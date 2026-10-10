@@ -517,6 +517,19 @@ class RunDir:
                 found.append((int(m.group(2)), int(m.group(3)), p))
         return sorted(found)
 
+    def read_events(self, kind: str) -> dict[str, np.ndarray]:
+        """Every ``kind`` (births|deaths) record of the run, concatenated over its chunks in step order."""
+        if kind not in ("births", "deaths"):
+            raise ValueError(f"unknown event kind {kind!r}")
+        spec = BIRTH_COLUMNS if kind == "births" else DEATH_COLUMNS
+        chunks = [_read_events(path) for _, _, path in self.event_files(kind)]
+        return {
+            name: np.concatenate([c[name] for c in chunks]).astype(dtype)
+            if chunks
+            else np.zeros(0, dtype=dtype)
+            for name, dtype in spec.items()
+        }
+
     def truncate_after(self, step: int) -> None:
         """Make the logs consistent with the checkpoint at ``step`` (§18 resume, step 4).
 

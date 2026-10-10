@@ -14,6 +14,13 @@ The whole simulation step is a pure, compiled MLX function on fixed shapes. It t
 The single source of truth for the design (state schema, step pipeline, numeric defaults, RNG streams, tests and
 work packages) is [`docs/DESIGN.md`](docs/DESIGN.md).
 
+![dev preset, step 600: the whole 512-unit world](docs/media/dev_step600_world.png)
+![dev preset, step 600: bonded bodies of kin, zoom 12](docs/media/dev_step600_bodies.png)
+
+Frames from `alife render` of a `dev` run at step 600 (CPU, seed 0, float32 weights). Agents are coloured by tag, so
+kin share colours. The green resource field is grazed down and tinted by the agents' chemical signals where they
+gather (the dark cells). The zoomed frame shows small bonded bodies of kin.
+
 ## Quickstart (macOS, Apple silicon)
 
 Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
@@ -22,8 +29,10 @@ Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
 git clone <this repo> artificial-life && cd artificial-life
 uv sync                                   # creates .venv with mlx (Metal) and numpy
 uv sync --extra viewer --extra video      # optional: pygame-ce live viewer, bundled ffmpeg for videos
+                                          # (a later plain `uv sync` removes the extras again)
 
 uv run alife run --preset tiny --steps 500 --out runs/first
+uv run alife resume runs/first --steps 500   # continue bitwise-identically from the latest checkpoint
 uv run alife inspect runs/first --check
 uv run alife render runs/first --steps 200 --every 2 --out runs/first/media/movie.mp4
 uv run alife view --preset dev            # live viewer (needs the `viewer` extra)

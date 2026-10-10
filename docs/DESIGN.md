@@ -297,7 +297,7 @@ Ordered sub-steps:
 | S8 | **costs and solvency**: `energy.pay_costs`, then `actions.mask(act, solvent)` | `energy, act, n_bonds, brain_cost, alive` | `E`, `solvent`, `paid_basal`, `paid_action`, and `act` with all actions of insolvent agents cancelled | — |
 | S9 | **bonds**: `bonds.break_bonds`, then `bonds.form_bonds` | `partner, rev, act.release, geom.length, act.bond_want, act.bond_target, alive & solvent` | `partner, rev`, broken and formed counts | `BOND_PRIO` |
 | S10 | **harvest**: `energy.harvest` | `E, resource, fcell, act.harvest, solvent` | `E, resource, got` | — |
-| S11 | **combat**: `energy.combat` | `E, resource, fcell, act`, post-S9 `partner` | `E, resource, lost, gain, spill`; attacks on a target that became a bond partner at S9 are dropped unless `attack_bonded` | — |
+| S11 | **combat**: `energy.combat` | `E, resource, fcell, act`, post-S9 `partner` | `E, resource, lost, gain, spill, residue` (I13); attacks on a target that became a bond partner at S9 are dropped unless `attack_bonded` | — |
 | S12 | **share**: `energy.share` | `E`, post-S9 `partner, rev`, start-of-step `s.partner`, `act.share`, `solvent` | `E, out, inflow, heat`; a slot sends only if its partner is unchanged since the start of the step | — |
 | S13 | **cap**: `energy.cap_energy` | `E` | `E ≤ e_max`, `overflow` | — |
 | S14 | **deaths**: `lifecycle.deaths` | `alive, solvent, E, lost, age, uid, generation, clade, partner, rev, resource, fcell` | `survivor` mask (`alive` after deaths); corpses into `resource`; dead rows canonicalised; bonds of the dead dropped on both sides; death records | — |
@@ -1407,8 +1407,14 @@ Settings: N = 65 536, K = 8, C = 16, Q = 144, B = 4, M = 1 024, H = 32, fp16 wei
   - snapshot metrics.
 
   Unified memory makes `np.asarray` of small arrays nearly free.
-- **Donation health** (`alife bench`): after warm-up, bench measures `mx.get_peak_memory()` over 10 steps. It warns
-  if peak − baseline exceeds 0.5 × (bytes of `W1` + `W2`), which means the weights are being copied.
+- **Donation health** (`alife bench`): after warm-up, bench measures `mx.get_peak_memory()` − the resident
+  baseline over 10 steps (`excess`), then over one calibration step that deliberately keeps a reference to its
+  input state (`excess_copy`, the known-copy case of F1). It warns unless `excess_copy − excess` exceeds
+  0.25 × (bytes of `W1` + `W2`), which means the weights are being copied. The step's own transients cancel in
+  the difference; an absolute bound on `excess` cannot work, because those transients are ≈ 0.3× the f32 and
+  ≈ 0.64× the fp16 weight bytes (measured on CPU for tiny and dev), while a retained old state can even lower
+  `excess` (it is part of the baseline). Measured: healthy steps save 0.64–1.05× the weight bytes; a retained
+  state saves 0.
   - **Fallback** if Metal behaves differently from CPU: run S0 as its own compiled call, evaluated before the main
     step. That costs one extra sync per step.
 
@@ -1717,11 +1723,13 @@ class VideoWriter:
 
 # viewer.py
 def run_viewer(cfg: Config, state: State, *, rundir: RunDir | None = None, size: tuple[int, int] = (900, 900),
-               steps_per_frame: int = 1) -> None
+               steps_per_frame: int = 1) -> None        # ImportError with an install hint without pygame-ce
+class ViewerSession: ...           # the viewer minus the window (state, viewport, keys, selection, HUD, snapshots)
 
 # bench.py
 def run_bench(cfg: Config, *, steps: int = 200, warmup: int = 20, stages: bool = False,
-              determinism: bool = False, brain_variants: bool = False) -> dict[str, Any]
+              determinism: bool = False, brain_variants: bool = False) -> dict[str, Any]   # JSON-compatible
+def format_report(report: dict[str, Any]) -> str                            # terminal summary of a report
 
 # cli.py
 def main(argv: Sequence[str] | None = None) -> int
@@ -2022,7 +2030,8 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
 - **`meta.json` fields:**
   - versions: `format_version`, `alife_version`, `mlx_version`, `python`;
   - environment: `platform`, `device` (`mx.default_device()`), `git_rev` (or null), `created_utc`;
-  - run identity: `seed`, `config_hash`, `rng_layout_version`, `genome_layout_version`, `parent`;
+  - run identity: `seed`, `config_hash`, `rng_layout_version`, `genome_layout_version`, `parent`,
+    `start_step` (the step the directory started from: 0, or the fork step);
   - `status`, one of `running | done | extinct | violation | interrupted`.
 - **Checkpoint metadata** (safetensors string metadata, written by `runio.write_state_file` for checkpoints and
   viewer snapshots alike): `format_version`, `rng_layout_version`, `genome_layout_version`, `step`, `config_hash`,
@@ -2031,15 +2040,21 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
 - **Atomic writes.** Each checkpoint is written to `*.tmp` and moved into place with `os.replace`. Only then is
   `LATEST` rewritten, also atomically. A crash never corrupts the newest complete checkpoint.
 - **Retention.** The newest `keep_checkpoints` are kept, plus `step_0000000000`.
-- **Cadence.** Scheduled checkpoints happen only at metrics boundaries. The runner always flushes metrics and
-  events *before* writing a checkpoint, so logs are consistent with every checkpoint.
+- **Cadence.** Scheduled checkpoints happen only at metrics boundaries. Event records are read to the host at every
+  metrics boundary and written as one chunk per checkpoint interval, `[previous checkpoint step, step)`. The runner
+  always flushes metrics and events *before* writing a checkpoint, so logs are consistent with every checkpoint.
 - **Unscheduled stops** (end of run, extinction, SIGINT). The runner finishes the current step, writes a partial
   interval row whose `steps` field is the actual number of steps in it, flushes events, and checkpoints at that
   step. On resume the next boundary is the next multiple of `metrics_every`, so the first resumed interval may also
-  be short. Every interval row therefore carries `steps`, and consumers weight by it.
+  be short. Every interval row therefore carries `steps`, and consumers weight by it. Extinction (no agent alive,
+  immigration off) is read from each step's already evaluated `N_ALIVE` counter, so it costs no extra sync.
+- **Violations.** An error `diag` bit, or a non-zero host `ledger_error`, found at a metrics boundary: the row and the
+  pending events are flushed, the state is dumped to `diag/`, `status = violation`, exit 3. An invalid state is never
+  checkpointed, so resume restarts from the last good checkpoint.
 - **Resume** (`alife resume RUN`):
   1. Read `config.json`.
-  2. Load `LATEST`, or `--checkpoint STEP`.
+  2. Load `LATEST`, or `--checkpoint STEP`. Without `--steps`/`--until` the run continues to
+     `meta.start_step + run.steps`.
   3. Refuse with exit 4 if `format_version`, `rng_layout_version`, `genome_layout_version` or `config_hash` differ.
      Resume accepts only `--set run.*` overrides of observer and cadence keys (`steps`, `metrics_every`,
      `checkpoint_every`, `keep_checkpoints`, `heavy_metrics_every`, `components_iters`, `diversity_sample`).
@@ -2258,6 +2273,18 @@ Viewing never changes the trajectory.
 - The viewer never appends to `metrics.jsonl` or `events/`.
 - The HUD line shows step, population, births/deaths per interval, bonds, steps/s.
 
+Pinned details (impl, WP6):
+- `+`/`−` double/halve steps per frame within `[1, 1024]` (`=` and the keypad keys also work). `.` pauses and
+  steps once. Esc or `q` quits. The wheel zooms by 1.25 per notch about the cursor, within `[0.25, 256]`. A press
+  that moves more than 4 px is a drag, otherwise a click.
+- The HUD interval is `run.metrics_every` steps: births/deaths are summed on the device and shown for the last
+  completed interval (the running one until the first completes). A selected agent that dies is reported as
+  dead; error diag bits are shown in red, and the viewer keeps running.
+- Without a run directory, `s` writes `./media/snap_<step>.safetensors`. `p` writes `media/view_<step>.png`
+  next to the snapshots.
+- The loop's logic lives in `ViewerSession`, which has no pygame dependency and is tested headless; the
+  pygame loop is tested with `SDL_VIDEODRIVER=dummy` and skipped without pygame-ce.
+
 ---
 
 ## 21. CLI (`alife`, argparse, entry point `alife.cli:main`)
@@ -2303,9 +2330,15 @@ Options:
 
 Options:
 - `--stages` compiles and evaluates each sub-step group separately to attribute time. The total is slightly
-  inflated by the extra syncs.
-- `--determinism` runs 2 × 200 steps and compares SHA-256 digests.
-- `--brain-variants` times `impl ∈ {matmul, einsum}` × `weight_dtype ∈ {float16, bfloat16, float32}`.
+  inflated by the extra syncs. The groups follow §15.2: S0, S1–S2, S3–S5, S6, S7, S8–S14, S15, S16, S17, S18.
+  Their wiring mirrors `step.step` exactly (a test checks bitwise equality in eager mode), and S0 still updates
+  the weights in place.
+- `--determinism` runs 2 × `--steps` steps (default 200) and compares SHA-256 digests.
+- `--brain-variants` times `brain.forward` over all N rows for `impl ∈ {matmul, einsum}` ×
+  `weight_dtype ∈ {float16, bfloat16, float32}`, reporting ms and weight GB/s. A variant the backend rejects
+  is reported with its error rather than aborting the bench.
+- The throughput run also reports the final `diag` flags and an `invariants.full_check` of the final state,
+  so day-one backend gaps (e.g. int64 on Metal, §23.3) show up in the bench output.
 
 **Exit codes** (`runner.ExitCode`):
 
@@ -2317,6 +2350,21 @@ Options:
 | 3 | invariant violation: diag bits are printed by name and the state is dumped to `diag/` |
 | 4 | checkpoint incompatible |
 | 130 | interrupted by SIGINT after a clean flush and checkpoint |
+
+Pinned details (impl, WP5):
+- `--seed`, `--steps`, `--metrics-every`, `--checkpoint-every`, `--checks` and `--no-compile` are `run.*` overrides
+  applied after `--set`. `run.steps` counts steps from the directory's start (`meta.start_step`), so a fork runs
+  `run.steps` steps after the fork step. `resume` also takes `--quiet`.
+- `render`, `inspect` and `view` accept a standalone state file (a viewer snapshot) in place of `RUN`; its embedded
+  config is used, and default outputs go to `./media/`. `render` names them `frame_<step:010d>.png` (`--steps 0`)
+  and `render_<s0:010d>_<s1:010d>.mp4`; a `--steps > 0` sequence holds the start frame plus one per `K` steps.
+- `inspect --json` prints one object: `step`, `config` (summary and `config_hash`), `carrying_capacity_est`,
+  `ledger_error`, `diag` and `diag_flags`, `state` (heavy `snapshot_metrics`), `checkpoints`, `last_metrics`, and
+  `check` / `agent` when asked. An unknown `--agent` uid exits 1. The ancestor chain follows `events/` births up
+  to a founder or immigrant (`ancestors_complete`).
+- Usage errors exit 2 (argparse); a missing run directory or an existing `--out` exits 1; `bench --determinism`
+  exits 1 when the two digests differ. The CLI hands its state to `runner.run`/`run_viewer` without keeping a
+  reference (the donation rule, §15.4).
 
 ---
 
@@ -2790,8 +2838,12 @@ changes must be reflected in this document.
 - `test_render`: shape and dtype; a single agent lights the expected pixels; a bond across the seam is drawn on both
   sides; viewport culling; frames are deterministic; a valid PNG header and CRC (decoded with `zlib`);
   `VideoWriter` falls back to a PNG sequence when ffmpeg is absent.
-- `test_bench_smoke`, through `test_cli_smoke`.
-- The viewer import is guarded, and the test is skipped when pygame-ce is absent.
+- `test_bench`: a tiny smoke run of every part (JSON-compatible report), the staged wiring equal to `step`
+  bitwise in eager mode, and the donation check flagging a step whose caller retains the old state; plus the
+  bench invocation in `test_cli_smoke`.
+- `test_viewer`: `ViewerSession` headless (trajectory unchanged by viewing, keys, pan/zoom, selection across
+  the seam, HUD, snapshots that leave the run directory's checkpoints and logs alone). The viewer import is
+  guarded, and the pygame loop test (`SDL_VIDEODRIVER=dummy`) is skipped when pygame-ce is absent.
 
 ### Cross-package rules
 
@@ -2860,6 +2912,9 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I11 | impl: (WP5) Bodies add root hooking to label propagation (a shuffled 2 000-chain needs O(length) rounds without it, ≈ 10 with it); `weight_diversity` keeps founders eligible at step 0 and pins the sample to the first eligible rows of an observer permutation; level counters are interval means; event chunks are half-open `[s0, s1)` and `truncate_after` also deletes later checkpoints; `E[founder brain_cost]` is analytic (§10.10, §18, §19.2). |
 | I12 | impl: (WP6) §20.1 left screen orientation, seam and zoom-out wrapping, bond sample spacing, the violet and energy-ramp colours, the nose colour, large-stencil memory and `VideoWriter` path handling unspecified; they are pinned in §20.1 "Pinned details". |
 | I13 | impl: (WP4) Combat drains a victim whose attackers together demand at least all it holds: `proportional_take`'s −1 guard otherwise left it ≥ 1 quantum, so it survived S14 and died insolvent a step later as `STARVED`, making `KILLED` practically unreachable. The remainder is `Combat.residue` (per victim), spilled into the victim's cell and booked as `FLOW_SPILL` (§10.9, §11, §16.2, §16.3). `golden` also pins the platform; measured tiny step time recorded (§22.0, §22.4). |
+| I14 | impl: (WP6) The donation-health rule of §15.4 ("peak − baseline > 0.5 × weight bytes") misfires: step transients alone are ≈ 0.64× the fp16 weight bytes on CPU (tiny and dev), and a retained old state lowers the excess because it sits in the baseline. Bench now calibrates with one step that keeps its input alive and warns unless that step peaks > 0.25 × weight bytes higher. Viewer controls, HUD interval and snapshot paths pinned (§20.2); bench stage groups and variant timing pinned (§21); `ViewerSession` and `bench.format_report` added (§16.2). MLX 0.32 `mx.compile` fails (`_Map_base::at`) when a constant array is an output beside arrays that use it (`Lanes.n_imm` with immigration off); the staged bench returns the lane counts stacked. |
+| I15 | impl: (WP5) Runner and CLI details pinned: `meta.start_step` and the default resume target, event chunks per checkpoint interval, the violation path (rows and events flushed, `diag/` dump, no checkpoint), extinction read from the evaluated per-step `N_ALIVE`, shortcut-flag precedence, state files accepted by `render`/`inspect`/`view`, `inspect --json` keys (§18, §21). |
+| I16 | impl: (gate) Release check: the §3 S11 row now lists `residue` (I13); `bench` reports `n_alive_start` at the start of the timed window and adds `immigrants`, so start + births + immigrants − deaths = end; `format_report` takes `report` as in §16.2. No behaviour change to the step. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

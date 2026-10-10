@@ -325,6 +325,21 @@ def test_write_events(micro_cfg: Config, tmp_path: Path) -> None:
     assert [(a, b) for a, b, _ in rd.event_files("births")] == [(0, 4)]
 
 
+def test_read_events(micro_cfg: Config, tmp_path: Path) -> None:
+    rd = RunDir.create(tmp_path / "run", micro_cfg)
+    empty = rd.read_events("births")
+    assert set(empty) == set(runio.BIRTH_COLUMNS) and all(v.size == 0 for v in empty.values())
+    assert empty["uid"].dtype == np.int64
+    rd.write_events(4, 8, _births([4, 7]), _deaths([5]))
+    rd.write_events(0, 4, _births([0, 3]), _deaths([]))
+    b = rd.read_events("births")
+    assert list(b["step"]) == [0, 0, 3, 4, 4, 7] and b["step"].dtype == np.int32
+    d = rd.read_events("deaths")
+    assert list(d["step"]) == [5] and d["cause"].dtype == np.uint8
+    with pytest.raises(ValueError, match="kind"):
+        rd.read_events("lives")
+
+
 def test_truncate_after(micro_cfg: Config, tmp_path: Path) -> None:
     rd = RunDir.create(tmp_path / "run", micro_cfg)
     s = _scene(micro_cfg)

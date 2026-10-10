@@ -39,4 +39,4 @@ jobs:
       - name: Install
         run: uv sync --locked --group dev
       - name: Slow tests
-        run: uv run pytest -m slow -q || test $? -eq 5  # 5: no slow tests collected yet
+        run: uv run pytest -m slow -q
