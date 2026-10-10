@@ -15,7 +15,7 @@ from alife.layout import T
 from alife.lifecycle import LaneKind
 from alife.rng import Stream
 from alife.state import AGENT_FIELDS, R_HARD, DeathCause, State, age, to_numpy, total_energy
-from helpers import make_scene
+from helpers import ON_GPU, make_scene
 
 STARVED, KILLED, AGED = DeathCause.STARVED, DeathCause.KILLED, DeathCause.AGED
 
@@ -601,7 +601,10 @@ def test_age_helper_matches_birth_step_convention() -> None:
 
 
 def test_lifecycle_compiles_and_matches_eager(micro_cfg: Config) -> None:
-    """S0 + S14 + S16 are pure graph code: compiled output equals eager (no host reads or array branching)."""
+    """S0 + S14 + S16 are pure graph code: compiled output equals eager (no host reads or array branching).
+
+    Bitwise on CPU; on GPU float outputs (the mutated child weights) agree to rounding, integers exactly.
+    """
     cfg = apply_overrides(micro_cfg, ["population.immigration_floor=30"])
     d = dims(cfg)
     agents = [dict(energy=30_000 + 7_000 * i, pos=(2.0 * i, 3.0), birth_step=-25) for i in range(12)]
@@ -625,6 +628,11 @@ def test_lifecycle_compiles_and_matches_eager(micro_cfg: Config) -> None:
     eager, comp = core(s), mx.compile(core)(s)
     mx.eval(eager, comp)
     for a, b in zip(tree_flatten(eager), tree_flatten(comp), strict=True):
-        assert a[0] == b[0] and np.array_equal(_np(a[1]), _np(b[1])), a[0]
+        x, y = _np(a[1]), _np(b[1])
+        assert a[0] == b[0], a[0]
+        if ON_GPU and x.dtype.kind == "f":
+            np.testing.assert_allclose(x, y, rtol=1e-6, atol=1e-6, err_msg=a[0])
+        else:
+            assert np.array_equal(x, y), a[0]
     lanes = eager[3]
     assert int(_np(lanes.n_birth)) > 0 and int(_np(lanes.n_imm)) > 0 and int(_np(eager[2].valid.sum())) > 0

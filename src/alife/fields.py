@@ -33,7 +33,9 @@ def init_patches(key_pos: mx.array, key_vel: mx.array, cfg: Config) -> tuple[mx.
 def fertility(patch_pos: mx.array, cfg: Config) -> mx.array:
     """``clip(fertility_base + Σ_p torus-Gaussian_p, 0, 1)`` on the field grid, (FG,FG) f32 indexed [y, x].
 
-    Separable: ``gyᵀ @ gx`` with per-axis minimum-image offsets from cell centres.
+    Separable: ``Σ_p gy_p ⊗ gx_p`` with per-axis minimum-image offsets from cell centres. The sum is
+    elementwise rather than ``gyᵀ @ gx`` because float32 matmul runs at reduced precision on some Apple GPUs
+    (≈ 8e-4 relative on M5), which would perturb the integer regeneration map well beyond rounding.
     """
     fg, L, fc = dims(cfg).fg, cfg.world.size, cfg.world.field_cell
     centres = (mx.arange(fg, dtype=mx.float32) + 0.5) * fc
@@ -41,7 +43,7 @@ def fertility(patch_pos: mx.array, cfg: Config) -> mx.array:
     dx = ops.min_image(centres[None, :] - patch_pos[:, 0:1], L)  # (PP,FG)
     dy = ops.min_image(centres[None, :] - patch_pos[:, 1:2], L)
     gx, gy = mx.exp(dx * dx * inv), mx.exp(dy * dy * inv)
-    return mx.clip(cfg.fields.fertility_base + gy.T @ gx, 0.0, 1.0)
+    return mx.clip(cfg.fields.fertility_base + (gy[:, :, None] * gx[:, None, :]).sum(axis=0), 0.0, 1.0)
 
 
 def regen_rate(patch_pos: mx.array, cfg: Config) -> mx.array:

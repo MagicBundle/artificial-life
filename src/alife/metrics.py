@@ -90,8 +90,14 @@ def _diversity_arrays(s: State, step: int, cfg: Config) -> tuple[mx.array, mx.ar
     x = mx.concatenate(
         [s.W1[rows].astype(mx.float32).reshape(k, -1), s.W2[rows].astype(mx.float32).reshape(k, -1)], axis=1
     )
-    g = x @ x.T
-    sq = mx.diagonal(g)
+    # Centring removes the component related genomes share, which would otherwise cancel in the Gram trick.
+    # The Gram matmul runs on the CPU stream: float32 matmul on some Apple GPUs is reduced precision (≈ 8e-4
+    # relative on M5). Squared norms are exact elementwise sums. This is an observer-side metric, so the
+    # extra stream costs nothing in the step.
+    w = valid.astype(mx.float32)[:, None]
+    x = x - (x * w).sum(axis=0) / mx.maximum(w.sum(), 1.0)
+    g = mx.matmul(x, x.T, stream=mx.cpu)
+    sq = (x * x).sum(axis=1)
     dist = mx.sqrt(mx.maximum(sq[:, None] + sq[None, :] - 2.0 * g, 0.0))
     idx = mx.arange(k)
     pair = valid[:, None] & valid[None, :] & (idx[:, None] < idx[None, :])

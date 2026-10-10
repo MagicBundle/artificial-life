@@ -12,6 +12,10 @@ from alife import brain, layout
 from alife.config import Config, dims
 from alife.state import AGENT_FIELDS, State, init_state, to_numpy, total_energy
 
+# Fused Metal kernels may round float ops differently from eager ones (e.g. FMA contraction), so compiled vs
+# eager is bitwise only on CPU. Integer results must still agree exactly on every backend.
+ON_GPU = mx.default_device().type == mx.gpu
+
 
 def make_scene(
     cfg: Config,

@@ -242,6 +242,23 @@ def test_weight_diversity_excludes_unflushed_rows(micro_cfg: Config) -> None:
     assert metrics.snapshot_metrics(s1, micro_cfg, heavy=True)["weight_diversity"] is None
 
 
+def test_weight_diversity_close_kin_is_accurate(micro_cfg: Config) -> None:
+    """Near-identical genomes (a shared base plus tiny mutations) must not lose the distance to cancellation.
+
+    Uncentred, ``|x|² ≈ 400`` against ``dist² ≈ 0.01``, so the Gram trick in float32 is off by percent.
+    """
+    d = dims(micro_cfg)
+    rs = np.random.default_rng(11)
+    base1 = rs.normal(0, 0.3, (d.w1_rows, d.h))
+    base2 = rs.normal(0, 0.3, (d.w2_rows, layout.D_OUT))
+    w1 = (base1 + rs.normal(0, 1e-3, (6, d.w1_rows, d.h))).astype(np.float32)
+    w2 = (base2 + rs.normal(0, 1e-3, (6, d.w2_rows, layout.D_OUT))).astype(np.float32)
+    s = make_scene(micro_cfg, _agents(6, W1=list(w1), W2=list(w2)))
+    flat = np.concatenate([w1.reshape(6, -1), w2.reshape(6, -1)], axis=1).astype(np.float64)
+    got = metrics.snapshot_metrics(s, micro_cfg, heavy=True)["weight_diversity"]
+    assert got == pytest.approx(_pairwise_mean(flat), rel=1e-3)
+
+
 def test_weight_diversity_sample_matches_numpy(tiny_cfg: Config) -> None:
     cfg = apply_overrides(tiny_cfg, ["run.diversity_sample=40"])
     s = init_state(cfg)
