@@ -1,0 +1,18 @@
+# tiny: tests and CI (N = 1 024, M = 32).
+[population]
+n_max = 1024
+n_init = 256
+max_births_per_step = 32
+
+[world]
+size = 128.0
+
+[fields]
+n_patches = 4
+patch_sigma = 12.0
+
+[run]
+steps = 500
+metrics_every = 10
+checkpoint_every = 50
+heavy_metrics_every = 10

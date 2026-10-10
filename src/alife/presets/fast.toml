@@ -1,0 +1,7 @@
+# fast overlay: cheaper neighbour search and brain; combines with any preset.
+[sensing]
+k_neighbors = 6
+cell_capacity = 12
+
+[brain]
+hidden = 24
