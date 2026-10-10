@@ -1,80 +1,558 @@
-"""Run directories: config, meta, checkpoints, metrics and event logs (§18). Owned by WP5."""
+"""Run directories: config, meta, checkpoints, metrics and event logs (§18). Owned by WP5.
+
+State files, ``LATEST``, ``meta.json``, ``config.json`` and event chunks are written atomically (``*.tmp`` +
+``os.replace``), so a crash leaves either the old or the new complete file; ``metrics.jsonl`` is appended and
+fsynced, and a torn last line is ignored on read.
+
+Event chunks ``births_<s0>_<s1>.npz`` / ``deaths_<s0>_<s1>.npz`` hold the records of steps ``s0 ≤ step < s1``,
+where a record's ``step`` is the index of the step during which it happened; a checkpoint at
+``state.step == s1`` therefore contains exactly the effects of every chunk ending at ``s1``.
+"""
 
 from __future__ import annotations
 
+import datetime as _dt
+import json
+import math
+import os
+import platform
+import re
+import shutil
+import struct
+import subprocess
+import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Final
 
+import mlx.core as mx
 import numpy as np
 
-from alife.config import Config
-from alife.state import State
+from alife import layout, rng
+from alife.config import Config, config_from_dict, config_hash, config_to_dict, dims, save_config, validate
+from alife.state import N_LEDGER, State, state_from_arrays, state_to_arrays, to_numpy
 
 FORMAT_VERSION: Final = 1
+
+CONFIG_FILE: Final = "config.json"
+META_FILE: Final = "meta.json"
+METRICS_FILE: Final = "metrics.jsonl"
+LATEST_FILE: Final = "LATEST"
+STATUSES: Final = ("running", "done", "extinct", "violation", "interrupted")
+
+BIRTH_COLUMNS: Final[Mapping[str, Any]] = {
+    "step": np.int32,
+    "uid": np.int64,
+    "parent_uid": np.int64,
+    "clade": np.int32,
+    "generation": np.int32,
+    "slot": np.int32,
+}
+DEATH_COLUMNS: Final[Mapping[str, Any]] = {
+    "step": np.int32,
+    "uid": np.int64,
+    "age": np.int32,
+    "cause": np.uint8,
+    "generation": np.int32,
+    "clade": np.int32,
+}
+
+_CKPT_RE: Final = re.compile(r"^step_(\d{10})\.safetensors$")
+_EVENT_RE: Final = re.compile(r"^(births|deaths)_(\d{10})_(\d{10})\.npz$")
+_MAX_HEADER: Final = 1 << 26  # sanity bound on a safetensors JSON header
 
 
 class CheckpointError(Exception):
     """Incompatible or corrupt checkpoint (version, shape or config-hash mismatch)."""
 
 
+# --- atomic file helpers --------------------------------------------------------------------------------
+
+
+def _tmp_path(path: Path) -> Path:
+    return path.with_name(path.name + ".tmp")
+
+
+def _fsync_dir(path: Path) -> None:
+    """Best-effort fsync of a directory so a completed rename survives a crash."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _atomic_write(path: Path, write: Any) -> None:
+    """Call ``write(f)`` on ``path.tmp`` (binary), fsync it, and move it over ``path``; never leaves a tmp."""
+    path = Path(path)
+    tmp = _tmp_path(path)
+    try:
+        with open(tmp, "wb") as f:
+            write(f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    _fsync_dir(path.parent)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    _atomic_write(path, lambda f: f.write(text.encode("utf-8")))
+
+
+def _jsonable(x: Any) -> Any:
+    """Plain JSON values: numpy scalars/arrays → Python, non-finite floats → None, tuples → lists."""
+    if isinstance(x, Mapping):
+        return {str(k): _jsonable(v) for k, v in x.items()}
+    if isinstance(x, list | tuple | np.ndarray):
+        return [_jsonable(v) for v in x]
+    if isinstance(x, np.generic):
+        x = x.item()
+    if isinstance(x, float) and not math.isfinite(x):
+        return None
+    return x
+
+
+def _dumps(x: Any) -> str:
+    return json.dumps(_jsonable(x), allow_nan=False)
+
+
+# --- state files ----------------------------------------------------------------------------------------
+
+
+def _expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]:
+    """Shape and dtype of every State field under ``cfg`` (§2.2)."""
+    d = dims(cfg)
+    n, m, fg, wd = d.n, d.m, d.fg, d.wdtype
+    i32, i64, f32 = mx.int32, mx.int64, mx.float32
+    return {
+        "alive": ((n,), mx.bool_),
+        "uid": ((n,), i64),
+        "parent_uid": ((n,), i64),
+        "clade": ((n,), i32),
+        "generation": ((n,), i32),
+        "birth_step": ((n,), i32),
+        "energy": ((n,), i32),
+        "pos": ((n, 2), f32),
+        "vel": ((n, 2), f32),
+        "heading": ((n,), f32),
+        "h": ((n, d.h), f32),
+        "msg": ((n, layout.MSG), f32),
+        "last_loss": ((n,), i32),
+        "last_harvest": ((n,), i32),
+        "last_inflow": ((n,), i32),
+        "partner": ((n, layout.B), i32),
+        "rev": ((n, layout.B), i32),
+        "tag": ((n, layout.T), f32),
+        "mut_sigma": ((n,), f32),
+        "mut_rate": ((n,), f32),
+        "offspring_frac": ((n,), f32),
+        "brain_cost": ((n,), i32),
+        "W1": ((n, d.w1_rows, d.h), wd),
+        "W2": ((n, d.w2_rows, layout.D_OUT), wd),
+        "pend_slot": ((m,), i32),
+        "pend_W1": ((m, d.w1_rows, d.h), wd),
+        "pend_W2": ((m, d.w2_rows, layout.D_OUT), wd),
+        "resource": ((fg, fg), i32),
+        "chem": ((layout.NCH, fg, fg), f32),
+        "patch_pos": ((d.pp, 2), f32),
+        "patch_vel": ((d.pp, 2), f32),
+        "key": ((2,), mx.uint32),
+        "step": ((), i32),
+        "next_uid": ((), i64),
+        "total": ((), i64),
+        "total0": ((), i64),
+        "ledger_cum": ((N_LEDGER,), i64),
+        "diag": ((), i32),
+    }
+
+
+def _alife_version() -> str:
+    import alife  # local: the package __init__ imports the step graph, which never imports runio
+
+    return alife.__version__
+
+
+def write_state_file(path: Path, s: State, cfg: Config) -> None:
+    """Atomic safetensors write (``*.tmp`` + ``os.replace``) with checkpoint metadata (§18)."""
+    meta = {
+        "format_version": str(FORMAT_VERSION),
+        "rng_layout_version": str(rng.RNG_LAYOUT_VERSION),
+        "genome_layout_version": str(layout.GENOME_LAYOUT_VERSION),
+        "step": str(int(to_numpy(s.step))),
+        "config_hash": config_hash(cfg),
+        "alife_version": _alife_version(),
+        "mlx_version": mx.__version__,
+        "weight_dtype": cfg.brain.weight_dtype,
+        "config": json.dumps(config_to_dict(cfg), sort_keys=True, indent=2),
+    }
+    arrays = state_to_arrays(s)
+    _atomic_write(Path(path), lambda f: mx.save_safetensors(f, arrays, meta))
+
+
+def checkpoint_metadata(path: Path) -> dict[str, str]:
+    """The string metadata of a state file, read from the safetensors header only."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(8)
+            if len(raw) != 8:
+                raise CheckpointError(f"{path}: truncated safetensors header")
+            (size,) = struct.unpack("<Q", raw)
+            if size > _MAX_HEADER:
+                raise CheckpointError(f"{path}: implausible safetensors header size {size}")
+            body = f.read(size)
+        header = json.loads(body)
+    except OSError as e:
+        raise CheckpointError(f"{path}: cannot read state file: {e}") from e
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise CheckpointError(f"{path}: corrupt safetensors header: {e}") from e
+    meta = header.get("__metadata__", {}) if isinstance(header, dict) else None
+    if not isinstance(meta, dict):
+        raise CheckpointError(f"{path}: corrupt safetensors metadata")
+    return {str(k): str(v) for k, v in meta.items()}
+
+
+def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> State:
+    """Load a state file; ``CheckpointError`` on a version/shape mismatch, or a config-hash one if checked.
+
+    Keys are matched by name (their order in the file is arbitrary, F15). The result is evaluated.
+    """
+    path = Path(path)
+    meta = checkpoint_metadata(path)
+    want = {
+        "format_version": str(FORMAT_VERSION),
+        "rng_layout_version": str(rng.RNG_LAYOUT_VERSION),
+        "genome_layout_version": str(layout.GENOME_LAYOUT_VERSION),
+    }
+    if check_hash:
+        want["config_hash"] = config_hash(cfg)
+    bad = [f"{k}={meta.get(k)!r} (expected {v!r})" for k, v in want.items() if meta.get(k) != v]
+    if bad:
+        raise CheckpointError(f"{path}: incompatible checkpoint: {', '.join(bad)}")
+    try:
+        arrays = mx.load(str(path), format="safetensors")
+        s = state_from_arrays(arrays)
+        mx.eval(s)  # loads are lazy; read now so a later replace of the file cannot affect this state
+    except (ValueError, RuntimeError, OSError) as e:
+        raise CheckpointError(f"{path}: {e}") from e
+    spec = _expected_layout(cfg)
+    problems = [
+        f"{name}: {tuple(a.shape)} {a.dtype} (expected {spec[name][0]} {spec[name][1]})"
+        for name, a in zip(State._fields, s, strict=True)
+        if tuple(a.shape) != spec[name][0] or a.dtype != spec[name][1]
+    ]
+    if problems:
+        raise CheckpointError(f"{path}: state does not match the config: {'; '.join(problems)}")
+    return s
+
+
+# --- run directory --------------------------------------------------------------------------------------
+
+
+def _git_rev() -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    rev = out.stdout.strip()
+    return rev if out.returncode == 0 and rev else None
+
+
+def _read_events(path: Path) -> dict[str, np.ndarray]:
+    with np.load(path) as z:
+        return {k: z[k] for k in z.files}
+
+
+def _write_npz(path: Path, cols: Mapping[str, np.ndarray]) -> None:
+    _atomic_write(path, lambda f: np.savez_compressed(f, **cols))
+
+
+def _event_columns(kind: str, rec: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Flatten, filter by ``valid`` (if present) and cast one record mapping to the §18 column dtypes."""
+    spec = BIRTH_COLUMNS if kind == "births" else DEATH_COLUMNS
+    missing = sorted(set(spec) - set(rec))
+    if missing:
+        raise ValueError(f"{kind} records are missing columns {missing}")
+    keep = None if "valid" not in rec else np.asarray(rec["valid"], dtype=bool).reshape(-1)
+    out = {}
+    for name, dtype in spec.items():
+        col = np.asarray(rec[name]).reshape(-1)
+        if keep is not None:
+            if col.shape != keep.shape:
+                raise ValueError(f"{kind}.{name} has {col.size} entries, valid has {keep.size}")
+            col = col[keep]
+        out[name] = col.astype(dtype)
+    sizes = {c.size for c in out.values()}
+    if len(sizes) > 1:
+        raise ValueError(f"{kind} columns differ in length: {sorted(sizes)}")
+    return out
+
+
 class RunDir:
+    """A run directory (§18): config, meta, metrics, checkpoints, events, diag dumps and media."""
+
     path: Path
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
 
+    # paths
+    @property
+    def checkpoint_dir(self) -> Path:
+        return self.path / "checkpoints"
+
+    @property
+    def events_dir(self) -> Path:
+        return self.path / "events"
+
+    @property
+    def diag_dir(self) -> Path:
+        return self.path / "diag"
+
+    @property
+    def media_dir(self) -> Path:
+        return self.path / "media"
+
     @classmethod
     def create(cls, path: Path, cfg: Config, *, overwrite: bool = False, parent: str | None = None) -> RunDir:
-        raise NotImplementedError
+        """Create a fresh run directory holding ``cfg`` and a ``running`` meta.
+
+        An existing non-empty directory is an error unless ``overwrite`` is set and it is a run directory
+        (has ``meta.json``); anything else is never deleted.
+        """
+        path = Path(path)
+        if path.exists():
+            if not path.is_dir():
+                raise FileExistsError(f"{path} exists and is not a directory")
+            if any(path.iterdir()):
+                if not overwrite:
+                    raise FileExistsError(f"{path} is not empty (use overwrite to replace a run directory)")
+                if not (path / META_FILE).is_file():
+                    raise FileExistsError(f"{path} is not a run directory; refusing to overwrite it")
+                shutil.rmtree(path)
+        rd = cls(path)
+        rd.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        rd.events_dir.mkdir(exist_ok=True)
+        tmp = _tmp_path(path / CONFIG_FILE)
+        save_config(cfg, tmp)
+        os.replace(tmp, path / CONFIG_FILE)
+        meta = {
+            "format_version": FORMAT_VERSION,
+            "alife_version": _alife_version(),
+            "mlx_version": mx.__version__,
+            "python": platform.python_version(),
+            "platform": f"{sys.platform}-{platform.machine()}",
+            "device": str(mx.default_device()),
+            "git_rev": _git_rev(),
+            "created_utc": _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "seed": cfg.run.seed,
+            "config_hash": config_hash(cfg),
+            "rng_layout_version": rng.RNG_LAYOUT_VERSION,
+            "genome_layout_version": layout.GENOME_LAYOUT_VERSION,
+            "parent": parent,
+            "status": "running",
+        }
+        rd._write_meta(meta)
+        return rd
 
     @classmethod
     def open(cls, path: Path) -> RunDir:
-        raise NotImplementedError
+        """Open an existing run directory; ``CheckpointError`` if its format version differs."""
+        rd = cls(path)
+        for name in (CONFIG_FILE, META_FILE):
+            if not (rd.path / name).is_file():
+                raise FileNotFoundError(f"{rd.path} is not a run directory (missing {name})")
+        version = rd.meta().get("format_version")
+        if version != FORMAT_VERSION:
+            raise CheckpointError(f"{rd.path}: run format_version {version!r}, expected {FORMAT_VERSION}")
+        return rd
 
     def config(self) -> Config:
-        raise NotImplementedError
+        cfg = config_from_dict(json.loads((self.path / CONFIG_FILE).read_text(encoding="utf-8")))
+        validate(cfg)
+        return cfg
+
+    def save_config(self, cfg: Config) -> None:
+        """Rewrite ``config.json`` atomically (resume writes accepted ``run.*`` overrides back, §18)."""
+        tmp = _tmp_path(self.path / CONFIG_FILE)
+        save_config(cfg, tmp)
+        os.replace(tmp, self.path / CONFIG_FILE)
 
     def meta(self) -> dict[str, Any]:
-        raise NotImplementedError
+        return json.loads((self.path / META_FILE).read_text(encoding="utf-8"))
+
+    def _write_meta(self, meta: Mapping[str, Any]) -> None:
+        _atomic_write_text(
+            self.path / META_FILE, json.dumps(_jsonable(meta), indent=2, allow_nan=False) + "\n"
+        )
 
     def update_meta(self, **fields: Any) -> None:
-        raise NotImplementedError
+        if "status" in fields and fields["status"] not in STATUSES:
+            raise ValueError(f"unknown run status {fields['status']!r}; expected one of {STATUSES}")
+        meta = self.meta()
+        meta.update(fields)
+        self._write_meta(meta)
 
+    # checkpoints
     def save_checkpoint(self, s: State, cfg: Config) -> Path:
         """write_state_file + LATEST + prune."""
-        raise NotImplementedError
+        step = int(to_numpy(s.step))
+        path = self.checkpoint_dir / f"step_{step:010d}.safetensors"
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        write_state_file(path, s, cfg)
+        _atomic_write_text(self.checkpoint_dir / LATEST_FILE, path.name + "\n")
+        self._prune(cfg.run.keep_checkpoints)
+        return path
+
+    def _prune(self, keep: int) -> None:
+        """Keep the newest ``keep`` checkpoints, step 0 and whatever ``LATEST`` names."""
+        ckpts = self.checkpoints()
+        latest = self.latest_checkpoint()
+        protected = {p for _, p in ckpts[-keep:]} | {p for st, p in ckpts if st == 0}
+        for _, p in ckpts:
+            if p not in protected and p != latest:
+                p.unlink(missing_ok=True)
 
     def checkpoints(self) -> list[tuple[int, Path]]:
-        raise NotImplementedError
+        """Complete checkpoints as ``(step, path)``, ascending by step."""
+        if not self.checkpoint_dir.is_dir():
+            return []
+        found = [
+            (int(m.group(1)), p)
+            for p in self.checkpoint_dir.iterdir()
+            if (m := _CKPT_RE.match(p.name)) and p.is_file()
+        ]
+        return sorted(found)
 
     def latest_checkpoint(self) -> Path | None:
-        raise NotImplementedError
+        """The checkpoint named by ``LATEST``, else the newest complete one, else None."""
+        latest = self.checkpoint_dir / LATEST_FILE
+        if latest.is_file():
+            name = latest.read_text(encoding="utf-8").strip()
+            if _CKPT_RE.match(name) and (self.checkpoint_dir / name).is_file():
+                return self.checkpoint_dir / name
+        ckpts = self.checkpoints()
+        return ckpts[-1][1] if ckpts else None
 
+    def checkpoint_at(self, step: int) -> Path:
+        """The checkpoint of ``step``; ``FileNotFoundError`` if there is none."""
+        path = self.checkpoint_dir / f"step_{step:010d}.safetensors"
+        if not path.is_file():
+            raise FileNotFoundError(f"{self.path}: no checkpoint at step {step}")
+        return path
+
+    # logs
     def append_metrics(self, rows: Iterable[Mapping[str, Any]]) -> None:
-        raise NotImplementedError
+        """Append rows to ``metrics.jsonl`` (one JSON object per line, key "step" first) and fsync."""
+        lines = []
+        for row in rows:
+            if "step" not in row:
+                raise ValueError("a metrics row needs a 'step' key")
+            lines.append(_dumps({"step": row["step"], **{k: v for k, v in row.items() if k != "step"}}))
+        if not lines:
+            return
+        with open(self.path / METRICS_FILE, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+    def metrics_rows(self) -> list[dict[str, Any]]:
+        """All rows of ``metrics.jsonl``; a torn last line (a crash mid-append) is ignored."""
+        path = self.path / METRICS_FILE
+        if not path.is_file():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+        rows = []
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                if i == len(lines) - 1:
+                    break
+                raise
+        return rows
 
     def write_events(
         self, s0: int, s1: int, births: Mapping[str, np.ndarray], deaths: Mapping[str, np.ndarray]
     ) -> None:
-        raise NotImplementedError
+        """Write the records of steps ``s0 ≤ step < s1`` as ``births_*.npz`` and ``deaths_*.npz`` (§18).
+
+        Each mapping holds the §18 columns (any shape, flattened); an optional bool ``valid`` of the same
+        size selects the rows to keep, so stacked ``(T, lanes)`` records can be passed directly.
+        """
+        if not 0 <= s0 <= s1:
+            raise ValueError(f"bad event interval [{s0}, {s1})")
+        self.events_dir.mkdir(parents=True, exist_ok=True)
+        for kind, rec in (("births", births), ("deaths", deaths)):
+            cols = _event_columns(kind, rec)
+            st = cols["step"]
+            if st.size and (st.min() < s0 or st.max() >= s1):
+                raise ValueError(f"{kind} record steps outside [{s0}, {s1})")
+            _write_npz(self.events_dir / f"{kind}_{s0:010d}_{s1:010d}.npz", cols)
+
+    def event_files(self, kind: str) -> list[tuple[int, int, Path]]:
+        """``(s0, s1, path)`` of every ``kind`` (births|deaths) chunk, ascending."""
+        if not self.events_dir.is_dir():
+            return []
+        found = []
+        for p in self.events_dir.iterdir():
+            m = _EVENT_RE.match(p.name)
+            if m and m.group(1) == kind:
+                found.append((int(m.group(2)), int(m.group(3)), p))
+        return sorted(found)
 
     def truncate_after(self, step: int) -> None:
-        raise NotImplementedError
+        """Make the logs consistent with the checkpoint at ``step`` (§18 resume, step 4).
+
+        Drops metrics rows with ``step > step``, deletes event chunks starting at or after ``step``, trims a
+        chunk spanning it to the records with ``step < step`` (renamed ``*_<s0>_<step>.npz``), and deletes
+        checkpoints after ``step`` so they cannot be confused with the resumed trajectory.
+        """
+        if (self.path / METRICS_FILE).exists():
+            kept = [r for r in self.metrics_rows() if r["step"] <= step]
+            _atomic_write_text(self.path / METRICS_FILE, "".join(_dumps(r) + "\n" for r in kept))
+
+        for kind in ("births", "deaths"):
+            for s0, s1, path in self.event_files(kind):
+                if s1 <= step:
+                    continue
+                if s0 >= step:
+                    path.unlink()
+                    continue
+                cols = _read_events(path)
+                keep = cols["step"] < step
+                trimmed = {k: v[keep] for k, v in cols.items()}
+                _write_npz(path.with_name(f"{kind}_{s0:010d}_{step:010d}.npz"), trimmed)
+                path.unlink()
+
+        for st, path in self.checkpoints():
+            if st > step:
+                path.unlink()
+        latest = self.latest_checkpoint()
+        if latest is not None:
+            _atomic_write_text(self.checkpoint_dir / LATEST_FILE, latest.name + "\n")
+        else:
+            (self.checkpoint_dir / LATEST_FILE).unlink(missing_ok=True)
 
     def dump_diag(self, s: State, step: int) -> Path:
-        raise NotImplementedError
-
-
-def write_state_file(path: Path, s: State, cfg: Config) -> None:
-    """Atomic safetensors write (``*.tmp`` + ``os.replace``) with checkpoint metadata (§18)."""
-    raise NotImplementedError
-
-
-def checkpoint_metadata(path: Path) -> dict[str, str]:
-    raise NotImplementedError
-
-
-def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> State:
-    """Load a state file; ``CheckpointError`` on a version/shape mismatch, or a config-hash one if checked."""
-    raise NotImplementedError
+        """Write ``diag/step_<step>.safetensors`` (a full state file) after an invariant violation."""
+        self.diag_dir.mkdir(parents=True, exist_ok=True)
+        path = self.diag_dir / f"step_{step}.safetensors"
+        write_state_file(path, s, self.config())
+        return path

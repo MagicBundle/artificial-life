@@ -205,7 +205,8 @@ def _combat(cfg, e, res, fcell, act, partner):
 
 
 def _check_combat_ledger(e, res, cb) -> None:
-    assert cb.lost.sum() == cb.gain.sum() + cb.spill.sum()  # FLOW_STOLEN = ATTACK_GAIN + SPILL
+    assert cb.lost.sum() == cb.gain.sum() + cb.spill.sum() + cb.residue.sum()  # FLOW_STOLEN = GAIN + SPILL
+    assert np.all(cb.residue >= 0) and np.all((cb.residue == 0) | (cb.energy - cb.gain == 0))
     assert e.sum() + res.sum() == cb.energy.sum() + cb.resource.sum()
     assert np.array_equal(cb.energy, e - cb.lost + cb.gain)
     assert np.all(cb.energy >= 0) and np.all(cb.lost <= e)
@@ -243,14 +244,16 @@ def test_combat_three_attackers_on_poor_victim_and_defend(micro_cfg: Config) -> 
         defend=np.array([0.0, 0, 0, 0, 1.0, 0], np.float32),
     )
     cb = _combat(micro_cfg, e, res, fcell, act, np.full((n, B), -1, np.int32))
-    # Three demands of 4000 against 3000 q: ratio floor(3000·2^15/12000) − 1 = 8191, grant 999 each.
+    # Three demands of 4000 against 3000 q: ratio floor(3000·2^15/12000) − 1 = 8191, grant 999 each. The
+    # victim is fully covered, so it is drained to exactly 0 and the remainder spills into its cell.
     grant = (4000 * 8191) >> 15
-    assert cb.lost[0] == 3 * grant and 0 <= 3000 - cb.lost[0] <= 3 + 1
+    assert cb.lost[0] == 3000 and cb.energy[0] == 0
+    assert cb.residue.tolist() == [3000 - 3 * grant, 0, 0, 0, 0, 0] and 0 < cb.residue[0] <= 3 + 1
     assert cb.gain[1:4].tolist() == [(grant * 179) >> 8] * 3
     # Defend 1.0 cuts the demand to floor(4000·0.25) = 1000.
     assert cb.lost[4] == 1000 and cb.gain[5] == (1000 * 179) >> 8
     flat = cb.resource.reshape(-1)
-    assert flat[17] == 7 + cb.spill[1:4].sum() and flat[30] == 7 + cb.spill[5]
+    assert flat[17] == 7 + cb.spill[1:4].sum() + cb.residue[0] and flat[30] == 7 + cb.spill[5]
     assert int(cb.max_attackers) == 3 and cb.hit.tolist() == [False, True, True, True, False, True]
     _check_combat_ledger(e, res, cb)
 
@@ -300,6 +303,15 @@ def test_combat_random_ledger(micro_cfg: Config) -> None:
         cb = _combat(micro_cfg, e, res, fcell, act, partner)
         _check_combat_ledger(e, res, cb)
         assert np.all(cb.spill >= 0) and np.all(cb.gain >= 0) and np.all(cb.spill[~cb.attack] == 0)
+        # A victim loses its whole demand when that fits, else everything it holds (drained to exactly 0).
+        cc = micro_cfg.combat
+        dt = _np(act.defend)[np.maximum(tgt, 0)]
+        cut = np.float32(1) - np.float32(cc.defend_efficiency) * dt
+        want = np.floor(np.float32(cc.attack_max) * cut).astype(np.int64)
+        demand = np.zeros(n, np.int64)
+        np.add.at(demand, tgt[cb.attack], want[cb.attack])
+        assert np.array_equal(cb.lost, np.minimum(demand, e))
+        assert np.all(cb.residue[demand <= e] == 0)  # uncontested victims are served exactly, no residue
         assert not cb.attack[np.flatnonzero(att)[0]]
         assert int(cb.max_attackers) == np.bincount(tgt[cb.attack], minlength=1).max()
 

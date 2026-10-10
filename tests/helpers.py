@@ -134,3 +134,23 @@ def make_scene(
     s = State(**out)
     mx.eval(s)
     return s
+
+
+def set_output_bias(s: State, cfg: Config, bias: Mapping[int, float]) -> State:
+    """Return ``s`` with ``W2[i, H, out] = value`` for each alive row ``i`` and ``out → value`` in ``bias``.
+
+    Row ``H`` of ``W2`` multiplies the constant hidden unit, so this is the output bias of §6. Values are
+    clipped to ``±weight_clip`` and ``brain_cost`` of the alive rows is recomputed from the stored weights.
+    Used by the whole-step tests to make particular actions fire (§22.5); the engine never seeds a bias.
+    """
+    d = dims(cfg)
+    clip = cfg.brain.weight_clip
+    w2 = to_numpy(s.W2).astype(np.float32)
+    alive = to_numpy(s.alive)
+    for out, value in bias.items():
+        w2[alive, d.h, out] = float(np.clip(value, -clip, clip))
+    W2 = mx.array(w2).astype(d.wdtype)
+    cost = brain.l1_cost(s.W1, W2, cfg)
+    s = s._replace(W2=W2, brain_cost=mx.where(s.alive, cost, s.brain_cost))
+    mx.eval(s)
+    return s

@@ -7,6 +7,7 @@ import math
 import mlx.core as mx
 import numpy as np
 import pytest
+from mlx.utils import tree_flatten
 
 from alife import bonds, brain, lifecycle, ops, rng
 from alife.config import Config, apply_overrides, dims
@@ -597,3 +598,33 @@ def test_lane_maps_are_placements(micro_cfg: Config) -> None:
 def test_age_helper_matches_birth_step_convention() -> None:
     assert int(_np(age(mx.array(0, dtype=mx.int32), mx.array(-1, dtype=mx.int32)))) == 0
     assert int(_np(age(mx.array(8, dtype=mx.int32), mx.array(7, dtype=mx.int32)))) == 0
+
+
+def test_lifecycle_compiles_and_matches_eager(micro_cfg: Config) -> None:
+    """S0 + S14 + S16 are pure graph code: compiled output equals eager (no host reads or array branching)."""
+    cfg = apply_overrides(micro_cfg, ["population.immigration_floor=30"])
+    d = dims(cfg)
+    agents = [dict(energy=30_000 + 7_000 * i, pos=(2.0 * i, 3.0), birth_step=-25) for i in range(12)]
+    s = make_scene(cfg, agents, bonds=[(0, 1), (2, 3)], step=4)
+
+    def core(s: State) -> tuple:
+        W1, W2 = lifecycle.flush_pending(s.W1, s.W2, s.pend_slot, s.pend_W1, s.pend_W2)
+        s = s._replace(W1=W1, W2=W2)
+        _, ks = rng.step_keys(s.key)
+        a = age(s.step, s.birth_step)
+        fcell = mx.zeros((d.n,), dtype=mx.int32)
+        dt = lifecycle.deaths(
+            s.alive, s.alive & (s.energy > 40_000), s.energy, mx.zeros_like(s.energy), a, s.uid,
+            s.generation, s.clade, s.partner, s.rev, s.resource, fcell, cfg,
+        )  # fmt: skip
+        s1 = s._replace(alive=dt.survivor, energy=dt.energy, uid=dt.uid, partner=dt.partner, rev=dt.rev)
+        lanes = lifecycle.allocate_lanes(dt.survivor & (dt.energy >= 80_000), dt.survivor, ks[2], cfg)
+        rp = lifecycle.reproduce(s1._replace(resource=dt.resource), lanes, dt.survivor, ks, cfg)
+        return rp.state, rp.records, dt.records, lanes, rp.endow
+
+    eager, comp = core(s), mx.compile(core)(s)
+    mx.eval(eager, comp)
+    for a, b in zip(tree_flatten(eager), tree_flatten(comp), strict=True):
+        assert a[0] == b[0] and np.array_equal(_np(a[1]), _np(b[1])), a[0]
+    lanes = eager[3]
+    assert int(_np(lanes.n_birth)) > 0 and int(_np(lanes.n_imm)) > 0 and int(_np(eager[2].valid.sum())) > 0

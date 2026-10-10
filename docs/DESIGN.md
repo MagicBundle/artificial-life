@@ -979,7 +979,7 @@ These bounds are validated by `config.validate` or monitored by diag bits.
 | per-agent per-step flows | `< 2²¹` (corpse ≤ e_max + S) | validate `S < 2²⁰` |
 | `exact_sum` inputs | `0 ≤ x < 2³¹`, length ≤ 2²⁰ | validate `n_max ≤ 2²⁰`, `FG ≤ 1024` |
 | `proportional_take` | demand < 2¹⁶; contenders per pool < 2¹⁵ | validate `harvest_max, attack_max, share_rate < 2¹⁶`; `INT_HEADROOM` if max field-cell occupancy ≥ `occ_limit` or max attackers per target ≥ 2¹⁵ |
-| corpse and spill scatter into R | `R_HARD + occ·(2·e_max + S) < 2³¹` (per agent in the cell: corpse ≤ e_max + S, spill ≤ 0.3·lost ≤ e_max) | `Dims.occ_limit = min(2¹⁵ − 1, (2³¹ − 1 − R_HARD) // (2·e_max + S))` = 1 060 at defaults; same `INT_HEADROOM` bit |
+| corpse and spill scatter into R | `R_HARD + occ·(2·e_max + S) < 2³¹` (per agent in the cell: corpse ≤ e_max + S, spill plus residue ≤ lost ≤ e_max) | `Dims.occ_limit = min(2¹⁵ − 1, (2³¹ − 1 − R_HARD) // (2·e_max + S))` = 1 060 at defaults; same `INT_HEADROOM` bit |
 | Q8 products | `Dp·230 < 2²⁸`, `grant·179 < 2²⁴`, `in·230 < 2²⁴` | the bounds above |
 | int64 (`uid`, totals, ledger) | — | elementwise ops only; count × constant ledger terms are cast to int64 before the multiply (§10.8) |
 
@@ -991,7 +991,9 @@ limit. `occ_limit` is derived from the config rather than a magic number, so it 
 ### 10.10 Carrying capacity
 
 `metrics.carrying_capacity(s, cfg)` estimates `K_est = Σ_c regen_rate_c / c_ref`, where
-`c_ref = basal_cost + E[founder brain_cost] + C_REF_MARGIN`. With the 64k defaults:
+`c_ref = basal_cost + E[founder brain_cost] + C_REF_MARGIN`. `regen_rate` uses the state's patch positions, and
+`E[founder brain_cost]` is the analytic expectation under the §6 init distribution
+(`metrics.founder_brain_cost`, 37.6 q at the defaults). With the 64k defaults:
 - Mean fertility is ≈ 0.33–0.36 over seeds (overlapping patches clip at 1), so regen is ≈ 7.0–7.5 M q/step
   (`revise_proto/r2_fert.py`, 8 seeds).
 - `c_ref ≈ 100 + 37 + 50` (`C_REF_MARGIN = 50`, `layout.py`).
@@ -1019,13 +1021,21 @@ and cast to int32. `defend` is the target's own decoded output, already zeroed i
 **Simultaneous attacks.** All attacks resolve against one snapshot, the post-harvest `E`.
 
 ```text
-grant, lost = ops.proportional_take(want, attack_target, attack, E)      # pool = victims' energy (P = N)
+grant, taken = ops.proportional_take(want, attack_target, attack, E)     # pool = victims' energy (P = N)
+D       = scatter_add_i32(N, attack_target, want, attack)                # total demand per victim
+residue = where(D ≥ E, E − taken, 0)                                     # fully covered victims are drained
+lost    = taken + residue
 gain  = mul_q8(grant, q8(efficiency = 0.7) = 179)                        → FLOW_ATTACK_GAIN
 spill = grant − gain → scatter_add_i32 into resource at fcell[attack_target]   → FLOW_SPILL
-E ← E − lost + gain                                                      (FLOW_STOLEN = Σ lost = Σ grant)
+residue → scatter_add_i32 into resource at the victim's own fcell              → FLOW_SPILL
+E ← E − lost + gain                                    (FLOW_STOLEN = Σ lost = Σ gain + Σ spill + Σ residue)
 ```
 
 - Mutual attacks (i↔j) and chains resolve consistently. Each victim loses at most its snapshot energy, so `E ≥ 0`.
+- **Draining.** A victim whose attackers together demand at least all it holds (`D ≥ E`) loses everything and
+  ends S11 at `E = 0`. `proportional_take` alone would leave it the few quanta its −1 guard keeps in a contested
+  pool (§10.4), so it would survive S14 and die insolvent one step later as `STARVED`, which made `KILLED`
+  practically unreachable. The `residue` (≤ contenders + 2D/2¹⁵ + 1 quanta) spills into the victim's cell.
 - Gains may exceed `e_max`. S13 caps them, with the excess going to heat.
 - **Theft efficiency.** 70% reaches the attacker and 30% spills into the field at the victim's cell. Predation is
   therefore lossy (it pays only against energy-rich prey) and messy (it feeds scavengers).
@@ -1617,9 +1627,10 @@ class Costs(NamedTuple): energy; solvent; paid_basal; paid_action               
 def pay_costs(energy, act: Actions, n_bonds, brain_cost, alive, cfg: Config) -> Costs
 def harvest(energy, resource, fcell, act: Actions, solvent, cfg: Config
             ) -> tuple[mx.array, mx.array, mx.array]                               # (E, resource, got)
-class Combat(NamedTuple): energy; resource; lost; gain; spill; attack; hit; max_attackers
-                    # (N,) int32 ×4 except resource (FG,FG); attack, hit (N,) bool (attackers after the S9-partner
-                    # gate; grant > 0); max_attackers () int32
+class Combat(NamedTuple): energy; resource; lost; gain; spill; residue; attack; hit; max_attackers
+                    # (N,) int32 ×5 except resource (FG,FG); gain, spill per attacker; lost, residue per victim
+                    # (residue: what a fully drained victim loses beyond the grants, spilled into its own cell, §11);
+                    # attack, hit (N,) bool (attackers after the S9-partner gate; grant > 0); max_attackers () int32
 def combat(energy, resource, fcell, act: Actions, partner, cfg: Config) -> Combat     # partner: post-S9
 class Share(NamedTuple): energy; out; inflow; heat          # (N,) each; out and heat are per-agent sums over slots
 def share(energy, partner, rev, partner0, act: Actions, solvent, cfg: Config) -> Share
@@ -1773,8 +1784,9 @@ def step(s, cfg):
 `finish` is a private helper in `step.py`. It also computes
 `max_cell_occ = ops.scatter_add_i32(FG², fcell, 1, s.alive).max()`, the start-of-step field-cell occupancy that
 `device_check` needs for the headroom bit. It:
-1. builds the per-agent flow matrix `[paid_basal, paid_action, got, cb.lost, cb.gain, cb.spill, sh.out, sh.heat,
-   e_over, dt.corpse]` (all (N,) int32; `sh.out` and `sh.heat` are already summed over slots), the per-cell matrix
+1. builds the per-agent flow matrix `[paid_basal, paid_action, got, cb.lost, cb.gain, cb.spill + cb.residue, sh.out,
+   sh.heat, e_over, dt.corpse]` (all (N,) int32; `sh.out` and `sh.heat` are already summed over slots; the spill
+   column is `FLOW_SPILL`), the per-cell matrix
    `[regen_inc, dt.r_overflow]` and the lane `endow` vector;
 2. reduces them with `ops.exact_sum`;
 3. forms the count × constant terms in int64 (§10.8): `HEAT_BIRTH = int64(n_birth)·birth_cost`,
@@ -2033,8 +2045,11 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
      `checkpoint_every`, `keep_checkpoints`, `heavy_metrics_every`, `components_iters`, `diversity_sample`).
      Overriding `run.seed`, `run.compile` or `run.runtime_checks`, or any dynamics key, is a config error (exit 2):
      those changes go through a fork. The accepted overrides are written back to `config.json`.
-  4. `truncate_after(step)`: drop metrics rows with `step > ckpt_step`, and delete or trim event chunks that extend
-     past it.
+  4. `truncate_after(step)`: drop metrics rows with `step > ckpt_step`, delete or trim event chunks that extend
+     past it, and delete checkpoints after it (they belong to the abandoned continuation). An event chunk
+     `*_<s0>_<s1>.npz` holds the records with `s0 ≤ step < s1`, where a record's `step` is the index of the step
+     during which it happened, so a checkpoint at `state.step = s1` contains exactly the chunks ending at `s1`; a
+     trimmed chunk is renamed `*_<s0>_<ckpt_step>.npz`.
   5. Continue. The checkpoint holds the full state (key, `pend_*`, ledger), so the resumed trajectory is
      **bitwise identical** to an uninterrupted one. This is tested.
 - **Fork** (`alife run --init-from RUN[:STEP]|FILE.safetensors --out NEW [--set …]`) starts a new run directory
@@ -2086,8 +2101,10 @@ All four kin counters and `BOND_PROPOSERS` are assembled by `step.finish` (§16.
 Every row has these groups:
 - **Header:** `step`, `steps` (steps in this interval; short after an unscheduled stop or a resume, §18), `wall_s`,
   `steps_per_s`, `peak_mem_gb`.
-- **Population (interval sums or means of counters):** `n_alive`, `births`, `birth_requests`, `births_blocked`,
-  `immigrants`, `deaths_starved`, `deaths_killed`, `deaths_aged`, `deaths_unlogged`, `insolvent`.
+- **Population (interval sums of event counters; the levels `n_alive` and `bonds_total` are interval means, and
+  `mean_bonds_per_agent`, `sharers_frac` and `emitters_frac` are weighted by `N_ALIVE`):** `n_alive`, `births`,
+  `birth_requests`, `births_blocked`, `immigrants`, `deaths_starved`, `deaths_killed`, `deaths_aged`,
+  `deaths_unlogged`, `insolvent`.
 - **Interactions:**
   - `attacks`, `attack_hits`;
   - `bonds_formed`, `bonds_broken`, `child_bonds`, `bonds_total`, `mean_bonds_per_agent`;
@@ -2118,10 +2135,13 @@ Every row has these groups:
 **Heavy metrics** are added every `heavy_metrics_every` steps:
 - **Bodies.** Connected components over bonds on the GPU:
   - Labels start as `lab = arange(N)`.
-  - `components_iters` rounds of `lab = minimum(lab, min_b where(valid, lab[partner], N))`, then
-    `lab = lab[lab]` (pointer jumping).
-  - `converged` means one extra round changes nothing.
-  - Sizes come from `scatter_add_i32(N, lab, 1, alive)`.
+  - `components_iters` rounds of: `m = min_b where(valid, lab[partner], N)`; **root hooking**, which lowers
+    `lab[lab[i]]` to `m[i]` (a scatter-min, done as `ops.scatter_max_i32` of `N − 1 − m`); `lab = minimum(lab, m)`;
+    then `lab = lab[lab]` (pointer jumping). `valid` also requires both ends alive. Without hooking, a chain laid
+    over random rows needs O(length) rounds; with it a shuffled 2 000-chain converges in about 10.
+  - `converged` means one extra round changes nothing. At convergence `lab` is the smallest row of the component.
+  - Sizes come from `scatter_add_i32(N, lab, 1, alive)`; `bodies_hist` counts components (alive singletons in
+    bin 1).
 
   Reported values:
   - `bodies_n` (size ≥ 2), `bodies_largest`, `bodies_mean_size` (agent-weighted, size ≥ 2);
@@ -2131,7 +2151,8 @@ Every row has these groups:
 
   If `bodies_converged` is false, the body counts are upper bounds.
 - **`weight_diversity`.** The sample is up to `diversity_sample` alive agents with `birth_step < step − 1` (so the
-  rows are flushed), chosen through `observer_key(seed, step)`. The metric is the mean pairwise L2 distance between
+  rows are flushed; at `step = 0` every founder is flushed, as in §12.6), chosen as the first eligible rows of
+  `permutation(N, key=observer_key(seed, step))`. The metric is the mean pairwise L2 distance between
   their flattened `[W1, W2]`, cast to f32 on device (so bf16 works, F17), computed with the Gram trick.
 
 `snapshot_metrics` performs **one** host transfer of a dict of small arrays. It never touches `state.key`, and the
@@ -2179,6 +2200,25 @@ deferred.
 6. `np.asarray` happens once per frame.
 
 The emergence prototype measured 16 ms for 64k agents into 512² on CPU.
+
+Pinned details (impl, WP6):
+- **Screen orientation and periodicity.** Pixel column grows with world `x` and pixel row with world `y`, like
+  `resource[y, x]`. An agent's centre pixel is `floor(W/2 + min_image(x − cx)·scale)`. Stencil offsets are added
+  in pixel space, and each sample is wrapped into `[−P/2, P/2)` around the frame centre, with `P = L·scale`, then
+  drawn at every periodic image that falls inside the frame. So a disc or bond on the seam shows on both sides,
+  `zoom < 1` tiles the torus, and the long axis of a non-square frame tiles too. Background pixel centres map
+  back to the wrapped field cell.
+- **Unspecified colours.** Bond points are `t = (k+1)/9`, `k = 0..7`, which excludes the endpoints. The violet
+  tint is `(0.6, 0, 1)·t2`. Without the `resource` layer the base is black. The `energy` ramp is piecewise linear
+  over `log1p(E)/log1p(e_max)`, with stops blue `(30, 60, 200)`, green `(60, 200, 120)` and yellow
+  `(255, 220, 40)`. The nose is white. Float colours are rounded half-up.
+- **Memory bound.** A splat whose sample count exceeds 2²³ (deep zoom, or far zoom-out) is split into row
+  chunks, with an `mx.eval` between chunks. Integer max makes the frame identical. `render_frame` is an eager
+  observer: it is not compiled.
+- **`VideoWriter` paths.** A path with no suffix is a PNG-sequence directory, with no warning (`alife render
+  --out dir/`). A video suffix (`.mp4`, `.mov`, `.mkv` or `.m4v`) falls back to `<path minus suffix>/` with a
+  warning. Any other suffix is a `ValueError`. Frames are named `frame_000000.png`, …. The encoder pads odd sizes
+  to even ones for `yuv420p`, and ffmpeg failures raise `RuntimeError` with ffmpeg's stderr.
 
 `write_png(path, img)` uses the standard library only: `zlib`, `struct` and the CRC. There is no Pillow dependency.
 
@@ -2300,8 +2340,12 @@ Options:
   - `golden`: runs only if the MLX version matches.
 - **Budget:** the non-slow suite finishes in < 3 min on a CI runner. The tiny preset (f32, M = 32) is estimated at
   ≈ 20–30 ms/step on a 4-core CPU runner, assembled from measured sub-steps (F19: neighbours 5–6 ms, brain 3 ms,
-  mutation ≈ 6 ms at M = 32, flush ≈ 2 ms, plus ≈ 250 small kernels). WP4 replaces this with the measured figure
-  from `alife bench --preset tiny` once the step runs, and adjusts the step counts below if needed.
+  mutation ≈ 6 ms at M = 32, flush ≈ 2 ms, plus ≈ 250 small kernels). **Measured (WP4):** ≈ 30 ms/step for the
+  compiled `tiny_cfg` step on a shared 4-core x86 container (MLX 0.32.3, CPU), and ≈ 0.3 s/step for `dev`. The
+  WP4 fast suite (≈ 1 100 tiny steps with a host `full_check` after 200 + 7 × 60 of them) takes ≈ 60 s, so the
+  step counts below stand.
+- **`golden`** also pins the platform (`system-machine-device`): CPU kernels may round differently across
+  architectures, so the digest is only compared where it was recorded.
 - **CI** (`.github/workflows/ci.yml`, ubuntu-latest): `astral-sh/setup-uv`, `uv sync --group dev`,
   `uv run ruff check`, `uv run ruff format --check`, `uv run pytest -m "not slow"`. A nightly job runs `-m slow`.
 
@@ -2447,7 +2491,8 @@ bonds, sharers, emitters and harvest are all > 0, and the population is > 0 at t
 - The test builds founders with a fixed bias row from a test-only helper, so every action fires.
 - This affects the test only, not the engine defaults (founders are fully random).
 
-**`test_ecology.py`** (marker `slow`) runs the `dev` preset with default random founders for 3 000 steps. The
+**`test_ecology.py`** (marker `slow`) runs the `dev` preset (float32 weights, as `tiny_cfg`, F19) with default random
+founders for 3 000 steps. The
 population must be neither extinct nor pinned at `N_CAP` from step 0. Births > 0, bonds > 0, and at least one
 attack lands. This test is the tuning harness for the defaults in §17.
 
@@ -2812,6 +2857,9 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I8 | impl: (WP1) §13.2's "diffusion is an average" was imprecise under floor rounding; `R ≤ R_HARD` still holds exactly because `R_HARD ≡ −1 (mod 256)` (proof in §13.2, property-tested for `d_q8 ∈ [1, 64]`). No code change. |
 | I9 | impl: (WP3) `form_bonds` also drops proposals to self or to a current partner (a no-op under the §7 targeting contract; without it a self-target would pass the mutual test and self-bond); `bond_geometry` gives empty slots `off = 0`, `length = 0`; `physics.forces` returns 0 for non-survivors (§8.3, §9). |
 | I10 | impl: (WP4) `Deaths`/record field semantics written out (§16.2); `allocate_lanes` clamps `room` at 0 (identical while the cap holds); `device_check` recomputes `TOTAL` from the state rather than reading `s.total`; `full_check` additionally checks shapes/dtypes, that `pend_slot` rows are dead or last step's newborns (the next S0 overwrites them), non-negative ledgers and, given `prev`/`out`, `step + 1`, `out.ledger` and `pend_slot` vs the birth slots (§22.2). |
+| I11 | impl: (WP5) Bodies add root hooking to label propagation (a shuffled 2 000-chain needs O(length) rounds without it, ≈ 10 with it); `weight_diversity` keeps founders eligible at step 0 and pins the sample to the first eligible rows of an observer permutation; level counters are interval means; event chunks are half-open `[s0, s1)` and `truncate_after` also deletes later checkpoints; `E[founder brain_cost]` is analytic (§10.10, §18, §19.2). |
+| I12 | impl: (WP6) §20.1 left screen orientation, seam and zoom-out wrapping, bond sample spacing, the violet and energy-ramp colours, the nose colour, large-stencil memory and `VideoWriter` path handling unspecified; they are pinned in §20.1 "Pinned details". |
+| I13 | impl: (WP4) Combat drains a victim whose attackers together demand at least all it holds: `proportional_take`'s −1 guard otherwise left it ≥ 1 quantum, so it survived S14 and died insolvent a step later as `STARVED`, making `KILLED` practically unreachable. The remainder is `Combat.residue` (per victim), spilled into the victim's cell and booked as `FLOW_SPILL` (§10.9, §11, §16.2, §16.3). `golden` also pins the platform; measured tiny step time recorded (§22.0, §22.4). |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

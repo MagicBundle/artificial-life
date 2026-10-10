@@ -25,7 +25,8 @@ class Combat(NamedTuple):
     resource: mx.array  # (FG,FG) int32
     lost: mx.array  # (N,) int32
     gain: mx.array  # (N,) int32
-    spill: mx.array  # (N,) int32
+    spill: mx.array  # (N,) int32, per attacker
+    residue: mx.array  # (N,) int32, per fully drained victim: the remainder also spilled into its cell
     attack: mx.array  # (N,) bool: attackers after the S9-partner gate
     hit: mx.array  # (N,) bool: grant > 0
     max_attackers: mx.array  # () int32
@@ -93,8 +94,11 @@ def combat(
     An attack whose target became a bond partner at S9 is dropped unless ``attack_bonded`` (its cost was paid
     at S8). Demand ``floor(attack_max·(1 − defend_efficiency·defend[target]))`` is served proportionally from
     the victims' post-harvest energy; 70% of each grant reaches the attacker and the rest spills into the
-    field at the victim's cell. Ledger: ``Σ lost = Σ gain + Σ spill`` (``FLOW_STOLEN``, ``FLOW_ATTACK_GAIN``,
-    ``FLOW_SPILL``); ``spill`` and ``gain`` are per attacker, ``lost`` per victim.
+    field at the victim's cell. A victim whose attackers together demand at least all it holds is drained to
+    exactly 0: the few quanta that ``proportional_take`` leaves in a contested pool (its −1 guard) are its
+    ``residue``, spilled into its own cell, so it dies ``KILLED`` at S14 unless bond inflow rescues it.
+    Ledger: ``Σ lost = Σ gain + Σ spill + Σ residue`` (``FLOW_STOLEN``, ``FLOW_ATTACK_GAIN``, ``FLOW_SPILL``
+    = spill + residue); ``spill`` and ``gain`` are per attacker, ``lost`` and ``residue`` per victim.
     """
     cc = cfg.combat
     n = energy.shape[0]
@@ -105,10 +109,15 @@ def combat(
     t0 = mx.maximum(tgt, 0)
     want = ops.floor_i32(cc.attack_max * (1.0 - cc.defend_efficiency * act.defend[t0]))
     want = mx.where(attack, mx.clip(want, 0, cc.attack_max), 0)
-    grant, lost = ops.proportional_take(want, t0, attack, energy)
+    grant, taken = ops.proportional_take(want, t0, attack, energy)
+    demand = ops.scatter_add_i32(n, t0, want, attack)  # total demand per victim
+    residue = mx.where(demand >= energy, energy - taken, 0)  # 0 when uncontested (taken == demand)
+    lost = taken + residue
     gain = ops.mul_q8(grant, ops.q8(cc.efficiency))
     spill = grant - gain
-    dep = ops.scatter_add_i32(resource.size, fcell[t0], spill, attack)
+    dep = ops.scatter_add_i32(resource.size, fcell[t0], spill, attack) + ops.scatter_add_i32(
+        resource.size, fcell, residue
+    )
     max_attackers = ops.scatter_add_i32(n, t0, 1, attack).max()
     return Combat(
         energy=energy - lost + gain,
@@ -116,6 +125,7 @@ def combat(
         lost=lost,
         gain=gain,
         spill=spill,
+        residue=residue,
         attack=attack,
         hit=attack & (grant > 0),
         max_attackers=max_attackers,
