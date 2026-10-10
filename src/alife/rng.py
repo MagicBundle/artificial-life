@@ -1,7 +1,7 @@
 """Versioned RNG key layout (§14.1). ``state.key`` is the only simulation RNG state.
 
-``mx.random.split`` is not prefix-stable (F3), so the stream count is frozen: adding a consumer takes a reserved
-index, and changing the layout bumps ``RNG_LAYOUT_VERSION``.
+``mx.random.split`` is not prefix-stable (F3), so the stream count is frozen: a new consumer takes a
+reserved index, and changing the layout bumps ``RNG_LAYOUT_VERSION``.
 """
 
 from __future__ import annotations

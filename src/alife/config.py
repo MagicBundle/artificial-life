@@ -224,6 +224,7 @@ WEIGHT_DTYPES: Final[Mapping[str, mx.Dtype]] = {
 BRAIN_IMPLS: Final = ("matmul", "einsum")
 RUNTIME_CHECKS: Final = ("cheap", "off")
 
+
 @functools.cache
 def _section_types() -> dict[str, type]:
     hints = typing.get_type_hints(Config)
@@ -271,7 +272,11 @@ def dims(cfg: Config) -> Dims:
 
 def stability_number(cfg: Config) -> float:
     """Gershgorin bound 2(B·k_s + K·k_r)/drag of the explicit overdamped step (§9)."""
-    return 2.0 * (layout.B * cfg.bonds.k_spring + cfg.sensing.k_neighbors * cfg.physics.k_repel) / cfg.physics.drag
+    return (
+        2.0
+        * (layout.B * cfg.bonds.k_spring + cfg.sensing.k_neighbors * cfg.physics.k_repel)
+        / cfg.physics.drag
+    )
 
 
 # --- dict conversion ------------------------------------------------------------------------------------
@@ -283,7 +288,8 @@ def config_to_dict(cfg: Config) -> dict[str, dict[str, Any]]:
     for sec in dataclasses.fields(Config):
         sub = getattr(cfg, sec.name)
         out[sec.name] = {
-            f.name: list(v) if isinstance(v := getattr(sub, f.name), tuple) else v for f in dataclasses.fields(sub)
+            f.name: list(v) if isinstance(v := getattr(sub, f.name), tuple) else v
+            for f in dataclasses.fields(sub)
         }
     return out
 
@@ -512,7 +518,10 @@ def validate(cfg: Config) -> None:
     req(ph.v_max > 0, f"physics.v_max must be > 0, got {ph.v_max}")
     req(pop.max_age >= 0, f"population.max_age must be ≥ 0, got {pop.max_age}")
     req(pop.immigration_floor >= 0, f"population.immigration_floor must be ≥ 0, got {pop.immigration_floor}")
-    req(pop.immigrants_per_step >= 0, f"population.immigrants_per_step must be ≥ 0, got {pop.immigrants_per_step}")
+    req(
+        pop.immigrants_per_step >= 0,
+        f"population.immigrants_per_step must be ≥ 0, got {pop.immigrants_per_step}",
+    )
     req(fi.n_patches >= 1, f"fields.n_patches must be ≥ 1, got {fi.n_patches}")
     req(fi.patch_sigma > 0, f"fields.patch_sigma must be > 0, got {fi.patch_sigma}")
     req(fi.chem_max > 0, f"fields.chem_max must be > 0, got {fi.chem_max}")
@@ -522,8 +531,21 @@ def validate(cfg: Config) -> None:
     req(ru.diversity_sample >= 2, f"run.diversity_sample must be ≥ 2, got {ru.diversity_sample}")
     req(ru.steps >= 0, f"run.steps must be ≥ 0, got {ru.steps}")
     req(0 <= ru.seed < 2**63, f"run.seed must be in [0, 2^63), got {ru.seed}")
-    for name in ("e_init", "basal_cost", "bond_upkeep", "move_cost", "turn_cost", "grip_cost", "contract_cost",
-                 "msg_cost", "emit_cost", "harvest_cost", "defend_cost", "attack_cost", "harvest_max"):
+    for name in (
+        "e_init",
+        "basal_cost",
+        "bond_upkeep",
+        "move_cost",
+        "turn_cost",
+        "grip_cost",
+        "contract_cost",
+        "msg_cost",
+        "emit_cost",
+        "harvest_cost",
+        "defend_cost",
+        "attack_cost",
+        "harvest_max",
+    ):
         req(getattr(en, name) >= 0, f"energy.{name} must be ≥ 0, got {getattr(en, name)}")
     req(en.brain_cost_per_l1 >= 0, f"energy.brain_cost_per_l1 must be ≥ 0, got {en.brain_cost_per_l1}")
     req(rp.birth_cost >= 0 and rp.min_age >= 0, "repro.birth_cost and repro.min_age must be ≥ 0")
@@ -538,7 +560,10 @@ def validate(cfg: Config) -> None:
 
     # Interaction ranges.
     need = max(bo.form_range, co.range, 2 * ph.radius)
-    req(sen.radius >= need, f"sensing.radius {sen.radius} must be ≥ max(form_range, combat.range, 2·r) = {need}")
+    req(
+        sen.radius >= need,
+        f"sensing.radius {sen.radius} must be ≥ max(form_range, combat.range, 2·r) = {need}",
+    )
     req(
         layout.NS <= sen.k_neighbors <= 9 * sen.cell_capacity,
         f"sensing.k_neighbors {sen.k_neighbors} must be in [NS={layout.NS}, 9·C={9 * sen.cell_capacity}]",
@@ -560,7 +585,10 @@ def validate(cfg: Config) -> None:
     req(ph.thrust_contact_limit > 0, "physics.thrust_contact_limit must be > 0")
 
     # Bond geometry.
-    req(bo.rest_length * (1 + bo.contract_gain) < bo.break_length, "rest_length·(1 + contract_gain) must be < break_length")
+    req(
+        bo.rest_length * (1 + bo.contract_gain) < bo.break_length,
+        "rest_length·(1 + contract_gain) must be < break_length",
+    )
     req(bo.form_range < bo.break_length, "bonds.form_range must be < bonds.break_length")
     req(rp.offspring_distance < bo.break_length, "repro.offspring_distance must be < bonds.break_length")
 
@@ -575,8 +603,11 @@ def validate(cfg: Config) -> None:
     )
 
     # Contention headroom.
-    for name, val in (("energy.harvest_max", en.harvest_max), ("combat.attack_max", co.attack_max),
-                      ("bonds.share_rate", bo.share_rate)):
+    for name, val in (
+        ("energy.harvest_max", en.harvest_max),
+        ("combat.attack_max", co.attack_max),
+        ("bonds.share_rate", bo.share_rate),
+    ):
         req(0 <= val < 1 << 16, f"{name} {val} must be in [0, 2^16)")
 
     # Resource field.
@@ -591,24 +622,37 @@ def validate(cfg: Config) -> None:
     req(all(0 <= v < 1 for v in fi.chem_decay), "every fields.chem_decay must be in [0, 1)")
 
     # Rates and gene bounds.
-    for name, val in (("bonds.share_efficiency", bo.share_efficiency), ("combat.efficiency", co.efficiency),
-                      ("combat.defend_efficiency", co.defend_efficiency)):
+    for name, val in (
+        ("bonds.share_efficiency", bo.share_efficiency),
+        ("combat.efficiency", co.efficiency),
+        ("combat.defend_efficiency", co.defend_efficiency),
+    ):
         req(0 < val <= 1, f"{name} {val} must be in (0, 1]")
     req(0 < mu.frac_min <= mu.frac_init <= mu.frac_max < 1, "need 0 < frac_min ≤ frac_init ≤ frac_max < 1")
     req(0 < mu.sigma_min <= mu.sigma_init <= mu.sigma_max, "need 0 < sigma_min ≤ sigma_init ≤ sigma_max")
     req(0 < mu.rate_min <= mu.rate_init <= mu.rate_max < 1, "need 0 < rate_min ≤ rate_init ≤ rate_max < 1")
 
     # Enumerations.
-    req(br.weight_dtype in WEIGHT_DTYPES, f"brain.weight_dtype {br.weight_dtype!r} not in {tuple(WEIGHT_DTYPES)}")
+    req(
+        br.weight_dtype in WEIGHT_DTYPES,
+        f"brain.weight_dtype {br.weight_dtype!r} not in {tuple(WEIGHT_DTYPES)}",
+    )
     req(br.impl in BRAIN_IMPLS, f"brain.impl {br.impl!r} not in {BRAIN_IMPLS}")
-    req(ru.runtime_checks in RUNTIME_CHECKS, f"run.runtime_checks {ru.runtime_checks!r} not in {RUNTIME_CHECKS}")
+    req(
+        ru.runtime_checks in RUNTIME_CHECKS,
+        f"run.runtime_checks {ru.runtime_checks!r} not in {RUNTIME_CHECKS}",
+    )
 
     # Cadences.
     if ru.metrics_every >= 1:
-        req(ru.checkpoint_every >= 1 and ru.checkpoint_every % ru.metrics_every == 0,
-            "run.checkpoint_every must be a positive multiple of run.metrics_every")
-        req(ru.heavy_metrics_every >= 1 and ru.heavy_metrics_every % ru.metrics_every == 0,
-            "run.heavy_metrics_every must be a positive multiple of run.metrics_every")
+        req(
+            ru.checkpoint_every >= 1 and ru.checkpoint_every % ru.metrics_every == 0,
+            "run.checkpoint_every must be a positive multiple of run.metrics_every",
+        )
+        req(
+            ru.heavy_metrics_every >= 1 and ru.heavy_metrics_every % ru.metrics_every == 0,
+            "run.heavy_metrics_every must be a positive multiple of run.metrics_every",
+        )
 
     if errs:
         raise ConfigError(f"{len(errs)} config problem(s): " + "; ".join(errs))

@@ -76,7 +76,7 @@ OUT_CHILD_BOND: Final = 22
 OUT_Q_BOND: Final = 23  # F wide
 OUT_Q_ATTACK: Final = 29  # F wide
 
-# --- fixed input normalisation constants (§5) and numeric guards (§9, §10.10) ---------------------------------
+# --- fixed input normalisation constants (§5) and numeric guards (§9, §10.10) ------------------------------
 LR_SCALE: Final = 2.0
 AGE_SCALE: Final = 1000.0
 RES_SAT: Final = 2.0

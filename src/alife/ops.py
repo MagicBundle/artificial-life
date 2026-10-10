@@ -18,7 +18,7 @@ _LIMB_MASK = (1 << _LIMB_BITS) - 1
 _EXACT_SUM_MAX_LEN = 1 << 20
 _TAKE_ONE = 1 << 15
 
-# Smallest float32 ≥ −math.pi: float32(π) > math.pi, so −float32(π) would lie outside [−π, π) in float64 terms.
+# Smallest float32 ≥ −math.pi: float32(π) > math.pi, so −float32(π) is outside [−π, π) in float64 terms.
 _NEG_PI_F32_SAFE = float(np.nextafter(np.float32(-math.pi), np.float32(0.0)))
 
 

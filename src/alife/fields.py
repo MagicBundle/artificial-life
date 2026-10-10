@@ -22,7 +22,7 @@ class FieldObs(NamedTuple):
 
 
 def init_patches(key_pos: mx.array, key_vel: mx.array, cfg: Config) -> tuple[mx.array, mx.array]:
-    """Patch centres ``U[0, L)²`` and constant drift velocities ``patch_drift·(cos ψ, sin ψ)``, ψ ~ U[0, 2π)."""
+    """Patch centres ``U[0, L)²`` and constant drifts ``patch_drift·(cos ψ, sin ψ)``, ψ ~ U[0, 2π)."""
     pp, L = dims(cfg).pp, cfg.world.size
     pos = ops.wrap(mx.random.uniform(0.0, L, (pp, 2), key=key_pos), L)
     psi = mx.random.uniform(0.0, 2.0 * math.pi, (pp,), key=key_vel)
@@ -54,7 +54,9 @@ def cell_index(pos: mx.array, cfg: Config) -> mx.array:
     raise NotImplementedError
 
 
-def sample_fields(resource: mx.array, chem: mx.array, fcell: mx.array, heading: mx.array, cfg: Config) -> FieldObs:
+def sample_fields(
+    resource: mx.array, chem: mx.array, fcell: mx.array, heading: mx.array, cfg: Config
+) -> FieldObs:
     """Resource and chemical values and body-frame gradients at each agent's cell (§5, §13)."""
     raise NotImplementedError
 
