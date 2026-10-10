@@ -31,8 +31,25 @@ def init_weights(key_w1: mx.array, key_w2: mx.array, n_rows: int, cfg: Config) -
 
 
 def forward(W1: mx.array, W2: mx.array, x: mx.array, h: mx.array, cfg: Config) -> tuple[mx.array, mx.array]:
-    """Batched RNN step: ``(h_new (N,H) f32, y (N,D_OUT) f32)`` (§6)."""
-    raise NotImplementedError
+    """Batched RNN step: ``(h_new (N,H) f32, y (N,D_OUT) f32)`` (§6).
+
+    ``h' = tanh([x, h] @ W1)``, ``y = [h', 1] @ W2``. Activations are cast to the weight dtype for the two
+    batched GEMVs (``impl`` = matmul or einsum); ``tanh`` and the outputs are float32. Dead rows are evaluated
+    too and masked by the caller.
+    """
+    d = dims(cfg)
+    z = mx.concatenate([x.astype(mx.float32), h.astype(mx.float32)], axis=1)  # (N, W1_ROWS)
+    h_new = mx.tanh(_gemv(z.astype(d.wdtype), W1, cfg.brain.impl).astype(mx.float32))
+    hz = mx.concatenate([h_new, mx.ones((h_new.shape[0], 1), dtype=mx.float32)], axis=1)  # (N, W2_ROWS)
+    y = _gemv(hz.astype(d.wdtype), W2, cfg.brain.impl).astype(mx.float32)
+    return h_new, y
+
+
+def _gemv(v: mx.array, w: mx.array, impl: str) -> mx.array:
+    """Per-row vector-matrix product ``(N,R) × (N,R,C) → (N,C)``."""
+    if impl == "einsum":
+        return mx.einsum("nr,nrc->nc", v, w)
+    return (v[:, None, :] @ w)[:, 0]
 
 
 def _mutate(w: mx.array, sigma: mx.array, rate: mx.array, key: mx.array, clip: float) -> mx.array:

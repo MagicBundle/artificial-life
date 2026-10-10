@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# alife outputs (run directories, viewer snapshots, renders written to the repo root)
+runs/
+/media/
+/frames/
+/*.png
+/*.mp4
+/*.safetensors
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

@@ -41,6 +41,7 @@ markers = ["slow: long-running (nightly)", "golden: MLX-version-pinned trajector
 line-length = 110
 target-version = "py312"
 src = ["src", "tests"]
+extend-exclude = ["*.md"]  # DESIGN.md code blocks are aligned pseudocode, not formatted source
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]

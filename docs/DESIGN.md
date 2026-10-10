@@ -446,8 +446,9 @@ sort, which is deterministic and involves no atomics.
 
 Notation:
 - **Body frame:** `fwd = (cos θ, sin θ)` and `lat = (−sin θ, cos θ)`, so `to_body(v) = (v·fwd, v·lat)`.
-- **Log ratio:** `lr(a, b) = clip(log((a + q0)/(b + q0)) / LR_SCALE, −1, 1)` with `q0 = energy.basal_cost` and
-  `LR_SCALE = 2`.
+- **Log ratio:** `lr(a, b) = clip(log((a + q0)/(b + q0)) / LR_SCALE, −1, 1)` with `q0 = max(energy.basal_cost, 1)`
+  (the `max` keeps `lr` and `IN_ENERGY` defined when `basal_cost = 0`) and `LR_SCALE = 2`. Likewise a zero
+  `attack_max`, `harvest_max` or `share_rate` is read as 1 in `IN_HURT`, `IN_FED` and `IN_GIFT`.
 - **Kin similarity:** `sim(i, j) = exp(−‖tag_i − tag_j‖² / tag_scale²)` with `tag_scale = 0.5`. It is 1 for
   clones. For unrelated founders it is ≈ e⁻¹⁰.
 - **Missing entities** (absent neighbour, empty bond slot) give an all-zero block, and an explicit `present` feature
@@ -493,6 +494,9 @@ used for sensing (first NS) and targeting (all K), and zeroed where invalid.
 The targeting descriptor is `φ = desc[..., 1:]` (F = 6 dims).
 
 Field samples use the agent's start-of-step field cell `fcell = cy·FG + cx`, where `(cx, cy) = floor(pos / field_cell) mod FG`.
+`fields.sample_fields` computes rows 12–23 completely (gather, gradient, body-frame rotation and the normalisation
+above) and returns them as `FieldObs` (§16.2); `sensing.build_inputs` copies them unchanged, so the normalisation
+lives in exactly one module.
 Gradients use the four periodic neighbour cells. Bond-slot blocks keep their slot index for the bond's whole
 lifetime, so a recurrent brain can attach roles to particular slots.
 
@@ -529,7 +533,8 @@ y  = concat(h', 1) @ W2                      W2: (N, 33, 35)     raw logits, dec
 
 **Batched evaluation (`brain.forward`).**
 - `impl = "matmul"` (default) computes `(z.astype(wdtype)[:, None, :] @ W1)[:, 0]`.
-- `impl = "einsum"` computes `mx.einsum("nr,nrh->nh", z, W1)`.
+- `impl = "einsum"` computes `mx.einsum("nr,nrh->nh", z.astype(wdtype), W1)` (the same operand dtypes as
+  `matmul`, so the A/B compares kernels, not an implicit f32 upcast of `W1`).
 - `tanh` and all decoding run in float32. Outputs are cast with `.astype(mx.float32)`.
 - Two heavy kernels read every weight exactly once per step, so the brain is memory-bound (§15).
 - `alife bench --brain-variants` A/B-tests both `impl` values and dtypes on Metal. The winner is set in the preset;
@@ -1146,10 +1151,11 @@ weights are stale by definition, and every lane index is unique, so the write is
 
 **Consequences.**
 1. Checkpoints contain `pend_*`, so resume is exact.
-2. Between steps, rows with `birth_step == step − 1` have stale `W1`/`W2`. Observers that read weights (genome
-   metrics, `inspect --agent`) exclude them or read their rows from `pend_*`.
-3. The pending invariant: `pend_slot` entries are distinct, and every alive row with `birth_step == step − 1`
-   appears in `pend_slot`.
+2. Between steps (for `step ≥ 1`), rows with `birth_step == step − 1` have stale `W1`/`W2`. Observers that read
+   weights (genome metrics, `inspect --agent`) exclude them or read their rows from `pend_*`.
+3. The pending invariant: `pend_slot` entries are distinct, and for `step ≥ 1` every alive row with
+   `birth_step == step − 1` appears in `pend_slot`. At step 0 the founders have `birth_step = −1 = step − 1`, but
+   `init_state` writes their weights directly, so the second clause does not apply.
 
 **Initial state.** `pend_slot = arange(N − M, N)`, which are dead rows because `n_init ≤ N_CAP`, and `pend_W* = 0`.
 
@@ -1203,7 +1209,9 @@ patch_pos ← wrap(patch_pos + patch_vel)                                  |patc
 - **Properties:**
   - Total resource is conserved exactly.
   - `R` stays ≥ 0, because `4q ≤ R` (validate requires `resource_diffusion_q8 ≤ 64`).
-  - `R` stays ≤ `R_HARD`, because diffusion is an average.
+  - `R` stays ≤ `R_HARD`: an output cell is at most `R_i − 4q_i + 4·q(R_HARD) ≤ R_HARD + (4·d_q8 − 4)/256`,
+    which is `< R_HARD + 1` because `R_HARD ≡ −1 (mod 256)`. (Floor rounding means diffusion is not a strict
+    average: a cell may exceed the local maximum by a few quanta, but never `R_HARD`.)
   - The product `R·64 < 2³⁰`.
 - Setting `resource_diffusion_q8 = 0` disables diffusion.
 - Corpses (S14) and combat spill (S11) are int scatter-adds into `R`.
@@ -1532,10 +1540,10 @@ def proportional_take(demand: mx.array, target: mx.array, active: mx.array, supp
 def exact_sum(x: mx.array, axis: int | None = None) -> mx.array           # int32 ≥ 0 → int64, 3 limbs
 def rank_select(mask: mx.array, n: int) -> tuple[mx.array, mx.array]      # (idx (n,), valid (n,))
 def place(arr: mx.array, newborn: mx.array, lane: mx.array, lane_vals: mx.array) -> mx.array
-def first_free(partner: mx.array) -> tuple[mx.array, mx.array]            # (slot (N,) i32, has_free (N,) bool)
+def first_free(partner: mx.array) -> tuple[mx.array, mx.array]            # (slot (N,) i32, has_free (N,) bool); full row → slot 0
 def min_image(d: mx.array, L: float) -> mx.array
 def wrap(x: mx.array, L: float) -> mx.array                                 # [0, L) with the F8 guard
-def wrap_angle(a: mx.array) -> mx.array                                     # [−π, π)
+def wrap_angle(a: mx.array) -> mx.array                                     # [−π, π) in f32 and f64 terms (−f32(π) < −math.pi is lifted one ulp)
 def to_body(v: mx.array, cos_h: mx.array, sin_h: mx.array) -> mx.array     # (...,2) → (fwd, lat)
 def int_diffuse(r: mx.array, d_q8: int) -> mx.array
 def floor_i32(x: mx.array) -> mx.array
@@ -1548,7 +1556,9 @@ def find_neighbors(pos: mx.array, alive: mx.array, cfg: Config) -> Neighbors
 
 # fields.py
 class FieldObs(NamedTuple): res: mx.array; res_grad: mx.array; chem: mx.array; chem_grad: mx.array
-                            # (N,), (N,2) body frame normalised, (N,NCH), (N,NCH,2) body frame normalised
+                            # all f32 and already the final §5 inputs (sensing copies them into rows 12–23):
+                            # res (N,) = IN_RES; res_grad (N,2) = IN_RES_GRAD; chem (N,NCH) = IN_CHEM;
+                            # chem_grad (N,NCH,2) = IN_CHEM_GRAD as (fwd, lat) per channel
 def init_patches(key_pos: mx.array, key_vel: mx.array, cfg: Config) -> tuple[mx.array, mx.array]
 def fertility(patch_pos: mx.array, cfg: Config) -> mx.array               # (FG,FG) f32 in [0,1]
 def regen_rate(patch_pos: mx.array, cfg: Config) -> mx.array              # (FG,FG) int32
@@ -1590,6 +1600,8 @@ def form_bonds(partner: mx.array, rev: mx.array, can_bond: mx.array, target: mx.
 def drop_dead(partner: mx.array, rev: mx.array, survivor: mx.array) -> tuple[mx.array, mx.array]
 def add_child_bonds(partner: mx.array, rev: mx.array, child_of: mx.array, want: mx.array,
                     born_parent: mx.array) -> tuple[mx.array, mx.array, mx.array]    # (partner, rev, made (N,) bool)
+    # child_of: parent row → child row; born_parent: newborn row → parent row (−1 otherwise, immigrants too);
+    # want: the parent's act.child_bond; made: parents that bonded (Σ made = CHILD_BONDS). Child side uses slot 0.
 def spring_forces(pos: mx.array, partner: mx.array, contract: mx.array, cfg: Config) -> mx.array   # (N,2)
 def symmetric_ok(partner: mx.array, rev: mx.array, alive: mx.array) -> mx.array      # () bool
 
@@ -1619,6 +1631,8 @@ class LaneKind(IntEnum): PAD = 0; BIRTH = 1; IMMIGRANT = 2
 class DeathRecords(NamedTuple): uid; age; cause; generation; clade; valid           # (DL,)
 class BirthRecords(NamedTuple): uid; parent_uid; clade; generation; slot; valid     # (M,)
 class Deaths(NamedTuple): survivor; dead; energy; uid; partner; rev; resource; corpse; r_overflow; cause; records
+    # (N,) except resource, r_overflow (FG,FG); corpse = E + S on dead rows else 0; cause = DeathCause on dead
+    # rows, −1 elsewhere. Unused record lanes (deaths and births) hold uid/parent_uid/slot −1 and 0 elsewhere.
 def flush_pending(W1, W2, pend_slot, pend_W1, pend_W2) -> tuple[mx.array, mx.array]   # via ops.set_rows
 def deaths(alive, solvent, energy, lost, age, uid, generation, clade, partner, rev, resource, fcell, cfg: Config) -> Deaths
     # dead = alive & (~solvent | E == 0 | aged); cause precedence in §10.7
@@ -1967,6 +1981,11 @@ except `run`.
 - **Enumerations:** `weight_dtype ∈ {float16, bfloat16, float32}`; `impl ∈ {matmul, einsum}`;
   `runtime_checks ∈ {cheap, off}`.
 - **Cadences:** `checkpoint_every % metrics_every == 0`; `heavy_metrics_every % metrics_every == 0`.
+- **Sanity** (so the rules above are well defined): `size`, `field_cell`, `sensing.radius`, `tag_scale`,
+  `chem_half_sat`, `physics.radius`, `drag`, `turn_max`, `v_max`, `weight_clip`, `patch_sigma`, `chem_max` are
+  `> 0`; `hidden`, `cell_capacity`, `clock_period`, `n_patches`, `metrics_every`, `keep_checkpoints`,
+  `components_iters` are `≥ 1`; `diversity_sample ≥ 2`; costs, `max_age`, immigration counts, `birth_cost`,
+  `min_age` and `steps` are `≥ 0`; `0 ≤ seed < 2⁶³`.
 
 ---
 
@@ -2335,8 +2354,8 @@ stateless). `full_check` verifies:
    - `h ∈ [−1, 1]`.
    - Genes within bounds; `tag ∈ [−1, 1]`.
    - `0 ≤ R ≤ R_HARD`; `chem ∈ [0, chem_max]`.
-7. **Pending buffer.** `pend_slot` entries are distinct, and every alive row with `birth_step == step − 1` is in
-   `pend_slot`.
+7. **Pending buffer.** `pend_slot` entries are distinct, and (for `step ≥ 1`, §12.6) every alive row with
+   `birth_step == step − 1` is in `pend_slot`.
 8. **Age.** `birth_step ≤ step − 1` for alive rows.
 
 **Stress variants** (each 60 steps in the fast suite and 150 steps under `slow`, on `tiny_cfg`):
@@ -2778,6 +2797,21 @@ Each critic issue was verified against the text and, where it made a numeric cla
 | R27 | Symbol M overloaded in D17 and fatal-flaw list (minor) | **Fixed.** Replaced with C. |
 
 Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
+
+**Implementation notes** (deviations found while implementing; one line each).
+
+| # | note |
+|---|---|
+| I1 | impl: (WP0) The pending-buffer invariant misfired at step 0 (founders have `birth_step = −1 = step − 1` but are not in `pend_slot`); it now applies for `step ≥ 1` (§12.6, §22.2). |
+| I2 | impl: (WP0) `validate` also checks basic sanity (positive sizes, counts ≥ 1, seed range) so that every listed rule and `stability_number` are well defined (§17). |
+| I3 | impl: (WP0) `wrap_angle` lifts `−float32(π)` (which is `< −math.pi`) by one ulp so the range holds in float32 and float64 checks; `first_free` returns slot 0 for full rows; `add_child_bonds` argument semantics written out (§16.2). |
+| I4 | impl: (WP0) `proportional_take` clamps the f32 ratio to `ONE + 1` before the int32 cast; uncontested pools ignore that value, so results are unchanged but the cast can no longer overflow (§10.4). |
+| I5 | impl: (WP2) `FieldObs` contents pinned: `sample_fields` returns the final §5 values of rows 12–23 and `build_inputs` copies them, so WP1 and WP2 cannot both (or neither) normalise (§5, §16.2). |
+| I6 | impl: (WP2) `q0 = max(basal_cost, 1)` and zero `attack_max`/`harvest_max`/`share_rate` read as 1 in the §5 inputs, so `x` stays finite for every valid config; identical at the defaults (§5). |
+| I7 | impl: (WP2) `impl = "einsum"` casts `z` to `wdtype` like `matmul` (§6); `IN_CLOCK` takes its phase from `age mod clock_period` (exact for large ages, same value); sensing also ANDs `nbr.valid` with both ends' `alive`, and targeting with the neighbour's (no-ops under the §4 contract). |
+| I8 | impl: (WP1) §13.2's "diffusion is an average" was imprecise under floor rounding; `R ≤ R_HARD` still holds exactly because `R_HARD ≡ −1 (mod 256)` (proof in §13.2, property-tested for `d_q8 ∈ [1, 64]`). No code change. |
+| I9 | impl: (WP3) `form_bonds` also drops proposals to self or to a current partner (a no-op under the §7 targeting contract; without it a self-target would pass the mutual test and self-bond); `bond_geometry` gives empty slots `off = 0`, `length = 0`; `physics.forces` returns 0 for non-survivors (§8.3, §9). |
+| I10 | impl: (WP4) `Deaths`/record field semantics written out (§16.2); `allocate_lanes` clamps `room` at 0 (identical while the cap holds); `device_check` recomputes `TOTAL` from the state rather than reading `s.total`; `full_check` additionally checks shapes/dtypes, that `pend_slot` rows are dead or last step's newborns (the next S0 overwrites them), non-negative ledgers and, given `prev`/`out`, `step + 1`, `out.ledger` and `pend_slot` vs the birth slots (§22.2). |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense
