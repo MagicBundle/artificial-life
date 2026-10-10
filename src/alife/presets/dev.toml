@@ -1,0 +1,12 @@
+# dev: interactive development (N = 16 384, M = 256).
+[population]
+n_max = 16384
+n_init = 4096
+max_births_per_step = 256
+
+[world]
+size = 512.0
+
+[fields]
+n_patches = 12
+patch_sigma = 32.0

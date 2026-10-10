@@ -1,0 +1,11 @@
+# 256k: large runs (N = 262 144, M = 4 096).
+[population]
+n_max = 262144
+n_init = 65536
+max_births_per_step = 4096
+
+[world]
+size = 2048.0
+
+[fields]
+n_patches = 96
