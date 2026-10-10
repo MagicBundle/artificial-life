@@ -268,6 +268,44 @@ def test_large_stencil_chunks_match(micro_cfg: Config, monkeypatch: pytest.Monke
     np.testing.assert_array_equal(whole, _frame(s, micro_cfg, viewport=vp))
 
 
+def _culling_scene(cfg: Config):
+    rng = np.random.default_rng(9)
+    pos = rng.uniform(0, 48, (40, 2))
+    pos[:6] = [(0.2, 24.0), (47.8, 24.0), (24.0, 0.1), (24.0, 47.9), (0.3, 47.7), (47.6, 0.4)]  # seams
+    agents = [{"pos": p, "tag": rng.uniform(-1, 1, 4), "heading": rng.uniform(-3, 3)} for p in pos]
+    return make_scene(cfg, agents, bonds=[(0, 1), (2, 3), (4, 5), (6, 7), (8, 9)])
+
+
+@pytest.mark.parametrize(
+    ("size", "vp"),
+    [
+        (SIZE, Viewport(0.0, 0.0, 1.0)),
+        (SIZE, Viewport(24.0, 24.0, 0.5)),
+        (SIZE, Viewport(47.5, 3.0, 4.0)),
+        (SIZE, Viewport(10.0, 40.0, 13.0)),
+        ((150, 70), Viewport(47.0, 1.0, 2.7)),
+        ((70, 150), Viewport(1.0, 46.0, 9.0)),
+    ],
+)
+def test_culling_is_exact(micro_cfg: Config, monkeypatch: pytest.MonkeyPatch, size, vp: Viewport) -> None:
+    """Culling rows whose stencil misses the frame changes no pixel (seams, tiling, deep zoom, non-square)."""
+    s = _culling_scene(micro_cfg)
+    culled = _frame(s, micro_cfg, size=size, viewport=vp)
+    monkeypatch.setattr(render, "_maybe_visible", lambda coord, *a: mx.ones(coord.shape, dtype=mx.bool_))
+    np.testing.assert_array_equal(culled, _frame(s, micro_cfg, size=size, viewport=vp))
+
+
+def test_deep_zoom_splats_only_visible_rows(micro_cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    """At deep zoom the disc scatter covers the few rows near the view, not all N (cost was ∝ zoom² × N)."""
+    s = _culling_scene(micro_cfg)
+    rows: list[int] = []
+    once = render._splat_once
+    monkeypatch.setattr(render, "_splat_once", lambda c, x, *a: rows.append(x.shape[0]) or once(c, x, *a))
+    p = to_numpy(s.pos)[10]
+    img = _frame(s, micro_cfg, viewport=Viewport(float(p[0]), float(p[1]), 40.0), layers=AGENTS)
+    assert img.any() and 0 < sum(rows) <= 4, rows  # agent 10's disc and nose (plus any close neighbour)
+
+
 # --- PNG ------------------------------------------------------------------------------------------------
 
 

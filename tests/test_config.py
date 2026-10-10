@@ -108,6 +108,7 @@ BAD_CASES: list[tuple[dict, str]] = [
     ({"population": {"n_init": 0}}, "n_init"),
     ({"population": {"n_init": 64513}}, "n_init"),
     ({"population": {"immigration_floor": 64513}}, "immigration_floor"),
+    ({"population": {"immigration_floor": 4, "immigrants_per_step": 0}}, "immigrants_per_step"),
     ({"physics": {"k_repel": 0.2}}, "stability_number"),
     ({"physics": {"thrust_max": 0.16}}, "thrust_max"),
     ({"physics": {"v_max": 1.5}}, "v_max"),
@@ -121,6 +122,11 @@ BAD_CASES: list[tuple[dict, str]] = [
     ({"energy": {"structure": -1}}, "structure"),
     ({"repro": {"min_energy": 12000}}, "min_energy"),
     ({"repro": {"min_energy": 12005}, "mutation": {"frac_min": 0.1}}, "frac_min"),
+    # Quantised split (§10.7): frac_q8 rounds to 0 / 256 although the unquantised floor rule held.
+    ({"mutation": {"frac_min": 0.001, "frac_init": 0.001}}, "frac_min"),
+    ({"mutation": {"frac_max": 0.999, "frac_init": 0.999}}, "frac_max"),
+    ({"repro": {"min_energy": 12200}, "mutation": {"frac_min": 0.00582}}, "frac_min"),  # q=1: 200·1>>8 = 0
+    ({"energy": {"e_init": 0}}, "e_init"),
     ({"energy": {"harvest_max": 1 << 16}}, "harvest_max"),
     ({"combat": {"attack_max": 1 << 16}}, "attack_max"),
     ({"bonds": {"share_rate": 1 << 16}}, "share_rate"),

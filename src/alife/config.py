@@ -491,6 +491,11 @@ def config_hash(cfg: Config) -> str:
 # --- validation -----------------------------------------------------------------------------------------
 
 
+def frac_q8(frac: float) -> int:
+    """The engine's quantised offspring fraction ``floor(f32(frac)·256 + 0.5)`` (§10.7), in MLX f32."""
+    return int(mx.floor(mx.array(frac, mx.float32) * 256.0 + 0.5).astype(mx.int32).item())
+
+
 def validate(cfg: Config) -> None:
     """Check every rule of §17 (plus basic sanity); raise one ConfigError listing all problems."""
     w, pop, sen, br = cfg.world, cfg.population, cfg.sensing, cfg.brain
@@ -575,6 +580,10 @@ def validate(cfg: Config) -> None:
     req(1 <= m <= n // 4, f"population.max_births_per_step {m} must be in [1, n_max // 4 = {n // 4}]")
     req(1 <= pop.n_init <= n - m, f"population.n_init {pop.n_init} must be in [1, N_CAP = {n - m}]")
     req(pop.immigration_floor <= n - m, f"population.immigration_floor must be ≤ N_CAP = {n - m}")
+    req(
+        pop.immigration_floor == 0 or pop.immigrants_per_step >= 1,
+        "population.immigrants_per_step must be ≥ 1 when immigration_floor > 0 (immigration on)",
+    )
 
     # Physics stability.
     if ph.drag > 0:
@@ -594,13 +603,20 @@ def validate(cfg: Config) -> None:
 
     # Energy bounds.
     req(en.e_max < 1 << 20, f"energy.e_max {en.e_max} must be < 2^20")
-    req(en.e_init <= en.e_max, "energy.e_init must be ≤ energy.e_max")
+    req(1 <= en.e_init <= en.e_max, "energy.e_init must be in [1, energy.e_max]")
     req(0 <= en.structure < 1 << 20, f"energy.structure {en.structure} must be in [0, 2^20)")
     req(rp.min_energy > rp.birth_cost + en.structure, "repro.min_energy must be > birth_cost + structure")
-    req(
-        math.floor((rp.min_energy - rp.birth_cost - en.structure) * mu.frac_min) >= 1,
-        "floor((min_energy − birth_cost − structure)·frac_min) must be ≥ 1",
-    )
+    # §10.7 splits Dp with the engine's quantised fraction, so the endow ≥ 1 / parent keeps ≥ 1 guarantees are
+    # checked on frac_q8 itself: q_min ≥ 1, (Dp_min·q_min) >> 8 ≥ 1 and q_max ≤ 255 (then endow < Dp).
+    if 0 < mu.frac_min <= mu.frac_max < 1:
+        q_min, q_max = frac_q8(mu.frac_min), frac_q8(mu.frac_max)
+        dp_min = rp.min_energy - rp.birth_cost - en.structure
+        req(
+            q_min >= 1 and (dp_min * q_min) >> 8 >= 1,
+            f"frac_min: need frac_q8(frac_min) = {q_min} ≥ 1 and "
+            f"((min_energy − birth_cost − structure)·frac_q8(frac_min)) >> 8 ≥ 1",
+        )
+        req(q_max <= 255, f"frac_max: need frac_q8(frac_max) = {q_max} ≤ 255")
 
     # Contention headroom.
     for name, val in (

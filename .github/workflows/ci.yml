@@ -18,8 +18,18 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+      # MLX's CPU backend JIT-compiles fused kernels with g++ into $TMPDIR/mlx; a cold cache roughly triples
+      # the fast suite (§22.0 budget), so keep it across runs.
+      - name: MLX JIT cache dir
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mlx
+          key: ${{ runner.os }}-mlx-${{ hashFiles('uv.lock') }}-${{ hashFiles('src/alife/**/*.py') }}
+          restore-keys: ${{ runner.os }}-mlx-${{ hashFiles('uv.lock') }}-
       - name: Install
-        run: uv sync --locked --group dev
+        # The extras let the pygame viewer loop test and the ffmpeg video test run instead of skipping.
+        run: uv sync --locked --group dev --extra viewer --extra video
       - name: Lint
         run: uv run ruff check
       - name: Format
@@ -36,6 +46,15 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+      # MLX's CPU backend JIT-compiles fused kernels with g++ into $TMPDIR/mlx; a cold cache roughly triples
+      # the fast suite (§22.0 budget), so keep it across runs.
+      - name: MLX JIT cache dir
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mlx
+          key: ${{ runner.os }}-mlx-${{ hashFiles('uv.lock') }}-${{ hashFiles('src/alife/**/*.py') }}
+          restore-keys: ${{ runner.os }}-mlx-${{ hashFiles('uv.lock') }}-
       - name: Install
         run: uv sync --locked --group dev
       - name: Slow tests

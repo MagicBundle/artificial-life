@@ -3,7 +3,7 @@ name = "alife"
 version = "0.1.0"
 description = "A neural artificial-life engine on Apple MLX: evolving agents with per-agent recurrent brains."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.15"
 license = { text = "MIT" }
 dependencies = [
   "mlx>=0.32.3,<0.33; sys_platform == 'darwin'",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,25 @@ from alife.viewer import ViewerSession
 from helpers import make_scene
 
 SIZE = (96, 96)  # micro_cfg (L = 48): 2 px per unit at zoom 1
+
+
+@pytest.fixture(autouse=True)
+def _no_frame_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exact per-frame step counts below: a cold compile must not cut a frame short."""
+    monkeypatch.setattr(viewer, "FRAME_BUDGET_S", math.inf)
+
+
+def test_frame_budget_bounds_steps_per_frame(micro_cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past ``FRAME_BUDGET_S`` a frame stops stepping (after ≥ 1 step), so the loop gets back to its events;
+    how steps split into frames never changes the trajectory."""
+    full = ViewerSession(micro_cfg, init_state(micro_cfg), size=SIZE, steps_per_frame=8)
+    assert full.tick() and int(to_numpy(full.state.step)) == 8
+    monkeypatch.setattr(viewer, "FRAME_BUDGET_S", 0.0)
+    cut = ViewerSession(micro_cfg, init_state(micro_cfg), size=SIZE, steps_per_frame=8)
+    for k in range(1, 9):
+        assert cut.tick() and int(to_numpy(cut.state.step)) == k
+    assert state_digest(cut.state) == state_digest(full.state)
+    assert cut.advance(3) == 3  # explicit advances (``.``) ignore the budget
 
 
 def _tree(path: Path) -> set[str]:

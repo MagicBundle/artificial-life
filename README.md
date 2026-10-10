@@ -23,7 +23,8 @@ gather (the dark cells). The zoomed frame shows small bonded bodies of kin.
 
 ## Quickstart (macOS, Apple silicon)
 
-Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.12–3.14 (mlx 0.32 ships no wheels for newer versions) and [uv](https://docs.astral.sh/uv/).
+The repository pins 3.12 in `.python-version`, so `uv sync` picks (or downloads) a supported interpreter.
 
 ```bash
 git clone <this repo> artificial-life && cd artificial-life

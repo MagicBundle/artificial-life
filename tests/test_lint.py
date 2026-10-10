@@ -207,3 +207,42 @@ def test_rules_are_not_vacuous() -> None:
         assert not bad(rule_host_reads, "physics", f"def f(cfg, d, n):\n    return {snippet}\n"), snippet
     assert not bad(rule_host_reads, "invariants", "def full_check(s):\n    return s.energy.item()\n")
     assert not bad(rule_host_reads, "metrics", "def f(s):\n    return s.energy.item()\n")
+
+
+# --- project and CI configuration --------------------------------------------------------------------------
+
+ROOT = SRC.parents[1]
+
+
+def test_python_range_matches_mlx_wheels() -> None:
+    """Every Python minor that ``requires-python`` admits has an mlx wheel in uv.lock (mlx has no sdist),
+    and ``.python-version`` pins one of them, so ``uv sync`` cannot pick an uninstallable interpreter."""
+    import re
+    import tomllib
+
+    spec = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["requires-python"]
+    lo = re.search(r">=\s*3\.(\d+)", spec)
+    hi = re.search(r"<\s*3\.(\d+)", spec)
+    assert lo and hi, f"requires-python {spec!r} needs a lower and an upper bound"
+    minors = range(int(lo[1]), int(hi[1]))
+    lock = tomllib.loads((ROOT / "uv.lock").read_text())
+    tags = {
+        int(m[1])
+        for pkg in lock["package"]
+        if pkg["name"] == "mlx"
+        for w in pkg.get("wheels", [])
+        if (m := re.search(r"-cp3(\d+)-", w["url"]))
+    }
+    assert set(minors) <= tags, f"mlx wheels cover 3.{sorted(tags)}, requires-python admits 3.{list(minors)}"
+    pinned = (ROOT / ".python-version").read_text().strip()
+    assert re.fullmatch(r"3\.(\d+)", pinned) and int(pinned.split(".")[1]) in minors, pinned
+
+
+def test_ci_installs_extras_and_caches_mlx_jit() -> None:
+    """The fast-suite job installs the viewer/video extras (else the pygame loop test always skips) and both
+    jobs keep MLX's CPU JIT cache (``$TMPDIR/mlx``) between runs (§22.0 budget)."""
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    test_job, nightly = ci.split("\n  nightly:")
+    assert "--extra viewer" in test_job and "--extra video" in test_job
+    for job in (test_job, nightly):
+        assert "TMPDIR=$RUNNER_TEMP" in job and "path: ${{ runner.temp }}/mlx" in job

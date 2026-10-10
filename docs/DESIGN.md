@@ -920,7 +920,8 @@ needs no gate: it gathers the sender's already-gated `out`. A newly formed bond 
     is intended: it is a cooperative defence that bodies can evolve. Insolvent agents cannot be rescued.
 - **Reproduction (S16).** For each parent:
   - `Dp = E − birth_cost − S`. Eligibility guarantees `Dp ≥ min_energy − birth_cost − S = 28 000`.
-  - `frac_q8 = floor(offspring_frac·256 + 0.5)`, which lies in [26, 230].
+  - `frac_q8 = floor(offspring_frac·256 + 0.5)`, which lies in [26, 230] at the default bounds and in
+    [`frac_q8(frac_min)`, `frac_q8(frac_max)`] ⊆ [1, 255] for every valid config (§17).
   - `endow = (Dp · frac_q8) >> 8`.
   - The parent keeps `Dp − endow ≥ 1`, and the child gets `endow ≥ 1`.
   - Ledger: `birth_cost` → `HEAT_BIRTH`; `S` → `FLOW_STRUCTURE` (agent E → child structure); `endow` →
@@ -1984,13 +1985,18 @@ except `run`.
 **`validate`** collects every violation and raises one `ConfigError`:
 - **World geometry:** `size / field_cell` is an integer with `3 ≤ FG ≤ 1024`; `G_h = floor(size/radius) ≥ 3`.
 - **Interaction ranges:** `radius ≥ max(form_range, combat.range, 2·physics.radius)`; `NS ≤ K ≤ 9·C`.
-- **Population:** `64 ≤ n_max ≤ 2²⁰`; `1 ≤ M ≤ n_max // 4`; `1 ≤ n_init ≤ N_CAP`; `immigration_floor ≤ N_CAP`.
+- **Population:** `64 ≤ n_max ≤ 2²⁰`; `1 ≤ M ≤ n_max // 4`; `1 ≤ n_init ≤ N_CAP`; `immigration_floor ≤ N_CAP`;
+  `immigrants_per_step ≥ 1` when `immigration_floor > 0` (otherwise an extinct world could never refill, yet
+  the §18 extinction stop is off).
 - **Physics stability:** `stability_number ≤ 1.8`; `thrust_max < 2·radius·k_repel`; `v_max ≤ physics.radius`;
   `thrust_contact_limit > 0`.
 - **Bond geometry:** `rest_length·(1 + contract_gain) < break_length`; `form_range < break_length`;
   `offspring_distance < break_length`.
-- **Energy bounds:** `e_max < 2²⁰`; `e_init ≤ e_max`; `0 ≤ structure < 2²⁰`;
-  `min_energy > birth_cost + structure`; `floor((min_energy − birth_cost − structure)·frac_min) ≥ 1`.
+- **Energy bounds:** `e_max < 2²⁰`; `1 ≤ e_init ≤ e_max`; `0 ≤ structure < 2²⁰`;
+  `min_energy > birth_cost + structure`. With the engine's quantised fraction
+  `frac_q8(f) = floor(float32(f)·256 + 0.5)` (§10.7): `frac_q8(frac_min) ≥ 1`,
+  `((min_energy − birth_cost − structure)·frac_q8(frac_min)) >> 8 ≥ 1` and `frac_q8(frac_max) ≤ 255`, so the
+  child gets `endow ≥ 1` and the parent keeps `Dp − endow ≥ 1`.
 - **Contention headroom:** `harvest_max`, `attack_max` and `share_rate` are each `< 2¹⁶`.
 - **Resource field:** `0 < resource_cap < 2²⁴ − 1`; `0 ≤ regen_max ≤ resource_cap`;
   `0 ≤ resource_diffusion_q8 ≤ 64`.
@@ -2076,7 +2082,9 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
     bins are `n_init + 1`); otherwise exit 4.
   - **Kept:** `step`, `next_uid`, every uid, `birth_step` (so derived ages stay correct), lineage fields, `pend_*`,
     fields and patches.
-  - **Reset:** `diag = 0`; `ledger_cum = 0`; `total0 = total` (the loaded value).
+  - **Reset:** `diag = 0`; `ledger_cum = 0`; `total0 = total = loaded total + (S_new − S_old)·n_alive`. Structure
+    energy is not in any `E`, so the conserved total moves with `energy.structure`; a loaded total that was
+    already inconsistent stays inconsistent and fails the admission check.
   - **Key.** `state.key` is kept, unless `--seed` is given, in which case `key = init_keys(seed)[STATE_KEY]`.
   - **Admission check.** `invariants.full_check(s, new_cfg)` runs on the loaded state before the first step. A
     state that violates the new config (e.g. `E > e_max` after lowering `e_max`, genes outside new bounds) is
@@ -2227,9 +2235,14 @@ Pinned details (impl, WP6):
   tint is `(0.6, 0, 1)·t2`. Without the `resource` layer the base is black. The `energy` ramp is piecewise linear
   over `log1p(E)/log1p(e_max)`, with stops blue `(30, 60, 200)`, green `(60, 200, 120)` and yellow
   `(255, 220, 40)`. The nose is white. Float colours are rounded half-up.
-- **Memory bound.** A splat whose sample count exceeds 2²³ (deep zoom, or far zoom-out) is split into row
-  chunks, with an `mx.eval` between chunks. Integer max makes the frame identical. `render_frame` is an eager
-  observer: it is not compiled.
+- **Viewport culling.** Before each splat, rows that are invalid (dead, or a bond not drawn) or whose stencil
+  box misses the frame in every periodic image are dropped with one host read, and only the rest are gathered
+  and splatted. The test is conservative (one pixel of slack per side), so frames are unchanged; the cost
+  follows the visible rows instead of `N × πρ²`, which grows with zoom² (dev at zoom 64: 36 s → 0.04 s per
+  900² frame on CPU).
+- **Memory bound.** A splat whose sample count still exceeds 2²³ (many visible rows at deep zoom, or far
+  zoom-out) is split into row chunks, with an `mx.eval` between chunks. Integer max makes the frame identical.
+  `render_frame` is an eager observer: it is not compiled.
 - **`VideoWriter` paths.** A path with no suffix is a PNG-sequence directory, with no warning (`alife render
   --out dir/`). A video suffix (`.mp4`, `.mov`, `.mkv` or `.m4v`) falls back to `<path minus suffix>/` with a
   warning. Any other suffix is a `ValueError`. Frames are named `frame_000000.png`, …. The encoder pads odd sizes
@@ -2257,9 +2270,11 @@ exactly that:
 - matplotlib: too slow for 30 fps at 1 MP.
 - DearPyGui: a viable second choice if richer widgets are ever needed.
 
-**Loop.** Each frame runs `steps_per_frame` compiled steps (sync eval), then one `render_frame`, then one blit, so
-there is one host read per frame. The viewer holds only the current state, which respects the donation rule.
-Viewing never changes the trajectory.
+**Loop.** Each frame runs up to `steps_per_frame` compiled steps (sync eval), then one `render_frame`, then one
+blit, so there is one host read per frame. A frame stops stepping early (after at least one step) once
+`FRAME_BUDGET_S = 0.1` s of wall time is spent, so a large `steps_per_frame` on a big preset cannot stall event
+handling for seconds (macOS would mark the window unresponsive); `.` and explicit advances ignore the budget.
+The viewer holds only the current state, which respects the donation rule. Viewing never changes the trajectory.
 
 **Controls:**
 - Space: pause. `.`: single step. `+`/`−`: steps per frame.
@@ -2394,8 +2409,14 @@ Pinned details (impl, WP5):
   step counts below stand.
 - **`golden`** also pins the platform (`system-machine-device`): CPU kernels may round differently across
   architectures, so the digest is only compared where it was recorded.
-- **CI** (`.github/workflows/ci.yml`, ubuntu-latest): `astral-sh/setup-uv`, `uv sync --group dev`,
-  `uv run ruff check`, `uv run ruff format --check`, `uv run pytest -m "not slow"`. A nightly job runs `-m slow`.
+- **CI** (`.github/workflows/ci.yml`, ubuntu-latest): `astral-sh/setup-uv`,
+  `uv sync --locked --group dev --extra viewer --extra video` (so the pygame loop and ffmpeg tests run rather than
+  skip), `uv run ruff check`, `uv run ruff format --check`, `uv run pytest -m "not slow"`. A nightly job runs
+  `-m slow`. Both jobs set `TMPDIR=$RUNNER_TEMP` and cache `$RUNNER_TEMP/mlx`: MLX's CPU backend JIT-compiles
+  every fused kernel with `g++` into `$TMPDIR/mlx`, and a cold cache measured ≈ 280–310 s for the fast suite
+  versus ≈ 100 s warm, so the < 3 min budget assumes a warm (cached) JIT directory.
+- **Python.** `requires-python = ">=3.12,<3.15"` and a committed `.python-version` (3.12, the minimum supported version, so CI tests the lower bound): mlx 0.32.x has
+  wheels only for cp312–cp314, so an unbounded range lets uv pick an interpreter that cannot install it.
 
 ### 22.1 Unit tests per module (each owned by the work package that owns the module, §25)
 
@@ -2730,7 +2751,7 @@ change their signatures or semantics.
 ```toml
 [project]
 name = "alife"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.15"
 dependencies = [
   "mlx>=0.32.3,<0.33; sys_platform == 'darwin'",
   "mlx[cpu]>=0.32.3,<0.33; sys_platform == 'linux'",
@@ -2915,6 +2936,15 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I14 | impl: (WP6) The donation-health rule of §15.4 ("peak − baseline > 0.5 × weight bytes") misfires: step transients alone are ≈ 0.64× the fp16 weight bytes on CPU (tiny and dev), and a retained old state lowers the excess because it sits in the baseline. Bench now calibrates with one step that keeps its input alive and warns unless that step peaks > 0.25 × weight bytes higher. Viewer controls, HUD interval and snapshot paths pinned (§20.2); bench stage groups and variant timing pinned (§21); `ViewerSession` and `bench.format_report` added (§16.2). MLX 0.32 `mx.compile` fails (`_Map_base::at`) when a constant array is an output beside arrays that use it (`Lanes.n_imm` with immigration off); the staged bench returns the lane counts stacked. |
 | I15 | impl: (WP5) Runner and CLI details pinned: `meta.start_step` and the default resume target, event chunks per checkpoint interval, the violation path (rows and events flushed, `diag/` dump, no checkpoint), extinction read from the evaluated per-step `N_ALIVE`, shortcut-flag precedence, state files accepted by `render`/`inspect`/`view`, `inspect --json` keys (§18, §21). |
 | I16 | impl: (gate) Release check: the §3 S11 row now lists `residue` (I13); `bench` reports `n_alive_start` at the start of the timed window and adds `immigrants`, so start + births + immigrants − deaths = end; `format_report` takes `report` as in §16.2. No behaviour change to the step. |
+| I17 | rev: §10.7/§17 — `validate` checked `floor(Dp_min·frac_min) ≥ 1` on the unquantised fraction, so `frac_min < 0.5/256` (frac_q8 = 0: child alive with E = 0) or `frac_max ≥ 255.5/256` (frac_q8 = 256: parent left with E = 0) passed and later tripped `ENERGY_RANGE`. Now `frac_q8(frac_min) ≥ 1`, `(Dp_min·frac_q8(frac_min)) >> 8 ≥ 1`, `frac_q8(frac_max) ≤ 255` (f32, as the engine computes it) and `e_init ≥ 1`. Defaults unchanged. |
+| I18 | rev: §18 Fork — a fork that changed `energy.structure` was always refused ("recomputed TOTAL != state.total"): the conserved total moves with S because structure energy is in no `E`. Reset is now `total0 = total = loaded total + (S_new − S_old)·n_alive`; a loaded total that was already wrong is still refused. |
+| I19 | rev: §17 — `immigration_floor > 0` with `immigrants_per_step = 0` admitted no immigrant yet disabled the extinction stop, so a dead world ran to `run.steps` as `done`. `validate` now requires `immigrants_per_step ≥ 1` when immigration is on. |
+| I20 | rev: §22.2 — eight relational `full_check` rules (resurrection by an old uid, `next_uid` decreasing, births > min(free, M), duplicate/out-of-range/dead/reused birth slots, newborn `birth_step`, `pend_slot` vs births) and ten host-only rules (uid ≥ `next_uid`, partner/rev index range, partner/rev disagreement, duplicate partner, negative cumulative/per-step ledger, `RESERVED`, negative `brain_cost`, non-finite `patch_vel`, negative `step`, `pend_slot` range, per-step closure) had no corruption case. Cases added, plus a meta-test that every `r.check`/`r.rows` site in `full_check` is hit by a case whose fragment matches only that rule. |
+| I21 | rev: §10.9/§22.3 — no test checked what the step passes to `device_check`. An eager-step test now compares the recorded `max_cell_occ`, `max_attackers`, `overflow_cells` and `v_clips` with independent counts and asserts `VCLIP_WARN`; a 1 100-agent single-cell scene asserts `INT_HEADROOM` from a real step. |
+| I22 | rev: §22.0 CI — the test job installs the `viewer` and `video` extras (the pygame loop test always skipped before), and both jobs cache MLX's CPU JIT directory (`TMPDIR=$RUNNER_TEMP`, `$RUNNER_TEMP/mlx`): a cold cache measured ≈ 280–310 s for the fast suite against the 3 min budget. |
+| I23 | rev: §20.1 — `render_frame` splatted every row's full disc stencil, so cost grew with zoom² × N (dev, 900², zoom 64: 36 s per frame). `_splat` now culls invalid rows and rows whose stencil box misses every periodic image (one host read, conservative, frames unchanged) and `_disc_stencil` is vectorised: 0.04 s at zoom 64, 0.09 s at zoom 256. |
+| I24 | rev: §20.2 — the viewer ran up to 1 024 steps per frame without pumping events (tens of seconds at 64k–256k). A frame now stops stepping after `FRAME_BUDGET_S = 0.1` s (at least one step); the trajectory is unchanged. |
+| I25 | rev: packaging — `requires-python` had no upper bound and mlx 0.32.x has no cp315 wheels or sdist, so uv could pick 3.15 and `uv sync` failed. Now `>=3.12,<3.15` (uv.lock relocked: only cp315 wheel entries dropped) and `.python-version` pins 3.12 (the lower bound, so CI covers it); README states the range. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

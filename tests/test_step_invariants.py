@@ -369,3 +369,57 @@ def test_bf16_steps_are_clean(tiny_cfg_bf16: Config) -> None:
     """bfloat16 weights (host reads widen through ``to_numpy``, F17) pass every check for a few steps."""
     run = _run(tiny_cfg_bf16, init_state(tiny_cfg_bf16), 5)
     assert run.state.W1.dtype == mx.bfloat16 and run.state.pend_W1.dtype == mx.bfloat16
+
+
+# --- the step's device_check inputs (§10.9, §22.3) ---------------------------------------------------------
+
+
+def test_step_feeds_device_check_its_own_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An eager step hands ``device_check`` the real max cell occupancy, attackers per victim, overflow cells
+    and speed clips, and the resulting warning bits reach ``s.diag``."""
+    from alife import energy
+
+    cfg = apply_overrides(_base("float32"), ["physics.v_max=0.05"])  # full thrust (0.1/drag) clips
+    s = set_output_bias(_dense_start(cfg), cfg, {layout.OUT_ATTACK: 4.0, layout.OUT_THRUST: 4.0})
+    seen: dict[str, tuple] = {}
+    device_check, combat = invariants.device_check, energy.combat
+
+    def spy_check(*args: mx.array) -> mx.array:
+        seen["check"] = args
+        return device_check(*args)
+
+    def spy_combat(*args: mx.array) -> energy.Combat:
+        seen["combat"] = (args, combat(*args))
+        return seen["combat"][1]
+
+    monkeypatch.setattr(invariants, "device_check", spy_check)
+    monkeypatch.setattr(energy, "combat", spy_combat)
+    s1, out = make_step(cfg, compile=False)(s)
+    mx.eval(s1, out)
+    occ, attackers, overflow, clips = (int(_np(x)) for x in seen["check"][3:7])
+
+    alive = _np(s.alive)
+    cell = np.floor(_np(s.pos)[alive] / cfg.world.field_cell).astype(np.int64)
+    assert occ == np.unique(cell, axis=0, return_counts=True)[1].max() > 1
+    (_, _, _, act, _, _), cb = seen["combat"]
+    assert attackers == np.bincount(_np(act.attack_target)[_np(cb.attack)]).max() > 1
+    counters = _np(out.counters)
+    assert overflow == counters[C.CELL_OVERFLOW] > 0
+    assert clips == counters[C.V_CLIPS] > 0
+    diag = int(_np(s1.diag))
+    assert diag & Diag.VCLIP_WARN and diag & Diag.CELL_OVERFLOW_WARN and not diag & ERROR_MASK
+
+
+def test_crowded_field_cell_sets_int_headroom() -> None:
+    """A start-of-step field cell holding ``occ_limit`` agents trips ``INT_HEADROOM`` in a real step."""
+    cfg = apply_overrides(_base("float32"), ["population.n_max=2048", "population.n_init=1100"])
+    d = dims(cfg)
+    assert d.occ_limit <= cfg.population.n_init
+    s = init_state(cfg)
+    pos = _np(s.pos)
+    rs = np.random.default_rng(5)
+    pos[: cfg.population.n_init] = 60.0 + rs.uniform(0.0, cfg.world.field_cell, (cfg.population.n_init, 2))
+    s = s._replace(pos=mx.array(pos.astype(np.float32)))
+    s1, out = make_step(cfg, compile=False)(s)
+    mx.eval(s1, out)
+    assert int(_np(s1.diag)) & Diag.INT_HEADROOM

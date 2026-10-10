@@ -219,6 +219,24 @@ def test_fork(run_dir: Path, tmp_path: Path) -> None:
     assert cli.main([*args, "--preset", "tiny"]) == 2  # the source state's config is the base
 
 
+def test_fork_structure_change_rebases_total(run_dir: Path, tmp_path: Path) -> None:
+    """§18 Reset: a fork that changes ``energy.structure`` rebases TOTAL by (S_new − S_old)·n_alive."""
+    fork = tmp_path / "fork_s"
+    args = ["run", "--init-from", str(run_dir), "--set", "energy.structure=5000", "--out", str(fork)]
+    assert cli.main([*args, "--steps", "10", "--quiet"]) == 0
+    rd = RunDir.open(fork)
+    cfg = rd.config()
+    src_cfg = RunDir.open(run_dir).config()
+    src = load_checkpoint(RunDir.open(run_dir).checkpoint_at(200), src_cfg)
+    start = load_checkpoint(rd.checkpoint_at(200), cfg)
+    n_alive = int(to_numpy(src.alive).sum())
+    delta = n_alive * (cfg.energy.structure - src_cfg.energy.structure)
+    assert n_alive > 0 and delta != 0
+    assert int(to_numpy(start.total)) == int(to_numpy(src.total)) + delta
+    assert int(to_numpy(start.total0)) == int(to_numpy(start.total))
+    assert rd.meta()["status"] == "done"
+
+
 def test_view_and_bench_delegate(run_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The ``view`` and ``bench`` commands call WP6's public functions with the parsed arguments."""
     from alife import bench, viewer

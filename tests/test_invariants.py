@@ -7,7 +7,10 @@ matching ledger), so the relational checks (``prev``/``out``) are exercised with
 
 from __future__ import annotations
 
+import ast
+import inspect
 import math
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -278,8 +281,47 @@ def _pend_established(s: State) -> State:
     return _set(s, "pend_slot", lambda a: a.__setitem__(lane, old))
 
 
+def _open_slot(s: State) -> tuple[int, int, int]:
+    """(a bonded alive row with an empty slot, that empty slot, one of its partners)."""
+    alive, partner = _np(s.alive), _np(s.partner)
+    occ = partner >= 0
+    i = int(np.flatnonzero(alive & occ.any(1) & ~occ.all(1))[0])
+    return i, int(np.argmin(occ[i])), int(partner[i][occ[i]][0])
+
+
+def _stray_rev(s: State) -> State:
+    i, b, _ = _open_slot(s)
+    return _set(s, "rev", lambda a: a.__setitem__((i, b), 2))
+
+
+def _dup_partner(s: State) -> State:
+    i, b, j = _open_slot(s)
+    s = _set(s, "partner", lambda a: a.__setitem__((i, b), j))
+    return _set(s, "rev", lambda a: a.__setitem__((i, b), 0))
+
+
+def _uid_at_next(s: State) -> State:
+    i = _rows(s)[0]
+    return _set(s, "uid", lambda a: a.__setitem__(i, _np(s.next_uid)))
+
+
 FULL_ONLY = [
     ("duplicate_uid", _dup_uid, "duplicate uid"),
+    ("uid_ge_next_uid", _uid_at_next, "uid: alive uid outside"),
+    (
+        "partner_range",
+        lambda s: _set(s, "partner", lambda a: a.__setitem__(_rows(s)[2:], 67)),
+        "partner index",
+    ),
+    ("rev_range", lambda s: _set(s, "rev", lambda a: a.__setitem__(_rows(s)[2:], 4)), "rev index"),
+    ("stray_rev", _stray_rev, "rev < 0 disagree"),
+    ("duplicate_partner", _dup_partner, "duplicate partner"),
+    ("negative_cum", _field("ledger_cum", LedgerIdx.HEAT_SHARE, value=-1), "negative cumulative"),
+    ("reserved_cum", _field("ledger_cum", LedgerIdx.RESERVED, value=1), "RESERVED"),
+    ("negative_brain_cost", _at("brain_cost", 0, -1), "brain_cost: negative"),
+    ("nan_patch_vel", _field("patch_vel", (0, 1), value=np.nan), "patch_vel"),
+    ("negative_step", _field("step", (), value=-1), "step: negative"),
+    ("pend_out_of_range", _field("pend_slot", 0, value=64), "pend_slot out of range"),
     ("sigma_high", _at("mut_sigma", 0, 0.31), "mut_sigma"),
     ("rate_low", _at("mut_rate", 1, 0.0005), "mut_rate"),
     ("frac_high", _at("offspring_frac", 0, 0.95), "offspring_frac"),
@@ -330,8 +372,93 @@ def _newborn_record(out: StepOut) -> StepOut:
     return out._replace(births=out.births._replace(uid=mx.array(uid)))
 
 
+def _births(o: StepOut, **arrays: Callable[[np.ndarray, np.ndarray], None]) -> StepOut:
+    """``o`` with ``births.<name>`` edited in place by ``fn(array, valid_lanes)``."""
+    lanes = np.flatnonzero(_np(o.births.valid))
+    rec = {}
+    for name, fn in arrays.items():
+        a = _np(getattr(o.births, name)).copy()
+        fn(a, lanes)
+        rec[name] = mx.array(a)
+    return o._replace(births=o.births._replace(**rec))
+
+
+def _recycled_uid(s: State, o: StepOut) -> tuple[State, StepOut]:
+    """The first newborn reuses an older uid that is neither alive nor in this step's death records."""
+    uid, alive = _np(s.uid), _np(s.alive)
+    prev_next = int(_np(s.next_uid)) - int(_np(o.births.valid).sum())
+    taken = set(uid[alive].tolist()) | set(_np(o.deaths.uid)[_np(o.deaths.valid)].tolist())
+    old = next(u for u in range(prev_next) if u not in taken)
+    slot = int(_np(o.births.slot)[_np(o.births.valid)][0])
+    s = _set(s, "uid", lambda a: a.__setitem__(slot, old))
+    return s, _births(o, uid=lambda a, v: a.__setitem__(v[0], old))
+
+
+def _dup_birth_slot(s: State, o: StepOut) -> tuple[State, StepOut]:
+    pad = int(np.flatnonzero(~_np(o.births.valid))[0])
+    first = int(np.flatnonzero(_np(o.births.valid))[0])
+    out = _births(
+        o, slot=lambda a, v: a.__setitem__(pad, a[first]), uid=lambda a, v: a.__setitem__(pad, a[first])
+    )
+    return s, out._replace(
+        births=out.births._replace(valid=mx.array(np.arange(len(_np(o.births.valid))) <= pad))
+    )
+
+
+def _record_slot(fn: Callable[[State, StepOut], int], *, keep_uid: bool = True) -> Callable:
+    """Point the first valid birth record at row ``fn(s, o)`` (and give it that row's uid)."""
+
+    def f(s: State, o: StepOut) -> tuple[State, StepOut]:
+        row = fn(s, o)
+        o = _births(o, slot=lambda a, v: a.__setitem__(v[0], row))
+        if keep_uid:
+            o = _births(o, uid=lambda a, v: a.__setitem__(v[0], _np(s.uid)[row]))
+        return s, o
+
+    return f
+
+
+def _dead_row(s: State, o: StepOut) -> int:
+    return int(np.setdiff1d(np.flatnonzero(~_np(s.alive)), _np(s.pend_slot))[0])
+
+
+def _established_row(s: State, o: StepOut) -> int:
+    alive, bstep = _np(s.alive), _np(s.birth_step)
+    return int(np.flatnonzero(alive & (bstep < _np(s.step) - 1))[0])
+
+
+def _newborn_birth_step(s: State, o: StepOut) -> tuple[State, StepOut]:
+    slot = int(_np(o.births.slot)[_np(o.births.valid)][0])
+    return _set(s, "birth_step", lambda a: a.__setitem__(slot, a[slot] - 1)), o
+
+
+def _pend_moved(s: State, o: StepOut) -> tuple[State, StepOut]:
+    lane, spare = int(np.flatnonzero(_np(o.births.valid))[0]), _dead_row(s, o)
+    return _set(s, "pend_slot", lambda a: a.__setitem__(lane, spare)), o
+
+
+def _negative_step_entry(s: State, o: StepOut) -> tuple[State, StepOut]:
+    i = LedgerIdx.HEAT_BIRTH
+    return _field("ledger_cum", i, delta=-(int(_np(o.ledger)[i]) + 1))(s), o
+
+
 STEPWISE = [  # corruptions that only the relational (prev/out) checks can see
-    ("resurrection", lambda s, o: (_resurrect(s, o), o), "resurrection"),
+    ("resurrection", lambda s, o: (_resurrect(s, o), o), "death records is alive"),
+    ("recycled_uid", _recycled_uid, "resurrection: new alive row"),
+    ("next_uid_down", lambda s, o: (_field("next_uid", (), value=0)(s), o), "next_uid decreased"),
+    (
+        "per_step_closure",
+        lambda s, o: (_field("ledger_cum", LedgerIdx.HEAT_BASAL, delta=1)(s), o),
+        "per-step",
+    ),
+    ("negative_step_entry", _negative_step_entry, "negative per-step"),
+    ("births_over_capacity", lambda s, o: (_over_capacity(s), o), "births exceed"),
+    ("duplicate_birth_slot", _dup_birth_slot, "births: duplicate slots"),
+    ("birth_slot_range", _record_slot(lambda s, o: 64, keep_uid=False), "births: slot out of range"),
+    ("newborn_dead", _record_slot(_dead_row), "newborn slot is not alive"),
+    ("newborn_established", _record_slot(_established_row), "held the same uid before"),
+    ("newborn_birth_step", _newborn_birth_step, "newborn birth_step"),
+    ("pend_vs_births", _pend_moved, "pend_slot differs"),
     ("next_uid_jump", lambda s, o: (_field("next_uid", (), delta=1)(s), o), "next_uid advanced"),
     ("record_uid", lambda s, o: (s, _newborn_record(o)), "births: newborn row uid differs"),
     ("step_skip", lambda s, o: (_field("step", (), delta=1)(s), o), "does not follow"),
@@ -360,3 +487,84 @@ def test_full_check_stepwise_reports(micro_cfg: Config, history, corrupt, msg: s
     bad_s, bad_out = corrupt(s, out)
     problems = invariants.full_check(bad_s, micro_cfg, prev, bad_out)
     assert any(msg in p for p in problems), problems
+
+
+# --- every full_check rule has a corruption test (§22.2: the checks are not vacuous) ------------------------
+
+
+_CHECK_FNS = ("_check_ledger", "_check_bonds", "_check_rows", "_check_step", "full_check")
+
+
+def _rule_sites() -> set[int]:
+    """Source lines of every ``r.check`` / ``r.rows`` / ``r.problems.append`` in the full_check rules."""
+    tree = ast.parse(inspect.getsource(invariants))
+    sites = set()
+    for fn in tree.body:
+        if not (isinstance(fn, ast.FunctionDef) and fn.name in _CHECK_FNS):
+            continue
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            target, attr = ast.unparse(node.func.value), node.func.attr
+            if (attr in ("check", "rows") and target == "r") or (attr == "append" and target == "r.problems"):
+                sites.add(node.lineno)
+    return sites
+
+
+class _SitedProblems(list):
+    """A problem list that remembers the rule line (in a ``_CHECK_FNS`` function) of each message."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lines: list[int] = []
+
+    def append(self, item: str) -> None:
+        f = sys._getframe(1)
+        while f.f_code.co_name not in _CHECK_FNS:
+            f = f.f_back
+        self.lines.append(f.f_lineno)
+        super().append(item)
+
+
+def test_every_full_check_rule_has_a_corruption_case(
+    micro_cfg: Config, history, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rule counts as covered when a BOTH / FULL_ONLY / STEPWISE case's message fragment matches a problem
+    that this very rule emitted, so a new rule cannot ship without a corruption test."""
+    reports: list[_SitedProblems] = []
+
+    class Recording(invariants._Report):
+        def __init__(self) -> None:
+            self.problems = _SitedProblems()
+            reports.append(self.problems)
+
+    monkeypatch.setattr(invariants, "_Report", Recording)
+    prev, s, out, _ = history[-1]
+    covered: set[int] = set()
+
+    ambiguous: list[str] = []
+
+    def run(case: str, msg: str, *args: Any) -> None:
+        reports.clear()
+        invariants.full_check(*args)
+        (probs,) = reports
+        lines = {line for p, line in zip(probs, probs.lines, strict=True) if msg in p}
+        if len(lines) != 1:  # the fragment must name one rule, or a dead rule could hide behind another
+            ambiguous.append(f"{case}: {msg!r} matched rules at lines {sorted(lines)}")
+        covered.update(lines)
+
+    for case, corrupt, _, msg in BOTH:
+        run(case, msg, corrupt(s), micro_cfg)
+    for case, corrupt, msg in FULL_ONLY:
+        run(case, msg, corrupt(s), micro_cfg)
+    for case, corrupt, msg in STEPWISE:
+        bad_s, bad_out = corrupt(s, out)
+        run(case, msg, bad_s, micro_cfg, prev, bad_out)
+    assert not ambiguous, ambiguous
+    sites = _rule_sites()
+    assert len(sites) > 50 and covered <= sites  # the site scan itself is not vacuous
+    missing = sorted(sites - covered)
+    src = inspect.getsource(invariants).splitlines()
+    assert not missing, "full_check rules without a corruption case:\n" + "\n".join(
+        f"  invariants.py:{n}: {src[n - 1].strip()}" for n in missing
+    )

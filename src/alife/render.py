@@ -104,6 +104,23 @@ def _axis_images(coord: mx.array, offs: mx.array, ax: _Axis, L: float) -> list[m
     return [mx.floor(v + (half + k * ax.period)) for k in range(-ax.k_max, ax.k_max + 1)]
 
 
+def _maybe_visible(coord: mx.array, offs: mx.array, ax: _Axis, L: float) -> mx.array:
+    """(n,) bool, conservative: some stencil pixel of some periodic image of ``coord`` may fall in the frame.
+
+    Mirrors ``_axis_images``: a pixel ``u + o`` (``u`` the centre pixel relative to the frame centre) is
+    visible iff ``(u + o + extent/2) mod P`` lies in ``[0, extent)``. The stencil spans ``[o_min, o_max]``;
+    one pixel of slack on each side absorbs f32 rounding (false positives only cost sink samples).
+    """
+    if ax.extent >= ax.period:
+        return mx.ones(coord.shape, dtype=mx.bool_)
+    o_min, o_max = float(mx.min(offs).item()), float(mx.max(offs).item())
+    half = ax.extent / 2.0
+    c = mx.floor(ops.min_image(coord - ax.centre, L) * ax.scale + half)
+    a = c + (0.5 - half + o_min + half - 1.0)
+    a = a - ax.period * mx.floor(a / ax.period)  # [0, P)
+    return (a < ax.extent + 1.0) | (a + (o_max - o_min + 2.0) >= ax.period)
+
+
 def _splat(
     canvas: mx.array,
     x: mx.array,
@@ -116,10 +133,21 @@ def _splat(
 ) -> mx.array:
     """Scatter-max ``packed`` (n,) uint32 at every stencil pixel of every visible image of (x, y) (n,).
 
-    Off-frame and invalid samples go to the sink pixel ``H·W`` (the last canvas entry). When the sample count
-    (n × stencil × images) exceeds ``_SAMPLE_BUDGET`` (deep zoom or far zoom-out), the rows are processed in
-    chunks with an eval in between to bound transient memory; integer max makes the result identical.
+    Rows that are invalid, or whose stencil box misses the frame in every periodic image, are culled first
+    (one host read; ``render_frame`` is an eager observer), so the cost follows the visible rows rather than
+    N × stencil, which grows with zoom². Off-frame pixels of the remaining rows go to the sink pixel ``H·W``
+    (the last canvas entry). When the sample count (rows × stencil × images) exceeds ``_SAMPLE_BUDGET``, the
+    rows are processed in chunks with an eval in between to bound transient memory; integer max makes the
+    result identical.
     """
+    keep = valid & _maybe_visible(x, stencil[0], axes[0], L) & _maybe_visible(y, stencil[1], axes[1], L)
+    rows = np.flatnonzero(to_numpy(keep))
+    if rows.size == 0:
+        return canvas
+    if rows.size < x.shape[0]:
+        sel = mx.array(rows.astype(np.int32))
+        x, y, packed = x[sel], y[sel], packed[sel]
+    valid = mx.ones(x.shape, dtype=mx.bool_)
     n = x.shape[0]
     per_row = stencil[0].shape[0] * (2 * axes[0].k_max + 1) * (2 * axes[1].k_max + 1)
     chunk = max(1, _SAMPLE_BUDGET // per_row)
@@ -175,14 +203,11 @@ def _const_rgb(rgb: tuple[int, int, int], n: int) -> mx.array:
 
 
 def _disc_stencil(rho: int) -> tuple[mx.array, mx.array]:
-    """Integer offsets (static per ρ) of the disc ``ox² + oy² ≤ ρ²``, as f32 (S,) pairs."""
-    ox, oy = [], []
-    for dy in range(-rho, rho + 1):
-        for dx in range(-rho, rho + 1):
-            if dx * dx + dy * dy <= rho * rho:
-                ox.append(dx)
-                oy.append(dy)
-    return mx.array(ox, dtype=_F32), mx.array(oy, dtype=_F32)
+    """Integer offsets (static per ρ) of the disc ``ox² + oy² ≤ ρ²``, as f32 (S,) pairs (row-major in dy)."""
+    d = np.arange(-rho, rho + 1, dtype=np.int64)
+    dy, dx = np.meshgrid(d, d, indexing="ij")
+    inside = dx * dx + dy * dy <= rho * rho
+    return mx.array(dx[inside].astype(np.float32)), mx.array(dy[inside].astype(np.float32))
 
 
 def _agent_rgb(s: State, cfg: Config, color: str) -> mx.array:

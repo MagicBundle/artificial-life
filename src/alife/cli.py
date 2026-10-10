@@ -285,8 +285,12 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
             f"population.n_init must equal the source's {src_cfg.population.n_init} (clade bins depend on it)"
         )
     s = load_checkpoint(src, cfg, check_hash=False)
+    # Structure energy is not in any E, so the conserved TOTAL moves with S: rebase by (S_new − S_old)·n_alive
+    # (a stored TOTAL that was already wrong stays wrong and is refused by the admission check below).
+    n_alive = s.alive.astype(mx.int32).sum().astype(mx.int64)
+    total = s.total + n_alive * (cfg.energy.structure - src_cfg.energy.structure)
     s = s._replace(
-        diag=mx.zeros_like(s.diag), ledger_cum=mx.zeros_like(s.ledger_cum), total0=mx.array(s.total)
+        diag=mx.zeros_like(s.diag), ledger_cum=mx.zeros_like(s.ledger_cum), total=total, total0=total
     )
     if a.seed is not None:
         s = s._replace(key=init_keys(a.seed)[InitStream.STATE_KEY])

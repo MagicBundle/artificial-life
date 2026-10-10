@@ -42,6 +42,7 @@ ZOOM_MAX: Final = 256.0
 SPF_MAX: Final = 1024  # steps per frame
 CLICK_SLOP: Final = 4  # pixels a press may move and still count as a click
 RATE_WINDOW_S: Final = 0.5  # steps/s refresh period
+FRAME_BUDGET_S: Final = 0.1  # wall time a frame may spend stepping before it renders and pumps events
 _HUD_FONT_PX: Final = 18
 _HUD_FG: Final = (235, 235, 235)
 _HUD_ERR: Final = (255, 90, 90)
@@ -132,26 +133,39 @@ class ViewerSession:
         self.size = self._check_size(size)
         self.dirty = True
 
-    def advance(self, n: int) -> None:
-        """Run ``n`` compiled steps, one blocking eval each (§15.4); counters accumulate on the device."""
-        for _ in range(n):
+    def advance(self, n: int, budget_s: float | None = None) -> int:
+        """Run up to ``n`` compiled steps, one blocking eval each (§15.4); counters accumulate on the device.
+
+        With ``budget_s``, stop after the first step that ends ``budget_s`` or more after the call started, so
+        a large ``steps_per_frame`` cannot keep the window from pumping events for seconds. Returns the steps
+        run. The trajectory does not depend on how steps are split into frames.
+        """
+        t0 = time.perf_counter()
+        done = 0
+        while done < n:
             self._state, out = self._step(self._state)
             self._acc = self._acc + out.counters
             mx.eval(self._state, self._acc)
+            done += 1
+            if budget_s is not None and time.perf_counter() - t0 >= budget_s:
+                break
+        n = done
         if n > 0:
             self._acc_steps += n
             self._rate_steps += n
             self.dirty = True
+        return n
 
     def tick(self) -> bool:
-        """One frame's worth of simulation: ``steps_per_frame`` steps unless paused. True if it stepped."""
+        """One frame's worth of simulation unless paused: ``steps_per_frame`` steps, or fewer (at least one)
+        once ``FRAME_BUDGET_S`` of wall time is spent. True if it stepped."""
         now = time.perf_counter()
         if now - self._rate_t0 >= RATE_WINDOW_S:
             self.steps_per_s = self._rate_steps / (now - self._rate_t0)
             self._rate_t0, self._rate_steps = now, 0
         if self.paused:
             return False
-        self.advance(self.steps_per_frame)
+        self.advance(self.steps_per_frame, FRAME_BUDGET_S)
         return True
 
     # --- rendering ------------------------------------------------------------------------------------------
@@ -416,7 +430,8 @@ def run_viewer(
 ) -> None:
     """Interactive viewer loop; holds only the current state (donation rule).
 
-    Each frame runs ``steps_per_frame`` compiled steps (one sync eval each), then one ``render_frame`` and
+    Each frame runs up to ``steps_per_frame`` compiled steps (one sync eval each; stepping stops early once
+    ``FRAME_BUDGET_S`` of wall time is spent, so input stays responsive), then one ``render_frame`` and
     one blit. Returns when the window is closed (or on Esc / ``q``). Raises ``ImportError`` with an install
     hint when pygame-ce is missing. Pass the state without keeping another reference to it, so the first
     step can update the weights in place.
