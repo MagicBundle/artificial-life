@@ -264,7 +264,7 @@ Endpoint and model are run-level keys (`run.*`), so they can change on resume.
 
 ## 9. Evaluation
 
-Fork `runs/64k_s0` at step 120,000 into arms that run to step 1.5M, with the same seed:
+Fork `runs/64k_s0` at step 120,000 into arms that run to step 1.5M:
 
 | arm | director |
 |---|---|
@@ -272,9 +272,24 @@ Fork `runs/64k_s0` at step 120,000 into arms that run to step 1.5M, with the sam
 | B | rule tier only, Gardener |
 | C | rule + LLM, Trickster |
 | D (optional) | rule + LLM, Architect with goal "bodies ≥ 100" |
+| R | random director: same menu, budgets, cooldowns and safety rules as B, with actions drawn uniformly from the eligible menu (seeded, so it replays) |
+
+**Why arm R.** Without it, "the director helps" cannot be separated from "any perturbation helps".
+Prior LLM-in-the-loop ALife work (ASAL, ASAL++) reports no such matched control (`docs/RESEARCH.md` §1).
+B and C count as an improvement only if they beat R as well as A. The random director needs a new
+`random` persona: not built yet, see §10.
+
+**Seeds.** Run every arm on at least two seeds:
+- seed 0: the fork of `runs/64k_s0` described above;
+- seed 1: the same fork of a second base run made with `--seed 1` and run to step 120,000.
+
+Within a seed, all arms share the base checkpoint, so the director is the only difference.
+
+Report each metric per seed, with the spread, and draw no conclusion from a single trajectory.
 
 **Metrics.**
 - Archive coverage over time.
+- Bedau–Packard evolutionary activity, normalised against a neutral shadow (`docs/RESEARCH.md` §4).
 - Persistent novelty: novelty that is still above the baseline 100k steps after an intervention.
 - Clades and lineage depth.
 - Behavioural turnover.
@@ -282,10 +297,13 @@ Fork `runs/64k_s0` at step 120,000 into arms that run to step 1.5M, with the sam
 - Intervention diversity and cost.
 - For the LLM: JSON validity rate, clamp rate and latency.
 
-**Success criteria.** B beats A on coverage and persistent novelty, with no population collapse. C beats B on
-those metrics, or matches B with better journal legibility (a human rates 10 sampled journal entries).
+**Success criteria.**
+- B beats both A and R on coverage and persistent novelty, on every seed, with no population collapse.
+- C beats B on those metrics, or matches B with better journal legibility (a human rates 10 sampled journal
+  entries).
 
-**Cost.** About 6 hours per arm at 64k on the M5 Pro. Run sequentially; parallel arms share the GPU.
+**Cost.** About 6 hours per arm and seed at 64k on the M5 Pro, so 4 arms × 2 seeds is about 48 hours, plus D if
+run. Run sequentially; parallel arms share the GPU.
 
 ## 10. Build order
 
@@ -299,7 +317,11 @@ those metrics, or matches B with better journal legibility (a human rates 10 sam
 3. **LLM tier (done, §13):** LM Studio client, schema, personas, prompt builder, fallback and journal, with a
    mock-server test (`http.server` in tests) for valid, invalid and slow replies.
 4. **GUI (done, §14):** the Director panel and `alife llm-check`.
-5. **Evaluation:** arms A–D and dashboard markers.
+5. **Evaluation:**
+   - a `random` persona for arm R: uniform over the eligible menu, with the same budget, cooldown and safety
+     rules, seeded per decision like the Trickster, plus a replay test;
+   - arms A–D and R on two seeds;
+   - dashboard markers.
 
 ## 11. Open decisions (owner)
 
