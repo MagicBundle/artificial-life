@@ -17,29 +17,31 @@ struct ExitInfo {
 }
 
 /// Splits a byte stream into lines (on "\n" or "\r", so progress bars become lines too).
-/// Each instance is used from a single pipe handler, so it needs no locking.
-private final class LineSplitter {
+/// A value owned by one drain loop, so it needs no locking.
+private struct LineSplitter {
     private var buffer = Data()
 
-    func feed(_ data: Data) -> [String] {
+    mutating func feed(_ data: Data) -> [String] {
         buffer.append(data)
         var lines: [String] = []
-        while let index = buffer.firstIndex(where: { $0 == 0x0A || $0 == 0x0D }) {
-            let lineData = buffer[buffer.startIndex..<index]
-            if !lineData.isEmpty { lines.append(String(decoding: lineData, as: UTF8.self)) }
-            buffer.removeSubrange(buffer.startIndex..<(index + 1))
+        var start = buffer.startIndex
+        while let index = buffer[start...].firstIndex(where: { $0 == 0x0A || $0 == 0x0D }) {
+            if index > start { lines.append(String(decoding: buffer[start..<index], as: UTF8.self)) }
+            start = index + 1
         }
+        buffer.removeSubrange(buffer.startIndex..<start)
         return lines
     }
 
-    func flush() -> String? {
+    mutating func flush() -> String? {
         defer { buffer.removeAll() }
         return buffer.isEmpty ? nil : String(decoding: buffer, as: UTF8.self)
     }
 }
 
 /// Owns the engine subprocesses and all UI-visible run state.
-/// Everything here is touched on the main thread only (pipe and termination handlers hop back to main).
+/// Main-actor isolated; pipe and termination handlers feed AsyncStreams that main-actor tasks consume.
+@MainActor
 final class RunController: ObservableObject {
     static let shared = RunController()
     private static let repoKey = "repoPath"
@@ -61,6 +63,8 @@ final class RunController: ObservableObject {
     @Published private(set) var stopRequested = false
     @Published private(set) var viewerRunning = false
     @Published private(set) var lastExit: ExitInfo?
+    /// Fork mode: set when the source run's config could not be read (the levers then show the engine defaults).
+    @Published private(set) var forkLeverWarning: String?
 
     // Live status
     @Published private(set) var metrics: MetricsSnapshot?
@@ -76,15 +80,25 @@ final class RunController: ObservableObject {
     private var trackedRun = ""
     private var nextLogID = 0
     private var tickCount = 0
-    private var ticker: Timer?
-    private let pollQueue = DispatchQueue(label: "alife.metrics", qos: .utility)
+    private var ticker: Task<Void, Never>?
+    private var pollCount = 0
+    private var appliedPoll = 0
 
     private init() {
         repoPath = UserDefaults.standard.string(forKey: Self.repoKey) ?? "~/artificial-life"
         settings.name = Self.defaultRunName()
         refreshRepo()
-        ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.tick()
+        // Lives as long as the app (it also refreshes the run list and metrics while idle).
+        ticker = Task { [weak self] in
+            let clock = ContinuousClock()
+            var next = clock.now
+            while !Task.isCancelled {
+                // Skip missed ticks (e.g. after system sleep) instead of firing a burst to catch up.
+                next = max(next + .seconds(1), clock.now)
+                try? await clock.sleep(until: next)
+                guard let self else { return }
+                self.tick()
+            }
         }
     }
 
@@ -156,6 +170,27 @@ final class RunController: ObservableObject {
     }
 
     func suggestNewName() { settings.name = Self.defaultRunName() }
+
+    // MARK: Fork levers
+
+    /// Fork mode: pre-fills the levers with the source run's values, which are also the baseline that only
+    /// changed levers are diffed against. Call when the source run changes or Fork mode is entered.
+    func loadForkLevers() {
+        guard settings.mode == .fork else { return }
+        guard !settings.sourceRun.isEmpty else { resetLevers(); return }
+        let dir = repoURL.appendingPathComponent("runs/\(settings.sourceRun)", isDirectory: true)
+        let loaded = Levers.forkBaseline(runDirectory: dir)
+        settings.levers = loaded.levers
+        settings.leverBaseline = loaded.levers
+        forkLeverWarning = loaded.warning
+    }
+
+    /// Back to the engine defaults (used when leaving Fork mode).
+    func resetLevers() {
+        settings.levers = Levers()
+        settings.leverBaseline = Levers()
+        forkLeverWarning = nil
+    }
 
     // MARK: Jobs
 
@@ -313,9 +348,9 @@ final class RunController: ObservableObject {
     // MARK: Process plumbing
 
     /// Starts `executable` in the repo directory, streaming its output into the log. `onExit` runs on the main
-    /// thread after the process has exited and both pipes have been drained.
+    /// actor after the process has exited and both pipes have been drained to EOF.
     private func launch(_ executable: URL, _ arguments: [String], prefix: String,
-                        onExit: @escaping (Int32, Process.TerminationReason) -> Void) -> Process? {
+                        onExit: @escaping @MainActor (Int32, Process.TerminationReason) -> Void) -> Process? {
         let p = Process()
         p.executableURL = executable
         p.arguments = arguments
@@ -332,43 +367,52 @@ final class RunController: ObservableObject {
         p.standardOutput = outPipe
         p.standardError = errPipe
 
-        let group = DispatchGroup()
-        group.enter()  // termination
-        p.terminationHandler = { _ in group.leave() }
+        let (exits, exitSink) = AsyncStream.makeStream(of: (Int32, Process.TerminationReason).self)
+        p.terminationHandler = { process in
+            exitSink.yield((process.terminationStatus, process.terminationReason))
+            exitSink.finish()
+        }
         do {
             try p.run()
         } catch {
-            group.leave()
             appendLines(["Failed to launch \(executable.path): \(error.localizedDescription)"], isError: true)
             return nil
         }
-        attach(outPipe, isError: false, prefix: prefix, group: group)
-        attach(errPipe, isError: true, prefix: prefix, group: group)
-        group.notify(queue: .main) {
-            onExit(p.terminationStatus, p.terminationReason)
+        let outChunks = Self.chunks(from: outPipe)
+        let errChunks = Self.chunks(from: errPipe)
+        // One ordered consumer per stream (each appends synchronously on the main actor, in arrival order).
+        // The exit status is only reported once both have seen EOF and the process has terminated.
+        Task {
+            async let out: Void = drain(outChunks, isError: false, prefix: prefix)
+            async let err: Void = drain(errChunks, isError: true, prefix: prefix)
+            _ = await (out, err)
+            for await (status, reason) in exits { onExit(status, reason) }  // yields exactly once
         }
         return p
     }
 
-    private func attach(_ pipe: Pipe, isError: Bool, prefix: String, group: DispatchGroup) {
-        let splitter = LineSplitter()
-        group.enter()
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            if data.isEmpty {  // EOF
-                handle.readabilityHandler = nil
-                let rest = splitter.flush()
-                DispatchQueue.main.async {
-                    if let rest { self?.appendLines([prefix + rest], isError: isError) }
-                    group.leave()
+    /// Continuously reads the pipe (so the child can never block on a full pipe); finishes at EOF.
+    private nonisolated static func chunks(from pipe: Pipe) -> AsyncStream<Data> {
+        let handle = pipe.fileHandleForReading
+        return AsyncStream { continuation in
+            handle.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty {  // EOF
+                    handle.readabilityHandler = nil
+                    continuation.finish()
+                } else {
+                    continuation.yield(data)
                 }
-                return
-            }
-            let lines = splitter.feed(data).map { prefix + $0 }
-            if !lines.isEmpty {
-                DispatchQueue.main.async { self?.appendLines(lines, isError: isError) }
             }
         }
+    }
+
+    private func drain(_ chunks: AsyncStream<Data>, isError: Bool, prefix: String) async {
+        var splitter = LineSplitter()
+        for await data in chunks {
+            appendLines(splitter.feed(data).map { prefix + $0 }, isError: isError)
+        }
+        if let rest = splitter.flush() { appendLines([prefix + rest], isError: isError) }
     }
 
     private func findUV() -> URL? {
@@ -410,12 +454,14 @@ final class RunController: ObservableObject {
             return
         }
         let url = repoURL.appendingPathComponent("runs/\(run)/metrics.jsonl")
-        pollQueue.async { [weak self] in
-            let snapshot = MetricsTailer.readLast(at: url)
-            DispatchQueue.main.async {
-                guard let self, self.metrics != snapshot else { return }
-                self.metrics = snapshot
-            }
+        pollCount += 1
+        let poll = pollCount
+        Task {
+            let snapshot = await Task.detached(priority: .utility) { MetricsTailer.readLast(at: url) }.value
+            // Polls can overlap; never let an older read overwrite a newer one.
+            guard poll > appliedPoll else { return }
+            appliedPoll = poll
+            if metrics != snapshot { metrics = snapshot }
         }
     }
 }

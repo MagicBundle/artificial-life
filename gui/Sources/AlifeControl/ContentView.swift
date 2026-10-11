@@ -75,9 +75,13 @@ struct ContentView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .onChange(of: controller.settings.mode) { _, newMode in
+                .onChange(of: controller.settings.mode) { oldMode, newMode in
                     // A fork keeps the source state's RNG unless a seed is given.
-                    if newMode == .fork { controller.settings.seed = "" }
+                    if newMode == .fork {
+                        controller.settings.seed = ""
+                        controller.loadForkLevers()
+                    }
+                    if oldMode == .fork && newMode != .fork { controller.resetLevers() }
                     if newMode == .new && controller.settings.seed.isEmpty { controller.settings.seed = "1" }
                 }
 
@@ -89,6 +93,7 @@ struct ContentView: View {
                         }
                         Button("Refresh") { controller.refreshRuns() }
                     }
+                    .onChange(of: controller.settings.sourceRun) { controller.loadForkLevers() }
                     if controller.runs.isEmpty {
                         Text("No runs found in runs/.").font(.caption).foregroundStyle(.secondary)
                     }
@@ -113,18 +118,30 @@ struct ContentView: View {
                     field("Seed", text: $controller.settings.seed,
                           prompt: controller.settings.mode == .fork ? "blank = keep source RNG" : "blank = preset default")
                 }
-                field(controller.settings.mode == .resume ? "Additional steps" : "Steps",
+                field(controller.settings.mode == .new ? "Steps" : "Additional steps",
                       text: $controller.settings.steps,
-                      prompt: controller.settings.mode == .resume ? "blank = original target" : "blank = preset default")
+                      prompt: stepsPrompt)
                 if controller.settings.mode == .fork {
-                    Text("A fork starts a new run from the source run's latest checkpoint; the source config is the base, so the preset cannot be changed.")
+                    Text("A fork starts a new run from the source run's latest checkpoint; the source config is the base, so the preset cannot be changed. The levers are pre-filled from the source run, and only levers you change are passed.")
                         .font(.caption).foregroundStyle(.secondary)
+                    if let warning = controller.forkLeverWarning {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                 }
             }
             .padding(6)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .disabled(busy)
+    }
+
+    private var stepsPrompt: String {
+        switch controller.settings.mode {
+        case .new: return "blank = preset default"
+        case .resume: return "blank = original target"
+        case .fork: return "blank = source config's steps"
+        }
     }
 
     private func field(_ title: String, text: Binding<String>, prompt: String) -> some View {
@@ -207,12 +224,8 @@ struct ContentView: View {
                 Toggle("Stop after (HH:MM)", isOn: $controller.settings.timerEnabled)
                 if controller.settings.timerEnabled {
                     HStack {
-                        Stepper(value: $controller.settings.timerHours, in: 0...99) {
-                            Text(String(format: "%02d h", controller.settings.timerHours))
-                        }
-                        Stepper(value: $controller.settings.timerMinutes, in: 0...55, step: 5) {
-                            Text(String(format: "%02d min", controller.settings.timerMinutes))
-                        }
+                        timerField(value: $controller.settings.timerHours, range: 0...99, unit: "h")
+                        timerField(value: $controller.settings.timerMinutes, range: 0...59, unit: "min")
                     }
                     Text("Sends one SIGINT when the time is up; the engine finishes the step, writes a checkpoint and exits. The timer starts when the run starts.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -222,6 +235,20 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .disabled(busy)
+    }
+
+    /// A typeable number with a stepper; typed values are clamped to `range`.
+    private func timerField(value: Binding<Int>, range: ClosedRange<Int>, unit: String) -> some View {
+        let clamped = Binding<Int>(
+            get: { value.wrappedValue },
+            set: { value.wrappedValue = min(max($0, range.lowerBound), range.upperBound) }
+        )
+        return HStack(spacing: 4) {
+            TextField(unit, value: clamped, format: .number)
+                .frame(width: 44)
+                .multilineTextAlignment(.trailing)
+            Stepper(unit, value: clamped, in: range)
+        }
     }
 
     // MARK: Right column

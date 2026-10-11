@@ -23,4 +23,5 @@ runs/
 
 # Swift GUI (gui/)
 gui/.build/
+gui/.swiftpm/
 *.xcodeproj/xcuserdata

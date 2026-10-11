@@ -7,7 +7,8 @@ dependencies and no Python code of its own.
 ## Requirements
 
 - macOS 14 or later
-- Xcode command line tools (`xcode-select --install`) or Xcode 15+ (Swift 5.9)
+- A Swift 6 toolchain: Xcode 16 or later, or the command line tools that ship with it
+  (`xcode-select --install`). The package builds in Swift 6 language mode (strict concurrency).
 - The engine environment in the repository: `uv sync --extra viewer --extra video`
   (the app can run this for you with **Set up environment** if `.venv/bin/alife` is missing; it looks for `uv`
   in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin` and `PATH`)
@@ -24,11 +25,37 @@ Or open it in Xcode: `cd gui && open Package.swift`, select the `AlifeControl` s
 
 On first launch pick the repository folder (default `~/artificial-life`); the choice is remembered.
 
+## Install as an app
+
+```bash
+gui/scripts/make-app.sh --install     # builds, bundles, signs and copies to /Applications/AlifeControl.app
+gui/scripts/make-app.sh               # bundle only: gui/.build/AlifeControl.app
+gui/scripts/make-app.sh --help
+```
+
+The script builds the release binary, generates the icon (`scripts/make-icon.swift`), writes `Info.plist`
+(bundle ID `io.github.magicbundle.alifecontrol`, overridable with `BUNDLE_ID`; version from `VERSION`, build
+number from the commit count) and signs the bundle with the hardened runtime. The signing identity is, in order:
+`--sign "<identity>"`, the first "Developer ID Application" identity, the first "Apple Development" identity,
+then ad-hoc. `--install-dir DIR` installs somewhere else (for example `~/Applications`). The script never uses
+sudo and refuses to install over a running copy, so quit the app first (a run may be active).
+
+Ad-hoc and Apple Development signing are for this Mac only. Sharing the app with others needs a Developer ID
+certificate plus notarization (`notarytool` and `stapler`), which is not done yet. Re-run the script after any
+GUI change to refresh the installed copy.
+
+The installed app is only the front end: it still uses the repository's `.venv` at the configured repo path
+(default `~/artificial-life`). The setting is stored under the bundle's own preferences domain, so it is
+separate from the one used by `swift run`.
+
 ## Using it
 
 - **Mode**: *New run* (`alife run --preset ... --out runs/NAME`), *Resume* (`alife resume runs/NAME`, optionally
   `--steps N` more steps) or *Fork* (`alife run --init-from runs/SOURCE --out runs/NAME`, starting from the source
-  run's latest checkpoint). The exact command line is shown before you start.
+  run's latest checkpoint; *Steps* is the number of steps to run from that checkpoint). In Fork mode the levers are
+  pre-filled from the source run's `config.json` and only the levers you change are passed, so a lever can also be
+  set back to its engine default. If the source config cannot be read, the levers show the engine defaults and a
+  warning appears. The exact command line is shown before you start.
 - **Stop** sends a single SIGINT: the engine finishes the step, writes a checkpoint and exits (exit code 130).
   **Force stop** (shown after Stop) sends SIGTERM and ends it immediately, without a checkpoint.
 - **Timer**: "Stop after HH:MM" sends the same single SIGINT when the time is up; the remaining time is shown.
@@ -42,8 +69,9 @@ On first launch pick the repository folder (default `~/artificial-life`); the ch
 
 ## The "keep inventing" levers
 
-Each lever is passed as `--set section.key=value` only when it differs from the engine default. Resume cannot
-change the dynamics (it accepts only `run.*` settings); use a new run or a fork to apply them.
+Each lever is passed as `--set section.key=value` only when it differs from the baseline: the engine default for a
+new run, the source run's value for a fork. Resume cannot change the dynamics (it accepts only `run.*` settings);
+use a new run or a fork to apply them.
 
 | lever | key | default | effect |
 |---|---|---|---|
@@ -63,7 +91,9 @@ The engine performs the final validation; any rejection (exit code 2) appears in
 ## Files
 
 - `AlifeControlApp.swift`: app entry point and app delegate
+- `scripts/make-app.sh`, `scripts/make-icon.swift`: app bundle, signing, install and the generated icon
 - `ContentView.swift`: the UI
-- `RunController.swift`: subprocess management, log streaming, timer, keep-awake
+- `RunController.swift`: subprocess management (main-actor isolated; pipe output arrives through ordered
+  AsyncStreams), log streaming, timer, keep-awake
 - `Levers.swift`: run settings, levers, validation and command-line construction
 - `MetricsTailer.swift`: reads the last row of `metrics.jsonl`

@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Makes the unbundled executable (`swift run`) a regular foreground app and stops a running
-/// simulation cleanly when the app quits.
+/// Makes the app a regular foreground app (needed when run unbundled with `swift run`; harmless in the .app
+/// bundle) and stops a running simulation cleanly when the app quits.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
