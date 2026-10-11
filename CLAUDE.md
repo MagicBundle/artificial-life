@@ -4,7 +4,7 @@ Start with `docs/HANDOVER.md` (current state, results, next steps). `docs/DESIGN
 `docs/DIRECTOR.md` is the design for the ecosystem director; build steps 1 (the engine's live environment
 state, `State.env`), 2 (the host-side core: vital signs, archive, rule tier, `director.jsonl`, replay, CLI;
 `DESIGN.md` §26) and 3 (the optional LLM tier on a local LM Studio server, `DESIGN.md` §26.10) are implemented, the
-GUI panel and the evaluation are not yet.
+GUI panel and the evaluation are not yet. `docs/RESEARCH.md` assesses research directions against prior work.
 
 ## Conventions
 
