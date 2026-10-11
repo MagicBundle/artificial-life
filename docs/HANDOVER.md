@@ -41,20 +41,22 @@ of the Python process). A second SIGINT is a hard exit. Do not use `--quiet` if 
 
 ## Verified state
 
-- `main` holds the v0 engine (PR #1, squash-merged). This branch adds the GUI, periodic immigration and seasons
-  (a second PR).
+- `main` holds the v0 engine (PR #1) plus the GUI, periodic immigration and seasons (PR #2), both
+  squash-merged. Branch `gui-fork-prefill-swift6` adds the GUI follow-ups below.
 - Linux CPU (container and CI): 530 fast tests pass, ruff clean. The golden digest is pinned for MLX 0.32.3 on
   Linux-x86_64-cpu, and the test skips elsewhere.
 - Mac (M5 Pro, Metal), v0 code: 505 fast and 18 slow tests pass. `bench --preset 64k`: 61.6 steps/s
   (16 ms/step), 1.1 GB peak, weights updated in place, deterministic. The neighbour search is the biggest stage
   (33%).
+- Mac, current `main` (immigration and seasons included): 529 fast tests pass, 1 skipped (the Linux-only golden
+  digest), ruff clean, about 18 s.
 - Metal quirk (DESIGN F20): float32 GPU matmul is reduced precision (about 8e-4 relative). Anything that must
   be accurate avoids GPU matmul.
-- **Not yet verified on the Mac:** the GUI has never been compiled. Swift is not available in the cloud
-  container, so the first `cd gui && swift run` is its compile test. The new engine features (immigration and
-  seasons) have passed on Linux CPU only; run the fast suite on the Mac after pulling.
+- GUI on the Mac: it compiled first time (Swift 6.4 toolchain, macOS 27 SDK). The levers and CLI flags were
+  checked against `config.py` and `alife --help`. The owner clicked through the tiny-preset checklist below
+  before and after the Swift 6 migration, and every step passed.
 
-## New in this branch
+## New in PR #2
 
 - **Periodic immigration:** `population.immigration_every` (N steps, 0 = off) and
   `population.immigration_count` (founders per event). These combine with the older floor rule
@@ -89,17 +91,36 @@ verified findings for the whole run.
   undercounts delayed combat deaths, which are recorded as starvation. Kin biases are partly a proximity
   artefact.
 
+## GUI follow-ups (branch `gui-fork-prefill-swift6`)
+
+- **Fork pre-fill:** in Fork mode the levers are loaded from `runs/SOURCE/config.json`, where a missing
+  post-v0.1 key means the engine default. Only levers that differ from the source are passed as `--set`, so a
+  fork can also set a lever back to its default. An unreadable config falls back to the engine defaults and
+  shows an inline warning. Leaving Fork mode resets the levers. The Steps field reads "Additional steps" for
+  fork and resume.
+- **Timer:** hours and minutes can be typed, and minutes step by 1 instead of 5.
+- **Swift 6:** the package builds in Swift 6 language mode, and `RunController` is `@MainActor`. Pipe output
+  reaches the main actor through one ordered AsyncStream per stream. The exit status is reported only after
+  the process has exited and both pipes have reached EOF. The 1 s ticker is a Task loop that skips missed
+  ticks after sleep. No `DispatchQueue.main` hops remain.
+- **Click-through checklist** (tiny preset), to repeat after any GUI change:
+  1. startup;
+  2. a new run with the fast overlay and a `--set` lever, then Stop once: exit 130 and a checkpoint;
+  3. resume for 2000 steps: exit 0;
+  4. fork pre-fill from a run with seasons on, including setting a lever back to its default;
+  5. the stop-after timer at 1 minute;
+  6. Inspect, the viewer and Reveal in Finder;
+  7. ⌘Q during a run: the engine still writes its checkpoint.
+
 ## Suggested next steps
 
-1. On the Mac: `git pull`, run the fast suite, and build the GUI with `cd gui && swift run`. Fix any Swift
-   compile errors. The APIs the GUI author was unsure about are listed in the PR description.
-2. Experiments with the new levers. Fork `runs/64k_s0` from its latest checkpoint, for example with
+1. Experiments with the new levers. Fork `runs/64k_s0` from its latest checkpoint, for example with
    `immigration_every=5000 immigration_count=64`, then `season_period=20000 season_amplitude=0.6
    season_mode=per_patch`, then a higher `mutation.rate_min`. Compare against an unforked control and a second
    seed (`--seed 1`).
-3. Optional engine work, deferred in DESIGN §23.2:
+2. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
    - `inspect` showing the resumed total instead of the original `steps`.
-4. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
+3. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
    it in the DESIGN Review log.
