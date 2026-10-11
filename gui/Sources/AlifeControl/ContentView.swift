@@ -224,12 +224,8 @@ struct ContentView: View {
                 Toggle("Stop after (HH:MM)", isOn: $controller.settings.timerEnabled)
                 if controller.settings.timerEnabled {
                     HStack {
-                        Stepper(value: $controller.settings.timerHours, in: 0...99) {
-                            Text(String(format: "%02d h", controller.settings.timerHours))
-                        }
-                        Stepper(value: $controller.settings.timerMinutes, in: 0...55, step: 5) {
-                            Text(String(format: "%02d min", controller.settings.timerMinutes))
-                        }
+                        timerField(value: $controller.settings.timerHours, range: 0...99, unit: "h")
+                        timerField(value: $controller.settings.timerMinutes, range: 0...59, unit: "min")
                     }
                     Text("Sends one SIGINT when the time is up; the engine finishes the step, writes a checkpoint and exits. The timer starts when the run starts.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -239,6 +235,20 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .disabled(busy)
+    }
+
+    /// A typeable number with a stepper; typed values are clamped to `range`.
+    private func timerField(value: Binding<Int>, range: ClosedRange<Int>, unit: String) -> some View {
+        let clamped = Binding<Int>(
+            get: { value.wrappedValue },
+            set: { value.wrappedValue = min(max($0, range.lowerBound), range.upperBound) }
+        )
+        return HStack(spacing: 4) {
+            TextField(unit, value: clamped, format: .number)
+                .frame(width: 44)
+                .multilineTextAlignment(.trailing)
+            Stepper(unit, value: clamped, in: range)
+        }
     }
 
     // MARK: Right column
