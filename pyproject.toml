@@ -35,7 +35,11 @@ environments = ["sys_platform == 'darwin'", "sys_platform == 'linux'"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-markers = ["slow: long-running (nightly)", "golden: MLX-version-pinned trajectory digest"]
+markers = [
+  "slow: long-running (nightly)",
+  "golden: MLX-version-pinned trajectory digest",
+  "llm: needs a real LM Studio server (runs only with ALIFE_LLM_URL set)",
+]
 
 [tool.ruff]
 line-length = 110

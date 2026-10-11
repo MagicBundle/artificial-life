@@ -197,7 +197,7 @@ def test_a_valid_log_passes(dcfg: Config) -> None:
         ([entry(200), entry(100)], "comes after"),
         ([{"kind": "footer"}], "unknown kind"),
         (["not a record"], "not an object"),
-        ([entry(100, source="llm")], "unknown source"),
+        ([entry(100, source="oracle")], "unknown source"),
         (
             [entry(100, "habitat_loss", {"patch": 1, "gain": 1.0}, source="revert", prev={}, duration=None)],
             "no active effect",

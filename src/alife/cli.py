@@ -29,6 +29,7 @@ from alife.config import (
     DIRECTOR_MODES,
     DIRECTOR_POLICY_KEYS,
     OVERLAYS,
+    PERSONAS,
     PRESETS,
     Config,
     ConfigError,
@@ -70,9 +71,13 @@ RESUME_KEYS: frozenset[str] = frozenset(
         "components_iters",
         "diversity_sample",
         "director",
+        "llm_url",
+        "llm_model",
     }
 )
 RESUME_DIRECTOR_KEYS: frozenset[str] = frozenset(DIRECTOR_POLICY_KEYS)
+
+LLM_DEFAULT_EVERY = 25_000  # steps between LLM calls with a bare --llm
 
 _RUN_STEP_RE = re.compile(r"^(?P<run>.+):(?P<step>\d+)$")
 
@@ -218,7 +223,30 @@ def _run_overrides(a: argparse.Namespace) -> list[str]:
         out.append(f"run.director={a.director}")
         if a.director != "off":
             out.append("director.enabled=true")
+    return out + _llm_overrides(a)
+
+
+def _llm_overrides(a: argparse.Namespace) -> list[str]:
+    """The LLM and persona shortcut flags as ``--set`` items (run, fork and resume)."""
+    out: list[str] = []
+    if a.llm:
+        out.append(f"director.llm_every={LLM_DEFAULT_EVERY}")
+    for flag, key in (
+        ("llm_every", "director.llm_every"),
+        ("llm_url", "run.llm_url"),
+        ("llm_model", "run.llm_model"),
+        ("persona", "director.persona"),
+        ("goal", "director.goal"),
+    ):
+        if getattr(a, flag) is not None:
+            out.append(f"{key}={getattr(a, flag)}")
     return out
+
+
+def _check_llm_flags(a: argparse.Namespace, cfg: Config) -> None:
+    """The LLM tier only exists in live mode: asking for it in any other mode is a mistake, not a no-op."""
+    if (a.llm or (a.llm_every or 0) > 0) and cfg.run.director != "live":
+        raise ConfigError("--llm / --llm-every need --director live (a replay never calls the model)")
 
 
 def _summary(cfg: Config) -> dict[str, Any]:
@@ -248,6 +276,8 @@ def _announce(rd: RunDir, cfg: Config, step: int, steps: int, quiet: bool) -> No
     if not quiet:
         s = _summary(cfg)
         mode = f" | director {cfg.run.director}" if cfg.run.director != "off" else ""
+        if cfg.run.director == "live" and cfg.director.llm_every:
+            mode += f" + llm every {cfg.director.llm_every} ({cfg.run.llm_model})"
         print(
             f"run {rd.path}: N={s['n_max']} n_init={s['n_init']} L={s['world_size']:g} "
             f"weights={s['weight_dtype']} seed={s['seed']} | steps {step} → {step + steps}{mode}",
@@ -272,6 +302,7 @@ def _cmd_run(a: argparse.Namespace) -> int:
     if a.init_from is not None:
         return _fork(a, overrides)
     cfg = load_config(a.config, preset=a.preset, overlays=a.overlay, overrides=overrides)
+    _check_llm_flags(a, cfg)
     if cfg.run.director == "replay" or a.replay_log is not None:
         raise ConfigError(
             "a replay continues an existing state: use `run --init-from SRC --director replay --replay-log "
@@ -311,6 +342,7 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
     # A fork runs no director unless it is asked to (--director), whatever mode the source ran in.
     src_cfg = dataclasses.replace(src_cfg, run=dataclasses.replace(src_cfg.run, director="off"))
     cfg = _layer(src_cfg, overlays=a.overlay, path=a.config, overrides=overrides)
+    _check_llm_flags(a, cfg)
     replay = cfg.run.director == "replay"
     if replay != (a.replay_log is not None):
         raise ConfigError("--director replay and --replay-log LOG go together")
@@ -369,6 +401,7 @@ def _cmd_resume(a: argparse.Namespace) -> int:
     items = list(a.set)
     if a.director is not None:  # a shortcut for --set run.director=MODE, translated before the key check
         items.append(f"run.director={a.director}")
+    items += _llm_overrides(a)
     bad = [item for item in items if not _resume_allowed(item)]
     if bad:
         raise ConfigError(
@@ -383,6 +416,7 @@ def _cmd_resume(a: argparse.Namespace) -> int:
             "actions; fork it with `alife run --init-from RUN --director live` instead"
         )
     cfg = apply_overrides(base, items)
+    _check_llm_flags(a, cfg)
     path = _select_checkpoint(rd, a.checkpoint)
     state = load_checkpoint(path, cfg)
     step = int(to_numpy(state.step))
@@ -644,6 +678,25 @@ def _config_args(p: argparse.ArgumentParser, *, overlays: bool = True) -> None:
     p.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE")
 
 
+def _llm_args(p: argparse.ArgumentParser) -> None:
+    """The LLM tier and persona shortcuts (DIRECTOR.md §8); each is a shortcut for a ``--set`` item."""
+    g = p.add_mutually_exclusive_group()
+    g.add_argument(
+        "--llm",
+        action="store_true",
+        help=f"enable the LLM tier: director.llm_every={LLM_DEFAULT_EVERY} (needs --director live)",
+    )
+    g.add_argument(
+        "--llm-every", type=_non_negative, default=None, metavar="N", help="director.llm_every (0 = off)"
+    )
+    p.add_argument(
+        "--llm-url", default=None, metavar="URL", help="run.llm_url (an OpenAI-compatible endpoint)"
+    )
+    p.add_argument("--llm-model", default=None, metavar="NAME", help="run.llm_model")
+    p.add_argument("--persona", choices=PERSONAS, default=None, help="director.persona")
+    p.add_argument("--goal", default=None, metavar="TEXT", help="director.goal (the Architect's goal)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="alife", description="Neural artificial life on Apple MLX.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -666,6 +719,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="director mode: live decides and logs; replay applies --replay-log (with --init-from)",
     )
+    _llm_args(p)
     p.add_argument(
         "--replay-log", default=None, metavar="PATH", help="director.jsonl to replay (with --init-from)"
     )
@@ -685,6 +739,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="shortcut for --set run.director=MODE (live or replay need a run started with director.enabled)",
     )
+    _llm_args(p)
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(func=_cmd_resume)
 

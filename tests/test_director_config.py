@@ -59,6 +59,12 @@ def test_existing_hashes_do_not_move() -> None:
         "director.goal=bodies of at least 100",
         "director.rule_every=2000",
         "director.budget_per_100k=3",
+        "director.llm_every=2000",
+        "director.llm_temperature=0.9",
+        "director.llm_timeout_s=5",
+        "director.llm_max_tokens=800",
+        "run.llm_url=http://127.0.0.1:9/v1/chat/completions",
+        "run.llm_model=some-other-model",
         "run.director=live",
     ],
 )
@@ -79,6 +85,8 @@ def test_only_enabled_is_hashed() -> None:
     # a policy-only change never reaches the hash, even from non-default values
     odd = apply_overrides(tiny, ["director.persona=trickster", "director.rule_every=500", "director.goal=x"])
     assert config_hash(odd) == TINY_HASH_V01
+    llm = apply_overrides(tiny, ["director.rule_every=500", "director.llm_every=1000"])
+    assert config_hash(llm) == TINY_HASH_V01 and config_hash(apply_overrides(tiny, [ENABLED])) == TINY_ENABLED
 
 
 def test_old_config_files_load_with_the_new_defaults() -> None:
@@ -92,6 +100,14 @@ def test_old_config_files_load_with_the_new_defaults() -> None:
     assert back == cfg and config_hash(back) == TINY_HASH_V01
     assert (back.director.persona, back.director.goal, back.director.rule_every) == ("gardener", "", 1000)
     assert back.director.budget_per_100k == 0 and back.run.director == "off"
+    assert back.director.llm_every == 0 and back.director.llm_max_tokens == 400  # the LLM tier is off
+    assert (back.run.llm_url, back.run.llm_model) == (
+        "http://localhost:1234/v1/chat/completions",
+        "gemma-4-26b-a4b-it-mlx@8bit",
+    )
+    assert (back.director.llm_temperature, back.director.llm_timeout_s) == (0.4, 60.0)
+    del old["run"]["llm_url"], old["run"]["llm_model"]  # a config.json from before the LLM keys existed
+    assert config_from_dict(old) == cfg
 
 
 def test_validation_of_the_director_keys() -> None:
@@ -105,6 +121,30 @@ def test_validation_of_the_director_keys() -> None:
     ):
         with pytest.raises(ConfigError, match=msg):
             apply_overrides(tiny, [bad])
+
+
+def test_validation_of_the_llm_keys() -> None:
+    tiny = apply_overrides(load_config(preset="tiny"), [ENABLED, "director.rule_every=100"])
+    assert apply_overrides(tiny, ["director.llm_every=0"]).director.llm_every == 0
+    assert apply_overrides(tiny, ["director.llm_every=300"]).director.llm_every == 300
+    for bad, msg in (
+        ("director.llm_every=250", "llm_every"),  # not a multiple of rule_every
+        ("director.llm_every=-100", "llm_every"),
+        ("director.llm_temperature=-0.1", "llm_temperature"),
+        ("director.llm_temperature=3", "llm_temperature"),
+        ("director.llm_timeout_s=0", "llm_timeout_s"),
+        ("director.llm_timeout_s=nan", "llm_timeout_s"),
+        ("director.llm_max_tokens=0", "llm_max_tokens"),
+        ("run.llm_model= ", "llm_model"),
+    ):
+        with pytest.raises(ConfigError, match=msg):
+            apply_overrides(tiny, [bad])
+    # the endpoint is only checked when the tier is on, and then it must be http(s) with a host
+    assert apply_overrides(tiny, ["run.llm_url=ftp://x"]).run.llm_url == "ftp://x"
+    for url in ("ftp://localhost/x", "file:///etc/passwd", "localhost:1234/v1", "http://", "http://[bad"):
+        with pytest.raises(ConfigError, match="llm_url"):
+            apply_overrides(tiny, ["director.llm_every=100", f"run.llm_url={url}"])
+    assert apply_overrides(tiny, ["director.llm_every=100", "run.llm_url=https://h:1/v1/c"]).run.llm_url
 
 
 def test_rule_every_must_be_a_multiple_of_both_metrics_cadences_when_the_director_runs() -> None:
@@ -201,3 +241,62 @@ def test_resume_of_a_run_without_an_enabled_director_cannot_start_one(
         assert "--init-from" in capsys.readouterr().err  # the message points to a fork
     assert cli.main(["resume", str(rd.path), "--director", "off", "--steps", "0", "--quiet"]) == 0
     assert [s for s, _ in rd.checkpoints()] == [0, 20]
+
+
+# --- the LLM and persona flags ---
+
+
+def test_the_llm_flags_are_shortcuts_for_config_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Config] = []
+
+    def fake_launch(rd: RunDir, cfg: Config, box: list, steps: int, quiet: bool) -> int:
+        seen.append(cfg)
+        return 0
+
+    monkeypatch.setattr(cli, "_launch", fake_launch)
+    base = ["run", "--preset", "tiny", "--quiet", "--set", "director.rule_every=1000"]
+    argv = [*base, "--director", "live", "--llm", "--persona", "architect", "--goal", "bodies = 100, now"]
+    argv += ["--llm-url", "http://127.0.0.1:5/v1/chat/completions", "--llm-model", "m@8bit"]
+    assert cli.main([*argv, "--out", str(tmp_path / "a")]) == 0
+    cfg = seen[-1]
+    assert cfg.run.director == "live" and cfg.director.enabled and cfg.director.llm_every == 25_000
+    assert (cfg.director.persona, cfg.director.goal) == ("architect", "bodies = 100, now")
+    assert (cfg.run.llm_url, cfg.run.llm_model) == ("http://127.0.0.1:5/v1/chat/completions", "m@8bit")
+    assert cli.main([*base, "--director", "live", "--llm-every", "3000", "--out", str(tmp_path / "b")]) == 0
+    assert seen[-1].director.llm_every == 3000
+    assert cli.main([*base, "--director", "live", "--out", str(tmp_path / "c")]) == 0
+    assert seen[-1].director.llm_every == 0  # off unless asked for
+
+
+def test_the_llm_flags_need_a_live_director(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    for extra in ([], ["--director", "off"], ["--director", "replay"]):
+        for flag in (["--llm"], ["--llm-every", "1000"]):
+            argv = ["run", "--preset", "tiny", "--quiet", *flag, *extra, "--out", str(tmp_path / "x")]
+            assert cli.main(argv) == 2
+            assert "--director live" in capsys.readouterr().err
+    assert not (tmp_path / "x").exists()  # nothing was created
+    assert cli.main(["run", "--llm", "--llm-every", "5"]) == 2  # argparse: they are alternatives
+
+
+def test_resume_takes_the_llm_flags(
+    run_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    copy = tmp_path / "run"
+    shutil.copytree(run_dir, copy)
+    # the run's mode is off: --llm alone is refused and changes nothing
+    before = (copy / "config.json").read_bytes()
+    assert cli.main(["resume", str(copy), "--steps", "0", "--quiet", "--llm"]) == 2
+    assert (copy / "config.json").read_bytes() == before
+    argv = ["resume", str(copy), "--steps", "0", "--quiet", "--director", "live", "--llm-every", "3000"]
+    argv += ["--llm-url", "http://127.0.0.1:9/x", "--llm-model", "other", "--persona", "trickster"]
+    assert cli.main(argv) == 0
+    cfg = RunDir.open(copy).config()
+    assert (cfg.director.llm_every, cfg.run.llm_url, cfg.run.llm_model) == (
+        3000,
+        "http://127.0.0.1:9/x",
+        "other",
+    )
+    assert cfg.director.persona == "trickster"
+    # a later resume inherits the mode, so --llm-every alone is enough; llm_every 0 switches the tier off
+    assert cli.main(["resume", str(copy), "--steps", "0", "--quiet", "--llm-every", "0"]) == 0
+    assert RunDir.open(copy).config().director.llm_every == 0

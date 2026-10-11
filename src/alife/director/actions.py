@@ -32,7 +32,7 @@ from alife.invariants import (
 )
 from alife.state import State, to_numpy
 
-SOURCES: Final = ("rule", "revert")
+SOURCES: Final = ("rule", "llm", "revert")
 IMM_PENDING_CAP: Final = 1024  # the most immigrants the director may leave pending in ``env_imm_request``
 MOVE_MAX_FRAC: Final = 0.25  # a patch moves by at most L/4
 CATASTROPHE_RADIUS: Final = (20.0, 200.0)  # the upper end is also capped by L/2
@@ -149,7 +149,7 @@ def _device(value: float, bounds: tuple[float, float]) -> float:
     return _clip(value, *bounds)
 
 
-def _radius_bounds(cfg: Config) -> tuple[float, float]:
+def radius_bounds(cfg: Config) -> tuple[float, float]:
     hi = min(CATASTROPHE_RADIUS[1], cfg.world.size / 2)
     return min(CATASTROPHE_RADIUS[0], hi), hi
 
@@ -224,7 +224,7 @@ def _clamp_immigration_pulse(raw: Mapping[str, Any], view: EnvView, cfg: Config)
 
 def _clamp_catastrophe(raw: Mapping[str, Any], view: EnvView, cfg: Config) -> Clamped:
     centre = _wrap([_number(raw, "x"), _number(raw, "y")], cfg.world.size)
-    radius = _clip(_number(raw, "radius"), *_radius_bounds(cfg))
+    radius = _clip(_number(raw, "radius"), *radius_bounds(cfg))
     kill_p = _clip(_number(raw, "kill_p"), *MENU["catastrophe"].bounds["kill_p"])
     return Clamped({"center": centre, "radius": radius, "kill_p": kill_p}, {}, None)
 
@@ -339,7 +339,7 @@ def _check_forward(where: str, action: str, params: Mapping[str, Any], prev: Any
         for v in c:
             if _in_range(where, "center", v, 0, cfg.world.size) >= cfg.world.size:
                 raise ActionError(f"{where}: center {c!r} is not strictly inside the world")
-        _in_range(where, "radius", params["radius"], *_radius_bounds(cfg))
+        _in_range(where, "radius", params["radius"], *radius_bounds(cfg))
         _in_range(where, "kill_p", params["kill_p"], *bounds["kill_p"])
     elif action == "drift_change":
         _check_keys(where, params, {"mult"})

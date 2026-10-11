@@ -3,8 +3,10 @@
 Status: proposal (2026-10-11). Build step 1 (§3, the engine's live environment state) is implemented and is now
 normative in `docs/DESIGN.md` (§2.2, §12.7, §12.9, §13.1, §14, §17–§19; Review-log row I28). **Build step 2 (the
 director core: vital signs, archive, rule tier, decision log, replay, CLI) is implemented** and is normative in
-`docs/DESIGN.md` §26 (Review-log row I29); §12 below records where it refines or contradicts this proposal. Steps
-3–5 (the LLM tier, the GUI panel, the evaluation) are not implemented yet. This document extends `docs/DESIGN.md`.
+`docs/DESIGN.md` §26 (Review-log row I29); §12 below records where it refines or contradicts this proposal. **Build
+step 3 (the LLM tier) is implemented** and is normative in `docs/DESIGN.md` §26.10 (Review-log row I30); §13 records
+where it refines §2.1, §7 and §8. Steps 4–5 (the GUI panel, the evaluation) are not implemented yet. This document
+extends `docs/DESIGN.md`.
 As each step lands, its normative parts (state fields, config keys, ledger terms, tests) move into DESIGN.md with
 Review-log rows, per `CLAUDE.md`.
 
@@ -37,9 +39,9 @@ Constraints:
 
 - **Rule tier** (Python, no LLM). It computes vital signs from the metrics row and applies safety and pacing
   rules. It is deterministic in (state history, config).
-- **LLM tier.** An async request to LM Studio's OpenAI-compatible server. The reply is constrained to the
-  intervention JSON schema, then validated, clamped and budgeted like rule actions. The result is applied at the
-  next `K_rule` boundary.
+- **LLM tier.** A synchronous request to LM Studio's OpenAI-compatible server, made at the `K_rule` boundary that is
+  a multiple of `K_llm` (decision L1, §13). The reply is constrained to the intervention JSON schema, then
+  validated, clamped and budgeted like rule actions, and applied at that same boundary.
 - **Decision log** (`runs/NAME/director.jsonl`). One line per applied intervention: `{step_applied, source:
   rule|llm|revert, persona, action, params, prev, duration, reason, vitals_step, vitals}`, after a header line
   (§12). It is the single source of truth for replay.
@@ -55,8 +57,13 @@ Constraints:
   bitwise-identical trajectory on the same backend.
 - **Live.** `--director live` calls the rule tier and, if enabled, the LLM, and appends to the log.
 - **Off.** `--director off` is the default and gives the current behaviour exactly.
-- The LLM reply that arrives during steps `[t, t + K_rule)` is applied at the next boundary and logged with
-  that step. No wall-clock time enters the simulation.
+- **The LLM call is synchronous (L1).** The first proposal had the call run asynchronously, with the reply applied
+  at the next `K_rule` boundary. Built instead: at an LLM boundary the runner waits for the reply inside the
+  director hook, so the reply is applied and logged at that boundary. Reason: a landing step that depends on
+  wall-clock latency would make the log (and so any replay-by-rerun) depend on machine speed, and the cost of
+  waiting is small: a call takes about 2 to 8 seconds against a boundary every 25,000 steps (about 7 minutes at 62
+  steps/s), roughly 0.5% of wall time. A failure or a timeout (`director.llm_timeout_s`, default 60) falls back to
+  the rule tier for that boundary. No wall-clock time enters the simulation.
 - On resume in `live` mode, log entries after the checkpoint step are truncated, like events today.
 
 ## 3. Engine change: live environment state
@@ -206,18 +213,23 @@ w_x·intervention_cost`. The persona sets the `w`.
   The schema allows at most two actions per call, including `"none"`. Every reply is validated against the
   schema, clamped to the bounds, checked against budget and cooldown, then logged. An invalid or late reply
   falls back to the rule tier.
-- **Prompt.** About 2k tokens:
+- **Prompt.** About 2k tokens (built: 1.7k to 2.5k for the `tiny` preset, `prompt.py`):
   - persona paragraph;
-  - menu with bounds, costs and cooldowns remaining;
+  - menu with an effect description per action (bounds alone make a model choose `immigration_pulse` for
+    everything), bounds, costs and cooldowns remaining;
   - current vital signs and their trends over the last 5–10 windows;
   - the last five interventions with their measured effect (vital-sign deltas 50k steps later);
   - budget remaining;
   - the user's goal (Architect).
-- **Cadence.** Every `K_llm` steps (default 25,000, about 7 minutes at 62 steps/s), async. The simulation keeps
-  running and the reply applies at the next boundary.
+- **Cadence.** Every `K_llm` steps (default 25,000, about 7 minutes at 62 steps/s), synchronous (§2.1, L1).
 - **Model.** Any local instruct model with reliable JSON-schema output. On 48 GB, a 7–14B model in LM Studio's
   MLX format fits beside the simulation (about 1.2 GB). Shortlist two or three by validity rate and decision
-  quality (§9). Latency of a few seconds per call is fine.
+  quality (§9). Latency of a few seconds per call is fine. **Chosen (L5): `gemma-4-26b-a4b-it-mlx@8bit`**, the
+  default of `run.llm_model`. A local probe on 2026-10-11 (24 requests, two personas, four synthetic scenarios) gave
+  24/24 valid, sensible replies at about 2.3 s median. The 4-bit QAT build degenerated, and the qwen3.6 reasoning
+  models return an empty `content` unless thinking is disabled in LM Studio, which the client reports as an
+  `empty` failure and answers with the rule tier. Run the model with LM Studio's default settings otherwise; the
+  26B A4B mixture of experts has 4B active parameters, hence the speed.
 - **Containment.** The LLM output is data and only selects menu actions. It never edits files, code or config,
   and it is never `eval`'d. Store the raw prompt and response in `journal.jsonl` for audit.
 
@@ -226,16 +238,17 @@ w_x·intervention_cost`. The persona sets the `w`.
 **CLI**
 - `alife run|resume ... --director off|live|replay`.
 - `--persona gardener|trickster|architect`, `--goal "..."` (Architect).
-- `--llm-url URL`, `--llm-model NAME`, `--llm-every N`, `--no-llm` (rule tier only).
+- `--llm` (every 25,000 steps), `--llm-every N`, `--llm-url URL`, `--llm-model NAME`. Built as in §13: there is no
+  `--no-llm`, the tier is off unless asked for (`--llm-every 0` switches it off on a resume).
 
 **Config** (new keys, defaults off, added to `config.POST_V01_KEYS`):
 - `director.enabled`, `director.rule_every`, `director.llm_every` (step 3);
 - `director.persona`, `director.budget_per_100k`, `director.goal`;
 - `run.director` = `off|live|replay`.
 
-In step 2 only `director.enabled` is hashed: the policy keys (`persona`, `goal`, `rule_every`, `budget_per_100k`) are
-omitted from `config_hash` at every value and may change on resume. The persona and goal are set with `--set` for
-now; the `--persona` / `--goal` flags come with the LLM tier.
+Only `director.enabled` is hashed: the policy keys (`persona`, `goal`, `rule_every`, `budget_per_100k`, and from step 3
+`llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens`) are omitted from `config_hash` at every value and may
+change on resume. `--persona` / `--goal` and the LLM flags came with step 3 (§13).
 
 Endpoint and model are run-level keys (`run.*`), so they can change on resume.
 
@@ -282,8 +295,8 @@ those metrics, or matches B with better journal legibility (a human rates 10 sam
    - vital signs, archive and rule tier, with budgets, cooldowns and safety rules;
    - `director.jsonl`, and replay with a bitwise replay test;
    - CLI flags.
-3. **LLM tier:** LM Studio client, schema, personas, prompt builder, fallback and journal. Add a mock-server
-   test (`http.server` in tests) for valid, invalid and slow replies.
+3. **LLM tier (done, §13):** LM Studio client, schema, personas, prompt builder, fallback and journal, with a
+   mock-server test (`http.server` in tests) for valid, invalid and slow replies.
 4. **GUI:** the Director panel.
 5. **Evaluation:** arms A–D and dashboard markers.
 
@@ -333,3 +346,46 @@ Decisions A1–A20 of the step-2 spec; `docs/DESIGN.md` §26 is normative.
   boundary from the live environment.
 - **Fork (A19).** A fork resets `env_*` to `default_env(new cfg)` and starts with the director off.
 - **Viewer (A20).** `view` and `render` re-simulate without the director; replay in the viewer is not implemented.
+
+## 13. Build step 3 as built: where it refines this proposal
+
+Decisions L1–L11 of the step-3 spec; `docs/DESIGN.md` §26.10 is normative.
+
+- **Synchronous (L1).** The call blocks inside the existing hook (after the row and the violation check, before the
+  checkpoint), at `t % director.llm_every == 0`. No thread, no pending-request state. Timeout `director.llm_timeout_s`
+  (60). A timeout, a connection or HTTP error, unparseable JSON, a schema violation or a reply of which every
+  proposal was refused falls back to the rule tier for that boundary (§2.1 has the reason).
+- **Roles (L2).** The rule tier keeps the safety moves at every boundary (reverts, extinction rescue, runaway damper,
+  the hard caps) and they take precedence. The discretionary moves (stagnation response, monoculture breaker, the
+  persona-driven moves, the Trickster's boredom) come only from the model at an LLM boundary; the rule tier makes them
+  only as the fallback of a failed call there, and none between LLM boundaries. The order at a boundary is: reverts,
+  safety rules, then the model or the fallback; the prompt shows what the first two did. With the tier off the
+  behaviour and the log are exactly step 2's.
+- **Off by default (L3).** `director.llm_every = 0`; `--llm` sets 25,000; `validate` demands 0 or a multiple of
+  `rule_every`. With the tier off, or in replay, nothing touches the network.
+- **Config and flags (L4).** Policy keys `director.llm_every|llm_temperature|llm_timeout_s|llm_max_tokens` (unhashed,
+  resumable) and run keys `run.llm_url|llm_model` (resumable); flags `--llm`, `--llm-every`, `--llm-url`,
+  `--llm-model`, `--persona`, `--goal` on `run`, fork and `resume`. A bare `--llm` needs `--director live` (exit 2
+  otherwise).
+- **Model (L5).** `gemma-4-26b-a4b-it-mlx@8bit` (§7).
+- **Request (L6).** The schema is generated from `actions.MENU`; every number has `minimum`/`maximum` and every string
+  `maxLength` (240 for `expected_effect`, 600 for `journal`), which probes showed are needed to stop runaway integers
+  and looping strings. `fertility_shift` is offered in its gain form (`patch`, `gain`) only; the patch move stays a
+  rule-tier action, so that every menu action is one schema variant. Catastrophes are given as absolute `x`, `y`.
+- **Prompt (L7).** Persona; the Architect's `director.goal` as delimited data; the menu with effect descriptions,
+  bounds, cost, cooldown and cooldown remaining; active effects; vital signs and their trends over the last 8 rule
+  windows; the safety actions and reverts of this boundary; the last five interventions with their measured effect;
+  the budget left. No text the model wrote is ever put back into a prompt.
+- **Validation (L8).** Structure and types are the schema's (a violation is an `invalid` reply and a fallback);
+  numeric ranges are clamped by the step-2 clamp and each change is journalled; what the clamp refuses (a patch that
+  does not exist) and what the rule tier's eligibility refuses (budget, cooldown, one effect per lever, the
+  catastrophe cap) is a rejected proposal with its reason. Repeated actions are dropped; `none` beside another action
+  is ignored; `none` alone is a decision. If nothing survives and the reply was not `none`, the rule tier decides.
+- **Logging (L9).** `source: "llm"` entries with the persona, clamped params, `reason` = `expected_effect` and an
+  `llm_call` id; one `llm_call` record per call in `journal.jsonl` with the raw prompt and response.
+- **Replay (L10).** `llm` entries replay like rule entries; replay never calls the model; `RULES_VERSION` is unchanged.
+- **Containment (L11).** The client POSTs to the configured http(s) URL only: no proxies, no redirects, a size cap and a
+  total deadline.
+- **Not built.** `--no-llm` (use `--llm-every 0`); the move form of `fertility_shift` for the model; a streaming or
+  concurrent call; any use of the model for text that feeds the simulation or a prompt.
+

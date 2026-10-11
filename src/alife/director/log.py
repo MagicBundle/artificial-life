@@ -36,6 +36,8 @@ def make_header(cfg: Config, step: int, budget: int) -> dict[str, Any]:
         "rule_every": d.rule_every,
         "budget_per_100k": budget,
         "seed": cfg.run.seed,
+        # The LLM tier's policy is recorded only while it is on, so a log without it keeps its step-2 header.
+        **({"llm_every": d.llm_every, "llm_model": cfg.run.llm_model} if d.llm_every else {}),
     }
 
 

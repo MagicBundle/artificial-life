@@ -17,6 +17,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
+from urllib.parse import urlsplit
 
 import mlx.core as mx
 
@@ -173,6 +174,11 @@ class DirectorConfig:  # ecosystem director (docs/DIRECTOR.md); added after v0.1
     goal: str = ""  # the Architect's goal text (stored, not interpreted before the LLM tier)
     rule_every: int = 1000  # steps between rule-tier decisions; a multiple of the metrics cadences
     budget_per_100k: int = 0  # intervention cost units per rolling 100k steps; 0 = the persona's default
+    # The LLM tier (build step 3): off at 0. Where it runs and which model answers are run.llm_* keys.
+    llm_every: int = 0  # steps between LLM calls; 0 = off, else a multiple of rule_every
+    llm_temperature: float = 0.4  # sampling temperature of the request
+    llm_timeout_s: float = 60.0  # seconds to wait for a reply before the rule tier takes over
+    llm_max_tokens: int = 400  # reply length limit of the request
 
 
 @dataclass(frozen=True)
@@ -188,6 +194,8 @@ class RunConfig:  # excluded from config_hash; on resume only observer/cadence k
     components_iters: int = 32
     diversity_sample: int = 256
     director: str = "off"  # off | live | replay (needs director.enabled); resume may change it
+    llm_url: str = "http://localhost:1234/v1/chat/completions"  # the LLM tier's endpoint (LM Studio)
+    llm_model: str = "gemma-4-26b-a4b-it-mlx@8bit"  # the model named in each request
 
 
 @dataclass(frozen=True)
@@ -512,6 +520,10 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("director", "goal"),
     ("director", "rule_every"),
     ("director", "budget_per_100k"),
+    ("director", "llm_every"),
+    ("director", "llm_temperature"),
+    ("director", "llm_timeout_s"),
+    ("director", "llm_max_tokens"),
 )
 
 # The POST_V01 keys that are omitted from ``config_hash`` at every value: the director's policy. Only
@@ -521,6 +533,10 @@ UNHASHED_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("director", "goal"),
     ("director", "rule_every"),
     ("director", "budget_per_100k"),
+    ("director", "llm_every"),
+    ("director", "llm_temperature"),
+    ("director", "llm_timeout_s"),
+    ("director", "llm_max_tokens"),
 )
 DIRECTOR_POLICY_KEYS: Final = tuple(key for _, key in UNHASHED_KEYS)
 DIRECTOR_MODES: Final = ("off", "live", "replay")
@@ -564,6 +580,15 @@ def config_hash(cfg: Config) -> str:
 
 
 # --- validation -----------------------------------------------------------------------------------------
+
+
+def is_http_url(url: str) -> bool:
+    """True for an ``http://`` or ``https://`` URL with a host (the only schemes the LLM client contacts)."""
+    try:
+        parts = urlsplit(url)
+        return parts.scheme in ("http", "https") and bool(parts.hostname)
+    except ValueError:
+        return False
 
 
 def frac_q8(frac: float) -> int:
@@ -772,6 +797,23 @@ def validate(cfg: Config) -> None:
     req(di.persona in PERSONAS, f"director.persona {di.persona!r} not in {PERSONAS}")
     req(di.rule_every >= 1, f"director.rule_every must be ≥ 1, got {di.rule_every}")
     req(di.budget_per_100k >= 0, f"director.budget_per_100k must be ≥ 0, got {di.budget_per_100k}")
+    req(
+        di.llm_every >= 0 and (di.rule_every < 1 or di.llm_every % di.rule_every == 0),
+        f"director.llm_every must be 0 (off) or a positive multiple of director.rule_every "
+        f"{di.rule_every}, got {di.llm_every}",
+    )
+    req(
+        math.isfinite(di.llm_temperature) and 0.0 <= di.llm_temperature <= 2.0,
+        f"director.llm_temperature must be in [0, 2], got {di.llm_temperature}",
+    )
+    req(
+        math.isfinite(di.llm_timeout_s) and di.llm_timeout_s > 0,
+        f"director.llm_timeout_s must be positive and finite, got {di.llm_timeout_s}",
+    )
+    req(di.llm_max_tokens >= 1, f"director.llm_max_tokens must be ≥ 1, got {di.llm_max_tokens}")
+    req(ru.llm_model.strip() != "", "run.llm_model must not be empty")
+    if di.llm_every > 0:  # the endpoint is user config: only http(s) is ever contacted (DIRECTOR.md L11)
+        req(is_http_url(ru.llm_url), f"run.llm_url must be an http(s) URL, got {ru.llm_url!r}")
     req(ru.director in DIRECTOR_MODES, f"run.director {ru.director!r} not in {DIRECTOR_MODES}")
     if ru.director != "off":
         req(di.enabled, "run.director live/replay needs director.enabled (use --director, which sets it)")

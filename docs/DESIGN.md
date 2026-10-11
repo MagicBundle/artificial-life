@@ -2082,6 +2082,10 @@ class DirectorConfig:                  # added after v0.1; docs/DIRECTOR.md
     goal: str = ""                     # the Architect's goal text (stored, not interpreted before the LLM tier)
     rule_every: int = 1000             # steps between rule-tier decisions; multiple of the metrics cadences
     budget_per_100k: int = 0           # cost units per rolling 100k steps; 0 = the persona's default
+    llm_every: int = 0                 # LLM tier (§26.10): steps between calls; 0 = off, else a multiple of rule_every
+    llm_temperature: float = 0.4       # sampling temperature of the request
+    llm_timeout_s: float = 60.0        # seconds the run waits for a reply before the rule tier takes over
+    llm_max_tokens: int = 400          # reply length limit of the request
 
 @dataclass(frozen=True)
 class RunConfig:                       # excluded from config_hash; on resume only observer/cadence keys may change (§18)
@@ -2096,6 +2100,8 @@ class RunConfig:                       # excluded from config_hash; on resume on
     components_iters: int = 32
     diversity_sample: int = 256
     director: str = "off"              # off | live | replay (§26.2); needs director.enabled; resume may change it
+    llm_url: str = "http://localhost:1234/v1/chat/completions"   # the LLM tier's endpoint (§26.10)
+    llm_model: str = "gemma-4-26b-a4b-it-mlx@8bit"               # the model named in each request; resume may change both
 
 @dataclass(frozen=True)
 class Config:
@@ -2136,7 +2142,7 @@ lists). It reloads exactly: `config_from_dict(config_to_dict(c)) == c`. `config_
 except `run`. **Keys added after v0.1 are omitted from the hash at their defaults** (`config.POST_V01_KEYS`:
 `population.immigration_every`, `population.immigration_count`, `fields.season_period`,
 `fields.season_amplitude`, `fields.season_mode`, `director.enabled`; the director's policy keys `persona`, `goal`,
-`rule_every` and `budget_per_100k` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
+`rule_every`, `budget_per_100k` and (step 3) `llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
 because only `enabled` changes the compiled step). A section that this leaves empty
 (`director`) is omitted from the hashed dict too, so the hash does not change when a section is added. A
 `config.json` that predates them therefore loads with the
@@ -2156,7 +2162,9 @@ changes the hash, as for any dynamics key.
   `env_patch_gain`, and immigration is possible (`immigration_possible`) even when `immigration_floor = 0`.
   `persona ∈ {gardener, trickster, architect}`; `rule_every ≥ 1`; `budget_per_100k ≥ 0`; `run.director ∈ {off, live,
   replay}`; when `run.director` is not `off`: `director.enabled` is true and `rule_every` is a multiple of both
-  `run.metrics_every` and `run.heavy_metrics_every` (§26.2).
+  `run.metrics_every` and `run.heavy_metrics_every` (§26.2). LLM tier (§26.10): `llm_every` is 0 or a positive
+  multiple of `rule_every`; `0 ≤ llm_temperature ≤ 2`; `llm_timeout_s` positive and finite; `llm_max_tokens ≥ 1`;
+  `run.llm_model` non-empty; with `llm_every > 0`, `run.llm_url` is an http(s) URL with a host.
 - **Fields (seasons):** `season_period ≥ 0`; `0 ≤ season_amplitude ≤ 1`; `season_period ≥ 1` when
   `season_amplitude > 0`; `season_mode ∈ {global, per_patch}`.
 - **Physics stability:** `stability_number ≤ 1.8`; `thrust_max < 2·radius·k_repel`; `v_max ≤ physics.radius`;
@@ -2202,7 +2210,7 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
     deaths_<s0:010d>_<s1:010d>.npz             step i32, uid i64, age i32, cause u8, generation i32, clade i32
   diag/step_<step>.safetensors                 written automatically when an error diag bit is found (exit 3)
   director.jsonl                               director runs only: the decision log (header + entries), §26.3
-  journal.jsonl                                director runs only: rule-tier one-liners, never read by the simulation
+  journal.jsonl                                director runs only: one-liners and LLM call records, never read by the simulation
   director_archive.json                        director runs only: the behaviour archive at the last checkpoint
   media/                                       render and video outputs; viewer snapshots snap_<step>.safetensors
 ```
@@ -2509,8 +2517,10 @@ alife run      [--preset tiny|dev|64k|256k] [--overlay fast ...] [--config PATH]
                [--seed S] [--steps N] [--out DIR] [--overwrite] [--init-from RUN[:STEP]|FILE.safetensors]
                [--metrics-every N] [--checkpoint-every N] [--checks cheap|off] [--no-compile] [--quiet]
                [--director off|live|replay] [--replay-log LOG]
+               [--llm | --llm-every N] [--llm-url URL] [--llm-model NAME] [--persona NAME] [--goal TEXT]
 alife resume   RUN [--steps N | --until STEP] [--checkpoint STEP|latest] [--set run.key=value ...]
                [--set director.key=value ...] [--director off|live|replay] [--quiet]
+               [--llm | --llm-every N] [--llm-url URL] [--llm-model NAME] [--persona NAME] [--goal TEXT]
                (only observer/cadence run.* keys, run.director and the director's policy keys, §18; dynamics
                changes go through run --init-from)
 alife render   RUN [--checkpoint STEP|latest] [--steps N] [--every K] [--out PATH(.png|.mp4|dir)]
@@ -2525,6 +2535,13 @@ alife bench    [--preset P] [--overlay fast] [--set ...] [--steps 200] [--warmup
 **`run`** creates the run directory and the initial state (or loads `--init-from`), then calls `runner.run`. Every
 metrics interval it prints one status line: step, population, births/deaths, bonds, largest body (heavy steps),
 steps/s, `ledger OK`.
+
+**LLM and persona flags** (`run`, including a fork, and `resume`; §26.10) are shortcuts for `--set` items, like
+`--director`, and take precedence over `--set`: `--llm` is `director.llm_every=25000`, `--llm-every N` is
+`director.llm_every=N` (`--llm` and `--llm-every` exclude each other), `--llm-url` / `--llm-model` are `run.llm_url` /
+`run.llm_model`, `--persona` / `--goal` are `director.persona` / `director.goal`. `--llm` or a positive `--llm-every`
+needs the effective mode to be `live` (`--director live`, or a resume of a live run): in any other mode the command
+exits 2 before anything is written, since a replay never calls the model.
 
 **`render`** re-simulates deterministically from the checkpoint in memory. It never alters the run, apart from
 writing into `RUN/media/` when `--out` is omitted.
@@ -3093,12 +3110,13 @@ changes must be reflected in this document.
 
 ---
 
-## 26. Director core: vital signs, rule tier, decision log and replay (build step 2)
+## 26. Director: vital signs, rule tier, decision log, replay (build step 2) and the LLM tier (build step 3)
 
-`docs/DIRECTOR.md` is the design rationale; this section is normative for what build step 2 implements. There is no
-LLM in this step (step 3), no GUI panel (step 4) and no evaluation harness (step 5). The compiled step is unchanged
-from build step 1 (§2.2, §12.9, §13.1): the director is host code in the `alife.director` package that runs
-**between** compiled steps.
+`docs/DIRECTOR.md` is the design rationale; this section is normative for what build steps 2 and 3 implement. §26.1 to
+§26.9 describe the director core of step 2, which is the whole behaviour when `director.llm_every = 0`; §26.10 is the
+LLM tier of step 3 and says exactly what it changes. There is no GUI panel (step 4) and no evaluation harness
+(step 5). The compiled step is unchanged from build step 1 (§2.2, §12.9, §13.1): the director is host code in the
+`alife.director` package that runs **between** compiled steps.
 
 ### 26.1 Modules and the runner hook
 
@@ -3109,8 +3127,10 @@ from build step 1 (§2.2, §12.9, §13.1): the director is host code in the `ali
 | `director/archive.py` | `Archive`: novelty search and the coverage grid |
 | `director/actions.py` | `MENU`, `EnvView`, `clamp` (live), `validate_entry` (replay), `apply`, `lever_keys` |
 | `director/pacing.py` | `fold(entries, t)`: budget, cooldowns, active effects, drama, as pure folds of the log |
-| `director/rules.py` | `RuleParams` / `PersonaParams`, `RULES_VERSION`, `decide(ctx, params)`, `rng_for` |
+| `director/rules.py` | `RuleParams` / `PersonaParams`, `RULES_VERSION`, `decide(ctx, params)` (and, for step 3, `decide_safety`, `decide_discretionary`, `eligibility`, `cooldown_steps`), `rng_for` |
 | `director/log.py` | `director.jsonl` header, `validate_log`, `read_log` |
+| `director/llm.py` | step 3: the reply schema generated from `MENU`, `parse_reply`, the stdlib `Client` (§26.10) |
+| `director/prompt.py` | step 3: the system and user messages of a call (§26.10) |
 
 **Hook** (`runner.run(..., director=None)`). `director=None` is today's behaviour exactly. With a director, at every
 metrics row, after the row is appended and after the violation check (so never for a violated state):
@@ -3137,7 +3157,7 @@ levers keep whatever values they hold, nothing is decided or reverted.
 | key | default | meaning |
 |---|---|---|
 | `director.persona` | `gardener` | `gardener`, `trickster` or `architect` (§26.6) |
-| `director.goal` | `""` | the Architect's goal text; stored (in the log header), not interpreted before step 3 |
+| `director.goal` | `""` | the Architect's goal text; stored in the log header, and given to the model as data when the LLM tier is on (§26.10) |
 | `director.rule_every` | 1000 | steps between rule-tier decisions |
 | `director.budget_per_100k` | 0 | cost units per rolling 100k steps; 0 = the persona's default; bounded by the persona's maximum |
 
@@ -3145,7 +3165,9 @@ levers keep whatever values they hold, nothing is decided or reverted.
 `POST_V01_KEYS`, so old `config.json` files without them load). Only `director.enabled` stays hashed. The hashes of
 every earlier run are unchanged (`TINY_HASH_V01`; the step-1 `enabled = true` hashes; the `64k` preset's hash,
 pinned in `tests/test_director_config.py`). Resume accepts `--set director.<persona|goal|rule_every|budget_per_100k>`
-besides the observer/cadence `run.*` keys (§18).
+besides the observer/cadence `run.*` keys (§18). Step 3 adds four more policy keys (`llm_every`, `llm_temperature`,
+`llm_timeout_s`, `llm_max_tokens`, §26.10), unhashed and resumable in the same way, and the run-level keys
+`run.llm_url` and `run.llm_model` (resume keys; not hashed, since no `run.*` key is).
 
 `validate`: `persona` is one of the three; `rule_every ≥ 1`; `budget_per_100k ≥ 0`; `run.director ∈ {off, live,
 replay}`; and when the mode is not `off`, `director.enabled` is true and `rule_every` is a multiple of both
@@ -3170,8 +3192,9 @@ director starts with a policy that differs from the latest header (a resume with
 | field | meaning |
 |---|---|
 | `step_applied` | the rule boundary the entry was applied at (a positive multiple of `rule_every`) |
-| `source` | `rule`, or `revert` (the end of a timed effect; the LLM tier will add `llm`) |
-| `persona`, `rule`, `reason` | who, which rule (`extinction_rescue`, `runaway_damper`, `monoculture_breaker`, `stagnation_response`, `boredom`; absent on reverts) and a one-line why |
+| `source` | `rule`, `llm` (step 3: an action the model chose, §26.10) or `revert` (the end of a timed effect) |
+| `persona`, `rule`, `reason` | who, which rule (`extinction_rescue`, `runaway_damper`, `monoculture_breaker`, `stagnation_response`, `boredom`; absent on reverts and on `llm` entries) and a one-line why (for `llm`, the model's `expected_effect`, cleaned and at most 240 characters) |
+| `llm_call` | `llm` entries only: the id of the call, `llm-<boundary step>`, which names its record in `journal.jsonl` |
 | `action`, `params` | a menu action and its **explicit, clamped, absolute** parameters (§26.4) |
 | `prev` | the values the action returns to when a timed effect ends (for other actions, the values it replaced) |
 | `duration` | timed actions only: steps until the revert, already rounded up to a multiple of `rule_every` |
@@ -3182,7 +3205,8 @@ Entries are canonicalised through JSON before they are applied, so what a replay
 run applied. Entries are in non-decreasing `step_applied`; a boundary's reverts come first.
 
 **`journal.jsonl`.** `{"step", "persona", "text"}`: one line per entry, plus one line when a rule newly triggers but is
-blocked (a condition that persists is noted once, not at every boundary).
+blocked (a condition that persists is noted once, not at every boundary). With the LLM tier on, each call adds one
+`{"kind": "llm_call", ...}` record (§26.10).
 
 **`director_archive.json`.** `Archive.to_json(as_of_step)`: the parameters, `coverage`, every visited grid cell with the
 step it was first visited, and every archive entry (step and descriptor). It is rewritten atomically at each
@@ -3364,7 +3388,105 @@ trigger. These are first values for the evaluation of §9 of `docs/DIRECTOR.md`,
 | `test_director_log.py` | append and fsync; torn lines; resume truncation; replay never truncates; headers; log validation; the CLI's exit 2 before anything is written |
 | `test_director_replay.py` | the bitwise replay tests of §26.8 (fresh directory, in place at three checkpoints, another metrics cadence, a late fork, live resume, real rules) and a slow one with the real timed bounds |
 | `test_director_config.py` | unchanged hashes, the unhashed policy keys, validation, the resume key list and its refusals |
-| edits | `test_runner.py` (hook order; no action on a violated or extinct state; the checkpoint holds the applied env), `test_metrics.py`, `test_cli_smoke.py` (`--director` flows, fork reset), `test_lint.py` (the director package is scanned) |
+| `test_director_llm.py` | step 3 (§26.10): the schema and the reply validator; a mock OpenAI-compatible server for valid, invalid, empty, slow, refused, 500 and redirected replies, clamps, duplicates, `none`, budget and cooldown blocks, the request body and the prompt; roles; no network with the tier off or in a replay; a live run with the mock model and its bitwise replay; an optional real-server test (`@pytest.mark.llm`, needs `ALIFE_LLM_URL`) |
+| edits | `test_director_actions.py` and `test_director_log.py` (the "unknown source" example is no longer `llm`), `test_director_config.py` (the LLM keys, the flags), `test_runner.py` (hook order; no action on a violated or extinct state; the checkpoint holds the applied env), `test_metrics.py`, `test_cli_smoke.py` (`--director` flows, fork reset), `test_lint.py` (the director package is scanned) |
+
+### 26.10 The LLM tier (build step 3)
+
+A local OpenAI-compatible server (LM Studio) picks the discretionary interventions. Decisions L1 to L11 of the step-3
+spec; `docs/DIRECTOR.md` §7 has the rationale. **With `director.llm_every = 0` (the default) nothing in this section
+applies: no client exists, nothing touches the network, and the behaviour and the log are exactly those of §26.1 to
+§26.9.**
+
+**Config and flags.** `director.llm_every` (0 = off, else a multiple of `rule_every`; `--llm` sets 25000, `--llm-every N`
+sets N), `director.llm_temperature` (0.4), `director.llm_timeout_s` (60), `director.llm_max_tokens` (400); and
+`run.llm_url` (`http://localhost:1234/v1/chat/completions`) and `run.llm_model` (`gemma-4-26b-a4b-it-mlx@8bit`). The
+`director.*` keys are policy keys (unhashed, `POST_V01_KEYS`, `UNHASHED_KEYS`); every hash of §26.2 is unchanged. The
+tier exists in live mode only: `Director` builds the `Client` only for `mode == "live"` with `llm_every > 0`, and a
+replay never does. `--llm` / `--llm-every N > 0` with any other effective mode is a `ConfigError` (§21). The log header
+records `llm_every` and `llm_model` while the tier is on (and nothing about it while it is off, so a step-2 log keeps
+its header).
+
+**Roles (L2).** At every rule boundary the order is: (1) the reverts that are due; (2) the safety rules, extinction
+rescue and runaway damper, `rules.decide_safety`; (3) at a boundary with `t % llm_every == 0`, the model (below).
+Between LLM boundaries the rule tier takes **no** discretionary move. The discretionary rules (monoculture breaker,
+stagnation response, the Trickster's boredom, `rules.decide_discretionary`) run only as the fallback of a failed call.
+`rules.decide` is the safety rules followed by the discretionary ones and is what the director calls with the tier off
+(`RULES_VERSION` is unchanged). The prompt shows the reverts and safety actions already taken at the boundary.
+
+**Call (L1).** Synchronous, inside the existing hook (after the row and the violation check, before the checkpoint).
+No thread and no pending request, so landing steps never depend on wall-clock latency. A failure of any kind, and a
+reply of which nothing could be applied, hands the boundary to the rule tier's discretionary rules:
+
+| outcome | meaning | fallback |
+|---|---|---|
+| `ok` | at least one action applied | no |
+| `none` | the reply was a valid `none`: a decision to do nothing | no |
+| `failed` | timeout, connection error, HTTP error (a redirect included), a body that is not a chat completion, an empty `content`, an oversized response | yes |
+| `invalid` | the content is not a valid reply (below) | yes |
+| `rejected` | a valid reply, none of whose actions could be applied | yes |
+
+**Request (L6).** One POST of `{model, messages: [system, user], temperature, max_tokens, seed, stream: false,
+response_format}` to `run.llm_url`, with `response_format = {"type": "json_schema", "json_schema": {"name":
+"intervention", "strict": true, "schema": S}}`. `seed` is a deterministic int31 of `(run.seed, step)`; a server may
+ignore it. `S` is **generated from `actions.MENU`** and the config, never copied:
+`{"actions": [1 to 2 items], "journal": string}`, each item an `anyOf` of one variant per menu action plus `none`; a
+variant is `{"action": enum[name], "params": {exact required keys, additionalProperties: false, every number with
+minimum and maximum}, "expected_effect": string}`. `journal` has `maxLength` 600 and `expected_effect` 240 (without
+`maxLength` models loop inside a string until `max_tokens`; without numeric bounds they emit runaway integers).
+Parameters (the names a rule's `Proposal.raw` takes): `set_seasons` `period` (integer), `amp`; `fertility_shift` `patch`
+(0 to `n_patches − 1`), `gain`; `habitat_loss` `patch`, `duration`; `regen_pulse` `mult`, `duration`;
+`immigration_pulse` `count`; `catastrophe` absolute `x`, `y` in `[0, L]`, `radius` (the clamp's range), `kill_p`;
+`drift_change` `mult`. **`fertility_shift` is offered in its gain form only**: the patch *move* stays a rule-tier action,
+so each menu action is one schema variant. Stdlib `urllib` only.
+
+**Client containment (L11).** The URL is user config. The client (`llm.Client`) refuses a URL that is not `http(s)` with
+a host, ignores proxy environment variables, follows **no** redirect (a 3xx is an `http` failure), reads at most 1 MiB,
+enforces the timeout as a total deadline (each socket operation, and the body in chunks), and never raises: every
+failure is an `Exchange` with an `error` string of the form `<kind>: <detail>`, the detail drawn from our own code and
+never from the server.
+
+**Validation (L8).** `llm.parse_reply` treats every byte as untrusted: one JSON object with exactly the keys `actions`
+and `journal`, no duplicate keys, no `NaN` / `Infinity`, 1 to 2 actions, each with exactly `action`, `params` and
+`expected_effect`, an `action` in the menu or `none`, `params` with exactly the action's keys and finite numbers
+(integers where the menu has them; `true` is not a number), strings within their `maxLength` (a violation of any of
+these is `invalid`). Numeric *ranges* are not checked there: the step-2 clamp brings a number inside its bounds, the
+journal records each change (`clamps`, rounding to a rule boundary included), and what the clamp cannot make sense of (a
+patch that does not exist) is a rejected proposal. A repeated action name is dropped (the first wins). `none` next to
+another action is ignored and the other action kept; `none` alone is a decision. Each surviving action becomes a
+`Proposal` and takes the rule tier's path: `rules.eligibility` (budget, the action's cooldown with the catastrophe
+cap, a full immigration queue, one active effect per lever; the persona's minimum gap and drama, which only shape the
+rule tier's discretion, do not apply), then `Director._take` (clamp, validate, apply), with the pacing and the
+environment refolded after each accepted action. Text from the reply (`expected_effect`, `journal`) is stripped of
+control and format characters, collapsed and cut to its limit; nothing is evaluated, no text is ever fed back into a
+prompt (earlier interventions are shown by action name and numbers), and the reply is used for nothing beyond menu
+selection.
+
+**Prompt (L7).** `prompt.system_message`: the persona paragraph (the Architect's also carries `director.goal`, verbatim,
+between `<goal>` tags and introduced as data), the rules of the reply, and the menu with an effect description per action,
+bounds, cost and cooldown length (models shown bounds alone choose `immigration_pulse` for everything).
+`prompt.user_message`: availability (cooldowns remaining, active timed effects, budget left, the actions that are
+affordable and not cooling down), the latest vital signs, the trends of seven of them over the last 8 rule windows, the
+safety actions and reverts of this boundary, the last five interventions with their measured effect (the change in
+population, top clade share, clades, emitters, sharers, kill share and novelty from the intervention's boundary to 50k
+steps later, or to now with "(so far)"). About 2.4k tokens for the `tiny` preset.
+
+**Logging (L9).** An applied action is an entry with `source: "llm"`, the persona, the clamped `params`, `reason` = the
+model's `expected_effect`, no `rule` and `llm_call: "llm-<step>"`. `journal.jsonl` gets one record per call:
+`{"kind": "llm_call", "step", "persona", "llm_call", "model", "url", "latency_s", "messages" (the raw prompt),
+"response" (the raw text, or null), "finish_reason", "usage", "outcome", "error", "validation" (what the parser dropped
+or ignored), "accepted", "rejected" (each with the reason), "clamps" ({action, param, requested, applied}),
+"fallback" (null, or {"tier": "rule", "actions": [...]}), "journal" (the model's text)}`. The console prints one line per
+call (`director @ <t>: llm 3.5s: 2 action(s) applied`) before the entries' lines.
+
+**Replay (L10).** `llm` entries replay like rule entries: `actions.SOURCES = ("rule", "llm", "revert")`, so the
+pre-validation accepts them, and replay never calls the model. A replay of a live run made with the (mock) model is
+bitwise identical in digest, rows and log (tested, also with `urllib` and sockets patched to fail). A resumed live run
+re-asks the model for the boundaries after the checkpoint (the journal and log are truncated to it first), so its
+decisions need not equal the uninterrupted run's; the log is the source of truth.
+
+**Real server.** `tests/test_director_llm.py` has one test marked `llm` that runs only when `ALIFE_LLM_URL` is set (and
+optionally `ALIFE_LLM_MODEL`); the default runs never need LM Studio.
 
 ---
 
@@ -3438,6 +3560,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I27 | feat: two optional levers, both off by default and invisible to old runs. (1) Periodic immigration (§12.7): `population.immigration_every` / `immigration_count` add up to `count` random founders on steps with `(t+1) % every == 0`, combined with the floor rule by `max` and capped by free lanes and capacity; same lanes, `IMMIGRANT` stream, clade, ledger term and counters; static branch plus array arithmetic on `state.step`. (2) Seasons (§13.1): `fields.season_period` / `season_amplitude` / `season_mode` weight each patch by `1 + A·sin(2πt/P + φ_p)` (φ_p = 0 or 2πp/PP); `fertility` / `regen_rate` / `update_resource` take an optional `step`, regeneration stays integer and `INJECT_REGEN`-accounted, the carrying-capacity estimate uses the time average. Compatibility: keys added after v0.1 are omitted from `config_hash` at their defaults, so existing run directories load with defaults and resume; the tiny hash and the golden digest are unchanged (`tests/test_features.py`). |
 | I28 | feat: director build step 1 (`docs/DIRECTOR.md` §3): the engine's live environment state, off by default and invisible to old runs. (1) Nine flat `State` fields `env_*` appended after `diag` (regen multiplier, season amplitude and period, drift multiplier, per-patch gain, immigration request, catastrophe centre, radius and kill probability; `State.env` is a read-only `Env` view, `default_env(cfg)` the inert values), read by the compiled step only behind the static `director.enabled` (`DirectorConfig`, `POST_V01_KEYS`; `config_hash` also drops a section the POST_V01 deletions empty). Enabled with inert values is bit-identical to off. (2) New `DeathCause.CATASTROPHE` (3) and counter `DEATHS_CATASTROPHE` (index 26, `N_COUNTERS` 27; `metrics.jsonl` rows always carry `deaths_catastrophe`), on a new RNG stream (`Stream.CATASTROPHE = 8`, `RNG_LAYOUT_VERSION` 2 with `RNG_COMPATIBLE_VERSIONS = {1, 2}`: loading accepts the set, streams 0–7 are unchanged). Catastrophe deaths are excess only (every other cause keeps precedence, so `INSOLVENT ≤ DEATHS_STARVED` holds), the corpse takes the ordinary path, no new ledger term. (3) `env_imm_request` is a third immigration demand combined by `max`; the step carries over `max(request − n_imm, 0)`, so a large pulse arrives over several steps; `env_cat_kill_p` resets to 0 after the step it applied in (`step.consume_env`, outputs derived from inputs for the MLX 0.32 compile quirk). `immigration_possible` widens the two static immigration gates. (4) `state_digest` still hashes all fields (now stricter); `legacy_state_digest` hashes the 38 v0 fields, and the golden pin, unchanged, uses it. Pre-director checkpoints (38 arrays, RNG layout 1) load with inert env (`state_from_arrays(d, cfg)`); env ranges are checked by `full_check` always and by `device_check` (`FIELD_RANGE`) when enabled, including the start-of-step values of the consumed fields. Runner: the extinction stop also waits for a pending `env_imm_request`. Tests: `tests/test_director_env.py` and the edits listed in §22. |
 | I29 | feat: director build step 2 (`docs/DIRECTOR.md` §10): the host-side director core, no LLM, no change to the compiled step. (1) Package `alife.director` (vitals, archive, actions, pacing, rules, log, controller): vital signs from `metrics.jsonl` rows, a behaviour archive with novelty and a coverage grid, the §5 menu with budgets, cooldowns and timed reverts, the safety rules and the three personas, `director.jsonl` (header, entries with explicit clamped params, revert entries) and `journal.jsonl`, replay. (2) Runner: optional `director` hook after the metrics row and the violation check, before the checkpoint; never on a violated or extinct state; the checkpoint holds the applied env. (3) Config: `run.director` (off/live/replay, a resume key) and the policy keys `director.persona|goal|rule_every|budget_per_100k`, which are unhashed at every value (`UNHASHED_KEYS`); `validate` ties `rule_every` to the metrics cadences; all earlier hashes, `TINY_HASH_V01` included, are unchanged. (4) CLI: `--director`, `--replay-log`; resume accepts the policy keys; a fork resets the env to `default_env` and starts with the director off; a bad replay log is exit 2 before anything is written. (5) Metrics: additive `n_alive_min` and, with the director enabled, an `env` summary; `carrying_capacity` takes optional `step`/`env`. (6) `RunDir.append_jsonl/read_jsonl/write_json`, `truncate_after(keep_director=)`. Deviation from the proposal: seasons have no runtime mode (only period and amplitude), `mutation_floor_nudge` and archive immigrants are not implemented, the damper's capacity is `N_CAP`. Replay of a log is bitwise (§26.8); viewer and `render` re-simulate without the director. Tests: `tests/test_director_*.py` and the edits in §26.9. |
+| I30 | feat: director build step 3 (`docs/DIRECTOR.md` §7): the LLM tier, off by default, no change to the compiled step or to any earlier hash. (1) `director.llm_every` (0 = off, else a multiple of `rule_every`), `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` (policy keys: `POST_V01_KEYS` and `UNHASHED_KEYS`) and `run.llm_url`, `run.llm_model` (resume keys); CLI `--llm`, `--llm-every`, `--llm-url`, `--llm-model`, `--persona`, `--goal` on `run` (fork included) and `resume`, which exit 2 unless the effective mode is `live`. (2) `director/llm.py` (the JSON schema generated from `actions.MENU` with `minimum`/`maximum`/`maxLength`, the untrusted-reply validator, a stdlib client that follows no redirect, ignores proxies, caps size and wall time and never raises) and `director/prompt.py` (persona, goal as delimited data, menu with effect descriptions, vital signs and trends, this boundary's safety actions, the last five interventions with their measured effect, budget). (3) Roles: the rule tier keeps reverts and the safety rules at every boundary (`rules.decide_safety`); at `t % llm_every == 0` the model makes the discretionary moves and the rule tier's discretionary rules (`decide_discretionary`) are only the fallback of a failed, invalid or fully refused call; the call is synchronous inside the existing hook. With the tier off the director calls `rules.decide` as before: same decisions, same log, `RULES_VERSION` unchanged. (4) `source: "llm"` entries (with `llm_call`), accepted by `validate_entry` and `validate_log`; one `llm_call` record per call in `journal.jsonl` (raw prompt and response, outcome, clamps, rejections, fallback); the header records `llm_every`/`llm_model` only while the tier is on. Replay never builds a client. Deviations from the proposal: synchronous instead of async (reply applied at the same boundary), `fertility_shift` offered to the model in its gain form only, no `--no-llm` (use `--llm-every 0`). Tests: `tests/test_director_llm.py`, the `llm` marker, and the edits in §26.9 (two existing tests used `llm` as their example of an unknown source). |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

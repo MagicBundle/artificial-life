@@ -89,6 +89,27 @@ It never edits agents or genomes. Its decisions go to `runs/<name>/director.json
 `director.rule_every` and `director.budget_per_100k`. The viewer and `render` ignore the director. See
 `docs/DIRECTOR.md` and DESIGN §26.
 
+### LLM tier (optional, LM Studio)
+
+With `--llm` (every 25,000 steps) or `--llm-every N`, a local language model makes the discretionary interventions
+at those boundaries; the rule tier keeps the safety moves and takes over whenever a call fails or its reply is
+invalid. It needs `--director live`, and it is off unless asked for (nothing then touches the network). A replay
+never calls the model.
+
+```bash
+uv run alife run --preset 64k --director live --llm --persona architect --goal "bodies of at least 100 agents" \
+    --llm-model gemma-4-26b-a4b-it-mlx@8bit
+```
+
+LM Studio setup: start the local server (default `http://localhost:1234`; `--llm-url` changes it) and load the model,
+ideally before the run (`lms load gemma-4-26b-a4b-it-mlx@8bit`), so the first call does not wait for the load. The
+default, **`gemma-4-26b-a4b-it-mlx@8bit`**, gave valid replies in 24 of 24 probes at about 2.3 s; the 4-bit QAT build
+degenerated. Reasoning models (the qwen3.6 family) return an empty reply unless **thinking is switched off** in LM
+Studio, and the run then falls back to the rule tier at every boundary. Every call, with its prompt, reply, outcome and
+fallback, is written to `journal.jsonl`. The model's text is data: it can only select menu actions, which pass the same
+bounds, budget and cooldown checks as the rules. `ALIFE_LLM_URL=http://localhost:1234/v1/chat/completions uv run pytest
+-m llm` runs the one test against a real server.
+
 ## Development and testing on Linux (CPU)
 
 On Linux the `mlx[cpu]` wheel is installed automatically, so the full test suite runs without a GPU:
