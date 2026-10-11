@@ -73,7 +73,7 @@ def _death_inputs(cfg: Config, rows: list[dict], bonds_: list[tuple[int, int]], 
     return s, solvent, e, lost, ag, fcell
 
 
-def _run_deaths(cfg: Config, s: State, solvent, e, lost, ag, fcell) -> lifecycle.Deaths:
+def _run_deaths(cfg: Config, s: State, solvent, e, lost, ag, fcell, cat_mask=None) -> lifecycle.Deaths:
     return lifecycle.deaths(
         s.alive,
         mx.array(solvent),
@@ -88,6 +88,7 @@ def _run_deaths(cfg: Config, s: State, solvent, e, lost, ag, fcell) -> lifecycle
         s.resource,
         mx.array(fcell),
         cfg,
+        cat_mask=None if cat_mask is None else mx.array(cat_mask),
     )
 
 
@@ -156,6 +157,44 @@ def test_deaths_causes_corpses_cap_and_bonds(micro_cfg: Config) -> None:
     assert np.array_equal(_np(rec.cause)[:6], cause[[1, 2, 3, 4, 5, 6]])
     assert np.array_equal(_np(rec.age)[:6], ag[[1, 2, 3, 4, 5, 6]])
     assert np.all(_np(rec.uid)[6:] == -1)
+
+
+def test_catastrophe_deaths_are_excess_only_and_keep_cause_precedence(micro_cfg: Config) -> None:
+    cfg, d = micro_cfg, dims(micro_cfg)
+    S, max_age = cfg.energy.structure, cfg.population.max_age
+    rows = [
+        dict(row=0, E=500, cell=3),  # in the mask, would survive: CATASTROPHE
+        dict(row=1, E=500, cell=3),  # not in the mask: survives
+        dict(row=2, solvent=False, E=300, cell=5),  # in the mask but insolvent: STARVED
+        dict(row=3, E=0, lost=50, cell=7),  # in the mask but drained by an attack: KILLED
+        dict(row=4, E=0, lost=0, cell=9),  # in the mask, E == 0: STARVED
+        dict(row=5, E=700, age=max_age, cell=9),  # in the mask, aged: AGED
+        dict(row=6, E=800, cell=11),  # in the mask: CATASTROPHE, corpse E + S
+        dict(row=7, alive=False),  # in the mask but already dead: not a death this step
+    ]
+    resource = np.full((d.fg, d.fg), 100, np.int32)
+    s, solvent, e, lost, ag, fcell = _death_inputs(cfg, rows, [(0, 6), (6, 1)], resource)
+    mask = np.zeros(d.n, bool)
+    mask[[0, 2, 3, 4, 5, 6, 7]] = True
+    dt = _run_deaths(cfg, s, solvent, e, lost, ag, fcell, cat_mask=mask)
+    CAT = DeathCause.CATASTROPHE
+    cause = np.full(d.n, -1, np.int32)
+    cause[[0, 2, 3, 4, 5, 6]] = [CAT, STARVED, KILLED, STARVED, AGED, CAT]
+    assert np.array_equal(_np(dt.cause), cause)
+    dead = cause >= 0
+    assert np.array_equal(_np(dt.dead), dead) and np.array_equal(_np(dt.survivor), _np(s.alive) & ~dead)
+    assert _np(dt.corpse)[6] == 800 + S and _np(dt.corpse)[0] == 500 + S  # the existing corpse path
+    assert np.array_equal(_np(dt.energy), np.where(dead, 0, e)) and (_np(dt.uid)[dead] == -1).all()
+    assert (_np(dt.partner)[1] == -1).all()  # bonds to the dead are dropped
+    assert bool(_np(bonds.symmetric_ok(dt.partner, dt.rev, dt.survivor)))
+    rec = dt.records
+    assert np.array_equal(_np(rec.cause)[:6], cause[[0, 2, 3, 4, 5, 6]])
+    # The same inputs without a mask: the cat_mask rows that survive on their own keep surviving.
+    plain = _run_deaths(cfg, s, solvent, e, lost, ag, fcell)
+    assert np.array_equal(_np(plain.cause), np.where(np.isin(np.arange(d.n), [0, 6]), -1, cause))
+    # An all-False mask changes nothing.
+    none = _run_deaths(cfg, s, solvent, e, lost, ag, fcell, cat_mask=np.zeros(d.n, bool))
+    assert np.array_equal(_np(none.cause), _np(plain.cause))
 
 
 def test_deaths_records_truncate_and_max_age_off(micro_cfg: Config) -> None:

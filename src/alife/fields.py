@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import math
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import mlx.core as mx
 
 from alife import layout, ops
 from alife.config import Config, dims, seasons_on
+
+if TYPE_CHECKING:  # state imports this module; the annotation alone must not create an import cycle
+    from alife.state import Env
 
 
 class FieldObs(NamedTuple):
@@ -30,25 +33,35 @@ def init_patches(key_pos: mx.array, key_vel: mx.array, cfg: Config) -> tuple[mx.
     return pos, vel
 
 
-def season_weights(step: mx.array, cfg: Config) -> mx.array:
+def season_weights(step: mx.array, cfg: Config, env: Env | None = None) -> mx.array:
     """Per-patch seasonal weights ``w_p = 1 + A·sin(2π·t/P + φ_p)``, (PP,) f32 (§13.1).
 
     ``φ_p = 0`` for ``season_mode = "global"`` and ``2π·p/PP`` for ``"per_patch"``. ``t mod P`` is taken in
-    integers first so the phase stays exact for long runs. Only called when seasons are on.
+    integers first so the phase stays exact for long runs. Only called when seasons are on, or (with ``env``,
+    i.e. the director enabled) always: then ``A`` and ``P`` come from ``env.season_amp`` and
+    ``env.season_period``, and ``P = 0`` means off (all weights 1; the modulo is guarded against it).
     """
     fi = cfg.fields
     pp = dims(cfg).pp
-    phase = 2.0 * math.pi * (step % fi.season_period).astype(mx.float32) / fi.season_period
     offset = (2.0 * math.pi / pp) * mx.arange(pp, dtype=mx.float32) if fi.season_mode == "per_patch" else 0.0
-    return 1.0 + fi.season_amplitude * mx.sin(phase + offset * mx.ones((pp,), mx.float32))
+    if env is None:
+        phase = 2.0 * math.pi * (step % fi.season_period).astype(mx.float32) / fi.season_period
+        return 1.0 + fi.season_amplitude * mx.sin(phase + offset * mx.ones((pp,), mx.float32))
+    period = mx.maximum(env.season_period, 1)
+    phase = 2.0 * math.pi * (step % period).astype(mx.float32) / period.astype(mx.float32)
+    w = 1.0 + env.season_amp * mx.sin(phase + offset * mx.ones((pp,), mx.float32))
+    return mx.where(env.season_period > 0, w, 1.0)
 
 
-def fertility(patch_pos: mx.array, cfg: Config, step: mx.array | None = None) -> mx.array:
+def fertility(
+    patch_pos: mx.array, cfg: Config, step: mx.array | None = None, env: Env | None = None
+) -> mx.array:
     """``clip(fertility_base + Σ_p w_p·torus-Gaussian_p, 0, 1)``, (FG,FG) f32 indexed [y, x].
 
     ``w_p`` is the seasonal weight at ``step`` (``season_weights``); it is 1 when seasons are off or ``step``
     is None (the time-average, used for initial fields and the carrying-capacity estimate). With seasons off
-    the computation is exactly the unweighted sum.
+    the computation is exactly the unweighted sum. With ``env`` (the director enabled) and a ``step``, the
+    weight is ``env.patch_gain[p]·w_p`` with the env season parameters (gain 0 disables a patch).
 
     Separable: ``Σ_p gy_p ⊗ gx_p`` with per-axis minimum-image offsets from cell centres. The sum is
     elementwise rather than ``gyᵀ @ gx`` because float32 matmul runs at reduced precision on some Apple GPUs
@@ -61,14 +74,24 @@ def fertility(patch_pos: mx.array, cfg: Config, step: mx.array | None = None) ->
     dy = ops.min_image(centres[None, :] - patch_pos[:, 1:2], L)
     gx, gy = mx.exp(dx * dx * inv), mx.exp(dy * dy * inv)
     terms = gy[:, :, None] * gx[:, None, :]
-    if step is not None and seasons_on(cfg.fields):  # static: seasons enabled
+    if step is not None and env is not None:  # static: director enabled
+        terms = (env.patch_gain * season_weights(step, cfg, env))[:, None, None] * terms
+    elif step is not None and seasons_on(cfg.fields):  # static: seasons enabled
         terms = season_weights(step, cfg)[:, None, None] * terms
     return mx.clip(cfg.fields.fertility_base + terms.sum(axis=0), 0.0, 1.0)
 
 
-def regen_rate(patch_pos: mx.array, cfg: Config, step: mx.array | None = None) -> mx.array:
-    """Per-cell regeneration ``floor(regen_max·fertility)``, (FG,FG) int32 (seasonal at ``step`` if given)."""
-    return ops.floor_i32(cfg.fields.regen_max * fertility(patch_pos, cfg, step))
+def regen_rate(
+    patch_pos: mx.array, cfg: Config, step: mx.array | None = None, env: Env | None = None
+) -> mx.array:
+    """Per-cell regeneration ``floor(regen_max·fertility)``, (FG,FG) int32 (seasonal at ``step`` if given).
+
+    With ``env`` the product is scaled by ``env.regen_mult`` after ``regen_max·fertility``, so 1.0 is exact.
+    """
+    rate = cfg.fields.regen_max * fertility(patch_pos, cfg, step, env)
+    if env is not None:  # static: director enabled
+        rate = rate * env.regen_mult
+    return ops.floor_i32(rate)
 
 
 def cell_index(pos: mx.array, cfg: Config) -> mx.array:
@@ -153,19 +176,26 @@ def update_chem(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array:
 
 
 def update_resource(
-    resource: mx.array, patch_pos: mx.array, cfg: Config, step: mx.array | None = None
+    resource: mx.array,
+    patch_pos: mx.array,
+    cfg: Config,
+    step: mx.array | None = None,
+    env: Env | None = None,
 ) -> tuple[mx.array, mx.array]:
     """Regenerate then integer-diffuse the resource: ``(resource', inc (FG,FG) int32)`` (§13.2, §10.2).
 
     ``inc = clip(min(regen_rate, resource_cap − R), 0, ∞)`` (``INJECT_REGEN = Σ inc``), so regeneration stops
     at ``resource_cap``; the exact flux stencil ``ops.int_diffuse`` then conserves the total. ``step`` (the
-    step index during the step) selects the seasonal weights; it is ignored with seasons off.
+    step index during the step) selects the seasonal weights; it is ignored with seasons off. ``env`` is the
+    director's live levers (None when the director is off).
     """
     fi = cfg.fields
-    inc = mx.maximum(mx.minimum(regen_rate(patch_pos, cfg, step), fi.resource_cap - resource), 0)
+    inc = mx.maximum(mx.minimum(regen_rate(patch_pos, cfg, step, env), fi.resource_cap - resource), 0)
     return ops.int_diffuse(resource + inc, fi.resource_diffusion_q8), inc
 
 
-def drift_patches(patch_pos: mx.array, patch_vel: mx.array, cfg: Config) -> mx.array:
-    """``wrap(patch_pos + patch_vel)`` into ``[0, L)`` (§13.1)."""
+def drift_patches(patch_pos: mx.array, patch_vel: mx.array, cfg: Config, env: Env | None = None) -> mx.array:
+    """``wrap(patch_pos + patch_vel)`` into ``[0, L)`` (§13.1); ``env`` scales the drift."""
+    if env is not None:  # static: director enabled
+        patch_vel = patch_vel * env.drift_mult
     return ops.wrap(patch_pos + patch_vel, cfg.world.size)

@@ -10,7 +10,7 @@ import numpy as np
 
 from alife import brain, layout
 from alife.config import Config, dims
-from alife.state import AGENT_FIELDS, State, init_state, to_numpy, total_energy
+from alife.state import AGENT_FIELDS, ENV_FIELDS, State, init_state, to_numpy, total_energy
 
 # Fused Metal kernels may round float ops differently from eager ones (e.g. FMA contraction), so compiled vs
 # eager is bitwise only on CPU. Integer results must still agree exactly on every backend.
@@ -124,7 +124,7 @@ def make_scene(
         out["chem"] = mx.zeros((layout.NCH, d.fg, d.fg), dtype=mx.float32)
     else:
         out["chem"] = mx.array(np.broadcast_to(np.asarray(chem, np.float32), (layout.NCH, d.fg, d.fg)).copy())
-    for name in ("patch_pos", "patch_vel", "key", "step", "ledger_cum", "diag"):
+    for name in ("patch_pos", "patch_vel", "key", "step", "ledger_cum", "diag", *ENV_FIELDS):
         out[name] = mx.array(base[name]).astype(dtypes[name])
     out["next_uid"] = mx.array(int(arr["uid"].max(initial=-1)) + 1, dtype=mx.int64)
     for name, value in fields.items():

@@ -94,6 +94,19 @@ def test_extinction_with_immigration_continues(cfg: Config, tmp_path: Path) -> N
     assert int(to_numpy(res.state.alive).sum()) > 0 and _steps(rd) == [(5, 5)]
 
 
+def test_pending_director_immigration_request_prevents_extinction(cfg: Config, tmp_path: Path) -> None:
+    c = apply_overrides(cfg, ["director.enabled=true"])
+    empty = make_scene(c, [])
+    rd = RunDir.create(tmp_path / "none", c)
+    assert runner.run(rd, c, empty, 5, quiet=True).status == "extinct"  # nothing pending: extinct at once
+    pending = empty._replace(env_imm_request=mx.array(6, dtype=mx.int32))
+    rd = RunDir.create(tmp_path / "pending", c)
+    res = runner.run(rd, c, pending, 5, quiet=True)
+    assert (res.status, res.exit_code) == ("done", ExitCode.OK)
+    assert int(to_numpy(res.state.alive).sum()) > 0 and int(to_numpy(res.state.env_imm_request)) == 0
+    assert rd.metrics_rows()[0]["immigrants"] == 6 and rd.metrics_rows()[0]["deaths_catastrophe"] == 0
+
+
 def test_violation_dumps_state_and_exits_3(cfg: Config, tmp_path: Path, capsys) -> None:
     s = init_state(cfg)
     s = s._replace(diag=mx.array(int(Diag.BOND_ASYM | Diag.VCLIP_WARN), dtype=mx.int32))  # sticky

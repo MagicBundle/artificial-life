@@ -117,7 +117,7 @@ def _concat(chunks: list[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
 
 
 def _status_line(row: dict[str, Any]) -> str:
-    deaths = row["deaths_starved"] + row["deaths_killed"] + row["deaths_aged"]
+    deaths = row["deaths_starved"] + row["deaths_killed"] + row["deaths_aged"] + row["deaths_catastrophe"]
     sps = row.get("steps_per_s")
     parts = [
         f"step {row['step']}",
@@ -130,6 +130,11 @@ def _status_line(row: dict[str, Any]) -> str:
     parts.append(f"{sps:.1f} steps/s" if sps else "- steps/s")
     parts.append("ledger OK" if row["ledger_error"] == 0 else f"LEDGER ERROR {row['ledger_error']}")
     return " | ".join(parts)
+
+
+def _immigrants_pending(state: State, cfg: Config) -> bool:
+    """Host read of the director's un-admitted immigration request (False with the director off)."""
+    return cfg.director.enabled and int(to_numpy(state.env_imm_request)) > 0
 
 
 def run(
@@ -145,10 +150,10 @@ def run(
 
     The trajectory depends only on ``state`` and the dynamics config: metrics, checkpoint and render cadences
     never touch it (observer purity). A checkpoint at the starting step is written if the run directory lacks
-    one. Extinction (no agent alive with immigration off) is read from each step's already evaluated
-    ``N_ALIVE`` counter, which adds no sync. On an error diag bit or a non-zero host ledger error the state
-    is dumped to ``diag/`` and the run stops with ``violation`` (exit 3); an invalid state is never
-    checkpointed.
+    one. Extinction (no agent alive with immigration off and no director immigration request pending) is
+    read from each step's already evaluated ``N_ALIVE`` counter, which adds no sync. On an error diag bit or
+    a non-zero host ledger error the state is dumped to ``diag/`` and the run stops with ``violation``
+    (exit 3); an invalid state is never checkpointed.
     ``on_interval(state, row)`` runs after each metrics row is written and must not retain ``state``.
     """
     if steps < 0:
@@ -162,7 +167,7 @@ def run(
     if not any(st == t for st, _ in rd.checkpoints()):
         rd.save_checkpoint(state, cfg)
     first_row = not rd.metrics_rows()
-    if not immigration and not bool(to_numpy(state.alive).any()):
+    if not immigration and not bool(to_numpy(state.alive).any()) and not _immigrants_pending(state, cfg):
         rd.update_meta(status="extinct")
         return RunResult(state, "extinct", ExitCode.OK)
 
@@ -193,7 +198,11 @@ def run(
             outs.append(out)
             out_steps.append(t)
             t += 1
-            extinct = not immigration and int(to_numpy(out.counters)[CounterIdx.N_ALIVE]) == 0
+            extinct = (
+                not immigration
+                and int(to_numpy(out.counters)[CounterIdx.N_ALIVE]) == 0
+                and not _immigrants_pending(state, cfg)
+            )
             stop = extinct or latch.requested or t == end
             if t % me and not stop:
                 continue

@@ -219,6 +219,7 @@ _SUMMED: Final = (
     ("deaths_starved", CounterIdx.DEATHS_STARVED),
     ("deaths_killed", CounterIdx.DEATHS_KILLED),
     ("deaths_aged", CounterIdx.DEATHS_AGED),
+    ("deaths_catastrophe", CounterIdx.DEATHS_CATASTROPHE),
     ("deaths_unlogged", CounterIdx.DEATHS_UNLOGGED),
     ("insolvent", CounterIdx.INSOLVENT),
     ("attacks", CounterIdx.ATTACKS),
@@ -240,7 +241,7 @@ def interval_row(
     snap: Mapping[str, Any],
     perf: Mapping[str, float],
 ) -> dict[str, Any]:
-    """One ``metrics.jsonl`` row from stacked counters (T,26), ledgers (T,16) and a snapshot (§19.2).
+    """One ``metrics.jsonl`` row from stacked counters (T,27), ledgers (T,16) and a snapshot (§19.2).
 
     Event counters are interval sums; the level counters ``N_ALIVE`` and ``BONDS_TOTAL`` are interval
     means, and the per-agent fractions are weighted by ``N_ALIVE`` over the interval. ``MAX_OCCUPANCY`` is an

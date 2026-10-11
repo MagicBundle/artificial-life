@@ -78,6 +78,7 @@ class CounterIdx(IntEnum):
     KIN_BOND_SUM = 23
     KIN_BOND_BASE = 24
     BOND_PROPOSERS = 25
+    DEATHS_CATASTROPHE = 26
 
 
 N_COUNTERS: Final = len(CounterIdx)
@@ -106,6 +107,7 @@ class DeathCause(IntEnum):
     STARVED = 0
     KILLED = 1
     AGED = 2
+    CATASTROPHE = 3  # director catastrophe (env.cat_*), only for agents that would otherwise have survived
 
 
 class State(NamedTuple):
@@ -149,6 +151,57 @@ class State(NamedTuple):
     total0: mx.array
     ledger_cum: mx.array
     diag: mx.array
+    # Live environment levers (docs/DIRECTOR.md §3). Flat so checkpoints stay name-keyed; ``State.env`` groups
+    # them. Read by the compiled step only when ``cfg.director.enabled``; inert values change nothing.
+    env_regen_mult: mx.array  # () f32: multiplier on per-cell regeneration
+    env_season_amp: mx.array  # () f32: replaces fields.season_amplitude
+    env_season_period: mx.array  # () i32: replaces fields.season_period (0 = off)
+    env_drift_mult: mx.array  # () f32: multiplier on patch drift velocity
+    env_patch_gain: mx.array  # (PP,) f32: per-patch fertility gain (0 disables a patch)
+    env_imm_request: mx.array  # () i32: immigrants still to admit (consumed as lanes allow)
+    env_cat_center: mx.array  # (2,) f32: catastrophe centre
+    env_cat_radius: mx.array  # () f32: catastrophe radius (0 = none)
+    env_cat_kill_p: mx.array  # () f32: per-agent kill probability inside the radius (reset after one step)
+
+    @property
+    def env(self) -> Env:
+        """Read-only grouped view of the ``env_*`` fields (the fields stay flat)."""
+        return Env(*(getattr(self, name) for name in ENV_FIELDS))
+
+
+class Env(NamedTuple):
+    """The ``env_*`` fields of ``State`` without the prefix."""
+
+    regen_mult: mx.array
+    season_amp: mx.array
+    season_period: mx.array
+    drift_mult: mx.array
+    patch_gain: mx.array
+    imm_request: mx.array
+    cat_center: mx.array
+    cat_radius: mx.array
+    cat_kill_p: mx.array
+
+
+ENV_FIELDS: Final = tuple(f"env_{name}" for name in Env._fields)
+# The 38 fields of the v0 layout, frozen: ``legacy_state_digest`` hashes exactly these, in this order.
+V0_FIELDS: Final = State._fields[: State._fields.index("env_regen_mult")]
+
+
+def default_env(cfg: Config) -> dict[str, mx.array]:
+    """Inert ``env_*`` arrays: a director-enabled run with these values matches a director-off run (D1)."""
+    f32, i32 = mx.float32, mx.int32
+    return {
+        "env_regen_mult": mx.array(1.0, dtype=f32),
+        "env_season_amp": mx.array(cfg.fields.season_amplitude, dtype=f32),
+        "env_season_period": mx.array(cfg.fields.season_period, dtype=i32),
+        "env_drift_mult": mx.array(1.0, dtype=f32),
+        "env_patch_gain": mx.ones((dims(cfg).pp,), dtype=f32),
+        "env_imm_request": mx.array(0, dtype=i32),
+        "env_cat_center": mx.zeros((2,), dtype=f32),
+        "env_cat_radius": mx.array(0.0, dtype=f32),
+        "env_cat_kill_p": mx.array(0.0, dtype=f32),
+    }
 
 
 # Per-agent fields (leading dim N), in canonical order.
@@ -223,6 +276,7 @@ def _initial_state(cfg: Config) -> State:
         total0=mx.array(0, dtype=mx.int64),
         ledger_cum=full((N_LEDGER,), 0, mx.int64),
         diag=mx.array(0, dtype=mx.int32),
+        **default_env(cfg),
     )
     total = total_energy(s.energy, s.alive, s.resource, cfg)
     return s._replace(total=total, total0=total)
@@ -251,9 +305,16 @@ def state_to_arrays(s: State) -> dict[str, mx.array]:
     return dict(zip(State._fields, s, strict=True))
 
 
-def state_from_arrays(d: Mapping[str, mx.array]) -> State:
-    """Rebuild a State from a name-keyed mapping; the key set must equal ``State._fields`` exactly."""
+def state_from_arrays(d: Mapping[str, mx.array], cfg: Config | None = None) -> State:
+    """Rebuild a State from a name-keyed mapping; the key set must equal ``State._fields`` exactly.
+
+    The one exception: when ``cfg`` is given and every missing key is an ``env_*`` field (a pre-director
+    checkpoint), those fields are filled with the inert ``default_env(cfg)``.
+    """
     keys, want = set(d), set(State._fields)
+    if cfg is not None and keys < want and (want - keys) <= set(ENV_FIELDS):
+        d = {**default_env(cfg), **d}
+        keys = set(d)
     if keys != want:
         missing, extra = sorted(want - keys), sorted(keys - want)
         raise ValueError(f"state arrays do not match State fields: missing={missing}, extra={extra}")
@@ -267,11 +328,25 @@ def to_numpy(a: mx.array) -> np.ndarray:
     return np.array(a, copy=True)
 
 
-def state_digest(s: State) -> str:
-    """SHA-256 hex over every field (name, dtype, shape, bytes) in ``State._fields`` order."""
+def _digest(s: State, names: tuple[str, ...]) -> str:
     h = hashlib.sha256()
-    for name, a in zip(State._fields, s, strict=True):
+    for name in names:
+        a = getattr(s, name)
         arr = np.ascontiguousarray(to_numpy(a))
         h.update(f"{name}|{a.dtype}|{tuple(a.shape)}|".encode())
         h.update(arr.tobytes())
     return h.hexdigest()
+
+
+def state_digest(s: State) -> str:
+    """SHA-256 hex over every field (name, dtype, shape, bytes) in ``State._fields`` order."""
+    return _digest(s, State._fields)
+
+
+def legacy_state_digest(s: State) -> str:
+    """``state_digest`` restricted to the 38 frozen v0 fields (``V0_FIELDS``, §14.2).
+
+    It equals the digest the engine produced before the ``env_*`` fields existed, so the golden pin and
+    bit-identity checks against old trajectories stay comparable. ``state_digest`` also covers ``env_*``.
+    """
+    return _digest(s, V0_FIELDS)

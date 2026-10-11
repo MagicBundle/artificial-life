@@ -12,10 +12,12 @@ from alife import bonds, layout, ops
 from alife.config import Config, dims, load_config
 from alife.state import (
     AGENT_FIELDS,
+    ENV_FIELDS,
     ERROR_MASK,
     N_COUNTERS,
     N_LEDGER,
     R_HARD,
+    V0_FIELDS,
     CounterIdx,
     DeathCause,
     Diag,
@@ -76,13 +78,68 @@ def _expected_schema(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]
         "total0": ((), i64),
         "ledger_cum": ((N_LEDGER,), i64),
         "diag": ((), i32),
+        "env_regen_mult": ((), f32),
+        "env_season_amp": ((), f32),
+        "env_season_period": ((), i32),
+        "env_drift_mult": ((), f32),
+        "env_patch_gain": ((d.pp,), f32),
+        "env_imm_request": ((), i32),
+        "env_cat_center": ((2,), f32),
+        "env_cat_radius": ((), f32),
+        "env_cat_kill_p": ((), f32),
     }
 
 
+# The 38 v0 fields in order: frozen, because `legacy_state_digest` (and the golden pin) hash exactly these.
+_V0 = (
+    "alive",
+    "uid",
+    "parent_uid",
+    "clade",
+    "generation",
+    "birth_step",
+    "energy",
+    "pos",
+    "vel",
+    "heading",
+    "h",
+    "msg",
+    "last_loss",
+    "last_harvest",
+    "last_inflow",
+    "partner",
+    "rev",
+    "tag",
+    "mut_sigma",
+    "mut_rate",
+    "offspring_frac",
+    "brain_cost",
+    "W1",
+    "W2",
+    "pend_slot",
+    "pend_W1",
+    "pend_W2",
+    "resource",
+    "chem",
+    "patch_pos",
+    "patch_vel",
+    "key",
+    "step",
+    "next_uid",
+    "total",
+    "total0",
+    "ledger_cum",
+    "diag",
+)
+
+
 def test_field_order() -> None:
-    assert State._fields[:6] == ("alive", "uid", "parent_uid", "clade", "generation", "birth_step")
-    assert State._fields[-7:] == ("key", "step", "next_uid", "total", "total0", "ledger_cum", "diag")
-    assert len(State._fields) == 38
+    assert _V0 == State._fields[:38] == V0_FIELDS and len(_V0) == 38
+    assert State._fields[38:] == ENV_FIELDS and len(ENV_FIELDS) == 9 and len(State._fields) == 47
+    assert (
+        tuple(f"env_{n}" for n in State.env.fget(init_state(load_config(preset="tiny")))._fields)
+        == ENV_FIELDS
+    )
     assert AGENT_FIELDS[-1] == "W2" and len(AGENT_FIELDS) == 24
 
 
@@ -215,9 +272,10 @@ def test_to_numpy_bf16(tiny_cfg_bf16: Config) -> None:
 def test_enums() -> None:
     assert N_LEDGER == 16 and [e.value for e in LedgerIdx] == list(range(16))
     assert LedgerIdx.FLOW_STRUCTURE == 14 and LedgerIdx.RESERVED == 15 and LedgerIdx.HEAT_OVERFLOW == 6
-    assert N_COUNTERS == 26 and [c.value for c in CounterIdx] == list(range(26))
+    assert N_COUNTERS == 27 and [c.value for c in CounterIdx] == list(range(27))
+    assert CounterIdx.DEATHS_CATASTROPHE == 26
     assert CounterIdx.BOND_PROPOSERS == 25 and CounterIdx.V_CLIPS == 20 and CounterIdx.KIN_BOND_SUM == 23
-    assert (DeathCause.STARVED, DeathCause.KILLED, DeathCause.AGED) == (0, 1, 2)
+    assert (DeathCause.STARVED, DeathCause.KILLED, DeathCause.AGED, DeathCause.CATASTROPHE) == (0, 1, 2, 3)
     assert Diag.LEDGER == 1 and Diag.POS_RANGE == 256 and Diag.INT_HEADROOM == 64
     assert Diag.CELL_OVERFLOW_WARN == 1 << 16 and Diag.VCLIP_WARN == 1 << 17
     errors = [f for f in Diag if f & ERROR_MASK]

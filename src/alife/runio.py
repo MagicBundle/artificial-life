@@ -171,6 +171,15 @@ def _expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]
         "total0": ((), i64),
         "ledger_cum": ((N_LEDGER,), i64),
         "diag": ((), i32),
+        "env_regen_mult": ((), f32),
+        "env_season_amp": ((), f32),
+        "env_season_period": ((), i32),
+        "env_drift_mult": ((), f32),
+        "env_patch_gain": ((d.pp,), f32),
+        "env_imm_request": ((), i32),
+        "env_cat_center": ((2,), f32),
+        "env_cat_radius": ((), f32),
+        "env_cat_kill_p": ((), f32),
     }
 
 
@@ -222,23 +231,27 @@ def checkpoint_metadata(path: Path) -> dict[str, str]:
 def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> State:
     """Load a state file; ``CheckpointError`` on a version/shape mismatch, or a config-hash one if checked.
 
-    Keys are matched by name (their order in the file is arbitrary, F15). The result is evaluated.
+    Keys are matched by name (their order in the file is arbitrary, F15). The RNG layout version must be in
+    ``rng.RNG_COMPATIBLE_VERSIONS``. A pre-director file (no ``env_*`` arrays) loads with inert env values.
+    The result is evaluated.
     """
     path = Path(path)
     meta = checkpoint_metadata(path)
     want = {
         "format_version": str(FORMAT_VERSION),
-        "rng_layout_version": str(rng.RNG_LAYOUT_VERSION),
         "genome_layout_version": str(layout.GENOME_LAYOUT_VERSION),
     }
     if check_hash:
         want["config_hash"] = config_hash(cfg)
     bad = [f"{k}={meta.get(k)!r} (expected {v!r})" for k, v in want.items() if meta.get(k) != v]
+    if meta.get("rng_layout_version") not in {str(v) for v in rng.RNG_COMPATIBLE_VERSIONS}:
+        compatible = sorted(rng.RNG_COMPATIBLE_VERSIONS)
+        bad.append(f"rng_layout_version={meta.get('rng_layout_version')!r} (expected one of {compatible})")
     if bad:
         raise CheckpointError(f"{path}: incompatible checkpoint: {', '.join(bad)}")
     try:
         arrays = mx.load(str(path), format="safetensors")
-        s = state_from_arrays(arrays)
+        s = state_from_arrays(arrays, cfg)
         mx.eval(s)  # loads are lazy; read now so a later replace of the file cannot affect this state
     except (ValueError, RuntimeError, OSError) as e:
         raise CheckpointError(f"{path}: {e}") from e

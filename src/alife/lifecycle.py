@@ -14,9 +14,9 @@ from typing import NamedTuple
 import mlx.core as mx
 
 from alife import bonds, brain, layout, ops
-from alife.config import Config, dims, immigration_on
+from alife.config import Config, dims, immigration_possible
 from alife.rng import Stream
-from alife.state import R_HARD, DeathCause, State
+from alife.state import R_HARD, DeathCause, Env, State
 
 _I32 = mx.int32
 
@@ -82,6 +82,20 @@ def flush_pending(
     return ops.set_rows(W1, pend_slot, pend_W1), ops.set_rows(W2, pend_slot, pend_W2)
 
 
+def catastrophe_mask(pos: mx.array, alive: mx.array, env: Env, key: mx.array, cfg: Config) -> mx.array:
+    """(N,) bool: alive agents inside the catastrophe disc that draw below ``env.cat_kill_p`` (§12.9).
+
+    Distance is the torus minimum image from ``env.cat_center`` to the start-of-step position. One uniform
+    per row is drawn from ``key`` (``Stream.CATASTROPHE``) every step the director is enabled, whether or not
+    a catastrophe is active, so the stream use is independent of the levers. ``cat_radius = 0`` or
+    ``cat_kill_p = 0`` kills nobody.
+    """
+    off = ops.min_image(pos - env.cat_center, cfg.world.size)
+    inside = ((off * off).sum(axis=1) <= env.cat_radius * env.cat_radius) & (env.cat_radius > 0.0)
+    u = mx.random.uniform(shape=(pos.shape[0],), key=key)
+    return alive & inside & (u < env.cat_kill_p)
+
+
 def deaths(
     alive: mx.array,
     solvent: mx.array,
@@ -96,19 +110,27 @@ def deaths(
     resource: mx.array,
     fcell: mx.array,
     cfg: Config,
+    *,
+    cat_mask: mx.array | None = None,
 ) -> Deaths:
     """S14: ``dead = alive & (~solvent | E == 0 | aged)``; corpses, canonical rows, bonds, records (§10.7).
 
     Cause, first match wins: ``STARVED`` if insolvent, ``KILLED`` if ``E == 0`` after a loss this step,
-    ``STARVED`` if ``E == 0``, else ``AGED``. Corpses (``E + S``) are scatter-added into the dead agent's
-    field cell, then the field is hard-capped at ``R_HARD``. Death records hold the first ``DL`` dead rows by
-    index.
+    ``STARVED`` if ``E == 0``, else ``AGED``. ``cat_mask`` (the director's catastrophe, None when off)
+    kills additional agents: an alive row in the mask that none of those causes already kills dies as
+    ``CATASTROPHE``, so every other cause keeps precedence. Corpses (``E + S``) are scatter-added into the
+    dead agent's field cell, then the field is hard-capped at ``R_HARD``. Death records hold the first ``DL``
+    dead rows by index.
     """
     d = dims(cfg)
     zero = energy == 0
     dead = alive & (~solvent | zero)
     if cfg.population.max_age > 0:  # static: senescence enabled
         dead = dead | (alive & (age >= cfg.population.max_age))
+    cat = None
+    if cat_mask is not None:  # static: director enabled
+        cat = alive & cat_mask & ~dead  # excess deaths only
+        dead = dead | cat
     survivor = alive & ~dead
 
     cause = mx.where(
@@ -120,6 +142,8 @@ def deaths(
             mx.where(zero, DeathCause.STARVED.value, DeathCause.AGED.value),
         ),
     )
+    if cat is not None:  # static: director enabled
+        cause = mx.where(cat, DeathCause.CATASTROPHE.value, cause)
     cause = mx.where(dead, cause, -1).astype(_I32)
 
     corpse = mx.where(dead, energy + cfg.energy.structure, 0).astype(_I32)
@@ -155,7 +179,13 @@ def deaths(
 
 
 def allocate_lanes(
-    req: mx.array, survivor: mx.array, key: mx.array, cfg: Config, step: mx.array | None = None
+    req: mx.array,
+    survivor: mx.array,
+    key: mx.array,
+    cfg: Config,
+    step: mx.array | None = None,
+    *,
+    imm_request: mx.array | None = None,
 ) -> Lanes:
     """Assign up to M birth/immigrant lanes to distinct dead rows under capacity pressure (§12.2).
 
@@ -168,6 +198,10 @@ def allocate_lanes(
     ``immigrants_per_step``) and the periodic rule (``immigration_count`` on steps with
     ``(step + 1) % immigration_every == 0``, ``step`` being this step's index), then capped by the free lanes
     and the free capacity after births (§12.7). ``step`` is required when ``immigration_every > 0``.
+
+    ``imm_request`` (the director's ``env.imm_request``, None when it is off) is a third demand: the
+    demand is ``max(floor and periodic demand, imm_request)``, and the step carries
+    ``max(imm_request − n_imm, 0)`` over to later steps.
     """
     d = dims(cfg)
     n, m = d.n, d.m
@@ -179,7 +213,7 @@ def allocate_lanes(
     room = mx.maximum(d.n_cap - n_surv, 0)  # ≥ 0 whenever the cap held at the start of the step
     n_birth = mx.minimum(mx.minimum(n_req, m), room)
     pop = cfg.population
-    if immigration_on(pop):  # static: immigration enabled
+    if immigration_possible(cfg):  # static: immigration enabled (config rules or the director)
         demand = mx.array(0, dtype=_I32)
         if pop.immigration_floor > 0:  # static: floor rule
             demand = mx.minimum(pop.immigration_floor - n_surv - n_birth, pop.immigrants_per_step)
@@ -188,6 +222,8 @@ def allocate_lanes(
                 raise ValueError("allocate_lanes needs `step` when population.immigration_every > 0")
             due = (step + 1) % pop.immigration_every == 0
             demand = mx.maximum(demand, mx.where(due, pop.immigration_count, 0))
+        if imm_request is not None:  # static: director enabled
+            demand = mx.maximum(demand, imm_request)
         want = mx.minimum(demand, mx.minimum(m - n_birth, room - n_birth))
         n_imm = mx.clip(want, 0, m).astype(_I32)
     else:
@@ -260,7 +296,7 @@ def reproduce(s: State, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: C
     pos = ops.wrap(s.pos[p] + step_vec, L)
     heading = ops.wrap_angle(phi)
     w1, w2 = brain.mutate_rows(s.W1[p], s.W2[p], sigma, rate, ks[Stream.MUT_W1], ks[Stream.MUT_W2], cfg)
-    if immigration_on(pop):  # static: immigrant lanes draw fresh founders (§12.7)
+    if immigration_possible(cfg):  # static: immigrant lanes draw fresh founders (§12.7)
         k_pos, k_head, k_tag, k_w1, k_w2 = mx.random.split(ks[Stream.IMMIGRANT], 5)
         i_pos = ops.wrap(mx.random.uniform(0.0, L, (m, 2), key=k_pos), L)
         i_head = ops.wrap_angle(mx.random.uniform(-math.pi, math.pi, (m,), key=k_head))

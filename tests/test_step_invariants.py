@@ -65,7 +65,7 @@ def _check_counters(prev: State, s: State, out: StepOut, cfg: Config) -> None:
         0 <= c[C.BIRTHS] <= c[C.BIRTH_REQUESTS] and c[C.BIRTHS_BLOCKED] == c[C.BIRTH_REQUESTS] - c[C.BIRTHS]
     )
     n_dead = n0 + int(bv.sum()) - n1
-    assert c[C.DEATHS_STARVED] + c[C.DEATHS_KILLED] + c[C.DEATHS_AGED] == n_dead
+    assert c[C.DEATHS_STARVED] + c[C.DEATHS_KILLED] + c[C.DEATHS_AGED] + c[C.DEATHS_CATASTROPHE] == n_dead
     dv = _np(out.deaths.valid)
     assert dv.sum() == min(n_dead, d.dl) and c[C.DEATHS_UNLOGGED] == max(n_dead - d.dl, 0)
     causes = _np(out.deaths.cause)[dv]

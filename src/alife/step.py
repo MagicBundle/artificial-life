@@ -18,7 +18,7 @@ from alife.actions import Actions
 from alife.config import Config, dims
 from alife.lifecycle import BirthRecords, DeathRecords
 from alife.rng import Stream, step_keys
-from alife.state import N_COUNTERS, CounterIdx, DeathCause, LedgerIdx, State, age, total_energy
+from alife.state import N_COUNTERS, CounterIdx, DeathCause, Diag, Env, LedgerIdx, State, age, total_energy
 
 __all__ = ["BirthRecords", "DeathRecords", "StepOut", "make_step", "step"]
 
@@ -88,8 +88,27 @@ def step(s: State, cfg: Config) -> tuple[State, StepOut]:
     cb = en.combat(E, resource, fcell, act, partner, cfg)  # S11
     sh = en.share(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)  # S12
     E, e_over = en.cap_energy(sh.energy, cfg)  # S13
+    env = s.env if cfg.director.enabled else None  # static: the director's live levers
+    cat_mask = (
+        lifecycle.catastrophe_mask(s.pos, s.alive, env, ks[Stream.CATASTROPHE], cfg)
+        if env is not None
+        else None
+    )
     dt = lifecycle.deaths(
-        s.alive, c.solvent, E, cb.lost, a, s.uid, s.generation, s.clade, partner, rev, cb.resource, fcell, cfg
+        s.alive,
+        c.solvent,
+        E,
+        cb.lost,
+        a,
+        s.uid,
+        s.generation,
+        s.clade,
+        partner,
+        rev,
+        cb.resource,
+        fcell,
+        cfg,
+        cat_mask=cat_mask,
     )  # S14
 
     sv = dt.survivor  # S15
@@ -113,15 +132,18 @@ def step(s: State, cfg: Config) -> tuple[State, StepOut]:
     )
 
     req = sv & act.reproduce & (dt.energy >= cfg.repro.min_energy) & (a >= cfg.repro.min_age)  # S16
-    lanes = lifecycle.allocate_lanes(req, sv, ks[Stream.BIRTH_PRIO], cfg, s.step)
+    imm_request = env.imm_request if env is not None else None
+    lanes = lifecycle.allocate_lanes(req, sv, ks[Stream.BIRTH_PRIO], cfg, s.step, imm_request=imm_request)
     rp = lifecycle.reproduce(s1, lanes, act.child_bond, ks, cfg)
     s2 = rp.state
 
     dep = fields.deposit_chem(act.emit, fcell, c.solvent, cfg)  # S17
     chem = fields.update_chem(s2.chem, dep, cfg)
-    resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step)
-    patch_pos = fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg)
+    resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env)
+    patch_pos = fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env)
     s2 = s2._replace(chem=chem, resource=resource, patch_pos=patch_pos, key=key_next, step=t + 1)
+    if env is not None:  # static: director enabled
+        s2 = consume_env(s2, env, lanes)
 
     flows = _Flows(
         costs=c,
@@ -145,6 +167,20 @@ def step(s: State, cfg: Config) -> tuple[State, StepOut]:
         slots_s9=slots_s9,
     )
     return _finish(s2, s, cfg, flows)  # S18
+
+
+def consume_env(s: State, env: Env, lanes: lifecycle.Lanes) -> State:
+    """Write back the one-shot env levers after a step (§12.7, §12.9).
+
+    ``env`` is the start-of-step view. The immigration request carries over what the lanes did not admit
+    (``max(request − n_imm, 0)``), and the catastrophe kill probability resets to 0 so a catastrophe lasts one
+    step. Centre and radius stay as set: they are inert at ``cat_kill_p = 0``. Both outputs derive from inputs
+    (MLX 0.32 ``mx.compile`` fails on a constant output next to arrays that use it).
+    """
+    return s._replace(
+        env_imm_request=mx.maximum(env.imm_request - lanes.n_imm, 0).astype(_I32),
+        env_cat_kill_p=env.cat_kill_p * 0.0,
+    )
 
 
 def _ledger(f: _Flows, cfg: Config) -> mx.array:
@@ -200,7 +236,7 @@ def _kin_sum(desc: mx.array, k: mx.array, rows: mx.array) -> mx.array:
 
 
 def _counters(s_new: State, alive0: mx.array, f: _Flows, cfg: Config) -> mx.array:
-    """The (26,) int32 per-step counters of §19.1; ``alive0`` is the start-of-step ``alive``."""
+    """The (27,) int32 per-step counters of §19.1; ``alive0`` is the start-of-step ``alive``."""
     d = dims(cfg)
     act, dt, cb = f.act, f.dt, f.cb
 
@@ -238,6 +274,7 @@ def _counters(s_new: State, alive0: mx.array, f: _Flows, cfg: Config) -> mx.arra
         CounterIdx.KIN_BOND_SUM: _kin_sum(f.desc, act.bond_k, f.as_prop),
         CounterIdx.KIN_BOND_BASE: mx.where(f.as_prop, kin_mean, 0.0).astype(_I32).sum(),
         CounterIdx.BOND_PROPOSERS: count(f.as_prop),
+        CounterIdx.DEATHS_CATASTROPHE: count(dt.cause == DeathCause.CATASTROPHE.value),
     }
     assert len(entries) == N_COUNTERS
     return mx.stack([entries[i].astype(_I32) for i in CounterIdx])
@@ -262,6 +299,10 @@ def _finish(s_new: State, s: State, cfg: Config, f: _Flows) -> tuple[State, Step
             f.v_clips,
             cfg,
         )
+        # The start-of-step levers, as the step used them (some are consumed by it).
+        if cfg.director.enabled:  # static
+            env_bad = invariants.env_out_of_range(s, cfg)
+            bits = bits | mx.where(env_bad, Diag.FIELD_RANGE.value, 0).astype(_I32)
         s_new = s_new._replace(diag=s.diag | bits)
     out = StepOut(counters=counters, ledger=ledger, births=f.rp.records, deaths=f.dt.records)
     return s_new, out

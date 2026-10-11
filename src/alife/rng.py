@@ -1,7 +1,10 @@
 """Versioned RNG key layout (§14.1). ``state.key`` is the only simulation RNG state.
 
 ``mx.random.split`` is not prefix-stable (F3), so the stream count is frozen: a new consumer takes a
-reserved index, and changing the layout bumps ``RNG_LAYOUT_VERSION``.
+reserved index, and changing the layout bumps ``RNG_LAYOUT_VERSION``. Taking a reserved index leaves every
+existing stream's key unchanged, so the older version stays in ``RNG_COMPATIBLE_VERSIONS`` and its
+checkpoints still load and resume. A change that moves an existing key would bump the version without
+adding the old one to the set.
 """
 
 from __future__ import annotations
@@ -12,11 +15,12 @@ from typing import Final
 import mlx.core as mx
 
 NUM_STREAMS: Final = 16
-RNG_LAYOUT_VERSION: Final = 1
+RNG_LAYOUT_VERSION: Final = 2  # 2: Stream.CATASTROPHE took reserved index 8 (the key layout is unchanged)
+RNG_COMPATIBLE_VERSIONS: Final = frozenset({1, 2})  # layout versions whose checkpoints this code resumes
 
 
 class Stream(IntEnum):
-    """Per-step streams ``ks[Stream.X]``; indices 8–15 are reserved."""
+    """Per-step streams ``ks[Stream.X]``; indices 9–15 are reserved."""
 
     NOISE = 0
     BOND_PRIO = 1
@@ -26,6 +30,7 @@ class Stream(IntEnum):
     MUT_W2 = 5
     MUT_GENES = 6
     IMMIGRANT = 7
+    CATASTROPHE = 8
 
 
 class InitStream(IntEnum):

@@ -16,6 +16,12 @@ from alife import bonds, layout
 from alife.config import Config, dims
 from alife.state import R_HARD, Diag, LedgerIdx, State, to_numpy, total_energy
 
+# Director env ranges (docs/DIRECTOR.md §3), inclusive (lo, hi); radius and kill_p are set in `_env_ranges`.
+ENV_REGEN_MULT: tuple[float, float] = (0.0, 4.0)
+ENV_DRIFT_MULT: tuple[float, float] = (0.0, 20.0)
+ENV_PATCH_GAIN: tuple[float, float] = (0.0, 4.0)
+ENV_SEASON_AMP: tuple[float, float] = (0.0, 1.0)
+
 if TYPE_CHECKING:  # step imports this module; the annotation alone must not create an import cycle
     from alife.step import StepOut
 
@@ -31,6 +37,27 @@ def _ledger_net(ledger: mx.array) -> mx.array:
     for i in range(LedgerIdx.HEAT_BASAL, LedgerIdx.HEAT_OVERFLOW + 1):
         net = net - ledger[i]
     return net
+
+
+def _env_ranges(cfg: Config) -> dict[str, tuple[float, float]]:
+    """Inclusive range of each float env field (the integer ones are checked separately)."""
+    return {
+        "env_regen_mult": ENV_REGEN_MULT,
+        "env_season_amp": ENV_SEASON_AMP,
+        "env_drift_mult": ENV_DRIFT_MULT,
+        "env_patch_gain": ENV_PATCH_GAIN,
+        "env_cat_radius": (0.0, cfg.world.size / 2),
+        "env_cat_kill_p": (0.0, 1.0),
+    }
+
+
+def env_out_of_range(s: State, cfg: Config) -> mx.array:
+    """True if any ``env_*`` value is non-finite or outside its range (reported as ``FIELD_RANGE``)."""
+    bad = mx.any(~mx.isfinite(s.env_cat_center)) | (s.env_season_period < 0) | (s.env_imm_request < 0)
+    for name, (lo, hi) in _env_ranges(cfg).items():
+        a = getattr(s, name)
+        bad = bad | mx.any(~mx.isfinite(a) | (a < lo) | (a > hi))
+    return bad
 
 
 def device_check(
@@ -67,6 +94,8 @@ def device_check(
         & mx.all(mx.isfinite(s.chem))
     )
     field_bad = mx.any((s.resource < 0) | (s.resource > R_HARD))
+    if cfg.director.enabled:  # static: the director's env levers are live
+        field_bad = field_bad | env_out_of_range(s, cfg)
     headroom = (max_cell_occ >= d.occ_limit) | (max_attackers >= (1 << 15))
     capacity = alive.astype(_I32).sum() > d.n_cap
     pos_bad = mx.any((s.pos < 0) | (s.pos >= cfg.world.size))
@@ -134,6 +163,15 @@ def _expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]
         "total0": ((), i64),
         "ledger_cum": ((len(LedgerIdx),), i64),
         "diag": ((), i32),
+        "env_regen_mult": ((), f32),
+        "env_season_amp": ((), f32),
+        "env_season_period": ((), i32),
+        "env_drift_mult": ((), f32),
+        "env_patch_gain": ((d.pp,), f32),
+        "env_imm_request": ((), i32),
+        "env_cat_center": ((2,), f32),
+        "env_cat_radius": ((), f32),
+        "env_cat_kill_p": ((), f32),
     }
 
 
@@ -270,6 +308,7 @@ def _check_rows(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     r.rows(_bad_range(a["patch_pos"], 0.0, L, hi_open=True), "patch_pos: outside [0, L)")
     r.rows(_bad_range(a["patch_vel"], None, None), "patch_vel: non-finite")
     r.check(step >= 0, f"step: negative ({step})")
+    _check_env(r, a, cfg)
 
     # Pending buffer (§12.6).
     ps = a["pend_slot"]
@@ -281,6 +320,15 @@ def _check_rows(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     # The next S0 overwrites these rows' weights: each must be dead or last step's newborn (§2.2).
     psc = np.clip(ps, 0, d.n - 1)
     r.rows(alive[psc] & (a["birth_step"][psc] != step - 1), "pending: pend_slot points at an established row")
+
+
+def _check_env(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
+    """Director env levers: finite and in range. Inert values pass, so this is checked for every run."""
+    for name, (lo, hi) in _env_ranges(cfg).items():
+        r.rows(_bad_range(a[name].reshape(-1, 1), lo, hi), f"{name}: outside [{lo}, {hi}] or non-finite")
+    r.rows(_bad_range(a["env_cat_center"].reshape(-1, 1), None, None), "env_cat_center: non-finite")
+    r.check(a["env_season_period"] >= 0, f"env_season_period: negative ({a['env_season_period']})")
+    r.check(a["env_imm_request"] >= 0, f"env_imm_request: negative ({a['env_imm_request']})")
 
 
 def _check_step(
