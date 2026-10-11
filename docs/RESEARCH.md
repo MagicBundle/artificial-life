@@ -75,7 +75,8 @@ The literature adds these rules:
    - **A matched random-director arm.** It uses the same menu, budgets and cooldowns, with actions drawn uniformly. Without it, "the director helps" cannot be separated from "any perturbation helps", which is the gap noted in ASAL and ASAL++.
    - **At least a second seed per arm**, since a single-seed comparison is not evidence.
 
-   Both would change DIRECTOR.md §9 and need the owner's decision. Each arm costs about 6 hours on the M5 Pro.
+   The owner accepted both on 2026-10-11, and they are now in DIRECTOR.md §9 and §10. Each arm and seed costs
+   about 6 hours on the M5 Pro.
 4. **P1, then P2.** Add per-agent flow counters with a ledger-closure test. Pursue P2 only if some director arm sustains bodies.
 5. **P5 and P8** as later analyses on the same data.
 6. **P7:** not pursued.

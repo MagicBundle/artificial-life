@@ -170,8 +170,8 @@ verified findings for the whole run.
    LLM, Trickster; optional Architect) with the same seed, and compare archive coverage, persistent novelty, clades,
    extinctions and rescues, and intervention cost, plus the LLM's validity, clamp rate and latency. About 6 hours per
    arm. Build step 4 (the GUI Director panel) can come before or after.
-   `docs/RESEARCH.md` §4 recommends adding a matched random-director arm and a second seed per arm, and
-   using Bedau–Packard activity statistics as an outcome metric.
+   §9 now also requires a matched random-director arm R (a new `random` persona, not built yet), at least two
+   seeds per arm, and Bedau–Packard activity as an outcome metric (`docs/RESEARCH.md` §4).
 3. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
