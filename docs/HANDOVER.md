@@ -19,6 +19,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `tests/` | pytest suite. 730 fast tests (`-m "not slow"`, about 50 s on the Mac) plus 19 slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 3 are built, §12 and §13 record how steps 2 and 3 refine it |
+| `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
 | `.github/workflows/ci.yml` | Linux CPU CI: ruff, ruff format check, fast suite; nightly slow suite |
@@ -169,6 +170,8 @@ verified findings for the whole run.
    LLM, Trickster; optional Architect) with the same seed, and compare archive coverage, persistent novelty, clades,
    extinctions and rescues, and intervention cost, plus the LLM's validity, clamp rate and latency. About 6 hours per
    arm. Build step 4 (the GUI Director panel) can come before or after.
+   §9 now also requires a matched random-director arm R (a new `random` persona, not built yet), at least two
+   seeds per arm, and Bedau–Packard activity as an outcome metric (`docs/RESEARCH.md` §4).
 3. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
