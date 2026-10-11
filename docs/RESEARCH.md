@@ -69,7 +69,7 @@ The literature adds these rules:
 
 ## 4. Recommended order
 
-1. **P4, offline.** Compute Bedau–Packard activity statistics on `64k_s0` from `events/`, normalised against a neutral shadow. This classifies the stall after about 1M steps as no, bounded or unbounded activity. Clade is too coarse a component (4 remain), so use lineage subtrees, quantised tag vectors, or both. The result becomes the outcome metric for every later experiment. (Queued as a local task.)
+1. **P4, offline.** Compute Bedau–Packard activity statistics on `64k_s0` from `events/`, normalised against a neutral shadow. This classifies the stall after about 1M steps as no, bounded or unbounded activity. Clade is too coarse a component (4 remain), so use lineage subtrees, quantised tag vectors, or both. The result becomes the outcome metric for every later experiment. Done: `docs/ACTIVITY.md` (`alife activity`): bounded activity in all three windows; lineage components only, since tags are not recorded per birth; forks are not yet readable by the tool.
 2. **P3 diagnostic, offline.** Estimate mutual information between each signal channel (`emit`, `msg`) and resource, energy, kin and next action at several checkpoints, against a shuffle null. (Queued as a local task.)
 3. **P6, the DIRECTOR.md §9 evaluation, with two additions.** Report the step-1 activity statistics alongside archive coverage and persistent novelty. Then add:
    - **A matched random-director arm.** It uses the same menu, budgets and cooldowns, with actions drawn uniformly. Without it, "the director helps" cannot be separated from "any perturbation helps", which is the gap noted in ASAL and ASAL++.
