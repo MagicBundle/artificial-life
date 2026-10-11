@@ -14,6 +14,7 @@ import zlib
 from pathlib import Path
 from typing import Any
 
+import mlx.core as mx
 import numpy as np
 import pytest
 
@@ -307,3 +308,199 @@ def test_usage_and_config_errors(tmp_path: Path) -> None:
     assert cli.main(["run", "--preset", "tiny", "--metrics-every", "7", "--out", str(tmp_path / "b")]) == 2
     assert cli.main(["resume", str(tmp_path / "missing")]) == 1
     assert cli.main(["--help"]) == 0
+
+
+# --- the director flags (build step 2) ---
+
+DIR_SET = [
+    "--set",
+    "director.rule_every=100",
+    "--set",
+    "run.metrics_every=10",
+    "--set",
+    "run.heavy_metrics_every=100",
+]
+
+
+def test_director_live_run_writes_its_files_and_replays(tmp_path: Path) -> None:
+    out, rep = tmp_path / "live", tmp_path / "rep"
+    base = ["--preset", "tiny", *F32, *SAMPLE, *DIR_SET, "--quiet"]
+    assert cli.main(["run", *base, "--director", "live", "--steps", "300", "--out", str(out)]) == 0
+    rd = RunDir.open(out)
+    cfg = rd.config()
+    assert (cfg.run.director, cfg.director.enabled) == ("live", True)  # live implies an enabled director
+    head = json.loads((out / "director.jsonl").read_text().splitlines()[0])
+    assert head["kind"] == "header" and head["rules_version"] == 1 and head["rule_every"] == 100
+    assert json.loads((out / "director_archive.json").read_text())["as_of_step"] == 300
+    assert "env" in rd.metrics_rows()[0] and cli.main(["inspect", str(out), "--check"]) == 0
+    argv = [
+        "run",
+        "--init-from",
+        f"{out}:0",
+        "--director",
+        "replay",
+        "--replay-log",
+        str(out / "director.jsonl"),
+    ]
+    assert cli.main([*argv, "--steps", "300", "--quiet", "--out", str(rep)]) == 0
+    assert _digest(RunDir.open(rep), 300) == _digest(rd, 300)
+    assert RunDir.open(rep).config().run.director == "replay"
+    assert cli.main(["resume", str(rep), "--steps", "0", "--quiet"]) == 0  # inherits replay; applies the log
+
+
+def test_director_off_and_default_runs_have_no_director_files(tmp_path: Path) -> None:
+    for name, extra in (("default", []), ("off", ["--director", "off"])):
+        out = tmp_path / name
+        assert (
+            cli.main(
+                [
+                    "run",
+                    "--preset",
+                    "tiny",
+                    *F32,
+                    *SAMPLE,
+                    "--steps",
+                    "20",
+                    "--quiet",
+                    *extra,
+                    "--out",
+                    str(out),
+                ]
+            )
+            == 0
+        )
+        assert not any(
+            (out / f).exists() for f in ("director.jsonl", "journal.jsonl", "director_archive.json")
+        )
+        assert "env" not in RunDir.open(out).metrics_rows()[0]  # the env summary is only for enabled runs
+        assert RunDir.open(out).config().director.enabled is False
+    # director.enabled with the mode off: the environment is inert and nothing is decided
+    out = tmp_path / "enabled_off"
+    argv = [
+        "run",
+        "--preset",
+        "tiny",
+        *F32,
+        *SAMPLE,
+        "--set",
+        "director.enabled=true",
+        "--steps",
+        "20",
+        "--quiet",
+    ]
+    assert cli.main([*argv, "--out", str(out)]) == 0
+    assert not (out / "director.jsonl").exists() and "env" in RunDir.open(out).metrics_rows()[0]
+
+
+def test_replay_needs_a_state_to_continue(tmp_path: Path) -> None:
+    assert (
+        cli.main(["run", "--preset", "tiny", "--director", "replay", "--quiet", "--out", str(tmp_path / "x")])
+        == 2
+    )
+    assert (
+        cli.main(
+            [
+                "run",
+                "--preset",
+                "tiny",
+                "--set",
+                "run.director=replay",
+                "--quiet",
+                "--out",
+                str(tmp_path / "y"),
+            ]
+        )
+        == 2
+    )
+    assert not (tmp_path / "x").exists() and not (tmp_path / "y").exists()
+
+
+def test_fork_resets_the_environment_and_does_not_inherit_the_director(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from alife.state import default_env
+
+    src = tmp_path / "src"
+    assert (
+        cli.main(
+            [
+                "run",
+                "--preset",
+                "tiny",
+                *F32,
+                *SAMPLE,
+                *DIR_SET,
+                "--director",
+                "live",
+                "--steps",
+                "100",
+                "--quiet",
+                "--out",
+                str(src),
+            ]
+        )
+        == 0
+    )
+    # make the source's last checkpoint carry a non-inert environment, as after a director action
+    srd, scfg = RunDir.open(src), RunDir.open(src).config()
+    s = load_checkpoint(srd.checkpoint_at(100), scfg)
+    srd.save_checkpoint(
+        s._replace(env_regen_mult=mx.array(1.7, mx.float32), env_imm_request=mx.array(9, mx.int32)), scfg
+    )
+    capsys.readouterr()
+    out = tmp_path / "fork"
+    assert cli.main(["run", "--init-from", str(src), "--steps", "10", "--out", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert text.count("environment levers were reset") == 1  # one note line
+    frd = RunDir.open(out)
+    fcfg = frd.config()
+    assert fcfg.run.director == "off" and fcfg.director.enabled  # the mode is not inherited, the lever is
+    assert not (out / "director.jsonl").exists()  # and the source's director history does not carry over
+    start = load_checkpoint(frd.checkpoint_at(100), fcfg)
+    for name, want in default_env(fcfg).items():
+        np.testing.assert_array_equal(to_numpy(getattr(start, name)), to_numpy(want), err_msg=name)
+    # the new config's seasons become the inert environment (the source's were off)
+    seasons = tmp_path / "seasons"
+    argv = [
+        "run",
+        "--init-from",
+        str(src),
+        "--set",
+        "fields.season_period=40",
+        "--set",
+        "fields.season_amplitude=0.5",
+    ]
+    assert cli.main([*argv, "--steps", "5", "--quiet", "--out", str(seasons)]) == 0
+    sstart = load_checkpoint(RunDir.open(seasons).checkpoint_at(100), RunDir.open(seasons).config())
+    assert int(to_numpy(sstart.env_season_period)) == 40 and float(
+        to_numpy(sstart.env_season_amp)
+    ) == np.float32(0.5)
+    # a clean source needs no reset and no note; --director live on a fork starts a fresh log
+    clean = tmp_path / "clean"
+    assert (
+        cli.main(
+            [
+                "run",
+                "--init-from",
+                f"{src}:0",
+                "--director",
+                "live",
+                *DIR_SET,
+                "--steps",
+                "100",
+                "--out",
+                str(clean),
+            ]
+        )
+        == 0
+    )
+    assert "were reset" not in capsys.readouterr().out
+    heads = [json.loads(x) for x in (clean / "director.jsonl").read_text().splitlines() if '"header"' in x]
+    assert [h["step"] for h in heads] == [0] and RunDir.open(clean).config().run.director == "live"
+
+
+def test_view_and_render_help_say_they_ignore_the_director(capsys: pytest.CaptureFixture[str]) -> None:
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction")
+    helps = {c.dest: c.help for c in sub._choices_actions}
+    assert "without the director" in helps["view"] and "director" in helps["render"]

@@ -637,9 +637,8 @@ def test_config_hash_rules() -> None:
     assert ("director", "enabled") in POST_V01_KEYS
     on = apply_overrides(cfg, [DIRECTOR])
     assert config_hash(on) != config_hash(cfg)
-    assert config_to_dict(cfg)["director"] == {
-        "enabled": False
-    }  # saved in config.json, dropped from the hash
+    # saved in config.json, dropped from the hash (the policy keys never enter it, see test_director_config)
+    assert config_to_dict(cfg)["director"]["enabled"] is False
     old = config_to_dict(cfg)
     del old["director"]  # a config.json written before the section existed
     back = config_from_dict(old)

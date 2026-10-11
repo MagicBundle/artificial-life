@@ -167,6 +167,12 @@ class FieldConfig:
 @dataclass(frozen=True)
 class DirectorConfig:  # ecosystem director (docs/DIRECTOR.md); added after v0.1
     enabled: bool = False  # static: the compiled step reads the live environment state (State.env)
+    # Policy keys: read by the host-side director between steps, never by the compiled step. They are not
+    # hashed (``UNHASHED_KEYS``) and may change on resume.
+    persona: str = "gardener"  # gardener | trickster | architect
+    goal: str = ""  # the Architect's goal text (stored, not interpreted before the LLM tier)
+    rule_every: int = 1000  # steps between rule-tier decisions; a multiple of the metrics cadences
+    budget_per_100k: int = 0  # intervention cost units per rolling 100k steps; 0 = the persona's default
 
 
 @dataclass(frozen=True)
@@ -181,6 +187,7 @@ class RunConfig:  # excluded from config_hash; on resume only observer/cadence k
     heavy_metrics_every: int = 1000  # components + weight diversity; multiple of metrics_every
     components_iters: int = 32
     diversity_sample: int = 256
+    director: str = "off"  # off | live | replay (needs director.enabled); resume may change it
 
 
 @dataclass(frozen=True)
@@ -501,7 +508,23 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("fields", "season_amplitude"),
     ("fields", "season_mode"),
     ("director", "enabled"),
+    ("director", "persona"),
+    ("director", "goal"),
+    ("director", "rule_every"),
+    ("director", "budget_per_100k"),
 )
+
+# The POST_V01 keys that are omitted from ``config_hash`` at every value: the director's policy. Only
+# ``director.enabled`` changes the compiled step, so only it is hashed.
+UNHASHED_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    ("director", "persona"),
+    ("director", "goal"),
+    ("director", "rule_every"),
+    ("director", "budget_per_100k"),
+)
+DIRECTOR_POLICY_KEYS: Final = tuple(key for _, key in UNHASHED_KEYS)
+DIRECTOR_MODES: Final = ("off", "live", "replay")
+PERSONAS: Final = ("gardener", "trickster", "architect")
 
 
 SEASON_MODES: Final = ("global", "per_patch")
@@ -525,14 +548,14 @@ def seasons_on(fi: FieldConfig) -> bool:
 def config_hash(cfg: Config) -> str:
     """SHA-256 hex of the canonical JSON of every section except ``run``.
 
-    Keys added after v0.1 (``POST_V01_KEYS``) are omitted at their defaults, and a section left empty by
-    that (``director``) is omitted too, so pre-director runs keep their hash.
+    Keys added after v0.1 (``POST_V01_KEYS``) are omitted at their defaults (``UNHASHED_KEYS``: always), and a
+    section left empty by that (``director``) is omitted too, so pre-director runs keep their hash.
     """
     d = config_to_dict(cfg)
     d.pop("run")
     defaults = config_to_dict(Config())
     for sec, key in POST_V01_KEYS:
-        if d[sec][key] == defaults[sec][key]:
+        if (sec, key) in UNHASHED_KEYS or d[sec][key] == defaults[sec][key]:
             del d[sec][key]
     for sec in {sec for sec, _ in POST_V01_KEYS}:
         if not d[sec]:
@@ -553,6 +576,7 @@ def validate(cfg: Config) -> None:
     w, pop, sen, br = cfg.world, cfg.population, cfg.sensing, cfg.brain
     ph, bo, en, co = cfg.physics, cfg.bonds, cfg.energy, cfg.combat
     rp, mu, fi, ru = cfg.repro, cfg.mutation, cfg.fields, cfg.run
+    di = cfg.director
     errs: list[str] = []
 
     def req(ok: bool, msg: str) -> None:
@@ -743,6 +767,20 @@ def validate(cfg: Config) -> None:
             ru.heavy_metrics_every >= 1 and ru.heavy_metrics_every % ru.metrics_every == 0,
             "run.heavy_metrics_every must be a positive multiple of run.metrics_every",
         )
+
+    # Director.
+    req(di.persona in PERSONAS, f"director.persona {di.persona!r} not in {PERSONAS}")
+    req(di.rule_every >= 1, f"director.rule_every must be ≥ 1, got {di.rule_every}")
+    req(di.budget_per_100k >= 0, f"director.budget_per_100k must be ≥ 0, got {di.budget_per_100k}")
+    req(ru.director in DIRECTOR_MODES, f"run.director {ru.director!r} not in {DIRECTOR_MODES}")
+    if ru.director != "off":
+        req(di.enabled, "run.director live/replay needs director.enabled (use --director, which sets it)")
+        if di.rule_every >= 1 and ru.metrics_every >= 1 and ru.heavy_metrics_every >= 1:
+            req(
+                di.rule_every % ru.metrics_every == 0 and di.rule_every % ru.heavy_metrics_every == 0,
+                f"director.rule_every {di.rule_every} must be a multiple of run.metrics_every "
+                f"{ru.metrics_every} and run.heavy_metrics_every {ru.heavy_metrics_every}",
+            )
 
     if errs:
         raise ConfigError(f"{len(errs)} config problem(s): " + "; ".join(errs))

@@ -30,15 +30,19 @@ SIM_MODULES = {
     "step",
     "invariants",
 }  # rule 5
-SETITEM_MODULES = SIM_MODULES | {"ops", "rng", "state"}  # rule 2 scope: modules that handle arrays in-graph
+DIRECTOR_MODULES = {f"director.{p.stem}" for p in (SRC / "director").glob("*.py")}  # host-side, scanned too
+SETITEM_MODULES = SIM_MODULES | {"ops", "rng", "state"} | DIRECTOR_MODULES  # rule 2 scope
 HOST_ALLOW = {("invariants", "full_check")}  # rule 5: the host-side exhaustive check reads numpy by design
 KEYLESS_RANDOM = {"key", "split"}  # take the key (or seed) positionally by design
 SAFE_ROOTS = {"cfg", "d", "math", "layout", "dims", "self"}  # float()/int() of config-derived Python values
 
 
 def _modules() -> Iterator[tuple[str, ast.Module]]:
+    """Every module of ``alife`` and of ``alife.director`` (named ``director.<stem>``)."""
     for path in sorted(SRC.glob("*.py")):
         yield path.stem, ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for path in sorted((SRC / "director").glob("*.py")):
+        yield f"director.{path.stem}", ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
 def _functions(tree: ast.AST) -> Iterator[tuple[str, ast.AST]]:
@@ -179,7 +183,7 @@ RULES = (rule_at, rule_setitem, rule_random, rule_async_eval, rule_host_reads)
 @pytest.mark.parametrize("rule", RULES, ids=lambda r: r.__name__)
 def test_source_tree(rule) -> None:
     mods = list(_modules())
-    assert {"ops", "state", "step", "bonds"} <= {m for m, _ in mods}
+    assert {"ops", "state", "step", "bonds", "director.rules", "director.actions"} <= {m for m, _ in mods}
     violations = [v for mod, tree in mods for v in rule(mod, tree)]
     assert violations == []
 
@@ -195,6 +199,7 @@ def test_rules_are_not_vacuous() -> None:
     assert bad(rule_setitem, "ops", "def place(x):\n    x[0] += 1\n")
     assert not bad(rule_setitem, "ops", "def set_rows(x):\n    x[0] = 1\n")
     assert not bad(rule_setitem, "config", "def f(d):\n    d['a'] = 1\n")
+    assert bad(rule_setitem, "director.rules", "def f(d):\n    d['a'] = 1\n")  # the director scans clean too
     assert bad(rule_random, "brain", "def f():\n    return mx.random.normal((3,))\n")
     assert bad(rule_random, "brain", "def f():\n    mx.random.seed(0)\n")
     assert not bad(

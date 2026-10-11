@@ -14,6 +14,7 @@ from alife.config import (
     OVERLAYS,
     PRESETS,
     R_HARD,
+    UNHASHED_KEYS,
     Config,
     ConfigError,
     apply_overrides,
@@ -288,6 +289,8 @@ def test_hash_ignores_run_and_tracks_dynamics() -> None:
         if sec == "run":
             continue
         for key, val in vals.items():
+            if (sec, key) in UNHASHED_KEYS:
+                continue  # the director's policy is read between steps only (see test_director_config)
             if isinstance(val, bool):
                 new = not val
             elif isinstance(val, int):

@@ -1,8 +1,9 @@
 # alife: notes for Claude
 
 Start with `docs/HANDOVER.md` (current state, results, next steps). `docs/DESIGN.md` is the normative spec.
-`docs/DIRECTOR.md` is the design for the ecosystem director; build step 1 (the engine's live environment
-state, `State.env`) is implemented, the rest is not yet.
+`docs/DIRECTOR.md` is the design for the ecosystem director; build steps 1 (the engine's live environment
+state, `State.env`) and 2 (the host-side core: vital signs, archive, rule tier, `director.jsonl`, replay, CLI;
+`DESIGN.md` §26) are implemented, the LLM tier, the GUI panel and the evaluation are not yet.
 
 ## Conventions
 

@@ -1,7 +1,7 @@
 # Handover
 
-Status of the `alife` project as of 2026-10-11, written for the next coding session (a local Claude Code
-session on the owner's MacBook Pro, M5 Pro, 48 GB). Read this, then `CLAUDE.md`, then the parts of
+Status of the `alife` project as of 2026-10-11 (after director build step 2), written for the next coding
+session (a local Claude Code session on the owner's MacBook Pro, M5 Pro, 48 GB). Read this, then `CLAUDE.md`, then the parts of
 `docs/DESIGN.md` you need.
 
 ## What this is
@@ -15,9 +15,10 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 
 | path | what |
 |---|---|
-| `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI |
-| `tests/` | pytest suite. About 530 fast tests (`-m "not slow"`, about 2 min on Linux CPU, 15 s on the Mac) plus 18 slow ones |
-| `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs |
+| `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, and `director/` (the host-side ecosystem director, see below) |
+| `tests/` | pytest suite. 730 fast tests (`-m "not slow"`, about 50 s on the Mac) plus 19 slow ones |
+| `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director core is §26) |
+| `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 and 2 are built, §12 records how step 2 refines it |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
 | `.github/workflows/ci.yml` | Linux CPU CI: ruff, ruff format check, fast suite; nightly slow suite |
@@ -41,20 +42,22 @@ of the Python process). A second SIGINT is a hard exit. Do not use `--quiet` if 
 
 ## Verified state
 
-- `main` holds the v0 engine (PR #1) plus the GUI, periodic immigration and seasons (PR #2), both
-  squash-merged. Branch `gui-fork-prefill-swift6` adds the GUI follow-ups below.
-- Linux CPU (container and CI): 530 fast tests pass, ruff clean. The golden digest is pinned for MLX 0.32.3 on
-  Linux-x86_64-cpu, and the test skips elsewhere.
-- Mac (M5 Pro, Metal), v0 code: 505 fast and 18 slow tests pass. `bench --preset 64k`: 61.6 steps/s
-  (16 ms/step), 1.1 GB peak, weights updated in place, deterministic. The neighbour search is the biggest stage
-  (33%).
-- Mac, current `main` (immigration and seasons included): 529 fast tests pass, 1 skipped (the Linux-only golden
-  digest), ruff clean, about 18 s.
+- `main` holds the v0 engine (PR #1), the GUI, periodic immigration and seasons (PR #2), the GUI follow-ups (PR #3),
+  the director design (PR #4) and director build step 1, the engine's live environment state (PR #5), all
+  squash-merged. Director build step 2 (the host-side director core) is the PR this handover ships with.
+- Mac (M5 Pro, Metal), this PR: 730 fast tests pass, 1 skipped (the Linux-only golden digest), 19 slow tests pass,
+  ruff and the format check clean. Linux CI was not run in this session.
+- Director off is bit-identical to `main`: the baseline digests (`legacy_state_digest`, counters and ledgers of the
+  tiny cases on CPU and GPU, 200 steps) are unchanged, and no existing config hash moved (`runs/64k_s0` still hashes
+  to `69b4e21a…`; `alife inspect runs/64k_s0 --check` passes).
+- Mac, v0 code: `bench --preset 64k`: 61.6 steps/s (16 ms/step), 1.1 GB peak, weights updated in place,
+  deterministic. The neighbour search is the biggest stage (33%).
 - Metal quirk (DESIGN F20): float32 GPU matmul is reduced precision (about 8e-4 relative). Anything that must
   be accurate avoids GPU matmul.
 - GUI on the Mac: it compiled first time (Swift 6.4 toolchain, macOS 27 SDK). The levers and CLI flags were
   checked against `config.py` and `alife --help`. The owner clicked through the tiny-preset checklist below
-  before and after the Swift 6 migration, and every step passed.
+  before and after the Swift 6 migration, and every step passed. Step 2 did not touch the GUI; its Director panel is
+  build step 4.
 
 ## New in PR #2
 
@@ -69,6 +72,28 @@ of the Python process). A second SIGINT is a hard exit. Do not use `--quiet` if 
 - **GUI:** new run, resume and fork; levers; stop button and stop-after timer; keep-awake; live status from
   `metrics.jsonl`; viewer, inspect and Finder buttons. Fork hides the fast overlay because it changes the brain
   size.
+
+## Ecosystem director (docs/DIRECTOR.md)
+
+Goal: keep the world novel but viable by acting only on the environment, never on agents or genomes.
+
+- **Step 1 (PR #5, merged):** the engine's live environment state, `State.env_*` (regeneration multiplier, seasons,
+  drift, per-patch gain, immigration request, catastrophe), read by the compiled step behind `director.enabled`.
+- **Step 2 (this PR, `DESIGN.md` §26):** the host-side core, no LLM. `alife.director` computes vital signs from
+  `metrics.jsonl`, keeps a behaviour archive (novelty and a coverage grid), and a rule tier (extinction rescue, runaway
+  damper, monoculture breaker, stagnation response, three personas) decides at `director.rule_every` boundaries
+  between compiled steps, within budgets and cooldowns. Every action is logged with explicit clamped values to
+  `runs/NAME/director.jsonl` (plus `journal.jsonl` and `director_archive.json`), and the log replays bitwise.
+- **Use:** `alife run --preset 64k --director live --set director.persona=trickster ...`; the same for `resume RUN
+  --director live`. `--director replay` applies a log: `resume RUN --director replay` in place, or `run --init-from
+  SRC:STEP --director replay --replay-log LOG --out NEW` for a fork. A run must be started with the director enabled
+  (`--director live|replay` on `run` sets `director.enabled`); to add it to an older run, fork it.
+- **Caveats:** a fork resets the environment levers and starts with the director off. `view` and `render` re-simulate
+  without the director, so after an action they diverge from the run. A resume that interrupts a rule window may
+  decide differently from an uninterrupted run; the log is the truth. The thresholds in `RuleParams` (rules version
+  1) are first values calibrated on the `64k_s0` rows (§26.7), not tuned results. On the tiny preset the extinction
+  rescue fires at step 100 (a start-up boom and bust of more than 30% inside one window), and the damper sees a body
+  above 5% of a 250-agent population; neither is expected on a 64k run.
 
 ## Results so far (run `runs/64k_s0`, seed 0, 64k preset, about 1.5M steps)
 
@@ -91,7 +116,7 @@ verified findings for the whole run.
   undercounts delayed combat deaths, which are recorded as starvation. Kin biases are partly a proximity
   artefact.
 
-## GUI follow-ups (branch `gui-fork-prefill-swift6`)
+## GUI follow-ups (PR #3, merged)
 
 - **Fork pre-fill:** in Fork mode the levers are loaded from `runs/SOURCE/config.json`, where a missing
   post-v0.1 key means the engine default. Only levers that differ from the source are passed as `--set`, so a
@@ -118,13 +143,17 @@ verified findings for the whole run.
 
 ## Suggested next steps
 
-1. Experiments with the new levers. Fork `runs/64k_s0` from its latest checkpoint, for example with
-   `immigration_every=5000 immigration_count=64`, then `season_period=20000 season_amplitude=0.6
-   season_mode=per_patch`, then a higher `mutation.rate_min`. Compare against an unforked control and a second
-   seed (`--seed 1`).
-2. Optional engine work, deferred in DESIGN §23.2:
+1. **Director build step 3, the LLM tier** (`docs/DIRECTOR.md` §7): an LM Studio client with the intervention JSON
+   schema, personas' prompts, the fallback to the rule tier and the audit journal, plus a mock-server test (valid,
+   invalid and slow replies). It adds `source: llm` entries, `llm_every`, and the `--persona`, `--goal` and LLM
+   flags. The Architect's goal text is stored but not interpreted until then.
+2. **The §9 evaluation:** fork `runs/64k_s0` at step 120,000 into the arms (director off; rule tier, Gardener; rule +
+   LLM, Trickster; optional Architect) with the same seed, and compare archive coverage, persistent novelty, clades,
+   extinctions and rescues, and intervention cost. About 6 hours per arm. Build step 4 (the GUI Director panel) can
+   come before or after.
+3. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
    - `inspect` showing the resumed total instead of the original `steps`.
-3. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
+4. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
    it in the DESIGN Review log.

@@ -1405,7 +1405,8 @@ Bitwise-identical trajectories are guaranteed when all of these match:
   State field and part of the digest).
 
 `run.seed`, `run.compile` and `run.runtime_checks` are therefore fixed for the lifetime of a run directory: resume
-rejects overrides of them (§18). The guarantee covers checkpoint/resume, and holds **whatever** the metrics, render, checkpoint or viewer cadence
+rejects overrides of them (§18). With a director, the decision log (`director.jsonl`, §26) is one more input: the same
+log replays bitwise (§26.8). The guarantee covers checkpoint/resume, and holds **whatever** the metrics, render, checkpoint or viewer cadence
 (observer purity).
 
 **How each mechanism is made deterministic.**
@@ -1805,7 +1806,8 @@ def components(partner: mx.array, alive: mx.array, iters: int) -> tuple[mx.array
 def snapshot_metrics(s: State, cfg: Config, *, heavy: bool) -> dict[str, Any]     # host floats/ints/lists
 def interval_row(step: int, counters: np.ndarray, ledgers: np.ndarray, snap: Mapping[str, Any],
                  perf: Mapping[str, float]) -> dict[str, Any]                     # counters (T,27), ledgers (T,16)
-def carrying_capacity(s: State, cfg: Config) -> float
+def carrying_capacity(s: State, cfg: Config, step: mx.array | None = None, env: Env | None = None) -> float
+                    # step + env: the live regeneration (the director's K_est, §26.5)
 
 # runio.py
 FORMAT_VERSION: Final = 1
@@ -1822,8 +1824,11 @@ class RunDir:
     def checkpoints(self) -> list[tuple[int, Path]]
     def latest_checkpoint(self) -> Path | None
     def append_metrics(self, rows: Iterable[Mapping[str, Any]]) -> None
+    def append_jsonl(self, name: str, records: Iterable[Mapping[str, Any]]) -> None   # append + fsync (director files)
+    def read_jsonl(self, name: str) -> list[dict[str, Any]]                          # a torn last line is ignored
+    def write_json(self, name: str, obj: Any) -> None                                # atomic (director_archive.json)
     def write_events(self, s0: int, s1: int, births: Mapping[str, np.ndarray], deaths: Mapping[str, np.ndarray]) -> None
-    def truncate_after(self, step: int) -> None
+    def truncate_after(self, step: int, *, keep_director: bool = False) -> None   # also cuts the director files (§26.3)
     def dump_diag(self, s: State, step: int) -> Path
 def write_state_file(path: Path, s: State, cfg: Config) -> None   # atomic (*.tmp + os.replace); checkpoint metadata
 def checkpoint_metadata(path: Path) -> dict[str, str]
@@ -1834,7 +1839,8 @@ def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> Stat
 class ExitCode(IntEnum): OK = 0; ERROR = 1; CONFIG = 2; INVARIANT = 3; CHECKPOINT = 4; INTERRUPTED = 130
 class RunResult(NamedTuple): state: State; status: str; exit_code: ExitCode     # status: done|extinct|violation|interrupted
 def run(rd: RunDir, cfg: Config, state: State, steps: int, *, quiet: bool = False,
-        on_interval: Callable[[State, dict[str, Any]], None] | None = None) -> RunResult
+        on_interval: Callable[[State, dict[str, Any]], None] | None = None,
+        director: Director | None = None) -> RunResult        # the director hook: §26.1
 
 # render.py
 @dataclass(frozen=True) class Viewport: cx: float; cy: float; zoom: float = 1.0
@@ -2072,6 +2078,10 @@ class FieldConfig:
 @dataclass(frozen=True)
 class DirectorConfig:                  # added after v0.1; docs/DIRECTOR.md
     enabled: bool = False              # static: the compiled step reads State.env (§2.2, §3); off = today's graph
+    persona: str = "gardener"          # gardener | trickster | architect; the keys below are policy (§26.2), unhashed
+    goal: str = ""                     # the Architect's goal text (stored, not interpreted before the LLM tier)
+    rule_every: int = 1000             # steps between rule-tier decisions; multiple of the metrics cadences
+    budget_per_100k: int = 0           # cost units per rolling 100k steps; 0 = the persona's default
 
 @dataclass(frozen=True)
 class RunConfig:                       # excluded from config_hash; on resume only observer/cadence keys may change (§18)
@@ -2085,6 +2095,7 @@ class RunConfig:                       # excluded from config_hash; on resume on
     heavy_metrics_every: int = 1000    # components + weight diversity; multiple of metrics_every
     components_iters: int = 32
     diversity_sample: int = 256
+    director: str = "off"              # off | live | replay (§26.2); needs director.enabled; resume may change it
 
 @dataclass(frozen=True)
 class Config:
@@ -2124,7 +2135,9 @@ Rules:
 lists). It reloads exactly: `config_from_dict(config_to_dict(c)) == c`. `config_hash` covers every section
 except `run`. **Keys added after v0.1 are omitted from the hash at their defaults** (`config.POST_V01_KEYS`:
 `population.immigration_every`, `population.immigration_count`, `fields.season_period`,
-`fields.season_amplitude`, `fields.season_mode`, `director.enabled`). A section that this leaves empty
+`fields.season_amplitude`, `fields.season_mode`, `director.enabled`; the director's policy keys `persona`, `goal`,
+`rule_every` and `budget_per_100k` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
+because only `enabled` changes the compiled step). A section that this leaves empty
 (`director`) is omitted from the hashed dict too, so the hash does not change when a section is added. A
 `config.json` that predates them therefore loads with the
 defaults (sparse dicts fill missing keys, and a missing `director` section is the default one), hashes exactly as
@@ -2139,9 +2152,11 @@ changes the hash, as for any dynamics key.
   `immigrants_per_step ≥ 1` when `immigration_floor > 0` (otherwise an extinct world could never refill, yet
   the §18 extinction stop is off); `immigration_every ≥ 0`; `1 ≤ immigration_count` when
   `immigration_every > 0`; `immigration_count ≤ M`.
-- **Director:** `director.enabled` is a plain bool with no cross-rule. With it on, `fields.n_patches` also fixes
-  the length of `env_patch_gain`, and immigration is possible (`immigration_possible`) even when
-  `immigration_floor = 0`.
+- **Director:** `director.enabled` is a plain bool. With it on, `fields.n_patches` also fixes the length of
+  `env_patch_gain`, and immigration is possible (`immigration_possible`) even when `immigration_floor = 0`.
+  `persona ∈ {gardener, trickster, architect}`; `rule_every ≥ 1`; `budget_per_100k ≥ 0`; `run.director ∈ {off, live,
+  replay}`; when `run.director` is not `off`: `director.enabled` is true and `rule_every` is a multiple of both
+  `run.metrics_every` and `run.heavy_metrics_every` (§26.2).
 - **Fields (seasons):** `season_period ≥ 0`; `0 ≤ season_amplitude ≤ 1`; `season_period ≥ 1` when
   `season_amplitude > 0`; `season_mode ∈ {global, per_patch}`.
 - **Physics stability:** `stability_number ≤ 1.8`; `thrust_max < 2·radius·k_repel`; `v_max ≤ physics.radius`;
@@ -2186,6 +2201,9 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
     births_<s0:010d>_<s1:010d>.npz             step i32, uid i64, parent_uid i64, clade i32, generation i32, slot i32
     deaths_<s0:010d>_<s1:010d>.npz             step i32, uid i64, age i32, cause u8, generation i32, clade i32
   diag/step_<step>.safetensors                 written automatically when an error diag bit is found (exit 3)
+  director.jsonl                               director runs only: the decision log (header + entries), §26.3
+  journal.jsonl                                director runs only: rule-tier one-liners, never read by the simulation
+  director_archive.json                        director runs only: the behaviour archive at the last checkpoint
   media/                                       render and video outputs; viewer snapshots snap_<step>.safetensors
 ```
 
@@ -2226,14 +2244,20 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
      `meta.start_step + run.steps`.
   3. Refuse with exit 4 if `format_version`, `rng_layout_version`, `genome_layout_version` or `config_hash` differ.
      Resume accepts only `--set run.*` overrides of observer and cadence keys (`steps`, `metrics_every`,
-     `checkpoint_every`, `keep_checkpoints`, `heavy_metrics_every`, `components_iters`, `diversity_sample`).
-     Overriding `run.seed`, `run.compile` or `run.runtime_checks`, or any dynamics key, is a config error (exit 2):
-     those changes go through a fork. The accepted overrides are written back to `config.json`.
+     `checkpoint_every`, `keep_checkpoints`, `heavy_metrics_every`, `components_iters`, `diversity_sample`), the
+     director mode `run.director` (`--director MODE` is a shortcut, translated before this check) and the director's
+     policy keys `director.persona|goal|rule_every|budget_per_100k`. Overriding `run.seed`, `run.compile` or
+     `run.runtime_checks`, or any dynamics key (`director.enabled` included), is a config error (exit 2): those
+     changes go through a fork. `--director live|replay` on a run whose `director.enabled` is false is a config error
+     that points to `run --init-from`. The accepted overrides are written back to `config.json`, and the cadences are
+     revalidated (§17).
   4. `truncate_after(step)`: drop metrics rows with `step > ckpt_step`, delete or trim event chunks that extend
      past it, and delete checkpoints after it (they belong to the abandoned continuation). An event chunk
      `*_<s0>_<s1>.npz` holds the records with `s0 ≤ step < s1`, where a record's `step` is the index of the step
      during which it happened, so a checkpoint at `state.step = s1` contains exactly the chunks ending at `s1`; a
-     trimmed chunk is renamed `*_<s0>_<ckpt_step>.npz`.
+     trimmed chunk is renamed `*_<s0>_<ckpt_step>.npz`. The director files are cut the same way, unless the mode is
+     `replay`, which never touches `director.jsonl` (§26.3). A `replay` log is pre-validated before anything is
+     truncated.
   5. Continue. The checkpoint holds the full state (key, `pend_*`, ledger), so the resumed trajectory is
      **bitwise identical** to an uninterrupted one. This is tested.
 - **Fork** (`alife run --init-from RUN[:STEP]|FILE.safetensors --out NEW [--set …]`) starts a new run directory
@@ -2249,6 +2273,11 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
     energy is not in any `E`, so the conserved total moves with `energy.structure`; a loaded total that was
     already inconsistent stays inconsistent and fails the admission check.
   - **Key.** `state.key` is kept, unless `--seed` is given, in which case `key = init_keys(seed)[STATE_KEY]`.
+  - **Environment.** All `env_*` fields are reset to `default_env(new_cfg)` (inert, with the new config's seasons),
+    and a note line is printed if that changed anything. The source's director history does not carry over: a fork
+    starts with `run.director = off` (whatever the source ran) unless `--director` is given, and a new log starts
+    empty. The one exception is a replay fork (`--director replay --replay-log LOG`), which copies `LOG` verbatim
+    (§26.8). Resume never resets the environment.
   - **Admission check.** `invariants.full_check(s, new_cfg)` runs on the loaded state before the first step. A
     state that violates the new config (e.g. `E > e_max` after lowering `e_max`, genes outside new bounds) is
     refused with exit 4.
@@ -2291,7 +2320,8 @@ Every row has these groups:
 - **Header:** `step`, `steps` (steps in this interval; short after an unscheduled stop or a resume, §18), `wall_s`,
   `steps_per_s`, `peak_mem_gb`.
 - **Population (interval sums of event counters; the levels `n_alive` and `bonds_total` are interval means, and
-  `mean_bonds_per_agent`, `sharers_frac` and `emitters_frac` are weighted by `N_ALIVE`):** `n_alive`, `births`,
+  `mean_bonds_per_agent`, `sharers_frac` and `emitters_frac` are weighted by `N_ALIVE`):** `n_alive`, `n_alive_min`
+  (the lowest per-step population of the interval), `births`,
   `birth_requests`, `births_blocked`, `immigrants`, `deaths_starved`, `deaths_killed`, `deaths_aged`,
   `deaths_catastrophe` (always present, 0 with the director off), `deaths_unlogged`, `insolvent`.
 - **Interactions:**
@@ -2316,6 +2346,9 @@ Every row has these groups:
   - `sigma_q10/q50/q90`, `rate_q10/q50/q90`, `frac_q10/q50/q90`;
   - `brain_cost_mean`.
 - **Fields:** `resource_mean`, `chem_mean` (list of 3).
+- **Environment** (`env`, only when `director.enabled`): the live levers at the snapshot (`regen_mult`, `season_amp`,
+  `season_period`, `drift_mult`, `imm_request`, `cat_radius`, `cat_kill_p`, and the range and zero-count of
+  `patch_gain`). The row is written before the director acts at that step, so `env` shows what the interval ran with.
 - **Health:**
   - `diag`;
   - `cell_overflow` (interval sum), `max_occupancy` (interval max), `v_clips`;
@@ -2475,8 +2508,11 @@ Pinned details (impl, WP6):
 alife run      [--preset tiny|dev|64k|256k] [--overlay fast ...] [--config PATH] [--set section.key=value ...]
                [--seed S] [--steps N] [--out DIR] [--overwrite] [--init-from RUN[:STEP]|FILE.safetensors]
                [--metrics-every N] [--checkpoint-every N] [--checks cheap|off] [--no-compile] [--quiet]
+               [--director off|live|replay] [--replay-log LOG]
 alife resume   RUN [--steps N | --until STEP] [--checkpoint STEP|latest] [--set run.key=value ...]
-               (only observer/cadence run.* keys, §18; dynamics changes go through run --init-from)
+               [--set director.key=value ...] [--director off|live|replay] [--quiet]
+               (only observer/cadence run.* keys, run.director and the director's policy keys, §18; dynamics
+               changes go through run --init-from)
 alife render   RUN [--checkpoint STEP|latest] [--steps N] [--every K] [--out PATH(.png|.mp4|dir)]
                [--size WxH] [--fps 30] [--layers agents,bonds,resource,chem] [--color tag|energy|clade]
                [--view CX,CY,ZOOM]
@@ -2532,6 +2568,13 @@ Options:
 | 3 | invariant violation: diag bits are printed by name and the state is dumped to `diag/` |
 | 4 | checkpoint incompatible |
 | 130 | interrupted by SIGINT after a clean flush and checkpoint |
+
+**Director flags** (§26). `--director live|replay` is a shortcut for `--set run.director=MODE` and also sets
+`director.enabled=true` on `run`; `--director off` sets only the mode. `--replay-log` goes with `--director replay`
+and `--init-from` (a replay needs a state to continue); other combinations, an unreadable or invalid log, and
+`--director live|replay` on `resume` of a run without `director.enabled`, are config errors (exit 2) reported before
+anything is written. `view` and `render` re-simulate without the director (§26.8). The persona and goal are set with
+`--set director.persona=...` / `director.goal=...` in this step.
 
 Pinned details (impl, WP5):
 - `--seed`, `--steps`, `--metrics-every`, `--checkpoint-every`, `--checks` and `--no-compile` are `run.*` overrides
@@ -2605,6 +2648,7 @@ Pinned details (impl, WP5):
 | `test_energy.py` | Each function conserves its own sub-ledger exactly. Costs: `paid ≤ E`, insolvency drives E to 0 and cancels actions. Harvest: proportional, exact, demand never negative even at `E = e_max`. Combat: a mutual attack, three attackers on a poor victim, defend reduces demand, spill lands in the victim's cell, `E ≥ 0`. Share: a chain A→B→C is exact with 10% heat, and Σ out ≤ E. Share gating: a slot broken and refilled with a new partner in the same step sends nothing, a newly formed bond in a previously empty slot sends nothing, and an unchanged bond sends. Combat gating: an attack on a target that became a partner at S9 is dropped (no grant, no `attack` flag), and kept when `attack_bonded`. Cap overflow → heat. |
 | `test_lifecycle.py` | `deaths`: causes and their precedence; an insolvent agent that received bond inflow (E > 0) still dies as `STARVED` with corpse = inflow + S; a solvent victim drained to 0 and rescued by inflow survives; corpse = E + S into the correct cell; the hard cap; dead rows canonicalised; bonds dropped on both sides; records compacted; unlogged counter. `allocate_lanes` (≥ 300 property trials): unique dead slots; unique eligible parents; the birth prefix; capacity pressure; zero requests; full population → 0 births; padding lanes target distinct dead rows and use parent row 0 regardless of request counts; χ² fairness across seeds. `reproduce`: endowment arithmetic, the parent keeps ≥ 1, uids are `next_uid + k`, lineage fields, placement distance = 2.0, gene bounds. **Child-row completeness:** fill a dead row's every per-agent field with sentinel garbage, force a birth into it, run one more step (the S0 flush), and assert that no sentinel survives in any field, `W1`/`W2` rows included. Immigration: lanes, clade `n_init`, ledger. Catastrophe: `deaths(cat_mask=)` kills only agents that would otherwise survive, every other cause keeps precedence, a masked dead row stays unchanged, an all-False mask changes nothing. |
 | `test_director_env.py` | `State.env` view and `default_env`; `legacy_state_digest` is exactly the v0 encoding. Director enabled with inert env equals director off (`legacy_state_digest`, counters, ledgers; 60 compiled steps; plain and seasons+immigration); director off passes `env_*` through. Each knob: `regen_mult` (0 / 0.5 / 2 / 3.7 against a numpy floor, whole-step `INJECT_REGEN`), `patch_gain` (0 removes a lone patch; weights match a float64 reference), `drift_mult` (0 freezes; ×5 displacement), the season override (period 0 → weights exactly 1; sine reference; config seasons + inert env bit-identical to director off). `imm_request`: admitted over several steps with the remainder carried, `INJECT_IMMIGRATION` matching, capped by capacity with the rest left pending, `max` with the periodic rule. Catastrophe: deaths only inside the radius (torus minimum image), `kill_p` 1 and 0.5, cause `CATASTROPHE`, counter, records, `kill_p` reset, radius 0 / `kill_p` 0 inert. Ledger closes under scripted catastrophes, requests and lever changes (`full_check` every step, deterministic digest), compiled vs eager write-back, checkpoint round trip with non-default env, pre-director (v1, 38 arrays) checkpoint loads inert and resumes (also as a run directory), a missing non-env key and an RNG version outside {1, 2} are refused, out-of-range env flagged by `full_check` and (enabled) `FIELD_RANGE`, config hash rules, stream 8 and the frozen keys of streams 0–7. |
+| `test_director_*.py` (vitals, archive, actions, rules, log, replay, config) | Build step 2, see §26.9. |
 
 ### 22.2 Whole-step invariant tests (`test_step_invariants.py`)
 
@@ -3049,6 +3093,281 @@ changes must be reflected in this document.
 
 ---
 
+## 26. Director core: vital signs, rule tier, decision log and replay (build step 2)
+
+`docs/DIRECTOR.md` is the design rationale; this section is normative for what build step 2 implements. There is no
+LLM in this step (step 3), no GUI panel (step 4) and no evaluation harness (step 5). The compiled step is unchanged
+from build step 1 (§2.2, §12.9, §13.1): the director is host code in the `alife.director` package that runs
+**between** compiled steps.
+
+### 26.1 Modules and the runner hook
+
+| module | content |
+|---|---|
+| `director/__init__.py` | `Director` (the controller the runner calls), `make_director(rd, cfg, start_step)`, `describe(entry)` |
+| `director/vitals.py` | `Window` / `aggregate` (rule-window aggregates of metrics rows), `descriptor`, `Tracker` (window buffer, boundary history, archive, streaks), `Vitals` |
+| `director/archive.py` | `Archive`: novelty search and the coverage grid |
+| `director/actions.py` | `MENU`, `EnvView`, `clamp` (live), `validate_entry` (replay), `apply`, `lever_keys` |
+| `director/pacing.py` | `fold(entries, t)`: budget, cooldowns, active effects, drama, as pure folds of the log |
+| `director/rules.py` | `RuleParams` / `PersonaParams`, `RULES_VERSION`, `decide(ctx, params)`, `rng_for` |
+| `director/log.py` | `director.jsonl` header, `validate_log`, `read_log` |
+
+**Hook** (`runner.run(..., director=None)`). `director=None` is today's behaviour exactly. With a director, at every
+metrics row, after the row is appended and after the violation check (so never for a violated state):
+1. `director.observe(row)`;
+2. if `director.due(t)` (`t % director.rule_every == 0`) **and the run is not extinct at this step**:
+   `state = director.on_boundary(state, row, t)`. In live mode this computes the decision from the row and the
+   vital signs, appends the entries to `director.jsonl` (fsync), and returns the state with them applied; in replay
+   mode it applies the log's entries for `t` and decides nothing;
+3. then the checkpoint write (if due), followed by `director.on_checkpoint(t)` (live: write `director_archive.json`).
+
+The checkpoint at `t` therefore already contains the applied environment, and a resume never re-applies anything.
+A SIGINT or the end of the run at a rule boundary runs the hook like any other. `Director.status_lines()` gives the
+console lines (`director @ <t>: <description>`) printed after the status line unless `--quiet`.
+
+### 26.2 Modes, config and the hash
+
+`run.director` is `off` (default), `live` or `replay`. It is a `run.*` key: not hashed, stored in `config.json`,
+inherited by resume, and changeable on resume (it is in `cli.RESUME_KEYS`). `live` and `replay` need
+`director.enabled` (`validate`). `off` builds no `Director` at all: with `director.enabled = true` the environment
+levers keep whatever values they hold, nothing is decided or reverted.
+
+`DirectorConfig` gains four **policy** keys, read only by the host-side director:
+
+| key | default | meaning |
+|---|---|---|
+| `director.persona` | `gardener` | `gardener`, `trickster` or `architect` (§26.6) |
+| `director.goal` | `""` | the Architect's goal text; stored (in the log header), not interpreted before step 3 |
+| `director.rule_every` | 1000 | steps between rule-tier decisions |
+| `director.budget_per_100k` | 0 | cost units per rolling 100k steps; 0 = the persona's default; bounded by the persona's maximum |
+
+`config.UNHASHED_KEYS` lists them: they are omitted from `config_hash` **at every value** (they are also in
+`POST_V01_KEYS`, so old `config.json` files without them load). Only `director.enabled` stays hashed. The hashes of
+every earlier run are unchanged (`TINY_HASH_V01`; the step-1 `enabled = true` hashes; the `64k` preset's hash,
+pinned in `tests/test_director_config.py`). Resume accepts `--set director.<persona|goal|rule_every|budget_per_100k>`
+besides the observer/cadence `run.*` keys (§18).
+
+`validate`: `persona` is one of the three; `rule_every ≥ 1`; `budget_per_100k ≥ 0`; `run.director ∈ {off, live,
+replay}`; and when the mode is not `off`, `director.enabled` is true and `rule_every` is a multiple of both
+`run.metrics_every` and `run.heavy_metrics_every` (so the heavy vital signs exist at every boundary). Resume
+overrides of the cadences are revalidated like any other.
+
+### 26.3 Files
+
+```text
+runs/<name>/
+  director.jsonl           the decision log (the source of truth for replay)
+  journal.jsonl            rule-tier one-liners, for people; never read by the simulation
+  director_archive.json    the behaviour archive at the last checkpoint ("as_of_step"); analysis only
+```
+
+**`director.jsonl`.** One JSON object per line. The first line is a header
+`{"kind": "header", "step", "rules_version", "persona", "goal", "rule_every", "budget_per_100k", "seed"}` (`step` is the
+step the director started at; `budget_per_100k` is the effective budget). A new header is appended whenever a live
+director starts with a policy that differs from the latest header (a resume with another persona, cadence, budget or
+`RULES_VERSION`). Every other line is an *entry*:
+
+| field | meaning |
+|---|---|
+| `step_applied` | the rule boundary the entry was applied at (a positive multiple of `rule_every`) |
+| `source` | `rule`, or `revert` (the end of a timed effect; the LLM tier will add `llm`) |
+| `persona`, `rule`, `reason` | who, which rule (`extinction_rescue`, `runaway_damper`, `monoculture_breaker`, `stagnation_response`, `boredom`; absent on reverts) and a one-line why |
+| `action`, `params` | a menu action and its **explicit, clamped, absolute** parameters (§26.4) |
+| `prev` | the values the action returns to when a timed effect ends (for other actions, the values it replaced) |
+| `duration` | timed actions only: steps until the revert, already rounded up to a multiple of `rule_every` |
+| `reverts` | reverts only: the `step_applied` of the entry being undone |
+| `vitals_step`, `vitals` | the metrics row step the decision used (the boundary) and a compact vitals dict (rounded to 4 places) |
+
+Entries are canonicalised through JSON before they are applied, so what a replay reads back is exactly what the live
+run applied. Entries are in non-decreasing `step_applied`; a boundary's reverts come first.
+
+**`journal.jsonl`.** `{"step", "persona", "text"}`: one line per entry, plus one line when a rule newly triggers but is
+blocked (a condition that persists is noted once, not at every boundary).
+
+**`director_archive.json`.** `Archive.to_json(as_of_step)`: the parameters, `coverage`, every visited grid cell with the
+step it was first visited, and every archive entry (step and descriptor). It is rewritten atomically at each
+checkpoint of a live run and **never read back**: the archive is rebuilt from `metrics.jsonl` (§26.5).
+
+**Resume truncation.** `RunDir.truncate_after(step, keep_director=False)` also cuts `director.jsonl` and
+`journal.jsonl` to the records with `step_applied` (or `step`, for headers and journal lines) `≤ step` and deletes a
+`director_archive.json` whose `as_of_step > step`. The files are rewritten whole, so a torn last line disappears. A
+replay passes `keep_director=True`: **replay never truncates or writes any director file**. `RunDir` has generic
+`append_jsonl` (append + fsync), `read_jsonl` (a torn last line is ignored) and `write_json` (atomic).
+
+### 26.4 The menu: bounds, clamping, validation, application
+
+| action | params (logged) | bounds | cost | cooldown |
+|---|---|---|---|---|
+| `set_seasons` | `period`, `amp` | period 2k–100k, amp 0–0.9 | 1 | 50k |
+| `fertility_shift` | `patch`, and `gain` **or** `x`, `y` | gain 0.25–2.0; a move of at most L/4 (minimum image) from `prev` | 1 | 20k |
+| `habitat_loss` | `patch`, `gain` = 0; `duration` | duration 10k–200k | 2 | 50k |
+| `regen_pulse` | `mult`; `duration` | mult 0.4–1.8, duration 5k–50k | 1 | 30k |
+| `immigration_pulse` | `count` | 16–1024; the pending `env_imm_request` plus the count may not exceed 1024 | 1 | 20k |
+| `catastrophe` | `center` [x, y], `radius`, `kill_p` | radius in [20, min(200, L/2)], kill_p 0.2–0.9 | 3 | 100k |
+| `drift_change` | `mult` | 0.5–10, permanent until changed | 1 | 50k |
+
+- **Seasons** change `env_season_period` / `env_season_amp` only; the mode stays `fields.season_mode` and is not a
+  runtime lever. The mutation-floor nudge is not implemented.
+- **Patch moves** are host edits of `patch_pos`, wrapped with `ops.wrap` (so the f32 result is strictly below L); the
+  log holds the absolute new coordinates and the old ones in `prev`. The drift continues from the new position.
+- **Immigration** is always random founders; it adds to `env_imm_request`, which the step admits over several steps.
+- **Costs and cooldowns** are the §5 table of `docs/DIRECTOR.md`. A cooldown counts from the **end** of the effect
+  (for an instant action, from `step_applied`).
+- **Timed effects** (`habitat_loss`, `regen_pulse`) end with a `revert` entry at `step_applied + duration`, with the
+  explicit restore values (`habitat_loss`: the patch's prior gain; `regen_pulse`: the prior multiplier). A new
+  effect on a lever that has one active is refused by the rules, except a rescue's `regen_pulse`, which supersedes
+  the active pulse and restores the original base value. A **lever** is `regen` or `patch:<p>` (a gain change also
+  takes the patch's lever; a move does not).
+- **Live: `clamp`** brings a rule's raw request inside the menu bounds *and* the step-1 device ranges
+  (`invariants.ENV_*`), canonicalises floats through float32 (so the logged value is the applied value) and rounds a
+  duration up to a multiple of `rule_every`. It raises `ActionError` for an unknown action or an unusable request.
+- **Replay: `validate_entry`** rejects instead of clamping: unknown action or source, a `step_applied` that is not a
+  positive multiple of `rule_every`, a parameter set that is not exactly the action's, any value outside the bounds
+  (menu and device ranges), a move of more than L/4 or without `prev`, a duration that is out of bounds or off the
+  cadence, a revert of an action without a timed effect. `log.validate_log` adds: records in non-decreasing step, and
+  every revert has an active effect on its lever. A bad log is a config error (exit 2) before the first step.
+- **`apply(state, entry, cfg)`** edits only `env_*` and (moves) `patch_pos` with `_replace`, converting to each field's
+  dtype and shape (no retrace), and fails with `ActionError` if the result would leave `invariants.env_out_of_range`.
+  The live director validates every entry it builds before applying it.
+
+### 26.5 Vital signs, the descriptor and the archive
+
+Computed at each rule boundary from the `metrics.jsonl` rows since the previous boundary (`aggregate`): means are
+weighted by `row["steps"]` (short rows exist after an interrupted run) and skip None; snapshot values (clade shares,
+gene medians, bodies, weight diversity) take the latest non-None value; the wall-clock keys (`wall_s`,
+`steps_per_s`, `peak_mem_gb`) are never read. `kill share = Σ deaths_killed / Σ all deaths` (catastrophe deaths
+included), `singleton fraction = bodies_hist["1"] / n_alive`. `n_alive_min` is the lowest per-step population of a row
+(rows without it fall back to `n_alive`).
+
+- **`K_est`** is recomputed at every live boundary by `metrics.carrying_capacity(state, cfg, state.step, state.env)`:
+  the regeneration of the *current* environment (seasonal at the step, scaled by the levers). It is used only at the
+  boundary, never stored.
+- **Viability:** `n_alive / K_est`; `fall = 1 − (window minimum / highest window mean over the last risk_fall_window)`;
+  the **extinction-risk flag** is `n_alive/K_est < risk_k_frac` or `fall > risk_fall`.
+- **Descriptor `b`** (ten components, each clipped to [0, 1], a missing one counts as 0, None for an empty world):
+  `emitters_frac`, `sharers_frac`, `mean_bonds_per_agent / bonds_per_agent_max`, `frac_in_bodies_ge4`, singleton
+  fraction, kill share, `predation_ratio / predation_max`, and the medians of σ, rate and offspring fraction
+  log-scaled onto their fixed `RuleParams` ranges.
+- **Archive** (`Archive`): the **novelty** of `b` is the mean RMS distance (Euclidean / √10) to its `novelty_k` nearest
+  archive members, **excluding the most recent `novelty_exclude` entries**; `b` joins the archive when its novelty
+  exceeds `archive_rho` (or when there is nothing to compare to). **Coverage** is the number of cells of a
+  `grid_bins`³ grid over `emitters_frac × frac_in_bodies_ge4 × predation_ratio` that any observed descriptor has
+  visited; each cell remembers the step it was first visited.
+- **Stagnation signals:** `b_shift` (RMS distance between `b` now and `b` about `shift_window` steps ago) and the
+  number of new cells in the last `stagnation_window` steps.
+- **Rebuild.** The `Tracker` is a deterministic fold of the rows. On start or resume, `Director` replays the on-disk
+  rows with `step ≤ start step` through the same `observe` / `close` calls live mode uses, so the rebuilt archive,
+  history and streaks equal the live ones (tested); the rows after the last boundary stay buffered for the next
+  window. The archive file is never consulted.
+
+### 26.6 The rule tier
+
+`decide(ctx, params)` is a pure function of the vital signs, the pacing folds, the live environment values and the
+seed. Rules in priority order; the first that yields an action wins, and one that triggers but is blocked leaves a
+journal note:
+
+1. **Extinction rescue:** the extinction-risk flag. A `regen_pulse` (`rescue_regen`) plus an `immigration_pulse` of
+   `rescue_imm_frac × K_est` founders. It **overrides cooldown and budget at most once per `rescue_override_gap`**
+   (it may also supersede an active regen pulse); inside that gap it needs ordinary eligibility.
+2. **Runaway damper:** population `> damper_pop_frac × N_CAP` (`dims(cfg).n_cap`, the hard row capacity, not `K_est`)
+   or the largest body `> damper_body_frac` of the population: a `regen_pulse` of `damper_mult` (< 1).
+3. **Monoculture breaker:** `top_clade_share > mono_share` for `mono_window × window_scale` steps (the streak runs
+   from the start of the first window above the threshold; it re-arms after the rule acts): the persona picks an
+   immigration pulse, seasons or habitat loss.
+4. **Stagnation response:** over `stagnation_window × window_scale` steps, which the run has covered: no new grid cell
+   and mean novelty below `novelty_low` (re-arms one window after acting): the persona picks from the menu.
+5. **Boredom** (Trickster only): `idle_gap` steps without any intervention since the last one (or since the first
+   window the run directory saw): as the stagnation response.
+
+**Eligibility** of an action: its cooldown (scaled by the persona; **a catastrophe never less than `catastrophe_gap`
+= 100k**, whatever the persona, the override included), the rolling budget (`cost` against `budget` over the last
+100k steps of `step_applied`), a free lever (one active effect per lever), room in the immigration queue, and for
+the discretionary rules (3–5) `min_gap` steps since the last intervention and a decayed cost sum ("drama", half-life
+`drama_half_life`) below `drama_max`. Safety rules 1–2 skip the last two checks.
+
+**Personas without an LLM.**
+- **Gardener** (default): the deterministic argmax of its weights over the eligible responses; parameters at the
+  fixed fraction `param_u` of each range; long windows, long cooldowns, small budget, so it rarely acts.
+- **Trickster:** a seeded weighted draw over the eligible responses that **never repeats its last action**, random
+  parameters inside the ranges, short windows and cooldowns, a larger budget, and the boredom rule.
+- **Architect:** the Gardener's machinery with its own weights and budget; safety rules only. The goal text is
+  recorded in the header and not interpreted.
+
+**Randomness** (a patch index, a catastrophe centre, the Trickster's sampling) is stateless host numpy,
+`np.random.Generator(PCG64(SeedSequence([run.seed, step, tag])))`, no `mx.random`. The values are logged, so replay
+draws nothing. The objective J of `docs/DIRECTOR.md` §6 is not optimised: there is no forward model.
+
+### 26.7 `RuleParams` (rules version 1)
+
+Every threshold, window, weight, range and budget is a field of the frozen `RuleParams` (`RULES_VERSION = 1`,
+recorded in the log header; change the version with any value).
+
+| group | values |
+|---|---|
+| Descriptor | `bonds_per_agent_max` 4.0; `predation_max` 0.25; `sigma_range` (1e-3, 0.5); `rate_range` (5e-4, 0.5); `frac_range` (0.05, 0.95) (log-scaled) |
+| Archive | `novelty_k` 5; `novelty_exclude` 3; `archive_rho` 0.025; `grid_bins` 10; `history_keep` 400k steps |
+| Viability / rescue | `risk_k_frac` 0.2; `risk_fall` 0.3 within `risk_fall_window` 50k; `rescue_override_gap` 200k; `rescue_regen` (1.5, 20k); `rescue_imm_frac` 0.1 |
+| Damper | `damper_pop_frac` 0.95; `damper_body_frac` 0.05; `damper_mult` 0.8; `damper_duration` 10k |
+| Monoculture / stagnation | `mono_share` 0.9; `mono_window` 100k; `novelty_low` 0.02; `stagnation_window` 200k; `shift_window` 100k |
+| Pacing | `drama_half_life` 50k; `catastrophe_gap` 100k |
+| Response ranges | seasons period (10k, 40k), amp (0.3, 0.7); shift gain (0.5, 1.6), move (0.4, 1.0) of L/4; habitat duration (20k, 100k); regen boom (1.2, 1.6) for (10k, 30k); immigrants (1%, 4%) of the population; catastrophe radius (0.1, 0.25) of L, kill_p (0.3, 0.7); drift (2, 6) |
+
+| persona | budget (max) | window_scale | cooldown_scale | min_gap | drama_max | idle_gap | selection |
+|---|---|---|---|---|---|---|---|
+| gardener | 2 (4) | 1.0 | 1.5 | 50k | 3 | none | argmax, `param_u` 0.3 |
+| trickster | 6 (12) | 0.5 | 0.5 | 20k | 8 | 150k | sampled, no repeat |
+| architect | 4 (8) | 1.0 | 1.0 | 30k | 5 | none | argmax, `param_u` 0.5 |
+
+Response weights (menu order): monoculture, Gardener / Architect: seasons 2, habitat loss 1, immigration 3;
+Trickster: seasons 2, habitat loss 2, immigration 1. Stagnation, Gardener: seasons 2, shift 2, habitat loss 0.5,
+regen 1, immigration 3, drift 1; Architect: seasons 2, shift 2, habitat loss 1, regen 1, immigration 2, drift 1;
+Trickster: seasons 2, shift 2, habitat loss 2, regen 2, immigration 1.5, catastrophe 1, drift 2. The Gardener and
+the Architect never take a catastrophe.
+
+**Calibration.** `archive_rho` and `novelty_low` were set against the `runs/64k_s0` rows (read only), replayed through
+the tracker with a 1000-step rule window: the per-window novelty is dominated by sampling noise (median ≈ 0.02), so
+`archive_rho` sits just above it (212 archive entries from 1504 boundaries, coverage 32). For a Gardener the
+stagnation response is armed from step 1.199M (200k after the cell first visited at 999k) until a new cell appears at
+1.279M, and not before 1.1M, which matches the stall seen by eye. The monoculture breaker never arms on that run (top clade share ≤ 0.84), the damper and the rescue never
+trigger. These are first values for the evaluation of §9 of `docs/DIRECTOR.md`, not tuned results.
+
+### 26.8 Determinism, replay and what is not guaranteed
+
+- **Replay is bitwise.** A `director.jsonl` replayed with the same seed, config, backend and starting state gives a
+  bitwise-identical trajectory (same `state_digest`, same metrics rows apart from the perf keys), in a new
+  directory or in place from any checkpoint, and for any `metrics_every` that still visits every log step (the log
+  steps are multiples of `rule_every`, which is a multiple of the cadences). Tested for a scripted policy that takes
+  every action and reverts across a checkpoint, and for a real-rules run.
+- **A resumed live run may decide differently** from an uninterrupted one when the resume interrupted a window (the
+  first rows are short, so the aggregates differ). The log is the source of truth. When the checkpoint falls on a rule
+  boundary with unbroken rows, the resumed log and archive are byte-identical to the uninterrupted ones (tested).
+- **Director off, or enabled with inert levers, is bit-identical to today** (§14.2, `test_director_env.py`).
+- **Replay modes.** `resume RUN --director replay` applies the run's own log at the recorded steps from the checkpoint on
+  (entries at or before the checkpoint are already in the state). `run --init-from SRC[:STEP] --director replay
+  --replay-log LOG` copies the log verbatim into the new run directory and replays it; entries at or before the
+  fork's start step are skipped. The environment of a fork is always reset (§18), so a fork replay reproduces the source
+  only when it forks from a step before the first log entry (normally `SRC:0`).
+- **The viewer and `render` re-simulate without the director.** They keep the checkpoint's environment levers but
+  apply no log entry, so after a director action they diverge from the run they were opened on. Replay in the viewer
+  is not implemented.
+- A live decision depends on `K_est`, which uses a float32 GPU computation; it is deterministic on a given backend
+  but not across backends. Replay does not recompute it.
+
+### 26.9 Tests
+
+| file | covers |
+|---|---|
+| `test_director_vitals.py` | each signal from synthetic rows; None and absent heavy keys; short-row weighting; wall-clock keys ignored; descriptor ranges; the tracker's streaks, risk flag and shift |
+| `test_director_archive.py` | cells; novelty with the recent-entries exclusion; ρ membership; coverage and first-visit steps; the JSON; deterministic rebuild from rows equals the live archive (also through `Director`) |
+| `test_director_actions.py` | the menu table; bounds and clamps; refusals; duration rounding; the move cap and the f32 wrap guard; strict validation (39 bad entries); each action through the real compiled step with `full_check(prev=edited)`; an unclamped out-of-range write raises `FIELD_RANGE` |
+| `test_director_rules.py` | each safety rule; the rescue override once per 200k; one catastrophe per 100k; budget, cooldown-from-end, one-active-effect and drama folds; persona determinism; the Trickster never repeats; every proposal clamps and validates |
+| `test_director_log.py` | append and fsync; torn lines; resume truncation; replay never truncates; headers; log validation; the CLI's exit 2 before anything is written |
+| `test_director_replay.py` | the bitwise replay tests of §26.8 (fresh directory, in place at three checkpoints, another metrics cadence, a late fork, live resume, real rules) and a slow one with the real timed bounds |
+| `test_director_config.py` | unchanged hashes, the unhashed policy keys, validation, the resume key list and its refusals |
+| edits | `test_runner.py` (hook order; no action on a violated or extinct state; the checkpoint holds the applied env), `test_metrics.py`, `test_cli_smoke.py` (`--director` flows, fork reset), `test_lint.py` (the director package is scanned) |
+
+---
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -3118,6 +3437,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I26 | metal: first run on the M5 Pro: 459/464 fast tests passed. Four float-precision failures, two causes. (1) GPU float32 matmul is reduced precision (F20): `fertility` now sums `gy_p ⊗ gx_p` elementwise, and `weight_diversity` centres the sample, uses exact elementwise norms and runs its Gram on the CPU stream (new close-kin accuracy test; it fails against the old code on CPU too). (2) Fused Metal kernels round differently from eager ops: `test_lifecycle_compiles_and_matches_eager` compares floats to 1e-6 on GPU and stays bitwise on CPU; integers stay exact everywhere. |
 | I27 | feat: two optional levers, both off by default and invisible to old runs. (1) Periodic immigration (§12.7): `population.immigration_every` / `immigration_count` add up to `count` random founders on steps with `(t+1) % every == 0`, combined with the floor rule by `max` and capped by free lanes and capacity; same lanes, `IMMIGRANT` stream, clade, ledger term and counters; static branch plus array arithmetic on `state.step`. (2) Seasons (§13.1): `fields.season_period` / `season_amplitude` / `season_mode` weight each patch by `1 + A·sin(2πt/P + φ_p)` (φ_p = 0 or 2πp/PP); `fertility` / `regen_rate` / `update_resource` take an optional `step`, regeneration stays integer and `INJECT_REGEN`-accounted, the carrying-capacity estimate uses the time average. Compatibility: keys added after v0.1 are omitted from `config_hash` at their defaults, so existing run directories load with defaults and resume; the tiny hash and the golden digest are unchanged (`tests/test_features.py`). |
 | I28 | feat: director build step 1 (`docs/DIRECTOR.md` §3): the engine's live environment state, off by default and invisible to old runs. (1) Nine flat `State` fields `env_*` appended after `diag` (regen multiplier, season amplitude and period, drift multiplier, per-patch gain, immigration request, catastrophe centre, radius and kill probability; `State.env` is a read-only `Env` view, `default_env(cfg)` the inert values), read by the compiled step only behind the static `director.enabled` (`DirectorConfig`, `POST_V01_KEYS`; `config_hash` also drops a section the POST_V01 deletions empty). Enabled with inert values is bit-identical to off. (2) New `DeathCause.CATASTROPHE` (3) and counter `DEATHS_CATASTROPHE` (index 26, `N_COUNTERS` 27; `metrics.jsonl` rows always carry `deaths_catastrophe`), on a new RNG stream (`Stream.CATASTROPHE = 8`, `RNG_LAYOUT_VERSION` 2 with `RNG_COMPATIBLE_VERSIONS = {1, 2}`: loading accepts the set, streams 0–7 are unchanged). Catastrophe deaths are excess only (every other cause keeps precedence, so `INSOLVENT ≤ DEATHS_STARVED` holds), the corpse takes the ordinary path, no new ledger term. (3) `env_imm_request` is a third immigration demand combined by `max`; the step carries over `max(request − n_imm, 0)`, so a large pulse arrives over several steps; `env_cat_kill_p` resets to 0 after the step it applied in (`step.consume_env`, outputs derived from inputs for the MLX 0.32 compile quirk). `immigration_possible` widens the two static immigration gates. (4) `state_digest` still hashes all fields (now stricter); `legacy_state_digest` hashes the 38 v0 fields, and the golden pin, unchanged, uses it. Pre-director checkpoints (38 arrays, RNG layout 1) load with inert env (`state_from_arrays(d, cfg)`); env ranges are checked by `full_check` always and by `device_check` (`FIELD_RANGE`) when enabled, including the start-of-step values of the consumed fields. Runner: the extinction stop also waits for a pending `env_imm_request`. Tests: `tests/test_director_env.py` and the edits listed in §22. |
+| I29 | feat: director build step 2 (`docs/DIRECTOR.md` §10): the host-side director core, no LLM, no change to the compiled step. (1) Package `alife.director` (vitals, archive, actions, pacing, rules, log, controller): vital signs from `metrics.jsonl` rows, a behaviour archive with novelty and a coverage grid, the §5 menu with budgets, cooldowns and timed reverts, the safety rules and the three personas, `director.jsonl` (header, entries with explicit clamped params, revert entries) and `journal.jsonl`, replay. (2) Runner: optional `director` hook after the metrics row and the violation check, before the checkpoint; never on a violated or extinct state; the checkpoint holds the applied env. (3) Config: `run.director` (off/live/replay, a resume key) and the policy keys `director.persona|goal|rule_every|budget_per_100k`, which are unhashed at every value (`UNHASHED_KEYS`); `validate` ties `rule_every` to the metrics cadences; all earlier hashes, `TINY_HASH_V01` included, are unchanged. (4) CLI: `--director`, `--replay-log`; resume accepts the policy keys; a fork resets the env to `default_env` and starts with the director off; a bad replay log is exit 2 before anything is written. (5) Metrics: additive `n_alive_min` and, with the director enabled, an `env` summary; `carrying_capacity` takes optional `step`/`env`. (6) `RunDir.append_jsonl/read_jsonl/write_json`, `truncate_after(keep_director=)`. Deviation from the proposal: seasons have no runtime mode (only period and amplitude), `mutation_floor_nudge` and archive immigrants are not implemented, the damper's capacity is `N_CAP`. Replay of a log is bitwise (§26.8); viewer and `render` re-simulate without the director. Tests: `tests/test_director_*.py` and the edits in §26.9. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense
