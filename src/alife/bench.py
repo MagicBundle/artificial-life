@@ -426,7 +426,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             last_inflow=mx.where(sv, it.sh.inflow, 0),
         )
         req = sv & act.reproduce & (dt.energy >= cfg.repro.min_energy) & (a >= cfg.repro.min_age)
-        lanes = lifecycle.allocate_lanes(req, sv, ks[Stream.BIRTH_PRIO], cfg)
+        lanes = lifecycle.allocate_lanes(req, sv, ks[Stream.BIRTH_PRIO], cfg, s.step)
         rp = lifecycle.reproduce(s1, lanes, act.child_bond, ks, cfg)
         # The lane counts leave as one stacked array: with immigration off ``n_imm`` is a constant, and
         # MLX 0.32 mx.compile fails (``_Map_base::at``) when it is an output next to arrays that use it.
@@ -436,7 +436,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
     def field_update(s2: State, it: _Interact, fcell: mx.array) -> tuple[mx.array, ...]:
         dep = fields.deposit_chem(it.act.emit, fcell, it.costs.solvent, cfg)
         chem = fields.update_chem(s2.chem, dep, cfg)
-        resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg)
+        resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step)
         return chem, resource, regen_inc, fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg)
 
     def finish(s2: State, s: State, flows: Any) -> tuple[State, Any]:

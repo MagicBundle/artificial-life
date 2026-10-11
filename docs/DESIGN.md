@@ -277,7 +277,7 @@ config. The config is closed over as Python constants, so shapes are static and 
 which means there is no retracing.
 
 There are no host syncs, no `.item()`, no Python branching on array values and no data-dependent shapes inside the
-step. The only Python branches are on config constants. Examples: `immigration_floor > 0` and
+step. The only Python branches are on config constants. Examples: `immigration_floor > 0` (or `immigration_every > 0`) and
 `runtime_checks == "cheap"`.
 
 Ordered sub-steps:
@@ -992,7 +992,7 @@ limit. `occ_limit` is derived from the config rather than a magic number, so it 
 
 ### 10.10 Carrying capacity
 
-`metrics.carrying_capacity(s, cfg)` estimates `K_est = Σ_c regen_rate_c / c_ref`, where
+`metrics.carrying_capacity(s, cfg)` (time-averaged: seasons use `w = 1`, §13.1) estimates `K_est = Σ_c regen_rate_c / c_ref`, where
 `c_ref = basal_cost + E[founder brain_cost] + C_REF_MARGIN`. `regen_rate` uses the state's patch positions, and
 `E[founder brain_cost]` is the analytic expectation under the §6 init distribution
 (`metrics.founder_brain_cost`, 37.6 q at the defaults). With the 64k defaults:
@@ -1173,11 +1173,20 @@ weights are stale by definition, and every lane index is unique, so the write is
 
 ### 12.7 Immigration (optional, off by default)
 
-- Immigration is enabled iff `population.immigration_floor > 0`. This is a static Python branch, so with the
-  default config the code path does not exist in the compiled graph.
-- When enabled and `n_surv + n_birth < floor`, up to `immigrants_per_step (64)` random founders fill the next lanes.
-- It prevents extinction from ending long experiments, and it is ledger-accounted (`INJECT_IMMIGRATION`).
-- Immigrants share clade `n_init`.
+- Immigration is enabled iff `population.immigration_floor > 0` **or** `population.immigration_every > 0`
+  (`config.immigration_on`). This is a static Python branch, so with the default config the code path does not
+  exist in the compiled graph.
+- **Floor rule.** When `n_surv + n_birth < floor`, the demand is `min(floor − n_surv − n_birth, immigrants_per_step (64))`.
+- **Periodic rule** (`immigration_every = P > 0`, `immigration_count = c`). On every step with index `t` such
+  that `(t + 1) % P == 0` (`t = state.step` during the step) the demand is `c`; on other steps it is 0. The test
+  is array arithmetic on `state.step`, so it stays inside the compiled step with no host sync.
+- The two rules combine by `max`: `n_imm = clip(min(max(floor demand, periodic demand), M − n_birth,
+  room − n_birth), 0, M)` with `room = max(N_CAP − n_surv, 0)`. Births take lanes first, so a due step with
+  all `M` lanes used by births admits no immigrants.
+- It prevents extinction from ending long experiments, and it can also inject fresh genetic variation on a
+  schedule. Both rules use the same lanes, the `IMMIGRANT` RNG stream, and are ledger-accounted
+  (`INJECT_IMMIGRATION`, `IMMIGRANTS` counter).
+- Immigrants share clade `n_init`. The extinction stop (§18) is off whenever either rule is enabled.
 
 ### 12.8 Lineage
 
@@ -1202,6 +1211,19 @@ fert     = clip(fertility_base + Σ_p gy_p ⊗ gx_p, 0, 1)                (FG,FG
 regen_rate = floor(regen_max · fert).astype(int32)                       regen_max = 320 q/cell/step
 patch_pos ← wrap(patch_pos + patch_vel)                                  |patch_vel| = patch_drift = 0.005 u/step
 ```
+
+**Seasons (optional, off by default).** With `fields.season_period = P > 0` and `fields.season_amplitude = A > 0`
+each patch's Gaussian is weighted by `w_p(t) = 1 + A·sin(2π·t/P + φ_p)`, so
+`fert = clip(fertility_base + Σ_p w_p · gy_p ⊗ gx_p, 0, 1)` with `t` = the step index during the step
+(`fertility(patch_pos, cfg, step)`, `regen_rate(…, step)`, `update_resource(…, step)`; `step` defaults to None).
+`φ_p = 0` for `season_mode = "global"` (all patches wax and wane together) and `2π·p/PP` for `"per_patch"`
+(evenly staggered phases). The phase is a pure function of `t`, so there is no new state, and `t mod P` is
+taken in integers so it stays exact on long runs. `A ∈ [0, 1]` keeps `w_p ≥ 0`; the mean of `w_p` over a period is 1.
+- Seasons are a static branch: with `P = 0` or `A = 0` no multiplication is traced and `fertility` is
+  bit-identical to the unweighted sum (the golden digest is unchanged).
+- Regeneration stays integer and ledger-accounted (`INJECT_REGEN = Σ inc`), so the ledger closes exactly.
+- `step = None` means the time average `w = 1`. It is used for the initial resource field (`init_state`) and for
+  the carrying-capacity estimate (§10.10), which is therefore the season-averaged one.
 
 - At init, `patch_pos ~ U[0, L)²` (`InitStream.PATCH_POS`) and `patch_vel = patch_drift·(cos ψ, sin ψ)` with
   `ψ ~ U[0, 2π)` (`InitStream.PATCH_VEL`).
@@ -1835,6 +1857,8 @@ class PopulationConfig:
     max_age: int = 10000              # senescence death; 0 disables
     immigration_floor: int = 0        # 0 disables immigration (static)
     immigrants_per_step: int = 64
+    immigration_every: int = 0        # 0 disables periodic immigration (static); added after v0.1
+    immigration_count: int = 0        # founders requested on steps t with (t + 1) % every == 0
 
 @dataclass(frozen=True)
 class SensingConfig:
@@ -1981,14 +2005,22 @@ Rules:
 
 **Saving.** Each run writes the fully resolved config to `config.json` as canonical JSON (sorted keys, tuples as
 lists). It reloads exactly: `config_from_dict(config_to_dict(c)) == c`. `config_hash` covers every section
-except `run`.
+except `run`. **Keys added after v0.1 are omitted from the hash at their defaults** (`config.POST_V01_KEYS`:
+`population.immigration_every`, `population.immigration_count`, `fields.season_period`,
+`fields.season_amplitude`, `fields.season_mode`). A `config.json` that predates them therefore loads with the
+defaults (sparse dicts fill missing keys), hashes exactly as before, and resumes without a hash mismatch; the
+`tiny` preset's hash `d25e0eae…61d5` is pinned in `tests/test_features.py`. Setting any of them off default
+changes the hash, as for any dynamics key.
 
 **`validate`** collects every violation and raises one `ConfigError`:
 - **World geometry:** `size / field_cell` is an integer with `3 ≤ FG ≤ 1024`; `G_h = floor(size/radius) ≥ 3`.
 - **Interaction ranges:** `radius ≥ max(form_range, combat.range, 2·physics.radius)`; `NS ≤ K ≤ 9·C`.
 - **Population:** `64 ≤ n_max ≤ 2²⁰`; `1 ≤ M ≤ n_max // 4`; `1 ≤ n_init ≤ N_CAP`; `immigration_floor ≤ N_CAP`;
   `immigrants_per_step ≥ 1` when `immigration_floor > 0` (otherwise an extinct world could never refill, yet
-  the §18 extinction stop is off).
+  the §18 extinction stop is off); `immigration_every ≥ 0`; `1 ≤ immigration_count` when
+  `immigration_every > 0`; `immigration_count ≤ M`.
+- **Fields (seasons):** `season_period ≥ 0`; `0 ≤ season_amplitude ≤ 1`; `season_period ≥ 1` when
+  `season_amplitude > 0`; `season_mode ∈ {global, per_patch}`.
 - **Physics stability:** `stability_number ≤ 1.8`; `thrust_max < 2·radius·k_repel`; `v_max ≤ physics.radius`;
   `thrust_contact_limit > 0`.
 - **Bond geometry:** `rest_length·(1 + contract_gain) < break_length`; `form_range < break_length`;
@@ -2948,6 +2980,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I24 | rev: §20.2 — the viewer ran up to 1 024 steps per frame without pumping events (tens of seconds at 64k–256k). A frame now stops stepping after `FRAME_BUDGET_S = 0.1` s (at least one step); the trajectory is unchanged. |
 | I25 | rev: packaging — `requires-python` had no upper bound and mlx 0.32.x has no cp315 wheels or sdist, so uv could pick 3.15 and `uv sync` failed. Now `>=3.12,<3.15` (uv.lock relocked: only cp315 wheel entries dropped) and `.python-version` pins 3.12 (the lower bound, so CI covers it); README states the range. |
 | I26 | metal: first run on the M5 Pro: 459/464 fast tests passed. Four float-precision failures, two causes. (1) GPU float32 matmul is reduced precision (F20): `fertility` now sums `gy_p ⊗ gx_p` elementwise, and `weight_diversity` centres the sample, uses exact elementwise norms and runs its Gram on the CPU stream (new close-kin accuracy test; it fails against the old code on CPU too). (2) Fused Metal kernels round differently from eager ops: `test_lifecycle_compiles_and_matches_eager` compares floats to 1e-6 on GPU and stays bitwise on CPU; integers stay exact everywhere. |
+| I27 | feat: two optional levers, both off by default and invisible to old runs. (1) Periodic immigration (§12.7): `population.immigration_every` / `immigration_count` add up to `count` random founders on steps with `(t+1) % every == 0`, combined with the floor rule by `max` and capped by free lanes and capacity; same lanes, `IMMIGRANT` stream, clade, ledger term and counters; static branch plus array arithmetic on `state.step`. (2) Seasons (§13.1): `fields.season_period` / `season_amplitude` / `season_mode` weight each patch by `1 + A·sin(2πt/P + φ_p)` (φ_p = 0 or 2πp/PP); `fertility` / `regen_rate` / `update_resource` take an optional `step`, regeneration stays integer and `INJECT_REGEN`-accounted, the carrying-capacity estimate uses the time average. Compatibility: keys added after v0.1 are omitted from `config_hash` at their defaults, so existing run directories load with defaults and resume; the tiny hash and the golden digest are unchanged (`tests/test_features.py`). |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

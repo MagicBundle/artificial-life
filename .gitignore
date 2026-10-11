@@ -20,3 +20,7 @@ runs/
 .DS_Store
 .idea/
 .vscode/
+
+# Swift GUI (gui/)
+gui/.build/
+*.xcodeproj/xcuserdata
