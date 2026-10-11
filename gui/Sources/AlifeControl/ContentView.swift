@@ -13,6 +13,7 @@ struct ContentView: View {
                     repoSection
                     runSection
                     leverSection
+                    DirectorSettingsBox(controller: controller)
                     timerSection
                 }
                 .padding(.trailing, 4)
@@ -23,6 +24,7 @@ struct ContentView: View {
                 commandSection
                 controlSection
                 statusSection
+                DirectorLiveView(controller: controller)
                 toolSection
                 LogView(controller: controller)
             }
@@ -83,6 +85,7 @@ struct ContentView: View {
                     }
                     if oldMode == .fork && newMode != .fork { controller.resetLevers() }
                     if newMode == .new && controller.settings.seed.isEmpty { controller.settings.seed = "1" }
+                    controller.loadDirector()
                 }
 
                 if controller.settings.mode != .new {
@@ -93,7 +96,10 @@ struct ContentView: View {
                         }
                         Button("Refresh") { controller.refreshRuns() }
                     }
-                    .onChange(of: controller.settings.sourceRun) { controller.loadForkLevers() }
+                    .onChange(of: controller.settings.sourceRun) {
+                        controller.loadForkLevers()
+                        controller.loadDirector()
+                    }
                     if controller.runs.isEmpty {
                         Text("No runs found in runs/.").font(.caption).foregroundStyle(.secondary)
                     }
@@ -109,6 +115,7 @@ struct ContentView: View {
                     Picker("Preset", selection: $controller.settings.preset) {
                         ForEach(Preset.allCases) { Text($0.rawValue).tag($0) }
                     }
+                    .onChange(of: controller.settings.preset) { controller.refreshDirectorCadence() }
                 }
                 if controller.settings.mode == .new {
                     // A fork keeps the source's brain size, which the fast overlay would change.

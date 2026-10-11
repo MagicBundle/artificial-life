@@ -217,6 +217,10 @@ struct RunSettings: Equatable {
     /// Fork only: the source run's lever values; only levers that differ from them are passed. (A new run
     /// always diffs against the engine defaults.)
     var leverBaseline = Levers()
+    /// The ecosystem director (docs/DIRECTOR.md). The context holds what it is diffed against (the engine
+    /// defaults for a new run, the source's values for a fork or resume) and what the run allows.
+    var director = DirectorSettings()
+    var directorContext = DirectorContext()
     var timerEnabled = false
     var timerHours = 1
     var timerMinutes = 0
@@ -258,6 +262,7 @@ struct RunSettings: Equatable {
             }
         }
         if mode != .resume { errors += levers.validate() }
+        errors += director.validate(context: directorContext)
         if timerEnabled && timerDuration <= 0 { errors.append("Timer duration must be greater than zero.") }
         return errors
     }
@@ -276,15 +281,18 @@ struct RunSettings: Equatable {
             if let n = Parse.integer(trimmedSteps) { args += ["--steps", "\(n)"] }
             args += ["--out", "runs/\(trimmedName)"]
             args += levers.setArguments()
+            args += director.arguments(context: directorContext)
         case .fork:
             args = ["run", "--init-from", "runs/\(sourceRun)"]
             if let s = Parse.integer(trimmedSeed) { args += ["--seed", "\(s)"] }
             if let n = Parse.integer(trimmedSteps) { args += ["--steps", "\(n)"] }
             args += ["--out", "runs/\(trimmedName)"]
             args += levers.setArguments(baseline: leverBaseline)
+            args += director.arguments(context: directorContext)
         case .resume:
             args = ["resume", "runs/\(sourceRun)"]
             if let n = Parse.integer(trimmedSteps) { args += ["--steps", "\(n)"] }
+            args += director.arguments(context: directorContext)
         }
         return args
     }
