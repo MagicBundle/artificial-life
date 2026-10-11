@@ -1,4 +1,4 @@
-"""The ``alife`` command line: run, resume, render, inspect, view, bench (§21). Owned by WP5.
+"""The ``alife`` command line: run, resume, render, inspect, view, bench, llm-check (§21). Owned by WP5.
 
 ``main(argv)`` never raises: errors map to ``runner.ExitCode`` values (2 config, 4 checkpoint, 130 SIGINT,
 1 anything else; argparse usage errors are 2). ``view`` and ``bench`` delegate to WP6 (``viewer.run_viewer``,
@@ -40,6 +40,7 @@ from alife.config import (
     dims,
     load_config,
 )
+from alife.director import llm as director_llm
 from alife.director import log as director_log
 from alife.director import make_director
 from alife.invariants import full_check
@@ -131,6 +132,13 @@ def _positive(text: str) -> int:
     v = int(text)
     if v < 1:
         raise argparse.ArgumentTypeError(f"expected an integer ≥ 1, got {text!r}")
+    return v
+
+
+def _positive_seconds(text: str) -> float:
+    v = float(text)
+    if not 0 < v < float("inf"):
+        raise argparse.ArgumentTypeError(f"expected a number of seconds > 0, got {text!r}")
     return v
 
 
@@ -668,6 +676,41 @@ def _cmd_bench(a: argparse.Namespace) -> int:
     return int(ExitCode.OK)
 
 
+# --- llm-check ------------------------------------------------------------------------------------------
+
+_LLM_CHECK_MESSAGES: tuple[dict[str, str], ...] = (
+    {"role": "system", "content": "You are a connectivity check for a simulation. Reply only with JSON."},
+    {
+        "role": "user",
+        "content": 'Choose the action "none" with empty params and the expected_effect "nothing", and '
+        'put "ok" in the journal.',
+    },
+)
+
+
+def _cmd_llm_check(a: argparse.Namespace) -> int:
+    """One tiny structured-output request under the director's own client and schema; one line out (§21)."""
+    cfg = load_config(preset=a.preset)
+    url = a.llm_url if a.llm_url is not None else cfg.run.llm_url
+    model = a.llm_model if a.llm_model is not None else cfg.run.llm_model
+    if model.strip() == "":
+        raise ConfigError("--llm-model must not be empty")
+    d = cfg.director
+    client = director_llm.Client(url, model, a.timeout, d.llm_max_tokens, d.llm_temperature)
+    ex = client.chat(client.body(_LLM_CHECK_MESSAGES, cfg, 0))
+    failure = ex.error
+    if ex.text is not None:
+        try:
+            director_llm.parse_reply(ex.text, cfg)
+        except director_llm.ReplyError as e:
+            failure = f"invalid: {e}"
+    if failure is not None:
+        print(f"FAIL {failure}", flush=True)
+        return int(ExitCode.ERROR)
+    print(f"OK model={model} latency={ex.latency_s:.2f}s", flush=True)
+    return int(ExitCode.OK)
+
+
 # --- parser ---------------------------------------------------------------------------------------------
 
 
@@ -789,6 +832,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--brain-variants", action="store_true")
     p.add_argument("--json", default=None, metavar="PATH")
     p.set_defaults(func=_cmd_bench)
+
+    p = sub.add_parser(
+        "llm-check",
+        help="send one tiny structured-output request to the director's LLM endpoint; prints OK or FAIL",
+    )
+    p.add_argument("--llm-url", default=None, metavar="URL", help="default run.llm_url")
+    p.add_argument("--llm-model", default=None, metavar="NAME", help="default run.llm_model")
+    p.add_argument("--timeout", type=_positive_seconds, default=60.0, metavar="SECONDS")
+    p.add_argument(
+        "--preset", choices=PRESETS, default=None, help=f"world size of the schema; default {DEFAULT_PRESET}"
+    )
+    p.set_defaults(func=_cmd_llm_check)
     return parser
 
 

@@ -5,8 +5,9 @@ normative in `docs/DESIGN.md` (§2.2, §12.7, §12.9, §13.1, §14, §17–§19;
 director core: vital signs, archive, rule tier, decision log, replay, CLI) is implemented** and is normative in
 `docs/DESIGN.md` §26 (Review-log row I29); §12 below records where it refines or contradicts this proposal. **Build
 step 3 (the LLM tier) is implemented** and is normative in `docs/DESIGN.md` §26.10 (Review-log row I30); §13 records
-where it refines §2.1, §7 and §8. Steps 4–5 (the GUI panel, the evaluation) are not implemented yet. This document
-extends `docs/DESIGN.md`.
+where it refines §2.1, §7 and §8. **Build step 4 (the GUI Director panel and `alife llm-check`) is implemented**
+(`gui/`, Review-log row I31); §14 records how it refines §8. Step 5 (the evaluation) is not implemented yet. This
+document extends `docs/DESIGN.md`.
 As each step lands, its normative parts (state fields, config keys, ledger terms, tests) move into DESIGN.md with
 Review-log rows, per `CLAUDE.md`.
 
@@ -252,7 +253,7 @@ change on resume. `--persona` / `--goal` and the LLM flags came with step 3 (§1
 
 Endpoint and model are run-level keys (`run.*`), so they can change on resume.
 
-**GUI** (AlifeControl): a Director panel with:
+**GUI** (AlifeControl; built as in §14): a Director panel with:
 - mode, persona and goal;
 - LLM URL and model, with a "Test connection" button that sends a tiny chat request;
 - cadence;
@@ -315,7 +316,7 @@ run. Run sequentially; parallel arms share the GPU.
    - CLI flags.
 3. **LLM tier (done, §13):** LM Studio client, schema, personas, prompt builder, fallback and journal, with a
    mock-server test (`http.server` in tests) for valid, invalid and slow replies.
-4. **GUI:** the Director panel.
+4. **GUI (done, §14):** the Director panel and `alife llm-check`.
 5. **Evaluation:**
    - a `random` persona for arm R: uniform over the eligible menu, with the same budget, cooldown and safety
      rules, seeded per decision like the Trickster, plus a replay test;
@@ -411,3 +412,36 @@ Decisions L1–L11 of the step-3 spec; `docs/DESIGN.md` §26.10 is normative.
 - **Not built.** `--no-llm` (use `--llm-every 0`); the move form of `fertility_shift` for the model; a streaming or
   concurrent call; any use of the model for text that feeds the simulation or a prompt.
 
+## 14. Build step 4 as built: where it refines this proposal
+
+Decisions G1 and G2 of the step-4 spec. The panel is `gui/Sources/AlifeControl/DirectorPanel.swift`; its pure logic
+(settings, baselines, validation, argument construction) is `DirectorSettings.swift`, and the file tailers are
+`DirectorTailer.swift`. `gui/README.md` describes the use.
+
+- **`alife llm-check` (G1).** A new CLI command (`DESIGN.md` §21, Review-log row I31): one tiny request under the
+  director's own client and schema, one output line, `OK model=... latency=...s` (exit 0) or `FAIL <kind>: <detail>`
+  (exit 1). The "Test connection" button runs it with the panel's URL and model and shows the line in green or red.
+  No Python is duplicated in the GUI: the check goes through the same code a run uses.
+- **Modes (G2).** A new run and a fork offer Off and Live; a resume offers Off, Live and Replay (in place, the run's own
+  `director.jsonl`). A replay fork with `--replay-log` stays CLI-only. A resume of a run whose `config.json` has
+  `director.enabled = false` offers nothing and passes nothing ("fork it to add one"), since its compiled step cannot
+  take director actions; Replay is also refused in the panel when the run has no `director.jsonl`.
+- **Baselines.** As with the levers, only values that differ from a baseline are passed: the engine defaults for a new
+  run; for a fork and a resume the source's `config.json` (`director.*`, `run.llm_url`, `run.llm_model`, `run.director`).
+  The engine starts a fork with the director off whatever the source ran, so a fork's baseline mode is Off: the picker is
+  pre-filled with Live when the source ran live, which passes `--director live`.
+- **Mapping.** `--director live|replay` (only when it differs from the baseline mode), then, in Live mode only,
+  `--persona`, `--goal=TEXT` (Architect only), `--llm-every N` (0 switches the tier off; the toggle's default is 25000),
+  `--llm-url=URL` and `--llm-model=NAME` (only with the tier on), and `--set director.rule_every=N`. Free text is passed as
+  `--flag=value` so that a leading "-" cannot be taken for an option.
+- **Validation hints** mirror `config.validate` and disable Start: `rule_every` is a positive integer and a multiple of
+  `run.metrics_every` and `run.heavy_metrics_every` (read from the preset file for a new run, from `config.json` for a
+  fork and a resume; if they cannot be read a note says the engine will check, exit 2); `llm_every` is a positive
+  multiple of `rule_every` while the tier is on; the URL is http(s) and the model non-empty while the tier is on.
+- **Live views.** The Interventions view (the last 10 entries of `director.jsonl`, newest first) and the Journal view (the
+  last 20 records of `journal.jsonl`: rule one-liners, and LLM calls with step, latency, outcome, the model's journal
+  text, accepted and rejected counts, the fallback, and the raw prompt and reply in a disclosure group) tail the files
+  every 2 s, reading only the last 256 KiB; a missing file, a torn last line and malformed lines are skipped, and unknown
+  keys are ignored. A run without `director.jsonl` shows "Director off for this run".
+- **Not built.** Starting a replay fork from the GUI; editing `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` or
+  `budget_per_100k` (CLI `--set` only); intervention markers on the metrics (step 5).
