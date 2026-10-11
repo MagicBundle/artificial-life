@@ -1,0 +1,264 @@
+# Ecosystem director: design
+
+Status: proposal (2026-10-11). Nothing in this document is implemented yet. It extends `docs/DESIGN.md`. Once
+built, the normative parts (state fields, config keys, ledger terms, tests) move into DESIGN.md with Review-log
+rows, per `CLAUDE.md`.
+
+## 1. Goal and motivation
+
+Run `runs/64k_s0` (1.5M steps, see `docs/HANDOVER.md`) settled into a low-novelty regime after about 1M
+steps. One founder lineage reached 84%, signalling fell from 81% to 26%, sharing nearly vanished, and the
+mutation scale was selected down. A stable world with no newcomers favours faithful copying and pruning.
+
+The **director** watches the ecosystem's vital signs and acts on the environment (and immigration) to keep the
+world **novel but viable**. That is the "novelty + learnability" criterion from open-endedness research.
+
+Constraints:
+- The director never edits agents, their genomes or their brains. All change flows through the environment,
+  so outcomes stay emergent.
+- It has two tiers. The rule tier is deterministic and always on. The LLM tier is optional, runs locally via
+  LM Studio, and is slow-cadence.
+- It must preserve determinism, checkpoint/resume and the exact energy ledger.
+- It runs locally on the owner's Mac, with no paid API.
+
+## 2. Architecture
+
+```text
+            every K_rule steps (default 1,000)              every K_llm steps (default 25,000–50,000)
+ metrics ─► vital signs ─► RULE TIER ─┐            summary ─► LLM TIER (LM Studio) ─┐
+                                      ├─► validate + clamp + budget ─► decision log ─► env state ─► step
+                                      │                                  (director.jsonl)
+                                      └──────────────────────────────── journal.jsonl (rationales)
+```
+
+- **Rule tier** (Python, no LLM). It computes vital signs from the metrics row and applies safety and pacing
+  rules. It is deterministic in (state history, config).
+- **LLM tier.** An async request to LM Studio's OpenAI-compatible server. The reply is constrained to the
+  intervention JSON schema, then validated, clamped and budgeted like rule actions. The result is applied at the
+  next `K_rule` boundary.
+- **Decision log** (`runs/NAME/director.jsonl`). One line per applied intervention: `{step_applied, source:
+  rule|llm|replay, persona, action, params, reason, vitals_snapshot_id}`. It is the single source of truth for
+  replay.
+- **Journal** (`runs/NAME/journal.jsonl`). LLM rationales and narrative entries, plus rule-tier one-liners.
+  This is for legibility only and never feeds back into the simulation.
+
+### 2.1 Determinism and replay
+
+- Ordering in the runner: interventions apply only at `K_rule` step boundaries, between compiled steps, as
+  pure updates of `State.env` (§3). The step function stays pure.
+- **Replay.** `alife resume RUN --director replay` (and any rerun from a checkpoint) applies `director.jsonl`
+  entries at their recorded steps and never calls the LLM. Same seed + same config + same decision log gives a
+  bitwise-identical trajectory on the same backend.
+- **Live.** `--director live` calls the rule tier and, if enabled, the LLM, and appends to the log.
+- **Off.** `--director off` is the default and gives the current behaviour exactly.
+- The LLM reply that arrives during steps `[t, t + K_rule)` is applied at the next boundary and logged with
+  that step. No wall-clock time enters the simulation.
+- On resume in `live` mode, log entries after the checkpoint step are truncated, like events today.
+
+## 3. Engine change: live environment state
+
+Today the levers are `Config` constants closed over by the compiled step. Changing them mid-run needs a fork.
+Add a small **environment state** record to `State`, read by the compiled step as arrays. Its fields are
+checkpointed, cost nothing to change and need no recompile.
+
+| field | shape, dtype | meaning | default (inert) |
+|---|---|---|---|
+| `env.regen_mult` | (), f32 | multiplier on per-cell regeneration | 1.0 |
+| `env.season_amp` | (), f32 | replaces `fields.season_amplitude` at runtime | config value |
+| `env.season_period` | (), i32 | replaces `fields.season_period` (0 = off) | config value |
+| `env.drift_mult` | (), f32 | multiplier on patch drift velocity | 1.0 |
+| `env.patch_gain` | (PP,), f32 | per-patch fertility gain (add or remove habitat; 0 disables a patch) | 1.0 |
+| `env.imm_request` | (), i32 | immigrants to admit at the next lane allocation (consumed, reset to 0) | 0 |
+| `env.cat_center` | (2,), f32 | catastrophe centre | 0 |
+| `env.cat_radius` | (), f32 | catastrophe radius (0 = none) | 0 |
+| `env.cat_kill_p` | (), f32 | per-agent kill probability inside the radius (consumed, reset) | 0 |
+
+Rules:
+- **Inert defaults are bit-identical.** With `--director off` and inert defaults, trajectories must equal
+  today's, so the golden digest must not change. Read `env.*` only where the config already branches. Where a
+  multiplier is exactly 1.0, keep the integer path identical: apply `floor(regen * mult)` only when the director
+  is enabled, behind a static config branch `director.enabled`.
+- **Energy and ledger.**
+  - Regeneration stays `INJECT_REGEN`.
+  - Immigration stays `INJECT_IMMIGRATION`.
+  - Catastrophe deaths are a new death cause, `CATASTROPHE`. The corpse goes through the existing corpse path
+    (`FLOW_CORPSE`, structure back to the field), so no new ledger term is needed. This needs a death-cause
+    enum entry, counters and an events column.
+  - A catastrophe draws randomness from a **new RNG stream** (`Stream.CATASTROPHE`), which bumps
+    `RNG_LAYOUT_VERSION`. The other streams stay unchanged, so existing trajectories are unaffected.
+- **Season and patch gain.** `fields.season_weights` uses `env.season_*`. Fertility weights each patch by
+  `env.patch_gain[p] * w_p(t)`.
+- **Checkpoints.** `env` is part of `State`, so it is saved and resumed. Old checkpoints without `env` load
+  with inert defaults (`state_from_arrays` fills missing `env.*`).
+- **Invariants.** Every `env.*` must be finite and in range: `regen_mult` in [0, 4], `drift_mult` in [0, 20],
+  `patch_gain` in [0, 4], radius ≤ L/2, `kill_p` in [0, 1]. Add these to `device_check` and `full_check`.
+- **Tests.**
+  - Inert defaults give an unchanged digest.
+  - Each knob has the intended effect.
+  - The ledger closes with catastrophes.
+  - Checkpoint round-trip.
+  - Old-checkpoint load.
+  - Replay of a decision log is bitwise-identical to the live run that produced it, on CPU.
+
+## 4. Vital signs
+
+Computed by the rule tier every `K_rule` steps from metrics already logged (§19 of DESIGN.md), plus a few
+cheap additions.
+
+| group | signals |
+|---|---|
+| Diversity | `clades_alive`, `clade_entropy`, `top_clade_share`, `weight_diversity` (reliable since the F20 fix), spread of gene quantiles (q90/q10 of sigma, rate, frac) |
+| Behaviour descriptor `b` | emitters_frac, sharers_frac, mean_bonds_per_agent, frac_in_bodies_ge4, singleton fraction, kill share, predation_ratio, gene medians. Each is normalised to [0, 1] with fixed ranges. |
+| Novelty | `novelty = mean k-NN distance of b to the descriptor archive` (k = 5). A MAP-Elites-style grid over 2–3 chosen descriptor axes records which cells have ever been visited. **Coverage** = visited cells. |
+| Stagnation | `‖b(t) − b(t − 100k)‖`, and the number of new archive cells in the last 200k steps |
+| Viability | n_alive / K_est, births/deaths balance, a min-population trend, an extinction-risk flag (`n_alive < 0.2 × K_est` or falling more than 30% in 50k) |
+| Pacing | steps since the last intervention, a "drama" level (recent intervention intensity), and the persona's target curve |
+
+The archive (descriptor vectors and grid cells) is persisted at `runs/NAME/director_archive.json` and is
+rebuilt deterministically from metrics on replay.
+
+## 5. Intervention menu
+
+Every action has parameter bounds, a cost against a rolling **budget** (per 100k steps), a **cooldown**, and an
+expected-effect note for the journal.
+
+| action | params (bounds) | effect | cost | cooldown |
+|---|---|---|---|---|
+| `set_seasons` | period 2k–100k, amp 0–0.9, mode global/per_patch | climate regime; per_patch forces migration | 1 | 50k |
+| `fertility_shift` | move patch p by ≤ L/4, or gain 0.25–2.0 | frontier or habitat change | 1 | 20k |
+| `habitat_loss` | patch p, gain → 0 for D steps (10k–200k) | fragmentation, refugia | 2 | 50k |
+| `regen_pulse` | mult 0.4–1.8 for D steps (5k–50k) | famine or boom | 1 | 30k |
+| `immigration_pulse` | count 16–1,024 (≤ lanes over several steps), source random/archive | invasion, new founders | 1 | 20k |
+| `catastrophe` | centre, radius 20–200, kill_p 0.2–0.9 | founder effects, recolonisation | 3 | 100k |
+| `drift_change` | mult 0.5–10 | environmental tempo | 1 | 50k |
+| `mutation_floor_nudge` | rate_min ×(0.5–4), sigma_min ×(0.5–4) | exploration pressure (global; use sparingly) | 3 | 200k |
+
+The mutation-floor nudge changes config-level bounds. It needs `env.rate_min` and `env.sigma_min` fields too.
+It is optional for v1.
+
+**Archive immigrants** (`source: archive`) need a genome archive: every heavy-metrics step, snapshot a few
+sampled genomes from distinct clades into `runs/NAME/genome_archive/`. An immigrant pulse can then reintroduce
+an extinct lineage ("invasive species"). This is optional for v1; random founders work first.
+
+### Safety rules (rule tier, always on)
+
+- **Extinction rescue.** If the extinction-risk flag is set: a `regen_pulse` boost plus a random
+  `immigration_pulse`. This overrides cooldowns and budget once per 200k steps.
+- **Monoculture breaker.** If `top_clade_share > 0.9` for 100k steps: an immigration pulse, or per-patch
+  seasons, or habitat loss, chosen by persona weights.
+- **Stagnation response.** If novelty is below threshold and there are no new archive cells for 200k steps: the
+  persona selects from the menu (the rule tier picks by weights when the LLM is off).
+- **Runaway damper.** If the population exceeds 0.95 × capacity or a single body exceeds 5% of the population:
+  a mild `regen_pulse` < 1.
+- **Hard caps.** At most one catastrophe per 100k steps. The total budget per 100k is bounded by the persona.
+
+## 6. Personas
+
+Each persona is a weight vector over objectives plus a system-prompt paragraph for the LLM tier.
+
+| persona | objective | style |
+|---|---|---|
+| **Gardener** | maximise viability and diversity; minimal intervention | rescues, gentle seasons, rare pulses |
+| **Trickster** | maximise persistent novelty within viability | irregular, varied shocks; avoids repeating an action |
+| **Architect** | pursue a user goal (e.g. "bodies ≥ 100", "make signalling pay", "three trophic levels") | targeted, multi-step plans |
+
+The objective is `J = w_n·novelty + w_c·coverage_gain + w_d·diversity − w_r·extinction_risk −
+w_x·intervention_cost`. The persona sets the `w`.
+
+## 7. LLM tier (LM Studio)
+
+- **Endpoint.** Configurable; the default is `http://localhost:1234/v1/chat/completions` (OpenAI-compatible).
+  Use stdlib `urllib`, with no new runtime dependency.
+- **Structured output.** Request `response_format: {type: "json_schema", json_schema: <intervention schema>}`:
+  ```json
+  {"actions": [{"action": "<menu name>", "params": {...}, "expected_effect": "..."}],
+   "journal": "2-3 sentences citing the vital signs that motivated the choice"}
+  ```
+  The schema allows at most two actions per call, including `"none"`. Every reply is validated against the
+  schema, clamped to the bounds, checked against budget and cooldown, then logged. An invalid or late reply
+  falls back to the rule tier.
+- **Prompt.** About 2k tokens:
+  - persona paragraph;
+  - menu with bounds, costs and cooldowns remaining;
+  - current vital signs and their trends over the last 5–10 windows;
+  - the last five interventions with their measured effect (vital-sign deltas 50k steps later);
+  - budget remaining;
+  - the user's goal (Architect).
+- **Cadence.** Every `K_llm` steps (default 25,000, about 7 minutes at 62 steps/s), async. The simulation keeps
+  running and the reply applies at the next boundary.
+- **Model.** Any local instruct model with reliable JSON-schema output. On 48 GB, a 7–14B model in LM Studio's
+  MLX format fits beside the simulation (about 1.2 GB). Shortlist two or three by validity rate and decision
+  quality (§9). Latency of a few seconds per call is fine.
+- **Containment.** The LLM output is data and only selects menu actions. It never edits files, code or config,
+  and it is never `eval`'d. Store the raw prompt and response in `journal.jsonl` for audit.
+
+## 8. Interfaces
+
+**CLI**
+- `alife run|resume ... --director off|live|replay`.
+- `--persona gardener|trickster|architect`, `--goal "..."` (Architect).
+- `--llm-url URL`, `--llm-model NAME`, `--llm-every N`, `--no-llm` (rule tier only).
+
+**Config** (new keys, defaults off, added to `config.POST_V01_KEYS`):
+- `director.enabled`, `director.rule_every`, `director.llm_every`;
+- `director.persona`, `director.budget_per_100k`, `director.goal`.
+
+Endpoint and model are run-level keys (`run.*`), so they can change on resume.
+
+**GUI** (AlifeControl): a Director panel with:
+- mode, persona and goal;
+- LLM URL and model, with a "Test connection" button that sends a tiny chat request;
+- cadence;
+- a live journal view that tails `journal.jsonl`;
+- the last ten interventions.
+
+**Dashboard / analysis:** intervention markers on time-series charts, and novelty and coverage curves.
+
+## 9. Evaluation
+
+Fork `runs/64k_s0` at step 120,000 into arms that run to step 1.5M, with the same seed:
+
+| arm | director |
+|---|---|
+| A | off (control; behaviour already known) |
+| B | rule tier only, Gardener |
+| C | rule + LLM, Trickster |
+| D (optional) | rule + LLM, Architect with goal "bodies ≥ 100" |
+
+**Metrics.**
+- Archive coverage over time.
+- Persistent novelty: novelty that is still above the baseline 100k steps after an intervention.
+- Clades and lineage depth.
+- Behavioural turnover.
+- Number of extinctions and rescues.
+- Intervention diversity and cost.
+- For the LLM: JSON validity rate, clamp rate and latency.
+
+**Success criteria.** B beats A on coverage and persistent novelty, with no population collapse. C beats B on
+those metrics, or matches B with better journal legibility (a human rates 10 sampled journal entries).
+
+**Cost.** About 6 hours per arm at 64k on the M5 Pro. Run sequentially; parallel arms share the GPU.
+
+## 10. Build order
+
+1. **Engine:** `State.env`, the `CATASTROPHE` death cause and RNG stream, patch gain, regen multiplier,
+   invariants, tests and a DESIGN.md update. This is the highest-risk step because it touches the compiled
+   step; land it alone.
+2. **Director core:**
+   - vital signs, archive and rule tier, with budgets, cooldowns and safety rules;
+   - `director.jsonl`, and replay with a bitwise replay test;
+   - CLI flags.
+3. **LLM tier:** LM Studio client, schema, personas, prompt builder, fallback and journal. Add a mock-server
+   test (`http.server` in tests) for valid, invalid and slow replies.
+4. **GUI:** the Director panel.
+5. **Evaluation:** arms A–D and dashboard markers.
+
+## 11. Open decisions (owner)
+
+1. **Live levers as simulation state** (§3), as opposed to forks. *Recommended:* yes. It is the only way to
+   intervene without recompiles or new run directories.
+2. **LLM role.** It picks from the menu (*recommended*), or it free-forms actions (rejected: unsafe, hard to
+   validate).
+3. **Initial objective.** Research open-endedness (Gardener and Trickster, evaluated by §9) or game-style pacing
+   and drama. *Recommended:* the research objective first. Pacing personas reuse the same machinery later.
+4. **Genome archive for immigrants.** Defer to v2 (*recommended*) or include in v1.

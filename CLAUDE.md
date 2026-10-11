@@ -1,6 +1,7 @@
 # alife: notes for Claude
 
 Start with `docs/HANDOVER.md` (current state, results, next steps). `docs/DESIGN.md` is the normative spec.
+`docs/DIRECTOR.md` is the proposed design for the ecosystem director (not implemented yet).
 
 ## Conventions
 
