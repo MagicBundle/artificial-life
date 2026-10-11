@@ -49,6 +49,7 @@ uv run alife view --preset dev            # live viewer (needs the `viewer` extr
 | `alife inspect RUN` | config summary, carrying capacity, checkpoints, ledger status, bodies and clades; `--check` runs the full invariant check |
 | `alife view` | interactive pygame-ce viewer (pan, zoom, layers, agent picking, snapshots) |
 | `alife bench` | throughput, donation health, determinism and brain-variant benchmarks |
+| `alife llm-check` | send one tiny structured-output request to the director's LLM endpoint; prints `OK model=... latency=...s` or `FAIL <kind>: <detail>` (exit 0 or 1) |
 
 Run directories (`runs/<name>/`) hold the resolved `config.json`, `meta.json`, `metrics.jsonl`, safetensors
 checkpoints, and birth/death event logs (DESIGN §18).
@@ -109,6 +110,12 @@ Studio, and the run then falls back to the rule tier at every boundary. Every ca
 fallback, is written to `journal.jsonl`. The model's text is data: it can only select menu actions, which pass the same
 bounds, budget and cooldown checks as the rules. `ALIFE_LLM_URL=http://localhost:1234/v1/chat/completions uv run pytest
 -m llm` runs the one test against a real server.
+
+`uv run alife llm-check` (with `--llm-url` / `--llm-model`, default the `run.llm_*` values) sends one tiny request under
+the director's own client and reply schema and prints `OK model=... latency=...s` or `FAIL <kind>: <detail>`, with
+`<kind>` one of `connection`, `timeout`, `http`, `empty` (a reasoning model with thinking on), `protocol`, `oversize` or
+`invalid` (not JSON, or not the schema); the exit code is 0 or 1. The GUI's Director panel has a "Test connection"
+button that runs it.
 
 ## Development and testing on Linux (CPU)
 

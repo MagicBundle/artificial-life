@@ -1,6 +1,6 @@
 # Handover
 
-Status of the `alife` project as of 2026-10-11 (after director build step 3), written for the next coding
+Status of the `alife` project as of 2026-10-11 (after director build step 4), written for the next coding
 session (a local Claude Code session on the owner's MacBook Pro, M5 Pro, 48 GB). Read this, then `CLAUDE.md`, then the parts of
 `docs/DESIGN.md` you need.
 
@@ -18,7 +18,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, and `director/` (the host-side ecosystem director, see below) |
 | `tests/` | pytest suite. 730 fast tests (`-m "not slow"`, about 50 s on the Mac) plus 19 slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
-| `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 3 are built, §12 and §13 record how steps 2 and 3 refine it |
+| `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
 | `docs/ACTIVITY.md` | evolutionary-activity analysis of `runs/64k_s0` (method, results, sensitivity); figures in `docs/activity/` |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
@@ -47,9 +47,9 @@ of the Python process). A second SIGINT is a hard exit. Do not use `--quiet` if 
 
 - `main` holds the v0 engine (PR #1), the GUI, periodic immigration and seasons (PR #2), the GUI follow-ups (PR #3),
   the director design (PR #4) and director build step 1, the engine's live environment state (PR #5), all
-  squash-merged, as is director build step 2 (the host-side director core, PR #6). Director build step 3 (the LLM tier)
-  is the PR this handover ships with.
-- Mac (M5 Pro, Metal), this PR: 851 tests pass (832 fast, 19 slow), 2 skipped (the Linux-only golden digest and the
+  squash-merged, as are director build step 2 (the host-side director core, PR #6) and step 3 (the LLM tier, PR #7).
+  Director build step 4 (the GUI Director panel and `alife llm-check`) is the PR this handover ships with.
+- Mac (M5 Pro, Metal), this PR: 871 tests pass (852 fast, 19 slow), 2 skipped (the Linux-only golden digest and the
   `llm` test that needs a real server; it passed once with LM Studio), ruff and the format check clean. Linux CI was
   not run in this session. A real LM Studio smoke test (`gemma-4-26b-a4b-it-mlx@8bit`, tiny preset, 3000 steps, a call
   every 500 steps, Trickster and Architect): 12 calls, all valid, median latency 3.2 s (first call after idle 17 s);
@@ -63,8 +63,9 @@ of the Python process). A second SIGINT is a hard exit. Do not use `--quiet` if 
   be accurate avoids GPU matmul.
 - GUI on the Mac: it compiled first time (Swift 6.4 toolchain, macOS 27 SDK). The levers and CLI flags were
   checked against `config.py` and `alife --help`. The owner clicked through the tiny-preset checklist below
-  before and after the Swift 6 migration, and every step passed. Step 2 did not touch the GUI; its Director panel is
-  build step 4.
+  before and after the Swift 6 migration, and every step passed. Step 4 added the Director panel (below); it was built
+  and its pure logic and tail parsers were checked with a throwaway script and real runs, but the panel itself has not
+  yet been clicked through by the owner (checklist below).
 
 ## New in PR #2
 
@@ -95,7 +96,7 @@ Goal: keep the world novel but viable by acting only on the environment, never o
   --director live`. `--director replay` applies a log: `resume RUN --director replay` in place, or `run --init-from
   SRC:STEP --director replay --replay-log LOG --out NEW` for a fork. A run must be started with the director enabled
   (`--director live|replay` on `run` sets `director.enabled`); to add it to an older run, fork it.
-- **Step 3 (this PR, `DESIGN.md` §26.10):** the LLM tier. With `--llm` / `--llm-every N` (live mode), a local LM Studio
+- **Step 3 (PR #7, merged, `DESIGN.md` §26.10):** the LLM tier. With `--llm` / `--llm-every N` (live mode), a local LM Studio
   model (`gemma-4-26b-a4b-it-mlx@8bit`) is asked at every multiple of `director.llm_every` for up to two menu actions
   and a journal, with a JSON-schema reply generated from `MENU`. The call is synchronous in the director hook (60 s
   timeout). The rule tier keeps reverts and the safety rules at every boundary; the model makes the discretionary
@@ -169,21 +170,37 @@ verified findings for the whole run.
   6. Inspect, the viewer and Reveal in Finder;
   7. ⌘Q during a run: the engine still writes its checkpoint.
 
+## Director panel (step 4, `docs/DIRECTOR.md` §14)
+
+- **Settings (left column):** a Director box with Mode (New run and Fork: Off or Live; Resume: Off, Live or Replay),
+  Persona, Goal (Architect), Rule every, an LLM toggle with LLM every, URL and Model, and **Test connection**
+  (`alife llm-check`, one line in green or red). Baselines and the "only changed values are passed" rule work as for the
+  levers; the command preview shows the flags. A resume of a run without `director.enabled` shows a note and passes
+  nothing. Validation mirrors `config.validate` (rule_every multiples, llm_every, URL).
+- **Live views (right column):** Interventions (last 10 of `director.jsonl`) and Journal (last 20 of `journal.jsonl`,
+  LLM calls with the raw prompt and reply under a disclosure), tailed every 2 s from the last 256 KiB.
+- **`alife llm-check`:** `OK model=... latency=...s` (exit 0) or `FAIL <kind>: <detail>` (exit 1); `DESIGN.md` §21.
+- **Director click-through checklist** (tiny preset; add to the checklist above):
+  1. New run, Director Live with the LLM toggle on: the Command box shows `--director live --llm-every N`, **Test
+     connection** turns green with LM Studio running and red (`FAIL connection`) with it stopped;
+  2. start it with Rule every 50 and LLM every 100: Interventions and Journal fill in while it runs, the disclosure shows
+     the raw prompt and reply;
+  3. Fork that run: the Director box is pre-filled and Live; change only the persona and check the command shows only
+     `--director live --persona ...`;
+  4. Resume it with Replay, then Resume a run made without a director: the note appears and no director flag is shown;
+  5. a run without `director.jsonl` shows "Director off for this run".
+
 ## Suggested next steps
 
-1. **Director build step 4, the GUI Director panel** (`docs/DIRECTOR.md` §8): mode, persona, goal, LLM URL and model
-   with a "Test connection" button, cadence, a live journal view tailing `journal.jsonl` (including the `llm_call`
-   records) and the last ten interventions. Keep the GUI's lever list in sync with the config keys, including
-   `director.llm_*` and `run.llm_*`.
-2. **The §9 evaluation:** fork `runs/64k_s0` at step 120,000 into the arms (director off; rule tier, Gardener; rule +
+1. **The §9 evaluation:** fork `runs/64k_s0` at step 120,000 into the arms (director off; rule tier, Gardener; rule +
    LLM, Trickster; optional Architect) with the same seed, and compare archive coverage, persistent novelty, clades,
    extinctions and rescues, and intervention cost, plus the LLM's validity, clamp rate and latency. About 6 hours per
-   arm. Build step 4 (the GUI Director panel) can come before or after.
+   arm.
    §9 now also requires a matched random-director arm R (a new `random` persona, not built yet), at least two
    seeds per arm, and Bedau–Packard activity as an outcome metric (`docs/RESEARCH.md` §4).
-3. Optional engine work, deferred in DESIGN §23.2:
+2. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
    - `inspect` showing the resumed total instead of the original `steps`.
-4. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
+3. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
    it in the DESIGN Review log.

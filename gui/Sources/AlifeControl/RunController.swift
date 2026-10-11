@@ -65,9 +65,14 @@ final class RunController: ObservableObject {
     @Published private(set) var lastExit: ExitInfo?
     /// Fork mode: set when the source run's config could not be read (the levers then show the engine defaults).
     @Published private(set) var forkLeverWarning: String?
+    /// Fork and Resume: set when the source run's config could not be read for the director settings.
+    @Published private(set) var directorWarning: String?
+    /// The outcome of the last "Test connection" (nil when none is current).
+    @Published private(set) var llmCheck: LLMCheckState = .idle
 
     // Live status
     @Published private(set) var metrics: MetricsSnapshot?
+    @Published private(set) var director: DirectorSnapshot?
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var remaining: TimeInterval?
     @Published private(set) var logLines: [LogLine] = []
@@ -83,11 +88,14 @@ final class RunController: ObservableObject {
     private var ticker: Task<Void, Never>?
     private var pollCount = 0
     private var appliedPoll = 0
+    private var directorPollCount = 0
+    private var appliedDirectorPoll = 0
 
     private init() {
         repoPath = UserDefaults.standard.string(forKey: Self.repoKey) ?? "~/artificial-life"
         settings.name = Self.defaultRunName()
         refreshRepo()
+        loadDirector()
         // Lives as long as the app (it also refreshes the run list and metrics while idle).
         ticker = Task { [weak self] in
             let clock = ContinuousClock()
@@ -112,6 +120,14 @@ final class RunController: ObservableObject {
 
     var validationErrors: [String] { settings.validate(existingRuns: Set(runs)) }
 
+    /// New run / fork: a note when the typed name is taken and Start will use the next free one.
+    var outputNameNote: String? {
+        guard settings.mode != .resume else { return nil }
+        let typed = settings.name.trimmingCharacters(in: .whitespaces)
+        let used = settings.outputName(existingRuns: Set(runs))
+        return typed.isEmpty || used == typed ? nil : "'runs/\(typed)' exists; this run will be saved as 'runs/\(used)'."
+    }
+
     var canStart: Bool { job == nil && repoReady && validationErrors.isEmpty }
 
     var targetRunExists: Bool {
@@ -120,7 +136,7 @@ final class RunController: ObservableObject {
 
     /// The exact command that Start will execute.
     var commandLine: String {
-        let args = settings.arguments().map(shellQuote).joined(separator: " ")
+        let args = settings.arguments(existingRuns: Set(runs)).map(shellQuote).joined(separator: " ")
         return "cd \(shellQuote(repoPath)) && .venv/bin/alife \(args)"
     }
 
@@ -129,6 +145,7 @@ final class RunController: ObservableObject {
     func refreshRepo() {
         repoReady = FileManager.default.isExecutableFile(atPath: alifeURL.path)
         refreshRuns()
+        refreshDirectorCadence()
     }
 
     func chooseRepo() {
@@ -192,11 +209,78 @@ final class RunController: ObservableObject {
         forkLeverWarning = nil
     }
 
+    // MARK: Director settings
+
+    /// Pre-fills the director settings and sets what they are diffed against. Call when the mode or the source
+    /// run changes. A new run starts from the engine defaults; a fork and a resume from the source run's
+    /// `config.json` (a fork pre-fills the mode but the engine starts it with the director off; a resume of a run
+    /// without a director has none to offer).
+    func loadDirector() {
+        let context: DirectorContext
+        switch settings.mode {
+        case .new:
+            context = .newRun(cadence: Cadence.preset(settings.preset.rawValue, repo: repoURL))
+        case .fork, .resume:
+            if settings.sourceRun.isEmpty {
+                context = DirectorContext(available: settings.mode == .fork, hasLog: false)
+            } else {
+                let dir = repoURL.appendingPathComponent("runs/\(settings.sourceRun)", isDirectory: true)
+                context = .forRun(at: dir, mode: settings.mode)
+            }
+        }
+        settings.director = context.baseline
+        settings.director.mode = context.initialMode
+        settings.directorContext = context
+        directorWarning = context.warning
+        llmCheck = .idle
+    }
+
+    /// New run: the cadence follows the preset (the edited settings stay).
+    func refreshDirectorCadence() {
+        guard settings.mode == .new else { return }
+        settings.directorContext.cadence = Cadence.preset(settings.preset.rawValue, repo: repoURL)
+    }
+
+    /// Runs `alife llm-check` with the URL and model in the panel and shows its one-line result.
+    func checkLLM() {
+        guard repoReady, llmCheck != .running, settings.director.llmEndpointValid else { return }
+        let url = settings.director.llmURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = settings.director.llmModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let executable = alifeURL
+        let directory = repoURL
+        llmCheck = .running
+        Task {
+            let result = await LLMCheck.run(
+                executable: executable, arguments: ["llm-check", "--llm-url=\(url)", "--llm-model=\(model)"],
+                directory: directory)
+            // The fields may have been edited while it ran; a result for other values would mislead.
+            let current = settings.director
+            guard current.llmURL.trimmingCharacters(in: .whitespacesAndNewlines) == url,
+                  current.llmModel.trimmingCharacters(in: .whitespacesAndNewlines) == model else {
+                llmCheck = .idle
+                return
+            }
+            llmCheck = .result(result)
+        }
+    }
+
+    /// Forgets a connection-test result (the URL or model was edited).
+    func clearLLMCheck() {
+        if llmCheck != .running { llmCheck = .idle }
+    }
+
     // MARK: Jobs
 
     func start() {
         guard canStart else { return }
-        let args = settings.arguments()
+        let existing = Set(runs)
+        let args = settings.arguments(existingRuns: existing)
+        if settings.mode != .resume {
+            // The name field follows the run actually started, so the status, viewer and inspect buttons refer to
+            // it, and the next run or fork again resolves to a free name.
+            let used = settings.outputName(existingRuns: existing)
+            if settings.name != used { settings.name = used }
+        }
         beginJob(.run, executable: alifeURL, arguments: args, keepAwake: true)
         guard job == .run else { return }
         trackedRun = settings.targetRun
@@ -274,6 +358,7 @@ final class RunController: ObservableObject {
         stopRequested = false
         refreshRepo()
         pollMetrics()
+        pollDirector()
     }
 
     private static func describe(status: Int32, reason: Process.TerminationReason, kind: Job) -> ExitInfo {
@@ -444,6 +529,7 @@ final class RunController: ObservableObject {
         if tickCount % 2 == 0 {
             refreshRuns()
             pollMetrics()
+            pollDirector()
         }
     }
 
@@ -464,4 +550,30 @@ final class RunController: ObservableObject {
             if metrics != snapshot { metrics = snapshot }
         }
     }
+
+    /// The Director views follow the same run as the metrics.
+    private func pollDirector() {
+        let run = job == .run ? trackedRun : settings.targetRun
+        guard !run.isEmpty else {
+            if director != nil { director = nil }
+            return
+        }
+        let dir = repoURL.appendingPathComponent("runs/\(run)", isDirectory: true)
+        directorPollCount += 1
+        let poll = directorPollCount
+        Task {
+            let snapshot = await Task.detached(priority: .utility) { DirectorTailer.snapshot(runDirectory: dir) }.value
+            // Polls can overlap; never let an older read overwrite a newer one.
+            guard poll > appliedDirectorPoll else { return }
+            appliedDirectorPoll = poll
+            if director != snapshot { director = snapshot }
+        }
+    }
+}
+
+/// The state of the "Test connection" button.
+enum LLMCheckState: Equatable {
+    case idle
+    case running
+    case result(LLMCheckResult)
 }

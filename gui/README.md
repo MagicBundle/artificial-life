@@ -56,10 +56,15 @@ separate from the one used by `swift run`.
   pre-filled from the source run's `config.json` and only the levers you change are passed, so a lever can also be
   set back to its engine default. If the source config cannot be read, the levers show the engine defaults and a
   warning appears. The exact command line is shown before you start.
+- **Run name** (new run, fork): if `runs/NAME` already exists, the next free name is used instead of blocking Start:
+  a short trailing number counts up (`trickster2` → `trickster3`), otherwise `-2`, `-3`, ... is appended. The
+  command preview shows the name that will be used, and on Start the name field switches to it.
 - **Stop** sends a single SIGINT: the engine finishes the step, writes a checkpoint and exits (exit code 130).
   **Force stop** (shown after Stop) sends SIGTERM and ends it immediately, without a checkpoint.
 - **Timer**: "Stop after HH:MM" sends the same single SIGINT when the time is up; the remaining time is shown.
 - The Mac is kept awake (no idle sleep) while a run is active.
+- **Director**: see the section below. New run and Fork can start a live director (optionally with the local LLM tier);
+  Resume can switch it off, live or to an in-place replay.
 - **Status** is read from the last line of `runs/NAME/metrics.jsonl` every ~2 seconds: step, population,
   steps/s, clades, maximum generation and ledger error.
 - **Open viewer** runs `alife view runs/NAME` as a separate process. It shares the GPU with a running
@@ -70,7 +75,7 @@ separate from the one used by `swift run`.
 ## The "keep inventing" levers
 
 Each lever is passed as `--set section.key=value` only when it differs from the baseline: the engine default for a
-new run, the source run's value for a fork. Resume cannot change the dynamics (it accepts only `run.*` settings);
+new run, the source run's value for a fork. Resume cannot change the dynamics (it accepts only `run.*` settings and the director's policy keys);
 use a new run or a fork to apply them.
 
 | lever | key | default | effect |
@@ -88,6 +93,44 @@ use a new run or a fork to apply them.
 
 The engine performs the final validation; any rejection (exit code 2) appears in the log.
 
+## The Director panel
+
+The **Director** box (settings column) runs the ecosystem director (`docs/DIRECTOR.md`, DESIGN §26) from the app; the
+**Director** views (right column) follow it. As with the levers, only values that differ from a baseline are passed:
+the engine defaults for a new run, the source run's `config.json` (`director.*`, `run.llm_url`, `run.llm_model`,
+`run.director`) for a fork and a resume. The Command box shows the flags.
+
+| setting | CLI | notes |
+|---|---|---|
+| Mode | `--director live\|replay` | New run and Fork: Off or Live. Resume: Off, Live or Replay (in place, the run's own `director.jsonl`; the model is never called). Replay forks with `--replay-log` stay CLI-only. |
+| Persona | `--persona gardener\|trickster\|architect` | Live only. |
+| Goal | `--goal=TEXT` | Architect only: the rule tier applies the safety rules only; the goal reaches the model as data. |
+| Rule every | `--set director.rule_every=N` | Default 1000. A positive multiple of `run.metrics_every` and `run.heavy_metrics_every` (read from the preset file, or from the source's config). |
+| LLM tier | `--llm-every N` | Off is `0`. When on, N defaults to 25000 and must be a positive multiple of Rule every. A failed call falls back to the rule tier. |
+| URL, Model | `--llm-url=URL`, `--llm-model=NAME` | Only with the tier on. URL must be http(s); default `http://localhost:1234/v1/chat/completions` and `gemma-4-26b-a4b-it-mlx@8bit` (LM Studio). |
+
+- **Fork** does not inherit the director: the engine starts it off and resets the environment levers, so the Mode
+  picker is pre-filled with Live when the source ran live and `--director live` is passed. The other settings are
+  pre-filled from the source and only changed ones are passed.
+- **Resume** pre-fills the run's own mode and settings. If the run's `config.json` has `director.enabled = false` (it
+  was created without the director), the box says "This run was created without the director; fork it to add one." and
+  nothing is passed. Replay is refused when the run has no `director.jsonl`.
+- **Test connection** runs `alife llm-check --llm-url=... --llm-model=...` (one tiny structured-output request under the
+  director's own client and schema) and shows its line in green (`OK model=... latency=...s`) or red
+  (`FAIL connection: ...`, `FAIL timeout: ...`, `FAIL empty: ...` for a reasoning model with thinking on, `FAIL invalid:
+  ...`). It can take up to the 60 s timeout, and works while no run is active. LM Studio must be running with the model
+  loaded; it may answer for another model if the name is unknown, so the check shows reachability and a valid reply.
+- **Start** is disabled while a director setting is invalid (the messages appear under the command, like the levers).
+  A note, not an error, appears if the metrics cadence could not be read: the engine then does the check (exit code 2).
+- **Interventions** shows the last 10 entries of `director.jsonl`, newest first: step, source (gear = rule, sparkles =
+  llm, arrow = revert), action, its params (floats at three significant digits) and the reason (full text on hover).
+- **Journal** shows the last 20 records of `journal.jsonl`, newest first: rule one-liners, and for each LLM call the
+  step, outcome (ok, none, rejected, failed, invalid), latency, accepted and rejected counts, any fallback to the rule
+  tier, the model's own journal text and, under "Raw prompt and response", the full request and reply as selectable text.
+- Both views follow the same run as the status box (the running run, else the selected one), poll every 2 s, read only
+  the last 256 KiB of each file, and skip a missing file, a half-written last line and malformed lines. A run without a
+  `director.jsonl` shows "Director off for this run".
+
 ## Files
 
 - `AlifeControlApp.swift`: app entry point and app delegate
@@ -97,3 +140,7 @@ The engine performs the final validation; any rejection (exit code 2) appears in
   AsyncStreams), log streaming, timer, keep-awake
 - `Levers.swift`: run settings, levers, validation and command-line construction
 - `MetricsTailer.swift`: reads the last row of `metrics.jsonl`
+- `DirectorSettings.swift`: the director's settings, baselines from `config.json`, validation, argument construction
+  and the `alife llm-check` runner (pure logic apart from that runner)
+- `DirectorTailer.swift`: tails `director.jsonl` and `journal.jsonl` (last 256 KiB) into interventions and journal rows
+- `DirectorPanel.swift`: the Director settings box and the Interventions / Journal views
