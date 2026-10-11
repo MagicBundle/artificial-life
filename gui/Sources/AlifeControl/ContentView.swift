@@ -268,6 +268,11 @@ struct ContentView: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if !busy {
+                    if let note = controller.outputNameNote {
+                        Label(note, systemImage: "info.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     ForEach(controller.validationErrors, id: \.self) { message in
                         Label(message, systemImage: "exclamationmark.circle")
                             .font(.caption)

@@ -120,6 +120,14 @@ final class RunController: ObservableObject {
 
     var validationErrors: [String] { settings.validate(existingRuns: Set(runs)) }
 
+    /// New run / fork: a note when the typed name is taken and Start will use the next free one.
+    var outputNameNote: String? {
+        guard settings.mode != .resume else { return nil }
+        let typed = settings.name.trimmingCharacters(in: .whitespaces)
+        let used = settings.outputName(existingRuns: Set(runs))
+        return typed.isEmpty || used == typed ? nil : "'runs/\(typed)' exists; this run will be saved as 'runs/\(used)'."
+    }
+
     var canStart: Bool { job == nil && repoReady && validationErrors.isEmpty }
 
     var targetRunExists: Bool {
@@ -128,7 +136,7 @@ final class RunController: ObservableObject {
 
     /// The exact command that Start will execute.
     var commandLine: String {
-        let args = settings.arguments().map(shellQuote).joined(separator: " ")
+        let args = settings.arguments(existingRuns: Set(runs)).map(shellQuote).joined(separator: " ")
         return "cd \(shellQuote(repoPath)) && .venv/bin/alife \(args)"
     }
 
@@ -265,7 +273,14 @@ final class RunController: ObservableObject {
 
     func start() {
         guard canStart else { return }
-        let args = settings.arguments()
+        let existing = Set(runs)
+        let args = settings.arguments(existingRuns: existing)
+        if settings.mode != .resume {
+            // The name field follows the run actually started, so the status, viewer and inspect buttons refer to
+            // it, and the next run or fork again resolves to a free name.
+            let used = settings.outputName(existingRuns: existing)
+            if settings.name != used { settings.name = used }
+        }
         beginJob(.run, executable: alifeURL, arguments: args, keepAwake: true)
         guard job == .run else { return }
         trackedRun = settings.targetRun

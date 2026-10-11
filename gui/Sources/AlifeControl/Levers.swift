@@ -230,6 +230,13 @@ struct RunSettings: Equatable {
 
     var timerDuration: TimeInterval { TimeInterval(timerHours * 3600 + timerMinutes * 60) }
 
+    /// New run / fork: the run name Start will use. The typed name if `runs/<name>` is free, else the next free
+    /// variant (`RunName.nextFree`), so a taken name never blocks a run.
+    func outputName(existingRuns: Set<String>) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        return existingRuns.contains(trimmed) ? RunName.nextFree(after: trimmed, taken: existingRuns) : trimmed
+    }
+
     func validate(existingRuns: Set<String>) -> [String] {
         var errors: [String] = []
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
@@ -245,8 +252,6 @@ struct RunSettings: Equatable {
                 errors.append("Enter a run name.")
             } else if trimmedName.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) == nil {
                 errors.append("Run name may use letters, digits, '.', '_' and '-' only.")
-            } else if existingRuns.contains(trimmedName) {
-                errors.append("'runs/\(trimmedName)' already exists; pick another name.")
             }
             let trimmedSeed = seed.trimmingCharacters(in: .whitespaces)
             if !trimmedSeed.isEmpty && Parse.integer(trimmedSeed) == nil {
@@ -268,8 +273,8 @@ struct RunSettings: Equatable {
     }
 
     /// Arguments after the executable. Call only when `validate` returned no errors.
-    func arguments() -> [String] {
-        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+    func arguments(existingRuns: Set<String>) -> [String] {
+        let trimmedName = outputName(existingRuns: existingRuns)
         let trimmedSeed = seed.trimmingCharacters(in: .whitespaces)
         let trimmedSteps = steps.trimmingCharacters(in: .whitespaces)
         var args: [String]
@@ -302,4 +307,28 @@ struct RunSettings: Equatable {
 func shellQuote(_ s: String) -> String {
     if s.range(of: #"^[A-Za-z0-9_@%+=:,./-]+$"#, options: .regularExpression) != nil { return s }
     return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+// MARK: - Run names
+
+enum RunName {
+    /// The first name not in `taken` derived from `name`: a short trailing number (1-3 digits) counts up,
+    /// keeping its width (`trickster2` → `trickster3`, `run007` → `run008`); otherwise `-2`, `-3`, ... is
+    /// appended (`baseline` → `baseline-2`, and `run-20261011-1530` → `run-20261011-1530-2`, whose trailing
+    /// digits are a time, not a counter).
+    static func nextFree(after name: String, taken: Set<String>) -> String {
+        let digits = String(name.reversed().prefix { $0.isASCII && $0.isNumber }.reversed())
+        let stem = String(name.dropLast(digits.count))
+        let candidates: (Int) -> String
+        var n: Int
+        if (1...3).contains(digits.count), !stem.isEmpty, let value = Int(digits) {
+            candidates = { stem + String(format: "%0\(digits.count)d", $0) }
+            n = value + 1
+        } else {
+            candidates = { "\(name)-\($0)" }
+            n = 2
+        }
+        while taken.contains(candidates(n)) { n += 1 }
+        return candidates(n)
+    }
 }

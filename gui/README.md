@@ -56,6 +56,9 @@ separate from the one used by `swift run`.
   pre-filled from the source run's `config.json` and only the levers you change are passed, so a lever can also be
   set back to its engine default. If the source config cannot be read, the levers show the engine defaults and a
   warning appears. The exact command line is shown before you start.
+- **Run name** (new run, fork): if `runs/NAME` already exists, the next free name is used instead of blocking Start:
+  a short trailing number counts up (`trickster2` → `trickster3`), otherwise `-2`, `-3`, ... is appended. The
+  command preview shows the name that will be used, and on Start the name field switches to it.
 - **Stop** sends a single SIGINT: the engine finishes the step, writes a checkpoint and exits (exit code 130).
   **Force stop** (shown after Stop) sends SIGTERM and ends it immediately, without a checkpoint.
 - **Timer**: "Stop after HH:MM" sends the same single SIGINT when the time is up; the remaining time is shown.
