@@ -75,9 +75,13 @@ struct ContentView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .onChange(of: controller.settings.mode) { _, newMode in
+                .onChange(of: controller.settings.mode) { oldMode, newMode in
                     // A fork keeps the source state's RNG unless a seed is given.
-                    if newMode == .fork { controller.settings.seed = "" }
+                    if newMode == .fork {
+                        controller.settings.seed = ""
+                        controller.loadForkLevers()
+                    }
+                    if oldMode == .fork && newMode != .fork { controller.resetLevers() }
                     if newMode == .new && controller.settings.seed.isEmpty { controller.settings.seed = "1" }
                 }
 
@@ -89,6 +93,7 @@ struct ContentView: View {
                         }
                         Button("Refresh") { controller.refreshRuns() }
                     }
+                    .onChange(of: controller.settings.sourceRun) { controller.loadForkLevers() }
                     if controller.runs.isEmpty {
                         Text("No runs found in runs/.").font(.caption).foregroundStyle(.secondary)
                     }
@@ -117,8 +122,12 @@ struct ContentView: View {
                       text: $controller.settings.steps,
                       prompt: stepsPrompt)
                 if controller.settings.mode == .fork {
-                    Text("A fork starts a new run from the source run's latest checkpoint; the source config is the base, so the preset cannot be changed. Levers left at their default value are not passed, so the source run's values are kept.")
+                    Text("A fork starts a new run from the source run's latest checkpoint; the source config is the base, so the preset cannot be changed. The levers are pre-filled from the source run, and only levers you change are passed.")
                         .font(.caption).foregroundStyle(.secondary)
+                    if let warning = controller.forkLeverWarning {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                 }
             }
             .padding(6)

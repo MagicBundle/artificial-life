@@ -61,6 +61,8 @@ final class RunController: ObservableObject {
     @Published private(set) var stopRequested = false
     @Published private(set) var viewerRunning = false
     @Published private(set) var lastExit: ExitInfo?
+    /// Fork mode: set when the source run's config could not be read (the levers then show the engine defaults).
+    @Published private(set) var forkLeverWarning: String?
 
     // Live status
     @Published private(set) var metrics: MetricsSnapshot?
@@ -156,6 +158,27 @@ final class RunController: ObservableObject {
     }
 
     func suggestNewName() { settings.name = Self.defaultRunName() }
+
+    // MARK: Fork levers
+
+    /// Fork mode: pre-fills the levers with the source run's values, which are also the baseline that only
+    /// changed levers are diffed against. Call when the source run changes or Fork mode is entered.
+    func loadForkLevers() {
+        guard settings.mode == .fork else { return }
+        guard !settings.sourceRun.isEmpty else { resetLevers(); return }
+        let dir = repoURL.appendingPathComponent("runs/\(settings.sourceRun)", isDirectory: true)
+        let loaded = Levers.forkBaseline(runDirectory: dir)
+        settings.levers = loaded.levers
+        settings.leverBaseline = loaded.levers
+        forkLeverWarning = loaded.warning
+    }
+
+    /// Back to the engine defaults (used when leaving Fork mode).
+    func resetLevers() {
+        settings.levers = Levers()
+        settings.leverBaseline = Levers()
+        forkLeverWarning = nil
+    }
 
     // MARK: Jobs
 

@@ -28,8 +28,10 @@ On first launch pick the repository folder (default `~/artificial-life`); the ch
 
 - **Mode**: *New run* (`alife run --preset ... --out runs/NAME`), *Resume* (`alife resume runs/NAME`, optionally
   `--steps N` more steps) or *Fork* (`alife run --init-from runs/SOURCE --out runs/NAME`, starting from the source
-  run's latest checkpoint; *Steps* is the number of steps to run from that checkpoint, and levers left at their
-  default are not passed, so the source run's values are kept). The exact command line is shown before you start.
+  run's latest checkpoint; *Steps* is the number of steps to run from that checkpoint). In Fork mode the levers are
+  pre-filled from the source run's `config.json` and only the levers you change are passed, so a lever can also be
+  set back to its engine default. If the source config cannot be read, the levers show the engine defaults and a
+  warning appears. The exact command line is shown before you start.
 - **Stop** sends a single SIGINT: the engine finishes the step, writes a checkpoint and exits (exit code 130).
   **Force stop** (shown after Stop) sends SIGTERM and ends it immediately, without a checkpoint.
 - **Timer**: "Stop after HH:MM" sends the same single SIGINT when the time is up; the remaining time is shown.
@@ -43,8 +45,9 @@ On first launch pick the repository folder (default `~/artificial-life`); the ch
 
 ## The "keep inventing" levers
 
-Each lever is passed as `--set section.key=value` only when it differs from the engine default. Resume cannot
-change the dynamics (it accepts only `run.*` settings); use a new run or a fork to apply them.
+Each lever is passed as `--set section.key=value` only when it differs from the baseline: the engine default for a
+new run, the source run's value for a fork. Resume cannot change the dynamics (it accepts only `run.*` settings);
+use a new run or a fork to apply them.
 
 | lever | key | default | effect |
 |---|---|---|---|
