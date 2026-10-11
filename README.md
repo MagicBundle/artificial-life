@@ -79,6 +79,16 @@ uv run alife run --preset tiny --set population.immigration_every=100 --set popu
     --set fields.season_period=400 --set fields.season_amplitude=0.6 --set fields.season_mode=per_patch
 ```
 
+## Ecosystem director
+
+`alife run ... --director live` (or `resume RUN --director live`) lets a rule-based director watch the vital signs
+and act on the environment between steps: seasons, patch fertility, regeneration pulses, immigration, catastrophes.
+It never edits agents or genomes. Its decisions go to `runs/<name>/director.jsonl` (with `journal.jsonl`), and
+`--director replay` re-applies a log bitwise: `resume RUN --director replay`, or
+`run --init-from SRC:STEP --director replay --replay-log LOG`. Tune it with `--set director.persona=gardener|trickster|architect`,
+`director.rule_every` and `director.budget_per_100k`. The viewer and `render` ignore the director. See
+`docs/DIRECTOR.md` and DESIGN §26.
+
 ## Development and testing on Linux (CPU)
 
 On Linux the `mlx[cpu]` wheel is installed automatically, so the full test suite runs without a GPU:

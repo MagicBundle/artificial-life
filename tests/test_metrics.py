@@ -386,6 +386,64 @@ def test_carrying_capacity(tiny_cfg: Config) -> None:
     assert abs(metrics.founder_brain_cost(tiny_cfg) - 0.5 - founders.mean()) < 0.3
 
 
+def test_carrying_capacity_follows_the_live_environment(tiny_cfg: Config) -> None:
+    """With ``step`` and ``env`` (the director's rule tier) the estimate is the live regeneration."""
+    cfg = apply_overrides(tiny_cfg, ["director.enabled=true"])
+    s = init_state(cfg)
+    step = mx.array(0, dtype=mx.int32)
+    base = metrics.carrying_capacity(s, cfg)
+    assert metrics.carrying_capacity(s, cfg, step, s.env) == pytest.approx(
+        base, rel=1e-9
+    )  # inert env: unchanged
+    boosted = s._replace(env_regen_mult=mx.array(2.0, dtype=mx.float32))
+    assert metrics.carrying_capacity(boosted, cfg, step, boosted.env) == pytest.approx(2 * base, rel=2e-2)
+    assert metrics.carrying_capacity(boosted, cfg) == base  # the plain call ignores the environment
+    off = s._replace(env_patch_gain=mx.zeros_like(s.env_patch_gain))
+    assert (
+        metrics.carrying_capacity(off, cfg, step, off.env) < 0.25 * base
+    )  # every patch lost: only the base fertility
+    seasonal = s._replace(
+        env_season_amp=mx.array(0.9, dtype=mx.float32), env_season_period=mx.array(40, dtype=mx.int32)
+    )
+    peak = metrics.carrying_capacity(seasonal, cfg, mx.array(10, dtype=mx.int32), seasonal.env)  # sin = 1
+    trough = metrics.carrying_capacity(seasonal, cfg, mx.array(30, dtype=mx.int32), seasonal.env)
+    assert trough < base < peak
+
+
+def test_interval_row_carries_the_lowest_population_of_the_interval() -> None:
+    c = np.zeros((4, len(CounterIdx)), np.int64)
+    c[:, CounterIdx.N_ALIVE] = [30, 12, 25, 40]
+    row = metrics.interval_row(4, c, np.zeros((4, 16), np.int64), {}, {})
+    assert row["n_alive_min"] == 12 and row["n_alive"] == pytest.approx(26.75)
+    assert list(row)[5:7] == ["n_alive", "n_alive_min"]
+
+
+def test_env_summary_is_in_the_snapshot_only_when_the_director_is_enabled(tiny_cfg: Config) -> None:
+    plain = metrics.snapshot_metrics(init_state(tiny_cfg), tiny_cfg, heavy=False)
+    assert "env" not in plain
+    cfg = apply_overrides(tiny_cfg, ["director.enabled=true"])
+    s = init_state(cfg)._replace(
+        env_regen_mult=mx.array(1.5, dtype=mx.float32),
+        env_imm_request=mx.array(33, dtype=mx.int32),
+        env_patch_gain=mx.array([1.0, 0.0, 0.5, 2.0], dtype=mx.float32),
+    )
+    snap = metrics.snapshot_metrics(s, cfg, heavy=False)
+    assert snap["env"] == {
+        "regen_mult": 1.5,
+        "season_amp": 0.0,
+        "season_period": 0,
+        "drift_mult": 1.0,
+        "imm_request": 33,
+        "cat_radius": 0.0,
+        "cat_kill_p": 0.0,
+        "patch_gain_min": 0.0,
+        "patch_gain_max": 2.0,
+        "patches_off": 1,
+    }
+    json.dumps(snap)  # plain JSON values
+    assert {k: v for k, v in snap.items() if k != "env"}.keys() == plain.keys()  # the rest is unchanged
+
+
 @pytest.mark.parametrize(("sigma", "clip"), [(0.1, 4.0), (1.0, 1.0), (2.0, 0.5)])
 def test_mean_abs_clipped_normal(sigma: float, clip: float) -> None:
     x = np.clip(np.random.default_rng(0).normal(0, sigma, 2_000_000), -clip, clip)

@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import re
+import shutil
 import sys
 import time
 import traceback
@@ -24,6 +26,8 @@ from alife import config as config_mod
 from alife import metrics, runner
 from alife.config import (
     DEFAULT_PRESET,
+    DIRECTOR_MODES,
+    DIRECTOR_POLICY_KEYS,
     OVERLAYS,
     PRESETS,
     Config,
@@ -35,6 +39,8 @@ from alife.config import (
     dims,
     load_config,
 )
+from alife.director import log as director_log
+from alife.director import make_director
 from alife.invariants import full_check
 from alife.render import (
     COLOR_MODES,
@@ -46,12 +52,14 @@ from alife.render import (
     write_png,
 )
 from alife.rng import InitStream, init_keys
-from alife.runio import CheckpointError, RunDir, checkpoint_metadata, load_checkpoint
+from alife.runio import DIRECTOR_LOG_FILE, CheckpointError, RunDir, checkpoint_metadata, load_checkpoint
 from alife.runner import ExitCode
-from alife.state import AGENT_FIELDS, DeathCause, State, init_state, to_numpy
+from alife.state import AGENT_FIELDS, DeathCause, State, default_env, init_state, to_numpy
 from alife.step import make_step
 
-# run.* keys that resume may change: observers and cadences only (§18). Everything else goes through a fork.
+# run.* keys that resume may change: observers, cadences and the director mode (§18). Everything else goes
+# through a fork. The director's policy keys (director.persona, ...) may change too: they never reach the
+# compiled step.
 RESUME_KEYS: frozenset[str] = frozenset(
     {
         "steps",
@@ -61,8 +69,10 @@ RESUME_KEYS: frozenset[str] = frozenset(
         "heavy_metrics_every",
         "components_iters",
         "diversity_sample",
+        "director",
     }
 )
+RESUME_DIRECTOR_KEYS: frozenset[str] = frozenset(DIRECTOR_POLICY_KEYS)
 
 _RUN_STEP_RE = re.compile(r"^(?P<run>.+):(?P<step>\d+)$")
 
@@ -204,6 +214,10 @@ def _run_overrides(a: argparse.Namespace) -> list[str]:
             out.append(f"run.{key}={getattr(a, flag)}")
     if a.no_compile:
         out.append("run.compile=false")
+    if a.director is not None:  # live and replay imply an enabled director (the hash-relevant key)
+        out.append(f"run.director={a.director}")
+        if a.director != "off":
+            out.append("director.enabled=true")
     return out
 
 
@@ -233,11 +247,21 @@ def _summary(cfg: Config) -> dict[str, Any]:
 def _announce(rd: RunDir, cfg: Config, step: int, steps: int, quiet: bool) -> None:
     if not quiet:
         s = _summary(cfg)
+        mode = f" | director {cfg.run.director}" if cfg.run.director != "off" else ""
         print(
             f"run {rd.path}: N={s['n_max']} n_init={s['n_init']} L={s['world_size']:g} "
-            f"weights={s['weight_dtype']} seed={s['seed']} | steps {step} → {step + steps}",
+            f"weights={s['weight_dtype']} seed={s['seed']} | steps {step} → {step + steps}{mode}",
             flush=True,
         )
+
+
+def _launch(rd: RunDir, cfg: Config, box: list[State], steps: int, quiet: bool) -> int:
+    """Run ``steps`` steps from the state in ``box``, with the director ``cfg.run.director`` names (if any).
+
+    The runner must hold the only reference to the state (donation rule, F1), so it is popped here.
+    """
+    director = make_director(rd, cfg, int(to_numpy(box[0].step)))
+    return int(runner.run(rd, cfg, box.pop(), steps, quiet=quiet, director=director).exit_code)
 
 
 # --- run / fork / resume --------------------------------------------------------------------------------
@@ -248,11 +272,16 @@ def _cmd_run(a: argparse.Namespace) -> int:
     if a.init_from is not None:
         return _fork(a, overrides)
     cfg = load_config(a.config, preset=a.preset, overlays=a.overlay, overrides=overrides)
+    if cfg.run.director == "replay" or a.replay_log is not None:
+        raise ConfigError(
+            "a replay continues an existing state: use `run --init-from SRC --director replay --replay-log "
+            "LOG` or `resume RUN --director replay`"
+        )
     out = Path(a.out) if a.out else _default_out(a.preset or DEFAULT_PRESET, cfg.run.seed)
     rd = RunDir.create(out, cfg, overwrite=a.overwrite)
     rd.update_meta(start_step=0)
     _announce(rd, cfg, 0, cfg.run.steps, a.quiet)
-    return int(runner.run(rd, cfg, init_state(cfg), cfg.run.steps, quiet=a.quiet).exit_code)
+    return _launch(rd, cfg, [init_state(cfg)], cfg.run.steps, a.quiet)
 
 
 def _fork_source(spec: str) -> tuple[Path, str]:
@@ -279,7 +308,14 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
         )
     src, origin = _fork_source(a.init_from)
     src_cfg = _embedded_config(src)
+    # A fork runs no director unless it is asked to (--director), whatever mode the source ran in.
+    src_cfg = dataclasses.replace(src_cfg, run=dataclasses.replace(src_cfg.run, director="off"))
     cfg = _layer(src_cfg, overlays=a.overlay, path=a.config, overrides=overrides)
+    replay = cfg.run.director == "replay"
+    if replay != (a.replay_log is not None):
+        raise ConfigError("--director replay and --replay-log LOG go together")
+    if replay:  # the whole log is checked before anything is written (exit 2)
+        director_log.validate_log(director_log.read_log(Path(a.replay_log)), cfg)
     if cfg.population.n_init != src_cfg.population.n_init:
         raise CheckpointError(
             f"population.n_init must equal the source's {src_cfg.population.n_init} (clade bins depend on it)"
@@ -289,8 +325,12 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
     # (a stored TOTAL that was already wrong stays wrong and is refused by the admission check below).
     n_alive = s.alive.astype(mx.int32).sum().astype(mx.int64)
     total = s.total + n_alive * (cfg.energy.structure - src_cfg.energy.structure)
+    # The environment levers restart inert for the new config (the source's director history does not carry
+    # over; a replay fork brings its own log).
+    env = default_env(cfg)
+    env_reset = any(not np.array_equal(to_numpy(getattr(s, k)), to_numpy(v)) for k, v in env.items())
     s = s._replace(
-        diag=mx.zeros_like(s.diag), ledger_cum=mx.zeros_like(s.ledger_cum), total=total, total0=total
+        diag=mx.zeros_like(s.diag), ledger_cum=mx.zeros_like(s.ledger_cum), total=total, total0=total, **env
     )
     if a.seed is not None:
         s = s._replace(key=init_keys(a.seed)[InitStream.STATE_KEY])
@@ -305,25 +345,44 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
     out = Path(a.out) if a.out else _default_out("fork", cfg.run.seed)
     rd = RunDir.create(out, cfg, overwrite=a.overwrite, parent=origin)
     rd.update_meta(start_step=step)
+    if replay:
+        shutil.copyfile(a.replay_log, rd.path / DIRECTOR_LOG_FILE)
     _announce(rd, cfg, step, cfg.run.steps, a.quiet)
+    if env_reset and not a.quiet:
+        print(
+            "note: the source's environment levers were reset to inert values for the new config", flush=True
+        )
     box = [s]
     del s  # the runner must hold the only reference to the state (donation rule, F1)
-    return int(runner.run(rd, cfg, box.pop(), cfg.run.steps, quiet=a.quiet).exit_code)
+    return _launch(rd, cfg, box, cfg.run.steps, a.quiet)
+
+
+def _resume_allowed(item: str) -> bool:
+    section, _, key = item.partition("=")[0].strip().partition(".")
+    return (section == "run" and key in RESUME_KEYS) or (
+        section == "director" and key in RESUME_DIRECTOR_KEYS
+    )
 
 
 def _cmd_resume(a: argparse.Namespace) -> int:
     rd = RunDir.open(Path(a.run))
-    bad = []
-    for item in a.set:
-        section, _, key = item.partition("=")[0].strip().partition(".")
-        if section != "run" or key not in RESUME_KEYS:
-            bad.append(item)
+    items = list(a.set)
+    if a.director is not None:  # a shortcut for --set run.director=MODE, translated before the key check
+        items.append(f"run.director={a.director}")
+    bad = [item for item in items if not _resume_allowed(item)]
     if bad:
         raise ConfigError(
-            f"resume accepts only --set run.<key> for {sorted(RESUME_KEYS)}; got {bad} "
+            f"resume accepts only --set run.<key> for {sorted(RESUME_KEYS)} and director.<key> for "
+            f"{sorted(RESUME_DIRECTOR_KEYS)}; got {bad} "
             "(seed, compile, runtime_checks and dynamics changes need `alife run --init-from`)"
         )
-    cfg = apply_overrides(rd.config(), a.set)
+    base = rd.config()
+    if a.director not in (None, "off") and not base.director.enabled:
+        raise ConfigError(
+            f"{rd.path} was started with director.enabled=false, so its compiled step cannot take director "
+            "actions; fork it with `alife run --init-from RUN --director live` instead"
+        )
+    cfg = apply_overrides(base, items)
     path = _select_checkpoint(rd, a.checkpoint)
     state = load_checkpoint(path, cfg)
     step = int(to_numpy(state.step))
@@ -335,14 +394,17 @@ def _cmd_resume(a: argparse.Namespace) -> int:
         steps = a.until - step
     else:
         steps = max(0, int(rd.meta().get("start_step", 0)) + cfg.run.steps - step)
+    replay = cfg.run.director == "replay"
+    if replay:  # the whole log is checked before anything is written (exit 2)
+        director_log.validate_log(director_log.read_log(rd.path / DIRECTOR_LOG_FILE), cfg)
     # Everything is validated; only now touch the run directory.
-    if a.set:
+    if items:
         rd.save_config(cfg)
-    rd.truncate_after(step)
+    rd.truncate_after(step, keep_director=replay)  # a replay never touches the log it replays
     _announce(rd, cfg, step, steps, a.quiet)
     box = [state]
     del state  # the runner must hold the only reference to the state (donation rule, F1)
-    return int(runner.run(rd, cfg, box.pop(), steps, quiet=a.quiet).exit_code)
+    return _launch(rd, cfg, box, steps, a.quiet)
 
 
 # --- render ---------------------------------------------------------------------------------------------
@@ -598,6 +660,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--checkpoint-every", type=_positive, default=None)
     p.add_argument("--checks", choices=("cheap", "off"), default=None)
     p.add_argument("--no-compile", action="store_true")
+    p.add_argument(
+        "--director",
+        choices=DIRECTOR_MODES,
+        default=None,
+        help="director mode: live decides and logs; replay applies --replay-log (with --init-from)",
+    )
+    p.add_argument(
+        "--replay-log", default=None, metavar="PATH", help="director.jsonl to replay (with --init-from)"
+    )
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(func=_cmd_run)
 
@@ -607,11 +678,21 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--steps", type=_non_negative, default=None)
     g.add_argument("--until", type=_non_negative, default=None, metavar="STEP")
     p.add_argument("--checkpoint", type=_checkpoint_arg, default=None, metavar="STEP|latest")
-    p.add_argument("--set", action="append", default=[], metavar="run.KEY=VALUE")
+    p.add_argument("--set", action="append", default=[], metavar="run.KEY=VALUE|director.KEY=VALUE")
+    p.add_argument(
+        "--director",
+        choices=DIRECTOR_MODES,
+        default=None,
+        help="shortcut for --set run.director=MODE (live or replay need a run started with director.enabled)",
+    )
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(func=_cmd_resume)
 
-    p = sub.add_parser("render", help="re-simulate from a checkpoint and write a PNG or a video")
+    p = sub.add_parser(
+        "render",
+        help="re-simulate from a checkpoint and write a PNG or a video "
+        "(the director is not replayed: after an intervention it differs from the run)",
+    )
     p.add_argument("run", metavar="RUN")
     p.add_argument("--checkpoint", type=_checkpoint_arg, default=None, metavar="STEP|latest")
     p.add_argument("--steps", type=_non_negative, default=0)
@@ -632,7 +713,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--agent", type=int, default=None, metavar="UID")
     p.set_defaults(func=_cmd_inspect)
 
-    p = sub.add_parser("view", help="live viewer (needs the 'viewer' extra)")
+    p = sub.add_parser(
+        "view",
+        help="live viewer (needs the 'viewer' extra); it re-simulates without the director, so after an "
+        "intervention it differs from a director run",
+    )
     p.add_argument("run", nargs="?", default=None, metavar="RUN")
     _config_args(p, overlays=False)
     p.add_argument("--checkpoint", type=_checkpoint_arg, default=None, metavar="STEP|latest")

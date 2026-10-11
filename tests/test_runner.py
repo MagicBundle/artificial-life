@@ -160,3 +160,101 @@ def test_inspect_check_exits_3_on_violation(cfg: Config, tmp_path: Path) -> None
     write_state_file(good, s, cfg)
     assert cli.main(["inspect", str(good), "--check"]) == 0
     assert np.all(to_numpy(load_checkpoint(path, cfg).energy)[:-1] == to_numpy(s.energy)[:-1])
+
+
+# --- the director hook ---
+
+
+class SpyDirector:
+    """Records the runner's calls; at a boundary it sets the regeneration multiplier to 1.5."""
+
+    def __init__(self, every: int, act: bool = True) -> None:
+        self.every, self.act, self.calls, self.applied = every, act, [], []
+
+    def due(self, t: int) -> bool:
+        return t % self.every == 0
+
+    def observe(self, row) -> None:
+        self.calls.append(("observe", row["step"]))
+
+    def on_boundary(self, state, row, t):
+        self.calls.append(("boundary", t))
+        self.applied = [{"step_applied": t}]
+        return state._replace(env_regen_mult=mx.array(1.5, dtype=mx.float32)) if self.act else state
+
+    def status_lines(self) -> list[str]:
+        return [f"director @ {e['step_applied']}: spy" for e in self.applied]
+
+    def on_checkpoint(self, t: int) -> None:
+        self.calls.append(("checkpoint", t))
+
+
+@pytest.fixture(scope="module")
+def dcfg(cfg: Config) -> Config:
+    return apply_overrides(cfg, ["director.enabled=true"])
+
+
+def test_director_hook_runs_after_the_row_and_before_the_checkpoint(
+    dcfg: Config, tmp_path: Path, capsys
+) -> None:
+    spy = SpyDirector(every=10)
+    rd = RunDir.create(tmp_path / "run", dcfg)
+    order = []
+    real = rd.save_checkpoint
+    rd.save_checkpoint = lambda s, c: (order.append(("save", int(to_numpy(s.step)))), real(s, c))[1]  # type: ignore[method-assign]
+    res = runner.run(rd, dcfg, init_state(dcfg), 20, director=spy)
+    assert res.status == "done"
+    assert spy.calls == [
+        ("observe", 5),
+        ("observe", 10),
+        ("boundary", 10),
+        ("checkpoint", 10),
+        ("observe", 15),
+        ("observe", 20),
+        ("boundary", 20),
+        ("checkpoint", 20),
+    ]  # every row is observed; the hook is on rule boundaries only, before the checkpoint it feeds
+    assert order == [("save", 0), ("save", 10), ("save", 20)]
+    ck10 = load_checkpoint(rd.checkpoint_at(10), dcfg)
+    assert float(to_numpy(ck10.env_regen_mult)) == 1.5  # the checkpoint already holds the applied env
+    assert float(to_numpy(res.state.env_regen_mult)) == 1.5
+    out = capsys.readouterr().out.splitlines()
+    assert out[1].startswith("step 10") and out[2] == "director @ 10: spy"  # printed after the status line
+
+
+def test_a_director_that_does_nothing_changes_nothing(dcfg: Config, tmp_path: Path) -> None:
+    quiet = SpyDirector(every=5, act=False)
+    a = RunDir.create(tmp_path / "a", dcfg)
+    b = RunDir.create(tmp_path / "b", dcfg)
+    ra = runner.run(a, dcfg, init_state(dcfg), 20, quiet=True, director=quiet)
+    rb = runner.run(b, dcfg, init_state(dcfg), 20, quiet=True)
+    assert state_digest(ra.state) == state_digest(rb.state)
+    perf = {"wall_s", "steps_per_s", "peak_mem_gb"}
+    strip = lambda rd: [{k: v for k, v in r.items() if k not in perf} for r in rd.metrics_rows()]  # noqa: E731
+    assert strip(a) == strip(b)
+
+
+def test_the_director_never_sees_or_acts_on_a_violated_state(dcfg: Config, tmp_path: Path) -> None:
+    s = init_state(dcfg)._replace(diag=mx.array(int(Diag.BOND_ASYM), dtype=mx.int32))
+    spy = SpyDirector(every=5)
+    rd = RunDir.create(tmp_path / "run", dcfg)
+    res = runner.run(rd, dcfg, s, 20, quiet=True, director=spy)
+    assert res.status == "violation"
+    assert spy.calls == []  # the row of the violated step is not observed and no boundary runs
+    assert [st for st, _ in rd.checkpoints()] == [0]
+    # an out-of-range environment is a violation too (FIELD_RANGE), so it never reaches the director either
+    bad = init_state(dcfg)._replace(env_regen_mult=mx.array(9.0, dtype=mx.float32))
+    spy2 = SpyDirector(every=5)
+    res = runner.run(RunDir.create(tmp_path / "run2", dcfg), dcfg, bad, 20, quiet=True, director=spy2)
+    assert res.status == "violation" and spy2.calls == []
+
+
+def test_the_director_does_not_act_on_an_extinct_world(dcfg: Config, tmp_path: Path) -> None:
+    s = make_scene(dcfg, [{"pos": [10.0, 10.0], "energy": 1}])  # dies in its first step
+    spy = SpyDirector(every=1)
+    res = runner.run(RunDir.create(tmp_path / "run", dcfg), dcfg, s, 10, quiet=True, director=spy)
+    assert res.status == "extinct"
+    assert spy.calls == [
+        ("observe", 1),
+        ("checkpoint", 1),
+    ]  # observed, but nothing is decided for a dead world

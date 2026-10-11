@@ -10,7 +10,9 @@ Cadences (all in units of ``state.step``):
 - a **checkpoint boundary** is a multiple of ``run.checkpoint_every`` (itself a metrics boundary): the event
   chunk ``[s0, step)`` is written first, then the checkpoint;
 - an **unscheduled stop** (end of run, extinction, SIGINT) finishes the current step, writes a possibly short
-  interval row, flushes events and checkpoints at that step (§18).
+  interval row, flushes events and checkpoints at that step (§18);
+- a **director boundary** is a multiple of ``director.rule_every`` (itself a metrics boundary): after the row
+  and the violation check, and before the checkpoint, the director may edit the environment.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from enum import IntEnum
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import mlx.core as mx
 import numpy as np
@@ -31,6 +33,9 @@ from alife.config import Config, immigration_on
 from alife.runio import RunDir
 from alife.state import ERROR_MASK, CounterIdx, Diag, State, to_numpy
 from alife.step import StepOut, make_step
+
+if TYPE_CHECKING:  # the director imports metrics and runio; the runner only calls its hooks
+    from alife.director import Director
 
 
 class ExitCode(IntEnum):
@@ -145,6 +150,7 @@ def run(
     *,
     quiet: bool = False,
     on_interval: Callable[[State, dict[str, Any]], None] | None = None,
+    director: Director | None = None,
 ) -> RunResult:
     """Run ``steps`` steps with one blocking eval per step, writing metrics, events and checkpoints.
 
@@ -155,6 +161,12 @@ def run(
     a non-zero host ledger error the state is dumped to ``diag/`` and the run stops with ``violation``
     (exit 3); an invalid state is never checkpointed.
     ``on_interval(state, row)`` runs after each metrics row is written and must not retain ``state``.
+
+    With a ``director`` every row is passed to ``director.observe``, and at a step ``t`` with
+    ``director.due(t)`` (not extinct, never on a violated state) ``director.on_boundary`` returns the state
+    with the interventions applied, after they are durable in ``director.jsonl`` and before the checkpoint,
+    so the checkpoint at ``t`` already contains them and a resume never re-applies anything.
+    ``director=None`` is the exact behaviour without a director.
     """
     if steps < 0:
         raise ValueError(f"steps must be ≥ 0, got {steps}")
@@ -186,6 +198,8 @@ def run(
         rd.write_events(chunk_s0, t, _concat(births), _concat(deaths))
         births, deaths, chunk_s0 = [], [], t
         rd.save_checkpoint(state, cfg)
+        if director is not None:
+            director.on_checkpoint(t)
         ckpt_step = t
 
     mx.reset_peak_memory()
@@ -234,10 +248,16 @@ def run(
                 rd.update_meta(status="violation")
                 return RunResult(state, "violation", ExitCode.INVARIANT)
 
+            if director is not None:
+                director.observe(row)
+                if director.due(t) and not extinct:
+                    state = director.on_boundary(state, row, t)
             if t % ce == 0 or stop:
                 checkpoint()
             if not quiet:
                 print(_status_line(row), flush=True)
+                for line in director.status_lines() if director is not None else ():
+                    print(line, flush=True)
             if on_interval is not None:
                 on_interval(state, row)
             if stop or latch.requested:  # a SIGINT may also arrive during the flush or the callback

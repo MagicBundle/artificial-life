@@ -8,9 +8,10 @@ from typing import Any
 import mlx.core as mx
 import numpy as np
 
-from alife import brain, layout
+from alife import brain, invariants, layout
 from alife.config import Config, dims
-from alife.state import AGENT_FIELDS, ENV_FIELDS, State, init_state, to_numpy, total_energy
+from alife.state import AGENT_FIELDS, ENV_FIELDS, Diag, State, init_state, to_numpy, total_energy
+from alife.step import make_step
 
 # Fused Metal kernels may round float ops differently from eager ones (e.g. FMA contraction), so compiled vs
 # eager is bitwise only on CPU. Integer results must still agree exactly on every backend.
@@ -158,3 +159,40 @@ def set_output_bias(s: State, cfg: Config, bias: Mapping[int, float]) -> State:
     s = s._replace(W2=W2, brain_cost=mx.where(s.alive, cost, s.brain_cost))
     mx.eval(s)
     return s
+
+
+def run_checked(cfg: Config, steps: int, s: State | None = None, *, pre: Any = None):
+    """``steps`` compiled steps from ``s`` (default ``init_state``); ``pre(i, s)`` may edit the state first.
+
+    Every step passes ``invariants.full_check`` against the edited previous state (ledger closure, uid
+    issuing, event records) and raises no error diag bit. Returns the final state and the
+    ``(prev, state, out)`` triples.
+    """
+    fn = make_step(cfg)
+    s = init_state(cfg) if s is None else s
+    hist = []
+    for i in range(steps):
+        if pre is not None:
+            s = pre(i, s)
+        prev = s
+        s, out = fn(s)
+        mx.eval(s, out)
+        problems = invariants.full_check(s, cfg, prev, out)
+        assert problems == [], f"step {i}: {problems}"
+        assert int(to_numpy(s.diag)) & 0xFFFF == 0, f"step {i}: diag {Diag(int(to_numpy(s.diag)))!r}"
+        hist.append((prev, s, out))
+    return s, hist
+
+
+def scripted_decide(plan: Mapping[int, Sequence[Any]]) -> Any:
+    """A stand-in for ``director.rules.decide`` that returns the ``Proposal`` list ``plan[t]`` at step ``t``.
+
+    Monkeypatch ``alife.director.rules.decide`` with it to drive the whole live director (vitals, archive,
+    clamping, the log, the journal) with a chosen policy.
+    """
+    from alife.director.rules import Decision
+
+    def decide(ctx: Any, params: Any = None) -> Any:
+        return Decision(tuple(plan.get(ctx.t, ())), ())
+
+    return decide

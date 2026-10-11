@@ -72,6 +72,7 @@ def small_run(tiny_cfg: Config, tmp_path_factory: pytest.TempPathFactory) -> Pat
         "energy.basal_cost=7",
         "combat.attack_bonded=true",
         "run.nope=1",
+        "director.enabled=true",
     ],
 )
 def test_resume_rejects_non_observer_keys(small_run: Path, override: str) -> None:

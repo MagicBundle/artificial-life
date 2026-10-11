@@ -4,6 +4,9 @@ State files, ``LATEST``, ``meta.json``, ``config.json`` and event chunks are wri
 ``os.replace``), so a crash leaves either the old or the new complete file; ``metrics.jsonl`` is appended and
 fsynced, and a torn last line is ignored on read.
 
+The director's ``director.jsonl`` and ``journal.jsonl`` use the same append/fsync/torn-line rules as
+``metrics.jsonl`` (the generic ``append_jsonl`` / ``read_jsonl``); ``director_archive.json`` is atomic.
+
 Event chunks ``births_<s0>_<s1>.npz`` / ``deaths_<s0>_<s1>.npz`` hold the records of steps ``s0 ≤ step < s1``,
 where a record's ``step`` is the index of the step during which it happened; a checkpoint at
 ``state.step == s1`` therefore contains exactly the effects of every chunk ending at ``s1``.
@@ -38,6 +41,9 @@ CONFIG_FILE: Final = "config.json"
 META_FILE: Final = "meta.json"
 METRICS_FILE: Final = "metrics.jsonl"
 LATEST_FILE: Final = "LATEST"
+DIRECTOR_LOG_FILE: Final = "director.jsonl"
+JOURNAL_FILE: Final = "journal.jsonl"
+DIRECTOR_ARCHIVE_FILE: Final = "director_archive.json"
 STATUSES: Final = ("running", "done", "extinct", "violation", "interrupted")
 
 BIRTH_COLUMNS: Final[Mapping[str, Any]] = {
@@ -122,6 +128,41 @@ def _jsonable(x: Any) -> Any:
 
 def _dumps(x: Any) -> str:
     return json.dumps(_jsonable(x), allow_nan=False)
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """The records of a JSONL file; a torn last line (a crash mid-append) is ignored."""
+    if not path.is_file():
+        return []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    rows = []
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            if i == len(lines) - 1:
+                break
+            raise
+    return rows
+
+
+def _append_jsonl(path: Path, records: Iterable[Mapping[str, Any]]) -> None:
+    """Append one JSON object per line and fsync."""
+    lines = [_dumps(r) for r in records]
+    if not lines:
+        return
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _record_step(rec: Mapping[str, Any]) -> int | None:
+    """The step a log record belongs to: ``step_applied`` (director entries) or ``step`` (rows, headers)."""
+    step = rec.get("step_applied", rec.get("step"))
+    return step if isinstance(step, int) else None
 
 
 # --- state files ----------------------------------------------------------------------------------------
@@ -471,35 +512,28 @@ class RunDir:
     # logs
     def append_metrics(self, rows: Iterable[Mapping[str, Any]]) -> None:
         """Append rows to ``metrics.jsonl`` (one JSON object per line, key "step" first) and fsync."""
-        lines = []
+        ordered = []
         for row in rows:
             if "step" not in row:
                 raise ValueError("a metrics row needs a 'step' key")
-            lines.append(_dumps({"step": row["step"], **{k: v for k, v in row.items() if k != "step"}}))
-        if not lines:
-            return
-        with open(self.path / METRICS_FILE, "a", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+            ordered.append({"step": row["step"], **{k: v for k, v in row.items() if k != "step"}})
+        _append_jsonl(self.path / METRICS_FILE, ordered)
 
     def metrics_rows(self) -> list[dict[str, Any]]:
         """All rows of ``metrics.jsonl``; a torn last line (a crash mid-append) is ignored."""
-        path = self.path / METRICS_FILE
-        if not path.is_file():
-            return []
-        lines = path.read_text(encoding="utf-8").splitlines()
-        rows = []
-        for i, line in enumerate(lines):
-            if not line.strip():
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                if i == len(lines) - 1:
-                    break
-                raise
-        return rows
+        return read_jsonl(self.path / METRICS_FILE)
+
+    def append_jsonl(self, name: str, records: Iterable[Mapping[str, Any]]) -> None:
+        """Append records to the run's JSONL file ``name`` (e.g. ``director.jsonl``) and fsync."""
+        _append_jsonl(self.path / name, records)
+
+    def read_jsonl(self, name: str) -> list[dict[str, Any]]:
+        """All records of the run's JSONL file ``name`` (empty if missing); a torn last line is ignored."""
+        return read_jsonl(self.path / name)
+
+    def write_json(self, name: str, obj: Any) -> None:
+        """Atomically (re)write the run's JSON file ``name`` (``director_archive.json``)."""
+        _atomic_write_text(self.path / name, _dumps(obj) + "\n")
 
     def write_events(
         self, s0: int, s1: int, births: Mapping[str, np.ndarray], deaths: Mapping[str, np.ndarray]
@@ -543,16 +577,21 @@ class RunDir:
             for name, dtype in spec.items()
         }
 
-    def truncate_after(self, step: int) -> None:
+    def truncate_after(self, step: int, *, keep_director: bool = False) -> None:
         """Make the logs consistent with the checkpoint at ``step`` (§18 resume, step 4).
 
         Drops metrics rows with ``step > step``, deletes event chunks starting at or after ``step``, trims a
         chunk spanning it to the records with ``step < step`` (renamed ``*_<s0>_<step>.npz``), and deletes
-        checkpoints after ``step`` so they cannot be confused with the resumed trajectory.
+        checkpoints after ``step`` so they cannot be confused with the resumed trajectory. The director files
+        are cut the same way (``director.jsonl`` and ``journal.jsonl`` to records with step ≤ ``step``; a
+        ``director_archive.json`` taken after it is deleted), except with ``keep_director`` (a replay, which
+        must never touch the log it replays).
         """
         if (self.path / METRICS_FILE).exists():
             kept = [r for r in self.metrics_rows() if r["step"] <= step]
             _atomic_write_text(self.path / METRICS_FILE, "".join(_dumps(r) + "\n" for r in kept))
+        if not keep_director:
+            self._truncate_director(step)
 
         for kind in ("births", "deaths"):
             for s0, s1, path in self.event_files(kind):
@@ -575,6 +614,20 @@ class RunDir:
             _atomic_write_text(self.checkpoint_dir / LATEST_FILE, latest.name + "\n")
         else:
             (self.checkpoint_dir / LATEST_FILE).unlink(missing_ok=True)
+
+    def _truncate_director(self, step: int) -> None:
+        for name in (DIRECTOR_LOG_FILE, JOURNAL_FILE):
+            if (self.path / name).exists():
+                kept = [r for r in self.read_jsonl(name) if (at := _record_step(r)) is None or at <= step]
+                _atomic_write_text(self.path / name, "".join(_dumps(r) + "\n" for r in kept))
+        archive = self.path / DIRECTOR_ARCHIVE_FILE
+        if archive.exists():
+            try:
+                as_of = json.loads(archive.read_text(encoding="utf-8")).get("as_of_step")
+            except (OSError, json.JSONDecodeError):
+                as_of = None
+            if not isinstance(as_of, int) or as_of > step:  # analysis only: the next checkpoint rewrites it
+                archive.unlink()
 
     def dump_diag(self, s: State, step: int) -> Path:
         """Write ``diag/step_<step>.safetensors`` (a full state file) after an invariant violation."""

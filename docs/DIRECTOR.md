@@ -1,9 +1,12 @@
 # Ecosystem director: design
 
 Status: proposal (2026-10-11). Build step 1 (§3, the engine's live environment state) is implemented and is now
-normative in `docs/DESIGN.md` (§2.2, §12.7, §12.9, §13.1, §14, §17–§19; Review-log row I28). Steps 2–5 are not
-implemented yet. This document extends `docs/DESIGN.md`. As each step lands, its normative parts (state fields,
-config keys, ledger terms, tests) move into DESIGN.md with Review-log rows, per `CLAUDE.md`.
+normative in `docs/DESIGN.md` (§2.2, §12.7, §12.9, §13.1, §14, §17–§19; Review-log row I28). **Build step 2 (the
+director core: vital signs, archive, rule tier, decision log, replay, CLI) is implemented** and is normative in
+`docs/DESIGN.md` §26 (Review-log row I29); §12 below records where it refines or contradicts this proposal. Steps
+3–5 (the LLM tier, the GUI panel, the evaluation) are not implemented yet. This document extends `docs/DESIGN.md`.
+As each step lands, its normative parts (state fields, config keys, ledger terms, tests) move into DESIGN.md with
+Review-log rows, per `CLAUDE.md`.
 
 ## 1. Goal and motivation
 
@@ -38,8 +41,8 @@ Constraints:
   intervention JSON schema, then validated, clamped and budgeted like rule actions. The result is applied at the
   next `K_rule` boundary.
 - **Decision log** (`runs/NAME/director.jsonl`). One line per applied intervention: `{step_applied, source:
-  rule|llm|replay, persona, action, params, reason, vitals_snapshot_id}`. It is the single source of truth for
-  replay.
+  rule|llm|revert, persona, action, params, prev, duration, reason, vitals_step, vitals}`, after a header line
+  (§12). It is the single source of truth for replay.
 - **Journal** (`runs/NAME/journal.jsonl`). LLM rationales and narrative entries, plus rule-tier one-liners.
   This is for legibility only and never feeds back into the simulation.
 
@@ -139,8 +142,9 @@ cheap additions.
 | Viability | n_alive / K_est, births/deaths balance, a min-population trend, an extinction-risk flag (`n_alive < 0.2 × K_est` or falling more than 30% in 50k) |
 | Pacing | steps since the last intervention, a "drama" level (recent intervention intensity), and the persona's target curve |
 
-The archive (descriptor vectors and grid cells) is persisted at `runs/NAME/director_archive.json` and is
-rebuilt deterministically from metrics on replay.
+The archive (descriptor vectors and grid cells) is written to `runs/NAME/director_archive.json` at each checkpoint for
+analysis. It is never read back: a live run rebuilds it deterministically from `metrics.jsonl` on start or resume,
+and a replay needs no archive.
 
 ## 5. Intervention menu
 
@@ -149,17 +153,17 @@ expected-effect note for the journal.
 
 | action | params (bounds) | effect | cost | cooldown |
 |---|---|---|---|---|
-| `set_seasons` | period 2k–100k, amp 0–0.9, mode global/per_patch | climate regime; per_patch forces migration | 1 | 50k |
-| `fertility_shift` | move patch p by ≤ L/4, or gain 0.25–2.0 | frontier or habitat change | 1 | 20k |
+| `set_seasons` | period 2k–100k, amp 0–0.9 (the mode stays `fields.season_mode`; it is not a run-time lever) | climate regime; with `season_mode = per_patch` it forces migration | 1 | 50k |
+| `fertility_shift` | move patch p by ≤ L/4 (a host `patch_pos` edit), or gain 0.25–2.0 | frontier or habitat change | 1 | 20k |
 | `habitat_loss` | patch p, gain → 0 for D steps (10k–200k) | fragmentation, refugia | 2 | 50k |
 | `regen_pulse` | mult 0.4–1.8 for D steps (5k–50k) | famine or boom | 1 | 30k |
-| `immigration_pulse` | count 16–1,024 (≤ lanes over several steps), source random/archive | invasion, new founders | 1 | 20k |
+| `immigration_pulse` | count 16–1,024 (≤ lanes over several steps; at most 1,024 pending in total), source random (no archive source yet) | invasion, new founders | 1 | 20k |
 | `catastrophe` | centre, radius 20–200, kill_p 0.2–0.9 | founder effects, recolonisation | 3 | 100k |
 | `drift_change` | mult 0.5–10 | environmental tempo | 1 | 50k |
 | `mutation_floor_nudge` | rate_min ×(0.5–4), sigma_min ×(0.5–4) | exploration pressure (global; use sparingly) | 3 | 200k |
 
 The mutation-floor nudge changes config-level bounds. It needs `env.rate_min` and `env.sigma_min` fields too.
-It is optional for v1.
+It is optional for v1 and **not implemented in step 2**: it is not in the action schema.
 
 **Archive immigrants** (`source: archive`) need a genome archive: every heavy-metrics step, snapshot a few
 sampled genomes from distinct clades into `runs/NAME/genome_archive/`. An immigrant pulse can then reintroduce
@@ -173,8 +177,8 @@ an extinct lineage ("invasive species"). This is optional for v1; random founder
   seasons, or habitat loss, chosen by persona weights.
 - **Stagnation response.** If novelty is below threshold and there are no new archive cells for 200k steps: the
   persona selects from the menu (the rule tier picks by weights when the LLM is off).
-- **Runaway damper.** If the population exceeds 0.95 × capacity or a single body exceeds 5% of the population:
-  a mild `regen_pulse` < 1.
+- **Runaway damper.** If the population exceeds 0.95 × capacity (`N_CAP`, the hard row capacity) or a single body
+  exceeds 5% of the population: a mild `regen_pulse` < 1.
 - **Hard caps.** At most one catastrophe per 100k steps. The total budget per 100k is bounded by the persona.
 
 ## 6. Personas
@@ -225,8 +229,13 @@ w_x·intervention_cost`. The persona sets the `w`.
 - `--llm-url URL`, `--llm-model NAME`, `--llm-every N`, `--no-llm` (rule tier only).
 
 **Config** (new keys, defaults off, added to `config.POST_V01_KEYS`):
-- `director.enabled`, `director.rule_every`, `director.llm_every`;
-- `director.persona`, `director.budget_per_100k`, `director.goal`.
+- `director.enabled`, `director.rule_every`, `director.llm_every` (step 3);
+- `director.persona`, `director.budget_per_100k`, `director.goal`;
+- `run.director` = `off|live|replay`.
+
+In step 2 only `director.enabled` is hashed: the policy keys (`persona`, `goal`, `rule_every`, `budget_per_100k`) are
+omitted from `config_hash` at every value and may change on resume. The persona and goal are set with `--set` for
+now; the `--persona` / `--goal` flags come with the LLM tier.
 
 Endpoint and model are run-level keys (`run.*`), so they can change on resume.
 
@@ -269,7 +278,7 @@ those metrics, or matches B with better journal legibility (a human rates 10 sam
 1. **Engine (done):** `State.env`, the `CATASTROPHE` death cause and RNG stream, patch gain, regen multiplier,
    invariants, tests and a DESIGN.md update. This is the highest-risk step because it touches the compiled
    step; land it alone.
-2. **Director core:**
+2. **Director core (done, §12):**
    - vital signs, archive and rule tier, with budgets, cooldowns and safety rules;
    - `director.jsonl`, and replay with a bitwise replay test;
    - CLI flags.
@@ -289,3 +298,38 @@ those metrics, or matches B with better journal legibility (a human rates 10 sam
 3. **Initial objective.** Research open-endedness (Gardener and Trickster, evaluated by §9) or game-style pacing
    and drama. *Recommended:* the research objective first. Pacing personas reuse the same machinery later.
 4. **Genome archive for immigrants.** Defer to v2 (*recommended*) or include in v1.
+
+## 12. Build step 2 as built: where it refines this proposal
+
+Decisions A1–A20 of the step-2 spec; `docs/DESIGN.md` §26 is normative.
+
+- **Host-only (A1).** No change to the compiled step; the director edits `env_*` and `patch_pos` with `_replace`
+  between steps, keeping shapes and dtypes, so nothing retraces.
+- **Hook (A2).** After the metrics row and the violation check, before the checkpoint, at `t % rule_every == 0`; the
+  checkpoint holds the applied env and a resume never re-applies anything. Not on an extinct world.
+- **Modes (A4, A9).** `run.director` is `off|live|replay`, a resume key; `--director` on `run` (fork included) and
+  `resume`. `off` with `director.enabled` leaves the env as it is. Replay is in place (`resume RUN --director
+  replay`) or by fork (`run --init-from SRC[:STEP] --director replay --replay-log LOG`); the log is
+  pre-validated (exit 2) and replay never clamps, truncates or writes.
+- **Hash scope (A5).** Only `director.enabled` is hashed. The policy keys are excluded from the hash entirely.
+- **Director state is folds (A6, A7).** Budget, cooldowns, active effects, drama and the pacing are folds of
+  `director.jsonl`; the vital-sign tracker and archive are folds of `metrics.jsonl`, rebuilt on start or resume by the
+  same code path. `director_archive.json` is analysis output and never read back.
+- **Log (A8).** A header line (rules version, persona, goal, cadence, budget, seed), then entries with explicit,
+  clamped, absolute `params`, `prev`, `duration`, `reason`, `vitals_step` and a compact `vitals`. A timed effect's
+  end is **its own `revert` entry** at `step_applied + duration` (duration rounded up to the cadence); `prev` holds
+  the values to restore. `journal.jsonl` holds the one-liners.
+- **Menu (A11).** Seasons change period and amplitude only (the mode is `fields.season_mode`); a patch move is a host
+  `patch_pos` edit wrapped like `ops.wrap`; immigration is random and capped at 1,024 pending; the mutation-floor
+  nudge is not implemented.
+- **Safety rules (A14).** "Capacity" is `N_CAP`. The rescue overrides cooldown and budget at most once per 200k, and
+  never the one-catastrophe-per-100k cap.
+- **Personas (A15).** Gardener: argmax of its weights; Trickster: seeded sampling that never repeats its last action,
+  plus a boredom rule; Architect: the safety rules only (the goal is stored, not interpreted). Persona weights scale
+  the windows, cooldowns and budget. The objective J is not optimised (no forward model).
+- **Vitals and archive (A17, A18).** The descriptor is ten components in [0, 1] with fixed ranges; novelty is the mean
+  RMS distance to the 5 nearest archive members excluding the 3 most recent; archive membership is by a novelty
+  threshold; coverage is a 10×10×10 grid over emitters × bodies≥4 × predation. `K_est` is recomputed at each
+  boundary from the live environment.
+- **Fork (A19).** A fork resets `env_*` to `default_env(new cfg)` and starts with the director off.
+- **Viewer (A20).** `view` and `render` re-simulate without the director; replay in the viewer is not implemented.

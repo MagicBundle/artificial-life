@@ -13,6 +13,9 @@ Viewing never changes the trajectory: the session only calls the compiled step, 
 selection, snapshot) reads the state without touching ``state.key``. Snapshots go to
 ``media/snap_<step>.safetensors`` (in the run directory if one is attached, else the current directory)
 via ``runio.write_state_file``; checkpoints, ``LATEST``, ``metrics.jsonl`` and ``events/`` are never touched.
+
+The viewer re-simulates without the director (docs/DIRECTOR.md): it keeps the checkpoint's environment levers
+but applies none of ``director.jsonl``, so after a director action it diverges from the run it was opened on.
 """
 
 from __future__ import annotations
