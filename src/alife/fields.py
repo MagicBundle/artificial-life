@@ -11,7 +11,7 @@ from typing import NamedTuple
 import mlx.core as mx
 
 from alife import layout, ops
-from alife.config import Config, dims
+from alife.config import Config, dims, seasons_on
 
 
 class FieldObs(NamedTuple):
@@ -30,8 +30,25 @@ def init_patches(key_pos: mx.array, key_vel: mx.array, cfg: Config) -> tuple[mx.
     return pos, vel
 
 
-def fertility(patch_pos: mx.array, cfg: Config) -> mx.array:
-    """``clip(fertility_base + Σ_p torus-Gaussian_p, 0, 1)`` on the field grid, (FG,FG) f32 indexed [y, x].
+def season_weights(step: mx.array, cfg: Config) -> mx.array:
+    """Per-patch seasonal weights ``w_p = 1 + A·sin(2π·t/P + φ_p)``, (PP,) f32 (§13.1).
+
+    ``φ_p = 0`` for ``season_mode = "global"`` and ``2π·p/PP`` for ``"per_patch"``. ``t mod P`` is taken in
+    integers first so the phase stays exact for long runs. Only called when seasons are on.
+    """
+    fi = cfg.fields
+    pp = dims(cfg).pp
+    phase = 2.0 * math.pi * (step % fi.season_period).astype(mx.float32) / fi.season_period
+    offset = (2.0 * math.pi / pp) * mx.arange(pp, dtype=mx.float32) if fi.season_mode == "per_patch" else 0.0
+    return 1.0 + fi.season_amplitude * mx.sin(phase + offset * mx.ones((pp,), mx.float32))
+
+
+def fertility(patch_pos: mx.array, cfg: Config, step: mx.array | None = None) -> mx.array:
+    """``clip(fertility_base + Σ_p w_p·torus-Gaussian_p, 0, 1)``, (FG,FG) f32 indexed [y, x].
+
+    ``w_p`` is the seasonal weight at ``step`` (``season_weights``); it is 1 when seasons are off or ``step``
+    is None (the time-average, used for initial fields and the carrying-capacity estimate). With seasons off
+    the computation is exactly the unweighted sum.
 
     Separable: ``Σ_p gy_p ⊗ gx_p`` with per-axis minimum-image offsets from cell centres. The sum is
     elementwise rather than ``gyᵀ @ gx`` because float32 matmul runs at reduced precision on some Apple GPUs
@@ -43,12 +60,15 @@ def fertility(patch_pos: mx.array, cfg: Config) -> mx.array:
     dx = ops.min_image(centres[None, :] - patch_pos[:, 0:1], L)  # (PP,FG)
     dy = ops.min_image(centres[None, :] - patch_pos[:, 1:2], L)
     gx, gy = mx.exp(dx * dx * inv), mx.exp(dy * dy * inv)
-    return mx.clip(cfg.fields.fertility_base + (gy[:, :, None] * gx[:, None, :]).sum(axis=0), 0.0, 1.0)
+    terms = gy[:, :, None] * gx[:, None, :]
+    if step is not None and seasons_on(cfg.fields):  # static: seasons enabled
+        terms = season_weights(step, cfg)[:, None, None] * terms
+    return mx.clip(cfg.fields.fertility_base + terms.sum(axis=0), 0.0, 1.0)
 
 
-def regen_rate(patch_pos: mx.array, cfg: Config) -> mx.array:
-    """Per-cell regeneration ``floor(regen_max·fertility)``, (FG,FG) int32."""
-    return ops.floor_i32(cfg.fields.regen_max * fertility(patch_pos, cfg))
+def regen_rate(patch_pos: mx.array, cfg: Config, step: mx.array | None = None) -> mx.array:
+    """Per-cell regeneration ``floor(regen_max·fertility)``, (FG,FG) int32 (seasonal at ``step`` if given)."""
+    return ops.floor_i32(cfg.fields.regen_max * fertility(patch_pos, cfg, step))
 
 
 def cell_index(pos: mx.array, cfg: Config) -> mx.array:
@@ -132,14 +152,17 @@ def update_chem(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array:
     return mx.clip(keep * (c + diff * lap), 0.0, fi.chem_max)
 
 
-def update_resource(resource: mx.array, patch_pos: mx.array, cfg: Config) -> tuple[mx.array, mx.array]:
+def update_resource(
+    resource: mx.array, patch_pos: mx.array, cfg: Config, step: mx.array | None = None
+) -> tuple[mx.array, mx.array]:
     """Regenerate then integer-diffuse the resource: ``(resource', inc (FG,FG) int32)`` (§13.2, §10.2).
 
     ``inc = clip(min(regen_rate, resource_cap − R), 0, ∞)`` (``INJECT_REGEN = Σ inc``), so regeneration stops
-    at ``resource_cap``; the exact flux stencil ``ops.int_diffuse`` then conserves the total.
+    at ``resource_cap``; the exact flux stencil ``ops.int_diffuse`` then conserves the total. ``step`` (the
+    step index during the step) selects the seasonal weights; it is ignored with seasons off.
     """
     fi = cfg.fields
-    inc = mx.maximum(mx.minimum(regen_rate(patch_pos, cfg), fi.resource_cap - resource), 0)
+    inc = mx.maximum(mx.minimum(regen_rate(patch_pos, cfg, step), fi.resource_cap - resource), 0)
     return ops.int_diffuse(resource + inc, fi.resource_diffusion_q8), inc
 
 

@@ -113,13 +113,13 @@ def step(s: State, cfg: Config) -> tuple[State, StepOut]:
     )
 
     req = sv & act.reproduce & (dt.energy >= cfg.repro.min_energy) & (a >= cfg.repro.min_age)  # S16
-    lanes = lifecycle.allocate_lanes(req, sv, ks[Stream.BIRTH_PRIO], cfg)
+    lanes = lifecycle.allocate_lanes(req, sv, ks[Stream.BIRTH_PRIO], cfg, s.step)
     rp = lifecycle.reproduce(s1, lanes, act.child_bond, ks, cfg)
     s2 = rp.state
 
     dep = fields.deposit_chem(act.emit, fcell, c.solvent, cfg)  # S17
     chem = fields.update_chem(s2.chem, dep, cfg)
-    resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg)
+    resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step)
     patch_pos = fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg)
     s2 = s2._replace(chem=chem, resource=resource, patch_pos=patch_pos, key=key_next, step=t + 1)
 

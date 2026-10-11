@@ -21,7 +21,7 @@ enum Parse {
 
 // MARK: - "Keep inventing" levers
 
-/// The five dynamics levers. Values are kept as text (they are bound to text fields); only values that differ
+/// The dynamics levers. Values are kept as text (they are bound to text fields); only values that differ
 /// from the engine default are passed to the engine, each as one `--set section.key=value`.
 struct Levers: Equatable {
     static let defaultRateMin = 0.001
@@ -35,6 +35,11 @@ struct Levers: Equatable {
     var patchDrift = "0.005"
     var immigrationFloor = "0"
     var immigrantsPerStep = "64"
+    var immigrationEvery = "0"
+    var immigrationCount = "0"
+    var seasonPeriod = "0"
+    var seasonAmplitude = "0"
+    var seasonMode = "global"
 
     /// Human-readable problems; ranges mirror `validate()` in src/alife/config.py.
     func validate() -> [String] {
@@ -59,6 +64,23 @@ struct Levers: Equatable {
         if let floor, let perStep, floor > 0, perStep < 1 {
             errors.append("population.immigrants_per_step must be >= 1 when immigration_floor > 0.")
         }
+        let every = Parse.integer(immigrationEvery)
+        let count = Parse.integer(immigrationCount)
+        if every == nil { errors.append("population.immigration_every must be an integer >= 0.") }
+        if count == nil { errors.append("population.immigration_count must be an integer >= 0.") }
+        if let every, let count, every > 0, count < 1 {
+            errors.append("population.immigration_count must be >= 1 when immigration_every > 0.")
+        }
+        let period = Parse.integer(seasonPeriod)
+        if period == nil { errors.append("fields.season_period must be an integer >= 0.") }
+        if let a = Parse.decimal(seasonAmplitude) {
+            if a > 1 { errors.append("fields.season_amplitude must be in [0, 1].") }
+            if a > 0, let period, period < 1 {
+                errors.append("fields.season_period must be >= 1 when season_amplitude > 0.")
+            }
+        } else {
+            errors.append("fields.season_amplitude must be a plain decimal number in [0, 1].")
+        }
         return errors
     }
 
@@ -75,6 +97,11 @@ struct Levers: Equatable {
         if let v = Parse.integer(immigrantsPerStep), v != Levers.defaultImmigrantsPerStep {
             add("population.immigrants_per_step", "\(v)")
         }
+        if let v = Parse.integer(immigrationEvery), v != 0 { add("population.immigration_every", "\(v)") }
+        if let v = Parse.integer(immigrationCount), v != 0 { add("population.immigration_count", "\(v)") }
+        if let v = Parse.integer(seasonPeriod), v != 0 { add("fields.season_period", "\(v)") }
+        if let v = Parse.decimal(seasonAmplitude), v != 0 { add("fields.season_amplitude", "\(v)") }
+        if seasonMode != "global" { add("fields.season_mode", seasonMode) }
         return args
     }
 

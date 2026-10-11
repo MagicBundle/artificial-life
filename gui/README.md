@@ -52,6 +52,11 @@ change the dynamics (it accepts only `run.*` settings); use a new run or a fork 
 | Patch drift | `fields.patch_drift` | 0.005 | Drift speed of the resource patches (world units per step), >= 0. Faster drift is a proxy for a less predictable environment that keeps selecting for adaptability. |
 | Immigration floor | `population.immigration_floor` | 0 (off) | When the population falls below this number, random founders ("immigrants") are added. Immigrants are added only while the population is below the floor. |
 | Immigrants per step | `population.immigrants_per_step` | 64 | Maximum number of immigrants added per step while below the floor; must be >= 1 when the floor is above 0. |
+| Immigration every | `population.immigration_every` | 0 (off) | Add random founders every N steps, whatever the population size. |
+| Immigrants per event | `population.immigration_count` | 0 | Founders added per periodic event (1 to max births per step); required when the period is above 0. |
+| Season period | `fields.season_period` | 0 (off) | Length of one resource-regrowth season cycle, in steps. |
+| Season amplitude | `fields.season_amplitude` | 0 | Seasonal swing in regrowth, 0 to 1 (1 = regrowth reaches zero at the trough). |
+| Season mode | `fields.season_mode` | global | `per_patch` gives each resource patch its own phase, so good seasons move across the map. |
 
 The engine performs the final validation; any rejection (exit code 2) appears in the log.
 

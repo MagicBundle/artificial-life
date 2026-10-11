@@ -155,6 +155,15 @@ BAD_CASES: list[tuple[dict, str]] = [
     ({"brain": {"hidden": 0}}, "hidden"),
     ({"physics": {"drag": 0.0}}, "drag"),
     ({"fields": {"patch_sigma": 0.0}}, "patch_sigma"),
+    ({"population": {"immigration_every": -1}}, "immigration_every"),
+    ({"population": {"immigration_every": 10, "immigration_count": 0}}, "immigration_count"),
+    ({"population": {"immigration_every": 10, "immigration_count": 1025}}, "immigration_count"),
+    ({"population": {"immigration_count": -1}}, "immigration_count"),
+    ({"fields": {"season_period": -1}}, "season_period"),
+    ({"fields": {"season_amplitude": 1.5}}, "season_amplitude"),
+    ({"fields": {"season_amplitude": -0.1}}, "season_amplitude"),
+    ({"fields": {"season_amplitude": 0.5, "season_period": 0}}, "season_period"),
+    ({"fields": {"season_mode": "sine"}}, "season_mode"),
 ]
 
 

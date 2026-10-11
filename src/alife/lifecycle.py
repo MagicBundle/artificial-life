@@ -14,7 +14,7 @@ from typing import NamedTuple
 import mlx.core as mx
 
 from alife import bonds, brain, layout, ops
-from alife.config import Config, dims
+from alife.config import Config, dims, immigration_on
 from alife.rng import Stream
 from alife.state import R_HARD, DeathCause, State
 
@@ -154,13 +154,20 @@ def deaths(
     )
 
 
-def allocate_lanes(req: mx.array, survivor: mx.array, key: mx.array, cfg: Config) -> Lanes:
+def allocate_lanes(
+    req: mx.array, survivor: mx.array, key: mx.array, cfg: Config, step: mx.array | None = None
+) -> Lanes:
     """Assign up to M birth/immigrant lanes to distinct dead rows under capacity pressure (§12.2).
 
     Birth lanes are a prefix, served in a uniformly random order of the requesters; immigrant lanes (only
-    when ``immigration_floor > 0``) follow; the rest are padding. Every lane, padding included, targets one of
+    when immigration is on) follow; the rest are padding. Every lane, padding included, targets one of
     the M lowest-index dead rows, which exist because the population never exceeds ``N_CAP = N − M``.
     Non-birth lanes use parent row 0.
+
+    Immigrant demand is the larger of the floor rule (``immigration_floor``: top up to the floor, at most
+    ``immigrants_per_step``) and the periodic rule (``immigration_count`` on steps with
+    ``(step + 1) % immigration_every == 0``, ``step`` being this step's index), then capped by the free lanes
+    and the free capacity after births (§12.7). ``step`` is required when ``immigration_every > 0``.
     """
     d = dims(cfg)
     n, m = d.n, d.m
@@ -172,11 +179,16 @@ def allocate_lanes(req: mx.array, survivor: mx.array, key: mx.array, cfg: Config
     room = mx.maximum(d.n_cap - n_surv, 0)  # ≥ 0 whenever the cap held at the start of the step
     n_birth = mx.minimum(mx.minimum(n_req, m), room)
     pop = cfg.population
-    if pop.immigration_floor > 0:  # static: immigration enabled
-        want = mx.minimum(
-            mx.minimum(pop.immigration_floor - n_surv - n_birth, pop.immigrants_per_step),
-            mx.minimum(m - n_birth, room - n_birth),
-        )
+    if immigration_on(pop):  # static: immigration enabled
+        demand = mx.array(0, dtype=_I32)
+        if pop.immigration_floor > 0:  # static: floor rule
+            demand = mx.minimum(pop.immigration_floor - n_surv - n_birth, pop.immigrants_per_step)
+        if pop.immigration_every > 0:  # static: periodic rule
+            if step is None:
+                raise ValueError("allocate_lanes needs `step` when population.immigration_every > 0")
+            due = (step + 1) % pop.immigration_every == 0
+            demand = mx.maximum(demand, mx.where(due, pop.immigration_count, 0))
+        want = mx.minimum(demand, mx.minimum(m - n_birth, room - n_birth))
         n_imm = mx.clip(want, 0, m).astype(_I32)
     else:
         n_imm = mx.array(0, dtype=_I32)
@@ -248,7 +260,7 @@ def reproduce(s: State, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: C
     pos = ops.wrap(s.pos[p] + step_vec, L)
     heading = ops.wrap_angle(phi)
     w1, w2 = brain.mutate_rows(s.W1[p], s.W2[p], sigma, rate, ks[Stream.MUT_W1], ks[Stream.MUT_W2], cfg)
-    if pop.immigration_floor > 0:  # static: immigrant lanes draw fresh founders (§12.7)
+    if immigration_on(pop):  # static: immigrant lanes draw fresh founders (§12.7)
         k_pos, k_head, k_tag, k_w1, k_w2 = mx.random.split(ks[Stream.IMMIGRANT], 5)
         i_pos = ops.wrap(mx.random.uniform(0.0, L, (m, 2), key=k_pos), L)
         i_head = ops.wrap_angle(mx.random.uniform(-math.pi, math.pi, (m,), key=k_head))

@@ -64,6 +64,21 @@ checkpoints, and birth/death event logs (DESIGN §18).
 
 The `fast` overlay (`K = 6`, `C = 12`, `H = 24`) combines with any preset.
 
+## Optional environment levers
+
+Both are off by default and leave old runs (and their config hashes) untouched:
+
+- **Periodic immigration:** `population.immigration_every=P`, `population.immigration_count=c` add up to `c`
+  random founders on every step `t` with `(t + 1) % P == 0` (combines with `immigration_floor` by `max`).
+- **Seasons:** `fields.season_period=P`, `fields.season_amplitude=A` (0 to 1) and
+  `fields.season_mode=global|per_patch` weight each fertility patch by `1 + A·sin(2πt/P + φ)`, so resource
+  regeneration pulses in time (DESIGN §13.1).
+
+```bash
+uv run alife run --preset tiny --set population.immigration_every=100 --set population.immigration_count=8 \
+    --set fields.season_period=400 --set fields.season_amplitude=0.6 --set fields.season_mode=per_patch
+```
+
 ## Development and testing on Linux (CPU)
 
 On Linux the `mlx[cpu]` wheel is installed automatically, so the full test suite runs without a GPU:

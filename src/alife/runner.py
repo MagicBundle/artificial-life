@@ -27,7 +27,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import metrics
-from alife.config import Config
+from alife.config import Config, immigration_on
 from alife.runio import RunDir
 from alife.state import ERROR_MASK, CounterIdx, Diag, State, to_numpy
 from alife.step import StepOut, make_step
@@ -155,7 +155,7 @@ def run(
         raise ValueError(f"steps must be ≥ 0, got {steps}")
     run_cfg = cfg.run
     me, ce, he = run_cfg.metrics_every, run_cfg.checkpoint_every, run_cfg.heavy_metrics_every
-    immigration = cfg.population.immigration_floor > 0
+    immigration = immigration_on(cfg.population)
     t = int(to_numpy(state.step))
     end = t + steps
     rd.update_meta(status="running")

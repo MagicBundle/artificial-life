@@ -43,6 +43,8 @@ class PopulationConfig:
     max_age: int = 10000  # senescence death; 0 disables
     immigration_floor: int = 0  # 0 disables immigration (static)
     immigrants_per_step: int = 64
+    immigration_every: int = 0  # 0 disables periodic immigration (static); added after v0.1
+    immigration_count: int = 0  # founders requested on each step t with (t + 1) % every == 0
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,9 @@ class FieldConfig:
     chem_decay: tuple[float, float, float] = (0.10, 0.03, 0.005)
     chem_deposit_scale: float = 1.0 / 256.0
     chem_max: float = 16.0
+    season_period: int = 0  # steps per seasonal cycle; 0 disables seasons (static); added after v0.1
+    season_amplitude: float = 0.0  # A in [0, 1]: patch weight 1 + A*sin(2*pi*t/P + phi_p)
+    season_mode: str = "global"  # global (phi_p = 0) | per_patch (phi_p = 2*pi*p/PP)
 
 
 @dataclass(frozen=True)
@@ -481,10 +486,41 @@ def save_config(cfg: Config, path: Path) -> None:
     Path(path).write_text(_canonical_json(config_to_dict(cfg)), encoding="utf-8")
 
 
+# Keys added after v0.1 (section, key). They are omitted from ``config_hash`` while they equal their defaults,
+# so runs created before they existed keep their hash and stay resumable (§18).
+POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    ("population", "immigration_every"),
+    ("population", "immigration_count"),
+    ("fields", "season_period"),
+    ("fields", "season_amplitude"),
+    ("fields", "season_mode"),
+)
+
+
+SEASON_MODES: Final = ("global", "per_patch")
+
+
+def immigration_on(pop: PopulationConfig) -> bool:
+    """Static: any immigration source (floor rule or periodic) is enabled."""
+    return pop.immigration_floor > 0 or pop.immigration_every > 0
+
+
+def seasons_on(fi: FieldConfig) -> bool:
+    """Static: seasonal modulation of the fertility patches is enabled."""
+    return fi.season_period > 0 and fi.season_amplitude > 0.0
+
+
 def config_hash(cfg: Config) -> str:
-    """SHA-256 hex of the canonical JSON of every section except ``run``."""
+    """SHA-256 hex of the canonical JSON of every section except ``run``.
+
+    Keys added after v0.1 (``POST_V01_KEYS``) are omitted at their defaults.
+    """
     d = config_to_dict(cfg)
     d.pop("run")
+    defaults = config_to_dict(Config())
+    for sec, key in POST_V01_KEYS:
+        if d[sec][key] == defaults[sec][key]:
+            del d[sec][key]
     return hashlib.sha256(_canonical_json(d).encode("utf-8")).hexdigest()
 
 
@@ -584,6 +620,15 @@ def validate(cfg: Config) -> None:
         pop.immigration_floor == 0 or pop.immigrants_per_step >= 1,
         "population.immigrants_per_step must be ≥ 1 when immigration_floor > 0 (immigration on)",
     )
+    req(pop.immigration_every >= 0, f"population.immigration_every must be ≥ 0, got {pop.immigration_every}")
+    req(
+        pop.immigration_every == 0 or pop.immigration_count >= 1,
+        "population.immigration_count must be ≥ 1 when immigration_every > 0 (periodic immigration on)",
+    )
+    req(
+        0 <= pop.immigration_count <= m,
+        f"population.immigration_count must be in [0, max_births_per_step = {m}]",
+    )
 
     # Physics stability.
     if ph.drag > 0:
@@ -630,6 +675,19 @@ def validate(cfg: Config) -> None:
     req(0 < fi.resource_cap < R_HARD, f"fields.resource_cap {fi.resource_cap} must be in (0, 2^24 − 1)")
     req(0 <= fi.regen_max <= fi.resource_cap, "fields.regen_max must be in [0, resource_cap]")
     req(0 <= fi.resource_diffusion_q8 <= 64, "fields.resource_diffusion_q8 must be in [0, 64]")
+    req(fi.season_period >= 0, f"fields.season_period must be ≥ 0, got {fi.season_period}")
+    req(
+        0.0 <= fi.season_amplitude <= 1.0,
+        f"fields.season_amplitude must be in [0, 1], got {fi.season_amplitude}",
+    )
+    req(
+        fi.season_amplitude == 0.0 or fi.season_period >= 1,
+        "fields.season_period must be ≥ 1 when fields.season_amplitude > 0 (seasons on)",
+    )
+    req(
+        fi.season_mode in SEASON_MODES,
+        f"fields.season_mode must be one of {list(SEASON_MODES)}, got {fi.season_mode!r}",
+    )
 
     # Chemicals.
     req(len(fi.chem_diffusion) == layout.NCH, f"fields.chem_diffusion must have {layout.NCH} entries")

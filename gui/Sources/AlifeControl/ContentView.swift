@@ -156,6 +156,29 @@ struct ContentView: View {
                 lever("Immigrants per step", key: "population.immigrants_per_step",
                       text: $controller.settings.levers.immigrantsPerStep,
                       help: "Maximum immigrants added per step while below the floor; must be >= 1 when the floor is above 0. Default 64.")
+                lever("Immigration every", key: "population.immigration_every",
+                      text: $controller.settings.levers.immigrationEvery,
+                      help: "Add random founders every N steps regardless of population size. 0 = off.")
+                lever("Immigrants per event", key: "population.immigration_count",
+                      text: $controller.settings.levers.immigrationCount,
+                      help: "Founders added at each periodic event (1 to max births per step); needed when the period is above 0.")
+                lever("Season period", key: "fields.season_period",
+                      text: $controller.settings.levers.seasonPeriod,
+                      help: "Length of one resource season cycle in steps. 0 = no seasons.")
+                lever("Season amplitude", key: "fields.season_amplitude",
+                      text: $controller.settings.levers.seasonAmplitude,
+                      help: "Strength of the seasonal swing in regrowth, 0 to 1 (1 = regrowth falls to zero at the trough).")
+                HStack {
+                    Text("Season mode").frame(width: 140, alignment: .leading)
+                    Picker("", selection: $controller.settings.levers.seasonMode) {
+                        Text("Global").tag("global")
+                        Text("Per patch").tag("per_patch")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                }
+                Text("Per patch: each resource patch peaks at a different time, so good seasons move across the map.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Button("Reset levers to defaults") { controller.settings.levers.reset() }
                     .font(.caption)
             }
