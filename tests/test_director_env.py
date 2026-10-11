@@ -427,6 +427,23 @@ def test_ledger_closes_with_catastrophes_and_immigration_requests(dcfg: Config) 
     assert state_digest(s2) == state_digest(s)  # deterministic given the same lever script
 
 
+def test_catastrophe_deaths_reach_metrics_and_events(dcfg: Config, tmp_path: Path) -> None:
+    """End to end through the runner: catastrophe deaths appear in metrics.jsonl and the deaths event log."""
+    L = dcfg.world.size
+    rd = RunDir.create(tmp_path / "cat", dcfg)
+    s0 = _set_env(init_state(dcfg), cat_center=[L / 2, L / 2], cat_radius=L / 4, cat_kill_p=0.5)
+    res = runner.run(rd, dcfg, s0, 20, quiet=True)
+    assert float(_np(res.state.env_cat_kill_p)) == 0.0  # one-step event
+    rows = rd.metrics_rows()
+    n_cat = sum(r["deaths_catastrophe"] for r in rows)
+    assert n_cat > 0 and sum(r["deaths_unlogged"] for r in rows) == 0  # every death has a record
+    ev = rd.read_events("deaths")
+    is_cat = ev["cause"] == DeathCause.CATASTROPHE
+    assert int(is_cat.sum()) == n_cat
+    assert (ev["step"][is_cat] == 0).all()  # only the step the catastrophe applied in
+    assert cli.main(["inspect", str(rd.path), "--check"]) == 0  # ledger and full_check on the written run
+
+
 def test_compiled_and_eager_agree_on_env_writeback(dcfg: Config) -> None:
     s0 = _set_env(init_state(dcfg), imm_request=50, cat_center=[64.0, 64.0], cat_radius=30.0, cat_kill_p=0.7)
     outs = []
