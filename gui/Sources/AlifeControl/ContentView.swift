@@ -113,11 +113,11 @@ struct ContentView: View {
                     field("Seed", text: $controller.settings.seed,
                           prompt: controller.settings.mode == .fork ? "blank = keep source RNG" : "blank = preset default")
                 }
-                field(controller.settings.mode == .resume ? "Additional steps" : "Steps",
+                field(controller.settings.mode == .new ? "Steps" : "Additional steps",
                       text: $controller.settings.steps,
-                      prompt: controller.settings.mode == .resume ? "blank = original target" : "blank = preset default")
+                      prompt: stepsPrompt)
                 if controller.settings.mode == .fork {
-                    Text("A fork starts a new run from the source run's latest checkpoint; the source config is the base, so the preset cannot be changed.")
+                    Text("A fork starts a new run from the source run's latest checkpoint; the source config is the base, so the preset cannot be changed. Levers left at their default value are not passed, so the source run's values are kept.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -125,6 +125,14 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .disabled(busy)
+    }
+
+    private var stepsPrompt: String {
+        switch controller.settings.mode {
+        case .new: return "blank = preset default"
+        case .resume: return "blank = original target"
+        case .fork: return "blank = source config's steps"
+        }
     }
 
     private func field(_ title: String, text: Binding<String>, prompt: String) -> some View {

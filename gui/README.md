@@ -28,7 +28,8 @@ On first launch pick the repository folder (default `~/artificial-life`); the ch
 
 - **Mode**: *New run* (`alife run --preset ... --out runs/NAME`), *Resume* (`alife resume runs/NAME`, optionally
   `--steps N` more steps) or *Fork* (`alife run --init-from runs/SOURCE --out runs/NAME`, starting from the source
-  run's latest checkpoint). The exact command line is shown before you start.
+  run's latest checkpoint; *Steps* is the number of steps to run from that checkpoint, and levers left at their
+  default are not passed, so the source run's values are kept). The exact command line is shown before you start.
 - **Stop** sends a single SIGINT: the engine finishes the step, writes a checkpoint and exits (exit code 130).
   **Force stop** (shown after Stop) sends SIGTERM and ends it immediately, without a checkpoint.
 - **Timer**: "Stop after HH:MM" sends the same single SIGINT when the time is up; the remaining time is shown.

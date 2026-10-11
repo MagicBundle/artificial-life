@@ -134,7 +134,8 @@ struct RunSettings: Equatable {
     var fast = false
     /// New run: blank = preset default. Fork: blank = keep the source state's RNG.
     var seed = "1"
-    /// New run / fork: total steps (blank = preset default). Resume: additional steps (blank = original target).
+    /// New run: total steps (blank = preset default). Fork: steps to run from the source checkpoint (blank = the
+    /// source config's `run.steps`). Resume: additional steps (blank = original target).
     var steps = ""
     var levers = Levers()
     var timerEnabled = false
