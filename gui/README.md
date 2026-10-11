@@ -7,7 +7,8 @@ dependencies and no Python code of its own.
 ## Requirements
 
 - macOS 14 or later
-- Xcode command line tools (`xcode-select --install`) or Xcode 15+ (Swift 5.9)
+- A Swift 6 toolchain: Xcode 16 or later, or the command line tools that ship with it
+  (`xcode-select --install`). The package builds in Swift 6 language mode (strict concurrency).
 - The engine environment in the repository: `uv sync --extra viewer --extra video`
   (the app can run this for you with **Set up environment** if `.venv/bin/alife` is missing; it looks for `uv`
   in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin` and `PATH`)
@@ -68,6 +69,7 @@ The engine performs the final validation; any rejection (exit code 2) appears in
 
 - `AlifeControlApp.swift`: app entry point and app delegate
 - `ContentView.swift`: the UI
-- `RunController.swift`: subprocess management, log streaming, timer, keep-awake
+- `RunController.swift`: subprocess management (main-actor isolated; pipe output arrives through ordered
+  AsyncStreams), log streaming, timer, keep-awake
 - `Levers.swift`: run settings, levers, validation and command-line construction
 - `MetricsTailer.swift`: reads the last row of `metrics.jsonl`
