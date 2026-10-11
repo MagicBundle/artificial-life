@@ -227,6 +227,27 @@ invariants. Other dead-row values are stale and must never be read without an `a
 | `ledger_cum` | (16,) | int64 | cumulative ledger since step 0 (indices `LedgerIdx`, §10.8) |
 | `diag` | () | int32 | **sticky** invariant bitmask, OR-accumulated every step (§22.3) |
 
+**Director environment (live levers, `docs/DIRECTOR.md` §3).** Nine flat fields appended after `diag` (the 38
+fields above are the frozen v0 layout, `state.V0_FIELDS`). They are simulation state: checkpointed, changeable
+between steps without a recompile, and read by the compiled step only when `cfg.director.enabled` (static,
+§3, §17). `State.env` is a read-only `Env` NamedTuple view (`regen_mult`, `season_amp`, ...) and
+`state.ENV_FIELDS` lists the flat names. Checkpoint keys are the flat names.
+
+| field | shape | dtype | meaning | inert default | range (checked) |
+|---|---|---|---|---|---|
+| `env_regen_mult` | () | float32 | multiplier on per-cell regeneration (§13.1) | 1.0 | [0, 4] |
+| `env_season_amp` | () | float32 | replaces `fields.season_amplitude` | `fields.season_amplitude` | [0, 1] |
+| `env_season_period` | () | int32 | replaces `fields.season_period`; 0 = seasons off | `fields.season_period` | ≥ 0 |
+| `env_drift_mult` | () | float32 | multiplier on patch drift velocity | 1.0 | [0, 20] |
+| `env_patch_gain` | (PP,) | float32 | per-patch fertility gain; 0 disables a patch | ones | [0, 4] |
+| `env_imm_request` | () | int32 | immigrants still to be admitted (§12.7); the un-admitted remainder carries over | 0 | ≥ 0 |
+| `env_cat_center` | (2,) | float32 | catastrophe centre (torus coordinates) | zeros | finite |
+| `env_cat_radius` | () | float32 | catastrophe radius; 0 = none | 0 | [0, L/2] |
+| `env_cat_kill_p` | () | float32 | per-agent kill probability inside the radius; reset to 0 after the step it applied in (§12.9) | 0 | [0, 1] |
+
+`state.default_env(cfg)` returns the inert arrays for a config. `env_season_amp` is allowed up to 1 (inclusive)
+because `validate` allows `season_amplitude = 1`; the weight `1 − A` is then 0 at the trough, never negative.
+
 **Derived quantities** are never stored, to remove a class of inconsistency.
 - During step `t` (the value of `state.step` at the start of the step), `age = t − 1 − birth_step` (int32).
   Founders therefore have age 0 during step 0. A child born during step `t` has age 0 during step `t + 1`, which
@@ -237,7 +258,7 @@ invariants. Other dead-row values are stale and must never be read without an `a
 - Founders occupy rows `[0, n_init)` with `uid = arange(n_init)`, `parent_uid = −1`, `clade = arange(n_init)`,
   `generation = 0`, `birth_step = −1`, `energy = e_init`, random `pos`, `heading`, `tag`, `W1`, `W2` (§14.1), genes
   at their `*_init` values, and `brain_cost = l1_cost` of their rows. `next_uid = n_init`, `step = 0`, `diag = 0`,
-  `ledger_cum = 0`.
+  `ledger_cum = 0`, and the `env_*` fields at `default_env(cfg)`.
 - Dead rows at init hold the canonical dead values, plus `pos = 0`, `heading = 0`, `tag = 0`, genes at their
   `*_init` values, `clade = 0`, `generation = 0`, `parent_uid = −1`, `birth_step = −1`, `brain_cost = 0` and zero
   weights. So every unqualified range invariant above also holds for dead rows at init, and it keeps holding: a dead
@@ -263,6 +284,11 @@ class State(NamedTuple):           # every field is an mx.array, in exactly the 
     resource: mx.array; chem: mx.array; patch_pos: mx.array; patch_vel: mx.array
     key: mx.array; step: mx.array; next_uid: mx.array; total: mx.array; total0: mx.array
     ledger_cum: mx.array; diag: mx.array
+    env_regen_mult: mx.array; env_season_amp: mx.array; env_season_period: mx.array; env_drift_mult: mx.array
+    env_patch_gain: mx.array; env_imm_request: mx.array; env_cat_center: mx.array; env_cat_radius: mx.array
+    env_cat_kill_p: mx.array
+    @property
+    def env(self) -> Env: ...      # grouped read-only view of the env_* fields (Env.regen_mult, ...)
 ```
 
 `NamedTuple` is a pytree that `mx.compile` accepts and returns (F12). Updates use `s._replace(...)`. There is no
@@ -277,8 +303,13 @@ config. The config is closed over as Python constants, so shapes are static and 
 which means there is no retracing.
 
 There are no host syncs, no `.item()`, no Python branching on array values and no data-dependent shapes inside the
-step. The only Python branches are on config constants. Examples: `immigration_floor > 0` (or `immigration_every > 0`) and
-`runtime_checks == "cheap"`.
+step. The only Python branches are on config constants. Examples: `immigration_floor > 0` (or `immigration_every > 0`),
+`director.enabled` and `runtime_checks == "cheap"`.
+
+**Director branches.** Every read or write of `State.env`, the `CATASTROPHE` draw, the widened immigration gate
+and the seasonal override sit behind a static `if cfg.director.enabled:`. With the director off the traced graph
+is the one it was before the env fields existed, and the `env_*` arrays pass through unchanged. With it on and
+inert env values, the trajectory is bit-identical to director-off (tested, `test_director_env.py`).
 
 Ordered sub-steps:
 - **"Start-of-step"** means the input `s`.
@@ -301,11 +332,11 @@ Ordered sub-steps:
 | S11 | **combat**: `energy.combat` | `E, resource, fcell, act`, post-S9 `partner` | `E, resource, lost, gain, spill, residue` (I13); attacks on a target that became a bond partner at S9 are dropped unless `attack_bonded` | — |
 | S12 | **share**: `energy.share` | `E`, post-S9 `partner, rev`, start-of-step `s.partner`, `act.share`, `solvent` | `E, out, inflow, heat`; a slot sends only if its partner is unchanged since the start of the step | — |
 | S13 | **cap**: `energy.cap_energy` | `E` | `E ≤ e_max`, `overflow` | — |
-| S14 | **deaths**: `lifecycle.deaths` | `alive, solvent, E, lost, age, uid, generation, clade, partner, rev, resource, fcell` | `survivor` mask (`alive` after deaths); corpses into `resource`; dead rows canonicalised; bonds of the dead dropped on both sides; death records | — |
+| S14 | **deaths**: `lifecycle.deaths` | `alive, solvent, E, lost, age, uid, generation, clade, partner, rev, resource, fcell`; director: `cat_mask` from `lifecycle.catastrophe_mask(pos, alive, env, ks[CATASTROPHE])` (start-of-step `pos`) | `survivor` mask (`alive` after deaths); corpses into `resource`; dead rows canonicalised; bonds of the dead dropped on both sides; death records | — |
 | S15 | **physics**: `physics.forces`, `physics.integrate` | start-of-step `pos, heading`; `nbr`; post-S14 `partner`; `act.thrust, act.contract, act.grip, act.turn`; `survivor` | `pos, vel, heading` for survivors; `v_clips`. Right after S15, survivors' `h ← h_new`, `msg ← act.msg`, `last_loss/harvest/inflow` are written and everything else gets 0 (§16.3). | — |
-| S16 | **reproduction and immigration**: `lifecycle.allocate_lanes`, `lifecycle.reproduce` | the in-flight state after S15, `act.reproduce`, `act.child_bond`, `solvent` | newborn rows (small arrays), parents debited, child bonds, `pend_*` (child weights), birth records | `BIRTH_PRIO`, `PLACEMENT`, `MUT_W1`, `MUT_W2`, `MUT_GENES`, `IMMIGRANT` |
-| S17 | **fields**: `fields.deposit_chem`, `fields.update_chem`, `fields.update_resource`, `fields.drift_patches` | `chem, act.emit, fcell, solvent, resource, patch_pos, patch_vel` | `chem, resource, patch_pos`, `regen_injected` | — |
-| S18 | **bookkeeping**: `step.finish` (private) | everything, including `desc`, `x`, `act` and `as_prop` for the kin counters | `step + 1`; `key = key_next`; `total`; `ledger_cum`; `counters`; `diag` OR-ed with `invariants.device_check(...)` | — |
+| S16 | **reproduction and immigration**: `lifecycle.allocate_lanes`, `lifecycle.reproduce` | the in-flight state after S15, `act.reproduce`, `act.child_bond`, `solvent`; director: `env_imm_request` | newborn rows (small arrays), parents debited, child bonds, `pend_*` (child weights), birth records | `BIRTH_PRIO`, `PLACEMENT`, `MUT_W1`, `MUT_W2`, `MUT_GENES`, `IMMIGRANT` |
+| S17 | **fields**: `fields.deposit_chem`, `fields.update_chem`, `fields.update_resource`, `fields.drift_patches` | `chem, act.emit, fcell, solvent, resource, patch_pos, patch_vel`; director: `env_regen_mult, env_season_*, env_patch_gain, env_drift_mult` | `chem, resource, patch_pos`, `regen_injected` | — |
+| S18 | **bookkeeping**: `step.finish` (private) | everything, including `desc`, `x`, `act` and `as_prop` for the kin counters | `step + 1`; `key = key_next`; `total`; `ledger_cum`; `counters`; `diag` OR-ed with `invariants.device_check(...)`. Director: after S17 `step.consume_env` writes `env_imm_request ← max(request − n_imm, 0)` and `env_cat_kill_p ← 0` | — |
 
 **Why this order.**
 - **Decisions use the start-of-step snapshot.** Sensing, targets, bond geometry and forces all read start-of-step
@@ -917,6 +948,10 @@ needs no gate: it gathers the sender's already-gated `out`. A newly formed bond 
   - The field is then hard-capped: `R_over = max(R − R_HARD, 0)` and `R −= R_over` → `HEAT_OVERFLOW`.
   - Cause, first match wins: `STARVED` if `~solvent`; `KILLED` if `E == 0` and `lost > 0` this step; `STARVED` if
     `E == 0`; else `AGED`.
+  - **Catastrophe (director only, §12.9).** With `cat_mask`, `dead |= alive & cat_mask & ~dead`, and those rows get
+    the new cause `CATASTROPHE` (3). Catastrophe deaths are *excess* deaths only: an agent that any other rule
+    already kills keeps that cause, so the precedence above is unchanged and `INSOLVENT ≤ DEATHS_STARVED` still
+    holds. The corpse (`E + S`) takes the ordinary corpse path above, so there is no new ledger term.
   - **Rescue.** A solvent agent drained to 0 by combat at S11 survives if bond inflow at S12 lifts it above 0. This
     is intended: it is a cooperative defence that bodies can evolve. Insolvent agents cannot be rescued.
 - **Reproduction (S16).** For each parent:
@@ -944,6 +979,10 @@ is `state.ledger_cum`.
 | 5 | `HEAT_BIRTH` | sink | 13 | `FLOW_ENDOWMENT` | internal |
 | 6 | `HEAT_OVERFLOW` | sink | 14 | `FLOW_STRUCTURE` | internal |
 | 7 | `FLOW_HARVEST` | internal | 15 | `RESERVED` (always 0) | — |
+
+No director action adds a ledger term. A catastrophe death is a corpse (`FLOW_CORPSE`), an immigration request is
+admitted through the ordinary immigrant lanes (`INJECT_IMMIGRATION`), and a regeneration multiplier or patch gain
+only changes the integer regeneration amount (`INJECT_REGEN`).
 
 **Per-step closure.** This is checked on device every step (`Diag.LEDGER`) and in tests on the host:
 
@@ -1068,7 +1107,7 @@ slot, _ = ops.rank_select(~survivor, M)                            # the M lowes
 n_surv, n_req = survivor.sum(), req.sum()                          # int32 counts
 room    = N_CAP - n_surv                                           # ≥ 0, since n_surv ≤ alive_prev ≤ N_CAP
 n_birth = minimum(minimum(n_req, M), room)
-n_imm   = clip(min(floor − n_surv − n_birth, imm_per_step, M − n_birth, room − n_birth), 0, M)  # 0 if disabled (static)
+n_imm   = clip(min(floor − n_surv − n_birth, imm_per_step, M − n_birth, room − n_birth), 0, M)  # 0 if disabled (static); §12.7
 kind    = where(k < n_birth, BIRTH, where(k < n_birth + n_imm, IMMIGRANT, PAD))   # k = arange(M); LaneKind enum
 parent  = mx.where(kind == BIRTH, perm[ppos], 0)                   # (M,); non-birth lanes use row 0 (§12.6)
 ```
@@ -1174,8 +1213,10 @@ weights are stale by definition, and every lane index is unique, so the write is
 ### 12.7 Immigration (optional, off by default)
 
 - Immigration is enabled iff `population.immigration_floor > 0` **or** `population.immigration_every > 0`
-  (`config.immigration_on`). This is a static Python branch, so with the default config the code path does not
-  exist in the compiled graph.
+  (`config.immigration_on`). The lane and founder-drawing gates in `lifecycle` use `config.immigration_possible(cfg)
+  = immigration_on(cfg.population) or cfg.director.enabled`, because the director can request immigrants at any
+  time. This is a static Python branch, so with the default config the code path does not exist in the compiled
+  graph. The runner's extinction stop (§18) uses `immigration_on` plus a host check of `env_imm_request`.
 - **Floor rule.** When `n_surv + n_birth < floor`, the demand is `min(floor − n_surv − n_birth, immigrants_per_step (64))`.
 - **Periodic rule** (`immigration_every = P > 0`, `immigration_count = c`). On every step with index `t` such
   that `(t + 1) % P == 0` (`t = state.step` during the step) the demand is `c`; on other steps it is 0. The test
@@ -1183,6 +1224,12 @@ weights are stale by definition, and every lane index is unique, so the write is
 - The two rules combine by `max`: `n_imm = clip(min(max(floor demand, periodic demand), M − n_birth,
   room − n_birth), 0, M)` with `room = max(N_CAP − n_surv, 0)`. Births take lanes first, so a due step with
   all `M` lanes used by births admits no immigrants.
+- **Director request** (`env_imm_request = r`; `allocate_lanes(..., imm_request=r)`). With the director on, the
+  demand is `max(floor demand, periodic demand, r)` before the same caps (`M − n_birth`, `room − n_birth`). The step
+  then writes back `r' = max(r − n_imm, 0)` (`step.consume_env`), so whatever the lanes or the capacity could not
+  admit stays requested and arrives over the following steps: a large pulse is spread over `⌈r / M⌉` steps or more.
+  If the other rules already admit at least `r` immigrants this step, the request is fully consumed by them. The
+  request is capped by capacity like any immigrant, and a request that capacity keeps refusing remains pending.
 - It prevents extinction from ending long experiments, and it can also inject fresh genetic variation on a
   schedule. Both rules use the same lanes, the `IMMIGRANT` RNG stream, and are ledger-accounted
   (`INJECT_IMMIGRATION`, `IMMIGRANTS` counter).
@@ -1195,6 +1242,18 @@ weights are stale by definition, and every lane index is unique, so the write is
 - **Events:** each step's `BirthRecords` (M lanes) and `DeathRecords` (DL = 2M lanes) are flushed to
   `events/*.npz` at metrics intervals (§18). Deaths beyond DL in one step are counted in `DEATHS_UNLOGGED`.
 - Together these allow the full phylogeny to be reconstructed offline.
+
+### 12.9 Catastrophe (director, off unless `director.enabled`)
+
+A catastrophe is a one-step event: set `env_cat_center`, `env_cat_radius` and `env_cat_kill_p` between steps.
+In the next step `lifecycle.catastrophe_mask(pos, alive, env, ks[Stream.CATASTROPHE], cfg)` marks an alive agent
+iff its start-of-step position lies within `env_cat_radius` of `env_cat_center` by the torus minimum image
+(`‖min_image(pos − center)‖² ≤ radius²`, and `radius > 0`) **and** its uniform draw `u_i < env_cat_kill_p`
+(`u ~ U[0,1)^N` from the `CATASTROPHE` stream; the draw is made every step the director is enabled, so stream use
+never depends on the levers). `deaths(..., cat_mask=)` kills the marked agents that would otherwise survive (§10.7)
+with cause `CATASTROPHE`, counted in `DEATHS_CATASTROPHE`. After the step `env_cat_kill_p` is reset to 0, so it
+cannot repeat; `env_cat_center` and `env_cat_radius` stay as set (they are inert at `kill_p = 0`, and the last
+geometry stays inspectable).
 
 ---
 
@@ -1221,6 +1280,20 @@ each patch's Gaussian is weighted by `w_p(t) = 1 + A·sin(2π·t/P + φ_p)`, so
 taken in integers so it stays exact on long runs. `A ∈ [0, 1]` keeps `w_p ≥ 0`; the mean of `w_p` over a period is 1.
 - Seasons are a static branch: with `P = 0` or `A = 0` no multiplication is traced and `fertility` is
   bit-identical to the unweighted sum (the golden digest is unchanged).
+- **Director env (static `director.enabled`; the functions take an optional `env`).** The functions take
+  `env: Env | None = None`; the step passes `s.env` only when the director is enabled.
+  - *Seasons.* `season_weights(step, cfg, env)` uses `env.season_amp` and `env.season_period` in place of the
+    config values (`season_mode` stays a config constant). `env.season_period = 0` means off: every weight is 1,
+    and the integer modulo is taken by `max(period, 1)` so it is never by zero. With the director on, seasonal
+    weighting is always traced (a `1 + 0·sin(…)` weight is exactly 1).
+  - *Patch gain.* The Gaussian of patch `p` is weighted by `env.patch_gain[p] · w_p(t)`; gain 0 removes the patch
+    from the fertility sum (and a gain above 1 makes a richer patch). Gain applies when a `step` is given, so the
+    initial field and the carrying-capacity estimate (`step = None`) are unaffected.
+  - *Regeneration.* `regen_rate = floor_i32((regen_max · fertility) · env.regen_mult)`. The product
+    `regen_max · fertility` is evaluated first, so `regen_mult = 1.0` is exact.
+  - *Drift.* `patch_pos ← wrap(patch_pos + patch_vel · env.drift_mult)`; the velocity itself has no RNG.
+  - With inert env values (`mult = 1`, `gain = 1`, config season values) each of these is the identity, so a
+    director-enabled run is bit-identical to a director-off run.
 - Regeneration stays integer and ledger-accounted (`INJECT_REGEN = Σ inc`), so the ledger closes exactly.
 - `step = None` means the time average `w = 1`. It is used for the initial resource field (`init_state`) and for
   the carrying-capacity estimate (§10.10), which is therefore the season-averaged one.
@@ -1288,10 +1361,13 @@ chem_c ← (1 − λ_c) · (chem_c + D_c · (roll₄(chem_c) − 4·chem_c))
 
 - `state.key` (uint32[2]) is the only simulation RNG state.
 - Every step: `k = split(state.key, 2)`, `key_next = k[0]`, `ks = split(k[1], NUM_STREAMS)`.
-- `NUM_STREAMS = 16` is frozen, because split is not prefix-stable (F3). `RNG_LAYOUT_VERSION = 1` is stored in every
+- `NUM_STREAMS = 16` is frozen, because split is not prefix-stable (F3). `RNG_LAYOUT_VERSION = 2` is stored in every
   checkpoint.
-- New consumers take a reserved index. Changing the layout bumps the version, and loading a checkpoint with a
-  different version is refused with exit code 4.
+- New consumers take a reserved index. Every layout change bumps the version. A change that moves no existing
+  stream key (taking a reserved index, as `CATASTROPHE` did for version 2) keeps the older versions in
+  `rng.RNG_COMPATIBLE_VERSIONS = {1, 2}`, so their checkpoints load and resume. Loading a checkpoint whose version is
+  not in that set is refused with exit code 4. A change that did move a key must bump the version without adding
+  the old one to the set.
 
 | `Stream` | idx | consumer | draws |
 |---|---|---|---|
@@ -1302,8 +1378,9 @@ chem_c ← (1 − λ_c) · (chem_c + D_c · (roll₄(chem_c) − 4·chem_c))
 | `MUT_W1` | 4 | `W1` mutation | `split(·, 2)` → `uniform (M,W1_ROWS,H)`, `normal (M,W1_ROWS,H)` |
 | `MUT_W2` | 5 | `W2` mutation | same, with shape `(M,W2_ROWS,D_OUT)` |
 | `MUT_GENES` | 6 | σ, p, tag, frac | `split(·, 4)` → `normal (M,)`, `normal (M,)`, `normal (M,T)`, `normal (M,)` |
-| `IMMIGRANT` | 7 | immigrant pos, heading, tag, W1, W2 | `split(·, 5)`; drawn only if immigration is enabled |
-| — | 8–15 | reserved | — |
+| `IMMIGRANT` | 7 | immigrant pos, heading, tag, W1, W2 | `split(·, 5)`; drawn only if immigration is possible (`immigration_possible`) |
+| `CATASTROPHE` | 8 | director catastrophe kill draw | `uniform(0, 1, (N,))`; drawn every step only if `director.enabled` |
+| — | 9–15 | reserved | — |
 
 **Init** (`rng.init_keys(seed)`): `split(key(seed), 16)`, with these `InitStream` slots:
 - 0 `POS` (founder positions, `U[0, L)²`)
@@ -1350,8 +1427,15 @@ Every invariant, including exact ledger closure, holds on all backends regardles
 **Acceptance on the Mac.** `alife bench --determinism` runs 2 × 200 steps of the 64k preset on the GPU and compares
 SHA-256 state digests.
 
-**Golden test.** `tests/test_determinism.py::test_golden` pins the `tiny_cfg` (tiny preset, f32 weights) digest
-after 50 steps. It runs only
+**Digests.** `state_digest(s)` hashes every `State` field, `env_*` included. `legacy_state_digest(s)` hashes exactly
+the 38 frozen v0 fields (`state.V0_FIELDS`) in v0 order with the same per-field encoding, so on a director-off
+state it equals what `state_digest` returned before the `env_*` fields existed. Bit-identity checks against
+pre-director trajectories (the golden pin, `alife bench` baselines) use `legacy_state_digest`; everything else uses
+the stricter `state_digest`. With the director enabled and inert env values, `legacy_state_digest` equals the
+director-off one at every step (§3).
+
+**Golden test.** `tests/test_determinism.py::test_golden` pins the `tiny_cfg` (tiny preset, f32 weights)
+`legacy_state_digest` after 50 steps (the pin was not changed by the env fields). It runs only
 when `mlx.__version__` equals the version recorded next to the golden value, so an MLX upgrade becomes a deliberate
 change.
 
@@ -1470,7 +1554,7 @@ artificial-life/
     config.py                    Config dataclasses, Dims, presets, load/save/override/validate/hash
     layout.py                    structural constants, IN_*/OUT_*/NBR_*/BOND_* indices, names, GENOME_LAYOUT_VERSION
     state.py                     State, LedgerIdx, CounterIdx, Diag, DeathCause, init_state, totals, (de)serialisation, to_numpy
-    rng.py                       Stream, InitStream, NUM_STREAMS, RNG_LAYOUT_VERSION, step_keys, init_keys, observer_key
+    rng.py                       Stream, InitStream, NUM_STREAMS, RNG_LAYOUT_VERSION, RNG_COMPATIBLE_VERSIONS, step_keys, init_keys, observer_key
     ops.py                       the only home of scatters/setitem; contention, limb sums, placement, torus math
     spatial.py                   Neighbors, find_neighbors
     fields.py                    patches, fertility, sampling, chem deposit/update, resource update
@@ -1517,9 +1601,9 @@ artificial-life/
 class ConfigError(ValueError): ...
 @dataclass(frozen=True) class WorldConfig; PopulationConfig; SensingConfig; BrainConfig; PhysicsConfig
 @dataclass(frozen=True) class BondConfig; EnergyConfig; CombatConfig; ReproConfig; MutationConfig
-@dataclass(frozen=True) class FieldConfig; RunConfig                     # §17
+@dataclass(frozen=True) class FieldConfig; DirectorConfig; RunConfig    # §17
 @dataclass(frozen=True) class Config: world; population; sensing; brain; physics; bonds; energy; combat;
-                                      repro; mutation; fields; run
+                                      repro; mutation; fields; director; run
 @dataclass(frozen=True) class Dims:
     n: int; m: int; n_cap: int; dl: int; k: int; c: int; q: int; g_hash: int; cell_hash: float; fg: int
     h: int; w1_rows: int; w2_rows: int; params: int; pp: int; wdtype: mx.Dtype
@@ -1533,7 +1617,10 @@ def config_to_dict(cfg: Config) -> dict[str, dict[str, Any]]
 def config_from_dict(d: Mapping[str, Any]) -> Config                      # strict: unknown keys → ConfigError
 def save_config(cfg: Config, path: Path) -> None                          # canonical JSON (sorted keys, indent 2)
 def validate(cfg: Config) -> None                                         # raises ConfigError listing ALL problems
-def config_hash(cfg: Config) -> str                                       # sha256 hex of canonical JSON minus "run"
+def config_hash(cfg: Config) -> str                                       # sha256 hex of canonical JSON minus "run";
+                                                                          # POST_V01_KEYS at defaults, and sections they empty, omitted
+def immigration_on(pop: PopulationConfig) -> bool                         # floor or periodic rule
+def immigration_possible(cfg: Config) -> bool                             # immigration_on or director.enabled (static gate)
 def stability_number(cfg: Config) -> float                                # 2(B k_s + K k_r)/drag
 
 # layout.py  (module constants; no functions besides names)
@@ -1549,24 +1636,30 @@ INPUT_NAMES: tuple[str, ...]   # len D_IN;  OUTPUT_NAMES: tuple[str, ...]  # len
 
 # state.py
 class LedgerIdx(IntEnum): ...      # §10.8 (16)
-class CounterIdx(IntEnum): ...     # §19.1 (N_COUNTERS = 26)
+class CounterIdx(IntEnum): ...     # §19.1 (N_COUNTERS = 27)
 class Diag(IntFlag): ...           # §22.3
-class DeathCause(IntEnum): STARVED = 0; KILLED = 1; AGED = 2
+class DeathCause(IntEnum): STARVED = 0; KILLED = 1; AGED = 2; CATASTROPHE = 3
 R_HARD: Final = (1 << 24) - 1
-class State(NamedTuple): ...       # §2.3
+class State(NamedTuple): ...       # §2.3 (47 fields: V0_FIELDS (38) + ENV_FIELDS (9)); State.env -> Env view
+class Env(NamedTuple): regen_mult; season_amp; season_period; drift_mult; patch_gain; imm_request; cat_center; cat_radius; cat_kill_p
+ENV_FIELDS: Final = ("env_regen_mult", ...); V0_FIELDS: Final = State._fields[:38]
+def default_env(cfg: Config) -> dict[str, mx.array]                        # inert env_* arrays for cfg
 def init_state(cfg: Config) -> State                                       # uses cfg.run.seed; evaluated arrays
 def total_energy(energy: mx.array, alive: mx.array, resource: mx.array, cfg: Config) -> mx.array   # int64 (); int64(n_alive)·S
 def age(step: mx.array, birth_step: mx.array) -> mx.array                  # step − 1 − birth_step
 def state_to_arrays(s: State) -> dict[str, mx.array]
-def state_from_arrays(d: Mapping[str, mx.array]) -> State                  # key SET must equal State._fields; built in _fields order
+def state_from_arrays(d: Mapping[str, mx.array], cfg: Config | None = None) -> State
+                    # key SET must equal State._fields, built in _fields order; exception: with cfg, a set missing only
+                    # env_* keys (a pre-director checkpoint) is filled from default_env(cfg)
 def state_digest(s: State) -> str                                          # sha256 over all fields in State._fields order (host)
+def legacy_state_digest(s: State) -> str                                   # same encoding over V0_FIELDS only (§14.2)
 def to_numpy(a: mx.array) -> np.ndarray                                    # the only host read path: bf16 → f32 on device (exact, F17)
 
 # rng.py
 class Stream(IntEnum): NOISE = 0; BOND_PRIO = 1; BIRTH_PRIO = 2; PLACEMENT = 3; MUT_W1 = 4; MUT_W2 = 5
-                       MUT_GENES = 6; IMMIGRANT = 7
+                       MUT_GENES = 6; IMMIGRANT = 7; CATASTROPHE = 8
 class InitStream(IntEnum): POS = 0; HEADING = 1; W1 = 2; W2 = 3; TAG = 4; PATCH_POS = 5; PATCH_VEL = 6; STATE_KEY = 7
-NUM_STREAMS: Final = 16; RNG_LAYOUT_VERSION: Final = 1
+NUM_STREAMS: Final = 16; RNG_LAYOUT_VERSION: Final = 2; RNG_COMPATIBLE_VERSIONS: Final = frozenset({1, 2})
 def step_keys(key: mx.array) -> tuple[mx.array, mx.array]                 # (key_next (2,), ks (16,2))
 def init_keys(seed: int) -> mx.array                                       # (16,2)
 def observer_key(seed: int, step: int) -> mx.array
@@ -1600,15 +1693,19 @@ class FieldObs(NamedTuple): res: mx.array; res_grad: mx.array; chem: mx.array; c
                             # res (N,) = IN_RES; res_grad (N,2) = IN_RES_GRAD; chem (N,NCH) = IN_CHEM;
                             # chem_grad (N,NCH,2) = IN_CHEM_GRAD as (fwd, lat) per channel
 def init_patches(key_pos: mx.array, key_vel: mx.array, cfg: Config) -> tuple[mx.array, mx.array]
-def fertility(patch_pos: mx.array, cfg: Config) -> mx.array               # (FG,FG) f32 in [0,1]
-def regen_rate(patch_pos: mx.array, cfg: Config) -> mx.array              # (FG,FG) int32
+def season_weights(step: mx.array, cfg: Config, env: Env | None = None) -> mx.array   # (PP,) f32 (§13.1)
+def fertility(patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
+              env: Env | None = None) -> mx.array                         # (FG,FG) f32 in [0,1]
+def regen_rate(patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
+               env: Env | None = None) -> mx.array                        # (FG,FG) int32
 def cell_index(pos: mx.array, cfg: Config) -> mx.array                    # (N,) int32
 def sample_fields(resource: mx.array, chem: mx.array, fcell: mx.array, heading: mx.array, cfg: Config) -> FieldObs
 def deposit_chem(emit: mx.array, fcell: mx.array, active: mx.array, cfg: Config) -> mx.array   # (NCH*FG*FG,) int32
 def update_chem(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array
-def update_resource(resource: mx.array, patch_pos: mx.array, cfg: Config) -> tuple[mx.array, mx.array]
+def update_resource(resource: mx.array, patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
+                    env: Env | None = None) -> tuple[mx.array, mx.array]
                     # (resource', inc (FG,FG) int32) — regen then int diffusion
-def drift_patches(patch_pos: mx.array, patch_vel: mx.array, cfg: Config) -> mx.array
+def drift_patches(patch_pos: mx.array, patch_vel: mx.array, cfg: Config, env: Env | None = None) -> mx.array
 
 # sensing.py
 def neighbor_descriptors(s: State, nbr: Neighbors, cfg: Config) -> mx.array          # (N,K,NF) f32
@@ -1675,10 +1772,13 @@ class Deaths(NamedTuple): survivor; dead; energy; uid; partner; rev; resource; c
     # (N,) except resource, r_overflow (FG,FG); corpse = E + S on dead rows else 0; cause = DeathCause on dead
     # rows, −1 elsewhere. Unused record lanes (deaths and births) hold uid/parent_uid/slot −1 and 0 elsewhere.
 def flush_pending(W1, W2, pend_slot, pend_W1, pend_W2) -> tuple[mx.array, mx.array]   # via ops.set_rows
-def deaths(alive, solvent, energy, lost, age, uid, generation, clade, partner, rev, resource, fcell, cfg: Config) -> Deaths
-    # dead = alive & (~solvent | E == 0 | aged); cause precedence in §10.7
+def deaths(alive, solvent, energy, lost, age, uid, generation, clade, partner, rev, resource, fcell, cfg: Config,
+           *, cat_mask: mx.array | None = None) -> Deaths
+    # dead = alive & (~solvent | E == 0 | aged) | excess catastrophe deaths (cat_mask); cause precedence in §10.7
+def catastrophe_mask(pos: mx.array, alive: mx.array, env: Env, key: mx.array, cfg: Config) -> mx.array   # (N,) bool, §12.9
 class Lanes(NamedTuple): parent; slot; kind; n_req; n_birth; n_imm                 # (M,),(M,),(M,),(),(),()
-def allocate_lanes(req: mx.array, survivor: mx.array, key: mx.array, cfg: Config) -> Lanes
+def allocate_lanes(req: mx.array, survivor: mx.array, key: mx.array, cfg: Config, step: mx.array | None = None,
+                   *, imm_request: mx.array | None = None) -> Lanes     # imm_request: §12.7 (director)
 class Repro(NamedTuple): state: State; records: BirthRecords; endow: mx.array; n_child_bonds: mx.array
 def reproduce(s: State, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: Config) -> Repro
     # s: in-flight state (alive = survivor, post-physics pos/heading, post-S14 bonds/energy).
@@ -1687,6 +1787,7 @@ def reproduce(s: State, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: C
 # step.py
 class StepOut(NamedTuple): counters; ledger; births: BirthRecords; deaths: DeathRecords     # §3
 def step(s: State, cfg: Config) -> tuple[State, StepOut]
+def consume_env(s: State, env: Env, lanes: Lanes) -> State                 # env_imm_request carry-over, env_cat_kill_p reset (§12.7, §12.9)
 def make_step(cfg: Config, *, compile: bool | None = None) -> Callable[[State], tuple[State, StepOut]]
     # compile=None → cfg.run.compile
 
@@ -1694,6 +1795,7 @@ def make_step(cfg: Config, *, compile: bool | None = None) -> Callable[[State], 
 def device_check(s: State, ledger: mx.array, prev_total: mx.array, max_cell_occ: mx.array,
                  max_attackers: mx.array, overflow_cells: mx.array, v_clips: mx.array, cfg: Config) -> mx.array
                     # int32 Diag bits for this step (ORed into s.diag by step)
+def env_out_of_range(s: State, cfg: Config) -> mx.array                   # device bool: any env_* value non-finite / outside §2.2 ranges
 def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | None = None) -> list[str]
                     # host numpy; [] == OK. Per-step ledger = s.ledger_cum − prev.ledger_cum; births and immigrants
                     # from out.births.valid. Stateless: a cumulative dead-uid set, if wanted, lives in the test harness.
@@ -1702,7 +1804,7 @@ def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | 
 def components(partner: mx.array, alive: mx.array, iters: int) -> tuple[mx.array, mx.array]   # labels, converged
 def snapshot_metrics(s: State, cfg: Config, *, heavy: bool) -> dict[str, Any]     # host floats/ints/lists
 def interval_row(step: int, counters: np.ndarray, ledgers: np.ndarray, snap: Mapping[str, Any],
-                 perf: Mapping[str, float]) -> dict[str, Any]                     # counters (T,26), ledgers (T,16)
+                 perf: Mapping[str, float]) -> dict[str, Any]                     # counters (T,27), ledgers (T,16)
 def carrying_capacity(s: State, cfg: Config) -> float
 
 # runio.py
@@ -1813,6 +1915,14 @@ def step(s, cfg):
 
 `act.msg` is masked by `alive` and by solvency, so insolvent and dead agents broadcast 0.
 
+**With `director.enabled`** (static) the wiring above gains four things and nothing else changes:
+`env = s.env`; S14 passes `cat_mask=lifecycle.catastrophe_mask(s.pos, s.alive, env, ks[Stream.CATASTROPHE], cfg)`
+to `deaths`; S16 passes `imm_request=env.imm_request` to `allocate_lanes`; S17 passes `env` to `update_resource` and
+`drift_patches`, and afterwards `step.consume_env(s2, env, lanes)` writes the carried-over request and resets
+`env_cat_kill_p`. Both outputs are computed from inputs (`max(request − n_imm, 0)`, `kill_p · 0`): MLX 0.32
+`mx.compile` fails (`_Map_base::at`) on a constant output next to arrays that use it. `bench._StagedStep` mirrors
+these arguments.
+
 `finish` is a private helper in `step.py`. It also computes
 `max_cell_occ = ops.scatter_add_i32(FG², fcell, 1, s.alive).max()`, the start-of-step field-cell occupancy that
 `device_check` needs for the headroom bit. It:
@@ -1825,14 +1935,17 @@ def step(s, cfg):
    `FLOW_STRUCTURE = int64(n_birth)·S`, `INJECT_IMMIGRATION = int64(n_imm)·(e_init + S)`;
 4. assembles `ledger (16,)`, adds it to `ledger_cum`, and computes the new `total` (via `state.total_energy`, whose
    `S·n_alive` term is int64);
-5. assembles `counters (26,)`. The kin counters are computed here and nowhere else:
+5. assembles `counters (27,)`. The kin counters are computed here and nowhere else:
    - `ATTACKS = Σ cb.attack`, `ATTACK_HITS = Σ cb.hit`;
    - `KIN_ATTACK_SUM = Σ_{cb.attack} round(256·desc[i, act.attack_k, NBR_KIN])`,
      `KIN_ATTACK_BASE = Σ_{cb.attack} round(256·x[i, IN_KIN_MEAN])`;
    - `BOND_PROPOSERS = Σ as_prop`; `KIN_BOND_SUM = Σ_{as_prop} round(256·desc[i, act.bond_k, NBR_KIN])`,
      `KIN_BOND_BASE = Σ_{as_prop} round(256·x[i, IN_KIN_MEAN])`. A mutual pair has two proposers and counts twice.
      Every `as_prop` row has `bond_k ≥ 0`, so the gather is valid;
-6. ORs `invariants.device_check(...)` into `diag` (skipped when `runtime_checks == "off"`).
+6. ORs `invariants.device_check(...)` into `diag` (skipped when `runtime_checks == "off"`). With the director
+   enabled it also ORs `FIELD_RANGE` if the *start-of-step* env values were out of range
+   (`invariants.env_out_of_range(s)`), because `env_imm_request` and `env_cat_kill_p` are consumed by the step and
+   the end-of-step state would hide a bad value.
 
 ---
 
@@ -1957,6 +2070,10 @@ class FieldConfig:
     chem_max: float = 16.0
 
 @dataclass(frozen=True)
+class DirectorConfig:                  # added after v0.1; docs/DIRECTOR.md
+    enabled: bool = False              # static: the compiled step reads State.env (§2.2, §3); off = today's graph
+
+@dataclass(frozen=True)
 class RunConfig:                       # excluded from config_hash; on resume only observer/cadence keys may change (§18)
     seed: int = 0
     steps: int = 100_000
@@ -1976,7 +2093,7 @@ class Config:
     physics: PhysicsConfig = PhysicsConfig(); bonds: BondConfig = BondConfig()
     energy: EnergyConfig = EnergyConfig(); combat: CombatConfig = CombatConfig()
     repro: ReproConfig = ReproConfig(); mutation: MutationConfig = MutationConfig()
-    fields: FieldConfig = FieldConfig(); run: RunConfig = RunConfig()
+    fields: FieldConfig = FieldConfig(); director: DirectorConfig = DirectorConfig(); run: RunConfig = RunConfig()
 ```
 
 **Presets** are TOML files in `alife/presets/` holding sparse overrides of the defaults.
@@ -2007,8 +2124,11 @@ Rules:
 lists). It reloads exactly: `config_from_dict(config_to_dict(c)) == c`. `config_hash` covers every section
 except `run`. **Keys added after v0.1 are omitted from the hash at their defaults** (`config.POST_V01_KEYS`:
 `population.immigration_every`, `population.immigration_count`, `fields.season_period`,
-`fields.season_amplitude`, `fields.season_mode`). A `config.json` that predates them therefore loads with the
-defaults (sparse dicts fill missing keys), hashes exactly as before, and resumes without a hash mismatch; the
+`fields.season_amplitude`, `fields.season_mode`, `director.enabled`). A section that this leaves empty
+(`director`) is omitted from the hashed dict too, so the hash does not change when a section is added. A
+`config.json` that predates them therefore loads with the
+defaults (sparse dicts fill missing keys, and a missing `director` section is the default one), hashes exactly as
+before, and resumes without a hash mismatch; the
 `tiny` preset's hash `d25e0eae…61d5` is pinned in `tests/test_features.py`. Setting any of them off default
 changes the hash, as for any dynamics key.
 
@@ -2019,6 +2139,9 @@ changes the hash, as for any dynamics key.
   `immigrants_per_step ≥ 1` when `immigration_floor > 0` (otherwise an extinct world could never refill, yet
   the §18 extinction stop is off); `immigration_every ≥ 0`; `1 ≤ immigration_count` when
   `immigration_every > 0`; `immigration_count ≤ M`.
+- **Director:** `director.enabled` is a plain bool with no cross-rule. With it on, `fields.n_patches` also fixes
+  the length of `env_patch_gain`, and immigration is possible (`immigration_possible`) even when
+  `immigration_floor = 0`.
 - **Fields (seasons):** `season_period ≥ 0`; `0 ≤ season_amplitude ≤ 1`; `season_period ≥ 1` when
   `season_amplitude > 0`; `season_mode ∈ {global, per_patch}`.
 - **Physics stability:** `stability_number ≤ 1.8`; `thrust_max < 2·radius·k_repel`; `v_max ≤ physics.radius`;
@@ -2056,7 +2179,7 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
   meta.json                                    see below
   metrics.jsonl                                one JSON object per metrics interval (§19.2), key "step" first
   checkpoints/
-    step_0000000000.safetensors                every State field by name (state_to_arrays)
+    step_0000000000.safetensors                every State field by name (state_to_arrays), env_* included
     step_0000010000.safetensors
     LATEST                                     text: file name of the newest complete checkpoint
   events/
@@ -2076,6 +2199,12 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
   viewer snapshots alike): `format_version`, `rng_layout_version`, `genome_layout_version`, `step`, `config_hash`,
   `alife_version`, `mlx_version`, `weight_dtype`, and `config` (the canonical config JSON), so a state file is
   self-describing.
+- **Versions and pre-director files.** `load_checkpoint` accepts any `rng_layout_version` in
+  `rng.RNG_COMPATIBLE_VERSIONS` ({1, 2}); new files write 2 (`meta.json` too). A file written before the `env_*`
+  fields (38 arrays) loads with inert env values from `default_env(cfg)`: `state_from_arrays(d, cfg)` fills the
+  missing keys only when every missing key is an `env_*` field, and any other mismatch still raises. A pre-director
+  run directory therefore resumes under a director-off config (same hash), and forks (`--init-from`, hash check off)
+  under a director-enabled config start with inert env. `env_*` shapes and dtypes are checked like every field.
 - **Atomic writes.** Each checkpoint is written to `*.tmp` and moved into place with `os.replace`. Only then is
   `LATEST` rewritten, also atomically. A crash never corrupts the newest complete checkpoint.
 - **Retention.** The newest `keep_checkpoints` are kept, plus `step_0000000000`.
@@ -2086,7 +2215,8 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
   interval row whose `steps` field is the actual number of steps in it, flushes events, and checkpoints at that
   step. On resume the next boundary is the next multiple of `metrics_every`, so the first resumed interval may also
   be short. Every interval row therefore carries `steps`, and consumers weight by it. Extinction (no agent alive,
-  immigration off) is read from each step's already evaluated `N_ALIVE` counter, so it costs no extra sync.
+  immigration off, and no director `env_imm_request` pending) is read from each step's already evaluated `N_ALIVE`
+  counter, so it costs no extra sync; the pending-request check is a host read of an evaluated scalar in the runner.
 - **Violations.** An error `diag` bit, or a non-zero host `ledger_error`, found at a metrics boundary: the row and the
   pending events are flushed, the state is dumped to `diag/`, `status = violation`, exit 3. An invalid state is never
   checkpointed, so resume restarts from the last good checkpoint.
@@ -2128,7 +2258,7 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
 
 ## 19. Metrics for emergence
 
-### 19.1 Per-step counters (`CounterIdx`, `StepOut.counters`, int32 (26,))
+### 19.1 Per-step counters (`CounterIdx`, `StepOut.counters`, int32 (27,))
 
 | idx | name | idx | name |
 |---|---|---|---|
@@ -2145,12 +2275,15 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
 | 10 | `ATTACKS` (after the S9-partner gate) | 23 | `KIN_BOND_SUM` (Σ round(256·sim(i, bond target)) over `as_prop` rows) |
 | 11 | `ATTACK_HITS` | 24 | `KIN_BOND_BASE` (Σ round(256·kin_mean) over `as_prop` rows) |
 | 12 | `BONDS_FORMED` (pairs) | 25 | `BOND_PROPOSERS` (`as_prop` rows; a mutual pair counts 2) |
+| | | 26 | `DEATHS_CATASTROPHE` (director catastrophe deaths, §12.9; 0 when the director is off) |
+
+`DEATHS_STARVED + DEATHS_KILLED + DEATHS_AGED + DEATHS_CATASTROPHE` equals the number of deaths in the step.
 
 All four kin counters and `BOND_PROPOSERS` are assembled by `step.finish` (§16.3).
 
 `BONDS_BROKEN` is the decrease in occupied slots across S9a plus across S14, halved. The runner keeps the per-step
 `StepOut`s of an interval as small evaluated arrays and stacks them on the host at the flush. That gives counters
-`(T,26)` and ledgers `(T,16)` as int64 sums, so no step's events are lost.
+`(T,27)` and ledgers `(T,16)` as int64 sums, so no step's events are lost.
 
 ### 19.2 Interval row (`metrics.jsonl`)
 
@@ -2160,7 +2293,7 @@ Every row has these groups:
 - **Population (interval sums of event counters; the levels `n_alive` and `bonds_total` are interval means, and
   `mean_bonds_per_agent`, `sharers_frac` and `emitters_frac` are weighted by `N_ALIVE`):** `n_alive`, `births`,
   `birth_requests`, `births_blocked`, `immigrants`, `deaths_starved`, `deaths_killed`, `deaths_aged`,
-  `deaths_unlogged`, `insolvent`.
+  `deaths_catastrophe` (always present, 0 with the director off), `deaths_unlogged`, `insolvent`.
 - **Interactions:**
   - `attacks`, `attack_hits`;
   - `bonds_formed`, `bonds_broken`, `child_bonds`, `bonds_total`, `mean_bonds_per_agent`;
@@ -2458,8 +2591,8 @@ Pinned details (impl, WP5):
 |---|---|
 | `test_config.py` | Defaults and every preset/overlay validate. Each `validate` rule rejects a crafted bad config, and all problems are reported at once. TOML and JSON load. Precedence: defaults < preset < overlay < file < `--set`. Typed override parsing (int, float, bool, tuple). Unknown key → `ConfigError`. `config_from_dict(config_to_dict(c)) == c`. Hash ignores `run.*` and changes with any dynamics field. `stability_number` value. |
 | `test_layout.py` | `D_IN == 69`, `D_OUT == 35`. Input and output blocks are disjoint and tile `[0, D)`. Name tuples have matching lengths. |
-| `test_state.py` | `init_state` shapes and dtypes match §2.2 for every preset. Founders are alive in rows `[0, n_init)` and everything else is dead-canonical. `pend_slot` lies in the dead tail. Founder `uid == arange(n_init)`, `next_uid == n_init`, and dead rows hold the §2.2 initial values. `total == total0 == total_energy(...)`. `total_energy` is exact when `n_alive·S > 2³¹` (a 262 144-row all-alive mask). `state_to_arrays`/`state_from_arrays` round-trip, including from a dict with shuffled key order; a missing or extra key is rejected. `state_digest` is stable and independent of dict order. `to_numpy` handles bf16. |
-| `test_rng.py` | `step_keys` is deterministic, and its streams are pairwise distinct. `init_keys(s)` differs across seeds. Layout constants are frozen: a snapshot of `Stream` and `NUM_STREAMS` is compared, so changing them fails until `RNG_LAYOUT_VERSION` is bumped. |
+| `test_state.py` | `init_state` shapes and dtypes match §2.2 for every preset. Founders are alive in rows `[0, n_init)` and everything else is dead-canonical. `pend_slot` lies in the dead tail. Founder `uid == arange(n_init)`, `next_uid == n_init`, and dead rows hold the §2.2 initial values. `total == total0 == total_energy(...)`. `total_energy` is exact when `n_alive·S > 2³¹` (a 262 144-row all-alive mask). `state_to_arrays`/`state_from_arrays` round-trip, including from a dict with shuffled key order; a missing or extra key is rejected. `state_digest` is stable and independent of dict order. `to_numpy` handles bf16. The 38 v0 field names and their order, and `ENV_FIELDS` appended after them, are frozen by a literal list. |
+| `test_rng.py` | `step_keys` is deterministic, and its streams are pairwise distinct. `init_keys(s)` differs across seeds. Layout constants are frozen: a snapshot of `Stream`, `NUM_STREAMS`, `RNG_LAYOUT_VERSION` and `RNG_COMPATIBLE_VERSIONS` is compared, so changing them fails until the version is bumped. |
 | `test_ops.py` | `proportional_take`: 500 random instances against the guarantees of §10.4, including demand = 0, supply = 0, a single pool and 2¹⁶ − 1 demands. `exact_sum` matches numpy int64 at max range and length 2²⁰. `rank_select` matches `np.flatnonzero`. `scatter_*_i32` reject float dtypes and handle duplicates. `place` and `set_rows` do not mutate inputs (F2). `first_free` handles full rows. `min_image` is antisymmetric bitwise. `wrap` never returns L (F8). `wrap_angle` range. `int_diffuse` conserves exactly and stays ≥ 0 on random and extreme fields. `mul_q8`/`q8`. |
 | `test_spatial.py` | Equals brute-force kNN on random torus scenes when overflow-free: 20% dead, agents within R of edges and corners, empty world, a single agent, K > available. Dead and self are never listed. Invalid entries have `idx == self` and `dist == R`. Rows are sorted by distance. A crowded cell sets `overflow_cells > 0` and still yields a valid subset. Deterministic. |
 | `test_fields.py` | Fertility matches a numpy torus-Gaussian reference, and the separable form is exact. `regen_rate` lies in range. Regen respects the cap and `inc` sums to the injected amount. Resource diffusion conserves exactly. Chem decays by `(1−λ)` per step without deposits, and diffusion conserves mass when λ = 0. Deposit sums are exact. A planted ramp gives the right gradient sign and body-frame rotation. Patches drift and wrap. |
@@ -2470,7 +2603,8 @@ Pinned details (impl, WP5):
 | `test_physics.py` | An overlapping pair separates to ≥ 2r. A bonded pair relaxes to the rest length. Contraction without grip: centre-of-mass displacement is < 1e-3 u over 500 steps. It is analytically 0, and the tolerance covers fp32 rounding of positions. With phase-locked grip it is > 1 u (F11). The speed clip is counted. `wrap` keeps `0 ≤ pos < L`. A hexagonal cluster at default stiffness stays finite and does not gain energy. A config with `stability_number > 1.8` is rejected. Thrust attenuation: factor 1, 0.75, …, 0 for 0..4 contacts. |
 | `test_crowd.py` (WP4: it integrates `spatial` and `physics`) | **Converging crowd:** 300 agents at full thrust toward one point for 600 steps, using the real `find_neighbors` (C = 16, K = 8), `physics.forces` and `physics.integrate`, with and without grip: `max_occupancy ≤ C` and `overflow_cells == 0` at every step, and median nearest-neighbour spacing ≥ 1.6 at the end (F18). With `thrust_contact_limit` set very large (attenuation effectively off) the same scene overflows, which proves the test is not vacuous. |
 | `test_energy.py` | Each function conserves its own sub-ledger exactly. Costs: `paid ≤ E`, insolvency drives E to 0 and cancels actions. Harvest: proportional, exact, demand never negative even at `E = e_max`. Combat: a mutual attack, three attackers on a poor victim, defend reduces demand, spill lands in the victim's cell, `E ≥ 0`. Share: a chain A→B→C is exact with 10% heat, and Σ out ≤ E. Share gating: a slot broken and refilled with a new partner in the same step sends nothing, a newly formed bond in a previously empty slot sends nothing, and an unchanged bond sends. Combat gating: an attack on a target that became a partner at S9 is dropped (no grant, no `attack` flag), and kept when `attack_bonded`. Cap overflow → heat. |
-| `test_lifecycle.py` | `deaths`: causes and their precedence; an insolvent agent that received bond inflow (E > 0) still dies as `STARVED` with corpse = inflow + S; a solvent victim drained to 0 and rescued by inflow survives; corpse = E + S into the correct cell; the hard cap; dead rows canonicalised; bonds dropped on both sides; records compacted; unlogged counter. `allocate_lanes` (≥ 300 property trials): unique dead slots; unique eligible parents; the birth prefix; capacity pressure; zero requests; full population → 0 births; padding lanes target distinct dead rows and use parent row 0 regardless of request counts; χ² fairness across seeds. `reproduce`: endowment arithmetic, the parent keeps ≥ 1, uids are `next_uid + k`, lineage fields, placement distance = 2.0, gene bounds. **Child-row completeness:** fill a dead row's every per-agent field with sentinel garbage, force a birth into it, run one more step (the S0 flush), and assert that no sentinel survives in any field, `W1`/`W2` rows included. Immigration: lanes, clade `n_init`, ledger. |
+| `test_lifecycle.py` | `deaths`: causes and their precedence; an insolvent agent that received bond inflow (E > 0) still dies as `STARVED` with corpse = inflow + S; a solvent victim drained to 0 and rescued by inflow survives; corpse = E + S into the correct cell; the hard cap; dead rows canonicalised; bonds dropped on both sides; records compacted; unlogged counter. `allocate_lanes` (≥ 300 property trials): unique dead slots; unique eligible parents; the birth prefix; capacity pressure; zero requests; full population → 0 births; padding lanes target distinct dead rows and use parent row 0 regardless of request counts; χ² fairness across seeds. `reproduce`: endowment arithmetic, the parent keeps ≥ 1, uids are `next_uid + k`, lineage fields, placement distance = 2.0, gene bounds. **Child-row completeness:** fill a dead row's every per-agent field with sentinel garbage, force a birth into it, run one more step (the S0 flush), and assert that no sentinel survives in any field, `W1`/`W2` rows included. Immigration: lanes, clade `n_init`, ledger. Catastrophe: `deaths(cat_mask=)` kills only agents that would otherwise survive, every other cause keeps precedence, a masked dead row stays unchanged, an all-False mask changes nothing. |
+| `test_director_env.py` | `State.env` view and `default_env`; `legacy_state_digest` is exactly the v0 encoding. Director enabled with inert env equals director off (`legacy_state_digest`, counters, ledgers; 60 compiled steps; plain and seasons+immigration); director off passes `env_*` through. Each knob: `regen_mult` (0 / 0.5 / 2 / 3.7 against a numpy floor, whole-step `INJECT_REGEN`), `patch_gain` (0 removes a lone patch; weights match a float64 reference), `drift_mult` (0 freezes; ×5 displacement), the season override (period 0 → weights exactly 1; sine reference; config seasons + inert env bit-identical to director off). `imm_request`: admitted over several steps with the remainder carried, `INJECT_IMMIGRATION` matching, capped by capacity with the rest left pending, `max` with the periodic rule. Catastrophe: deaths only inside the radius (torus minimum image), `kill_p` 1 and 0.5, cause `CATASTROPHE`, counter, records, `kill_p` reset, radius 0 / `kill_p` 0 inert. Ledger closes under scripted catastrophes, requests and lever changes (`full_check` every step, deterministic digest), compiled vs eager write-back, checkpoint round trip with non-default env, pre-director (v1, 38 arrays) checkpoint loads inert and resumes (also as a run directory), a missing non-env key and an RNG version outside {1, 2} are refused, out-of-range env flagged by `full_check` and (enabled) `FIELD_RANGE`, config hash rules, stream 8 and the frozen keys of streams 0–7. |
 
 ### 22.2 Whole-step invariant tests (`test_step_invariants.py`)
 
@@ -2539,7 +2673,7 @@ metrics interval. On any error bit it dumps the state to `diag/`, prints the dec
 | 4 | `DEAD_DIRTY` | dead row with `uid ≠ −1`, or any bond |
 | 8 | `BOND_ASYM` | `bonds.symmetric_ok` is false |
 | 16 | `NONFINITE` | non-finite `pos`, `vel`, `h` or `chem` |
-| 32 | `FIELD_RANGE` | `R < 0` or `R > R_HARD` |
+| 32 | `FIELD_RANGE` | `R < 0` or `R > R_HARD`; with `director.enabled`, also any `env_*` value non-finite or outside its §2.2 range (end-of-step state in `device_check`, start-of-step state in `step.finish`) |
 | 64 | `INT_HEADROOM` | `max_cell_occ ≥ Dims.occ_limit` (1 060 at defaults, §10.9) or `max_attackers ≥ 2¹⁵`: a real int32 precondition, unreachable with contact-attenuated thrust (F18) |
 | 128 | `CAPACITY` | `n_alive > N_CAP` |
 | 256 | `POS_RANGE` | `pos < 0` or `pos ≥ L` |
@@ -2561,6 +2695,8 @@ is checked only by the host `full_check`.
 **`test_determinism.py`** (WP4):
 - The same seed run twice (50 compiled steps each) gives identical `state_digest`. Different seeds give different
   digests.
+- **`legacy_state_digest`** (§14.2) is the golden's digest. Director-enabled-inert vs director-off bit-identity is in
+  `test_director_env.py`.
 - **Compiled vs eager** (marker `slow`). Population and ledger trajectories match for 30 steps. Bitwise equality is
   not required, but it was observed on CPU.
 - **`test_golden`** (marker `golden`): the `tiny_cfg` digest after 50 steps equals the pinned value.
@@ -2571,8 +2707,8 @@ is checked only by the host `full_check`.
   `run.seed` and dynamics keys (exit 2).
 - **Observer purity** (`tiny_cfg_f16`). A run with `metrics_every = 1`, `heavy_metrics_every = 1`, a `render_frame`
   every step and a checkpoint every 10 steps has the same digest as a bare run.
-- **Version guards.** Loading a checkpoint whose `RNG_LAYOUT_VERSION` or `GENOME_LAYOUT_VERSION` was altered fails
-  with `CheckpointError`.
+- **Version guards.** Loading a checkpoint whose `RNG_LAYOUT_VERSION` is outside `RNG_COMPATIBLE_VERSIONS` or whose
+  `GENOME_LAYOUT_VERSION` was altered fails with `CheckpointError`.
 - **Fork semantics.** A fork keeps `step`, `next_uid` and uids, resets `diag` and `ledger_cum`, reseeds `key` only
   with `--seed`, refuses a changed `n_init` and a state that fails `full_check` under the new config (exit 4).
 
@@ -2981,6 +3117,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I25 | rev: packaging — `requires-python` had no upper bound and mlx 0.32.x has no cp315 wheels or sdist, so uv could pick 3.15 and `uv sync` failed. Now `>=3.12,<3.15` (uv.lock relocked: only cp315 wheel entries dropped) and `.python-version` pins 3.12 (the lower bound, so CI covers it); README states the range. |
 | I26 | metal: first run on the M5 Pro: 459/464 fast tests passed. Four float-precision failures, two causes. (1) GPU float32 matmul is reduced precision (F20): `fertility` now sums `gy_p ⊗ gx_p` elementwise, and `weight_diversity` centres the sample, uses exact elementwise norms and runs its Gram on the CPU stream (new close-kin accuracy test; it fails against the old code on CPU too). (2) Fused Metal kernels round differently from eager ops: `test_lifecycle_compiles_and_matches_eager` compares floats to 1e-6 on GPU and stays bitwise on CPU; integers stay exact everywhere. |
 | I27 | feat: two optional levers, both off by default and invisible to old runs. (1) Periodic immigration (§12.7): `population.immigration_every` / `immigration_count` add up to `count` random founders on steps with `(t+1) % every == 0`, combined with the floor rule by `max` and capped by free lanes and capacity; same lanes, `IMMIGRANT` stream, clade, ledger term and counters; static branch plus array arithmetic on `state.step`. (2) Seasons (§13.1): `fields.season_period` / `season_amplitude` / `season_mode` weight each patch by `1 + A·sin(2πt/P + φ_p)` (φ_p = 0 or 2πp/PP); `fertility` / `regen_rate` / `update_resource` take an optional `step`, regeneration stays integer and `INJECT_REGEN`-accounted, the carrying-capacity estimate uses the time average. Compatibility: keys added after v0.1 are omitted from `config_hash` at their defaults, so existing run directories load with defaults and resume; the tiny hash and the golden digest are unchanged (`tests/test_features.py`). |
+| I28 | feat: director build step 1 (`docs/DIRECTOR.md` §3): the engine's live environment state, off by default and invisible to old runs. (1) Nine flat `State` fields `env_*` appended after `diag` (regen multiplier, season amplitude and period, drift multiplier, per-patch gain, immigration request, catastrophe centre, radius and kill probability; `State.env` is a read-only `Env` view, `default_env(cfg)` the inert values), read by the compiled step only behind the static `director.enabled` (`DirectorConfig`, `POST_V01_KEYS`; `config_hash` also drops a section the POST_V01 deletions empty). Enabled with inert values is bit-identical to off. (2) New `DeathCause.CATASTROPHE` (3) and counter `DEATHS_CATASTROPHE` (index 26, `N_COUNTERS` 27; `metrics.jsonl` rows always carry `deaths_catastrophe`), on a new RNG stream (`Stream.CATASTROPHE = 8`, `RNG_LAYOUT_VERSION` 2 with `RNG_COMPATIBLE_VERSIONS = {1, 2}`: loading accepts the set, streams 0–7 are unchanged). Catastrophe deaths are excess only (every other cause keeps precedence, so `INSOLVENT ≤ DEATHS_STARVED` holds), the corpse takes the ordinary path, no new ledger term. (3) `env_imm_request` is a third immigration demand combined by `max`; the step carries over `max(request − n_imm, 0)`, so a large pulse arrives over several steps; `env_cat_kill_p` resets to 0 after the step it applied in (`step.consume_env`, outputs derived from inputs for the MLX 0.32 compile quirk). `immigration_possible` widens the two static immigration gates. (4) `state_digest` still hashes all fields (now stricter); `legacy_state_digest` hashes the 38 v0 fields, and the golden pin, unchanged, uses it. Pre-director checkpoints (38 arrays, RNG layout 1) load with inert env (`state_from_arrays(d, cfg)`); env ranges are checked by `full_check` always and by `device_check` (`FIELD_RANGE`) when enabled, including the start-of-step values of the consumed fields. Runner: the extinction stop also waits for a pending `env_imm_request`. Tests: `tests/test_director_env.py` and the edits listed in §22. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

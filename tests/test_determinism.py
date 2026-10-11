@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from alife.config import Config, apply_overrides
-from alife.state import State, init_state, state_digest, to_numpy
+from alife.state import State, init_state, legacy_state_digest, state_digest, to_numpy
 from alife.step import make_step
 
 STEPS = 50
@@ -105,4 +105,4 @@ def test_compiled_vs_eager_trajectories(tiny_cfg: Config) -> None:
 def test_golden(base_run) -> None:
     if mx.__version__ != GOLDEN["mlx"] or _platform() != GOLDEN["platform"]:
         pytest.skip(f"golden digest pinned for MLX {GOLDEN['mlx']} on {GOLDEN['platform']}")
-    assert state_digest(base_run[0]) == GOLDEN["digest"]
+    assert legacy_state_digest(base_run[0]) == GOLDEN["digest"]  # the 38 v0 fields: unchanged by env_*

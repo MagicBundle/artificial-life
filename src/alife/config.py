@@ -165,6 +165,11 @@ class FieldConfig:
 
 
 @dataclass(frozen=True)
+class DirectorConfig:  # ecosystem director (docs/DIRECTOR.md); added after v0.1
+    enabled: bool = False  # static: the compiled step reads the live environment state (State.env)
+
+
+@dataclass(frozen=True)
 class RunConfig:  # excluded from config_hash; on resume only observer/cadence keys may change (§18)
     seed: int = 0
     steps: int = 100_000
@@ -191,6 +196,7 @@ class Config:
     repro: ReproConfig = field(default_factory=ReproConfig)
     mutation: MutationConfig = field(default_factory=MutationConfig)
     fields: FieldConfig = field(default_factory=FieldConfig)
+    director: DirectorConfig = field(default_factory=DirectorConfig)
     run: RunConfig = field(default_factory=RunConfig)
 
 
@@ -494,6 +500,7 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("fields", "season_period"),
     ("fields", "season_amplitude"),
     ("fields", "season_mode"),
+    ("director", "enabled"),
 )
 
 
@@ -505,6 +512,11 @@ def immigration_on(pop: PopulationConfig) -> bool:
     return pop.immigration_floor > 0 or pop.immigration_every > 0
 
 
+def immigration_possible(cfg: Config) -> bool:
+    """Static: immigrants can appear, from a config rule or from the director's ``env.imm_request``."""
+    return immigration_on(cfg.population) or cfg.director.enabled
+
+
 def seasons_on(fi: FieldConfig) -> bool:
     """Static: seasonal modulation of the fertility patches is enabled."""
     return fi.season_period > 0 and fi.season_amplitude > 0.0
@@ -513,7 +525,8 @@ def seasons_on(fi: FieldConfig) -> bool:
 def config_hash(cfg: Config) -> str:
     """SHA-256 hex of the canonical JSON of every section except ``run``.
 
-    Keys added after v0.1 (``POST_V01_KEYS``) are omitted at their defaults.
+    Keys added after v0.1 (``POST_V01_KEYS``) are omitted at their defaults, and a section left empty by
+    that (``director``) is omitted too, so pre-director runs keep their hash.
     """
     d = config_to_dict(cfg)
     d.pop("run")
@@ -521,6 +534,9 @@ def config_hash(cfg: Config) -> str:
     for sec, key in POST_V01_KEYS:
         if d[sec][key] == defaults[sec][key]:
             del d[sec][key]
+    for sec in {sec for sec, _ in POST_V01_KEYS}:
+        if not d[sec]:
+            del d[sec]
     return hashlib.sha256(_canonical_json(d).encode("utf-8")).hexdigest()
 
 

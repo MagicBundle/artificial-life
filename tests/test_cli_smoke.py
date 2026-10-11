@@ -82,7 +82,12 @@ def test_run_writes_a_complete_run_directory(run_dir: Path) -> None:
     ev = _events(rd)
     assert ev["births"]["uid"].size == sum(r["births"] + r["immigrants"] for r in rows)
     deaths = sum(
-        r["deaths_starved"] + r["deaths_killed"] + r["deaths_aged"] - r["deaths_unlogged"] for r in rows
+        r["deaths_starved"]
+        + r["deaths_killed"]
+        + r["deaths_aged"]
+        + r["deaths_catastrophe"]
+        - r["deaths_unlogged"]
+        for r in rows
     )
     assert ev["deaths"]["uid"].size == deaths
     s = load_checkpoint(rd.checkpoint_at(200), cfg)
@@ -127,7 +132,7 @@ def test_inspect_agent_lineage(run_dir: Path, capsys: pytest.CaptureFixture[str]
     if agent["alive"]:
         assert agent["fields"]["uid"] == uid and agent["fields"]["parent_uid"] == chain[0]
     else:
-        assert agent["death"]["cause"] in ("STARVED", "KILLED", "AGED")
+        assert agent["death"]["cause"] in ("STARVED", "KILLED", "AGED", "CATASTROPHE")
     assert cli.main(["inspect", str(run_dir), "--agent", "999999"]) == 1
 
 

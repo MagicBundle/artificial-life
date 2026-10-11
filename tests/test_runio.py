@@ -144,8 +144,9 @@ def test_version_hash_and_shape_refusal(micro_cfg: Config, tmp_path: Path, monke
         with pytest.raises(CheckpointError, match=key):
             load_checkpoint(bad, micro_cfg, check_hash=False)
 
-    # The code's layout version moved on (e.g. a new RNG stream): old files are refused.
-    monkeypatch.setattr(rng, "RNG_LAYOUT_VERSION", rng.RNG_LAYOUT_VERSION + 1)
+    # The code's layout moved on incompatibly (a version outside the compatible set): old files are refused.
+    monkeypatch.setattr(rng, "RNG_LAYOUT_VERSION", max(rng.RNG_COMPATIBLE_VERSIONS) + 1)
+    monkeypatch.setattr(rng, "RNG_COMPATIBLE_VERSIONS", frozenset({max(rng.RNG_COMPATIBLE_VERSIONS) + 1}))
     with pytest.raises(CheckpointError, match="rng_layout_version"):
         load_checkpoint(path, micro_cfg)
     monkeypatch.undo()

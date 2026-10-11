@@ -53,7 +53,12 @@ _INSTALL_HINT: Final = (
     "or pip install 'alife[viewer]')"
 )
 
-_DEATH_COUNTERS: Final = (CounterIdx.DEATHS_STARVED, CounterIdx.DEATHS_KILLED, CounterIdx.DEATHS_AGED)
+_DEATH_COUNTERS: Final = (
+    CounterIdx.DEATHS_STARVED,
+    CounterIdx.DEATHS_KILLED,
+    CounterIdx.DEATHS_AGED,
+    CounterIdx.DEATHS_CATASTROPHE,
+)
 
 
 class AgentInfo(NamedTuple):

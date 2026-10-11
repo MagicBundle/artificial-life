@@ -1,8 +1,9 @@
 # Ecosystem director: design
 
-Status: proposal (2026-10-11). Nothing in this document is implemented yet. It extends `docs/DESIGN.md`. Once
-built, the normative parts (state fields, config keys, ledger terms, tests) move into DESIGN.md with Review-log
-rows, per `CLAUDE.md`.
+Status: proposal (2026-10-11). Build step 1 (§3, the engine's live environment state) is implemented and is now
+normative in `docs/DESIGN.md` (§2.2, §12.7, §12.9, §13.1, §14, §17–§19; Review-log row I28). Steps 2–5 are not
+implemented yet. This document extends `docs/DESIGN.md`. As each step lands, its normative parts (state fields,
+config keys, ledger terms, tests) move into DESIGN.md with Review-log rows, per `CLAUDE.md`.
 
 ## 1. Goal and motivation
 
@@ -56,6 +57,30 @@ Constraints:
 - On resume in `live` mode, log entries after the checkpoint step are truncated, like events today.
 
 ## 3. Engine change: live environment state
+
+**Status: implemented (build step 1).** DESIGN.md is the spec; this section is the design rationale, and the table
+below is the original proposal. Where the implementation differs, the step-1 decisions apply:
+- **Flat fields.** The record is nine flat `State` fields named `env_<name>` (`env_regen_mult`, `env_patch_gain`, ...),
+  appended after `diag`, so checkpoints stay name-keyed. `State.env` is a read-only `Env` NamedTuple view
+  (`env.regen_mult`, ...), and `state.default_env(cfg)` gives the inert values.
+- **Digests.** `state_digest` hashes every field, `env_*` included. `legacy_state_digest` hashes exactly the 38 v0
+  fields with the old encoding, and the golden pin uses it, so the pin did not change.
+- **RNG.** `Stream.CATASTROPHE = 8` takes a reserved index and moves no other key. `RNG_LAYOUT_VERSION` is 2 and
+  `RNG_COMPATIBLE_VERSIONS = {1, 2}`, so version-1 checkpoints still load.
+- **Excess deaths.** Catastrophe deaths are only agents that would otherwise have survived the step. Every other
+  cause keeps precedence, so `INSOLVENT ≤ DEATHS_STARVED` still holds. The corpse takes the ordinary path.
+- **Carry-over request.** `env_imm_request` is a third immigration demand, combined with the floor and periodic rules
+  by `max`. The step writes back `max(request − n_imm, 0)`, so a large pulse arrives over several steps. It is
+  capped by lanes (births first) and capacity, and the remainder stays pending. The runner's extinction stop waits
+  for a pending request.
+- **One-step catastrophe.** `env_cat_kill_p` resets to 0 after the step it applied in. Centre and radius stay set.
+- **Ranges.** `season_amp` is checked in `[0, 1]` (inclusive), matching `validate`. With the director on, an
+  out-of-range value, including one that the step consumes, sets `Diag.FIELD_RANGE`.
+- **Gating.** Everything is behind the static `cfg.director.enabled` (`DirectorConfig`, default off, in
+  `POST_V01_KEYS`; `config_hash` also drops a section the POST_V01 deletions empty). Enabled with inert values is
+  bit-identical to off.
+- **Not in step 1.** The mutation-floor nudge (`env.rate_min` / `sigma_min`), the rule tier, CLI flags,
+  `director.jsonl`, the LLM and the GUI.
 
 Today the levers are `Config` constants closed over by the compiled step. Changing them mid-run needs a fork.
 Add a small **environment state** record to `State`, read by the compiled step as arrays. Its fields are
@@ -241,7 +266,7 @@ those metrics, or matches B with better journal legibility (a human rates 10 sam
 
 ## 10. Build order
 
-1. **Engine:** `State.env`, the `CATASTROPHE` death cause and RNG stream, patch gain, regen multiplier,
+1. **Engine (done):** `State.env`, the `CATASTROPHE` death cause and RNG stream, patch gain, regen multiplier,
    invariants, tests and a DESIGN.md update. This is the highest-risk step because it touches the compiled
    step; land it alone.
 2. **Director core:**
@@ -254,6 +279,8 @@ those metrics, or matches B with better journal legibility (a human rates 10 sam
 5. **Evaluation:** arms A–D and dashboard markers.
 
 ## 11. Open decisions (owner)
+
+**Decided 2026-10-11:** all four recommended options below were accepted by the owner.
 
 1. **Live levers as simulation state** (§3), as opposed to forks. *Recommended:* yes. It is the only way to
    intervene without recompiles or new run directories.

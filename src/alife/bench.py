@@ -203,7 +203,12 @@ def _throughput(fn: Callable[[State], Any], cfg: Config, steps: int, warmup: int
         "n_alive_end": int(to_numpy(s.alive.sum())),
         "births": int(c[CounterIdx.BIRTHS]),
         "immigrants": int(c[CounterIdx.IMMIGRANTS]),
-        "deaths": int(c[CounterIdx.DEATHS_STARVED] + c[CounterIdx.DEATHS_KILLED] + c[CounterIdx.DEATHS_AGED]),
+        "deaths": int(
+            c[CounterIdx.DEATHS_STARVED]
+            + c[CounterIdx.DEATHS_KILLED]
+            + c[CounterIdx.DEATHS_AGED]
+            + c[CounterIdx.DEATHS_CATASTROPHE]
+        ),
         **_diag_report(int(to_numpy(s.diag))),
         "invariants_ok": not problems,
         "invariant_problems": problems[:_SHOW_PROBLEMS],
@@ -383,6 +388,12 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         cb = en.combat(E, resource, se.fcell, act, partner, cfg)
         sh = en.share(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)
         E, e_over = en.cap_energy(sh.energy, cfg)
+        env = s.env if cfg.director.enabled else None  # static
+        cat_mask = (
+            lifecycle.catastrophe_mask(s.pos, s.alive, env, ks[Stream.CATASTROPHE], cfg)
+            if env is not None
+            else None
+        )
         dt = lifecycle.deaths(
             s.alive,
             c.solvent,
@@ -397,6 +408,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             cb.resource,
             se.fcell,
             cfg,
+            cat_mask=cat_mask,
         )
         return _Interact(c, act, partner, rev, formed, as_prop, broken, slots_s9, got, cb, sh, e_over, dt)
 
@@ -426,7 +438,8 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             last_inflow=mx.where(sv, it.sh.inflow, 0),
         )
         req = sv & act.reproduce & (dt.energy >= cfg.repro.min_energy) & (a >= cfg.repro.min_age)
-        lanes = lifecycle.allocate_lanes(req, sv, ks[Stream.BIRTH_PRIO], cfg, s.step)
+        imm_request = s.env_imm_request if cfg.director.enabled else None  # static
+        lanes = lifecycle.allocate_lanes(req, sv, ks[Stream.BIRTH_PRIO], cfg, s.step, imm_request=imm_request)
         rp = lifecycle.reproduce(s1, lanes, act.child_bond, ks, cfg)
         # The lane counts leave as one stacked array: with immigration off ``n_imm`` is a constant, and
         # MLX 0.32 mx.compile fails (``_Map_base::at``) when it is an output next to arrays that use it.
@@ -436,8 +449,9 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
     def field_update(s2: State, it: _Interact, fcell: mx.array) -> tuple[mx.array, ...]:
         dep = fields.deposit_chem(it.act.emit, fcell, it.costs.solvent, cfg)
         chem = fields.update_chem(s2.chem, dep, cfg)
-        resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step)
-        return chem, resource, regen_inc, fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg)
+        env = s2.env if cfg.director.enabled else None  # static
+        resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env)
+        return chem, resource, regen_inc, fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env)
 
     def finish(s2: State, s: State, flows: Any) -> tuple[State, Any]:
         return step_mod._finish(s2, s, cfg, flows)
@@ -461,6 +475,7 @@ class _StagedStep:
 
     def __init__(self, cfg: Config, *, compile: bool | None = None) -> None:
         use = cfg.run.compile if compile is None else compile
+        self.cfg = cfg
         self.fns = {k: (mx.compile(f) if use else f) for k, f in _stage_fns(cfg).items()}
         self.times: dict[str, list[float]] = {name: [] for name, _ in STAGES}
 
@@ -495,6 +510,8 @@ class _StagedStep:
         s2 = rp.state._replace(
             chem=chem, resource=resource, patch_pos=patch_pos, key=key_next, step=s.step + 1
         )
+        if self.cfg.director.enabled:  # static
+            s2 = step_mod.consume_env(s2, s.env, lanes)
         flows = step_mod._Flows(
             costs=it.costs,
             got=it.got,
