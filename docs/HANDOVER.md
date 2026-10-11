@@ -103,6 +103,10 @@ verified findings for the whole run.
   reaches the main actor through one ordered AsyncStream per stream. The exit status is reported only after
   the process has exited and both pipes have reached EOF. The 1 s ticker is a Task loop that skips missed
   ticks after sleep. No `DispatchQueue.main` hops remain.
+- **App bundle:** `gui/scripts/make-app.sh [--install]` builds, signs (hardened runtime; Developer ID, else Apple
+  Development, else ad-hoc) and installs `AlifeControl.app`, with a generated icon. It is for this Mac only: no
+  Developer ID certificate or notarization yet. The App Store would need the engine embedded and sandboxed,
+  which is a separate project and is not done.
 - **Click-through checklist** (tiny preset), to repeat after any GUI change:
   1. startup;
   2. a new run with the fast overlay and a `--set` lever, then Stop once: exit 130 and a checkpoint;

@@ -25,6 +25,29 @@ Or open it in Xcode: `cd gui && open Package.swift`, select the `AlifeControl` s
 
 On first launch pick the repository folder (default `~/artificial-life`); the choice is remembered.
 
+## Install as an app
+
+```bash
+gui/scripts/make-app.sh --install     # builds, bundles, signs and copies to /Applications/AlifeControl.app
+gui/scripts/make-app.sh               # bundle only: gui/.build/AlifeControl.app
+gui/scripts/make-app.sh --help
+```
+
+The script builds the release binary, generates the icon (`scripts/make-icon.swift`), writes `Info.plist`
+(bundle ID `io.github.magicbundle.alifecontrol`, overridable with `BUNDLE_ID`; version from `VERSION`, build
+number from the commit count) and signs the bundle with the hardened runtime. The signing identity is, in order:
+`--sign "<identity>"`, the first "Developer ID Application" identity, the first "Apple Development" identity,
+then ad-hoc. `--install-dir DIR` installs somewhere else (for example `~/Applications`). The script never uses
+sudo and refuses to install over a running copy, so quit the app first (a run may be active).
+
+Ad-hoc and Apple Development signing are for this Mac only. Sharing the app with others needs a Developer ID
+certificate plus notarization (`notarytool` and `stapler`), which is not done yet. Re-run the script after any
+GUI change to refresh the installed copy.
+
+The installed app is only the front end: it still uses the repository's `.venv` at the configured repo path
+(default `~/artificial-life`). The setting is stored under the bundle's own preferences domain, so it is
+separate from the one used by `swift run`.
+
 ## Using it
 
 - **Mode**: *New run* (`alife run --preset ... --out runs/NAME`), *Resume* (`alife resume runs/NAME`, optionally
@@ -68,6 +91,7 @@ The engine performs the final validation; any rejection (exit code 2) appears in
 ## Files
 
 - `AlifeControlApp.swift`: app entry point and app delegate
+- `scripts/make-app.sh`, `scripts/make-icon.swift`: app bundle, signing, install and the generated icon
 - `ContentView.swift`: the UI
 - `RunController.swift`: subprocess management (main-actor isolated; pipe output arrives through ordered
   AsyncStreams), log streaming, timer, keep-awake
