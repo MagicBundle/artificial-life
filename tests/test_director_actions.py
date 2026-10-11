@@ -267,7 +267,7 @@ def bad_cases(cfg: Config, s: State) -> dict[str, dict]:
     )
     return {
         "unknown action": mutate(seasons, action="mutation_floor_nudge"),
-        "unknown source": mutate(seasons, source="llm"),
+        "unknown source": mutate(seasons, source="oracle"),
         "step not a multiple": mutate(seasons, step_applied=150),
         "step zero": mutate(seasons, step_applied=0),
         "step is a float": mutate(seasons, step_applied=200.0),

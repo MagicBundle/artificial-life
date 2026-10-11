@@ -230,6 +230,13 @@ def effective_budget(configured: int, persona: PersonaParams) -> int:
 # --- eligibility ------------------------------------------------------------------------------------------
 
 
+def cooldown_steps(action: str, p: RuleParams, persona: PersonaParams) -> int:
+    """Steps after the end of an action's latest effect before it may be taken again: the menu cooldown scaled
+    by the persona, and never less than the one-catastrophe-per-``catastrophe_gap`` cap."""
+    floor = p.catastrophe_gap if action == "catastrophe" else 0
+    return max(round(MENU[action].cooldown * persona.cooldown_scale), floor)
+
+
 def _blocked(
     ctx: Context,
     p: RuleParams,
@@ -248,7 +255,7 @@ def _blocked(
         if floor and not cooldown_ready(pc, action, t, floor):
             return f"{action} is cooling down"
     else:
-        if not cooldown_ready(pc, action, t, max(round(spec.cooldown * persona.cooldown_scale), floor)):
+        if not cooldown_ready(pc, action, t, cooldown_steps(action, p, persona)):
             return f"{action} is cooling down"
         if budget_used(pc, t) + spec.cost > ctx.budget:
             return f"budget {budget_used(pc, t)}/{ctx.budget} used"
@@ -435,15 +442,40 @@ def _boredom(ctx: Context, p: RuleParams, persona: PersonaParams) -> Outcome:
     return _respond(ctx, p, persona, "boredom", persona.stagnation, f"{ctx.t - anchor} quiet steps")
 
 
-_RULES: Final = (_extinction_rescue, _runaway_damper, _monoculture, _stagnation, _boredom)
+_SAFETY: Final = (_extinction_rescue, _runaway_damper)
+_DISCRETIONARY: Final = (_monoculture, _stagnation, _boredom)
+_RULES: Final = (*_SAFETY, *_DISCRETIONARY)
 
 
 def decide(ctx: Context, p: RuleParams = RULE_PARAMS) -> Decision:
     """The interventions to take at this boundary (usually none), and notes on rules that triggered but were
     blocked (the journal records them; a rule that acts is recorded by its entries)."""
+    return _decide(_RULES, ctx, p)
+
+
+def decide_safety(ctx: Context, p: RuleParams = RULE_PARAMS) -> Decision:
+    """The safety rules alone (extinction rescue, runaway damper): what the rule tier keeps doing at every
+    boundary when the LLM tier makes the discretionary moves (build step 3, L2)."""
+    return _decide(_SAFETY, ctx, p)
+
+
+def decide_discretionary(ctx: Context, p: RuleParams = RULE_PARAMS) -> Decision:
+    """The discretionary rules alone (monoculture breaker, stagnation response, boredom): the rule tier's
+    fallback for a failed LLM call."""
+    return _decide(_DISCRETIONARY, ctx, p)
+
+
+def eligibility(ctx: Context, p: RuleParams, action: str, raw: Mapping[str, Any]) -> str | None:
+    """Why an LLM-proposed ``action`` may not be taken now (None if it may): the budget, the action's cooldown
+    (with the catastrophe cap), a full immigration queue and a lever that already holds a timed effect. The
+    persona's pacing (minimum gap, drama), which only shapes the rule tier's discretion, does not apply."""
+    return _blocked(ctx, p, p.persona(ctx.persona), action, raw, safety=True)
+
+
+def _decide(rules: tuple[Any, ...], ctx: Context, p: RuleParams) -> Decision:
     persona = p.persona(ctx.persona)
     notes: list[str] = []
-    for rule in _RULES:
+    for rule in rules:
         out = rule(ctx, p, persona)
         if out is None:
             continue
