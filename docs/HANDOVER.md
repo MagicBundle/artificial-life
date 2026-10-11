@@ -19,6 +19,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `tests/` | pytest suite. 730 fast tests (`-m "not slow"`, about 50 s on the Mac) plus 19 slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 3 are built, §12 and §13 record how steps 2 and 3 refine it |
+| `docs/ACTIVITY.md` | evolutionary-activity analysis of `runs/64k_s0` (method, results, sensitivity); figures in `docs/activity/` |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
 | `.github/workflows/ci.yml` | Linux CPU CI: ruff, ruff format check, fast suite; nightly slow suite |
@@ -33,6 +34,7 @@ uv run alife resume runs/NAME --steps 100000
 uv run alife view runs/NAME                   # pygame viewer (re-simulates from the latest checkpoint)
 uv run alife inspect runs/NAME --check        # summary plus full invariant check
 uv run alife bench --preset 64k --determinism --stages
+uv run alife activity runs/NAME                # evolutionary activity (needs --extra analysis for plots)
 cd gui && swift run                           # the macOS control app
 ```
 
@@ -133,6 +135,13 @@ verified findings for the whole run.
 - Caveats: `weight_diversity` before step 120k in this run is unreliable (pre-fix metric). The kill share
   undercounts delayed combat deaths, which are recorded as starvation. Kin biases are partly a proximity
   artefact.
+- Evolutionary activity (`docs/ACTIVITY.md`, `uv run alife activity runs/64k_s0`): lineage-based Bedau–Packard
+  statistics from the complete event logs (`deaths_unlogged` = 0), against a neutral shadow and a heritability
+  null. Channon's component-normalised test gives **bounded** activity in 0–120k, 120k–1M and 1M–1.5M, for every
+  component definition, grid and seed: new adaptive lineages keep arising at a constant rate, nothing
+  accumulates. Lineage sorting relative to the heritability null is slightly stronger after 1M, so the "stall" is a
+  steady state, not a decline of selection. Bedau's original normalisation is threshold-unstable on this run (see
+  the note). The tool reads runs that start at step 0; forks (founders from a checkpoint) are not supported yet.
 
 ## GUI follow-ups (PR #3, merged)
 

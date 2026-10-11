@@ -14,6 +14,7 @@ dependencies = [
 [project.optional-dependencies]
 viewer = ["pygame-ce>=2.5"]
 video = ["imageio-ffmpeg>=0.5"]
+analysis = ["matplotlib>=3.9"]  # plots of `alife activity` (alife.analysis.plots)
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]
