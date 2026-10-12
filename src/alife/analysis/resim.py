@@ -124,20 +124,19 @@ def resimulate(
             rate = (t - t_log) / (time.perf_counter() - t_wall)
             log(f"resim: step {t}, {rate:.1f} steps/s, {checked} rows verified")
             t_wall, t_log = time.perf_counter(), t
-    _write_report(out_dir, rd, targets, checked)
+    _write_report(out_dir, rd, checked)
     return [state_path(out_dir, t) for t in targets]
 
 
-def _write_report(out_dir: Path, rd: RunDir, targets: list[int], checked: int) -> None:
+def _write_report(out_dir: Path, rd: RunDir, checked: int) -> None:
     """A small JSON sidecar recording where the states came from and how much of them was verified."""
     path = out_dir / "resim.json"
-    old = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     rec = {
         "source_run": str(rd.path),
         "source_config_hash": rd.meta().get("config_hash"),
         "mlx_version": mx.__version__,
         "device": str(mx.default_device()),
-        "steps": sorted(set(old.get("steps", [])) | set(targets)),
+        "steps": [st for st, _ in cached_states(out_dir)],  # every cached state, from any pass
         "rows_verified_last_pass": checked,
         "finished_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }

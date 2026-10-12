@@ -116,6 +116,9 @@ def test_merge_and_render() -> None:
     assert md.index("Step 100") < md.index("Step 500") and "**9.0**" in md and "**1.0**" not in md
     trend = signals.trend_table(rep, "all", z_sig=4.0)
     assert "| emit0 | resource | 0.090* | 0.090 |" in trend
+    cats = signals.category_table(rep, z_sig=4.0)
+    assert "| emit0 | resource | **0.09** | · |" in cats
+    assert "| msg1 | kin beyond crowding | **0.09** | · |" in cats
     with pytest.raises(ValueError):
         signals.merge_reports([_fake_report(100, 1.0), _fake_report(100, 1.0)])
     other = {**_fake_report(200, 1.0), "params": {"k": 5}}

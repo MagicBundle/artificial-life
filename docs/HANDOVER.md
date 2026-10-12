@@ -21,6 +21,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
 | `docs/ACTIVITY.md` | evolutionary-activity analysis of `runs/64k_s0` (method, results, sensitivity); figures in `docs/activity/` |
+| `docs/SIGNALS.md` | information carried by the emit and msg signals of `runs/64k_s0` at eight states; full tables in `docs/signals/` |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
 | `.github/workflows/ci.yml` | Linux CPU CI: ruff, ruff format check, fast suite; nightly slow suite |
@@ -36,6 +37,7 @@ uv run alife view runs/NAME                   # pygame viewer (re-simulates from
 uv run alife inspect runs/NAME --check        # summary plus full invariant check
 uv run alife bench --preset 64k --determinism --stages
 uv run alife activity runs/NAME                # evolutionary activity (needs --extra analysis for plots)
+uv run python -m alife.analysis.signals RUN --steps ... --out FILE.json   # signal information, docs/SIGNALS.md
 cd gui && swift run                           # the macOS control app
 ```
 
@@ -128,8 +130,9 @@ verified findings for the whole run.
   84%.
 - Mutation scale was selected steadily down (median 0.022 to 0.006). The mutation rate fell to about 0.006 by
   500k, then rebounded to 0.014.
-- Signalling was abandoned: emitters fell from 81% to 26%, flat since about 1M. Energy sharing nearly vanished
-  (6% to 1.6%). Bonds became brief contacts: the lifetime proxy fell from about 135 steps to about 12.
+- Signalling became rarer, not emptier: emitters fell from 81% to 26%, flat since about 1M, but the remaining
+  signals carry more information than the early ones (signal-information bullet below). Energy sharing nearly
+  vanished (6% to 1.6%). Bonds became brief contacts: the lifetime proxy fell from about 135 steps to about 12.
 - Predation: attack effort rose 4–5x early, then lethality per attack halved. Kill share of deaths is about
   19% at the end.
 - Reading: the ecology largely settled after about 1M steps while evolution continues slowly. This is the
@@ -144,6 +147,15 @@ verified findings for the whole run.
   accumulates. Lineage sorting relative to the heritability null is slightly stronger after 1M, so the "stall" is a
   steady state, not a decline of selection. Bedau's original normalisation is threshold-unstable on this run (see
   the note). The tool reads runs that start at step 0; forks (founders from a checkpoint) are not supported yet.
+- Signal information (`docs/SIGNALS.md`, `python -m alife.analysis.signals`): mutual information of each emit
+  channel and message component with the sender's resource, harvest, energy, crowding, kin and next action, at
+  0, 120k, 250k, 500k, 750k, 1M, 1.49M and 1.504M, against shuffle nulls. The intermediate states were
+  re-simulated with every `metrics.jsonl` row checked exactly (0–120k needs the run's original commit `f09b32a`)
+  and are cached in `analysis_cache/64k_s0/` (git-ignored). Founders: no information. From 250k on, `emit0`,
+  `emit1`, `msg0` and `msg1` robustly report local crowding and the coming stop (up to 0.34 bits, `msg0` at the
+  end), and a little resource (≤ 0.11 bits); energy ≤ 0.05; kin composition beyond crowding ≈ 0; attack
+  intent never; `emit2` almost nothing. At 120k, lineages and patches had their own codes; one code dominates
+  as one clade takes over. Whether receivers use the signals is open (receiver-side test in the note).
 
 ## GUI follow-ups (PR #3, merged)
 

@@ -382,6 +382,48 @@ def trend_table(report: dict[str, Any], variant: str, z_sig: float) -> str:
     return "\n".join(out)
 
 
+# Categories of the summary table: (targets, variant). Kin is read given the crowd (kin composition beyond
+# local density), the others from the plain agent sample.
+CATEGORIES: dict[str, tuple[tuple[str, ...], str]] = {
+    "resource": (("resource", "harvest"), "all"),
+    "energy": (("energy",), "all"),
+    "crowding": (("crowd",), "all"),
+    "kin beyond crowding": (KIN_TARGETS, "crowd"),
+    "intent": (("thrust_next", "turn_next", "attack_next"), "all"),
+}
+
+
+def category_table(report: dict[str, Any], z_sig: float, robust_bits: float = 0.05) -> str:
+    """Per signal × category × state, the largest excess MI (bits) among the category's significant targets.
+
+    Bold: robust (``z ≥ z_sig`` and excess ``≥ robust_bits``); plain with ``*``: significant but smaller;
+    ``·``: nothing significant.
+    """
+    by = {(r["step"], r["signal"], r["target"], r["variant"]): r for r in report["results"]}
+    steps = [s["step"] for s in report["summaries"]]
+    out = [
+        "| signal | category | " + " | ".join(f"{st:,}" for st in steps) + " |",
+        "|" + "---|" * (2 + len(steps)),
+    ]
+    for sig in SIGNALS:
+        for cat, (targets, variant) in CATEGORIES.items():
+            row = [sig, cat]
+            for st in steps:
+                recs = [by.get((st, sig, t, variant)) for t in targets]
+                sig_ex = [
+                    r["mi"] - r["null_mean"]
+                    for r in recs
+                    if r is not None and math.isfinite(r["z"]) and r["z"] >= z_sig
+                ]
+                if not sig_ex:
+                    row.append("·")
+                    continue
+                ex = max(sig_ex)
+                row.append(f"**{ex:.2f}**" if ex >= robust_bits else f"{ex:.2f}*")
+            out.append("| " + " | ".join(row) + " |")
+    return "\n".join(out)
+
+
 def merge_reports(reports: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """One report from several passes over the same run with the same parameters, ordered by step."""
     if len({json.dumps(r["params"], sort_keys=True) for r in reports}) > 1:
@@ -434,7 +476,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"#### Trend: {v}\n\n{trend_table(report, v, a.z_sig)}\n"
             for v in ("all", "emitters", "patch", "clade")
         ]
-        a.md.write_text("\n".join(trends) + "\n" + markdown_tables(report, a.z_sig) + "\n", encoding="utf-8")
+        summary_md = f"#### Summary by category\n\n{category_table(report, a.z_sig)}\n"
+        a.md.write_text(
+            "\n".join([summary_md, *trends]) + "\n" + markdown_tables(report, a.z_sig) + "\n",
+            encoding="utf-8",
+        )
     return 0
 
 
