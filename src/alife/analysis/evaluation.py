@@ -266,7 +266,7 @@ def _entropy(counts: Iterable[int]) -> float:
     if c.size == 0:
         return 0.0
     p = c / c.sum()
-    return float(-(p * np.log2(p)).sum())
+    return float(-(p * np.log2(p)).sum()) + 0.0  # + 0.0: a single action gives 0.0, not -0.0
 
 
 def intervention_stats(entries: Sequence[Mapping[str, Any]], span_steps: int) -> dict[str, Any]:
@@ -618,6 +618,58 @@ def write_series(path: Path, series: Mapping[tuple[int, str], Sequence[Mapping[s
     np.savez_compressed(path, **flat)
 
 
+TABLE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("coverage.final", "coverage", "{:.0f}"),
+    ("coverage.cells_outside_control", "cells not in A", "{:.0f}"),
+    ("novelty.mean", "novelty", "{:.4f}"),
+    ("persistent_novelty.vs_control.mean", "PN vs A", "{:+.4f}"),
+    ("persistent_novelty.vs_control.anchors", "PN anchors", "{:.0f}"),
+    ("persistent_novelty.vs_before.mean", "PN vs before", "{:+.4f}"),
+    ("excursion.mean", "excursion", "{:.3f}"),
+    ("turnover.b_shift_mean", "b shift", "{:.3f}"),
+    ("viability.pop_mean", "pop mean", "{:,.0f}"),
+    ("viability.pop_min", "pop min", "{:,.0f}"),
+    ("viability.at_risk_frac", "at risk", "{:.0%}"),
+    ("interventions.rescues", "rescues", "{:.0f}"),
+    ("clades.clades_alive.end", "clades end", "{:.0f}"),
+    ("clades.top_clade_share.end", "top clade", "{:.2f}"),
+    ("interventions.all.count", "actions", "{:.0f}"),
+    ("interventions.discretionary.count", "discretionary", "{:.0f}"),
+    ("interventions.discretionary.distinct_actions", "distinct", "{:.0f}"),
+    ("interventions.discretionary.entropy_bits", "entropy (bits)", "{:.2f}"),
+    ("interventions.all.cost_per_100k", "cost / 100k", "{:.2f}"),
+)
+
+
+def dig(d: Any, dotted: str) -> Any:
+    """``d["a"]["b"]`` for ``"a.b"``, None if any step is missing."""
+    for k in dotted.split("."):
+        if not isinstance(d, Mapping) or d.get(k) is None:
+            return None
+        d = d[k]
+    return d
+
+
+def markdown_table(
+    summary: Mapping[str, Any],
+    columns: Sequence[tuple[str, str, str]] = TABLE_COLUMNS,
+    order: Sequence[str] = (),
+) -> str:
+    """A Markdown table with one row per arm and seed (arms in ``order``, then the rest; seeds ascending)."""
+    rank = {n: i for i, n in enumerate(order)}
+    rows = sorted(summary["arms"], key=lambda r: (rank.get(r["arm"], len(rank)), r["arm"], r["seed"]))
+    head = "| arm | seed | " + " | ".join(c[1] for c in columns) + " |"
+    sep = "|---|---|" + "---|" * len(columns)
+    lines = [head, sep]
+    for r in rows:
+        cells = [r["arm"], str(r["seed"])]
+        for key, _, fmt in columns:
+            v = dig(r, key)
+            cells.append("–" if v is None else fmt.format(v))
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="python -m alife.analysis.evaluation", description=__doc__.split("\n")[0]
@@ -643,6 +695,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary, series = evaluate(arms, a.control, a.lineages)
     (out / "evaluation.json").write_text(json.dumps(summary, indent=1) + "\n", encoding="utf-8")
     write_series(out / "series.npz", series)
+    order = list(dict.fromkeys(x.name for x in arms))
+    (out / "table.md").write_text(markdown_table(summary, order=order) + "\n", encoding="utf-8")
     for spec in a.journal_sample:
         seed, name = spec.split(":")
         arm = next(x for x in arms if x.seed == int(seed) and x.name == name)

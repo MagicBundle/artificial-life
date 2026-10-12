@@ -1,8 +1,8 @@
 """Figures of the director evaluation (``alife.analysis.evaluation``; matplotlib, the ``analysis`` extra).
 
 Arms keep one colour everywhere: the control A is the neutral ink, dashed (a reference, not a peer series);
-the directed arms take the categorical slots in a fixed order (B blue, C orange, R aqua, D yellow), so a seed
-without an arm does not repaint the others.
+the directed arms take the categorical slots in a fixed order (B blue, C orange, R aqua, RC magenta,
+D yellow), so a seed without an arm does not repaint the others.
 """
 
 from __future__ import annotations
@@ -16,12 +16,13 @@ import numpy as np
 from alife.analysis import evaluation as ev
 from alife.analysis.plots import INK2, _setup
 
-ARM_COLORS = {"A": INK2, "B": "#2a78d6", "C": "#eb6834", "R": "#1baf7a", "D": "#eda100"}
+ARM_COLORS = {"A": INK2, "B": "#2a78d6", "C": "#eb6834", "R": "#1baf7a", "RC": "#e87ba4", "D": "#eda100"}
 ARM_LABELS = {
     "A": "A  off",
     "B": "B  Gardener (rules)",
     "C": "C  Trickster (rules + LLM)",
     "R": "R  random, yoked to B",
+    "RC": "RC random, yoked to C",
     "D": "D  Architect (rules + LLM)",
 }
 SMOOTH = 25  # rule boundaries (25k steps) in the novelty running mean
@@ -116,14 +117,6 @@ SUMMARY_METRICS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _get(d: Mapping[str, Any], dotted: str) -> float | None:
-    for k in dotted.split("."):
-        if not isinstance(d, Mapping) or d.get(k) is None:
-            return None
-        d = d[k]
-    return float(d)  # type: ignore[arg-type]
-
-
 def fig_summary(summary: Mapping[str, Any], out: Path) -> Path:
     """One panel per headline metric: each arm's value on every seed (circle seed 0, square seed 1)."""
     plt = _setup()
@@ -134,7 +127,7 @@ def fig_summary(summary: Mapping[str, Any], out: Path) -> Path:
     for ax, (key, title) in zip(axes, SUMMARY_METRICS, strict=True):
         for i, n in enumerate(names):
             for r in (r for r in rows if r["arm"] == n):
-                v = _get(r, key)
+                v = ev.dig(r, key)
                 if v is None:
                     continue
                 ax.plot(i + (r["seed"] - 0.5) * 0.18, v, markers.get(r["seed"], "D"), color=_color(n), ms=8)

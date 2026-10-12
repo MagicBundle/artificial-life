@@ -184,3 +184,18 @@ def test_activity_classes_of_a_fork_report(tmp_path: Path) -> None:
     cell = a["spaces"]["marker_0.5"][report.window_label(10, 30)]
     assert a["t0"] == 10 and cell["class"] in report.CLASSES and set(cell["sweep"]) == set(report.CLASSES)
     assert ev.activity_classes(tmp_path / "missing.json") is None
+
+
+def test_markdown_table_orders_arms_and_marks_missing_values() -> None:
+    summary = {
+        "arms": [
+            {"arm": "C", "seed": 1, "coverage": {"final": 80}},
+            {"arm": "A", "seed": 0, "coverage": {"final": 23}, "novelty": {"mean": 0.02}},
+            {"arm": "C", "seed": 0, "coverage": {"final": 87}},
+        ]
+    }
+    cols = (("coverage.final", "coverage", "{:.0f}"), ("novelty.mean", "novelty", "{:.3f}"))
+    t = ev.markdown_table(summary, cols, order=("A", "B", "C")).splitlines()
+    assert t[0] == "| arm | seed | coverage | novelty |"
+    assert t[2:] == ["| A | 0 | 23 | 0.020 |", "| C | 0 | 87 | – |", "| C | 1 | 80 | – |"]
+    assert ev.dig(summary["arms"][0], "coverage.final") == 80 and ev.dig({}, "a.b") is None
