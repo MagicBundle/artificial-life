@@ -1545,7 +1545,7 @@ One million agents would need ≈ 15 GB. That fits in 48 GB, at an estimated 4�
 
 ```text
 artificial-life/
-  pyproject.toml                 uv; mlx (darwin) | mlx[cpu] (linux); extras: viewer, video; dev group
+  pyproject.toml                 uv; mlx (darwin) | mlx[cpu] (linux); extras: viewer, video, analysis; dev group
   README.md
   .github/workflows/ci.yml
   docs/DESIGN.md                 this document
@@ -1575,6 +1575,8 @@ artificial-life/
     viewer.py                    optional pygame-ce live viewer (lazy import)
     bench.py                     throughput, stages, donation health, determinism, brain variants
     cli.py                       argparse entry point `alife`
+    analysis/                    offline, host-only numpy analysis of finished runs (never imported by the step;
+                                 not under the §22.6 lint scope); phylo, activity, report, plots: §19.3
   tests/                         §22
 ```
 
@@ -2394,8 +2396,13 @@ observer-purity test enforces this.
 ### 19.3 Offline analysis (deferred tooling, complete data)
 
 The data for these analyses is already recorded: births and deaths with uids, plus checkpoints. The scripts are
-deferred.
-- Bedau–Packard evolutionary activity.
+deferred, except the first.
+- Bedau–Packard evolutionary activity: `alife activity RUN` (`alife.analysis`, method and results in
+  `docs/ACTIVITY.md`). It rebuilds the phylogeny from the event logs, builds a neutral shadow (Bedau) and a
+  permuted heritability null, computes the activity statistics on two lineage component definitions (cohort
+  subtrees and paraphyletic marker components), normalises them (shadow difference; Channon's component
+  normalisation against a reset shadow) and classifies the activity as none, bounded or unbounded per window,
+  with every threshold swept. Plots need the optional extra `analysis` (matplotlib).
 - MODES-style change, novelty, complexity and ecology.
 - Phylogeny shape.
 - Division-of-labour indices.
@@ -2535,7 +2542,12 @@ alife view     [RUN | --preset P [--set ...]] [--checkpoint STEP|latest] [--step
 alife bench    [--preset P] [--overlay fast] [--set ...] [--steps 200] [--warmup 20] [--stages]
                [--determinism] [--brain-variants] [--json PATH]
 alife llm-check [--llm-url URL] [--llm-model NAME] [--timeout SECONDS] [--preset P]
+alife activity RUN [--out DIR] [--grid N] [--marker-rates R,...] [--horizons H,...] [--shadows N] [--seed S]
+               [--windows A:B,...] [--reuse] [--no-plots] [--quiet]
 ```
+
+**`activity`** never modifies the run's files: it writes `activity.npz`, `summary.json`, `classification.txt` and the
+figures to `--out` (default `RUN/activity`), §19.3 and `docs/ACTIVITY.md`.
 
 **`run`** creates the run directory and the initial state (or loads `--init-from`), then calls `runner.run`. Every
 metrics interval it prints one status line: step, population, births/deaths, bonds, largest body (heavy steps),
@@ -3643,6 +3655,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I30 | feat: director build step 3 (`docs/DIRECTOR.md` §7): the LLM tier, off by default, no change to the compiled step or to any earlier hash. (1) `director.llm_every` (0 = off, else a multiple of `rule_every`), `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` (policy keys: `POST_V01_KEYS` and `UNHASHED_KEYS`) and `run.llm_url`, `run.llm_model` (resume keys); CLI `--llm`, `--llm-every`, `--llm-url`, `--llm-model`, `--persona`, `--goal` on `run` (fork included) and `resume`, which exit 2 unless the effective mode is `live`. (2) `director/llm.py` (the JSON schema generated from `actions.MENU` with `minimum`/`maximum`/`maxLength`, the untrusted-reply validator, a stdlib client that follows no redirect, ignores proxies, caps size and wall time and never raises) and `director/prompt.py` (persona, goal as delimited data, menu with effect descriptions, vital signs and trends, this boundary's safety actions, the last five interventions with their measured effect, budget). (3) Roles: the rule tier keeps reverts and the safety rules at every boundary (`rules.decide_safety`); at `t % llm_every == 0` the model makes the discretionary moves and the rule tier's discretionary rules (`decide_discretionary`) are only the fallback of a failed, invalid or fully refused call; the call is synchronous inside the existing hook. With the tier off the director calls `rules.decide` as before: same decisions, same log, `RULES_VERSION` unchanged. (4) `source: "llm"` entries (with `llm_call`), accepted by `validate_entry` and `validate_log`; one `llm_call` record per call in `journal.jsonl` (raw prompt and response, outcome, clamps, rejections, fallback); the header records `llm_every`/`llm_model` only while the tier is on. Replay never builds a client. Deviations from the proposal: synchronous instead of async (reply applied at the same boundary), `fertility_shift` offered to the model in its gain form only, no `--no-llm` (use `--llm-every 0`). Tests: `tests/test_director_llm.py`, the `llm` marker, and the edits in §26.9 (two existing tests used `llm` as their example of an unknown source). |
 | I31 | feat: director build step 4 (`docs/DIRECTOR.md` §14): the GUI Director panel, plus one CLI command. `alife llm-check` (§21) sends one tiny structured-output request under the director's own `llm.Client` and `response_format` and prints `OK model=... latency=...s` (exit 0) or `FAIL <kind>: <detail>` (exit 1, `ExitCode.ERROR`; exit 2 for a malformed URL, empty model or non-positive `--timeout`). No engine, config or hash change; no new config key; Python changes are `cli.py` and `tests/test_cli_llm_check.py` (mock-server cases for OK, HTTP error, empty content, invalid JSON, schema violation, timeout, closed port). |
 | I32 | feat: the `random` persona for evaluation arm R (`docs/DIRECTOR.md` §9, §15), yoked to another run's discretionary moves. (1) `director.persona = random` (`PERSONAS`) and the policy key `director.yoke_log` (`POST_V01_KEYS`, `UNHASHED_KEYS`: no hash changes); `--yoke-log PATH` on `run`, fork and `resume`; `validate` ties them together (a yoke log and `llm_every = 0` for `random`, no yoke log for any other persona). (2) `director/yoked.py`: `yoked_steps` (discretionary entries of a log per step: `source` rule or llm, not a safety rule, never a revert; `rules.SAFETY_RULES` are named constants shared with the rules), `load` (exists, replay pre-validation, steps on R's boundaries, sha256), `candidates` (the eligible menu actions via `rules.eligibility`), `sample_params` (uniform and log-uniform over the live menu bounds) and a stateless per-draw generator. (3) `Director`: R uses the Gardener's `PersonaParams` and keeps reverts and the safety rules; at a yoked step it makes the same number of random eligible moves, or journals "nothing eligible"; entries `rule: random`, `persona: random`, `yoked_to`; the header records `yoke_log` and `yoke_sha256`; a live resume warns on stderr when the file changed. Replay never reads the yoke log. (4) The CLI checks the yoke log (exit 2) before any directory is created or touched; the GUI offers Random with a "Yoked to run" picker. No engine, step or hash change; every other persona is byte-identical. Interpretations: the sampler returns `(raw, duration)` like a rule's proposal; the patch of a gain change or a loss is drawn among the free ones (a draw cannot be refused for a locked patch); a new header is appended when a resume finds another yoke file; the one existing test that pinned `PERSONAS` was updated. Tests: `tests/test_director_random.py`. |
+| I33 | feat: offline evolutionary-activity analysis (§19.3, `docs/ACTIVITY.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) Package `alife.analysis` (host-only numpy, never imported by the step, outside the §22.6 lint scope): `phylo` (the phylogeny rebuilt from the event logs by streaming the chunks, with a coverage report against `metrics.jsonl` and the final checkpoint; pointer-jumping lineage labels; Bedau's neutral shadow and a permuted heritability null), `activity` (one pass over grid windows: cohort-subtree and paraphyletic marker components; Bedau–Packard `D`, `A_cum`, `Ā`, `A_new` histograms; Channon's component-normalised activity against a reset shadow, computed in expectation; threshold crossings), `report` (classification none/bounded/unbounded per window with every threshold swept, `summary.json`) and `plots`. (2) CLI `alife activity RUN` (§21), writing to `RUN/activity` by default and never modifying the run's files. (3) Optional extra `analysis = ["matplotlib>=3.9"]` (§16); without it the command writes tables only. Deviations from the 1998 paper, documented in the note: the primary `A_new` window is `[a', 10^0.2 a']`, because the literal `a' ± 0.05 (a_max − a')` degenerates on a heavy-tailed run; the asymptotic definitions are applied as trends over finite windows. Limitation: runs that start at step 0 only (forks need founders from a checkpoint). Tests: `tests/test_analysis_activity.py`. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

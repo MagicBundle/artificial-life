@@ -1,0 +1,29 @@
+space          window         Bedau (primary)          Bedau sweep n/b/u  Channon (primary)  Channon sweep n/b/u
+cohort_h100k   0k-1500k       unbounded (3b: Ā)        126/54/126          bounded            6/18/0
+cohort_h100k   0k-120k        n/a (cohort pool still filling before 100000)
+cohort_h100k   120k-1000k     unbounded (3b: Ā)        126/54/126          bounded            6/18/0
+cohort_h100k   1000k-1500k    unbounded (3b: Ā)        126/108/54           bounded            0/18/0
+cohort_h200k   0k-1500k       unbounded (3b: Ā)        135/54/135          bounded            12/12/0
+cohort_h200k   0k-120k        n/a (cohort pool still filling before 200000)
+cohort_h200k   120k-1000k     unbounded (3b: Ā)        135/54/135          bounded            9/15/0
+cohort_h200k   1000k-1500k    unbounded (3b: Ā)        126/66/114          bounded            6/18/0
+cohort_h500k   0k-1500k       unbounded (3b: Ā)        171/54/135          bounded            12/18/0
+cohort_h500k   0k-120k        n/a (cohort pool still filling before 500000)
+cohort_h500k   120k-1000k     unbounded (3b: Ā)        180/117/63           bounded            9/21/0
+cohort_h500k   1000k-1500k    unbounded (3b: Ā)        171/45/126          bounded            6/18/0
+marker_0.003   0k-1500k       unbounded (3b: Ā)        198/153/135          bounded            15/9/0
+marker_0.003   0k-120k        none                     171/99/90           bounded            6/12/0
+marker_0.003   120k-1000k     unbounded (3b: Ā)        189/153/126          bounded            15/9/0
+marker_0.003   1000k-1500k    unbounded (3b: Ā)        216/162/108          bounded            9/9/0
+marker_0.01    0k-1500k       unbounded (3b: Ā)        225/159/66           bounded            9/15/0
+marker_0.01    0k-120k        unbounded (3b: Ā)        198/114/84           bounded            6/12/0
+marker_0.01    120k-1000k     unbounded (3b: Ā)        225/99/108          bounded            6/12/0
+marker_0.01    1000k-1500k    bounded                  198/252/0            bounded            9/15/0
+marker_0.03    0k-1500k       bounded                  189/189/36           bounded            3/15/0
+marker_0.03    0k-120k        unbounded (3b: Ā)        207/111/60           bounded            3/15/0
+marker_0.03    120k-1000k     unbounded (3b: Ā)        225/153/36           bounded            0/18/0
+marker_0.03    1000k-1500k    unbounded (3b: Ā)        180/180/54           bounded            3/15/0
+marker_0.1     0k-1500k       bounded                  189/171/0            bounded            6/12/0
+marker_0.1     0k-120k        unbounded (3b: Ā)        180/105/75           bounded            6/6/0
+marker_0.1     120k-1000k     bounded                  189/156/15           bounded            6/6/0
+marker_0.1     1000k-1500k    bounded                  180/165/15           bounded            6/12/0

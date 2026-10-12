@@ -665,6 +665,64 @@ def _cmd_view(a: argparse.Namespace) -> int:
     return int(ExitCode.OK)
 
 
+def _floats(text: str) -> tuple[float, ...]:
+    try:
+        return tuple(float(x) for x in text.split(",") if x.strip())
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"expected comma-separated numbers, got {text!r}") from e
+
+
+def _ints(text: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(x) for x in text.split(",") if x.strip())
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"expected comma-separated integers, got {text!r}") from e
+
+
+def _windows(text: str) -> tuple[tuple[int, int | None], ...]:
+    """``A:B,C:D,E:end``: classification windows in steps (``end`` = the end of the run)."""
+    out = []
+    for part in text.split(","):
+        a, sep, b = part.partition(":")
+        try:
+            if not sep:
+                raise ValueError
+            out.append((int(a), None if b.strip() == "end" else int(b)))
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(
+                f"expected windows like 0:120000,120000:end, got {text!r}"
+            ) from e
+    return tuple(out)
+
+
+def _cmd_activity(a: argparse.Namespace) -> int:
+    from alife.analysis import report  # local: host-only numpy analysis, kept off the simulation import path
+
+    rd = RunDir.open(Path(a.run))
+    out = Path(a.out) if a.out else rd.path / "activity"
+    st = report.Settings(
+        grid_every=a.grid,
+        marker_rates=a.marker_rates,
+        cohort_horizons=a.horizons,
+        shadows=a.shadows,
+        seed=a.seed,
+        windows=a.windows,
+    )
+    plots = not a.no_plots
+    if plots:
+        try:
+            import matplotlib  # noqa: F401
+        except ImportError:
+            print("matplotlib is missing (uv sync --extra analysis): writing tables only", file=sys.stderr)
+            plots = False
+    report.run_report(
+        rd.path, out, st, reuse=a.reuse, plots=plots, log=lambda m: None if a.quiet else print(m)
+    )
+    if not a.quiet:
+        print(f"wrote {out}")
+    return ExitCode.OK
+
+
 def _cmd_bench(a: argparse.Namespace) -> int:
     from alife.bench import run_bench
 
@@ -852,6 +910,36 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--brain-variants", action="store_true")
     p.add_argument("--json", default=None, metavar="PATH")
     p.set_defaults(func=_cmd_bench)
+
+    p = sub.add_parser(
+        "activity",
+        help="Bedau–Packard evolutionary activity of the lineages against null shadows (docs/ACTIVITY.md)",
+    )
+    p.add_argument("run", metavar="RUN")
+    p.add_argument("--out", default=None, metavar="DIR", help="output directory (default RUN/activity)")
+    p.add_argument(
+        "--grid", type=_positive, default=10_000, metavar="N", help="grid and cohort spacing (steps)"
+    )
+    p.add_argument("--marker-rates", type=_floats, default=(0.003, 0.01, 0.03, 0.1), metavar="R,...")
+    p.add_argument(
+        "--horizons",
+        type=_ints,
+        default=(100_000, 200_000, 500_000),
+        metavar="H,...",
+        help="cohort-pool horizons (steps)",
+    )
+    p.add_argument("--shadows", type=_positive, default=2, metavar="N", help="replicates of each shadow")
+    p.add_argument("--seed", type=_non_negative, default=0)
+    p.add_argument(
+        "--windows",
+        type=_windows,
+        default=((0, 120_000), (120_000, 1_000_000), (1_000_000, None)),
+        metavar="A:B,...",
+    )
+    p.add_argument("--reuse", action="store_true", help="reuse OUT/activity.npz instead of recomputing")
+    p.add_argument("--no-plots", action="store_true")
+    p.add_argument("--quiet", action="store_true")
+    p.set_defaults(func=_cmd_activity)
 
     p = sub.add_parser(
         "llm-check",
