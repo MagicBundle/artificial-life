@@ -1576,7 +1576,7 @@ artificial-life/
     bench.py                     throughput, stages, donation health, determinism, brain variants
     cli.py                       argparse entry point `alife`
     analysis/                    offline, host-only numpy analysis of finished runs (never imported by the step;
-                                 not under the §22.6 lint scope); phylo, activity, report, plots: §19.3
+                                 not under the §22.6 lint scope); phylo, activity, report, plots, mi, resim, signals: §19.3
   tests/                         §22
 ```
 
@@ -2396,7 +2396,7 @@ observer-purity test enforces this.
 ### 19.3 Offline analysis (deferred tooling, complete data)
 
 The data for these analyses is already recorded: births and deaths with uids, plus checkpoints. The scripts are
-deferred, except the first.
+deferred, except the first and the last.
 - Bedau–Packard evolutionary activity: `alife activity RUN` (`alife.analysis`, method and results in
   `docs/ACTIVITY.md`). It rebuilds the phylogeny from the event logs, builds a neutral shadow (Bedau) and a
   permuted heritability null, computes the activity statistics on two lineage component definitions (cohort
@@ -2406,7 +2406,13 @@ deferred, except the first.
 - MODES-style change, novelty, complexity and ecology.
 - Phylogeny shape.
 - Division-of-labour indices.
-- Signal–behaviour mutual information.
+- Signal–behaviour mutual information: `python -m alife.analysis.signals` (method and results in
+  `docs/SIGNALS.md`). It recomputes each agent's `emit` deposit quanta and `msg` by S0–S8 of the step as a pure
+  function of a state, and estimates their MI with the agent's resource, harvest, energy, crowding and kin counts
+  and its next-step thrust, turn and attack (KSG on tie-broken ranks, `alife.analysis.mi`), against shuffle
+  nulls, also restricted to emitters and conditioned on patch, clade and crowding. States a run no longer has
+  are re-simulated in memory by `alife.analysis.resim`, which checks every `metrics.jsonl` row on the way
+  exactly and writes them outside the run directory.
 
 ---
 
@@ -3656,6 +3662,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I31 | feat: director build step 4 (`docs/DIRECTOR.md` §14): the GUI Director panel, plus one CLI command. `alife llm-check` (§21) sends one tiny structured-output request under the director's own `llm.Client` and `response_format` and prints `OK model=... latency=...s` (exit 0) or `FAIL <kind>: <detail>` (exit 1, `ExitCode.ERROR`; exit 2 for a malformed URL, empty model or non-positive `--timeout`). No engine, config or hash change; no new config key; Python changes are `cli.py` and `tests/test_cli_llm_check.py` (mock-server cases for OK, HTTP error, empty content, invalid JSON, schema violation, timeout, closed port). |
 | I32 | feat: the `random` persona for evaluation arm R (`docs/DIRECTOR.md` §9, §15), yoked to another run's discretionary moves. (1) `director.persona = random` (`PERSONAS`) and the policy key `director.yoke_log` (`POST_V01_KEYS`, `UNHASHED_KEYS`: no hash changes); `--yoke-log PATH` on `run`, fork and `resume`; `validate` ties them together (a yoke log and `llm_every = 0` for `random`, no yoke log for any other persona). (2) `director/yoked.py`: `yoked_steps` (discretionary entries of a log per step: `source` rule or llm, not a safety rule, never a revert; `rules.SAFETY_RULES` are named constants shared with the rules), `load` (exists, replay pre-validation, steps on R's boundaries, sha256), `candidates` (the eligible menu actions via `rules.eligibility`), `sample_params` (uniform and log-uniform over the live menu bounds) and a stateless per-draw generator. (3) `Director`: R uses the Gardener's `PersonaParams` and keeps reverts and the safety rules; at a yoked step it makes the same number of random eligible moves, or journals "nothing eligible"; entries `rule: random`, `persona: random`, `yoked_to`; the header records `yoke_log` and `yoke_sha256`; a live resume warns on stderr when the file changed. Replay never reads the yoke log. (4) The CLI checks the yoke log (exit 2) before any directory is created or touched; the GUI offers Random with a "Yoked to run" picker. No engine, step or hash change; every other persona is byte-identical. Interpretations: the sampler returns `(raw, duration)` like a rule's proposal; the patch of a gain change or a loss is drawn among the free ones (a draw cannot be refused for a locked patch); a new header is appended when a resume finds another yoke file; the one existing test that pinned `PERSONAS` was updated. Tests: `tests/test_director_random.py`. |
 | I33 | feat: offline evolutionary-activity analysis (§19.3, `docs/ACTIVITY.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) Package `alife.analysis` (host-only numpy, never imported by the step, outside the §22.6 lint scope): `phylo` (the phylogeny rebuilt from the event logs by streaming the chunks, with a coverage report against `metrics.jsonl` and the final checkpoint; pointer-jumping lineage labels; Bedau's neutral shadow and a permuted heritability null), `activity` (one pass over grid windows: cohort-subtree and paraphyletic marker components; Bedau–Packard `D`, `A_cum`, `Ā`, `A_new` histograms; Channon's component-normalised activity against a reset shadow, computed in expectation; threshold crossings), `report` (classification none/bounded/unbounded per window with every threshold swept, `summary.json`) and `plots`. (2) CLI `alife activity RUN` (§21), writing to `RUN/activity` by default and never modifying the run's files. (3) Optional extra `analysis = ["matplotlib>=3.9"]` (§16); without it the command writes tables only. Deviations from the 1998 paper, documented in the note: the primary `A_new` window is `[a', 10^0.2 a']`, because the literal `a' ± 0.05 (a_max − a')` degenerates on a heavy-tailed run; the asymptotic definitions are applied as trends over finite windows. Limitation: runs that start at step 0 only (forks need founders from a checkpoint). Tests: `tests/test_analysis_activity.py`. |
+| I34 | feat: offline signal-information analysis (§19.3, `docs/SIGNALS.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) `alife.analysis.mi` (numpy only): KSG estimator 1 on ranks with random tie-breaking (exactly MI-preserving; the integer, zero-inflated signals and targets made the Gao et al. 2017 mixed estimator biased by about +0.07 bits), a Miller–Madow binned cross-check, shuffle nulls with z and permutation p, conditional MI over strata. (2) `alife.analysis.resim`: in-memory re-simulation to steps without a checkpoint, every `metrics.jsonl` row compared exactly, states written with `runio.write_state_file` to a cache outside the run (`analysis_cache/`, git-ignored). `runs/64k_s0` changed dynamics at its 120k resume (I26's `fields.fertility` change), so 0–120k is re-simulated with the run's original commit `f09b32a`; all 10,000 rows to 1M match. (3) `alife.analysis.signals`: `decode` mirrors S0–S8 of `step.step` (a test checks it against the stored `msg` and the `EMITTERS` counter), per-agent tables, the estimate grid and markdown/trend tables; entry point `python -m alife.analysis.signals`, no `alife` subcommand and no new dependency. Tests: `tests/test_analysis_mi.py`, `tests/test_analysis_resim.py`, `tests/test_analysis_signals.py`. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

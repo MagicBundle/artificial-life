@@ -15,6 +15,7 @@ runs/
 /*.png
 /*.mp4
 /*.safetensors
+/analysis_cache/
 
 # OS / editors
 .DS_Store
