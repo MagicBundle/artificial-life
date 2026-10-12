@@ -281,7 +281,8 @@ B and C count as an improvement only if they beat R as well as A. R is **yoked**
 choices from the amount and timing of perturbation. It is the `random` persona (built, §10, §15).
 
 **Running R.** Run B first. Then run R from the same fork point, with the same seed, `rule_every` and metrics cadences:
-`alife run --init-from runs/64k_s0:120000 --director live --persona random --yoke-log runs/B/director.jsonl ...`.
+`alife run --init-from analysis_cache/64k_s0/step_0000120000.safetensors --director live --persona random --yoke-log runs/B/director.jsonl ...`
+(`runs/64k_s0` kept no checkpoint at 120,000; the file is the verified re-simulated state, `docs/SIGNALS.md` §3).
 R keeps the reverts and the safety rules, so it may also rescue or damp on its own state; those are not yoked.
 
 **Seeds.** Run every arm on at least two seeds:
