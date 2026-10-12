@@ -103,7 +103,8 @@ the engine defaults for a new run, the source run's `config.json` (`director.*`,
 | setting | CLI | notes |
 |---|---|---|
 | Mode | `--director live\|replay` | New run and Fork: Off or Live. Resume: Off, Live or Replay (in place, the run's own `director.jsonl`; the model is never called). Replay forks with `--replay-log` stay CLI-only. |
-| Persona | `--persona gardener\|trickster\|architect` | Live only. |
+| Persona | `--persona gardener\|trickster\|architect\|random` | Live only. A menu. Random is arm R of the evaluation (`docs/DIRECTOR.md` §15): it hides the LLM controls (forced off, `--llm-every 0` if the source had it on). |
+| Yoked to run | `--yoke-log=runs/NAME/director.jsonl` | Random only, and required: a picker of the runs that have a `director.jsonl` (the run being resumed is left out). The random director makes as many moves as that run's director did, at the same steps; run that one first. Leaving Random passes `--yoke-log=` to clear it. |
 | Goal | `--goal=TEXT` | Architect only: the rule tier applies the safety rules only; the goal reaches the model as data. |
 | Rule every | `--set director.rule_every=N` | Default 1000. A positive multiple of `run.metrics_every` and `run.heavy_metrics_every` (read from the preset file, or from the source's config). |
 | LLM tier | `--llm-every N` | Off is `0`. When on, N defaults to 25000 and must be a positive multiple of Rule every. A failed call falls back to the rule tier. |

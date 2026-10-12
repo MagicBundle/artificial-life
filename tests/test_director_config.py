@@ -112,7 +112,8 @@ def test_old_config_files_load_with_the_new_defaults() -> None:
 
 def test_validation_of_the_director_keys() -> None:
     tiny = apply_overrides(load_config(preset="tiny"), [ENABLED])
-    assert PERSONAS == ("gardener", "trickster", "architect") and DIRECTOR_MODES == ("off", "live", "replay")
+    assert PERSONAS == ("gardener", "trickster", "architect", "random")
+    assert DIRECTOR_MODES == ("off", "live", "replay")
     for bad, msg in (
         ("director.persona=wizard", "persona"),
         ("director.rule_every=0", "rule_every"),

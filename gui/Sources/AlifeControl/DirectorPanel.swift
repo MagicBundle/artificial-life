@@ -72,8 +72,9 @@ struct DirectorSettingsBox: View {
                 ForEach(Persona.allCases) { Text($0.label).tag($0) }
             }
             .labelsHidden()
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
         }
+        if controller.settings.director.persona == .random { yokeControls }
         if controller.settings.director.persona == .architect {
             field("Goal", prompt: "e.g. bodies of at least 100 agents", text: $controller.settings.director.goal)
             note("The Architect acts through the LLM tier: the rule tier applies the safety rules only, and the "
@@ -81,12 +82,42 @@ struct DirectorSettingsBox: View {
         }
         field("Rule every", prompt: "steps", text: $controller.settings.director.ruleEvery)
         note(ruleEveryHelp)
-        Divider()
-        Toggle("LLM tier (local LM Studio)", isOn: $controller.settings.director.llmOn)
-        if controller.settings.director.llmOn { llmControls }
+        if controller.settings.director.persona != .random {  // the random persona has no LLM tier (forced off)
+            Divider()
+            Toggle("LLM tier (local LM Studio)", isOn: $controller.settings.director.llmOn)
+            if controller.settings.director.llmOn { llmControls }
+        }
         ForEach(controller.settings.director.notes(context: context), id: \.self) { message in
             Label(message, systemImage: "info.circle").font(.caption).foregroundStyle(.orange)
         }
+    }
+
+    /// The runs a random director can follow: those with a `director.jsonl`, but not the run being resumed, plus
+    /// the one the settings already name (a source config may follow a run that is gone: validation says so).
+    private var yokeOptions: [String] {
+        var options = context.yokeRuns.filter { $0 != context.ownRun }
+        let current = controller.settings.director.yokeRun
+        if !current.isEmpty && !options.contains(current) { options.append(current) }
+        return options
+    }
+
+    @ViewBuilder private var yokeControls: some View {
+        HStack {
+            Text("Yoked to run").frame(width: 110, alignment: .leading)
+            Picker("", selection: $controller.settings.director.yokeRun) {
+                Text("Choose a run").tag("")
+                ForEach(yokeOptions, id: \.self) { Text($0).tag($0) }
+            }
+            .labelsHidden()
+        }
+        let log = controller.settings.director.yokeLog
+        if !log.isEmpty && YokeLog.run(from: log) == nil {
+            note("The source config follows \(log); choose a run to replace it.")
+        }
+        note("Arm R of the evaluation: it makes the same number of discretionary moves as that run's director, at "
+             + "the same steps, but picks the actions and their parameters at random. Reverts and the safety rules "
+             + "run as for the Gardener, with the Gardener's budget and cooldowns. No LLM tier. Run the yoked run "
+             + "first, and give this one its fork point, seed and Rule every.")
     }
 
     private var ruleEveryHelp: String {

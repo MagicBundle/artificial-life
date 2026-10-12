@@ -170,10 +170,11 @@ class DirectorConfig:  # ecosystem director (docs/DIRECTOR.md); added after v0.1
     enabled: bool = False  # static: the compiled step reads the live environment state (State.env)
     # Policy keys: read by the host-side director between steps, never by the compiled step. They are not
     # hashed (``UNHASHED_KEYS``) and may change on resume.
-    persona: str = "gardener"  # gardener | trickster | architect
+    persona: str = "gardener"  # gardener | trickster | architect | random (the yoked control, needs yoke_log)
     goal: str = ""  # the Architect's goal text (stored, not interpreted before the LLM tier)
     rule_every: int = 1000  # steps between rule-tier decisions; a multiple of the metrics cadences
     budget_per_100k: int = 0  # intervention cost units per rolling 100k steps; 0 = the persona's default
+    yoke_log: str = ""  # the random persona only: the director.jsonl of the run whose moves it is yoked to
     # The LLM tier (build step 3): off at 0. Where it runs and which model answers are run.llm_* keys.
     llm_every: int = 0  # steps between LLM calls; 0 = off, else a multiple of rule_every
     llm_temperature: float = 0.4  # sampling temperature of the request
@@ -524,6 +525,7 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("director", "llm_temperature"),
     ("director", "llm_timeout_s"),
     ("director", "llm_max_tokens"),
+    ("director", "yoke_log"),
 )
 
 # The POST_V01 keys that are omitted from ``config_hash`` at every value: the director's policy. Only
@@ -537,10 +539,12 @@ UNHASHED_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("director", "llm_temperature"),
     ("director", "llm_timeout_s"),
     ("director", "llm_max_tokens"),
+    ("director", "yoke_log"),
 )
 DIRECTOR_POLICY_KEYS: Final = tuple(key for _, key in UNHASHED_KEYS)
 DIRECTOR_MODES: Final = ("off", "live", "replay")
-PERSONAS: Final = ("gardener", "trickster", "architect")
+RANDOM_PERSONA: Final = "random"  # arm R of DIRECTOR.md §9: yoked to another run's discretionary moves
+PERSONAS: Final = ("gardener", "trickster", "architect", RANDOM_PERSONA)
 
 
 SEASON_MODES: Final = ("global", "per_patch")
@@ -811,6 +815,14 @@ def validate(cfg: Config) -> None:
         f"director.llm_timeout_s must be positive and finite, got {di.llm_timeout_s}",
     )
     req(di.llm_max_tokens >= 1, f"director.llm_max_tokens must be ≥ 1, got {di.llm_max_tokens}")
+    if di.persona == RANDOM_PERSONA:  # the yoked control: moves come from another run's log, never a model
+        req(di.yoke_log.strip() != "", "director.persona 'random' needs director.yoke_log (a director.jsonl)")
+        req(
+            di.llm_every == 0,
+            f"director.persona 'random' has no LLM tier: llm_every must be 0, got {di.llm_every}",
+        )
+    else:
+        req(di.yoke_log == "", f"director.yoke_log is only for the random persona, not {di.persona!r}")
     req(ru.llm_model.strip() != "", "run.llm_model must not be empty")
     if di.llm_every > 0:  # the endpoint is user config: only http(s) is ever contacted (DIRECTOR.md L11)
         req(is_http_url(ru.llm_url), f"run.llm_url must be an http(s) URL, got {ru.llm_url!r}")
