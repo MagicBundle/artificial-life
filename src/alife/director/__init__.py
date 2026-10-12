@@ -12,6 +12,11 @@ tier keeps the safety moves (reverts, extinction rescue, runaway damper) and, at
 call, an invalid reply or a reply of which nothing could be applied falls back to the rule tier's
 discretionary rules for that boundary. With the tier off the behaviour is exactly that of step 2.
 
+The ``random`` persona (arm R of the evaluation, ``yoked``) has no discretionary rules of its own. In live
+mode it keeps the reverts and the safety rules, under the Gardener's budget, cooldowns and thresholds, and at
+the steps where the run named by ``director.yoke_log`` made discretionary moves it makes as many uniformly
+random eligible ones. A replay of it reads only its own log.
+
 Everything the director remembers is a fold: the vital-sign tracker and archive of the ``metrics.jsonl`` rows,
 and budget, cooldowns, active effects and drama of the ``director.jsonl`` entries (``pacing``). A resumed live
 run rebuilds both from disk, so no sidecar state exists.
@@ -20,13 +25,14 @@ run rebuilds both from disk, so no sidecar state exists.
 from __future__ import annotations
 
 import json
+import sys
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple
 
 from alife import metrics
-from alife.config import Config, dims
-from alife.director import actions, llm, log, pacing, prompt, rules
+from alife.config import RANDOM_PERSONA, Config, dims
+from alife.director import actions, llm, log, pacing, prompt, rules, yoked
 from alife.director.rules import RULE_PARAMS, RuleParams
 from alife.director.vitals import Tracker, Vitals
 from alife.runio import DIRECTOR_ARCHIVE_FILE, DIRECTOR_LOG_FILE, JOURNAL_FILE, RunDir
@@ -62,13 +68,16 @@ class Director:
             raise ValueError(f"director mode must be one of {MODES}, got {mode!r}")
         self.rd, self.cfg, self.mode, self.params = rd, cfg, mode, params
         self.rule_every = cfg.director.rule_every
-        self.persona = params.persona(cfg.director.persona)
+        self.name = cfg.director.persona  # what entries and the journal call this director
+        # The random persona has no parameters of its own: it lives by the Gardener's (R3).
+        self.persona = params.persona(yoked.PARAMS_PERSONA if self.name == RANDOM_PERSONA else self.name)
         self.budget = rules.effective_budget(cfg.director.budget_per_100k, self.persona)
         self.applied: list[dict[str, Any]] = []
         self.llm_line: str | None = None  # the console line of this boundary's LLM call (if it made one)
         # The LLM tier exists in live mode only: a replay never builds a client, so it cannot reach a network.
         self.llm = llm.Client.of(cfg) if mode == "live" and cfg.director.llm_every > 0 else None
         self._blocked: frozenset[str] = frozenset()  # rules the previous boundary journalled as blocked
+        self.yoke: yoked.Yoke | None = None  # the random persona's yoke log (live mode only)
         records = rd.read_jsonl(DIRECTOR_LOG_FILE)
         self.entries = log.entries_of(records)
         if mode == "replay":
@@ -80,9 +89,26 @@ class Director:
         else:
             self.tracker = Tracker(params)
             self._rebuild(rd.metrics_rows(), start_step)
-            header = log.make_header(cfg, start_step, self.budget)
+            # The yoke log is read in live mode only: a replay needs nothing but its own log (R5).
+            self.yoke = yoked.load(cfg) if self.name == RANDOM_PERSONA else None
+            self._check_yoke(records)
+            header = log.make_header(cfg, start_step, self.budget, self.yoke.sha256 if self.yoke else None)
             if log.needs_header(records, header):
                 rd.append_jsonl(DIRECTOR_LOG_FILE, [header])
+
+    def _check_yoke(self, records: Sequence[Mapping[str, Any]]) -> None:
+        """Warn if the yoke log is not the file this run was started with (its header says which): the
+        run goes on, since the header records provenance and a new header records the file now in use."""
+        if self.yoke is None:
+            return
+        then = next((r["yoke_sha256"] for r in reversed(records) if r.get("yoke_sha256")), None)
+        if then is not None and then != self.yoke.sha256:
+            print(
+                f"warning: {self.yoke.path} has changed since this run started following it "
+                f"(sha256 {then[:12]}... then, {self.yoke.sha256[:12]}... now); continuing",
+                file=sys.stderr,
+                flush=True,
+            )
 
     def _rebuild(self, rows: Sequence[Mapping[str, Any]], start_step: int) -> None:
         """Fold the stored rows up to the start step into the tracker, as live mode did (A7)."""
@@ -149,12 +175,13 @@ class Director:
         rule: str | None = None,
         reverts: int | None = None,
         llm_call: str | None = None,
+        yoked_to: int | None = None,
     ) -> dict[str, Any]:
         """A log entry in its canonical JSON form (what a replay reads back is exactly what is applied)."""
         entry = {
             "step_applied": v.step,
             "source": source,
-            "persona": self.persona.name,
+            "persona": self.name,
             "action": action,
             "params": clamped.params,
             "prev": clamped.prev,
@@ -165,6 +192,7 @@ class Director:
             **({"rule": rule} if rule is not None else {}),
             **({"reverts": reverts} if reverts is not None else {}),
             **({"llm_call": llm_call} if llm_call is not None else {}),
+            **({"yoked_to": yoked_to} if yoked_to is not None else {}),
         }
         return json.loads(json.dumps(entry, allow_nan=False))
 
@@ -184,7 +212,8 @@ class Director:
 
     def _decide(self, state: State, t: int) -> State:
         """Reverts, then the safety rules, then (at an LLM boundary) the model or, failing that, the rule
-        tier's discretionary rules. With the LLM tier off the rule tier alone decides, as in step 2."""
+        tier's discretionary rules; or, for the random persona, its yoked draws. With the LLM tier off the
+        rule tier alone decides, as in step 2."""
         v = self._vitals(state, t)
         new: list[dict[str, Any]] = []
         notes: list[str] = []
@@ -197,12 +226,16 @@ class Director:
             work = self._apply(work, entry)
             new.append(entry)
         ctx = self._context(work, v, t, new)
-        # The LLM tier takes the discretionary moves from the rule tier (L2): only the safety rules remain.
-        decision = (rules.decide if self.llm is None else rules.decide_safety)(ctx, self.params)
+        # The LLM tier takes the discretionary moves from the rule tier (L2), and the random persona has none:
+        # only the safety rules remain.
+        safety_only = self.llm is not None or self.yoke is not None
+        decision = (rules.decide_safety if safety_only else rules.decide)(ctx, self.params)
         notes.extend(decision.notes)
         work = self._take_all(work, v, decision.proposals, new, notes)
         if self.llm is not None and t % self.cfg.director.llm_every == 0:
             work = self._consult(work, v, t, new, notes, records)
+        if self.yoke is not None and t in self.yoke.steps:
+            work = self._yoked_moves(work, v, t, new, notes)
         if new:
             self.rd.append_jsonl(DIRECTOR_LOG_FILE, new)
         self.entries = [*self.entries, *new]
@@ -235,16 +268,20 @@ class Director:
         prop: rules.Proposal,
         entries: Sequence[Mapping[str, Any]],
         llm_call: str | None = None,
+        yoked_to: int | None = None,
     ) -> tuple[State, dict[str, Any]]:
         """Clamp and apply one proposal to ``work``; the entry that results (``source`` is ``llm`` for a
-        proposal of the model, whose entry carries the call id and no rule)."""
+        proposal of the model, whose entry carries the call id and no rule; a yoked move of the random
+        persona carries the step it is yoked to)."""
         active = pacing.fold(entries, v.step).active
         restore = active["regen"].restore if prop.action == "regen_pulse" and "regen" in active else None
         clamped = actions.clamp(
             prop.action, prop.raw, prop.duration, actions.env_view(work), self.cfg, restore
         )
         if llm_call is None:
-            entry = self._entry(v, "rule", prop.action, clamped, prop.reason, rule=prop.rule)
+            entry = self._entry(
+                v, "rule", prop.action, clamped, prop.reason, rule=prop.rule, yoked_to=yoked_to
+            )
         else:
             entry = self._entry(v, "llm", prop.action, clamped, prop.reason, llm_call=llm_call)
         return self._apply(work, entry), entry
@@ -254,6 +291,39 @@ class Director:
         something a replay would reject."""
         actions.validate_entry(entry, self.cfg, self.rule_every)
         return actions.apply(work, entry, self.cfg)
+
+    # --- the random persona -------------------------------------------------------------------------------
+
+    def _yoked_moves(
+        self, work: State, v: Vitals, t: int, new: list[dict[str, Any]], notes: list[str]
+    ) -> State:
+        """Make the moves the yoke log made at this step (R3): each is a uniformly random action among those
+        eligible now, with random parameters, taken through the normal path (clamp, validate, apply) and
+        followed by a refold of the pacing. When nothing is eligible a note is journalled and the remaining
+        moves of the step are not made."""
+        assert self.yoke is not None
+        k = self.yoke.steps[t]
+        for i in range(k):
+            ctx = self._context(work, v, t, new)
+            options, pools, skipped = yoked.candidates(ctx, self.params, self.cfg)
+            rng = yoked.rng_for(self.cfg.run.seed, t, i)
+            while options:
+                action = options[int(rng.integers(len(options)))]
+                raw, duration = yoked.sample_params(action, rng, self.cfg, pools)
+                prop = rules.Proposal(action, raw, duration, yoked.RULE, f"yoked draw {i + 1} of {k}")
+                try:
+                    work, entry = self._take(work, v, prop, [*self.entries, *new], yoked_to=t)
+                except actions.ActionError as e:  # the clamp refused it: nothing was applied; try another
+                    notes.append(f"yoked step {t}: {action} dropped ({e})")
+                    options.remove(action)
+                    continue
+                new.append(entry)
+                break
+            else:
+                why = f" [{'; '.join(skipped)}]" if skipped else ""
+                notes.append(f"yoked step {t}: nothing eligible ({k - i} of {k} moves not made){why}")
+                break
+        return work
 
     # --- the LLM tier -------------------------------------------------------------------------------------
 
@@ -308,7 +378,7 @@ class Director:
             {
                 "kind": "llm_call",
                 "step": t,
-                "persona": self.persona.name,
+                "persona": self.name,
                 "llm_call": call,
                 "model": self.llm.model,
                 "url": self.llm.url,
@@ -385,8 +455,8 @@ class Director:
         rules_blocked = frozenset(n.split(" (", 1)[0] for n in notes)
         fresh = [n for n in notes if n.split(" (", 1)[0] not in self._blocked]
         self._blocked = rules_blocked
-        lines = [{"step": t, "persona": self.persona.name, "text": describe(e)} for e in entries]
-        lines += [{"step": t, "persona": self.persona.name, "text": n} for n in fresh]
+        lines = [{"step": t, "persona": self.name, "text": describe(e)} for e in entries]
+        lines += [{"step": t, "persona": self.name, "text": n} for n in fresh]
         lines += records
         if lines:
             self.rd.append_jsonl(JOURNAL_FILE, lines)
