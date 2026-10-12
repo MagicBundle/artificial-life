@@ -208,9 +208,15 @@ class Decision(NamedTuple):
     notes: tuple[str, ...]  # triggered-but-blocked rules, for the journal
 
 
+# The names of the safety rules, as they appear in an entry's ``rule`` field. Everything else a rule or the
+# model does is discretionary; the yoked ``random`` persona (``director.yoked``) tells the two apart by them.
+EXTINCTION_RESCUE: Final = "extinction_rescue"
+RUNAWAY_DAMPER: Final = "runaway_damper"
+SAFETY_RULES: Final = (EXTINCTION_RESCUE, RUNAWAY_DAMPER)
+
 _TAGS: Final = {
-    "extinction_rescue": 0,
-    "runaway_damper": 1,
+    EXTINCTION_RESCUE: 0,
+    RUNAWAY_DAMPER: 1,
     "monoculture_breaker": 2,
     "stagnation_response": 3,
     "boredom": 4,
@@ -369,7 +375,7 @@ def _extinction_rescue(ctx: Context, p: RuleParams, persona: PersonaParams) -> O
     v = ctx.vitals
     if not v.extinction_risk:
         return None
-    last = ctx.pacing.last_rule.get("extinction_rescue")
+    last = ctx.pacing.last_rule.get(EXTINCTION_RESCUE)
     override = last is None or ctx.t - last >= p.rescue_override_gap
     why = f"n/K_est {_r(v.n_over_k)}, fall {_r(v.fall)}"
     mult, duration = p.rescue_regen
@@ -379,12 +385,12 @@ def _extinction_rescue(ctx: Context, p: RuleParams, persona: PersonaParams) -> O
     for action, raw, dur in parts:
         blocked = _blocked(ctx, p, persona, action, raw, safety=True, override=override)
         if blocked is None:
-            props.append(Proposal(action, raw, dur, "extinction_rescue", why))
+            props.append(Proposal(action, raw, dur, EXTINCTION_RESCUE, why))
         else:
             skipped.append(f"{action}: {blocked}")
     if override:
         props = [pr._replace(reason=f"{pr.reason} (override)") for pr in props]
-    return tuple(props), f"extinction_rescue ({why}): blocked [{'; '.join(skipped)}]"
+    return tuple(props), f"{EXTINCTION_RESCUE} ({why}): blocked [{'; '.join(skipped)}]"
 
 
 def _runaway_damper(ctx: Context, p: RuleParams, persona: PersonaParams) -> Outcome:
@@ -397,9 +403,9 @@ def _runaway_damper(ctx: Context, p: RuleParams, persona: PersonaParams) -> Outc
     raw = {"mult": p.damper_mult}
     blocked = _blocked(ctx, p, persona, "regen_pulse", raw, safety=True)
     if blocked is not None:
-        return (), f"runaway_damper ({why}): blocked [{blocked}]"
-    prop = Proposal("regen_pulse", raw, p.damper_duration, "runaway_damper", why)
-    return (prop,), f"runaway_damper ({why}): regen_pulse"
+        return (), f"{RUNAWAY_DAMPER} ({why}): blocked [{blocked}]"
+    prop = Proposal("regen_pulse", raw, p.damper_duration, RUNAWAY_DAMPER, why)
+    return (prop,), f"{RUNAWAY_DAMPER} ({why}): regen_pulse"
 
 
 def _sustained(since: int | None, last_fire: int | None, t: int, window: float) -> bool:

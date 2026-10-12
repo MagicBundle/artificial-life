@@ -9,11 +9,27 @@ enum DirectorMode: String, CaseIterable, Identifiable, Sendable {
     var label: String { rawValue.capitalized }
 }
 
-/// `director.persona`.
+/// `director.persona`. `random` is arm R of the evaluation (docs/DIRECTOR.md §9, §15): it makes as many random
+/// moves as another run's director made, at the same steps (`director.yoke_log`), and has no LLM tier.
 enum Persona: String, CaseIterable, Identifiable, Sendable {
-    case gardener, trickster, architect
+    case gardener, trickster, architect, random
     var id: String { rawValue }
     var label: String { rawValue.capitalized }
+}
+
+/// `director.yoke_log`: the `director.jsonl` of the run a random director follows. The panel offers runs of the
+/// repository and passes the path relative to it, where the engine runs.
+enum YokeLog {
+    static func path(run: String) -> String { "runs/\(run)/director.jsonl" }
+
+    /// The run a path of the form `runs/<run>/director.jsonl` names; nil for any other path.
+    static func run(from path: String) -> String? {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "runs", !parts[1].isEmpty, parts[2] == "director.jsonl" else {
+            return nil
+        }
+        return String(parts[1])
+    }
 }
 
 /// Engine defaults of the director keys (src/alife/config.py: DirectorConfig and RunConfig).
@@ -83,13 +99,26 @@ struct DirectorSettings: Equatable {
     var llmEvery = String(DirectorDefaults.llmEvery)
     var llmURL = DirectorDefaults.url
     var llmModel = DirectorDefaults.model
+    /// The random persona's `director.yoke_log` (empty for every other persona).
+    var yokeLog = ""
+
+    /// The run the random persona follows, as the picker shows it ("" when none, or when the path is not of
+    /// the form `runs/<run>/director.jsonl`).
+    var yokeRun: String {
+        get { YokeLog.run(from: yokeLog) ?? "" }
+        set { yokeLog = newValue.isEmpty ? "" : YokeLog.path(run: newValue) }
+    }
+
+    /// The LLM tier is in use: switched on, and not the random persona (which has none; it is forced off).
+    var usesLLM: Bool { llmOn && persona != .random }
 
     /// `director.llm_every` as the engine would see it (0 when the tier is off), or nil if the field is invalid.
-    var effectiveLLMEvery: Int? { llmOn ? Parse.integer(llmEvery) : 0 }
+    var effectiveLLMEvery: Int? { usesLLM ? Parse.integer(llmEvery) : 0 }
 
     private var trimmedGoal: String { goal.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedURL: String { llmURL.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedModel: String { llmModel.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var trimmedYokeLog: String { yokeLog.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     /// True for an `http://` or `https://` URL with a host (the only schemes the LLM client contacts;
     /// config.is_http_url).
@@ -121,7 +150,17 @@ struct DirectorSettings: Equatable {
         } else {
             errors.append("director.rule_every must be a positive integer.")
         }
-        if llmOn {
+        if persona == .random {  // mirrors validate(): a yoke log, and no LLM tier
+            if trimmedYokeLog.isEmpty {
+                errors.append("director.persona random needs a run to follow (director.yoke_log).")
+            } else if let run = YokeLog.run(from: trimmedYokeLog) {
+                if run == context.ownRun {
+                    errors.append("A run cannot follow its own director.jsonl.")
+                } else if !context.yokeRuns.contains(run) {
+                    errors.append("runs/\(run) has no director.jsonl to follow.")
+                }
+            }
+        } else if llmOn {
             if let every = Parse.integer(llmEvery), every >= 1 {
                 if let rule, rule >= 1, every % rule != 0 {
                     errors.append("director.llm_every must be 0 (off) or a positive multiple of "
@@ -159,8 +198,11 @@ struct DirectorSettings: Equatable {
         guard mode == .live else { return args }
         if persona != base.persona { args += ["--persona", persona.rawValue] }
         if persona == .architect, trimmedGoal != base.trimmedGoal { args.append("--goal=\(trimmedGoal)") }
+        // Only the random persona may hold a yoke log: leaving it clears the one the source had.
+        let wantLog = persona == .random ? trimmedYokeLog : ""
+        if wantLog != base.trimmedYokeLog { args.append("--yoke-log=\(wantLog)") }
         if let now = effectiveLLMEvery, now != base.effectiveLLMEvery { args += ["--llm-every", "\(now)"] }
-        if llmOn {
+        if usesLLM {
             if trimmedURL != base.trimmedURL { args.append("--llm-url=\(trimmedURL)") }
             if trimmedModel != base.trimmedModel { args.append("--llm-model=\(trimmedModel)") }
         }
@@ -190,6 +232,10 @@ struct DirectorContext: Equatable {
     var cadence: Cadence? = .engineDefaults
     /// Set when the source config could not be read.
     var warning: String?
+    /// The runs of the repository that have a `director.jsonl`: what the random persona can follow.
+    var yokeRuns: [String] = []
+    /// Resume: the run being resumed, which cannot follow itself.
+    var ownRun: String?
 
     /// A new run: the engine defaults, with the preset's cadence.
     static func newRun(cadence: Cadence?) -> DirectorContext {
@@ -213,7 +259,8 @@ struct DirectorContext: Equatable {
             }
             if mode == .resume && !source.enabled { baseline.mode = .off }
             return DirectorContext(baseline: baseline, initialMode: initial, available: mode == .fork || source.enabled,
-                                   hasLog: hasLog, cadence: source.cadence, warning: nil)
+                                   hasLog: hasLog, cadence: source.cadence, warning: nil,
+                                   ownRun: mode == .resume ? runDirectory.lastPathComponent : nil)
         } catch {
             let why = (error as? LeverConfigError)?.message ?? "\(error)"
             return DirectorContext(
@@ -282,6 +329,7 @@ struct DirectorSource: Equatable {
             s.persona = persona
         }
         if let g = try string("director", "goal") { s.goal = g }
+        if let y = try string("director", "yoke_log") { s.yokeLog = y }
         if let n = try integer("director", "rule_every") { s.ruleEvery = String(n) }
         if let n = try integer("director", "llm_every"), n > 0 {
             s.llmOn = true
