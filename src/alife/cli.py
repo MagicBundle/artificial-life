@@ -31,6 +31,7 @@ from alife.config import (
     OVERLAYS,
     PERSONAS,
     PRESETS,
+    RANDOM_PERSONA,
     Config,
     ConfigError,
     apply_overrides,
@@ -42,7 +43,7 @@ from alife.config import (
 )
 from alife.director import llm as director_llm
 from alife.director import log as director_log
-from alife.director import make_director
+from alife.director import make_director, yoked
 from alife.invariants import full_check
 from alife.render import (
     COLOR_MODES,
@@ -235,7 +236,7 @@ def _run_overrides(a: argparse.Namespace) -> list[str]:
 
 
 def _llm_overrides(a: argparse.Namespace) -> list[str]:
-    """The LLM and persona shortcut flags as ``--set`` items (run, fork and resume)."""
+    """The LLM, persona and yoke-log shortcut flags as ``--set`` items (run, fork and resume)."""
     out: list[str] = []
     if a.llm:
         out.append(f"director.llm_every={LLM_DEFAULT_EVERY}")
@@ -245,6 +246,7 @@ def _llm_overrides(a: argparse.Namespace) -> list[str]:
         ("llm_model", "run.llm_model"),
         ("persona", "director.persona"),
         ("goal", "director.goal"),
+        ("yoke_log", "director.yoke_log"),
     ):
         if getattr(a, flag) is not None:
             out.append(f"{key}={getattr(a, flag)}")
@@ -255,6 +257,13 @@ def _check_llm_flags(a: argparse.Namespace, cfg: Config) -> None:
     """The LLM tier only exists in live mode: asking for it in any other mode is a mistake, not a no-op."""
     if (a.llm or (a.llm_every or 0) > 0) and cfg.run.director != "live":
         raise ConfigError("--llm / --llm-every need --director live (a replay never calls the model)")
+
+
+def _check_yoke(cfg: Config) -> None:
+    """A live random persona follows another run's log: check it (exit 2) before any run directory is
+    created or touched. A replay never reads it."""
+    if cfg.run.director == "live" and cfg.director.persona == RANDOM_PERSONA:
+        yoked.load(cfg)
 
 
 def _summary(cfg: Config) -> dict[str, Any]:
@@ -286,6 +295,8 @@ def _announce(rd: RunDir, cfg: Config, step: int, steps: int, quiet: bool) -> No
         mode = f" | director {cfg.run.director}" if cfg.run.director != "off" else ""
         if cfg.run.director == "live" and cfg.director.llm_every:
             mode += f" + llm every {cfg.director.llm_every} ({cfg.run.llm_model})"
+        if cfg.run.director == "live" and cfg.director.persona == RANDOM_PERSONA:
+            mode += f" + random, yoked to {cfg.director.yoke_log}"
         print(
             f"run {rd.path}: N={s['n_max']} n_init={s['n_init']} L={s['world_size']:g} "
             f"weights={s['weight_dtype']} seed={s['seed']} | steps {step} → {step + steps}{mode}",
@@ -311,6 +322,7 @@ def _cmd_run(a: argparse.Namespace) -> int:
         return _fork(a, overrides)
     cfg = load_config(a.config, preset=a.preset, overlays=a.overlay, overrides=overrides)
     _check_llm_flags(a, cfg)
+    _check_yoke(cfg)
     if cfg.run.director == "replay" or a.replay_log is not None:
         raise ConfigError(
             "a replay continues an existing state: use `run --init-from SRC --director replay --replay-log "
@@ -351,6 +363,7 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
     src_cfg = dataclasses.replace(src_cfg, run=dataclasses.replace(src_cfg.run, director="off"))
     cfg = _layer(src_cfg, overlays=a.overlay, path=a.config, overrides=overrides)
     _check_llm_flags(a, cfg)
+    _check_yoke(cfg)
     replay = cfg.run.director == "replay"
     if replay != (a.replay_log is not None):
         raise ConfigError("--director replay and --replay-log LOG go together")
@@ -425,6 +438,7 @@ def _cmd_resume(a: argparse.Namespace) -> int:
         )
     cfg = apply_overrides(base, items)
     _check_llm_flags(a, cfg)
+    _check_yoke(cfg)
     path = _select_checkpoint(rd, a.checkpoint)
     state = load_checkpoint(path, cfg)
     step = int(to_numpy(state.step))
@@ -796,6 +810,12 @@ def _llm_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--llm-model", default=None, metavar="NAME", help="run.llm_model")
     p.add_argument("--persona", choices=PERSONAS, default=None, help="director.persona")
     p.add_argument("--goal", default=None, metavar="TEXT", help="director.goal (the Architect's goal)")
+    p.add_argument(
+        "--yoke-log",
+        default=None,
+        metavar="PATH",
+        help="director.yoke_log: the director.jsonl the random persona follows (needs --persona random)",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

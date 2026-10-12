@@ -1,6 +1,6 @@
 # Handover
 
-Status of the `alife` project as of 2026-10-11 (after director build step 4), written for the next coding
+Status of the `alife` project as of 2026-10-11 (after director build step 4 and the yoked `random` persona), written for the next coding
 session (a local Claude Code session on the owner's MacBook Pro, M5 Pro, 48 GB). Read this, then `CLAUDE.md`, then the parts of
 `docs/DESIGN.md` you need.
 
@@ -49,6 +49,9 @@ of the Python process). A second SIGINT is a hard exit. Do not use `--quiet` if 
   the director design (PR #4) and director build step 1, the engine's live environment state (PR #5), all
   squash-merged, as are director build step 2 (the host-side director core, PR #6) and step 3 (the LLM tier, PR #7).
   Director build step 4 (the GUI Director panel and `alife llm-check`) is the PR this handover ships with.
+  The yoked `random` persona for evaluation arm R (`--persona random --yoke-log runs/B/director.jsonl`; `DIRECTOR.md`
+  §15, `DESIGN.md` §26.11) is built on its own branch; the GUI offers it (Persona menu, "Yoked to run" picker) and the
+  click-through below has an item for it, not yet run by the owner.
 - Mac (M5 Pro, Metal), this PR: 871 tests pass (852 fast, 19 slow), 2 skipped (the Linux-only golden digest and the
   `llm` test that needs a real server; it passed once with LM Studio), ruff and the format check clean. Linux CI was
   not run in this session. A real LM Studio smoke test (`gemma-4-26b-a4b-it-mlx@8bit`, tiny preset, 3000 steps, a call
@@ -188,7 +191,11 @@ verified findings for the whole run.
   3. Fork that run: the Director box is pre-filled and Live; change only the persona and check the command shows only
      `--director live --persona ...`;
   4. Resume it with Replay, then Resume a run made without a director: the note appears and no director flag is shown;
-  5. a run without `director.jsonl` shows "Director off for this run".
+  5. a run without `director.jsonl` shows "Director off for this run";
+  6. pick Persona Random: the LLM controls disappear, Start is disabled until a run is chosen under "Yoked to run" (only
+     runs with a `director.jsonl` are listed), and the Command box then shows `--persona random
+     --yoke-log=runs/NAME/director.jsonl`; switch back to Gardener and, for a Resume of a random run, check the command
+     adds `--yoke-log=` to clear the key.
 
 ## Suggested next steps
 
@@ -196,7 +203,8 @@ verified findings for the whole run.
    LLM, Trickster; optional Architect) with the same seed, and compare archive coverage, persistent novelty, clades,
    extinctions and rescues, and intervention cost, plus the LLM's validity, clamp rate and latency. About 6 hours per
    arm.
-   §9 now also requires a matched random-director arm R (a new `random` persona, not built yet), at least two
+   §9 now also requires a matched random-director arm R (the `random` persona is built: run B first, then R with
+   `--yoke-log runs/B/director.jsonl` and the same fork point, seed and `rule_every`), at least two
    seeds per arm, and Bedau–Packard activity as an outcome metric (`docs/RESEARCH.md` §4).
 2. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;

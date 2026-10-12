@@ -2,7 +2,8 @@
 
 The log is the single source of truth for replay. Its first line is a header; every later line is one entry
 (see ``actions``). A header is appended again whenever the policy changes on resume (persona, goal, budget,
-cadence or rules version), so a reader sees which settings were in force: entries also carry their persona.
+cadence, rules version or yoke log), so a reader sees which settings were in force: entries also carry their
+persona.
 """
 
 from __future__ import annotations
@@ -24,8 +25,9 @@ class LogError(ConfigError):
     """A director log that cannot be replayed (exit 2 when it reaches the CLI)."""
 
 
-def make_header(cfg: Config, step: int, budget: int) -> dict[str, Any]:
-    """The header for a director starting at ``step``; ``budget`` is the effective cost budget per 100k."""
+def make_header(cfg: Config, step: int, budget: int, yoke_sha256: str | None = None) -> dict[str, Any]:
+    """The header for a director starting at ``step``; ``budget`` is the effective cost budget per 100k.
+    ``yoke_sha256`` (the random persona only) is the fingerprint of the yoke log it was started with."""
     d = cfg.director
     return {
         "kind": HEADER_KIND,
@@ -38,6 +40,8 @@ def make_header(cfg: Config, step: int, budget: int) -> dict[str, Any]:
         "seed": cfg.run.seed,
         # The LLM tier's policy is recorded only while it is on, so a log without it keeps its step-2 header.
         **({"llm_every": d.llm_every, "llm_model": cfg.run.llm_model} if d.llm_every else {}),
+        # Likewise the yoked persona's provenance: the log it follows (as given) and what that file held.
+        **({"yoke_log": d.yoke_log, "yoke_sha256": yoke_sha256} if yoke_sha256 is not None else {}),
     }
 
 

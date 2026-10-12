@@ -2080,7 +2080,7 @@ class FieldConfig:
 @dataclass(frozen=True)
 class DirectorConfig:                  # added after v0.1; docs/DIRECTOR.md
     enabled: bool = False              # static: the compiled step reads State.env (§2.2, §3); off = today's graph
-    persona: str = "gardener"          # gardener | trickster | architect; the keys below are policy (§26.2), unhashed
+    persona: str = "gardener"          # gardener | trickster | architect | random (§26.11); the keys below are policy (§26.2), unhashed
     goal: str = ""                     # the Architect's goal text (stored, not interpreted before the LLM tier)
     rule_every: int = 1000             # steps between rule-tier decisions; multiple of the metrics cadences
     budget_per_100k: int = 0           # cost units per rolling 100k steps; 0 = the persona's default
@@ -2088,6 +2088,7 @@ class DirectorConfig:                  # added after v0.1; docs/DIRECTOR.md
     llm_temperature: float = 0.4       # sampling temperature of the request
     llm_timeout_s: float = 60.0        # seconds the run waits for a reply before the rule tier takes over
     llm_max_tokens: int = 400          # reply length limit of the request
+    yoke_log: str = ""                 # random persona only (§26.11): the director.jsonl whose discretionary moves it matches
 
 @dataclass(frozen=True)
 class RunConfig:                       # excluded from config_hash; on resume only observer/cadence keys may change (§18)
@@ -2144,7 +2145,7 @@ lists). It reloads exactly: `config_from_dict(config_to_dict(c)) == c`. `config_
 except `run`. **Keys added after v0.1 are omitted from the hash at their defaults** (`config.POST_V01_KEYS`:
 `population.immigration_every`, `population.immigration_count`, `fields.season_period`,
 `fields.season_amplitude`, `fields.season_mode`, `director.enabled`; the director's policy keys `persona`, `goal`,
-`rule_every`, `budget_per_100k` and (step 3) `llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
+`rule_every`, `budget_per_100k`, (step 3) `llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` and (§26.11) `yoke_log` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
 because only `enabled` changes the compiled step). A section that this leaves empty
 (`director`) is omitted from the hashed dict too, so the hash does not change when a section is added. A
 `config.json` that predates them therefore loads with the
@@ -2162,7 +2163,8 @@ changes the hash, as for any dynamics key.
   `immigration_every > 0`; `immigration_count ≤ M`.
 - **Director:** `director.enabled` is a plain bool. With it on, `fields.n_patches` also fixes the length of
   `env_patch_gain`, and immigration is possible (`immigration_possible`) even when `immigration_floor = 0`.
-  `persona ∈ {gardener, trickster, architect}`; `rule_every ≥ 1`; `budget_per_100k ≥ 0`; `run.director ∈ {off, live,
+  `persona ∈ {gardener, trickster, architect, random}`; the `random` persona needs a non-empty `yoke_log` and
+  `llm_every = 0`, and `yoke_log` is empty for every other persona (§26.11); `rule_every ≥ 1`; `budget_per_100k ≥ 0`; `run.director ∈ {off, live,
   replay}`; when `run.director` is not `off`: `director.enabled` is true and `rule_every` is a multiple of both
   `run.metrics_every` and `run.heavy_metrics_every` (§26.2). LLM tier (§26.10): `llm_every` is 0 or a positive
   multiple of `rule_every`; `0 ≤ llm_temperature ≤ 2`; `llm_timeout_s` positive and finite; `llm_max_tokens ≥ 1`;
@@ -2525,9 +2527,11 @@ alife run      [--preset tiny|dev|64k|256k] [--overlay fast ...] [--config PATH]
                [--metrics-every N] [--checkpoint-every N] [--checks cheap|off] [--no-compile] [--quiet]
                [--director off|live|replay] [--replay-log LOG]
                [--llm | --llm-every N] [--llm-url URL] [--llm-model NAME] [--persona NAME] [--goal TEXT]
+               [--yoke-log PATH]
 alife resume   RUN [--steps N | --until STEP] [--checkpoint STEP|latest] [--set run.key=value ...]
                [--set director.key=value ...] [--director off|live|replay] [--quiet]
                [--llm | --llm-every N] [--llm-url URL] [--llm-model NAME] [--persona NAME] [--goal TEXT]
+               [--yoke-log PATH]
                (only observer/cadence run.* keys, run.director and the director's policy keys, §18; dynamics
                changes go through run --init-from)
 alife render   RUN [--checkpoint STEP|latest] [--steps N] [--every K] [--out PATH(.png|.mp4|dir)]
@@ -2552,7 +2556,8 @@ steps/s, `ledger OK`.
 **LLM and persona flags** (`run`, including a fork, and `resume`; §26.10) are shortcuts for `--set` items, like
 `--director`, and take precedence over `--set`: `--llm` is `director.llm_every=25000`, `--llm-every N` is
 `director.llm_every=N` (`--llm` and `--llm-every` exclude each other), `--llm-url` / `--llm-model` are `run.llm_url` /
-`run.llm_model`, `--persona` / `--goal` are `director.persona` / `director.goal`. `--llm` or a positive `--llm-every`
+`run.llm_model`, `--persona` / `--goal` / `--yoke-log` are `director.persona` / `director.goal` / `director.yoke_log`
+(§26.11). `--llm` or a positive `--llm-every`
 needs the effective mode to be `live` (`--director live`, or a resume of a live run): in any other mode the command
 exits 2 before anything is written, since a replay never calls the model.
 
@@ -3158,6 +3163,7 @@ LLM tier of step 3 and says exactly what it changes. There is no GUI panel (step
 | `director/log.py` | `director.jsonl` header, `validate_log`, `read_log` |
 | `director/llm.py` | step 3: the reply schema generated from `MENU`, `parse_reply`, the stdlib `Client` (§26.10) |
 | `director/prompt.py` | step 3: the system and user messages of a call (§26.10) |
+| `director/yoked.py` | the `random` persona (§26.11): the yoke log (`yoked_steps`, `load`), the eligible actions, `sample_params`, the per-draw generator |
 
 **Hook** (`runner.run(..., director=None)`). `director=None` is today's behaviour exactly. With a director, at every
 metrics row, after the row is appended and after the violation check (so never for a violated state):
@@ -3183,7 +3189,7 @@ levers keep whatever values they hold, nothing is decided or reverted.
 
 | key | default | meaning |
 |---|---|---|
-| `director.persona` | `gardener` | `gardener`, `trickster` or `architect` (§26.6) |
+| `director.persona` | `gardener` | `gardener`, `trickster`, `architect` or `random` (§26.6, §26.11) |
 | `director.goal` | `""` | the Architect's goal text; stored in the log header, and given to the model as data when the LLM tier is on (§26.10) |
 | `director.rule_every` | 1000 | steps between rule-tier decisions |
 | `director.budget_per_100k` | 0 | cost units per rolling 100k steps; 0 = the persona's default; bounded by the persona's maximum |
@@ -3196,7 +3202,7 @@ besides the observer/cadence `run.*` keys (§18). Step 3 adds four more policy k
 `llm_timeout_s`, `llm_max_tokens`, §26.10), unhashed and resumable in the same way, and the run-level keys
 `run.llm_url` and `run.llm_model` (resume keys; not hashed, since no `run.*` key is).
 
-`validate`: `persona` is one of the three; `rule_every ≥ 1`; `budget_per_100k ≥ 0`; `run.director ∈ {off, live,
+`validate`: `persona` is one of the four (the `random` persona's extra rules are in §26.11); `rule_every ≥ 1`; `budget_per_100k ≥ 0`; `run.director ∈ {off, live,
 replay}`; and when the mode is not `off`, `director.enabled` is true and `rule_every` is a multiple of both
 `run.metrics_every` and `run.heavy_metrics_every` (so the heavy vital signs exist at every boundary). Resume
 overrides of the cadences are revalidated like any other.
@@ -3415,8 +3421,9 @@ trigger. These are first values for the evaluation of §9 of `docs/DIRECTOR.md`,
 | `test_director_log.py` | append and fsync; torn lines; resume truncation; replay never truncates; headers; log validation; the CLI's exit 2 before anything is written |
 | `test_director_replay.py` | the bitwise replay tests of §26.8 (fresh directory, in place at three checkpoints, another metrics cadence, a late fork, live resume, real rules) and a slow one with the real timed bounds |
 | `test_director_config.py` | unchanged hashes, the unhashed policy keys, validation, the resume key list and its refusals |
+| `test_director_random.py` | the `random` persona (§26.11): which of a log's entries are yoked; validation and the exit-2 file checks; the sampler (bounds, reachability, log-uniform shape, determinism, clamp and replay validation); eligibility; a live run yoked to a scripted arm B, its header, its replay (bitwise, never reading the yoke log), live resume, a changed yoke log, nothing eligible, the safety rules |
 | `test_director_llm.py` | step 3 (§26.10): the schema and the reply validator; a mock OpenAI-compatible server for valid, invalid, empty, slow, refused, 500 and redirected replies, clamps, duplicates, `none`, budget and cooldown blocks, the request body and the prompt; roles; no network with the tier off or in a replay; a live run with the mock model and its bitwise replay; an optional real-server test (`@pytest.mark.llm`, needs `ALIFE_LLM_URL`) |
-| edits | `test_director_actions.py` and `test_director_log.py` (the "unknown source" example is no longer `llm`), `test_director_config.py` (the LLM keys, the flags), `test_runner.py` (hook order; no action on a violated or extinct state; the checkpoint holds the applied env), `test_metrics.py`, `test_cli_smoke.py` (`--director` flows, fork reset), `test_lint.py` (the director package is scanned) |
+| edits | `test_director_actions.py` and `test_director_log.py` (the "unknown source" example is no longer `llm`), `test_director_config.py` (the LLM keys, the flags; `PERSONAS` gains `random`), `test_runner.py` (hook order; no action on a violated or extinct state; the checkpoint holds the applied env), `test_metrics.py`, `test_cli_smoke.py` (`--director` flows, fork reset), `test_lint.py` (the director package is scanned) |
 
 ### 26.10 The LLM tier (build step 3)
 
@@ -3515,6 +3522,64 @@ decisions need not equal the uninterrupted run's; the log is the source of truth
 **Real server.** `tests/test_director_llm.py` has one test marked `llm` that runs only when `ALIFE_LLM_URL` is set (and
 optionally `ALIFE_LLM_MODEL`); the default runs never need LM Studio.
 
+### 26.11 The `random` persona: arm R, yoked to another run (evaluation)
+
+Arm R of `docs/DIRECTOR.md` §9 is a control that perturbs as often and as late as arm B, but chooses nothing. The owner
+decided it is **yoked**: it reads B's `director.jsonl` and intervenes at exactly the steps where B made a discretionary
+move, with the same number of moves, picking uniformly random eligible actions with random parameters. That isolates the
+quality of B's choices from the amount and timing of perturbation. Decisions R1 to R7 of the spec; everything below
+applies only to `director.persona = random`, and with any other persona nothing changes (the hashes, the logs and the
+trajectories are as before).
+
+**Config and CLI (R1).** `random` joins `config.PERSONAS`. `director.yoke_log` (str, default `""`) is a policy key like
+the others: in `POST_V01_KEYS` and `UNHASHED_KEYS` (so no hash changes and a resume may change it). `--yoke-log PATH` on
+`run` (a fork included) and `resume` is its shortcut. `validate`: `random` needs a non-empty `yoke_log` and
+`llm_every = 0`; a non-empty `yoke_log` with any other persona is an error. At the start of a **live** `random` director
+(`run`, fork and `resume`, checked in the CLI before any directory is created or touched, and again by `Director`; exit
+2) the yoke log must exist, pass the replay pre-validation of §26.3 against this run's config, and have every yoked step
+a multiple of this run's `rule_every`. The log header records `yoke_log` (as given) and `yoke_sha256` (of the file's
+bytes), only for this persona. Paths are used as given, relative to the working directory.
+
+**Which moves are yoked (R2).** From the yoke log, every entry whose `source` is `rule` or `llm` and whose `rule` is not a
+safety rule (`rules.SAFETY_RULES` = `extinction_rescue`, `runaway_damper`). Reverts never are. They are counted per
+`step_applied`. A log whose entries carry no `rule` field (older logs) has nothing to tell a safety move by: its `llm`
+entries and its `rule` entries all count, reverts excepted.
+
+**Behaviour at a boundary (R3).** `Director` takes the Gardener's `PersonaParams` for the budget, the cooldown scale and
+the thresholds (the entries and the journal still say `random`). Reverts and the safety rules run as for any persona
+(`rules.decide_safety`); there is no boredom rule, no other discretionary rule and no model. At a yoked step with count
+`k`, `k` times: take the menu actions that `rules.eligibility` allows now (budget, cooldown, one effect per lever, the
+catastrophe cap, a full immigration queue; the persona's minimum gap and drama do not apply, as for the model) and, for
+`habitat_loss`, a free alive patch while at least two are alive; pick one uniformly; draw its parameters; take it
+through the normal path (clamp, validate, apply, log); refold the pacing. If nothing is eligible, or the clamp refuses
+every candidate, the journal gets `yoked step <t>: nothing eligible (<n> of <k> moves not made) [why, per action]` and
+the remaining moves of the step are not made. Entries: `source: "rule"`, `rule: "random"`, `persona: "random"`,
+`yoked_to: <step>`, `reason: "yoked draw i of k"`. `mutation_floor_nudge` is not on the menu, so it is never drawn. With
+the Gardener's default budget of 2 a catastrophe (cost 3) is never eligible unless `budget_per_100k` is 3 or 4 (its maximum).
+
+**Sampling (R4).** `yoked.rng_for(seed, t, draw)` is `Generator(PCG64(SeedSequence([run.seed, t, 100, draw])))` (the
+Trickster's streams are 0 to 9): stateless, one per draw. It picks the action, then `yoked.sample_params(action, rng, cfg,
+patches)` returns `(raw, duration)` as a rule's `Proposal` does, within the live `actions.MENU` bounds, `radius_bounds(cfg)`
+and the world size. Log-uniform: season period, immigrant count, every duration (`habitat_loss`, `regen_pulse`), drift
+multiplier. Uniform: amp, gain, the regen multiplier, `kill_p`, the catastrophe radius, the centre (over the torus) and the
+patch index. `fertility_shift` is a gain change or a move with probability 1/2 each; a move has a uniform direction and a
+uniform length in `[0, L/4]`; with no free patch it is a move. Integers are rounded after sampling; `actions.clamp` does
+the rest (durations round up to `rule_every`) and its output is what is logged.
+
+**Replay and resume (R5).** R's own log replays like any other (§26.8): `Director` loads the yoke log in live mode only, so
+a replay never opens it (tested with the file gone). A live `resume` re-reads it; if its sha256 differs from the latest
+header's, a warning goes to stderr and the run continues, and a new header records the file now in use.
+
+**GUI (R6).** The Director panel's persona menu gains Random; with it selected the panel shows a "Yoked to run" picker
+(runs that have a `director.jsonl`; the resumed run itself is excluded) passed as `--yoke-log=runs/<run>/director.jsonl`,
+and hides the LLM controls (forced off: `--llm-every 0` when the baseline had it on). Leaving Random for another persona
+passes `--yoke-log=` to clear the key. `DirectorSettings.validate` mirrors R1 (a run chosen, and it has a log).
+
+**Running the arms.** Run B first. Then run R from the same fork point, with the same seed, `rule_every` and metrics
+cadences: `alife run --init-from SRC:STEP --director live --persona random --yoke-log runs/B/director.jsonl ...`. R's moves
+are yoked to B's steps, not to B's state, so the two trajectories diverge after the first intervention; the counts match as
+long as R has budget, an unlocked lever and a free cooldown at each yoked step (the journal says when it did not).
+
 ---
 
 ## Review log
@@ -3589,7 +3654,8 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I29 | feat: director build step 2 (`docs/DIRECTOR.md` §10): the host-side director core, no LLM, no change to the compiled step. (1) Package `alife.director` (vitals, archive, actions, pacing, rules, log, controller): vital signs from `metrics.jsonl` rows, a behaviour archive with novelty and a coverage grid, the §5 menu with budgets, cooldowns and timed reverts, the safety rules and the three personas, `director.jsonl` (header, entries with explicit clamped params, revert entries) and `journal.jsonl`, replay. (2) Runner: optional `director` hook after the metrics row and the violation check, before the checkpoint; never on a violated or extinct state; the checkpoint holds the applied env. (3) Config: `run.director` (off/live/replay, a resume key) and the policy keys `director.persona|goal|rule_every|budget_per_100k`, which are unhashed at every value (`UNHASHED_KEYS`); `validate` ties `rule_every` to the metrics cadences; all earlier hashes, `TINY_HASH_V01` included, are unchanged. (4) CLI: `--director`, `--replay-log`; resume accepts the policy keys; a fork resets the env to `default_env` and starts with the director off; a bad replay log is exit 2 before anything is written. (5) Metrics: additive `n_alive_min` and, with the director enabled, an `env` summary; `carrying_capacity` takes optional `step`/`env`. (6) `RunDir.append_jsonl/read_jsonl/write_json`, `truncate_after(keep_director=)`. Deviation from the proposal: seasons have no runtime mode (only period and amplitude), `mutation_floor_nudge` and archive immigrants are not implemented, the damper's capacity is `N_CAP`. Replay of a log is bitwise (§26.8); viewer and `render` re-simulate without the director. Tests: `tests/test_director_*.py` and the edits in §26.9. |
 | I30 | feat: director build step 3 (`docs/DIRECTOR.md` §7): the LLM tier, off by default, no change to the compiled step or to any earlier hash. (1) `director.llm_every` (0 = off, else a multiple of `rule_every`), `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` (policy keys: `POST_V01_KEYS` and `UNHASHED_KEYS`) and `run.llm_url`, `run.llm_model` (resume keys); CLI `--llm`, `--llm-every`, `--llm-url`, `--llm-model`, `--persona`, `--goal` on `run` (fork included) and `resume`, which exit 2 unless the effective mode is `live`. (2) `director/llm.py` (the JSON schema generated from `actions.MENU` with `minimum`/`maximum`/`maxLength`, the untrusted-reply validator, a stdlib client that follows no redirect, ignores proxies, caps size and wall time and never raises) and `director/prompt.py` (persona, goal as delimited data, menu with effect descriptions, vital signs and trends, this boundary's safety actions, the last five interventions with their measured effect, budget). (3) Roles: the rule tier keeps reverts and the safety rules at every boundary (`rules.decide_safety`); at `t % llm_every == 0` the model makes the discretionary moves and the rule tier's discretionary rules (`decide_discretionary`) are only the fallback of a failed, invalid or fully refused call; the call is synchronous inside the existing hook. With the tier off the director calls `rules.decide` as before: same decisions, same log, `RULES_VERSION` unchanged. (4) `source: "llm"` entries (with `llm_call`), accepted by `validate_entry` and `validate_log`; one `llm_call` record per call in `journal.jsonl` (raw prompt and response, outcome, clamps, rejections, fallback); the header records `llm_every`/`llm_model` only while the tier is on. Replay never builds a client. Deviations from the proposal: synchronous instead of async (reply applied at the same boundary), `fertility_shift` offered to the model in its gain form only, no `--no-llm` (use `--llm-every 0`). Tests: `tests/test_director_llm.py`, the `llm` marker, and the edits in §26.9 (two existing tests used `llm` as their example of an unknown source). |
 | I31 | feat: director build step 4 (`docs/DIRECTOR.md` §14): the GUI Director panel, plus one CLI command. `alife llm-check` (§21) sends one tiny structured-output request under the director's own `llm.Client` and `response_format` and prints `OK model=... latency=...s` (exit 0) or `FAIL <kind>: <detail>` (exit 1, `ExitCode.ERROR`; exit 2 for a malformed URL, empty model or non-positive `--timeout`). No engine, config or hash change; no new config key; Python changes are `cli.py` and `tests/test_cli_llm_check.py` (mock-server cases for OK, HTTP error, empty content, invalid JSON, schema violation, timeout, closed port). |
-| I32 | feat: offline evolutionary-activity analysis (§19.3, `docs/ACTIVITY.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) Package `alife.analysis` (host-only numpy, never imported by the step, outside the §22.6 lint scope): `phylo` (the phylogeny rebuilt from the event logs by streaming the chunks, with a coverage report against `metrics.jsonl` and the final checkpoint; pointer-jumping lineage labels; Bedau's neutral shadow and a permuted heritability null), `activity` (one pass over grid windows: cohort-subtree and paraphyletic marker components; Bedau–Packard `D`, `A_cum`, `Ā`, `A_new` histograms; Channon's component-normalised activity against a reset shadow, computed in expectation; threshold crossings), `report` (classification none/bounded/unbounded per window with every threshold swept, `summary.json`) and `plots`. (2) CLI `alife activity RUN` (§21), writing to `RUN/activity` by default and never modifying the run's files. (3) Optional extra `analysis = ["matplotlib>=3.9"]` (§16); without it the command writes tables only. Deviations from the 1998 paper, documented in the note: the primary `A_new` window is `[a', 10^0.2 a']`, because the literal `a' ± 0.05 (a_max − a')` degenerates on a heavy-tailed run; the asymptotic definitions are applied as trends over finite windows. Limitation: runs that start at step 0 only (forks need founders from a checkpoint). Tests: `tests/test_analysis_activity.py`. |
+| I32 | feat: the `random` persona for evaluation arm R (`docs/DIRECTOR.md` §9, §15), yoked to another run's discretionary moves. (1) `director.persona = random` (`PERSONAS`) and the policy key `director.yoke_log` (`POST_V01_KEYS`, `UNHASHED_KEYS`: no hash changes); `--yoke-log PATH` on `run`, fork and `resume`; `validate` ties them together (a yoke log and `llm_every = 0` for `random`, no yoke log for any other persona). (2) `director/yoked.py`: `yoked_steps` (discretionary entries of a log per step: `source` rule or llm, not a safety rule, never a revert; `rules.SAFETY_RULES` are named constants shared with the rules), `load` (exists, replay pre-validation, steps on R's boundaries, sha256), `candidates` (the eligible menu actions via `rules.eligibility`), `sample_params` (uniform and log-uniform over the live menu bounds) and a stateless per-draw generator. (3) `Director`: R uses the Gardener's `PersonaParams` and keeps reverts and the safety rules; at a yoked step it makes the same number of random eligible moves, or journals "nothing eligible"; entries `rule: random`, `persona: random`, `yoked_to`; the header records `yoke_log` and `yoke_sha256`; a live resume warns on stderr when the file changed. Replay never reads the yoke log. (4) The CLI checks the yoke log (exit 2) before any directory is created or touched; the GUI offers Random with a "Yoked to run" picker. No engine, step or hash change; every other persona is byte-identical. Interpretations: the sampler returns `(raw, duration)` like a rule's proposal; the patch of a gain change or a loss is drawn among the free ones (a draw cannot be refused for a locked patch); a new header is appended when a resume finds another yoke file; the one existing test that pinned `PERSONAS` was updated. Tests: `tests/test_director_random.py`. |
+| I33 | feat: offline evolutionary-activity analysis (§19.3, `docs/ACTIVITY.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) Package `alife.analysis` (host-only numpy, never imported by the step, outside the §22.6 lint scope): `phylo` (the phylogeny rebuilt from the event logs by streaming the chunks, with a coverage report against `metrics.jsonl` and the final checkpoint; pointer-jumping lineage labels; Bedau's neutral shadow and a permuted heritability null), `activity` (one pass over grid windows: cohort-subtree and paraphyletic marker components; Bedau–Packard `D`, `A_cum`, `Ā`, `A_new` histograms; Channon's component-normalised activity against a reset shadow, computed in expectation; threshold crossings), `report` (classification none/bounded/unbounded per window with every threshold swept, `summary.json`) and `plots`. (2) CLI `alife activity RUN` (§21), writing to `RUN/activity` by default and never modifying the run's files. (3) Optional extra `analysis = ["matplotlib>=3.9"]` (§16); without it the command writes tables only. Deviations from the 1998 paper, documented in the note: the primary `A_new` window is `[a', 10^0.2 a']`, because the literal `a' ± 0.05 (a_max − a')` degenerates on a heavy-tailed run; the asymptotic definitions are applied as trends over finite windows. Limitation: runs that start at step 0 only (forks need founders from a checkpoint). Tests: `tests/test_analysis_activity.py`. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

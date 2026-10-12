@@ -4,7 +4,8 @@ Start with `docs/HANDOVER.md` (current state, results, next steps). `docs/DESIGN
 `docs/DIRECTOR.md` is the design for the ecosystem director; build steps 1 (the engine's live environment
 state, `State.env`), 2 (the host-side core: vital signs, archive, rule tier, `director.jsonl`, replay, CLI;
 `DESIGN.md` §26), 3 (the optional LLM tier on a local LM Studio server, `DESIGN.md` §26.10) and 4 (the GUI Director
-panel and `alife llm-check`, `DIRECTOR.md` §14) are implemented, the evaluation is not yet. `docs/RESEARCH.md`
+panel and `alife llm-check`, `DIRECTOR.md` §14) are implemented, and so is the yoked `random` persona for the evaluation's arm R
+(`DIRECTOR.md` §15, `director.yoke_log`); the evaluation itself has not been run. `docs/RESEARCH.md`
 assesses research directions against prior work.
 
 ## Conventions

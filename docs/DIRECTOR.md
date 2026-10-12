@@ -272,12 +272,17 @@ Fork `runs/64k_s0` at step 120,000 into arms that run to step 1.5M:
 | B | rule tier only, Gardener |
 | C | rule + LLM, Trickster |
 | D (optional) | rule + LLM, Architect with goal "bodies ≥ 100" |
-| R | random director: same menu, budgets, cooldowns and safety rules as B, with actions drawn uniformly from the eligible menu (seeded, so it replays) |
+| R | random director, yoked to B: same menu, budgets, cooldowns and safety rules as B; it moves at exactly the steps where B made a discretionary move, as often, with actions drawn uniformly from the eligible menu (seeded, so it replays) |
 
 **Why arm R.** Without it, "the director helps" cannot be separated from "any perturbation helps".
 Prior LLM-in-the-loop ALife work (ASAL, ASAL++) reports no such matched control (`docs/RESEARCH.md` §1).
-B and C count as an improvement only if they beat R as well as A. The random director needs a new
-`random` persona: not built yet, see §10.
+B and C count as an improvement only if they beat R as well as A. R is **yoked** (owner decision): it reads B's
+`director.jsonl` and makes the same number of moves at the same steps, so the comparison isolates the quality of B's
+choices from the amount and timing of perturbation. It is the `random` persona (built, §10, §15).
+
+**Running R.** Run B first. Then run R from the same fork point, with the same seed, `rule_every` and metrics cadences:
+`alife run --init-from runs/64k_s0:120000 --director live --persona random --yoke-log runs/B/director.jsonl ...`.
+R keeps the reverts and the safety rules, so it may also rescue or damp on its own state; those are not yoked.
 
 **Seeds.** Run every arm on at least two seeds:
 - seed 0: the fork of `runs/64k_s0` described above;
@@ -318,8 +323,8 @@ run. Run sequentially; parallel arms share the GPU.
    mock-server test (`http.server` in tests) for valid, invalid and slow replies.
 4. **GUI (done, §14):** the Director panel and `alife llm-check`.
 5. **Evaluation:**
-   - a `random` persona for arm R: uniform over the eligible menu, with the same budget, cooldown and safety
-     rules, seeded per decision like the Trickster, plus a replay test;
+   - a `random` persona for arm R (**done, §15**): uniform over the eligible menu, yoked to B's discretionary steps,
+     with the same budget, cooldown and safety rules, seeded per decision, plus a replay test;
    - arms A–D and R on two seeds;
    - dashboard markers.
 
@@ -445,3 +450,24 @@ Decisions G1 and G2 of the step-4 spec. The panel is `gui/Sources/AlifeControl/D
   keys are ignored. A run without `director.jsonl` shows "Director off for this run".
 - **Not built.** Starting a replay fork from the GUI; editing `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` or
   `budget_per_100k` (CLI `--set` only); intervention markers on the metrics (step 5).
+
+## 15. The random persona as built: arm R
+
+Decisions R1 to R7 of the spec; `docs/DESIGN.md` §26.11 is normative.
+
+- **Yoked (R1, R2).** `director.persona = random` needs `director.yoke_log` (the `director.jsonl` of another run) and no LLM
+  tier. R makes, at each step where that log has discretionary entries (source `rule` or `llm`, not a safety rule, never a
+  revert), the same number of moves. The log must exist, pass the replay pre-validation, and have its steps on R's
+  `rule_every` (exit 2 before anything is written); R's header records the path and the sha256.
+- **Same pacing as B (R3).** R takes the Gardener's budget, cooldown scale and thresholds, and keeps the reverts and the safety
+  rules. It has no discretionary rule and no model. A yoked move is a uniformly random action among those eligible now
+  (budget, cooldown, lever, catastrophe cap); with nothing eligible the journal says so and the step's remaining moves are
+  skipped, so counts can fall short of B's when R has no budget or every action is cooling down. With the Gardener's default
+  budget of 2, catastrophes (cost 3) are out of reach unless `director.budget_per_100k` is 3 or 4.
+- **Sampling (R4).** Stateless per-draw generator `(run.seed, step, tag, draw)`. Log-uniform for ranges of a decade or more
+  (season period, immigrant count, durations, drift multiplier), uniform otherwise; a patch move has a uniform direction and
+  length in `[0, L/4]`; the clamp does the rest and its result is what is logged.
+- **Replay (R5).** R's own log replays like any other and never reads the yoke log. A live resume re-reads it and warns on
+  stderr if its sha256 changed.
+- **GUI (R6).** Persona menu gains Random, with a "Yoked to run" picker over the runs that have a `director.jsonl`.
+- **Not built.** Yoking to anything but timing and counts: R does not follow B's state, actions or parameter values.

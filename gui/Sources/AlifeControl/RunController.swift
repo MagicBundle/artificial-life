@@ -56,6 +56,8 @@ final class RunController: ObservableObject {
     }
     @Published private(set) var repoReady = false
     @Published private(set) var runs: [String] = []
+    /// The runs with a `director.jsonl`: what a random director can be yoked to (newest first).
+    private var runsWithLog: [String] = []
 
     // Settings and job state
     @Published var settings = RunSettings()
@@ -173,6 +175,11 @@ final class RunController: ObservableObject {
         }
         let names = entries.sorted { $0.date > $1.date }.map { $0.name }
         if names != runs { runs = names }
+        runsWithLog = names.filter {
+            FileManager.default.fileExists(
+                atPath: runsDir.appendingPathComponent($0).appendingPathComponent("director.jsonl").path)
+        }
+        if settings.directorContext.yokeRuns != runsWithLog { settings.directorContext.yokeRuns = runsWithLog }
         if !runs.contains(settings.sourceRun) {
             let fallback = runs.first ?? ""
             if settings.sourceRun != fallback { settings.sourceRun = fallback }
@@ -228,10 +235,12 @@ final class RunController: ObservableObject {
                 context = .forRun(at: dir, mode: settings.mode)
             }
         }
-        settings.director = context.baseline
-        settings.director.mode = context.initialMode
-        settings.directorContext = context
-        directorWarning = context.warning
+        var offered = context
+        offered.yokeRuns = runsWithLog
+        settings.director = offered.baseline
+        settings.director.mode = offered.initialMode
+        settings.directorContext = offered
+        directorWarning = offered.warning
         llmCheck = .idle
     }
 
