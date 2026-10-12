@@ -272,7 +272,7 @@ Fork `runs/64k_s0` at step 120,000 into arms that run to step 1.5M:
 | B | rule tier only, Gardener |
 | C | rule + LLM, Trickster |
 | D (optional) | rule + LLM, Architect with goal "bodies ≥ 100" |
-| R | random director, yoked to B: same menu, budgets, cooldowns and safety rules as B; it moves at exactly the steps where B made a discretionary move, as often, with actions drawn uniformly from the eligible menu (seeded, so it replays) |
+| R | random director, yoked to B (or to C): same menu, budgets, cooldowns and safety rules as the run it follows; it moves at exactly the steps where B made a discretionary move, as often, with actions drawn uniformly from the eligible menu (seeded, so it replays) |
 
 **Why arm R.** Without it, "the director helps" cannot be separated from "any perturbation helps".
 Prior LLM-in-the-loop ALife work (ASAL, ASAL++) reports no such matched control (`docs/RESEARCH.md` §1).
@@ -284,6 +284,13 @@ choices from the amount and timing of perturbation. It is the `random` persona (
 `alife run --init-from analysis_cache/64k_s0/step_0000120000.safetensors --director live --persona random --yoke-log runs/B/director.jsonl ...`
 (`runs/64k_s0` kept no checkpoint at 120,000; the file is the verified re-simulated state, `docs/SIGNALS.md` §3).
 R keeps the reverts and the safety rules, so it may also rescue or damp on its own state; those are not yoked.
+
+**R against C.** R inherits the pacing parameters (budget, cooldown scale, safety thresholds) of the persona that made the
+yoke log, so a second R yoked to the Trickster arm C has C's budget of 6 and C's cooldowns, and can match C's moves:
+`... --director live --persona random --yoke-log runs/C/director.jsonl` with `director.budget_per_100k` left at 0 (R then
+takes the budget C's header recorded; an explicit value is capped by the Trickster's maximum of 12). C's moves are the
+model's, R's are uniform over the eligible menu, so R_C separates the model's choices from the Trickster's rate and
+timing, as R_B does for the Gardener rules. Run it from the same fork point and seed as C.
 
 **Seeds.** Run every arm on at least two seeds:
 - seed 0: the fork of `runs/64k_s0` described above;
@@ -460,11 +467,16 @@ Decisions R1 to R7 of the spec; `docs/DESIGN.md` §26.11 is normative.
   tier. R makes, at each step where that log has discretionary entries (source `rule` or `llm`, not a safety rule, never a
   revert), the same number of moves. The log must exist, pass the replay pre-validation, and have its steps on R's
   `rule_every` (exit 2 before anything is written); R's header records the path and the sha256.
-- **Same pacing as B (R3).** R takes the Gardener's budget, cooldown scale and thresholds, and keeps the reverts and the safety
-  rules. It has no discretionary rule and no model. A yoked move is a uniformly random action among those eligible now
+- **Same pacing as the yoked run (R3).** R takes the budget, cooldown scale and safety thresholds of the persona that made the
+  yoke log (the persona of its first header: Gardener for B, Trickster for C), and keeps the reverts and the safety rules.
+  The budget is the explicit `director.budget_per_100k` capped by that persona's maximum; with 0 it is the one the yoke log's
+  header recorded (6 for C), else the persona's default. Not inherited: the Trickster's boredom rule, minimum gap and drama
+  gating, and the model. A header persona of `random` (R yoked to an R) or an unknown name is exit 2, as is a `random`
+  persona in any later header; a later header with another persona is not followed (stderr warning). R's header records
+  `params_persona` and the effective budget; the entries still say `random`. It has no discretionary rule and no model. A yoked move is a uniformly random action among those eligible now
   (budget, cooldown, lever, catastrophe cap); with nothing eligible the journal says so and the step's remaining moves are
-  skipped, so counts can fall short of B's when R has no budget or every action is cooling down. With the Gardener's default
-  budget of 2, catastrophes (cost 3) are out of reach unless `director.budget_per_100k` is 3 or 4.
+  skipped, so counts can fall short of the yoked run's when R has no budget or every action is cooling down. With a budget
+  of 2 (a default Gardener), catastrophes (cost 3) are out of reach unless `director.budget_per_100k` is 3 or 4.
 - **Sampling (R4).** Stateless per-draw generator `(run.seed, step, tag, draw)`. Log-uniform for ranges of a decade or more
   (season period, immigrant count, durations, drift multiplier), uniform otherwise; a patch move has a uniform direction and
   length in `[0, L/4]`; the clamp does the rest and its result is what is logged.

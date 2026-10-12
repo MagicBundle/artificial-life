@@ -3169,7 +3169,7 @@ LLM tier of step 3 and says exactly what it changes. There is no GUI panel (step
 | `director/log.py` | `director.jsonl` header, `validate_log`, `read_log` |
 | `director/llm.py` | step 3: the reply schema generated from `MENU`, `parse_reply`, the stdlib `Client` (§26.10) |
 | `director/prompt.py` | step 3: the system and user messages of a call (§26.10) |
-| `director/yoked.py` | the `random` persona (§26.11): the yoke log (`yoked_steps`, `load`), the eligible actions, `sample_params`, the per-draw generator |
+| `director/yoked.py` | the `random` persona (§26.11): the yoke log (`yoked_steps`, `inherited`, `load`), the eligible actions, `sample_params`, the per-draw generator |
 
 **Hook** (`runner.run(..., director=None)`). `director=None` is today's behaviour exactly. With a director, at every
 metrics row, after the row is appended and after the violation check (so never for a violated state):
@@ -3427,7 +3427,7 @@ trigger. These are first values for the evaluation of §9 of `docs/DIRECTOR.md`,
 | `test_director_log.py` | append and fsync; torn lines; resume truncation; replay never truncates; headers; log validation; the CLI's exit 2 before anything is written |
 | `test_director_replay.py` | the bitwise replay tests of §26.8 (fresh directory, in place at three checkpoints, another metrics cadence, a late fork, live resume, real rules) and a slow one with the real timed bounds |
 | `test_director_config.py` | unchanged hashes, the unhashed policy keys, validation, the resume key list and its refusals |
-| `test_director_random.py` | the `random` persona (§26.11): which of a log's entries are yoked; validation and the exit-2 file checks; the sampler (bounds, reachability, log-uniform shape, determinism, clamp and replay validation); eligibility; a live run yoked to a scripted arm B, its header, its replay (bitwise, never reading the yoke log), live resume, a changed yoke log, nothing eligible, the safety rules |
+| `test_director_random.py` | the `random` persona (§26.11): which of a log's entries are yoked; validation and the exit-2 file checks; the sampler (bounds, reachability, log-uniform shape, determinism, clamp and replay validation); eligibility; a live run yoked to a scripted arm B, its header, its replay (bitwise, never reading the yoke log), live resume, a changed yoke log, nothing eligible, the safety rules; the parameters R inherits (a scripted Trickster yoke log with six moves in one 100k window, budget from the header and caps, a missing budget, a `random` or unknown persona exit 2, mixed headers, bitwise replay) |
 | `test_director_llm.py` | step 3 (§26.10): the schema and the reply validator; a mock OpenAI-compatible server for valid, invalid, empty, slow, refused, 500 and redirected replies, clamps, duplicates, `none`, budget and cooldown blocks, the request body and the prompt; roles; no network with the tier off or in a replay; a live run with the mock model and its bitwise replay; an optional real-server test (`@pytest.mark.llm`, needs `ALIFE_LLM_URL`) |
 | edits | `test_director_actions.py` and `test_director_log.py` (the "unknown source" example is no longer `llm`), `test_director_config.py` (the LLM keys, the flags; `PERSONAS` gains `random`), `test_runner.py` (hook order; no action on a violated or extinct state; the checkpoint holds the applied env), `test_metrics.py`, `test_cli_smoke.py` (`--director` flows, fork reset), `test_lint.py` (the director package is scanned) |
 
@@ -3542,17 +3542,35 @@ the others: in `POST_V01_KEYS` and `UNHASHED_KEYS` (so no hash changes and a res
 `run` (a fork included) and `resume` is its shortcut. `validate`: `random` needs a non-empty `yoke_log` and
 `llm_every = 0`; a non-empty `yoke_log` with any other persona is an error. At the start of a **live** `random` director
 (`run`, fork and `resume`, checked in the CLI before any directory is created or touched, and again by `Director`; exit
-2) the yoke log must exist, pass the replay pre-validation of §26.3 against this run's config, and have every yoked step
-a multiple of this run's `rule_every`. The log header records `yoke_log` (as given) and `yoke_sha256` (of the file's
-bytes), only for this persona. Paths are used as given, relative to the working directory.
+2) the yoke log must exist, pass the replay pre-validation of §26.3 against this run's config, have every yoked step
+a multiple of this run's `rule_every`, and have headers that name a persona R can inherit from (R3: not `random`, not an
+unknown name). The log header records `yoke_log` (as given), `yoke_sha256` (of the file's bytes), `params_persona` (the
+persona R inherited, R3) and, as always, the effective `budget_per_100k`, only for this persona. Paths are used as given, relative to the working directory.
 
 **Which moves are yoked (R2).** From the yoke log, every entry whose `source` is `rule` or `llm` and whose `rule` is not a
 safety rule (`rules.SAFETY_RULES` = `extinction_rescue`, `runaway_damper`). Reverts never are. They are counted per
 `step_applied`. A log whose entries carry no `rule` field (older logs) has nothing to tell a safety move by: its `llm`
 entries and its `rule` entries all count, reverts excepted.
 
-**Behaviour at a boundary (R3).** `Director` takes the Gardener's `PersonaParams` for the budget, the cooldown scale and
-the thresholds (the entries and the journal still say `random`). Reverts and the safety rules run as for any persona
+**Inherited parameters (R3).** R lives by the `PersonaParams` of the persona that made the yoke log, not by a fixed
+persona: arm R yoked to B (Gardener) is paced as B, yoked to C (Trickster, budget 6 per 100k) as C. `yoked.inherited`
+reads the persona and the effective `budget_per_100k` from the yoke log's **first header** (the run's own start). A later
+header (a resume that changed the persona or budget) is not followed: R keeps the first one's parameters for the whole
+run and a live start prints a stderr warning when the headers name several personas. (Following the persona in force at
+each yoked step would also need R's safety rules, budget window and cooldowns to switch mid-run; not built.) Inherited
+are the budget, the budget maximum, `cooldown_scale` and, through `rules.RuleParams.persona`, the thresholds the safety
+rules read. Not inherited, because they belong to discretionary choice, which R does not have: the Trickster's boredom
+rule, the persona's minimum gap and drama gating, its action weights and sampling, and the model. A header with no
+`persona` (or no header) gives the Gardener, the pre-R3 behaviour. A header persona of `random` (the yoke log is itself a
+yoked run: yoke R to the run it followed) or a name with no parameters is `LogError`, exit 2, checked in any header of
+the log. The budget: an explicit `director.budget_per_100k` is capped by the inherited persona's maximum; `0` (the
+default) takes the header's `budget_per_100k` (what the yoked run actually had), or the inherited persona's default if the
+header recorded none; a malformed one (not a positive integer) is `LogError`. In replay (which reads no yoke log) the
+persona and budget are the ones R's own first header recorded (`params_persona`, `budget_per_100k`; the Gardener for a log
+written before R3). Consequence: R yoked to a Gardener log is the same as before for any explicit budget; with
+`budget_per_100k = 0` it now has the budget B's header recorded (2 for a default B, as before).
+
+**Behaviour at a boundary (R3, continued).** The entries and the journal still say `random`. Reverts and the safety rules run as for any persona
 (`rules.decide_safety`); there is no boredom rule, no other discretionary rule and no model. At a yoked step with count
 `k`, `k` times: take the menu actions that `rules.eligibility` allows now (budget, cooldown, one effect per lever, the
 catastrophe cap, a full immigration queue; the persona's minimum gap and drama do not apply, as for the model) and, for
@@ -3561,7 +3579,7 @@ through the normal path (clamp, validate, apply, log); refold the pacing. If not
 every candidate, the journal gets `yoked step <t>: nothing eligible (<n> of <k> moves not made) [why, per action]` and
 the remaining moves of the step are not made. Entries: `source: "rule"`, `rule: "random"`, `persona: "random"`,
 `yoked_to: <step>`, `reason: "yoked draw i of k"`. `mutation_floor_nudge` is not on the menu, so it is never drawn. With
-the Gardener's default budget of 2 a catastrophe (cost 3) is never eligible unless `budget_per_100k` is 3 or 4 (its maximum).
+a budget of 2 (a default Gardener) a catastrophe (cost 3) is never eligible; with the Trickster's 6 it is.
 
 **Sampling (R4).** `yoked.rng_for(seed, t, draw)` is `Generator(PCG64(SeedSequence([run.seed, t, 100, draw])))` (the
 Trickster's streams are 0 to 9): stateless, one per draw. It picks the action, then `yoked.sample_params(action, rng, cfg,
@@ -3582,7 +3600,9 @@ and hides the LLM controls (forced off: `--llm-every 0` when the baseline had it
 passes `--yoke-log=` to clear the key. `DirectorSettings.validate` mirrors R1 (a run chosen, and it has a log).
 
 **Running the arms.** Run B first. Then run R from the same fork point, with the same seed, `rule_every` and metrics
-cadences: `alife run --init-from SRC:STEP --director live --persona random --yoke-log runs/B/director.jsonl ...`. R's moves
+cadences: `alife run --init-from SRC:STEP --director live --persona random --yoke-log runs/B/director.jsonl ...`; for the
+Trickster arm C, `--yoke-log runs/C/director.jsonl` (leave `director.budget_per_100k` at 0 so that R has C's budget, 6;
+an explicit value is capped by the Trickster's 12). R's moves
 are yoked to B's steps, not to B's state, so the two trajectories diverge after the first intervention; the counts match as
 long as R has budget, an unlocked lever and a free cooldown at each yoked step (the journal says when it did not).
 
@@ -3663,6 +3683,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I32 | feat: the `random` persona for evaluation arm R (`docs/DIRECTOR.md` §9, §15), yoked to another run's discretionary moves. (1) `director.persona = random` (`PERSONAS`) and the policy key `director.yoke_log` (`POST_V01_KEYS`, `UNHASHED_KEYS`: no hash changes); `--yoke-log PATH` on `run`, fork and `resume`; `validate` ties them together (a yoke log and `llm_every = 0` for `random`, no yoke log for any other persona). (2) `director/yoked.py`: `yoked_steps` (discretionary entries of a log per step: `source` rule or llm, not a safety rule, never a revert; `rules.SAFETY_RULES` are named constants shared with the rules), `load` (exists, replay pre-validation, steps on R's boundaries, sha256), `candidates` (the eligible menu actions via `rules.eligibility`), `sample_params` (uniform and log-uniform over the live menu bounds) and a stateless per-draw generator. (3) `Director`: R uses the Gardener's `PersonaParams` and keeps reverts and the safety rules; at a yoked step it makes the same number of random eligible moves, or journals "nothing eligible"; entries `rule: random`, `persona: random`, `yoked_to`; the header records `yoke_log` and `yoke_sha256`; a live resume warns on stderr when the file changed. Replay never reads the yoke log. (4) The CLI checks the yoke log (exit 2) before any directory is created or touched; the GUI offers Random with a "Yoked to run" picker. No engine, step or hash change; every other persona is byte-identical. Interpretations: the sampler returns `(raw, duration)` like a rule's proposal; the patch of a gain change or a loss is drawn among the free ones (a draw cannot be refused for a locked patch); a new header is appended when a resume finds another yoke file; the one existing test that pinned `PERSONAS` was updated. Tests: `tests/test_director_random.py`. |
 | I33 | feat: offline evolutionary-activity analysis (§19.3, `docs/ACTIVITY.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) Package `alife.analysis` (host-only numpy, never imported by the step, outside the §22.6 lint scope): `phylo` (the phylogeny rebuilt from the event logs by streaming the chunks, with a coverage report against `metrics.jsonl` and the final checkpoint; pointer-jumping lineage labels; Bedau's neutral shadow and a permuted heritability null), `activity` (one pass over grid windows: cohort-subtree and paraphyletic marker components; Bedau–Packard `D`, `A_cum`, `Ā`, `A_new` histograms; Channon's component-normalised activity against a reset shadow, computed in expectation; threshold crossings), `report` (classification none/bounded/unbounded per window with every threshold swept, `summary.json`) and `plots`. (2) CLI `alife activity RUN` (§21), writing to `RUN/activity` by default and never modifying the run's files. (3) Optional extra `analysis = ["matplotlib>=3.9"]` (§16); without it the command writes tables only. Deviations from the 1998 paper, documented in the note: the primary `A_new` window is `[a', 10^0.2 a']`, because the literal `a' ± 0.05 (a_max − a')` degenerates on a heavy-tailed run; the asymptotic definitions are applied as trends over finite windows. Limitation: runs that start at step 0 only (forks need founders from a checkpoint). Tests: `tests/test_analysis_activity.py`. |
 | I34 | feat: offline signal-information analysis (§19.3, `docs/SIGNALS.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) `alife.analysis.mi` (numpy only): KSG estimator 1 on ranks with random tie-breaking (exactly MI-preserving; the integer, zero-inflated signals and targets made the Gao et al. 2017 mixed estimator biased by about +0.07 bits), a Miller–Madow binned cross-check, shuffle nulls with z and permutation p, conditional MI over strata. (2) `alife.analysis.resim`: in-memory re-simulation to steps without a checkpoint, every `metrics.jsonl` row compared exactly, states written with `runio.write_state_file` to a cache outside the run (`analysis_cache/`, git-ignored). `runs/64k_s0` changed dynamics at its 120k resume (I26's `fields.fertility` change), so 0–120k is re-simulated with the run's original commit `f09b32a`; all 10,000 rows to 1M match. (3) `alife.analysis.signals`: `decode` mirrors S0–S8 of `step.step` (a test checks it against the stored `msg` and the `EMITTERS` counter), per-agent tables, the estimate grid and markdown/trend tables; entry point `python -m alife.analysis.signals`, no `alife` subcommand and no new dependency. Tests: `tests/test_analysis_mi.py`, `tests/test_analysis_resim.py`, `tests/test_analysis_signals.py`. |
+| I35 | feat: the `random` persona inherits the pacing parameters of the persona that made its yoke log (§26.11, `docs/DIRECTOR.md` §9, §15), so that arm R can be yoked to the Trickster arm C (budget 6 per 100k) as well as to B. Before, `yoked.PARAMS_PERSONA = "gardener"` fixed R's budget, cooldown scale and thresholds, capping it at the Gardener's maximum of 4. (1) `yoked.inherited` reads the persona and the effective `budget_per_100k` of the yoke log's first header; `yoked.load` returns them (`Yoke.persona`, `.budget`, `.personas`) and refuses (`LogError`, exit 2, before anything is written) a header persona of `random` or an unknown name; `PARAMS_PERSONA` became `FALLBACK_PERSONA` (the Gardener, for a log with no header or no persona). (2) Budget: an explicit `director.budget_per_100k` is capped by the inherited persona's maximum, `0` takes the header's budget, else the persona's default (`yoked.effective_budget`). (3) R's header gains `params_persona`; a replay takes persona and budget from its own first header. Only budgets, cooldowns and safety-rule thresholds are inherited; the boredom rule, minimum gap, drama gating and the model stay off. R yoked to a Gardener log makes the same entries and reaches the same state digest as before (checked against the previous code); its header has the new field, and with `budget_per_100k = 0` it takes B's recorded budget rather than the Gardener default (the same for a default B). Interpretations: a yoke log that was resumed with another persona uses the first header's persona (stderr warning), not the persona in force at each step, since R's budget window and cooldowns are one policy per run; the persona check covers every header. No engine, step, config key or hash change. Tests: `tests/test_director_random.py`. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense
