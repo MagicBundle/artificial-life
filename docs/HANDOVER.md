@@ -22,6 +22,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
 | `docs/ACTIVITY.md` | evolutionary-activity analysis of `runs/64k_s0` (method, results, sensitivity); figures in `docs/activity/` |
 | `docs/SIGNALS.md` | information carried by the emit and msg signals of `runs/64k_s0` at eight states; full tables in `docs/signals/` |
+| `docs/3D.md` | proposed 3D world with gravity and a floor (owner decisions, layout, fields, Swift viewer, PR plan); starts after the §9 evaluation |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
 | `.github/workflows/ci.yml` | Linux CPU CI: ruff, ruff format check, fast suite; nightly slow suite |
@@ -218,9 +219,14 @@ verified findings for the whole run.
    §9 now also requires a matched random-director arm R (the `random` persona is built: run B first, then R with
    `--yoke-log runs/B/director.jsonl` and the same fork point, seed and `rule_every`), at least two
    seeds per arm, and Bedau–Packard activity as an outcome metric (`docs/RESEARCH.md` §4).
-2. Optional engine work, deferred in DESIGN §23.2:
+   **Fork source:** `runs/64k_s0` kept only the checkpoints at 0, 1.49M, 1.50M and 1.504M, so
+   `--init-from runs/64k_s0:120000` fails. Use the verified re-simulated state
+   `analysis_cache/64k_s0/step_0000120000.safetensors` (how it was made: `docs/SIGNALS.md` §3). For seed 1, run
+   `alife run --preset 64k --seed 1 --steps 120000 --out runs/64k_s1` and fork from `runs/64k_s1:120000`.
+2. **3D world** (`docs/3D.md`), after the evaluation: six PRs, starting with `world.dims` plumbing.
+3. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
    - `inspect` showing the resumed total instead of the original `steps`.
-3. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
+4. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
    it in the DESIGN Review log.

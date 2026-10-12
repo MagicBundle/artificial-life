@@ -6,7 +6,8 @@ state, `State.env`), 2 (the host-side core: vital signs, archive, rule tier, `di
 `DESIGN.md` §26), 3 (the optional LLM tier on a local LM Studio server, `DESIGN.md` §26.10) and 4 (the GUI Director
 panel and `alife llm-check`, `DIRECTOR.md` §14) are implemented, and so is the yoked `random` persona for the evaluation's arm R
 (`DIRECTOR.md` §15, `director.yoke_log`); the evaluation itself has not been run. `docs/RESEARCH.md`
-assesses research directions against prior work.
+assesses research directions against prior work. `docs/3D.md` is the proposed 3D world (gravity and a floor;
+not implemented; it starts after the 2D evaluation).
 
 ## Conventions
 
