@@ -1000,9 +1000,7 @@ def validate(cfg: Config) -> None:
             "run.heavy_metrics_every must be a positive multiple of run.metrics_every",
         )
 
-    # Director.
-    if d3:  # its levers, vital signs and log are 2D until docs/3D.md PR 4
-        req(not di.enabled, "director.enabled is not supported with world.dims = 3 yet (docs/3D.md PR 4)")
+    # Director (valid in 3D too: the column catastrophe, scaled radius bounds and 3D prompt, §27.10).
     req(di.persona in PERSONAS, f"director.persona {di.persona!r} not in {PERSONAS}")
     req(di.rule_every >= 1, f"director.rule_every must be ≥ 1, got {di.rule_every}")
     req(di.budget_per_100k >= 0, f"director.budget_per_100k must be ≥ 0, got {di.budget_per_100k}")

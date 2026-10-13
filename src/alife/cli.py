@@ -1,4 +1,4 @@
-"""The ``alife`` command line: run, resume, render, inspect, view, bench, llm-check (§21). Owned by WP5.
+"""The ``alife`` command line (§21): run, resume, render, inspect, view, stream, bench, llm-check. WP5.
 
 ``main(argv)`` never raises: errors map to ``runner.ExitCode`` values (2 config, 4 checkpoint, 130 SIGINT,
 1 anything else; argparse usage errors are 2). ``view`` and ``bench`` delegate to WP6 (``viewer.run_viewer``,
@@ -23,7 +23,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import config as config_mod
-from alife import metrics, runner
+from alife import metrics, physics, runner, stream
 from alife.config import (
     DEFAULT_PRESET,
     DIRECTOR_MODES,
@@ -57,7 +57,7 @@ from alife.render import (
 from alife.rng import InitStream, init_keys
 from alife.runio import DIRECTOR_LOG_FILE, CheckpointError, RunDir, checkpoint_metadata, load_checkpoint
 from alife.runner import ExitCode
-from alife.state import DeathCause, State, agent_fields, default_env, init_state, to_numpy
+from alife.state import DeathCause, State, State3, agent_fields, default_env, init_state, to_numpy
 from alife.step import make_step
 
 # run.* keys that resume may change: observers, cadences and the director mode (§18). Everything else goes
@@ -80,6 +80,14 @@ RESUME_KEYS: frozenset[str] = frozenset(
 RESUME_DIRECTOR_KEYS: frozenset[str] = frozenset(DIRECTOR_POLICY_KEYS)
 
 LLM_DEFAULT_EVERY = 25_000  # steps between LLM calls with a bare --llm
+
+_STREAM_HELP = (
+    "write the world as binary frames on stdout for an external viewer (DESIGN §27.11). It re-simulates from "
+    "RUN, a state FILE or --preset without the director, so after an intervention it differs from a director "
+    "run; --follow streams the run's newest checkpoints instead and is the faithful view of a director run. "
+    "It never writes into the run directory. Control lines on stdin: pause, run, step [N], every K, "
+    "color MODE, fields on|off|z K, quit (stdin EOF = quit)."
+)
 
 _RUN_STEP_RE = re.compile(r"^(?P<run>.+):(?P<step>\d+)$")
 
@@ -271,6 +279,8 @@ def _check_yoke(cfg: Config) -> None:
 
 
 def _summary(cfg: Config) -> dict[str, Any]:
+    """The config block of ``inspect`` and the run announcement. A 3D world adds ``dims``, ``world_height``
+    and ``field_grid_z`` (the layer count FZ) after ``field_grid``; a 2D summary is unchanged (§27.11)."""
     d = dims(cfg)
     return {
         "n_max": d.n,
@@ -279,6 +289,7 @@ def _summary(cfg: Config) -> dict[str, Any]:
         "n_cap": d.n_cap,
         "world_size": cfg.world.size,
         "field_grid": d.fg,
+        **({"dims": d.nd, "world_height": cfg.world.height, "field_grid_z": d.fz} if d.d3 else {}),
         "hidden": d.h,
         "k_neighbors": d.k,
         "weight_dtype": cfg.brain.weight_dtype,
@@ -301,8 +312,9 @@ def _announce(rd: RunDir, cfg: Config, step: int, steps: int, quiet: bool) -> No
             mode += f" + llm every {cfg.director.llm_every} ({cfg.run.llm_model})"
         if cfg.run.director == "live" and cfg.director.persona == RANDOM_PERSONA:
             mode += f" + random, yoked to {cfg.director.yoke_log}"
+        world = f"L={s['world_size']:g}" + (f" height={s['world_height']:g}" if "world_height" in s else "")
         print(
-            f"run {rd.path}: N={s['n_max']} n_init={s['n_init']} L={s['world_size']:g} "
+            f"run {rd.path}: N={s['n_max']} n_init={s['n_init']} {world} "
             f"weights={s['weight_dtype']} seed={s['seed']} | steps {step} → {step + steps}{mode}",
             flush=True,
         )
@@ -525,10 +537,12 @@ def _cmd_render(a: argparse.Namespace) -> int:
 # --- inspect --------------------------------------------------------------------------------------------
 
 
-def _agent_info(uid: int, s: State, cfg: Config, rd: RunDir | None) -> dict[str, Any] | None:
+def _agent_info(uid: int, s: State | State3, cfg: Config, rd: RunDir | None) -> dict[str, Any] | None:
     """Row, bonds, birth/death records and ancestor chain of ``uid`` as of the state's step (None if unknown).
 
     Ancestors come from the run's birth events; the chain is complete when it ends at a founder or immigrant.
+    In 3D ``fields`` also holds the (x, y, z) ``pos``, ``pitch`` and ``buoy_cap``, and the info gains
+    ``height`` (z) and ``grounded`` (``z ≤ Dims.z_ground``, as ``physics.grounded``) (§27.11).
     """
     step = int(to_numpy(s.step))
     n_init = cfg.population.n_init
@@ -542,6 +556,9 @@ def _agent_info(uid: int, s: State, cfg: Config, rd: RunDir | None) -> dict[str,
         info["row"] = r
         info["age"] = step - 1 - int(a["birth_step"])
         info["fields"] = {k: v.tolist() for k, v in a.items()}
+        if dims(cfg).d3:
+            info["height"] = float(a["pos"][2])
+            info["grounded"] = float(a["pos"][2]) <= dims(cfg).z_ground
         info["bonds"] = [
             {"slot": b, "row": p, "uid": int(host["uid"][p])}
             for b, p in enumerate(a["partner"].tolist())
@@ -571,6 +588,13 @@ def _agent_info(uid: int, s: State, cfg: Config, rd: RunDir | None) -> dict[str,
     return info
 
 
+def _grounded_frac(state: State | State3, cfg: Config) -> float | None:
+    """The share of the alive agents of a 3D state that are grounded (``physics.grounded``), None if none."""
+    alive, on_floor = to_numpy(state.alive), to_numpy(physics.grounded(state.pos, cfg))
+    n = int(alive.sum())
+    return int((alive & on_floor).sum()) / n if n else None
+
+
 def _cmd_inspect(a: argparse.Namespace) -> int:
     cfg, state, rd, path = _load_target(a.run, a.checkpoint)
     snap = metrics.snapshot_metrics(state, cfg, heavy=True)
@@ -587,6 +611,8 @@ def _cmd_inspect(a: argparse.Namespace) -> int:
         "next_uid": int(to_numpy(state.next_uid)),
         "state": snap,
     }
+    if dims(cfg).d3:  # the fraction of the alive agents on the floor now (the rows hold the interval means)
+        info["grounded_frac"] = _grounded_frac(state, cfg)
     if rd is not None:
         meta = rd.meta()
         info["status"] = meta.get("status")
@@ -620,6 +646,21 @@ def _fmt(v: Any) -> str:
     return str(v)
 
 
+def _height_line(info: Mapping[str, Any]) -> str:
+    """The 3D line of ``inspect``: the height distribution, grounded and surface shares, and the bands."""
+    s, c = info["state"], info["config"]
+    if s["height_mean"] is None:
+        return f"height (world {c['world_height']:g}): nobody alive"
+    quart = "/".join(_fmt(s[f"height_q{p}"]) for p in (25, 50, 75))
+    bands = " ".join(f"{x:.2f}" for x in s["band_frac"])
+    return (
+        f"height (world {c['world_height']:g}): mean {_fmt(s['height_mean'])}, quartiles {quart}, "
+        f"grounded {_fmt(info['grounded_frac'])}, surface {_fmt(s['surface_frac'])}, bands [{bands}]; "
+        f"speed {_fmt(s['speed_mean'])}, |pitch| {_fmt(s['pitch_abs_mean'])}, buoyancy cap median "
+        f"{_fmt(s['buoy_cap_q50'])}"
+    )
+
+
 def _print_inspect(info: Mapping[str, Any]) -> None:
     s, c = info["state"], info["config"]
     ledger = "OK" if info["ledger_error"] == 0 else f"ERROR {info['ledger_error']}"
@@ -645,6 +686,8 @@ def _print_inspect(info: Mapping[str, Any]) -> None:
         f"clades: {s['clades_alive']} alive, top share {_fmt(s['top_clade_share'])}, "
         f"entropy {_fmt(s['clade_entropy'])}, simpson {_fmt(s['clade_simpson'])}"
     )
+    if "height_mean" in s:  # a 3D world
+        print(_height_line(info))
     if info.get("last_metrics") is not None:
         print("last metrics row: " + json.dumps(info["last_metrics"], default=_json_default))
     if "check" in info:
@@ -682,6 +725,52 @@ def _cmd_view(a: argparse.Namespace) -> int:
     except ImportError as e:  # pygame-ce (the optional 'viewer' extra) is missing
         print(f"error: {e}", file=sys.stderr)
         return int(ExitCode.ERROR)
+    return int(ExitCode.OK)
+
+
+def _cmd_stream(a: argparse.Namespace) -> int:
+    """``alife stream`` (§27.11): the binary frame protocol on stdout, for an external viewer (2D or 3D)."""
+    if a.run is not None and (a.preset is not None or a.set):
+        raise ConfigError("stream takes either RUN (or a state FILE) or --preset/--set, not both")
+    if a.run is None and a.preset is None:
+        raise ConfigError("stream needs a source: a run directory, a state file or --preset")
+    view = stream.View(color=a.color, fields=a.fields or a.field_z is not None, field_z=a.field_z or 0)
+    box: list[State | State3] = []
+    rd: RunDir | None = None
+    if a.follow:
+        for flag, value in (("--checkpoint", a.checkpoint), ("--steps", a.steps), ("--every", a.every)):
+            if value is not None:
+                raise ConfigError(f"{flag} does not apply to --follow, which streams each new checkpoint")
+        if a.run is None or not Path(a.run).is_dir():
+            raise ConfigError("--follow needs a run directory")
+        rd = RunDir.open(Path(a.run))
+        cfg, source = rd.config(), "run"
+        view.check(cfg)
+    elif a.run is not None:
+        cfg, rd, path = _target_config(a.run, a.checkpoint)
+        source = "file" if rd is None else "run"
+        view.check(cfg)
+        box.append(load_checkpoint(path, cfg))
+    else:
+        if a.checkpoint is not None:
+            raise ConfigError("--checkpoint needs RUN")
+        cfg, source = load_config(preset=a.preset, overrides=a.set), "preset"
+        view.check(cfg)
+        box.append(init_state(cfg))
+    control = stream.NoControl() if a.no_control else stream.FdControl()
+    stream.serve(
+        cfg,
+        mode="follow" if a.follow else "simulate",
+        source=source,
+        run=a.run,
+        state=box,
+        rd=rd if a.follow else None,
+        view=view,
+        every=a.every or 1,
+        max_steps=a.steps,
+        poll_s=a.poll,
+        control=control,
+    )
     return int(ExitCode.OK)
 
 
@@ -806,8 +895,10 @@ def _cmd_llm_check(a: argparse.Namespace) -> int:
 # --- parser ---------------------------------------------------------------------------------------------
 
 
-def _config_args(p: argparse.ArgumentParser, *, overlays: bool = True) -> None:
-    p.add_argument("--preset", choices=PRESETS, default=None, help=f"default {DEFAULT_PRESET}")
+def _config_args(
+    p: argparse.ArgumentParser, *, overlays: bool = True, preset_help: str | None = None
+) -> None:
+    p.add_argument("--preset", choices=PRESETS, default=None, help=preset_help or f"default {DEFAULT_PRESET}")
     if overlays:
         p.add_argument("--overlay", action="append", default=[], choices=OVERLAYS)
     p.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE")
@@ -920,6 +1011,53 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--steps-per-frame", type=_positive, default=1)
     p.add_argument("--size", default="900x900", metavar="WxH")
     p.set_defaults(func=_cmd_view)
+
+    p = sub.add_parser("stream", help=_STREAM_HELP, description=_STREAM_HELP)
+    p.add_argument("run", nargs="?", default=None, metavar="RUN|FILE")
+    _config_args(
+        p,
+        overlays=False,
+        preset_help="simulate from this preset's founders (no default: needs RUN or FILE otherwise)",
+    )
+    p.add_argument("--checkpoint", type=_checkpoint_arg, default=None, metavar="STEP|latest")
+    p.add_argument(
+        "--every", type=_positive, default=None, metavar="K", help="a frame every K steps (default 1)"
+    )
+    p.add_argument(
+        "--steps",
+        type=_non_negative,
+        default=None,
+        metavar="N",
+        help="stop after N steps (default: run until the reader closes or stdin ends)",
+    )
+    p.add_argument(
+        "--follow",
+        action="store_true",
+        help="no stepping: stream the latest checkpoint of RUN, then at each poll the newest one if it is "
+        "newer (checkpoints written between two polls are skipped)",
+    )
+    p.add_argument(
+        "--poll",
+        type=_positive_seconds,
+        default=1.0,
+        metavar="SECONDS",
+        help="--follow: checkpoint poll period (also how often a closed reader is noticed)",
+    )
+    p.add_argument("--color", choices=COLOR_MODES, default=COLOR_MODES[0], help="initial colour mode")
+    p.add_argument("--fields", action="store_true", help="include the field slice in each frame")
+    p.add_argument(
+        "--field-z",
+        type=_non_negative,
+        default=None,
+        metavar="K",
+        help="field slice layer (implies --fields; default 0)",
+    )
+    p.add_argument(
+        "--no-control",
+        action="store_true",
+        help="do not read stdin (by default it carries control lines, and its EOF ends the stream)",
+    )
+    p.set_defaults(func=_cmd_stream)
 
     p = sub.add_parser("bench", help="throughput, donation health, determinism")
     _config_args(p)

@@ -22,7 +22,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import ops
-from alife.config import Config, ConfigError
+from alife.config import Config, ConfigError, is_3d
 from alife.invariants import (
     ENV_DRIFT_MULT,
     ENV_PATCH_GAIN,
@@ -36,6 +36,7 @@ SOURCES: Final = ("rule", "llm", "revert")
 IMM_PENDING_CAP: Final = 1024  # the most immigrants the director may leave pending in ``env_imm_request``
 MOVE_MAX_FRAC: Final = 0.25  # a patch moves by at most L/4
 CATASTROPHE_RADIUS: Final = (20.0, 200.0)  # the upper end is also capped by L/2
+CATASTROPHE_REF_SIZE: Final = 1024.0  # the world width ``CATASTROPHE_RADIUS`` is written for (3D scales it)
 _MOVE_SLACK: Final = 1e-5  # relative slack for the f32 rounding of an absolute coordinate
 
 
@@ -150,6 +151,12 @@ def _device(value: float, bounds: tuple[float, float]) -> float:
 
 
 def radius_bounds(cfg: Config) -> tuple[float, float]:
+    """The catastrophe radius range: ``CATASTROPHE_RADIUS`` capped by L/2. In 3D the menu's range is scaled
+    by ``L / 1024`` (``CATASTROPHE_REF_SIZE``, §27.10): the column covers the same share of the floor as the
+    2D disc of a 1024-wide world, rather than most of a small 3D world."""
+    if is_3d(cfg):
+        k = cfg.world.size / CATASTROPHE_REF_SIZE
+        return CATASTROPHE_RADIUS[0] * k, min(CATASTROPHE_RADIUS[1] * k, cfg.world.size / 2)
     hi = min(CATASTROPHE_RADIUS[1], cfg.world.size / 2)
     return min(CATASTROPHE_RADIUS[0], hi), hi
 

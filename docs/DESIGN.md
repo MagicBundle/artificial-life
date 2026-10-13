@@ -1064,7 +1064,8 @@ limit. `occ_limit` is derived from the config rather than a magic number, so it 
 - `c_ref ≈ 100 + 37 + 50` (`C_REF_MARGIN = 50`, `layout.py`).
 - So `K_est ≈ 37–40 k` agents, about 60% of `N_CAP`. `alife inspect` prints the value computed for the actual seed.
 
-In 3D, `c_ref` also holds a founder's buoyancy-cap upkeep and the regeneration sums every layer (§27.7).
+In 3D, `c_ref` also holds a founder's buoyancy-cap upkeep and the regeneration is that of the floor layer only
+(§27.7, §27.10).
 
 Local depletion and predation push the real figure lower. `alife inspect` prints the estimate. The defaults are a
 starting point, tuned with the slow ecology test (§22.5).
@@ -1611,6 +1612,7 @@ artificial-life/
     runner.py                    run loop, cadences, SIGINT handling, exit codes
     render.py                    Viewport, render_frame, write_png, VideoWriter
     viewer.py                    optional pygame-ce live viewer (lazy import)
+    stream.py                    `alife stream`: the binary frame protocol, control lines, --follow (§27.11)
     bench.py                     throughput, stages, donation health, determinism, brain variants
     cli.py                       argparse entry point `alife`
     analysis/                    offline, host-only numpy analysis of finished runs (never imported by the step;
@@ -1899,6 +1901,7 @@ def interval_row(step: int, counters: np.ndarray, ledgers: np.ndarray, snap: Map
                     # counters (T, n_counters(nd)), ledgers (T,16); the ledger keyed by ledger_names(nd) (§27.8)
 def carrying_capacity(s: State, cfg: Config, step: mx.array | None = None, env: Env | None = None) -> float
                     # step + env: the live regeneration (the director's K_est, §26.5)
+                    # 3D: the floor layer's regeneration only (§27.10)
 
 # runio.py
 FORMAT_VERSION: Final = 1
@@ -1943,11 +1946,28 @@ class VideoWriter:
     def __init__(self, path: Path, size: tuple[int, int], fps: int = 30) -> None
     def write(self, frame: np.ndarray) -> None
     def close(self) -> None
+COLOR_MODES: tuple[str, ...] = ("tag", "energy", "clade")
+def agent_colors(s: State | State3, cfg: Config, color: str) -> mx.array   # (N,) uint32 0x00RRGGBB, 2D and 3D (§20.1, §27.11)
+def field_colors(s: State | State3, cfg: Config, layer: int = 0) -> mx.array   # (FG²,) uint32 of one lattice layer
 
 # viewer.py
 def run_viewer(cfg: Config, state: State, *, rundir: RunDir | None = None, size: tuple[int, int] = (900, 900),
                steps_per_frame: int = 1) -> None        # ImportError with an install hint without pygame-ce
 class ViewerSession: ...           # the viewer minus the window (state, viewport, keys, selection, HUD, snapshots)
+
+# stream.py  (§27.11)
+MAGIC: Final = b"ALSTRM\x00\x01"; PROTOCOL: Final = 1
+@dataclass class View: color: str = "tag"; fields: bool = False; field_z: int = 0
+class Streamer:                                   # header + frames of one stream to a binary file object
+    def __init__(self, cfg: Config, out: BinaryIO, *, mode: str = "simulate", source: str = "preset",
+                 run: str | None = None, view: View | None = None, every: int = 1) -> None
+    def begin(self, state: State | State3) -> None;  def send(self, state: State | State3) -> None
+def serve(cfg: Config, *, mode: str, source: str, run: str | None, state: list[State | State3] | None = None,
+          rd: RunDir | None = None, view: View | None = None, every: int = 1, max_steps: int | None = None,
+          poll_s: float = 1.0, control: Control | None = None, out: BinaryIO | None = None,
+          step_fn: StepFn | None = None) -> StreamStats     # a closed reader ends it with ended == "pipe", no error
+def protocol_output() -> ContextManager[BinaryIO]  # private dup of fd 1; sys.stdout and fd 1 -> stderr meanwhile
+class FdControl: ...                              # stdin control lines on a daemon thread (os.read); EOF = "quit"
 
 # bench.py
 def run_bench(cfg: Config, *, steps: int = 200, warmup: int = 20, stages: bool = False,
@@ -2475,6 +2495,10 @@ Every row has these groups:
   - `sigma_q10/q50/q90`, `rate_q10/q50/q90`, `frac_q10/q50/q90`;
   - `brain_cost_mean`.
 - **Fields:** `resource_mean`, `chem_mean` (list of 3). In 3D both are over every cell of the volume (§27.8).
+- **3D** (only when `world.dims = 3`, §27.9): the interval keys `z_floor_clamps`, `z_surface_clamps`, `grounded_frac`
+  and `buoy_heat` after `v_clips`, and the snapshot keys `height_*`, `surface_frac`, `speed_mean`, `pitch_abs_mean`,
+  `buoy_cap_q*`, `band_frac` and `clade_height_mi` after `diag` (heavy: `body_z_extent_mean` and `_max`). A 2D row
+  has none of them.
 - **Environment** (`env`, only when `director.enabled`): the live levers at the snapshot (`regen_mult`, `season_amp`,
   `season_period`, `drift_mult`, `imm_request`, `cat_radius`, `cat_kill_p`, and the range and zero-count of
   `patch_gain`). The row is written before the director acts at that step, so `env` shows what the interval ran with.
@@ -2583,6 +2607,14 @@ Pinned details (impl, WP6):
 - **Memory bound.** A splat whose sample count still exceeds 2²³ (many visible rows at deep zoom, or far
   zoom-out) is split into row chunks, with an `mx.eval` between chunks. Integer max makes the frame identical.
   `render_frame` is an eager observer: it is not compiled.
+- **Colour helpers (PR 4).** The per-agent and per-cell colour code of `render_frame` is split out, with the 2D path
+  and its palette unchanged (the frames of every colour mode and layer set are bit for bit the same as before the
+  split): `_agent_rgb(s, cfg, color)` is the (N,3) float colour of a state (2D or 3D) in a mode of `COLOR_MODES`,
+  and `_cell_rgb(resource, chem, cfg, layers)` the `0x00RRGGBB` colour of `n` field cells from flat `(n,)` resource and
+  `(NCH, n)` chemical arrays; `_background` calls it on the whole 2D lattice. Two public wrappers serve the 3D
+  stream (§27.11) and need no 2D world: `agent_colors(s, cfg, color)` is `(N,)` uint32 `0x00RRGGBB`, and
+  `field_colors(s, cfg, layer)` the `(FG²,)` colours of one lattice layer (the 2D lattice, or z layer `layer` of a
+  3D one). `render_frame` itself still refuses a 3D config.
 - **`VideoWriter` paths.** A path with no suffix is a PNG-sequence directory, with no warning (`alife render
   --out dir/`). A video suffix (`.mp4`, `.mov`, `.mkv` or `.m4v`) falls back to `<path minus suffix>/` with a
   warning. Any other suffix is a `ValueError`. Frames are named `frame_000000.png`, …. The encoder pads odd sizes
@@ -2627,6 +2659,8 @@ The viewer holds only the current state, which respects the donation rule. Viewi
   so run-directory consistency (§18) is preserved; `alife run --init-from FILE` can fork from it. `p`: save a PNG.
 - The viewer never appends to `metrics.jsonl` or `events/`.
 - The HUD line shows step, population, births/deaths per interval, bonds, steps/s.
+- It draws a 2D plane: `run_viewer` and `ViewerSession` refuse a 3D config (`require_2d`, exit 2). A 3D run is viewed
+  through `alife stream` and the AlifeControl 3D viewer (§27.11).
 
 Pinned details (impl, WP6):
 - `+`/`−` double/halve steps per frame within `[1, 1024]` (`=` and the keypad keys also work). `.` pauses and
@@ -2662,6 +2696,8 @@ alife render   RUN [--checkpoint STEP|latest] [--steps N] [--every K] [--out PAT
                [--view CX,CY,ZOOM]
 alife inspect  RUN [--checkpoint STEP|latest] [--json] [--check] [--agent UID]
 alife view     [RUN | --preset P [--set ...]] [--checkpoint STEP|latest] [--steps-per-frame N] [--size WxH]
+alife stream   [RUN|FILE | --preset P [--set ...]] [--checkpoint STEP|latest] [--every K] [--steps N]
+               [--follow [--poll SECONDS]] [--color tag|energy|clade] [--fields] [--field-z K] [--no-control]
 alife bench    [--preset P] [--overlay fast] [--set ...] [--steps 200] [--warmup 20] [--stages]
                [--determinism] [--brain-variants] [--json PATH]
 alife llm-check [--llm-url URL] [--llm-model NAME] [--timeout SECONDS] [--preset P]
@@ -2703,6 +2739,13 @@ writing into `RUN/media/` when `--out` is omitted.
 - `--steps 0` produces a single PNG.
 - Otherwise it produces a video (or PNG sequence) with one frame every K steps.
 
+**`stream`** (3D world PR 4, §27.11) writes the world as a binary frame stream on stdout, for the AlifeControl 3D
+viewer (2D worlds too, with z = 0). It re-simulates like `view`, without the director, or with `--follow` streams the
+run's newest checkpoints (the faithful view of a director run); it reads control lines (`pause`, `run`, `step [N]`,
+`every K`, `color MODE`, `fields on|off|z K`, `quit`) from stdin, whose EOF ends it, and never writes into the run
+directory. `--field-z K` implies `--fields`, and `--preset` has no default here. The protocol, the control grammar and
+the exit codes (a closed reader is exit 0) are normative in §27.11.
+
 **`inspect`** prints:
 - a config summary and the carrying-capacity estimate;
 - the checkpoint list;
@@ -2734,7 +2777,7 @@ Options:
 
 | code | meaning |
 |---|---|
-| 0 | OK, including a clean extinction with `status = extinct` |
+| 0 | OK, including a clean extinction with `status = extinct`; for `stream` also a closed reader, `quit` and stdin EOF |
 | 1 | unexpected error; also `llm-check` when the check fails (`FAIL ...`) |
 | 2 | config error |
 | 3 | invariant violation: diag bits are printed by name and the state is dumped to `diag/` |
@@ -2745,7 +2788,7 @@ Options:
 `director.enabled=true` on `run`; `--director off` sets only the mode. `--replay-log` goes with `--director replay`
 and `--init-from` (a replay needs a state to continue); other combinations, an unreadable or invalid log, and
 `--director live|replay` on `resume` of a run without `director.enabled`, are config errors (exit 2) reported before
-anything is written. `view` and `render` re-simulate without the director (§26.8). The persona and goal are set with
+anything is written. `view`, `render` and `stream` re-simulate without the director (§26.8). The persona and goal are set with
 `--set director.persona=...` / `director.goal=...` in this step.
 
 Pinned details (impl, WP5):
@@ -2758,7 +2801,7 @@ Pinned details (impl, WP5):
 - `inspect --json` prints one object: `step`, `config` (summary and `config_hash`), `carrying_capacity_est`,
   `ledger_error`, `diag` and `diag_flags`, `state` (heavy `snapshot_metrics`), `checkpoints`, `last_metrics`, and
   `check` / `agent` when asked. An unknown `--agent` uid exits 1. The ancestor chain follows `events/` births up
-  to a founder or immigrant (`ancestors_complete`).
+  to a founder or immigrant (`ancestors_complete`). The 3D additions are in §27.11.
 - Usage errors exit 2 (argparse); a missing run directory or an existing `--out` exits 1; `bench --determinism`
   exits 1 when the two digests differ. The CLI hands its state to `runner.run`/`run_viewer` without keeping a
   reference (the donation rule, §15.4).
@@ -3356,7 +3399,8 @@ runs/<name>/
 
 **`director.jsonl`.** One JSON object per line. The first line is a header
 `{"kind": "header", "step", "rules_version", "persona", "goal", "rule_every", "budget_per_100k", "seed"}` (`step` is the
-step the director started at; `budget_per_100k` is the effective budget). A new header is appended whenever a live
+step the director started at; `budget_per_100k` is the effective budget; a 3D run adds `"dims": 3` after `seed`, and a
+2D header never has the key, §27.10). A new header is appended whenever a live
 director starts with a policy that differs from the latest header (a resume with another persona, cadence, budget or
 `RULES_VERSION`). Every other line is an *entry*:
 
@@ -3398,13 +3442,14 @@ replay passes `keep_director=True`: **replay never truncates or writes any direc
 | `habitat_loss` | `patch`, `gain` = 0; `duration` | duration 10k–200k | 2 | 50k |
 | `regen_pulse` | `mult`; `duration` | mult 0.4–1.8, duration 5k–50k | 1 | 30k |
 | `immigration_pulse` | `count` | 16–1024; the pending `env_imm_request` plus the count may not exceed 1024 | 1 | 20k |
-| `catastrophe` | `center` [x, y], `radius`, `kill_p` | radius in [20, min(200, L/2)], kill_p 0.2–0.9 | 3 | 100k |
+| `catastrophe` | `center` [x, y], `radius`, `kill_p` | radius in [20, min(200, L/2)] (3D: both ends times L/1024, §27.10), kill_p 0.2–0.9 | 3 | 100k |
 | `drift_change` | `mult` | 0.5–10, permanent until changed | 1 | 50k |
 
 - **Seasons** change `env_season_period` / `env_season_amp` only; the mode stays `fields.season_mode` and is not a
   runtime lever. The mutation-floor nudge is not implemented.
 - **Patch moves** are host edits of `patch_pos`, wrapped with `ops.wrap` (so the f32 result is strictly below L); the
-  log holds the absolute new coordinates and the old ones in `prev`. The drift continues from the new position.
+  log holds the absolute new coordinates and the old ones in `prev`. The drift continues from the new position. In 3D
+  `patch_pos` is (PP, 2) as well and a move is x and y only (§27.10).
 - **Immigration** is always random founders; it adds to `env_imm_request`, which the step admits over several steps.
 - **Costs and cooldowns** are the §5 table of `docs/DIRECTOR.md`. A cooldown counts from the **end** of the effect
   (for an instant action, from `step_applied`).
@@ -3419,8 +3464,8 @@ replay passes `keep_director=True`: **replay never truncates or writes any direc
 - **Replay: `validate_entry`** rejects instead of clamping: unknown action or source, a `step_applied` that is not a
   positive multiple of `rule_every`, a parameter set that is not exactly the action's, any value outside the bounds
   (menu and device ranges), a move of more than L/4 or without `prev`, a duration that is out of bounds or off the
-  cadence, a revert of an action without a timed effect. `log.validate_log` adds: records in non-decreasing step, and
-  every revert has an active effect on its lever. A bad log is a config error (exit 2) before the first step.
+  cadence, a revert of an action without a timed effect. `log.validate_log` adds: records in non-decreasing step, every
+  revert has an active effect on its lever, and every header's `dims` (absent = 2) equals `world.dims` (§27.10). A bad log is a config error (exit 2) before the first step.
 - **`apply(state, entry, cfg)`** edits only `env_*` and (moves) `patch_pos` with `_replace`, converting to each field's
   dtype and shape (no retrace), and fails with `ActionError` if the result would leave `invariants.env_out_of_range`.
   The live director validates every entry it builds before applying it.
@@ -3435,8 +3480,8 @@ included), `singleton fraction = bodies_hist["1"] / n_alive`. `n_alive_min` is t
 (rows without it fall back to `n_alive`).
 
 - **`K_est`** is recomputed at every live boundary by `metrics.carrying_capacity(state, cfg, state.step, state.env)`:
-  the regeneration of the *current* environment (seasonal at the step, scaled by the levers). It is used only at the
-  boundary, never stored.
+  the regeneration of the *current* environment (seasonal at the step, scaled by the levers; in 3D the floor layer's,
+  §27.10). It is used only at the boundary, never stored.
 - **Viability:** `n_alive / K_est`; `fall = 1 − (window minimum / highest window mean over the last risk_fall_window)`;
   the **extinction-risk flag** is `n_alive/K_est < risk_k_frac` or `fall > risk_fall`.
 - **Descriptor `b`** (ten components, each clipped to [0, 1], a missing one counts as 0, None for an empty world):
@@ -3542,9 +3587,10 @@ trigger. These are first values for the evaluation of §9 of `docs/DIRECTOR.md`,
   --replay-log LOG` copies the log verbatim into the new run directory and replays it; entries at or before the
   fork's start step are skipped. The environment of a fork is always reset (§18), so a fork replay reproduces the source
   only when it forks from a step before the first log entry (normally `SRC:0`).
-- **The viewer and `render` re-simulate without the director.** They keep the checkpoint's environment levers but
-  apply no log entry, so after a director action they diverge from the run they were opened on. Replay in the viewer
-  is not implemented.
+- **The viewer, `render` and `stream` re-simulate without the director.** They keep the checkpoint's environment
+  levers but apply no log entry, so after a director action they diverge from the run they were opened on. Replay in
+  the viewer is not implemented; `alife stream --follow` shows a director run faithfully, because it streams the
+  checkpoints the runner wrote with the applied environment (§27.11).
 - A live decision depends on `K_est`, which uses a float32 GPU computation; it is deterministic on a given backend
   but not across backends. Replay does not recompute it.
 
@@ -3561,7 +3607,8 @@ trigger. These are first values for the evaluation of §9 of `docs/DIRECTOR.md`,
 | `test_director_config.py` | unchanged hashes, the unhashed policy keys, validation, the resume key list and its refusals |
 | `test_director_random.py` | the `random` persona (§26.11): which of a log's entries are yoked; validation and the exit-2 file checks; the sampler (bounds, reachability, log-uniform shape, determinism, clamp and replay validation); eligibility; a live run yoked to a scripted arm B, its header, its replay (bitwise, never reading the yoke log), live resume, a changed yoke log, nothing eligible, the safety rules; the parameters R inherits (a scripted Trickster yoke log with six moves in one 100k window, budget from the header and caps, a missing budget, a `random` or unknown persona exit 2, mixed headers, bitwise replay) |
 | `test_director_llm.py` | step 3 (§26.10): the schema and the reply validator; a mock OpenAI-compatible server for valid, invalid, empty, slow, refused, 500 and redirected replies, clamps, duplicates, `none`, budget and cooldown blocks, the request body and the prompt; roles; no network with the tier off or in a replay; a live run with the mock model and its bitwise replay; an optional real-server test (`@pytest.mark.llm`, needs `ALIFE_LLM_URL`) |
-| edits | `test_director_actions.py` and `test_director_log.py` (the "unknown source" example is no longer `llm`), `test_director_config.py` (the LLM keys, the flags; `PERSONAS` gains `random`), `test_runner.py` (hook order; no action on a violated or extinct state; the checkpoint holds the applied env), `test_metrics.py`, `test_cli_smoke.py` (`--director` flows, fork reset), `test_lint.py` (the director package is scanned) |
+| `test_director_3d.py` | the director in 3D (§27.10): validation accepts it; the column catastrophe through the director path; patch moves keep `patch_pos` (PP, 2); the scaled radius bounds; the header's `dims` and the refusal of a log of the other dimensions; the 3D prompt and the byte-identical 2D one; a scripted `tiny3d` run, its replay (fresh, in place, live resume) and the `random` persona on it; a real-rules Gardener run with the floor-layer `K_est` |
+| edits | `test_director_actions.py` and `test_director_log.py` (the "unknown source" example is no longer `llm`), `test_director_config.py` (the LLM keys, the flags; `PERSONAS` gains `random`), `test_runner.py` (hook order; no action on a violated or extinct state; the checkpoint holds the applied env), `test_metrics.py`, `test_cli_smoke.py` (`--director` flows, fork reset), `test_lint.py` (the director package is scanned); PR 4 of the 3D world: `test_dims_config_pr2.py` (the 3D case of the director rejection is gone, §27.10) |
 
 ### 26.10 The LLM tier (build step 3)
 
@@ -3641,7 +3688,9 @@ bounds, cost and cooldown length (models shown bounds alone choose `immigration_
 affordable and not cooling down), the latest vital signs, the trends of seven of them over the last 8 rule windows, the
 safety actions and reverts of this boundary, the last five interventions with their measured effect (the change in
 population, top clade share, clades, emitters, sharers, kill share and novelty from the intervention's boundary to 50k
-steps later, or to now with "(so far)"). About 2.4k tokens for the `tiny` preset.
+steps later, or to now with "(so far)"). About 2.4k tokens for the `tiny` preset. In a 3D world the world sentence, the
+catastrophe's effect text, the world size line and the capacity estimate's qualifier differ (§27.10); the 2D messages
+are unchanged byte for byte.
 
 **Logging (L9).** An applied action is an entry with `source: "llm"`, the persona, the clamped `params`, `reason` = the
 model's `expected_effect`, no `rule` and `llm_call: "llm-<step>"`. `journal.jsonl` gets one record per call:
@@ -3750,7 +3799,10 @@ and the golden digest are untouched). PR 2 (§27.2–§27.5) adds the 3D geometr
 functions the step does not call yet: `world.dims = 3` is still rejected, and 2D is again unchanged (config files
 gain the PR 2 keys at their defaults). PR 3 (§27.6–§27.8) adds the field dynamics, the buoyancy costs and their
 ledger term, and the step wiring, and enables `world.dims = 3` with the `tiny3d` preset; 2D is again unchanged
-(config files gain the two cost keys at their defaults).
+(config files gain the two cost keys at their defaults). PR 4 (§27.9–§27.11) adds the 3D metrics keys and the
+floor-layer carrying capacity, lifts the director's 3D refusal, extends the CLI reporting and adds `alife stream`,
+the frame protocol of the 3D viewer; the compiled step, the state and every 2D output are unchanged (a new module,
+`stream.py`, and a split of the renderer's colour code, whose 2D frames are bit for bit the same).
 
 ### 27.0 Overview and decision record
 
@@ -3809,8 +3861,10 @@ PR 2 adds the rules of its keys, each with its own message (their meaning is in 
   3D form of the §9 rule `thrust_max < 2·r·k_repel`: full thrust plus the net vertical load cannot push a resting
   agent through the one below it (or, buoyant, above it);
 - `buoy_init ∈ [0, 1]` and `buoy_sigma ≥ 0` (finite), both 0 when `buoyancy_max = 0`;
-- `benthic_lambda > 0`; `photic_amp ∈ [0, 1]`; `photic_lambda > 0` when `photic_amp > 0`;
-- `director.enabled` is false: the director's levers, vital signs and log stay 2D until PR 4.
+- `benthic_lambda > 0`; `photic_amp ∈ [0, 1]`; `photic_lambda > 0` when `photic_amp > 0`.
+
+(PR 2 and PR 3 also rejected `director.enabled` in 3D, until the director's levers, vital signs and log had a 3D
+form; PR 4 lifted the rule, §27.10.)
 
 **`Dims`** gains `nd`, `d3`, `lay` (`layout.for_dims(nd)`), `fz`, `n_cells` (`FZ·FG²`), `field_shape` (`(FG, FG)`
 in 2D, `(FZ, FG, FG)` in 3D), `g_hash_z` and `cell_hash_z` (1 and ∞ in 2D), and derives `Q = 3^nd·C`,
@@ -4116,8 +4170,8 @@ actuator on or off never shifts the other genes' draws; at `buoy_sigma = 0` the 
 - `lifecycle.deaths` sinks corpses to the floor cell (§27.6).
 
 **Catastrophe.** In 3D the catastrophe is a vertical column: `catastrophe_mask` measures the x/y minimum-image
-distance from the (2,) `env_cat_center`, so every agent above the disc is in it, at any height. The director stays
-rejected in 3D until PR 4, which also scales the radius bounds (docs/3D.md §12 Q10).
+distance from the (2,) `env_cat_center`, so every agent above the disc is in it, at any height. The director's menu
+scales the radius bounds in 3D (docs/3D.md §12 Q10, §27.10).
 
 **RNG.** The 3D draws use the existing keys with 3D-only shapes and split counts (§14.1): no new stream, no
 `RNG_LAYOUT_VERSION` bump, and every 2D draw is unchanged.
@@ -4329,13 +4383,10 @@ above the floor. A dense packing (FCC, density 0.74) puts about `0.74·field_cel
 column: 68 at field cell 4, height 24 and r = 1, and 226 at height 80, against `occ_limit = 1 060`.
 
 **Carrying capacity.** In 3D `c_ref` (§10.10) also holds a founder's cap upkeep `floor(buoyancy_cap_cost·buoy_init)`
-(float32, as `pay_costs3` computes it), and the regeneration is summed over every layer. The 3D `K_est` is
-therefore not comparable to a 2D one: it counts the food of the upper layers, which costs lift (thrust or
-buoyancy against gravity) to harvest. On `tiny3d` (default seed) it is 1 456 against 426 for `tiny`, while the
-two populations run about level (peaks 441 and 426 in the first 400 steps on CPU; the floor layer alone
-regenerates as `tiny`'s lattice, §27.5). Whether `K_est` should weight the upper layers or count the floor layer
-only is open, to be settled before the director runs in 3D (PR 4) and with the PR 6 tuning of `photic_amp` and
-`fertility_base`.
+(float32, as `pay_costs3` computes it). The regeneration is the floor layer's only (§27.10): PR 3 summed every layer,
+which gave `tiny3d` 1 456 against 426 for `tiny`. With the floor layer it is 409: the numerators are equal (the floor
+layer regenerates as `tiny`'s lattice, §27.5) and a 3D founder costs more (a wider brain, the cap upkeep). The two
+populations run about level (peaks 441 and 426 in the first 400 steps on CPU).
 
 **Tests.** `tests/test_energy_3d.py` (`pay_costs3` against a float32 reference on mixed solvent and insolvent
 populations, with the per-function closure and dead rows paying 0; the exact buoyancy terms and the payment order;
@@ -4374,11 +4425,11 @@ returns `Integrated3`), and `tests/test_bench.py` checks it bit for bit against 
 |---|---|---|
 | 27 | `Z_FLOOR_CLAMPS` | survivors stopped by the floor this step (pre-clamp `z ≤ z_lo` with `v_z < 0`; `Integrated3.z_floor`, §27.3) |
 | 28 | `Z_SURFACE_CLAMPS` | survivors stopped by the surface (pre-clamp `z ≥ z_hi` with `v_z > 0`) |
-| 29 | `GROUNDED` | alive agents grounded at the start of the step (`physics.grounded(s.pos) & s.alive`; `IN_GROUNDED` is not masked) |
+| 29 | `GROUNDED` | agents grounded at the start of the step that survived it (`physics.grounded(s.pos) & s.alive & ~dead`; `IN_GROUNDED` is not masked). A row that dies in the step (starvation, age, combat, a catastrophe) is not counted, so `Σ GROUNDED ≤ Σ N_ALIVE` and the interval's `grounded_frac` (§27.9) is a share in [0, 1]; counted over the start-of-step alive set (as PR 3 first defined it), a mass death inflated the numerator against the end-of-step `N_ALIVE` (review of PR 4) |
 
 `n_counters(nd)` is 27 in 2D and 30 in 3D. `metrics.interval_row` and the viewer's accumulator size by it; the
-runner stacks the step's counters as they come. Under gravity every agent resting on the floor clamps every step,
-so `Z_FLOOR_CLAMPS` is about `GROUNDED` and is not an anomaly signal; the surface count is the separate one.
+runner stacks the step's counters as they come. Under gravity every surviving agent resting on the floor clamps
+every step, so `Z_FLOOR_CLAMPS` is about `GROUNDED` and is not an anomaly signal; the surface count is the separate one.
 
 **Ledger.** In 3D the step stacks `paid_buoy` as one more per-agent column of §10.8's exact sum and books it in slot
 15 (`HEAT_BUOYANCY`, §27.7); in 2D the slot stays the constant 0. `StepOut.ledger` stays (16,).
@@ -4404,16 +4455,16 @@ terms are separate static additions.
   (`ValueError`) up front, where a reshape by 27 would fail later with a misleading step-count mismatch (a 3D
   `(9, 30)` block reshapes to ten rows against nine ledgers).
   The ledger is keyed by `ledger_names(nd)`, so a 3D row has `HEAT_BUOYANCY` where a 2D row keeps `RESERVED`. The
-  runner and `analysis.resim` pass the run's dims. Rows do not carry the `Counter3D` columns yet; the 3D metrics are
-  docs/3D.md §7's, in PR 4.
+  runner and `analysis.resim` pass the run's dims. The `Counter3D` columns reach the row as the interval keys of
+  §27.9.
 - `snapshot_metrics`: `ledger_error` over `sinks(nd)`; `chem_mean` per channel over all `FZ·FG²` cells;
   `resource_mean` per cell of the volume (`E_field / n_cells`), so the upper layers dilute it compared with a 2D
   floor.
-- `carrying_capacity`: §27.7.
+- `carrying_capacity`: §27.7, and the floor-layer rule of §27.10.
 
 **Enablement.** `config.DIMS_SUPPORTED = (2, 3)`: a config with `world.dims = 3` validates under §27.1's rules and
-runs through `alife run`, `resume`, fork, `inspect` and `bench`. Still refused in 3D: `director.enabled` (until
-docs/3D.md PR 4) and the 2D-only tools of §27.1 (`render`, `view`, `analysis.signals`; exit 2). 2D is unchanged:
+runs through `alife run`, `resume`, fork, `inspect` and `bench`. Still refused in 3D: the 2D-only tools of §27.1
+(`render`, `view`, `analysis.signals`; exit 2). `director.enabled` was refused until PR 4 (§27.10). 2D is unchanged:
 every 2D trajectory, config hash, metrics row and checkpoint key set (the CPU digest matrix of 2D trajectories and
 runs matches bit for bit; the 2D golden is not re-pinned).
 
@@ -4455,7 +4506,8 @@ over slot 15; the carrying capacity with the upkeep; resim's comparison with the
 rules on the first 27, `Counter3D` against the state transition and the per-step and global closures; slot 15 equal to
 the step's `Σ paid_buoy` and to the float32 due; more `HEAT_BUOYANCY` under an `OUT_BUOYANCY` bias; slot 15 off by one
 caught by `device_check` and by both host closures; slot 15 zero in a 2D run; floor and surface clamps and grounding
-in a scene; an x/y column of `occ_limit` agents, no 3D cell near the limit, trips `INT_HEADROOM`).
+in a scene; `GROUNDED` counting only the survivors of a mass death, with a `grounded_frac` of 1; an x/y column of
+`occ_limit` agents, no 3D cell near the limit, trips `INT_HEADROOM`).
 `tests/test_affordances_3d.py` (one eager step per `micro3d_cfg` scene: three attackers drain a victim, with the
 closure; with regeneration and diffusion off the corpse lands in the floor cell and the spill and residue in the
 victim's own cell; a mid-water and a grounded agent each harvest their own cell, never the floor cell below a
@@ -4470,6 +4522,368 @@ rows and reproducing the step-100 state). New functions: `test_bench.py` (the st
 3D, with and without the actuator; every bench part on `tiny3d`), `test_runner.py` (SIGINT and a bitwise resume in
 3D; immigrants in the volume at `buoy_init`), `test_config.py` (`test_preset_table_tiny3d`), `test_cli_smoke.py` (a
 2D row keeps `RESERVED`).
+
+### 27.9 Metrics in 3D (PR 4)
+
+A 3D row (§19.2) has the 2D keys unchanged, in their order, plus the keys below; a 2D row has none of them, so every
+2D `metrics.jsonl` row is byte-identical. All are host-side observers (`metrics.py`): one host transfer as before,
+no change to the compiled step, the state or the RNG. "Alive" means over the alive agents; the keys are `None` when
+nobody is alive. Heights are the agent centre `z` in world units, `0 < z_lo ≤ z ≤ z_hi < height`; "height" is the
+world height `world.height` (never `H`, the hidden size).
+
+**Snapshot keys** (`metrics._snapshot_3d`, after `diag`; the order below):
+
+| key | definition |
+|---|---|
+| `height_mean`, `height_q25`, `height_q50`, `height_q75` | mean and quartiles of `z` (`np.quantile`, linear, float64) |
+| `surface_frac` | share of alive agents with `z ≥ z_hi − floor_eps`: within the grounding margin of the surface bound. The surface never grounds (Q2), so this is the mirror of the grounding band; with `floor_eps = 0` it is the share resting on the clamp |
+| `speed_mean` | mean of `‖vel‖` (3-D) of the last step. The clamp zeroes `v_z` on a row it moves to a boundary, so a floor-resting agent contributes its horizontal speed |
+| `pitch_abs_mean` | mean of `|pitch|` in radians, in `[0, PITCH_MAX]` |
+| `buoy_cap_q10`, `_q50`, `_q90` | quantiles of the heritable cap `buoy_cap ∈ [0, 1]` (as `sigma_q*`) |
+| `band_frac` | list of 4 shares of alive agents in the equal z bands `[b·height/4, (b+1)·height/4)`, `b = 0..3`; the top band includes the surface and a height on an edge belongs to the band above (`metrics.z_band`: `floor(4·z / height)`, with `4·z` exact in binary). Sums to 1 |
+| `clade_height_mi` | plug-in mutual information in nats between an agent's clade (binned as `clade_counts`, immigrants in bin `n_init`) and its z band, from the host joint histogram (`np.bincount`). It is 0 exactly for a single clade and for independent labellings (the ratio `n_ab·n / (n_a·n_b)` is formed from exact int64 products); it is biased upwards by about `(clades − 1)(bands − 1) / (2n)` nats for small samples, so it is a descriptive measure of vertical niche separation, not a test. **When the clades are close to singletons it saturates at the entropy of the band and carries no information about vertical niche separation**: every run starts with `n_init` clades of one agent, and on `tiny3d` (seed 0, 6 000 steps, measured in review) the value stays at 0.90 to 1.00 of `H(band)` (1.381 of 1.381 at step 10, 0.34 of 0.37 at step 6 000) while the bias estimate is 0.6 to 1.5, larger than the value at every step. Read it only where the clades are few and large (a long run, or a coarsened clade labelling); a measure that is not dominated by singletons (large clades only, a bias correction or a shuffle baseline) is open for PR 6 |
+
+The heavy snapshot (every `heavy_metrics_every`) adds, after the `bodies_*` keys and before `weight_diversity`,
+`body_z_extent_mean` and `body_z_extent_max`: over the bodies (components of at least two alive agents, as
+`bodies_n`), the extent `max z − min z` of the member centres, their unweighted mean over bodies and their maximum.
+`z` is bounded and never wrapped, so no unwrapping is needed (x and y, which are periodic, have no extent key).
+Both are `None` with no body, and are computed from the same bond-component labels as `bodies_*` (a
+non-converged labelling is reported by `bodies_converged`, as there).
+
+**Interval keys** (`interval_row(…, nd = 3)`, after `v_clips`): `z_floor_clamps` and `z_surface_clamps` (interval sums
+of `Counter3D`), `grounded_frac` (`Σ GROUNDED / Σ N_ALIVE`: the share of agent-steps spent grounded, weighted like
+the other per-agent fractions of the row, in [0, 1] because `GROUNDED` counts only the agents that survive the step
+(§27.8) while `N_ALIVE` is the end-of-step count; `None` without alive steps) and `buoy_heat` (the interval sum of ledger slot
+15, equal to `ledger["HEAT_BUOYANCY"]`, repeated as a plain key). Under gravity every grounded agent clamps each
+step, so `z_floor_clamps ≈ Σ GROUNDED` (§27.8). No snapshot key is named `grounded_frac`: `interval_row` raises on a
+key shared with the snapshot, and the snapshot has no grounded key at all (`alife inspect` computes the share of the
+checkpoint state, §27.11). `analysis.resim` recomputes the interval keys with `nd` and compares them with the stored
+row, as it does the shared ones; a row stored before PR 4 lacks them and is compared on the keys it has.
+
+**`carrying_capacity_est`** (first row, `inspect`, the director): the floor-layer rule of §27.10.
+
+**Tests.** `tests/test_metrics_3d.py`:
+- the snapshot keys against an independent host reference (quantiles, bands, surface margin, speed, pitch, the cap's
+  quantiles, `clade_height_mi` by `Counter`/`math.log`, `body_z_extent_*` over three known bodies);
+- band edges; the mutual-information limits (determined, independent, a single clade exactly 0, a hand value);
+- the exact key sets and order in 2D (the 2D dict is unchanged, light and heavy) and 3D; the empty population (all
+  `None`); a snapshot never colliding with the interval keys;
+- the interval keys against host sums, `grounded_frac` weighting and `None`, the 2D row without them, resim flagging
+  each of them;
+- the carrying capacity (§27.10).
+
+### 27.10 The director in 3D (PR 4)
+
+**Carrying capacity (`K_est`).** In 3D `metrics.carrying_capacity` counts the regeneration of the **floor layer** only,
+`Σ regen_rate(…)[0]` (the benthic analogue of the 2D lattice), over the same `c_ref` as §10.10 (which keeps the
+founder's cap upkeep, §27.7). Every consumer reads it: the `carrying_capacity_est` of the first metrics row, `alife
+inspect`, and the director's `n / K_est`, rescue size and prompt capacity line. With the live levers (`step`, `env`) the
+layer is that of the live rate. 2D is unchanged. The reasons:
+- The floor layer regenerates exactly as the 2D lattice for the same patches (`V[0] = 1`, §27.5), so a 3D estimate is
+  comparable to a 2D one: `tiny3d` 409 against 426 for `tiny` (the difference is the larger founder brain and the
+  cap upkeep). Summing the layers gave 1 456 on `tiny3d`, 3.6 floor lattices' worth, a factor set by the vertical
+  profile (`benthic_lambda`, `photic_amp`, `photic_lambda`) rather than by the habitat. The extinction-risk rule
+  (`n/K_est` below 0.2) and the rescue size (a fraction of `K_est`) would have moved with every retuning of that
+  profile, which PR 6 does.
+- Food above the floor costs lift to reach (thrust or buoyancy against gravity, §27.7).
+
+It ignores the food of the upper layers, including the photic band (`photic_amp > 0`), so it is a lower bound on the
+food an agent can use; it is revisited in PR 6 with the tuning of `photic_amp` and `fertility_base`.
+`tests/test_metrics_3d.py`: the 3D value equals the 2D lattice's regeneration over the 3D `c_ref`, against a float64
+host reference of the floor fertility, with the live environment, and on `tiny3d` against `tiny`; the PR 3 test of the
+cap upkeep now takes its regeneration from layer 0.
+
+**Scope.** The director is host code (§26.1): it reads the metrics rows and edits the `env_*` fields and `patch_pos`
+between compiled steps. The compiled step (apart from what §27.4 and §27.6 already built: the column mask and the
+volume immigrants), the state, the RNG, `RULES_VERSION`, the ten-component descriptor of §26.5 and every rule
+parameter of §26.7 are unchanged in 3D, and the director reads none of the 3D row keys of §27.9. `validate` no longer
+rejects `director.enabled` with `world.dims = 3`: the live and replay modes, the LLM tier and the `random` persona
+(§26.11) run in 3D, under the same menu, budget and cooldowns. The 3D differences are these.
+
+| part | 3D |
+|---|---|
+| catastrophe | a **vertical column**: `catastrophe_mask` measures the x/y minimum-image distance from `env_cat_center`, which stays (2,), so `params.center` is `[x, y]` as in 2D and every agent over the disc dies with probability `kill_p`, at any height (§27.4) |
+| radius bounds | `actions.radius_bounds(cfg)` = `[20·L/1024, min(200·L/1024, L/2)]` in 3D; 2D keeps `[20, min(200, L/2)]` (`tiny3d` `[2.5, 25]`, a width-320 world `[6.25, 62.5]`). The 2D range was written for a 1024-wide world, where the largest disc covers π·(200/1024)² = 12% of the floor; at width 320 it would cover 78% (docs/3D.md §12 Q10). The scaling keeps the largest column at 12% of the floor at any width. `CATASTROPHE_RADIUS` and `CATASTROPHE_REF_SIZE = 1024` are the constants. The bounds apply to the live clamp, to replay validation (a 2D-sized radius in a 3D log is `ActionError`, exit 2), to the LLM schema and prompt, and to the `random` persona's sampler. The rules' own request (`cat_radius_frac`, 0.1 to 0.25 of L) is clamped to the upper bound |
+| patch moves | x and y only. `patch_pos` and `patch_vel` stay `(PP, 2)`; a move's `params` are `{patch, x, y}` and `prev` `{patch, x, y}`, wrapped with `ops.wrap` and capped at L/4 in the x/y minimum image, as in 2D; a `z` (or `dz`) is not on the menu, and `validate_entry` rejects it. A patch is a column: its gain multiplies the fertility of every layer (§27.5), so `habitat_loss` and `fertility_shift` act on the whole column, and `regen_pulse` and `set_seasons` act on every layer |
+| immigration | `immigration_pulse` adds founders to `env_imm_request` as in 2D; the step admits them uniformly in the volume at `buoy_init` (§27.4) |
+| vital signs | the ten-component descriptor, the window aggregates and the archive are functions of the rows and are unchanged; `K_est` is the floor-layer value above, so `n/K_est` is the population against what the floor lattice supports |
+| log header | `"dims": 3` after `seed`; a 2D header has no such key and keeps its key set (§26.3). `needs_header` compares headers without the start step, so a resumed 2D or 3D run with an unchanged policy appends no header |
+| log validation | `log.validate_log` (replay, `--replay-log`, the yoke log of the `random` persona) raises `LogError` (exit 2) for a header whose `dims` (absent = 2) differs from `world.dims`: a 2D log is never replayed or followed in 3D, nor the reverse |
+| LLM prompt | `prompt.effects(cfg)` selects `EFFECT` (2D, byte-identical to build step 3) or `EFFECT_3D`, which differs in the catastrophe line: a vertical column, a disc in x and y from the floor to the surface; `prompt.world_text(cfg)` says "periodic in x and y, with a floor and a surface at height" followed by the number `world.height` where the 2D text says "a torus"; the user message gives the world as `L x L x height` (three numbers) and marks the capacity estimate "(floor-layer food only)"; the catastrophe radius bounds are the scaled ones. Nothing else changes, and the 2D system and user messages are byte-identical (pinned by sha256) |
+
+**Calibration (provisional).** The extinction-risk flag has two criteria (§26.7): `n/K_est < risk_k_frac` (0.2) **or**
+`fall > risk_fall` (0.3), where `fall` is the drop of the window minimum below the highest window mean. Measured on
+`tiny3d` with the director off (seed 0, 2 000 steps, `K_est` 409), the first criterion is far from firing: `n/K_est`
+is 0.63 at step 10, 1.01 at 110 after the founders' first reproduction and 0.54 to 0.71 from step 210 on, and the same
+run has 77% of the agents grounded at the end (the ecology is PR 6's). The second criterion depends on the rule cadence,
+because the founders' boom and bust is a fall of that size within a few hundred steps. Measured in review (CPU,
+Gardener, seed 0, 6 000 steps, `K_est` 408.6, vitals recomputed with `director.vitals.Tracker` over the stored rows):
+
+| `rule_every` | first extinction-risk flag |
+|---|---|
+| 50 | step 200 (`n/K_est` 0.728, `fall` 0.325) |
+| 100 | step 100 (`n/K_est` 1.029, `fall` 0.348) |
+| 200 | step 200 (`fall` 0.309) |
+| 500, 1 000 | none (at 1 000: `n/K_est` 0.55 to 0.68, `fall` 0.04 to 0.16) |
+
+So the flag is off at baseline at the default cadence of 1 000 steps, and a rescue there needs a real collapse; at
+`rule_every ≤ 200` the early boom and bust trips the fall criterion and the rescue fires at the first boundary. The
+2D `tiny` preset behaves the same way (it flags at cadences 50, 100, 200 and 500), so this is a property of the rule
+set on a small, boom-and-bust preset and not of the third dimension, but a test or a run that uses a short cadence
+on `tiny3d` (the tests use 50) must expect a rescue. These values belong to the provisional `tiny3d`; the `64k3d`
+preset has to be measured the same way, at its own cadence, before the first director run.
+
+**Not changed.** `RULES_VERSION` is 1 and the vitals descriptor has ten components in 3D as in 2D, so the logs of a 2D
+and a 3D run share a rules version; a 3D rule set (a vertical-niche signal such as `clade_height_mi`, a persona that
+reads `band_frac`) would be a new `RULES_VERSION` and is not part of PR 4. `alife stream` and `view` re-simulate
+without the director (§27.11); `--follow` is the faithful view of a director run.
+
+**Tests.** `tests/test_director_3d.py`:
+- the validation accepts every mode in 3D;
+- one scene through `clamp`, `validate_entry`, `apply` and a compiled step: 24 agents in a radius-2.5 column at six
+  heights die (about 90%, at the lowest and the highest height), 8 outside it do not, the deaths are logged with cause
+  `CATASTROPHE`, and `full_check` closes the ledger;
+- a patch move: `(PP, 2)` kept, the other patches untouched, a `z` or `dz` rejected;
+- the radius bounds (2D unchanged; `tiny3d`, widths 48 to 1024, the 12% share), their effect on the clamp, on replay
+  validation, on the schema and on the sampler;
+- the header (`dims` in 3D only, the 2D key set pinned, no header for an unchanged policy) and the refusal of a log of
+  the other dimensions (replay, yoke);
+- the prompts (sha256 of the 2D system messages of the three personas and of the user message, the 3D wording, the
+  per-action effect texts);
+- a scripted live run of 400 steps on `tiny3d` that takes all seven actions (a revert across a checkpoint, a 2D-sized
+  radius clamped to 25, a patch move, an immigration pulse admitted in the volume) with its replay bitwise (fresh
+  directory, in place from a checkpoint, a live resume with no second header), the run being a valid 3D run with the
+  ledger exact;
+- the `random` persona yoked to that log, and its replay;
+- a real-rules Gardener run (population started at 40, so the extinction rescue fires at the first boundary) with the
+  ledger exact, its logged `k_est` equal to the floor-layer `carrying_capacity` of the state before the director acted
+  (and below half of what all the layers would give), a resume equal to the uninterrupted run (log, journal, archive,
+  digest), and its replay.
+
+**Tests edited.** `test_dims_config_pr2.py::BAD_PR2` lost its `director.enabled` case: the rule it pinned is gone.
+
+### 27.11 The CLI in 3D: reporting, refusals and `alife stream` (PR 4)
+
+**Reporting.** Every addition is 3D only; the 2D output, JSON key sets and `bench` environment are unchanged.
+- **Config summary** (`cli._summary`, used by `inspect` and the run announcement): `dims`, `world_height` and
+  `field_grid_z` (the layer count `FZ`) after `field_grid`. The announcement reads `L=128 height=24`.
+- **`inspect`**: `config` has the three keys above; `state` has the §27.9 snapshot keys (heavy); the top level has
+  `grounded_frac`, the share of the alive agents grounded in the checkpoint state (`physics.grounded`; `None` with
+  nobody alive; the rows' `grounded_frac` is an interval mean). The text output adds one line, `height (world 24): mean …,
+  quartiles …, grounded …, surface …, bands […]; speed …, |pitch| …, buoyancy cap median …`. `--agent UID` lists the
+  (x, y, z) `pos`, `pitch` and `buoy_cap` among the fields and adds `height` (z) and `grounded` (`z ≤ Dims.z_ground`).
+- **`bench`**: the environment `config` has `dims`, `world_height` and `field_grid_z`, and the text report prints
+  `height=…` after `L=…` (`H=` stays the hidden size).
+
+`tests/test_cli_report_3d.py`: `inspect --json` on a real 30-step `tiny3d` run reports `dims`, `world_height`,
+`field_grid_z`, the height keys against the checkpoint state and the grounded share; the text line; `--agent`; the rows
+of the run (interval and snapshot keys, the first row's `carrying_capacity_est` on the floor layer); the summary, the
+announcement and `bench`'s environment and report in 3D and without the keys in 2D.
+
+**Refusals.** `render`, `view` (and `render.render_frame`, `viewer.ViewerSession`) and `analysis.signals` keep their
+`require_2d` refusal (`ConfigError`, exit 2, before the state is loaded): the pygame viewer and the MLX renderer draw a
+2D plane, and the signal decoder mirrors S0–S8 of the 2D step; porting it to the 3D inputs and outputs is out of scope
+for PR 4. The message names `alife stream`. A 3D run is viewed through the stream below, by the AlifeControl 3D viewer
+(PR 5).
+
+**`alife stream`** writes the world as a binary frame stream on stdout, for an external viewer (docs/3D.md §8). It
+serves 2D and 3D worlds alike (a 2D stream carries z = 0 and pitch = 0, so the viewer can show it), is an observer
+that never writes into the run directory, and shares the renderer's palette (§20.1) so a frame has the colours of a
+`render` image.
+
+```text
+alife stream  [RUN|FILE | --preset P [--set section.key=value ...]] [--checkpoint STEP|latest]
+              [--every K] [--steps N] [--follow [--poll SECONDS]]
+              [--color tag|energy|clade] [--fields] [--field-z K] [--no-control]
+```
+
+`--field-z K` implies `--fields`. The `--preset` of `stream` has no default (without a source the command exits 2); the
+other commands' `--preset` defaults to the engine's default preset.
+
+- **Sources** (exactly one): `RUN`, a run directory (the `--checkpoint` step, default the latest); `FILE`, a standalone
+  state file (a viewer snapshot; its embedded config); `--preset P` with `--set` (founders from `init_state`; a
+  preset is required, there is no default). `RUN`/`FILE` together with `--preset`/`--set`, `--checkpoint` with a
+  preset or a state file, or neither source, is a config error (exit 2). A run with no checkpoint is exit 4.
+- **Simulating stream** (default). It re-simulates from the state like `view`: one compiled step and one blocking
+  `mx.eval` per step, and the loop holds the only reference to the state (the donation rule, §15.4). It writes the
+  header, a frame of the starting state, and then a frame after every `K`-th step (`--every K`, default 1), counted
+  from the starting state: a bound of `--steps N` steps (default: unbounded) writes `N // K + 1` frames, the frame of
+  step `k·K` being stamped with `start + k·K`. It ends after `N` steps, on `quit` or stdin EOF, or when the reader
+  closes. **It re-simulates without the director**, as `view` and `render` do (§26.8): it keeps the checkpoint's
+  environment levers but applies none of `director.jsonl`, so after an intervention it diverges from a director run.
+  Nothing it does changes the trajectory (a test compares its final state digest with bare stepping, with and without
+  pauses, colour changes and field slices).
+- **`--follow`** (`RUN` only; `--steps`, `--every` and `--checkpoint` are refused) steps nothing. It streams the run's
+  latest checkpoint and, polling the directory every `--poll` seconds (default 1), a frame of the newest checkpoint
+  whenever it is newer than the last one streamed: checkpoints written between two polls are skipped (the stream
+  samples a fast run at the poll rate), and a file identified by name, size and mtime is streamed once (checkpoints are
+  written atomically). It is the **faithful view of a director run**: the checkpoint holds the environment the
+  director applied. `pause` holds the stream on its current checkpoint, `step` fetches the newest one once, `color`
+  and `fields` redraw the current checkpoint, `every` is ignored (with a note on stderr), `run` resumes. A checkpoint
+  or `LATEST` that disappears between the listing and the read (the runner's pruning, or a resume's truncation) is
+  skipped and the next poll carries on: the loader reports a missing file as `CheckpointError`, which the stream
+  treats as a vanished file when the path no longer exists. A checkpoint that exists but cannot be loaded (corrupt, or
+  of another config) is an error, exit 4 with a message on stderr, even after frames have been written. It only
+  reads: the run directory may be read-only, and a test freezes it.
+- **Processes and descriptors.** The protocol goes to a private duplicate of fd 1 (`stream.protocol_output`); while the
+  stream runs, `sys.stdout` and fd 1 itself are pointed at stderr, so a stray `print`, a C library's `printf` and a
+  child process cannot corrupt the framing. What the original `sys.stdout`, `sys.__stdout__` and the C library's
+  stdout buffer still hold when the stream ends is flushed **before** fd 1 is restored (a pipe's C stdio buffer is
+  only written at `exit`, which would put it after the last frame), so it lands on stderr. Diagnostics go to stderr.
+  Control lines are read from stdin by a thread using `os.read` on the raw descriptor (a daemon thread blocked in a
+  buffered reader can abort interpreter shutdown). `--no-control` leaves stdin alone (no control, and its EOF is not
+  a quit). A closed reader (`BrokenPipeError`, `ConnectionResetError`) ends the stream with exit 0, no message and no
+  traceback. A stream that writes nothing cannot learn of it from a failed write (a paused stream, a followed run
+  that has stopped, a running one whose `--every` skips the frame), so it asks the descriptor (`poll` for `POLLHUP` or
+  `POLLERR` on the write side, a no-op for a file or a device): once per `--poll` seconds when following, once a
+  second (`stream.IDLE_WAIT_S`) when paused, and after every step that writes no frame. A non-blocking stdout that
+  is full (a raw write returning `None`, EAGAIN) is a slow reader, not a closed one: the writer waits until the
+  descriptor drains and loses no byte.
+- **Exit codes**: 0 after `--steps`, `quit`, stdin EOF or a closed reader; 2 for a config error (nothing written to
+  stdout); 4 for a missing or incompatible checkpoint (likewise, except for an unreadable checkpoint of a followed
+  run, above); 1 unexpected; 130 SIGINT (`runner.ExitCode`). A decoder treats EOF inside a record as truncation (the
+  process died).
+- **Help.** The `stream` help says that it re-simulates without the director and that `--follow` is the faithful
+  view of a director run (a test pins it, as for `view`).
+
+**Protocol (version 1; normative, PR 5's Swift decoder is written from this text).** All integers are little endian;
+floats are IEEE 754 (`f32` binary32, `f16` binary16). A stream is a header and then records until EOF.
+
+| offset | size | field |
+|---|---|---|
+| 0 | 8 | magic `41 4C 53 54 52 4D 00 01`: `ALSTRM`, a zero byte, and the **major protocol version** (1) |
+| 8 | 4 | `u32 json_len`: the byte length of the JSON text, a multiple of 4 |
+| 12 | `json_len` | the header object: UTF-8 (ASCII) JSON, followed by 0 to 3 spaces of padding (inside `json_len`) |
+| `12 + json_len` | | records |
+
+*Header object* (every key is always present, in this order; a decoder ignores keys it does not know):
+
+| key | type | meaning |
+|---|---|---|
+| `protocol` | int | 1, as the last magic byte |
+| `dims` | int | 2 or 3 |
+| `L` | float | `world.size`: x and y are periodic on `[0, L)` |
+| `height` | float | `world.height` (z is bounded on `[0, height]`; an agent's centre lies in `[radius, height − radius]`); 0.0 when `dims` is 2 |
+| `N` | int | rows in every per-agent section of a frame: the state's agent capacity, `population.n_max` |
+| `B` | int | bond slots per agent (4) |
+| `radius` | float | `physics.radius`, the agent radius |
+| `field_cell` | float | the field cell size; `FG = L / field_cell` cells per side |
+| `FG`, `FZ` | int | field cells per side, and field layers (`FZ = height / field_cell`; 1 when `dims` is 2) |
+| `NCH` | int | chemical channels (3) |
+| `color_modes` | list of str | `["tag", "energy", "clade"]`: the index of a mode is the frame's `color_index` |
+| `color`, `fields`, `field_z` | str, bool, int | the view of the first frame: colour mode, field section on or off, field layer |
+| `step` | int | the step of the first frame |
+| `run` | str or null | the `RUN` or `FILE` argument as given; null for a preset |
+| `config_hash` | str | `config_hash(cfg)` of the streamed config (§17) |
+| `mode` | str | `"simulate"` or `"follow"` |
+| `every` | int | steps per frame (`--every`); 0 in follow mode |
+| `source` | str | `"run"`, `"file"` or `"preset"` |
+
+*Records.* Each record is `tag` (4 bytes), `u32 len` and `len` payload bytes; the next record follows at once. Every
+record has a multiple of 4 bytes, so each starts 4-byte aligned. A decoder skips a record whose tag it does not know
+by its `len`. The only tag of version 1 is `FRM1`, a frame, with this payload (offsets from the start of the payload):
+
+| offset | size | field |
+|---|---|---|
+| 0 | 8 | `u64 step`: the step of the streamed state |
+| 8 | 4 | `u32 n_alive`: the number of rows with `alive = 1` |
+| 12 | 4 | `u32 flags` (below) |
+| 16 | 4 | `u32 n_bonds` |
+| 20 | 4 | `u32 color_index`: the colour mode of this frame's `rgb`, an index into `color_modes` |
+| 24 | 8 | reserved, zero |
+| 32 | `4·ceil(N/4)` | **alive**: `N × u8`, 1 for an alive row, then zero padding to a multiple of 4 |
+| | `12·N` | **pos**: `N × (f32 x, f32 y, f32 z)`. Always 3 floats; z is 0 in a 2D stream |
+| | `4·N` | **orient**: `N × (f16 yaw, f16 pitch)` in radians. Yaw is `heading`, in `[−π, π)`; pitch is `State3.pitch`, in `[−80°, 80°]`, 0 in a 2D stream. The forward axis is `(cos φ·cos θ, cos φ·sin θ, sin φ)` for yaw θ and pitch φ (§27.2) |
+| | `4·N` | **rgb**: `N × u32` `0x00RRGGBB` (R in bits 16–23; the top byte is 0) |
+| | `8·n_bonds` | **bonds**: `n_bonds × (u32 i, u32 j)` with `i < j` and both rows alive, each bond once, in ascending `i` and then slot order |
+| | `4·FG²` | **field** (only when flags bit 0 is set): `FG² × u32` `0x00RRGGBB`, row-major `[cy][cx]`: the cell `(cx, cy)` covers `[cx·field_cell, (cx+1)·field_cell)` in x and y; in 3D it is the lattice layer named by `flags >> 16` |
+
+`flags`: bit 0 = a field section follows; bit 1 = the state's `diag` has an error bit set (an invariant violation, as the
+pygame HUD shows); bits 2 to 15 are reserved zero; bits 16 to 31 are the field layer (0 without a field section). The
+payload length is exactly `32 + 4·ceil(N/4) + 20·N + 8·n_bonds` plus `4·FG²` with a field. Section padding is zero
+bytes. Row `r` of the alive, pos, orient and rgb sections is agent slot `r` of the state; the values of a row with
+`alive = 0` are unspecified and a decoder ignores them (the writer copies the state's dead-row fill and colours it
+like an alive row). Colours are those of `render.agent_colors` (agents hurt in the last step, `last_loss > 0`, red
+`0xFF0000` in every mode; the `tag`, `energy` and `clade` palettes of §20.1) and `render.field_colors` (the §20.1
+background of resource and chemicals for one layer); there is no `kin` mode.
+
+*Versioning.* The last magic byte and `protocol` are the major version: a change to the header layout or to the layout of
+an existing record bumps it, and a decoder refuses a major version it does not know. Compatible additions keep the
+version: new header keys, new `flags` bits (a decoder ignores bits it does not know), a nonzero use of the reserved
+bytes by a later version (a version-1 writer writes zeros), and new record tags (skipped by length).
+
+*Control grammar.* One command per line on stdin (LF; surrounding whitespace is ignored); a blank line or a line whose
+first token starts with `#` is ignored; tokens are lower case and separated by whitespace; `N` and `K` are decimal
+integers.
+
+```text
+command = "pause" | "run" | "step" [N] | "every" K | "color" MODE | "fields" ( "on" | "off" ) | "fields" "z" K | "quit"
+```
+
+Lines are applied one at a time, between steps, in the order received, however the pipe chunks them: a line takes
+effect, and writes the frame it asks for, before the next line is looked at. `pause` stops stepping and frames and
+cancels the pending `step` batches. `run` resumes (and cancels them too). `step [N]` (N ≥ 1, default 1) pauses, runs N
+steps and writes exactly one frame after the last, whatever `every` is; a `step` received while another batch is
+running or queued is queued behind it and has a frame of its own, so `step 3` followed by `step 2` writes a frame
+after step 3 and another after step 5. `every K` (K ≥ 1) sets the frame period. `color MODE` (`tag`, `energy` or
+`clade`) sets the colour of later frames and writes a frame of the current state now. `fields on|off` includes or omits
+the field section and writes a frame now. `fields z K` (0 ≤ K < FZ) chooses the layer and writes a frame now if fields
+are on. `quit` ends the stream, as does EOF of stdin; the lines after `quit` in the same read are dropped, and the
+frames that earlier lines asked for are already written (so `printf 'color clade\n' | alife stream ...` ends with the
+clade frame). A line that is not a valid command, or longer than 4096 bytes (its LF not counted: a line of exactly 4096
+bytes is accepted), is ignored with one line on stderr per dropped line; nothing else changes. A paused stream with
+nothing to do waits on stdin without using CPU (it wakes once a second to look at the output descriptor). Commands
+change only what is written and when: the trajectory is the same.
+
+*Fixtures for the decoder.* `tests/data/stream_tiny_2d.bin` and `stream_tiny_3d.bin` are complete streams of a built
+(not stepped) scene on `tiny` / `tiny3d` with `micro` sizes (N = 64, L = 48, height 24): three frames (steps 100, 104,
+108) with a bond across the periodic seam, a hurt (red) agent, dead rows between alive ones, the three colour modes,
+a field slice (3D: layers 0 and 5) and the invariant flag. The first frame has three bonds, row 2 holding two of them
+in slot order (partner 10, then 3, so the stream lists (2,10) before (2,3)); the second frame has a fourth bond. The
+JSON next to each (`.json`) holds the expected header and, per frame, the head fields, the alive rows, the bonds, the
+first agents (position, yaw, pitch, colour), the first field cells and the SHA-256 of every section, produced by an
+independent decoder (`tests/stream_decode.py`, written from this section). `tests/stream_fixtures.py` regenerates them
+on the CPU device (`uv run python tests/stream_fixtures.py --write`); the test rebuilds both and compares the bytes
+(skipped on a GPU default device, where the float32 colour arithmetic may round differently; the committed files are
+decoded and checked against their sidecars on every device).
+
+**Tests.** `tests/test_stream.py` (every protocol claim is checked with the independent decoder):
+- the header (bytes, alignment, key order and values in 2D and 3D) and frame count `steps // every + 1` with absolute
+  step stamps; unknown record tags skipped;
+- the frames of a stepped scene equal the stepped state: alive mask, positions, yaw, pitch, bonds (a death along the
+  way removes its bonds) and colours; a 2D stream has z = 0 and pitch = 0 on every row; the bond order (row 2 of the
+  scene holds partners 10 and 3 in that slot order, which row-major, slot-major and partner-sorted orders all list
+  differently); the flag word (bit 1 for an error bit of `diag` and not for the routine warning bits, bits 2 to 15 zero,
+  bit 0 and the layer bits only with a field section, whatever layer the view has selected);
+- colour modes, the field slice against the renderer's background (2D, one pixel per cell) and against a float32
+  reference per layer (3D), the colour helpers' argument checks;
+- purity: the final state digest equals bare stepping, with every frame cadence and a control script;
+- the control grammar (a parser table; every command in a fixed schedule with the expected frames; each redraw command
+  writing its own frame, the same frames whether the lines arrive in one read or one per read; a redraw written before
+  `quit` or EOF in the same read, through a real pipe too; queued `step` batches with a frame each; invalid lines; EOF
+  as quit; `--steps` winning over a pending `step`; a paused stream waiting on the channel with a bounded timeout; the
+  stdin reader with partial lines, a line of exactly 4096 bytes accepted, overlong lines in one write or in pieces
+  dropped with one note on stderr each and the line after them intact, and EOF);
+- a closed reader (`BrokenPipeError` and `ConnectionResetError`, at each write) is a quiet stop; a full non-blocking
+  pipe makes the writer wait and loses no byte; `reader_closed` on a pipe, a file and a device; a paused stream, a
+  running one whose `--every` writes no frame, and a followed one with nothing to write notice a closed reader; `protocol_output` sends prints and raw fd-1 writes to
+  stderr and restores both; a step that prints cannot corrupt the stream; a subprocess whose step leaves output in the
+  C library's stdout buffer and in `sys.__stdout__` still ends with a stdout that decodes strictly;
+- the sources through `cli.main` (RUN at LATEST and at `--checkpoint`, FILE, preset; `--field-z` alone turning the field
+  section on; the argument errors, exit 2 and 4; the `--follow`, `--poll` and source arguments reaching `serve`; the
+  help saying `--preset` has no default); a run directory and a followed one that are read-only, unchanged;
+- `--follow`: the latest first, new checkpoints, pause, step, redraws, `every` ignored, a file that vanishes between
+  the stat and the read (deleted for real, so the real loader raises its `CheckpointError`), `LATEST` vanishing, a
+  checkpoint that exists but cannot be loaded reported, nothing stepped;
+- four subprocesses on the CPU device with real pipes: a reader that closes early exits 0 with an empty stderr, stdin
+  commands and EOF with a stdout that decodes strictly, `--follow` seeing a checkpoint written by another process, and
+  `--follow --no-control` exiting once the reader goes;
+- the committed fixtures: decoded against their sidecars on every device and rebuilt byte for byte on the CPU device;
+  `stream_fixtures.build` asserts that no colour computed from an inexact float32 expression (the energy ramp, the
+  field greens and tints) lies within 1e-3 of a rounding boundary, so the byte comparison does not depend on how a
+  platform rounds the last bit.
+
+**Tests edited.** `tests/test_lint.py` scans `stream` for subscript assignment (`SETITEM_MODULES`).
 
 ---
 
@@ -4552,6 +4966,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I36 | feat: 3D world PR 1, dims plumbing (`docs/3D.md` §10 item 1; new §27.0 and §27.1), no behaviour change: `validate` still rejects `world.dims = 3` (`config.DIMS_SUPPORTED = (2,)`), and every 2D trajectory, config hash, metrics row and checkpoint and `meta.json` key set is unchanged (golden digest not re-pinned, no `FORMAT_VERSION` or `RNG_LAYOUT_VERSION` bump; a CPU digest matrix of 2D trajectories and runs matched bit for bit). (1) `world.dims` (2) and `world.height` (0) in `POST_V01_KEYS` and the new `THREE_D_KEYS`; `is_3d`, `require_2d`; `Dims` gains `nd`, `d3`, `lay`, `fz`, `n_cells`, `field_shape`, `g_hash_z`, `cell_hash_z`, and `q`, `w1_rows`, `params` go through `lay`; the world-dimensions validation (2D: the 3D keys keep their defaults; 3D: height, FZ, FZ·FG² ≤ 2²⁰, G_z, `2·height ≤ size`, `K ≤ 27·C`, `chem_diffusion ≤ 1/6`, `resource_diffusion_q8 ≤ 42`), every 2D message verbatim; only finite ratios are rounded (a non-finite `size` or `height` is a `ConfigError`, not an `OverflowError`). (2) `layout.Layout`, `for_dims`, `genome_layout_version` and `GENOME_LAYOUT_VERSION_3D = 2` with the frozen append-only 3D tables (D_IN 84 with inputs 69–83 ending in `IN_HEIGHT`, `IN_PITCH`, `IN_GROUNDED`; D_OUT 39 with `OUT_PITCH`, `OUT_BUOYANCY`, `OUT_Q_BOND_DZ`, `OUT_Q_ATTACK_DZ`); the D_IN/D_OUT reads in brain, sensing, metrics, bench, state and the schema go through `dims(cfg).lay` (equal Python ints in 2D); D18 amended. (3) `state.expected_layout` is the one State schema (`runio._expected_layout` stays as an alias for `tests/test_runio.py`; the private `invariants._expected_layout` is removed); `LedgerIdx.HEAT_BUOYANCY` alias of slot 15, `sinks(nd)`, `ledger_names(nd)` (definitions only). (4) `dims` metadata only when dims ≠ 2 (absent = 2D); `load_checkpoint` refuses a cross-dimension file; a fork refuses a `world.dims`/`world.height` change (exit 4); `render`, `view`, `render_frame`, the viewer and `analysis.signals` refuse a 3D config before loading (`require_2d`, exit 2). (5) `tests/helpers.make_scene` takes the pos, vel, W2, resource and chem shapes from the config's state (2D unchanged). Interpretations: `actions.decode` keeps `layout.F` (the 2D query block width in both dims; PR 2 appends the z component); `cli._agent_info` and the `make_scene` State class wait for `State3` (PR 2). Tests: `tests/test_layout_dims.py`, `tests/test_dims_config.py`, `tests/test_dims_runio.py`. |
 | I37 | feat: 3D world PR 2, the geometry core (`docs/3D.md` §10 item 2; new §27.2–§27.5), still gated: `validate` rejects `world.dims = 3` (`DIMS_SUPPORTED = (2,)`) and the step does not call the 3D code yet (PR 3); every 2D trajectory, config hash, metrics row and checkpoint key set is unchanged (golden digest not re-pinned, no `FORMAT_VERSION` or `RNG_LAYOUT_VERSION` bump; the CPU digest matrix of 2D trajectories matched bit for bit). (1) Config: `physics.gravity`, `floor_eps`, `buoyancy_max`, `mutation.buoy_init`, `buoy_sigma`, `fields.benthic_lambda`, `photic_amp`, `photic_lambda` (all 0, in `POST_V01_KEYS` and `THREE_D_KEYS`, rejected off default in 2D, no 2D message changed); the 3D rules of §27.1 (room to reflect a child, `gravity < thrust_max·sin(PITCH_MAX)`, `r + floor_eps < field_cell`, the 3D load rule, the buoyancy keys 0 without the actuator, the profile keys, the director rejected until PR 4); `Dims.z_lo`, `z_hi`, `z_ground` as float32-exact host values (`z_ground` the largest float32 `≤ r + floor_eps` and at least `z_lo`, so a floor agent is always grounded); `layout.PITCH_MAX = 80°`. (2) State: `State3` (State's 47 fields, then `pitch`, `buoy_cap`), `EXTRA_3D_FIELDS`, `AGENT_FIELDS_3D`, `state_cls`, `agent_fields`; type-generic schema, (de)serialisation and digests (`legacy_state_digest` 2D only); founders uniform in the volume (`volume_kinematics`), dead rows at (0, 0, z_lo), `buoy_cap = buoy_init`; `load_checkpoint`, `full_check`, `inspect` and `tests/helpers.make_scene` take `State3`. (3) Geometry: `ops.wrap_xy_clamp_z`, `body_axes`, `to_body3`; `spatial._find_neighbors_3d` (G²·G_z cells, z clamped and never wrapped, a 3×3×3 stencil whose out-of-range layers are empty, Q = 27C); the 8-wide descriptor ending in `NBR_DZ`; 3D queries in `decode`, and `Motion3`/`decode_motion3`. (4) Physics: `grounded`, `forces3` (thrust along the 3D forward axis; gravity and buoyancy as body forces that contacts do not attenuate), `integrate3`/`Integrated3` (grip on x and y only and only when grounded, the 3D `v_max` clip before the clamp, floor and surface clamps that move the agent to the boundary and zero only the stored `v_z`, counted; the pitch clip); `bonds` works on (N,B,3) unchanged (docstrings only). (5) Lifecycle: the buoyancy-cap gene (`split(MUT_GENES, 5)` whenever dims = 3, additive Gaussian noise with a clip), children in a cone behind the parent with vertical reflection, immigrants uniform in the volume at `buoy_init`, the `pitch`/`buoy_cap` row writes, the vertical-column catastrophe. (6) Lattice: `resource` (FZ, FG, FG) and `chem` (NCH, FZ, FG, FG), the z-major `cell_index`, `vertical_profile` (V[0] = 1; the photic term only when `photic_amp > 0`), `fertility` and `regen_rate` over layers (the floor layer is the 2D fertility bit for bit). (7) Static guards in the 2D bodies that would otherwise take 3D input silently: last-axis asserts in `to_body`, `cell_index`, `find_neighbors` and `integrate`, and a lattice-rank assert in `sample_fields`, each with a refusal test. Interpretations: no `ops.min_image_xy` and no `bonds` z flag, since `2·height ≤ L` (§27.1) makes `min_image` the identity on z; the buoyancy costs, the field dynamics, sinking corpses and the step wiring are PR 3, and the scaled catastrophe radius bounds PR 4; the PR 1 3D fixtures of `tests/test_dims_config.py` and `tests/test_dims_runio.py` gained `fields.benthic_lambda` (now required in 3D), the `THREE_D_KEYS` pin checks the PR 1 prefix, and one BAD_3D case uses values that keep it the only problem. Measured: C = 16 and K = 8 do not hold 3D crowds (§27.3: peak cell occupancy 28 to 37 at C = 64 and up to 10 contacts per agent; overflow and collapse at C = 16), to be sized in PR 6. Tests: `tests/test_dims_config_pr2.py`, `tests/test_state_3d.py`, `tests/test_fields_3d.py`, `tests/test_ops_3d.py`, `tests/test_spatial_3d.py`, `tests/test_sensing_3d.py`, `tests/test_actions_3d.py`, `tests/test_physics_3d.py`, `tests/test_lifecycle_3d.py`, `tests/test_crowd_3d.py` (slow). |
 | I38 | feat: 3D world PR 3, field dynamics, energy and enablement (`docs/3D.md` §10 item 3; new §27.6–§27.8): `world.dims = 3` is enabled (`DIMS_SUPPORTED = (2, 3)`) and runs end to end with the new, provisional `tiny3d` preset; every 2D trajectory, config hash, metrics row (slot 15 still `RESERVED`) and checkpoint key set is unchanged (2D golden not re-pinned, no `FORMAT_VERSION`, `RNG_LAYOUT_VERSION` or genome-version bump; the CPU digest matrix of 2D trajectories and runs matched bit for bit after each change). (1) Fields: `ops.int_diffuse_3d` (exact no-flux integer diffusion, z never rolled; `int_diffuse` unchanged), the 7-point chemical stencil with mirrored ghost layers, `deposit_chem` strided by `n_cells`, `sample_fields(…, pitch=)` with z gradients (clamped index, divisor 2), corpses sinking to the floor cell `fcell mod FG²` under `FLOW_CORPSE` (combat spill and residue stay in the victim's own 3D cell), and the input tail 69–83 (`build_inputs(…, grounded=)`). (2) Energy: `pay_costs3`/`Costs3` (turn term on `|turn| + |Δφ|`; `buoyancy_cost·(buoy_cap·b)² + buoyancy_cap_cost·buoy_cap` per step, the upkeep paid even without lift; solvency on the total; paid basal, action, buoyancy), the keys `energy.buoyancy_cost` and `buoyancy_cap_cost` (int, 0; `POST_V01_KEYS`, `THREE_D_KEYS`; in 3D `< 2¹⁶` and 0 without the actuator), booked in `HEAT_BUOYANCY`, ledger slot 15 (`RESERVED` stays the canonical name and is still checked 0 in 2D). (3) Invariants and metrics: the closures over `sinks(nd)` in `device_check`, `full_check` and `ledger_error`; z, pitch and non-finite `pitch`/`buoy_cap` under the existing `POS_RANGE` and `NONFINITE` bits; `_check_rows_3d` with its own meta-test; `Counter3D` (27–29) and `n_counters(nd)`; `interval_row(…, nd=)` refuses a counter block of the wrong width instead of reshaping it; per-dims ledger names; `chem_mean` over the volume; the founder's cap upkeep in `c_ref`. (4) Step: static `d3` branches at S4, S5, S7, S8, S15 and S18 with every 2D line unchanged, `StepOut.counters` (30,) with `Counter3D` appended, `paid_buoy` as an 11th exact-sum column, `INT_HEADROOM` on the x/y column occupancy (a floor cell receives the corpses of its whole column), every output derived from its inputs (I14); `bench._StagedStep` mirrors each branch. (5) Enablement: `tiny3d` (values and reasons in §27.8; hovering costs 9 q/step by buoyancy and by thrust), fixtures `tiny3d_cfg` and `micro3d_cfg`, a 3D fork refusing a changed `physics.radius` as it refuses `world.height` (exit 4; the radius sets `z_lo` and `z_hi`, §27.1), and the 3D golden test (`GOLDEN_3D`: `state_digest` of `tiny3d_cfg` after 50 steps with `HEAT_BUOYANCY > 0`; its digest is empty until recorded on Linux-x86_64-cpu with MLX 0.32.3, where the skip message prints it). Interpretations: the diffusion bound is `resource_diffusion_q8 ≤ 42` as PR 1 validates, not 43 (an empty cell between six saturated ones would exceed `R_HARD`, §27.6); `Motion3` is masked by solvency for symmetry with `Actions`, though an insolvent agent dies at S14 and its `Motion3` has no effect; `metrics.jsonl` rows do not carry the `Counter3D` columns yet (PR 4); the 3D `K_est` sums every layer's regeneration and is not comparable to a 2D one (1 456 on `tiny3d` against 426 on `tiny`, §27.7), its meaning to be settled before the director runs in 3D; the GUI's preset list and 3D levers wait for PR 5. Existing tests that pinned the pre-enablement gate were edited: `test_dims_config.py` (`DIMS_SUPPORTED == (2, 3)`; the rejection test narrows it to `(2,)`; `test_defaults_are_2d` leaves out `tiny3d`), `test_dims_runio.py` (the exit-2 fork test narrows it to `(2,)`; the schema test pins `state_cls(cfg)` to `State` or `State3` by dims and expects its fields) and `test_dims_config_pr2.py` (the PR 2 `THREE_D_KEYS` pin checks `[2:10]`). Tests: `tests/test_energy_3d.py`, `tests/test_invariants_3d.py`, `tests/test_metrics_3d.py`, `tests/test_step_3d.py`, `tests/test_affordances_3d.py`, `tests/test_determinism_3d.py`, `tests/test_cli_smoke_3d.py`, and new functions in `test_ops_3d`, `test_fields_3d`, `test_lifecycle_3d`, `test_sensing_3d`, `test_bench`, `test_runner`, `test_config` and `test_cli_smoke`. |
+| I39 | feat: 3D world PR 4, metrics, the director and the CLI in 3D, and `alife stream` (`docs/3D.md` §10 item 4; new §27.9–§27.11): no change to the 2D compiled step, the state, the RNG, any config key's meaning, the golden digests or any 2D output, and in 3D the compiled step changes only in the `GROUNDED` counter (review fixes below) (the CPU digest matrix of 2D trajectories and runs, 2D director runs included, matched bit for bit after each of the three stages; 2D metrics rows, director logs, LLM prompts, `inspect` output and the `render` palette are byte-identical, the prompts pinned by sha256). (1) Metrics (§27.9): 3D-only snapshot keys after `diag` (`height_mean`, `height_q25/50/75`, `surface_frac`, `speed_mean`, `pitch_abs_mean`, `buoy_cap_q10/50/90`, `band_frac` over four equal z bands, `clade_height_mi`, and with the heavy snapshot `body_z_extent_mean/max`) and interval keys after `v_clips` (`z_floor_clamps`, `z_surface_clamps`, `grounded_frac` = Σ `GROUNDED` / Σ `N_ALIVE`, `buoy_heat`); no snapshot key is named `grounded_frac` (`interval_row` raises on a clash). (2) `carrying_capacity` counts the **floor layer's** regeneration only in 3D (owner decision: the benthic analogue of the 2D lattice; `c_ref` keeps the founder's cap upkeep; `tiny3d` 409 against `tiny` 426, 1 456 when every layer was summed); the first row, `inspect` and the director's `n/K_est` read it; it ignores the photic band and is revisited with the tuning in PR 6 (§27.10). (3) Director (§27.10): `validate` no longer refuses `director.enabled` in 3D; `actions.radius_bounds` scales the catastrophe radius by L/1024 in 3D only (`tiny3d` [2.5, 25]); patches move in x and y only (`patch_pos` stays (PP, 2)); the log header gains `"dims": 3` in 3D only and `validate_log` refuses a log of the other dimensions; `prompt.EFFECT_3D`, `effects(cfg)` and `world_text(cfg)` give the 3D wording, with a "(floor-layer food only)" qualifier on `K_est`; `RULES_VERSION`, the ten-component descriptor and every rule parameter are unchanged; `n/K_est` on `tiny3d` with the director off is 0.54 to 0.71 after step 210, so the `n/K_est` criterion of the extinction flag is off at baseline; the `fall > 0.3` criterion is off at the default cadence of 1 000 steps and fires at cadences of 200 or less (the founders' boom and bust, as on 2D `tiny`; provisional, to be measured on `64k3d`). (4) CLI (§27.11): `dims`, `world_height`, `field_grid_z` in the summary, `height=` in the announcement, a height line, a top-level `grounded_frac` and (for `--agent`) `height` and `grounded` in `inspect`, the height in `bench`'s environment and report; `render`, `view` and `analysis.signals` keep their `require_2d` refusal (porting the signal decoder is out of scope). (5) `alife stream` (§27.11, `stream.py`): a framed binary protocol on a private duplicate of fd 1 (`ALSTRM\0\1` magic, a JSON header, `FRM1` records of a 32-byte head and the sections alive, pos, orient, rgb, bonds and an optional field slice, all little endian and 4-byte aligned), colours computed with the renderer's palette, a simulating mode that re-simulates like `view` (one `mx.eval` per step, donation rule) and `--follow`, which reads the run's newest checkpoints and is the faithful view of a director run; stdin control lines (`pause`, `run`, `step [N]`, `every K`, `color MODE`, `fields on`, `fields off`, `fields z K`, `quit`; EOF = quit); a closed reader is exit 0 with no traceback; the run directory is never written. `render._background` is split into `_cell_rgb` (a flat per-cell colour on which the 2D code calls it unchanged) with the public `agent_colors` and `field_colors`; the fixtures `tests/data/stream_tiny_{2d,3d}.bin` and their JSON sidecars serve PR 5's Swift decoder tests. Interpretations: heights are the agent centre z; `surface_frac` counts `z ≥ z_hi − floor_eps`; `clade_height_mi` is a plug-in estimate in nats; a body's extent is max z − min z of its members; a 2D stream carries three floats per position (z = 0) and pitch 0; the field layer and an invariant-violation flag travel in the frame's `flags` (the 8 reserved head bytes stay zero); the command has no default preset and `--follow` refuses `--steps`, `--every` and `--checkpoint`; `step` in follow mode fetches the newest checkpoint once; the stdin reader uses `os.read` (a daemon thread blocked in a buffered reader can abort interpreter shutdown); the fixtures are built scenes, not stepped runs, so their bytes do not depend on the platform's floating-point dynamics (the byte comparison runs on the CPU device only); `validate_log`'s refusal of a log of the other dimensions and the "(floor-layer food only)" qualifier are additions beyond the plan. **Review fixes** (a second commit on the PR): (a) `Counter3D.GROUNDED` counts the agents that were grounded at the start of the step and survive it (`grounded & alive0 & ~dead`, §27.8): counted over the start-of-step alive set it was set against the end-of-step `N_ALIVE`, so a mass death (a catastrophe, an extinction interval) pushed `grounded_frac` above 1 (2.86 in a probe; 1 514 grounded agent-steps against 1 406 floor clamps in an ordinary `tiny3d` row at step 1 010); a change to a 3D output counter only, so the 2D step, the state, the RNG and the 3D golden digest are untouched. (b) `alife stream`: control lines are applied one at a time, so each `color` and `fields` line writes its own frame whatever the pipe read-chunking, a redraw is written before a `quit` or EOF that arrives with it, and `step` batches queue with a frame each; an overlong control line is noted on stderr; the C library's stdout buffer and `sys.__stdout__` are flushed before fd 1 is restored (a pipe's block-buffered C stdio had been writing into the protocol stream after the last frame, at `exit`); a full non-blocking stdout waits instead of reading as a closed reader; a closed reader is noticed when nothing is being written (`poll` for hang-up, each `--poll` seconds when following and each second when paused); `--follow` skips a checkpoint that vanishes between the stat and the read (the real loader raises `CheckpointError` for a missing file, not `FileNotFoundError`) and a vanished `LATEST`, and describes itself as streaming the newest checkpoint at each poll, not every one; `stream.py` has no subscript assignment (`test_lint` scans it); `stream` has its own `--preset` help; the fixtures were regenerated with a row of two bonds in slot order and with field colours and chemical levels away from rounding boundaries (asserted in `build`). (c) Documentation: §27.10's calibration states both flag criteria and the cadence, §27.9 says `clade_height_mi` saturates at the band entropy while clades are near singletons (the estimator is left for PR 6), the stream bullets of §27.11, the `stream.py` entry in §16, `height` for `H` in §27.10 and the wrapping of `docs/3D.md`. Existing tests edited: `test_carrying_capacity_3d_includes_the_cap_upkeep` takes its regeneration from layer 0 (the rule changed on purpose) and `test_dims_config_pr2.py::BAD_PR2` lost its `director.enabled` case (the rule it pinned is gone); the review fixes changed the helper `test_step_3d._counter3d_ref` (`GROUNDED` over survivors) and the constant `test_lint.SETITEM_MODULES` (adds `stream`); no other existing test function changed. New tests of the review fixes are in `tests/test_stream.py`, `tests/test_step_3d.py` (a mass death) and `tests/test_cli_report_3d.py` (an extinct state). Tests: `tests/test_metrics_3d.py` (extended), `tests/test_cli_report_3d.py`, `tests/test_director_3d.py`, `tests/test_stream.py` (with `tests/stream_decode.py`, an independent decoder, and `tests/stream_fixtures.py`). |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

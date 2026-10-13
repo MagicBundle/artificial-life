@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
-from alife.config import Config, ConfigError
+from alife.config import Config, ConfigError, is_3d
 from alife.director.actions import TIMED, lever_keys, validate_entry
 from alife.director.rules import RULES_VERSION
 from alife.runio import read_jsonl
@@ -45,6 +45,9 @@ def make_header(
         "rule_every": d.rule_every,
         "budget_per_100k": budget,
         "seed": cfg.run.seed,
+        # The world's dimensions are recorded in 3D only (§27.10): a 2D header keeps its step-2 key set, so a
+        # resumed 2D run never gets a new header for it.
+        **({"dims": 3} if is_3d(cfg) else {}),
         # The LLM tier's policy is recorded only while it is on, so a log without it keeps its step-2 header.
         **({"llm_every": d.llm_every, "llm_model": cfg.run.llm_model} if d.llm_every else {}),
         # Likewise the yoked persona's provenance: the log it follows (as given) and what that file held.
@@ -79,7 +82,8 @@ def read_log(path: Path) -> list[dict[str, Any]]:
 def validate_log(records: Sequence[Any], cfg: Config) -> None:
     """Pre-validate a whole log before a replay (A9): ``LogError`` / ``ActionError`` (both exit 2) if any
     record is malformed, any action unknown, any ``step_applied`` not a multiple of ``rule_every``, any value
-    outside the menu bounds, the steps go backwards, or a revert has nothing to revert."""
+    outside the menu bounds, the steps go backwards, a revert has nothing to revert, or a header says the log
+    was written for another ``world.dims`` than this run's."""
     rule_every = cfg.director.rule_every
     active: set[str] = set()
     last = 0
@@ -89,6 +93,12 @@ def validate_log(records: Sequence[Any], cfg: Config) -> None:
         if "kind" in rec:
             if rec["kind"] != HEADER_KIND:
                 raise LogError(f"record {i}: unknown kind {rec['kind']!r}")
+            written = rec.get("dims", 2)  # absent = a 2D world (§27.10)
+            if written != cfg.world.dims:
+                raise LogError(
+                    f"record {i}: the log was written for a world with dims = {written!r}, "
+                    f"this run has world.dims = {cfg.world.dims}"
+                )
             continue
         validate_entry(rec, cfg, rule_every)
         if rec["step_applied"] < last:
