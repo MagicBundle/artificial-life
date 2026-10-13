@@ -57,7 +57,7 @@ from alife.render import (
 from alife.rng import InitStream, init_keys
 from alife.runio import DIRECTOR_LOG_FILE, CheckpointError, RunDir, checkpoint_metadata, load_checkpoint
 from alife.runner import ExitCode
-from alife.state import AGENT_FIELDS, DeathCause, State, default_env, init_state, to_numpy
+from alife.state import DeathCause, State, agent_fields, default_env, init_state, to_numpy
 from alife.step import make_step
 
 # run.* keys that resume may change: observers, cadences and the director mode (§18). Everything else goes
@@ -533,7 +533,7 @@ def _agent_info(uid: int, s: State, cfg: Config, rd: RunDir | None) -> dict[str,
     parent: int | None = -1 if 0 <= uid < n_init else None  # founders have no birth record
     if rows.size:
         r = int(rows[0])
-        a = {name: to_numpy(getattr(s, name)[r]) for name in AGENT_FIELDS if name not in ("W1", "W2")}
+        a = {name: to_numpy(getattr(s, name)[r]) for name in agent_fields(cfg) if name not in ("W1", "W2")}
         info["row"] = r
         info["age"] = step - 1 - int(a["birth_step"])
         info["fields"] = {k: v.tolist() for k, v in a.items()}

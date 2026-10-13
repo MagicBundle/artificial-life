@@ -258,7 +258,7 @@ def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> Stat
     spec = expected_layout(cfg)
     problems = [
         f"{name}: {tuple(a.shape)} {a.dtype} (expected {spec[name][0]} {spec[name][1]})"
-        for name, a in zip(State._fields, s, strict=True)
+        for name, a in zip(type(s)._fields, s, strict=True)
         if tuple(a.shape) != spec[name][0] or a.dtype != spec[name][1]
     ]
     if problems:

@@ -8,14 +8,51 @@ from typing import Any
 import mlx.core as mx
 import numpy as np
 
-from alife import brain, invariants, layout
-from alife.config import Config, dims
-from alife.state import AGENT_FIELDS, ENV_FIELDS, Diag, State, init_state, to_numpy, total_energy
+from alife import brain, invariants, layout, ops
+from alife.config import Config, config_from_dict, config_to_dict, dims
+from alife.state import (
+    ENV_FIELDS,
+    Diag,
+    State,
+    State3,
+    agent_fields,
+    init_state,
+    state_cls,
+    to_numpy,
+    total_energy,
+)
 from alife.step import make_step
 
 # Fused Metal kernels may round float ops differently from eager ones (e.g. FMA contraction), so compiled vs
 # eager is bitwise only on CPU. Integer results must still agree exactly on every backend.
 ON_GPU = mx.default_device().type == mx.gpu
+
+# The 3D variant of a 2D test config (height 24: FZ = 6 and G_z = 4 at the test field cell and radius), valid
+# under §27 once dims = 3 is enabled: chem_diffusion ≤ 1/6 and a benthic food band.
+THREE_D: dict[str, dict[str, Any]] = {
+    "world": {"dims": 3, "height": 24.0},
+    "fields": {"chem_diffusion": [0.16, 0.1, 0.16], "benthic_lambda": 8.0},
+}
+
+
+def as_3d(cfg: Config, **sections: Mapping[str, Any]) -> Config:
+    """``cfg`` as a 3D world: ``THREE_D`` and then ``sections`` (``{"physics": {"gravity": 0.03}}``) merged
+    over it. Built without ``validate``, which rejects dims = 3 until 3D is enabled (docs/3D.md PR 3)."""
+    d = config_to_dict(cfg)
+    for name, sub in (*THREE_D.items(), *sections.items()):
+        d[name] = {**d[name], **sub}
+    return config_from_dict(d)
+
+
+def volume_draws(k_pos: mx.array, k_head: mx.array, n: int, cfg: Config) -> tuple[np.ndarray, ...]:
+    """``(pos (n,3), heading (n,), pitch (n,))`` of founders or immigrants from §27.4's RNG table, written
+    out independently of ``state.volume_kinematics``: one (n, 3) position draw over ``[0, L)² × [z_lo, z_hi]``
+    from ``k_pos`` and one (n, 2) draw of ``k_head``, the yaw then the pitch."""
+    d, L, pm = dims(cfg), cfg.world.size, layout.PITCH_MAX
+    pos = mx.random.uniform(mx.array([0.0, 0.0, d.z_lo]), mx.array([L, L, d.z_hi]), (n, 3), key=k_pos)
+    ang = mx.random.uniform(mx.array([-np.pi, -pm]), mx.array([np.pi, pm]), (n, 2), key=k_head)
+    out = ops.wrap_xy_clamp_z(pos, L, d.z_lo, d.z_hi), ops.wrap_angle(ang[:, 0]), mx.clip(ang[:, 1], -pm, pm)
+    return tuple(to_numpy(a) for a in out)
 
 
 def make_scene(
@@ -26,8 +63,8 @@ def make_scene(
     resource: Any = None,
     chem: Any = None,
     **fields: Any,
-) -> State:
-    """Build a State holding exactly ``agents`` (every other row dead-canonical).
+) -> State | State3:
+    """Build a State (``State3`` in 3D) holding exactly ``agents`` (every other row dead-canonical).
 
     - Each agent is a mapping of per-agent State fields (``pos``, ``energy``, ``heading``, ``tag``, ``W1``...)
       plus an optional ``row`` (default: its list index). Unset fields default to a founder-like agent:
@@ -37,6 +74,8 @@ def make_scene(
     - ``resource``: None keeps the initial field, a scalar fills it, an array replaces it. ``chem`` likewise
       (default zeros).
     - ``fields``: any other State field (e.g. ``step``, ``key``, ``next_uid``) set verbatim.
+    - 3D (§27.4): positions are (x, y, z), dead rows rest at (0, 0, z_lo), ``pitch`` defaults to 0 and
+      ``buoy_cap`` to ``mutation.buoy_init``.
     ``total`` and ``total0`` are recomputed unless given. The returned arrays are evaluated.
     """
     d = dims(cfg)
@@ -71,6 +110,10 @@ def make_scene(
         "W1": np.zeros((n, d.w1_rows, d.h), np.float32),
         "W2": np.zeros((n, d.w2_rows, d.lay.D_OUT), np.float32),
     }
+    if d.d3:
+        arr["pos"][:, 2] = d.z_lo
+        arr["pitch"] = np.zeros(n, np.float32)
+        arr["buoy_cap"] = np.full(n, mu.buoy_init, np.float32)
     if len(agents) > d.n_cap:
         raise ValueError(f"{len(agents)} agents exceed N_CAP = {d.n_cap}")
     rows_used: list[int] = []
@@ -86,7 +129,7 @@ def make_scene(
         for key, value in spec.items():
             if key == "row":
                 continue
-            if key not in AGENT_FIELDS:
+            if key not in agent_fields(cfg):
                 raise KeyError(f"unknown per-agent field {key!r}")
             arr[key][row] = np.asarray(value, dtype=arr[key].dtype)
             if key == "brain_cost":
@@ -130,14 +173,14 @@ def make_scene(
         out[name] = mx.array(base[name]).astype(dtypes[name])
     out["next_uid"] = mx.array(int(arr["uid"].max(initial=-1)) + 1, dtype=mx.int64)
     for name, value in fields.items():
-        if name not in State._fields:
+        if name not in state_cls(cfg)._fields:
             raise KeyError(f"unknown State field {name!r}")
         out[name] = value if isinstance(value, mx.array) else mx.array(np.asarray(value)).astype(dtypes[name])
     total = total_energy(out["energy"], out["alive"], out["resource"], cfg)
     for name in ("total", "total0"):
         if name not in fields:
             out[name] = total
-    s = State(**out)
+    s = state_cls(cfg)(**out)
     mx.eval(s)
     return s
 

@@ -134,8 +134,8 @@ the input and output vectors, and `layout.for_dims(nd)` (held as `Dims.lay`) giv
 |---|---|---|
 | `B` | 4 | bond slots per agent |
 | `NS` | 3 | nearest neighbours given explicit input blocks |
-| `NF` | 7 | features per sensed neighbour |
-| `F` | 6 | targeting descriptor dims (= NF minus the `present` flag) |
+| `NF` | 7 | features per sensed neighbour (2D; 3D: 8, `NBR_DZ` last, §27.2) |
+| `F` | 6 | targeting descriptor dims (= NF minus the `present` flag; 2D; 3D: 7, §27.2) |
 | `MSG` | 2 | broadcast message channels |
 | `NCH` | 3 | chemical field channels |
 | `T` | 4 | genome tag dims |
@@ -172,7 +172,8 @@ or duplicate-index set-scatter exists anywhere in the design.
 The canonical order is `State._fields`. It is the order used by `state_to_arrays`, `state_digest` and every
 host iteration. Checkpoint files are keyed by name, and their key order is not significant (F15). The shapes are
 those of a 2D world; `state.expected_layout(cfg)` is the one schema for both dims (§27.1). A 3D world differs in
-the rows marked "3D" and, through `W1_ROWS` and `D_OUT` (§2.1), in the weight widths.
+the rows marked "3D" and, through `W1_ROWS` and `D_OUT` (§2.1), in the weight widths, and its state is the parallel
+type `State3`: these 47 fields, then `pitch` and `buoy_cap` (§27.4).
 
 **Per-agent rows (leading dim N).** "Canonical when dead" means the value is forced at death and checked by the
 invariants. Other dead-row values are stale and must never be read without an `alive` mask.
@@ -186,7 +187,7 @@ invariants. Other dead-row values are stale and must never be read without an `a
 | `generation` | (N,) | int32 | founders and immigrants 0; child = parent + 1 | ≥ 0 |
 | `birth_step` | (N,) | int32 | index of the step during which the agent was born; founders −1 | alive ⇒ `birth_step ≤ step − 1` |
 | `energy` | (N,) | int32 | stored energy (q) | alive ⇒ `1 ≤ E ≤ e_max`. Canonical when dead: 0 |
-| `pos` | (N,2); 3D (N,3) | float32 | position (x, y) | `0 ≤ pos < L`, finite |
+| `pos` | (N,2); 3D (N,3) | float32 | position (x, y); 3D (x, y, z) | `0 ≤ pos < L`, finite; 3D `z ∈ [z_lo, z_hi]` (§27.4) |
 | `vel` | (N,2); 3D (N,3) | float32 | displacement during the last step | `‖vel‖ ≤ v_max·(1+1e-6)`. Canonical when dead: 0 |
 | `heading` | (N,) | float32 | body orientation | `[−π, π)` |
 | `h` | (N,H) | float32 | recurrent hidden state | `[−1, 1]`. Canonical when dead: 0 |
@@ -265,10 +266,11 @@ because `validate` allows `season_amplitude = 1`; the weight `1 − A` is then 0
   `generation = 0`, `birth_step = −1`, `energy = e_init`, random `pos`, `heading`, `tag`, `W1`, `W2` (§14.1), genes
   at their `*_init` values, and `brain_cost = l1_cost` of their rows. `next_uid = n_init`, `step = 0`, `diag = 0`,
   `ledger_cum = 0`, and the `env_*` fields at `default_env(cfg)`.
-- Dead rows at init hold the canonical dead values, plus `pos = 0`, `heading = 0`, `tag = 0`, genes at their
-  `*_init` values, `clade = 0`, `generation = 0`, `parent_uid = −1`, `birth_step = −1`, `brain_cost = 0` and zero
-  weights. So every unqualified range invariant above also holds for dead rows at init, and it keeps holding: a dead
-  row's genes, tag, pos and heading are either these values or the in-range values of the agent that last lived there.
+- Dead rows at init hold the canonical dead values, plus `pos = 0` (3D: `(0, 0, z_lo)`, §27.4), `heading = 0`,
+  `tag = 0`, genes at their `*_init` values, `clade = 0`, `generation = 0`, `parent_uid = −1`, `birth_step = −1`,
+  `brain_cost = 0` and zero weights. So every unqualified range invariant above also holds for dead rows at init, and
+  it keeps holding: a dead row's genes, tag, pos and heading are either these values or the in-range values of the
+  agent that last lived there.
 
 **Memory.**
 - Weights: `W1` is 101·32·2 = 6 464 B and `W2` is 33·35·2 = 2 310 B per agent (fp16).
@@ -298,7 +300,8 @@ class State(NamedTuple):           # every field is an mx.array, in exactly the 
 ```
 
 `NamedTuple` is a pytree that `mx.compile` accepts and returns (F12). Updates use `s._replace(...)`. There is no
-class hierarchy anywhere. `State` and `Config` are the only central types.
+class hierarchy anywhere. `State` and `Config` are the only central types; a 3D world uses `State3`, a parallel
+NamedTuple with `State`'s fields first (§27.4).
 
 ---
 
@@ -384,12 +387,12 @@ class StepOut(NamedTuple):
 
 ---
 
-## 4. Spatial indexing: fixed-K neighbour search in pure MLX
+## 4. Spatial indexing: fixed-K neighbour search in pure MLX (2D; 3D: §27.2)
 
 **Parameters.**
 - `R = sensing.radius = 6.0`, which is 3 agent diameters.
 - `G_h = floor(L/R)` and `cell_h = L/G_h ≥ R`, so the 3×3 block of cells covers the sensing disc.
-- `C = sensing.cell_capacity = 16`, giving `Q = 9C = 144` candidates.
+- `C = sensing.cell_capacity = 16`, giving `Q = 9C = 144` candidates (2D; the 3×3×3 search of §27.2 has 27C).
 - `K = sensing.k_neighbors = 8`.
 - `validate` requires `G_h ≥ 3` (otherwise the 3×3 stencil would visit a cell twice), `NS ≤ K ≤ Q`, and
   `R ≥ max(bonds.form_range, combat.range, 2·physics.radius)`, so every interaction partner is inside the sensing
@@ -430,7 +433,7 @@ def find_neighbors(pos, alive, cfg) -> Neighbors:
 `Neighbors(NamedTuple)` has these fields:
 - `idx (N,K) int32`. Invalid entries hold **the agent's own index**, so gathers never go out of bounds.
 - `valid (N,K) bool`. Every consumer must AND with `valid`.
-- `off (N,K,2) f32`, the minimum-image vector from me to the neighbour; 0 where invalid.
+- `off (N,K,2) f32`, the minimum-image vector from me to the neighbour; 0 where invalid (3D: (N,K,3), §27.2).
 - `dist (N,K) f32`; `R` where invalid.
 - `overflow_cells () int32` and `max_occupancy () int32`.
 
@@ -483,7 +486,8 @@ sort, which is deterministic and involves no atomics.
 ## 5. Sensing: exact input vector layout (`D_IN = 69`, float32; 2D, 3D: §27.1)
 
 Notation:
-- **Body frame:** `fwd = (cos θ, sin θ)` and `lat = (−sin θ, cos θ)`, so `to_body(v) = (v·fwd, v·lat)`.
+- **Body frame:** `fwd = (cos θ, sin θ)` and `lat = (−sin θ, cos θ)`, so `to_body(v) = (v·fwd, v·lat)` (2D; the
+  3D frame adds pitch and an `up` axis, §27.2).
 - **Log ratio:** `lr(a, b) = clip(log((a + q0)/(b + q0)) / LR_SCALE, −1, 1)` with `q0 = max(energy.basal_cost, 1)`
   (the `max` keeps `lr` and `IN_ENERGY` defined when `basal_cost = 0`) and `LR_SCALE = 2`. Likewise a zero
   `attack_max`, `harvest_max` or `share_rate` is read as 1 in `IN_HURT`, `IN_FED` and `IN_GIFT`.
@@ -516,8 +520,8 @@ The index constants live in `layout.py` (`IN_*`). Tests import them by name.
 | 28 + 7n + f | `IN_NBR` (n = 0, 1, 2 nearest) | descriptor feature f (table below), copied from `desc[:, n, f]` |
 | 49 + 5b + f | `IN_BOND` (b = 0..3) | f: 0 `present`; 1, 2 `clip(to_body(geom.off) / break_length, −1, 1)`; 3 partner `msg[0]`; 4 `lr(E_partner, E_i)` |
 
-**Neighbour descriptor** `desc (N,K,NF=7)` (`sensing.neighbor_descriptors`). It is computed for all K neighbours,
-used for sensing (first NS) and targeting (all K), and zeroed where invalid.
+**Neighbour descriptor** `desc (N,K,NF=7)` (`sensing.neighbor_descriptors`; 3D: `NF = 8` with `NBR_DZ` last, §27.2).
+It is computed for all K neighbours, used for sensing (first NS) and targeting (all K), and zeroed where invalid.
 
 | f | name | definition |
 |---|---|---|
@@ -529,7 +533,7 @@ used for sensing (first NS) and targeting (all K), and zeroed where invalid.
 | 5 | `NBR_MSG0` | `msg_j[0]` |
 | 6 | `NBR_BONDED` | 1.0 if `j ∈ partner[i, :]` ((N,K,B) compare) |
 
-The targeting descriptor is `φ = desc[..., 1:]` (F = 6 dims).
+The targeting descriptor is `φ = desc[..., 1:]` (F = 6 dims; 7 in 3D, §27.2).
 
 Field samples use the agent's start-of-step field cell `fcell = cy·FG + cx`, where `(cx, cy) = floor(pos / field_cell) mod FG`.
 `fields.sample_fields` computes rows 12–23 completely (gather, gradient, body-frame rotation and the normalisation
@@ -638,8 +642,8 @@ input, never from action sampling.
 | 23–28 | `Q_BOND` | raw ℝ⁶ | bond-target query |
 | 29–34 | `Q_ATTACK` | raw ℝ⁶ | attack-target query |
 
-**Evolvable targeting (attention over neighbours).** The descriptor `φ_k ∈ ℝ⁶` is defined in §5. Target selection
-works as follows.
+**Evolvable targeting (attention over neighbours).** The descriptor `φ_k ∈ ℝ⁶` is defined in §5 (ℝ⁷ in 3D,
+where each query gains its `*_DZ` column, §27.2). Target selection works as follows.
 
 ```python
 has_free  = (partner < 0).any(1)
@@ -667,6 +671,9 @@ class Actions(NamedTuple):      # all (N,...) and already masked by `alive`
 def decode(y, desc, nbr, partner, alive, cfg) -> Actions
 def mask(act: Actions, keep: mx.array) -> Actions   # bools → False, floats → 0, k/targets → −1 where ~keep
 ```
+
+The 3D-only outputs (`OUT_PITCH`, `OUT_BUOYANCY`) decode into the parallel `Motion3`, and `mask` returns the type it
+is given (§27.2).
 
 ---
 
@@ -783,7 +790,7 @@ O(N·B) gathers plus an (N,B,B) duplicate compare. It runs every step inside `de
 
 ---
 
-## 9. Physics integration (S15)
+## 9. Physics integration (S15; 2D, 3D: §27.3)
 
 **Model.** Overdamped (Stokes) dynamics: velocity is proportional to force, with no inertia. This suits cell-scale
 agents, cannot oscillate, and has a simple stability criterion.
@@ -849,7 +856,7 @@ All physics is gathers plus elementwise work. There is no float scatter, so it i
 
 ### 10.1 Representation
 
-- All conserved energy is **int32 quanta**: `energy (N,)` and `resource (FG,FG)`.
+- All conserved energy is **int32 quanta**: `energy (N,)` and `resource (FG,FG)` (2D; 3D (FZ,FG,FG), §27.5).
 - Every agent also holds a fixed **structural energy** `S = energy.structure = 10 000 q`. It is paid by the parent
   at birth and returned to the field as part of the corpse, which makes corpses food.
 - The conserved total is
@@ -1145,7 +1152,8 @@ Every per-agent small array is written with `place`. This includes the int64 `ui
 needed. Parents are debited with `where(child_of >= 0, E − birth_cost − S − endow, E)`.
 
 **Child row values.** Here `p` is the parent row. `pos_p` and `θ_p` are post-S15 values. The `PLACEMENT`,
-`MUT_*` and `IMMIGRANT` keys are split as listed in §14.
+`MUT_*` and `IMMIGRANT` keys are split as listed in §14. The table is the 2D one; a 3D world places children in a
+cone behind the parent and immigrants in the volume, and also writes `pitch` and `buoy_cap` (§27.4).
 
 | field | birth lane | immigrant lane |
 |---|---|---|
@@ -1172,7 +1180,8 @@ After the step, `next_uid += n_birth + n_imm`.
 ### 12.4 Heritable genes and weight mutation
 
 The strategy genes mutate first, and the mutated values are then used for the weights. Keys:
-`ks[MUT_GENES]` is split into 4 (σ, p, tag, frac), and `ks[MUT_W1]` / `ks[MUT_W2]` are used as in §6.
+`ks[MUT_GENES]` is split into 4 (σ, p, tag, frac; 2D, 3D: 5 with the buoyancy cap, §27.4), and `ks[MUT_W1]` /
+`ks[MUT_W2]` are used as in §6.
 
 ```text
 σ_c   = clip(σ_p · exp(tau_sigma(0.15) · n₁), sigma_min(0.002), sigma_max(0.3))            σ_init = 0.03
@@ -1259,13 +1268,14 @@ iff its start-of-step position lies within `env_cat_radius` of `env_cat_center` 
 never depends on the levers). `deaths(..., cat_mask=)` kills the marked agents that would otherwise survive (§10.7)
 with cause `CATASTROPHE`, counted in `DEATHS_CATASTROPHE`. After the step `env_cat_kill_p` is reset to 0, so it
 cannot repeat; `env_cat_center` and `env_cat_radius` stay as set (they are inert at `kill_p = 0`, and the last
-geometry stays inspectable).
+geometry stays inspectable). In 3D the disc is a vertical column: only x and y count (§27.4).
 
 ---
 
 ## 13. Fields: the cellular-automaton substrate
 
-All fields are periodic, indexed `[y, x]`, with flat index `cy·FG + cx`.
+All fields are periodic, indexed `[y, x]`, with flat index `cy·FG + cx` (2D; a 3D lattice is `[z, y, x]`, bounded
+in z, with the z-major flat index `(cz·FG + cy)·FG + cx`, §27.5).
 - `cell_index(pos)` returns `(floor(pos.y / field_cell) % FG)·FG + (floor(pos.x / field_cell) % FG)`.
 
 ### 13.1 Fertility patches (non-stationary environment)
@@ -1276,6 +1286,9 @@ fert     = clip(fertility_base + Σ_p gy_p ⊗ gx_p, 0, 1)                (FG,FG
 regen_rate = floor(regen_max · fert).astype(int32)                       regen_max = 320 q/cell/step
 patch_pos ← wrap(patch_pos + patch_vel)                                  |patch_vel| = patch_drift = 0.005 u/step
 ```
+
+In 3D, `fert` and `regen_rate` are (FZ, FG, FG): this `fert` times a vertical profile by layer, whose floor entry is
+exactly 1 (§27.5).
 
 **Seasons (optional, off by default).** With `fields.season_period = P > 0` and `fields.season_amplitude = A > 0`
 each patch's Gaussian is weighted by `w_p(t) = 1 + A·sin(2π·t/P + φ_p)`, so
@@ -1398,6 +1411,10 @@ chem_c ← (1 − λ_c) · (chem_c + D_c · (roll₄(chem_c) − 4·chem_c))
 - 6 `PATCH_VEL`
 - 7 `STATE_KEY` (becomes `state.key`)
 - 8–15 reserved.
+
+A 3D world draws from these same keys and streams with 3D-only shapes and split counts (`InitStream.POS` and
+`HEADING`, `PLACEMENT`, `MUT_GENES` and the `IMMIGRANT` split's position and heading keys): no new stream and no
+`RNG_LAYOUT_VERSION` bump, and every 2D draw is unchanged (§27.4).
 
 **Observers** use `rng.observer_key(seed, step) = mx.random.key((seed * 1_000_003 + step) % 2**63)`. Examples are
 genome-diversity sampling and viewer picks. Observers never touch `state.key`.
@@ -1619,6 +1636,7 @@ class ConfigError(ValueError): ...
     occ_limit: int                                                        # §10.9: min(2^15−1, (2^31−1−R_HARD)//(2·e_max+S))
     nd: int; d3: bool; lay: layout.Layout; fz: int; n_cells: int; field_shape: tuple[int, ...]
     g_hash_z: int; cell_hash_z: float                                     # world dimensions (§27.1); q = 3^nd·C
+    z_lo: float; z_hi: float; z_ground: float                             # float32 z bounds (§27.2); 0.0 in 2D
 def dims(cfg: Config) -> Dims                                             # functools.cache
 POST_V01_KEYS; UNHASHED_KEYS; THREE_D_KEYS                                # §17; the 3D keys (§27.1)
 DIMS_SUPPORTED: tuple[int, ...] = (2,)                                    # world.dims values validate accepts (§27.1)
@@ -1652,6 +1670,7 @@ OUT_THRUST = 0; ...; OUT_Q_BOND = 23; OUT_Q_ATTACK = 29            # every index
 LR_SCALE = 2.0; AGE_SCALE = 1000.0; RES_SAT = 2.0; RES_GRAD_GAIN = 4.0   # §5 input normalisation
 EPS_LEN = 1e-6                                                     # §9 unit-vector guard
 C_REF_MARGIN = 50                                                  # §10.10 carrying-capacity estimate
+PITCH_MAX = math.radians(80.0)                                     # 3D pitch clip (§27.2)
 INPUT_NAMES: tuple[str, ...]   # len D_IN;  OUTPUT_NAMES: tuple[str, ...]  # len D_OUT
 
 # state.py
@@ -1666,16 +1685,23 @@ R_HARD: Final = (1 << 24) - 1
 class State(NamedTuple): ...       # §2.3 (47 fields: V0_FIELDS (38) + ENV_FIELDS (9)); State.env -> Env view
 class Env(NamedTuple): regen_mult; season_amp; season_period; drift_mult; patch_gain; imm_request; cat_center; cat_radius; cat_kill_p
 ENV_FIELDS: Final = ("env_regen_mult", ...); V0_FIELDS: Final = State._fields[:38]
+class State3(NamedTuple): ...      # §27.4: State's 47 fields, then EXTRA_3D_FIELDS = ("pitch", "buoy_cap"); .env as State
+AGENT_FIELDS; AGENT_FIELDS_3D = AGENT_FIELDS + EXTRA_3D_FIELDS               # per-agent fields (leading dim N)
+def state_cls(cfg: Config) -> type                                         # State3 if world.dims == 3, else State
+def agent_fields(cfg: Config) -> tuple[str, ...]                           # AGENT_FIELDS_3D | AGENT_FIELDS
 def default_env(cfg: Config) -> dict[str, mx.array]                        # inert env_* arrays for cfg
-def init_state(cfg: Config) -> State                                       # uses cfg.run.seed; evaluated arrays
+def init_state(cfg: Config) -> State | State3                              # uses cfg.run.seed; evaluated arrays
+def volume_kinematics(k_pos: mx.array, k_head: mx.array, n: int, cfg: Config) -> tuple[mx.array, mx.array, mx.array]
+                    # 3D (pos (n,3), heading, pitch) uniform in the volume: founders and immigrants (§27.4)
 def total_energy(energy: mx.array, alive: mx.array, resource: mx.array, cfg: Config) -> mx.array   # int64 (); int64(n_alive)·S
 def age(step: mx.array, birth_step: mx.array) -> mx.array                  # step − 1 − birth_step
-def state_to_arrays(s: State) -> dict[str, mx.array]
-def state_from_arrays(d: Mapping[str, mx.array], cfg: Config | None = None) -> State
-                    # key SET must equal State._fields, built in _fields order; exception: with cfg, a set missing only
-                    # env_* keys (a pre-director checkpoint) is filled from default_env(cfg)
-def state_digest(s: State) -> str                                          # sha256 over all fields in State._fields order (host)
-def legacy_state_digest(s: State) -> str                                   # same encoding over V0_FIELDS only (§14.2)
+def state_to_arrays(s: State | State3) -> dict[str, mx.array]
+def state_from_arrays(d: Mapping[str, mx.array], cfg: Config | None = None) -> State | State3
+                    # type state_cls(cfg) (without cfg: State3 iff the keys hold EXTRA_3D_FIELDS); key SET must equal its
+                    # _fields, built in _fields order; exception: with a 2D cfg, a set missing only env_* keys (a
+                    # pre-director checkpoint) is filled from default_env(cfg)
+def state_digest(s: State | State3) -> str                                 # sha256 over all fields in type(s)._fields order (host)
+def legacy_state_digest(s: State) -> str                                   # same encoding over V0_FIELDS only (§14.2); TypeError for State3
 def to_numpy(a: mx.array) -> np.ndarray                                    # the only host read path: bf16 → f32 on device (exact, F17)
 
 # rng.py
@@ -1699,15 +1725,20 @@ def place(arr: mx.array, newborn: mx.array, lane: mx.array, lane_vals: mx.array)
 def first_free(partner: mx.array) -> tuple[mx.array, mx.array]            # (slot (N,) i32, has_free (N,) bool); full row → slot 0
 def min_image(d: mx.array, L: float) -> mx.array
 def wrap(x: mx.array, L: float) -> mx.array                                 # [0, L) with the F8 guard
+def wrap_xy_clamp_z(p: mx.array, L: float, z_lo: float, z_hi: float) -> mx.array   # (...,3): wrap x, y; clip z (§27.2)
 def wrap_angle(a: mx.array) -> mx.array                                     # [−π, π) in f32 and f64 terms (−f32(π) < −math.pi is lifted one ulp)
 def to_body(v: mx.array, cos_h: mx.array, sin_h: mx.array) -> mx.array     # (...,2) → (fwd, lat)
+def body_axes(cos_h: mx.array, sin_h: mx.array, cos_p: mx.array, sin_p: mx.array
+              ) -> tuple[mx.array, mx.array, mx.array]                    # 3D: (fwd, lat, up), each (...,3) (§27.2)
+def to_body3(v: mx.array, cos_h: mx.array, sin_h: mx.array, cos_p: mx.array, sin_p: mx.array
+             ) -> mx.array                                                 # (...,3) → (fwd, lat, up) (§27.2)
 def int_diffuse(r: mx.array, d_q8: int) -> mx.array
 def floor_i32(x: mx.array) -> mx.array
 def q8(f: float) -> int                                                      # host: round(f·256)
 def mul_q8(x: mx.array, q: int) -> mx.array                                 # (x·q) >> 8
 
 # spatial.py
-class Neighbors(NamedTuple): idx; valid; off; dist; overflow_cells; max_occupancy    # §4
+class Neighbors(NamedTuple): idx; valid; off; dist; overflow_cells; max_occupancy    # §4; off (N,K,nd) (§27.2)
 def find_neighbors(pos: mx.array, alive: mx.array, cfg: Config) -> Neighbors
 
 # fields.py
@@ -1718,10 +1749,11 @@ class FieldObs(NamedTuple): res: mx.array; res_grad: mx.array; chem: mx.array; c
 def init_patches(key_pos: mx.array, key_vel: mx.array, cfg: Config) -> tuple[mx.array, mx.array]
 def season_weights(step: mx.array, cfg: Config, env: Env | None = None) -> mx.array   # (PP,) f32 (§13.1)
 def fertility(patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
-              env: Env | None = None) -> mx.array                         # (FG,FG) f32 in [0,1]
+              env: Env | None = None) -> mx.array                         # (FG,FG) f32 in [0,1]; 3D (FZ,FG,FG) (§27.5)
+def vertical_profile(cfg: Config) -> mx.array                              # 3D: (FZ,1,1) f32, V[0] = 1 (§27.5)
 def regen_rate(patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
-               env: Env | None = None) -> mx.array                        # (FG,FG) int32
-def cell_index(pos: mx.array, cfg: Config) -> mx.array                    # (N,) int32
+               env: Env | None = None) -> mx.array                        # (FG,FG) int32; 3D (FZ,FG,FG)
+def cell_index(pos: mx.array, cfg: Config) -> mx.array                    # (N,) int32; 3D z-major (§27.5)
 def sample_fields(resource: mx.array, chem: mx.array, fcell: mx.array, heading: mx.array, cfg: Config) -> FieldObs
 def deposit_chem(emit: mx.array, fcell: mx.array, active: mx.array, cfg: Config) -> mx.array   # (NCH*FG*FG,) int32
 def update_chem(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array
@@ -1731,7 +1763,7 @@ def update_resource(resource: mx.array, patch_pos: mx.array, cfg: Config, step: 
 def drift_patches(patch_pos: mx.array, patch_vel: mx.array, cfg: Config, env: Env | None = None) -> mx.array
 
 # sensing.py
-def neighbor_descriptors(s: State, nbr: Neighbors, cfg: Config) -> mx.array          # (N,K,NF) f32
+def neighbor_descriptors(s: State, nbr: Neighbors, cfg: Config) -> mx.array          # (N,K,NF) f32; 3D NF = 8 (§27.2)
 def build_inputs(s: State, age: mx.array, nbr: Neighbors, desc: mx.array, geom: BondGeom,
                  fobs: FieldObs, key: mx.array, cfg: Config) -> mx.array             # (N,D_IN) f32
 
@@ -1745,11 +1777,13 @@ def l1_cost(W1r: mx.array, W2r: mx.array, cfg: Config) -> mx.array      # (rows,
 
 # actions.py
 class Actions(NamedTuple): ...      # §7
+class Motion3(NamedTuple): pitch: mx.array; buoy: mx.array                  # 3D-only outputs (§27.2)
 def decode(y: mx.array, desc: mx.array, nbr: Neighbors, partner: mx.array, alive: mx.array, cfg: Config) -> Actions
-def mask(act: Actions, keep: mx.array) -> Actions
+def decode_motion3(y: mx.array, alive: mx.array, cfg: Config) -> Motion3    # dims = 3 only
+def mask[A: (Actions, Motion3)](act: A, keep: mx.array) -> A              # returns the type it is given
 
 # bonds.py
-class BondGeom(NamedTuple): off: mx.array; length: mx.array; valid: mx.array    # (N,B,2), (N,B), (N,B)
+class BondGeom(NamedTuple): off: mx.array; length: mx.array; valid: mx.array    # (N,B,nd), (N,B), (N,B)
 def bond_geometry(pos: mx.array, partner: mx.array, cfg: Config) -> BondGeom
 def n_bonds(partner: mx.array) -> mx.array                                         # (N,) int32
 def break_bonds(partner: mx.array, rev: mx.array, flag: mx.array) -> tuple[mx.array, mx.array, mx.array]
@@ -1762,7 +1796,7 @@ def add_child_bonds(partner: mx.array, rev: mx.array, child_of: mx.array, want: 
                     born_parent: mx.array) -> tuple[mx.array, mx.array, mx.array]    # (partner, rev, made (N,) bool)
     # child_of: parent row → child row; born_parent: newborn row → parent row (−1 otherwise, immigrants too);
     # want: the parent's act.child_bond; made: parents that bonded (Σ made = CHILD_BONDS). Child side uses slot 0.
-def spring_forces(pos: mx.array, partner: mx.array, contract: mx.array, cfg: Config) -> mx.array   # (N,2)
+def spring_forces(pos: mx.array, partner: mx.array, contract: mx.array, cfg: Config) -> mx.array   # (N,nd)
 def symmetric_ok(partner: mx.array, rev: mx.array, alive: mx.array) -> mx.array      # () bool
 
 # physics.py
@@ -1770,7 +1804,13 @@ def forces(pos: mx.array, heading: mx.array, act: Actions, nbr: Neighbors, survi
            partner: mx.array, cfg: Config) -> mx.array                              # (N,2)
 def integrate(pos: mx.array, heading: mx.array, force: mx.array, grip: mx.array, turn: mx.array,
               survivor: mx.array, cfg: Config) -> tuple[mx.array, mx.array, mx.array, mx.array]
-                    # (pos, vel, heading, n_clipped () int32)
+                    # (pos, vel, heading, n_clipped () int32); asserts (N,2) positions
+def grounded(pos: mx.array, cfg: Config) -> mx.array                        # 3D: (N,) bool, z ≤ z_ground (§27.3)
+def forces3(pos: mx.array, heading: mx.array, pitch: mx.array, act: Actions, mo: Motion3, buoy_cap: mx.array,
+            nbr: Neighbors, survivor: mx.array, partner: mx.array, cfg: Config) -> mx.array    # 3D: (N,3) (§27.3)
+class Integrated3(NamedTuple): pos; vel; heading; pitch; v_clips; z_floor; z_surface      # counts () int32
+def integrate3(pos: mx.array, heading: mx.array, pitch: mx.array, force: mx.array, grip: mx.array, turn: mx.array,
+               dpitch: mx.array, on_floor: mx.array, survivor: mx.array, cfg: Config) -> Integrated3   # 3D (§27.3)
 
 # energy.py
 class Costs(NamedTuple): energy; solvent; paid_basal; paid_action                  # (N,) each
@@ -1799,6 +1839,7 @@ def deaths(alive, solvent, energy, lost, age, uid, generation, clade, partner, r
            *, cat_mask: mx.array | None = None) -> Deaths
     # dead = alive & (~solvent | E == 0 | aged) | excess catastrophe deaths (cat_mask); cause precedence in §10.7
 def catastrophe_mask(pos: mx.array, alive: mx.array, env: Env, key: mx.array, cfg: Config) -> mx.array   # (N,) bool, §12.9
+                    # 3D: a vertical column, x and y only (§27.4)
 class Lanes(NamedTuple): parent; slot; kind; n_req; n_birth; n_imm                 # (M,),(M,),(M,),(),(),()
 def allocate_lanes(req: mx.array, survivor: mx.array, key: mx.array, cfg: Config, step: mx.array | None = None,
                    *, imm_request: mx.array | None = None) -> Lanes     # imm_request: §12.7 (director)
@@ -1806,6 +1847,7 @@ class Repro(NamedTuple): state: State; records: BirthRecords; endow: mx.array; n
 def reproduce(s: State, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: Config) -> Repro
     # s: in-flight state (alive = survivor, post-physics pos/heading, post-S14 bonds/energy).
     # Writes small arrays via ops.place, debits parents, adds child bonds, sets pend_*, advances next_uid.
+    # 3D (State3): cone placement with reflection, immigrants in the volume, pitch and buoy_cap rows (§27.4).
 
 # step.py
 class StepOut(NamedTuple): counters; ledger; births: BirthRecords; deaths: DeathRecords     # §3
@@ -2031,6 +2073,9 @@ class PhysicsConfig:
     v_max: float = 0.5
     k_repel: float = 0.08
     thrust_contact_limit: float = 4.0 # thrust × max(0, 1 − contacts/limit) (§9)
+    gravity: float = 0.0              # 3D only (§27.3): downward body force; added after v0.1
+    floor_eps: float = 0.0            # 3D only: grounded iff z ≤ radius + floor_eps
+    buoyancy_max: float = 0.0         # 3D only: upward force at buoy_cap = 1 and full OUT_BUOYANCY; 0 = none
 
 @dataclass(frozen=True)
 class BondConfig:
@@ -2084,6 +2129,7 @@ class MutationConfig:
     rate_init: float = 0.05;  rate_min: float = 0.001;  rate_max: float = 0.5;  tau_rate: float = 0.15
     frac_init: float = 0.5;   frac_min: float = 0.1;    frac_max: float = 0.9;  tau_frac: float = 0.1
     tag_sigma: float = 0.02
+    buoy_init: float = 0.0;   buoy_sigma: float = 0.0                       # 3D only (§27.4): the buoyancy cap
 
 @dataclass(frozen=True)
 class FieldConfig:
@@ -2098,6 +2144,9 @@ class FieldConfig:
     chem_decay: tuple[float, float, float] = (0.10, 0.03, 0.005)
     chem_deposit_scale: float = 1.0 / 256.0
     chem_max: float = 16.0
+    benthic_lambda: float = 0.0       # 3D only (§27.5): e-folding height of the floor food band; added after v0.1
+    photic_amp: float = 0.0           # 3D only: surface food band amplitude in [0, 1]; 0 = off
+    photic_lambda: float = 0.0        # 3D only: its e-folding depth below the surface
 
 @dataclass(frozen=True)
 class DirectorConfig:                  # added after v0.1; docs/DIRECTOR.md
@@ -2166,7 +2215,9 @@ Rules:
 lists). It reloads exactly: `config_from_dict(config_to_dict(c)) == c`. `config_hash` covers every section
 except `run`. **Keys added after v0.1 are omitted from the hash at their defaults** (`config.POST_V01_KEYS`:
 `population.immigration_every`, `population.immigration_count`, `fields.season_period`,
-`fields.season_amplitude`, `fields.season_mode`, `director.enabled`, `world.dims`, `world.height` (§27.1); the
+`fields.season_amplitude`, `fields.season_mode`, `director.enabled`, `world.dims`, `world.height` (§27.1),
+`physics.gravity`, `physics.floor_eps`, `physics.buoyancy_max`, `mutation.buoy_init`, `mutation.buoy_sigma`,
+`fields.benthic_lambda`, `fields.photic_amp`, `fields.photic_lambda` (§27.1, §27.3–§27.5); the
 director's policy keys `persona`, `goal`, `rule_every`, `budget_per_100k`, (step 3) `llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` and (§26.11) `yoke_log` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
 because only `enabled` changes the compiled step). A section that this leaves empty
 (`director`) is omitted from the hashed dict too, so the hash does not change when a section is added. A
@@ -2179,8 +2230,8 @@ changes the hash, as for any dynamics key.
 **`validate`** collects every violation and raises one `ConfigError`:
 - **World geometry:** `size / field_cell` is an integer with `3 ≤ FG ≤ 1024`; `G_h = floor(size/radius) ≥ 3`.
 - **World dimensions** (§27.1): `world.dims ∈ {2, 3}` and in `config.DIMS_SUPPORTED` (`(2,)`: dims = 3 is not
-  enabled yet); in 2D every 3D key (`config.THREE_D_KEYS`) keeps its default (`height = 0`); the 3D-only rules are
-  listed in §27.1.
+  enabled yet); in 2D every 3D key (`config.THREE_D_KEYS`) keeps its default (`height` and the gravity, buoyancy and
+  vertical-profile keys 0); the 3D-only rules are listed in §27.1.
 - **Interaction ranges:** `radius ≥ max(form_range, combat.range, 2·physics.radius)`; `NS ≤ K ≤ 9·C` (2D;
   `27·C` in 3D, §27.1).
 - **Population:** `64 ≤ n_max ≤ 2²⁰`; `1 ≤ M ≤ n_max // 4`; `1 ≤ n_init ≤ N_CAP`; `immigration_floor ≤ N_CAP`;
@@ -3640,16 +3691,19 @@ long as R has budget, an unlocked lever and a free cooldown at each yoked step (
 ## 27. 3D world (`world.dims = 3`)
 
 `docs/3D.md` is the design rationale and the six-PR plan (its §10); this section is normative for what is built and
-grows one subsection per PR. PR 1 (§27.1) adds the dims constant and its plumbing only: `validate` still rejects
+grows with each PR. PR 1 (§27.1) adds the dims constant and its plumbing only: `validate` still rejects
 `world.dims = 3`, and every 2D trajectory, config hash, metrics row, checkpoint array and metadata key set is
 unchanged (`config.json` and the embedded config only gain the two new keys at their defaults; the existing tests
-and the golden digest are untouched).
+and the golden digest are untouched). PR 2 (§27.2–§27.5) adds the 3D geometry, physics, state and static lattice as
+functions the step does not call yet: `world.dims = 3` is still rejected, and 2D is again unchanged (config files
+gain the PR 2 keys at their defaults).
 
 ### 27.0 Overview and decision record
 
 The 3D world is periodic in x and y on `[0, L)` as in 2D and bounded in z by a floor (z = 0) and a surface
-(z = `world.height`); agents stay in `[r, height − r]`. Gravity, a buoyancy actuator, a vertical food profile and
-sinking corpses come in later PRs. `height` (or `Lz`) names the world height in code and docs: `H` is the hidden size.
+(z = `world.height`); agents stay in `[r, height − r]`. Gravity, a buoyancy actuator and a vertical food profile
+come in PR 2 and sinking corpses in PR 3, which also wires them into the step. `height` (or `Lz`) names the world
+height in code and docs: `H` is the hidden size.
 
 **Owner decisions** (docs/3D.md §0 and §11): 3D with gravity and a floor; a `world.dims` config constant that keeps
 2D bit-identical; a Swift Metal viewer in AlifeControl; after the 2D director evaluation. On 2026-10-13:
@@ -3692,7 +3746,17 @@ non-finite `size` or `height` is a listed problem, never an exception:
 - every `chem_diffusion ≤ 1/6` (explicit 7-point stencil);
 - `resource_diffusion_q8 ≤ 42`: with six neighbours, `6·((R·d) >> 8) ≤ R` keeps every cell ≥ 0.
 
-Later PRs add the rules of their keys (offspring distance against the height, gravity, buoyancy, the director).
+PR 2 adds the rules of its keys, each with its own message (their meaning is in §27.3–§27.5):
+- `height − 2·r ≥ 2·repro.offspring_distance`, so a child reflected at the floor or the surface lands in range
+  at the full offset (§27.4);
+- `0 ≤ gravity < thrust_max·sin(PITCH_MAX)`: an agent can always climb at full pitch;
+- `floor_eps ≥ 0` and `r + floor_eps < field_cell`: a grounded agent is in the floor layer;
+- `buoyancy_max` is finite and `≥ 0`, and `thrust_max + max(gravity, buoyancy_max − gravity) < 2·r·k_repel`, the
+  3D form of the §9 rule `thrust_max < 2·r·k_repel`: full thrust plus the net vertical load cannot push a resting
+  agent through the one below it (or, buoyant, above it);
+- `buoy_init ∈ [0, 1]` and `buoy_sigma ≥ 0` (finite), both 0 when `buoyancy_max = 0`;
+- `benthic_lambda > 0`; `photic_amp ∈ [0, 1]`; `photic_lambda > 0` when `photic_amp > 0`;
+- `director.enabled` is false: the director's levers, vital signs and log stay 2D until PR 4.
 
 **`Dims`** gains `nd`, `d3`, `lay` (`layout.for_dims(nd)`), `fz`, `n_cells` (`FZ·FG²`), `field_shape` (`(FG, FG)`
 in 2D, `(FZ, FG, FG)` in 3D), `g_hash_z` and `cell_hash_z` (1 and ∞ in 2D), and derives `Q = 3^nd·C`,
@@ -3757,7 +3821,307 @@ counted by `len`, and its `.name` is `"RESERVED"`. `state.sinks(nd)` is `SINKS` 
 
 **Tests.** `tests/test_layout_dims.py` (2D view equals the module constants, 3D tiling, the 2D prefix, the version,
 the `src` scan), `tests/test_dims_config.py` (defaults, pinned hashes, the gate, each 3D rule, the `Dims` fields) and
-`tests/test_dims_runio.py` (metadata, cross-dims refusals, fork and resume, the 2D-only tools, one schema).
+`tests/test_dims_runio.py` (metadata, cross-dims refusals, fork and resume, the 2D-only tools, one schema). The PR 2
+keys: `tests/test_dims_config_pr2.py` (defaults, hashes, 2D rejection, each rule above, the float32 z bounds,
+`z_ground ≥ z_lo`).
+
+### 27.2 Geometry, orientation and neighbour search (PR 2)
+
+**Coordinates and bounds.** `pos` is (x, y, z). x and y are periodic on `[0, L)` as in 2D; z is bounded by the
+floor (z = 0) and the surface (z = `height`), and an agent's centre stays in `[z_lo, z_hi]`. `Dims.z_lo` is the
+smallest float32 `≥ r` and `Dims.z_hi` the largest float32 `≤ height − r`; `Dims.z_ground`, the grounded threshold
+(§27.3), is the largest float32 `≤ r + floor_eps`, raised to `z_lo` when no float32 lies in `[r, r + floor_eps]`
+(as for `r = 0.7` with `floor_eps = 0`). All three are 0.0 in 2D. They are computed on the host in `config.dims`, so
+a clip with them (MLX casts Python bounds to float32) and a float64 range check agree.
+`ops.wrap_xy_clamp_z(p, L, z_lo, z_hi)` maps (…, 3) positions into the world: x and y as `ops.wrap` (with the F8
+guard), z clipped and never wrapped (−0.3 would become `L − 0.3`). `ops.wrap` and `ops.min_image` stay elementwise
+and unchanged. Because `2·height ≤ L` (§27.1), every in-range `|dz| < L/2`, so `min_image(dz) = dz − L·(±0) = dz`
+exactly: offsets of 3-vectors (neighbours, bonds) need no z-specific minimum image.
+
+**Orientation.** The yaw θ is `heading`, wrapped to `[−π, π)` as in 2D. The pitch φ is `State3.pitch`, clipped to
+`[−PITCH_MAX, PITCH_MAX]` with `layout.PITCH_MAX = 80°` and never wrapped (checked against `float32(PITCH_MAX)`).
+Gravity defines up, so there is no roll. The body frame is
+
+```text
+fwd = (cos φ·cos θ, cos φ·sin θ, sin φ)
+lat = (−sin θ, cos θ, 0)
+up  = fwd × lat = (−sin φ·cos θ, −sin φ·sin θ, cos φ)
+```
+
+right-handed and orthonormal, with a horizontal lateral axis; `(θ, φ) = (0, 0)` gives the world axes and a positive
+pitch raises the nose. `ops.body_axes(cos θ, sin θ, cos φ, sin φ)` returns the three axes in world coordinates (the
+thrust direction, §27.3). `ops.to_body3(v, cos θ, sin θ, cos φ, sin φ)` rotates (…, 3) world vectors into
+(fwd, lat, up): `h = vx·cos θ + vy·sin θ` and `lat = vy·cos θ − vx·sin θ` exactly as `to_body`, then
+`fwd = h·cos φ + vz·sin φ` and `up = vz·cos φ − h·sin φ`. That is the projection on `body_axes`, so the sensed
+forward and the thrust direction are one frame; at φ = 0 with `vz = 0` it reduces to `to_body`.
+
+**Neighbour search.** `spatial.find_neighbors` dispatches to `_find_neighbors_3d` when dims = 3 (the 2D body is
+unchanged). Its contract is §4's, with `off` (N,K,3):
+- The hash grid has `G_h × G_h × G_z` cells: `G_z = floor(height / R)` layers of height
+  `cell_hash_z = height / G_z ≥ R`, so the 3×3×3 stencil covers the sensing sphere and `Q = 27·C`.
+- The cell of a position is `cx`, `cy` as in 2D (with the `% G` seam guard) and
+  `cz = clip(floor(z / cell_hash_z), 0, G_z − 1)`, never wrapped: a z at the surface that divides to `G_z` in
+  float32 (z = height, and for some heights the largest float32 below it) lands in the top layer. The cell id is
+  z-major, `(cz·G + cy)·G + cx`; dead rows take the sentinel `G²·G_z`.
+- The stencil is dz outermost, then the 2D 3×3 (`_DX27`, `_DY27`, `_DZ27`). x and y neighbour cells wrap. A layer
+  outside `[0, G_z)` keeps a clamped index but an empty run (`e = s`), so no layer is visited twice: `G_z` may be 1
+  or 2, and only x and y need `G ≥ 3`.
+- Distances are per axis, `dx, dy = min_image(·, L)` and a plain `dz`, with `d2 = dx² + dy² + dz²`; no (N,Q,3)
+  array is formed. Selection is §4's, and only the K winners' offsets are gathered into `off` (N,K,3). The z offset
+  is the plain float32 difference `z_j − z_i`.
+- `overflow_cells` and `max_occupancy` count the `G²·G_z` cells: a column of agents over one x/y cell overflows only
+  where a single 3D cell holds more than C. Equal to brute-force kNN whenever no cell does (F13). The candidate
+  arrays are 3× the 2D ones at the same C; C and K for gravity piles are sized by measurement (docs/3D.md §12 Q15).
+
+**Neighbour descriptor.** In 3D `sensing.neighbor_descriptors` reads `State3.pitch` and returns `desc (N,K,8)`:
+the seven §5 features, with (`NBR_DX`, `NBR_DY`) the (fwd, lat) components of `off / R` from `to_body3`, then
+`NBR_DZ = 7`, the up component of `off / R`. Each is clipped to `[−1, 1]` (every component of an offset inside the
+sphere is at most R) and zeroed where invalid. The targeting descriptor `φ = desc[..., 1:]` is seven wide:
+`[dx, dy, kin, rele, msg0, bonded, dz]`. `IN_NBR` stays `desc[:, :NS, :7]`; the NS nearest `NBR_DZ` values are the
+tail block `IN_NBR_DZ` (wired in PR 3).
+
+**Action decode.** In 3D `actions.decode` builds each query as its 2D block of six followed by its `*_DZ` column,
+`[y[OUT_Q_BOND : +6], y[OUT_Q_BOND_DZ]]` and likewise for attack, in the order of `φ`. In 2D the `*_DZ` indices are
+None and the query is the 2D block, with the same trace as before. The 3D-only outputs are decoded into a parallel
+type, so `Actions` keeps its fields:
+
+```python
+class Motion3(NamedTuple):           # (N,) f32 each, masked like Actions
+    pitch: mx.array                  # turn_max·tanh(y[OUT_PITCH]), the pitch change (clipped in §27.3)
+    buoy: mx.array                   # max(tanh(y[OUT_BUOYANCY]), 0) ∈ [0, 1): the buoyancy fraction
+def decode_motion3(y, alive, cfg) -> Motion3      # dims = 3 only (asserted); masked by alive
+def mask[A: (Actions, Motion3)](act: A, keep) -> A    # returns the type it is given
+```
+
+`buoy` follows EMIT and SHARE: zero buoyancy is exactly reachable, and so free (§27.0 Q3). The step masks `Motion3`
+by `alive` and then by `solvent`, as it does `Actions` (PR 3).
+
+**2D-body guards.** Static asserts on the last axis: `ops.to_body` takes (…, 2), `ops.to_body3` and
+`ops.wrap_xy_clamp_z` take (…, 3), and the 2D body of `find_neighbors`, `physics.integrate` (§27.3) and the 2D
+cell index (§27.5) take (N, 2) positions. Two more guards are not on positions: 2D `sample_fields` takes a 2D
+lattice (§27.5) and `decode_motion3` requires dims = 3. They are free under `mx.compile` and leave the 2D trace
+unchanged, so a missed 3D branch fails at trace time instead of silently dropping z.
+
+**Tests.** `tests/test_ops_3d.py` (`wrap_xy_clamp_z`; the frame: orthonormal, right-handed, named angles, the
+round trip, broadcasting, φ = 0 against `to_body`; `min_image` as the identity below L/2; the guards).
+`tests/test_spatial_3d.py` (exact brute-force kNN on random volume scenes; the floor, the surface and the x/y seams
+with the eight corners; thin slabs, `G_z = 1, 2`; z not periodic; R strict along z; the top layer; overflow over
+`G²·G_z` cells and a column that does not overflow; the empty world; dispatch and the 2D guard; compiled equals
+eager). `tests/test_sensing_3d.py` (a level scene against the 2D descriptor bit for bit; the body frame against a
+float64 reference; a named case; compile). `tests/test_actions_3d.py` (`Motion3` ranges, columns, masking and the
+3D-only assert; the DZ query order and independence; the 2D decode as the 3D one's prefix; compile).
+
+### 27.3 Physics: gravity, buoyancy, the floor and the surface (PR 2)
+
+**Forces** (`physics.forces3`, (N,3)). They are §9's, evaluated at the start-of-step positions with the post-S14
+bonds, the same contact mask and the same attenuation `att`, plus two body forces on z:
+
+```text
+F_i = thrust_max · a_i · att_i · fwd_i                       fwd_i = body_axes(θ_i, φ_i)[0] (§27.2)
+    + Σ_b springs (§9) + Σ_k contacts (§9)                   on the (N,B,3) and (N,K,3) offsets
+    + (buoyancy_max · buoy_cap_i · b_i − gravity) · ẑ          b_i = Motion3.buoy ∈ [0, 1); not attenuated
+```
+
+- Gravity and buoyancy are body forces: `att` does not scale them. A crowded agent (F18) loses its thrust but still
+  sinks, and buoyancy can lift it. An isolated agent sinks at `gravity / drag` per step (overdamped) and climbs at
+  full pitch at `(thrust_max·sin φ − gravity) / drag`, which `gravity < thrust_max·sin(PITCH_MAX)` (§27.1) keeps
+  positive. Gravity has no ledger term (an overdamped body force does no bookkeeping work); the buoyancy costs and
+  their `HEAT_BUOYANCY` term come in PR 3.
+- Springs and contacts are §9's expressions on 3-vectors. `min_image` is the identity on z (§27.2), so `bonds` has
+  no 3D code (`BondGeom.off` is (N,B,nd)) and the bitwise pair antisymmetry of §9 holds in 3D. The body forces act
+  on z only, so x and y stay antisymmetric under gravity.
+- Non-survivors get 0.
+
+**Grounding.** `physics.grounded(pos, cfg) = z ≤ Dims.z_ground` (§27.2), from the start-of-step position, inclusive:
+for a float32 z, exactly `z ≤ r + floor_eps` or `z = z_lo`, so an agent resting on the floor is always grounded, and
+with `floor_eps = 0` exactly the agents at `z = z_lo` are. It is the one predicate for the floor friction below,
+`IN_GROUNDED` and the `GROUNDED` counter (PR 3). The surface never grounds (§27.0 Q2). `r + floor_eps < field_cell`
+(§27.1) puts every grounded agent in the floor layer.
+
+**Integration** (`physics.integrate3 → Integrated3`, survivors only):
+
+```text
+γ_xy = drag · (1 + grip_gain · grip · [grounded])        γ_z = drag
+v    = (F_x / γ_xy, F_y / γ_xy, F_z / γ_z) ;   v ← v · min(1, v_max/‖v‖)    (3D norm; each clip counted)
+p    = pos + v ;   pos' = (wrap(p_x), wrap(p_y), clip(p_z, z_lo, z_hi))   (ops.wrap_xy_clamp_z)
+floor clamp:   p_z ≤ z_lo and v_z < 0 ;   surface clamp:   p_z ≥ z_hi and v_z > 0
+vel' = (v_x, v_y, 0 on a clamped row, else v_z)
+θ'   = wrap_angle(θ + turn) ;   φ' = clip(φ + Δφ, −PITCH_MAX, PITCH_MAX)    Δφ = Motion3.pitch
+```
+
+- Grip acts only on the floor and only on x and y: it never slows sinking (§27.0, docs/3D.md §12 Q14). It still
+  costs `grip_cost` everywhere (§10.3).
+- The `v_max` clip is on the 3D speed and comes before the clamp, so a resting agent under gravity spends part of
+  `v_max` on a `v_z` that the clamp then cancels (`√(0.5² − 0.03²) ≈ 0.499` left for x and y at `gravity = 0.03`).
+- A clamp moves the agent to the boundary (an agent 0.2 above the floor falling at 0.5 lands at `z_lo`; it does not
+  hang 0.2 above it) and zeroes only the stored `v_z` of the clamped rows; x and y move and wrap as usual. `vel` is
+  read only by sensing (`IN_VEL`, `IN_VEL_UP`, PR 3), so an agent resting on the floor senses no vertical motion.
+  Under gravity every resting floor agent clamps every step, so the floor-clamp count is about the grounded
+  population.
+- `Integrated3(pos, vel, heading, pitch, v_clips, z_floor, z_surface)`: the three counts are () int32 (`V_CLIPS`
+  and the `Counter3D` clamp counts of PR 3).
+- Non-survivors keep `pos`, `heading` and `pitch` and get `vel = 0`. The pitch is clipped, never wrapped, at the
+  float32 `PITCH_MAX`.
+- Stability: gravity and buoyancy are constant forces and grip only raises γ, so §9's Gershgorin bound is unchanged.
+  The load rule `thrust_max + max(gravity, buoyancy_max − gravity) < 2r·k_repel` (§27.1) is the 3D form of §9's
+  `thrust_max < 2r·k_repel`.
+
+**A level floor is the 2D physics.** With every agent on the floor at pitch 0 and `gravity = buoyancy_max = 0`,
+`forces3` and `integrate3` give x and y equal to `forces` and `integrate`, bit for bit on CPU (every agent is
+grounded, so grip is §9's), z stays at `z_lo` and nothing is clamped. F11 (contraction alone does not move the centre
+of mass; phase-locked grip crawls) carries over to the floor. `physics.integrate` asserts (N,2) positions, since it
+would wrap z (§27.2 guards).
+
+**Crowding (measured, not yet a mechanism).** `tests/test_crowd_3d.py` (slow) runs 300 agents through
+`find_neighbors`, `forces3` and `integrate3` in the `tiny` geometry made 3D (L 128, height 24, R 6, K 8), from a
+start with at most 16 agents per hash cell. With C = 64 nothing overflows and the physics alone reaches a maximum
+cell occupancy of 28 for a floor pile under `gravity = 0.03` and 37 for a ball converging by thrust without gravity,
+with up to 10 true contacts per agent (K = 8 lists at most 8). With the default C = 16 both overflow on most steps,
+and the agents beyond the first C of an overflowing cell, which no one sees, collapse onto each other (minimum
+centre distance 0). A dense 3D packing holds about 40 agents per 6³ hash cell (FCC) and 12 contacts per agent,
+against about 11 per 2D cell and 6 contacts in 2D, so contact-attenuated thrust (F18), sufficient in 2D, does not
+keep a 3D crowd within C = 16. C and K for `64k3d` are sized in PR 6 (docs/3D.md §12 Q15).
+
+**Tests.** `tests/test_physics_3d.py` (sinking and rising at the net force over drag; the floor and surface clamps
+with their counts, the seam wrap of a clamped row and dead rows; landing at `z_lo` and resting there under gravity;
+`grounded` inclusive at `z_ground` and never at the surface; a radius float32 cannot represent (r = 0.7) resting at
+`z_lo` and grounded; grip in x and y only, only when grounded; the 3D speed clip before the clamp; the pitch clip;
+the body forces not attenuated and the thrust along the 3D forward axis; repulsion and spring antisymmetry across the
+seams and in z, with and without gravity; a vertical contact and a vertical bond against the 2D forces rotated onto
+z; the level floor against `forces`/`integrate` bit for bit; the 2D guard; compile) and `tests/test_crowd_3d.py`
+(slow, informational).
+
+### 27.4 The 3D state, the buoyancy-cap trait and placement (PR 2)
+
+**`State3`.** A 3D world's state is `state.State3`, a NamedTuple parallel to `State`: `State`'s 47 fields in the
+same order, then `state.EXTRA_3D_FIELDS = ("pitch", "buoy_cap")`. `State` itself, every 2D digest and the 2D
+checkpoint key set are unchanged. `State3.env` is the same `Env` view; `env_cat_center` stays (2,), because the
+catastrophe is a vertical column. `state_cls(cfg)` and `agent_fields(cfg)` (`AGENT_FIELDS_3D = AGENT_FIELDS +
+EXTRA_3D_FIELDS`) pick per dims; `mx.compile` takes and returns `State3` as it does `State` (F12).
+
+| field | shape | dtype | meaning | invariants |
+|---|---|---|---|---|
+| `pos` | (N,3) | float32 | position (x, y, z) | x, y in `[0, L)`; `z ∈ [z_lo, z_hi]` |
+| `vel` | (N,3) | float32 | displacement during the last step | as in 2D |
+| `resource`, `chem` | (FZ,FG,FG), (NCH,FZ,FG,FG) | int32, float32 | the lattice, `[z, y, x]` (§27.5) | as in 2D |
+| `pitch` | (N,) | float32 | pitch φ; the yaw is `heading` | `[−PITCH_MAX, PITCH_MAX]` (float32 bound) |
+| `buoy_cap` | (N,) | float32 | heritable buoyancy cap, normalised: the effective cap is `buoy_cap·physics.buoyancy_max` | `[0, 1]` |
+
+**Bounds.** `z_lo`, `z_hi` and `PITCH_MAX` are the float32 bounds of §27.2.
+
+**Schema and serialisation.** `expected_layout(cfg)` appends `pitch` and `buoy_cap` in 3D. `state_to_arrays` and
+`state_digest` follow `type(s)._fields`. `state_from_arrays(d, cfg)` builds `state_cls(cfg)` (without `cfg`:
+`State3` exactly when the keys include `EXTRA_3D_FIELDS`) and requires its exact key set, so a state never crosses
+dimensions (after the `dims` metadata check of §27.1); the pre-director `env_*` fill applies to 2D only.
+`legacy_state_digest` is 2D only (`TypeError`: a 3D state has no v0 layout). `load_checkpoint`, `full_check` and
+`alife inspect` read the fields of the state's own type.
+
+**Initial state** (`init_state`, 3D branch; the 2D lines are unchanged).
+- Founders are uniform in the volume (`state.volume_kinematics`, which immigrants share): `InitStream.POS` draws
+  (n0, 3) uniform over `[0, L)² × [z_lo, z_hi]`, then `ops.wrap_xy_clamp_z` (x and y wrapped as `wrap`, z clipped to
+  the bounds and never wrapped). `InitStream.HEADING` draws (n0, 2): the yaw uniform in `[−π, π)` (`wrap_angle`)
+  and the pitch uniform in `[−PITCH_MAX, PITCH_MAX]`.
+- Every other draw (tag, the weights at their 3D widths, the patches, the state key) is the 2D call on the 2D key,
+  so the tags, patches and state key equal the 2D world's for the same seed.
+- Dead rows hold `pos = (0, 0, z_lo)` (on the floor, so the z range holds on every row), `vel = 0`, `heading = 0`
+  and `pitch = 0`. `buoy_cap = mutation.buoy_init` on every row, without a draw.
+- `resource = floor(resource_cap·fertility)` is (FZ, FG, FG) (§27.5) and `chem` is zero; `TOTAL` sums every layer.
+
+**The buoyancy-cap trait.** `buoy_cap ∈ [0, 1]` is stored normalised: the effective cap is
+`buoy_cap·physics.buoyancy_max` (§27.3), so a fork that changes `buoyancy_max` rescales every agent's cap without
+invalidating any state. Founders and immigrants start at `mutation.buoy_init`, without a draw. A child inherits its
+parent's cap with additive Gaussian noise and a clip, like `tag` (§12.4):
+
+```text
+cap_c = clip(cap_p + buoy_sigma · n₅, 0, 1)          n₅ ~ N(0, 1), the fifth draw of MUT_GENES
+```
+
+so both ends are reachable and can be left again (logit-space noise, as for `offspring_frac`, would make 0
+absorbing). In 3D `MUT_GENES` splits into five whenever dims = 3, even with `buoyancy_max = 0`, so switching the
+actuator on or off never shifts the other genes' draws; at `buoy_sigma = 0` the cap is inherited unchanged.
+`buoy_init` and `buoy_sigma` are 0 when `buoyancy_max = 0` (§27.1). The cap's energy costs (`energy.buoyancy_cost`,
+`energy.buoyancy_cap_cost`, booked in `HEAT_BUOYANCY`) come in PR 3.
+
+**Placement** (`lifecycle.reproduce`, 3D branch; the 2D lines are unchanged).
+- A child is placed at `D = offspring_distance` in a cone behind its parent, "behind" being the direction
+  `(θ_p + π, −φ_p)`. With `u = U(−0.5, 0.5)²` from `PLACEMENT`, the yaw is `ψ = θ_p + π + u₀` and the pitch
+  `χ = clip(u₁ − φ_p, ±PITCH_MAX)`. If `z_p + D·sin χ` leaves `[z_lo, z_hi]`, `χ ← −χ` (a reflection at the floor or
+  the surface). Then `pos = wrap_xy_clamp_z(pos_p + D·(cos χ·cos ψ, cos χ·sin ψ, sin χ))`, `heading = wrap_angle(ψ)`
+  and `pitch = χ`: the child faces away from its parent (`lifecycle._offspring_kinematics_3d`).
+- The offset keeps its length D (by default the child bond's rest length, §8.4): `height − 2r ≥ 2D` (§27.1) puts
+  the reflected point in range, and the final clamp only absorbs rounding. (A uniform direction with a z clamp could
+  shorten the offset to 0, where the spring and the repulsion both vanish.) With a level parent and no pitch jitter
+  the x and y of a child are §12.3's 2D rule (bit for bit on CPU) and its z is the parent's.
+- Immigrants are uniform in the volume: `state.volume_kinematics` on the `IMMIGRANT` split's position and heading
+  keys, as for the founders, with `buoy_cap = buoy_init`.
+- Newborn rows also get `pitch` and `buoy_cap` (`ops.place`); `vel` (N,3) is cleared as in 2D. No invariant would
+  catch a missed write (the previous occupant's value is in range), so a test fills a dead row with sentinels in every
+  field of `AGENT_FIELDS_3D` and checks that a birth and an immigrant overwrite each.
+- `lifecycle.deaths` stays 2D until PR 3, which sinks corpses to the floor cell.
+
+**Catastrophe.** In 3D the catastrophe is a vertical column: `catastrophe_mask` measures the x/y minimum-image
+distance from the (2,) `env_cat_center`, so every agent above the disc is in it, at any height. The director stays
+rejected in 3D until PR 4, which also scales the radius bounds (docs/3D.md §12 Q10).
+
+**RNG.** The 3D draws use the existing keys with 3D-only shapes and split counts (§14.1): no new stream, no
+`RNG_LAYOUT_VERSION` bump, and every 2D draw is unchanged.
+
+| key | 2D draw | 3D draw |
+|---|---|---|
+| `InitStream.POS` | `uniform(0, L, (n0, 2))` | `uniform((0, 0, z_lo), (L, L, z_hi), (n0, 3))` |
+| `InitStream.HEADING` | `uniform(−π, π, (n0,))` | `uniform((−π, −PITCH_MAX), (π, PITCH_MAX), (n0, 2))`: yaw, pitch |
+| founders' `buoy_cap` | — | `mutation.buoy_init`, no draw |
+| `Stream.PLACEMENT` | `uniform(−0.5, 0.5, (M,))` | `uniform(−0.5, 0.5, (M, 2))`: yaw and pitch jitter |
+| `Stream.MUT_GENES` | `split(·, 4)`: σ, p, tag, frac | `split(·, 5)`: σ, p, tag, frac, then `normal (M,)` for `buoy_cap`, whatever `buoyancy_max` |
+| `Stream.IMMIGRANT` | `split(·, 5)`: pos `(M, 2)`, heading `(M,)`, tag, W1, W2 | the same split; pos `(M, 3)` and heading `(M, 2)` drawn as the founders'; `buoy_cap = buoy_init`, no draw |
+
+**Tests.** `tests/test_state_3d.py` (the type and schema, compile, founders, their draws against the RNG table
+above, dead rows, the shared 2D draws, the initial resource, `full_check`, round trips, cross-dims refusals, digests,
+checkpoints, `make_scene`, `inspect`).
+`tests/test_lifecycle_3d.py` (a level parent without pitch jitter against the 2D rule; the offset length, the
+reflection at the floor and the surface, the facing and the cone; the child rows against the `PLACEMENT` and
+five-way `MUT_GENES` draws, unstressed child bonds and untouched other rows; the cap gene against a numpy reference,
+both clip ends and the same other genes with the actuator off; immigrants in the volume at `buoy_init`, drawn as the
+RNG table says; sentinel completeness over `AGENT_FIELDS_3D` for a birth and an immigrant; the catastrophe column;
+compile). `tests/helpers.volume_draws` writes out the table's founder and immigrant draws independently of
+`state.volume_kinematics`; `tests/helpers.make_scene` builds a `State3` for a 3D config, and `tests/helpers.as_3d(cfg)`
+is the tests' 3D variant of a 2D config (height 24, `chem_diffusion ≤ 1/6`, `benthic_lambda = 8`), built without
+`validate` while dims = 3 is gated.
+
+### 27.5 The static 3D lattice and the vertical food profile (PR 2)
+
+**Shapes and index.** `resource` is (FZ, FG, FG) int32 and `chem` (NCH, FZ, FG, FG) float32, indexed `[z, y, x]`
+with `FZ = height / field_cell`; layer `k` covers `z ∈ [k·field_cell, (k + 1)·field_cell)`. x and y are periodic
+and z is bounded. `fields.cell_index` returns the z-major flat index `(cz·FG + cy)·FG + cx`, with x and y as in 2D
+(the `% FG` seam guard) and `cz = clip(floor(z / field_cell), 0, FZ − 1)`, never wrapped. Layer 0's index equals the
+2D index, and the floor cell below a position is `fcell % FG²`. The index fits int32 (`FZ·FG² ≤ 2²⁰`, §27.1).
+
+**Vertical profile.** `fields.vertical_profile(cfg)`, (FZ, 1, 1) float32, by layer index:
+
+```text
+V[k] = min(1, exp(−k·fc / benthic_lambda) + photic_amp · exp(−(FZ − 1 − k)·fc / photic_lambda))     fc = field_cell
+```
+
+A benthic band at the floor plus an optional photic band under the surface; its term exists only when
+`photic_amp > 0` (a static branch; `photic_amp = 0`, the default, is exactly the benthic profile). `V[0] = 1`
+exactly, so the floor layer is the 2D fertility bit for bit. The profile is by layer index, not by z at cell centres.
+It is built on the host from config constants (one float32 array; no matmul, F20).
+
+**Fertility and regeneration.** `fertility` computes the (FG, FG) field of §13.1 unchanged (seasons and the
+director's env included) and in 3D returns `fert[None]·V`, one float32 product per layer, never a (PP, FZ, FG, FG)
+array.
+`regen_rate` and the initial resource follow its shape. Harvest is not gated on grounding: a grounded agent is in
+layer 0 (`r + floor_eps < field_cell`, §27.1). The 3D resource and chemical dynamics (no-flux diffusion in z,
+deposits, gradients, sinking corpses) come in PR 3; until then `update_resource`, `update_chem`, `deposit_chem` and
+`sample_fields` are 2D only.
+
+**2D-body guards.** The 2D cell index asserts (N, 2) positions and 2D `sample_fields` a 2D lattice. The asserts are
+static (free under `mx.compile`, the 2D trace unchanged), so a missed 3D branch fails loudly instead of dropping z
+(the 2D index) or folding the layer into y (`_nbr_cells`).
+
+**Tests.** `tests/test_fields_3d.py`: the z-major index against a reference, layer 0 against the 2D index, the z
+clamp, the highest grounded z in layer 0, the guards, both profiles, the floor layer bit for bit (plain, seasonal,
+director env) and the 3D regeneration.
 
 ---
 
@@ -3838,6 +4202,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I34 | feat: offline signal-information analysis (§19.3, `docs/SIGNALS.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) `alife.analysis.mi` (numpy only): KSG estimator 1 on ranks with random tie-breaking (exactly MI-preserving; the integer, zero-inflated signals and targets made the Gao et al. 2017 mixed estimator biased by about +0.07 bits), a Miller–Madow binned cross-check, shuffle nulls with z and permutation p, conditional MI over strata. (2) `alife.analysis.resim`: in-memory re-simulation to steps without a checkpoint, every `metrics.jsonl` row compared exactly, states written with `runio.write_state_file` to a cache outside the run (`analysis_cache/`, git-ignored). `runs/64k_s0` changed dynamics at its 120k resume (I26's `fields.fertility` change), so 0–120k is re-simulated with the run's original commit `f09b32a`; all 10,000 rows to 1M match. (3) `alife.analysis.signals`: `decode` mirrors S0–S8 of `step.step` (a test checks it against the stored `msg` and the `EMITTERS` counter), per-agent tables, the estimate grid and markdown/trend tables; entry point `python -m alife.analysis.signals`, no `alife` subcommand and no new dependency. Tests: `tests/test_analysis_mi.py`, `tests/test_analysis_resim.py`, `tests/test_analysis_signals.py`. |
 | I35 | feat: the `random` persona inherits the pacing parameters of the persona that made its yoke log (§26.11, `docs/DIRECTOR.md` §9, §15), so that arm R can be yoked to the Trickster arm C (budget 6 per 100k) as well as to B. Before, `yoked.PARAMS_PERSONA = "gardener"` fixed R's budget, cooldown scale and thresholds, capping it at the Gardener's maximum of 4. (1) `yoked.inherited` reads the persona and the effective `budget_per_100k` of the yoke log's first header; `yoked.load` returns them (`Yoke.persona`, `.budget`, `.personas`) and refuses (`LogError`, exit 2, before anything is written) a header persona of `random` or an unknown name; `PARAMS_PERSONA` became `FALLBACK_PERSONA` (the Gardener, for a log with no header or no persona). (2) Budget: an explicit `director.budget_per_100k` is capped by the inherited persona's maximum, `0` takes the header's budget, else the persona's default (`yoked.effective_budget`). (3) R's header gains `params_persona`; a replay takes persona and budget from its own first header. Only budgets, cooldowns and safety-rule thresholds are inherited; the boredom rule, minimum gap, drama gating and the model stay off. R yoked to a Gardener log makes the same entries and reaches the same state digest as before (checked against the previous code); its header has the new field, and with `budget_per_100k = 0` it takes B's recorded budget rather than the Gardener default (the same for a default B). Interpretations: a yoke log that was resumed with another persona uses the first header's persona (stderr warning), not the persona in force at each step, since R's budget window and cooldowns are one policy per run; the persona check covers every header. No engine, step, config key or hash change. Tests: `tests/test_director_random.py`. |
 | I36 | feat: 3D world PR 1, dims plumbing (`docs/3D.md` §10 item 1; new §27.0 and §27.1), no behaviour change: `validate` still rejects `world.dims = 3` (`config.DIMS_SUPPORTED = (2,)`), and every 2D trajectory, config hash, metrics row and checkpoint and `meta.json` key set is unchanged (golden digest not re-pinned, no `FORMAT_VERSION` or `RNG_LAYOUT_VERSION` bump; a CPU digest matrix of 2D trajectories and runs matched bit for bit). (1) `world.dims` (2) and `world.height` (0) in `POST_V01_KEYS` and the new `THREE_D_KEYS`; `is_3d`, `require_2d`; `Dims` gains `nd`, `d3`, `lay`, `fz`, `n_cells`, `field_shape`, `g_hash_z`, `cell_hash_z`, and `q`, `w1_rows`, `params` go through `lay`; the world-dimensions validation (2D: the 3D keys keep their defaults; 3D: height, FZ, FZ·FG² ≤ 2²⁰, G_z, `2·height ≤ size`, `K ≤ 27·C`, `chem_diffusion ≤ 1/6`, `resource_diffusion_q8 ≤ 42`), every 2D message verbatim; only finite ratios are rounded (a non-finite `size` or `height` is a `ConfigError`, not an `OverflowError`). (2) `layout.Layout`, `for_dims`, `genome_layout_version` and `GENOME_LAYOUT_VERSION_3D = 2` with the frozen append-only 3D tables (D_IN 84 with inputs 69–83 ending in `IN_HEIGHT`, `IN_PITCH`, `IN_GROUNDED`; D_OUT 39 with `OUT_PITCH`, `OUT_BUOYANCY`, `OUT_Q_BOND_DZ`, `OUT_Q_ATTACK_DZ`); the D_IN/D_OUT reads in brain, sensing, metrics, bench, state and the schema go through `dims(cfg).lay` (equal Python ints in 2D); D18 amended. (3) `state.expected_layout` is the one State schema (`runio._expected_layout` stays as an alias for `tests/test_runio.py`; the private `invariants._expected_layout` is removed); `LedgerIdx.HEAT_BUOYANCY` alias of slot 15, `sinks(nd)`, `ledger_names(nd)` (definitions only). (4) `dims` metadata only when dims ≠ 2 (absent = 2D); `load_checkpoint` refuses a cross-dimension file; a fork refuses a `world.dims`/`world.height` change (exit 4); `render`, `view`, `render_frame`, the viewer and `analysis.signals` refuse a 3D config before loading (`require_2d`, exit 2). (5) `tests/helpers.make_scene` takes the pos, vel, W2, resource and chem shapes from the config's state (2D unchanged). Interpretations: `actions.decode` keeps `layout.F` (the 2D query block width in both dims; PR 2 appends the z component); `cli._agent_info` and the `make_scene` State class wait for `State3` (PR 2). Tests: `tests/test_layout_dims.py`, `tests/test_dims_config.py`, `tests/test_dims_runio.py`. |
+| I37 | feat: 3D world PR 2, the geometry core (`docs/3D.md` §10 item 2; new §27.2–§27.5), still gated: `validate` rejects `world.dims = 3` (`DIMS_SUPPORTED = (2,)`) and the step does not call the 3D code yet (PR 3); every 2D trajectory, config hash, metrics row and checkpoint key set is unchanged (golden digest not re-pinned, no `FORMAT_VERSION` or `RNG_LAYOUT_VERSION` bump; the CPU digest matrix of 2D trajectories matched bit for bit). (1) Config: `physics.gravity`, `floor_eps`, `buoyancy_max`, `mutation.buoy_init`, `buoy_sigma`, `fields.benthic_lambda`, `photic_amp`, `photic_lambda` (all 0, in `POST_V01_KEYS` and `THREE_D_KEYS`, rejected off default in 2D, no 2D message changed); the 3D rules of §27.1 (room to reflect a child, `gravity < thrust_max·sin(PITCH_MAX)`, `r + floor_eps < field_cell`, the 3D load rule, the buoyancy keys 0 without the actuator, the profile keys, the director rejected until PR 4); `Dims.z_lo`, `z_hi`, `z_ground` as float32-exact host values (`z_ground` the largest float32 `≤ r + floor_eps` and at least `z_lo`, so a floor agent is always grounded); `layout.PITCH_MAX = 80°`. (2) State: `State3` (State's 47 fields, then `pitch`, `buoy_cap`), `EXTRA_3D_FIELDS`, `AGENT_FIELDS_3D`, `state_cls`, `agent_fields`; type-generic schema, (de)serialisation and digests (`legacy_state_digest` 2D only); founders uniform in the volume (`volume_kinematics`), dead rows at (0, 0, z_lo), `buoy_cap = buoy_init`; `load_checkpoint`, `full_check`, `inspect` and `tests/helpers.make_scene` take `State3`. (3) Geometry: `ops.wrap_xy_clamp_z`, `body_axes`, `to_body3`; `spatial._find_neighbors_3d` (G²·G_z cells, z clamped and never wrapped, a 3×3×3 stencil whose out-of-range layers are empty, Q = 27C); the 8-wide descriptor ending in `NBR_DZ`; 3D queries in `decode`, and `Motion3`/`decode_motion3`. (4) Physics: `grounded`, `forces3` (thrust along the 3D forward axis; gravity and buoyancy as body forces that contacts do not attenuate), `integrate3`/`Integrated3` (grip on x and y only and only when grounded, the 3D `v_max` clip before the clamp, floor and surface clamps that move the agent to the boundary and zero only the stored `v_z`, counted; the pitch clip); `bonds` works on (N,B,3) unchanged (docstrings only). (5) Lifecycle: the buoyancy-cap gene (`split(MUT_GENES, 5)` whenever dims = 3, additive Gaussian noise with a clip), children in a cone behind the parent with vertical reflection, immigrants uniform in the volume at `buoy_init`, the `pitch`/`buoy_cap` row writes, the vertical-column catastrophe. (6) Lattice: `resource` (FZ, FG, FG) and `chem` (NCH, FZ, FG, FG), the z-major `cell_index`, `vertical_profile` (V[0] = 1; the photic term only when `photic_amp > 0`), `fertility` and `regen_rate` over layers (the floor layer is the 2D fertility bit for bit). (7) Static guards in the 2D bodies that would otherwise take 3D input silently: last-axis asserts in `to_body`, `cell_index`, `find_neighbors` and `integrate`, and a lattice-rank assert in `sample_fields`, each with a refusal test. Interpretations: no `ops.min_image_xy` and no `bonds` z flag, since `2·height ≤ L` (§27.1) makes `min_image` the identity on z; the buoyancy costs, the field dynamics, sinking corpses and the step wiring are PR 3, and the scaled catastrophe radius bounds PR 4; the PR 1 3D fixtures of `tests/test_dims_config.py` and `tests/test_dims_runio.py` gained `fields.benthic_lambda` (now required in 3D), the `THREE_D_KEYS` pin checks the PR 1 prefix, and one BAD_3D case uses values that keep it the only problem. Measured: C = 16 and K = 8 do not hold 3D crowds (§27.3: peak cell occupancy 28 to 37 at C = 64 and up to 10 contacts per agent; overflow and collapse at C = 16), to be sized in PR 6. Tests: `tests/test_dims_config_pr2.py`, `tests/test_state_3d.py`, `tests/test_fields_3d.py`, `tests/test_ops_3d.py`, `tests/test_spatial_3d.py`, `tests/test_sensing_3d.py`, `tests/test_actions_3d.py`, `tests/test_physics_3d.py`, `tests/test_lifecycle_3d.py`, `tests/test_crowd_3d.py` (slow). |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

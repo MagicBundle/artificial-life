@@ -9,6 +9,7 @@ the totals ``D_IN``/``D_OUT`` outside this module. Changing any value here chang
 from __future__ import annotations
 
 import functools
+import math
 from dataclasses import dataclass
 from typing import Final
 
@@ -89,6 +90,11 @@ RES_SAT: Final = 2.0
 RES_GRAD_GAIN: Final = 4.0
 EPS_LEN: Final = 1e-6
 C_REF_MARGIN: Final = 50
+
+# --- 3D orientation (§27.2) ------------------------------------------------------------------------------
+# Pitch φ is clipped to ±PITCH_MAX, never wrapped. MLX clips in float32: range checks compare against
+# float32(PITCH_MAX). A constant, not a config key, so it never enters a config hash.
+PITCH_MAX: Final = math.radians(80.0)
 
 # --- block tables (name, start, width); they tile [0, D_IN) and [0, D_OUT) -------------------------------
 INPUT_BLOCKS: Final[tuple[tuple[str, int, int], ...]] = (
