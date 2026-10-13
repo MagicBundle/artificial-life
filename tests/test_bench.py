@@ -12,9 +12,18 @@ from mlx.utils import tree_flatten
 
 from alife import bench
 from alife.bench import STAGES, format_report, run_bench
-from alife.config import BRAIN_IMPLS, WEIGHT_DTYPES, Config
-from alife.state import CounterIdx, init_state, state_digest, to_numpy
+from alife.config import BRAIN_IMPLS, WEIGHT_DTYPES, Config, apply_overrides
+from alife.state import CounterIdx, LedgerIdx, init_state, n_counters, state_digest, to_numpy
 from alife.step import make_step
+
+# tiny3d without the buoyancy actuator (validate requires its other keys at 0 then).
+OFF_3D = [
+    "physics.buoyancy_max=0",
+    "energy.buoyancy_cost=0",
+    "energy.buoyancy_cap_cost=0",
+    "mutation.buoy_init=0",
+    "mutation.buoy_sigma=0",
+]
 
 
 def test_smoke_all_parts_on_tiny(tiny_cfg: Config) -> None:
@@ -85,6 +94,46 @@ def test_staged_pipeline_equals_step(tiny_cfg: Config) -> None:
         births += int(to_numpy(out.counters)[CounterIdx.BIRTHS])
     assert births > 0  # the reproduction stage and the S0 flush of its pending rows were exercised
     assert all(len(v) == 4 for v in staged.times.values())
+
+
+@pytest.mark.parametrize("actuator", [True, False])
+def test_staged_pipeline_equals_step_3d(tiny3d_cfg: Config, actuator: bool) -> None:
+    """The stage wiring mirrors every 3D branch of ``step.step`` (§27.8): bitwise equal states and StepOuts in
+    eager mode, with and without the buoyancy actuator."""
+    cfg = replace(tiny3d_cfg, run=replace(tiny3d_cfg.run, compile=False))
+    if not actuator:
+        cfg = apply_overrides(cfg, OFF_3D)
+    fused = make_step(cfg)
+    staged = bench._StagedStep(cfg)
+    s0 = init_state(cfg)
+    s0 = s0._replace(birth_step=mx.where(s0.alive, -50, s0.birth_step))  # founders old enough to breed
+    mx.eval(s0)
+    s, holder = s0, [s0]
+    births = 0
+    for _ in range(4):
+        s, out = fused(s)
+        out_staged = staged(holder)
+        mx.eval(s, out, holder[0], out_staged)
+        assert state_digest(holder[0]) == state_digest(s)
+        for a, b in zip(tree_flatten(out), tree_flatten(out_staged), strict=True):
+            assert a[0] == b[0]
+            np.testing.assert_array_equal(to_numpy(a[1]), to_numpy(b[1]), err_msg=a[0])
+        births += int(to_numpy(out.counters)[CounterIdx.BIRTHS])
+    assert births > 0 and out.counters.shape == (n_counters(3),)
+    assert (int(to_numpy(s.ledger_cum)[LedgerIdx.HEAT_BUOYANCY]) > 0) == actuator
+
+
+def test_smoke_all_parts_on_tiny3d(tiny3d_cfg: Config) -> None:
+    """Every part on ``tiny3d``, compiled; the stages also without the actuator, whose ``paid_buoy`` is 0 by
+    construction (an MLX 0.32 compile output that must still derive from its inputs, I14)."""
+    r = run_bench(tiny3d_cfg, steps=3, warmup=2, stages=True, determinism=True, brain_variants=True)
+    json.dumps(r, allow_nan=False)
+    assert r["n_alive_end"] == r["n_alive_start"] + r["births"] + r["immigrants"] - r["deaths"] > 0
+    assert r["diag_ok"] and r["invariants_ok"] and r["invariant_problems"] == []
+    assert r["determinism"]["match"] and all("error" not in v for v in r["brain_variants"])
+    assert list(r["stages"]["ms"]) == [name for name, _ in STAGES]
+    off = run_bench(apply_overrides(tiny3d_cfg, OFF_3D), steps=2, warmup=1, stages=True)
+    assert off["diag_ok"] and off["invariants_ok"] and all(v > 0 for v in off["stages"]["ms"].values())
 
 
 def test_donation_health_flags_a_retained_state(tiny_cfg: Config) -> None:

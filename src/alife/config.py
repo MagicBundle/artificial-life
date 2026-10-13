@@ -265,7 +265,7 @@ class Dims:
     z_ground: float  # max(z_lo, the largest float32 ≤ radius + floor_eps): grounded iff z ≤ z_ground
 
 
-PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k")
+PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d")
 OVERLAYS: tuple[str, ...] = ("fast",)
 DEFAULT_PRESET: Final = "64k"
 
@@ -617,9 +617,9 @@ THREE_D_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("energy", "buoyancy_cost"),
     ("energy", "buoyancy_cap_cost"),
 )
-# The world.dims values validate accepts. Read at call time, so tests of 3D code can widen it before 3D is
-# enabled (docs/3D.md §10: PR 3 adds 3).
-DIMS_SUPPORTED: tuple[int, ...] = (2,)
+# The world.dims values validate accepts. Read at call time, so a test can narrow it (docs/3D.md §10: PR 3
+# enabled 3).
+DIMS_SUPPORTED: tuple[int, ...] = (2, 3)
 
 # The POST_V01 keys that are omitted from ``config_hash`` at every value: the director's policy. Only
 # ``director.enabled`` changes the compiled step, so only it is hashed.

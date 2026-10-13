@@ -1,0 +1,42 @@
+# tiny3d: the 3D tiny world for tests, CI and first looks (N = 1 024, M = 32; DESIGN §27.8). It is `tiny`
+# plus a floor, a surface at height 24 (6 field layers, 4 hash layers), gravity, a buoyancy actuator and a
+# vertical food profile. The values are provisional; 3D tuning is docs/3D.md PR 6.
+[population]
+n_max = 1024
+n_init = 256
+max_births_per_step = 32
+
+[world]
+size = 128.0
+dims = 3
+height = 24.0
+
+[physics]
+gravity = 0.03
+floor_eps = 0.1
+buoyancy_max = 0.04
+
+[energy]
+# Hovering against gravity costs the same by either means: buoyancy (buoy_cap·b = 0.75) is
+# floor(16·0.75²) = 9 q/step, thrust at full pitch (a ≈ 0.305) floor(100·0.305²) = 9 q/step.
+buoyancy_cost = 16
+# The upkeep: 4 q/step for a founder's cap of 0.5, 8 at the full cap (basal_cost is 100).
+buoyancy_cap_cost = 8
+
+[mutation]
+buoy_init = 0.5
+buoy_sigma = 0.02
+
+[fields]
+n_patches = 4
+patch_sigma = 12.0
+chem_diffusion = [0.16, 0.10, 0.16]  # ≤ 1/6: the explicit 7-point stencil
+benthic_lambda = 8.0
+photic_amp = 0.5
+photic_lambda = 8.0
+
+[run]
+steps = 500
+metrics_every = 10
+checkpoint_every = 50
+heavy_metrics_every = 10
