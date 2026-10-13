@@ -15,11 +15,13 @@ from alife.render import render_frame
 from alife.runio import CheckpointError, RunDir, checkpoint_metadata, load_checkpoint, write_state_file
 from alife.state import State, init_state
 
-# A valid 3D variant of tiny or micro once 3D is enabled (height 24, chem_diffusion ≤ 1/6), as CLI flags.
+# A valid 3D variant of tiny or micro once 3D is enabled (height 24, chem_diffusion ≤ 1/6, a benthic food
+# band), as CLI flags.
 THREE_D = [
     *("--set", "world.dims=3"),
     *("--set", "world.height=24"),
     *("--set", "fields.chem_diffusion=0.16,0.1,0.16"),
+    *("--set", "fields.benthic_lambda=8"),
 ]
 
 

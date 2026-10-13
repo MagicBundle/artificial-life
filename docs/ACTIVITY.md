@@ -273,7 +273,7 @@ The component-normalised verdict does not move under any swept setting.
   without genome or position data per birth.
 - **The neutral shadow** ignores the run's age structure (`max_age`, starvation of the young); it enforces only
   the minimum parent age. That is why the heritability null is the better reference for cohort survival.
-- **Forks** are read since the director evaluation (`docs/EVALUATION.md`, DESIGN Review-log I37): the founders
+- **Forks** are read since the director evaluation (`docs/EVALUATION.md`, DESIGN Review-log I38): the founders
   are the agents alive in the fork's first checkpoint, and `--start STEP` does the same from any step of a run
   from step 0. The results above, from step 0, are unchanged by it.
 - **The 0–120k window** is affected by the start-up boom (1,024 births per step at first) and by the founders.

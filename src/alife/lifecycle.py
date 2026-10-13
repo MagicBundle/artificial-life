@@ -16,7 +16,7 @@ import mlx.core as mx
 from alife import bonds, brain, layout, ops
 from alife.config import Config, dims, immigration_possible
 from alife.rng import Stream
-from alife.state import R_HARD, DeathCause, Env, State
+from alife.state import R_HARD, DeathCause, Env, State, State3, volume_kinematics
 
 _I32 = mx.int32
 
@@ -88,8 +88,10 @@ def catastrophe_mask(pos: mx.array, alive: mx.array, env: Env, key: mx.array, cf
     Distance is the torus minimum image from ``env.cat_center`` to the start-of-step position. One uniform
     per row is drawn from ``key`` (``Stream.CATASTROPHE``) every step the director is enabled, whether or not
     a catastrophe is active, so the stream use is independent of the levers. ``cat_radius = 0`` or
-    ``cat_kill_p = 0`` kills nobody.
+    ``cat_kill_p = 0`` kills nobody. In 3D the disc is a vertical column: only x and y count (§27.4).
     """
+    if dims(cfg).d3:  # static: the (2,) centre and the x/y distance, at any height
+        pos = pos[:, :2]
     off = ops.min_image(pos - env.cat_center, cfg.world.size)
     inside = ((off * off).sum(axis=1) <= env.cat_radius * env.cat_radius) & (env.cat_radius > 0.0)
     u = mx.random.uniform(shape=(pos.shape[0],), key=key)
@@ -242,10 +244,18 @@ def _logit(p: mx.array) -> mx.array:
     return mx.log(p / (1.0 - p))
 
 
-def _child_genes(s: State, p: mx.array, key: mx.array, cfg: Config) -> tuple[mx.array, ...]:
-    """Mutated (σ, p, tag, frac) of each lane's parent row (§12.4); f32, (M,) / (M,T)."""
+def _child_genes(s: State | State3, p: mx.array, key: mx.array, cfg: Config) -> tuple[mx.array | None, ...]:
+    """Mutated (σ, p, tag, frac, buoy_cap) of each lane's parent row (§12.4); f32, (M,) / (M,T).
+
+    ``buoy_cap`` is None in 2D. In 3D (§27.4) the key splits into 5 whether or not the actuator is on, and the
+    cap mutates additively with a clip, like ``tag``: ``clip(cap_p + buoy_sigma·n₅, 0, 1)``.
+    """
     mu, m = cfg.mutation, p.shape[0]
-    k_sigma, k_rate, k_tag, k_frac = mx.random.split(key, 4)
+    d3 = dims(cfg).d3
+    if d3:  # static: a fifth gene, the buoyancy cap
+        k_sigma, k_rate, k_tag, k_frac, k_cap = mx.random.split(key, 5)
+    else:
+        k_sigma, k_rate, k_tag, k_frac = mx.random.split(key, 4)
     n1 = mx.random.normal((m,), key=k_sigma)
     n2 = mx.random.normal((m,), key=k_rate)
     n3 = mx.random.normal((m, layout.T), key=k_tag)
@@ -254,16 +264,45 @@ def _child_genes(s: State, p: mx.array, key: mx.array, cfg: Config) -> tuple[mx.
     rate = mx.clip(mx.sigmoid(_logit(s.mut_rate[p]) + mu.tau_rate * n2), mu.rate_min, mu.rate_max)
     tag = mx.clip(s.tag[p] + mu.tag_sigma * n3, -1.0, 1.0)
     frac = mx.clip(mx.sigmoid(_logit(s.offspring_frac[p]) + mu.tau_frac * n4), mu.frac_min, mu.frac_max)
-    return sigma, rate, tag, frac
+    cap = None
+    if d3:  # static
+        n5 = mx.random.normal((m,), key=k_cap)
+        cap = mx.clip(s.buoy_cap[p] + mu.buoy_sigma * n5, 0.0, 1.0)
+    return sigma, rate, tag, frac, cap
 
 
-def reproduce(s: State, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: Config) -> Repro:
+def _offspring_kinematics_3d(
+    pos_p: mx.array, heading_p: mx.array, pitch_p: mx.array, u: mx.array, cfg: Config
+) -> tuple[mx.array, mx.array, mx.array]:
+    """3D child placement (§27.4): ``(pos (M,3), heading (M,), pitch (M,))`` from the parents' rows.
+
+    The child sits at ``offspring_distance`` in a cone behind the parent: yaw ``θ_p + π + u₀`` and pitch
+    ``clip(u₁ − φ_p, ±PITCH_MAX)``, with ``u`` the (M,2) ``PLACEMENT`` jitter. When that point would leave
+    ``[z_lo, z_hi]`` the pitch is negated (a reflection at the floor or the surface), so the offset keeps its
+    length (by default the child bond's rest length); ``height − 2r ≥ 2·offspring_distance`` (§27.1) puts the
+    reflected point in range, and the final clamp only absorbs rounding. The child faces away from the parent.
+    With zero jitter and a level parent this is the 2D rule.
+    """
+    d, D, pm = dims(cfg), cfg.repro.offspring_distance, layout.PITCH_MAX
+    yaw = heading_p + math.pi + u[:, 0]
+    pitch = mx.clip(u[:, 1] - pitch_p, -pm, pm)
+    z1 = pos_p[:, 2] + D * mx.sin(pitch)
+    pitch = mx.where((z1 < d.z_lo) | (z1 > d.z_hi), -pitch, pitch)
+    cp = mx.cos(pitch)
+    step_vec = D * mx.stack([cp * mx.cos(yaw), cp * mx.sin(yaw), mx.sin(pitch)], axis=1)
+    pos = ops.wrap_xy_clamp_z(pos_p + step_vec, cfg.world.size, d.z_lo, d.z_hi)
+    return pos, ops.wrap_angle(yaw), pitch
+
+
+def reproduce(s: State | State3, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: Config) -> Repro:
     """S16: write newborn rows via ``ops.place``, debit parents, add child bonds, set ``pend_*`` (§12).
 
     ``s`` is the in-flight state (``alive`` = survivors, post-physics ``pos``/``heading``, post-S14 bonds and
     energy, post-flush weights, ``step`` = this step's index). ``child_bond`` is the parents' (N,) decision.
     Returns the state with newborn rows, debited parents, child bonds, ``pend_*`` and ``next_uid`` advanced;
     the lane records; the per-lane endowment (0 off birth lanes, FLOW_ENDOWMENT); and the child-bond count.
+    In 3D (§27.4) children go in a cone behind the parent, immigrants are uniform in the volume, and the
+    ``pitch`` and ``buoy_cap`` rows are written too.
     """
     d = dims(cfg)
     n, m = d.n, d.m
@@ -290,16 +329,23 @@ def reproduce(s: State, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: C
     energy = ops.place(energy, newborn, born_lane, mx.where(imm, en.e_init, endow).astype(_I32))
 
     # Genes, placement and weights per lane. Padding lanes compute mutated copies of row 0 (§12.6).
-    sigma, rate, tag, frac = _child_genes(s, p, ks[Stream.MUT_GENES], cfg)
-    phi = s.heading[p] + math.pi + mx.random.uniform(-0.5, 0.5, (m,), key=ks[Stream.PLACEMENT])
-    step_vec = cfg.repro.offspring_distance * mx.stack([mx.cos(phi), mx.sin(phi)], axis=1)
-    pos = ops.wrap(s.pos[p] + step_vec, L)
-    heading = ops.wrap_angle(phi)
+    sigma, rate, tag, frac, cap = _child_genes(s, p, ks[Stream.MUT_GENES], cfg)
+    if d.d3:  # static: a cone behind the parent, reflected at the floor and the surface (§27.4)
+        u = mx.random.uniform(-0.5, 0.5, (m, 2), key=ks[Stream.PLACEMENT])
+        pos, heading, pitch = _offspring_kinematics_3d(s.pos[p], s.heading[p], s.pitch[p], u, cfg)
+    else:
+        phi = s.heading[p] + math.pi + mx.random.uniform(-0.5, 0.5, (m,), key=ks[Stream.PLACEMENT])
+        step_vec = cfg.repro.offspring_distance * mx.stack([mx.cos(phi), mx.sin(phi)], axis=1)
+        pos = ops.wrap(s.pos[p] + step_vec, L)
+        heading = ops.wrap_angle(phi)
     w1, w2 = brain.mutate_rows(s.W1[p], s.W2[p], sigma, rate, ks[Stream.MUT_W1], ks[Stream.MUT_W2], cfg)
     if immigration_possible(cfg):  # static: immigrant lanes draw fresh founders (§12.7)
         k_pos, k_head, k_tag, k_w1, k_w2 = mx.random.split(ks[Stream.IMMIGRANT], 5)
-        i_pos = ops.wrap(mx.random.uniform(0.0, L, (m, 2), key=k_pos), L)
-        i_head = ops.wrap_angle(mx.random.uniform(-math.pi, math.pi, (m,), key=k_head))
+        if d.d3:  # static: uniform in the volume, like the founders (§27.4)
+            i_pos, i_head, i_pitch = volume_kinematics(k_pos, k_head, m, cfg)
+        else:
+            i_pos = ops.wrap(mx.random.uniform(0.0, L, (m, 2), key=k_pos), L)
+            i_head = ops.wrap_angle(mx.random.uniform(-math.pi, math.pi, (m,), key=k_head))
         i_tag = mx.random.uniform(-1.0, 1.0, (m, layout.T), key=k_tag)
         i_w1, i_w2 = brain.init_weights(k_w1, k_w2, m, cfg)
         pos = mx.where(imm[:, None], i_pos, pos)
@@ -310,6 +356,9 @@ def reproduce(s: State, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: C
         frac = mx.where(imm, mu.frac_init, frac)
         w1 = mx.where(imm[:, None, None], i_w1, w1)
         w2 = mx.where(imm[:, None, None], i_w2, w2)
+        if d.d3:  # static
+            pitch = mx.where(imm, i_pitch, pitch)
+            cap = mx.where(imm, mu.buoy_init, cap)
     brain_cost = brain.l1_cost(w1, w2, cfg)
 
     uid = s.next_uid + k.astype(mx.int64)
@@ -358,6 +407,8 @@ def reproduce(s: State, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: C
         pend_W2=w2,
         next_uid=s.next_uid + n_new,
     )
+    if d.d3:  # static: the 3D-only rows (§27.4)
+        state = state._replace(pitch=put(s.pitch, pitch), buoy_cap=put(s.buoy_cap, cap))
     records = BirthRecords(
         uid=mx.where(used, uid, -1),
         parent_uid=mx.where(used, parent_uid, -1),

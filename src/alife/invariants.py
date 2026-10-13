@@ -335,13 +335,13 @@ def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | 
     """
     r = _Report()
     want = expected_layout(cfg)
-    for name, arr in zip(State._fields, s, strict=True):
+    for name, arr in zip(type(s)._fields, s, strict=True):
         shape, dtype = want[name]
         if tuple(arr.shape) != shape or arr.dtype != dtype:
             r.problems.append(f"layout: {name} is {arr.dtype}{tuple(arr.shape)}, expected {dtype}{shape}")
     if r.problems:
         return r.problems
-    a = {name: to_numpy(arr) for name, arr in zip(State._fields, s, strict=True)}
+    a = {name: to_numpy(arr) for name, arr in zip(type(s)._fields, s, strict=True)}
     _check_ledger(r, a, cfg)
     _check_bonds(r, a)
     _check_rows(r, a, cfg)
