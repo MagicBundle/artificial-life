@@ -49,7 +49,7 @@ def _problems(overrides: list[str], preset: str = "tiny") -> str:
 # --- defaults, keys, hashes -------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("preset", PRESETS)
+@pytest.mark.parametrize("preset", [p for p in PRESETS if p != "tiny3d"])  # tiny3d: PR 3, test_config.py
 @pytest.mark.parametrize("overlays", [(), OVERLAYS])
 def test_defaults_are_2d(preset: str, overlays: tuple[str, ...]) -> None:
     cfg = load_config(preset=preset, overlays=overlays)
@@ -65,7 +65,7 @@ def test_pinned_hashes_unchanged() -> None:
 def test_3d_keys_are_post_v01_and_hashed() -> None:
     assert THREE_D_KEYS[:2] == (("world", "dims"), ("world", "height"))  # PR 2 appends its keys
     assert set(THREE_D_KEYS) <= set(POST_V01_KEYS) and not set(THREE_D_KEYS) & set(UNHASHED_KEYS)
-    assert config.DIMS_SUPPORTED == (2,)
+    assert config.DIMS_SUPPORTED == (2, 3)  # enabled in PR 3
 
 
 def test_hash_moves_off_default() -> None:
@@ -96,7 +96,8 @@ def test_dims_is_an_int_key() -> None:
 # --- the gate and the 2D rules ----------------------------------------------------------------------------
 
 
-def test_dims3_rejected_until_enabled() -> None:
+def test_dims3_rejected_until_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DIMS_SUPPORTED", (2,))  # the gate as it stood before PR 3 enabled 3D
     msg = _problems(TINY3D)
     assert msg.startswith("1 config problem(s)") and "not enabled yet" in msg and "docs/3D.md" in msg
     assert "world.dims must be 2 or 3" in _problems(["world.dims=4"])

@@ -1,5 +1,6 @@
 """§27.4 3D births: the cone placement behind the parent with its vertical reflection, immigrants uniform in
-the volume, the buoyancy-cap gene, complete newborn rows, the catastrophe column and compile."""
+the volume, the buoyancy-cap gene, complete newborn rows, the catastrophe column and compile. §27.6 corpses
+sink to the floor cell below the dead agent."""
 
 from __future__ import annotations
 
@@ -10,12 +11,12 @@ import numpy as np
 import pytest
 from mlx.utils import tree_flatten
 
-from alife import bonds, layout, lifecycle, ops, rng
+from alife import bonds, fields, layout, lifecycle, ops, rng
 from alife.config import Config, apply_overrides, dims
 from alife.layout import T
 from alife.lifecycle import LaneKind
 from alife.rng import Stream
-from alife.state import AGENT_FIELDS_3D, State3, init_state, to_numpy
+from alife.state import AGENT_FIELDS_3D, R_HARD, State3, init_state, to_numpy, total_energy
 from helpers import ON_GPU, as_3d, make_scene, volume_draws
 
 f32 = np.float32
@@ -313,6 +314,78 @@ def test_catastrophe_is_a_vertical_column(cfg3: Config, micro_cfg: Config) -> No
     assert mask[:6].tolist() == [True, True, True, False, False, True] and not mask[6:].any()
     flat = _np(lifecycle.catastrophe_mask(mx.array(pos[:, :2]), alive, env, mx.random.key(1), micro_cfg))
     assert np.array_equal(mask, flat)  # the column is the 2D disc at every height
+
+
+# --- corpses sink (§27.6) -----------------------------------------------------------------------------------
+
+
+def _deaths(s: State3, solvent: np.ndarray, e: np.ndarray, cfg: Config) -> lifecycle.Deaths:
+    zero = mx.zeros(s.alive.shape, mx.int32)
+    return lifecycle.deaths(
+        s.alive, mx.array(solvent), mx.array(e), zero, zero, s.uid, s.generation, s.clade, s.partner, s.rev,
+        s.resource, fields.cell_index(s.pos, cfg), cfg,
+    )  # fmt: skip
+
+
+def _column_scene(cfg: Config, resource: np.ndarray, floor: int) -> tuple[State3, np.ndarray, np.ndarray]:
+    """One agent per layer stacked over the cell (cx, cy) = (2, 3), plus one survivor elsewhere; the floor
+    cell of the column holds ``floor``. Rows 1..FZ−1 above the floor die (insolvent, E = 100·(row + 1))."""
+    d, fc = dims(cfg), cfg.world.field_cell
+    resource = resource.copy()
+    resource[0, 3, 2] = floor
+    zs = [d.z_lo, *((k + 0.5) * fc for k in range(1, d.fz - 1)), d.z_hi]  # layer k holds row k
+    agents = [{"pos": [2.5 * fc, 3.5 * fc, z]} for z in zs] + [{"pos": [9.5 * fc, 9.5 * fc, 10.0]}]
+    s = make_scene(cfg, agents, resource=resource)
+    n, rows = dims(cfg).n, np.arange(1, d.fz)
+    solvent, e = np.array(s.alive), np.zeros(n, np.int32)
+    solvent[rows] = False
+    e[: len(agents)] = 100 * np.arange(1, len(agents) + 1)
+    return s, solvent, e
+
+
+def test_corpses_sink_to_the_floor_cell(cfg3: Config) -> None:
+    """A corpse from layer k lands in the floor cell (0, cy, cx) below it, not in its own cell; every other
+    cell is untouched and the corpse term is unchanged (FLOW_CORPSE)."""
+    d, S = dims(cfg3), cfg3.energy.structure
+    resource = np.random.default_rng(1).integers(0, 8000, d.field_shape).astype(np.int32)
+    s, solvent, e = _column_scene(cfg3, resource, 500)
+    fcell = _np(fields.cell_index(s.pos, cfg3))
+    assert sorted(fcell[: d.fz] // (d.fg * d.fg)) == list(range(d.fz))  # one agent per layer
+    assert len(set(fcell[: d.fz] % (d.fg * d.fg))) == 1  # one column
+    dt = _deaths(s, solvent, e, cfg3)
+    dead = _np(dt.dead)
+    assert np.array_equal(np.flatnonzero(dead), np.arange(1, d.fz))
+    corpse = np.where(dead, e + S, 0)
+    assert np.array_equal(_np(dt.corpse), corpse)
+    want = _np(s.resource).astype(np.int64)
+    want[0, 3, 2] += corpse.sum()
+    assert dt.resource.shape == d.field_shape and dt.resource.dtype == mx.int32
+    assert np.array_equal(_np(dt.resource), want)
+    assert dt.r_overflow.shape == d.field_shape and not _np(dt.r_overflow).any()
+    # The conserved total does not move: corpses are internal (§10.8).
+    before = int(e.sum()) + S * int(_np(s.alive).sum()) + int(_np(s.resource).astype(np.int64).sum())
+    assert before == int(_np(total_energy(dt.energy, dt.survivor, dt.resource, cfg3)))
+
+
+def test_corpses_on_a_full_floor_cell_are_capped(cfg3: Config) -> None:
+    """The R_HARD cap applies at the floor cell the corpses sink into, and only there; the excess is the
+    overflow (HEAT_OVERFLOW). Compiled equals eager (integers)."""
+    d, S = dims(cfg3), cfg3.energy.structure
+    resource = np.full(d.field_shape, 1000, np.int32)
+    s, solvent, e = _column_scene(cfg3, resource, R_HARD - 100)
+    corpse = int(np.where(~solvent & _np(s.alive), e + S, 0).sum())
+    assert corpse > 100
+    dt = _deaths(s, solvent, e, cfg3)
+    over = np.zeros(d.field_shape, np.int64)
+    over[0, 3, 2] = corpse - 100
+    assert np.array_equal(_np(dt.r_overflow), over)
+    want = _np(s.resource).astype(np.int64)
+    want[0, 3, 2] = R_HARD
+    assert np.array_equal(_np(dt.resource), want)
+    comp = mx.compile(lambda s_: _deaths(s_, solvent, e, cfg3))(s)
+    for a, b in zip(dt, comp, strict=True):
+        if isinstance(a, mx.array):
+            assert np.array_equal(_np(a), _np(b))
 
 
 # --- compile -----------------------------------------------------------------------------------------------

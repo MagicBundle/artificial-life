@@ -99,6 +99,13 @@ def test_run_writes_a_complete_run_directory(run_dir: Path) -> None:
     )
 
 
+def test_2d_rows_keep_reserved_key(run_dir: Path) -> None:
+    """A 2D row names ledger slot 15 ``RESERVED`` (always 0) and has no 3D keys (§27.8)."""
+    rows = RunDir.open(run_dir).metrics_rows()
+    assert all(r["ledger"]["RESERVED"] == 0 and "HEAT_BUOYANCY" not in r["ledger"] for r in rows)
+    assert len(rows[0]["ledger"]) == 16
+
+
 def test_inspect_check_json(run_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
     capsys.readouterr()
     assert cli.main(["inspect", str(run_dir), "--check", "--json"]) == 0

@@ -1,4 +1,4 @@
-"""Sensing: neighbour descriptors and the D_IN = 69 input vector (§5). Owned by WP2.
+"""Sensing: neighbour descriptors and the D_IN = 69 input vector (§5; 3D: D_IN = 84, §27.6). Owned by WP2.
 
 Everything is float32 and in the agent's body frame. Absent neighbours and empty bond slots give all-zero
 blocks with ``present = 0``. Every input is finite with ``|x| ≤ 1``.
@@ -92,21 +92,33 @@ def build_inputs(
     fobs: FieldObs,
     key: mx.array,
     cfg: Config,
+    *,
+    grounded: mx.array | None = None,
 ) -> mx.array:
     """Brain inputs ``x (N,D_IN)`` f32 with ``|x| ≤ 1`` (§5).
 
     ``desc`` comes from ``neighbor_descriptors``; ``geom`` holds start-of-step bond offsets for ``s.partner``;
     ``fobs`` holds rows 12–23 as computed by ``fields.sample_fields`` (§16.2), copied unchanged; ``key`` is
     ``ks[Stream.NOISE]``.
+
+    3D (§27.6): every vector is taken in the yaw-and-pitch frame (``ops.to_body3``); its (fwd, lat) components
+    fill the 2D blocks and its up component the tail 69–83, which ends with ``z / height``, ``sin(pitch)`` and
+    ``grounded`` ((N,) bool, ``physics.grounded``; required in 3D).
     """
     d, n = dims(cfg), s.alive.shape[0]
     q0, sc, en = _q0(cfg), cfg.sensing, cfg.energy
     cos_h, sin_h = mx.cos(s.heading), mx.sin(s.heading)
+    if d.d3:  # static: the pitch half of the 3D body frame
+        cos_p, sin_p = mx.cos(s.pitch), mx.sin(s.pitch)
 
     # --- self (0..11) ---
     energy = mx.clip(mx.log1p(s.energy.astype(_F32) / q0) / math.log1p(en.e_max / q0), 0.0, 1.0)
     age_in = mx.tanh(age.astype(_F32) / layout.AGE_SCALE)
-    vel = mx.clip(ops.to_body(s.vel, cos_h, sin_h) / cfg.physics.v_max, -1.0, 1.0)
+    if d.d3:  # static: (fwd, lat) here, up in the tail
+        vel3 = mx.clip(ops.to_body3(s.vel, cos_h, sin_h, cos_p, sin_p) / cfg.physics.v_max, -1.0, 1.0)
+        vel = vel3[:, :2]
+    else:
+        vel = mx.clip(ops.to_body(s.vel, cos_h, sin_h) / cfg.physics.v_max, -1.0, 1.0)
     occupied = s.partner >= 0
     nbonds = occupied.sum(1).astype(_F32) / layout.B
     hurt = _sat(s.last_loss, cfg.combat.attack_max)
@@ -117,6 +129,9 @@ def build_inputs(
     phase = mx.remainder(age, sc.clock_period).astype(_F32) * (2.0 * math.pi / sc.clock_period)
 
     # --- fields (12..23): sample_fields already returns the final §5 values (§16.2) ---
+    if d.d3:  # static: (fwd, lat) here, up in the tail
+        fobs3 = fobs
+        fobs = fobs._replace(res_grad=fobs3.res_grad[:, :2], chem_grad=fobs3.chem_grad[..., :2])
     chem_grad = fobs.chem_grad.astype(_F32).reshape(n, 2 * layout.NCH)  # (c0 fwd, c0 lat, c1 fwd, ...)
 
     # --- pooled neighbourhood (24..27) ---
@@ -128,11 +143,21 @@ def build_inputs(
     msg_mean = mx.where(valid[..., None], s.msg[nbr.idx], 0.0).sum(1) * inv[:, None]
 
     # --- nearest NS neighbours (28..48) ---
-    near = desc[:, : layout.NS, :].reshape(n, layout.NS * layout.NF)
+    if d.d3:  # static: the first NF = 7 features; NBR_DZ goes to the tail
+        near = desc[:, : layout.NS, : layout.NF].reshape(n, layout.NS * layout.NF)
+    else:
+        near = desc[:, : layout.NS, :].reshape(n, layout.NS * layout.NF)
 
     # --- bond slots (49..68) ---
     pj = mx.maximum(s.partner, 0)
-    brel = mx.clip(ops.to_body(geom.off, cos_h[:, None], sin_h[:, None]) / cfg.bonds.break_length, -1.0, 1.0)
+    if d.d3:  # static: (fwd, lat) here, up in the tail
+        rot = ops.to_body3(geom.off, cos_h[:, None], sin_h[:, None], cos_p[:, None], sin_p[:, None])
+        brel3 = mx.clip(rot / cfg.bonds.break_length, -1.0, 1.0)
+        brel = brel3[..., :2]
+    else:
+        brel = mx.clip(
+            ops.to_body(geom.off, cos_h[:, None], sin_h[:, None]) / cfg.bonds.break_length, -1.0, 1.0
+        )
     bond = mx.stack(
         [
             mx.ones(pj.shape, dtype=_F32),
@@ -170,5 +195,18 @@ def build_inputs(
         ],
         axis=1,
     )
+    if d.d3:  # static: the 3D tail (69..83)
+        assert grounded is not None, "3D sensing needs the grounded mask"  # static
+        tail = [
+            vel3[:, 2:],  # IN_VEL_UP
+            fobs3.res_grad[:, 2:].astype(_F32),  # IN_RES_GRAD_UP
+            fobs3.chem_grad[..., 2].astype(_F32),  # IN_CHEM_GRAD_UP (N,NCH)
+            desc[:, : layout.NS, d.lay.NBR_DZ],  # IN_NBR_DZ (N,NS), zero where invalid
+            mx.where(geom.valid, brel3[..., 2], 0.0),  # IN_BOND_DZ (N,B)
+            _col(s.pos[:, 2] / cfg.world.height),  # IN_HEIGHT
+            _col(sin_p),  # IN_PITCH
+            _col(grounded),  # IN_GROUNDED
+        ]
+        x = mx.concatenate([x, *tail], axis=1)
     assert x.shape == (n, d.lay.D_IN), x.shape  # static shape check, free under compile
     return x

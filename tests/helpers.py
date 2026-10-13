@@ -12,11 +12,13 @@ from alife import brain, invariants, layout, ops
 from alife.config import Config, config_from_dict, config_to_dict, dims
 from alife.state import (
     ENV_FIELDS,
+    SOURCES,
     Diag,
     State,
     State3,
     agent_fields,
     init_state,
+    sinks,
     state_cls,
     to_numpy,
     total_energy,
@@ -28,20 +30,37 @@ from alife.step import make_step
 ON_GPU = mx.default_device().type == mx.gpu
 
 # The 3D variant of a 2D test config (height 24: FZ = 6 and G_z = 4 at the test field cell and radius), valid
-# under §27 once dims = 3 is enabled: chem_diffusion ≤ 1/6 and a benthic food band.
+# under §27: chem_diffusion ≤ 1/6 and a benthic food band.
 THREE_D: dict[str, dict[str, Any]] = {
     "world": {"dims": 3, "height": 24.0},
     "fields": {"chem_diffusion": [0.16, 0.1, 0.16], "benthic_lambda": 8.0},
 }
 
+# ``micro3d_cfg`` (conftest): the ``tiny3d`` preset with ``micro_cfg``'s overrides. N = 64, M = 8, n_init = 8,
+# L = 48 (G_h = 8, FG = 12), height 24 (FZ = 6, G_z = 4), f32 weights; tiny3d's gravity, buoyancy and costs.
+MICRO3D: tuple[str, ...] = (
+    "population.n_max=64",
+    "population.max_births_per_step=8",
+    "population.n_init=8",
+    "world.size=48",
+    "brain.weight_dtype=float32",
+)
+
 
 def as_3d(cfg: Config, **sections: Mapping[str, Any]) -> Config:
     """``cfg`` as a 3D world: ``THREE_D`` and then ``sections`` (``{"physics": {"gravity": 0.03}}``) merged
-    over it. Built without ``validate``, which rejects dims = 3 until 3D is enabled (docs/3D.md PR 3)."""
+    over it. Built without ``validate``, so a unit test may switch single 3D mechanisms on or off."""
     d = config_to_dict(cfg)
     for name, sub in (*THREE_D.items(), *sections.items()):
         d[name] = {**d[name], **sub}
     return config_from_dict(d)
+
+
+def ledger_net(led: Any, cfg: Config) -> int:
+    """Sources minus sinks of a (16,) ledger (an ``mx.array`` or numpy) for ``cfg``'s dims, as a Python int:
+    the change of ``TOTAL`` it accounts for (§10.8; ``HEAT_BUOYANCY`` is a sink in 3D, §27.7)."""
+    a = np.asarray(to_numpy(led) if isinstance(led, mx.array) else led, np.int64)
+    return sum(int(a[i]) for i in SOURCES) - sum(int(a[i]) for i in sinks(dims(cfg).nd))
 
 
 def volume_draws(k_pos: mx.array, k_head: mx.array, n: int, cfg: Config) -> tuple[np.ndarray, ...]:

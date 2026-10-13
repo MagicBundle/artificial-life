@@ -14,6 +14,7 @@ from alife.config import (
     OVERLAYS,
     PRESETS,
     R_HARD,
+    THREE_D_KEYS,
     UNHASHED_KEYS,
     Config,
     ConfigError,
@@ -67,6 +68,27 @@ def test_preset_table(preset: str, n: int, m: int, n_init: int, size: float, g_h
     assert (d.g_hash, d.fg) == (g_hash, fg)
     assert d.n_cap == n - m and d.dl == 2 * m
     assert d.cell_hash >= cfg.sensing.radius
+
+
+def test_preset_table_tiny3d() -> None:
+    """``tiny3d`` is ``tiny`` plus every 3D key and a 3D-stable ``chem_diffusion`` (§27.8); with the fast
+    overlay it validates too."""
+    cfg, tiny = load_config(preset="tiny3d"), load_config(preset="tiny")
+    d = dims(cfg)
+    assert "tiny3d" in PRESETS and cfg.world.dims == 3
+    assert (d.n, d.m, cfg.population.n_init, cfg.world.size, d.g_hash, d.fg) == (1024, 32, 256, 128.0, 21, 32)
+    assert (d.fz, d.g_hash_z, d.n_cells, d.field_shape) == (6, 4, 6 * 32 * 32, (6, 32, 32))
+    assert (d.lay.D_IN, d.lay.D_OUT, d.q, d.w1_rows, d.params) == (84, 39, 27 * 16, 116, 4999)
+    a, b = config_to_dict(cfg), config_to_dict(tiny)
+    changed = {(sec, k) for sec in a for k in a[sec] if a[sec][k] != b[sec][k]}
+    assert changed == {*THREE_D_KEYS, ("fields", "chem_diffusion")}
+    assert max(cfg.fields.chem_diffusion) <= 1 / 6
+    ph, en, mu, fi = cfg.physics, cfg.energy, cfg.mutation, cfg.fields
+    assert (cfg.world.height, ph.gravity, ph.floor_eps, ph.buoyancy_max) == (24.0, 0.03, 0.1, 0.04)
+    assert (en.buoyancy_cost, en.buoyancy_cap_cost, mu.buoy_init, mu.buoy_sigma) == (16, 8, 0.5, 0.02)
+    assert (fi.benthic_lambda, fi.photic_amp, fi.photic_lambda) == (8.0, 0.5, 8.0)
+    fast = load_config(preset="tiny3d", overlays=["fast"])
+    assert (fast.sensing.k_neighbors, dims(fast).q) == (6, 27 * 12)
 
 
 def test_tiny_and_fast_overrides() -> None:

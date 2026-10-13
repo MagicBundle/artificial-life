@@ -330,10 +330,11 @@ class _Sense(NamedTuple):
     fcell: mx.array
     desc: mx.array
     x: mx.array
+    grounded: mx.array | None = None  # 3D only: physics.grounded of the start-of-step pos
 
 
 class _Interact(NamedTuple):
-    costs: en.Costs
+    costs: en.Costs | en.Costs3  # Costs3 in 3D
     act: Actions  # masked by solvency
     partner: mx.array  # post-S9
     rev: mx.array
@@ -346,10 +347,13 @@ class _Interact(NamedTuple):
     sh: en.Share
     e_over: mx.array
     dt: lifecycle.Deaths
+    mo: actions.Motion3 | None = None  # 3D only, masked by solvency
 
 
 def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
-    """One function per sub-step group of ``STAGES``; together they are exactly ``step.step``."""
+    """One function per sub-step group of ``STAGES``; together they are exactly ``step.step``, including its
+    static 3D branches (§27.8)."""
+    d3 = dims(cfg).d3
 
     def flush(
         W1: mx.array, W2: mx.array, slot: mx.array, pW1: mx.array, pW2: mx.array
@@ -364,6 +368,12 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         a = age(s.step, s.birth_step)
         geom = bonds.bond_geometry(s.pos, s.partner, cfg)
         fcell = fields.cell_index(s.pos, cfg)
+        if d3:  # static
+            gr = physics.grounded(s.pos, cfg)
+            fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch)
+            desc = sensing.neighbor_descriptors(s, nbr, cfg)
+            x = sensing.build_inputs(s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, grounded=gr)
+            return _Sense(a, geom, fcell, desc, x, gr)
         fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg)
         desc = sensing.neighbor_descriptors(s, nbr, cfg)
         x = sensing.build_inputs(s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg)
@@ -372,11 +382,21 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
     def think(W1: mx.array, W2: mx.array, x: mx.array, h: mx.array) -> tuple[mx.array, mx.array]:
         return brain.forward(W1, W2, x, h, cfg)
 
-    def decode(y: mx.array, desc: mx.array, nbr: spatial.Neighbors, s: State) -> Actions:
+    def decode(
+        y: mx.array, desc: mx.array, nbr: spatial.Neighbors, s: State
+    ) -> Actions | tuple[Actions, actions.Motion3]:
+        if d3:  # static: Actions and Motion3
+            act = actions.decode(y, desc, nbr, s.partner, s.alive, cfg)
+            return act, actions.decode_motion3(y, s.alive, cfg)
         return actions.decode(y, desc, nbr, s.partner, s.alive, cfg)
 
-    def interact(s: State, act: Actions, se: _Sense, ks: mx.array) -> _Interact:
-        c = en.pay_costs(s.energy, act, bonds.n_bonds(s.partner), s.brain_cost, s.alive, cfg)
+    def interact(s: State, act: Actions, se: _Sense, ks: mx.array, mo: actions.Motion3 | None) -> _Interact:
+        if d3:  # static
+            nb0 = bonds.n_bonds(s.partner)
+            c = en.pay_costs3(s.energy, act, mo, nb0, s.brain_cost, s.buoy_cap, s.alive, cfg)
+            mo = actions.mask(mo, c.solvent)
+        else:
+            c = en.pay_costs(s.energy, act, bonds.n_bonds(s.partner), s.brain_cost, s.alive, cfg)
         act = actions.mask(act, c.solvent)
         flag = act.release | (se.geom.length > cfg.bonds.break_length)
         partner, rev, broken = bonds.break_bonds(s.partner, s.rev, flag & se.geom.valid)
@@ -410,9 +430,20 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             cfg,
             cat_mask=cat_mask,
         )
-        return _Interact(c, act, partner, rev, formed, as_prop, broken, slots_s9, got, cb, sh, e_over, dt)
+        return _Interact(c, act, partner, rev, formed, as_prop, broken, slots_s9, got, cb, sh, e_over, dt, mo)
 
-    def move(s: State, act: Actions, nbr: spatial.Neighbors, dt: lifecycle.Deaths) -> tuple[mx.array, ...]:
+    def move(
+        s: State,
+        act: Actions,
+        nbr: spatial.Neighbors,
+        dt: lifecycle.Deaths,
+        mo: actions.Motion3 | None,
+        gr: mx.array | None,
+    ) -> tuple[mx.array, ...]:
+        if d3:  # static: Integrated3 (a NamedTuple; its first three are pos, vel, heading as in 2D)
+            sv = dt.survivor
+            F = physics.forces3(s.pos, s.heading, s.pitch, act, mo, s.buoy_cap, nbr, sv, dt.partner, cfg)
+            return physics.integrate3(s.pos, s.heading, s.pitch, F, act.grip, act.turn, mo.pitch, gr, sv, cfg)
         F = physics.forces(s.pos, s.heading, act, nbr, dt.survivor, dt.partner, cfg)
         return physics.integrate(s.pos, s.heading, F, act.grip, act.turn, dt.survivor, cfg)
 
@@ -437,6 +468,8 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             last_harvest=mx.where(sv, it.got, 0),
             last_inflow=mx.where(sv, it.sh.inflow, 0),
         )
+        if d3:  # static
+            s1 = s1._replace(pitch=moved.pitch)
         req = sv & act.reproduce & (dt.energy >= cfg.repro.min_energy) & (a >= cfg.repro.min_age)
         imm_request = s.env_imm_request if cfg.director.enabled else None  # static
         lanes = lifecycle.allocate_lanes(req, sv, ks[Stream.BIRTH_PRIO], cfg, s.step, imm_request=imm_request)
@@ -501,9 +534,11 @@ class _StagedStep:
         key_next, ks, nbr = self._run("neighbors", s.key, s.pos, s.alive)
         se = self._run("sense", s, nbr, ks)
         h_new, y = self._run("brain", s.W1, s.W2, se.x, s.h)
-        act = self._run("decode", y, se.desc, nbr, s)
-        it = self._run("interact", s, act, se, ks)
-        moved = self._run("physics", s, it.act, nbr, it.dt)
+        d3 = dims(self.cfg).d3
+        dec = self._run("decode", y, se.desc, nbr, s)
+        act, mo = dec if d3 else (dec, None)
+        it = self._run("interact", s, act, se, ks, mo)
+        moved = self._run("physics", s, it.act, nbr, it.dt, it.mo, se.grounded)
         (parent, slot, kind, counts), rp = self._run("reproduce", s, it, h_new, moved, se.age, ks)
         lanes = lifecycle.Lanes(parent, slot, kind, counts[0], counts[1], counts[2])
         chem, resource, regen_inc, patch_pos = self._run("fields", rp.state, it, se.fcell)
@@ -523,7 +558,7 @@ class _StagedStep:
             rp=rp,
             regen_inc=regen_inc,
             nbr=nbr,
-            v_clips=moved[3],
+            v_clips=moved.v_clips if d3 else moved[3],
             fcell=se.fcell,
             desc=se.desc,
             x=se.x,
@@ -533,6 +568,8 @@ class _StagedStep:
             broken=it.broken,
             slots_s9=it.slots_s9,
         )
+        if d3:  # static: the Counter3D inputs
+            flows = flows._replace(z_floor=moved.z_floor, z_surface=moved.z_surface, grounded=se.grounded)
         s_new, out = self._run("finish", s2, s, flows)
         holder.append(s_new)
         return out

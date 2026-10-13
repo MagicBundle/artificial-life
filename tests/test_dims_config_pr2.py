@@ -57,7 +57,7 @@ def _problems(overrides: list[str]) -> str:
 
 
 def test_pr2_keys_default_off_and_listed() -> None:
-    assert THREE_D_KEYS[2:] == PR2_KEYS
+    assert THREE_D_KEYS[2:10] == PR2_KEYS  # PR 3 appends its keys
     defaults = config_to_dict(Config())
     for sec, key in PR2_KEYS:
         assert defaults[sec][key] == 0.0 and isinstance(defaults[sec][key], float), (sec, key)

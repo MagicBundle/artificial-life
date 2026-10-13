@@ -24,6 +24,7 @@ from typing import Any
 import mlx.core as mx
 
 from alife import metrics, runio
+from alife.config import dims
 from alife.runio import RunDir
 from alife.state import to_numpy
 from alife.step import make_step
@@ -52,12 +53,13 @@ def cached_states(out_dir: Path) -> list[tuple[int, Path]]:
 
 
 def _compare(
-    stored: dict[str, Any], counters: list[mx.array], ledgers: list[mx.array], total: int
+    stored: dict[str, Any], counters: list[mx.array], ledgers: list[mx.array], total: int, *, nd: int = 2
 ) -> list[str]:
-    """Keys whose recomputed value differs from ``stored`` (interval keys plus ``E_total``)."""
+    """Keys whose recomputed value differs from ``stored`` (interval keys plus ``E_total``); ``nd`` is the
+    run's dims (``metrics.interval_row``)."""
     c = to_numpy(mx.stack(counters))
     lg = to_numpy(mx.stack(ledgers))
-    row = metrics.interval_row(int(stored["step"]), c, lg, {}, {})
+    row = metrics.interval_row(int(stored["step"]), c, lg, {}, {}, nd=nd)
     bad = [k for k, v in row.items() if k not in _PERF_KEYS and k in stored and stored[k] != v]
     if "E_total" in stored and stored["E_total"] != total:
         bad.append("E_total")
@@ -111,7 +113,7 @@ def resimulate(
         stored = rows.get(t)
         if stored is not None:
             if stored["steps"] == len(counters):
-                bad = _compare(stored, counters, ledgers, int(to_numpy(state.total)))
+                bad = _compare(stored, counters, ledgers, int(to_numpy(state.total)), nd=dims(cfg).nd)
                 if bad:
                     raise ResimMismatch(f"step {t}: re-simulated values differ from metrics.jsonl in {bad}")
                 checked += 1
