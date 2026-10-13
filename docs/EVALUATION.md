@@ -69,7 +69,8 @@ sha256 in its header, the yoke parser read one yoked move at step 1,199,000 from
 Not run. The 3D session (building `docs/3D.md`) found that no part of the 3D plan depends on it, that 2D bodies do
 not transfer to 3D (gravity, bond sag), and that the goal "bodies ≥ 100" is within noise of the undirected
 baseline (largest body about 90 at 64k), so even a positive result would be hard to read. A goal-directed bodies
-experiment is planned in 3D after its PR 6. Owner decision: pending.
+experiment is planned in 3D after its PR 6. Owner decision (2026-10-13): deferred, to keep the GPU free; it may
+still be run later, with a goal measurably above the baseline (for example largest body ≥ 200).
 
 ## 2. Metrics
 
