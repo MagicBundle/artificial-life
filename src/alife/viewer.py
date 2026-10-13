@@ -29,7 +29,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import bonds, ops
-from alife.config import Config
+from alife.config import Config, require_2d
 from alife.render import COLOR_MODES, DEFAULT_LAYERS, Viewport, render_frame, write_png
 from alife.runio import write_state_file
 from alife.state import ERROR_MASK, N_COUNTERS, CounterIdx, Diag, State, age, to_numpy
@@ -102,6 +102,7 @@ class ViewerSession:
         size: tuple[int, int] = (900, 900),
         steps_per_frame: int = 1,
     ) -> None:
+        require_2d(cfg, "the live viewer")
         self.cfg = cfg
         self.rundir = rundir
         self._state = state  # the only long-lived reference; replaced on every step (donation rule)
@@ -444,6 +445,7 @@ def run_viewer(
     hint when pygame-ce is missing. Pass the state without keeping another reference to it, so the first
     step can update the weights in place.
     """
+    require_2d(cfg, "the live viewer")  # before pygame, so a 3D run never opens a window
     pg = _import_pygame()
     session = ViewerSession(cfg, state, rundir=rundir, size=size, steps_per_frame=steps_per_frame)
     del state

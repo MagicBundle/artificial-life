@@ -1,13 +1,19 @@
-"""Structural constants and genome I/O layout (§2.1, §5, §7).
+"""Structural constants and genome I/O layout (§2.1, §5, §7, §27.1).
 
-Changing any value here changes the genome layout: bump ``GENOME_LAYOUT_VERSION`` with it.
+The module constants are the 2D layout. A 3D world (``world.dims = 3``) appends a tail to the input and output
+vectors and keeps every index below unchanged; ``for_dims(nd)`` is the per-dims view and the only source of
+the totals ``D_IN``/``D_OUT`` outside this module. Changing any value here changes the genome layout: bump
+``GENOME_LAYOUT_VERSION`` (2D) or ``GENOME_LAYOUT_VERSION_3D`` with it.
 """
 
 from __future__ import annotations
 
+import functools
+from dataclasses import dataclass
 from typing import Final
 
 GENOME_LAYOUT_VERSION: Final = 1
+GENOME_LAYOUT_VERSION_3D: Final = 2  # one version sequence: a future 2D bump takes 3 (§27.1)
 
 # --- structural symbols (§2.1) ---------------------------------------------------------------------------
 B: Final = 4  # bond slots per agent
@@ -172,3 +178,134 @@ OUTPUT_NAMES: Final[tuple[str, ...]] = (
     *(f"q_bond{i}" for i in range(F)),
     *(f"q_attack{i}" for i in range(F)),
 )
+
+
+# --- the layout per dims (§27.1) ----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Layout:
+    """The genome I/O layout of an ``nd``-dimensional world (``for_dims``).
+
+    3D appends a tail to the 2D vectors ("append-only"): every module constant above keeps its value and
+    meaning in both dims, so only the totals, the descriptor width ``NF``, the query width ``F`` and the
+    version depend on dims. Indices that exist only in 3D are None in 2D (never −1, which would read the last
+    column).
+    """
+
+    nd: int
+    D_IN: int
+    D_OUT: int
+    NF: int  # features per sensed neighbour: 7, or 8 with NBR_DZ last
+    F: int  # targeting descriptor width NF − 1 (the bond and attack queries)
+    INPUT_BLOCKS: tuple[tuple[str, int, int], ...]
+    OUTPUT_BLOCKS: tuple[tuple[str, int, int], ...]
+    INPUT_NAMES: tuple[str, ...]
+    OUTPUT_NAMES: tuple[str, ...]
+    NBR_FEATURE_NAMES: tuple[str, ...]
+    # 3D only (None in 2D).
+    NBR_DZ: int | None = None  # desc[..., NBR_DZ]: body-frame up offset / R
+    IN_VEL_UP: int | None = None
+    IN_RES_GRAD_UP: int | None = None
+    IN_CHEM_GRAD_UP: int | None = None  # NCH wide
+    IN_NBR_DZ: int | None = None  # NS wide
+    IN_BOND_DZ: int | None = None  # B wide
+    IN_HEIGHT: int | None = None
+    IN_PITCH: int | None = None
+    IN_GROUNDED: int | None = None
+    OUT_PITCH: int | None = None
+    OUT_BUOYANCY: int | None = None
+    OUT_Q_BOND_DZ: int | None = None  # the query's 7th component, after the 2D block OUT_Q_BOND
+    OUT_Q_ATTACK_DZ: int | None = None
+
+
+def _layout_2d() -> Layout:
+    return Layout(
+        nd=2,
+        D_IN=D_IN,
+        D_OUT=D_OUT,
+        NF=NF,
+        F=F,
+        INPUT_BLOCKS=INPUT_BLOCKS,
+        OUTPUT_BLOCKS=OUTPUT_BLOCKS,
+        INPUT_NAMES=INPUT_NAMES,
+        OUTPUT_NAMES=OUTPUT_NAMES,
+        NBR_FEATURE_NAMES=NBR_FEATURE_NAMES,
+    )
+
+
+def _layout_3d() -> Layout:
+    """The 2D vectors unchanged, then the 3D-only tail (docs/3D.md §4, §27.1). Frozen: any change to these
+    tables bumps ``GENOME_LAYOUT_VERSION_3D``."""
+    in_tail = (
+        ("vel_up", 69, 1),  # body-frame up component of vel / v_max
+        ("res_grad_up", 70, 1),
+        ("chem_grad_up", 71, NCH),
+        ("nbr_dz", 74, NS),  # up offset / R of the NS nearest neighbours
+        ("bond_dz", 77, B),  # up offset / break_length per bond slot
+        ("height", 81, 1),  # z / world.height
+        ("pitch", 82, 1),  # sin(pitch)
+        ("grounded", 83, 1),  # 1 on the floor, else 0
+    )
+    out_tail = (
+        ("pitch", 35, 1),  # pitch change turn_max·tanh(y)
+        ("buoyancy", 36, 1),  # buoyancy fraction max(tanh(y), 0)
+        ("q_bond_dz", 37, 1),  # 7th bond-query component, after OUT_Q_BOND's six
+        ("q_attack_dz", 38, 1),  # 7th attack-query component
+    )
+    at = {name: start for name, start, _ in in_tail}
+    out_at = {name: start for name, start, _ in out_tail}
+    return Layout(
+        nd=3,
+        D_IN=84,
+        D_OUT=39,
+        NF=NF + 1,
+        F=F + 1,
+        INPUT_BLOCKS=INPUT_BLOCKS + in_tail,
+        OUTPUT_BLOCKS=OUTPUT_BLOCKS + out_tail,
+        INPUT_NAMES=(
+            *INPUT_NAMES,
+            "vel_up",
+            "res_grad_up",
+            *(f"chem{c}_grad_up" for c in range(NCH)),
+            *(f"nbr{n}_dz" for n in range(NS)),
+            *(f"bond{b}_dz" for b in range(B)),
+            "height",
+            "pitch",
+            "grounded",
+        ),
+        OUTPUT_NAMES=(*OUTPUT_NAMES, "pitch", "buoyancy", "q_bond_dz", "q_attack_dz"),
+        NBR_FEATURE_NAMES=(*NBR_FEATURE_NAMES, "dz"),
+        NBR_DZ=NF,
+        IN_VEL_UP=at["vel_up"],
+        IN_RES_GRAD_UP=at["res_grad_up"],
+        IN_CHEM_GRAD_UP=at["chem_grad_up"],
+        IN_NBR_DZ=at["nbr_dz"],
+        IN_BOND_DZ=at["bond_dz"],
+        IN_HEIGHT=at["height"],
+        IN_PITCH=at["pitch"],
+        IN_GROUNDED=at["grounded"],
+        OUT_PITCH=out_at["pitch"],
+        OUT_BUOYANCY=out_at["buoyancy"],
+        OUT_Q_BOND_DZ=out_at["q_bond_dz"],
+        OUT_Q_ATTACK_DZ=out_at["q_attack_dz"],
+    )
+
+
+@functools.cache
+def for_dims(nd: int) -> Layout:
+    """The layout of an ``nd``-dimensional world (2 or 3); ``config.dims(cfg).lay`` holds the config's one."""
+    if nd == 2:
+        return _layout_2d()
+    if nd == 3:
+        return _layout_3d()
+    raise ValueError(f"no genome layout for dims = {nd} (2 or 3)")
+
+
+def genome_layout_version(nd: int) -> int:
+    """The genome layout version of an ``nd``-dimensional world, read at call time (tests monkeypatch it)."""
+    if nd == 2:
+        return GENOME_LAYOUT_VERSION
+    if nd == 3:
+        return GENOME_LAYOUT_VERSION_3D
+    raise ValueError(f"no genome layout for dims = {nd} (2 or 3)")

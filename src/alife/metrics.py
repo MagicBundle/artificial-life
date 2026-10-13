@@ -341,9 +341,9 @@ def founder_brain_cost(cfg: Config) -> float:
     d, bc = dims(cfg), cfg.brain
     s1, s2 = bc.init_scale / math.sqrt(d.w1_rows), bc.init_scale / math.sqrt(d.w2_rows)
     l1 = (
-        layout.D_IN * d.h * _mean_abs_clipped_normal(s1, bc.weight_clip)
+        d.lay.D_IN * d.h * _mean_abs_clipped_normal(s1, bc.weight_clip)
         + d.h * d.h * _mean_abs_clipped_normal(s1 * bc.recurrent_scale, bc.weight_clip)
-        + d.w2_rows * layout.D_OUT * _mean_abs_clipped_normal(s2, bc.weight_clip)
+        + d.w2_rows * d.lay.D_OUT * _mean_abs_clipped_normal(s2, bc.weight_clip)
     )
     return cfg.energy.brain_cost_per_l1 * l1
 

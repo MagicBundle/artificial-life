@@ -162,5 +162,5 @@ def build_inputs(
         ],
         axis=1,
     )
-    assert x.shape == (n, layout.D_IN), x.shape  # static shape check, free under compile
+    assert x.shape == (n, d.lay.D_IN), x.shape  # static shape check, free under compile
     return x

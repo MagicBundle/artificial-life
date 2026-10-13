@@ -35,7 +35,8 @@ class LedgerIdx(IntEnum):
     FLOW_CORPSE = 12
     FLOW_ENDOWMENT = 13
     FLOW_STRUCTURE = 14
-    RESERVED = 15
+    RESERVED = 15  # canonical name; always 0 in 2D
+    HEAT_BUOYANCY = 15  # 3D alias of slot 15 (§27.1): not iterated, not in len(); see ledger_names
 
 
 N_LEDGER: Final = len(LedgerIdx)
@@ -47,6 +48,19 @@ SINKS: Final = (
     LedgerIdx.HEAT_BIRTH,
     LedgerIdx.HEAT_OVERFLOW,
 )
+
+
+def sinks(nd: int) -> tuple[LedgerIdx, ...]:
+    """The heat sinks of an ``nd``-dimensional world: ``SINKS``, plus slot 15 (``HEAT_BUOYANCY``) in 3D."""
+    return SINKS + ((LedgerIdx.HEAT_BUOYANCY,) if nd == 3 else ())
+
+
+def ledger_names(nd: int) -> tuple[str, ...]:
+    """Ledger entry names in index order; slot 15 is ``RESERVED`` in 2D and ``HEAT_BUOYANCY`` in 3D.
+
+    Use this rather than ``LedgerIdx.HEAT_BUOYANCY.name``, which is ``RESERVED`` (an alias has no own name).
+    """
+    return tuple("HEAT_BUOYANCY" if nd == 3 and i == LedgerIdx.HEAT_BUOYANCY else i.name for i in LedgerIdx)
 
 
 class CounterIdx(IntEnum):
@@ -264,7 +278,7 @@ def _initial_state(cfg: Config) -> State:
         W2=_pad_rows(w2, n),
         pend_slot=mx.arange(n - m, n, dtype=mx.int32),
         pend_W1=full((m, d.w1_rows, d.h), 0, d.wdtype),
-        pend_W2=full((m, d.w2_rows, layout.D_OUT), 0, d.wdtype),
+        pend_W2=full((m, d.w2_rows, d.lay.D_OUT), 0, d.wdtype),
         resource=resource,
         chem=full((layout.NCH, d.fg, d.fg), 0.0, mx.float32),
         patch_pos=patch_pos,
@@ -287,6 +301,65 @@ def init_state(cfg: Config) -> State:
     s = _initial_state(cfg)
     mx.eval(s)
     return s
+
+
+def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]:
+    """Shape and dtype of every State field under ``cfg``, in canonical order (§2.2, §27.1).
+
+    The one schema: ``load_checkpoint`` and ``full_check`` both compare against it.
+    """
+    d = dims(cfg)
+    n, m, wd = d.n, d.m, d.wdtype
+    i32, i64, f32 = mx.int32, mx.int64, mx.float32
+    return {
+        "alive": ((n,), mx.bool_),
+        "uid": ((n,), i64),
+        "parent_uid": ((n,), i64),
+        "clade": ((n,), i32),
+        "generation": ((n,), i32),
+        "birth_step": ((n,), i32),
+        "energy": ((n,), i32),
+        "pos": ((n, d.nd), f32),
+        "vel": ((n, d.nd), f32),
+        "heading": ((n,), f32),
+        "h": ((n, d.h), f32),
+        "msg": ((n, layout.MSG), f32),
+        "last_loss": ((n,), i32),
+        "last_harvest": ((n,), i32),
+        "last_inflow": ((n,), i32),
+        "partner": ((n, layout.B), i32),
+        "rev": ((n, layout.B), i32),
+        "tag": ((n, layout.T), f32),
+        "mut_sigma": ((n,), f32),
+        "mut_rate": ((n,), f32),
+        "offspring_frac": ((n,), f32),
+        "brain_cost": ((n,), i32),
+        "W1": ((n, d.w1_rows, d.h), wd),
+        "W2": ((n, d.w2_rows, d.lay.D_OUT), wd),
+        "pend_slot": ((m,), i32),
+        "pend_W1": ((m, d.w1_rows, d.h), wd),
+        "pend_W2": ((m, d.w2_rows, d.lay.D_OUT), wd),
+        "resource": (d.field_shape, i32),
+        "chem": ((layout.NCH, *d.field_shape), f32),
+        "patch_pos": ((d.pp, 2), f32),
+        "patch_vel": ((d.pp, 2), f32),
+        "key": ((2,), mx.uint32),
+        "step": ((), i32),
+        "next_uid": ((), i64),
+        "total": ((), i64),
+        "total0": ((), i64),
+        "ledger_cum": ((N_LEDGER,), i64),
+        "diag": ((), i32),
+        "env_regen_mult": ((), f32),
+        "env_season_amp": ((), f32),
+        "env_season_period": ((), i32),
+        "env_drift_mult": ((), f32),
+        "env_patch_gain": ((d.pp,), f32),
+        "env_imm_request": ((), i32),
+        "env_cat_center": ((2,), f32),
+        "env_cat_radius": ((), f32),
+        "env_cat_kill_p": ((), f32),
+    }
 
 
 def total_energy(energy: mx.array, alive: mx.array, resource: mx.array, cfg: Config) -> mx.array:

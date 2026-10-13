@@ -43,7 +43,7 @@ from alife import energy as en
 from alife.actions import Actions
 from alife.analysis import mi
 from alife.analysis.resim import cached_states
-from alife.config import Config
+from alife.config import Config, require_2d
 from alife.rng import Stream, step_keys
 from alife.runio import RunDir
 from alife.spatial import Neighbors
@@ -74,7 +74,11 @@ class Decoded(NamedTuple):
 
 
 def decode(s: State, cfg: Config) -> Decoded:
-    """The actions step ``s → s+1`` takes, by S0–S8 of ``step.step`` (no state change, no RNG advance)."""
+    """The actions step ``s → s+1`` takes, by S0–S8 of ``step.step`` (no state change, no RNG advance).
+
+    It mirrors the 2D step only, so a 3D config is refused (``ConfigError``).
+    """
+    require_2d(cfg, "the signal analysis")
     W1, W2 = lifecycle.flush_pending(s.W1, s.W2, s.pend_slot, s.pend_W1, s.pend_W2)  # S0
     _, ks = step_keys(s.key)  # S1
     a = age(s.step, s.birth_step)
@@ -280,6 +284,7 @@ def analyse(
     """Tables and summaries for ``steps``; see the module docstring."""
     rd = RunDir.open(Path(run))
     cfg = rd.config()
+    require_2d(cfg, "the signal analysis")
     step_fn = make_step(cfg)
     results: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
