@@ -11,7 +11,10 @@ Policy:
       cases.*.dims                                (new Dims fields: nd, d3, lay, ...)
       layout                                      (new layout constants)
       runs.*.config_json                          (new config keys at their 2D defaults)
+      config_hashes                               (new presets; existing preset hashes must still match)
       runs.*.checkpoints.*.metadata.config        (same, embedded in each checkpoint)
+      config_hashes                               (a new preset, e.g. tiny3d of 3D PR 3; every 2D preset's
+                                                   hash stays strict)
   - env (MLX/Python/macOS/device) differences are WARNINGS: digests are only meaningful on the same stack.
   - info, timing and descriptions are ignored.
 """
@@ -30,10 +33,12 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 MATRIX = HERE / "digest_matrix.py"
 SUBSET = (
+    ("config_hashes",),  # new presets (e.g. tiny3d) are additions; existing preset hashes must still match
     ("cases", "*", "dims"),
     ("layout",),
     ("runs", "*", "config_json"),
     ("runs", "*", "checkpoints", "*", "metadata", "config"),
+    ("config_hashes",),
 )
 IGNORED = {"info", "timing", "descriptions"}
 
