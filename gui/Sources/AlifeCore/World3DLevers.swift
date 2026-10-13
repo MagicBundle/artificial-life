@@ -18,7 +18,9 @@ import Foundation
 /// - `mutation.buoy_init` and `mutation.buoy_sigma` are the start and the noise of the evolvable buoyancy cap, and
 ///   the engine requires both to be 0 when `physics.buoyancy_max` is 0. The baseline carries their values
 ///   (`buoyInit`, `buoySigma`; no field edits them) and `setArguments` passes both as 0 whenever the buoyancy lever
-///   is 0, so that switching the actuator off is one edit, not an engine rejection the GUI cannot fix.
+///   is 0, so that switching the actuator off is one edit, not an engine rejection the GUI cannot fix. The other
+///   direction cannot be done from here: a baseline whose actuator is off has them at 0, and switching it on would
+///   leave every cap at 0 (`actuatorErrors(baseline:)` says so).
 package struct World3DLevers: Equatable, Sendable {
     /// `world.dims` of the preset or source run: 3 turns every rule below on, 2 makes the struct inert (nothing is
     /// validated or passed). It is never an input: the preset or the source fixes it, and a fork or resume cannot
@@ -112,6 +114,21 @@ package struct World3DLevers: Equatable, Sendable {
             errors.append("energy.buoyancy_cost and energy.buoyancy_cap_cost must be 0 when physics.buoyancy_max is 0.")
         }
         return errors
+    }
+
+    /// Problems of switching the actuator on that no field of this struct can fix. The cap every agent carries is what
+    /// `physics.buoyancy_max` scales, and it starts at `mutation.buoy_init` and drifts by `mutation.buoy_sigma` per
+    /// birth; the engine requires both to be 0 while the actuator is off, so a baseline with the actuator off has them
+    /// at 0, and nothing here sets them (they are CLI-only). Switching the actuator on from there would be accepted by
+    /// the engine and do nothing: every cap stays 0, so there is never any lift and the costs are never paid. That is an
+    /// error here, so that the run is not wasted; a baseline with the actuator off and a cap to evolve (its `buoy_init`
+    /// or `buoy_sigma` above 0, which only a preset or a run made on the command line can have) can switch it on.
+    package func actuatorErrors(baseline: World3DLevers) -> [String] {
+        guard dims == 3, let wanted = Parse.decimal(buoyancyMax), wanted > 0, Parse.decimal(baseline.buoyancyMax) == 0,
+              Parse.decimal(baseline.buoyInit) == 0, Parse.decimal(baseline.buoySigma) == 0 else { return [] }
+        return ["physics.buoyancy_max cannot be switched on here: the source has mutation.buoy_init and "
+                + "mutation.buoy_sigma at 0, so every agent's buoyancy cap would stay 0 and nothing would lift. "
+                + "Set them with --set on the command line (alife run), or start from a preset with an actuator."]
     }
 
     /// `--set` arguments for the values that differ from `baseline` (compared as numbers, like `Levers`). Nothing

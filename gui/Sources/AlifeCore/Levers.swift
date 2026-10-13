@@ -259,11 +259,14 @@ package struct RunSettings: Equatable {
 
     package var timerDuration: TimeInterval { TimeInterval(timerHours * 3600 + timerMinutes * 60) }
 
-    /// What the 3D levers are diffed against: the preset's values for a new run, the source's for a fork (and a
-    /// resume), which the caller loads into `leverBaseline` from the source's `config.json`.
+    /// What the 3D levers are diffed against: the preset's values for a new run, the source's for a fork, which the
+    /// caller loads into `leverBaseline` from the source's `config.json` (`RunController.loadForkLevers`, in Fork mode
+    /// only: a resume has no levers, so the app leaves `leverBaseline` at the engine defaults there, and a resume's
+    /// dimensions are `RunController.targetRunDims`).
     package var world3DBaseline: World3DLevers { mode == .new ? presetWorld3D : leverBaseline.world3D }
 
-    /// The world's dimensions: the preset's for a new run, the source's for a fork or a resume. Never a lever.
+    /// The world's dimensions: the preset's for a new run, the source's for a fork. Never a lever. Whatever
+    /// `leverBaseline` holds in a resume (the app does not load it there; see `world3DBaseline`).
     package var worldDims: Int { world3DBaseline.dims }
 
     /// Chooses a preset and its 3D values: the 3D levers go back to the preset's, the 2D levers keep their edits.
@@ -320,7 +323,10 @@ package struct RunSettings: Equatable {
                 errors.append("Steps must be a positive integer (or blank).")
             }
         }
-        if mode != .resume { errors += effectiveLevers.validate() }
+        if mode != .resume {
+            errors += effectiveLevers.validate()
+            errors += effectiveLevers.world3D.actuatorErrors(baseline: world3DBaseline)
+        }
         errors += director.validate(context: directorContext)
         if timerEnabled && timerDuration <= 0 { errors.append("Timer duration must be greater than zero.") }
         return errors

@@ -100,11 +100,13 @@ struct SyntheticStream {
     var dims = 3
 
     func preamble() -> [UInt8] {
+        // L = 16 is `fieldGrid` cells of 16 / fieldGrid, and a 3D height is `fieldLayers` of them (§27.11).
+        let cell = 16.0 / Double(fieldGrid)
         let json = """
-        {"protocol":1,"dims":\(dims),"L":16.0,"height":\(dims == 3 ? "12.0" : "0.0"),"N":\(rows),"B":4,"radius":1.0,\
-        "field_cell":4.0,"FG":\(fieldGrid),"FZ":\(fieldLayers),"NCH":3,"color_modes":["tag","energy","clade"],\
-        "color":"tag","fields":false,"field_z":0,"step":0,"run":null,"config_hash":"h","mode":"simulate","every":1,\
-        "source":"preset"}
+        {"protocol":1,"dims":\(dims),"L":16.0,"height":\(dims == 3 ? Double(fieldLayers) * cell : 0.0),"N":\(rows),"B":4,\
+        "radius":1.0,"field_cell":\(cell),"FG":\(fieldGrid),"FZ":\(dims == 3 ? fieldLayers : 1),"NCH":3,\
+        "color_modes":["tag","energy","clade"],"color":"tag","fields":false,"field_z":0,"step":0,"run":null,\
+        "config_hash":"h","mode":"simulate","every":1,"source":"preset"}
         """
         var text = Array(json.utf8)
         while text.count % 4 != 0 { text.append(0x20) }

@@ -6,7 +6,10 @@ import Testing
 /// The command lines of the 2D GUI before the 3D work (the 3D PR 5 package split and `World3DLevers`). The table was
 /// captured from the sources as they were at origin/main e1f718e, before any change to `Levers.swift` or
 /// `DirectorSettings.swift`, by running `argvCases()` against them. A 2D run, fork or resume must keep producing
-/// exactly these arguments: that is what the 3D levers must not disturb.
+/// exactly these arguments: that is what the 3D levers must not disturb. The cases named `real-preset-*` (a preset
+/// chosen through its file in the repository, as the app does) and `engine-*` (a fork or resume of a run whose
+/// config.json is what the engine writes, with `world.dims = 2` and the 3D keys at 0) were added after a review, and
+/// captured from the same sources in the same way.
 @Suite struct ArgvIdentityTests {
     static let expected: [String: [String]] = [
         "new/tiny": ["run", "--preset", "tiny", "--seed", "1", "--out", "runs/t"],
@@ -55,6 +58,29 @@ import Testing
         "resume/live-llm-on": ["resume", "runs/src-live", "--llm-every", "10000"],
         "resume/plain": ["resume", "runs/src-plain"],
         "resume/plain-steps": ["resume", "runs/src-plain", "--steps", "1000"],
+        "new/real-preset-tiny": ["run", "--preset", "tiny", "--seed", "1", "--out", "runs/t"],
+        "new/real-preset-dev": ["run", "--preset", "dev", "--seed", "1", "--out", "runs/t"],
+        "new/real-preset-64k": ["run", "--preset", "64k", "--seed", "1", "--out", "runs/t"],
+        "new/real-preset-256k": ["run", "--preset", "256k", "--seed", "1", "--out", "runs/t"],
+        "new/real-preset-levers-fast-director": ["run", "--preset", "tiny", "--overlay", "fast", "--seed", "1", "--out", "runs/t", "--set", "mutation.rate_min=0.01", "--set", "fields.season_period=5000", "--set", "fields.season_amplitude=0.5", "--director", "live"],
+        "fork/engine-dev-untouched": ["run", "--init-from", "runs/eng-dev", "--out", "runs/child"],
+        "fork/engine-dev-seed-steps": ["run", "--init-from", "runs/eng-dev", "--seed", "3", "--steps", "5000", "--out", "runs/child"],
+        "fork/engine-dev-levers": ["run", "--init-from", "runs/eng-dev", "--out", "runs/child", "--set", "mutation.rate_min=0.002", "--set", "fields.patch_drift=0.01", "--set", "population.immigration_floor=50", "--set", "fields.season_period=100", "--set", "fields.season_amplitude=0.3"],
+        "fork/engine-dev-levers-to-defaults": ["run", "--init-from", "runs/eng-dev", "--out", "runs/child", "--set", "mutation.sigma_min=0.003"],
+        "fork/engine-dev-director-live": ["run", "--init-from", "runs/eng-dev", "--out", "runs/child", "--director", "live"],
+        "fork/engine-tiny-untouched": ["run", "--init-from", "runs/eng-tiny", "--out", "runs/child"],
+        "fork/engine-tiny-director-persona": ["run", "--init-from", "runs/eng-tiny", "--out", "runs/child", "--director", "live", "--persona", "architect", "--goal=diversify"],
+        "fork/engine-live-untouched": ["run", "--init-from", "runs/eng-live", "--out", "runs/child", "--director", "live"],
+        "fork/engine-live-levers-back": ["run", "--init-from", "runs/eng-live", "--out", "runs/child", "--set", "mutation.rate_min=0.001", "--set", "population.immigration_floor=0", "--set", "fields.season_mode=global", "--director", "live"],
+        "fork/engine-live-director-off": ["run", "--init-from", "runs/eng-live", "--out", "runs/child"],
+        "fork/engine-live-persona": ["run", "--init-from", "runs/eng-live", "--out", "runs/child", "--director", "live", "--persona", "gardener", "--set", "director.rule_every=2000"],
+        "resume/engine-dev-untouched": ["resume", "runs/eng-dev"],
+        "resume/engine-dev-steps": ["resume", "runs/eng-dev", "--steps", "2000"],
+        "resume/engine-dev-director-live": ["resume", "runs/eng-dev"],
+        "resume/engine-live-untouched": ["resume", "runs/eng-live"],
+        "resume/engine-live-steps": ["resume", "runs/eng-live", "--steps", "30000"],
+        "resume/engine-live-replay": ["resume", "runs/eng-live", "--director", "replay"],
+        "resume/engine-live-off": ["resume", "runs/eng-live", "--director", "off"],
     ]
 
     @Test func twoDArgumentsAreUnchanged() throws {

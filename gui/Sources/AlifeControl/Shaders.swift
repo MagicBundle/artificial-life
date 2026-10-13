@@ -43,6 +43,9 @@ enum Shaders {
     // The nose of an agent: a small sphere on its forward axis, paler than the body, so the heading shows.
     constant float noseOffset = 0.75;
     constant float noseRadius = 0.5;
+    // A sphere about the agent's centre that holds the body and the nose, in units of the agent radius: the farthest point
+    // of the nose from the centre is noseOffset + noseRadius.
+    constant float boundRadius = 1.25;
 
     float3 unpackColor(uint c) {
         return float3(float((c >> 16) & 255u), float((c >> 8) & 255u), float(c & 255u)) * (1.0 / 255.0);
@@ -82,11 +85,13 @@ enum Shaders {
         float3 viewAxis = cross(scene.up.xyz, scene.right.xyz);
         if (!(dist > 1.5 * radius) || dot(toCenter, viewAxis) <= 0.0) { return out; }
 
-        // The billboard faces the eye, and is as large as the silhouette of the sphere and its nose.
+        // The billboard faces the eye, and is as large as the silhouette of the sphere that holds the body and the nose
+        // (seen from outside it, from the eye at least 1.5 radii away: R / sqrt(1 - R^2 / d^2) at the plane of the centre).
         float3 f = toCenter / dist;
         float3 bx = normalize(cross(f, scene.up.xyz));
         float3 by = cross(bx, f);
-        float extent = 1.4 * radius * rsqrt(max(1.0 - (radius * radius) / (dist * dist), 0.05));
+        float bound = boundRadius * radius;
+        float extent = bound * rsqrt(max(1.0 - (bound * bound) / (dist * dist), 0.05));
         float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
         float3 world = center + (bx * corner.x + by * corner.y) * extent;
 

@@ -31,6 +31,22 @@ private let plainSourceConfig = """
 {"mutation": {"rate_min": 0.001}, "fields": {"patch_drift": 0.005}, "run": {"metrics_every": 100}}
 """
 
+/// A config.json as the engine writes it (`config.save_config`: every section and key, among them `world.dims = 2` and
+/// the 3D keys at their zeros), from `tests/data/gui_config_NAME.json`. Made with `load_config(preset=...,
+/// overrides=...)`: `dev` and `tiny` from the presets, `dev_live` from `dev` with `run.director=live`,
+/// `director.enabled=true`, `director.persona=trickster`, `director.rule_every=1000`, `fields.season_period=5000`,
+/// `fields.season_amplitude=0.5`, `fields.season_mode=per_patch`, `population.immigration_floor=100` and
+/// `mutation.rate_min=0.01`.
+private func engineConfig(_ name: String) throws -> String {
+    try String(contentsOf: Repo.streamData.appendingPathComponent("gui_config_\(name).json"), encoding: .utf8)
+}
+
+/// Chooses a preset the way the app does (`RunController.refreshPresetWorld3D`): its 3D values come from the preset file
+/// in the repository, and a 2D preset has none.
+private func choosePreset(_ s: inout RunSettings, _ preset: Preset) {
+    s.selectPreset(preset, world3D: World3DLevers.preset(preset.rawValue, repo: Repo.root) ?? World3DLevers())
+}
+
 /// The argument lists of the 2D configurations the GUI must keep producing byte for byte.
 func argvCases() throws -> [ArgvCase] {
     var out: [ArgvCase] = []
@@ -54,6 +70,19 @@ func argvCases() throws -> [ArgvCase] {
     add("new/fast", newRun { $0.fast = true; $0.preset = .tiny })
     add("new/blank-seed-steps", newRun { $0.seed = ""; $0.steps = "2000" })
     add("new/steps-padded", newRun { $0.steps = " 750 "; $0.name = " spaced " })
+
+    // New run: the preset chosen as the app chooses it, through the preset file (the 3D values it reads are inert).
+    for p in [Preset.tiny, .dev, .k64, .k256] {
+        add("new/real-preset-\(p.rawValue)", newRun { choosePreset(&$0, p) })
+    }
+    add("new/real-preset-levers-fast-director", newRun {
+        choosePreset(&$0, .tiny)
+        $0.fast = true
+        $0.levers.rateMin = "0.01"
+        $0.levers.seasonPeriod = "5000"
+        $0.levers.seasonAmplitude = "0.5"
+        $0.director.mode = .live
+    })
 
     // New run: levers, one at a time and together.
     add("new/rate_min", newRun { $0.levers.rateMin = "0.01" })
@@ -199,5 +228,45 @@ func argvCases() throws -> [ArgvCase] {
     add("resume/live-llm-on", resume(live) { $0.director.llmOn = true; $0.director.llmEvery = "10000" })
     add("resume/plain", resume(plain))
     add("resume/plain-steps", resume(plain) { $0.steps = "1000" })
+
+    // The same from run directories whose config.json is what the engine writes, not a hand-written excerpt.
+    let engineDev = try makeRun(root, "eng-dev", config: try engineConfig("dev"))
+    let engineTiny = try makeRun(root, "eng-tiny", config: try engineConfig("tiny"))
+    let engineLive = try makeRun(root, "eng-live", config: try engineConfig("dev_live"), director: true)
+    add("fork/engine-dev-untouched", fork(engineDev))
+    add("fork/engine-dev-seed-steps", fork(engineDev) { $0.seed = "3"; $0.steps = "5000" })
+    add("fork/engine-dev-levers", fork(engineDev) {
+        $0.levers.rateMin = "0.002"
+        $0.levers.patchDrift = "0.01"
+        $0.levers.seasonPeriod = "100"
+        $0.levers.seasonAmplitude = "0.3"
+        $0.levers.immigrationFloor = "50"
+    })
+    add("fork/engine-dev-levers-to-defaults", fork(engineDev) {
+        $0.levers.rateMin = "0.001"  // the source's value: nothing to pass
+        $0.levers.sigmaMin = "0.003"
+    })
+    add("fork/engine-dev-director-live", fork(engineDev) { $0.director.mode = .live })
+    add("fork/engine-tiny-untouched", fork(engineTiny))
+    add("fork/engine-tiny-director-persona", fork(engineTiny) {
+        $0.director.mode = .live
+        $0.director.persona = .architect
+        $0.director.goal = "diversify"
+    })
+    add("fork/engine-live-untouched", fork(engineLive))
+    add("fork/engine-live-levers-back", fork(engineLive) {
+        $0.levers.rateMin = "0.001"
+        $0.levers.seasonMode = "global"
+        $0.levers.immigrationFloor = "0"
+    })
+    add("fork/engine-live-director-off", fork(engineLive) { $0.director.mode = .off })
+    add("fork/engine-live-persona", fork(engineLive) { $0.director.persona = .gardener; $0.director.ruleEvery = "2000" })
+    add("resume/engine-dev-untouched", resume(engineDev))
+    add("resume/engine-dev-steps", resume(engineDev) { $0.steps = "2000" })
+    add("resume/engine-dev-director-live", resume(engineDev) { $0.director.mode = .live })
+    add("resume/engine-live-untouched", resume(engineLive))
+    add("resume/engine-live-steps", resume(engineLive) { $0.steps = "30000" })
+    add("resume/engine-live-replay", resume(engineLive) { $0.director.mode = .replay })
+    add("resume/engine-live-off", resume(engineLive) { $0.director.mode = .off })
     return out
 }

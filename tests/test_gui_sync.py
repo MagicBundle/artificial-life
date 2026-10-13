@@ -9,6 +9,7 @@ engine does not have would be rejected at Start (exit 2) or never matched, so ea
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 from pathlib import Path
 
@@ -115,3 +116,38 @@ def test_the_director_enums_match_the_engine() -> None:
     text = sources()["DirectorSettings.swift"]
     assert swift_enum_values(text, "Persona") == set(config.PERSONAS)
     assert swift_enum_values(text, "DirectorMode") == set(config.DIRECTOR_MODES)
+
+
+# The config.json files the Swift argument tests (gui/Tests/AlifeCoreTests/ArgvCases.swift) fork and resume
+# from, and how the engine writes them.
+GUI_CONFIGS = {
+    "dev": {"preset": "dev"},
+    "tiny": {"preset": "tiny"},
+    "dev_live": {
+        "preset": "dev",
+        "overrides": [
+            "run.director=live",
+            "director.enabled=true",
+            "director.persona=trickster",
+            "director.rule_every=1000",
+            "fields.season_period=5000",
+            "fields.season_amplitude=0.5",
+            "fields.season_mode=per_patch",
+            "population.immigration_floor=100",
+            "mutation.rate_min=0.01",
+        ],
+    },
+}
+
+
+def test_the_gui_argument_fixtures_are_what_the_engine_writes() -> None:
+    """tests/data/gui_config_*.json stand for real run directories; a new config key must be in them too.
+
+    If this fails, regenerate the files with
+    `config.save_config(config.load_config(**GUI_CONFIGS[name]), path)`. The Swift argument table does not
+    change with them: a key at its default is not passed.
+    """
+    for name, kwargs in GUI_CONFIGS.items():
+        path = ROOT / "tests" / "data" / f"gui_config_{name}.json"
+        written = config.config_to_dict(config.load_config(**kwargs))
+        assert json.loads(path.read_text(encoding="utf-8")) == json.loads(json.dumps(written)), path.name

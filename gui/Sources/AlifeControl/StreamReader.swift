@@ -65,8 +65,9 @@ final class StreamMailbox: Sendable {
 
 enum StreamReader {
     /// Reads `handle` to end of file on a new thread, decoding what it reads into `mailbox` and yielding to `wake` after
-    /// each chunk that published something and once more when the input ends (then it finishes `wake`). `wake` should
-    /// buffer one element: yields that arrive while the main actor has not yet looked collapse into one.
+    /// each chunk that published something (a header, a frame, the end; a chunk that completes none of them, the middle
+    /// of a frame, wakes nobody) and once more when the input ends (then it finishes `wake`). `wake` should buffer one
+    /// element: yields that arrive while the main actor has not yet looked collapse into one.
     static func start(reading handle: FileHandle, into mailbox: StreamMailbox, wake: AsyncStream<Void>.Continuation,
                       chunkSize: Int = 1 << 18) {
         let thread = Thread {
@@ -104,22 +105,36 @@ enum StreamReader {
             }
             if count == 0 { break }  // end of file: the process closed its stdout, or exited
             if failed { continue }
+            var published = false
             do {
                 for event in try decoder.feed(Data(bytes: buffer.baseAddress!, count: count)) {
                     switch event {
-                    case .header(let header): mailbox.publish(header: header)
-                    case .frame(let frame): mailbox.publish(frame: frame)
+                    case .header(let header):
+                        mailbox.publish(header: header)
+                        published = true
+                    case .frame(let frame):
+                        mailbox.publish(frame: frame)
+                        published = true
                     case .unknownRecord: break  // a record of a later compatible version
                     }
+                }
+                // `feed` returns the events before an error and throws the error from the next call. This chunk may
+                // be the last for a long time (a paused stream, a followed run that has stopped), so publish it now.
+                if let error = decoder.failure {
+                    mailbox.publish(end: .failed(error))
+                    failed = true
+                    published = true
                 }
             } catch let error as StreamError {
                 mailbox.publish(end: .failed(error))
                 failed = true
+                published = true
             } catch {
                 mailbox.publish(end: .unreadable("\(error)"))
                 failed = true
+                published = true
             }
-            wake.yield()
+            if published { wake.yield() }
         }
         if failed { return }
         do {

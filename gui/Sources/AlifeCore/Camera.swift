@@ -13,22 +13,40 @@ import simd
 /// or down (`pitch` = ±π/2) is well defined: there `yaw` spins the picture about the view axis.
 ///
 /// Matrices are right handed with the depth range [0, 1] of Metal's clip space; the eye looks down -z in view space.
+///
+/// The clip planes follow the pose. A camera that knows the world it looks at (`scene`) puts the far plane just behind
+/// the farthest point of the world and the near plane in front of the nearest, wherever the eye is, so that zooming or
+/// flying away never clips the world and the depth buffer's resolution is spent on the world and not on the empty
+/// space around it. A camera without a scene uses the fixed `near` and `far`.
 package struct Camera: Equatable, Sendable {
+    /// The world as a sphere: what the clip planes are fitted to.
+    package struct Scene: Equatable, Sendable {
+        package var center: SIMD3<Float>
+        package var radius: Float
+
+        package init(center: SIMD3<Float>, radius: Float) {
+            self.center = center
+            self.radius = radius
+        }
+    }
+
     package var target: SIMD3<Float>
     package var distance: Float
     package var yaw: Float
     package var pitch: Float
     /// The vertical field of view, in radians.
     package var fovY: Float
+    /// The clip planes of a camera without a `scene`, and the least `near` of one with a scene.
     package var near: Float
     package var far: Float
+    package var scene: Scene?
 
     package static let defaultFovY: Float = 50 * .pi / 180
     package static let maxPitch: Float = .pi / 2
     package static let minDistance: Float = 0.25
 
     package init(target: SIMD3<Float>, distance: Float, yaw: Float, pitch: Float,
-                 fovY: Float = Camera.defaultFovY, near: Float = 0.1, far: Float = 10_000) {
+                 fovY: Float = Camera.defaultFovY, near: Float = 0.1, far: Float = 10_000, scene: Scene? = nil) {
         self.target = target
         self.distance = max(distance, Self.minDistance)
         self.yaw = Self.wrap(yaw)
@@ -36,6 +54,7 @@ package struct Camera: Equatable, Sendable {
         self.fovY = fovY
         self.near = near
         self.far = far
+        self.scene = scene
     }
 
     // MARK: Basis
@@ -66,10 +85,23 @@ package struct Camera: Equatable, Sendable {
             SIMD4(-dot(r, p), -dot(u, p), dot(f, p), 1)))
     }
 
-    /// View to clip: a perspective projection for a viewport of width / height `aspect`, depth [0, 1] from `near` to
-    /// `far`.
+    /// The planes of the projection. With a `scene`: the far plane at the farthest point of the world from the eye, and
+    /// the near plane at a quarter of the distance to the nearest (never nearer than `near`). The depth that the planes
+    /// bound is measured along the view axis, so a point off to the side of a wide view is nearer than its distance to
+    /// the eye, by at most the cosine of the view's half diagonal (0.4 even for a window four times wider than high);
+    /// the sphere impostors, and agents that stick out of the world by their radius, need some room too. A quarter
+    /// keeps all of that in front of the plane. Without a scene: `near` and `far`.
+    package var clipPlanes: (near: Float, far: Float) {
+        guard let scene else { return (near, far) }
+        let toCenter = simd_length(position - scene.center)
+        return (max(near, 0.25 * (toCenter - scene.radius)), toCenter + scene.radius)
+    }
+
+    /// View to clip: a perspective projection for a viewport of width / height `aspect`, depth [0, 1] from the near to the
+    /// far plane (`clipPlanes`).
     package func projectionMatrix(aspect: Float) -> simd_float4x4 {
         let fy = 1 / tan(fovY / 2)
+        let (near, far) = clipPlanes
         let range = near - far
         return simd_float4x4(columns: (
             SIMD4(fy / aspect, 0, 0, 0),
@@ -130,9 +162,10 @@ package struct Camera: Equatable, Sendable {
     package static func overview(size: Float, height: Float, aspect: Float = 1,
                                  fovY: Float = Camera.defaultFovY) -> Camera {
         let radius = 0.5 * (2 * size * size + height * height).squareRoot()
-        return Camera(target: SIMD3(size / 2, size / 2, height / 2),
-                      distance: fitDistance(radius: radius, aspect: aspect, fovY: fovY),
-                      yaw: .pi / 2, pitch: -25 * .pi / 180, fovY: fovY, near: 0.1, far: 8 * max(size, height))
+        let center = SIMD3(size / 2, size / 2, height / 2)
+        return Camera(target: center, distance: fitDistance(radius: radius, aspect: aspect, fovY: fovY),
+                      yaw: .pi / 2, pitch: -25 * .pi / 180, fovY: fovY, near: 0.1, far: 8 * max(size, height),
+                      scene: Scene(center: center, radius: radius * sceneMargin))
     }
 
     /// The 2D world as the 2D renderer's PNGs and the pygame viewer show it: the plane of the world seen face on with
@@ -141,8 +174,10 @@ package struct Camera: Equatable, Sendable {
     /// has z = 0 for every row, so nothing is hidden by the choice.
     package static func topDown(size: Float, aspect: Float = 1, fovY: Float = Camera.defaultFovY) -> Camera {
         let distance = fitDistance(radius: size / 2 * 1.02, aspect: aspect, fovY: fovY, face: true)
-        return Camera(target: SIMD3(size / 2, size / 2, 0), distance: distance, yaw: .pi / 2, pitch: Self.maxPitch,
-                      fovY: fovY, near: 0.1, far: 8 * size)
+        let center = SIMD3(size / 2, size / 2, 0)
+        return Camera(target: center, distance: distance, yaw: .pi / 2, pitch: Self.maxPitch,
+                      fovY: fovY, near: 0.1, far: 8 * size,
+                      scene: Scene(center: center, radius: size / 2 * Float(2).squareRoot() * sceneMargin))
     }
 
     /// The starting pose for a stream: the overview of a 3D world, the face-on view of a 2D one.
@@ -151,6 +186,10 @@ package struct Camera: Equatable, Sendable {
             ? overview(size: Float(header.size), height: Float(header.height), aspect: aspect)
             : topDown(size: Float(header.size), aspect: aspect)
     }
+
+    /// The bounding sphere of a world, as the clip planes see it, is this much larger than the sphere through its corners
+    /// (agents lie at most their radius outside the box, and a billboard is wider than its sphere).
+    private static let sceneMargin: Float = 1.05
 
     /// The distance at which a sphere of `radius` fits the smaller field of view (or, for `face`, a flat square of
     /// half-side `radius` fills it).

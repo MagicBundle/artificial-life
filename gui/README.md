@@ -163,8 +163,9 @@ floor and surface, and optionally a slice of the resource and chemical fields at
 (x to the right, y down, as the 2D images). The window has two sources, switched at the top:
 
 - **Follow run** shows the newest checkpoint of the run, as the run (and its director) made it. It is the faithful view
-  of a director run, and the default for the run in progress. The first checkpoint appears after `run.checkpoint_every`
-  steps; until then the stream stops with "no usable checkpoint" and Open 3D viewer can be pressed again.
+  of a director run, and the default for the run in progress. A run writes a checkpoint as it starts and then every
+  `run.checkpoint_every` steps, so the first picture comes at once; opened in the moments before that checkpoint exists,
+  the stream stops with "no usable checkpoint" and Open 3D viewer can be pressed again.
 - **Re-simulate** steps the latest checkpoint again in a separate process. It **ignores the director**, so a director run
   diverges from it after its first intervention (the window says so), and it shares the GPU with a running simulation.
   The default for a run that is not running.
@@ -185,8 +186,9 @@ Mouse: left drag orbits (or looks, when flying); right drag, middle drag or Opti
 a pinch zoom. Arrow keys orbit and dolly, or fly (Shift: faster; Page Up and Page Down: up and down).
 
 The window starts `alife stream` as a process of its own and stops it when it closes or the app quits (a `quit` line, then
-one SIGTERM if the process is still there after two seconds); closing the main window closes it too. The stream's
-messages go to the log as `[3d] ...`. The drawing is on demand, so the GPU is idle while nothing changes. The shaders are
+one SIGTERM if the process is still there after two seconds); closing the last main window closes it too, and quitting
+the app ends every stream process at once. The stream's messages go to the log as `[3d] ...`. The drawing is on demand,
+so the GPU is idle while nothing changes. The shaders are
 compiled when the first stream is shown (an idle window creates no Metal device); if that fails, the window shows the
 compiler's message.
 
@@ -200,14 +202,15 @@ Testing), **`AlifeCoreTests`** for the library and **`AlifeControlTests`** for t
 `Sources/AlifeCore/`:
 - `Levers.swift`: run settings, levers, validation and command-line construction
 - `World3DLevers.swift`: the 3D world's levers (height, gravity, buoyancy, the vertical food profile); a new run diffs them
-  against the preset's values, a fork against its source's, so the 2D command lines do not change
+  against the preset's values, a fork against its source's, so the 2D command lines do not change; switching the buoyancy
+  actuator on from a baseline without one is refused (its cap keys are command-line only, and both 0 there)
 - `PresetFile.swift`: the scalar (integer and number) settings of a preset file `src/alife/presets/NAME.toml`
 - `DirectorSettings.swift`: the director's settings, baselines from `config.json`, validation, argument construction
   and the `alife llm-check` runner (pure logic apart from that runner)
 - `MetricsTailer.swift`: reads the last row of `metrics.jsonl`
 - `StreamProtocol.swift`: the incremental decoder of the `alife stream` binary protocol (DESIGN §27.11)
 - `StreamControl.swift`: the encoder of the control lines written to the stream's stdin
-- `Camera.swift`: the orbit and fly camera (view and projection matrices)
+- `Camera.swift`: the orbit and fly camera (view and projection matrices; the clip planes follow the pose)
 
 `Sources/AlifeControl/`:
 - `AlifeControlApp.swift`: app entry point and app delegate (ignores SIGPIPE), the main window and the 3D Viewer window
@@ -217,14 +220,15 @@ Testing), **`AlifeCoreTests`** for the library and **`AlifeControlTests`** for t
 - `DirectorPanel.swift`: the Director settings box and the Interventions / Journal views
 - `DirectorTailer.swift`: tails `director.jsonl` and `journal.jsonl` (last 256 KiB) into interventions and journal rows
 - `StreamReader.swift`: the thread that drains the stream's stdout into the decoder, and the mailbox it leaves the newest
-  frame in
+  frame in (it wakes the main actor only for a header, a frame or the end, and publishes a decoder error at once)
 - `StreamController.swift`: the `alife stream` process: pipes, control lines, stopping, the end of a stream
 - `Shaders.swift`: the Metal shaders as a string (compiled at run time; no resource bundle is needed)
-- `Renderer.swift`: the Metal drawing (buffers, pipelines, offscreen rendering for snapshots) and the PNG writer
+- `Renderer.swift`: the Metal drawing (buffers, pipelines, offscreen rendering for snapshots), the PNG writer, and
+  `DrawGate`, the ring of buffer sets and the two semaphores that keep a draw from waiting for the GPU
 - `ViewerMTKView.swift`, `ViewerModel.swift`, `Viewer3DView.swift`: the mouse and keys, the display options and
   snapshot, and the window's controls
 - `ViewerSupport.swift`: the pure parts (keys, speed, pointer-to-camera mapping, the stream's arguments)
-- `WindowCloseObserver.swift`: runs an action when a window closes
+- `WindowCloseObserver.swift`: runs an action when a window closes (or when the last of a group of windows does)
 
 Also `scripts/make-app.sh` and `scripts/make-icon.swift` (app bundle, signing, install and the generated icon).
 
@@ -242,11 +246,14 @@ arguments byte for byte), the 3D lever rules, the preset reader, the stream deco
 `tests/data/stream_tiny_{2d,3d}.bin` against the sidecars written by the independent Python decoder, any chunking of
 the input, every refusal), the control-line encoder, the camera, the reader thread on a real pipe, the stream process
 (launch, control lines, stopping once, exit status, a corrupt stream, replacement) against the stand-in, the keys and
-pointer mapping, and the shader source's structure. `tests/test_gui_sync.py` (Python, in the engine's suite) checks that
-every `--set` key and preset name in the Swift sources exists in the engine's `Config`.
+pointer mapping, the draw gate, and the shader source's structure. The 2D command lines include forks and resumes of runs
+whose `config.json` is what the engine writes (`tests/data/gui_config_*.json`). `tests/test_gui_sync.py` (Python, in the
+engine's suite) checks that every `--set` key and preset name in the Swift sources exists in the engine's `Config`, and
+that those three files are still what `load_config` gives.
 
 The GPU tests are opt in, because they create a Metal device, compile the shaders and render the stream fixtures
-offscreen (PNGs go to a temporary directory, printed, or `$ALIFE_GPU_TESTS_OUT`):
+offscreen and compare the pixels around the agents with a CPU port of the sphere shader (PNGs go to a temporary
+directory, printed, or `$ALIFE_GPU_TESTS_OUT`):
 
 ```bash
 cd gui

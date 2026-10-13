@@ -1,4 +1,5 @@
 import AlifeCore
+import AppKit
 import Foundation
 import ImageIO
 import Testing
@@ -192,6 +193,19 @@ import simd
         }
     }
 
+    @Test func theBillboardHoldsTheBodyAndTheNose() {
+        func constant(_ name: String) -> Float? {
+            Shaders.source.firstMatch(of: try! Regex("constant float \(name) = ([0-9.]+);"))
+                .flatMap { $0.output[1].substring }.flatMap { Float($0) }
+        }
+        let (offset, nose, bound) = (constant("noseOffset"), constant("noseRadius"), constant("boundRadius"))
+        #expect(offset == 0.75 && nose == 0.5)
+        #expect(bound == (offset ?? 0) + (nose ?? 0), "the bounding sphere reaches the far side of the nose")
+        // The billboard is that sphere's silhouette, `R / sqrt(1 - R^2 / d^2)`, from the eye at least 1.5 radii away.
+        #expect(Shaders.source.contains("float bound = boundRadius * radius;"))
+        #expect(Shaders.source.contains("float extent = bound * rsqrt(max(1.0 - (bound * bound) / (dist * dist), 0.05));"))
+    }
+
     @Test func theShaderStructsMirrorTheSwiftOnes() {
         // The field names and order of `Scene` as the shader declares them, against SceneUniforms' own.
         let scene = Shaders.source.matches(of: #/struct Scene \{([^}]*)\};/#).first.map { String($0.1) } ?? ""
@@ -205,6 +219,15 @@ import simd
         let withField3 = try #require(world3.frames.first { $0.hasField })
         let withoutField3 = try #require(world3.frames.first { !$0.hasField })
         let layer = try #require(withField3.fieldLayer)
+        // The fixture also carries a slice at a layer above the first (layer 5 of 6: z = 5.5 cells = 22), which a formula
+        // that ignored the layer would put at 2.
+        let upper = try #require(world3.frames.last { $0.hasField })
+        let upperLayer = try #require(upper.fieldLayer)
+        #expect(upperLayer > layer)
+        let cell = Float(world3.header.fieldCell)
+        let upperPlane = Renderer.planes(header: world3.header, frame: upper, display: ViewerDisplay()).last
+        #expect(upperPlane?.textured == true && upperPlane?.z == (Float(upperLayer) + 0.5) * cell)
+        #expect(upperPlane?.z != (Float(layer) + 0.5) * cell)
         let all = ViewerDisplay()
         var bare = ViewerDisplay()
         bare.frame = false
@@ -225,6 +248,87 @@ import simd
         #expect(flat.count == 1 && flat[0].textured && flat[0].z == 0 && flat[0].color.w == 1)
         let noField2 = try #require(world2.frames.first { !$0.hasField })
         #expect(Renderer.planes(header: world2.header, frame: noField2, display: all).isEmpty)
+    }
+}
+
+@Suite struct DrawGateTests {
+    private let now = DispatchTimeInterval.milliseconds(0)
+
+    @Test @MainActor func aDrawThatFailsBeforeTheCommitLeavesTheRingWhereItWas() throws {
+        let gate = DrawGate(slotCount: 3, windowDraws: 2)
+        let a = try #require(gate.acquire(intoWindow: false, patience: now))
+        #expect(a.slot == 0)
+        gate.commit(a)
+        let b = try #require(gate.acquire(intoWindow: false, patience: now))
+        #expect(b.slot == 1)
+        gate.commit(b)
+        let c = try #require(gate.acquire(intoWindow: false, patience: now))
+        #expect(c.slot == 2)
+        gate.release(c)  // the encoder, or the upload, failed: set 2 was never used
+        // The next draw uses the same set. Moving the ring on at the acquisition would have given it set 0, which draw
+        // `a` may still be reading.
+        let d = try #require(gate.acquire(intoWindow: false, patience: now))
+        #expect(d.slot == 2)
+        gate.commit(d)
+        #expect(gate.acquire(intoWindow: false, patience: now) == nil, "three draws are in flight")
+        a.giveBack()
+        let e = try #require(gate.acquire(intoWindow: false, patience: now))
+        #expect(e.slot == 0, "the oldest draw has finished, and its set is next")
+        // A semaphore must be back at its starting value when it goes away.
+        for ticket in [b, d, e] { ticket.giveBack() }
+    }
+
+    @Test @MainActor func twoDrawsIntoTheWindowAtMostLeaveADrawableForTheScreen() throws {
+        // Three sets but two drawables for drawing: a third draw into the window would wait for one in `nextDrawable()`.
+        let gate = DrawGate(slotCount: 3, windowDraws: 2)
+        let first = try #require(gate.acquire(intoWindow: true, patience: now))
+        let second = try #require(gate.acquire(intoWindow: true, patience: now))
+        #expect(gate.acquire(intoWindow: true, patience: now) == nil)
+        // A snapshot needs no drawable.
+        let snapshot = try #require(gate.acquire(intoWindow: false, patience: now))
+        #expect(Set([first.slot, second.slot, snapshot.slot]).count == 1, "none was committed: the same set")
+        first.giveBack()
+        let third = try #require(gate.acquire(intoWindow: true, patience: now))
+        for ticket in [second, snapshot, third] { ticket.giveBack() }
+    }
+
+    @Test @MainActor func aDrawThatFindsNoSetGivesBackItsPlace() throws {
+        let gate = DrawGate(slotCount: 2, windowDraws: 2)
+        let snapshot = try #require(gate.acquire(intoWindow: false, patience: now))
+        gate.commit(snapshot)
+        let first = try #require(gate.acquire(intoWindow: true, patience: now))
+        gate.commit(first)
+        // Both sets are taken: this draw took a place and found no set, and must not keep the place.
+        #expect(gate.acquire(intoWindow: true, patience: now) == nil)
+        snapshot.giveBack()
+        let second = try #require(gate.acquire(intoWindow: true, patience: now), "its place was given back")
+        for ticket in [first, second] { ticket.giveBack() }
+    }
+}
+
+@Suite struct WindowGroupTests {
+    @Test @MainActor func windowsOfAGroupAreCountedTogether() {
+        let groups = WindowGroups()
+        let (first, second, viewer) = (NSObject(), NSObject(), NSObject())
+        groups.add(first, to: "main")
+        groups.add(second, to: "main")
+        groups.add(first, to: "main")  // a second registration of a window changes nothing
+        groups.add(viewer, to: "viewer")
+        #expect(groups.remove(first, from: "main") == 1, "another main window is still open")
+        #expect(groups.remove(first, from: "main") == 1)
+        #expect(groups.remove(second, from: "main") == 0, "the last one")
+        #expect(groups.remove(viewer, from: "viewer") == 0)
+        #expect(groups.remove(viewer, from: "unknown") == 0)
+    }
+
+    @Test @MainActor func aWindowThatIsGoneIsNotCounted() {
+        let groups = WindowGroups()
+        let kept = NSObject()
+        var gone: NSObject? = NSObject()
+        groups.add(kept, to: "main")
+        groups.add(gone!, to: "main")
+        gone = nil
+        #expect(groups.remove(kept, from: "main") == 0, "a window that was released without a close is not another window")
     }
 }
 

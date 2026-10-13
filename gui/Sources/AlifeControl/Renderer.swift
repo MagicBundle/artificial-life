@@ -57,6 +57,66 @@ struct OffscreenImage: Sendable, Equatable {
     }
 }
 
+// MARK: - Draw gate
+
+/// Which buffer set the next draw uses, and who may draw: the ring of `slotCount` sets, a semaphore that lets that many
+/// draws be in flight, and a second one that lets `windowDraws` of them go into the window (see `Renderer`).
+///
+/// The ring moves on only when a draw has been committed (`commit`). A draw that fails before that has used no set, so
+/// it gives its ticket back (`release`) and the next one uses the same set: moving the ring on before the commit would
+/// let the ring and the semaphore drift apart, until a draw wrote a set the GPU was still reading.
+@MainActor
+final class DrawGate {
+    /// The right to one draw with the buffer set `slot`. `giveBack` is what the GPU's completion handler calls.
+    struct Ticket: Sendable {
+        let slot: Int
+        let giveBack: GiveBack
+    }
+
+    /// Returns a ticket's permissions; safe to call from any thread, once.
+    struct GiveBack: Sendable {
+        let sets: DispatchSemaphore
+        let window: DispatchSemaphore?
+
+        func callAsFunction() {
+            sets.signal()
+            window?.signal()
+        }
+    }
+
+    let slotCount: Int
+    private let sets: DispatchSemaphore
+    private let window: DispatchSemaphore
+    private(set) var next = 0
+
+    init(slotCount: Int, windowDraws: Int) {
+        self.slotCount = slotCount
+        sets = DispatchSemaphore(value: slotCount)
+        window = DispatchSemaphore(value: windowDraws)
+    }
+
+    /// A ticket if a buffer set (and for a draw into the window, a place for its drawable) is free within `patience`; nil
+    /// if not, and then nothing was taken. A draw into the window never waits for the place.
+    func acquire(intoWindow: Bool, patience: DispatchTimeInterval) -> Ticket? {
+        if intoWindow, window.wait(timeout: .now()) != .success { return nil }
+        guard sets.wait(timeout: .now() + patience) == .success else {
+            if intoWindow { window.signal() }
+            return nil
+        }
+        return Ticket(slot: next, giveBack: GiveBack(sets: sets, window: intoWindow ? window : nil))
+    }
+
+    /// The draw of `ticket` is committed: the GPU has it, and it gives the ticket back when it has finished.
+    func commit(_ ticket: Ticket) {
+        next = (ticket.slot + 1) % slotCount
+    }
+
+    /// The draw of `ticket` failed before it was committed.
+    func release(_ ticket: Ticket) {
+        ticket.giveBack()
+    }
+}
+
 // MARK: - Renderer
 
 /// Draws the stream's frames with Metal: instanced sphere impostors for the agents (with a nose for the heading), bond
@@ -67,6 +127,12 @@ struct OffscreenImage: Sendable, Equatable {
 /// or the window changes. The frame's arrays are copied into one of three shared buffer sets and a semaphore lets at
 /// most three draws be in flight, so the CPU never writes a set the GPU is still reading. A set remembers which frame it
 /// holds, so redrawing the same frame from another angle copies nothing once all three have it.
+///
+/// A draw into the window takes its buffer set first and its drawable second. `CAMetalLayer` has three drawables, one of
+/// which is on screen, so a second semaphore lets two draws into the window be in flight; the third would wait inside
+/// `nextDrawable()` (for up to a second, on the main thread) for the GPU to finish one of them. A draw into the window
+/// never waits for either semaphore: one that finds no free set or drawable is tried again shortly. (A snapshot, which
+/// the user asked for, waits for a set for up to 10 s.)
 @MainActor
 final class Renderer: NSObject, MTKViewDelegate {
     enum Failure: Error, CustomStringConvertible {
@@ -94,6 +160,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     static let slotCount = 3
+    /// Draws into the window in flight at once: one fewer than the layer's three drawables (its
+    /// `maximumDrawableCount` defaults to 3 and `MTKView` leaves it), because the one on screen is not available.
+    static let drawablesInFlight = 2
     static let colorFormat = MTLPixelFormat.bgra8Unorm
     static let depthFormat = MTLPixelFormat.depth32Float
     static let background = MTLClearColor(red: 0.035, green: 0.04, blue: 0.055, alpha: 1)
@@ -110,8 +179,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let overlayDepth: any MTLDepthStencilState
 
     private var slots: [Slot]
-    private var nextSlot = 0
-    private let inFlight = DispatchSemaphore(value: Renderer.slotCount)
+    private let gate = DrawGate(slotCount: Renderer.slotCount, windowDraws: Renderer.drawablesInFlight)
 
     /// The view; edited by the controls, then the owner asks the view to redraw. While it is still the home pose, a
     /// resize of the window fits the world to the new shape again (`cameraIsHome`).
@@ -241,17 +309,26 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     func draw(in view: MTKView) {
-        guard let descriptor = view.currentRenderPassDescriptor, let drawable = view.currentDrawable else { return }
+        let size = view.drawableSize
+        guard size.width >= 1, size.height >= 1 else { return }  // nothing to draw into
+        // The ticket comes before the drawable: asking the layer for a drawable blocks (up to a second) when the GPU is
+        // behind, and the main thread never waits for the GPU. No ticket: draw again shortly.
+        guard let ticket = gate.acquire(intoWindow: true, patience: .milliseconds(0)) else {
+            retryLater(view)
+            return
+        }
+        guard let descriptor = view.currentRenderPassDescriptor, let drawable = view.currentDrawable else {
+            gate.release(ticket)
+            retryLater(view, limit: Self.retryLimit)  // no drawable to draw into; a few more tries, then wait for a cue
+            return
+        }
+        retries = 0
         descriptor.colorAttachments[0].loadAction = .clear
         descriptor.colorAttachments[0].clearColor = Self.background
         descriptor.depthAttachment.loadAction = .clear
         descriptor.depthAttachment.clearDepth = 1
         do {
-            // Never wait for the GPU on the main thread: if three draws are still in flight (a simulation is using the
-            // GPU), draw again shortly.
-            let submitted = try submit(descriptor: descriptor, size: view.drawableSize, drawable: drawable,
-                                       patience: .milliseconds(0), waitUntilCompleted: false)
-            if !submitted { retryLater(view) }
+            try submit(ticket, descriptor: descriptor, size: size, drawable: drawable, waitUntilCompleted: false)
         } catch {
             let message = "\(error)"
             if message != lastFailure {
@@ -262,9 +339,18 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     private var retryPending = false
+    /// Consecutive redraws that found no drawable.
+    private var retries = 0
+    private static let retryLimit = 20
 
-    private func retryLater(_ view: MTKView) {
+    /// Draws again in 100 ms (`limit` times in a row at most, when the cause is not the GPU being busy: a layer that
+    /// has no drawable to give does not get one by being asked every 100 ms for ever).
+    private func retryLater(_ view: MTKView, limit: Int? = nil) {
         guard !retryPending else { return }
+        if let limit {
+            retries += 1
+            guard retries <= limit else { return }
+        }
         retryPending = true
         Task { [weak self, weak view] in
             try? await Task.sleep(for: .milliseconds(100))
@@ -299,10 +385,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         descriptor.depthAttachment.loadAction = .clear
         descriptor.depthAttachment.storeAction = .dontCare
         descriptor.depthAttachment.clearDepth = 1
-        guard try submit(descriptor: descriptor, size: CGSize(width: width, height: height), drawable: nil,
-                         patience: .seconds(10), waitUntilCompleted: true) else {
-            throw Failure.busy
-        }
+        guard let ticket = gate.acquire(intoWindow: false, patience: .seconds(10)) else { throw Failure.busy }
+        try submit(ticket, descriptor: descriptor, size: CGSize(width: width, height: height), drawable: nil,
+                   waitUntilCompleted: true)
         var bytes = [UInt8](repeating: 0, count: 4 * width * height)
         bytes.withUnsafeMutableBytes {
             colorTexture.getBytes($0.baseAddress!, bytesPerRow: 4 * width,
@@ -313,37 +398,36 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // MARK: Drawing
 
-    /// Encodes and commits one draw into `descriptor`. Returns false if every buffer set stayed busy for `patience` (the
-    /// GPU is behind, as when a simulation is using it): nothing was drawn.
-    @discardableResult
-    private func submit(descriptor: MTLRenderPassDescriptor, size: CGSize, drawable: (any MTLDrawable)?,
-                        patience: DispatchTimeInterval, waitUntilCompleted: Bool) throws -> Bool {
-        guard size.width >= 1, size.height >= 1 else { return true }  // nothing to draw into
-        guard inFlight.wait(timeout: .now() + patience) == .success else { return false }
-        let slot = slots[nextSlot]
-        nextSlot = (nextSlot + 1) % Self.slotCount
-        guard let commands = queue.makeCommandBuffer(),
-              let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) else {
-            inFlight.signal()
+    /// Encodes and commits one draw into `descriptor`, with the buffer set of `ticket`, which goes back to the gate when
+    /// the GPU has finished (at once, if this throws).
+    private func submit(_ ticket: DrawGate.Ticket, descriptor: MTLRenderPassDescriptor, size: CGSize,
+                        drawable: (any MTLDrawable)?, waitUntilCompleted: Bool) throws {
+        let slot = slots[ticket.slot]
+        guard let commands = queue.makeCommandBuffer() else {
+            gate.release(ticket)
             throw Failure.encoding
         }
+        // The CPU writes the set before the encoder exists: the GPU has not been told about this draw yet.
         if let header, let frame {
             do {
                 try refresh(slot, from: frame, header: header)
             } catch {
-                encoder.endEncoding()
-                inFlight.signal()
+                gate.release(ticket)
                 throw error
             }
+        }
+        guard let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) else {
+            gate.release(ticket)
+            throw Failure.encoding
         }
         encode(into: encoder, slot: slot, size: size)
         encoder.endEncoding()
         if let drawable { commands.present(drawable) }
-        let semaphore = inFlight
-        commands.addCompletedHandler { _ in semaphore.signal() }
+        let giveBack = ticket.giveBack
+        commands.addCompletedHandler { _ in giveBack() }
         commands.commit()
+        gate.commit(ticket)
         if waitUntilCompleted { commands.waitUntilCompleted() }
-        return true
     }
 
     private func uniforms(header: StreamHeader, size: CGSize) -> SceneUniforms {

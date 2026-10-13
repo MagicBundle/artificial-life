@@ -49,6 +49,33 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
     /// `"run"`, `"file"` or `"preset"`.
     package var source: String
 
+    /// Decodes every key explicitly. The synthesized decoder reads an optional property with `decodeIfPresent`, which
+    /// would let the `run` key be absent; the protocol says it is a string or null and always present.
+    package init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        protocolVersion = try c.decode(Int.self, forKey: .protocolVersion)
+        dims = try c.decode(Int.self, forKey: .dims)
+        size = try c.decode(Double.self, forKey: .size)
+        height = try c.decode(Double.self, forKey: .height)
+        capacity = try c.decode(Int.self, forKey: .capacity)
+        bondSlots = try c.decode(Int.self, forKey: .bondSlots)
+        radius = try c.decode(Double.self, forKey: .radius)
+        fieldCell = try c.decode(Double.self, forKey: .fieldCell)
+        fieldGrid = try c.decode(Int.self, forKey: .fieldGrid)
+        fieldLayers = try c.decode(Int.self, forKey: .fieldLayers)
+        channels = try c.decode(Int.self, forKey: .channels)
+        colorModes = try c.decode([String].self, forKey: .colorModes)
+        color = try c.decode(String.self, forKey: .color)
+        fields = try c.decode(Bool.self, forKey: .fields)
+        fieldZ = try c.decode(Int.self, forKey: .fieldZ)
+        step = try c.decode(Int.self, forKey: .step)
+        run = try c.decode(String?.self, forKey: .run)  // throws keyNotFound when absent, nil for null
+        configHash = try c.decode(String.self, forKey: .configHash)
+        mode = try c.decode(String.self, forKey: .mode)
+        every = try c.decode(Int.self, forKey: .every)
+        source = try c.decode(String.self, forKey: .source)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case dims
@@ -78,7 +105,10 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
     static let maxCapacity = 1 << 22
     static let maxFieldGrid = 1 << 10
 
-    /// Refuses a header whose values cannot describe a stream (`magicVersion` is the preamble's last byte).
+    /// Refuses a header whose values cannot describe a stream (`magicVersion` is the preamble's last byte): a value out of
+    /// its range, or one that breaks a relation §27.11 states (`FG = L / field_cell`, `FZ = height / field_cell` and
+    /// `height = 0` in 2D, the initial view inside the header's own colour modes and field layers, `mode` and `source`
+    /// among the values of version 1). The viewer copies the initial view into its state, so it must be one it can show.
     func validate(magicVersion: Int) throws {
         func bad(_ why: String) -> StreamError { .malformedHeader(why) }
         guard protocolVersion == magicVersion else {
@@ -86,14 +116,37 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
         }
         guard dims == 2 || dims == 3 else { throw bad("dims \(dims) is not 2 or 3") }
         guard size.isFinite, size > 0, height.isFinite, height >= 0 else { throw bad("L or height is not a size") }
+        guard radius.isFinite, radius > 0 else { throw bad("radius \(radius) is not a positive number") }
+        guard fieldCell.isFinite, fieldCell > 0 else { throw bad("field_cell \(fieldCell) is not a positive number") }
         guard (1...Self.maxCapacity).contains(capacity) else { throw bad("N \(capacity) is outside [1, 2^22]") }
         guard (1...64).contains(bondSlots) else { throw bad("B \(bondSlots) is outside [1, 64]") }
         guard (1...Self.maxFieldGrid).contains(fieldGrid), (1...Self.maxFieldGrid).contains(fieldLayers) else {
             throw bad("FG \(fieldGrid) or FZ \(fieldLayers) is outside [1, 1024]")
         }
+        guard Self.agrees(Double(fieldGrid) * fieldCell, size) else {
+            throw bad("FG \(fieldGrid) cells of \(fieldCell) do not make L = \(size)")
+        }
+        if dims == 2 {
+            guard height == 0, fieldLayers == 1 else {
+                throw bad("a 2D stream has height 0 and FZ 1, not \(height) and \(fieldLayers)")
+            }
+        } else {
+            guard height > 0, Self.agrees(Double(fieldLayers) * fieldCell, height) else {
+                throw bad("FZ \(fieldLayers) layers of \(fieldCell) do not make height \(height)")
+            }
+        }
         guard !colorModes.isEmpty else { throw bad("color_modes is empty") }
+        guard colorModes.contains(color) else { throw bad("color \"\(color)\" is not one of color_modes") }
+        guard (0..<fieldLayers).contains(fieldZ) else { throw bad("field_z \(fieldZ) is outside [0, \(fieldLayers))") }
         guard every >= 0 else { throw bad("every \(every) is negative") }
+        guard mode == "simulate" || mode == "follow" else { throw bad("mode \"\(mode)\" is not simulate or follow") }
+        guard ["run", "file", "preset"].contains(source) else {
+            throw bad("source \"\(source)\" is not run, file or preset")
+        }
     }
+
+    /// Whether two sizes written by the engine as binary64 agree, allowing for the rounding of a product.
+    private static func agrees(_ a: Double, _ b: Double) -> Bool { abs(a - b) <= 1e-6 * max(abs(b), 1) }
 
     /// The name of the colour mode `frame` carries, or nil for an index outside `colorModes`.
     package func colorMode(of frame: StreamFrame) -> String? {
@@ -243,7 +296,9 @@ package struct FrameDecoder: Sendable {
     private var head = 0
     /// An unknown record being skipped: its tag, declared length and the bytes still to drop.
     private var skipping: (tag: String, length: Int, remaining: Int)?
-    private var failure: StreamError?
+    /// The error that ended the stream, from the `feed` that met it on. `feed` reports the events before the error and
+    /// throws the error from the next call, so a caller that must act on it at once reads it here after each `feed`.
+    package private(set) var failure: StreamError?
     /// The header, once it has been decoded.
     package private(set) var header: StreamHeader?
 

@@ -37,9 +37,10 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
         }
         .padding(16)
-        // The main window is the app: when it closes the 3D viewer window goes with it, so that the app quits as it did
-        // when this was the only window (`applicationShouldTerminateAfterLastWindowClosed`).
-        .background(WindowCloseObserver { dismissWindow(id: "viewer3d") })
+        // The main window is the app: when the last one closes the 3D viewer window goes with it, so that the app quits as
+        // it did when this was the only window (`applicationShouldTerminateAfterLastWindowClosed`). Another main window
+        // (File > New Window) keeps the app and the viewer.
+        .background(WindowCloseObserver(group: "main") { dismissWindow(id: "viewer3d") })
     }
 
     // MARK: Repository
@@ -257,7 +258,7 @@ struct ContentView: View {
                 lever("Gravity", key: "physics.gravity", text: w3.gravity,
                       help: "Downward force on every agent, below the climb rate of full thrust. 0 = none.")
                 lever("Buoyancy max", key: "physics.buoyancy_max", text: w3.buoyancyMax,
-                      help: "Upward force at the full evolvable buoyancy cap. 0 = no actuator; then both costs below must be 0.")
+                      help: "Upward force at the full evolvable buoyancy cap. 0 = no actuator; then both costs below must be 0. Switching it on needs a source whose cap can evolve (mutation.buoy_init or buoy_sigma above 0).")
                 lever("Buoyancy cost", key: "energy.buoyancy_cost", text: w3.buoyancyCost,
                       help: "Energy quanta per step at full lift, scaled by the square of the lift.")
                 lever("Buoyancy cap cost", key: "energy.buoyancy_cap_cost", text: w3.buoyancyCapCost,
@@ -462,7 +463,7 @@ struct ContentView: View {
     private var viewer3DHelp: String {
         guard let source = controller.viewer3DSource else { return "Choose an existing run to view." }
         if source.follow {
-            return "Opens the 3D viewer on the run in progress, following its newest checkpoints (the faithful view of a director run). The first checkpoint appears after run.checkpoint_every steps."
+            return "Opens the 3D viewer on the run in progress, following its newest checkpoints (the faithful view of a director run). A run writes a checkpoint as it starts and then every run.checkpoint_every steps."
         }
         return "Opens the 3D viewer on the run's latest checkpoint and steps it again in a separate process. That ignores the director, and shares the GPU with a running simulation. Works for 2D runs too."
     }

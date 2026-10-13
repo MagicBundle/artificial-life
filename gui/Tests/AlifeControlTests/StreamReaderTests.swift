@@ -1,6 +1,7 @@
 import AlifeCore
 import Foundation
 import Testing
+import os
 
 @testable import AlifeControl
 
@@ -84,6 +85,88 @@ import Testing
         let (delivery, _) = await read([])
         guard case .failed(.truncated)? = delivery.end else {
             Issue.record("expected a truncation, got \(String(describing: delivery.end))")
+            return
+        }
+    }
+
+    // MARK: Wake-ups and early errors
+
+    private func u32(_ bytes: [UInt8], _ offset: Int) -> Int {
+        (0..<4).reduce(0) { $0 | Int(bytes[offset + $1]) << (8 * $1) }
+    }
+
+    /// A reader on a pipe that stays open until the test closes it, and the wake-ups it has sent.
+    private struct OpenPipe: Sendable {
+        let writer: FileHandle
+        let mailbox = StreamMailbox()
+        let wakes = OSAllocatedUnfairLock(initialState: 0)
+
+        init() {
+            let pipe = Pipe()
+            writer = pipe.fileHandleForWriting
+            let (wakeups, wake) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+            StreamReader.start(reading: pipe.fileHandleForReading, into: mailbox, wake: wake, chunkSize: 1 << 12)
+            let counter = wakes
+            Task.detached {
+                for await _ in wakeups { counter.withLock { $0 += 1 } }
+            }
+        }
+
+        func write(_ bytes: ArraySlice<UInt8>) throws { try writer.write(contentsOf: Data(bytes)) }
+        func close() { try? writer.close() }
+    }
+
+    @Test func aChunkThatCompletesNothingWakesNobody() async throws {
+        let fixture = try StreamFixtureData(kind: "3d")
+        let bytes = fixture.bytes
+        let headerEnd = 12 + u32(bytes, 8)
+        let frameEnd = headerEnd + 8 + u32(bytes, headerEnd + 4)
+        let open = OpenPipe()
+        defer { open.close() }
+
+        try open.write(bytes[0..<headerEnd])
+        #expect(await eventually { open.wakes.withLock { $0 } == 1 })
+        #expect(open.mailbox.take().header != nil)
+
+        // The frame in three pieces: the first two are the middle of it, and nothing in them is worth a redraw.
+        let third = (frameEnd - headerEnd) / 3
+        try open.write(bytes[headerEnd..<(headerEnd + third)])
+        try open.write(bytes[(headerEnd + third)..<(headerEnd + 2 * third)])
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(open.wakes.withLock { $0 } == 1, "a partial frame woke the main actor")
+        #expect(open.mailbox.take().isEmpty)
+
+        try open.write(bytes[(headerEnd + 2 * third)..<frameEnd])
+        #expect(await eventually { open.wakes.withLock { $0 } == 2 })
+        #expect(open.mailbox.take().frame != nil)
+    }
+
+    @Test func aDecoderErrorIsPublishedAtOnceNotWhenTheNextBytesArrive() async throws {
+        // The header, a good frame and the start of a second whose length is wrong, in one write; nothing follows (a
+        // paused stream, a followed run that has stopped). The error must not wait for more bytes or for end of file.
+        let fixture = try StreamFixtureData(kind: "3d")
+        let bytes = fixture.bytes
+        let headerEnd = 12 + u32(bytes, 8)
+        let second = headerEnd + 8 + u32(bytes, headerEnd + 4)
+        var broken = Array(bytes[0..<(second + 8 + 32)])
+        let wrong = u32(bytes, second + 4) + 4
+        for k in 0..<4 { broken[second + 4 + k] = UInt8((wrong >> (8 * k)) & 0xFF) }
+
+        let open = OpenPipe()
+        defer { open.close() }
+        try open.write(broken[...])
+        var delivery = StreamDelivery()
+        let arrived = await eventually {
+            let more = open.mailbox.take()
+            delivery.header = delivery.header ?? more.header
+            delivery.frame = more.frame ?? delivery.frame
+            delivery.end = more.end ?? delivery.end
+            return delivery.end != nil
+        }
+        #expect(arrived, "the pipe is still open and the error has not been seen")
+        #expect(delivery.header != nil && delivery.frame != nil, "the events before the error are delivered")
+        guard case .failed(.lengthMismatch)? = delivery.end else {
+            Issue.record("expected a length mismatch, got \(String(describing: delivery.end))")
             return
         }
     }

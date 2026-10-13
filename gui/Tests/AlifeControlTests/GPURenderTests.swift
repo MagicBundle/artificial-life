@@ -132,6 +132,50 @@ struct GPURenderTests {
         #expect(checked == frame.nAlive)
     }
 
+    /// The picture of the agents, pixel by pixel around each of them and on a sparse grid elsewhere, against
+    /// `ReferenceSphere`, a CPU port of the sphere shader: the colour channels (a red agent is red, not blue), the
+    /// headlight, which half-precision value is the yaw and which the pitch, the forward axis, and the nose (on the side
+    /// the agent faces, and only there). The pixels within a hair of an edge are left out (`steady`).
+    @Test(arguments: ["2d", "3d"])
+    func eachAgentShowsItsColourItsHeadingAndItsNose(kind: String) throws {
+        let (renderer, fixture, frame) = try scene(kind, display: ViewerDisplay(agents: true, bonds: false, frame: false))
+        let image = try render(renderer, "\(kind)-shading")
+        let spheres = (0..<frame.rows).filter(frame.isAlive).map {
+            ReferenceSphere(frame: frame, row: $0, radius: Float(fixture.header.radius))
+        }
+        let rays = PixelRays(camera: renderer.camera, width: image.width, height: image.height)
+        var pixels = pixelsAround(frame, camera: renderer.camera, size: Self.size, half: shadingHalfWidth(kind))
+        for y in stride(from: 5, to: Self.size, by: 16) {
+            for x in stride(from: 5, to: Self.size, by: 16) { pixels.append((x, y)) }
+        }
+        var compared = 0, lit = 0
+        var seenRows = Set<Int>()
+        var mismatches: [String] = []
+        for p in pixels {
+            let expected = referencePixel(spheres, rays: rays, x: p.x, y: p.y)
+            guard expected.steady else { continue }
+            compared += 1
+            let seen = image.pixel(p.x, p.y)
+            let agree: Bool
+            if let color = expected.color {
+                lit += 1
+                if let nearest = expected.nearest { seenRows.insert(nearest) }
+                let want = color * 255
+                agree = abs(Float(seen.r) - want.x) <= 8 && abs(Float(seen.g) - want.y) <= 8
+                    && abs(Float(seen.b) - want.z) <= 8
+            } else {
+                agree = isBackground(seen)
+            }
+            if !agree, mismatches.count < 6 {
+                mismatches.append("pixel (\(p.x), \(p.y)) is \(seen), expected \(String(describing: expected.color.map { $0 * 255 }))"
+                                  + " of agent \(String(describing: expected.nearest))")
+            }
+        }
+        #expect(compared > 1500 && lit > 300, "only \(compared) pixels (\(lit) lit) were comparable")
+        #expect(seenRows.count == spheres.count, "agents \(seenRows) of \(spheres.count) were compared")
+        #expect(mismatches.isEmpty, "\(mismatches.joined(separator: "; "))")
+    }
+
     @Test func aBondAcrossThePeriodicSeamIsDrawnAsTwoStubsAndNotAcrossTheWorld() throws {
         let (renderer, fixture, frame) = try scene("2d", display: ViewerDisplay(agents: false, bonds: true, frame: false))
         let image = try render(renderer, "2d-bonds", width: 768, height: 768)
@@ -189,13 +233,16 @@ struct GPURenderTests {
         #expect(checked == 12)
     }
 
-    @Test func the3DSliceIsSeeThroughAtItsLayer() throws {
+    /// The fixture has a slice at layer 0 and one at layer 5 of 6 (z = 22): both must land at their own height.
+    @Test(arguments: [true, false])
+    func the3DSliceIsSeeThroughAtItsLayer(firstSlice: Bool) throws {
         let fixture = try StreamFixtureData(kind: "3d")
-        let index = try #require(fixture.frames.firstIndex { $0.hasField })
+        let index = try #require(firstSlice ? fixture.frames.firstIndex { $0.hasField }
+                                            : fixture.frames.lastIndex { $0.hasField })
         let (renderer, _, frame) = try scene("3d", frame: index, display: ViewerDisplay(agents: false, bonds: false, frame: false))
         let field = try #require(frame.field)
         let layer = try #require(frame.fieldLayer)
-        let image = try render(renderer, "3d-slice")
+        let image = try render(renderer, firstSlice ? "3d-slice" : "3d-slice-upper")
         let cells = fixture.header.fieldGrid
         let cell = Float(fixture.header.fieldCell)
         var checked = 0
@@ -224,6 +271,10 @@ struct GPURenderTests {
         let bytes = try Data(contentsOf: url)
         #expect(Array(bytes.prefix(8)) == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
     }
+
+    /// How far around an agent's centre `eachAgentShowsItsColourItsHeadingAndItsNose` looks: its body and nose reach 1.25
+    /// radii, which are about 10 pixels in the face-on picture of the 2D fixture and 6 in the overview of the 3D one.
+    private func shadingHalfWidth(_ kind: String) -> Int { kind == "2d" ? 16 : 11 }
 
     private func brightness(_ color: UInt32) -> UInt32 {
         ((color >> 16) & 255) + ((color >> 8) & 255) + (color & 255)

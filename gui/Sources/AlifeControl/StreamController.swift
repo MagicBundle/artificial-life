@@ -23,7 +23,8 @@ enum StreamPhase: Equatable, Sendable {
 ///
 /// Stopping is exactly once: a `quit` line, then stdin is closed (its EOF is a quit too), and if the process is still
 /// there after `terminationGrace` it gets one SIGTERM. A stream has nothing to save, so none of this waits for the
-/// engine to checkpoint, unlike the single SIGINT that stops a run. `shutdown()` (the app quits) skips the grace.
+/// engine to checkpoint, unlike the single SIGINT that stops a run. `shutdown()` (the app quits) skips the grace, for
+/// every process that has not finished, not only the current one.
 @MainActor
 final class StreamController: ObservableObject {
     static let shared = StreamController()
@@ -50,6 +51,9 @@ final class StreamController: ObservableObject {
     private var executable: URL?
 
     private var session: Session?
+    /// Sessions that were replaced by a newer stream and whose process has not finished: each is on its way out (its
+    /// `quit` is sent and its grace is running), and `shutdown()` still has to end it if the app quits first.
+    private var retired: [Session] = []
     private var rateStart: (time: ContinuousClock.Instant, step: UInt64)?
 
     init() {}
@@ -57,18 +61,29 @@ final class StreamController: ObservableObject {
     var isActive: Bool { phase == .starting || phase == .live }
 
     /// Whether an `alife stream` process is still attached (it can outlive `stop()` by its grace period).
-    var hasProcess: Bool { session != nil }
+    var hasProcess: Bool { session != nil || !retired.isEmpty }
 
     // MARK: Start and stop
 
     /// Starts `source` with `executable` (the repository's `.venv/bin/alife`), run in `directory`, replacing any stream
     /// that is running. `arguments` replaces the ones `StreamLaunch` builds (for tests, which run a stand-in).
-    func start(_ source: StreamSource, executable: URL, directory: URL, arguments: [String]? = nil) {
+    ///
+    /// The view (colour, speed, field slice) is carried into the new stream through its arguments. The field layer is
+    /// carried only with `keepingView`, which is for another stream of the same run (`restart`): another run may have
+    /// fewer layers, and `alife stream` refuses a `--field-z` past its last (exit 2), which would fail every stream
+    /// opened after that with nothing in the window to change it. A new run starts at layer 0, which every run has.
+    func start(_ source: StreamSource, executable: URL, directory: URL, arguments: [String]? = nil,
+               keepingView: Bool = false) {
         stopSession()
+        if let old = session {
+            retired.append(old)  // its end is ignored from now on, but the app quitting must still end it
+            session = nil
+        }
         self.source = source
         self.executable = executable
         self.directory = directory
         control.paused = false
+        if !keepingView { control.fieldLayer = 0 }
         header = nil
         frame = nil
         frameSerial += 1
@@ -121,7 +136,8 @@ final class StreamController: ObservableObject {
     /// Starts the same run again as a follow or a re-simulation (the viewer's source switch).
     func restart(follow: Bool) {
         guard let source, source.follow != follow, let executable, let directory else { return }
-        start(StreamSource(run: source.run, follow: follow), executable: executable, directory: directory)
+        start(StreamSource(run: source.run, follow: follow), executable: executable, directory: directory,
+              keepingView: true)
     }
 
     /// Stops the stream, once: the viewer window closed, or another stream replaces it. The view is cleared.
@@ -135,11 +151,13 @@ final class StreamController: ObservableObject {
         stepsPerSecond = nil
     }
 
-    /// The app is quitting: end the process now, without the grace period.
+    /// The app is quitting: end every process now, without the grace period. That includes the ones an earlier `start`
+    /// replaced, whose SIGTERM after the grace would die with the app.
     func shutdown() {
-        guard let session else { return }
-        session.stopRequested = true
-        session.terminate()
+        for session in retired + [session].compactMap({ $0 }) {
+            session.stopRequested = true
+            session.terminate()
+        }
     }
 
     private func stopSession() {
@@ -172,9 +190,11 @@ final class StreamController: ObservableObject {
         if control.paused { run() } else { pause() }
     }
 
-    /// Pauses and runs `count` steps, then one frame. A followed run fetches its newest checkpoint instead.
+    /// Pauses and runs `count` steps, then one frame. A followed run fetches its newest checkpoint instead, once, and
+    /// keeps following: `step` does not pause it (the engine's `step` in follow mode only refreshes).
     func step(_ count: Int = 1) {
-        if send(.step(count: count)) { control.paused = true }
+        guard send(.step(count: count)) else { return }
+        if source?.follow != true { control.paused = true }
     }
 
     /// Steps per frame (a re-simulation: a followed run ignores it, and the viewer does not offer it).
@@ -300,6 +320,9 @@ final class StreamController: ObservableObject {
 
     private func apply(_ delivery: StreamDelivery, from session: Session) {
         guard self.session === session, !session.stopRequested else { return }
+        // Nothing arrived (a wake-up whose content the last take already delivered): assigning a @Published property
+        // announces a change whatever the value, and each announcement is a redraw of the view.
+        guard !delivery.isEmpty else { return }
         if let header = delivery.header {
             self.header = header
             // The stream starts in the view the command line asked for, and says so.
@@ -314,7 +337,7 @@ final class StreamController: ObservableObject {
             frameSerial += 1
             measure(step: frame.step)
         }
-        droppedFrames += delivery.dropped
+        if delivery.dropped > 0 { droppedFrames += delivery.dropped }
         if let end = delivery.end {
             session.end = end
             switch end {
@@ -340,6 +363,7 @@ final class StreamController: ObservableObject {
 
     private func finish(_ session: Session, status: Int32, reason: Process.TerminationReason) {
         session.release()
+        retired.removeAll { $0 === session }
         guard self.session === session else { return }  // a newer stream replaced it
         self.session = nil
         guard !session.stopRequested else { return }  // asked for: the phase is already idle

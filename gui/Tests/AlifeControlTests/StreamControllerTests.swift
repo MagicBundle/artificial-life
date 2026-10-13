@@ -201,10 +201,31 @@ import Testing
         #expect(await eventually { controller.phase == .live })
         controller.faster()
         controller.setEvery(7)
+        controller.step()  // fetches the newest checkpoint once; the run keeps being followed
+        #expect(!controller.control.paused)
         controller.pause()
+        #expect(controller.control.paused)
         controller.stop()
         #expect(await eventually { !controller.hasProcess })
-        #expect(commandLines(commands) == ["pause", "quit"])
+        #expect(commandLines(commands) == ["step", "pause", "quit"])
+    }
+
+    @Test func stepPausesAReSimulationButOnlyRefreshesAFollowedRun() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (script, commands) = try standIn(in: scratch)
+        let (controller, _) = make()
+        controller.start(source, executable: script, directory: scratch.url,
+                         arguments: [Repo.streamFixtureURL("3d").path, commands.path])
+        #expect(await eventually { controller.phase == .live })
+        #expect(!controller.control.paused)
+        controller.step(2)
+        #expect(controller.control.paused, "a re-simulation pauses to run its steps")
+        controller.run()
+        #expect(!controller.control.paused)
+        controller.stop()
+        #expect(await eventually { !controller.hasProcess })
+        #expect(commandLines(commands) == ["step 2", "run", "quit"])
     }
 
     @Test func aProcessThatIgnoresQuitIsTerminatedAfterTheGrace() async throws {
@@ -281,6 +302,65 @@ import Testing
         #expect(controller.phase == .starting)
         controller.shutdown()
         #expect(await eventually { !controller.hasProcess })
+    }
+
+    /// The `$ ...` lines the controller logged: the command lines it started processes with.
+    private func commandsStarted(_ recorder: Recorder) -> [String] {
+        recorder.lines.map(\.text).filter { $0.hasPrefix("$ ") }
+    }
+
+    @Test func theFieldLayerIsCarriedOnlyAcrossARestartOfTheSameRun() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (script, commands) = try standIn(in: scratch)
+        let (controller, recorder) = make()
+        controller.start(source, executable: script, directory: scratch.url,
+                         arguments: [Repo.streamFixtureURL("3d").path, commands.path])
+        #expect(await eventually { controller.phase == .live })
+        controller.setFields(true)
+        controller.setFieldLayer(5)  // the last of this run's six layers
+        #expect(controller.control.fieldLayer == 5)
+
+        // The same run again: the layer is valid for it and the view is kept.
+        controller.restart(follow: true)
+        // Another run may have fewer layers (a 2D run has one): `--field-z 5` would be refused, exit code 2, and the
+        // window would have no way to change it. It starts at layer 0, with the field slice still on.
+        controller.start(StreamSource(run: "flat", follow: false), executable: script, directory: scratch.url)
+        controller.restart(follow: true)
+
+        let started = commandsStarted(recorder).dropFirst()  // the first used the stand-in's own arguments
+        let flags = started.map { line in line.split(separator: " ").drop { $0 != "--field-z" }.prefix(2).joined(separator: " ") }
+        #expect(flags == ["--field-z 5", "--field-z 0", "--field-z 0"], "\(started)")
+        controller.shutdown()
+        #expect(await eventually { !controller.hasProcess })
+    }
+
+    @Test func aNewRunWithTheFieldSliceOffPassesNoFieldLayer() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (script, _) = try standIn(in: scratch, serve: false)
+        let (controller, recorder) = make()
+        controller.start(source, executable: script, directory: scratch.url)
+        #expect(commandsStarted(recorder).first?.contains("--field-z") == false)
+        controller.shutdown()
+        #expect(await eventually { !controller.hasProcess })
+    }
+
+    @Test func quittingEndsTheProcessesOfReplacedStreamsToo() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        // A process that ignores its quit and its stdin closing, and a long grace: only shutdown() can end it in time.
+        let deaf = try scratch.script("alife-deaf-long", "cat \"$1\"\nexec sleep 60")
+        let (controller, _) = make(grace: .seconds(120))
+        controller.start(source, executable: deaf, directory: scratch.url, arguments: [Repo.streamFixtureURL("3d").path])
+        #expect(await eventually { controller.phase == .live })
+        // Replaced before it finished: the new session does not know about this process any more.
+        controller.start(StreamSource(run: "other", follow: false), executable: deaf, directory: scratch.url,
+                         arguments: [Repo.streamFixtureURL("3d").path])
+        #expect(await eventually { controller.phase == .live })
+        #expect(controller.hasProcess)
+        controller.shutdown()
+        #expect(await eventually(timeout: .seconds(10)) { !controller.hasProcess }, "a replaced process was left running")
     }
 
     @Test func aWriteToAPipeWhoseReaderHasGoneFailsInsteadOfKillingTheApp() throws {

@@ -325,6 +325,58 @@ import Testing
         #expect(s.arguments(existingRuns: ["src3d"]) == Self.forkRun + ["--set", "physics.gravity=0.02"])
     }
 
+    private static var actuatorOffConfig: String {
+        tiny3DConfig
+            .replacingOccurrences(of: "\"buoyancy_max\": 0.04", with: "\"buoyancy_max\": 0.0")
+            .replacingOccurrences(of: "\"buoyancy_cost\": 16, \"buoyancy_cap_cost\": 8", with: "\"buoyancy_cost\": 0, \"buoyancy_cap_cost\": 0")
+            .replacingOccurrences(of: "\"buoy_init\": 0.5, \"buoy_sigma\": 0.02", with: "\"buoy_init\": 0.0, \"buoy_sigma\": 0.0")
+    }
+
+    @Test func switchingTheActuatorBackOnInAForkOfAnActuatorlessRunIsRefused() throws {
+        // The cap starts at buoy_init and drifts by buoy_sigma, both 0 and both CLI-only: nothing would ever lift.
+        let s = try fork(config: Self.actuatorOffConfig) {
+            $0.levers.world3D.buoyancyMax = "0.04"
+            $0.levers.world3D.buoyancyCost = "16"
+            $0.levers.world3D.buoyancyCapCost = "8"
+        }
+        let errors = s.validate(existingRuns: ["src3d"])
+        #expect(errors.count == 1 && errors[0].contains("physics.buoyancy_max") && errors[0].contains("buoy_init"), "\(errors)")
+        // Untouched, the same fork is fine: the refusal is about the switch, not about the source.
+        let untouched = try fork(config: Self.actuatorOffConfig)
+        #expect(untouched.validate(existingRuns: ["src3d"]).isEmpty)
+        // So is a gravity edit, and so is an actuator that is still off.
+        let gravity = try fork(config: Self.actuatorOffConfig) { $0.levers.world3D.gravity = "0.02" }
+        #expect(gravity.validate(existingRuns: ["src3d"]).isEmpty)
+    }
+
+    @Test func aCapThatCanEvolveLetsTheActuatorSwitchOn() throws {
+        // A source with the actuator off but a noisy cap (a preset or a command line can make one).
+        let config = Self.actuatorOffConfig.replacingOccurrences(of: "\"buoy_sigma\": 0.0", with: "\"buoy_sigma\": 0.02")
+        let s = try fork(config: config) { $0.levers.world3D.buoyancyMax = "0.04" }
+        #expect(s.validate(existingRuns: ["src3d"]).isEmpty)
+        #expect(s.arguments(existingRuns: ["src3d"]) == Self.forkRun + ["--set", "physics.buoyancy_max=0.04"])
+    }
+
+    @Test func aForkOfARunWithTheActuatorOnMaySwitchItOffAndOnAgain() throws {
+        var s = try fork { $0.levers.world3D.buoyancyMax = "0" }
+        #expect(!s.validate(existingRuns: ["src3d"]).isEmpty, "the costs must be 0 with no actuator (the engine's rule)")
+        s.levers.world3D.buoyancyCost = "0"
+        s.levers.world3D.buoyancyCapCost = "0"
+        #expect(s.validate(existingRuns: ["src3d"]).isEmpty)
+        s.levers.world3D.buoyancyMax = "0.04"  // back to the source's value: the baseline has an actuator
+        #expect(s.world3DBaseline.buoyancyMax == "0.04")
+        #expect(s.effectiveLevers.world3D.actuatorErrors(baseline: s.world3DBaseline).isEmpty)
+    }
+
+    @Test func aNewRunMayNotSwitchOnAnActuatorThePresetLacks() throws {
+        var preset = try tiny3D()
+        (preset.buoyancyMax, preset.buoyancyCost, preset.buoyancyCapCost) = ("0", "0", "0")
+        (preset.buoyInit, preset.buoySigma) = ("0", "0")
+        let s = newRun(world3D: preset) { $0.levers.world3D.buoyancyMax = "0.04" }
+        #expect(s.validate(existingRuns: []).contains { $0.contains("physics.buoyancy_max cannot be switched on") })
+        #expect(newRun(world3D: preset).validate(existingRuns: []).isEmpty)
+    }
+
     @Test func aResumeHasNoLevers() throws {
         var s = try fork()
         s.mode = .resume
@@ -333,6 +385,6 @@ import Testing
         s.steps = "500"
         #expect(s.validate(existingRuns: ["src3d"]).isEmpty)
         #expect(s.arguments(existingRuns: ["src3d"]) == ["resume", "runs/src3d", "--steps", "500"])
-        #expect(s.worldDims == 3, "a resume reports the dims of its source (leverBaseline)")
+        #expect(s.worldDims == 3, "a resume reports what leverBaseline holds; the app loads it for a fork only")
     }
 }

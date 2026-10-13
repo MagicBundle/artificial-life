@@ -86,6 +86,76 @@ import simd
         #expect(atNear.z < mid.z && mid.z < atFar.z)
     }
 
+    // MARK: Clip planes
+
+    /// The eight corners of a 3D world's box, or the four of a 2D world's square.
+    private func corners(size: Float, height: Float) -> [SIMD3<Float>] {
+        var points: [SIMD3<Float>] = []
+        for x in [Float(0), size] {
+            for y in [Float(0), size] {
+                for z in height > 0 ? [Float(0), height] : [0] { points.append(SIMD3(x, y, z)) }
+            }
+        }
+        return points
+    }
+
+    @Test(arguments: [(Float(128), Float(24)), (1024, 0), (4096, 0), (100, 40)], aspects)
+    func theWholeWorldIsInDepthAtHomeAndHoweverFarTheCameraIsPulledBack(world: (Float, Float), aspect: Float) throws {
+        let (size, height) = world
+        var camera = height > 0 ? Camera.overview(size: size, height: height, aspect: aspect)
+                                : Camera.topDown(size: size, aspect: aspect)
+        let points = corners(size: size, height: height) + [camera.target]
+        // Zooming out by the factors a wheel gives, from the home pose to a hundred times as far.
+        for factor in [Float(1), 2, 4, 10, 100] {
+            let far = camera.distance * factor
+            var pulled = camera
+            pulled.dolly(by: factor)
+            #expect(abs(pulled.distance - far) < far * 1e-5)
+            for point in points {
+                let ndc = try #require(pulled.ndc(of: point, aspect: aspect))
+                #expect(ndc.z > 0 && ndc.z < 1, "\(point) is clipped at \(factor)x: depth \(ndc.z)")
+            }
+        }
+        // Flying away (the target moves, the distance does not) is the same: the planes follow the eye.
+        camera.move(forward: -3 * size)
+        for point in points {
+            let ndc = try #require(camera.ndc(of: point, aspect: aspect))
+            #expect(ndc.z > 0 && ndc.z < 1, "\(point) is clipped after flying back")
+        }
+    }
+
+    @Test(arguments: [(Float(128), Float(24)), (1024, 0), (4096, 0)], aspects)
+    func theHomeDepthRangeIsTightEnoughForAnAgentToBeTold(world: (Float, Float), aspect: Float) {
+        // A float32 depth value near 1 has steps of about 6e-8, and depth = 1 - near / z far from the near plane, so a step
+        // is z^2 * 6e-8 / near world units at distance z. With the fixed planes the home pose of a 1024-wide world (near
+        // 0.1) had a step of 0.75, most of an agent's radius of 1; fitted to the world it is under a thousandth.
+        let (size, height) = world
+        let camera = height > 0 ? Camera.overview(size: size, height: height, aspect: aspect)
+                                : Camera.topDown(size: size, aspect: aspect)
+        let (near, far) = camera.clipPlanes
+        #expect(far / near < 40, "near \(near), far \(far)")
+        let z = simd_length(camera.position - camera.target)
+        let step = z * z * 6e-8 / near
+        #expect(step < 0.01, "a depth step of \(step) world units at the centre")
+    }
+
+    @Test func aCameraWithoutASceneKeepsItsFixedPlanes() {
+        var camera = sample()
+        #expect(camera.clipPlanes.near == 0.1 && camera.clipPlanes.far == 10_000)
+        camera.near = 2
+        camera.far = 500
+        camera.dolly(by: 3)
+        #expect(camera.clipPlanes.near == 2 && camera.clipPlanes.far == 500)
+    }
+
+    @Test func insideTheWorldTheNearPlaneIsTheLeastOne() {
+        var camera = Camera.overview(size: 128, height: 24)
+        camera.dolly(by: 0.01)
+        let (near, far) = camera.clipPlanes
+        #expect(near == camera.near, "the eye is inside the bounding sphere: only the fixed least near plane applies")
+        #expect(far > camera.distance)
+    }
+
     @Test func aPointBehindTheEyeIsNotProjected() {
         let camera = sample()
         #expect(camera.ndc(of: camera.position - camera.forward * 3, aspect: 1) == nil)

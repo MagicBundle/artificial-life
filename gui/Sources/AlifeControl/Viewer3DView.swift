@@ -267,16 +267,25 @@ struct ViewerMetalView: NSViewRepresentable {
     func updateNSView(_ view: ViewerMTKView, context: Context) {
         let coordinator = context.coordinator
         guard let renderer = coordinator.renderer else { return }
-        renderer.display = model.display
+        // SwiftUI calls this for every change of the stream's or the model's state (the speed readout, the status line),
+        // most of which change nothing that is drawn: the view is redrawn only when its content did. The camera and the
+        // window's size ask for their own redraws.
+        var changed = false
+        if renderer.display != model.display {
+            renderer.display = model.display
+            changed = true
+        }
         if stream.header != coordinator.header {
             coordinator.header = stream.header
             coordinator.serial = -1
             renderer.configure(header: stream.header, aspect: model.aspect)
+            changed = true
         }
         if stream.frameSerial != coordinator.serial {
             coordinator.serial = stream.frameSerial
             renderer.show(frame: stream.frame)
+            changed = true
         }
-        view.needsDisplay = true
+        if changed { view.needsDisplay = true }
     }
 }

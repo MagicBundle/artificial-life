@@ -299,6 +299,18 @@ import Testing
             ("FG 0", json.replacingOccurrences(of: "\"FG\":12", with: "\"FG\":0")),
             ("no colour modes", json.replacingOccurrences(of: "[\"tag\",\"energy\",\"clade\"]", with: "[]")),
             ("a negative L", json.replacingOccurrences(of: "\"L\":48.0", with: "\"L\":-48.0")),
+            ("a missing run key", json.replacingOccurrences(of: "\"run\":null,", with: "")),
+            ("a run of the wrong type", json.replacingOccurrences(of: "\"run\":null", with: "\"run\":7")),
+            ("a zero radius", json.replacingOccurrences(of: "\"radius\":1.0", with: "\"radius\":0.0")),
+            ("a zero field cell", json.replacingOccurrences(of: "\"field_cell\":4.0", with: "\"field_cell\":0.0")),
+            ("FG that does not make L", json.replacingOccurrences(of: "\"FG\":12", with: "\"FG\":11")),
+            ("FZ that does not make the height", json.replacingOccurrences(of: "\"FZ\":6", with: "\"FZ\":5")),
+            ("a 3D world without a height", json.replacingOccurrences(of: "\"height\":24.0", with: "\"height\":0.0")),
+            ("a colour that is not a mode", json.replacingOccurrences(of: "\"color\":\"tag\"", with: "\"color\":\"rainbow\"")),
+            ("a field layer past FZ", json.replacingOccurrences(of: "\"field_z\":0", with: "\"field_z\":6")),
+            ("a negative field layer", json.replacingOccurrences(of: "\"field_z\":0", with: "\"field_z\":-1")),
+            ("an unknown mode", json.replacingOccurrences(of: "\"mode\":\"simulate\"", with: "\"mode\":\"weird\"")),
+            ("an unknown source", json.replacingOccurrences(of: "\"source\":\"preset\"", with: "\"source\":\"cloud\"")),
         ]
         for (what, text) in broken {
             #expect(text != json || what == "not JSON", "the edit for \(what) changed the JSON")
@@ -312,6 +324,30 @@ import Testing
         #expect(malformed(decode(stream(json: json, jsonLength: 0))))
         // A key the version does not know is ignored.
         #expect(decode(stream(json: "{\"future_key\":[1,2]," + json.dropFirst())).error == nil)
+        // `run` is a string or null.
+        let named = decode(stream(json: json.replacingOccurrences(of: "\"run\":null", with: "\"run\":\"runs/a\"")))
+        #expect(named.error == nil)
+        if case .header(let header)? = named.events.first { #expect(header.run == "runs/a") }
+    }
+
+    @Test func the2DHeaderIsFlat() throws {
+        let fixture = try StreamFixture(kind: "2d")
+        let json = String(decoding: fixture.bytes[12..<fixture.headerEnd], as: UTF8.self)
+        func stream(_ edit: (String) -> String) -> [UInt8] {
+            var body = Array(edit(json).utf8)
+            while body.count % 4 != 0 { body.append(0x20) }
+            return Array(fixture.bytes[0..<8]) + le32(body.count) + body + Array(fixture.bytes[fixture.headerEnd...])
+        }
+        for (what, edit) in [
+            ("a height", { $0.replacingOccurrences(of: "\"height\":0.0", with: "\"height\":24.0") }),
+            ("several layers", { $0.replacingOccurrences(of: "\"FZ\":1", with: "\"FZ\":6") }),
+        ] as [(String, (String) -> String)] {
+            guard case .malformedHeader? = decode(stream(edit)).error else {
+                Issue.record("a 2D header with \(what) was accepted")
+                continue
+            }
+        }
+        #expect(decode(stream { $0 }).error == nil)
     }
 
     @Test(arguments: [("a shorter", -4), ("a longer", 4), ("a much longer", 40_000)])
@@ -363,6 +399,26 @@ import Testing
         // n_bonds past what N rows can hold: refused before the length is compared (a corrupt count must not
         // make the decoder wait for gigabytes).
         refused("an absurd n_bonds", patched(fixture.bytes, at: payload + 16, le32(1_000_000)))
+    }
+
+    @Test func anErrorAfterAnEventIsVisibleAtOnce() throws {
+        // `feed` returns the events before an error and throws the error on the next call; a reader that blocks for more
+        // input in between (a paused or finished stream sends none) must be able to see it without waiting for it.
+        let fixture = try StreamFixture(kind: "3d")
+        let (offset, length) = fixture.records[0]
+        let bytes = patched(fixture.bytes, at: offset + 4, le32(length + 4))
+        var decoder = FrameDecoder()
+        #expect(decoder.failure == nil)
+        let events = try decoder.feed(Data(bytes[0..<(offset + 8 + 32)]))
+        #expect(events.count == 1, "the header, then a frame whose length is wrong")
+        #expect(decoder.failure == .lengthMismatch(tag: "FRM1", declared: length + 4, expected: length))
+        #expect(throws: (any Error).self) { try decoder.feed(Data([0])) }
+        // The same when the first frame is fine and the second is the bad one.
+        var second = FrameDecoder()
+        let (offset2, length2) = fixture.records[1]
+        let both = patched(fixture.bytes, at: offset2 + 4, le32(length2 + 4))
+        let seen = try second.feed(Data(both[0..<(offset2 + 8 + 32)]))
+        #expect(seen.count == 2 && second.failure != nil)
     }
 
     @Test func reservedBytesAndUnknownFlagBitsAreIgnored() throws {

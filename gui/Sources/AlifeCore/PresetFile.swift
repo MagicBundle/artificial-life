@@ -4,6 +4,10 @@ import Foundation
 /// of its tables. Presets are sparse TOML overrides of the engine defaults written one `key = value` per line,
 /// so this reads exactly that and nothing more: strings, booleans and arrays are skipped, as are inline tables
 /// and multi-line values. A key the file does not set is nil, and the caller applies the engine default.
+///
+/// It is not a TOML parser, and agrees with one on the files `tomllib` accepts. A key set twice is the last value (a
+/// parser refuses the file; the cadence reader this replaced kept the last value that was an integer of at least 1),
+/// and a table header that is not closed names no table, as in that reader, so its keys are ignored.
 package struct PresetFile: Equatable, Sendable {
     package enum Value: Equatable, Sendable {
         case int(Int)
@@ -21,8 +25,10 @@ package struct PresetFile: Equatable, Sendable {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("[") {
                 // `[run]` and `[run] # comment` name the table `run`; the name is not trimmed, so `[ run ]` names
-                // another table (the cadence reader this replaced matched `[run]` literally, and so does this).
-                table = String(line.dropFirst().prefix { $0 != "]" })
+                // another table (the cadence reader this replaced matched `[run]` literally, and so does this). A
+                // header without its `]` names no table: the NUL cannot be a table name in a file.
+                let name = line.dropFirst().prefix { $0 != "]" }
+                table = name.endIndex == line.endIndex ? "\u{0}" : String(name)
                 continue
             }
             guard let eq = line.firstIndex(of: "=") else { continue }

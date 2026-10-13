@@ -6,7 +6,8 @@ import Testing
 /// `PresetFile`, the scalar reader that `Cadence` now stands on, against the cadence reader it replaced.
 @Suite struct PresetFileTests {
     /// The `Cadence(presetTOML:)` of origin/main e1f718e, verbatim in behaviour: the reference for "the `[run]`
-    /// reading is unchanged".
+    /// reading is unchanged". It is unchanged on every file `tomllib` accepts, and on the odd files below that it
+    /// does not (a key set twice is the exception, `aKeySetTwiceIsTheLastValue`).
     private func legacyCadence(_ text: String) -> Cadence {
         var cadence = Cadence.engineDefaults
         var inRun = false
@@ -64,10 +65,25 @@ import Testing
         "[ run ]\nmetrics_every = 8\n",
         "[run]\nmetrics_every = +20\nheavy_metrics_every = 0x10\n",
         "[run]\nmetrics_every\n= 4\nmetrics_every = \n",
+        "[run\nmetrics_every = 7\n",
+        "[run]\nmetrics_every = 7\n[world\nmetrics_every = 9\n",
+        "[\nmetrics_every = 7\n",
         "",
     ])
     func cadenceOfOddFilesIsUnchanged(text: String) {
         #expect(Cadence(presetTOML: text) == legacyCadence(text))
+    }
+
+    /// The one difference from the reader it replaced: that one kept the last value that was an integer of at least 1,
+    /// this one keeps the last scalar and `Cadence` then ignores a value below 1. TOML refuses a key set twice, so the
+    /// engine would refuse such a preset file; this pins the behaviour rather than endorsing it.
+    @Test func aKeySetTwiceIsTheLastValue() {
+        let text = "[run]\nmetrics_every = 10\nmetrics_every = 0\n"
+        #expect(legacyCadence(text).metricsEvery == 10)
+        #expect(Cadence(presetTOML: text).metricsEvery == Cadence.engineDefaults.metricsEvery)
+        #expect(PresetFile(text: text).int("run", "metrics_every") == 0)
+        let later = "[run]\nmetrics_every = 10\nmetrics_every = 20\n"
+        #expect(Cadence(presetTOML: later) == legacyCadence(later))
     }
 
     // MARK: Scalars
