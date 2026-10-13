@@ -25,7 +25,7 @@ STEPS = 50
 GOLDEN_3D = {
     "mlx": "0.32.3",
     "platform": "Linux-x86_64-cpu",
-    "digest": "",
+    "digest": "ffb171300f5377b0397b24c2783d177365ff4006c30c7c291ac8aeb92148b3a1",
 }
 
 

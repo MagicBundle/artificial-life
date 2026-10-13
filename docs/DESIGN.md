@@ -4441,7 +4441,8 @@ costs are on, so `ledger_cum[HEAT_BUOYANCY] > 0` (asserted) and the pin covers s
 keyed by the MLX version and the platform, and it is recorded on the CI platform, `Linux-x86_64-cpu` with MLX
 0.32.3, never on the Mac (CPU kernels round differently across architectures). Procedure: while
 `GOLDEN_3D["digest"]` is empty the test skips everywhere; on the pinned platform the skip message carries the computed
-digest, which is then committed into `GOLDEN_3D`. A change of the 3D trajectory re-pins it the same way, deliberately.
+digest, which is then committed into `GOLDEN_3D`. A change of the 3D trajectory re-pins it the same way, deliberately. The
+value `ffb17130…` was recorded this way at PR 3's head `3bbcab0` and reproduced in a second process.
 
 **Tests.** `tests/test_invariants_3d.py` (a healthy volume scene with the bounds reached; integrated states pushed
 into the floor and the surface pass the clamp rules; the closures with `HEAT_BUOYANCY`, and the same arrays failing
