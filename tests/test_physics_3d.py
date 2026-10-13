@@ -146,13 +146,13 @@ def test_sinking_and_rising_speed_is_net_force_over_drag(cfg3: Config) -> None:
 def test_floor_and_surface_clamps(cfg3: Config) -> None:
     d, L = dims(cfg3), cfg3.world.size
     pts = [
-        (5.0, 5.0, d.z_lo + 0.2),  # 0: falls 0.5: lands on the floor, not 0.2 above it
+        (5.0, 5.0, d.z_lo + 0.2),  # 0: falls 0.5 (= v_max, not clipped): lands on the floor, not 0.2 above it
         (5.0, 9.0, d.z_hi - 0.1),  # 1: rises 0.3: stops at the surface
         (9.0, 5.0, 12.0),  # 2: falls 0.4 in mid-water: not clamped
         (9.0, 9.0, d.z_lo),  # 3: resting on the floor without force: not clamped
         (13.0, 5.0, d.z_lo),  # 4: on the floor, moving up: not clamped
         (L - 0.1, 13.0, d.z_lo + 0.1),  # 5: falls and crosses the x seam: clamped and wrapped
-        (13.0, 13.0, d.z_lo + 0.3),  # 6: dead, with a downward force: untouched, not counted
+        (13.0, 13.0, d.z_lo + 0.3),  # 6: dead, with a downward force over v_max: untouched, not counted
         (17.0, 5.0, d.z_hi),  # 7: at the surface, pushed down: leaves it
     ]
     pos, alive, _ = _scene(cfg3, pts)
@@ -163,7 +163,7 @@ def test_floor_and_surface_clamps(cfg3: Config) -> None:
     force[2] = (0.0, 0.0, -0.4)
     force[4] = (0.0, 0.0, 0.2)
     force[5] = (0.2, 0.0, -0.3)
-    force[6] = (0.0, 0.0, -0.5)
+    force[6] = (0.0, 0.0, -0.9)
     force[7] = (0.0, 0.0, -0.25)
     out = _integrate3(cfg3, pos, force, alive=alive)
     p, v = out.pos, out.vel
@@ -178,6 +178,7 @@ def test_floor_and_surface_clamps(cfg3: Config) -> None:
     assert np.isclose(p[7, 2], d.z_hi - 0.25) and v[7, 2] == f32(-0.25)
     assert (out.z_floor.dtype, out.z_surface.dtype) == (np.int32, np.int32)
     assert int(out.z_floor) == 2 and int(out.z_surface) == 1
+    assert int(out.v_clips) == 0  # |v| = v_max is not clipped, and the dead row is not counted
     assert np.all((p[:, :2] >= 0) & (p[:, :2] < L))
     assert np.all((p[:, 2] >= f32(d.z_lo)) & (p[:, 2] <= f32(d.z_hi)))
 
@@ -206,7 +207,7 @@ def test_a_falling_agent_lands_at_r_and_rests_there(cfg3: Config) -> None:
 
 def test_grounded_is_inclusive_at_z_ground_and_never_at_the_surface(cfg3: Config, level3: Config) -> None:
     d = dims(cfg3)
-    assert d.z_ground == float(f32(cfg3.physics.radius + 0.1))
+    assert d.z_ground <= 1.1 < float(np.nextafter(f32(d.z_ground), f32(np.inf)))  # largest float32 ≤ r + eps
     above = float(np.nextafter(f32(d.z_ground), f32(np.inf)))
     z = [d.z_lo, d.z_ground, above, 12.0, d.z_hi]
     pos = np.array([(1.0, 1.0, zz) for zz in z], np.float32)
@@ -216,6 +217,31 @@ def test_grounded_is_inclusive_at_z_ground_and_never_at_the_surface(cfg3: Config
     up = float(np.nextafter(f32(1.0), f32(2.0)))
     pos0 = np.array([(1.0, 1.0, 1.0), (1.0, 1.0, up), (1.0, 1.0, d0.z_hi)], np.float32)
     assert np.array(physics.grounded(mx.array(pos0), level3)).tolist() == [True, False, False]
+
+
+@pytest.mark.parametrize("eps", [0.0, 0.1])
+def test_a_radius_float32_cannot_represent_rests_at_z_lo_grounded(micro_cfg: Config, eps: float) -> None:
+    """r = 0.7, which float32 rounds down: the floor clamp uses ``Dims.z_lo`` (the smallest float32 ≥ r),
+    never the raw radius, and the agent resting there is grounded, also with floor_eps = 0, so grip slows
+    it in x and y."""
+    cfg = as_3d(micro_cfg, physics={"radius": 0.7, "gravity": G, "floor_eps": eps})
+    ph, d = cfg.physics, dims(cfg)
+    assert float(f32(0.7)) < 0.7 < d.z_lo
+    pos, alive, partner = _scene(cfg, [(20.0, 20.0, 1.5)])
+    n = d.n
+    act, mo, zf = _actions(n), _motion(n), np.zeros(n, f32)
+    for _ in range(40):  # lands after 27 steps
+        f = _forces3(cfg, pos, zf, zf, alive, partner, act, mo, zf)
+        pos = _integrate3(cfg, pos, f, alive=alive).pos
+    assert pos[0, 2] == f32(d.z_lo) and float(pos[0, 2]) >= 0.7
+    assert bool(np.array(physics.grounded(mx.array(pos), cfg))[0])
+    force = np.zeros(pos.shape, f32)
+    force[0] = (0.2, 0.0, -G)
+    grip = np.zeros(n, f32)
+    grip[0] = 1.0
+    out = _integrate3(cfg, pos, force, grip=grip, alive=alive)
+    assert out.vel[0, 0] == f32(0.2) / f32(ph.drag * (1.0 + ph.grip_gain))  # floor grip applies
+    assert out.pos[0, 2] == f32(d.z_lo) and int(out.z_floor) == 1
 
 
 def test_grip_drags_x_and_y_only_and_only_when_grounded(cfg3: Config) -> None:
@@ -332,6 +358,30 @@ def test_repulsion_and_springs_are_antisymmetric_in_3d(cfg3: Config, level3: Con
         else:
             assert np.array_equal(f[i], -f[i + 1]), i
     assert np.any(f[2:6, 2] != 0)  # the vertical spring components are exercised
+
+
+def test_vertical_contacts_and_springs_are_the_2d_forces_rotated(micro_cfg: Config, level3: Config) -> None:
+    """A pair stacked in z (dz = 1.5 < 2r) and a bond stretched purely along z (length 3) get the forces of
+    the same pairs laid along x in 2D, rotated onto z: the lower agent is pushed down and pulled up, x and y
+    are 0."""
+    pts3 = [(10.0, 10.0, 5.0), (10.0, 10.0, 6.5), (30.0, 30.0, 5.0), (30.0, 30.0, 8.0)]
+    pos3, alive, partner = _scene(level3, pts3, [(2, 3)])
+    pos2, _, _ = _scene(micro_cfg, [(10.0, 10.0), (11.5, 10.0), (30.0, 30.0), (33.0, 30.0)], [(2, 3)])
+    n = pos3.shape[0]
+    act, mo, zf = _actions(n), _motion(n), np.zeros(n, f32)
+    f3 = _forces3(level3, pos3, zf, zf, alive, partner, act, mo, zf)
+    f2 = np.array(
+        physics.forces(
+            mx.array(pos2), mx.array(zf), act, _neighbors(pos2, alive, micro_cfg), mx.array(alive),
+            mx.array(partner), micro_cfg,
+        )
+    )  # fmt: skip
+    assert not f3[:, :2].any() and not f2[:, 1].any()
+    assert np.array_equal(f3[:, 2], f2[:, 0])
+    ph = level3.physics
+    rep = ph.k_repel * (2.0 * ph.radius - 1.5)
+    spring = level3.bonds.k_spring * (3.0 - level3.bonds.rest_length)
+    assert np.allclose(f3[:4, 2], [-rep, rep, spring, -spring], rtol=1e-6)
 
 
 def test_level_floor_scene_is_the_2d_physics(micro_cfg: Config, level3: Config) -> None:

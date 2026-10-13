@@ -116,7 +116,15 @@ def test_z_bounds_are_float32_exact(r: float) -> None:
         assert float(f32(v)) == v  # representable: MLX's cast of the Python bound is exact
     assert d.z_lo >= r and float(np.nextafter(f32(d.z_lo), f32(-np.inf))) < r
     assert d.z_hi <= height - r and float(np.nextafter(f32(d.z_hi), f32(np.inf))) > height - r
-    assert d.z_ground == float(f32(r + 0.1))
+    assert d.z_ground <= r + 0.1 and float(np.nextafter(f32(d.z_ground), f32(np.inf))) > r + 0.1  # round down
+
+
+@pytest.mark.parametrize("r", [0.7, 0.9, 0.3, 1.0])  # float32 rounds 0.7 and 0.9 down, 0.3 up; 1.0 is exact
+def test_z_ground_is_never_below_the_floor_rest(r: float) -> None:
+    """With floor_eps = 0 the threshold is z_lo itself, so an agent resting on the floor is grounded even when
+    the nearest float32 to r lies below z_lo (r = 0.7: 0.69999999 < 0.70000005)."""
+    d = dims(as_3d(load_config(preset="tiny"), physics={"radius": r}))
+    assert d.z_ground == d.z_lo
 
 
 # --- the 3D rules (validate widened to dims = 3) ------------------------------------------------------------

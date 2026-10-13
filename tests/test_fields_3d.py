@@ -59,14 +59,27 @@ def test_cell_index_floor_layer_is_the_2d_index(micro_cfg: Config, cfg3: Config)
 
 
 def test_cell_index_clamps_z_and_wraps_xy(cfg3: Config) -> None:
-    d, L, H = dims(cfg3), cfg3.world.size, cfg3.world.height
-    top = float(np.nextafter(np.float32(H), np.float32(0)))
+    d, L, height = dims(cfg3), cfg3.world.size, cfg3.world.height
+    top = float(np.nextafter(np.float32(height), np.float32(0)))
     seam = float(np.nextafter(np.float32(L), np.float32(0)))
-    pos = mx.array([[0.0, 0.0, -0.5], [0.0, 0.0, top], [0.0, 0.0, H], [L, seam, 0.0]], dtype=mx.float32)
+    pos = mx.array([[0.0, 0.0, -0.5], [0.0, 0.0, top], [0.0, 0.0, height], [L, seam, 0.0]], dtype=mx.float32)
     got = _np(fields.cell_index(pos, cfg3))
     fg2 = d.fg * d.fg
     assert got[0] == 0 and got[1] == got[2] == (d.fz - 1) * fg2  # z is clamped, never wrapped
     assert 0 <= got[3] < fg2  # x = L wraps to cell 0 (the % FG seam guard)
+
+
+def test_a_grounded_agent_is_in_the_floor_layer(cfg3: Config) -> None:
+    """``r + floor_eps`` 1e-8 below the field cell: ``z_ground`` rounds down, not to the nearest float32 (the
+    cell boundary), so the highest grounded z is still in layer 0 (§27.1)."""
+    fc = cfg3.world.field_cell
+    cfg = as_3d(cfg3, physics={"floor_eps": fc - 1.0 - 1e-8})
+    d = dims(cfg)
+    r_eps = cfg.physics.radius + cfg.physics.floor_eps
+    assert r_eps < fc and float(np.float32(r_eps)) == fc  # the nearest float32 is the cell boundary
+    assert d.z_lo <= d.z_ground < fc
+    pos = mx.array([[1.0, 1.0, d.z_lo], [1.0, 1.0, d.z_ground]], dtype=mx.float32)
+    assert np.all(_np(fields.cell_index(pos, cfg)) // (d.fg * d.fg) == 0)
 
 
 def test_2d_bodies_refuse_3d_inputs(micro_cfg: Config, cfg3: Config) -> None:

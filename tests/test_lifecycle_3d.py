@@ -15,8 +15,8 @@ from alife.config import Config, apply_overrides, dims
 from alife.layout import T
 from alife.lifecycle import LaneKind
 from alife.rng import Stream
-from alife.state import AGENT_FIELDS_3D, State3, init_state, to_numpy, volume_kinematics
-from helpers import ON_GPU, as_3d, make_scene
+from alife.state import AGENT_FIELDS_3D, State3, init_state, to_numpy
+from helpers import ON_GPU, as_3d, make_scene, volume_draws
 
 f32 = np.float32
 PM32 = f32(layout.PITCH_MAX)
@@ -238,7 +238,7 @@ def test_immigrants_are_uniform_in_the_volume_with_buoy_init(imm3: Config) -> No
     assert kind[0] == LaneKind.BIRTH and np.all(kind[1:] == LaneKind.IMMIGRANT)
     a1, im = _host(rp.state), slot[1:]
     k = mx.random.split(ks[Stream.IMMIGRANT], 5)
-    ref = [_np(x)[1:] for x in volume_kinematics(k[0], k[1], d.m, imm3)]
+    ref = [x[1:] for x in volume_draws(k[0], k[1], d.m, imm3)]  # lane j takes row j of the IMMIGRANT draws
     for name, r in zip(("pos", "heading", "pitch"), ref, strict=True):
         assert np.array_equal(a1[name][im], r), name
     pos = a1["pos"][im]

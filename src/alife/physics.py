@@ -83,7 +83,7 @@ class Integrated3(NamedTuple):
 
 
 def grounded(pos: mx.array, cfg: Config) -> mx.array:
-    """(N,) bool: on the floor, ``z ≤ Dims.z_ground = float32(r + floor_eps)`` (§27.3).
+    """(N,) bool: on the floor, ``z ≤ Dims.z_ground`` (§27.3): ``z ≤ r + floor_eps`` exactly, or ``z = z_lo``.
 
     The one grounding predicate (floor friction, ``IN_GROUNDED``, the ``GROUNDED`` counter), taken from the
     start-of-step position. The surface never grounds.

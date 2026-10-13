@@ -8,7 +8,7 @@ from typing import Any
 import mlx.core as mx
 import numpy as np
 
-from alife import brain, invariants, layout
+from alife import brain, invariants, layout, ops
 from alife.config import Config, config_from_dict, config_to_dict, dims
 from alife.state import (
     ENV_FIELDS,
@@ -42,6 +42,17 @@ def as_3d(cfg: Config, **sections: Mapping[str, Any]) -> Config:
     for name, sub in (*THREE_D.items(), *sections.items()):
         d[name] = {**d[name], **sub}
     return config_from_dict(d)
+
+
+def volume_draws(k_pos: mx.array, k_head: mx.array, n: int, cfg: Config) -> tuple[np.ndarray, ...]:
+    """``(pos (n,3), heading (n,), pitch (n,))`` of founders or immigrants from §27.4's RNG table, written
+    out independently of ``state.volume_kinematics``: one (n, 3) position draw over ``[0, L)² × [z_lo, z_hi]``
+    from ``k_pos`` and one (n, 2) draw of ``k_head``, the yaw then the pitch."""
+    d, L, pm = dims(cfg), cfg.world.size, layout.PITCH_MAX
+    pos = mx.random.uniform(mx.array([0.0, 0.0, d.z_lo]), mx.array([L, L, d.z_hi]), (n, 3), key=k_pos)
+    ang = mx.random.uniform(mx.array([-np.pi, -pm]), mx.array([np.pi, pm]), (n, 2), key=k_head)
+    out = ops.wrap_xy_clamp_z(pos, L, d.z_lo, d.z_hi), ops.wrap_angle(ang[:, 0]), mx.clip(ang[:, 1], -pm, pm)
+    return tuple(to_numpy(a) for a in out)
 
 
 def make_scene(

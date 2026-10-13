@@ -11,7 +11,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from alife import cli, fields, layout, ops
+from alife import cli, fields, invariants, layout, ops, rng
 from alife.config import Config, dims
 from alife.runio import CheckpointError, checkpoint_metadata, load_checkpoint, write_state_file
 from alife.state import (
@@ -32,7 +32,7 @@ from alife.state import (
     state_to_arrays,
     to_numpy,
 )
-from helpers import as_3d, make_scene
+from helpers import as_3d, make_scene, volume_draws
 
 PITCH_MAX_F32 = np.float32(layout.PITCH_MAX)
 
@@ -116,6 +116,16 @@ def test_founders_in_the_volume(tiny3: Config) -> None:
     assert a["total"] == a["total0"] == ref_total
 
 
+def test_founder_kinematics_follow_the_rng_table(tiny3: Config) -> None:
+    """§27.4: ``InitStream.POS`` draws (n0, 3) over the volume, ``InitStream.HEADING`` (n0, 2): yaw, pitch."""
+    n0 = tiny3.population.n_init
+    ik = rng.init_keys(tiny3.run.seed)
+    want = volume_draws(ik[rng.InitStream.POS], ik[rng.InitStream.HEADING], n0, tiny3)
+    a = _host(init_state(tiny3))
+    for name, w in zip(("pos", "heading", "pitch"), want, strict=True):
+        assert np.array_equal(a[name][:n0], w), name
+
+
 def test_buoy_cap_starts_at_buoy_init(cfg3: Config) -> None:
     a = _host(init_state(cfg3))
     assert np.all(a["buoy_cap"] == np.float32(0.25))
@@ -142,6 +152,14 @@ def test_initial_resource_follows_the_vertical_profile(tiny3: Config) -> None:
     per_layer = to_numpy(s.resource).astype(np.int64).sum(axis=(1, 2))
     assert np.all(np.diff(per_layer) < 0)  # the benthic band thins with height
     assert np.all(to_numpy(s.chem) == 0) and s.chem.shape == (layout.NCH, *dims(tiny3).field_shape)
+
+
+def test_full_check_takes_state3(cfg3: Config) -> None:
+    """``invariants.full_check`` reads the fields of the state's own type (§27.4)."""
+    assert invariants.full_check(init_state(cfg3), cfg3) == []
+    agents = [{"pos": (1.0, 2.0, 3.0), "pitch": 0.5, "buoy_cap": 0.75}, {"pos": (2.0, 2.0, 3.0)}]
+    s = make_scene(cfg3, agents=agents, bonds=[(0, 1)])
+    assert invariants.full_check(s, cfg3) == []
 
 
 # --- (de)serialisation, digests, checkpoints --------------------------------------------------------------

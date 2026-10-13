@@ -260,7 +260,7 @@ class Dims:
     # The f32 z bounds every 3D clamp and check uses (§27.2); 0.0 in 2D (unused).
     z_lo: float  # the smallest float32 ≥ physics.radius
     z_hi: float  # the largest float32 ≤ height − physics.radius
-    z_ground: float  # float32(radius + floor_eps): grounded iff z ≤ z_ground
+    z_ground: float  # max(z_lo, the largest float32 ≤ radius + floor_eps): grounded iff z ≤ z_ground
 
 
 PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k")
@@ -320,7 +320,7 @@ def dims(cfg: Config) -> Dims:
         g_hash_z = math.floor(cfg.world.height / cfg.sensing.radius)
         cell_hash_z = cfg.world.height / g_hash_z if g_hash_z > 0 else float("inf")
         z_lo, z_hi = _f32_at_least(r), _f32_at_most(cfg.world.height - r)
-        z_ground = float(np.float32(r + cfg.physics.floor_eps))
+        z_ground = max(z_lo, _f32_at_most(r + cfg.physics.floor_eps))  # the floor rest z_lo always grounds
     else:
         fz, g_hash_z, cell_hash_z = 1, 1, float("inf")
         z_lo = z_hi = z_ground = 0.0
