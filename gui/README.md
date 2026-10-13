@@ -134,14 +134,43 @@ the engine defaults for a new run, the source run's `config.json` (`director.*`,
 
 ## Files
 
+`Package.swift` has three targets: **`AlifeCore`**, a library of pure logic with no AppKit and no Metal (its declarations
+have `package` access: visible to the app and the tests, not an API); **`AlifeControl`**, the app; and **`AlifeCoreTests`**,
+the tests (Swift Testing).
+
+`Sources/AlifeCore/`:
+- `Levers.swift`: run settings, levers, validation and command-line construction
+- `World3DLevers.swift`: the 3D world's levers (height, gravity, buoyancy, the vertical food profile); a new run diffs them
+  against the preset's values, a fork against its source's, so the 2D command lines do not change
+- `PresetFile.swift`: the scalar (integer and number) settings of a preset file `src/alife/presets/NAME.toml`
+- `DirectorSettings.swift`: the director's settings, baselines from `config.json`, validation, argument construction
+  and the `alife llm-check` runner (pure logic apart from that runner)
+- `MetricsTailer.swift`: reads the last row of `metrics.jsonl`
+- `StreamProtocol.swift`: the incremental decoder of the `alife stream` binary protocol (DESIGN §27.11)
+- `StreamControl.swift`: the encoder of the control lines written to the stream's stdin
+- `Camera.swift`: the orbit and fly camera (view and projection matrices)
+
+`Sources/AlifeControl/`:
 - `AlifeControlApp.swift`: app entry point and app delegate
-- `scripts/make-app.sh`, `scripts/make-icon.swift`: app bundle, signing, install and the generated icon
 - `ContentView.swift`: the UI
 - `RunController.swift`: subprocess management (main-actor isolated; pipe output arrives through ordered
   AsyncStreams), log streaming, timer, keep-awake
-- `Levers.swift`: run settings, levers, validation and command-line construction
-- `MetricsTailer.swift`: reads the last row of `metrics.jsonl`
-- `DirectorSettings.swift`: the director's settings, baselines from `config.json`, validation, argument construction
-  and the `alife llm-check` runner (pure logic apart from that runner)
-- `DirectorTailer.swift`: tails `director.jsonl` and `journal.jsonl` (last 256 KiB) into interventions and journal rows
 - `DirectorPanel.swift`: the Director settings box and the Interventions / Journal views
+- `DirectorTailer.swift`: tails `director.jsonl` and `journal.jsonl` (last 256 KiB) into interventions and journal rows
+
+Also `scripts/make-app.sh` and `scripts/make-icon.swift` (app bundle, signing, install and the generated icon).
+
+## Tests
+
+```bash
+cd gui
+swift build -Xswiftc -warnings-as-errors     # the build the checks use
+swift test
+```
+
+The tests need no GPU and start no process. They cover the command lines the GUI builds for 2D runs (a table captured
+before the 3D work, so that a 2D run, fork or resume keeps its arguments byte for byte), the 3D lever rules, the preset
+reader, the stream decoder (the committed fixtures `tests/data/stream_tiny_{2d,3d}.bin` against the sidecars written by
+the independent Python decoder, any chunking of the input, every refusal), the control-line encoder and the camera.
+`tests/test_gui_sync.py` (Python, in the engine's suite) checks that every `--set` key and preset name in the Swift
+sources exists in the engine's `Config`.

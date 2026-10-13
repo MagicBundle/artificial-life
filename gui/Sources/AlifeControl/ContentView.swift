@@ -1,3 +1,4 @@
+import AlifeCore
 import AppKit
 import SwiftUI
 
@@ -84,6 +85,7 @@ struct ContentView: View {
                         controller.loadForkLevers()
                     }
                     if oldMode == .fork && newMode != .fork { controller.resetLevers() }
+                    if newMode == .new { controller.refreshPresetWorld3D() }
                     if newMode == .new && controller.settings.seed.isEmpty { controller.settings.seed = "1" }
                     controller.loadDirector()
                 }
@@ -115,7 +117,10 @@ struct ContentView: View {
                     Picker("Preset", selection: $controller.settings.preset) {
                         ForEach(Preset.allCases) { Text($0.rawValue).tag($0) }
                     }
-                    .onChange(of: controller.settings.preset) { controller.refreshDirectorCadence() }
+                    .onChange(of: controller.settings.preset) {
+                        controller.refreshDirectorCadence()
+                        controller.refreshPresetWorld3D()
+                    }
                 }
                 if controller.settings.mode == .new {
                     // A fork keeps the source's brain size, which the fast overlay would change.
@@ -203,7 +208,9 @@ struct ContentView: View {
                 }
                 Text("Per patch: each resource patch peaks at a different time, so good seasons move across the map.")
                     .font(.caption).foregroundStyle(.secondary)
-                Button("Reset levers to defaults") { controller.settings.levers.reset() }
+                Button("Reset levers to defaults") {
+                    controller.settings.levers.reset(world3D: controller.settings.world3DBaseline)
+                }
                     .font(.caption)
             }
             .padding(6)

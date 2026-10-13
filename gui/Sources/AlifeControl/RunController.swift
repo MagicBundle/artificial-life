@@ -1,3 +1,4 @@
+import AlifeCore
 import AppKit
 import Foundation
 
@@ -148,6 +149,7 @@ final class RunController: ObservableObject {
         repoReady = FileManager.default.isExecutableFile(atPath: alifeURL.path)
         refreshRuns()
         refreshDirectorCadence()
+        refreshPresetWorld3D()
     }
 
     func chooseRepo() {
@@ -209,11 +211,20 @@ final class RunController: ObservableObject {
         forkLeverWarning = loaded.warning
     }
 
-    /// Back to the engine defaults (used when leaving Fork mode).
+    /// Back to the engine defaults (used when leaving Fork mode); the 3D levers go to the chosen preset's values.
     func resetLevers() {
-        settings.levers = Levers()
+        settings.levers = Levers(world3D: settings.presetWorld3D)
         settings.leverBaseline = Levers()
         forkLeverWarning = nil
+    }
+
+    /// New run: reads the chosen preset's 3D values (the baseline of the 3D levers; a 2D preset has none) and, if they
+    /// are not the ones already loaded, pre-fills the 3D levers with them (so a refresh that finds the same values keeps
+    /// the user's edits). Call when the preset or the repository changes.
+    func refreshPresetWorld3D() {
+        guard settings.mode == .new else { return }
+        let loaded = World3DLevers.preset(settings.preset.rawValue, repo: repoURL) ?? World3DLevers()
+        if loaded != settings.presetWorld3D { settings.selectPreset(settings.preset, world3D: loaded) }
     }
 
     // MARK: Director settings
