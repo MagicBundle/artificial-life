@@ -49,12 +49,19 @@ def neighbor_descriptors(s: State, nbr: Neighbors, cfg: Config) -> mx.array:
     """Descriptor ``desc (N,K,NF)`` f32 for all K neighbours, zeroed where invalid (§5).
 
     Features: present, body-frame offset / R (dx, dy), kin similarity, ``lr(E_j, E_i)``, ``msg_j[0]`` and
-    whether ``j`` is a current bond partner.
+    whether ``j`` is a current bond partner. In 3D (``State3``, §27.2) the offset is rotated by yaw and pitch
+    (``ops.to_body3``) and its up component / R is appended as ``NBR_DZ``, so ``NF`` is 8.
     """
+    d3 = dims(cfg).d3
     valid = _neighbor_mask(s, nbr)
     j = nbr.idx
     cos_h, sin_h = mx.cos(s.heading), mx.sin(s.heading)
-    rel = mx.clip(ops.to_body(nbr.off, cos_h[:, None], sin_h[:, None]) / cfg.sensing.radius, -1.0, 1.0)
+    if d3:  # static: (fwd, lat, up); every component of an offset inside the sphere is ≤ R
+        cos_p, sin_p = mx.cos(s.pitch)[:, None], mx.sin(s.pitch)[:, None]
+        rel3 = ops.to_body3(nbr.off, cos_h[:, None], sin_h[:, None], cos_p, sin_p)
+        rel = mx.clip(rel3 / cfg.sensing.radius, -1.0, 1.0)
+    else:
+        rel = mx.clip(ops.to_body(nbr.off, cos_h[:, None], sin_h[:, None]) / cfg.sensing.radius, -1.0, 1.0)
     dtag = s.tag[:, None, :] - s.tag[j]  # (N,K,T)
     kin = mx.exp(-(dtag * dtag).sum(-1) / (cfg.sensing.tag_scale**2))
     rele = _log_ratio(s.energy[j], s.energy[:, None], _q0(cfg))
@@ -69,6 +76,7 @@ def neighbor_descriptors(s: State, nbr: Neighbors, cfg: Config) -> mx.array:
             rele,
             msg0,
             bonded.astype(_F32),
+            *([rel[..., 2]] if d3 else []),  # 3D: NBR_DZ, last
         ],
         axis=-1,
     )

@@ -158,6 +158,7 @@ def wrap_xy_clamp_z(p: mx.array, L: float, z_lo: float, z_hi: float) -> mx.array
 
     z is never wrapped (−0.3 would become ``L − 0.3``); pass the float32 bounds ``Dims.z_lo``/``Dims.z_hi``.
     """
+    assert p.shape[-1] == 3, "wrap_xy_clamp_z takes 3D positions"  # static
     return mx.concatenate([wrap(p[..., :2], L), mx.clip(p[..., 2:], z_lo, z_hi)], axis=-1)
 
 
@@ -174,8 +175,36 @@ def to_body(v: mx.array, cos_h: mx.array, sin_h: mx.array) -> mx.array:
 
     ``cos_h``/``sin_h`` must broadcast against ``v[..., 0]`` (e.g. pass ``cos[:, None]`` for (N,K,2)).
     """
+    assert v.shape[-1] == 2, "to_body got 3D vectors (to_body3)"  # static: z would be dropped silently
     vx, vy = v[..., 0], v[..., 1]
     return mx.stack([vx * cos_h + vy * sin_h, vy * cos_h - vx * sin_h], axis=-1)
+
+
+def body_axes(
+    cos_h: mx.array, sin_h: mx.array, cos_p: mx.array, sin_p: mx.array
+) -> tuple[mx.array, mx.array, mx.array]:
+    """The 3D body frame ``(fwd, lat, up)`` of yaw θ and pitch φ, each ``(..., 3)`` in world axes (§27.2).
+
+    ``fwd = (cφ·cθ, cφ·sθ, sφ)``, ``lat = (−sθ, cθ, 0)`` (always horizontal) and ``up = fwd × lat =
+    (−sφ·cθ, −sφ·sθ, cφ)``: right-handed and orthonormal, and ``(θ, φ) = (0, 0)`` gives the world axes.
+    """
+    fwd = mx.stack([cos_p * cos_h, cos_p * sin_h, sin_p], axis=-1)
+    lat = mx.stack([-sin_h, cos_h, mx.zeros_like(cos_h)], axis=-1)
+    up = mx.stack([-sin_p * cos_h, -sin_p * sin_h, cos_p], axis=-1)
+    return fwd, lat, up
+
+
+def to_body3(v: mx.array, cos_h: mx.array, sin_h: mx.array, cos_p: mx.array, sin_p: mx.array) -> mx.array:
+    """Rotate world vectors ``(..., 3)`` into the body frame ``(fwd, lat, up)`` of ``body_axes`` (§27.2).
+
+    Yaw first (``h`` and ``lat`` exactly as ``to_body``), then pitch in the vertical plane:
+    ``fwd = h·cφ + vz·sφ`` and ``up = vz·cφ − h·sφ``. At φ = 0 with ``vz = 0`` the first two components reduce
+    to ``to_body``'s. The angle arrays must broadcast against ``v[..., 0]``, as for ``to_body``.
+    """
+    assert v.shape[-1] == 3, "to_body3 got 2D vectors (to_body)"  # static
+    vx, vy, vz = v[..., 0], v[..., 1], v[..., 2]
+    h, lat = vx * cos_h + vy * sin_h, vy * cos_h - vx * sin_h
+    return mx.stack([h * cos_p + vz * sin_p, lat, vz * cos_p - h * sin_p], axis=-1)
 
 
 def int_diffuse(r: mx.array, d_q8: int) -> mx.array:
