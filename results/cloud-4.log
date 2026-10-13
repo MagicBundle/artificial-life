@@ -1,0 +1,530 @@
+# cloud-4 logs
+
+## golden3d
+```
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /home/user/artificial-life/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/user/artificial-life
+configfile: pyproject.toml
+collecting ... collected 5 items
+
+tests/test_determinism_3d.py::test_same_seed_is_identical PASSED         [ 20%]
+tests/test_determinism_3d.py::test_different_seeds_differ PASSED         [ 40%]
+tests/test_determinism_3d.py::test_runtime_checks_only_touch_diag PASSED [ 60%]
+tests/test_determinism_3d.py::test_eager_step_matches_compiled PASSED    [ 80%]
+tests/test_determinism_3d.py::test_golden_3d SKIPPED (3D golden dige...) [100%]
+
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_determinism_3d.py:105: 3D golden digest not pinned yet: record ffb171300f5377b0397b24c2783d177365ff4006c30c7c291ac8aeb92148b3a1 in GOLDEN_3D (DESIGN §27.8)
+======================== 4 passed, 1 skipped in 35.83s =========================
+```
+
+## fast
+```
+........................................................................ [  5%]
+........................................................................ [ 11%]
+........................................................................ [ 16%]
+...........................................s............................ [ 22%]
+........................................................................ [ 28%]
+........................................................................ [ 33%]
+........................................................................ [ 39%]
+........................................................................ [ 44%]
+....................s................................................... [ 50%]
+........................................................................ [ 56%]
+........................................................................ [ 61%]
+........................................................................ [ 67%]
+........................................................................ [ 73%]
+........................................................................ [ 78%]
+........................................................................ [ 84%]
+........................................................................ [ 89%]
+........................................................................ [ 95%]
+........................................................s                [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_determinism_3d.py:105: 3D golden digest not pinned yet: record ffb171300f5377b0397b24c2783d177365ff4006c30c7c291ac8aeb92148b3a1 in GOLDEN_3D (DESIGN §27.8)
+SKIPPED [1] tests/test_director_llm.py:994: set ALIFE_LLM_URL to run against a real server
+SKIPPED [1] tests/test_viewer.py:237: could not import 'pygame': No module named 'pygame'
+1278 passed, 3 skipped, 23 deselected in 1514.06s (0:25:14)
+```
+
+## slow
+```
+.......................                                                  [100%]
+============================= slowest 30 durations =============================
+1045.33s call     tests/test_ecology.py::test_dev_ecology_is_alive_and_unsaturated
+862.44s call     tests/test_director_replay_slow.py::test_replay_with_the_real_timed_bounds
+24.22s call     tests/test_step_invariants.py::test_every_step_is_clean_long[float16]
+19.86s call     tests/test_crowd_3d.py::test_floor_pile_under_gravity[C64]
+15.25s call     tests/test_step_invariants.py::test_every_step_is_clean_long[float32]
+13.54s call     tests/test_crowd_3d.py::test_converging_sphere[C64]
+13.05s call     tests/test_step_invariants.py::test_stress_variant_long[immigration-float16]
+12.78s call     tests/test_step_invariants.py::test_stress_variant_long[reproduce-float16]
+12.44s call     tests/test_step_invariants.py::test_stress_variant_long[attack-float16]
+12.37s call     tests/test_step_invariants.py::test_stress_variant_long[f16-float16]
+12.10s call     tests/test_step_invariants.py::test_stress_variant_long[f16-float32]
+11.89s call     tests/test_step_invariants.py::test_stress_variant_long[dense-float16]
+11.79s call     tests/test_step_invariants.py::test_stress_variant_long[max_age-float16]
+9.62s call     tests/test_step_invariants.py::test_stress_variant_long[fast-float16]
+9.17s call     tests/test_step_invariants.py::test_stress_variant_long[immigration-float32]
+8.19s call     tests/test_step_invariants.py::test_stress_variant_long[reproduce-float32]
+7.76s call     tests/test_step_invariants.py::test_stress_variant_long[attack-float32]
+7.72s call     tests/test_step_invariants.py::test_stress_variant_long[dense-float32]
+7.10s call     tests/test_step_invariants.py::test_stress_variant_long[max_age-float32]
+6.76s call     tests/test_crowd_3d.py::test_floor_pile_under_gravity[C16]
+6.67s call     tests/test_step_invariants.py::test_stress_variant_long[fast-float32]
+4.33s call     tests/test_crowd_3d.py::test_converging_sphere[C16]
+2.70s call     tests/test_determinism.py::test_compiled_vs_eager_trajectories
+0.01s setup    tests/test_director_replay_slow.py::test_replay_with_the_real_timed_bounds
+
+(6 durations < 0.005s hidden.  Use -vv to show these durations.)
+23 passed, 1281 deselected in 2141.82s (0:35:41)
+```
+
+## compare
+```
+[cases] tiny_f32                          14.5s  diag=0 n_alive=286 digest=662b8f111f8a
+[cases] tiny_f16                          10.3s  diag=0 n_alive=288 digest=739f7f39df38
+[cases] tiny_bf16                         14.9s  diag=0 n_alive=291 digest=7bbeb3f249ec
+[cases] micro                              3.1s  diag=0 n_alive=14 digest=381854e13d89
+[cases] tiny_director_inert               15.6s  diag=0 n_alive=286 digest=662b8f111f8a
+[cases] tiny_director_levers              14.7s  diag=0 n_alive=267 digest=c59017809268
+[cases] tiny_imm_floor                    14.1s  diag=0 n_alive=400 digest=845cb4c7768e
+[cases] tiny_imm_every                    14.7s  diag=0 n_alive=485 digest=600625dd0cc8
+[cases] tiny_seasons_global               12.9s  diag=0 n_alive=282 digest=e22e1134b60f
+[cases] tiny_seasons_per_patch            12.5s  diag=0 n_alive=276 digest=da795651d3ab
+[cases] tiny_fast                          8.6s  diag=0 n_alive=287 digest=6f9507a41d33
+[cases] dev_20                            19.3s  diag=0 n_alive=4095 digest=38f1fe7ad714
+[cases] tiny_f32_eager                     2.2s  diag=0 n_alive=416 digest=e60e3be92a4d
+[cases] bench_staged_compiled              2.8s  diag=0 n_alive=426 digest=c8c644e8bd48
+[cases] bench_staged_eager                 0.8s  diag=0 n_alive=256 digest=ba6560179a4d
+[runs] run_tiny_cli                       7.1s  diag=- n_alive=- digest=082a9054858a
+[runs] run_tiny_director_scripted        11.3s  diag=- n_alive=- digest=25b3674ef5f0
+[runs] run_tiny_director_gardener        11.2s  diag=- n_alive=- digest=c3890f0e0ea0
+wrote /tmp/claude-0/-home-user-artificial-life/10f53a41-c8ef-5b68-9347-e890546b5650/scratchpad/cloud4/cloud-4-pr3-digests.json in 190.6s (0 case error(s))
+baseline: git afe52f534aee1a2b54ebf4001129ac3468f6271c (dirty=False)
+current : git 3bbcab0f36d93b2159046387d04f9dcd277f82c4 (dirty=False) alife=/home/user/artificial-life/src/alife/__init__.py
+schema                               ok
+config_hashes                        2 difference(s)
+     DIFF config_hashes.tiny3d: added in current = 90e799beeba91e8cb0e2e021ad9595340efa9975eb53f963047c63646e61797a
+     DIFF config_hashes.tiny3d+fast: added in current = fd56d2121a6f2bb680734dbdb134c03c73a2d10c350b27f1bbd024b8c966d1d2
+layout                               ok
+     INFO layout.GENOME_LAYOUT_VERSION_3D: added in current = 2
+cases.tiny_f32                       ok
+     INFO cases.tiny_f32.dims.nd: added in current = 2
+     INFO cases.tiny_f32.dims.d3: added in current = false
+     INFO cases.tiny_f32.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.tiny_f32.dims.fz: added in current = 1
+     INFO cases.tiny_f32.dims.n_cells: added in current = 1024
+     INFO cases.tiny_f32.dims.field_shape: added in current = [32, 32]
+     INFO cases.tiny_f32.dims.g_hash_z: added in current = 1
+     INFO cases.tiny_f32.dims.cell_hash_z: added in current = Infinity
+     INFO cases.tiny_f32.dims.z_lo: added in current = 0.0
+     INFO cases.tiny_f32.dims.z_hi: added in current = 0.0
+     INFO cases.tiny_f32.dims.z_ground: added in current = 0.0
+cases.tiny_f16                       ok
+     INFO cases.tiny_f16.dims.nd: added in current = 2
+     INFO cases.tiny_f16.dims.d3: added in current = false
+     INFO cases.tiny_f16.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.tiny_f16.dims.fz: added in current = 1
+     INFO cases.tiny_f16.dims.n_cells: added in current = 1024
+     INFO cases.tiny_f16.dims.field_shape: added in current = [32, 32]
+     INFO cases.tiny_f16.dims.g_hash_z: added in current = 1
+     INFO cases.tiny_f16.dims.cell_hash_z: added in current = Infinity
+     INFO cases.tiny_f16.dims.z_lo: added in current = 0.0
+     INFO cases.tiny_f16.dims.z_hi: added in current = 0.0
+     INFO cases.tiny_f16.dims.z_ground: added in current = 0.0
+cases.tiny_bf16                      ok
+     INFO cases.tiny_bf16.dims.nd: added in current = 2
+     INFO cases.tiny_bf16.dims.d3: added in current = false
+     INFO cases.tiny_bf16.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.tiny_bf16.dims.fz: added in current = 1
+     INFO cases.tiny_bf16.dims.n_cells: added in current = 1024
+     INFO cases.tiny_bf16.dims.field_shape: added in current = [32, 32]
+     INFO cases.tiny_bf16.dims.g_hash_z: added in current = 1
+     INFO cases.tiny_bf16.dims.cell_hash_z: added in current = Infinity
+     INFO cases.tiny_bf16.dims.z_lo: added in current = 0.0
+     INFO cases.tiny_bf16.dims.z_hi: added in current = 0.0
+     INFO cases.tiny_bf16.dims.z_ground: added in current = 0.0
+cases.micro                          ok
+     INFO cases.micro.dims.nd: added in current = 2
+     INFO cases.micro.dims.d3: added in current = false
+     INFO cases.micro.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.micro.dims.fz: added in current = 1
+     INFO cases.micro.dims.n_cells: added in current = 144
+     INFO cases.micro.dims.field_shape: added in current = [12, 12]
+     INFO cases.micro.dims.g_hash_z: added in current = 1
+     INFO cases.micro.dims.cell_hash_z: added in current = Infinity
+     INFO cases.micro.dims.z_lo: added in current = 0.0
+     INFO cases.micro.dims.z_hi: added in current = 0.0
+     INFO cases.micro.dims.z_ground: added in current = 0.0
+cases.tiny_director_inert            ok
+     INFO cases.tiny_director_inert.dims.nd: added in current = 2
+     INFO cases.tiny_director_inert.dims.d3: added in current = false
+     INFO cases.tiny_director_inert.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.tiny_director_inert.dims.fz: added in current = 1
+     INFO cases.tiny_director_inert.dims.n_cells: added in current = 1024
+     INFO cases.tiny_director_inert.dims.field_shape: added in current = [32, 32]
+     INFO cases.tiny_director_inert.dims.g_hash_z: added in current = 1
+     INFO cases.tiny_director_inert.dims.cell_hash_z: added in current = Infinity
+     INFO cases.tiny_director_inert.dims.z_lo: added in current = 0.0
+     INFO cases.tiny_director_inert.dims.z_hi: added in current = 0.0
+     INFO cases.tiny_director_inert.dims.z_ground: added in current = 0.0
+cases.tiny_director_levers           ok
+     INFO cases.tiny_director_levers.dims.nd: added in current = 2
+     INFO cases.tiny_director_levers.dims.d3: added in current = false
+     INFO cases.tiny_director_levers.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.tiny_director_levers.dims.fz: added in current = 1
+     INFO cases.tiny_director_levers.dims.n_cells: added in current = 1024
+     INFO cases.tiny_director_levers.dims.field_shape: added in current = [32, 32]
+     INFO cases.tiny_director_levers.dims.g_hash_z: added in current = 1
+     INFO cases.tiny_director_levers.dims.cell_hash_z: added in current = Infinity
+     INFO cases.tiny_director_levers.dims.z_lo: added in current = 0.0
+     INFO cases.tiny_director_levers.dims.z_hi: added in current = 0.0
+     INFO cases.tiny_director_levers.dims.z_ground: added in current = 0.0
+cases.tiny_imm_floor                 ok
+     INFO cases.tiny_imm_floor.dims.nd: added in current = 2
+     INFO cases.tiny_imm_floor.dims.d3: added in current = false
+     INFO cases.tiny_imm_floor.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.tiny_imm_floor.dims.fz: added in current = 1
+     INFO cases.tiny_imm_floor.dims.n_cells: added in current = 1024
+     INFO cases.tiny_imm_floor.dims.field_shape: added in current = [32, 32]
+     INFO cases.tiny_imm_floor.dims.g_hash_z: added in current = 1
+     INFO cases.tiny_imm_floor.dims.cell_hash_z: added in current = Infinity
+     INFO cases.tiny_imm_floor.dims.z_lo: added in current = 0.0
+     INFO cases.tiny_imm_floor.dims.z_hi: added in current = 0.0
+     INFO cases.tiny_imm_floor.dims.z_ground: added in current = 0.0
+cases.tiny_imm_every                 ok
+     INFO cases.tiny_imm_every.dims.nd: added in current = 2
+     INFO cases.tiny_imm_every.dims.d3: added in current = false
+     INFO cases.tiny_imm_every.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.tiny_imm_every.dims.fz: added in current = 1
+     INFO cases.tiny_imm_every.dims.n_cells: added in current = 1024
+     INFO cases.tiny_imm_every.dims.field_shape: added in current = [32, 32]
+     INFO cases.tiny_imm_every.dims.g_hash_z: added in current = 1
+     INFO cases.tiny_imm_every.dims.cell_hash_z: added in current = Infinity
+     INFO cases.tiny_imm_every.dims.z_lo: added in current = 0.0
+     INFO cases.tiny_imm_every.dims.z_hi: added in current = 0.0
+     INFO cases.tiny_imm_every.dims.z_ground: added in current = 0.0
+cases.tiny_seasons_global            ok
+     INFO cases.tiny_seasons_global.dims.nd: added in current = 2
+     INFO cases.tiny_seasons_global.dims.d3: added in current = false
+     INFO cases.tiny_seasons_global.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.tiny_seasons_global.dims.fz: added in current = 1
+     INFO cases.tiny_seasons_global.dims.n_cells: added in current = 1024
+     INFO cases.tiny_seasons_global.dims.field_shape: added in current = [32, 32]
+     INFO cases.tiny_seasons_global.dims.g_hash_z: added in current = 1
+     INFO cases.tiny_seasons_global.dims.cell_hash_z: added in current = Infinity
+     INFO cases.tiny_seasons_global.dims.z_lo: added in current = 0.0
+     INFO cases.tiny_seasons_global.dims.z_hi: added in current = 0.0
+     INFO cases.tiny_seasons_global.dims.z_ground: added in current = 0.0
+cases.tiny_seasons_per_patch         ok
+     INFO cases.tiny_seasons_per_patch.dims.nd: added in current = 2
+     INFO cases.tiny_seasons_per_patch.dims.d3: added in current = false
+     INFO cases.tiny_seasons_per_patch.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.tiny_seasons_per_patch.dims.fz: added in current = 1
+     INFO cases.tiny_seasons_per_patch.dims.n_cells: added in current = 1024
+     INFO cases.tiny_seasons_per_patch.dims.field_shape: added in current = [32, 32]
+     INFO cases.tiny_seasons_per_patch.dims.g_hash_z: added in current = 1
+     INFO cases.tiny_seasons_per_patch.dims.cell_hash_z: added in current = Infinity
+     INFO cases.tiny_seasons_per_patch.dims.z_lo: added in current = 0.0
+     INFO cases.tiny_seasons_per_patch.dims.z_hi: added in current = 0.0
+     INFO cases.tiny_seasons_per_patch.dims.z_ground: added in current = 0.0
+cases.tiny_fast                      ok
+     INFO cases.tiny_fast.dims.nd: added in current = 2
+     INFO cases.tiny_fast.dims.d3: added in current = false
+     INFO cases.tiny_fast.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.tiny_fast.dims.fz: added in current = 1
+     INFO cases.tiny_fast.dims.n_cells: added in current = 1024
+     INFO cases.tiny_fast.dims.field_shape: added in current = [32, 32]
+     INFO cases.tiny_fast.dims.g_hash_z: added in current = 1
+     INFO cases.tiny_fast.dims.cell_hash_z: added in current = Infinity
+     INFO cases.tiny_fast.dims.z_lo: added in current = 0.0
+     INFO cases.tiny_fast.dims.z_hi: added in current = 0.0
+     INFO cases.tiny_fast.dims.z_ground: added in current = 0.0
+cases.dev_20                         ok
+     INFO cases.dev_20.dims.nd: added in current = 2
+     INFO cases.dev_20.dims.d3: added in current = false
+     INFO cases.dev_20.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.dev_20.dims.fz: added in current = 1
+     INFO cases.dev_20.dims.n_cells: added in current = 16384
+     INFO cases.dev_20.dims.field_shape: added in current = [128, 128]
+     INFO cases.dev_20.dims.g_hash_z: added in current = 1
+     INFO cases.dev_20.dims.cell_hash_z: added in current = Infinity
+     INFO cases.dev_20.dims.z_lo: added in current = 0.0
+     INFO cases.dev_20.dims.z_hi: added in current = 0.0
+     INFO cases.dev_20.dims.z_ground: added in current = 0.0
+cases.tiny_f32_eager                 ok
+     INFO cases.tiny_f32_eager.dims.nd: added in current = 2
+     INFO cases.tiny_f32_eager.dims.d3: added in current = false
+     INFO cases.tiny_f32_eager.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.tiny_f32_eager.dims.fz: added in current = 1
+     INFO cases.tiny_f32_eager.dims.n_cells: added in current = 1024
+     INFO cases.tiny_f32_eager.dims.field_shape: added in current = [32, 32]
+     INFO cases.tiny_f32_eager.dims.g_hash_z: added in current = 1
+     INFO cases.tiny_f32_eager.dims.cell_hash_z: added in current = Infinity
+     INFO cases.tiny_f32_eager.dims.z_lo: added in current = 0.0
+     INFO cases.tiny_f32_eager.dims.z_hi: added in current = 0.0
+     INFO cases.tiny_f32_eager.dims.z_ground: added in current = 0.0
+cases.bench_staged_compiled          ok
+     INFO cases.bench_staged_compiled.dims.nd: added in current = 2
+     INFO cases.bench_staged_compiled.dims.d3: added in current = false
+     INFO cases.bench_staged_compiled.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.bench_staged_compiled.dims.fz: added in current = 1
+     INFO cases.bench_staged_compiled.dims.n_cells: added in current = 1024
+     INFO cases.bench_staged_compiled.dims.field_shape: added in current = [32, 32]
+     INFO cases.bench_staged_compiled.dims.g_hash_z: added in current = 1
+     INFO cases.bench_staged_compiled.dims.cell_hash_z: added in current = Infinity
+     INFO cases.bench_staged_compiled.dims.z_lo: added in current = 0.0
+     INFO cases.bench_staged_compiled.dims.z_hi: added in current = 0.0
+     INFO cases.bench_staged_compiled.dims.z_ground: added in current = 0.0
+cases.bench_staged_eager             ok
+     INFO cases.bench_staged_eager.dims.nd: added in current = 2
+     INFO cases.bench_staged_eager.dims.d3: added in current = false
+     INFO cases.bench_staged_eager.dims.lay: added in current = {"D_IN": 69, "D_OUT": 35, "F": 6, "INPUT_BLOCKS": [["bias", 0, 1], ["energy", 1, 1], ["age", 2, 1...
+     INFO cases.bench_staged_eager.dims.fz: added in current = 1
+     INFO cases.bench_staged_eager.dims.n_cells: added in current = 1024
+     INFO cases.bench_staged_eager.dims.field_shape: added in current = [32, 32]
+     INFO cases.bench_staged_eager.dims.g_hash_z: added in current = 1
+     INFO cases.bench_staged_eager.dims.cell_hash_z: added in current = Infinity
+     INFO cases.bench_staged_eager.dims.z_lo: added in current = 0.0
+     INFO cases.bench_staged_eager.dims.z_hi: added in current = 0.0
+     INFO cases.bench_staged_eager.dims.z_ground: added in current = 0.0
+runs.run_tiny_cli                   ok
+     INFO runs.run_tiny_cli.config_json.energy.buoyancy_cap_cost: added in current = 0
+     INFO runs.run_tiny_cli.config_json.energy.buoyancy_cost: added in current = 0
+     INFO runs.run_tiny_cli.config_json.fields.benthic_lambda: added in current = 0.0
+     INFO runs.run_tiny_cli.config_json.fields.photic_amp: added in current = 0.0
+     INFO runs.run_tiny_cli.config_json.fields.photic_lambda: added in current = 0.0
+     INFO runs.run_tiny_cli.config_json.mutation.buoy_init: added in current = 0.0
+     INFO runs.run_tiny_cli.config_json.mutation.buoy_sigma: added in current = 0.0
+     INFO runs.run_tiny_cli.config_json.physics.buoyancy_max: added in current = 0.0
+     INFO runs.run_tiny_cli.config_json.physics.floor_eps: added in current = 0.0
+     INFO runs.run_tiny_cli.config_json.physics.gravity: added in current = 0.0
+     INFO runs.run_tiny_cli.config_json.world.dims: added in current = 2
+     INFO runs.run_tiny_cli.config_json.world.height: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000000.safetensors.metadata.config.energy.buoyancy_cap_cost: added in current = 0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000000.safetensors.metadata.config.energy.buoyancy_cost: added in current = 0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000000.safetensors.metadata.config.fields.benthic_lambda: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000000.safetensors.metadata.config.fields.photic_amp: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000000.safetensors.metadata.config.fields.photic_lambda: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000000.safetensors.metadata.config.mutation.buoy_init: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000000.safetensors.metadata.config.mutation.buoy_sigma: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000000.safetensors.metadata.config.physics.buoyancy_max: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000000.safetensors.metadata.config.physics.floor_eps: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000000.safetensors.metadata.config.physics.gravity: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000000.safetensors.metadata.config.world.dims: added in current = 2
+     INFO runs.run_tiny_cli.checkpoints.step_0000000000.safetensors.metadata.config.world.height: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000050.safetensors.metadata.config.energy.buoyancy_cap_cost: added in current = 0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000050.safetensors.metadata.config.energy.buoyancy_cost: added in current = 0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000050.safetensors.metadata.config.fields.benthic_lambda: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000050.safetensors.metadata.config.fields.photic_amp: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000050.safetensors.metadata.config.fields.photic_lambda: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000050.safetensors.metadata.config.mutation.buoy_init: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000050.safetensors.metadata.config.mutation.buoy_sigma: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000050.safetensors.metadata.config.physics.buoyancy_max: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000050.safetensors.metadata.config.physics.floor_eps: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000050.safetensors.metadata.config.physics.gravity: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000050.safetensors.metadata.config.world.dims: added in current = 2
+     INFO runs.run_tiny_cli.checkpoints.step_0000000050.safetensors.metadata.config.world.height: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000100.safetensors.metadata.config.energy.buoyancy_cap_cost: added in current = 0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000100.safetensors.metadata.config.energy.buoyancy_cost: added in current = 0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000100.safetensors.metadata.config.fields.benthic_lambda: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000100.safetensors.metadata.config.fields.photic_amp: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000100.safetensors.metadata.config.fields.photic_lambda: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000100.safetensors.metadata.config.mutation.buoy_init: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000100.safetensors.metadata.config.mutation.buoy_sigma: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000100.safetensors.metadata.config.physics.buoyancy_max: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000100.safetensors.metadata.config.physics.floor_eps: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000100.safetensors.metadata.config.physics.gravity: added in current = 0.0
+     INFO runs.run_tiny_cli.checkpoints.step_0000000100.safetensors.metadata.config.world.dims: added in current = 2
+     INFO runs.run_tiny_cli.checkpoints.step_0000000100.safetensors.metadata.config.world.height: added in current = 0.0
+runs.run_tiny_director_scripted     ok
+     INFO runs.run_tiny_director_scripted.config_json.energy.buoyancy_cap_cost: added in current = 0
+     INFO runs.run_tiny_director_scripted.config_json.energy.buoyancy_cost: added in current = 0
+     INFO runs.run_tiny_director_scripted.config_json.fields.benthic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.config_json.fields.photic_amp: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.config_json.fields.photic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.config_json.mutation.buoy_init: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.config_json.mutation.buoy_sigma: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.config_json.physics.buoyancy_max: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.config_json.physics.floor_eps: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.config_json.physics.gravity: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.config_json.world.dims: added in current = 2
+     INFO runs.run_tiny_director_scripted.config_json.world.height: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000000.safetensors.metadata.config.energy.buoyancy_cap_cost: added in current = 0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000000.safetensors.metadata.config.energy.buoyancy_cost: added in current = 0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000000.safetensors.metadata.config.fields.benthic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000000.safetensors.metadata.config.fields.photic_amp: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000000.safetensors.metadata.config.fields.photic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000000.safetensors.metadata.config.mutation.buoy_init: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000000.safetensors.metadata.config.mutation.buoy_sigma: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000000.safetensors.metadata.config.physics.buoyancy_max: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000000.safetensors.metadata.config.physics.floor_eps: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000000.safetensors.metadata.config.physics.gravity: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000000.safetensors.metadata.config.world.dims: added in current = 2
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000000.safetensors.metadata.config.world.height: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000100.safetensors.metadata.config.energy.buoyancy_cap_cost: added in current = 0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000100.safetensors.metadata.config.energy.buoyancy_cost: added in current = 0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000100.safetensors.metadata.config.fields.benthic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000100.safetensors.metadata.config.fields.photic_amp: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000100.safetensors.metadata.config.fields.photic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000100.safetensors.metadata.config.mutation.buoy_init: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000100.safetensors.metadata.config.mutation.buoy_sigma: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000100.safetensors.metadata.config.physics.buoyancy_max: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000100.safetensors.metadata.config.physics.floor_eps: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000100.safetensors.metadata.config.physics.gravity: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000100.safetensors.metadata.config.world.dims: added in current = 2
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000100.safetensors.metadata.config.world.height: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000200.safetensors.metadata.config.energy.buoyancy_cap_cost: added in current = 0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000200.safetensors.metadata.config.energy.buoyancy_cost: added in current = 0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000200.safetensors.metadata.config.fields.benthic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000200.safetensors.metadata.config.fields.photic_amp: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000200.safetensors.metadata.config.fields.photic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000200.safetensors.metadata.config.mutation.buoy_init: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000200.safetensors.metadata.config.mutation.buoy_sigma: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000200.safetensors.metadata.config.physics.buoyancy_max: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000200.safetensors.metadata.config.physics.floor_eps: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000200.safetensors.metadata.config.physics.gravity: added in current = 0.0
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000200.safetensors.metadata.config.world.dims: added in current = 2
+     INFO runs.run_tiny_director_scripted.checkpoints.step_0000000200.safetensors.metadata.config.world.height: added in current = 0.0
+runs.run_tiny_director_gardener     ok
+     INFO runs.run_tiny_director_gardener.config_json.energy.buoyancy_cap_cost: added in current = 0
+     INFO runs.run_tiny_director_gardener.config_json.energy.buoyancy_cost: added in current = 0
+     INFO runs.run_tiny_director_gardener.config_json.fields.benthic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.config_json.fields.photic_amp: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.config_json.fields.photic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.config_json.mutation.buoy_init: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.config_json.mutation.buoy_sigma: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.config_json.physics.buoyancy_max: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.config_json.physics.floor_eps: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.config_json.physics.gravity: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.config_json.world.dims: added in current = 2
+     INFO runs.run_tiny_director_gardener.config_json.world.height: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000000.safetensors.metadata.config.energy.buoyancy_cap_cost: added in current = 0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000000.safetensors.metadata.config.energy.buoyancy_cost: added in current = 0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000000.safetensors.metadata.config.fields.benthic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000000.safetensors.metadata.config.fields.photic_amp: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000000.safetensors.metadata.config.fields.photic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000000.safetensors.metadata.config.mutation.buoy_init: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000000.safetensors.metadata.config.mutation.buoy_sigma: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000000.safetensors.metadata.config.physics.buoyancy_max: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000000.safetensors.metadata.config.physics.floor_eps: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000000.safetensors.metadata.config.physics.gravity: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000000.safetensors.metadata.config.world.dims: added in current = 2
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000000.safetensors.metadata.config.world.height: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000100.safetensors.metadata.config.energy.buoyancy_cap_cost: added in current = 0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000100.safetensors.metadata.config.energy.buoyancy_cost: added in current = 0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000100.safetensors.metadata.config.fields.benthic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000100.safetensors.metadata.config.fields.photic_amp: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000100.safetensors.metadata.config.fields.photic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000100.safetensors.metadata.config.mutation.buoy_init: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000100.safetensors.metadata.config.mutation.buoy_sigma: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000100.safetensors.metadata.config.physics.buoyancy_max: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000100.safetensors.metadata.config.physics.floor_eps: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000100.safetensors.metadata.config.physics.gravity: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000100.safetensors.metadata.config.world.dims: added in current = 2
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000100.safetensors.metadata.config.world.height: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000200.safetensors.metadata.config.energy.buoyancy_cap_cost: added in current = 0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000200.safetensors.metadata.config.energy.buoyancy_cost: added in current = 0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000200.safetensors.metadata.config.fields.benthic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000200.safetensors.metadata.config.fields.photic_amp: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000200.safetensors.metadata.config.fields.photic_lambda: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000200.safetensors.metadata.config.mutation.buoy_init: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000200.safetensors.metadata.config.mutation.buoy_sigma: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000200.safetensors.metadata.config.physics.buoyancy_max: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000200.safetensors.metadata.config.physics.floor_eps: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000200.safetensors.metadata.config.physics.gravity: added in current = 0.0
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000200.safetensors.metadata.config.world.dims: added in current = 2
+     INFO runs.run_tiny_director_gardener.checkpoints.step_0000000200.safetensors.metadata.config.world.height: added in current = 0.0
+
+FAIL: 2 difference(s) against the 2D baseline
+```
+
+## t3d_inspect
+```
+/tmp/claude-0/-home-user-artificial-life/10f53a41-c8ef-5b68-9347-e890546b5650/scratchpad/cloud4/t3d  (checkpoint step 3000, status done)
+config: n_max=1024, n_init=256, max_births_per_step=32, n_cap=992, world_size=128, field_grid=32, hidden=32, k_neighbors=8, weight_dtype=float16, immigration_floor=0, seed=0, steps=3000, metrics_every=10, checkpoint_every=50, compile=True, runtime_checks=cheap, config_hash=90e799beeba91e8cb0e2e021ad9595340efa9975eb53f963047c63646e61797a
+carrying capacity estimate: 1544
+checkpoints: [0, 2900, 2950, 3000]
+population: 255 alive, next_uid 820, generation max 8, mean age 1699
+energy: agents 7419557, structure 2550000, field 47690641, total 57660198; ledger OK
+diag: 0 []
+bodies: 64 (largest 6, converged True), hist {'1': 99, '2': 47, '3-4': 15, '5-8': 2, '9-16': 0, '17-32': 0, '33-64': 0, '65+': 0}
+clades: 128 alive, top share 0.0902, entropy 4.481, simpson 0.9797
+last metrics row: {"step": 3000, "steps": 10, "wall_s": 0.9018658530000039, "steps_per_s": 11.088123546019164, "peak_mem_gb": 0.039767142, "n_alive": 254.3, "n_alive_min": 253, "births": 4, "birth_requests": 4, "births_blocked": 0, "immigrants": 0, "deaths_starved": 3, "deaths_killed": 0, "deaths_aged": 0, "deaths_catastrophe": 0, "deaths_unlogged": 0, "insolvent": 3, "attacks": 1, "attack_hits": 1, "bonds_formed": 3, "bonds_broken": 9, "child_bonds": 0, "bonds_total": 106.1, "mean_bonds_per_agent": 0.8344475029492725, "sharers_frac": 0.25442390876917026, "emitters_frac": 0.8324813212740857, "predation_ratio": 0.004903291041363851, "kin_attack_bias": -0.0078125, "kin_bond_bias": 0.045572916666666664, "ledger": {"INJECT_REGEN": 520348, "INJECT_IMMIGRATION": 0, "HEAT_BASAL": 369872, "HEAT_ACTION": 113427, "HEAT_SHARE": 13826, "HEAT_BIRTH": 8000, "HEAT_OVERFLOW": 0, "FLOW_HARVEST": 538006, "FLOW_STOLEN": 2638, "FLOW_ATTACK_GAIN": 1844, "FLOW_SPILL": 794, "FLOW_SHARED": 132734, "FLOW_CORPSE": 30043, "FLOW_ENDOWMENT": 56783, "FLOW_STRUCTURE": 40000, "HEAT_BUOYANCY": 9173}, "cell_overflow": 0, "max_occupancy": 9, "v_clips": 0, "E_agents": 7419557, "E_structure": 2550000, "E_field": 47690641, "E_total": 57660198, "ledger_error": 0, "energy_mean": 29096.301960784313, "energy_median": 20290.0, "age_mean": 1699.2509803921569, "generation_max": 8, "generation_mean": 1.8901960784313725, "clades_alive": 128, "clade_entropy": 4.4811904703282135, "clade_simpson": 0.9797462514417532, "top_clade_share": 0.09019607843137255, "tag_var": 1.393344590367146, "sigma_q10": 0.023545515537261964, "sigma_q50": 0.029999999329447746, "sigma_q90": 0.036431010067462924, "rate_q10": 0.03849844560027123, "rate_q50": 0.05000000074505806, "rate_q90": 0.061671498417854305, "frac_q10": 0.45639653205871583, "frac_q50": 0.5, "frac_q90": 0.5451950550079345, "brain_cost_mean": 41.345098039215685, "resource_mean": 7762.148600260417, "chem_mean": [0.040436141192913055, 0.16795477271080017, 0.906354546546936], "diag": 0, "bodies_n": 64, "bodies_largest": 6, "bodies_mean_size": 2.730769230769231, "bodies_hist": {"1": 99, "2": 47, "3-4": 15, "5-8": 2, "9-16": 0, "17-32": 0, "33-64": 0, "65+": 0}, "frac_in_bodies_ge4": 0.13725490196078433, "bodies_converged": true, "weight_diversity": 11.244604948278525}
+full_check: OK
+```
+
+## t3d_summary
+```
+world {'dims': 3, 'field_cell': 4.0, 'height': 24.0, 'size': 128.0}
+physics {'radius': 1.0, 'gravity': 0.03, 'floor_eps': 0.1, 'buoyancy_max': 0.04}
+mutation.buoy_init 0.5
+
+step | n_alive | births | deaths_starved | deaths_killed | deaths_aged | deaths_catastrophe | deaths_unlogged | ledger_error | HEAT_BUOYANCY | steps/s   (counts summed over the preceding 300 steps)
+300 | 270.9 | 210 | 186 | 11 | 0 | 0 | 0 | 0 | 393003 | 16.2
+600 | 238.0 | 30 | 55 | 6 | 0 | 0 | 0 | 0 | 282032 | 16.7
+900 | 228.0 | 25 | 34 | 1 | 0 | 0 | 0 | 0 | 262087 | 17.8
+1200 | 228.3 | 39 | 38 | 1 | 0 | 0 | 0 | 0 | 251877 | 15.7
+1500 | 238.7 | 36 | 24 | 2 | 0 | 0 | 0 | 0 | 261633 | 15.9
+1800 | 241.3 | 43 | 37 | 2 | 0 | 0 | 0 | 0 | 266305 | 18.6
+2100 | 247.7 | 45 | 32 | 6 | 0 | 0 | 0 | 0 | 263271 | 16.9
+2400 | 237.6 | 36 | 44 | 4 | 0 | 0 | 0 | 0 | 264612 | 15.9
+2700 | 246.9 | 48 | 35 | 3 | 0 | 0 | 0 | 0 | 258135 | 14.6
+3000 | 254.3 | 52 | 40 | 4 | 0 | 0 | 0 | 0 | 270171 | 11.1
+
+steps/s (steps>100): median 16.9 mean 16.6 min 11.1 max 20.2
+max |ledger_error| over all rows: 0
+HEAT_BUOYANCY total over run: 2773126
+
+checkpoint step_0000003000.safetensors
+alive 255 pos shape (1024, 3)
+z: min 1.000 q25 1.000 median 1.000 q75 1.006 max 23.000 mean 2.654
+frac z<=1.2 (floor): 0.800 | mid-water: 0.165 | z>=22.8 (surface): 0.035
+histogram z (bins of 2): [210, 20, 3, 0, 3, 3, 2, 1, 0, 0, 2, 11]
+buoy_cap alive: mean 0.4966 median 0.5000 q10 0.4682 q90 0.5281
+```
+
+## t3d_run.log (last 40 lines)
+```
+step 2610 | pop 236 | births 0 deaths 0 | bonds 85 | largest body 7 | 17.2 steps/s | ledger OK
+step 2620 | pop 236 | births 2 deaths 3 | bonds 84 | largest body 7 | 16.9 steps/s | ledger OK
+step 2630 | pop 234 | births 0 deaths 2 | bonds 78 | largest body 5 | 17.2 steps/s | ledger OK
+step 2640 | pop 233 | births 1 deaths 0 | bonds 77 | largest body 5 | 16.9 steps/s | ledger OK
+step 2650 | pop 235 | births 2 deaths 0 | bonds 79 | largest body 5 | 17.9 steps/s | ledger OK
+step 2660 | pop 236 | births 1 deaths 1 | bonds 80 | largest body 5 | 15.7 steps/s | ledger OK
+step 2670 | pop 238 | births 4 deaths 1 | bonds 80 | largest body 5 | 16.9 steps/s | ledger OK
+step 2680 | pop 240 | births 3 deaths 1 | bonds 84 | largest body 5 | 16.1 steps/s | ledger OK
+step 2690 | pop 243 | births 5 deaths 0 | bonds 87 | largest body 5 | 18.7 steps/s | ledger OK
+step 2700 | pop 247 | births 1 deaths 0 | bonds 89 | largest body 5 | 14.6 steps/s | ledger OK
+step 2710 | pop 248 | births 3 deaths 1 | bonds 89 | largest body 5 | 15.9 steps/s | ledger OK
+step 2720 | pop 247 | births 0 deaths 2 | bonds 89 | largest body 5 | 16.9 steps/s | ledger OK
+step 2730 | pop 245 | births 2 deaths 5 | bonds 88 | largest body 5 | 18.2 steps/s | ledger OK
+step 2740 | pop 244 | births 1 deaths 0 | bonds 89 | largest body 5 | 15.2 steps/s | ledger OK
+step 2750 | pop 244 | births 1 deaths 3 | bonds 89 | largest body 6 | 13.7 steps/s | ledger OK
+step 2760 | pop 242 | births 1 deaths 1 | bonds 87 | largest body 7 | 16.5 steps/s | ledger OK
+step 2770 | pop 243 | births 0 deaths 0 | bonds 90 | largest body 7 | 14.3 steps/s | ledger OK
+step 2780 | pop 243 | births 2 deaths 0 | bonds 91 | largest body 7 | 16.0 steps/s | ledger OK
+step 2790 | pop 245 | births 0 deaths 1 | bonds 95 | largest body 7 | 15.8 steps/s | ledger OK
+step 2800 | pop 245 | births 2 deaths 1 | bonds 97 | largest body 6 | 14.0 steps/s | ledger OK
+step 2810 | pop 248 | births 6 deaths 0 | bonds 102 | largest body 6 | 17.0 steps/s | ledger OK
+step 2820 | pop 251 | births 3 deaths 2 | bonds 106 | largest body 6 | 15.4 steps/s | ledger OK
+step 2830 | pop 252 | births 2 deaths 2 | bonds 109 | largest body 6 | 12.4 steps/s | ledger OK
+step 2840 | pop 251 | births 0 deaths 1 | bonds 108 | largest body 6 | 17.3 steps/s | ledger OK
+step 2850 | pop 250 | births 3 deaths 3 | bonds 104 | largest body 6 | 15.4 steps/s | ledger OK
+step 2860 | pop 252 | births 4 deaths 1 | bonds 107 | largest body 9 | 17.4 steps/s | ledger OK
+step 2870 | pop 254 | births 2 deaths 1 | bonds 109 | largest body 10 | 18.3 steps/s | ledger OK
+step 2880 | pop 255 | births 2 deaths 1 | bonds 111 | largest body 11 | 18.1 steps/s | ledger OK
+step 2890 | pop 255 | births 4 deaths 4 | bonds 113 | largest body 11 | 18.1 steps/s | ledger OK
+step 2900 | pop 256 | births 2 deaths 2 | bonds 111 | largest body 6 | 17.8 steps/s | ledger OK
+step 2910 | pop 254 | births 0 deaths 3 | bonds 107 | largest body 6 | 15.7 steps/s | ledger OK
+step 2920 | pop 252 | births 0 deaths 2 | bonds 106 | largest body 11 | 15.3 steps/s | ledger OK
+step 2930 | pop 252 | births 2 deaths 0 | bonds 107 | largest body 11 | 15.0 steps/s | ledger OK
+step 2940 | pop 251 | births 0 deaths 2 | bonds 107 | largest body 11 | 15.3 steps/s | ledger OK
+step 2950 | pop 251 | births 0 deaths 0 | bonds 108 | largest body 11 | 17.9 steps/s | ledger OK
+step 2960 | pop 252 | births 2 deaths 0 | bonds 109 | largest body 11 | 15.2 steps/s | ledger OK
+step 2970 | pop 254 | births 2 deaths 0 | bonds 111 | largest body 13 | 16.9 steps/s | ledger OK
+step 2980 | pop 256 | births 2 deaths 1 | bonds 114 | largest body 13 | 14.3 steps/s | ledger OK
+step 2990 | pop 255 | births 0 deaths 2 | bonds 110 | largest body 8 | 11.5 steps/s | ledger OK
+step 3000 | pop 254 | births 4 deaths 3 | bonds 106 | largest body 6 | 11.1 steps/s | ledger OK
+```
