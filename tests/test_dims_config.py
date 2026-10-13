@@ -29,8 +29,9 @@ from alife.config import (
 TINY_HASH_V01 = "d25e0eaee7349ae366e3e4e60ebab107cf7a89fcf49be88a12d81099ff2561d5"
 K64_HASH = "69b4e21ad6b6016b17c11d6a1d9b3371c03b4b9f590fdb4a04752515c13a01d8"
 
-# A valid 3D variant of ``tiny`` once 3D is enabled: height 24 (FZ 6, G_z 4), chem_diffusion ≤ 1/6.
-TINY3D = ["world.dims=3", "world.height=24", "fields.chem_diffusion=0.16,0.1,0.16"]
+# A valid 3D variant of ``tiny`` once 3D is enabled: height 24 (FZ 6, G_z 4), chem_diffusion ≤ 1/6, and (PR 2,
+# §27.5) a benthic food band.
+TINY3D = ["world.dims=3", "world.height=24", "fields.chem_diffusion=0.16,0.1,0.16", "fields.benthic_lambda=8"]
 
 
 @pytest.fixture
@@ -62,7 +63,7 @@ def test_pinned_hashes_unchanged() -> None:
 
 
 def test_3d_keys_are_post_v01_and_hashed() -> None:
-    assert THREE_D_KEYS == (("world", "dims"), ("world", "height"))
+    assert THREE_D_KEYS[:2] == (("world", "dims"), ("world", "height"))  # PR 2 appends its keys
     assert set(THREE_D_KEYS) <= set(POST_V01_KEYS) and not set(THREE_D_KEYS) & set(UNHASHED_KEYS)
     assert config.DIMS_SUPPORTED == (2,)
 
@@ -158,7 +159,8 @@ BAD_3D: list[tuple[list[str], str, bool]] = [
     (["world.height=inf"], "world.height must be finite", True),
     (["world.size=inf"], "world.size must be positive and finite, got inf", True),  # not an OverflowError
     (["world.height=4"], "field layers FZ = 1 must be ≥ 2", False),
-    (["world.field_cell=1", "world.height=4"], "hash layers G_z", True),
+    # G_z = floor(6 / 8) = 0, with height − 2r = 4 ≥ 2·offspring_distance (the PR 2 rule) and FZ = 3.
+    (["world.field_cell=2", "world.height=6", "sensing.radius=8"], "hash layers G_z", True),
     (["world.height=68"], "world.height 68.0 must be ≤ world.size / 2 = 64.0", True),
     (["sensing.cell_capacity=1", "sensing.k_neighbors=28"], "27·C=27", False),
     (["fields.chem_diffusion=0.2,0.1,0.16"], "chem_diffusion must be ≤ 1/6 in 3D", True),

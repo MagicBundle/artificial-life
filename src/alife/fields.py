@@ -66,6 +66,9 @@ def fertility(
     Separable: ``Σ_p gy_p ⊗ gx_p`` with per-axis minimum-image offsets from cell centres. The sum is
     elementwise rather than ``gyᵀ @ gx`` because float32 matmul runs at reduced precision on some Apple GPUs
     (≈ 8e-4 relative on M5), which would perturb the integer regeneration map well beyond rounding.
+
+    In 3D (§27.5) the result is (FZ,FG,FG) indexed [z, y, x]: this 2D fertility times ``vertical_profile``,
+    whose floor entry is exactly 1, so layer 0 equals the 2D fertility bit for bit.
     """
     fg, L, fc = dims(cfg).fg, cfg.world.size, cfg.world.field_cell
     centres = (mx.arange(fg, dtype=mx.float32) + 0.5) * fc
@@ -78,7 +81,24 @@ def fertility(
         terms = (env.patch_gain * season_weights(step, cfg, env))[:, None, None] * terms
     elif step is not None and seasons_on(cfg.fields):  # static: seasons enabled
         terms = season_weights(step, cfg)[:, None, None] * terms
-    return mx.clip(cfg.fields.fertility_base + terms.sum(axis=0), 0.0, 1.0)
+    fert = mx.clip(cfg.fields.fertility_base + terms.sum(axis=0), 0.0, 1.0)
+    if dims(cfg).d3:  # static: broadcast over the layers; never a (PP,FZ,FG,FG) array
+        return fert[None] * vertical_profile(cfg)
+    return fert
+
+
+def vertical_profile(cfg: Config) -> mx.array:
+    """The 3D food profile ``V`` by layer index ``k``, (FZ,1,1) f32 (§27.5).
+
+    ``V[k] = min(1, exp(−k·fc/benthic_lambda) + photic_amp·exp(−(FZ−1−k)·fc/photic_lambda))`` with
+    ``fc = field_cell``: a benthic band at the floor plus an optional photic band under the surface (its term
+    exists only when ``photic_amp > 0``). ``V[0] = 1`` exactly. Built on the host from config constants.
+    """
+    d, fi, fc = dims(cfg), cfg.fields, cfg.world.field_cell
+    v = [math.exp(-k * fc / fi.benthic_lambda) for k in range(d.fz)]
+    if fi.photic_amp > 0:  # static: the photic band is on
+        v = [b + fi.photic_amp * math.exp(-(d.fz - 1 - k) * fc / fi.photic_lambda) for k, b in enumerate(v)]
+    return mx.array([min(1.0, x) for x in v], dtype=mx.float32).reshape(d.fz, 1, 1)
 
 
 def regen_rate(
@@ -87,6 +107,7 @@ def regen_rate(
     """Per-cell regeneration ``floor(regen_max·fertility)``, (FG,FG) int32 (seasonal at ``step`` if given).
 
     With ``env`` the product is scaled by ``env.regen_mult`` after ``regen_max·fertility``, so 1.0 is exact.
+    In 3D it has the fertility's shape (FZ,FG,FG) (§27.5).
     """
     rate = cfg.fields.regen_max * fertility(patch_pos, cfg, step, env)
     if env is not None:  # static: director enabled
@@ -97,11 +118,27 @@ def regen_rate(
 def cell_index(pos: mx.array, cfg: Config) -> mx.array:
     """Flat field-cell index ``cy·FG + cx`` of each position, (N,) int32 (§13).
 
-    ``% FG`` is a second seam guard: a position that rounds to ``L`` maps to cell 0.
+    ``% FG`` is a second seam guard: a position that rounds to ``L`` maps to cell 0. In 3D the index is
+    z-major, ``(cz·FG + cy)·FG + cx`` (``_cell_index_3d``, §27.5).
     """
+    if dims(cfg).d3:
+        return _cell_index_3d(pos, cfg)
+    assert pos.shape[-1] == 2, "the 2D cell index got 3D positions"  # static: z would be dropped silently
     fg = dims(cfg).fg
     cxy = ops.floor_i32(pos / cfg.world.field_cell) % fg
     return cxy[:, 1] * fg + cxy[:, 0]
+
+
+def _cell_index_3d(pos: mx.array, cfg: Config) -> mx.array:
+    """Z-major flat index ``(cz·FG + cy)·FG + cx`` of 3D positions, (N,) int32 (§27.5).
+
+    x and y keep the ``% FG`` seam guard; ``cz`` is clamped to ``[0, FZ − 1]``, never wrapped. Layer 0's index
+    equals the 2D index, and the floor cell below any position is ``fcell % FG²``.
+    """
+    d, fc = dims(cfg), cfg.world.field_cell
+    cxy = ops.floor_i32(pos[:, :2] / fc) % d.fg
+    cz = mx.clip(ops.floor_i32(pos[:, 2] / fc), 0, d.fz - 1)
+    return (cz * d.fg + cxy[:, 1]) * d.fg + cxy[:, 0]
 
 
 def _nbr_cells(fcell: mx.array, fg: int) -> tuple[mx.array, mx.array, mx.array, mx.array]:
@@ -125,6 +162,7 @@ def sample_fields(
 
     Dead rows get stale values (from their stale ``pos``); consumers mask by ``alive``.
     """
+    assert resource.ndim == 2, "2D field sampling got a 3D lattice"  # static: _nbr_cells would fold z into y
     fg = dims(cfg).fg
     fi, half = cfg.fields, cfg.sensing.chem_half_sat
     cos_h, sin_h = mx.cos(heading), mx.sin(heading)

@@ -12,7 +12,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import brain, config, fields, layout, ops, rng
-from alife.config import Config, dims
+from alife.config import Config, dims, is_3d
 
 R_HARD: Final = config.R_HARD  # (1 << 24) − 1: hard per-cell resource cap (§10.9)
 
@@ -222,14 +222,105 @@ def default_env(cfg: Config) -> dict[str, mx.array]:
 AGENT_FIELDS: Final = State._fields[: State._fields.index("W2") + 1]
 
 
+class State3(NamedTuple):
+    """The state of a 3D world (§27.4): ``State``'s 47 fields in the same order, then ``EXTRA_3D_FIELDS``.
+
+    ``pos`` and ``vel`` are (N,3), ``resource`` is (FZ,FG,FG) and ``chem`` (NCH,FZ,FG,FG); every other shared
+    field is as in ``State``. A parallel type, so ``State``, its digests and 2D checkpoints never change.
+    """
+
+    alive: mx.array
+    uid: mx.array
+    parent_uid: mx.array
+    clade: mx.array
+    generation: mx.array
+    birth_step: mx.array
+    energy: mx.array
+    pos: mx.array
+    vel: mx.array
+    heading: mx.array
+    h: mx.array
+    msg: mx.array
+    last_loss: mx.array
+    last_harvest: mx.array
+    last_inflow: mx.array
+    partner: mx.array
+    rev: mx.array
+    tag: mx.array
+    mut_sigma: mx.array
+    mut_rate: mx.array
+    offspring_frac: mx.array
+    brain_cost: mx.array
+    W1: mx.array
+    W2: mx.array
+    pend_slot: mx.array
+    pend_W1: mx.array
+    pend_W2: mx.array
+    resource: mx.array
+    chem: mx.array
+    patch_pos: mx.array
+    patch_vel: mx.array
+    key: mx.array
+    step: mx.array
+    next_uid: mx.array
+    total: mx.array
+    total0: mx.array
+    ledger_cum: mx.array
+    diag: mx.array
+    env_regen_mult: mx.array
+    env_season_amp: mx.array
+    env_season_period: mx.array
+    env_drift_mult: mx.array
+    env_patch_gain: mx.array
+    env_imm_request: mx.array
+    env_cat_center: mx.array  # (2,): the catastrophe is a vertical column
+    env_cat_radius: mx.array
+    env_cat_kill_p: mx.array
+    pitch: mx.array  # (N,) f32 in [−PITCH_MAX, PITCH_MAX]; stale on dead rows, like heading
+    buoy_cap: mx.array  # (N,) f32 in [0, 1]: heritable buoyancy cap (effective cap buoy_cap·buoyancy_max)
+
+    env = State.env  # the same read-only view (unannotated, so not a field)
+
+
+EXTRA_3D_FIELDS: Final = ("pitch", "buoy_cap")  # appended after State's fields (per-agent, leading dim N)
+AGENT_FIELDS_3D: Final = AGENT_FIELDS + EXTRA_3D_FIELDS
+
+
+def state_cls(cfg: Config) -> type[State] | type[State3]:
+    """The state type of a config: ``State3`` for a 3D world, else ``State``."""
+    return State3 if is_3d(cfg) else State
+
+
+def agent_fields(cfg: Config) -> tuple[str, ...]:
+    """The per-agent (leading dim N) fields of a config's state type, in canonical order."""
+    return AGENT_FIELDS_3D if is_3d(cfg) else AGENT_FIELDS
+
+
 def _pad_rows(a: mx.array, n: int) -> mx.array:
     """Append zero rows so the leading dim becomes ``n``."""
     pad = mx.zeros((n - a.shape[0], *a.shape[1:]), dtype=a.dtype)
     return mx.concatenate([a, pad], axis=0)
 
 
-def _initial_state(cfg: Config) -> State:
-    """The (unevaluated) initial state of §2.2; ``init_state`` evaluates it."""
+def _founder_kinematics_3d(cfg: Config, ik: mx.array, n0: int) -> tuple[mx.array, mx.array, mx.array]:
+    """3D founders (§27.4): ``(pos (n0,3), heading (n0,), pitch (n0,))``.
+
+    Positions are uniform in ``[0, L)² × [z_lo, z_hi]`` from ``InitStream.POS``; yaw is uniform in ``[−π, π)``
+    and pitch in ``[−PITCH_MAX, PITCH_MAX]`` from one ``(n0, 2)`` draw of ``InitStream.HEADING``. The 2D keys
+    with 3D-only shapes: no new stream and no RNG layout bump.
+    """
+    d, L, pm = dims(cfg), cfg.world.size, layout.PITCH_MAX
+    lo, hi = mx.array([0.0, 0.0, d.z_lo]), mx.array([L, L, d.z_hi])
+    pos = mx.random.uniform(lo, hi, (n0, 3), key=ik[rng.InitStream.POS])
+    angles = mx.random.uniform(
+        mx.array([-math.pi, -pm]), mx.array([math.pi, pm]), (n0, 2), key=ik[rng.InitStream.HEADING]
+    )
+    heading, pitch = ops.wrap_angle(angles[:, 0]), mx.clip(angles[:, 1], -pm, pm)
+    return ops.wrap_xy_clamp_z(pos, L, d.z_lo, d.z_hi), heading, pitch
+
+
+def _initial_state(cfg: Config) -> State | State3:
+    """The (unevaluated) initial state of §2.2 (``State3`` in 3D, §27.4); ``init_state`` evaluates it."""
     d = dims(cfg)
     n, m, n0, L = d.n, d.m, cfg.population.n_init, cfg.world.size
     mu = cfg.mutation
@@ -237,8 +328,11 @@ def _initial_state(cfg: Config) -> State:
     rows = mx.arange(n, dtype=mx.int32)
     alive = rows < n0
 
-    pos = ops.wrap(mx.random.uniform(0.0, L, (n0, 2), key=ik[rng.InitStream.POS]), L)
-    heading = ops.wrap_angle(mx.random.uniform(-math.pi, math.pi, (n0,), key=ik[rng.InitStream.HEADING]))
+    if d.d3:  # static: uniform in the volume, from the 2D keys with 3D-only shapes (§27.4)
+        pos, heading, pitch = _founder_kinematics_3d(cfg, ik, n0)
+    else:
+        pos = ops.wrap(mx.random.uniform(0.0, L, (n0, 2), key=ik[rng.InitStream.POS]), L)
+        heading = ops.wrap_angle(mx.random.uniform(-math.pi, math.pi, (n0,), key=ik[rng.InitStream.HEADING]))
     tag = mx.random.uniform(-1.0, 1.0, (n0, layout.T), key=ik[rng.InitStream.TAG])
     w1, w2 = brain.init_weights(ik[rng.InitStream.W1], ik[rng.InitStream.W2], n0, cfg)
     brain_cost = brain.l1_cost(w1, w2, cfg)
@@ -260,7 +354,7 @@ def _initial_state(cfg: Config) -> State:
         birth_step=full((n,), -1, mx.int32),
         energy=energy,
         pos=_pad_rows(pos, n),
-        vel=full((n, 2), 0.0, mx.float32),
+        vel=full((n, d.nd), 0.0, mx.float32),
         heading=_pad_rows(heading, n),
         h=full((n, d.h), 0.0, mx.float32),
         msg=full((n, layout.MSG), 0.0, mx.float32),
@@ -280,7 +374,7 @@ def _initial_state(cfg: Config) -> State:
         pend_W1=full((m, d.w1_rows, d.h), 0, d.wdtype),
         pend_W2=full((m, d.w2_rows, d.lay.D_OUT), 0, d.wdtype),
         resource=resource,
-        chem=full((layout.NCH, d.fg, d.fg), 0.0, mx.float32),
+        chem=full((layout.NCH, *d.field_shape), 0.0, mx.float32),
         patch_pos=patch_pos,
         patch_vel=patch_vel,
         key=ik[rng.InitStream.STATE_KEY],
@@ -292,11 +386,17 @@ def _initial_state(cfg: Config) -> State:
         diag=mx.array(0, dtype=mx.int32),
         **default_env(cfg),
     )
+    if d.d3:  # static: dead rows rest on the floor at (0, 0, z_lo); every row's cap starts at buoy_init
+        s = State3(
+            *s._replace(pos=mx.where(alive[:, None], s.pos, mx.array([0.0, 0.0, d.z_lo]))),
+            pitch=_pad_rows(pitch, n),
+            buoy_cap=full((n,), mu.buoy_init, mx.float32),
+        )
     total = total_energy(s.energy, s.alive, s.resource, cfg)
     return s._replace(total=total, total0=total)
 
 
-def init_state(cfg: Config) -> State:
+def init_state(cfg: Config) -> State | State3:
     """Founders in rows ``[0, n_init)``, canonical dead rows elsewhere, seeded by ``run.seed``; evaluated."""
     s = _initial_state(cfg)
     mx.eval(s)
@@ -359,6 +459,7 @@ def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]:
         "env_cat_center": ((2,), f32),
         "env_cat_radius": ((), f32),
         "env_cat_kill_p": ((), f32),
+        **({"pitch": ((n,), f32), "buoy_cap": ((n,), f32)} if d.d3 else {}),  # State3 (§27.4)
     }
 
 
@@ -373,25 +474,28 @@ def age(step: mx.array, birth_step: mx.array) -> mx.array:
     return (step - 1 - birth_step).astype(mx.int32)
 
 
-def state_to_arrays(s: State) -> dict[str, mx.array]:
+def state_to_arrays(s: State | State3) -> dict[str, mx.array]:
     """Field name → array, in canonical order."""
-    return dict(zip(State._fields, s, strict=True))
+    return dict(zip(type(s)._fields, s, strict=True))
 
 
-def state_from_arrays(d: Mapping[str, mx.array], cfg: Config | None = None) -> State:
-    """Rebuild a State from a name-keyed mapping; the key set must equal ``State._fields`` exactly.
+def state_from_arrays(d: Mapping[str, mx.array], cfg: Config | None = None) -> State | State3:
+    """Rebuild a state from a name-keyed mapping; the key set must equal the state type's fields exactly.
 
-    The one exception: when ``cfg`` is given and every missing key is an ``env_*`` field (a pre-director
-    checkpoint), those fields are filled with the inert ``default_env(cfg)``.
+    The type is ``state_cls(cfg)``, or without ``cfg`` ``State3`` when the keys include ``EXTRA_3D_FIELDS``.
+    The one exception: when ``cfg`` is given for a 2D world and every missing key is an ``env_*`` field (a
+    pre-director checkpoint), those fields are filled with the inert ``default_env(cfg)``.
     """
-    keys, want = set(d), set(State._fields)
-    if cfg is not None and keys < want and (want - keys) <= set(ENV_FIELDS):
+    keys = set(d)
+    cls = state_cls(cfg) if cfg is not None else State3 if set(EXTRA_3D_FIELDS) <= keys else State
+    want = set(cls._fields)
+    if cls is State and cfg is not None and keys < want and (want - keys) <= set(ENV_FIELDS):
         d = {**default_env(cfg), **d}
         keys = set(d)
     if keys != want:
         missing, extra = sorted(want - keys), sorted(keys - want)
-        raise ValueError(f"state arrays do not match State fields: missing={missing}, extra={extra}")
-    return State(*(d[name] for name in State._fields))
+        raise ValueError(f"state arrays do not match {cls.__name__} fields: missing={missing}, extra={extra}")
+    return cls(*(d[name] for name in cls._fields))
 
 
 def to_numpy(a: mx.array) -> np.ndarray:
@@ -401,7 +505,7 @@ def to_numpy(a: mx.array) -> np.ndarray:
     return np.array(a, copy=True)
 
 
-def _digest(s: State, names: tuple[str, ...]) -> str:
+def _digest(s: State | State3, names: tuple[str, ...]) -> str:
     h = hashlib.sha256()
     for name in names:
         a = getattr(s, name)
@@ -411,9 +515,9 @@ def _digest(s: State, names: tuple[str, ...]) -> str:
     return h.hexdigest()
 
 
-def state_digest(s: State) -> str:
-    """SHA-256 hex over every field (name, dtype, shape, bytes) in ``State._fields`` order."""
-    return _digest(s, State._fields)
+def state_digest(s: State | State3) -> str:
+    """SHA-256 hex over every field (name, dtype, shape, bytes) in the state type's ``_fields`` order."""
+    return _digest(s, type(s)._fields)
 
 
 def legacy_state_digest(s: State) -> str:
@@ -421,5 +525,8 @@ def legacy_state_digest(s: State) -> str:
 
     It equals the digest the engine produced before the ``env_*`` fields existed, so the golden pin and
     bit-identity checks against old trajectories stay comparable. ``state_digest`` also covers ``env_*``.
+    A 3D state has no v0 digest (``TypeError``).
     """
+    if isinstance(s, State3):
+        raise TypeError("legacy_state_digest is defined for 2D states only (the v0 layout)")
     return _digest(s, V0_FIELDS)

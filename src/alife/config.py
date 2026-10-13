@@ -20,6 +20,7 @@ from typing import Any, Final
 from urllib.parse import urlsplit
 
 import mlx.core as mx
+import numpy as np
 
 from alife import layout
 
@@ -80,6 +81,9 @@ class PhysicsConfig:
     v_max: float = 0.5
     k_repel: float = 0.08
     thrust_contact_limit: float = 4.0  # thrust × max(0, 1 − contacts/limit) (§9)
+    gravity: float = 0.0  # 3D (§27.3): downward body force on every survivor; added after v0.1
+    floor_eps: float = 0.0  # 3D: grounded iff z ≤ radius + floor_eps (the floor only)
+    buoyancy_max: float = 0.0  # 3D: upward force at buoy_cap = 1 and full OUT_BUOYANCY; 0 = no actuator
 
 
 @dataclass(frozen=True)
@@ -147,6 +151,8 @@ class MutationConfig:
     frac_max: float = 0.9
     tau_frac: float = 0.1
     tag_sigma: float = 0.02
+    buoy_init: float = 0.0  # 3D (§27.4): buoy_cap ∈ [0, 1] of founders and immigrants; added after v0.1
+    buoy_sigma: float = 0.0  # 3D: additive Gaussian mutation of buoy_cap, clipped to [0, 1] (like tag_sigma)
 
 
 @dataclass(frozen=True)
@@ -165,6 +171,9 @@ class FieldConfig:
     season_period: int = 0  # steps per seasonal cycle; 0 disables seasons (static); added after v0.1
     season_amplitude: float = 0.0  # A in [0, 1]: patch weight 1 + A*sin(2*pi*t/P + phi_p)
     season_mode: str = "global"  # global (phi_p = 0) | per_patch (phi_p = 2*pi*p/PP)
+    benthic_lambda: float = 0.0  # 3D (§27.5): e-folding height of the floor food band; added after v0.1
+    photic_amp: float = 0.0  # 3D: amplitude in [0, 1] of the surface food band; 0 = off
+    photic_lambda: float = 0.0  # 3D: e-folding depth of the surface band below the surface
 
 
 @dataclass(frozen=True)
@@ -248,6 +257,10 @@ class Dims:
     field_shape: tuple[int, ...]  # (FG, FG) in 2D, (FZ, FG, FG) in 3D
     g_hash_z: int  # hash layers floor(height / radius); 1 in 2D
     cell_hash_z: float  # height / g_hash_z; inf in 2D
+    # The f32 z bounds every 3D clamp and check uses (§27.2); 0.0 in 2D (unused).
+    z_lo: float  # the smallest float32 ≥ physics.radius
+    z_hi: float  # the largest float32 ≤ height − physics.radius
+    z_ground: float  # float32(radius + floor_eps): grounded iff z ≤ z_ground
 
 
 PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k")
@@ -279,6 +292,18 @@ def _field_fg(cfg: Config) -> int:
     return round(cfg.world.size / cfg.world.field_cell)
 
 
+def _f32_at_least(x: float) -> float:
+    """The smallest float32 ≥ ``x``, as a Python float (MLX casts Python bounds to float32)."""
+    f = np.float32(x)  # nearest; compared in float64 (NumPy would compare a Python float in float32)
+    return float(f) if float(f) >= x else float(np.nextafter(f, np.float32(np.inf)))
+
+
+def _f32_at_most(x: float) -> float:
+    """The largest float32 ≤ ``x``, as a Python float."""
+    f = np.float32(x)
+    return float(f) if float(f) <= x else float(np.nextafter(f, np.float32(-np.inf)))
+
+
 @functools.cache
 def dims(cfg: Config) -> Dims:
     """Derived sizes for a (validated) config. Cached per config."""
@@ -289,12 +314,16 @@ def dims(cfg: Config) -> Dims:
     w1_rows, w2_rows = lay.D_IN + h, h + 1
     e_max, s = cfg.energy.e_max, cfg.energy.structure
     fg = _field_fg(cfg)
+    r = cfg.physics.radius
     if nd == 3:
         fz = round(cfg.world.height / cfg.world.field_cell)
         g_hash_z = math.floor(cfg.world.height / cfg.sensing.radius)
         cell_hash_z = cfg.world.height / g_hash_z if g_hash_z > 0 else float("inf")
+        z_lo, z_hi = _f32_at_least(r), _f32_at_most(cfg.world.height - r)
+        z_ground = float(np.float32(r + cfg.physics.floor_eps))
     else:
         fz, g_hash_z, cell_hash_z = 1, 1, float("inf")
+        z_lo = z_hi = z_ground = 0.0
     return Dims(
         n=n,
         m=m,
@@ -321,6 +350,9 @@ def dims(cfg: Config) -> Dims:
         field_shape=(fz, fg, fg) if nd == 3 else (fg, fg),
         g_hash_z=g_hash_z,
         cell_hash_z=cell_hash_z,
+        z_lo=z_lo,
+        z_hi=z_hi,
+        z_ground=z_ground,
     )
 
 
@@ -555,6 +587,14 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("director", "yoke_log"),
     ("world", "dims"),
     ("world", "height"),
+    ("physics", "gravity"),
+    ("physics", "floor_eps"),
+    ("physics", "buoyancy_max"),
+    ("mutation", "buoy_init"),
+    ("mutation", "buoy_sigma"),
+    ("fields", "benthic_lambda"),
+    ("fields", "photic_amp"),
+    ("fields", "photic_lambda"),
 )
 
 # The POST_V01 keys of the 3D world (docs/3D.md, §27.1). In a 2D world every one but ``world.dims`` must keep
@@ -562,6 +602,14 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
 THREE_D_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("world", "dims"),
     ("world", "height"),
+    ("physics", "gravity"),
+    ("physics", "floor_eps"),
+    ("physics", "buoyancy_max"),
+    ("mutation", "buoy_init"),
+    ("mutation", "buoy_sigma"),
+    ("fields", "benthic_lambda"),
+    ("fields", "photic_amp"),
+    ("fields", "photic_lambda"),
 )
 # The world.dims values validate accepts. Read at call time, so tests of 3D code can widen it before 3D is
 # enabled (docs/3D.md §10: PR 3 adds 3).
@@ -756,6 +804,12 @@ def validate(cfg: Config) -> None:
             req(g_z >= 1, f"hash layers G_z = floor(height / radius) = {g_z} must be ≥ 1")
             # Then |dz| < L/2 for any two agents, so min_image is the identity on z (§27.1).
             req(2 * h <= w.size, f"world.height {h} must be ≤ world.size / 2 = {w.size / 2}")
+        if math.isfinite(h):  # room for a child's vertical reflection at full offset (§27.4)
+            req(
+                h - 2 * ph.radius >= 2 * rp.offspring_distance,
+                f"world.height − 2·physics.radius = {h - 2 * ph.radius} must be ≥ "
+                f"2·repro.offspring_distance = {2 * rp.offspring_distance}",
+            )
 
     # Interaction ranges.
     need = max(bo.form_range, co.range, 2 * ph.radius)
@@ -802,6 +856,24 @@ def validate(cfg: Config) -> None:
     req(ph.thrust_max < 2 * ph.radius * ph.k_repel, "physics.thrust_max must be < 2·radius·k_repel")
     req(ph.v_max <= ph.radius, "physics.v_max must be ≤ physics.radius")
     req(ph.thrust_contact_limit > 0, "physics.thrust_contact_limit must be > 0")
+    if d3:  # gravity, the floor and buoyancy (§27.3)
+        g, bmax = ph.gravity, ph.buoyancy_max
+        climb = ph.thrust_max * math.sin(layout.PITCH_MAX)
+        req(0 <= g < climb, f"physics.gravity {g} must be in [0, thrust_max·sin(PITCH_MAX) = {climb:.4g})")
+        req(
+            ph.floor_eps >= 0 and ph.radius + ph.floor_eps < w.field_cell,
+            f"physics.floor_eps {ph.floor_eps} must be ≥ 0 with radius + floor_eps < world.field_cell "
+            "(a grounded agent is in the floor layer)",
+        )
+        req(0 <= bmax < math.inf, f"physics.buoyancy_max must be ≥ 0 and finite, got {bmax}")
+        # The 3D form of thrust_max < 2·radius·k_repel: full thrust plus the net vertical load must not push a
+        # resting agent through the one below it (or above it, when buoyant).
+        load = ph.thrust_max + max(g, bmax - g)
+        req(
+            load < 2 * ph.radius * ph.k_repel,
+            f"physics.thrust_max + max(gravity, buoyancy_max − gravity) = {load:.4g} must be "
+            f"< 2·radius·k_repel = {2 * ph.radius * ph.k_repel:.4g}",
+        )
 
     # Bond geometry.
     req(
@@ -864,6 +936,15 @@ def validate(cfg: Config) -> None:
     if d3:  # the explicit 7-point stencil is stable for diffusion ≤ 1/6
         req(all(v <= 1 / 6 for v in fi.chem_diffusion), "every fields.chem_diffusion must be ≤ 1/6 in 3D")
 
+    # Vertical food profile (3D, §27.5).
+    if d3:
+        req(fi.benthic_lambda > 0, f"fields.benthic_lambda must be > 0 in 3D, got {fi.benthic_lambda}")
+        req(0 <= fi.photic_amp <= 1, f"fields.photic_amp must be in [0, 1], got {fi.photic_amp}")
+        req(
+            fi.photic_amp == 0 or fi.photic_lambda > 0,
+            f"fields.photic_lambda must be > 0 when fields.photic_amp > 0, got {fi.photic_lambda}",
+        )
+
     # Rates and gene bounds.
     for name, val in (
         ("bonds.share_efficiency", bo.share_efficiency),
@@ -874,6 +955,13 @@ def validate(cfg: Config) -> None:
     req(0 < mu.frac_min <= mu.frac_init <= mu.frac_max < 1, "need 0 < frac_min ≤ frac_init ≤ frac_max < 1")
     req(0 < mu.sigma_min <= mu.sigma_init <= mu.sigma_max, "need 0 < sigma_min ≤ sigma_init ≤ sigma_max")
     req(0 < mu.rate_min <= mu.rate_init <= mu.rate_max < 1, "need 0 < rate_min ≤ rate_init ≤ rate_max < 1")
+    if d3:  # the buoyancy cap (§27.4): inert unless the actuator exists
+        req(0 <= mu.buoy_init <= 1, f"mutation.buoy_init must be in [0, 1], got {mu.buoy_init}")
+        req(0 <= mu.buoy_sigma < math.inf, f"mutation.buoy_sigma must be ≥ 0 and finite, got {mu.buoy_sigma}")
+        req(
+            ph.buoyancy_max > 0 or (mu.buoy_init == 0 and mu.buoy_sigma == 0),
+            "mutation.buoy_init and mutation.buoy_sigma must be 0 when physics.buoyancy_max = 0",
+        )
 
     # Enumerations.
     req(
@@ -898,6 +986,8 @@ def validate(cfg: Config) -> None:
         )
 
     # Director.
+    if d3:  # its levers, vital signs and log are 2D until docs/3D.md PR 4
+        req(not di.enabled, "director.enabled is not supported with world.dims = 3 yet (docs/3D.md PR 4)")
     req(di.persona in PERSONAS, f"director.persona {di.persona!r} not in {PERSONAS}")
     req(di.rule_every >= 1, f"director.rule_every must be ≥ 1, got {di.rule_every}")
     req(di.budget_per_100k >= 0, f"director.budget_per_100k must be ≥ 0, got {di.budget_per_100k}")

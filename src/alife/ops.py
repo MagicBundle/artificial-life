@@ -153,6 +153,14 @@ def wrap(x: mx.array, L: float) -> mx.array:
     return mx.where(r >= L, r - L, r)
 
 
+def wrap_xy_clamp_z(p: mx.array, L: float, z_lo: float, z_hi: float) -> mx.array:
+    """3D positions ``(..., 3)``: x and y wrapped into ``[0, L)`` (``wrap``), z clamped to ``[z_lo, z_hi]``.
+
+    z is never wrapped (−0.3 would become ``L − 0.3``); pass the float32 bounds ``Dims.z_lo``/``Dims.z_hi``.
+    """
+    return mx.concatenate([wrap(p[..., :2], L), mx.clip(p[..., 2:], z_lo, z_hi)], axis=-1)
+
+
 def wrap_angle(a: mx.array) -> mx.array:
     """Map angles into ``[−π, π)``; the result lies inside that interval in float32 and float64 terms."""
     two_pi = 2.0 * math.pi
