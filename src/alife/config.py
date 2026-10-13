@@ -265,7 +265,7 @@ class Dims:
     z_ground: float  # max(z_lo, the largest float32 ≤ radius + floor_eps): grounded iff z ≤ z_ground
 
 
-PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d")
+PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d", "64k3d")
 OVERLAYS: tuple[str, ...] = ("fast",)
 DEFAULT_PRESET: Final = "64k"
 

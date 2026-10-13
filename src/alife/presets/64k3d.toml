@@ -1,0 +1,68 @@
+# 64k3d: the 3D world at 64k scale (N = 65 536, M = 1 024; DESIGN §27.13). A 320 x 320 x 80 water column
+# with a floor and a surface (FG = 80, FZ = 20 field layers, a 53 x 53 x 13 hash grid), gravity, the buoyancy
+# actuator and a benthic plus photic food profile. One key per line: the GUI reads the scalars of this file.
+#
+# PROVISIONAL. The values come from the cloud tuning sweeps on tiny3d and DEV3D (CPU, DESIGN §27.13) and
+# from the sizing arithmetic below, none of it measured at this size yet. To be confirmed on the Mac, once the
+# GPU is free: `alife bench --preset 64k3d --stages` (time and memory of the 27 * C = 648 candidates per
+# agent), `cell_overflow` in a short run (C), and a short tuning run (the population against K_est).
+[population]
+n_max = 65536
+# The founders' first generation multiplies the population by 1.4 to 1.6 within about 100 steps (tiny3d
+# 256 -> 413, DEV3D 4 096 -> 5 900), so 16 384 (as 64k) peaks near 25 000, under the K_est of about 33 000
+# of a mostly benthic steady state. Seeding at K_est, or the 4x over-seeding of DEV3D, overshoots and crashes.
+n_init = 16384
+max_births_per_step = 1024
+
+[world]
+size = 320.0
+dims = 3
+height = 80.0
+
+[physics]
+# 0.015: the cloud sweeps (g 0.01 and 0.03, tiny3d) give clade-specific depth niches at 0.01 (about 40 %
+# grounded, clade-height information 0.70) and a mostly benthic population at 0.03 (about 80 %, 0.30 to 0.41).
+gravity = 0.015
+floor_eps = 0.1
+# thrust_max + max(gravity, buoyancy_max - gravity) = 0.125 < 2 r k_repel = 0.16.
+buoyancy_max = 0.04
+
+[sensing]
+# K = 8: K = 12 cannot pass validation at the default physics (it needs k_repel <= 0.058 for the stability
+# number and > 0.065 for non-penetration), and barely changed the ecology where it could run.
+k_neighbors = 8
+# C = 24: no hash cell overflowed at C = 16 on tiny3d and DEV3D (peak occupancy 13), but floor piles reached
+# 28 to 36 in the crowd tests, and the K_est below puts about 5x the 2D density on the floor. Q = 27 C = 648.
+cell_capacity = 24
+
+[energy]
+# Keeps a founder's brain cost at the 2D value: its expected L1 is 10.5 % larger than in 2D (the wider
+# brain, 4 999 weights against 4 387), so 0.1 / 1.105: 37.63 q/step against 37.64 (founder_brain_cost).
+brain_cost_per_l1 = 0.0905
+# The cloud sweep (4 vs 16, and 2 vs 8) found no systematic effect of the use cost; the upkeep sets the
+# energy share of the cap (about 2.5 % of basal at 8) and so a selection gradient on it.
+buoyancy_cost = 16
+buoyancy_cap_cost = 8
+
+[mutation]
+buoy_init = 0.5
+buoy_sigma = 0.02
+
+[fields]
+n_patches = 8
+patch_sigma = 24.0
+# regen_max: K_est (occupancy-weighted, DESIGN §27.10) of about 33 000 with 70 % of the agents in the floor
+# layer and the rest spread evenly over the others. At 1 700: floor only 17 800, 90 % benthic 23 000, 70 %
+# 33 400, 50 % 43 900, founders uniform in the volume 61 200 (mean of 8 seeds; c_ref 191.63).
+regen_max = 1700
+chem_diffusion = [0.16, 0.10, 0.16]  # <= 1/6: the explicit 7-point stencil
+benthic_lambda = 8.0
+photic_amp = 0.5
+photic_lambda = 8.0
+
+[run]
+# The 64k cadences (the dataclass defaults, written out for the GUI's rule_every check).
+steps = 100000
+metrics_every = 100
+checkpoint_every = 10000
+heavy_metrics_every = 1000
