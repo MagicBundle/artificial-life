@@ -507,8 +507,12 @@ def arm_summary(
     t, nov = _series(bds, "novelty")
     end = int(t[-1])
     out: dict[str, Any] = {"seed": arm.seed, "arm": arm.name, "run": str(run), "start": start, "end": end}
-    meta = RunDir.open(run).meta()
+    rd = RunDir.open(run)
+    meta = rd.meta()
     out["git_rev"] = meta.get("git_rev")
+    out["parent"] = meta.get("parent")
+    # simulated wall time of the analysed span (the rows' wall_s; excludes start-up and checkpoint writes)
+    out["wall_h"] = sum(r.get("wall_s") or 0.0 for r in rd.metrics_rows() if start < r["step"] <= end) / 3600
     _, cov = _series(bds, "coverage")
     out["coverage"] = {
         "final": int(archive.coverage),
