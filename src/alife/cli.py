@@ -1,4 +1,4 @@
-"""The ``alife`` command line: run, resume, render, inspect, view, bench, llm-check (§21). Owned by WP5.
+"""The ``alife`` command line (§21): run, resume, render, inspect, view, stream, bench, llm-check. WP5.
 
 ``main(argv)`` never raises: errors map to ``runner.ExitCode`` values (2 config, 4 checkpoint, 130 SIGINT,
 1 anything else; argparse usage errors are 2). ``view`` and ``bench`` delegate to WP6 (``viewer.run_viewer``,
@@ -23,7 +23,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import config as config_mod
-from alife import metrics, physics, runner
+from alife import metrics, physics, runner, stream
 from alife.config import (
     DEFAULT_PRESET,
     DIRECTOR_MODES,
@@ -80,6 +80,14 @@ RESUME_KEYS: frozenset[str] = frozenset(
 RESUME_DIRECTOR_KEYS: frozenset[str] = frozenset(DIRECTOR_POLICY_KEYS)
 
 LLM_DEFAULT_EVERY = 25_000  # steps between LLM calls with a bare --llm
+
+_STREAM_HELP = (
+    "write the world as binary frames on stdout for an external viewer (DESIGN §27.11). It re-simulates from "
+    "RUN, a state FILE or --preset without the director, so after an intervention it differs from a director "
+    "run; --follow streams the run's newest checkpoints instead and is the faithful view of a director run. "
+    "It never writes into the run directory. Control lines on stdin: pause, run, step [N], every K, "
+    "color MODE, fields on|off|z K, quit (stdin EOF = quit)."
+)
 
 _RUN_STEP_RE = re.compile(r"^(?P<run>.+):(?P<step>\d+)$")
 
@@ -720,6 +728,52 @@ def _cmd_view(a: argparse.Namespace) -> int:
     return int(ExitCode.OK)
 
 
+def _cmd_stream(a: argparse.Namespace) -> int:
+    """``alife stream`` (§27.11): the binary frame protocol on stdout, for an external viewer (2D or 3D)."""
+    if a.run is not None and (a.preset is not None or a.set):
+        raise ConfigError("stream takes either RUN (or a state FILE) or --preset/--set, not both")
+    if a.run is None and a.preset is None:
+        raise ConfigError("stream needs a source: a run directory, a state file or --preset")
+    view = stream.View(color=a.color, fields=a.fields or a.field_z is not None, field_z=a.field_z or 0)
+    box: list[State | State3] = []
+    rd: RunDir | None = None
+    if a.follow:
+        for flag, value in (("--checkpoint", a.checkpoint), ("--steps", a.steps), ("--every", a.every)):
+            if value is not None:
+                raise ConfigError(f"{flag} does not apply to --follow, which streams each new checkpoint")
+        if a.run is None or not Path(a.run).is_dir():
+            raise ConfigError("--follow needs a run directory")
+        rd = RunDir.open(Path(a.run))
+        cfg, source = rd.config(), "run"
+        view.check(cfg)
+    elif a.run is not None:
+        cfg, rd, path = _target_config(a.run, a.checkpoint)
+        source = "file" if rd is None else "run"
+        view.check(cfg)
+        box.append(load_checkpoint(path, cfg))
+    else:
+        if a.checkpoint is not None:
+            raise ConfigError("--checkpoint needs RUN")
+        cfg, source = load_config(preset=a.preset, overrides=a.set), "preset"
+        view.check(cfg)
+        box.append(init_state(cfg))
+    control = stream.NoControl() if a.no_control else stream.FdControl()
+    stream.serve(
+        cfg,
+        mode="follow" if a.follow else "simulate",
+        source=source,
+        run=a.run,
+        state=box,
+        rd=rd if a.follow else None,
+        view=view,
+        every=a.every or 1,
+        max_steps=a.steps,
+        poll_s=a.poll,
+        control=control,
+    )
+    return int(ExitCode.OK)
+
+
 def _floats(text: str) -> tuple[float, ...]:
     try:
         return tuple(float(x) for x in text.split(",") if x.strip())
@@ -955,6 +1009,48 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--steps-per-frame", type=_positive, default=1)
     p.add_argument("--size", default="900x900", metavar="WxH")
     p.set_defaults(func=_cmd_view)
+
+    p = sub.add_parser("stream", help=_STREAM_HELP, description=_STREAM_HELP)
+    p.add_argument("run", nargs="?", default=None, metavar="RUN|FILE")
+    _config_args(p, overlays=False)
+    p.add_argument("--checkpoint", type=_checkpoint_arg, default=None, metavar="STEP|latest")
+    p.add_argument(
+        "--every", type=_positive, default=None, metavar="K", help="a frame every K steps (default 1)"
+    )
+    p.add_argument(
+        "--steps",
+        type=_non_negative,
+        default=None,
+        metavar="N",
+        help="stop after N steps (default: run until the reader closes or stdin ends)",
+    )
+    p.add_argument(
+        "--follow",
+        action="store_true",
+        help="no stepping: stream the latest checkpoint of RUN and every newer one as the runner writes it",
+    )
+    p.add_argument(
+        "--poll",
+        type=_positive_seconds,
+        default=1.0,
+        metavar="SECONDS",
+        help="--follow: checkpoint poll period",
+    )
+    p.add_argument("--color", choices=COLOR_MODES, default=COLOR_MODES[0], help="initial colour mode")
+    p.add_argument("--fields", action="store_true", help="include the field slice in each frame")
+    p.add_argument(
+        "--field-z",
+        type=_non_negative,
+        default=None,
+        metavar="K",
+        help="field slice layer (implies --fields; default 0)",
+    )
+    p.add_argument(
+        "--no-control",
+        action="store_true",
+        help="do not read stdin (by default it carries control lines, and its EOF ends the stream)",
+    )
+    p.set_defaults(func=_cmd_stream)
 
     p = sub.add_parser("bench", help="throughput, donation health, determinism")
     _config_args(p)

@@ -1,0 +1,321 @@
+{
+  "about": "Expected decoding of the stream in the .bin file next to this one (DESIGN section 27.11). Regenerate with `uv run python tests/stream_fixtures.py --write`.",
+  "kind": "2d",
+  "config": {
+    "preset": "tiny",
+    "overrides": [
+      "population.n_max=64",
+      "population.max_births_per_step=8",
+      "population.n_init=8",
+      "world.size=48",
+      "brain.weight_dtype=float32"
+    ]
+  },
+  "bytes": 5712,
+  "header": {
+    "protocol": 1,
+    "dims": 2,
+    "L": 48.0,
+    "height": 0.0,
+    "N": 64,
+    "B": 4,
+    "radius": 1.0,
+    "field_cell": 4.0,
+    "FG": 12,
+    "FZ": 1,
+    "NCH": 3,
+    "color_modes": [
+      "tag",
+      "energy",
+      "clade"
+    ],
+    "color": "tag",
+    "fields": false,
+    "field_z": 0,
+    "step": 100,
+    "run": null,
+    "config_hash": "3ac9b8e480d64cd06ce5b396ac46c04fdb6800673898f7650e72f22b37e305a7",
+    "mode": "simulate",
+    "every": 4,
+    "source": "preset"
+  },
+  "frames": [
+    {
+      "index": 0,
+      "offset": 352,
+      "length": 1392,
+      "step": 100,
+      "n_alive": 7,
+      "flags": 0,
+      "n_bonds": 2,
+      "color_index": 0,
+      "color": "tag",
+      "field_layer": null,
+      "diag_error": false,
+      "alive_rows": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        10,
+        21
+      ],
+      "bonds": [
+        [
+          0,
+          1
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "agents": [
+        {
+          "row": 0,
+          "pos": [
+            1.0,
+            24.0,
+            0.0
+          ],
+          "yaw": 0.5,
+          "pitch": 0.0,
+          "rgb": "#ff40cf"
+        },
+        {
+          "row": 1,
+          "pos": [
+            47.0,
+            24.0,
+            0.0
+          ],
+          "yaw": -1.25,
+          "pitch": 0.0,
+          "rgb": "#40ffa0"
+        },
+        {
+          "row": 2,
+          "pos": [
+            10.0,
+            10.0,
+            0.0
+          ],
+          "yaw": 3.0,
+          "pitch": 0.0,
+          "rgb": "#ff0000"
+        },
+        {
+          "row": 3,
+          "pos": [
+            12.0,
+            11.5,
+            0.0
+          ],
+          "yaw": -3.0,
+          "pitch": 0.0,
+          "rgb": "#70cfff"
+        }
+      ],
+      "field_first": null,
+      "sha256": {
+        "alive": "67b6dbfdad0e08b45a047d6dce14683caddf294d2b6fff578bbc21a1aac17caa",
+        "pos": "b93e7dc58db53155b446ce9c5843b301637ad4e7f898cc5754cdd84d585abfa3",
+        "orient": "e4d16afd26619a9eea4c571ced508c13b992a6713701bb9252731671433b8ce3",
+        "rgb": "ca67284a83134da1152712ce4eede09ed34acb301664a89e10fc0ab4ffeb5d1b",
+        "bonds": "baed642339816affb3fe8719792d0e4ce82f12db72b7373d244eaa65445800fe"
+      }
+    },
+    {
+      "index": 1,
+      "offset": 1752,
+      "length": 1976,
+      "step": 104,
+      "n_alive": 7,
+      "flags": 1,
+      "n_bonds": 3,
+      "color_index": 1,
+      "color": "energy",
+      "field_layer": 0,
+      "diag_error": false,
+      "alive_rows": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        10,
+        21
+      ],
+      "bonds": [
+        [
+          0,
+          1
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          4,
+          10
+        ]
+      ],
+      "agents": [
+        {
+          "row": 0,
+          "pos": [
+            1.25,
+            24.0,
+            0.0
+          ],
+          "yaw": 0.5,
+          "pitch": 0.0,
+          "rgb": "#63cc68"
+        },
+        {
+          "row": 1,
+          "pos": [
+            47.25,
+            24.0,
+            0.0
+          ],
+          "yaw": -1.25,
+          "pitch": 0.0,
+          "rgb": "#3cc878"
+        },
+        {
+          "row": 2,
+          "pos": [
+            10.0,
+            10.25,
+            0.0
+          ],
+          "yaw": 3.0,
+          "pitch": 0.0,
+          "rgb": "#ff0000"
+        },
+        {
+          "row": 3,
+          "pos": [
+            12.0,
+            11.75,
+            0.0
+          ],
+          "yaw": -3.0,
+          "pitch": 0.0,
+          "rgb": "#77ce60"
+        }
+      ],
+      "field_first": [
+        "#121e5a",
+        "#391e6d",
+        "#4d1e7a",
+        "#5a1f3c",
+        "#631f5e",
+        "#691f71"
+      ],
+      "sha256": {
+        "alive": "67b6dbfdad0e08b45a047d6dce14683caddf294d2b6fff578bbc21a1aac17caa",
+        "pos": "65ce973c45986eaa0b61fae5910b293eb11a20b0be55ed3d6511e9276cdf9444",
+        "orient": "e4d16afd26619a9eea4c571ced508c13b992a6713701bb9252731671433b8ce3",
+        "rgb": "e20a244cd80747db290cb8276e07cd6f7d5dbf10958dda34aec8ff6215df0044",
+        "bonds": "cdf343ced1409f2b69d48d47ec47ac865c0024b16082698c532fc0b31bacf3cb",
+        "field": "6d3d887f3e34c5f8f291fff7bf9bc10e6271da47bf414137f4a552a3a4612cfc"
+      }
+    },
+    {
+      "index": 2,
+      "offset": 3736,
+      "length": 1968,
+      "step": 108,
+      "n_alive": 6,
+      "flags": 3,
+      "n_bonds": 2,
+      "color_index": 2,
+      "color": "clade",
+      "field_layer": 0,
+      "diag_error": true,
+      "alive_rows": [
+        0,
+        1,
+        2,
+        3,
+        10,
+        21
+      ],
+      "bonds": [
+        [
+          0,
+          1
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "agents": [
+        {
+          "row": 0,
+          "pos": [
+            1.5,
+            24.0,
+            0.0
+          ],
+          "yaw": 0.5,
+          "pitch": 0.0,
+          "rgb": "#a66d13"
+        },
+        {
+          "row": 1,
+          "pos": [
+            47.5,
+            24.0,
+            0.0
+          ],
+          "yaw": -1.25,
+          "pitch": 0.0,
+          "rgb": "#a66d13"
+        },
+        {
+          "row": 2,
+          "pos": [
+            10.0,
+            10.5,
+            0.0
+          ],
+          "yaw": 3.0,
+          "pitch": 0.0,
+          "rgb": "#ff0000"
+        },
+        {
+          "row": 3,
+          "pos": [
+            12.0,
+            12.0,
+            0.0
+          ],
+          "yaw": -3.0,
+          "pitch": 0.0,
+          "rgb": "#156075"
+        }
+      ],
+      "field_first": [
+        "#121e5a",
+        "#391e6d",
+        "#4d1e7a",
+        "#5a1f3c",
+        "#631f5e",
+        "#691f71"
+      ],
+      "sha256": {
+        "alive": "4e265030f1deb9e8497260af40b54fb64301c393e5eeb5fac271bad7c55c4931",
+        "pos": "b469f668d6587a4c9c54a3cf0a4d8d6bb7d77e99da9f7ca3377564b409691726",
+        "orient": "eeab0e4003f7e7359c3c0849a5a4d6e64b9effceed64df883042a6b9b61cc971",
+        "rgb": "66d049f1e722467fc7e5ccc167c11cc3c841214552f9661bfad29b4f0014c6c8",
+        "bonds": "baed642339816affb3fe8719792d0e4ce82f12db72b7373d244eaa65445800fe",
+        "field": "6d3d887f3e34c5f8f291fff7bf9bc10e6271da47bf414137f4a552a3a4612cfc"
+      }
+    }
+  ]
+}
