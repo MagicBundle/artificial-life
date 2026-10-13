@@ -185,6 +185,42 @@ verified findings for the whole run.
   5. the stop-after timer at 1 minute;
   6. Inspect, the viewer and Reveal in Finder;
   7. ⌘Q during a run: the engine still writes its checkpoint.
+- **3D viewer click-through checklist** (3D PR 5, to add to the checklist above; `gui/README.md`, DESIGN §27.12; not yet
+  run by the owner; use the `tiny3d` preset, and `tiny` for the 2D items; run the GPU tests first with the GPU free:
+  `cd gui && ALIFE_GPU_TESTS=1 swift test --filter GPURenderTests`, which prints where the PNGs went):
+  1. pick the `tiny3d` preset: a "3D world levers" box appears, pre-filled from the preset (height 24, gravity 0.03, ...),
+     and the Command box shows no `--set` for the 3D levers until one is changed; change the gravity and check the
+     command shows only `--set physics.gravity=...`; set Buoyancy max to 0 and check it shows `buoy_init` and
+     `buoy_sigma` as 0 and flags a nonzero buoyancy cost; switch to `tiny`: the box disappears; fork a run made with
+     Buoyancy max 0 and set it back to 0.04 (and the costs to 16 and 8): Start is blocked with a message about
+     `buoy_init` and `buoy_sigma` (decision for the owner: make those two keys levers instead);
+  2. start `tiny3d` (200 steps or more, `checkpoint_every` is 50): the status box adds the height mean, grounded and
+     surface shares; "Open viewer" (pygame) is disabled for it with a pointer to the 3D viewer;
+  3. **Open 3D viewer** while it runs: the window opens on Follow, "Starting alife stream" then the world: the box, a
+     translucent floor and surface, spheres with a pale nose; the status line shows the step moving at the checkpoint
+     pace; Pause and Run, "Newest" fetches the newest checkpoint once and the status line does not say "paused" (the run
+     is still followed); the log shows `$ .../alife stream runs/NAME --follow ...` and the stream's messages as
+     `[3d] ...`;
+  4. when the run has ended, **Open 3D viewer** again: it re-simulates (Source "Re-simulate", the hint says it ignores the
+     director); Pause, Step, `+` and `-` change the steps per frame, `c` cycles tag, energy, clade, `f` shows the field
+     slice and `[` `]` move it up and down; bonds across the box edge are two short stubs, not a line across the world;
+  5. mouse and keys: left drag orbits, right or Option drag pans, the wheel and a pinch zoom, `o` switches to Fly (the
+     arrow keys move, Shift is faster), `r` resets the view, `1` `2` `3` toggle agents, bonds and frame; resize the
+     window: the picture refits until the camera has been moved; zoom out with the wheel to many times the home
+     distance: the box stays in view and is never cut off;
+  6. `s` (or Snapshot): `runs/NAME/media/view3d_STEP.png` exists and shows the same picture as the window;
+  7. a `tiny` (2D) run in the 3D viewer: the same picture as `alife render` (x to the right, y down); press `f`: the
+     field is the background, as in `alife render`; with Field slice on at a high layer in a `tiny3d` run, open the 2D
+     run: it opens (no exit code 2) with the slice on at layer 0;
+  8. close the 3D window while it streams: no `alife stream` process is left (`pgrep -fl "alife stream"`); close the main
+     window with the 3D window open: the app quits; with two main windows (File > New Window), closing one leaves the
+     3D window and the app, and closing the last one quits; Cmd-Q with a stream and a run active: the run still
+     checkpoints and no stream is left (also after switching Source or opening another run within two seconds);
+  9. Open 3D viewer on a run directory with no checkpoint (a copy of a run with `checkpoints/` removed, `config.json`
+     and `meta.json` kept; or Follow within a second or two of Start, before the step-0 checkpoint is written): the
+     window shows the failure (exit code 4) and the next press works; a new run has its step-0 checkpoint from the
+     start, so Follow shows it at once; GPU time while the picture is still (Activity Monitor): none, also while the
+     run it follows is busy.
 
 ## Director panel (step 4, `docs/DIRECTOR.md` §14)
 

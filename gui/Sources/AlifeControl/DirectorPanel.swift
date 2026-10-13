@@ -1,3 +1,4 @@
+import AlifeCore
 import SwiftUI
 
 // MARK: - Settings (left column)

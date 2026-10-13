@@ -2,9 +2,9 @@ import Foundation
 
 // MARK: - Input parsing helpers
 
-enum Parse {
+package enum Parse {
     /// Plain non-negative decimal ("0.001", "5e-4"); rejects NaN, inf, signs, commas and empty input.
-    static func decimal(_ text: String) -> Double? {
+    package static func decimal(_ text: String) -> Double? {
         let t = text.trimmingCharacters(in: .whitespaces)
         guard t.range(of: #"^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$"#, options: .regularExpression) != nil,
               let v = Double(t), v.isFinite else { return nil }
@@ -12,7 +12,7 @@ enum Parse {
     }
 
     /// Non-negative integer with at most nine digits.
-    static func integer(_ text: String) -> Int? {
+    package static func integer(_ text: String) -> Int? {
         let t = text.trimmingCharacters(in: .whitespaces)
         guard t.range(of: #"^[0-9]{1,9}$"#, options: .regularExpression) != nil else { return nil }
         return Int(t)
@@ -24,20 +24,27 @@ enum Parse {
 /// The dynamics levers. Values are kept as text (they are bound to text fields). Only values that differ from a
 /// baseline are passed to the engine, each as one `--set section.key=value`: the engine defaults for a new run,
 /// the source run's values for a fork.
-struct Levers: Equatable {
-    var rateMin = "0.001"
-    var sigmaMin = "0.002"
-    var patchDrift = "0.005"
-    var immigrationFloor = "0"
-    var immigrantsPerStep = "64"
-    var immigrationEvery = "0"
-    var immigrationCount = "0"
-    var seasonPeriod = "0"
-    var seasonAmplitude = "0"
-    var seasonMode = "global"
+package struct Levers: Equatable {
+    package var rateMin = "0.001"
+    package var sigmaMin = "0.002"
+    package var patchDrift = "0.005"
+    package var immigrationFloor = "0"
+    package var immigrantsPerStep = "64"
+    package var immigrationEvery = "0"
+    package var immigrationCount = "0"
+    package var seasonPeriod = "0"
+    package var seasonAmplitude = "0"
+    package var seasonMode = "global"
+    /// The 3D world's levers; inert unless `world3D.dims` is 3. Their baseline is the preset's, not the engine
+    /// defaults (see `World3DLevers`), which is why a `Levers` value carries them and `RunSettings` picks the baseline.
+    package var world3D = World3DLevers()
+
+    package init() {}
+
+    package init(world3D: World3DLevers) { self.world3D = world3D }
 
     /// Human-readable problems; ranges mirror `validate()` in src/alife/config.py.
-    func validate() -> [String] {
+    package func validate() -> [String] {
         var errors: [String] = []
         if let v = Parse.decimal(rateMin) {
             if !(v > 0 && v < 1) { errors.append("mutation.rate_min must be in (0, 1).") }
@@ -76,12 +83,13 @@ struct Levers: Equatable {
         } else {
             errors.append("fields.season_amplitude must be a plain decimal number in [0, 1].")
         }
-        return errors
+        return errors + world3D.validate()
     }
 
     /// `--set` arguments for the levers whose value differs from `baseline` (compared as numbers, so 5e-05 equals
-    /// 0.00005 and 0 equals 0.0). The default baseline is the engine defaults. Invalid fields are skipped.
-    func setArguments(baseline: Levers = Levers()) -> [String] {
+    /// 0.00005 and 0 equals 0.0). The default baseline is the engine defaults, except for the 3D levers, whose
+    /// baseline is the preset's or the source's (the caller puts it in `baseline.world3D`). Invalid fields are skipped.
+    package func setArguments(baseline: Levers = Levers()) -> [String] {
         var args: [String] = []
         func decimal(_ key: String, _ now: String, _ base: String) {
             guard let v = Parse.decimal(now), v != Parse.decimal(base) else { return }
@@ -101,24 +109,26 @@ struct Levers: Equatable {
         integer("fields.season_period", seasonPeriod, baseline.seasonPeriod)
         decimal("fields.season_amplitude", seasonAmplitude, baseline.seasonAmplitude)
         if seasonMode != baseline.seasonMode { args += ["--set", "fields.season_mode=\(seasonMode)"] }
-        return args
+        return args + world3D.setArguments(baseline: baseline.world3D)
     }
 
-    mutating func reset() { self = Levers() }
+    /// Back to the engine defaults, except for the 3D levers, which go to `world3D` (a 3D world has no valid all-zero
+    /// defaults: the preset's or the source's values are its defaults).
+    package mutating func reset(world3D: World3DLevers = World3DLevers()) { self = Levers(world3D: world3D) }
 }
 
 // MARK: - Lever values of an existing run
 
 /// Why a source run's levers could not be read.
-struct LeverConfigError: Error, Equatable {
-    let message: String
+package struct LeverConfigError: Error, Equatable {
+    package let message: String
 }
 
 extension Levers {
     /// The levers of a run's `config.json` (the full nested config written by the engine). A missing section or
     /// key means the engine default, as in `config_from_dict`: runs from before `POST_V01_KEYS` simply lack
     /// the newer keys. A present value of the wrong type throws, because the engine would reject it too.
-    init(configJSON data: Data) throws {
+    package init(configJSON data: Data) throws {
         let root: Any
         do {
             root = try JSONSerialization.jsonObject(with: data)
@@ -166,11 +176,24 @@ extension Levers {
             guard let mode = raw as? String else { throw LeverConfigError(message: "fields.season_mode is not a string") }
             seasonMode = mode
         }
+
+        // The 3D world (DESIGN §27.1): a run from before it lacks these keys and is a 2D world with the 3D defaults.
+        if let t = try integerText("world", "dims"), let dims = Int(t) { world3D.dims = dims }
+        if let t = try decimalText("world", "height") { world3D.height = t }
+        if let t = try decimalText("physics", "gravity") { world3D.gravity = t }
+        if let t = try decimalText("physics", "buoyancy_max") { world3D.buoyancyMax = t }
+        if let t = try integerText("energy", "buoyancy_cost") { world3D.buoyancyCost = t }
+        if let t = try integerText("energy", "buoyancy_cap_cost") { world3D.buoyancyCapCost = t }
+        if let t = try decimalText("fields", "benthic_lambda") { world3D.benthicLambda = t }
+        if let t = try decimalText("fields", "photic_amp") { world3D.photicAmp = t }
+        if let t = try decimalText("fields", "photic_lambda") { world3D.photicLambda = t }
+        if let t = try decimalText("mutation", "buoy_init") { world3D.buoyInit = t }
+        if let t = try decimalText("mutation", "buoy_sigma") { world3D.buoySigma = t }
     }
 
     /// The levers of the run directory `runDirectory`, or the engine defaults plus a short warning if its
     /// `config.json` cannot be read.
-    static func forkBaseline(runDirectory: URL) -> (levers: Levers, warning: String?) {
+    package static func forkBaseline(runDirectory: URL) -> (levers: Levers, warning: String?) {
         do {
             guard let data = try? Data(contentsOf: runDirectory.appendingPathComponent("config.json")) else {
                 throw LeverConfigError(message: "cannot read it")
@@ -186,58 +209,92 @@ extension Levers {
 
 // MARK: - Run settings
 
-enum RunMode: String, CaseIterable, Identifiable {
+package enum RunMode: String, CaseIterable, Identifiable {
     case new = "New run"
     case resume = "Resume"
     case fork = "Fork"
-    var id: String { rawValue }
+    package var id: String { rawValue }
 }
 
-enum Preset: String, CaseIterable, Identifiable {
+package enum Preset: String, CaseIterable, Identifiable {
     case tiny, dev
     case k64 = "64k"
     case k256 = "256k"
-    var id: String { rawValue }
+    case tiny3d
+    package var id: String { rawValue }
 }
 
-struct RunSettings: Equatable {
-    var mode: RunMode = .new
+package struct RunSettings: Equatable {
+    package var mode: RunMode = .new
     /// Output run name (new run, fork). The run directory is `runs/<name>`.
-    var name = ""
+    package var name = ""
     /// Existing run to resume, or to fork from (its latest checkpoint).
-    var sourceRun = ""
-    var preset: Preset = .dev
-    var fast = false
+    package var sourceRun = ""
+    package var preset: Preset = .dev
+    package var fast = false
     /// New run: blank = preset default. Fork: blank = keep the source state's RNG.
-    var seed = "1"
+    package var seed = "1"
     /// New run: total steps (blank = preset default). Fork: steps to run from the source checkpoint (blank = the
     /// source config's `run.steps`). Resume: additional steps (blank = original target).
-    var steps = ""
-    var levers = Levers()
-    /// Fork only: the source run's lever values; only levers that differ from them are passed. (A new run
-    /// always diffs against the engine defaults.)
-    var leverBaseline = Levers()
+    package var steps = ""
+    package var levers = Levers()
+    /// Fork only: the source run's lever values; only levers that differ from them are passed. (A new run diffs
+    /// the 2D levers against the engine defaults and the 3D levers against `presetWorld3D`.)
+    package var leverBaseline = Levers()
+    /// New run only: the 3D values of the chosen preset (a 2D preset gives `dims` 2), the baseline of the 3D levers.
+    /// The caller keeps it in step with `preset` and pre-fills `levers.world3D` from it (`selectPreset`).
+    package var presetWorld3D = World3DLevers()
     /// The ecosystem director (docs/DIRECTOR.md). The context holds what it is diffed against (the engine
     /// defaults for a new run, the source's values for a fork or resume) and what the run allows.
-    var director = DirectorSettings()
-    var directorContext = DirectorContext()
-    var timerEnabled = false
-    var timerHours = 1
-    var timerMinutes = 0
+    package var director = DirectorSettings()
+    package var directorContext = DirectorContext()
+    package var timerEnabled = false
+    package var timerHours = 1
+    package var timerMinutes = 0
+
+    package init() {}
 
     /// The run the status, viewer, inspect and reveal buttons refer to.
-    var targetRun: String { mode == .resume ? sourceRun : name.trimmingCharacters(in: .whitespaces) }
+    package var targetRun: String { mode == .resume ? sourceRun : name.trimmingCharacters(in: .whitespaces) }
 
-    var timerDuration: TimeInterval { TimeInterval(timerHours * 3600 + timerMinutes * 60) }
+    package var timerDuration: TimeInterval { TimeInterval(timerHours * 3600 + timerMinutes * 60) }
+
+    /// What the 3D levers are diffed against: the preset's values for a new run, the source's for a fork, which the
+    /// caller loads into `leverBaseline` from the source's `config.json` (`RunController.loadForkLevers`, in Fork mode
+    /// only: a resume has no levers, so the app leaves `leverBaseline` at the engine defaults there, and a resume's
+    /// dimensions are `RunController.targetRunDims`).
+    package var world3DBaseline: World3DLevers { mode == .new ? presetWorld3D : leverBaseline.world3D }
+
+    /// The world's dimensions: the preset's for a new run, the source's for a fork. Never a lever. Whatever
+    /// `leverBaseline` holds in a resume (the app does not load it there; see `world3DBaseline`).
+    package var worldDims: Int { world3DBaseline.dims }
+
+    /// Chooses a preset and its 3D values: the 3D levers go back to the preset's, the 2D levers keep their edits.
+    package mutating func selectPreset(_ preset: Preset, world3D: World3DLevers) {
+        self.preset = preset
+        presetWorld3D = world3D
+        levers.world3D = world3D
+    }
+
+    /// The levers as they are validated and applied. `world.dims` is the baseline's whatever was typed, and a fork
+    /// also keeps its source's `world.height`: the lattice shape of a run cannot change in a fork (DESIGN §27.1). A
+    /// resume has no levers.
+    package var effectiveLevers: Levers {
+        var effective = levers
+        let base = world3DBaseline
+        effective.world3D.dims = base.dims
+        if mode == .fork { effective.world3D.height = base.height }
+        return effective
+    }
 
     /// New run / fork: the run name Start will use. The typed name if `runs/<name>` is free, else the next free
     /// variant (`RunName.nextFree`), so a taken name never blocks a run.
-    func outputName(existingRuns: Set<String>) -> String {
+    package func outputName(existingRuns: Set<String>) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         return existingRuns.contains(trimmed) ? RunName.nextFree(after: trimmed, taken: existingRuns) : trimmed
     }
 
-    func validate(existingRuns: Set<String>) -> [String] {
+    package func validate(existingRuns: Set<String>) -> [String] {
         var errors: [String] = []
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         if mode == .resume || mode == .fork {
@@ -266,14 +323,17 @@ struct RunSettings: Equatable {
                 errors.append("Steps must be a positive integer (or blank).")
             }
         }
-        if mode != .resume { errors += levers.validate() }
+        if mode != .resume {
+            errors += effectiveLevers.validate()
+            errors += effectiveLevers.world3D.actuatorErrors(baseline: world3DBaseline)
+        }
         errors += director.validate(context: directorContext)
         if timerEnabled && timerDuration <= 0 { errors.append("Timer duration must be greater than zero.") }
         return errors
     }
 
     /// Arguments after the executable. Call only when `validate` returned no errors.
-    func arguments(existingRuns: Set<String>) -> [String] {
+    package func arguments(existingRuns: Set<String>) -> [String] {
         let trimmedName = outputName(existingRuns: existingRuns)
         let trimmedSeed = seed.trimmingCharacters(in: .whitespaces)
         let trimmedSteps = steps.trimmingCharacters(in: .whitespaces)
@@ -285,14 +345,14 @@ struct RunSettings: Equatable {
             if let s = Parse.integer(trimmedSeed) { args += ["--seed", "\(s)"] }
             if let n = Parse.integer(trimmedSteps) { args += ["--steps", "\(n)"] }
             args += ["--out", "runs/\(trimmedName)"]
-            args += levers.setArguments()
+            args += effectiveLevers.setArguments(baseline: Levers(world3D: presetWorld3D))
             args += director.arguments(context: directorContext)
         case .fork:
             args = ["run", "--init-from", "runs/\(sourceRun)"]
             if let s = Parse.integer(trimmedSeed) { args += ["--seed", "\(s)"] }
             if let n = Parse.integer(trimmedSteps) { args += ["--steps", "\(n)"] }
             args += ["--out", "runs/\(trimmedName)"]
-            args += levers.setArguments(baseline: leverBaseline)
+            args += effectiveLevers.setArguments(baseline: leverBaseline)
             args += director.arguments(context: directorContext)
         case .resume:
             args = ["resume", "runs/\(sourceRun)"]
@@ -304,19 +364,19 @@ struct RunSettings: Equatable {
 }
 
 /// Quotes an argument for display in a shell-style command line.
-func shellQuote(_ s: String) -> String {
+package func shellQuote(_ s: String) -> String {
     if s.range(of: #"^[A-Za-z0-9_@%+=:,./-]+$"#, options: .regularExpression) != nil { return s }
     return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
 
 // MARK: - Run names
 
-enum RunName {
+package enum RunName {
     /// The first name not in `taken` derived from `name`: a short trailing number (1-3 digits) counts up,
     /// keeping its width (`trickster2` → `trickster3`, `run007` → `run008`); otherwise `-2`, `-3`, ... is
     /// appended (`baseline` → `baseline-2`, and `run-20261011-1530` → `run-20261011-1530-2`, whose trailing
     /// digits are a time, not a counter).
-    static func nextFree(after name: String, taken: Set<String>) -> String {
+    package static func nextFree(after name: String, taken: Set<String>) -> String {
         let digits = String(name.reversed().prefix { $0.isASCII && $0.isNumber }.reversed())
         let stem = String(name.dropLast(digits.count))
         let candidates: (Int) -> String

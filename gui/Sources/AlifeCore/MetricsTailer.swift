@@ -1,19 +1,23 @@
 import Foundation
 
 /// The latest row of a run's metrics.jsonl (one JSON object per metrics interval).
-struct MetricsSnapshot: Equatable {
-    var step: Int
-    var nAlive: Double?
-    var stepsPerSecond: Double?
-    var clades: Double?
-    var generationMax: Double?
-    var ledgerError: Double?
+package struct MetricsSnapshot: Equatable {
+    package var step: Int
+    package var nAlive: Double?
+    package var stepsPerSecond: Double?
+    package var clades: Double?
+    package var generationMax: Double?
+    package var ledgerError: Double?
+    // The keys of a dims = 3 run (DESIGN §27.9, in every row); nil in a 2D run, and in a 3D row with nobody alive.
+    package var heightMean: Double?
+    package var groundedFrac: Double?
+    package var surfaceFrac: Double?
 }
 
-enum MetricsTailer {
+package enum MetricsTailer {
     /// Reads only the tail of the file (64 KiB) and returns the newest line that parses as a complete JSON
     /// object, so a torn last line (the engine is mid-append) falls back to the previous row.
-    static func readLast(at url: URL) -> MetricsSnapshot? {
+    package static func readLast(at url: URL) -> MetricsSnapshot? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let size = try? handle.seekToEnd(), size > 0 else { return nil }
@@ -29,7 +33,7 @@ enum MetricsTailer {
         return nil
     }
 
-    private static func parse(_ line: Data) -> MetricsSnapshot? {
+    package static func parse(_ line: Data) -> MetricsSnapshot? {
         // Python's json module may emit bare NaN / Infinity, which JSONSerialization rejects.
         var text = String(decoding: line, as: UTF8.self)
         if text.contains("NaN") || text.contains("Infinity") {
@@ -46,7 +50,10 @@ enum MetricsTailer {
             stepsPerSecond: number("steps_per_s"),
             clades: number("clades_alive"),
             generationMax: number("generation_max"),
-            ledgerError: number("ledger_error")
+            ledgerError: number("ledger_error"),
+            heightMean: number("height_mean"),
+            groundedFrac: number("grounded_frac"),
+            surfaceFrac: number("surface_frac")
         )
     }
 }
