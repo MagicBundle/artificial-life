@@ -302,19 +302,20 @@ def _pad_rows(a: mx.array, n: int) -> mx.array:
     return mx.concatenate([a, pad], axis=0)
 
 
-def _founder_kinematics_3d(cfg: Config, ik: mx.array, n0: int) -> tuple[mx.array, mx.array, mx.array]:
-    """3D founders (§27.4): ``(pos (n0,3), heading (n0,), pitch (n0,))``.
+def volume_kinematics(
+    k_pos: mx.array, k_head: mx.array, n: int, cfg: Config
+) -> tuple[mx.array, mx.array, mx.array]:
+    """``(pos (n,3), heading (n,), pitch (n,))`` uniform in the 3D volume (§27.4): founders and immigrants.
 
-    Positions are uniform in ``[0, L)² × [z_lo, z_hi]`` from ``InitStream.POS``; yaw is uniform in ``[−π, π)``
-    and pitch in ``[−PITCH_MAX, PITCH_MAX]`` from one ``(n0, 2)`` draw of ``InitStream.HEADING``. The 2D keys
-    with 3D-only shapes: no new stream and no RNG layout bump.
+    Positions are uniform in ``[0, L)² × [z_lo, z_hi]`` from ``k_pos``; yaw is uniform in ``[−π, π)`` and
+    pitch in ``[−PITCH_MAX, PITCH_MAX]`` from one ``(n, 2)`` draw of ``k_head``. The keys are the 2D ones
+    (``InitStream.POS``/``HEADING``, or the ``IMMIGRANT`` split's) with 3D-only shapes: no new stream and no
+    RNG layout bump.
     """
     d, L, pm = dims(cfg), cfg.world.size, layout.PITCH_MAX
     lo, hi = mx.array([0.0, 0.0, d.z_lo]), mx.array([L, L, d.z_hi])
-    pos = mx.random.uniform(lo, hi, (n0, 3), key=ik[rng.InitStream.POS])
-    angles = mx.random.uniform(
-        mx.array([-math.pi, -pm]), mx.array([math.pi, pm]), (n0, 2), key=ik[rng.InitStream.HEADING]
-    )
+    pos = mx.random.uniform(lo, hi, (n, 3), key=k_pos)
+    angles = mx.random.uniform(mx.array([-math.pi, -pm]), mx.array([math.pi, pm]), (n, 2), key=k_head)
     heading, pitch = ops.wrap_angle(angles[:, 0]), mx.clip(angles[:, 1], -pm, pm)
     return ops.wrap_xy_clamp_z(pos, L, d.z_lo, d.z_hi), heading, pitch
 
@@ -329,7 +330,7 @@ def _initial_state(cfg: Config) -> State | State3:
     alive = rows < n0
 
     if d.d3:  # static: uniform in the volume, from the 2D keys with 3D-only shapes (§27.4)
-        pos, heading, pitch = _founder_kinematics_3d(cfg, ik, n0)
+        pos, heading, pitch = volume_kinematics(ik[rng.InitStream.POS], ik[rng.InitStream.HEADING], n0, cfg)
     else:
         pos = ops.wrap(mx.random.uniform(0.0, L, (n0, 2), key=ik[rng.InitStream.POS]), L)
         heading = ops.wrap_angle(mx.random.uniform(-math.pi, math.pi, (n0,), key=ik[rng.InitStream.HEADING]))

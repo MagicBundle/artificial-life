@@ -15,13 +15,16 @@ from alife.config import Config
 
 
 class BondGeom(NamedTuple):
-    off: mx.array  # (N,B,2) minimum-image vector to the partner; 0 where empty
+    off: mx.array  # (N,B,nd) minimum-image vector to the partner; 0 where empty
     length: mx.array  # (N,B)
     valid: mx.array  # (N,B) bool: slot occupied
 
 
 def _partner_offsets(pos: mx.array, partner: mx.array, L: float) -> tuple[mx.array, mx.array, mx.array]:
-    """``(off (N,B,2), length (N,B), valid (N,B))``: minimum-image vector to each partner, 0 where empty."""
+    """``(off (N,B,nd), length (N,B), valid (N,B))``: minimum-image vector to each partner, 0 where empty.
+
+    3D positions need no z-specific code: ``2·height ≤ L`` makes ``min_image`` the identity on z (§27.2).
+    """
     valid = partner >= 0
     off = ops.min_image(pos[mx.maximum(partner, 0)] - pos[:, None, :], L)
     off = mx.where(valid[..., None], off, 0.0)
@@ -121,7 +124,7 @@ def add_child_bonds(
 
 
 def spring_forces(pos: mx.array, partner: mx.array, contract: mx.array, cfg: Config) -> mx.array:
-    """Spring forces with brain-controlled rest lengths (§9), (N,2); exactly antisymmetric per pair.
+    """Spring forces with brain-controlled rest lengths (§9), (N,nd); exactly antisymmetric per pair.
 
     ``F_i = Σ_b k_s·(d_ib − ℓ_ib)·û_ib`` with ``ℓ_ib = L0·(1 + contract_gain·(c_i + c_j)/2)``. Both ends
     evaluate the same expression on bitwise-negated offsets (``min_image`` is odd-symmetric) and a commuted
