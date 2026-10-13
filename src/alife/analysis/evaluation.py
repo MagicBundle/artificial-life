@@ -395,6 +395,37 @@ def journal_sample(journal: Iterable[Mapping[str, Any]], n: int = 10, seed: int 
     ]
 
 
+def legibility_sheet(
+    llm_samples: Mapping[str, Sequence[Mapping[str, Any]]],
+    rule_lines: Mapping[str, Sequence[Mapping[str, Any]]],
+    context: Mapping[str, Mapping[int, Mapping[str, Any]]],
+) -> str:
+    """The §9 legibility sheet (Markdown): the sampled LLM journal entries per arm label, each with the
+    population and novelty the director saw at that step (``context[label][step]``, a boundary record) and an
+    empty rating cell, then the rule tier's one-liners of the comparison arms for reference."""
+    out = [
+        "Rate each entry 1–5 for legibility: does it say what the director did and why, citing the state it",
+        "saw, in a way you can check against the numbers? (1 = opaque or wrong, 5 = clear and accurate.)",
+        "",
+        "| # | arm | step | population | novelty | journal (model text) | chose | rating |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    i = 0
+    for label, rows in llm_samples.items():
+        for r in rows:
+            i += 1
+            b = context.get(label, {}).get(r["step"], {})
+            pop = f"{b['n_alive']:,.0f}" if b.get("n_alive") is not None else "–"
+            nov = f"{b['novelty']:.4f}" if b.get("novelty") is not None else "–"
+            chose = ", ".join(r["accepted"]) or r["outcome"]
+            text = r["journal"].replace("|", "/").replace("\n", " ")
+            out.append(f"| {i} | {label} | {r['step']:,} | {pop} | {nov} | {text} | {chose} |  |")
+    for label, lines in rule_lines.items():
+        out += ["", f"Rule-tier journal of {label} (every entry), for comparison:", ""]
+        out += [f"- {x['step']:,}: `{x['text']}`" for x in lines] or ["- (no entries)"]
+    return "\n".join(out) + "\n"
+
+
 def _params(p: Mapping[str, Any]) -> str:
     return ", ".join(f"{k}={round(v, 3) if isinstance(v, float) else v}" for k, v in p.items())
 
@@ -747,11 +778,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     ap.add_argument("--plots", action="store_true", help="draw the figures (needs the analysis extra)")
     ap.add_argument(
+        "--legibility-compare",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="arms whose rule-tier journal the legibility sheet lists for comparison",
+    )
+    ap.add_argument(
         "--journal-sample",
         action="append",
         default=[],
-        metavar="SEED:NAME",
-        help="sample 10 LLM journal entries",
+        metavar="SEED:NAME[:N]",
+        help="sample N (default 10) LLM journal entries of an arm into legibility_sheet.md",
     )
     a = ap.parse_args(argv)
     arms = [Arm.parse(x) for x in a.arm]
@@ -765,12 +803,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_series(out / "series.npz", series)
     order = list(dict.fromkeys(x.name for x in arms))
     (out / "table.md").write_text(markdown_table(summary, order=order) + "\n", encoding="utf-8")
-    for spec in a.journal_sample:
-        seed, name = spec.split(":")
+    llm_samples: dict[str, list[dict[str, Any]]] = {}
+    for spec in a.journal_sample:  # SEED:NAME[:N]
+        seed, name, *n = spec.split(":")
         arm = next(x for x in arms if x.seed == int(seed) and x.name == name)
-        sample = journal_sample(read_jsonl(arm.run / JOURNAL))
-        path = out / f"journal_sample_s{seed}_{name}.json"
-        path.write_text(json.dumps(sample, indent=1) + "\n", encoding="utf-8")
+        llm_samples[f"s{seed} {name}"] = journal_sample(read_jsonl(arm.run / JOURNAL), int(n[0]) if n else 10)
+    if llm_samples:
+        rule_lines = {
+            f"s{x.seed} {x.name}": [j for j in read_jsonl(x.run / JOURNAL) if j.get("kind") != "llm_call"]
+            for x in arms
+            if x.name in a.legibility_compare
+        }
+        context = {f"s{s_} {n_}": {b["step"]: b for b in bds} for (s_, n_), bds in series.items()}
+        (out / "legibility_sheet.md").write_text(
+            legibility_sheet(llm_samples, rule_lines, context), encoding="utf-8"
+        )
     if a.plots:
         from alife.analysis import evaluation_plots
 

@@ -214,3 +214,16 @@ def test_markdown_table_orders_arms_and_marks_missing_values() -> None:
     assert t[0] == "| arm | seed | coverage | novelty |"
     assert t[2:] == ["| A | 0 | 23 | 0.020 |", "| C | 0 | 87 | – |", "| C | 1 | 80 | – |"]
     assert ev.dig(summary["arms"][0], "coverage.final") == 80 and ev.dig({}, "a.b") is None
+
+
+def test_legibility_sheet() -> None:
+    sample = ev.journal_sample([_call(25_000 * i, "ok", accepted=1) for i in range(1, 5)], 2, seed=1)
+    ctx = {"s0 C": {r["step"]: {"n_alive": 31234.4, "novelty": 0.0251} for r in sample}}
+    rules = {"s0 B": [{"step": 1_199_000, "text": "immigration_pulse(count=646) [stagnation_response: ...]"}]}
+    sheet = ev.legibility_sheet({"s0 C": sample}, rules, ctx).splitlines()
+    rows = [x for x in sheet if x.startswith("| 1 ") or x.startswith("| 2 ")]
+    assert (
+        len(rows) == 2 and "31,234" in rows[0] and "0.0251" in rows[0] and "drift_change(mult=2.0)" in rows[0]
+    )
+    assert rows[0].endswith("|  |")  # the empty rating cell
+    assert any(x.startswith("- 1,199,000: `immigration_pulse") for x in sheet)
