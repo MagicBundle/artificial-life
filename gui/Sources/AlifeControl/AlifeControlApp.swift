@@ -6,6 +6,9 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The 3D viewer writes control lines to the stdin of `alife stream`; a write to a pipe whose reader has gone must
+        // fail with EPIPE (an error `FileHandle.write(contentsOf:)` throws), not kill the app with SIGPIPE.
+        signal(SIGPIPE, SIG_IGN)
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -28,5 +31,11 @@ struct AlifeControlApp: App {
                 .frame(minWidth: 960, minHeight: 700)
         }
         .windowResizability(.contentMinSize)
+
+        Window("3D Viewer", id: "viewer3d") {
+            Viewer3DView(stream: StreamController.shared)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 1000, height: 760)
     }
 }

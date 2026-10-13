@@ -1,8 +1,11 @@
+import AlifeCore
 import AppKit
 import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var controller: RunController
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     private var busy: Bool { controller.job != nil }
 
@@ -13,6 +16,9 @@ struct ContentView: View {
                     repoSection
                     runSection
                     leverSection
+                    if controller.settings.mode != .resume, controller.settings.worldDims == 3 {
+                        world3DSection
+                    }
                     DirectorSettingsBox(controller: controller)
                     timerSection
                 }
@@ -31,6 +37,10 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
         }
         .padding(16)
+        // The main window is the app: when the last one closes the 3D viewer window goes with it, so that the app quits as
+        // it did when this was the only window (`applicationShouldTerminateAfterLastWindowClosed`). Another main window
+        // (File > New Window) keeps the app and the viewer.
+        .background(WindowCloseObserver(group: "main") { dismissWindow(id: "viewer3d") })
     }
 
     // MARK: Repository
@@ -84,8 +94,10 @@ struct ContentView: View {
                         controller.loadForkLevers()
                     }
                     if oldMode == .fork && newMode != .fork { controller.resetLevers() }
+                    if newMode == .new { controller.refreshPresetWorld3D() }
                     if newMode == .new && controller.settings.seed.isEmpty { controller.settings.seed = "1" }
                     controller.loadDirector()
+                    controller.refreshTargetRunDims()
                 }
 
                 if controller.settings.mode != .new {
@@ -99,6 +111,7 @@ struct ContentView: View {
                     .onChange(of: controller.settings.sourceRun) {
                         controller.loadForkLevers()
                         controller.loadDirector()
+                        controller.refreshTargetRunDims()
                     }
                     if controller.runs.isEmpty {
                         Text("No runs found in runs/.").font(.caption).foregroundStyle(.secondary)
@@ -115,7 +128,10 @@ struct ContentView: View {
                     Picker("Preset", selection: $controller.settings.preset) {
                         ForEach(Preset.allCases) { Text($0.rawValue).tag($0) }
                     }
-                    .onChange(of: controller.settings.preset) { controller.refreshDirectorCadence() }
+                    .onChange(of: controller.settings.preset) {
+                        controller.refreshDirectorCadence()
+                        controller.refreshPresetWorld3D()
+                    }
                 }
                 if controller.settings.mode == .new {
                     // A fork keeps the source's brain size, which the fast overlay would change.
@@ -203,7 +219,9 @@ struct ContentView: View {
                 }
                 Text("Per patch: each resource patch peaks at a different time, so good seasons move across the map.")
                     .font(.caption).foregroundStyle(.secondary)
-                Button("Reset levers to defaults") { controller.settings.levers.reset() }
+                Button("Reset levers to defaults") {
+                    controller.settings.levers.reset(world3D: controller.settings.world3DBaseline)
+                }
                     .font(.caption)
             }
             .padding(6)
@@ -221,6 +239,43 @@ struct ContentView: View {
             }
             Text(help).font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    /// The levers of a 3D world (`World3DLevers`). Their starting values and what they are diffed against are the
+    /// preset's (a fork: its source run's), not the engine defaults.
+    private var world3DSection: some View {
+        let isFork = controller.settings.mode == .fork
+        let w3 = $controller.settings.levers.world3D
+        return GroupBox("3D world levers") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(isFork
+                     ? "Pre-filled from the source run; only changed values are passed. The height is fixed in a fork."
+                     : "Pre-filled from the preset; only changed values are passed.")
+                    .font(.caption).foregroundStyle(.secondary)
+                lever("World height", key: "world.height", text: w3.height,
+                      help: "Vertical size of the world: a multiple of the field cell, at most half the world size.")
+                    .disabled(isFork)
+                lever("Gravity", key: "physics.gravity", text: w3.gravity,
+                      help: "Downward force on every agent, below the climb rate of full thrust. 0 = none.")
+                lever("Buoyancy max", key: "physics.buoyancy_max", text: w3.buoyancyMax,
+                      help: "Upward force at the full evolvable buoyancy cap. 0 = no actuator; then both costs below must be 0. Switching it on needs a source whose cap can evolve (mutation.buoy_init or buoy_sigma above 0).")
+                lever("Buoyancy cost", key: "energy.buoyancy_cost", text: w3.buoyancyCost,
+                      help: "Energy quanta per step at full lift, scaled by the square of the lift.")
+                lever("Buoyancy cap cost", key: "energy.buoyancy_cap_cost", text: w3.buoyancyCapCost,
+                      help: "Upkeep per step per unit of buoyancy cap, paid even without lift.")
+                lever("Benthic lambda", key: "fields.benthic_lambda", text: w3.benthicLambda,
+                      help: "Height scale of the food band at the floor (e-folding), > 0.")
+                lever("Photic amplitude", key: "fields.photic_amp", text: w3.photicAmp,
+                      help: "Strength of a second food band under the surface, 0 to 1. 0 = off.")
+                lever("Photic lambda", key: "fields.photic_lambda", text: w3.photicLambda,
+                      help: "Depth scale of the surface band below the surface; > 0 when the amplitude is above 0.")
+                Button("Reset 3D levers") { controller.settings.levers.world3D = controller.settings.world3DBaseline }
+                    .font(.caption)
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .disabled(busy)
     }
 
     // MARK: Timer
@@ -340,6 +395,13 @@ struct ContentView: View {
                                     .foregroundStyle((m.ledgerError ?? 0) == 0 ? Color.primary : Color.red)
                             }
                         }
+                        if m.heightMean != nil {
+                            GridRow {
+                                stat("Height mean", number(m.heightMean, "%.2f"))
+                                stat("Grounded", number(m.groundedFrac.map { $0 * 100 }, "%.0f%%"))
+                                stat("At surface", number(m.surfaceFrac.map { $0 * 100 }, "%.0f%%"))
+                            }
+                        }
                     }
                 } else {
                     Text("No metrics yet for the selected run.").foregroundStyle(.secondary)
@@ -372,19 +434,38 @@ struct ContentView: View {
                 Button("Close viewer") { controller.closeViewer() }
             } else {
                 Button("Open viewer") { controller.openViewer() }
-                    .disabled(!controller.targetRunExists || controller.job == .setup)
-                    .help("Opens the pygame viewer on the run's latest checkpoint. It shares the GPU with a running simulation and will slow it down.")
+                    .disabled(!controller.targetRunExists || controller.job == .setup || !controller.pygameViewerAvailable)
+                    .help(controller.pygameViewerAvailable
+                          ? "Opens the pygame viewer on the run's latest checkpoint. It shares the GPU with a running simulation and will slow it down."
+                          : "The pygame viewer draws a 2D plane. Use Open 3D viewer for a 3D run.")
             }
+            Button("Open 3D viewer") {
+                controller.openViewer3D()
+                openWindow(id: "viewer3d")
+            }
+            .disabled(controller.viewer3DSource == nil)
+            .help(viewer3DHelp)
             Button("Inspect") { controller.inspect() }
                 .disabled(busy || !controller.targetRunExists)
                 .help("Runs `alife inspect --check` and prints the result in the log.")
             Button("Reveal in Finder") { controller.revealInFinder() }
             Spacer()
-            if controller.job == .run {
+            if controller.targetRunExists, !controller.pygameViewerAvailable {
+                Text("3D run: the pygame viewer is 2D only; use Open 3D viewer.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if controller.job == .run {
                 Text("Viewer shares the GPU with the run.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var viewer3DHelp: String {
+        guard let source = controller.viewer3DSource else { return "Choose an existing run to view." }
+        if source.follow {
+            return "Opens the 3D viewer on the run in progress, following its newest checkpoints (the faithful view of a director run). A run writes a checkpoint as it starts and then every run.checkpoint_every steps."
+        }
+        return "Opens the 3D viewer on the run's latest checkpoint and steps it again in a separate process. That ignores the director, and shares the GPU with a running simulation. Works for 2D runs too."
     }
 }
 
