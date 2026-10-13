@@ -1,12 +1,14 @@
 """The yoked ``random`` persona, arm R of DIRECTOR.md §9: a control that perturbs as often and as late as
 another run's director did, but chooses nothing.
 
-Arm R reads the ``director.jsonl`` of arm B (``director.yoke_log``) and intervenes at exactly the steps where
-B made a *discretionary* move, with the same number of moves at each step. Reverts and the safety rules
-(``rules.SAFETY_RULES``) are not yoked: R runs them itself, under the Gardener's budget, cooldowns and
-thresholds, like any persona. What it draws at a yoked step is a uniformly random eligible menu action with
-random parameters (``sample_params``), so the comparison with B isolates the quality of B's choices from the
-amount and timing of perturbation.
+Arm R reads the ``director.jsonl`` of another run (``director.yoke_log``: arm B, or arm C) and intervenes at
+exactly the steps where that run made a *discretionary* move, with the same number of moves at each step.
+Reverts and the safety rules (``rules.SAFETY_RULES``) are not yoked: R runs them itself, like any persona,
+under the budget, cooldowns and thresholds of the persona that made the yoke log (R3: the persona of its first
+header, ``inherited``). Its discretionary choice (the persona's boredom rule, minimum gap, drama gating, the
+model) is not inherited: R has none. What it draws at a yoked step is a uniformly random eligible menu action
+with random parameters (``sample_params``), so the comparison with the yoked run isolates the quality of its
+choices from the amount and timing of perturbation.
 
 Everything here is host-only and pure. The generator of a draw is stateless, seeded by
 ``(run.seed, step, RANDOM_TAG, draw)`` (A13): the values it produces are logged, so replay never draws any,
@@ -24,21 +26,25 @@ from typing import Any, Final, NamedTuple
 
 import numpy as np
 
-from alife.config import Config
+from alife.config import RANDOM_PERSONA, Config
 from alife.director import log, rules
 from alife.director.actions import MENU, MOVE_MAX_FRAC, radius_bounds
 
 RULE: Final = "random"  # the ``rule`` field of an entry R takes at a yoked step
 RANDOM_TAG: Final = 100  # the decision stream of a draw; the Trickster's streams are tags 0 to 9
-PARAMS_PERSONA: Final = "gardener"  # whose budget, cooldown scale and thresholds R lives by ("same as B")
+FALLBACK_PERSONA: Final = "gardener"  # whose parameters R takes when the yoke log's headers name no persona
 
 
 class Yoke(NamedTuple):
-    """The loaded yoke log: the path as given, the sha256 of its bytes, and the moves to make per step."""
+    """The loaded yoke log: the path as given, the sha256 of its bytes, the moves to make per step, and the
+    pacing R inherits from the run that made it (``inherited``)."""
 
     path: str
     sha256: str
-    steps: Mapping[int, int]  # step_applied -> number of discretionary moves arm B made there
+    steps: Mapping[int, int]  # step_applied -> number of discretionary moves the yoked run made there
+    persona: str = FALLBACK_PERSONA  # whose PersonaParams R lives by: the persona of the log's first header
+    budget: int | None = None  # that header's effective budget_per_100k (None: it recorded none)
+    personas: tuple[str, ...] = ()  # the distinct personas of all the log's headers, in order of appearance
 
 
 class Patches(NamedTuple):
@@ -79,11 +85,51 @@ def yoked_steps(records: Iterable[Any]) -> dict[int, int]:
     return dict(sorted(Counter(steps).items()))
 
 
-def load(cfg: Config) -> Yoke:
+def inherited(
+    records: Iterable[Any], params: rules.RuleParams = rules.RULE_PARAMS
+) -> tuple[str, int | None, tuple[str, ...]]:
+    """``(persona, budget, personas)`` that R inherits from a yoke log's headers (R3).
+
+    The persona is that of the *first* header, the one the run started with, and the budget is that header's
+    ``budget_per_100k`` (the effective budget the run had). A resume that changed the persona or the budget
+    appends a later header; R does not follow it (``personas`` lists every persona seen, so the caller can
+    warn). A log with no header, or a first header that names no persona or no budget, gives the Gardener
+    (``FALLBACK_PERSONA``) or no budget (the persona's default). ``LogError`` if any header's persona is
+    ``random`` (a run that was itself yoked) or not a persona with parameters in ``params``, or if a budget
+    is not a positive integer.
+    """
+    headers = [r for r in records if isinstance(r, Mapping) and r.get("kind") == log.HEADER_KIND]
+    known = [p.name for p in params.personas]
+    seen: list[str] = []
+    for h in headers:
+        name = h.get("persona")
+        if name is None:
+            continue
+        if name == RANDOM_PERSONA:
+            raise log.LogError("the yoke log is itself a yoked 'random' run: yoke R to the run it followed")
+        if name not in known:
+            raise log.LogError(f"the yoke log's header names an unknown persona {name!r} (known: {known})")
+        if name not in seen:
+            seen.append(name)
+    first = headers[0] if headers else {}
+    budget = first.get("budget_per_100k")
+    if budget is not None and (not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0):
+        raise log.LogError(f"the yoke log's first header has a bad budget_per_100k {budget!r}")
+    return (first.get("persona") or FALLBACK_PERSONA), budget, tuple(seen)
+
+
+def effective_budget(configured: int, yoke: Yoke | None, persona: rules.PersonaParams) -> int:
+    """R's budget: ``director.budget_per_100k`` if set, else the yoked run's recorded budget, else the
+    persona's default; in every case at most the persona's maximum."""
+    return min(configured or (yoke.budget if yoke else None) or persona.budget, persona.budget_max)
+
+
+def load(cfg: Config, params: rules.RuleParams = rules.RULE_PARAMS) -> Yoke:
     """Read, check and fingerprint ``cfg.director.yoke_log`` (``LogError`` / ``ActionError``, exit 2).
 
-    The file must exist and pass the replay pre-validation against this run's config, and every yoked step
-    must be a multiple of this run's ``director.rule_every`` (R can only act at its own boundaries).
+    The file must exist and pass the replay pre-validation against this run's config, every yoked step
+    must be a multiple of this run's ``director.rule_every`` (R can only act at its own boundaries), and its
+    headers must name a persona R can inherit parameters from (``inherited``).
     """
     path = Path(cfg.director.yoke_log)
     try:
@@ -92,6 +138,7 @@ def load(cfg: Config) -> Yoke:
     except UnicodeDecodeError as e:
         raise log.LogError(f"{path}: not a text log ({e})") from e
     steps = yoked_steps(records)
+    persona, budget, personas = inherited(records, params)
     every = cfg.director.rule_every
     off = [s for s in steps if s % every]
     if off:
@@ -100,7 +147,7 @@ def load(cfg: Config) -> Yoke:
             "run the yoked arm with the cadence of the run it is yoked to"
         )
     log.validate_log(records, cfg)
-    return Yoke(cfg.director.yoke_log, hashlib.sha256(data).hexdigest(), steps)
+    return Yoke(cfg.director.yoke_log, hashlib.sha256(data).hexdigest(), steps, persona, budget, personas)
 
 
 # --- the draw ---------------------------------------------------------------------------------------------

@@ -13,9 +13,10 @@ call, an invalid reply or a reply of which nothing could be applied falls back t
 discretionary rules for that boundary. With the tier off the behaviour is exactly that of step 2.
 
 The ``random`` persona (arm R of the evaluation, ``yoked``) has no discretionary rules of its own. In live
-mode it keeps the reverts and the safety rules, under the Gardener's budget, cooldowns and thresholds, and at
-the steps where the run named by ``director.yoke_log`` made discretionary moves it makes as many uniformly
-random eligible ones. A replay of it reads only its own log.
+mode it keeps the reverts and the safety rules, under the budget, cooldowns and thresholds of the persona that
+made the log named by ``director.yoke_log`` (its first header's), and at the steps where that run made
+discretionary moves it makes as many uniformly random eligible ones. A replay of it reads only its own log,
+whose header records the persona it inherited (``params_persona``) and the budget.
 
 Everything the director remembers is a fold: the vital-sign tracker and archive of the ``metrics.jsonl`` rows,
 and budget, cooldowns, active effects and drama of the ``director.jsonl`` entries (``pacing``). A resumed live
@@ -57,6 +58,13 @@ def describe(entry: Mapping[str, Any]) -> str:
     return f"{entry['action']}({p}){dur} [{src}: {entry['reason']}]"
 
 
+def _recorded(records: Sequence[Mapping[str, Any]]) -> tuple[str, int | None]:
+    """The persona and budget a random director's own log says it inherited (its first header's; the
+    Gardener and no budget for a log that predates them)."""
+    first = next((r for r in records if r.get("kind") == log.HEADER_KIND), {})
+    return first.get("params_persona") or yoked.FALLBACK_PERSONA, first.get("budget_per_100k")
+
+
 class Director:
     """The controller the runner calls: ``due(t)``, ``observe(row)``, ``on_boundary(state, row, t)``,
     ``on_checkpoint(t)``. ``applied`` holds the entries of the latest boundary."""
@@ -69,16 +77,27 @@ class Director:
         self.rd, self.cfg, self.mode, self.params = rd, cfg, mode, params
         self.rule_every = cfg.director.rule_every
         self.name = cfg.director.persona  # what entries and the journal call this director
-        # The random persona has no parameters of its own: it lives by the Gardener's (R3).
-        self.persona = params.persona(yoked.PARAMS_PERSONA if self.name == RANDOM_PERSONA else self.name)
-        self.budget = rules.effective_budget(cfg.director.budget_per_100k, self.persona)
+        records = rd.read_jsonl(DIRECTOR_LOG_FILE)
+        # The random persona has no parameters of its own: it lives by those of the persona that made its yoke
+        # log (R3). A live run reads them from that log (before anything is written); a replay needs none of
+        # them, and takes what its own header recorded.
+        self.yoke: yoked.Yoke | None = None  # the random persona's yoke log (live mode only)
+        if self.name != RANDOM_PERSONA:
+            self.persona = params.persona(self.name)
+            self.budget = rules.effective_budget(cfg.director.budget_per_100k, self.persona)
+        elif mode == "live":
+            self.yoke = yoked.load(cfg, params)
+            self.persona = params.persona(self.yoke.persona)
+            self.budget = yoked.effective_budget(cfg.director.budget_per_100k, self.yoke, self.persona)
+        else:
+            name, budget = _recorded(records)
+            self.persona = params.persona(name)
+            self.budget = rules.effective_budget(budget or cfg.director.budget_per_100k, self.persona)
         self.applied: list[dict[str, Any]] = []
         self.llm_line: str | None = None  # the console line of this boundary's LLM call (if it made one)
         # The LLM tier exists in live mode only: a replay never builds a client, so it cannot reach a network.
         self.llm = llm.Client.of(cfg) if mode == "live" and cfg.director.llm_every > 0 else None
         self._blocked: frozenset[str] = frozenset()  # rules the previous boundary journalled as blocked
-        self.yoke: yoked.Yoke | None = None  # the random persona's yoke log (live mode only)
-        records = rd.read_jsonl(DIRECTOR_LOG_FILE)
         self.entries = log.entries_of(records)
         if mode == "replay":
             log.validate_log(records, cfg)
@@ -89,18 +108,30 @@ class Director:
         else:
             self.tracker = Tracker(params)
             self._rebuild(rd.metrics_rows(), start_step)
-            # The yoke log is read in live mode only: a replay needs nothing but its own log (R5).
-            self.yoke = yoked.load(cfg) if self.name == RANDOM_PERSONA else None
             self._check_yoke(records)
-            header = log.make_header(cfg, start_step, self.budget, self.yoke.sha256 if self.yoke else None)
+            header = log.make_header(
+                cfg,
+                start_step,
+                self.budget,
+                self.yoke.sha256 if self.yoke else None,
+                self.persona.name if self.yoke else None,
+            )
             if log.needs_header(records, header):
                 rd.append_jsonl(DIRECTOR_LOG_FILE, [header])
 
     def _check_yoke(self, records: Sequence[Mapping[str, Any]]) -> None:
         """Warn if the yoke log is not the file this run was started with (its header says which): the
-        run goes on, since the header records provenance and a new header records the file now in use."""
+        run goes on, since the header records provenance and a new header records the file now in use. Also
+        warn if the yoked run changed persona on a resume: R keeps the persona it started with."""
         if self.yoke is None:
             return
+        if len(self.yoke.personas) > 1:
+            print(
+                f"warning: {self.yoke.path} has headers of several personas {list(self.yoke.personas)}; "
+                f"using the parameters of {self.yoke.persona!r}, the first",
+                file=sys.stderr,
+                flush=True,
+            )
         then = next((r["yoke_sha256"] for r in reversed(records) if r.get("yoke_sha256")), None)
         if then is not None and then != self.yoke.sha256:
             print(

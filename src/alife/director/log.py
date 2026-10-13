@@ -25,9 +25,16 @@ class LogError(ConfigError):
     """A director log that cannot be replayed (exit 2 when it reaches the CLI)."""
 
 
-def make_header(cfg: Config, step: int, budget: int, yoke_sha256: str | None = None) -> dict[str, Any]:
+def make_header(
+    cfg: Config,
+    step: int,
+    budget: int,
+    yoke_sha256: str | None = None,
+    params_persona: str | None = None,
+) -> dict[str, Any]:
     """The header for a director starting at ``step``; ``budget`` is the effective cost budget per 100k.
-    ``yoke_sha256`` (the random persona only) is the fingerprint of the yoke log it was started with."""
+    ``yoke_sha256`` (the random persona only) is the fingerprint of the yoke log it was started with, and
+    ``params_persona`` the persona whose pacing parameters it inherited from that log."""
     d = cfg.director
     return {
         "kind": HEADER_KIND,
@@ -42,6 +49,7 @@ def make_header(cfg: Config, step: int, budget: int, yoke_sha256: str | None = N
         **({"llm_every": d.llm_every, "llm_model": cfg.run.llm_model} if d.llm_every else {}),
         # Likewise the yoked persona's provenance: the log it follows (as given) and what that file held.
         **({"yoke_log": d.yoke_log, "yoke_sha256": yoke_sha256} if yoke_sha256 is not None else {}),
+        **({"params_persona": params_persona} if params_persona is not None else {}),
     }
 
 
