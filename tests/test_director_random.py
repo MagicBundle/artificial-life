@@ -96,6 +96,33 @@ def arm_b(shrunk_menu: None, tmp_path_factory: pytest.TempPathFactory) -> Path:
     return out
 
 
+# Arm C: a Trickster run (budget 6 by default) with six scripted discretionary moves inside one 100k window,
+# three at step 200 and three at 500, each of a different action.
+PLAN_C = {
+    200: [
+        prop("set_seasons", {"period": 5000, "amp": 0.5}),
+        prop("immigration_pulse", {"count": 60}),
+        prop("drift_change", {"mult": 3.0}),
+    ],
+    500: [
+        prop("regen_pulse", {"mult": 1.2}, 200),
+        prop("catastrophe", {"x": 8.0, "y": 8.0, "radius": 3.0, "kill_p": 0.3}),
+        prop("fertility_shift", {"patch": 0, "dx": 0.5, "dy": 0.5}),
+    ],
+}
+C_STEPS = {200: 3, 500: 3}
+
+
+@pytest.fixture(scope="module")
+def arm_c(shrunk_menu: None, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    out = tmp_path_factory.mktemp("arm_c") / "c"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("alife.director.rules.decide", scripted_decide(PLAN_C))
+        argv = ["run", *COMMON, "--director", "live", "--persona", "trickster"]
+        assert cli.main([*argv, "--set", "director.budget_per_100k=0", "--out", str(out)]) == 0
+    return out
+
+
 def run_r(b: Path, out: Path, *extra: str) -> int:
     argv = [
         "run",
@@ -653,3 +680,165 @@ def test_the_real_safety_rules_fire_for_r(
     assert all("yoked_to" not in e for e in rescue)
     assert [(e["step_applied"], e["rule"]) for e in es if e.get("yoked_to")] == [(200, "random")] * 2
     assert cli.main(["inspect", str(out), "--check"]) == 0
+
+
+# --- R inherits the parameters of the persona that made the yoke log (R3) -----------------------------------
+
+
+def header_of(path: Path) -> dict[str, Any]:
+    return read_jsonl(path / DIRECTOR_LOG_FILE)[0]
+
+
+@pytest.fixture(scope="module")
+def arm_rc(arm_c: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Arm R yoked to the Trickster run: no explicit budget, so the one arm C had."""
+    out = tmp_path_factory.mktemp("arm_rc") / "r"
+    assert run_r(arm_c, out, "--set", "director.budget_per_100k=0") == 0
+    return out
+
+
+def test_the_scripted_trickster_log(arm_c: Path) -> None:
+    recs = read_jsonl(arm_c / DIRECTOR_LOG_FILE)
+    assert (recs[0]["persona"], recs[0]["budget_per_100k"]) == ("trickster", 6)
+    assert yoked.yoked_steps(recs) == C_STEPS
+
+
+def test_r_yoked_to_a_gardener_log_inherits_the_gardener(arm_b: Path, arm_r: Path) -> None:
+    header = header_of(arm_r)
+    assert header["params_persona"] == "gardener" and header["budget_per_100k"] == 4
+    assert discretionary(entries(arm_r)) == Counter(B_STEPS)
+    rd = RunDir.open(arm_r)
+    assert yoked.load(rd.config()).persona == "gardener"  # nothing but the header's persona is read
+
+
+def test_r_yoked_to_a_trickster_log_uses_the_trickster_s_parameters(arm_c: Path, arm_rc: Path) -> None:
+    header = header_of(arm_rc)
+    assert (header["persona"], header["params_persona"], header["budget_per_100k"]) == (
+        "random",
+        "trickster",
+        6,
+    )
+    assert header["yoke_sha256"] == hashlib.sha256((arm_c / DIRECTOR_LOG_FILE).read_bytes()).hexdigest()
+    es = entries(arm_rc)
+    moves = [e for e in es if e["source"] != "revert" and e.get("rule") == "random"]
+    # six moves in one 100k window: more than the Gardener's maximum budget of 4 allows
+    assert [e["step_applied"] for e in moves] == [200] * 3 + [500] * 3
+    assert len(moves) == 6 > rules.GARDENER.budget_max
+    assert all(e["persona"] == "random" and e["yoked_to"] == e["step_applied"] for e in moves)
+    assert len({e["action"] for e in moves}) == 6  # a cooldown (half the menu's under the Trickster) holds
+    assert cli.main(["inspect", str(arm_rc), "--check"]) == 0
+
+
+def test_a_trickster_yoke_with_an_explicit_gardener_sized_budget_falls_short(
+    arm_c: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "four"
+    assert run_r(arm_c, out) == 0  # COMMON sets director.budget_per_100k=4
+    assert header_of(out)["budget_per_100k"] == 4 and header_of(out)["params_persona"] == "trickster"
+    moves = [e for e in entries(out) if e["source"] != "revert"]
+    assert [e["step_applied"] for e in moves] == [200] * 3 + [500]  # 4 of the 6
+
+
+@pytest.mark.parametrize(
+    ("log_of", "configured", "expected"),
+    [("arm_c", "20", 12), ("arm_c", "5", 5), ("arm_c", "0", 6), ("arm_b", "20", 4), ("arm_b", "3", 3)],
+)
+def test_an_explicit_budget_is_capped_by_the_inherited_persona_s_maximum(
+    request: pytest.FixtureRequest, tmp_path: Path, log_of: str, configured: str, expected: int
+) -> None:
+    src: Path = request.getfixturevalue(log_of)
+    out = tmp_path / "cap"
+    assert run_r(src, out, "--set", f"director.budget_per_100k={configured}", "--steps", "100") == 0
+    assert header_of(out)["budget_per_100k"] == expected
+
+
+def test_a_header_without_a_budget_gives_the_persona_s_default(arm_c: Path, tmp_path: Path) -> None:
+    yoke = tmp_path / "yoke.jsonl"
+    recs = [json.loads(line) for line in (arm_c / DIRECTOR_LOG_FILE).read_text().splitlines()]
+    del recs[0]["budget_per_100k"]
+    yoke.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    out = tmp_path / "r"
+    argv = ["run", *COMMON, "--director", "live", "--persona", "random", "--yoke-log", str(yoke)]
+    assert cli.main([*argv, "--set", "director.budget_per_100k=0", "--steps", "100", "--out", str(out)]) == 0
+    assert (header_of(out)["params_persona"], header_of(out)["budget_per_100k"]) == ("trickster", 6)
+
+
+def test_inherited_reads_the_headers() -> None:
+    h = {"kind": "header", "step": 0}
+    assert yoked.inherited([]) == ("gardener", None, ())  # no header: the old behaviour
+    assert yoked.inherited([entry(100), h]) == ("gardener", None, ())
+    assert yoked.inherited([{**h, "persona": "architect", "budget_per_100k": 5}]) == (
+        "architect",
+        5,
+        ("architect",),
+    )
+    mixed = [
+        {**h, "persona": "trickster", "budget_per_100k": 6},
+        entry(100),
+        {**h, "step": 300, "persona": "gardener", "budget_per_100k": 2},
+    ]
+    assert yoked.inherited(mixed) == ("trickster", 6, ("trickster", "gardener"))  # the first header rules
+    for bad in (0, -1, 2.5, "6", True):
+        with pytest.raises(log.LogError, match="budget_per_100k"):
+            yoked.inherited([{**h, "persona": "gardener", "budget_per_100k": bad}])
+
+
+@pytest.mark.parametrize("persona", ["random", "wizard"])
+@pytest.mark.parametrize("where", ["first", "later"])
+def test_a_yoke_log_of_a_yoked_or_unknown_persona_exits_2_before_anything_is_written(
+    arm_c: Path, tmp_path: Path, capsys: pytest.CaptureFixture, persona: str, where: str
+) -> None:
+    recs = [json.loads(line) for line in (arm_c / DIRECTOR_LOG_FILE).read_text().splitlines()]
+    if where == "first":
+        recs[0]["persona"] = persona
+    else:  # a resume of the yoked run appended a header with another persona
+        recs.insert(3, {**recs[0], "step": 400, "persona": persona})
+    yoke = tmp_path / "yoke.jsonl"
+    yoke.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    out = tmp_path / "x"
+    argv = ["run", *COMMON, "--director", "live", "--persona", "random", "--yoke-log", str(yoke)]
+    assert cli.main([*argv, "--out", str(out)]) == 2 and not out.exists()
+    err = capsys.readouterr().err
+    assert ("yoked 'random' run" if persona == "random" else "unknown persona 'wizard'") in err
+
+
+def test_a_mixed_persona_yoke_log_warns_and_uses_the_first_header(
+    arm_c: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    recs = [json.loads(line) for line in (arm_c / DIRECTOR_LOG_FILE).read_text().splitlines()]
+    recs.insert(3, {**recs[0], "step": 400, "persona": "gardener", "budget_per_100k": 2})
+    yoke = tmp_path / "yoke.jsonl"
+    yoke.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    out = tmp_path / "r"
+    argv = ["run", *COMMON, "--director", "live", "--persona", "random", "--yoke-log", str(yoke)]
+    assert cli.main([*argv, "--set", "director.budget_per_100k=0", "--steps", "100", "--out", str(out)]) == 0
+    assert "several personas ['trickster', 'gardener']" in capsys.readouterr().err
+    assert (header_of(out)["params_persona"], header_of(out)["budget_per_100k"]) == ("trickster", 6)
+
+
+def test_a_trickster_yoked_r_replays_bitwise_without_the_yoke_log(
+    arm_c: Path, arm_rc: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    yoke = arm_c / DIRECTOR_LOG_FILE
+    hidden = yoke.with_name("hidden.jsonl")
+    yoke.rename(hidden)
+    try:
+        monkeypatch.setattr(yoked, "load", lambda *a, **k: pytest.fail("a replay read the yoke log"))
+        out = tmp_path / "replay"
+        argv = ["run", "--init-from", f"{arm_rc}:0", "--director", "replay", "--replay-log"]
+        argv += [str(arm_rc / DIRECTOR_LOG_FILE), "--steps", str(END), "--quiet", "--out", str(out)]
+        assert cli.main(argv) == 0
+        assert digest(out) == digest(arm_rc) and rows(out) == rows(arm_rc)
+        assert (out / DIRECTOR_LOG_FILE).read_bytes() == (arm_rc / DIRECTOR_LOG_FILE).read_bytes()
+        rd = RunDir.open(arm_rc)
+        d = Director(rd, rd.config(), "replay", 0)  # the persona and budget come from R's own header
+        assert (d.persona.name, d.name, d.budget) == ("trickster", "random", 6)
+    finally:
+        hidden.rename(yoke)
+
+
+def test_the_same_trickster_yoked_run_twice_is_identical(arm_c: Path, arm_rc: Path, tmp_path: Path) -> None:
+    out = tmp_path / "again"
+    assert run_r(arm_c, out, "--set", "director.budget_per_100k=0") == 0
+    assert (out / DIRECTOR_LOG_FILE).read_bytes() == (arm_rc / DIRECTOR_LOG_FILE).read_bytes()
+    assert digest(out) == digest(arm_rc)
