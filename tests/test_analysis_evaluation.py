@@ -163,6 +163,18 @@ def test_lineage_stats_of_a_fork(tmp_path: Path) -> None:
     assert s["founders"] == 4 and s["alive_end"] == 3 and s["founder_lineages_alive"] == 2
     assert s["immigrants"] == 0 and s["immigrant_descended_frac_end"] == 0.0
     assert s["generation_head"] == 1.0 and s["generations_gained"] == 0.0 and s["coverage_ok"]
+    # cut at step 25 (index 15): 0 and 1 died at 20 and 15 and 5 at 18 (indices 10, 5, 8); 2, 3, 4 are alive
+    e = ev.lineage_stats(rd.path, 10, end=25, tail=15, head=5)
+    assert e["end"] == 25 and e["alive_end"] == 3 and e["founder_lineages_alive"] == 2 and e["births"] == 2
+
+
+def test_boundaries_stop_at_end_and_reference_population() -> None:
+    rows = [{"step": s, "steps": 100, "n_alive": 100.0 + (s > 1500)} for s in range(100, 3001, 100)]
+    bds, _ = ev.boundaries(rows, 0, 1000, end=2000)
+    assert [b["step"] for b in bds] == [1000, 2000]
+    assert ev.reference_population(rows, (1000, 2000)) == pytest.approx(100.5)
+    with pytest.raises(ValueError, match="no metrics rows"):
+        ev.reference_population(rows, (5000, 6000))
 
 
 def test_arm_parse() -> None:
@@ -179,8 +191,8 @@ def test_activity_classes_of_a_fork_report(tmp_path: Path) -> None:
     rd = _hand_run(tmp_path / "fork", uid_of=[100, 101, 102, 103, 200, 201], start=10, cuts=(10, 20, 30))
     _alive_checkpoint(rd, 10, [100, 101, 102, 103])
     st = report.Settings(grid_every=5, marker_rates=(0.5,), cohort_horizons=(10,), shadows=1, windows=())
-    report.run_report(rd.path, rd.path / ev.ACTIVITY_DIR, st, plots=False, log=lambda m: None)
-    a = ev.activity_classes(rd.path / ev.ACTIVITY_DIR / "summary.json", ("marker_0.5",))
+    report.run_report(rd.path, tmp_path / "act", st, plots=False, log=lambda m: None)
+    a = ev.activity_classes(tmp_path / "act" / "summary.json", ("marker_0.5",))
     cell = a["spaces"]["marker_0.5"][report.window_label(10, 30)]
     assert a["t0"] == 10 and cell["class"] in report.CLASSES and set(cell["sweep"]) == set(report.CLASSES)
     assert ev.activity_classes(tmp_path / "missing.json") is None

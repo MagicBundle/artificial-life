@@ -24,8 +24,8 @@ Per arm (``arm_summary``), over the whole span and over ``BLOCKS``:
     which gives the drift without a director;
 - **turnover**: ``b_shift`` (RMS distance between the descriptor now and 100k steps earlier) and archive
   additions per 100k steps;
-- **viability**: the lowest population (also over the control arm's mean), the share of rule windows at
-  risk (the director's ``fall`` above 0.3, a fall of more than 30% within 50k steps) and the extinction
+- **viability**: the lowest population (also over the seed's reference population), the share of rule windows
+  at risk (the director's ``fall`` above 0.3, a fall of more than 30% within 50k steps) and the extinction
   rescues;
 - **clades**: ``clades_alive``, ``top_clade_share`` and ``clade_entropy`` (all immigrants share one clade id,
   ``population.n_init``, so immigration adds at most one clade);
@@ -36,12 +36,18 @@ Per arm (``arm_summary``), over the whole span and over ``BLOCKS``:
 - **lineages** (``lineage_stats``, from the event logs): fork-founder lineages surviving at the end, the
   immigrant-descended share of the population, and generations gained since the fork;
 - **evolutionary activity** (``activity_classes``): the Channon classes of ``alife activity RUN --start``
-  (``docs/ACTIVITY.md``), read from ``RUN/ACTIVITY_DIR/summary.json`` when it exists.
+  (``docs/ACTIVITY.md``), read from ``ACTIVITY_ROOT/s<seed>_<arm>/summary.json`` when it exists (analysis
+  output stays outside the run directories).
+
+Every arm is cut at ``END`` (1.5M): ``runs/64k_s0`` runs on to 1,504,009, the forks stop at 1.5M. The
+collapse criterion uses a fixed per-seed reference population, the base run's mean ``n_alive`` over
+``REF_WINDOW`` (before the fork, so no arm and no live ``K_est`` moves it): an arm collapses if its lowest
+population falls below ``COLLAPSE_FRAC`` of it.
 
 Usage::
 
     python -m alife.analysis.evaluation --arm 0:A:runs/64k_s0:120000 --arm 0:B:runs/eval_s0_B ... \\
-        --out docs/evaluation [--lineages] [--plots]
+        --base 0:runs/64k_s0 --base 1:runs/eval_s1_base --out docs/evaluation [--lineages] [--plots]
 """
 
 from __future__ import annotations
@@ -64,7 +70,12 @@ from alife.director.vitals import GRID_AXES, Tracker
 from alife.runio import RunDir
 
 DIRECTOR_LOG = "director.jsonl"
-ACTIVITY_DIR = "activity_eval"  # alife activity RUN --out RUN/activity_eval (the evaluation's windows)
+ACTIVITY_ROOT = Path(
+    "analysis_cache/eval"
+)  # alife activity RUN --out ROOT/s<seed>_<arm> (the evaluation's windows)
+END = 1_500_000  # every arm is analysed up to this step
+REF_WINDOW = (70_000, 120_000)  # the base run's steps whose mean population is the seed's reference
+COLLAPSE_FRAC = 0.2  # rules.RuleParams.risk_k_frac, against the fixed reference instead of the live K_est
 ACTIVITY_SPACES = ("cohort_h200k", "marker_0.01")  # report.PRIMARY_SPACES
 JOURNAL = "journal.jsonl"
 RULE_EVERY = 1_000
@@ -99,9 +110,9 @@ class Arm:
 
 
 def boundaries(
-    rows: Iterable[Mapping[str, Any]], start: int, rule_every: int = RULE_EVERY
+    rows: Iterable[Mapping[str, Any]], start: int, rule_every: int = RULE_EVERY, end: int | None = None
 ) -> tuple[list[dict[str, Any]], Archive]:
-    """One record per rule boundary after ``start``, folded exactly as a live director folds the rows
+    """One record per rule boundary in ``(start, end]``, folded exactly as a live director folds the rows
     (``Director._rebuild`` then ``observe``/``close``); ``K_est`` is not stored, so the risk flags that need
     it are left out. Returns the records and the final archive."""
     tr = Tracker(rules.RULE_PARAMS)
@@ -110,6 +121,8 @@ def boundaries(
     for r in rows:
         if r["step"] <= start:
             continue
+        if end is not None and r["step"] > end:
+            break
         tr.observe(r)
         imm += int(r.get("immigrants", 0) or 0)
         if r["step"] % rule_every:
@@ -143,6 +156,18 @@ def boundaries(
         )
         imm = 0
     return out, tr.archive
+
+
+def reference_population(rows: Iterable[Mapping[str, Any]], window: tuple[int, int] = REF_WINDOW) -> float:
+    """The step-weighted mean ``n_alive`` of the rows in ``(window[0], window[1]]``."""
+    num = den = 0.0
+    for r in rows:
+        if window[0] < r["step"] <= window[1] and r.get("n_alive") is not None:
+            w = r.get("steps") or 1
+            num, den = num + w * r["n_alive"], den + w
+    if not den:
+        raise ValueError(f"no metrics rows with a population in {window}")
+    return num / den
 
 
 def check_against_log(
@@ -371,40 +396,43 @@ def _params(p: Mapping[str, Any]) -> str:
 # --- lineages from the event logs ---------------------------------------------------------------------------
 
 
-def lineage_stats(run: Path, start: int, tail: int = 50_000, head: int = 10_000) -> dict[str, Any]:
-    """From the phylogeny since ``start`` (``phylo.load_tree``) and the births' ``generation`` column:
-    fork-founder lineages alive at the end, immigrant-descended share, and the mean generation of the
-    founder-descended births in the first ``head`` and the last ``tail`` steps."""
+def lineage_stats(
+    run: Path, start: int, end: int | None = None, tail: int = 50_000, head: int = 10_000
+) -> dict[str, Any]:
+    """From the phylogeny since ``start`` (``phylo.load_tree``) up to ``end`` (default: the end of the
+    record) and the births' ``generation`` column: fork-founder lineages alive at ``end``, the
+    immigrant-descended share, and the mean generation of the founder-descended births in the first ``head``
+    and the last ``tail`` steps."""
     from alife.analysis import phylo  # local: numpy-heavy; not needed for the rest of the module
 
     tree, rep = phylo.load_tree(run, start=start, check_checkpoint=False)
+    e = tree.t_end if end is None else min(end - start, tree.t_end)
     n_f = int(np.count_nonzero(tree.birth < 0))
     root = phylo.nearest_root(tree.parent, tree.parent < 0)
-    alive = tree.death >= tree.t_end
+    alive = (tree.birth < e) & (tree.death >= e)  # alive at grid time e
     founder_line = root < n_f
     gen = _birth_generations(run, start)
     if gen.size != tree.n - n_f:
         raise ValueError(f"{run}: {gen.size} generation records for {tree.n - n_f} births")
-    born = np.arange(n_f, tree.n)
     b = tree.birth[n_f:]
-    fl = founder_line[n_f:] & (tree.parent[n_f:] >= 0)
+    fl = founder_line[n_f:] & (tree.parent[n_f:] >= 0) & (b < e)
 
     def mean_gen(m: np.ndarray) -> float | None:
         return float(gen[m].mean()) if m.any() else None
 
     g_head = mean_gen(fl & (b < head))
-    g_tail = mean_gen(fl & (b >= tree.t_end - tail))
+    g_tail = mean_gen(fl & (b >= e - tail))
     return {
         "founders": n_f,
-        "agents": tree.n,
+        "end": e + start,
         "alive_end": int(alive.sum()),
         "founder_lineages_alive": int(np.unique(root[alive & founder_line]).size),
-        "immigrants": int(np.count_nonzero((tree.parent < 0) & (tree.birth >= 0))),
+        "immigrants": int(np.count_nonzero((tree.parent < 0) & (tree.birth >= 0) & (tree.birth < e))),
         "immigrant_descended_frac_end": float((alive & ~founder_line).sum() / max(alive.sum(), 1)),
         "generation_head": g_head,
         "generation_tail": g_tail,
         "generations_gained": None if g_head is None or g_tail is None else g_tail - g_head,
-        "births": int(born.size),
+        "births": int(np.count_nonzero((b >= 0) & (b < e) & (tree.parent[n_f:] >= 0))),
         "coverage_ok": bool(rep["chunks_tile"] and rep["births_match_metrics"]),
     }
 
@@ -466,10 +494,13 @@ def arm_summary(
     archive: Archive,
     control: tuple[Sequence[Mapping[str, Any]], Archive] | None,
     seed_anchors: Sequence[int],
+    ref_pop: float | None = None,
     blocks: Sequence[tuple[int, int]] = BLOCKS,
+    activity_root: Path = ACTIVITY_ROOT,
 ) -> dict[str, Any]:
     """Every metric of the module docstring for one arm (``control``: the seed's control arm, None for the
-    control itself; ``seed_anchors``: the intervention steps of every arm of the seed)."""
+    control itself; ``seed_anchors``: the intervention steps of every arm of the seed; ``ref_pop``: the seed's
+    reference population)."""
     run = arm.run
     start = arm.start_step()
     entries = log_entries(run)
@@ -518,16 +549,18 @@ def arm_summary(
     _, low = _series(bds, "n_alive_min")
     _, fall = _series(bds, "fall")
     risk = np.isfinite(fall) & (fall > CRASH_FALL)
-    ctrl_pop = _mean(_series(control[0], "n_alive")[1]) if control is not None else _mean(pop)
+    pop_min = float(np.nanmin(low))
     out["viability"] = {
+        "ref_pop": ref_pop,
         "pop_mean": _mean(pop),
         "pop_blocks": _block_means(t, pop, blocks),
-        "pop_min": float(np.nanmin(low)),
+        "pop_min": pop_min,
         "pop_min_step": int(t[np.nanargmin(low)]),
         "pop_end": _at(t, pop, end),
-        "pop_min_over_control_mean": float(np.nanmin(low)) / ctrl_pop if ctrl_pop else None,
+        "pop_min_over_ref": pop_min / ref_pop if ref_pop else None,
+        "collapse": pop_min < COLLAPSE_FRAC * ref_pop if ref_pop else None,
         "at_risk_frac": float(risk.mean()),
-        "extinct": bool(np.nanmin(low) == 0),
+        "extinct": bool(pop_min == 0),
         "immigrants": int(sum(b["immigrants"] for b in bds)),
     }
     clades: dict[str, Any] = {}
@@ -542,7 +575,7 @@ def arm_summary(
     out["interventions"] = intervention_stats(entries, span)
     out["llm"] = llm_stats(read_jsonl(run / JOURNAL))
     out["log_check"] = check_against_log(bds, entries) if entries else None
-    out["activity"] = activity_classes(run / ACTIVITY_DIR / "summary.json")
+    out["activity"] = activity_classes(activity_root / f"s{arm.seed}_{arm.name}" / "summary.json")
     return out
 
 
@@ -550,16 +583,25 @@ def arm_summary(
 
 
 def evaluate(
-    arms: Sequence[Arm], control: str = "A", lineages: bool = False, log: Any = print
+    arms: Sequence[Arm],
+    control: str = "A",
+    lineages: bool = False,
+    log: Any = print,
+    *,
+    bases: Mapping[int, Path] | None = None,
+    end: int = END,
+    activity_root: Path = ACTIVITY_ROOT,
 ) -> tuple[dict[str, Any], dict[tuple[int, str], list[dict[str, Any]]]]:
-    """Summaries of every arm (``{"arms": [...], "seeds": {...}}``) and the per-boundary records."""
+    """Summaries of every arm (``{"arms": [...], "settings": ...}``) and the per-boundary records. ``bases``
+    maps a seed to the run whose ``REF_WINDOW`` gives its reference population."""
+    refs = {s: reference_population(RunDir.open(p).metrics_rows()) for s, p in (bases or {}).items()}
     series: dict[tuple[int, str], list[dict[str, Any]]] = {}
     archives: dict[tuple[int, str], Archive] = {}
     for a in arms:
         log(f"folding {a.seed}:{a.name} ({a.run})")
-        bds, arc = boundaries(RunDir.open(a.run).metrics_rows(), a.start_step())
+        bds, arc = boundaries(RunDir.open(a.run).metrics_rows(), a.start_step(), end=end)
         series[(a.seed, a.name)], archives[(a.seed, a.name)] = bds, arc
-    out: dict[str, Any] = {"arms": [], "settings": _settings(control)}
+    out: dict[str, Any] = {"arms": [], "settings": {**_settings(control), "end": end, "ref_pop": refs}}
     for a in arms:
         ctrl = (a.seed, control)
         has_ctrl = ctrl in series and a.name != control
@@ -570,10 +612,12 @@ def evaluate(
             archives[(a.seed, a.name)],
             (series[ctrl], archives[ctrl]) if has_ctrl else None,
             seed_anchors,
+            refs.get(a.seed),
+            activity_root=activity_root,
         )
         if lineages:
             log(f"lineages of {a.seed}:{a.name}")
-            summ["lineages"] = lineage_stats(a.run, a.start_step())
+            summ["lineages"] = lineage_stats(a.run, a.start_step(), end)
         out["arms"].append(summ)
     return out, series
 
@@ -586,6 +630,8 @@ def _settings(control: str) -> dict[str, Any]:
         "blocks": [list(b) for b in BLOCKS],
         "persistent_novelty": {"lag": PN_LAG, "span": PN_SPAN, "base": PN_BASE},
         "crash_fall": CRASH_FALL,
+        "ref_window": list(REF_WINDOW),
+        "collapse_frac": COLLAPSE_FRAC,
         "archive": {
             "k": p.novelty_k,
             "exclude": p.novelty_exclude,
@@ -676,6 +722,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     ap.add_argument("--arm", action="append", required=True, metavar="SEED:NAME:RUN[:START]")
     ap.add_argument("--control", default="A")
+    ap.add_argument(
+        "--base",
+        action="append",
+        default=[],
+        metavar="SEED:RUN",
+        help="the run whose 70k-120k sets the reference",
+    )
+    ap.add_argument("--end", type=int, default=END)
+    ap.add_argument("--activity-root", default=str(ACTIVITY_ROOT), metavar="DIR")
     ap.add_argument("--out", required=True, metavar="DIR")
     ap.add_argument(
         "--lineages", action="store_true", help="also read the event logs (slow, about 1 min per arm)"
@@ -692,7 +747,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     arms = [Arm.parse(x) for x in a.arm]
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    summary, series = evaluate(arms, a.control, a.lineages)
+    bases = {int(x.split(":", 1)[0]): Path(x.split(":", 1)[1]) for x in a.base}
+    summary, series = evaluate(
+        arms, a.control, a.lineages, bases=bases, end=a.end, activity_root=Path(a.activity_root)
+    )
     (out / "evaluation.json").write_text(json.dumps(summary, indent=1) + "\n", encoding="utf-8")
     write_series(out / "series.npz", series)
     order = list(dict.fromkeys(x.name for x in arms))

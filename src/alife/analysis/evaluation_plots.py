@@ -113,7 +113,7 @@ SUMMARY_METRICS: tuple[tuple[str, str], ...] = (
     ("coverage.final", "final coverage (cells)"),
     ("persistent_novelty.vs_control.mean", "persistent novelty vs A"),
     ("novelty.mean", "mean novelty"),
-    ("viability.pop_min_over_control_mean", "lowest population / A's mean"),
+    ("viability.pop_min_over_ref", "lowest population / reference"),
 )
 
 
