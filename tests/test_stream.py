@@ -16,6 +16,8 @@ import os
 import struct
 import subprocess
 import sys
+import textwrap
+import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -29,8 +31,8 @@ import stream_decode as dec
 import stream_fixtures as fx
 from alife import cli, render, stream
 from alife.config import Config, config_hash, dims, load_config
-from alife.runio import RunDir, write_state_file
-from alife.state import State, State3, init_state, state_digest, to_numpy
+from alife.runio import CheckpointError, RunDir, write_state_file
+from alife.state import Diag, State, State3, init_state, state_digest, to_numpy
 from alife.step import make_step
 from helpers import MICRO3D, ON_GPU, make_scene
 
@@ -51,12 +53,16 @@ def steps(cfgs: dict[str, Config]) -> dict[str, Callable[[Any], Any]]:
     return {k: make_step(c) for k, c in cfgs.items()}
 
 
+BONDS = [(0, 1), (2, 10), (2, 3), (4, 10)]
+
+
 def scene(cfg: Config, kind: str, step: int = 0) -> State | State3:
-    """Seven zero-weight agents in rows 0-4, 10 and 21 with bonds (0,1) across the seam, (2,3) and (4,10)."""
+    """Seven zero-weight agents in rows 0-4, 10 and 21 with bonds (0,1) across the seam, (2,10), (2,3) and
+    (4,10): row 2 has two bonds, in slot order partner 10 then 3 (not the partner order), as has row 10."""
     return make_scene(
         cfg,
         fx.scene_agents(kind, 0),
-        bonds=[(0, 1), (2, 3), (4, 10)],
+        bonds=BONDS,
         step=mx.array(step, dtype=mx.int32),
     )
 
@@ -163,6 +169,14 @@ def check_frame(fr: dec.Frame, h: dict[str, np.ndarray], cfg: Config, color: str
     assert fr.bonds.tolist() == ref_bonds(h) and fr.n_bonds == len(ref_bonds(h))
     np.testing.assert_array_equal(fr.rgb, ref_rgb(h, cfg, color))
     assert bool(fr.flags & 2) == bool(int(h["diag"]) & 0xFFFF)
+    check_flags(fr)
+
+
+def check_flags(fr: dec.Frame) -> None:
+    """The version-1 flag word: bits 2-15 are zero, and bits 16-31 hold the field layer iff a field section
+    follows (0 otherwise, whatever layer the view has selected)."""
+    assert fr.flags & 0xFFFC == 0, hex(fr.flags)
+    assert fr.flags >> 16 == (fr.field_layer if fr.flags & 1 else 0), hex(fr.flags)
 
 
 def micro_args(kind: str) -> list[str]:
@@ -243,9 +257,9 @@ def test_frames_equal_the_stepped_state(kind: str, cfgs: dict[str, Config], step
     for _ in range(6):
         cur = advance(step_fn, cur, 1)
         refs.append(snapshot(cur))
-    # The scene is not static: the agent in row 10 dies in the first step and takes its bond with it.
+    # The scene is not static: the agent in row 10 dies in the first step and takes its two bonds with it.
     assert [int(r["alive"].sum()) for r in refs] == [7, *[6] * 6]
-    assert [len(ref_bonds(r)) for r in refs] == [3, *[2] * 6]
+    assert [len(ref_bonds(r)) for r in refs] == [4, *[2] * 6]
     data, _ = run_sim(cfg, scene(cfg, kind), step_fn, steps=6)
     header, frames = dec.decode(data)
     assert len(frames) == 7
@@ -277,10 +291,62 @@ def test_a_bond_to_a_dead_row_is_not_streamed(cfgs: dict[str, Config], steps: di
     cfg = cfgs["2d"]
     s = scene(cfg, "2d")
     alive = to_numpy(s.alive)
-    alive[1] = False  # row 1 dies but keeps its partner slots: (0,1) must not be drawn, (2,3) still is
+    alive[1] = False  # row 1 dies but keeps its partner slots: (0,1) must not be drawn, the others still are
     s = s._replace(alive=mx.array(alive))
     (fr,) = dec.decode(run_sim(cfg, s, steps["2d"], steps=0)[0])[1]
-    assert fr.bonds.tolist() == [[2, 3], [4, 10]] and fr.n_bonds == 2
+    assert fr.bonds.tolist() == [[2, 10], [2, 3], [4, 10]] and fr.n_bonds == 3
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_bonds_are_listed_by_row_then_slot(kind: str, cfgs: dict[str, Config], steps: dict[str, Any]) -> None:
+    """Each bond once, from its lower row, in ascending row and then slot order (not the partner order, and
+    not slot-major): row 2 holds partner 10 in slot 0 and partner 3 in slot 1."""
+    cfg = cfgs[kind]
+    s = scene(cfg, kind)
+    partner = to_numpy(s.partner)
+    assert partner[2].tolist()[:2] == [10, 3] and partner[10].tolist()[:2] == [2, 4]
+    (fr,) = dec.decode(run_sim(cfg, s, steps[kind], steps=0)[0])[1]
+    # Row-major: (0,1), then row 2's slots, then row 4. Slot-major would put (4,10) before (2,3);
+    # sorted by partner would put (2,3) before (2,10).
+    assert fr.bonds.tolist() == [[0, 1], [2, 10], [2, 3], [4, 10]]
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_flags_set_bit_one_for_an_error_diag_only(
+    kind: str, cfgs: dict[str, Config], steps: dict[str, Any]
+) -> None:
+    """`diag` error bits (below 1 << 16) set flag bit 1; the routine warning bits (a velocity clip, a cell
+    overflow) do not; every other flag bit stays zero."""
+    cfg = cfgs[kind]
+    warn = int(Diag.CELL_OVERFLOW_WARN | Diag.VCLIP_WARN)
+    cases = [
+        (0, 0),
+        (int(Diag.VCLIP_WARN), 0),
+        (warn, 0),
+        (int(Diag.LEDGER), 2),
+        (int(Diag.POS_RANGE), 2),
+        (int(Diag.LEDGER) | warn, 2),
+    ]
+    for diag, flags in cases:
+        s = make_scene(cfg, fx.scene_agents(kind, 0), diag=mx.array(diag, dtype=mx.int32))
+        (fr,) = dec.decode(run_sim(cfg, s, steps[kind], steps=0)[0])[1]
+        assert fr.flags == flags, (diag, hex(fr.flags))
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_flags_carry_the_field_layer_only_with_a_field_section(
+    kind: str, cfgs: dict[str, Config], steps: dict[str, Any]
+) -> None:
+    """Bits 16-31 name the layer of the field section; without one they are zero even when the view has a
+    layer selected (`fields z K` with fields off), and bit 0 is the section's presence."""
+    cfg = cfgs[kind]
+    layers = (0, 3, 5) if kind == "3d" else (0,)
+    for z in layers:
+        for fields in (False, True):
+            view = stream.View(fields=fields, field_z=z)
+            (fr,) = dec.decode(run_sim(cfg, scene(cfg, kind), steps[kind], steps=0, view=view)[0])[1]
+            assert fr.flags == ((1 | z << 16) if fields else 0), (z, fields, hex(fr.flags))
+            assert (fr.field is not None) == fields
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -418,6 +484,17 @@ def test_stream_help_says_it_ignores_the_director() -> None:
         assert "never writes into the run directory" in flat and "stdin EOF = quit" in flat
 
 
+def test_stream_help_says_the_preset_has_no_default() -> None:
+    """`stream` has no default preset (without RUN, FILE or --preset it exits 2), unlike `run`."""
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction")
+    text = " ".join(sub.choices["stream"].format_help().split())
+    assert "default 64k" not in text and "no default" in text
+    assert "default 64k" in " ".join(
+        sub.choices["bench"].format_help().split()
+    )  # the shared helper's default
+
+
 # --- the control channel --------------------------------------------------------------------------------
 
 
@@ -433,7 +510,7 @@ def test_control_script(cfgs: dict[str, Config], steps: dict[str, Any]) -> None:
         ["step 3"],  # step 5
         [],  # step 6
         [],  # step 7: the one frame of the batch
-        ["fields on", "fields z 2"],  # idle: one redraw
+        ["fields on", "fields z 2"],  # idle: a redraw for each, with layer 0 and then 2
         ["run"],  # step 8: frame
         ["bogus", "", "# a comment"],  # step 9: frame; the comment and the blank line are silent
         ["quit"],
@@ -448,14 +525,19 @@ def test_control_script(cfgs: dict[str, Config], steps: dict[str, Any]) -> None:
         (2, 1, None),
         (4, 1, None),
         (7, 1, None),
+        (7, 1, 0),
         (7, 1, 2),
         (8, 1, 2),
         (9, 1, 2),
     ]
+    for fr in frames:
+        check_flags(fr)
     assert stats.ended == "quit" and stats.steps == 9 and ctl.closed
-    # A running stream only peeks at the channel; a paused one with nothing to do blocks on it (no spinning).
-    assert ctl.timeouts[:5] == [0] * 5 and ctl.timeouts[5] is None
-    assert [k for k, t in enumerate(ctl.timeouts) if t is None] == [5, 8, 9]
+    # A running stream only peeks at the channel; a paused one with nothing to do waits on it (no spinning),
+    # waking every IDLE_WAIT_S to notice a closed reader.
+    assert ctl.timeouts[:5] == [0] * 5 and ctl.timeouts[5] == stream.IDLE_WAIT_S
+    assert [k for k, t in enumerate(ctl.timeouts) if t == stream.IDLE_WAIT_S] == [5, 8, 9]
+    assert all(t in (0, stream.IDLE_WAIT_S) for t in ctl.timeouts)
     assert header["every"] == 2 and header["fields"] is False  # the header is the starting view
 
 
@@ -483,20 +565,71 @@ def test_pause_cancels_a_pending_step_batch(cfgs: dict[str, Config], steps: dict
     assert [f.step for f in dec.decode(data)[1]] == [0, 2, 3, 4] and stats.steps == 4
 
 
-def test_a_colour_and_a_layer_in_one_batch_write_one_frame(
+def test_each_redraw_command_writes_its_own_frame(cfgs: dict[str, Config], steps: dict[str, Any]) -> None:
+    """Lines are applied one at a time, in order: `color`, `fields on|off` and (fields on) `fields z K` each
+    write their frame before the next line is read, whatever else arrives in the same read; `fields z K` with
+    fields off writes nothing. The frames do not depend on how the pipe chunked the lines."""
+    cfg = cfgs["3d"]
+    lines = [
+        "color clade",
+        "fields z 3",
+        "fields z 4",
+        "fields on",
+        "fields z 1",
+        "fields off",
+        "color energy",
+    ]
+    together = run_sim(cfg, scene(cfg, "3d"), steps["3d"], steps=0, control=ScriptControl([lines]))[0]
+    frames = dec.decode(together)[1]
+    # (step, colour index, layer): the starting frame, then `color clade`, `fields on` (with the layer set by
+    # `fields z 4` while fields were off), `fields z 1`, `fields off` and `color energy`.
+    assert [(f.step, f.color_index, f.field_layer) for f in frames] == [
+        (0, 0, None),
+        (0, 2, None),
+        (0, 2, 4),
+        (0, 2, 1),
+        (0, 2, None),
+        (0, 1, None),
+    ]
+    for fr in frames:
+        check_flags(fr)
+    script = ScriptControl([[x] for x in lines])  # the same lines, one per read
+    apart = run_sim(cfg, scene(cfg, "3d"), steps["3d"], steps=len(lines), every=1000, control=script)[0]
+    assert [(f.color_index, f.field_layer) for f in dec.decode(apart)[1]] == [
+        (f.color_index, f.field_layer) for f in frames
+    ]
+
+
+def test_a_redraw_is_written_before_quit_in_the_same_read(
     cfgs: dict[str, Config], steps: dict[str, Any]
 ) -> None:
-    """`fields z K` with fields off shows nothing new, but must not drop the redraw `color` asked for."""
-    cfg = cfgs["3d"]
-    script = [["color clade", "fields z 3"], ["fields z 4"], ["fields on"], []]
-    data, _ = run_sim(cfg, scene(cfg, "3d"), steps["3d"], steps=0, control=ScriptControl(script))
-    got = [(f.step, f.color_index, f.field_layer) for f in dec.decode(data)[1]]
-    assert got == [(0, 0, None), (0, 2, None)]  # the script is cut by `steps=0` after its first poll
-    data, _ = run_sim(cfg, scene(cfg, "3d"), steps["3d"], steps=3, control=ScriptControl(script))
-    got = [(f.step, f.color_index, f.field_layer) for f in dec.decode(data)[1]]
-    # `fields z 4` with fields still off writes nothing; `fields on` then redraws with layer 4 (set by the
-    # line before), and the grid frames follow.
-    assert got == [(0, 0, None), (0, 2, None), (1, 2, None), (2, 2, None), (2, 2, 4), (3, 2, 4)]
+    """`color clade` then `quit` (or EOF) arriving together still draws the clade frame; what follows `quit`
+    is dropped. `printf 'color clade\\n' | alife stream ...` therefore ends with that frame."""
+    cfg = cfgs["2d"]
+    ctl = ScriptControl([["color clade", "quit", "color energy"]])
+    data, stats = run_sim(cfg, scene(cfg, "2d"), steps["2d"], control=ctl)
+    assert [(f.step, f.color_index) for f in dec.decode(data)[1]] == [(0, 0), (0, 2)]
+    assert stats.ended == "quit" and stats.steps == 0
+    r, w = os.pipe()  # the real reader: a line and then EOF, queued together
+    os.write(w, b"color clade\n")
+    os.close(w)
+    fd = stream.FdControl(r)
+    try:
+        data, stats = run_sim(cfg, scene(cfg, "2d"), steps["2d"], every=1_000_000, control=fd)
+    finally:
+        os.close(r)
+    frames = dec.decode(data)[1]
+    assert (frames[0].color_index, frames[-1].color_index) == (0, 2) and stats.ended == "quit"
+
+
+def test_each_step_batch_writes_one_frame(cfgs: dict[str, Config], steps: dict[str, Any]) -> None:
+    """`step N` writes exactly one frame after its last step, whatever else is pending: a batch received while
+    another is running (or two in one read) is queued and has its own frame."""
+    cfg = cfgs["2d"]
+    script = [["step 3"], [], ["step 2"], [], [], ["step 1", "step 2"], [], [], []]
+    data, stats = run_sim(cfg, scene(cfg, "2d"), steps["2d"], control=ScriptControl(script))
+    # 3 steps, then 2 (queued behind the first), then 1 and 2 received together.
+    assert [f.step for f in dec.decode(data)[1]] == [0, 3, 5, 6, 8] and stats.steps == 8
 
 
 def test_invalid_control_lines_are_ignored(
@@ -543,6 +676,16 @@ def test_parse_command_grammar() -> None:
             P(line, fz=6)
 
 
+def _read_lines(ctl: stream.FdControl, want: int) -> list[str]:
+    """Poll until `want` lines have arrived (a failure, not a hang, if they never do)."""
+    got: list[str] = []
+    deadline = time.monotonic() + 10
+    while len(got) < want:
+        assert time.monotonic() < deadline, f"timed out with {got!r}"
+        got += ctl.poll(0.5)
+    return got
+
+
 def test_fd_control_reads_lines_and_eof() -> None:
     r, w = os.pipe()
     ctl = stream.FdControl(r)
@@ -551,15 +694,7 @@ def test_fd_control_reads_lines_and_eof() -> None:
         os.write(w, b"pause\nstep 2")
         assert ctl.poll(5) == ["pause"]  # the partial line waits for its newline
         os.write(w, b"\ncolor energy\n\nfields on\n")
-        got: list[str] = []
-        while len(got) < 4:
-            got += ctl.poll(5)
-        assert got == ["step 2", "color energy", "", "fields on"]
-        os.write(w, b"x" * (stream.MAX_LINE + 10) + b"\nafter\n")  # an overlong line is dropped
-        got = []
-        while "after" not in got:
-            got += ctl.poll(5)
-        assert got == ["after"]
+        assert _read_lines(ctl, 4) == ["step 2", "color energy", "", "fields on"]
         os.write(w, b"last")  # EOF flushes an unterminated line, then reads as quit
         os.close(w)
         w = -1
@@ -567,6 +702,39 @@ def test_fd_control_reads_lines_and_eof() -> None:
         while "quit" not in got:
             got += ctl.poll(5)
         assert got == ["last", "quit"]
+    finally:
+        if w >= 0:
+            os.close(w)
+        os.close(r)
+
+
+def test_fd_control_drops_overlong_lines_with_a_note(capsys: pytest.CaptureFixture[str]) -> None:
+    """A line of exactly MAX_LINE bytes (the newline not counted) is delivered; a longer one is dropped with
+    one note on stderr, however it arrives (in one write, or in many), and the line after it is delivered."""
+    note = f"longer than {stream.MAX_LINE} bytes"
+    r, w = os.pipe()
+    ctl = stream.FdControl(r)
+    try:
+        exact = b"pause" + b" " * (stream.MAX_LINE - 5)
+        os.write(w, exact + b"\n")
+        assert _read_lines(ctl, 1) == [exact.decode()]  # accepted: it is not longer than the limit
+        assert capsys.readouterr().err == ""
+        os.write(w, b"x" * (stream.MAX_LINE + 1) + b"\nafter one\n")  # one byte over, in one write
+        assert _read_lines(ctl, 1) == ["after one"]
+        assert capsys.readouterr().err.count(note) == 1
+        for _ in range(3):  # three times the limit, in pieces, then its end and the next line
+            os.write(w, b"y" * stream.MAX_LINE)
+            time.sleep(0.01)
+        os.write(w, b"y" * 10 + b"\nafter two\n")
+        assert _read_lines(ctl, 1) == ["after two"]  # the dropped line did not swallow the next one
+        assert capsys.readouterr().err.count(note) == 1
+        os.write(w, b"z" * (2 * stream.MAX_LINE))  # an overlong line that ends with EOF: dropped, then quit
+        os.close(w)
+        w = -1
+        got = []
+        while "quit" not in got:
+            got += ctl.poll(5)
+        assert got == ["quit"] and capsys.readouterr().err.count(note) == 1
     finally:
         if w >= 0:
             os.close(w)
@@ -617,10 +785,88 @@ def test_closed_reader_is_a_quiet_stop(
     assert capsys.readouterr().err == ""  # no traceback, no message
 
 
+def test_write_all_waits_on_a_full_nonblocking_pipe() -> None:
+    """A raw write that returns None (EAGAIN: a non-blocking descriptor that is full) means a slow reader, not
+    a closed one: the writer waits until the pipe drains and no byte is lost."""
+    r, w = os.pipe()
+    os.set_blocking(w, False)
+    out = os.fdopen(w, "wb", buffering=0)
+    payload = bytes(range(256)) * 4096  # 1 MiB, far beyond a pipe buffer
+    got = bytearray()
+
+    def slow_reader() -> None:
+        time.sleep(0.3)  # the pipe is full and the writer has seen EAGAIN by now
+        while chunk := os.read(r, 1 << 16):
+            got.extend(chunk)
+
+    t = threading.Thread(target=slow_reader)
+    t.start()
+    try:
+        stream._write_all(out, payload)
+    finally:
+        out.close()
+        t.join(60)
+        os.close(r)
+    assert bytes(got) == payload
+
+
+def test_reader_closed_sees_a_hung_up_pipe(tmp_path: Path) -> None:
+    r, w = os.pipe()
+    out = os.fdopen(w, "wb", buffering=0)
+    try:
+        assert not stream.reader_closed(out)
+        os.close(r)
+        assert stream.reader_closed(out)
+    finally:
+        out.close()
+    assert not stream.reader_closed(io.BytesIO())  # no descriptor: it cannot tell
+    with open(tmp_path / "f", "wb") as f:
+        assert not stream.reader_closed(f)  # a regular file has no reader
+    with open(os.devnull, "wb") as f:
+        assert not stream.reader_closed(f)
+
+
+def _pipe_sink() -> tuple[int, Any]:
+    r, w = os.pipe()
+    return r, os.fdopen(w, "wb", buffering=0)
+
+
+def test_a_running_stream_without_frames_notices_a_closed_reader(
+    cfgs: dict[str, Config], steps: dict[str, Any]
+) -> None:
+    """With a large `--every` a running stream writes no frame for long: each step asks the descriptor."""
+    cfg = cfgs["2d"]
+    r, out = _pipe_sink()
+    ctl = ScriptControl([[], lambda: (os.close(r), [])[1], *[[]] * 20])
+    try:
+        stats = stream.serve(
+            cfg, mode="simulate", source="preset", run=None, state=[scene(cfg, "2d")], control=ctl, out=out,
+            every=1_000_000, step_fn=steps["2d"],
+        )  # fmt: skip
+    finally:
+        out.close()
+    assert stats.ended == "pipe" and stats.steps == 2 and len(ctl.timeouts) == 2 and stats.frames == 1
+
+
+def test_a_paused_stream_notices_a_closed_reader(cfgs: dict[str, Config], steps: dict[str, Any]) -> None:
+    """Nothing is being written while paused, so no write can fail: the idle wake-up asks the descriptor."""
+    cfg = cfgs["2d"]
+    r, out = _pipe_sink()
+    ctl = ScriptControl([["pause"], lambda: (os.close(r), [])[1], *[[]] * 20])
+    try:
+        stats = stream.serve(
+            cfg, mode="simulate", source="preset", run=None, state=[scene(cfg, "2d")], control=ctl, out=out,
+            step_fn=steps["2d"],
+        )  # fmt: skip
+    finally:
+        out.close()
+    assert stats.ended == "pipe" and len(ctl.timeouts) == 2 and ctl.closed
+
+
 def test_protocol_output_redirects_stdout_to_stderr(capfdbinary: pytest.CaptureFixture[bytes]) -> None:
     with stream.protocol_output() as out:
         print("a stray print")
-        os.write(1, b"a raw write to fd 1\n")  # a C library's printf, a child process
+        os.write(1, b"a raw write to fd 1\n")  # a child process
         sys.stdout.write("via sys.stdout\n")
         sys.stdout.flush()
         out.write(b"PROTOCOL")
@@ -749,6 +995,45 @@ def test_run_source_checkpoint_file_and_preset(
     check_frame(frames[0], snapshot(init_state(cfg)), cfg)
 
 
+def test_field_z_alone_implies_fields(cfgs: dict[str, Config], shared_step: None, capfdbinary: Any) -> None:
+    """`--field-z K` without `--fields` turns the field section on, at layer K, in every frame."""
+    argv = ["stream", *micro_args("3d"), "--steps", "2", "--no-control"]
+    assert cli.main([*argv, "--field-z", "2"]) == 0
+    header, frames, _ = stdout_frames(capfdbinary)
+    assert header["fields"] is True and header["field_z"] == 2 and len(frames) == 3
+    assert all(f.field_layer == 2 and f.flags == 1 | 2 << 16 for f in frames)
+    assert cli.main(argv) == 0  # and neither flag: no field section
+    header, frames, _ = stdout_frames(capfdbinary)
+    assert header["fields"] is False and all(f.field is None and f.flags == 0 for f in frames)
+
+
+def test_follow_arguments_reach_serve(
+    cfgs: dict[str, Config], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--follow --poll S` passes the run, the source, the mode and the poll period on (the loops themselves
+    are tested through `serve`)."""
+    rd = make_run(tmp_path, "2d", cfgs["2d"], [0, 3])
+    seen: dict[str, Any] = {}
+
+    def fake_serve(cfg: Config, **kw: Any) -> stream.StreamStats:
+        seen.update(kw, cfg=cfg)
+        return stream.StreamStats(0, 0, "quit")
+
+    monkeypatch.setattr(stream, "serve", fake_serve)
+    assert cli.main(["stream", str(rd.path), "--follow", "--poll", "0.37", "--no-control"]) == 0
+    assert (seen["mode"], seen["source"], seen["run"], seen["poll_s"]) == (
+        "follow",
+        "run",
+        str(rd.path),
+        0.37,
+    )
+    assert seen["rd"].path == rd.path and isinstance(seen["control"], stream.NoControl)
+    assert seen["max_steps"] is None and seen["cfg"] == cfgs["2d"]
+    assert cli.main(["stream", str(rd.path), "--no-control"]) == 0  # simulating: the default poll, a state
+    assert (seen["mode"], seen["source"], seen["rd"], len(seen["state"])) == ("simulate", "run", None, 1)
+    assert seen["poll_s"] == 1.0 and seen["every"] == 1
+
+
 def test_2d_preset_stream(cfgs: dict[str, Config], shared_step: None, capfdbinary: Any) -> None:
     cfg = cfgs["2d"]
     assert cli.main(["stream", *micro_args("2d"), "--steps", "4", "--every", "2", "--no-control"]) == 0
@@ -822,6 +1107,16 @@ def test_cli_control_over_a_pipe(
 # --- follow ---------------------------------------------------------------------------------------------
 
 
+def saver(rd: RunDir, cfg: Config, kind: str, k: int) -> Callable[[], list[str]]:
+    """A control-script item with which the "runner" writes a checkpoint at step `k` (it adds no line)."""
+
+    def go() -> list[str]:
+        rd.save_checkpoint(scene(cfg, kind, k), cfg)
+        return []
+
+    return go
+
+
 def follow(rd: RunDir, cfg: Config, script: Sequence[Any], **kw: Any) -> tuple[bytes, stream.StreamStats]:
     buf = io.BytesIO()
     stats = stream.serve(
@@ -859,7 +1154,7 @@ def test_follow_streams_each_new_checkpoint(cfgs: dict[str, Config], tmp_path: P
         [],
         ["every 5", "color clade"],  # `every` ignored; a redraw of step 6
         ["step"],  # the newest checkpoint, once
-        ["fields on", "fields z 1"],  # one redraw
+        ["fields on", "fields z 1"],  # a redraw for each
         ["run"],
         [],
     ]
@@ -871,8 +1166,11 @@ def test_follow_streams_each_new_checkpoint(cfgs: dict[str, Config], tmp_path: P
         (6, 0, None),
         (6, 2, None),
         (9, 2, None),
+        (9, 2, 0),
         (9, 2, 1),
     ]
+    for fr in frames:
+        check_flags(fr)
     assert stats.ended == "quit" and stats.steps == 0
     for fr in frames[:2]:
         check_frame(fr, snapshot(scene(cfg, "3d", fr.step)), cfg)
@@ -894,28 +1192,88 @@ def test_follow_writes_nothing_and_never_steps(
     assert [f.step for f in dec.decode(data)[1]] == [3, 3] and stats.ended == "quit"
 
 
-def test_follow_survives_a_pruned_checkpoint(
+def test_follow_skips_a_checkpoint_that_vanishes_before_it_is_read(
     cfgs: dict[str, Config], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A checkpoint that vanishes between listing and reading is skipped; the next poll gets the new one."""
+    """A checkpoint pruned (or truncated by a resume) after it was listed and stat'ed is skipped; the next
+    poll carries on. The real loader wraps the missing file in `CheckpointError`, which must not end the
+    stream."""
     cfg = cfgs["2d"]
     rd = make_run(tmp_path, "2d", cfg, [0, 2])
     real = stream.load_checkpoint
-    calls: list[Path] = []
+    loads: list[Path] = []
+    raised: list[type[BaseException]] = []
 
-    def flaky(path: Path, c: Config) -> Any:
-        calls.append(path)
+    def vanishing(path: Path, c: Config) -> Any:
+        loads.append(path)
+        if len(loads) == 2:  # the load of step 5: its file is gone by then
+            path.unlink()
+        try:
+            return real(path, c)
+        except Exception as e:
+            raised.append(type(e))
+            raise
+
+    monkeypatch.setattr(stream, "load_checkpoint", vanishing)
+    data, stats = follow(rd, cfg, [saver(rd, cfg, "2d", 5), [], saver(rd, cfg, "2d", 8), []])
+    assert raised == [CheckpointError]  # what the real loader raises for a missing file
+    assert [f.step for f in dec.decode(data)[1]] == [2, 8] and stats.ended == "quit"
+
+
+def test_follow_survives_latest_vanishing(
+    cfgs: dict[str, Config], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`LATEST` removed between its existence check and its read (a resume's truncation) is a skipped poll."""
+    cfg = cfgs["2d"]
+    rd = make_run(tmp_path, "2d", cfg, [0, 2])
+    real = RunDir.latest_checkpoint
+    calls: list[int] = []
+
+    def flaky(self: RunDir) -> Path | None:
+        calls.append(1)
         if len(calls) == 2:
-            raise FileNotFoundError(path)
+            raise FileNotFoundError("LATEST")
+        return real(self)
+
+    rd.save_checkpoint(scene(cfg, "2d", 5), cfg)
+    monkeypatch.setattr(RunDir, "latest_checkpoint", flaky)
+    data, _ = follow(rd, cfg, [[], [], []])
+    assert [f.step for f in dec.decode(data)[1]] == [5] and len(calls) >= 3
+
+
+def test_follow_reports_a_checkpoint_that_exists_but_cannot_be_loaded(
+    cfgs: dict[str, Config], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a vanished file is skipped: an incompatible or corrupt one is a `CheckpointError` (exit 4)."""
+    cfg = cfgs["2d"]
+    rd = make_run(tmp_path, "2d", cfg, [0, 2])
+    real = stream.load_checkpoint
+    loads: list[Path] = []
+
+    def corrupt(path: Path, c: Config) -> Any:
+        loads.append(path)
+        if len(loads) == 2:
+            raise CheckpointError(f"{path}: corrupt")
         return real(path, c)
 
-    def new_checkpoint() -> list[str]:
-        rd.save_checkpoint(scene(cfg, "2d", 5), cfg)
-        return []
+    monkeypatch.setattr(stream, "load_checkpoint", corrupt)
+    with pytest.raises(CheckpointError, match="corrupt"):
+        follow(rd, cfg, [saver(rd, cfg, "2d", 5), []])
 
-    monkeypatch.setattr(stream, "load_checkpoint", flaky)
-    data, _ = follow(rd, cfg, [new_checkpoint, [], []])
-    assert [f.step for f in dec.decode(data)[1]] == [2, 5]
+
+def test_a_followed_stream_notices_a_closed_reader(cfgs: dict[str, Config], tmp_path: Path) -> None:
+    """A run that has stopped writes no checkpoints, so no write can fail: every poll asks the descriptor."""
+    cfg = cfgs["2d"]
+    rd = make_run(tmp_path, "2d", cfg, [0, 3])
+    r, out = _pipe_sink()
+    ctl = ScriptControl([[], lambda: (os.close(r), [])[1], *[[]] * 20])
+    try:
+        stats = stream.serve(
+            cfg, mode="follow", source="run", run=str(rd.path), rd=rd, out=out, control=ctl, poll_s=0.01
+        )
+    finally:
+        out.close()
+    assert stats.ended == "pipe" and len(ctl.timeouts) == 2 and ctl.closed
 
 
 # --- subprocesses: real pipes ------------------------------------------------------------------------------
@@ -971,6 +1329,48 @@ def test_reader_closing_early_exits_zero_without_a_traceback() -> None:
     assert "Traceback" not in err and "BrokenPipe" not in err and "Exception ignored" not in err
 
 
+STRAY_MAIN = textwrap.dedent(
+    """
+    import ctypes, sys
+    import mlx.core as mx
+    mx.set_default_device(mx.cpu)
+    from alife import stream
+    from alife.cli import main
+
+    libc = ctypes.CDLL(None)
+    real = stream.make_step
+
+    def noisy_make_step(cfg):
+        step = real(cfg)
+
+        def f(state):
+            libc.printf(b"C_PRINTF_NOISE\\n")  # C stdio: fully buffered on a pipe, flushed by exit()
+            print("DUNDER_STDOUT_NOISE", file=sys.__stdout__)  # the original stdout object, buffered
+            return step(state)
+
+        return f
+
+    stream.make_step = noisy_make_step
+    raise SystemExit(main(sys.argv[1:]))
+    """
+)
+
+
+def test_late_flushed_stdio_cannot_corrupt_the_stream() -> None:
+    """Output buffered in the C library's stdout or in `sys.__stdout__` while the stream runs is flushed
+    before fd 1 is restored, so it lands on stderr instead of after the last frame (where a pipe's block
+    buffering would have written it at exit)."""
+    args = ["stream", *micro_args("2d"), "--steps", "2", "--every", "1", "--no-control"]
+    done = subprocess.run(
+        [sys.executable, "-c", STRAY_MAIN, *args], capture_output=True, timeout=300, stdin=subprocess.DEVNULL
+    )
+    assert done.returncode == 0, done.stderr.decode()
+    header, frames = dec.decode(done.stdout)  # strict: any stray byte fails
+    assert [f.step for f in frames] == [0, 1, 2] and header["dims"] == 2
+    assert done.stderr.count(b"C_PRINTF_NOISE") == 2 and done.stderr.count(b"DUNDER_STDOUT_NOISE") == 2
+    assert b"C_PRINTF_NOISE" not in done.stdout and b"DUNDER_STDOUT_NOISE" not in done.stdout
+
+
 def test_stdin_commands_and_eof_over_real_pipes() -> None:
     """Commands written to stdin take effect between steps; closing stdin ends the stream with exit 0, and the
     whole of stdout is protocol."""
@@ -1010,6 +1410,7 @@ def test_follow_over_real_pipes(cfgs: dict[str, Config], tmp_path: Path) -> None
         header = dec.decode_header(read_header(proc.stdout))[0]
         tag, payload = read_record(proc.stdout)
         assert header["mode"] == "follow" and tag == b"FRM1" and struct.unpack_from("<Q", payload)[0] == 3
+        assert (header["source"], header["every"], header["run"]) == ("run", 0, str(rd.path))
         rd.save_checkpoint(scene(cfg, "2d", 8), cfg)  # a runner writing a new checkpoint
         tag, payload = read_record(proc.stdout)
         assert struct.unpack_from("<Q", payload)[0] == 8
@@ -1017,6 +1418,29 @@ def test_follow_over_real_pipes(cfgs: dict[str, Config], tmp_path: Path) -> None
         assert proc.stdout.read() == b"" and proc.wait(timeout=60) == 0
     finally:
         proc.kill()
+
+
+def test_follow_without_control_exits_when_the_reader_goes(cfgs: dict[str, Config], tmp_path: Path) -> None:
+    """The finished-run case: nothing new to write and no stdin to end it, so only the descriptor tells that
+    the viewer has gone (within a few polls)."""
+    rd = make_run(tmp_path, "2d", cfgs["2d"], [0, 3])
+    proc = _spawn(str(rd.path), "--follow", "--no-control", "--poll", "0.1")
+    try:
+        assert proc.stdout is not None
+        read_header(proc.stdout)
+        assert read_record(proc.stdout)[0] == b"FRM1"
+        time.sleep(0.5)  # idle polls with an open reader: still running
+        assert proc.poll() is None
+        proc.stdout.close()
+        code = proc.wait(timeout=60)
+        err = proc.stderr.read().decode() if proc.stderr else ""
+    finally:
+        proc.kill()
+        for f in (proc.stdin, proc.stderr):
+            if f:
+                f.close()
+    assert code == 0, err
+    assert "Traceback" not in err and "BrokenPipe" not in err
 
 
 # --- the committed fixtures ------------------------------------------------------------------------------
@@ -1036,7 +1460,8 @@ def test_committed_fixtures_decode_as_their_sidecars_say(kind: str) -> None:
     assert [f["field_layer"] for f in side["frames"]] == [None, 0, 5 if kind == "3d" else 0]
     assert [f["color"] for f in side["frames"]] == ["tag", "energy", "clade"]
     assert side["frames"][2]["diag_error"] and not side["frames"][0]["diag_error"]
-    assert side["frames"][0]["bonds"] == [[0, 1], [2, 3]] and side["frames"][1]["n_bonds"] == 3
+    assert side["frames"][0]["bonds"] == [[0, 1], [2, 10], [2, 3]] and side["frames"][1]["n_bonds"] == 4
+    assert side["frames"][1]["bonds"] == [[0, 1], [2, 10], [2, 3], [4, 10]]  # row, then slot: (2,10) first
     z = np.hstack([f.pos[f.alive, 2] for f in frames])
     assert (z > 0).all() if kind == "3d" else not z.any()
 

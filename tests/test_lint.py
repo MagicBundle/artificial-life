@@ -31,7 +31,7 @@ SIM_MODULES = {
     "invariants",
 }  # rule 5
 DIRECTOR_MODULES = {f"director.{p.stem}" for p in (SRC / "director").glob("*.py")}  # host-side, scanned too
-SETITEM_MODULES = SIM_MODULES | {"ops", "rng", "state"} | DIRECTOR_MODULES  # rule 2 scope
+SETITEM_MODULES = SIM_MODULES | {"ops", "rng", "state", "stream"} | DIRECTOR_MODULES  # rule 2 scope
 HOST_ALLOW = {("invariants", "full_check")}  # rule 5: the host-side exhaustive check reads numpy by design
 KEYLESS_RANDOM = {"key", "split"}  # take the key (or seed) positionally by design
 SAFE_ROOTS = {"cfg", "d", "math", "layout", "dims", "self"}  # float()/int() of config-derived Python values

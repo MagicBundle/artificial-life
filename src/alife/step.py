@@ -285,7 +285,8 @@ def _counters(s_new: State, alive0: mx.array, f: _Flows, cfg: Config) -> mx.arra
     """The (27,) int32 per-step counters of §19.1; ``alive0`` is the start-of-step ``alive``.
 
     In 3D the three ``Counter3D`` counts follow (30,): the floor and surface clamps of this step's integration
-    and the alive agents grounded at its start (§27.8).
+    and the agents that were grounded at its start and survived it (§27.8: a row that died this step is not
+    counted, so ``Σ GROUNDED ≤ Σ N_ALIVE`` and the interval's ``grounded_frac`` lies in [0, 1]).
     """
     d = dims(cfg)
     act, dt, cb = f.act, f.dt, f.cb
@@ -332,7 +333,7 @@ def _counters(s_new: State, alive0: mx.array, f: _Flows, cfg: Config) -> mx.arra
         extra = {
             Counter3D.Z_FLOOR_CLAMPS: f.z_floor,
             Counter3D.Z_SURFACE_CLAMPS: f.z_surface,
-            Counter3D.GROUNDED: count(f.grounded & alive0),
+            Counter3D.GROUNDED: count(f.grounded & alive0 & ~dt.dead),
         }
         counters = mx.concatenate([counters, mx.stack([extra[i].astype(_I32) for i in Counter3D])])
     return counters

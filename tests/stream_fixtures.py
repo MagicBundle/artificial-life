@@ -2,11 +2,13 @@
 
 Each fixture is a complete stream (header and three frames) of a hand-built scene on a small `tiny` / `tiny3d`
 config (N = 64, L = 48), written by the real `Streamer`. The frames cover a bond across the periodic seam, a
-hurt (red) agent, dead rows between alive ones, the three colour modes, a field slice (in 3D at layers 0
-and 5) and the invariant-violation flag. The scenes are built, not stepped, so the bytes do not depend on the
-platform's floating-point dynamics. The JSON sidecar holds the expected header object and, per frame, the head
-fields, a SHA-256 of every section, the alive rows, the bonds and the first agents, decoded by `stream_decode`
-(an independent decoder written from DESIGN §27.11).
+row with two bonds whose slot order (partner 10, then 3) differs from the partner order, a hurt (red) agent,
+dead rows between alive ones, the three colour modes, a field slice (in 3D at layers 0 and 5) and the
+invariant-violation flag. The scenes are built, not stepped, so the bytes do not depend on the platform's
+floating-point dynamics, and every colour is chosen away from a rounding boundary (`build` asserts it), so a
+last-bit difference of float32 arithmetic cannot change a byte. The JSON sidecar holds the expected header
+object and, per frame, the head fields, a SHA-256 of every section, the alive rows, the bonds and the first
+agents, decoded by `stream_decode` (an independent decoder written from DESIGN §27.11).
 
 Regenerate after a deliberate protocol or palette change, on the CPU device:
 
@@ -88,16 +90,30 @@ def scene_agents(kind: str, variant: int) -> list[dict[str, Any]]:
     return out
 
 
+def field_arrays(kind: str) -> tuple[np.ndarray, np.ndarray]:
+    """The resource (int32) and chemical (float32, NCH leading) arrays of every fixture scene.
+
+    The green ramp `30 + 150·r/cap` of a cell with `r % 160 == 80` sits exactly on a rounding boundary
+    (`x.5`), where a last-bit difference between platforms would change a byte: those cells are moved by 7
+    quanta. The chemical levels carry an offset of 0.1 for the same reason (`90·c/(c + 1)` is `x.5` at c = 3).
+    """
+    shape = (6, 12, 12) if kind == "3d" else (12, 12)
+    n = math.prod(shape)
+    base = np.arange(n).reshape(shape) * 13 % 9000
+    resource = (base - 7 * (base % 160 == 80)).astype(np.int32)
+    chem = (np.arange(3 * n).reshape((3, *shape)) % 7 * 0.5 + 0.1).astype(np.float32)
+    return resource, chem
+
+
 def fixture_scene(kind: str, cfg: Config, variant: int):
     from helpers import make_scene  # not at import: helpers reads the default device (ON_GPU)
 
-    shape = (6, 12, 12) if kind == "3d" else (12, 12)
-    resource = (np.arange(math.prod(shape)).reshape(shape) * 13 % 9000).astype(np.int32)
-    chem = (np.arange(3 * math.prod(shape)).reshape((3, *shape)) % 7 * 0.5).astype(np.float32)
+    resource, chem = field_arrays(kind)
     return make_scene(
         cfg,
         scene_agents(kind, variant),
-        bonds=[(0, 1), (2, 3), *([(4, 10)] if variant == 1 else [])],
+        # Row 2 has two bonds, in slot order partner 10 then 3 (a stream lists them (2,10), (2,3)).
+        bonds=[(0, 1), (2, 10), (2, 3), *([(4, 10)] if variant == 1 else [])],
         resource=resource,
         chem=chem,
         step=mx.array(100 + 4 * variant, dtype=mx.int32),
@@ -105,10 +121,25 @@ def fixture_scene(kind: str, cfg: Config, variant: int):
     )
 
 
-def _energy_margin_ok(cfg: Config, kind: str) -> bool:
-    """The `energy` colour rounds a float that depends on `log1p`; require every fixture energy to be far
-    from a rounding boundary, so a 1 ulp difference between platforms cannot change a byte. (The tag and
-    field colours of the fixture are exact in float32 or plain IEEE arithmetic.)"""
+def _near_boundary(values: np.ndarray, tol: float = 1e-3) -> bool:
+    """Whether some in-range pre-rounding channel value is within `tol` of `k + 0.5`, where the renderer's
+    `floor(x + 0.5)` flips (values outside [0, 255] are clipped and cannot flip)."""
+    v = np.asarray(values, np.float64)
+    v = v[(v > 0.0) & (v < 255.0)]
+    return bool((np.abs(v % 1.0 - 0.5) < tol).any())
+
+
+def _margins_ok(cfg: Config, kind: str) -> bool:
+    """Every colour that is rounded from an inexact float32 computation is far from a rounding boundary.
+
+    Checked in float64 (float32 is off by about 1e-5 at these magnitudes, the tolerance is 1e-3):
+    - the `energy` colours (a `log1p` ramp);
+    - the field colours of every cell and layer of the fixture scenes: `30 + 150·r/cap` for green, and
+      `90·c/(c + 1)` for the chemical tints (red = c0 + 0.6·c2, blue = c1 + c2).
+    The `tag` colours are `64 + 191·(t + 1)/2 + 0.5` of dyadic `t` with at most three fractional bits (the
+    fixture tags): exact in float32 whatever the evaluation order, so a boundary there is harmless. The
+    `clade` colours are integer arithmetic.
+    """
     ramp = ((0.0, (30, 60, 200)), (0.5, (60, 200, 120)), (1.0, (255, 220, 40)))
     for spec in scene_agents(kind, 0):
         t = min(max(math.log1p(spec["energy"]) / math.log1p(cfg.energy.e_max), 0.0), 1.0)
@@ -118,15 +149,20 @@ def _energy_margin_ok(cfg: Config, kind: str) -> bool:
             frac = min(max((t - prev_t) / (ti - prev_t), 0.0), 1.0)
             rgb = [v + frac * (b - a) for v, a, b in zip(rgb, prev_c, ci, strict=True)]
             prev_t, prev_c = ti, ci
-        if any(abs(v % 1.0 - 0.5) < 1e-3 for v in rgb):
+        if _near_boundary(np.array(rgb)):
             return False
-    return True
+    resource, chem = field_arrays(kind)
+    green = 30.0 + 150.0 * np.minimum(resource.astype(np.float64) / cfg.fields.resource_cap, 1.0)
+    c = np.maximum(chem.astype(np.float64), 0.0)
+    tint = 90.0 * c / (c + 1.0)
+    red, blue = tint[0] + 0.6 * tint[2], tint[1] + tint[2]
+    return not any(_near_boundary(ch) for ch in (red, green, blue))
 
 
 def build(kind: str) -> tuple[bytes, dict[str, Any]]:
     """`(stream bytes, sidecar object)` of fixture `kind`."""
     cfg, spec = fixture_config(kind)
-    assert _energy_margin_ok(cfg, kind), "an energy colour sits on a rounding boundary: change the energies"
+    assert _margins_ok(cfg, kind), "a colour sits on a rounding boundary: change the energies or the fields"
     buf = io.BytesIO()
     sm = Streamer(cfg, buf, mode="simulate", source="preset", run=None, view=View(), every=4)
     s0, s1, s2 = (fixture_scene(kind, cfg, v) for v in range(3))

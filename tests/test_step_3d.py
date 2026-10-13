@@ -10,7 +10,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from alife import energy, invariants, layout
+from alife import energy, invariants, layout, metrics
 from alife.config import Config, apply_overrides, dims
 from alife.state import (
     N_COUNTERS,
@@ -43,14 +43,15 @@ def _e15() -> mx.array:
 def _counter3d_ref(prev: State3, s: State3, cfg: Config) -> list[int]:
     """``Counter3D`` from the transition alone: a survivor keeps its row and uid; one stopped by the floor
     (surface) ends at ``z_lo`` (``z_hi``) with its stored ``v_z`` zeroed (§27.3); grounding is the
-    start-of-step ``z ≤ z_ground`` of the alive rows."""
+    start-of-step ``z ≤ z_ground`` of the rows that are alive at the start and survive the step (a row that
+    dies is not counted, so ``GROUNDED ≤ N_ALIVE``)."""
     d = dims(cfg)
     a0, a1 = _np(prev.alive), _np(s.alive)
     sv = a0 & a1 & (_np(prev.uid) == _np(s.uid))
     z, vz = _np(s.pos)[:, 2], _np(s.vel)[:, 2]
     floor = sv & (z == f32(d.z_lo)) & (vz == 0)
     surface = sv & (z == f32(d.z_hi)) & (vz == 0)
-    grounded = a0 & (_np(prev.pos)[:, 2] <= f32(d.z_ground))
+    grounded = sv & (_np(prev.pos)[:, 2] <= f32(d.z_ground))
     return [int(floor.sum()), int(surface.sum()), int(grounded.sum())]
 
 
@@ -193,6 +194,24 @@ def test_counter3d_counts_floor_surface_and_grounded(micro3d_cfg: Config) -> Non
         assert c[Counter3D.Z_SURFACE_CLAMPS] == 3 and c[Counter3D.Z_FLOOR_CLAMPS] == 4
         assert c[Counter3D.GROUNDED] == 4
         assert (_np(s1.pos)[:3, 2] == f32(d.z_hi)).all() and (_np(s1.pos)[3:7, 2] == f32(d.z_lo)).all()
+
+
+def test_grounded_counts_only_the_agents_that_survive(micro3d_cfg: Config) -> None:
+    """A mass death: eight grounded agents starve in the step, two grounded agents live. `GROUNDED` is the
+    two, not ten, so the interval's `grounded_frac` is a share (a start-of-step count against the end-of-step
+    `N_ALIVE` gave 10 / 2)."""
+    cfg = micro3d_cfg
+    d = dims(cfg)
+    dying = [dict(pos=(4.0 + 4 * k, 10.0, d.z_lo), energy=0, birth_step=-50) for k in range(8)]
+    living = [dict(pos=(6.0 + 6 * k, 30.0, d.z_lo), birth_step=-50) for k in range(2)]
+    s = make_scene(cfg, [*dying, *living], resource=0)
+    _, hist = run_checked(cfg, 1, s)
+    prev, s1, out = hist[0]
+    c = _check_step_3d(prev, s1, out, cfg)
+    assert int(_np(prev.alive).sum()) == 10 and int(_np(s1.alive).sum()) == 2
+    assert c[CounterIdx.N_ALIVE] == 2 and c[Counter3D.GROUNDED] == 2
+    row = metrics.interval_row(1, c[None, :], _np(out.ledger)[None, :], {}, {}, nd=3)
+    assert row["grounded_frac"] == 1.0 and 0.0 <= row["grounded_frac"] <= 1.0
 
 
 # --- the column bound of INT_HEADROOM (§27.7) ---------------------------------------------------------------

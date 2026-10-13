@@ -381,8 +381,9 @@ def interval_row(
     The snapshot keys (and ``carrying_capacity_est`` when the caller adds it) follow; "step" is the first key.
     ``nd`` is the world's dims (§27.8): a 3D world's counters are (T,30) and its ledger names slot 15
     ``HEAT_BUOYANCY``; counters of another width are refused rather than reshaped. A 3D row also has
-    ``z_floor_clamps`` and ``z_surface_clamps`` (interval sums), ``grounded_frac`` (``GROUNDED`` over the
-    ``N_ALIVE`` steps: the share of agent-steps spent grounded) and ``buoy_heat`` (the interval sum of ledger
+    ``z_floor_clamps`` and ``z_surface_clamps`` (interval sums), ``grounded_frac`` (``GROUNDED``, the agents
+    that were grounded at the start of a step and survived it, over the ``N_ALIVE`` steps: the share of
+    agent-steps spent grounded, in [0, 1] whatever dies) and ``buoy_heat`` (the interval sum of ledger
     slot 15, ``HEAT_BUOYANCY``), after ``v_clips`` (§27.9).
     """
     width = n_counters(nd)

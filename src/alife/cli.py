@@ -895,8 +895,10 @@ def _cmd_llm_check(a: argparse.Namespace) -> int:
 # --- parser ---------------------------------------------------------------------------------------------
 
 
-def _config_args(p: argparse.ArgumentParser, *, overlays: bool = True) -> None:
-    p.add_argument("--preset", choices=PRESETS, default=None, help=f"default {DEFAULT_PRESET}")
+def _config_args(
+    p: argparse.ArgumentParser, *, overlays: bool = True, preset_help: str | None = None
+) -> None:
+    p.add_argument("--preset", choices=PRESETS, default=None, help=preset_help or f"default {DEFAULT_PRESET}")
     if overlays:
         p.add_argument("--overlay", action="append", default=[], choices=OVERLAYS)
     p.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE")
@@ -1012,7 +1014,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("stream", help=_STREAM_HELP, description=_STREAM_HELP)
     p.add_argument("run", nargs="?", default=None, metavar="RUN|FILE")
-    _config_args(p, overlays=False)
+    _config_args(
+        p,
+        overlays=False,
+        preset_help="simulate from this preset's founders (no default: needs RUN or FILE otherwise)",
+    )
     p.add_argument("--checkpoint", type=_checkpoint_arg, default=None, metavar="STEP|latest")
     p.add_argument(
         "--every", type=_positive, default=None, metavar="K", help="a frame every K steps (default 1)"
@@ -1027,14 +1033,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--follow",
         action="store_true",
-        help="no stepping: stream the latest checkpoint of RUN and every newer one as the runner writes it",
+        help="no stepping: stream the latest checkpoint of RUN, then at each poll the newest one if it is "
+        "newer (checkpoints written between two polls are skipped)",
     )
     p.add_argument(
         "--poll",
         type=_positive_seconds,
         default=1.0,
         metavar="SECONDS",
-        help="--follow: checkpoint poll period",
+        help="--follow: checkpoint poll period (also how often a closed reader is noticed)",
     )
     p.add_argument("--color", choices=COLOR_MODES, default=COLOR_MODES[0], help="initial colour mode")
     p.add_argument("--fields", action="store_true", help="include the field slice in each frame")

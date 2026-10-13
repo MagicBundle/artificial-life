@@ -16,13 +16,16 @@ steps through is the one ``alife view`` shows (the director is not replayed, §2
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import json
 import os
 import queue
 import re
+import select
 import struct
 import sys
 import threading
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO, Final, Protocol
@@ -48,7 +51,8 @@ FIELD_LAYER_SHIFT: Final = 16  # flags >> 16: the lattice layer of the field sec
 MODES: Final = ("simulate", "follow")
 SOURCES: Final = ("run", "file", "preset")
 CONTROL_FD: Final = 0  # the descriptor control lines are read from
-MAX_LINE: Final = 4096  # a longer control line is dropped
+MAX_LINE: Final = 4096  # a longer control line is dropped (with a note on stderr)
+IDLE_WAIT_S: Final = 1.0  # a paused stream wakes this often to notice a closed reader
 COMMANDS: Final = ("pause", "run", "step", "every", "color", "fields", "quit")
 
 _UINT = re.compile(r"[0-9]+")
@@ -106,13 +110,43 @@ def encode_frame(
 
 
 def _write_all(out: BinaryIO, data: bytes) -> None:
-    """Write all of ``data`` (a raw pipe write may be short)."""
+    """Write all of ``data`` (a raw pipe write may be short).
+
+    A raw write returns ``None`` when a non-blocking descriptor is full (EAGAIN): that is a slow reader, not a
+    closed one, so wait until the descriptor drains (``select``) and go on. A closed reader raises
+    ``BrokenPipeError`` from the write itself.
+    """
     view = memoryview(data)
     while view:
         n = out.write(view)
-        if n is None or n <= 0:
+        if n is None:
+            try:
+                select.select([], [out], [])
+            except (TypeError, ValueError, OSError) as e:  # nothing to wait on
+                raise BrokenPipeError("the protocol stream cannot be written") from e
+            continue
+        if n <= 0:
             raise BrokenPipeError("short write to the protocol stream")
         view = view[n:]
+
+
+def reader_closed(out: object) -> bool:
+    """True when ``out`` is a pipe or socket whose reader has hung up (``POLLHUP`` or ``POLLERR`` on the write
+    side); False when it is open or when nothing can be told (no descriptor, a file, a device, no ``poll``).
+
+    A stream that has nothing to write (paused, or following a run that has stopped) cannot learn of a closed
+    reader from a failed write, so it asks the descriptor.
+    """
+    make_poll = getattr(select, "poll", None)
+    if make_poll is None:
+        return False
+    try:
+        poller = make_poll()
+        poller.register(out.fileno(), select.POLLOUT)  # type: ignore[attr-defined]
+        events = poller.poll(0)
+    except (AttributeError, OSError, ValueError):  # io.UnsupportedOperation is both OSError and ValueError
+        return False
+    return any(ev & (select.POLLERR | select.POLLHUP) for _, ev in events)
 
 
 # --- the view and the frame builder ---------------------------------------------------------------------
@@ -193,7 +227,6 @@ class Streamer:
     def frame_bytes(self, state: State | State3) -> bytes:
         """The frame record of ``state`` in the current view (one device evaluation, one host transfer)."""
         cfg, view = self.cfg, self.view
-        d = dims(cfg)
         colors = agent_colors(state, cfg, view.color)
         dev: dict[str, mx.array] = {
             "alive": state.alive,
@@ -203,23 +236,19 @@ class Streamer:
             "step": state.step,
             "diag": state.diag,
             "rgb": colors,
+            **({"pitch": state.pitch} if isinstance(state, State3) else {}),
+            **({"field": field_colors(state, cfg, view.field_z)} if view.fields else {}),
         }
-        if d.d3:
-            assert isinstance(state, State3)
-            dev["pitch"] = state.pitch
-        if view.fields:
-            dev["field"] = field_colors(state, cfg, view.field_z)
         mx.eval(*dev.values())
         h = {k: to_numpy(v) for k, v in dev.items()}
 
         alive = h["alive"].astype(bool)
         n = alive.shape[0]
-        pos = np.zeros((n, 3), np.float32)
-        pos[:, : h["pos"].shape[1]] = h["pos"]
-        orient = np.zeros((n, 2), np.float32)
-        orient[:, 0] = h["yaw"]
-        if d.d3:
-            orient[:, 1] = h["pitch"]
+        yaw = h["yaw"].astype(np.float32)
+        pitch = h["pitch"].astype(np.float32) if "pitch" in h else np.zeros_like(yaw)  # a 2D stream: pitch 0
+        orient = np.stack([yaw, pitch], axis=1)
+        xy_z = h["pos"].astype(np.float32)
+        pos = np.concatenate([xy_z, np.zeros((n, 3 - xy_z.shape[1]), np.float32)], axis=1)  # 2D: z = 0
         partner = h["partner"]
         rows = np.arange(n)[:, None]
         drawn = (partner > rows) & alive[:, None] & alive[np.maximum(partner, 0)]
@@ -245,6 +274,11 @@ class Streamer:
     def send(self, state: State | State3) -> None:
         _write_all(self.out, self.frame_bytes(state))
         self.frames += 1
+
+    def check_reader(self) -> None:
+        """``BrokenPipeError`` if the reader has hung up (for a stream that is not writing anything)."""
+        if reader_closed(self.out):
+            raise BrokenPipeError("the reader closed the protocol stream")
 
 
 # --- control lines --------------------------------------------------------------------------------------
@@ -368,7 +402,8 @@ class FdControl(QueueControl):
     """Control lines read from a file descriptor (stdin) by a daemon thread; EOF queues ``quit``.
 
     It reads with ``os.read`` rather than through ``sys.stdin``: a daemon thread blocked in a buffered reader
-    can abort interpreter shutdown, and a raw read cannot. A line longer than ``MAX_LINE`` bytes is dropped.
+    can abort interpreter shutdown, and a raw read cannot. A line longer than ``MAX_LINE`` bytes (the newline
+    not counted) is dropped, with one note on stderr per dropped line.
     """
 
     def __init__(self, fd: int | None = None) -> None:
@@ -378,7 +413,7 @@ class FdControl(QueueControl):
         self._thread.start()
 
     def _read(self) -> None:
-        buf, skipping = b"", False
+        buf, skipping = b"", False  # skipping: inside a line already dropped, up to its newline
         while True:
             try:
                 chunk = os.read(self._fd, 4096)
@@ -392,10 +427,15 @@ class FdControl(QueueControl):
             buf += chunk
             *lines, buf = buf.split(b"\n")
             for raw in lines:
-                if not skipping and len(raw) <= MAX_LINE:
+                if skipping:  # the end of a dropped line: it was reported when it crossed the limit
+                    skipping = False
+                elif len(raw) <= MAX_LINE:
                     self.put(raw.decode("utf-8", "replace"))
-                skipping = False
-            if len(buf) > MAX_LINE:
+                else:
+                    _warn(f"ignored a control line longer than {MAX_LINE} bytes")
+            if len(buf) > MAX_LINE:  # no newline yet and already too long: drop it as it comes
+                if not skipping:
+                    _warn(f"ignored a control line longer than {MAX_LINE} bytes")
                 buf, skipping = b"", True
 
 
@@ -404,17 +444,28 @@ class FdControl(QueueControl):
 
 @dataclass
 class Session:
-    """The mutable control state of one stream (``apply`` turns control lines into it)."""
+    """The mutable control state of one stream (``apply`` turns control lines into it).
+
+    Lines are applied one at a time, in the order received; after each the loop writes the redraw frame it
+    asked for (``redraw``) before it looks at the next line, so the frames do not depend on how the lines were
+    chunked by the pipe.
+    """
 
     streamer: Streamer
     mode: str = "simulate"
     every: int = 1
     paused: bool = False
-    pending: int = 0  # steps left of a ``step N`` batch (simulate)
+    queued: deque[int] = field(default_factory=deque)  # sizes of the ``step N`` batches not yet started
+    running: int = 0  # steps left of the ``step N`` batch in progress
     quit: bool = False
     redraw: bool = False  # a frame of the current state is due now
     refresh: bool = False  # follow: look for a newer checkpoint now even when paused
     steps: int = 0
+
+    @property
+    def busy(self) -> bool:
+        """A ``step`` batch is running or queued (a paused stream steps only while it is)."""
+        return self.running > 0 or bool(self.queued)
 
     def apply(self, line: str) -> None:
         view = self.streamer.view
@@ -428,15 +479,20 @@ class Session:
         if cmd.name == "quit":
             self.quit = True
         elif cmd.name == "pause":
-            self.paused, self.pending = True, 0
+            self.paused = True
+            self.queued.clear()
+            self.running = 0
         elif cmd.name == "run":
-            self.paused, self.pending = False, 0
+            self.paused = False
+            self.queued.clear()
+            self.running = 0
         elif cmd.name == "step":
             if self.mode == "follow":
                 self.refresh = True
             else:
                 assert isinstance(cmd.arg, int)
-                self.paused, self.pending = True, self.pending + cmd.arg
+                self.paused = True
+                self.queued.append(cmd.arg)  # a batch of its own, with its own frame at the end
         elif cmd.name == "every":
             if self.mode == "follow":
                 _warn("ignored 'every': a followed stream has a frame per checkpoint")
@@ -480,11 +536,15 @@ def run_simulation(
 ) -> StreamStats:
     """Write the header, a frame of ``state`` and then, stepping, a frame every ``every`` steps.
 
-    The loop applies the control lines between steps (a paused loop with nothing to do blocks on the control
-    channel) and stops after ``max_steps`` steps, on ``quit`` or at EOF of the control channel. A
-    ``BrokenPipeError`` from the output propagates (``serve`` turns it into a quiet exit). Frames follow the
-    step grid ``steps % every == 0`` counted from the first state, so a bound of ``S`` steps writes
-    ``S // every + 1`` frames. The loop holds the only reference to the state while it steps (donation rule).
+    The loop applies the control lines between steps, one at a time and in order (a ``color`` or ``fields``
+    line writes its frame before the next line is read, and ``quit`` drops the lines after it). A paused loop
+    with nothing to do blocks on the control channel, waking every ``IDLE_WAIT_S`` seconds to ask the output
+    descriptor whether the reader is gone, as does every step that writes no frame (a write would otherwise be
+    the only way to find out). It stops after ``max_steps`` steps, on ``quit`` or at EOF of the control
+    channel. A ``BrokenPipeError`` from the output propagates (``serve`` turns it into a quiet exit). Frames
+    follow the step grid ``steps % every == 0`` counted from the first state, so a bound of ``S`` steps writes
+    ``S // every + 1`` frames; each ``step N`` batch writes one frame after its last step. The loop holds the
+    only reference to the state while it steps (donation rule).
     """
     step_fn = step_fn or make_step(cfg)
     sess = session or Session(streamer)
@@ -494,37 +554,55 @@ def run_simulation(
     ended = "quit"
     while True:
         done = max_steps is not None and sess.steps >= max_steps
-        idle = sess.paused and sess.pending == 0
-        for line in control.poll(None if idle and not done else 0):
+        idle = sess.paused and not sess.busy
+        for line in control.poll(IDLE_WAIT_S if idle and not done else 0):
             sess.apply(line)
+            if sess.quit:
+                break
+            if sess.redraw:
+                streamer.send(state)
+                sess.redraw = False
         if sess.quit:
             break
-        if sess.redraw:
-            streamer.send(state)
-            sess.redraw = False
+        if idle:
+            streamer.check_reader()  # nothing is being written: ask the descriptor
         if done:
             ended = "steps"
             break
-        if sess.paused and sess.pending == 0:
+        if sess.paused and not sess.busy:
             continue
+        if not sess.running and sess.queued:
+            sess.running = sess.queued.popleft()
         state, out = step_fn(state)
         mx.eval(state, out)
         del out
         sess.steps += 1
-        if sess.pending > 0:
-            sess.pending -= 1
-            if sess.pending == 0:
+        if sess.running:
+            sess.running -= 1
+            if not sess.running:  # the batch is done: its one frame
                 streamer.send(state)
+            else:
+                streamer.check_reader()
         elif not sess.paused and sess.steps % sess.every == 0:
             streamer.send(state)
+        else:
+            streamer.check_reader()  # a step without a frame writes nothing: ask the descriptor
     return StreamStats(streamer.frames, sess.steps, ended, state)
 
 
 def _newest(
     rd: RunDir, cfg: Config, since: tuple[Any, ...] | None
 ) -> tuple[tuple[Any, ...], State | State3] | None:
-    """The run's newest checkpoint if it is not the one identified by ``since`` (name, mtime, size)."""
-    path = rd.latest_checkpoint()
+    """The run's newest checkpoint if it is not the one identified by ``since`` (name, mtime, size).
+
+    A checkpoint (or ``LATEST``) that vanishes between the listing and the read, as a resume's truncation or
+    the runner's pruning makes it, is skipped: the answer is None and the next poll finds the new one. Any
+    other failure (``CheckpointError`` of an incompatible or corrupt file) propagates.
+    """
+    try:
+        path = rd.latest_checkpoint()
+    except OSError:  # LATEST removed between the existence check and the read
+        return None
     if path is None:
         return None
     try:
@@ -533,8 +611,12 @@ def _newest(
         if ident == since:
             return None
         return ident, load_checkpoint(path, cfg)
-    except FileNotFoundError:  # pruned between the listing and the read: the next poll finds the new one
+    except FileNotFoundError:
         return None
+    except CheckpointError:  # the loader wraps a missing file in CheckpointError
+        if not path.exists():
+            return None
+        raise
 
 
 def run_follow(
@@ -546,13 +628,15 @@ def run_follow(
     poll_s: float = 1.0,
     session: Session | None = None,
 ) -> StreamStats:
-    """Write the header and a frame of the run's latest checkpoint, then a frame for every newer checkpoint.
+    """Write the header and a frame of the run's latest checkpoint, then, at each poll, a frame of the newest
+    checkpoint when it is newer than the last one streamed (checkpoints written in between are skipped).
 
     Nothing is stepped: the frames are the states the runner wrote, director actions included, so this is the
-    faithful view of a director run. The directory is read, never written. ``pause`` holds the stream on its
-    current checkpoint, ``step`` fetches the newest one once, ``color`` and ``fields`` redraw the current
-    state, ``every`` is ignored. Ends on ``quit`` or at EOF of the control channel; ``CheckpointError`` if
-    the run has no checkpoint.
+    faithful view of a director run. The directory is read, never written. Control lines are applied one at a
+    time, in order: ``pause`` holds the stream on its current checkpoint, ``step`` fetches the newest one
+    once, ``color`` and ``fields`` redraw the current state, ``every`` is ignored. Every ``poll_s`` seconds
+    the loop also asks the output descriptor whether the reader has gone. Ends on ``quit`` or at EOF of the
+    control channel; ``CheckpointError`` if the run has no checkpoint.
     """
     first = _newest(rd, cfg, None)
     if first is None:
@@ -562,23 +646,48 @@ def run_follow(
     sess.mode, sess.every = "follow", 0
     streamer.begin(state)
     streamer.send(state)
+
+    def fetch() -> bool:
+        nonlocal ident, state
+        newer = _newest(rd, cfg, ident)
+        if newer is None:
+            return False
+        ident, state = newer
+        return True
+
     while True:
         for line in control.poll(poll_s):
             sess.apply(line)
+            if sess.quit:
+                break
+            if sess.refresh:
+                sess.refresh = False
+                sess.redraw = fetch() or sess.redraw
+            if sess.redraw:
+                streamer.send(state)
+                sess.redraw = False
         if sess.quit:
             break
-        if not sess.paused or sess.refresh:
-            sess.refresh = False
-            if (newer := _newest(rd, cfg, ident)) is not None:
-                ident, state = newer
-                sess.redraw = True
-        if sess.redraw:
+        streamer.check_reader()  # a run that has stopped writes nothing: ask the descriptor
+        if not sess.paused and fetch():
             streamer.send(state)
-            sess.redraw = False
     return StreamStats(streamer.frames, 0, "quit", state)
 
 
 # --- the process boundary -------------------------------------------------------------------------------
+
+
+def _flush_stdio(*files: object, c_stdio: bool = True) -> None:
+    """Flush the Python streams ``files`` and, with ``c_stdio``, the C library's stdio (never raises)."""
+    for f in files:
+        if f is not None:
+            with contextlib.suppress(OSError, ValueError, AttributeError):
+                f.flush()  # type: ignore[attr-defined]
+    if c_stdio:
+        with contextlib.suppress(OSError, AttributeError, TypeError):  # no libc to reach (not POSIX)
+            ctypes.CDLL(None).fflush(
+                None
+            )  # fflush(NULL): every open C stream, as a C library's printf buffers
 
 
 @contextlib.contextmanager
@@ -586,12 +695,15 @@ def protocol_output() -> Iterator[BinaryIO]:
     """A private unbuffered binary duplicate of fd 1, with ``sys.stdout`` and fd 1 itself pointed at stderr.
 
     Inside the block nothing but the stream writes to the protocol descriptor: a ``print``, a C library's
-    ``printf`` and a child process all land on stderr. On exit the original descriptor 1 and ``sys.stdout``
-    are restored. Closing never raises (a broken pipe included).
+    ``printf`` and a child process all land on stderr. On exit the output buffered meanwhile in the original
+    ``sys.stdout``, in ``sys.__stdout__`` and in the C library is flushed while fd 1 still points at stderr
+    (a pipe's C stdio buffer is only flushed at ``exit``, which would otherwise write it into the protocol
+    stream after the last frame), and then the original descriptor 1 and ``sys.stdout`` are restored. Closing
+    never raises (a broken pipe included).
     """
-    for f in (sys.stdout, sys.stderr):
-        with contextlib.suppress(OSError, ValueError):
-            f.flush()
+    # What C stdio holds from before the stream is not flushed here: it would reach the protocol pipe ahead of
+    # the header. It is flushed below, to stderr.
+    _flush_stdio(sys.stdout, sys.stderr, c_stdio=False)
     out = os.fdopen(os.dup(1), "wb", buffering=0)
     saved = sys.stdout
     os.dup2(2, 1)
@@ -600,6 +712,7 @@ def protocol_output() -> Iterator[BinaryIO]:
         yield out
     finally:
         sys.stdout = saved
+        _flush_stdio(saved, sys.__stdout__)  # fd 1 is still stderr here
         os.dup2(out.fileno(), 1)
         with contextlib.suppress(OSError):
             out.close()

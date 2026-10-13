@@ -16,8 +16,9 @@ import pytest
 
 from alife import bench, cli, layout, metrics
 from alife.config import Config, dims
-from alife.runio import RunDir, load_checkpoint
+from alife.runio import RunDir, load_checkpoint, write_state_file
 from alife.state import to_numpy
+from helpers import make_scene
 
 F32 = ["--set", "brain.weight_dtype=float32"]
 SAMPLE = ["--set", "run.diversity_sample=64"]  # cheap heavy metrics on CPU, as test_cli_smoke_3d.py
@@ -84,6 +85,24 @@ def test_inspect_agent_reports_the_3d_fields(run_dir: Path, capsys: pytest.Captu
     assert abs(f["pitch"]) <= layout.PITCH_MAX and 0.0 <= f["buoy_cap"] <= 1.0
     assert agent["height"] == f["pos"][2]
     assert agent["grounded"] is (f["pos"][2] <= dims(cfg).z_ground)
+
+
+def test_inspect_an_extinct_3d_state(
+    micro3d_cfg: Config, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With nobody alive every height statistic is None; the text line says so and `inspect` still exits 0."""
+    path = tmp_path / "extinct.safetensors"
+    write_state_file(path, make_scene(micro3d_cfg, []), micro3d_cfg)
+    capsys.readouterr()
+    assert cli.main(["inspect", str(path)]) == 0
+    out = capsys.readouterr().out
+    (line,) = [ln for ln in out.splitlines() if ln.startswith("height (world")]
+    assert line.endswith("nobody alive") and "quartiles" not in line
+    assert cli.main(["inspect", str(path), "--json"]) == 0
+    info = json.loads(capsys.readouterr().out)
+    s = info["state"]
+    assert info["n_alive"] == 0 and info["grounded_frac"] is None
+    assert s["height_mean"] is None and s["band_frac"] is None and s["clade_height_mi"] is None
 
 
 # --- the rows of a real run ---------------------------------------------------------------------------------
