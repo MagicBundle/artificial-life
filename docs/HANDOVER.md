@@ -223,9 +223,7 @@ verified findings for the whole run.
    `--init-from runs/64k_s0:120000` fails. Use the verified re-simulated state
    `analysis_cache/64k_s0/step_0000120000.safetensors` (how it was made: `docs/SIGNALS.md` §3). For seed 1, run
    `alife run --preset 64k --seed 1 --steps 120000 --out runs/64k_s1` and fork from `runs/64k_s1:120000`.
-2. **3D world** (`docs/3D.md`), after the evaluation: six PRs. PR 1 (`world.dims` plumbing, DESIGN §27.1) is
-   built and changes no 2D behaviour; `world.dims = 3` stays rejected until PR 3. The owner's answers and the
-   accepted technical choices are in `docs/3D.md` §11 and §12.
+2. **3D world** (`docs/3D.md`), after the evaluation: six PRs, starting with `world.dims` plumbing.
 3. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
