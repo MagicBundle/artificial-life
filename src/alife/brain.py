@@ -9,7 +9,6 @@ import math
 
 import mlx.core as mx
 
-from alife import layout
 from alife.config import Config, dims
 
 
@@ -21,9 +20,9 @@ def init_weights(key_w1: mx.array, key_w2: mx.array, n_rows: int, cfg: Config) -
     """
     d, bc = dims(cfg), cfg.brain
     w1 = mx.random.normal((n_rows, d.w1_rows, d.h), key=key_w1) * (bc.init_scale / math.sqrt(d.w1_rows))
-    row_scale = mx.where(mx.arange(d.w1_rows) >= layout.D_IN, bc.recurrent_scale, 1.0).astype(mx.float32)
+    row_scale = mx.where(mx.arange(d.w1_rows) >= d.lay.D_IN, bc.recurrent_scale, 1.0).astype(mx.float32)
     w1 = w1 * row_scale[None, :, None]
-    w2 = mx.random.normal((n_rows, d.w2_rows, layout.D_OUT), key=key_w2) * (
+    w2 = mx.random.normal((n_rows, d.w2_rows, d.lay.D_OUT), key=key_w2) * (
         bc.init_scale / math.sqrt(d.w2_rows)
     )
     clip = bc.weight_clip

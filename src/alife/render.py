@@ -25,7 +25,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import layout, ops
-from alife.config import Config, dims
+from alife.config import Config, dims, require_2d
 from alife.state import State, to_numpy
 
 
@@ -275,8 +275,9 @@ def render_frame(
 
     Foreground samples (bonds, agent discs, heading noses) are packed as ``(prio << 24) | RGB`` and combined
     by uint32 scatter-max, so the frame is independent of row order and deterministic. Pixels that no sample
-    covers show the background. Rendering never modifies ``s``.
+    covers show the background. Rendering never modifies ``s``. 2D worlds only (``ConfigError`` otherwise).
     """
+    require_2d(cfg, "the MLX renderer")
     w, h = (int(v) for v in size)
     if w < 1 or h < 1 or w * h + 1 >= 1 << 31:
         raise ValueError(f"size must be positive with W·H < 2^31 − 1, got {size}")

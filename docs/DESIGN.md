@@ -127,7 +127,8 @@ combines with any preset.
 ### 2.1 Symbols
 
 Structural constants are fixed in `layout.py` for v0. Changing any of them changes the genome layout and requires a
-code change plus a bump of `GENOME_LAYOUT_VERSION`.
+code change plus a bump of `GENOME_LAYOUT_VERSION`. The values below are the 2D layout; a 3D world appends a tail to
+the input and output vectors, and `layout.for_dims(nd)` (held as `Dims.lay`) gives the per-dims totals (§27.1).
 
 | symbol | value | meaning |
 |---|---|---|
@@ -138,8 +139,8 @@ code change plus a bump of `GENOME_LAYOUT_VERSION`.
 | `MSG` | 2 | broadcast message channels |
 | `NCH` | 3 | chemical field channels |
 | `T` | 4 | genome tag dims |
-| `D_IN` | 69 | brain inputs |
-| `D_OUT` | 35 | brain outputs |
+| `D_IN` | 69 | brain inputs (2D; 3D: 84, §27.1) |
+| `D_OUT` | 35 | brain outputs (2D; 3D: 39, §27.1) |
 
 The remaining symbols are config-derived (`config.dims(cfg)`):
 
@@ -151,12 +152,15 @@ The remaining symbols are config-derived (`config.dims(cfg)`):
 | `DL` | `2M` | death-record lanes |
 | `K` | `k_neighbors` | neighbour list width |
 | `C` | `cell_capacity` | hash-cell scan capacity |
-| `Q` | `9C` | candidates per agent |
+| `Q` | `9C` | candidates per agent (2D; `3^nd·C`, 27C in 3D, §27.1) |
 | `H` | `hidden` | hidden units |
-| `W1_ROWS` | `D_IN + H` | rows of `W1` |
+| `W1_ROWS` | `D_IN + H` | rows of `W1` (`D_IN` of the world's dims) |
 | `W2_ROWS` | `H + 1` | rows of `W2` |
 | `FG` | `L / field_cell` | field grid side |
 | `PP` | `n_patches` | fertility patches |
+| `nd`, `lay` | `world.dims`, `layout.for_dims(nd)` | 2 or 3, and the genome I/O layout (§27.1); `d3 = (nd == 3)` |
+| `FZ`, `n_cells`, `field_shape` | `height / field_cell`; `FZ·FG²`; `(FG, FG)` or `(FZ, FG, FG)` | field layers (1 in 2D), cells and lattice shape (§27.1) |
+| `G_z`, `cell_hash_z` | `floor(height / R)`; `height / G_z` | hash layers and their height (1 and ∞ in 2D, §27.1) |
 | `wdtype` | `brain.weight_dtype` | weight storage dtype (`float16` by default on the Mac; the default CI fixture uses `float32` for speed and fp16 has targeted CI tests, §22.0) |
 
 **Capacity reserve.** The population never exceeds `N_CAP = N − M`. At reproduction time at least `M` rows are
@@ -166,7 +170,9 @@ or duplicate-index set-scatter exists anywhere in the design.
 ### 2.2 `State` (a `typing.NamedTuple`; field order is the canonical order)
 
 The canonical order is `State._fields`. It is the order used by `state_to_arrays`, `state_digest` and every
-host iteration. Checkpoint files are keyed by name, and their key order is not significant (F15).
+host iteration. Checkpoint files are keyed by name, and their key order is not significant (F15). The shapes are
+those of a 2D world; `state.expected_layout(cfg)` is the one schema for both dims (§27.1). A 3D world differs in
+the rows marked "3D" and, through `W1_ROWS` and `D_OUT` (§2.1), in the weight widths.
 
 **Per-agent rows (leading dim N).** "Canonical when dead" means the value is forced at death and checked by the
 invariants. Other dead-row values are stale and must never be read without an `alive` mask.
@@ -180,8 +186,8 @@ invariants. Other dead-row values are stale and must never be read without an `a
 | `generation` | (N,) | int32 | founders and immigrants 0; child = parent + 1 | ≥ 0 |
 | `birth_step` | (N,) | int32 | index of the step during which the agent was born; founders −1 | alive ⇒ `birth_step ≤ step − 1` |
 | `energy` | (N,) | int32 | stored energy (q) | alive ⇒ `1 ≤ E ≤ e_max`. Canonical when dead: 0 |
-| `pos` | (N,2) | float32 | position (x, y) | `0 ≤ pos < L`, finite |
-| `vel` | (N,2) | float32 | displacement during the last step | `‖vel‖ ≤ v_max·(1+1e-6)`. Canonical when dead: 0 |
+| `pos` | (N,2); 3D (N,3) | float32 | position (x, y) | `0 ≤ pos < L`, finite |
+| `vel` | (N,2); 3D (N,3) | float32 | displacement during the last step | `‖vel‖ ≤ v_max·(1+1e-6)`. Canonical when dead: 0 |
 | `heading` | (N,) | float32 | body orientation | `[−π, π)` |
 | `h` | (N,H) | float32 | recurrent hidden state | `[−1, 1]`. Canonical when dead: 0 |
 | `msg` | (N,MSG) | float32 | broadcast emitted last step | `[−1, 1]`. Canonical when dead: 0 |
@@ -210,8 +216,8 @@ invariants. Other dead-row values are stale and must never be read without an `a
 
 | field | shape | dtype | meaning | invariants |
 |---|---|---|---|---|
-| `resource` | (FG,FG) | int32 | resource quanta per cell, indexed `[y, x]` (part of the energy total) | `0 ≤ R ≤ R_HARD = 2²⁴ − 1` |
-| `chem` | (NCH,FG,FG) | float32 | chemical concentrations (not energy) | `[0, chem_max]`, finite |
+| `resource` | (FG,FG); 3D (FZ,FG,FG) | int32 | resource quanta per cell, indexed `[y, x]` (part of the energy total) | `0 ≤ R ≤ R_HARD = 2²⁴ − 1` |
+| `chem` | (NCH,FG,FG); 3D (NCH,FZ,FG,FG) | float32 | chemical concentrations (not energy) | `[0, chem_max]`, finite |
 | `patch_pos` | (PP,2) | float32 | fertility patch centres | `[0, L)` |
 | `patch_vel` | (PP,2) | float32 | constant patch drift velocities, drawn at init | — |
 
@@ -474,7 +480,7 @@ sort, which is deterministic and involves no atomics.
 
 ---
 
-## 5. Sensing: exact input vector layout (`D_IN = 69`, float32)
+## 5. Sensing: exact input vector layout (`D_IN = 69`, float32; 2D, 3D: §27.1)
 
 Notation:
 - **Body frame:** `fwd = (cos θ, sin θ)` and `lat = (−sin θ, cos θ)`, so `to_body(v) = (v·fwd, v·lat)`.
@@ -607,7 +613,7 @@ W_c = clip(W_p + 1[u < p_c] · σ_c · ε, −weight_clip, weight_clip)      u ~
 
 ---
 
-## 7. Actions: output layout and decoding (`D_OUT = 35`)
+## 7. Actions: output layout and decoding (`D_OUT = 35`; 2D, 3D: §27.1)
 
 `actions.decode(y, desc, nbr, partner, alive, cfg) -> Actions` is pure and elementwise apart from target
 selection. Binary decisions are deterministic thresholds. Exploration comes from mutation and from the noise
@@ -1553,7 +1559,7 @@ artificial-life/
     __init__.py                  __version__; re-exports Config, State, load_config, init_state, make_step
     presets/{tiny,dev,64k,256k,fast}.toml   package data
     config.py                    Config dataclasses, Dims, presets, load/save/override/validate/hash
-    layout.py                    structural constants, IN_*/OUT_*/NBR_*/BOND_* indices, names, GENOME_LAYOUT_VERSION
+    layout.py                    structural constants, IN_*/OUT_*/NBR_*/BOND_* indices, names, GENOME_LAYOUT_VERSION; Layout per dims
     state.py                     State, LedgerIdx, CounterIdx, Diag, DeathCause, init_state, totals, (de)serialisation, to_numpy
     rng.py                       Stream, InitStream, NUM_STREAMS, RNG_LAYOUT_VERSION, RNG_COMPATIBLE_VERSIONS, step_keys, init_keys, observer_key
     ops.py                       the only home of scatters/setitem; contention, limb sums, placement, torus math
@@ -1611,7 +1617,13 @@ class ConfigError(ValueError): ...
     n: int; m: int; n_cap: int; dl: int; k: int; c: int; q: int; g_hash: int; cell_hash: float; fg: int
     h: int; w1_rows: int; w2_rows: int; params: int; pp: int; wdtype: mx.Dtype
     occ_limit: int                                                        # §10.9: min(2^15−1, (2^31−1−R_HARD)//(2·e_max+S))
+    nd: int; d3: bool; lay: layout.Layout; fz: int; n_cells: int; field_shape: tuple[int, ...]
+    g_hash_z: int; cell_hash_z: float                                     # world dimensions (§27.1); q = 3^nd·C
 def dims(cfg: Config) -> Dims                                             # functools.cache
+POST_V01_KEYS; UNHASHED_KEYS; THREE_D_KEYS                                # §17; the 3D keys (§27.1)
+DIMS_SUPPORTED: tuple[int, ...] = (2,)                                    # world.dims values validate accepts (§27.1)
+def is_3d(cfg: Config) -> bool                                            # world.dims == 3 (static)
+def require_2d(cfg: Config, what: str) -> None                            # ConfigError for a 3D config in a 2D-only tool
 PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k")                 # plus overlay "fast"
 def load_config(path: str | Path | None = None, *, preset: str | None = None,
                 overlays: Sequence[str] = (), overrides: Sequence[str] = ()) -> Config   # validates
@@ -1626,8 +1638,13 @@ def immigration_on(pop: PopulationConfig) -> bool                         # floo
 def immigration_possible(cfg: Config) -> bool                             # immigration_on or director.enabled (static gate)
 def stability_number(cfg: Config) -> float                                # 2(B k_s + K k_r)/drag
 
-# layout.py  (module constants; no functions besides names)
+# layout.py  (module constants: the 2D layout; Layout per dims, §27.1)
 B = 4; NS = 3; NF = 7; F = 6; MSG = 2; NCH = 3; T = 4; D_IN = 69; D_OUT = 35; GENOME_LAYOUT_VERSION = 1
+GENOME_LAYOUT_VERSION_3D = 2
+@dataclass(frozen=True) class Layout: nd; D_IN; D_OUT; NF; F; INPUT_BLOCKS; OUTPUT_BLOCKS; INPUT_NAMES; OUTPUT_NAMES
+                                      NBR_FEATURE_NAMES; NBR_DZ, IN_VEL_UP, ..., OUT_Q_ATTACK_DZ (3D only; None in 2D)
+def for_dims(nd: int) -> Layout                                    # functools.cache; 2 or 3, else ValueError
+def genome_layout_version(nd: int) -> int                          # reads the module globals at call time
 IN_BIAS = 0; IN_ENERGY = 1; ...; IN_NBR = 28; IN_BOND = 49        # every index in §5
 NBR_PRESENT = 0; NBR_DX = 1; NBR_DY = 2; NBR_KIN = 3; NBR_RELE = 4; NBR_MSG0 = 5; NBR_BONDED = 6
 BOND_PRESENT = 0; BOND_DX = 1; BOND_DY = 2; BOND_MSG0 = 3; BOND_RELE = 4; BOND_W = 5
@@ -1638,7 +1655,10 @@ C_REF_MARGIN = 50                                                  # §10.10 car
 INPUT_NAMES: tuple[str, ...]   # len D_IN;  OUTPUT_NAMES: tuple[str, ...]  # len D_OUT
 
 # state.py
-class LedgerIdx(IntEnum): ...      # §10.8 (16)
+class LedgerIdx(IntEnum): ...      # §10.8 (16); HEAT_BUOYANCY = 15 is an alias of RESERVED (§27.1)
+def sinks(nd: int) -> tuple[LedgerIdx, ...]                                # SINKS, plus slot 15 in 3D
+def ledger_names(nd: int) -> tuple[str, ...]                               # slot 15: RESERVED (2D) | HEAT_BUOYANCY (3D)
+def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]   # the one State schema (§27.1)
 class CounterIdx(IntEnum): ...     # §19.1 (N_COUNTERS = 27)
 class Diag(IntFlag): ...           # §22.3
 class DeathCause(IntEnum): STARVED = 0; KILLED = 1; AGED = 2; CATASTROPHE = 3
@@ -1835,7 +1855,7 @@ class RunDir:
 def write_state_file(path: Path, s: State, cfg: Config) -> None   # atomic (*.tmp + os.replace); checkpoint metadata
 def checkpoint_metadata(path: Path) -> dict[str, str]
 def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> State
-                    # CheckpointError on version/shape mismatch, or config_hash mismatch when check_hash (fork passes False)
+                    # CheckpointError on dims/version/shape mismatch, or config_hash mismatch when check_hash (fork passes False)
 
 # runner.py
 class ExitCode(IntEnum): OK = 0; ERROR = 1; CONFIG = 2; INVARIANT = 3; CHECKPOINT = 4; INTERRUPTED = 130
@@ -1969,6 +1989,8 @@ Rendering colours are local to `render.py`.
 class WorldConfig:
     size: float = 1024.0              # torus side L
     field_cell: float = 4.0           # FG = size / field_cell (must be an integer ≤ 1024)
+    dims: int = 2                     # 2 | 3, static (§27.1); added after v0.1
+    height: float = 0.0               # 3D world height (floor z = 0, surface z = height); 0 in 2D
 
 @dataclass(frozen=True)
 class PopulationConfig:
@@ -2144,8 +2166,8 @@ Rules:
 lists). It reloads exactly: `config_from_dict(config_to_dict(c)) == c`. `config_hash` covers every section
 except `run`. **Keys added after v0.1 are omitted from the hash at their defaults** (`config.POST_V01_KEYS`:
 `population.immigration_every`, `population.immigration_count`, `fields.season_period`,
-`fields.season_amplitude`, `fields.season_mode`, `director.enabled`; the director's policy keys `persona`, `goal`,
-`rule_every`, `budget_per_100k`, (step 3) `llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` and (§26.11) `yoke_log` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
+`fields.season_amplitude`, `fields.season_mode`, `director.enabled`, `world.dims`, `world.height` (§27.1); the
+director's policy keys `persona`, `goal`, `rule_every`, `budget_per_100k`, (step 3) `llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` and (§26.11) `yoke_log` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
 because only `enabled` changes the compiled step). A section that this leaves empty
 (`director`) is omitted from the hashed dict too, so the hash does not change when a section is added. A
 `config.json` that predates them therefore loads with the
@@ -2156,7 +2178,11 @@ changes the hash, as for any dynamics key.
 
 **`validate`** collects every violation and raises one `ConfigError`:
 - **World geometry:** `size / field_cell` is an integer with `3 ≤ FG ≤ 1024`; `G_h = floor(size/radius) ≥ 3`.
-- **Interaction ranges:** `radius ≥ max(form_range, combat.range, 2·physics.radius)`; `NS ≤ K ≤ 9·C`.
+- **World dimensions** (§27.1): `world.dims ∈ {2, 3}` and in `config.DIMS_SUPPORTED` (`(2,)`: dims = 3 is not
+  enabled yet); in 2D every 3D key (`config.THREE_D_KEYS`) keeps its default (`height = 0`); the 3D-only rules are
+  listed in §27.1.
+- **Interaction ranges:** `radius ≥ max(form_range, combat.range, 2·physics.radius)`; `NS ≤ K ≤ 9·C` (2D;
+  `27·C` in 3D, §27.1).
 - **Population:** `64 ≤ n_max ≤ 2²⁰`; `1 ≤ M ≤ n_max // 4`; `1 ≤ n_init ≤ N_CAP`; `immigration_floor ≤ N_CAP`;
   `immigrants_per_step ≥ 1` when `immigration_floor > 0` (otherwise an extinct world could never refill, yet
   the §18 extinction stop is off); `immigration_every ≥ 0`; `1 ≤ immigration_count` when
@@ -2182,9 +2208,9 @@ changes the hash, as for any dynamics key.
   child gets `endow ≥ 1` and the parent keeps `Dp − endow ≥ 1`.
 - **Contention headroom:** `harvest_max`, `attack_max` and `share_rate` are each `< 2¹⁶`.
 - **Resource field:** `0 < resource_cap < 2²⁴ − 1`; `0 ≤ regen_max ≤ resource_cap`;
-  `0 ≤ resource_diffusion_q8 ≤ 64`.
-- **Chemicals:** every `chem_diffusion` is in `[0, 0.25]`; every `chem_decay` is in `[0, 1)`; both tuples have
-  length `NCH`.
+  `0 ≤ resource_diffusion_q8 ≤ 64` (2D; `≤ 42` in 3D, §27.1).
+- **Chemicals:** every `chem_diffusion` is in `[0, 0.25]` (2D; `≤ 1/6` in 3D, §27.1); every `chem_decay` is in
+  `[0, 1)`; both tuples have length `NCH`.
 - **Rates and gene bounds:** efficiencies are in `(0, 1]`; `0 < frac_min ≤ frac_init ≤ frac_max < 1`;
   `0 < sigma_min ≤ sigma_init ≤ sigma_max`; `0 < rate_min ≤ rate_init ≤ rate_max < 1`.
 - **Enumerations:** `weight_dtype ∈ {float16, bfloat16, float32}`; `impl ∈ {matmul, einsum}`;
@@ -2222,13 +2248,14 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
 - **`meta.json` fields:**
   - versions: `format_version`, `alife_version`, `mlx_version`, `python`;
   - environment: `platform`, `device` (`mx.default_device()`), `git_rev` (or null), `created_utc`;
-  - run identity: `seed`, `config_hash`, `rng_layout_version`, `genome_layout_version`, `parent`,
-    `start_step` (the step the directory started from: 0, or the fork step);
+  - run identity: `seed`, `config_hash`, `rng_layout_version`, `genome_layout_version` (of the world's dims),
+    `dims` (3D only; absent = 2D, §27.1), `parent`, `start_step` (the step the directory started from: 0, or the
+    fork step);
   - `status`, one of `running | done | extinct | violation | interrupted`.
 - **Checkpoint metadata** (safetensors string metadata, written by `runio.write_state_file` for checkpoints and
   viewer snapshots alike): `format_version`, `rng_layout_version`, `genome_layout_version`, `step`, `config_hash`,
   `alife_version`, `mlx_version`, `weight_dtype`, and `config` (the canonical config JSON), so a state file is
-  self-describing.
+  self-describing; a 3D state also records `dims` (absent = 2D, §27.1).
 - **Versions and pre-director files.** `load_checkpoint` accepts any `rng_layout_version` in
   `rng.RNG_COMPATIBLE_VERSIONS` ({1, 2}); new files write 2 (`meta.json` too). A file written before the `env_*`
   fields (38 arrays) loads with inert env values from `default_env(cfg)`: `state_from_arrays(d, cfg)` fills the
@@ -2254,7 +2281,8 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
   1. Read `config.json`.
   2. Load `LATEST`, or `--checkpoint STEP`. Without `--steps`/`--until` the run continues to
      `meta.start_step + run.steps`.
-  3. Refuse with exit 4 if `format_version`, `rng_layout_version`, `genome_layout_version` or `config_hash` differ.
+  3. Refuse with exit 4 if `dims` (§27.1), `format_version`, `rng_layout_version`, `genome_layout_version` or
+     `config_hash` differ.
      Resume accepts only `--set run.*` overrides of observer and cadence keys (`steps`, `metrics_every`,
      `checkpoint_every`, `keep_checkpoints`, `heavy_metrics_every`, `components_iters`, `diversity_sample`), the
      director mode `run.director` (`--director MODE` is a shortcut, translated before this check) and the director's
@@ -2277,8 +2305,9 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
   (`combat.threshold` raised), different regeneration, `combat.attack_bonded = true`.
   - **Config.** It starts from the source state file's embedded `config`, then applies `--overlay`, `--config` and
     `--set`. `--preset` is rejected with `--init-from`.
-  - **Shapes.** All state shapes must match the new config, and `population.n_init` must equal the source's (clade
-    bins are `n_init + 1`); otherwise exit 4.
+  - **Shapes.** All state shapes must match the new config, `world.dims` and `world.height` must equal the
+    source's (§27.1), and `population.n_init` must equal the source's (clade bins are `n_init + 1`); otherwise
+    exit 4.
   - **Kept:** `step`, `next_uid`, every uid, `birth_step` (so derived ages stay correct), lineage fields, `pend_*`,
     fields and patches.
   - **Reset:** `diag = 0`; `ledger_cum = 0`; `total0 = total = loaded total + (S_new − S_old)·n_alive`. Structure
@@ -2948,7 +2977,7 @@ reports ≥ 30 steps/s. CI runs only the tiny smoke invocation in `test_cli_smok
 | D15 | **Frozen 16-stream RNG with `RNG_LAYOUT_VERSION`; permutations for priorities** (from correctness) | a free-form key-splitting tree | Split is not prefix-stable (F3), and randint/uniform duplicate at scale (F4). |
 | D16 | **fp16 weights by default on the Mac; f32 mutation math; CI's default fixture uses f32, with targeted fp16 tests** | fp16 in every CI test (CPU fp16 matmul is ≈ 3× slower, F19, which breaks the CI budget); fp16 never in CI (throughput) | Halves the dominant traffic on the GPU. CI still exercises the production dtype in the brain, mutation, a whole-step stress variant and the observer-purity run. |
 | D17 | **Neighbour hash cell = R = 6 (3 diameters), C = 16, K = 8, gathering from the cell-sorted copy** (from throughput, re-sized) | R = 8 with C = 16 (throughput: undersized, since hexagonal packing gives 18.5 per cell); C = 12 (correctness) and C = 8 (emergence), both undersized for contracted bodies | C is sized from contracted-body packing (12.8 per cell) and from measured converging crowds under contact-attenuated thrust (≤ 15 per cell, F18). Q = 144 is the price; the `fast` overlay trades it down. |
-| D18 | **Structural dims (B, NS, MSG, NCH, T) fixed in `layout.py`**, H/K/C from config | a config-derived `Layout` object (correctness) | Index constants are importable and test-pinned. Changing the genome layout is a deliberate, versioned code change. |
+| D18 | **Structural dims (B, NS, MSG, NCH, T) fixed in `layout.py`**, H/K/C from config | a config-derived `Layout` object (correctness) | Index constants are importable and test-pinned. Changing the genome layout is a deliberate, versioned code change. Amended for 3D (§27.1): the module constants stay the 2D layout, and `layout.for_dims(nd)` returns a frozen per-dims `Layout` (the 2D vectors plus an appended 3D tail) keyed only by the static `world.dims`, with its own `GENOME_LAYOUT_VERSION_3D`; no other config key shapes it. |
 | D19 | **Heritable σ, p and offspring_frac; neutral fixed-rate tags** (from emergence) | heritable σ only (throughput, correctness); brain-output child share (correctness) | Evolvability and life history evolve. Tags stay an honest kin cue. |
 | D20 | **Drifting fertility patches** (from emergence), default 0.005 u/step | static patches | A non-stationary environment for open-endedness, at negligible cost (separable Gaussians). |
 | D21 | **`State` as a `NamedTuple`** | a frozen dataclass plus dict conversion | A native `mx.compile` pytree (F12), `_replace`, and no conversion layer. |
@@ -3617,6 +3646,130 @@ long as R has budget, an unlocked lever and a free cooldown at each yoked step (
 
 ---
 
+## 27. 3D world (`world.dims = 3`)
+
+`docs/3D.md` is the design rationale and the six-PR plan (its §10); this section is normative for what is built and
+grows one subsection per PR. PR 1 (§27.1) adds the dims constant and its plumbing only: `validate` still rejects
+`world.dims = 3`, and every 2D trajectory, config hash, metrics row, checkpoint array and metadata key set is
+unchanged (`config.json` and the embedded config only gain the two new keys at their defaults; the existing tests
+and the golden digest are untouched).
+
+### 27.0 Overview and decision record
+
+The 3D world is periodic in x and y on `[0, L)` as in 2D and bounded in z by a floor (z = 0) and a surface
+(z = `world.height`); agents stay in `[r, height − r]`. Gravity, a buoyancy actuator, a vertical food profile and
+sinking corpses come in later PRs. `height` (or `Lz`) names the world height in code and docs: `H` is the hidden size.
+
+**Owner decisions** (docs/3D.md §0 and §11): 3D with gravity and a floor; a `world.dims` config constant that keeps
+2D bit-identical; a Swift Metal viewer in AlifeControl; after the 2D director evaluation. On 2026-10-13:
+
+| # | question | decision |
+|---|---|---|
+| Q1 | vertical food | a benthic band plus an optional photic band; `fields.photic_amp` defaults to 0 (off) |
+| Q2 | surface | a clamp at z = height − r that zeroes the inward velocity, without grounding (no floor friction) |
+| Q3 | buoyancy | brain output `OUT_BUOYANCY` with a heritable cap `buoy_cap ∈ [0, 1]` (effective cap `buoy_cap·physics.buoyancy_max`), additive Gaussian mutation with a clip (`mutation.buoy_sigma`); upward force `b = cap·max(tanh y, 0)`; cost `buoyancy_cost·(b/bmax)² + buoyancy_cap_cost·buoy_cap` per step, both booked in `HEAT_BUOYANCY` (ledger slot 15) |
+| Q4 | immigrants | uniform in the volume |
+
+**Accepted technical choices** (one line each in docs/3D.md §12): the append-only genome layout (§27.1); a parallel
+`State3` (State's 47 fields, then `pitch`, `buoy_cap`), so `State` and every 2D digest stay as they are; ledger slot
+15 keeps the canonical name `RESERVED` with `HEAT_BUOYANCY` as an alias named per dims in metrics; the existing RNG
+streams with 3D-only draw shapes (`RNG_LAYOUT_VERSION` stays 2); offspring in a cone behind the parent with vertical
+reflection; `Counter3D` (27–29) appended to `StepOut.counters` in 3D only; mirrored field z-gradients; the vertical
+profile by layer index (floor layer = 2D fertility) with no grounded gate on harvest; a vertical-column catastrophe;
+one step pipeline with static `if d3:` branches; grip only on the floor, never slowing sinking; `IN_HEIGHT` (z /
+height) rather than "depth"; a `tiny3d` preset (PR 3); a 3D golden digest recorded in CI.
+
+### 27.1 Scope and the dims constant (PR 1)
+
+**Keys.** `world.dims` (int, 2 or 3, default 2) and `world.height` (float, default 0). Both are static: they change
+the compiled step and the state shapes. Both are in `config.POST_V01_KEYS` (omitted from `config_hash` at their
+defaults, so every existing run keeps its hash) and in `config.THREE_D_KEYS`, never in `UNHASHED_KEYS`.
+`config.is_3d(cfg)` is the host predicate; simulation code branches on `dims(cfg).d3`.
+
+**Gate and validation.** `world.dims` must be 2 or 3 and in `config.DIMS_SUPPORTED`, which is `(2,)` until PR 3
+(read at call time, so tests of 3D code can widen it); dims = 3 reports "world.dims = 3 is not enabled yet". In a
+2D world every key of `THREE_D_KEYS` except `world.dims` must keep its default. The 3D rules apply only when
+dims = 3 (gated or not), each with its own message, and no 2D message changed. They round only finite ratios, so a
+non-finite `size` or `height` is a listed problem, never an exception:
+- `height` is finite and `> 2·physics.radius`;
+- `height / field_cell` is an integer `FZ ≥ 2`;
+- `FZ·FG² ≤ 2²⁰` (the limit of `ops.exact_sum`, which sums the resource for `TOTAL`);
+- `G_z = floor(height / R) ≥ 1`;
+- `2·height ≤ size`. Then every `|dz| < L/2`, so `ops.min_image` is exactly the identity on z
+  (`round(dz/L) = ±0`), and bond and neighbour offsets need no z-specific code;
+- `NS ≤ K ≤ 27·C` (the 3×3×3 stencil); the 2D rule `K ≤ 9·C` applies in 2D only;
+- every `chem_diffusion ≤ 1/6` (explicit 7-point stencil);
+- `resource_diffusion_q8 ≤ 42`: with six neighbours, `6·((R·d) >> 8) ≤ R` keeps every cell ≥ 0.
+
+Later PRs add the rules of their keys (offspring distance against the height, gravity, buoyancy, the director).
+
+**`Dims`** gains `nd`, `d3`, `lay` (`layout.for_dims(nd)`), `fz`, `n_cells` (`FZ·FG²`), `field_shape` (`(FG, FG)`
+in 2D, `(FZ, FG, FG)` in 3D), `g_hash_z` and `cell_hash_z` (1 and ∞ in 2D), and derives `Q = 3^nd·C`,
+`W1_ROWS = lay.D_IN + H` and `params` from `lay.D_OUT`. Every 2D value equals the old one.
+
+**Layout.** The module constants of `layout.py` are the 2D layout, unchanged. `layout.Layout` is a frozen
+per-dims view and `layout.for_dims(nd)` returns it (cached; any other `nd` is a `ValueError`). A 3D world uses
+the **append-only** layout: the 2D input and output vectors unchanged, then a 3D-only tail, so every `IN_*`,
+`OUT_*`, `NBR_*` and `BOND_*` index keeps its meaning in both dims.
+
+| inputs | index | content |
+|---|---|---|
+| 2D inputs | 0–68 | as §5 |
+| `IN_VEL_UP` | 69 | body-frame up component of `vel / v_max` |
+| `IN_RES_GRAD_UP` | 70 | resource gradient, up |
+| `IN_CHEM_GRAD_UP` | 71–73 | chemical gradients, up (NCH wide) |
+| `IN_NBR_DZ` | 74–76 | up offset / R of the NS nearest neighbours |
+| `IN_BOND_DZ` | 77–80 | up offset / `break_length` per bond slot |
+| `IN_HEIGHT` | 81 | z / height |
+| `IN_PITCH` | 82 | sin φ |
+| `IN_GROUNDED` | 83 | 1 on the floor, else 0 |
+
+| outputs | index | content |
+|---|---|---|
+| 2D outputs | 0–34 | as §7 |
+| `OUT_PITCH` | 35 | pitch change `turn_max·tanh(y)` |
+| `OUT_BUOYANCY` | 36 | buoyancy fraction `max(tanh(y), 0)` |
+| `OUT_Q_BOND_DZ` | 37 | 7th component of the bond query |
+| `OUT_Q_ATTACK_DZ` | 38 | 7th component of the attack query |
+
+So `D_IN = 84` and `D_OUT = 39`. The neighbour descriptor is `NF = 8` wide with `NBR_DZ = 7` last, `F = 7`, and a
+query is `[y[OUT_Q_BOND : +6], y[OUT_Q_BOND_DZ]]`, in the order of `φ = desc[..., 1:]`. The 2D blocks keep their
+widths (`IN_NBR` is NS·7, `IN_BOND` is B·5), and the module constants `NF = 7` and `F = 6` remain valid as those
+block widths in both dims. Indices that exist only in 3D are None in a 2D `Layout`, never −1. With H = 32 a 3D
+genome has (84 + 32)·32 + 33·39 = 4 999 parameters (2D: 4 387). Outside `layout.py`, `D_IN`, `D_OUT` and the
+genome version are read only through `dims(cfg).lay` and `layout.genome_layout_version(nd)`; a test scans `src`.
+
+**Genome layout version.** `layout.genome_layout_version(nd)` reads the module globals at call time:
+`GENOME_LAYOUT_VERSION = 1` for 2D and `GENOME_LAYOUT_VERSION_3D = 2` for 3D (one sequence: a future 2D bump takes
+3). The 3D tables are frozen now; no 3D checkpoint can exist before PR 3, and after it any change bumps the version.
+
+**Metadata.** `meta.json` and checkpoint metadata record the genome version of the world's dims and, for a 3D
+world only, `dims` (an int in `meta.json`, a string in checkpoint metadata). An absent key means 2D, so every 2D
+file keeps its exact key set. `FORMAT_VERSION` and `RNG_LAYOUT_VERSION` are unchanged.
+
+**Refusals.**
+- `load_checkpoint` refuses a file whose `dims` (absent = 2) differs from `world.dims` ("cross-dimension
+  resume/fork is not supported", exit 4), with or without the hash check, before reading any array.
+- A fork refuses a `world.dims` or `world.height` different from the source's (exit 4, nothing written); resume
+  refuses both as dynamics keys (exit 2). Until 3D is enabled a fork to dims = 3 already fails validation (exit 2).
+- The 2D-only tools call `config.require_2d(cfg, what)` (`ConfigError`, exit 2) before any state is loaded or
+  built: `alife render` and `alife view`, `render.render_frame`, `viewer.ViewerSession` and `viewer.run_viewer`
+  (before pygame is imported), and `analysis.signals` (`decode`, `analyse`).
+
+**One schema.** `state.expected_layout(cfg)` is the shape and dtype of every State field: `pos`/`vel` `(N, nd)`,
+the weight widths from `lay`, `resource` `field_shape`, `chem` `(NCH, *field_shape)`. `load_checkpoint` and
+`full_check` compare against it; `runio._expected_layout` is an alias kept for an existing test.
+
+**Ledger names.** `LedgerIdx.HEAT_BUOYANCY = 15` is an `IntEnum` alias of `RESERVED`: it is not iterated, not
+counted by `len`, and its `.name` is `"RESERVED"`. `state.sinks(nd)` is `SINKS` plus slot 15 in 3D and
+`state.ledger_names(nd)` names slot 15 `HEAT_BUOYANCY` in 3D. PR 1 only defines them; PR 3 books and checks the term.
+
+**Tests.** `tests/test_layout_dims.py` (2D view equals the module constants, 3D tiling, the 2D prefix, the version,
+the `src` scan), `tests/test_dims_config.py` (defaults, pinned hashes, the gate, each 3D rule, the `Dims` fields) and
+`tests/test_dims_runio.py` (metadata, cross-dims refusals, fork and resume, the 2D-only tools, one schema).
+
+---
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -3693,6 +3846,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I33 | feat: offline evolutionary-activity analysis (§19.3, `docs/ACTIVITY.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) Package `alife.analysis` (host-only numpy, never imported by the step, outside the §22.6 lint scope): `phylo` (the phylogeny rebuilt from the event logs by streaming the chunks, with a coverage report against `metrics.jsonl` and the final checkpoint; pointer-jumping lineage labels; Bedau's neutral shadow and a permuted heritability null), `activity` (one pass over grid windows: cohort-subtree and paraphyletic marker components; Bedau–Packard `D`, `A_cum`, `Ā`, `A_new` histograms; Channon's component-normalised activity against a reset shadow, computed in expectation; threshold crossings), `report` (classification none/bounded/unbounded per window with every threshold swept, `summary.json`) and `plots`. (2) CLI `alife activity RUN` (§21), writing to `RUN/activity` by default and never modifying the run's files. (3) Optional extra `analysis = ["matplotlib>=3.9"]` (§16); without it the command writes tables only. Deviations from the 1998 paper, documented in the note: the primary `A_new` window is `[a', 10^0.2 a']`, because the literal `a' ± 0.05 (a_max − a')` degenerates on a heavy-tailed run; the asymptotic definitions are applied as trends over finite windows. Limitation: runs that start at step 0 only (forks need founders from a checkpoint). Tests: `tests/test_analysis_activity.py`. |
 | I34 | feat: offline signal-information analysis (§19.3, `docs/SIGNALS.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) `alife.analysis.mi` (numpy only): KSG estimator 1 on ranks with random tie-breaking (exactly MI-preserving; the integer, zero-inflated signals and targets made the Gao et al. 2017 mixed estimator biased by about +0.07 bits), a Miller–Madow binned cross-check, shuffle nulls with z and permutation p, conditional MI over strata. (2) `alife.analysis.resim`: in-memory re-simulation to steps without a checkpoint, every `metrics.jsonl` row compared exactly, states written with `runio.write_state_file` to a cache outside the run (`analysis_cache/`, git-ignored). `runs/64k_s0` changed dynamics at its 120k resume (I26's `fields.fertility` change), so 0–120k is re-simulated with the run's original commit `f09b32a`; all 10,000 rows to 1M match. (3) `alife.analysis.signals`: `decode` mirrors S0–S8 of `step.step` (a test checks it against the stored `msg` and the `EMITTERS` counter), per-agent tables, the estimate grid and markdown/trend tables; entry point `python -m alife.analysis.signals`, no `alife` subcommand and no new dependency. Tests: `tests/test_analysis_mi.py`, `tests/test_analysis_resim.py`, `tests/test_analysis_signals.py`. |
 | I35 | feat: the `random` persona inherits the pacing parameters of the persona that made its yoke log (§26.11, `docs/DIRECTOR.md` §9, §15), so that arm R can be yoked to the Trickster arm C (budget 6 per 100k) as well as to B. Before, `yoked.PARAMS_PERSONA = "gardener"` fixed R's budget, cooldown scale and thresholds, capping it at the Gardener's maximum of 4. (1) `yoked.inherited` reads the persona and the effective `budget_per_100k` of the yoke log's first header; `yoked.load` returns them (`Yoke.persona`, `.budget`, `.personas`) and refuses (`LogError`, exit 2, before anything is written) a header persona of `random` or an unknown name; `PARAMS_PERSONA` became `FALLBACK_PERSONA` (the Gardener, for a log with no header or no persona). (2) Budget: an explicit `director.budget_per_100k` is capped by the inherited persona's maximum, `0` takes the header's budget, else the persona's default (`yoked.effective_budget`). (3) R's header gains `params_persona`; a replay takes persona and budget from its own first header. Only budgets, cooldowns and safety-rule thresholds are inherited; the boredom rule, minimum gap, drama gating and the model stay off. R yoked to a Gardener log makes the same entries and reaches the same state digest as before (checked against the previous code); its header has the new field, and with `budget_per_100k = 0` it takes B's recorded budget rather than the Gardener default (the same for a default B). Interpretations: a yoke log that was resumed with another persona uses the first header's persona (stderr warning), not the persona in force at each step, since R's budget window and cooldowns are one policy per run; the persona check covers every header. No engine, step, config key or hash change. Tests: `tests/test_director_random.py`. |
+| I36 | feat: 3D world PR 1, dims plumbing (`docs/3D.md` §10 item 1; new §27.0 and §27.1), no behaviour change: `validate` still rejects `world.dims = 3` (`config.DIMS_SUPPORTED = (2,)`), and every 2D trajectory, config hash, metrics row and checkpoint and `meta.json` key set is unchanged (golden digest not re-pinned, no `FORMAT_VERSION` or `RNG_LAYOUT_VERSION` bump; a CPU digest matrix of 2D trajectories and runs matched bit for bit). (1) `world.dims` (2) and `world.height` (0) in `POST_V01_KEYS` and the new `THREE_D_KEYS`; `is_3d`, `require_2d`; `Dims` gains `nd`, `d3`, `lay`, `fz`, `n_cells`, `field_shape`, `g_hash_z`, `cell_hash_z`, and `q`, `w1_rows`, `params` go through `lay`; the world-dimensions validation (2D: the 3D keys keep their defaults; 3D: height, FZ, FZ·FG² ≤ 2²⁰, G_z, `2·height ≤ size`, `K ≤ 27·C`, `chem_diffusion ≤ 1/6`, `resource_diffusion_q8 ≤ 42`), every 2D message verbatim; only finite ratios are rounded (a non-finite `size` or `height` is a `ConfigError`, not an `OverflowError`). (2) `layout.Layout`, `for_dims`, `genome_layout_version` and `GENOME_LAYOUT_VERSION_3D = 2` with the frozen append-only 3D tables (D_IN 84 with inputs 69–83 ending in `IN_HEIGHT`, `IN_PITCH`, `IN_GROUNDED`; D_OUT 39 with `OUT_PITCH`, `OUT_BUOYANCY`, `OUT_Q_BOND_DZ`, `OUT_Q_ATTACK_DZ`); the D_IN/D_OUT reads in brain, sensing, metrics, bench, state and the schema go through `dims(cfg).lay` (equal Python ints in 2D); D18 amended. (3) `state.expected_layout` is the one State schema (`runio._expected_layout` stays as an alias for `tests/test_runio.py`; the private `invariants._expected_layout` is removed); `LedgerIdx.HEAT_BUOYANCY` alias of slot 15, `sinks(nd)`, `ledger_names(nd)` (definitions only). (4) `dims` metadata only when dims ≠ 2 (absent = 2D); `load_checkpoint` refuses a cross-dimension file; a fork refuses a `world.dims`/`world.height` change (exit 4); `render`, `view`, `render_frame`, the viewer and `analysis.signals` refuse a 3D config before loading (`require_2d`, exit 2). (5) `tests/helpers.make_scene` takes the pos, vel, W2, resource and chem shapes from the config's state (2D unchanged). Interpretations: `actions.decode` keeps `layout.F` (the 2D query block width in both dims; PR 2 appends the z component); `cli._agent_info` and the `make_scene` State class wait for `State3` (PR 2). Tests: `tests/test_layout_dims.py`, `tests/test_dims_config.py`, `tests/test_dims_runio.py`. |
 | I37 | feat: `alife activity` reads forks, and the director evaluation (`docs/DIRECTOR.md` §9, `docs/EVALUATION.md`, §19.3, §21), no change to the engine, the step, any config key or hash, or the golden digest. (1) `phylo.load_tree(run, start=)`: a fork's founders are the agents alive in its checkpoint at `meta.json` `start_step` (source uids kept; parents and deaths mapped by uid), and `start` restricts any tree to the agents alive at that step and their descendants (`phylo.restrict`); step indices count from the start (report `t0`, `origin`), the stored grids are run steps (`report.compute(step0=)`), and the windows and the cohort-pool settling start at `t0`. Founders may be parents from step 0 (`phylo.eligible_from`, used by the exposures and the neutral shadow) and `min_gap(founder_ages=False)` ignores their children, since their ages are not recorded; on a run from step 0 both change nothing (no birth before the founders' minimum age): on `runs/64k_s0` all 820 arrays of `activity.npz` and the summary are identical. Catastrophe deaths count in the death totals. CLI `--start STEP` (§21). This lifts I33's limitation. (2) `alife.analysis.evaluation` (entry point `python -m alife.analysis.evaluation`) and `evaluation_plots`: per arm and seed, the director's vital signs refolded with `Tracker` from `metrics.jsonl` (equal to the logged vitals of every live entry), coverage and cells outside the control, novelty and excursion from the control, persistent novelty against the control and against the pre-intervention level, turnover, viability against a fixed per-seed reference population (base run, 70k–120k), clades, lineages from the event logs, intervention counts, entropy and cost, the LLM's validity, clamp rate and latency, the activity classes, a seeded journal sample and a Markdown table. Tests: `tests/test_analysis_activity.py`, `tests/test_analysis_evaluation.py`. |
 
 **Open questions for the user.**

@@ -188,17 +188,21 @@ def _embedded_config(path: Path) -> Config:
     return cfg
 
 
-def _load_target(target: str, step: int | None) -> tuple[Config, State, RunDir | None, Path]:
-    """``(cfg, state, rundir, path)`` from a run directory (``--checkpoint``) or a standalone state file."""
+def _target_config(target: str, step: int | None) -> tuple[Config, RunDir | None, Path]:
+    """``(cfg, rundir, path)`` of a run directory (``--checkpoint``) or a standalone state file, unloaded."""
     p = Path(target)
     if p.is_file():
         if step is not None:
             raise ConfigError("--checkpoint applies to a run directory, not a state file")
-        cfg = _embedded_config(p)
-        return cfg, load_checkpoint(p, cfg), None, p
+        return _embedded_config(p), None, p
     rd = RunDir.open(p)
     cfg = rd.config()
-    path = _select_checkpoint(rd, step)
+    return cfg, rd, _select_checkpoint(rd, step)
+
+
+def _load_target(target: str, step: int | None) -> tuple[Config, State, RunDir | None, Path]:
+    """``(cfg, state, rundir, path)`` from a run directory (``--checkpoint``) or a standalone state file."""
+    cfg, rd, path = _target_config(target, step)
     return cfg, load_checkpoint(path, cfg), rd, path
 
 
@@ -369,6 +373,12 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
         raise ConfigError("--director replay and --replay-log LOG go together")
     if replay:  # the whole log is checked before anything is written (exit 2)
         director_log.validate_log(director_log.read_log(Path(a.replay_log)), cfg)
+    for key in ("dims", "height"):  # a state never crosses dimensions or world heights (§27.1)
+        if getattr(cfg.world, key) != getattr(src_cfg.world, key):
+            raise CheckpointError(
+                f"world.{key} must equal the source's {getattr(src_cfg.world, key)} "
+                "(a fork cannot change the world's dimensions or height)"
+            )
     if cfg.population.n_init != src_cfg.population.n_init:
         raise CheckpointError(
             f"population.n_init must equal the source's {src_cfg.population.n_init} (clade bins depend on it)"
@@ -467,7 +477,9 @@ def _cmd_resume(a: argparse.Namespace) -> int:
 
 
 def _cmd_render(a: argparse.Namespace) -> int:
-    cfg, state, rd, _ = _load_target(a.run, a.checkpoint)
+    cfg, rd, path = _target_config(a.run, a.checkpoint)
+    config_mod.require_2d(cfg, "alife render")  # before the state is loaded
+    state = load_checkpoint(path, cfg)
     size = _parse_size(a.size)
     view = _parse_view(a.view, cfg)
     layers = _parse_layers(a.layers)
@@ -646,11 +658,14 @@ def _cmd_view(a: argparse.Namespace) -> int:
     if a.run is not None and (a.preset is not None or a.set):
         raise ConfigError("view takes either RUN or --preset/--set, not both")
     if a.run is not None:
-        cfg, state, rd, _ = _load_target(a.run, a.checkpoint)
+        cfg, rd, path = _target_config(a.run, a.checkpoint)
+        config_mod.require_2d(cfg, "alife view")
+        state = load_checkpoint(path, cfg)
     else:
         if a.checkpoint is not None:
             raise ConfigError("--checkpoint needs RUN")
         cfg = load_config(preset=a.preset, overrides=a.set)
+        config_mod.require_2d(cfg, "alife view")
         state, rd = init_state(cfg), None
     box = [state]
     del state
