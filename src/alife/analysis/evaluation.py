@@ -328,8 +328,10 @@ def intervention_stats(entries: Sequence[Mapping[str, Any]], span_steps: int) ->
 def llm_stats(journal: Iterable[Mapping[str, Any]]) -> dict[str, Any] | None:
     """The LLM tier's record (``journal.jsonl`` ``llm_call`` records), or None for an arm without it.
 
-    - validity: replies that arrived, parsed and passed the schema (outcome ``ok``, ``none`` or
-      ``rejected``) over all calls; ``failed`` (transport) and ``invalid`` (parse or schema) are not valid;
+    - validity: replies that parsed and passed the schema (outcome ``ok``, ``none`` or ``rejected``), over
+      all calls (``validity_rate``) and over the replies that arrived (``json_validity_rate``: a ``failed``
+      call is a transport failure, with no reply to judge; ``invalid`` is a reply that failed to parse or the
+      schema);
     - clamp rate: clamped parameters per accepted proposal, and the share of calls with any clamp."""
     calls = [j for j in journal if j.get("kind") == "llm_call"]
     if not calls:
@@ -345,6 +347,10 @@ def llm_stats(journal: Iterable[Mapping[str, Any]]) -> dict[str, Any] | None:
         "outcomes": dict(sorted(outcomes.items())),
         "valid": valid,
         "validity_rate": valid / len(calls),
+        "replies": len(calls) - outcomes["failed"],
+        "json_validity_rate": valid / (len(calls) - outcomes["failed"])
+        if len(calls) > outcomes["failed"]
+        else None,
         "accepted_proposals": accepted,
         "rejected_proposals": sum(reasons.values()),
         "rejection_reasons": dict(reasons.most_common()),

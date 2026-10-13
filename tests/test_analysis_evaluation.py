@@ -138,6 +138,9 @@ def test_llm_stats() -> None:
     ]
     s = ev.llm_stats(journal)
     assert s["calls"] == 4 and s["valid"] == 3 and s["validity_rate"] == pytest.approx(0.75)
+    assert s["replies"] == 4 and s["json_validity_rate"] == pytest.approx(0.75)  # "invalid" is a reply
+    t = ev.llm_stats([_call(1, "ok", accepted=1), _call(2, "failed")])
+    assert t["replies"] == 1 and t["json_validity_rate"] == 1.0 and t["validity_rate"] == 0.5
     assert s["clamp_rate"] == pytest.approx(0.5) and s["calls_with_clamp"] == 1
     assert s["rejection_reasons"] == {"budget 6/6 used": 1} and s["fallbacks"] == 1
     assert s["latency_s"]["median"] == pytest.approx(3.5) and s["latency_s"]["max"] == 10.0
