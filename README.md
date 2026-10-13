@@ -48,6 +48,7 @@ uv run alife view --preset dev            # live viewer (needs the `viewer` extr
 | `alife render RUN` | re-simulate from a checkpoint and write a PNG, a video, or a PNG sequence |
 | `alife inspect RUN` | config summary, carrying capacity, checkpoints, ledger status, bodies and clades; `--check` runs the full invariant check |
 | `alife view` | interactive pygame-ce viewer (pan, zoom, layers, agent picking, snapshots) |
+| `alife stream` | binary frame stream on stdout for an external 2D or 3D viewer (stdin control lines, `--follow` for a running director run; DESIGN §27.11) |
 | `alife bench` | throughput, donation health, determinism and brain-variant benchmarks |
 | `alife llm-check` | send one tiny structured-output request to the director's LLM endpoint; prints `OK model=... latency=...s` or `FAIL <kind>: <detail>` (exit 0 or 1) |
 

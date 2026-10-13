@@ -26,7 +26,7 @@ import numpy as np
 
 from alife import layout, ops
 from alife.config import Config, dims, require_2d
-from alife.state import State, to_numpy
+from alife.state import State, State3, to_numpy
 
 
 @dataclass(frozen=True)
@@ -210,7 +210,7 @@ def _disc_stencil(rho: int) -> tuple[mx.array, mx.array]:
     return mx.array(dx[inside].astype(np.float32)), mx.array(dy[inside].astype(np.float32))
 
 
-def _agent_rgb(s: State, cfg: Config, color: str) -> mx.array:
+def _agent_rgb(s: State | State3, cfg: Config, color: str) -> mx.array:
     """(N,3) f32 integer-valued agent colours; agents hurt last step (``last_loss > 0``) are red."""
     if color == "tag":
         t = mx.clip(s.tag[:, :3].astype(_F32), -1.0, 1.0)
@@ -233,6 +233,26 @@ def _agent_rgb(s: State, cfg: Config, color: str) -> mx.array:
     return mx.where(hurt, mx.array(_HURT_RGB, dtype=_F32)[None, :], rgb)
 
 
+def _cell_rgb(resource: mx.array, chem: mx.array, cfg: Config, layers: frozenset[str]) -> mx.array:
+    """(n,) uint32 ``0x00RRGGBB`` background colour of ``n`` field cells (§20.1 step 2).
+
+    ``resource`` is (n,) integer quanta and ``chem`` (NCH, n) float32: a 2D lattice flattened row-major, or
+    one z layer of a 3D lattice (§27.11). Only the ``resource`` and ``chem`` entries of ``layers`` contribute.
+    """
+    rgb = mx.zeros((resource.shape[0], 3), dtype=_F32)
+    if "resource" in layers:
+        r = resource.astype(_F32)
+        g = _RES_G0 + _RES_G_SPAN * mx.minimum(r / float(cfg.fields.resource_cap), 1.0)
+        rgb = rgb + g[:, None] * mx.array([0.0, 1.0, 0.0], dtype=_F32)
+    if "chem" in layers:
+        chem = mx.maximum(chem, 0.0)  # (NCH, n)
+        tint = _CHEM_GAIN * chem / (chem + 1.0)
+        for ch in range(layout.NCH):
+            rgb = rgb + tint[ch][:, None] * mx.array(_CHEM_TINT[ch], dtype=_F32)
+    cell_rgb = mx.clip(mx.floor(rgb + 0.5), 0.0, 255.0).astype(_U32)
+    return (cell_rgb[:, 0] << 16) | (cell_rgb[:, 1] << 8) | cell_rgb[:, 2]
+
+
 def _background(s: State, cfg: Config, axes: tuple[_Axis, _Axis], layers: frozenset[str]) -> mx.array:
     """(H,W) uint32 packed RGB background: colours are computed per field cell, then each pixel centre gathers
     its (wrapped) cell."""
@@ -241,19 +261,7 @@ def _background(s: State, cfg: Config, axes: tuple[_Axis, _Axis], layers: frozen
     if not layers & {"resource", "chem"}:
         return mx.zeros((h, w), dtype=_U32)
     L, fg = float(cfg.world.size), dims(cfg).fg
-
-    rgb = mx.zeros((fg * fg, 3), dtype=_F32)
-    if "resource" in layers:
-        r = s.resource.reshape(-1).astype(_F32)
-        g = _RES_G0 + _RES_G_SPAN * mx.minimum(r / float(cfg.fields.resource_cap), 1.0)
-        rgb = rgb + g[:, None] * mx.array([0.0, 1.0, 0.0], dtype=_F32)
-    if "chem" in layers:
-        chem = mx.maximum(s.chem.reshape(layout.NCH, -1), 0.0)  # (NCH, FG²)
-        tint = _CHEM_GAIN * chem / (chem + 1.0)
-        for ch in range(layout.NCH):
-            rgb = rgb + tint[ch][:, None] * mx.array(_CHEM_TINT[ch], dtype=_F32)
-    cell_rgb = mx.clip(mx.floor(rgb + 0.5), 0.0, 255.0).astype(_U32)
-    cell_packed = (cell_rgb[:, 0] << 16) | (cell_rgb[:, 1] << 8) | cell_rgb[:, 2]
+    cell_packed = _cell_rgb(s.resource.reshape(-1), s.chem.reshape(layout.NCH, -1), cfg, layers)
 
     def cells(ax: _Axis) -> mx.array:
         p = mx.arange(ax.extent, dtype=_F32) + 0.5 - ax.extent / 2.0
@@ -261,6 +269,25 @@ def _background(s: State, cfg: Config, axes: tuple[_Axis, _Axis], layers: frozen
         return mx.clip(mx.floor(world / cfg.world.field_cell).astype(_I32), 0, fg - 1)
 
     return mx.take(cell_packed, cells(ax_y)[:, None] * fg + cells(ax_x)[None, :])
+
+
+def agent_colors(s: State | State3, cfg: Config, color: str) -> mx.array:
+    """(N,) uint32 ``0x00RRGGBB`` agent colours in a mode of ``COLOR_MODES``: those ``render_frame`` gives the
+    discs (agents hurt last step are red), for 2D and 3D states alike (the stream's ``rgb``, §27.11)."""
+    if color not in COLOR_MODES:
+        raise ValueError(f"unknown color mode {color!r}; expected one of {COLOR_MODES}")
+    return _pack(0, _agent_rgb(s, cfg, color))
+
+
+def field_colors(s: State | State3, cfg: Config, layer: int = 0) -> mx.array:
+    """(FG²,) uint32 ``0x00RRGGBB`` field colours (resource and chemicals, as the renderer's background) of
+    one lattice layer, row-major in ``(y, x)``: the 2D lattice (``layer`` must be 0), or z layer ``layer``
+    of a 3D one (the stream's field slice, §27.11)."""
+    d = dims(cfg)
+    if not 0 <= layer < d.fz:
+        raise ValueError(f"layer must be in [0, {d.fz}), got {layer}")
+    res, chem = (s.resource[layer], s.chem[:, layer]) if d.d3 else (s.resource, s.chem)
+    return _cell_rgb(res.reshape(-1), chem.reshape(layout.NCH, -1), cfg, frozenset({"resource", "chem"}))
 
 
 def render_frame(

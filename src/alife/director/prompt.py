@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
-from alife.config import Config
+from alife.config import Config, is_3d
 from alife.director import llm, pacing
 from alife.director.actions import MENU
 from alife.director.rules import Context, RuleParams, cooldown_steps
@@ -54,6 +54,14 @@ EFFECT: Final = {
     "drift_change": "multiply how fast the fertile patches drift across the world (environmental tempo)",
 }
 
+# The 3D world's wording (§27.10): the same menu, with the catastrophe a vertical column. ``EFFECT`` is the 2D
+# text and stays as it is; ``effects(cfg)`` picks the table for the world.
+EFFECT_3D: Final = {
+    **EFFECT,
+    "catastrophe": "kill a fraction of the agents inside a vertical column (a disc in x and y, from the "
+    "floor to the surface) once: founder effects, then recolonisation",
+}
+
 _METRICS: Final = (
     ("n_alive", "population", lambda b: b.window.n_alive_last),
     ("top_clade_share", "top clade share", lambda b: b.window.top_clade_share),
@@ -81,14 +89,30 @@ def _bound(p: llm.Param) -> str:
     return f"{p.name} in [{fmt(p.lo)}, {fmt(p.hi)}]" + (" (integer)" if p.integer else "")
 
 
+def effects(cfg: Config) -> Mapping[str, str]:
+    """The effect description of every menu action for ``cfg``'s world."""
+    return EFFECT_3D if is_3d(cfg) else EFFECT
+
+
+def world_text(cfg: Config) -> str:
+    """The sentence of the system message that describes the world's boundaries and the time unit."""
+    if is_3d(cfg):
+        return (
+            "The world is periodic in x and y, with a floor and a surface at height "
+            f"{cfg.world.height:g}; one step is one time unit."
+        )
+    return "The world is a torus; one step is one time unit."
+
+
 def _menu_text(cfg: Config, p: RuleParams) -> str:
     persona = p.persona(cfg.director.persona)
+    effect = effects(cfg)
     lines = []
     for name, params in llm.param_specs(cfg).items():
         spec = MENU[name]
         cd = cooldown_steps(name, p, persona)
         lines.append(
-            f"- {name} (cost {spec.cost}, cooldown {cd:,} steps): {EFFECT[name]}. "
+            f"- {name} (cost {spec.cost}, cooldown {cd:,} steps): {effect[name]}. "
             f"Params: {', '.join(_bound(q) for q in params)}."
         )
     lines.append("- none: do nothing this time; it must then be the only action.")
@@ -101,7 +125,7 @@ def system_message(cfg: Config, p: RuleParams) -> str:
     parts = [
         "You steer an artificial-life simulation only through its environment: resource regrowth, climate, "
         "fertility patches, immigration and disasters. You never edit agents, genomes or brains, and you "
-        "cannot do anything that is not on the menu. The world is a torus; one step is one time unit.",
+        f"cannot do anything that is not on the menu. {world_text(cfg)}",
         PERSONA_TEXT[d.persona],
     ]
     if d.persona == "architect":
@@ -160,7 +184,7 @@ def _env_text(ctx: Context) -> str:
     )
 
 
-def _vitals_text(ctx: Context, p: RuleParams) -> str:
+def _vitals_text(ctx: Context, p: RuleParams, k_note: str = "") -> str:
     v, w = ctx.vitals, ctx.vitals.window
     per_k = 1000 / w.steps if w.steps else 0.0
     mono = f" (above {_f(p.mono_share)} since step {v.mono_since:,})" if v.mono_since is not None else ""
@@ -168,10 +192,10 @@ def _vitals_text(ctx: Context, p: RuleParams) -> str:
     return "\n".join(
         [
             f"viability: population {_f(v.n_alive)} = {_f(v.n_over_k)} of the capacity estimate K_est "
-            f"{_f(round(v.k_est))}, window low {_f(v.n_alive_min)}; births {_f(w.births * per_k)} / deaths "
-            f"{_f(w.deaths * per_k)} per 1k steps; fall within 50k steps {_f(v.fall)}; extinction-risk flag "
-            f"{_f(v.extinction_risk)}; {_f(v.pop_frac_cap)} of the hard capacity; largest body "
-            f"{_f(v.largest_body_frac)} of the population",
+            f"{_f(round(v.k_est))}{k_note}, window low {_f(v.n_alive_min)}; births "
+            f"{_f(w.births * per_k)} / deaths {_f(w.deaths * per_k)} per 1k steps; fall within 50k steps "
+            f"{_f(v.fall)}; extinction-risk flag {_f(v.extinction_risk)}; {_f(v.pop_frac_cap)} of the hard "
+            f"capacity; largest body {_f(v.largest_body_frac)} of the population",
             f"diversity: clades alive {_f(w.clades_alive)}, top clade share {_f(v.top_clade_share)}{mono}, "
             f"clade entropy {_f(w.clade_entropy)}, weight diversity {_f(w.weight_diversity)}",
             f"behaviour: emitters {_f(w.emitters_frac)}, sharers {_f(w.sharers_frac)}, bonds per agent "
@@ -266,12 +290,14 @@ def user_message(
 ) -> str:
     """The state at this boundary. ``entries`` is the decision log so far (the safety actions of this
     boundary are in ``taken`` and not repeated under the recent interventions)."""
+    d3 = is_3d(cfg)  # the 3D world has a height, and K_est counts the floor layer's food only (§27.10)
+    size = f"{ctx.world_size:g} x {ctx.world_size:g}" + (f" x {cfg.world.height:g}" if d3 else "")
     return "\n\n".join(
         [
-            f"Step {ctx.t:,} of the run. World {ctx.world_size:g} x {ctx.world_size:g}, "
+            f"Step {ctx.t:,} of the run. World {size}, "
             f"{cfg.fields.n_patches} fertility patches. Decide what, if anything, to do now.",
             "Availability:\n" + _availability(ctx, p),
-            "Vital signs (latest window):\n" + _vitals_text(ctx, p),
+            "Vital signs (latest window):\n" + _vitals_text(ctx, p, " (floor-layer food only)" if d3 else ""),
             "Trends, " + _trends_text(history, cfg.director.rule_every),
             "Safety actions the rules already took at this step:\n" + _taken_text(taken, notes),
             "The last interventions and their measured effect:\n" + _recent_text(entries, history, ctx.t),

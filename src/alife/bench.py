@@ -110,6 +110,7 @@ def _environment(cfg: Config) -> dict[str, Any]:
             "max_births_per_step": d.m,
             "world_size": cfg.world.size,
             "field_grid": d.fg,
+            **({"dims": d.nd, "world_height": cfg.world.height, "field_grid_z": d.fz} if d.d3 else {}),
             "k_neighbors": d.k,
             "cell_capacity": d.c,
             "hidden": d.h,
@@ -607,9 +608,10 @@ def format_report(report: dict[str, Any]) -> str:
     """A short human-readable summary of a ``run_bench`` report."""
     r = report
     c = r["config"]
+    height = f"height={c['world_height']:g} " if "world_height" in c else ""  # 3D only; H is the hidden size
     lines = [
         f"alife {r['alife_version']}  mlx {r['mlx_version']}  {r['platform']}  {r['device']}",
-        f"N={c['n_max']} M={c['max_births_per_step']} n_init={c['n_init']} L={c['world_size']:g} "
+        f"N={c['n_max']} M={c['max_births_per_step']} n_init={c['n_init']} L={c['world_size']:g} {height}"
         f"K={c['k_neighbors']} C={c['cell_capacity']} H={c['hidden']} {c['weight_dtype']}/{c['brain_impl']} "
         f"compile={c['compile']} checks={c['runtime_checks']}",
         f"compile {r['compile_s']:.2f} s   {r['ms_per_step']:.2f} ms/step (median "

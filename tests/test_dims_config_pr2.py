@@ -173,7 +173,6 @@ BAD_PR2: list[tuple[list[str], str, bool]] = [
     (["fields.benthic_lambda=-8"], "fields.benthic_lambda must be > 0 in 3D", True),
     (["fields.photic_amp=1.5", "fields.photic_lambda=8"], "fields.photic_amp must be in [0, 1]", True),
     (["fields.photic_amp=0.3"], "fields.photic_lambda must be > 0 when fields.photic_amp > 0", True),
-    (["director.enabled=true"], "director.enabled is not supported with world.dims = 3 yet", True),
 ]
 
 
