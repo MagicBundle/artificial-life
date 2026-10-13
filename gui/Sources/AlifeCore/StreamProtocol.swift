@@ -129,6 +129,21 @@ package struct StreamFrame: Equatable, Sendable {
     /// `FG²` colours `0x00RRGGBB` of one field layer, row-major `[cy][cx]`; nil without a field section.
     package var field: [UInt32]?
 
+    package init(step: UInt64, nAlive: Int, flags: UInt32, nBonds: Int, colorIndex: Int, alive: [UInt8], pos: [Float],
+                 orient: [UInt16], rgb: [UInt32], bonds: [UInt32], field: [UInt32]?) {
+        self.step = step
+        self.nAlive = nAlive
+        self.flags = flags
+        self.nBonds = nBonds
+        self.colorIndex = colorIndex
+        self.alive = alive
+        self.pos = pos
+        self.orient = orient
+        self.rgb = rgb
+        self.bonds = bonds
+        self.field = field
+    }
+
     package var rows: Int { alive.count }
     package var hasField: Bool { flags & 1 != 0 }
     /// An invariant violation in the streamed state (the pygame HUD shows it in red).

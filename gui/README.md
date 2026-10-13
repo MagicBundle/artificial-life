@@ -67,8 +67,9 @@ separate from the one used by `swift run`.
   Resume can switch it off, live or to an in-place replay.
 - **Status** is read from the last line of `runs/NAME/metrics.jsonl` every ~2 seconds: step, population,
   steps/s, clades, maximum generation and ledger error.
-- **Open viewer** runs `alife view runs/NAME` as a separate process. It shares the GPU with a running
-  simulation and slows it down. **Inspect** runs `alife inspect runs/NAME --check` into the log.
+- **Open viewer** runs `alife view runs/NAME` (the pygame viewer, 2D only) as a separate process. It shares the GPU with a
+  running simulation and slows it down. It is disabled for a 3D run. **Open 3D viewer** opens the 3D viewer window
+  (below) on the selected run, 2D or 3D. **Inspect** runs `alife inspect runs/NAME --check` into the log.
   **Reveal in Finder** shows the run directory.
 - Only one run (or inspect / environment setup) can be active at a time from the app.
 
@@ -92,6 +93,28 @@ use a new run or a fork to apply them.
 | Season mode | `fields.season_mode` | global | `per_patch` gives each resource patch its own phase, so good seasons move across the map. |
 
 The engine performs the final validation; any rejection (exit code 2) appears in the log.
+
+### The 3D world levers
+
+A 3D preset (`tiny3d`) or a fork of a 3D run adds a **3D world levers** box. The 3D levers do not start from the engine
+defaults (all 0, which is not a valid 3D world) but from the **preset's** values, or the source run's for a fork, and
+only values that differ are passed. `world.dims` is never a lever: the preset or the source fixes it. A fork keeps its
+source's `world.height`; a resume has no levers.
+
+| lever | key | effect |
+|---|---|---|
+| World height | `world.height` | Vertical size; a multiple of the field cell, at most half the world size. New run only. |
+| Gravity | `physics.gravity` | Downward force on every agent, below the climb rate of full thrust. 0 = none. |
+| Buoyancy max | `physics.buoyancy_max` | Upward force at the full evolvable buoyancy cap. 0 = no actuator, then both costs must be 0. |
+| Buoyancy cost | `energy.buoyancy_cost` | Energy quanta per step at full lift, times the square of the lift fraction. |
+| Buoyancy cap cost | `energy.buoyancy_cap_cost` | Upkeep per step per unit of cap, paid even without lift. |
+| Benthic lambda | `fields.benthic_lambda` | Height scale of the food band at the floor, > 0. |
+| Photic amplitude | `fields.photic_amp` | Strength of a second food band under the surface, 0 to 1. 0 = off. |
+| Photic lambda | `fields.photic_lambda` | Depth scale of that band; > 0 when the amplitude is above 0. |
+
+`physics.floor_eps`, `mutation.buoy_init` and `mutation.buoy_sigma` stay command-line only. Because the engine requires
+the last two to be 0 when `physics.buoyancy_max` is 0, setting that lever to 0 passes them as 0 as well. The status box
+shows the mean height and the grounded and surface shares of a 3D run.
 
 ## The Director panel
 
@@ -132,11 +155,47 @@ the engine defaults for a new run, the source run's `config.json` (`director.*`,
   the last 256 KiB of each file, and skip a missing file, a half-written last line and malformed lines. A run without a
   `director.jsonl` shows "Director off for this run".
 
+## The 3D viewer
+
+**Open 3D viewer** (main window, next to Open viewer) opens a second window, **3D Viewer**, that draws an `alife stream`
+of the selected run with Metal: agents as shaded spheres with a pale nose for the heading, bonds, the box, a translucent
+floor and surface, and optionally a slice of the resource and chemical fields at one height. It shows 2D runs too, face on
+(x to the right, y down, as the 2D images). The window has two sources, switched at the top:
+
+- **Follow run** shows the newest checkpoint of the run, as the run (and its director) made it. It is the faithful view
+  of a director run, and the default for the run in progress. The first checkpoint appears after `run.checkpoint_every`
+  steps; until then the stream stops with "no usable checkpoint" and Open 3D viewer can be pressed again.
+- **Re-simulate** steps the latest checkpoint again in a separate process. It **ignores the director**, so a director run
+  diverges from it after its first intervention (the window says so), and it shares the GPU with a running simulation.
+  The default for a run that is not running.
+
+Controls (the buttons, or the keys while the picture has the focus):
+
+| key | action |
+|---|---|
+| Space, `.` | pause or run; step (a followed run fetches its newest checkpoint) |
+| `+`, `-` | simulation steps per frame, doubled or halved (a re-simulation only) |
+| `c` | next colour mode (tag, energy, clade) |
+| `f`, `[`, `]` | field slice on or off, and its layer |
+| `1` `2` `3` `4` | agents, bonds, frame (box, floor, surface), field slice |
+| `o`, `r` | orbit or fly camera; reset the view |
+| `s`, `p` | snapshot: a PNG to `runs/NAME/media/view3d_STEP.png` |
+
+Mouse: left drag orbits (or looks, when flying); right drag, middle drag or Option-drag pans; the wheel, the trackpad and
+a pinch zoom. Arrow keys orbit and dolly, or fly (Shift: faster; Page Up and Page Down: up and down).
+
+The window starts `alife stream` as a process of its own and stops it when it closes or the app quits (a `quit` line, then
+one SIGTERM if the process is still there after two seconds); closing the main window closes it too. The stream's
+messages go to the log as `[3d] ...`. The drawing is on demand, so the GPU is idle while nothing changes. The shaders are
+compiled when the first stream is shown (an idle window creates no Metal device); if that fails, the window shows the
+compiler's message.
+
 ## Files
 
-`Package.swift` has three targets: **`AlifeCore`**, a library of pure logic with no AppKit and no Metal (its declarations
-have `package` access: visible to the app and the tests, not an API); **`AlifeControl`**, the app; and **`AlifeCoreTests`**,
-the tests (Swift Testing).
+`Package.swift` has four targets: **`AlifeCore`**, a library of pure logic with no AppKit and no Metal (its declarations
+have `package` access: visible to the app and the tests, not an API); **`AlifeControl`**, the app; and the tests (Swift
+Testing), **`AlifeCoreTests`** for the library and **`AlifeControlTests`** for the app (it imports the executable with
+`@testable`).
 
 `Sources/AlifeCore/`:
 - `Levers.swift`: run settings, levers, validation and command-line construction
@@ -151,12 +210,21 @@ the tests (Swift Testing).
 - `Camera.swift`: the orbit and fly camera (view and projection matrices)
 
 `Sources/AlifeControl/`:
-- `AlifeControlApp.swift`: app entry point and app delegate
+- `AlifeControlApp.swift`: app entry point and app delegate (ignores SIGPIPE), the main window and the 3D Viewer window
 - `ContentView.swift`: the UI
 - `RunController.swift`: subprocess management (main-actor isolated; pipe output arrives through ordered
   AsyncStreams), log streaming, timer, keep-awake
 - `DirectorPanel.swift`: the Director settings box and the Interventions / Journal views
 - `DirectorTailer.swift`: tails `director.jsonl` and `journal.jsonl` (last 256 KiB) into interventions and journal rows
+- `StreamReader.swift`: the thread that drains the stream's stdout into the decoder, and the mailbox it leaves the newest
+  frame in
+- `StreamController.swift`: the `alife stream` process: pipes, control lines, stopping, the end of a stream
+- `Shaders.swift`: the Metal shaders as a string (compiled at run time; no resource bundle is needed)
+- `Renderer.swift`: the Metal drawing (buffers, pipelines, offscreen rendering for snapshots) and the PNG writer
+- `ViewerMTKView.swift`, `ViewerModel.swift`, `Viewer3DView.swift`: the mouse and keys, the display options and
+  snapshot, and the window's controls
+- `ViewerSupport.swift`: the pure parts (keys, speed, pointer-to-camera mapping, the stream's arguments)
+- `WindowCloseObserver.swift`: runs an action when a window closes
 
 Also `scripts/make-app.sh` and `scripts/make-icon.swift` (app bundle, signing, install and the generated icon).
 
@@ -168,9 +236,22 @@ swift build -Xswiftc -warnings-as-errors     # the build the checks use
 swift test
 ```
 
-The tests need no GPU and start no process. They cover the command lines the GUI builds for 2D runs (a table captured
-before the 3D work, so that a 2D run, fork or resume keeps its arguments byte for byte), the 3D lever rules, the preset
-reader, the stream decoder (the committed fixtures `tests/data/stream_tiny_{2d,3d}.bin` against the sidecars written by
-the independent Python decoder, any chunking of the input, every refusal), the control-line encoder and the camera.
-`tests/test_gui_sync.py` (Python, in the engine's suite) checks that every `--set` key and preset name in the Swift
-sources exists in the engine's `Config`.
+The tests need no GPU and never start `alife` (some start a stand-in shell script that plays it). They cover the command
+lines the GUI builds for 2D runs (a table captured before the 3D work, so that a 2D run, fork or resume keeps its
+arguments byte for byte), the 3D lever rules, the preset reader, the stream decoder (the committed fixtures
+`tests/data/stream_tiny_{2d,3d}.bin` against the sidecars written by the independent Python decoder, any chunking of
+the input, every refusal), the control-line encoder, the camera, the reader thread on a real pipe, the stream process
+(launch, control lines, stopping once, exit status, a corrupt stream, replacement) against the stand-in, the keys and
+pointer mapping, and the shader source's structure. `tests/test_gui_sync.py` (Python, in the engine's suite) checks that
+every `--set` key and preset name in the Swift sources exists in the engine's `Config`.
+
+The GPU tests are opt in, because they create a Metal device, compile the shaders and render the stream fixtures
+offscreen (PNGs go to a temporary directory, printed, or `$ALIFE_GPU_TESTS_OUT`):
+
+```bash
+cd gui
+ALIFE_GPU_TESTS=1 swift test --filter GPURenderTests
+```
+
+Without the variable they are reported as skipped. Run them when the GPU is free (a simulation on it slows both), and
+after any change to `Shaders.swift` or `Renderer.swift`.

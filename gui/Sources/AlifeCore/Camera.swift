@@ -145,6 +145,13 @@ package struct Camera: Equatable, Sendable {
                       fovY: fovY, near: 0.1, far: 8 * size)
     }
 
+    /// The starting pose for a stream: the overview of a 3D world, the face-on view of a 2D one.
+    package static func home(for header: StreamHeader, aspect: Float = 1) -> Camera {
+        header.dims == 3
+            ? overview(size: Float(header.size), height: Float(header.height), aspect: aspect)
+            : topDown(size: Float(header.size), aspect: aspect)
+    }
+
     /// The distance at which a sphere of `radius` fits the smaller field of view (or, for `face`, a flat square of
     /// half-side `radius` fills it).
     private static func fitDistance(radius: Float, aspect: Float, fovY: Float, face: Bool = false) -> Float {

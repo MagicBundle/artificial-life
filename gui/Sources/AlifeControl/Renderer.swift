@@ -1,0 +1,503 @@
+import AlifeCore
+import AppKit
+import ImageIO
+import Metal
+import MetalKit
+import UniformTypeIdentifiers
+import simd
+
+// MARK: - Uniforms
+
+/// The per-frame constants of every shader (`Scene` in Shaders.swift). Only 16-byte types, so the Swift layout is the
+/// Metal one: 160 bytes.
+struct SceneUniforms: Equatable {
+    var viewProjection: simd_float4x4
+    /// xyz: the eye.
+    var eye: SIMD4<Float>
+    /// xyz: the screen's +x and +y in the world.
+    var right: SIMD4<Float>
+    var up: SIMD4<Float>
+    /// x: L, y: height, z: the agent radius.
+    var world: SIMD4<Float>
+    /// x: rows, y: bonds, z: dims.
+    var counts: SIMD4<UInt32>
+    /// x, y: the drawable size in pixels.
+    var viewport: SIMD4<Float>
+}
+
+/// A plane's constants (`Plane` in Shaders.swift): 32 bytes.
+struct PlaneUniforms: Equatable {
+    var color: SIMD4<Float>
+    /// x: the z of the plane.
+    var info: SIMD4<Float>
+}
+
+/// A translucent quad of the scene: the floor, the surface, or the field slice.
+struct ScenePlane: Equatable {
+    var z: Float
+    var color: SIMD4<Float>
+    var textured: Bool
+
+    /// The planes ordered so that the farthest from the eye is drawn first (translucent planes blend correctly only
+    /// back to front; they are all horizontal, so the distance is that of the heights).
+    static func backToFront(_ planes: [ScenePlane], eyeZ: Float) -> [ScenePlane] {
+        planes.sorted { abs(eyeZ - $0.z) > abs(eyeZ - $1.z) }
+    }
+}
+
+/// A rendered image: BGRA, 8 bits per channel, row 0 at the top.
+struct OffscreenImage: Sendable, Equatable {
+    var width: Int
+    var height: Int
+    var bgra: [UInt8]
+
+    func pixel(_ x: Int, _ y: Int) -> (r: UInt8, g: UInt8, b: UInt8) {
+        let at = 4 * (y * width + x)
+        return (bgra[at + 2], bgra[at + 1], bgra[at])
+    }
+}
+
+// MARK: - Renderer
+
+/// Draws the stream's frames with Metal: instanced sphere impostors for the agents (with a nose for the heading), bond
+/// half segments, the edges of the box, translucent floor, surface and field-slice planes. It is the `MTKViewDelegate`
+/// of the viewer's view, and it can also draw into a texture (`renderOffscreen`, used by the snapshot and the GPU test).
+///
+/// Drawing is on demand: the view is not on a display link, so the GPU is idle until a frame arrives, the camera moves
+/// or the window changes. The frame's arrays are copied into one of three shared buffer sets and a semaphore lets at
+/// most three draws be in flight, so the CPU never writes a set the GPU is still reading. A set remembers which frame it
+/// holds, so redrawing the same frame from another angle copies nothing once all three have it.
+@MainActor
+final class Renderer: NSObject, MTKViewDelegate {
+    enum Failure: Error, CustomStringConvertible {
+        case noDevice
+        case shaders(String)
+        case missingFunction(String)
+        case pipeline(String, String)
+        case noQueue
+        case allocation(String)
+        case encoding
+        case busy
+
+        var description: String {
+            switch self {
+            case .noDevice: return "this Mac has no Metal device"
+            case .shaders(let log): return "the viewer's shaders do not compile: \(log)"
+            case .missingFunction(let name): return "the shader function \(name) is missing"
+            case .pipeline(let name, let why): return "cannot build the \(name) pipeline: \(why)"
+            case .noQueue: return "cannot create a Metal command queue"
+            case .allocation(let what): return "cannot allocate \(what)"
+            case .encoding: return "cannot encode the drawing commands"
+            case .busy: return "the GPU is too busy to draw"
+            }
+        }
+    }
+
+    static let slotCount = 3
+    static let colorFormat = MTLPixelFormat.bgra8Unorm
+    static let depthFormat = MTLPixelFormat.depth32Float
+    static let background = MTLClearColor(red: 0.035, green: 0.04, blue: 0.055, alpha: 1)
+
+    let device: any MTLDevice
+    private let queue: any MTLCommandQueue
+    private let spherePipeline: any MTLRenderPipelineState
+    private let boxPipeline: any MTLRenderPipelineState
+    private let bondPipeline: any MTLRenderPipelineState
+    private let planePipeline: any MTLRenderPipelineState
+    private let slicePipeline: any MTLRenderPipelineState
+    /// Depth tested and written (agents, bonds, box) and depth tested only (translucent planes, the 2D background).
+    private let opaqueDepth: any MTLDepthStencilState
+    private let overlayDepth: any MTLDepthStencilState
+
+    private var slots: [Slot]
+    private var nextSlot = 0
+    private let inFlight = DispatchSemaphore(value: Renderer.slotCount)
+
+    /// The view; edited by the controls, then the owner asks the view to redraw. While it is still the home pose, a
+    /// resize of the window fits the world to the new shape again (`cameraIsHome`).
+    var camera = Camera.overview(size: 1, height: 1) {
+        didSet { if !settingHome { cameraIsHome = false } }
+    }
+    private(set) var cameraIsHome = true
+    private var settingHome = false
+    var display = ViewerDisplay()
+    private(set) var header: StreamHeader?
+    private var frame: StreamFrame?
+    /// Increases with every frame shown; a slot that holds an older one is refreshed before it is drawn.
+    private var frameSerial = 0
+    private(set) var frameStep: UInt64?
+    /// Told when a draw fails (once per distinct message), so the window can say so instead of staying blank.
+    var failureHandler: (@MainActor (String) -> Void)?
+    private var lastFailure: String?
+
+    /// A set of the GPU buffers one draw reads.
+    private final class Slot {
+        var alive: (any MTLBuffer)?
+        var pos: (any MTLBuffer)?
+        var orient: (any MTLBuffer)?
+        var rgb: (any MTLBuffer)?
+        var bonds: (any MTLBuffer)?
+        var field: (any MTLTexture)?
+        /// The `frameSerial` this slot holds (-1: nothing).
+        var serial = -1
+    }
+
+    init(device: any MTLDevice) throws {
+        self.device = device
+        guard let queue = device.makeCommandQueue() else { throw Failure.noQueue }
+        self.queue = queue
+
+        let options = MTLCompileOptions()
+        options.languageVersion = .version3_0
+        let library: any MTLLibrary
+        do {
+            library = try device.makeLibrary(source: Shaders.source, options: options)
+        } catch {
+            throw Failure.shaders("\(error)")
+        }
+        func function(_ name: String) throws -> any MTLFunction {
+            guard let f = library.makeFunction(name: name) else { throw Failure.missingFunction(name) }
+            return f
+        }
+        func pipeline(_ name: String, vertex: String, fragment: String, blend: Bool) throws
+            -> any MTLRenderPipelineState {
+            let d = MTLRenderPipelineDescriptor()
+            d.label = name
+            d.vertexFunction = try function(vertex)
+            d.fragmentFunction = try function(fragment)
+            d.colorAttachments[0].pixelFormat = Renderer.colorFormat
+            d.depthAttachmentPixelFormat = Renderer.depthFormat
+            if blend {
+                let c = d.colorAttachments[0]!
+                c.isBlendingEnabled = true
+                c.rgbBlendOperation = .add
+                c.alphaBlendOperation = .add
+                c.sourceRGBBlendFactor = .sourceAlpha
+                c.destinationRGBBlendFactor = .oneMinusSourceAlpha
+                c.sourceAlphaBlendFactor = .one
+                c.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            }
+            do {
+                return try device.makeRenderPipelineState(descriptor: d)
+            } catch {
+                throw Failure.pipeline(name, "\(error)")
+            }
+        }
+        spherePipeline = try pipeline("agents", vertex: Shaders.sphereVertex, fragment: Shaders.sphereFragment,
+                                      blend: false)
+        bondPipeline = try pipeline("bonds", vertex: Shaders.bondVertex, fragment: Shaders.lineFragment, blend: false)
+        boxPipeline = try pipeline("box", vertex: Shaders.boxVertex, fragment: Shaders.lineFragment, blend: false)
+        planePipeline = try pipeline("planes", vertex: Shaders.planeVertex, fragment: Shaders.planeFragment,
+                                     blend: true)
+        slicePipeline = try pipeline("field slice", vertex: Shaders.planeVertex, fragment: Shaders.sliceFragment,
+                                     blend: true)
+
+        func depthState(write: Bool) throws -> any MTLDepthStencilState {
+            let d = MTLDepthStencilDescriptor()
+            d.depthCompareFunction = .lessEqual
+            d.isDepthWriteEnabled = write
+            guard let state = device.makeDepthStencilState(descriptor: d) else { throw Failure.allocation("a depth state") }
+            return state
+        }
+        opaqueDepth = try depthState(write: true)
+        overlayDepth = try depthState(write: false)
+        slots = (0..<Renderer.slotCount).map { _ in Slot() }
+        super.init()
+    }
+
+    // MARK: Content
+
+    /// A new stream: forget the old frame and start from the home pose of the world (`aspect` is the view's).
+    func configure(header: StreamHeader?, aspect: Float) {
+        self.header = header
+        frame = nil
+        frameStep = nil
+        frameSerial += 1
+        goHome(aspect: aspect)
+    }
+
+    /// The frame to draw from now on (nil: none).
+    func show(frame: StreamFrame?) {
+        self.frame = frame
+        frameStep = frame?.step
+        frameSerial += 1
+    }
+
+    func resetCamera(aspect: Float) { goHome(aspect: aspect) }
+
+    private func goHome(aspect: Float) {
+        guard let header else { return }
+        settingHome = true
+        camera = Camera.home(for: header, aspect: aspect)
+        settingHome = false
+        cameraIsHome = true
+    }
+
+    // MARK: MTKViewDelegate
+
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        if cameraIsHome, size.height >= 1 { goHome(aspect: Float(size.width / size.height)) }
+        view.needsDisplay = true
+    }
+
+    func draw(in view: MTKView) {
+        guard let descriptor = view.currentRenderPassDescriptor, let drawable = view.currentDrawable else { return }
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].clearColor = Self.background
+        descriptor.depthAttachment.loadAction = .clear
+        descriptor.depthAttachment.clearDepth = 1
+        do {
+            // Never wait for the GPU on the main thread: if three draws are still in flight (a simulation is using the
+            // GPU), draw again shortly.
+            let submitted = try submit(descriptor: descriptor, size: view.drawableSize, drawable: drawable,
+                                       patience: .milliseconds(0), waitUntilCompleted: false)
+            if !submitted { retryLater(view) }
+        } catch {
+            let message = "\(error)"
+            if message != lastFailure {
+                lastFailure = message
+                failureHandler?(message)
+            }
+        }
+    }
+
+    private var retryPending = false
+
+    private func retryLater(_ view: MTKView) {
+        guard !retryPending else { return }
+        retryPending = true
+        Task { [weak self, weak view] in
+            try? await Task.sleep(for: .milliseconds(100))
+            self?.retryPending = false
+            view?.needsDisplay = true
+        }
+    }
+
+    // MARK: Offscreen
+
+    /// Draws the current scene into a `width` x `height` texture and reads it back. Blocks until the GPU is done.
+    func renderOffscreen(width: Int, height: Int) throws -> OffscreenImage {
+        guard width > 0, height > 0 else { throw Failure.allocation("an empty image") }
+        let color = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: Self.colorFormat, width: width, height: height, mipmapped: false)
+        color.usage = [.renderTarget]
+        color.storageMode = .shared
+        let depth = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: Self.depthFormat, width: width, height: height, mipmapped: false)
+        depth.usage = [.renderTarget]
+        depth.storageMode = .private
+        guard let colorTexture = device.makeTexture(descriptor: color),
+              let depthTexture = device.makeTexture(descriptor: depth) else {
+            throw Failure.allocation("the offscreen textures")
+        }
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = colorTexture
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.colorAttachments[0].clearColor = Self.background
+        descriptor.depthAttachment.texture = depthTexture
+        descriptor.depthAttachment.loadAction = .clear
+        descriptor.depthAttachment.storeAction = .dontCare
+        descriptor.depthAttachment.clearDepth = 1
+        guard try submit(descriptor: descriptor, size: CGSize(width: width, height: height), drawable: nil,
+                         patience: .seconds(10), waitUntilCompleted: true) else {
+            throw Failure.busy
+        }
+        var bytes = [UInt8](repeating: 0, count: 4 * width * height)
+        bytes.withUnsafeMutableBytes {
+            colorTexture.getBytes($0.baseAddress!, bytesPerRow: 4 * width,
+                                  from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        }
+        return OffscreenImage(width: width, height: height, bgra: bytes)
+    }
+
+    // MARK: Drawing
+
+    /// Encodes and commits one draw into `descriptor`. Returns false if every buffer set stayed busy for `patience` (the
+    /// GPU is behind, as when a simulation is using it): nothing was drawn.
+    @discardableResult
+    private func submit(descriptor: MTLRenderPassDescriptor, size: CGSize, drawable: (any MTLDrawable)?,
+                        patience: DispatchTimeInterval, waitUntilCompleted: Bool) throws -> Bool {
+        guard size.width >= 1, size.height >= 1 else { return true }  // nothing to draw into
+        guard inFlight.wait(timeout: .now() + patience) == .success else { return false }
+        let slot = slots[nextSlot]
+        nextSlot = (nextSlot + 1) % Self.slotCount
+        guard let commands = queue.makeCommandBuffer(),
+              let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) else {
+            inFlight.signal()
+            throw Failure.encoding
+        }
+        if let header, let frame {
+            do {
+                try refresh(slot, from: frame, header: header)
+            } catch {
+                encoder.endEncoding()
+                inFlight.signal()
+                throw error
+            }
+        }
+        encode(into: encoder, slot: slot, size: size)
+        encoder.endEncoding()
+        if let drawable { commands.present(drawable) }
+        let semaphore = inFlight
+        commands.addCompletedHandler { _ in semaphore.signal() }
+        commands.commit()
+        if waitUntilCompleted { commands.waitUntilCompleted() }
+        return true
+    }
+
+    private func uniforms(header: StreamHeader, size: CGSize) -> SceneUniforms {
+        let aspect = Float(size.width / size.height)
+        return SceneUniforms(
+            viewProjection: camera.viewProjectionMatrix(aspect: aspect),
+            eye: SIMD4(camera.position, 1),
+            right: SIMD4(camera.right, 0),
+            up: SIMD4(camera.up, 0),
+            world: SIMD4(Float(header.size), Float(header.height), Float(header.radius), 0),
+            counts: SIMD4(UInt32(header.capacity), UInt32(frame?.nBonds ?? 0), UInt32(header.dims), 0),
+            viewport: SIMD4(Float(size.width), Float(size.height), 0, 0))
+    }
+
+    /// The planes of a scene: in 3D the floor and the surface (with the frame option), and the field slice when the frame
+    /// has one, at the middle of its layer.
+    nonisolated static func planes(header: StreamHeader, frame: StreamFrame?, display: ViewerDisplay) -> [ScenePlane] {
+        var planes: [ScenePlane] = []
+        if header.dims == 3, display.frame {
+            planes.append(ScenePlane(z: 0, color: SIMD4(0.2, 0.32, 0.5, 0.22), textured: false))
+            planes.append(ScenePlane(z: Float(header.height), color: SIMD4(0.5, 0.65, 0.9, 0.1), textured: false))
+        }
+        if let layer = frame?.fieldLayer, frame?.field != nil {
+            // A 3D slice is see-through; the 2D field is the background of the picture.
+            let z = header.dims == 3 ? (Float(layer) + 0.5) * Float(header.fieldCell) : 0
+            planes.append(ScenePlane(z: z, color: SIMD4(1, 1, 1, header.dims == 3 ? 0.6 : 1), textured: true))
+        }
+        return planes
+    }
+
+    private func encode(into encoder: any MTLRenderCommandEncoder, slot: Slot, size: CGSize) {
+        guard let header else { return }
+        var scene = uniforms(header: header, size: size)
+        encoder.setCullMode(.none)
+        encoder.setVertexBytes(&scene, length: MemoryLayout<SceneUniforms>.stride, index: 0)
+        encoder.setFragmentBytes(&scene, length: MemoryLayout<SceneUniforms>.stride, index: 0)
+
+        var planes = ScenePlane.backToFront(Self.planes(header: header, frame: frame, display: display),
+                                            eyeZ: camera.position.z)
+        func draw(_ plane: ScenePlane) {
+            var constants = PlaneUniforms(color: plane.color, info: SIMD4(plane.z, 0, 0, 0))
+            encoder.setVertexBytes(&constants, length: MemoryLayout<PlaneUniforms>.stride, index: 6)
+            encoder.setFragmentBytes(&constants, length: MemoryLayout<PlaneUniforms>.stride, index: 6)
+            if plane.textured {
+                encoder.setRenderPipelineState(slicePipeline)
+                encoder.setFragmentTexture(slot.field, index: 0)
+            } else {
+                encoder.setRenderPipelineState(planePipeline)
+            }
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
+
+        // The 2D field is the background of everything else: drawn first, it neither hides nor z-fights with the agents
+        // and bonds, which lie in its plane.
+        if header.dims == 2, let background = planes.first(where: { $0.textured }), frame?.field != nil {
+            encoder.setDepthStencilState(overlayDepth)
+            draw(background)
+            planes.removeAll { $0.textured }
+        }
+
+        encoder.setDepthStencilState(opaqueDepth)
+        if let frame {
+            encoder.setVertexBuffer(slot.alive, offset: 0, index: 1)
+            encoder.setVertexBuffer(slot.pos, offset: 0, index: 2)
+            encoder.setVertexBuffer(slot.orient, offset: 0, index: 3)
+            encoder.setVertexBuffer(slot.rgb, offset: 0, index: 4)
+            encoder.setVertexBuffer(slot.bonds, offset: 0, index: 5)
+            if display.agents, frame.nAlive > 0 {
+                encoder.setRenderPipelineState(spherePipeline)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: header.capacity)
+            }
+            if display.bonds, frame.nBonds > 0, slot.bonds != nil {
+                encoder.setRenderPipelineState(bondPipeline)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 4, instanceCount: frame.nBonds)
+            }
+        }
+        if display.frame {
+            encoder.setRenderPipelineState(boxPipeline)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 24)
+        }
+        encoder.setDepthStencilState(overlayDepth)
+        for plane in planes { draw(plane) }
+    }
+
+    // MARK: Upload
+
+    /// Copies the frame into `slot` unless the slot already holds it.
+    private func refresh(_ slot: Slot, from frame: StreamFrame, header: StreamHeader) throws {
+        guard slot.serial != frameSerial else { return }
+        guard copy(frame.alive, into: &slot.alive), copy(frame.pos, into: &slot.pos),
+              copy(frame.orient, into: &slot.orient), copy(frame.rgb, into: &slot.rgb),
+              copy(frame.bonds, into: &slot.bonds, slack: true) else {
+            throw Failure.allocation("the agent buffers")
+        }
+        if let field = frame.field {
+            let cells = header.fieldGrid
+            if slot.field?.width != cells {
+                let d = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: .bgra8Unorm, width: cells, height: cells, mipmapped: false)
+                d.usage = .shaderRead
+                d.storageMode = .shared
+                slot.field = device.makeTexture(descriptor: d)
+            }
+            guard let texture = slot.field else { throw Failure.allocation("the field texture") }
+            field.withUnsafeBytes {
+                texture.replace(region: MTLRegionMake2D(0, 0, cells, cells), mipmapLevel: 0,
+                                withBytes: $0.baseAddress!, bytesPerRow: 4 * cells)
+            }
+        }
+        slot.serial = frameSerial
+    }
+
+    /// Copies `values` into a shared buffer, creating or growing it (`slack` leaves room, for a count that varies).
+    private func copy<T>(_ values: [T], into buffer: inout (any MTLBuffer)?, slack: Bool = false) -> Bool {
+        let bytes = values.count * MemoryLayout<T>.stride
+        guard bytes > 0 else { return true }
+        if (buffer?.length ?? 0) < bytes {
+            buffer = device.makeBuffer(length: slack ? bytes + bytes / 2 : bytes, options: .storageModeShared)
+        }
+        guard let target = buffer else { return false }
+        values.withUnsafeBytes { target.contents().copyMemory(from: $0.baseAddress!, byteCount: bytes) }
+        return true
+    }
+}
+
+// MARK: - PNG
+
+enum PNG {
+    enum Failure: Error, CustomStringConvertible {
+        case encode(String)
+        var description: String {
+            switch self {
+            case .encode(let why): return "cannot write the PNG: \(why)"
+            }
+        }
+    }
+
+    /// Writes `image` to `url` as a PNG, creating the directory if needed.
+    static func write(_ image: OffscreenImage, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard let provider = CGDataProvider(data: Data(image.bgra) as CFData),
+              let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let picture = CGImage(
+                  width: image.width, height: image.height, bitsPerComponent: 8, bitsPerPixel: 32,
+                  bytesPerRow: 4 * image.width, space: space,
+                  bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue
+                                           | CGImageAlphaInfo.noneSkipFirst.rawValue),
+                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+              let destination = CGImageDestinationCreateWithURL(
+                  url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+            throw Failure.encode("cannot create the image")
+        }
+        CGImageDestinationAddImage(destination, picture, nil)
+        guard CGImageDestinationFinalize(destination) else { throw Failure.encode("the encoder failed") }
+    }
+}

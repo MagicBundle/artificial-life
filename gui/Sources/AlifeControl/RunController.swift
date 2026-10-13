@@ -19,7 +19,7 @@ struct ExitInfo {
 
 /// Splits a byte stream into lines (on "\n" or "\r", so progress bars become lines too).
 /// A value owned by one drain loop, so it needs no locking.
-private struct LineSplitter {
+struct LineSplitter {
     private var buffer = Data()
 
     mutating func feed(_ data: Data) -> [String] {
@@ -66,6 +66,9 @@ final class RunController: ObservableObject {
     @Published private(set) var stopRequested = false
     @Published private(set) var viewerRunning = false
     @Published private(set) var lastExit: ExitInfo?
+    /// The `world.dims` of the run the status, viewer and inspect buttons refer to (from its `config.json`; a run from
+    /// before the key is 2D), or nil when there is no such run or its config cannot be read.
+    @Published private(set) var targetRunDims: Int?
     /// Fork mode: set when the source run's config could not be read (the levers then show the engine defaults).
     @Published private(set) var forkLeverWarning: String?
     /// Fork and Resume: set when the source run's config could not be read for the director settings.
@@ -99,6 +102,9 @@ final class RunController: ObservableObject {
         settings.name = Self.defaultRunName()
         refreshRepo()
         loadDirector()
+        StreamController.shared.log = { [weak self] lines, isError in
+            self?.appendStreamLog(lines, isError: isError)
+        }
         // Lives as long as the app (it also refreshes the run list and metrics while idle).
         ticker = Task { [weak self] in
             let clock = ContinuousClock()
@@ -186,6 +192,18 @@ final class RunController: ObservableObject {
             let fallback = runs.first ?? ""
             if settings.sourceRun != fallback { settings.sourceRun = fallback }
         }
+        refreshTargetRunDims()
+    }
+
+    /// Reads `world.dims` of the target run (a small file; called with the run list, every two seconds, and when the
+    /// selection changes).
+    func refreshTargetRunDims() {
+        var dims: Int?
+        if repoReady, !settings.targetRun.isEmpty, runs.contains(settings.targetRun) {
+            let url = repoURL.appendingPathComponent("runs/\(settings.targetRun)/config.json")
+            dims = (try? Data(contentsOf: url)).flatMap { try? Levers(configJSON: $0).world3D.dims }
+        }
+        if targetRunDims != dims { targetRunDims = dims }
     }
 
     private static func defaultRunName() -> String {
@@ -402,7 +420,7 @@ final class RunController: ObservableObject {
 
     /// The viewer is a separate process and competes with a running simulation for the GPU.
     func openViewer() {
-        guard repoReady, viewerProcess == nil, targetRunExists else { return }
+        guard repoReady, viewerProcess == nil, targetRunExists, targetRunDims != 3 else { return }
         let args = ["view", "runs/\(settings.targetRun)"]
         appendLines(["$ " + ([alifeURL.path] + args).map(shellQuote).joined(separator: " ")], isError: false)
         let launched = launch(alifeURL, args, prefix: "[viewer] ") { [weak self] status, _ in
@@ -416,6 +434,23 @@ final class RunController: ObservableObject {
     }
 
     func closeViewer() { viewerProcess?.terminate() }
+
+    /// The pygame viewer draws a 2D plane (`alife view` refuses a 3D run, exit 2); a 3D run goes to the 3D viewer.
+    var pygameViewerAvailable: Bool { targetRunDims != 3 }
+
+    /// What "Open 3D viewer" shows for the selected run: its newest checkpoints while it is the run in progress (the
+    /// faithful view of a director run), else a re-simulation from its latest checkpoint. Nil if there is nothing to show.
+    var viewer3DSource: StreamSource? {
+        guard repoReady, targetRunExists, job != .setup else { return nil }
+        let run = settings.targetRun
+        return StreamSource(run: run, follow: job == .run && trackedRun == run)
+    }
+
+    /// Starts the stream for the 3D viewer window (the caller opens the window).
+    func openViewer3D() {
+        guard let source = viewer3DSource else { return }
+        StreamController.shared.start(source, executable: alifeURL, directory: repoURL)
+    }
 
     func revealInFinder() {
         let url = repoURL.appendingPathComponent("runs/\(settings.targetRun)", isDirectory: true)
@@ -431,11 +466,15 @@ final class RunController: ObservableObject {
     func shutdown() {
         stop()
         viewerProcess?.terminate()
+        StreamController.shared.shutdown()
     }
 
     // MARK: Log
 
     func clearLog() { logLines.removeAll() }
+
+    /// Lines of the 3D viewer's stream process (its stderr, and the command that started it) for the log.
+    func appendStreamLog(_ lines: [String], isError: Bool) { appendLines(lines, isError: isError) }
 
     var logText: String { logLines.map(\.text).joined(separator: "\n") }
 
@@ -460,12 +499,7 @@ final class RunController: ObservableObject {
         p.executableURL = executable
         p.arguments = arguments
         p.currentDirectoryURL = repoURL
-        var env = ProcessInfo.processInfo.environment
-        env["PYTHONUNBUFFERED"] = "1"
-        let extra = ["/opt/homebrew/bin", "/usr/local/bin", NSHomeDirectory() + "/.local/bin"]
-        let existing = (env["PATH"] ?? "/usr/bin:/bin").split(separator: ":").map(String.init)
-        env["PATH"] = (existing + extra.filter { !existing.contains($0) }).joined(separator: ":")
-        p.environment = env
+        p.environment = Self.engineEnvironment()
         p.standardInput = FileHandle.nullDevice
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -496,8 +530,19 @@ final class RunController: ObservableObject {
         return p
     }
 
+    /// The environment of an engine process: unbuffered output and the places `uv` and Homebrew tools live in on PATH
+    /// (a Finder-launched app has a minimal one). Shared with the viewer's `alife stream`.
+    nonisolated static func engineEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONUNBUFFERED"] = "1"
+        let extra = ["/opt/homebrew/bin", "/usr/local/bin", NSHomeDirectory() + "/.local/bin"]
+        let existing = (env["PATH"] ?? "/usr/bin:/bin").split(separator: ":").map(String.init)
+        env["PATH"] = (existing + extra.filter { !existing.contains($0) }).joined(separator: ":")
+        return env
+    }
+
     /// Continuously reads the pipe (so the child can never block on a full pipe); finishes at EOF.
-    private nonisolated static func chunks(from pipe: Pipe) -> AsyncStream<Data> {
+    nonisolated static func chunks(from pipe: Pipe) -> AsyncStream<Data> {
         let handle = pipe.fileHandleForReading
         return AsyncStream { continuation in
             handle.readabilityHandler = { handle in

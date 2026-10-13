@@ -152,6 +152,21 @@ import simd
         for corner in [origin, east, south, far] { #expect(abs(corner.x) <= 1 && abs(corner.y) <= 1, "the world fits the view") }
     }
 
+    /// The viewer starts a 3D stream at the overview of its box and a 2D stream face on.
+    @Test(arguments: [("2d", 2), ("3d", 3)], aspects)
+    func theHomePoseFollowsTheDimensionsOfTheStream(fixture: (String, Int), aspect: Float) throws {
+        let events = try StreamFixture(kind: fixture.0).events()
+        guard case .header(let header) = events[0] else { Issue.record("no header"); return }
+        #expect(header.dims == fixture.1)
+        let home = Camera.home(for: header, aspect: aspect)
+        let size = Float(header.size)
+        if fixture.1 == 3 {
+            #expect(home == Camera.overview(size: size, height: Float(header.height), aspect: aspect))
+        } else {
+            #expect(home == Camera.topDown(size: size, aspect: aspect))
+        }
+    }
+
     // MARK: Controls
 
     @Test func orbitingKeepsTheTargetAndTheDistance() {
