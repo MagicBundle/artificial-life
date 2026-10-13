@@ -170,3 +170,121 @@ def test_min_image_is_the_identity_below_half_the_period(size: float) -> None:
     )
     got = _np(ops.min_image(mx.array(d), size))
     assert np.array_equal(got, d)
+
+
+# --- int_diffuse_3d (§27.6) -------------------------------------------------------------------------------
+
+R_HARD = (1 << 24) - 1
+
+
+def _ref_diffuse_3d(r: np.ndarray, d_q8: int) -> np.ndarray:
+    """int64 reference: x and y rolled, z padded with its edge layers (a mirrored ghost sends back exactly
+    what the boundary layer would send out, so the pair cancels: no flux through the floor or the surface)."""
+    q = (r.astype(np.int64) * d_q8) >> 8
+    qz = np.pad(q, ((1, 1), (0, 0), (0, 0)), mode="edge")
+    xy = sum(np.roll(q, s, axis=a) for s in (1, -1) for a in (1, 2))
+    return r - 6 * q + xy + qz[:-2] + qz[2:]
+
+
+def _fields_3d(fz: int) -> list[np.ndarray]:
+    rs = np.random.default_rng(fz)
+    return [
+        rs.integers(0, 8000, (fz, 12, 12)).astype(np.int32),
+        np.full((fz, 8, 8), R_HARD, np.int32),  # saturated
+        np.where(rs.random((fz, 10, 10)) < 0.1, R_HARD, 0).astype(np.int32),
+        rs.integers(R_HARD - 300, R_HARD + 1, (fz, 6, 6)).astype(np.int32),
+    ]
+
+
+@pytest.mark.parametrize("fz", [2, 3, 5])
+def test_int_diffuse_3d_conserves_exactly_and_matches_mirror_reference(fz: int) -> None:
+    for r in _fields_3d(fz):
+        for d_q8 in (0, 1, 4, 17, 42):
+            out = ops.int_diffuse_3d(mx.array(r), d_q8)
+            o = _np(out)
+            assert out.dtype == mx.int32 and o.shape == r.shape
+            assert o.astype(np.int64).sum() == r.astype(np.int64).sum(), (fz, d_q8)  # exact conservation
+            assert np.array_equal(o, _ref_diffuse_3d(r, d_q8)), (fz, d_q8)
+            assert o.min() >= 0 and o.max() <= R_HARD
+
+
+def test_int_diffuse_3d_never_wraps_z() -> None:
+    """A spike on the floor reaches the layer above, never the surface layer (a roll in z would put a quarter
+    of the floor's flux there); likewise from the top."""
+    for z0, far in ((0, 4), (4, 0)):
+        r = np.zeros((5, 6, 6), np.int32)
+        r[z0, 2, 3] = 1 << 20
+        o = r.copy()
+        for _ in range(3):
+            o = _np(ops.int_diffuse_3d(mx.array(o), 42))
+            assert not o[far].any()
+        assert o.astype(np.int64).sum() == 1 << 20
+
+
+@pytest.mark.parametrize("d_q8", [1, 4, 17, 42])
+def test_int_diffuse_3d_stays_in_range(d_q8: int) -> None:
+    """``6q ≤ R`` keeps every cell ≥ 0, and ``R_HARD ≡ −1 (mod 256)`` keeps it ≤ R_HARD (§27.6, §13.2)."""
+    rs = np.random.default_rng(d_q8)
+    for _ in range(5):
+        r = rs.integers(R_HARD - 600, R_HARD + 1, (4, 8, 8))
+        r[rs.random(r.shape) < 0.3] = R_HARD
+        r[rs.random(r.shape) < 0.2] = 0  # isolated full cells next to empty ones
+        o = _np(ops.int_diffuse_3d(mx.array(r.astype(np.int32)), d_q8)).astype(np.int64)
+        assert o.min() >= 0 and o.max() <= R_HARD
+        assert o.sum() == r.sum()
+
+
+def test_int_diffuse_3d_spike_values() -> None:
+    """d = 4, a spike of 256 (q = 4): an interior cell keeps 256 − 6·4 and gives 4 to each of its 6
+    neighbours; a floor cell keeps 256 − 5·4 and gives 4 to each of its 5 (none through the floor)."""
+    r = np.zeros((5, 7, 7), np.int32)
+    r[2, 3, 3] = 256
+    o = _np(ops.int_diffuse_3d(mx.array(r), 4))
+    assert o[2, 3, 3] == 256 - 24
+    nbrs = [(1, 3, 3), (3, 3, 3), (2, 2, 3), (2, 4, 3), (2, 3, 2), (2, 3, 4)]
+    assert [o[c] for c in nbrs] == [4] * 6 and o.sum() == 256
+    r = np.zeros((5, 7, 7), np.int32)
+    r[0, 3, 3] = 256
+    o = _np(ops.int_diffuse_3d(mx.array(r), 4))
+    assert o[0, 3, 3] == 256 - 20
+    nbrs = [(1, 3, 3), (0, 2, 3), (0, 4, 3), (0, 3, 2), (0, 3, 4)]
+    assert [o[c] for c in nbrs] == [4] * 5 and o.sum() == 256 and not o[4].any()
+
+
+def test_int_diffuse_3d_d43_breaks_both_bounds() -> None:
+    """Why ``resource_diffusion_q8 ≤ 42`` in 3D (§27.1, §27.6): at d = 43 an interior cell of 256 with empty
+    neighbours sends 6·43 = 258 > 256 and goes negative, and an empty interior cell with six saturated
+    neighbours receives 6·q(R_HARD) > R_HARD. The total is still conserved: the bound is about the range. At
+    42 the same cells stay in [0, R_HARD]."""
+    r = np.zeros((3, 5, 5), np.int32)
+    r[1, 2, 2] = 256
+    o = _np(ops.int_diffuse_3d(mx.array(r), 43))
+    assert o[1, 2, 2] == 256 - 6 * 43 == -2 and o.sum() == 256
+    assert _np(ops.int_diffuse_3d(mx.array(r), 42)).min() >= 0
+    sat = np.zeros((3, 5, 5), np.int32)
+    sat[:, 2, 2] = R_HARD
+    sat[1, 1:4, 2] = sat[1, 2, 1:4] = R_HARD
+    sat[1, 2, 2] = 0  # empty, with its six neighbours at the cap
+    o = _np(ops.int_diffuse_3d(mx.array(sat), 43)).astype(np.int64)
+    assert o[1, 2, 2] == 6 * ((R_HARD * 43) >> 8) > R_HARD
+    assert o.sum() == sat.astype(np.int64).sum()
+    assert _np(ops.int_diffuse_3d(mx.array(sat), 42)).max() <= R_HARD
+
+
+def test_int_diffuse_3d_single_layer_is_int_diffuse() -> None:
+    rs = np.random.default_rng(9)
+    for r in (
+        rs.integers(0, 9000, (12, 12)),
+        np.full((8, 8), R_HARD),
+        rs.integers(R_HARD - 300, R_HARD, (6, 6)),
+    ):
+        r = r.astype(np.int32)
+        for d_q8 in (0, 1, 4, 42, 64):
+            got = _np(ops.int_diffuse_3d(mx.array(r[None]), d_q8))
+            assert np.array_equal(got[0], _np(ops.int_diffuse(mx.array(r), d_q8))), d_q8
+
+
+def test_int_diffuse_3d_compiles() -> None:
+    r = mx.array(np.random.default_rng(10).integers(0, 9000, (4, 10, 10)).astype(np.int32))
+    got = mx.compile(lambda a: ops.int_diffuse_3d(a, 4))(r)
+    assert np.array_equal(_np(got), _np(ops.int_diffuse_3d(r, 4)))  # integers: exact on every backend

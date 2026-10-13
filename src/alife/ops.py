@@ -226,6 +226,34 @@ def int_diffuse(r: mx.array, d_q8: int) -> mx.array:
     )
 
 
+def int_diffuse_3d(r: mx.array, d_q8: int) -> mx.array:
+    """Exact integer flux diffusion on an (FZ,FG,FG) lattice, periodic in x and y, no flux in z (§27.6).
+
+    Each cell sends ``q = (R·d_q8) >> 8`` to each of its four x/y neighbours and to each z neighbour that
+    exists: ``R − (4 + n_z)·q + Σ roll₄(q) + q[k−1] + q[k+1]`` with ``n_z(k) = [k > 0] + [k < FZ − 1]`` and
+    the missing layers contributing 0. z is never rolled, so nothing crosses the floor or the surface, and the
+    total is conserved exactly. Requires ``0 ≤ r`` and ``0 ≤ d_q8 ≤ 42``: then ``6q ≤ r`` keeps every cell
+    ``≥ 0`` and the cap ``R ≤ R_HARD`` holds (§27.6). With FZ = 1 it is ``int_diffuse`` on the single layer.
+    """
+    _require_i32(r, "r")
+    if d_q8 == 0:
+        return r
+    fz = r.shape[0]
+    q = (r * d_q8) >> 8
+    n_z = mx.array([(k > 0) + (k < fz - 1) for k in range(fz)], dtype=_I32).reshape(fz, 1, 1)
+    zero = mx.zeros_like(q[:1])
+    return (
+        r
+        - (4 + n_z) * q
+        + mx.roll(q, 1, axis=1)
+        + mx.roll(q, -1, axis=1)
+        + mx.roll(q, 1, axis=2)
+        + mx.roll(q, -1, axis=2)
+        + mx.concatenate([zero, q[:-1]], axis=0)  # from the layer below
+        + mx.concatenate([q[1:], zero], axis=0)  # from the layer above
+    )
+
+
 def floor_i32(x: mx.array) -> mx.array:
     """``floor(x)`` cast to int32."""
     return mx.floor(x).astype(_I32)

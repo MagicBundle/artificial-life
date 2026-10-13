@@ -52,9 +52,9 @@ class Deaths(NamedTuple):
     uid: mx.array  # (N,) int64, −1 on dead rows
     partner: mx.array  # (N,B) bonds with a dead end dropped on both sides
     rev: mx.array  # (N,B)
-    resource: mx.array  # (FG,FG) int32 after corpses and the R_HARD cap
+    resource: mx.array  # (FG,FG) int32 after corpses and the R_HARD cap; 3D (FZ,FG,FG)
     corpse: mx.array  # (N,) int32: E + S on dead rows, else 0 (FLOW_CORPSE)
-    r_overflow: mx.array  # (FG,FG) int32 removed by the hard cap (HEAT_OVERFLOW)
+    r_overflow: mx.array  # (FG,FG) int32 removed by the hard cap (HEAT_OVERFLOW); 3D (FZ,FG,FG)
     cause: mx.array  # (N,) int32 DeathCause on dead rows, −1 elsewhere
     records: DeathRecords
 
@@ -122,7 +122,8 @@ def deaths(
     kills additional agents: an alive row in the mask that none of those causes already kills dies as
     ``CATASTROPHE``, so every other cause keeps precedence. Corpses (``E + S``) are scatter-added into the
     dead agent's field cell, then the field is hard-capped at ``R_HARD``. Death records hold the first ``DL``
-    dead rows by index.
+    dead rows by index. In 3D corpses sink: they land in the floor cell ``(0, cy, cx)`` below the dead agent,
+    ``fcell % FG²`` (§27.6).
     """
     d = dims(cfg)
     zero = energy == 0
@@ -150,7 +151,10 @@ def deaths(
 
     corpse = mx.where(dead, energy + cfg.energy.structure, 0).astype(_I32)
     fg2 = d.fg * d.fg
-    r = resource.reshape(-1) + ops.scatter_add_i32(fg2, fcell, corpse, dead)
+    if d.d3:  # static: corpses sink to the floor cell below
+        r = resource.reshape(-1) + ops.scatter_add_i32(d.n_cells, fcell % fg2, corpse, dead)
+    else:
+        r = resource.reshape(-1) + ops.scatter_add_i32(fg2, fcell, corpse, dead)
     r_over = mx.maximum(r - R_HARD, 0)
     r = r - r_over
 
@@ -172,9 +176,9 @@ def deaths(
         uid=mx.where(dead, -1, uid),
         partner=partner,
         rev=rev,
-        resource=r.reshape(d.fg, d.fg),
+        resource=r.reshape(resource.shape),
         corpse=corpse,
-        r_overflow=r_over.reshape(d.fg, d.fg),
+        r_overflow=r_over.reshape(resource.shape),
         cause=cause,
         records=records,
     )

@@ -539,8 +539,9 @@ Field samples use the agent's start-of-step field cell `fcell = cy·FG + cx`, wh
 `fields.sample_fields` computes rows 12–23 completely (gather, gradient, body-frame rotation and the normalisation
 above) and returns them as `FieldObs` (§16.2); `sensing.build_inputs` copies them unchanged, so the normalisation
 lives in exactly one module.
-Gradients use the four periodic neighbour cells. Bond-slot blocks keep their slot index for the bond's whole
-lifetime, so a recurrent brain can attach roles to particular slots.
+Gradients use the four periodic neighbour cells (2D; 3D adds a mirrored z difference and the up components go to
+the input tail, §27.6). Bond-slot blocks keep their slot index for the bond's whole lifetime, so a recurrent brain
+can attach roles to particular slots.
 
 **Contract.** `x` is finite and `|x| ≤ 1` element-wise (`tanh`, `clip` and `min` guards). `test_sensing.py` asserts
 this, and checks every index on hand-built scenes. The bond-offset clip matters: sensing reads start-of-step lengths,
@@ -956,8 +957,9 @@ needs no gate: it gathers the sender's already-gated `out`. A newly formed bond 
 - **Cap (S13).** `overflow = max(E − e_max, 0)` and `E −= overflow` → `HEAT_OVERFLOW`. This guarantees `E ≤ e_max`
   before deaths, so harvest demand is never negative. That fixes the emergence proposal's fatal flaw.
 - **Death (S14).** `dead = alive & (~solvent | (E == 0) | (max_age > 0 & age ≥ max_age))`.
-  - `corpse = E + S` is scatter-added into `resource` at the dead agent's `fcell` → `FLOW_CORPSE`. For an
-    insolvent agent, `E` is whatever bond inflow it received at S12, so the ledger is unchanged.
+  - `corpse = E + S` is scatter-added into `resource` at the dead agent's `fcell` → `FLOW_CORPSE` (2D; in 3D at
+    the floor cell below it, §27.6). For an insolvent agent, `E` is whatever bond inflow it received at S12, so the
+    ledger is unchanged.
   - The field is then hard-capped: `R_over = max(R − R_HARD, 0)` and `R −= R_over` → `HEAT_OVERFLOW`.
   - Cause, first match wins: `STARVED` if `~solvent`; `KILLED` if `E == 0` and `lost > 0` this step; `STARVED` if
     `E == 0`; else `AGED`.
@@ -1327,7 +1329,8 @@ taken in integers so it stays exact on long runs. `A ∈ [0, 1]` keeps `w_p ≥ 
 ### 13.2 Resource (int32 quanta)
 
 - **Init:** `R = floor(resource_cap(8000) · fert₀)`.
-- **Per step (S17):** regenerate (§10.2), then diffuse with the exact integer flux stencil (`ops.int_diffuse`):
+- **Per step (S17):** regenerate (§10.2), then diffuse with the exact integer flux stencil (`ops.int_diffuse`; 3D:
+  `ops.int_diffuse_3d`, no flux through the floor and the surface, §27.6):
   ```text
   q  = (R · resource_diffusion_q8(4)) >> 8                       per direction (≈ 1.6%)
   R ← R − 4q + roll(q, +1, 0) + roll(q, −1, 0) + roll(q, +1, 1) + roll(q, −1, 1)
@@ -1345,10 +1348,11 @@ taken in integers so it stays exact on long runs. `A ∈ [0, 1]` keeps `w_p ≥ 
 ### 13.3 Chemical / signal channels (NCH = 3, float32)
 
 **Deposit.** Each solvent agent emits `floor(emit_c · 256)` integer quanta per channel. These are accumulated with
-`scatter_add_i32` at flat index `c·FG² + fcell`, which is deterministic. Then
+`scatter_add_i32` at flat index `c·FG² + fcell` (3D: `c·FZ·FG² + fcell`, §27.6), which is deterministic. Then
 `chem += dep_q · chem_deposit_scale (1/256)`, so a full-strength emitter adds 1.0 per step.
 
-**Update.** A 5-point explicit stencil via `mx.roll`, clamped to `[0, chem_max = 16]`:
+**Update.** A 5-point explicit stencil via `mx.roll`, clamped to `[0, chem_max = 16]` (2D; 3D: a 7-point stencil
+with mirrored z boundaries, §27.6):
 
 ```text
 chem_c ← (1 − λ_c) · (chem_c + D_c · (roll₄(chem_c) − 4·chem_c))
@@ -1733,6 +1737,7 @@ def body_axes(cos_h: mx.array, sin_h: mx.array, cos_p: mx.array, sin_p: mx.array
 def to_body3(v: mx.array, cos_h: mx.array, sin_h: mx.array, cos_p: mx.array, sin_p: mx.array
              ) -> mx.array                                                 # (...,3) → (fwd, lat, up) (§27.2)
 def int_diffuse(r: mx.array, d_q8: int) -> mx.array
+def int_diffuse_3d(r: mx.array, d_q8: int) -> mx.array                     # (FZ,FG,FG): no flux in z, d_q8 ≤ 42 (§27.6)
 def floor_i32(x: mx.array) -> mx.array
 def q8(f: float) -> int                                                      # host: round(f·256)
 def mul_q8(x: mx.array, q: int) -> mx.array                                 # (x·q) >> 8
@@ -1745,7 +1750,8 @@ def find_neighbors(pos: mx.array, alive: mx.array, cfg: Config) -> Neighbors
 class FieldObs(NamedTuple): res: mx.array; res_grad: mx.array; chem: mx.array; chem_grad: mx.array
                             # all f32 and already the final §5 inputs (sensing copies them into rows 12–23):
                             # res (N,) = IN_RES; res_grad (N,2) = IN_RES_GRAD; chem (N,NCH) = IN_CHEM;
-                            # chem_grad (N,NCH,2) = IN_CHEM_GRAD as (fwd, lat) per channel
+                            # chem_grad (N,NCH,2) = IN_CHEM_GRAD as (fwd, lat) per channel;
+                            # 3D: res_grad (N,3), chem_grad (N,NCH,3) as (fwd, lat, up) (§27.6)
 def init_patches(key_pos: mx.array, key_vel: mx.array, cfg: Config) -> tuple[mx.array, mx.array]
 def season_weights(step: mx.array, cfg: Config, env: Env | None = None) -> mx.array   # (PP,) f32 (§13.1)
 def fertility(patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
@@ -1754,18 +1760,20 @@ def vertical_profile(cfg: Config) -> mx.array                              # 3D:
 def regen_rate(patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
                env: Env | None = None) -> mx.array                        # (FG,FG) int32; 3D (FZ,FG,FG)
 def cell_index(pos: mx.array, cfg: Config) -> mx.array                    # (N,) int32; 3D z-major (§27.5)
-def sample_fields(resource: mx.array, chem: mx.array, fcell: mx.array, heading: mx.array, cfg: Config) -> FieldObs
-def deposit_chem(emit: mx.array, fcell: mx.array, active: mx.array, cfg: Config) -> mx.array   # (NCH*FG*FG,) int32
-def update_chem(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array
+def sample_fields(resource: mx.array, chem: mx.array, fcell: mx.array, heading: mx.array, cfg: Config,
+                  *, pitch: mx.array | None = None) -> FieldObs              # pitch required in 3D (§27.6)
+def deposit_chem(emit: mx.array, fcell: mx.array, active: mx.array, cfg: Config) -> mx.array   # (NCH*n_cells,) int32
+def update_chem(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array     # 3D: 7-point, mirrored z (§27.6)
 def update_resource(resource: mx.array, patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
                     env: Env | None = None) -> tuple[mx.array, mx.array]
-                    # (resource', inc (FG,FG) int32) — regen then int diffusion
+                    # (resource', inc (FG,FG) int32) — regen then int diffusion; 3D (FZ,FG,FG), int_diffuse_3d
 def drift_patches(patch_pos: mx.array, patch_vel: mx.array, cfg: Config, env: Env | None = None) -> mx.array
 
 # sensing.py
 def neighbor_descriptors(s: State, nbr: Neighbors, cfg: Config) -> mx.array          # (N,K,NF) f32; 3D NF = 8 (§27.2)
 def build_inputs(s: State, age: mx.array, nbr: Neighbors, desc: mx.array, geom: BondGeom,
-                 fobs: FieldObs, key: mx.array, cfg: Config) -> mx.array             # (N,D_IN) f32
+                 fobs: FieldObs, key: mx.array, cfg: Config,
+                 *, grounded: mx.array | None = None) -> mx.array                   # (N,D_IN) f32; grounded: 3D (§27.6)
 
 # brain.py
 def init_weights(key_w1: mx.array, key_w2: mx.array, n_rows: int, cfg: Config) -> tuple[mx.array, mx.array]
@@ -1818,7 +1826,7 @@ def pay_costs(energy, act: Actions, n_bonds, brain_cost, alive, cfg: Config) -> 
 def harvest(energy, resource, fcell, act: Actions, solvent, cfg: Config
             ) -> tuple[mx.array, mx.array, mx.array]                               # (E, resource, got)
 class Combat(NamedTuple): energy; resource; lost; gain; spill; residue; attack; hit; max_attackers
-                    # (N,) int32 ×5 except resource (FG,FG); gain, spill per attacker; lost, residue per victim
+                    # (N,) int32 ×5 except resource (FG,FG) (3D: (FZ,FG,FG)); gain, spill per attacker; lost, residue per victim
                     # (residue: what a fully drained victim loses beyond the grants, spilled into its own cell, §11);
                     # attack, hit (N,) bool (attackers after the S9-partner gate; grant > 0); max_attackers () int32
 def combat(energy, resource, fcell, act: Actions, partner, cfg: Config) -> Combat     # partner: post-S9
@@ -1832,7 +1840,8 @@ class LaneKind(IntEnum): PAD = 0; BIRTH = 1; IMMIGRANT = 2
 class DeathRecords(NamedTuple): uid; age; cause; generation; clade; valid           # (DL,)
 class BirthRecords(NamedTuple): uid; parent_uid; clade; generation; slot; valid     # (M,)
 class Deaths(NamedTuple): survivor; dead; energy; uid; partner; rev; resource; corpse; r_overflow; cause; records
-    # (N,) except resource, r_overflow (FG,FG); corpse = E + S on dead rows else 0; cause = DeathCause on dead
+    # (N,) except resource, r_overflow (FG,FG) (3D: (FZ,FG,FG), corpses in the floor cell, §27.6);
+    # corpse = E + S on dead rows else 0; cause = DeathCause on dead
     # rows, −1 elsewhere. Unused record lanes (deaths and births) hold uid/parent_uid/slot −1 and 0 elsewhere.
 def flush_pending(W1, W2, pend_slot, pend_W1, pend_W2) -> tuple[mx.array, mx.array]   # via ops.set_rows
 def deaths(alive, solvent, energy, lost, age, uid, generation, clade, partner, rev, resource, fcell, cfg: Config,
@@ -3878,7 +3887,7 @@ the seven §5 features, with (`NBR_DX`, `NBR_DY`) the (fwd, lat) components of `
 `NBR_DZ = 7`, the up component of `off / R`. Each is clipped to `[−1, 1]` (every component of an offset inside the
 sphere is at most R) and zeroed where invalid. The targeting descriptor `φ = desc[..., 1:]` is seven wide:
 `[dx, dy, kin, rele, msg0, bonded, dz]`. `IN_NBR` stays `desc[:, :NS, :7]`; the NS nearest `NBR_DZ` values are the
-tail block `IN_NBR_DZ` (wired in PR 3).
+tail block `IN_NBR_DZ` (§27.6).
 
 **Action decode.** In 3D `actions.decode` builds each query as its 2D block of six followed by its `*_DZ` column,
 `[y[OUT_Q_BOND : +6], y[OUT_Q_BOND_DZ]]` and likewise for attack, in the order of `φ`. In 2D the `*_DZ` indices are
@@ -3955,7 +3964,7 @@ vel' = (v_x, v_y, 0 on a clamped row, else v_z)
   `v_max` on a `v_z` that the clamp then cancels (`√(0.5² − 0.03²) ≈ 0.499` left for x and y at `gravity = 0.03`).
 - A clamp moves the agent to the boundary (an agent 0.2 above the floor falling at 0.5 lands at `z_lo`; it does not
   hang 0.2 above it) and zeroes only the stored `v_z` of the clamped rows; x and y move and wrap as usual. `vel` is
-  read only by sensing (`IN_VEL`, `IN_VEL_UP`, PR 3), so an agent resting on the floor senses no vertical motion.
+  read only by sensing (`IN_VEL`, `IN_VEL_UP`, §27.6), so an agent resting on the floor senses no vertical motion.
   Under gravity every resting floor agent clamps every step, so the floor-clamp count is about the grounded
   population.
 - `Integrated3(pos, vel, heading, pitch, v_clips, z_floor, z_surface)`: the three counts are () int32 (`V_CLIPS`
@@ -4057,7 +4066,7 @@ actuator on or off never shifts the other genes' draws; at `buoy_sigma = 0` the 
 - Newborn rows also get `pitch` and `buoy_cap` (`ops.place`); `vel` (N,3) is cleared as in 2D. No invariant would
   catch a missed write (the previous occupant's value is in range), so a test fills a dead row with sentinels in every
   field of `AGENT_FIELDS_3D` and checks that a birth and an immigrant overwrite each.
-- `lifecycle.deaths` stays 2D until PR 3, which sinks corpses to the floor cell.
+- `lifecycle.deaths` sinks corpses to the floor cell (§27.6).
 
 **Catastrophe.** In 3D the catastrophe is a vertical column: `catastrophe_mask` measures the x/y minimum-image
 distance from the (2,) `env_cat_center`, so every agent above the disc is in it, at any height. The director stays
@@ -4112,8 +4121,7 @@ director's env included) and in 3D returns `fert[None]·V`, one float32 product 
 array.
 `regen_rate` and the initial resource follow its shape. Harvest is not gated on grounding: a grounded agent is in
 layer 0 (`r + floor_eps < field_cell`, §27.1). The 3D resource and chemical dynamics (no-flux diffusion in z,
-deposits, gradients, sinking corpses) come in PR 3; until then `update_resource`, `update_chem`, `deposit_chem` and
-`sample_fields` are 2D only.
+deposits, gradients, sinking corpses) are §27.6.
 
 **2D-body guards.** The 2D cell index asserts (N, 2) positions and 2D `sample_fields` a 2D lattice. The asserts are
 static (free under `mx.compile`, the 2D trace unchanged), so a missed 3D branch fails loudly instead of dropping z
@@ -4122,6 +4130,99 @@ static (free under `mx.compile`, the 2D trace unchanged), so a missed 3D branch 
 **Tests.** `tests/test_fields_3d.py`: the z-major index against a reference, layer 0 against the 2D index, the z
 clamp, the highest grounded z in layer 0, the guards, both profiles, the floor layer bit for bit (plain, seasonal,
 director env) and the 3D regeneration.
+
+### 27.6 Field dynamics, sinking corpses and the 3D inputs (PR 3)
+
+**Resource diffusion** (`ops.int_diffuse_3d`, called by `update_resource` in 3D after the regeneration of §27.5,
+whose `inc` has the lattice's (FZ, FG, FG) shape; `INJECT_REGEN = Σ inc` as in 2D):
+
+```text
+q = (R · resource_diffusion_q8) >> 8
+R ← R − (4 + n_z(k))·q + roll(q, ±1, x) + roll(q, ±1, y) + q[k − 1] + q[k + 1]      n_z(k) = [k > 0] + [k < FZ − 1]
+```
+
+The layers below the floor and above the surface contribute 0 and z is never rolled, so nothing crosses either
+boundary and the total is conserved exactly (the stencil is a sum of pairwise fluxes). A cell sends at most `6q`:
+`resource_diffusion_q8 ≤ 42` (§27.1) keeps `6q ≤ R`, hence `R ≥ 0`. The §13.2 cap argument carries over with six
+neighbours while `6·d_q8 < 256`: an output cell is at most `R_HARD + 6·(d_q8 − 1)/256 < R_HARD + 1`. Both bounds
+fail at 43: an interior cell of 256 with empty neighbours ends at −2, and an empty interior cell with six
+saturated neighbours receives `6·q(R_HARD) > R_HARD`. With `FZ = 1` the stencil is `int_diffuse`. The resource has no decay, so
+an ungrazed column fills towards `resource_cap` in every layer: the vertical profile shapes the regeneration rate
+and the initial stock, and a standing vertical contrast exists only under grazing (a tuning question for `64k3d`).
+
+**Chemicals.** `deposit_chem` accumulates at `c·n_cells + fcell` (`n_cells = FZ·FG²`; in 2D the same `c·FG² + fcell`),
+so a deposit in the top layers stays in its own channel. `update_chem` in 3D (`_update_chem_3d`) is §13.3's update
+with a 7-point stencil and mirrored ghost layers:
+
+```text
+lap  = roll(c, ±1, x) + roll(c, ±1, y) + c[k + 1] + c[k − 1] − 6·c          c[−1] = c[0],  c[FZ] = c[FZ − 1]
+chem ← clip((1 − λ_c)·(c + D_c·lap), 0, chem_max)                         after c = chem + dep_q·chem_deposit_scale
+```
+
+A boundary layer therefore has the 5-point stencil of its four x/y neighbours and its one z neighbour: no flux
+through the floor or the surface, mass conserved (to float rounding) at `λ = 0`, and stable for `D_c ≤ 1/6` (§27.1).
+The 2D expression and its float addition order are unchanged.
+
+**Sinking corpses** (S14, `lifecycle.deaths`). A corpse `E + S` is scatter-added into the floor cell below the dead
+agent, `fcell mod FG²` = `(0, cy, cx)`, instead of its own cell; the term is still `FLOW_CORPSE`. The `R_HARD` cap
+then applies over the whole volume (`r_overflow` (FZ, FG, FG), `HEAT_OVERFLOW`). A floor cell collects the corpses of
+its whole column, so §10.9's occupancy bound applies per column (§27.7). Only corpses sink (docs/3D.md §12 Q19):
+harvest takes from the agent's own 3D cell, and combat spill and residue go to the victim's own 3D cell
+(`energy.harvest` and `energy.combat` are shape-agnostic).
+
+**Field samples** (`sample_fields(…, pitch=)`, `_sample_fields_3d`; `pitch` is required in 3D). `res` and `chem` are
+§5's at the agent's own 3D cell. The gradients are central differences over the six neighbour cells
+(`_nbr_cells_3d`: x and y periodic within the layer, z clamped to `[0, FZ − 1]`), with the divisor kept at 2:
+
+```text
+g = (R[x+1] − R[x−1], R[y+1] − R[y−1], R[z+1] − R[z−1]) / (2·resource_cap)       z ± 1 clamped (mirror)
+res_grad  = clip(RES_GRAD_GAIN · to_body3(g), −1, 1)                             (N,3) as (fwd, lat, up)
+chem_grad = tanh(to_body3(central difference / 2) / chem_half_sat)               (N,NCH,3)
+```
+
+In the floor and surface layers the clamped index mirrors the cell itself, so the z component is half the one-sided
+slope, consistent with the no-flux boundary (docs/3D.md §12 Q8). `to_body3` is the frame of §27.2, so the sensed
+gradient and the thrust direction agree.
+
+**Inputs** (`build_inputs(…, grounded=)`, `D_IN = 84`). Every vector is taken in the yaw-and-pitch frame
+(`ops.to_body3`): its (fwd, lat) components fill the §5 blocks at their 2D indices, and its up component goes to the
+tail. `grounded` is `physics.grounded(s.pos, cfg)` (§27.3), passed in by the step; it is required in 3D.
+
+| idx | name | definition |
+|---|---|---|
+| 3, 4 | `IN_VEL` | (fwd, lat) of `clip(to_body3(vel) / v_max, −1, 1)` |
+| 13, 14 | `IN_RES_GRAD` | (fwd, lat) of `res_grad` |
+| 18–23 | `IN_CHEM_GRAD` | (fwd, lat) of `chem_grad` per channel |
+| 28 + 7n + f | `IN_NBR` | `desc[:, n, :7]`: `NBR_DX`, `NBR_DY` are (fwd, lat) of `off / R` (§27.2) |
+| 49 + 5b + f | `IN_BOND` | f = 1, 2: (fwd, lat) of `clip(to_body3(geom.off) / break_length, −1, 1)` |
+| 69 | `IN_VEL_UP` | up of the velocity above |
+| 70 | `IN_RES_GRAD_UP` | up of `res_grad` |
+| 71–73 | `IN_CHEM_GRAD_UP` | up of `chem_grad`, per channel |
+| 74–76 | `IN_NBR_DZ` | `desc[:, n, NBR_DZ]` of the NS nearest (0 for an absent neighbour) |
+| 77–80 | `IN_BOND_DZ` | up of the clipped bond offset per slot (0 for an empty slot) |
+| 81 | `IN_HEIGHT` | `z / height` |
+| 82 | `IN_PITCH` | `sin φ` |
+| 83 | `IN_GROUNDED` | 1 if `grounded`, else 0 |
+
+Every other input is §5's. The contract `|x| ≤ 1` holds: `z / height ∈ [z_lo, z_hi] / height ⊂ (0, 1)`,
+`|sin φ| ≤ sin 80° ≈ 0.985`, and every offset, velocity and gradient component is clipped or a `tanh`. Dead rows get
+stale values, as in 2D (`IN_GROUNDED` is 1 on a dead row resting at `z_lo`); consumers mask by `alive`. A level scene
+(one height, pitch 0, no vertical velocity) gives the 2D inputs bit for bit on CPU, because `to_body3` reduces to
+`to_body`. The 2D input expressions are unchanged; the 3D branches are static. The step calls these in 3D from §27.8.
+
+**Tests.** `tests/test_ops_3d.py` (`int_diffuse_3d`: exact conservation at FZ 2, 3 and 5 on random, saturated and
+near-`R_HARD` fields; a numpy mirror reference; no z wrap; the range for `d_q8` 1, 4, 17 and 42; the spike values
+`256 − 24` with 4 to each of six neighbours in the interior and `256 − 20` with 4 to each of five on the floor; the
+`d_q8 = 43` counterexample; FZ = 1 equals `int_diffuse`; compile). `tests/test_fields_3d.py` (`update_chem` against a
+float64 mirror reference, a uniform field decaying exactly in every layer, mass conservation without decay, no z
+wrap; `update_resource` regeneration and exact conservation; `sample_fields` against a float64 reference including
+the boundary layers and the x/y seams, a vertical ramp (positive up, halved at the floor and the surface, rotated by
+the pitch), the pitch required; `deposit_chem` exact over the volume). `tests/test_lifecycle_3d.py` (a corpse from
+every layer lands in its column's floor cell and the total is unchanged; the `R_HARD` cap at the floor cell, with
+compile). `tests/test_sensing_3d.py` (a float64 reference of all 84 inputs on a random volume scene; a level scene
+against the 2D inputs bit for bit; a pitch rotation case; `IN_GROUNDED` inclusive at `z_ground` and false above it and
+at the surface, with `IN_HEIGHT`; `grounded` required; dead and padded neighbours and empty bond slots zero the DZ
+inputs; `|x| ≤ 1` at `±PITCH_MAX`; compiled against eager).
 
 ---
 
