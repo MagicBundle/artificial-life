@@ -1,0 +1,97 @@
+# cloud-1 logs
+
+## fast.log
+```
+........................................................................ [  7%]
+........................................................................ [ 15%]
+........................................................................ [ 23%]
+........................................................................ [ 30%]
+........................................................................ [ 38%]
+.......................................................................s [ 46%]
+........................................................................ [ 53%]
+........................................................................ [ 61%]
+........................................................................ [ 69%]
+........................................................................ [ 77%]
+........................................................................ [ 84%]
+........................................................................ [ 92%]
+......................................................................s  [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_director_llm.py:994: set ALIFE_LLM_URL to run against a real server
+SKIPPED [1] tests/test_viewer.py:237: could not import 'pygame': No module named 'pygame'
+933 passed, 2 skipped, 19 deselected in 1516.72s (0:25:16)
+```
+
+## slow.log
+```
+...................                                                      [100%]
+============================= slowest 25 durations =============================
+1035.93s call     tests/test_ecology.py::test_dev_ecology_is_alive_and_unsaturated
+831.25s call     tests/test_director_replay_slow.py::test_replay_with_the_real_timed_bounds
+23.18s call     tests/test_step_invariants.py::test_every_step_is_clean_long[float16]
+14.24s call     tests/test_step_invariants.py::test_every_step_is_clean_long[float32]
+12.51s call     tests/test_step_invariants.py::test_stress_variant_long[immigration-float16]
+12.50s call     tests/test_step_invariants.py::test_stress_variant_long[attack-float16]
+12.10s call     tests/test_step_invariants.py::test_stress_variant_long[f16-float32]
+11.84s call     tests/test_step_invariants.py::test_stress_variant_long[f16-float16]
+11.54s call     tests/test_step_invariants.py::test_stress_variant_long[dense-float16]
+11.13s call     tests/test_step_invariants.py::test_stress_variant_long[reproduce-float16]
+11.07s call     tests/test_step_invariants.py::test_stress_variant_long[max_age-float16]
+9.78s call     tests/test_step_invariants.py::test_stress_variant_long[fast-float16]
+9.12s call     tests/test_step_invariants.py::test_stress_variant_long[immigration-float32]
+8.63s call     tests/test_step_invariants.py::test_stress_variant_long[attack-float32]
+8.18s call     tests/test_step_invariants.py::test_stress_variant_long[max_age-float32]
+7.92s call     tests/test_step_invariants.py::test_stress_variant_long[dense-float32]
+7.20s call     tests/test_step_invariants.py::test_stress_variant_long[reproduce-float32]
+5.75s call     tests/test_step_invariants.py::test_stress_variant_long[fast-float32]
+2.93s call     tests/test_determinism.py::test_compiled_vs_eager_trajectories
+0.33s setup    tests/test_director_replay_slow.py::test_replay_with_the_real_timed_bounds
+
+(5 durations < 0.005s hidden.  Use -vv to show these durations.)
+19 passed, 935 deselected in 2048.53s (0:34:08)
+```
+
+## digest.log
+```
+[cases] tiny_f32                          12.1s  diag=0 n_alive=286 digest=662b8f111f8a
+[cases] tiny_f16                          10.0s  diag=0 n_alive=288 digest=739f7f39df38
+[cases] tiny_bf16                         14.2s  diag=0 n_alive=291 digest=7bbeb3f249ec
+[cases] micro                              2.9s  diag=0 n_alive=14 digest=381854e13d89
+[cases] tiny_director_inert               14.3s  diag=0 n_alive=286 digest=662b8f111f8a
+[cases] tiny_director_levers              13.6s  diag=0 n_alive=267 digest=c59017809268
+[cases] tiny_imm_floor                    15.0s  diag=0 n_alive=400 digest=845cb4c7768e
+[cases] tiny_imm_every                    15.2s  diag=0 n_alive=485 digest=600625dd0cc8
+[cases] tiny_seasons_global               13.2s  diag=0 n_alive=282 digest=e22e1134b60f
+[cases] tiny_seasons_per_patch            13.4s  diag=0 n_alive=276 digest=da795651d3ab
+[cases] tiny_fast                          8.1s  diag=0 n_alive=287 digest=6f9507a41d33
+[cases] dev_20                            19.6s  diag=0 n_alive=4095 digest=38f1fe7ad714
+[cases] tiny_f32_eager                     2.2s  diag=0 n_alive=416 digest=e60e3be92a4d
+[cases] bench_staged_compiled              2.8s  diag=0 n_alive=426 digest=c8c644e8bd48
+[cases] bench_staged_eager                 0.8s  diag=0 n_alive=256 digest=ba6560179a4d
+[runs] run_tiny_cli                       6.7s  diag=- n_alive=- digest=082a9054858a
+[runs] run_tiny_director_scripted        11.2s  diag=- n_alive=- digest=25b3674ef5f0
+[runs] run_tiny_director_gardener        11.2s  diag=- n_alive=- digest=c3890f0e0ea0
+wrote /tmp/claude-0/-home-user-artificial-life/10f53a41-c8ef-5b68-9347-e890546b5650/scratchpad/cloud1/cloud-1-main-digests.json in 186.7s (0 case error(s))
+```
+
+## slow test ids (19)
+```
+tests/test_determinism.py::test_compiled_vs_eager_trajectories
+tests/test_director_replay_slow.py::test_replay_with_the_real_timed_bounds
+tests/test_ecology.py::test_dev_ecology_is_alive_and_unsaturated
+tests/test_step_invariants.py::test_every_step_is_clean_long[float32]
+tests/test_step_invariants.py::test_every_step_is_clean_long[float16]
+tests/test_step_invariants.py::test_stress_variant_long[attack-float32]
+tests/test_step_invariants.py::test_stress_variant_long[attack-float16]
+tests/test_step_invariants.py::test_stress_variant_long[reproduce-float32]
+tests/test_step_invariants.py::test_stress_variant_long[reproduce-float16]
+tests/test_step_invariants.py::test_stress_variant_long[dense-float32]
+tests/test_step_invariants.py::test_stress_variant_long[dense-float16]
+tests/test_step_invariants.py::test_stress_variant_long[immigration-float32]
+tests/test_step_invariants.py::test_stress_variant_long[immigration-float16]
+tests/test_step_invariants.py::test_stress_variant_long[max_age-float32]
+tests/test_step_invariants.py::test_stress_variant_long[max_age-float16]
+tests/test_step_invariants.py::test_stress_variant_long[fast-float32]
+tests/test_step_invariants.py::test_stress_variant_long[fast-float16]
+tests/test_step_invariants.py::test_stress_variant_long[f16-float32]
+tests/test_step_invariants.py::test_stress_variant_long[f16-float16]
+```
