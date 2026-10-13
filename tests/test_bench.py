@@ -125,7 +125,7 @@ def test_staged_pipeline_equals_step_3d(tiny3d_cfg: Config, actuator: bool) -> N
 
 def test_smoke_all_parts_on_tiny3d(tiny3d_cfg: Config) -> None:
     """Every part on ``tiny3d``, compiled; the stages also without the actuator, whose ``paid_buoy`` is 0 by
-    construction (an MLX 0.32 compile output that must still derive from its inputs, I14)."""
+    construction (and derived from ``energy``, so never a constant compile output, I14)."""
     r = run_bench(tiny3d_cfg, steps=3, warmup=2, stages=True, determinism=True, brain_variants=True)
     json.dumps(r, allow_nan=False)
     assert r["n_alive_end"] == r["n_alive_start"] + r["births"] + r["immigrants"] - r["deaths"] > 0

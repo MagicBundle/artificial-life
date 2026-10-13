@@ -236,7 +236,8 @@ def test_level_and_capless_is_pay_costs_bitwise(cfg3: Config, cfg3_off: Config, 
 @pytest.mark.parametrize("actuator", [True, False])
 def test_pay_costs3_compiles(cfg3: Config, cfg3_off: Config, actuator: bool) -> None:
     """Every output, including a ``paid_buoy`` that is 0 by construction without the actuator, comes out of
-    ``mx.compile`` (MLX 0.32 fails on a constant output beside its users, I14)."""
+    ``mx.compile`` equal to the eager one. (``paid_buoy`` derives from ``energy`` either way, so this is not a
+    guard for the MLX 0.32 constant-output bug of I14.)"""
     cfg = cfg3 if actuator else cfg3_off
     rs = np.random.default_rng(9)
     n = 128

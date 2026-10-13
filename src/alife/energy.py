@@ -32,7 +32,7 @@ class Costs3(NamedTuple):
 
 class Combat(NamedTuple):
     energy: mx.array  # (N,) int32
-    resource: mx.array  # (FG,FG) int32
+    resource: mx.array  # (FG,FG) int32; 3D (FZ,FG,FG)
     lost: mx.array  # (N,) int32
     gain: mx.array  # (N,) int32
     spill: mx.array  # (N,) int32, per attacker
@@ -118,7 +118,7 @@ def pay_costs3(
     if ph.buoyancy_max > 0:  # static: the actuator exists
         lift = buoy_cap * mo.buoy  # the fraction of buoyancy_max used
         buoy_due = f(ec.buoyancy_cost * (lift * lift)) + f(ec.buoyancy_cap_cost * buoy_cap)
-    else:  # 0, derived from an input like every possibly-constant output of the step (I14)
+    else:  # 0; ``paid_buoy`` below derives from ``energy`` either way, never a constant output (I14)
         buoy_due = energy * 0
     basal_due = mx.where(alive, basal_due, 0).astype(_I32)
     action_due = mx.where(alive, action_due, 0).astype(_I32)

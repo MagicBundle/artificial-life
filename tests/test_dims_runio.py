@@ -202,7 +202,8 @@ def test_one_schema(preset: str, overlays: tuple[str, ...]) -> None:
     assert runio._expected_layout is state.expected_layout
     spec = state.expected_layout(cfg)
     assert runio._expected_layout(cfg) == spec
-    assert tuple(spec) == state.state_cls(cfg)._fields  # State3 for tiny3d (PR 3)
+    want = state.State3 if is_3d(cfg) else state.State  # State3 for tiny3d (PR 3)
+    assert state.state_cls(cfg) is want and tuple(spec) == want._fields
 
 
 def test_schema_follows_dims(micro_cfg: Config) -> None:

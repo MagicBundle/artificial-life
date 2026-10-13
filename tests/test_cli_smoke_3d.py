@@ -1,7 +1,8 @@
 """§27.8 end-to-end smoke test of a 3D run through ``cli.main(argv)`` (no subprocesses).
 
 One 100-step ``tiny3d`` run (f32 weights, as ``tiny3d_cfg``) is shared by the module; tests that change a run
-directory work on a copy. The 2D-only tools (``render``, ``view``) refuse it, and a fork keeps its dimensions.
+directory work on a copy. The 2D-only tools (``render``, ``view``) refuse it, a fork keeps its dimensions,
+height and radius, and ``analysis.resim`` re-simulates it.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import numpy as np
 import pytest
 
 from alife import cli, viewer
+from alife.analysis import resim
 from alife.config import THREE_D_KEYS, Config, config_to_dict, load_config
 from alife.runio import RunDir, load_checkpoint
 from alife.state import State3, state_digest, to_numpy
@@ -125,3 +127,29 @@ def test_a_fork_cannot_change_dims_or_height(
     assert not out.exists() and _snapshot(run_dir) == before
     assert cli.main([*base, "--set", "physics.gravity=0.02"]) == 0  # a dynamics change in 3D forks
     assert RunDir.open(out).config().physics.gravity == 0.02
+
+
+def test_a_3d_fork_cannot_change_the_radius(
+    run_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = _snapshot(run_dir)
+    out = tmp_path / "fork"
+    base = ["run", "--init-from", str(run_dir), "--out", str(out), "--quiet", "--steps", "5"]
+    capsys.readouterr()
+    for r in ("1.2", "0.9"):  # the radius sets z_lo and z_hi: the source's rows sit within its own bounds
+        assert cli.main([*base, "--set", f"physics.radius={r}"]) == 4
+        assert "physics.radius must equal the source's 1.0 in a 3D world" in capsys.readouterr().err
+    assert not out.exists() and _snapshot(run_dir) == before
+
+
+def test_resim_reproduces_a_3d_run(run_dir: Path, tmp_path: Path) -> None:
+    """``analysis.resim`` re-simulates a 3D run from its step-50 checkpoint, verifies every stored row on the
+    way (30 counters, ``HEAT_BUOYANCY``) and lands on the run's own step-100 state."""
+    before = _snapshot(run_dir)
+    out = tmp_path / "cache"
+    paths = resim.resimulate(run_dir, [60, 100], out, log=lambda _: None)
+    assert [p.name for p in paths] == ["step_0000000060.safetensors", "step_0000000100.safetensors"]
+    assert json.loads((out / "resim.json").read_text())["rows_verified_last_pass"] == 5  # rows 60 to 100
+    rd = RunDir.open(run_dir)
+    assert state_digest(load_checkpoint(paths[1], rd.config())) == _digest(rd, 100)
+    assert _snapshot(run_dir) == before

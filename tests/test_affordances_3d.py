@@ -1,7 +1,7 @@
 """§27.3–§27.8 3D affordances through one eager step on hand-built ``micro3d`` scenes: an attack drain and
-its closure with ``HEAT_BUOYANCY``, a corpse sinking to the floor cell, a vertical bond, the pitch and its
-turn cost, buoyant lift and its cost against a float32 reference, a zero cap and the upkeep without lift, the
-surface clamp without grounding."""
+its closure with ``HEAT_BUOYANCY``, a corpse sinking to the floor cell, harvest from the agent's own cell
+(mid-water or grounded), a vertical bond, the pitch and its turn cost, buoyant lift and its cost against a
+float32 reference, a zero cap and the upkeep without lift, the surface clamp without grounding."""
 
 from __future__ import annotations
 
@@ -100,6 +100,28 @@ def test_a_corpse_sinks_to_the_floor_cell(micro3d_cfg: Config) -> None:
     assert r[0, cy, cx] == led[LedgerIdx.FLOW_CORPSE] == cfg.energy.structure
     assert r[cz, cy, cx] == led[LedgerIdx.FLOW_SPILL] > 0
     assert r.sum() == r[0, cy, cx] + r[cz, cy, cx]
+
+
+def test_harvest_takes_from_the_agents_own_cell(micro3d_cfg: Config) -> None:
+    """A mid-water agent harvests its own 3D cell, not the floor cell below it, and a grounded agent its floor
+    cell: harvest is not gated on grounding (§27.6, docs/3D.md §12)."""
+    cfg = apply_overrides(micro3d_cfg, ["fields.regen_max=0", "fields.resource_diffusion_q8=0"])
+    d = dims(cfg)
+    w2 = _w2(cfg, {layout.OUT_HARVEST: 4.0})
+    mid = dict(pos=(24.0, 24.0, 13.0), W2=w2, birth_step=-50)
+    floor = dict(pos=(10.0, 10.0, d.z_lo), W2=w2, birth_step=-50)
+    own, below, ground = (3, 6, 6), (0, 6, 6), (0, 2, 2)  # field cell 4: (24, 24, 13) and (10, 10, z_lo)
+    r0 = np.zeros(d.field_shape, np.int32)
+    for cell in (own, below, ground):
+        r0[cell] = 5_000
+    s = make_scene(cfg, [mid, floor], resource=r0)
+    assert _np(physics.grounded(s.pos, cfg))[:2].tolist() == [False, True]
+    s1, out = _step(cfg, s)
+    led, r1 = _np(out.ledger), _np(s1.resource)
+    take = int(np.floor(f32(cfg.energy.harvest_max) / (f32(1.0) + np.exp(f32(-4.0)))))  # sigmoid(4)·h_max
+    assert take == 392 and led[LedgerIdx.INJECT_REGEN] == 0 and led[LedgerIdx.FLOW_HARVEST] == 2 * take
+    assert r1[own] == r1[ground] == 5_000 - take and r1[below] == 5_000
+    assert r1.astype(np.int64).sum() == 3 * 5_000 - 2 * take
 
 
 # --- bonds and buoyancy -------------------------------------------------------------------------------------
