@@ -23,7 +23,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import config as config_mod
-from alife import metrics, runner
+from alife import metrics, physics, runner
 from alife.config import (
     DEFAULT_PRESET,
     DIRECTOR_MODES,
@@ -57,7 +57,7 @@ from alife.render import (
 from alife.rng import InitStream, init_keys
 from alife.runio import DIRECTOR_LOG_FILE, CheckpointError, RunDir, checkpoint_metadata, load_checkpoint
 from alife.runner import ExitCode
-from alife.state import DeathCause, State, agent_fields, default_env, init_state, to_numpy
+from alife.state import DeathCause, State, State3, agent_fields, default_env, init_state, to_numpy
 from alife.step import make_step
 
 # run.* keys that resume may change: observers, cadences and the director mode (§18). Everything else goes
@@ -271,6 +271,8 @@ def _check_yoke(cfg: Config) -> None:
 
 
 def _summary(cfg: Config) -> dict[str, Any]:
+    """The config block of ``inspect`` and the run announcement. A 3D world adds ``dims``, ``world_height``
+    and ``field_grid_z`` (the layer count FZ) after ``field_grid``; a 2D summary is unchanged (§27.11)."""
     d = dims(cfg)
     return {
         "n_max": d.n,
@@ -279,6 +281,7 @@ def _summary(cfg: Config) -> dict[str, Any]:
         "n_cap": d.n_cap,
         "world_size": cfg.world.size,
         "field_grid": d.fg,
+        **({"dims": d.nd, "world_height": cfg.world.height, "field_grid_z": d.fz} if d.d3 else {}),
         "hidden": d.h,
         "k_neighbors": d.k,
         "weight_dtype": cfg.brain.weight_dtype,
@@ -301,8 +304,9 @@ def _announce(rd: RunDir, cfg: Config, step: int, steps: int, quiet: bool) -> No
             mode += f" + llm every {cfg.director.llm_every} ({cfg.run.llm_model})"
         if cfg.run.director == "live" and cfg.director.persona == RANDOM_PERSONA:
             mode += f" + random, yoked to {cfg.director.yoke_log}"
+        world = f"L={s['world_size']:g}" + (f" height={s['world_height']:g}" if "world_height" in s else "")
         print(
-            f"run {rd.path}: N={s['n_max']} n_init={s['n_init']} L={s['world_size']:g} "
+            f"run {rd.path}: N={s['n_max']} n_init={s['n_init']} {world} "
             f"weights={s['weight_dtype']} seed={s['seed']} | steps {step} → {step + steps}{mode}",
             flush=True,
         )
@@ -525,10 +529,12 @@ def _cmd_render(a: argparse.Namespace) -> int:
 # --- inspect --------------------------------------------------------------------------------------------
 
 
-def _agent_info(uid: int, s: State, cfg: Config, rd: RunDir | None) -> dict[str, Any] | None:
+def _agent_info(uid: int, s: State | State3, cfg: Config, rd: RunDir | None) -> dict[str, Any] | None:
     """Row, bonds, birth/death records and ancestor chain of ``uid`` as of the state's step (None if unknown).
 
     Ancestors come from the run's birth events; the chain is complete when it ends at a founder or immigrant.
+    In 3D ``fields`` also holds the (x, y, z) ``pos``, ``pitch`` and ``buoy_cap``, and the info gains
+    ``height`` (z) and ``grounded`` (``z ≤ Dims.z_ground``, as ``physics.grounded``) (§27.11).
     """
     step = int(to_numpy(s.step))
     n_init = cfg.population.n_init
@@ -542,6 +548,9 @@ def _agent_info(uid: int, s: State, cfg: Config, rd: RunDir | None) -> dict[str,
         info["row"] = r
         info["age"] = step - 1 - int(a["birth_step"])
         info["fields"] = {k: v.tolist() for k, v in a.items()}
+        if dims(cfg).d3:
+            info["height"] = float(a["pos"][2])
+            info["grounded"] = float(a["pos"][2]) <= dims(cfg).z_ground
         info["bonds"] = [
             {"slot": b, "row": p, "uid": int(host["uid"][p])}
             for b, p in enumerate(a["partner"].tolist())
@@ -571,6 +580,13 @@ def _agent_info(uid: int, s: State, cfg: Config, rd: RunDir | None) -> dict[str,
     return info
 
 
+def _grounded_frac(state: State | State3, cfg: Config) -> float | None:
+    """The share of the alive agents of a 3D state that are grounded (``physics.grounded``), None if none."""
+    alive, on_floor = to_numpy(state.alive), to_numpy(physics.grounded(state.pos, cfg))
+    n = int(alive.sum())
+    return int((alive & on_floor).sum()) / n if n else None
+
+
 def _cmd_inspect(a: argparse.Namespace) -> int:
     cfg, state, rd, path = _load_target(a.run, a.checkpoint)
     snap = metrics.snapshot_metrics(state, cfg, heavy=True)
@@ -587,6 +603,8 @@ def _cmd_inspect(a: argparse.Namespace) -> int:
         "next_uid": int(to_numpy(state.next_uid)),
         "state": snap,
     }
+    if dims(cfg).d3:  # the fraction of the alive agents on the floor now (the rows hold the interval means)
+        info["grounded_frac"] = _grounded_frac(state, cfg)
     if rd is not None:
         meta = rd.meta()
         info["status"] = meta.get("status")
@@ -620,6 +638,21 @@ def _fmt(v: Any) -> str:
     return str(v)
 
 
+def _height_line(info: Mapping[str, Any]) -> str:
+    """The 3D line of ``inspect``: the height distribution, grounded and surface shares, and the bands."""
+    s, c = info["state"], info["config"]
+    if s["height_mean"] is None:
+        return f"height (world {c['world_height']:g}): nobody alive"
+    quart = "/".join(_fmt(s[f"height_q{p}"]) for p in (25, 50, 75))
+    bands = " ".join(f"{x:.2f}" for x in s["band_frac"])
+    return (
+        f"height (world {c['world_height']:g}): mean {_fmt(s['height_mean'])}, quartiles {quart}, "
+        f"grounded {_fmt(info['grounded_frac'])}, surface {_fmt(s['surface_frac'])}, bands [{bands}]; "
+        f"speed {_fmt(s['speed_mean'])}, |pitch| {_fmt(s['pitch_abs_mean'])}, buoyancy cap median "
+        f"{_fmt(s['buoy_cap_q50'])}"
+    )
+
+
 def _print_inspect(info: Mapping[str, Any]) -> None:
     s, c = info["state"], info["config"]
     ledger = "OK" if info["ledger_error"] == 0 else f"ERROR {info['ledger_error']}"
@@ -645,6 +678,8 @@ def _print_inspect(info: Mapping[str, Any]) -> None:
         f"clades: {s['clades_alive']} alive, top share {_fmt(s['top_clade_share'])}, "
         f"entropy {_fmt(s['clade_entropy'])}, simpson {_fmt(s['clade_simpson'])}"
     )
+    if "height_mean" in s:  # a 3D world
+        print(_height_line(info))
     if info.get("last_metrics") is not None:
         print("last metrics row: " + json.dumps(info["last_metrics"], default=_json_default))
     if "check" in info:

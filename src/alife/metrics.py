@@ -17,10 +17,12 @@ from alife import fields, layout, ops, rng
 from alife.config import Config, dims, is_3d
 from alife.state import (
     ENV_FIELDS,
+    Counter3D,
     CounterIdx,
     Env,
     LedgerIdx,
     State,
+    State3,
     ledger_names,
     n_counters,
     sinks,
@@ -115,12 +117,16 @@ def _diversity_arrays(s: State, step: int, cfg: Config) -> tuple[mx.array, mx.ar
 # --- snapshot -------------------------------------------------------------------------------------------
 
 
-def _quantiles(name: str, x: np.ndarray) -> dict[str, float | None]:
-    """``<name>_q10/q50/q90`` of an alive-masked gene (None when nobody is alive)."""
+def _quantiles(name: str, x: np.ndarray, ps: tuple[int, ...] = (10, 50, 90)) -> dict[str, float | None]:
+    """``<name>_q<p>`` for each percentile in ``ps`` of an alive-masked array (None when nobody is alive).
+
+    ``p / 100`` is the correctly rounded quotient of two exact integers, so it is the same float as the
+    literal ``0.1``, ``0.5``, ``0.9`` of the default percentiles.
+    """
     if not x.size:
-        return {f"{name}_q{p}": None for p in (10, 50, 90)}
-    q = np.quantile(x.astype(np.float64), (0.1, 0.5, 0.9))
-    return {f"{name}_q{p}": float(v) for p, v in zip((10, 50, 90), q, strict=True)}
+        return {f"{name}_q{p}": None for p in ps}
+    q = np.quantile(x.astype(np.float64), [p / 100 for p in ps])
+    return {f"{name}_q{p}": float(v) for p, v in zip(ps, q, strict=True)}
 
 
 def _env_summary(h: Mapping[str, np.ndarray]) -> dict[str, Any]:
@@ -144,7 +150,83 @@ def _env_summary(h: Mapping[str, np.ndarray]) -> dict[str, Any]:
     }
 
 
-def snapshot_metrics(s: State, cfg: Config, *, heavy: bool) -> dict[str, Any]:
+# --- 3D snapshot keys (§27.9) -----------------------------------------------------------------------------
+
+# Equal z bands of ``band_frac``: band b is [b·height/4, (b+1)·height/4) and the top one holds the surface.
+N_BANDS: Final = 4
+
+
+def z_band(z: np.ndarray, height: float) -> np.ndarray:
+    """The z band ``0..N_BANDS − 1`` of each height ``z``: ``floor(N_BANDS·z / height)``, clipped.
+
+    ``z·N_BANDS`` is exact (a power of two), so a height on a band edge belongs to the band above it.
+    """
+    return np.clip(np.floor((z.astype(np.float64) * N_BANDS) / height), 0, N_BANDS - 1).astype(np.int64)
+
+
+def _mutual_information(a: np.ndarray, b: np.ndarray, na: int, nb: int) -> float:
+    """Plug-in mutual information in nats of two integer labellings (``a`` in [0, na), ``b`` in [0, nb)).
+
+    Counts are integers and the ratio ``n_ab·n / (n_a·n_b)`` is formed from exact int64 products, so
+    independent labellings (including a single clade) give exactly 0 rather than rounding noise.
+    """
+    joint = np.bincount(a * nb + b, minlength=na * nb).reshape(na, nb).astype(np.int64)
+    n = int(joint.sum())
+    na_, nb_ = joint.sum(axis=1)[:, None], joint.sum(axis=0)[None, :]
+    nz = joint > 0
+    ratio = (joint * n)[nz] / (na_ * nb_)[nz]
+    return max(0.0, float((joint[nz] / n * np.log(ratio)).sum()))
+
+
+def _snapshot_3d(h: Mapping[str, np.ndarray], cfg: Config) -> dict[str, Any]:
+    """The 3D-only snapshot keys over the alive agents of a host-side snapshot (§27.9).
+
+    Heights are the centre ``z`` in world units. ``surface_frac`` is the fraction within ``floor_eps`` of the
+    surface bound, ``z ≥ z_hi − floor_eps`` (the mirror of the grounding band, although the surface never
+    grounds; with ``floor_eps = 0`` it is the fraction resting on the clamp). ``band_frac`` is the fraction
+    in each of ``N_BANDS`` equal z bands. ``clade_height_mi`` is the plug-in mutual information in nats
+    between an agent's clade (immigrants binned at ``n_init``, as ``clade_counts``) and its z band; it is
+    biased upwards by about ``(clades − 1)(bands − 1)/(2·n)`` nats for small samples. All None with nobody
+    alive.
+    """
+    d, n_init = dims(cfg), cfg.population.n_init
+    alive = h["alive"]
+    z = h["pos_z"][alive].astype(np.float64)
+    keys = ("height_mean", "height_q25", "height_q50", "height_q75", "surface_frac", "speed_mean")
+    keys += ("pitch_abs_mean", "buoy_cap_q10", "buoy_cap_q50", "buoy_cap_q90", "band_frac", "clade_height_mi")
+    if not z.size:
+        return dict.fromkeys(keys)
+    vel = h["vel"][alive].astype(np.float64)
+    band = z_band(z, cfg.world.height)
+    return {
+        "height_mean": float(z.mean()),
+        **_quantiles("height", z, (25, 50, 75)),
+        "surface_frac": float((z >= d.z_hi - cfg.physics.floor_eps).mean()),
+        "speed_mean": float(np.sqrt((vel * vel).sum(axis=1)).mean()),
+        "pitch_abs_mean": float(np.abs(h["pitch"][alive].astype(np.float64)).mean()),
+        **_quantiles("buoy_cap", h["buoy_cap"][alive]),
+        "band_frac": [float(c) / z.size for c in np.bincount(band, minlength=N_BANDS)],
+        "clade_height_mi": _mutual_information(
+            np.clip(h["clade"][alive].astype(np.int64), 0, n_init), band, n_init + 1, N_BANDS
+        ),
+    }
+
+
+def _body_z_extent(labels: np.ndarray, sizes: np.ndarray, alive: np.ndarray, z: np.ndarray) -> dict[str, Any]:
+    """``body_z_extent_mean`` / ``_max`` over the bodies (components of ≥ 2 alive agents): ``max z − min z``
+    of a body's member centres. z is bounded, never wrapped, so no unwrapping is needed (§27.9)."""
+    member = alive & (sizes[labels] >= 2)
+    if not member.any():
+        return {"body_z_extent_mean": None, "body_z_extent_max": None}
+    lab, zz = labels[member], z[member].astype(np.float64)
+    order = np.argsort(lab, kind="stable")
+    lab, zz = lab[order], zz[order]
+    starts = np.concatenate([[0], np.flatnonzero(np.diff(lab)) + 1])
+    ext = np.maximum.reduceat(zz, starts) - np.minimum.reduceat(zz, starts)
+    return {"body_z_extent_mean": float(ext.mean()), "body_z_extent_max": float(ext.max())}
+
+
+def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str, Any]:
     """Host floats/ints/lists describing the current state, with one host transfer (§19.2).
 
     Small device reductions (clade bins, chem means and, when ``heavy``, body sizes and weight diversity) and
@@ -152,9 +234,12 @@ def snapshot_metrics(s: State, cfg: Config, *, heavy: bool) -> dict[str, Any]:
     exact host int64; ``ledger_error`` is the absolute discrepancy of the global closure (§10.8), 0 when it
     holds (its sinks are ``state.sinks``: ``HEAT_BUOYANCY`` too in 3D). ``clade_entropy`` is in nats;
     ``tag_var`` is the trace of the population (ddof 0) covariance. ``resource_mean`` is per field cell (every
-    layer in 3D) and ``chem_mean`` per channel over all its cells.
+    layer in 3D) and ``chem_mean`` per channel over all its cells. A 3D world adds the keys of
+    ``_snapshot_3d`` (and, when ``heavy``, ``body_z_extent_*``) after ``diag``; the 2D dict is unchanged
+    (§27.9).
     """
     n_init = cfg.population.n_init
+    d3 = dims(cfg).d3
     step = int(to_numpy(s.step))
     dev: dict[str, mx.array] = {
         "alive": s.alive,
@@ -178,10 +263,14 @@ def snapshot_metrics(s: State, cfg: Config, *, heavy: bool) -> dict[str, Any]:
         cfg.director.enabled
     ):  # static: the director's live levers (a few scalars; one more entry in the transfer)
         dev.update({name: getattr(s, name) for name in ENV_FIELDS})
+    if d3:  # static: the per-agent arrays of the 3D keys (§27.9)
+        dev.update(pos_z=s.pos[:, 2], vel=s.vel, pitch=s.pitch, buoy_cap=s.buoy_cap, clade=s.clade)
     if heavy:
         labels, converged = components(s.partner, s.alive, cfg.run.components_iters)
         dev["body_sizes"] = ops.scatter_add_i32(s.alive.shape[0], labels, 1, s.alive)
         dev["bodies_converged"] = converged
+        if d3:
+            dev["labels"] = labels
         dev["div_sum"], dev["div_pairs"] = _diversity_arrays(s, step, cfg)
     mx.eval(*dev.values())
     h = {name: to_numpy(a) for name, a in dev.items()}
@@ -237,10 +326,14 @@ def snapshot_metrics(s: State, cfg: Config, *, heavy: bool) -> dict[str, Any]:
         "chem_mean": [float(c) for c in h["chem_mean"]],
         "diag": int(h["diag"]),
     }
+    if d3:
+        out.update(_snapshot_3d(h, cfg))
     if cfg.director.enabled:
         out["env"] = _env_summary(h)
     if heavy:
         out.update(_body_stats(h["body_sizes"], n_alive, bool(h["bodies_converged"])))
+        if d3:
+            out.update(_body_z_extent(h["labels"], h["body_sizes"], alive, h["pos_z"]))
         pairs = int(h["div_pairs"])
         out["weight_diversity"] = float(h["div_sum"]) / pairs if pairs else None
     return out
@@ -287,7 +380,10 @@ def interval_row(
     interval max. ``perf`` supplies ``wall_s`` and ``peak_mem_gb``. Ratios with a zero denominator are None.
     The snapshot keys (and ``carrying_capacity_est`` when the caller adds it) follow; "step" is the first key.
     ``nd`` is the world's dims (§27.8): a 3D world's counters are (T,30) and its ledger names slot 15
-    ``HEAT_BUOYANCY``; counters of another width are refused rather than reshaped.
+    ``HEAT_BUOYANCY``; counters of another width are refused rather than reshaped. A 3D row also has
+    ``z_floor_clamps`` and ``z_surface_clamps`` (interval sums), ``grounded_frac`` (``GROUNDED`` over the
+    ``N_ALIVE`` steps: the share of agent-steps spent grounded) and ``buoy_heat`` (the interval sum of ledger
+    slot 15, ``HEAT_BUOYANCY``), after ``v_clips`` (§27.9).
     """
     width = n_counters(nd)
     c = np.asarray(counters, dtype=np.int64)
@@ -335,6 +431,15 @@ def interval_row(
             "v_clips": int(cs[CounterIdx.V_CLIPS]),
         }
     )
+    if nd == 3:  # the 3D keys follow the shared ones (§27.9); a 2D row is unchanged
+        row.update(
+            {
+                "z_floor_clamps": int(cs[Counter3D.Z_FLOOR_CLAMPS]),
+                "z_surface_clamps": int(cs[Counter3D.Z_SURFACE_CLAMPS]),
+                "grounded_frac": _ratio(int(cs[Counter3D.GROUNDED]), alive_steps),
+                "buoy_heat": int(ls[LedgerIdx.HEAT_BUOYANCY]),
+            }
+        )
     clash = sorted(set(row) & set(snap))
     if clash:
         raise ValueError(f"snapshot keys collide with interval keys: {clash}")
@@ -366,17 +471,24 @@ def founder_brain_cost(cfg: Config) -> float:
     return cfg.energy.brain_cost_per_l1 * l1
 
 
-def carrying_capacity(s: State, cfg: Config, step: mx.array | None = None, env: Env | None = None) -> float:
+def carrying_capacity(
+    s: State | State3, cfg: Config, step: mx.array | None = None, env: Env | None = None
+) -> float:
     """``K_est = Σ_c regen_rate_c / c_ref``, ``c_ref = basal_cost + E[founder brain_cost] + C_REF_MARGIN``.
 
     Regeneration uses the state's current patch positions, so the estimate is specific to the seed (and
     drifts with the patches); ``E[founder brain_cost]`` is the analytic expectation (``founder_brain_cost``).
-    In 3D ``c_ref`` also holds a founder's buoyancy-cap upkeep ``floor(buoyancy_cap_cost·buoy_init)`` (§27.7),
-    paid every step, and the regeneration is summed over every layer.
+    In 3D the regeneration is summed over the floor layer only (the benthic analogue of the 2D lattice,
+    ``regen_rate(…)[0]``): the food of the upper layers costs lift to reach and is not counted, so a 3D
+    ``K_est`` is comparable to a 2D one of the same lattice (§27.9, §27.10). ``c_ref`` also holds a founder's
+    buoyancy-cap upkeep ``floor(buoyancy_cap_cost·buoy_init)`` (§27.7), paid every step.
     With ``step`` and ``env`` (the director's rule tier) the regeneration is the live one: seasonal at
     ``step`` and scaled by the environment levers, as ``fields.regen_rate`` defines it.
     """
-    regen = int(to_numpy(fields.regen_rate(s.patch_pos, cfg, step, env)).astype(np.int64).sum())
+    rate = fields.regen_rate(s.patch_pos, cfg, step, env)
+    if is_3d(cfg):  # static: the floor layer, (FG, FG)
+        rate = rate[0]
+    regen = int(to_numpy(rate).astype(np.int64).sum())
     c_ref = cfg.energy.basal_cost + founder_brain_cost(cfg) + layout.C_REF_MARGIN
     if is_3d(cfg):  # float32, as pay_costs3 computes it
         c_ref += int(np.floor(np.float32(cfg.energy.buoyancy_cap_cost) * np.float32(cfg.mutation.buoy_init)))

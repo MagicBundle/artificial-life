@@ -1064,7 +1064,8 @@ limit. `occ_limit` is derived from the config rather than a magic number, so it 
 - `c_ref ≈ 100 + 37 + 50` (`C_REF_MARGIN = 50`, `layout.py`).
 - So `K_est ≈ 37–40 k` agents, about 60% of `N_CAP`. `alife inspect` prints the value computed for the actual seed.
 
-In 3D, `c_ref` also holds a founder's buoyancy-cap upkeep and the regeneration sums every layer (§27.7).
+In 3D, `c_ref` also holds a founder's buoyancy-cap upkeep and the regeneration is that of the floor layer only
+(§27.7, §27.10).
 
 Local depletion and predation push the real figure lower. `alife inspect` prints the estimate. The defaults are a
 starting point, tuned with the slow ecology test (§22.5).
@@ -2475,6 +2476,10 @@ Every row has these groups:
   - `sigma_q10/q50/q90`, `rate_q10/q50/q90`, `frac_q10/q50/q90`;
   - `brain_cost_mean`.
 - **Fields:** `resource_mean`, `chem_mean` (list of 3). In 3D both are over every cell of the volume (§27.8).
+- **3D** (only when `world.dims = 3`, §27.9): the interval keys `z_floor_clamps`, `z_surface_clamps`, `grounded_frac`
+  and `buoy_heat` after `v_clips`, and the snapshot keys `height_*`, `surface_frac`, `speed_mean`, `pitch_abs_mean`,
+  `buoy_cap_q*`, `band_frac` and `clade_height_mi` after `diag` (heavy: `body_z_extent_mean` and `_max`). A 2D row
+  has none of them.
 - **Environment** (`env`, only when `director.enabled`): the live levers at the snapshot (`regen_mult`, `season_amp`,
   `season_period`, `drift_mult`, `imm_request`, `cat_radius`, `cat_kill_p`, and the range and zero-count of
   `patch_gain`). The row is written before the director acts at that step, so `env` shows what the interval ran with.
@@ -2758,7 +2763,7 @@ Pinned details (impl, WP5):
 - `inspect --json` prints one object: `step`, `config` (summary and `config_hash`), `carrying_capacity_est`,
   `ledger_error`, `diag` and `diag_flags`, `state` (heavy `snapshot_metrics`), `checkpoints`, `last_metrics`, and
   `check` / `agent` when asked. An unknown `--agent` uid exits 1. The ancestor chain follows `events/` births up
-  to a founder or immigrant (`ancestors_complete`).
+  to a founder or immigrant (`ancestors_complete`). The 3D additions are in §27.11.
 - Usage errors exit 2 (argparse); a missing run directory or an existing `--out` exits 1; `bench --determinism`
   exits 1 when the two digests differ. The CLI hands its state to `runner.run`/`run_viewer` without keeping a
   reference (the donation rule, §15.4).
@@ -4329,13 +4334,10 @@ above the floor. A dense packing (FCC, density 0.74) puts about `0.74·field_cel
 column: 68 at field cell 4, height 24 and r = 1, and 226 at height 80, against `occ_limit = 1 060`.
 
 **Carrying capacity.** In 3D `c_ref` (§10.10) also holds a founder's cap upkeep `floor(buoyancy_cap_cost·buoy_init)`
-(float32, as `pay_costs3` computes it), and the regeneration is summed over every layer. The 3D `K_est` is
-therefore not comparable to a 2D one: it counts the food of the upper layers, which costs lift (thrust or
-buoyancy against gravity) to harvest. On `tiny3d` (default seed) it is 1 456 against 426 for `tiny`, while the
-two populations run about level (peaks 441 and 426 in the first 400 steps on CPU; the floor layer alone
-regenerates as `tiny`'s lattice, §27.5). Whether `K_est` should weight the upper layers or count the floor layer
-only is open, to be settled before the director runs in 3D (PR 4) and with the PR 6 tuning of `photic_amp` and
-`fertility_base`.
+(float32, as `pay_costs3` computes it). The regeneration is the floor layer's only (§27.10): PR 3 summed every layer,
+which gave `tiny3d` 1 456 against 426 for `tiny`. With the floor layer it is 409: the numerators are equal (the floor
+layer regenerates as `tiny`'s lattice, §27.5) and a 3D founder costs more (a wider brain, the cap upkeep). The two
+populations run about level (peaks 441 and 426 in the first 400 steps on CPU).
 
 **Tests.** `tests/test_energy_3d.py` (`pay_costs3` against a float32 reference on mixed solvent and insolvent
 populations, with the per-function closure and dead rows paying 0; the exact buoyancy terms and the payment order;
@@ -4404,12 +4406,12 @@ terms are separate static additions.
   (`ValueError`) up front, where a reshape by 27 would fail later with a misleading step-count mismatch (a 3D
   `(9, 30)` block reshapes to ten rows against nine ledgers).
   The ledger is keyed by `ledger_names(nd)`, so a 3D row has `HEAT_BUOYANCY` where a 2D row keeps `RESERVED`. The
-  runner and `analysis.resim` pass the run's dims. Rows do not carry the `Counter3D` columns yet; the 3D metrics are
-  docs/3D.md §7's, in PR 4.
+  runner and `analysis.resim` pass the run's dims. The `Counter3D` columns reach the row as the interval keys of
+  §27.9.
 - `snapshot_metrics`: `ledger_error` over `sinks(nd)`; `chem_mean` per channel over all `FZ·FG²` cells;
   `resource_mean` per cell of the volume (`E_field / n_cells`), so the upper layers dilute it compared with a 2D
   floor.
-- `carrying_capacity`: §27.7.
+- `carrying_capacity`: §27.7, and the floor-layer rule of §27.10.
 
 **Enablement.** `config.DIMS_SUPPORTED = (2, 3)`: a config with `world.dims = 3` validates under §27.1's rules and
 runs through `alife run`, `resume`, fork, `inspect` and `bench`. Still refused in 3D: `director.enabled` (until
@@ -4470,6 +4472,95 @@ rows and reproducing the step-100 state). New functions: `test_bench.py` (the st
 3D, with and without the actuator; every bench part on `tiny3d`), `test_runner.py` (SIGINT and a bitwise resume in
 3D; immigrants in the volume at `buoy_init`), `test_config.py` (`test_preset_table_tiny3d`), `test_cli_smoke.py` (a
 2D row keeps `RESERVED`).
+
+### 27.9 Metrics in 3D (PR 4)
+
+A 3D row (§19.2) has the 2D keys unchanged, in their order, plus the keys below; a 2D row has none of them, so every
+2D `metrics.jsonl` row is byte-identical. All are host-side observers (`metrics.py`): one host transfer as before,
+no change to the compiled step, the state or the RNG. "Alive" means over the alive agents; the keys are `None` when
+nobody is alive. Heights are the agent centre `z` in world units, `0 < z_lo ≤ z ≤ z_hi < height`; "height" is the
+world height `world.height` (never `H`, the hidden size).
+
+**Snapshot keys** (`metrics._snapshot_3d`, after `diag`; the order below):
+
+| key | definition |
+|---|---|
+| `height_mean`, `height_q25`, `height_q50`, `height_q75` | mean and quartiles of `z` (`np.quantile`, linear, float64) |
+| `surface_frac` | share of alive agents with `z ≥ z_hi − floor_eps`: within the grounding margin of the surface bound. The surface never grounds (Q2), so this is the mirror of the grounding band; with `floor_eps = 0` it is the share resting on the clamp |
+| `speed_mean` | mean of `‖vel‖` (3-D) of the last step. The clamp zeroes `v_z` on a row it moves to a boundary, so a floor-resting agent contributes its horizontal speed |
+| `pitch_abs_mean` | mean of `|pitch|` in radians, in `[0, PITCH_MAX]` |
+| `buoy_cap_q10`, `_q50`, `_q90` | quantiles of the heritable cap `buoy_cap ∈ [0, 1]` (as `sigma_q*`) |
+| `band_frac` | list of 4 shares of alive agents in the equal z bands `[b·height/4, (b+1)·height/4)`, `b = 0..3`; the top band includes the surface and a height on an edge belongs to the band above (`metrics.z_band`: `floor(4·z / height)`, with `4·z` exact in binary). Sums to 1 |
+| `clade_height_mi` | plug-in mutual information in nats between an agent's clade (binned as `clade_counts`, immigrants in bin `n_init`) and its z band, from the host joint histogram (`np.bincount`). It is 0 exactly for a single clade and for independent labellings (the ratio `n_ab·n / (n_a·n_b)` is formed from exact int64 products); it is biased upwards by about `(clades − 1)(bands − 1) / (2n)` nats for small samples, so it is a descriptive measure of vertical niche separation, not a test |
+
+The heavy snapshot (every `heavy_metrics_every`) adds, after the `bodies_*` keys and before `weight_diversity`,
+`body_z_extent_mean` and `body_z_extent_max`: over the bodies (components of at least two alive agents, as
+`bodies_n`), the extent `max z − min z` of the member centres, their unweighted mean over bodies and their maximum.
+`z` is bounded and never wrapped, so no unwrapping is needed (x and y, which are periodic, have no extent key).
+Both are `None` with no body, and are computed from the same bond-component labels as `bodies_*` (a
+non-converged labelling is reported by `bodies_converged`, as there).
+
+**Interval keys** (`interval_row(…, nd = 3)`, after `v_clips`): `z_floor_clamps` and `z_surface_clamps` (interval sums
+of `Counter3D`), `grounded_frac` (`Σ GROUNDED / Σ N_ALIVE`: the share of agent-steps spent grounded, weighted like
+the other per-agent fractions of the row; `None` without alive steps) and `buoy_heat` (the interval sum of ledger slot
+15, equal to `ledger["HEAT_BUOYANCY"]`, repeated as a plain key). Under gravity every grounded agent clamps each
+step, so `z_floor_clamps ≈ Σ GROUNDED` (§27.8). No snapshot key is named `grounded_frac`: `interval_row` raises on a
+key shared with the snapshot, and the snapshot has no grounded key at all (`alife inspect` computes the share of the
+checkpoint state, §27.11). `analysis.resim` recomputes the interval keys with `nd` and compares them with the stored
+row, as it does the shared ones; a row stored before PR 4 lacks them and is compared on the keys it has.
+
+**`carrying_capacity_est`** (first row, `inspect`, the director): the floor-layer rule of §27.10.
+
+**Tests.** `tests/test_metrics_3d.py`:
+- the snapshot keys against an independent host reference (quantiles, bands, surface margin, speed, pitch, the cap's
+  quantiles, `clade_height_mi` by `Counter`/`math.log`, `body_z_extent_*` over three known bodies);
+- band edges; the mutual-information limits (determined, independent, a single clade exactly 0, a hand value);
+- the exact key sets and order in 2D (the 2D dict is unchanged, light and heavy) and 3D; the empty population (all
+  `None`); a snapshot never colliding with the interval keys;
+- the interval keys against host sums, `grounded_frac` weighting and `None`, the 2D row without them, resim flagging
+  each of them;
+- the carrying capacity (§27.10).
+
+### 27.10 The director in 3D (PR 4)
+
+**Carrying capacity (`K_est`).** In 3D `metrics.carrying_capacity` counts the regeneration of the **floor layer** only,
+`Σ regen_rate(…)[0]` (the benthic analogue of the 2D lattice), over the same `c_ref` as §10.10 (which keeps the
+founder's cap upkeep, §27.7). Every consumer reads it: the `carrying_capacity_est` of the first metrics row, `alife
+inspect`, and the director's `n / K_est`, rescue size and prompt capacity line. With the live levers (`step`, `env`) the
+layer is that of the live rate. 2D is unchanged. The reasons:
+- The floor layer regenerates exactly as the 2D lattice for the same patches (`V[0] = 1`, §27.5), so a 3D estimate is
+  comparable to a 2D one: `tiny3d` 409 against 426 for `tiny` (the difference is the larger founder brain and the
+  cap upkeep). Summing the layers gave 1 456 on `tiny3d`, 3.6 floor lattices' worth, a factor set by the vertical
+  profile (`benthic_lambda`, `photic_amp`, `photic_lambda`) rather than by the habitat. The extinction-risk rule
+  (`n/K_est` below 0.2) and the rescue size (a fraction of `K_est`) would have moved with every retuning of that
+  profile, which PR 6 does.
+- Food above the floor costs lift to reach (thrust or buoyancy against gravity, §27.7).
+
+It ignores the food of the upper layers, including the photic band (`photic_amp > 0`), so it is a lower bound on the
+food an agent can use; it is revisited in PR 6 with the tuning of `photic_amp` and `fertility_base`.
+`tests/test_metrics_3d.py`: the 3D value equals the 2D lattice's regeneration over the 3D `c_ref`, against a float64
+host reference of the floor fertility, with the live environment, and on `tiny3d` against `tiny`; the PR 3 test of the
+cap upkeep now takes its regeneration from layer 0.
+
+### 27.11 CLI reporting in 3D (PR 4)
+
+Every addition is 3D only; the 2D output, JSON key sets and `bench` environment are unchanged.
+- **Config summary** (`cli._summary`, used by `inspect` and the run announcement): `dims`, `world_height` and
+  `field_grid_z` (the layer count `FZ`) after `field_grid`. The announcement reads `L=128 height=24`.
+- **`inspect`**: `config` has the three keys above; `state` has the §27.9 snapshot keys (heavy); the top level has
+  `grounded_frac`, the share of the alive agents grounded in the checkpoint state (`physics.grounded`; `None` with
+  nobody alive; the rows' `grounded_frac` is an interval mean). The text output adds one line, `height (world 24): mean …,
+  quartiles …, grounded …, surface …, bands […]; speed …, |pitch| …, buoyancy cap median …`. `--agent UID` lists the
+  (x, y, z) `pos`, `pitch` and `buoy_cap` among the fields and adds `height` (z) and `grounded` (`z ≤ Dims.z_ground`).
+- **`bench`**: the environment `config` has `dims`, `world_height` and `field_grid_z`, and the text report prints
+  `height=…` after `L=…` (`H=` stays the hidden size).
+- **Tools that stay 2D.** `analysis.signals` keeps its `require_2d` refusal (§27.1): its decoder mirrors S0–S8 of the 2D
+  step, and porting it to the 3D inputs and outputs is out of scope for PR 4.
+
+`tests/test_cli_report_3d.py`: `inspect --json` on a real 30-step `tiny3d` run reports `dims`, `world_height`,
+`field_grid_z`, the height keys against the checkpoint state and the grounded share; the text line; `--agent`; the rows
+of the run (interval and snapshot keys, the first row's `carrying_capacity_est` on the floor layer); the summary, the
+announcement and `bench`'s environment and report in 3D and without the keys in 2D.
 
 ---
 
