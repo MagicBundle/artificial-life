@@ -30,7 +30,7 @@ from typing import Any, Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import actions, bonds, brain, fields, invariants, layout, lifecycle, physics, sensing, spatial
+from alife import actions, bonds, brain, fields, invariants, lifecycle, physics, sensing, spatial
 from alife import energy as en
 from alife import step as step_mod
 from alife.actions import Actions
@@ -275,7 +275,7 @@ def _brain_variants(cfg: Config, reps: int, warmup: int) -> list[dict[str, Any]]
     s = init_state(cfg)
     d = dims(cfg)
     kx, kh = mx.random.split(mx.random.key(0), 2)
-    x = mx.random.uniform(-1.0, 1.0, (d.n, layout.D_IN), key=kx)
+    x = mx.random.uniform(-1.0, 1.0, (d.n, d.lay.D_IN), key=kx)
     h = mx.random.uniform(-1.0, 1.0, (d.n, d.h), key=kh)
     W1f, W2f = s.W1.astype(mx.float32), s.W2.astype(mx.float32)
     del s

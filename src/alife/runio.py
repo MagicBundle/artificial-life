@@ -32,8 +32,8 @@ import mlx.core as mx
 import numpy as np
 
 from alife import layout, rng
-from alife.config import Config, config_from_dict, config_hash, config_to_dict, dims, save_config, validate
-from alife.state import N_LEDGER, State, state_from_arrays, state_to_arrays, to_numpy
+from alife.config import Config, config_from_dict, config_hash, config_to_dict, is_3d, save_config, validate
+from alife.state import State, expected_layout, state_from_arrays, state_to_arrays, to_numpy
 
 FORMAT_VERSION: Final = 1
 
@@ -168,60 +168,8 @@ def _record_step(rec: Mapping[str, Any]) -> int | None:
 # --- state files ----------------------------------------------------------------------------------------
 
 
-def _expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]:
-    """Shape and dtype of every State field under ``cfg`` (§2.2)."""
-    d = dims(cfg)
-    n, m, fg, wd = d.n, d.m, d.fg, d.wdtype
-    i32, i64, f32 = mx.int32, mx.int64, mx.float32
-    return {
-        "alive": ((n,), mx.bool_),
-        "uid": ((n,), i64),
-        "parent_uid": ((n,), i64),
-        "clade": ((n,), i32),
-        "generation": ((n,), i32),
-        "birth_step": ((n,), i32),
-        "energy": ((n,), i32),
-        "pos": ((n, 2), f32),
-        "vel": ((n, 2), f32),
-        "heading": ((n,), f32),
-        "h": ((n, d.h), f32),
-        "msg": ((n, layout.MSG), f32),
-        "last_loss": ((n,), i32),
-        "last_harvest": ((n,), i32),
-        "last_inflow": ((n,), i32),
-        "partner": ((n, layout.B), i32),
-        "rev": ((n, layout.B), i32),
-        "tag": ((n, layout.T), f32),
-        "mut_sigma": ((n,), f32),
-        "mut_rate": ((n,), f32),
-        "offspring_frac": ((n,), f32),
-        "brain_cost": ((n,), i32),
-        "W1": ((n, d.w1_rows, d.h), wd),
-        "W2": ((n, d.w2_rows, layout.D_OUT), wd),
-        "pend_slot": ((m,), i32),
-        "pend_W1": ((m, d.w1_rows, d.h), wd),
-        "pend_W2": ((m, d.w2_rows, layout.D_OUT), wd),
-        "resource": ((fg, fg), i32),
-        "chem": ((layout.NCH, fg, fg), f32),
-        "patch_pos": ((d.pp, 2), f32),
-        "patch_vel": ((d.pp, 2), f32),
-        "key": ((2,), mx.uint32),
-        "step": ((), i32),
-        "next_uid": ((), i64),
-        "total": ((), i64),
-        "total0": ((), i64),
-        "ledger_cum": ((N_LEDGER,), i64),
-        "diag": ((), i32),
-        "env_regen_mult": ((), f32),
-        "env_season_amp": ((), f32),
-        "env_season_period": ((), i32),
-        "env_drift_mult": ((), f32),
-        "env_patch_gain": ((d.pp,), f32),
-        "env_imm_request": ((), i32),
-        "env_cat_center": ((2,), f32),
-        "env_cat_radius": ((), f32),
-        "env_cat_kill_p": ((), f32),
-    }
+# The one State schema lives in ``state`` (§2.2); this name is kept for callers and tests.
+_expected_layout = expected_layout
 
 
 def _alife_version() -> str:
@@ -231,11 +179,15 @@ def _alife_version() -> str:
 
 
 def write_state_file(path: Path, s: State, cfg: Config) -> None:
-    """Atomic safetensors write (``*.tmp`` + ``os.replace``) with checkpoint metadata (§18)."""
+    """Atomic safetensors write (``*.tmp`` + ``os.replace``) with checkpoint metadata (§18).
+
+    A 3D state also records ``dims`` (§27.1); a file without the key is 2D.
+    """
     meta = {
         "format_version": str(FORMAT_VERSION),
         "rng_layout_version": str(rng.RNG_LAYOUT_VERSION),
-        "genome_layout_version": str(layout.GENOME_LAYOUT_VERSION),
+        "genome_layout_version": str(layout.genome_layout_version(cfg.world.dims)),
+        **({"dims": str(cfg.world.dims)} if is_3d(cfg) else {}),
         "step": str(int(to_numpy(s.step))),
         "config_hash": config_hash(cfg),
         "alife_version": _alife_version(),
@@ -272,19 +224,26 @@ def checkpoint_metadata(path: Path) -> dict[str, str]:
 def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> State:
     """Load a state file; ``CheckpointError`` on a version/shape mismatch, or a config-hash one if checked.
 
-    Keys are matched by name (their order in the file is arbitrary, F15). The RNG layout version must be in
+    Keys are matched by name (their order in the file is arbitrary, F15). The file's ``dims`` (absent = 2)
+    must equal ``world.dims``: a state never crosses dimensions (§27.1). The RNG layout version must be in
     ``rng.RNG_COMPATIBLE_VERSIONS``. A pre-director file (no ``env_*`` arrays) loads with inert env values.
     The result is evaluated.
     """
     path = Path(path)
     meta = checkpoint_metadata(path)
+    nd = str(cfg.world.dims)
+    bad = []
+    if meta.get("dims", "2") != nd:
+        bad.append(
+            f"dims={meta.get('dims', '2')!r} (expected {nd!r}): cross-dimension resume/fork is not supported"
+        )
     want = {
         "format_version": str(FORMAT_VERSION),
-        "genome_layout_version": str(layout.GENOME_LAYOUT_VERSION),
+        "genome_layout_version": str(layout.genome_layout_version(cfg.world.dims)),
     }
     if check_hash:
         want["config_hash"] = config_hash(cfg)
-    bad = [f"{k}={meta.get(k)!r} (expected {v!r})" for k, v in want.items() if meta.get(k) != v]
+    bad += [f"{k}={meta.get(k)!r} (expected {v!r})" for k, v in want.items() if meta.get(k) != v]
     if meta.get("rng_layout_version") not in {str(v) for v in rng.RNG_COMPATIBLE_VERSIONS}:
         compatible = sorted(rng.RNG_COMPATIBLE_VERSIONS)
         bad.append(f"rng_layout_version={meta.get('rng_layout_version')!r} (expected one of {compatible})")
@@ -296,7 +255,7 @@ def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> Stat
         mx.eval(s)  # loads are lazy; read now so a later replace of the file cannot affect this state
     except (ValueError, RuntimeError, OSError) as e:
         raise CheckpointError(f"{path}: {e}") from e
-    spec = _expected_layout(cfg)
+    spec = expected_layout(cfg)
     problems = [
         f"{name}: {tuple(a.shape)} {a.dtype} (expected {spec[name][0]} {spec[name][1]})"
         for name, a in zip(State._fields, s, strict=True)
@@ -416,7 +375,8 @@ class RunDir:
             "seed": cfg.run.seed,
             "config_hash": config_hash(cfg),
             "rng_layout_version": rng.RNG_LAYOUT_VERSION,
-            "genome_layout_version": layout.GENOME_LAYOUT_VERSION,
+            "genome_layout_version": layout.genome_layout_version(cfg.world.dims),
+            **({"dims": cfg.world.dims} if is_3d(cfg) else {}),  # absent = 2D (§27.1)
             "parent": parent,
             "status": "running",
         }

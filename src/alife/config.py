@@ -34,6 +34,8 @@ class ConfigError(ValueError):
 class WorldConfig:
     size: float = 1024.0  # torus side L
     field_cell: float = 4.0  # FG = size / field_cell (must be an integer ≤ 1024)
+    dims: int = 2  # 2 | 3, static (docs/3D.md, §27.1); added after v0.1
+    height: float = 0.0  # 3D world height (floor z = 0, surface z = height); 0 in 2D
 
 
 @dataclass(frozen=True)
@@ -237,6 +239,15 @@ class Dims:
     pp: int
     wdtype: mx.Dtype
     occ_limit: int  # §10.9: min(2^15−1, (2^31−1−R_HARD)//(2·e_max+S))
+    # World dimensions (§27.1). 2D values are the neutral ones (one layer, no z hashing).
+    nd: int  # world.dims
+    d3: bool  # nd == 3: the static switch of every 3D branch
+    lay: layout.Layout  # the genome I/O layout for nd (layout.for_dims)
+    fz: int  # field layers FZ = height / field_cell; 1 in 2D
+    n_cells: int  # field cells FZ·FG²
+    field_shape: tuple[int, ...]  # (FG, FG) in 2D, (FZ, FG, FG) in 3D
+    g_hash_z: int  # hash layers floor(height / radius); 1 in 2D
+    cell_hash_z: float  # height / g_hash_z; inf in 2D
 
 
 PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k")
@@ -274,8 +285,16 @@ def dims(cfg: Config) -> Dims:
     n, m = cfg.population.n_max, cfg.population.max_births_per_step
     h = cfg.brain.hidden
     g_hash = math.floor(cfg.world.size / cfg.sensing.radius)
-    w1_rows, w2_rows = layout.D_IN + h, h + 1
+    nd, lay = cfg.world.dims, layout.for_dims(cfg.world.dims)
+    w1_rows, w2_rows = lay.D_IN + h, h + 1
     e_max, s = cfg.energy.e_max, cfg.energy.structure
+    fg = _field_fg(cfg)
+    if nd == 3:
+        fz = round(cfg.world.height / cfg.world.field_cell)
+        g_hash_z = math.floor(cfg.world.height / cfg.sensing.radius)
+        cell_hash_z = cfg.world.height / g_hash_z if g_hash_z > 0 else float("inf")
+    else:
+        fz, g_hash_z, cell_hash_z = 1, 1, float("inf")
     return Dims(
         n=n,
         m=m,
@@ -283,17 +302,25 @@ def dims(cfg: Config) -> Dims:
         dl=2 * m,
         k=cfg.sensing.k_neighbors,
         c=cfg.sensing.cell_capacity,
-        q=9 * cfg.sensing.cell_capacity,
+        q=3**nd * cfg.sensing.cell_capacity,  # 9C in 2D, 27C in 3D
         g_hash=g_hash,
         cell_hash=cfg.world.size / g_hash if g_hash > 0 else float("inf"),
-        fg=_field_fg(cfg),
+        fg=fg,
         h=h,
         w1_rows=w1_rows,
         w2_rows=w2_rows,
-        params=w1_rows * h + w2_rows * layout.D_OUT,
+        params=w1_rows * h + w2_rows * lay.D_OUT,
         pp=cfg.fields.n_patches,
         wdtype=WEIGHT_DTYPES.get(cfg.brain.weight_dtype, mx.float32),
         occ_limit=min((1 << 15) - 1, ((1 << 31) - 1 - R_HARD) // max(2 * e_max + s, 1)),
+        nd=nd,
+        d3=nd == 3,
+        lay=lay,
+        fz=fz,
+        n_cells=fz * fg * fg,
+        field_shape=(fz, fg, fg) if nd == 3 else (fg, fg),
+        g_hash_z=g_hash_z,
+        cell_hash_z=cell_hash_z,
     )
 
 
@@ -526,7 +553,19 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("director", "llm_timeout_s"),
     ("director", "llm_max_tokens"),
     ("director", "yoke_log"),
+    ("world", "dims"),
+    ("world", "height"),
 )
+
+# The POST_V01 keys of the 3D world (docs/3D.md, §27.1). In a 2D world every one but ``world.dims`` must keep
+# its default (``validate``), so no 2D config can change its hash without changing its behaviour.
+THREE_D_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    ("world", "dims"),
+    ("world", "height"),
+)
+# The world.dims values validate accepts. Read at call time, so tests of 3D code can widen it before 3D is
+# enabled (docs/3D.md §10: PR 3 adds 3).
+DIMS_SUPPORTED: tuple[int, ...] = (2,)
 
 # The POST_V01 keys that are omitted from ``config_hash`` at every value: the director's policy. Only
 # ``director.enabled`` changes the compiled step, so only it is hashed.
@@ -563,6 +602,20 @@ def immigration_possible(cfg: Config) -> bool:
 def seasons_on(fi: FieldConfig) -> bool:
     """Static: seasonal modulation of the fertility patches is enabled."""
     return fi.season_period > 0 and fi.season_amplitude > 0.0
+
+
+def is_3d(cfg: Config) -> bool:
+    """Static: the world is 3D (``world.dims = 3``, §27.1)."""
+    return cfg.world.dims == 3
+
+
+def require_2d(cfg: Config, what: str) -> None:
+    """Refuse a 3D config in a 2D-only tool: ``ConfigError`` (exit 2) naming ``what``."""
+    if is_3d(cfg):
+        raise ConfigError(
+            f"{what} supports 2D worlds only (world.dims = {cfg.world.dims}); a 3D run is viewed in the "
+            "AlifeControl 3D viewer through `alife stream` (docs/3D.md §8)"
+        )
 
 
 def config_hash(cfg: Config) -> str:
@@ -668,16 +721,57 @@ def validate(cfg: Config) -> None:
         g_hash = math.floor(w.size / sen.radius)
         req(g_hash >= 3, f"hash grid G_h = floor(size / radius) = {g_hash} must be ≥ 3")
 
+    # World dimensions (§27.1). A 2D config trips none of these: its 3D keys sit at their defaults.
+    d3 = w.dims == 3
+    req(w.dims in (2, 3), f"world.dims must be 2 or 3, got {w.dims}")
+    req(
+        w.dims not in (2, 3) or w.dims in DIMS_SUPPORTED,
+        f"world.dims = {w.dims} is not enabled yet (docs/3D.md PR 3)",
+    )
+    if w.dims == 2:
+        for sec, key in THREE_D_KEYS:
+            if (sec, key) == ("world", "dims"):
+                continue
+            val, default = getattr(getattr(cfg, sec), key), getattr(getattr(Config(), sec), key)
+            req(
+                val == default,
+                f"{sec}.{key} is a 3D key: it must keep its default {default!r} when world.dims = 2, "
+                f"got {val!r}",
+            )
+    if d3:
+        h = w.height
+        req(
+            math.isfinite(h) and h > 2 * ph.radius,
+            f"world.height must be finite and > 2·physics.radius = {2 * ph.radius}, got {h}",
+        )
+        if math.isfinite(h) and h > 0 and w.size > 0 and w.field_cell > 0 and sen.radius > 0:
+            fz = h / w.field_cell
+            req(fz == round(fz), f"world.height / world.field_cell must be an integer, got {fz}")
+            req(round(fz) >= 2, f"field layers FZ = {round(fz)} must be ≥ 2")
+            cells = round(fz) * round(w.size / w.field_cell) ** 2
+            req(cells <= 1 << 20, f"field cells FZ·FG² = {cells} must be ≤ 2^20 (exact_sum)")
+            g_z = math.floor(h / sen.radius)
+            req(g_z >= 1, f"hash layers G_z = floor(height / radius) = {g_z} must be ≥ 1")
+            # Then |dz| < L/2 for any two agents, so min_image is the identity on z (§27.1).
+            req(2 * h <= w.size, f"world.height {h} must be ≤ world.size / 2 = {w.size / 2}")
+
     # Interaction ranges.
     need = max(bo.form_range, co.range, 2 * ph.radius)
     req(
         sen.radius >= need,
         f"sensing.radius {sen.radius} must be ≥ max(form_range, combat.range, 2·r) = {need}",
     )
-    req(
-        layout.NS <= sen.k_neighbors <= 9 * sen.cell_capacity,
-        f"sensing.k_neighbors {sen.k_neighbors} must be in [NS={layout.NS}, 9·C={9 * sen.cell_capacity}]",
-    )
+    if d3:  # the 3×3×3 cell stencil scans 27·C candidates
+        req(
+            layout.NS <= sen.k_neighbors <= 27 * sen.cell_capacity,
+            f"sensing.k_neighbors {sen.k_neighbors} must be in "
+            f"[NS={layout.NS}, 27·C={27 * sen.cell_capacity}]",
+        )
+    else:
+        req(
+            layout.NS <= sen.k_neighbors <= 9 * sen.cell_capacity,
+            f"sensing.k_neighbors {sen.k_neighbors} must be in [NS={layout.NS}, 9·C={9 * sen.cell_capacity}]",
+        )
 
     # Population.
     n, m = pop.n_max, pop.max_births_per_step
@@ -744,6 +838,8 @@ def validate(cfg: Config) -> None:
     req(0 < fi.resource_cap < R_HARD, f"fields.resource_cap {fi.resource_cap} must be in (0, 2^24 − 1)")
     req(0 <= fi.regen_max <= fi.resource_cap, "fields.regen_max must be in [0, resource_cap]")
     req(0 <= fi.resource_diffusion_q8 <= 64, "fields.resource_diffusion_q8 must be in [0, 64]")
+    if d3:  # six neighbours: 6·((R·d) >> 8) ≤ R keeps every cell ≥ 0
+        req(fi.resource_diffusion_q8 <= 42, "fields.resource_diffusion_q8 must be ≤ 42 in 3D")
     req(fi.season_period >= 0, f"fields.season_period must be ≥ 0, got {fi.season_period}")
     req(
         0.0 <= fi.season_amplitude <= 1.0,
@@ -763,6 +859,8 @@ def validate(cfg: Config) -> None:
     req(len(fi.chem_decay) == layout.NCH, f"fields.chem_decay must have {layout.NCH} entries")
     req(all(0 <= v <= 0.25 for v in fi.chem_diffusion), "every fields.chem_diffusion must be in [0, 0.25]")
     req(all(0 <= v < 1 for v in fi.chem_decay), "every fields.chem_decay must be in [0, 1)")
+    if d3:  # the explicit 7-point stencil is stable for diffusion ≤ 1/6
+        req(all(v <= 1 / 6 for v in fi.chem_diffusion), "every fields.chem_diffusion must be ≤ 1/6 in 3D")
 
     # Rates and gene bounds.
     for name, val in (

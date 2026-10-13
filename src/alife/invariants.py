@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING
 import mlx.core as mx
 import numpy as np
 
-from alife import bonds, layout
+from alife import bonds
 from alife.config import Config, dims
-from alife.state import R_HARD, Diag, LedgerIdx, State, to_numpy, total_energy
+from alife.state import R_HARD, Diag, LedgerIdx, State, expected_layout, to_numpy, total_energy
 
 # Director env ranges (docs/DIRECTOR.md §3), inclusive (lo, hi); radius and kill_p are set in `_env_ranges`.
 ENV_REGEN_MULT: tuple[float, float] = (0.0, 4.0)
@@ -121,58 +121,8 @@ def device_check(
 # --- host check ---------------------------------------------------------------------------------------------
 
 
-def _expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]:
-    d = dims(cfg)
-    n, m, i32, f32, i64 = d.n, d.m, mx.int32, mx.float32, mx.int64
-    return {
-        "alive": ((n,), mx.bool_),
-        "uid": ((n,), i64),
-        "parent_uid": ((n,), i64),
-        "clade": ((n,), i32),
-        "generation": ((n,), i32),
-        "birth_step": ((n,), i32),
-        "energy": ((n,), i32),
-        "pos": ((n, 2), f32),
-        "vel": ((n, 2), f32),
-        "heading": ((n,), f32),
-        "h": ((n, d.h), f32),
-        "msg": ((n, layout.MSG), f32),
-        "last_loss": ((n,), i32),
-        "last_harvest": ((n,), i32),
-        "last_inflow": ((n,), i32),
-        "partner": ((n, layout.B), i32),
-        "rev": ((n, layout.B), i32),
-        "tag": ((n, layout.T), f32),
-        "mut_sigma": ((n,), f32),
-        "mut_rate": ((n,), f32),
-        "offspring_frac": ((n,), f32),
-        "brain_cost": ((n,), i32),
-        "W1": ((n, d.w1_rows, d.h), d.wdtype),
-        "W2": ((n, d.w2_rows, layout.D_OUT), d.wdtype),
-        "pend_slot": ((m,), i32),
-        "pend_W1": ((m, d.w1_rows, d.h), d.wdtype),
-        "pend_W2": ((m, d.w2_rows, layout.D_OUT), d.wdtype),
-        "resource": ((d.fg, d.fg), i32),
-        "chem": ((layout.NCH, d.fg, d.fg), f32),
-        "patch_pos": ((d.pp, 2), f32),
-        "patch_vel": ((d.pp, 2), f32),
-        "key": ((2,), mx.uint32),
-        "step": ((), i32),
-        "next_uid": ((), i64),
-        "total": ((), i64),
-        "total0": ((), i64),
-        "ledger_cum": ((len(LedgerIdx),), i64),
-        "diag": ((), i32),
-        "env_regen_mult": ((), f32),
-        "env_season_amp": ((), f32),
-        "env_season_period": ((), i32),
-        "env_drift_mult": ((), f32),
-        "env_patch_gain": ((d.pp,), f32),
-        "env_imm_request": ((), i32),
-        "env_cat_center": ((2,), f32),
-        "env_cat_radius": ((), f32),
-        "env_cat_kill_p": ((), f32),
-    }
+# The one State schema lives in ``state`` (§2.2); this name is kept for callers and tests.
+_expected_layout = expected_layout
 
 
 class _Report:
@@ -388,7 +338,7 @@ def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | 
     with ``out`` (that step's ``StepOut``) the birth records, ``next_uid`` advance and death records too.
     """
     r = _Report()
-    want = _expected_layout(cfg)
+    want = expected_layout(cfg)
     for name, arr in zip(State._fields, s, strict=True):
         shape, dtype = want[name]
         if tuple(arr.shape) != shape or arr.dtype != dtype:

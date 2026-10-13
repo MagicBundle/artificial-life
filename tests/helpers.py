@@ -53,8 +53,8 @@ def make_scene(
         "generation": np.zeros(n, np.int32),
         "birth_step": np.full(n, -1, np.int32),
         "energy": np.zeros(n, np.int32),
-        "pos": np.zeros((n, 2), np.float32),
-        "vel": np.zeros((n, 2), np.float32),
+        "pos": np.zeros(base["pos"].shape, np.float32),
+        "vel": np.zeros(base["vel"].shape, np.float32),
         "heading": np.zeros(n, np.float32),
         "h": np.zeros((n, d.h), np.float32),
         "msg": np.zeros((n, layout.MSG), np.float32),
@@ -69,7 +69,7 @@ def make_scene(
         "offspring_frac": np.full(n, mu.frac_init, np.float32),
         "brain_cost": np.zeros(n, np.int32),
         "W1": np.zeros((n, d.w1_rows, d.h), np.float32),
-        "W2": np.zeros((n, d.w2_rows, layout.D_OUT), np.float32),
+        "W2": np.zeros((n, d.w2_rows, d.lay.D_OUT), np.float32),
     }
     if len(agents) > d.n_cap:
         raise ValueError(f"{len(agents)} agents exceed N_CAP = {d.n_cap}")
@@ -120,11 +120,12 @@ def make_scene(
     if resource is None:
         out["resource"] = mx.array(base["resource"])
     else:
-        out["resource"] = mx.array(np.broadcast_to(np.asarray(resource, np.int32), (d.fg, d.fg)).copy())
+        shape = base["resource"].shape
+        out["resource"] = mx.array(np.broadcast_to(np.asarray(resource, np.int32), shape).copy())
     if chem is None:
-        out["chem"] = mx.zeros((layout.NCH, d.fg, d.fg), dtype=mx.float32)
+        out["chem"] = mx.zeros(base["chem"].shape, dtype=mx.float32)
     else:
-        out["chem"] = mx.array(np.broadcast_to(np.asarray(chem, np.float32), (layout.NCH, d.fg, d.fg)).copy())
+        out["chem"] = mx.array(np.broadcast_to(np.asarray(chem, np.float32), base["chem"].shape).copy())
     for name in ("patch_pos", "patch_vel", "key", "step", "ledger_cum", "diag", *ENV_FIELDS):
         out[name] = mx.array(base[name]).astype(dtypes[name])
     out["next_uid"] = mx.array(int(arr["uid"].max(initial=-1)) + 1, dtype=mx.int64)
