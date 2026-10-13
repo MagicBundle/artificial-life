@@ -116,6 +116,7 @@ regular lattice, which is the cellular-automaton substrate.
 | `dev` | 16 384 | 256 | 4 096 | 512 | 85 (6.02) | 128 |
 | `64k` (defaults) | 65 536 | 1 024 | 16 384 | 1 024 | 170 (6.02) | 256 |
 | `256k` | 262 144 | 4 096 | 65 536 | 2 048 | 341 (6.01) | 512 |
+| `tiny3d` (3D tests/CI, §27.8) | 1 024 | 32 | 256 | 128 | 21 (6.10) × 4 layers | 32 × 6 layers |
 
 The `fast` overlay sets `sensing.k_neighbors = 6`, `sensing.cell_capacity = 12` and `brain.hidden = 24`. It
 combines with any preset.
@@ -335,17 +336,20 @@ Ordered sub-steps:
 | S5 | **sense**: `sensing.neighbor_descriptors`, `sensing.build_inputs` | `s`, `nbr`, `geom`, `fobs`, `age` | `desc (N,K,NF)`, `x (N,D_IN)` | `NOISE` |
 | S6 | **think**: `brain.forward` | `W1, W2, x, h` | `h_new (N,H)`, `y (N,D_OUT)` | — |
 | S7 | **decode and target**: `actions.decode` | `y, desc, nbr, partner, alive` | `act: Actions` (masked by `alive`) | — |
-| S8 | **costs and solvency**: `energy.pay_costs`, then `actions.mask(act, solvent)` | `energy, act, n_bonds, brain_cost, alive` | `E`, `solvent`, `paid_basal`, `paid_action`, and `act` with all actions of insolvent agents cancelled | — |
+| S8 | **costs and solvency**: `energy.pay_costs`, then `actions.mask(act, solvent)` (3D: `energy.pay_costs3`, §27.7) | `energy, act, n_bonds, brain_cost, alive` | `E`, `solvent`, `paid_basal`, `paid_action`, and `act` with all actions of insolvent agents cancelled | — |
 | S9 | **bonds**: `bonds.break_bonds`, then `bonds.form_bonds` | `partner, rev, act.release, geom.length, act.bond_want, act.bond_target, alive & solvent` | `partner, rev`, broken and formed counts | `BOND_PRIO` |
 | S10 | **harvest**: `energy.harvest` | `E, resource, fcell, act.harvest, solvent` | `E, resource, got` | — |
 | S11 | **combat**: `energy.combat` | `E, resource, fcell, act`, post-S9 `partner` | `E, resource, lost, gain, spill, residue` (I13); attacks on a target that became a bond partner at S9 are dropped unless `attack_bonded` | — |
 | S12 | **share**: `energy.share` | `E`, post-S9 `partner, rev`, start-of-step `s.partner`, `act.share`, `solvent` | `E, out, inflow, heat`; a slot sends only if its partner is unchanged since the start of the step | — |
 | S13 | **cap**: `energy.cap_energy` | `E` | `E ≤ e_max`, `overflow` | — |
 | S14 | **deaths**: `lifecycle.deaths` | `alive, solvent, E, lost, age, uid, generation, clade, partner, rev, resource, fcell`; director: `cat_mask` from `lifecycle.catastrophe_mask(pos, alive, env, ks[CATASTROPHE])` (start-of-step `pos`) | `survivor` mask (`alive` after deaths); corpses into `resource`; dead rows canonicalised; bonds of the dead dropped on both sides; death records | — |
-| S15 | **physics**: `physics.forces`, `physics.integrate` | start-of-step `pos, heading`; `nbr`; post-S14 `partner`; `act.thrust, act.contract, act.grip, act.turn`; `survivor` | `pos, vel, heading` for survivors; `v_clips`. Right after S15, survivors' `h ← h_new`, `msg ← act.msg`, `last_loss/harvest/inflow` are written and everything else gets 0 (§16.3). | — |
+| S15 | **physics**: `physics.forces`, `physics.integrate` (3D: `forces3`, `integrate3`, §27.3) | start-of-step `pos, heading`; `nbr`; post-S14 `partner`; `act.thrust, act.contract, act.grip, act.turn`; `survivor` | `pos, vel, heading` for survivors; `v_clips`. Right after S15, survivors' `h ← h_new`, `msg ← act.msg`, `last_loss/harvest/inflow` are written and everything else gets 0 (§16.3). | — |
 | S16 | **reproduction and immigration**: `lifecycle.allocate_lanes`, `lifecycle.reproduce` | the in-flight state after S15, `act.reproduce`, `act.child_bond`, `solvent`; director: `env_imm_request` | newborn rows (small arrays), parents debited, child bonds, `pend_*` (child weights), birth records | `BIRTH_PRIO`, `PLACEMENT`, `MUT_W1`, `MUT_W2`, `MUT_GENES`, `IMMIGRANT` |
 | S17 | **fields**: `fields.deposit_chem`, `fields.update_chem`, `fields.update_resource`, `fields.drift_patches` | `chem, act.emit, fcell, solvent, resource, patch_pos, patch_vel`; director: `env_regen_mult, env_season_*, env_patch_gain, env_drift_mult` | `chem, resource, patch_pos`, `regen_injected` | — |
 | S18 | **bookkeeping**: `step.finish` (private) | everything, including `desc`, `x`, `act` and `as_prop` for the kin counters | `step + 1`; `key = key_next`; `total`; `ledger_cum`; `counters`; `diag` OR-ed with `invariants.device_check(...)`. Director: after S17 `step.consume_env` writes `env_imm_request ← max(request − n_imm, 0)` and `env_cat_kill_p ← 0` | — |
+
+A 3D world runs the same sub-steps in the same order, with static 3D branches in S4, S5, S7, S8, S15 and S18
+(§27.8).
 
 **Why this order.**
 - **Decisions use the start-of-step snapshot.** Sensing, targets, bond geometry and forces all read start-of-step
@@ -379,7 +383,7 @@ class BirthRecords(NamedTuple):   # (M,) each
 class DeathRecords(NamedTuple):   # (DL,) each, DL = 2M
     uid: mx.array; age: mx.array; cause: mx.array; generation: mx.array; clade: mx.array; valid: mx.array
 class StepOut(NamedTuple):
-    counters: mx.array            # (N_COUNTERS,) int32, CounterIdx (§19.1)
+    counters: mx.array            # (n_counters(nd),) int32: CounterIdx (§19.1), then Counter3D in 3D (§27.8)
     ledger: mx.array              # (16,) int64, this step's ledger (LedgerIdx, §10.8)
     births: BirthRecords
     deaths: DeathRecords
@@ -539,8 +543,9 @@ Field samples use the agent's start-of-step field cell `fcell = cy·FG + cx`, wh
 `fields.sample_fields` computes rows 12–23 completely (gather, gradient, body-frame rotation and the normalisation
 above) and returns them as `FieldObs` (§16.2); `sensing.build_inputs` copies them unchanged, so the normalisation
 lives in exactly one module.
-Gradients use the four periodic neighbour cells. Bond-slot blocks keep their slot index for the bond's whole
-lifetime, so a recurrent brain can attach roles to particular slots.
+Gradients use the four periodic neighbour cells (2D; 3D adds a mirrored z difference and the up components go to
+the input tail, §27.6). Bond-slot blocks keep their slot index for the bond's whole lifetime, so a recurrent brain
+can attach roles to particular slots.
 
 **Contract.** `x` is finite and `|x| ≤ 1` element-wise (`tanh`, `clip` and `min` guards). `test_sensing.py` asserts
 this, and checks every index on hand-built scenes. The bond-offset clip matters: sensing reads start-of-step lengths,
@@ -895,6 +900,8 @@ paid_basal  = min(basal_due, E);   paid_action = min(action_due, E − paid_basa
   grip. They **always** die at S14 with cause `STARVED`: the death rule includes `~solvent` (§10.7), so a bond
   partner's share at S12 cannot rescue them; any inflow becomes part of their corpse. Hence
   `DEATHS_STARVED ≥ INSOLVENT` every step.
+- In 3D, `energy.pay_costs3` adds the pitch change to the turn term and a buoyancy due, paid last and booked in
+  `HEAT_BUOYANCY` (§27.7).
 
 ### 10.4 Harvest (S10, `energy.harvest`)
 
@@ -956,8 +963,9 @@ needs no gate: it gathers the sender's already-gated `out`. A newly formed bond 
 - **Cap (S13).** `overflow = max(E − e_max, 0)` and `E −= overflow` → `HEAT_OVERFLOW`. This guarantees `E ≤ e_max`
   before deaths, so harvest demand is never negative. That fixes the emergence proposal's fatal flaw.
 - **Death (S14).** `dead = alive & (~solvent | (E == 0) | (max_age > 0 & age ≥ max_age))`.
-  - `corpse = E + S` is scatter-added into `resource` at the dead agent's `fcell` → `FLOW_CORPSE`. For an
-    insolvent agent, `E` is whatever bond inflow it received at S12, so the ledger is unchanged.
+  - `corpse = E + S` is scatter-added into `resource` at the dead agent's `fcell` → `FLOW_CORPSE` (2D; in 3D at
+    the floor cell below it, §27.6). For an insolvent agent, `E` is whatever bond inflow it received at S12, so the
+    ledger is unchanged.
   - The field is then hard-capped: `R_over = max(R − R_HARD, 0)` and `R −= R_over` → `HEAT_OVERFLOW`.
   - Cause, first match wins: `STARVED` if `~solvent`; `KILLED` if `E == 0` and `lost > 0` this step; `STARVED` if
     `E == 0`; else `AGED`.
@@ -991,20 +999,22 @@ is `state.ledger_cum`.
 | 4 | `HEAT_SHARE` | sink | 12 | `FLOW_CORPSE` (E + S) | internal |
 | 5 | `HEAT_BIRTH` | sink | 13 | `FLOW_ENDOWMENT` | internal |
 | 6 | `HEAT_OVERFLOW` | sink | 14 | `FLOW_STRUCTURE` | internal |
-| 7 | `FLOW_HARVEST` | internal | 15 | `RESERVED` (always 0) | — |
+| 7 | `FLOW_HARVEST` | internal | 15 | `RESERVED` (always 0 in 2D); in 3D `HEAT_BUOYANCY` (§27.7) | — (3D: sink) |
 
 No director action adds a ledger term. A catastrophe death is a corpse (`FLOW_CORPSE`), an immigration request is
 admitted through the ordinary immigrant lanes (`INJECT_IMMIGRATION`), and a regeneration multiplier or patch gain
 only changes the integer regeneration amount (`INJECT_REGEN`).
 
-**Per-step closure.** This is checked on device every step (`Diag.LEDGER`) and in tests on the host:
+**Per-step closure.** This is checked on device every step (`Diag.LEDGER`) and in tests on the host (2D; in 3D
+`L[15]` is a sink too, §27.7):
 
 ```text
 TOTAL(after) − state.total == L[0] + L[1] − (L[2] + L[3] + L[4] + L[5] + L[6])
 L[FLOW_STOLEN] == L[FLOW_ATTACK_GAIN] + L[FLOW_SPILL]
 ```
 
-**Global closure.** This is checked on the host at every metrics interval, and gives `ledger_error`, which must be 0:
+**Global closure.** This is checked on the host at every metrics interval, and gives `ledger_error`, which must be 0
+(2D; in 3D the sinks are `state.sinks(3)`, which adds slot 15, §27.7):
 
 ```text
 TOTAL(now, recomputed in numpy int64) == total0 + cum[0] + cum[1] − Σ_{k=2..6} cum[k] == state.total
@@ -1014,7 +1024,8 @@ Any lost or created quantum anywhere in history is detected exactly. The per-ste
 step.
 
 **How it is computed on device.**
-- Per-agent flows are stacked into an `(N, F_A)` int32 matrix, and per-cell flows into `(FG², F_F)`.
+- Per-agent flows are stacked into an `(N, F_A)` int32 matrix, and per-cell flows into `(FG², F_F)` (3D: `paid_buoy`
+  is one more agent column and the cells are the `FZ·FG²` of the volume, §27.7).
 - Count × constant terms are formed directly in int64 from int32 counts: `HEAT_BIRTH = int64(n_birth)·birth_cost`,
   `FLOW_STRUCTURE = int64(n_birth)·S`, `INJECT_IMMIGRATION = int64(n_imm)·(e_init + S)`, and the `S·n_alive` term
   of `TOTAL` is `int64(n_alive)·S` (at 256k, `n_alive·S` exceeds 2³¹).
@@ -1032,8 +1043,8 @@ These bounds are validated by `config.validate` or monitored by diag bits.
 | `R` | `≤ R_HARD = 2²⁴ − 1` (exact in f32) | hard cap after corpse and spill deposits |
 | per-agent per-step flows | `< 2²¹` (corpse ≤ e_max + S) | validate `S < 2²⁰` |
 | `exact_sum` inputs | `0 ≤ x < 2³¹`, length ≤ 2²⁰ | validate `n_max ≤ 2²⁰`, `FG ≤ 1024` |
-| `proportional_take` | demand < 2¹⁶; contenders per pool < 2¹⁵ | validate `harvest_max, attack_max, share_rate < 2¹⁶`; `INT_HEADROOM` if max field-cell occupancy ≥ `occ_limit` or max attackers per target ≥ 2¹⁵ |
-| corpse and spill scatter into R | `R_HARD + occ·(2·e_max + S) < 2³¹` (per agent in the cell: corpse ≤ e_max + S, spill plus residue ≤ lost ≤ e_max) | `Dims.occ_limit = min(2¹⁵ − 1, (2³¹ − 1 − R_HARD) // (2·e_max + S))` = 1 060 at defaults; same `INT_HEADROOM` bit |
+| `proportional_take` | demand < 2¹⁶; contenders per pool < 2¹⁵ | validate `harvest_max, attack_max, share_rate < 2¹⁶`; `INT_HEADROOM` if max field-cell occupancy (3D: the x/y column occupancy, §27.7) ≥ `occ_limit` or max attackers per target ≥ 2¹⁵ |
+| corpse and spill scatter into R | `R_HARD + occ·(2·e_max + S) < 2³¹` (per agent in the cell: corpse ≤ e_max + S, spill plus residue ≤ lost ≤ e_max; in 3D `occ` is per x/y column, because corpses sink to the floor cell, §27.7) | `Dims.occ_limit = min(2¹⁵ − 1, (2³¹ − 1 − R_HARD) // (2·e_max + S))` = 1 060 at defaults; same `INT_HEADROOM` bit |
 | Q8 products | `Dp·230 < 2²⁸`, `grant·179 < 2²⁴`, `in·230 < 2²⁴` | the bounds above |
 | int64 (`uid`, totals, ledger) | — | elementwise ops only; count × constant ledger terms are cast to int64 before the multiply (§10.8) |
 
@@ -1052,6 +1063,8 @@ limit. `occ_limit` is derived from the config rather than a magic number, so it 
   (`revise_proto/r2_fert.py`, 8 seeds).
 - `c_ref ≈ 100 + 37 + 50` (`C_REF_MARGIN = 50`, `layout.py`).
 - So `K_est ≈ 37–40 k` agents, about 60% of `N_CAP`. `alife inspect` prints the value computed for the actual seed.
+
+In 3D, `c_ref` also holds a founder's buoyancy-cap upkeep and the regeneration sums every layer (§27.7).
 
 Local depletion and predation push the real figure lower. `alife inspect` prints the estimate. The defaults are a
 starting point, tuned with the slow ecology test (§22.5).
@@ -1327,7 +1340,8 @@ taken in integers so it stays exact on long runs. `A ∈ [0, 1]` keeps `w_p ≥ 
 ### 13.2 Resource (int32 quanta)
 
 - **Init:** `R = floor(resource_cap(8000) · fert₀)`.
-- **Per step (S17):** regenerate (§10.2), then diffuse with the exact integer flux stencil (`ops.int_diffuse`):
+- **Per step (S17):** regenerate (§10.2), then diffuse with the exact integer flux stencil (`ops.int_diffuse`; 3D:
+  `ops.int_diffuse_3d`, no flux through the floor and the surface, §27.6):
   ```text
   q  = (R · resource_diffusion_q8(4)) >> 8                       per direction (≈ 1.6%)
   R ← R − 4q + roll(q, +1, 0) + roll(q, −1, 0) + roll(q, +1, 1) + roll(q, −1, 1)
@@ -1345,10 +1359,11 @@ taken in integers so it stays exact on long runs. `A ∈ [0, 1]` keeps `w_p ≥ 
 ### 13.3 Chemical / signal channels (NCH = 3, float32)
 
 **Deposit.** Each solvent agent emits `floor(emit_c · 256)` integer quanta per channel. These are accumulated with
-`scatter_add_i32` at flat index `c·FG² + fcell`, which is deterministic. Then
+`scatter_add_i32` at flat index `c·FG² + fcell` (3D: `c·FZ·FG² + fcell`, §27.6), which is deterministic. Then
 `chem += dep_q · chem_deposit_scale (1/256)`, so a full-strength emitter adds 1.0 per step.
 
-**Update.** A 5-point explicit stencil via `mx.roll`, clamped to `[0, chem_max = 16]`:
+**Update.** A 5-point explicit stencil via `mx.roll`, clamped to `[0, chem_max = 16]` (2D; 3D: a 7-point stencil
+with mirrored z boundaries, §27.6):
 
 ```text
 chem_c ← (1 − λ_c) · (chem_c + D_c · (roll₄(chem_c) − 4·chem_c))
@@ -1461,7 +1476,7 @@ director-off one at every step (§3).
 **Golden test.** `tests/test_determinism.py::test_golden` pins the `tiny_cfg` (tiny preset, f32 weights)
 `legacy_state_digest` after 50 steps (the pin was not changed by the env fields). It runs only
 when `mlx.__version__` equals the version recorded next to the golden value, so an MLX upgrade becomes a deliberate
-change.
+change. The 3D golden (`state_digest` of `tiny3d_cfg`) is §27.8's.
 
 ---
 
@@ -1574,7 +1589,7 @@ artificial-life/
   docs/DESIGN.md                 this document
   src/alife/
     __init__.py                  __version__; re-exports Config, State, load_config, init_state, make_step
-    presets/{tiny,dev,64k,256k,fast}.toml   package data
+    presets/{tiny,dev,64k,256k,tiny3d,fast}.toml   package data
     config.py                    Config dataclasses, Dims, presets, load/save/override/validate/hash
     layout.py                    structural constants, IN_*/OUT_*/NBR_*/BOND_* indices, names, GENOME_LAYOUT_VERSION; Layout per dims
     state.py                     State, LedgerIdx, CounterIdx, Diag, DeathCause, init_state, totals, (de)serialisation, to_numpy
@@ -1639,10 +1654,10 @@ class ConfigError(ValueError): ...
     z_lo: float; z_hi: float; z_ground: float                             # float32 z bounds (§27.2); 0.0 in 2D
 def dims(cfg: Config) -> Dims                                             # functools.cache
 POST_V01_KEYS; UNHASHED_KEYS; THREE_D_KEYS                                # §17; the 3D keys (§27.1)
-DIMS_SUPPORTED: tuple[int, ...] = (2,)                                    # world.dims values validate accepts (§27.1)
+DIMS_SUPPORTED: tuple[int, ...] = (2, 3)                                  # world.dims values validate accepts (§27.1)
 def is_3d(cfg: Config) -> bool                                            # world.dims == 3 (static)
 def require_2d(cfg: Config, what: str) -> None                            # ConfigError for a 3D config in a 2D-only tool
-PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k")                 # plus overlay "fast"
+PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d")       # plus overlay "fast"; tiny3d: §27.8
 def load_config(path: str | Path | None = None, *, preset: str | None = None,
                 overlays: Sequence[str] = (), overrides: Sequence[str] = ()) -> Config   # validates
 def apply_overrides(cfg: Config, overrides: Sequence[str]) -> Config      # "section.key=value", typed parse
@@ -1679,6 +1694,8 @@ def sinks(nd: int) -> tuple[LedgerIdx, ...]                                # SIN
 def ledger_names(nd: int) -> tuple[str, ...]                               # slot 15: RESERVED (2D) | HEAT_BUOYANCY (3D)
 def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]   # the one State schema (§27.1)
 class CounterIdx(IntEnum): ...     # §19.1 (N_COUNTERS = 27)
+class Counter3D(IntEnum): Z_FLOOR_CLAMPS = 27; Z_SURFACE_CLAMPS = 28; GROUNDED = 29    # 3D only (§27.8)
+def n_counters(nd: int) -> int                                             # len(StepOut.counters): 27 | 30 (3D)
 class Diag(IntFlag): ...           # §22.3
 class DeathCause(IntEnum): STARVED = 0; KILLED = 1; AGED = 2; CATASTROPHE = 3
 R_HARD: Final = (1 << 24) - 1
@@ -1733,6 +1750,7 @@ def body_axes(cos_h: mx.array, sin_h: mx.array, cos_p: mx.array, sin_p: mx.array
 def to_body3(v: mx.array, cos_h: mx.array, sin_h: mx.array, cos_p: mx.array, sin_p: mx.array
              ) -> mx.array                                                 # (...,3) → (fwd, lat, up) (§27.2)
 def int_diffuse(r: mx.array, d_q8: int) -> mx.array
+def int_diffuse_3d(r: mx.array, d_q8: int) -> mx.array                     # (FZ,FG,FG): no flux in z, d_q8 ≤ 42 (§27.6)
 def floor_i32(x: mx.array) -> mx.array
 def q8(f: float) -> int                                                      # host: round(f·256)
 def mul_q8(x: mx.array, q: int) -> mx.array                                 # (x·q) >> 8
@@ -1745,7 +1763,8 @@ def find_neighbors(pos: mx.array, alive: mx.array, cfg: Config) -> Neighbors
 class FieldObs(NamedTuple): res: mx.array; res_grad: mx.array; chem: mx.array; chem_grad: mx.array
                             # all f32 and already the final §5 inputs (sensing copies them into rows 12–23):
                             # res (N,) = IN_RES; res_grad (N,2) = IN_RES_GRAD; chem (N,NCH) = IN_CHEM;
-                            # chem_grad (N,NCH,2) = IN_CHEM_GRAD as (fwd, lat) per channel
+                            # chem_grad (N,NCH,2) = IN_CHEM_GRAD as (fwd, lat) per channel;
+                            # 3D: res_grad (N,3), chem_grad (N,NCH,3) as (fwd, lat, up) (§27.6)
 def init_patches(key_pos: mx.array, key_vel: mx.array, cfg: Config) -> tuple[mx.array, mx.array]
 def season_weights(step: mx.array, cfg: Config, env: Env | None = None) -> mx.array   # (PP,) f32 (§13.1)
 def fertility(patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
@@ -1754,18 +1773,20 @@ def vertical_profile(cfg: Config) -> mx.array                              # 3D:
 def regen_rate(patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
                env: Env | None = None) -> mx.array                        # (FG,FG) int32; 3D (FZ,FG,FG)
 def cell_index(pos: mx.array, cfg: Config) -> mx.array                    # (N,) int32; 3D z-major (§27.5)
-def sample_fields(resource: mx.array, chem: mx.array, fcell: mx.array, heading: mx.array, cfg: Config) -> FieldObs
-def deposit_chem(emit: mx.array, fcell: mx.array, active: mx.array, cfg: Config) -> mx.array   # (NCH*FG*FG,) int32
-def update_chem(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array
+def sample_fields(resource: mx.array, chem: mx.array, fcell: mx.array, heading: mx.array, cfg: Config,
+                  *, pitch: mx.array | None = None) -> FieldObs              # pitch required in 3D (§27.6)
+def deposit_chem(emit: mx.array, fcell: mx.array, active: mx.array, cfg: Config) -> mx.array   # (NCH*n_cells,) int32
+def update_chem(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array     # 3D: 7-point, mirrored z (§27.6)
 def update_resource(resource: mx.array, patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
                     env: Env | None = None) -> tuple[mx.array, mx.array]
-                    # (resource', inc (FG,FG) int32) — regen then int diffusion
+                    # (resource', inc (FG,FG) int32) — regen then int diffusion; 3D (FZ,FG,FG), int_diffuse_3d
 def drift_patches(patch_pos: mx.array, patch_vel: mx.array, cfg: Config, env: Env | None = None) -> mx.array
 
 # sensing.py
 def neighbor_descriptors(s: State, nbr: Neighbors, cfg: Config) -> mx.array          # (N,K,NF) f32; 3D NF = 8 (§27.2)
 def build_inputs(s: State, age: mx.array, nbr: Neighbors, desc: mx.array, geom: BondGeom,
-                 fobs: FieldObs, key: mx.array, cfg: Config) -> mx.array             # (N,D_IN) f32
+                 fobs: FieldObs, key: mx.array, cfg: Config,
+                 *, grounded: mx.array | None = None) -> mx.array                   # (N,D_IN) f32; grounded: 3D (§27.6)
 
 # brain.py
 def init_weights(key_w1: mx.array, key_w2: mx.array, n_rows: int, cfg: Config) -> tuple[mx.array, mx.array]
@@ -1815,10 +1836,13 @@ def integrate3(pos: mx.array, heading: mx.array, pitch: mx.array, force: mx.arra
 # energy.py
 class Costs(NamedTuple): energy; solvent; paid_basal; paid_action                  # (N,) each
 def pay_costs(energy, act: Actions, n_bonds, brain_cost, alive, cfg: Config) -> Costs
+class Costs3(NamedTuple): energy; solvent; paid_basal; paid_action; paid_buoy      # (N,) each; 3D (§27.7)
+def pay_costs3(energy, act: Actions, mo: Motion3, n_bonds, brain_cost, buoy_cap, alive, cfg: Config) -> Costs3
+                    # 3D: the pitch in the turn term, the buoyancy due paid last (HEAT_BUOYANCY, §27.7)
 def harvest(energy, resource, fcell, act: Actions, solvent, cfg: Config
             ) -> tuple[mx.array, mx.array, mx.array]                               # (E, resource, got)
 class Combat(NamedTuple): energy; resource; lost; gain; spill; residue; attack; hit; max_attackers
-                    # (N,) int32 ×5 except resource (FG,FG); gain, spill per attacker; lost, residue per victim
+                    # (N,) int32 ×5 except resource (FG,FG) (3D: (FZ,FG,FG)); gain, spill per attacker; lost, residue per victim
                     # (residue: what a fully drained victim loses beyond the grants, spilled into its own cell, §11);
                     # attack, hit (N,) bool (attackers after the S9-partner gate; grant > 0); max_attackers () int32
 def combat(energy, resource, fcell, act: Actions, partner, cfg: Config) -> Combat     # partner: post-S9
@@ -1832,7 +1856,8 @@ class LaneKind(IntEnum): PAD = 0; BIRTH = 1; IMMIGRANT = 2
 class DeathRecords(NamedTuple): uid; age; cause; generation; clade; valid           # (DL,)
 class BirthRecords(NamedTuple): uid; parent_uid; clade; generation; slot; valid     # (M,)
 class Deaths(NamedTuple): survivor; dead; energy; uid; partner; rev; resource; corpse; r_overflow; cause; records
-    # (N,) except resource, r_overflow (FG,FG); corpse = E + S on dead rows else 0; cause = DeathCause on dead
+    # (N,) except resource, r_overflow (FG,FG) (3D: (FZ,FG,FG), corpses in the floor cell, §27.6);
+    # corpse = E + S on dead rows else 0; cause = DeathCause on dead
     # rows, −1 elsewhere. Unused record lanes (deaths and births) hold uid/parent_uid/slot −1 and 0 elsewhere.
 def flush_pending(W1, W2, pend_slot, pend_W1, pend_W2) -> tuple[mx.array, mx.array]   # via ops.set_rows
 def deaths(alive, solvent, energy, lost, age, uid, generation, clade, partner, rev, resource, fcell, cfg: Config,
@@ -1851,25 +1876,27 @@ def reproduce(s: State, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: C
 
 # step.py
 class StepOut(NamedTuple): counters; ledger; births: BirthRecords; deaths: DeathRecords     # §3
-def step(s: State, cfg: Config) -> tuple[State, StepOut]
+def step(s: State | State3, cfg: Config) -> tuple[State | State3, StepOut]   # State3 in 3D (§27.8)
 def consume_env(s: State, env: Env, lanes: Lanes) -> State                 # env_imm_request carry-over, env_cat_kill_p reset (§12.7, §12.9)
 def make_step(cfg: Config, *, compile: bool | None = None) -> Callable[[State], tuple[State, StepOut]]
-    # compile=None → cfg.run.compile
+    # compile=None → cfg.run.compile; in 3D the callable takes and returns State3 (§27.8)
 
 # invariants.py
 def device_check(s: State, ledger: mx.array, prev_total: mx.array, max_cell_occ: mx.array,
                  max_attackers: mx.array, overflow_cells: mx.array, v_clips: mx.array, cfg: Config) -> mx.array
-                    # int32 Diag bits for this step (ORed into s.diag by step)
+                    # int32 Diag bits for this step (ORed into s.diag by step); 3D terms in §27.8
 def env_out_of_range(s: State, cfg: Config) -> mx.array                   # device bool: any env_* value non-finite / outside §2.2 ranges
 def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | None = None) -> list[str]
                     # host numpy; [] == OK. Per-step ledger = s.ledger_cum − prev.ledger_cum; births and immigrants
                     # from out.births.valid. Stateless: a cumulative dead-uid set, if wanted, lives in the test harness.
+                    # 3D: the closures over state.sinks(3), no RESERVED rule, and _check_rows_3d (§27.8)
 
 # metrics.py
 def components(partner: mx.array, alive: mx.array, iters: int) -> tuple[mx.array, mx.array]   # labels, converged
 def snapshot_metrics(s: State, cfg: Config, *, heavy: bool) -> dict[str, Any]     # host floats/ints/lists
 def interval_row(step: int, counters: np.ndarray, ledgers: np.ndarray, snap: Mapping[str, Any],
-                 perf: Mapping[str, float]) -> dict[str, Any]                     # counters (T,27), ledgers (T,16)
+                 perf: Mapping[str, float], *, nd: int = 2) -> dict[str, Any]
+                    # counters (T, n_counters(nd)), ledgers (T,16); the ledger keyed by ledger_names(nd) (§27.8)
 def carrying_capacity(s: State, cfg: Config, step: mx.array | None = None, env: Env | None = None) -> float
                     # step + env: the live regeneration (the director's K_est, §26.5)
 
@@ -1993,9 +2020,13 @@ to `deaths`; S16 passes `imm_request=env.imm_request` to `allocate_lanes`; S17 p
 `mx.compile` fails (`_Map_base::at`) on a constant output next to arrays that use it. `bench._StagedStep` mirrors
 these arguments.
 
+**In 3D** (static `d3`, the table of §27.8) S4 also computes the grounding and passes the pitch, S7 adds
+`decode_motion3`, S8 calls `pay_costs3`, S15 calls `forces3` and `integrate3` and writes the pitch back, and
+`finish` adds the `HEAT_BUOYANCY` column, `Counter3D` and the column occupancy; the 2D lines above are unchanged.
+
 `finish` is a private helper in `step.py`. It also computes
 `max_cell_occ = ops.scatter_add_i32(FG², fcell, 1, s.alive).max()`, the start-of-step field-cell occupancy that
-`device_check` needs for the headroom bit. It:
+`device_check` needs for the headroom bit (in 3D the x/y column occupancy, `fcell mod FG²`, §27.7). It:
 1. builds the per-agent flow matrix `[paid_basal, paid_action, got, cb.lost, cb.gain, cb.spill + cb.residue, sh.out,
    sh.heat, e_over, dt.corpse]` (all (N,) int32; `sh.out` and `sh.heat` are already summed over slots; the spill
    column is `FLOW_SPILL`), the per-cell matrix
@@ -2005,7 +2036,8 @@ these arguments.
    `FLOW_STRUCTURE = int64(n_birth)·S`, `INJECT_IMMIGRATION = int64(n_imm)·(e_init + S)`;
 4. assembles `ledger (16,)`, adds it to `ledger_cum`, and computes the new `total` (via `state.total_energy`, whose
    `S·n_alive` term is int64);
-5. assembles `counters (27,)`. The kin counters are computed here and nowhere else:
+5. assembles `counters (27,)` (3D: (30,), `Counter3D` appended, §27.8). The kin counters are computed here and
+   nowhere else:
    - `ATTACKS = Σ cb.attack`, `ATTACK_HITS = Σ cb.hit`;
    - `KIN_ATTACK_SUM = Σ_{cb.attack} round(256·desc[i, act.attack_k, NBR_KIN])`,
      `KIN_ATTACK_BASE = Σ_{cb.attack} round(256·x[i, IN_KIN_MEAN])`;
@@ -2106,6 +2138,7 @@ class EnergyConfig:
     defend_cost: int = 20
     attack_cost: int = 50
     harvest_max: int = 400
+    buoyancy_cost: int = 0;  buoyancy_cap_cost: int = 0                     # 3D only (§27.7): buoyancy use, cap upkeep
 
 @dataclass(frozen=True)
 class CombatConfig:
@@ -2195,6 +2228,7 @@ class Config:
 | `dev` | `population: n_max 16384, n_init 4096, max_births_per_step 256`; `world.size 512`; `fields: n_patches 12, patch_sigma 32` |
 | `64k` | (empty: the defaults) |
 | `256k` | `population: n_max 262144, n_init 65536, max_births_per_step 4096`; `world.size 2048`; `fields.n_patches 96` |
+| `tiny3d` | `tiny`'s, plus `world: dims 3, height 24`; `physics: gravity 0.03, floor_eps 0.1, buoyancy_max 0.04`; `energy: buoyancy_cost 16, buoyancy_cap_cost 8`; `mutation: buoy_init 0.5, buoy_sigma 0.02`; `fields: chem_diffusion [0.16, 0.10, 0.16], benthic_lambda 8, photic_amp 0.5, photic_lambda 8` (provisional, §27.8) |
 | `fast` (overlay) | `sensing: k_neighbors 6, cell_capacity 12`; `brain.hidden 24` |
 
 **Loading** (`load_config`). Precedence, lowest first:
@@ -2217,7 +2251,8 @@ except `run`. **Keys added after v0.1 are omitted from the hash at their default
 `population.immigration_every`, `population.immigration_count`, `fields.season_period`,
 `fields.season_amplitude`, `fields.season_mode`, `director.enabled`, `world.dims`, `world.height` (§27.1),
 `physics.gravity`, `physics.floor_eps`, `physics.buoyancy_max`, `mutation.buoy_init`, `mutation.buoy_sigma`,
-`fields.benthic_lambda`, `fields.photic_amp`, `fields.photic_lambda` (§27.1, §27.3–§27.5); the
+`fields.benthic_lambda`, `fields.photic_amp`, `fields.photic_lambda`, `energy.buoyancy_cost`,
+`energy.buoyancy_cap_cost` (§27.1, §27.3–§27.5, §27.7); the
 director's policy keys `persona`, `goal`, `rule_every`, `budget_per_100k`, (step 3) `llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` and (§26.11) `yoke_log` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
 because only `enabled` changes the compiled step). A section that this leaves empty
 (`director`) is omitted from the hashed dict too, so the hash does not change when a section is added. A
@@ -2229,9 +2264,9 @@ changes the hash, as for any dynamics key.
 
 **`validate`** collects every violation and raises one `ConfigError`:
 - **World geometry:** `size / field_cell` is an integer with `3 ≤ FG ≤ 1024`; `G_h = floor(size/radius) ≥ 3`.
-- **World dimensions** (§27.1): `world.dims ∈ {2, 3}` and in `config.DIMS_SUPPORTED` (`(2,)`: dims = 3 is not
-  enabled yet); in 2D every 3D key (`config.THREE_D_KEYS`) keeps its default (`height` and the gravity, buoyancy and
-  vertical-profile keys 0); the 3D-only rules are listed in §27.1.
+- **World dimensions** (§27.1): `world.dims ∈ {2, 3}` and in `config.DIMS_SUPPORTED` (`(2, 3)` since PR 3,
+  §27.8); in 2D every 3D key (`config.THREE_D_KEYS`) keeps its default (`height` and the gravity, buoyancy and
+  vertical-profile keys 0); the 3D-only rules are listed in §27.1 (the buoyancy costs' in §27.7).
 - **Interaction ranges:** `radius ≥ max(form_range, combat.range, 2·physics.radius)`; `NS ≤ K ≤ 9·C` (2D;
   `27·C` in 3D, §27.1).
 - **Population:** `64 ≤ n_max ≤ 2²⁰`; `1 ≤ M ≤ n_max // 4`; `1 ≤ n_init ≤ N_CAP`; `immigration_floor ≤ N_CAP`;
@@ -2379,7 +2414,7 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
 
 ## 19. Metrics for emergence
 
-### 19.1 Per-step counters (`CounterIdx`, `StepOut.counters`, int32 (27,))
+### 19.1 Per-step counters (`CounterIdx`, `StepOut.counters`, int32 (27,); 2D, 3D (30,): §27.8)
 
 | idx | name | idx | name |
 |---|---|---|---|
@@ -2404,7 +2439,8 @@ All four kin counters and `BOND_PROPOSERS` are assembled by `step.finish` (§16.
 
 `BONDS_BROKEN` is the decrease in occupied slots across S9a plus across S14, halved. The runner keeps the per-step
 `StepOut`s of an interval as small evaluated arrays and stacks them on the host at the flush. That gives counters
-`(T,27)` and ledgers `(T,16)` as int64 sums, so no step's events are lost.
+`(T,27)` and ledgers `(T,16)` as int64 sums, so no step's events are lost. In 3D the counters are `(T,30)`: the 27
+above, then `state.Counter3D` (§27.8).
 
 ### 19.2 Interval row (`metrics.jsonl`)
 
@@ -2427,7 +2463,8 @@ Every row has these groups:
     as partners. Both biases are null when their denominator is 0.
 - **Energy:**
   - `E_agents`, `E_structure`, `E_field`, `E_total`, all host int64;
-  - `ledger` (interval sums by `LedgerIdx` name);
+  - `ledger` (interval sums by `LedgerIdx` name; `state.ledger_names(nd)`, so slot 15 is `HEAT_BUOYANCY` in 3D,
+    §27.8);
   - **`ledger_error`** (must be 0, §10.8);
   - `energy_mean`, `energy_median`.
 - **Life history:** `age_mean`, `generation_max`, `generation_mean`.
@@ -2437,7 +2474,7 @@ Every row has these groups:
   - `tag_var` (trace of the tag covariance over alive agents);
   - `sigma_q10/q50/q90`, `rate_q10/q50/q90`, `frac_q10/q50/q90`;
   - `brain_cost_mean`.
-- **Fields:** `resource_mean`, `chem_mean` (list of 3).
+- **Fields:** `resource_mean`, `chem_mean` (list of 3). In 3D both are over every cell of the volume (§27.8).
 - **Environment** (`env`, only when `director.enabled`): the live levers at the snapshot (`regen_mult`, `season_amp`,
   `season_period`, `drift_mult`, `imm_request`, `cat_radius`, `cat_kill_p`, and the range and zero-count of
   `patch_gain`). The row is written before the director acts at that step, so `env` shows what the interval ran with.
@@ -2616,7 +2653,7 @@ Pinned details (impl, WP6):
 ## 21. CLI (`alife`, argparse, entry point `alife.cli:main`)
 
 ```text
-alife run      [--preset tiny|dev|64k|256k] [--overlay fast ...] [--config PATH] [--set section.key=value ...]
+alife run      [--preset tiny|dev|64k|256k|tiny3d] [--overlay fast ...] [--config PATH] [--set section.key=value ...]
                [--seed S] [--steps N] [--out DIR] [--overwrite] [--init-from RUN[:STEP]|FILE.safetensors]
                [--metrics-every N] [--checkpoint-every N] [--checks cheap|off] [--no-compile] [--quiet]
                [--director off|live|replay] [--replay-log LOG]
@@ -2749,6 +2786,8 @@ Pinned details (impl, WP5):
   - `tiny_cfg_bf16` is the same with `bfloat16`, used only by a digest / `full_check` / metrics smoke test (F17).
   - `micro_cfg` is hand-built for unit scenes: `n_max 64`, `M 8`, `n_init 8`, `world.size 48`, which gives
     `G_h = 8` and `FG = 12`.
+  - 3D (§27.8): `tiny3d_cfg` is the `tiny3d` preset with f32 weights, and `micro3d_cfg` the `micro_cfg` sizes on
+    `tiny3d` (`tests/helpers.MICRO3D`: height 24, `FZ = 6`, `G_z = 4`).
   - Scenes are built with `make_scene(cfg, agents=[...])`, a test helper that writes explicit positions,
     energies, bonds and weights into a fresh `init_state`.
 - **References** are plain numpy or Python loops, and are compared exactly.
@@ -2827,6 +2866,10 @@ stateless). `full_check` verifies:
    `birth_step == step − 1` is in `pend_slot`.
 8. **Age.** `birth_step ≤ step − 1` for alive rows.
 
+In 3D the closures include `HEAT_BUOYANCY`, `RESERVED == 0` is not checked, and `_check_rows_3d` adds the z, pitch,
+`buoy_cap` and boundary-velocity rules (§27.8); `tests/test_step_3d.py` runs `micro3d_cfg` through the same
+checks after every step.
+
 **Stress variants** (each 60 steps in the fast suite and 150 steps under `slow`, on `tiny_cfg`):
 - forced high attack logits;
 - every agent reproducing (capacity pressure);
@@ -2862,7 +2905,7 @@ metrics interval. On any error bit it dumps the state to `diag/`, prints the dec
 | 8 | `BOND_ASYM` | `bonds.symmetric_ok` is false |
 | 16 | `NONFINITE` | non-finite `pos`, `vel`, `h` or `chem` |
 | 32 | `FIELD_RANGE` | `R < 0` or `R > R_HARD`; with `director.enabled`, also any `env_*` value non-finite or outside its §2.2 range (end-of-step state in `device_check`, start-of-step state in `step.finish`) |
-| 64 | `INT_HEADROOM` | `max_cell_occ ≥ Dims.occ_limit` (1 060 at defaults, §10.9) or `max_attackers ≥ 2¹⁵`: a real int32 precondition, unreachable with contact-attenuated thrust (F18) |
+| 64 | `INT_HEADROOM` | `max_cell_occ ≥ Dims.occ_limit` (1 060 at defaults, §10.9; in 3D per x/y column, §27.7) or `max_attackers ≥ 2¹⁵`: a real int32 precondition, unreachable with contact-attenuated thrust (F18) |
 | 128 | `CAPACITY` | `n_alive > N_CAP` |
 | 256 | `POS_RANGE` | `pos < 0` or `pos ≥ L` |
 | 1<<16 | `CELL_OVERFLOW_WARN` | warning: `overflow_cells > 0` |
@@ -2876,7 +2919,7 @@ metrics interval. On any error bit it dumps the state to `diag/`, prints the dec
 and `chem` (`NONFINITE`); resource range (`FIELD_RANGE`); int32 preconditions (`INT_HEADROOM`); the population cap
 (`CAPACITY`); and position range (`POS_RANGE`). Everything else in §22.2 (uid uniqueness and monotonicity, gene,
 `h`, `heading`, `tag` and `chem` ranges, the pending-buffer invariant, the remaining dead-row canonical fields, age)
-is checked only by the host `full_check`.
+is checked only by the host `full_check`. The 3D terms of both checks (no new bit) are in §27.8.
 
 ### 22.4 Determinism tests
 
@@ -2888,6 +2931,9 @@ is checked only by the host `full_check`.
 - **Compiled vs eager** (marker `slow`). Population and ledger trajectories match for 30 steps. Bitwise equality is
   not required, but it was observed on CPU.
 - **`test_golden`** (marker `golden`): the `tiny_cfg` digest after 50 steps equals the pinned value.
+
+**`test_determinism_3d.py`**: the same checks on `tiny3d_cfg` (eager against compiled in the fast suite), and
+`test_golden_3d` (§27.8).
 
 **`test_resume_purity.py`** (WP5):
 - **Resume.** 50 steps → `RunDir.save_checkpoint` → `load_checkpoint` → 50 steps equals 100 uninterrupted steps
@@ -2911,12 +2957,18 @@ is checked only by the host `full_check`.
 6. `run --init-from tmp --set combat.attack_bonded=true --out fork` starts a fork.
 7. `bench --preset tiny --steps 5 --warmup 2` writes JSON.
 
+**`test_cli_smoke_3d.py`** does the same for a 100-step `tiny3d` run (§27.8): clean rows, `inspect --check`,
+bitwise resume, the 2D-only tools refusing it, and a fork that may not change `world.dims` or `world.height`.
+
 **`test_affordances.py`** runs `tiny` for 400 steps with the pinned seed. Every affordance must be exercised: the
 interval totals of births, `DEATHS_STARVED + DEATHS_KILLED`, attacks with hits, bonds formed, bonds broken, child
 bonds, sharers, emitters and harvest are all > 0, and the population is > 0 at the end.
 - If a parameter change makes an affordance unreachable, this test fails.
 - The test builds founders with a fixed bias row from a test-only helper, so every action fires.
 - This affects the test only, not the engine defaults (founders are fully random).
+
+**`test_affordances_3d.py`** exercises the 3D affordances in one-step `micro3d_cfg` scenes (§27.8); the 400-step 3D
+run is `64k3d` tuning work (docs/3D.md PR 6).
 
 **`test_ecology.py`** (marker `slow`) runs the `dev` preset (float32 weights, as `tiny_cfg`, F19) with default random
 founders for 3 000 steps. The
@@ -3705,7 +3757,9 @@ grows with each PR. PR 1 (§27.1) adds the dims constant and its plumbing only: 
 unchanged (`config.json` and the embedded config only gain the two new keys at their defaults; the existing tests
 and the golden digest are untouched). PR 2 (§27.2–§27.5) adds the 3D geometry, physics, state and static lattice as
 functions the step does not call yet: `world.dims = 3` is still rejected, and 2D is again unchanged (config files
-gain the PR 2 keys at their defaults).
+gain the PR 2 keys at their defaults). PR 3 (§27.6–§27.8) adds the field dynamics, the buoyancy costs and their
+ledger term, and the step wiring, and enables `world.dims = 3` with the `tiny3d` preset; 2D is again unchanged
+(config files gain the two cost keys at their defaults).
 
 ### 27.0 Overview and decision record
 
@@ -3740,11 +3794,11 @@ the compiled step and the state shapes. Both are in `config.POST_V01_KEYS` (omit
 defaults, so every existing run keeps its hash) and in `config.THREE_D_KEYS`, never in `UNHASHED_KEYS`.
 `config.is_3d(cfg)` is the host predicate; simulation code branches on `dims(cfg).d3`.
 
-**Gate and validation.** `world.dims` must be 2 or 3 and in `config.DIMS_SUPPORTED`, which is `(2,)` until PR 3
-(read at call time, so tests of 3D code can widen it); dims = 3 reports "world.dims = 3 is not enabled yet". In a
-2D world every key of `THREE_D_KEYS` except `world.dims` must keep its default. The 3D rules apply only when
-dims = 3 (gated or not), each with its own message, and no 2D message changed. They round only finite ratios, so a
-non-finite `size` or `height` is a listed problem, never an exception:
+**Gate and validation.** `world.dims` must be 2 or 3 and in `config.DIMS_SUPPORTED`, which is `(2, 3)` since PR 3
+enabled 3D (`(2,)` before; read at call time, so a test can narrow it); a dims outside it reports "world.dims = 3
+is not enabled yet". In a 2D world every key of `THREE_D_KEYS` except `world.dims` must keep its default. The 3D
+rules apply whenever dims = 3 (also under a narrowed gate), each with its own message, and no 2D message changed.
+They round only finite ratios, so a non-finite `size` or `height` is a listed problem, never an exception:
 - `height` is finite and `> 2·physics.radius`;
 - `height / field_cell` is an integer `FZ ≥ 2`;
 - `FZ·FG² ≤ 2²⁰` (the limit of `ops.exact_sum`, which sums the resource for `TOTAL`);
@@ -3815,7 +3869,9 @@ file keeps its exact key set. `FORMAT_VERSION` and `RNG_LAYOUT_VERSION` are unch
 - `load_checkpoint` refuses a file whose `dims` (absent = 2) differs from `world.dims` ("cross-dimension
   resume/fork is not supported", exit 4), with or without the hash check, before reading any array.
 - A fork refuses a `world.dims` or `world.height` different from the source's (exit 4, nothing written); resume
-  refuses both as dynamics keys (exit 2). Until 3D is enabled a fork to dims = 3 already fails validation (exit 2).
+  refuses both as dynamics keys (exit 2). (Before PR 3 enabled 3D, a fork to dims = 3 failed validation first,
+  exit 2.) A 3D fork also refuses a changed `physics.radius` (exit 4, nothing written): the radius sets `z_lo` and
+  `z_hi` (§27.2), and the source's rows, dead ones included, sit within its own bounds.
 - The 2D-only tools call `config.require_2d(cfg, what)` (`ConfigError`, exit 2) before any state is loaded or
   built: `alife render` and `alife view`, `render.render_frame`, `viewer.ViewerSession` and `viewer.run_viewer`
   (before pygame is imported), and `analysis.signals` (`decode`, `analyse`).
@@ -3887,7 +3943,7 @@ the seven §5 features, with (`NBR_DX`, `NBR_DY`) the (fwd, lat) components of `
 `NBR_DZ = 7`, the up component of `off / R`. Each is clipped to `[−1, 1]` (every component of an offset inside the
 sphere is at most R) and zeroed where invalid. The targeting descriptor `φ = desc[..., 1:]` is seven wide:
 `[dx, dy, kin, rele, msg0, bonded, dz]`. `IN_NBR` stays `desc[:, :NS, :7]`; the NS nearest `NBR_DZ` values are the
-tail block `IN_NBR_DZ` (wired in PR 3).
+tail block `IN_NBR_DZ` (§27.6).
 
 **Action decode.** In 3D `actions.decode` builds each query as its 2D block of six followed by its `*_DZ` column,
 `[y[OUT_Q_BOND : +6], y[OUT_Q_BOND_DZ]]` and likewise for attack, in the order of `φ`. In 2D the `*_DZ` indices are
@@ -3935,7 +3991,7 @@ F_i = thrust_max · a_i · att_i · fwd_i                       fwd_i = body_axe
   sinks, and buoyancy can lift it. An isolated agent sinks at `gravity / drag` per step (overdamped) and climbs at
   full pitch at `(thrust_max·sin φ − gravity) / drag`, which `gravity < thrust_max·sin(PITCH_MAX)` (§27.1) keeps
   positive. Gravity has no ledger term (an overdamped body force does no bookkeeping work); the buoyancy costs and
-  their `HEAT_BUOYANCY` term come in PR 3.
+  their `HEAT_BUOYANCY` term are §27.7's.
 - Springs and contacts are §9's expressions on 3-vectors. `min_image` is the identity on z (§27.2), so `bonds` has
   no 3D code (`BondGeom.off` is (N,B,nd)) and the bitwise pair antisymmetry of §9 holds in 3D. The body forces act
   on z only, so x and y stay antisymmetric under gravity.
@@ -3964,7 +4020,7 @@ vel' = (v_x, v_y, 0 on a clamped row, else v_z)
   `v_max` on a `v_z` that the clamp then cancels (`√(0.5² − 0.03²) ≈ 0.499` left for x and y at `gravity = 0.03`).
 - A clamp moves the agent to the boundary (an agent 0.2 above the floor falling at 0.5 lands at `z_lo`; it does not
   hang 0.2 above it) and zeroes only the stored `v_z` of the clamped rows; x and y move and wrap as usual. `vel` is
-  read only by sensing (`IN_VEL`, `IN_VEL_UP`, PR 3), so an agent resting on the floor senses no vertical motion.
+  read only by sensing (`IN_VEL`, `IN_VEL_UP`, §27.6), so an agent resting on the floor senses no vertical motion.
   Under gravity every resting floor agent clamps every step, so the floor-clamp count is about the grounded
   population.
 - `Integrated3(pos, vel, heading, pitch, v_clips, z_floor, z_surface)`: the three counts are () int32 (`V_CLIPS`
@@ -4049,7 +4105,7 @@ so both ends are reachable and can be left again (logit-space noise, as for `off
 absorbing). In 3D `MUT_GENES` splits into five whenever dims = 3, even with `buoyancy_max = 0`, so switching the
 actuator on or off never shifts the other genes' draws; at `buoy_sigma = 0` the cap is inherited unchanged.
 `buoy_init` and `buoy_sigma` are 0 when `buoyancy_max = 0` (§27.1). The cap's energy costs (`energy.buoyancy_cost`,
-`energy.buoyancy_cap_cost`, booked in `HEAT_BUOYANCY`) come in PR 3.
+`energy.buoyancy_cap_cost`, booked in `HEAT_BUOYANCY`) are §27.7's.
 
 **Placement** (`lifecycle.reproduce`, 3D branch; the 2D lines are unchanged).
 - A child is placed at `D = offspring_distance` in a cone behind its parent, "behind" being the direction
@@ -4066,7 +4122,7 @@ actuator on or off never shifts the other genes' draws; at `buoy_sigma = 0` the 
 - Newborn rows also get `pitch` and `buoy_cap` (`ops.place`); `vel` (N,3) is cleared as in 2D. No invariant would
   catch a missed write (the previous occupant's value is in range), so a test fills a dead row with sentinels in every
   field of `AGENT_FIELDS_3D` and checks that a birth and an immigrant overwrite each.
-- `lifecycle.deaths` stays 2D until PR 3, which sinks corpses to the floor cell.
+- `lifecycle.deaths` sinks corpses to the floor cell (§27.6).
 
 **Catastrophe.** In 3D the catastrophe is a vertical column: `catastrophe_mask` measures the x/y minimum-image
 distance from the (2,) `env_cat_center`, so every agent above the disc is in it, at any height. The director stays
@@ -4095,7 +4151,7 @@ RNG table says; sentinel completeness over `AGENT_FIELDS_3D` for a birth and an 
 compile). `tests/helpers.volume_draws` writes out the table's founder and immigrant draws independently of
 `state.volume_kinematics`; `tests/helpers.make_scene` builds a `State3` for a 3D config, and `tests/helpers.as_3d(cfg)`
 is the tests' 3D variant of a 2D config (height 24, `chem_diffusion ≤ 1/6`, `benthic_lambda = 8`), built without
-`validate` while dims = 3 is gated.
+`validate`, so a unit test can switch single 3D mechanisms on or off.
 
 ### 27.5 The static 3D lattice and the vertical food profile (PR 2)
 
@@ -4121,8 +4177,7 @@ director's env included) and in 3D returns `fert[None]·V`, one float32 product 
 array.
 `regen_rate` and the initial resource follow its shape. Harvest is not gated on grounding: a grounded agent is in
 layer 0 (`r + floor_eps < field_cell`, §27.1). The 3D resource and chemical dynamics (no-flux diffusion in z,
-deposits, gradients, sinking corpses) come in PR 3; until then `update_resource`, `update_chem`, `deposit_chem` and
-`sample_fields` are 2D only.
+deposits, gradients, sinking corpses) are §27.6.
 
 **2D-body guards.** The 2D cell index asserts (N, 2) positions and 2D `sample_fields` a 2D lattice. The asserts are
 static (free under `mx.compile`, the 2D trace unchanged), so a missed 3D branch fails loudly instead of dropping z
@@ -4131,6 +4186,299 @@ static (free under `mx.compile`, the 2D trace unchanged), so a missed 3D branch 
 **Tests.** `tests/test_fields_3d.py`: the z-major index against a reference, layer 0 against the 2D index, the z
 clamp, the highest grounded z in layer 0, the guards, both profiles, the floor layer bit for bit (plain, seasonal,
 director env) and the 3D regeneration.
+
+### 27.6 Field dynamics, sinking corpses and the 3D inputs (PR 3)
+
+**Resource diffusion** (`ops.int_diffuse_3d`, called by `update_resource` in 3D after the regeneration of §27.5,
+whose `inc` has the lattice's (FZ, FG, FG) shape; `INJECT_REGEN = Σ inc` as in 2D):
+
+```text
+q = (R · resource_diffusion_q8) >> 8
+R ← R − (4 + n_z(k))·q + roll(q, ±1, x) + roll(q, ±1, y) + q[k − 1] + q[k + 1]      n_z(k) = [k > 0] + [k < FZ − 1]
+```
+
+The layers below the floor and above the surface contribute 0 and z is never rolled, so nothing crosses either
+boundary and the total is conserved exactly (the stencil is a sum of pairwise fluxes). A cell sends at most `6q`:
+`resource_diffusion_q8 ≤ 42` (§27.1) keeps `6q ≤ R`, hence `R ≥ 0`. The §13.2 cap argument carries over with six
+neighbours while `6·d_q8 < 256`: an output cell is at most `R_HARD + 6·(d_q8 − 1)/256 < R_HARD + 1`. Both bounds
+fail at 43: an interior cell of 256 with empty neighbours ends at −2, and an empty interior cell with six
+saturated neighbours receives `6·q(R_HARD) > R_HARD`. With `FZ = 1` the stencil is `int_diffuse`. The resource has no decay, so
+an ungrazed column fills towards `resource_cap` in every layer: the vertical profile shapes the regeneration rate
+and the initial stock, and a standing vertical contrast exists only under grazing (a tuning question for `64k3d`).
+
+**Chemicals.** `deposit_chem` accumulates at `c·n_cells + fcell` (`n_cells = FZ·FG²`; in 2D the same `c·FG² + fcell`),
+so a deposit in the top layers stays in its own channel. `update_chem` in 3D (`_update_chem_3d`) is §13.3's update
+with a 7-point stencil and mirrored ghost layers:
+
+```text
+lap  = roll(c, ±1, x) + roll(c, ±1, y) + c[k + 1] + c[k − 1] − 6·c          c[−1] = c[0],  c[FZ] = c[FZ − 1]
+chem ← clip((1 − λ_c)·(c + D_c·lap), 0, chem_max)                         after c = chem + dep_q·chem_deposit_scale
+```
+
+A boundary layer therefore has the 5-point stencil of its four x/y neighbours and its one z neighbour: no flux
+through the floor or the surface, mass conserved (to float rounding) at `λ = 0`, and stable for `D_c ≤ 1/6` (§27.1).
+The 2D expression and its float addition order are unchanged.
+
+**Sinking corpses** (S14, `lifecycle.deaths`). A corpse `E + S` is scatter-added into the floor cell below the dead
+agent, `fcell mod FG²` = `(0, cy, cx)`, instead of its own cell; the term is still `FLOW_CORPSE`. The `R_HARD` cap
+then applies over the whole volume (`r_overflow` (FZ, FG, FG), `HEAT_OVERFLOW`). A floor cell collects the corpses of
+its whole column, so §10.9's occupancy bound applies per column (§27.7). Only corpses sink (docs/3D.md §12 Q19):
+harvest takes from the agent's own 3D cell, and combat spill and residue go to the victim's own 3D cell
+(`energy.harvest` and `energy.combat` are shape-agnostic).
+
+**Field samples** (`sample_fields(…, pitch=)`, `_sample_fields_3d`; `pitch` is required in 3D). `res` and `chem` are
+§5's at the agent's own 3D cell. The gradients are central differences over the six neighbour cells
+(`_nbr_cells_3d`: x and y periodic within the layer, z clamped to `[0, FZ − 1]`), with the divisor kept at 2:
+
+```text
+g = (R[x+1] − R[x−1], R[y+1] − R[y−1], R[z+1] − R[z−1]) / (2·resource_cap)       z ± 1 clamped (mirror)
+res_grad  = clip(RES_GRAD_GAIN · to_body3(g), −1, 1)                             (N,3) as (fwd, lat, up)
+chem_grad = tanh(to_body3(central difference / 2) / chem_half_sat)               (N,NCH,3)
+```
+
+In the floor and surface layers the clamped index mirrors the cell itself, so the z component is half the one-sided
+slope, consistent with the no-flux boundary (docs/3D.md §12 Q8). `to_body3` is the frame of §27.2, so the sensed
+gradient and the thrust direction agree.
+
+**Inputs** (`build_inputs(…, grounded=)`, `D_IN = 84`). Every vector is taken in the yaw-and-pitch frame
+(`ops.to_body3`): its (fwd, lat) components fill the §5 blocks at their 2D indices, and its up component goes to the
+tail. `grounded` is `physics.grounded(s.pos, cfg)` (§27.3), passed in by the step; it is required in 3D.
+
+| idx | name | definition |
+|---|---|---|
+| 3, 4 | `IN_VEL` | (fwd, lat) of `clip(to_body3(vel) / v_max, −1, 1)` |
+| 13, 14 | `IN_RES_GRAD` | (fwd, lat) of `res_grad` |
+| 18–23 | `IN_CHEM_GRAD` | (fwd, lat) of `chem_grad` per channel |
+| 28 + 7n + f | `IN_NBR` | `desc[:, n, :7]`: `NBR_DX`, `NBR_DY` are (fwd, lat) of `off / R` (§27.2) |
+| 49 + 5b + f | `IN_BOND` | f = 1, 2: (fwd, lat) of `clip(to_body3(geom.off) / break_length, −1, 1)` |
+| 69 | `IN_VEL_UP` | up of the velocity above |
+| 70 | `IN_RES_GRAD_UP` | up of `res_grad` |
+| 71–73 | `IN_CHEM_GRAD_UP` | up of `chem_grad`, per channel |
+| 74–76 | `IN_NBR_DZ` | `desc[:, n, NBR_DZ]` of the NS nearest (0 for an absent neighbour) |
+| 77–80 | `IN_BOND_DZ` | up of the clipped bond offset per slot (0 for an empty slot) |
+| 81 | `IN_HEIGHT` | `z / height` |
+| 82 | `IN_PITCH` | `sin φ` |
+| 83 | `IN_GROUNDED` | 1 if `grounded`, else 0 |
+
+Every other input is §5's. The contract `|x| ≤ 1` holds: `z / height ∈ [z_lo, z_hi] / height ⊂ (0, 1)`,
+`|sin φ| ≤ sin 80° ≈ 0.985`, and every offset, velocity and gradient component is clipped or a `tanh`. Dead rows get
+stale values, as in 2D (`IN_GROUNDED` is 1 on a dead row resting at `z_lo`); consumers mask by `alive`. A level scene
+(one height, pitch 0, no vertical velocity) gives the 2D inputs bit for bit on CPU, because `to_body3` reduces to
+`to_body`. The 2D input expressions are unchanged; the 3D branches are static. The step calls these in 3D from §27.8.
+
+**Tests.** `tests/test_ops_3d.py` (`int_diffuse_3d`: exact conservation at FZ 2, 3 and 5 on random, saturated and
+near-`R_HARD` fields; a numpy mirror reference; no z wrap; the range for `d_q8` 1, 4, 17 and 42; the spike values
+`256 − 24` with 4 to each of six neighbours in the interior and `256 − 20` with 4 to each of five on the floor; the
+`d_q8 = 43` counterexample; FZ = 1 equals `int_diffuse`; compile). `tests/test_fields_3d.py` (`update_chem` against a
+float64 mirror reference, a uniform field decaying exactly in every layer, mass conservation without decay, no z
+wrap; `update_resource` regeneration and exact conservation; `sample_fields` against a float64 reference including
+the boundary layers and the x/y seams, a vertical ramp (positive up, halved at the floor and the surface, rotated by
+the pitch), the pitch required; `deposit_chem` exact over the volume). `tests/test_lifecycle_3d.py` (a corpse from
+every layer lands in its column's floor cell and the total is unchanged; the `R_HARD` cap at the floor cell, with
+compile). `tests/test_sensing_3d.py` (a float64 reference of all 84 inputs on a random volume scene; a level scene
+against the 2D inputs bit for bit; a pitch rotation case; `IN_GROUNDED` inclusive at `z_ground` and false above it and
+at the surface, with `IN_HEIGHT`; `grounded` required; dead and padded neighbours and empty bond slots zero the DZ
+inputs; `|x| ≤ 1` at `±PITCH_MAX`; compiled against eager).
+
+### 27.7 Energy: the pitch turn cost, the buoyancy costs and `HEAT_BUOYANCY` (PR 3)
+
+**Costs** (S8 in 3D, `energy.pay_costs3 → Costs3`; the 2D `pay_costs` and `Costs` are unchanged). §10.3's dues with
+the pitch change in the turn term, plus a third due for buoyancy:
+
+```text
+basal_due  = basal_cost + brain_cost + bond_upkeep·n_bonds                                  → HEAT_BASAL
+action_due = §10.3's, with the turn term floor(turn_cost·(|turn| + |Δφ|)/turn_max)          → HEAT_ACTION
+buoy_due   = floor(buoyancy_cost·(buoy_cap·b)²) + floor(buoyancy_cap_cost·buoy_cap)          → HEAT_BUOYANCY
+solvent    = alive & (E ≥ basal_due + action_due + buoy_due)
+paid_basal = min(basal_due, E);   paid_action = min(action_due, E − paid_basal)
+paid_buoy  = min(buoy_due, E − paid_basal − paid_action);   E ← E − paid_basal − paid_action − paid_buoy
+```
+
+- `Δφ = Motion3.pitch` and `b = Motion3.buoy` (§27.2), masked by `alive`. The lift is `buoyancy_max·buoy_cap·b`
+  (§27.3), so `buoy_cap·b` is the fraction of `buoyancy_max` in use: the use term is quadratic like
+  `move_cost·a²`, and no lift costs nothing. The upkeep is linear in the cap and paid every step by every alive
+  agent, also at `b = 0`: holding a cap is a running cost, using it another.
+- Each `floor` is float32 cast to int32 (§10.3). Both buoyancy terms are traced only when `buoyancy_max > 0` (a
+  static branch); without the actuator the due is 0 (written `E·0`), and `validate` requires both costs to be 0.
+  `paid_buoy = min(due, E − paid_basal − paid_action)` derives from `E` whatever the due, so it is never a
+  constant output under the compile rule of I14.
+- The payment order is basal, action, buoyancy, with solvency on the total. A solvent agent pays exactly §10.3's
+  basal and action amounts; the order only decides how an insolvent agent's energy is split. Insolvent agents end
+  S8 at `E = 0`, `actions.mask(·, solvent)` cancels their `Actions` and their `Motion3`, and they die `STARVED` at
+  S14 (§10.3). Dead rows pay 0.
+- With `Δφ = 0` and `buoy_cap = 0` the result is `pay_costs` bit for bit on CPU: `|turn| + 0` is exact and the
+  buoyancy due is 0.
+
+**Keys.** `energy.buoyancy_cost` and `energy.buoyancy_cap_cost` (int, quanta per step, default 0) are in
+`POST_V01_KEYS` and `THREE_D_KEYS`, so a 2D world must keep them at 0 and no 2D hash moves. Each is `≥ 0` (§17's
+per-cost rule lists them) and, in 3D, `< 2¹⁶` (each term is at most its coefficient, like the demands of §10.9);
+both must be 0 when `buoyancy_max = 0`.
+
+**`HEAT_BUOYANCY`.** In 3D, ledger slot 15 is the sink `HEAT_BUOYANCY = Σ paid_buoy` (§27.8). `RESERVED` stays the
+canonical `LedgerIdx` name and stays 0 in 2D, where it is still checked; `state.sinks(3)` is §10.8's five sinks plus
+slot 15, and `state.ledger_names(3)` names the slot in metrics rows. The 3D closures:
+
+```text
+TOTAL(after) − state.total == L[0] + L[1] − (L[2] + L[3] + L[4] + L[5] + L[6] + L[15])
+TOTAL(now) == total0 + cum[0] + cum[1] − Σ_{k ∈ sinks(3)} cum[k] == state.total
+S8:  E_in − E_out == paid_basal + paid_action + paid_buoy
+```
+
+`device_check` (`LEDGER`), `full_check` and `ledger_error` evaluate them over `sinks(nd)` (§27.8). Gravity has no
+term (§27.3), and every other flow keeps its §10 term: harvest takes from the agent's own 3D cell, combat spill and
+residue go to the victim's own 3D cell (docs/3D.md §12 Q19), and corpses sink to the floor cell under `FLOW_CORPSE`
+(§27.6).
+
+**Column headroom.** §10.9's bound `R_HARD + occ·(2·e_max + S) < 2³¹` holds per destination cell. In 3D a floor cell
+receives the corpses of every layer of its column (§27.6) as well as the spills and residues of its own layer, so
+`occ` counts the agents of an x/y column: the step gives `device_check` the largest column occupancy,
+`scatter_add_i32(FG², fcell mod FG², 1, alive).max()` (§27.8), checked against the unchanged `Dims.occ_limit`
+(`INT_HEADROOM`). A column holds at least as many agents as any of its cells, so the bound also covers the cells
+above the floor. A dense packing (FCC, density 0.74) puts about `0.74·field_cell²·height / (4π r³/3)` agents in a
+column: 68 at field cell 4, height 24 and r = 1, and 226 at height 80, against `occ_limit = 1 060`.
+
+**Carrying capacity.** In 3D `c_ref` (§10.10) also holds a founder's cap upkeep `floor(buoyancy_cap_cost·buoy_init)`
+(float32, as `pay_costs3` computes it), and the regeneration is summed over every layer. The 3D `K_est` is
+therefore not comparable to a 2D one: it counts the food of the upper layers, which costs lift (thrust or
+buoyancy against gravity) to harvest. On `tiny3d` (default seed) it is 1 456 against 426 for `tiny`, while the
+two populations run about level (peaks 441 and 426 in the first 400 steps on CPU; the floor layer alone
+regenerates as `tiny`'s lattice, §27.5). Whether `K_est` should weight the upper layers or count the floor layer
+only is open, to be settled before the director runs in 3D (PR 4) and with the PR 6 tuning of `photic_amp` and
+`fertility_base`.
+
+**Tests.** `tests/test_energy_3d.py` (`pay_costs3` against a float32 reference on mixed solvent and insolvent
+populations, with the per-function closure and dead rows paying 0; the exact buoyancy terms and the payment order;
+the upkeep without lift; the pitch in the turn term; level and capless equal to `pay_costs` bit for bit, with and
+without the actuator; compile, including the `paid_buoy` that is 0 by construction; the keys: defaults, the pinned
+hash, rejection in 2D and each 3D rule).
+
+### 27.8 Step wiring, counters, invariants, metrics and enablement (PR 3)
+
+**Step wiring** (`step.step`). One pipeline (§3, §16.3) with static `if d3:` branches (`d3 = dims(cfg).d3`); every
+2D line is unchanged under the `else`. The 3D branches:
+
+| stage | 3D |
+|---|---|
+| S2, S3 | `find_neighbors` dispatches to its 3D body (§27.2); `bond_geometry` takes (N,3) unchanged |
+| S4 | `gr = physics.grounded(s.pos)` from the start-of-step positions (not masked by `alive`); `sample_fields(…, pitch=s.pitch)` (§27.6) |
+| S5 | the 8-wide descriptor; `build_inputs(…, grounded=gr)` |
+| S7 | also `mo = actions.decode_motion3(y, alive)` (§27.2) |
+| S8 | `energy.pay_costs3(E, act, mo, n_bonds, brain_cost, buoy_cap, alive)` (§27.7); `mo` and `act` masked by `solvent` |
+| S14 | corpses sink to the floor cell (§27.6) |
+| S15 | `forces3(pos, heading, pitch, act, mo, buoy_cap, …)`, `integrate3(…, mo.pitch, gr, survivor)`; the pitch is written back with `pos`, `vel` and `heading` (§27.3) |
+| S16, S17 | the 3D `reproduce` (§27.4); `deposit_chem`, `update_chem` and `update_resource` on the volume (§27.6) |
+| S18 | `paid_buoy` booked in slot 15, `Counter3D` appended, `INT_HEADROOM` on the column occupancy (below and §27.7) |
+
+The one grounding predicate feeds `IN_GROUNDED`, the floor friction of `integrate3` and the `GROUNDED` counter, so the
+three always agree. Every output of the compiled step stays derived from its inputs (the MLX 0.32 compile rule of
+I14): `paid_buoy` is computed from `E` even when it is 0 without the actuator (§27.7), and the `Integrated3` counts
+are reductions.
+`bench._StagedStep` mirrors every branch (its `decode` stage also returns `Motion3`, `interact` masks it, `physics`
+returns `Integrated3`), and `tests/test_bench.py` checks it bit for bit against `step`, with and without the actuator.
+
+**Counters** (`state.Counter3D`, `state.n_counters(nd)`). `CounterIdx` keeps its 27 members (§19.1). A 3D
+`StepOut.counters` is (30,): the 27, then
+
+| idx | name | counts |
+|---|---|---|
+| 27 | `Z_FLOOR_CLAMPS` | survivors stopped by the floor this step (pre-clamp `z ≤ z_lo` with `v_z < 0`; `Integrated3.z_floor`, §27.3) |
+| 28 | `Z_SURFACE_CLAMPS` | survivors stopped by the surface (pre-clamp `z ≥ z_hi` with `v_z > 0`) |
+| 29 | `GROUNDED` | alive agents grounded at the start of the step (`physics.grounded(s.pos) & s.alive`; `IN_GROUNDED` is not masked) |
+
+`n_counters(nd)` is 27 in 2D and 30 in 3D. `metrics.interval_row` and the viewer's accumulator size by it; the
+runner stacks the step's counters as they come. Under gravity every agent resting on the floor clamps every step,
+so `Z_FLOOR_CLAMPS` is about `GROUNDED` and is not an anomaly signal; the surface count is the separate one.
+
+**Ledger.** In 3D the step stacks `paid_buoy` as one more per-agent column of §10.8's exact sum and books it in slot
+15 (`HEAT_BUOYANCY`, §27.7); in 2D the slot stays the constant 0. `StepOut.ledger` stays (16,).
+
+**Invariants** (§22.2 and §22.3 in 3D). There is no new `Diag` bit. The 2D expressions are unchanged and the 3D
+terms are separate static additions.
+- `device_check`: `LEDGER` closes over `sinks(nd)`; `NONFINITE` also covers `pitch` and `buoy_cap`; `POS_RANGE`
+  also flags z outside `[z_lo, z_hi]` and `|pitch| > PITCH_MAX`, both against the float32 bounds the engine clips
+  with, on every row (a dead row holds `(0, 0, z_lo)` from init or the last in-range position and pitch of its
+  agent, §2.2, §27.3); `INT_HEADROOM` receives the column occupancy (§27.7). The 2D rule `0 ≤ pos < L` also
+  runs on z, where the z bounds imply it (`2·height ≤ L`).
+- `full_check`: the closures over `sinks(nd)`; the rule `RESERVED == 0` in 2D only; and `_check_rows_3d`, on every
+  row: z in `[z_lo, z_hi]`, `|pitch| ≤ float32(PITCH_MAX)` and `buoy_cap ∈ [0, 1]` (each finite), and no alive agent
+  at `z_lo` with `v_z < 0` or at `z_hi` with `v_z > 0`. The last two rules are exact: the clamp of §27.3 zeroes the
+  stored `v_z` of every row it moves to a boundary, and a move it does not clamp ends strictly inside. A finite
+  `buoy_cap` out of range is reported by `full_check` only, like the other genes.
+- `_check_rows_3d` has its own meta-test (`_CHECK_FNS_3D`): each of its rules must be hit by a 3D corruption case
+  whose message fragment matches that rule only. `full_check` calls it in 3D only, so the 2D meta-test of I20 and
+  its sites are unchanged.
+
+**Metrics** (§19.2 in 3D).
+- `interval_row(…, *, nd = 2)` takes counters `(T, n_counters(nd))` and refuses a 2-D block of another width
+  (`ValueError`) up front, where a reshape by 27 would fail later with a misleading step-count mismatch (a 3D
+  `(9, 30)` block reshapes to ten rows against nine ledgers).
+  The ledger is keyed by `ledger_names(nd)`, so a 3D row has `HEAT_BUOYANCY` where a 2D row keeps `RESERVED`. The
+  runner and `analysis.resim` pass the run's dims. Rows do not carry the `Counter3D` columns yet; the 3D metrics are
+  docs/3D.md §7's, in PR 4.
+- `snapshot_metrics`: `ledger_error` over `sinks(nd)`; `chem_mean` per channel over all `FZ·FG²` cells;
+  `resource_mean` per cell of the volume (`E_field / n_cells`), so the upper layers dilute it compared with a 2D
+  floor.
+- `carrying_capacity`: §27.7.
+
+**Enablement.** `config.DIMS_SUPPORTED = (2, 3)`: a config with `world.dims = 3` validates under §27.1's rules and
+runs through `alife run`, `resume`, fork, `inspect` and `bench`. Still refused in 3D: `director.enabled` (until
+docs/3D.md PR 4) and the 2D-only tools of §27.1 (`render`, `view`, `analysis.signals`; exit 2). 2D is unchanged:
+every 2D trajectory, config hash, metrics row and checkpoint key set (the CPU digest matrix of 2D trajectories and
+runs matches bit for bit; the 2D golden is not re-pinned).
+
+**`tiny3d`** (`presets/tiny3d.toml`; the 3D tests, CI and a first look) is `tiny` plus every key of
+`THREE_D_KEYS` and a 3D-stable `chem_diffusion`. The values are provisional; 3D tuning is docs/3D.md PR 6.
+
+| key | value | why |
+|---|---|---|
+| `world.dims`, `world.height` | 3, 24 | `FZ = 6`, `G_z = 4`; 24 rather than 32 keeps contacts nearer `tiny`'s rate (`2·height ≤ L = 128`) |
+| `physics.gravity` | 0.03 | sinking 0.03 per step; climbing at full pitch `0.1·sin 80° − 0.03 ≈ 0.068` |
+| `physics.floor_eps` | 0.1 | grounded within 0.1 of `z_lo` |
+| `physics.buoyancy_max` | 0.04 | a full cap lifts at `0.04 − 0.03 = 0.01` per step; a founder's (0.5) only slows sinking |
+| `energy.buoyancy_cost` | 16 | hovering costs the same either way: buoyancy at `buoy_cap·b = 0.75` is `floor(16·0.75²) = 9` q/step, thrust at full pitch (`a ≈ 0.305`) `floor(100·0.305²) = 9` |
+| `energy.buoyancy_cap_cost` | 8 | 4 q/step at a founder's cap 0.5 (≈ 3% of its basal and brain cost, ≈ 142 q), 8 at a full cap |
+| `mutation.buoy_init`, `buoy_sigma` | 0.5, 0.02 | founders halfway; the cap drifts like `tag` |
+| `fields.chem_diffusion` | 0.16, 0.10, 0.16 | `≤ 1/6` (§27.1) |
+| `fields.benthic_lambda`, `photic_amp`, `photic_lambda` | 8, 0.5, 8 | a benthic band and a weaker photic band (§27.5) |
+
+It keeps `tiny`'s `C = 16` and `K = 8`, which a floor pile under gravity overflows (§27.3, a warning bit); they are
+sized for `64k3d` in PR 6. `tiny3d` with the `fast` overlay validates too (`K = 6 ≤ 27·12`).
+
+**3D golden digest.** `tests/test_determinism_3d.py::test_golden_3d` (marker `golden`) pins `state_digest` (every
+field of `State3`; `legacy_state_digest` is 2D only) of `tiny3d_cfg` after 50 compiled steps. The actuator and both
+costs are on, so `ledger_cum[HEAT_BUOYANCY] > 0` (asserted) and the pin covers slot 15. Like §14.2's golden it is
+keyed by the MLX version and the platform, and it is recorded on the CI platform, `Linux-x86_64-cpu` with MLX
+0.32.3, never on the Mac (CPU kernels round differently across architectures). Procedure: while
+`GOLDEN_3D["digest"]` is empty the test skips everywhere; on the pinned platform the skip message carries the computed
+digest, which is then committed into `GOLDEN_3D`. A change of the 3D trajectory re-pins it the same way, deliberately. The
+value `ffb17130…` was recorded this way at PR 3's head `3bbcab0` and reproduced in a second process.
+
+**Tests.** `tests/test_invariants_3d.py` (a healthy volume scene with the bounds reached; integrated states pushed
+into the floor and the surface pass the clamp rules; the closures with `HEAT_BUOYANCY`, and the same arrays failing
+without it; slot 15 not a sink in 2D, where `RESERVED` is reported; both checks on each 3D corruption with a Diag bit;
+the float32 bounds inclusive; `buoy_cap` range `full_check` only; a corruption case for every `_check_rows_3d` rule
+and the meta-test; `_check_rows_3d` not run in 2D). `tests/test_metrics_3d.py` (`Counter3D` after `CounterIdx`; a
+`(9, 30)` interval in 3D, refused as 2D; the 2D row keeps `RESERVED`; the snapshot over the volume with the closure
+over slot 15; the carrying capacity with the upkeep; resim's comparison with the 3D names). `tests/test_step_3d.py`
+(60 compiled `micro3d_cfg` steps, half the founders starting on the floor, `full_check` after each, the 2D counter
+rules on the first 27, `Counter3D` against the state transition and the per-step and global closures; slot 15 equal to
+the step's `Σ paid_buoy` and to the float32 due; more `HEAT_BUOYANCY` under an `OUT_BUOYANCY` bias; slot 15 off by one
+caught by `device_check` and by both host closures; slot 15 zero in a 2D run; floor and surface clamps and grounding
+in a scene; an x/y column of `occ_limit` agents, no 3D cell near the limit, trips `INT_HEADROOM`).
+`tests/test_affordances_3d.py` (one eager step per `micro3d_cfg` scene: three attackers drain a victim, with the
+closure; with regeneration and diffusion off the corpse lands in the floor cell and the spill and residue in the
+victim's own cell; a mid-water and a grounded agent each harvest their own cell, never the floor cell below a
+mid-water agent; a vertical pair bonds and its spring acts along z; `OUT_PITCH` steers and pays the turn cost; a
+full cap rises at the net force and pays the float32 due; a zero cap does not lift, a cap without lift pays only the
+upkeep; the surface clamps without grounding, and the brain sees `IN_GROUNDED` and `IN_HEIGHT`).
+`tests/test_determinism_3d.py` (same seed, other seed, `runtime_checks`, eager against compiled, the golden).
+`tests/test_cli_smoke_3d.py` (a 100-step `tiny3d` run through `cli.main`: clean rows with `HEAT_BUOYANCY`,
+`inspect --check`, a truncating and bitwise resume, `render` and `view` refused with nothing written, a fork that
+changes `world.dims`, `world.height` or `physics.radius` refused with exit 4, `analysis.resim` verifying the stored
+rows and reproducing the step-100 state). New functions: `test_bench.py` (the staged pipeline equals the step in
+3D, with and without the actuator; every bench part on `tiny3d`), `test_runner.py` (SIGINT and a bitwise resume in
+3D; immigrants in the volume at `buoy_init`), `test_config.py` (`test_preset_table_tiny3d`), `test_cli_smoke.py` (a
+2D row keeps `RESERVED`).
 
 ---
 
@@ -4212,7 +4560,8 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I35 | feat: the `random` persona inherits the pacing parameters of the persona that made its yoke log (§26.11, `docs/DIRECTOR.md` §9, §15), so that arm R can be yoked to the Trickster arm C (budget 6 per 100k) as well as to B. Before, `yoked.PARAMS_PERSONA = "gardener"` fixed R's budget, cooldown scale and thresholds, capping it at the Gardener's maximum of 4. (1) `yoked.inherited` reads the persona and the effective `budget_per_100k` of the yoke log's first header; `yoked.load` returns them (`Yoke.persona`, `.budget`, `.personas`) and refuses (`LogError`, exit 2, before anything is written) a header persona of `random` or an unknown name; `PARAMS_PERSONA` became `FALLBACK_PERSONA` (the Gardener, for a log with no header or no persona). (2) Budget: an explicit `director.budget_per_100k` is capped by the inherited persona's maximum, `0` takes the header's budget, else the persona's default (`yoked.effective_budget`). (3) R's header gains `params_persona`; a replay takes persona and budget from its own first header. Only budgets, cooldowns and safety-rule thresholds are inherited; the boredom rule, minimum gap, drama gating and the model stay off. R yoked to a Gardener log makes the same entries and reaches the same state digest as before (checked against the previous code); its header has the new field, and with `budget_per_100k = 0` it takes B's recorded budget rather than the Gardener default (the same for a default B). Interpretations: a yoke log that was resumed with another persona uses the first header's persona (stderr warning), not the persona in force at each step, since R's budget window and cooldowns are one policy per run; the persona check covers every header. No engine, step, config key or hash change. Tests: `tests/test_director_random.py`. |
 | I36 | feat: 3D world PR 1, dims plumbing (`docs/3D.md` §10 item 1; new §27.0 and §27.1), no behaviour change: `validate` still rejects `world.dims = 3` (`config.DIMS_SUPPORTED = (2,)`), and every 2D trajectory, config hash, metrics row and checkpoint and `meta.json` key set is unchanged (golden digest not re-pinned, no `FORMAT_VERSION` or `RNG_LAYOUT_VERSION` bump; a CPU digest matrix of 2D trajectories and runs matched bit for bit). (1) `world.dims` (2) and `world.height` (0) in `POST_V01_KEYS` and the new `THREE_D_KEYS`; `is_3d`, `require_2d`; `Dims` gains `nd`, `d3`, `lay`, `fz`, `n_cells`, `field_shape`, `g_hash_z`, `cell_hash_z`, and `q`, `w1_rows`, `params` go through `lay`; the world-dimensions validation (2D: the 3D keys keep their defaults; 3D: height, FZ, FZ·FG² ≤ 2²⁰, G_z, `2·height ≤ size`, `K ≤ 27·C`, `chem_diffusion ≤ 1/6`, `resource_diffusion_q8 ≤ 42`), every 2D message verbatim; only finite ratios are rounded (a non-finite `size` or `height` is a `ConfigError`, not an `OverflowError`). (2) `layout.Layout`, `for_dims`, `genome_layout_version` and `GENOME_LAYOUT_VERSION_3D = 2` with the frozen append-only 3D tables (D_IN 84 with inputs 69–83 ending in `IN_HEIGHT`, `IN_PITCH`, `IN_GROUNDED`; D_OUT 39 with `OUT_PITCH`, `OUT_BUOYANCY`, `OUT_Q_BOND_DZ`, `OUT_Q_ATTACK_DZ`); the D_IN/D_OUT reads in brain, sensing, metrics, bench, state and the schema go through `dims(cfg).lay` (equal Python ints in 2D); D18 amended. (3) `state.expected_layout` is the one State schema (`runio._expected_layout` stays as an alias for `tests/test_runio.py`; the private `invariants._expected_layout` is removed); `LedgerIdx.HEAT_BUOYANCY` alias of slot 15, `sinks(nd)`, `ledger_names(nd)` (definitions only). (4) `dims` metadata only when dims ≠ 2 (absent = 2D); `load_checkpoint` refuses a cross-dimension file; a fork refuses a `world.dims`/`world.height` change (exit 4); `render`, `view`, `render_frame`, the viewer and `analysis.signals` refuse a 3D config before loading (`require_2d`, exit 2). (5) `tests/helpers.make_scene` takes the pos, vel, W2, resource and chem shapes from the config's state (2D unchanged). Interpretations: `actions.decode` keeps `layout.F` (the 2D query block width in both dims; PR 2 appends the z component); `cli._agent_info` and the `make_scene` State class wait for `State3` (PR 2). Tests: `tests/test_layout_dims.py`, `tests/test_dims_config.py`, `tests/test_dims_runio.py`. |
 | I37 | feat: 3D world PR 2, the geometry core (`docs/3D.md` §10 item 2; new §27.2–§27.5), still gated: `validate` rejects `world.dims = 3` (`DIMS_SUPPORTED = (2,)`) and the step does not call the 3D code yet (PR 3); every 2D trajectory, config hash, metrics row and checkpoint key set is unchanged (golden digest not re-pinned, no `FORMAT_VERSION` or `RNG_LAYOUT_VERSION` bump; the CPU digest matrix of 2D trajectories matched bit for bit). (1) Config: `physics.gravity`, `floor_eps`, `buoyancy_max`, `mutation.buoy_init`, `buoy_sigma`, `fields.benthic_lambda`, `photic_amp`, `photic_lambda` (all 0, in `POST_V01_KEYS` and `THREE_D_KEYS`, rejected off default in 2D, no 2D message changed); the 3D rules of §27.1 (room to reflect a child, `gravity < thrust_max·sin(PITCH_MAX)`, `r + floor_eps < field_cell`, the 3D load rule, the buoyancy keys 0 without the actuator, the profile keys, the director rejected until PR 4); `Dims.z_lo`, `z_hi`, `z_ground` as float32-exact host values (`z_ground` the largest float32 `≤ r + floor_eps` and at least `z_lo`, so a floor agent is always grounded); `layout.PITCH_MAX = 80°`. (2) State: `State3` (State's 47 fields, then `pitch`, `buoy_cap`), `EXTRA_3D_FIELDS`, `AGENT_FIELDS_3D`, `state_cls`, `agent_fields`; type-generic schema, (de)serialisation and digests (`legacy_state_digest` 2D only); founders uniform in the volume (`volume_kinematics`), dead rows at (0, 0, z_lo), `buoy_cap = buoy_init`; `load_checkpoint`, `full_check`, `inspect` and `tests/helpers.make_scene` take `State3`. (3) Geometry: `ops.wrap_xy_clamp_z`, `body_axes`, `to_body3`; `spatial._find_neighbors_3d` (G²·G_z cells, z clamped and never wrapped, a 3×3×3 stencil whose out-of-range layers are empty, Q = 27C); the 8-wide descriptor ending in `NBR_DZ`; 3D queries in `decode`, and `Motion3`/`decode_motion3`. (4) Physics: `grounded`, `forces3` (thrust along the 3D forward axis; gravity and buoyancy as body forces that contacts do not attenuate), `integrate3`/`Integrated3` (grip on x and y only and only when grounded, the 3D `v_max` clip before the clamp, floor and surface clamps that move the agent to the boundary and zero only the stored `v_z`, counted; the pitch clip); `bonds` works on (N,B,3) unchanged (docstrings only). (5) Lifecycle: the buoyancy-cap gene (`split(MUT_GENES, 5)` whenever dims = 3, additive Gaussian noise with a clip), children in a cone behind the parent with vertical reflection, immigrants uniform in the volume at `buoy_init`, the `pitch`/`buoy_cap` row writes, the vertical-column catastrophe. (6) Lattice: `resource` (FZ, FG, FG) and `chem` (NCH, FZ, FG, FG), the z-major `cell_index`, `vertical_profile` (V[0] = 1; the photic term only when `photic_amp > 0`), `fertility` and `regen_rate` over layers (the floor layer is the 2D fertility bit for bit). (7) Static guards in the 2D bodies that would otherwise take 3D input silently: last-axis asserts in `to_body`, `cell_index`, `find_neighbors` and `integrate`, and a lattice-rank assert in `sample_fields`, each with a refusal test. Interpretations: no `ops.min_image_xy` and no `bonds` z flag, since `2·height ≤ L` (§27.1) makes `min_image` the identity on z; the buoyancy costs, the field dynamics, sinking corpses and the step wiring are PR 3, and the scaled catastrophe radius bounds PR 4; the PR 1 3D fixtures of `tests/test_dims_config.py` and `tests/test_dims_runio.py` gained `fields.benthic_lambda` (now required in 3D), the `THREE_D_KEYS` pin checks the PR 1 prefix, and one BAD_3D case uses values that keep it the only problem. Measured: C = 16 and K = 8 do not hold 3D crowds (§27.3: peak cell occupancy 28 to 37 at C = 64 and up to 10 contacts per agent; overflow and collapse at C = 16), to be sized in PR 6. Tests: `tests/test_dims_config_pr2.py`, `tests/test_state_3d.py`, `tests/test_fields_3d.py`, `tests/test_ops_3d.py`, `tests/test_spatial_3d.py`, `tests/test_sensing_3d.py`, `tests/test_actions_3d.py`, `tests/test_physics_3d.py`, `tests/test_lifecycle_3d.py`, `tests/test_crowd_3d.py` (slow). |
-| I38 | feat: `alife activity` reads forks, and the director evaluation (`docs/DIRECTOR.md` §9, `docs/EVALUATION.md`, §19.3, §21), no change to the engine, the step, any config key or hash, or the golden digest. (1) `phylo.load_tree(run, start=)`: a fork's founders are the agents alive in its checkpoint at `meta.json` `start_step` (source uids kept; parents and deaths mapped by uid), and `start` restricts any tree to the agents alive at that step and their descendants (`phylo.restrict`); step indices count from the start (report `t0`, `origin`), the stored grids are run steps (`report.compute(step0=)`), and the windows and the cohort-pool settling start at `t0`. Founders may be parents from step 0 (`phylo.eligible_from`, used by the exposures and the neutral shadow) and `min_gap(founder_ages=False)` ignores their children, since their ages are not recorded; on a run from step 0 both change nothing (no birth before the founders' minimum age): on `runs/64k_s0` all 820 arrays of `activity.npz` and the summary are identical. Catastrophe deaths count in the death totals. CLI `--start STEP` (§21). This lifts I33's limitation. (2) `alife.analysis.evaluation` (entry point `python -m alife.analysis.evaluation`) and `evaluation_plots`: per arm and seed, the director's vital signs refolded with `Tracker` from `metrics.jsonl` (equal to the logged vitals of every live entry), coverage and cells outside the control, novelty and excursion from the control, persistent novelty against the control and against the pre-intervention level, turnover, viability against a fixed per-seed reference population (base run, 70k–120k), clades, lineages from the event logs, intervention counts, entropy and cost, the LLM's validity, clamp rate and latency, the activity classes, a seeded journal sample and a Markdown table. Tests: `tests/test_analysis_activity.py`, `tests/test_analysis_evaluation.py`. |
+| I38 | feat: 3D world PR 3, field dynamics, energy and enablement (`docs/3D.md` §10 item 3; new §27.6–§27.8): `world.dims = 3` is enabled (`DIMS_SUPPORTED = (2, 3)`) and runs end to end with the new, provisional `tiny3d` preset; every 2D trajectory, config hash, metrics row (slot 15 still `RESERVED`) and checkpoint key set is unchanged (2D golden not re-pinned, no `FORMAT_VERSION`, `RNG_LAYOUT_VERSION` or genome-version bump; the CPU digest matrix of 2D trajectories and runs matched bit for bit after each change). (1) Fields: `ops.int_diffuse_3d` (exact no-flux integer diffusion, z never rolled; `int_diffuse` unchanged), the 7-point chemical stencil with mirrored ghost layers, `deposit_chem` strided by `n_cells`, `sample_fields(…, pitch=)` with z gradients (clamped index, divisor 2), corpses sinking to the floor cell `fcell mod FG²` under `FLOW_CORPSE` (combat spill and residue stay in the victim's own 3D cell), and the input tail 69–83 (`build_inputs(…, grounded=)`). (2) Energy: `pay_costs3`/`Costs3` (turn term on `|turn| + |Δφ|`; `buoyancy_cost·(buoy_cap·b)² + buoyancy_cap_cost·buoy_cap` per step, the upkeep paid even without lift; solvency on the total; paid basal, action, buoyancy), the keys `energy.buoyancy_cost` and `buoyancy_cap_cost` (int, 0; `POST_V01_KEYS`, `THREE_D_KEYS`; in 3D `< 2¹⁶` and 0 without the actuator), booked in `HEAT_BUOYANCY`, ledger slot 15 (`RESERVED` stays the canonical name and is still checked 0 in 2D). (3) Invariants and metrics: the closures over `sinks(nd)` in `device_check`, `full_check` and `ledger_error`; z, pitch and non-finite `pitch`/`buoy_cap` under the existing `POS_RANGE` and `NONFINITE` bits; `_check_rows_3d` with its own meta-test; `Counter3D` (27–29) and `n_counters(nd)`; `interval_row(…, nd=)` refuses a counter block of the wrong width instead of reshaping it; per-dims ledger names; `chem_mean` over the volume; the founder's cap upkeep in `c_ref`. (4) Step: static `d3` branches at S4, S5, S7, S8, S15 and S18 with every 2D line unchanged, `StepOut.counters` (30,) with `Counter3D` appended, `paid_buoy` as an 11th exact-sum column, `INT_HEADROOM` on the x/y column occupancy (a floor cell receives the corpses of its whole column), every output derived from its inputs (I14); `bench._StagedStep` mirrors each branch. (5) Enablement: `tiny3d` (values and reasons in §27.8; hovering costs 9 q/step by buoyancy and by thrust), fixtures `tiny3d_cfg` and `micro3d_cfg`, a 3D fork refusing a changed `physics.radius` as it refuses `world.height` (exit 4; the radius sets `z_lo` and `z_hi`, §27.1), and the 3D golden test (`GOLDEN_3D`: `state_digest` of `tiny3d_cfg` after 50 steps with `HEAT_BUOYANCY > 0`; its digest is empty until recorded on Linux-x86_64-cpu with MLX 0.32.3, where the skip message prints it). Interpretations: the diffusion bound is `resource_diffusion_q8 ≤ 42` as PR 1 validates, not 43 (an empty cell between six saturated ones would exceed `R_HARD`, §27.6); `Motion3` is masked by solvency for symmetry with `Actions`, though an insolvent agent dies at S14 and its `Motion3` has no effect; `metrics.jsonl` rows do not carry the `Counter3D` columns yet (PR 4); the 3D `K_est` sums every layer's regeneration and is not comparable to a 2D one (1 456 on `tiny3d` against 426 on `tiny`, §27.7), its meaning to be settled before the director runs in 3D; the GUI's preset list and 3D levers wait for PR 5. Existing tests that pinned the pre-enablement gate were edited: `test_dims_config.py` (`DIMS_SUPPORTED == (2, 3)`; the rejection test narrows it to `(2,)`; `test_defaults_are_2d` leaves out `tiny3d`), `test_dims_runio.py` (the exit-2 fork test narrows it to `(2,)`; the schema test pins `state_cls(cfg)` to `State` or `State3` by dims and expects its fields) and `test_dims_config_pr2.py` (the PR 2 `THREE_D_KEYS` pin checks `[2:10]`). Tests: `tests/test_energy_3d.py`, `tests/test_invariants_3d.py`, `tests/test_metrics_3d.py`, `tests/test_step_3d.py`, `tests/test_affordances_3d.py`, `tests/test_determinism_3d.py`, `tests/test_cli_smoke_3d.py`, and new functions in `test_ops_3d`, `test_fields_3d`, `test_lifecycle_3d`, `test_sensing_3d`, `test_bench`, `test_runner`, `test_config` and `test_cli_smoke`. |
+| I39 | feat: `alife activity` reads forks, and the director evaluation (`docs/DIRECTOR.md` §9, `docs/EVALUATION.md`, §19.3, §21), no change to the engine, the step, any config key or hash, or the golden digest. (1) `phylo.load_tree(run, start=)`: a fork's founders are the agents alive in its checkpoint at `meta.json` `start_step` (source uids kept; parents and deaths mapped by uid), and `start` restricts any tree to the agents alive at that step and their descendants (`phylo.restrict`); step indices count from the start (report `t0`, `origin`), the stored grids are run steps (`report.compute(step0=)`), and the windows and the cohort-pool settling start at `t0`. Founders may be parents from step 0 (`phylo.eligible_from`, used by the exposures and the neutral shadow) and `min_gap(founder_ages=False)` ignores their children, since their ages are not recorded; on a run from step 0 both change nothing (no birth before the founders' minimum age): on `runs/64k_s0` all 820 arrays of `activity.npz` and the summary are identical. Catastrophe deaths count in the death totals. CLI `--start STEP` (§21). This lifts I33's limitation. (2) `alife.analysis.evaluation` (entry point `python -m alife.analysis.evaluation`) and `evaluation_plots`: per arm and seed, the director's vital signs refolded with `Tracker` from `metrics.jsonl` (equal to the logged vitals of every live entry), coverage and cells outside the control, novelty and excursion from the control, persistent novelty against the control and against the pre-intervention level, turnover, viability against a fixed per-seed reference population (base run, 70k–120k), clades, lineages from the event logs, intervention counts, entropy and cost, the LLM's validity, clamp rate and latency, the activity classes, a seeded journal sample and a Markdown table. Tests: `tests/test_analysis_activity.py`, `tests/test_analysis_evaluation.py`. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

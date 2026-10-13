@@ -18,7 +18,19 @@ from alife.actions import Actions
 from alife.config import Config, dims
 from alife.lifecycle import BirthRecords, DeathRecords
 from alife.rng import Stream, step_keys
-from alife.state import N_COUNTERS, CounterIdx, DeathCause, Diag, Env, LedgerIdx, State, age, total_energy
+from alife.state import (
+    N_COUNTERS,
+    Counter3D,
+    CounterIdx,
+    DeathCause,
+    Diag,
+    Env,
+    LedgerIdx,
+    State,
+    State3,
+    age,
+    total_energy,
+)
 
 __all__ = ["BirthRecords", "DeathRecords", "StepOut", "make_step", "step"]
 
@@ -27,7 +39,7 @@ _I64 = mx.int64
 
 
 class StepOut(NamedTuple):
-    counters: mx.array  # (N_COUNTERS,) int32, CounterIdx (§19.1)
+    counters: mx.array  # (n_counters(nd),) int32: CounterIdx (§19.1), then Counter3D in 3D (§27.8)
     ledger: mx.array  # (16,) int64, this step's ledger (LedgerIdx, §10.8)
     births: BirthRecords
     deaths: DeathRecords
@@ -36,7 +48,7 @@ class StepOut(NamedTuple):
 class _Flows(NamedTuple):
     """Intermediate results of S0–S17 that S18 turns into the ledger, counters and diag."""
 
-    costs: en.Costs
+    costs: en.Costs | en.Costs3  # Costs3 in 3D (paid_buoy, §27.7)
     got: mx.array  # (N,) harvest
     cb: en.Combat
     sh: en.Share
@@ -44,7 +56,7 @@ class _Flows(NamedTuple):
     dt: lifecycle.Deaths
     lanes: lifecycle.Lanes
     rp: lifecycle.Repro
-    regen_inc: mx.array  # (FG,FG)
+    regen_inc: mx.array  # d.field_shape
     nbr: spatial.Neighbors
     v_clips: mx.array  # ()
     fcell: mx.array  # (N,) start-of-step field cell
@@ -55,10 +67,16 @@ class _Flows(NamedTuple):
     formed: mx.array  # (N,) bool
     broken: mx.array  # (N,B) bool, S9a
     slots_s9: mx.array  # () occupied slots after S9 (before S14)
+    # 3D only (None in 2D): the Counter3D inputs (§27.8).
+    z_floor: mx.array | None = None  # () survivors clamped at the floor (Integrated3)
+    z_surface: mx.array | None = None  # () survivors clamped at the surface
+    grounded: mx.array | None = None  # (N,) bool, physics.grounded of the start-of-step pos (not masked)
 
 
-def step(s: State, cfg: Config) -> tuple[State, StepOut]:
-    """Advance the world by one step (S0–S18). Pure; no host syncs."""
+def step(s: State | State3, cfg: Config) -> tuple[State | State3, StepOut]:
+    """Advance the world by one step (S0–S18). Pure; no host syncs. A 3D world (``State3``) takes the static
+    ``d3`` branches of §27.8; every 2D line is unchanged."""
+    d3 = dims(cfg).d3
     t = s.step
     W1, W2 = lifecycle.flush_pending(s.W1, s.W2, s.pend_slot, s.pend_W1, s.pend_W2)  # S0
     s = s._replace(W1=W1, W2=W2)
@@ -67,14 +85,27 @@ def step(s: State, cfg: Config) -> tuple[State, StepOut]:
     nbr = spatial.find_neighbors(s.pos, s.alive, cfg)  # S2
     geom = bonds.bond_geometry(s.pos, s.partner, cfg)  # S3
     fcell = fields.cell_index(s.pos, cfg)  # S4
-    fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg)
+    if d3:  # static: the yaw-and-pitch frame and the start-of-step grounding (§27.6)
+        gr = physics.grounded(s.pos, cfg)
+        fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch)
+    else:
+        fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg)
     desc = sensing.neighbor_descriptors(s, nbr, cfg)  # S5
-    x = sensing.build_inputs(s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg)
+    if d3:  # static
+        x = sensing.build_inputs(s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, grounded=gr)
+    else:
+        x = sensing.build_inputs(s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg)
     h_new, y = brain.forward(s.W1, s.W2, x, s.h, cfg)  # S6
     act = actions.decode(y, desc, nbr, s.partner, s.alive, cfg)  # S7
+    if d3:  # static: the pitch change and the buoyancy fraction (§27.2)
+        mo = actions.decode_motion3(y, s.alive, cfg)
 
     nb0 = bonds.n_bonds(s.partner)  # S8
-    c = en.pay_costs(s.energy, act, nb0, s.brain_cost, s.alive, cfg)
+    if d3:  # static: the pitch turn cost and the buoyancy due (§27.7)
+        c = en.pay_costs3(s.energy, act, mo, nb0, s.brain_cost, s.buoy_cap, s.alive, cfg)
+        mo = actions.mask(mo, c.solvent)
+    else:
+        c = en.pay_costs(s.energy, act, nb0, s.brain_cost, s.alive, cfg)
     act = actions.mask(act, c.solvent)
 
     flag = act.release | (geom.length > cfg.bonds.break_length)  # S9
@@ -112,8 +143,13 @@ def step(s: State, cfg: Config) -> tuple[State, StepOut]:
     )  # S14
 
     sv = dt.survivor  # S15
-    F = physics.forces(s.pos, s.heading, act, nbr, sv, dt.partner, cfg)
-    pos, vel, heading, v_clips = physics.integrate(s.pos, s.heading, F, act.grip, act.turn, sv, cfg)
+    if d3:  # static: gravity, buoyancy, the floor and the surface (§27.3)
+        F = physics.forces3(s.pos, s.heading, s.pitch, act, mo, s.buoy_cap, nbr, sv, dt.partner, cfg)
+        it = physics.integrate3(s.pos, s.heading, s.pitch, F, act.grip, act.turn, mo.pitch, gr, sv, cfg)
+        pos, vel, heading, v_clips = it.pos, it.vel, it.heading, it.v_clips
+    else:
+        F = physics.forces(s.pos, s.heading, act, nbr, sv, dt.partner, cfg)
+        pos, vel, heading, v_clips = physics.integrate(s.pos, s.heading, F, act.grip, act.turn, sv, cfg)
     s1 = s._replace(
         alive=sv,
         energy=dt.energy,
@@ -130,6 +166,8 @@ def step(s: State, cfg: Config) -> tuple[State, StepOut]:
         last_harvest=mx.where(sv, got, 0),
         last_inflow=mx.where(sv, sh.inflow, 0),
     )
+    if d3:  # static
+        s1 = s1._replace(pitch=it.pitch)
 
     req = sv & act.reproduce & (dt.energy >= cfg.repro.min_energy) & (a >= cfg.repro.min_age)  # S16
     imm_request = env.imm_request if env is not None else None
@@ -166,6 +204,8 @@ def step(s: State, cfg: Config) -> tuple[State, StepOut]:
         broken=broken,
         slots_s9=slots_s9,
     )
+    if d3:  # static
+        flows = flows._replace(z_floor=it.z_floor, z_surface=it.z_surface, grounded=gr)
     return _finish(s2, s, cfg, flows)  # S18
 
 
@@ -184,7 +224,12 @@ def consume_env(s: State, env: Env, lanes: lifecycle.Lanes) -> State:
 
 
 def _ledger(f: _Flows, cfg: Config) -> mx.array:
-    """This step's (16,) int64 ledger from exact limb sums plus int64 count × constant terms (§10.8)."""
+    """This step's (16,) int64 ledger from exact limb sums plus int64 count × constant terms (§10.8).
+
+    In 3D ``paid_buoy`` is an 11th per-agent column, booked in slot 15 (``HEAT_BUOYANCY``, §27.7); in 2D the
+    slot is the constant 0 (``RESERVED``).
+    """
+    d3 = dims(cfg).d3
     S = cfg.energy.structure
     agent = mx.stack(
         [
@@ -198,10 +243,11 @@ def _ledger(f: _Flows, cfg: Config) -> mx.array:
             f.sh.heat,
             f.e_over,
             f.dt.corpse,
+            *([f.costs.paid_buoy] if d3 else []),  # 3D: HEAT_BUOYANCY, last
         ],
         axis=1,
     ).astype(_I32)
-    a = ops.exact_sum(agent, axis=0)  # (10,) int64
+    a = ops.exact_sum(agent, axis=0)  # (10,) int64; (11,) in 3D
     cell = mx.stack([f.regen_inc.reshape(-1), f.dt.r_overflow.reshape(-1)], axis=1).astype(_I32)
     c = ops.exact_sum(cell, axis=0)  # (2,) int64
     endow = ops.exact_sum(f.rp.endow)
@@ -224,7 +270,7 @@ def _ledger(f: _Flows, cfg: Config) -> mx.array:
         LedgerIdx.FLOW_CORPSE: a[9],
         LedgerIdx.FLOW_ENDOWMENT: endow,
         LedgerIdx.FLOW_STRUCTURE: n_birth * S,
-        LedgerIdx.RESERVED: zero,
+        LedgerIdx.RESERVED: a[10] if d3 else zero,  # HEAT_BUOYANCY in 3D
     }
     return mx.stack([entries[i].astype(_I64) for i in LedgerIdx])
 
@@ -236,7 +282,11 @@ def _kin_sum(desc: mx.array, k: mx.array, rows: mx.array) -> mx.array:
 
 
 def _counters(s_new: State, alive0: mx.array, f: _Flows, cfg: Config) -> mx.array:
-    """The (27,) int32 per-step counters of §19.1; ``alive0`` is the start-of-step ``alive``."""
+    """The (27,) int32 per-step counters of §19.1; ``alive0`` is the start-of-step ``alive``.
+
+    In 3D the three ``Counter3D`` counts follow (30,): the floor and surface clamps of this step's integration
+    and the alive agents grounded at its start (§27.8).
+    """
     d = dims(cfg)
     act, dt, cb = f.act, f.dt, f.cb
 
@@ -277,18 +327,33 @@ def _counters(s_new: State, alive0: mx.array, f: _Flows, cfg: Config) -> mx.arra
         CounterIdx.DEATHS_CATASTROPHE: count(dt.cause == DeathCause.CATASTROPHE.value),
     }
     assert len(entries) == N_COUNTERS
-    return mx.stack([entries[i].astype(_I32) for i in CounterIdx])
+    counters = mx.stack([entries[i].astype(_I32) for i in CounterIdx])
+    if d.d3:  # static: appended, so the first 27 keep their meaning
+        extra = {
+            Counter3D.Z_FLOOR_CLAMPS: f.z_floor,
+            Counter3D.Z_SURFACE_CLAMPS: f.z_surface,
+            Counter3D.GROUNDED: count(f.grounded & alive0),
+        }
+        counters = mx.concatenate([counters, mx.stack([extra[i].astype(_I32) for i in Counter3D])])
+    return counters
 
 
 def _finish(s_new: State, s: State, cfg: Config, f: _Flows) -> tuple[State, StepOut]:
-    """S18: ledger, cumulative ledger, ``total``, counters and diag (§16.3)."""
+    """S18: ledger, cumulative ledger, ``total``, counters and diag (§16.3).
+
+    ``INT_HEADROOM`` gets the largest start-of-step field-cell occupancy; in 3D the largest x/y column
+    occupancy, since a floor cell collects the corpses of its whole column (§27.7).
+    """
     d = dims(cfg)
     ledger = _ledger(f, cfg)
     total = total_energy(s_new.energy, s_new.alive, s_new.resource, cfg)
     s_new = s_new._replace(total=total, ledger_cum=s.ledger_cum + ledger)
     counters = _counters(s_new, s.alive, f, cfg)
     if cfg.run.runtime_checks != "off":  # static
-        max_cell_occ = ops.scatter_add_i32(d.fg * d.fg, f.fcell, 1, s.alive).max()
+        if d.d3:  # static: per x/y column; fcell mod FG² is the floor cell below (§27.5)
+            max_cell_occ = ops.scatter_add_i32(d.fg * d.fg, f.fcell % (d.fg * d.fg), 1, s.alive).max()
+        else:
+            max_cell_occ = ops.scatter_add_i32(d.fg * d.fg, f.fcell, 1, s.alive).max()
         bits = invariants.device_check(
             s_new,
             ledger,

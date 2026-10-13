@@ -13,7 +13,7 @@ from alife.analysis import signals
 from alife.config import PRESETS, Config, ConfigError, config_from_dict, config_to_dict, is_3d, load_config
 from alife.render import render_frame
 from alife.runio import CheckpointError, RunDir, checkpoint_metadata, load_checkpoint, write_state_file
-from alife.state import State, init_state
+from alife.state import init_state
 
 # A valid 3D variant of tiny or micro once 3D is enabled (height 24, chem_diffusion ≤ 1/6, a benthic food
 # band), as CLI flags.
@@ -94,7 +94,10 @@ def test_cross_dims_checkpoint_refused(micro_cfg: Config, tmp_path: Path) -> Non
 # --- CLI refusals -----------------------------------------------------------------------------------------
 
 
-def test_fork_set_dims3_exit2_touches_nothing(source_run: Path, tmp_path: Path) -> None:
+def test_fork_set_dims3_exit2_touches_nothing(
+    source_run: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "DIMS_SUPPORTED", (2,))  # the gate as it stood before PR 3 enabled 3D
     before = _snapshot(source_run)
     out = tmp_path / "fork"
     argv = ["run", "--init-from", str(source_run), "--out", str(out), "--quiet", *THREE_D]
@@ -199,7 +202,8 @@ def test_one_schema(preset: str, overlays: tuple[str, ...]) -> None:
     assert runio._expected_layout is state.expected_layout
     spec = state.expected_layout(cfg)
     assert runio._expected_layout(cfg) == spec
-    assert tuple(spec) == State._fields
+    want = state.State3 if is_3d(cfg) else state.State  # State3 for tiny3d (PR 3)
+    assert state.state_cls(cfg) is want and tuple(spec) == want._fields
 
 
 def test_schema_follows_dims(micro_cfg: Config) -> None:

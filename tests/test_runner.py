@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from alife import cli, runner
-from alife.config import Config, apply_overrides
+from alife.config import Config, apply_overrides, dims
 from alife.runio import RunDir, load_checkpoint, write_state_file
 from alife.runner import ExitCode
 from alife.state import Diag, init_state, state_digest, to_numpy
@@ -67,6 +67,61 @@ def test_sigint_stops_cleanly_and_resumes_bitwise(cfg: Config, tmp_path: Path, m
         ref, out = fn(ref)
         mx.eval(ref, out)
     assert state_digest(res.state) == state_digest(ref)
+
+
+def test_sigint_stops_cleanly_and_resumes_bitwise_3d(
+    micro3d_cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 3D run interrupted at step 7 and resumed from its checkpoint ends bitwise where an uninterrupted run
+    does (``State3``, the 30 counters, ``HEAT_BUOYANCY``; §27.8)."""
+    cfg = apply_overrides(
+        micro3d_cfg, ["run.metrics_every=5", "run.checkpoint_every=10", "run.heavy_metrics_every=5"]
+    )
+    real = runner.make_step
+
+    def interrupting(c: Config):
+        fn, calls = real(c), [0]
+
+        def wrapped(s):
+            calls[0] += 1
+            if calls[0] == 7:
+                signal.raise_signal(signal.SIGINT)
+            return fn(s)
+
+        return wrapped
+
+    monkeypatch.setattr(runner, "make_step", interrupting)
+    rd = RunDir.create(tmp_path / "run", cfg)
+    res = runner.run(rd, cfg, init_state(cfg), 20, quiet=True)
+    assert (res.status, res.exit_code) == ("interrupted", ExitCode.INTERRUPTED)
+    assert int(to_numpy(res.state.step)) == 7 and [st for st, _ in rd.checkpoints()] == [0, 7]
+    monkeypatch.undo()
+
+    s = load_checkpoint(rd.latest_checkpoint(), cfg)
+    res = runner.run(rd, cfg, s, 13, quiet=True)
+    assert (res.status, res.exit_code) == ("done", ExitCode.OK)
+    assert _steps(rd) == [(5, 5), (7, 2), (10, 3), (15, 5), (20, 5)]
+    assert all(r["ledger_error"] == 0 and r["ledger"]["HEAT_BUOYANCY"] > 0 for r in rd.metrics_rows())
+    fn, ref = runner.make_step(cfg), init_state(cfg)
+    for _ in range(20):
+        ref, out = fn(ref)
+        mx.eval(ref, out)
+    assert state_digest(res.state) == state_digest(ref)
+
+
+def test_immigrants_arrive_in_the_volume_3d(micro3d_cfg: Config, tmp_path: Path) -> None:
+    """After a die-off, immigration refills a 3D world uniformly in the volume, at ``buoy_init`` (§27.4)."""
+    c = apply_overrides(micro3d_cfg, ["population.immigration_floor=16", "population.immigrants_per_step=8"])
+    d = dims(c)
+    s = make_scene(c, [{"pos": [10.0, 10.0, d.z_lo], "energy": 1}])  # cannot pay its first step's costs
+    rd = RunDir.create(tmp_path / "run", c)
+    res = runner.run(rd, c, s, 2, quiet=True)
+    assert (res.status, res.exit_code) == ("done", ExitCode.OK)
+    assert sum(r["immigrants"] for r in rd.metrics_rows()) == 16
+    alive = to_numpy(res.state.alive)
+    z = to_numpy(res.state.pos)[alive, 2]
+    assert alive.sum() == 16 and ((z >= d.z_lo) & (z <= d.z_hi)).all() and z.std() > 2.0
+    assert (to_numpy(res.state.buoy_cap)[alive] == np.float32(c.mutation.buoy_init)).all()
 
 
 def test_extinction_stops_with_status_extinct(cfg: Config, tmp_path: Path) -> None:

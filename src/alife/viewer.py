@@ -29,10 +29,10 @@ import mlx.core as mx
 import numpy as np
 
 from alife import bonds, ops
-from alife.config import Config, require_2d
+from alife.config import Config, dims, require_2d
 from alife.render import COLOR_MODES, DEFAULT_LAYERS, Viewport, render_frame, write_png
 from alife.runio import write_state_file
-from alife.state import ERROR_MASK, N_COUNTERS, CounterIdx, Diag, State, age, to_numpy
+from alife.state import ERROR_MASK, CounterIdx, Diag, State, age, n_counters, to_numpy
 from alife.step import make_step
 
 if TYPE_CHECKING:
@@ -119,7 +119,7 @@ class ViewerSession:
         self.frame: np.ndarray | None = None  # last rendered (H,W,3) uint8 image
         self.dirty = True  # the view changed since the last frame
         self.steps_per_s = 0.0
-        self._acc = mx.zeros((N_COUNTERS,), dtype=mx.int32)  # counters summed over the current interval
+        self._acc = mx.zeros((n_counters(dims(cfg).nd),), dtype=mx.int32)  # counters summed over the interval
         self._acc_steps = 0
         self._last_interval: tuple[int, int, int] | None = None  # (births, deaths, steps)
         self._rate_t0 = time.perf_counter()

@@ -379,6 +379,11 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
                 f"world.{key} must equal the source's {getattr(src_cfg.world, key)} "
                 "(a fork cannot change the world's dimensions or height)"
             )
+    if dims(cfg).d3 and cfg.physics.radius != src_cfg.physics.radius:  # the radius sets z_lo, z_hi (§27.1)
+        raise CheckpointError(
+            f"physics.radius must equal the source's {src_cfg.physics.radius} in a 3D world "
+            "(it sets the floor and surface bounds z_lo, z_hi)"
+        )
     if cfg.population.n_init != src_cfg.population.n_init:
         raise CheckpointError(
             f"population.n_init must equal the source's {src_cfg.population.n_init} (clade bins depend on it)"

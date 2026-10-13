@@ -19,9 +19,9 @@ if TYPE_CHECKING:  # state imports this module; the annotation alone must not cr
 
 class FieldObs(NamedTuple):
     res: mx.array  # (N,)
-    res_grad: mx.array  # (N,2) body frame, normalised
+    res_grad: mx.array  # (N,2) body frame (fwd, lat), normalised; 3D (N,3) (fwd, lat, up) (§27.6)
     chem: mx.array  # (N,NCH)
-    chem_grad: mx.array  # (N,NCH,2) body frame, normalised
+    chem_grad: mx.array  # (N,NCH,2) body frame, normalised; 3D (N,NCH,3)
 
 
 def init_patches(key_pos: mx.array, key_vel: mx.array, cfg: Config) -> tuple[mx.array, mx.array]:
@@ -149,8 +149,37 @@ def _nbr_cells(fcell: mx.array, fg: int) -> tuple[mx.array, mx.array, mx.array, 
     return cy * fg + xp, cy * fg + xm, yp * fg + cx, ym * fg + cx
 
 
+def _nbr_cells_3d(fcell: mx.array, fg: int, fz: int) -> tuple[mx.array, ...]:
+    """Flat z-major indices of the neighbour cells ``(x+1, x−1, y+1, y−1, z+1, z−1)`` (§27.6).
+
+    x and y are periodic; z is clamped to ``[0, FZ − 1]``, so a boundary layer is its own outer neighbour (the
+    mirror of the no-flux boundary).
+    """
+    fg2 = fg * fg
+    cz, cyx = fcell // fg2, fcell % fg2
+    cy, cx = cyx // fg, cyx % fg
+    xp, xm = (cx + 1) % fg, (cx - 1 + fg) % fg
+    yp, ym = (cy + 1) % fg, (cy - 1 + fg) % fg
+    zp, zm = mx.minimum(cz + 1, fz - 1), mx.maximum(cz - 1, 0)
+    row = cz * fg2 + cy * fg
+    return (
+        row + xp,
+        row + xm,
+        cz * fg2 + yp * fg + cx,
+        cz * fg2 + ym * fg + cx,
+        zp * fg2 + cyx,
+        zm * fg2 + cyx,
+    )
+
+
 def sample_fields(
-    resource: mx.array, chem: mx.array, fcell: mx.array, heading: mx.array, cfg: Config
+    resource: mx.array,
+    chem: mx.array,
+    fcell: mx.array,
+    heading: mx.array,
+    cfg: Config,
+    *,
+    pitch: mx.array | None = None,
 ) -> FieldObs:
     """Field inputs at each agent's start-of-step cell, already normalised as in §5.
 
@@ -160,8 +189,12 @@ def sample_fields(
     - ``chem``: ``c / (c + chem_half_sat)`` per channel (``IN_CHEM``).
     - ``chem_grad``: ``tanh(to_body(central difference / 2) / chem_half_sat)`` per channel (``IN_CHEM_GRAD``).
 
-    Dead rows get stale values (from their stale ``pos``); consumers mask by ``alive``.
+    Dead rows get stale values (from their stale ``pos``); consumers mask by ``alive``. In 3D the gradients
+    gain a z difference and are rotated by yaw and ``pitch`` (required) into (fwd, lat, up)
+    (``_sample_fields_3d``, §27.6).
     """
+    if dims(cfg).d3:
+        return _sample_fields_3d(resource, chem, fcell, heading, pitch, cfg)
     assert resource.ndim == 2, "2D field sampling got a 3D lattice"  # static: _nbr_cells would fold z into y
     fg = dims(cfg).fg
     fi, half = cfg.fields, cfg.sensing.chem_half_sat
@@ -180,25 +213,56 @@ def sample_fields(
     return FieldObs(res=res, res_grad=res_grad, chem=cv / (cv + half), chem_grad=chem_grad)
 
 
-def deposit_chem(emit: mx.array, fcell: mx.array, active: mx.array, cfg: Config) -> mx.array:
-    """Integer chemical deposit quanta per channel and cell, (NCH·FG·FG,) int32 (§13.3).
+def _sample_fields_3d(
+    resource: mx.array, chem: mx.array, fcell: mx.array, heading: mx.array, pitch: mx.array, cfg: Config
+) -> FieldObs:
+    """``sample_fields`` on the (FZ,FG,FG) lattice (§27.6): the same §5 normalisation, with a z difference.
 
-    Each active agent adds ``floor(emit_c·256)`` quanta at flat index ``c·FG² + fcell`` (int scatter-add, so
-    the result is independent of atomic order).
+    ``g_z = (R[z+1] − R[z−1]) / (2·resource_cap)`` with the z index clamped and the divisor kept at 2 (the
+    mirror of the no-flux boundary, so a boundary layer sees half its one-sided slope); likewise for the
+    chemicals. The 3-vectors are rotated into (fwd, lat, up) by ``ops.to_body3``: ``res_grad`` (N,3) and
+    ``chem_grad`` (N,NCH,3).
     """
-    fg2 = dims(cfg).fg ** 2
+    assert pitch is not None, "3D field sampling needs the pitch"  # static
+    d = dims(cfg)
+    fi, half = cfg.fields, cfg.sensing.chem_half_sat
+    cos_h, sin_h = mx.cos(heading), mx.sin(heading)
+    cos_p, sin_p = mx.cos(pitch), mx.sin(pitch)
+    xp, xm, yp, ym, zp, zm = _nbr_cells_3d(fcell, d.fg, d.fz)
+
+    r = resource.reshape(-1).astype(mx.float32)  # R ≤ R_HARD < 2^24: exact in f32
+    res = mx.minimum(r[fcell] / fi.resource_cap, layout.RES_SAT) / layout.RES_SAT
+    g = mx.stack([r[xp] - r[xm], r[yp] - r[ym], r[zp] - r[zm]], axis=-1) / (2.0 * fi.resource_cap)
+    res_grad = mx.clip(layout.RES_GRAD_GAIN * ops.to_body3(g, cos_h, sin_h, cos_p, sin_p), -1.0, 1.0)
+
+    c = chem.reshape(layout.NCH, d.n_cells)
+    cv = c[:, fcell].T  # (N,NCH)
+    cg = mx.stack([(c[:, xp] - c[:, xm]).T, (c[:, yp] - c[:, ym]).T, (c[:, zp] - c[:, zm]).T], axis=-1) * 0.5
+    rot = ops.to_body3(cg, cos_h[:, None], sin_h[:, None], cos_p[:, None], sin_p[:, None])
+    return FieldObs(res=res, res_grad=res_grad, chem=cv / (cv + half), chem_grad=mx.tanh(rot / half))
+
+
+def deposit_chem(emit: mx.array, fcell: mx.array, active: mx.array, cfg: Config) -> mx.array:
+    """Integer chemical deposit quanta per channel and cell, (NCH·n_cells,) int32 (§13.3).
+
+    Each active agent adds ``floor(emit_c·256)`` quanta at flat index ``c·n_cells + fcell`` (int scatter-add,
+    so the result is independent of atomic order). ``n_cells`` is FG² in 2D and FZ·FG² in 3D (§27.6).
+    """
+    n_cells = dims(cfg).n_cells
     quanta = mx.maximum(ops.floor_i32(emit * 256.0), 0)  # (N,NCH); emit ∈ [0, 1) → [0, 255]
-    flat = fcell[:, None] + mx.arange(layout.NCH, dtype=mx.int32) * fg2  # (N,NCH)
+    flat = fcell[:, None] + mx.arange(layout.NCH, dtype=mx.int32) * n_cells  # (N,NCH)
     mask = mx.broadcast_to(active[:, None], flat.shape)
-    return ops.scatter_add_i32(layout.NCH * fg2, flat, quanta, mask)
+    return ops.scatter_add_i32(layout.NCH * n_cells, flat, quanta, mask)
 
 
 def update_chem(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array:
     """Deposit, then diffuse and decay, then clamp the chemical channels (§13.3).
 
     ``chem_c ← clip((1 − λ_c)·(chem_c + D_c·(roll₄(chem_c) − 4·chem_c)), 0, chem_max)`` after
-    ``chem += dep_q·chem_deposit_scale``.
+    ``chem += dep_q·chem_deposit_scale``. 3D: ``_update_chem_3d`` (§27.6).
     """
+    if dims(cfg).d3:
+        return _update_chem_3d(chem, dep_q, cfg)
     fi, fg = cfg.fields, dims(cfg).fg
     diff = mx.array(fi.chem_diffusion, dtype=mx.float32).reshape(layout.NCH, 1, 1)
     keep = mx.array([1.0 - lam for lam in fi.chem_decay], dtype=mx.float32).reshape(layout.NCH, 1, 1)
@@ -209,6 +273,31 @@ def update_chem(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array:
         + mx.roll(c, 1, axis=2)
         + mx.roll(c, -1, axis=2)
         - 4.0 * c
+    )
+    return mx.clip(keep * (c + diff * lap), 0.0, fi.chem_max)
+
+
+def _update_chem_3d(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array:
+    """``update_chem`` on the (NCH,FZ,FG,FG) lattice with a 7-point stencil, no flux in z (§27.6).
+
+    x and y are rolled (periodic); z uses mirrored ghost layers (``c[−1] = c[0]``, ``c[FZ] = c[FZ−1]``), so a
+    boundary layer has the 5-point stencil of its four x/y neighbours and its one z neighbour, nothing crosses
+    the floor or the surface, and diffusion conserves mass. ``chem_diffusion ≤ 1/6`` keeps it stable (§27.1).
+    """
+    fi, d = cfg.fields, dims(cfg)
+    diff = mx.array(fi.chem_diffusion, dtype=mx.float32).reshape(layout.NCH, 1, 1, 1)
+    keep = mx.array([1.0 - lam for lam in fi.chem_decay], dtype=mx.float32).reshape(layout.NCH, 1, 1, 1)
+    c = chem + dep_q.reshape(layout.NCH, d.fz, d.fg, d.fg).astype(mx.float32) * fi.chem_deposit_scale
+    c_up = mx.concatenate([c[:, 1:], c[:, -1:]], axis=1)  # the layer above; the top layer mirrors itself
+    c_dn = mx.concatenate([c[:, :1], c[:, :-1]], axis=1)  # the layer below; the floor layer mirrors itself
+    lap = (
+        mx.roll(c, 1, axis=2)
+        + mx.roll(c, -1, axis=2)
+        + mx.roll(c, 1, axis=3)
+        + mx.roll(c, -1, axis=3)
+        + c_up
+        + c_dn
+        - 6.0 * c
     )
     return mx.clip(keep * (c + diff * lap), 0.0, fi.chem_max)
 
@@ -225,10 +314,13 @@ def update_resource(
     ``inc = clip(min(regen_rate, resource_cap − R), 0, ∞)`` (``INJECT_REGEN = Σ inc``), so regeneration stops
     at ``resource_cap``; the exact flux stencil ``ops.int_diffuse`` then conserves the total. ``step`` (the
     step index during the step) selects the seasonal weights; it is ignored with seasons off. ``env`` is the
-    director's live levers (None when the director is off).
+    director's live levers (None when the director is off). In 3D both are (FZ,FG,FG) and the stencil is
+    ``ops.int_diffuse_3d``, with no flux through the floor and the surface (§27.6).
     """
     fi = cfg.fields
     inc = mx.maximum(mx.minimum(regen_rate(patch_pos, cfg, step, env), fi.resource_cap - resource), 0)
+    if dims(cfg).d3:
+        return ops.int_diffuse_3d(resource + inc, fi.resource_diffusion_q8), inc
     return ops.int_diffuse(resource + inc, fi.resource_diffusion_q8), inc
 
 

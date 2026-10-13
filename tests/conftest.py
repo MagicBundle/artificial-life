@@ -38,3 +38,17 @@ def micro_cfg() -> Config:
             "brain.weight_dtype=float32",
         ],
     )
+
+
+@pytest.fixture(scope="session")
+def tiny3d_cfg() -> Config:
+    """The ``tiny3d`` preset with float32 weights: the default for whole-step 3D tests (§27.8)."""
+    return load_config(preset="tiny3d", overrides=["brain.weight_dtype=float32"])
+
+
+@pytest.fixture(scope="session")
+def micro3d_cfg() -> Config:
+    """``micro_cfg``'s sizes on the ``tiny3d`` preset (``helpers.MICRO3D``): N = 64, L = 48, height 24."""
+    from helpers import MICRO3D  # not at import: helpers reads the default device (ON_GPU)
+
+    return load_config(preset="tiny3d", overrides=list(MICRO3D))
