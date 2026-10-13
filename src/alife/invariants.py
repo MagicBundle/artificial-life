@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING
 import mlx.core as mx
 import numpy as np
 
-from alife import bonds
+from alife import bonds, layout
 from alife.config import Config, dims
-from alife.state import R_HARD, Diag, LedgerIdx, State, expected_layout, to_numpy, total_energy
+from alife.state import R_HARD, Diag, LedgerIdx, State, expected_layout, sinks, to_numpy, total_energy
 
 # Director env ranges (docs/DIRECTOR.md §3), inclusive (lo, hi); radius and kill_p are set in `_env_ranges`.
 ENV_REGEN_MULT: tuple[float, float] = (0.0, 4.0)
@@ -26,16 +26,20 @@ if TYPE_CHECKING:  # step imports this module; the annotation alone must not cre
     from alife.step import StepOut
 
 _I32 = mx.int32
-_SINK_SLICE = slice(LedgerIdx.HEAT_BASAL, LedgerIdx.HEAT_OVERFLOW + 1)
 _VEL_TOL = 1e-6  # §2.2: ‖vel‖ ≤ v_max·(1 + 1e-6) for fp32 rescaling
 _SHOW = 5  # offending indices quoted per message
 
 
-def _ledger_net(ledger: mx.array) -> mx.array:
-    """Sources minus sinks as int64 element adds (no int64 reduction on device, §10.8)."""
+def _ledger_net(ledger: mx.array, nd: int) -> mx.array:
+    """Sources minus sinks as int64 element adds (no int64 reduction on device, §10.8).
+
+    The sinks are ``state.sinks(nd)``: slot 15 (``HEAT_BUOYANCY``) is one in 3D (§27.7), after the 2D five.
+    """
     net = ledger[LedgerIdx.INJECT_REGEN] + ledger[LedgerIdx.INJECT_IMMIGRATION]
     for i in range(LedgerIdx.HEAT_BASAL, LedgerIdx.HEAT_OVERFLOW + 1):
         net = net - ledger[i]
+    if nd == 3:  # static
+        net = net - ledger[LedgerIdx.HEAT_BUOYANCY]
     return net
 
 
@@ -74,13 +78,15 @@ def device_check(
 
     ``s`` is the end-of-step state, ``ledger`` this step's (16,) int64 ledger and ``prev_total`` the
     start-of-step ``TOTAL``. ``TOTAL`` is recomputed from ``s`` (not read from ``s.total``), so a leak
-    anywhere in the state sets ``LEDGER``.
+    anywhere in the state sets ``LEDGER``. In 3D (§27.8) ``HEAT_BUOYANCY`` is a sink, ``NONFINITE`` also
+    covers ``pitch`` and ``buoy_cap``, and ``POS_RANGE`` also z outside ``[z_lo, z_hi]`` and
+    ``|pitch| > PITCH_MAX`` (float32 bounds), on every row.
     """
     d = dims(cfg)
     alive, dead = s.alive, ~s.alive
     e = s.energy
     total = total_energy(e, alive, s.resource, cfg)
-    ledger_bad = ((total - prev_total) != _ledger_net(ledger)) | (
+    ledger_bad = ((total - prev_total) != _ledger_net(ledger, d.nd)) | (
         ledger[LedgerIdx.FLOW_STOLEN] != ledger[LedgerIdx.FLOW_ATTACK_GAIN] + ledger[LedgerIdx.FLOW_SPILL]
     )
     energy_bad = mx.any(alive & ((e < 1) | (e > cfg.energy.e_max))) | mx.any(dead & (e != 0))
@@ -93,12 +99,17 @@ def device_check(
         & mx.all(mx.isfinite(s.h))
         & mx.all(mx.isfinite(s.chem))
     )
+    if d.d3:  # static: the 3D-only fields
+        nonfinite = nonfinite | ~(mx.all(mx.isfinite(s.pitch)) & mx.all(mx.isfinite(s.buoy_cap)))
     field_bad = mx.any((s.resource < 0) | (s.resource > R_HARD))
     if cfg.director.enabled:  # static: the director's env levers are live
         field_bad = field_bad | env_out_of_range(s, cfg)
     headroom = (max_cell_occ >= d.occ_limit) | (max_attackers >= (1 << 15))
     capacity = alive.astype(_I32).sum() > d.n_cap
     pos_bad = mx.any((s.pos < 0) | (s.pos >= cfg.world.size))
+    if d.d3:  # static: the z bounds and the pitch clip, as float32 (MLX casts the Python bounds, §27.2)
+        z = s.pos[:, 2]
+        pos_bad = pos_bad | mx.any((z < d.z_lo) | (z > d.z_hi) | (mx.abs(s.pitch) > layout.PITCH_MAX))
     checks = (
         (ledger_bad, Diag.LEDGER),
         (energy_bad, Diag.ENERGY_RANGE),
@@ -149,8 +160,10 @@ def _bad_range(a: np.ndarray, lo: float | None, hi: float | None, *, hi_open: bo
     return bad.reshape(a.shape[0], -1).any(axis=1) if a.ndim > 1 else bad
 
 
-def _ledger_net_np(ledger: np.ndarray) -> np.int64:
-    return ledger[LedgerIdx.INJECT_REGEN] + ledger[LedgerIdx.INJECT_IMMIGRATION] - ledger[_SINK_SLICE].sum()
+def _ledger_net_np(ledger: np.ndarray, nd: int) -> np.int64:
+    """Sources minus ``state.sinks(nd)`` (int64; ``HEAT_BUOYANCY`` is a sink in 3D)."""
+    sources = ledger[LedgerIdx.INJECT_REGEN] + ledger[LedgerIdx.INJECT_IMMIGRATION]
+    return sources - ledger[list(sinks(nd))].sum()
 
 
 def _total_np(a: dict[str, np.ndarray], cfg: Config) -> np.int64:
@@ -164,12 +177,14 @@ def _total_np(a: dict[str, np.ndarray], cfg: Config) -> np.int64:
 
 
 def _check_ledger(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
+    d = dims(cfg)
     total_now, cum = _total_np(a, cfg), a["ledger_cum"]
     r.check(total_now == a["total"], f"ledger: recomputed TOTAL {total_now} != state.total {a['total']}")
-    want = a["total0"] + _ledger_net_np(cum)
+    want = a["total0"] + _ledger_net_np(cum, d.nd)
     r.check(total_now == want, f"ledger: global closure fails, TOTAL {total_now} != total0 + cum = {want}")
     r.rows(cum < 0, "ledger: negative cumulative entry")
-    r.check(cum[LedgerIdx.RESERVED] == 0, "ledger: RESERVED entry is not 0")
+    if not d.d3:  # in 3D slot 15 is HEAT_BUOYANCY (§27.7)
+        r.check(cum[LedgerIdx.RESERVED] == 0, "ledger: RESERVED entry is not 0")
 
 
 def _check_bonds(r: _Report, a: dict[str, np.ndarray]) -> None:
@@ -268,6 +283,20 @@ def _check_rows(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     r.rows(alive[psc] & (a["birth_step"][psc] != step - 1), "pending: pend_slot points at an established row")
 
 
+def _check_rows_3d(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
+    """The 3D-only ranges (§27.8), every row: z in ``[z_lo, z_hi]``, ``|pitch| ≤ PITCH_MAX`` and
+    ``buoy_cap`` in ``[0, 1]`` (float32 bounds, as the engine clips), and no stored velocity into the floor or
+    the surface at it (the clamp zeroes ``v_z``, §27.3). x and y are §22.2's rule on ``pos``, which also
+    bounds z by L."""
+    d, pm = dims(cfg), np.float32(layout.PITCH_MAX)
+    alive, z, vz = a["alive"], a["pos"][:, 2], a["vel"][:, 2]
+    r.rows(_bad_range(z, d.z_lo, d.z_hi), "pos: z outside [z_lo, z_hi] or non-finite")
+    r.rows(_bad_range(a["pitch"], -pm, pm), "pitch: outside [−PITCH_MAX, PITCH_MAX] or non-finite")
+    r.rows(_bad_range(a["buoy_cap"], 0.0, 1.0), "buoy_cap: outside [0, 1] or non-finite")
+    r.rows(alive & (z == d.z_lo) & (vz < 0), "vel: alive row on the floor moving down")
+    r.rows(alive & (z == d.z_hi) & (vz > 0), "vel: alive row at the surface moving up")
+
+
 def _check_env(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     """Director env levers: finite and in range. Inert values pass, so this is checked for every run."""
     for name, (lo, hi) in _env_ranges(cfg).items():
@@ -289,7 +318,8 @@ def _check_step(
     r.check(a["step"] == p["step"] + 1, f"step: {a['step']} does not follow {p['step']}")
     dl = a["ledger_cum"] - p["ledger_cum"]
     dt = a["total"] - p["total"]
-    r.check(dt == _ledger_net_np(dl), f"ledger: per-step closure fails, ΔTOTAL {dt} != {_ledger_net_np(dl)}")
+    net = _ledger_net_np(dl, d.nd)
+    r.check(dt == net, f"ledger: per-step closure fails, ΔTOTAL {dt} != {net}")
     r.check(
         dl[LedgerIdx.FLOW_STOLEN] == dl[LedgerIdx.FLOW_ATTACK_GAIN] + dl[LedgerIdx.FLOW_SPILL],
         "ledger: FLOW_STOLEN != FLOW_ATTACK_GAIN + FLOW_SPILL this step",
@@ -345,6 +375,8 @@ def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | 
     _check_ledger(r, a, cfg)
     _check_bonds(r, a)
     _check_rows(r, a, cfg)
+    if dims(cfg).d3:  # its own meta-test (tests/test_invariants_3d.py)
+        _check_rows_3d(r, a, cfg)
     if prev is not None:
         p = {
             name: to_numpy(getattr(prev, name))

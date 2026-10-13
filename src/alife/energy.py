@@ -7,7 +7,7 @@ from typing import NamedTuple
 import mlx.core as mx
 
 from alife import layout, ops
-from alife.actions import Actions
+from alife.actions import Actions, Motion3
 from alife.config import Config
 
 _I32 = mx.int32
@@ -18,6 +18,16 @@ class Costs(NamedTuple):
     solvent: mx.array  # (N,) bool
     paid_basal: mx.array  # (N,) int32
     paid_action: mx.array  # (N,) int32
+
+
+class Costs3(NamedTuple):
+    """``Costs`` plus the buoyancy payment (3D, §27.7); a parallel type, so ``Costs`` keeps four fields."""
+
+    energy: mx.array  # (N,) int32 after paying
+    solvent: mx.array  # (N,) bool
+    paid_basal: mx.array  # (N,) int32
+    paid_action: mx.array  # (N,) int32
+    paid_buoy: mx.array  # (N,) int32: buoyancy use and cap upkeep (HEAT_BUOYANCY)
 
 
 class Combat(NamedTuple):
@@ -68,6 +78,56 @@ def pay_costs(
     paid_basal = mx.minimum(basal_due, energy)
     paid_action = mx.minimum(action_due, energy - paid_basal)
     return Costs(energy - paid_basal - paid_action, solvent, paid_basal, paid_action)
+
+
+def pay_costs3(
+    energy: mx.array,
+    act: Actions,
+    mo: Motion3,
+    n_bonds: mx.array,
+    brain_cost: mx.array,
+    buoy_cap: mx.array,
+    alive: mx.array,
+    cfg: Config,
+) -> Costs3:
+    """3D basal, action and buoyancy costs with solvency (§27.7); ``pay_costs`` is the 2D form.
+
+    The dues are §10.3's except the turn term, ``floor(turn_cost·(|turn| + |Δφ|)/turn_max)`` with
+    ``Δφ = mo.pitch``, plus the buoyancy due
+    ``floor(buoyancy_cost·(buoy_cap·b)²) + floor(buoyancy_cap_cost·buoy_cap)`` with ``b = mo.buoy``: the
+    quadratic use of the lift (``buoy_cap·b`` is its fraction of ``buoyancy_max``) and the cap's upkeep, paid
+    every step even at ``b = 0``. Without the actuator (``buoyancy_max = 0``, static) the buoyancy terms are
+    not traced and the due is 0. Solvency is on the total; payment order is basal, action, buoyancy. Dead
+    rows pay 0. Ledger: ``E_in − E_out = paid_basal + paid_action + paid_buoy`` (``HEAT_BASAL``,
+    ``HEAT_ACTION``, ``HEAT_BUOYANCY``). With ``Δφ = 0`` and ``buoy_cap = 0`` it equals ``pay_costs``.
+    """
+    ec, ph = cfg.energy, cfg.physics
+    f = ops.floor_i32
+    basal_due = ec.basal_cost + brain_cost + ec.bond_upkeep * n_bonds
+    action_due = (
+        f(ec.move_cost * (act.thrust * act.thrust))
+        + f(ec.turn_cost * (mx.abs(act.turn) + mx.abs(mo.pitch)) / ph.turn_max)
+        + f(ec.grip_cost * act.grip)
+        + f(ec.contract_cost * mx.abs(act.contract) * n_bonds.astype(mx.float32))
+        + f(ec.msg_cost * mx.abs(act.msg).sum(axis=1))
+        + f(ec.emit_cost * act.emit.sum(axis=1))
+        + f(ec.harvest_cost * act.harvest)
+        + f(ec.defend_cost * act.defend)
+        + ec.attack_cost * act.attack.astype(_I32)
+    )
+    if ph.buoyancy_max > 0:  # static: the actuator exists
+        lift = buoy_cap * mo.buoy  # the fraction of buoyancy_max used
+        buoy_due = f(ec.buoyancy_cost * (lift * lift)) + f(ec.buoyancy_cap_cost * buoy_cap)
+    else:  # 0, derived from an input like every possibly-constant output of the step (I14)
+        buoy_due = energy * 0
+    basal_due = mx.where(alive, basal_due, 0).astype(_I32)
+    action_due = mx.where(alive, action_due, 0).astype(_I32)
+    buoy_due = mx.where(alive, buoy_due, 0).astype(_I32)
+    solvent = alive & (energy >= basal_due + action_due + buoy_due)
+    paid_basal = mx.minimum(basal_due, energy)
+    paid_action = mx.minimum(action_due, energy - paid_basal)
+    paid_buoy = mx.minimum(buoy_due, energy - paid_basal - paid_action)
+    return Costs3(energy - paid_basal - paid_action - paid_buoy, solvent, paid_basal, paid_action, paid_buoy)
 
 
 def harvest(

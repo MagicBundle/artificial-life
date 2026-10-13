@@ -29,7 +29,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import metrics
-from alife.config import Config, immigration_on
+from alife.config import Config, dims, immigration_on
 from alife.runio import RunDir
 from alife.state import ERROR_MASK, CounterIdx, Diag, State, to_numpy
 from alife.step import StepOut, make_step
@@ -227,7 +227,7 @@ def run(
             deaths.append(_records(host, "deaths"))
             snap = metrics.snapshot_metrics(state, cfg, heavy=t % he == 0)
             perf = {"wall_s": wall, "peak_mem_gb": mx.get_peak_memory() / 1e9}
-            row = metrics.interval_row(t, host["counters"], host["ledgers"], snap, perf)
+            row = metrics.interval_row(t, host["counters"], host["ledgers"], snap, perf, nd=dims(cfg).nd)
             if first_row:
                 row["carrying_capacity_est"] = metrics.carrying_capacity(state, cfg)
                 first_row = False

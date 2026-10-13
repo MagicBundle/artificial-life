@@ -12,11 +12,13 @@ from alife import brain, invariants, layout, ops
 from alife.config import Config, config_from_dict, config_to_dict, dims
 from alife.state import (
     ENV_FIELDS,
+    SOURCES,
     Diag,
     State,
     State3,
     agent_fields,
     init_state,
+    sinks,
     state_cls,
     to_numpy,
     total_energy,
@@ -42,6 +44,13 @@ def as_3d(cfg: Config, **sections: Mapping[str, Any]) -> Config:
     for name, sub in (*THREE_D.items(), *sections.items()):
         d[name] = {**d[name], **sub}
     return config_from_dict(d)
+
+
+def ledger_net(led: Any, cfg: Config) -> int:
+    """Sources minus sinks of a (16,) ledger (an ``mx.array`` or numpy) for ``cfg``'s dims, as a Python int:
+    the change of ``TOTAL`` it accounts for (§10.8; ``HEAT_BUOYANCY`` is a sink in 3D, §27.7)."""
+    a = np.asarray(to_numpy(led) if isinstance(led, mx.array) else led, np.int64)
+    return sum(int(a[i]) for i in SOURCES) - sum(int(a[i]) for i in sinks(dims(cfg).nd))
 
 
 def volume_draws(k_pos: mx.array, k_head: mx.array, n: int, cfg: Config) -> tuple[np.ndarray, ...]:

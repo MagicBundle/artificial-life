@@ -14,14 +14,22 @@ import mlx.core as mx
 import numpy as np
 
 from alife import fields, layout, ops, rng
-from alife.config import Config, dims
-from alife.state import ENV_FIELDS, CounterIdx, Env, LedgerIdx, State, to_numpy
+from alife.config import Config, dims, is_3d
+from alife.state import (
+    ENV_FIELDS,
+    CounterIdx,
+    Env,
+    LedgerIdx,
+    State,
+    ledger_names,
+    n_counters,
+    sinks,
+    to_numpy,
+)
 
 # Upper bounds of the body-size histogram bins 1, 2, 3–4, 5–8, 9–16, 17–32, 33–64, 65+ (§19.2).
 BODY_BIN_EDGES: Final = (1, 2, 4, 8, 16, 32, 64)
 BODY_BIN_NAMES: Final = ("1", "2", "3-4", "5-8", "9-16", "17-32", "33-64", "65+")
-
-_SINKS: Final = range(LedgerIdx.HEAT_BASAL, LedgerIdx.HEAT_OVERFLOW + 1)
 
 
 # --- bodies ---------------------------------------------------------------------------------------------
@@ -142,7 +150,9 @@ def snapshot_metrics(s: State, cfg: Config, *, heavy: bool) -> dict[str, Any]:
     Small device reductions (clade bins, chem means and, when ``heavy``, body sizes and weight diversity) and
     the per-agent arrays the host statistics need are evaluated together and read once. Energy totals are
     exact host int64; ``ledger_error`` is the absolute discrepancy of the global closure (§10.8), 0 when it
-    holds. ``clade_entropy`` is in nats; ``tag_var`` is the trace of the population (ddof 0) covariance.
+    holds (its sinks are ``state.sinks``: ``HEAT_BUOYANCY`` too in 3D). ``clade_entropy`` is in nats;
+    ``tag_var`` is the trace of the population (ddof 0) covariance. ``resource_mean`` is per field cell (every
+    layer in 3D) and ``chem_mean`` per channel over all its cells.
     """
     n_init = cfg.population.n_init
     step = int(to_numpy(s.step))
@@ -157,7 +167,7 @@ def snapshot_metrics(s: State, cfg: Config, *, heavy: bool) -> dict[str, Any]:
         "offspring_frac": s.offspring_frac,
         "brain_cost": s.brain_cost,
         "resource": s.resource,
-        "chem_mean": s.chem.mean(axis=(1, 2)),
+        "chem_mean": s.chem.mean(axis=tuple(range(1, s.chem.ndim))),  # (1, 2) in 2D, (1, 2, 3) in 3D
         "clade_counts": ops.scatter_add_i32(n_init + 1, mx.clip(s.clade, 0, n_init), 1, s.alive),
         "total": s.total,
         "total0": s.total0,
@@ -185,7 +195,7 @@ def snapshot_metrics(s: State, cfg: Config, *, heavy: bool) -> dict[str, Any]:
     e_total = e_agents + e_structure + e_field
     cum = h["ledger_cum"].astype(np.int64)
     expected = int(h["total0"]) + int(cum[LedgerIdx.INJECT_REGEN] + cum[LedgerIdx.INJECT_IMMIGRATION])
-    expected -= int(sum(int(cum[i]) for i in _SINKS))
+    expected -= int(sum(int(cum[i]) for i in sinks(dims(cfg).nd)))
     ledger_error = abs(e_total - expected) + abs(int(h["total"]) - e_total)
 
     ea = e[alive]
@@ -267,6 +277,8 @@ def interval_row(
     ledgers: np.ndarray,
     snap: Mapping[str, Any],
     perf: Mapping[str, float],
+    *,
+    nd: int = 2,
 ) -> dict[str, Any]:
     """One ``metrics.jsonl`` row from stacked counters (T,27), ledgers (T,16) and a snapshot (§19.2).
 
@@ -274,8 +286,14 @@ def interval_row(
     means, and the per-agent fractions are weighted by ``N_ALIVE`` over the interval. ``MAX_OCCUPANCY`` is an
     interval max. ``perf`` supplies ``wall_s`` and ``peak_mem_gb``. Ratios with a zero denominator are None.
     The snapshot keys (and ``carrying_capacity_est`` when the caller adds it) follow; "step" is the first key.
+    ``nd`` is the world's dims (§27.8): a 3D world's counters are (T,30) and its ledger names slot 15
+    ``HEAT_BUOYANCY``; counters of another width are refused rather than reshaped.
     """
-    c = np.asarray(counters, dtype=np.int64).reshape(-1, len(CounterIdx))
+    width = n_counters(nd)
+    c = np.asarray(counters, dtype=np.int64)
+    if c.ndim == 2 and c.shape[1] != width:
+        raise ValueError(f"counters have {c.shape[1]} columns, a {nd}D world has {width}")
+    c = c.reshape(-1, width)
     lg = np.asarray(ledgers, dtype=np.int64).reshape(-1, len(LedgerIdx))
     if c.shape[0] != lg.shape[0]:
         raise ValueError(f"counters ({c.shape[0]} steps) and ledgers ({lg.shape[0]} steps) differ in length")
@@ -311,7 +329,7 @@ def interval_row(
                 int(cs[CounterIdx.BOND_PROPOSERS]),
                 256.0,
             ),
-            "ledger": {i.name: int(ls[i]) for i in LedgerIdx},
+            "ledger": {name: int(ls[i]) for i, name in enumerate(ledger_names(nd))},
             "cell_overflow": int(cs[CounterIdx.CELL_OVERFLOW]),
             "max_occupancy": int(c[:, CounterIdx.MAX_OCCUPANCY].max(initial=0)),
             "v_clips": int(cs[CounterIdx.V_CLIPS]),
@@ -353,9 +371,13 @@ def carrying_capacity(s: State, cfg: Config, step: mx.array | None = None, env: 
 
     Regeneration uses the state's current patch positions, so the estimate is specific to the seed (and
     drifts with the patches); ``E[founder brain_cost]`` is the analytic expectation (``founder_brain_cost``).
+    In 3D ``c_ref`` also holds a founder's buoyancy-cap upkeep ``floor(buoyancy_cap_cost·buoy_init)`` (§27.7),
+    paid every step, and the regeneration is summed over every layer.
     With ``step`` and ``env`` (the director's rule tier) the regeneration is the live one: seasonal at
     ``step`` and scaled by the environment levers, as ``fields.regen_rate`` defines it.
     """
     regen = int(to_numpy(fields.regen_rate(s.patch_pos, cfg, step, env)).astype(np.int64).sum())
     c_ref = cfg.energy.basal_cost + founder_brain_cost(cfg) + layout.C_REF_MARGIN
+    if is_3d(cfg):  # float32, as pay_costs3 computes it
+        c_ref += int(np.floor(np.float32(cfg.energy.buoyancy_cap_cost) * np.float32(cfg.mutation.buoy_init)))
     return regen / c_ref

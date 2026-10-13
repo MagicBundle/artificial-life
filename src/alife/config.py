@@ -116,6 +116,8 @@ class EnergyConfig:
     defend_cost: int = 20
     attack_cost: int = 50
     harvest_max: int = 400
+    buoyancy_cost: int = 0  # 3D (§27.7): q per step at the full buoyancy_max lift, ·(lift/buoyancy_max)²
+    buoyancy_cap_cost: int = 0  # 3D: q per step per unit of buoy_cap, paid even without lift (upkeep)
 
 
 @dataclass(frozen=True)
@@ -595,6 +597,8 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("fields", "benthic_lambda"),
     ("fields", "photic_amp"),
     ("fields", "photic_lambda"),
+    ("energy", "buoyancy_cost"),
+    ("energy", "buoyancy_cap_cost"),
 )
 
 # The POST_V01 keys of the 3D world (docs/3D.md, §27.1). In a 2D world every one but ``world.dims`` must keep
@@ -610,6 +614,8 @@ THREE_D_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("fields", "benthic_lambda"),
     ("fields", "photic_amp"),
     ("fields", "photic_lambda"),
+    ("energy", "buoyancy_cost"),
+    ("energy", "buoyancy_cap_cost"),
 )
 # The world.dims values validate accepts. Read at call time, so tests of 3D code can widen it before 3D is
 # enabled (docs/3D.md §10: PR 3 adds 3).
@@ -756,6 +762,8 @@ def validate(cfg: Config) -> None:
         "defend_cost",
         "attack_cost",
         "harvest_max",
+        "buoyancy_cost",
+        "buoyancy_cap_cost",
     ):
         req(getattr(en, name) >= 0, f"energy.{name} must be ≥ 0, got {getattr(en, name)}")
     req(en.brain_cost_per_l1 >= 0, f"energy.brain_cost_per_l1 must be ≥ 0, got {en.brain_cost_per_l1}")
@@ -899,6 +907,13 @@ def validate(cfg: Config) -> None:
             f"((min_energy − birth_cost − structure)·frac_q8(frac_min)) >> 8 ≥ 1",
         )
         req(q_max <= 255, f"frac_max: need frac_q8(frac_max) = {q_max} ≤ 255")
+    if d3:  # the buoyancy costs (§27.7): each term is at most its coefficient; inert without the actuator
+        for name in ("buoyancy_cost", "buoyancy_cap_cost"):
+            req(getattr(en, name) < 1 << 16, f"energy.{name} {getattr(en, name)} must be < 2^16")
+        req(
+            ph.buoyancy_max > 0 or (en.buoyancy_cost == 0 and en.buoyancy_cap_cost == 0),
+            "energy.buoyancy_cost and energy.buoyancy_cap_cost must be 0 when physics.buoyancy_max = 0",
+        )
 
     # Contention headroom.
     for name, val in (

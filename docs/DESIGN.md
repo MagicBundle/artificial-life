@@ -896,6 +896,8 @@ paid_basal  = min(basal_due, E);   paid_action = min(action_due, E − paid_basa
   grip. They **always** die at S14 with cause `STARVED`: the death rule includes `~solvent` (§10.7), so a bond
   partner's share at S12 cannot rescue them; any inflow becomes part of their corpse. Hence
   `DEATHS_STARVED ≥ INSOLVENT` every step.
+- In 3D, `energy.pay_costs3` adds the pitch change to the turn term and a buoyancy due, paid last and booked in
+  `HEAT_BUOYANCY` (§27.7).
 
 ### 10.4 Harvest (S10, `energy.harvest`)
 
@@ -993,20 +995,22 @@ is `state.ledger_cum`.
 | 4 | `HEAT_SHARE` | sink | 12 | `FLOW_CORPSE` (E + S) | internal |
 | 5 | `HEAT_BIRTH` | sink | 13 | `FLOW_ENDOWMENT` | internal |
 | 6 | `HEAT_OVERFLOW` | sink | 14 | `FLOW_STRUCTURE` | internal |
-| 7 | `FLOW_HARVEST` | internal | 15 | `RESERVED` (always 0) | — |
+| 7 | `FLOW_HARVEST` | internal | 15 | `RESERVED` (always 0 in 2D); in 3D `HEAT_BUOYANCY` (§27.7) | — (3D: sink) |
 
 No director action adds a ledger term. A catastrophe death is a corpse (`FLOW_CORPSE`), an immigration request is
 admitted through the ordinary immigrant lanes (`INJECT_IMMIGRATION`), and a regeneration multiplier or patch gain
 only changes the integer regeneration amount (`INJECT_REGEN`).
 
-**Per-step closure.** This is checked on device every step (`Diag.LEDGER`) and in tests on the host:
+**Per-step closure.** This is checked on device every step (`Diag.LEDGER`) and in tests on the host (2D; in 3D
+`L[15]` is a sink too, §27.7):
 
 ```text
 TOTAL(after) − state.total == L[0] + L[1] − (L[2] + L[3] + L[4] + L[5] + L[6])
 L[FLOW_STOLEN] == L[FLOW_ATTACK_GAIN] + L[FLOW_SPILL]
 ```
 
-**Global closure.** This is checked on the host at every metrics interval, and gives `ledger_error`, which must be 0:
+**Global closure.** This is checked on the host at every metrics interval, and gives `ledger_error`, which must be 0
+(2D; in 3D the sinks are `state.sinks(3)`, which adds slot 15, §27.7):
 
 ```text
 TOTAL(now, recomputed in numpy int64) == total0 + cum[0] + cum[1] − Σ_{k=2..6} cum[k] == state.total
@@ -1016,7 +1020,8 @@ Any lost or created quantum anywhere in history is detected exactly. The per-ste
 step.
 
 **How it is computed on device.**
-- Per-agent flows are stacked into an `(N, F_A)` int32 matrix, and per-cell flows into `(FG², F_F)`.
+- Per-agent flows are stacked into an `(N, F_A)` int32 matrix, and per-cell flows into `(FG², F_F)` (3D: `paid_buoy`
+  is one more agent column and the cells are the `FZ·FG²` of the volume, §27.7).
 - Count × constant terms are formed directly in int64 from int32 counts: `HEAT_BIRTH = int64(n_birth)·birth_cost`,
   `FLOW_STRUCTURE = int64(n_birth)·S`, `INJECT_IMMIGRATION = int64(n_imm)·(e_init + S)`, and the `S·n_alive` term
   of `TOTAL` is `int64(n_alive)·S` (at 256k, `n_alive·S` exceeds 2³¹).
@@ -1035,7 +1040,7 @@ These bounds are validated by `config.validate` or monitored by diag bits.
 | per-agent per-step flows | `< 2²¹` (corpse ≤ e_max + S) | validate `S < 2²⁰` |
 | `exact_sum` inputs | `0 ≤ x < 2³¹`, length ≤ 2²⁰ | validate `n_max ≤ 2²⁰`, `FG ≤ 1024` |
 | `proportional_take` | demand < 2¹⁶; contenders per pool < 2¹⁵ | validate `harvest_max, attack_max, share_rate < 2¹⁶`; `INT_HEADROOM` if max field-cell occupancy ≥ `occ_limit` or max attackers per target ≥ 2¹⁵ |
-| corpse and spill scatter into R | `R_HARD + occ·(2·e_max + S) < 2³¹` (per agent in the cell: corpse ≤ e_max + S, spill plus residue ≤ lost ≤ e_max) | `Dims.occ_limit = min(2¹⁵ − 1, (2³¹ − 1 − R_HARD) // (2·e_max + S))` = 1 060 at defaults; same `INT_HEADROOM` bit |
+| corpse and spill scatter into R | `R_HARD + occ·(2·e_max + S) < 2³¹` (per agent in the cell: corpse ≤ e_max + S, spill plus residue ≤ lost ≤ e_max; in 3D `occ` is per x/y column, because corpses sink to the floor cell, §27.7) | `Dims.occ_limit = min(2¹⁵ − 1, (2³¹ − 1 − R_HARD) // (2·e_max + S))` = 1 060 at defaults; same `INT_HEADROOM` bit |
 | Q8 products | `Dp·230 < 2²⁸`, `grant·179 < 2²⁴`, `in·230 < 2²⁴` | the bounds above |
 | int64 (`uid`, totals, ledger) | — | elementwise ops only; count × constant ledger terms are cast to int64 before the multiply (§10.8) |
 
@@ -1054,6 +1059,8 @@ limit. `occ_limit` is derived from the config rather than a magic number, so it 
   (`revise_proto/r2_fert.py`, 8 seeds).
 - `c_ref ≈ 100 + 37 + 50` (`C_REF_MARGIN = 50`, `layout.py`).
 - So `K_est ≈ 37–40 k` agents, about 60% of `N_CAP`. `alife inspect` prints the value computed for the actual seed.
+
+In 3D, `c_ref` also holds a founder's buoyancy-cap upkeep and the regeneration sums every layer (§27.7).
 
 Local depletion and predation push the real figure lower. `alife inspect` prints the estimate. The defaults are a
 starting point, tuned with the slow ecology test (§22.5).
@@ -1683,6 +1690,8 @@ def sinks(nd: int) -> tuple[LedgerIdx, ...]                                # SIN
 def ledger_names(nd: int) -> tuple[str, ...]                               # slot 15: RESERVED (2D) | HEAT_BUOYANCY (3D)
 def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]   # the one State schema (§27.1)
 class CounterIdx(IntEnum): ...     # §19.1 (N_COUNTERS = 27)
+class Counter3D(IntEnum): Z_FLOOR_CLAMPS = 27; Z_SURFACE_CLAMPS = 28; GROUNDED = 29    # 3D only (§27.8)
+def n_counters(nd: int) -> int                                             # len(StepOut.counters): 27 | 30 (3D)
 class Diag(IntFlag): ...           # §22.3
 class DeathCause(IntEnum): STARVED = 0; KILLED = 1; AGED = 2; CATASTROPHE = 3
 R_HARD: Final = (1 << 24) - 1
@@ -1823,6 +1832,9 @@ def integrate3(pos: mx.array, heading: mx.array, pitch: mx.array, force: mx.arra
 # energy.py
 class Costs(NamedTuple): energy; solvent; paid_basal; paid_action                  # (N,) each
 def pay_costs(energy, act: Actions, n_bonds, brain_cost, alive, cfg: Config) -> Costs
+class Costs3(NamedTuple): energy; solvent; paid_basal; paid_action; paid_buoy      # (N,) each; 3D (§27.7)
+def pay_costs3(energy, act: Actions, mo: Motion3, n_bonds, brain_cost, buoy_cap, alive, cfg: Config) -> Costs3
+                    # 3D: the pitch in the turn term, the buoyancy due paid last (HEAT_BUOYANCY, §27.7)
 def harvest(energy, resource, fcell, act: Actions, solvent, cfg: Config
             ) -> tuple[mx.array, mx.array, mx.array]                               # (E, resource, got)
 class Combat(NamedTuple): energy; resource; lost; gain; spill; residue; attack; hit; max_attackers
@@ -1868,17 +1880,19 @@ def make_step(cfg: Config, *, compile: bool | None = None) -> Callable[[State], 
 # invariants.py
 def device_check(s: State, ledger: mx.array, prev_total: mx.array, max_cell_occ: mx.array,
                  max_attackers: mx.array, overflow_cells: mx.array, v_clips: mx.array, cfg: Config) -> mx.array
-                    # int32 Diag bits for this step (ORed into s.diag by step)
+                    # int32 Diag bits for this step (ORed into s.diag by step); 3D terms in §27.8
 def env_out_of_range(s: State, cfg: Config) -> mx.array                   # device bool: any env_* value non-finite / outside §2.2 ranges
 def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | None = None) -> list[str]
                     # host numpy; [] == OK. Per-step ledger = s.ledger_cum − prev.ledger_cum; births and immigrants
                     # from out.births.valid. Stateless: a cumulative dead-uid set, if wanted, lives in the test harness.
+                    # 3D: the closures over state.sinks(3), no RESERVED rule, and _check_rows_3d (§27.8)
 
 # metrics.py
 def components(partner: mx.array, alive: mx.array, iters: int) -> tuple[mx.array, mx.array]   # labels, converged
 def snapshot_metrics(s: State, cfg: Config, *, heavy: bool) -> dict[str, Any]     # host floats/ints/lists
 def interval_row(step: int, counters: np.ndarray, ledgers: np.ndarray, snap: Mapping[str, Any],
-                 perf: Mapping[str, float]) -> dict[str, Any]                     # counters (T,27), ledgers (T,16)
+                 perf: Mapping[str, float], *, nd: int = 2) -> dict[str, Any]
+                    # counters (T, n_counters(nd)), ledgers (T,16); the ledger keyed by ledger_names(nd) (§27.8)
 def carrying_capacity(s: State, cfg: Config, step: mx.array | None = None, env: Env | None = None) -> float
                     # step + env: the live regeneration (the director's K_est, §26.5)
 
@@ -2115,6 +2129,7 @@ class EnergyConfig:
     defend_cost: int = 20
     attack_cost: int = 50
     harvest_max: int = 400
+    buoyancy_cost: int = 0;  buoyancy_cap_cost: int = 0                     # 3D only (§27.7): buoyancy use, cap upkeep
 
 @dataclass(frozen=True)
 class CombatConfig:
@@ -2226,7 +2241,8 @@ except `run`. **Keys added after v0.1 are omitted from the hash at their default
 `population.immigration_every`, `population.immigration_count`, `fields.season_period`,
 `fields.season_amplitude`, `fields.season_mode`, `director.enabled`, `world.dims`, `world.height` (§27.1),
 `physics.gravity`, `physics.floor_eps`, `physics.buoyancy_max`, `mutation.buoy_init`, `mutation.buoy_sigma`,
-`fields.benthic_lambda`, `fields.photic_amp`, `fields.photic_lambda` (§27.1, §27.3–§27.5); the
+`fields.benthic_lambda`, `fields.photic_amp`, `fields.photic_lambda`, `energy.buoyancy_cost`,
+`energy.buoyancy_cap_cost` (§27.1, §27.3–§27.5, §27.7); the
 director's policy keys `persona`, `goal`, `rule_every`, `budget_per_100k`, (step 3) `llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` and (§26.11) `yoke_log` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
 because only `enabled` changes the compiled step). A section that this leaves empty
 (`director`) is omitted from the hashed dict too, so the hash does not change when a section is added. A
@@ -2240,7 +2256,7 @@ changes the hash, as for any dynamics key.
 - **World geometry:** `size / field_cell` is an integer with `3 ≤ FG ≤ 1024`; `G_h = floor(size/radius) ≥ 3`.
 - **World dimensions** (§27.1): `world.dims ∈ {2, 3}` and in `config.DIMS_SUPPORTED` (`(2,)`: dims = 3 is not
   enabled yet); in 2D every 3D key (`config.THREE_D_KEYS`) keeps its default (`height` and the gravity, buoyancy and
-  vertical-profile keys 0); the 3D-only rules are listed in §27.1.
+  vertical-profile keys 0); the 3D-only rules are listed in §27.1 (the buoyancy costs' in §27.7).
 - **Interaction ranges:** `radius ≥ max(form_range, combat.range, 2·physics.radius)`; `NS ≤ K ≤ 9·C` (2D;
   `27·C` in 3D, §27.1).
 - **Population:** `64 ≤ n_max ≤ 2²⁰`; `1 ≤ M ≤ n_max // 4`; `1 ≤ n_init ≤ N_CAP`; `immigration_floor ≤ N_CAP`;
@@ -2388,7 +2404,7 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
 
 ## 19. Metrics for emergence
 
-### 19.1 Per-step counters (`CounterIdx`, `StepOut.counters`, int32 (27,))
+### 19.1 Per-step counters (`CounterIdx`, `StepOut.counters`, int32 (27,); 2D, 3D (30,): §27.8)
 
 | idx | name | idx | name |
 |---|---|---|---|
@@ -2413,7 +2429,8 @@ All four kin counters and `BOND_PROPOSERS` are assembled by `step.finish` (§16.
 
 `BONDS_BROKEN` is the decrease in occupied slots across S9a plus across S14, halved. The runner keeps the per-step
 `StepOut`s of an interval as small evaluated arrays and stacks them on the host at the flush. That gives counters
-`(T,27)` and ledgers `(T,16)` as int64 sums, so no step's events are lost.
+`(T,27)` and ledgers `(T,16)` as int64 sums, so no step's events are lost. In 3D the counters are `(T,30)`: the 27
+above, then `state.Counter3D` (§27.8).
 
 ### 19.2 Interval row (`metrics.jsonl`)
 
@@ -2436,7 +2453,8 @@ Every row has these groups:
     as partners. Both biases are null when their denominator is 0.
 - **Energy:**
   - `E_agents`, `E_structure`, `E_field`, `E_total`, all host int64;
-  - `ledger` (interval sums by `LedgerIdx` name);
+  - `ledger` (interval sums by `LedgerIdx` name; `state.ledger_names(nd)`, so slot 15 is `HEAT_BUOYANCY` in 3D,
+    §27.8);
   - **`ledger_error`** (must be 0, §10.8);
   - `energy_mean`, `energy_median`.
 - **Life history:** `age_mean`, `generation_max`, `generation_mean`.
@@ -2446,7 +2464,7 @@ Every row has these groups:
   - `tag_var` (trace of the tag covariance over alive agents);
   - `sigma_q10/q50/q90`, `rate_q10/q50/q90`, `frac_q10/q50/q90`;
   - `brain_cost_mean`.
-- **Fields:** `resource_mean`, `chem_mean` (list of 3).
+- **Fields:** `resource_mean`, `chem_mean` (list of 3). In 3D both are over every cell of the volume (§27.8).
 - **Environment** (`env`, only when `director.enabled`): the live levers at the snapshot (`regen_mult`, `season_amp`,
   `season_period`, `drift_mult`, `imm_request`, `cat_radius`, `cat_kill_p`, and the range and zero-count of
   `patch_gain`). The row is written before the director acts at that step, so `env` shows what the interval ran with.
@@ -2827,6 +2845,9 @@ stateless). `full_check` verifies:
    `birth_step == step − 1` is in `pend_slot`.
 8. **Age.** `birth_step ≤ step − 1` for alive rows.
 
+In 3D the closures include `HEAT_BUOYANCY`, `RESERVED == 0` is not checked, and `_check_rows_3d` adds the z, pitch,
+`buoy_cap` and boundary-velocity rules (§27.8).
+
 **Stress variants** (each 60 steps in the fast suite and 150 steps under `slow`, on `tiny_cfg`):
 - forced high attack logits;
 - every agent reproducing (capacity pressure);
@@ -2876,7 +2897,7 @@ metrics interval. On any error bit it dumps the state to `diag/`, prints the dec
 and `chem` (`NONFINITE`); resource range (`FIELD_RANGE`); int32 preconditions (`INT_HEADROOM`); the population cap
 (`CAPACITY`); and position range (`POS_RANGE`). Everything else in §22.2 (uid uniqueness and monotonicity, gene,
 `h`, `heading`, `tag` and `chem` ranges, the pending-buffer invariant, the remaining dead-row canonical fields, age)
-is checked only by the host `full_check`.
+is checked only by the host `full_check`. The 3D terms of both checks (no new bit) are in §27.8.
 
 ### 22.4 Determinism tests
 
@@ -4223,6 +4244,123 @@ compile). `tests/test_sensing_3d.py` (a float64 reference of all 84 inputs on a 
 against the 2D inputs bit for bit; a pitch rotation case; `IN_GROUNDED` inclusive at `z_ground` and false above it and
 at the surface, with `IN_HEIGHT`; `grounded` required; dead and padded neighbours and empty bond slots zero the DZ
 inputs; `|x| ≤ 1` at `±PITCH_MAX`; compiled against eager).
+
+### 27.7 Energy: the pitch turn cost, the buoyancy costs and `HEAT_BUOYANCY` (PR 3)
+
+**Costs** (S8 in 3D, `energy.pay_costs3 → Costs3`; the 2D `pay_costs` and `Costs` are unchanged). §10.3's dues with
+the pitch change in the turn term, plus a third due for buoyancy:
+
+```text
+basal_due  = basal_cost + brain_cost + bond_upkeep·n_bonds                                  → HEAT_BASAL
+action_due = §10.3's, with the turn term floor(turn_cost·(|turn| + |Δφ|)/turn_max)          → HEAT_ACTION
+buoy_due   = floor(buoyancy_cost·(buoy_cap·b)²) + floor(buoyancy_cap_cost·buoy_cap)          → HEAT_BUOYANCY
+solvent    = alive & (E ≥ basal_due + action_due + buoy_due)
+paid_basal = min(basal_due, E);   paid_action = min(action_due, E − paid_basal)
+paid_buoy  = min(buoy_due, E − paid_basal − paid_action);   E ← E − paid_basal − paid_action − paid_buoy
+```
+
+- `Δφ = Motion3.pitch` and `b = Motion3.buoy` (§27.2), masked by `alive`. The lift is `buoyancy_max·buoy_cap·b`
+  (§27.3), so `buoy_cap·b` is the fraction of `buoyancy_max` in use: the use term is quadratic like
+  `move_cost·a²`, and no lift costs nothing. The upkeep is linear in the cap and paid every step by every alive
+  agent, also at `b = 0`: holding a cap is a running cost, using it another.
+- Each `floor` is float32 cast to int32 (§10.3). Both buoyancy terms are traced only when `buoyancy_max > 0` (a
+  static branch); without the actuator the due is 0, derived from `E` (the compile rule of I14), and `validate`
+  requires both costs to be 0.
+- The payment order is basal, action, buoyancy, with solvency on the total. A solvent agent pays exactly §10.3's
+  basal and action amounts; the order only decides how an insolvent agent's energy is split. Insolvent agents end
+  S8 at `E = 0`, `actions.mask(·, solvent)` cancels their `Actions` and their `Motion3`, and they die `STARVED` at
+  S14 (§10.3). Dead rows pay 0.
+- With `Δφ = 0` and `buoy_cap = 0` the result is `pay_costs` bit for bit on CPU: `|turn| + 0` is exact and the
+  buoyancy due is 0.
+
+**Keys.** `energy.buoyancy_cost` and `energy.buoyancy_cap_cost` (int, quanta per step, default 0) are in
+`POST_V01_KEYS` and `THREE_D_KEYS`, so a 2D world must keep them at 0 and no 2D hash moves. Each is `≥ 0` (§17's
+per-cost rule lists them) and, in 3D, `< 2¹⁶` (each term is at most its coefficient, like the demands of §10.9);
+both must be 0 when `buoyancy_max = 0`.
+
+**`HEAT_BUOYANCY`.** In 3D, ledger slot 15 is the sink `HEAT_BUOYANCY = Σ paid_buoy` (§27.8). `RESERVED` stays the
+canonical `LedgerIdx` name and stays 0 in 2D, where it is still checked; `state.sinks(3)` is §10.8's five sinks plus
+slot 15, and `state.ledger_names(3)` names the slot in metrics rows. The 3D closures:
+
+```text
+TOTAL(after) − state.total == L[0] + L[1] − (L[2] + L[3] + L[4] + L[5] + L[6] + L[15])
+TOTAL(now) == total0 + cum[0] + cum[1] − Σ_{k ∈ sinks(3)} cum[k] == state.total
+S8:  E_in − E_out == paid_basal + paid_action + paid_buoy
+```
+
+`device_check` (`LEDGER`), `full_check` and `ledger_error` evaluate them over `sinks(nd)` (§27.8). Gravity has no
+term (§27.3), and every other flow keeps its §10 term: harvest takes from the agent's own 3D cell, combat spill and
+residue go to the victim's own 3D cell (docs/3D.md §12 Q19), and corpses sink to the floor cell under `FLOW_CORPSE`
+(§27.6).
+
+**Column headroom.** §10.9's bound `R_HARD + occ·(2·e_max + S) < 2³¹` holds per destination cell. In 3D a floor cell
+receives the corpses of every layer of its column (§27.6) as well as the spills and residues of its own layer, so
+`occ` counts the agents of an x/y column: the step gives `device_check` the largest column occupancy,
+`scatter_add_i32(FG², fcell mod FG², 1, alive).max()` (§27.8), checked against the unchanged `Dims.occ_limit`
+(`INT_HEADROOM`). A column holds at least as many agents as any of its cells, so the bound also covers the cells
+above the floor. A dense packing (FCC, density 0.74) puts about `0.74·field_cell²·height / (4π r³/3)` agents in a
+column: 68 at field cell 4, height 24 and r = 1, and 226 at height 80, against `occ_limit = 1 060`.
+
+**Carrying capacity.** In 3D `c_ref` (§10.10) also holds a founder's cap upkeep `floor(buoyancy_cap_cost·buoy_init)`
+(float32, as `pay_costs3` computes it), and the regeneration is summed over every layer.
+
+**Tests.** `tests/test_energy_3d.py` (`pay_costs3` against a float32 reference on mixed solvent and insolvent
+populations, with the per-function closure and dead rows paying 0; the exact buoyancy terms and the payment order;
+the upkeep without lift; the pitch in the turn term; level and capless equal to `pay_costs` bit for bit, with and
+without the actuator; compile, including the `paid_buoy` that is 0 by construction; the keys: defaults, the pinned
+hash, rejection in 2D and each 3D rule).
+
+### 27.8 Step wiring, counters, invariants and metrics (PR 3)
+
+**Counters** (`state.Counter3D`, `state.n_counters(nd)`). `CounterIdx` keeps its 27 members (§19.1). A 3D
+`StepOut.counters` is (30,): the 27, then
+
+| idx | name | counts |
+|---|---|---|
+| 27 | `Z_FLOOR_CLAMPS` | survivors stopped by the floor this step (pre-clamp `z ≤ z_lo` with `v_z < 0`; `Integrated3.z_floor`, §27.3) |
+| 28 | `Z_SURFACE_CLAMPS` | survivors stopped by the surface (pre-clamp `z ≥ z_hi` with `v_z > 0`) |
+| 29 | `GROUNDED` | alive agents grounded at the start of the step (`physics.grounded(s.pos) & s.alive`; `IN_GROUNDED` is not masked) |
+
+`n_counters(nd)` is 27 in 2D and 30 in 3D, and every consumer sizes by it: the runner's interval stacks,
+`metrics.interval_row` and the viewer's accumulator. Under gravity every agent resting on the floor clamps every step,
+so `Z_FLOOR_CLAMPS` is about `GROUNDED` and is not an anomaly signal; the surface count is the separate one.
+
+**Ledger.** In 3D the step stacks `paid_buoy` as one more per-agent column of §10.8's exact sum and books it in slot
+15 (`HEAT_BUOYANCY`, §27.7); in 2D the slot stays the constant 0. `StepOut.ledger` stays (16,).
+
+**Invariants** (§22.2 and §22.3 in 3D). There is no new `Diag` bit. The 2D expressions are unchanged and the 3D
+terms are separate static additions.
+- `device_check`: `LEDGER` closes over `sinks(nd)`; `NONFINITE` also covers `pitch` and `buoy_cap`; `POS_RANGE`
+  also flags z outside `[z_lo, z_hi]` and `|pitch| > PITCH_MAX`, both against the float32 bounds the engine clips
+  with, on every row (dead rows rest at `z_lo`, §27.4); `INT_HEADROOM` receives the column occupancy (§27.7). The 2D
+  rule `0 ≤ pos < L` also runs on z, where the z bounds imply it (`2·height ≤ L`).
+- `full_check`: the closures over `sinks(nd)`; the rule `RESERVED == 0` in 2D only; and `_check_rows_3d`, on every
+  row: z in `[z_lo, z_hi]`, `|pitch| ≤ float32(PITCH_MAX)` and `buoy_cap ∈ [0, 1]` (each finite), and no alive agent
+  at `z_lo` with `v_z < 0` or at `z_hi` with `v_z > 0`. The last two rules are exact: the clamp of §27.3 zeroes the
+  stored `v_z` of every row it moves to a boundary, and a move it does not clamp ends strictly inside. A finite
+  `buoy_cap` out of range is reported by `full_check` only, like the other genes.
+- `_check_rows_3d` has its own meta-test (`_CHECK_FNS_3D`): each of its rules must be hit by a 3D corruption case
+  whose message fragment matches that rule only. `full_check` calls it in 3D only, so the 2D meta-test of I20 and
+  its sites are unchanged.
+
+**Metrics** (§19.2 in 3D).
+- `interval_row(…, *, nd = 2)` takes counters `(T, n_counters(nd))` and refuses a 2-D block of another width
+  (`ValueError`) instead of reshaping it: a 3D `(9, 30)` block would otherwise reshape by 27 into ten scrambled rows.
+  The ledger is keyed by `ledger_names(nd)`, so a 3D row has `HEAT_BUOYANCY` where a 2D row keeps `RESERVED`. The
+  runner and `analysis.resim` pass the run's dims. Rows do not carry the `Counter3D` columns yet; the 3D metrics are
+  docs/3D.md §7's, in PR 4.
+- `snapshot_metrics`: `ledger_error` over `sinks(nd)`; `chem_mean` per channel over all `FZ·FG²` cells;
+  `resource_mean` per cell of the volume (`E_field / n_cells`), so the upper layers dilute it compared with a 2D
+  floor.
+- `carrying_capacity`: §27.7.
+
+**Tests.** `tests/test_invariants_3d.py` (a healthy volume scene with the bounds reached; integrated states pushed
+into the floor and the surface pass the clamp rules; the closures with `HEAT_BUOYANCY`, and the same arrays failing
+without it; slot 15 not a sink in 2D, where `RESERVED` is reported; both checks on each 3D corruption with a Diag bit;
+the float32 bounds inclusive; `buoy_cap` range `full_check` only; a corruption case for every `_check_rows_3d` rule
+and the meta-test; `_check_rows_3d` not run in 2D). `tests/test_metrics_3d.py` (`Counter3D` after `CounterIdx`; a
+`(9, 30)` interval in 3D, refused as 2D; the 2D row keeps `RESERVED`; the snapshot over the volume with the closure
+over slot 15; the carrying capacity with the upkeep; resim's comparison with the 3D names).
 
 ---
 

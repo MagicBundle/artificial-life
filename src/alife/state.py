@@ -98,6 +98,19 @@ class CounterIdx(IntEnum):
 N_COUNTERS: Final = len(CounterIdx)
 
 
+class Counter3D(IntEnum):
+    """3D-only per-step int32 counters (§27.8), appended after ``CounterIdx`` in a 3D ``StepOut.counters``."""
+
+    Z_FLOOR_CLAMPS = 27  # survivors stopped by the floor this step (pre-clamp z ≤ z_lo, falling)
+    Z_SURFACE_CLAMPS = 28  # survivors stopped by the surface (pre-clamp z ≥ z_hi, rising)
+    GROUNDED = 29  # alive agents grounded at the start of the step (physics.grounded)
+
+
+def n_counters(nd: int) -> int:
+    """The length of ``StepOut.counters`` in an ``nd``-dimensional world: 27 in 2D, 30 in 3D."""
+    return N_COUNTERS + (len(Counter3D) if nd == 3 else 0)
+
+
 class Diag(IntFlag):
     """Sticky invariant bits OR-ed into ``state.diag`` (§22.3). Bits below 1<<16 are errors."""
 
