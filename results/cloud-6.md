@@ -1,4 +1,4 @@
-cloud-6 (PARTIAL: Parts A and B done; Part C running): tiny3d 20k-step baselines. Ledger exact and full_check OK on both seeds. buoy_cap widens but does not shift on seed 0, and drifts down on seed 1. Seed 1 colonises the water column and hits the N cap (992).
+cloud-6 (COMPLETE): every run (2 × 20k tiny3d, 8 × 10k grid, 5 × 2k DEV3D) has its ledger exact and full_check OK. Recommendations: C = 16 at DEV3D density (C = 24–32 for 64k3d, to be verified on the Mac), K = 8 (K = 12 conflicts with two physics constraints), gravity about 0.01–0.015 for vertical niches, buoyancy costs 16/8.
 
 # cloud-6: 3D tuning sweeps (CPU, main)
 
@@ -13,7 +13,9 @@ cloud-6 (PARTIAL: Parts A and B done; Part C running): tiny3d 20k-step baselines
 **Raw data.** In `results/cloud-6/`:
 - `partA_*_metrics.jsonl.gz` and `partB_*_metrics.jsonl.gz`: every 10-step row, gzipped;
 - `partA_*_inspect.txt`;
-- `partA_summary.json` and `partB_summary.json`.
+- `partA_summary.json`, `partB_summary.json` and `partC_summary.json`;
+- `partC_dev3d.toml`, the DEV3D overrides;
+- `partC_*_inspect.txt` and `partC_*_metrics.jsonl.gz`.
 
 ## Part A: tiny3d baselines, 20,000 steps
 
@@ -258,3 +260,110 @@ totals: {"rows": 1000, "last_step": 10000, "ledger_err_max": 0, "overflow_rows":
   little more at CC = 2 (0.424–0.435) than at CC = 8.
 
 **Population.** About 240–335 at 10k in every cell. None hit `n_cap` within 10k steps.
+
+
+## Part C: hash capacity C and neighbour count K at dev scale (DEV3D)
+
+**Config.** `--preset dev --config partC_dev3d.toml --steps 2000`, seed 0. The TOML holds every override from
+the task:
+- world: dims 3, size 160, height 40;
+- fields: `n_patches` 4, `patch_sigma` 17, `chem_diffusion` [0.16, 0.10, 0.16], `benthic_lambda` 8,
+  `photic_amp` 0.5, `photic_lambda` 8;
+- physics: gravity 0.03, `floor_eps` 0.1, `buoyancy_max` 0.04;
+- energy: `buoyancy_cost` 16, `buoyancy_cap_cost` 8;
+- mutation: `buoy_init` 0.5, `buoy_sigma` 0.02;
+- `brain.weight_dtype` float32.
+
+C and K are set with `--set sensing.cell_capacity` and `--set sensing.k_neighbors`. The run has `n_max` 16,384
+and `n_init` 4096, and metrics every 100 steps.
+
+**K = 12 cannot pass validation by lowering `k_repel` alone.** Two validation rules conflict:
+
+1. **Stability:** `2(B·k_spring + K·k_repel)/drag ≤ 1.8`. With B = 4, k_spring 0.05 and drag 1, K = 12 needs
+   `k_repel ≤ 0.0583`. The default 0.08 gives 2.32.
+2. **Non-penetration:** `thrust_max + max(gravity, buoyancy_max − gravity) < 2·r·k_repel`. With thrust_max 0.10
+   and gravity 0.03 this needs `k_repel > 0.065`.
+
+Verbatim error at `k_repel` = 0.058:
+
+```
+config error: 1 config problem(s): physics.thrust_max + max(gravity, buoyancy_max − gravity) = 0.13 must be < 2·radius·k_repel = 0.116
+```
+
+**What I ran.** The smallest change that satisfies both rules is `physics.k_repel = 0.058` (stability 1.792)
+plus `physics.thrust_max = 0.085`, down from 0.10.
+- I used it for both K = 12 runs (C = 16 and C = 48).
+- I also added a **control: K = 8 with the same modified physics** (`c16_k8_modphys`). That separates the
+  effect of K from the effect of the physics change.
+- Alternatives that would also satisfy both rules: drag ≥ 1.29 at the default `k_repel`, or `k_repel` 0.066
+  with `k_spring` ≤ 0.027.
+
+**Results.**
+- Overflow columns count 100-step rows with `cell_overflow` > 0; occupancy is the maximum `max_occupancy` over
+  the run.
+- Peak memory is the maximum `peak_mem_gb` of the run.
+- Every run: `inspect --check` full_check OK, `ledger_error` 0 on every row, `v_clips` 0, carrying-capacity
+  estimate 792.
+
+| run | C | K | k_repel / thrust_max | overflow rows>0 (of 20) / max | max_occupancy | n@500 | n@1000 | n@2000 | grounded@2000 | surface@2000 | steps/s (median) | peak mem GB | wall | ledger_err max | v_clips |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| c16_k8 | 16 | 8 | 0.08 / 0.10 | 0 / 0 | 12 | 1905.0 | 1282.5 | 1054.1 | 0.604 | 0.026 | 1.56 | 0.564 | wall=1288s | 0 | 0 |
+| c48_k8 | 48 | 8 | 0.08 / 0.10 | 0 / 0 | 12 | 1905.0 | 1282.5 | 1054.1 | 0.604 | 0.026 | 0.75 | 0.974 | wall=2713s | 0 | 0 |
+| c16_k8_modphys | 16 | 8 | 0.058 / 0.085 | 0 / 0 | 11 | 1914.5 | 1262.0 | 978.0 | 0.692 | 0.014 | 1.60 | 0.564 | wall=1260s | 0 | 0 |
+| c16_k12 | 16 | 12 | 0.058 / 0.085 | 0 / 0 | 13 | 1883.7 | 1227.3 | 993.1 | 0.688 | 0.012 | 1.57 | 0.568 | wall=1282s | 0 | 0 |
+| c48_k12 | 48 | 12 | 0.058 / 0.085 | 0 / 0 | 13 | 1883.7 | 1227.3 | 993.1 | 0.688 | 0.012 | 0.74 | 0.979 | wall=2724s | 0 | 0 |
+
+
+**Population.** Every run follows the same arc: 4096 founders, a boom to about 5900 at step 100, a crash to
+about 4100 at step 200, then a slow decline to about 1000 by step 2000.
+
+### Reading (Part C)
+
+**C.**
+- There is **no overflow anywhere** at DEV3D density: max occupancy is 11–13 against C = 16.
+- C = 48 gives **bit-identical trajectories** to C = 16 at equal K: every metric matches, as expected when no
+  cell overflows.
+- It costs **2.1× wall time** (0.75 vs 1.56 steps/s) and **1.73× peak memory** (0.97 vs 0.56 GB). The 27·C
+  candidate gather dominates the step on CPU.
+
+**K.**
+- At equal physics, K = 12 and K = 8 differ only slightly: n@2000 993 vs 978, grounded 0.688 vs 0.692. The cost
+  is the same (1.57 vs 1.60 steps/s).
+- The physics change itself moves the outcome more than K does: n@2000 drops from 1054 to 978, and grounded
+  rises from 0.60 to 0.69.
+- At this density, K = 12 buys little and needs a physics compromise.
+
+## Reading: recommendations for a 64k3d preset
+
+1. **C = 16 is enough at DEV3D density, but 64k3d is about 4× denser.**
+   - The proposed 64k3d is about 33k agents in 320×320×80 = 8.2M, against about 1000 in 160×160×40 = 1.0M
+     here.
+   - Under gravity, crowding concentrates on the floor. cloud-3's crowd tests reached occupancy 28–36 in
+     floor piles.
+   - Recommendation: **C = 24–32**, then confirm with `bench --preset 64k3d --stages` on the Mac. Raise C only
+     if `cell_overflow` > 0 in a real 64k3d run.
+   - The cost is roughly linear in C: 2.1× for 3× C on CPU. The Metal cost may differ.
+2. **K = 8.** K = 12 cannot pass validation with the current physics defaults: stability and non-penetration
+   conflict, as shown above. Where it can run, it barely changes the ecology at dev density. Revisit only if a
+   64k3d run shows many agents whose K list is all contacts; cloud-3 measured that in dense piles. If K = 12 is
+   wanted, the cleanest option is to raise drag to about 1.3, which keeps `k_repel` and thrust; the cost is
+   slower motion.
+3. **Gravity about 0.01–0.015, not 0.03,** if vertical niches are the point of 3D.
+   - At 0.01, about 40% of agents are grounded, about 20% sit at the surface, and clade–height mutual
+     information is about 0.70. At 0.03 the population is about 80% benthic, with MI 0.30–0.41 (Part B).
+   - Seed 1 at 0.03 did colonise the column after about 10k steps (Part A), so 0.03 is not prohibitive, just
+     slow and seed-dependent.
+   - 0.02 was not tested.
+4. **`buoyancy_cost` 16, `buoyancy_cap_cost` 8, the current tiny3d values.**
+   - The lift cost (4 vs 16) made no systematic difference in 10k steps.
+   - A cap cost of 8 keeps upkeep at about 2.5% of basal heat, against 0.3% at 2. That gives selection a
+     gradient on `buoy_cap`.
+   - Part A seed 1 shows the median drifting down to 0.46 once the population is rich, so the trait is under
+     selection there.
+5. **Related issues found on the way.**
+   - The `inspect` carrying-capacity estimate underestimates 3D populations: about 450 vs a realised 992 on
+     tiny3d seed 1, and 792 vs about 1000 on DEV3D. Since the director uses n/K, this should be fixed or
+     recalibrated before director runs in 3D.
+   - tiny3d's `n_max` = 1024 saturates at about 16k steps on some seeds.
+   - Founder over-seeding: DEV3D booms to 5900 and crashes to about 1000. `n_init` 4096 is about 4× the
+     equilibrium, so a 64k3d preset may want `n_init` closer to the expected K.

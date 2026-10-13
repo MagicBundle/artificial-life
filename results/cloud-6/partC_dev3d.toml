@@ -1,0 +1,23 @@
+[world]
+dims = 3
+size = 160.0
+height = 40.0
+[fields]
+n_patches = 4
+patch_sigma = 17.0
+chem_diffusion = [0.16, 0.10, 0.16]
+benthic_lambda = 8.0
+photic_amp = 0.5
+photic_lambda = 8.0
+[physics]
+gravity = 0.03
+floor_eps = 0.1
+buoyancy_max = 0.04
+[energy]
+buoyancy_cost = 16
+buoyancy_cap_cost = 8
+[mutation]
+buoy_init = 0.5
+buoy_sigma = 0.02
+[brain]
+weight_dtype = "float32"
