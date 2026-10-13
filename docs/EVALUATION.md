@@ -45,7 +45,7 @@ fork file above, `S1` is `runs/eval_s1_base:120000`.
 | B | `--director live --persona gardener` | a154d45 |
 | C | `--director live --persona trickster --llm` (model `gemma-4-26b-a4b-it-mlx@8bit`, LM Studio, loaded with `lms load ... -c 8192 --gpu max`, checked with `alife llm-check` before each C arm) | a154d45 |
 | R | `--director live --persona random --yoke-log runs/eval_s<seed>_B/director.jsonl` | 0071863 (PR #11) |
-| RC | `--director live --persona random --yoke-log runs/eval_s<seed>_C/director.jsonl` | b849ba9 (PR #14) |
+| RC | `--director live --persona random --yoke-log runs/eval_s<seed>_C/director.jsonl` | b849ba9 (PR #14; `src/` and `tests/` identical to its merge afe52f5) |
 
 - The three checkouts have the same engine: director off is digest-identical across them, and PR #14 changes only
   how R picks its pacing parameters (a Gardener-yoked R is byte-identical under it).
