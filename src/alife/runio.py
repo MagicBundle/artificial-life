@@ -168,7 +168,7 @@ def _record_step(rec: Mapping[str, Any]) -> int | None:
 # --- state files ----------------------------------------------------------------------------------------
 
 
-# The one State schema lives in ``state`` (§2.2); this name is kept for callers and tests.
+# The one State schema lives in ``state`` (§2.2, §27.1); this name is kept for tests/test_runio.py.
 _expected_layout = expected_layout
 
 

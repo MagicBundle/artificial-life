@@ -744,13 +744,15 @@ def validate(cfg: Config) -> None:
             math.isfinite(h) and h > 2 * ph.radius,
             f"world.height must be finite and > 2·physics.radius = {2 * ph.radius}, got {h}",
         )
-        if math.isfinite(h) and h > 0 and w.size > 0 and w.field_cell > 0 and sen.radius > 0:
-            fz = h / w.field_cell
+        # Only finite ratios reach round() and floor(); the sanity rules above report the inputs that are not.
+        sane = h > 0 and w.size > 0 and w.field_cell > 0 and sen.radius > 0
+        fz, fg, hz = (h / w.field_cell, w.size / w.field_cell, h / sen.radius) if sane else (0.0, 0.0, 0.0)
+        if sane and math.isfinite(fz) and math.isfinite(fg) and math.isfinite(hz):
             req(fz == round(fz), f"world.height / world.field_cell must be an integer, got {fz}")
             req(round(fz) >= 2, f"field layers FZ = {round(fz)} must be ≥ 2")
-            cells = round(fz) * round(w.size / w.field_cell) ** 2
+            cells = round(fz) * round(fg) ** 2
             req(cells <= 1 << 20, f"field cells FZ·FG² = {cells} must be ≤ 2^20 (exact_sum)")
-            g_z = math.floor(h / sen.radius)
+            g_z = math.floor(hz)
             req(g_z >= 1, f"hash layers G_z = floor(height / radius) = {g_z} must be ≥ 1")
             # Then |dz| < L/2 for any two agents, so min_image is the identity on z (§27.1).
             req(2 * h <= w.size, f"world.height {h} must be ≤ world.size / 2 = {w.size / 2}")

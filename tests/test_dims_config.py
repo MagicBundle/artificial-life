@@ -100,6 +100,9 @@ def test_dims3_rejected_until_enabled() -> None:
     assert msg.startswith("1 config problem(s)") and "not enabled yet" in msg and "docs/3D.md" in msg
     assert "world.dims must be 2 or 3" in _problems(["world.dims=4"])
     assert "world.dims must be 2 or 3" in _problems(["world.dims=1"])
+    # The 3D rules run while dims = 3 is gated: a non-finite size is reported, never an OverflowError.
+    msg = _problems([*TINY3D, "world.size=inf"])
+    assert msg.startswith("2 config problem(s)") and "not enabled yet" in msg and "positive and finite" in msg
 
 
 def test_3d_keys_rejected_in_2d() -> None:
@@ -152,6 +155,8 @@ BAD_3D: list[tuple[list[str], str, bool]] = [
     (["world.height=22"], "world.height / world.field_cell must be an integer", True),
     (["world.height=2"], "world.height must be finite and > 2·physics.radius", False),
     (["world.height=nan"], "world.height must be finite", False),
+    (["world.height=inf"], "world.height must be finite", True),
+    (["world.size=inf"], "world.size must be positive and finite, got inf", True),  # not an OverflowError
     (["world.height=4"], "field layers FZ = 1 must be ≥ 2", False),
     (["world.field_cell=1", "world.height=4"], "hash layers G_z", True),
     (["world.height=68"], "world.height 68.0 must be ≤ world.size / 2 = 64.0", True),

@@ -121,10 +121,6 @@ def device_check(
 # --- host check ---------------------------------------------------------------------------------------------
 
 
-# The one State schema lives in ``state`` (§2.2); this name is kept for callers and tests.
-_expected_layout = expected_layout
-
-
 class _Report:
     """Collects violation messages; ``rows`` quotes the first offending indices."""
 
