@@ -3361,7 +3361,8 @@ runs/<name>/
 
 **`director.jsonl`.** One JSON object per line. The first line is a header
 `{"kind": "header", "step", "rules_version", "persona", "goal", "rule_every", "budget_per_100k", "seed"}` (`step` is the
-step the director started at; `budget_per_100k` is the effective budget). A new header is appended whenever a live
+step the director started at; `budget_per_100k` is the effective budget; a 3D run adds `"dims": 3` after `seed`, and a
+2D header never has the key, §27.10). A new header is appended whenever a live
 director starts with a policy that differs from the latest header (a resume with another persona, cadence, budget or
 `RULES_VERSION`). Every other line is an *entry*:
 
@@ -3403,13 +3404,14 @@ replay passes `keep_director=True`: **replay never truncates or writes any direc
 | `habitat_loss` | `patch`, `gain` = 0; `duration` | duration 10k–200k | 2 | 50k |
 | `regen_pulse` | `mult`; `duration` | mult 0.4–1.8, duration 5k–50k | 1 | 30k |
 | `immigration_pulse` | `count` | 16–1024; the pending `env_imm_request` plus the count may not exceed 1024 | 1 | 20k |
-| `catastrophe` | `center` [x, y], `radius`, `kill_p` | radius in [20, min(200, L/2)], kill_p 0.2–0.9 | 3 | 100k |
+| `catastrophe` | `center` [x, y], `radius`, `kill_p` | radius in [20, min(200, L/2)] (3D: both ends times L/1024, §27.10), kill_p 0.2–0.9 | 3 | 100k |
 | `drift_change` | `mult` | 0.5–10, permanent until changed | 1 | 50k |
 
 - **Seasons** change `env_season_period` / `env_season_amp` only; the mode stays `fields.season_mode` and is not a
   runtime lever. The mutation-floor nudge is not implemented.
 - **Patch moves** are host edits of `patch_pos`, wrapped with `ops.wrap` (so the f32 result is strictly below L); the
-  log holds the absolute new coordinates and the old ones in `prev`. The drift continues from the new position.
+  log holds the absolute new coordinates and the old ones in `prev`. The drift continues from the new position. In 3D
+  `patch_pos` is (PP, 2) as well and a move is x and y only (§27.10).
 - **Immigration** is always random founders; it adds to `env_imm_request`, which the step admits over several steps.
 - **Costs and cooldowns** are the §5 table of `docs/DIRECTOR.md`. A cooldown counts from the **end** of the effect
   (for an instant action, from `step_applied`).
@@ -3424,8 +3426,8 @@ replay passes `keep_director=True`: **replay never truncates or writes any direc
 - **Replay: `validate_entry`** rejects instead of clamping: unknown action or source, a `step_applied` that is not a
   positive multiple of `rule_every`, a parameter set that is not exactly the action's, any value outside the bounds
   (menu and device ranges), a move of more than L/4 or without `prev`, a duration that is out of bounds or off the
-  cadence, a revert of an action without a timed effect. `log.validate_log` adds: records in non-decreasing step, and
-  every revert has an active effect on its lever. A bad log is a config error (exit 2) before the first step.
+  cadence, a revert of an action without a timed effect. `log.validate_log` adds: records in non-decreasing step, every
+  revert has an active effect on its lever, and every header's `dims` (absent = 2) equals `world.dims` (§27.10). A bad log is a config error (exit 2) before the first step.
 - **`apply(state, entry, cfg)`** edits only `env_*` and (moves) `patch_pos` with `_replace`, converting to each field's
   dtype and shape (no retrace), and fails with `ActionError` if the result would leave `invariants.env_out_of_range`.
   The live director validates every entry it builds before applying it.
@@ -3440,8 +3442,8 @@ included), `singleton fraction = bodies_hist["1"] / n_alive`. `n_alive_min` is t
 (rows without it fall back to `n_alive`).
 
 - **`K_est`** is recomputed at every live boundary by `metrics.carrying_capacity(state, cfg, state.step, state.env)`:
-  the regeneration of the *current* environment (seasonal at the step, scaled by the levers). It is used only at the
-  boundary, never stored.
+  the regeneration of the *current* environment (seasonal at the step, scaled by the levers; in 3D the floor layer's,
+  §27.10). It is used only at the boundary, never stored.
 - **Viability:** `n_alive / K_est`; `fall = 1 − (window minimum / highest window mean over the last risk_fall_window)`;
   the **extinction-risk flag** is `n_alive/K_est < risk_k_frac` or `fall > risk_fall`.
 - **Descriptor `b`** (ten components, each clipped to [0, 1], a missing one counts as 0, None for an empty world):
@@ -3566,7 +3568,8 @@ trigger. These are first values for the evaluation of §9 of `docs/DIRECTOR.md`,
 | `test_director_config.py` | unchanged hashes, the unhashed policy keys, validation, the resume key list and its refusals |
 | `test_director_random.py` | the `random` persona (§26.11): which of a log's entries are yoked; validation and the exit-2 file checks; the sampler (bounds, reachability, log-uniform shape, determinism, clamp and replay validation); eligibility; a live run yoked to a scripted arm B, its header, its replay (bitwise, never reading the yoke log), live resume, a changed yoke log, nothing eligible, the safety rules; the parameters R inherits (a scripted Trickster yoke log with six moves in one 100k window, budget from the header and caps, a missing budget, a `random` or unknown persona exit 2, mixed headers, bitwise replay) |
 | `test_director_llm.py` | step 3 (§26.10): the schema and the reply validator; a mock OpenAI-compatible server for valid, invalid, empty, slow, refused, 500 and redirected replies, clamps, duplicates, `none`, budget and cooldown blocks, the request body and the prompt; roles; no network with the tier off or in a replay; a live run with the mock model and its bitwise replay; an optional real-server test (`@pytest.mark.llm`, needs `ALIFE_LLM_URL`) |
-| edits | `test_director_actions.py` and `test_director_log.py` (the "unknown source" example is no longer `llm`), `test_director_config.py` (the LLM keys, the flags; `PERSONAS` gains `random`), `test_runner.py` (hook order; no action on a violated or extinct state; the checkpoint holds the applied env), `test_metrics.py`, `test_cli_smoke.py` (`--director` flows, fork reset), `test_lint.py` (the director package is scanned) |
+| `test_director_3d.py` | the director in 3D (§27.10): validation accepts it; the column catastrophe through the director path; patch moves keep `patch_pos` (PP, 2); the scaled radius bounds; the header's `dims` and the refusal of a log of the other dimensions; the 3D prompt and the byte-identical 2D one; a scripted `tiny3d` run, its replay (fresh, in place, live resume) and the `random` persona on it; a real-rules Gardener run with the floor-layer `K_est` |
+| edits | `test_director_actions.py` and `test_director_log.py` (the "unknown source" example is no longer `llm`), `test_director_config.py` (the LLM keys, the flags; `PERSONAS` gains `random`), `test_runner.py` (hook order; no action on a violated or extinct state; the checkpoint holds the applied env), `test_metrics.py`, `test_cli_smoke.py` (`--director` flows, fork reset), `test_lint.py` (the director package is scanned); PR 4 of the 3D world: `test_dims_config_pr2.py` (the 3D case of the director rejection is gone, §27.10) |
 
 ### 26.10 The LLM tier (build step 3)
 
@@ -3646,7 +3649,9 @@ bounds, cost and cooldown length (models shown bounds alone choose `immigration_
 affordable and not cooling down), the latest vital signs, the trends of seven of them over the last 8 rule windows, the
 safety actions and reverts of this boundary, the last five interventions with their measured effect (the change in
 population, top clade share, clades, emitters, sharers, kill share and novelty from the intervention's boundary to 50k
-steps later, or to now with "(so far)"). About 2.4k tokens for the `tiny` preset.
+steps later, or to now with "(so far)"). About 2.4k tokens for the `tiny` preset. In a 3D world the world sentence, the
+catastrophe's effect text, the world size line and the capacity estimate's qualifier differ (§27.10); the 2D messages
+are unchanged byte for byte.
 
 **Logging (L9).** An applied action is an entry with `source: "llm"`, the persona, the clamped `params`, `reason` = the
 model's `expected_effect`, no `rule` and `llm_call: "llm-<step>"`. `journal.jsonl` gets one record per call:
@@ -3814,8 +3819,10 @@ PR 2 adds the rules of its keys, each with its own message (their meaning is in 
   3D form of the §9 rule `thrust_max < 2·r·k_repel`: full thrust plus the net vertical load cannot push a resting
   agent through the one below it (or, buoyant, above it);
 - `buoy_init ∈ [0, 1]` and `buoy_sigma ≥ 0` (finite), both 0 when `buoyancy_max = 0`;
-- `benthic_lambda > 0`; `photic_amp ∈ [0, 1]`; `photic_lambda > 0` when `photic_amp > 0`;
-- `director.enabled` is false: the director's levers, vital signs and log stay 2D until PR 4.
+- `benthic_lambda > 0`; `photic_amp ∈ [0, 1]`; `photic_lambda > 0` when `photic_amp > 0`.
+
+(PR 2 and PR 3 also rejected `director.enabled` in 3D, until the director's levers, vital signs and log had a 3D
+form; PR 4 lifted the rule, §27.10.)
 
 **`Dims`** gains `nd`, `d3`, `lay` (`layout.for_dims(nd)`), `fz`, `n_cells` (`FZ·FG²`), `field_shape` (`(FG, FG)`
 in 2D, `(FZ, FG, FG)` in 3D), `g_hash_z` and `cell_hash_z` (1 and ∞ in 2D), and derives `Q = 3^nd·C`,
@@ -4121,8 +4128,8 @@ actuator on or off never shifts the other genes' draws; at `buoy_sigma = 0` the 
 - `lifecycle.deaths` sinks corpses to the floor cell (§27.6).
 
 **Catastrophe.** In 3D the catastrophe is a vertical column: `catastrophe_mask` measures the x/y minimum-image
-distance from the (2,) `env_cat_center`, so every agent above the disc is in it, at any height. The director stays
-rejected in 3D until PR 4, which also scales the radius bounds (docs/3D.md §12 Q10).
+distance from the (2,) `env_cat_center`, so every agent above the disc is in it, at any height. The director's menu
+scales the radius bounds in 3D (docs/3D.md §12 Q10, §27.10).
 
 **RNG.** The 3D draws use the existing keys with 3D-only shapes and split counts (§14.1): no new stream, no
 `RNG_LAYOUT_VERSION` bump, and every 2D draw is unchanged.
@@ -4414,8 +4421,8 @@ terms are separate static additions.
 - `carrying_capacity`: §27.7, and the floor-layer rule of §27.10.
 
 **Enablement.** `config.DIMS_SUPPORTED = (2, 3)`: a config with `world.dims = 3` validates under §27.1's rules and
-runs through `alife run`, `resume`, fork, `inspect` and `bench`. Still refused in 3D: `director.enabled` (until
-docs/3D.md PR 4) and the 2D-only tools of §27.1 (`render`, `view`, `analysis.signals`; exit 2). 2D is unchanged:
+runs through `alife run`, `resume`, fork, `inspect` and `bench`. Still refused in 3D: the 2D-only tools of §27.1
+(`render`, `view`, `analysis.signals`; exit 2). `director.enabled` was refused until PR 4 (§27.10). 2D is unchanged:
 every 2D trajectory, config hash, metrics row and checkpoint key set (the CPU digest matrix of 2D trajectories and
 runs matches bit for bit; the 2D golden is not re-pinned).
 
@@ -4541,6 +4548,59 @@ food an agent can use; it is revisited in PR 6 with the tuning of `photic_amp` a
 `tests/test_metrics_3d.py`: the 3D value equals the 2D lattice's regeneration over the 3D `c_ref`, against a float64
 host reference of the floor fertility, with the live environment, and on `tiny3d` against `tiny`; the PR 3 test of the
 cap upkeep now takes its regeneration from layer 0.
+
+**Scope.** The director is host code (§26.1): it reads the metrics rows and edits the `env_*` fields and `patch_pos`
+between compiled steps. The compiled step (apart from what §27.4 and §27.6 already built: the column mask and the
+volume immigrants), the state, the RNG, `RULES_VERSION`, the ten-component descriptor of §26.5 and every rule
+parameter of §26.7 are unchanged in 3D, and the director reads none of the 3D row keys of §27.9. `validate` no longer
+rejects `director.enabled` with `world.dims = 3`: the live and replay modes, the LLM tier and the `random` persona
+(§26.11) run in 3D, under the same menu, budget and cooldowns. The 3D differences are these.
+
+| part | 3D |
+|---|---|
+| catastrophe | a **vertical column**: `catastrophe_mask` measures the x/y minimum-image distance from `env_cat_center`, which stays (2,), so `params.center` is `[x, y]` as in 2D and every agent over the disc dies with probability `kill_p`, at any height (§27.4) |
+| radius bounds | `actions.radius_bounds(cfg)` = `[20·L/1024, min(200·L/1024, L/2)]` in 3D; 2D keeps `[20, min(200, L/2)]` (`tiny3d` `[2.5, 25]`, a width-320 world `[6.25, 62.5]`). The 2D range was written for a 1024-wide world, where the largest disc covers π·(200/1024)² = 12% of the floor; at width 320 it would cover 78% (docs/3D.md §12 Q10). The scaling keeps the largest column at 12% of the floor at any width. `CATASTROPHE_RADIUS` and `CATASTROPHE_REF_SIZE = 1024` are the constants. The bounds apply to the live clamp, to replay validation (a 2D-sized radius in a 3D log is `ActionError`, exit 2), to the LLM schema and prompt, and to the `random` persona's sampler. The rules' own request (`cat_radius_frac`, 0.1 to 0.25 of L) is clamped to the upper bound |
+| patch moves | x and y only. `patch_pos` and `patch_vel` stay `(PP, 2)`; a move's `params` are `{patch, x, y}` and `prev` `{patch, x, y}`, wrapped with `ops.wrap` and capped at L/4 in the x/y minimum image, as in 2D; a `z` (or `dz`) is not on the menu, and `validate_entry` rejects it. A patch is a column: its gain multiplies the fertility of every layer (§27.5), so `habitat_loss` and `fertility_shift` act on the whole column, and `regen_pulse` and `set_seasons` act on every layer |
+| immigration | `immigration_pulse` adds founders to `env_imm_request` as in 2D; the step admits them uniformly in the volume at `buoy_init` (§27.4) |
+| vital signs | the ten-component descriptor, the window aggregates and the archive are functions of the rows and are unchanged; `K_est` is the floor-layer value above, so `n/K_est` is the population against what the floor lattice supports |
+| log header | `"dims": 3` after `seed`; a 2D header has no such key and keeps its key set (§26.3). `needs_header` compares headers without the start step, so a resumed 2D or 3D run with an unchanged policy appends no header |
+| log validation | `log.validate_log` (replay, `--replay-log`, the yoke log of the `random` persona) raises `LogError` (exit 2) for a header whose `dims` (absent = 2) differs from `world.dims`: a 2D log is never replayed or followed in 3D, nor the reverse |
+| LLM prompt | `prompt.effects(cfg)` selects `EFFECT` (2D, byte-identical to build step 3) or `EFFECT_3D`, which differs in the catastrophe line: a vertical column, a disc in x and y from the floor to the surface; `prompt.world_text(cfg)` says "periodic in x and y, with a floor and a surface at height H" where the 2D text says "a torus"; the user message gives the world as `L x L x H` and marks the capacity estimate "(floor-layer food only)"; the catastrophe radius bounds are the scaled ones. Nothing else changes, and the 2D system and user messages are byte-identical (pinned by sha256) |
+
+**Calibration (provisional).** The extinction-risk flag is `n/K_est < 0.2` (§26.7). Measured on `tiny3d` with the
+director off (seed 0, 2 000 steps, `K_est` 409): `n/K_est` is 0.63 at step 10, 1.01 at 110 after the founders' first
+reproduction and 0.54 to 0.71 from step 210 on, so the flag is off at baseline and a rescue in the first 2 000 steps
+needs a real collapse; the same run has 77% of the agents grounded at the end (the ecology is PR 6's). These values
+belong to the provisional `tiny3d`; the `64k3d` preset has to be measured the same way before the first director run.
+
+**Not changed.** `RULES_VERSION` is 1 and the vitals descriptor has ten components in 3D as in 2D, so the logs of a 2D
+and a 3D run share a rules version; a 3D rule set (a vertical-niche signal such as `clade_height_mi`, a persona that
+reads `band_frac`) would be a new `RULES_VERSION` and is not part of PR 4. `alife stream` and `view` re-simulate
+without the director (§27.11); `--follow` is the faithful view of a director run.
+
+**Tests.** `tests/test_director_3d.py`:
+- the validation accepts every mode in 3D;
+- one scene through `clamp`, `validate_entry`, `apply` and a compiled step: 24 agents in a radius-2.5 column at six
+  heights die (about 90%, at the lowest and the highest height), 8 outside it do not, the deaths are logged with cause
+  `CATASTROPHE`, and `full_check` closes the ledger;
+- a patch move: `(PP, 2)` kept, the other patches untouched, a `z` or `dz` rejected;
+- the radius bounds (2D unchanged; `tiny3d`, widths 48 to 1024, the 12% share), their effect on the clamp, on replay
+  validation, on the schema and on the sampler;
+- the header (`dims` in 3D only, the 2D key set pinned, no header for an unchanged policy) and the refusal of a log of
+  the other dimensions (replay, yoke);
+- the prompts (sha256 of the 2D system messages of the three personas and of the user message, the 3D wording, the
+  per-action effect texts);
+- a scripted live run of 400 steps on `tiny3d` that takes all seven actions (a revert across a checkpoint, a 2D-sized
+  radius clamped to 25, a patch move, an immigration pulse admitted in the volume) with its replay bitwise (fresh
+  directory, in place from a checkpoint, a live resume with no second header), the run being a valid 3D run with the
+  ledger exact;
+- the `random` persona yoked to that log, and its replay;
+- a real-rules Gardener run (population started at 40, so the extinction rescue fires at the first boundary) with the
+  ledger exact, its logged `k_est` equal to the floor-layer `carrying_capacity` of the state before the director acted
+  (and below half of what all the layers would give), a resume equal to the uninterrupted run (log, journal, archive,
+  digest), and its replay.
+
+**Tests edited.** `test_dims_config_pr2.py::BAD_PR2` lost its `director.enabled` case: the rule it pinned is gone.
 
 ### 27.11 CLI reporting in 3D (PR 4)
 
