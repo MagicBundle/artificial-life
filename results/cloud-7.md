@@ -1,4 +1,4 @@
-cloud-7 (PARTIAL: steps 2 and 3 done): fast suite green, both goldens pass, 2 expected xfails. **test_ecology_3d FAILS on the overflow gate: hash cells over capacity in 299 of 2500 steps, peak occupancy 31 at C = 24.** Every other assertion passed. A diagnostic rerun, the rest of the slow suite, the digest compare and the 64k3d probe are still running.
+cloud-7 (PARTIAL: steps 2 and 3 done): fast suite green, both goldens pass, 2 expected xfails. **test_ecology_3d FAILS on the overflow gate: hash cells over capacity in 299 of 2500 steps, peak occupancy 31 at C = 24.** Every other assertion passed. The rest of the slow suite (23/23) and the digest compare (bit-identical) are done. The diagnostic rerun and the 64k3d probe are still running.
 
 # cloud-7: 3D PR 6 (`3d/pr6-64k3d`) on Linux CPU
 
@@ -128,3 +128,24 @@ FAILED tests/test_ecology_3d.py::test_dev3d_ecology_is_alive_and_unsaturated
 
 ```
 </details>
+
+
+## Step 4: the rest of the slow suite
+
+**Command:** `uv run pytest -m slow -q -rs --durations=25 --deselect tests/test_ecology_3d.py`, under `nice -n 5`
+and in parallel with the diagnostic rerun.
+
+**Result:** **23 passed**, 0 failed, in 30 m 25 s.
+
+**Comparison with cloud-5:**
+- The collected slow test IDs, excluding `test_ecology_3d`, are identical to cloud-5's 23.
+- All pass, as they did there. No regression.
+- Main's long tests took 913 s and 730 s (cloud-5: 1019 s and 836 s).
+
+## Step 5: digest compare against the cloud-1 main baseline
+
+**Command:** `uv run python /tmp/tools/digest_compare.py --baseline <cloud-1 main digests> --out results/cloud-7-pr6-digests.json`
+
+**Result:** **exit 0: "OK: bit-identical to the 2D baseline (CPU device)"**, in 2 m 42 s.
+- The 314 INFO lines are additions at defaults, including the new `64k3d` preset hash.
+- No DIFF lines.
