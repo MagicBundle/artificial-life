@@ -64,7 +64,18 @@ started (2026-10-13): the ledger closed (`full_check: OK`), `director.jsonl` was
 sha256 in its header, the yoke parser read one yoked move at step 1,199,000 from `runs/eval_s0_B/director.jsonl`
 (B's single discretionary entry), and its 20 metrics rows equal B's.
 
-### 1.4 Arm D
+### 1.4 Interruption of s0_R
+
+At the owner's request, s0_R was stopped with one SIGINT at step 792,173 (2026-10-14 01:02; a `STOP` file kept the
+next arm from starting) and resumed from that checkpoint at 22:41 the same day (`alife resume`, via `r_arms.sh`).
+Its only yoked move is at 1,199,000, after the resume. Known effects of a live resume:
+- a resume that splits a 1,000-step rule window may decide the safety rules differently from an uninterrupted run
+  (`HANDOVER.md`, director caveats); `director.jsonl` is the record either way, and R's yoked draws depend only on
+  the seed, the step and the log's budget and cooldowns, not on the vital signs;
+- `Director._blocked` is not persisted, so a rule still blocked across the resume is journalled again in
+  `journal.jsonl` (found by the 3D session; a fix is deferred). The evaluation reads no rule-tier journal of R.
+
+### 1.5 Arm D
 
 Not run. The 3D session (building `docs/3D.md`) found that no part of the 3D plan depends on it, that 2D bodies do
 not transfer to 3D (gravity, bond sag), and that the goal "bodies ≥ 100" is within noise of the undirected
