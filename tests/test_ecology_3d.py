@@ -10,7 +10,7 @@ on the storage dtype.
 
 ``n_init`` is half of the occupancy-weighted ``K_est`` of a mostly benthic population (about 8 700, the
 arithmetic of §27.13), as ``64k3d``'s is of its 33 000: the founders' first generation multiplies the
-population by 1.4 to 1.6 and must not overshoot the food (the 4x over-seeding of the first cloud run did).
+population by 1.4 to 1.7 and must not overshoot the food (the 5x over-seeding of the first cloud run did).
 The assertions are the 2D ones that make sense in 3D (never extinct, not pinned at ``N_CAP``, births, bonds
 and landed attacks, a clean state), plus the 3D terms: floor contacts, ``HEAT_BUOYANCY``, a grounded share
 strictly between 0 and 1, and a hash-cell overflow rate near zero.

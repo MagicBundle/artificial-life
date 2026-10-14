@@ -10,9 +10,9 @@
 [population]
 n_max = 65536
 # n_init = 16 384, half of the K_est of about 33 000 below. The founders all start with a surplus, so the first
-# generation multiplies the population by 1.4 to 1.6 within about 100 steps (tiny3d 256 -> 413, DEV3D
-# 4 096 -> 5 900): 16 384 peaks at 23 000 to 26 000, under K_est and inside the 0.4 to 0.7 K_est where tiny3d
-# settles. Seeding at K_est, or the 4x over-seeding of DEV3D, peaks past it and crashes.
+# generation multiplies the population by 1.4 to 1.7 within about 100 steps (tiny3d 256 -> 442, a peak at
+# step 64; DEV3D 4 096 -> 5 900): 16 384 peaks at 23 000 to 28 000, under K_est and inside the 0.4 to 0.7 K_est
+# where tiny3d settles. Seeding at K_est, or the 5x over-seeding of the cloud DEV3D run, peaks past it and crashes.
 n_init = 16384
 max_births_per_step = 1024
 
