@@ -1,4 +1,4 @@
-cloud-7 (PARTIAL: steps 2 and 3 done): fast suite green, both goldens pass, 2 expected xfails. **test_ecology_3d FAILS on the overflow gate: hash cells over capacity in 299 of 2500 steps, peak occupancy 31 at C = 24.** Every other assertion passed. The rest of the slow suite (23/23) and the digest compare (bit-identical) are done. The diagnostic rerun reproduces the failure exactly: **one floor cell** overflows continuously from step 2151, and occupancy rises steadily to 31. K_est (14,190 initial, 12,759 final) is about 4× the realised population (about 3,100). The 64k3d probe is still running.
+PR6 Linux-CPU: 2D identical, slow suite same, both goldens pass; **test_ecology_3d FAILS**: one floor hash cell over C = 24 continuously from step 2151, peak 31, 11.96% of steps against a 1% gate. 3D K_est overestimates about 4× (DEV3D 12.8–14.2k vs about 3.1k realised; the 64k3d initial state gives 65,167, above n_cap 64,512). 64k3d on CPU: about 4.3 s/step, 1.99 GB.
 
 # cloud-7: 3D PR 6 (`3d/pr6-64k3d`) on Linux CPU
 
@@ -217,3 +217,45 @@ steps at steady state.
 - The question for the coordinator is whether to treat a single persistent pile as acceptable or as a design
   problem. If it is a problem, options are a softer floor-food gradient or crowding costs. The gate itself
   measures what it should.
+
+
+## Step 6: 64k3d probe (CPU, informational)
+
+**Commands:**
+- `uv run alife run --preset 64k3d --steps 20 --out <scratch>/k64 --metrics-every 1`, under a `timeout 900`
+  cap: exit 0, **116 s** in total.
+- `uv run alife inspect <scratch>/k64`: exit 0.
+
+The full inspect output is in `results/cloud-7-k64-inspect.txt`.
+
+**Derived sizes.** From the inspect and config output:
+
+| item | value |
+|---|---|
+| N (`n_max`) / `n_init` / `n_cap` | 65,536 / 16,384 / 64,512 |
+| `max_births_per_step` | 1024 |
+| world | L 320, height 80 |
+| field lattice | `field_cell` 4, FG 80 × 80 × FZ 20 = 128,000 cells |
+| hash grid | `sensing.radius` 6, so 53 × 53 × 13 cells |
+| C / K | 24 / 8, so Q = 27·24 = 648 candidates |
+| brain | hidden 32, float16 |
+| physics | gravity **0.015**, `buoyancy_max` 0.04, `k_repel` 0.08, `thrust_max` 0.10 |
+| energy | `buoyancy_cost` 16, `buoyancy_cap_cost` 8 |
+| fields | `n_patches` 8, `patch_sigma` 24, `regen_max` 1700, `benthic_lambda` 8, `photic_amp` 0.5, `photic_lambda` 8 |
+| config_hash | `768e8373c78264e0737c1a19182f0c3882f985e72433ca05ef700cc0d134f560` |
+
+**Measurements.**
+
+| item | value |
+|---|---|
+| **K_est (`inspect` carrying-capacity estimate)** | **65,167**, which is above `n_cap` = 64,512 |
+| **step time on this CPU** | first step 20.1 s (compile); then **3.7–6.4 s/step, median about 4.3 s (0.23 steps/s)** |
+| **peak memory** | **1.99 GB** |
+| state after 20 steps | 16,376 alive, ledger OK, diag 0, `cell_overflow` 0, max occupancy 5–6 |
+| height | mean 39.5, uniform founders: bands 0.25 / 0.25 / 0.25 / 0.24, grounded 0.005 |
+
+**Reading.**
+- The K_est of 65,167 is above `n_cap` on 64k3d. On DEV3D the same estimator came out about 4× above the
+  realised population, so 64k3d's K_est is probably far too high as well. Any director rule that uses n/K
+  would then read "underpopulated" at equilibrium.
+- For speed reference on Apple GPUs, this CPU does about 0.23 steps/s. The Mac bench is the real number.
