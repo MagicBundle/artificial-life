@@ -265,7 +265,8 @@ def run3d(tiny3d_cfg: Config) -> dict[str, Any]:
     Besides the totals it records, step by step: the height and pitch ranges of the alive agents; the
     horizontal (x and y, minimum image) and the vertical distance moved by the agents that lived through the
     step; the horizontal distance of those that started it grounded (gravity cannot move them, and the floor
-    holds them); and the parent of each child.
+    holds them); the number of agent-steps in which a surviving agent's pitch changed; the chemicals per
+    channel and layer after the second step (``chem_early``, (NCH, FZ)); and the parent of each child.
     """
     cfg = tiny3d_cfg
     assert cfg.run.seed == 0 and cfg.world.dims == 3
@@ -276,10 +277,19 @@ def run3d(tiny3d_cfg: Config) -> dict[str, Any]:
     ledger = np.zeros(len(LedgerIdx), np.int64)
     parent_of: dict[int, int] = {}
     r = dict(
-        xy=0.0, xy_grounded=0.0, z=0.0, sink_steps=0, z_lo=np.inf, z_hi=-np.inf, p_lo=np.inf, p_hi=-np.inf
+        xy=0.0,
+        xy_grounded=0.0,
+        z=0.0,
+        sink_steps=0,
+        pitch_moves=0,
+        z_lo=np.inf,
+        z_hi=-np.inf,
+        p_lo=np.inf,
+        p_hi=-np.inf,
     )
-    for _ in range(STEPS):
-        prev_pos, prev_alive = _np(s.pos), _np(s.alive)
+    chem_early = np.zeros((0, 0))
+    for step in range(STEPS):
+        prev_pos, prev_alive, prev_pitch, prev_uid = _np(s.pos), _np(s.alive), _np(s.pitch), _np(s.uid)
         was_grounded = _np(physics.grounded(s.pos, cfg))
         s, out = fn(s)
         mx.eval(s, out)
@@ -299,9 +309,21 @@ def run3d(tiny3d_cfg: Config) -> dict[str, Any]:
         r["z"] += float(np.abs(dz).sum())
         r["sink_steps"] += int((dz < 0).sum())
         r["z_lo"], r["z_hi"] = min(r["z_lo"], pos[alive, 2].min()), max(r["z_hi"], pos[alive, 2].max())
-        pitch = _np(s.pitch)[alive]
+        pitch_all = _np(s.pitch)
+        same = still & (_np(s.uid) == prev_uid)  # the same agent, not a child that took a freed row
+        r["pitch_moves"] += int((pitch_all[same] != prev_pitch[same]).sum())
+        pitch = pitch_all[alive]
         r["p_lo"], r["p_hi"] = min(r["p_lo"], pitch.min()), max(r["p_hi"], pitch.max())
-    return {"state": s, "totals": totals, "ledger": ledger, "parent_of": parent_of, **r}
+        if step == 1:  # two steps of diffusion reach two layers up: higher chemicals were deposited there
+            chem_early = _np(s.chem).sum(axis=(2, 3))
+    return {
+        "state": s,
+        "totals": totals,
+        "ledger": ledger,
+        "parent_of": parent_of,
+        "chem_early": chem_early,
+        **r,
+    }
 
 
 def test_every_3d_affordance_is_exercised(tiny3d_cfg: Config, run3d: dict[str, Any]) -> None:
@@ -323,17 +345,26 @@ def test_a_3d_run_stays_between_the_floor_and_the_surface(tiny3d_cfg: Config, ru
     assert d.z_lo <= run3d["z_lo"] and run3d["z_hi"] <= d.z_hi  # every alive height, at every step
     assert run3d["z_lo"] == d.z_lo and run3d["z_hi"] == d.z_hi  # and both bounds were reached
     alive, pitch = _np(s.alive), _np(s.pitch)
-    assert (pitch[alive] != 0.0).any()  # pitch is used
+    assert (pitch[alive] != 0.0).any()  # (the founders start with a random pitch: this alone proves nothing)
+    assert run3d["pitch_moves"] > 0  # pitch is used: surviving agents turn, step after step
     assert run3d["p_lo"] >= -f32(layout.PITCH_MAX) and run3d["p_hi"] <= f32(layout.PITCH_MAX)
     grounded = _np(physics.grounded(s.pos, tiny3d_cfg))[alive]
     assert 0 < grounded.sum() < alive.sum()  # some rest on the floor and some swim
 
 
 def test_signals_reach_the_water(run3d: dict[str, Any]) -> None:
+    """Every chemical channel holds a deposit at the end, made where the emitters are: two steps in, only a
+    direct deposit can be in the layers three or more above the floor (the chemicals diffuse one layer per
+    step), and every channel has some there."""
     s = run3d["state"]
     alive = _np(s.alive)
     assert np.abs(_np(s.msg)[alive]).max() > 0.0  # broadcast channels
     assert _np(s.chem).sum(axis=(1, 2, 3)).min() > 0.0  # every chemical channel holds a deposit in the volume
+    early = run3d["chem_early"]
+    assert early.shape == (_np(s.chem).shape[0], _np(s.chem).shape[1])
+    assert (
+        early[:, 3:].sum(axis=1) > 0.0
+    ).all()  # deposits in the water above the floor, not on the floor only
 
 
 def test_reproduction_mutates_the_buoyancy_cap(tiny3d_cfg: Config, run3d: dict[str, Any]) -> None:

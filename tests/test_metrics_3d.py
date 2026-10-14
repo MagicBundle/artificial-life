@@ -587,6 +587,39 @@ def test_all_benthic_is_the_floor_layer_and_an_even_column_is_every_layer(micro3
     assert top == pytest.approx(regen[5] / _c_ref(cfg), rel=1e-12) and top < k_floor
 
 
+def test_a_few_survivors_saturate_the_weights_and_n_zero_is_a_discontinuity(micro3d_cfg: Config) -> None:
+    """With ``n ≤ FZ`` alive, any occupied layer holds at least ``1/n ≥ 1/FZ`` of them, so ``w_k = 1`` there
+    (and 0 elsewhere): one survivor per layer gives the plain sum over the layers, the largest ``K_est`` there
+    is, and a lone survivor counts its own layer's food alone, the floor layer's included only if it lives
+    there. Only with nobody alive does the floor layer count by default, so ``K_est`` is not continuous at
+    ``n = 0`` (§27.10): it does not inflate after a total collapse, but it is at its maximum just before."""
+    cfg = micro3d_cfg
+    regen = _engine_regen_by_layer(make_scene(cfg, []), cfg)
+    c_ref = _c_ref(cfg)
+    one_per_layer = metrics.carrying_capacity(_scene_by_layer(cfg, (1, 1, 1, 1, 1, 1)), cfg)
+    assert one_per_layer == pytest.approx(regen.sum() / c_ref, rel=1e-12)  # the plain sum
+    for counts in [
+        (1, 0, 0, 0, 0, 0),
+        (0, 1, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 1),
+        (1, 1, 1, 0, 0, 0),
+        (0, 2, 0, 1, 0, 1),
+    ]:
+        assert sum(counts) <= 6
+        occupied = np.array(counts) > 0
+        w = metrics.layer_occupancy_weights(_scene_by_layer(cfg, counts), cfg)
+        np.testing.assert_array_equal(w, occupied.astype(np.float64))  # 1 where anyone lives, else 0
+        k = metrics.carrying_capacity(_scene_by_layer(cfg, counts), cfg)
+        assert k == pytest.approx(float(regen[occupied].sum()) / c_ref, rel=1e-12)
+    floor_only = metrics.carrying_capacity(make_scene(cfg, []), cfg)
+    assert floor_only == pytest.approx(regen[0] / c_ref, rel=1e-12)
+    assert (
+        one_per_layer > 3 * floor_only
+    )  # six survivors in six layers: the maximum, at the edge of extinction
+    lone_top = metrics.carrying_capacity(_scene_by_layer(cfg, (0, 0, 0, 0, 0, 1)), cfg)
+    assert lone_top < floor_only  # a lone survivor in the top layer: below the empty world's floor-only value
+
+
 def test_with_nobody_alive_the_floor_layer_counts_and_dead_rows_do_not(micro3d_cfg: Config) -> None:
     cfg = micro3d_cfg
     floor_only = np.eye(6)[0]

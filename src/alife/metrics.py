@@ -479,7 +479,9 @@ def layer_occupancy_weights(s: State3, cfg: Config) -> np.ndarray:
     the layer ``clip(floor(z / field_cell), 0, FZ − 1)`` that harvest reads and deposits in (the same float32
     computation, so a position on a layer edge falls where the engine puts it). A layer holding at least its
     even share ``1 / FZ`` of the agents counts fully (``w_k = 1``), a sparser one in proportion to its
-    occupancy. With nobody alive there is no occupancy to weigh, and the floor layer alone counts.
+    occupancy. With ``n ≤ FZ`` alive every occupied layer has ``w_k = 1`` (a few survivors saturate the
+    weights, so ``K_est`` is not continuous at ``n = 0``). With nobody alive there is no occupancy to weigh,
+    and the floor layer alone counts.
     """
     d = dims(cfg)
     alive = to_numpy(s.alive)

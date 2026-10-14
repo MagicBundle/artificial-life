@@ -8,12 +8,14 @@ sigma 17 (the same share of the floor as eight patches of sigma 24 in 320), 16 3
 Weights are float32 as in ``tiny3d_cfg`` (CPU fp16 matmul is about 3x slower, F19); the dynamics do not depend
 on the storage dtype.
 
-``n_init`` is half of the occupancy-weighted ``K_est`` of a mostly benthic population (about 8 700, the
-arithmetic of §27.13), as ``64k3d``'s is of its 33 000: the founders' first generation multiplies the
-population by 1.4 to 1.7 and must not overshoot the food (the 5x over-seeding of the first cloud run did).
+``n_init`` is about half of the occupancy-weighted ``K_est`` of a mostly benthic population (0.47 of 8 700,
+the arithmetic of §27.13), as ``64k3d``'s is of its 33 600: the founders' first generation multiplies the
+population by 1.4 to 1.7, and the cloud run seeded at 2.5x that ``K_est`` (5x the floor-only one) boomed and
+crashed. Seeding at 1x was not tried: the value is a hedge that the owner signs off.
 The assertions are the 2D ones that make sense in 3D (never extinct, not pinned at ``N_CAP``, births, bonds
-and landed attacks, a clean state), plus the 3D terms: floor contacts, ``HEAT_BUOYANCY``, a grounded share
-strictly between 0 and 1, and a hash-cell overflow rate near zero.
+and landed attacks, a clean state), plus the 3D terms: floor contacts (also late in the run),
+``HEAT_BUOYANCY``, some agents resting on the floor and some swimming in the final state, and hash-cell
+overflow on at most 1% of the steps.
 
 Run by the nightly job (``-m slow``) and on the cloud worker; not by the fast suite, and not on the Mac while
 its GPU is busy.
@@ -27,7 +29,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from alife import invariants, metrics
+from alife import invariants, metrics, physics
 from alife.config import Config, dims, load_config
 from alife.state import (
     ERROR_MASK,
@@ -52,9 +54,13 @@ DEV3D = (
     "fields.patch_sigma=17",
     "brain.weight_dtype=float32",
 )
-# At most this many hash-cell overflows per alive agent and step: none was seen at C = 16 on tiny3d and DEV3D
-# (peak occupancy 13), and C = 24 has 1.8x that headroom; a crowded floor may still spill now and then.
-OVERFLOW_RATE_MAX = 1e-4
+# The share of the steps in which any hash cell holds more than C agents may be at most this. None was seen
+# at C = 16 on tiny3d and the cloud DEV3D (peak occupancy 13), but those runs had a regen_max of 320; at the
+# 1 700 of this preset the food alone can feed about 20 agents in the hottest floor hash cell (27 in DEV3D's
+# quarter-size floor), against C = 24 (DESIGN §27.13), so this is the gate on C. A floor pile that overflows
+# does so for many steps in a row (hundreds in the crowd tests), which 1% of 2 500 steps does not allow.
+OVERFLOW_STEPS_MAX = 0.01
+LATE = 500  # the last steps of the run: the steady state, where the floor is what the agents use
 
 
 def dev3d_cfg() -> Config:
@@ -96,10 +102,17 @@ def check_dev3d(cfg: Config, run: dict[str, Any]) -> None:
     # --- the 3D terms ---
     assert totals[Counter3D.Z_FLOOR_CLAMPS] > 0, "nobody ever reached the floor"
     assert led[:, LedgerIdx.HEAT_BUOYANCY].sum() > 0, "the buoyancy actuator was never paid for"
-    grounded = totals[Counter3D.GROUNDED] / totals[C.N_ALIVE]
-    assert 0.0 < grounded < 1.0, f"grounded share {grounded}: everyone or no one rests on the floor"
-    overflow = totals[C.CELL_OVERFLOW] / totals[C.N_ALIVE]
-    assert overflow < OVERFLOW_RATE_MAX, f"hash cells overflow {overflow:.2e} per agent and step at C = 24"
+    assert cnt[-LATE:, Counter3D.Z_FLOOR_CLAMPS].sum() > 0, "nobody reached the floor in the last steps"
+    # the final state, not the run-wide ratio: the founders start uniform in z, so GROUNDED / N_ALIVE over the
+    # whole run lies strictly between 0 and 1 whatever the population does afterwards
+    alive = to_numpy(s.alive)
+    resting = to_numpy(physics.grounded(s.pos, cfg))[alive]
+    assert 0 < resting.sum() < alive.sum(), f"{resting.sum()} of {alive.sum()} rest on the floor at the end"
+    over = cnt[:, C.CELL_OVERFLOW] > 0
+    assert over.mean() <= OVERFLOW_STEPS_MAX, (
+        f"hash cells over capacity in {over.sum()} of {over.size} steps (peak occupancy "
+        f"{cnt[:, C.MAX_OCCUPANCY].max()}, {cnt[-LATE:, C.MAX_OCCUPANCY].max()} in the last {LATE}) at C = 24"
+    )
     # --- the sizing of regen_max: uniform founders see the whole column (15 600; 8 700 at 70% benthic) ---
     assert 12_000 < run["k0"] < 19_000, run["k0"]
 
