@@ -39,6 +39,22 @@ import Testing
         #expect(World3DLevers.preset("no-such-preset", repo: Repo.root) == nil)
     }
 
+    @Test func sixtyFourK3DIsReadFromItsPresetFile() throws {
+        let w = World3DLevers(preset: PresetFile(text: try Repo.preset("64k3d")))
+        #expect(w.dims == 3 && w.height == "80")
+        #expect(w.gravity == "0.015" && w.buoyancyMax == "0.04")
+        #expect(w.buoyancyCost == "16" && w.buoyancyCapCost == "8")
+        #expect(w.benthicLambda == "8" && w.photicAmp == "0.5" && w.photicLambda == "8")
+        #expect(w.buoyInit == "0.5" && w.buoySigma == "0.02")
+        #expect(w.validate().isEmpty)
+        #expect(World3DLevers.preset("64k3d", repo: Repo.root) == w)
+        // An unchanged 64k3d run passes the preset name alone: no lever differs from it.
+        let s = newRun(preset: .k64_3d, world3D: w)
+        #expect(s.validate(existingRuns: []).isEmpty)
+        #expect(s.arguments(existingRuns: []) == ["run", "--preset", "64k3d", "--seed", "1", "--out", "runs/t"])
+        #expect(s.worldDims == 3)
+    }
+
     @Test(arguments: ["tiny", "dev", "64k", "256k"])
     func aTwoDPresetIsInert(name: String) throws {
         let w = World3DLevers(preset: PresetFile(text: try Repo.preset(name)))

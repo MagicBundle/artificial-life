@@ -126,6 +126,19 @@ import Testing
         #expect(file.double("nowhere", "size") == nil)
     }
 
+    @Test func theRealSixtyFourK3DPresetIsRead() throws {
+        let file = PresetFile(text: try Repo.preset("64k3d"))
+        #expect(file.int("world", "dims") == 3 && file.double("world", "height") == 80)
+        #expect(file.double("world", "size") == 320)
+        #expect(file.double("physics", "gravity") == 0.015)
+        #expect(file.int("fields", "regen_max") == 1700 && file.int("population", "n_init") == 16384)
+        #expect(file.double("energy", "brain_cost_per_l1") == 0.0905)
+        #expect(file.value("fields", "chem_diffusion") == nil, "an array is not a scalar")
+        // The run cadences are the engine's, as the 64k preset's: the file sets none.
+        #expect(file.int("run", "metrics_every") == nil)
+        #expect(Cadence.preset("64k3d", repo: Repo.root) == Cadence.engineDefaults)
+    }
+
     @Test func theRealTiny3DPresetIsRead() throws {
         let file = PresetFile(text: try Repo.preset("tiny3d"))
         #expect(file.int("world", "dims") == 3)

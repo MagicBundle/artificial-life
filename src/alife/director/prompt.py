@@ -62,10 +62,10 @@ EFFECT_3D: Final = {
     "floor to the surface) once: founder effects, then recolonisation",
 }
 
-# The qualifier the 3D user message puts after the capacity estimate (§27.10): ``K_est`` counts a layer's food
-# in proportion to the share of the agents living in it (all of it from an even share), not the floor's alone.
+# The qualifier the 3D user message puts after the capacity estimate (§27.10): ``K_est`` counts each layer's
+# food by the share of the agents living in it, so it moves with where they are.
 K_NOTE_3D: Final = (
-    " (occupancy-weighted: floor food only if all agents are on the floor,"
+    " (food weighted by where the agents live: the floor layer's alone if all are on the floor,"
     " every layer's if they are spread evenly)"
 )
 

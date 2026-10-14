@@ -1,16 +1,18 @@
 # 64k3d: the 3D world at 64k scale (N = 65 536, M = 1 024; DESIGN §27.13). A 320 x 320 x 80 water column
 # with a floor and a surface (FG = 80, FZ = 20 field layers, a 53 x 53 x 13 hash grid), gravity, the buoyancy
 # actuator and a benthic plus photic food profile. One key per line: the GUI reads the scalars of this file.
+# The run cadences are the 64k ones (the dataclass defaults: metrics every 100 steps, heavy every 1 000).
 #
-# PROVISIONAL. The values come from the cloud tuning sweeps on tiny3d and DEV3D (CPU, DESIGN §27.13) and
-# from the sizing arithmetic below, none of it measured at this size yet. To be confirmed on the Mac, once the
-# GPU is free: `alife bench --preset 64k3d --stages` (time and memory of the 27 * C = 648 candidates per
-# agent), `cell_overflow` in a short run (C), and a short tuning run (the population against K_est).
+# PROVISIONAL. The values come from the cloud tuning runs on tiny3d and DEV3D (CPU, DESIGN §27.13) and from
+# the sizing arithmetic below; none of it has been measured at this size. To be confirmed on the Mac, once the
+# GPU is free: `alife bench --preset 64k3d --stages` (time and memory of the 27 * C = 648 neighbour candidates
+# per agent), `cell_overflow` in a short run (C), and a short tuning run (the population against K_est).
 [population]
 n_max = 65536
-# The founders' first generation multiplies the population by 1.4 to 1.6 within about 100 steps (tiny3d
-# 256 -> 413, DEV3D 4 096 -> 5 900), so 16 384 (as 64k) peaks near 25 000, under the K_est of about 33 000
-# of a mostly benthic steady state. Seeding at K_est, or the 4x over-seeding of DEV3D, overshoots and crashes.
+# n_init = 16 384, half of the K_est of about 33 000 below. The founders all start with a surplus, so the first
+# generation multiplies the population by 1.4 to 1.6 within about 100 steps (tiny3d 256 -> 413, DEV3D
+# 4 096 -> 5 900): 16 384 peaks at 23 000 to 26 000, under K_est and inside the 0.4 to 0.7 K_est where tiny3d
+# settles. Seeding at K_est, or the 4x over-seeding of DEV3D, peaks past it and crashes.
 n_init = 16384
 max_births_per_step = 1024
 
@@ -20,27 +22,31 @@ dims = 3
 height = 80.0
 
 [physics]
-# 0.015: the cloud sweeps (g 0.01 and 0.03, tiny3d) give clade-specific depth niches at 0.01 (about 40 %
-# grounded, clade-height information 0.70) and a mostly benthic population at 0.03 (about 80 %, 0.30 to 0.41).
+# 0.015, between the cloud sweeps on tiny3d: clade-specific depth niches at 0.01 (about 40 % of the agents
+# grounded, clade-height information 0.70) and a mostly benthic population at 0.03 (76 to 83 %, 0.30 to 0.41).
+# Sinking is 0.015 per step and climbing at full pitch 0.0835. Hovering costs about 2 q/step either way:
+# thrust at a = 0.015 / (0.1 sin 80 deg) = 0.152 is floor(100 * 0.152^2) = 2, buoyancy at 0.375 of its
+# maximum is floor(16 * 0.375^2) = 2. A founder's cap (0.5) can lift 0.02 > gravity.
 gravity = 0.015
 floor_eps = 0.1
-# thrust_max + max(gravity, buoyancy_max - gravity) = 0.125 < 2 r k_repel = 0.16.
+# thrust_max + max(gravity, buoyancy_max - gravity) = 0.125 < 2 r k_repel = 0.16 (validate).
 buoyancy_max = 0.04
 
 [sensing]
-# K = 8: K = 12 cannot pass validation at the default physics (it needs k_repel <= 0.058 for the stability
-# number and > 0.065 for non-penetration), and barely changed the ecology where it could run.
+# K = 8: K = 12 cannot pass validation at the default physics (stability needs k_repel <= 0.058,
+# non-penetration needs more than 0.065), and it barely changed the ecology where it could run.
 k_neighbors = 8
-# C = 24: no hash cell overflowed at C = 16 on tiny3d and DEV3D (peak occupancy 13), but floor piles reached
-# 28 to 36 in the crowd tests, and the K_est below puts about 5x the 2D density on the floor. Q = 27 C = 648.
+# C = 24, PROVISIONAL. No hash cell overflowed at C = 16 on tiny3d and DEV3D (peak occupancy 13), but a floor
+# pile under gravity reached 28 to 36 agents per hash cell in the crowd tests, and C = 48 doubles the step
+# time (2.1x) and costs 1.7x the memory at DEV3D. 24 is the middle: Q = 27 C = 648 candidates per agent.
 cell_capacity = 24
 
 [energy]
-# Keeps a founder's brain cost at the 2D value: its expected L1 is 10.5 % larger than in 2D (the wider
-# brain, 4 999 weights against 4 387), so 0.1 / 1.105: 37.63 q/step against 37.64 (founder_brain_cost).
+# Keeps a founder's brain cost at the 2D value: its expected L1 is 10.5 % larger than in 2D (4 999 weights
+# against 4 387), so 0.1 / 1.105: founder_brain_cost is 37.63 q/step against 37.64.
 brain_cost_per_l1 = 0.0905
-# The cloud sweep (4 vs 16, and 2 vs 8) found no systematic effect of the use cost; the upkeep sets the
-# energy share of the cap (about 2.5 % of basal at 8) and so a selection gradient on it.
+# The cloud grid (use cost 4 to 16, upkeep 2 to 8) found no systematic effect of either. The upkeep sets the
+# energy share of the cap: 4 q/step at a founder's cap of 0.5, about 3 % of its basal and brain cost.
 buoyancy_cost = 16
 buoyancy_cap_cost = 8
 
@@ -51,18 +57,12 @@ buoy_sigma = 0.02
 [fields]
 n_patches = 8
 patch_sigma = 24.0
-# regen_max: K_est (occupancy-weighted, DESIGN §27.10) of about 33 000 with 70 % of the agents in the floor
-# layer and the rest spread evenly over the others. At 1 700: floor only 17 800, 90 % benthic 23 000, 70 %
-# 33 400, 50 % 43 900, founders uniform in the volume 61 200 (mean of 8 seeds; c_ref 191.63).
+# regen_max = 1 700 gives a K_est (occupancy-weighted, DESIGN §27.10) of about 33 000 at a mostly benthic
+# steady state, taken as 70 % of the agents in the floor layer and the rest spread evenly over the other 19.
+# Mean of 16 seeds, c_ref 191.63 (mean floor fertility 0.31): floor layer only 17 800, 90 % in it 23 100,
+# 80 % 28 300, 70 % 33 600, 60 % 38 800, 50 % 44 100; founders uniform in the volume (the step-0 value) 61 500.
 regen_max = 1700
 chem_diffusion = [0.16, 0.10, 0.16]  # <= 1/6: the explicit 7-point stencil
 benthic_lambda = 8.0
 photic_amp = 0.5
 photic_lambda = 8.0
-
-[run]
-# The 64k cadences (the dataclass defaults, written out for the GUI's rule_every check).
-steps = 100000
-metrics_every = 100
-checkpoint_every = 10000
-heavy_metrics_every = 1000

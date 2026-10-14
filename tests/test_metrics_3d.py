@@ -1,7 +1,8 @@
 """§27.8 and §27.9 3D metrics: ``Counter3D`` and the per-dims counter width, interval rows with ``nd = 3`` (no
 silent reshape, ``HEAT_BUOYANCY`` named in 3D and ``RESERVED`` kept in 2D, the 3D interval keys), the snapshot
 over the volume (chemical means, the global closure with slot 15, the 3D keys against a host reference), the
-carrying capacity (the floor layer's regeneration and the cap's upkeep), and resim's comparison."""
+carrying capacity (the occupancy-weighted regeneration, §27.10, and the cap's upkeep) and resim's
+comparison."""
 
 from __future__ import annotations
 
@@ -15,13 +16,14 @@ import pytest
 
 from alife import fields, layout, metrics
 from alife.analysis import resim
-from alife.config import Config, dims
+from alife.config import Config, dims, load_config
 from alife.state import (
     N_COUNTERS,
     Counter3D,
     CounterIdx,
     LedgerIdx,
     State3,
+    _initial_state,
     init_state,
     ledger_names,
     n_counters,
@@ -125,7 +127,7 @@ def test_carrying_capacity_3d_includes_the_cap_upkeep(cfg3: Config) -> None:
     s = make_scene(cfg3, [])
     rate = to_numpy(fields.regen_rate(s.patch_pos, cfg3)).astype(np.int64)
     assert rate.shape == dims(cfg3).field_shape
-    regen = int(rate[0].sum())  # the floor layer only (§27.9)
+    regen = int(rate[0].sum())  # nobody alive: the floor layer alone (§27.10)
     upkeep = math.floor(30 * 0.25)  # floor(buoyancy_cap_cost·buoy_init) = 7
     c_ref = cfg3.energy.basal_cost + metrics.founder_brain_cost(cfg3) + layout.C_REF_MARGIN + upkeep
     assert metrics.carrying_capacity(s, cfg3) == pytest.approx(regen / c_ref, rel=1e-12)
@@ -373,14 +375,15 @@ def test_snapshot_3d_is_pure_and_matches_an_eager_second_call(micro3d_cfg: Confi
     assert metrics.snapshot_metrics(s, micro3d_cfg, heavy=True) == first
 
 
-# --- §27.9: the carrying capacity counts the floor layer ---------------------------------------------------
+# --- §27.10: with nobody alive the carrying capacity counts the floor layer ---------------------------------
 
 
 def test_carrying_capacity_3d_is_the_2d_lattice_over_the_3d_cost(
     micro_cfg: Config, micro3d_cfg: Config
 ) -> None:
-    """The floor layer regenerates as the 2D lattice (§27.5), so the 3D numerator equals the 2D one for the
-    same patches; only the divisor differs (the 3D founder's larger brain and its cap upkeep)."""
+    """The floor layer regenerates as the 2D lattice (§27.5), so the 3D numerator of a world nobody lives in
+    (the floor layer alone, §27.10) equals the 2D one for the same patches; only the divisor differs (the 3D
+    founder's larger brain and its cap upkeep)."""
     s = make_scene(micro3d_cfg, [])
     regen2d = int(to_numpy(fields.regen_rate(s.patch_pos, micro_cfg)).astype(np.int64).sum())
     all_layers = int(to_numpy(fields.regen_rate(s.patch_pos, micro3d_cfg)).astype(np.int64).sum())
@@ -394,7 +397,8 @@ def test_carrying_capacity_3d_is_the_2d_lattice_over_the_3d_cost(
 
 
 def test_carrying_capacity_3d_floor_layer_against_a_float64_host_reference(micro3d_cfg: Config) -> None:
-    """Independent of ``fields``: the torus-Gaussian fertility of the floor layer in float64."""
+    """Independent of ``fields``: the torus-Gaussian fertility of the floor layer in float64 (a world nobody
+    lives in, so the floor layer alone counts, §27.10)."""
     cfg = micro3d_cfg
     s = make_scene(cfg, [])
     d, fi = dims(cfg), cfg.fields
@@ -423,8 +427,8 @@ def test_carrying_capacity_3d_floor_layer_against_a_float64_host_reference(micro
 def test_carrying_capacity_3d_follows_the_live_environment_on_the_floor(
     micro_cfg: Config, micro3d_cfg: Config
 ) -> None:
-    """The director's call (``step``, ``env``): the floor layer of the live regeneration, as the 2D function
-    defines it for the same patches, levers and step."""
+    """The director's call (``step``, ``env``) on a world nobody lives in: the floor layer of the live
+    regeneration, as the 2D function defines it for the same patches, levers and step."""
     s = make_scene(micro3d_cfg, [])
     boosted = s._replace(env_regen_mult=mx.array(2.0), env_season_amp=mx.array(0.5, dtype=mx.float32))
     boosted = boosted._replace(env_season_period=mx.array(40, dtype=mx.int32))
@@ -445,9 +449,245 @@ def test_carrying_capacity_3d_follows_the_live_environment_on_the_floor(
 
 
 def test_carrying_capacity_of_tiny3d_is_comparable_to_tiny(tiny_cfg: Config, tiny3d_cfg: Config) -> None:
-    """Same seed, same patches: the numerators are equal, and K_est is within the cost difference of 2D's
-    (1 456 when every layer was counted)."""
+    """Same seed, same patches, every founder on the floor (the benthic limit of the occupancy rule, §27.10;
+    the uniform founders of ``init_state`` count the upper layers too): the numerators are equal, and K_est is
+    within the cost difference of 2D's (1 456 when every layer is counted)."""
     s2, s3 = init_state(tiny_cfg), init_state(tiny3d_cfg)
     np.testing.assert_array_equal(to_numpy(s2.patch_pos), to_numpy(s3.patch_pos))
+    z = mx.array(np.full(dims(tiny3d_cfg).n, dims(tiny3d_cfg).z_lo, np.float32))
+    s3 = s3._replace(pos=mx.concatenate([s3.pos[:, :2], z[:, None]], axis=1))
     k2, k3 = metrics.carrying_capacity(s2, tiny_cfg), metrics.carrying_capacity(s3, tiny3d_cfg)
     assert 0.9 * k2 < k3 < k2
+
+
+# --- §27.10: the occupancy-weighted carrying capacity ------------------------------------------------------
+
+# Heights inside each of the six layers of ``micro3d_cfg`` (field cell 4, z in [1, 23]); up to ten agents per
+# layer are spaced by 0.1, so none reaches a layer edge.
+LAYER_Z = (2.0, 5.5, 9.5, 13.5, 17.5, 21.0)
+
+
+def _c_ref(cfg: Config) -> float:
+    """``c_ref`` of §10.10 and §27.7, written out."""
+    return (
+        cfg.energy.basal_cost
+        + metrics.founder_brain_cost(cfg)
+        + layout.C_REF_MARGIN
+        + math.floor(cfg.energy.buoyancy_cap_cost * cfg.mutation.buoy_init)
+    )
+
+
+def _scene_by_layer(cfg: Config, counts: tuple[int, ...]) -> State3:
+    """``counts[k]`` agents in layer ``k``, spread over the torus (rows in layer order)."""
+    zs = [LAYER_Z[k] + 0.1 * j for k, c in enumerate(counts) for j in range(c)]
+    return make_scene(
+        cfg, [dict(pos=(2.0 + 3.1 * (i % 14), 2.0 + 3.1 * (i // 14), z)) for i, z in enumerate(zs)]
+    )
+
+
+def _host_layers(cfg: Config, z: np.ndarray) -> np.ndarray:
+    """``clip(floor(z / field_cell), 0, FZ − 1)`` in float32: the layer harvest reads (§27.5)."""
+    layer = np.floor(z.astype(np.float32) / np.float32(cfg.world.field_cell)).astype(np.int64)
+    return np.clip(layer, 0, dims(cfg).fz - 1)
+
+
+def _host_weights(cfg: Config, z: np.ndarray) -> np.ndarray:
+    """``w_k = min(1, FZ·p_k)`` of the alive heights ``z``; the floor layer alone when there are none."""
+    fz = dims(cfg).fz
+    if z.size == 0:
+        return np.eye(fz)[0]
+    return np.minimum(1.0, fz * np.bincount(_host_layers(cfg, z), minlength=fz) / z.size)
+
+
+def _host_regen_by_layer(cfg: Config, patch_pos: np.ndarray) -> np.ndarray:
+    """(FZ,) float64: the sum of ``floor(regen_max·fertility·V_k)`` over layer ``k``, written independently
+    of ``fields`` (torus-Gaussian patches, the vertical profile of §27.5, seasons off)."""
+    d, fi, fc, L = dims(cfg), cfg.fields, cfg.world.field_cell, cfg.world.size
+    centres = (np.arange(d.fg) + 0.5) * fc
+
+    def torus(dx: np.ndarray) -> np.ndarray:
+        dx = dx - L * np.round(dx / L)
+        return np.exp(-(dx**2) / (2.0 * fi.patch_sigma**2))
+
+    fert = fi.fertility_base + sum(
+        torus(centres[:, None] - p[1]) * torus(centres[None, :] - p[0]) for p in patch_pos.astype(np.float64)
+    )
+    fert = np.clip(fert, 0.0, 1.0)
+    k = np.arange(d.fz)
+    v = np.exp(-k * fc / fi.benthic_lambda)
+    if fi.photic_amp > 0:
+        v = v + fi.photic_amp * np.exp(-(d.fz - 1 - k) * fc / fi.photic_lambda)
+    v = np.minimum(1.0, v)
+    return np.array([np.floor(fi.regen_max * fert * v[i]).sum() for i in k])
+
+
+def _host_k(cfg: Config, s: State3) -> float:
+    """``K_est`` from the state's alive heights and patches alone."""
+    z = to_numpy(s.pos)[to_numpy(s.alive), 2]
+    regen = _host_regen_by_layer(cfg, to_numpy(s.patch_pos))
+    return float((regen * _host_weights(cfg, z)).sum()) / _c_ref(cfg)
+
+
+def _engine_regen_by_layer(s: State3, cfg: Config, *args: object) -> np.ndarray:
+    rate = to_numpy(fields.regen_rate(s.patch_pos, cfg, *args)).astype(np.int64)
+    return rate.reshape(rate.shape[0], -1).sum(axis=1).astype(np.float64)
+
+
+@pytest.mark.parametrize(
+    "counts",
+    [
+        (5, 0, 0, 0, 0, 0),  # every agent on the floor
+        (1, 0, 0, 0, 0, 0),
+        (4, 4, 4, 4, 4, 4),  # the column used evenly
+        (2, 2, 0, 0, 0, 0),
+        (12, 4, 2, 0, 0, 2),  # mixed: 0.6, 0.2, 0.1, 0, 0, 0.1 of the agents
+        (0, 0, 0, 0, 0, 6),  # all at the top: the floor layer does not count
+        (1, 2, 3, 4, 5, 6),
+    ],
+)
+def test_layer_weights_and_k_est_follow_the_occupancy(micro3d_cfg: Config, counts: tuple[int, ...]) -> None:
+    cfg = micro3d_cfg
+    s = _scene_by_layer(cfg, counts)
+    n = sum(counts)
+    want = np.minimum(1.0, 6 * np.array(counts) / n)  # min(1, FZ·p_k)
+    got = metrics.layer_occupancy_weights(s, cfg)
+    np.testing.assert_allclose(got, want, rtol=0, atol=1e-12)
+    assert got.shape == (6,) and got.dtype == np.float64
+    z = to_numpy(s.pos)[to_numpy(s.alive), 2]
+    np.testing.assert_array_equal(
+        np.bincount(_host_layers(cfg, z), minlength=6), counts
+    )  # the scene is as built
+    # K_est is the weighted layer sums over c_ref: against the engine's own layer sums (to rounding) ...
+    k = metrics.carrying_capacity(s, cfg)
+    regen = _engine_regen_by_layer(s, cfg)
+    assert k == pytest.approx(float((regen * want).sum()) / _c_ref(cfg), rel=1e-12)
+    # ... and against the independent float64 host reference (the floors may differ by a quantum a cell).
+    assert k == pytest.approx(_host_k(cfg, s), rel=2e-3)
+
+
+def test_all_benthic_is_the_floor_layer_and_an_even_column_is_every_layer(micro3d_cfg: Config) -> None:
+    cfg = micro3d_cfg
+    empty = make_scene(cfg, [])
+    benthic, even = _scene_by_layer(cfg, (6, 0, 0, 0, 0, 0)), _scene_by_layer(cfg, (4, 4, 4, 4, 4, 4))
+    mixed = _scene_by_layer(cfg, (12, 4, 2, 0, 0, 2))
+    regen = _engine_regen_by_layer(empty, cfg)
+    k_floor = metrics.carrying_capacity(benthic, cfg)
+    assert k_floor == metrics.carrying_capacity(
+        empty, cfg
+    )  # the benthic limit is the floor-only value, exactly
+    assert k_floor == regen[0] / _c_ref(cfg)
+    assert metrics.carrying_capacity(even, cfg) == pytest.approx(regen.sum() / _c_ref(cfg), rel=1e-12)
+    k_mixed = metrics.carrying_capacity(mixed, cfg)
+    assert k_floor < k_mixed < metrics.carrying_capacity(even, cfg)
+    assert (
+        metrics.carrying_capacity(even, cfg) > 3 * k_floor
+    )  # the upper layers hold more than 2 floors' food
+    # the top layer alone: the floor layer's food is not counted, only the top layer's
+    top = metrics.carrying_capacity(_scene_by_layer(cfg, (0, 0, 0, 0, 0, 6)), cfg)
+    assert top == pytest.approx(regen[5] / _c_ref(cfg), rel=1e-12) and top < k_floor
+
+
+def test_with_nobody_alive_the_floor_layer_counts_and_dead_rows_do_not(micro3d_cfg: Config) -> None:
+    cfg = micro3d_cfg
+    floor_only = np.eye(6)[0]
+    np.testing.assert_array_equal(metrics.layer_occupancy_weights(make_scene(cfg, []), cfg), floor_only)
+    spread = _scene_by_layer(cfg, (0, 4, 4, 4, 4, 4))  # upper layers only ...
+    dead = spread._replace(alive=mx.zeros_like(spread.alive))  # ... and all of them dead
+    np.testing.assert_array_equal(metrics.layer_occupancy_weights(dead, cfg), floor_only)
+    assert metrics.carrying_capacity(dead, cfg) == metrics.carrying_capacity(make_scene(cfg, []), cfg)
+    # three living benthic agents and three dead rows left in the upper layers: only the living are counted
+    s = _scene_by_layer(cfg, (3, 1, 1, 1, 0, 0))
+    alive = np.array(to_numpy(s.alive))
+    alive[3:6] = False
+    s = s._replace(alive=mx.array(alive))
+    np.testing.assert_array_equal(metrics.layer_occupancy_weights(s, cfg), floor_only)
+    assert metrics.carrying_capacity(s, cfg) == metrics.carrying_capacity(make_scene(cfg, []), cfg)
+
+
+def test_the_layer_of_a_height_is_the_one_harvest_reads(micro3d_cfg: Config) -> None:
+    """Heights on and around the layer edges, the floor rest height and the surface bound: the weights use
+    the layer of ``fields.cell_index`` (float32 ``floor(z / field_cell)``, clamped to the lattice)."""
+    cfg = micro3d_cfg
+    d = dims(cfg)
+    below4 = float(np.nextafter(np.float32(4.0), np.float32(0.0)))  # the largest float32 under 4.0
+    zs = [d.z_lo, below4, 4.0, 8.0, 11.999, 12.0, 20.0, d.z_hi]
+    s = make_scene(cfg, [dict(pos=(3.0 * (i + 1), 5.0, z)) for i, z in enumerate(zs)])
+    z32 = to_numpy(s.pos)[:, 2][: len(zs)]
+    layers = to_numpy(fields.cell_index(s.pos, cfg))[: len(zs)] // (d.fg * d.fg)
+    np.testing.assert_array_equal(layers, _host_layers(cfg, z32))
+    assert layers.tolist() == [0, 0, 1, 2, 2, 3, 5, 5]  # 4.0 is in layer 1, the largest float32 below it in 0
+    counts = np.bincount(layers, minlength=6)
+    np.testing.assert_allclose(
+        metrics.layer_occupancy_weights(s, cfg), np.minimum(1.0, 6 * counts / len(zs)), rtol=0, atol=1e-12
+    )
+
+
+def test_k_est_follows_the_live_environment_by_occupancy(micro3d_cfg: Config) -> None:
+    """The director's call: every layer's live regeneration (seasonal at ``step``, scaled by the levers),
+    weighted by the same occupancy."""
+    cfg = micro3d_cfg
+    s = _scene_by_layer(cfg, (12, 4, 2, 0, 0, 2))
+    boosted = s._replace(env_regen_mult=mx.array(2.0), env_season_amp=mx.array(0.5, dtype=mx.float32))
+    boosted = boosted._replace(env_season_period=mx.array(40, dtype=mx.int32))
+    step = mx.array(10, dtype=mx.int32)
+    w = metrics.layer_occupancy_weights(boosted, cfg)
+    live = metrics.carrying_capacity(boosted, cfg, step, boosted.env)
+    ref = float((_engine_regen_by_layer(boosted, cfg, step, boosted.env) * w).sum()) / _c_ref(cfg)
+    assert live == pytest.approx(ref, rel=1e-12)
+    base = metrics.carrying_capacity(s, cfg)
+    assert live > 1.5 * base  # the levers double the regeneration (and the season adds to it at step 10)
+    assert metrics.carrying_capacity(boosted, cfg) == base  # the plain call ignores the environment
+    # the occupancy part is the same with and without the levers: the ratio is the ratio of the regenerations
+    plain = _engine_regen_by_layer(s, cfg)
+    assert live / base == pytest.approx(
+        float((_engine_regen_by_layer(boosted, cfg, step, boosted.env) * w).sum()) / float((plain * w).sum()),
+        rel=1e-12,
+    )
+
+
+def test_a_2d_state_is_unaffected_by_the_occupancy_rule(tiny_cfg: Config) -> None:
+    """The rule is a static 3D branch: a 2D ``K_est`` is the lattice's regeneration over ``c_ref`` whatever
+    the agents do (§10.10)."""
+    s = init_state(tiny_cfg)
+    rate = to_numpy(fields.regen_rate(s.patch_pos, tiny_cfg)).astype(np.int64)
+    c_ref = tiny_cfg.energy.basal_cost + metrics.founder_brain_cost(tiny_cfg) + layout.C_REF_MARGIN
+    assert metrics.carrying_capacity(s, tiny_cfg) == int(rate.sum()) / c_ref
+    emptied = s._replace(alive=mx.zeros_like(s.alive))
+    assert metrics.carrying_capacity(emptied, tiny_cfg) == metrics.carrying_capacity(s, tiny_cfg)
+
+
+def _lazy_64k3d(seed: int) -> tuple[Config, State3]:
+    """The 64k3d initial state as a lazy graph: only the alive mask, the positions and the patches are ever
+    evaluated, so the (65 536, 116, 32) weights are never materialised (as ``test_state.test_schema_*``)."""
+    cfg = load_config(preset="64k3d", overrides=[f"run.seed={seed}"])
+    return cfg, _initial_state(cfg)
+
+
+def test_k_est_band_of_the_64k3d_initial_state() -> None:
+    """The sizing of ``regen_max`` (DESIGN §27.13): for the founders uniform in the volume, for all of them on
+    the floor and for the mostly benthic steady state the preset targets (70% in the floor layer, the rest
+    spread over the other layers), K_est stays in a band around 61 000, 17 800 and 33 000 for any seed."""
+    for seed in range(3):
+        cfg, s = _lazy_64k3d(seed)
+        d = dims(cfg)
+        n0 = cfg.population.n_init
+        pos = np.array(to_numpy(s.pos))
+        assert d.fz == 20 and pos.shape == (65536, 3) and int(to_numpy(s.alive).sum()) == n0
+        k_uniform = metrics.carrying_capacity(s, cfg)
+        assert 55_000 < k_uniform < 68_000, (seed, k_uniform)
+
+        rng = np.random.default_rng(seed)
+        n_floor = int(0.7 * n0)
+        z = np.array(pos[:, 2])
+        z[:n_floor] = d.z_lo  # 70% in the floor layer ...
+        z[n_floor:n0] = rng.uniform(cfg.world.field_cell, d.z_hi, n0 - n_floor)  # ... the rest in the others
+        mixed = s._replace(pos=mx.array(np.stack([pos[:, 0], pos[:, 1], z], axis=1)))
+        k_mixed = metrics.carrying_capacity(mixed, cfg)
+        assert 30_000 < k_mixed < 36_500, (seed, k_mixed)
+
+        z[:n0] = d.z_lo
+        benthic = s._replace(pos=mx.array(np.stack([pos[:, 0], pos[:, 1], z], axis=1)))
+        k_floor = metrics.carrying_capacity(benthic, cfg)
+        assert 16_000 < k_floor < 19_500, (seed, k_floor)
+        assert k_floor < k_mixed < k_uniform
+        assert 0.4 < n0 / k_mixed < 0.6  # n_init is about half of the benthic steady state's K_est

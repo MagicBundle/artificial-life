@@ -1,7 +1,9 @@
 """§27.3–§27.8 3D affordances through one eager step on hand-built ``micro3d`` scenes: an attack drain and
 its closure with ``HEAT_BUOYANCY``, a corpse sinking to the floor cell, harvest from the agent's own cell
 (mid-water or grounded), a vertical bond, the pitch and its turn cost, buoyant lift and its cost against a
-float32 reference, a zero cap and the upkeep without lift, the surface clamp without grounding."""
+float32 reference, a zero cap and the upkeep without lift, the surface clamp without grounding; and, over 400
+compiled ``tiny3d`` steps, every affordance of §0.1 with the 3D terms (the z clamps, ``HEAT_BUOYANCY``, pitch,
+the heritable cap, signals in the volume, swimming apart from sinking)."""
 
 from __future__ import annotations
 
@@ -12,11 +14,21 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from alife import brain, layout, physics
+from alife import brain, invariants, layout, physics
 from alife.config import Config, apply_overrides, dims
-from alife.state import Counter3D, CounterIdx, DeathCause, LedgerIdx, State3, to_numpy
+from alife.state import (
+    ERROR_MASK,
+    Counter3D,
+    CounterIdx,
+    DeathCause,
+    LedgerIdx,
+    State3,
+    init_state,
+    n_counters,
+    to_numpy,
+)
 from alife.step import StepOut, make_step
-from helpers import ledger_net, make_scene
+from helpers import ledger_net, make_scene, set_output_bias
 
 C = CounterIdx
 N3 = Counter3D.Z_FLOOR_CLAMPS  # the first Counter3D index
@@ -227,3 +239,134 @@ def test_the_surface_clamps_without_grounding(micro3d_cfg: Config, monkeypatch: 
     assert x[:2, d.lay.IN_GROUNDED].tolist() == [0.0, 1.0]
     height = np.array([d.z_hi, d.z_lo]) / cfg.world.height
     np.testing.assert_allclose(x[:2, d.lay.IN_HEIGHT], height, atol=1e-7)
+
+
+# --- the whole step: 400 compiled steps of tiny3d (§22.5 in 3D) --------------------------------------------
+
+STEPS = 400
+
+# Output biases for the founders, as ``test_affordances.BIAS``: harvest, bond, share, reproduce (bonded),
+# attack and emit. Pitch, thrust and the buoyancy use stay with the founders' random brains.
+BIAS = {
+    layout.OUT_HARVEST: 2.0,
+    layout.OUT_BOND: 2.0,
+    **{layout.OUT_SHARE + b: 1.0 for b in range(layout.B)},
+    layout.OUT_REPRODUCE: 2.0,
+    layout.OUT_CHILD_BOND: 2.0,
+    layout.OUT_ATTACK: 1.0,
+    **{layout.OUT_EMIT + c: 1.0 for c in range(layout.NCH)},
+}
+
+
+@pytest.fixture(scope="module")
+def run3d(tiny3d_cfg: Config) -> dict[str, Any]:
+    """``tiny3d`` for ``STEPS`` compiled steps with the pinned seed, founders biased as in ``BIAS``.
+
+    Besides the totals it records, step by step: the height and pitch ranges of the alive agents; the
+    horizontal (x and y, minimum image) and the vertical distance moved by the agents that lived through the
+    step; the horizontal distance of those that started it grounded (gravity cannot move them, and the floor
+    holds them); and the parent of each child.
+    """
+    cfg = tiny3d_cfg
+    assert cfg.run.seed == 0 and cfg.world.dims == 3
+    L = cfg.world.size
+    s = set_output_bias(init_state(cfg), cfg, BIAS)
+    fn = make_step(cfg)
+    totals = np.zeros(n_counters(3), np.int64)
+    ledger = np.zeros(len(LedgerIdx), np.int64)
+    parent_of: dict[int, int] = {}
+    r = dict(
+        xy=0.0, xy_grounded=0.0, z=0.0, sink_steps=0, z_lo=np.inf, z_hi=-np.inf, p_lo=np.inf, p_hi=-np.inf
+    )
+    for _ in range(STEPS):
+        prev_pos, prev_alive = _np(s.pos), _np(s.alive)
+        was_grounded = _np(physics.grounded(s.pos, cfg))
+        s, out = fn(s)
+        mx.eval(s, out)
+        totals += _np(out.counters)
+        ledger += _np(out.ledger)
+        bv = _np(out.births.valid)
+        parent_of.update(
+            zip(_np(out.births.uid)[bv].tolist(), _np(out.births.parent_uid)[bv].tolist(), strict=True)
+        )
+        pos, alive = _np(s.pos), _np(s.alive)
+        still = prev_alive & alive
+        dxy = pos[still, :2] - prev_pos[still, :2]
+        dxy -= L * np.round(dxy / L)  # x and y are periodic
+        r["xy"] += float(np.abs(dxy).sum())
+        r["xy_grounded"] += float(np.abs(dxy[was_grounded[still]]).sum())
+        dz = pos[still, 2] - prev_pos[still, 2]
+        r["z"] += float(np.abs(dz).sum())
+        r["sink_steps"] += int((dz < 0).sum())
+        r["z_lo"], r["z_hi"] = min(r["z_lo"], pos[alive, 2].min()), max(r["z_hi"], pos[alive, 2].max())
+        pitch = _np(s.pitch)[alive]
+        r["p_lo"], r["p_hi"] = min(r["p_lo"], pitch.min()), max(r["p_hi"], pitch.max())
+    return {"state": s, "totals": totals, "ledger": ledger, "parent_of": parent_of, **r}
+
+
+def test_every_3d_affordance_is_exercised(tiny3d_cfg: Config, run3d: dict[str, Any]) -> None:
+    t, led, s = run3d["totals"], run3d["ledger"], run3d["state"]
+    assert t[C.BIRTHS] > 0 and t[C.DEATHS_STARVED] + t[C.DEATHS_KILLED] > 0  # REPRODUCE, DIE
+    assert t[C.ATTACK_HITS] > 0 and led[LedgerIdx.FLOW_STOLEN] > 0  # FIGHT
+    assert t[C.BONDS_FORMED] > 0 and t[C.BONDS_BROKEN] > 0 and t[C.CHILD_BONDS] > 0  # BOND, SPLIT
+    assert t[C.SHARERS] > 0 and led[LedgerIdx.FLOW_SHARED] > 0 and led[LedgerIdx.FLOW_HARVEST] > 0
+    # the 3D terms: the floor and the surface hold agents, the buoyancy actuator is paid for
+    assert t[Counter3D.Z_FLOOR_CLAMPS] > 0 and t[Counter3D.Z_SURFACE_CLAMPS] > 0 and t[Counter3D.GROUNDED] > 0
+    assert led[H15] > 0 and led[H15] == led[LedgerIdx.RESERVED]  # HEAT_BUOYANCY is slot 15
+    assert int(_np(s.alive).sum()) > 0
+    assert int(_np(s.diag)) & ERROR_MASK == 0
+    assert invariants.full_check(s, tiny3d_cfg) == []  # the ledger closes, z and pitch are in range
+
+
+def test_a_3d_run_stays_between_the_floor_and_the_surface(tiny3d_cfg: Config, run3d: dict[str, Any]) -> None:
+    d, s = dims(tiny3d_cfg), run3d["state"]
+    assert d.z_lo <= run3d["z_lo"] and run3d["z_hi"] <= d.z_hi  # every alive height, at every step
+    assert run3d["z_lo"] == d.z_lo and run3d["z_hi"] == d.z_hi  # and both bounds were reached
+    alive, pitch = _np(s.alive), _np(s.pitch)
+    assert (pitch[alive] != 0.0).any()  # pitch is used
+    assert run3d["p_lo"] >= -f32(layout.PITCH_MAX) and run3d["p_hi"] <= f32(layout.PITCH_MAX)
+    grounded = _np(physics.grounded(s.pos, tiny3d_cfg))[alive]
+    assert 0 < grounded.sum() < alive.sum()  # some rest on the floor and some swim
+
+
+def test_signals_reach_the_water(run3d: dict[str, Any]) -> None:
+    s = run3d["state"]
+    alive = _np(s.alive)
+    assert np.abs(_np(s.msg)[alive]).max() > 0.0  # broadcast channels
+    assert _np(s.chem).sum(axis=(1, 2, 3)).min() > 0.0  # every chemical channel holds a deposit in the volume
+
+
+def test_reproduction_mutates_the_buoyancy_cap(tiny3d_cfg: Config, run3d: dict[str, Any]) -> None:
+    s, parent_of = run3d["state"], run3d["parent_of"]
+    alive, uid, cap = _np(s.alive), _np(s.uid), _np(s.buoy_cap)
+    row_of = {int(u): int(r) for r, u in enumerate(uid) if alive[r]}
+    birth, step = _np(s.birth_step), int(_np(s.step))
+    pairs = [
+        (row_of[c], row_of[p])
+        for c, p in parent_of.items()
+        if c in row_of and p in row_of and birth[row_of[c]] < step - 1  # flushed child rows (§12.6)
+    ]
+    assert pairs, "no living parent-child pair to compare"
+    assert any(cap[c] != cap[p] for c, p in pairs)  # the additive mutation of the cap
+    assert cap[alive].min() >= 0.0 and cap[alive].max() <= 1.0 and cap[alive].std() > 0.0
+    assert np.isclose(cap[alive].mean(), tiny3d_cfg.mutation.buoy_init, atol=0.1)  # no drift in 400 steps
+
+
+def test_horizontal_movement_is_separate_from_sinking(micro3d_cfg: Config, run3d: dict[str, Any]) -> None:
+    """Gravity acts on z alone, so movement in x and y is the agents' own, and so is all of the movement of an
+    agent held by the floor. In the run both happen; a passive agent sinks and does not move sideways."""
+    assert run3d["xy"] > 0.0 and run3d["xy_grounded"] > 0.0  # swimming, and walking on the floor
+    assert run3d["z"] > 0.0 and run3d["sink_steps"] > 0  # vertical movement, downward steps included
+
+    cfg = micro3d_cfg
+    ph, d = cfg.physics, dims(cfg)
+    passive = [dict(pos=(6.0 * (k + 1), 24.0, 20.0), birth_step=-50) for k in range(6)]  # zero brains
+    s = make_scene(cfg, passive, resource=0)
+    fn = make_step(cfg, compile=False)
+    xy0, z0 = _np(s.pos)[:6, :2].copy(), _np(s.pos)[:6, 2].copy()
+    for n in range(1, 41):
+        s, out = fn(s)
+        mx.eval(s, out)
+        np.testing.assert_array_equal(_np(s.pos)[:6, :2], xy0)  # nothing acts on x and y
+        np.testing.assert_allclose(_np(s.pos)[:6, 2], z0 - n * ph.gravity / ph.drag, rtol=0, atol=1e-4)
+    assert (_np(s.pos)[:6, 2] > d.z_lo).all() and _np(out.counters)[N3] == 0  # still in the water: no clamp

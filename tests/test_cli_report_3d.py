@@ -120,14 +120,16 @@ def test_rows_of_a_3d_run_carry_the_3d_keys(run_dir: Path) -> None:
         assert "body_z_extent_mean" in r and "grounded_frac" in r and r["ledger_error"] == 0
 
 
-def test_the_first_row_estimates_the_capacity_on_the_floor_layer(run_dir: Path) -> None:
-    """The row is written at step 10, with the patches drifted from their step-0 positions."""
+def test_the_first_row_estimates_the_capacity_by_occupancy(run_dir: Path) -> None:
+    """The row is written at step 10, with the patches drifted from their step-0 positions and the founders
+    still spread over the column: the occupancy-weighted estimate (§27.10), between the floor layer's alone
+    (about 409: tiny's 426 less the larger founder brain and the cap upkeep) and every layer's (1 456)."""
     rd = RunDir.open(run_dir)
     cfg = rd.config()
     first = rd.metrics_rows()[0]["carrying_capacity_est"]
     k0 = metrics.carrying_capacity(load_checkpoint(rd.checkpoint_at(0), cfg), cfg)
-    assert first == pytest.approx(k0, rel=1e-2)
-    assert 300 < first < 500  # about 409: tiny's 426 less the larger founder brain and the cap upkeep
+    assert first == pytest.approx(k0, rel=5e-2)
+    assert 1000 < first < 1500  # the six layers hold about 3.6 floors' food, and the founders use them all
 
 
 # --- announce, summary and bench: 3D only -------------------------------------------------------------------

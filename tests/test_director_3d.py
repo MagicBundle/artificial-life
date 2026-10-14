@@ -4,8 +4,8 @@ The director is host code that edits the ``env_*`` fields and ``patch_pos`` betw
 3D world needs little of it: the validation that refused ``director.enabled`` is gone; the catastrophe is a
 vertical column (the step's mask, §27.4) whose radius bounds are scaled by ``L / 1024``; a patch moves in
 x and y only (``patch_pos`` stays ``(PP, 2)``); the log header names ``"dims": 3`` (in 3D only, so that no
-2D run ever gets a new header); the LLM prompt describes the 3D world; and ``K_est`` is the floor layer's
-(§27.10).
+2D run ever gets a new header); the LLM prompt describes the 3D world; and ``K_est`` weighs each layer's
+food by the share of the agents living in it (§27.10).
 
 Two module-scoped runs on ``tiny3d`` carry the end-to-end tests: a scripted live run whose log replays
 bitwise (the timed menu bounds are shrunk by a patch around the tests that need it, as in
@@ -270,37 +270,40 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def _synthetic_row(step: int) -> dict[str, Any]:
+    """A metrics row of a population of 200 (a window of 10 steps), for the prompt and vitals tests."""
+    return {
+        "step": step,
+        "steps": 10,
+        "n_alive": 200.0,
+        "n_alive_min": 190,
+        "births": 5,
+        "deaths_starved": 3,
+        "deaths_killed": 1,
+        "deaths_aged": 0,
+        "deaths_catastrophe": 0,
+        "emitters_frac": 0.1,
+        "sharers_frac": 0.2,
+        "mean_bonds_per_agent": 0.5,
+        "predation_ratio": 0.1,
+        "top_clade_share": 0.4,
+        "clades_alive": 7,
+        "clade_entropy": 1.5,
+        "weight_diversity": 0.3,
+        "frac_in_bodies_ge4": 0.05,
+        "bodies_hist": {"1": 150},
+        "bodies_largest": 6,
+        "sigma_q50": 0.05,
+        "rate_q50": 0.05,
+        "frac_q50": 0.3,
+    }
+
+
 def _window_ctx(cfg: Config, persona: str) -> tuple[Context, Tracker]:
     """A context over ten synthetic metrics rows (a population of 200, K_est 409), for the prompt builders."""
     tr = Tracker(RULE_PARAMS)
     for step in range(10, 101, 10):
-        tr.observe(
-            {
-                "step": step,
-                "steps": 10,
-                "n_alive": 200.0,
-                "n_alive_min": 190,
-                "births": 5,
-                "deaths_starved": 3,
-                "deaths_killed": 1,
-                "deaths_aged": 0,
-                "deaths_catastrophe": 0,
-                "emitters_frac": 0.1,
-                "sharers_frac": 0.2,
-                "mean_bonds_per_agent": 0.5,
-                "predation_ratio": 0.1,
-                "top_clade_share": 0.4,
-                "clades_alive": 7,
-                "clade_entropy": 1.5,
-                "weight_diversity": 0.3,
-                "frac_in_bodies_ge4": 0.05,
-                "bodies_hist": {"1": 150},
-                "bodies_largest": 6,
-                "sigma_q50": 0.05,
-                "rate_q50": 0.05,
-                "frac_q50": 0.3,
-            }
-        )
+        tr.observe(_synthetic_row(step))
     vitals = tr.vitals(tr.close(100), 409.0, 1024)
     env = actions.EnvView(1.0, 0.0, 0, 1.0, 0, np.ones(4, np.float32), np.zeros((4, 2), np.float32))
     ctx = Context(100, 0, persona, 8, cfg.world.size, vitals, pacing.fold([], 100), env)
@@ -351,7 +354,50 @@ def test_the_3d_prompts_describe_the_3d_world(tiny3d_cfg: Config, tiny_cfg: Conf
             assert f"- {name} (cost" in system and text in system
     assert system2d.count("Menu:") == system.count("Menu:") == 1
     assert "World 128 x 128 x 24, 4 fertility patches. Decide what" in user
-    assert "capacity estimate K_est 409 (floor-layer food only), window low" in user
+    assert f"capacity estimate K_est 409{prompt.K_NOTE_3D}, window low" in user  # the occupancy rule, §27.10
+
+
+def test_the_3d_prompt_describes_the_occupancy_weighted_k_est(tiny3d_cfg: Config, tiny_cfg: Config) -> None:
+    """The qualifier after the capacity estimate says what the number counts: not "floor-layer food only"
+    (the rule of PR 4), but each layer's food weighted by where the agents live."""
+    _, user = _messages(tiny3d_cfg, "gardener")
+    note = prompt.K_NOTE_3D
+    assert note == (
+        " (food weighted by where the agents live: the floor layer's alone if all are on the floor,"
+        " every layer's if they are spread evenly)"
+    )
+    assert user.count(note) == 1 and "floor-layer food only" not in user
+    line = next(ln for ln in user.splitlines() if ln.startswith("viability:"))
+    assert "of the capacity estimate K_est 409" + note + ", window low" in line
+    _, user2d = _messages(tiny_cfg, "gardener")
+    assert "food weighted" not in user2d and "K_est 409, window low" in user2d  # 2D: no qualifier at all
+
+
+def test_the_director_vitals_use_the_occupancy_weighted_k_est(micro3d_cfg: Config, tmp_path: Path) -> None:
+    """``Director._vitals`` reads ``metrics.carrying_capacity`` of the live state: the same patches give a
+    floor-only K_est to agents that all rest on the floor and a larger one to agents spread over the column,
+    and ``n / K_est`` follows."""
+    cfg = apply_overrides(
+        micro3d_cfg, ["director.enabled=true", "run.director=live", "director.rule_every=100"]
+    )
+    zs = {"floor": [1.0] * 8, "column": [2.0, 5.5, 9.5, 13.5, 17.5, 21.0, 3.0, 6.0]}
+    got = {}
+    for name, z in zs.items():
+        s = make_scene(cfg, [dict(pos=(4.0 + 5 * i, 8.0, h)) for i, h in enumerate(z)])
+        rd = RunDir.create(tmp_path / name, cfg)
+        director = Director(rd, cfg, "live", 0)
+        for step in range(10, 101, 10):
+            director.observe(_synthetic_row(step))
+        v = director._vitals(s, 100)
+        assert v.k_est == metrics.carrying_capacity(s, cfg, s.step, s.env) > 0
+        assert v.n_over_k == pytest.approx(200.0 / v.k_est)
+        got[name] = v
+    floor_only = metrics.carrying_capacity(make_scene(cfg, []), cfg)  # nobody alive: the floor layer alone
+    assert got["floor"].k_est == floor_only
+    assert (
+        got["column"].k_est > 2 * floor_only
+    )  # six layers, each holding its even share or more, are counted
+    assert got["column"].n_over_k < got["floor"].n_over_k / 2
 
 
 # --- the scripted live run and its replay -----------------------------------------------------------------
@@ -579,7 +625,11 @@ def _gardener_argv(out: Path, steps: int, *extra: str) -> list[str]:
         "--set",
         "brain.weight_dtype=float32",
         "--set",
-        "population.n_init=40",  # n / K_est = 0.098 < 0.2: the extinction rescue fires at the first boundary
+        # n / K_est is 0.12 at the first boundary, under 0.2: the rescue fires. 150 and not 40: under the
+        # occupancy rule K_est stays near 1 900 (the rescue's regeneration pulse), so 40 founders (290 agents
+        # at most) stay flagged for the whole run, the rescue blocked by its cooldown at every boundary, which
+        # a live resume journals once more (a blocked rule is noted once per process, not once per run).
+        "population.n_init=150",
         "--set",
         "director.rule_every=20",
         "--set",
@@ -626,11 +676,12 @@ def test_a_short_gardener_run_in_3d_keeps_the_ledger_exact(gardener: Path) -> No
     assert cli.main(["inspect", str(gardener), "--check"]) == 0
 
 
-def test_the_vitals_of_a_3d_run_use_the_floor_layer_k_est(gardener: Path, tmp_path: Path) -> None:
+def test_the_vitals_of_a_3d_run_use_the_occupancy_weighted_k_est(gardener: Path, tmp_path: Path) -> None:
     """The ``k_est`` logged at the first boundary is ``metrics.carrying_capacity`` of the state before the
-    director acted: the floor layer's regeneration (§27.10), well below what all the layers would give."""
+    director acted: the layers' regeneration weighted by where the agents live (§27.10), between the floor
+    layer's alone and all the layers'."""
     rcfg = apply_overrides(
-        load_config(preset="tiny3d", overrides=["brain.weight_dtype=float32", "population.n_init=40"]),
+        load_config(preset="tiny3d", overrides=["brain.weight_dtype=float32", "population.n_init=150"]),
         [
             "director.enabled=true",
             "director.rule_every=20",
@@ -644,9 +695,20 @@ def test_the_vitals_of_a_3d_run_use_the_floor_layer_k_est(gardener: Path, tmp_pa
     k = metrics.carrying_capacity(s, rcfg, s.step, s.env)
     rate = _np(fields.regen_rate(s.patch_pos, rcfg, s.step, s.env)).astype(np.int64)
     assert rate.shape[0] == 6 and rate.sum() > 2 * rate[0].sum()  # the layers above would more than double it
+    c_ref = (
+        rcfg.energy.basal_cost
+        + metrics.founder_brain_cost(rcfg)
+        + 50  # layout.C_REF_MARGIN
+        + int(np.floor(np.float32(rcfg.energy.buoyancy_cap_cost) * np.float32(rcfg.mutation.buoy_init)))
+    )
+    z = _np(s.pos)[_np(s.alive), 2]
+    layer = np.clip(np.floor(z / np.float32(rcfg.world.field_cell)).astype(np.int64), 0, 5)
+    w = np.minimum(1.0, 6 * np.bincount(layer, minlength=6) / z.size)
+    host = float((rate.reshape(6, -1).sum(axis=1) * w).sum()) / c_ref
+    assert k == pytest.approx(host, rel=1e-12)
+    assert rate[0].sum() / c_ref < k < rate.sum() / c_ref  # floor-only 409 < K_est < all the layers' 1 456
     first = next(e for e in read_jsonl(gardener / DIRECTOR_LOG_FILE) if e.get("kind") != "header")
     assert first["vitals_step"] == 20 and first["vitals"]["k_est"] == round(k, 4)
-    assert 400.0 < k < 420.0  # tiny3d's 409, against 1 456 for all the layers
     assert first["vitals"]["n_over_k"] == round(first["vitals"]["n_alive"] / k, 4)
     assert first["vitals"]["extinction_risk"] is True
 

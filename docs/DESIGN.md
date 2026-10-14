@@ -117,6 +117,7 @@ regular lattice, which is the cellular-automaton substrate.
 | `64k` (defaults) | 65 536 | 1 024 | 16 384 | 1 024 | 170 (6.02) | 256 |
 | `256k` | 262 144 | 4 096 | 65 536 | 2 048 | 341 (6.01) | 512 |
 | `tiny3d` (3D tests/CI, §27.8) | 1 024 | 32 | 256 | 128 | 21 (6.10) × 4 layers | 32 × 6 layers |
+| `64k3d` (3D at 64k scale, §27.13, provisional) | 65 536 | 1 024 | 16 384 | 320 (height 80) | 53 (6.04) × 13 layers (6.15) | 80 × 20 layers |
 
 The `fast` overlay sets `sensing.k_neighbors = 6`, `sensing.cell_capacity = 12` and `brain.hidden = 24`. It
 combines with any preset.
@@ -1064,8 +1065,8 @@ limit. `occ_limit` is derived from the config rather than a magic number, so it 
 - `c_ref ≈ 100 + 37 + 50` (`C_REF_MARGIN = 50`, `layout.py`).
 - So `K_est ≈ 37–40 k` agents, about 60% of `N_CAP`. `alife inspect` prints the value computed for the actual seed.
 
-In 3D, `c_ref` also holds a founder's buoyancy-cap upkeep and the regeneration is that of the floor layer only
-(§27.7, §27.10).
+In 3D, `c_ref` also holds a founder's buoyancy-cap upkeep and the regeneration is weighted by where the agents live:
+each layer's counts in proportion to its share of the alive agents (§27.7, §27.10).
 
 Local depletion and predation push the real figure lower. `alife inspect` prints the estimate. The defaults are a
 starting point, tuned with the slow ecology test (§22.5).
@@ -1590,7 +1591,7 @@ artificial-life/
   docs/DESIGN.md                 this document
   src/alife/
     __init__.py                  __version__; re-exports Config, State, load_config, init_state, make_step
-    presets/{tiny,dev,64k,256k,tiny3d,fast}.toml   package data
+    presets/{tiny,dev,64k,256k,tiny3d,64k3d,fast}.toml   package data
     config.py                    Config dataclasses, Dims, presets, load/save/override/validate/hash
     layout.py                    structural constants, IN_*/OUT_*/NBR_*/BOND_* indices, names, GENOME_LAYOUT_VERSION; Layout per dims
     state.py                     State, LedgerIdx, CounterIdx, Diag, DeathCause, init_state, totals, (de)serialisation, to_numpy
@@ -1659,7 +1660,7 @@ POST_V01_KEYS; UNHASHED_KEYS; THREE_D_KEYS                                # §17
 DIMS_SUPPORTED: tuple[int, ...] = (2, 3)                                  # world.dims values validate accepts (§27.1)
 def is_3d(cfg: Config) -> bool                                            # world.dims == 3 (static)
 def require_2d(cfg: Config, what: str) -> None                            # ConfigError for a 3D config in a 2D-only tool
-PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d")       # plus overlay "fast"; tiny3d: §27.8
+PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d", "64k3d")   # plus overlay "fast"; 3D: §27.8, §27.13
 def load_config(path: str | Path | None = None, *, preset: str | None = None,
                 overlays: Sequence[str] = (), overrides: Sequence[str] = ()) -> Config   # validates
 def apply_overrides(cfg: Config, overrides: Sequence[str]) -> Config      # "section.key=value", typed parse
@@ -1901,7 +1902,7 @@ def interval_row(step: int, counters: np.ndarray, ledgers: np.ndarray, snap: Map
                     # counters (T, n_counters(nd)), ledgers (T,16); the ledger keyed by ledger_names(nd) (§27.8)
 def carrying_capacity(s: State, cfg: Config, step: mx.array | None = None, env: Env | None = None) -> float
                     # step + env: the live regeneration (the director's K_est, §26.5)
-                    # 3D: the floor layer's regeneration only (§27.10)
+                    # 3D: each layer's regeneration weighted by the share of the alive agents in it (§27.10)
 
 # runio.py
 FORMAT_VERSION: Final = 1
@@ -2249,6 +2250,7 @@ class Config:
 | `64k` | (empty: the defaults) |
 | `256k` | `population: n_max 262144, n_init 65536, max_births_per_step 4096`; `world.size 2048`; `fields.n_patches 96` |
 | `tiny3d` | `tiny`'s, plus `world: dims 3, height 24`; `physics: gravity 0.03, floor_eps 0.1, buoyancy_max 0.04`; `energy: buoyancy_cost 16, buoyancy_cap_cost 8`; `mutation: buoy_init 0.5, buoy_sigma 0.02`; `fields: chem_diffusion [0.16, 0.10, 0.16], benthic_lambda 8, photic_amp 0.5, photic_lambda 8` (provisional, §27.8) |
+| `64k3d` | `64k`'s, plus `world: size 320, dims 3, height 80`; `physics: gravity 0.015, floor_eps 0.1, buoyancy_max 0.04`; `sensing.cell_capacity 24` (provisional); `energy: brain_cost_per_l1 0.0905, buoyancy_cost 16, buoyancy_cap_cost 8`; `mutation: buoy_init 0.5, buoy_sigma 0.02`; `fields: n_patches 8, patch_sigma 24, regen_max 1700, chem_diffusion [0.16, 0.10, 0.16], benthic_lambda 8, photic_amp 0.5, photic_lambda 8` (provisional, §27.13) |
 | `fast` (overlay) | `sensing: k_neighbors 6, cell_capacity 12`; `brain.hidden 24` |
 
 **Loading** (`load_config`). Precedence, lowest first:
@@ -2679,7 +2681,7 @@ Pinned details (impl, WP6):
 ## 21. CLI (`alife`, argparse, entry point `alife.cli:main`)
 
 ```text
-alife run      [--preset tiny|dev|64k|256k|tiny3d] [--overlay fast ...] [--config PATH] [--set section.key=value ...]
+alife run      [--preset tiny|dev|64k|256k|tiny3d|64k3d] [--overlay fast ...] [--config PATH] [--set section.key=value ...]
                [--seed S] [--steps N] [--out DIR] [--overwrite] [--init-from RUN[:STEP]|FILE.safetensors]
                [--metrics-every N] [--checkpoint-every N] [--checks cheap|off] [--no-compile] [--quiet]
                [--director off|live|replay] [--replay-log LOG]
@@ -3001,13 +3003,21 @@ bonds, sharers, emitters and harvest are all > 0, and the population is > 0 at t
 - The test builds founders with a fixed bias row from a test-only helper, so every action fires.
 - This affects the test only, not the engine defaults (founders are fully random).
 
-**`test_affordances_3d.py`** exercises the 3D affordances in one-step `micro3d_cfg` scenes (§27.8); the 400-step 3D
-run is `64k3d` tuning work (docs/3D.md PR 6).
+**`test_affordances_3d.py`** exercises the 3D affordances in one-step `micro3d_cfg` scenes (§27.8), and runs `tiny3d`
+for 400 compiled steps with the pinned seed and the 2D bias row (§27.13): every affordance above, plus floor and
+surface clamps, `HEAT_BUOYANCY`, heights and pitch in range, a mutating buoyancy cap, deposits in the volume, and
+movement in x and y apart from sinking (a passive agent loses `gravity/drag` of height per step and does not move
+sideways).
 
 **`test_ecology.py`** (marker `slow`) runs the `dev` preset (float32 weights, as `tiny_cfg`, F19) with default random
 founders for 3 000 steps. The
 population must be neither extinct nor pinned at `N_CAP` from step 0. Births > 0, bonds > 0, and at least one
 attack lands. This test is the tuning harness for the defaults in §17.
+
+**`test_ecology_3d.py`** (marker `slow`) is its 3D counterpart on `DEV3D`, the `64k3d` preset shrunk (§27.13): 2 500
+steps with float32 weights, the 2D assertions that carry over, floor contacts, `HEAT_BUOYANCY`, a grounded share in
+(0, 1) and a hash-cell overflow rate under 1e-4 per agent and step. It is collected only under `-m slow` (the nightly
+job and the cloud worker).
 
 ### 22.6 Static and lint tests (`test_lint.py`, AST-based)
 
@@ -3480,8 +3490,8 @@ included), `singleton fraction = bodies_hist["1"] / n_alive`. `n_alive_min` is t
 (rows without it fall back to `n_alive`).
 
 - **`K_est`** is recomputed at every live boundary by `metrics.carrying_capacity(state, cfg, state.step, state.env)`:
-  the regeneration of the *current* environment (seasonal at the step, scaled by the levers; in 3D the floor layer's,
-  §27.10). It is used only at the boundary, never stored.
+  the regeneration of the *current* environment (seasonal at the step, scaled by the levers; in 3D weighted by the
+  layers the agents live in, §27.10). It is used only at the boundary, never stored.
 - **Viability:** `n_alive / K_est`; `fall = 1 − (window minimum / highest window mean over the last risk_fall_window)`;
   the **extinction-risk flag** is `n_alive/K_est < risk_k_frac` or `fall > risk_fall`.
 - **Descriptor `b`** (ten components, each clipped to [0, 1], a missing one counts as 0, None for an empty world):
@@ -3607,7 +3617,7 @@ trigger. These are first values for the evaluation of §9 of `docs/DIRECTOR.md`,
 | `test_director_config.py` | unchanged hashes, the unhashed policy keys, validation, the resume key list and its refusals |
 | `test_director_random.py` | the `random` persona (§26.11): which of a log's entries are yoked; validation and the exit-2 file checks; the sampler (bounds, reachability, log-uniform shape, determinism, clamp and replay validation); eligibility; a live run yoked to a scripted arm B, its header, its replay (bitwise, never reading the yoke log), live resume, a changed yoke log, nothing eligible, the safety rules; the parameters R inherits (a scripted Trickster yoke log with six moves in one 100k window, budget from the header and caps, a missing budget, a `random` or unknown persona exit 2, mixed headers, bitwise replay) |
 | `test_director_llm.py` | step 3 (§26.10): the schema and the reply validator; a mock OpenAI-compatible server for valid, invalid, empty, slow, refused, 500 and redirected replies, clamps, duplicates, `none`, budget and cooldown blocks, the request body and the prompt; roles; no network with the tier off or in a replay; a live run with the mock model and its bitwise replay; an optional real-server test (`@pytest.mark.llm`, needs `ALIFE_LLM_URL`) |
-| `test_director_3d.py` | the director in 3D (§27.10): validation accepts it; the column catastrophe through the director path; patch moves keep `patch_pos` (PP, 2); the scaled radius bounds; the header's `dims` and the refusal of a log of the other dimensions; the 3D prompt and the byte-identical 2D one; a scripted `tiny3d` run, its replay (fresh, in place, live resume) and the `random` persona on it; a real-rules Gardener run with the floor-layer `K_est` |
+| `test_director_3d.py` | the director in 3D (§27.10): validation accepts it; the column catastrophe through the director path; patch moves keep `patch_pos` (PP, 2); the scaled radius bounds; the header's `dims` and the refusal of a log of the other dimensions; the 3D prompt and the byte-identical 2D one; a scripted `tiny3d` run, its replay (fresh, in place, live resume) and the `random` persona on it; a real-rules Gardener run with the occupancy-weighted `K_est` (PR 6: the weights, the prompt qualifier, `Director._vitals`) |
 | edits | `test_director_actions.py` and `test_director_log.py` (the "unknown source" example is no longer `llm`), `test_director_config.py` (the LLM keys, the flags; `PERSONAS` gains `random`), `test_runner.py` (hook order; no action on a violated or extinct state; the checkpoint holds the applied env), `test_metrics.py`, `test_cli_smoke.py` (`--director` flows, fork reset), `test_lint.py` (the director package is scanned); PR 4 of the 3D world: `test_dims_config_pr2.py` (the 3D case of the director rejection is gone, §27.10) |
 
 ### 26.10 The LLM tier (build step 3)
@@ -3804,7 +3814,10 @@ floor-layer carrying capacity, lifts the director's 3D refusal, extends the CLI 
 the frame protocol of the 3D viewer; the compiled step, the state and every 2D output are unchanged (a new module,
 `stream.py`, and a split of the renderer's colour code, whose 2D frames are bit for bit the same). PR 5 (§27.12) is the
 Swift side, in `gui/`, the docs and one test of the engine's suite (`tests/test_gui_sync.py`, with the config files it
-checks): the 3D viewer window of AlifeControl, the decoder of §27.11, the 3D levers; the engine is untouched.
+checks): the 3D viewer window of AlifeControl, the decoder of §27.11, the 3D levers; the engine is untouched. PR 6
+(§27.13) is the ecology: the carrying capacity of §27.10 becomes occupancy-weighted (a host-side change of one metric;
+the compiled step, the state and every 2D output are unchanged), the provisional `64k3d` preset, and the 3D
+affordance and ecology tests; its stage 1 (this text) needs no GPU, and the measurements that do are listed in §27.13.
 
 ### 27.0 Overview and decision record
 
@@ -4385,10 +4398,11 @@ above the floor. A dense packing (FCC, density 0.74) puts about `0.74·field_cel
 column: 68 at field cell 4, height 24 and r = 1, and 226 at height 80, against `occ_limit = 1 060`.
 
 **Carrying capacity.** In 3D `c_ref` (§10.10) also holds a founder's cap upkeep `floor(buoyancy_cap_cost·buoy_init)`
-(float32, as `pay_costs3` computes it). The regeneration is the floor layer's only (§27.10): PR 3 summed every layer,
-which gave `tiny3d` 1 456 against 426 for `tiny`. With the floor layer it is 409: the numerators are equal (the floor
-layer regenerates as `tiny`'s lattice, §27.5) and a 3D founder costs more (a wider brain, the cap upkeep). The two
-populations run about level (peaks 441 and 426 in the first 400 steps on CPU).
+(float32, as `pay_costs3` computes it). The regeneration is weighted by the layers the agents live in (§27.10): PR 3
+summed every layer, which gave `tiny3d` 1 456 against 426 for `tiny`; PR 4 took the floor layer alone, 409, where the
+numerators are equal (the floor layer regenerates as `tiny`'s lattice, §27.5) and a 3D founder costs more (a wider
+brain, the cap upkeep), and PR 6 weighs the layers by occupancy, which is that 409 when every agent is on the floor.
+The two populations run about level (peaks 441 and 426 in the first 400 steps on CPU).
 
 **Tests.** `tests/test_energy_3d.py` (`pay_costs3` against a float32 reference on mixed solvent and insolvent
 populations, with the per-function closure and dead rows paying 0; the exact buoyancy terms and the payment order;
@@ -4462,7 +4476,7 @@ terms are separate static additions.
 - `snapshot_metrics`: `ledger_error` over `sinks(nd)`; `chem_mean` per channel over all `FZ·FG²` cells;
   `resource_mean` per cell of the volume (`E_field / n_cells`), so the upper layers dilute it compared with a 2D
   floor.
-- `carrying_capacity`: §27.7, and the floor-layer rule of §27.10.
+- `carrying_capacity`: §27.7, and the occupancy-weighted rule of §27.10.
 
 **Enablement.** `config.DIMS_SUPPORTED = (2, 3)`: a config with `world.dims = 3` validates under §27.1's rules and
 runs through `alife run`, `resume`, fork, `inspect` and `bench`. Still refused in 3D: the 2D-only tools of §27.1
@@ -4562,7 +4576,7 @@ key shared with the snapshot, and the snapshot has no grounded key at all (`alif
 checkpoint state, §27.11). `analysis.resim` recomputes the interval keys with `nd` and compares them with the stored
 row, as it does the shared ones; a row stored before PR 4 lacks them and is compared on the keys it has.
 
-**`carrying_capacity_est`** (first row, `inspect`, the director): the floor-layer rule of §27.10.
+**`carrying_capacity_est`** (first row, `inspect`, the director): the occupancy-weighted rule of §27.10.
 
 **Tests.** `tests/test_metrics_3d.py`:
 - the snapshot keys against an independent host reference (quantiles, bands, surface margin, speed, pitch, the cap's
@@ -4576,24 +4590,54 @@ row, as it does the shared ones; a row stored before PR 4 lacks them and is comp
 
 ### 27.10 The director in 3D (PR 4)
 
-**Carrying capacity (`K_est`).** In 3D `metrics.carrying_capacity` counts the regeneration of the **floor layer** only,
-`Σ regen_rate(…)[0]` (the benthic analogue of the 2D lattice), over the same `c_ref` as §10.10 (which keeps the
-founder's cap upkeep, §27.7). Every consumer reads it: the `carrying_capacity_est` of the first metrics row, `alife
-inspect`, and the director's `n / K_est`, rescue size and prompt capacity line. With the live levers (`step`, `env`) the
-layer is that of the live rate. 2D is unchanged. The reasons:
-- The floor layer regenerates exactly as the 2D lattice for the same patches (`V[0] = 1`, §27.5), so a 3D estimate is
-  comparable to a 2D one: `tiny3d` 409 against 426 for `tiny` (the difference is the larger founder brain and the
-  cap upkeep). Summing the layers gave 1 456 on `tiny3d`, 3.6 floor lattices' worth, a factor set by the vertical
-  profile (`benthic_lambda`, `photic_amp`, `photic_lambda`) rather than by the habitat. The extinction-risk rule
-  (`n/K_est` below 0.2) and the rescue size (a fraction of `K_est`) would have moved with every retuning of that
-  profile, which PR 6 does.
-- Food above the floor costs lift to reach (thrust or buoyancy against gravity, §27.7).
+**Carrying capacity (`K_est`)** (PR 4: the floor layer only; PR 6: occupancy-weighted, owner decision 2026-10-14). In 3D
+`metrics.carrying_capacity` weighs the regeneration of each layer by where the alive agents live:
 
-It ignores the food of the upper layers, including the photic band (`photic_amp > 0`), so it is a lower bound on the
-food an agent can use; it is revisited in PR 6 with the tuning of `photic_amp` and `fertility_base`.
-`tests/test_metrics_3d.py`: the 3D value equals the 2D lattice's regeneration over the 3D `c_ref`, against a float64
-host reference of the floor fertility, with the live environment, and on `tiny3d` against `tiny`; the PR 3 test of the
-cap upkeep now takes its regeneration from layer 0.
+```text
+K_est = Σ_k regen_k · min(1, FZ·p_k) / c_ref
+```
+
+- `regen_k` is the integer regeneration of layer `k`, the sum over its (FG, FG) slice of `fields.regen_rate(…)`; with the
+  live levers (`step`, `env`) it is the live rate, as in 2D.
+- `p_k` is the share of the alive agents whose field cell is in layer `k`: `fields.cell_index(pos) // FG²`, the layer
+  `clip(floor(z / field_cell), 0, FZ − 1)` that harvest reads and deposits in (§27.5), computed by the engine's own
+  float32 expression so a height on a layer edge falls where harvest puts it.
+- `c_ref` is §10.10's, with the founder's cap upkeep (§27.7); `FZ` is the number of layers.
+- `w_k = min(1, FZ·p_k)` is 1 for a layer holding at least its even share `1/FZ` of the agents and proportional to its
+  occupancy below that. So `K_est` equals **the floor layer's alone** when every agent is in it (the benthic limit, the
+  PR 4 rule, the 2D lattice's), **every layer's** when the column is used evenly (`p_k = 1/FZ`), and the floor layer's
+  alone when **nobody is alive** (there is no occupancy to weigh; the extinction rescue's `K_est` stays defined and
+  does not inflate after a collapse). The sum of the weights is at most `FZ` and at least 1 with anyone alive.
+- Founders uniform in `[z_lo, z_hi]` fill the two edge layers less than the others (`p_0 = p_{FZ−1} = (field_cell −
+  r)/(height − 2r)`, 3/78 on `64k3d`, so `w = 0.77` there), which is why uniform founders give 61 500 on `64k3d` and
+  not the 67 700 of the plain sum over its layers.
+
+Every consumer reads it: the `carrying_capacity_est` of the first metrics row (the state at the first row), `alife
+inspect`, and the director's `n / K_est`, rescue size and prompt capacity line (whose qualifier now reads "food
+weighted by where the agents live: the floor layer's alone if all are on the floor, every layer's if they are spread
+evenly", `prompt.K_NOTE_3D`). 2D is unchanged (a static branch; the value is the lattice's integer regeneration over
+`c_ref` as before). The reasons for replacing the floor-only rule:
+- It undercounts a population that has colonised the column. On `tiny3d` (cloud-6, 20 000 steps) seed 1 spreads
+  through the water after about 10 000 steps (28% grounded, a surface band of 23%, a body spanning 19 of 24 units) and
+  the floor-only `K_est` (about 450) is then half the realised population.
+- The summed layers (PR 3: 1 456 on `tiny3d`, 3.6 floor lattices' worth) count food that no agent can reach when the
+  population rests on the floor; the occupancy weights count a layer's food only as far as agents are there to use
+  it, and they follow the population as it moves.
+- Food above the floor still costs lift to reach (§27.7); the rule does not price that, it only counts the layers in use.
+
+What it is and is not. It depends on the state's agents as well as its patches (so it is a state function, not a
+property of the seed), it is an upper estimate of what the occupied layers supply and not a prediction of the realised
+population (on `tiny3d` the population settles at 0.56 of the floor-only value and 0.39 of the occupancy-weighted
+one, §27.13), and a retuning of the vertical profile moves it whenever the column is in use. The thresholds that read
+it (`risk_k_frac` 0.2, `rescue_imm_frac` 0.1) were set against a 2D `K_est` and are unchanged; their 3D calibration
+is §27.13's open item.
+
+`tests/test_metrics_3d.py`: the weights and `K_est` on built scenes against a float64 host reference written
+independently of `fields` (all benthic, evenly spread, mixed, the top layer alone, nobody alive, dead rows with
+positions in upper layers not counted, heights on and around the layer edges, the live environment), the benthic limit
+equal to the floor-only value and the even column to the plain sum, a 2D state unaffected, and the band of the lazy
+initial state of `64k3d` (§27.13). The PR 4 floor-layer tests now describe a world nobody lives in (their scenes have
+no alive agent), and `tiny3d` against `tiny` is compared with every founder on the floor.
 
 **Scope.** The director is host code (§26.1): it reads the metrics rows and edits the `env_*` fields and `patch_pos`
 between compiled steps. The compiled step (apart from what §27.4 and §27.6 already built: the column mask and the
@@ -4608,12 +4652,18 @@ rejects `director.enabled` with `world.dims = 3`: the live and replay modes, the
 | radius bounds | `actions.radius_bounds(cfg)` = `[20·L/1024, min(200·L/1024, L/2)]` in 3D; 2D keeps `[20, min(200, L/2)]` (`tiny3d` `[2.5, 25]`, a width-320 world `[6.25, 62.5]`). The 2D range was written for a 1024-wide world, where the largest disc covers π·(200/1024)² = 12% of the floor; at width 320 it would cover 78% (docs/3D.md §12 Q10). The scaling keeps the largest column at 12% of the floor at any width. `CATASTROPHE_RADIUS` and `CATASTROPHE_REF_SIZE = 1024` are the constants. The bounds apply to the live clamp, to replay validation (a 2D-sized radius in a 3D log is `ActionError`, exit 2), to the LLM schema and prompt, and to the `random` persona's sampler. The rules' own request (`cat_radius_frac`, 0.1 to 0.25 of L) is clamped to the upper bound |
 | patch moves | x and y only. `patch_pos` and `patch_vel` stay `(PP, 2)`; a move's `params` are `{patch, x, y}` and `prev` `{patch, x, y}`, wrapped with `ops.wrap` and capped at L/4 in the x/y minimum image, as in 2D; a `z` (or `dz`) is not on the menu, and `validate_entry` rejects it. A patch is a column: its gain multiplies the fertility of every layer (§27.5), so `habitat_loss` and `fertility_shift` act on the whole column, and `regen_pulse` and `set_seasons` act on every layer |
 | immigration | `immigration_pulse` adds founders to `env_imm_request` as in 2D; the step admits them uniformly in the volume at `buoy_init` (§27.4) |
-| vital signs | the ten-component descriptor, the window aggregates and the archive are functions of the rows and are unchanged; `K_est` is the floor-layer value above, so `n/K_est` is the population against what the floor lattice supports |
+| vital signs | the ten-component descriptor, the window aggregates and the archive are functions of the rows and are unchanged; `K_est` is the occupancy-weighted value above, so `n/K_est` is the population against what the layers its agents live in supply |
 | log header | `"dims": 3` after `seed`; a 2D header has no such key and keeps its key set (§26.3). `needs_header` compares headers without the start step, so a resumed 2D or 3D run with an unchanged policy appends no header |
 | log validation | `log.validate_log` (replay, `--replay-log`, the yoke log of the `random` persona) raises `LogError` (exit 2) for a header whose `dims` (absent = 2) differs from `world.dims`: a 2D log is never replayed or followed in 3D, nor the reverse |
-| LLM prompt | `prompt.effects(cfg)` selects `EFFECT` (2D, byte-identical to build step 3) or `EFFECT_3D`, which differs in the catastrophe line: a vertical column, a disc in x and y from the floor to the surface; `prompt.world_text(cfg)` says "periodic in x and y, with a floor and a surface at height" followed by the number `world.height` where the 2D text says "a torus"; the user message gives the world as `L x L x height` (three numbers) and marks the capacity estimate "(floor-layer food only)"; the catastrophe radius bounds are the scaled ones. Nothing else changes, and the 2D system and user messages are byte-identical (pinned by sha256) |
+| LLM prompt | `prompt.effects(cfg)` selects `EFFECT` (2D, byte-identical to build step 3) or `EFFECT_3D`, which differs in the catastrophe line: a vertical column, a disc in x and y from the floor to the surface; `prompt.world_text(cfg)` says "periodic in x and y, with a floor and a surface at height" followed by the number `world.height` where the 2D text says "a torus"; the user message gives the world as `L x L x height` (three numbers) and qualifies the capacity estimate with `prompt.K_NOTE_3D` (" (food weighted by where the agents live: the floor layer's alone if all are on the floor, every layer's if they are spread evenly)", §27.10; PR 4 had "(floor-layer food only)"); the catastrophe radius bounds are the scaled ones. Nothing else changes, and the 2D system and user messages are byte-identical (pinned by sha256) |
 
-**Calibration (provisional).** The extinction-risk flag has two criteria (§26.7): `n/K_est < risk_k_frac` (0.2) **or**
+**Calibration (provisional; measured with PR 4's floor-layer `K_est` of 409).** Under the occupancy rule of PR 6 the first
+criterion is nearer: on the same `tiny3d` run (seed 0, 2 000 steps, director off, sampled at steps 10, 50, 100, 110, 200,
+300, 500, 1 000, 1 500 and 2 000) `n/K_est` is 0.19 at step 10 (256 founders spread over the column, `K_est` 1 362),
+0.33 at steps 50 to 110, 0.27 to 0.28 at 200, 300 and 500 and 0.33 to 0.39 from step 1 000 on (`K_est` falling to 608
+as the agents settle on the floor, 77% grounded at step 2 000). It stays above 0.2 at every sampled step from 50 on,
+with less margin than the 0.54 to 0.71 of the floor-layer rule. The second criterion (`fall`) does not read `K_est` and
+is as measured. The extinction-risk flag has two criteria (§26.7): `n/K_est < risk_k_frac` (0.2) **or**
 `fall > risk_fall` (0.3), where `fall` is the drop of the window minimum below the highest window mean. Measured on
 `tiny3d` with the director off (seed 0, 2 000 steps, `K_est` 409), the first criterion is far from firing: `n/K_est`
 is 0.63 at step 10, 1.01 at 110 after the founders' first reproduction and 0.54 to 0.71 from step 210 on, and the same
@@ -4657,12 +4707,15 @@ without the director (§27.11); `--follow` is the faithful view of a director ru
   directory, in place from a checkpoint, a live resume with no second header), the run being a valid 3D run with the
   ledger exact;
 - the `random` persona yoked to that log, and its replay;
-- a real-rules Gardener run (population started at 40, so the extinction rescue fires at the first boundary) with the
-  ledger exact, its logged `k_est` equal to the floor-layer `carrying_capacity` of the state before the director acted
-  (and below half of what all the layers would give), a resume equal to the uninterrupted run (log, journal, archive,
-  digest), and its replay.
+- a real-rules Gardener run (150 founders, so the extinction rescue fires at the first boundary: PR 4 started 40, which the
+  occupancy rule leaves flagged for the whole run, §27.13) with the
+  ledger exact, its logged `k_est` equal to the occupancy-weighted `carrying_capacity` of the state before the director
+  acted (against a host reference of the weights, and between the floor layer's value and all the layers'), a resume
+  equal to the uninterrupted run (log, journal, archive, digest), and its replay;
+- `Director._vitals` on built scenes: the same patches give a floor-only `K_est` to agents resting on the floor and
+  more than twice that to agents spread over the six layers, and `n/K_est` follows (PR 6).
 
-**Tests edited.** `test_dims_config_pr2.py::BAD_PR2` lost its `director.enabled` case: the rule it pinned is gone.
+**Tests edited.** `test_dims_config_pr2.py::BAD_PR2` lost its `director.enabled` case: the rule it pinned is gone. PR 6's edits for the occupancy rule are in its Review-log row (I42).
 
 ### 27.11 The CLI in 3D: reporting, refusals and `alife stream` (PR 4)
 
@@ -4679,7 +4732,7 @@ without the director (§27.11); `--follow` is the faithful view of a director ru
 
 `tests/test_cli_report_3d.py`: `inspect --json` on a real 30-step `tiny3d` run reports `dims`, `world_height`,
 `field_grid_z`, the height keys against the checkpoint state and the grounded share; the text line; `--agent`; the rows
-of the run (interval and snapshot keys, the first row's `carrying_capacity_est` on the floor layer); the summary, the
+of the run (interval and snapshot keys, the first row's occupancy-weighted `carrying_capacity_est`); the summary, the
 announcement and `bench`'s environment and report in 3D and without the keys in 2D.
 
 **Refusals.** `render`, `view` (and `render.render_frame`, `viewer.ViewerSession`) and `analysis.signals` keep their
@@ -5086,6 +5139,136 @@ the PR's checks (the GPU was running evaluation arms): the first run of the GPU 
 the checks to make. Known limits: one-pixel bond lines, no multisampling (sphere edges alias), no picking of an agent,
 no state snapshot (`s` of the 2D viewer writes one; here it is a PNG), and a re-simulation shares the GPU with a run.
 
+### 27.13 Presets and tuning (PR 6)
+
+PR 6 is the ecology of the 3D world: a preset at 64k scale, the tests that must pass before a long run, and the first
+runs. This section is stage 1, which needs no GPU: the occupancy-weighted `K_est` (§27.10), the `64k3d` preset, and the
+tests (the 3D affordance run, the preset table, the `K_est` band of the initial state, the slow ecology test). The
+values below are **provisional**: they come from the cloud runs summarised next and from arithmetic, and none of them
+has been measured at 64k scale on the Mac (the list of what is, last).
+
+**Cloud tuning evidence** (CPU runs of the cloud worker, 2026-10-13, reported in `results/cloud-3.md` and
+`results/cloud-6.md` on the branch `claude/cloud-results`; `tiny3d` and `DEV3D` below are not the final presets):
+- **Gravity sets the vertical ecology** (`tiny3d`, 10 000 steps, seed 0, a sweep of `physics.gravity`). At 0.01 about 40%
+  of the agents are grounded, about 20% are at the surface and the clade-height information (`clade_height_mi`, caveat
+  in §27.9) is about 0.70: clades occupy their own depths. At 0.03 (the `tiny3d` value) 76 to 83% are benthic and the
+  information is 0.30 to 0.41. The recommendation was 0.01 to 0.02; the owner chose 0.015 (2026-10-14).
+- **The buoyancy costs barely matter** (a grid of the use cost 4 to 16 and the upkeep 2 to 8). The upkeep sets the energy
+  share of the cap (2.5% of basal against 0.3% across the grid) and so the selection gradient on it, and the median cap
+  stays at 0.50 in every cell. The `tiny3d` costs (16 and 8) are kept.
+- **A long `tiny3d` run** (20 000 steps): the ledger exact and no hash overflow at C = 16. Seed 0 stays benthic (82%
+  grounded, population 486). Seed 1 colonises the water column after about 10 000 steps (28% grounded, a surface band of
+  23%, a body spanning 19 of 24 units) and reaches `n_cap` (992) at about 16 000. The floor-only `K_est`
+  (about 450) then underestimates the population by half: the reason for the occupancy rule (§27.10). The cap spreads
+  on seed 0 and drifts down on seed 1 (median 0.46).
+- **Hash capacity and neighbours** (`DEV3D`: 16 384 rows, L 160, height 40, 2 000 steps; and the crowd tests of
+  `tests/test_crowd_3d.py`). Under gravity a floor pile overflows C = 16 and collapses onto a point; C = 64 holds (peak
+  occupancy 28 to 36) and true contacts reach 10 or more against the K = 8 neighbours listed. In the ordinary `DEV3D`
+  run no cell overflowed at C = 16 (peak occupancy 13); C = 48 is bit-identical to it and costs 2.1× the time and 1.7×
+  the memory. **K = 12 cannot pass `validate`**: the stability number `2(B·k_spring + K·k_repel)/drag ≤ 1.8` needs
+  `k_repel ≤ 0.058`, and non-penetration (`thrust_max + max(g, buoyancy_max − g) < 2 r k_repel`, §27.3) needs more than
+  0.065 at `tiny3d`'s gravity (0.0625 at 0.015). Making room takes a larger `drag` (about 1.3) or a smaller
+  `thrust_max`; at equal physics K = 12 and K = 8 barely differ.
+- **Seeding** (`DEV3D` started 4× over the floor-only `K_est`): the population booms to 5 900 and crashes to about
+  1 000. On `tiny3d` the first generation multiplies the founders by 1.4 to 1.6 within about 100 steps
+  (256 to 441 by step 50), whatever the food, because the founders start with a surplus (`e_init` 50 000 against
+  `repro.min_energy` 40 000).
+
+**The `64k3d` preset** (`presets/64k3d.toml`): `64k`'s defaults, a 3D world and the changes below. Valid with the `fast`
+overlay too (`K = 6 ≤ 27·12`).
+
+| key | value | why |
+|---|---|---|
+| `world.size`, `dims`, `height` | 320, 3, 80 | `FG = 80`, `FZ = 20` (128 000 field cells, 2× the 2D 64k lattice), hash grid 53 × 53 × 13 (cells 6.04 × 6.04 × 6.15), `2·height ≤ L`. The volume, 8.19 M, gives the 2D neighbour density (about 3.6 neighbours within the sensing radius) at 33 000 agents spread uniformly |
+| `physics.gravity` | 0.015 | the owner's choice between the sweeps above. Sinking is 0.015 per step, climbing at full pitch 0.0835 (`0.1·sin 80° − g`). Hovering costs about 2 q/step either way: thrust at `a = g/(0.1·sin 80°) = 0.152` is `floor(100·a²) = 2`, buoyancy at 0.375 of its maximum is `floor(16·0.375²) = 2` (9 q/step on `tiny3d`), so the cap range is worth using; a founder's cap (0.5) lifts 0.02, more than gravity |
+| `physics.floor_eps`, `buoyancy_max` | 0.1, 0.04 | as `tiny3d`. `thrust_max + max(g, bmax − g) = 0.125 < 2·r·k_repel = 0.16` |
+| `sensing.k_neighbors`, `cell_capacity` | 8, **24 (provisional)** | K = 8 for the validation conflict above. C = 24 is between the 16 that never overflowed in an ordinary run and the 28 to 36 that a crowd reached: `Q = 27·C = 648` candidates per agent, 4.5× the 144 of 2D (`tiny3d`: 432). To be confirmed on the Mac by `cell_overflow` in a run and `bench --stages` |
+| `energy.brain_cost_per_l1` | 0.0905 | the 3D brain is wider (4 999 weights against 4 387) and its expected L1 norm is 10.5% larger (each weight is smaller: `init_scale/√rows`), so `0.1/1.105` keeps a founder's `brain_cost` at the 2D value: `founder_brain_cost` is 37.63 q/step against 37.64. A 3D founder otherwise pays 4 q/step more for its brain, on top of the cap upkeep |
+| `energy.buoyancy_cost`, `buoyancy_cap_cost` | 16, 8 | the cloud grid found no effect of either; 4 q/step of upkeep at a founder's cap, about 3% of its basal and brain cost (137.6) |
+| `mutation.buoy_init`, `buoy_sigma` | 0.5, 0.02 | as `tiny3d` |
+| `fields.n_patches`, `patch_sigma` | 8, 24 | the patches cover 28% of the floor (`8·2πσ²/L²`), 2D 64k's 33% (24 patches of σ 48 in 1 024); the mean floor fertility is 0.31, 2D's 0.33 to 0.36 |
+| `fields.chem_diffusion` | 0.16, 0.10, 0.16 | `≤ 1/6` in 3D (§27.6), as `tiny3d` |
+| `fields.benthic_lambda`, `photic_amp`, `photic_lambda` | 8, 0.5, 8 | as `tiny3d`: `V = 1, 0.61, 0.37, 0.22, …` down from the floor and 0.5, 0.30, 0.18, … down from the surface (every layer is `min(1, benthic + photic)`); all layers together hold 3.8 floor layers' regeneration |
+| `fields.regen_max` | **1 700** | `K_est` of about 33 000, below |
+| `population.n_max`, `max_births_per_step`, `n_init` | 65 536, 1 024, 16 384 | below |
+| `run.*` | the `64k` defaults | metrics every 100 steps, heavy every 1 000, checkpoint every 10 000; the director's `rule_every` of 1 000 validates as in 2D |
+
+**`regen_max` and `K_est`.** The target is a `K_est` of about 33 000, the agent count at which the volume has the 2D
+neighbour density. `K_est` is a function of the agents' layers (§27.10), so the sizing states its assumption. With the
+layer sums `R_k = Σ regen_rate(…)[k]` (at `regen_max` 1 700, 16 seeds: `R_0` 3.2 to 3.6 M, `R_1/R_0 = 0.606`, `Σ_k R_k =
+3.8·R_0`) and `c_ref` 191.63 (basal 100, founder brain 37.6, margin 50, cap upkeep 4):
+
+| agents in the floor layer, the rest spread evenly over the other 19 | `K_est` (mean of 16 seeds; range) |
+|---|---|
+| all (the floor layer only) | 17 800 (16 800 to 18 700) |
+| 90% | 23 100 |
+| 80% | 28 300 |
+| **70% (the assumption)** | **33 600 (31 600 to 35 100)** |
+| 60% | 38 800 |
+| 50% | 44 100 |
+| founders uniform in the volume (the value at step 0) | 61 500 (58 200 to 64 900) |
+| every layer at its even share (the plain sum) | 67 700 |
+
+The *steady state* is taken as **70% of the agents in the floor layer**: between the cloud sweeps (about 40% grounded at
+g = 0.01, 76 to 83% benthic at 0.03; the floor layer, `z < 4`, holds somewhat more than the grounded `z ≤ 1.1`, and
+0.015 is a quarter of the way up that range). That is the owner's "mostly benthic", and 1 700 gives 33 600 at it; the
+first estimate of about 1 000, made when every layer was to be counted (it gives 39 800 for an even column), gives 19 800
+at 70%. At step 0 the founders are uniform in the volume, so `K_est` starts at 61 500 and falls towards the benthic
+value as they sink; `n_init/K_est` is 0.27 at step 0 (above the extinction-risk threshold of 0.2) and 0.49 at 70%.
+The sensitivity is 5 300 per 10 points of benthic share, so the first tuning run should read the realised floor-layer
+share (`alife inspect`) before it moves `regen_max`.
+
+**Population sizing.** `n_max` 65 536 and `max_births_per_step` 1 024 are 64k's. `n_init` = 16 384 (64k's too) is half of
+the 70% `K_est` and 0.92 of the floor-only one. The first generation multiplies it by 1.4 to 1.6 within about 100 steps
+(observed above), so it peaks at 23 000 to 26 000, under 33 000. The population then falls back to where the food holds
+it: on `tiny3d` at 0.56 of the floor-only and 0.39 of the occupancy-weighted `K_est` (237 agents against 424 and 608 at
+step 2 000), in 2D 64k at about 0.8, which for `64k3d` is 13 000 to 27 000: `n_init` lies in that range, so the start is
+not far from the settled population. Seeding at `K_est` would peak at 50 000 and crash as `DEV3D` did. If a `64k3d` run
+settles near 0.4·`K_est` (13 000), it holds 40% of the 2D 64k's 33 000 agents and `regen_max` should be raised, not
+`n_init`.
+
+**Cost and memory (arithmetic from the shapes; not measured).** A row holds ≈ 10.3 KB (`W1` 116 × 32 and `W2` 33 × 39
+in float16 are 10.0 KB; 9.1 KB in 2D), 0.68 GB at 65 536 rows, plus the pending lanes and the fields (0.5 MB resource,
+1.5 MB chemicals). The neighbour search gathers and ranks 648 candidates per agent (432 on `tiny3d`, 144 in 2D), the
+fields are 2× the 2D 64k lattice, the brain 1.14×: docs/3D.md §9 estimated 30 to 40 steps/s against 61 in 2D for
+`C = 16`; with `C = 24` expect the lower end or below.
+
+**To measure on the Mac, once its GPU is free** (none of it is done in stage 1):
+1. `alife bench --preset tiny3d --stages`, then `--preset 64k3d --stages`: steps/s, the time of each stage (the
+   neighbour search is the one to watch), peak memory; the estimate above is the thing to check.
+2. `C`: `cell_overflow` and `max_occupancy` in a short `64k3d` run and in a crowded one, against 24; a lower `C` if the
+   peak stays far under it, 32 if it overflows.
+3. A short `64k3d` tuning run (a few thousand steps, seed 0): the first-generation peak against 25 000, the settled
+   population against `K_est`, the floor-layer share (the 70% assumption), the grounded share against the sweeps, the
+   `n/K_est` series (the extinction-risk criterion, §27.10) and `fall` at the cadence of the run, the ledger, `cell_overflow`.
+   Then `regen_max`, `n_init` and `gravity` are adjusted and the preset's comments updated.
+4. `K = 12` (§27.13 above) needs a physics change (`drag` or `thrust_max`) and a run to decide whether it is worth it.
+5. The first long run, analysed with `alife activity` (the signal tools are 2D-only, `require_2d`), is the results PR.
+
+**Tests (stage 1).**
+- `tests/test_config.py::test_preset_table_3d`: the derived sizes of `64k3d` (N, M, L, height, FG, FZ, the hash grid
+  G × G × G_z, `Q = 27·C`, `D_IN`, `D_OUT`, the weights), exactly the keys that differ from `64k`, the values of §27.13's
+  table, the founder brain cost equal to the 2D one within 0.2%, the validation inequality, and the `fast` overlay.
+- `tests/test_metrics_3d.py`: the occupancy rule (§27.10) and `test_k_est_band_of_the_64k3d_initial_state`: on the lazy
+  initial state of `64k3d` (`state._initial_state`, evaluating only the alive mask, the positions and the patches; the
+  (65 536, 116, 32) weights are never materialised, as in `test_state.test_schema_every_preset`) for three seeds,
+  `K_est` of the uniform founders is 55 000 to 68 000, of 70% of them on the floor 30 000 to 36 500 (and `n_init` is
+  0.4 to 0.6 of it), of all of them on the floor 16 000 to 19 500.
+- `tests/test_affordances_3d.py`: 400 compiled `tiny3d` steps (seed 0, the 2D bias row, CPU, about 7 s): every 2D
+  affordance, floor and surface clamps and grounded agents, `HEAT_BUOYANCY > 0` and equal to ledger slot 15, `full_check`
+  clean, every alive height in `[z_lo, z_hi]` at every step and both bounds reached, pitch used and within ±80°,
+  deposits in all three chemical channels of the volume and in the broadcast messages, children's caps different from
+  their parents', movement in x and y (also of grounded agents, whom the floor holds) apart from sinking, and six
+  passive agents that lose `gravity/drag` of height per step for 40 steps without moving sideways.
+- `tests/test_ecology_3d.py` (marker `slow`, not run by the fast suite): `DEV3D` = `64k3d` with `population: n_max 16 384,
+  max_births_per_step 256, n_init 4 096`, `world: size 160, height 40`, `fields: n_patches 4, patch_sigma 17` and float32
+  weights (a quarter of the floor, the same patch coverage, `K_est` 8 700 at 70% benthic and 15 600 for uniform founders,
+  `n_init` 0.47 of the first), 2 500 steps: never extinct, not pinned at `N_CAP`, births, bonds and landed attacks, no
+  error flag and `full_check` clean, floor clamps > 0, `HEAT_BUOYANCY > 0`, a grounded share strictly between 0 and 1,
+  `cell_overflow` under 1e-4 per agent and step, and the initial `K_est` in 12 000 to 19 000. A 40-step smoke run of its
+  helpers took 31 s on the CPU (4 096 to 6 718 agents; no assertion fired); the 2 500-step run has not been done and
+  belongs to the cloud worker or the nightly job.
+
 ---
 
 ## Review log
@@ -5169,6 +5352,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I38 | feat: 3D world PR 3, field dynamics, energy and enablement (`docs/3D.md` §10 item 3; new §27.6–§27.8): `world.dims = 3` is enabled (`DIMS_SUPPORTED = (2, 3)`) and runs end to end with the new, provisional `tiny3d` preset; every 2D trajectory, config hash, metrics row (slot 15 still `RESERVED`) and checkpoint key set is unchanged (2D golden not re-pinned, no `FORMAT_VERSION`, `RNG_LAYOUT_VERSION` or genome-version bump; the CPU digest matrix of 2D trajectories and runs matched bit for bit after each change). (1) Fields: `ops.int_diffuse_3d` (exact no-flux integer diffusion, z never rolled; `int_diffuse` unchanged), the 7-point chemical stencil with mirrored ghost layers, `deposit_chem` strided by `n_cells`, `sample_fields(…, pitch=)` with z gradients (clamped index, divisor 2), corpses sinking to the floor cell `fcell mod FG²` under `FLOW_CORPSE` (combat spill and residue stay in the victim's own 3D cell), and the input tail 69–83 (`build_inputs(…, grounded=)`). (2) Energy: `pay_costs3`/`Costs3` (turn term on `|turn| + |Δφ|`; `buoyancy_cost·(buoy_cap·b)² + buoyancy_cap_cost·buoy_cap` per step, the upkeep paid even without lift; solvency on the total; paid basal, action, buoyancy), the keys `energy.buoyancy_cost` and `buoyancy_cap_cost` (int, 0; `POST_V01_KEYS`, `THREE_D_KEYS`; in 3D `< 2¹⁶` and 0 without the actuator), booked in `HEAT_BUOYANCY`, ledger slot 15 (`RESERVED` stays the canonical name and is still checked 0 in 2D). (3) Invariants and metrics: the closures over `sinks(nd)` in `device_check`, `full_check` and `ledger_error`; z, pitch and non-finite `pitch`/`buoy_cap` under the existing `POS_RANGE` and `NONFINITE` bits; `_check_rows_3d` with its own meta-test; `Counter3D` (27–29) and `n_counters(nd)`; `interval_row(…, nd=)` refuses a counter block of the wrong width instead of reshaping it; per-dims ledger names; `chem_mean` over the volume; the founder's cap upkeep in `c_ref`. (4) Step: static `d3` branches at S4, S5, S7, S8, S15 and S18 with every 2D line unchanged, `StepOut.counters` (30,) with `Counter3D` appended, `paid_buoy` as an 11th exact-sum column, `INT_HEADROOM` on the x/y column occupancy (a floor cell receives the corpses of its whole column), every output derived from its inputs (I14); `bench._StagedStep` mirrors each branch. (5) Enablement: `tiny3d` (values and reasons in §27.8; hovering costs 9 q/step by buoyancy and by thrust), fixtures `tiny3d_cfg` and `micro3d_cfg`, a 3D fork refusing a changed `physics.radius` as it refuses `world.height` (exit 4; the radius sets `z_lo` and `z_hi`, §27.1), and the 3D golden test (`GOLDEN_3D`: `state_digest` of `tiny3d_cfg` after 50 steps with `HEAT_BUOYANCY > 0`; its digest is empty until recorded on Linux-x86_64-cpu with MLX 0.32.3, where the skip message prints it). Interpretations: the diffusion bound is `resource_diffusion_q8 ≤ 42` as PR 1 validates, not 43 (an empty cell between six saturated ones would exceed `R_HARD`, §27.6); `Motion3` is masked by solvency for symmetry with `Actions`, though an insolvent agent dies at S14 and its `Motion3` has no effect; `metrics.jsonl` rows do not carry the `Counter3D` columns yet (PR 4); the 3D `K_est` sums every layer's regeneration and is not comparable to a 2D one (1 456 on `tiny3d` against 426 on `tiny`, §27.7), its meaning to be settled before the director runs in 3D; the GUI's preset list and 3D levers wait for PR 5. Existing tests that pinned the pre-enablement gate were edited: `test_dims_config.py` (`DIMS_SUPPORTED == (2, 3)`; the rejection test narrows it to `(2,)`; `test_defaults_are_2d` leaves out `tiny3d`), `test_dims_runio.py` (the exit-2 fork test narrows it to `(2,)`; the schema test pins `state_cls(cfg)` to `State` or `State3` by dims and expects its fields) and `test_dims_config_pr2.py` (the PR 2 `THREE_D_KEYS` pin checks `[2:10]`). Tests: `tests/test_energy_3d.py`, `tests/test_invariants_3d.py`, `tests/test_metrics_3d.py`, `tests/test_step_3d.py`, `tests/test_affordances_3d.py`, `tests/test_determinism_3d.py`, `tests/test_cli_smoke_3d.py`, and new functions in `test_ops_3d`, `test_fields_3d`, `test_lifecycle_3d`, `test_sensing_3d`, `test_bench`, `test_runner`, `test_config` and `test_cli_smoke`. |
 | I39 | feat: 3D world PR 4, metrics, the director and the CLI in 3D, and `alife stream` (`docs/3D.md` §10 item 4; new §27.9–§27.11): no change to the 2D compiled step, the state, the RNG, any config key's meaning, the golden digests or any 2D output, and in 3D the compiled step changes only in the `GROUNDED` counter (review fixes below) (the CPU digest matrix of 2D trajectories and runs, 2D director runs included, matched bit for bit after each of the three stages; 2D metrics rows, director logs, LLM prompts, `inspect` output and the `render` palette are byte-identical, the prompts pinned by sha256). (1) Metrics (§27.9): 3D-only snapshot keys after `diag` (`height_mean`, `height_q25/50/75`, `surface_frac`, `speed_mean`, `pitch_abs_mean`, `buoy_cap_q10/50/90`, `band_frac` over four equal z bands, `clade_height_mi`, and with the heavy snapshot `body_z_extent_mean/max`) and interval keys after `v_clips` (`z_floor_clamps`, `z_surface_clamps`, `grounded_frac` = Σ `GROUNDED` / Σ `N_ALIVE`, `buoy_heat`); no snapshot key is named `grounded_frac` (`interval_row` raises on a clash). (2) `carrying_capacity` counts the **floor layer's** regeneration only in 3D (owner decision: the benthic analogue of the 2D lattice; `c_ref` keeps the founder's cap upkeep; `tiny3d` 409 against `tiny` 426, 1 456 when every layer was summed); the first row, `inspect` and the director's `n/K_est` read it; it ignores the photic band and is revisited with the tuning in PR 6 (§27.10). (3) Director (§27.10): `validate` no longer refuses `director.enabled` in 3D; `actions.radius_bounds` scales the catastrophe radius by L/1024 in 3D only (`tiny3d` [2.5, 25]); patches move in x and y only (`patch_pos` stays (PP, 2)); the log header gains `"dims": 3` in 3D only and `validate_log` refuses a log of the other dimensions; `prompt.EFFECT_3D`, `effects(cfg)` and `world_text(cfg)` give the 3D wording, with a "(floor-layer food only)" qualifier on `K_est`; `RULES_VERSION`, the ten-component descriptor and every rule parameter are unchanged; `n/K_est` on `tiny3d` with the director off is 0.54 to 0.71 after step 210, so the `n/K_est` criterion of the extinction flag is off at baseline; the `fall > 0.3` criterion is off at the default cadence of 1 000 steps and fires at cadences of 200 or less (the founders' boom and bust, as on 2D `tiny`; provisional, to be measured on `64k3d`). (4) CLI (§27.11): `dims`, `world_height`, `field_grid_z` in the summary, `height=` in the announcement, a height line, a top-level `grounded_frac` and (for `--agent`) `height` and `grounded` in `inspect`, the height in `bench`'s environment and report; `render`, `view` and `analysis.signals` keep their `require_2d` refusal (porting the signal decoder is out of scope). (5) `alife stream` (§27.11, `stream.py`): a framed binary protocol on a private duplicate of fd 1 (`ALSTRM\0\1` magic, a JSON header, `FRM1` records of a 32-byte head and the sections alive, pos, orient, rgb, bonds and an optional field slice, all little endian and 4-byte aligned), colours computed with the renderer's palette, a simulating mode that re-simulates like `view` (one `mx.eval` per step, donation rule) and `--follow`, which reads the run's newest checkpoints and is the faithful view of a director run; stdin control lines (`pause`, `run`, `step [N]`, `every K`, `color MODE`, `fields on`, `fields off`, `fields z K`, `quit`; EOF = quit); a closed reader is exit 0 with no traceback; the run directory is never written. `render._background` is split into `_cell_rgb` (a flat per-cell colour on which the 2D code calls it unchanged) with the public `agent_colors` and `field_colors`; the fixtures `tests/data/stream_tiny_{2d,3d}.bin` and their JSON sidecars serve PR 5's Swift decoder tests. Interpretations: heights are the agent centre z; `surface_frac` counts `z ≥ z_hi − floor_eps`; `clade_height_mi` is a plug-in estimate in nats; a body's extent is max z − min z of its members; a 2D stream carries three floats per position (z = 0) and pitch 0; the field layer and an invariant-violation flag travel in the frame's `flags` (the 8 reserved head bytes stay zero); the command has no default preset and `--follow` refuses `--steps`, `--every` and `--checkpoint`; `step` in follow mode fetches the newest checkpoint once; the stdin reader uses `os.read` (a daemon thread blocked in a buffered reader can abort interpreter shutdown); the fixtures are built scenes, not stepped runs, so their bytes do not depend on the platform's floating-point dynamics (the byte comparison runs on the CPU device only); `validate_log`'s refusal of a log of the other dimensions and the "(floor-layer food only)" qualifier are additions beyond the plan. **Review fixes** (a second commit on the PR): (a) `Counter3D.GROUNDED` counts the agents that were grounded at the start of the step and survive it (`grounded & alive0 & ~dead`, §27.8): counted over the start-of-step alive set it was set against the end-of-step `N_ALIVE`, so a mass death (a catastrophe, an extinction interval) pushed `grounded_frac` above 1 (2.86 in a probe; 1 514 grounded agent-steps against 1 406 floor clamps in an ordinary `tiny3d` row at step 1 010); a change to a 3D output counter only, so the 2D step, the state, the RNG and the 3D golden digest are untouched. (b) `alife stream`: control lines are applied one at a time, so each `color` and `fields` line writes its own frame whatever the pipe read-chunking, a redraw is written before a `quit` or EOF that arrives with it, and `step` batches queue with a frame each; an overlong control line is noted on stderr; the C library's stdout buffer and `sys.__stdout__` are flushed before fd 1 is restored (a pipe's block-buffered C stdio had been writing into the protocol stream after the last frame, at `exit`); a full non-blocking stdout waits instead of reading as a closed reader; a closed reader is noticed when nothing is being written (`poll` for hang-up, each `--poll` seconds when following and each second when paused); `--follow` skips a checkpoint that vanishes between the stat and the read (the real loader raises `CheckpointError` for a missing file, not `FileNotFoundError`) and a vanished `LATEST`, and describes itself as streaming the newest checkpoint at each poll, not every one; `stream.py` has no subscript assignment (`test_lint` scans it); `stream` has its own `--preset` help; the fixtures were regenerated with a row of two bonds in slot order and with field colours and chemical levels away from rounding boundaries (asserted in `build`). (c) Documentation: §27.10's calibration states both flag criteria and the cadence, §27.9 says `clade_height_mi` saturates at the band entropy while clades are near singletons (the estimator is left for PR 6), the stream bullets of §27.11, the `stream.py` entry in §16, `height` for `H` in §27.10 and the wrapping of `docs/3D.md`. Existing tests edited: `test_carrying_capacity_3d_includes_the_cap_upkeep` takes its regeneration from layer 0 (the rule changed on purpose) and `test_dims_config_pr2.py::BAD_PR2` lost its `director.enabled` case (the rule it pinned is gone); the review fixes changed the helper `test_step_3d._counter3d_ref` (`GROUNDED` over survivors) and the constant `test_lint.SETITEM_MODULES` (adds `stream`); no other existing test function changed. New tests of the review fixes are in `tests/test_stream.py`, `tests/test_step_3d.py` (a mass death) and `tests/test_cli_report_3d.py` (an extinct state). Tests: `tests/test_metrics_3d.py` (extended), `tests/test_cli_report_3d.py`, `tests/test_director_3d.py`, `tests/test_stream.py` (with `tests/stream_decode.py`, an independent decoder, and `tests/stream_fixtures.py`). |
 | I40 | feat: 3D world PR 5, the Swift 3D viewer in AlifeControl (`docs/3D.md` §10 item 5; new §27.12; provisional row, to be revised after the first run of the GPU tests and the click-through), in three commits (the third is the fixes of a review, below) and in `gui/`, the docs and one test of the engine's suite (`tests/test_gui_sync.py`, with three `config.json` files in `tests/data`) only: no engine code, config key, hash, golden digest or 2D output changes, and the 2D GUI's command lines are pinned byte for byte by a table of 69 configurations captured from the sources of the previous commit before the refactor (46 of them in the first two commits, 23 added in the review and captured from the same sources in the same way). (1) Package: `AlifeCore` (library, `package` access, no AppKit or Metal: `Levers` and `World3DLevers`, `DirectorSettings`, `PresetFile`, `MetricsTailer`, `FrameDecoder`, `StreamCommand`, `Camera`), `AlifeControl` (executable) and the test targets `AlifeCoreTests` and `AlifeControlTests` (the second imports the executable with `@testable`, so the renderer and the controller are testable without another library target); Swift 6 language mode, macOS 14, no resources, no unsafe flags, and no `@unchecked Sendable`, `nonisolated(unsafe)` or `assumeIsolated`. (2) Decoder (§27.12): `FrameDecoder` written from §27.11 alone and checked against the two committed fixtures and their sidecars (every field and the SHA-256 of every section), for any chunking, with every refusal, truncation at every byte and unknown records skipped; sticky errors that follow the events before them; binary16 kept as bits and converted by hand (`Float16` is arm64-only). (3) Process (`StreamController`, `StreamReader`): the protocol bytes never go through the run log's line splitter; a thread reads the pipe with `read(2)` into the decoder and leaves the newest frame in an `OSAllocatedUnfairLock` mailbox, waking the main actor through an `AsyncStream<Void>` with `bufferingNewest(1)`; stderr goes to the log as `[3d] ...`; control lines go to stdin through the throwing `write(contentsOf:)` (`F_SETNOSIGPIPE` on the descriptor, and SIGPIPE ignored at launch); the session finishes only after exit and end of file on both pipes, so the last frame and the status cannot race; stopping is once per process (`quit`, EOF, one SIGTERM after 2 s), on window close, replacement and (without the grace) app termination; a corrupt stream stops its process; closing the main window closes the viewer window so the app still quits. (4) Renderer (`Renderer`, `Shaders`): raw Metal through `MTKView`, the shaders one MSL string compiled when the first stream is shown (the installed app has no resource bundle and the Metal Toolchain is not installed); ray-traced sphere impostors with a pale nose, bond half segments to the minimum-image midpoint, box edges, translucent floor, surface and field-slice planes (drawn farthest first; the 2D field is the opaque background), three shared buffer sets with a semaphore, on-demand drawing (no display link), a draw that never waits for the GPU on the main thread (retry after 100 ms), snapshot to `runs/NAME/media/view3d_<step>.png`. (5) Input and window: orbit and fly camera (`Camera`), the keys of §20.2 where there is an equivalent, follow (the run in progress; the faithful view of a director run) or re-simulate (says that it ignores the director), `Open 3D viewer` for 2D and 3D runs, the pygame viewer's button disabled for a 3D run, a "3D world levers" box (new run against the preset, fork against its source, `world.dims` never an input, a fork keeps its height, `floor_eps`, `buoy_init` and `buoy_sigma` CLI-only), the 3D status row. (6) Tests (counts after the review fixes: `AlifeCoreTests` 91, `AlifeControlTests` 60 that run and 8 opt-in GPU tests; the first two commits had 80, 42 and 7): `AlifeCoreTests` 80 (79 of the first commit and the home pose), `AlifeControlTests` 42 that run (the reader on a real pipe; the controller against a stand-in script with real processes: last frame before the end, exit status and stderr, signal, corrupt stream, launch failure, command order and a single `quit`, SIGTERM after the grace, replacement, source switch, a write to a closed pipe; keys, speed, pointer mapping, planes, uniform layout, shader structure, PNG) and 7 opt-in GPU tests (`ALIFE_GPU_TESTS=1`; skipped otherwise; shaders compile, layers independent, every alive agent where the camera says, the seam bond as two stubs, field orientation and 3D slice blending, snapshot; the review added an eighth, below); `tests/test_gui_sync.py` ties the Swift keys, presets, personas and director modes to the engine. Interpretations: `read(2)` rather than `FileHandle.read(upToCount:)` (which can wait for the whole count on a pipe; a stand-in process test found it); a draw skipped for lack of a buffer set is retried, not waited for; `s` is a PNG here and `p` too (the 2D viewer's `s` writes a state file); bonds are one-pixel lines and there is no multisampling; the view keeps its colour mode, field layer and speed across a restart through the arguments; a 3D world's levers are not shown for a resume (it has none). Not run: the shaders and the drawing on a device (the GPU was busy with the evaluation arms, and the Metal compiler needs the Metal Toolchain or a device), the app itself, and the installed bundle; the opt-in GPU tests and the HANDOVER click-through are the checks to make first. Existing tests edited: none of the repository's from before the PR (`CameraTests` gained one test; `StreamFrame` gained an explicit memberwise `package init`, and `Camera.home(for:aspect:)`, for the viewer and its tests). **Review fixes** (the third commit; each was a reviewer's finding, verified against the code, and none changes the engine): (a) the field layer of the previous stream was passed as `--field-z` to a different run, and `alife stream` exits 2 for a layer past the run's last (a 2D run has one layer), which left the window with no way to recover: the layer is now carried only across a restart of the same run, and another run starts at layer 0. (b) `step` marked a followed run as paused, but the engine's `step` in follow mode only refreshes. (c) The reader woke the main actor after every pipe chunk and `apply` published a property on every wake-up, so each partial chunk of a frame redrew the old frame: it wakes only for a header, a frame or the end, and the view is redrawn only when its content changed. (d) `draw(in:)` asked for the drawable before the semaphore, so the main thread could block in `nextDrawable()` for up to a second and, on a timeout, lose the redraw: the ticket (a buffer set, and a place among the two draws into the window that leave a drawable for the screen) now comes first and a missing drawable is retried; and the ring index moved on before the encoding, so three failure paths kept it while giving the semaphore back, and a later draw could write a set that the GPU was reading: `DrawGate` moves the ring on only after the commit. (e) The close observer held the view weakly across the hop to the main actor, and closing any main window closed the viewer: the view is held, and `WindowGroups` counts the main windows (the main scene is a `WindowGroup`). (f) App termination ended only the current stream's process: it ends every one that has not finished. (g) A decoder error that arrived in the same read as an earlier event waited for the next bytes, which a paused or finished stream never sends: `FrameDecoder.failure` shows it and the reader publishes it at once. (h) The header accepted a missing `run` key and values that break §27.11 (`FG·field_cell = L`, `FZ`, the 2D shape, `color`, `field_z`, `mode`, `source`). (i) The clip planes were fixed when the pose was built (near 0.1, far `8 max(L, height)`): zooming out about four times clipped the world, and in a 1 024-wide world a depth step at the home pose was 0.75 world units; they follow the pose now. (j) The billboard did not cover the nose when the eye was within about two radii of an agent: it is the silhouette of the sphere that holds body and nose. (k) Switching `physics.buoyancy_max` on from a baseline without an actuator was accepted and did nothing (the caps start at `buoy_init` and drift by `buoy_sigma`, both 0 and both CLI-only): it is refused with a message; whether those two keys should be levers is the owner's decision. (l) `PresetFile` equals the cadence reader it replaced on every file `tomllib` accepts (a table header without its `]` names no table, as before; a key set twice is the last value, where the old reader kept the last integer of at least 1, and the engine refuses such a file). (m) Documentation: a followed run has its step-0 checkpoint from the start (the text said the first came after `checkpoint_every` steps, so item 9 of the click-through could not be reproduced), the counts, the file lists, the package row and the place and wording of the HANDOVER checklist. New tests: one or more for each of the above; an eighth GPU test that compares every pixel around the agents with a CPU port of the sphere shader (the colour channels, the headlight, the yaw and the pitch, the nose), and the 3D slice test at both field layers of the fixture; 23 more 2D command lines, from `config.json` files written by the engine and presets chosen through their files. Not run, as before: the GPU tests (the new one included; a mistake in the port would show as a failing test, to be checked against the shader first), the app, and the installed bundle. |
+| I42 | feat: 3D world PR 6, ecology (`docs/3D.md` §10 item 6; new §27.13; provisional row and number, stage 1 of 2: the evaluation PR holds I41 and the coordinator renumbers at merge; the GPU parts and the long run are not done): no change to the compiled step, the state, the RNG, any config key or its default, any config hash, golden digest or 2D output (the CPU digest comparison of the 2D config hashes, the initial 2D `K_est` of `tiny` and `dev` and the `tiny` state digest after 30 compiled steps against origin/main 748ad5b is identical; the only differences are the new preset and its two hashes). (1) **`K_est` in 3D is occupancy-weighted** (owner decision 2026-10-14; §27.10): `Σ_k regen_k·min(1, FZ·p_k)/c_ref`, `p_k` the share of the alive agents in field layer `k` (`fields.cell_index // FG²`, the layer harvest uses), the floor layer alone when nobody is alive, so it equals PR 4's floor-only value in the benthic limit and the plain sum over the layers for an even column; `metrics.layer_occupancy_weights` is new, the 2D branch is the same integer sum over `c_ref`; the first row, `inspect`, the director's `n/K_est`, rescue size and prompt read it; the prompt qualifier is now `prompt.K_NOTE_3D` (the 2D messages stay byte-identical, pinned by sha256). (2) **`64k3d`** (`presets/64k3d.toml`, `config.PRESETS`, the Swift `Preset` enum and the `PresetFileTests` list; owner decision: gravity 0.015): 320 × 320 × 80, FG 80, FZ 20, hash grid 53 × 53 × 13, `K = 8`, `C = 24` **provisional** (to be confirmed by `bench --stages` and `cell_overflow` on the Mac), `brain_cost_per_l1` 0.0905 (founder brain 37.63 q against 2D's 37.64), buoyancy costs 16 and 8, `regen_max` 1 700 for a `K_est` of 33 600 at 70% of the agents in the floor layer (61 500 at step 0, 17 800 floor only; mean of 16 seeds), `n_init` 16 384 (half of that `K_est`: the first generation multiplies the founders by 1.4 to 1.6, and seeding at `K_est` peaks past it), the 64k run cadences; the derivations, the cloud evidence (gravity sweep, buoyancy costs, `C` and `K`, the `K = 12` conflict with `validate`) and what remains to be measured are §27.13. (3) **Tests** (new): `test_config.py::test_preset_table_3d`; in `test_metrics_3d.py` the occupancy weights and `K_est` on built scenes against a float64 host reference (all benthic, even column, mixed, top layer, nobody alive, dead rows, layer edges, the live environment, a 2D state) and `test_k_est_band_of_the_64k3d_initial_state` (the lazy `_initial_state`, three seeds, the weights never materialised); in `test_director_3d.py` the prompt qualifier and `Director._vitals` on built scenes; in `test_affordances_3d.py` 400 compiled `tiny3d` steps (every affordance, floor and surface clamps, `HEAT_BUOYANCY`, heights and pitch in range, the mutating cap, deposits in the volume, swimming apart from sinking) and a passive-agent sinking test; `test_ecology_3d.py` (marker `slow`, `DEV3D`, 2 500 steps; collected only under `-m slow`, **not run**: only a 40-step smoke of its helpers on the CPU, in which no assertion fired). (4) **Existing tests edited, all for the rule changes above**: `test_dims_config.py::test_defaults_are_2d` leaves out `64k3d` as it leaves out `tiny3d`; `test_metrics_3d.py::test_carrying_capacity_of_tiny3d_is_comparable_to_tiny` puts every founder on the floor (the benthic limit), and the docstrings and one comment of the four PR 4 floor-layer tests say that their scenes have nobody alive (their assertions are unchanged and pass: with nobody alive the floor layer alone counts); `test_cli_report_3d.py::test_the_first_row_estimates_the_capacity_on_the_floor_layer` is now `…_by_occupancy` (the first row against the step-0 checkpoint to 5%, and between 1 000 and 1 500 instead of 300 to 500); `test_director_3d.py` asserts the new qualifier text, `…_use_the_floor_layer_k_est` is now `…_use_the_occupancy_weighted_k_est` (the logged `k_est` against a host reference of the weights, and between the floor layer's value and all the layers'), the Gardener fixture starts 150 founders instead of 40 (see the finding below), and the row dict of `_window_ctx` became the helper `_synthetic_row` (no assertion changed). **A finding in the director, not fixed**: with 40 founders the occupancy rule leaves `n/K_est` at 0.14 to 0.15 for the whole 200-step run (the rescue's regeneration pulse raises `K_est` to about 1 900 and the population stays under 300), so the extinction rescue stays wanted and blocked by its cooldown at every boundary; `Director._blocked`, which journals a blocked rule only when it was not blocked at the previous boundary, is kept per process, so a live resume journals the note once more at its first boundary, and `test_a_resumed_3d_live_run_is_the_uninterrupted_run_and_its_log_replays` (journal bytes equal) failed. `director.jsonl`, the archive, the rows and the state are identical across the resume. The code is shared with 2D, where a persistent blocked rule would show the same; the director is left as it is (the evaluation runs on it) and the fixture starts 150 founders, for which the flag clears at step 60. Interpretations: the nobody-alive case counts the floor layer (so an extinct run reports PR 4's value); uniform founders weigh the two edge layers 0.77 (`p = (field_cell − r)/(height − 2r)` against 1/FZ), so an even-in-z start is 91% of the plain sum; the steady state of the sizing is taken as 70% of the agents in the floor layer (between the cloud sweeps at g = 0.01 and 0.03); on `tiny3d` the n/K_est of the extinction-risk criterion is 0.19 at step 10 and 0.27 to 0.39 later under the new rule (0.54 to 0.71 under the old), so its margin to 0.2 is smaller (§27.10). Swift: `Preset.k64_3d` ("64k3d") and a `64k3d` test each in `World3DLeverTests` (the preset's values, and an unchanged run passing the preset name alone) and `PresetFileTests` (the scalars, the engine-default cadence); `swift build -Xswiftc -warnings-as-errors` and `swift test` pass (the GPU suites stay skipped). Not done in stage 1 (no GPU): `bench --stages`, confirming `C`, a short `64k3d` tuning run, the cloud/CI run of `test_ecology_3d.py`. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

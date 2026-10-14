@@ -49,7 +49,10 @@ def _problems(overrides: list[str], preset: str = "tiny") -> str:
 # --- defaults, keys, hashes -------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("preset", [p for p in PRESETS if p != "tiny3d"])  # tiny3d: PR 3, test_config.py
+@pytest.mark.parametrize(
+    "preset",
+    [p for p in PRESETS if p not in ("tiny3d", "64k3d")],  # the 3D presets: test_config.py
+)
 @pytest.mark.parametrize("overlays", [(), OVERLAYS])
 def test_defaults_are_2d(preset: str, overlays: tuple[str, ...]) -> None:
     cfg = load_config(preset=preset, overlays=overlays)

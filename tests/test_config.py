@@ -9,7 +9,7 @@ from pathlib import Path
 import mlx.core as mx
 import pytest
 
-from alife import layout
+from alife import layout, metrics
 from alife.config import (
     OVERLAYS,
     PRESETS,
@@ -89,6 +89,50 @@ def test_preset_table_tiny3d() -> None:
     assert (fi.benthic_lambda, fi.photic_amp, fi.photic_lambda) == (8.0, 0.5, 8.0)
     fast = load_config(preset="tiny3d", overlays=["fast"])
     assert (fast.sensing.k_neighbors, dims(fast).q) == (6, 27 * 12)
+
+
+def test_preset_table_3d() -> None:
+    """``64k3d`` is ``64k`` plus every 3D key and the changes listed here (DESIGN §27.13); with the fast
+    overlay it validates too. It stays provisional until ``bench --stages`` and a tuning run on the Mac."""
+    cfg, k64 = load_config(preset="64k3d"), load_config(preset="64k")
+    d = dims(cfg)
+    assert "64k3d" in PRESETS and cfg.world.dims == 3 and cfg.world.height == 80.0
+    assert (d.n, d.m, cfg.population.n_init, cfg.world.size) == (65536, 1024, 16384, 320.0)
+    assert d.n_cap == 65536 - 1024 and d.dl == 2048
+    assert (d.fg, d.fz, d.n_cells, d.field_shape) == (80, 20, 80 * 80 * 20, (20, 80, 80))
+    assert (d.g_hash, d.g_hash_z, d.k, d.c, d.q) == (53, 13, 8, 24, 27 * 24)  # hash grid G x G x G_z (§27.2)
+    assert d.cell_hash >= cfg.sensing.radius and d.cell_hash_z >= cfg.sensing.radius
+    assert (d.lay.D_IN, d.lay.D_OUT, d.w1_rows, d.params) == (84, 39, 116, 4999)
+    a, b = config_to_dict(cfg), config_to_dict(k64)
+    changed = {(sec, k) for sec in a for k in a[sec] if a[sec][k] != b[sec][k]}
+    assert changed == {
+        *THREE_D_KEYS,
+        ("world", "size"),
+        ("sensing", "cell_capacity"),
+        ("energy", "brain_cost_per_l1"),
+        ("fields", "n_patches"),
+        ("fields", "patch_sigma"),
+        ("fields", "regen_max"),
+        ("fields", "chem_diffusion"),
+    }
+    ph, en, mu, fi = cfg.physics, cfg.energy, cfg.mutation, cfg.fields
+    assert (ph.gravity, ph.floor_eps, ph.buoyancy_max) == (0.015, 0.1, 0.04)
+    assert (en.buoyancy_cost, en.buoyancy_cap_cost, mu.buoy_init, mu.buoy_sigma) == (16, 8, 0.5, 0.02)
+    assert (fi.n_patches, fi.patch_sigma, fi.regen_max) == (8, 24.0, 1700)
+    assert fi.chem_diffusion == (0.16, 0.10, 0.16) and max(fi.chem_diffusion) <= 1 / 6
+    assert (fi.benthic_lambda, fi.photic_amp, fi.photic_lambda) == (8.0, 0.5, 8.0)
+    # a founder's brain costs what it does in 2D, though the 3D brain is wider (4 999 weights against 4 387)
+    assert en.brain_cost_per_l1 == 0.0905 and k64.energy.brain_cost_per_l1 == 0.1
+    cost3, cost2 = metrics.founder_brain_cost(cfg), metrics.founder_brain_cost(k64)
+    assert cost3 == pytest.approx(cost2, rel=2e-3)
+    # the cadences of 64k, so the director's rule cadence validates as it does there
+    assert (cfg.run.metrics_every, cfg.run.heavy_metrics_every) == (100, 1000)
+    assert (cfg.run.checkpoint_every, cfg.run.steps) == (10000, k64.run.steps)
+    # a founder (cap 0.5) can lift more than gravity; full thrust plus the net vertical load stays under 2 r k
+    assert ph.buoyancy_max * mu.buoy_init > ph.gravity
+    assert ph.thrust_max + max(ph.gravity, ph.buoyancy_max - ph.gravity) < 2 * ph.radius * ph.k_repel
+    fast = load_config(preset="64k3d", overlays=["fast"])
+    assert (fast.sensing.k_neighbors, dims(fast).q, dims(fast).h) == (6, 27 * 12, 24)
 
 
 def test_tiny_and_fast_overrides() -> None:

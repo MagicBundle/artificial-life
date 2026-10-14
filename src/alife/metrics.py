@@ -476,18 +476,16 @@ def layer_occupancy_weights(s: State3, cfg: Config) -> np.ndarray:
     """The 3D layer weights ``w_k = min(1, FZ·p_k)`` of ``carrying_capacity``, (FZ,) float64 (§27.10).
 
     ``p_k`` is the share of the alive agents whose field cell is in layer ``k``: ``fields.cell_index // FG²``,
-    the layer ``clip(floor(z / field_cell), 0, FZ − 1)`` that harvest reads and deposits in. A layer holding
-    at least its even share ``1 / FZ`` of the agents counts fully (``w_k = 1``); a sparser one counts in
-    proportion to its occupancy. With nobody alive there is no occupancy to weigh, and the floor layer alone
-    counts.
+    the layer ``clip(floor(z / field_cell), 0, FZ − 1)`` that harvest reads and deposits in (the same float32
+    computation, so a position on a layer edge falls where the engine puts it). A layer holding at least its
+    even share ``1 / FZ`` of the agents counts fully (``w_k = 1``), a sparser one in proportion to its
+    occupancy. With nobody alive there is no occupancy to weigh, and the floor layer alone counts.
     """
     d = dims(cfg)
     alive = to_numpy(s.alive)
     n = int(alive.sum())
     if n == 0:
-        w = np.zeros(d.fz)
-        w[0] = 1.0
-        return w
+        return (np.arange(d.fz) == 0).astype(np.float64)
     layer = to_numpy(fields.cell_index(s.pos, cfg)) // (d.fg * d.fg)
     p = np.bincount(layer[alive], minlength=d.fz) / n
     return np.minimum(1.0, d.fz * p)
@@ -501,20 +499,22 @@ def carrying_capacity(
     Regeneration uses the state's current patch positions, so the estimate is specific to the seed (and
     drifts with the patches); ``E[founder brain_cost]`` is the analytic expectation (``founder_brain_cost``).
     In 3D the regeneration is occupancy-weighted (§27.10): ``Σ_k regen_k · min(1, FZ·p_k)``, where
-    ``regen_k`` is the integer regeneration of layer ``k`` and ``p_k`` the share of the alive agents living
-    in it (``layer_occupancy_weights``). It equals the floor layer's alone (the benthic analogue of the 2D
-    lattice) when every agent is on the floor, every layer's when the column is used evenly, and the floor
-    layer's when nobody is alive. ``c_ref`` also holds a founder's buoyancy-cap upkeep
+    ``regen_k`` is the integer regeneration of layer ``k`` (the sum of ``regen_rate(…)[k]``) and ``p_k`` the
+    share of the alive agents living in it (``layer_occupancy_weights``). It equals the floor layer's alone
+    (the benthic analogue of the 2D lattice) when every agent is in the floor layer, every layer's when the
+    column is used evenly, and the floor layer's when nobody is alive, so it depends on the state's agents as
+    well as on its patches. ``c_ref`` also holds a founder's buoyancy-cap upkeep
     ``floor(buoyancy_cap_cost·buoy_init)`` (§27.7), paid every step.
     With ``step`` and ``env`` (the director's rule tier) the regeneration is the live one: seasonal at
     ``step`` and scaled by the environment levers, as ``fields.regen_rate`` defines it.
     """
     rate = to_numpy(fields.regen_rate(s.patch_pos, cfg, step, env)).astype(np.int64)
+    regen: float
     if is_3d(cfg):  # static: weigh the per-layer sums by where the agents live
         per_layer = rate.reshape(rate.shape[0], -1).sum(axis=1).astype(np.float64)
         regen = float((per_layer * layer_occupancy_weights(s, cfg)).sum())
     else:
-        regen = float(rate.sum())
+        regen = int(rate.sum())
     c_ref = cfg.energy.basal_cost + founder_brain_cost(cfg) + layout.C_REF_MARGIN
     if is_3d(cfg):  # float32, as pay_costs3 computes it
         c_ref += int(np.floor(np.float32(cfg.energy.buoyancy_cap_cost) * np.float32(cfg.mutation.buoy_init)))
