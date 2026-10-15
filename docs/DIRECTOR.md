@@ -6,8 +6,8 @@ director core: vital signs, archive, rule tier, decision log, replay, CLI) is im
 `docs/DESIGN.md` §26 (Review-log row I29); §12 below records where it refines or contradicts this proposal. **Build
 step 3 (the LLM tier) is implemented** and is normative in `docs/DESIGN.md` §26.10 (Review-log row I30); §13 records
 where it refines §2.1, §7 and §8. **Build step 4 (the GUI Director panel and `alife llm-check`) is implemented**
-(`gui/`, Review-log row I31); §14 records how it refines §8. Step 5 (the evaluation) is not implemented yet. This
-document extends `docs/DESIGN.md`.
+(`gui/`, Review-log row I31); §14 records how it refines §8. **Step 5, the evaluation, is done:** `docs/EVALUATION.md`
+(§9 below states the design; the results and the verdict are there). This document extends `docs/DESIGN.md`.
 As each step lands, its normative parts (state fields, config keys, ledger terms, tests) move into DESIGN.md with
 Review-log rows, per `CLAUDE.md`.
 

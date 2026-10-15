@@ -1,6 +1,6 @@
 # Handover
 
-Status of the `alife` project as of 2026-10-11 (after director build step 4 and the yoked `random` persona), written for the next coding
+Status of the `alife` project as of 2026-10-16 (after the director evaluation, `docs/EVALUATION.md`; the 3D world is being built, `docs/3D.md`), written for the next coding
 session (a local Claude Code session on the owner's MacBook Pro, M5 Pro, 48 GB). Read this, then `CLAUDE.md`, then the parts of
 `docs/DESIGN.md` you need.
 
@@ -22,6 +22,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
 | `docs/ACTIVITY.md` | evolutionary-activity analysis of `runs/64k_s0` (method, results, sensitivity); figures in `docs/activity/` |
 | `docs/SIGNALS.md` | information carried by the emit and msg signals of `runs/64k_s0` at eight states; full tables in `docs/signals/` |
+| `docs/EVALUATION.md` | the director evaluation (`DIRECTOR.md` §9): arms A, B, C, R and RC on two seeds, results and verdict; outputs and figures in `docs/evaluation/` (`python -m alife.analysis.evaluation`) |
 | `docs/3D.md` | proposed 3D world with gravity and a floor (owner decisions, layout, fields, Swift viewer, PR plan); starts after the §9 evaluation |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
@@ -161,6 +162,29 @@ verified findings for the whole run.
   intent never; `emit2` almost nothing. At 120k, lineages and patches had their own codes; one code dominates
   as one clade takes over. Whether receivers use the signals is open (receiver-side test in the note).
 
+## Results so far: the director evaluation (`docs/EVALUATION.md`)
+
+Arms forked at step 120,000 and run to 1.5M on two seeds: A (off; seed 0 is `runs/64k_s0`), B (rule tier, Gardener),
+C (rule tier + LLM, Trickster), R (random, yoked to B) and RC (random, yoked to C at C's budget). Runs are
+`runs/eval_s<seed>_<arm>`; activity output is in `analysis_cache/eval/` (git-ignored).
+
+- **Criterion 1 fails:** the Gardener acted once and twice in 1.38M steps, so B is almost A and beats neither A nor R
+  on coverage and persistent novelty. No collapse.
+- **Criterion 2 passes as specified:** C beats B on both seeds (coverage 87 and 69 against 24 and 30). But one random
+  seasons move (R, seed 0) gave nearly the same coverage and persistent novelty, and RC (random moves at C's steps
+  and budget) gave more coverage than C on seed 0 and the same persistent novelty. The archive's coverage and novelty
+  mostly measure forced population oscillation.
+- **Evolutionary activity is bounded in every arm** (one non-robust window in RC, seed 0, during a sweep to
+  monoculture). C has 2.4–5 times the rate of new adaptive activity, and RC less than C after 1M.
+- **C's cost:** repeated crashes to about a quarter of the reference population, 34 and 38 extinction rescues, and
+  about 60% of rule windows at risk. The extinction-risk flag reads every seasonal trough as a crash.
+- **Immigrants rarely establish** (1 of 26,349 agents at the end of C on seed 0), so immigration pulses add no lasting
+  genetic novelty.
+- **The LLM** (gemma-4-26b-a4b-it-mlx@8bit) replied with valid JSON every time (one transport failure in 112 calls),
+  with no clamps, at a median 3.6–4.4 s; it chose "none" in about two thirds of its calls, mostly for lack of budget.
+- Analysis: `python -m alife.analysis.evaluation` recomputes the director's vital signs for every arm (equal to the
+  logged ones); `alife activity` reads forks (`--start`).
+
 ## GUI follow-ups (PR #3, merged)
 
 - **Fork pre-fill:** in Fork mode the levers are loaded from `runs/SOURCE/config.json`, where a missing
@@ -248,17 +272,17 @@ verified findings for the whole run.
 
 ## Suggested next steps
 
-1. **The §9 evaluation:** fork `runs/64k_s0` at step 120,000 into the arms (director off; rule tier, Gardener; rule +
-   LLM, Trickster; optional Architect) with the same seed, and compare archive coverage, persistent novelty, clades,
-   extinctions and rescues, and intervention cost, plus the LLM's validity, clamp rate and latency. About 6 hours per
-   arm.
-   §9 now also requires a matched random-director arm R (the `random` persona is built: run B first, then R with
-   `--yoke-log runs/B/director.jsonl` and the same fork point, seed and `rule_every`), at least two
-   seeds per arm, and Bedau–Packard activity as an outcome metric (`docs/RESEARCH.md` §4).
-   **Fork source:** `runs/64k_s0` kept only the checkpoints at 0, 1.49M, 1.50M and 1.504M, so
-   `--init-from runs/64k_s0:120000` fails. Use the verified re-simulated state
-   `analysis_cache/64k_s0/step_0000120000.safetensors` (how it was made: `docs/SIGNALS.md` §3). For seed 1, run
-   `alife run --preset 64k --seed 1 --steps 120000 --out runs/64k_s1` and fork from `runs/64k_s1:120000`.
+1. **The §9 evaluation is done** (`docs/EVALUATION.md`). Follow-ups it found, in order:
+   - **Season-aware extinction risk** (owner decision: a PR after the evaluation, with the `Director._blocked` journal
+     fix): the risk flag fires on every seasonal trough deeper than 30%, so a strong season triggers a rescue every
+     period, and the rescues use up the budget.
+   - **A better outcome criterion.** The archive's coverage and novelty move with any forced population oscillation;
+     lead with Bedau–Packard activity, or give the archive a heritable descriptor (genotypes or per-lineage behaviour).
+   - **The Gardener's triggers** (stagnation: novelty below 0.02 and no new cell for 200k steps; monoculture: top clade
+     above 0.9 for 100k steps) almost never fire on the 64k preset.
+   - **Archive immigrants** (`DIRECTOR.md` §5, deferred): random founders do not establish.
+   - Arm D (Architect) is deferred by the owner; if run, with a goal above the baseline (largest body ≥ 200). A
+     seasons-only control arm is deferred until after 3D tuning.
 2. **3D world** (`docs/3D.md`), after the evaluation: six PRs, starting with `world.dims` plumbing.
 3. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;

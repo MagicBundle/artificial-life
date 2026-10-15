@@ -1,7 +1,7 @@
 # Director evaluation (`DIRECTOR.md` §9)
 
 Status: **draft** (2026-10-15). Arms A, B, C and R are finished and analysed on both seeds, RC on seed 0; s1_RC is
-paused at step 460,730 (§1.4), and the legibility ratings are with the owner. Sections that wait for them say so.
+running (resumed from step 460,730, §1.4), and the legibility ratings are with the owner. Sections that wait for them say so.
 
 ## Answer
 
@@ -100,7 +100,7 @@ At the owner's request the queue was paused twice, each time with one SIGINT and
 checkpoint with `alife resume`:
 - s0_R at step 792,173 (2026-10-14 01:02, resumed 22:41). Its only yoked move is at 1,199,000, after the resume.
 - s0_RC at step 1,255,491 (2026-10-15 14:20, resumed 16:52).
-- s1_RC at step 460,730 (2026-10-15 19:42); not yet resumed.
+- s1_RC at step 460,730 (2026-10-15 19:42, resumed 20:12).
 
 Known effects of a live resume:
 - a resume that splits a 1,000-step rule window may decide the safety rules differently from an uninterrupted run
