@@ -1,4 +1,4 @@
-cloud-8 (RESUMED; PARTIAL, step 3 at 4,500 of 6,000): **test_ecology_3d PASSES at C = 48**; fast suite green; goldens pass; digest compare identical. Long DEV3D run: **no overflow through step 4,500, and peak occupancy has levelled off at 30–37** (max 37 at step 3,610). The population is still rising (4,465, n/floor-K 0.98). Steps 4,500–6,000 are running.
+PR6 (a3d46eb) Linux-CPU: test_ecology_3d PASSES at C = 48; fast suite green (2 expected xfails); goldens pass; digest compare identical. 6,000-step DEV3D: **0 overflow steps; peak occupancy levelled off at 30–37 (max 37 at step 3,610) against C = 48.** The population is still growing linearly (5,981 at 6,000; n/floor-K 1.29, so the floor-layer K is now below the population).
 
 # cloud-8: 3D PR 6 recheck (`3d/pr6-64k3d` at `a3d46eb`) on Linux CPU
 
@@ -135,3 +135,52 @@ peak occupancy per 100 steps since 2500: [31, 33, 32, 36, 36, 32, 31, 30, 31, 32
 - The population keeps growing: 3,388 → 3,660 → 4,030 → 4,465. n / floor-K reaches 0.98.
 - The grounded share eases from 0.305 to 0.271 as the population grows: the extra agents live off the floor.
   The floor pile is not getting denser.
+
+
+## Step 3 complete: 6,000 steps
+
+**Last chunk.** Chunk 4,500–6,000 ran in 2,434 s, at 0.62 steps/s. All four chunk counter files are in
+`results/cloud-8-dev3d-counters_*.npz`, and the K records in `results/cloud-8-dev3d-k_est.json`.
+
+**Full window table.**
+
+| steps | n_alive (end) | grounded share (mean) | steps with overflow | max cell_overflow | peak occupancy (C = 48) | floor clamps | HEAT_BUOYANCY | K_est (end) | floor-layer K (end) | n / floor K |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1–500 | 3664 | 0.086 | 0 | 0 | 12 | 166063 | 9110855 | 13644 | 4208 | 0.87 |
+| 501–1000 | 3192 | 0.202 | 0 | 0 | 11 | 309454 | 6400622 | 13259 | 4236 | 0.75 |
+| 1001–1500 | 3043 | 0.259 | 0 | 0 | 16 | 363383 | 5810667 | 13012 | 4271 | 0.71 |
+| 1501–2000 | 3013 | 0.285 | 0 | 0 | 18 | 390170 | 5631982 | 12763 | 4310 | 0.70 |
+| 2001–2500 | 3170 | 0.301 | 0 | 0 | 32 | 415089 | 5669953 | 12812 | 4352 | 0.73 |
+| 2501–3000 | 3388 | 0.305 | 0 | 0 | 36 | 446541 | 6000192 | 12717 | 4398 | 0.77 |
+| 3001–3500 | 3660 | 0.298 | 0 | 0 | 32 | 471210 | 6460076 | 12906 | 4446 | 0.82 |
+| 3501–4000 | 4030 | 0.282 | 0 | 0 | 37 | 489205 | 7053910 | 13089 | 4491 | 0.90 |
+| 4001–4500 | 4465 | 0.271 | 0 | 0 | 32 | 517333 | 7756446 | 13320 | 4535 | 0.98 |
+| 4501–5000 | 4996 | 0.255 | 0 | 0 | 34 | 542557 | 8703274 | 13653 | 4575 | 1.09 |
+| 5001–5500 | 5468 | 0.253 | 0 | 0 | 33 | 604368 | 9694612 | 13723 | 4613 | 1.19 |
+| 5501–6000 | 5981 | 0.248 | 0 | 0 | 32 | 645317 | 10559988 | 13760 | 4648 | 1.29 |
+
+steps 1–6000: overflow on 0 steps; peak occupancy 37 at step 3610
+peak occupancy per 100 steps since 2500: [31, 33, 32, 36, 36, 32, 31, 30, 31, 32, 35, 37, 34, 34, 31, 31, 31, 31, 32, 32, 32, 32, 34, 34, 32, 31, 31, 31, 33, 32, 30, 30, 32, 32, 31]
+
+
+**Answer to the key question: peak occupancy levels off.**
+- After the rise to about 32–36 between steps 2,000 and 3,000, the per-100-step peak stays between 30 and 37
+  for the remaining 3,000 steps, with no upward trend. The last 1,500 steps peak at 30–34.
+- The all-time maximum is 37, at step 3,610.
+- **No step of the 6,000 had a cell over C = 48**, so there was no overflow step to report.
+- C = 48 has a margin of 11 or more on this run. C = 40 would also have passed it, but with only 3 to spare.
+
+**Other observations.**
+- **The population has not equilibrated.** It grows by about 450–530 every 500 steps from step 2,000 to 6,000:
+  3,013 → 5,981.
+- The growth is off the floor. The grounded share falls from 0.305 to 0.248, and `HEAT_BUOYANCY` per window
+  nearly doubles (5.6M to 10.6M). The water column and the surface band are filling.
+- This is why the floor pile stopped densifying while n kept rising.
+- **n / floor-K passes 1 at about step 4,600 and reaches 1.29 at step 6,000.** The floor-layer K (4,648) now
+  understates the realised population, because the newcomers do not live on the floor.
+- K_est (13,760) is still about 2.3× n. Both estimates bracket the population, and the true 3D steady state is
+  above 6,000 and not yet reached.
+- For the director's extinction-risk test, which compares n against the floor-layer K, this errs on the safe
+  side: n/K reads high, not low. Any rule that treats n/K > 1 as overcrowding would fire here, though.
+- Longer runs, beyond 6,000 steps, would be needed to see where DEV3D's population and occupancy actually
+  settle.
