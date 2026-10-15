@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import math
 from typing import Any
 
@@ -213,6 +214,86 @@ def test_extinction_risk_from_carrying_capacity_and_from_a_fall() -> None:
     far = 200 + P.risk_fall_window + 100
     tr.observe(row(far, steps=100, n_alive=300.0, n_alive_min=290))
     assert not tr.vitals(tr.close(far), k_est=800.0, n_cap=2000).extinction_risk
+
+
+COMPACT_2D_KEYS = [
+    "n_alive",
+    "k_est",
+    "n_over_k",
+    "fall",
+    "extinction_risk",
+    "top_clade_share",
+    "novelty",
+    "coverage",
+    "new_cells_200k",
+    "b_shift",
+]
+
+
+def test_2d_vitals_have_one_k_and_the_log_keys_of_build_step_2() -> None:
+    """2D has one K: no second capacity is carried, the risk ratio is ``n / K_est``, and the logged vitals are
+    exactly the keys of build step 2 in their order (so a 2D ``director.jsonl`` is byte-identical, §27.10)."""
+    tr = Tracker(P)
+    tr.observe(row(100, steps=100, n_alive=500.0, n_alive_min=480))
+    v = tr.vitals(tr.close(100), k_est=800.0, n_cap=2000)
+    assert v.k_floor is None and v.n_over_k_floor is None
+    assert v.n_over_k_risk == v.n_over_k == pytest.approx(500 / 800)
+    assert list(v.compact()) == COMPACT_2D_KEYS
+
+
+def test_3d_extinction_risk_reads_the_floor_layer_k_and_every_other_reader_keeps_k_est() -> None:
+    """A spread population: the occupancy-weighted ``K_est`` is 5 000, the floor layer's capacity 800, and 500
+    agents are alive. ``n / K_est`` is 0.1 (under ``risk_k_frac``) but the flag reads ``n / K_floor`` = 0.625
+    and is clear; with the capacities the other way round it is set. ``k_est`` and ``n_over_k`` (the viability
+    line, the rescue's size) are the occupancy-weighted ones in both."""
+    tr = Tracker(P)
+    tr.observe(row(100, steps=100, n_alive=500.0, n_alive_min=480))
+    bd = tr.close(100)
+    spread = tr.vitals(bd, k_est=5000.0, n_cap=2000, k_floor=800.0)
+    assert spread.n_over_k == pytest.approx(0.1) and spread.n_over_k < P.risk_k_frac
+    assert (
+        spread.k_est == 5000.0 and spread.k_floor == 800.0 and spread.n_over_k_floor == pytest.approx(0.625)
+    )
+    assert spread.n_over_k_risk == spread.n_over_k_floor and not spread.extinction_risk
+    assert spread.pop_frac_cap == 0.25
+    sparse = tr.vitals(
+        bd, k_est=800.0, n_cap=2000, k_floor=5000.0
+    )  # the floor layer's food is the scarce one
+    assert sparse.n_over_k == pytest.approx(0.625) and sparse.n_over_k_floor == pytest.approx(0.1)
+    assert sparse.extinction_risk and sparse.k_est == 800.0
+    # the same K on both sides is the 2D rule
+    assert tr.vitals(bd, k_est=5000.0, n_cap=2000, k_floor=5000.0).extinction_risk
+    assert not tr.vitals(bd, k_est=800.0, n_cap=2000, k_floor=800.0).extinction_risk
+    # the threshold is the same number as in 2D: just under and just over risk_k_frac of the floor layer's K
+    edge = 500 / P.risk_k_frac
+    assert tr.vitals(bd, 800.0, 2000, k_floor=edge * 1.001).extinction_risk
+    assert not tr.vitals(bd, 800.0, 2000, k_floor=edge * 0.999).extinction_risk
+
+
+def test_3d_fall_criterion_is_independent_of_the_capacities() -> None:
+    tr = Tracker(P)
+    tr.observe(row(100, steps=100, n_alive=500.0, n_alive_min=480))
+    tr.vitals(tr.close(100), 800.0, 2000, k_floor=800.0)
+    tr.observe(row(200, steps=100, n_alive=300.0, n_alive_min=250))
+    v = tr.vitals(tr.close(200), k_est=800.0, n_cap=2000, k_floor=800.0)
+    assert v.fall == pytest.approx(1 - 250 / 500) and v.n_over_k_floor > P.risk_k_frac
+    assert v.extinction_risk  # the fall alone sets the flag
+
+
+def test_3d_compact_adds_the_floor_k_after_n_over_k_and_is_json_ready() -> None:
+    tr = Tracker(P)
+    tr.observe(row(100, steps=100, n_alive=123.456789))
+    v = tr.vitals(tr.close(100), k_est=777.7777777, n_cap=2000, k_floor=222.2222222)
+    c = v.compact()
+    assert list(c) == [*COMPACT_2D_KEYS[:3], "k_floor", "n_over_k_floor", *COMPACT_2D_KEYS[3:]]
+    assert c["k_floor"] == 222.2222 and c["n_over_k_floor"] == round(123.456789 / 222.2222222, 4)
+    assert c["k_est"] == 777.7778 and c["n_over_k"] == round(123.456789 / 777.7777777, 4)
+    assert json.loads(json.dumps(c, allow_nan=False)) == c
+    # nobody alive: no ratio, no flag from the capacities
+    empty = Tracker(P)
+    empty.observe(row(100, steps=100, n_alive=None, n_alive_min=None))
+    e = empty.vitals(empty.close(100), k_est=800.0, n_cap=2000, k_floor=0.0)
+    assert e.n_over_k_floor is None and e.n_over_k_risk is None and not e.extinction_risk
 
 
 def test_descriptor_shift_compares_with_the_boundary_a_shift_window_ago() -> None:

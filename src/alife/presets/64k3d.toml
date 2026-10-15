@@ -5,9 +5,9 @@
 #
 # PROVISIONAL. The values come from the cloud tuning runs on tiny3d and DEV3D (CPU, DESIGN §27.13) and from
 # the sizing arithmetic below; none of it has been measured at this size. To be confirmed on the Mac, once the
-# GPU is free: `alife bench --preset 64k3d --stages` (time and memory of the 27 * C = 648 neighbour candidates
-# per agent), `cell_overflow` and `max_occupancy` at the benthic steady state of a real run (C), and a tuning run
-# (the population against K_est, and the director's risk_k_frac before any 3D director run).
+# GPU is free: `alife bench --preset 64k3d --stages` (time and memory of the 27 * C = 1 296 neighbour candidates
+# per agent at C = 48), `cell_overflow` and `max_occupancy` at the benthic steady state of a real run (C), and a
+# tuning run (the population against K_est, and the director's risk_k_frac before any 3D director run).
 [population]
 n_max = 65536
 # n_init = 16 384, 0.49 of the K_est of about 33 600 below (the owner asked for "near K"; this is a hedge, to be
@@ -40,14 +40,17 @@ buoyancy_max = 0.04
 # K = 8: K = 12 cannot pass validation at the default physics (stability needs k_repel <= 0.058, non-penetration
 # needs more than 0.0625 at this gravity), and it barely changed the ecology where it could run.
 k_neighbors = 8
-# C = 24, PROVISIONAL. No hash cell overflowed at C = 16 on tiny3d and the cloud DEV3D (peak occupancy 13), but
-# both ran at the default regen_max of 320. A floor pile under gravity reached 28 agents per hash cell in the
-# crowd tests (a converging ball without gravity 36), more than 24, and C = 48 doubles the step time (2.1x) and
-# costs 1.7x the memory at DEV3D. At regen_max 1 700 the food alone can feed about 20 agents in the hottest
-# floor hash cell (p99 20, max 23; 2D 64k: max 5 against C = 16), so the margin to 24 is about 1x, not 3x:
-# cell_overflow and max_occupancy at the benthic steady state of a real run decide between 24 and 32 (or a lower
-# regen_max). Q = 27 C = 648 candidates per agent.
-cell_capacity = 24
+# C = 48, PROVISIONAL, pending `alife bench --preset 64k3d --stages` on the Mac. It was 24 until the cloud run of
+# the slow DEV3D test (cloud-7, C = 24): one floor hash cell stayed over capacity from step 2151 to the end of the
+# run, a floor pile still growing (peak occupancy 31, over C on 11.96 % of the steps against a 1 % gate). Earlier
+# cloud evidence: a floor pile under gravity reached 28 agents per hash cell in the crowd tests (a converging ball
+# without gravity 36), no cell overflowed at C = 16 on tiny3d and DEV3D at the default regen_max of 320 (peak
+# occupancy 13), and the food at regen_max 1 700 can feed about 20 agents in the hottest floor hash cell (p99 20,
+# max 23; 2D 64k: max 5 against C = 16). C = 48 holds the pile of 31 with a margin of 1.5x. The price: Q = 27 C =
+# 1 296 candidates per agent (2D 144, 648 at C = 24), about 2.1x the step time of C = 16 and 1.6x that of C = 24
+# on the cloud CPU (DEV3D), and (N, Q) neighbour-search transients of 340 MB each (170 MB at C = 24). If the bench
+# finds C = 48 too costly, the alternative is a lower regen_max (fewer agents per cell, K_est recalibrated).
+cell_capacity = 48
 
 [energy]
 # Keeps a founder's brain cost at the 2D value: its expected L1 is 10.5 % larger than in 2D (4 999 weights

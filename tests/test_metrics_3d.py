@@ -689,6 +689,66 @@ def test_a_2d_state_is_unaffected_by_the_occupancy_rule(tiny_cfg: Config) -> Non
     assert metrics.carrying_capacity(emptied, tiny_cfg) == metrics.carrying_capacity(s, tiny_cfg)
 
 
+# --- the floor layer's K, the extinction-risk test's divisor in 3D (owner decision 2026-10-15, §27.10) ----
+
+
+@pytest.mark.parametrize(
+    ("counts", "versus"),
+    [
+        ((0, 0, 0, 0, 0, 0), "eq"),  # nobody alive: the floor layer counts
+        ((6, 0, 0, 0, 0, 0), "eq"),  # all benthic: the occupancy rule is the same number
+        ((4, 4, 4, 4, 4, 4), "gt"),  # an even column: every layer's food, more than 3 floors'
+        ((12, 4, 2, 0, 0, 2), "gt"),  # mixed
+        ((0, 0, 0, 0, 0, 6), "lt"),  # the top layer alone
+        ((1, 1, 1, 1, 1, 1), "gt"),  # a few survivors, one per layer: the plain sum
+    ],
+)
+def test_floor_k_is_the_floor_layer_alone_wherever_the_agents_live(
+    micro3d_cfg: Config, counts: tuple[int, ...], versus: str
+) -> None:
+    """``floor_carrying_capacity`` does not depend on the agents: it is the floor layer's integer regeneration
+    over ``c_ref`` for any population, against a float64 host reference written independently of ``fields``,
+    while ``carrying_capacity`` moves with the occupancy (§27.10)."""
+    cfg = micro3d_cfg
+    s = _scene_by_layer(cfg, counts)
+    floor_k = metrics.floor_carrying_capacity(s, cfg)
+    assert floor_k == _engine_regen_by_layer(s, cfg)[0] / _c_ref(cfg)  # exact: one integer sum over c_ref
+    assert floor_k == metrics.floor_carrying_capacity(make_scene(cfg, []), cfg)
+    host = _host_regen_by_layer(cfg, to_numpy(s.patch_pos))[0] / _c_ref(cfg)
+    assert floor_k == pytest.approx(host, rel=0.002)  # float32 against float64 floors of the cells
+    k = metrics.carrying_capacity(s, cfg)
+    assert {"eq": k == floor_k, "gt": k > floor_k, "lt": k < floor_k}[versus]
+    if counts == (4, 4, 4, 4, 4, 4):
+        assert k > 3 * floor_k
+
+
+def test_floor_k_follows_the_live_environment(micro3d_cfg: Config) -> None:
+    """The director's call (``step``, ``env``): the floor layer of the live regeneration, whoever is alive."""
+    cfg = micro3d_cfg
+    s = _scene_by_layer(cfg, (12, 4, 2, 0, 0, 2))
+    boosted = s._replace(env_regen_mult=mx.array(2.0), env_season_amp=mx.array(0.5, dtype=mx.float32))
+    boosted = boosted._replace(env_season_period=mx.array(40, dtype=mx.int32))
+    step = mx.array(10, dtype=mx.int32)
+    live = metrics.floor_carrying_capacity(boosted, cfg, step, boosted.env)
+    assert live == _engine_regen_by_layer(boosted, cfg, step, boosted.env)[0] / _c_ref(cfg)
+    base = metrics.floor_carrying_capacity(s, cfg)
+    assert live > 1.5 * base and metrics.floor_carrying_capacity(boosted, cfg) == base
+
+
+def test_floor_k_in_2d_is_the_one_k(tiny_cfg: Config) -> None:
+    """2D has one lattice and one ``K_est``: the floor-layer function returns it, bit for bit, for any state,
+    with and without the live environment."""
+    s = init_state(tiny_cfg)
+    assert metrics.floor_carrying_capacity(s, tiny_cfg) == metrics.carrying_capacity(s, tiny_cfg)
+    step = mx.array(7, dtype=mx.int32)
+    boosted = s._replace(env_regen_mult=mx.array(1.5))
+    assert metrics.floor_carrying_capacity(boosted, tiny_cfg, step, boosted.env) == metrics.carrying_capacity(
+        boosted, tiny_cfg, step, boosted.env
+    )
+    emptied = s._replace(alive=mx.zeros_like(s.alive))
+    assert metrics.floor_carrying_capacity(emptied, tiny_cfg) == metrics.carrying_capacity(s, tiny_cfg)
+
+
 def _lazy_64k3d(seed: int) -> tuple[Config, State3]:
     """The 64k3d initial state as a lazy graph: only the alive mask, the positions and the patches are ever
     evaluated, so the (65 536, 116, 32) weights are never materialised (as ``test_state.test_schema_*``)."""

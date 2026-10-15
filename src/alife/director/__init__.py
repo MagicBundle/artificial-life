@@ -32,7 +32,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple
 
 from alife import metrics
-from alife.config import RANDOM_PERSONA, Config, dims
+from alife.config import RANDOM_PERSONA, Config, dims, is_3d
 from alife.director import actions, llm, log, pacing, prompt, rules, yoked
 from alife.director.rules import RULE_PARAMS, RuleParams
 from alife.director.vitals import Tracker, Vitals
@@ -194,7 +194,12 @@ class Director:
     def _vitals(self, state: State, t: int) -> Vitals:
         bd = self.tracker.close(t)
         k_est = metrics.carrying_capacity(state, self.cfg, state.step, state.env)
-        return self.tracker.vitals(bd, k_est, dims(self.cfg).n_cap)
+        # 3D: the extinction-risk test reads the floor layer's K, every other consumer the occupancy-weighted
+        # one (§27.10). 2D has one K, and its vitals carry no second.
+        k_floor = None
+        if is_3d(self.cfg):
+            k_floor = metrics.floor_carrying_capacity(state, self.cfg, state.step, state.env)
+        return self.tracker.vitals(bd, k_est, dims(self.cfg).n_cap, k_floor)
 
     def _entry(
         self,

@@ -5,7 +5,8 @@ The director is host code that edits the ``env_*`` fields and ``patch_pos`` betw
 vertical column (the step's mask, §27.4) whose radius bounds are scaled by ``L / 1024``; a patch moves in
 x and y only (``patch_pos`` stays ``(PP, 2)``); the log header names ``"dims": 3`` (in 3D only, so that no
 2D run ever gets a new header); the LLM prompt describes the 3D world; and ``K_est`` weighs each layer's
-food by the share of the agents living in it (§27.10).
+food by the share of the agents living in it, while the extinction-risk test reads the floor layer's capacity
+alone (§27.10).
 
 Two module-scoped runs on ``tiny3d`` carry the end-to-end tests: a scripted live run whose log replays
 bitwise (the timed menu bounds are shrunk by a patch around the tests that need it, as in
@@ -29,7 +30,7 @@ import numpy as np
 import pytest
 
 from alife import cli, fields, metrics, runner
-from alife.config import Config, apply_overrides, config_from_dict, config_to_dict, dims, load_config
+from alife.config import Config, apply_overrides, config_from_dict, config_to_dict, dims, is_3d, load_config
 from alife.director import Director, actions, llm, log, pacing, prompt, yoked
 from alife.director.actions import MENU, ActionError
 from alife.director.rules import RULE_PARAMS, Context, Proposal
@@ -300,11 +301,12 @@ def _synthetic_row(step: int) -> dict[str, Any]:
 
 
 def _window_ctx(cfg: Config, persona: str) -> tuple[Context, Tracker]:
-    """A context over ten synthetic metrics rows (a population of 200, K_est 409), for the prompt builders."""
+    """A context over ten synthetic metrics rows (a population of 200, K_est 409; in 3D a floor layer's K of
+    250, which the extinction-risk test reads), for the prompt builders."""
     tr = Tracker(RULE_PARAMS)
     for step in range(10, 101, 10):
         tr.observe(_synthetic_row(step))
-    vitals = tr.vitals(tr.close(100), 409.0, 1024)
+    vitals = tr.vitals(tr.close(100), 409.0, 1024, k_floor=250.0 if is_3d(cfg) else None)
     env = actions.EnvView(1.0, 0.0, 0, 1.0, 0, np.ones(4, np.float32), np.zeros((4, 2), np.float32))
     ctx = Context(100, 0, persona, 8, cfg.world.size, vitals, pacing.fold([], 100), env)
     return ctx, tr
@@ -354,7 +356,9 @@ def test_the_3d_prompts_describe_the_3d_world(tiny3d_cfg: Config, tiny_cfg: Conf
             assert f"- {name} (cost" in system and text in system
     assert system2d.count("Menu:") == system.count("Menu:") == 1
     assert "World 128 x 128 x 24, 4 fertility patches. Decide what" in user
-    assert f"capacity estimate K_est 409{prompt.K_NOTE_3D}, window low" in user  # the occupancy rule, §27.10
+    # the occupancy-weighted K_est with its qualifier, then the floor layer's K the risk flag reads (§27.10)
+    floor = f"0.8 of the floor-layer capacity K_floor 250 ({prompt.K_FLOOR_NOTE_3D})"
+    assert f"capacity estimate K_est 409{prompt.K_NOTE_3D}, {floor}, window low" in user
 
 
 def test_the_3d_prompt_describes_the_occupancy_weighted_k_est(tiny3d_cfg: Config, tiny_cfg: Config) -> None:
@@ -371,15 +375,39 @@ def test_the_3d_prompt_describes_the_occupancy_weighted_k_est(tiny3d_cfg: Config
     )  # the layer is z < field_cell, which is not "grounded" (z <= r + floor_eps)
     assert user.count(note) == 1 and "floor-layer food only" not in user
     line = next(ln for ln in user.splitlines() if ln.startswith("viability:"))
-    assert "of the capacity estimate K_est 409" + note + ", window low" in line
+    assert (
+        "of the capacity estimate K_est 409" + note + ", 0.8 of the floor-layer capacity K_floor 250 ("
+        in line
+    )
     _, user2d = _messages(tiny_cfg, "gardener")
     assert "food weighted" not in user2d and "K_est 409, window low" in user2d  # 2D: no qualifier at all
+
+
+def test_the_3d_prompt_says_which_capacity_the_extinction_flag_reads(
+    tiny3d_cfg: Config, tiny_cfg: Config
+) -> None:
+    """The viability line gives both ratios in 3D, the occupancy-weighted one of the capacity estimate and the
+    floor layer's one the flag compares (§27.10), so the model is not left to read the flag off the wrong K.
+    The 2D line has no such clause (its bytes are pinned by sha256 above)."""
+    _, user = _messages(tiny3d_cfg, "gardener")
+    line = next(ln for ln in user.splitlines() if ln.startswith("viability:"))
+    assert (
+        prompt.K_FLOOR_NOTE_3D
+        == "the extinction-risk flag compares the population with this one, not with K_est"
+    )
+    assert line.count("K_floor") == 1 and line.count("capacity estimate K_est") == 1
+    assert (
+        line.index("capacity estimate K_est") < line.index("K_floor") < line.index("extinction-risk flag no")
+    )
+    _, user2d = _messages(tiny_cfg, "gardener")
+    assert "K_floor" not in user2d and "floor-layer capacity" not in user2d
 
 
 def test_the_director_vitals_use_the_occupancy_weighted_k_est(micro3d_cfg: Config, tmp_path: Path) -> None:
     """``Director._vitals`` reads ``metrics.carrying_capacity`` of the live state: the same patches give a
     floor-only K_est to agents that all rest on the floor and a larger one to agents spread over the column,
-    and ``n / K_est`` follows."""
+    and ``n / K_est`` follows. The floor layer's K, which the extinction-risk test reads, is the same for both
+    (it does not depend on where the agents are)."""
     cfg = apply_overrides(
         micro3d_cfg, ["director.enabled=true", "run.director=live", "director.rule_every=100"]
     )
@@ -394,9 +422,12 @@ def test_the_director_vitals_use_the_occupancy_weighted_k_est(micro3d_cfg: Confi
         v = director._vitals(s, 100)
         assert v.k_est == metrics.carrying_capacity(s, cfg, s.step, s.env) > 0
         assert v.n_over_k == pytest.approx(200.0 / v.k_est)
+        assert v.k_floor == metrics.floor_carrying_capacity(s, cfg, s.step, s.env) == _floor_layer_k(s, cfg)
+        assert v.n_over_k_floor == pytest.approx(200.0 / v.k_floor) and v.n_over_k_risk == v.n_over_k_floor
         got[name] = v
     floor_only = metrics.carrying_capacity(make_scene(cfg, []), cfg)  # nobody alive: the floor layer alone
     assert got["floor"].k_est == floor_only
+    assert got["floor"].k_floor == got["column"].k_floor == floor_only  # the risk test's K ignores the agents
     # all six layers are counted: two hold more than their even share (weight 1), four hold 1/8 against 1/6
     # (weight 0.75), so the weights sum to 5 and the floor-only value is more than doubled
     assert got["column"].k_est > 2 * floor_only
@@ -411,39 +442,53 @@ def _spread_scene(cfg: Config, n: int) -> State3:
     )
 
 
-def test_a_spread_population_is_flagged_at_three_times_the_floor_only_size(
+def _vitals_of(cfg: Config, s: State3, tmp_path: Path, name: str, n: float) -> Any:
+    """``Director._vitals`` at step 100 for the state ``s`` after windows that all read ``n`` alive."""
+    rd = RunDir.create(tmp_path / name, cfg)
+    director = Director(rd, cfg, "live", 0)
+    for step in range(10, 101, 10):
+        director.observe({**_synthetic_row(step), "n_alive": n, "n_alive_min": n - 10})
+    return director._vitals(s, 100)
+
+
+def test_a_spread_population_is_judged_against_the_floor_layer_not_the_occupancy_weighted_k(
     tiny3d_cfg: Config, tmp_path: Path
 ) -> None:
-    """A consequence of the occupancy rule for the extinction criterion (§27.10, a known limit): ``n / K_est``
-    is judged against the layers the agents live in, so agents spread over the column, such as the founders
-    and a rescue's immigrants (placed uniformly in the volume, §27.4), are flagged at about three times the
-    population that would be flagged on the floor layer alone. A rescue therefore raises the ``K_est`` it is
-    judged by: 200 agents spread over the six layers are at risk (``n / K_est`` under ``risk_k_frac``) where
-    200 agents on the floor are not, and the size that clears the flag is about 280 against about 82.
-    The 3D calibration of ``risk_k_frac`` is an open item of §27.13; this pins the arithmetic."""
+    """The extinction-risk test reads the floor layer's capacity in 3D (owner decision 2026-10-15, §27.10), so
+    where the agents live no longer moves the flag. Agents spread over the six layers have an
+    occupancy-weighted ``K_est`` of about 1 400 against the floor layer's 409, and 200 of them are under
+    ``risk_k_frac`` of the first (``n / K_est`` 0.14, the PR 6 rule flagged them) and at 0.49 of the second,
+    clear. The flag is the same for a spread population and a benthic one of the same size, and it is set
+    below 0.2·409 = 82 agents for both; ``n_over_k`` (the crowding ratio of the prompt and the log) is still
+    the occupancy-weighted one."""
     cfg = apply_overrides(
         tiny3d_cfg, ["director.enabled=true", "run.director=live", "director.rule_every=100"]
     )
     risk = RULE_PARAMS.risk_k_frac
     floor_only = metrics.carrying_capacity(make_scene(cfg, []), cfg)  # nobody alive: the floor layer alone
-    spread = {n: metrics.carrying_capacity(_spread_scene(cfg, n), cfg) for n in (40, 200, 250)}
-    assert all(k > 3 * floor_only for k in spread.values())  # an even column counts 3.5 floors' food
-    got = {}
-    for name, s in (
-        ("spread", _spread_scene(cfg, 200)),
-        ("floor", make_scene(cfg, [dict(pos=(4.0 + 5 * i, 8.0, 1.0)) for i in range(8)])),
-    ):
-        rd = RunDir.create(tmp_path / name, cfg)
-        director = Director(rd, cfg, "live", 0)
-        for step in range(10, 101, 10):
-            director.observe(_synthetic_row(step))  # 200 alive in every window
-        got[name] = director._vitals(s, 100)
-    assert got["floor"].k_est == floor_only and not got["floor"].extinction_risk  # 200 / 409 = 0.49
-    assert got["spread"].k_est == spread[200] and got["spread"].n_over_k < risk  # 200 / 1 400 = 0.14
-    assert got["spread"].extinction_risk
-    # the population that clears the flag: 0.2·K_est agents
-    assert risk * spread[200] > 3 * risk * floor_only
-    assert 250 / spread[250] < risk <= 250 / floor_only  # a recovered 250, still spread out, is still at risk
+    scenes = {
+        "spread": _spread_scene(cfg, 200),
+        "floor": make_scene(cfg, [dict(pos=(4.0 + 5 * i, 8.0, 1.0)) for i in range(8)]),
+    }
+    k_est = {name: metrics.carrying_capacity(s, cfg) for name, s in scenes.items()}
+    assert (
+        k_est["floor"] == floor_only and k_est["spread"] > 3 * floor_only
+    )  # an even column counts 3.5 floors
+    for n, flagged in ((60.0, True), (80.0, True), (85.0, False), (200.0, False), (250.0, False)):
+        for name, s in scenes.items():
+            v = _vitals_of(cfg, s, tmp_path, f"{name}{int(n)}", n)
+            assert v.k_floor == floor_only and v.n_over_k_floor == pytest.approx(n / floor_only)
+            assert v.k_est == k_est[name] and v.n_over_k == pytest.approx(n / k_est[name])
+            assert v.extinction_risk is flagged, (
+                name,
+                n,
+            )  # the same for both: only n and the floor layer count
+    # what the PR 6 rule did: the occupancy ratio of the spread population is under the threshold from 200 to
+    # 280 agents, where the floor layer's is far over it; the two ratios are different numbers in the vitals
+    assert 200 / k_est["spread"] < risk <= 200 / floor_only
+    assert 250 / k_est["spread"] < risk <= 250 / floor_only  # a recovered 250, still spread out
+    spread200 = _vitals_of(cfg, scenes["spread"], tmp_path, "again", 200.0)
+    assert spread200.n_over_k < risk <= spread200.n_over_k_floor and not spread200.extinction_risk
 
 
 # --- the scripted live run and its replay -----------------------------------------------------------------
@@ -663,16 +708,18 @@ def test_the_random_persona_runs_and_replays_in_3d(
 # --- real rules: the Gardener in 3D -----------------------------------------------------------------------
 
 
-FOUNDERS = (
-    150  # n / K_est is 0.12 at the first boundary, under 0.2: the rescue fires, and it clears at step 60
-)
+# 40 founders (PR 4's value): n / K_floor is 0.098 at the first boundary, under 0.2, so the extinction rescue
+# fires (131 immigrants, 0.1 of the occupancy-weighted K_est); the flag is set once more at step 40 by the
+# fall criterion (the founders' boom and bust; the rescue's cooldown blocks it, one journal note) and clears
+# at step 60. Under PR 6's occupancy rule the flag stayed set for the whole run at 40 founders and 150 were
+# started (n / K_est 0.12); under the floor-layer rule 150 founders are at 0.37 and no rescue fires.
+FOUNDERS = 40
 
 
-def _gardener_argv(out: Path, steps: int, *extra: str, founders: int = FOUNDERS) -> list[str]:
-    """The Gardener run of the tests. ``founders`` is 150 for the run that is resumed: with 40 (PR 4's value)
-    the occupancy rule leaves the extinction flag set, and the rescue blocked by its cooldown, at every
-    boundary (``gardener40``, §27.10), and a live resume then journals that blocked note a second time
-    (``test_a_blocked_note_is_journalled_once_across_a_resume``: a defect of the director, not of 3D)."""
+def _gardener_argv(out: Path, steps: int, *extra: str) -> list[str]:
+    """The Gardener run of the tests. Resumed at step 100, where no rule is blocked: the flag has cleared (a
+    rule that stays blocked across a live resume is journalled twice,
+    ``test_a_blocked_note_is_journalled_once_across_a_resume``: a defect of the director, not of 3D)."""
     return [
         "run",
         "--preset",
@@ -680,7 +727,7 @@ def _gardener_argv(out: Path, steps: int, *extra: str, founders: int = FOUNDERS)
         "--set",
         "brain.weight_dtype=float32",
         "--set",
-        f"population.n_init={founders}",
+        f"population.n_init={FOUNDERS}",
         "--set",
         "director.rule_every=20",
         "--set",
@@ -700,11 +747,41 @@ def _gardener_argv(out: Path, steps: int, *extra: str, founders: int = FOUNDERS)
     ]
 
 
+def _floor_layer_k(s: State3, cfg: Config) -> float:
+    """PR 4's ``K_est`` of the state, written out: the live regeneration of the floor layer over ``c_ref``."""
+    rate = _np(fields.regen_rate(s.patch_pos, cfg, s.step, s.env)).astype(np.int64)
+    c_ref = (
+        cfg.energy.basal_cost
+        + metrics.founder_brain_cost(cfg)
+        + 50  # layout.C_REF_MARGIN
+        + int(np.floor(np.float32(cfg.energy.buoyancy_cap_cost) * np.float32(cfg.mutation.buoy_init)))
+    )
+    return float(rate[0].sum()) / c_ref
+
+
 @pytest.fixture(scope="module")
-def gardener(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def gardener_run(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, list[tuple[int, Any, float]]]:
+    """The Gardener run of the tests (``FOUNDERS`` founders, 200 steps), with each boundary's vital signs and
+    the floor-layer ``K_est`` of the same state (written out by ``_floor_layer_k``) recorded as
+    ``(step, Vitals, floor-layer K_est)``."""
+    seen: list[tuple[int, Any, float]] = []
+    vitals = Director._vitals
+
+    def spy(self: Director, state: State3, t: int) -> Any:
+        v = vitals(self, state, t)
+        seen.append((t, v, _floor_layer_k(state, self.cfg)))
+        return v
+
     out = tmp_path_factory.mktemp("gardener3d") / "run"
-    assert cli.main(_gardener_argv(out, 200)) == 0
-    return out
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Director, "_vitals", spy)
+        assert cli.main(_gardener_argv(out, 200)) == 0
+    return out, seen
+
+
+@pytest.fixture(scope="module")
+def gardener(gardener_run: tuple[Path, list[tuple[int, Any, float]]]) -> Path:
+    return gardener_run[0]
 
 
 def test_a_short_gardener_run_in_3d_keeps_the_ledger_exact(gardener: Path) -> None:
@@ -732,9 +809,11 @@ def test_a_short_gardener_run_in_3d_keeps_the_ledger_exact(gardener: Path) -> No
 def test_the_vitals_of_a_3d_run_use_the_occupancy_weighted_k_est(gardener: Path, tmp_path: Path) -> None:
     """The ``k_est`` logged at the first boundary is ``metrics.carrying_capacity`` of the state before the
     director acted: the layers' regeneration weighted by where the agents live (§27.10), between the floor
-    layer's alone and all the layers'."""
+    layer's alone and all the layers'. Next to it the log carries the floor layer's K the risk flag read."""
     rcfg = apply_overrides(
-        load_config(preset="tiny3d", overrides=["brain.weight_dtype=float32", "population.n_init=150"]),
+        load_config(
+            preset="tiny3d", overrides=["brain.weight_dtype=float32", f"population.n_init={FOUNDERS}"]
+        ),
         [
             "director.enabled=true",
             "director.rule_every=20",
@@ -763,7 +842,12 @@ def test_the_vitals_of_a_3d_run_use_the_occupancy_weighted_k_est(gardener: Path,
     first = next(e for e in read_jsonl(gardener / DIRECTOR_LOG_FILE) if e.get("kind") != "header")
     assert first["vitals_step"] == 20 and first["vitals"]["k_est"] == round(k, 4)
     assert first["vitals"]["n_over_k"] == round(first["vitals"]["n_alive"] / k, 4)
+    k_floor = metrics.floor_carrying_capacity(s, rcfg, s.step, s.env)
+    assert k_floor == rate[0].sum() / c_ref and first["vitals"]["k_floor"] == round(k_floor, 4)
+    assert first["vitals"]["n_over_k_floor"] == round(first["vitals"]["n_alive"] / k_floor, 4)
     assert first["vitals"]["extinction_risk"] is True
+    assert first["reason"].startswith("n/K_floor 0.098, fall 0.0")  # the ratio the flag read (§27.10)
+    assert list(first["vitals"])[:5] == ["n_alive", "k_est", "n_over_k", "k_floor", "n_over_k_floor"]
 
 
 def test_a_resumed_3d_live_run_is_the_uninterrupted_run_and_its_log_replays(
@@ -786,63 +870,44 @@ def test_a_resumed_3d_live_run_is_the_uninterrupted_run_and_its_log_replays(
     assert cli.main(["inspect", str(rep), "--check"]) == 0
 
 
-# --- the rescue under the occupancy rule: a known limit (§27.10) ------------------------------------------
+# --- the rescue and the extinction flag in 3D (§27.10) ---------------------------------------------------
 
 
-def _floor_layer_k(s: State3, cfg: Config) -> float:
-    """PR 4's ``K_est`` of the state: the live regeneration of the floor layer over ``c_ref``."""
-    rate = _np(fields.regen_rate(s.patch_pos, cfg, s.step, s.env)).astype(np.int64)
-    c_ref = (
-        cfg.energy.basal_cost
-        + metrics.founder_brain_cost(cfg)
-        + 50  # layout.C_REF_MARGIN
-        + int(np.floor(np.float32(cfg.energy.buoyancy_cap_cost) * np.float32(cfg.mutation.buoy_init)))
-    )
-    return float(rate[0].sum()) / c_ref
-
-
-@pytest.fixture(scope="module")
-def gardener40(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, list[tuple[int, Any, float]]]:
-    """The Gardener run of PR 4 (40 founders, 200 steps), with each boundary's vital signs and the floor-layer
-    ``K_est`` of the same state recorded as ``(step, Vitals, floor-only K_est)``."""
-    seen: list[tuple[int, Any, float]] = []
-    vitals = Director._vitals
-
-    def spy(self: Director, state: State3, t: int) -> Any:
-        v = vitals(self, state, t)
-        seen.append((t, v, _floor_layer_k(state, self.cfg)))
-        return v
-
-    out = tmp_path_factory.mktemp("gardener3d_40") / "run"
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(Director, "_vitals", spy)
-        assert cli.main(_gardener_argv(out, 200, founders=40)) == 0
-    return out, seen
-
-
-def test_a_3d_rescue_raises_its_own_k_est_and_the_flag_stays_set(
-    gardener40: tuple[Path, list[tuple[int, Any, float]]],
+def test_a_3d_rescue_raises_its_own_k_est_but_no_longer_keeps_the_flag_set(
+    gardener_run: tuple[Path, list[tuple[int, Any, float]]],
 ) -> None:
-    """40 founders spread over the column are 0.03 of their ``K_est`` (1 309, 3.2x the floor layer's 409);
-    the rescue sends ``0.1·K_est`` immigrants, uniform in the volume, with a 1.5x regeneration pulse, so the
-    survivors and the immigrants keep every layer's weight near 1 and ``K_est`` rises to 1 700-2 000. The
-    population recovers to 250-290 agents (0.4 to 0.5 of the floor layer's value) and is still at
-    ``n / K_est`` 0.14 to 0.15 < ``risk_k_frac``: the extinction flag is set at every boundary, which the
-    floor-layer rule of PR 4 cleared at step 60. A limit of the rule to calibrate before a 3D director run
-    (§27.10, §27.13); this pins what the rule does so that changing it is a decision."""
-    out, seen = gardener40
+    """The scenario PR 6 recorded as a limit of the occupancy rule. 40 founders spread over the column are
+    0.03 of their ``K_est`` (1 309, 3.2x the floor layer's 409) and 0.098 of the floor layer's; the rescue
+    sends ``0.1·K_est`` immigrants (131), uniform in the volume, with a 1.5x regeneration pulse, so every
+    layer's weight stays near 1 and ``K_est`` rises to 1 700-2 000, 3.2x the floor layer's. The population
+    recovers to 250-290 agents and sits at ``n / K_est`` 0.14 to 0.15 < ``risk_k_frac``: the occupancy ratio
+    would keep the flag set at every boundary. The flag reads the floor layer's K (owner decision
+    2026-10-15): there the same population is at 0.40 to 0.48, and the flag clears at step 60 and stays
+    clear. The rescue still raises ``K_est`` (its size, the viability line and the log's ``n_over_k`` read
+    the occupancy-weighted value)."""
+    out, seen = gardener_run
     risk = RULE_PARAMS.risk_k_frac
     assert [t for t, _, _ in seen] == list(range(20, 201, 20))
     _, v0, floor0 = seen[0]
     assert v0.n_alive == 40 and v0.k_est > 3 * floor0 and v0.n_over_k < 0.05 and v0.extinction_risk
-    rescue = [e for e in read_jsonl(out / DIRECTOR_LOG_FILE) if e.get("action") == "immigration_pulse"]
+    assert v0.k_floor == floor0 and v0.n_over_k_floor == pytest.approx(40 / floor0)
+    assert v0.n_over_k_floor < risk
+    log_entries = [e for e in read_jsonl(out / DIRECTOR_LOG_FILE) if e.get("kind") != "header"]
+    rescue = [e for e in log_entries if e.get("action") == "immigration_pulse"]
+    # the size is 0.1 of the occupancy-weighted K_est, not of the floor layer's (41)
     assert (
         len(rescue) == 1 and abs(rescue[0]["params"]["count"] - RULE_PARAMS.rescue_imm_frac * v0.k_est) <= 1
     )
+    assert rescue[0]["params"]["count"] > 2 * RULE_PARAMS.rescue_imm_frac * floor0
+    assert (
+        len(log_entries) == 2
+    )  # the pulse and the immigrants, once: the flag never asks for a second rescue
     for t, v, floor_k in seen[3:]:  # from step 80, when the immigrants and their children are the population
         assert v.n_alive > 5 * 40 and v.k_est > 2.5 * floor_k, (t, v.n_alive, v.k_est)
-        assert v.n_over_k < risk <= v.n_alive / floor_k, (t, v.n_over_k, v.n_alive / floor_k)
-        assert v.extinction_risk  # the flag the floor layer's K_est would have cleared
+        assert v.k_floor == floor_k and v.n_over_k_floor == pytest.approx(v.n_alive / floor_k)
+        assert v.n_over_k < risk <= v.n_over_k_floor, (t, v.n_over_k, v.n_over_k_floor)
+        assert not v.extinction_risk  # the flag the occupancy-weighted ratio would have kept set
+    assert not any(v.extinction_risk for _, v, _ in seen[2:])  # clear from step 60
 
 
 @pytest.mark.parametrize("config", ["tiny_cfg", "tiny3d_cfg"])

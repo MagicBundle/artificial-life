@@ -69,6 +69,10 @@ K_NOTE_3D: Final = (
     " every layer's if they are spread evenly)"
 )
 
+# 3D only (§27.10): the extinction-risk flag compares the population with the floor layer's capacity, not
+# with ``K_est``, so the viability line gives that ratio as well. 2D vitals carry no ``k_floor``: no clause.
+K_FLOOR_NOTE_3D: Final = "the extinction-risk flag compares the population with this one, not with K_est"
+
 _METRICS: Final = (
     ("n_alive", "population", lambda b: b.window.n_alive_last),
     ("top_clade_share", "top clade share", lambda b: b.window.top_clade_share),
@@ -196,10 +200,16 @@ def _vitals_text(ctx: Context, p: RuleParams, k_note: str = "") -> str:
     per_k = 1000 / w.steps if w.steps else 0.0
     mono = f" (above {_f(p.mono_share)} since step {v.mono_since:,})" if v.mono_since is not None else ""
     last = pacing.steps_since_last(ctx.pacing, ctx.t)
+    floor = (
+        ""
+        if v.k_floor is None
+        else f", {_f(v.n_over_k_floor)} of the floor-layer capacity K_floor {_f(round(v.k_floor))} "
+        f"({K_FLOOR_NOTE_3D})"
+    )
     return "\n".join(
         [
             f"viability: population {_f(v.n_alive)} = {_f(v.n_over_k)} of the capacity estimate K_est "
-            f"{_f(round(v.k_est))}{k_note}, window low {_f(v.n_alive_min)}; births "
+            f"{_f(round(v.k_est))}{k_note}{floor}, window low {_f(v.n_alive_min)}; births "
             f"{_f(w.births * per_k)} / deaths {_f(w.deaths * per_k)} per 1k steps; fall within 50k steps "
             f"{_f(v.fall)}; extinction-risk flag {_f(v.extinction_risk)}; {_f(v.pop_frac_cap)} of the hard "
             f"capacity; largest body {_f(v.largest_body_frac)} of the population",

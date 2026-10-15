@@ -377,7 +377,9 @@ def _extinction_rescue(ctx: Context, p: RuleParams, persona: PersonaParams) -> O
         return None
     last = ctx.pacing.last_rule.get(EXTINCTION_RESCUE)
     override = last is None or ctx.t - last >= p.rescue_override_gap
-    why = f"n/K_est {_r(v.n_over_k)}, fall {_r(v.fall)}"
+    # 3D: the flag reads the floor layer's K (§27.10), so the reason names the ratio that set it (2D as ever)
+    ratio = f"n/K_est {_r(v.n_over_k)}" if v.k_floor is None else f"n/K_floor {_r(v.n_over_k_floor)}"
+    why = f"{ratio}, fall {_r(v.fall)}"
     mult, duration = p.rescue_regen
     count = round(p.rescue_imm_frac * v.k_est)
     parts = (("regen_pulse", {"mult": mult}, duration), ("immigration_pulse", {"count": count}, None))

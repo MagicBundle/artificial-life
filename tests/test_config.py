@@ -100,7 +100,8 @@ def test_preset_table_3d() -> None:
     assert (d.n, d.m, cfg.population.n_init, cfg.world.size) == (65536, 1024, 16384, 320.0)
     assert d.n_cap == 65536 - 1024 and d.dl == 2048
     assert (d.fg, d.fz, d.n_cells, d.field_shape) == (80, 20, 80 * 80 * 20, (20, 80, 80))
-    assert (d.g_hash, d.g_hash_z, d.k, d.c, d.q) == (53, 13, 8, 24, 27 * 24)  # hash grid G x G x G_z (§27.2)
+    # hash grid G x G x G_z (§27.2); C = 48 is provisional (cloud-7: a floor pile of 31 overflowed C = 24)
+    assert (d.g_hash, d.g_hash_z, d.k, d.c, d.q) == (53, 13, 8, 48, 27 * 48) and d.q == 1296
     assert d.cell_hash >= cfg.sensing.radius and d.cell_hash_z >= cfg.sensing.radius
     assert (d.lay.D_IN, d.lay.D_OUT, d.w1_rows, d.params) == (84, 39, 116, 4999)
     a, b = config_to_dict(cfg), config_to_dict(k64)
