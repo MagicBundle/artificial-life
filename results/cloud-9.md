@@ -1,4 +1,4 @@
-cloud-9 (PARTIAL, at step 12,000 of 20,000): **growth is levelling off.** n is 12,301, and per 500 steps it grew +321, +105, +143, +186 after step 10,000 (+677 before). n/K_est is steady at 0.77–0.78; n/floor-K is 2.60. **Peak occupancy reached 43 of 48** at step 10,705, with no overflow yet. Kills now exceed starvation deaths.
+cloud-9 (PARTIAL, at step 14,000 of 20,000): **the population has plateaued at about 12,500**: 12,489 / 12,500 / 12,509 / 12,490 at steps 12,500–14,000. n/K_est is 0.78–0.79 and n/floor-K 2.64. One more chunk (to 16,000) will give 3,000+ flat steps before stopping. No overflow; peak occupancy 43 of 48 (step 10,705).
 
 # cloud-9: DEV3D continuation to 20,000 steps (`3d/pr6-64k3d` at `a3d46eb`, C = 48)
 
@@ -34,11 +34,13 @@ cloud-9 (PARTIAL, at step 12,000 of 20,000): **growth is levelling off.** n is 1
 | 9001–10000 | 11546 | 13814 | 6479 / 5959 / 0 | 0.158 | 0.45/0.16/0.14/0.25 | 3.1/12.8/30.2 | 0.072 | 0 | 37 | 15396 | 4726 | 0.75 | 2.44 | 40103338 | 0.421/0.508/0.587 | 430 | 0.295 |
 | 10001–11000 | 11972 | 15184 | 7107 / 7570 / 81 | 0.144 | 0.43/0.17/0.14/0.26 | 3.4/13.5/30.6 | 0.071 | 0 | 43 | 15624 | 4727 | 0.77 | 2.53 | 43435329 | 0.416/0.508/0.590 | 339 | 0.294 |
 | 11001–12000 | 12301 | 16253 | 7256 / 8658 / 10 | 0.130 | 0.41/0.18/0.14/0.27 | 3.9/14.2/31.0 | 0.074 | 0 | 42 | 15841 | 4727 | 0.78 | 2.60 | 44628324 | 0.411/0.507/0.593 | 294 | 0.290 |
+| 12001–13000 | 12500 | 17507 | 7523 / 9777 / 8 | 0.127 | 0.41/0.18/0.15/0.26 | 4.1/14.5/30.8 | 0.072 | 0 | 32 | 15873 | 4727 | 0.79 | 2.64 | 46112301 | 0.412/0.509/0.597 | 260 | 0.297 |
+| 13001–14000 | 12490 | 18438 | 7450 / 10985 / 13 | 0.122 | 0.41/0.18/0.15/0.26 | 4.2/14.5/30.8 | 0.066 | 0 | 37 | 15998 | 4727 | 0.78 | 2.64 | 46423502 | 0.411/0.510/0.608 | 224 | 0.315 |
 
-n_alive every 500 steps: [(6000, 5981), (6500, 6521), (7000, 7117), (7500, 7857), (8000, 8542), (8500, 9338), (9000, 10170), (9500, 10869), (10000, 11546), (10500, 11867), (11000, 11972), (11500, 12115), (12000, 12301)]
-steps 6001–12000: overflow on 0 steps; peak occupancy 43 at step 10705
+n_alive every 500 steps: [(6000, 5981), (6500, 6521), (7000, 7117), (7500, 7857), (8000, 8542), (8500, 9338), (9000, 10170), (9500, 10869), (10000, 11546), (10500, 11867), (11000, 11972), (11500, 12115), (12000, 12301), (12500, 12489), (13000, 12500), (13500, 12509), (14000, 12490)]
+steps 6001–14000: overflow on 0 steps; peak occupancy 43 at step 10705
 
-**Throughput:** 0.635 steps/s (6,000–8,000) 0.662 steps/s (8,000–10,000) and 0.703 steps/s (10,000–12,000), alone on the CPU.
+**Throughput:** 0.635 steps/s (6,000–8,000) 0.662 steps/s (8,000–10,000) 0.703 steps/s (10,000–12,000) and 0.729 steps/s (12,000–14,000), alone on the CPU.
 
 **Reading at 8,000.**
 - **No plateau.** Growth is accelerating: +540 per 500 steps around step 6,000, up to +685 per 500 by
@@ -86,3 +88,25 @@ steps 6001–12000: overflow on 0 steps; peak occupancy 43 at step 10705
 - **Occupancy warning.** Peak occupancy jumped to **43** (step 10,705) and 42 in the next window, against
   C = 48. The rise with density is real. 64k3d at higher density may need C > 48, or a confirmation run.
 - One clade holds about 29%, and clades alive fell to 294.
+
+
+**Reading at 14,000.**
+- **Plateau.** n_alive every 500 steps from 12,500 is 12,489, 12,500, 12,509, 12,490: within ±0.1% over
+  1,500 steps.
+- **The balance at the plateau.**
+  - Births per 1,000 steps are still rising (17,507 → 18,438).
+  - They are matched by kills (9,777 → 10,985), which now outnumber starvation deaths (about 7,450 per 1,000)
+    by about 1.5×.
+  - The equilibrium is set by predation as much as by food.
+- **Calibration numbers at the plateau.**
+  - **n / K_est = 0.78–0.79** (12,500 / 15,873; 12,490 / 15,998).
+  - **n / floor-K = 2.64** (floor-K 4,727).
+  - The column structure is stable:
+    - band_frac 0.41 / 0.18 / 0.15 / 0.26;
+    - height median 14.5;
+    - surface share about 0.07;
+    - grounded share about 0.12.
+- **Occupancy.** Peaks of 32 and 37 in the last two windows. The all-time maximum is still 43, at step 10,705.
+  No overflow on any of the 8,000 steps since 6,000.
+- buoy_cap's upper tail is creeping up (q90 0.608) while the median holds at 0.51.
+- Clades are consolidating: 224 alive, top share 0.315.
