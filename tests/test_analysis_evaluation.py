@@ -214,6 +214,8 @@ def test_markdown_table_orders_arms_and_marks_missing_values() -> None:
     assert t[0] == "| arm | seed | coverage | novelty |"
     assert t[2:] == ["| A | 0 | 23 | 0.020 |", "| C | 0 | 87 | – |", "| C | 1 | 80 | – |"]
     assert ev.dig(summary["arms"][0], "coverage.final") == 80 and ev.dig({}, "a.b") is None
+    spaces = {"activity": {"spaces": {"marker_0.01": {"120k-1500k": {"class": "bounded"}}}}}
+    assert ev.dig(spaces, ("activity", "spaces", "marker_0.01", "120k-1500k", "class")) == "bounded"
 
 
 def test_legibility_sheet() -> None:

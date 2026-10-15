@@ -728,9 +728,10 @@ TABLE_COLUMNS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def dig(d: Any, dotted: str) -> Any:
-    """``d["a"]["b"]`` for ``"a.b"``, None if any step is missing."""
-    for k in dotted.split("."):
+def dig(d: Any, path: str | Sequence[str]) -> Any:
+    """``d["a"]["b"]`` for ``"a.b"`` (or the tuple ``("a", "b")``, for keys that contain a dot such as
+    ``marker_0.01``), None if any step is missing."""
+    for k in path.split(".") if isinstance(path, str) else path:
         if not isinstance(d, Mapping) or d.get(k) is None:
             return None
         d = d[k]
@@ -739,7 +740,7 @@ def dig(d: Any, dotted: str) -> Any:
 
 def markdown_table(
     summary: Mapping[str, Any],
-    columns: Sequence[tuple[str, str, str]] = TABLE_COLUMNS,
+    columns: Sequence[tuple[str | Sequence[str], str, str]] = TABLE_COLUMNS,
     order: Sequence[str] = (),
 ) -> str:
     """A Markdown table with one row per arm and seed (arms in ``order``, then the rest; seeds ascending)."""
