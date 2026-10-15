@@ -123,6 +123,16 @@ All metrics are computed by `python -m alife.analysis.evaluation` (`src/alife/an
 
 Pending.
 
+### 3.x Journal legibility (owner ratings)
+
+The sheet is [`evaluation/legibility_sheet.md`](evaluation/legibility_sheet.md): 10 LLM journal entries of arm C, 5 per
+seed, drawn uniformly without replacement (`journal_sample`, seed 0), each with the population and novelty the
+director saw, and B's rule-tier lines for comparison. Rated by the owner, 1 (opaque or wrong) to 5 (clear and accurate).
+
+| entry | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | mean |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| rating | pending | pending | pending | pending | pending | pending | pending | pending | pending | pending | – |
+
 ## 4. Verdict
 
 Pending.
