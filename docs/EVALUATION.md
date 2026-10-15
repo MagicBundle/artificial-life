@@ -14,7 +14,7 @@ does not depend on them.
 - **The coverage and novelty metrics mostly measure forced population oscillation, not heritable novelty.** On seed
   0, R's single random move (permanent seasons at step 1,199,000) took coverage from 22 to 83 cells in 300k steps and
   matched C's persistent novelty. C's own gains come mostly from the permanent seasons the model set. Read on
-  Bedau–Packard evolutionary activity, every arm on both seeds is **bounded**, director or not. C has 2.4–5 times the
+  Bedau–Packard evolutionary activity, every arm on both seeds is **bounded**, director or not. C has 2.4–4 times the
   rate of new adaptive activity in the cohort space, and neither the neutral shadow nor the heritability null comes
   close.
 - **Random moves at C's steps and budget (RC) do at least as well as the LLM on the §9 metrics, on both seeds:**
@@ -247,7 +247,7 @@ Against the two nulls (whole span, 120k–1.5M):
   normalised activity grew with it. In 1M–1.5M its cumulative normalised activity falls the most steeply of any arm
   (ρ = −0.16, cohort 200k). A sweep to monoculture is growth that ends; `docs/ACTIVITY.md` counts a class only when
   it holds across the component definitions.
-- **C sorts lineages faster.** Its rate is 2.4 to 5 times A's in the cohort space, the neutral shadow and the
+- **C sorts lineages faster.** Its rate is 2.4 to 4 times A's in the cohort space, the neutral shadow and the
   heritability null are near zero, and cohort components cannot contain immigrant lineages, so the excess is not
   immigration or drift. The likely cause is selection through the repeated bottlenecks (the crashes). R on seed 0,
   with one season, shows a much smaller rise in 1M–1.5M (13.7 against A's 11.7), and RC, with the same pace, budget
