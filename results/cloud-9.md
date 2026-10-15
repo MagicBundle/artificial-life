@@ -1,4 +1,4 @@
-cloud-9 (PARTIAL, at step 10,000 of 20,000): **still no plateau.** n is 11,546, but growth per 500 steps peaked at about +830 (8,500–9,000) and is now +677. n/floor-K is 2.44 and n/K_est 0.75. Killing is now about 48% of deaths. No overflow (peak occupancy 37 of 48).
+cloud-9 (PARTIAL, at step 12,000 of 20,000): **growth is levelling off.** n is 12,301, and per 500 steps it grew +321, +105, +143, +186 after step 10,000 (+677 before). n/K_est is steady at 0.77–0.78; n/floor-K is 2.60. **Peak occupancy reached 43 of 48** at step 10,705, with no overflow yet. Kills now exceed starvation deaths.
 
 # cloud-9: DEV3D continuation to 20,000 steps (`3d/pr6-64k3d` at `a3d46eb`, C = 48)
 
@@ -32,11 +32,13 @@ cloud-9 (PARTIAL, at step 10,000 of 20,000): **still no plateau.** n is 11,546, 
 | 7001–8000 | 8542 | 9227 | 4553 / 3249 / 0 | 0.207 | 0.49/0.15/0.12/0.24 | 2.2/10.4/29.1 | 0.076 | 0 | 31 | 14593 | 4722 | 0.59 | 1.81 | 28975975 | 0.433/0.507/0.579 | 578 | 0.213 |
 | 8001–9000 | 10170 | 11454 | 5425 / 4401 / 0 | 0.185 | 0.46/0.15/0.13/0.25 | 2.5/12.1/30.1 | 0.074 | 0 | 33 | 15103 | 4725 | 0.67 | 2.15 | 34624283 | 0.426/0.509/0.586 | 497 | 0.271 |
 | 9001–10000 | 11546 | 13814 | 6479 / 5959 / 0 | 0.158 | 0.45/0.16/0.14/0.25 | 3.1/12.8/30.2 | 0.072 | 0 | 37 | 15396 | 4726 | 0.75 | 2.44 | 40103338 | 0.421/0.508/0.587 | 430 | 0.295 |
+| 10001–11000 | 11972 | 15184 | 7107 / 7570 / 81 | 0.144 | 0.43/0.17/0.14/0.26 | 3.4/13.5/30.6 | 0.071 | 0 | 43 | 15624 | 4727 | 0.77 | 2.53 | 43435329 | 0.416/0.508/0.590 | 339 | 0.294 |
+| 11001–12000 | 12301 | 16253 | 7256 / 8658 / 10 | 0.130 | 0.41/0.18/0.14/0.27 | 3.9/14.2/31.0 | 0.074 | 0 | 42 | 15841 | 4727 | 0.78 | 2.60 | 44628324 | 0.411/0.507/0.593 | 294 | 0.290 |
 
-n_alive every 500 steps: [(6000, 5981), (6500, 6521), (7000, 7117), (7500, 7857), (8000, 8542), (8500, 9338), (9000, 10170), (9500, 10869), (10000, 11546)]
-steps 6001–10000: overflow on 0 steps; peak occupancy 37 at step 9878
+n_alive every 500 steps: [(6000, 5981), (6500, 6521), (7000, 7117), (7500, 7857), (8000, 8542), (8500, 9338), (9000, 10170), (9500, 10869), (10000, 11546), (10500, 11867), (11000, 11972), (11500, 12115), (12000, 12301)]
+steps 6001–12000: overflow on 0 steps; peak occupancy 43 at step 10705
 
-**Throughput:** 0.635 steps/s (6,000–8,000) and 0.662 steps/s (8,000–10,000), alone on the CPU.
+**Throughput:** 0.635 steps/s (6,000–8,000) 0.662 steps/s (8,000–10,000) and 0.703 steps/s (10,000–12,000), alone on the CPU.
 
 **Reading at 8,000.**
 - **No plateau.** Growth is accelerating: +540 per 500 steps around step 6,000, up to +685 per 500 by
@@ -66,3 +68,21 @@ steps 6001–10000: overflow on 0 steps; peak occupancy 37 at step 9878
   current trend n reaches K_est around 13,000–15,000, if the slowdown continues.
 - **The floor-layer K is flat at about 4,725**, so it says nothing about where this settles.
 - Peak occupancy is 37, at step 9,878, still under C = 48 with no overflow.
+
+
+**Reading at 12,000.**
+- **The population is approaching a plateau, at about 12,000–12,500 so far.**
+  - Per 500 steps after 10,000: +321, +105, +143, +186.
+  - Over 10,000–12,000 it grew only 755 in total, against 2,004 over 8,000–10,000.
+  - It is not yet flat for 3,000 steps, so the run continues.
+- **Predation is now the main cause of death.**
+  - Killed per 1,000 steps: 7,570, then 8,658.
+  - Starved per 1,000 steps: 7,107, then 7,256.
+  - The first aged deaths appear (81, then 10). Founder-era agents are reaching `max_age`.
+- **n/K_est has flattened at 0.77–0.78** (11,972/15,624 and 12,301/15,841). If n settles here, the
+  occupancy-weighted K_est overestimates the 3D equilibrium by about 1.25–1.3×. That is far better than the
+  about 4× at step 2,500, because K_est only became accurate once the column filled.
+- **n/floor-K is about 2.5–2.6.** The floor layer alone supports about 40% of the equilibrium.
+- **Occupancy warning.** Peak occupancy jumped to **43** (step 10,705) and 42 in the next window, against
+  C = 48. The rise with density is real. 64k3d at higher density may need C > 48, or a confirmation run.
+- One clade holds about 29%, and clades alive fell to 294.
