@@ -172,10 +172,11 @@ C (rule tier + LLM, Trickster), R (random, yoked to B) and RC (random, yoked to 
   on coverage and persistent novelty. No collapse.
 - **Criterion 2 passes as specified:** C beats B on both seeds (coverage 87 and 69 against 24 and 30). But one random
   seasons move (R, seed 0) gave nearly the same coverage and persistent novelty, and RC (random moves at C's steps
-  and budget) gave more coverage than C on seed 0 and the same persistent novelty. The archive's coverage and novelty
-  mostly measure forced population oscillation.
+  and budget) gave more coverage than C on both seeds (228 and 119 against 87 and 69) and slightly more persistent
+  novelty. The archive's coverage and novelty mostly measure forced population oscillation.
 - **Evolutionary activity is bounded in every arm** (one non-robust window in RC, seed 0, during a sweep to
-  monoculture). C has 2.4–5 times the rate of new adaptive activity, and RC less than C after 1M.
+  monoculture). C has 2.4–5 times A's rate of new adaptive activity and 1.3–3.9 times RC's, in every window and space
+  on both seeds: the one place where the LLM's choices beat random ones.
 - **C's cost:** repeated crashes to about a quarter of the reference population, 34 and 38 extinction rescues, and
   about 60% of rule windows at risk. The extinction-risk flag reads every seasonal trough as a crash.
 - **Immigrants rarely establish** (1 of 26,349 agents at the end of C on seed 0), so immigration pulses add no lasting

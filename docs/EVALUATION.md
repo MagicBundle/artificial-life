@@ -1,7 +1,7 @@
 # Director evaluation (`DIRECTOR.md` §9)
 
-Status: **draft** (2026-10-15). Arms A, B, C and R are finished and analysed on both seeds, RC on seed 0; s1_RC is
-running (resumed from step 460,730, §1.4), and the legibility ratings are with the owner. Sections that wait for them say so.
+Status: all arms finished and analysed (2026-10-16). The owner's legibility ratings (§3.8) are pending; the verdict
+does not depend on them.
 
 ## Answer
 
@@ -17,10 +17,11 @@ running (resumed from step 460,730, §1.4), and the legibility ratings are with 
   Bedau–Packard evolutionary activity, every arm on both seeds is **bounded**, director or not. C has 2.4–5 times the
   rate of new adaptive activity in the cohort space, and neither the neutral shadow nor the heritability null comes
   close.
-- **Random moves at C's steps and budget (RC) do at least as well as the LLM on the §9 metrics** (seed 0; seed 1
-  pending): 228 cells against C's 87, and the same persistent novelty (+0.0157 against +0.0152). The LLM's choices
-  show only in the evolutionary activity and the clades: C keeps a high rate of new adaptive activity to the end
-  (27.6 against RC's 10.5 in 1M–1.5M) and three clades, while RC ends in one lineage at 100%.
+- **Random moves at C's steps and budget (RC) do at least as well as the LLM on the §9 metrics, on both seeds:**
+  228 and 119 cells against C's 87 and 69, and slightly more persistent novelty (+0.0157 and +0.0077 against +0.0152
+  and +0.0065). The LLM's choices show in one place only: C's rate of new adaptive activity is higher than RC's in
+  every window and component space on both seeds (cohort, 120k–1M and 1M–1.5M: 27.2 and 27.6 against 20.9 and 10.5
+  on seed 0; 27.7 and 15.8 against 11.4 and 4.1 on seed 1).
 - **C pays in viability.** Its population fell to 25% and 29% of the reference, was "at risk" in about 60% of rule
   windows, and needed 34 and 38 extinction rescues. The rescue rule cannot tell a seasonal trough from a crash. The
   rescues used up the budget, so the model answered "none" in 36 and 37 of its 56 calls.
@@ -83,7 +84,7 @@ Wall time of the simulated steps (the rows' `wall_s`, excluding start-up and che
 | B | 6.24 | 6.69 |
 | C | 6.59 | 6.80 |
 | R | 6.66 | 6.53 |
-| RC | 6.67 | pending |
+| RC | 6.67 | 6.58 |
 
 ### 1.3 Smoke runs
 
@@ -127,7 +128,7 @@ The full output is in [`evaluation/`](evaluation/): `evaluation.json` (every num
 - **The director's own vital signs are recomputed for every arm**, the control included, with the director's code
   (`Tracker`, default `RuleParams`, a 1,000-step rule window), each arm's archive starting empty at the fork. The
   recomputation equals the vital signs the live directors logged with every one of their entries (novelty, coverage,
-  `fall` and `b_shift`: 1, 2, 108, 109, 10 and 3 entries checked for B, C and R on seeds 0 and 1; no mismatch).
+  `fall` and `b_shift`: 434 entries of B, C, R and RC on both seeds; no mismatch).
 - **Coverage:** grid cells (10 × 10 × 10 over the fraction of emitters, the fraction in bodies ≥ 4, and the predation
   ratio) ever visited, and the cells the control never visited.
 - **Novelty:** the director's novelty, the mean RMS distance of the window's ten-component behaviour descriptor to its
@@ -179,7 +180,7 @@ The full output is in [`evaluation/`](evaluation/): `evaluation.json` (every num
 | C | 0 | 87 | 83 | +0.0152 | 41 | -0.0002 | 0.0358 | 0.25 | False |
 | C | 1 | 69 | 62 | +0.0065 | 47 | -0.0030 | 0.0291 | 0.29 | False |
 | RC | 0 | 228 | 212 | +0.0157 | 52 | +0.0021 | 0.0343 | 0.29 | False |
-| RC | 1 | pending | | | | | | | |
+| RC | 1 | 119 | 110 | +0.0077 | 41 | +0.0027 | 0.0268 | 0.46 | False |
 
 - **B is almost A.** The Gardener's only rule that fired was the stagnation response, with an immigration pulse:
   646 agents at 1,199,000 (seed 0), 700 at 1,118,000 and 728 at 1,426,000 (seed 1). Its trajectory is A's until then.
@@ -218,7 +219,7 @@ Rate of new normalised activity, `A^N_new` per component per 10k steps:
 | C | 0 | 27.2 | 27.6 | 9.7 | 13.7 |
 | C | 1 | 27.7 | 15.8 | 8.2 | 4.5 |
 | RC | 0 | 20.9 | 10.5 | 6.2 | 4.5 |
-| RC | 1 | pending | | | |
+| RC | 1 | 11.4 | 4.1 | 4.5 | 2.8 |
 
 Against the two nulls (whole span, 120k–1.5M):
 
@@ -233,22 +234,24 @@ Against the two nulls (whole span, 120k–1.5M):
 | C | 0 | 27.39 | 0.17 | 0.00 | 11.12 | 0.44 | 0.35 |
 | C | 1 | 22.63 | 0.03 | 0.00 | 6.89 | 0.32 | 0.13 |
 | RC | 0 | 16.46 | 0.21 | 0.01 | 5.61 | 0.50 | 0.19 |
+| RC | 1 | 8.32 | 0.04 | 0.00 | 3.85 | 0.33 | 0.21 |
 
 - **Every arm is bounded** over the whole span, in every component space (cohort pools with horizons 100k, 200k and
   500k; marker components at rates 0.003 to 0.1), on both seeds. New adaptive lineages keep arising and nothing
   accumulates, as in `docs/ACTIVITY.md`.
 - **One exception, not robust: RC on seed 0, 120k–1M**, is classified unbounded in the cohort pools with horizons
   100k and 200k (12 of 24 informative settings in each), and bounded with horizon 500k and in all four marker spaces.
-  It is the only window of the 189 analysed (9 arms × 7 spaces × 3 windows) where any setting gives unbounded. It
-  coincides with a selective sweep: RC's top clade rose from 0.27 to 0.99 over 500k–1M, while one cohort lineage's
+  Of the 210 cells analysed (10 arm-seeds × 7 spaces × 3 windows), these are the only two with an unbounded primary
+  class; one more cell has unbounded swept settings with a bounded primary class (RC on seed 1, cohort 500k, 1M–1.5M:
+  6 of 18). The seed-0 cells coincide with a selective sweep: RC's top clade rose from 0.27 to 0.99 over 500k–1M, while one cohort lineage's
   normalised activity grew with it. In 1M–1.5M its cumulative normalised activity falls the most steeply of any arm
   (ρ = −0.16, cohort 200k). A sweep to monoculture is growth that ends; `docs/ACTIVITY.md` counts a class only when
   it holds across the component definitions.
 - **C sorts lineages faster.** Its rate is 2.4 to 5 times A's in the cohort space, the neutral shadow and the
   heritability null are near zero, and cohort components cannot contain immigrant lineages, so the excess is not
   immigration or drift. The likely cause is selection through the repeated bottlenecks (the crashes). R on seed 0,
-  with one season, shows a much smaller rise in 1M–1.5M (13.7 against A's 11.7). Whether random perturbation at C's
-  pace and budget does the same as C is the RC question (pending).
+  with one season, shows a much smaller rise in 1M–1.5M (13.7 against A's 11.7), and RC, with the same pace, budget
+  and rescues as C, stays well below C (§3.7).
 - On seed 1, C's rate halves in 1M–1.5M (27.7 → 15.8), as its top clade reaches 99% (§3.4).
 
 ### 3.3 Viability
@@ -264,6 +267,7 @@ Against the two nulls (whole span, 120k–1.5M):
 | C | 0 | 28,954 | 8,329 | 562,000 | 65% | 34 | 39,470 |
 | C | 1 | 31,573 | 9,201 | 747,000 | 59% | 38 | 44,778 |
 | RC | 0 | 34,653 | 9,632 | 458,000 | 74% | 47 | 45,232 |
+| RC | 1 | 35,401 | 14,905 | 451,000 | 44% | 39 | 37,910 |
 
 - No arm collapsed (minimum below 20% of the reference) or went extinct. C's and R's (seed 0) lowest points are 25–29%
   of the reference.
@@ -286,6 +290,7 @@ Against the two nulls (whole span, 120k–1.5M):
 | C | 0 | 3 | 0.56 | 2 | 0.00004 | 882 |
 | C | 1 | 2 | 0.99 | 1 | 0.00654 | 940 |
 | RC | 0 | 2 | 1.00 | 1 | 0.00108 | 746 |
+| RC | 1 | 3 | 0.83 | 2 | 0.00802 | 1206 |
 
 - Every arm coalesces: of about 31,500 lineages alive at the fork, 1 to 4 have descendants at 1.5M.
 - C does not prevent monoculture. On seed 0 its top clade ends at 0.56 (A 0.83), but on seed 1 it passes 0.95 by
@@ -308,6 +313,7 @@ Against the two nulls (whole span, 120k–1.5M):
 | C | 0 | 0.161 | 0.189 | 76.3 | 0.0423 | 0.0341 | 0.0326 |
 | C | 1 | 0.135 | 0.142 | 52.8 | 0.0397 | 0.0266 | 0.0236 |
 | RC | 0 | 0.121 | 0.167 | 65.4 | 0.0346 | 0.0387 | 0.0296 |
+| RC | 1 | 0.120 | 0.135 | 43.0 | 0.0261 | 0.0293 | 0.0249 |
 
 | arm | seed | applied | discretionary | safety | distinct (disc.) | entropy (bits) | cost / 100k |
 |---|---|---|---|---|---|---|---|
@@ -320,6 +326,7 @@ Against the two nulls (whole span, 120k–1.5M):
 | C | 0 | 83 | 27 | 56 | 6 | 2.30 | 6.16 |
 | C | 1 | 82 | 22 | 60 | 5 | 1.93 | 6.16 |
 | RC | 0 | 84 | 15 | 69 | 6 | 2.28 | 6.16 |
+| RC | 1 | 69 | 12 | 57 | 7 | 2.69 | 5.29 |
 
 "Applied" counts log entries other than reverts; a rescue is two entries. C's discretionary moves: seed 0, drift ×9,
 immigration ×7, fertility gain ×4, seasons ×4, habitat loss ×2, regen ×1; seed 1, immigration ×11, seasons ×4, drift
@@ -347,28 +354,31 @@ up, mostly by the rescues (§3.3). The C arms are therefore less "LLM-directed" 
 
 RC (`DIRECTOR.md` §15, PR #14) makes, at each step where C's log has discretionary entries, as many uniformly random
 eligible moves, under the Trickster's budget (6), cooldowns and safety rules. It isolates the quality of C's choices
-from the amount and timing of perturbation. Seed 1 is pending.
+from the amount and timing of perturbation.
 
-| seed 0 | C (LLM) | RC (random) |
-|---|---|---|
-| coverage (cells not in A) | 87 (83) | 228 (212) |
-| persistent novelty vs A (anchors, share above A) | +0.0152 (41, 100%) | +0.0157 (52, 100%) |
-| mean novelty | 0.0358 | 0.0343 |
-| discretionary moves made | 27 | 15 |
-| extinction rescues; windows at risk | 34; 65% | 47; 74% |
-| lowest population / reference | 0.25 | 0.29 |
-| top clade at 1.5M; fork lineages alive | 0.56; 2 | 1.00; 1 |
-| new activity, cohort 120k–1M / 1M–1.5M | 27.2 / 27.6 | 20.9 / 10.5 |
-| new activity, marker 120k–1M / 1M–1.5M | 9.7 / 13.7 | 6.2 / 4.5 |
+| | C, seed 0 | RC, seed 0 | C, seed 1 | RC, seed 1 |
+|---|---|---|---|---|
+| coverage (cells not in A) | 87 (83) | 228 (212) | 69 (62) | 119 (110) |
+| persistent novelty vs A (anchors, share above A) | +0.0152 (41, 100%) | +0.0157 (52, 100%) | +0.0065 (47, 89%) | +0.0077 (41, 95%) |
+| mean novelty | 0.0358 | 0.0343 | 0.0291 | 0.0268 |
+| discretionary moves made | 27 | 15 | 22 | 12 |
+| extinction rescues; windows at risk | 34; 65% | 47; 74% | 38; 59% | 39; 44% |
+| lowest population / reference | 0.25 | 0.29 | 0.29 | 0.46 |
+| top clade at 1.5M; fork lineages alive | 0.56; 2 | 1.00; 1 | 0.99; 1 | 0.83; 2 |
+| new activity, cohort 120k–1M / 1M–1.5M | 27.2 / 27.6 | 20.9 / 10.5 | 27.7 / 15.8 | 11.4 / 4.1 |
+| new activity, marker 120k–1M / 1M–1.5M | 9.7 / 13.7 | 6.2 / 4.5 | 8.2 / 4.5 | 4.5 / 2.8 |
 
-- **On the §9 metrics, random choice does as well as the model, or better.** RC made fewer moves (its budget went
-  to rescues even faster), yet covered 2.6 times as many cells. One of its draws was a season of period 3,056 and
-  amplitude 0.83 (from step 450k), whose fast cycles sweep the descriptor through the grid. Persistent novelty is the
-  same.
-- **The model's choices show in the evolutionary activity and the clades.** C sustains a high rate of new adaptive
-  activity to the end, where RC's falls by half after 1M, and C keeps two fork lineages and a top clade of 0.56 where
-  RC ends with one lineage at 100%. On seed 1, though, C itself ends at 0.99 (§3.4), so this difference needs seed 1's
-  RC before it counts.
+- **On the §9 metrics, random choice does as well as the model, or better, on both seeds.** RC made fewer moves (the
+  rescues took its budget even sooner), yet covered 1.7 to 2.6 times as many cells, with slightly more persistent
+  novelty. Its random seasons included fast ones (period 3,056 at amplitude 0.83 on seed 0), whose cycles sweep the
+  descriptor through the grid; on seed 1 it also drew the menu's catastrophe once, which C never chose.
+- **The model's choices show only in the evolutionary activity.** C's rate of new adaptive activity is higher than
+  RC's in all eight cells (two seeds × two windows × two spaces), by 1.3 to 3.9 times. In the cohort space RC's
+  rate falls by half or more after 1M, where C's holds (seed 0) or falls less (seed 1). Clade diversity does not separate them: C ends more
+  diverse on seed 0 and less on seed 1.
+- What C does differently, from its log: it sets seasons early and keeps them, and it alternates drift between ×4 and
+  ×0.5–0.6; RC's levers change at random. A plausible reading is that sustained, regular forcing (persistent seasons,
+  repeated crashes) selects among lineages more steadily than random forcing does; two seeds cannot establish it.
 
 ### 3.8 Journal legibility (owner ratings)
 
@@ -403,8 +413,10 @@ Legibility was not needed. Caveats, which change what the pass means:
 - evolutionary activity is bounded in C as in every arm; C raises the rate of new adaptive lineages, not their
   accumulation;
 - C buys its novelty with repeated crashes to a quarter of the reference population, and with 34–38 rescues;
-- against random moves at its own steps and budget (RC, seed 0), C does not win on coverage (87 against 228) and ties on
-  persistent novelty; it leads only on evolutionary activity and clade diversity (§3.7). Seed 1's RC is pending.
+- against random moves at its own steps and budget (RC), C loses on coverage on both seeds (87 against 228, 69
+  against 119) and is slightly behind on persistent novelty; it leads only on the rate of new adaptive activity, on
+  both seeds (§3.7). By the logic of §9 ("count as an improvement only if they beat R as well as A"), C's pass on
+  coverage and persistent novelty is not evidence that its choices help.
 
 ## 5. What this says about the director
 
@@ -426,7 +438,8 @@ Legibility was not needed. Caveats, which change what the pass means:
 
 - Two seeds. The spread between seeds is large for every directed arm (C's seed-1 rate halves late; R's seeds differ by
   one draw), so the effect sizes are indicative only.
-- The R and RC arms each have one random draw sequence per seed; R's seed-0 result rests on a single draw.
+- The R and RC arms each have one random draw sequence per seed; R's seed-0 result rests on a single draw, and RC's
+  coverage on a few strong seasons.
 - s0_R, s0_RC and s1_RC were each resumed once (§1.4).
 - Coverage, novelty and persistent novelty use the director's own definitions and archive, recomputed per arm; the
   archive is path-dependent, so novelty compares how each arm moves relative to its own past.
@@ -447,7 +460,7 @@ uv run alife activity runs/eval_s0_B --out analysis_cache/eval/s0_B --windows 12
 (The same for every other arm, `--out analysis_cache/eval/s<seed>_<arm>`.)
 
 ```bash
-uv run python -m alife.analysis.evaluation --arm 0:A:runs/64k_s0:120000 --arm 0:B:runs/eval_s0_B --arm 0:C:runs/eval_s0_C --arm 0:R:runs/eval_s0_R --arm 1:A:runs/eval_s1_A --arm 1:B:runs/eval_s1_B --arm 1:C:runs/eval_s1_C --arm 1:R:runs/eval_s1_R --base 0:runs/64k_s0 --base 1:runs/eval_s1_base --activity-root analysis_cache/eval --out docs/evaluation --lineages --plots --journal-sample 0:C:5 --journal-sample 1:C:5 --legibility-compare B
+uv run python -m alife.analysis.evaluation --arm 0:A:runs/64k_s0:120000 --arm 0:B:runs/eval_s0_B --arm 0:C:runs/eval_s0_C --arm 0:R:runs/eval_s0_R --arm 0:RC:runs/eval_s0_RC --arm 1:A:runs/eval_s1_A --arm 1:B:runs/eval_s1_B --arm 1:C:runs/eval_s1_C --arm 1:R:runs/eval_s1_R --arm 1:RC:runs/eval_s1_RC --base 0:runs/64k_s0 --base 1:runs/eval_s1_base --activity-root analysis_cache/eval --out docs/evaluation --lineages --plots --journal-sample 0:C:5 --journal-sample 1:C:5 --legibility-compare B
 ```
 
 Each `alife activity` call takes about 3.5 minutes and 7 GB; the evaluation takes about one minute with `--lineages`.
