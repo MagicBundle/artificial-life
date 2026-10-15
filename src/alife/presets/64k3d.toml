@@ -41,15 +41,16 @@ buoyancy_max = 0.04
 # needs more than 0.0625 at this gravity), and it barely changed the ecology where it could run.
 k_neighbors = 8
 # C = 48, PROVISIONAL, pending `alife bench --preset 64k3d --stages` on the Mac. It was 24 until the cloud run of
-# the slow DEV3D test (cloud-7, C = 24): one floor hash cell stayed over capacity from step 2151 to the end of the
-# run, a floor pile still growing (peak occupancy 31, over C on 11.96 % of the steps against a 1 % gate). Earlier
-# cloud evidence: a floor pile under gravity reached 28 agents per hash cell in the crowd tests (a converging ball
-# without gravity 36), no cell overflowed at C = 16 on tiny3d and DEV3D at the default regen_max of 320 (peak
-# occupancy 13), and the food at regen_max 1 700 can feed about 20 agents in the hottest floor hash cell (p99 20,
-# max 23; 2D 64k: max 5 against C = 16). C = 48 holds the pile of 31 with a margin of 1.5x. The price: Q = 27 C =
-# 1 296 candidates per agent (2D 144, 648 at C = 24), about 2.1x the step time of C = 16 and 1.6x that of C = 24
-# on the cloud CPU (DEV3D), and (N, Q) neighbour-search transients of 340 MB each (170 MB at C = 24). If the bench
-# finds C = 48 too costly, the alternative is a lower regen_max (fewer agents per cell, K_est recalibrated).
+# the slow DEV3D test (cloud-7, C = 24): one floor hash cell was first over capacity at step 2151 (5 steps) and then
+# continuously from step 2207 to the end of the run, a floor pile still growing (peak occupancy 31, over C on 11.96 %
+# of the steps against a 1 % gate). Earlier cloud evidence: a floor pile under gravity reached 28 agents per hash
+# cell in the crowd tests (a converging ball without gravity 36), no cell overflowed at C = 16 on tiny3d and DEV3D
+# at the default regen_max of 320 (peak occupancy 13), and the food at regen_max 1 700 can feed about 20 agents in
+# the hottest floor hash cell (p99 20, max 23; 2D 64k: max 5 against C = 16). C = 48 holds the pile of 31 with a
+# margin of 1.5x. The price: Q = 27 C = 1 296 candidates per agent (2D 144, 648 at C = 24), about 2.1x the step
+# time of C = 16 and 1.6x that of C = 24 on the cloud CPU (DEV3D), and (N, Q) neighbour-search transients of 340 MB
+# each (170 MB at C = 24). If the bench finds C = 48 too costly, the alternative is a lower regen_max (fewer
+# agents per cell, K_est recalibrated).
 cell_capacity = 48
 
 [energy]

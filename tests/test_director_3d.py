@@ -43,7 +43,7 @@ from alife.runio import (
     load_checkpoint,
     read_jsonl,
 )
-from alife.state import CounterIdx, DeathCause, State3, init_state, state_digest, to_numpy
+from alife.state import CounterIdx, DeathCause, State, State3, init_state, state_digest, to_numpy
 from helpers import make_scene, run_checked, scripted_decide
 
 PERF = {"wall_s", "steps_per_s", "peak_mem_gb"}
@@ -442,13 +442,18 @@ def _spread_scene(cfg: Config, n: int) -> State3:
     )
 
 
-def _vitals_of(cfg: Config, s: State3, tmp_path: Path, name: str, n: float) -> Any:
-    """``Director._vitals`` at step 100 for the state ``s`` after windows that all read ``n`` alive."""
+def _director_after(cfg: Config, tmp_path: Path, name: str, n: float) -> Director:
+    """A live director that has observed ten windows (steps 10 to 100) that all read ``n`` alive."""
     rd = RunDir.create(tmp_path / name, cfg)
     director = Director(rd, cfg, "live", 0)
     for step in range(10, 101, 10):
         director.observe({**_synthetic_row(step), "n_alive": n, "n_alive_min": n - 10})
-    return director._vitals(s, 100)
+    return director
+
+
+def _vitals_of(cfg: Config, s: State | State3, tmp_path: Path, name: str, n: float) -> Any:
+    """``Director._vitals`` at step 100 for the state ``s`` after windows that all read ``n`` alive."""
+    return _director_after(cfg, tmp_path, name, n)._vitals(s, 100)
 
 
 def test_a_spread_population_is_judged_against_the_floor_layer_not_the_occupancy_weighted_k(
@@ -489,6 +494,56 @@ def test_a_spread_population_is_judged_against_the_floor_layer_not_the_occupancy
     assert 250 / k_est["spread"] < risk <= 250 / floor_only  # a recovered 250, still spread out
     spread200 = _vitals_of(cfg, scenes["spread"], tmp_path, "again", 200.0)
     assert spread200.n_over_k < risk <= spread200.n_over_k_floor and not spread200.extinction_risk
+
+
+# The logged vitals of a 2D director, in order: the keys of build step 2 (a 3D entry adds k_floor and
+# n_over_k_floor after n_over_k).
+LOG_KEYS_2D = [
+    "n_alive",
+    "k_est",
+    "n_over_k",
+    "fall",
+    "extinction_risk",
+    "top_clade_share",
+    "novelty",
+    "coverage",
+    "new_cells_200k",
+    "b_shift",
+]
+
+
+def test_a_2d_director_carries_one_k_through_its_vitals_log_rescue_and_prompt(
+    tiny_cfg: Config, tmp_path: Path
+) -> None:
+    """The 3D-only gate of ``Director._vitals`` (§27.10), through the director itself. A 2D world has one K,
+    so the vitals carry no ``k_floor``, the logged vitals are the keys of build step 2 in their order, the
+    rescue's reason names ``n/K_est`` and the prompt has no floor-layer clause. That keeps a 2D
+    ``director.jsonl``, its replay and its prompts byte-identical and ``RULES_VERSION`` at 1. The sha256 pins
+    of the 2D prompts and the vitals tests build their own vitals and never pass through the gate."""
+    cfg = apply_overrides(tiny_cfg, ["director.enabled=true", "run.director=live", "director.rule_every=100"])
+    assert not is_3d(cfg)
+    s = init_state(cfg)
+    director = _director_after(cfg, tmp_path, "vitals", 20.0)
+    v = director._vitals(s, 100)
+    assert v.k_floor is None and v.n_over_k_floor is None
+    assert v.n_over_k_risk == v.n_over_k == pytest.approx(20.0 / v.k_est)
+    assert v.n_over_k < RULE_PARAMS.risk_k_frac
+    assert v.extinction_risk and list(v.compact()) == LOG_KEYS_2D
+    ctx = director._context(s, v, 100, [])
+    user = prompt.user_message(ctx, RULE_PARAMS, cfg, director.tracker.history, [], [], [])
+    assert "capacity estimate K_est" in user and f"K_est {round(v.k_est)}, window" in user
+    assert "K_floor" not in user and "floor-layer capacity" not in user and "food weighted" not in user
+    # the entries of a rescue at the same boundary: the reason and the logged vitals of 2D
+    decided = _director_after(cfg, tmp_path, "rescue", 20.0)
+    decided._decide(s, 100)
+    assert {e["action"] for e in decided.applied} == {"regen_pulse", "immigration_pulse"}
+    for e in decided.applied:
+        assert e["reason"].startswith(f"n/K_est {round(v.n_over_k, 3)}, fall ")
+        assert "K_floor" not in e["reason"]
+        assert list(e["vitals"]) == LOG_KEYS_2D
+    on_disk = [r for r in read_jsonl(tmp_path / "rescue" / DIRECTOR_LOG_FILE) if r.get("kind") != "header"]
+    assert on_disk == decided.applied  # what is written is what is applied: no 3D key reaches the log
+    assert "K_floor" not in (tmp_path / "rescue" / DIRECTOR_LOG_FILE).read_text()
 
 
 # --- the scripted live run and its replay -----------------------------------------------------------------
@@ -879,12 +934,12 @@ def test_a_3d_rescue_raises_its_own_k_est_but_no_longer_keeps_the_flag_set(
     """The scenario PR 6 recorded as a limit of the occupancy rule. 40 founders spread over the column are
     0.03 of their ``K_est`` (1 309, 3.2x the floor layer's 409) and 0.098 of the floor layer's; the rescue
     sends ``0.1·K_est`` immigrants (131), uniform in the volume, with a 1.5x regeneration pulse, so every
-    layer's weight stays near 1 and ``K_est`` rises to 1 700-2 000, 3.2x the floor layer's. The population
-    recovers to 250-290 agents and sits at ``n / K_est`` 0.14 to 0.15 < ``risk_k_frac``: the occupancy ratio
-    would keep the flag set at every boundary. The flag reads the floor layer's K (owner decision
-    2026-10-15): there the same population is at 0.40 to 0.48, and the flag clears at step 60 and stays
-    clear. The rescue still raises ``K_est`` (its size, the viability line and the log's ``n_over_k`` read
-    the occupancy-weighted value)."""
+    layer's weight stays near 1 and ``K_est`` rises from 1 309 to 1 700-2 050, 2.8 to 3.3x the floor layer's
+    capacity (614 under the pulse). The population recovers to 250-290 agents and sits at ``n / K_est`` 0.14
+    to 0.15 < ``risk_k_frac``: the occupancy ratio would keep the flag set at every boundary. The flag reads
+    the floor layer's K (owner decision 2026-10-15): there the same population is at 0.40 to 0.48, and the
+    flag clears at step 60 and stays clear. The rescue still raises ``K_est`` (its size, the viability line
+    and the log's ``n_over_k`` read the occupancy-weighted value)."""
     out, seen = gardener_run
     risk = RULE_PARAMS.risk_k_frac
     assert [t for t, _, _ in seen] == list(range(20, 201, 20))
@@ -899,9 +954,13 @@ def test_a_3d_rescue_raises_its_own_k_est_but_no_longer_keeps_the_flag_set(
         len(rescue) == 1 and abs(rescue[0]["params"]["count"] - RULE_PARAMS.rescue_imm_frac * v0.k_est) <= 1
     )
     assert rescue[0]["params"]["count"] > 2 * RULE_PARAMS.rescue_imm_frac * floor0
-    assert (
-        len(log_entries) == 2
-    )  # the pulse and the immigrants, once: the flag never asks for a second rescue
+    # one rescue: the pulse and the immigrants. The flag is set once more, at step 40 by the fall criterion
+    # (the founders' boom and bust), and the rescue's cooldown blocks that request: a single journal note.
+    # The count of log entries does not tell the two K's apart; the per-boundary flags below do.
+    assert len(log_entries) == 2
+    notes = [ln for ln in read_jsonl(out / JOURNAL_FILE) if "blocked" in ln.get("text", "")]
+    assert [(ln["step"], ln["text"].split(" (")[0]) for ln in notes] == [(40, "extinction_rescue")]
+    assert "n/K_floor" in notes[0]["text"] and "cooling down" in notes[0]["text"]
     for t, v, floor_k in seen[3:]:  # from step 80, when the immigrants and their children are the population
         assert v.n_alive > 5 * 40 and v.k_est > 2.5 * floor_k, (t, v.n_alive, v.k_est)
         assert v.k_floor == floor_k and v.n_over_k_floor == pytest.approx(v.n_alive / floor_k)

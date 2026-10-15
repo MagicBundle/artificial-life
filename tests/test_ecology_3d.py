@@ -13,8 +13,9 @@ the arithmetic of §27.13), as ``64k3d``'s is of its 33 600: the founders' first
 population by 1.4 to 1.7, and the cloud run seeded at 2.5x that ``K_est`` (5x the floor-only one) boomed and
 crashed. Seeding at 1x was not tried: the value is a hedge that the owner signs off.
 ``C = 48`` is provisional, pending ``alife bench --stages`` on the Mac (DESIGN §27.13). It was 24 until this
-test failed its overflow gate at that value on the cloud worker (cloud-7): one floor pile grew past 24 from
-step 2151 and was still growing (peak occupancy 31, over capacity on 11.96% of the steps). The gate itself is
+test failed its overflow gate at that value on the cloud worker (cloud-7): one floor pile first passed 24 at
+step 2151, was over it continuously from step 2207 and was still growing (peak occupancy 31, over capacity on
+11.96% of the steps). The gate itself is
 unchanged (at most 1% of the steps); a pile that keeps growing past 48 would fail it again.
 The assertions are the 2D ones that make sense in 3D (never extinct, not pinned at ``N_CAP``, births, bonds
 and landed attacks, a clean state), plus the 3D terms: floor contacts (also late in the run),

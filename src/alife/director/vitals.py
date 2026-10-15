@@ -1,10 +1,11 @@
 """Vital signs from metrics rows (DIRECTOR.md §4): window aggregates, the behaviour descriptor, the tracker.
 
-Everything is a pure function of ``metrics.jsonl`` rows (plus the one live input ``K_est``, which is not
-stored), so the ``Tracker`` rebuilt from the rows on disk equals the one a live run built (A7). Rows are
-aggregated over the rule window and weighted by ``row["steps"]`` (short rows exist after an interrupted run);
-the wall-clock keys (``wall_s``, ``steps_per_s``, ``peak_mem_gb``) are never read. A heavy key that is absent
-or None (an empty world, a non-heavy row) is skipped, and a descriptor component that is missing counts as 0.
+Everything is a pure function of ``metrics.jsonl`` rows (plus the live inputs, which are not stored:
+``K_est`` and, in 3D, the floor layer's ``k_floor``, §27.10), so the ``Tracker`` rebuilt from the rows on
+disk equals the one a live run built (A7). Rows are aggregated over the rule window and weighted by
+``row["steps"]`` (short rows exist after an interrupted run); the wall-clock keys (``wall_s``,
+``steps_per_s``, ``peak_mem_gb``) are never read. A heavy key that is absent or None (an empty world, a
+non-heavy row) is skipped, and a descriptor component that is missing counts as 0.
 """
 
 from __future__ import annotations
@@ -168,7 +169,8 @@ class Boundary:
 
 @dataclass(frozen=True)
 class Vitals:
-    """What the rules see at a boundary (the window plus history, the archive and the live ``K_est``)."""
+    """What the rules see at a boundary (the window plus history, the archive and the live ``K_est``, with the
+    floor layer's ``k_floor`` in 3D)."""
 
     step: int
     origin: int | None  # start of the first window this run directory ever saw
