@@ -1,4 +1,4 @@
-cloud-8 (PAUSED on owner instruction, 2026-10-15): **test_ecology_3d PASSES at C = 48**; fast suite green (2 expected xfails); goldens pass; digest compare identical. The 6,000-step DEV3D run was stopped during steps 3,000–4,500. Over steps 1–3,000 there was no overflow, but peak occupancy rose to 36 of 48. The population was growing again (4,030 at step 4,000, n/floor-K 0.90).
+cloud-8 (RESUMED; PARTIAL, step 3 at 4,500 of 6,000): **test_ecology_3d PASSES at C = 48**; fast suite green; goldens pass; digest compare identical. Long DEV3D run: **no overflow through step 4,500, and peak occupancy has levelled off at 30–37** (max 37 at step 3,610). The population is still rising (4,465, n/floor-K 0.98). Steps 4,500–6,000 are running.
 
 # cloud-8: 3D PR 6 recheck (`3d/pr6-64k3d` at `a3d46eb`) on Linux CPU
 
@@ -99,3 +99,39 @@ steps 1–3000: overflow on 0 steps; peak occupancy 36 at step 2896
   about 0.24–0.31.
 - After a low of about 3,010 near step 2,000, the population is growing again: 3,170 → 3,388 → 3,660 → 4,030 by
   step 4,000. Combined with the rising peak occupancy, the floor is getting more crowded, not settling.
+
+
+## Step 3, resumed (owner instruction, 2026-10-15 20:12)
+
+**Resume.**
+- Resumed from the saved 3,000-step state via `runio.load_checkpoint`, with the same chunk script.
+- Chunk 3,000–4,500 ran alone on the CPU: 2,776 s, 0.54 steps/s.
+- **Determinism check:** the n_alive, K_est and floor-K values it recorded at steps 3,500 and 4,000 are
+  identical to the ones written by the interrupted attempt.
+
+**Window table.** Rows 3001–3500 onward replace the K-only rows above.
+
+| steps | n_alive (end) | grounded share (mean) | steps with overflow | max cell_overflow | peak occupancy (C = 48) | floor clamps | HEAT_BUOYANCY | K_est (end) | floor-layer K (end) | n / floor K |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1–500 | 3664 | 0.086 | 0 | 0 | 12 | 166063 | 9110855 | 13644 | 4208 | 0.87 |
+| 501–1000 | 3192 | 0.202 | 0 | 0 | 11 | 309454 | 6400622 | 13259 | 4236 | 0.75 |
+| 1001–1500 | 3043 | 0.259 | 0 | 0 | 16 | 363383 | 5810667 | 13012 | 4271 | 0.71 |
+| 1501–2000 | 3013 | 0.285 | 0 | 0 | 18 | 390170 | 5631982 | 12763 | 4310 | 0.70 |
+| 2001–2500 | 3170 | 0.301 | 0 | 0 | 32 | 415089 | 5669953 | 12812 | 4352 | 0.73 |
+| 2501–3000 | 3388 | 0.305 | 0 | 0 | 36 | 446541 | 6000192 | 12717 | 4398 | 0.77 |
+| 3001–3500 | 3660 | 0.298 | 0 | 0 | 32 | 471210 | 6460076 | 12906 | 4446 | 0.82 |
+| 3501–4000 | 4030 | 0.282 | 0 | 0 | 37 | 489205 | 7053910 | 13089 | 4491 | 0.90 |
+| 4001–4500 | 4465 | 0.271 | 0 | 0 | 32 | 517333 | 7756446 | 13320 | 4535 | 0.98 |
+
+steps 1–4500: overflow on 0 steps; peak occupancy 37 at step 3610
+peak occupancy per 100 steps since 2500: [31, 33, 32, 36, 36, 32, 31, 30, 31, 32, 35, 37, 34, 34, 31, 31, 31, 31, 32, 32]
+
+
+**Reading at 4,500.**
+- **Peak occupancy is levelling off, not climbing to 48.** Per-100-step peaks since step 2,500 are
+  31, 33, 32, 36, 36, 32, 31, 30, 31, 32, 35, 37, 34, 34, 31, 31, 31, 31, 32, 32. The all-time maximum is 37,
+  at step 3,610.
+- That leaves a margin of 11 or more against C = 48. **No overflow on any of the 4,500 steps.**
+- The population keeps growing: 3,388 → 3,660 → 4,030 → 4,465. n / floor-K reaches 0.98.
+- The grounded share eases from 0.305 to 0.271 as the population grows: the extra agents live off the floor.
+  The floor pile is not getting denser.
