@@ -23,6 +23,13 @@ The model, from how the engine applies a season (``fields.fertility``, ``fields.
   ``1 - (lowest capacity of the current window) / (highest window mean over the fall window)``, each window
   under the regime in force in it. It is the fall the seasons force at *this* phase (zero at a peak, the
   full swing at a trough), and includes the jump of a regime that has just been switched on.
+- The regeneration multiplier (``env.regen_mult``, a regen pulse's lever) scales the capacity of a window
+  and is recorded per window in the rows' ``env``. The exemption never exceeds what the seasons and the
+  multiplier **together** force: ``forced_fall`` is the lower of the fall with the seasons alone and the
+  fall with each window's multiplier. A pulse begun after the last peak raises the capacity of the current
+  window against the peak's, so the seasons' share is overstated and the second is the lower; a pulse that
+  has ended drops the capacity back, which no season forced, and the first is the lower (the drop stays
+  flagged, as in version 1). With the multiplier 1 in every window the two are the same number.
 - The **excess** divides the forced ratio out of the observed one: ``1 - (1 - fall) / (1 - forced)``. A fall
   of 0.50 where the seasons force 0.42 is an excess of 0.14; a collapse to a tenth of the reference where
   they force 0.42 is an excess of 0.84.
@@ -33,6 +40,7 @@ the metrics rows' ``env``), so the tracker's fold stays deterministic.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any, Final, NamedTuple
 
@@ -50,6 +58,14 @@ class CapacityShape(NamedTuple):
 
     amp: float
     table: tuple[float, ...]
+
+
+def regen_mult_of(env: Mapping[str, Any] | None) -> float:
+    """The regeneration multiplier a metrics row's ``env`` summary records; 1.0 if it records none (or
+    something that is not a positive finite number, which the engine's lever range does not allow)."""
+    mult = env.get("regen_mult") if env else None
+    ok = isinstance(mult, int | float) and not isinstance(mult, bool) and math.isfinite(mult) and mult > 0
+    return float(mult) if ok else 1.0
 
 
 def regime_of(env: Mapping[str, Any] | None) -> Regime | None:
@@ -72,25 +88,43 @@ def capacity(shape: CapacityShape, regime: Regime | None, steps: np.ndarray) -> 
     return 1.0 + (amp / shape.amp) * dev
 
 
-def window_stats(shape: CapacityShape, regime: Regime | None, lo: float, hi: float) -> tuple[float, float]:
+def window_stats(
+    shape: CapacityShape, regime: Regime | None, lo: float, hi: float, mult: float = 1.0
+) -> tuple[float, float]:
     """The mean and the lowest value of the modelled capacity over the window ``(lo, hi]``, from its values
     at the ends of ``WINDOW_PARTS`` equal parts (the mean by the trapezoid rule). The ends are read because
     the population's window minimum is a per-step minimum, which on a rising or falling stretch sits at an
-    edge."""
+    edge. ``mult`` is the regeneration multiplier the window ran with (the capacity is proportional to it)."""
     c = capacity(shape, regime, np.linspace(lo, hi, WINDOW_PARTS + 1))
+    if mult != 1.0:
+        c = c * mult
     return float((c.sum() - 0.5 * (c[0] + c[-1])) / WINDOW_PARTS), float(c.min())
 
 
 def forced_fall(
-    shape: CapacityShape, windows: Sequence[tuple[Regime | None, float, float]], current: int = -1
+    shape: CapacityShape,
+    windows: Sequence[tuple[Regime | None, float, float] | tuple[Regime | None, float, float, float]],
+    current: int = -1,
 ) -> float:
     """The fall the seasons force: ``1 - (lowest capacity of the current window) / (highest window mean)``.
 
-    ``windows`` are the ``(regime, lo, hi)`` of the rule windows of the fall window, oldest first; ``current``
-    indexes the one whose lowest capacity counts (the last by default).
+    ``windows`` are the ``(regime, lo, hi)`` of the rule windows of the fall window, oldest first, each with
+    an optional fourth item, the regeneration multiplier the window ran with (default 1); ``current`` indexes
+    the one whose lowest capacity counts (the last by default). The result is the lower of the fall with the
+    seasons alone and the fall with each window's multiplier (see the module docstring): never more than the
+    seasons and the levers together force.
     """
-    stats = [window_stats(shape, regime, lo, hi) for regime, lo, hi in windows]
-    return 1.0 - stats[current][1] / max(mean for mean, _ in stats)
+
+    def fall(mults: Sequence[float]) -> float:
+        stats = [
+            window_stats(shape, regime, lo, hi, m)
+            for (regime, lo, hi, *_), m in zip(windows, mults, strict=True)
+        ]
+        return 1.0 - stats[current][1] / max(mean for mean, _ in stats)
+
+    levers = [w[3] if len(w) > 3 else 1.0 for w in windows]
+    seasons_only = fall([1.0] * len(windows))
+    return seasons_only if all(m == 1.0 for m in levers) else min(seasons_only, fall(levers))
 
 
 def excess_fall(fall: float, forced: float) -> float:

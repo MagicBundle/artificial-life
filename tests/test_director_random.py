@@ -783,6 +783,81 @@ def test_inherited_reads_the_headers() -> None:
             yoked.inherited([{**h, "persona": "gardener", "budget_per_100k": bad}])
 
 
+# --- R lives by the rules version of the yoke log's first header (Review-log row I43) -----------------------
+
+
+def yoke_of_version(b: Path, dst: Path, version: int | None) -> Path:
+    """A copy of B's log in ``dst`` with every header saying rules version ``version`` (``None``: the key
+    dropped, a header that predates it), as a log written by another alife would be."""
+    recs = read_jsonl(b / DIRECTOR_LOG_FILE)
+    for r in recs:
+        if r.get("kind") == log.HEADER_KIND:
+            r.pop("rules_version", None)
+            if version is not None:
+                r["rules_version"] = version
+    dst.mkdir(parents=True, exist_ok=True)
+    (dst / DIRECTOR_LOG_FILE).write_text("".join(json.dumps(r) + "\n" for r in recs))
+    return dst
+
+
+def test_inherited_rules_version_is_the_first_headers() -> None:
+    h = {"kind": "header", "step": 0}
+    assert yoked.inherited_rules_version([]) == 1  # a log with no header predates the key: version 1
+    assert yoked.inherited_rules_version([entry(100)]) == 1
+    assert yoked.inherited_rules_version([h]) == 1  # a header with no key too
+    assert yoked.inherited_rules_version([{**h, "rules_version": 2}]) == 2
+    mixed = [{**h, "rules_version": 1}, entry(100), {**h, "step": 300, "rules_version": 2}]
+    assert yoked.inherited_rules_version(mixed) == 1  # the first header rules, as for the persona
+    for bad in (0, 3, "2", None, True, 1.5):
+        with pytest.raises(log.LogError, match="rules_version"):
+            yoked.inherited_rules_version([{**h, "rules_version": bad}])
+
+
+def test_r_yoked_to_a_version_1_log_runs_the_rules_of_version_1(
+    arm_b: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """The evaluation's arms R and RC are started against logs of rules version 1. Their safety rules must be
+    the ones that made those logs (the extinction rescue of version 1 reads every fall), not the season-aware
+    ones of version 2: the run takes the version of the yoke log's first header, records it in its own
+    header, says so on stderr, and keeps it on a resume even if the yoke file is replaced by a log of
+    another version."""
+    yoke = yoke_of_version(arm_b, tmp_path / "yoke1", 1)
+    out = tmp_path / "r"
+    assert run_r(yoke, out, "--steps", "300") == 0
+    assert "written under rules version 1; this run follows it" in capsys.readouterr().err
+    assert header_of(out)["rules_version"] == 1 and header_of(out)["params_persona"] == "gardener"
+    rd = RunDir.open(out)
+    d = Director(rd, rd.config(), "live", 300)
+    assert d.params.rules_version == 1 and not d.params.season_aware
+    assert d.tracker.p.rules_version == 1  # the tracker that computes the flag lives by it too
+    capsys.readouterr()
+    # the yoke file is replaced by a log of version 2: the run keeps the version it began with
+    yoke_of_version(arm_b, tmp_path / "yoke1", 2)
+    assert cli.main(["resume", str(out), "--until", "400", "--quiet"]) == 0
+    headers = [r for r in read_jsonl(out / DIRECTOR_LOG_FILE) if r.get("kind") == "header"]
+    assert [h["rules_version"] for h in headers] == [1, 1]  # a new header (the yoke changed) still names 1
+    assert headers[0]["yoke_sha256"] != headers[1]["yoke_sha256"]
+    assert cli.main(["inspect", str(out), "--check"]) == 0
+
+
+def test_r_yoked_to_a_current_or_headerless_version_log(
+    arm_b: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    now = tmp_path / "now"
+    assert run_r(arm_b, now, "--steps", "100") == 0  # B's own log: the current version
+    assert header_of(now)["rules_version"] == rules.RULES_VERSION == 2
+    assert "this run follows it" not in capsys.readouterr().err  # nothing to say
+    bare = yoke_of_version(arm_b, tmp_path / "bare", None)  # a header that predates the key: version 1
+    out = tmp_path / "r"
+    assert run_r(bare, out, "--steps", "100") == 0
+    assert header_of(out)["rules_version"] == 1
+    assert "written under rules version 1" in capsys.readouterr().err
+    unknown = yoke_of_version(arm_b, tmp_path / "unknown", 3)  # the CLI refuses it before writing anything
+    bad = tmp_path / "x"
+    assert run_r(unknown, bad, "--steps", "100") == 2 and not bad.exists()
+    assert "rules_version 3" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("persona", ["random", "wizard"])
 @pytest.mark.parametrize("where", ["first", "later"])
 def test_a_yoke_log_of_a_yoked_or_unknown_persona_exits_2_before_anything_is_written(

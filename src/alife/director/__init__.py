@@ -24,7 +24,9 @@ run rebuilds both from disk. The one thing that is not a fold is the set of rule
 journal has already written (a persisting condition is noted once): it is saved with the archive at each
 checkpoint and restored by a resume from that checkpoint, so that the journal of a resumed run equals the
 uninterrupted one's. The rules version is the log's: a resumed run continues under the version of its latest
-header (``rules.params_for``), so its rules never change mid-run; a new run or a fork takes the current one.
+header (``rules.params_for``), so its rules never change mid-run; a new run or a fork takes the current one,
+except a new random-persona run, which takes the version of its yoke log's first header like the rest of the
+parameters it inherits from that log (``yoked.inherited_rules_version``).
 """
 
 from __future__ import annotations
@@ -93,6 +95,8 @@ class Director:
             self.budget = rules.effective_budget(cfg.director.budget_per_100k, self.persona)
         elif mode == "live":
             self.yoke = yoked.load(cfg, params)
+            if log.rules_version_of(records) is None:  # a new run follows the rules of the log it is yoked to
+                params = self.params = self._yoked_params(self.yoke, params)
             self.persona = params.persona(self.yoke.persona)
             self.budget = yoked.effective_budget(cfg.director.budget_per_100k, self.yoke, self.persona)
         else:
@@ -103,7 +107,7 @@ class Director:
         self.llm_line: str | None = None  # the console line of this boundary's LLM call (if it made one)
         # The LLM tier exists in live mode only: a replay never builds a client, so it cannot reach a network.
         self.llm = llm.Client.of(cfg) if mode == "live" and cfg.director.llm_every > 0 else None
-        # Rules the previous boundary journalled as blocked; saved at each checkpoint, restored by a resume.
+        # Rules noted (blocked) at the previous boundary; saved at each checkpoint, restored by a resume.
         self._blocked: frozenset[str] = self._saved_blocked(start_step) if mode == "live" else frozenset()
         self.entries = log.entries_of(records)
         if mode == "replay":
@@ -143,6 +147,24 @@ class Director:
             flush=True,
         )
         return rules.params_for(params, logged)
+
+    @staticmethod
+    def _yoked_params(yoke: yoked.Yoke, params: RuleParams) -> RuleParams:
+        """The rule parameters a *new* random-persona run lives by: those of the rules version of its yoke
+        log's first header (R3), so that the safety rules R runs are the ones the yoked run ran and an arm R
+        started against a version-1 log does not run version 2's season-aware rescue. A note on stderr says
+        when that is not the current version. A resumed R run keeps its own log's version instead
+        (``_resume_params``)."""
+        if yoke.rules_version == params.rules_version:
+            return params
+        print(
+            f"note: {yoke.path} was written under rules version {yoke.rules_version}; this run follows it "
+            f"under the same rules (the current version is {params.rules_version}, which a run not yoked to "
+            "an older log takes)",
+            file=sys.stderr,
+            flush=True,
+        )
+        return rules.params_for(params, yoke.rules_version)
 
     def _saved_blocked(self, start_step: int) -> frozenset[str]:
         """The blocked-rule set saved with the archive of the checkpoint at ``start_step``; empty if the
@@ -219,8 +241,9 @@ class Director:
 
     def on_checkpoint(self, t: int) -> None:
         """Write ``director_archive.json``: the archive for analysis (never read back) and ``blocked``, the
-        rules whose blocked note was journalled at the latest boundary, which a resume from this checkpoint
-        restores. Replays write nothing."""
+        rules that were noted (blocked, or ``seasonal_exemption``) at the latest boundary, whether or not that
+        boundary journalled the note (a persisting one is journalled only when it first appears), which a
+        resume from this checkpoint restores. Replays write nothing."""
         if self.mode == "live":
             self.rd.write_json(
                 DIRECTOR_ARCHIVE_FILE, {**self.tracker.archive.to_json(t), "blocked": sorted(self._blocked)}

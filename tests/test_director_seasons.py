@@ -1,12 +1,13 @@
 """Season-aware extinction risk (rules version 2; DESIGN §26.5, Review-log row I43).
 
 Under seasons a population that follows the capacity falls by a large fraction every period without a crash.
-Rules version 1 read that fall as a crash (the evaluation's arm C fired 56 and 60 rescues on it); version 2
-models the fall the seasons force and sets the flag on the excess only. The tests cover the model against a
-per-step reference, the engine's capacity table against the director's own ``K_est``, the tracker's flag on
-synthetic series (a seasonal one that no longer fires, a crash on a trough that does, no seasons identical to
-version 1), the rule's reason and journal note, and the director's end of it (the table is computed only when
-it is needed, a resumed version-1 run keeps its rules).
+Rules version 1 read that fall as a crash (the evaluation's arms C fired 34 and 38 extinction rescues on it);
+version 2 models the fall the seasons force and sets the flag on the excess only. The tests cover the model
+against a per-step reference (with and without a regen pulse), the engine's capacity table against the
+director's own ``K_est``, the tracker's flag on synthetic series (a seasonal one that no longer fires, a crash
+on a trough that does, also on top of a regen pulse, no seasons identical to version 1), the rule's reason and
+journal note, and the director's end of it (the table is computed only when it is needed, a resumed version-1
+run keeps its rules).
 """
 
 from __future__ import annotations
@@ -77,6 +78,88 @@ def test_the_forced_fall_is_the_full_swing_at_a_trough_and_zero_at_a_peak() -> N
     peak = period // 4 + 2 * period  # the window before it holds the trough, not a higher value than the peak
     assert model_forced_fall(a, period, trough) == pytest.approx(2 * a / (1 + a), abs=6e-3)
     assert model_forced_fall(a, period, peak) == pytest.approx(0.0, abs=6e-3)
+
+
+Pulse = tuple[int, int, float]  # (on, off, regen multiplier) over (on, off]; multiples of R, like boundaries
+
+
+def pulse_windows(a: float, period: int, t: int, pulse: Pulse | None) -> list[tuple]:
+    """The rule windows of the fall window ending at ``t``, each with the multiplier it ran with."""
+    on, off, m = pulse or (0, 0, 1.0)
+    return [
+        ((a, period), h - R, h, m if on <= h - R and h <= off else 1.0) for h in range(t - W + R, t + 1, R)
+    ]
+
+
+def reference_levers_fall(a: float, period: int, t: int, pulse: Pulse) -> tuple[float, float]:
+    """Step by step: the fall that the seasons and the pulse together force, and the seasons' alone."""
+    s = np.arange(t - W - R + 1, t + 1)
+    on, off, m = pulse
+    base = 1 + a * np.sin(2 * np.pi * s / period)
+    out = []
+    for c in (base * np.where((s > on) & (s <= off), m, 1.0), base):
+        means = [c[(s > h - R) & (s <= h)].mean() for h in range(t, t - W, -R)]
+        out.append(1 - c[(s > t - R) & (s <= t)].min() / max(means))
+    return out[0], out[1]
+
+
+@pytest.mark.parametrize(
+    ("pulse", "differs"),
+    [
+        ((162_000, 174_000, 1.4), "levers"),  # begun after a peak, running through the next trough
+        ((150_000, 162_000, 1.4), "seasons"),  # over before the trough: the drop back is no season's
+        ((160_000, 172_000, 0.6), "seasons"),  # a pulse below 1 (a damper's, or a random draw's)
+        ((100_000, 200_000, 2.0), None),  # over the whole fall window: the same ratios either way
+    ],
+)
+def test_the_forced_fall_is_the_lower_of_what_seasons_and_pulse_force_and_the_seasons_alone(
+    pulse: Pulse, differs: str | None
+) -> None:
+    a, period = 0.4, 45_000
+    lower = {"levers": False, "seasons": False}
+    for t in range(150_000, 150_000 + period + 1, 3_000):
+        together, alone = reference_levers_fall(a, period, t, pulse)
+        got = seasons.forced_fall(sine_shape(a), pulse_windows(a, period, t, pulse))
+        assert got == pytest.approx(min(together, alone), abs=1e-2), t
+        lower["levers"] |= together < alone - 0.05  # the pulse and the seasons force less than the seasons
+        lower["seasons"] |= alone < together - 0.05  # the seasons alone force less: the pulse's drop is extra
+    assert [k for k, v in lower.items() if v] == ([differs] if differs else [])
+
+
+def test_a_pulse_begun_after_the_peak_narrows_the_exemption_and_one_that_ended_leaves_it_alone() -> None:
+    a, period = 0.4, 45_000
+    t = 169_000  # just after the trough at 168 750
+    plain = seasons.forced_fall(sine_shape(a), pulse_windows(a, period, t, None))
+    assert plain == pytest.approx(2 * a / (1 + a), abs=6e-3)  # the full swing
+
+    def forced(pulse: Pulse) -> float:
+        return seasons.forced_fall(sine_shape(a), pulse_windows(a, period, t, pulse))
+
+    # x1.4 from 162 000: the capacity of the last windows is 1.4 times what the seasons give, and the
+    # peak before it was not boosted, so the seasons did not force the whole of the fall to the trough
+    assert forced((162_000, 174_000, 1.4)) == pytest.approx(1 - 1.4 * (1 - plain), abs=0.03)
+    assert forced((162_000, 174_000, 1.4)) < plain - 0.15
+    # a pulse over before the trough dropped the capacity back, which no season forced: seasons alone count
+    assert forced((130_000, 166_000, 1.4)) == pytest.approx(plain, abs=1e-12)
+    # a pulse below 1 begun after the peak makes the fall bigger than the seasons force: not exempt either
+    assert forced((160_000, 172_000, 0.6)) == pytest.approx(plain, abs=1e-12)
+    # while one that held the peak down means the population had less to fall from: a smaller exemption
+    assert forced((130_000, 166_000, 0.6)) < plain - 0.2
+    assert forced((100_000, 200_000, 1.4)) == pytest.approx(plain, abs=1e-12)  # over all of it: no change
+    assert forced((164_000, 175_000, 1.0)) == plain  # a multiplier of 1 is no pulse, exactly
+
+
+def test_the_regeneration_multiplier_is_read_from_a_rows_env_and_scales_a_windows_capacity() -> None:
+    assert seasons.regen_mult_of({"regen_mult": 1.4}) == 1.4
+    for absent in (None, {}, {"regen_mult": None}, {"regen_mult": 0.0}, {"regen_mult": -1.0}):
+        assert seasons.regen_mult_of(absent) == 1.0  # nothing recorded, or nothing the lever range allows
+    for odd in (float("nan"), float("inf"), True, "1.4"):
+        assert seasons.regen_mult_of({"regen_mult": odd}) == 1.0
+    shape = sine_shape(0.4)
+    mean, low = seasons.window_stats(shape, (0.4, 45_000), 30_000.0, 31_000.0)
+    mean2, low2 = seasons.window_stats(shape, (0.4, 45_000), 30_000.0, 31_000.0, 1.5)
+    assert (mean2, low2) == pytest.approx((1.5 * mean, 1.5 * low))
+    assert seasons.window_stats(shape, None, 0.0, 1_000.0, 1.5) == pytest.approx((1.5, 1.5))
 
 
 def test_the_capacity_is_the_table_read_periodically_and_scaled_by_the_amplitude() -> None:
@@ -194,20 +277,28 @@ def seasonal_rows(
     *,
     n0: float = 1000.0,
     crash: tuple[int, int, float] | None = None,
+    pulse: tuple[int, int, float] | None = None,
     start: int = 0,
     every: int = 100,
 ) -> list[dict[str, Any]]:
     """Metrics rows of a population that follows the sine capacity ``n0·(1 + a sin(2 pi s / period))`` exactly
     (``crash``: from step ``lo`` to ``hi`` it is multiplied by ``f``), with the regime in each row's
-    ``env``."""
+    ``env``. ``pulse = (on, off, m)`` is a regen pulse of multiplier ``m`` over ``(on, off]``: the capacity,
+    and so the population, is multiplied by ``m`` there, and every row's ``env`` records the ``regen_mult``
+    its interval ran with (``on`` and ``off`` are multiples of ``every``, as a director's boundaries are)."""
     rows = []
     for end in range(start + every, steps + 1, every):
         s = np.arange(end - every + 1, end + 1)
         n = n0 * (1 + a * np.sin(2 * np.pi * s / period))
+        if pulse:
+            on, off, m = pulse
+            n = np.where((s > on) & (s <= off), n * m, n)
         if crash:
             lo, hi, f = crash
             n = np.where((s > lo) & (s <= hi), n * f, n)
         env = {"season_amp": a, "season_period": period}
+        if pulse:
+            env["regen_mult"] = pulse[2] if pulse[0] <= end - every and end <= pulse[1] else 1.0
         rows.append(
             {
                 "step": end,
@@ -264,6 +355,52 @@ def test_a_crash_on_a_trough_still_sets_the_flag_on_the_excess() -> None:
     # a crash of 20% is below the 30% threshold of a world without seasons too: not a rescue
     mild = vitals_series(seasonal_rows(a, period, 400_000, crash=(lo, lo + 3_000, 0.8)), RULE_PARAMS, a)
     assert not any(v.extinction_risk for v in mild)
+
+
+@pytest.mark.parametrize("on", [159_000, 162_000, 165_000])  # 9 750, 6 750 and 3 750 steps before the trough
+@pytest.mark.parametrize("f", [0.6, 0.5])
+def test_a_crash_on_a_trough_inside_a_regen_pulse_begun_after_the_peak_still_sets_the_flag(
+    on: int, f: float
+) -> None:
+    """A boom (a x1.4 pulse of the model, of a persona, of a random draw) begun after the last peak raises the
+    capacity the population follows, so the seasons' share of the fall to the trough is smaller than the
+    seasons alone would force. The exemption must follow: a crash of 40% or 50% on top of that is a crash."""
+    a, period = 0.4, 45_000
+    trough = 3 * period // 4 + 3 * period  # 168 750
+    rows = seasonal_rows(a, period, 200_000, crash=(166_000, 171_000, f), pulse=(on, on + 12_000, 1.4))
+    old, new = vitals_series(rows, V1, a), vitals_series(rows, RULE_PARAMS, a)
+    in_crash = [(o, n) for o, n in zip(old, new, strict=True) if 166_000 < n.step <= 171_000]
+    assert len(in_crash) == 5 and trough in range(166_000, 171_000)
+    assert all(o.extinction_risk and n.extinction_risk for o, n in in_crash)
+    assert max(n.fall_excess for _, n in in_crash) == pytest.approx(1 - f, abs=0.03)
+    # what the seasons and the pulse force is less than the seasons alone force (about 0.57 at a trough)
+    assert all(n.fall_seasonal < 0.5 for _, n in in_crash if n.step >= 168_000)
+    # without the crash the same pulse and trough raise nothing
+    calm = vitals_series(seasonal_rows(a, period, 168_000, pulse=(on, on + 12_000, 1.4)), RULE_PARAMS, a)
+    assert not any(v.extinction_risk for v in calm)
+
+
+def test_the_end_of_a_pulse_is_still_a_fall_the_seasons_did_not_force() -> None:
+    """A x2 pulse that ends just after a peak drops the capacity to half, which no season forced: the flag is
+    set as in version 1 (DESIGN §26.5 limit (ii)), the exemption not being widened by the pulse's own drop."""
+    a, period = 0.4, 45_000
+    peak = 146_250  # the pulse ends at the boundary after it
+    pulse = (120_000, 147_000, 2.0)
+    rows = seasonal_rows(a, period, 160_000, pulse=pulse)
+    old, new = (next(v for v in vitals_series(rows, p, a) if v.step == 148_000) for p in (V1, RULE_PARAMS))
+    assert peak < pulse[1] < 148_000
+    assert old.fall > 0.4 and old.extinction_risk
+    assert new.fall_seasonal < 0.05 and new.fall_excess == pytest.approx(new.fall, abs=0.05)
+    assert new.extinction_risk
+
+
+def test_a_pulse_over_the_whole_fall_window_changes_nothing() -> None:
+    a, period = 0.4, 45_000
+    plain = vitals_series(seasonal_rows(a, period, 300_000), RULE_PARAMS, a)
+    boosted = vitals_series(seasonal_rows(a, period, 300_000, pulse=(0, 300_000, 1.4)), RULE_PARAMS, a)
+    assert not any(v.extinction_risk for v in boosted)
+    assert [v.fall_seasonal for v in boosted] == pytest.approx([v.fall_seasonal for v in plain], abs=1e-9)
+    assert [v.fall_excess for v in boosted] == pytest.approx([v.fall_excess for v in plain], abs=1e-9)
 
 
 def test_the_same_observed_fall_is_exempt_at_a_trough_and_flagged_at_a_peak() -> None:
@@ -360,10 +497,16 @@ def test_the_window_regime_comes_from_the_rows_and_survives_a_rebuild() -> None:
         if r["step"] % R == 0:
             tr.close(r["step"])
     assert [h.regime for h in tr.history] == [(0.6000000238418579, 45_000)] * 3
+    assert [h.regen_mult for h in tr.history] == [1.0] * 3  # the rows record no regen_mult: neutral
     assert tr.season_amp(tr.history[-1]) == 0.6000000238418579
     plain = Tracker(RULE_PARAMS)
     plain.observe({"step": 100, "steps": 100, "n_alive": 5.0})  # a row without ``env``: no seasons
     assert plain.close(100).regime is None and plain.season_amp(plain.history[-1]) == 0.0
+    boosted = Tracker(RULE_PARAMS)  # the window's last row speaks for it (the interval's multiplier)
+    boosted.observe({"step": 50, "steps": 50, "n_alive": 5.0, "env": {"regen_mult": 1.0}})
+    boosted.observe({"step": 100, "steps": 50, "n_alive": 5.0, "env": {"regen_mult": 1.5}})
+    bd = boosted.close(100)
+    assert bd.regen_mult == 1.5 and bd.regime is None
 
 
 def test_season_amp_looks_back_only_over_the_fall_window() -> None:

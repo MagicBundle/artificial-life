@@ -496,7 +496,8 @@ normative and Review-log row I43 records the change. Host-side only: no change t
 or any trajectory without a director.
 
 - **The defect.** The fall criterion (a fall of more than 30% within 50k steps) fires on every seasonal trough; arms C
-  fired 56 and 60 extinction rescues, each also charging the model's budget. The flag could not tell a trough from a crash.
+  fired 34 and 38 extinction rescues (56 and 60 safety-rule entries, a rescue being two), each also charging the model's
+  budget. The flag could not tell a trough from a crash.
 - **Owner decision: exempt the forced amplitude.** With seasons in force the flag reads the fall *beyond* what the seasons
   force. Of the two options the evaluation named (detrend the fall over the period, or exempt the forced amplitude) the owner chose the second.
 - **The forced fall is read from the engine's own regeneration map, not from the amplitude.** Regeneration is
@@ -506,22 +507,29 @@ or any trajectory without a director.
   a fall of 0.75 where 0.57 is forced, so a population could fall up to 0.18 further without the flag. The capacity table over one cycle
   (32 phases, 33 evaluations per boundary, 0.02 s on the CPU at 64k) gives the shape; the vital sign's own formula on it,
   window by window under the regime each recorded, gives the forced fall at this phase; the flag reads
-  `excess = 1 − (1 − fall)/(1 − forced)`. The n/K criterion, 3D's `k_floor`, the thresholds and every other rule are
+  `excess = 1 − (1 − fall)/(1 − forced)`. Each window's recorded `regen_mult` (a regen pulse) scales its capacity too, and
+  the exemption is the lower of the fall with and without those multipliers: a boom begun after the last peak narrows it
+  (a 40% crash on a trough inside a ×1.4 pulse is flagged), while the end of a pulse, which no season forced, is not
+  exempt. The n/K criterion, 3D's `k_floor`, the thresholds and every other rule are
   unchanged. Without seasons the code path is not entered.
 - **Legibility.** The log's `vitals` gain `fall_seasonal` and `fall_excess` (only when seasons were in force), a rescue's
   reason says `(the seasons force 0.42, excess 0.69)`, a fall the seasons account for leaves the journal note
   `seasonal_exemption (…): no extinction rescue` (once per run of boundaries), and the model's prompt says the same on the
   viability line.
 - **What it fixes in the data** (read only, `runs/eval_*`): windows at which the fall sets the flag fall from 891, 808, 129,
-  1 018 and 614 of 1 380 to 55, 118, 0, 198 and 139; the runs of consecutive flagged windows in the two C arms from 85 and
-  63 to 19 and 26. **What it does not:** it does not model a population lag (RC's period-3 056 regime still flags 106 of
-  600 windows), nor the other forced falls: the end of a rescue's own regeneration pulse drops the capacity back, and the
-  population falls with it. A rescue that does not feed the next one would need the same treatment for the levers.
+  1 018 and 614 of 1 380 to 55, 119, 0, 198 and 141; the runs of consecutive flagged windows in the two C arms from 85 and
+  63 to 19 and 27. **What it does not:** it does not model a population lag (RC's period-3 056 regime still flags 106 of
+  600 windows), nor a rescue's own feedback: the end of its regeneration pulse drops the capacity back, no season forced
+  that fall, and it can set the flag again as in version 1. The patch gains are not followed either (the rows record
+  only the lowest and highest): a gain raised, or a patch regaining its gain, after the last peak widens the exemption.
 - **Rules version 2.** `RULES_VERSION` is 2. A live run continues under the version of its log's latest header, so a
   resumed version-1 run (every evaluation arm) keeps its rules, appends no header for it and says so on stderr; a new run
-  or a fork takes 2. Replay never decides, so every implemented version validates and replays byte-identically; an unknown
-  version is exit 2. There is no in-place upgrade (fork).
-- **`Director._blocked`.** The set of rules whose blocked note the journal wrote at the previous boundary is saved with
-  the archive at each checkpoint and restored by a resume from that checkpoint (`as_of_step` equal to the start step); a
+  or a fork takes 2, except a new `random` run (arm R), which takes the version of the yoke log's first header like the
+  rest of what it inherits from it (DESIGN §26.11 R3): an R or RC arm started against the evaluation's version-1 logs
+  runs version 1's safety rules, not a season-aware rescue the run it is compared with did not have. Replay never decides,
+  so every implemented version validates and replays byte-identically; an unknown version is exit 2. There is no
+  in-place upgrade (fork).
+- **`Director._blocked`.** The set of rules noted (blocked, or `seasonal_exemption`) at the previous boundary, whether or
+  not that boundary journalled the note, is saved with the archive at each checkpoint and restored by a resume from that checkpoint (`as_of_step` equal to the start step); a
   resumed run's journal equals the uninterrupted run's. Not built: a persistent set that survives a resume from an older
   checkpoint (the guard makes that case journal the note once more, as before).

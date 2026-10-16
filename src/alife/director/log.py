@@ -79,11 +79,15 @@ def rules_version_of(records: Sequence[Mapping[str, Any]]) -> int | None:
 
 
 def needs_header(records: Sequence[Mapping[str, Any]], header: Mapping[str, Any]) -> bool:
-    """True unless the latest header in ``records`` already says the same (the start step aside)."""
+    """True unless the latest header in ``records`` already says the same (the start step aside). A header
+    with no ``rules_version`` says 1, as everywhere else, so resuming a log whose header predates the key
+    under version 1 appends nothing."""
     last = next((r for r in reversed(records) if r.get("kind") == HEADER_KIND), None)
-    return last is None or {k: v for k, v in last.items() if k != "step"} != {
-        k: v for k, v in header.items() if k != "step"
-    }
+
+    def policy(h: Mapping[str, Any]) -> dict[str, Any]:
+        return {"rules_version": 1, **{k: v for k, v in h.items() if k != "step"}}
+
+    return last is None or policy(last) != policy(header)
 
 
 def entries_of(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:

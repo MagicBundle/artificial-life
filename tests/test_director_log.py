@@ -405,9 +405,13 @@ def test_a_resumed_run_keeps_the_rules_version_of_its_log(
     rd.append_jsonl(DIRECTOR_LOG_FILE, [log.make_header(trick, 300, 6, rules_version=2)])
     assert Director(rd, trick, "live", 300).params.rules_version == 2
     capsys.readouterr()
-    # a header that predates the key is version 1; a replay never changes anything and says nothing
+    # a header that predates the key is version 1 (no header is appended for it: it says what version 1 says);
+    # a replay never changes anything and says nothing
     relabel(rd, None)
+    n_headers = len(headers_of(rd))
     assert Director(rd, trick, "live", 300).params.rules_version == 1
+    assert len(headers_of(rd)) == n_headers and all("rules_version" not in h for h in headers_of(rd))
+    assert log.needs_header(headers_of(rd), log.make_header(trick, 300, 6, rules_version=2))  # 2 is a change
     assert Director(rd, apply_overrides(dcfg, ["run.director=replay"]), "replay", 0).params.rules_version == 2
 
 
@@ -432,25 +436,35 @@ def test_a_live_director_refuses_a_log_of_rules_it_does_not_implement(dcfg: Conf
         Director(rd, dcfg, "live", 100)
 
 
+def run_tree(rd: RunDir) -> dict[str, bytes]:
+    """Every file of a run directory (relative path -> bytes): checkpoints, logs, archive, config."""
+    return {str(p.relative_to(rd.path)): p.read_bytes() for p in sorted(rd.path.rglob("*")) if p.is_file()}
+
+
 def test_a_live_resume_refuses_unknown_rules_before_touching_anything_and_a_known_one_continues(
     dcfg: Config, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """The refusal is the CLI's own pre-check, not the director's later one: the resume is from the checkpoint
+    at 100 of a run that went on to 200, so a resume that got as far as truncating would cut the logs, delete
+    the archive (``as_of_step`` 200) and drop the checkpoint at 200. Not one byte of the directory changes."""
     rd = RunDir.create(tmp_path / "r", dcfg)
-    res = runner.run(rd, dcfg, init_state(dcfg), 100, quiet=True, director=Director(rd, dcfg, "live", 0))
+    res = runner.run(rd, dcfg, init_state(dcfg), 200, quiet=True, director=Director(rd, dcfg, "live", 0))
     assert res.status == "done"
     relabel(rd, 3)
-    watched = (DIRECTOR_LOG_FILE, "metrics.jsonl", "config.json", JOURNAL_FILE, DIRECTOR_ARCHIVE_FILE)
-    before = {n: (rd.path / n).read_bytes() for n in watched if (rd.path / n).exists()}
-    assert cli.main(["resume", str(rd.path), "--until", "200", "--quiet"]) == 2
-    assert {n: (rd.path / n).read_bytes() for n in before} == before  # not truncated, not rewritten
+    before = run_tree(rd)
+    assert DIRECTOR_ARCHIVE_FILE in before and len(rd.checkpoints()) >= 2
+    resume = ["resume", str(rd.path), "--checkpoint", "100", "--until", "300", "--quiet"]
+    assert cli.main(resume) == 2
+    assert run_tree(rd) == before  # same files, same bytes: not truncated, not rewritten, nothing deleted
     assert "rules_version 3" in capsys.readouterr().err
     assert cli.main(["resume", str(rd.path), "--director", "replay", "--quiet"]) == 2  # nor does a replay
+    assert run_tree(rd) == before
     # version 1 is known: the resume goes ahead under it, with no new header
     relabel(rd, 1)
-    assert cli.main(["resume", str(rd.path), "--until", "200", "--quiet"]) == 0
+    assert cli.main(resume) == 0
     assert [h["rules_version"] for h in headers_of(rd)] == [1]
     assert "rules version 1" in capsys.readouterr().err
-    assert max(r["step"] for r in RunDir.open(rd.path).metrics_rows()) == 200
+    assert max(r["step"] for r in RunDir.open(rd.path).metrics_rows()) == 300
 
 
 def test_a_resumed_live_run_notes_a_persistent_blocked_rule_once(

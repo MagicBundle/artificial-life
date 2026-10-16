@@ -167,6 +167,7 @@ class Boundary:
     b: tuple[float, ...] | None
     obs: Observation | None
     regime: seasons.Regime | None = None  # (season amplitude, period) the window ran under; None: no seasons
+    regen_mult: float = 1.0  # the regeneration multiplier the window ran with (``env.regen_mult``)
 
 
 @dataclass(frozen=True)
@@ -183,7 +184,8 @@ class Vitals:
     n_over_k: float | None  # n_alive / k_est
     fall: float | None  # 1 − (window minimum / highest window mean) over the last ``risk_fall_window`` steps
     # ``fall`` is the observed fall in every version. From rules version 2, with seasons in force in the fall
-    # window, ``fall_seasonal`` is the part of it the seasons force and ``fall_excess`` the rest (seasons.py);
+    # window, ``fall_seasonal`` is the part of it the seasons force (at most what they and the regen pulses
+    # together force) and ``fall_excess`` the rest (seasons.py);
     # the flag then reads the excess. Both are None without seasons (and under version 1): ``fall`` is read.
     extinction_risk: bool  # n_over_k_risk < ``risk_k_frac`` or the fall (its excess) > ``risk_fall``
     pop_frac_cap: float | None  # population / N_CAP
@@ -259,9 +261,11 @@ class Tracker:
     def close(self, t: int) -> Boundary:
         """Fold the buffered rows (the window ending at ``t``) into the history, archive and streaks."""
         w = aggregate(self.rows)
-        # The regime of the window: a metrics row's ``env`` is what its interval ran with, and the director
-        # changes the environment only at a boundary, so the window's last row speaks for all of it.
-        regime = seasons.regime_of(self.rows[-1].get("env"))
+        # The regime and the regeneration multiplier of the window: a metrics row's ``env`` is what its
+        # interval ran with, and the director changes the environment only at a boundary, so the window's last
+        # row speaks for all of it.
+        env = self.rows[-1].get("env")
+        regime, regen_mult = seasons.regime_of(env), seasons.regen_mult_of(env)
         self.rows = []
         start = t - w.steps
         self.origin = start if self.origin is None else self.origin
@@ -269,7 +273,7 @@ class Tracker:
         obs = self.archive.observe(t, b) if b is not None else None
         mono = w.top_clade_share is not None and w.top_clade_share > self.p.mono_share
         self.mono_since = (start if self.mono_since is None else self.mono_since) if mono else None
-        boundary = Boundary(t, w, b, obs, regime)
+        boundary = Boundary(t, w, b, obs, regime, regen_mult)
         kept = [h for h in self.history if h.step > t - self.p.history_keep]
         self.history = [*kept, boundary]
         return boundary
@@ -296,19 +300,19 @@ class Tracker:
 
     def _forced_fall(self, bd: Boundary, shape: seasons.CapacityShape) -> float | None:
         """The fall the seasons force over the same windows as ``_fall`` (seasons.py): the modelled capacity
-        through the vital sign's own formula, each window under its own regime. None where ``_fall`` is."""
+        through the vital sign's own formula, each window under its own regime and regeneration multiplier
+        (the lower of the fall with and without the multipliers, so a regen pulse never widens the exemption).
+        None where ``_fall`` is, and where the window of ``bd`` has no mean population."""
         wins = [
             h
             for h in self.history
             if bd.step - self.p.risk_fall_window < h.step <= bd.step and h.window.n_alive is not None
         ]
-        if not wins or bd.window.n_alive_min is None:
+        if not wins or wins[-1].step != bd.step or bd.window.n_alive_min is None:
             return None
-        mean_cap = max(
-            seasons.window_stats(shape, h.regime, h.step - h.window.steps, h.step)[0] for h in wins
+        return seasons.forced_fall(
+            shape, [(h.regime, h.step - h.window.steps, h.step, h.regen_mult) for h in wins]
         )
-        low_cap = seasons.window_stats(shape, bd.regime, bd.step - bd.window.steps, bd.step)[1]
-        return 1.0 - low_cap / mean_cap
 
     def _shift(self, bd: Boundary) -> float | None:
         if bd.b is None:
