@@ -1,4 +1,4 @@
-cloud-9 (PARTIAL, at step 16,000 of 20,000): **the population peaked at about 12,500 (steps 12,500–14,000), then declined**: 12,145 / 11,786 / 11,612 / 11,404 at steps 14,500–16,000. Kills now outpace births minus starvation. This is not a stable plateau, so the run continues to 20,000. n/K_est is 0.71; no overflow; peak occupancy 43 of 48.
+cloud-9 (PARTIAL, at step 18,000 of 20,000): after peaking at about 12,500 (12,500–14,000), **n declines but more slowly**: 11,404 → 11,185 → 11,054 → 11,072 → 10,813, about −150 per 500 steps against −350 before. Kills have stopped rising (about 12,000–12,300 per 1,000 steps). n/K_est is 0.67; no overflow.
 
 # cloud-9: DEV3D continuation to 20,000 steps (`3d/pr6-64k3d` at `a3d46eb`, C = 48)
 
@@ -38,9 +38,11 @@ cloud-9 (PARTIAL, at step 16,000 of 20,000): **the population peaked at about 12
 | 13001–14000 | 12490 | 18438 | 7450 / 10985 / 13 | 0.122 | 0.41/0.18/0.15/0.26 | 4.2/14.5/30.8 | 0.066 | 0 | 37 | 15998 | 4727 | 0.78 | 2.64 | 46423502 | 0.411/0.510/0.608 | 224 | 0.315 |
 | 14001–15000 | 11786 | 18530 | 7252 / 11973 / 9 | 0.117 | 0.39/0.19/0.15/0.26 | 4.9/14.8/30.7 | 0.069 | 0 | 31 | 16158 | 4727 | 0.73 | 2.49 | 45512207 | 0.408/0.512/0.615 | 205 | 0.336 |
 | 15001–16000 | 11404 | 18733 | 6846 / 12262 / 7 | 0.112 | 0.40/0.19/0.15/0.26 | 4.9/14.6/30.3 | 0.066 | 0 | 31 | 16117 | 4727 | 0.71 | 2.41 | 44029617 | 0.405/0.514/0.621 | 189 | 0.338 |
+| 16001–17000 | 11054 | 18594 | 6604 / 12333 / 7 | 0.111 | 0.40/0.19/0.16/0.25 | 4.7/14.4/29.9 | 0.065 | 0 | 28 | 16192 | 4727 | 0.68 | 2.34 | 42429564 | 0.404/0.513/0.625 | 180 | 0.332 |
+| 17001–18000 | 10813 | 18293 | 6493 / 12031 / 10 | 0.113 | 0.40/0.19/0.16/0.26 | 4.8/14.8/30.3 | 0.064 | 0 | 35 | 16231 | 4727 | 0.67 | 2.29 | 41614762 | 0.402/0.512/0.625 | 153 | 0.332 |
 
-n_alive every 500 steps: [(6000, 5981), (6500, 6521), (7000, 7117), (7500, 7857), (8000, 8542), (8500, 9338), (9000, 10170), (9500, 10869), (10000, 11546), (10500, 11867), (11000, 11972), (11500, 12115), (12000, 12301), (12500, 12489), (13000, 12500), (13500, 12509), (14000, 12490), (14500, 12145), (15000, 11786), (15500, 11612), (16000, 11404)]
-steps 6001–16000: overflow on 0 steps; peak occupancy 43 at step 10705
+n_alive every 500 steps: [(6000, 5981), (6500, 6521), (7000, 7117), (7500, 7857), (8000, 8542), (8500, 9338), (9000, 10170), (9500, 10869), (10000, 11546), (10500, 11867), (11000, 11972), (11500, 12115), (12000, 12301), (12500, 12489), (13000, 12500), (13500, 12509), (14000, 12490), (14500, 12145), (15000, 11786), (15500, 11612), (16000, 11404), (16500, 11185), (17000, 11054), (17500, 11072), (18000, 10813)]
+steps 6001–18000: overflow on 0 steps; peak occupancy 43 at step 10705
 
 **Throughput:** 0.635 steps/s (6,000–8,000) 0.662 steps/s (8,000–10,000) 0.703 steps/s (10,000–12,000) 0.729 steps/s (12,000–14,000), and 0.56–0.62 steps/s for 14,000–16,000, alone on the CPU.
 
@@ -139,3 +141,17 @@ steps 6001–16000: overflow on 0 steps; peak occupancy 43 at step 10705
 - Occupancy peaks at 31 in both windows. The all-time maximum is still 43, and there is no overflow on any step.
 - **For calibration so far:** the realised population ranges from 0.71 to 0.79 of K_est over steps 11,000–16,000.
   The long-run level is not yet known. Steps 16,000–20,000 are running.
+
+
+**Reading at 18,000.**
+- **The decline is slowing.** Per 500 steps after 16,000: −219, −131, +18, −259. Before that it was −345, −359,
+  −174, −208.
+- **Kills have stopped rising:** 12,333, then 12,031 per 1,000 steps. Births are about flat at
+  18,294–18,594. Starvation keeps easing (6,604 → 6,493).
+- The population appears to be settling toward about 10,500–11,000, but it is not yet flat.
+- **For calibration:**
+  - n/K_est is 0.68 at 17,000 and 0.67 at 18,000; K_est itself is steady at about 16,200.
+  - n/floor-K is about 2.3.
+- No change in the vertical structure. buoy_cap q90 keeps creeping up (0.625).
+- Clades alive keep falling (180 → 153); the top share is steady at 0.332.
+- No overflow. Occupancy peaks at 28–35.
