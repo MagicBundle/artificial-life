@@ -3626,12 +3626,12 @@ journal note:
 1. **Extinction rescue:** the extinction-risk flag. A `regen_pulse` (`rescue_regen`) plus an `immigration_pulse` of
    `rescue_imm_frac × K_est` founders. It **overrides cooldown and budget at most once per `rescue_override_gap`**
    (it may also supersede an active regen pulse); inside that gap it needs ordinary eligibility. From rules version 2,
-   with seasons in force, the reason names the seasons' share, `n/K_est 0.15, fall 0.82 (the seasons force 0.42, excess
+   with seasons in force, the reason names the seasons' share, `n/K_est 0.15, fall 0.82 (the environment forces 0.42, excess
    0.69)`, and a fall that would have set the flag under version 1 (`fall > risk_fall`) but whose excess does not (and the
    ratio criterion does not) leaves the journal note `seasonal_exemption (fall 0.45 within 50,000 steps; the seasons
    force 0.42, excess 0.052): no extinction rescue`. It takes no action and is not an entry; it is noted once per run of
    boundaries under the key `seasonal_exemption`, like a blocked rule, and the LLM's prompt lists it under "not taken".
-   The prompt's viability line gains `(the seasons force 0.42 of it; the flag reads the excess 0.0517)` after the fall
+   The prompt's viability line gains `(the environment forces 0.42 of it; the flag reads the excess 0.0517)` after the fall
    when the vitals carry the split, and is otherwise byte-identical.
 2. **Runaway damper:** population `> damper_pop_frac × N_CAP` (`dims(cfg).n_cap`, the hard row capacity, not `K_est`)
    or the largest body `> damper_body_frac` of the population: a `regen_pulse` of `damper_mult` (< 1).

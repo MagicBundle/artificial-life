@@ -209,7 +209,7 @@ def _vitals_text(ctx: Context, p: RuleParams, k_note: str = "") -> str:
     seasonal = (
         ""
         if v.fall_seasonal is None
-        else f" (the seasons force {_f(v.fall_seasonal)} of it; "
+        else f" (the environment forces {_f(v.fall_seasonal)} of it; "
         f"the flag reads the excess {_f(v.fall_excess)})"
     )
     return "\n".join(

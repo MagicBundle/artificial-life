@@ -329,7 +329,7 @@ Against the two nulls (whole span, 120k–1.5M):
 | RC | 0 | 84 | 15 | 69 | 6 | 2.28 | 6.16 |
 | RC | 1 | 69 | 12 | 57 | 7 | 2.69 | 5.29 |
 
-"Applied" counts log entries other than reverts; a rescue is two entries. C's discretionary moves: seed 0, drift ×9,
+"Applied" counts log entries other than reverts; a rescue is an immigration pulse plus a regen pulse, the second skipped when blocked (one or two entries). C's discretionary moves: seed 0, drift ×9,
 immigration ×7, fertility gain ×4, seasons ×4, habitat loss ×2, regen ×1; seed 1, immigration ×11, seasons ×4, drift
 ×3, habitat loss ×3, fertility gain ×1. The model alternates between two settings of a lever (drift ×4 and ×0.5–0.6;
 season periods of 45k and 12k–15k) rather than exploring the menu. It never chose a catastrophe.

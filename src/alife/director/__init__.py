@@ -107,7 +107,8 @@ class Director:
         self.llm_line: str | None = None  # the console line of this boundary's LLM call (if it made one)
         # The LLM tier exists in live mode only: a replay never builds a client, so it cannot reach a network.
         self.llm = llm.Client.of(cfg) if mode == "live" and cfg.director.llm_every > 0 else None
-        # Rules noted (blocked) at the previous boundary; saved at each checkpoint, restored by a resume.
+        # Rules noted (blocked, or seasonal_exemption) at the previous boundary; saved at each checkpoint,
+        # restored by a resume.
         self._blocked: frozenset[str] = self._saved_blocked(start_step) if mode == "live" else frozenset()
         self.entries = log.entries_of(records)
         if mode == "replay":

@@ -496,7 +496,7 @@ normative and Review-log row I43 records the change. Host-side only: no change t
 or any trajectory without a director.
 
 - **The defect.** The fall criterion (a fall of more than 30% within 50k steps) fires on every seasonal trough; arms C
-  fired 34 and 38 extinction rescues (56 and 60 safety-rule entries, a rescue being two), each also charging the model's
+  fired 34 and 38 extinction rescues (56 and 60 safety-rule entries: a rescue is an immigration pulse, plus a regen pulse unless that one is blocked), each also charging the model's
   budget. The flag could not tell a trough from a crash.
 - **Owner decision: exempt the forced amplitude.** With seasons in force the flag reads the fall *beyond* what the seasons
   force. Of the two options the evaluation named (detrend the fall over the period, or exempt the forced amplitude) the owner chose the second.
@@ -513,7 +513,7 @@ or any trajectory without a director.
   exempt. The n/K criterion, 3D's `k_floor`, the thresholds and every other rule are
   unchanged. Without seasons the code path is not entered.
 - **Legibility.** The log's `vitals` gain `fall_seasonal` and `fall_excess` (only when seasons were in force), a rescue's
-  reason says `(the seasons force 0.42, excess 0.69)`, a fall the seasons account for leaves the journal note
+  reason says `(the environment forces 0.42, excess 0.69)` (the seasons, scaled by the regen levers in force), a fall the seasons account for leaves the journal note
   `seasonal_exemption (…): no extinction rescue` (once per run of boundaries), and the model's prompt says the same on the
   viability line.
 - **What it fixes in the data** (read only, `runs/eval_*`): windows at which the fall sets the flag fall from 891, 808, 129,

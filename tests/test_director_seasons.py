@@ -539,7 +539,7 @@ def test_an_exempt_fall_makes_no_rescue_and_leaves_a_note_saying_by_how_much() -
     assert dec.proposals == ()
     (note,) = dec.notes
     assert note.startswith(
-        "seasonal_exemption (fall 0.45 within 50,000 steps; the seasons force 0.42, excess "
+        "seasonal_exemption (fall 0.45 within 50,000 steps; the environment forces 0.42, excess "
     )
     assert note.endswith("): no extinction rescue")
     assert note.split(" (", 1)[0] == rules.SEASONAL_EXEMPTION  # the key the journal dedupes on
@@ -550,7 +550,7 @@ def test_a_rescue_on_the_excess_names_the_seasons_share_in_its_reason() -> None:
     dec = rules.decide(ctx(v=seasonal_vitals(300_000, 0.82, 0.42)))
     assert {p.action for p in dec.proposals} == {"regen_pulse", "immigration_pulse"}
     reasons = {p.reason for p in dec.proposals}
-    assert reasons == {"n/K_est 0.9, fall 0.82 (the seasons force 0.42, excess 0.69) (override)"}
+    assert reasons == {"n/K_est 0.9, fall 0.82 (the environment forces 0.42, excess 0.69) (override)"}
     assert dec.notes == ()
 
 
@@ -571,14 +571,16 @@ def test_a_low_ratio_still_rescues_inside_an_exempt_fall() -> None:
     v = dataclasses.replace(seasonal_vitals(300_000, 0.45, 0.42), n_over_k=0.1, extinction_risk=True)
     dec = rules.decide(ctx(v=v))
     assert {p.action for p in dec.proposals} == {"regen_pulse", "immigration_pulse"}
-    assert "(the seasons force 0.42, excess 0.052)" in next(iter(dec.proposals)).reason
+    assert "(the environment forces 0.42, excess 0.052)" in next(iter(dec.proposals)).reason
 
 
 def test_the_exemption_is_noted_once_per_run_of_boundaries(tiny_cfg: Config, tmp_path: Path) -> None:
     cfg = seasons_cfg(tiny_cfg, "director.rule_every=100")
     rd = RunDir.create(tmp_path / "run", cfg)
     d = Director(rd, cfg, "live", 0)
-    note = "seasonal_exemption (fall 0.45 within 50,000 steps; the seasons force 0.42, excess 0.052): no x"
+    note = (
+        "seasonal_exemption (fall 0.45 within 50,000 steps; the environment forces 0.42, excess 0.052): no x"
+    )
     d._journal(100, [], [note])
     d._journal(200, [], [note])  # a persisting condition is noted once
     d._journal(300, [], [])
@@ -590,8 +592,11 @@ def test_the_exemption_is_noted_once_per_run_of_boundaries(tiny_cfg: Config, tmp
 def test_the_prompt_names_the_seasons_share_only_when_there_is_one() -> None:
     plain = prompt._vitals_text(ctx(), RULE_PARAMS)
     seasonal = prompt._vitals_text(ctx(v=seasonal_vitals(300_000, 0.45, 0.42)), RULE_PARAMS)
-    assert "seasons force" not in plain and "fall within 50k steps 0.01; extinction-risk flag no" in plain
-    want = "fall within 50k steps 0.45 (the seasons force 0.42 of it; the flag reads the excess 0.0517); "
+    assert "environment forces" not in plain
+    assert "fall within 50k steps 0.01; extinction-risk flag no" in plain
+    want = (
+        "fall within 50k steps 0.45 (the environment forces 0.42 of it; the flag reads the excess 0.0517); "
+    )
     assert want + "extinction-risk flag no" in seasonal
     note = rules.decide(ctx(v=seasonal_vitals(300_000, 0.45, 0.42))).notes
     assert "- not taken: seasonal_exemption (fall 0.45" in prompt._taken_text([], note)

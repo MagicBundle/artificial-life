@@ -399,7 +399,7 @@ SEASONAL_EXEMPTION: Final = "seasonal_exemption"  # the journal key of a fall th
 
 def _seasonal_clause(v: Vitals) -> str:
     """What the seasons force of the fall and the excess the flag reads (rules version 2, with seasons)."""
-    return f"the seasons force {_r(v.fall_seasonal)}, excess {_r(v.fall_excess)}"
+    return f"the environment forces {_r(v.fall_seasonal)}, excess {_r(v.fall_excess)}"
 
 
 def _extinction_rescue(ctx: Context, p: RuleParams, persona: PersonaParams) -> Outcome:

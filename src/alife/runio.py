@@ -586,7 +586,7 @@ class RunDir:
                 as_of = json.loads(archive.read_text(encoding="utf-8")).get("as_of_step")
             except (OSError, json.JSONDecodeError):
                 as_of = None
-            if not isinstance(as_of, int) or as_of > step:  # analysis only: the next checkpoint rewrites it
+            if not isinstance(as_of, int) or as_of > step:  # rewritten at the next checkpoint
                 archive.unlink()
 
     def dump_diag(self, s: State, step: int) -> Path:
