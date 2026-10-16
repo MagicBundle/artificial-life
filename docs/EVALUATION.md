@@ -1,7 +1,6 @@
 # Director evaluation (`DIRECTOR.md` §9)
 
-Status: all arms finished and analysed (2026-10-16). The owner's legibility ratings (§3.8) are pending; the verdict
-does not depend on them.
+Status: final (2026-10-16). All arms finished and analysed; the owner rated the journal sample (§3.8).
 
 ## Answer
 
@@ -9,8 +8,10 @@ does not depend on them.
   director (R) on both coverage and persistent novelty. The Gardener acted once (seed 0) and twice (seed 1) in 1.38M
   steps, so B is almost A. There was no population collapse.
 - **Criterion 2 passes as specified.** The LLM Trickster (C) beats B on coverage and persistent novelty on both seeds:
-  87 and 69 cells against 24 and 30, and its novelty stays above A's 100k steps after its interventions. The
-  legibility rating was therefore not needed for the verdict.
+  87 and 69 cells against 24 and 30, and its novelty stays above A's 100k steps after its interventions. The owner
+  also rated C's journal legible (mean 4.3 of 5 over 10 sampled entries, none below 4; §3.8), so the criterion's
+  alternative clause would hold as well. Legibility is what the LLM tier clearly adds; C's coverage and novelty
+  advantage over B does not survive the RC comparison (below).
 - **The coverage and novelty metrics mostly measure forced population oscillation, not heritable novelty.** On seed
   0, R's single random move (permanent seasons at step 1,199,000) took coverage from 22 to 83 cells in 300k steps and
   matched C's persistent novelty. C's own gains come mostly from the permanent seasons the model set. Read on
@@ -388,10 +389,20 @@ director saw, and B's rule-tier lines for comparison. Rated by the owner, 1 (opa
 
 | entry | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | mean |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| rating | pending | pending | pending | pending | pending | pending | pending | pending | pending | pending | – |
+| rating | 5 | 4 | 5 | 4 | 4 | 4 | 4 | 4 | 5 | 4 | 4.3 |
 
-The numbers the model quotes can be checked against the sheet's context columns (for example, entry 1 quotes the
-population 21,135 that the director saw at step 475,000).
+Rated on 2026-10-16. Entries 1–5 are seed 0 (mean 4.4), 6–10 seed 1 (mean 4.2); no entry is below 4. The owner's
+comment: "All of my ratings are either at 4 or 5. I have no difficulty understanding these entries." There were no
+per-entry notes. The numbers the model quotes can be checked against the sheet's context columns (for example,
+entry 1 quotes the population 21,135 that the director saw at step 475,000).
+
+**How this reads with the verdict.** The §9 criterion allows C to pass by matching B "with better journal
+legibility". C passes on the metrics already, so the ratings do not change the verdict, but they settle the other
+clause: C's journal is legible to its reader. B's journal has nothing comparable, only three rule one-liners in
+2.76M steps (the sheet lists them). Legibility is the LLM tier's clear gain here. It does not carry over to the
+ecology: C's coverage and persistent novelty over B do not survive the comparison with random moves at its own
+steps and budget (§3.7). The model explains its moves well, but its moves do no better than random ones on those
+metrics.
 
 ## 4. Verdict
 
@@ -407,7 +418,8 @@ The Gardener under rules version 1 almost never acts (1 and 2 interventions), so
 
 **Criterion 2: "C beats B on those metrics, or matches B with better journal legibility." Passes as specified, on
 both seeds.** Coverage 87 vs 24 and 69 vs 30; persistent novelty vs A +0.0152 vs −0.0028 and +0.0065 vs −0.0014.
-Legibility was not needed. Caveats, which change what the pass means:
+Legibility was not needed for the pass; the owner rated C's journal 4.3 of 5 (§3.8), so the alternative clause holds
+as well. Caveats, which change what the pass means:
 - the metrics reward forced oscillation: one random seasons move (R, seed 0) matched C's persistent novelty and came
   within 4 cells of its coverage;
 - evolutionary activity is bounded in C as in every arm; C raises the rate of new adaptive lineages, not their

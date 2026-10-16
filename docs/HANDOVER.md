@@ -173,7 +173,9 @@ C (rule tier + LLM, Trickster), R (random, yoked to B) and RC (random, yoked to 
 - **Criterion 2 passes as specified:** C beats B on both seeds (coverage 87 and 69 against 24 and 30). But one random
   seasons move (R, seed 0) gave nearly the same coverage and persistent novelty, and RC (random moves at C's steps
   and budget) gave more coverage than C on both seeds (228 and 119 against 87 and 69) and slightly more persistent
-  novelty. The archive's coverage and novelty mostly measure forced population oscillation.
+  novelty. The archive's coverage and novelty mostly measure forced population oscillation. The owner rated C's
+  journal legible (mean 4.3 of 5 over 10 entries, none below 4): the LLM tier explains its moves well, but the moves
+  do no better than random ones on these metrics.
 - **Evolutionary activity is bounded in every arm** (one non-robust window in RC, seed 0, during a sweep to
   monoculture). C's rate of new adaptive activity is 2.4–4 times A's in the cohort space (2.2–3 in the marker space)
   and 1.3–3.9 times RC's, in every window and space on both seeds: the one place where the LLM's choices beat random
