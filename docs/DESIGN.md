@@ -5650,7 +5650,8 @@ Linux x86_64, 4 cores).
   grounded 0.11, surface 0.065); the buoyancy cap's median holds at 0.51 and its upper tail widens (q90 0.57 at step
   6 000, 0.63 at 20 000); clades alive 648 at 7 000 and 122 at 20 000, the top clade at 0.35.
 
-**What remains.**
+**What remains.** Item 1 is done for one seed (`runs/64k3d_s0`, 500 000 steps) and described in `docs/RESULTS_3D.md`,
+which also gives the `n/K_floor` series of item 4.
 1. **The first long run**, the results PR: `64k3d` for at least 100 000 steps (about 1 h 50 min at 14.9 steps/s; 1 M
    steps would take about 18.6 h) on several seeds, analysed with `alife activity` (the signal tools are 2D-only,
    `require_2d`). Open there: where the population settles (it was falling at 30 000 steps and `DEV3D` was still

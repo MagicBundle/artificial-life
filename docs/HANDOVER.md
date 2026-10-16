@@ -1,6 +1,6 @@
 # Handover
 
-Status of the `alife` project as of 2026-10-16 (after the director evaluation, `docs/EVALUATION.md`; the 3D world is being built, `docs/3D.md`), written for the next coding
+Status of the `alife` project as of 2026-10-16 (after the director evaluation, `docs/EVALUATION.md`; the 3D world is built, PRs #15 to #20, `docs/3D.md`, and its first long run is analysed, `docs/RESULTS_3D.md`), written for the next coding
 session (a local Claude Code session on the owner's MacBook Pro, M5 Pro, 48 GB). Read this, then `CLAUDE.md`, then the parts of
 `docs/DESIGN.md` you need.
 
@@ -23,7 +23,9 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/ACTIVITY.md` | evolutionary-activity analysis of `runs/64k_s0` (method, results, sensitivity); figures in `docs/activity/` |
 | `docs/SIGNALS.md` | information carried by the emit and msg signals of `runs/64k_s0` at eight states; full tables in `docs/signals/` |
 | `docs/EVALUATION.md` | the director evaluation (`DIRECTOR.md` §9): arms A, B, C, R and RC on two seeds, results and verdict; outputs and figures in `docs/evaluation/` (`python -m alife.analysis.evaluation`) |
-| `docs/3D.md` | proposed 3D world with gravity and a floor (owner decisions, layout, fields, Swift viewer, PR plan); starts after the §9 evaluation |
+| `docs/3D.md` | the 3D world with gravity and a floor (owner decisions, layout, fields, Swift viewer, PR plan); built in PRs #15 to #20, normative spec `docs/DESIGN.md` §27 |
+| `docs/RESULTS_3D.md` | the first long 3D run, `runs/64k3d_s0` (500k steps): population and `K`, vertical niches and buoyancy, bodies, evolutionary activity, comparison with 2D; figures and tables in `docs/results_3d/`, scripts in `analysis_cache/64k3d_s0/results3d/` (git-ignored) |
+| `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13) |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
 | `.github/workflows/ci.yml` | Linux CPU CI: ruff, ruff format check, fast suite; nightly slow suite |
@@ -189,6 +191,58 @@ C (rule tier + LLM, Trickster), R (random, yoked to B) and RC (random, yoked to 
 - Analysis: `python -m alife.analysis.evaluation` recomputes the director's vital signs for every arm (equal to the
   logged ones); `alife activity` reads forks (`--start`).
 
+## Results so far: the first long 3D run (`docs/RESULTS_3D.md`)
+
+The run is `runs/64k3d_s0`: preset `64k3d`, seed 0, 500,000 steps, director off. It used code 358de29, whose tree
+equals `main` 99098f4. It has 11 checkpoints, 50k apart, and complete event logs. The 2D reference is `runs/64k_s0`
+over the same steps. This is one seed: no result below has a between-seed estimate.
+
+- **Stability.**
+  - 9.5 h at 14.6 steps/s, peak 3.32 GB.
+  - The ledger was exact on all 5,000 rows, with no error flags.
+  - No hash cell overflowed. The maximum occupancy was 37, at step 4,500, and at most 18 after step 50k, against
+    `C` = 48.
+- **Population.**
+  - The founders boomed to 25,719 at step 100 and crashed to 11,585 at step 1,200.
+  - The population then overshot to 42,730 at step 13,100 and fell to 25,111 at step 36,600.
+  - From step 100k it is stationary around 41,923 (sd of the 100-step means 3.8%, no trend). That is 1.25× the
+    sizing aim of 33,600 and 1.32× the 2D run.
+  - n/`K_est` is 0.63 to 0.68 and n/`K_floor` is 2.2 to 2.4 from step 100k.
+  - Only 19 to 21% of the agents live in the floor layer, against the 70% that the sizing assumed. 53% live in the
+    bottom quarter of the column and 35% in the top quarter.
+  - n/`K_floor` is lowest at the founder crash, about 0.62, which is 3.1× above `risk_k_frac` 0.2.
+- **Vertical niches.**
+  - From step 177,100 four founder clades remain, each at its own depth: floor (40% of agents), low water (20%),
+    upper water (11%) and surface (28%).
+  - The clade label carries 0.60 of the height-band entropy, and 0.73 within an xy column, against a shuffle
+    baseline of 0.0001. Every column holds at least two of the clades.
+  - Each layer's share of the agents follows its share of the food.
+- **Buoyancy cap.**
+  - The heritable cap evolves down: the median falls from 0.50 to 0.19, and `HEAT_BUOYANCY` from 1.75% to 0.62% of
+    all heat.
+  - The surface clade keeps 0.44. The upper-water clade has 0.08 and climbs by pitching up.
+  - The change is far beyond neutral drift; it cannot be separated from hitchhiking.
+- **Bodies.**
+  - Bodies are about 35× larger than in 2D: a median largest body of 2,582 from step 100k, against 74.
+  - They are thin single-clade sheets on the surface or the floor. They are adhesion clusters of a crowd 12 to 13
+    times denser per unit of floor area than 2D's, not organisms.
+  - After every bond is cut they re-form within about 10 steps. Members do not move together and do not share
+    energy.
+  - Erasing bonds at every step kills about 15% of the population within 100 steps (attacks 5×). This fits bonds
+    acting as a ceasefire.
+  - `docs/3D.md`'s goal of bodies with real 3D shapes, `RESEARCH.md` P2, is not met.
+- **Evolutionary activity.**
+  - Activity is bounded in all 22 valid cells (Channon), robust to horizon, grid and shadow seed, as in 2D.
+  - Lineage sorting is much stronger early and relaxes to the 2D level over about 300k steps.
+  - The survivors' excess share of births is not above the heritability null in 3D (age 100k: −0.003 ± 0.002, 2D
+    +0.021).
+- **Against 2D.** This is preset against preset, not a controlled dimension test.
+  - Clades fall to 10 by step 99,500, against 392,800 in 2D.
+  - Predation stays high: kill share 0.50 against 0.13.
+  - Emitters stay at 0.88 against 0.53.
+- **Outputs.** The figures and tables are in `docs/results_3d/`. The scripts and full outputs, with the activity
+  runs, are in `analysis_cache/64k3d_s0/` (git-ignored).
+
 ## GUI follow-ups (PR #3, merged)
 
 - **Fork pre-fill:** in Fork mode the levers are loaded from `runs/SOURCE/config.json`, where a missing
@@ -278,7 +332,7 @@ C (rule tier + LLM, Trickster), R (random, yoked to B) and RC (random, yoked to 
 
 1. **The §9 evaluation is done** (`docs/EVALUATION.md`). Follow-ups it found, in order:
    - **Season-aware extinction risk** (owner decision: a PR after the evaluation, with the `Director._blocked` journal
-     fix): the risk flag fires on every seasonal trough deeper than 30%, so a strong season triggers a rescue every
+     fix; PR #23, open): the risk flag fires on every seasonal trough deeper than 30%, so a strong season triggers a rescue every
      period, and the rescues use up the budget.
    - **A better outcome criterion.** The archive's coverage and novelty move with any forced population oscillation;
      lead with Bedau–Packard activity, or give the archive a heritable descriptor (genotypes or per-lineage behaviour).
@@ -287,7 +341,23 @@ C (rule tier + LLM, Trickster), R (random, yoked to B) and RC (random, yoked to 
    - **Archive immigrants** (`DIRECTOR.md` §5, deferred): random founders do not establish.
    - Arm D (Architect) is deferred by the owner; if run, with a goal above the baseline (largest body ≥ 200). A
      seasons-only control arm is deferred until after 3D tuning.
-2. **3D world** (`docs/3D.md`), after the evaluation: six PRs, starting with `world.dims` plumbing.
+2. **3D world** (`docs/3D.md`, DESIGN §27). It is built: PRs #15 to #20 are merged. The first long run,
+   `runs/64k3d_s0`, is done and analysed in `docs/RESULTS_3D.md`. Next, in order:
+   - **A second seed** of `64k3d` (500k steps, about 9.5 h of GPU). It would check the level near 42,000, the
+     four-clade depth structure, the erosion of the buoyancy cap and the bounded activity between seeds.
+   - **`regen_max` and `n_init`** (owner). The population is 1.25× the sizing aim, with no overflow and no
+     extinction risk at the founder crash. No result requires a change; the sign-off of `n_init` is still open.
+   - **The director in 3D.**
+     - The `K` criterion of the risk flag has a 3.1× margin at its lowest point (`RESULTS_3D.md` §3.4).
+     - The 30% `fall` criterion would probably read the founder crash and the 41% post-peak decline as risk.
+     - The rescue's `0.1·K_est` is at the menu's 1,024 cap.
+     - Merge PR #23 first.
+   - **Bodies beyond crowding.** A lower-density control would test whether body size follows density. A bodies goal
+     needs measures other than size: persistence, coordination and sharing.
+   - **Signals.** The signal-information tools are 2D-only (`require_2d`), and emitters stay at 0.88 in 3D, so they
+     need a 3D port.
+   - **Speed.** The fused Metal neighbour kernel (below) matters if more or longer 3D runs are wanted: 14.6 steps/s,
+     with the search at 79% of the step.
 3. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
