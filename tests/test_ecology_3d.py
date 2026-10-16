@@ -12,11 +12,13 @@ on the storage dtype.
 the arithmetic of §27.13), as ``64k3d``'s is of its 33 600: the founders' first generation multiplies the
 population by 1.4 to 1.7, and the cloud run seeded at 2.5x that ``K_est`` (5x the floor-only one) boomed and
 crashed. Seeding at 1x was not tried: the value is a hedge that the owner signs off.
-``C = 48`` is provisional, pending ``alife bench --stages`` on the Mac (DESIGN §27.13). It was 24 until this
-test failed its overflow gate at that value on the cloud worker (cloud-7): one floor pile first passed 24 at
-step 2151, was over it continuously from step 2207 and was still growing (peak occupancy 31, over capacity on
-11.96% of the steps). The gate itself is
-unchanged (at most 1% of the steps); a pile that keeps growing past 48 would fail it again.
+``C = 48`` is confirmed (owner decision 2026-10-16, DESIGN §27.13). It was 24 until this test failed its
+overflow gate at that value on the cloud worker (cloud-7): one floor pile first passed 24 at step 2151, was
+over it continuously from step 2207 and was still growing (peak occupancy 31, over capacity on 11.96% of the
+steps). At 48 the test passes on that worker (cloud-8); a 20 000-step run of the same configuration never
+overflowed (peak occupancy 43, at step 10 705) and ``64k3d`` itself ran 30 000 steps on the Mac with a peak
+of 37. The gate is unchanged (at most 1% of the steps); a pile that keeps growing past 48 would fail it
+again.
 The assertions are the 2D ones that make sense in 3D (never extinct, not pinned at ``N_CAP``, births, bonds
 and landed attacks, a clean state), plus the 3D terms: floor contacts (also late in the run),
 ``HEAT_BUOYANCY``, some agents resting on the floor and some swimming in the final state, and hash-cell
@@ -49,7 +51,7 @@ from alife.step import make_step
 
 STEPS = 2500
 C = CounterIdx
-CELL_CAPACITY = 48  # 64k3d's hash capacity C, provisional (DESIGN §27.13); DEV3D sets it too (checked equal)
+CELL_CAPACITY = 48  # 64k3d's hash capacity C, confirmed (DESIGN §27.13); DEV3D sets it too (checked equal)
 DEV3D = (
     "population.n_max=16384",
     "population.max_births_per_step=256",

@@ -3,11 +3,12 @@
 # actuator and a benthic plus photic food profile. One key per line: the GUI reads the scalars of this file.
 # The run cadences are the 64k ones (the dataclass defaults: metrics every 100 steps, heavy every 1 000).
 #
-# PROVISIONAL. The values come from the cloud tuning runs on tiny3d and DEV3D (CPU, DESIGN §27.13) and from
-# the sizing arithmetic below; none of it has been measured at this size. To be confirmed on the Mac, once the
-# GPU is free: `alife bench --preset 64k3d --stages` (time and memory of the 27 * C = 1 296 neighbour candidates
-# per agent at C = 48), `cell_overflow` and `max_occupancy` at the benthic steady state of a real run (C), and a
-# tuning run (the population against K_est, and the director's risk_k_frac before any 3D director run).
+# The hash capacity C = 48 is MEASURED and CONFIRMED (owner decision 2026-10-16; DESIGN §27.13): no hash cell
+# overflowed in a 30 000-step run of this preset on the Mac (maximum occupancy 37) nor in 20 000 steps of DEV3D on
+# the cloud CPU (maximum 43), and `alife bench --stages` on the M5 Pro gives 14.4 steps/s and a 3.1 GB peak at this
+# size. The other values (regen_max, n_init, the vertical food profile) come from the cloud tuning runs on tiny3d
+# and DEV3D (CPU, DESIGN §27.13) and from the sizing arithmetic below, and are as derived: the first long run (the
+# results PR) decides whether they move, and the director's risk_k_frac is confirmed before any 3D director run.
 [population]
 n_max = 65536
 # n_init = 16 384, 0.49 of the K_est of about 33 600 below (the owner asked for "near K"; this is a hedge, to be
@@ -40,17 +41,19 @@ buoyancy_max = 0.04
 # K = 8: K = 12 cannot pass validation at the default physics (stability needs k_repel <= 0.058, non-penetration
 # needs more than 0.0625 at this gravity), and it barely changed the ecology where it could run.
 k_neighbors = 8
-# C = 48, PROVISIONAL, pending `alife bench --preset 64k3d --stages` on the Mac. It was 24 until the cloud run of
-# the slow DEV3D test (cloud-7, C = 24): one floor hash cell was first over capacity at step 2151 (5 steps) and then
-# continuously from step 2207 to the end of the run, a floor pile still growing (peak occupancy 31, over C on 11.96 %
-# of the steps against a 1 % gate). Earlier cloud evidence: a floor pile under gravity reached 28 agents per hash
-# cell in the crowd tests (a converging ball without gravity 36), no cell overflowed at C = 16 on tiny3d and DEV3D
-# at the default regen_max of 320 (peak occupancy 13), and the food at regen_max 1 700 can feed about 20 agents in
-# the hottest floor hash cell (p99 20, max 23; 2D 64k: max 5 against C = 16). C = 48 holds the pile of 31 with a
-# margin of 1.5x. The price: Q = 27 C = 1 296 candidates per agent (2D 144, 648 at C = 24), about 2.1x the step
-# time of C = 16 and 1.6x that of C = 24 on the cloud CPU (DEV3D), and (N, Q) neighbour-search transients of 340 MB
-# each (170 MB at C = 24). If the bench finds C = 48 too costly, the alternative is a lower regen_max (fewer
-# agents per cell, K_est recalibrated).
+# C = 48, confirmed 2026-10-16 (owner decision). It was 24 until the cloud run of the slow DEV3D test (cloud-7,
+# C = 24): one floor hash cell was first over capacity at step 2151 (5 steps) and then continuously from step 2207
+# to the end of the run, a floor pile still growing (peak occupancy 31, over C on 11.96 % of the steps against a
+# 1 % gate). At 48 no cell overflowed in 30 000 steps of this preset on the Mac (seed 0, maximum occupancy 37, a
+# margin of 11) nor in 20 000 steps of DEV3D on the cloud CPU (maximum 43, a margin of 5, near the population
+# peak), and the slow test passes; neither pile would fit 32 or 24. Earlier cloud evidence: a floor pile under
+# gravity reached 28 agents per hash cell in the crowd tests (a converging ball without gravity 36), no cell
+# overflowed at C = 16 on tiny3d and DEV3D at the default regen_max of 320 (peak occupancy 13), and the food at
+# regen_max 1 700 can feed about 20 agents in the hottest floor hash cell (p99 20, max 23; 2D 64k: max 5 against
+# C = 16). The price, measured on the M5 Pro (alife bench --stages): Q = 27 C = 1 296 candidates per agent (2D 144)
+# make the neighbour search 56 of the 69 ms of a step, 14.4 steps/s against 24.9 at C = 24 and 59.3 for 2D 64k, and
+# the peak memory 3.1 GB (2.0 GB at C = 24). A long run that overflows should read max_occupancy first; the
+# alternatives are C = 64 (it held the crowd tests) or a lower regen_max with K_est recalibrated.
 cell_capacity = 48
 
 [energy]
