@@ -1,10 +1,11 @@
 """Vital signs from metrics rows (DIRECTOR.md §4): window aggregates, the behaviour descriptor, the tracker.
 
-Everything is a pure function of ``metrics.jsonl`` rows (plus the one live input ``K_est``, which is not
-stored), so the ``Tracker`` rebuilt from the rows on disk equals the one a live run built (A7). Rows are
-aggregated over the rule window and weighted by ``row["steps"]`` (short rows exist after an interrupted run);
-the wall-clock keys (``wall_s``, ``steps_per_s``, ``peak_mem_gb``) are never read. A heavy key that is absent
-or None (an empty world, a non-heavy row) is skipped, and a descriptor component that is missing counts as 0.
+Everything is a pure function of ``metrics.jsonl`` rows (plus the live inputs, which are not stored:
+``K_est`` and, in 3D, the floor layer's ``k_floor``, §27.10), so the ``Tracker`` rebuilt from the rows on
+disk equals the one a live run built (A7). Rows are aggregated over the rule window and weighted by
+``row["steps"]`` (short rows exist after an interrupted run); the wall-clock keys (``wall_s``,
+``steps_per_s``, ``peak_mem_gb``) are never read. A heavy key that is absent or None (an empty world, a
+non-heavy row) is skipped, and a descriptor component that is missing counts as 0.
 """
 
 from __future__ import annotations
@@ -168,17 +169,18 @@ class Boundary:
 
 @dataclass(frozen=True)
 class Vitals:
-    """What the rules see at a boundary (the window plus history, the archive and the live ``K_est``)."""
+    """What the rules see at a boundary (the window plus history, the archive and the live ``K_est``, with the
+    floor layer's ``k_floor`` in 3D)."""
 
     step: int
     origin: int | None  # start of the first window this run directory ever saw
     window: Window
     n_alive: float | None
     n_alive_min: float | None
-    k_est: float
-    n_over_k: float | None
+    k_est: float  # capacity estimate; 3D: occupancy-weighted (§27.10), read by the rescue size and the prompt
+    n_over_k: float | None  # n_alive / k_est
     fall: float | None  # 1 − (window minimum / highest window mean) over the last ``risk_fall_window`` steps
-    extinction_risk: bool
+    extinction_risk: bool  # n_over_k_risk < ``risk_k_frac`` or ``fall`` > ``risk_fall``
     pop_frac_cap: float | None  # population / N_CAP
     largest_body_frac: float | None
     top_clade_share: float | None
@@ -189,6 +191,16 @@ class Vitals:
     new_cells_200k: int
     last_new_cell: int | None  # step the latest grid cell was first visited
     b_shift: float | None  # RMS distance between b now and b about ``shift_window`` steps ago
+    # 3D only (None in 2D, which has one K): the floor layer's capacity, the K the extinction-risk test reads
+    # (§27.10, owner decision 2026-10-15), and the population over it.
+    k_floor: float | None = None
+    n_over_k_floor: float | None = None
+
+    @property
+    def n_over_k_risk(self) -> float | None:
+        """The ratio the extinction-risk test compares with ``risk_k_frac``: the floor layer's in 3D, the one
+        ``K_est`` in 2D."""
+        return self.n_over_k if self.k_floor is None else self.n_over_k_floor
 
     def compact(self) -> dict[str, Any]:
         """The legible subset written into each log entry (rounded to 4 places)."""
@@ -196,12 +208,15 @@ class Vitals:
         def r(x: Any) -> Any:
             return round(x, 4) if isinstance(x, float) else x
 
+        # 2D: the keys of build step 2, byte for byte. 3D adds the floor layer's K the risk test reads.
+        floor = ("k_floor", "n_over_k_floor") if self.k_floor is not None else ()
         return {
             k: r(getattr(self, k))
             for k in (
                 "n_alive",
                 "k_est",
                 "n_over_k",
+                *floor,
                 "fall",
                 "extinction_risk",
                 "top_clade_share",
@@ -263,13 +278,20 @@ class Tracker:
             return None
         return math.sqrt(sum((x - y) ** 2 for x, y in zip(bd.b, past[-1], strict=True)) / len(bd.b))
 
-    def vitals(self, bd: Boundary, k_est: float, n_cap: int) -> Vitals:
-        """The vital signs at boundary ``bd`` (the one ``close`` just returned) for a live ``K_est``."""
+    def vitals(self, bd: Boundary, k_est: float, n_cap: int, k_floor: float | None = None) -> Vitals:
+        """The vital signs at boundary ``bd`` (the one ``close`` just returned) for a live ``K_est``.
+
+        ``k_floor`` is given in 3D only (the floor layer's capacity, §27.10): the extinction-risk test then
+        divides the population by it instead of by ``k_est``, which every other reader keeps. Without it (2D)
+        the one ``K_est`` is both.
+        """
         w, p = bd.window, self.p
         n = w.n_alive_last
         n_over_k = n / k_est if n is not None and k_est > 0 else None
+        n_over_k_floor = n / k_floor if n is not None and k_floor is not None and k_floor > 0 else None
+        risk_ratio = n_over_k if k_floor is None else n_over_k_floor
         fall = self._fall(bd)
-        risk = (n_over_k is not None and n_over_k < p.risk_k_frac) or (
+        risk = (risk_ratio is not None and risk_ratio < p.risk_k_frac) or (
             fall is not None and fall > p.risk_fall
         )
         return Vitals(
@@ -292,4 +314,6 @@ class Tracker:
             new_cells_200k=self.archive.new_cells_since(bd.step - p.stagnation_window),
             last_new_cell=self.archive.last_new_cell,
             b_shift=self._shift(bd),
+            k_floor=k_floor,
+            n_over_k_floor=n_over_k_floor,
         )

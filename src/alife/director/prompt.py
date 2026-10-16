@@ -62,6 +62,17 @@ EFFECT_3D: Final = {
     "floor to the surface) once: founder effects, then recolonisation",
 }
 
+# The qualifier the 3D user message puts after the capacity estimate (§27.10): ``K_est`` counts each layer's
+# food by the share of the agents living in it, so it moves with where they are.
+K_NOTE_3D: Final = (
+    " (food weighted by where the agents live: the floor layer's alone if all are in the floor layer,"
+    " every layer's if they are spread evenly)"
+)
+
+# 3D only (§27.10): the extinction-risk flag compares the population with the floor layer's capacity, not
+# with ``K_est``, so the viability line gives that ratio as well. 2D vitals carry no ``k_floor``: no clause.
+K_FLOOR_NOTE_3D: Final = "the extinction-risk flag compares the population with this one, not with K_est"
+
 _METRICS: Final = (
     ("n_alive", "population", lambda b: b.window.n_alive_last),
     ("top_clade_share", "top clade share", lambda b: b.window.top_clade_share),
@@ -189,10 +200,16 @@ def _vitals_text(ctx: Context, p: RuleParams, k_note: str = "") -> str:
     per_k = 1000 / w.steps if w.steps else 0.0
     mono = f" (above {_f(p.mono_share)} since step {v.mono_since:,})" if v.mono_since is not None else ""
     last = pacing.steps_since_last(ctx.pacing, ctx.t)
+    floor = (
+        ""
+        if v.k_floor is None
+        else f", {_f(v.n_over_k_floor)} of the floor-layer capacity K_floor {_f(round(v.k_floor))} "
+        f"({K_FLOOR_NOTE_3D})"
+    )
     return "\n".join(
         [
             f"viability: population {_f(v.n_alive)} = {_f(v.n_over_k)} of the capacity estimate K_est "
-            f"{_f(round(v.k_est))}{k_note}, window low {_f(v.n_alive_min)}; births "
+            f"{_f(round(v.k_est))}{k_note}{floor}, window low {_f(v.n_alive_min)}; births "
             f"{_f(w.births * per_k)} / deaths {_f(w.deaths * per_k)} per 1k steps; fall within 50k steps "
             f"{_f(v.fall)}; extinction-risk flag {_f(v.extinction_risk)}; {_f(v.pop_frac_cap)} of the hard "
             f"capacity; largest body {_f(v.largest_body_frac)} of the population",
@@ -290,14 +307,14 @@ def user_message(
 ) -> str:
     """The state at this boundary. ``entries`` is the decision log so far (the safety actions of this
     boundary are in ``taken`` and not repeated under the recent interventions)."""
-    d3 = is_3d(cfg)  # the 3D world has a height, and K_est counts the floor layer's food only (§27.10)
+    d3 = is_3d(cfg)  # the 3D world has a height, and K_est weighs each layer's food by its occupancy (§27.10)
     size = f"{ctx.world_size:g} x {ctx.world_size:g}" + (f" x {cfg.world.height:g}" if d3 else "")
     return "\n\n".join(
         [
             f"Step {ctx.t:,} of the run. World {size}, "
             f"{cfg.fields.n_patches} fertility patches. Decide what, if anything, to do now.",
             "Availability:\n" + _availability(ctx, p),
-            "Vital signs (latest window):\n" + _vitals_text(ctx, p, " (floor-layer food only)" if d3 else ""),
+            "Vital signs (latest window):\n" + _vitals_text(ctx, p, K_NOTE_3D if d3 else ""),
             "Trends, " + _trends_text(history, cfg.director.rule_every),
             "Safety actions the rules already took at this step:\n" + _taken_text(taken, notes),
             "The last interventions and their measured effect:\n" + _recent_text(entries, history, ctx.t),

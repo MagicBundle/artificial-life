@@ -210,6 +210,31 @@ def test_extinction_rescue_boosts_regeneration_and_brings_immigrants() -> None:
     assert imm.raw == {"count": 100} and "override" in reg.reason  # 0.1 * K_est
 
 
+def test_the_rescue_reason_names_the_ratio_the_flag_read_and_its_size_reads_k_est() -> None:
+    """2D: the reason is as it has always been ("n/K_est"). 3D (vitals carry the floor layer's K, §27.10): the
+    flag was set by ``n / K_floor``, so the reason names that ratio; the rescue's size is still ``0.1·K_est``
+    of the occupancy-weighted estimate, which every other consumer keeps."""
+    d2 = decide(ctx(vit=dict(extinction_risk=True, n_over_k=0.1, fall=0.05)))
+    assert d2.proposals[0].reason == "n/K_est 0.1, fall 0.05 (override)"
+    assert d2.proposals[1].raw == {"count": 100}
+    d3 = decide(
+        ctx(vit=dict(extinction_risk=True, n_over_k=0.5, k_floor=300.0, n_over_k_floor=0.15, fall=0.05))
+    )
+    assert [p.action for p in d3.proposals] == ["regen_pulse", "immigration_pulse"]
+    assert all(p.reason == "n/K_floor 0.15, fall 0.05 (override)" for p in d3.proposals)
+    assert d3.proposals[1].raw == {"count": 100}  # 0.1 of k_est (1 000), not of the floor layer's 300
+
+
+def test_a_blocked_3d_rescue_is_noted_with_the_floor_layer_ratio() -> None:
+    t = 600_000
+    spent = (*over(fe(t - 20_000, "habitat_loss", duration=10_000)), fe(t - 15_000, "catastrophe"))
+    rescue = fe(t - 50_000, "regen_pulse", duration=20_000, rule="extinction_rescue")
+    risk = dict(extinction_risk=True, n_over_k=0.5, k_floor=300.0, n_over_k_floor=0.15, fall=0.01)
+    again = decide(ctx(t, entries=(*spent, *over(rescue)), vit=risk))  # the override is used up
+    assert again.proposals == () and "blocked" in again.notes[0]
+    assert again.notes[0].startswith("extinction_rescue (n/K_floor 0.15, fall 0.01): blocked [")
+
+
 def test_extinction_rescue_overrides_budget_and_cooldown_at_most_once_per_200k() -> None:
     t = 600_000
     spent = (

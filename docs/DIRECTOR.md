@@ -147,7 +147,7 @@ cheap additions.
 | Behaviour descriptor `b` | emitters_frac, sharers_frac, mean_bonds_per_agent, frac_in_bodies_ge4, singleton fraction, kill share, predation_ratio, gene medians. Each is normalised to [0, 1] with fixed ranges. |
 | Novelty | `novelty = mean k-NN distance of b to the descriptor archive` (k = 5). A MAP-Elites-style grid over 2–3 chosen descriptor axes records which cells have ever been visited. **Coverage** = visited cells. |
 | Stagnation | `‖b(t) − b(t − 100k)‖`, and the number of new archive cells in the last 200k steps |
-| Viability | n_alive / K_est, births/deaths balance, a min-population trend, an extinction-risk flag (`n_alive < 0.2 × K_est` or falling more than 30% in 50k) |
+| Viability | n_alive / K_est, births/deaths balance, a min-population trend, an extinction-risk flag (`n_alive < 0.2 × K_est` or falling more than 30% in 50k; in a 3D world `K_est` is the floor layer's capacity for this test, DESIGN §27.10) |
 | Pacing | steps since the last intervention, a "drama" level (recent intervention intensity), and the persona's target curve |
 
 The archive (descriptor vectors and grid cells) is written to `runs/NAME/director_archive.json` at each checkpoint for
