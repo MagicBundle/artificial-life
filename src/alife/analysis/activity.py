@@ -49,7 +49,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from alife.analysis.phylo import Tree, marker_roots, min_gap, nearest_root
+from alife.analysis.phylo import Tree, eligible_from, marker_roots, min_gap, nearest_root
 
 # Log-spaced histogram edges for activity: bin 0 is [0, 1), then 10 bins per decade up to 1e10.
 A_EDGES = np.concatenate([[0.0], 10.0 ** np.arange(0.0, 10.0001, 0.1)])
@@ -73,9 +73,9 @@ def grid_times(t_end: int, every: int) -> np.ndarray:
 def exposure_cdf(tree: Tree, gap: int) -> np.ndarray:
     """``F[t] = Σ_{u<t} b_u / E_u`` (float64, length ``t_end + 1``): one agent's expected births over the
     steps before ``t`` if it is eligible throughout; ``b_u`` are the non-root births of step ``u`` and ``E_u``
-    the agents eligible in step ``u`` (``birth + gap ≤ u < death``)."""
+    the agents eligible in step ``u`` (``eligible_from ≤ u < death``: ``birth + gap``, 0 for a founder)."""
     t_end = tree.t_end
-    start = tree.birth.astype(np.int64) + gap
+    start = eligible_from(tree.birth, gap)
     end = tree.death.astype(np.int64)
     ok = start < end
     e_count = np.cumsum(
@@ -91,7 +91,7 @@ def exposure_cdf(tree: Tree, gap: int) -> np.ndarray:
 
 
 def _exposure(tree: Tree, idx: np.ndarray, gap: int, cdf: np.ndarray, t0: int, t1: int) -> np.ndarray:
-    lo = np.clip(tree.birth[idx].astype(np.int64) + gap, t0, t1)
+    lo = np.clip(eligible_from(tree.birth[idx], gap), t0, t1)
     hi = np.clip(tree.death[idx].astype(np.int64), t0, t1)
     return np.where(hi > lo, cdf[hi] - cdf[lo], 0.0)
 

@@ -93,8 +93,8 @@ def tree_names(shadows: int) -> list[str]:
 # --- computation ------------------------------------------------------------------------------------------
 
 
-def _flatten(name: str, r: act.Result) -> dict[str, np.ndarray]:
-    out = {f"{name}/grid": r.grid, f"{name}/n_alive": r.n_alive, f"{name}/births": r.births}
+def _flatten(name: str, r: act.Result, t0: int = 0) -> dict[str, np.ndarray]:
+    out = {f"{name}/grid": r.grid + t0, f"{name}/n_alive": r.n_alive, f"{name}/births": r.births}
     for h, s in r.cohort_pooled.items():
         for k, v in s.arrays().items():
             out[f"{name}/{horizon_name(h)}/{k}"] = v
@@ -107,18 +107,26 @@ def _flatten(name: str, r: act.Result) -> dict[str, np.ndarray]:
 
 
 def compute(
-    tree: phylo.Tree, st: Settings, log: Callable[[str], None] = print
+    tree: phylo.Tree,
+    st: Settings,
+    log: Callable[[str], None] = print,
+    *,
+    step0: int = 0,
+    gap: int | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, float]]:
-    """The statistics of the run and its shadows as flat arrays ``<tree>/<space>/<field>``, plus timings."""
+    """The statistics of the run and its shadows as flat arrays ``<tree>/<space>/<field>``, plus timings.
+
+    ``step0`` is the run step of the tree's step 0 (``load_tree``'s ``t0``); the stored grids are run steps.
+    ``gap`` defaults to ``phylo.min_gap(tree)``; ``load_tree`` reports the one to use for a fork."""
     flat: dict[str, np.ndarray] = {}
     timing: dict[str, float] = {}
     rng = np.random.default_rng(st.seed)
-    gap = phylo.min_gap(tree)
+    gap = phylo.min_gap(tree) if gap is None else gap
 
     def run(name: str, t: phylo.Tree) -> None:
         t0 = time.perf_counter()
         flat.update(
-            _flatten(name, act.analyse(t, st.grid_every, st.marker_rates, st.cohort_horizons, gap=gap))
+            _flatten(name, act.analyse(t, st.grid_every, st.marker_rates, st.cohort_horizons, gap=gap), step0)
         )
         timing[name] = time.perf_counter() - t0
         log(f"  {name}: {timing[name]:.1f} s")
@@ -340,10 +348,16 @@ def summarise(
 ) -> dict[str, Any]:
     """Classification tables, thresholds, sensitivity and the cohort-age summary (``summary.json``)."""
     d = Data(flat, st.shadows)
-    t_end = int(d.grid[-1])
-    windows = [(0, t_end)] + [(a, t_end if b is None else b) for a, b in st.windows]
+    t0, t_end = int(d.grid[0]), int(d.grid[-1])
+    windows = [(t0, t_end)] + [(a, t_end if b is None else b) for a, b in st.windows]
     spaces = [s for s in space_names(st) if f"real/{s}/D" in flat]
-    out: dict[str, Any] = {"settings": asdict(st), "coverage": coverage, "t_analysed": t_end, "spaces": {}}
+    out: dict[str, Any] = {
+        "settings": asdict(st),
+        "coverage": coverage,
+        "t0": t0,
+        "t_analysed": t_end,
+        "spaces": {},
+    }
 
     for space in spaces:
         thr: dict[str, Any] = {}
@@ -362,7 +376,7 @@ def summarise(
         thr["channon_minus_min_rule"] = _f(-an_min)
 
         sp_out: dict[str, Any] = {"thresholds": thr, "windows": {}}
-        settle = pool_horizon(space)  # a cohort pool is filling up before its horizon
+        settle = t0 + pool_horizon(space)  # a cohort pool is filling up before its horizon
         for w0, w1 in windows:
             w = _window(d, max(w0, settle), w1)
             if w.t.size < MIN_POINTS:
@@ -532,13 +546,17 @@ def run_report(
     *,
     reuse: bool = False,
     plots: bool = True,
+    start: int | None = None,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    """The whole analysis: load, compute (or reuse ``activity.npz``), summarise, plot."""
+    """The whole analysis: load, compute (or reuse ``activity.npz``), summarise, plot.
+
+    ``start`` (default: the run's first step, the fork step for a fork) makes the agents alive at that step
+    the founders (``phylo.load_tree``)."""
     out.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     log(f"loading {run}")
-    tree, coverage = phylo.load_tree(run)
+    tree, coverage = phylo.load_tree(run, start=start)
     coverage["load_s"] = time.perf_counter() - t0
     npz = out / "activity.npz"
     if reuse and npz.is_file():
@@ -547,7 +565,7 @@ def run_report(
         timing: dict[str, float] = {}
     else:
         log("analysing the run and its shadows")
-        flat, timing = compute(tree, st, log)
+        flat, timing = compute(tree, st, log, step0=coverage["t0"], gap=coverage["min_parent_child_gap"])
         save_flat(npz, flat)
     del tree
     summary = summarise(flat, st, coverage)
