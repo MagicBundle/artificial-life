@@ -76,7 +76,10 @@ The literature adds these rules:
    - **At least a second seed per arm**, since a single-seed comparison is not evidence.
 
    The owner accepted both on 2026-10-11, and they are now in DIRECTOR.md §9 and §10. Each arm and seed costs
-   about 6 hours on the M5 Pro.
+   about 6 hours on the M5 Pro. Done: `docs/EVALUATION.md`, with arms A, B, C, R and RC (random, yoked to C) on two
+   seeds. Activity is bounded in every arm. The rule-tier Gardener barely acts and fails its criterion; the LLM
+   Trickster passes as specified, but random moves at its own pace match it on coverage and persistent novelty, which
+   mostly measure forced population oscillation. It leads only on the rate of new adaptive activity.
 4. **P1, then P2.** Add per-agent flow counters with a ledger-closure test. Pursue P2 only if some director arm sustains bodies.
 5. **P5 and P8** as later analyses on the same data.
 6. **P7:** not pursued.

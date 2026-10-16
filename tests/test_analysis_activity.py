@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 
 import numpy as np
@@ -242,50 +243,154 @@ def test_summary_and_table(selected_tree: Tree) -> None:
 # --- loading from a run directory ---------------------------------------------------------------------------
 
 
-def test_load_tree_from_run_dir(tmp_path) -> None:
+def _part(cols: dict, lo: int, hi: int) -> dict:
+    m = (cols["step"] >= lo) & (cols["step"] < hi)
+    return {k: np.asarray(v)[m] for k, v in cols.items()}
+
+
+def _hand_run(path, *, uid_of=None, start: int = 0, cuts=(0, 15, 30)) -> RunDir:
+    """A run directory holding the hand tree's events from ``start`` on; ``uid_of`` maps agent → uid."""
     cfg = load_config(preset="tiny", overrides=["population.n_init=2"])
-    rd = RunDir.create(tmp_path / "run", cfg)
+    rd = RunDir.create(path, cfg)
     t = hand_tree()
-    kids = np.arange(2, 6)
+    uid = np.arange(t.n) if uid_of is None else np.asarray(uid_of)
+    kids = np.flatnonzero(t.birth >= start)
     births = {
         "step": t.birth[kids],
-        "uid": kids,
-        "parent_uid": t.parent[kids],
-        "clade": np.zeros(4),
-        "generation": np.ones(4),
+        "uid": uid[kids],
+        "parent_uid": uid[t.parent[kids]],
+        "clade": np.zeros(kids.size),
+        "generation": np.ones(kids.size),
         "slot": kids,
     }
-    dead = np.array([1, 5, 0])
+    dead = np.flatnonzero((t.death < t.t_end) & (t.death >= start))
     deaths = {
         "step": t.death[dead],
-        "uid": dead,
-        "age": np.zeros(3),
-        "cause": np.zeros(3),
-        "generation": np.zeros(3),
-        "clade": np.zeros(3),
+        "uid": uid[dead],
+        "age": np.zeros(dead.size),
+        "cause": np.zeros(dead.size),
+        "generation": np.zeros(dead.size),
+        "clade": np.zeros(dead.size),
     }
-
-    def part(cols: dict, lo: int, hi: int) -> dict:
-        m = (cols["step"] >= lo) & (cols["step"] < hi)
-        return {k: np.asarray(v)[m] for k, v in cols.items()}
-
-    rd.write_events(0, 15, part(births, 0, 15), part(deaths, 0, 15))
-    rd.write_events(15, 30, part(births, 15, 30), part(deaths, 15, 30))
+    for lo, hi in itertools.pairwise(cuts):
+        rd.write_events(lo, hi, _part(births, lo, hi), _part(deaths, lo, hi))
     rd.append_metrics(
         [
             {
                 "step": 30,
-                "births": 4,
+                "births": int(kids.size),
                 "immigrants": 0,
-                "deaths_starved": 3,
+                "deaths_starved": int(dead.size),
                 "deaths_killed": 0,
                 "deaths_aged": 0,
                 "deaths_unlogged": 0,
             }
         ]
     )
+    if start:
+        rd.update_meta(start_step=start)
+    return rd
+
+
+def _alive_checkpoint(rd: RunDir, step: int, uids) -> None:
+    """A checkpoint stand-in with only the ``alive`` and ``uid`` arrays (all ``load_tree`` reads)."""
+    import mlx.core as mx
+
+    rd.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    u = np.asarray(uids, np.int64)
+    mx.save_safetensors(
+        str(rd.checkpoint_dir / f"step_{step:010d}.safetensors"),
+        {"alive": mx.array(np.r_[np.ones(u.size, bool), False]), "uid": mx.array(np.r_[u, -1])},
+    )
+
+
+def _assert_trees_equal(a: Tree, b: Tree) -> None:
+    for x, y in zip(a, b, strict=True):
+        np.testing.assert_array_equal(x, y)
+
+
+def test_load_tree_from_run_dir(tmp_path) -> None:
+    rd = _hand_run(tmp_path / "run")
     tree, rep = phylo.load_tree(rd.path, check_checkpoint=False)
-    for a, b in zip(tree, t, strict=True):
-        np.testing.assert_array_equal(a, b)
+    _assert_trees_equal(tree, hand_tree())
     assert rep["chunks_tile"] and rep["births_match_metrics"] and rep["deaths_match_metrics"]
     assert rep["metrics_totals"]["deaths_unlogged"] == 0 and rep["min_parent_child_gap"] == 6
+    assert rep["origin"] == rep["t0"] == 0
+
+
+# --- forks and start steps ----------------------------------------------------------------------------------
+
+#   restrict(hand_tree, 10): the agents alive at 10 (0, 1, 2, 3) become founders; 4 (born 12 to 2) and 5 (born
+#   13 to 1) keep their parents; every step index moves by −10.
+RESTRICTED_10 = Tree(
+    parent=np.array([-1, -1, -1, -1, 2, 1], np.int32),
+    birth=np.array([-1, -1, -1, -1, 2, 3], np.int32),
+    death=np.array([10, 5, 20, 20, 20, 8], np.int32),
+    t_end=20,
+)
+
+
+def test_restrict_hand_tree() -> None:
+    r = phylo.restrict(hand_tree(), 10)
+    phylo.validate_tree(r)
+    _assert_trees_equal(r, RESTRICTED_10)
+    assert phylo.min_gap(r, founder_ages=False) == 3  # only founders' children: fall back to them
+    with pytest.raises(ValueError, match="restrict step"):
+        phylo.restrict(hand_tree(), 30)
+
+
+def test_restricted_cohort_equals_the_original_cohort() -> None:
+    """Cohort 0 of the tree restricted to step 10 is cohort 1 (rooted at 10) of the whole tree."""
+    whole = act.analyse(hand_tree(), 10, cohort_horizons=(10,), gap=6).cohorts
+    part = act.analyse(phylo.restrict(hand_tree(), 10), 10, cohort_horizons=(10,), gap=6).cohorts
+    for f in ("D", "A_cum", "AN_cum", "AF_cum"):
+        np.testing.assert_allclose(part[f][0], whole[f][1][1:], err_msg=f)
+
+
+def test_founders_may_reproduce_from_the_start() -> None:
+    """In a fork, founders are of unknown age: a birth before ``gap`` steps have passed must not fail."""
+    r = phylo.restrict(hand_tree(), 10)  # births at steps 2 and 3, gap 6
+    np.testing.assert_array_equal(phylo.eligible_from(r.birth, 6), [0, 0, 0, 0, 8, 9])
+    act.exposure_cdf(r, 6)  # no "births without eligible agents"
+    sh = phylo.neutral_shadow(r, np.random.default_rng(0), gap=6)
+    phylo.validate_tree(sh)
+    assert np.all(sh.parent[4:] < 4)  # the only eligible parents are the founders
+
+
+def test_load_tree_with_start(tmp_path) -> None:
+    rd = _hand_run(tmp_path / "run")
+    tree, rep = phylo.load_tree(rd.path, start=10, check_checkpoint=False)
+    _assert_trees_equal(tree, RESTRICTED_10)
+    assert rep["t0"] == 10 and rep["origin"] == 0 and rep["founders_at_t0"] == 4
+    assert rep["min_parent_child_gap"] == 3
+
+
+def test_load_tree_of_a_fork(tmp_path) -> None:
+    """A fork's founders are the agents alive in its first checkpoint, with their source uids."""
+    uid_of = [100, 101, 102, 103, 200, 201]  # founders keep source uids, births continue from next_uid
+    rd = _hand_run(tmp_path / "fork", uid_of=uid_of, start=10, cuts=(10, 20, 30))
+    _alive_checkpoint(rd, 10, [100, 101, 102, 103])
+    _alive_checkpoint(rd, 30, [102, 103, 200])
+    tree, rep = phylo.load_tree(rd.path)
+    _assert_trees_equal(tree, RESTRICTED_10)
+    assert rep["origin"] == rep["t0"] == 10 and rep["t_end"] == 30 and rep["n_init"] == 4
+    assert rep["chunks_tile"] and rep["births_match_metrics"] and rep["deaths_match_metrics"]
+    assert rep["checkpoint_check"]["ok"]
+    with pytest.raises(ValueError, match="before the run's first step"):
+        phylo.load_tree(rd.path, start=5)
+
+
+def test_fork_report_uses_run_steps(tmp_path) -> None:
+    uid_of = [100, 101, 102, 103, 200, 201]
+    rd = _hand_run(tmp_path / "fork", uid_of=uid_of, start=10, cuts=(10, 20, 30))
+    _alive_checkpoint(rd, 10, [100, 101, 102, 103])
+    st = report.Settings(
+        grid_every=5, marker_rates=(0.5,), cohort_horizons=(10,), shadows=1, windows=((10, None),)
+    )
+    s = report.run_report(rd.path, tmp_path / "out", st, plots=False, log=lambda m: None)
+    flat = report.load_flat(tmp_path / "out" / "activity.npz")
+    np.testing.assert_array_equal(flat["real/grid"], [10, 15, 20, 25, 30])
+    assert s["t0"] == 10 and s["t_analysed"] == 30
+    cells = s["spaces"]["marker_0.5"]["windows"]
+    assert list(cells) == [report.window_label(10, 30)]  # the whole run starts at the fork step, not at 0
+    assert cells[report.window_label(10, 30)]["valid"]

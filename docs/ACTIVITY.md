@@ -273,10 +273,9 @@ The component-normalised verdict does not move under any swept setting.
   without genome or position data per birth.
 - **The neutral shadow** ignores the run's age structure (`max_age`, starvation of the young); it enforces only
   the minimum parent age. That is why the heritability null is the better reference for cohort survival.
-- **Forks are not supported yet.** The loader assumes a run that starts at step 0, with founders as uids
-  `0 … n_init − 1`. A fork (`run --init-from`) starts from a checkpoint whose agents keep their source uids. To use
-  this measure as the outcome metric of the `DIRECTOR.md` §9 arms, `phylo.load_tree` must take the founders from
-  the fork's first checkpoint and the grid must start at the fork step.
+- **Forks** are read since the director evaluation (`docs/EVALUATION.md`, DESIGN Review-log I41): the founders
+  are the agents alive in the fork's first checkpoint, and `--start STEP` does the same from any step of a run
+  from step 0. The results above, from step 0, are unchanged by it.
 - **The 0–120k window** is affected by the start-up boom (1,024 births per step at first) and by the founders.
   The cohort pools are not yet filled; the marker verdict for it is bounded.
 

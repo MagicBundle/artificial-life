@@ -825,7 +825,13 @@ def _cmd_activity(a: argparse.Namespace) -> int:
             print("matplotlib is missing (uv sync --extra analysis): writing tables only", file=sys.stderr)
             plots = False
     report.run_report(
-        rd.path, out, st, reuse=a.reuse, plots=plots, log=lambda m: None if a.quiet else print(m)
+        rd.path,
+        out,
+        st,
+        reuse=a.reuse,
+        plots=plots,
+        start=a.start,
+        log=lambda m: None if a.quiet else print(m),
     )
     if not a.quiet:
         print(f"wrote {out}")
@@ -1093,6 +1099,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=_windows,
         default=((0, 120_000), (120_000, 1_000_000), (1_000_000, None)),
         metavar="A:B,...",
+    )
+    p.add_argument(
+        "--start",
+        type=_non_negative,
+        default=None,
+        metavar="STEP",
+        help="analyse from STEP: the agents alive then are the founders (default: the run's first step, "
+        "the fork step for a fork)",
     )
     p.add_argument("--reuse", action="store_true", help="reuse OUT/activity.npz instead of recomputing")
     p.add_argument("--no-plots", action="store_true")
