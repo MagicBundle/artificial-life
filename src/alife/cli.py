@@ -480,6 +480,8 @@ def _cmd_resume(a: argparse.Namespace) -> int:
     replay = cfg.run.director == "replay"
     if replay:  # the whole log is checked before anything is written (exit 2)
         director_log.validate_log(director_log.read_log(rd.path / DIRECTOR_LOG_FILE), cfg)
+    elif cfg.run.director == "live":  # a log of rules this code does not implement is refused (exit 2) too
+        director_log.rules_version_of(rd.read_jsonl(DIRECTOR_LOG_FILE))
     # Everything is validated; only now touch the run directory.
     if items:
         rd.save_config(cfg)

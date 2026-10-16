@@ -7,7 +7,9 @@ director core: vital signs, archive, rule tier, decision log, replay, CLI) is im
 step 3 (the LLM tier) is implemented** and is normative in `docs/DESIGN.md` §26.10 (Review-log row I30); §13 records
 where it refines §2.1, §7 and §8. **Build step 4 (the GUI Director panel and `alife llm-check`) is implemented**
 (`gui/`, Review-log row I31); §14 records how it refines §8. **Step 5, the evaluation, is done:** `docs/EVALUATION.md`
-(§9 below states the design; the results and the verdict are there). This document extends `docs/DESIGN.md`.
+(§9 below states the design; the results and the verdict are there). **A follow-up to the evaluation (Review-log row I43)
+is implemented:** the extinction-risk flag is season-aware (rules version 2) and the blocked-rule note survives a resume
+(§16). This document extends `docs/DESIGN.md`.
 As each step lands, its normative parts (state fields, config keys, ledger terms, tests) move into DESIGN.md with
 Review-log rows, per `CLAUDE.md`.
 
@@ -147,12 +149,12 @@ cheap additions.
 | Behaviour descriptor `b` | emitters_frac, sharers_frac, mean_bonds_per_agent, frac_in_bodies_ge4, singleton fraction, kill share, predation_ratio, gene medians. Each is normalised to [0, 1] with fixed ranges. |
 | Novelty | `novelty = mean k-NN distance of b to the descriptor archive` (k = 5). A MAP-Elites-style grid over 2–3 chosen descriptor axes records which cells have ever been visited. **Coverage** = visited cells. |
 | Stagnation | `‖b(t) − b(t − 100k)‖`, and the number of new archive cells in the last 200k steps |
-| Viability | n_alive / K_est, births/deaths balance, a min-population trend, an extinction-risk flag (`n_alive < 0.2 × K_est` or falling more than 30% in 50k; in a 3D world `K_est` is the floor layer's capacity for this test, DESIGN §27.10) |
+| Viability | n_alive / K_est, births/deaths balance, a min-population trend, an extinction-risk flag (`n_alive < 0.2 × K_est` or falling more than 30% in 50k; in a 3D world `K_est` is the floor layer's capacity for this test, DESIGN §27.10; from rules version 2, with seasons in force, the fall is the part beyond what the seasons force, §16) |
 | Pacing | steps since the last intervention, a "drama" level (recent intervention intensity), and the persona's target curve |
 
 The archive (descriptor vectors and grid cells) is written to `runs/NAME/director_archive.json` at each checkpoint for
 analysis. It is never read back: a live run rebuilds it deterministically from `metrics.jsonl` on start or resume,
-and a replay needs no archive.
+and a replay needs no archive. The file also carries `blocked`, the one thing a resume does read from it (§16).
 
 ## 5. Intervention menu
 
@@ -180,7 +182,8 @@ an extinct lineage ("invasive species"). This is optional for v1; random founder
 ### Safety rules (rule tier, always on)
 
 - **Extinction rescue.** If the extinction-risk flag is set: a `regen_pulse` boost plus a random
-  `immigration_pulse`. This overrides cooldowns and budget once per 200k steps.
+  `immigration_pulse`. This overrides cooldowns and budget once per 200k steps. Under seasons the flag reads the fall
+  beyond what the seasons force (rules version 2, §16); the evaluation had found that every seasonal trough set it.
 - **Monoculture breaker.** If `top_clade_share > 0.9` for 100k steps: an immigration pulse, or per-patch
   seasons, or habitat loss, chosen by persona weights.
 - **Stagnation response.** If novelty is below threshold and there are no new archive cells for 200k steps: the
@@ -363,7 +366,8 @@ Decisions A1–A20 of the step-2 spec; `docs/DESIGN.md` §26 is normative.
 - **Hash scope (A5).** Only `director.enabled` is hashed. The policy keys are excluded from the hash entirely.
 - **Director state is folds (A6, A7).** Budget, cooldowns, active effects, drama and the pacing are folds of
   `director.jsonl`; the vital-sign tracker and archive are folds of `metrics.jsonl`, rebuilt on start or resume by the
-  same code path. `director_archive.json` is analysis output and never read back.
+  same code path. `director_archive.json` is analysis output and never read back, except for the `blocked` set that §16
+  adds (the one piece of state that is not a fold).
 - **Log (A8).** A header line (rules version, persona, goal, cadence, budget, seed), then entries with explicit,
   clamped, absolute `params`, `prev`, `duration`, `reason`, `vitals_step` and a compact `vitals`. A timed effect's
   end is **its own `revert` entry** at `step_applied + duration` (duration rounded up to the cadence); `prev` holds
@@ -484,3 +488,40 @@ Decisions R1 to R7 of the spec; `docs/DESIGN.md` §26.11 is normative.
   stderr if its sha256 changed.
 - **GUI (R6).** Persona menu gains Random, with a "Yoked to run" picker over the runs that have a `director.jsonl`.
 - **Not built.** Yoking to anything but timing and counts: R does not follow B's state, actions or parameter values.
+
+## 16. Season-aware extinction risk and the persisted blocked set as built (rules version 2)
+
+Decisions of 2026-10-16 after the evaluation (`docs/EVALUATION.md` §3.3, §5 item 2); `docs/DESIGN.md` §26.5 to §26.8 are
+normative and Review-log row I43 records the change. Host-side only: no change to the compiled step, the state, any hash
+or any trajectory without a director.
+
+- **The defect.** The fall criterion (a fall of more than 30% within 50k steps) fires on every seasonal trough; arms C
+  fired 56 and 60 extinction rescues, each also charging the model's budget. The flag could not tell a trough from a crash.
+- **Owner decision: exempt the forced amplitude.** With seasons in force the flag reads the fall *beyond* what the seasons
+  force. Of the two options the evaluation named (detrend the fall over the period, or exempt the forced amplitude) the owner chose the second.
+- **The forced fall is read from the engine's own regeneration map, not from the amplitude.** Regeneration is
+  `floor(regen_max·clip(base + Σ gain·weight·G, 0, 1))` and the weight multiplies only the patch term, so a season of
+  amplitude 0.6 swings the capacity by about ±0.40 (the data) to ±0.45 (the engine's map), and the clip and the base
+  fertility skew it; with `season_mode = per_patch` the patches cancel in the total. A plain `1 ± A` would have exempted
+  a fall of 0.75 where 0.57 is forced, so a population could fall up to 0.18 further without the flag. The capacity table over one cycle
+  (32 phases, 33 evaluations per boundary, 0.02 s on the CPU at 64k) gives the shape; the vital sign's own formula on it,
+  window by window under the regime each recorded, gives the forced fall at this phase; the flag reads
+  `excess = 1 − (1 − fall)/(1 − forced)`. The n/K criterion, 3D's `k_floor`, the thresholds and every other rule are
+  unchanged. Without seasons the code path is not entered.
+- **Legibility.** The log's `vitals` gain `fall_seasonal` and `fall_excess` (only when seasons were in force), a rescue's
+  reason says `(the seasons force 0.42, excess 0.69)`, a fall the seasons account for leaves the journal note
+  `seasonal_exemption (…): no extinction rescue` (once per run of boundaries), and the model's prompt says the same on the
+  viability line.
+- **What it fixes in the data** (read only, `runs/eval_*`): windows at which the fall sets the flag fall from 891, 808, 129,
+  1 018 and 614 of 1 380 to 55, 118, 0, 198 and 139; the runs of consecutive flagged windows in the two C arms from 85 and
+  63 to 19 and 26. **What it does not:** it does not model a population lag (RC's period-3 056 regime still flags 106 of
+  600 windows), nor the other forced falls: the end of a rescue's own regeneration pulse drops the capacity back, and the
+  population falls with it. A rescue that does not feed the next one would need the same treatment for the levers.
+- **Rules version 2.** `RULES_VERSION` is 2. A live run continues under the version of its log's latest header, so a
+  resumed version-1 run (every evaluation arm) keeps its rules, appends no header for it and says so on stderr; a new run
+  or a fork takes 2. Replay never decides, so every implemented version validates and replays byte-identically; an unknown
+  version is exit 2. There is no in-place upgrade (fork).
+- **`Director._blocked`.** The set of rules whose blocked note the journal wrote at the previous boundary is saved with
+  the archive at each checkpoint and restored by a resume from that checkpoint (`as_of_step` equal to the start step); a
+  resumed run's journal equals the uninterrupted run's. Not built: a persistent set that survives a resume from an older
+  checkpoint (the guard makes that case journal the note once more, as before).

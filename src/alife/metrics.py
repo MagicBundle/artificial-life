@@ -550,3 +550,42 @@ def floor_carrying_capacity(
         return carrying_capacity(s, cfg, step, env)
     rate = _layer_regen(s, cfg, step, env)
     return float(rate[0].sum()) / _c_ref(cfg)
+
+
+_SEASON_PROBE_PERIOD: Final = (
+    1 << 20
+)  # a multiple of every table size we use: sample j is at exactly phase j / n
+
+
+def seasonal_capacity_table(s: State | State3, cfg: Config, env: Env, amp: float, n: int = 32) -> np.ndarray:
+    """The lattice's regeneration over one seasonal cycle, ``n`` equally spaced phases ``j / n``, relative to
+    its value with no seasons: ``Σ regen_rate(step = j·P/n; env season = (amp, P)) / Σ regen_rate(env season
+    off)`` for the state's patches, gains and levers (the director's rules version 2, ``director.seasons``).
+
+    It is the engine's own map, so it carries what a plain sine of the weight would miss: the base fertility
+    and the clip at 1 damp and skew the swing, and with ``season_mode = per_patch`` the patches' sines cancel
+    in the total. Only the phase matters (the weights depend on ``step mod P`` through ``t / P``), so the
+    table serves any period; it is evaluated at an artificial period that ``n`` divides, so phases are exact.
+    The floor layer stands for the column in 3D (every layer is the 2D fertility times a fixed profile, so
+    they swing alike). ``amp`` is the amplitude to evaluate at (the model scales other amplitudes linearly).
+    """
+    if n < 2 or _SEASON_PROBE_PERIOD % n:
+        raise ValueError(
+            f"the capacity table needs a size n ≥ 2 that divides {_SEASON_PROBE_PERIOD}, got {n}"
+        )
+    f32, i32 = mx.float32, mx.int32
+    probe = env._replace(
+        season_amp=mx.array(amp, dtype=f32), season_period=mx.array(_SEASON_PROBE_PERIOD, dtype=i32)
+    )
+    off = env._replace(season_amp=mx.array(0.0, dtype=f32), season_period=mx.array(0, dtype=i32))
+
+    def total(step: int, e: Env) -> int:
+        rate = fields.regen_rate(s.patch_pos, cfg, mx.array(step, dtype=i32), e)
+        return int(to_numpy(rate[0] if is_3d(cfg) else rate).astype(np.int64).sum())
+
+    base = total(0, off)
+    if base <= 0:
+        return np.ones(n, dtype=np.float64)  # no regeneration at all: nothing for the seasons to modulate
+    return np.array(
+        [total(j * (_SEASON_PROBE_PERIOD // n), probe) for j in range(n)], dtype=np.float64
+    ) / float(base)

@@ -439,6 +439,7 @@ as well. Caveats, which change what the pass means:
 2. **The extinction-risk flag must be season-aware.** A fall of 30% in 50k steps is normal under the seasons the menu
    allows. A follow-up PR (after this evaluation) will detrend the fall over the season period or exempt falls within
    the forced amplitude, together with the `Director._blocked` journal fix.
+   *Fixed in rules version 2 (DESIGN.md Review-log row I43, DIRECTOR.md §16); the results here are version 1's.*
 3. **Coverage over population-level fractions is not a novelty measure of heritable behaviour.** Bedau–Packard activity,
    or a descriptor of genotypes or of per-lineage behaviour, should lead any future criterion.
 4. **Immigration does not inject lasting novelty**: random founders do not establish. An archive of past genomes

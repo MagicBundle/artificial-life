@@ -4,7 +4,8 @@ A descriptor ``b`` is one vector per rule window (``vitals.descriptor``). The ar
 that were novel when they arrived, scores every new one by its mean distance to its nearest archive members,
 and records which cells of a coarse grid over three descriptor axes the run has ever visited ("coverage").
 It is a deterministic fold of the descriptors it is fed, so a resumed run rebuilds it exactly from the
-on-disk metrics rows (A7); ``director_archive.json`` is written for analysis and never read back.
+on-disk metrics rows (A7); ``director_archive.json`` is written for analysis and the archive in it is never
+read back (the director adds the one field it does read, ``blocked``, DESIGN §26.3).
 """
 
 from __future__ import annotations

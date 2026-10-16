@@ -9,6 +9,7 @@ bounds are tested in ``test_director_replay_slow.py`` (a separate module, so the
 from __future__ import annotations
 
 import dataclasses
+import json
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
@@ -146,6 +147,48 @@ def test_replay_into_a_fresh_directory_is_bitwise_identical(live: Path, cfg: Con
         not (rd.path / JOURNAL_FILE).exists() and not (rd.path / DIRECTOR_ARCHIVE_FILE).exists()
     )  # no new records
     assert cli.main(["inspect", str(rd.path), "--check"]) == 0
+
+
+def test_the_run_under_seasons_logs_the_split_of_the_fall_from_the_boundary_after_they_are_set(
+    live: Path,
+) -> None:
+    """The scripted policy sets seasons (period 5 000, amplitude 0.5) at step 100: the entries from step 200
+    on carry the fall the seasons force and its excess (rules version 2), the entries up to step 100 do not
+    and have the keys of build step 2. The replays below read none of it."""
+    entries = [e for e in read_jsonl(live / DIRECTOR_LOG_FILE) if e.get("kind") != "header"]
+    before, after = (
+        [e for e in entries if e["step_applied"] <= 100],
+        [e for e in entries if e["step_applied"] >= 200],
+    )
+    assert before and after
+    assert all("fall_seasonal" not in e["vitals"] for e in before)
+    assert all(list(e["vitals"])[3:6] == ["fall", "fall_seasonal", "fall_excess"] for e in after)
+    assert all(0.0 <= e["vitals"]["fall_excess"] <= e["vitals"]["fall"] for e in after)
+    assert read_jsonl(live / DIRECTOR_LOG_FILE)[0]["rules_version"] == 2
+
+
+def test_a_log_written_under_rules_version_1_replays_bitwise(live: Path, cfg: Config, tmp_path: Path) -> None:
+    """A replay applies the logged entries and never decides, so the version of the rules that wrote a log
+    does not matter to it: the same log relabelled version 1 (as every log of a run begun before rules
+    version 2 is) validates and gives the same state and rows, in a fresh directory and from the command
+    line."""
+    old = tmp_path / "v1.jsonl"
+    recs = read_jsonl(live / DIRECTOR_LOG_FILE)
+    recs[0] = {**recs[0], "rules_version": 1}
+    old.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    rcfg = apply_overrides(cfg, ["run.director=replay"])
+    rd = RunDir.create(tmp_path / "replay", rcfg)
+    rd.update_meta(start_step=0)
+    shutil.copyfile(old, rd.path / DIRECTOR_LOG_FILE)
+    res = runner.run(rd, rcfg, init_state(rcfg), END, quiet=True, director=Director(rd, rcfg, "replay", 0))
+    assert res.status == "done"
+    assert digest(rd.path) == digest(live) and rows(rd.path) == rows(live)
+    assert (rd.path / DIRECTOR_LOG_FILE).read_bytes() == old.read_bytes()  # a replay writes nothing
+    fork = tmp_path / "fork"
+    argv = ["run", "--init-from", f"{live}:0", "--director", "replay", "--replay-log", str(old)]
+    argv += ["--steps", str(END), "--set", "run.checkpoint_every=300", "--quiet", "--out", str(fork)]
+    assert cli.main(argv) == 0
+    assert digest(fork) == digest(live) and rows(fork) == rows(live)
 
 
 def test_the_director_changes_the_trajectory(live: Path, cfg: Config, tmp_path: Path) -> None:

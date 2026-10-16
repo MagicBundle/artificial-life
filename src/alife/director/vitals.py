@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from alife.director import seasons
 from alife.director.archive import Archive, Observation
 
 if TYPE_CHECKING:  # rules imports this module; the annotation alone must not create an import cycle
@@ -165,6 +166,7 @@ class Boundary:
     window: Window
     b: tuple[float, ...] | None
     obs: Observation | None
+    regime: seasons.Regime | None = None  # (season amplitude, period) the window ran under; None: no seasons
 
 
 @dataclass(frozen=True)
@@ -180,7 +182,10 @@ class Vitals:
     k_est: float  # capacity estimate; 3D: occupancy-weighted (§27.10), read by the rescue size and the prompt
     n_over_k: float | None  # n_alive / k_est
     fall: float | None  # 1 − (window minimum / highest window mean) over the last ``risk_fall_window`` steps
-    extinction_risk: bool  # n_over_k_risk < ``risk_k_frac`` or ``fall`` > ``risk_fall``
+    # ``fall`` is the observed fall in every version. From rules version 2, with seasons in force in the fall
+    # window, ``fall_seasonal`` is the part of it the seasons force and ``fall_excess`` the rest (seasons.py);
+    # the flag then reads the excess. Both are None without seasons (and under version 1): ``fall`` is read.
+    extinction_risk: bool  # n_over_k_risk < ``risk_k_frac`` or the fall (its excess) > ``risk_fall``
     pop_frac_cap: float | None  # population / N_CAP
     largest_body_frac: float | None
     top_clade_share: float | None
@@ -195,6 +200,8 @@ class Vitals:
     # (§27.10, owner decision 2026-10-15), and the population over it.
     k_floor: float | None = None
     n_over_k_floor: float | None = None
+    fall_seasonal: float | None = None
+    fall_excess: float | None = None
 
     @property
     def n_over_k_risk(self) -> float | None:
@@ -208,8 +215,10 @@ class Vitals:
         def r(x: Any) -> Any:
             return round(x, 4) if isinstance(x, float) else x
 
-        # 2D: the keys of build step 2, byte for byte. 3D adds the floor layer's K the risk test reads.
+        # 2D: the keys of build step 2, byte for byte. 3D adds the floor layer's K the risk test reads, and a
+        # window under seasons (rules version 2) the split of the fall into the forced part and the excess.
         floor = ("k_floor", "n_over_k_floor") if self.k_floor is not None else ()
+        seasonal = ("fall_seasonal", "fall_excess") if self.fall_seasonal is not None else ()
         return {
             k: r(getattr(self, k))
             for k in (
@@ -218,6 +227,7 @@ class Vitals:
                 "n_over_k",
                 *floor,
                 "fall",
+                *seasonal,
                 "extinction_risk",
                 "top_clade_share",
                 "novelty",
@@ -249,6 +259,9 @@ class Tracker:
     def close(self, t: int) -> Boundary:
         """Fold the buffered rows (the window ending at ``t``) into the history, archive and streaks."""
         w = aggregate(self.rows)
+        # The regime of the window: a metrics row's ``env`` is what its interval ran with, and the director
+        # changes the environment only at a boundary, so the window's last row speaks for all of it.
+        regime = seasons.regime_of(self.rows[-1].get("env"))
         self.rows = []
         start = t - w.steps
         self.origin = start if self.origin is None else self.origin
@@ -256,7 +269,7 @@ class Tracker:
         obs = self.archive.observe(t, b) if b is not None else None
         mono = w.top_clade_share is not None and w.top_clade_share > self.p.mono_share
         self.mono_since = (start if self.mono_since is None else self.mono_since) if mono else None
-        boundary = Boundary(t, w, b, obs)
+        boundary = Boundary(t, w, b, obs, regime)
         kept = [h for h in self.history if h.step > t - self.p.history_keep]
         self.history = [*kept, boundary]
         return boundary
@@ -270,6 +283,33 @@ class Tracker:
         low = bd.window.n_alive_min
         return 1.0 - low / max(recent) if recent and low is not None and max(recent) > 0 else None
 
+    def season_amp(self, bd: Boundary) -> float:
+        """The largest season amplitude of the windows in the fall window ending at ``bd`` (0: no seasons)."""
+        return max(
+            (
+                h.regime[0]
+                for h in self.history
+                if h.regime is not None and bd.step - self.p.risk_fall_window < h.step <= bd.step
+            ),
+            default=0.0,
+        )
+
+    def _forced_fall(self, bd: Boundary, shape: seasons.CapacityShape) -> float | None:
+        """The fall the seasons force over the same windows as ``_fall`` (seasons.py): the modelled capacity
+        through the vital sign's own formula, each window under its own regime. None where ``_fall`` is."""
+        wins = [
+            h
+            for h in self.history
+            if bd.step - self.p.risk_fall_window < h.step <= bd.step and h.window.n_alive is not None
+        ]
+        if not wins or bd.window.n_alive_min is None:
+            return None
+        mean_cap = max(
+            seasons.window_stats(shape, h.regime, h.step - h.window.steps, h.step)[0] for h in wins
+        )
+        low_cap = seasons.window_stats(shape, bd.regime, bd.step - bd.window.steps, bd.step)[1]
+        return 1.0 - low_cap / mean_cap
+
     def _shift(self, bd: Boundary) -> float | None:
         if bd.b is None:
             return None
@@ -278,12 +318,24 @@ class Tracker:
             return None
         return math.sqrt(sum((x - y) ** 2 for x, y in zip(bd.b, past[-1], strict=True)) / len(bd.b))
 
-    def vitals(self, bd: Boundary, k_est: float, n_cap: int, k_floor: float | None = None) -> Vitals:
+    def vitals(
+        self,
+        bd: Boundary,
+        k_est: float,
+        n_cap: int,
+        k_floor: float | None = None,
+        shape: seasons.CapacityShape | None = None,
+    ) -> Vitals:
         """The vital signs at boundary ``bd`` (the one ``close`` just returned) for a live ``K_est``.
 
         ``k_floor`` is given in 3D only (the floor layer's capacity, §27.10): the extinction-risk test then
         divides the population by it instead of by ``k_est``, which every other reader keeps. Without it (2D)
         the one ``K_est`` is both.
+
+        ``shape`` is the capacity over a seasonal cycle (``seasons.CapacityShape``), given by a live director
+        of rules version 2 when seasons are in force in the fall window. The extinction-risk test then reads
+        the excess of the fall over what the seasons force (``fall_seasonal``, ``fall_excess``); ``fall``
+        itself stays the observed value. Without it the test reads ``fall`` as it always did.
         """
         w, p = bd.window, self.p
         n = w.n_alive_last
@@ -291,8 +343,11 @@ class Tracker:
         n_over_k_floor = n / k_floor if n is not None and k_floor is not None and k_floor > 0 else None
         risk_ratio = n_over_k if k_floor is None else n_over_k_floor
         fall = self._fall(bd)
+        forced = self._forced_fall(bd, shape) if shape is not None and p.season_aware else None
+        excess = seasons.excess_fall(fall, forced) if fall is not None and forced is not None else None
+        judged = fall if excess is None else excess
         risk = (risk_ratio is not None and risk_ratio < p.risk_k_frac) or (
-            fall is not None and fall > p.risk_fall
+            judged is not None and judged > p.risk_fall
         )
         return Vitals(
             step=bd.step,
@@ -316,4 +371,6 @@ class Tracker:
             b_shift=self._shift(bd),
             k_floor=k_floor,
             n_over_k_floor=n_over_k_floor,
+            fall_seasonal=None if excess is None else forced,
+            fall_excess=excess,
         )

@@ -8,7 +8,11 @@ catastrophe centre, the Trickster's sampling) is stateless host numpy seeded by 
 Rule order at a boundary (the first that acts wins; one that triggers but is blocked leaves a journal note):
 extinction rescue, runaway damper, monoculture breaker, stagnation response, then the Trickster's boredom.
 ``RuleParams`` holds every threshold, window, weight, range and budget; ``RULES_VERSION`` is recorded in the
-log header and must change with any of them.
+log header and must change with any of them or with any change of what the rules do.
+
+Rules versions: 1 is build steps 2 and 3; 2 makes the extinction-risk flag season-aware (it reads the fall
+beyond what the seasons force, ``seasons.py``). A live run keeps the version of its log's latest header, so a
+resumed run never changes rules mid-run (``params_for``); a new run (or a fork) gets ``RULES_VERSION``.
 
 The objective J of DIRECTOR.md §6 is documented but not optimised here: without a forward model the rule
 tier reacts to thresholds. Its terms are available as vital signs for the LLM tier (build step 3).
@@ -18,7 +22,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Final, NamedTuple
 
 import numpy as np
@@ -33,7 +37,11 @@ from alife.director.pacing import (
 )
 from alife.director.vitals import Vitals
 
-RULES_VERSION: Final = 1
+RULES_VERSION: Final = 2
+SUPPORTED_RULES_VERSIONS: Final = (
+    1,
+    2,
+)  # a live run may continue a log of any of these; replay never decides
 
 Weights = tuple[tuple[str, float], ...]  # (action, weight) in menu order; ties go to the first
 
@@ -124,6 +132,8 @@ ARCHITECT: Final = PersonaParams(
 
 @dataclass(frozen=True)
 class RuleParams:
+    # Which behaviour of the rule tier: the log's version for a resumed run (``params_for``), else the latest
+    rules_version: int = RULES_VERSION
     # Descriptor normalisation (vitals.descriptor): every component is clipped to [0, 1]
     bonds_per_agent_max: float = 4.0  # mean bonds per agent is divided by this
     predation_max: float = 0.25  # predation ratio (stolen / harvested energy) is divided by this
@@ -176,8 +186,21 @@ class RuleParams:
     def persona(self, name: str) -> PersonaParams:
         return next(p for p in self.personas if p.name == name)
 
+    @property
+    def season_aware(self) -> bool:
+        """Rules version 2 on: the extinction-risk flag reads the fall beyond what the seasons force."""
+        return self.rules_version >= 2
+
 
 RULE_PARAMS: Final = RuleParams()
+
+
+def params_for(params: RuleParams, version: int) -> RuleParams:
+    """``params`` under rules ``version`` (a live run continuing a log written under it); ``ValueError`` for a
+    version this code does not implement."""
+    if version not in SUPPORTED_RULES_VERSIONS:
+        raise ValueError(f"rules version {version!r} is not implemented (known: {SUPPORTED_RULES_VERSIONS})")
+    return params if version == params.rules_version else replace(params, rules_version=version)
 
 
 class Context(NamedTuple):
@@ -371,15 +394,30 @@ def _respond(
 Outcome = tuple[tuple[Proposal, ...], str] | None  # None: the rule did not trigger
 
 
+SEASONAL_EXEMPTION: Final = "seasonal_exemption"  # the journal key of a fall that the seasons account for
+
+
+def _seasonal_clause(v: Vitals) -> str:
+    """What the seasons force of the fall and the excess the flag reads (rules version 2, with seasons)."""
+    return f"the seasons force {_r(v.fall_seasonal)}, excess {_r(v.fall_excess)}"
+
+
 def _extinction_rescue(ctx: Context, p: RuleParams, persona: PersonaParams) -> Outcome:
     v = ctx.vitals
     if not v.extinction_risk:
+        # A fall that would have set the flag under rules version 1 but is within what the seasons force: no
+        # action, a journal note (once per run of boundaries, like a blocked rule) saying by how much.
+        if v.fall_excess is not None and v.fall is not None and v.fall > p.risk_fall:
+            why = f"fall {_r(v.fall)} within {p.risk_fall_window:,} steps; {_seasonal_clause(v)}"
+            return (), f"{SEASONAL_EXEMPTION} ({why}): no extinction rescue"
         return None
     last = ctx.pacing.last_rule.get(EXTINCTION_RESCUE)
     override = last is None or ctx.t - last >= p.rescue_override_gap
     # 3D: the flag reads the floor layer's K (§27.10), so the reason names the ratio that set it (2D as ever)
     ratio = f"n/K_est {_r(v.n_over_k)}" if v.k_floor is None else f"n/K_floor {_r(v.n_over_k_floor)}"
     why = f"{ratio}, fall {_r(v.fall)}"
+    if v.fall_seasonal is not None:
+        why += f" ({_seasonal_clause(v)})"
     mult, duration = p.rescue_regen
     count = round(p.rescue_imm_frac * v.k_est)
     parts = (("regen_pulse", {"mult": mult}, duration), ("immigration_pulse", {"count": count}, None))
