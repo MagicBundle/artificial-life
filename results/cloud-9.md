@@ -1,4 +1,4 @@
-cloud-9 (PARTIAL, at step 18,000 of 20,000): after peaking at about 12,500 (12,500–14,000), **n declines but more slowly**: 11,404 → 11,185 → 11,054 → 11,072 → 10,813, about −150 per 500 steps against −350 before. Kills have stopped rising (about 12,000–12,300 per 1,000 steps). n/K_est is 0.67; no overflow.
+cloud-9 COMPLETE (20,000 steps): DEV3D has **not reached a steady state**. It grew to a peak of about 12,500 (steps 12,500–14,000) and has been declining slowly since, to 10,195 at 20,000, with the decline slowing (−130 per 500 steps over the last 1,000). n/K_est: 0.78–0.79 at the peak, 0.63–0.64 at the end, mean 0.72 over steps 11,000–20,000. n/floor-K: 2.65 → 2.16. K_est is steady at about 16,200. No overflow on any of the 14,000 steps; peak occupancy 43 of 48 (step 10,705).
 
 # cloud-9: DEV3D continuation to 20,000 steps (`3d/pr6-64k3d` at `a3d46eb`, C = 48)
 
@@ -40,9 +40,11 @@ cloud-9 (PARTIAL, at step 18,000 of 20,000): after peaking at about 12,500 (12,5
 | 15001–16000 | 11404 | 18733 | 6846 / 12262 / 7 | 0.112 | 0.40/0.19/0.15/0.26 | 4.9/14.6/30.3 | 0.066 | 0 | 31 | 16117 | 4727 | 0.71 | 2.41 | 44029617 | 0.405/0.514/0.621 | 189 | 0.338 |
 | 16001–17000 | 11054 | 18594 | 6604 / 12333 / 7 | 0.111 | 0.40/0.19/0.16/0.25 | 4.7/14.4/29.9 | 0.065 | 0 | 28 | 16192 | 4727 | 0.68 | 2.34 | 42429564 | 0.404/0.513/0.625 | 180 | 0.332 |
 | 17001–18000 | 10813 | 18293 | 6493 / 12031 / 10 | 0.113 | 0.40/0.19/0.16/0.26 | 4.8/14.8/30.3 | 0.064 | 0 | 35 | 16231 | 4727 | 0.67 | 2.29 | 41614762 | 0.402/0.512/0.625 | 153 | 0.332 |
+| 18001–19000 | 10328 | 17880 | 6368 / 11992 / 5 | 0.110 | 0.38/0.19/0.16/0.26 | 5.0/15.3/30.6 | 0.064 | 0 | 27 | 16268 | 4727 | 0.63 | 2.19 | 40307558 | 0.399/0.510/0.628 | 138 | 0.328 |
+| 19001–20000 | 10195 | 17397 | 6016 / 11501 / 13 | 0.110 | 0.39/0.19/0.16/0.26 | 4.9/15.3/30.4 | 0.063 | 0 | 30 | 16237 | 4726 | 0.63 | 2.16 | 38593531 | 0.397/0.511/0.631 | 122 | 0.347 |
 
-n_alive every 500 steps: [(6000, 5981), (6500, 6521), (7000, 7117), (7500, 7857), (8000, 8542), (8500, 9338), (9000, 10170), (9500, 10869), (10000, 11546), (10500, 11867), (11000, 11972), (11500, 12115), (12000, 12301), (12500, 12489), (13000, 12500), (13500, 12509), (14000, 12490), (14500, 12145), (15000, 11786), (15500, 11612), (16000, 11404), (16500, 11185), (17000, 11054), (17500, 11072), (18000, 10813)]
-steps 6001–18000: overflow on 0 steps; peak occupancy 43 at step 10705
+n_alive every 500 steps: [(6000, 5981), (6500, 6521), (7000, 7117), (7500, 7857), (8000, 8542), (8500, 9338), (9000, 10170), (9500, 10869), (10000, 11546), (10500, 11867), (11000, 11972), (11500, 12115), (12000, 12301), (12500, 12489), (13000, 12500), (13500, 12509), (14000, 12490), (14500, 12145), (15000, 11786), (15500, 11612), (16000, 11404), (16500, 11185), (17000, 11054), (17500, 11072), (18000, 10813), (18500, 10662), (19000, 10328), (19500, 10140), (20000, 10195)]
+steps 6001–20000: overflow on 0 steps; peak occupancy 43 at step 10705
 
 **Throughput:** 0.635 steps/s (6,000–8,000) 0.662 steps/s (8,000–10,000) 0.703 steps/s (10,000–12,000) 0.729 steps/s (12,000–14,000), and 0.56–0.62 steps/s for 14,000–16,000, alone on the CPU.
 
@@ -155,3 +157,76 @@ steps 6001–18000: overflow on 0 steps; peak occupancy 43 at step 10705
 - No change in the vertical structure. buoy_cap q90 keeps creeping up (0.625).
 - Clades alive keep falling (180 → 153); the top share is steady at 0.332.
 - No overflow. Occupancy peaks at 28–35.
+
+
+## Final reading (20,000 steps)
+
+**Population trajectory.** n_alive every 500 steps:
+
+| step | n | step | n | step | n |
+|---|---|---|---|---|---|
+| 6,000 | 5,981 | 11,000 | 11,972 | 16,000 | 11,404 |
+| 7,000 | 7,117 | 12,000 | 12,301 | 17,000 | 11,054 |
+| 8,000 | 8,542 | 13,000 | 12,500 | 18,000 | 10,813 |
+| 9,000 | 10,170 | 14,000 | 12,490 | 19,000 | 10,328 |
+| 10,000 | 11,546 | 15,000 | 11,786 | 20,000 | 10,195 |
+
+**Where does it level off?** Not yet, within 20,000 steps.
+- **Growth phase (to about 12,000).** The water column filled, and K_est rose with the population because it
+  is occupancy-weighted.
+- **Peak (12,500–14,000).** About 12,500 for 1,500 steps.
+- **Decline (14,000–20,000).** About 2,300 lost, or 18%. The decline is slowing: −350 per 500 steps around
+  15,000, about −130 per 500 over the last 1,000 steps (10,328 → 10,140 → 10,195).
+
+**What drives the decline.**
+- Births fall: 18,733 → 17,397 per 1,000 steps.
+- Kills stay high: about 11,500–12,300 per 1,000.
+- Starvation falls: 7,450 → 6,016.
+- The top clade holds 0.33–0.35 of the population while clades alive fall from 224 to 122.
+
+This reads as a predation-limited regime still relaxing toward its level, which is probably around
+9,500–10,500. That is not confirmed.
+
+**Calibration numbers for the 3D K_est:**
+
+| quantity | value |
+|---|---|
+| K_est (occupancy-weighted), once the column is filled (steps 13,000–20,000) | 15,870–16,270, steady |
+| n / K_est at the peak (12,500–14,000) | 0.78–0.79 |
+| n / K_est at the end (19,000–20,000) | 0.63 (0.62–0.64 over the last 2,000 steps) |
+| n / K_est, mean over steps 11,000–20,000 | 0.72 |
+| floor-layer K | 4,727, constant |
+| n / floor-K | 2.65 at the peak → 2.16 at the end |
+
+**What this suggests for calibration.**
+- Once the column is filled, the occupancy-weighted K_est overestimates the realised 3D population by 1.3× at
+  the peak and about 1.6× at step 20,000. The true long-run factor may be larger if the decline continues.
+- The overestimate is not the 4× seen at step 2,500. That figure came from the unfilled column, when the
+  occupancy weights had not yet caught up.
+- The floor-layer K underestimates the population by more than 2× at every stage after step 6,000.
+- A K_est scaled by about 0.65–0.75 would bracket the observed range. Food alone does not fix the 3D carrying
+  capacity: predation is now the leading cause of death (about 65% of deaths at the end). Any food-based K_est
+  will overestimate by roughly the share of the population that predation removes.
+
+**Hash grid.**
+- **No overflow on any of the 14,000 steps** (6,001–20,000) at C = 48. The peak occupancy is 43 (step 10,705),
+  reached during the fastest growth.
+- After the peak, per-1,000-step peaks were 27–37. The C = 48 margin is narrowest (5) at the densest growth
+  phase.
+
+**Other observations.**
+- The column structure is stable from about step 12,000:
+  - band_frac about 0.39 / 0.19 / 0.16 / 0.26;
+  - height median about 15;
+  - grounded share about 0.11;
+  - surface share about 0.065.
+- buoy_cap shows a slow upward drift in its top tail: q90 rises from 0.571 to 0.631 over 6,000–20,000 while the
+  median holds at about 0.51. Variation is accumulating, and there is mild selection for higher caps in part
+  of the population.
+
+**Interruptions.** The container restarted twice during steps 14,000–16,000. Both attempts were rerun from the
+saved 14,000-step state in 500-step chunks. The 500-step resumes are exact; cloud-8 established this property.
+
+**Files** (all in `results/`):
+- `cloud-9-counters_6000_8000.npz` … `cloud-9-counters_18000_20000.npz`: per-step counters and ledgers;
+- `cloud-9-snapshots.json`: the 500-step state snapshots.
