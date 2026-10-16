@@ -194,8 +194,9 @@ C (rule tier + LLM, Trickster), R (random, yoked to B) and RC (random, yoked to 
 ## Results so far: the first long 3D run (`docs/RESULTS_3D.md`)
 
 The run is `runs/64k3d_s0`: preset `64k3d`, seed 0, 500,000 steps, director off. It used code 358de29, whose tree
-equals `main` 99098f4. It has 11 checkpoints, 50k apart, and complete event logs. The 2D reference is `runs/64k_s0`
-over the same steps. This is one seed: no result below has a between-seed estimate.
+equals `main` 99098f4. It has 11 checkpoints, 50k apart, and complete event logs. The 2D reference is `runs/64k_s0`:
+the metrics-row comparisons cover the same steps, but its bodies' structure is read from its checkpoints at 1.49M to
+1.504M steps (the only ones that survive). This is one seed: no result below has a between-seed estimate.
 
 - **Stability.**
   - 9.5 h at 14.6 steps/s, peak 3.32 GB.
@@ -212,11 +213,14 @@ over the same steps. This is one seed: no result below has a between-seed estima
     bottom quarter of the column and 35% in the top quarter.
   - n/`K_floor` is lowest at the founder crash, about 0.62, which is 3.1× above `risk_k_frac` 0.2.
 - **Vertical niches.**
-  - From step 177,100 four founder clades remain, each at its own depth: floor (40% of agents), low water (20%),
-    upper water (11%) and surface (28%).
-  - The clade label carries 0.60 of the height-band entropy, and 0.73 within an xy column, against a shuffle
-    baseline of 0.0001. Every column holds at least two of the clades.
-  - Each layer's share of the agents follows its share of the food.
+  - From step 177,100 four founder clades remain, in two depth zones of two clades each. Floor zone: clade 5165 (40%
+    of agents, median height 5.8) and 8695 (20%, 17.0). Top zone: 4616 (11%, 68.0) and 13526 (28%, 74.4).
+  - The clade label carries 0.60 of the height-band entropy (MI 0.63 nats against a shuffle baseline of 0.0001), and
+    0.73 within an xy column (baseline 0.010 nats). Most of the band MI separates the two zones: the zone label alone
+    carries 0.515 nats.
+  - Every column holds at least two of the clades. The two clades of a zone are also partly separated in xy.
+  - Each layer's share of the agents follows its share of the food. This is a correlation; food as the cause was not
+    tested.
 - **Buoyancy cap.**
   - The heritable cap evolves down: the median falls from 0.50 to 0.19, and `HEAT_BUOYANCY` from 1.75% to 0.62% of
     all heat.
@@ -224,8 +228,12 @@ over the same steps. This is one seed: no result below has a between-seed estima
   - The change is far beyond neutral drift; it cannot be separated from hitchhiking.
 - **Bodies.**
   - Bodies are about 35× larger than in 2D: a median largest body of 2,582 from step 100k, against 74.
-  - They are thin single-clade sheets on the surface or the floor. They are adhesion clusters of a crowd 12 to 13
-    times denser per unit of floor area than 2D's, not organisms.
+  - They are thin single-clade sheets on the surface or the floor. They are adhesion clusters, not organisms. Agents
+    have 1.25 to 1.59 contacts within 3 units against 0.81 to 0.89 in 2D. The crowd is 12 to 13 times denser per unit
+    of floor area summed over the column, but 1.7 to 4.7 times denser in the slabs where the sheets sit.
+  - Crowding is not separated from bonding as the cause of body size, because the bonds hold the contacts together
+    (erasing them dissolves the contact clusters). The 2D side of the contact comparison is from steps 1.49M to
+    1.504M.
   - After every bond is cut they re-form within about 10 steps. Members do not move together and do not share
     energy.
   - Erasing bonds at every step kills about 15% of the population within 100 steps (attacks 5×). This fits bonds
@@ -233,13 +241,14 @@ over the same steps. This is one seed: no result below has a between-seed estima
   - `docs/3D.md`'s goal of bodies with real 3D shapes, `RESEARCH.md` P2, is not met.
 - **Evolutionary activity.**
   - Activity is bounded in all 22 valid cells (Channon), robust to horizon, grid and shadow seed, as in 2D.
-  - Lineage sorting is much stronger early and relaxes to the 2D level over about 300k steps.
+  - Lineage sorting is much stronger early and weakens over the run. It reaches the 2D ratio at cohort ages 100k and
+    200k (late cohorts only) but not at 50k, and it is still trending up at every age.
   - The survivors' excess share of births is not above the heritability null in 3D (age 100k: −0.003 ± 0.002, 2D
     +0.021).
 - **Against 2D.** This is preset against preset, not a controlled dimension test.
-  - Clades fall to 10 by step 99,500, against 392,800 in 2D.
+  - Clades fall to 10 by step 99,500, against 392,800 in 2D (1.8 to 4.4 times faster, depending on the threshold).
   - Predation stays high: kill share 0.50 against 0.13.
-  - Emitters stay at 0.88 against 0.53.
+  - Emitters stay at 0.88 against 0.53. Whether the emissions carry information in 3D is untested.
 - **Outputs.** The figures and tables are in `docs/results_3d/`. The scripts and full outputs, with the activity
   runs, are in `analysis_cache/64k3d_s0/` (git-ignored).
 
@@ -344,7 +353,7 @@ over the same steps. This is one seed: no result below has a between-seed estima
 2. **3D world** (`docs/3D.md`, DESIGN §27). It is built: PRs #15 to #20 are merged. The first long run,
    `runs/64k3d_s0`, is done and analysed in `docs/RESULTS_3D.md`. Next, in order:
    - **A second seed** of `64k3d` (500k steps, about 9.5 h of GPU). It would check the level near 42,000, the
-     four-clade depth structure, the erosion of the buoyancy cap and the bounded activity between seeds.
+     two-zone depth structure, the erosion of the buoyancy cap and the bounded activity between seeds.
    - **`regen_max` and `n_init`** (owner). The population is 1.25× the sizing aim, with no overflow and no
      extinction risk at the founder crash. No result requires a change; the sign-off of `n_init` is still open.
    - **The director in 3D.**
@@ -352,8 +361,9 @@ over the same steps. This is one seed: no result below has a between-seed estima
      - The 30% `fall` criterion would probably read the founder crash and the 41% post-peak decline as risk.
      - The rescue's `0.1·K_est` is at the menu's 1,024 cap.
      - Merge PR #23 first.
-   - **Bodies beyond crowding.** A lower-density control would test whether body size follows density. A bodies goal
-     needs measures other than size: persistence, coordination and sharing.
+   - **Bodies beyond crowding.** A lower-density control would test whether body size follows density, and would
+     separate crowding from bonding as its cause. A bodies goal needs measures other than size: persistence,
+     coordination and sharing.
    - **Signals.** The signal-information tools are 2D-only (`require_2d`), and emitters stay at 0.88 in 3D, so they
      need a 3D port.
    - **Speed.** The fused Metal neighbour kernel (below) matters if more or longer 3D runs are wanted: 14.6 steps/s,

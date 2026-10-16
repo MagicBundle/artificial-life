@@ -2,7 +2,9 @@
 
 The first long run of the 3D world (`docs/3D.md`, `DESIGN.md` §27): preset `64k3d`, seed 0, 500,000 steps, director
 off. Written 2026-10-16. This is analysis only: the engine, the step, the config and the golden digests are unchanged.
-The 2D reference is `runs/64k_s0` (preset `64k`, seed 0), compared over the same steps 0 to 500,000.
+The 2D reference is `runs/64k_s0` (preset `64k`, seed 0). The comparisons that use the `metrics.jsonl` rows (population,
+lineages, predation, energy, the size of the largest body) cover the same steps, 0 to 500,000. The 2D bodies'
+structure and contact graphs come from the only 2D checkpoints that survive, at steps 1.49M to 1.504M (§5.3, §9).
 
 ## Answer
 
@@ -21,22 +23,28 @@ The 2D reference is `runs/64k_s0` (preset `64k`, seed 0), compared over the same
     the bottom quarter of the column and 35% in the top quarter.
   - The director's extinction-risk ratio `n/K_floor` is lowest at the founder crash, about 0.62. That is 3.1× above
     `risk_k_frac` (0.2), and the ratio stays above 1.05 after step 5,000.
-- **Vertical niches form.**
-  - From step 177,100 the population is four founder clades, each at its own depth:
+- **Vertical niches form: two depth zones, each shared by two clades.**
+  - From step 177,100 the population is four founder clades. At step 500,000 their heights fall in a floor zone and
+    a top zone, with two clades in each. The two clades of a zone have offset medians and overlap by 0.56 (floor
+    pair) and 0.60 (top pair) in height, against 0.002 to 0.11 between zones.
 
-    | clade | share of agents | height |
-    |---|---|---|
-    | floor | 40% | mean 7.1 |
-    | low water | 20% | mean 19.6 |
-    | upper water | 11% | mean 67.2 |
-    | surface | 28% | median 74.4 |
+    | zone | clade | share of agents | height, median (quartiles) |
+    |---|---|---|---|
+    | floor | 5165 | 40% | 5.8 (1.5 to 10.9) |
+    | floor | 8695 | 20% | 17.0 (7.7 to 27.3) |
+    | top | 4616 | 11% | 68.0 (60.4 to 74.9) |
+    | top | 13526 | 28% | 74.4 (69.7 to 77.9) |
 
   - At step 500,000 the clade label carries 0.60 of the entropy of an agent's height band: a mutual information of
-    0.63 nats, against a shuffle baseline of 0.0001.
-  - Within the same xy column it carries 0.73 of that entropy, and every column holds at least two of the clades. So
-    the niches are vertical, not territorial.
+    0.63 nats, against a shuffle baseline of 0.0001. Most of it separates the two zones: a two-valued zone label alone
+    carries 0.515 nats, and the clades within a zone add 0.111.
+  - Within the same xy column the clade label carries 0.73 of that entropy (baseline 0.010 nats), and every column
+    holds at least two of the clades. The two clades that share a zone are also partly separated in xy: their xy
+    overlap is 0.53 (floor pair) and 0.55 (top pair), and in 41% of floor-zone columns and 52% of top-zone columns
+    one clade holds at least 90% of the pair. Clades of different zones overlap in xy by 0.50 to 0.91. Whether the
+    horizontal split inside a zone is territory or kin clustering was not separated.
   - A layer's share of the agents follows its share of the food: the log correlation is 0.994 to 0.996 at every
-    checkpoint from step 100,000.
+    checkpoint from step 100,000. This is a correlation; food as the cause was not tested.
 - **The heritable buoyancy cap evolves downward.**
   - The median cap falls from the founders' 0.50 to 0.19 over the last 50,000 steps (q10 0.024).
     `HEAT_BUOYANCY` falls from 1.75% of all heat in the first 50,000 steps to 0.62% in the last.
@@ -46,27 +54,36 @@ The 2D reference is `runs/64k_s0` (preset `64k`, seed 0), compared over the same
     cap itself cannot be separated from hitchhiking.
 - **Bonded bodies are about 35 times larger than in 2D, but they are not organisms.**
   - Over steps 100k to 500k, the largest body is 2,582 agents at the median, against 74 in 2D.
-  - The bodies are thin single-clade sheets pressed against the surface or the floor. The largest at step 500,000 has
-    2,423 agents and is 157 × 110 units wide, with an sd in z of 3.0.
+  - The bodies are thin single-clade sheets pressed against the surface or the floor. The largest at step 500,000
+    has 2,423 agents and is 157 × 110 units wide, with an sd in z of 3.0.
   - None wraps the torus, and members do not move together (velocity coherence 0.04 to 0.10). Energy sharing has all
     but vanished: sharers are 1.1% of agents.
-  - After every bond is cut, the bodies re-form within about 10 steps. They are adhesion clusters of a crowd 12 to 13
-    times denser per unit of floor area than the 2D world's.
-  - Bonds still matter. Erasing them at every step dissolves the contact clusters and kills about 15% of the
-    population within 100 steps. Over 40 steps, attacks rise 5.0× and kills 3.6×. This fits bonds acting as a ceasefire
-    (`attack_bonded = false`).
+  - They are adhesion clusters. After every bond is cut, the bodies re-form within about 10 steps. Agents have 1.25
+    to 1.59 contacts within 3 units against 0.81 to 0.89 in 2D, and the largest contact cluster has 2,681 agents (2D:
+    94). The 3D crowd is 12 to 13 times denser per unit of floor area, summed over the 80-unit column, but 1.7 to 4.7
+    times denser in the slabs where the sheets sit.
+  - Crowding and bonding are not separated. Bonds also hold the contacts together: erasing them at every step
+    dissolves the contact clusters (the largest falls from 2,681 to 295 in 100 steps) and kills about 15% of the
+    population within 100 steps. Over 40 steps, attacks rise 5.0× and kills 3.6×. This fits bonds acting as a
+    ceasefire (`attack_bonded = false`). A lower-density control (§10, item 4) would separate the two. The 2D side of
+    the contact comparison is from steps 1.49M to 1.504M (§5.3, §9).
 - **Evolutionary activity is bounded, as in 2D.**
   - Channon's component-normalised test gives "bounded" in all 22 valid cells. The result holds for every horizon,
     grid and shadow seed tried.
-  - Lineage sorting differs from 2D: it is much stronger early and relaxes to the 2D level over about 300,000 steps.
+  - Lineage sorting differs from 2D: it is much stronger early and weakens over the run. It reaches the 2D ratio at
+    cohort age 100k for cohorts started after about 290k, and at age 200k after about 240k, but not at age 50k. The
+    ratio is still trending up at every age.
   - The survivors' excess share of births does not exceed the heritability null. At age 100k it is −0.003 ± 0.002,
     against +0.021 ± 0.001 in 2D.
 - **Other differences from 2D.** These compare preset against preset, not dimension in a controlled way.
-  - Lineages collapse four times faster: at most 10 clades remain from step 99,500, against 392,800 in 2D.
+  - Lineages collapse 1.8 to 4.4 times faster, depending on the threshold. For example, 1,000 clades are reached at
+    step 15,200 against 31,200 in 2D, and at most 10 clades remain from step 99,500 against 392,800.
   - Predation stays high: the kill share of deaths is 0.50, against 0.13 (steps 400k to 500k).
-  - Signalling stays common: emitters are 0.88, against 0.53.
+  - Emission stays common: emitters are 0.88, against 0.53. Whether the emissions carry information in 3D is
+    untested.
 - **Caveats.** This is one seed and 500,000 steps, with the director off. The 2D and 3D presets differ in more than
-  dimension. The body and activity results rest on checkpoints 50,000 steps apart and on short CPU continuations (§9).
+  dimension. The body and activity results rest on checkpoints 50,000 steps apart and on short CPU continuations. The 2D
+  reference for the bodies' structure is from steps 1.49M to 1.504M (§9).
 
 **For the open items of `DESIGN.md` §27.13:**
 
@@ -80,7 +97,7 @@ The 2D reference is `runs/64k_s0` (preset `64k`, seed 0), compared over the same
 
 | item | value |
 |---|---|
-| run | `runs/64k3d_s0`: `alife run --preset 64k3d --seed 0 --steps 500000 --set run.checkpoint_every=50000 --set run.keep_checkpoints=12`; `meta.json` status `done`, config hash `df54434f…` |
+| run | `runs/64k3d_s0`: `alife run --preset 64k3d --seed 0 --steps 500000 --set run.checkpoint_every=50000 --set run.keep_checkpoints=12 --out runs/64k3d_s0`; `meta.json` status `done`, config hash `df54434f…` |
 | code | 358de29, a pinned worktree whose tree equals `main` 99098f4 (after PR #20); Metal GPU on the M5 Pro |
 | director | off |
 | metrics | 5,000 rows (every 100 steps); heavy keys (`bodies_*`, `body_z_extent_*`, `weight_diversity`) every 1,000 |
@@ -88,7 +105,7 @@ The 2D reference is `runs/64k_s0` (preset `64k`, seed 0), compared over the same
 | event logs | births and deaths, 10 chunks each, tiling `[0, 500,000)` without gaps |
 | agents | 22,511,509: 16,384 founders and 22,495,125 logged births; 22,471,096 deaths; 40,413 alive at the end; no immigrants |
 | cross-checks | `deaths_unlogged` is 0. Births and deaths equal the `metrics.jsonl` totals. The alive set at step 500,000 is exactly the set of agents without a death record. `n_init` + Σ(births − deaths) equals the alive count at all 11 checkpoints. The band fractions, the cap quantiles and every `bodies_*` and `body_z_extent_*` key recomputed from the checkpoints equal the metrics rows. `bodies_converged` is true on all 500 heavy rows |
-| wall time | 9.49 h; 14.65 steps/s without the compile interval (2D: 61.5); peak memory 3.32 GB |
+| wall time | 9.49 h; 14.65 steps/s without the compile interval (2D: 61.5, over steps 100 to 500,000); peak memory 3.32 GB |
 | 2D reference | `runs/64k_s0` (created at f09b32a, 1,504,009 steps), read from its metrics rows up to step 500,000. Its activity, recomputed on the windows used here, reproduces the stored `activity.npz` bit for bit |
 
 ## 2. Method
@@ -131,7 +148,9 @@ The 2D reference is `runs/64k_s0` (preset `64k`, seed 0), compared over the same
 - **Scripts.** The scripts and their full outputs are kept, git-ignored and local to the Mac, in
   `analysis_cache/64k3d_s0/results3d/`. They are grouped by topic: `population/`, `vertical/`, `bodies/`,
   `activity/`, `compare2d/` and `writeup/`; `writeup/` holds the derived numbers of this note. The cached checkpoint
-  extracts and the `alife activity` outputs are next to them, in `analysis_cache/64k3d_s0/`.
+  extracts and the `alife activity` outputs are next to them, in `analysis_cache/64k3d_s0/`. `review/` holds the
+  checks made after the first review of this note (the two depth zones, the contacts, the 2D reference's age, the
+  rounding of table values).
 
 ## 3. Population and carrying capacity
 
@@ -193,8 +212,9 @@ The full table is in [`results_3d/population_windows_50k.csv`](results_3d/popula
 
 - **Deaths.** Over the run there were 22,495,125 births and 22,471,096 deaths. Of the deaths, 50.16% were
   starvation, 49.47% killing and 0.37% old age. There were no catastrophe deaths and no immigrants.
-- **Killed share over time.** The killed share peaks near 0.66 in the 1,000-step windows that end at 25,000 and
-  30,000. From step 100,000 it is 0.46 to 0.50 per 50k window. In 2D it falls to 0.13 (§7).
+- **Killed share over time.** The killed share peaks near 0.66 to 0.67 in the 1,000-step windows between about 25,000
+  and 33,000 (maximum 0.667, the window ending at 31,000). From step 100,000 it is 0.46 to 0.50 per 50k window. In 2D
+  it falls to 0.13 (§7).
 - **Predation.** The predation ratio (energy stolen over energy harvested) peaks at 0.32 in 50k–100k, then runs at
   0.23 to 0.26. Attack gain is 14 to 18% of the agents' income (harvest plus attack gain).
 - **Turnover.** From step 100,000 the per-agent birth and death rates are 1.048 per 1,000 steps each. By Little's
@@ -216,7 +236,7 @@ The full table is in [`results_3d/population_windows_50k.csv`](results_3d/popula
   and step it falls from 3.86 q in the first row to 2.00 q in the last (§4.4).
 - **Where the energy is.** `E_total` rises from 1.10e9 to 1.49e9 quanta. In the first row 37.8% is held by agents,
   23.4% by structure and 38.8% by the field. In the last row the shares are 54.5%, 27.0% and 18.4%.
-  `INJECT_REGEN` is 6.4 M quanta per step in 0–50k and about 11.0 M from 150k on.
+  `INJECT_REGEN` is 6.4 M quanta per step in 0–50k and about 11.1 M from 150k on.
 - **Speed.** The median is 14.70 steps/s, from 13.34 to 14.75 without the compile interval. The 150k–200k window
   averages 14.34 (minimum at step 165,600). This dip does not correlate with the population (r = 0.07); its cause was
   not diagnosed.
@@ -282,8 +302,8 @@ Realisation factors against `DESIGN.md` §27.13 (the values between checkpoints 
 |---|---|---|---|---|
 | 100 | 0.285 / 0.245 / 0.235 / 0.236 | 0.009 | 0.003 | 38.1 |
 | 5,000 | 0.630 / 0.097 / 0.074 / 0.199 | 0.248 | 0.067 | 24.2 |
-| 50,000 | 0.603 / 0.102 / 0.059 / 0.237 | 0.117 | 0.043 | 27.3 |
-| 100,000 | 0.541 / 0.078 / 0.042 / 0.339 | 0.110 | 0.058 | 32.9 |
+| 50,000 | 0.602 / 0.102 / 0.059 / 0.237 | 0.117 | 0.043 | 27.3 |
+| 100,000 | 0.541 / 0.078 / 0.042 / 0.338 | 0.110 | 0.058 | 32.9 |
 | last 50k (mean ± sd of rows) | 0.531 / 0.078 / 0.043 / 0.348 (each ±0.002 or less) | 0.097 ± 0.004 | 0.062 ± 0.002 | 33.70 ± 0.13 |
 
 - **The founders and the transient.** The founders start roughly uniform in `z`. They sink: the grounded share peaks
@@ -315,7 +335,7 @@ At step 500,000, by 4-unit field layer ([`results_3d/layers_occupancy_food.csv`]
   0.132 of the regeneration. The mid-water layers hold half the standing stock and are harvested least per agent.
 - **Not a cause.** This is a correlation. It does not show that food sets the positions.
 
-### 4.3 Four clades, four depths
+### 4.3 Four clades in two depth zones
 
 ![Clade niches](results_3d/clade_niches.png)
 
@@ -331,21 +351,52 @@ From step 177,100 exactly four founder clades are alive. At step 500,000 they co
 
 - **Lifestyles.** The two colonial clades live at the two boundaries: 5165 on the floor and 13526 at the surface. The
   two clades without bonds live in the water.
+- **Two depth zones.** The four clades fall into two zones of two clades each.
+  - In the floor zone, 5165 has a median `z` of 5.8 (quartiles 1.5 to 10.9) and 8695 has 17.0 (7.7 to 27.3). In the
+    top zone, 4616 has 68.0 (60.4 to 74.9) and 13526 has 74.4 (69.7 to 77.9).
+  - The overlap of two clades' height histograms (2-unit bins) at 300,000, 400,000 and 500,000 is 0.60, 0.60 and 0.56
+    for the floor pair and 0.74, 0.62 and 0.60 for the top pair. Between zones it is 0.002 to 0.11 at 500,000 (up
+    to 0.27 at 300,000).
+  - The top pair are close in mean height (67.2 and 68.7) and swap rank at 450,000 (66.4 against 64.1) and
+    back at 500,000. Four separate depths would overstate this.
 - **Depth carries information about the clade.** At step 500,000:
   - The MI of clade and band is 0.627 nats, which is 0.60 of `H(band)` = 1.041. The block-bootstrap 95% interval is
     0.565 to 0.641, and the shuffle baseline is 0.0001.
+  - Most of it separates the zones. A zone label (floor: 5165 and 8695; top: 4616 and 13526) carries 0.515 nats, and
+    the clades within a zone add 0.111 (the chain rule). Merging only 4616 into 13526 lowers the MI from 0.627 to
+    0.594. So the band MI measures floor against top more than four distinct depths.
   - Conditioned on the xy column, the MI is 0.756 nats (0.73 of `H`), against a within-column shuffle baseline of
-    0.0104.
-  - The large clades overlap strongly in xy (mean pairwise overlap 0.65), and every column holds at least two of
-    them. So clades at the same place sit at different depths.
+    0.0104. It is higher than the unconditional value because the clades also differ in xy within a band:
+    `I(clade; column | band)` is 0.300 nats against `I(clade; column)` of 0.170.
   - The metric `clade_height_mi` reads 0.606 ± 0.009 over the last 50,000 steps.
-- **Persistence.** From step 150,000 the four clades keep their band profiles. The mean total-variation distance of a
-  clade's profile between consecutive checkpoints is 0.04 to 0.07, against 0.62 to 0.72 between clades. The rank
-  order of the clades' mean heights is identical from 100k to 400k.
+- **Horizontal position.**
+  - The overlap of two clades' xy occupancy (one minus the total-variation distance over the 10 × 10 columns) is 0.50
+    to 0.91 over the six pairs at 500,000, 0.65 on average. The two pairs that share a zone overlap 0.53 (5165 and
+    8695) and 0.55 (4616 and 13526; 0.27 at 300,000). The four pairs from different zones overlap 0.91 (5165 and
+    13526), 0.85 (4616 and 8695), 0.55 (4616 and 5165) and 0.50 (8695 and 13526). The mean of 0.65 therefore
+    summarises neither group.
+  - Every column holds at least two of the clades, so clades at the same place mostly sit at different depths.
+  - Inside a zone the two clades are partly separated in xy. Among the agents with `z` < 28 the MI of clade (5165 or
+    8695) and xy column is 0.225 nats of a clade entropy of 0.589 (shuffle baseline 0.002). Among the agents with
+    `z` ≥ 60 (4616 or 13526) it is 0.245 of 0.559 (0.0035). The values at 300,000 and 400,000 are 0.221 and 0.225
+    (floor zone) and 0.305 and 0.255 (top zone). At 500,000, 41% of the floor-zone columns and 52% of the top-zone
+    columns (those with at least 20 agents of the pair, 100 columns each) have one clade holding at least 90% of the
+    pair.
+  - This could be territory or kin clustering after birth. The two were not separated.
+- **Persistence.** Three clades keep their band profiles from step 150,000. Clade 4616 does not.
+  - The total-variation distance of a clade's band profile between consecutive checkpoints from 150,000 is at most
+    0.013 for 5165, 0.099 for 13526 and 0.095 for 8695. Between 150,000 and 500,000 it is 0.006, 0.132 and 0.096.
+  - For 4616 it reaches 0.162 in a single 50,000-step interval and is 0.423 between 150,000 and 500,000. Its bottom
+    band falls from 0.26 to 0.00 and its top band rises from 0.40 to 0.77 (mean `z` 45.2 to 67.2).
+  - Averaged over the four clades, the distance between consecutive checkpoints is 0.04 to 0.07, against 0.62 to
+    0.72 between clades. The mean hides the drift of 4616.
+  - The rank order of the clades' mean heights is identical from 100k to 400k. The Spearman correlation falls to
+    +0.80 at 400k to 450k and at 450k to 500k, because 4616 and 13526 swap places.
 - **Niche shifts.**
   - Clade 13526 moved from the floor to the surface. At 50k its mean `z` was 14.2, with 81% of it in the floor band;
     it was 48.3 at 100k and 70.8 at 300k.
-  - Clade 4616 rose from a mean `z` of 44.0 at 100k to 67.2 at 500k as its cap fell from 0.36 to 0.08.
+  - Clade 4616 rose from a mean `z` of 44.0 at 100k to 67.2 at 500k as its cap fell from 0.36 to 0.08. The rise is
+    gradual: 45.2 at 150k, 51.8 at 250k, 60.5 at 350k and 66.4 at 450k.
 - **The metric over time.**
   - `clade_height_mi` is saturated by near-singleton clades early on: 0.98 of `H` at step 100 and 0.51 at 10,000.
     `DESIGN.md` §27.9 warns about this. The metric can be read from about step 10,000, when its plug-in bias estimate falls
@@ -363,7 +414,8 @@ From step 177,100 exactly four founder clades are alive. At step 500,000 they co
 - **The quantiles.**
   - The median is about 0.50 until about step 36,000, then falls: 0.472 at 50k, 0.424 at 100k, 0.354 at 150k, 0.289
     at 200k and 0.222 at 250k. Over the last 50,000 steps it is 0.190 ± 0.014.
-  - The q10 falls from 0.485 at step 100 to 0.02 to 0.03 from 300k (0.024 over the last 50,000 steps).
+  - The q10 falls from 0.485 at step 100 to about 0.02 to 0.04 from 300k (50k-window means 0.032, 0.028, 0.028 and
+    0.024; 0.024 over the last 50,000 steps).
   - The q90 first rises, to 0.770 at step 36,400, then falls to 0.465 over the last 50,000 steps.
 - **Who can float.** A cap of 0.375 is the level at which buoyancy alone offsets gravity (`gravity/buoyancy_max`).
   The share of agents at or above it falls from 0.74 at 50k to 0.17 to 0.29 from 250k.
@@ -381,8 +433,10 @@ From step 177,100 exactly four founder clades are alive. At step 500,000 they co
 
 - **The clade without lift.** Clade 4616 lives high (median `z` 68) with the lowest cap. 85% of its agents are
   pitched up by more than 10°, and its mean `|pitch|` is 0.96 rad. It holds its depth by thrust.
-- **Lift in the sheets.** The surface sheets carry high caps: the 2,423-agent body at 500k has a mean of 0.45, against
-  0.25 for the population.
+- **Cap in the sheets.** The 2,423-agent body at 500k has a mean cap of 0.45, against 0.25 for the population. The
+  body is entirely clade 13526, whose mean cap is 0.44, and the other three clades average 0.18. The clade's agents
+  outside the body average 0.43. At the same height (`z` ≥ 70) the body's members average 0.46 and the clade's
+  non-members 0.48. The high cap belongs to the clade, not to the body.
 - **Not neutral drift.** A haploid Wright–Fisher reference was run (σ = 0.02, clipped, 400 replicates). After 100
   generations, the sd of the population mean is 0.119 at N = 100, 0.045 at N = 1,000 and 0.013 at N = 10,000. Clade
   5165's mean cap fell by 0.29 between 50k and 150k, while its mean generation rose only from 154 to 197. The
@@ -413,7 +467,7 @@ From step 177,100 exactly four founder clades are alive. At step 500,000 they co
 
 ### 5.1 Sizes
 
-| | 3D, steps 250k–500k | 2D, whole run (1,504 heavy rows) |
+| | 3D, steps 250k–500k | 2D, whole run to step 1.504M (1,504 heavy rows) |
 |---|---|---|
 | largest body, median (q10–q90) | 2,510 (1,720–3,526), maximum 4,535 | 73 (52–115), maximum 323 |
 | largest body as a share of the population, median / maximum | 6.1% / 10.6% | 0.22% / 0.94% |
@@ -475,32 +529,52 @@ every checkpoint):
 - **Layer census at 500k** (cutoffs `z` ≤ 5 and `z` ≥ 75). Bodies of 100 or more hold 5,620 agents: 55% in the
   surface layer, 31% between and 14% on the floor.
 
-### 5.3 Why they are so large: crowding
+### 5.3 Why they are so large: contact clusters, crowding and bonds
 
 ![Contact graph against bond graph](results_3d/contact_vs_bond.png)
 
 - **Density.** The 3D world holds 40,413 agents on 320² units of floor, 0.395 per unit². The 2D world holds 0.031 to
-  0.032 per unit² on 1,024². Per unit of floor area the 3D crowd is 12 to 13 times denser. Even the floor layer alone,
-  at 0.076 per unit², is 2.5× the 2D density.
-- **Bonding policy is not the difference.** The share of contacting pairs (distance below 3) that are bonded is 0.73
-  to 0.83 in 3D and 0.87 in 2D.
-- **The contact graph is.**
+  0.032 per unit² on 1,024². Per unit of floor area the 3D crowd is 12 to 13 times denser, but that sums over the
+  80-unit column and is not the density an agent meets. In the slabs where the sheets sit, at 500,000 steps, it is
+  1.7 to 4.7 times the 2D value: 2.5× in the floor layer (`z` < 4, 0.076 per unit²), 4.7× for `z` < 10, 3.3× for
+  `z` ≥ 70 and 1.7× for `z` ≥ 76.
+- **Contacts.** An agent has 1.25 to 1.59 contacts closer than 3 in 3D (checkpoints 50k to 500k), against 0.81 to
+  0.89 in 2D (1.45× at the final states). The share of agents with no such contact is 0.29 to 0.39 in 3D and 0.48
+  to 0.51 in 2D.
+- **Bonded share of contacts.** The share of contacting pairs (distance below 3) that are bonded is 0.73 to 0.83 in
+  3D and 0.87 in 2D. This does not show that bonding is the same in the two worlds. Bonds create many of the
+  contacts (below, §5.5), and bonding differs by clade: two of the four 3D clades have a bonded share of 0.00
+  (§4.3).
+- **The contact graph.**
 
   | | 2D (step 1,504,009) | 3D (step 500,000) |
   |---|---|---|
   | largest contact cluster, pairs closer than 3 | 94 | 2,681 |
   | mean contacts closer than 3 per agent | 0.89 | 1.29 |
+  | share of agents with no contact closer than 3 | 0.48 | 0.39 |
 
   At pairs closer than 4 (the break length), a single 3D cluster holds 0.19 to 0.41 of the whole population across
   checkpoints (0.31 at 500k). The largest contact cluster at distance 3 is 1.1 to 3.7× the largest body.
 - **Null model.** The null keeps the same agents, positions and degree sequence, and places bonds at random or
   nearest-first among close pairs. Its largest body is 0.81 to 0.91 of the observed on average (range 0.51 to 0.98).
   The candidate pairs are only 1.24× the observed bonds, so the null is nearly fixed by the contact graph. It shows
-  that the sizes follow from crowding and degrees. It is not independent evidence of organisation. The observed bond
-  graph is slightly more connected than the null.
-- **2D bodies.** 2D bodies are structurally similar but small (top five 38 to 73 agents) and also single-clade. They
-  are more tree-like: 0.33 to 0.79 of the bonds of the top five bodies at three checkpoints are bridges, against
-  0.23.
+  that the sizes follow from the contact graph and the degrees. It is not independent evidence of organisation, and
+  the contact graph itself depends on the bonds (next point). The observed bond graph is slightly more connected than
+  the null.
+- **Crowding or bonding.** The contact clusters are partly made by the bonds. With every bond erased at each step
+  (§5.5), contacts per agent fall from 1.29 to 0.60 in 100 steps, below the 2D level, and the largest contact cluster
+  at distance 3 falls from 2,681 to 295 (from 350k: 4,212 to 221), while the population falls by about 15%. So a body
+  is a contact cluster held together by its bonds. These data do not separate crowding from bonding as the cause of
+  body size. A run at lower density would (§10, item 4).
+- **The 2D reference is later in evolution.** No 2D checkpoint between step 0 and step 1.49M survives. The 2D side of
+  this section (contacts, contact clusters, bridge shares, top-five sizes) is therefore read at steps 1,490,000,
+  1,500,000 and 1,504,009, three times later than the 3D state. The median generation there is 1,041 to 1,054
+  against 542 in 3D, and the top clade's share is 0.82 to 0.84 of 4 clades against 0.41 of 4. The size of the largest
+  body does not depend on this: the metrics rows give a 2D median of 74 over steps 100k to 500k and 73 over the
+  whole run.
+- **2D bodies.** 2D bodies are structurally similar but small (top five 38 to 73 agents, at steps 1.49M to 1.504M)
+  and also single-clade. They are more tree-like: 0.33 to 0.79 of the bonds of the top five bodies at three
+  checkpoints are bridges, against 0.23.
 
 ### 5.4 Persistence
 
@@ -573,8 +647,9 @@ Classification (Channon / Bedau, primary settings; full table in
   shadow seed 7 (22). The only unbounded settings anywhere are 4 of 18 in one start-up cell: markers μ = 0.1, 0–100k,
   on the 5k grid, all at the smallest ρ0 of 0.003.
 - **Bedau's normalisation depends on the window and the component definition** (11 unbounded and 11 bounded), as in
-  2D. The whole-run "unbounded" of the cohort pools comes from growth in the number of components: 0.513 against a
-  threshold of 0.5.
+  2D. The whole-run "unbounded" of the cohort pools comes from growth in the number of components `D`: the fitted
+  growth across the window is 0.698 for the horizon-100k pool and 0.513 for the horizon-200k pool, against the
+  criterion of 0.5.
 - **New adaptive activity stays above both nulls.** `A^N_new` is positive in every 50k block. At θ = 3,162 the
   rates per component per 10k steps are (run / neutral shadow / heritability null):
 
@@ -606,9 +681,15 @@ Classification (Channon / Bedau, primary settings; full table in
 | 300k–400k | 0.37 | 0.34 | 0.57 | 0.74 |
 | 400k–500k | | | 0.63 | 0.73 |
 
-- **Lineage sorting.** In 3D it is much stronger early and relaxes toward the 2D level. At age 100k it reaches the 2D
-  value for cohorts started at 300k to 400k; at age 200k it reaches it by 150k to 200k. At age 50k it is still rising
-  for the last cohorts.
+- **Lineage sorting.** In 3D it is much stronger early and weakens over the run, but it has not settled.
+  - At cohort age 100k the 3D ratio reaches the 2D level (0.38, the mean of the 2D cohorts started from 200k) for
+    cohorts started from about 290k, and the last cohort (400k) is above it, 0.461 against 0.37. At age 200k it
+    reaches the 2D level (0.18) from about 240k, and the last cohort is 0.208 against 0.162. At age 50k it has not
+    reached it: the last cohorts give 0.63 to 0.70 against 0.72 to 0.78 in 2D.
+  - The 3D ratio is still rising at every age. Its slope per million steps of cohort start (cohorts started from
+    200k) is +0.89 at age 50k, +0.64 at 100k and +0.50 at 200k, against −0.33, −0.46 and −0.25 in 2D. The last bin
+    of each age holds one cohort (ages 100k and 200k) or six (age 50k), and overlapping cohorts are not independent,
+    so these slopes are rough.
 - **Excess share of births.** The survivors' excess share of births is `A^N_cum/A_cum`, run minus heritability null.
   - In 3D it is +0.006 at age 50k, −0.003 ± 0.002 at 100k and about 0 at 200k.
   - In 2D it is +0.024, +0.021 ± 0.001 and +0.015.
@@ -652,10 +733,11 @@ Mean over steps 400k to 500k, with the sd of the rows in brackets
 | steps/s | 62.5 | 14.7 |
 
 - **Population.** 3D holds about 10,000 more agents. The gap is far outside the within-run sd of either run.
-- **Lineages.** In 3D they collapse faster. `clades_alive` is at most 10 from step 99,500, against 392,800 in 2D. The
-  3D top clade reaches a share of 0.68 at step 76,900. From step 177,100 there are exactly four clades, while 2D is
-  still losing clades (9 at 500k).
-- **Predation and signalling.** In 3D predation stays near its 100k–250k level (predation ratio 0.25, then 0.23 in
+- **Lineages.** In 3D they collapse faster. `clades_alive` is at most 10 from step 99,500, against 392,800 in 2D.
+  The ratio depends on the threshold: 1.8× for 2,000 clades, 2.1× for 1,000 (15,200 against 31,200 steps), 4.0× for
+  10 and 4.4× for 9. The 3D top clade reaches a share of 0.68 at step 76,900. From step 177,100 there are exactly
+  four clades, while 2D is still losing clades (9 at 500k).
+- **Predation and emission.** In 3D predation stays near its 100k–250k level (predation ratio 0.25, then 0.23 in
   400k–500k), and emitters even rise (0.83 to 0.88). In 2D both fall steadily (0.13 to 0.08, and 0.79 to 0.53).
 - **Similar values.** Energy per agent, bonds per agent, weight diversity, the corpse flux and the share of agents in
   bodies of 4 or more are similar. The brain cost is 9% higher in 3D, at a founder cost matched to 2D's.
@@ -675,9 +757,9 @@ Mean over steps 400k to 500k, with the sd of the rows in brackets
 | goal (`docs/3D.md` §1) | status | evidence |
 |---|---|---|
 | A water column: life near the floor is cheap, climbing costs energy | **yes** | Climbing is paid in `HEAT_BUOYANCY` (0.90% of all heat, 2.0 q per agent-step at the end) and in movement cost. The cap evolves down, and for a third of the agents it reaches the range where the upkeep is free (§4.4) |
-| Food by depth, so that vertical niches form | **yes, one seed** | Four clades at four depths, MI 0.63 nats (0.60 of `H`), 0.73 of `H` within xy columns, stable from 150k; occupancy follows the food per layer (§4.2, §4.3) |
+| Food by depth, so that vertical niches form | **depth-segregated clades present, one seed; food as the cause untested** | Four clades in two depth zones (floor and top, two clades each), MI 0.63 nats (0.60 of `H`; the zone label alone 0.515), 0.73 of `H` within xy columns. Three clades keep their profiles from 150k and one rises through 450k. Occupancy correlates with food per layer (§4.2, §4.3). No control with uniform food by depth was run |
 | Corpses sink ("marine snow") | **present, small, not separately tested** | `FLOW_CORPSE` 4.0% of regeneration, at most 3.2% moved down; no death positions logged (§4.5) |
-| Bonded structures take real 3D shapes (the "main scientific payoff") | **no, not as organisms** | Bodies are large (median 2,582 from 100k) but are 2D sheets at the surface or floor (sd in z about 3). They are crowd adhesion clusters that re-form within 10 steps, with no coordination and no sharing (§5). `RESEARCH.md` P2 is not met |
+| Bonded structures take real 3D shapes (the "main scientific payoff") | **no, not as organisms** | Bodies are large (median 2,582 from 100k) but are 2D sheets at the surface or floor (sd in z about 3). They are contact clusters held together by bonds, re-forming within 10 steps, with no coordination and no sharing (§5). `RESEARCH.md` P2 is not met |
 | The exact 16-term ledger | **yes** | `ledger_error` 0 on all 5,000 rows; `E_total` closure residual 0 (§3.3) |
 | Determinism and replay | **not exercised by this run** | The director was off, and no re-simulation of the GPU trajectory was made. The CPU continuations are not the GPU trajectory |
 | The director's safety rules and log in 3D | **not exercised** | The director was off. The `K` criterion's margin is measured (§3.4) |
@@ -688,7 +770,7 @@ Tuning risks (`docs/3D.md` §9):
 |---|---|
 | Gravity concentrates life on the floor | Only partly: 53% are in the bottom quarter, but only 19% are in the floor layer, and 35% are in the top quarter |
 | Hash capacity | No overflow at `C` = 48 |
-| Speed | 14.6 steps/s against 61.5 in 2D, as `DESIGN.md` §27.13 measured |
+| Speed | 14.65 steps/s in 3D against 61.5 in 2D, each from the run's own metrics rows over steps 100 to 500,000 (`DESIGN.md` §27.13's bench: 14.4 against 59.3) |
 
 ## 9. Caveats
 
@@ -713,13 +795,19 @@ Tuning risks (`docs/3D.md` §9):
   - the link between the fall of `HEAT_BUOYANCY` and the falling cap;
   - the steps/s dip in 150k–200k;
   - the cause of the bond flicker.
+- **The 2D structural reference.** The 2D bodies' shapes, contact graphs and bridge shares come from steps 1.49M to
+  1.504M, about three times later in steps and twice as many generations as the 3D state (§5.3). The §5.1 table sets
+  3D steps 250k to 500k against the whole 2D run (metrics rows). The sizes of the largest body over steps 100k to
+  500k, and the §7 table, compare the same steps.
+- **Crowding and bonding.** The contact clusters depend on the bonds, so crowding and bonding are not separated as
+  the cause of body size (§5.3).
 - **The 2D reference.** 2D `weight_diversity` before step 120,000 is the known pre-fix value, and the 2D run raised
   `cell_overflow` on two early rows.
 
 ## 10. Next steps
 
 1. **A second seed** of `64k3d` (500,000 steps, about 9.5 h of GPU). It would test the level near 42,000, the
-   four-clade depth structure, the erosion of the cap and the activity verdict between seeds.
+   two-zone depth structure, the erosion of the cap and the activity verdict between seeds.
 2. **`regen_max` and `n_init` (owner).** The population is 1.25× the aim. The founders' boom and crash (to 11,585)
    did not threaten extinction, and no hash cell overflowed (maximum 37 against 48). No result here requires a change. Lowering
    `regen_max` would bring the density toward the 2D-equivalent aim and lower the occupancy, but that is untested.
@@ -733,7 +821,8 @@ Tuning risks (`docs/3D.md` §9):
    - The rescue's size, `0.1·K_est`, is about 6,100 to 6,600 at the checkpoints, so the menu's cap of 1,024 applies.
    - PR #23 (season-aware extinction risk and the persisted blocked-rule set, open) changes the rules first.
 4. **Bodies beyond crowding.**
-   - A lower-density control (a smaller `regen_max`) would test whether body size follows density.
+   - A lower-density control (a smaller `regen_max`) would test whether body size follows density. It would also
+    separate crowding from bonding as the cause of body size (§5.3).
    - Any goal-directed bodies experiment (the deferred arm D) needs measures other than size. Candidates are member
      persistence over thousands of steps, velocity coherence and energy sharing.
    - A bond-persistence metric would replace the flicker-dominated lifetime proxy.
@@ -766,5 +855,8 @@ Tuning risks (`docs/3D.md` §9):
 
 ```bash
 uv run alife activity runs/64k3d_s0 --out analysis_cache/64k3d_s0/activity \
-    --windows 0:100000,100000:300000,300000:500000 --no-plots
+    --windows 0:100000,100000:300000,300000:500000
 ```
+
+Add `--no-plots` where matplotlib is not installed. The stored directory also holds the plots, which a second call
+with `--reuse --quiet` drew (`analysis_cache/64k3d_s0/results3d/activity/commands.sh`).
