@@ -12,7 +12,7 @@ jobs:
   test:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30  # the fast suite takes about 16-20 min on ubuntu-latest since the 3D work (DESIGN §22.0)
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

@@ -329,7 +329,7 @@ Against the two nulls (whole span, 120k–1.5M):
 | RC | 0 | 84 | 15 | 69 | 6 | 2.28 | 6.16 |
 | RC | 1 | 69 | 12 | 57 | 7 | 2.69 | 5.29 |
 
-"Applied" counts log entries other than reverts; a rescue is two entries. C's discretionary moves: seed 0, drift ×9,
+"Applied" counts log entries other than reverts; a rescue is an immigration pulse plus a regen pulse, the second skipped when blocked (one or two entries). C's discretionary moves: seed 0, drift ×9,
 immigration ×7, fertility gain ×4, seasons ×4, habitat loss ×2, regen ×1; seed 1, immigration ×11, seasons ×4, drift
 ×3, habitat loss ×3, fertility gain ×1. The model alternates between two settings of a lever (drift ×4 and ×0.5–0.6;
 season periods of 45k and 12k–15k) rather than exploring the menu. It never chose a catastrophe.
@@ -439,6 +439,7 @@ as well. Caveats, which change what the pass means:
 2. **The extinction-risk flag must be season-aware.** A fall of 30% in 50k steps is normal under the seasons the menu
    allows. A follow-up PR (after this evaluation) will detrend the fall over the season period or exempt falls within
    the forced amplitude, together with the `Director._blocked` journal fix.
+   *Fixed in rules version 2 (DESIGN.md Review-log row I43, DIRECTOR.md §16); the results here are version 1's.*
 3. **Coverage over population-level fractions is not a novelty measure of heritable behaviour.** Bedau–Packard activity,
    or a descriptor of genotypes or of per-lineage behaviour, should lead any future criterion.
 4. **Immigration does not inject lasting novelty**: random founders do not establish. An archive of past genomes

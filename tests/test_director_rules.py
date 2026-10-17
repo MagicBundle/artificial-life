@@ -443,7 +443,8 @@ def test_every_response_clamps_and_validates_as_a_menu_entry(tiny_cfg: Config, p
 
 
 def test_rule_params_and_version_are_recorded() -> None:
-    assert rules.RULES_VERSION == 1 and isinstance(P, rules.RuleParams)
+    assert rules.RULES_VERSION == 2 and rules.SUPPORTED_RULES_VERSIONS == (1, 2)
+    assert isinstance(P, rules.RuleParams) and P.rules_version == rules.RULES_VERSION and P.season_aware
     assert {p.name for p in P.personas} == {"gardener", "trickster", "architect"}
     assert P.persona("architect") is ARCHITECT
     with pytest.raises(StopIteration):

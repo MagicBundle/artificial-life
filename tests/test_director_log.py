@@ -11,7 +11,7 @@ import pytest
 
 from alife import cli, runner
 from alife.config import Config, apply_overrides
-from alife.director import Director, actions, log
+from alife.director import Director, actions, log, rules
 from alife.director.actions import ActionError
 from alife.director.rules import RULES_VERSION, Proposal
 from alife.runio import DIRECTOR_ARCHIVE_FILE, DIRECTOR_LOG_FILE, JOURNAL_FILE, RunDir, read_jsonl
@@ -356,3 +356,132 @@ def test_resume_replay_validates_before_it_truncates_and_never_edits_the_log(
     assert {p: p.read_bytes() for p in snapshot} == snapshot  # nothing truncated, nothing rewritten
     (rd.path / DIRECTOR_LOG_FILE).unlink()
     assert cli.main(["resume", str(rd.path), "--director", "replay", "--quiet"]) == 2  # no log at all
+
+
+# --- rules versions (Review-log row I43) ---
+
+
+def relabel(rd: RunDir, version: int | None) -> None:
+    """Rewrite the version of every header of the run's log, as if an older (or newer) alife had written it
+    (``None`` drops the key: a header that predates it)."""
+    recs = rd.read_jsonl(DIRECTOR_LOG_FILE)
+    for r in recs:
+        if r.get("kind") == log.HEADER_KIND:
+            r.pop("rules_version", None)
+            if version is not None:
+                r["rules_version"] = version
+    (rd.path / DIRECTOR_LOG_FILE).write_text("".join(json.dumps(r) + "\n" for r in recs))
+
+
+def headers_of(rd: RunDir) -> list[dict]:
+    return [r for r in rd.read_jsonl(DIRECTOR_LOG_FILE) if r.get("kind") == log.HEADER_KIND]
+
+
+def test_a_new_log_takes_the_current_rules_version(dcfg: Config, tmp_path: Path) -> None:
+    rd = RunDir.create(tmp_path / "r", dcfg)
+    d = Director(rd, dcfg, "live", 0)
+    (h,) = headers_of(rd)
+    assert h["rules_version"] == RULES_VERSION == 2
+    assert d.params.rules_version == 2 and d.params.season_aware
+
+
+def test_a_resumed_run_keeps_the_rules_version_of_its_log(
+    dcfg: Config, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A run begun under rules version 1 is not switched to 2 by a resume: its rules never change mid-run, no
+    second header is appended for it, and stderr says which rules apply. A policy change on the same resume
+    appends a header that still names version 1."""
+    rd = RunDir.create(tmp_path / "r", dcfg)
+    rd.append_jsonl(DIRECTOR_LOG_FILE, [log.make_header(dcfg, 0, 2, rules_version=1)])
+    d = Director(rd, dcfg, "live", 100)
+    assert d.params.rules_version == 1 and not d.params.season_aware
+    assert [h["rules_version"] for h in headers_of(rd)] == [1]
+    err = capsys.readouterr().err
+    assert "rules version 1" in err and "current version is 2" in err
+    trick = apply_overrides(dcfg, ["director.persona=trickster"])
+    assert Director(rd, trick, "live", 200).params.rules_version == 1
+    assert [(h["persona"], h["rules_version"]) for h in headers_of(rd)] == [("gardener", 1), ("trickster", 1)]
+    # a log whose latest header says 2 (a fork of a version-1 log, say) lives by 2
+    rd.append_jsonl(DIRECTOR_LOG_FILE, [log.make_header(trick, 300, 6, rules_version=2)])
+    assert Director(rd, trick, "live", 300).params.rules_version == 2
+    capsys.readouterr()
+    # a header that predates the key is version 1 (no header is appended for it: it says what version 1 says);
+    # a replay never changes anything and says nothing
+    relabel(rd, None)
+    n_headers = len(headers_of(rd))
+    assert Director(rd, trick, "live", 300).params.rules_version == 1
+    assert len(headers_of(rd)) == n_headers and all("rules_version" not in h for h in headers_of(rd))
+    assert log.needs_header(headers_of(rd), log.make_header(trick, 300, 6, rules_version=2))  # 2 is a change
+    assert Director(rd, apply_overrides(dcfg, ["run.director=replay"]), "replay", 0).params.rules_version == 2
+
+
+def test_validation_accepts_every_implemented_version_and_refuses_the_rest(dcfg: Config) -> None:
+    for v in (1, 2):
+        log.validate_log([header(rules_version=v), entry(100)], dcfg)  # a replay never decides: all validate
+    bare = {k: v for k, v in header().items() if k != "rules_version"}
+    log.validate_log([bare, entry(100)], dcfg)  # written before the key: version 1
+    assert log.rules_version_of([bare]) == 1 and log.rules_version_of([entry(100)]) is None
+    assert log.rules_version_of([header(rules_version=1), entry(100), header(rules_version=2)]) == 2
+    for bad in (0, 3, "2", None, True, 2.5):
+        with pytest.raises(log.LogError, match="rules_version"):
+            log.validate_log([header(rules_version=bad)], dcfg)
+    with pytest.raises(log.LogError, match="record 2"):  # a later header is checked too
+        log.validate_log([header(), entry(100), header(rules_version=3)], dcfg)
+
+
+def test_a_live_director_refuses_a_log_of_rules_it_does_not_implement(dcfg: Config, tmp_path: Path) -> None:
+    rd = RunDir.create(tmp_path / "r", dcfg)
+    rd.append_jsonl(DIRECTOR_LOG_FILE, [log.make_header(dcfg, 0, 2, rules_version=3)])
+    with pytest.raises(log.LogError, match="rules_version 3"):
+        Director(rd, dcfg, "live", 100)
+
+
+def run_tree(rd: RunDir) -> dict[str, bytes]:
+    """Every file of a run directory (relative path -> bytes): checkpoints, logs, archive, config."""
+    return {str(p.relative_to(rd.path)): p.read_bytes() for p in sorted(rd.path.rglob("*")) if p.is_file()}
+
+
+def test_a_live_resume_refuses_unknown_rules_before_touching_anything_and_a_known_one_continues(
+    dcfg: Config, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The refusal is the CLI's own pre-check, not the director's later one: the resume is from the checkpoint
+    at 100 of a run that went on to 200, so a resume that got as far as truncating would cut the logs, delete
+    the archive (``as_of_step`` 200) and drop the checkpoint at 200. Not one byte of the directory changes."""
+    rd = RunDir.create(tmp_path / "r", dcfg)
+    res = runner.run(rd, dcfg, init_state(dcfg), 200, quiet=True, director=Director(rd, dcfg, "live", 0))
+    assert res.status == "done"
+    relabel(rd, 3)
+    before = run_tree(rd)
+    assert DIRECTOR_ARCHIVE_FILE in before and len(rd.checkpoints()) >= 2
+    resume = ["resume", str(rd.path), "--checkpoint", "100", "--until", "300", "--quiet"]
+    assert cli.main(resume) == 2
+    assert run_tree(rd) == before  # same files, same bytes: not truncated, not rewritten, nothing deleted
+    assert "rules_version 3" in capsys.readouterr().err
+    assert cli.main(["resume", str(rd.path), "--director", "replay", "--quiet"]) == 2  # nor does a replay
+    assert run_tree(rd) == before
+    # version 1 is known: the resume goes ahead under it, with no new header
+    relabel(rd, 1)
+    assert cli.main(resume) == 0
+    assert [h["rules_version"] for h in headers_of(rd)] == [1]
+    assert "rules version 1" in capsys.readouterr().err
+    assert max(r["step"] for r in RunDir.open(rd.path).metrics_rows()) == 300
+
+
+def test_a_resumed_live_run_notes_a_persistent_blocked_rule_once(
+    dcfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: a rule blocked at every boundary is journalled once, however the run is split by resumes
+    (it was noted again at the first boundary after every resume, Review-log row I43). Both the journal and
+    the archive file, which carries the set, equal the uninterrupted run's."""
+    note = "extinction_rescue (n/K_est 0.1, fall 0.0): blocked [regen_pulse: regen_pulse is cooling down]"
+    monkeypatch.setattr("alife.director.rules.decide", lambda ctx, params=None: rules.Decision((), (note,)))
+    whole = RunDir.create(tmp_path / "whole", dcfg)
+    runner.run(whole, dcfg, init_state(dcfg), 300, quiet=True, director=Director(whole, dcfg, "live", 0))
+    split = RunDir.create(tmp_path / "split", dcfg)
+    runner.run(split, dcfg, init_state(dcfg), 100, quiet=True, director=Director(split, dcfg, "live", 0))
+    assert cli.main(["resume", str(split.path), "--until", "200", "--quiet"]) == 0
+    assert cli.main(["resume", str(split.path), "--until", "300", "--quiet"]) == 0
+    assert [ln["step"] for ln in read_jsonl(whole.path / JOURNAL_FILE)] == [100]
+    for name in (JOURNAL_FILE, DIRECTOR_LOG_FILE, DIRECTOR_ARCHIVE_FILE):
+        assert (whole.path / name).read_bytes() == (split.path / name).read_bytes(), name
+    assert json.loads((split.path / DIRECTOR_ARCHIVE_FILE).read_text())["blocked"] == ["extinction_rescue"]

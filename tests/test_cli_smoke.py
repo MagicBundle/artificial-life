@@ -337,7 +337,7 @@ def test_director_live_run_writes_its_files_and_replays(tmp_path: Path) -> None:
     cfg = rd.config()
     assert (cfg.run.director, cfg.director.enabled) == ("live", True)  # live implies an enabled director
     head = json.loads((out / "director.jsonl").read_text().splitlines()[0])
-    assert head["kind"] == "header" and head["rules_version"] == 1 and head["rule_every"] == 100
+    assert head["kind"] == "header" and head["rules_version"] == 2 and head["rule_every"] == 100
     assert json.loads((out / "director_archive.json").read_text())["as_of_step"] == 300
     assert "env" in rd.metrics_rows()[0] and cli.main(["inspect", str(out), "--check"]) == 0
     argv = [

@@ -20,7 +20,13 @@ whose header records the persona it inherited (``params_persona``) and the budge
 
 Everything the director remembers is a fold: the vital-sign tracker and archive of the ``metrics.jsonl`` rows,
 and budget, cooldowns, active effects and drama of the ``director.jsonl`` entries (``pacing``). A resumed live
-run rebuilds both from disk, so no sidecar state exists.
+run rebuilds both from disk. The one thing that is not a fold is the set of rules whose blocked note the
+journal has already written (a persisting condition is noted once): it is saved with the archive at each
+checkpoint and restored by a resume from that checkpoint, so that the journal of a resumed run equals the
+uninterrupted one's. The rules version is the log's: a resumed run continues under the version of its latest
+header (``rules.params_for``), so its rules never change mid-run; a new run or a fork takes the current one,
+except a new random-persona run, which takes the version of its yoke log's first header like the rest of the
+parameters it inherits from that log (``yoked.inherited_rules_version``).
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ from typing import Any, NamedTuple
 
 from alife import metrics
 from alife.config import RANDOM_PERSONA, Config, dims, is_3d
-from alife.director import actions, llm, log, pacing, prompt, rules, yoked
+from alife.director import actions, llm, log, pacing, prompt, rules, seasons, yoked
 from alife.director.rules import RULE_PARAMS, RuleParams
 from alife.director.vitals import Tracker, Vitals
 from alife.runio import DIRECTOR_ARCHIVE_FILE, DIRECTOR_LOG_FILE, JOURNAL_FILE, RunDir
@@ -74,10 +80,12 @@ class Director:
     ) -> None:
         if mode not in MODES:
             raise ValueError(f"director mode must be one of {MODES}, got {mode!r}")
+        records = rd.read_jsonl(DIRECTOR_LOG_FILE)
+        if mode == "live":
+            params = self._resume_params(rd, records, params)
         self.rd, self.cfg, self.mode, self.params = rd, cfg, mode, params
         self.rule_every = cfg.director.rule_every
         self.name = cfg.director.persona  # what entries and the journal call this director
-        records = rd.read_jsonl(DIRECTOR_LOG_FILE)
         # The random persona has no parameters of its own: it lives by those of the persona that made its yoke
         # log (R3). A live run reads them from that log (before anything is written); a replay needs none of
         # them, and takes what its own header recorded.
@@ -87,6 +95,8 @@ class Director:
             self.budget = rules.effective_budget(cfg.director.budget_per_100k, self.persona)
         elif mode == "live":
             self.yoke = yoked.load(cfg, params)
+            if log.rules_version_of(records) is None:  # a new run follows the rules of the log it is yoked to
+                params = self.params = self._yoked_params(self.yoke, params)
             self.persona = params.persona(self.yoke.persona)
             self.budget = yoked.effective_budget(cfg.director.budget_per_100k, self.yoke, self.persona)
         else:
@@ -97,7 +107,9 @@ class Director:
         self.llm_line: str | None = None  # the console line of this boundary's LLM call (if it made one)
         # The LLM tier exists in live mode only: a replay never builds a client, so it cannot reach a network.
         self.llm = llm.Client.of(cfg) if mode == "live" and cfg.director.llm_every > 0 else None
-        self._blocked: frozenset[str] = frozenset()  # rules the previous boundary journalled as blocked
+        # Rules noted (blocked, or seasonal_exemption) at the previous boundary; saved at each checkpoint,
+        # restored by a resume.
+        self._blocked: frozenset[str] = self._saved_blocked(start_step) if mode == "live" else frozenset()
         self.entries = log.entries_of(records)
         if mode == "replay":
             log.validate_log(records, cfg)
@@ -115,9 +127,61 @@ class Director:
                 self.budget,
                 self.yoke.sha256 if self.yoke else None,
                 self.persona.name if self.yoke else None,
+                self.params.rules_version,
             )
             if log.needs_header(records, header):
                 rd.append_jsonl(DIRECTOR_LOG_FILE, [header])
+
+    @staticmethod
+    def _resume_params(rd: RunDir, records: Sequence[Mapping[str, Any]], params: RuleParams) -> RuleParams:
+        """The rule parameters a live director runs under: those of the version of the log's latest header,
+        so a resumed run keeps the rules it began with (a log of a newer, unknown version is ``LogError``);
+        a new log takes ``params`` as given. A note on stderr says when that is not the current version."""
+        logged = log.rules_version_of(records)
+        if logged is None or logged == params.rules_version:
+            return params
+        print(
+            f"note: {rd.path / DIRECTOR_LOG_FILE} was written under rules version {logged}; this run "
+            f"continues under it (the current version is {params.rules_version}, which a new run or a "
+            "fork takes)",
+            file=sys.stderr,
+            flush=True,
+        )
+        return rules.params_for(params, logged)
+
+    @staticmethod
+    def _yoked_params(yoke: yoked.Yoke, params: RuleParams) -> RuleParams:
+        """The rule parameters a *new* random-persona run lives by: those of the rules version of its yoke
+        log's first header (R3), so that the safety rules R runs are the ones the yoked run ran and an arm R
+        started against a version-1 log does not run version 2's season-aware rescue. A note on stderr says
+        when that is not the current version. A resumed R run keeps its own log's version instead
+        (``_resume_params``)."""
+        if yoke.rules_version == params.rules_version:
+            return params
+        print(
+            f"note: {yoke.path} was written under rules version {yoke.rules_version}; this run follows it "
+            f"under the same rules (the current version is {params.rules_version}, which a run not yoked to "
+            "an older log takes)",
+            file=sys.stderr,
+            flush=True,
+        )
+        return rules.params_for(params, yoke.rules_version)
+
+    def _saved_blocked(self, start_step: int) -> frozenset[str]:
+        """The blocked-rule set saved with the archive of the checkpoint at ``start_step``; empty if the
+        archive is missing, unreadable, of another step (stale: written at an earlier checkpoint, or by a run
+        that went on past this one) or older than the field. The run then notes a still-blocked rule again."""
+        try:
+            saved = json.loads((self.rd.path / DIRECTOR_ARCHIVE_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return frozenset()
+        blocked = (
+            saved.get("blocked")
+            if isinstance(saved, dict) and saved.get("as_of_step") == start_step
+            else None
+        )
+        ok = isinstance(blocked, list) and all(isinstance(b, str) for b in blocked)
+        return frozenset(blocked) if ok else frozenset()
 
     def _check_yoke(self, records: Sequence[Mapping[str, Any]]) -> None:
         """Warn if the yoke log is not the file this run was started with (its header says which): the
@@ -177,9 +241,14 @@ class Director:
         return [self.llm_line, *lines] if self.llm_line else lines
 
     def on_checkpoint(self, t: int) -> None:
-        """Write ``director_archive.json`` (analysis only; never read back). Replays write nothing."""
+        """Write ``director_archive.json``: the archive for analysis (never read back) and ``blocked``, the
+        rules that were noted (blocked, or ``seasonal_exemption``) at the latest boundary, whether or not that
+        boundary journalled the note (a persisting one is journalled only when it first appears), which a
+        resume from this checkpoint restores. Replays write nothing."""
         if self.mode == "live":
-            self.rd.write_json(DIRECTOR_ARCHIVE_FILE, self.tracker.archive.to_json(t))
+            self.rd.write_json(
+                DIRECTOR_ARCHIVE_FILE, {**self.tracker.archive.to_json(t), "blocked": sorted(self._blocked)}
+            )
 
     # --- replay -------------------------------------------------------------------------------------------
 
@@ -199,7 +268,14 @@ class Director:
         k_floor = None
         if is_3d(self.cfg):
             k_floor = metrics.floor_carrying_capacity(state, self.cfg, state.step, state.env)
-        return self.tracker.vitals(bd, k_est, dims(self.cfg).n_cap, k_floor)
+        # Rules version 2: with seasons in force in the fall window, the capacity over one cycle is sampled
+        # through the engine so that the vitals can tell the fall the seasons force from the rest
+        # (seasons.py). Without seasons, or under version 1, nothing is computed (the vitals of version 1).
+        shape = None
+        if self.params.season_aware and (amp := self.tracker.season_amp(bd)) > 0:
+            table = metrics.seasonal_capacity_table(state, self.cfg, state.env, amp, seasons.TABLE_SIZE)
+            shape = seasons.CapacityShape(amp, tuple(float(x) for x in table))
+        return self.tracker.vitals(bd, k_est, dims(self.cfg).n_cap, k_floor, shape)
 
     def _entry(
         self,

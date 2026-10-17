@@ -206,13 +206,20 @@ def _vitals_text(ctx: Context, p: RuleParams, k_note: str = "") -> str:
         else f", {_f(v.n_over_k_floor)} of the floor-layer capacity K_floor {_f(round(v.k_floor))} "
         f"({K_FLOOR_NOTE_3D})"
     )
+    seasonal = (
+        ""
+        if v.fall_seasonal is None
+        else f" (the environment forces {_f(v.fall_seasonal)} of it; "
+        f"the flag reads the excess {_f(v.fall_excess)})"
+    )
     return "\n".join(
         [
             f"viability: population {_f(v.n_alive)} = {_f(v.n_over_k)} of the capacity estimate K_est "
             f"{_f(round(v.k_est))}{k_note}{floor}, window low {_f(v.n_alive_min)}; births "
             f"{_f(w.births * per_k)} / deaths {_f(w.deaths * per_k)} per 1k steps; fall within 50k steps "
-            f"{_f(v.fall)}; extinction-risk flag {_f(v.extinction_risk)}; {_f(v.pop_frac_cap)} of the hard "
-            f"capacity; largest body {_f(v.largest_body_frac)} of the population",
+            f"{_f(v.fall)}{seasonal}; extinction-risk flag {_f(v.extinction_risk)}; "
+            f"{_f(v.pop_frac_cap)} of the hard capacity; largest body {_f(v.largest_body_frac)} of the "
+            "population",
             f"diversity: clades alive {_f(w.clades_alive)}, top clade share {_f(v.top_clade_share)}{mono}, "
             f"clade entropy {_f(w.clade_entropy)}, weight diversity {_f(w.weight_diversity)}",
             f"behaviour: emitters {_f(w.emitters_frac)}, sharers {_f(w.sharers_frac)}, bonds per agent "

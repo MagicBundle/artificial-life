@@ -518,8 +518,9 @@ def test_a_2d_director_carries_one_k_through_its_vitals_log_rescue_and_prompt(
     """The 3D-only gate of ``Director._vitals`` (§27.10), through the director itself. A 2D world has one K,
     so the vitals carry no ``k_floor``, the logged vitals are the keys of build step 2 in their order, the
     rescue's reason names ``n/K_est`` and the prompt has no floor-layer clause. That keeps a 2D
-    ``director.jsonl``, its replay and its prompts byte-identical and ``RULES_VERSION`` at 1. The sha256 pins
-    of the 2D prompts and the vitals tests build their own vitals and never pass through the gate."""
+    ``director.jsonl`` (its header's ``rules_version`` aside), its replay and its prompts byte-identical.
+    The sha256 pins of the 2D prompts and the vitals tests build their own vitals and never pass through
+    the gate."""
     cfg = apply_overrides(tiny_cfg, ["director.enabled=true", "run.director=live", "director.rule_every=100"])
     assert not is_3d(cfg)
     s = init_state(cfg)
@@ -969,24 +970,58 @@ def test_a_3d_rescue_raises_its_own_k_est_but_no_longer_keeps_the_flag_set(
     assert not any(v.extinction_risk for _, v, _ in seen[2:])  # clear from step 60
 
 
+BLOCKED = "extinction_rescue (n/K_est 0.15, fall 0.01): blocked [regen_pulse: regen_pulse is cooling down]"
+
+
+def _blocked_cfg(config: str, request: pytest.FixtureRequest) -> Config:
+    return apply_overrides(
+        request.getfixturevalue(config),
+        ["director.enabled=true", "run.director=live", "director.rule_every=100"],
+    )
+
+
 @pytest.mark.parametrize("config", ["tiny_cfg", "tiny3d_cfg"])
-@pytest.mark.xfail(
-    strict=True,
-    reason="Director._blocked is per process and not rebuilt on a live resume (DESIGN §27.10): a rule that "
-    "stays blocked across the resume is journalled again. Shared with 2D. Remove the marker with the fix.",
-)
 def test_a_blocked_note_is_journalled_once_across_a_resume(
     config: str, request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     """A condition that persists is noted once, not at every boundary: a resumed director must not note a
-    rule again that was already blocked at the boundary before the resume."""
-    cfg = apply_overrides(
-        request.getfixturevalue(config),
-        ["director.enabled=true", "run.director=live", "director.rule_every=100"],
-    )
-    note = "extinction_rescue (n/K_est 0.15, fall 0.01): blocked [regen_pulse: regen_pulse is cooling down]"
+    rule again that was already blocked at the boundary before the resume. The set is saved with the archive
+    at the checkpoint (the runner calls ``on_checkpoint`` after every checkpoint it writes) and a resume from
+    that checkpoint restores it (Review-log row I43)."""
+    cfg = _blocked_cfg(config, request)
     rd = RunDir.create(tmp_path / "run", cfg)
-    Director(rd, cfg, "live", 0)._journal(100, [], [note])  # the process that is interrupted
-    Director(rd, cfg, "live", 100)._journal(200, [], [note])  # the resumed process: the rule is still blocked
+    first = Director(rd, cfg, "live", 0)  # the process that is interrupted
+    first._journal(100, [], [BLOCKED])
+    first.on_checkpoint(100)
+    Director(rd, cfg, "live", 100)._journal(200, [], [BLOCKED])  # the resumed process: still blocked
     lines = read_jsonl(rd.path / JOURNAL_FILE)
     assert [ln["step"] for ln in lines] == [100]
+    assert json.loads((rd.path / DIRECTOR_ARCHIVE_FILE).read_text())["blocked"] == ["extinction_rescue"]
+
+
+@pytest.mark.parametrize("config", ["tiny_cfg", "tiny3d_cfg"])
+def test_the_saved_blocked_set_is_restored_only_for_the_checkpoint_it_was_written_at(
+    config: str, request: pytest.FixtureRequest, tmp_path: Path
+) -> None:
+    """The guard: an archive of another step is stale and restores nothing (the rule is then noted again, as
+    it was before the fix), as does one without the field (written before it), an unreadable one, or none."""
+    cfg = _blocked_cfg(config, request)
+    rd = RunDir.create(tmp_path / "run", cfg)
+    first = Director(rd, cfg, "live", 0)
+    first._journal(100, [], [BLOCKED])
+    first.on_checkpoint(100)
+    archive = rd.path / DIRECTOR_ARCHIVE_FILE
+    assert Director(rd, cfg, "live", 100)._blocked == {"extinction_rescue"}
+    assert Director(rd, cfg, "live", 200)._blocked == frozenset()  # the archive is of step 100
+    assert Director(rd, cfg, "live", 0)._blocked == frozenset()
+    old = json.loads(archive.read_text())
+    del old["blocked"]  # an archive of a run that predates the field
+    archive.write_text(json.dumps(old))
+    assert Director(rd, cfg, "live", 100)._blocked == frozenset()
+    for bad in ('{"as_of_step": 100, "blocked": "extinction_rescue"}', '{"as_of_step": 100, "blocked": [1]}'):
+        archive.write_text(bad)  # a malformed field
+        assert Director(rd, cfg, "live", 100)._blocked == frozenset()
+    archive.write_text("[not json")
+    assert Director(rd, cfg, "live", 100)._blocked == frozenset()
+    archive.unlink()
+    assert Director(rd, cfg, "live", 100)._blocked == frozenset()
