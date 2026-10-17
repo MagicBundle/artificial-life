@@ -1,0 +1,73 @@
+offset-gravity threshold cap* = gravity/buoyancy_max = 0.375
+
+step 50000: population cap>=0.375 0.739, cap<0.125 0.007, mean upkeep 3.34 q/step, mean generation 97
+    clade    424 n=   326 cap mean 0.580 q05..q95 0.368 0.496 0.600 0.665 0.763 | >=0.375: 0.945 | <0.125: 0.000 | upkeep 4.15 q/step | gen mean 75 (min 54, max 99)
+    clade   1651 n=  1075 cap mean 0.442 q05..q95 0.234 0.345 0.433 0.547 0.655 | >=0.375: 0.672 | <0.125: 0.001 | upkeep 3.04 q/step | gen mean 59 (min 21, max 95)
+    clade   2116 n=  1170 cap mean 0.579 q05..q95 0.255 0.373 0.483 0.868 0.982 | >=0.375: 0.749 | <0.125: 0.001 | upkeep 4.13 q/step | gen mean 83 (min 35, max 110)
+    clade   4616 n=  5193 cap mean 0.460 q05..q95 0.224 0.369 0.472 0.556 0.670 | >=0.375: 0.737 | <0.125: 0.014 | upkeep 3.19 q/step | gen mean 57 (min 22, max 84)
+    clade   5165 n=  4487 cap mean 0.450 q05..q95 0.250 0.371 0.450 0.528 0.652 | >=0.375: 0.738 | <0.125: 0.005 | upkeep 3.10 q/step | gen mean 154 (min 61, max 190)
+    clade   5979 n=  3723 cap mean 0.646 q05..q95 0.435 0.540 0.639 0.742 0.884 | >=0.375: 0.988 | <0.125: 0.000 | upkeep 4.66 q/step | gen mean 85 (min 38, max 126)
+    clade   8695 n=  1007 cap mean 0.502 q05..q95 0.328 0.425 0.516 0.583 0.652 | >=0.375: 0.859 | <0.125: 0.000 | upkeep 3.51 q/step | gen mean 51 (min 25, max 70)
+    clade  13526 n= 13797 cap mean 0.445 q05..q95 0.227 0.343 0.436 0.543 0.687 | >=0.375: 0.666 | <0.125: 0.008 | upkeep 3.05 q/step | gen mean 109 (min 45, max 176)
+step 100000: population cap>=0.375 0.590, cap<0.125 0.087, mean upkeep 2.87 q/step, mean generation 179
+    clade   4616 n=  3578 cap mean 0.364 q05..q95 0.089 0.257 0.362 0.459 0.652 | >=0.375: 0.461 | <0.125: 0.082 | upkeep 2.41 q/step | gen mean 77 (min 40, max 110)
+    clade   5165 n= 12777 cap mean 0.361 q05..q95 0.042 0.208 0.348 0.479 0.762 | >=0.375: 0.442 | <0.125: 0.143 | upkeep 2.40 q/step | gen mean 215 (min 113, max 325)
+    clade   8695 n=  1868 cap mean 0.460 q05..q95 0.300 0.401 0.460 0.521 0.621 | >=0.375: 0.819 | <0.125: 0.000 | upkeep 3.18 q/step | gen mean 75 (min 54, max 102)
+    clade  13526 n= 20880 cap mean 0.461 q05..q95 0.100 0.322 0.482 0.597 0.798 | >=0.375: 0.679 | <0.125: 0.063 | upkeep 3.20 q/step | gen mean 185 (min 85, max 287)
+step 150000: population cap>=0.375 0.475, cap<0.125 0.212, mean upkeep 2.47 q/step, mean generation 192
+    clade   4616 n=  5925 cap mean 0.364 q05..q95 0.127 0.277 0.364 0.455 0.588 | >=0.375: 0.467 | <0.125: 0.048 | upkeep 2.40 q/step | gen mean 89 (min 67, max 155)
+    clade   5165 n= 17945 cap mean 0.163 q05..q95 0.000 0.057 0.130 0.237 0.423 | >=0.375: 0.080 | <0.125: 0.486 | upkeep 0.86 q/step | gen mean 197 (min 141, max 390)
+    clade   8695 n=  2636 cap mean 0.371 q05..q95 0.189 0.293 0.351 0.435 0.599 | >=0.375: 0.408 | <0.125: 0.013 | upkeep 2.46 q/step | gen mean 96 (min 75, max 136)
+    clade  13526 n= 16524 cap mean 0.591 q05..q95 0.313 0.490 0.580 0.691 0.880 | >=0.375: 0.916 | <0.125: 0.005 | upkeep 4.22 q/step | gen mean 238 (min 169, max 341)
+step 200000: population cap>=0.375 0.335, cap<0.125 0.226, mean upkeep 2.01 q/step, mean generation 237
+    clade   4616 n=  4759 cap mean 0.329 q05..q95 0.106 0.242 0.331 0.410 0.549 | >=0.375: 0.356 | <0.125: 0.065 | upkeep 2.13 q/step | gen mean 100 (min 79, max 164)
+    clade   5165 n= 18385 cap mean 0.149 q05..q95 0.000 0.053 0.124 0.227 0.371 | >=0.375: 0.048 | <0.125: 0.503 | upkeep 0.76 q/step | gen mean 252 (min 204, max 331)
+    clade   8695 n=  3679 cap mean 0.288 q05..q95 0.128 0.217 0.283 0.358 0.450 | >=0.375: 0.205 | <0.125: 0.046 | upkeep 1.80 q/step | gen mean 106 (min 85, max 166)
+    clade  13526 n= 16910 cap mean 0.486 q05..q95 0.215 0.341 0.447 0.625 0.857 | >=0.375: 0.670 | <0.125: 0.009 | upkeep 3.38 q/step | gen mean 289 (min 230, max 430)
+step 250000: population cap>=0.375 0.227, cap<0.125 0.324, mean upkeep 1.51 q/step, mean generation 293
+    clade   4616 n=  2867 cap mean 0.239 q05..q95 0.033 0.157 0.230 0.308 0.495 | >=0.375: 0.132 | <0.125: 0.194 | upkeep 1.42 q/step | gen mean 113 (min 91, max 147)
+    clade   5165 n= 18099 cap mean 0.129 q05..q95 0.000 0.040 0.098 0.180 0.386 | >=0.375: 0.055 | <0.125: 0.603 | upkeep 0.61 q/step | gen mean 311 (min 244, max 345)
+    clade   8695 n=  4548 cap mean 0.319 q05..q95 0.096 0.223 0.327 0.419 0.510 | >=0.375: 0.366 | <0.125: 0.085 | upkeep 2.04 q/step | gen mean 118 (min 95, max 153)
+    clade  13526 n= 16121 cap mean 0.360 q05..q95 0.067 0.243 0.339 0.450 0.750 | >=0.375: 0.399 | <0.125: 0.102 | upkeep 2.39 q/step | gen mean 354 (min 271, max 485)
+step 300000: population cap>=0.375 0.220, cap<0.125 0.351, mean upkeep 1.45 q/step, mean generation 323
+    clade   4616 n=  3654 cap mean 0.156 q05..q95 0.000 0.051 0.121 0.224 0.391 | >=0.375: 0.059 | <0.125: 0.512 | upkeep 0.82 q/step | gen mean 128 (min 103, max 157)
+    clade   5165 n= 17455 cap mean 0.137 q05..q95 0.000 0.047 0.107 0.192 0.392 | >=0.375: 0.059 | <0.125: 0.567 | upkeep 0.67 q/step | gen mean 371 (min 269, max 424)
+    clade   8695 n=  5955 cap mean 0.274 q05..q95 0.048 0.180 0.269 0.375 0.488 | >=0.375: 0.250 | <0.125: 0.136 | upkeep 1.70 q/step | gen mean 138 (min 104, max 189)
+    clade  13526 n= 12429 cap mean 0.388 q05..q95 0.071 0.243 0.366 0.523 0.774 | >=0.375: 0.480 | <0.125: 0.101 | upkeep 2.61 q/step | gen mean 402 (min 333, max 522)
+step 350000: population cap>=0.375 0.209, cap<0.125 0.279, mean upkeep 1.54 q/step, mean generation 365
+    clade   4616 n=  4017 cap mean 0.118 q05..q95 0.000 0.035 0.085 0.163 0.371 | >=0.375: 0.049 | <0.125: 0.648 | upkeep 0.53 q/step | gen mean 142 (min 113, max 177)
+    clade   5165 n= 18996 cap mean 0.166 q05..q95 0.005 0.074 0.154 0.240 0.371 | >=0.375: 0.048 | <0.125: 0.409 | upkeep 0.88 q/step | gen mean 428 (min 299, max 495)
+    clade   8695 n=  6557 cap mean 0.281 q05..q95 0.049 0.188 0.280 0.372 0.504 | >=0.375: 0.245 | <0.125: 0.143 | upkeep 1.75 q/step | gen mean 158 (min 117, max 226)
+    clade  13526 n= 13380 cap mean 0.396 q05..q95 0.121 0.278 0.363 0.492 0.763 | >=0.375: 0.467 | <0.125: 0.052 | upkeep 2.67 q/step | gen mean 444 (min 384, max 565)
+step 400000: population cap>=0.375 0.174, cap<0.125 0.349, mean upkeep 1.28 q/step, mean generation 391
+    clade   4616 n=  4996 cap mean 0.085 q05..q95 0.000 0.033 0.071 0.118 0.220 | >=0.375: 0.004 | <0.125: 0.775 | upkeep 0.26 q/step | gen mean 166 (min 124, max 219)
+    clade   5165 n= 17020 cap mean 0.171 q05..q95 0.002 0.064 0.148 0.258 0.409 | >=0.375: 0.078 | <0.125: 0.437 | upkeep 0.92 q/step | gen mean 494 (min 341, max 577)
+    clade   8695 n=  7862 cap mean 0.229 q05..q95 0.011 0.098 0.209 0.351 0.498 | >=0.375: 0.207 | <0.125: 0.314 | upkeep 1.37 q/step | gen mean 179 (min 130, max 251)
+    clade  13526 n= 12040 cap mean 0.331 q05..q95 0.104 0.226 0.321 0.424 0.595 | >=0.375: 0.360 | <0.125: 0.071 | upkeep 2.15 q/step | gen mean 476 (min 417, max 609)
+step 450000: population cap>=0.375 0.186, cap<0.125 0.330, mean upkeep 1.35 q/step, mean generation 443
+    clade   4616 n=  4911 cap mean 0.085 q05..q95 0.000 0.032 0.073 0.126 0.213 | >=0.375: 0.001 | <0.125: 0.747 | upkeep 0.27 q/step | gen mean 182 (min 134, max 255)
+    clade   5165 n= 19294 cap mean 0.175 q05..q95 0.002 0.069 0.160 0.267 0.395 | >=0.375: 0.069 | <0.125: 0.408 | upkeep 0.95 q/step | gen mean 542 (min 372, max 633)
+    clade   8695 n=  6699 cap mean 0.210 q05..q95 0.007 0.076 0.196 0.324 0.473 | >=0.375: 0.159 | <0.125: 0.368 | upkeep 1.21 q/step | gen mean 199 (min 139, max 272)
+    clade  13526 n= 14008 cap mean 0.357 q05..q95 0.117 0.244 0.348 0.450 0.653 | >=0.375: 0.424 | <0.125: 0.059 | upkeep 2.35 q/step | gen mean 515 (min 470, max 683)
+step 500000: population cap>=0.375 0.285, cap<0.125 0.346, mean upkeep 1.56 q/step, mean generation 462
+    clade   4616 n=  4449 cap mean 0.083 q05..q95 0.000 0.025 0.067 0.122 0.226 | >=0.375: 0.001 | <0.125: 0.759 | upkeep 0.27 q/step | gen mean 203 (min 146, max 273)
+    clade   5165 n= 16352 cap mean 0.192 q05..q95 0.001 0.064 0.154 0.314 0.463 | >=0.375: 0.154 | <0.125: 0.426 | upkeep 1.09 q/step | gen mean 588 (min 408, max 727)
+    clade   8695 n=  8156 cap mean 0.203 q05..q95 0.009 0.078 0.172 0.302 0.494 | >=0.375: 0.152 | <0.125: 0.383 | upkeep 1.16 q/step | gen mean 220 (min 151, max 323)
+    clade  13526 n= 11456 cap mean 0.438 q05..q95 0.137 0.337 0.448 0.547 0.705 | >=0.375: 0.677 | <0.125: 0.044 | upkeep 3.01 q/step | gen mean 554 (min 498, max 744)
+
+Neutral Wright-Fisher reference (sigma 0.02, clip [0,1], start 0.5; 400 replicates; 60 at N=10000): sd of the population-mean cap and mean change
+  N=    1, G= 100: mean change -0.015, sd 0.199, P(mean <= 0.2) = 0.083
+  N=    1, G= 250: mean change +0.017, sd 0.270, P(mean <= 0.2) = 0.142
+  N=    1, G= 450: mean change +0.001, sd 0.300, P(mean <= 0.2) = 0.217
+  N=   10, G= 100: mean change -0.004, sd 0.188, P(mean <= 0.2) = 0.072
+  N=   10, G= 250: mean change -0.026, sd 0.253, P(mean <= 0.2) = 0.182
+  N=   10, G= 450: mean change -0.024, sd 0.283, P(mean <= 0.2) = 0.223
+  N=  100, G= 100: mean change -0.012, sd 0.119, P(mean <= 0.2) = 0.013
+  N=  100, G= 250: mean change -0.029, sd 0.201, P(mean <= 0.2) = 0.098
+  N=  100, G= 450: mean change +0.005, sd 0.242, P(mean <= 0.2) = 0.115
+  N= 1000, G= 100: mean change +0.001, sd 0.045, P(mean <= 0.2) = 0.000
+  N= 1000, G= 250: mean change -0.001, sd 0.091, P(mean <= 0.2) = 0.000
+  N= 1000, G= 450: mean change -0.003, sd 0.107, P(mean <= 0.2) = 0.000
+  N=10000, G= 100: mean change -0.001, sd 0.013, P(mean <= 0.2) = 0.000
+  N=10000, G= 250: mean change -0.002, sd 0.028, P(mean <= 0.2) = 0.000
+  N=10000, G= 450: mean change +0.004, sd 0.043, P(mean <= 0.2) = 0.000
