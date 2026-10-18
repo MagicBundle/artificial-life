@@ -190,6 +190,7 @@ RULES = (rule_at, rule_setitem, rule_random, rule_async_eval, rule_host_reads)
 def test_source_tree(rule) -> None:
     mods = list(_modules())
     assert {"ops", "state", "step", "bonds", "director.rules", "director.actions"} <= {m for m, _ in mods}
+    assert {"game.observe", "game.rules"} <= {m for m, _ in mods}  # + game.observer, the host observer
     violations = [v for mod, tree in mods for v in rule(mod, tree)]
     assert violations == []
 
@@ -206,6 +207,8 @@ def test_rules_are_not_vacuous() -> None:
     assert not bad(rule_setitem, "ops", "def set_rows(x):\n    x[0] = 1\n")
     assert not bad(rule_setitem, "config", "def f(d):\n    d['a'] = 1\n")
     assert bad(rule_setitem, "director.rules", "def f(d):\n    d['a'] = 1\n")  # the director scans clean too
+    assert bad(rule_setitem, "game.observe", "def f(d):\n    d['a'] = 1\n")  # and so do the game modules
+    assert bad(rule_setitem, "game.rules", "def f(d):\n    d['a'] = 1\n")
     assert bad(rule_random, "brain", "def f():\n    return mx.random.normal((3,))\n")
     assert bad(rule_random, "brain", "def f():\n    mx.random.seed(0)\n")
     assert not bad(
@@ -217,6 +220,8 @@ def test_rules_are_not_vacuous() -> None:
     for snippet in ("float(cfg.physics.drag)", "int(d.n)", "int(round(2.5))", "float(n)"):
         assert not bad(rule_host_reads, "physics", f"def f(cfg, d, n):\n    return {snippet}\n"), snippet
     assert bad(rule_host_reads, "game.rules", "def f(x):\n    return int(Intent.NONE)\n")  # use .value
+    assert bad(rule_host_reads, "game.observe", "def f(x):\n    return int(ActFlag.BUDDED)\n")  # use .value
+    assert not bad(rule_host_reads, "game.observe", "def f(x):\n    return ActFlag.BUDDED.value\n")
     assert not bad(rule_host_reads, "invariants", "def full_check(s):\n    return s.energy.item()\n")
     assert not bad(rule_host_reads, "metrics", "def f(s):\n    return s.energy.item()\n")
 

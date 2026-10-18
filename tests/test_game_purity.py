@@ -16,6 +16,8 @@ import pytest
 from mlx.utils import tree_flatten
 
 from alife.config import Config, load_config
+from alife.game.observe import EVAL_BIT, ObsIn, evaluate, init_obs, obs_in, update
+from alife.game.rules import RULES_V1
 from alife.state import CounterIdx as C
 from alife.state import State, init_state, state_digest, to_numpy
 from alife.step import Acts, StepOut, make_step
@@ -24,40 +26,23 @@ COMPILED_STEPS = 60
 EAGER_STEPS = 20
 
 
-class _Fold:
-    """A stand-in observer: per-row integer accumulators over every act, updated lazily each step.
+class _Observer:
+    """The real observer update (``game.observe``) driven as the runner drives it: ``update`` after every step
+    and ``evaluate`` at multiples of ``every``, lazily, so that its graph is evaluated in the same
+    ``mx.eval`` as the state. It reads the whole channel and the post-step state fields it needs. It runs
+    eagerly: the step's fusion is decided by the step's own compile, which the observer's ops cannot enter."""
 
-    It reads the whole channel as the real observer does (``A += x - (A >> k)`` over per-row columns), so the
-    state update and the accumulator share one graph when they are evaluated together.
-    """
+    def __init__(self, state: State, cfg: Config) -> None:
+        self.cfg, self.rs = cfg, RULES_V1
+        self.obs = init_obs(obs_in(state), cfg)
 
-    def __init__(self, state: State) -> None:
-        n = state.alive.shape[0]
-        self.acc = mx.zeros((n, 12), dtype=mx.int32)
-
-    def update(self, state: State, acts: Acts) -> None:
-        i32 = mx.int32
-        x = mx.stack(
-            [
-                acts.attack_gain,
-                acts.share_out.sum(axis=1),
-                acts.share_got.sum(axis=1),
-                acts.flags.astype(i32),
-                acts.thrust.astype(i32),
-                acts.defend.astype(i32),
-                acts.emit.astype(i32),
-                state.last_harvest,
-                state.last_inflow,
-                state.last_loss,
-                acts.share_out[:, 0],
-                acts.share_got[:, 0],
-            ],
-            axis=1,
-        )
-        self.acc = self.acc + x - (self.acc >> 6)
+    def update(self, state: State, acts: Acts, t: int) -> None:
+        self.obs = update(self.obs, obs_in(state), acts, self.cfg, self.rs)
+        if t % self.rs.every == 0:
+            self.obs = evaluate(self.obs, self.cfg, self.rs)
 
     def arrays(self) -> tuple[mx.array, ...]:
-        return (self.acc,)
+        return tuple(self.obs)
 
 
 def _same(a, b) -> bool:
@@ -110,7 +95,7 @@ def test_observing_does_not_change_the_trajectory(
     off = make_step(cfg, compile=compiled)
     on = make_step(cfg, compile=compiled, observe=True)
     s_off, s_on = init_state(cfg), init_state(cfg)
-    fold = _Fold(s_on)
+    fold = _Observer(s_on, cfg)
     catastrophes = immigrants = 0
     for t in range(steps):
         if director and t in (0, steps // 2):  # the one-step levers are consumed by the step: set them again
@@ -118,7 +103,7 @@ def test_observing_does_not_change_the_trajectory(
         s_off, o_off = off(s_off)
         mx.eval(s_off, o_off)
         s_on, o_on = on(s_on)
-        fold.update(s_on, o_on.acts)
+        fold.update(s_on, o_on.acts, t + 1)
         mx.eval(s_on, o_on.base(), *fold.arrays())  # the runner's pattern: one blocking eval per step
         where = f"step {t}"
         assert type(o_off) is StepOut and type(o_on.base()) is StepOut
@@ -131,4 +116,18 @@ def test_observing_does_not_change_the_trajectory(
         catastrophes > 0 and immigrants > 0
     ) == director  # the director arms run the levers, the others not
     assert int(to_numpy(s_on.step)) == steps
-    assert int(np.abs(to_numpy(fold.acc)).sum()) > 0  # the stand-in consumer actually read the channel
+    # the observer actually ran: it accumulated, and (past the intent warm-up) evaluated rows
+    assert int(to_numpy(fold.obs.n_obs).max()) == steps and int(to_numpy(fold.obs.arch).max()) > 0
+    assert (steps < RULES_V1.intent_warm) == (not (to_numpy(fold.obs.match_intent) & EVAL_BIT).any())
+
+
+def test_observer_inputs_exclude_the_key() -> None:
+    """The observer reads a handful of State fields and never the RNG key or the weights (§28.1)."""
+    assert set(ObsIn._fields) == {
+        "alive", "uid", "parent_uid", "partner", "vel", "last_harvest", "last_inflow", "last_loss",
+    }  # fmt: skip
+    assert "key" not in ObsIn._fields
+    assert not {"W1", "W2", "pend_W1", "pend_W2", "h", "msg", "tag"} & set(ObsIn._fields)
+    s = init_state(load_config(preset="tiny", overrides=["brain.weight_dtype=float32"]))
+    oi = obs_in(s)
+    assert all(a is getattr(s, f) for f, a in zip(ObsIn._fields, oi, strict=True))
