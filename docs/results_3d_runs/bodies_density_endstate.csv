@@ -1,0 +1,5 @@
+run,n_alive_ckpt_mean,n_per_unit_floor_area,n_per_unit_volume,hash_occupied_cells,hash_mean_occ_per_occupied,hash_agent_weighted_occ,floor_layer_n,mid_n,surface_n,contacts3_per_agent,zero_contact3,contacts4_per_agent,largest_contact_cluster_r3,largest_contact_cluster_r4,largest_body,body_over_cc3,frac_ge4,frac_ge100,frac_ge1000,n_bodies_ge100,p_bond_given_contact3,null_rc3_nearest_largest,null_rc3_nearest_f4,"frac_agents_deg_eq_min(contacts,4)"
+s0,42414,0.414,0.0052,17794,2.38,3.97,9601,26015,6799,1.29,0.38,2.79,3505,14523,2016,0.62,0.356,0.126,0.085,6.7,0.75,1713,0.317,0.73
+s1,43997,0.430,0.0054,17911,2.46,4.25,10912,27015,6070,1.56,0.39,3.05,13068,18620,12108,0.93,0.427,0.347,0.347,2.3,0.81,11582,0.418,0.77
+half,26704,0.261,0.0033,13224,2.02,3.41,7508,15120,4077,1.08,0.49,2.21,2577,7985,2499,0.97,0.339,0.204,0.168,4.0,0.82,2044,0.308,0.81
+dir,40774,0.398,0.0050,17546,2.32,3.92,9820,25207,5747,1.22,0.40,2.74,5551,15637,3790,0.69,0.291,0.165,0.131,5.0,0.72,3085,0.272,0.73

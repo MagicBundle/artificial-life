@@ -1,6 +1,6 @@
 # Handover
 
-Status of the `alife` project as of 2026-10-16 (after the director evaluation, `docs/EVALUATION.md`; the 3D world is built, PRs #15 to #20, `docs/3D.md`, and its first long run is analysed, `docs/RESULTS_3D.md`), written for the next coding
+Status of the `alife` project as of 2026-10-18 (after the director evaluation, `docs/EVALUATION.md`; the 3D world is built, PRs #15 to #20, `docs/3D.md`; its first long run is analysed in `docs/RESULTS_3D.md`, and a second seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`), written for the next coding
 session (a local Claude Code session on the owner's MacBook Pro, M5 Pro, 48 GB). Read this, then `CLAUDE.md`, then the parts of
 `docs/DESIGN.md` you need.
 
@@ -25,6 +25,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/EVALUATION.md` | the director evaluation (`DIRECTOR.md` §9): arms A, B, C, R and RC on two seeds, results and verdict; outputs and figures in `docs/evaluation/` (`python -m alife.analysis.evaluation`) |
 | `docs/3D.md` | the 3D world with gravity and a floor (owner decisions, layout, fields, Swift viewer, PR plan); built in PRs #15 to #20, normative spec `docs/DESIGN.md` §27 |
 | `docs/RESULTS_3D.md` | the first long 3D run, `runs/64k3d_s0` (500k steps): population and `K`, vertical niches and buoyancy, bodies, evolutionary activity, comparison with 2D; figures and tables in `docs/results_3d/`, scripts in `analysis_cache/64k3d_s0/results3d/` (git-ignored) |
+| `docs/RESULTS_3D_RUNS.md` | the four 500k-step `64k3d` runs (seed 0, seed 1, half food, director live): replication, the density control, the director in 3D, bodies and activity across runs; figures and tables in `docs/results_3d_runs/`, scripts in `analysis_cache/64k3d_runs/` (git-ignored) |
 | `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13) |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
@@ -196,7 +197,8 @@ C (rule tier + LLM, Trickster), R (random, yoked to B) and RC (random, yoked to 
 The run is `runs/64k3d_s0`: preset `64k3d`, seed 0, 500,000 steps, director off. It used code 358de29, whose tree
 equals `main` 99098f4. It has 11 checkpoints, 50k apart, and complete event logs. The 2D reference is `runs/64k_s0`:
 the metrics-row comparisons cover the same steps, but its bodies' structure is read from its checkpoints at 1.49M to
-1.504M steps (the only ones that survive). This is one seed: no result below has a between-seed estimate.
+1.504M steps (the only ones that survive). This is one seed: no result below has a between-seed estimate. Seed 1 and
+two controls are in the next section; several of these results did not replicate.
 
 - **Stability.**
   - 9.5 h at 14.6 steps/s, peak 3.32 GB.
@@ -251,6 +253,38 @@ the metrics-row comparisons cover the same steps, but its bodies' structure is r
   - Emitters stay at 0.88 against 0.53. Whether the emissions carry information in 3D is untested.
 - **Outputs.** The figures and tables are in `docs/results_3d/`. The scripts and full outputs, with the activity
   runs, are in `analysis_cache/64k3d_s0/` (git-ignored).
+
+## Results so far: the four 64k3d runs (`docs/RESULTS_3D_RUNS.md`)
+
+Four runs of 500k steps each, preset `64k3d`: `runs/64k3d_s0` (above), `runs/64k3d_s1` (seed 1),
+`runs/64k3d_s0_half` (`fields.regen_max` = 850) and `runs/64k3d_s0_dir` (director live, Trickster, LLM every 25k on
+`google/gemma-4-26b-a4b-qat`, rules version 2, code aef79c2). All four are clean: ledger exact on every row, no
+overflow, 14.7 to 15.0 steps/s. The half-food and director runs were each paused and resumed once. There is one run
+per condition apart from the seed pair.
+
+- **Replication.** Seed 1 reproduces the structure but not the details: of 105 checks, 57 agree, 31 in part, 14 not.
+  - Reproduced: the capacity ratios, a floor-layer share of 19 to 23%, the two-ended depth profile, four founder
+    clades in two depth zones, thin single-clade bodies that never wrap, bounded activity.
+  - Not reproduced: seed 1 is still rising at 500k (1.35× the aim against 1.26×), turns over 1.4× faster, keeps a
+    higher cap (median 0.285 against 0.190, after a rebound; its floor clades keep lift, not its surface clade) and
+    has a giant floor sheet (median largest body 11,655 against 2,582).
+- **Half food.** 0.63× the population, not 0.5×. `K` halves, but the population fills more of it (n/`K_est` 0.86
+  against 0.67): the resource cap clips the full-food field, and agents cost 9% less per step. Predation thins and the
+  cap's erosion is delayed. Two clades survive, both spanning floor and top (clade–depth MI 0.09), so the two-ended
+  profile does not need depth-partitioned clades. Body size is unchanged (1.13× s0's at 0.63× the population).
+- **Director.** Bit-identical to s0 through step 25,000 (`DESIGN.md` §26.8 D1 holds in 3D), unpaired after.
+  - 30 interventions at its full budget: 12 LLM immigration pulses (the model never chose another lever although
+    others were affordable), 15 runaway-damper pulses and 3 rescue entries during the founder overshoot.
+  - The damper's trigger (largest body above 5% of the population) is met at most boundaries of every 64k3d run, so
+    it fires every 25k steps. Each pulse cuts the population by 13% and the largest body by about a quarter, both
+    temporarily.
+  - Immigrants leave no lineage (2 descendants alive at the end). The end state (3 founder clades, top clade 0.66)
+    cannot be attributed to the director; coverage, persistent novelty and the cohort activity rate show no gain over
+    the seed spread.
+- **Activity.** Channon's test is bounded in all 22 valid cells of all four runs; Bedau's class is unstable between
+  runs.
+- **Outputs.** The figures and tables are in `docs/results_3d_runs/`, the scripts and full outputs in
+  `analysis_cache/64k3d_runs/` (git-ignored).
 
 ## GUI follow-ups (PR #3, merged)
 
@@ -341,7 +375,7 @@ the metrics-row comparisons cover the same steps, but its bodies' structure is r
 
 1. **The §9 evaluation is done** (`docs/EVALUATION.md`). Follow-ups it found, in order:
    - **Season-aware extinction risk** (owner decision: a PR after the evaluation, with the `Director._blocked` journal
-     fix; PR #23, open): the risk flag fires on every seasonal trough deeper than 30%, so a strong season triggers a rescue every
+     fix; PR #23, merged as aef79c2; first used in `runs/64k3d_s0_dir`, `docs/RESULTS_3D_RUNS.md` §5.3): the risk flag fires on every seasonal trough deeper than 30%, so a strong season triggers a rescue every
      period, and the rescues use up the budget.
    - **A better outcome criterion.** The archive's coverage and novelty move with any forced population oscillation;
      lead with Bedau–Packard activity, or give the archive a heritable descriptor (genotypes or per-lineage behaviour).
@@ -350,23 +384,27 @@ the metrics-row comparisons cover the same steps, but its bodies' structure is r
    - **Archive immigrants** (`DIRECTOR.md` §5, deferred): random founders do not establish.
    - Arm D (Architect) is deferred by the owner; if run, with a goal above the baseline (largest body ≥ 200). A
      seasons-only control arm is deferred until after 3D tuning.
-2. **3D world** (`docs/3D.md`, DESIGN §27). It is built: PRs #15 to #20 are merged. The first long run,
-   `runs/64k3d_s0`, is done and analysed in `docs/RESULTS_3D.md`. Next, in order:
-   - **A second seed** of `64k3d` (500k steps, about 9.5 h of GPU). It would check the level near 42,000, the
-     two-zone depth structure, the erosion of the buoyancy cap and the bounded activity between seeds.
-   - **`regen_max` and `n_init`** (owner). The population is 1.25× the sizing aim, with no overflow and no
-     extinction risk at the founder crash. No result requires a change; the sign-off of `n_init` is still open.
-   - **The director in 3D.**
-     - The `K` criterion of the risk flag has a 3.1× margin at its lowest point (`RESULTS_3D.md` §3.4).
-     - The 30% `fall` criterion would probably read the founder crash and the 41% post-peak decline as risk.
-     - The rescue's `0.1·K_est` is at the menu's 1,024 cap.
-     - Merge PR #23 first.
-   - **Bodies beyond crowding.** A lower-density control would test whether body size follows density, and would
-     separate crowding from bonding as its cause. A bodies goal needs measures other than size: persistence,
-     coordination and sharing.
-   - **Signals.** The signal-information tools are 2D-only (`require_2d`), and emitters stay at 0.88 in 3D, so they
-     need a 3D port.
-   - **Speed.** The fused Metal neighbour kernel (below) matters if more or longer 3D runs are wanted: 14.6 steps/s,
+2. **3D world** (`docs/3D.md`, DESIGN §27). It is built: PRs #15 to #20 are merged. Four 500k-step runs are
+   analysed: `runs/64k3d_s0` in `docs/RESULTS_3D.md`, and the second seed, the half-food control and the director run
+   in `docs/RESULTS_3D_RUNS.md`. Next, in order:
+   - **A third seed** of `64k3d` (director off, about 9.5 h of GPU). Turnover, the cap's trajectory, which clade keeps
+     lift, the steps to the final clade count and body size differed between the two seeds by 1.4× or more.
+   - **The director's rules in 3D** (owner). The damper's 5% body threshold is met at most boundaries of every 64k3d
+     run (median largest-body share 0.063 in s0, 0.27 in s1), so it acts as a 25k-step clock and takes half the
+     budget. The rescue's 30% `fall` criterion reads the founder overshoot as risk (a warm-up exemption or the `K`
+     criterion alone would avoid that). The season-aware path of rules version 2 is unexercised in 3D.
+   - **The LLM tier in 3D.** The model chose `immigration_pulse` in 12 of 12 actions with other levers affordable, and
+     immigrants never establish; archive immigrants (`DIRECTOR.md` §5) would make the pulse meaningful. A 3D director
+     evaluation, if wanted, would use paired forks (`DIRECTOR.md` §9) after the damper is recalibrated.
+   - **Bodies.** The half-food control did not shrink the bodies at equilibrium, and crowding and bonding are still not
+     separated. Next: the bond reset and erase continuations (`RESULTS_3D.md` §5.5) on s1 and the half-food run, and an
+     arm with `combat.attack_bonded = true` to test the ceasefire reading. A bodies goal needs measures other than
+     size: persistence, coordination and sharing.
+   - **`regen_max` and `n_init`** (owner). Full food gives 1.25 to 1.35× the sizing aim at n = 2; the population's
+     elasticity to regeneration is about 0.65. No result requires a change; the sign-off of `n_init` is still open.
+   - **Signals.** The signal-information tools are 2D-only (`require_2d`), and emitters stay at 0.86 to 0.88 in 3D at
+     full food, so they need a 3D port.
+   - **Speed.** The fused Metal neighbour kernel (below) matters if more or longer 3D runs are wanted: about 14.7 steps/s,
      with the search at 79% of the step.
 3. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;

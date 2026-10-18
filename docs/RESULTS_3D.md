@@ -8,6 +8,11 @@ structure and contact graphs come from the only 2D checkpoints that survive, at 
 
 ## Answer
 
+> **Update, 2026-10-18.** A second seed, a half-food control and a run with the director live are analysed in
+> `docs/RESULTS_3D_RUNS.md`. Several single-seed results below do not replicate on seed 1: the population's
+> stationarity, the turnover, the buoyancy cap's trajectory and which clade keeps a high cap, and the size of the
+> bodies (its §3).
+
 - **The 3D world runs at 64k scale.** 500,000 steps took 9.5 h (14.6 steps/s, peak 3.32 GB). The energy ledger was
   exact on all 5,000 metrics rows. No hash cell overflowed: the maximum occupancy was 37 (step 4,500) and at most 18
   after step 50,000, against `C` = 48. There were no velocity clips and no error flags.
@@ -807,12 +812,14 @@ Tuning risks (`docs/3D.md` §9):
 ## 10. Next steps
 
 1. **A second seed** of `64k3d` (500,000 steps, about 9.5 h of GPU). It would test the level near 42,000, the
-   two-zone depth structure, the erosion of the cap and the activity verdict between seeds.
+   two-zone depth structure, the erosion of the cap and the activity verdict between seeds. Done: `runs/64k3d_s1`
+   (`docs/RESULTS_3D_RUNS.md` §3).
 2. **`regen_max` and `n_init` (owner).** The population is 1.25× the aim. The founders' boom and crash (to 11,585)
    did not threaten extinction, and no hash cell overflowed (maximum 37 against 48). No result here requires a change. Lowering
    `regen_max` would bring the density toward the 2D-equivalent aim and lower the occupancy, but that is untested.
    The sign-off of `n_init` stays open.
-3. **The director in 3D.**
+3. **The director in 3D.** Done: `runs/64k3d_s0_dir` (`docs/RESULTS_3D_RUNS.md` §5); the `fall` criterion fired
+   during the founder overshoot, as expected below.
    - The `K` criterion of the risk flag is confirmed for this run (§3.4).
    - The `fall` criterion would probably read the founder crash (−55%) and the 41% decline from the first peak to the
      trough at 36,600 as risk. From 100k the 100-step means span at most 17% over the whole run (37,628 to 45,240), so
@@ -822,7 +829,9 @@ Tuning risks (`docs/3D.md` §9):
    - PR #23 (season-aware extinction risk and the persisted blocked-rule set, open) changes the rules first.
 4. **Bodies beyond crowding.**
    - A lower-density control (a smaller `regen_max`) would test whether body size follows density. It would also
-    separate crowding from bonding as the cause of body size (§5.3).
+    separate crowding from bonding as the cause of body size (§5.3). Done: `runs/64k3d_s0_half`
+    (`docs/RESULTS_3D_RUNS.md` §4 and §6.3); body size did not follow density at equilibrium, and crowding and
+    bonding are still not separated.
    - Any goal-directed bodies experiment (the deferred arm D) needs measures other than size. Candidates are member
      persistence over thousands of steps, velocity coherence and energy sharing.
    - A bond-persistence metric would replace the flicker-dominated lifetime proxy.
