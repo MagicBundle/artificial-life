@@ -8,7 +8,8 @@ panel and `alife llm-check`, `DIRECTOR.md` §14) are implemented, and so is the 
 (`DIRECTOR.md` §15, `director.yoke_log`); the evaluation has been run and written up in `docs/EVALUATION.md`.
 `docs/RESEARCH.md`
 assesses research directions against prior work. `docs/3D.md` is the 3D world (gravity and a floor), built in PRs
-#15 to #20 (normative spec: `DESIGN.md` §27); its first long run is described in `docs/RESULTS_3D.md`.
+#15 to #20 (normative spec: `DESIGN.md` §27); its first long run is described in `docs/RESULTS_3D.md`, and a second
+seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`.
 
 ## Conventions
 

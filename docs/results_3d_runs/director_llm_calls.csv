@@ -1,0 +1,21 @@
+step,model,outcome,accepted_actions,validation_notes,latency_s,prompt_tokens,completion_tokens,fallback,clamps
+25000,google/gemma-4-26b-a4b-qat,ok,"immigration_pulse{""count"": 512}",immigration_pulse repeated: the duplicate was dropped,2.627,1724,122,,0
+50000,google/gemma-4-26b-a4b-qat,ok,"immigration_pulse{""count"": 512}",immigration_pulse repeated: the duplicate was dropped,3.074,2379,143,,0
+75000,google/gemma-4-26b-a4b-qat,none,,,2.355,2488,90,,0
+100000,google/gemma-4-26b-a4b-qat,none,,,2.289,2472,84,,0
+125000,google/gemma-4-26b-a4b-qat,ok,"immigration_pulse{""count"": 512}",immigration_pulse repeated: the duplicate was dropped,2.955,2480,132,,0
+150000,google/gemma-4-26b-a4b-qat,ok,"immigration_pulse{""count"": 512}",immigration_pulse repeated: the duplicate was dropped,2.871,2479,124,,0
+175000,google/gemma-4-26b-a4b-qat,ok,"immigration_pulse{""count"": 512}",immigration_pulse repeated: the duplicate was dropped,2.961,2487,129,,0
+200000,google/gemma-4-26b-a4b-qat,ok,"immigration_pulse{""count"": 512}",immigration_pulse repeated: the duplicate was dropped,2.976,2510,131,,0
+225000,google/gemma-4-26b-a4b-qat,none,,,3.558,2519,82,,0
+250000,google/gemma-4-26b-a4b-qat,none,,none repeated: the duplicate was dropped,3.505,2524,160,,0
+275000,google/gemma-4-26b-a4b-qat,ok,"immigration_pulse{""count"": 512}",,2.309,2551,86,,0
+300000,google/gemma-4-26b-a4b-qat,ok,"immigration_pulse{""count"": 256}",immigration_pulse repeated: the duplicate was dropped,2.724,2563,116,,0
+325000,google/gemma-4-26b-a4b-qat,none,,,2.56,2548,103,,0
+350000,google/gemma-4-26b-a4b-qat,none,,,2.141,2554,74,,0
+375000,google/gemma-4-26b-a4b-qat,ok,"immigration_pulse{""count"": 512}",immigration_pulse repeated: the duplicate was dropped,2.969,2559,127,,0
+400000,google/gemma-4-26b-a4b-qat,ok,"immigration_pulse{""count"": 512}",immigration_pulse repeated: the duplicate was dropped,2.724,2558,115,,0
+425000,google/gemma-4-26b-a4b-qat,none,,,2.388,2546,92,,0
+450000,google/gemma-4-26b-a4b-qat,none,,,2.2,2550,78,,0
+475000,google/gemma-4-26b-a4b-qat,ok,"immigration_pulse{""count"": 512}",immigration_pulse repeated: the duplicate was dropped,2.997,2558,136,,0
+500000,google/gemma-4-26b-a4b-qat,ok,"immigration_pulse{""count"": 512}",immigration_pulse repeated: the duplicate was dropped,2.93,2557,131,,0

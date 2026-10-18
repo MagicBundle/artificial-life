@@ -1,0 +1,5 @@
+run,seed,config difference from 64k3d_s0,code,steps,status,interrupted at,wall h,steps/s (median row),steps/s (overall),peak GB,ledger errors,cell overflow,max occupancy (after 50k),births,immigrants,alive at 500k
+64k3d_s0,0,(reference),358de29,500000,done,,9.49,14.70,14.65,3.32,0,0,37 (18),22495125,0,40413
+64k3d_s1,1,run.seed=1,358de29,500000,done,,9.40,14.79,14.78,3.32,0,0,39 (27),29094305,0,46380
+64k3d_s0_half,0,fields.regen_max=850,358de29,500000,done,105262,9.74,14.95,14.27,3.32,0,0,26 (19),13139465,0,25365
+64k3d_s0_dir,0,director.enabled=True; director.llm_every=25000; director.persona=trickster; run.director=live; run.llm_model=google/gemma-4-26b-a4b-qat,aef79c2,500000,done,249394,9.42,14.83,14.75,3.32,0,0,37 (20),22121759,7424,39165
