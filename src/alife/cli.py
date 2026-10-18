@@ -857,6 +857,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         stages=a.stages,
         determinism=a.determinism,
         brain_variants=a.brain_variants,
+        observe=a.observe,
     )
     text = _dumps(report)
     if a.json is not None:
@@ -867,6 +868,10 @@ def _cmd_bench(a: argparse.Namespace) -> int:
     det = report.get("determinism")
     if isinstance(det, Mapping) and det.get("match") is False:
         print("determinism check FAILED: the two runs' state digests differ", file=sys.stderr)
+        return int(ExitCode.ERROR)
+    obs = report.get("observe")
+    if isinstance(obs, Mapping) and obs.get("trajectory_match") is False:
+        print("observer purity check FAILED: observing changed the trajectory", file=sys.stderr)
         return int(ExitCode.ERROR)
     return int(ExitCode.OK)
 
@@ -1080,6 +1085,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stages", action="store_true")
     p.add_argument("--determinism", action="store_true")
     p.add_argument("--brain-variants", action="store_true")
+    p.add_argument(
+        "--observe",
+        action="store_true",
+        help="also time the step with the game observers against the plain step (interleaved blocks)",
+    )
     p.add_argument("--json", default=None, metavar="PATH")
     p.set_defaults(func=_cmd_bench)
 

@@ -1,0 +1,930 @@
+"""Do the game labels predict behaviour? The validity test of docs/GAMES.md §4.5 (DESIGN §28.8).
+
+A labelled row is a claim about what the agent does: a Gatherer lives on harvest, a Hunting agent attacks.
+This tool checks the claims. It re-simulates a run from a checkpoint with the observers on (``game.observe``
+need not be set in the run), and at *cohort* steps ``T`` (multiples of ``rules.every``, so the labels are
+fresh) it snapshots the labelled rows. It then follows each cohort row for the next ``H`` steps, while it
+stays the same occupant of its row, and asks whether the label at ``T`` ranks the row's later behaviour
+above that of the unlabelled rows: the Mann–Whitney AUC against a matched random label.
+
+* **Archetypes** (horizon ``--arch-horizon``, default 1,000 steps): for the rule's match bit, the outcome
+  is the harvest rate (Gatherer), the attack rate (Hunter), the share-out rate (Provider), the
+  ``min(out, got)`` rate (Trader), the radius of gyration squared of the unwrapped track (Nomad) or its
+  negative (Settler). Generalist is reported as prevalence only.
+* **Intents** (horizon ``--intent-horizon``, default 10 steps): for the displayed label (``auc_label``) and
+  for the predicate bit (``auc_rule``), the number of buds (Budding), attacks (Hunting), ``|thrust|``
+  (Fleeing, Roaming and, negated, Resting), defence (Defending), energy sent to kin (Caring), bonds formed
+  (Bonding), emission (Signalling) or harvest (Feeding) over the horizon.
+
+**Censoring.** Most rows die before a 1,000-step horizon, and what kills a row depends on what is being
+labelled. The archetype score is therefore exposure-normalised: every pool row observed at least
+``--arch-min-obs`` steps (default 100) is scored, with count outcomes as rates over its observed steps and
+Rg² over the first ``arch-min-obs`` steps, the same exposure for every scored row (Rg² is not additive in
+time). Complete cases only (``auc_complete``), and the rows that survived to the horizon (``auc_survived``)
+or not (``auc_censored``), are reported beside it, with ``n_short`` (observed under ``arch-min-obs`` steps,
+not scored), ``censored_frac`` and the median observed steps. Intents use complete cases at the intent
+horizon, where censoring is small; their censored fraction is reported.
+
+**The matched random label** is ``mi.perm_test``: ``x`` is permuted within strata (cohort × age quartile
+over the scored rows of the family), which keeps each stratum's prevalence, so a label that only tracks age
+or the cohort's phase scores like the random one. ``z`` and ``p`` are against that null, pooled and per
+cohort. The verdict is provisional (DESIGN §28.8): ``insufficient`` below 30 positives or negatives, ``pass``
+if ``p <= 0.01``, ``auc - null_mean >= 0.05`` and (intents) the label's coverage never exceeds 0.6, else
+``fail``.
+
+**Coverage and stability.** At every evaluation step after the warm-up the tool reads ``Observer.row_block()``
+and reports the mean and max share of each rule (``intent_match``, ``archetype_match``) and of each displayed
+label (``intent``, ``archetype``). A *flip* is a changed displayed intent (or archetype primary) between two
+consecutive evaluations of a row that kept its uid and was labelled both times;
+``flips_per_1000 = 1000·flips/(pairs·every)``.
+
+The run directory is read only. The report is deterministic for a given run, parameters and device (no wall
+time in it), and JSON-safe (``null`` for undefined numbers). ``--no-verify`` skips the check of every stored
+``metrics.jsonl`` row on the way (``resim.compare_row``), which also confirms that observing leaves the
+trajectory alone on this backend. Usage::
+
+    python -m alife.analysis.labels RUN --from STEP --steps N --out FILE.json [--states DIR]
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import json
+import math
+import sys
+import time
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
+from typing import Any, Final, NamedTuple
+
+import mlx.core as mx
+import numpy as np
+
+from alife import layout, ops
+from alife.analysis import mi
+from alife.analysis.resim import ResimMismatch, compare_row
+from alife.analysis.signals import load_state
+from alife.config import Config, config_hash, dims
+from alife.game.observe import EVAL_BIT, care_out
+from alife.game.observer import Observer
+from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V1, Archetype, RuleSet
+from alife.runio import RunDir
+from alife.state import State, to_numpy
+from alife.step import ActFlag, Acts, make_step
+
+__all__ = [
+    "ARCH_OUTCOMES",
+    "INTENT_OUTCOMES",
+    "OUTCOMES",
+    "auc",
+    "score_archetypes",
+    "score_intents",
+    "study",
+    "verdict",
+]
+
+# Verdict thresholds (provisional, DESIGN §28.8); recorded in the report's params.
+MIN_CLASS: Final = 30  # positives and negatives needed for a verdict
+P_MAX: Final = 0.01
+MARGIN: Final = 0.05  # auc - null_mean
+COVERAGE_MAX: Final = 0.6  # an intent label or rule that covers more of the evaluated rows than this fails
+N_AGE_BINS: Final = 4
+
+# The per-step outcome columns of the cohort trackers (int32 totals).
+OUTCOMES: Final = ("bud", "attack", "formed", "thrust", "defend", "emit", "harvest", "care", "out", "got")
+_OC: Final = {name: i for i, name in enumerate(OUTCOMES)}
+_I32 = mx.int32
+_F32 = mx.float32
+
+# Archetype name -> outcome label of the primary score (the rate or Rg² the rule claims).
+ARCH_OUTCOMES: Final = {
+    "gatherer": "harvest_rate",
+    "hunter": "attack_rate",
+    "provider": "out_rate",
+    "trader": "min_out_got_rate",
+    "nomad": "rg2",
+    "settler": "neg_rg2",
+}
+# Intent name -> (outcome column, sign); Resting predicts *less* thrust.
+INTENT_OUTCOMES: Final = {
+    "budding": ("bud", 1),
+    "hunting": ("attack", 1),
+    "fleeing": ("thrust", 1),
+    "defending": ("defend", 1),
+    "caring": ("care", 1),
+    "bonding": ("formed", 1),
+    "signalling": ("emit", 1),
+    "feeding": ("harvest", 1),
+    "roaming": ("thrust", 1),
+    "resting": ("thrust", -1),
+}
+
+# --- scoring (host, numpy) ------------------------------------------------------------------------------
+
+
+def _num(v: float | None) -> float | None:
+    """A JSON-safe float: NaN and infinities become None."""
+    return None if v is None or not math.isfinite(v) else float(v)
+
+
+def _auc_from_ranks(x: np.ndarray, r: np.ndarray) -> float:
+    """Mann–Whitney AUC of the bool ``x`` from the 0-based average ranks ``r`` of the outcome."""
+    n_pos = int(x.sum())
+    n_neg = x.size - n_pos
+    return float((r @ x.astype(np.float64) - n_pos * (n_pos - 1) / 2.0) / (n_pos * n_neg))
+
+
+def auc(x: np.ndarray, y: np.ndarray) -> float:
+    """``P(y⁺ > y⁻) + ½P(tie)`` for the positives ``x`` (bool), by average ranks; NaN if a class is empty."""
+    x = np.asarray(x, dtype=bool)
+    if x.all() or not x.any():
+        return math.nan
+    return _auc_from_ranks(x, mi.rank(np.asarray(y, dtype=np.float64)))
+
+
+def _score(
+    x: np.ndarray, y: np.ndarray, strata: np.ndarray, n_perm: int, rng: np.random.Generator
+) -> dict[str, Any]:
+    """AUC of ``x`` for ``y`` against the matched random label: ``x`` permuted within ``strata``."""
+    x = np.asarray(x, dtype=bool)
+    n, n_pos = int(x.size), int(x.sum())
+    out: dict[str, Any] = {
+        "n": n,
+        "n_pos": n_pos,
+        "auc": None,
+        "null_mean": None,
+        "null_sd": None,
+        "z": None,
+        "p": None,
+    }
+    if n_pos == 0 or n_pos == n:
+        return out
+    r = mi.rank(np.asarray(y, dtype=np.float64))  # AUC depends on y through its average ranks only
+    res = mi.perm_test(_auc_from_ranks, x, r, n_perm, rng, strata=np.asarray(strata, dtype=np.int64))
+    out.update(
+        auc=_num(res.mi),
+        null_mean=_num(res.null_mean),
+        null_sd=_num(res.null_sd),
+        z=_num(res.z),
+        p=_num(res.p),
+    )
+    return out
+
+
+def _rng(seed: int, label: int, variant: int) -> np.random.Generator:
+    """The stream of one score: ``[seed, label_index, variant]`` (variant 0 pooled, 1–3 secondary columns,
+    ``10 + c`` cohort ``c``). Labels: archetypes 1–7, intent labels ``100 + i``, intent rules ``200 + i``."""
+    return np.random.default_rng([seed, label, variant])
+
+
+def verdict(score: Mapping[str, Any], coverage_max: float | None = None, *, is_intent: bool = False) -> str:
+    """``insufficient`` / ``pass`` / ``fail`` of a pooled score (provisional criterion, DESIGN §28.8)."""
+    n, n_pos = score["n"], score["n_pos"]
+    if n_pos < MIN_CLASS or n - n_pos < MIN_CLASS or score["p"] is None or score["null_mean"] is None:
+        return "insufficient"
+    ok = score["p"] <= P_MAX and score["auc"] - score["null_mean"] >= MARGIN
+    if is_intent and coverage_max is not None:
+        ok = ok and coverage_max <= COVERAGE_MAX
+    return "pass" if ok else "fail"
+
+
+def _age_strata(cohort: np.ndarray, age: np.ndarray, scored: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """``(age quartile, cohort·4 + quartile)`` per row; the quartiles are over the scored rows of the family
+    (``mi.quantile_bins``: deterministic, tied ages share a bin), 0 elsewhere."""
+    quart = np.zeros(cohort.size, dtype=np.int64)
+    if scored.any():
+        quart[scored] = mi.quantile_bins(age[scored], N_AGE_BINS)
+    return quart, cohort.astype(np.int64) * N_AGE_BINS + quart
+
+
+def _scored_with_cohorts(
+    x: np.ndarray,
+    y: np.ndarray,
+    sel: np.ndarray,
+    cohort: np.ndarray,
+    quart: np.ndarray,
+    strata: np.ndarray,
+    cohort_steps: Sequence[int],
+    n_perm: int,
+    seed: int,
+    label: int,
+    *,
+    per_cohort: bool,
+) -> dict[str, Any]:
+    """The pooled score over the rows ``sel`` and, if asked, one per cohort (stratified by age quartile)."""
+    out = _score(x[sel], y[sel], strata[sel], n_perm, _rng(seed, label, 0))
+    if per_cohort:
+        cohorts = []
+        for c, step in enumerate(cohort_steps):
+            m = sel & (cohort == c)
+            if not m.any():
+                continue
+            s = _score(x[m], y[m], quart[m], n_perm, _rng(seed, label, 10 + c))
+            cohorts.append({"cohort": int(step), **s})
+        out["per_cohort"] = cohorts
+    return out
+
+
+def score_archetypes(
+    tab: Mapping[str, np.ndarray],
+    *,
+    arch_horizon: int,
+    arch_min_obs: int,
+    n_perm: int,
+    seed: int,
+    cohort_steps: Sequence[int] | None = None,
+) -> dict[str, Any]:
+    """Per-archetype scores from the pooled archetype table, one row per pool row of every cohort.
+
+    Columns: ``cohort`` (index), ``age``, ``primary`` and ``match`` (the ``Archetype`` and the match bits at
+    the cohort step), ``n_ok`` (observed steps at the horizon), ``rg2_min`` (Rg² over the first
+    ``arch_min_obs`` steps, valid where ``n_ok >= arch_min_obs``), ``rg2_full`` (Rg² at the horizon) and the
+    horizon totals ``harvest``, ``attack``, ``out`` and ``got``. A row is *scored* if observed at least
+    ``arch_min_obs`` steps; the primary score is on rates over its observed steps (Rg² over the first
+    ``arch_min_obs``).
+    """
+    cohort = np.asarray(tab["cohort"])
+    steps = list(cohort_steps) if cohort_steps is not None else list(range(int(cohort.max(initial=-1)) + 1))
+    n_ok = np.minimum(np.asarray(tab["n_ok"]), arch_horizon)
+    scored = n_ok >= arch_min_obs
+    full = n_ok >= arch_horizon
+    quart, strata = _age_strata(cohort, np.asarray(tab["age"]), scored)
+    per = np.maximum(n_ok, 1).astype(np.float64)
+    tot = {k: np.asarray(tab[k], dtype=np.float64) for k in ("harvest", "attack", "out", "got")}
+    low = np.minimum(tot["out"], tot["got"])
+    rg_min, rg_full = np.asarray(tab["rg2_min"], np.float64), np.asarray(tab["rg2_full"], np.float64)
+    # name -> (primary outcome per row, outcome for the complete cases)
+    spec: dict[str, tuple[np.ndarray, np.ndarray]] = {
+        "gatherer": (tot["harvest"] / per, tot["harvest"]),
+        "hunter": (tot["attack"] / per, tot["attack"]),
+        "provider": (tot["out"] / per, tot["out"]),
+        "trader": (low / per, low),
+        "nomad": (rg_min, rg_full),
+        "settler": (-rg_min, -rg_full),
+    }
+    match, primary = np.asarray(tab["match"]), np.asarray(tab["primary"])
+    out: dict[str, Any] = {}
+    for a in Archetype:
+        if a is Archetype.NONE:
+            continue
+        name = a.name.lower()
+        x = ((match >> (a.value - 1)) & 1).astype(bool)
+        entry: dict[str, Any] = {
+            "pool": int(x.size),
+            "prevalence_match": _num(x.mean()) if x.size else None,
+            "prevalence_primary": _num((primary == a.value).mean()) if x.size else None,
+        }
+        if name in spec:
+            y_primary, y_complete = spec[name]
+            entry.update(outcome=ARCH_OUTCOMES[name], horizon=arch_horizon, min_obs=arch_min_obs)
+            pooled = _scored_with_cohorts(
+                x, y_primary, scored, cohort, quart, strata, steps, n_perm, seed, a.value, per_cohort=True
+            )
+            entry.update(pooled)
+            entry["verdict"] = verdict(pooled)
+            entry["auc_complete"] = _score(
+                x[full], y_complete[full], strata[full], n_perm, _rng(seed, a.value, 1)
+            )
+            entry["auc_survived"] = _score(
+                x[scored & full],
+                y_primary[scored & full],
+                strata[scored & full],
+                n_perm,
+                _rng(seed, a.value, 2),
+            )
+            entry["auc_censored"] = _score(
+                x[scored & ~full],
+                y_primary[scored & ~full],
+                strata[scored & ~full],
+                n_perm,
+                _rng(seed, a.value, 3),
+            )
+            entry["exposure"] = {
+                side: _exposure(m, n_ok, scored, full) for side, m in (("pos", x), ("neg", ~x))
+            }
+        out[name] = entry
+    return out
+
+
+def _exposure(m: np.ndarray, n_ok: np.ndarray, scored: np.ndarray, full: np.ndarray) -> dict[str, Any]:
+    """Censoring of the pool rows ``m``: how many were observed too briefly to score (``n_short``), the share
+    not observed to the horizon (``censored_frac``, short rows included) and the median observed steps of the
+    scored ones."""
+    n = int(m.sum())
+    sc = m & scored
+    return {
+        "n_pool": n,
+        "n_short": int((m & ~scored).sum()),
+        "censored_frac": _num(1.0 - float((m & full).sum()) / n) if n else None,
+        "n_ok_median": _num(float(np.median(n_ok[sc]))) if sc.any() else None,
+    }
+
+
+def score_intents(
+    tab: Mapping[str, np.ndarray],
+    *,
+    n_perm: int,
+    seed: int,
+    intent_horizon: int,
+    cohort_steps: Sequence[int] | None = None,
+    coverage_max: Mapping[str, Mapping[str, float | None]] | None = None,
+) -> dict[str, Any]:
+    """Per-intent scores from the pooled intent table, one row per evaluated row of every cohort.
+
+    Columns: ``cohort`` (index), ``age``, ``label`` (displayed ``Intent``, 0 before the hysteresis settles),
+    ``match`` (predicate bits | ``EVAL_BIT``), ``complete`` (the row was observed all ``intent_horizon``
+    steps) and the horizon totals of the ``OUTCOMES`` the intents use. Complete cases only. ``auc_rule``
+    is over the evaluated rows; ``auc_label`` over those with a displayed label (the others have no claim).
+    ``coverage_max`` maps ``"intent"`` and ``"intent_match"`` to the max share per name; each verdict
+    requires its own (the label's, or the rule's) to stay at most ``COVERAGE_MAX``.
+    """
+    cohort = np.asarray(tab["cohort"])
+    steps = list(cohort_steps) if cohort_steps is not None else list(range(int(cohort.max(initial=-1)) + 1))
+    complete = np.asarray(tab["complete"], dtype=bool)
+    quart, strata = _age_strata(cohort, np.asarray(tab["age"]), complete)
+    label, match = np.asarray(tab["label"]), np.asarray(tab["match"])
+    cov = coverage_max or {}
+    out: dict[str, Any] = {}
+    for i, name in enumerate(INTENT_NAMES, start=1):
+        column, sign = INTENT_OUTCOMES[name]
+        y = sign * np.asarray(tab[column], dtype=np.float64)
+        x_label, x_rule = label == i, ((match >> (i - 1)) & 1).astype(bool)
+        sel_label, sel_rule = complete & (label != 0), complete
+        a_label = _scored_with_cohorts(
+            x_label, y, sel_label, cohort, quart, strata, steps, n_perm, seed, 100 + i, per_cohort=True
+        )
+        a_rule = _scored_with_cohorts(
+            x_rule, y, sel_rule, cohort, quart, strata, steps, n_perm, seed, 200 + i, per_cohort=True
+        )
+        cov_label = (cov.get("intent") or {}).get(name)
+        cov_rule = (cov.get("intent_match") or {}).get(name)
+        out[name] = {
+            "outcome": ("-" if sign < 0 else "") + column,
+            "horizon": intent_horizon,
+            "n_pool": int(label.size),
+            "n_labelled": int((label != 0).sum()),
+            "censored_frac": _num(1.0 - float(complete.mean())) if complete.size else None,
+            "prevalence_label": _num(x_label.mean()) if x_label.size else None,
+            "prevalence_rule": _num(x_rule.mean()) if x_rule.size else None,
+            "auc_label": a_label,
+            "auc_rule": a_rule,
+            "coverage_max": {"label": cov_label, "rule": cov_rule},
+            "verdict": verdict(a_label, cov_label, is_intent=True),
+            "verdict_rule": verdict(a_rule, cov_rule, is_intent=True),
+        }
+    return out
+
+
+# --- cohort trackers (device) ---------------------------------------------------------------------------
+
+
+class TrackState(NamedTuple):
+    """What a cohort accumulates, per row, while the row stays the same occupant (the cohort's uids are a
+    constant array kept beside it, so that no output of the compiled update is an input)."""
+
+    ok: mx.array  # (N,) bool: alive with the cohort's uid at every step so far
+    n_ok: mx.array  # (N,) int32: steps observed
+    tot: mx.array  # (N, len(OUTCOMES)) int32: outcome totals over the observed steps
+    pos: mx.array  # (N, nd) float32: the last observed position
+    u: mx.array  # (N, nd) float32: the unwrapped track (starts at 0)
+    mean: mx.array  # (N, nd) float32: Welford mean of the track
+    m2: mx.array  # (N,) float32: Welford sum of squared deviations (Rg² = m2 / n_ok)
+
+
+def track_start(member: mx.array, pos: mx.array) -> TrackState:
+    """The tracker of a cohort whose members are the rows where ``member``, at positions ``pos``."""
+    n, nd = pos.shape
+    return TrackState(
+        ok=member,
+        n_ok=mx.zeros((n,), dtype=_I32),
+        tot=mx.zeros((n, len(OUTCOMES)), dtype=_I32),
+        pos=pos,
+        u=mx.zeros((n, nd), dtype=_F32),
+        mean=mx.zeros((n, nd), dtype=_F32),
+        m2=mx.zeros((n,), dtype=_F32),
+    )
+
+
+def track_step(
+    cuid: mx.array, tr: TrackState, alive: mx.array, uid: mx.array, pos: mx.array, oc: mx.array, size: float
+) -> TrackState:
+    """One step: a row is observed while ``alive`` with its cohort uid; its outcomes ``oc`` (N, 10) are added,
+    and its position extends the unwrapped track (``u_k = u_{k-1} + min_image(pos_k − pos_{k-1})``, every
+    component: ``min_image`` is the identity on z, DESIGN §27.1), whose mean and M2 are a Welford update in
+    float32."""
+    ok = tr.ok & alive & (uid == cuid)
+    k = ok[:, None]
+    n = tr.n_ok + ok.astype(_I32)
+    u = tr.u + mx.where(k, ops.min_image(pos - tr.pos, size), 0.0)
+    delta = u - tr.mean
+    mean = tr.mean + delta / mx.maximum(n, 1).astype(_F32)[:, None]
+    m2 = tr.m2 + (delta * (u - mean)).sum(axis=1)
+    return TrackState(
+        ok=ok,
+        n_ok=n,
+        tot=tr.tot + mx.where(k, oc, 0),
+        pos=mx.where(k, pos, tr.pos),
+        u=u,
+        mean=mx.where(k, mean, tr.mean),
+        m2=mx.where(ok, m2, tr.m2),
+    )
+
+
+def step_outcomes(acts: Acts, last_harvest: mx.array, kin_prev: mx.array) -> mx.array:
+    """(N, len(OUTCOMES)) int32 outcomes of one step, in ``OUTCOMES`` order: bud, attack and bond-formed
+    flags (0 or 1), ``|thrust|``, defence and emission (in 1/256 and deposit quanta), the harvest, the energy
+    sent to kin (``observe.care_out`` with the ``slot_kin`` read *before* this step's observer update) and
+    the energy shared out and got."""
+    f = acts.flags.astype(_I32)
+
+    def flag(bit: ActFlag) -> mx.array:
+        return ((f & bit.value) != 0).astype(_I32)
+
+    cols = [
+        flag(ActFlag.BUDDED),
+        flag(ActFlag.ATTACKED),
+        flag(ActFlag.FORMED),
+        mx.abs(acts.thrust.astype(_I32)),
+        acts.defend.astype(_I32),
+        acts.emit.astype(_I32),
+        last_harvest.astype(_I32),
+        care_out(kin_prev, acts.share_out),
+        acts.share_out.sum(axis=1),
+        acts.share_got.sum(axis=1),
+    ]
+    return mx.stack(cols, axis=1).astype(_I32)
+
+
+def _host_track(tr: TrackState) -> dict[str, np.ndarray]:
+    """A tracker on the host: ``n_ok``, the ``OUTCOMES`` totals and Rg² (float64 from the float32 M2)."""
+    n = to_numpy(tr.n_ok)
+    m2 = to_numpy(tr.m2).astype(np.float64)
+    tot = to_numpy(tr.tot)
+    return {
+        "n_ok": n,
+        "rg2": m2 / np.maximum(n, 1),
+        **{name: tot[:, i].astype(np.int64) for name, i in _OC.items()},
+    }
+
+
+class _Cohort:
+    """One snapshot of the labelled rows at step ``step`` and its tracker."""
+
+    def __init__(self, index: int, step: int, cuid: mx.array, trk: TrackState, snap: dict[str, Any]) -> None:
+        self.index, self.step, self.cuid, self.trk, self.snap = index, step, cuid, trk, snap
+        self.k = 0
+        self.at_min: dict[str, np.ndarray] | None = None
+        self.at_arch: dict[str, np.ndarray] | None = None
+        self.at_intent: dict[str, np.ndarray] | None = None
+
+
+def _share_summary(values: list[float]) -> dict[str, float | None]:
+    return {
+        "mean": _num(sum(values) / len(values)) if values else None,
+        "max": _num(max(values)) if values else None,
+    }
+
+
+class _Coverage:
+    """Shares of ``Observer.row_block()`` over the evaluation steps after the warm-up."""
+
+    FAMILIES: Final = (
+        ("intent_match", INTENT_NAMES),
+        ("intent", INTENT_NAMES),
+        ("archetype", ARCHETYPE_NAMES),
+        ("archetype_match", ARCHETYPE_NAMES),
+    )
+
+    def __init__(self) -> None:
+        self.n = 0
+        self.vals: dict[str, dict[str, list[float]]] = {
+            f: {nm: [] for nm in names} for f, names in self.FAMILIES
+        }
+
+    def add(self, block: Mapping[str, Any]) -> None:
+        self.n += 1
+        for fam, _ in self.FAMILIES:
+            shares = block[fam]
+            if shares is not None:
+                for name, v in shares.items():
+                    self.vals[fam][name].append(float(v))
+
+    def report(self) -> dict[str, Any]:
+        return {
+            "evaluations": self.n,
+            **{fam: {nm: _share_summary(self.vals[fam][nm]) for nm in names} for fam, names in self.FAMILIES},
+        }
+
+    def maxima(self) -> dict[str, dict[str, float | None]]:
+        return {
+            fam: {nm: _share_summary(self.vals[fam][nm])["max"] for nm in names}
+            for fam, names in self.FAMILIES
+        }
+
+
+class _Flips:
+    """Label flips between consecutive evaluations of rows that kept their uid and were labelled twice."""
+
+    def __init__(self) -> None:
+        self.prev: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self.pairs = {"intent": 0, "archetype": 0}
+        self.flips = {"intent": 0, "archetype": 0}
+
+    def add(self, uid: np.ndarray, arch: np.ndarray, intent: np.ndarray) -> None:
+        if self.prev is not None:
+            puid, parch, pintent = self.prev
+            same = (uid >= 0) & (uid == puid)
+            for fam, now, before in (("archetype", arch, parch), ("intent", intent, pintent)):
+                both = same & (now != 0) & (before != 0)
+                self.pairs[fam] += int(both.sum())
+                self.flips[fam] += int((both & (now != before)).sum())
+        self.prev = (uid, arch, intent)
+
+    def per_1000(self, every: int) -> dict[str, float | None]:
+        return {
+            fam: _num(1000.0 * self.flips[fam] / (self.pairs[fam] * every)) if self.pairs[fam] else None
+            for fam in ("intent", "archetype")
+        }
+
+
+# --- the study ------------------------------------------------------------------------------------------
+
+
+def _concat(parts: list[dict[str, np.ndarray]], keys: Sequence[str]) -> dict[str, np.ndarray]:
+    return {k: np.concatenate([p[k] for p in parts]) if parts else np.zeros(0, dtype=np.int64) for k in keys}
+
+
+def _check_params(
+    rules: RuleSet,
+    steps: int,
+    warmup: int,
+    cohort_every: int,
+    arch_horizon: int,
+    arch_min_obs: int,
+    intent_horizon: int,
+    n_perm: int,
+    seed: int,
+) -> None:
+    def req(ok: bool, msg: str) -> None:
+        if not ok:
+            raise ValueError(msg)
+
+    req(steps >= 1 and warmup >= 0, "steps must be >= 1 and warmup >= 0")
+    req(
+        cohort_every >= rules.every and cohort_every % rules.every == 0,
+        f"cohort_every must be a positive multiple of rules.every ({rules.every})",
+    )
+    req(1 <= arch_min_obs <= arch_horizon, "need 1 <= arch_min_obs <= arch_horizon")
+    req(intent_horizon >= 1, "intent_horizon must be >= 1")
+    req(n_perm >= 1, "n_perm must be >= 1")
+    req(seed >= 0, "seed must be >= 0")
+
+
+def _bound_check(cfg: Config, horizon: int) -> None:
+    """The int32 outcome totals hold ``horizon`` steps of the largest per-step outcome."""
+    per_step = max(
+        cfg.energy.harvest_max,
+        cfg.combat.attack_max,
+        layout.B * cfg.bonds.share_rate,
+        layout.NCH * 255,
+        256,
+    )
+    if per_step * horizon > (1 << 31) - 1:
+        raise ValueError(
+            f"an outcome total over {horizon} steps of up to {per_step} per step overflows int32"
+        )
+
+
+def study(
+    run: Path | str,
+    *,
+    start: int,
+    steps: int,
+    states_dir: Path | None = None,
+    warmup: int = 256,
+    cohort_every: int = 256,
+    arch_horizon: int = 1000,
+    arch_min_obs: int = 100,
+    intent_horizon: int = 10,
+    n_perm: int = 200,
+    seed: int = 0,
+    verify: bool = True,
+    rules: RuleSet = RULES_V1,
+    log: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    """The validity study of a run from step ``start`` for ``steps`` steps (see the module docstring).
+
+    Needs a checkpoint of the run (or a cached state in ``states_dir``) at ``start``. The cohorts are the
+    multiples of ``rules.every`` from the first at or after ``start + warmup``, every ``cohort_every`` steps,
+    as long as a full horizon fits in the study. Returns the JSON-safe report.
+    """
+    _check_params(
+        rules, steps, warmup, cohort_every, arch_horizon, arch_min_obs, intent_horizon, n_perm, seed
+    )
+    rd = RunDir.open(Path(run))
+    cfg = rd.config()
+    rules.check(cfg)
+    horizon = max(arch_horizon, intent_horizon)
+    _bound_check(cfg, horizon)
+    end = start + steps
+    every = rules.every
+    t0 = -(-(start + warmup) // every) * every  # the first evaluation step at or after start + warmup
+    cohort_steps = list(range(t0, end - horizon + 1, cohort_every))
+    if not cohort_steps:
+        raise ValueError(
+            f"no cohort fits: the first would be at step {t0} and needs {horizon} steps after it, "
+            f"but the study ends at step {end}"
+        )
+    nd = dims(cfg).nd
+    size = cfg.world.size
+
+    state = load_state(rd, cfg, states_dir, start)
+    obs, note = Observer.open(rd, state, cfg, rules=rules)
+    resumed = any(st == start for st, _ in rd.checkpoints())
+    source = "sidecar" if resumed and note is None else "fresh"
+    rows = {int(r["step"]): r for r in rd.metrics_rows()} if verify else {}
+    last_row = max(rows, default=-1)
+    log(
+        f"labels: {rd.path} from step {start} to {end}, {len(cohort_steps)} cohorts, "
+        f"observers {source}, verify={verify}"
+    )
+
+    def outcomes_fn(acts: Acts, last_harvest: mx.array, kin_prev: mx.array) -> mx.array:
+        return step_outcomes(acts, last_harvest, kin_prev)
+
+    def track_fn(
+        cuid: mx.array, tr: TrackState, alive: mx.array, uid: mx.array, pos: mx.array, oc: mx.array
+    ) -> TrackState:
+        return track_step(cuid, tr, alive, uid, pos, oc, size)
+
+    oc_step = mx.compile(outcomes_fn) if cfg.run.compile else outcomes_fn
+    tr_step = mx.compile(track_fn) if cfg.run.compile else track_fn
+    step_fn = make_step(cfg, observe=True)
+
+    copy_points: dict[int, list[str]] = {}
+    for k, what in ((intent_horizon, "intent"), (arch_min_obs, "min"), (arch_horizon, "arch")):
+        copy_points.setdefault(k, []).append(what)
+
+    coverage, flips = _Coverage(), _Flips()
+    active: list[_Cohort] = []
+    arch_parts: list[dict[str, np.ndarray]] = []
+    intent_parts: list[dict[str, np.ndarray]] = []
+    cohort_info: list[dict[str, int]] = []
+    counters: list[mx.array] = []
+    ledgers: list[mx.array] = []
+    checked = 0
+    t = start
+    t_wall, t_log = time.perf_counter(), t
+
+    while t < end:
+        kin_prev = obs.o.slot_kin
+        state, out = step_fn(state)
+        obs.update(state, out.acts, t + 1)
+        trackers: list[mx.array] = []
+        if active:
+            oc = oc_step(out.acts, state.last_harvest, kin_prev)
+            for c in active:
+                c.trk = tr_step(c.cuid, c.trk, state.alive, state.uid, state.pos, oc)
+                trackers.extend(c.trk)
+        mx.eval(state, out.base(), *obs.arrays(), *trackers)
+        if t < last_row:  # only the rows still to be compared need the step's counters
+            counters.append(out.counters)
+            ledgers.append(out.ledger)
+        t += 1
+
+        stored = rows.get(t)
+        if stored is not None:
+            if stored["steps"] == len(counters):
+                bad = compare_row(stored, counters, ledgers, int(to_numpy(state.total)), nd=nd)
+                if bad:
+                    raise ResimMismatch(
+                        f"step {t}: observed re-simulation differs from metrics.jsonl in {bad}"
+                    )
+                checked += 1
+            counters, ledgers = [], []
+
+        finished: list[_Cohort] = []
+        for c in active:
+            c.k += 1
+            for what in copy_points.get(c.k, ()):
+                h = _host_track(c.trk)
+                if what == "intent":
+                    c.at_intent = h
+                elif what == "min":
+                    c.at_min = h
+                else:
+                    c.at_arch = h
+            if c.k == horizon:
+                finished.append(c)
+        for c in finished:
+            active.remove(c)
+            _collect(c, arch_parts, intent_parts, intent_horizon)
+
+        if t in cohort_steps:
+            active.append(_snapshot(len(cohort_info), t, state, obs))
+            cohort_info.append({"step": t})
+        if t % every == 0 and t >= t0:
+            coverage.add(obs.row_block())
+            lab = obs.host_labels()
+            flips.add(to_numpy(obs.o.uid), lab["arch_primary"], lab["intent"])
+        if t - t_log >= 1000:
+            rate = (t - t_log) / (time.perf_counter() - t_wall)
+            log(f"labels: step {t}, {rate:.1f} steps/s, {len(active)} cohorts open, {checked} rows verified")
+            t_wall, t_log = time.perf_counter(), t
+
+    assert not active, "every cohort has run its full horizon"
+    arch_tab = _concat(
+        arch_parts,
+        (
+            "cohort",
+            "age",
+            "primary",
+            "match",
+            "n_ok",
+            "rg2_min",
+            "rg2_full",
+            "harvest",
+            "attack",
+            "out",
+            "got",
+        ),
+    )
+    intent_tab = _concat(
+        intent_parts,
+        ("cohort", "age", "label", "match", "complete", *sorted({c for c, _ in INTENT_OUTCOMES.values()})),
+    )
+    for info, n_a, n_i in zip(
+        cohort_info,
+        np.bincount(arch_tab["cohort"], minlength=len(cohort_info)),
+        np.bincount(intent_tab["cohort"], minlength=len(cohort_info)),
+        strict=True,
+    ):
+        info.update(n_archetype_pool=int(n_a), n_intent_pool=int(n_i))
+    steps_of = [c["step"] for c in cohort_info]
+    arch_scores = score_archetypes(
+        arch_tab,
+        arch_horizon=arch_horizon,
+        arch_min_obs=arch_min_obs,
+        n_perm=n_perm,
+        seed=seed,
+        cohort_steps=steps_of,
+    )
+    intent_scores = score_intents(
+        intent_tab,
+        n_perm=n_perm,
+        seed=seed,
+        intent_horizon=intent_horizon,
+        cohort_steps=steps_of,
+        coverage_max=coverage.maxima(),
+    )
+    return {
+        "run": str(rd.path),
+        "config_hash": config_hash(cfg),
+        "start": start,
+        "steps": steps,
+        "params": {
+            "warmup": warmup,
+            "cohort_every": cohort_every,
+            "arch_horizon": arch_horizon,
+            "arch_min_obs": arch_min_obs,
+            "intent_horizon": intent_horizon,
+            "n_perm": n_perm,
+            "seed": seed,
+            "verify": verify,
+            "age_bins": N_AGE_BINS,
+            "verdict": {
+                "min_class": MIN_CLASS,
+                "p_max": P_MAX,
+                "margin": MARGIN,
+                "coverage_max": COVERAGE_MAX,
+            },
+            "rules": dataclasses.asdict(rules),
+        },
+        "intent_version": INTENT_VERSION,
+        "rules_digest": rules.digest(),
+        "device": str(mx.default_device()),
+        "mlx_version": mx.__version__,
+        "observer_start": {"step": start, "source": source, "note": note},
+        "rows_verified": checked,
+        "cohorts": cohort_info,
+        "archetypes": arch_scores,
+        "intents": intent_scores,
+        "coverage": coverage.report(),
+        "flips_per_1000": flips.per_1000(every),
+    }
+
+
+def _snapshot(index: int, t: int, state: State, obs: Observer) -> _Cohort:
+    """The cohort at step ``t``: the archetype pool (rows with a primary label), the intent pool (rows
+    evaluated, ``EVAL_BIT``), the rows' uid, age (``t − 1 − birth_step``) and labels, and a tracker."""
+    lab = obs.host_labels()
+    uid = to_numpy(obs.o.uid)
+    age = t - 1 - to_numpy(state.birth_step).astype(np.int64)
+    pool_a = lab["arch_primary"] != 0
+    pool_i = (lab["intent_match"] & EVAL_BIT) != 0
+    member = pool_a | pool_i
+    snap = {
+        "rows_a": np.flatnonzero(pool_a),
+        "rows_i": np.flatnonzero(pool_i),
+        "age": age,
+        "primary": lab["arch_primary"],
+        "match_arch": lab["arch_match"],
+        "label": lab["intent"],
+        "match_intent": lab["intent_match"],
+    }
+    cuid = mx.array(np.where(member, uid, -1).astype(np.int64))
+    pos = mx.array(to_numpy(state.pos))
+    trk = track_start(mx.array(member), pos)
+    mx.eval(cuid, *trk)
+    return _Cohort(index, t, cuid, trk, snap)
+
+
+def _collect(
+    c: _Cohort,
+    arch_parts: list[dict[str, np.ndarray]],
+    intent_parts: list[dict[str, np.ndarray]],
+    intent_h: int,
+) -> None:
+    """Append a finished cohort's pool rows to the pooled tables."""
+    s = c.snap
+    assert c.at_arch is not None and c.at_min is not None and c.at_intent is not None
+    ra, ri = s["rows_a"], s["rows_i"]
+    arch_parts.append(
+        {
+            "cohort": np.full(ra.size, c.index, dtype=np.int64),
+            "age": s["age"][ra],
+            "primary": s["primary"][ra],
+            "match": s["match_arch"][ra],
+            "n_ok": c.at_arch["n_ok"][ra],
+            "rg2_min": c.at_min["rg2"][ra],
+            "rg2_full": c.at_arch["rg2"][ra],
+            **{k: c.at_arch[k][ra] for k in ("harvest", "attack", "out", "got")},
+        }
+    )
+    columns = sorted({col for col, _ in INTENT_OUTCOMES.values()})
+    intent_parts.append(
+        {
+            "cohort": np.full(ri.size, c.index, dtype=np.int64),
+            "age": s["age"][ri],
+            "label": s["label"][ri],
+            "match": s["match_intent"][ri],
+            "complete": c.at_intent["n_ok"][ri] >= intent_h,
+            **{k: c.at_intent[k][ri] for k in columns},
+        }
+    )
+
+
+# --- command line ---------------------------------------------------------------------------------------
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="python -m alife.analysis.labels", description=__doc__.split("\n")[0])
+    ap.add_argument("run", type=Path, help="run directory (read only)")
+    ap.add_argument("--from", dest="start", type=int, required=True, help="step to start from (a checkpoint)")
+    ap.add_argument("--steps", type=int, required=True, help="steps to simulate from there")
+    ap.add_argument("--out", type=Path, required=True, help="report JSON (outside the run directory)")
+    ap.add_argument("--states", type=Path, default=None, help="directory of re-simulated states (resim)")
+    ap.add_argument("--warmup", type=int, default=256)
+    ap.add_argument(
+        "--cohort-every", type=int, default=256, help="a multiple of the rules' evaluation period"
+    )
+    ap.add_argument("--arch-horizon", type=int, default=1000)
+    ap.add_argument("--arch-min-obs", type=int, default=100)
+    ap.add_argument("--intent-horizon", type=int, default=10)
+    ap.add_argument("--n-perm", type=int, default=200)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--no-verify", action="store_true", help="skip the check of the stored metrics rows")
+    a = ap.parse_args(argv)
+    if a.out.resolve().is_relative_to(a.run.resolve()):
+        ap.error("--out must not be inside the run directory")
+    try:
+        report = study(
+            a.run,
+            start=a.start,
+            steps=a.steps,
+            states_dir=a.states,
+            warmup=a.warmup,
+            cohort_every=a.cohort_every,
+            arch_horizon=a.arch_horizon,
+            arch_min_obs=a.arch_min_obs,
+            intent_horizon=a.intent_horizon,
+            n_perm=a.n_perm,
+            seed=a.seed,
+            verify=not a.no_verify,
+            log=lambda m: print(m, flush=True),
+        )
+    except ResimMismatch as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except (ValueError, FileNotFoundError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    a.out.write_text(json.dumps(report, indent=1, allow_nan=False) + "\n", encoding="utf-8")
+    print(f"wrote {a.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
