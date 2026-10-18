@@ -826,12 +826,13 @@ Tuning risks (`docs/3D.md` §9):
      it would not fire then. This is an inference from the rows: the director computes `fall` from its own window
      statistics.
    - The rescue's size, `0.1·K_est`, is about 6,100 to 6,600 at the checkpoints, so the menu's cap of 1,024 applies.
-   - PR #23 (season-aware extinction risk and the persisted blocked-rule set, open) changes the rules first.
+   - PR #23 (season-aware extinction risk and the persisted blocked-rule set) changes the rules first: merged as
+     aef79c2, rules version 2 in `runs/64k3d_s0_dir`.
 4. **Bodies beyond crowding.**
    - A lower-density control (a smaller `regen_max`) would test whether body size follows density. It would also
     separate crowding from bonding as the cause of body size (§5.3). Done: `runs/64k3d_s0_half`
-    (`docs/RESULTS_3D_RUNS.md` §4 and §6.3); body size did not follow density at equilibrium, and crowding and
-    bonding are still not separated.
+    (`docs/RESULTS_3D_RUNS.md` §4 and §6.3); the control cannot say whether density sets body size (its largest body
+    is 1.11× seed 0's, against a 4.8× gap between seeds 0 and 1), and crowding and bonding are still not separated.
    - Any goal-directed bodies experiment (the deferred arm D) needs measures other than size. Candidates are member
      persistence over thousands of steps, velocity coherence and energy sharing.
    - A bond-persistence metric would replace the flicker-dominated lifetime proxy.

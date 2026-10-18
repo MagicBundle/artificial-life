@@ -259,28 +259,36 @@ two controls are in the next section; several of these results did not replicate
 Four runs of 500k steps each, preset `64k3d`: `runs/64k3d_s0` (above), `runs/64k3d_s1` (seed 1),
 `runs/64k3d_s0_half` (`fields.regen_max` = 850) and `runs/64k3d_s0_dir` (director live, Trickster, LLM every 25k on
 `google/gemma-4-26b-a4b-qat`, rules version 2, code aef79c2). All four are clean: ledger exact on every row, no
-overflow, 14.7 to 15.0 steps/s. The half-food and director runs were each paused and resumed once. There is one run
-per condition apart from the seed pair.
+overflow, 14.7 to 15.0 steps/s (median row; 14.3 to 14.8 overall). The half-food and director runs were each paused
+and resumed once. There is one run per condition apart from the seed pair.
 
-- **Replication.** Seed 1 reproduces the structure but not the details: of 105 checks, 57 agree, 31 in part, 14 not.
+- **Replication.** Seed 1 reproduces the structure but not the details: of 105 checks, the claim holds in 56, in part in
+  32 and not in 14 (verdicts by hand; 33 of the 56 also have every listed value within about 10% of seed 0's).
   - Reproduced: the capacity ratios, a floor-layer share of 19 to 23%, the two-ended depth profile, four founder
-    clades in two depth zones, thin single-clade bodies that never wrap, bounded activity.
-  - Not reproduced: seed 1 is still rising at 500k (1.35× the aim against 1.26×), turns over 1.4× faster, keeps a
-    higher cap (median 0.285 against 0.190, after a rebound; its floor clades keep lift, not its surface clade) and
-    has a giant floor sheet (median largest body 11,655 against 2,582).
-- **Half food.** 0.63× the population, not 0.5×. `K` halves, but the population fills more of it (n/`K_est` 0.86
-  against 0.67): the resource cap clips the full-food field, and agents cost 9% less per step. Predation thins and the
-  cap's erosion is delayed. Two clades survive, both spanning floor and top (clade–depth MI 0.09), so the two-ended
-  profile does not need depth-partitioned clades. Body size is unchanged (1.13× s0's at 0.63× the population).
-- **Director.** Bit-identical to s0 through step 25,000 (`DESIGN.md` §26.8 D1 holds in 3D), unpaired after.
+    clades (the split into two depth zones of two holds only in part), thin single-clade bodies that never wrap,
+    bounded activity.
+  - Not reproduced: seed 1 rose in 100k to 300k and has been level since (1.35× the aim over 400k–500k against 1.26×),
+    turns over 1.4× faster, keeps a higher cap (median 0.285 against 0.190, after a rebound; its floor clades keep lift,
+    not its surface clade) and has a giant floor sheet (median largest body 11,655 against 2,582).
+- **Half food.** 0.63× the population, not 0.5×. `K` halves, but the population fills more of it (n/`K_est` 0.86 against
+  0.67): the resource cap clips the full-food field, and agents cost 9% less per step. Predation thins (attacks per
+  agent-step and predation ratio; the kill-share change is inside the seed gap) and the cap's erosion is delayed. Two
+  clades survive, both spanning floor and top (clade–depth MI 0.09), so the two-ended profile does not need
+  depth-partitioned clades. The control cannot say whether density sets body size: the largest body is 1.11× s0's, far
+  inside the 4.8× gap between the two seeds.
+- **Director.** Identical to s0 in every metrics row and event record through step 25,000 (`DESIGN.md` §26.8, director
+  enabled with inert levers equals director off, holds in 3D; state equality is inferred, there is no checkpoint before
+  50k), unpaired after.
   - 30 interventions at its full budget: 12 LLM immigration pulses (the model never chose another lever although
     others were affordable), 15 runaway-damper pulses and 3 rescue entries during the founder overshoot.
   - The damper's trigger (largest body above 5% of the population) is met at most boundaries of every 64k3d run, so
     it fires every 25k steps. Each pulse cuts the population by 13% and the largest body by about a quarter, both
     temporarily.
   - Immigrants leave no lineage (2 descendants alive at the end). The end state (3 founder clades, top clade 0.66)
-    cannot be attributed to the director; coverage, persistent novelty and the cohort activity rate show no gain over
-    the seed spread.
+    cannot be attributed to the director. Coverage is higher (28 against 21 and 20), but it mostly tracks forced
+    population oscillation (`EVALUATION.md`), which the damper's pulses also impose, and the half-food run reaches 26
+    without a director; persistent novelty is below both director-free trajectories, and the cohort activity rate equals
+    s0's.
 - **Activity.** Channon's test is bounded in all 22 valid cells of all four runs; Bedau's class is unstable between
   runs.
 - **Outputs.** The figures and tables are in `docs/results_3d_runs/`, the scripts and full outputs in
@@ -396,10 +404,10 @@ per condition apart from the seed pair.
    - **The LLM tier in 3D.** The model chose `immigration_pulse` in 12 of 12 actions with other levers affordable, and
      immigrants never establish; archive immigrants (`DIRECTOR.md` §5) would make the pulse meaningful. A 3D director
      evaluation, if wanted, would use paired forks (`DIRECTOR.md` §9) after the damper is recalibrated.
-   - **Bodies.** The half-food control did not shrink the bodies at equilibrium, and crowding and bonding are still not
-     separated. Next: the bond reset and erase continuations (`RESULTS_3D.md` §5.5) on s1 and the half-food run, and an
-     arm with `combat.attack_bonded = true` to test the ceasefire reading. A bodies goal needs measures other than
-     size: persistence, coordination and sharing.
+   - **Bodies.** The half-food control cannot say whether density sets body size (its largest body is 1.11× s0's against
+     a seed gap of 4.8×), and crowding and bonding are still not separated. Next: the bond reset and erase continuations
+     (`RESULTS_3D.md` §5.5) on s1 and the half-food run, and an arm with `combat.attack_bonded = true` to test the
+     ceasefire reading. A bodies goal needs measures other than size: persistence, coordination and sharing.
    - **`regen_max` and `n_init`** (owner). Full food gives 1.25 to 1.35× the sizing aim at n = 2; the population's
      elasticity to regeneration is about 0.65. No result requires a change; the sign-off of `n_init` is still open.
    - **Signals.** The signal-information tools are 2D-only (`require_2d`), and emitters stay at 0.86 to 0.88 in 3D at

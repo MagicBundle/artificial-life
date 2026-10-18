@@ -12,34 +12,42 @@ of them hold across the four runs, and what the two controls change.
   overflowed (maximum occupancy 26 to 39, at most 27 after step 50,000, against `C` = 48), and there were no velocity
   clips or error flags. Each run took 9.4 to 9.7 h at 14.7 to 15.0 steps/s (median row), with a peak of 3.32 GB. The
   half-food run and the director run were each paused once and resumed.
-- **Seed 1 reproduces the structure of seed 0, not its details.** Of 105 checks of `RESULTS_3D.md` claims, 57 agree
-  within about 10%, 31 agree in part and 14 do not (3 are not applicable). With two seeds, "agree" means "not
-  distinguishable at n = 2".
+- **Seed 1 reproduces the structure of seed 0, not its details.** Of 105 checks of `RESULTS_3D.md` claims, the claim
+  holds in seed 1 in 56, in part in 32 and not in 14 (3 are not applicable). The verdicts were given by hand, row by
+  row; in 23 of the 56, a listed value is more than 10% from seed 0's or a listed range does not overlap seed 0's
+  (§2), so 33 pass that stricter reading. With two seeds, "holds" means "not distinguishable at n = 2".
   - Reproduced: the founder boom and crash; the population relative to capacity (n/`K_est` 0.60 to 0.72 and
     n/`K_floor` 2.1 to 2.5 at the checkpoints from 100k); a floor-layer share of 19 to 23%, not the sizing's 70%;
-    the two-ended depth distribution (88% of agents in the floor and top bands); four founder clades in two depth
-    zones, with one colonial clade on the floor and one at the surface; the high kill and emitter shares against 2D;
-    thin single-clade bodies that never wrap the torus; and bounded evolutionary activity.
-  - Not reproduced: stationarity (seed 1 still rises over 100k to 500k, +16.7 agents per 1,000 steps, and ends at
-    1.35× the sizing aim against 1.26×); turnover (1.42 births per agent per 1,000 steps against 1.05); the buoyancy
-    cap's trajectory (median 0.285 over the last 50k against 0.190, after a rebound) and which clade keeps a high cap
-    (the floor-zone clades in seed 1, the surface clade in seed 0); and body size (median largest body 11,655
-    against 2,582, a quarter of the population).
+    the two-ended depth distribution (88% of agents in the floor and top bands); four founder clades, with one
+    colonial clade on the floor and one at the surface (the split into two depth zones of two holds only in part:
+    seed 1's clade 9441 spans mid-water to the top, §3.2); the high kill and emitter shares against 2D; thin
+    single-clade bodies that never wrap the torus; and bounded evolutionary activity.
+  - Not reproduced: stationarity (seed 1 rises by 16.7 agents per 1,000 steps over 100k to 500k, mostly in 100k to 300k,
+    and has been level at 44,000 to 46,000 since 250k; over 400k–500k it is 1.35× the sizing aim against 1.26×);
+    turnover (1.42 births per agent per 1,000 steps against 1.05); the buoyancy cap's trajectory (median 0.285 over the
+    last 50k against 0.190, after a rebound) and which clade keeps a high cap (the floor-zone clades in seed 1, the
+    surface clade in seed 0); and body size (median largest body 11,655 against 2,582, a quarter of the population).
 - **Halving the food gives 0.63× the population, not 0.5×.** Both capacity estimates halve (`K_est` 0.49×,
   `K_floor` 0.50×), but the population fills more of its capacity (n/`K_est` 0.86 against 0.67). The full-food
   field loses 15% of its nominal regeneration to the resource cap and the half-food field 2%, and an agent costs 9%
-  less heat per step at half food, most of it action heat (fewer agents emit, and they attack less). An exact ledger
-  identity gives 0.497 × 1.154 × 1.000 × 1.098 = 0.630.
-  - Predation thins (0.034 attacks per agent-step against 0.059, kill share 0.43 against 0.50) and the erosion of
-    the buoyancy cap is delayed (median below 0.4 from step 245,300 against 143,800). Energy per agent, the
-    two-ended depth profile, body size and speed are unchanged.
+  less heat per step at half food, most of it action heat (fewer emitters and fewer attacks explain at most about 9
+  of its 20 q per agent-step; the rest was not diagnosed). An exact ledger identity gives
+  0.497 × 1.154 × 1.000 × 1.098 = 0.630.
+  - Predation thins: 0.034 attacks per agent-step against 0.059, and a predation ratio of 0.165 against 0.231, both
+    beyond the seed pair's gaps (0.007 and 0.003). The kill share (0.43 against 0.50) moves less than the seed pair's
+    does (0.09). The erosion of the buoyancy cap is delayed (median below 0.4 from step 245,300 against 143,800).
+    Energy per agent, the two-ended depth profile and speed are unchanged.
   - Only two clades survive, and both span the floor and the top: the clade–depth mutual information falls to 0.09
     (seed 0: 0.60) while the population stays two-ended. The bimodal depth profile does not need a partition of
     clades by depth.
-  - Body size does not follow total density at equilibrium. At 0.63× seed 0's population the largest body is 1.13×
-    seed 0's (95% interval 0.79 to 1.78); seed 1, at 1.07× the population, has 4.9×.
-- **The director run is bit-identical to seed 0 through step 25,000, as `DESIGN.md` §26.8 D1 requires, and a
-  different trajectory after its first intervention.**
+  - The control cannot show whether density sets body size. At 0.63× seed 0's population the half-food run's
+    largest body is 1.11× seed 0's (within-run bootstrap interval 0.79 to 1.78), but seed 1, under the same conditions
+    as seed 0 and at 1.07× its population, has 4.8× (3.6 to 7.1). A halving of the largest body would be 0.44 of that
+    seed gap on a log scale, so at n = 1 it would be lost in the noise.
+- **The director run is identical to seed 0 in every metrics row and event record through step 25,000, as
+  `DESIGN.md` §26.8 requires (director enabled with inert levers is bit-identical to director off), and follows a
+  different trajectory after its first intervention.** The check compares rows and events only (there is no
+  checkpoint before 50,000), so state equality is inferred.
   - It made 30 interventions at 23 steps and spent exactly its budget of 6 per 100k: 12 LLM immigration pulses, 15
     runaway-damper pulses (regeneration ×0.8 for 10,000 steps) and 3 extinction-rescue entries at steps 28,000 and
     38,000. No season, drift, patch or catastrophe lever was used. The model chose `immigration_pulse` in all 12
@@ -56,12 +64,20 @@ of them hold across the four runs, and what the two controls change.
   - The end state differs from seed 0: 3 founder clades against 4, a top clade of 0.66 against 0.41, a clade–depth
     MI of 0.17 against 0.60 and 9% fewer agents. But the half-food run reaches a similar clade state without a
     director, and the comparison is unpaired after step 25,000, so these differences cannot be attributed to the
-    director. Coverage, persistent novelty and the cohort-pool activity rate show no gain over the seed spread; the
-    marker-space activity rate is a third lower (suggestive at n = 1).
-- **Evolutionary activity is bounded in all four runs.** Channon's test gives "bounded" in all 22 valid cells of
-  every run. Bedau's class differs between runs in 14 of 22 cells, and the seed pair agrees in 0.68 of the cells,
-  inside the 0.55 to 0.73 range of all pairs. New adaptive activity stays above both nulls in every run, and in no run
-  is the survivors' excess share of births above the heritability null.
+    director.
+  - The archive's coverage is higher (28 cells against 21 and 20, beyond the seed pair's gap by the rule of §2), but the
+    cells that seed 0 never visited number 9 in both the director run and seed 1, the half-food run reaches 26 without a
+    director, and `EVALUATION.md` finds that coverage mostly tracks forced population oscillation, which the damper's
+    pulses also impose (13% cuts every 25,000 steps; whether they account for the gain was not tested). It is not
+    evidence of a benefit. Persistent novelty is below both director-free trajectories (−0.0001 against +0.0008 and
+    +0.0012). The cohort-pool activity rate equals seed 0's; the marker-space activity rate is a third lower (suggestive
+    at n = 1).
+- **Evolutionary activity is bounded in all four runs.** Channon's test gives "bounded" in all 22 valid cells of every
+  run. Bedau's class differs between runs in 14 of 22 cells, and the seed pair agrees in 0.68 of the cells, inside the
+  0.55 to 0.73 range of all pairs. New adaptive activity is positive in every 50k block and window of every run (cohort
+  pools and marker spaces μ = 0.003 to 0.03). It is above both nulls in every window except the director run's markers
+  at μ = 0.003 over 100k–300k, which sit at its heritability null, and in all but 4 of 176 blocks (§7). In no run is the
+  survivors' excess share of births above the heritability null.
 - **Caveats.** There is one run per condition apart from the seed pair, and each run is 500,000 steps long. The seed
   pair itself differs by 1.4× in turnover and 4.5× in body size; differences between the other runs are read against
   that scale (§8).
@@ -89,7 +105,8 @@ of them hold across the four runs, and what the two controls change.
   immigrants). At step 500,000 there are 40,413, 46,380, 25,365 and 39,165 agents alive.
 - **Speed.** The half-food run's first segment (to step 105,262) was erratic: 12.2 steps/s overall, with 207 of its
   1,052 rows below 14. The cause was not diagnosed. Its second segment ran at 14.95. Speed does not follow the
-  population (row correlation at most 0.16).
+  population (Pearson correlation of `steps_per_s` and `n_alive` over the rows after the first: at most 0.18 in each
+  run; over the rows after step 150,000, at most 0.16).
 - **Files.** Each run has 11 or 12 checkpoints (every 50,000 steps, plus the pause checkpoint), complete event logs,
   `metrics.jsonl` every 100 steps (heavy keys every 1,000), and for the director run `director.jsonl`,
   `journal.jsonl` and `director_archive.json`.
@@ -97,8 +114,11 @@ of them hold across the four runs, and what the two controls change.
 ## 2. Method
 
 - **Shared methods.** Rows, checkpoints, the approximate `K` between checkpoints, clades and depth, bodies and
-  activity are as in `docs/RESULTS_3D.md` §2. All analysis ran on the CPU at aef79c2. The engine and
-  `metrics.py` are unchanged from 358de29, and `src/alife/analysis` is byte-identical between the two.
+  activity are as in `docs/RESULTS_3D.md` §2. All analysis ran on the CPU at aef79c2. The engine is unchanged from
+  358de29: `metrics.py` differs only by an added function (`seasonal_capacity_table`, called only by the director's
+  rules version 2), `src/alife/analysis` is byte-identical, and the other differences are the director package (PR
+  #23), two lines of the live-director resume path in `cli.py` and a comment in `runio.py`. `alife.analysis.evaluation`
+  imports the director package; no run here has seasons, and it reproduces all 45 logged vitals of the director run.
 - **Same pipeline for every run.** The archived seed-0 scripts (`analysis_cache/64k3d_s0/results3d/`) were copied
   with only their paths changed and run on the new runs. Re-run on seed 0, they reproduce every archived JSON and TXT
   output byte for byte and every CSV cell. The new scripts that generalise them (for example, the depth-zone
@@ -108,9 +128,13 @@ of them hold across the four runs, and what the two controls change.
 - **Intervals.** Unless stated otherwise, intervals are 95% moving-block bootstraps with 20,000-step blocks. They
   are within-run intervals: they do not include the variance between trajectories, which the seed pair shows is
   larger. "Beyond the seed spread" means larger than |s1 − s0| in this one pair; it is not a test.
-- **Replication verdicts.** The rule was fixed before the comparison: "yes" if the claim holds and the numbers agree
-  within about 10%; "partly" if it holds only in part of the run or the numbers differ by more; "no" if it fails in
-  seed 1. The full table is [`results_3d_runs/replication_s0_s1.csv`](results_3d_runs/replication_s0_s1.csv).
+- **Replication verdicts.** The rule: "yes" if the claim holds in seed 1 and the numbers agree within about 10% or
+  their ranges overlap; "partly" if it holds only in part of the run or the numbers differ by more; "no" if it fails
+  in seed 1. It was applied by hand, row by row, because many claims are qualitative, and not every "yes" meets its
+  numeric part: a mechanical check of the 56 "yes" rows finds 23 in which a listed value (not a step number) is more
+  than 10% from seed 0's or a listed range does not overlap seed 0's, so 33 meet it
+  (`analysis_cache/64k3d_runs/fixes/c1b_verdict_rule_strict.out`). The full table is
+  [`results_3d_runs/replication_s0_s1.csv`](results_3d_runs/replication_s0_s1.csv).
 - **Depth zones.** A large clade (at least 1% of agents) is in the floor zone if its median height is below 40,
   otherwise in the top zone. The rule was fixed beforehand.
 - **Density decomposition.** At the 400k, 450k and 500k checkpoints, with the ledger over the 1,000 steps that end at
@@ -130,7 +154,11 @@ of them hold across the four runs, and what the two controls change.
   `analysis_cache/64k3d_runs/writeup/parts/` (one folder per topic: `replicate`, `density`, `director`, `bodies`,
   `activity`), with the scripts that built this note's tables and figures in `analysis_cache/64k3d_runs/writeup/`.
   The heavy checkpoint extracts are in `analysis_cache/64k3d_runs/{replicate,density,bodies}/` and the
-  `alife activity` outputs in `analysis_cache/64k3d_runs/activity_{s1,s0_half,s0_dir}/`.
+  `alife activity` outputs in `analysis_cache/64k3d_runs/activity_{s1,s0_half,s0_dir}/`. The scripts are archived as
+  they ran: the 16 under `parts/director/` (including `common.py`), `parts/density/common.py` and
+  `parts/activity/run_activity.sh` still name the scratchpad of the session that ran them
+  (`/private/tmp/claude-501/…/scratchpad/results4/<part>`) as output directory and import path, and need those lines
+  edited to re-run. The numbers behind the review corrections of this note are in `analysis_cache/64k3d_runs/fixes/`.
 
 ## 3. Replication: seed 1 against seed 0
 
@@ -148,7 +176,7 @@ of them hold across the four runs, and what the two controls change.
 | n/`K_floor` minimum at the founder crash | 0.622 | 0.615 | yes |
 | band fractions, floor to surface, last 50k | 0.531 / 0.078 / 0.043 / 0.348 | 0.573 / 0.077 / 0.041 / 0.308 | yes |
 | four founder clades, final from step | 177,100 | 322,900 | partly |
-| two depth zones of two clades; MI of clade and band at 500k (share of `H`) | 0.627 (0.60) | 0.717 (0.71) | yes |
+| two depth zones of two clades; MI of clade and band at 500k (share of `H`) | 0.627 (0.60) | 0.717 (0.71) | partly / yes |
 | median buoyancy cap, last 50k | 0.190 ± 0.014 | 0.285 ± 0.022 | no |
 | mean cap of the large clades at 500k (floor, low water, upper water, surface) | 0.19 / 0.20 / 0.08 / 0.44 | 0.37 / 0.49 / 0.18 / 0.12 | no |
 | births per agent per 1,000 steps, 100k–500k (Little lifetime, steps) | 1.048 (954) | 1.420 (704) | no |
@@ -161,15 +189,17 @@ of them hold across the four runs, and what the two controls change.
 ### 3.1 Population and capacity
 
 - **The start.** Both runs boom and crash from the same founder design and overshoot to about 43,000 by step 13,000.
-  Seed 1's trough is deeper and earlier (19,978 at step 27,500), and it returns above the sizing aim for good only
-  at step 62,200 (seed 0: 51,500).
-- **The level.** The two runs agree over 100k–300k (means 41,843 and 41,657). Seed 1 then rises: over 300k–500k its
-  mean is 44,694 against 42,002, a difference of +2,692 (interval +1,165 to +3,802). Its rise is concentrated in
-  100k–300k; over 300k–500k its slope is +5.9 per 1,000 steps (interval −10.4 to +21.3).
-- **Settling.** The 10k-window mean stays within 10% of the final-100k mean from step 70,000 in seed 0 and from step
-  180,000 in seed 1. The integrated autocorrelation time over 100k–500k is 14,300 steps in seed 0 and 73,800 in
-  seed 1, because seed 1's series carries the rise. `RESULTS_3D.md`'s "stationary from about 70,000 to 100,000
-  steps" is a seed-0 result. The level at n = 2 is 42,000 to 45,000 over 400k–500k, 1.26 to 1.35× the aim.
+  Seed 1's trough is deeper and earlier (19,978 at step 27,500), and its last row below the sizing aim is at step
+  62,200 (seed 0: 51,500).
+- **The level.** The two runs agree over 100k–300k (means 41,843 and 41,657). Seed 1 then ends higher: over 300k–500k
+  its mean is 44,694 against 42,002, a difference of +2,692 (interval +1,165 to +3,802). Its rise is concentrated in
+  100k–300k (50k-window means from 38,754 at 100k–150k to 44,913 at 250k–300k); over 300k–500k its slope is +5.9 per
+  1,000 steps (interval −10.4 to +21.3) and its 50k-window means stay between 43,876 and 46,119.
+- **Settling.** The 10k-window mean stays within 10% of the final-100k mean from step 60,000 in seed 0 and from step
+  170,000 in seed 1 (the first window that stays within ends at 70,000 and 180,000). The integrated autocorrelation time
+  over 100k–500k is 14,300 steps in seed 0 and 73,800 in seed 1, because seed 1's series carries the rise.
+  `RESULTS_3D.md`'s "stationary from about 70,000 to 100,000 steps" is a seed-0 result. The level at n = 2 is 42,000 to
+  45,000 over 400k–500k, 1.26 to 1.35× the aim.
 - **Capacity.** `K_est` spans 60,500 to 66,500 in both runs and `K_floor` 17,100 to 18,800. The occupancy of the 20
   layers follows their share of regeneration with log correlation 0.991 to 0.997 in both.
 - **`DESIGN.md` §27.13's 30,000-step trial is a seed-0 trajectory.** The population at step 30,000 is 29,010 in
@@ -247,7 +277,8 @@ of them hold across the four runs, and what the two controls change.
 
 `runs/64k3d_s0_half` differs from seed 0 only in `fields.regen_max` (850 against 1,700). The founder state is
 bit-identical, and the food patches are at identical positions at all 11 checkpoints; the two runs' event logs
-diverge at steps 17 (deaths) and 29 (births). Seed 1 is shown as the seed-spread reference.
+diverge at step 17 (deaths: 2 against 3) and step 20 (births: the same 1,024 births, from different parents; the
+birth counts differ from step 29). Seed 1 is shown as the seed-spread reference.
 
 Mean over steps 400k–500k ([`results_3d_runs/endstate_four_runs.csv`](results_3d_runs/endstate_four_runs.csv),
 [`results_3d_runs/windows_50k_four_runs.csv`](results_3d_runs/windows_50k_four_runs.csv)):
@@ -292,11 +323,15 @@ Mean over steps 400k–500k ([`results_3d_runs/endstate_four_runs.csv`](results_
   | heat per agent-step (q), inverted | 261.1 | 237.7 | 1.098 |
   | population | 42,416 | 26,733 | 0.630 |
 
-  - The resource cap clips the full-food field: at the 400k, 450k and 500k snapshots, the share of the next step's
-    regeneration lost to the cap is 0.23 to 0.28 at full food and 0.02 to 0.04 at half food.
-  - The cost per agent falls mostly in action heat (86.3 against 66.2 q per agent-step over 400k–500k), with fewer
-    emitters (0.878 against 0.511) and fewer attacks. The emission cost accounts for at most about 7 of the 20 q
-    (upper bound, if every emitter pays every step); this is arithmetic, not a ledger term.
+  - The resource cap clips the full-food field. The share of nominal regeneration lost to it, from the ledger over
+    the 1,000 steps that end at the 400k, 450k and 500k checkpoints, is 0.165, 0.136 and 0.151 at full food and
+    0.030, 0.016 and 0.012 at half food (the pooled 0.151 and 0.019 are 1 minus the injected shares above). A snapshot
+    of the field gives 0.23 to 0.28 and 0.02 to 0.04, but that is the share the next regeneration would lose if nothing
+    were harvested first, an upper bound: harvest (S10) comes before regeneration (S17).
+  - The cost per agent falls mostly in action heat (86.3 against 66.2 q per agent-step over 400k–500k, 20.1 of the
+    22.9 q gap), with fewer emitters (0.878 against 0.511) and fewer attacks. The emission cost accounts for at most
+    about 7.3 of the 20 q (upper bound, if every emitter pays every step) and the attack cost for about 1.2, so at
+    least 11.5 q of the action-heat gap are not explained; this is arithmetic, not a ledger term.
 - **Local density falls less than the total.** Per field layer, the half-food run has 0.77× seed 0's agents in the
   floor layer, 0.50× in mid-water (layers 5 to 14) and 0.57× in the top quarter. Its population is 1.58× the sizing
   aim scaled to half food (16,800), against 1.25× for seed 0.
@@ -352,11 +387,13 @@ Mean over steps 400k–500k ([`results_3d_runs/endstate_four_runs.csv`](results_
   in every key except the wall-clock ones (`wall_s`, `steps_per_s`, `peak_mem_gb`) and `env`, which only the director
   run logs and which is inert through 25,000. The 1,027,897 births and 1,012,072 deaths before step 25,000 match
   record for record.
-- **Divergence.** The first differing row is 25,100: 61 of the 84 compared keys differ, including `immigrants` (512),
+- **Divergence.** The first differing row is 25,100: 61 of its 74 compared keys differ, including `immigrants` (512),
   the LLM's first pulse at the 25,000 boundary. No later row is identical. The gap in `n_alive` is +704 at 25,100,
-  within ±140 over 25,500 to 26,000, and −934 at 28,000.
-- **So** director-enabled-with-inert-levers equals director-off in 3D, as `DESIGN.md` §26.8 D1 specifies, and after
-  step 25,000 s0_dir is a different realisation of the same seed. Every comparison after 25,000 below is unpaired.
+  between −137 and +213 over 25,500 to 26,000, and −934 at 28,000.
+- **So** director-enabled-with-inert-levers equals director-off in 3D in every metrics row and event record, as
+  `DESIGN.md` §26.8 specifies (it states bit-identical; the state itself is not compared, because there is no
+  checkpoint before 50,000), and after step 25,000 s0_dir is a different realisation of the same seed. Every
+  comparison after 25,000 below is unpaired.
 
 ### 5.2 What it did
 
@@ -468,14 +505,16 @@ Mean over steps 400k–500k:
   holds 0.971 of s0's population.
 - **Viability.** The lowest 100-step mean after step 100k is 31,668 (0.755 of s0's 100k–500k mean), inside a damper
   window; s0's is 37,628. There was no collapse and no extinction; the energy ledger was exact throughout.
-- **Clades.** The director run ends with three founder clades, 5165 (0.66 of the agents), 4616 and 13526 (0.06;
-  0.28 in s0), plus 2 immigrant-clade agents. Clade 8695, which holds 0.20 of s0 at 500k, went extinct at about step 118,900.
-  The loss of the clade-by-depth structure (`clade_height_mi` 0.17) follows from the loss of clades.
+- **Clades.** The director run ends with three founder clades, 5165 (0.67 of the agents at 500k; 0.66 over 400k–500k),
+  4616 and 13526 (0.06; 0.28 in s0), plus 2 immigrant-clade agents. Clade 8695, which holds 0.20 of s0 at 500k, went
+  extinct at about step 118,900. The loss of the clade-by-depth structure (`clade_height_mi` 0.17) follows from the loss
+  of clades.
 - **Attribution.** The 3 founder clades and the top share of 0.66 lie outside the seed pair (4 and 4; 0.41 and
   0.44). But the half-food run, without a director, also ends with 2 clades and a top share of 0.62, and after
   step 25,000 the director run is an unpaired realisation. With one trajectory per arm, the director's levers cannot
-  be separated from chaotic divergence. The largest-body and bonded-fraction differences are well inside the seed
-  pair's (seed 1's mean largest body over 400k–500k is 4.8× seed 0's).
+  be separated from chaotic divergence. The director run's gaps from seed 0 in the largest body (+718 against the
+  seed pair's +9,153) and in bonds per agent (−0.12 against +0.27) are inside the seed pair's. Its gap in
+  `frac_in_bodies_ge4` (−0.072) equals the seed pair's (+0.071), so it is not attributable at n = 1.
 - **Novelty and coverage** (the director's own archive, recomputed for every run):
 
   | run | coverage at 500k | cells not visited by s0 | mean novelty | persistent novelty against s0 (17 anchors, share above 0) |
@@ -486,14 +525,16 @@ Mean over steps 400k–500k:
   | half | 26 | 22 | 0.0257 | +0.0012 (82%) |
 
   The anchors are the director run's intervention steps up to 350,000 (the after-window must end by 500,000); the
-  director-free runs are evaluated at the same steps. Over the 8 LLM-only anchors the director run's persistent
-  novelty is −0.0008. It is inside the range of the runs without a director.
+  director-free runs are evaluated at the same steps. On the 17 anchors the director run's persistent novelty
+  (−0.0001) is below both director-free trajectories (s1 +0.0008, half +0.0012) and slightly below 0: no gain. Over
+  the 8 LLM-only anchors it is −0.0008.
 - **Activity.** The director run's cohort-pool rate equals s0's (mean paired difference of the 50k-block rates from
   100k: −0.02 ± 1.08 at horizon 200k, against s1 − s0 = +5.7 ± 1.3). Its marker-space rate is lower: at μ = 0.01 it
   averages 8.8 against 13.0 (s0) and 14.8 (s1), −4.2 ± 1.3 against s0 with 1 of 8 blocks above; at μ = 0.003, 11.8
-  against 18.5 and 18.1. These ± are naive standard errors of overlapping blocks, so lower bounds. The cause was not
-  identified: the director run also has a different clade state from 100k (top clade 0.62 to 0.70), though the
-  half-food run, with a similar clade state, shows no drop at μ = 0.01.
+  against 18.5 and 18.1. Over 100k–300k at μ = 0.003 it sits at its own heritability null (10.6 against 10.9) and is
+  below that null in 3 of the 4 50k blocks. These ± are naive standard errors of overlapping blocks, so lower bounds.
+  The cause was not identified: the director run also has a different clade state from 100k (top clade 0.62 to 0.70),
+  though the half-food run, with a similar clade state, shows no drop at μ = 0.01.
 
 ### 5.6 Against the 2D evaluation (`docs/EVALUATION.md`)
 
@@ -556,13 +597,17 @@ Steps 400k–500k ([`results_3d_runs/bodies_endstate.csv`](results_3d_runs/bodie
 
 ![Largest body against population, hash-cell occupancy and contacts](results_3d_runs/bodies_vs_density.png)
 
-- **At equilibrium, total density does not set body size.** half/s0 over 400k–500k: population 0.629 (interval
-  0.599 to 0.658), largest body 1.13 (0.79 to 1.78), `frac_in_bodies_ge4` −0.027 (−0.041 to −0.012). s1/s0:
-  population 1.07 (1.01 to 1.12), largest body 4.9 (3.6 to 7.1), `frac_in_bodies_ge4` +0.069.
+- **The half-food control cannot show whether density sets body size.** half/s0 over 400k–500k (ratios of means; of
+  medians for the largest body; a difference for `frac_in_bodies_ge4`): population 0.628 (within-run bootstrap interval
+  0.599 to 0.658), largest body 1.11 (0.79 to 1.78), `frac_in_bodies_ge4` −0.025 (−0.041 to −0.012). s1/s0, under the
+  same conditions: population 1.07 (1.01 to 1.12), largest body 4.8 (3.6 to 7.1), `frac_in_bodies_ge4` +0.071. (The
+  bootstrap medians of these ratios are 1.13 and 4.9.) The seed gap in the largest body (ln 4.83 = 1.58) is 2.3 times a
+  halving (ln 2 = 0.69), and the intervals leave out the variance between trajectories (§2), so one half-food run cannot
+  detect a density effect of that size.
 - **Local density falls less than the population** (mean of the 400k, 450k and 500k checkpoints;
   [`results_3d_runs/bodies_density_endstate.csv`](results_3d_runs/bodies_density_endstate.csv)):
 
-  | run | agents per unit of floor area | agents per hash cell, as met by an agent | contacts closer than 3, per agent | agents in the floor layer |
+  | run | agents per unit of floor area | agents per hash cell, as met by an agent | contacts closer than 3, per agent | agents with `z` ≤ 5 |
   |---|---|---|---|---|
   | s0 | 0.414 | 3.97 | 1.29 | 9,601 |
   | s1 | 0.430 | 4.25 | 1.56 | 10,912 |
@@ -570,7 +615,8 @@ Steps 400k–500k ([`results_3d_runs/bodies_endstate.csv`](results_3d_runs/bodie
   | dir | 0.398 | 3.92 | 1.22 | 9,820 |
 
   Half food cuts the population by 37% but the occupancy an agent meets by 14% and its contacts by 16%, because the
-  population concentrates in the floor layer.
+  population concentrates in the floor layer. (The last column counts `z` ≤ 5; §4.1 counts the field's layer 0,
+  `z` < 4, where half food has 0.77× seed 0's agents.)
 - **Correlations.** Over 36 checkpoints (4 runs × 9, 100k–500k) the Spearman correlation of the largest body with
   the population is 0.35 (0.21 within runs), with the occupancy an agent meets 0.59 (0.53), and with contacts per
   agent 0.65 (0.45). `frac_in_bodies_ge4` correlates with contacts at 0.86 (0.93 within runs). The contacts are
@@ -580,19 +626,20 @@ Steps 400k–500k ([`results_3d_runs/bodies_endstate.csv`](results_3d_runs/bodie
   placed nearest-first among pairs closer than 3, gives a largest body of 0.87 (s0), 0.96 (s1), 0.81 (half) and 0.75
   (dir) of the observed (medians over 9 checkpoints). The probability of a bond given a contact closer than 3 is 0.72
   to 0.82 in all runs.
-- **A sudden cut has the opposite effect.** Within the director run, a 13% fall in population during a damper pulse
+- **A sudden cut shrinks the bodies.** Within the director run, a 13% fall in population during a damper pulse
   comes with a fall of about a quarter in the largest body (ratio of the mean log changes over the first 5,000 steps:
   2.35, interval 1.08 to 3.78). The pulse cannot separate a density effect from a direct food effect, such as the
   starvation of bonded agents.
-- **Reading.** A permanent 0.63× population did not shrink the bodies; a sudden 0.87× did, for 10,000 to 15,000
-  steps. The seed-to-seed spread is far larger than either. Crowding against bonding as the cause of body size is
-  still open.
+- **Reading.** At a permanent 0.63× population the half-food run's largest body is 1.11× seed 0's, inside the 4.8×
+  gap between the seeds: the control neither shows nor excludes a shrinking. A sudden 0.87× cut shrank the bodies
+  within one run, for 10,000 to 15,000 steps. Crowding against bonding as the cause of body size is still open.
 
 ### 6.4 Common structure
 
 - **Across all 40 checkpoints** (4 runs × 50k to 500k) the recomputed bodies equal the metrics rows' `bodies_*` keys,
   no body of 10 or more wraps the torus, and the three largest bodies at 250k, 400k and 500k are single-clade (one
-  of them, seed 1's largest at 250k, has one member of a second clade), with every bond inside the clade.
+  of them, seed 1's largest at 250k, has one member of a second clade), with every bond inside the clade except one
+  (seed 1, 250k).
 - **No coordination.** The velocity coherence of the largest body is 0.01 to 0.19 across runs and checkpoints, and
   the velocity cosine between bonded neighbours is 0.01 to 0.08 (unbonded contacts −0.01 to 0.04).
 - **Sheets.** Over bodies of 10 to 300 agents the radius of gyration scales with a dimension of about 2 in every run
@@ -609,9 +656,13 @@ Steps 400k–500k ([`results_3d_runs/bodies_endstate.csv`](results_3d_runs/bodie
 - **Bedau's class is not stable between runs.** The primary tallies (bounded / none / unbounded over 22 cells) are
   11/0/11 (s0), 8/0/14 (s1), 9/0/13 (half) and 8/1/13 (dir). The four runs disagree in 14 of 22 cells. The seed pair
   agrees in 0.68 of the cells; the other pairs agree in 0.55 to 0.73.
-- **New adaptive activity stays above both nulls.** `A^N_new` is positive in every 50k block of every window of every
-  run, in the cohort pools and in the marker spaces μ = 0.003, 0.01 and 0.03. At θ = 3,162 (run / neutral shadow /
-  heritability null; [`results_3d_runs/activity_rates.md`](results_3d_runs/activity_rates.md)):
+- **New adaptive activity is positive everywhere and mostly above both nulls.** `A^N_new` is positive in every 50k
+  block (176) of every window (72) of every run, in the cohort pools and in the marker spaces μ = 0.003, 0.01 and 0.03.
+  It is above both nulls in every window but one and in all blocks but four. The exceptions are the director run's
+  markers at μ = 0.003 over 100k–300k (10.6 against a heritability null of 10.9; below that null in 3 of its 4 50k
+  blocks, and below the neutral shadow too in 2) and seed 1's cohort pool with horizon 200k in 450k–500k (22.7 against
+  a neutral shadow of 23.9). At θ = 3,162 (run / neutral shadow / heritability null;
+  [`results_3d_runs/activity_rates.md`](results_3d_runs/activity_rates.md)):
 
   | space | window | s0 | s1 | half | dir |
   |---|---|---|---|---|---|
@@ -642,12 +693,13 @@ Steps 400k–500k ([`results_3d_runs/bodies_endstate.csv`](results_3d_runs/bodie
 ## 8. Caveats
 
 - **One run per condition.** Only s0 and s1 share a condition, and that pair is a single difference, not a variance.
-  It already differs by 1.4× in turnover, by 4.5× in the median largest body (4.9× over 400k–500k) and by 0.07 in
+  It already differs by 1.4× in turnover, by 4.5× in the median largest body (4.8× over 400k–500k) and by 0.07 in
   `frac_in_bodies_ge4`, so smaller differences between other runs are not attributable. For an exchangeable third
   replicate, the director run would lie outside [s0, s1] two thirds of the time.
 - **500,000 steps.** The mean generation at the end is 444 to 501 in the undirected runs (375 over the director
-  run's last 50k). Seed 1 is still rising, its autocorrelation time is about 5 times seed 0's, and the half-food
-  run's rates (not its population) drift after 350k.
+  run's last 50k). Seed 1 shifted upward between about 200k and 300k and has been level at 44,000 to 46,000 since;
+  its autocorrelation time, 73,800 steps, is about 5 times seed 0's because its series carries that shift, and the
+  half-food run's rates (not its population) drift after 350k.
 - **The pauses.** The director run was paused at step 249,394 and resumed: no decision was lost or repeated (§5.2),
   but equality with an uninterrupted run cannot be tested. The half-food run was paused at step 105,262; no
   discontinuity is visible, and the determinism of that resume was not re-tested.
@@ -683,10 +735,11 @@ Steps 400k–500k ([`results_3d_runs/bodies_endstate.csv`](results_3d_runs/bodie
 4. **A director evaluation in 3D, if wanted,** would follow `DIRECTOR.md` §9: forks from a common late checkpoint so
    the arms stay paired, two or more seeds, and the damper recalibrated first. This run shows only what the director
    does in 3D, not whether it helps.
-5. **Bodies.** The density control did not shrink the bodies at equilibrium, and the bodies are still contact
-   clusters held by bonds. The next tests are the bond reset and erase continuations on s1 (the giant floor sheet)
-   and the half-food run, and an arm with `combat.attack_bonded = true` to test the ceasefire reading directly.
-   A bodies goal still needs measures other than size.
+5. **Bodies.** The density control cannot say whether density sets body size (its largest body is 1.11× seed 0's against
+   a seed gap of 4.8×), and the bodies are still contact clusters held by bonds. The next tests are the bond reset and
+   erase continuations on s1 (the giant floor sheet) and the half-food run, and an arm with
+   `combat.attack_bonded = true` to test the ceasefire reading directly. A bodies goal still needs measures other than
+   size.
 6. **`regen_max` and `n_init` (owner).** Full food gives 1.25 to 1.35× the sizing aim at n = 2; the population's
    elasticity to regeneration is about 0.65 (half-food run and damper pulses alike). No result here requires a change.
 7. **Unchanged from `RESULTS_3D.md` §10:** the signal-information tools need a 3D port (emitters 0.86 to 0.88 at full
