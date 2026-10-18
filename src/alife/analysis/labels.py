@@ -28,9 +28,9 @@ horizon, where censoring is small; their censored fraction is reported.
 **The matched random label** is ``mi.perm_test``: ``x`` is permuted within strata (cohort × age quartile
 over the scored rows of the family), which keeps each stratum's prevalence, so a label that only tracks age
 or the cohort's phase scores like the random one. ``z`` and ``p`` are against that null, pooled and per
-cohort. The verdict is provisional (DESIGN §28.8): ``insufficient`` below 30 positives or negatives, ``pass``
-if ``p <= 0.01``, ``auc - null_mean >= 0.05`` and (intents) the label's coverage never exceeds 0.6, else
-``fail``.
+cohort. The verdict is provisional (DESIGN §28.8): ``insufficient`` below 30 positives or negatives or with
+fewer than 99 permutations (``p`` cannot reach 0.01), ``pass`` if ``p <= 0.01``, ``auc - null_mean >= 0.05``
+and (intents) the label's coverage never exceeds 0.6, else ``fail``.
 
 **Coverage and stability.** At every evaluation step after the warm-up the tool reads ``Observer.row_block()``
 and reports the mean and max share of each rule (``intent_match``, ``archetype_match``) and of each displayed
@@ -178,10 +178,22 @@ def _rng(seed: int, label: int, variant: int) -> np.random.Generator:
     return np.random.default_rng([seed, label, variant])
 
 
-def verdict(score: Mapping[str, Any], coverage_max: float | None = None, *, is_intent: bool = False) -> str:
-    """``insufficient`` / ``pass`` / ``fail`` of a pooled score (provisional criterion, DESIGN §28.8)."""
+def verdict(
+    score: Mapping[str, Any],
+    coverage_max: float | None = None,
+    *,
+    is_intent: bool = False,
+    n_perm: int | None = None,
+) -> str:
+    """``insufficient`` / ``pass`` / ``fail`` of a pooled score (provisional criterion, DESIGN §28.8).
+
+    ``n_perm`` is the number of permutations of the score's null, when known: ``p`` is at least
+    ``1/(1 + n_perm)``, so with fewer than ``1/P_MAX − 1`` of them no label can pass and the verdict is
+    ``insufficient``, not ``fail``."""
     n, n_pos = score["n"], score["n_pos"]
     if n_pos < MIN_CLASS or n - n_pos < MIN_CLASS or score["p"] is None or score["null_mean"] is None:
+        return "insufficient"
+    if n_perm is not None and 1.0 / (1 + n_perm) > P_MAX:
         return "insufficient"
     ok = score["p"] <= P_MAX and score["auc"] - score["null_mean"] >= MARGIN
     if is_intent and coverage_max is not None:
@@ -282,7 +294,7 @@ def score_archetypes(
                 x, y_primary, scored, cohort, quart, strata, steps, n_perm, seed, a.value, per_cohort=True
             )
             entry.update(pooled)
-            entry["verdict"] = verdict(pooled)
+            entry["verdict"] = verdict(pooled, n_perm=n_perm)
             entry["auc_complete"] = _score(
                 x[full], y_complete[full], strata[full], n_perm, _rng(seed, a.value, 1)
             )
@@ -370,8 +382,8 @@ def score_intents(
             "auc_label": a_label,
             "auc_rule": a_rule,
             "coverage_max": {"label": cov_label, "rule": cov_rule},
-            "verdict": verdict(a_label, cov_label, is_intent=True),
-            "verdict_rule": verdict(a_rule, cov_rule, is_intent=True),
+            "verdict": verdict(a_label, cov_label, is_intent=True, n_perm=n_perm),
+            "verdict_rule": verdict(a_rule, cov_rule, is_intent=True, n_perm=n_perm),
         }
     return out
 

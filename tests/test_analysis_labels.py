@@ -230,6 +230,10 @@ def test_score_is_none_for_a_single_class() -> None:
         (100, 50, 0.001, 0.9, 0.50, 0.6, True, "pass"),  # coverage at its limit
         (100, 50, 0.001, 0.9, 0.50, 0.61, True, "fail"),
         (100, 50, 0.001, 0.9, 0.50, 0.99, False, "pass"),  # archetypes have no coverage clause
+        # the margin is over the matched random label, not over 0.5
+        (100, 50, 0.001, 0.62, 0.60, None, False, "fail"),
+        (100, 50, 0.001, 0.62, 0.55, None, False, "pass"),
+        (100, 50, 0.001, 0.62, 0.57, None, False, "pass"),  # a margin of exactly 0.05
     ],
 )
 def test_verdict_thresholds(
@@ -237,6 +241,129 @@ def test_verdict_thresholds(
 ) -> None:
     s = {"n": n, "n_pos": n_pos, "auc": auc, "null_mean": null, "null_sd": 0.05, "z": 5.0, "p": p}
     assert labels.verdict(s, cov, is_intent=intent) == want
+
+
+@pytest.mark.parametrize(
+    ("n_perm", "want"),
+    [
+        (10, "insufficient"),
+        (50, "insufficient"),
+        (98, "insufficient"),
+        (99, "pass"),
+        (200, "pass"),
+        (None, "pass"),
+    ],
+)
+def test_too_few_permutations_cannot_judge_a_label(n_perm: int | None, want: str) -> None:
+    """p >= 1/(1 + n_perm) > 0.01 below 99 permutations: a perfectly separating label would otherwise be
+    reported as a failure (and dropped from the UI) by a quick calibration."""
+    x = np.r_[np.ones(100, bool), np.zeros(100, bool)]
+    y = np.r_[np.ones(100), np.zeros(100)]
+    n_perm_run = 99 if n_perm is None else n_perm
+    s = labels._score(x, y, np.zeros(200, int), n_perm_run, np.random.default_rng(1))
+    assert s["auc"] == 1.0 and s["p"] == pytest.approx(1 / (1 + n_perm_run))
+    assert labels.verdict(s, n_perm=n_perm) == want
+    # and through the scoring function, which knows its n_perm (ages interleave the classes: the strata
+    # hold both, and the label separates the outcome inside each of them)
+    pos = np.arange(200) % 2 == 0
+    zero = np.zeros(200, np.int64)
+    tab = {
+        "cohort": zero,
+        "age": np.arange(200),
+        "primary": zero,
+        "match": np.where(pos, 1 << (Archetype.GATHERER.value - 1), 0),
+        "n_ok": np.full(200, 100),
+        "rg2_min": np.zeros(200),
+        "rg2_full": np.zeros(200),
+        "harvest": np.where(pos, 5000, 100),
+        "attack": zero,
+        "out": zero,
+        "got": zero,
+    }
+    g = labels.score_archetypes(tab, arch_horizon=100, arch_min_obs=20, n_perm=n_perm_run, seed=0)["gatherer"]
+    assert g["auc"] == 1.0 and g["verdict"] == (want if n_perm is not None else "pass")
+
+
+# --- the matched random label inside the scoring functions -----------------------------------------------
+
+AGE_PREVALENCE = np.array([0.1, 0.3, 0.6, 0.9])  # the label's prevalence in each age quartile
+DEFENDING_BIT = 1 << (Intent.DEFENDING.value - 1)
+
+
+def _age_confounded(effect: float, n: int = 4000, seed: int = 0) -> tuple[dict[str, Any], dict[str, Any]]:
+    """An archetype table (Gatherer) and an intent table (Defending) with two cohorts, in which the label's
+    prevalence and the outcome both rise with the age quartile and, by ``effect``, with the label itself.
+    The quartiles are exact (four age bands of n/4 rows), half the rows are censored whatever their age."""
+    rng = np.random.default_rng(seed)
+    cohort = rng.integers(0, 2, n)
+    q = rng.permutation(np.tile(np.arange(4), n // 4))
+    age = q * 1000 + rng.integers(0, 100, n)
+    x = rng.random(n) < AGE_PREVALENCE[q]
+    rate = (q * 10 + effect * x + rng.normal(0, 2, n)).clip(0)
+    n_ok = np.where(rng.random(n) < 0.5, 100, 50)
+    zero = np.zeros(n, np.int64)
+    arch = {
+        "cohort": cohort,
+        "age": age,
+        "primary": np.where(x, Archetype.GATHERER.value, Archetype.GENERALIST.value),
+        "match": np.where(x, 1 << (Archetype.GATHERER.value - 1), 0),
+        "n_ok": n_ok,
+        "rg2_min": np.zeros(n),
+        "rg2_full": np.zeros(n),
+        "harvest": np.round(rate * n_ok).astype(np.int64),  # totals: the rate over the observed steps
+        "attack": zero,
+        "out": zero,
+        "got": zero,
+    }
+    intent = {
+        "cohort": cohort,
+        "age": age,
+        "label": np.where(x, Intent.DEFENDING.value, Intent.RESTING.value),
+        "match": EVAL_BIT | np.where(x, DEFENDING_BIT, 1 << (Intent.RESTING.value - 1)),
+        "complete": np.ones(n, bool),
+        **{k: zero for k in ("bud", "attack", "formed", "thrust", "emit", "harvest", "care")},
+        "defend": np.round(rate * 10).astype(np.int64),
+    }
+    return arch, intent
+
+
+def _scores_of(arch: dict[str, Any], intent: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Every score the two scoring functions compute for the one label, by name."""
+    g = labels.score_archetypes(arch, arch_horizon=100, arch_min_obs=20, n_perm=200, seed=0)["gatherer"]
+    d = labels.score_intents(intent, n_perm=200, seed=0, intent_horizon=10)["defending"]
+    named = {
+        "arch pooled": g,
+        "arch complete": g["auc_complete"],
+        "arch survived": g["auc_survived"],
+        "arch censored": g["auc_censored"],
+        "intent label": d["auc_label"],
+        "intent rule": d["auc_rule"],
+    }
+    for name, s in (("arch", g), ("intent label", d["auc_label"]), ("intent rule", d["auc_rule"])):
+        assert len(s["per_cohort"]) == 2
+        named.update({f"{name} cohort {i}": c for i, c in enumerate(s["per_cohort"])})
+    return named
+
+
+def test_every_score_is_against_the_age_matched_random_label() -> None:
+    """A label that only tracks the age quartile scores like the random label on every score the tools
+    compute: pooled, per cohort, complete cases, survivors and censored, archetype and intent. Against an
+    unstratified null (the permutation over all rows) the same table gives a high AUC over a null of 0.5."""
+    arch, intent = _age_confounded(effect=0.0)
+    assert labels.auc(arch["match"] > 0, arch["harvest"] / arch["n_ok"]) > 0.8  # the naive AUC is high
+    for name, s in _scores_of(arch, intent).items():
+        assert s["auc"] is not None and abs(s["auc"] - s["null_mean"]) < 0.03, (name, s)
+        assert labels.verdict(s, n_perm=200) != "pass", name
+
+
+def test_a_real_effect_inside_the_age_strata_passes() -> None:
+    """The control: the same table with the outcome raised by the label itself passes everywhere."""
+    arch, intent = _age_confounded(effect=6.0)
+    scores = _scores_of(arch, intent)
+    for name, s in scores.items():
+        assert s["auc"] - s["null_mean"] >= 0.05 and s["p"] <= 0.01, (name, s)
+    for name in ("arch pooled", "intent label", "intent rule"):
+        assert labels.verdict(scores[name], n_perm=200) == "pass", name
 
 
 # --- exposure-normalised archetype scoring -----------------------------------------------------------------

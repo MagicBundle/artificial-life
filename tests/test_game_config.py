@@ -148,6 +148,14 @@ def test_resume_rejects_other_game_keys(
     assert [st for st, _ in RunDir.open(small_run).checkpoints()] == [0, 30]
 
 
+def test_resume_help_names_the_game_key(capsys: pytest.CaptureFixture[str]) -> None:
+    """``--set`` of ``resume`` advertises every section it accepts (run, director and game.observe)."""
+    capsys.readouterr()
+    assert cli.main(["resume", "--help"]) == 0  # main turns argparse's SystemExit(0) into a return code
+    text = " ".join(capsys.readouterr().out.split())
+    assert "run.KEY=VALUE|director.KEY=VALUE|game.observe=BOOL" in text
+
+
 def test_fork_can_set_observe(small_run: Path, tmp_path: Path) -> None:
     out = tmp_path / "fork"
     argv = ["run", "--init-from", f"{small_run}:30", "--out", str(out), "--steps", "0", "--quiet"]

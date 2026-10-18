@@ -7,12 +7,17 @@ every step: 2D and 3D, compiled and eager, float32 and float16 weights, the dire
 on. The runner-level tests check the same through ``runner.run`` and the CLI: the run files and the director
 log of an observing run equal those of a run without observers, except the ``observers`` additions. This is an
 empirical gate (the channel reads only arrays that are already kernel boundaries, or integers, §28.7); it
-runs on the CPU in the suite and on Metal before merge.
+runs on the CPU in the suite and on Metal before merge. The value tests cannot see a regrouping of the fused
+float kernels that leaves every value unchanged (it can change Metal's rounding), so a structural test pins
+the channel's read set on the traced graph: which trajectory arrays the channel reads, and that S12 is
+computed once (§28.2).
 """
 
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Callable
 from pathlib import Path
 
 import mlx.core as mx
@@ -20,7 +25,8 @@ import numpy as np
 import pytest
 from mlx.utils import tree_flatten
 
-from alife import cli, runner
+from alife import actions, bonds, cli, energy, lifecycle, runner
+from alife import step as step_mod
 from alife.config import Config, apply_overrides, load_config
 from alife.game.observe import EVAL_BIT, ObsIn, obs_in
 from alife.game.observer import Observer
@@ -124,6 +130,170 @@ def test_observer_inputs_exclude_the_key() -> None:
     s = init_state(load_config(preset="tiny", overrides=["brain.weight_dtype=float32"]))
     oi = obs_in(s)
     assert all(a is getattr(s, f) for f, a in zip(ObsIn._fields, oi, strict=True))
+
+
+# --- the channel's read set, structurally -------------------------------------------------------------------
+
+# The trajectory arrays the observer channel may read (§28.2): the decode thrust before S8 (it also feeds the
+# cost term), the post-S8 defend and emit (inputs of the S11 gather and of the S17 deposit), the solvency
+# mask, the lane kind and parent, the S11 attack, hit and gain, the S9 formed bits and the S12 slot flows.
+CHANNEL_TAPS = frozenset(
+    {
+        "thrust0", "defend_post", "emit_post", "solvent", "lanes_kind", "lanes_parent",
+        "cb_attack", "cb_hit", "cb_gain", "formed", "sl_out", "sl_got",
+    }
+)  # fmt: skip
+
+_DOT_PRIM = re.compile(r'\{ (\d+) \[label ="[^"]+"')
+_DOT_IN = re.compile(r'"([^"]+)" -> (\d+)$')
+_DOT_OUT = re.compile(r'(\d+) -> "([^"]+)"$')
+
+
+def _parse_dot(path: Path) -> tuple[set[str], dict[str, str], dict[str, list[str]]]:
+    """Primitive ids, the producer primitive of every array name, and the input array names of every
+    primitive, from an ``mx.export_to_dot`` file. Primitive ids are object addresses: they agree across two
+    exports made in the same process, which is what the comparison below relies on."""
+    prims: set[str] = set()
+    producer: dict[str, str] = {}
+    inputs: dict[str, list[str]] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if m := _DOT_PRIM.match(line):
+            prims.add(m.group(1))
+        elif m := _DOT_IN.match(line):
+            inputs.setdefault(m.group(2), []).append(m.group(1))
+        elif m := _DOT_OUT.match(line):
+            producer[m.group(2)] = m.group(1)
+    return prims, producer, inputs
+
+
+def _channel_taps(
+    cfg: Config,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutate: Callable[[pytest.MonkeyPatch], None] | None = None,
+) -> tuple[set[str], list[str], int]:
+    """Trace ``step(s, cfg, observe=True)`` eagerly (lazy, nothing is evaluated) and find the channel's taps.
+
+    A tap is an array produced by a primitive of the trajectory graph (the new state and ``out.base()``) that
+    the channel reads: an input of a primitive only the channel uses, or a channel output itself. Returns the
+    names of the allowed taps found, the auto-assigned names of any other tap, and the number of
+    ``share_slots`` calls. The allowed arrays are captured by wrapping the sub-step functions and named
+    through the keyword arguments of ``export_to_dot``. ``mutate`` installs a deliberate break after the
+    wrappers (the meta-tests).
+    """
+    cap: dict = {"sl_all": []}
+    real = (
+        actions.mask, energy.pay_costs, energy.pay_costs3, energy.combat, energy.share_slots,
+        bonds.form_bonds, lifecycle.allocate_lanes,
+    )  # fmt: skip
+    r_mask, r_pay, r_pay3, r_combat, r_share, r_form, r_lanes = real
+
+    def mask(act, keep):
+        out = r_mask(act, keep)
+        if isinstance(act, actions.Actions):  # the 3D motion mask is a different type
+            cap["pre"], cap["post"] = act, out
+        return out
+
+    def keep(name: str, fn):
+        def wrapped(*a, **k):
+            cap[name] = fn(*a, **k)
+            return cap[name]
+
+        return wrapped
+
+    def share_slots(*a, **k):
+        cap["sl_all"].append(r_share(*a, **k))
+        return cap["sl_all"][-1]
+
+    monkeypatch.setattr(actions, "mask", mask)
+    monkeypatch.setattr(energy, "pay_costs", keep("c", r_pay))
+    monkeypatch.setattr(energy, "pay_costs3", keep("c", r_pay3))
+    monkeypatch.setattr(energy, "combat", keep("cb", r_combat))
+    monkeypatch.setattr(energy, "share_slots", share_slots)
+    monkeypatch.setattr(bonds, "form_bonds", keep("fb", r_form))
+    monkeypatch.setattr(lifecycle, "allocate_lanes", keep("lanes", r_lanes))
+    if mutate is not None:
+        mutate(monkeypatch)
+    s = init_state(cfg)
+    mx.eval(s)
+    s1, out = step_mod.step(s, cfg, observe=True)
+    monkeypatch.undo()  # also undoes the mutation; the traced graph is complete
+    sl = cap["sl_all"][0]
+    allowed = {
+        "thrust0": cap["pre"].thrust,
+        "defend_post": cap["post"].defend,
+        "emit_post": cap["post"].emit,
+        "solvent": cap["c"].solvent,
+        "lanes_kind": cap["lanes"].kind,
+        "lanes_parent": cap["lanes"].parent,
+        "cb_attack": cap["cb"].attack,
+        "cb_hit": cap["cb"].hit,
+        "cb_gain": cap["cb"].gain,
+        "formed": cap["fb"][2],
+        "sl_out": sl.out,
+        "sl_got": sl.got,
+    }
+    trajectory = [v for _, v in tree_flatten((s1, out.base()))]
+    f_traj, f_acts = tmp_path / "trajectory.dot", tmp_path / "acts.dot"
+    mx.export_to_dot(str(f_traj), *trajectory)
+    mx.export_to_dot(str(f_acts), *out.acts, **allowed)
+    p_traj, _, _ = _parse_dot(f_traj)
+    p_acts, producer, inputs = _parse_dot(f_acts)
+    taps: set[str] = set()
+    for prim in p_acts - p_traj:  # primitives only the channel uses
+        taps.update(a for a in inputs.get(prim, []) if producer.get(a) in p_traj)
+    taps.update(a for a, prim in producer.items() if prim in p_traj and a in allowed)  # outputs read directly
+    return {t for t in taps if t in allowed}, sorted(t for t in taps if t not in allowed), len(cap["sl_all"])
+
+
+CHANNEL_CONFIGS = [
+    pytest.param("tiny", ["brain.weight_dtype=float32"], id="tiny-f32"),
+    pytest.param("tiny", ["director.enabled=true"], id="tiny-f16-director"),
+    pytest.param("tiny3d", ["brain.weight_dtype=float32"], id="tiny3d-f32"),
+]
+
+
+@pytest.mark.parametrize(("preset", "overrides"), CHANNEL_CONFIGS)
+def test_channel_reads_only_the_allowed_arrays(
+    preset: str, overrides: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """§28.2: S12 is computed once, and the channel reads no float array of the trajectory beyond the pre-S8
+    thrust, the post-S8 defend and emit and the integer and boolean flows. A reader of anything else (for
+    example the post-S8 float thrust) or a second S12 would add a consumer to a fused float chain, which can
+    change the compiled step's rounding on Metal while leaving every value of the CPU tests unchanged."""
+    taps, unnamed, n_share = _channel_taps(
+        load_config(preset=preset, overrides=overrides), monkeypatch, tmp_path
+    )
+    assert n_share == 1, f"share_slots was called {n_share} times"
+    assert not unnamed, f"the channel reads {len(unnamed)} unlisted trajectory arrays: {unnamed}"
+    assert taps == CHANNEL_TAPS  # all of them are read, so the probe is not vacuous
+
+
+def _thrust_after_the_mask(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutant: the channel reads the post-S8 float thrust (same values, a new consumer of a fused chain)."""
+    orig = step_mod._acts
+    monkeypatch.setattr(step_mod, "_acts", lambda f, sl, thrust0, cfg: orig(f, sl, f.act.thrust, cfg))
+
+
+def _second_share(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutant: S12 is computed twice (the same values; a second consumer of every float node of the share)."""
+    once = energy.share_slots
+
+    def twice(*a, **k):
+        once(*a, **k)
+        return once(*a, **k)
+
+    monkeypatch.setattr(energy, "share_slots", twice)
+
+
+@pytest.mark.parametrize("mutant", [_thrust_after_the_mask, _second_share], ids=["post-S8-thrust", "2nd-S12"])
+def test_the_structural_probe_catches_value_neutral_breaks(
+    mutant: Callable[[pytest.MonkeyPatch], None], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Both mutants leave every value, and so every other test of this file, unchanged on the CPU."""
+    _, unnamed, n_share = _channel_taps(load_config(preset="tiny"), monkeypatch, tmp_path, mutate=mutant)
+    assert unnamed or n_share != 1
 
 
 # --- through the runner and the CLI -------------------------------------------------------------------------

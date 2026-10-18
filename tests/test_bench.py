@@ -74,7 +74,7 @@ def test_minimal_report_and_validation(micro_cfg: Config) -> None:
 
 
 def test_observers_block(tiny_cfg: Config) -> None:
-    """``observe=True`` adds the observers' cost against the plain step, as interleaved blocks."""
+    """``observe=True`` adds the observers' cost against the plain step, as blocks in the order C O O C."""
     r = run_bench(tiny_cfg, steps=3, warmup=1, observe=True)
     json.dumps(r, allow_nan=False)
     ob = r["observe"]
@@ -121,6 +121,30 @@ def test_observers_block_runs_the_observer_in_every_step(
     ob = bench._bench_observe(tiny_cfg, 2, 1)  # warm-up 8 (rules.every), 1 timed step per block
     assert ob["warmup"] == 8
     assert seen == [*range(1, 10), *range(1, 10)]  # two observed blocks, each from a fresh observer
+
+
+def test_observers_blocks_run_control_observed_observed_control(
+    tiny_cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C O O C, not C O C O: with a drift linear in time the observed blocks of the second order sit on
+    average one block later than the control blocks, which biases the overhead by one block's drift."""
+    from alife.game.observer import Observer
+
+    order: list[str] = []
+    real_init, real_fresh = bench.init_state, Observer.fresh
+
+    def init_spy(cfg: Config):
+        order.append("control")  # every block starts from init_state; an observed one renames it below
+        return real_init(cfg)
+
+    def fresh_spy(state, cfg: Config, **kw):
+        order[-1] = "observed"
+        return real_fresh(state, cfg, **kw)
+
+    monkeypatch.setattr(bench, "init_state", init_spy)
+    monkeypatch.setattr(Observer, "fresh", staticmethod(fresh_spy))
+    ob = bench._bench_observe(tiny_cfg, 2, 1)
+    assert order == ["control", "observed", "observed", "control"] and ob["block_pairs"] == 2
 
 
 def test_observers_block_sees_a_changed_trajectory(tiny_cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:

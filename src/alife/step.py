@@ -2,7 +2,8 @@
 
 ``step`` wires the sub-steps S0–S18 in the normative order of §3; ``_finish`` (S18) assembles the exact
 ledger, the per-step counters (including the kin counters) and the diag bits. There are no host syncs and no
-Python branches on array values: the only branches are on config constants.
+Python branches on array values: the only branches are on config constants and on the static ``observe``
+argument of ``step`` / ``make_step`` (the observer channel, §28.2).
 """
 
 from __future__ import annotations
@@ -74,7 +75,7 @@ class Acts(NamedTuple):
     flags: mx.array  # (N,) uint8: ActFlag bits
     thrust: mx.array  # (N,) int16: round(256·act.thrust) of the post-S8 actions
     defend: mx.array  # (N,) int16: round(256·act.defend) of the post-S8 actions
-    emit: mx.array  # (N,) int16: Σ_c floor(256·act.emit_c), the S17 deposit quanta, in [0, 765]
+    emit: mx.array  # (N,) int16: Σ_c floor(256·act.emit_c), the S17 deposit quanta, in [0, 768]
 
 
 class StepOutG(NamedTuple):

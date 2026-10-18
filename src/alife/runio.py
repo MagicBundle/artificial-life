@@ -489,10 +489,17 @@ class RunDir:
         if not path.is_file():
             return None
         try:
-            with np.load(path, allow_pickle=False) as z:
-                return {k: z[k] for k in z.files}
+            z = np.load(path, allow_pickle=False)
+            if not isinstance(z, np.lib.npyio.NpzFile):  # a bare .npy (an ndarray), not an archive
+                raise ValueError("not an npz archive")
+            with z:
+                arrays = {k: z[k] for k in z.files}  # a member that is not an .npy comes back as bytes
         except (OSError, ValueError, EOFError, zipfile.BadZipFile, zlib.error) as e:
             raise CheckpointError(f"{path}: unreadable observer sidecar: {e}") from e
+        bad = sorted(k for k, a in arrays.items() if not isinstance(a, np.ndarray))
+        if bad:
+            raise CheckpointError(f"{path}: unreadable observer sidecar: members {bad} are not arrays")
+        return arrays
 
     def checkpoints(self) -> list[tuple[int, Path]]:
         """Complete checkpoints as ``(step, path)``, ascending by step."""

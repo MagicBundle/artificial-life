@@ -103,6 +103,59 @@ def test_ruleset_check_bounds_int32(preset: str) -> None:
         RuleSet(intent_k=13).check(top)
 
 
+INT32_MAX = (1 << 31) - 1
+
+
+def _income_max(cfg: Config) -> int:
+    return cfg.energy.harvest_max + cfg.combat.attack_max + B * cfg.bonds.share_rate
+
+
+@pytest.mark.parametrize("preset", ["tiny", "64k3d"])
+def test_ruleset_check_bounds_the_ratios(preset: str) -> None:
+    """The ratio tests ``den·x >= num·y`` run in int32: a sweep RuleSet with large integers is refused (the
+    same ratios as v1, scaled by 10^5, wrapped and mislabelled a Gatherer as not one)."""
+    cfg = load_config(preset=preset)
+    with pytest.raises(ValueError, match=r"ratio gatherer = \(700000, 1000000\)"):
+        RuleSet(gatherer=(700000, 1000000), provider=(100000, 500000)).check(cfg)
+    RuleSet(gatherer=(70, 100), provider=(10, 50)).check(cfg)  # the same ratios, small
+    flow = B * cfg.bonds.share_rate
+    largest_mean = {  # the largest compared mean of each int32 ratio test
+        "gatherer": _income_max(cfg),
+        "hunter": _income_max(cfg),
+        "provider": _income_max(cfg),
+        "trader": cfg.bonds.share_rate,
+        "care": max(flow, cfg.energy.harvest_max),
+        "feed": cfg.energy.harvest_max,
+    }
+    for name, x in largest_mean.items():
+        limit = INT32_MAX // x
+        dataclasses.replace(RULES_V1, **{name: (limit, 1)}).check(cfg)  # max(num, den)·X <= 2^31 − 1
+        dataclasses.replace(RULES_V1, **{name: (1, limit)}).check(cfg)
+        for pair in ((limit + 1, 1), (1, limit + 1)):  # numerator and denominator are both bounded
+            with pytest.raises(ValueError, match=f"ratio {name} = "):
+                dataclasses.replace(RULES_V1, **{name: pair}).check(cfg)
+    # Roaming compares den·thrust (thrust <= 256) with the numerator itself
+    dataclasses.replace(RULES_V1, roam=(INT32_MAX, 10)).check(cfg)
+    dataclasses.replace(RULES_V1, roam=(768, (1 << 23) - 1)).check(cfg)
+    with pytest.raises(ValueError, match=r"ratio roam = "):
+        dataclasses.replace(RULES_V1, roam=(1 << 31, 10)).check(cfg)
+    with pytest.raises(ValueError, match=r"ratio roam = "):
+        dataclasses.replace(RULES_V1, roam=(768, 1 << 23)).check(cfg)  # 2^23·256 = 2^31
+
+
+def test_ratio_at_the_check_limit_does_not_wrap() -> None:
+    """The largest ratio ``check`` accepts compares correctly at the largest mean (no int32 wrap)."""
+    cfg = load_config(preset="tiny")
+    x = _income_max(cfg)
+    den = INT32_MAX // x
+    rs = dataclasses.replace(RULES_V1, gatherer=(den - 1, den))
+    rs.check(cfg)
+    m6 = _m6(2, harvest=x)  # all income is harvest: den·x >= (den − 1)·x
+    assert bool(np_(rules.archetype_matches(m6, mx.zeros((1, B, 2), mx.int32), cfg, rs))[0, 0])
+    with pytest.raises(ValueError, match="ratio gatherer"):
+        dataclasses.replace(RULES_V1, gatherer=(den, den + 1)).check(cfg)
+
+
 def test_ruleset_check_names_the_intent_column() -> None:
     with pytest.raises(ValueError, match=r"intent\.harvest.*k = 20"):
         RuleSet(intent_k=20).check(_with_limits("tiny", (1 << 16) - 1))
@@ -227,6 +280,9 @@ def test_archetype_priority_and_secondary() -> None:
     assert one("provider", "gatherer") == (names["provider"], names["gatherer"])
     assert one("hunter", "gatherer") == (names["hunter"], names["gatherer"])  # income before movement
     assert one("gatherer", "settler") == (names["gatherer"], names["settler"])
+    assert one("provider", "hunter") == (names["provider"], names["hunter"])
+    assert one("gatherer", "nomad") == (names["gatherer"], names["nomad"])
+    assert one("nomad", "settler") == (names["nomad"], names["settler"])
     assert one("nomad") == (names["nomad"], 0)
     # no rule matched: Generalist, with no secondary
     assert one() == (names["generalist"], 0)
@@ -474,6 +530,15 @@ def test_archetype_names_and_priority_are_consistent() -> None:
     assert intents == INTENT_NAMES
     assert [a.value for a in Archetype] == list(range(8)) and [i.value for i in Intent] == list(range(11))
     assert sorted(a.value for a in ARCH_PRIORITY) == [1, 2, 3, 4, 5, 6]
+    # the order is part of INTENT_VERSION 1 but not of RuleSet.digest(): it is pinned here as a literal
+    assert ARCH_PRIORITY == (
+        Archetype.TRADER,
+        Archetype.PROVIDER,
+        Archetype.HUNTER,
+        Archetype.GATHERER,
+        Archetype.NOMAD,
+        Archetype.SETTLER,
+    )
     assert ARCH_PRIORITY.index(Archetype.TRADER) < ARCH_PRIORITY.index(Archetype.PROVIDER)
     assert VQ_MAX == 1 << 15 and n_arch_cols(2) == 9 and n_arch_cols(3) == 11
     assert dims(load_config(preset="tiny3d")).nd == 3

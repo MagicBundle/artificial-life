@@ -62,8 +62,8 @@ from alife.state import DeathCause, State, State3, agent_fields, default_env, in
 from alife.step import make_step
 
 # run.* keys that resume may change: observers, cadences and the director mode (§18). Everything else goes
-# through a fork. The director's policy keys (director.persona, ...) may change too: they never reach the
-# compiled step.
+# through a fork. The director's policy keys (director.persona, ...) and game.observe (RESUME_GAME_KEYS) may
+# change too: they never reach the trajectory.
 RESUME_KEYS: frozenset[str] = frozenset(
     {
         "steps",
@@ -983,7 +983,12 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--steps", type=_non_negative, default=None)
     g.add_argument("--until", type=_non_negative, default=None, metavar="STEP")
     p.add_argument("--checkpoint", type=_checkpoint_arg, default=None, metavar="STEP|latest")
-    p.add_argument("--set", action="append", default=[], metavar="run.KEY=VALUE|director.KEY=VALUE")
+    p.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="run.KEY=VALUE|director.KEY=VALUE|game.observe=BOOL",
+    )
     p.add_argument(
         "--director",
         choices=DIRECTOR_MODES,

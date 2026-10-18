@@ -11,9 +11,10 @@ import numpy as np
 import pytest
 from mlx.utils import tree_flatten
 
-from alife import actions, energy, layout, ops
+from alife import actions, brain, energy, layout, ops
 from alife.actions import Actions
 from alife.config import Config, apply_overrides, dims
+from alife.game.rules import RULES_V1
 from alife.state import CounterIdx as C
 from alife.state import LedgerIdx as L
 from alife.state import State, init_state, to_numpy
@@ -121,6 +122,19 @@ def _arm(name: str, tiny_cfg: Config, tiny3d_cfg: Config) -> tuple[Config, dict[
     }[name]
 
 
+STARVE_AT = (0, 20)  # steps at which a few rows are made insolvent (energy 0 cannot pay the basal cost)
+N_STARVED = 4
+
+
+def _starve(s: State) -> tuple[State, np.ndarray]:
+    """``s`` with the energy of its first ``N_STARVED`` alive rows set to 0, and their indexes. The solvency
+    mask of the thrust, defend and emit (S8) is then exercised on purpose in every arm, not by chance."""
+    rows = np.flatnonzero(_np(s.alive))[:N_STARVED]
+    energy_ = _np(s.energy).copy()
+    energy_[rows] = 0
+    return s._replace(energy=mx.array(energy_)), rows
+
+
 @pytest.mark.parametrize("arm", ["2d", "3d", "biased", "immigration"])
 def test_acts_match_the_ledger_and_counters(arm: str, tiny_cfg: Config, tiny3d_cfg: Config) -> None:
     cfg, bias = _arm(arm, tiny_cfg, tiny3d_cfg)
@@ -128,8 +142,11 @@ def test_acts_match_the_ledger_and_counters(arm: str, tiny_cfg: Config, tiny3d_c
     if bias:
         s = set_output_bias(s, cfg, bias)
     fn = make_step(cfg, observe=True)
-    seen = dict.fromkeys(("attack", "hit", "formed", "bud", "imm", "both", "share", "emit"), 0)
+    seen = dict.fromkeys(("attack", "hit", "formed", "bud", "imm", "both", "share", "emit", "insolvent"), 0)
     for t in range(STEPS):
+        starved = np.array([], np.int64)
+        if t in STARVE_AT:
+            s, starved = _starve(s)
         prev = s
         s, out = fn(prev)
         mx.eval(s, out)
@@ -156,7 +173,11 @@ def test_acts_match_the_ledger_and_counters(arm: str, tiny_cfg: Config, tiny3d_c
         thrust, defend, emit = (_np(x).astype(np.int64) for x in (a.thrust, a.defend, a.emit))
         assert thrust.min() >= -256 and thrust.max() <= 256, where
         assert defend.min() >= 0 and defend.max() <= 256, where
-        assert emit.min() >= 0 and emit.max() <= 765, where
+        assert emit.min() >= 0 and emit.max() <= 768, where  # 3 channels × floor(256·1.0)
+        # an insolvent row acts as nothing: its thrust, defend and emit are masked (S8), whatever it decoded
+        assert c[C.INSOLVENT] >= len(starved), where
+        for x in (a.thrust, a.defend, a.emit, a.attack_gain, a.share_out, a.flags):
+            assert not _np(x)[starved].any(), where
         # every act is zero on rows dead at the step's start
         dead0 = ~alive0
         for x in (a.attack_gain, a.share_out, a.share_got, a.flags, a.thrust, a.defend, a.emit):
@@ -169,12 +190,38 @@ def test_acts_match_the_ledger_and_counters(arm: str, tiny_cfg: Config, tiny3d_c
         seen["both"] += int(c[C.BIRTHS] > 0 and c[C.IMMIGRANTS] > 0)
         seen["share"] += int(led[L.FLOW_SHARED] > 0)
         seen["emit"] += c[C.EMITTERS]
+        seen["insolvent"] += c[C.INSOLVENT]
     # the arm exercises what it checks: every act fires, and the immigration arm has both lane kinds at once
-    for k in ("attack", "hit", "formed", "bud", "share", "emit"):
+    for k in ("attack", "hit", "formed", "bud", "share", "emit", "insolvent"):
         assert seen[k] > 0, (arm, k)
     assert (seen["imm"] > 0) == (arm == "immigration")
     if arm == "immigration":
         assert seen["both"] > 0
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float16"])
+def test_emit_reaches_its_upper_bound(dtype: str, tiny_cfg: Config) -> None:
+    """``tanh`` reaches exactly 1.0 in float32 and ``floor(256·1.0) = 256``, so ``emit`` is bounded by 768,
+    not 765: weights within ``weight_clip`` can drive every hidden unit and every emit output to saturation.
+    The rule set's int32 check uses that bound."""
+    cfg = apply_overrides(tiny_cfg, [f"brain.weight_dtype={dtype}"])
+    d, clip = dims(cfg), cfg.brain.weight_clip
+    s = init_state(cfg)
+    alive = _np(s.alive)
+    w1, w2 = (_np(w).astype(np.float32) for w in (s.W1, s.W2))
+    w1[alive, layout.IN_BIAS, :] = clip  # every hidden unit gets +clip from the constant input
+    for c in range(layout.NCH):
+        w2[alive, :, layout.OUT_EMIT + c] = clip  # y_emit = clip·(Σ_j h_j + 1), far past tanh's saturation
+    W1, W2 = mx.array(w1).astype(d.wdtype), mx.array(w2).astype(d.wdtype)
+    cost = brain.l1_cost(W1, W2, cfg)
+    s = s._replace(W1=W1, W2=W2, brain_cost=mx.where(s.alive, cost, s.brain_cost))
+    s1, out = make_step(cfg, observe=True)(s)
+    mx.eval(s1, out)
+    emit = _np(out.acts.emit).astype(np.int64)
+    assert emit.max() <= layout.NCH * 256
+    assert ON_GPU or (emit[alive] == layout.NCH * 256).all()  # on the CPU every living row saturates
+    assert emit.max() > layout.NCH * 255  # past the old bound 765
+    RULES_V1.check(cfg)  # the accumulator bound of the emit column is NCH·256
 
 
 # --- share_slots / share_from_slots (S12) ------------------------------------------------------------------

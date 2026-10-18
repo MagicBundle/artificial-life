@@ -180,6 +180,8 @@ class Observer:
         for f, ref in zip(ObsState._fields, self.o, strict=True):
             a = arrays[f]
             shape, dtype = tuple(ref.shape), _NP_DTYPE[ref.dtype]
+            if not isinstance(a, np.ndarray):
+                return None, f"array {f!r} is not an array"
             if a.shape != shape or a.dtype != dtype:
                 return None, f"array {f!r} is {a.dtype} {a.shape}, expected {dtype} {shape}"
         if not np.array_equal(arrays["uid"], to_numpy(self.o.uid)):

@@ -14,8 +14,8 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
 - **Determinism** (``determinism``): two runs of ``steps`` steps from ``init_state`` compare state digests.
 - **Brain variants** (``brain_variants``): ``brain.forward`` timed for every ``impl`` × ``weight_dtype``.
 - **Observers** (``observe``, §28): the step with the game observers (``make_step(observe=True)`` and
-  ``Observer.update``, evaluations included) against the plain step, as interleaved blocks of the runner's own
-  loop, with a check that the trajectories are bitwise equal.
+  ``Observer.update``, evaluations included) against the plain step, as blocks (control, observed, observed,
+  control) of the runner's own loop, with a check that the trajectories are bitwise equal.
 """
 
 from __future__ import annotations
@@ -272,7 +272,7 @@ def _determinism(fn: Callable[[State], Any], cfg: Config, steps: int) -> dict[st
 
 # --- observers ------------------------------------------------------------------------------------------
 
-OBSERVE_BLOCKS: Final = 2  # control/observed block pairs, interleaved to cancel thermal drift
+OBSERVE_BLOCKS: Final = 2  # control/observed block pairs, in the order C O O C (the leading arm alternates)
 
 
 def _bench_observe(cfg: Config, steps: int, warmup: int) -> dict[str, Any]:
@@ -281,11 +281,13 @@ def _bench_observe(cfg: Config, steps: int, warmup: int) -> dict[str, Any]:
     Two arms, each following the runner's loop with one blocking eval per step: the *control* is
     ``make_step(cfg)`` and ``mx.eval(state, out)``; the *observed* arm is ``make_step(cfg, observe=True)``
     plus ``Observer.update`` (the labels' evaluation every ``rules.every`` steps included) and
-    ``mx.eval(state, out.base(), *obs.arrays())``. They run as interleaved blocks (control, observed, control,
-    observed), each restarting from ``init_state(cfg)`` with the same warm-up and the same number of timed
-    steps (``max(steps // 2, 1)``), so thermal drift cancels. Each arm's step compiles once; the observer's
-    two closures compile again for each block, in its untimed warm-up. The warm-up covers at least the first
-    evaluation step, so that its compile is never timed.
+    ``mx.eval(state, out.base(), *obs.arrays())``. They run as blocks in the order control, observed,
+    observed, control (the leading arm alternates in each pair, so that a drift linear in time, such as a
+    thermal one, cancels from the difference of the means; in the order C O C O it would not), each
+    restarting from ``init_state(cfg)`` with the same warm-up and the same number of timed steps
+    (``max(steps // 2, 1)``). Each arm's step compiles once; the observer's two closures compile again for
+    each block, in its untimed warm-up. The warm-up covers at least the first evaluation step, so that its
+    compile is never timed.
 
     The median step times give ``overhead_ms_median``; the evaluation steps (one in ``rules.every``) are
     slower than the others, which a median hides, so ``overhead_ms_mean`` and ``observed_steps_per_s`` are
@@ -320,9 +322,10 @@ def _bench_observe(cfg: Config, steps: int, warmup: int) -> dict[str, Any]:
             digests[arm] = state_digest(s)
         del s, out, obs
 
-    for _ in range(OBSERVE_BLOCKS):
-        block("control")
-        block("observed")
+    for pair in range(OBSERVE_BLOCKS):  # C O, then O C: the mean block time of both arms is the same
+        first, second = ("control", "observed") if pair % 2 == 0 else ("observed", "control")
+        block(first)
+        block(second)
     ctl, obs_t = times["control"], times["observed"]
     ctl_med, obs_med = statistics.median(ctl), statistics.median(obs_t)
     ctl_mean, obs_mean = statistics.fmean(ctl), statistics.fmean(obs_t)

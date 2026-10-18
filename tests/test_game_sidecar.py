@@ -5,8 +5,11 @@ truncation, and the ``observers`` block of the metrics rows."""
 from __future__ import annotations
 
 import dataclasses
+import io
 import json
 import shutil
+import signal
+import zipfile
 from pathlib import Path
 
 import mlx.core as mx
@@ -332,6 +335,79 @@ def test_a_corrupt_or_absent_sidecar_falls_back_to_fresh(
     assert note is not None and f"no sidecar at step {AT}" in note and WARM_NOTE in note
 
 
+def _bare_npy(arrays: dict[str, np.ndarray]) -> bytes:
+    """A valid .npy file (np.load returns an ndarray, not an archive)."""
+    buf = io.BytesIO()
+    np.save(buf, arrays["arch"])
+    return buf.getvalue()
+
+
+def _zip_with_a_non_npy_member(arrays: dict[str, np.ndarray]) -> bytes:
+    """A zip with every member name of a sidecar, but ``arch`` stored without the .npy suffix (np.load's
+    NpzFile then returns its raw bytes)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for k, v in arrays.items():
+            if k == "arch":
+                z.writestr("arch", b"not an npy member")
+            else:
+                member = io.BytesIO()
+                np.save(member, v)
+                z.writestr(k + ".npy", member.getvalue())
+    return buf.getvalue()
+
+
+WRONG_FILES = [
+    pytest.param(_bare_npy, "not an npz archive", id="bare-npy"),
+    pytest.param(_zip_with_a_non_npy_member, "not arrays", id="non-npy-member"),
+]
+
+
+@pytest.mark.parametrize(("make", "reason"), WRONG_FILES)
+def test_a_wrong_kind_of_file_is_an_unreadable_sidecar(
+    make, reason: str, saved: Path, tmp_path: Path, tiny_cfg: Config
+) -> None:
+    """np.load accepts these (no OSError, no BadZipFile), but they are not an npz of arrays: the same
+    fallback to fresh observers with a note, never an exception (§28.6)."""
+    cfg = _observing(tiny_cfg)
+    rd = _copy_with(saved, tmp_path / "run", lambda a: a)
+    arrays = rd.read_observers(AT)
+    assert arrays is not None
+    rd.observer_path(AT).write_bytes(make(arrays))
+    with pytest.raises(CheckpointError, match=f"unreadable observer sidecar.*{reason}"):
+        rd.read_observers(AT)
+    state = load_checkpoint(rd.checkpoint_at(AT), cfg)
+    obs, note = Observer.open(rd, state, cfg)
+    assert note is not None and "unreadable" in note and WARM_NOTE in note
+    assert obs.step == AT and not to_numpy(obs.o.n_obs).any()
+
+
+@pytest.mark.parametrize(("make", "reason"), WRONG_FILES)
+def test_a_resume_over_a_wrong_kind_of_file_exits_zero(
+    make, reason: str, saved: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rd = _copy_with(saved, tmp_path / "run", lambda a: a)
+    arrays = rd.read_observers(AT)
+    assert arrays is not None
+    rd.observer_path(AT).write_bytes(make(arrays))
+    capsys.readouterr()
+    assert cli.main(["resume", str(rd.path), "--steps", "10"]) == 0
+    assert f"observers: the sidecar at step {AT} is unreadable" in capsys.readouterr().err
+    assert RunDir.open(rd.path).meta()["status"] == "done"
+
+
+def test_load_rejects_a_member_that_is_not_an_array(saved: Path, tiny_cfg: Config) -> None:
+    """Defence in depth: ``_load`` (a public method of the Observer) does not raise on non-array members."""
+    cfg = _observing(tiny_cfg)
+    rd = RunDir.open(saved)
+    state = load_checkpoint(rd.checkpoint_at(AT), cfg)
+    arrays = rd.read_observers(AT)
+    assert arrays is not None
+    obs = Observer.fresh(state, cfg)
+    loaded, reason = obs._load({**arrays, "arch": b"not an array"})  # type: ignore[dict-item]
+    assert loaded is None and "array 'arch' is not an array" in reason
+
+
 def test_another_ruleset_never_reads_these_accumulators(saved: Path, tiny_cfg: Config) -> None:
     cfg = _observing(tiny_cfg)
     rd = RunDir.open(saved)
@@ -412,6 +488,43 @@ def test_resume_labels_equal_uninterrupted(
     resumed = {r["step"]: r["observers"] for r in split.metrics_rows() if r["step"] > stop}
     assert resumed and all(blocks[st] == block for st, block in resumed.items())
     assert blocks[total]["intent_labelled"] > 0
+
+
+@pytest.mark.parametrize("d3", [False, True], ids=["2d", "3d"])
+def test_resume_after_a_sigint_equals_uninterrupted(
+    d3: bool,
+    tiny_cfg: Config,
+    tiny3d_cfg: Config,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A Ctrl-C delivered while the interval row of step 35 is written (35 is neither a multiple of 8 nor a
+    scheduled checkpoint) stops the run cleanly with a checkpoint and its sidecar at 35; the resumed run ends
+    with the observer state and the ``observers`` blocks of the uninterrupted one."""
+    cfg = _observing(tiny3d_cfg if d3 else tiny_cfg, "run.metrics_every=5", "run.heavy_metrics_every=5")
+    ref = _run(cfg, tmp_path / "ref", 60)
+
+    def interrupt(state: State, row: dict) -> None:
+        if row["step"] == 35:
+            signal.raise_signal(signal.SIGINT)
+
+    split = RunDir.create(tmp_path / "split", cfg)
+    before = signal.getsignal(signal.SIGINT)
+    res = runner.run(split, cfg, init_state(cfg), 60, quiet=True, on_interval=interrupt)
+    assert (res.status, res.exit_code) == ("interrupted", runner.ExitCode.INTERRUPTED)
+    assert int(to_numpy(res.state.step)) == 35 and signal.getsignal(signal.SIGINT) is before
+    del res
+    assert [st for st, _ in split.observer_files()] == [0, 30, 35]  # the stop has its sidecar too
+    capsys.readouterr()
+    _continue(split, cfg, 25, quiet=False)
+    assert "observers:" not in capsys.readouterr().err  # the sidecar at 35 was valid
+    a, b = ref.read_observers(60), split.read_observers(60)
+    assert a is not None and b is not None and _same(a, b)
+    blocks = {r["step"]: r["observers"] for r in ref.metrics_rows()}
+    resumed = {r["step"]: r["observers"] for r in split.metrics_rows() if r["step"] > 35}
+    assert sorted(resumed) == [40, 45, 50, 55, 60] and all(
+        blocks[st] == block for st, block in resumed.items()
+    )
 
 
 # --- pruning and truncation -------------------------------------------------------------------------------

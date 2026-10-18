@@ -195,7 +195,9 @@ class RuleSet:
     def check(self, cfg: Config) -> None:
         """Raise ``ValueError`` unless every accumulator column fits int32: ``X·(2^k + 1) <= 2^31 − 1`` with
         ``X`` the column's per-step maximum under ``cfg`` (``A <= X·2^k`` is invariant and ``A + x`` is the
-        largest intermediate). A calibration sweep with a large ``k`` fails loudly instead of wrapping."""
+        largest intermediate), and unless every int32 ratio comparison ``den·x >= num·y`` does:
+        ``max(num, den)·X <= 2^31 − 1`` with ``X`` the largest compared mean. A calibration sweep with a large
+        ``k`` or a large ratio fails loudly instead of wrapping."""
         flow = layout.B * cfg.bonds.share_rate  # a row's total over its B bond slots
         arch = (
             ("arch.harvest", cfg.energy.harvest_max),
@@ -211,7 +213,7 @@ class RuleSet:
             ("intent.hurt", 256),
             ("intent.thrust", 256),
             ("intent.defend", 256),
-            ("intent.emit", layout.NCH * 255),  # Σ_c floor(256·emit_c) <= 765
+            ("intent.emit", layout.NCH * 256),  # Σ_c floor(256·emit_c) <= 768 (emit_c = 1.0 is reachable)
             ("intent.harvest", cfg.energy.harvest_max),
             ("intent.care", flow),
         )
@@ -222,6 +224,29 @@ class RuleSet:
                         f"RuleSet.check: column {column} with k = {k} overflows int32: "
                         f"{x}·(2^{k} + 1) = {x * ((1 << k) + 1)} > 2^31 − 1"
                     )
+        harvest_max = cfg.energy.harvest_max
+        income = harvest_max + cfg.combat.attack_max + flow  # the largest windowed income
+        ratios = (  # (field, largest compared mean), the int32 ratio tests of the archetype and intent rules
+            ("gatherer", income),
+            ("hunter", income),
+            ("provider", income),
+            ("trader", cfg.bonds.share_rate),
+            ("care", max(flow, harvest_max)),  # den·care against num·harvest_max
+            ("feed", harvest_max),
+        )
+        for name, x in ratios:
+            num, den = getattr(self, name)
+            if max(num, den) * x > _INT32_MAX:
+                raise ValueError(
+                    f"RuleSet.check: ratio {name} = ({num}, {den}) overflows int32: "
+                    f"{max(num, den)}·{x} = {max(num, den) * x} > 2^31 − 1"
+                )
+        num, den = self.roam  # den·thrust (thrust <= 256) against the constant num
+        if max(num, den * 256) > _INT32_MAX:
+            raise ValueError(
+                f"RuleSet.check: ratio roam = ({num}, {den}) overflows int32: "
+                f"max({num}, {den}·256) > 2^31 − 1"
+            )
 
 
 _RATIOS: Final = (
