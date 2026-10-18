@@ -10,6 +10,9 @@ panel and `alife llm-check`, `DIRECTOR.md` §14) are implemented, and so is the 
 assesses research directions against prior work. `docs/3D.md` is the 3D world (gravity and a floor), built in PRs
 #15 to #20 (normative spec: `DESIGN.md` §27); its first long run is described in `docs/RESULTS_3D.md`, and a second
 seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`.
+`docs/GAMES.md` is the design of the gaming vertical (owner decisions in its §10); its build step G1, the observer
+layer (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`; normative spec `DESIGN.md` §28), is
+implemented, with provisional thresholds (`INTENT_VERSION` 1) until the calibration run.
 
 ## Conventions
 

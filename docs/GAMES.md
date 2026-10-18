@@ -1,6 +1,6 @@
 # Emergent Worlds: a gaming vertical for alife (design proposal)
 
-Status: **design; nothing built.** The owner decided five of the ten questions on 2026-10-18 (§10). This document maps the owner's brief ("Project: Emergent Worlds", 2026-10-18) onto the
+Status: **design; G1 built (DESIGN §28); G2–G5 not built.** The owner decided five of the ten questions on 2026-10-18 (§10). This document maps the owner's brief ("Project: Emergent Worlds", 2026-10-18) onto the
 engine at `aef79c2`. The brief's three pillars are:
 - a motivation-to-action loop instead of scripted state machines;
 - an LLM architect director;
@@ -144,10 +144,12 @@ Principles carried over from the director:
 - **Observers never write `State`.** Their values reach the dynamics only through logged director entries.
 - **The log is the source of truth** for replay.
 - **Hashing follows the trajectory.** `game.*` keys default to off and go into `POST_V01_KEYS`.
-  - Observer-only keys (`game.observe`, `game.house_rate`, thresholds) form a new `OBSERVER_KEYS` tuple. It is excluded
+  - Observer-only keys (`game.observe` in G1, `game.house_rate` in G2) form a new `OBSERVER_KEYS` tuple. It is excluded
     from `config_hash` next to `UNHASHED_KEYS`, but kept out of `DIRECTOR_POLICY_KEYS`, which is derived from
     `UNHASHED_KEYS`. A new `game` branch in `cli._resume_allowed` accepts it, so observers can be attached to an
-    existing world.
+    existing world. The label thresholds are not config keys: they are versioned code constants of
+    `rules.RuleSet`, identified by `INTENT_VERSION` and a pinned `RuleSet.digest()`, so a label means the same in
+    every world (decided for G1, DESIGN §28.4).
   - This is justified by G1's purity test: the trajectory is identical with observers on and off.
   - Only keys that change dynamics are hashed.
 
@@ -184,6 +186,11 @@ input 1. But the brain has no such threshold to display, so the UI presents inte
 
 `BirthRecords` gains a `parent_slot` field (the lane's parent row, −1 for immigrants) under the same flag. `runio`
 ignores extra event columns.
+
+**As built in G1** (DESIGN §28.2): `attack_gain`, `share_out`, the net received as `share_got`, `flags`, `thrust`,
+`defend` and `emit` (the sum of the S17 deposit quanta, in [0, 765], not a float). The targets, `q_kin`, the S12
+partner and `BirthRecords.parent_slot` serve only the relations, the per-kin-group temperament and the colonies, so
+they move to G2.
 
 ### 4.3 Accumulators
 
@@ -752,8 +759,9 @@ What a game adds:
 
 ## 9. Build plan (proposed; one PR per step, each merged before the next)
 
-- **G1. Observers.**
-  - `game.observe` (unhashed), `StepOutG.acts`, and `BirthRecords.parent_slot`.
+- **G1. Observers.** **Built** (DESIGN §28, Review-log row I44; the thresholds are provisional, `INTENT_VERSION` 1,
+  until the calibration run).
+  - `game.observe` (unhashed), `StepOutG.acts`, and `BirthRecords.parent_slot` (moved to G2, see below).
   - The accumulators, archetype and intent rules (`INTENT_VERSION`), and the observer sidecar.
   - `signals.decode` and the SIGNALS analysis generalised to 3D (needed only when a game world is 3D).
   - The §4.5 validity analysis.
@@ -763,6 +771,18 @@ What a game adds:
     - the trajectory and digests are unchanged with observers on and off;
     - the accumulator arithmetic is checked on spike and constant inputs;
     - the sidecar round-trips.
+  - **As built, and deferred.**
+    - `BirthRecords.parent_slot` moved to G2, with the houses, kin groups, colonies, territory and relations, and the
+      acts that serve only them (`attack_target`, `bond_target`, `q_kin`). The "in a colony of 4 or more" clause of
+      Settler is G2's too: G1's Settler is the speed rule alone.
+    - `signals.decode` and the SIGNALS analysis in 3D are deferred until a game world is 3D.
+    - The benches and the calibration run wait for the GPU, with the procedures of DESIGN §28.8. `alife bench
+      --observe` and `python -m alife.analysis.labels` are built; the stream rate and the step rate with an LLM call
+      in flight are measured by hand on the Mac (DESIGN §28.8), and the combined play-loop bench is G3's.
+    - Copying the source's sidecar into a fork is G3 (rewind and replay) or G4 (era change). In G1 every fork,
+      a replay fork included, starts its observers fresh, so its labels agree with the source's only approximately
+      after the warm-up.
+    - The stream tags and the colour modes are G3's, observer values in the director's vitals are G4's.
 - **G2. Social tracking.** Houses, kin groups, the colony tracker, territory and the relation matrices. Benches of
   `components` at 250-step cadence.
 - **G3. Play loop and view.**
