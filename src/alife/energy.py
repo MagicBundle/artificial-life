@@ -192,7 +192,15 @@ def combat(
     )
 
 
-def share(
+class ShareSlots(NamedTuple):
+    """The per-slot flows of S12 (§10.6); ``share_from_slots`` sums them over the slots."""
+
+    out: mx.array  # (N,B) int32, gated amount sent per slot
+    inc: mx.array  # (N,B) int32, gross received per slot (the partner's ``out`` gathered through ``rev``)
+    got: mx.array  # (N,B) int32, net received per slot: ``mul_q8(inc, q8(share_efficiency))``
+
+
+def share_slots(
     energy: mx.array,
     partner: mx.array,
     rev: mx.array,
@@ -200,13 +208,12 @@ def share(
     act: Actions,
     solvent: mx.array,
     cfg: Config,
-) -> Share:
-    """Per-slot gated transfers along bonds with 90% efficiency (§10.6).
+) -> ShareSlots:
+    """Per-slot gated transfers along bonds with 90% efficiency (§10.6), before the slot sums.
 
     A slot sends ``min(floor(share·share_rate), E // B)`` only if the sender is solvent and the slot's partner
     is unchanged since the start of the step (``partner == partner0``). The receiver gathers the sender's
-    gated ``out`` through ``rev`` and keeps ``mul_q8(in, q8(share_efficiency))``. Ledger: ``Σ out`` is
-    ``FLOW_SHARED`` and ``Σ (in − g)`` is ``HEAT_SHARE``; ``E`` stays ≥ 0 by the ``// B`` cap.
+    gated ``out`` through ``rev`` and keeps ``mul_q8(in, q8(share_efficiency))``.
     """
     bc = cfg.bonds
     valid = partner >= 0
@@ -216,8 +223,28 @@ def share(
     b = partner.shape[1]
     inc = mx.where(valid, out.reshape(-1)[mx.maximum(partner, 0) * b + mx.maximum(rev, 0)], 0)
     g = ops.mul_q8(inc, ops.q8(bc.share_efficiency))
-    out_sum, g_sum = out.sum(axis=1), g.sum(axis=1)
-    return Share(energy - out_sum + g_sum, out_sum, g_sum, (inc - g).sum(axis=1))
+    return ShareSlots(out, inc, g)
+
+
+def share_from_slots(energy: mx.array, sl: ShareSlots) -> Share:
+    """The slot sums of S12. Ledger: ``Σ out`` is ``FLOW_SHARED`` and ``Σ (in − g)`` is ``HEAT_SHARE``;
+    ``E`` stays ≥ 0 by the ``// B`` cap."""
+    out_sum, g_sum = sl.out.sum(axis=1), sl.got.sum(axis=1)
+    return Share(energy - out_sum + g_sum, out_sum, g_sum, (sl.inc - sl.got).sum(axis=1))
+
+
+def share(
+    energy: mx.array,
+    partner: mx.array,
+    rev: mx.array,
+    partner0: mx.array,
+    act: Actions,
+    solvent: mx.array,
+    cfg: Config,
+) -> Share:
+    """Per-slot gated transfers along bonds with 90% efficiency (§10.6): ``share_from_slots`` of
+    ``share_slots``. Ledger: ``Σ out`` is ``FLOW_SHARED`` and ``Σ (in − g)`` is ``HEAT_SHARE``."""
+    return share_from_slots(energy, share_slots(energy, partner, rev, partner0, act, solvent, cfg))
 
 
 def cap_energy(energy: mx.array, cfg: Config) -> tuple[mx.array, mx.array]:

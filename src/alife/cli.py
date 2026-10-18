@@ -28,6 +28,7 @@ from alife.config import (
     DEFAULT_PRESET,
     DIRECTOR_MODES,
     DIRECTOR_POLICY_KEYS,
+    OBSERVER_KEYS,
     OVERLAYS,
     PERSONAS,
     PRESETS,
@@ -78,6 +79,9 @@ RESUME_KEYS: frozenset[str] = frozenset(
     }
 )
 RESUME_DIRECTOR_KEYS: frozenset[str] = frozenset(DIRECTOR_POLICY_KEYS)
+# The observer keys (game.observe) are read by host-side observers only and are not hashed, so resume may
+# change them too (§28.6).
+RESUME_GAME_KEYS: frozenset[str] = frozenset(key for _, key in OBSERVER_KEYS)
 
 LLM_DEFAULT_EVERY = 25_000  # steps between LLM calls with a bare --llm
 
@@ -439,8 +443,10 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
 
 def _resume_allowed(item: str) -> bool:
     section, _, key = item.partition("=")[0].strip().partition(".")
-    return (section == "run" and key in RESUME_KEYS) or (
-        section == "director" and key in RESUME_DIRECTOR_KEYS
+    return (
+        (section == "run" and key in RESUME_KEYS)
+        or (section == "director" and key in RESUME_DIRECTOR_KEYS)
+        or (section == "game" and key in RESUME_GAME_KEYS)
     )
 
 
@@ -453,8 +459,8 @@ def _cmd_resume(a: argparse.Namespace) -> int:
     bad = [item for item in items if not _resume_allowed(item)]
     if bad:
         raise ConfigError(
-            f"resume accepts only --set run.<key> for {sorted(RESUME_KEYS)} and director.<key> for "
-            f"{sorted(RESUME_DIRECTOR_KEYS)}; got {bad} "
+            f"resume accepts only --set run.<key> for {sorted(RESUME_KEYS)}, director.<key> for "
+            f"{sorted(RESUME_DIRECTOR_KEYS)} and game.<key> for {sorted(RESUME_GAME_KEYS)}; got {bad} "
             "(seed, compile, runtime_checks and dynamics changes need `alife run --init-from`)"
         )
     base = rd.config()

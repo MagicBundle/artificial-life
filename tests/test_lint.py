@@ -29,20 +29,26 @@ SIM_MODULES = {
     "lifecycle",
     "step",
     "invariants",
+    "game.observe",  # the pure-MLX observer update and rules (§28): no host reads, like the simulation
+    "game.rules",
 }  # rule 5
 DIRECTOR_MODULES = {f"director.{p.stem}" for p in (SRC / "director").glob("*.py")}  # host-side, scanned too
-SETITEM_MODULES = SIM_MODULES | {"ops", "rng", "state", "stream"} | DIRECTOR_MODULES  # rule 2 scope
+GAME_MODULES = {
+    f"game.{p.stem}" for p in (SRC / "game").glob("*.py")
+}  # the games vertical (§28), scanned too
+SETITEM_MODULES = SIM_MODULES | {"ops", "rng", "state", "stream"} | DIRECTOR_MODULES | GAME_MODULES  # rule 2
 HOST_ALLOW = {("invariants", "full_check")}  # rule 5: the host-side exhaustive check reads numpy by design
 KEYLESS_RANDOM = {"key", "split"}  # take the key (or seed) positionally by design
 SAFE_ROOTS = {"cfg", "d", "math", "layout", "dims", "self"}  # float()/int() of config-derived Python values
 
 
 def _modules() -> Iterator[tuple[str, ast.Module]]:
-    """Every module of ``alife`` and of ``alife.director`` (named ``director.<stem>``)."""
+    """Every module of ``alife``, of ``alife.director`` and of ``alife.game`` (named ``<package>.<stem>``)."""
     for path in sorted(SRC.glob("*.py")):
         yield path.stem, ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for path in sorted((SRC / "director").glob("*.py")):
-        yield f"director.{path.stem}", ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for package in ("director", "game"):
+        for path in sorted((SRC / package).glob("*.py")):
+            yield f"{package}.{path.stem}", ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
 def _functions(tree: ast.AST) -> Iterator[tuple[str, ast.AST]]:
@@ -210,6 +216,7 @@ def test_rules_are_not_vacuous() -> None:
         assert bad(rule_host_reads, "physics", f"def f(x, s):\n    return {snippet}\n"), snippet
     for snippet in ("float(cfg.physics.drag)", "int(d.n)", "int(round(2.5))", "float(n)"):
         assert not bad(rule_host_reads, "physics", f"def f(cfg, d, n):\n    return {snippet}\n"), snippet
+    assert bad(rule_host_reads, "game.rules", "def f(x):\n    return int(Intent.NONE)\n")  # use .value
     assert not bad(rule_host_reads, "invariants", "def full_check(s):\n    return s.energy.item()\n")
     assert not bad(rule_host_reads, "metrics", "def f(s):\n    return s.energy.item()\n")
 

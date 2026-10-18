@@ -8,6 +8,7 @@ Python branches on array values: the only branches are on config constants.
 from __future__ import annotations
 
 from collections.abc import Callable
+from enum import IntFlag
 from typing import NamedTuple
 
 import mlx.core as mx
@@ -32,7 +33,16 @@ from alife.state import (
     total_energy,
 )
 
-__all__ = ["BirthRecords", "DeathRecords", "StepOut", "make_step", "step"]
+__all__ = [
+    "ActFlag",
+    "Acts",
+    "BirthRecords",
+    "DeathRecords",
+    "StepOut",
+    "StepOutG",
+    "make_step",
+    "step",
+]
 
 _I32 = mx.int32
 _I64 = mx.int64
@@ -43,6 +53,42 @@ class StepOut(NamedTuple):
     ledger: mx.array  # (16,) int64, this step's ledger (LedgerIdx, §10.8)
     births: BirthRecords
     deaths: DeathRecords
+
+
+class ActFlag(IntFlag):
+    """The bits of ``Acts.flags`` (§28.2); each is the per-row form of one step counter."""
+
+    ATTACKED = 1  # Combat.attack: attacked after the S9-partner gate (the ATTACKS counter)
+    HIT = 2  # Combat.hit (ATTACK_HITS)
+    FORMED = 4  # bond formed at S9, either end (2·BONDS_FORMED rows)
+    BUDDED = 8  # parent of a birth lane at S16 (BIRTHS rows)
+    EMITTED = 16  # some channel's deposit quanta floor(256·emit_c) > 0 (EMITTERS)
+
+
+class Acts(NamedTuple):
+    """The observer channel (§28.2): this step's actions and flows per row, never fed back into the step."""
+
+    attack_gain: mx.array  # (N,) int32: energy gained by attacking (Σ = FLOW_ATTACK_GAIN)
+    share_out: mx.array  # (N,B) int32: sent per bond slot (Σ = FLOW_SHARED)
+    share_got: mx.array  # (N,B) int32: net received per bond slot (Σ out − Σ got = HEAT_SHARE)
+    flags: mx.array  # (N,) uint8: ActFlag bits
+    thrust: mx.array  # (N,) int16: round(256·act.thrust) of the post-S8 actions
+    defend: mx.array  # (N,) int16: round(256·act.defend) of the post-S8 actions
+    emit: mx.array  # (N,) int16: Σ_c floor(256·act.emit_c), the S17 deposit quanta, in [0, 765]
+
+
+class StepOutG(NamedTuple):
+    """``StepOut``'s fields, then the observer channel (returned only by ``step(..., observe=True)``)."""
+
+    counters: mx.array
+    ledger: mx.array
+    births: BirthRecords
+    deaths: DeathRecords
+    acts: Acts
+
+    def base(self) -> StepOut:
+        """The ``StepOut`` part, without the channel."""
+        return StepOut(self.counters, self.ledger, self.births, self.deaths)
 
 
 class _Flows(NamedTuple):
@@ -73,9 +119,12 @@ class _Flows(NamedTuple):
     grounded: mx.array | None = None  # (N,) bool, physics.grounded of the start-of-step pos (not masked)
 
 
-def step(s: State | State3, cfg: Config) -> tuple[State | State3, StepOut]:
+def step(
+    s: State | State3, cfg: Config, *, observe: bool = False
+) -> tuple[State | State3, StepOut | StepOutG]:
     """Advance the world by one step (S0–S18). Pure; no host syncs. A 3D world (``State3``) takes the static
-    ``d3`` branches of §27.8; every 2D line is unchanged."""
+    ``d3`` branches of §27.8; every 2D line is unchanged. With the static ``observe`` the step also returns
+    the observer channel (``StepOutG``, §28.2); it changes no state value and no ``StepOut`` field."""
     d3 = dims(cfg).d3
     t = s.step
     W1, W2 = lifecycle.flush_pending(s.W1, s.W2, s.pend_slot, s.pend_W1, s.pend_W2)  # S0
@@ -106,6 +155,7 @@ def step(s: State | State3, cfg: Config) -> tuple[State | State3, StepOut]:
         mo = actions.mask(mo, c.solvent)
     else:
         c = en.pay_costs(s.energy, act, nb0, s.brain_cost, s.alive, cfg)
+    thrust0 = act.thrust if observe else None  # static: the decode output, which S8 also reads (§28.2)
     act = actions.mask(act, c.solvent)
 
     flag = act.release | (geom.length > cfg.bonds.break_length)  # S9
@@ -117,7 +167,11 @@ def step(s: State | State3, cfg: Config) -> tuple[State | State3, StepOut]:
 
     E, resource, got = en.harvest(c.energy, s.resource, fcell, act, c.solvent, cfg)  # S10
     cb = en.combat(E, resource, fcell, act, partner, cfg)  # S11
-    sh = en.share(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)  # S12
+    if observe:  # static: the per-slot flows are kept for the channel; the traced graph equals en.share's
+        sl = en.share_slots(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)  # S12
+        sh = en.share_from_slots(cb.energy, sl)
+    else:
+        sh = en.share(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)  # S12
     E, e_over = en.cap_energy(sh.energy, cfg)  # S13
     env = s.env if cfg.director.enabled else None  # static: the director's live levers
     cat_mask = (
@@ -206,7 +260,31 @@ def step(s: State | State3, cfg: Config) -> tuple[State | State3, StepOut]:
     )
     if d3:  # static
         flows = flows._replace(z_floor=it.z_floor, z_surface=it.z_surface, grounded=gr)
-    return _finish(s2, s, cfg, flows)  # S18
+    s_new, out = _finish(s2, s, cfg, flows)  # S18
+    if observe:  # static
+        return s_new, StepOutG(*out, acts=_acts(flows, sl, thrust0, cfg))
+    return s_new, out
+
+
+def _acts(f: _Flows, sl: en.ShareSlots, thrust0: mx.array, cfg: Config) -> Acts:
+    """The observer channel (§28.2). Every float is quantised from a value the step already materialises, and
+    the thrust is masked by solvency in integers, so the channel adds no consumer to a fused float chain."""
+    n = dims(cfg).n
+    birth = f.lanes.kind == lifecycle.LaneKind.BIRTH.value
+    budded = ops.scatter_add_i32(n, f.lanes.parent, 1, birth) > 0  # distinct parents: Σ = n_birth
+    emit_q = ops.floor_i32(f.act.emit * 256.0)  # the expression of _counters and fields.deposit_chem
+    emitted = (emit_q > 0).any(axis=1)  # the expression of the EMITTERS counter
+    u8, i16 = mx.uint8, mx.int16
+    flags = (
+        f.cb.attack.astype(u8) * ActFlag.ATTACKED.value
+        | f.cb.hit.astype(u8) * ActFlag.HIT.value
+        | f.formed.astype(u8) * ActFlag.FORMED.value
+        | budded.astype(u8) * ActFlag.BUDDED.value
+        | emitted.astype(u8) * ActFlag.EMITTED.value
+    )
+    thrust = mx.where(f.costs.solvent, mx.round(256.0 * thrust0).astype(i16), 0)  # = round(256·masked thrust)
+    defend = mx.round(256.0 * f.act.defend).astype(i16)
+    return Acts(f.cb.gain, sl.out, sl.got, flags, thrust, defend, emit_q.sum(axis=1).astype(i16))
 
 
 def consume_env(s: State, env: Env, lanes: lifecycle.Lanes) -> State:
@@ -374,11 +452,14 @@ def _finish(s_new: State, s: State, cfg: Config, f: _Flows) -> tuple[State, Step
     return s_new, out
 
 
-def make_step(cfg: Config, *, compile: bool | None = None) -> Callable[[State], tuple[State, StepOut]]:
-    """The step closed over ``cfg``, compiled once when ``compile`` (default ``cfg.run.compile``)."""
+def make_step(
+    cfg: Config, *, compile: bool | None = None, observe: bool = False
+) -> Callable[[State], tuple[State, StepOut | StepOutG]]:
+    """The step closed over ``cfg``, compiled once when ``compile`` (default ``cfg.run.compile``). With the
+    static ``observe`` it returns ``StepOutG`` (§28.2)."""
     use_compile = cfg.run.compile if compile is None else compile
 
-    def fn(s: State) -> tuple[State, StepOut]:
-        return step(s, cfg)
+    def fn(s: State) -> tuple[State, StepOut | StepOutG]:
+        return step(s, cfg, observe=observe)
 
     return mx.compile(fn) if use_compile else fn
