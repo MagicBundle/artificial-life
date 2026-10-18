@@ -1,13 +1,13 @@
 # Emergent Worlds: a gaming vertical for alife (design proposal)
 
-Status: **proposal, nothing built.** This document maps the owner's brief ("Project: Emergent Worlds", 2026-10-18) onto the
+Status: **design; nothing built.** The owner decided five of the ten questions on 2026-10-18 (§10). This document maps the owner's brief ("Project: Emergent Worlds", 2026-10-18) onto the
 engine at `aef79c2`. The brief's three pillars are:
 - a motivation-to-action loop instead of scripted state machines;
 - an LLM architect director;
 - social lineage.
 
-The owner's decisions are in §10, and `docs/DESIGN.md` stays normative. Every feature starts off by default, so existing
-runs, their `config_hash` and the 2D golden digest stay as they are. The new live levers of G4 change the 3D golden
+`docs/DESIGN.md` stays normative. Every feature starts off by default, so existing runs, their `config_hash` and the 2D
+golden digest stay as they are. The one new live lever chosen for G4, `attack_mult` (§10.4), changes the 3D golden
 digest, which that PR re-pins deliberately (§5.4).
 
 ## 1. Summary
@@ -42,7 +42,7 @@ digest, which that PR re-pins deliberately (§5.4).
   - **Pacing.** Player commands get their own pacing in game time. Once applied, the safety rules cannot supersede them
     (§5.5, §5.6).
 - **Scale.** At 64k capacity (`n_max` 65,536: about 33k agents in 2D, about 42k in 3D) the step runs at 59 steps/s in 2D
-  and 14 in 3D. The recommended first slice is a 16k-capacity world at 30 steps/s (§8.3).
+  and 14 in 3D. The owner chose a 64k-capacity 2D world at 30 steps/s for the first slice (§8.3, §10.7).
 - **Platform.** The engine runs on Apple Silicon at speed (MLX on Metal) and slowly on Linux CPU (`mlx[cpu]`, the CI
   platform). A Mac-first prototype is realistic. A Windows or console product needs the step ported.
 
@@ -311,7 +311,7 @@ The LLM does not choose actions directly, unlike today's Architect, for three re
 The current Architect path stays as the baseline in G5.
 
 **Calibration.** The compiler's gains need lever-response curves: the effect of each lever over 10k–50k steps on
-population, kill share and archetype mix. These are short sweeps on a 16k preset. A related long-run datum: a 3D run
+population, kill share and archetype mix. These are short sweeps on the 64k 2D preset. A related long-run datum: a 3D run
 with `regen_max` halved from step 0 (one seed, `runs/64k3d_s0_half`) settled at 0.63× the population and 2 clades against
 4. Its median buoy_cap over the last 50k steps was 0.16 against 0.19. That is an evolutionary end state, not a pulse
 response.
@@ -324,9 +324,11 @@ inert by default, read only under the static `cfg.director.enabled`, and range-c
 energy lever scales an existing ledger term, so no energy path is added; `env_mut_mult` touches no energy term. Each
 lever comes with ledger-closure tests and a DESIGN row.
 
+The owner chose `attack_mult` for G4 (§10.4). The other rows are designed but deferred.
+
 | lever | effect | implementation | bounds (proposed) | cost |
 |---|---|---|---|---|
-| `env_attack_mult` (action `attack_mult`) | predation lethality | scales the `combat.attack_max` demand (S11), integer-exact | 0.5–2.0 | 1 |
+| `env_attack_mult` (action `attack_mult`; **G4**) | predation lethality | scales the `combat.attack_max` demand (S11), integer-exact | 0.5–2.0 | 1 |
 | `env_share_q8` (action `share_eff`) | how well cooperation pays | absolute Q8 efficiency used as `mul_q8(inc, env_share_q8)` (S12); inert value `ops.q8(bonds.share_efficiency)` reproduces today's result bit for bit | 128–256 (0.5–1.0) | 1 |
 | `env_basal_mult` (action `harshness`) | upkeep | scales the basal due (S8). `metrics.carrying_capacity` scales `c_ref` with it, so `K_est` and the safety rules stay calibrated | 2/3–1.5 | 1 |
 | `env_mut_mult` (action `tempo`) | evolutionary tempo | a Q8 multiplier on the `mut_sigma` and `mut_rate` used for a child's weights at birth (S16); the inherited genes are unchanged. Replaces the unbuilt `mutation_floor_nudge` (DIRECTOR.md §5): a floor below the existing clip at `rate_min` would do nothing | 0.5–2.0 | 2 |
@@ -489,7 +491,7 @@ queries. Factions that behave as factions must therefore be groups in tag space.
 
 - **Territory.**
   - Each snapshot does one `ops.scatter_add_i32` of alive agents into a dense (cells × (F + 1)) array: a coarse grid such
-    as 32 × 32 (the floor projection in 3D), times the top F = 16 kin groups or houses plus "other".
+    as 32 × 32 (the floor projection in 3D), times the top F = 16 kin groups plus "other".
   - The owner is the argmax and the purity its share, both EMA-smoothed.
   - Borders are drawn between cells with different owners.
   - The overlay is labelled "dominance", not "control", until tests show defence.
@@ -592,22 +594,25 @@ The gains are placeholders until the lever-response curves exist (§5.3).
 - **Durations by horizon** (short / medium / long):
   - `regen_pulse`, `attack_mult`, `harshness` and `habitat_loss`: 3,000 / 18,000 / 36,000;
   - the slow levers `share_eff` and `tempo`: 18,000 / 36,000 / permanent.
-- **Always permanent.** Long scarcity uses `regen_set`. `set_seasons` and `drift_change` are always permanent, and the
+- **v1 scope.** Version 1 builds only `attack_mult` among the new levers (§10.4). Long scarcity therefore uses a
+  36,000-step `regen_pulse` until `regen_set` exists. Harshness, cooperation and tempo compile to no-ops, which the
+  preview states.
+- **Always permanent.** `set_seasons` and `drift_change` are always permanent, and the
   preview marks them. Their season period by horizon is 2,000 / 6,000 / 18,000.
 
 | dimension | lever | formula | bounds |
 |---|---|---|---|
-| scarcity s | `regen_pulse` (short, medium); `regen_set` (long) | mult = 1 − 0.6·s | 0.4–1.8 |
-| harshness h | `harshness` | mult = 1.5^h | 2/3–1.5 |
+| scarcity s | `regen_pulse` (all horizons in v1; `regen_set` for long once built) | mult = 1 − 0.6·s | 0.4–1.8 |
+| harshness h | `harshness` (not in v1: no-op) | mult = 1.5^h | 2/3–1.5 |
 | volatility v | `set_seasons`; also `drift_change` when v > 0.5 | v > 0: amp = 0.9·v. v < 0: amp = current·(1 + v). Drift mult = 1 + 8·(v − 0.5) | amp 0–0.9; drift 1–5 |
 | competition c | `attack_mult`; at c ≥ 0.5 also `habitat_loss` on the poorest patch (or the targeted one), which concentrates food | mult = 2^c | 0.5–2.0 |
-| cooperation k | `share_eff` (slow) | q8 = round(256·(0.9 + 0.1·k)) | 128–256 |
+| cooperation k | `share_eff` (slow; not in v1: no-op) | q8 = round(256·(0.9 + 0.1·k)) | 128–256 |
 | migration m | `immigration_pulse` | m ≥ 1/64: count = max(16, round(1,024·m)). Otherwise a no-op, stated in the preview | 16–1,024 |
-| tempo τ | `tempo` (slow) | mult = 2^τ | 0.5–2.0 |
+| tempo τ | `tempo` (slow; not in v1: no-op) | mult = 2^τ | 0.5–2.0 |
 | disaster d | `catastrophe` at the target (a region centre, or the densest cell of a kin group) | kill_p = 0.2 + 0.7·d; radius = min + d·(max − min) | menu bounds |
 
 The compiled plan for §7.2, as `director.jsonl` entries in the existing format. There is a new `source:"player"`, two new
-optional keys (`command`, `compiler_version`), and `vitals` is abbreviated here:
+optional keys (`command`, `compiler_version`), and `vitals` is abbreviated and illustrative here:
 
 ```json
 {"step_applied": 412000, "source": "player", "persona": "game_master", "action": "regen_pulse",
@@ -721,13 +726,18 @@ What a game adds:
     from a one-row decode. The protagonists at scale are groups.
   - (c) LLM narration of a few focal agents at narrative cadence, as an observer (*recommended*). Never one LLM per agent:
     Generative Agents cost thousands of dollars for 25 agents over two game days.
-- **First slice (§10.7).** A 16k-capacity world at 30 steps/s leaves headroom for observers, the viewer, an LLM on the
-  same GPU and fast-forward.
-  - 2D is quickest to real time and has the signal tools, but the thinnest content: kill share 0.13 and a median largest
-    body of 73.
-  - 3D has more to see: depth zones, reefs, kill share 0.50. At 16k it needs a bench, and the deferred fused Metal kNN
-    kernel (DESIGN §27.13) is the main lever for its speed.
-  - 64k 2D at 30 steps/s also fits.
+- **First world: 64k 2D at 30 steps/s** (the owner's decision, §10.7).
+  - **Budget.** The step takes 16.9 ms of the 33 ms frame. The remaining 16 ms must hold the observers (est. under
+    0.5 ms), the stream and an LLM parse sharing the GPU.
+  - **Stream.** At 30 fps it carries about 25 MB/s with alive-only frames (about 0.83 MB at 33k agents), or 45 MB/s with
+    full frames.
+  - **Fast-forward** is capped near 59 steps/s.
+  - **G1 benches** this whole loop before any UI work.
+  - **Content.** 2D has the signal tools, the pygame viewer, and the Swift viewer's face-on 2D view. It also has the
+    thinnest content: kill share 0.13, a median largest body of 73, and a predation ratio of 0.078. The chosen lever,
+    `attack_mult`, is aimed at that (§10.4).
+  - **3D later.** 3D has more to see (depth zones, reefs, kill share 0.50) but needs the deferred fused Metal kNN kernel
+    (DESIGN §27.13) to reach 30 steps/s at 64k.
 
 ### 8.4 Further risks
 
@@ -745,9 +755,10 @@ What a game adds:
 - **G1. Observers.**
   - `game.observe` (unhashed), `StepOutG.acts`, and `BirthRecords.parent_slot`.
   - The accumulators, archetype and intent rules (`INTENT_VERSION`), and the observer sidecar.
-  - `signals.decode` and the SIGNALS analysis generalised to 3D.
+  - `signals.decode` and the SIGNALS analysis generalised to 3D (needed only when a game world is 3D).
   - The §4.5 validity analysis.
-  - Benches: the 16k presets in 2D and 3D, and the step rate with an LLM call in flight.
+  - Benches of the 64k 2D world at 30 steps/s: the step with observers on, the stream, and the step rate with an LLM
+    call in flight.
   - Tests:
     - the trajectory and digests are unchanged with observers on and off;
     - the accumulator arithmetic is checked on spike and constant inputs;
@@ -757,7 +768,7 @@ What a game adds:
 - **G3. Play loop and view.**
   - `alife play` with the fixed-timestep scheduler.
   - The stream tags `IDNT`, `INTN`, `TERR`, `EVNT`, with Swift decoders and fixtures.
-  - 3D picking and HUD, and the new colour modes.
+  - Picking and a HUD in the Swift viewer (2D worlds face-on, as today), and the new colour modes.
   - Saves:
     - dead rows canonicalised, with a save-load-step digest test;
     - recorded ALSTRM replay files.
@@ -766,7 +777,7 @@ What a game adds:
 - **G4. Player intent.**
   - The intent schema and prompt, the compiler, `commands.jsonl`, the preview, `source:"player"`, and the separate pacing
     scope.
-  - `GAME_MENU` with the new levers, inert-fill for `State3`, and the 3D golden re-pin.
+  - `GAME_MENU` with `attack_mult` (§10.4), inert-fill for `State3`, and the 3D golden re-pin.
   - `GAME_SPECS`, and the `game_master` persona with its `PersonaParams` and the intensity vital.
   - Direct powers.
   - Era changes: a checkpoint at the boundary, then a fork with `reapply_env` and `copy_director_log`.
@@ -777,23 +788,39 @@ What a game adds:
   - Label validity on new worlds.
   - The owner's legibility ratings on the 1–5 scale used for the journal.
 
-## 10. Open decisions (owner)
+## 10. Decisions (owner)
 
-1. **Scope.** A Mac-first prototype in this repository (*recommended*), or plan a cross-platform port now.
-2. **Code location.** A `src/alife/game/` package with a `game` config section, off by default (*recommended*), or a
-   separate repository.
-3. **Intent translation.** The pipeline of LLM, intent vector, compiler, preview and confirm (*recommended*, §5.3), or the
-   current Architect with the LLM choosing menu actions.
-4. **New levers.** Which of `attack_mult`, `share_eff`, `harshness`, `tempo` and `regen_set` to build in G4 (§5.4). Each
-   changes dynamics only when used. Building `attack_mult`, `share_eff`, `harshness` or `tempo` adds a `State` field and
-   re-pins the 3D golden; `regen_set` alone does not.
+**Decided 2026-10-18:** items 1, 2, 3, 4, 7 and 8. Items 5, 6, 9 and 10 are open; their recommendations stand until the
+owner decides.
+
+1. **Scope.** *Decided:* a Mac-first prototype in this repository.
+2. **Code location.** *Decided:* a `src/alife/game/` package with a `game` config section, everything off by default.
+3. **Intent translation.** *Decided:* the staged pipeline of LLM, intent vector, compiler, preview and confirm (§5.3).
+   The current Architect, with the LLM choosing menu actions, stays only as the G5 baseline.
+4. **New levers.** *Decided:* one lever, chosen for its effect on play: **`attack_mult`**. The owner asked for one that
+   makes a difference for gameplay. The reasons for this one:
+   - It acts within one or two lifetimes, so the player sees the response in under a minute.
+   - The chosen 2D world has the thinnest predation (kill share 0.13, predation ratio 0.078), so it is where a lethality
+     lever changes most.
+   - It gives the competition dimension a direct lever.
+   - It feeds the Hunter archetype (§4.4) and the kin-group war relations (§6.5).
+
+   The alternatives make less difference to play:
+   - `share_eff` and `tempo` act on evolutionary timescales;
+   - `harshness` overlaps with the food levers;
+   - `regen_set` only lifts the time limit of an existing lever.
+
+   Consequences for v1:
+   - `attack_mult` adds a `State` field, so G4 re-pins the 3D golden.
+   - In compiler version 1 the harshness, cooperation and tempo dimensions compile to no-ops, which the preview states.
+   - Long scarcity uses a 36,000-step `regen_pulse`.
+   - The schema keeps all eight dimensions, so later levers do not change it.
 5. **During a parse.** Keep stepping (*recommended*), or pause until the player has confirmed the preview (§5.7).
 6. **Rewind.** Era changes need the fork with `reapply_env` and `copy_director_log` either way (§7.4). The question is
    only what backs rewind: in-place resume into a copied run directory (*recommended*), or the same fork (§8.2).
-7. **First world.** 16k 2D (*recommended* for speed and tooling), 16k 3D (richer content, needs a bench), or 64k 2D at
-   30 steps/s (§8.3).
-8. **Factions.** Kin groups (tag clusters, which agents perceive) for relations and territory, with houses for names and
-   genealogy (*recommended*, §6.2–§6.3). Or houses alone.
+7. **First world.** *Decided:* 64k 2D at 30 steps/s (§8.3).
+8. **Factions.** *Decided:* kin groups (tag clusters, which agents perceive) are the factions, for relations and
+   territory (§6.3, §6.5). Houses stay as genealogical names only (§6.2).
 9. **"Trader".** Reserve it for reciprocal sharing and call one-way givers "Providers" (*recommended*), or add an exchange
    mechanism, which is new dynamics with its own ledger term.
 10. **The Architect discrepancy.** DESIGN §26.6 and DIRECTOR.md §12 (A15) say "safety rules only". DESIGN §26.7,
