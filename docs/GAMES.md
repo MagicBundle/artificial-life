@@ -149,7 +149,7 @@ Principles carried over from the director:
     `UNHASHED_KEYS`. A new `game` branch in `cli._resume_allowed` accepts it, so observers can be attached to an
     existing world. The label thresholds are not config keys: they are versioned code constants of
     `rules.RuleSet`, identified by `INTENT_VERSION` and a pinned `RuleSet.digest()`, so a label means the same in
-    every world (decided for G1, DESIGN §28.4).
+    every world (G1's choice, DESIGN §28.4, pending the owner's confirmation: §10 item 11).
   - This is justified by G1's purity test: the trajectory is identical with observers on and off.
   - Only keys that change dynamics are hashed.
 
@@ -776,6 +776,9 @@ What a game adds:
       acts that serve only them (`attack_target`, `bond_target`, `q_kin`). The "in a colony of 4 or more" clause of
       Settler is G2's too: G1's Settler is the speed rule alone.
     - `signals.decode` and the SIGNALS analysis in 3D are deferred until a game world is 3D.
+    - **Merge condition:** `tests/test_game_purity.py` (with `tests/test_game_acts.py`) must pass on Metal before the
+      PR merges (DESIGN §28.1, §28.8). The CPU tests pin the channel's read set structurally, but only a Metal run can
+      show that observing leaves the compiled float kernels' rounding alone. A difference there stops the PR.
     - The benches and the calibration run wait for the GPU, with the procedures of DESIGN §28.8. `alife bench
       --observe` and `python -m alife.analysis.labels` are built; the stream rate and the step rate with an LLM call
       in flight are measured by hand on the Mac (DESIGN §28.8), and the combined play-loop bench is G3's.
@@ -811,7 +814,7 @@ What a game adds:
 ## 10. Decisions (owner)
 
 **Decided 2026-10-18:** items 1, 2, 3, 4, 7 and 8. Items 5, 6, 9 and 10 are open; their recommendations stand until the
-owner decides.
+owner decides. Items 11 and 12 came up in G1 (below) and are open too.
 
 1. **Scope.** *Decided:* a Mac-first prototype in this repository.
 2. **Code location.** *Decided:* a `src/alife/game/` package with a `game` config section, everything off by default.
@@ -846,6 +849,15 @@ owner decides.
 10. **The Architect discrepancy.** DESIGN §26.6 and DIRECTOR.md §12 (A15) say "safety rules only". DESIGN §26.7,
     `rules.ARCHITECT` and `test_director_rules.py` give the Architect discretionary moves when the LLM tier is off.
     Correct the two sentences (*recommended*), or change the code under a new rules version.
+11. **Label thresholds as code (G1).** G1 builds the thresholds of the archetype and intent rules as versioned code
+    constants (`rules.RuleSet`, `INTENT_VERSION` 1, a pinned digest), not as config keys, so a label means the same in
+    every world and the sidecar can tell which rules wrote it (DESIGN §28.4). *Recommended:* keep. The alternative,
+    per-world config keys, needs a decision on whether they enter `config_hash` (they would move every hash that sets
+    them) and a sweep interface for the calibration.
+12. **The verdict criterion (G1, provisional).** A label passes the validity test (§4.5) when its AUC against the
+    matched random label has `p ≤ 0.01` and `auc − null_mean ≥ 0.05`, with at least 30 positives and 30 negatives, at
+    least 99 permutations, and (intents) a coverage maximum of at most 0.6 (DESIGN §28.8). The numbers are G1's
+    placeholders; confirm or change them before the calibration run on `64k_s0` and `64k3d_s0`.
 
 ## 11. Prior-art sources
 

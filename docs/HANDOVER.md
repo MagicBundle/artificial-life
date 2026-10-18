@@ -417,9 +417,20 @@ and resumed once. There is one run per condition apart from the seed pair.
      full food, so they need a 3D port.
    - **Speed.** The fused Metal neighbour kernel (below) matters if more or longer 3D runs are wanted: about 14.7 steps/s,
      with the search at 79% of the step.
-3. Optional engine work, deferred in DESIGN §23.2:
+3. **Games G1** (branch `games/g1-observers`, DESIGN §28, Review-log row I44, `docs/GAMES.md` §9). Built and tested on
+   the CPU. Open before it merges, in order:
+   - **The Metal purity gate:** run `tests/test_game_purity.py` and `tests/test_game_acts.py` on the GPU once it is free
+     (§28.1, §28.8). The CPU tests pin the channel's read set on the traced graph, but only a Metal run can show that
+     observing leaves the compiled step's rounding alone. If it differs, `game.observe` is not observer-only on Metal:
+     stop and report, and do not move the key to the hashed keys.
+   - **The 64k benches and the calibration** (procedures in §28.8, GPU needed): `alife bench --observe`, the stream rate
+     and the step rate during an LLM call at 64k 2D; `python -m alife.analysis.labels` on `64k_s0` and `64k3d_s0`, which
+     may change the thresholds under `INTENT_VERSION` 2.
+   - **Owner decisions** (`docs/GAMES.md` §10, items 11 and 12): thresholds as code constants, and the verdict criterion.
+   - Then G2 (houses, kin groups, colonies, territory; `BirthRecords.parent_slot`).
+4. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
    - `inspect` showing the resumed total instead of the original `steps`.
-4. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
+5. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
    it in the DESIGN Review log.
