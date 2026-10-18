@@ -276,9 +276,9 @@ and resumed once. There is one run per condition apart from the seed pair.
   clades survive, both spanning floor and top (clade–depth MI 0.09), so the two-ended profile does not need
   depth-partitioned clades. The control cannot say whether density sets body size: the largest body is 1.11× s0's, far
   inside the 4.8× gap between the two seeds.
-- **Director.** Identical to s0 in every metrics row and event record through step 25,000 (`DESIGN.md` §26.8, director
-  enabled with inert levers equals director off, holds in 3D; state equality is inferred, there is no checkpoint before
-  50k), unpaired after.
+- **Director.** Identical to s0 in every metrics row through step 25,000 and every event record before it
+  (`DESIGN.md` §26.8, director enabled with inert levers equals director off, holds in 3D; state equality is inferred,
+  the only checkpoint before 50k is step 0), unpaired after.
   - 30 interventions at its full budget: 12 LLM immigration pulses (the model never chose another lever although
     others were affordable), 15 runaway-damper pulses and 3 rescue entries during the founder overshoot.
   - The damper's trigger (largest body above 5% of the population) is met at most boundaries of every 64k3d run, so

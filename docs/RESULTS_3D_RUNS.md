@@ -35,7 +35,8 @@ of them hold across the four runs, and what the two controls change.
   0.497 × 1.154 × 1.000 × 1.098 = 0.630.
   - Predation thins: 0.034 attacks per agent-step against 0.059, and a predation ratio of 0.165 against 0.231, both
     beyond the seed pair's gaps (0.007 and 0.003). The kill share (0.43 against 0.50) moves less than the seed pair's
-    does (0.09). The erosion of the buoyancy cap is delayed (median below 0.4 from step 245,300 against 143,800).
+    does (0.09). The erosion of the buoyancy cap is delayed (median, 5,000-step running mean, below 0.4 from step
+    245,300 against 143,800).
     Energy per agent, the two-ended depth profile and speed are unchanged.
   - Only two clades survive, and both span the floor and the top: the clade–depth mutual information falls to 0.09
     (seed 0: 0.60) while the population stays two-ended. The bimodal depth profile does not need a partition of
@@ -44,10 +45,10 @@ of them hold across the four runs, and what the two controls change.
     largest body is 1.11× seed 0's (within-run bootstrap interval 0.79 to 1.78), but seed 1, under the same conditions
     as seed 0 and at 1.07× its population, has 4.8× (3.6 to 7.1). A halving of the largest body would be 0.44 of that
     seed gap on a log scale, so at n = 1 it would be lost in the noise.
-- **The director run is identical to seed 0 in every metrics row and event record through step 25,000, as
+- **The director run is identical to seed 0 in every metrics row through step 25,000 and every event record before it, as
   `DESIGN.md` §26.8 requires (director enabled with inert levers is bit-identical to director off), and follows a
-  different trajectory after its first intervention.** The check compares rows and events only (there is no
-  checkpoint before 50,000), so state equality is inferred.
+  different trajectory after its first intervention.** The check compares rows and events only (the only
+  earlier checkpoint is the initial state at step 0), so state equality is inferred.
   - It made 30 interventions at 23 steps and spent exactly its budget of 6 per 100k: 12 LLM immigration pulses, 15
     runaway-damper pulses (regeneration ×0.8 for 10,000 steps) and 3 extinction-rescue entries at steps 28,000 and
     38,000. No season, drift, patch or catastrophe lever was used. The model chose `immigration_pulse` in all 12
@@ -61,10 +62,11 @@ of them hold across the four runs, and what the two controls change.
     and seed 1, at 21 and 42 boundaries.
   - Immigration left no lineage: 7,424 immigrants were admitted, and 2 of their descendants are alive at step
     500,000.
-  - The end state differs from seed 0: 3 founder clades against 4, a top clade of 0.66 against 0.41, a clade–depth
-    MI of 0.17 against 0.60 and 9% fewer agents. But the half-food run reaches a similar clade state without a
-    director, and the comparison is unpaired after step 25,000, so these differences cannot be attributed to the
-    director.
+  - The end state differs from seed 0: 3 founder clades against 4, a top clade of 0.66 against 0.41 and a
+    clade–depth MI of 0.17 against 0.60. But the half-food run reaches a similar clade state without a director, and
+    the comparison is unpaired after step 25,000, so these differences cannot be attributed to the director. Of its 9%
+    fewer agents, about 2,250 come from the damper's pulses (on in 40% of the last 100k, measured within the run,
+    §5.5); the remaining 1,565 are not attributable.
   - The archive's coverage is higher (28 cells against 21 and 20, beyond the seed pair's gap by the rule of §2), but the
     cells that seed 0 never visited number 9 in both the director run and seed 1, the half-food run reaches 26 without a
     director, and `EVALUATION.md` finds that coverage mostly tracks forced population oscillation, which the damper's
@@ -100,7 +102,8 @@ of them hold across the four runs, and what the two controls change.
   - The maximum hash-cell occupancy is 37, 39, 26 and 37 (s0, s1, half, dir), and at most 18, 27, 19 and 20 after
     step 50,000.
   - In all four runs the event chunks tile `[0, 500,000)`, births and deaths equal the metrics totals, and the
-    checkpoint counts agree with the flow. `alife inspect --check` passed at the end of every run (queue log).
+    checkpoint counts agree with the flow. `alife inspect --check` passed at the end of every run (`runs/3d_queue/queue3d.log` for the half-food and
+    director runs, `runs/3d_queue/README.md` for seed 1, and a rerun on seed 0 for this PR).
 - **Agents.** Births were 22,495,125 (s0), 29,094,305 (s1), 13,139,465 (half) and 22,121,759 (dir, plus 7,424
   immigrants). At step 500,000 there are 40,413, 46,380, 25,365 and 39,165 agents alive.
 - **Speed.** The half-food run's first segment (to step 105,262) was erratic: 12.2 steps/s overall, with 207 of its
@@ -318,22 +321,23 @@ Mean over steps 400k–500k ([`results_3d_runs/endstate_four_runs.csv`](results_
   | factor | s0 | half | half/s0 |
   |---|---|---|---|
   | nominal regeneration (M q per step) | 13.03 | 6.48 | 0.497 |
-  | share of it injected (`INJECT_REGEN` / nominal) | 0.849 | 0.981 | 1.154 |
+  | share of it injected (`INJECT_REGEN` / nominal) | 0.850 | 0.981 | 1.154 |
   | heat / `INJECT_REGEN` | 1.0005 | 1.0002 | 1.000 |
   | heat per agent-step (q), inverted | 261.1 | 237.7 | 1.098 |
   | population | 42,416 | 26,733 | 0.630 |
 
   - The resource cap clips the full-food field. The share of nominal regeneration lost to it, from the ledger over
     the 1,000 steps that end at the 400k, 450k and 500k checkpoints, is 0.165, 0.136 and 0.151 at full food and
-    0.030, 0.016 and 0.012 at half food (the pooled 0.151 and 0.019 are 1 minus the injected shares above). A snapshot
+    0.030, 0.016 and 0.012 at half food (the pooled 0.150 and 0.019 are 1 minus the injected shares above). A snapshot
     of the field gives 0.23 to 0.28 and 0.02 to 0.04, but that is the share the next regeneration would lose if nothing
     were harvested first, an upper bound: harvest (S10) comes before regeneration (S17).
   - The cost per agent falls mostly in action heat (86.3 against 66.2 q per agent-step over 400k–500k, 20.1 of the
     22.9 q gap), with fewer emitters (0.878 against 0.511) and fewer attacks. The emission cost accounts for at most
     about 7.3 of the 20 q (upper bound, if every emitter pays every step) and the attack cost for about 1.2, so at
     least 11.5 q of the action-heat gap are not explained; this is arithmetic, not a ledger term.
-- **Local density falls less than the total.** Per field layer, the half-food run has 0.77× seed 0's agents in the
-  floor layer, 0.50× in mid-water (layers 5 to 14) and 0.57× in the top quarter. Its population is 1.58× the sizing
+- **Local density falls less than the total only on the floor.** Per field layer, the half-food run has 0.77× seed
+  0's agents in the floor layer (the total is 0.63×), but 0.50× in mid-water (layers 5 to 14) and 0.57× in the top
+  quarter. Its population is 1.58× the sizing
   aim scaled to half food (16,800), against 1.25× for seed 0.
 - **The response to regeneration.** The elasticity of the population to `regen_max` is 0.67 (interval 0.60 to 0.74)
   from the half-food run, and 0.65 (0.55 to 0.75) from the director's damper pulses (§5.4).
@@ -372,8 +376,9 @@ Mean over steps 400k–500k ([`results_3d_runs/endstate_four_runs.csv`](results_
 
 ![Buoyancy cap at full and half food](results_3d_runs/density_buoyancy_cap.png)
 
-- **Erosion is delayed, not prevented.** The median cap is permanently below 0.4 from step 245,300 at half food,
-  against 143,800 (s0) and 149,400 (s1). Over the last 50k it is 0.156 (s0 0.190, s1 0.285).
+- **Erosion is delayed, not prevented.** The median cap (5,000-step running mean) is permanently below 0.4 from step
+  245,300 at half food, against 143,800 (s0) and 149,400 (s1); on the per-row median, from 243,200, 142,200 and
+  147,000. Over the last 50k it is 0.156 (s0 0.190, s1 0.285).
 - **At step 500,000** the share of agents with a cap below 0.125 is 0.43 (s0 0.35), and the share at or above 0.375
   is 0.16 (s0 0.28). The mean cap is 0.25 in clade 13526 and 0.14 in 15726.
 
@@ -391,8 +396,8 @@ Mean over steps 400k–500k ([`results_3d_runs/endstate_four_runs.csv`](results_
   the LLM's first pulse at the 25,000 boundary. No later row is identical. The gap in `n_alive` is +704 at 25,100,
   between −137 and +213 over 25,500 to 26,000, and −934 at 28,000.
 - **So** director-enabled-with-inert-levers equals director-off in 3D in every metrics row and event record, as
-  `DESIGN.md` §26.8 specifies (it states bit-identical; the state itself is not compared, because there is no
-  checkpoint before 50,000), and after step 25,000 s0_dir is a different realisation of the same seed. Every
+  `DESIGN.md` §26.8 specifies (it states bit-identical; the state itself is not compared, because the only checkpoint
+  before 50,000 is the initial state), and after step 25,000 s0_dir is a different realisation of the same seed. Every
   comparison after 25,000 below is unpaired.
 
 ### 5.2 What it did
@@ -580,7 +585,7 @@ Steps 400k–500k ([`results_3d_runs/bodies_endstate.csv`](results_3d_runs/bodie
 - **Size and make-up.** At step 500,000 the largest body has 11,939 agents (25.7% of 46,380) and 16,669 bonds. It is
   one clade, 12062, with all bonds inside the clade; 60% of that clade's 19,996 agents are in it. Its members'
   median generation, 495, equals the population's.
-- **A thick floor sheet.** Its height is 1.0, 4.9 and 14.2 at the 5th, 50th and 95th percentiles; 22% of the members
+- **A floor sheet, thicker than seed 0's.** Its height is 1.0, 4.9 and 14.2 at the 5th, 50th and 95th percentiles; 22% of the members
   are grounded and none is at the surface. The sd along its principal axes is 77.4, 44.7 and 4.5. It is a denser
   mesh than seed 0's largest body: mean degree 2.79 (2.66), 0.89 of the members in the 2-core (0.79), 13% of the
   bonds bridges (23%), hop diameter 214 (112).
@@ -599,7 +604,7 @@ Steps 400k–500k ([`results_3d_runs/bodies_endstate.csv`](results_3d_runs/bodie
 
 - **The half-food control cannot show whether density sets body size.** half/s0 over 400k–500k (ratios of means; of
   medians for the largest body; a difference for `frac_in_bodies_ge4`): population 0.628 (within-run bootstrap interval
-  0.599 to 0.658), largest body 1.11 (0.79 to 1.78), `frac_in_bodies_ge4` −0.025 (−0.041 to −0.012). s1/s0, under the
+  0.599 to 0.658 on the 1,000-step heavy rows with the body series; §4.1's 0.607 to 0.649 uses the 100-step rows), largest body 1.11 (0.79 to 1.78), `frac_in_bodies_ge4` −0.025 (−0.041 to −0.012). s1/s0, under the
   same conditions: population 1.07 (1.01 to 1.12), largest body 4.8 (3.6 to 7.1), `frac_in_bodies_ge4` +0.071. (The
   bootstrap medians of these ratios are 1.13 and 4.9.) The seed gap in the largest body (ln 4.83 = 1.58) is 2.3 times a
   halving (ln 2 = 0.69), and the intervals leave out the variance between trajectories (§2), so one half-food run cannot
@@ -624,11 +629,12 @@ Steps 400k–500k ([`results_3d_runs/bodies_endstate.csv`](results_3d_runs/bodie
   not separate crowding from bonding.
 - **The contact graph sets the size, as in seed 0.** A null model with the same agents, positions and degrees, bonds
   placed nearest-first among pairs closer than 3, gives a largest body of 0.87 (s0), 0.96 (s1), 0.81 (half) and 0.75
-  (dir) of the observed (medians over 9 checkpoints). The probability of a bond given a contact closer than 3 is 0.72
-  to 0.82 in all runs.
+  (dir) of the observed (medians over 9 checkpoints). The probability of a bond given a contact closer than 3 is 0.71
+  to 0.87 over the checkpoints from 100k (0.72 to 0.82 as each run's mean of the 400k, 450k and 500k checkpoints,
+  `bodies_density_endstate.csv`).
 - **A sudden cut shrinks the bodies.** Within the director run, a 13% fall in population during a damper pulse
-  comes with a fall of about a quarter in the largest body (ratio of the mean log changes over the first 5,000 steps:
-  2.35, interval 1.08 to 3.78). The pulse cannot separate a density effect from a direct food effect, such as the
+  comes with a fall of about a quarter in the largest body (ratio of the mean log changes over the first 5,000 steps,
+  each net of the same calendar steps of s0 and s1: 2.35, interval 1.08 to 3.78; 2.24 from the raw changes of §5.4). The pulse cannot separate a density effect from a direct food effect, such as the
   starvation of bonded agents.
 - **Reading.** At a permanent 0.63× population the half-food run's largest body is 1.11× seed 0's, inside the 4.8×
   gap between the seeds: the control neither shows nor excludes a shrinking. A sudden 0.87× cut shrank the bodies
@@ -697,8 +703,9 @@ Steps 400k–500k ([`results_3d_runs/bodies_endstate.csv`](results_3d_runs/bodie
   `frac_in_bodies_ge4`, so smaller differences between other runs are not attributable. For an exchangeable third
   replicate, the director run would lie outside [s0, s1] two thirds of the time.
 - **500,000 steps.** The mean generation at the end is 444 to 501 in the undirected runs (375 over the director
-  run's last 50k). Seed 1 shifted upward between about 200k and 300k and has been level at 44,000 to 46,000 since;
-  its autocorrelation time, 73,800 steps, is about 5 times seed 0's because its series carries that shift, and the
+  run's last 50k). Seed 1 rose between 100k and 300k (50k-window means 38,754 to 44,913) and has been level at 44,000
+  to 46,000 since 250k; its autocorrelation time, 73,800 steps, is about 5 times seed 0's because its series carries
+  that rise, and the
   half-food run's rates (not its population) drift after 350k.
 - **The pauses.** The director run was paused at step 249,394 and resumed: no decision was lost or repeated (§5.2),
   but equality with an uninterrupted run cannot be tested. The half-food run was paused at step 105,262; no
