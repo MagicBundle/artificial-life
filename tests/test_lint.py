@@ -190,7 +190,7 @@ RULES = (rule_at, rule_setitem, rule_random, rule_async_eval, rule_host_reads)
 def test_source_tree(rule) -> None:
     mods = list(_modules())
     assert {"ops", "state", "step", "bonds", "director.rules", "director.actions"} <= {m for m, _ in mods}
-    assert {"game.observe", "game.rules"} <= {m for m, _ in mods}  # + game.observer, the host observer
+    assert {"game.observe", "game.rules", "game.observer"} <= {m for m, _ in mods}
     violations = [v for mod, tree in mods for v in rule(mod, tree)]
     assert violations == []
 
@@ -208,6 +208,7 @@ def test_rules_are_not_vacuous() -> None:
     assert not bad(rule_setitem, "config", "def f(d):\n    d['a'] = 1\n")
     assert bad(rule_setitem, "director.rules", "def f(d):\n    d['a'] = 1\n")  # the director scans clean too
     assert bad(rule_setitem, "game.observe", "def f(d):\n    d['a'] = 1\n")  # and so do the game modules
+    assert bad(rule_setitem, "game.observer", "def f(d):\n    d['a'] = 1\n")  # the host observer too
     assert bad(rule_setitem, "game.rules", "def f(d):\n    d['a'] = 1\n")
     assert bad(rule_random, "brain", "def f():\n    return mx.random.normal((3,))\n")
     assert bad(rule_random, "brain", "def f():\n    mx.random.seed(0)\n")

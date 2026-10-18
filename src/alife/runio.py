@@ -24,6 +24,8 @@ import shutil
 import struct
 import subprocess
 import sys
+import zipfile
+import zlib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Final
@@ -44,6 +46,7 @@ LATEST_FILE: Final = "LATEST"
 DIRECTOR_LOG_FILE: Final = "director.jsonl"
 JOURNAL_FILE: Final = "journal.jsonl"
 DIRECTOR_ARCHIVE_FILE: Final = "director_archive.json"
+OBSERVERS_DIR: Final = "observers"  # the observer sidecars of an observing run (DESIGN §28.6)
 STATUSES: Final = ("running", "done", "extinct", "violation", "interrupted")
 
 BIRTH_COLUMNS: Final[Mapping[str, Any]] = {
@@ -65,6 +68,7 @@ DEATH_COLUMNS: Final[Mapping[str, Any]] = {
 
 _CKPT_RE: Final = re.compile(r"^step_(\d{10})\.safetensors$")
 _EVENT_RE: Final = re.compile(r"^(births|deaths)_(\d{10})_(\d{10})\.npz$")
+_OBSERVER_RE: Final = re.compile(r"^step_(\d{10})\.npz$")
 _MAX_HEADER: Final = 1 << 26  # sanity bound on a safetensors JSON header
 
 
@@ -337,6 +341,10 @@ class RunDir:
         return self.path / "diag"
 
     @property
+    def observers_dir(self) -> Path:
+        return self.path / OBSERVERS_DIR
+
+    @property
     def media_dir(self) -> Path:
         return self.path / "media"
 
@@ -422,24 +430,69 @@ class RunDir:
         self._write_meta(meta)
 
     # checkpoints
-    def save_checkpoint(self, s: State, cfg: Config) -> Path:
-        """write_state_file + LATEST + prune."""
+    def save_checkpoint(
+        self, s: State, cfg: Config, *, observers: Mapping[str, np.ndarray] | None = None
+    ) -> Path:
+        """sidecar + write_state_file + LATEST + prune.
+
+        ``observers`` (the arrays of ``Observer.sidecar()``) is written to ``observers/step_<t>.npz`` before
+        the state file, so every complete checkpoint of an observing run has its sidecar (a crash in between
+        leaves an orphan sidecar, which pruning removes). Without ``observers`` a sidecar of this step is
+        removed, so a checkpoint and its sidecar always come from the same save (§28.6).
+        """
         step = int(to_numpy(s.step))
         path = self.checkpoint_dir / f"step_{step:010d}.safetensors"
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        if observers:
+            self.observers_dir.mkdir(exist_ok=True)
+            _write_npz(self.observer_path(step), observers)
+        else:
+            self.observer_path(step).unlink(missing_ok=True)
         write_state_file(path, s, cfg)
         _atomic_write_text(self.checkpoint_dir / LATEST_FILE, path.name + "\n")
         self._prune(cfg.run.keep_checkpoints)
         return path
 
     def _prune(self, keep: int) -> None:
-        """Keep the newest ``keep`` checkpoints, step 0 and whatever ``LATEST`` names."""
+        """Keep the newest ``keep`` checkpoints, step 0 and whatever ``LATEST`` names; an observer sidecar
+        lives exactly as long as its checkpoint."""
         ckpts = self.checkpoints()
         latest = self.latest_checkpoint()
         protected = {p for _, p in ckpts[-keep:]} | {p for st, p in ckpts if st == 0}
         for _, p in ckpts:
             if p not in protected and p != latest:
                 p.unlink(missing_ok=True)
+        remaining = {st for st, _ in self.checkpoints()}
+        for st, p in self.observer_files():
+            if st not in remaining:
+                p.unlink(missing_ok=True)
+
+    # observer sidecars (§28.6)
+    def observer_path(self, step: int) -> Path:
+        return self.observers_dir / f"step_{step:010d}.npz"
+
+    def observer_files(self) -> list[tuple[int, Path]]:
+        """``(step, path)`` of every observer sidecar, ascending by step."""
+        if not self.observers_dir.is_dir():
+            return []
+        found = [
+            (int(m.group(1)), p)
+            for p in self.observers_dir.iterdir()
+            if (m := _OBSERVER_RE.match(p.name)) and p.is_file()
+        ]
+        return sorted(found)
+
+    def read_observers(self, step: int) -> dict[str, np.ndarray] | None:
+        """The arrays of the sidecar of ``step`` (every ``ObsState`` field and ``meta``), None if there is no
+        such file; ``CheckpointError`` if it exists but cannot be read."""
+        path = self.observer_path(step)
+        if not path.is_file():
+            return None
+        try:
+            with np.load(path, allow_pickle=False) as z:
+                return {k: z[k] for k in z.files}
+        except (OSError, ValueError, EOFError, zipfile.BadZipFile, zlib.error) as e:
+            raise CheckpointError(f"{path}: unreadable observer sidecar: {e}") from e
 
     def checkpoints(self) -> list[tuple[int, Path]]:
         """Complete checkpoints as ``(step, path)``, ascending by step."""
@@ -542,7 +595,8 @@ class RunDir:
 
         Drops metrics rows with ``step > step``, deletes event chunks starting at or after ``step``, trims a
         chunk spanning it to the records with ``step < step`` (renamed ``*_<s0>_<step>.npz``), and deletes
-        checkpoints after ``step`` so they cannot be confused with the resumed trajectory. The director files
+        checkpoints and observer sidecars after ``step`` so they cannot be confused with the resumed
+        trajectory (the sidecars always, whatever ``keep_director`` is). The director files
         are cut the same way (``director.jsonl`` and ``journal.jsonl`` to records with step ≤ ``step``; a
         ``director_archive.json`` taken after it is deleted), except with ``keep_director`` (a replay, which
         must never touch the log it replays).
@@ -569,6 +623,9 @@ class RunDir:
         for st, path in self.checkpoints():
             if st > step:
                 path.unlink()
+        for st, path in self.observer_files():  # whatever keep_director is: a sidecar belongs to its step
+            if st > step:
+                path.unlink(missing_ok=True)
         latest = self.latest_checkpoint()
         if latest is not None:
             _atomic_write_text(self.checkpoint_dir / LATEST_FILE, latest.name + "\n")

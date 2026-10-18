@@ -95,7 +95,7 @@ def test_unknown_game_key_is_rejected() -> None:
         apply_overrides(load_config(preset="tiny"), ["game.observe=maybe"])
 
 
-# --- resume and fork (the runner wiring is stage 3) ---------------------------------------------------------
+# --- resume and fork ---------------------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -120,7 +120,6 @@ def test_resume_accepts_game_observe_key(small_run: Path, tmp_path: Path) -> Non
     assert [st for st, _ in rd.checkpoints()][-1] == 50
 
 
-@pytest.mark.xfail(strict=True, reason="stage 3: the runner builds the observer, rows and sidecar")
 def test_resume_with_observe_writes_observer_rows_and_sidecar(
     small_run: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -159,7 +158,6 @@ def test_fork_can_set_observe(small_run: Path, tmp_path: Path) -> None:
     assert [st for st, _ in fork.checkpoints()] == [30]
 
 
-@pytest.mark.xfail(strict=True, reason="stage 3: the runner builds the observer and its sidecar")
 def test_fork_with_observe_starts_its_observers_fresh(small_run: Path, tmp_path: Path) -> None:
     import numpy as np
 

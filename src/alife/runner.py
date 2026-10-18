@@ -13,6 +13,11 @@ Cadences (all in units of ``state.step``):
   interval row, flushes events and checkpoints at that step (§18);
 - a **director boundary** is a multiple of ``director.rule_every`` (itself a metrics boundary): after the row
   and the violation check, and before the checkpoint, the director may edit the environment.
+
+With ``game.observe`` the step also returns the observer channel, an ``Observer`` folds it in the same single
+eval (its arrays are evaluated with the state and the ``StepOut``), the metrics rows gain an ``observers``
+block and every checkpoint is accompanied by an observer sidecar (§28.5, §28.6). It never changes the
+trajectory.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import numpy as np
 
 from alife import metrics
 from alife.config import Config, dims, immigration_on
+from alife.game.observer import Observer
 from alife.runio import RunDir
 from alife.state import ERROR_MASK, CounterIdx, Diag, State, to_numpy
 from alife.step import StepOut, make_step
@@ -167,6 +173,11 @@ def run(
     with the interventions applied, after they are durable in ``director.jsonl`` and before the checkpoint,
     so the checkpoint at ``t`` already contains them and a resume never re-applies anything.
     ``director=None`` is the exact behaviour without a director.
+
+    With ``cfg.game.observe`` the observers continue from the run's sidecar at the starting step if it is
+    valid (otherwise they start fresh, and a resume says so on stderr, unless ``quiet``); the step's acts are
+    folded into them in the step's eval and never retained, and a checkpoint at the starting step is written
+    with the sidecar. With it off every line is as without observers.
     """
     if steps < 0:
         raise ValueError(f"steps must be ≥ 0, got {steps}")
@@ -176,14 +187,27 @@ def run(
     t = int(to_numpy(state.step))
     end = t + steps
     rd.update_meta(status="running")
+    obs: Observer | None = None
+    if cfg.game.observe:
+        obs, note = Observer.open(rd, state, cfg)
+        if note and not quiet:  # stdout carries the status lines the GUI reads
+            print(note, file=sys.stderr)
+
+    def save_checkpoint() -> None:
+        """The checkpoint of the current ``state``, with its observer sidecar when observing."""
+        if obs is None:
+            rd.save_checkpoint(state, cfg)  # exactly the call of a run without observers
+        else:
+            rd.save_checkpoint(state, cfg, observers=obs.sidecar())
+
     if not any(st == t for st, _ in rd.checkpoints()):
-        rd.save_checkpoint(state, cfg)
+        save_checkpoint()
     first_row = not rd.metrics_rows()
     if not immigration and not bool(to_numpy(state.alive).any()) and not _immigrants_pending(state, cfg):
         rd.update_meta(status="extinct")
         return RunResult(state, "extinct", ExitCode.OK)
 
-    step_fn = make_step(cfg)
+    step_fn = make_step(cfg, observe=True) if obs is not None else make_step(cfg)
     latch = _Interrupt()
     outs: list[StepOut] = []
     out_steps: list[int] = []
@@ -197,7 +221,7 @@ def run(
         nonlocal births, deaths, chunk_s0, ckpt_step
         rd.write_events(chunk_s0, t, _concat(births), _concat(deaths))
         births, deaths, chunk_s0 = [], [], t
-        rd.save_checkpoint(state, cfg)
+        save_checkpoint()
         if director is not None:
             director.on_checkpoint(t)
         ckpt_step = t
@@ -208,7 +232,12 @@ def run(
     with _sigint(latch):
         while t < end:
             state, out = step_fn(state)  # rebinding drops the only reference to the previous state
-            mx.eval(state, out)
+            if obs is not None:
+                obs.update(state, out.acts, t + 1)
+                out = out.base()  # the acts are never retained in `outs`
+                mx.eval(state, out, *obs.arrays())  # still exactly one blocking eval per step
+            else:
+                mx.eval(state, out)
             outs.append(out)
             out_steps.append(t)
             t += 1
@@ -231,6 +260,8 @@ def run(
             if first_row:
                 row["carrying_capacity_est"] = metrics.carrying_capacity(state, cfg)
                 first_row = False
+            if obs is not None:
+                row["observers"] = obs.row_block()
             rd.append_metrics([row])
             outs, out_steps = [], []
 
