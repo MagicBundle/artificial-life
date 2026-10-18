@@ -1,0 +1,850 @@
+# Emergent Worlds: a gaming vertical for alife (design proposal)
+
+Status: **design; nothing built.** The owner decided five of the ten questions on 2026-10-18 (§10). This document maps the owner's brief ("Project: Emergent Worlds", 2026-10-18) onto the
+engine at `aef79c2`. The brief's three pillars are:
+- a motivation-to-action loop instead of scripted state machines;
+- an LLM architect director;
+- social lineage.
+
+`docs/DESIGN.md` stays normative. Every feature starts off by default, so existing runs, their `config_hash` and the 2D
+golden digest stay as they are. The one new live lever chosen for G4, `attack_mult` (§10.4), changes the 3D golden
+digest, which that PR re-pins deliberately (§5.4).
+
+## 1. Summary
+
+- **Much of the brief already has a basis in the code.**
+  - **Behaviour.** The agents already work the brief's needs-based way. A per-agent recurrent net maps sensed energy,
+    hurt, crowding, kin, chemicals and messages to actions. There are no hand-written behaviour rules: only the output
+    decode and the reproduction gate use fixed thresholds.
+  - **Director.** It has an `architect` persona that takes a natural-language `director.goal`. It answers through a
+    strict JSON schema, chooses only from a bounded menu, and logs every decision for bit-exact replay (DESIGN §26).
+  - **Lineage.** Clades, heritable tags, the bond graph and the birth and death logs cover family, kinship and colonies.
+- **The main gaps:**
+  - Per agent, only the last step's harvest, share inflow and loss are stored. Other actions, attack gains and all
+    longer-run counters are missing.
+  - There is no player command channel and no live lever for violence, cooperation or harshness.
+  - Director pacing is tuned for research runs: at game speed it would allow one or two commands an hour.
+  - There is no faction or territory tracking, the viewers carry no per-agent identity, and nothing runs at a fixed
+    step rate.
+- **The runs warn about the content.**
+  - Sharing is rare, bodies are uncoordinated "adhesion sheets", and founder clades collapse to about 4.
+  - In the director evaluation, random moves at the LLM's steps matched or beat it on coverage and novelty. The LLM's
+    moves gave 1.3–3.9× the new adaptive activity, and its journal was rated legible (4.3 of 5).
+  - A game on today's dynamics shows mostly foragers, predators and clumps (§8.4).
+- **Proposed design:**
+  - **Observation.** A gated, observer-only per-agent channel (§4). It is not a per-frame decode of the step, which would
+    cost about three quarters of a step.
+  - **Director target.** The director acts on live environment state (`State.env`), not on `config.json`. Config keys are
+    hashed, can change only by fork, and force a recompile; config changes become explicit "era changes" (§5.2).
+  - **Player intent.** It reaches the world in stages: the LLM parses text into an intent vector, a deterministic,
+    versioned compiler turns that into actions, and the player confirms a preview generated from the compiled plan
+    (§5.3, §7).
+  - **Pacing.** Player commands get their own pacing in game time. Once applied, the safety rules cannot supersede them
+    (§5.5, §5.6).
+- **Scale.** At 64k capacity (`n_max` 65,536: about 33k agents in 2D, about 42k in 3D) the step runs at 59 steps/s in 2D
+  and 14 in 3D. The owner chose a 64k-capacity 2D world at 30 steps/s for the first slice (§8.3, §10.7).
+- **Platform.** The engine runs on Apple Silicon at speed (MLX on Metal) and slowly on Linux CPU (`mlx[cpu]`, the CI
+  platform). A Mac-first prototype is realistic. A Windows or console product needs the step ported.
+
+## 2. Starting point
+
+| asset | where | evidence |
+|---|---|---|
+| Needs-driven agents | 69 inputs (84 in 3D) feed an Elman RNN (H = 32; 4,387 weights, or 4,999 in 3D), which drives 35 outputs (39 in 3D): `layout.py`, `brain.py`, `actions.py` | DESIGN §5–§7 |
+| Exact energy economy | 16-term integer ledger | DESIGN §10.8; `ledger_error` is 0 in all four 3D runs |
+| Bounded, logged interventions | `director/actions.py` `MENU` (7 actions with bounds, costs, cooldowns); `director.jsonl` | DESIGN §26.4 |
+| Natural-language goal | persona `architect`; `director.goal`, in `<goal>` tags in the system prompt (`director/prompt.py`) | DIRECTOR.md §6, §13 |
+| Bit-exact replay on one backend | `run.director=replay` | DESIGN §14.2, §26.8 |
+| Visible kinship | heritable 4-dimensional `tag` drifting at a fixed rate; render mode `tag` | DESIGN §12.4; `render.py` `COLOR_MODES` |
+| Live 3D view | `alife stream` (ALSTRM) into the Swift Metal viewer | DESIGN §27.11; `gui/README.md` |
+
+**Prior art** (sources in §11):
+- **Already shipped:**
+  - creatures evolved with neural nets (Creatures, 1996; The Bibites; Ecosystem);
+  - needs-based utility AI (The Sims, Dwarf Fortress);
+  - event directors (RimWorld's storytellers, the Left 4 Dead AI Director).
+- **Found in no shipped game:** an LLM that turns player intent into bounded, replayable parameter changes on an evolving
+  neural ecology. That is the defensible novelty.
+- **What prior art shows is hard:**
+  - designers cannot read or control evolved nets (Risi & Togelius 2015);
+  - players want agency more than they want to watch selection (Spore dropped mutation-driven play);
+  - LLM text must never become game state unchecked (Where Winds Meet, 2025).
+
+## 3. Part A: feature mapping
+
+Cost combines engineering complexity with runtime cost. "est." marks estimates. Step labels follow DESIGN §3: S7 decode,
+S8 costs, S10 harvest, S11 combat, S12 share.
+
+### Pillar I: the motivation-action loop
+
+| gameplay concept | `alife` code component | implementation strategy | complexity / performance cost |
+|---|---|---|---|
+| Hunger / survival | `State.energy`; `IN_ENERGY` (`sensing.py`); dues and insolvency (`energy.pay_costs`, S8); `repro.min_energy` | Two bars: *runway* (steps of upkeep left) and *satiety* (`E / min_energy`). "Starving" when the runway is under 50 steps. | Low. Reads `State` only. |
+| Threat / safety | `State.last_loss` (`IN_HURT`); `OUT_DEFEND`; `combat.*` | Hurt bar from `last_loss`. The Fleeing and Defending intents use the observer channel. | Low (hurt); Medium (intents). |
+| Social need | `State.partner` (B = 4 slots); `IN_KIN_MEAN`; `IN_CROWD` | Social and crowding bars. Family ties are bonds where `parent_uid` matches the partner's `uid`. | Low. |
+| Mating drive | `OUT_REPRODUCE`; `repro.min_energy` 40,000; `repro.min_age` 20; `StepOut.births` | "Ready to bud" when E ≥ min_energy and age ≥ min_age. | Low. |
+| Calling / signals | `IN_CHEM`, `IN_CHEM_GRAD`, `IN_MSG_MEAN`; `OUT_EMIT`, `OUT_MSG`; chemical fields (`fields.py`); `analysis/signals.py` | A chemical-field overlay. A signal gets a label only for what it is measured to predict in that world: in 2D, msg0 and emit1 carry 0.2–0.38 bits about crowding and the next-step stop (SIGNALS.md). 3D is untested, so G1 runs the analysis in 3D. | Low (overlay); Medium (analysis). |
+| Momentary intent | the decoded `Actions` (S7) inside `step.step` | Observer channel `StepOutG.acts` (§4.2), then threshold rules with step-clock hysteresis (§4.4). | Medium. A static branch, off by default; est. under 0.5 ms per step at 64k. |
+| Archetype: Gatherer / Hunter | `State.last_harvest` (S10, `energy.harvest`); attack gain `Combat.gain` (S11, `energy.combat`) | Labels by income source, from fixed-point accumulators (§4.3, §4.4). | Medium. Harvest is in `State`; attack gain needs the channel. |
+| Archetype: Provider / Trader | `State.last_inflow`; per-slot `out` and `in` of S12 `energy.share` | Provider gives a large share of its income. Trader is reciprocal flow on one bond, and is expected to be rare: there is no exchange mechanism. | Medium. Two (N, B) arrays in the channel. |
+| Archetype: Nomad / Settler | `State.vel`; grip (`physics.py`); bonds | Directional persistence `‖EMA(v)‖ / EMA(‖v‖)` and speed, both relative to the thrust speed `u = thrust_max / drag` (0.1). | Low. |
+| Temperament (kin attitude) | the kin component of `OUT_Q_ATTACK` and `OUT_Q_BOND` (`actions.py` φ·q) | Mean kin weight of each query, either spares kin or targets kin. Validated against `kin_attack_bias` per kin group. | Medium. Uses the channel. |
+| Archetype mix | metrics row | Archetype shares go into the metrics row of game worlds. They are kept out of `DESCRIPTOR_NAMES`, so existing personas do not change. | Low. |
+
+### Pillar II: the Architect Director
+
+| gameplay concept | `alife` code component | implementation strategy | complexity / performance cost |
+|---|---|---|---|
+| Natural-language command | persona `architect` and `director.goal` (the precedent); `director/llm.py` strict `json_schema`; `llm.clean_text` | A new intent schema (§7.1). The LLM parses the player's text into an intent vector and never chooses parameters. | Medium. |
+| Intent → parameters | `director/actions.py` `clamp`, `validate_entry`, `apply`; `rules.eligibility` | A deterministic compiler (`COMPILER_VERSION`). Its proposals are eligibility-checked and clamped at landing (§5.3). | Medium. Pure Python, unit-tested. |
+| New live levers | `GAME_MENU` and `GAME_SPECS` (used only in game worlds); new `env_*` fields read under the static `cfg.director.enabled` (`step.py`); `invariants.ENV_*` | `env_attack_mult`, `env_share_q8`, `env_basal_mult` and `env_mut_mult`, plus a `regen_set` action (§5.4). `MENU`, the yoked sampler and the existing prompts stay byte-identical. | High. Dynamics, ledger tests, State3 loading, 3D golden re-pin. |
+| Era change | fork (`run --init-from RUN:STEP --set …`); `config_hash` | A config-only change is planned as a fork at a chapter boundary. The fork recompiles (4.5–5.9 s) and must re-apply the env (§8.2). | Low (exists); Medium (UX). |
+| Influence | `director/pacing.py` (`BUDGET_WINDOW`, cooldowns, `drama`); `MENU` `Spec` rows; `rules.PersonaParams` | Player entries get their own pacing scope in game time, from a `GAME_SPECS` table (§5.5). | Medium. Clamp, validation, fold and cooldowns take the spec table as a parameter. |
+| Tension curve | counters `DEATHS_KILLED`, `ATTACKS`, `BIRTHS`; `Vitals.fall` | A new `intensity` vital (an EMA of the kill and death rate, as in Left 4 Dead), steered by `game_master` within the system budget. | Medium. |
+| Player-triggered calls | `Director._decide`; stdin control (`stream.py`) | An `intent` control line and `commands.jsonl`. The call is parsed off the step thread, and its proposals land at a rule boundary (§5.7). | Medium. |
+| Safety against player effects | `rules.py` rescue and runaway damper; lever exclusivity (`actions.lever_keys`) | Precedence and a risk preview (§5.6). | Medium. |
+
+### Pillar III: procedural social complexity
+
+| gameplay concept | `alife` code component | implementation strategy | complexity / performance cost |
+|---|---|---|---|
+| Family | `uid`, `parent_uid`, `generation`; `StepOut.births`; `events/births_*.npz`; `analysis/phylo.py`; `alife inspect --agent` | A host lineage store fed by births. An ancestry panel and a "kin nearby" list. | Low–Medium. |
+| House (genealogical name) | `clade` (the founder dynasty, which never splits); `phylo.splitmix64`, `phylo.marker_roots` | Live sub-lineages: houses found themselves by `splitmix64(uid, seed)`, are inherited, and use no RNG (§6.2). | Medium. Needs `parent_slot` in the birth records. |
+| Kin group (perceived faction) | `State.tag` (N, 4); kin `exp(−‖Δtag‖²/0.25)` (`sensing.py`) | Clusters in tag space, tracked over time. Agents perceive this grouping, so relations are measured between kin groups (§6.3). | Medium. |
+| Kinship colour | `render.agent_colors` (mode `tag`), which `stream` uses | Use as is: similar colour means recent common ancestry. | Low (exists). |
+| Colony | `metrics.components` (min-label propagation) | A one-to-one tracker on uids, giving born, merged, split and dissolved events. Presented as reefs or mats, not organisms (§6.4). | Medium. Labelling cost unmeasured; bench it in G2. |
+| Territory | `ops.scatter_add_i32`; coarse grid over `world.size` | Counts per cell for the top-F groups plus "other". The owner is the argmax and the purity is shown with EMA smoothing (§6.5). | Low–Medium. |
+| War, alliance, exchange | attack and bond targets (S7–S11); per-slot shares (S12) | F × F matrices between kin groups: attacks, kills, bonds formed, energy shared (§6.5). | Medium. Targets go in the channel. |
+| Depth niches (3D) | `clade_height_mi`, `band_frac` | The depth band of each group. In `64k3d_s0`, 4 clades held two zones, with clade–band MI of 0.63 nats. | Low. |
+
+### Infrastructure
+
+| gameplay concept | `alife` code component | implementation strategy | complexity / performance cost |
+|---|---|---|---|
+| Live view with picking and HUD | `stream.py` `FRM1` (alive, pos, orient, rgb, bonds, field slice); Swift `StreamReader`, `Renderer` | Add record tags within the major version (DESIGN §27.11): an alive-only frame record, `IDNT` (uid, house, kin group, colony; every k frames, alive rows only), `INTN` (archetype and intent bytes), `TERR` (overlay), `EVNT` (births, kills, director entries). Add picking and a HUD to the 3D viewer. | Medium. A 64k frame is 21 B per row (1.38 MB for all 65,536 rows) plus 8 B per bond, about 1.5 MB. IDNT at 16 B per alive row adds about 0.7 MB at 42k agents (est.). |
+| Director in the live view | `stream --follow` (faithful only at checkpoint cadence); simulate mode ignores the director | `alife play`: one process with the runner, director, observers, command inbox and stream (§3.1). | Medium. |
+| Real-time pacing | `runner.py` (no fixed rate) | A fixed-timestep scheduler with a target rate and fast-forward, plus interpolation in the viewer. | Low. |
+| Save / load | checkpoints (`runio.py`, safetensors) | Saves are checkpoints plus logs plus the observer sidecar (§6.6). They shrink if dead rows are canonicalised before saving (§8.2). | Medium. 686 MB per 64k3d checkpoint. At 16k the weights alone are about 144 MB in 2D and 164 MB in 3D. |
+| Shared replays | ALSTRM | Recorded, decimated stream files, independent of the backend (§8.2). | Medium. |
+
+### 3.1 Process architecture
+
+```
+ Swift client ──stdin: intent, confirm, pick, speed, colour──▶ alife play (one process)
+              ◀── ALSTRM frames + IDNT / INTN / TERR / EVNT ───
+ alife play:  scheduler ─ step (compiled; StepOutG when game.observe) ─ observers (accumulators, houses, kin groups,
+              colonies, territory) ─ director hook at rule boundaries (reverts, safety, player proposals, game_master)
+              ─ checkpoint + observer sidecar
+              off the step thread: LLM intent parse → compiler → preview to the client
+              logs: director.jsonl (decisions), commands.jsonl (text, exchange, intent, plan, confirmation, outcome)
+```
+
+Principles carried over from the director:
+- **Environment only.** No intervention edits an agent, genome or brain.
+- **Observers never write `State`.** Their values reach the dynamics only through logged director entries.
+- **The log is the source of truth** for replay.
+- **Hashing follows the trajectory.** `game.*` keys default to off and go into `POST_V01_KEYS`.
+  - Observer-only keys (`game.observe`, `game.house_rate`, thresholds) form a new `OBSERVER_KEYS` tuple. It is excluded
+    from `config_hash` next to `UNHASHED_KEYS`, but kept out of `DIRECTOR_POLICY_KEYS`, which is derived from
+    `UNHASHED_KEYS`. A new `game` branch in `cli._resume_allowed` accepts it, so observers can be attached to an
+    existing world.
+  - This is justified by G1's purity test: the trajectory is identical with observers on and off.
+  - Only keys that change dynamics are hashed.
+
+## 4. Pillar I in detail: the behavioural mapping layer
+
+### 4.1 What the layer may claim
+
+The layer may show what the agent **senses** (its inputs, shown as needs), what it **does** (its decoded actions, shown
+as intent), and what it **lives on** (its income sources over a window, shown as archetype). It may not claim motives.
+The brief's `If (Energy < Threshold) → Search(Resource_Field)` describes the kind of policy that evolves, since energy is
+input 1. But the brain has no such threshold to display, so the UI presents intents as observations, not rules.
+
+### 4.2 Data path
+
+- **From `State`, free.** Needs, harvest and received shares come from `State` (`last_harvest`, `last_inflow`,
+  `last_loss`, `energy`, `vel`, `partner`), so they work with observers off.
+- **Why not decode per frame.** Re-running the decode (`analysis/signals.decode`, S0–S8, 2D-only, no RNG advance) costs
+  about 14.4 ms (the staged S0–S7) plus part of S8, out of a 19.2 ms staged step at 64k in 2D (`docs/bench`). That is
+  about three quarters of a step. It stays the offline validation tool, generalised to 3D in G1.
+- **The observer channel.** With `game.observe` on (a static branch, so the compiled graph is unchanged when off),
+  `step.step` returns a parallel type `StepOutG`: the StepOut fields plus `acts`.
+  - `runner.run` keeps each step's StepOut (about 80 KB at 64k) until the metrics boundary.
+  - `acts` is about 4.5 MB per step at 64k, so the play loop folds it into the accumulators every step and keeps only
+    the StepOut part.
+
+| `acts` field | shape, dtype | source |
+|---|---|---|
+| `attack_gain` | (N,) i32 | S11 `energy.combat`, `Combat.gain` |
+| `attack_target`, `bond_target` | (N,) i32 | S7 targets (−1 when none), with flags for hit and formed |
+| `share_out`, `share_in` | (N, B) i32 | S12 per-slot `out`, and the net received `mul_q8(inc, q8(share_efficiency))`, with the S12 `partner` (N, B) |
+| `flags` | (N,) u8 | attacked, hit, bond formed, budded, emitted |
+| `thrust`, `defend` | (N,) i16 | S7 decoded values, quantised as `round(256·v)` |
+| `q_kin` | (N, 2) i16 | the kin columns of the raw `OUT_Q_ATTACK` and `OUT_Q_BOND` outputs, clipped to ±127 before `round(256·v)` |
+
+`BirthRecords` gains a `parent_slot` field (the lane's parent row, −1 for immigrants) under the same flag. `runio`
+ignores extra event columns.
+
+### 4.3 Accumulators
+
+Each signal uses a fixed-point accumulator: `A += x − (A >> k)`, with `A ≥ 0`, mean `A >> k`. It has no dead zone, its
+bias is under one quantum, and it never shifts a negative number.
+- **Flags** enter as 256 per set bit, and floats enter quantised as above.
+- **Windows.** k = 6 for archetypes (about 3·64 steps to reach 95%), and k = 3 for intents.
+- **Headroom.** The largest per-step input is about 6,800 quanta (harvest 400, attack gain up to about 2,800, shares in
+  up to about 3,600), so A stays under 4.5e8 even at k = 16.
+- **Exactness.** Integer accumulators make the label arithmetic exact. On one backend a replay reproduces the labels
+  because the trajectory is bitwise. Across backends the inputs drift with the trajectory, and so may the labels.
+- **Persistence.** Accumulators are restored from the observer sidecar (§6.6). Without it they warm up again after a
+  resume.
+
+Cost (est.): about 15 elementwise int ops per step on N rows, under 0.5 ms at 64k. Nothing goes to the host until a UI
+frame needs it.
+
+### 4.4 Rules
+
+**Archetypes.** Windowed income is `I = harvest + attack_gain + share_in`. Each agent gets a primary label and, where a
+second rule also matches, a secondary one.
+
+| archetype | rule (windowed means) | prevalence |
+|---|---|---|
+| Gatherer | harvest / I ≥ 0.7 | most agents (mean harvest 239–295 q per agent-step) |
+| Hunter | attack_gain / I ≥ 0.35 | unknown. Attack gain is 14–18% of all income in 3D (RESULTS_3D §3), but attacks are sparse (0.06 per agent-step), so measure the distribution first |
+| Provider | Σ share_out / I ≥ 0.2 | rare (1–2.5% of agents share) |
+| Trader | Provider, with some slot where `min(out, in) / max(out, in) ≥ 0.5` | very rare |
+| Nomad | persistence ≥ 0.6 and speed ≥ 0.4·u | unknown. The mean speed is about 0.27·u in 3D (`speed_mean` 0.025–0.029 per 50k window from step 100k) |
+| Settler / Colonial | speed < 0.1·u, or in a colony of 4 or more | unknown. 35% are in bodies of 4 or more (2D and 3D) |
+| Generalist | none of the above | the rest |
+
+**Intents.** Intents are evaluated by the observer every s = 8 steps. Event predicates such as "harvested > 0", "emitted"
+or "formed a bond" hold for nearly every agent (harvest effort is a sigmoid, 87% of 3D agents emit, about 3,700 bonds
+form per step). With 0.06 attacks and 0.19 bond formations per agent-step, "any attack in 8 steps" would cover about
+37% of agents and "any new bond" about 78%. Intents therefore use magnitude thresholds on the k = 3 means:
+- the order runs from rarest to commonest, and the first match wins;
+- a label changes only after the new rule has held at 4 consecutive evaluations, on the step clock, so labels do not
+  depend on playback speed.
+
+The order:
+1. Budding.
+2. Hunting: attack-flag mean ≥ 0.25, about two attempts per 8 steps.
+3. Fleeing: hurt, with |thrust| ≥ 0.5.
+4. Defending: defend ≥ 0.5.
+5. Caring: sharing to a parent or child partner, by `parent_uid`.
+6. Bonding: a new partner whose bond has lasted at least 24 steps, the flicker scale in RESULTS_3D §5.4.
+7. Signalling: Σ emit ≥ 0.5.
+8. Feeding: harvest ≥ 0.5·`harvest_max`.
+9. Roaming: |thrust| ≥ 0.3.
+10. Resting.
+
+G1 measures the coverage of each rule before the order is fixed.
+
+**Thresholds are absolute and versioned** (`INTENT_VERSION`). They are not per-world quantiles, which would label 10% of
+agents Hunters in a peaceful world. They are calibrated once on `64k_s0` and `64k3d_s0` and pinned in DESIGN.
+
+### 4.5 Validity test (G1, before any UI work)
+
+Run on `resim` replays of the reference runs:
+- **Archetypes.** Does "Hunter" predict attacks over the next 1,000 steps, "Nomad" the area covered, and "Provider" the
+  outflow? Each is scored as an AUC against a matched random label.
+- **Intents.**
+  - Each intent must predict its own action over the next 10 steps.
+  - No intent may cover more than about 60% of alive agents.
+- **Stability.** Label flips per agent per 1,000 steps (about 33 s at 30 steps/s).
+
+`analysis/mi.py` supplies the MI estimators and permutation nulls; the AUC and the matched random label are new code.
+Labels that fail are dropped from the UI.
+
+## 5. Pillar II in detail: the Architect Director
+
+### 5.1 What exists
+
+The Architect persona, `director.goal`, the seven-action `MENU`, the strict reply schema, eligibility, clamping, `apply`
+to `env_*` with no retrace, and `director.jsonl` (DESIGN §26.4–§26.10). The LLM runs on a timer (`llm_every`; 25,000
+with `--llm`) and synchronously. Director calls took a median 3.6–4.4 s (p90 5.5–7.2 s) and up to 18 s cold
+(EVALUATION.md §3.6), with a 60 s timeout.
+
+### 5.2 Why the target is `State.env`, not `config.json`
+
+The brief's example keys, `fields.season_amplitude` and `population.immigration_count`, are real (`config.py`), but
+neither can change in a live world:
+- Config keys outside `run` are hashed. Post-v0.1 keys are hashed once they differ from their default, except the
+  director's policy keys (`UNHASHED_KEYS`).
+- Resume accepts only `RESUME_KEYS` and those policy keys. Anything else is a fork, which recompiles, opens a new run
+  directory, resets `env_*` and starts the director off.
+
+Live equivalents exist for some keys: `set_seasons` writes `env_season_amp` (and the period), and `immigration_pulse`
+writes `env_imm_request`. Live intent therefore targets `State.env`. A key with no live equivalent becomes an era change
+(§7.4).
+
+### 5.3 The pipeline: parse, compile, preview, confirm, land
+
+1. **Parse (LLM, off the step thread).** The player's text is cleaned (`llm.clean_text`), capped at 280 characters, and
+   has `<` and `>` escaped before it goes between delimiters. The model returns the intent vector of §7.1:
+   - seven signed dimensions in [−1, 1] (scarcity, harshness, volatility, competition, cooperation, migration, tempo)
+     and an unsigned disaster in [0, 1];
+   - a horizon, and a target given as an index into lists shown in the prompt;
+   - a confidence, and a `clarify` question when the command is ambiguous.
+
+   Probes for the current schema showed that local models need `maxLength` on every string and bounds on every number
+   (DESIGN §26.10). With both, the menu schema gave 100% valid replies in the evaluation. The intent schema keeps both.
+2. **Compile (deterministic).** `game/compile.py` is a pure function of the intent, vitals, env and `COMPILER_VERSION`.
+   It produces raw proposals (§7.3). Any random choice, such as which patch, uses `rng_for(seed, t, tag)` as `rules.py`
+   does, and is logged.
+3. **Preview.** The proposals are dry-run through eligibility and clamp against the current env. The preview also
+   predicts the risk flag: the expected `n_over_k` and fall (§5.6). The player sees text generated from the plan itself,
+   covering every action, permanent ones marked. The LLM's narration makes no promise about outcomes. One measured
+   reason: halving the food lowered the kill share in 3D (0.48 to 0.44), the opposite of "hunting will pay more".
+4. **Confirm**, then **land.** The proposals are queued. At the next rule boundary `Director._decide` runs in this order:
+   - due reverts;
+   - the confirmed player proposals: eligibility and clamp against the env actually being edited, so `prev` and the
+     revert values are current, then apply and log with `source:"player"`;
+   - the safety rules, which may not supersede a lever a player effect holds (§5.6);
+   - the discretionary rules.
+
+   The client is told about anything clamped or refused.
+
+The LLM does not choose actions directly, unlike today's Architect, for three reasons:
+- the intent-to-parameter mapping becomes testable and stable across models;
+- the player can veto the interpretation;
+- the evaluation's case for the LLM rests on its language rather than its choices.
+
+The current Architect path stays as the baseline in G5.
+
+**Calibration.** The compiler's gains need lever-response curves: the effect of each lever over 10k–50k steps on
+population, kill share and archetype mix. These are short sweeps on the 64k 2D preset. A related long-run datum: a 3D run
+with `regen_max` halved from step 0 (one seed, `runs/64k3d_s0_half`) settled at 0.63× the population and 2 clades against
+4. Its median buoy_cap over the last 50k steps was 0.16 against 0.19. That is an evolutionary end state, not a pulse
+response.
+
+### 5.4 New live levers (`GAME_MENU`)
+
+The new rows live in a separate `GAME_MENU`, used only in game worlds. `MENU`, the yoked sampler (arm R),
+`llm.param_specs` and the pinned prompt digests of the existing personas therefore stay byte-identical. Each new field is
+inert by default, read only under the static `cfg.director.enabled`, and range-checked in `invariants.ENV_*`. Each
+energy lever scales an existing ledger term, so no energy path is added; `env_mut_mult` touches no energy term. Each
+lever comes with ledger-closure tests and a DESIGN row.
+
+The owner chose `attack_mult` for G4 (§10.4). The other rows are designed but deferred.
+
+| lever | effect | implementation | bounds (proposed) | cost |
+|---|---|---|---|---|
+| `env_attack_mult` (action `attack_mult`; **G4**) | predation lethality | scales the `combat.attack_max` demand (S11), integer-exact | 0.5–2.0 | 1 |
+| `env_share_q8` (action `share_eff`) | how well cooperation pays | absolute Q8 efficiency used as `mul_q8(inc, env_share_q8)` (S12); inert value `ops.q8(bonds.share_efficiency)` reproduces today's result bit for bit | 128–256 (0.5–1.0) | 1 |
+| `env_basal_mult` (action `harshness`) | upkeep | scales the basal due (S8). `metrics.carrying_capacity` scales `c_ref` with it, so `K_est` and the safety rules stay calibrated | 2/3–1.5 | 1 |
+| `env_mut_mult` (action `tempo`) | evolutionary tempo | a Q8 multiplier on the `mut_sigma` and `mut_rate` used for a child's weights at birth (S16); the inherited genes are unchanged. Replaces the unbuilt `mutation_floor_nudge` (DIRECTOR.md §5): a floor below the existing clip at `rate_min` would do nothing | 0.5–2.0 | 2 |
+| `regen_set` (action only, no new field) | permanent food level | writes `env_regen_mult`, takes the `regen` lever, refused while a pulse holds it | 0.4–1.8 | 2 |
+
+**Compatibility.**
+- `legacy_state_digest` covers only the 38 frozen v0 fields, so the 2D golden does not move.
+- `state_digest` hashes every field name, so any new env field moves the 3D golden. The G4 PR re-pins `GOLDEN_3D`
+  (DESIGN §27.8) deliberately on Linux-x86_64-cpu, with a Review-log row. The alternative is to first freeze a 3D field
+  list, as `V0_FIELDS` does for 2D. `regen_set` alone adds no field.
+- `state_from_arrays` fills missing env fields with inert values only for 2D `State`. G4 extends this to `State3`, with a
+  test that loads a pre-game 3D checkpoint (`runs/64k3d_s0`). Otherwise every existing 3D run fails to load.
+
+### 5.5 Game pacing in real time
+
+Research pacing does not fit a game. At 30 steps/s the 100k-step budget window (`pacing.BUDGET_WINDOW`) is 56 minutes,
+and the Architect gets 4 units in it. A 50k-step regen pulse plus its 30k cooldown locks the lever for 44 minutes, and
+catastrophes are floored at one per 100k steps.
+
+**Proposed pacing.**
+- **Separate scopes.** Player entries are folded in their own pacing scope, apart from the director's own moves. They
+  have their own budget ("influence"), and lever exclusivity stays shared.
+- **Game cadence.** The settings are:
+  - `director.rule_every` = 250 (8.3 s);
+  - `run.metrics_every` = 250 (or 50 or 125);
+  - `run.heavy_metrics_every` = 250;
+  - `run.checkpoint_every` a multiple of 250.
+
+  These are needed because validation requires `heavy_metrics_every` to be a multiple of `metrics_every`, and
+  `rule_every` a multiple of both. G2 benches components and weight diversity at that cadence.
+- **A game spec table.** Durations, cooldowns and costs are fields of `MENU`'s `Spec` rows, and `MENU` must stay
+  byte-identical, so game-time values cannot live in `RuleParams`.
+  - A `GAME_SPECS` table (cost, cooldown and duration bounds per action, existing actions included) is selected for
+    persona `game_master` and for `source:"player"`.
+  - Its id is recorded in the `director.jsonl` header.
+  - It is passed to `clamp`, `validate_entry`, `pacing.fold` / `budget_used` and `cooldown_steps`, so replay validates
+    3,000-step entries.
+  - The safety rules' own entries in a game world use it too, so the rescue pulse fits its bounds.
+  - Per-persona constants go in `game_master`'s `PersonaParams`, not in a global rules version, which would also apply
+    to research runs.
+
+  The proposed values are multiples of 250 steps:
+
+| action or item | duration (steps) | cooldown (steps) | at 30 steps/s |
+|---|---|---|---|
+| influence window / budget | 18,000 / 6 units | — | 10 min |
+| `regen_pulse`, `attack_mult`, `harshness` | 3,000–36,000 | 3,000 | 1.7–20 min; cooldown 1.7 min |
+| `share_eff`, `tempo` (slow) | 18,000–54,000, or permanent | 6,000 | 10–30 min (about 13–38 generations) |
+| `habitat_loss` | 3,000–36,000 | 6,000 | 1.7–20 min; 3.3 min |
+| `set_seasons` (permanent; period 2,000–18,000), `drift_change` (permanent) | — | 6,000 | a season of 1.1–10 min |
+| `regen_set` (permanent) | — | 6,000 | 3.3 min |
+| `immigration_pulse` | instant | 3,000 | 1.7 min |
+| `catastrophe` | one step | 9,000, which replaces the `catastrophe_gap` floor for `game_master` only | 5 min |
+| rescue `regen_pulse` (safety) | 6,000 | as the rule tier | 3.3 min |
+
+**Two timescales.**
+- Ecological responses show within one or two lifetimes. The 3D mean lifetime is about 954 steps, about 32 s.
+- Evolutionary responses are slow. There are about 13 generations per 10 minutes at 30 steps/s (3D). An agent's tag
+  similarity to its ancestor halves after about 108 generations (about 85 minutes). Two groups that split now reach
+  similarity 0.5 after about 54 generations each (about 42 minutes).
+- Goals should therefore be ecological ("make the reef recover"). The cooperation and tempo dimensions are labelled
+  "slow (evolutionary)" in the UI, and a time-lapse mode exists for the rest.
+
+### 5.6 Player effects against the safety rules
+
+The safety rules can cancel a player's plan. A strong scarcity plan can set the risk flag (a fall above 0.3 within 50k
+steps). The first `extinction_rescue` in any 200k window then waives budget, cooldown and the regen lever. It replaces
+the player's pulse with ×1.5 for 20k plus immigrants equal to 10% of `K_est`, and its revert restores the pre-player
+base.
+
+Rules for game mode:
+- Confirmed player proposals land before the safety rules at their boundary (§5.3), with the player-chosen risk floor as
+  the guard.
+- While a player effect holds a lever, rescues and the runaway damper may not supersede it. They act on other levers or
+  wait.
+- Safety moves draw from a system budget that is not shown as influence.
+- The preview shows when a plan would set the risk flag. `game_master` takes its risk floor from a world setting chosen
+  by the player (for example "allow a fall to 40% of K").
+
+### 5.7 Interactivity and latency
+
+- **Commands.** The client sends `intent <json>` and `confirm <id>` lines (the stdin protocol caps lines at 4,096 bytes).
+  `alife play` appends every step of the pipeline to `commands.jsonl`.
+- **Parsing does not block the step.** The world keeps stepping while the model parses (median about 4 s). Without that,
+  the world freezes for the call (median 4 s, p90 about 7 s, 18 s cold).
+  - Proposals land at a step that depends on wall-clock time either way, since confirmation is a human action. Replay
+    is unaffected because it reads `step_applied` from the log and never calls the model or the compiler.
+  - The real choice is responsiveness against a pause while the player reads the preview (§10.5).
+- **Shared GPU.** LM Studio and the MLX step share one GPU and 48 GB of unified memory. The step rate during an
+  inference is unmeasured, so G1 benches it. If the rate drops, the scheduler slows or pauses during calls. The game uses
+  whatever model LM Studio has loaded, checked with `llm-check`, and never loads or unloads models.
+- **Direct powers.** The UI keeps a few explicit actions, such as "catastrophe here" and "bloom this patch", and sliders
+  over the intent dimensions. They give precision and still work when the LLM fails.
+
+## 6. Pillar III in detail: social lineage
+
+### 6.1 Units and evidence
+
+| unit | source | what the runs show |
+|---|---|---|
+| Family | `parent_uid`; bonds to a parent or child | in the largest 3D body at step 500k, 25% of bonds are parent–child and 48% of members have their parent in the body (RESULTS_3D §5.2) |
+| House | sub-lineages of a clade | clades alone are too coarse: 16,384 founder clades fall to 4 by step 177k (3D) and 1.13M (2D) |
+| Kin group | tag similarity, which agents sense | 98% of sensed neighbours are same-clade in 2D (SIGNALS.md) |
+| Colony | bond-graph components | 3D: the largest body has a median of 2,510 agents and is a single-clade sheet with velocity coherence 0.04–0.10. 2D: the median largest body is 73 |
+| Territory | spatial dominance | 3D, step 500k: in 41% of floor-zone columns (52% of top-zone columns), one of the zone's two clades holds at least 90% of that pair's agents (columns with 20 or more). That may be kin clustering after birth rather than defence (RESULTS_3D §4.3) |
+
+### 6.2 Houses: genealogical names
+
+A house is a named sub-lineage within a clade.
+- **Founding rule.**
+  - Founders' house is their clade.
+  - A birth inherits `house[parent_slot]`, unless `splitmix64(uid, seed) < r·2^64`. In that case the child founds a
+    house with id = uid. This is the function and cut of `phylo.marker_roots`.
+  - For a world played from step 0, offline analysis reproduces the live houses.
+  - After a fork (an era change), `marker_roots` hashes tree indices rather than uids and roots every agent alive at
+    the fork. Houses then come from the observer sidecar, or `marker_roots` must hash uids and take the sidecar's houses
+    as roots.
+  - Immigrants found their own house.
+- **Properties.** The rule is deterministic, uses no RNG, and replays exactly.
+- **Rate.** At 64k there are 29 (2D) to 45 (3D) births per step, so r = 1/2,000 founds a house every 44–69 steps. At 16k
+  expect about 4× fewer births. r (`game.house_rate`) is set from the target number of named houses.
+- **Storage.**
+  - The label is `house (N,) i32` on the device, outside `State`.
+  - It is updated between steps, in step order, from `BirthRecords.parent_slot`, using an `ops.py` scatter.
+  - Only the top 16 houses by size are named. Houses get a distinct palette, not the founder's tag, which sibling houses
+    share.
+- **Not perceived by agents.** Houses are labels for the story (dynasties, family trees). They are not what agents
+  respond to.
+
+### 6.3 Kin groups: factions the agents perceive
+
+Agents discriminate kin only through tag similarity: `NBR_KIN`, `IN_KIN_MEAN`, and the kin column of the bond and attack
+queries. Factions that behave as factions must therefore be groups in tag space.
+- **Clustering.**
+  - Each snapshot quantises the 4-D tag on a fixed grid. The cell width is a parameter; 0.25 gives 8⁴ bins.
+  - Occupied neighbouring bins are merged into groups.
+  - Groups are matched across snapshots by member overlap, with the same tracker as colonies (§6.4).
+- **Drift.** The tag is a neutral clock (similarity 0.5 at about 108 generations apart), so groups drift slowly and
+  split as lineages diverge.
+- **Relations.** War, alliance and exchange (§6.5) are reported only between kin groups whose mean tag similarity is
+  below a threshold. They are validated against a cross-group `kin_attack_bias` corrected for proximity, as the
+  existing metric is.
+
+### 6.4 Colonies: persistent identity for bodies
+
+`metrics.components` labels components by row index, with no identity across snapshots. The tracker:
+- **Overlap on uids.** Overlaps are computed on uids, with newborns counted under their parent's colony.
+- **Matching.** Old and new components are matched one-to-one, greedily by descending |A∩B|. A match is accepted when the
+  Jaccard index is at least θ.
+- **Events.**
+  - An unmatched new component is `born`, or `split` if its largest overlap is with an already matched colony.
+  - An unmatched old component is `merged` into the component that holds most of it, or `dissolved`.
+- **Calibration.** θ is calibrated at the actual snapshot spacing. In 3D the Jaccard index with the starting body is 0.59
+  at 100 steps and 0.41 at 300 (RESULTS_3D §5.4). Snapshots should therefore be at most about 300 steps apart. The
+  tracker uses the 250-step game heavy cadence (§5.5), with footprint overlap (occupied coarse cells) as the cheaper
+  fallback if components cost too much there.
+- **Naming.** Colonies are presented as reefs or mats. "Super-organism" would promise coordination that does not exist.
+
+### 6.5 Territory and relations
+
+- **Territory.**
+  - Each snapshot does one `ops.scatter_add_i32` of alive agents into a dense (cells × (F + 1)) array: a coarse grid such
+    as 32 × 32 (the floor projection in 3D), times the top F = 16 kin groups plus "other".
+  - The owner is the argmax and the purity its share, both EMA-smoothed.
+  - Borders are drawn between cells with different owners.
+  - The overlay is labelled "dominance", not "control", until tests show defence.
+- **Relations.** F × F matrices per window, from the channel's targets and per-slot shares:
+  - attacks and kills (a kill is a victim dying `KILLED` at the step it was a target);
+  - bonds formed;
+  - energy shared.
+
+  Relation events are narrated in the journal ("Kin group 3 and kin group 7 are at war on the north reef") by the LLM at
+  narrative cadence, as an observer, never in the loop.
+
+### 6.6 Observer persistence
+
+Accumulators, houses, kin-group and colony trackers live outside `State`, so they are written to a sidecar with each
+checkpoint (`observers/step_<t>.npz`). The sidecar is restored on resume, rewind, load and replay, and cut by
+`truncate_after`. Without a sidecar, houses can only be rebuilt by folding the birth log from step 0 (43.6M records in
+`64k_s0`). Until the sidecar exists, observer values stay out of metrics rows and director vitals.
+
+### 6.7 Visual encoding
+
+- **Colour modes.** Existing: `tag` (kinship gradient), `clade` (dynasty hash), `energy`. New: `house`, `kin_group`,
+  `colony`, `archetype`, `intent`. All are computed on the server in `render.agent_colors`, so the 2D render and the 3D
+  stream agree.
+- **Glyphs.** Attacks are red sparks, keeping today's hurt-is-red rule. Shares are gold pulses along bonds, harvest a
+  green inflow from the field, and emission a plume in the channel's tint.
+- **Flows come from ledger quantities**, so the picture cannot show energy that does not exist.
+
+## 7. Part B: the intent-to-parameter schema
+
+### 7.1 Intent schema (LLM output, strict `json_schema`)
+
+The wrapper is the one `director/llm.py` uses: `{"type": "json_schema", "json_schema": {"name": "intent", "strict":
+true, "schema": S}}`. `target.index` refers to lists shown in the prompt: the top-16 kin groups or houses, the patches,
+and a 32 × 32 region grid. The compiler resolves the index to an id or coordinates and logs the resolved value.
+
+```json
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["dimensions", "horizon", "target", "confidence", "clarify"],
+  "properties": {
+    "dimensions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scarcity", "harshness", "volatility", "competition", "cooperation", "migration", "tempo", "disaster"],
+      "properties": {
+        "scarcity":    {"type": "number", "minimum": -1, "maximum": 1},
+        "harshness":   {"type": "number", "minimum": -1, "maximum": 1},
+        "volatility":  {"type": "number", "minimum": -1, "maximum": 1},
+        "competition": {"type": "number", "minimum": -1, "maximum": 1},
+        "cooperation": {"type": "number", "minimum": -1, "maximum": 1},
+        "migration":   {"type": "number", "minimum": -1, "maximum": 1},
+        "tempo":       {"type": "number", "minimum": -1, "maximum": 1},
+        "disaster":    {"type": "number", "minimum": 0,  "maximum": 1}
+      }
+    },
+    "horizon": {"type": "string", "enum": ["short", "medium", "long"]},
+    "target": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "index"],
+      "properties": {
+        "kind":  {"type": "string", "enum": ["world", "patch", "region", "kin_group", "house"]},
+        "index": {"type": "integer", "minimum": -1, "maximum": 1023}
+      }
+    },
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "clarify":    {"type": "string", "maxLength": 200}
+  }
+}
+```
+
+### 7.2 The brief's example: "Make the world more competitive and scarce"
+
+The system prompt gives the eight dimension definitions, the rule "0 means no change", the target lists, and the current
+vitals (`n_over_k`, kill share, archetype mix). The model replies:
+
+```json
+{
+  "dimensions": {"scarcity": 0.7, "harshness": 0.0, "volatility": 0.0, "competition": 0.6,
+                 "cooperation": 0.0, "migration": 0.0, "tempo": 0.0, "disaster": 0.0},
+  "horizon": "medium",
+  "target": {"kind": "world", "index": -1},
+  "confidence": 0.85,
+  "clarify": ""
+}
+```
+
+The brief's own reading was `fields.season_amplitude=0.8, population.immigration_count=0`. Version 1 maps it this way:
+- **Seasons are volatility, not scarcity.** They modulate fertility around its mean (`fields.season_weights`:
+  `w = 1 + A·sin(…)`), so they bring alternating dearth and plenty around nearly the same mean. The clip at fertility 1
+  trims a few percent at A = 0.8. "Scarce" is therefore read as
+  slower regrowth. A player who asks for harsh seasons gets `set_seasons` with amp 0.8, live, since 0.8 is inside the
+  menu's 0–0.9. No fork is needed.
+- **Immigration is already off.** `population.immigration_count` is 0 in every preset, so "stop immigration" is a
+  no-op, and the preview says so.
+
+### 7.3 Compiler, version 1
+
+The gains are placeholders until the lever-response curves exist (§5.3).
+- **Dead zone.** |x| < 0.05 compiles to no action, and so does disaster below 0.1.
+- **Quantisation.** Values are quantised to 0.01 before clamping. The log stores the float32 value, so 0.58 is logged as
+  0.5799999833106995.
+- **Durations by horizon** (short / medium / long):
+  - `regen_pulse`, `attack_mult`, `harshness` and `habitat_loss`: 3,000 / 18,000 / 36,000;
+  - the slow levers `share_eff` and `tempo`: 18,000 / 36,000 / permanent.
+- **v1 scope.** Version 1 builds only `attack_mult` among the new levers (§10.4). Long scarcity therefore uses a
+  36,000-step `regen_pulse` until `regen_set` exists. Harshness, cooperation and tempo compile to no-ops, which the
+  preview states.
+- **Always permanent.** `set_seasons` and `drift_change` are always permanent, and the
+  preview marks them. Their season period by horizon is 2,000 / 6,000 / 18,000.
+
+| dimension | lever | formula | bounds |
+|---|---|---|---|
+| scarcity s | `regen_pulse` (all horizons in v1; `regen_set` for long once built) | mult = 1 − 0.6·s | 0.4–1.8 |
+| harshness h | `harshness` (not in v1: no-op) | mult = 1.5^h | 2/3–1.5 |
+| volatility v | `set_seasons`; also `drift_change` when v > 0.5 | v > 0: amp = 0.9·v. v < 0: amp = current·(1 + v). Drift mult = 1 + 8·(v − 0.5) | amp 0–0.9; drift 1–5 |
+| competition c | `attack_mult`; at c ≥ 0.5 also `habitat_loss` on the poorest patch (or the targeted one), which concentrates food | mult = 2^c | 0.5–2.0 |
+| cooperation k | `share_eff` (slow; not in v1: no-op) | q8 = round(256·(0.9 + 0.1·k)) | 128–256 |
+| migration m | `immigration_pulse` | m ≥ 1/64: count = max(16, round(1,024·m)). Otherwise a no-op, stated in the preview | 16–1,024 |
+| tempo τ | `tempo` (slow; not in v1: no-op) | mult = 2^τ | 0.5–2.0 |
+| disaster d | `catastrophe` at the target (a region centre, or the densest cell of a kin group) | kill_p = 0.2 + 0.7·d; radius = min + d·(max − min) | menu bounds |
+
+The compiled plan for §7.2, as `director.jsonl` entries in the existing format. There is a new `source:"player"`, two new
+optional keys (`command`, `compiler_version`), and `vitals` is abbreviated and illustrative here:
+
+```json
+{"step_applied": 412000, "source": "player", "persona": "game_master", "action": "regen_pulse",
+ "params": {"mult": 0.5799999833106995}, "prev": {"mult": 1.0}, "duration": 18000,
+ "reason": "intent scarcity +0.70 (medium)", "command": 17, "compiler_version": 1,
+ "vitals_step": 412000, "vitals": {"n_alive": 7900, "k_est": 10400.0, "n_over_k": 0.76}}
+{"step_applied": 412000, "source": "player", "persona": "game_master", "action": "attack_mult",
+ "params": {"mult": 1.5199999809265137}, "prev": {"mult": 1.0}, "duration": 18000,
+ "reason": "intent competition +0.60 (medium)", "command": 17, "compiler_version": 1,
+ "vitals_step": 412000, "vitals": {"n_alive": 7900, "k_est": 10400.0, "n_over_k": 0.76}}
+{"step_applied": 412000, "source": "player", "persona": "game_master", "action": "habitat_loss",
+ "params": {"patch": 7, "gain": 0.0}, "prev": {"patch": 7, "gain": 1.0}, "duration": 18000,
+ "reason": "intent competition +0.60: concentrate food", "command": 17, "compiler_version": 1,
+ "vitals_step": 412000, "vitals": {"n_alive": 7900, "k_est": 10400.0, "n_over_k": 0.76}}
+```
+
+The preview text is generated from these entries. The costs are `GAME_SPECS` costs: `regen_pulse` 1, `attack_mult` 1,
+`habitat_loss` 2.
+
+> Food regrowth ×0.58, attacks 1.52× as damaging, and patch 7 barren, all for 18,000 steps (10 min). Cost 4 influence.
+> Risk: the population may fall about 30% (preview estimate). Apply?
+
+### 7.4 Era change: a key with no live lever
+
+Turning on periodic immigration has no env equivalent, so it becomes an era change. The play loop first writes a
+checkpoint at the chapter boundary, then forks from it:
+
+```json
+{"command": 23, "era_change": {"checkpoint_at": 430000, "init_from": "runs/world:430000",
+  "set": {"population.immigration_every": 5000, "population.immigration_count": 256},
+  "reapply_env": true, "copy_director_log": true}}
+```
+
+`reapply_env` and `copy_director_log` are the game's fork semantics (§8.2). Without them a fork starts with inert env
+and no director history.
+
+## 8. Part C: technical risks and bottlenecks
+
+### 8.1 Visual feedback
+
+- **Weights are not legible, so do not show them.** 4,387 fp16 weights per agent mean nothing to a player. Show inputs as
+  needs, decoded actions as intents and glyphs, and income sources as archetypes. The one brain-derived trait worth
+  showing is the kin attitude (§4.4), which is a measured output, not a weight.
+- **Labels can mislead.**
+  - Every label must pass the validity test (§4.5).
+  - Labels are dimmed when borderline and hidden until their window is warm.
+  - Labels that fail the test are dropped.
+- **Individuals are short-lived.** At about 954 steps, a lifetime is about 32 s at 30 steps/s. The narrative units are
+  therefore houses, kin groups and colonies. An ancestry camera can follow a lineage from a dying agent to its eldest
+  living descendant.
+- **The stream has no identity.**
+  - It carries no uid, energy or labels, and the 3D viewer has no picking. The record tags in §3 fix this.
+  - Today's frames carry all `n_max` rows, dead ones included. At 64k and 60 fps that is about 90 MB/s (est.).
+  - An alive-only frame record (rows filtered by alive, each with a row index) brings a frame to about 1.06 MB in 3D
+    and 0.83 MB in 2D. Identity sections, sent every k frames, add to that.
+- **The faithful view and the live view are different paths.** `stream --follow` is faithful only at checkpoint cadence,
+  and simulate-mode views ignore the director. `alife play` puts the director inside the viewed loop.
+
+### 8.2 Deterministic replay
+
+What already holds:
+- **Trajectories.** They are bitwise identical for the same seed, resolved config, code, MLX version, backend,
+  `run.compile` and `run.runtime_checks`, through checkpoint and resume (DESIGN §14.2, `test_resume_purity.py`).
+- **Director replay.** It is bitwise, never calls the model, and pre-validates its logs, exiting with code 2 on a bad
+  log (DESIGN §26.8).
+- **Same-Mac reproducibility.** A re-simulation of `runs/64k_s0` matched all 1,200 metrics rows (EVALUATION.md §1.1).
+
+What a game adds:
+- **Player commands** are director entries with `step_applied`. Replay applies the logged entries and calls neither the
+  LLM nor the compiler. `COMPILER_VERSION` is logged for audit.
+- **Rewind.** A plain fork resets `env_*`, starts the director off, and has no `director.jsonl`. Re-applying the env alone
+  would make an active timed effect permanent, because reverts come only from the log fold. The two options:
+  - Option 1 (*recommended*): in-place resume from a kept checkpoint into a copy of the run directory. The checkpoint
+    holds the applied env.
+    - `truncate_after` cuts the logs to the step, extended to cover `commands.jsonl` and observer sidecars.
+    - The copy hard-links the events and copies only the target checkpoint.
+    - Rewind points are the kept checkpoints, so game mode raises `keep_checkpoints` and checkpoints more often.
+  - Option 2: a fork that re-applies the env and copies the director entries up to the fork step.
+- **Shared replays across Macs.**
+  - Equality across MLX versions and backends is not promised (DESIGN §14.2).
+  - The goldens are pinned per platform, because kernels can round differently across architectures (DESIGN §22.0,
+    F20).
+  - Equality across Mac GPU generations is untested.
+  - Shared replays are therefore recorded, decimated ALSTRM files (alive rows plus IDNT and EVNT). They are independent
+    of the backend and need no re-simulation.
+  - Re-simulating replays from checkpoints is kept for the same machine.
+- **Save size.**
+  - A 64k3d checkpoint is 686 MB, almost all of it fp16 weights. At 16k the weights are about 144 MB in 2D and 164 MB in 3D.
+  - Writing only alive rows breaks the digest, because dead rows keep stale genes and weights and `state_digest`
+    hashes every row. Dead rows must be written in canonical form before saving, or checked with a new digest over alive
+    rows only, with a save-load-step test.
+- **Energy.** The ledger closes exactly on every backend. Per-agent energy still follows the float trajectory.
+
+### 8.3 Scale against granularity
+
+- **Cost follows `n_max`.** The step evaluates all rows and has a floor: `tiny3d` (1,024 rows) takes 2.43 ms (411
+  steps/s; `docs/bench`), consistent with the 2.1–3.6 ms dispatch and host overhead estimated in DESIGN §15.3. A
+  100-agent world hits that floor.
+
+  | world (capacity) | steps/s | ms per step | basis |
+  |---|---|---|---|
+  | 64k 2D (about 33k agents) | 59.3 | 16.9 | measured. Fits 30 steps/s; no headroom at 60 |
+  | 64k3d, C = 48 (about 42k) | 14.4 | 69.2 | measured; not real time |
+  | 64k3d, C = 24 | 24.9 | 40.2 | measured; neighbour search dominates |
+  | 16k 2D or 3D (about 8k, est.) | well above 30 (est.) | — | not benchmarked; G1 benches it |
+
+- **Uniform brains.** `brain.hidden` is a compile-time constant, so no agent can have a bigger brain. The options:
+  - (a) A second population with its own shapes. High complexity: neighbour search and the ledger across two state
+    types.
+  - (b) **Focus, not capacity** (*recommended*). The picked agent gets full per-step telemetry: inputs and decoded actions
+    from a one-row decode. The protagonists at scale are groups.
+  - (c) LLM narration of a few focal agents at narrative cadence, as an observer (*recommended*). Never one LLM per agent:
+    Generative Agents cost thousands of dollars for 25 agents over two game days.
+- **First world: 64k 2D at 30 steps/s** (the owner's decision, §10.7).
+  - **Budget.** The step takes 16.9 ms of the 33 ms frame. The remaining 16 ms must hold the observers (est. under
+    0.5 ms), the stream and an LLM parse sharing the GPU.
+  - **Stream.** At 30 fps it carries about 25 MB/s with alive-only frames (about 0.83 MB at 33k agents), or 45 MB/s with
+    full frames.
+  - **Fast-forward** is capped near 59 steps/s.
+  - **G1 benches** this whole loop before any UI work.
+  - **Content.** 2D has the signal tools, the pygame viewer, and the Swift viewer's face-on 2D view. It also has the
+    thinnest content: kill share 0.13, a median largest body of 73, and a predation ratio of 0.078. The chosen lever,
+    `attack_mult`, is aimed at that (§10.4).
+  - **3D later.** 3D has more to see (depth zones, reefs, kill share 0.50) but needs the deferred fused Metal kNN kernel
+    (DESIGN §27.13) to reach 30 steps/s at 64k.
+
+### 8.4 Further risks
+
+| risk | evidence | mitigation |
+|---|---|---|
+| Thin social content | sharers fell from 6% to 1.6% (2D) and are 1.1% in 3D. In 2D the bond-lifetime proxy fell from about 135 to 12 steps (HANDOVER). In 3D the proxy (about 5 steps) is dominated by flicker, and 60% of bonds survive 100 steps (RESULTS_3D §5.4). Whether flicker also dominates the 2D proxy was not tested. Bodies are uncoordinated sheets. Clades collapse to 4 | Houses and kin groups restore display diversity. `share_eff` and research P2 (multicellularity, currently blocked) are the route to real colonies. Name things honestly ("reefs", "dominance"). |
+| The director's choices are not shown to beat random | random moves matched or beat it on coverage and novelty; the LLM led on new adaptive activity by 1.3–3.9× (EVALUATION.md §3.7) | Sell faithful, explained execution of the player's intent, and measure it (G5). |
+| LLM latency and GPU sharing | median 3.6–4.4 s, 18 s cold; one GPU for the model and the step | Parse off the step thread (§5.7), bench contention in G1, direct powers as a fallback. |
+| Platform | MLX: Metal on Apple Silicon at speed, Linux CPU slowly. Python host loop | Mac-first. A Windows or console port needs a new backend, a non-Python host and per-backend goldens. |
+| Evolution is slow in wall time | about 13 generations per 10 min (3D, 30 steps/s) | Ecological goals, time-lapse, chapters across sessions. |
+| Engine regressions | CLAUDE.md conventions | `game.*` keys off and in `POST_V01_KEYS`. Scatters only in `ops.py`; static branches only. 2D digest matrix and CI goldens on every PR. Deliberate 3D golden re-pin in G4. |
+
+## 9. Build plan (proposed; one PR per step, each merged before the next)
+
+- **G1. Observers.**
+  - `game.observe` (unhashed), `StepOutG.acts`, and `BirthRecords.parent_slot`.
+  - The accumulators, archetype and intent rules (`INTENT_VERSION`), and the observer sidecar.
+  - `signals.decode` and the SIGNALS analysis generalised to 3D (needed only when a game world is 3D).
+  - The §4.5 validity analysis.
+  - Benches of the 64k 2D world at 30 steps/s: the step with observers on, the stream, and the step rate with an LLM
+    call in flight.
+  - Tests:
+    - the trajectory and digests are unchanged with observers on and off;
+    - the accumulator arithmetic is checked on spike and constant inputs;
+    - the sidecar round-trips.
+- **G2. Social tracking.** Houses, kin groups, the colony tracker, territory and the relation matrices. Benches of
+  `components` at 250-step cadence.
+- **G3. Play loop and view.**
+  - `alife play` with the fixed-timestep scheduler.
+  - The stream tags `IDNT`, `INTN`, `TERR`, `EVNT`, with Swift decoders and fixtures.
+  - Picking and a HUD in the Swift viewer (2D worlds face-on, as today), and the new colour modes.
+  - Saves:
+    - dead rows canonicalised, with a save-load-step digest test;
+    - recorded ALSTRM replay files.
+  - Rewind (in-place resume into a copied run directory), with `truncate_after` extended to `commands.jsonl` and
+    observer sidecars.
+- **G4. Player intent.**
+  - The intent schema and prompt, the compiler, `commands.jsonl`, the preview, `source:"player"`, and the separate pacing
+    scope.
+  - `GAME_MENU` with `attack_mult` (§10.4), inert-fill for `State3`, and the 3D golden re-pin.
+  - `GAME_SPECS`, and the `game_master` persona with its `PersonaParams` and the intensity vital.
+  - Direct powers.
+  - Era changes: a checkpoint at the boundary, then a fork with `reapply_env` and `copy_director_log`.
+  - Lever-response sweeps to calibrate the compiler.
+- **G5. Evaluation.**
+  - Intent fidelity: for scripted commands, does the targeted vital move as asked within the horizon, compared with a
+    yoked random plan with the same budget?
+  - Label validity on new worlds.
+  - The owner's legibility ratings on the 1–5 scale used for the journal.
+
+## 10. Decisions (owner)
+
+**Decided 2026-10-18:** items 1, 2, 3, 4, 7 and 8. Items 5, 6, 9 and 10 are open; their recommendations stand until the
+owner decides.
+
+1. **Scope.** *Decided:* a Mac-first prototype in this repository.
+2. **Code location.** *Decided:* a `src/alife/game/` package with a `game` config section, everything off by default.
+3. **Intent translation.** *Decided:* the staged pipeline of LLM, intent vector, compiler, preview and confirm (§5.3).
+   The current Architect, with the LLM choosing menu actions, stays only as the G5 baseline.
+4. **New levers.** *Decided:* one lever, chosen for its effect on play: **`attack_mult`**. The owner asked for one that
+   makes a difference for gameplay. The reasons for this one:
+   - It acts within one or two lifetimes, so the player sees the response in under a minute.
+   - The chosen 2D world has the thinnest predation (kill share 0.13, predation ratio 0.078), so it is where a lethality
+     lever changes most.
+   - It gives the competition dimension a direct lever.
+   - It feeds the Hunter archetype (§4.4) and the kin-group war relations (§6.5).
+
+   The alternatives make less difference to play:
+   - `share_eff` and `tempo` act on evolutionary timescales;
+   - `harshness` overlaps with the food levers;
+   - `regen_set` only lifts the time limit of an existing lever.
+
+   Consequences for v1:
+   - `attack_mult` adds a `State` field, so G4 re-pins the 3D golden.
+   - In compiler version 1 the harshness, cooperation and tempo dimensions compile to no-ops, which the preview states.
+   - Long scarcity uses a 36,000-step `regen_pulse`.
+   - The schema keeps all eight dimensions, so later levers do not change it.
+5. **During a parse.** Keep stepping (*recommended*), or pause until the player has confirmed the preview (§5.7).
+6. **Rewind.** Era changes need the fork with `reapply_env` and `copy_director_log` either way (§7.4). The question is
+   only what backs rewind: in-place resume into a copied run directory (*recommended*), or the same fork (§8.2).
+7. **First world.** *Decided:* 64k 2D at 30 steps/s (§8.3).
+8. **Factions.** *Decided:* kin groups (tag clusters, which agents perceive) are the factions, for relations and
+   territory (§6.3, §6.5). Houses stay as genealogical names only (§6.2).
+9. **"Trader".** Reserve it for reciprocal sharing and call one-way givers "Providers" (*recommended*), or add an exchange
+   mechanism, which is new dynamics with its own ledger term.
+10. **The Architect discrepancy.** DESIGN §26.6 and DIRECTOR.md §12 (A15) say "safety rules only". DESIGN §26.7,
+    `rules.ARCHITECT` and `test_director_rules.py` give the Architect discretionary moves when the LLM tier is off.
+    Correct the two sentences (*recommended*), or change the code under a new rules version.
+
+## 11. Prior-art sources
+
+The research pass opened each page, except where marked.
+
+- Creatures: https://en.wikipedia.org/wiki/Creatures_(video_game_series). Grand, Cliff & Malhotra (abstract only):
+  https://www.sussex.ac.uk/informatics/cogslib/reports/csrp/csrp434.pdf
+- Black & White: https://en.wikipedia.org/wiki/Black_%26_White_(video_game)
+- The Bibites: https://store.steampowered.com/app/2736860/
+- Species: https://store.steampowered.com/app/774541/
+- Ecosystem: https://store.steampowered.com/app/1133120/
+- Thrive auto-evo: https://www.revolutionarygamesstudio.com/devblog-20-lets-try-to-solve-evolution
+- Spore: https://en.wikipedia.org/wiki/Spore_(2008_video_game)
+- The Sims and needs-based AI (Zubek): https://robert.zubek.net/publications/Needs-based-AI-draft.pdf
+- Dwarf Fortress needs: https://dwarffortresswiki.org/index.php/Need
+- RimWorld storytellers: https://rimworldwiki.com/wiki/AI_Storytellers
+- Left 4 Dead AI Director (Booth, GDC 2009): https://steamcdn-a.akamaihd.net/apps/valve/2009/ai_systems_of_l4d_mike_booth.pdf
+- Generative Agents (Park et al. 2023): https://arxiv.org/abs/2304.03442
+- Project Sid: https://arxiv.org/abs/2411.00114
+- Where Winds Meet NPC exploits:
+  https://www.gosugamers.net/entertainment/news/77655-where-winds-meet-players-outsmart-ai-npcs-to-easily-get-sidequest-rewards
+- Risi & Togelius, neuroevolution in games: https://arxiv.org/abs/1410.7326
