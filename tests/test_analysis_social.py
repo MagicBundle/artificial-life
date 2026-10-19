@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from alife import runner
@@ -26,6 +27,8 @@ from alife.runio import RunDir, _dumps
 from alife.state import init_state
 from alife.tracking import TRACK_VERSION, Diagnostics, Event, EventKind
 from game_helpers import planted_state, social_every
+from helpers import set_output_bias
+from test_game_social import BIAS
 
 RUN = ["run.metrics_every=5", "run.checkpoint_every=10", "run.heavy_metrics_every=5"]
 STUDY: dict[str, Any] = {"start": 50, "steps": 200, "every": 20}
@@ -65,6 +68,15 @@ COLONY_KEYS = {*FAMILY_KEYS, "tracked", "members", "largest", "converged", "matc
 QUANTILE_KEYS = {"n", "p10", "p50", "p90"}
 EVENT_KEYS = {"born", "split", "merged", "dissolved"}
 CHURN_KEYS = {"born", "ended_within", "share"}
+HOUSE_KEYS = {
+    "alive",
+    "unknown_immigrant",
+    "members",
+    "seeded_members",
+    "founded_members",
+    "founded_houses",
+    "founded_share",
+}
 
 
 def _make_run(cfg: Config, path: Path, *extra: str, steps: int = 60, planted: bool = False) -> Path:
@@ -208,17 +220,31 @@ def test_the_snapshot_entry_is_built_from_the_societys_diagnostics() -> None:
         kin_sizes={1: 30, 2: 90, 3: 60},
         col_sizes={},
         sim_self={1: 0.5, 2: None, 3: 0.25},
+        house_ids=np.array([5, 40, 100, 130]),
+        house_sizes=np.array([10, 20, 30, 40]),
     )
     record = {
         "summary": {
-            "houses": {"alive": 12, "exact": True, "unknown_immigrant": 0},
+            "houses": {"alive": 12, "exact": True, "unknown_immigrant": 3},
             "kin_groups": {"tracked": 3, "other": 20},
             "colonies": {"tracked": 0, "members": 0, "largest": 0, "converged": True, "match": "uid"},
         }
     }
-    e = social._snapshot_entry(info, record)
+    e = social._snapshot_entry(info, record, 100)
     assert set(e) == SNAP_KEYS and e["step"] == 45 and e["n_alive"] == 200
-    assert e["thresholds"] == info.thresholds and e["houses"] == {"alive": 12}
+    assert e["thresholds"] == info.thresholds
+    # houses: ids below the start's next_uid (100) were seeded, the others founded since; 3 rows are unknown
+    assert e["houses"] == {
+        "alive": 12,
+        "unknown_immigrant": 3,
+        "members": 100,
+        "seeded_members": 30,
+        "founded_members": 70,
+        "founded_houses": 2,
+        "founded_share": 0.7,
+    }
+    assert social._snapshot_entry(info, record, 0)["houses"]["founded_share"] == 1.0
+    assert social._snapshot_entry(info, record, 10_000)["houses"]["founded_share"] == 0.0
     kin = e["kin_groups"]
     assert kin["events"] == {"born": 2, "split": 1, "merged": 1, "dissolved": 1}
     assert kin["jaccard_matched"] == {"n": 3, "p10": 0.3, "p50": 0.5, "p90": 0.9}
@@ -235,9 +261,19 @@ def test_the_snapshot_entry_is_built_from_the_societys_diagnostics() -> None:
     )  # fmt: skip
     # an empty world: no fraction to take
     empty = social._snapshot_entry(
-        info._replace(n_alive=0, unaffiliated=0, kin_sizes={}, sim_self={}), record
+        info._replace(
+            n_alive=0,
+            unaffiliated=0,
+            kin_sizes={},
+            sim_self={},
+            house_ids=np.zeros(0, np.int64),
+            house_sizes=np.zeros(0, np.int64),
+        ),
+        record,
+        100,
     )
     assert empty["kin_groups"]["unaffiliated_frac"] is None and empty["kin_groups"]["sim_self"]["n"] == 0
+    assert empty["houses"]["members"] == 0 and empty["houses"]["founded_share"] is None
 
 
 # --- the study ----------------------------------------------------------------------------------------------
@@ -250,13 +286,13 @@ def _documented(rep: Mapping[str, Any], *, every: int) -> None:
     assert p["every"] == every and p["churn_within"] == social.CHURN_WITHIN
     assert p["match"] == ("uid" if every <= SOCIAL_V1.uid_spacing else "footprint")
     assert p["social"]["snapshot_every"] == every and p["social"]["slots"] == SOCIAL_V1.slots
-    assert set(rep["observer_start"]) == {"step", "source", "note"}
+    assert set(rep["observer_start"]) == {"step", "source", "note", "next_uid"}
     for i, s in enumerate(rep["snapshots"]):
         assert set(s) == SNAP_KEYS, i
         assert set(s["thresholds"]) == THRESHOLD_KEYS
         assert s["step"] % every == 0 and s["step"] > rep["start"]
         kin, col = s["kin_groups"], s["colonies"]
-        assert set(kin) == KIN_KEYS and set(col) == COLONY_KEYS and set(s["houses"]) == {"alive"}
+        assert set(kin) == KIN_KEYS and set(col) == COLONY_KEYS and set(s["houses"]) == HOUSE_KEYS
         for fam in (kin, col):
             for q in ("jaccard_matched", "jaccard_unmatched_best"):
                 assert set(fam[q]) == QUANTILE_KEYS
@@ -293,6 +329,34 @@ def test_study_on_tiny(run_dir: Path) -> None:
     # a run without observers has no social log: the records are not comparable
     assert rep["records_verified"] == 0 and rep["records_comparable"] is False
     assert rep["records_note"] == "the run has no social log"
+
+
+def test_the_study_splits_house_members_by_when_the_house_was_founded(
+    tiny_cfg: Config, tmp_path: Path
+) -> None:
+    """With ``game.house_rate = 1`` every birth founds a house: the members of houses founded since the
+    study's start (ids from the start state's ``next_uid`` on) are none at the start and grow, the seeded
+    members shrink with their founders, and the two always make the members of the houses of known lineage
+    (all alive rows but the unknown immigrants). With rate 0 nothing is founded (no immigrant arrives)."""
+    shares = {}
+    for rate in ("1.0", "0"):
+        cfg = apply_overrides(tiny_cfg, [*RUN, f"game.house_rate={rate}"])
+        rd = RunDir.create(tmp_path / f"run{rate}", cfg)
+        state = set_output_bias(init_state(cfg), cfg, BIAS)  # births from step 21 on
+        assert runner.run(rd, cfg, state, 60, quiet=True).status == "done"
+        rep = social.study(rd.path, **STUDY, log=lambda _: None)
+        first_uid = rep["observer_start"]["next_uid"]
+        assert first_uid > cfg.population.n_init  # births before the start: their houses count as seeded
+        for s in rep["snapshots"]:
+            h = s["houses"]
+            assert h["members"] == h["seeded_members"] + h["founded_members"]
+            assert h["members"] == s["n_alive"] - h["unknown_immigrant"]
+            assert h["founded_houses"] <= h["alive"] and h["founded_members"] >= h["founded_houses"]
+        shares[rate] = [s["houses"]["founded_share"] for s in rep["snapshots"]]
+        if rate == "1.0":
+            founded = [s["houses"]["founded_houses"] for s in rep["snapshots"]]
+            assert founded[-1] > founded[0] >= 0 and 0.0 < shares[rate][0] < shares[rate][-1] < 1.0
+    assert set(shares["0"]) == {0.0}
 
 
 def test_the_report_is_deterministic_apart_from_the_timing(run_dir: Path) -> None:
@@ -453,7 +517,13 @@ def test_the_study_checks_its_records_against_the_stored_log(observing_run: Path
     rep = social.study(observing_run, start=30, steps=30, every=15, log=lambda _: None)
     _documented(rep, every=15)
     assert _bytes(observing_run) == before  # read only, the log included
-    assert rep["observer_start"] == {"step": 30, "source": "sidecar", "note": None}
+    assert rep["observer_start"] == {
+        "step": 30,
+        "source": "sidecar",
+        "note": None,
+        "next_uid": rep["observer_start"]["next_uid"],
+    }
+    assert rep["observer_start"]["next_uid"] > 0
     assert [s["step"] for s in rep["snapshots"]] == [45, 60]
     assert rep["records_verified"] == 2 and rep["records_comparable"] is True and rep["records_note"] is None
     assert rep["rows_verified"] > 0

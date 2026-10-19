@@ -88,6 +88,8 @@ class Acts(NamedTuple):
     born_row: mx.array  # (M,) int32: child row per lane, −1 padding
     born_parent: mx.array  # (M,) int32: parent row per birth lane, −1 for immigrant and padding lanes
     born_uid: mx.array  # (M,) int64: uid per lane, −1 padding
+    # Roster (§29.2, stage 7), appended after the social-tracking fields:
+    death_cause: mx.array  # (N,) int8: DeathCause of a row that died at S14 this step, −1 elsewhere
 
 
 class StepOutG(NamedTuple):
@@ -286,7 +288,9 @@ def _acts(
     """The observer channel (§28.2, §29.2). Every float is quantised from a value the step already
     materialises, and the thrust is masked by solvency in integers, so the channel adds no consumer to a fused
     float chain. ``y`` is the brain output (a kernel output read by two column slices), ``alive0`` the
-    start-of-step alive mask (a step input)."""
+    start-of-step alive mask (a step input). ``death_cause`` is the S14 cause array that the KILLED bit
+    already reads, cast to int8 (the per-cause counts of the roster come from it, never from the capped death
+    records)."""
     n = dims(cfg).n
     birth = f.lanes.kind == lifecycle.LaneKind.BIRTH.value
     budded = ops.scatter_add_i32(n, f.lanes.parent, 1, birth) > 0  # distinct parents: Σ = n_birth
@@ -318,7 +322,7 @@ def _acts(
     return Acts(
         f.cb.gain, sl.out, sl.got, flags, thrust, defend, emit_q.sum(axis=1).astype(i16),
         f.act.attack_target, f.act.bond_target, q_kin, nbr,
-        f.rp.records.slot, born_parent, f.rp.records.uid,
+        f.rp.records.slot, born_parent, f.rp.records.uid, f.dt.cause.astype(mx.int8),
     )  # fmt: skip
 
 

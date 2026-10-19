@@ -54,7 +54,7 @@ def make_oi(arrays: Mapping[str, Any]) -> ObsIn:
 
 def blank_social_acts(n: int, k: int, m: int) -> dict[str, np.ndarray]:
     """The social-tracking additions of ``Acts`` (§29.2) for ``n`` rows, ``k`` neighbours and ``m`` lanes: no
-    target, no neighbour, no kin query, no birth lane."""
+    target, no neighbour, no kin query, no birth lane, no death."""
     return {
         "attack_target": np.full(n, -1, np.int32),
         "bond_target": np.full(n, -1, np.int32),
@@ -63,6 +63,7 @@ def blank_social_acts(n: int, k: int, m: int) -> dict[str, np.ndarray]:
         "born_row": np.full(m, -1, np.int32),
         "born_parent": np.full(m, -1, np.int32),
         "born_uid": np.full(m, -1, np.int64),
+        "death_cause": np.full(n, -1, np.int8),
     }
 
 
@@ -197,11 +198,15 @@ class SocDriver:
         )
         return s, a, kin0
 
-    def advance(self, si: Mapping[str, Any], step: int, acts: Acts | None = None) -> dict[str, Any]:
-        """One snapshot at ``step``: the update with ``acts``, the snapshot, the settle and the relabel.
-        Returns the snapshot's record."""
+    def advance(
+        self, si: Mapping[str, Any], step: int, acts: Acts | None = None, arch: np.ndarray | None = None
+    ) -> dict[str, Any]:
+        """One snapshot at ``step``: the update with ``acts``, the snapshot (with ``arch``, the rows' primary
+        archetype labels, if given), the settle and the relabel. Returns the snapshot's record."""
         s, a, kin0 = self.tick(si, acts)
-        snap = social.snapshot(kin0, self.so, s, a, self.cfg, self.sr)
+        snap = social.snapshot(
+            kin0, self.so, s, a, self.cfg, self.sr, None if arch is None else mx.array(arch.astype(np.int32))
+        )
         self.h = host_snap(snap)
         before = len(self.society.records)
         self.kin_lut, self.col_lut = self.society.settle(self.h, step)
@@ -248,6 +253,24 @@ def window_reference(
                 rel[Rel.BOND_SLOTS.value, prev_kin[i], prev_sg[i, slot]] += 1
                 shared[prev_kin[i], prev_sg[i, slot]] += a["share_out"][i, slot]
     return rel, expo, shared
+
+
+def life_reference(
+    prev_kin: np.ndarray, a: dict[str, np.ndarray], g: int, causes: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """One step's increments to the window births ``(g,)`` and deaths ``(causes, g)`` from the channel and
+    the start-of-step slots, as plain loops (an independent formulation of ``social.update``): a birth lane
+    counts for its parent's slot, a row with a death cause for its own."""
+    births = np.zeros(g, np.int64)
+    deaths = np.zeros((causes, g), np.int64)
+    for lane in range(len(a["born_row"])):
+        parent = a["born_parent"][lane]
+        if a["born_row"][lane] >= 0 and parent >= 0 and prev_kin[parent] >= 0:
+            births[prev_kin[parent]] += 1
+    for row in range(len(prev_kin)):
+        if a["death_cause"][row] >= 0 and prev_kin[row] >= 0:  # a row dead at the start cannot die
+            deaths[a["death_cause"][row], prev_kin[row]] += 1
+    return births, deaths
 
 
 def planted_state(cfg: Config) -> State:

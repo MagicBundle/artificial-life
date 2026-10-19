@@ -7,6 +7,12 @@ give the proximity baseline). ``snapshot`` (only at snapshot steps) derives the 
 cluster the tag space, label the bonded bodies, count territory cells and read the temperament, and
 ``relabel`` writes the host's answer (slots) back and resets the window. The host half is ``society.py``.
 
+The roster (stage 7, DESIGN §29.14) adds three window counts to the same fold, all exact integer sums of the
+channel: the births of each kin slot (a newborn counts for the slot it inherits), the deaths of each slot by
+cause (``Acts.death_cause``, the S14 cause of every row, never the capped death records) and, per row, the
+house its house was founded from (``house_from``). The snapshot also carries each row's primary archetype
+label, so that the host can report a group's archetype mix.
+
 Everything is shape-static and branch-free on array values, and a reader of the ``State`` sees no key and no
 weight (``SocIn``). Integer counts only: the windows are exact int64 sums, so identities with the engine's
 counters hold exactly (tests).
@@ -29,11 +35,13 @@ import mlx.core as mx
 
 from alife import groups, layout, metrics
 from alife.config import Config, dims
-from alife.state import State, State3
+from alife.state import DeathCause, State, State3
 from alife.step import ActFlag, Acts
 
 __all__ = [
+    "DEATH_CAUSES",
     "HOUSE_UNKNOWN",
+    "KIN_NAME_SALT",
     "SOCIAL_V1",
     "SOCIAL_VERSION",
     "Expo",
@@ -51,6 +59,8 @@ __all__ = [
 
 SOCIAL_VERSION: Final = 1
 HOUSE_UNKNOWN: Final = -2  # an immigrant lineage seeded mid-run (§29.4): never named, counted apart
+KIN_NAME_SALT: Final = 0x6B696E6E616D65  # "kinname": the generated names of kin groups (§29.14)
+DEATH_CAUSES: Final = tuple(c.name.lower() for c in DeathCause)  # the rows of ``SocState.deaths``
 
 _I32 = mx.int32
 _I64 = mx.int64
@@ -91,6 +101,7 @@ class SocialRules:
     relations_max: int = 32  # relation pairs listed per record
     sim_salt: int = 0x6B696E73  # "kins": member choice of the similarity subsample
     name_salt: int = 0x686F757365  # "house": house names
+    kin_name_salt: int = KIN_NAME_SALT  # kin groups named by no house (§29.14)
 
     def __post_init__(self) -> None:
         def req(ok: bool, msg: str) -> None:
@@ -136,7 +147,7 @@ class SocialRules:
             ("relation counts", (4 + b) * n),  # attack, hit, kill, bond, and the B bond slots of every row
             ("neighbour exposure", 2 * n * k),
             ("energy shared", n * b),
-            ("temperament", 4 * n),
+            ("temperament and deaths by cause", 4 * n),  # (4, G) and (C, G) with C = 4 causes
         )
         for name, count in lanes:
             if count > _I32_MAX:
@@ -194,6 +205,10 @@ class Expo(IntEnum):
 class SocState(NamedTuple):
     uid: mx.array  # (N,) int64 where(alive, uid, -1) at the last update (the observed occupant)
     house: mx.array  # (N,) int64 house id (the founder's uid), HOUSE_UNKNOWN, -1 dead
+    house_from: (
+        mx.array
+    )  # (N,) int64 the house of the founder's parent, inherited with the house: -1 none (founder of the run,
+    #                 immigrant, observer start), HOUSE_UNKNOWN if the parent's house was unknown; -1 dead
     kin: (
         mx.array
     )  # (N,) int32 kin slot: 0..F-1 named, F = OTHER (untracked, unaffiliated, immigrant), -1 dead
@@ -204,6 +219,8 @@ class SocState(NamedTuple):
     expo: mx.array  # (2,G,G,K) int64 window neighbour lanes of attackers / proposers,
     #                 [actor slot, neighbour slot, n_i - 1] with n_i the actor's valid sensed neighbours
     shared: mx.array  # (G,G) int64 window energy shared, [sender slot, receiver slot]
+    births: mx.array  # (G,) int64 window births by the slot the newborn inherits (its parent's)
+    deaths: mx.array  # (C,G) int64 window deaths by DeathCause (rows) and the dead row's slot
 
 
 class Snap(NamedTuple):
@@ -215,6 +232,7 @@ class Snap(NamedTuple):
     partner: mx.array  # (N,B) int32 where(alive, ., -1)
     tag: mx.array  # (N,T) float32 where(alive, ., 0)
     pos: mx.array  # (N,nd) float32 where(alive, ., 0)
+    arch: mx.array  # (N,) int32 primary archetype label (rules.Archetype, 0 unlabelled) where(alive, ., 0)
     next_uid: mx.array  # () int64 maximum(next_uid, 0)
     comp: mx.array  # (N,) int32 metrics.components labels
     body: mx.array  # (N,) int32 component size per alive row, 0 on dead rows
@@ -225,11 +243,14 @@ class Snap(NamedTuple):
     foot: mx.array  # (N,) int32 plane_cell at foot_cells
     terr: mx.array  # (terr_cells^2 * G,) int32 counts [cell, slot] with the window's slots
     house: mx.array  # (N,) int64 so.house
+    house_from: mx.array  # (N,) int64 so.house_from
     q_sums: mx.array  # (4,G) int64 temperament sums: attack+, attack-, bond+, bond- (units of 1/256)
     q_rows: mx.array  # (G,) int32 rows per start-of-step slot
     rel: mx.array  # (5,G,G) int64 the window matrices at the snapshot step
     expo: mx.array  # (2,G,G,K) int64
     shared: mx.array  # (G,G) int64
+    births: mx.array  # (G,) int64
+    deaths: mx.array  # (C,G) int64
 
 
 # --- init -------------------------------------------------------------------------------------------------
@@ -258,6 +279,7 @@ def init_soc(si: SocIn, cfg: Config, sr: SocialRules) -> SocState:
     return SocState(
         uid=mx.where(alive, si.uid, -1),
         house=house.astype(_I64),
+        house_from=mx.full((d.n,), -1, dtype=_I64),
         kin=kin,
         colony=mx.full((d.n,), -1, dtype=_I32),
         body=mx.zeros((d.n,), dtype=_I32),
@@ -265,6 +287,8 @@ def init_soc(si: SocIn, cfg: Config, sr: SocialRules) -> SocState:
         rel=mx.zeros((len(Rel), g, g), dtype=_I64),
         expo=mx.zeros((len(Expo), g, g, d.k), dtype=_I64),
         shared=mx.zeros((g, g), dtype=_I64),
+        births=mx.zeros((g,), dtype=_I64),
+        deaths=mx.zeros((len(DEATH_CAUSES), g), dtype=_I64),
     )
 
 
@@ -278,7 +302,9 @@ def update(so: SocState, si: SocIn, a: Acts, cfg: Config, sr: SocialRules) -> So
     Houses, slots and bodies follow the reset rule of G1's observer: a row keeps its values only while the
     same occupant (same uid) lives in it; a newborn row takes its birth lane's. Relations are counted with
     the start-of-step slots ``so.kin`` (every acting row and every target was alive then) and added to the
-    window matrices, which are exact int64 functions of the channel until ``relabel`` resets them.
+    window matrices, which are exact int64 functions of the channel until ``relabel`` resets them. The births
+    (by the slot the newborn inherits: its parent's at the start of the step) and the deaths by cause (by the
+    dead row's start-of-step slot) are counted the same way.
     """
     d = dims(cfg)
     n, k = d.n, d.k
@@ -290,6 +316,10 @@ def update(so: SocState, si: SocIn, a: Acts, cfg: Config, sr: SocialRules) -> So
     p = mx.maximum(a.born_parent, 0)  # the parent row of a birth lane: a survivor, never a child row
     founded = (a.born_row >= 0) & (~birth | groups.hash_below(a.born_uid, cfg.run.seed, cfg.game.house_rate))
     house = groups.inherit(so.house, keep, lane, mx.where(founded, a.born_uid, so.house[p]), -1)
+    # the house a new house comes from: the founder's parent's house (-1 for an immigrant), inherited with it
+    house_from = groups.inherit(
+        so.house_from, keep, lane, mx.where(founded, mx.where(birth, so.house[p], -1), so.house_from[p]), -1
+    )
     kin = groups.inherit(so.kin, keep, lane, mx.where(birth, so.kin[p], other), -1)
     colony = mx.where(keep, so.colony, -1)
     body = mx.where(keep, so.body, 0)
@@ -342,20 +372,55 @@ def update(so: SocState, si: SocIn, a: Acts, cfg: Config, sr: SocialRules) -> So
         bits=16,
     ).reshape(g, g)
 
+    # Births and deaths of the window, by the start-of-step slots. A birth lane has a child row and a parent
+    # that was alive at the start; a row with a death cause was alive at the start (the slot guards only
+    # keep an inconsistent synthetic input from counting in another cause's bins).
+    parent_slot = g0[p]
+    is_birth = (a.born_row >= 0) & birth & (parent_slot >= 0)
+    births = so.births + groups.masked_bincount(g, parent_slot, is_birth).astype(_I64)
+    cause = a.death_cause.astype(_I32)
+    n_causes = len(DEATH_CAUSES)
+    deaths = so.deaths + groups.masked_bincount(
+        n_causes * g, cause * g + g0, (cause >= 0) & (g0 >= 0)
+    ).astype(_I64).reshape(n_causes, g)
+
     slot_group = _slot_groups(si.partner, kin)
-    return SocState(mx.where(si.alive, si.uid, -1), house, kin, colony, body, slot_group, rel, expo, shared)
+    return SocState(
+        mx.where(si.alive, si.uid, -1),
+        house,
+        house_from,
+        kin,
+        colony,
+        body,
+        slot_group,
+        rel,
+        expo,
+        shared,
+        births,
+        deaths,
+    )
 
 
 # --- the snapshot -----------------------------------------------------------------------------------------
 
 
-def snapshot(kin0: mx.array, so: SocState, si: SocIn, a: Acts | None, cfg: Config, sr: SocialRules) -> Snap:
+def snapshot(
+    kin0: mx.array,
+    so: SocState,
+    si: SocIn,
+    a: Acts | None,
+    cfg: Config,
+    sr: SocialRules,
+    arch: mx.array | None = None,
+) -> Snap:
     """The arrays of a snapshot step (evaluated once, then pulled to the host by ``Society.settle``).
 
     ``kin0`` is the slot array before this step's update (the start-of-step slots, which the step's
     temperament is read with); ``so`` and ``si`` are the updated ones. ``a`` is None for the initial snapshot
     of a fresh observer (static): the temperament is then zero. The territory counts use ``so.kin``, the
     slots of the window, so that territory, relations and temperament of one record share one slot map.
+    ``arch`` (N,) int32 is each row's primary archetype label (``Labels.arch_primary``, 0 where unlabelled);
+    None (the initial snapshot of a fresh observer, direct callers) reads as all unlabelled.
     """
     d = dims(cfg)
     n = d.n
@@ -369,6 +434,7 @@ def snapshot(kin0: mx.array, so: SocState, si: SocIn, a: Acts | None, cfg: Confi
 
     tag = mx.where(a1, si.tag, 0.0)
     pos = mx.where(a1, si.pos, 0.0)
+    arch = mx.where(alive, si.clade * 0 if arch is None else arch, 0).astype(_I32)  # derived from an input
     bins = groups.grid_code(tag, -1.0, 1.0, sr.kin_bins)
     bin_counts = groups.masked_bincount(sr.kin_bins**layout.T, bins, alive)
     cell = groups.plane_cell(pos, cfg.world.size, sr.terr_cells, axes=(0, 1))
@@ -400,6 +466,7 @@ def snapshot(kin0: mx.array, so: SocState, si: SocIn, a: Acts | None, cfg: Confi
         partner=mx.where(a1, si.partner, -1),
         tag=tag,
         pos=pos,
+        arch=arch,
         next_uid=mx.maximum(si.next_uid, 0),
         comp=comp,
         body=body,
@@ -410,11 +477,14 @@ def snapshot(kin0: mx.array, so: SocState, si: SocIn, a: Acts | None, cfg: Confi
         foot=foot,
         terr=terr,
         house=mx.where(alive, so.house, -1),
+        house_from=mx.where(alive, so.house_from, -1),
         q_sums=q_sums,
         q_rows=q_rows,
         rel=so.rel + 0,
         expo=so.expo + 0,
         shared=so.shared + 0,
+        births=so.births + 0,
+        deaths=so.deaths + 0,
     )
 
 
@@ -431,6 +501,7 @@ def relabel(so: SocState, snap: Snap, kin_lut: mx.array, col_lut: mx.array) -> S
     return so._replace(
         uid=mx.where(alive, snap.uid, -1),
         house=mx.where(alive, so.house, -1),
+        house_from=mx.where(alive, so.house_from, -1),
         kin=kin,
         colony=colony,
         body=snap.body + 0,
@@ -438,4 +509,6 @@ def relabel(so: SocState, snap: Snap, kin_lut: mx.array, col_lut: mx.array) -> S
         rel=so.rel * 0,
         expo=so.expo * 0,
         shared=so.shared * 0,
+        births=so.births * 0,
+        deaths=so.deaths * 0,
     )

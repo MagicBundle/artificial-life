@@ -841,17 +841,7 @@ def test_depth_bands_3d(tiny_cfg: Config, tiny3d_cfg: Config) -> None:
     sc.add(cloud(rng, (2, 2, 2, 2), 44), pos=pos)
     rec = SocDriver(cfg, sc.si).advance(sc.si, 250)
     kg = rec["kin_groups"]
-    assert list(kg) == [
-        "id",
-        "slot",
-        "size",
-        "tag",
-        "clade",
-        "clade_share",
-        "sim_self",
-        "z_mean",
-        "band_frac",
-    ]
+    assert list(kg) == [*EMPTY_TABLES["kin_groups"], "z_mean", "band_frac"]
     band = metrics.z_band(z, height)
     frac = np.bincount(band, minlength=metrics.N_BANDS) / 44
     assert kg["z_mean"] == [round(float(z.mean()), 2)] and kg["band_frac"] == [
@@ -1016,7 +1006,8 @@ def test_society_api_errors(tiny_cfg: Config) -> None:
 
 EMPTY_TABLES = {
     "houses": ["id", "name", "size", "clade"],
-    "kin_groups": ["id", "slot", "size", "tag", "clade", "clade_share", "sim_self"],
+    "kin_groups": ["id", "name", "named_after", "slot", "size", "tag", "clade", "clade_share", "sim_self",
+                   "x", "y", "arch", "births", "deaths"],
     "colonies": ["id", "slot", "size", "kin_group", "x", "y"],
     "events": ["step", "family", "kind", "id", "size", "other", "overlap"],
     "relations": ["a", "b", "attacks", "hits", "kills", "bonds", "shared", "bond_slots", "exp_attacks",
@@ -1044,6 +1035,12 @@ def test_empty_society(tiny_cfg: Config) -> None:
     rec = drv.advance(living_si(cfg, 0), 250)
     for name, cols in EMPTY_TABLES.items():
         assert rec[name] == {c: [] for c in cols}, name
+    assert rec["house_events"] == {
+        "founded": {"id": [], "step": [], "parent_house": []},
+        "extinct": {"id": [], "step": []},
+        "founded_dropped": 0,
+        "extinct_dropped": 0,
+    }
     assert rec["territory"] == {"owned_cells": 0, "purity_mean": None, "cells": {"id": [], "cells": []}}
     assert rec["events_dropped"] == 0 and rec["relations_dropped"] == 0
     assert rec["thresholds"]["n_ref"] == 0 and rec["thresholds"]["occ_min"] == 2
@@ -1103,8 +1100,8 @@ def test_empty_society(tiny_cfg: Config) -> None:
 HEAD_KEYS = ["social_version", "snapshot_step", "origin", "houses", "kin_groups", "colonies"]
 RECORD_KEYS = [
     "step", "social_version", "social_digest", "origin", "window_start", "summary", "thresholds", "houses",
-    "kin_groups", "colonies", "events", "events_dropped", "event_counts", "relations", "relations_dropped",
-    "temperament", "territory",
+    "house_events", "kin_groups", "colonies", "events", "events_dropped", "event_counts", "relations",
+    "relations_dropped", "temperament", "territory",
 ]  # fmt: skip
 
 
@@ -1147,6 +1144,9 @@ def test_head_and_record_keys(tiny_cfg: Config, tiny3d_cfg: Config) -> None:
                 list(c) == ["born", "split", "merged", "dissolved"] for c in rec["event_counts"].values()
             )
             assert list(rec["territory"]) == ["owned_cells", "purity_mean", "cells"]
+            assert list(rec["house_events"]) == ["founded", "extinct", "founded_dropped", "extinct_dropped"]
+            assert list(rec["house_events"]["founded"]) == ["id", "step", "parent_house"]
+            assert list(rec["house_events"]["extinct"]) == ["id", "step"]
             for name, cols in EMPTY_TABLES.items():
                 want = cols + (["z_mean", "band_frac"] if z and name == "kin_groups" else [])
                 want = want + (["z"] if z and name == "colonies" else [])
@@ -1190,15 +1190,18 @@ def test_head_and_record_keys(tiny_cfg: Config, tiny3d_cfg: Config) -> None:
 
 def _cap_scene(cfg: Config, generation: int) -> dict[str, np.ndarray]:
     """A 3-D scene that reaches every cap of a record: 17 kin groups (one more than the slots), 40 colonies of
-    4, 300 houses with 8-digit ids, lone rows; ``generation`` 1 replaces every agent (new uids, new bins)."""
+    4, 300 houses with 8-digit ids, lone rows. ``generation`` 1 replaces every agent but those of the kin
+    groups (new uids for the colonies and the lone rows: colony, house founded and house extinct events); the
+    groups stay (same uids, houses, bins), so each keeps its slot and its window counts are listed."""
     rng = np.random.default_rng(10 + generation)
     sc = Scene(cfg, 10 + generation)
     size = cfg.world.size
     uid0 = 10_000_000 * (generation + 1)
     for i in range(17):  # kin groups in well separated bins; sizes 9..11 so that the ranks are strict
-        bin_ = (3 * (i % 5), 3 * (i // 5), (7 * i) % 16, (5 * i + 8 * generation) % 16)
+        bin_ = (3 * (i % 5), 3 * (i // 5), (7 * i) % 16, (5 * i) % 16)
         n = 9 + i % 3
-        sc.add(cloud(rng, bin_, n), clade=12_345_000 + i + 17 * generation)
+        sc.add(cloud(rng, bin_, n), clade=12_345_000 + i)
+    n_kin = sc.next
     for k in range(40):  # colonies of 4 (lone tags: OTHER for the kin groups)
         lo = sc.next
         tags = rng.uniform(-1, 1, (4, T)).astype(np.float32)
@@ -1216,7 +1219,8 @@ def _cap_scene(cfg: Config, generation: int) -> dict[str, np.ndarray]:
         pos=np.concatenate([rng.uniform(0, size, (80, 2)), rng.uniform(1, 20, (80, 1))], 1),
     )
     n = sc.next
-    sc.si["uid"][:n] = uid0 + np.arange(n)
+    sc.si["uid"][:n_kin] = 10_000_000 + np.arange(n_kin)  # the kin groups' rows keep their uids
+    sc.si["uid"][n_kin:n] = uid0 + np.arange(n_kin, n)
     sc.si["next_uid"] = np.array(uid0 + n, np.int64)
     sc.si["clade"][:n] = np.where(
         sc.si["clade"][:n] >= 12_000_000, sc.si["clade"][:n], 20_000_000 + np.arange(n) % 300
@@ -1227,8 +1231,9 @@ def _cap_scene(cfg: Config, generation: int) -> dict[str, np.ndarray]:
 
 def test_head_and_record_size_budget(tiny3d_cfg: Config) -> None:
     """A synthetic 64k-like 3-D snapshot with every cap reached (17 window ids, 16 rows in each top table, 32
-    events, 32 relations, 7-digit steps, 8-digit ids): the record is at most 12 KB and the head at most
-    0.5 KB."""
+    events, 32 relations, 32 house events of each kind, 7-digit steps, 8-digit ids) and the roster's columns
+    at their widest (a name, six-digit window births and deaths by cause and seven archetype shares for every
+    listed group): the record is at most 12 KB and the head at most 0.5 KB."""
     cfg = tiny3d_cfg
     base = 1_490_000
     first = _cap_scene(cfg, 0)
@@ -1264,7 +1269,15 @@ def test_head_and_record_size_budget(tiny3d_cfg: Config) -> None:
         acts["attack_target"][attacker] = rows[b]
         acts["nbr"][attacker, 0] = rows[b]
     acts["q_kin"][:] = np.where(first["alive"][:, None], [300, -200], 0)
-    rec = drv.advance(_cap_scene(cfg, 1), base + 250, make_acts(acts))
+    # the roster: six-digit window counts for every slot (the window of 250 steps of a 64k run can hold that
+    # many births), and a label for every row, so that every share has digits
+    g = SOCIAL_V1.slots + 1
+    drv.so = drv.so._replace(
+        births=mx.array(900_000 + np.arange(g), dtype=mx.int64),
+        deaths=mx.array(800_000 + 17 * np.arange(4 * g).reshape(4, g), dtype=mx.int64),
+    )
+    labels = 1 + np.random.default_rng(3).integers(0, 7, size=first["alive"].shape).astype(np.int32)
+    rec = drv.advance(_cap_scene(cfg, 1), base + 250, make_acts(acts), arch=labels)
     head = drv.society.head()
     # every cap is reached
     assert (
@@ -1276,7 +1289,14 @@ def test_head_and_record_size_budget(tiny3d_cfg: Config) -> None:
     assert len(rec["relations"]["a"]) == SOCIAL_V1.relations_max and rec["relations_dropped"] > 0
     assert len(rec["temperament"]["id"]) == F + 1 and len(rec["territory"]["cells"]["id"]) == F
     assert rec["step"] == base + 250 and rec["origin"] == base and len(str(rec["houses"]["id"][0])) == 8
-    # the budgets (the 64k worst case is 9,526 B and 278 B; sizes here are the measured ones of this scene)
+    he = rec["house_events"]
+    assert len(he["founded"]["id"]) == SOCIAL_V1.events_max and he["founded_dropped"] > 0
+    assert len(he["extinct"]["id"]) == SOCIAL_V1.events_max and he["extinct_dropped"] > 0
+    assert len(str(he["founded"]["id"][0])) == 8 and len(str(he["extinct"]["id"][0])) == 8
+    kg = rec["kin_groups"]
+    assert None not in kg["births"] and None not in kg["deaths"] and None not in kg["arch"]
+    assert None not in kg["x"] and len(kg["name"]) == 16 and all(len(a) == 7 for a in kg["arch"])
+    # the budgets (the sizes here are the measured ones of this scene)
     size, hsize = len(runio._dumps(rec)), len(runio._dumps(head))
     assert size <= 12 * 1024, size
     assert hsize <= 512, hsize
@@ -1324,7 +1344,8 @@ def test_from_arrays_round_trip_and_continuation(tiny_cfg: Config) -> None:
     assert set(arrays) == {
         "host.kin.system", "host.kin.key", "host.col.system", "host.col.key", "host.kin.next_id",
         "host.col.next_id", "host.prev_step", "host.prev_next_uid", "host.window_start", "host.house_origin",
-        "host.n_ref", "host.kin.slots", "host.col.slots", "host.terr.ids", "host.terr.ema", "host.summary",
+        "host.n_ref", "host.kin.slots", "host.col.slots", "host.terr.ids", "host.terr.ema", "host.houses",
+        "host.kin.names", "host.summary",
     }  # fmt: skip
     restored, why = Society.from_arrays(arrays, cfg, SOCIAL_V1, step=750)
     assert why == "" and restored is not None and _same_arrays(restored.arrays(), arrays)
@@ -1408,9 +1429,50 @@ def _case(name: str, arrays: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         a["host.house_origin"] = np.array(-3, np.int64)
     elif name == "n_ref":
         a["host.n_ref"] = np.array(-2, np.int64)
+    elif name == "houses_dtype":
+        a["host.houses"] = a["host.houses"].astype(np.int32)
+    elif name == "houses_rank":
+        a["host.houses"] = a["host.houses"].reshape(1, -1)
+    elif name == "houses_unsorted":
+        a["host.houses"] = a["host.houses"][::-1].copy()
+    elif name == "houses_duplicate":
+        a["host.houses"] = np.concatenate([a["host.houses"][:1], a["host.houses"]])
+    elif name == "houses_negative":
+        a["host.houses"][0] = -1
+    elif name == "names_missing":
+        a.pop("host.kin.names")
+    elif name == "names_dtype":
+        a["host.kin.names"] = np.array(5)
+    elif name == "names_rank":
+        a["host.kin.names"] = a["host.kin.names"].reshape(1)
+    elif name == "names_not_json":
+        a["host.kin.names"] = np.array("[[1,")
+    elif name == "names_not_list":
+        a["host.kin.names"] = np.array('{"1": "A"}')
+    elif name == "names_item_short":
+        a["host.kin.names"] = np.array('[[1, "A"]]')
+    elif name == "names_empty_name":
+        a["host.kin.names"] = np.array(_names_json(lambda items: [[items[0][0], "", None], *items[1:]], a))
+    elif name == "names_bad_house":
+        a["host.kin.names"] = np.array(_names_json(lambda items: [[items[0][0], "A", -4], *items[1:]], a))
+    elif name == "names_bool_id":
+        a["host.kin.names"] = np.array(_names_json(lambda items: [[True, "A", None], *items[1:]], a))
+    elif name == "names_unsorted":
+        a["host.kin.names"] = np.array(_names_json(lambda items: items[::-1], a))
+    elif name == "names_duplicate":
+        a["host.kin.names"] = np.array(_names_json(lambda items: [items[0], *items], a))
+    elif name == "names_group_missing":
+        a["host.kin.names"] = np.array(_names_json(lambda items: items[:-1], a))
+    elif name == "names_group_extra":
+        a["host.kin.names"] = np.array(_names_json(lambda items: [*items, [10_000, "Zzz", None]], a))
     else:
         raise AssertionError(name)
     return a
+
+
+def _names_json(edit: Any, arrays: dict[str, np.ndarray]) -> str:
+    """The sidecar's kin names after ``edit`` (a function of the list of ``[id, name, house]`` items)."""
+    return runio._dumps(edit(json.loads(str(arrays["host.kin.names"]))))
 
 
 CASES = [
@@ -1423,6 +1485,17 @@ CASES = [
     ("summary_not_json", "JSON"), ("summary_not_object", "keys"), ("summary_keys", "keys"),
     ("prev_step_late", "host.prev_step"), ("window_start_late", "host.window_start"),
     ("origin_late", "host.house_origin"), ("origin_negative", "host.house_origin"), ("n_ref", "host.n_ref"),
+    ("houses_dtype", "host.houses is int32"), ("houses_rank", "host.houses is int64 with 2"),
+    ("houses_unsorted", "host.houses is not a strictly increasing"),
+    ("houses_duplicate", "host.houses is not a strictly increasing"),
+    ("houses_negative", "host.houses is not a strictly increasing"),
+    ("names_missing", "member 'host.kin.names' is missing"), ("names_dtype", "host.kin.names is"),
+    ("names_rank", "host.kin.names is"), ("names_not_json", "host.kin.names is not JSON"),
+    ("names_not_list", "host.kin.names is not a list"), ("names_item_short", "holds an item"),
+    ("names_empty_name", "holds an item"), ("names_bad_house", "holds an item"),
+    ("names_bool_id", "holds an item"), ("names_unsorted", "sorted by id"),
+    ("names_duplicate", "sorted by id"), ("names_group_missing", "exactly the tracked"),
+    ("names_group_extra", "exactly the tracked"),
 ]  # fmt: skip
 
 
@@ -1438,6 +1511,7 @@ def test_from_arrays_rejects(name: str, needle: str, tiny_cfg: Config) -> None:
     assert Society.from_arrays(good, cfg, SOCIAL_V1, step=750)[0] is not None
     # a long enough membership list for the cases that edit its first entries
     assert good["host.kin.system"].size > 2 and (good["host.kin.slots"] >= 0).sum() >= 3
+    assert good["host.houses"].size >= 2 and len(json.loads(str(good["host.kin.names"]))) >= 3
     soc, reason = Society.from_arrays(_case(name, good), cfg, SOCIAL_V1, step=750)
     assert soc is None and needle in reason, (name, reason)
 

@@ -29,10 +29,10 @@ from alife.game.social import (
     update,
 )
 from alife.state import CounterIdx as C
+from alife.state import DeathCause, State, init_state, to_numpy
 from alife.state import LedgerIdx as L
-from alife.state import State, init_state, to_numpy
 from alife.step import ActFlag, make_step
-from game_helpers import blank_acts, living_si, make_acts, make_si, window_reference
+from game_helpers import blank_acts, life_reference, living_si, make_acts, make_si, window_reference
 from helpers import set_output_bias
 
 B = layout.B
@@ -399,6 +399,218 @@ def test_kills_are_counted_on_the_victim_flag(tiny_cfg: Config) -> None:
     assert kills > 0 and (total.sum(axis=1) > 0).sum() > 1
 
 
+# --- the roster's device counts (stage 7, DESIGN section 29.14) --------------------------------------------
+
+
+def _grow(si: dict[str, np.ndarray], births: list[tuple[int, int, int]]) -> dict[str, np.ndarray]:
+    """A copy of ``si`` with one more alive child per ``(row, parent row, uid)``."""
+    out = {k: v.copy() for k, v in si.items()}
+    for row, parent, uid in births:
+        out["alive"][row], out["uid"][row], out["parent_uid"][row] = True, uid, out["uid"][parent]
+        out["clade"][row] = out["clade"][parent]
+    out["next_uid"] = np.array(1 + max(uid for *_, uid in births), np.int64)
+    return out
+
+
+def _lanes(acts: dict[str, np.ndarray], births: list[tuple[int, int, int]]) -> dict[str, np.ndarray]:
+    for lane, (row, parent, uid) in enumerate(births):
+        acts["born_row"][lane], acts["born_parent"][lane], acts["born_uid"][lane] = row, parent, uid
+    return acts
+
+
+def test_house_from_on_hand_lanes(micro_cfg: Config) -> None:
+    """``house_from`` is the house of the founder's parent, inherited with the house: a house founded by a
+    birth takes its parent's house; a child that does not found takes its parent's ``house_from``; an
+    immigrant and the founders of the run have none (-1); a parent of unknown house gives
+    ``HOUSE_UNKNOWN``; dead rows hold -1, and the snapshot carries the array."""
+    sr = SOCIAL_V1
+    cfg1 = apply_overrides(micro_cfg, ["game.house_rate=1.0"])
+    cfg0 = apply_overrides(micro_cfg, ["game.house_rate=0"])
+    before = living_si(cfg1, 8)
+    so0 = init_soc(make_si(before), cfg1, sr)
+    assert (np_(so0.house_from) == -1).all()
+    # step 1, rate 1: row 8 is a child of row 2 and founds house 100 from house 2; row 10 is an immigrant
+    s1 = _grow(before, [(8, 2, 100)])
+    s1["alive"][10], s1["uid"][10], s1["clade"][10] = True, 102, cfg1.population.n_init
+    acts1 = _lanes(blank_acts(cfg1), [(8, 2, 100)])
+    acts1["born_row"][1], acts1["born_uid"][1] = 10, 102
+    s1["alive"][7] = False
+    so1 = eval_soc(update(so0, make_si(s1), make_acts(acts1), cfg1, sr))
+    house, frm = np_(so1.house), np_(so1.house_from)
+    assert house[8] == 100 and frm[8] == 2  # the founder's parent's house
+    assert house[10] == 102 and frm[10] == -1  # an immigrant has no parent
+    assert (frm[:8] == -1).all() and (frm[11:] == -1).all()  # the founders of the run, dead and free rows
+    # step 2, rate 0: row 9 is a child of row 8 and keeps house 100 and its origin, house 2
+    s2 = _grow(s1, [(9, 8, 101)])
+    so2 = eval_soc(update(so1, make_si(s2), make_acts(_lanes(blank_acts(cfg0), [(9, 8, 101)])), cfg0, sr))
+    assert np_(so2.house)[9] == 100 and np_(so2.house_from)[9] == 2 and np_(so2.house_from)[8] == 2
+    # step 3, rate 1: row 11 is a child of row 9 and founds house 103 from house 100
+    s3 = _grow(s2, [(11, 9, 103)])
+    so3 = eval_soc(update(so2, make_si(s3), make_acts(_lanes(blank_acts(cfg1), [(11, 9, 103)])), cfg1, sr))
+    assert np_(so3.house)[11] == 103 and np_(so3.house_from)[11] == 100
+    assert np_(so3.house_from)[8] == 2 and np_(so3.house_from)[9] == 2  # the others keep theirs
+    # a row that dies and is reused by a newborn in the same step takes the newborn's, not the old row's
+    s4 = _grow(s3, [(8, 11, 104)])  # row 8 (house 100, from 2) is reused by a child of row 11
+    acts4 = _lanes(blank_acts(cfg1), [(8, 11, 104)])
+    so4 = eval_soc(update(so3, make_si(s4), make_acts(acts4), cfg1, sr))
+    assert np_(so4.house)[8] == 104 and np_(so4.house_from)[8] == 103
+    # a parent of unknown house (an observer attached mid-run): HOUSE_UNKNOWN, whatever the rate
+    unk = living_si(cfg1, 12)
+    unk["clade"][8:12] = cfg1.population.n_init
+    child = _grow(unk, [(20, 9, 500)])
+    so_u = update(
+        init_soc(make_si(unk), cfg1, sr),
+        make_si(child),
+        make_acts(_lanes(blank_acts(cfg1), [(20, 9, 500)])),
+        cfg1,
+        sr,
+    )
+    assert np_(so_u.house)[20] == 500 and np_(so_u.house_from)[20] == HOUSE_UNKNOWN
+    # the snapshot carries the array, dead rows masked
+    snap = snapshot(so3.kin, so3, make_si(s3), None, micro_cfg, sr)
+    mx.eval(*snap)
+    alive = s3["alive"]
+    assert np.array_equal(np_(snap.house_from), np.where(alive, np_(so3.house_from), -1))
+    assert np_(snap.house_from).dtype == np.int64
+
+
+def test_window_life_on_hand_lanes(micro_cfg: Config) -> None:
+    """Births are counted for the slot the newborn inherits (its parent's at the start of the step) and
+    deaths for the dead row's slot, by cause; immigrants are not births; a cause on a row that was dead at the
+    start and a birth from a dead parent are not counted; the window sums over steps, the snapshot carries it
+    and ``relabel`` zeroes it."""
+    cfg, sr = micro_cfg, SOCIAL_V1
+    g, other = sr.slots + 1, sr.slots
+    n = dims(cfg).n
+    before = living_si(cfg, 12)
+    so = init_soc(make_si(before), cfg, sr)
+    slots = [0, 0, 1, 1, 2, 2, 3, 3, other, other, 1, 2, *([-1] * (n - 12))]
+    so = so._replace(kin=mx.array(np.array(slots, np.int32)))
+    assert np_(so.births).shape == (g,) and np_(so.deaths).shape == (len(DeathCause), g)
+    assert not np_(so.births).any() and not np_(so.deaths).any()
+    # step 1: births from rows 0, 2, 8 (OTHER) and 0; an immigrant; six deaths of all four causes
+    births = [(20, 0, 100), (21, 2, 101), (22, 8, 102), (23, 0, 103)]
+    after = _grow(before, births)
+    after["alive"][24], after["uid"][24] = True, 104
+    acts = _lanes(blank_acts(cfg), births)
+    acts["born_row"][4], acts["born_uid"][4] = 24, 104  # an immigrant lane: no parent
+    acts["born_row"][5], acts["born_parent"][5], acts["born_uid"][5] = 25, 50, 105  # a dead parent (stray)
+    deaths = {1: DeathCause.STARVED, 3: DeathCause.KILLED, 4: DeathCause.AGED, 5: DeathCause.CATASTROPHE}
+    deaths |= {9: DeathCause.STARVED, 6: DeathCause.KILLED}
+    for row, cause in deaths.items():
+        acts["death_cause"][row] = cause.value
+        after["alive"][row] = False
+    acts["death_cause"][40] = DeathCause.AGED.value  # inconsistent: row 40 was dead at the start
+    ref_b, ref_d = life_reference(np.array(slots, np.int32), acts, g, len(DeathCause))
+    so1 = eval_soc(update(so, make_si(after), make_acts(acts), cfg, sr))
+    want_b = np.zeros(g, np.int64)
+    want_b[[0, 1, other]] = [2, 1, 1]
+    want_d = np.zeros((len(DeathCause), g), np.int64)
+    for row, cause in deaths.items():
+        want_d[cause.value, slots[row]] += 1
+    assert np.array_equal(np_(so1.births), want_b) and np.array_equal(ref_b, want_b)
+    assert np.array_equal(np_(so1.deaths), want_d) and np.array_equal(ref_d, want_d)
+    assert np_(so1.births).dtype == np.int64 and np_(so1.deaths).dtype == np.int64
+    assert want_d.sum() == 6 and want_b.sum() == 4  # the immigrant and the stray cause are not counted
+    # step 2 adds to the window: row 20 (slot 0, born in step 1) starves, row 21 (slot 1) has a child
+    kin1 = np_(so1.kin)
+    assert kin1[20] == 0 and kin1[21] == 1
+    births2 = [(30, 21, 105)]
+    after2 = _grow(after, births2)
+    acts2 = _lanes(blank_acts(cfg), births2)
+    acts2["death_cause"][20] = DeathCause.STARVED.value
+    after2["alive"][20] = False
+    b2, d2 = life_reference(kin1, acts2, g, len(DeathCause))
+    so2 = eval_soc(update(so1, make_si(after2), make_acts(acts2), cfg, sr))
+    assert np.array_equal(np_(so2.births), want_b + b2) and np.array_equal(np_(so2.deaths), want_d + d2)
+    assert (want_b + b2)[1] == 2 and (want_d + d2)[DeathCause.STARVED.value, 0] == 2
+    # the snapshot carries the window as it stands, then relabel resets it
+    snap = snapshot(so1.kin, so2, make_si(after2), make_acts(acts2), cfg, sr)
+    mx.eval(*snap)
+    assert np.array_equal(np_(snap.births), np_(so2.births)) and np.array_equal(
+        np_(snap.deaths), np_(so2.deaths)
+    )
+    kin_lut, col_lut = np.zeros(16**4, np.int32), np.zeros(n, np.int32)
+    out = eval_soc(relabel(so2, snap, mx.array(kin_lut), mx.array(col_lut)))
+    assert not np_(out.births).any() and not np_(out.deaths).any()
+    assert out.births.shape == so2.births.shape and out.deaths.shape == so2.deaths.shape
+
+
+def test_window_life_matches_counters(tiny_cfg: Config) -> None:
+    """60 real steps with immigrants, senescence (``max_age`` 40: the founders die at once, beyond the death
+    records' cap) and a snapshot every 10: per step the births over the slots are the ``BIRTHS`` counter,
+    the deaths of each cause are the ``DEATHS_*`` counter, and the window equals an independent numpy
+    reference built from the channel and the previous slots (slots reshuffled at every snapshot)."""
+    cfg = apply_overrides(tiny_cfg, [*IMMIGRATION, "population.max_age=40"])
+    sr = dataclasses.replace(SOCIAL_V1, snapshot_every=EVERY)
+    g, nc = sr.slots + 1, len(DeathCause)
+    s = set_output_bias(init_state(cfg), cfg, BIAS)
+    fn = make_step(cfg, observe=True)
+    so = init_soc(soc_in(s), cfg, sr)
+    first = np_(s.alive)
+    so = so._replace(kin=mx.array(np.where(first, np.arange(len(first)) % 4 % g, -1).astype(np.int32)))
+    counters = {
+        DeathCause.STARVED: C.DEATHS_STARVED,
+        DeathCause.KILLED: C.DEATHS_KILLED,
+        DeathCause.AGED: C.DEATHS_AGED,
+        DeathCause.CATASTROPHE: C.DEATHS_CATASTROPHE,
+    }
+    win_b, win_d = np.zeros(g, np.int64), np.zeros((nc, g), np.int64)
+    seen_b, seen_d, slots_used = 0, np.zeros(nc, np.int64), set()
+    for t in range(1, 61):
+        prev_kin = np_(so.kin)
+        s, out = fn(s)
+        a = out.acts
+        si = soc_in(s)
+        so = eval_soc(update(so, si, a, cfg, sr))
+        mx.eval(s, out)
+        an = {f: np_(getattr(a, f)) for f in a._fields}
+        c = np_(out.counters)
+        b, d = life_reference(prev_kin, an, g, nc)
+        where = f"step {t}"
+        assert b.sum() == c[C.BIRTHS], where
+        for cause, counter in counters.items():
+            assert d[cause.value].sum() == c[counter], (where, cause)
+        win_b, win_d = win_b + b, win_d + d
+        assert np.array_equal(np_(so.births), win_b) and np.array_equal(np_(so.deaths), win_d), where
+        seen_b += int(b.sum())
+        seen_d += d.sum(axis=1)
+        slots_used |= set(np.flatnonzero(win_b).tolist()) | set(np.flatnonzero(win_d.sum(axis=0)).tolist())
+        if t % EVERY == 0:  # a snapshot carries the window, then the relabel resets it
+            snap = snapshot(mx.array(prev_kin), so, si, a, cfg, sr)
+            mx.eval(*snap)
+            assert np.array_equal(np_(snap.births), win_b) and np.array_equal(np_(snap.deaths), win_d), where
+            kin_lut, col_lut = _luts(cfg, sr, t)
+            so = eval_soc(relabel(so, snap, mx.array(kin_lut), mx.array(col_lut)))
+            win_b, win_d = np.zeros_like(win_b), np.zeros_like(win_d)
+            assert not np_(so.births).any() and not np_(so.deaths).any(), where
+    assert seen_b > 20 and seen_d[DeathCause.STARVED.value] > 0 and seen_d[DeathCause.AGED.value] > 0
+    assert len(slots_used) > 2  # several slots hold counts, not only OTHER
+
+
+def test_snapshot_carries_the_archetype_labels(micro_cfg: Config) -> None:
+    """``Snap.arch`` is the labels passed in, masked by alive, as int32; without labels it is zero; compiled
+    equals eager and no output aliases an input."""
+    cfg, sr = micro_cfg, SOCIAL_V1
+    si = make_si(living_si(cfg, 6, tag=0.1))
+    so = init_soc(si, cfg, sr)
+    arch = mx.array(
+        np.array([0, 1, 2, 7, 3, 6, 5, 5, *([4] * (dims(cfg).n - 8))], np.int32)
+    )  # dead rows labelled
+    mx.eval(*so, arch)
+    eager = snapshot(so.kin, so, si, None, cfg, sr, arch)
+    compiled = mx.compile(lambda k, so_, si_, ar: snapshot(k, so_, si_, None, cfg, sr, ar))(
+        so.kin, so, si, arch
+    )
+    bare = snapshot(so.kin, so, si, None, cfg, sr)
+    mx.eval(*eager, *compiled, *bare)
+    want = np.where(np_(si.alive), np_(arch), 0)
+    assert np.array_equal(np_(eager.arch), want) and want.tolist()[:8] == [0, 1, 2, 7, 3, 6, 0, 0]
+    assert np.array_equal(np_(compiled.arch), want) and np_(eager.arch).dtype == np.int32
+    assert not np_(bare.arch).any() and np_(bare.arch).shape == want.shape
+    assert all(x is not arch for x in compiled) and all(x is not arch for x in eager)
+
+
 # --- territory and the snapshot arrays ------------------------------------------------------------------
 
 
@@ -592,7 +804,8 @@ def test_update_outputs_do_not_alias_inputs(micro_cfg: Config) -> None:
 
 # --- SocialRules ----------------------------------------------------------------------------------------
 
-SOCIAL_V1_DIGEST = "a636771e9e10ad6dc3a070acfdc64799116b72f42f10a35f077afbcd139839e4"
+# re-pinned at stage 7 (the roster adds ``kin_name_salt``); G2 is not merged: no record has the old digest
+SOCIAL_V1_DIGEST = "df6ba5e483e9f2fcf23508deeaee142b7e20ace317509d3881df6d8815483d7c"
 
 
 def test_social_rules(micro_cfg: Config) -> None:
@@ -621,7 +834,7 @@ def test_social_rules(micro_cfg: Config) -> None:
         "kin_enter": (9, 9), "kin_leave": (5, 10), "n_band": 4, "colony_enter": 5, "colony_leave": 4,
         "colony_iters": 33, "theta": (1, 4), "uid_spacing": 301, "foot_cells": 64, "terr_cells": 16,
         "terr_k": 3, "terr_min": 2, "sim_sample": 32, "sim_distinct": (1, 5), "events_max": 31,
-        "relations_max": 31, "sim_salt": 1, "name_salt": 2,
+        "relations_max": 31, "sim_salt": 1, "name_salt": 2, "kin_name_salt": 3,
     }  # fmt: skip
     assert set(changed) == {f.name for f in dataclasses.fields(SocialRules)}
     assert SOCIAL_V1.digest() == SOCIAL_V1_DIGEST

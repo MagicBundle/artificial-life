@@ -13,9 +13,10 @@ seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`.
 `docs/GAMES.md` is the design of the gaming vertical (owner decisions in its §10); its build step G1, the observer
 layer (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`; normative spec `DESIGN.md` §28), is
 implemented, with provisional thresholds (`INTENT_VERSION` 1) until the calibration run; its build step G2, social
-tracking (houses, kin groups, colonies, territory, relations; generic `groups.py` and `tracking.py`; normative spec
-`DESIGN.md` §29), is implemented, with provisional thresholds (`SOCIAL_VERSION` 1); the Settler colony clause is built
-but stays off until `INTENT_VERSION` 2 (DESIGN §28.4).
+tracking (houses, kin groups, colonies, territory, relations, and a roster of kin-group names, house events and
+per-group window counts; generic `groups.py` and `tracking.py`; normative spec `DESIGN.md` §29), is implemented, with
+provisional thresholds (`SOCIAL_VERSION` 1); the Settler colony clause is built but stays off until `INTENT_VERSION` 2
+(DESIGN §28.4).
 
 ## Conventions
 

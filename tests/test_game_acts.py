@@ -16,8 +16,8 @@ from alife.actions import Actions
 from alife.config import Config, apply_overrides, dims
 from alife.game.rules import RULES_V1
 from alife.state import CounterIdx as C
+from alife.state import DeathCause, State, init_state, to_numpy
 from alife.state import LedgerIdx as L
-from alife.state import State, init_state, to_numpy
 from alife.step import KIN_Q_CLIP, ActFlag, Acts, StepOut, StepOutG, make_step, step
 from helpers import ON_GPU, set_output_bias
 
@@ -77,6 +77,7 @@ def test_act_flag_bits_and_dtypes(tiny_cfg: Config) -> None:
     assert Acts._fields == (
         *("attack_gain", "share_out", "share_got", "flags", "thrust", "defend", "emit"),  # G1
         *("attack_target", "bond_target", "q_kin", "nbr", "born_row", "born_parent", "born_uid"),  # G2
+        "death_cause",  # G2 stage 7 (the roster)
     )
     d = dims(tiny_cfg)
     n, m, k, b = d.n, d.m, d.k, layout.B
@@ -94,6 +95,7 @@ def test_act_flag_bits_and_dtypes(tiny_cfg: Config) -> None:
         mx.int32, mx.int32, mx.int16, mx.int32,
     )  # fmt: skip
     assert (a.born_row.dtype, a.born_parent.dtype, a.born_uid.dtype) == (mx.int32, mx.int32, mx.int64)
+    assert a.death_cause.shape == (n,) and a.death_cause.dtype == mx.int8
     assert KIN_Q_CLIP == 127.0 and round(256 * KIN_Q_CLIP) <= np.iinfo(np.int16).max
 
 
@@ -190,6 +192,39 @@ def _starve(s: State) -> tuple[State, np.ndarray]:
     return s._replace(energy=mx.array(energy_)), rows
 
 
+CAUSE_COUNTERS = {
+    DeathCause.STARVED: C.DEATHS_STARVED,
+    DeathCause.KILLED: C.DEATHS_KILLED,
+    DeathCause.AGED: C.DEATHS_AGED,
+    DeathCause.CATASTROPHE: C.DEATHS_CATASTROPHE,
+}
+
+
+def _check_death_cause(a: Acts, out: StepOutG, prev: State, s: State, where: str) -> dict[DeathCause, int]:
+    """``Acts.death_cause`` (stage 7): the S14 cause of every row that died this step, -1 elsewhere. It is
+    set on exactly the rows alive at the start that did not survive (a row reused by a newborn in its death
+    step included), its count per cause is the step's counter, it agrees with the death records (which are
+    capped at DL; the channel is not), and it agrees with the KILLED flag. Returns the count per cause."""
+    dc = _np(a.death_cause)
+    alive0 = _np(prev.alive)
+    survivor = _np(s.alive) & (_np(s.uid) == _np(prev.uid))
+    assert np.array_equal(dc >= 0, alive0 & ~survivor), where
+    assert set(np.unique(dc)) <= {-1, *(c.value for c in DeathCause)}, where
+    c = _np(out.counters)
+    counts = {cause: int((dc == cause.value).sum()) for cause in DeathCause}
+    for cause, counter in CAUSE_COUNTERS.items():
+        assert counts[cause] == c[counter], (where, cause)
+    assert sum(counts.values()) == int(alive0.sum() - survivor.sum()), where
+    killed = (_np(a.flags) & ActFlag.KILLED.value) > 0
+    assert np.array_equal(killed, dc == DeathCause.KILLED.value), where
+    rec = out.deaths
+    valid = _np(rec.valid)
+    rows = {int(u): r for r, u in enumerate(_np(prev.uid)) if u >= 0}
+    for uid, cause in zip(_np(rec.uid)[valid], _np(rec.cause)[valid], strict=True):
+        assert dc[rows[int(uid)]] == cause, where
+    return counts
+
+
 def _check_social_acts(a: Acts, out: StepOutG, post: _Post, prev: State, s: State, where: str) -> None:
     """The additions of §29.2 against the spied sub-steps of an eager step from ``prev``."""
     n, k = post.nbr_idx.shape
@@ -219,6 +254,7 @@ def _check_social_acts(a: Acts, out: StepOutG, post: _Post, prev: State, s: Stat
     assert set(np.flatnonzero(killed)) <= set(_np(a.attack_target)[attacked]), where
     survivor = _np(s.alive) & (_np(s.uid) == _np(prev.uid))  # a reused row holds a newborn's new uid
     assert alive0[killed].all() and not survivor[killed].any(), where
+    _check_death_cause(a, out, prev, s, where)
     # the birth lanes: the records' rows and uids, the parent row on birth lanes only
     births = out.births
     born_row, born_uid, born_parent = (_np(x) for x in (a.born_row, a.born_uid, a.born_parent))
@@ -329,6 +365,39 @@ def test_killed_flag_under_forced_attacks(tiny_cfg: Config) -> None:
         _check_social_acts(out.acts, out, _post_s8(prev, tiny_cfg), prev, s, f"step {t}")
         kills += int(((_np(out.acts.flags) & ActFlag.KILLED.value) > 0).sum())
     assert kills > 0
+
+
+def test_death_cause_covers_every_cause(tiny_cfg: Config) -> None:
+    """``Acts.death_cause`` against the per-cause counters, the death records and the KILLED flag over a run
+    that starves rows (step 0), ages them (``max_age`` 12) and catastrophe-kills them (a director lever at
+    step 5), and over forced attacks that kill (``test_killed_flag_under_forced_attacks`` runs the same
+    check); every cause occurs, so no count above is trivially zero."""
+    cfg = apply_overrides(tiny_cfg, ["director.enabled=true", "population.max_age=12"])
+    s = init_state(cfg)
+    half = cfg.world.size / 2
+    fn = make_step(cfg, observe=True)
+    seen = dict.fromkeys(DeathCause, 0)
+    most = 0
+    for t in range(30):
+        if t == 0:
+            s, _ = _starve(s)
+        if t == 5:
+            s = s._replace(
+                env_cat_center=mx.array([half, half], dtype=mx.float32),
+                env_cat_radius=mx.array(60.0, dtype=mx.float32),
+                env_cat_kill_p=mx.array(0.5, dtype=mx.float32),
+            )
+        prev = s
+        s, out = fn(prev)
+        mx.eval(s, out)
+        counts = _check_death_cause(out.acts, out, prev, s, f"step {t}")
+        most = max(most, sum(counts.values()))
+        for cause, n in counts.items():
+            seen[cause] += n
+    assert all(seen[c] > 0 for c in (DeathCause.STARVED, DeathCause.AGED, DeathCause.CATASTROPHE)), seen
+    # the channel is not capped like the death records (DL = 2M per step): a step with more deaths than
+    # records is counted whole
+    assert most > dims(cfg).dl, (most, dims(cfg).dl)
 
 
 def test_q_kin_columns_are_the_kin_components() -> None:

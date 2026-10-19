@@ -10,7 +10,10 @@ set in the run) and reports, snapshot after snapshot, what the trackers did:
   10/50/90 quantiles of the Jaccard of the matched pairs and of the best Jaccard of the unmatched previous
   systems, and the event counts; for kin groups the occupied bins, the unaffiliated fraction, the tracked
   sizes and the quantiles of ``sim_self`` over the slotted groups (the chaining report: single linkage chains
-  within a clade, DESIGN §29.5); for colonies ``members``, ``largest`` and ``converged``; the houses alive;
+  within a clade, DESIGN §29.5); for colonies ``members``, ``largest`` and ``converged``; the houses alive and
+  the share of their members in houses founded since the study's start (``next_uid`` of the start state:
+  houses below it were seeded from clades) against the seeded ones, which is the check of ``game.house_rate``
+  (DESIGN §29.14);
 * per study and family, the **churn**: the ids born in the study that ended within 3 snapshots, as a count and
   as a share of the ids born (a tracker that flickers shows up here);
 * ``timing`` (kept apart: the rest of the report is deterministic for a given run, parameters and device): per
@@ -119,8 +122,28 @@ def _family(diag: Diagnostics, events: Sequence[Event]) -> dict[str, Any]:
     }
 
 
-def _snapshot_entry(info: SnapInfo, record: Mapping[str, Any]) -> dict[str, Any]:
-    """One snapshot of the report, from the society's last diagnostics and the snapshot's record."""
+def _houses_entry(info: SnapInfo, summary: Mapping[str, Any], first_uid: int) -> dict[str, Any]:
+    """The houses of one snapshot: how many are alive, and the members of those seeded at the study's start
+    against those of the houses founded since (DESIGN §29.14, the check of ``game.house_rate``). The id of a
+    house is its founder's uid, so a house with an id below ``first_uid``, the ``next_uid`` of the start,
+    existed then."""
+    members = int(info.house_sizes.sum())
+    founded = info.house_ids >= first_uid
+    founded_members = int(info.house_sizes[founded].sum())
+    return {
+        "alive": summary["houses"]["alive"],
+        "unknown_immigrant": summary["houses"]["unknown_immigrant"],
+        "members": members,
+        "seeded_members": members - founded_members,
+        "founded_members": founded_members,
+        "founded_houses": int(founded.sum()),
+        "founded_share": round(founded_members / members, 6) if members else None,
+    }
+
+
+def _snapshot_entry(info: SnapInfo, record: Mapping[str, Any], first_uid: int) -> dict[str, Any]:
+    """One snapshot of the report, from the society's last diagnostics and the snapshot's record;
+    ``first_uid`` is the ``next_uid`` of the study's start (see ``_houses_entry``)."""
     summary = record["summary"]
     n = info.n_alive
     sim_self = [v for v in info.sim_self.values() if v is not None]
@@ -146,7 +169,7 @@ def _snapshot_entry(info: SnapInfo, record: Mapping[str, Any]) -> dict[str, Any]
             "converged": summary["colonies"]["converged"],
             "match": summary["colonies"]["match"],
         },
-        "houses": {"alive": summary["houses"]["alive"]},
+        "houses": _houses_entry(info, summary, first_uid),
     }
 
 
@@ -216,6 +239,7 @@ def study(
     nd = dims(cfg).nd
 
     state = load_state(rd, cfg, states_dir, start)
+    first_uid = int(to_numpy(state.next_uid))
     obs, note = Observer.open(rd, state, cfg, social=sr)  # ValueError for rules this world cannot hold
     resumed = any(st == start for st, _ in rd.checkpoints())
     source = "sidecar" if resumed and note is None else "fresh"
@@ -296,7 +320,7 @@ def study(
                     f"step {t}: expected exactly the record of this snapshot, got {len(records)}"
                 )
             record, info = records[0], obs.society.info
-            snapshots.append(_snapshot_entry(info, record))
+            snapshots.append(_snapshot_entry(info, record, first_uid))
             kin_events.append(info.kin_events)
             col_events.append(info.col_events)
             study_records.append(record)
@@ -350,7 +374,7 @@ def study(
         "track_version": TRACK_VERSION,
         "device": str(mx.default_device()),
         "mlx_version": mx.__version__,
-        "observer_start": {"step": start, "source": source, "note": note},
+        "observer_start": {"step": start, "source": source, "note": note, "next_uid": first_uid},
         "rows_verified": checked,
         "records_verified": verified,
         "records_comparable": comparable > 0,

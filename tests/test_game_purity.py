@@ -154,8 +154,9 @@ def test_observer_inputs_exclude_the_key() -> None:
 # feeds the cost term), the post-S8 defend and emit (inputs of the S11 gather and of the S17 deposit), the
 # solvency mask, the lane kind and parent, the S11 attack, hit and gain, the S9 formed bits and the S12 slot
 # flows; and for social tracking the post-S8 attack and bond targets, the S9 proposer bits, the S14 death
-# cause, the neighbour rows, the brain output y (the one new float tap: a kernel output read by two column
-# slices) and the birth records' child rows and uids.
+# cause (read by the KILLED bit and, with the roster, by the int8 ``death_cause`` field: one tap), the
+# neighbour rows, the brain output y (the one new float tap: a kernel output read by two column slices)
+# and the birth records' child rows and uids.
 CHANNEL_TAPS = frozenset(
     {
         "thrust0", "defend_post", "emit_post", "solvent", "lanes_kind", "lanes_parent",

@@ -12,6 +12,12 @@ slot maps (slot -> id, sticky) and a few counters; ``arrays()`` and ``from_array
 (DESIGN §29.10). Every step of ``settle`` handles the empty cases (no alive row, no occupied bin, no tracked
 group, no colony, no window ids): tables are empty with their columns, ratios None, no exception.
 
+The roster (stage 7, DESIGN §29.14) adds three things to the record: each kin group is named once, at its
+admission, and keeps the name for life (``Society.kin_names``, saved in the sidecar); the houses founded and
+gone extinct since the last snapshot are listed (``house_events``, from the set of houses with live members
+at consecutive snapshots, ``Society.houses``); and each listed kin group carries its window births and
+deaths by cause (the device's window counts, by the window's slots), its centroid and its archetype mix.
+
 Lint (rule 2, ``tests/test_lint.py``): no subscript assignment anywhere in this module, dict keys included.
 Arrays are built with ``tracking`` helpers (``lookup_table``) and ``np.where``, dicts and tables by literals
 and comprehensions.
@@ -29,6 +35,7 @@ from alife import layout, metrics
 from alife.analysis import phylo
 from alife.config import Config, dims
 from alife.game import social
+from alife.game.rules import ARCHETYPE_NAMES
 from alife.game.social import SOCIAL_VERSION, Expo, Rel, SocialRules
 from alife.runio import _dumps
 from alife.state import to_numpy
@@ -80,6 +87,8 @@ HOST_KEYS: Final = (
     "host.col.slots",
     "host.terr.ids",
     "host.terr.ema",
+    "host.houses",
+    "host.kin.names",
     "host.summary",
 )
 SUMMARY_KEYS: Final = ("houses", "kin_groups", "colonies")
@@ -117,6 +126,8 @@ class SocietyState(NamedTuple):
     house_origin: int  # the step the observer started fresh: houses are exact iff 0
     n_ref: int  # the reference population of the thresholds, -1 before the first snapshot
     summary: dict[str, Any]  # the three summary objects of the last settled snapshot
+    houses: np.ndarray  # (m,) int64 ids of the houses with live members at the last snapshot, ascending
+    kin_names: tuple[tuple[int, str, int], ...]  # (kin group id, name, named_after: house id or -1), by id
 
 
 class SnapInfo(NamedTuple):
@@ -134,6 +145,8 @@ class SnapInfo(NamedTuple):
     kin_sizes: dict[int, int]  # tracked kin group id -> alive rows
     col_sizes: dict[int, int]  # tracked colony id -> alive rows
     sim_self: dict[int, float | None]  # slotted kin group id -> within-group similarity (empty at initialise)
+    house_ids: np.ndarray  # (m,) int64 every house with live members, ascending (not only the top 16)
+    house_sizes: np.ndarray  # (m,) int64 their live members
 
 
 def host_snap(snap: social.Snap) -> dict[str, np.ndarray]:
@@ -226,6 +239,11 @@ class Society:
         self.house_origin = -1 if state is None else state.house_origin
         self.n_ref = -1 if state is None else state.n_ref
         self.summary: dict[str, Any] | None = None if state is None else state.summary
+        self.houses = np.zeros(0, dtype=np.int64) if state is None else state.houses.copy()
+        # the live tracked kin groups' names: id -> (name, named_after: house id or -1), pruned per snapshot
+        self.kin_names: dict[int, tuple[str, int]] = (
+            {} if state is None else {i: (nm, after) for i, nm, after in state.kin_names}
+        )
         self.info: SnapInfo | None = None  # the last snapshot's diagnostics (not persisted)
 
     # -- public state -------------------------------------------------------------------------------------
@@ -255,6 +273,8 @@ class Society:
             self.house_origin,
             self.n_ref,
             self.summary,
+            self.houses.copy(),
+            tuple((i, nm, after) for i, (nm, after) in sorted(self.kin_names.items())),
         )
 
     def head(self) -> dict[str, Any]:
@@ -318,8 +338,10 @@ class Society:
             born = alive & (uid >= self.prev_next_uid) & (h["parent_uid"] >= 0)
             credit = (uid[born], h["parent_uid"][born])
 
-        houses_summary, houses_table = self._houses(h, alive)
+        houses_summary, houses_table, house_ids, house_parent, house_sizes = self._houses(h, alive)
+        house_events = None if first else self._house_events(step, house_ids, house_parent)
         kin = self._kin(h, step, alive, th, uid_mode, credit)
+        names = self._name_groups(h, kin, houses_table)
         col = self._colonies(h, step, alive, uid_mode, credit, kin["row_id"])
         summary = {
             "houses": houses_summary,
@@ -340,6 +362,8 @@ class Society:
             kin["sizes"],
             col["sizes"],
             sim_self,
+            house_ids,
+            house_sizes,
         )
         if not first:
             self.records.append(
@@ -349,13 +373,16 @@ class Society:
                     summary,
                     (n_ref, rescaled, th),
                     houses_table,
+                    house_events,
                     kin,
                     col,
                     window_ids,
                     sim_pair,
                     sim_self,
+                    names,
                 )
             )
+        self.houses, self.kin_names = house_ids, names
         self.kin_slots, self.col_slots = kin["slots"], col["slots"]
         self.window_start = self.prev_step = step
         self.prev_next_uid = int(h["next_uid"])
@@ -366,11 +393,15 @@ class Society:
 
     def _houses(
         self, h: Mapping[str, np.ndarray], alive: np.ndarray
-    ) -> tuple[dict[str, Any], dict[str, list[Any]]]:
+    ) -> tuple[dict[str, Any], dict[str, list[Any]], np.ndarray, np.ndarray, np.ndarray]:
+        """``(summary, top table, ids, parents, sizes)``: ``ids`` are all the houses with live members
+        (ascending), ``parents`` the house each was founded from (``house_from`` of its first alive row, which
+        every member shares; -1 where none or unknown) and ``sizes`` their live members."""
         house = h["house"]
         sel = alive & (house >= 0)
         ids, first, counts = np.unique(house[sel], return_index=True, return_counts=True)
         clade = h["clade"][sel][first]  # the clade of the house's first alive row
+        parents = h["house_from"][sel][first]
         top = np.lexsort((ids, -counts))[:TOP_HOUSES]
         names = house_names(ids[top], self.sr.name_salt)
         table = _table(
@@ -385,7 +416,29 @@ class Society:
             "exact": self.house_origin == 0,
             "unknown_immigrant": int((alive & (house == social.HOUSE_UNKNOWN)).sum()),
         }
-        return summary, table
+        return summary, table, ids, parents, counts
+
+    def _house_events(self, step: int, ids: np.ndarray, parents: np.ndarray) -> dict[str, Any]:
+        """The houses founded (live members now, none at the last snapshot) and gone extinct (the reverse)
+        since the last snapshot, each by ascending id and listed up to ``events_max`` with the rest counted.
+        A house founded and extinct inside one window is seen by neither snapshot. ``step`` is the
+        snapshot's: the step at which the change was observed."""
+        cap = self.sr.events_max
+        born = np.setdiff1d(ids, self.houses, assume_unique=True)
+        gone = np.setdiff1d(self.houses, ids, assume_unique=True)
+        listed = born[:cap]
+        parent = parents[np.searchsorted(ids, listed)]
+        founded = _table(
+            ("id", "step", "parent_house"),
+            [(int(i), step, int(pa) if pa >= 0 else None) for i, pa in zip(listed, parent, strict=True)],
+        )
+        extinct = _table(("id", "step"), [(int(i), step) for i in gone[:cap]])
+        return {
+            "founded": founded,
+            "extinct": extinct,
+            "founded_dropped": int(born.size - listed.size),
+            "extinct_dropped": int(gone.size - min(gone.size, cap)),
+        }
 
     # -- kin groups ---------------------------------------------------------------------------------------
 
@@ -439,10 +492,58 @@ class Society:
             "unaffiliated": int((alive & (g < 0)).sum()),
         }
 
+    def _name_groups(
+        self, h: Mapping[str, np.ndarray], kin: dict[str, Any], houses_table: dict[str, list[Any]]
+    ) -> dict[int, tuple[str, int]]:
+        """The names of the tracked kin groups after this snapshot: ``{id: (name, named_after)}``.
+
+        A group keeps the name it was admitted with. A group admitted now (no entry yet), in id order, takes
+        the name of the top-16 house that has the most of its members (ties to the smaller house id) and
+        ``named_after`` is that house's id; with no member in a top-16 house its name is generated from the
+        house name generator on ``splitmix64(id, kin_name_salt)`` and ``named_after`` is -1. A name already
+        held by a live tracked group (kept, or given earlier in this loop) gets ``f" {id}"`` appended, again
+        if that name is held too. Entries of groups no longer tracked are dropped, so a name can be held
+        again by a later group.
+        """
+        top = dict(zip(houses_table["id"], houses_table["name"], strict=True))
+        top_ids = np.array(sorted(top), dtype=np.int64)
+        live = sorted(kin["sizes"])
+        names = {i: self.kin_names[i] for i in live if i in self.kin_names}
+        held = {nm for nm, _ in names.values()}
+        house, row_id = h["house"], kin["row_id"]
+        for gid in live:
+            if gid in names:
+                continue
+            members = house[row_id == gid]
+            members = members[np.isin(members, top_ids)]
+            if members.size:
+                cand, count = np.unique(members, return_counts=True)
+                best = int(cand[np.lexsort((cand, -count))[0]])
+                name, after = top[best], best
+            else:
+                name, after = house_names(np.array([gid]), self.sr.kin_name_salt)[0], -1
+            while name in held:
+                name = f"{name} {gid}"
+            held.add(name)
+            names = {**names, gid: (name, after)}
+        return names
+
     def _kin_table(
-        self, h: Mapping[str, np.ndarray], kin: dict[str, Any], sim_self: dict[int, float | None]
+        self,
+        h: Mapping[str, np.ndarray],
+        kin: dict[str, Any],
+        sim_self: dict[int, float | None],
+        window_ids: np.ndarray,
+        names: dict[int, tuple[str, int]],
     ) -> dict[str, list[Any]]:
-        """The ``kin_groups`` table: one row per slotted group, by slot."""
+        """The ``kin_groups`` table: one row per slotted group, by slot.
+
+        ``name`` and ``named_after`` are the group's roster entry. ``x`` and ``y`` are the centroid of its
+        members (``circular_mean`` over the torus; ``z_mean`` is the height), ``arch`` the shares of the
+        primary archetypes (``rules.ARCHETYPE_NAMES`` order) among its members that have a label (None if
+        none has). ``births`` and the ``deaths`` by cause (``social.DEATH_CAUSES`` order) are the window's,
+        counted for the slot the group had in the window, so they are None for a group that held none then.
+        """
         sr, d = self.sr, self.d
         f = sr.slots
         slots, named, row_slot = kin["slots"], kin["named"], kin["row_slot"]
@@ -455,13 +556,23 @@ class Society:
             [np.bincount(rs, weights=tag[:, j], minlength=f)[:f] / denom for j in range(layout.T)], axis=1
         )
         code = (rs << 32) | h["clade"][sel].astype(np.int64)
+        n_arch = len(ARCHETYPE_NAMES)
+        arch = np.bincount(rs * (n_arch + 1) + h["arch"][sel], minlength=f * (n_arch + 1))
+        arch = arch.reshape(f, n_arch + 1)[:, 1:]  # members per primary archetype, unlabelled left out
+        order = np.argsort(rs, kind="stable")
+        pos = h["pos"][sel][order]
+        start = np.searchsorted(rs[order], np.arange(f + 1))  # the rows of slot s: pos[start[s]:start[s + 1]]
+        win = {int(i): s for s, i in enumerate(window_ids[:f].tolist()) if i >= 0}
         u, c = np.unique(code, return_counts=True)
         su, cu = u >> 32, u & 0xFFFFFFFF
         o = np.lexsort((cu, -c, su))
         top = o[_first_of_run(su[o])]  # per slot: the clade with the most rows, ties to the smaller clade
         dom_clade = lookup_table(f, su[top], cu[top], -1)
         dom_n = lookup_table(f, su[top], c[top], 0)
-        columns = ["id", "slot", "size", "tag", "clade", "clade_share", "sim_self"]
+        columns = [
+            "id", "name", "named_after", "slot", "size", "tag", "clade", "clade_share", "sim_self",
+            "x", "y", "arch", "births", "deaths",
+        ]  # fmt: skip
         if d.d3:
             z = h["pos"][sel][:, 2].astype(np.float64)
             z_mean = np.bincount(rs, weights=z, minlength=f)[:f] / denom
@@ -471,14 +582,30 @@ class Society:
             columns += ["z_mean", "band_frac"]
         rows = []
         for s in named.tolist():
+            gid = int(slots[s])
+            name, after = names[gid]
+            at = pos[start[s] : start[s + 1]]
+            centre = (
+                [_r(circular_mean(at[:, j], self.cfg.world.size), 2) for j in (0, 1)]
+                if at.shape[0]
+                else [None, None]
+            )
+            labelled = int(arch[s].sum())
+            w = win.get(gid)
             row = (
-                int(slots[s]),
+                gid,
+                name,
+                after if after >= 0 else None,
                 s,
                 int(size[s]),
                 [_r(v, 3) for v in mean_tag[s]],
                 int(dom_clade[s]),
                 _r(dom_n[s] / max(size[s], 1), 4),
-                sim_self.get(int(slots[s])),
+                sim_self.get(gid),
+                *centre,
+                [_r(v / labelled, 3) for v in arch[s]] if labelled else None,
+                None if w is None else int(h["births"][w]),
+                None if w is None else [int(v) for v in h["deaths"][:, w]],
             )
             if d.d3:
                 row += (_r(z_mean[s], 2), [_r(v, 4) for v in frac[s]])
@@ -591,11 +718,13 @@ class Society:
         summary: dict[str, Any],
         thresholds: tuple[int, bool, dict[str, int]],
         houses_table: dict[str, list[Any]],
+        house_events: dict[str, Any] | None,
         kin: dict[str, Any],
         col: dict[str, Any],
         window_ids: np.ndarray,
         sim_pair: dict[tuple[int, int], float | None],
         sim_self: dict[int, float | None],
+        names: dict[int, tuple[str, int]],
     ) -> dict[str, Any]:
         sr = self.sr
         n_ref, rescaled, th = thresholds
@@ -627,7 +756,8 @@ class Society:
                 "kin_leave": th["kin_leave"],
             },
             "houses": houses_table,
-            "kin_groups": self._kin_table(h, kin, sim_self),
+            "house_events": house_events,
+            "kin_groups": self._kin_table(h, kin, sim_self, window_ids, names),
             "colonies": _table(col_columns, col["table_rows"]),
             "events": event_table,
             "events_dropped": len(events) - len(listed),
@@ -766,6 +896,11 @@ class Society:
             "host.col.slots": st.col_slots,
             "host.terr.ids": terr.ids,
             "host.terr.ema": ema,
+            "host.houses": st.houses,
+            # the roster's names, by id: [[id, name, house id or null], ...]
+            "host.kin.names": np.array(
+                _dumps([[i, nm, after if after >= 0 else None] for i, nm, after in st.kin_names])
+            ),
             # insertion order, never sort_keys: a resumed head must keep the key order of an uninterrupted run
             "host.summary": np.array(_dumps(st.summary)),
         }
@@ -797,13 +932,17 @@ def _parse_host(
             return f"member {name!r} is not an array"
     ranks = {
         **{name: 0 for name in _SCALARS},
-        **{name: 1 for name in (*HOST_KEYS[:4], "host.kin.slots", "host.col.slots", "host.terr.ids")},
+        **{
+            name: 1
+            for name in (*HOST_KEYS[:4], "host.kin.slots", "host.col.slots", "host.terr.ids", "host.houses")
+        },
         "host.terr.ema": 2,
+        "host.kin.names": 0,
         "host.summary": 0,
     }
     for name, rank in ranks.items():
         a = arrays[name]
-        if name == "host.summary":
+        if name in ("host.summary", "host.kin.names"):
             if a.dtype.kind != "U" or a.ndim != 0:
                 return f"{name} is {a.dtype} with {a.ndim} dimensions, expected a 0-d string"
         elif a.dtype != np.int64 or a.ndim != rank:
@@ -835,6 +974,12 @@ def _parse_host(
         return "host.terr.ids holds an id twice"
     if ema.shape != (ids.size + 1, cells):
         return f"host.terr.ema has shape {ema.shape}, expected {(ids.size + 1, cells)}"
+    houses = arrays["host.houses"]
+    if (houses < 0).any() or (houses[1:] <= houses[:-1]).any():
+        return "host.houses is not a strictly increasing array of ids >= 0"
+    names = _parse_names(arrays["host.kin.names"], np.unique(out["kin"].system))
+    if isinstance(names, str):
+        return names
     try:
         summary = json.loads(str(arrays["host.summary"]))
     except ValueError:
@@ -864,4 +1009,37 @@ def _parse_host(
         origin,
         n_ref,
         summary,
+        houses.copy(),
+        names,
     )
+
+
+def _parse_names(raw: np.ndarray, tracked: np.ndarray) -> tuple[tuple[int, str, int], ...] | str:
+    """The kin names of a sidecar (``[[id, name, house id or null], ...]`` by id), or the reason they are not
+    valid: well-formed items, ascending ids, and exactly the ids of the tracked kin groups."""
+    try:
+        items = json.loads(str(raw))
+    except ValueError:
+        return "host.kin.names is not JSON"
+    if not isinstance(items, list):
+        return "host.kin.names is not a list"
+    out: list[tuple[int, str, int]] = []
+    for item in items:
+        ok = (
+            isinstance(item, list)
+            and len(item) == 3
+            and type(item[0]) is int
+            and item[0] >= 1
+            and isinstance(item[1], str)
+            and item[1] != ""
+            and (item[2] is None or (type(item[2]) is int and item[2] >= 0))
+        )
+        if not ok:
+            return "host.kin.names holds an item that is not [id >= 1, name, house id or null]"
+        out.append((item[0], item[1], -1 if item[2] is None else item[2]))
+    ids = np.array([i for i, _, _ in out], dtype=np.int64)
+    if (ids[1:] <= ids[:-1]).any():
+        return "host.kin.names is not sorted by id without duplicates"
+    if not np.array_equal(ids, tracked):
+        return "host.kin.names does not name exactly the tracked kin groups"
+    return tuple(out)

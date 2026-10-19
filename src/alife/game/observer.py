@@ -163,8 +163,10 @@ class Observer:
             o2, so2 = observe.update(o_, oi, a, cfg, rules), soc.update(so_, si, a, cfg, social)
             return observe.evaluate(o2, cfg, rules, so2.body), so2  # the Settler clause reads the body
 
-        def snap(kin0: mx.array, so_: SocState, si: soc.SocIn, a: Acts | None) -> soc.Snap:
-            return soc.snapshot(kin0, so_, si, a, cfg, social)
+        def snap(
+            kin0: mx.array, so_: SocState, si: soc.SocIn, a: Acts | None, arch: mx.array | None = None
+        ) -> soc.Snap:
+            return soc.snapshot(kin0, so_, si, a, cfg, social, arch)
 
         def relabel(so_: SocState, sn: soc.Snap, kin_lut: mx.array, col_lut: mx.array) -> SocState:
             return soc.relabel(so_, sn, kin_lut, col_lut)
@@ -202,7 +204,8 @@ class Observer:
         sr = DEFAULT_SOCIAL if social is None else social
         obs = cls._blank(state, cfg, rules, sr)
         si = soc.soc_in(state)
-        snap = obs._snap_fn(obs.so.kin, obs.so, si, None)  # no step to read: the temperament is zero
+        # no step to read: the temperament is zero; the labels are empty, so is the archetype mix
+        snap = obs._snap_fn(obs.so.kin, obs.so, si, None, obs.o.label_arch[:, 0])
         h = host_snap(snap)  # the one host transfer (and the evaluation)
         kin_lut, col_lut = obs.society.initialise(h, obs.step)
         obs.so = obs._relabel(obs.so, snap, mx.array(kin_lut), mx.array(col_lut))
@@ -359,7 +362,9 @@ class Observer:
         kin0 = self.so.kin  # the start-of-step slots, which the snapshot's temperament is read with
         self.o, self.so = fold(self.o, self.so, oi, si, acts)
         if t % self.social.snapshot_every == 0:
-            self._snap, self._snap_step = self._snap_fn(kin0, self.so, si, acts), t
+            # the primary archetype labels as of the last evaluation (reset rows are already unlabelled)
+            self._snap = self._snap_fn(kin0, self.so, si, acts, self.o.label_arch[:, 0])
+            self._snap_step = t
         self.step = t
 
     def arrays(self) -> tuple[mx.array, ...]:

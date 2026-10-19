@@ -407,9 +407,10 @@ def _bench_social(cfg: Config, observed_fn: Callable[[State], Any], warm: int) -
     comp_fn = mx.compile(comps) if cfg.run.compile else comps
     mx.eval(comp_fn(s.partner, s.alive))  # compile, untimed
     components_ms = _median_ms(lambda: mx.eval(comp_fn(s.partner, s.alive)), SOCIAL_REPS)
-    snap = obs._snap_fn(so.kin, so, si, acts)
+    arch = obs.o.label_arch[:, 0]
+    snap = obs._snap_fn(so.kin, so, si, acts, arch)
     mx.eval(*snap)
-    device_ms = _median_ms(lambda: mx.eval(*obs._snap_fn(so.kin, so, si, acts)), SOCIAL_REPS)
+    device_ms = _median_ms(lambda: mx.eval(*obs._snap_fn(so.kin, so, si, acts, arch)), SOCIAL_REPS)
     h = host_snap(snap)
     arrays, step_next = obs.society.arrays(), obs.society.snapshot_step + sr.snapshot_every
     settle_times = []

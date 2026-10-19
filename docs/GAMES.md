@@ -110,8 +110,8 @@ S8 costs, S10 harvest, S11 combat, S12 share.
 | gameplay concept | `alife` code component | implementation strategy | complexity / performance cost |
 |---|---|---|---|
 | Family | `uid`, `parent_uid`, `generation`; `StepOut.births`; `events/births_*.npz`; `analysis/phylo.py`; `alife inspect --agent` | A host lineage store fed by births. An ancestry panel and a "kin nearby" list. | Low–Medium. G3: it needs picking and the HUD (DESIGN §29.1). |
-| House (genealogical name) | `clade` (the founder dynasty, which never splits); `phylo.splitmix64`, `phylo.marker_roots` | Live sub-lineages: houses found themselves by `splitmix64(uid, seed)`, are inherited, and use no RNG (§6.2). | Medium. Built in G2 (DESIGN §29.4), with a parent-row channel in place of `parent_slot`. |
-| Kin group (perceived faction) | `State.tag` (N, 4); kin `exp(−‖Δtag‖²/0.25)` (`sensing.py`) | Clusters in tag space, tracked over time. Agents perceive this grouping, so relations are measured between kin groups (§6.3). | Medium. Built in G2 (DESIGN §29.5). |
+| House (genealogical name) | `clade` (the founder dynasty, which never splits); `phylo.splitmix64`, `phylo.marker_roots` | Live sub-lineages: houses found themselves by `splitmix64(uid, seed)`, are inherited, and use no RNG (§6.2). | Medium. Built in G2 (DESIGN §29.4), with a parent-row channel in place of `parent_slot`; founded and extinct houses are listed (§29.14). |
+| Kin group (perceived faction) | `State.tag` (N, 4); kin `exp(−‖Δtag‖²/0.25)` (`sensing.py`) | Clusters in tag space, tracked over time. Agents perceive this grouping, so relations are measured between kin groups (§6.3). | Medium. Built in G2 (DESIGN §29.5), with names and per-group counts (the roster, §29.14). |
 | Kinship colour | `render.agent_colors` (mode `tag`), which `stream` uses | Use as is: similar colour means recent common ancestry. | Low (exists). |
 | Colony | `metrics.components` (min-label propagation) | A one-to-one tracker on uids, giving born, merged, split and dissolved events. Presented as reefs or mats, not organisms (§6.4). | Medium. Built in G2 (DESIGN §29.6); `alife bench --observe` and `analysis.social` measure it. |
 | Territory | `ops.scatter_add_i32`; coarse grid over `world.size` | Counts per cell for the top-F groups plus "other". The owner is the argmax and the purity is shown with EMA smoothing (§6.5). | Low–Medium. Built in G2 (DESIGN §29.7). |
@@ -197,7 +197,8 @@ they move to G2.
 **As built in G2** (DESIGN §29.2): `attack_target`, `bond_target`, `q_kin`, the neighbour rows `nbr` (validity from the
 own-index contract), the birth lanes `born_row`, `born_parent` and `born_uid`, and the flag bits `PROPOSED` and `KILLED`.
 The parent row travels in `Acts` (`born_parent`), not in `BirthRecords.parent_slot`: a new `BirthRecords` field would
-change the event files of every run. The S12 partner is still not in the channel.
+change the event files of every run. The S12 partner is still not in the channel. The roster (§6.2, §6.3) adds one more
+field, `death_cause` (the S14 cause of every row that died, which the capped death records cannot give).
 
 ### 4.3 Accumulators
 
@@ -477,6 +478,13 @@ A house is a named sub-lineage within a clade.
   phylo tree (tested). An observer attached mid-run seeds houses from clades, labels immigrant lineages `HOUSE_UNKNOWN`
   and reports `exact: false`; there is no rebuild tool (§10 item 17). The rate is `game.house_rate`, 1/2048 by default
   (§10 item 13). The top 16 houses are named.
+- **House events in G2** (the roster, DESIGN §29.14). Each snapshot record lists the houses **founded** (id, step, and the
+  parent house: the house of the founder's parent, known from the birth lanes) and **extinct** (id, step) since the
+  last snapshot, from the set of houses with live members at consecutive snapshots, up to `events_max` of each with
+  the rest counted. The house id is its founder's uid, so no separate founder field. A house founded and extinct
+  inside one window is seen by neither snapshot. The study (`analysis.social`) reports the share of members in houses
+  founded since its start against those seeded from clades, so that the owner can re-decide the rate (§10 item 13)
+  from `64k3d_s1` and `64k_s0`.
 
 ### 6.3 Kin groups: factions the agents perceive
 
@@ -497,6 +505,15 @@ queries. Factions that behave as factions must therefore be groups in tag space.
   entering and leaving thresholds that scale with the population give each group hysteresis. Chaining within a clade is
   reported, not fixed: `sim_self`, the mean tag similarity within a group, is in every record. The validation against a
   cross-group `kin_attack_bias` stays G4/G5's.
+- **Names and the roster in G2** (DESIGN §29.14). A chronicle needs characters, so a kin group is **named once, when it is
+  admitted**, and keeps the name for as long as it is tracked: the name of its dominant house (the named top-16 house
+  with the most of its members; `named_after` says which), else a generated name from the house name generator on its
+  id; a name held by a live group gets the id appended. The names are saved in the sidecar. Each listed kin group also
+  carries, in its table row: its **births and deaths by cause** over the window (counted on the device for the slot it
+  held, from the channel's per-row death cause, so a mass die-off beyond the 2,048 death records of a step is still
+  counted whole; null for a group admitted at this snapshot), its **centroid** (a circular mean on the torus) and its
+  **archetype mix** (shares of the primary archetypes among its labelled members). Per-group counts are not valid for a
+  group that ends in the window: it has no row.
 
 ### 6.4 Colonies: persistent identity for bodies
 
@@ -832,14 +849,20 @@ What a game adds:
     - The kin grid has width 1/8 (the evidence is in DESIGN §29.5), with hysteresis on the enter and leave sizes;
       `sim_self` is the chaining report; temperament is read at the snapshot step.
     - Depth bands (each kin group's mean height and height-band fractions in 3D) are built.
+    - The **roster** (the last stage, DESIGN §29.14) is built: kin-group names, house events, and each listed kin
+      group's window births and deaths by cause, centroid and archetype mix (§6.2, §6.3), for the chronicle of G4.
+      `game.house_rate` stays 1/2048; the GPU verification reports, on `64k3d_s1` and `64k_s0`, the share of members in
+      houses founded after the observer's start against those seeded from clades (`analysis.social`), so that the owner can
+      re-decide it.
     - The Settler colony clause is built but inert at `settler_body` 0. `INTENT_VERSION` stays 1; version 2 brings the
       clause with the calibration fixes of G1's failing labels, in one change after a data study (DESIGN §28.4).
     - The snapshot cadence is a field of `SocialRules`, not a config key. The reports go to `observers/social.jsonl`,
       not into the rows.
     - The **Family** row of §3 (a host lineage store, an ancestry panel, a "kin nearby" list) is deferred to G3, with
       the stream tags and colour modes.
-    - **Merge condition:** `tests/test_game_purity.py` and `tests/test_groups.py` on Metal, without a `-m` filter; the
-      calibration, the churn rate and the 64k costs also wait for the GPU, with the procedure of DESIGN §29.12
+    - **Merge condition:** `tests/test_game_purity.py` and `tests/test_groups.py` on Metal, without a `-m` filter (the
+      roster adds one int8 field to the channel from an array that is already a tap); the calibration, the churn rate, the
+      house-rate report and the 64k costs also wait for the GPU, with the procedure of DESIGN §29.12
       (`python -m alife.analysis.social`, `alife bench --observe`).
 - **G3. Play loop and view.**
   - `alife play` with the fixed-timestep scheduler.

@@ -445,6 +445,11 @@ and resumed once. There is one run per condition apart from the seed pair.
      clause at `settler_body` 4, makes it the default under `INTENT_VERSION` 2 and pins its digest. G2 builds the clause
      inert (`settler_body` 0), so version 1 and `RULES_V1` are unchanged. The verdict criterion (GAMES §10 item 12) is
      still open and changes the list.
+   - **The roster** (the last stage of G2, DESIGN §29.14): kin groups are named once at admission, the record lists the
+     houses founded and extinct, and each listed kin group has its window births and deaths by cause, centroid and
+     archetype mix. The GPU verification also reports `houses.founded_share` from `python -m alife.analysis.social` on
+     `64k3d_s1` and `64k_s0` (the share of members in houses founded since the start against those seeded from clades), so
+     that the owner can re-decide `game.house_rate` (1/2048, GAMES §10 item 13).
    - **Deferred to G3**: the stream tags and colour modes, moving the host part of a snapshot off the step thread, the
      Family row (a host lineage store and an ancestry panel), and sharing the snapshot's components with the heavy
      metrics. Copying the sidecar and the social log into a fork is G3 or G4.
