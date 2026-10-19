@@ -1,6 +1,7 @@
 # Emergent Worlds: a gaming vertical for alife (design proposal)
 
-Status: **design; G1 built (DESIGN §28); G2–G5 not built.** The owner decided five of the ten questions on 2026-10-18 (§10). This document maps the owner's brief ("Project: Emergent Worlds", 2026-10-18) onto the
+Status: **design; G1 and G2 built (DESIGN §28, §29); G3–G5 not built.** The owner decided items 1–4, 7 and 8 on 2026-10-18
+and items 13–19 on 2026-10-19 (§10). This document maps the owner's brief ("Project: Emergent Worlds", 2026-10-18) onto the
 engine at `aef79c2`. The brief's three pillars are:
 - a motivation-to-action loop instead of scripted state machines;
 - an LLM architect director;
@@ -108,14 +109,14 @@ S8 costs, S10 harvest, S11 combat, S12 share.
 
 | gameplay concept | `alife` code component | implementation strategy | complexity / performance cost |
 |---|---|---|---|
-| Family | `uid`, `parent_uid`, `generation`; `StepOut.births`; `events/births_*.npz`; `analysis/phylo.py`; `alife inspect --agent` | A host lineage store fed by births. An ancestry panel and a "kin nearby" list. | Low–Medium. |
-| House (genealogical name) | `clade` (the founder dynasty, which never splits); `phylo.splitmix64`, `phylo.marker_roots` | Live sub-lineages: houses found themselves by `splitmix64(uid, seed)`, are inherited, and use no RNG (§6.2). | Medium. Needs `parent_slot` in the birth records. |
-| Kin group (perceived faction) | `State.tag` (N, 4); kin `exp(−‖Δtag‖²/0.25)` (`sensing.py`) | Clusters in tag space, tracked over time. Agents perceive this grouping, so relations are measured between kin groups (§6.3). | Medium. |
+| Family | `uid`, `parent_uid`, `generation`; `StepOut.births`; `events/births_*.npz`; `analysis/phylo.py`; `alife inspect --agent` | A host lineage store fed by births. An ancestry panel and a "kin nearby" list. | Low–Medium. G3: it needs picking and the HUD (DESIGN §29.1). |
+| House (genealogical name) | `clade` (the founder dynasty, which never splits); `phylo.splitmix64`, `phylo.marker_roots` | Live sub-lineages: houses found themselves by `splitmix64(uid, seed)`, are inherited, and use no RNG (§6.2). | Medium. Built in G2 (DESIGN §29.4), with a parent-row channel in place of `parent_slot`. |
+| Kin group (perceived faction) | `State.tag` (N, 4); kin `exp(−‖Δtag‖²/0.25)` (`sensing.py`) | Clusters in tag space, tracked over time. Agents perceive this grouping, so relations are measured between kin groups (§6.3). | Medium. Built in G2 (DESIGN §29.5). |
 | Kinship colour | `render.agent_colors` (mode `tag`), which `stream` uses | Use as is: similar colour means recent common ancestry. | Low (exists). |
-| Colony | `metrics.components` (min-label propagation) | A one-to-one tracker on uids, giving born, merged, split and dissolved events. Presented as reefs or mats, not organisms (§6.4). | Medium. Labelling cost unmeasured; bench it in G2. |
-| Territory | `ops.scatter_add_i32`; coarse grid over `world.size` | Counts per cell for the top-F groups plus "other". The owner is the argmax and the purity is shown with EMA smoothing (§6.5). | Low–Medium. |
-| War, alliance, exchange | attack and bond targets (S7–S11); per-slot shares (S12) | F × F matrices between kin groups: attacks, kills, bonds formed, energy shared (§6.5). | Medium. Targets go in the channel. |
-| Depth niches (3D) | `clade_height_mi`, `band_frac` | The depth band of each group. In `64k3d_s0`, 4 clades held two zones, with clade–band MI of 0.63 nats. | Low. |
+| Colony | `metrics.components` (min-label propagation) | A one-to-one tracker on uids, giving born, merged, split and dissolved events. Presented as reefs or mats, not organisms (§6.4). | Medium. Built in G2 (DESIGN §29.6); `alife bench --observe` and `analysis.social` measure it. |
+| Territory | `ops.scatter_add_i32`; coarse grid over `world.size` | Counts per cell for the top-F groups plus "other". The owner is the argmax and the purity is shown with EMA smoothing (§6.5). | Low–Medium. Built in G2 (DESIGN §29.7). |
+| War, alliance, exchange | attack and bond targets (S7–S11); per-slot shares (S12) | F × F matrices between kin groups: attacks, kills, bonds formed, energy shared (§6.5). | Medium. Built in G2 (DESIGN §29.8); the targets are in the channel. |
+| Depth niches (3D) | `clade_height_mi`, `band_frac` | The depth band of each group. In `64k3d_s0`, 4 clades held two zones, with clade–band MI of 0.63 nats. | Low. Built in G2 (DESIGN §29.5): each kin group's mean height and height bands. |
 
 ### Infrastructure
 
@@ -144,7 +145,8 @@ Principles carried over from the director:
 - **Observers never write `State`.** Their values reach the dynamics only through logged director entries.
 - **The log is the source of truth** for replay.
 - **Hashing follows the trajectory.** `game.*` keys default to off and go into `POST_V01_KEYS`.
-  - Observer-only keys (`game.observe` in G1, `game.house_rate` in G2) form a new `OBSERVER_KEYS` tuple. It is excluded
+  - Observer-only keys (`game.observe` in G1, `game.house_rate` in G2) form a new `OBSERVER_KEYS` tuple (they may default
+    to a working value: `house_rate` is 1/2048, §10 item 13). It is excluded
     from `config_hash` next to `UNHASHED_KEYS`, but kept out of `DIRECTOR_POLICY_KEYS`, which is derived from
     `UNHASHED_KEYS`. A new `game` branch in `cli._resume_allowed` accepts it, so observers can be attached to an
     existing world. The label thresholds are not config keys: they are versioned code constants of
@@ -191,6 +193,11 @@ ignores extra event columns.
 `defend` and `emit` (the sum of the S17 deposit quanta, in [0, 765], not a float). The targets, `q_kin`, the S12
 partner and `BirthRecords.parent_slot` serve only the relations, the per-kin-group temperament and the colonies, so
 they move to G2.
+
+**As built in G2** (DESIGN §29.2): `attack_target`, `bond_target`, `q_kin`, the neighbour rows `nbr` (validity from the
+own-index contract), the birth lanes `born_row`, `born_parent` and `born_uid`, and the flag bits `PROPOSED` and `KILLED`.
+The parent row travels in `Acts` (`born_parent`), not in `BirthRecords.parent_slot`: a new `BirthRecords` field would
+change the event files of every run. The S12 partner is still not in the channel.
 
 ### 4.3 Accumulators
 
@@ -464,6 +471,12 @@ A house is a named sub-lineage within a clade.
     share.
 - **Not perceived by agents.** Houses are labels for the story (dynasties, family trees). They are not what agents
   respond to.
+- **As built in G2** (DESIGN §29.4). The label is an int64 (the founder's uid, which `i32` would not hold), `−1` for a
+  dead row and `HOUSE_UNKNOWN = −2`. It is inherited from the parent row in the channel (`born_parent`), not from
+  `BirthRecords.parent_slot`. For a run observed from step 0 the live houses equal `nearest_root(marker_roots)` of the
+  phylo tree (tested). An observer attached mid-run seeds houses from clades, labels immigrant lineages `HOUSE_UNKNOWN`
+  and reports `exact: false`; there is no rebuild tool (§10 item 17). The rate is `game.house_rate`, 1/2048 by default
+  (§10 item 13). The top 16 houses are named.
 
 ### 6.3 Kin groups: factions the agents perceive
 
@@ -478,6 +491,12 @@ queries. Factions that behave as factions must therefore be groups in tag space.
 - **Relations.** War, alliance and exchange (§6.5) are reported only between kin groups whose mean tag similarity is
   below a threshold. They are validated against a cross-group `kin_attack_bias` corrected for proximity, as the
   existing metric is.
+- **As built in G2** (DESIGN §29.5, provisional). The grid is 16 bins per tag dimension (width 1/8, 16⁴ = 65,536 bins),
+  not 0.25: width 1/4 chains two 3-D clades into one group and leaves 4–5 groups in 2D, where 1/8 gives 15 and 8 tracked
+  groups on the two reference checkpoints (§10 item 14). Occupied bins join by face adjacency (single linkage), and
+  entering and leaving thresholds that scale with the population give each group hysteresis. Chaining within a clade is
+  reported, not fixed: `sim_self`, the mean tag similarity within a group, is in every record. The validation against a
+  cross-group `kin_attack_bias` stays G4/G5's.
 
 ### 6.4 Colonies: persistent identity for bodies
 
@@ -493,6 +512,10 @@ queries. Factions that behave as factions must therefore be groups in tag space.
   tracker uses the 250-step game heavy cadence (§5.5), with footprint overlap (occupied coarse cells) as the cheaper
   fallback if components cost too much there.
 - **Naming.** Colonies are presented as reefs or mats. "Super-organism" would promise coordination that does not exist.
+- **As built in G2** (DESIGN §29.3, §29.6, provisional). One generic `tracking.SystemTracker` serves colonies and kin
+  groups. θ is 0.3, a body gets an id at 4 members and keeps it while it has 3 or more, and an id that ends is never
+  revived (§10 item 15). Matching is by uid up to a 300-step snapshot spacing (newborns credited to their parent's
+  colony) and by footprint beyond it. The game cadence is 250 steps, a field of `SocialRules` rather than a config key.
 
 ### 6.5 Territory and relations
 
@@ -509,6 +532,13 @@ queries. Factions that behave as factions must therefore be groups in tag space.
 
   Relation events are narrated in the journal ("Kin group 3 and kin group 7 are at war on the north reef") by the LLM at
   narrative cadence, as an observer, never in the loop.
+- **As built in G2** (DESIGN §29.7, §29.8, provisional). Territory is a 32 × 32 floor grid (torus in both axes), the
+  EMA is a shift of 2, and the owner of a cell is the argmax of the smoothed counts with a purity and borders. It is
+  called dominance. Relations are counted per window for ordered pairs of kin-group slots: attacks, hits, kills,
+  formed proposals, energy shared and bond-steps, each with the expectation if every actor had picked a uniformly random
+  sensed neighbour (the per-step neighbour-exposure baseline, §10 item 18), the sampled tag similarity of the pair and
+  whether it is distinct (below 0.25). Temperament is the mean kin preference of the attack and bond queries per
+  slot, at the snapshot step. Narration of relation events stays G4/G5's.
 
 ### 6.6 Observer persistence
 
@@ -516,6 +546,11 @@ Accumulators, houses, kin-group and colony trackers live outside `State`, so the
 checkpoint (`observers/step_<t>.npz`). The sidecar is restored on resume, rewind, load and replay, and cut by
 `truncate_after`. Without a sidecar, houses can only be rebuilt by folding the birth log from step 0 (43.6M records in
 `64k_s0`). Until the sidecar exists, observer values stay out of metrics rows and director vitals.
+
+**As built in G2** (DESIGN §29.10, §29.11). The sidecar has format 2 (the social state and the host trackers). The
+reports are not in the sidecar or in the rows: each snapshot's record is one line of the append-only
+`observers/social.jsonl`, which `truncate_after` cuts on resume (§10 item 19), and a metrics row keeps a head of at most
+0.5 KB. A fork starts its observers fresh and its social log absent.
 
 ### 6.7 Visual encoding
 
@@ -786,8 +821,26 @@ What a game adds:
       a replay fork included, starts its observers fresh, so its labels agree with the source's only approximately
       after the warm-up.
     - The stream tags and the colour modes are G3's, observer values in the director's vitals are G4's.
-- **G2. Social tracking.** Houses, kin groups, the colony tracker, territory and the relation matrices. Benches of
-  `components` at 250-step cadence.
+- **G2. Social tracking.** **Built** (DESIGN §29, Review-log row I45; every threshold is provisional,
+  `SOCIAL_VERSION` 1, until the calibration run). Houses, kin groups, the colony tracker, territory, the relation
+  matrices and temperament, on two generic modules (`groups.py`, pure MLX, and `tracking.py`, host numpy) with the
+  game layer in `game/social.py` and `game/society.py`.
+  - **As built, and deferred.**
+    - The channel carries a parent row (`born_parent`) in place of `BirthRecords.parent_slot` (§4.2).
+    - Houses are int64 rather than `i32`, with `HOUSE_UNKNOWN` for immigrant lineages of an observer attached mid-run,
+      seeded from clades and flagged inexact; the rate is the config key `game.house_rate`, 1/2048.
+    - The kin grid has width 1/8 (the evidence is in DESIGN §29.5), with hysteresis on the enter and leave sizes;
+      `sim_self` is the chaining report; temperament is read at the snapshot step.
+    - Depth bands (each kin group's mean height and height-band fractions in 3D) are built.
+    - The Settler colony clause is built but inert at `settler_body` 0. `INTENT_VERSION` stays 1; version 2 brings the
+      clause with the calibration fixes of G1's failing labels, in one change after a data study (DESIGN §28.4).
+    - The snapshot cadence is a field of `SocialRules`, not a config key. The reports go to `observers/social.jsonl`,
+      not into the rows.
+    - The **Family** row of §3 (a host lineage store, an ancestry panel, a "kin nearby" list) is deferred to G3, with
+      the stream tags and colour modes.
+    - **Merge condition:** `tests/test_game_purity.py` and `tests/test_groups.py` on Metal, without a `-m` filter; the
+      calibration, the churn rate and the 64k costs also wait for the GPU, with the procedure of DESIGN §29.12
+      (`python -m alife.analysis.social`, `alife bench --observe`).
 - **G3. Play loop and view.**
   - `alife play` with the fixed-timestep scheduler.
   - The stream tags `IDNT`, `INTN`, `TERR`, `EVNT`, with Swift decoders and fixtures.
@@ -813,8 +866,8 @@ What a game adds:
 
 ## 10. Decisions (owner)
 
-**Decided 2026-10-18:** items 1, 2, 3, 4, 7 and 8. Items 5, 6, 9 and 10 are open; their recommendations stand until the
-owner decides. Items 11 and 12 came up in G1 (below) and are open too.
+**Decided 2026-10-18:** items 1, 2, 3, 4, 7 and 8; **2026-10-19:** items 13–19 (G2). Items 5, 6, 9 and 10 are open; their
+recommendations stand until the owner decides. Items 11 and 12 came up in G1 (below) and are open too.
 
 1. **Scope.** *Decided:* a Mac-first prototype in this repository.
 2. **Code location.** *Decided:* a `src/alife/game/` package with a `game` config section, everything off by default.
@@ -858,6 +911,29 @@ owner decides. Items 11 and 12 came up in G1 (below) and are open too.
     matched random label has `p ≤ 0.01` and `auc − null_mean ≥ 0.05`, with at least 30 positives and 30 negatives, at
     least 99 permutations, and (intents) a coverage maximum of at most 0.6 (DESIGN §28.8). The numbers are G1's
     placeholders; confirm or change them before the calibration run on `64k_s0` and `64k3d_s0`.
+13. **The house rate (G2).** *Decided 2026-10-19:* `game.house_rate` defaults to 1/2048, not "off". It is an
+    observer-only key, unhashed at every value and inert while `game.observe` is off, so a working default breaks
+    nothing. CLAUDE.md records the exception to the "new keys default to off" convention.
+14. **Kin-group grid width (G2).** *Decided 2026-10-19:* width 1/8 with single linkage. Chaining within a clade is
+    reported (`sim_self`), not fixed by a mode-seeking rule. Width 1/4 merges two 3-D clades and leaves 4–5 groups in 2D
+    (DESIGN §29.5).
+15. **Matching threshold and hysteresis (G2).** *Decided 2026-10-19:* θ = 0.3 with the hysteresis as designed: enter at
+    `max(8, n_ref >> 9)`, leave below `max(4, n_ref >> 10)`, `n_ref` with a 12.5% deadband, sticky slots within the top
+    20, colonies entering at 4 and leaving below 3. A fragmentation is `dissolved` plus `born` with provenance, and a
+    system that ends and comes back gets a new id. The values stay provisional until the calibration.
+16. **`INTENT_VERSION` 2 (G2).** *Decided 2026-10-19:* version 2 carries the Settler clause and the calibration fixes of
+    G1's GPU study (Gatherer, Defending, Budding, Feeding, and in 3D Bonding, Signalling, Roaming and Caring's too few
+    positives, because G3 onwards targets the 3-D storm world). The redesigned rules come from a later data study whose
+    one change defines `RULES_V2`, makes it the default under version 2 and pins its digest. G2 builds the clause, inert
+    at its version-1 value, and keeps version 1 (DESIGN §28.4).
+17. **Houses of observers attached mid-run (G2).** *Decided 2026-10-19:* seeded from clades, immigrant lineages as
+    `HOUSE_UNKNOWN`, flagged inexact. No offline rebuild tool.
+18. **Relation baseline (G2).** *Decided 2026-10-19:* the per-step sensed-neighbour exposure by actor slot, neighbour
+    slot and neighbour count, with the sampled tag similarity at snapshots and "distinct" below 0.25; not the territory
+    co-occupancy (DESIGN §29.8).
+19. **Where the reports live (G2).** *Decided 2026-10-19:* the reports move out of `metrics.jsonl` into the append-only
+    `observers/social.jsonl`, which `runio.truncate_after` cuts on resume. Rows keep a head of at most 0.5 KB (DESIGN
+    §29.10, §29.11).
 
 ## 11. Prior-art sources
 

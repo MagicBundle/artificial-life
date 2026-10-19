@@ -1,6 +1,6 @@
 # Handover
 
-Status of the `alife` project as of 2026-10-18 (after the director evaluation, `docs/EVALUATION.md`; the 3D world is built, PRs #15 to #20, `docs/3D.md`; its first long run is analysed in `docs/RESULTS_3D.md`, and a second seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`), written for the next coding
+Status of the `alife` project as of 2026-10-19 (the games vertical's observers are built, G1 and G2, `docs/GAMES.md`; after the director evaluation, `docs/EVALUATION.md`; the 3D world is built, PRs #15 to #20, `docs/3D.md`; its first long run is analysed in `docs/RESULTS_3D.md`, and a second seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`), written for the next coding
 session (a local Claude Code session on the owner's MacBook Pro, M5 Pro, 48 GB). Read this, then `CLAUDE.md`, then the parts of
 `docs/DESIGN.md` you need.
 
@@ -15,8 +15,8 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 
 | path | what |
 |---|---|
-| `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build step G1, `docs/DESIGN.md` §28) |
-| `tests/` | pytest suite. 730 fast tests (`-m "not slow"`, about 50 s on the Mac) plus 19 slow ones |
+| `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`) |
+| `tests/` | pytest suite. 2,088 fast tests passed on the CPU device at G2 (`-m "not slow"`, about 9 minutes) plus the slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
@@ -26,7 +26,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/3D.md` | the 3D world with gravity and a floor (owner decisions, layout, fields, Swift viewer, PR plan); built in PRs #15 to #20, normative spec `docs/DESIGN.md` §27 |
 | `docs/RESULTS_3D.md` | the first long 3D run, `runs/64k3d_s0` (500k steps): population and `K`, vertical niches and buoyancy, bodies, evolutionary activity, comparison with 2D; figures and tables in `docs/results_3d/`, scripts in `analysis_cache/64k3d_s0/results3d/` (git-ignored) |
 | `docs/RESULTS_3D_RUNS.md` | the four 500k-step `64k3d` runs (seed 0, seed 1, half food, director live): replication, the density control, the director in 3D, bodies and activity across runs; figures and tables in `docs/results_3d_runs/`, scripts in `analysis_cache/64k3d_runs/` (git-ignored) |
-| `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with provisional label thresholds (`INTENT_VERSION` 1) until the calibration run; G2 to G5 are not built |
+| `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with provisional label thresholds (`INTENT_VERSION` 1) until the calibration run; G2, social tracking (houses, kin groups, colonies, territory, relations; `src/alife/groups.py`, `tracking.py`, `game/social.py`, `game/society.py`, `python -m alife.analysis.social`; the reports are `observers/social.jsonl` in an observing run's directory; normative spec `docs/DESIGN.md` §29, Review-log row I45) is built with provisional thresholds (`SOCIAL_VERSION` 1); G3 to G5 are not built |
 | `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13) |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
@@ -44,8 +44,9 @@ uv run alife inspect runs/NAME --check        # summary plus full invariant chec
 uv run alife bench --preset 64k --determinism --stages
 uv run alife activity runs/NAME                # evolutionary activity (needs --extra analysis for plots)
 uv run python -m alife.analysis.signals RUN --steps ... --out FILE.json   # signal information, docs/SIGNALS.md
-uv run alife resume runs/NAME --set game.observe=true   # attach the game observers (labels in the rows, observers/ sidecars)
+uv run alife resume runs/NAME --set game.observe=true   # attach the game observers (labels and a social head in the rows, observers/ sidecars, observers/social.jsonl)
 uv run python -m alife.analysis.labels RUN --from STEP --steps N --out FILE.json   # do the game labels predict behaviour? docs/DESIGN.md §28.8
+uv run python -m alife.analysis.social RUN --from STEP --steps N --out FILE.json   # social trackers: thresholds, churn, snapshot cost; docs/DESIGN.md §29.12
 cd gui && swift run                           # the macOS control app
 ```
 
@@ -426,10 +427,31 @@ and resumed once. There is one run per condition apart from the seed pair.
      and the step rate during an LLM call at 64k 2D; `python -m alife.analysis.labels` on `64k_s0` and `64k3d_s0`, which
      may change the thresholds under `INTENT_VERSION` 2.
    - **Owner decisions** (`docs/GAMES.md` §10, items 11 and 12): thresholds as code constants, and the verdict criterion.
-   - Then G2 (houses, kin groups, colonies, territory; `BirthRecords.parent_slot`).
-4. Optional engine work, deferred in DESIGN §23.2:
+   - G2 is the next item.
+4. **Games G2** (branch `games/g2-social`, DESIGN §29, Review-log row I45, `docs/GAMES.md` §9). Built on top of G1 and
+   tested on the CPU only, because the GPU was in use. Status and what follows:
+   - **The Metal gate, before merge** (the coordinator): `uv run pytest tests/test_game_purity.py tests/test_groups.py -q
+     -p no:cacheprovider` on the default device, without a `-m` filter. The purity file is G1's gate with G2's 20 channel
+     taps, and `test_groups.py` holds the `splitmix64`, `hash_below` and exact-sum equality tests (§29.2, §29.12).
+   - **After merge: the 64k bench and the calibration** (GPU needed, procedures in §29.12): `uv run alife bench --preset 64k
+     --observe --steps 600 --json obs_64k.json`; `python -m alife.analysis.social` on `runs/64k_s0 --from 1490000 --steps
+     2500` and `runs/64k3d_s0 --from 450000 --steps 2500`, at `--every 250` and `--every 1000`. They give the snapshot
+     cost, the churn rate and the Jaccard distributions, and may change θ, the kin-group thresholds, `n_band` and the slot
+     slack under `SOCIAL_VERSION` 2. Every threshold is provisional until then; the matching cost on the CPU was about
+     8 ms against the 2 ms planned, which is worth timing on the GPU day.
+   - **The data study for `INTENT_VERSION` 2** (DESIGN §28.4): `python -m alife.analysis.labels` on the G1 reference
+     checkpoints, then one change that redesigns the rules of the labels that failed G1's validity study (Gatherer,
+     Defending, Budding, Feeding, and in 3D Bonding, Signalling, Roaming and Caring), defines `RULES_V2` with the Settler
+     clause at `settler_body` 4, makes it the default under `INTENT_VERSION` 2 and pins its digest. G2 builds the clause
+     inert (`settler_body` 0), so version 1 and `RULES_V1` are unchanged. The verdict criterion (GAMES §10 item 12) is
+     still open and changes the list.
+   - **Deferred to G3**: the stream tags and colour modes, moving the host part of a snapshot off the step thread, the
+     Family row (a host lineage store and an ancestry panel), and sharing the snapshot's components with the heavy
+     metrics. Copying the sidecar and the social log into a fork is G3 or G4.
+   - Then G3 (play loop and view).
+5. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
    - `inspect` showing the resumed total instead of the original `steps`.
-5. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
+6. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
    it in the DESIGN Review log.
