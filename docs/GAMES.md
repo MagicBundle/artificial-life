@@ -776,9 +776,9 @@ What a game adds:
       acts that serve only them (`attack_target`, `bond_target`, `q_kin`). The "in a colony of 4 or more" clause of
       Settler is G2's too: G1's Settler is the speed rule alone.
     - `signals.decode` and the SIGNALS analysis in 3D are deferred until a game world is 3D.
-    - **Merge condition:** `tests/test_game_purity.py` (with `tests/test_game_acts.py`) must pass on Metal before the
-      PR merges (DESIGN §28.1, §28.8). The CPU tests pin the channel's read set structurally, but only a Metal run can
-      show that observing leaves the compiled float kernels' rounding alone. A difference there stops the PR.
+    - **Merge condition, met 2026-10-19:** `tests/test_game_purity.py` and `tests/test_game_acts.py` pass on Metal
+      (26 passed on the M5 Pro; DESIGN §28.1, §28.8). The CPU tests pin the channel's read set structurally, and the
+      Metal run shows that observing leaves the compiled float kernels' rounding alone.
     - The benches and the calibration run wait for the GPU, with the procedures of DESIGN §28.8. `alife bench
       --observe` and `python -m alife.analysis.labels` are built; the stream rate and the step rate with an LLM call
       in flight are measured by hand on the Mac (DESIGN §28.8), and the combined play-loop bench is G3's.

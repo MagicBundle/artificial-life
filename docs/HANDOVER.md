@@ -418,12 +418,11 @@ and resumed once. There is one run per condition apart from the seed pair.
    - **Speed.** The fused Metal neighbour kernel (below) matters if more or longer 3D runs are wanted: about 14.7 steps/s,
      with the search at 79% of the step.
 3. **Games G1** (branch `games/g1-observers`, DESIGN §28, Review-log row I44, `docs/GAMES.md` §9). Built and tested on
-   the CPU. Open before it merges, in order:
-   - **The Metal purity gate:** run `tests/test_game_purity.py` and `tests/test_game_acts.py` on the GPU once it is free
-     (§28.1, §28.8). The CPU tests pin the channel's read set on the traced graph, but only a Metal run can show that
-     observing leaves the compiled step's rounding alone. If it differs, `game.observe` is not observer-only on Metal:
-     stop and report, and do not move the key to the hashed keys.
-   - **The 64k benches and the calibration** (procedures in §28.8, GPU needed): `alife bench --observe`, the stream rate
+   the CPU and on Metal. Status and what follows:
+   - **The Metal purity gate: passed** on the M5 Pro on 2026-10-19. `tests/test_game_purity.py` and
+     `tests/test_game_acts.py` gave 26 passed on the GPU, so observing leaves the compiled step's rounding alone on Metal
+     too (§28.1, §28.8; row I44).
+   - **After merge: the 64k benches and the calibration** (procedures in §28.8, GPU needed): `alife bench --observe`, the stream rate
      and the step rate during an LLM call at 64k 2D; `python -m alife.analysis.labels` on `64k_s0` and `64k3d_s0`, which
      may change the thresholds under `INTENT_VERSION` 2.
    - **Owner decisions** (`docs/GAMES.md` §10, items 11 and 12): thresholds as code constants, and the verdict criterion.
