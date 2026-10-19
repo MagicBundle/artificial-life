@@ -4,10 +4,11 @@ Status: **proposal, nothing built.** This is the owner's concept of 2026-10-18: 
 influence the meteorology of an alien planet, built on alife's evolutionary engine and not looking like a petri dish.
 Owner decisions so far:
 - game-plausible physics is enough;
-- storm systems and an evolving aerial biosphere are combined and coupled.
+- storm systems and an evolving aerial biosphere are combined and coupled;
+- G3 onwards target the 3D storm world (§9.1 (a), 2026-10-19), gated by W0.
 
-It builds on `docs/GAMES.md`, the gaming vertical. G1's observers are built in draft PR #27, where DESIGN §28 lands;
-its merge condition is a purity run on Metal. G2–G5 are designed, not built. `docs/DESIGN.md` stays normative, and
+It builds on `docs/GAMES.md`, the gaming vertical. G1's observers are built in PR #27, where DESIGN §28 lands;
+its Metal purity gate passed on 2026-10-19. G2–G5 are designed, not built. `docs/DESIGN.md` stays normative, and
 the open decisions are in §9. `ObsIn`, `INTENT_VERSION` and `OBSERVER_FORMAT` refer to G1 as built in PR #27, so this
 note merges after it.
 
@@ -33,8 +34,8 @@ note merges after it.
   - Rain feeds regrowth through `INJECT_REGEN`.
   - Storm deaths take the corpse path.
   - Weather fields are not energy.
-- **Main decisions** (§9): which world G3 onwards target (the 3D storm world reverses GAMES §10.7's 64k 2D choice),
-  the target step rate (3D runs at 14.4 steps/s), and the weather model.
+- **Decided:** G3 onwards target the 3D storm world, which reverses GAMES §10.7's 64k 2D choice for G3–G5 (§9.1).
+- **Main open decisions** (§9): the target step rate (3D runs at 14.4 steps/s) and the weather model.
 
 ## 2. Starting point
 
@@ -315,15 +316,15 @@ Each step is one PR, merged before the next.
 5. **W4, storm levers and intent** on G4's pipeline (`STORM_MENU`).
 6. **W5, client.** `VOL1`, `STRM` and the volumetric view.
 
-**Interleaving with GAMES G2–G5:**
-- **If §9.1 picks the storm world:** G2, W0, W1, W2, G3 (the play loop on the storm world, with `STRM` and a 2D
-  weather map as the first client), W3, G4 with W4 (one golden-safe change), W5, then G5.
-- **If GAMES §10.7 stands:** G2–G5 on 64k 2D as decided, with W0 alongside (no engine code) and W1 onwards after G5.
+**Interleaving with GAMES G2–G5** (§9.1 decided for the storm world): G2, W0, W1, W2, G3 (the play loop on the storm
+world, with `STRM` and a 2D weather map as the first client), W3, G4 with W4 (one golden-safe change), W5, then G5.
+W0 has no engine code, so it can run alongside G2. If W0 fails and model A also fails its budget, §9.1 comes back to
+the owner.
 
 ## 9. Open decisions (owner)
 
-1. **Which world G3 onwards target.**
-   - **(a) The 3D storm world** (*recommended*, gated by W0). It reopens:
+1. **Which world G3 onwards target.** *Decided 2026-10-19:* **(a)**.
+   - **(a) The 3D storm world** (gated by W0). It reopens:
      - GAMES §10.7 (64k 2D) and §10.4 (the case for `attack_mult` rests on 2D's thin predation; 3D's kill share is
        0.50);
      - G1's deferred 3D signal tools;
