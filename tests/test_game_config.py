@@ -28,6 +28,7 @@ from alife.config import (
 )
 from alife.runio import RunDir
 from alife.state import init_state
+from game_helpers import social_every
 
 # Hashes of the presets on the commit before G1 (905580a): they must not move, with the flag on or off. The
 # 2D values are the same literals as tests/test_director_config.py; the 3D ones are pinned here first.
@@ -169,10 +170,12 @@ def test_resume_accepts_game_house_rate_key(small_run: Path, tmp_path: Path) -> 
 
 
 def test_resume_with_observe_writes_observer_rows_and_sidecar(
-    small_run: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    small_run: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    social_every(monkeypatch, 15)
     copy = tmp_path / "run"
     shutil.copytree(small_run, copy)
+    assert not (copy / "observers").exists()  # the source run observed nothing: no observers/, no social log
     capsys.readouterr()
     assert cli.main(["resume", str(copy), "--set", OBSERVE, "--steps", "20"]) == 0
     rd = RunDir.open(copy)
@@ -181,6 +184,42 @@ def test_resume_with_observe_writes_observer_rows_and_sidecar(
     assert [r["step"] for r in rows if "observers" in r] == [40, 50]
     assert (copy / "observers" / "step_0000000050.npz").is_file()
     assert "observers:" in capsys.readouterr().err  # the note: no sidecar at the resumed step
+    # the social log starts at the resume: only the record of 45, with the resume step as its origin, and its
+    # houses are inexact (the observer started after step 0, so the clades stand in for the houses)
+    (record,) = rd.social_records()
+    assert (record["step"], record["origin"], record["window_start"]) == (45, 30, 30)
+    assert record["summary"]["houses"]["exact"] is False
+    assert [r["observers"]["social"]["snapshot_step"] for r in rows if "observers" in r] == [30, 45]
+    assert all(r["observers"]["social"]["origin"] == 30 for r in rows if "observers" in r)
+
+
+def test_resume_with_a_changed_house_rate_restarts_the_social_tracking(
+    tiny_cfg: Config, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rate that differs from the sidecar's is a meta mismatch: exit 0, the note on stderr, fresh observers
+    whose records carry the resume step as their origin; the log keeps the earlier observer's records."""
+    social_every(monkeypatch, 15)
+    cfg = apply_overrides(tiny_cfg, [OBSERVE, "run.checkpoint_every=30"])
+    rd = RunDir.create(tmp_path / "run", cfg)
+    rd.update_meta(start_step=0)
+    runner.run(rd, cfg, init_state(cfg), 30, quiet=True)
+    assert [r["origin"] for r in rd.social_records()] == [0, 0]
+    capsys.readouterr()
+    assert cli.main(["resume", str(rd.path), "--set", HOUSE_RATE, "--steps", "30"]) == 0
+    err = capsys.readouterr().err
+    assert "observers: meta.house_rate is 0.00048828125, expected 0.25;" in err
+    assert (
+        "social tracking restarts at step 30 (houses seeded from clades; new ids, records with origin 30)"
+        in err
+    )
+    rd = RunDir.open(rd.path)
+    assert [(r["step"], r["origin"]) for r in rd.social_records()] == [(15, 0), (30, 0), (45, 30), (60, 30)]
+    assert rd.config().game.house_rate == 0.25
+    # the new rate is now the run's: a further resume (config unchanged) loads the sidecar at 60 silently
+    capsys.readouterr()
+    assert cli.main(["resume", str(rd.path), "--steps", "15"]) == 0
+    assert "observers:" not in capsys.readouterr().err
+    assert [(r["step"], r["origin"]) for r in RunDir.open(rd.path).social_records()][-1] == (75, 30)
 
 
 @pytest.mark.parametrize(
@@ -231,3 +270,4 @@ def test_fork_with_observe_starts_its_observers_fresh(small_run: Path, tmp_path:
     assert cli.main([*argv, "--set", OBSERVE]) == 0
     with np.load(out / "observers" / "step_0000000030.npz", allow_pickle=False) as z:
         assert not z["n_obs"].any()
+    assert not (out / "observers" / "social.jsonl").exists()  # a fork's social log starts absent

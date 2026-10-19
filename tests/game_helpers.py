@@ -4,21 +4,33 @@ simulation."""
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping
 from typing import Any
 
 import mlx.core as mx
 import numpy as np
+import pytest
 
 from alife import layout
 from alife.config import Config, dims
-from alife.game import social
+from alife.game import observer, social
 from alife.game.observe import ObsIn, ObsState, evaluate, init_obs, update
 from alife.game.rules import RULES_V1, RuleSet
 from alife.game.social import SOCIAL_V1, Expo, Rel, SocialRules, SocIn
 from alife.game.society import Society, host_snap
 from alife.state import to_numpy
 from alife.step import ActFlag, Acts
+
+
+def social_every(monkeypatch: pytest.MonkeyPatch, every: int) -> SocialRules:
+    """Make the observers of this test snapshot every ``every`` steps: replaces ``observer.DEFAULT_SOCIAL``
+    (the module default that ``Observer.fresh``/``open``, hence the runner, and the bench read at call time;
+    DESIGN §29.9) by ``SOCIAL_V1`` with that cadence. A module-scoped fixture, which cannot use
+    ``monkeypatch``, passes ``social=`` explicitly instead."""
+    rules = dataclasses.replace(SOCIAL_V1, snapshot_every=every)
+    monkeypatch.setattr(observer, "DEFAULT_SOCIAL", rules)
+    return rules
 
 
 def blank_oi(cfg: Config) -> dict[str, np.ndarray]:

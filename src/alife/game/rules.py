@@ -11,6 +11,11 @@ its instance 1, provisional until the calibration run (the study tool, ``analysi
 suite, and the observer sidecar stores the digest. Thresholds are code constants, not config keys: labels
 mean the same in every world.
 
+``RuleSet.settler_body`` is the Settler colony clause (DESIGN §28.4, §29): a row also matches Settler when
+its bond component, as of the last social snapshot, has at least that many members. It is inert at its
+version-1 value 0, which ``digest()`` leaves out, so ``RULES_V1`` keeps its pin; a rule set with a positive
+value needs the rows' body sizes and raises without them.
+
 This module is the leaf of ``alife.game``: it also holds the accumulator column layout and the two bounds
 that ``RuleSet.check`` needs (``observe.py`` re-exports them), so it imports nothing from ``observe``.
 
@@ -58,6 +63,10 @@ INTENT_VERSION: Final = 1
 VQ_MAX: Final = 1 << 15  # clip of the quantised velocity components and speed (units of u/256)
 EVAL_BIT: Final = 1 << 30  # set in ``match_intent`` of every row that was evaluated (past intent warm-up)
 _INT32_MAX: Final = (1 << 31) - 1
+# RuleSet fields added after version 1, with the value at which they are inert. ``digest()`` leaves such a
+# field out while it holds that value, so the digest of a rule set that does not use it is the one it had
+# before the field existed (the pattern of ``config_hash`` for post-v0.1 keys).
+_POST_V1_INERT: Final = {"settler_body": 0}
 
 _I32 = mx.int32
 _I64 = mx.int64
@@ -162,7 +171,7 @@ class RuleSet:
     trader: tuple[int, int] = (1, 2)  # Provider and a slot with min(out, in) >= 1 and min/max >= 0.5
     nomad_speed: tuple[int, int] = (512, 5)  # m_speed >= 102.4 units (0.4u)
     nomad_persist: tuple[int, int] = (9, 25)  # |mean velocity|^2 / m_speed^2 >= 0.36 (persistence >= 0.6)
-    settler_speed: tuple[int, int] = (256, 10)  # m_speed < 25.6 units (0.1u); the colony clause is G2
+    settler_speed: tuple[int, int] = (256, 10)  # m_speed < 25.6 units (0.1u); or settler_body below
     bud_window: int = 32  # Budding: steps since the last bud < this (= every * hold)
     hunt: int = 64  # Hunting: m_attack >= this (flag mean 0.25)
     flee_hurt: int = 8  # Fleeing: m_hurt >= this (hurt within about 11 steps) ...
@@ -173,6 +182,7 @@ class RuleSet:
     signal: int = 128  # Signalling: m_emit >= this deposit quanta per step (about 0.5)
     feed: tuple[int, int] = (1, 2)  # Feeding: m_harvest(k_intent) >= 1 and >= harvest_max/2
     roam: tuple[int, int] = (768, 10)  # Roaming: m_thrust >= 76.8 (0.3)
+    settler_body: int = 0  # Settler also if the row's bond component has >= this many members; 0 = off (v1)
 
     def __post_init__(self) -> None:
         def req(ok: bool, msg: str) -> None:
@@ -186,10 +196,17 @@ class RuleSet:
             num, den = getattr(self, name)
             req(num >= 0 and den > 0, f"{name} must be a (numerator >= 0, denominator > 0) pair")
         req(0 <= self.bond_age[0] < self.bond_age[1], "bond_age must be (lo, hi) with 0 <= lo < hi")
+        req(0 <= self.settler_body <= _INT32_MAX, "settler_body must be in [0, 2^31 - 1]")
 
     def digest(self) -> str:
-        """sha256 of the canonical JSON of every field (tuples as lists): the identity of these rules."""
-        text = json.dumps(dataclasses.asdict(self), sort_keys=True, separators=(",", ":"))
+        """sha256 of the canonical JSON of every field (tuples as lists): the identity of these rules. A field
+        added after version 1 is left out while it holds its inert value (``_POST_V1_INERT``)."""
+        fields = {
+            k: v
+            for k, v in dataclasses.asdict(self).items()
+            if k not in _POST_V1_INERT or v != _POST_V1_INERT[k]
+        }
+        text = json.dumps(fields, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def check(self, cfg: Config) -> None:
@@ -274,11 +291,17 @@ def pack_bits(match: mx.array) -> mx.array:
 # --- archetypes -----------------------------------------------------------------------------------------
 
 
-def archetype_matches(m6: mx.array, m6s: mx.array, cfg: Config, rs: RuleSet) -> mx.array:
+def archetype_matches(
+    m6: mx.array, m6s: mx.array, cfg: Config, rs: RuleSet, body: mx.array | None = None
+) -> mx.array:
     """(N, 6) bool, one column per rule in enum order 1–6 (Gatherer..Settler), non-exclusive.
 
     ``m6`` is the (N, 5 + 2·nd) mean of ``arch`` (``ArchCol``, then the velocity halves V_POS and V_NEG),
-    ``m6s`` the (N, B, 2) mean of ``arch_slot`` (share out, share got per bond slot).
+    ``m6s`` the (N, B, 2) mean of ``arch_slot`` (share out, share got per bond slot). ``body`` is the (N,)
+    bond-component size of each row at the last social snapshot (0 where unknown): Settler also matches where
+    ``body >= rs.settler_body``. The gate is static on the rules: with ``rs.settler_body == 0`` the clause is
+    off and ``body`` is ignored; with a positive value ``body`` is required (``ValueError`` if None), never
+    speed-only labels under a digest that names the colony clause.
     """
     del cfg  # no archetype threshold depends on the world
     nd = (m6.shape[1] - N_ARCH_BASE) // 2
@@ -298,6 +321,12 @@ def archetype_matches(m6: mx.array, m6s: mx.array, cfg: Config, rs: RuleSet) -> 
         rs.nomad_persist[1] * v2 >= rs.nomad_persist[0] * s64 * s64
     )
     settler = rs.settler_speed[1] * s64 < rs.settler_speed[0]
+    if rs.settler_body > 0:
+        if body is None:
+            raise ValueError(
+                f"archetype_matches: settler_body = {rs.settler_body} needs the rows' body sizes (body=None)"
+            )
+        settler = settler | (body >= rs.settler_body)
     return mx.stack([gatherer, hunter, provider, trader, nomad, settler], axis=1)
 
 

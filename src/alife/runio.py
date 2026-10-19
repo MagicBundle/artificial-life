@@ -7,6 +7,10 @@ fsynced, and a torn last line is ignored on read.
 The director's ``director.jsonl`` and ``journal.jsonl`` use the same append/fsync/torn-line rules as
 ``metrics.jsonl`` (the generic ``append_jsonl`` / ``read_jsonl``); ``director_archive.json`` is atomic.
 
+The social log ``observers/social.jsonl`` (an observing run's snapshot records, DESIGN §29.10) has the same
+append/fsync/torn-line rules. It belongs to the trajectory like the observer sidecars: ``truncate_after`` cuts
+it to the checkpoint step, always (a replay included), after parsing it whole and before changing anything.
+
 Event chunks ``births_<s0>_<s1>.npz`` / ``deaths_<s0>_<s1>.npz`` hold the records of steps ``s0 ≤ step < s1``,
 where a record's ``step`` is the index of the step during which it happened; a checkpoint at
 ``state.step == s1`` therefore contains exactly the effects of every chunk ending at ``s1``.
@@ -47,6 +51,7 @@ DIRECTOR_LOG_FILE: Final = "director.jsonl"
 JOURNAL_FILE: Final = "journal.jsonl"
 DIRECTOR_ARCHIVE_FILE: Final = "director_archive.json"
 OBSERVERS_DIR: Final = "observers"  # the observer sidecars of an observing run (DESIGN §28.6)
+SOCIAL_FILE: Final = "social.jsonl"  # observers/social.jsonl: one record per social snapshot (DESIGN §29.10)
 STATUSES: Final = ("running", "done", "extinct", "violation", "interrupted")
 
 BIRTH_COLUMNS: Final[Mapping[str, Any]] = {
@@ -345,6 +350,11 @@ class RunDir:
         return self.path / OBSERVERS_DIR
 
     @property
+    def social_path(self) -> Path:
+        """``observers/social.jsonl``, the social log of an observing run (absent for any other run)."""
+        return self.observers_dir / SOCIAL_FILE
+
+    @property
     def media_dir(self) -> Path:
         return self.path / "media"
 
@@ -543,6 +553,50 @@ class RunDir:
         """All rows of ``metrics.jsonl``; a torn last line (a crash mid-append) is ignored."""
         return read_jsonl(self.path / METRICS_FILE)
 
+    def append_social(self, records: Iterable[Mapping[str, Any]]) -> None:
+        """Append snapshot records to ``observers/social.jsonl`` (key ``step`` first) and fsync.
+
+        An empty iterable is a no-op that creates neither ``observers/`` nor the file. Otherwise every record
+        needs an int ``step`` and the steps must strictly increase within the call (``ValueError``).
+        """
+        recs = list(records)
+        if not recs:
+            return
+        last: int | None = None
+        for rec in recs:
+            step = rec.get("step") if isinstance(rec, Mapping) else None
+            if not isinstance(step, int | np.integer) or isinstance(step, bool):
+                raise ValueError("a social record needs an int 'step' key")
+            step = int(step)
+            if last is not None and step <= last:
+                raise ValueError(f"social record steps must increase within a call ({step} after {last})")
+            last = step
+        self.observers_dir.mkdir(exist_ok=True)
+        _append_jsonl(
+            self.social_path,
+            [{"step": r["step"], **{k: v for k, v in r.items() if k != "step"}} for r in recs],
+        )
+
+    def social_records(self) -> list[dict[str, Any]]:
+        """All records of the social log, in step order; ``[]`` if there is none. A torn last line (a crash
+        mid-append) is ignored; a corrupt line elsewhere raises ``json.JSONDecodeError``."""
+        return read_jsonl(self.social_path)
+
+    def _parse_social(self) -> list[dict[str, Any]] | None:
+        """The records of the social log, parsed whole (None if the file is absent) with the rule of
+        ``read_jsonl``: a torn last line is dropped and a corrupt line elsewhere raises
+        ``json.JSONDecodeError``; a complete line that is not an object with an int ``step`` raises
+        ``ValueError`` naming the line. Only ``truncate_after`` needs the stricter second rule: it must not
+        guess the place of a record."""
+        if not self.social_path.is_file():
+            return None
+        records = read_jsonl(self.social_path)
+        for i, rec in enumerate(records, start=1):
+            step = rec.get("step") if isinstance(rec, dict) else None
+            if not isinstance(step, int) or isinstance(step, bool):
+                raise ValueError(f"{self.social_path}: record {i} is not an object with an int 'step'")
+        return records
+
     def append_jsonl(self, name: str, records: Iterable[Mapping[str, Any]]) -> None:
         """Append records to the run's JSONL file ``name`` (e.g. ``director.jsonl``) and fsync."""
         _append_jsonl(self.path / name, records)
@@ -607,12 +661,25 @@ class RunDir:
         are cut the same way (``director.jsonl`` and ``journal.jsonl`` to records with step ≤ ``step``; a
         ``director_archive.json`` taken after it is deleted), except with ``keep_director`` (a replay, which
         must never touch the log it replays).
+
+        The social log ``observers/social.jsonl`` is cut to its records with step ≤ ``step``, always, whatever
+        ``keep_director`` is (it belongs to the trajectory, like the sidecars, and a replay regenerates it).
+        It is parsed whole before anything else changes, so a corrupt line before the last
+        (``json.JSONDecodeError``) or a record without an int ``step`` (``ValueError``) fails the call with
+        the directory untouched. The kept records are re-serialised as the metrics rows are, which gives back
+        the bytes the runner wrote, and the file is rewritten atomically even when no record is removed,
+        because that also drops a torn last line (left in place, it would have the resumed run's first record
+        glued onto it). An absent log stays absent.
         """
+        social = self._parse_social()  # first: a log that cannot be parsed fails before any change
         if (self.path / METRICS_FILE).exists():
             kept = [r for r in self.metrics_rows() if r["step"] <= step]
             _atomic_write_text(self.path / METRICS_FILE, "".join(_dumps(r) + "\n" for r in kept))
         if not keep_director:
             self._truncate_director(step)
+        if social is not None:
+            kept_social = [r for r in social if r["step"] <= step]
+            _atomic_write_text(self.social_path, "".join(_dumps(r) + "\n" for r in kept_social))
 
         for kind in ("births", "deaths"):
             for s0, s1, path in self.event_files(kind):

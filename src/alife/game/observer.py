@@ -1,15 +1,26 @@
 """The host observer: folds the step's observer channel into accumulators, reports the ``observers`` block of
-the metrics row and persists the sidecar (docs/GAMES.md §4, §6.6; DESIGN §28.5, §28.6).
+the metrics row, tracks the social layer and persists the sidecar (docs/GAMES.md §4, §6, §6.6; DESIGN §28.5,
+§28.6, §29.9, §29.10).
 
-An ``Observer`` owns one ``ObsState`` (``game.observe``) and the host step counter. ``update(state, acts, t)``
-queues the (lazy) update, and the evaluation of the labels every ``rules.every`` steps on the global step
-clock; the caller evaluates ``arrays()`` in the same ``mx.eval`` as the state, so the run keeps exactly one
-blocking eval per step. The observer never stores a ``State`` array (it passes ``obs_in(state)``, a few
-fields, into its update and keeps only the result), never writes the state and never reads its RNG key.
+An ``Observer`` owns one ``ObsState`` (labels, ``game.observe``), one ``SocState`` (houses, kin groups,
+colonies, relation windows), a host ``Society`` and the host step counter. ``update(state, acts, t)`` queues
+the (lazy) folds, the evaluation of the labels every ``rules.every`` steps and, every
+``social.snapshot_every`` steps, the social snapshot; the caller evaluates ``arrays()`` in the same
+``mx.eval`` as the state, so the run keeps exactly one blocking eval per step. The observer never stores a
+``State`` array (it passes ``obs_in(state)`` and ``soc_in(state)``, a few fields, into its updates and keeps
+only the results), never writes the state and never reads its RNG key.
 
-The sidecar ``observers/step_<t>.npz`` holds one array per ``ObsState`` field plus ``meta`` (a JSON string).
-``Observer.open`` loads it on resume only if every meta field, the array layout and the observed occupants
-match, and otherwise starts fresh with a note (never an error).
+A snapshot is *pending* from its step until it is *settled*: one host transfer, ``Society.settle`` (which
+appends the snapshot's record to the records not yet taken) and ``relabel`` (the slots go back to the
+device). The runner takes the records right after each step's eval, so it settles at the snapshot step; a
+caller that never takes them (the labels tool, the step-level tests) settles at ``update(t + 1)`` or at its
+next read (``row_block``, ``sidecar``, ``labels``, ...). Both paths give the same records and, from the
+next update on, the same state.
+
+The sidecar ``observers/step_<t>.npz`` holds one array per ``ObsState`` field, ``soc.<field>`` per
+``SocState`` field, the society's ``host.*`` members and ``meta`` (a JSON string). ``Observer.open`` loads
+it on resume only if every check passes (``_load``) and otherwise starts fresh with a note (never an error).
+The snapshot records themselves are in the run's social log (``RunDir.append_social``), not in the sidecar.
 
 Lint (rule 2, ``tests/test_lint.py``): no subscript assignment anywhere in this module, dict keys included.
 The block and meta dicts are built as literals and comprehensions.
@@ -26,18 +37,39 @@ import numpy as np
 
 from alife.config import Config, config_hash, dims
 from alife.game import observe
+from alife.game import social as soc
 from alife.game.observe import EVAL_BIT, ObsState
 from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V1, RuleSet
+from alife.game.social import SOCIAL_V1, SOCIAL_VERSION, SocialRules, SocState
+from alife.game.society import HOST_KEYS, Society, host_snap
 from alife.runio import CheckpointError, RunDir
 from alife.state import State, to_numpy
 from alife.step import Acts
+from alife.tracking import TRACK_VERSION, DominanceMap
 
-__all__ = ["OBSERVER_FORMAT", "SIDECAR_FORMAT", "Labels", "Observer"]
+__all__ = [
+    "DEFAULT_RULES",
+    "DEFAULT_SOCIAL",
+    "OBSERVER_FORMAT",
+    "SIDECAR_FORMAT",
+    "Labels",
+    "Observer",
+    "SocialLabels",
+]
 
-OBSERVER_FORMAT: Final = 1  # the ObsState fields and their meaning; bump with any change to either
+OBSERVER_FORMAT: Final = 2  # the sidecar's members and their meaning; bump with any change to either
 SIDECAR_FORMAT: Final = "alife-observers"  # the ``format`` of the sidecar's meta
 
-# Meta fields that must equal the observer's own for a sidecar to load (``alife_version`` is not checked).
+# The rules a run's observer uses, looked up at call time (``Observer.fresh`` / ``open`` with ``rules=None``
+# or ``social=None``). No config key sets them (DESIGN §28.1, §29.9): the labels tool passes its own
+# ``rules``, and tests that need snapshots in a short run replace ``DEFAULT_SOCIAL`` (``monkeypatch``) or
+# pass ``social=``.
+DEFAULT_RULES: RuleSet = RULES_V1
+DEFAULT_SOCIAL: SocialRules = SOCIAL_V1
+
+# Meta fields that must equal the observer's own for a sidecar to load, checked in this order (``format``
+# first, then ``observer_format``, so that a sidecar of another layout gets that reason, not a list of
+# missing members). ``alife_version`` is not checked.
 _META_KEYS: Final = (
     "format",
     "observer_format",
@@ -47,12 +79,18 @@ _META_KEYS: Final = (
     "n_max",
     "dims",
     "config_hash",
+    "social_version",
+    "social_digest",
+    "track_version",
+    "house_rate",
+    "house_seed",
 )
 _NP_DTYPE: Final = {
     mx.int32: np.dtype(np.int32),
     mx.int64: np.dtype(np.int64),
     mx.bool_: np.dtype(np.bool_),
-}  # the dtypes ObsState uses, as they are stored in the sidecar
+}  # the dtypes ObsState and SocState use, as they are stored in the sidecar
+_SOC_PREFIX: Final = "soc."
 
 
 class Labels(NamedTuple):
@@ -67,6 +105,20 @@ class Labels(NamedTuple):
     intent_match: mx.array  # (N,) int32: bit i−1 = predicate i (Resting = none) | ``EVAL_BIT``
 
 
+class SocialLabels(NamedTuple):
+    """The per-row social labels as of the last settled snapshot (device arrays)."""
+
+    house: mx.array  # (N,) int64 house id (the founder's uid), ``social.HOUSE_UNKNOWN``, -1 dead
+    kin_slot: mx.array  # (N,) int32 kin group slot: 0..F-1 named, F = other, -1 dead
+    colony_slot: mx.array  # (N,) int32 colony slot: 0..F-1 named, F = other tracked colony, -1 none
+
+
+class _Loaded(NamedTuple):
+    o: ObsState
+    so: SocState
+    society: Society
+
+
 def _shares(counts: np.ndarray, names: tuple[str, ...], denominator: int) -> dict[str, float] | None:
     """``{name: count / denominator}``, or None when nothing was counted."""
     if denominator == 0:
@@ -75,44 +127,106 @@ def _shares(counts: np.ndarray, names: tuple[str, ...], denominator: int) -> dic
 
 
 class Observer:
-    """Per-row game observers on one run: accumulators, labels, the metrics block and the sidecar."""
+    """Per-row game observers on one run: accumulators, labels, the social layer, the metrics block, the
+    snapshot records and the sidecar."""
 
-    def __init__(self, cfg: Config, o: ObsState, step: int, rules: RuleSet = RULES_V1) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        o: ObsState,
+        so: SocState,
+        society: Society,
+        step: int,
+        rules: RuleSet,
+        social: SocialRules,
+    ) -> None:
         rules.check(cfg)  # a window that would overflow int32 for this world fails here, loudly
+        social.check(cfg)
         self.cfg = cfg
         self.rules = rules
+        self.social = social
         self.o = o
+        self.so = so
+        self.society = society
         self.step = step
+        self._snap: soc.Snap | None = None  # the pending snapshot (arrays, lazy until the caller's eval)
+        self._snap_step = -1
 
-        def fold(o_: ObsState, oi: observe.ObsIn, a: Acts) -> ObsState:
-            return observe.update(o_, oi, a, cfg, rules)
+        def fold(
+            o_: ObsState, so_: SocState, oi: observe.ObsIn, si: soc.SocIn, a: Acts
+        ) -> tuple[ObsState, SocState]:
+            return observe.update(o_, oi, a, cfg, rules), soc.update(so_, si, a, cfg, social)
 
-        def fold_eval(o_: ObsState, oi: observe.ObsIn, a: Acts) -> ObsState:
-            return observe.evaluate(observe.update(o_, oi, a, cfg, rules), cfg, rules)
+        def fold_eval(
+            o_: ObsState, so_: SocState, oi: observe.ObsIn, si: soc.SocIn, a: Acts
+        ) -> tuple[ObsState, SocState]:
+            o2, so2 = observe.update(o_, oi, a, cfg, rules), soc.update(so_, si, a, cfg, social)
+            return observe.evaluate(o2, cfg, rules, so2.body), so2  # the Settler clause reads the body
+
+        def snap(kin0: mx.array, so_: SocState, si: soc.SocIn, a: Acts | None) -> soc.Snap:
+            return soc.snapshot(kin0, so_, si, a, cfg, social)
+
+        def relabel(so_: SocState, sn: soc.Snap, kin_lut: mx.array, col_lut: mx.array) -> SocState:
+            return soc.relabel(so_, sn, kin_lut, col_lut)
 
         # The compile mode follows the run's, so labels are reproducible under the same contract as the
         # trajectory (DESIGN §14.2).
-        self._fold = mx.compile(fold) if cfg.run.compile else fold
-        self._fold_eval = mx.compile(fold_eval) if cfg.run.compile else fold_eval
+        comp = mx.compile if cfg.run.compile else (lambda f: f)
+        self._fold, self._fold_eval = comp(fold), comp(fold_eval)
+        self._snap_fn, self._relabel = comp(snap), comp(relabel)
 
     # --- construction -----------------------------------------------------------------------------------
 
     @classmethod
-    def fresh(cls, state: State, cfg: Config, *, rules: RuleSet = RULES_V1) -> Observer:
-        """Observers starting at ``state``: nothing accumulated or labelled, existing bonds of unknown age."""
+    def _blank(cls, state: State, cfg: Config, rules: RuleSet, sr: SocialRules) -> Observer:
+        """An observer at ``state`` with empty accumulators and no snapshot: what a sidecar is validated
+        against (shapes, dtypes, occupants)."""
         o = observe.init_obs(observe.obs_in(state), cfg)
-        mx.eval(*o)  # no lazy reference to the state's arrays survives (the loop donates them)
-        return cls(cfg, o, int(to_numpy(state.step)), rules)
+        so = soc.init_soc(soc.soc_in(state), cfg, sr)
+        mx.eval(*o, *so)  # no lazy reference to the state's arrays survives (the loop donates them)
+        return cls(cfg, o, so, Society(cfg, sr), int(to_numpy(state.step)), rules, sr)
+
+    @classmethod
+    def fresh(
+        cls,
+        state: State,
+        cfg: Config,
+        *,
+        rules: RuleSet | None = None,
+        social: SocialRules | None = None,
+    ) -> Observer:
+        """Observers starting at ``state``: nothing accumulated or labelled, existing bonds of unknown age,
+        and the initial social snapshot (ids and slots for what is there; no events, relations or record).
+        ``rules`` and ``social`` default to ``DEFAULT_RULES`` and ``DEFAULT_SOCIAL`` as of this call."""
+        rules = DEFAULT_RULES if rules is None else rules
+        sr = DEFAULT_SOCIAL if social is None else social
+        obs = cls._blank(state, cfg, rules, sr)
+        si = soc.soc_in(state)
+        snap = obs._snap_fn(obs.so.kin, obs.so, si, None)  # no step to read: the temperament is zero
+        h = host_snap(snap)  # the one host transfer (and the evaluation)
+        kin_lut, col_lut = obs.society.initialise(h, obs.step)
+        obs.so = obs._relabel(obs.so, snap, mx.array(kin_lut), mx.array(col_lut))
+        mx.eval(*obs.so)
+        return obs
 
     @classmethod
     def open(
-        cls, rd: RunDir, state: State, cfg: Config, *, rules: RuleSet = RULES_V1
+        cls,
+        rd: RunDir,
+        state: State,
+        cfg: Config,
+        *,
+        rules: RuleSet | None = None,
+        social: SocialRules | None = None,
     ) -> tuple[Observer, str | None]:
         """Observers for a run continuing from ``state``: the sidecar of its step if it is valid for it,
         else fresh. The note (None if the sidecar was loaded) is returned only on a resume, meaning ``rd``
-        has a checkpoint at this step; a new run or a fork starts fresh without one. Never an error."""
+        has a checkpoint at this step; a new run or a fork starts fresh without one. Never an error.
+        ``rules`` and ``social`` default to ``DEFAULT_RULES`` and ``DEFAULT_SOCIAL`` as of this call."""
+        rules = DEFAULT_RULES if rules is None else rules
+        sr = DEFAULT_SOCIAL if social is None else social
         t = int(to_numpy(state.step))
-        fresh = cls.fresh(state, cfg, rules=rules)
+        blank = cls._blank(state, cfg, rules, sr)
         try:
             arrays = rd.read_observers(t)
         except CheckpointError as e:
@@ -121,13 +235,15 @@ class Observer:
             if arrays is None:
                 loaded, reason = None, f"no sidecar at step {t}"
             else:
-                loaded, reason = fresh._load(arrays)
+                loaded, reason = blank._load(arrays)
         if loaded is not None:
-            return cls(cfg, loaded, t, rules), None
+            return cls(cfg, loaded.o, loaded.so, loaded.society, t, rules, sr), None
+        fresh = cls.fresh(state, cfg, rules=rules, social=sr)
         resumed = any(st == t for st, _ in rd.checkpoints())
         note = (
             f"observers: {reason}; labels warm up ({rules.arch_warm} steps for archetypes, "
-            f"{rules.intent_warm} for intents)"
+            f"{rules.intent_warm} for intents); social tracking restarts at step {t} "
+            f"(houses seeded from clades; new ids, records with origin {t})"
         )
         return fresh, note if resumed else None
 
@@ -147,26 +263,46 @@ class Observer:
             "dims": d.nd,
             "config_hash": config_hash(self.cfg),
             "alife_version": alife.__version__,
+            "social_version": SOCIAL_VERSION,
+            "social_digest": self.social.digest(),
+            "track_version": TRACK_VERSION,
+            "house_rate": self.cfg.game.house_rate,
+            "house_seed": self.cfg.run.seed,
         }
 
     def sidecar(self) -> dict[str, np.ndarray]:
-        """The arrays of ``observers/step_<t>.npz``: every ``ObsState`` field under its name, and ``meta``
-        (a 0-d unicode array holding JSON). One host transfer."""
-        mx.eval(*self.o)
+        """The arrays of ``observers/step_<t>.npz``: every ``ObsState`` field under its name, every
+        ``SocState`` field as ``soc.<field>``, the society's ``host.*`` members and ``meta`` (a 0-d unicode
+        array holding JSON). One host transfer.
+
+        Settles a pending snapshot first and raises ``RuntimeError`` while a record is untaken: the sidecar
+        carries no reports, so a checkpoint must never stand for a snapshot whose record is neither in the
+        social log nor anywhere else. The runner takes the records before every checkpoint.
+        """
+        self._settle()
+        if self.society.records:
+            raise RuntimeError(
+                f"Observer.sidecar: {len(self.society.records)} snapshot record(s) not taken yet "
+                "(call take_records() and append them to the run's social log first)"
+            )
+        mx.eval(*self.o, *self.so)
         return {
             **{f: to_numpy(a) for f, a in zip(ObsState._fields, self.o, strict=True)},
+            **{f"{_SOC_PREFIX}{f}": to_numpy(a) for f, a in zip(SocState._fields, self.so, strict=True)},
+            **self.society.arrays(),
             "meta": np.array(json.dumps(self._meta(), sort_keys=True)),
         }
 
-    def _load(self, arrays: Mapping[str, np.ndarray]) -> tuple[ObsState | None, str]:
-        """``(state, "")`` from a sidecar's arrays if they are valid for this (fresh) observer, else
-        ``(None, reason)``. Valid: the meta fields equal this observer's (``rules_digest`` included, so
-        accumulators scaled for, or hysteresis state left by, other rules are never read), the names, shapes
-        and dtypes equal ``ObsState``'s, and the observed occupants (``uid``) are the state's."""
-        names = {*ObsState._fields, "meta"}
-        if set(arrays) != names:
-            missing, extra = sorted(names - set(arrays)), sorted(set(arrays) - names)
-            return None, f"the sidecar's arrays differ (missing {missing}, unexpected {extra})"
+    def _load(self, arrays: Mapping[str, np.ndarray]) -> tuple[_Loaded | None, str]:
+        """``(loaded, "")`` from a sidecar's arrays if they are valid for this (blank) observer, else
+        ``(None, reason)`` with the first failure as the reason. Checked in this order: the meta parses as a
+        JSON object; its ``format`` and then ``observer_format``; its other fields equal this observer's
+        (``rules_digest`` and ``social_digest`` included, so accumulators scaled for, or hysteresis state left
+        by, other rules are never read); the member names; the shapes and dtypes of the ``ObsState`` and
+        ``SocState`` members; the observed occupants (``uid`` and ``soc.uid``) equal the state's; and the
+        society's host members (``Society.from_arrays``)."""
+        if "meta" not in arrays:
+            return None, "the sidecar has no meta"
         try:
             meta = json.loads(str(arrays["meta"]))
         except ValueError:
@@ -177,38 +313,82 @@ class Observer:
         for key in _META_KEYS:
             if meta.get(key) != want[key]:
                 return None, f"meta.{key} is {_short(meta.get(key))}, expected {_short(want[key])}"
-        for f, ref in zip(ObsState._fields, self.o, strict=True):
-            a = arrays[f]
+        expected = (
+            *((f, f) for f in ObsState._fields),
+            *((f"{_SOC_PREFIX}{f}", f) for f in SocState._fields),
+        )
+        names = {name for name, _ in expected} | {*HOST_KEYS, "meta"}
+        if set(arrays) != names:
+            missing, extra = sorted(names - set(arrays)), sorted(set(arrays) - names)
+            return None, f"the sidecar's arrays differ (missing {missing}, unexpected {extra})"
+        refs = (
+            *((f, getattr(self.o, f)) for f in ObsState._fields),
+            *((f"{_SOC_PREFIX}{f}", getattr(self.so, f)) for f in SocState._fields),
+        )
+        for name, ref in refs:
+            a = arrays[name]
             shape, dtype = tuple(ref.shape), _NP_DTYPE[ref.dtype]
             if not isinstance(a, np.ndarray):
-                return None, f"array {f!r} is not an array"
+                return None, f"array {name!r} is not an array"
             if a.shape != shape or a.dtype != dtype:
-                return None, f"array {f!r} is {a.dtype} {a.shape}, expected {dtype} {shape}"
-        if not np.array_equal(arrays["uid"], to_numpy(self.o.uid)):
-            return None, "the sidecar's observed uids are not the state's"
+                return None, f"array {name!r} is {a.dtype} {a.shape}, expected {dtype} {shape}"
+        for name, ref in (("uid", self.o.uid), (f"{_SOC_PREFIX}uid", self.so.uid)):
+            if not np.array_equal(arrays[name], to_numpy(ref)):
+                return None, "the sidecar's observed uids are not the state's"
+        society, reason = Society.from_arrays(arrays, self.cfg, self.social, step=self.step)
+        if society is None:
+            return None, f"the sidecar's host state is invalid ({reason})"
         o = ObsState(**{f: mx.array(arrays[f]) for f in ObsState._fields})
-        mx.eval(*o)
-        return o, ""
+        so = SocState(**{f: mx.array(arrays[f"{_SOC_PREFIX}{f}"]) for f in SocState._fields})
+        mx.eval(*o, *so)
+        return _Loaded(o, so, society), ""
 
     # --- the per-step fold --------------------------------------------------------------------------------
 
     def update(self, state: State, acts: Acts, t: int) -> None:
-        """Queue the fold of the step that produced ``state`` (now at step ``t``) and, when ``t`` is a
-        multiple of ``rules.every``, the evaluation. Lazy: evaluate ``arrays()`` in the step's ``mx.eval``."""
+        """Queue the fold of the step that produced ``state`` (now at step ``t``): the labels' accumulators
+        and the social state; and, when ``t`` is a multiple of ``rules.every``, the evaluation, and when it
+        is a multiple of ``social.snapshot_every``, the social snapshot (pending until it is settled). A
+        snapshot still pending from the previous step is settled first. Lazy: evaluate ``arrays()`` in the
+        step's ``mx.eval``."""
         if t != self.step + 1:
             raise ValueError(f"observer is at step {self.step}; cannot fold step {t}")
+        self._settle()
+        oi, si = observe.obs_in(state), soc.soc_in(state)
         fold = self._fold_eval if t % self.rules.every == 0 else self._fold
-        self.o = fold(self.o, observe.obs_in(state), acts)
+        kin0 = self.so.kin  # the start-of-step slots, which the snapshot's temperament is read with
+        self.o, self.so = fold(self.o, self.so, oi, si, acts)
+        if t % self.social.snapshot_every == 0:
+            self._snap, self._snap_step = self._snap_fn(kin0, self.so, si, acts), t
         self.step = t
 
     def arrays(self) -> tuple[mx.array, ...]:
-        """The observer state's arrays, for the caller's single ``mx.eval``."""
-        return tuple(self.o)
+        """The observer's arrays (``ObsState``, ``SocState`` and a pending snapshot), for the caller's
+        single ``mx.eval``."""
+        return (*self.o, *self.so, *(self._snap if self._snap is not None else ()))
+
+    def _settle(self) -> None:
+        """Settle the pending snapshot, if any: one host transfer, ``Society.settle`` (which appends the
+        snapshot's record to the untaken ones) and ``relabel`` (lazy: evaluated with the next step)."""
+        if self._snap is None:
+            return
+        snap, t = self._snap, self._snap_step
+        kin_lut, col_lut = self.society.settle(host_snap(snap), t)
+        self.so = self._relabel(self.so, snap, mx.array(kin_lut), mx.array(col_lut))
+        self._snap = None
+
+    def take_records(self) -> list[dict[str, Any]]:
+        """The records of the snapshots settled since the last call, in snapshot order, and forgets them.
+        Settles a pending snapshot first. The runner appends them to the social log right after each step's
+        eval (``RunDir.append_social``); a caller that never takes them keeps them in memory."""
+        self._settle()
+        return self.society.take_records()
 
     # --- reporting ----------------------------------------------------------------------------------------
 
     def labels(self) -> Labels:
         """The per-row labels as of the last evaluation (device arrays)."""
+        self._settle()
         o = self.o
         return Labels(o.label_arch[:, 0], o.label_arch[:, 1], o.match_arch, o.label_intent, o.match_intent)
 
@@ -216,13 +396,27 @@ class Observer:
         """``labels()`` as numpy arrays keyed by field name."""
         return {f: to_numpy(a) for f, a in zip(Labels._fields, self.labels(), strict=True)}
 
+    def social_labels(self) -> SocialLabels:
+        """The per-row house, kin group slot and colony slot of the last settled snapshot (device arrays)."""
+        self._settle()
+        return SocialLabels(self.so.house, self.so.kin, self.so.colony)
+
+    def territory(self) -> tuple[DominanceMap | None, np.ndarray]:
+        """``(DominanceMap | None, kin slot -> id)`` of the last settled snapshot (None before the first)."""
+        self._settle()
+        return self.society.territory()
+
     def row_block(self) -> dict[str, Any]:
-        """The ``observers`` block of a metrics row (DESIGN §28.5): counts and shares of the last evaluation.
+        """The ``observers`` block of a metrics row (DESIGN §28.5, §29.11): counts and shares of the last
+        evaluation, then ``social``, the head of the last settled snapshot.
 
         Comparisons and sums on the device and one host transfer. ``archetype`` and ``archetype_match`` are
         over the rows with an archetype label, ``intent`` over those with a displayed intent, and
         ``intent_match`` (the §4.5 coverage) over the rows evaluated; each is None while its denominator is 0.
+        A pending snapshot is settled first (the next ``update`` or read would do the same), so any caller
+        may call this at any step.
         """
+        self._settle()
         o, rs = self.o, self.rules
         primary = o.label_arch[:, 0]
         n_a, n_i = len(ARCHETYPE_NAMES), len(INTENT_NAMES)
@@ -251,6 +445,7 @@ class Observer:
             "archetype_match": _shares(match_arch, ARCHETYPE_NAMES, arch_n),
             "intent": _shares(by_intent, INTENT_NAMES, intent_n),
             "intent_match": _shares(match_intent, INTENT_NAMES, eval_n),
+            "social": self.society.head(),
         }
 
 

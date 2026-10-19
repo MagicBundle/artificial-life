@@ -4,6 +4,8 @@ the step it died)."""
 
 from __future__ import annotations
 
+import dataclasses
+
 import mlx.core as mx
 import numpy as np
 import pytest
@@ -26,7 +28,7 @@ from alife.game.observe import (
     speed_unit,
     update,
 )
-from alife.game.rules import RULES_V1
+from alife.game.rules import ARCHETYPE_NAMES, RULES_V1, Archetype
 from alife.state import CounterIdx as C
 from alife.state import init_state, to_numpy
 from alife.step import ActFlag, make_step
@@ -396,6 +398,45 @@ def test_update_outputs_do_not_alias_inputs(micro_cfg: Config) -> None:
     mx.eval(*e1, *e2)
     for f in ObsState._fields:
         assert np.array_equal(np_(getattr(e1, f)), np_(getattr(e2, f))), f
+
+
+def test_evaluate_reads_the_body_for_the_settler_clause(micro_cfg: Config) -> None:
+    """``evaluate`` hands the rows' body sizes to the archetype rules: fast-moving rows are Settlers where
+    ``body >= settler_body``, and the clause is inert under ``RULES_V1`` whatever body is passed."""
+    cfg, rs = micro_cfg, RULES_V1
+    settler4 = dataclasses.replace(rs, settler_body=4)
+    rows = 6
+    o = init_obs(make_oi(living(cfg, rows)), cfg)
+    n = o.uid.shape[0]
+    speed = np.zeros((n, o.arch.shape[1]), np.int32)
+    speed[:rows, ArchCol.SPEED.value] = 200 << rs.arch_k  # a constant mean speed of 200 units: not a Settler
+    o = o._replace(arch=mx.array(speed), n_obs=mx.full((n,), rs.arch_warm, dtype=I32))
+    body = np.zeros(n, np.int32)
+    body[:rows] = [0, 3, 4, 5, 9, 1]
+    settler_bit = 1 << (Archetype.SETTLER.value - 1)
+    on = evaluate(o, cfg, settler4, mx.array(body))
+    assert [bool(m & settler_bit) for m in np_(on.match_arch)[:rows]] == [
+        False,
+        False,
+        True,
+        True,
+        True,
+        False,
+    ]
+    assert np_(on.label_arch)[:rows, 0].tolist() == [
+        Archetype.GENERALIST.value,
+        Archetype.GENERALIST.value,
+        Archetype.SETTLER.value,
+        Archetype.SETTLER.value,
+        Archetype.SETTLER.value,
+        Archetype.GENERALIST.value,
+    ]
+    off = evaluate(o, cfg, rs, mx.array(body))
+    assert not (np_(off.match_arch)[:rows] & settler_bit).any()
+    assert np.array_equal(np_(off.label_arch), np_(evaluate(o, cfg, rs).label_arch))
+    assert ARCHETYPE_NAMES[Archetype.SETTLER.value - 1] == "settler"
+    with pytest.raises(ValueError, match="settler_body"):
+        evaluate(o, cfg, settler4)
 
 
 # --- real steps ---------------------------------------------------------------------------------------------

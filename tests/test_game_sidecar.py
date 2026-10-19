@@ -1,6 +1,9 @@
-"""§28.5/§28.6 the host observer, its metrics block and the sidecar (G1): round trip through ``RunDir``, the
-fallback to fresh observers on any mismatch, resumed labels equal to uninterrupted ones, pruning and
-truncation, and the ``observers`` block of the metrics rows."""
+"""§28.5/§28.6, §29.9/§29.10 the host observer, its metrics block and the sidecar (G1, G2): round trip through
+``RunDir``, the fallback to fresh observers on any mismatch, resumed labels, social state and social log equal
+to uninterrupted ones, pruning and truncation, and the ``observers`` block of the metrics rows.
+
+The module-scoped fixtures cannot use ``monkeypatch``, so they pass ``social=SOC15`` (snapshots every 15
+steps) explicitly; function-scoped tests set the module default with ``social_every``."""
 
 from __future__ import annotations
 
@@ -18,12 +21,17 @@ import pytest
 
 from alife import cli, runner
 from alife.config import Config, apply_overrides, dims
+from alife.game import social as soc
 from alife.game.observe import EVAL_BIT, OBS_CAP, ObsState, evaluate, init_obs, obs_in, update
 from alife.game.observer import OBSERVER_FORMAT, SIDECAR_FORMAT, Labels, Observer
 from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V1, Archetype, RuleSet
+from alife.game.social import SOCIAL_V1, SOCIAL_VERSION, SocState
+from alife.game.society import HOST_KEYS, Society, host_snap
 from alife.runio import CheckpointError, RunDir, _write_npz, load_checkpoint
 from alife.state import State, init_state, to_numpy
 from alife.step import make_step
+from alife.tracking import TRACK_VERSION
+from game_helpers import social_every
 
 OBS = ["game.observe=true", "run.checkpoint_every=30"]
 BLOCK_KEYS = [
@@ -37,9 +45,15 @@ BLOCK_KEYS = [
     "archetype_match",
     "intent",
     "intent_match",
+    "social",
 ]
+SOC15 = dataclasses.replace(SOCIAL_V1, snapshot_every=15)  # snapshots at 15, 30, 45, 60 inside the fixtures
+SETTLER4 = dataclasses.replace(RULES_V1, settler_body=4)
+SETTLER16 = dataclasses.replace(SETTLER4, arch_warm=16)  # archetypes are labelled within a short test
 AT = 61  # the step of the module's observer: 24-step warm-up + 4 evaluations to the first intent label
 WARM_NOTE = "labels warm up (192 steps for archetypes, 24 for intents)"
+RESTART_NOTE = "social tracking restarts at step"
+HEAD_KEYS = ["social_version", "snapshot_step", "origin", "houses", "kin_groups", "colonies"]
 
 
 def _observing(cfg: Config, *extra: str) -> Config:
@@ -73,15 +87,22 @@ def _meta(arrays: dict[str, np.ndarray]) -> dict:
     return json.loads(str(arrays["meta"]))
 
 
-def _manual(cfg: Config, steps: int) -> tuple[State, Observer]:
-    """``steps`` observed steps, driven as the runner drives them (one eval per step)."""
+def _manual(
+    cfg: Config, steps: int, records: list[dict] | None = None, rules: RuleSet | None = None
+) -> tuple[State, Observer]:
+    """``steps`` observed steps, driven as the runner drives them: one eval per step, then the records of the
+    snapshot settled at that step are taken (and appended to ``records`` if given), so that a sidecar taken
+    at any step never meets an untaken record."""
     s = init_state(cfg)
     fn = make_step(cfg, observe=True)
-    obs = Observer.fresh(s, cfg)
+    obs = Observer.fresh(s, cfg, rules=rules, social=SOC15)
     for t in range(steps):
         s, out = fn(s)
         obs.update(s, out.acts, t + 1)
         mx.eval(s, out.base(), *obs.arrays())
+        taken = obs.take_records()
+        if records is not None:
+            records.extend(taken)
     return s, obs
 
 
@@ -99,29 +120,103 @@ def observed(tiny_cfg: Config) -> tuple[Config, State, Observer]:
 
 @pytest.mark.parametrize("compiled", [True, False], ids=["compiled", "eager"])
 @pytest.mark.parametrize(
-    "rules", [RULES_V1, dataclasses.replace(RULES_V1, every=4, hold=2)], ids=["v1", "every4-hold2"]
+    "rules",
+    [RULES_V1, dataclasses.replace(RULES_V1, every=4, hold=2), SETTLER16],
+    ids=["v1", "every4-hold2", "settler4-warm16"],
 )
 def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules: RuleSet) -> None:
-    """On real steps the Observer (compiled, as the run is, or eager) equals the reference fold: ``update``
-    after every step and ``evaluate`` at the steps that are multiples of ``rules.every``, field by field."""
+    """On real steps the Observer (compiled, as the run is, or eager) equals the reference fold, field by
+    field: G1's ``update`` after every step and ``evaluate`` at the steps that are multiples of
+    ``rules.every``; and the social part: ``social.update`` after every step, and at the snapshot steps
+    (every 15 here, so snapshots and relabels fall inside the 80 steps) ``snapshot``, the host settle and
+    ``relabel``. The Settler clause (``settler_body`` 4) reads the body of the last snapshot: the reference
+    ``evaluate`` takes the body from the observer's ``so.body`` after the same step, before the step's own
+    snapshot is settled (the labels of step t are evaluated from the previous snapshot)."""
     cfg = _observing(tiny_cfg, f"run.compile={'true' if compiled else 'false'}")
     s = init_state(cfg)
     fn = make_step(cfg, observe=True)
-    obs = Observer.fresh(s, cfg, rules=rules)
+    obs = Observer.fresh(s, cfg, rules=rules, social=SOC15)
     ref = init_obs(obs_in(s), cfg)
-    evaluated = 0
+    ref_so = soc.init_soc(soc.soc_in(s), cfg, SOC15)
+    ref_society = Society(cfg, SOC15)
+    snap0 = soc.snapshot(ref_so.kin, ref_so, soc.soc_in(s), None, cfg, SOC15)  # the initial snapshot
+    kin_lut, col_lut = ref_society.initialise(host_snap(snap0), 0)
+    ref_so = soc.relabel(ref_so, snap0, mx.array(kin_lut), mx.array(col_lut))
+    evaluated = snapshots = 0
     for t in range(1, 81):
         s, out = fn(s)
         obs.update(s, out.acts, t)
+        body = obs.so.body  # the body the step's evaluation used: before this step's snapshot is settled
+        kin0 = ref_so.kin
         ref = update(ref, obs_in(s), out.acts, cfg, rules)
+        ref_so = soc.update(ref_so, soc.soc_in(s), out.acts, cfg, SOC15)
+        ref_body = ref_so.body
         if t % rules.every == 0:
-            ref = evaluate(ref, cfg, rules)
+            ref = evaluate(ref, cfg, rules, ref_body if rules.settler_body else None)
             evaluated += 1
-        mx.eval(s, out.base(), *obs.arrays(), *ref)
+        snap = soc.snapshot(kin0, ref_so, soc.soc_in(s), out.acts, cfg, SOC15) if t % 15 == 0 else None
+        mx.eval(s, out.base(), *obs.arrays(), *ref, *ref_so, *(snap if snap is not None else ()))
+        if snap is not None:
+            kin_lut, col_lut = ref_society.settle(host_snap(snap), t)
+            ref_so = soc.relabel(ref_so, snap, mx.array(kin_lut), mx.array(col_lut))
+            snapshots += 1
+        assert np.array_equal(to_numpy(body), to_numpy(ref_body)), t
+        records = obs.take_records()  # the runner's path: settle at the snapshot step
+        assert [r["step"] for r in records] == ([t] if t % 15 == 0 else []), t
+        # the records are the reference society's: the observer hands the snapshot the start-of-step slots
+        assert records == ref_society.take_records(), t
         for f in ObsState._fields:
             assert np.array_equal(to_numpy(getattr(obs.o, f)), to_numpy(getattr(ref, f))), (t, f)
+        for f in SocState._fields:
+            assert np.array_equal(to_numpy(getattr(obs.so, f)), to_numpy(getattr(ref_so, f))), (t, f)
     assert evaluated == 80 // rules.every and int(to_numpy(obs.o.label_intent).max()) > 0
+    assert snapshots == 5 and obs.society.snapshot_step == 75 and ref_society.snapshot_step == 75
+    if (
+        rules.settler_body
+    ):  # the clause was in play: rows in a body of >= 4 matched Settler that the speed rule
+        # alone (the same accumulators, no clause) would not have
+        bit = 1 << (Archetype.SETTLER.value - 1)
+        without = evaluate(obs.o, cfg, dataclasses.replace(rules, settler_body=0)).match_arch
+        with_clause = to_numpy(obs.o.match_arch)
+        assert int(((with_clause & bit) != 0).sum()) > int(((to_numpy(without) & bit) != 0).sum())
+        assert int((to_numpy(obs.so.body) >= rules.settler_body).sum()) > 0
     assert obs.row_block()["labels_step"] == 80 - 80 % rules.every
+    assert obs.row_block()["social"] == ref_society.head()
+
+
+def test_the_settler_clause_reads_the_body_of_the_new_occupant(micro_cfg: Config) -> None:
+    """The evaluation of step t reads the body as of the step's own update: a row reused in the step it
+    died (its occupant changed) has body 0 there, though the dead occupant's body was 9. With the speed rule
+    off and no warm-up the new occupant is evaluated from zero accumulators, so the clause alone decides its
+    Settler bit."""
+    cfg = apply_overrides(micro_cfg, ["population.immigration_every=1", "population.immigration_count=1"])
+    rules = dataclasses.replace(RULES_V1, settler_body=4, settler_speed=(0, 1), arch_warm=0)
+    s = init_state(cfg)
+    fn = make_step(cfg, observe=True)
+    obs = Observer.fresh(s, cfg, rules=rules, social=SOC15)
+    for t in range(1, 8):
+        s, out = fn(s)
+        obs.update(s, out.acts, t)
+        mx.eval(s, out.base(), *obs.arrays())
+        obs.take_records()
+    assert bool(to_numpy(s.alive)[0])
+    old_uid = int(to_numpy(s.uid)[0])
+    alive = to_numpy(obs.so.uid) >= 0
+    obs.so = obs.so._replace(
+        body=mx.array(np.where(alive, 9, 0).astype(np.int32))
+    )  # every row in a body of 9
+    energy = to_numpy(s.energy).copy()
+    energy[0] = 0  # row 0 starves at S14; an immigrant lands on it at S16 of the same step
+    s = s._replace(energy=mx.array(energy))
+    s, out = fn(s)
+    obs.update(s, out.acts, 8)  # step 8 is an evaluation step
+    mx.eval(s, out.base(), *obs.arrays())
+    assert int(to_numpy(s.uid)[0]) != old_uid and bool(to_numpy(s.alive)[0])
+    bit = 1 << (Archetype.SETTLER.value - 1)
+    match = to_numpy(obs.o.match_arch)
+    assert match[0] & bit == 0  # the new occupant: body 0
+    assert ((match[1:8] & bit) != 0).all()  # the other founders carry their body of 9: Settlers by the clause
+    assert to_numpy(obs.so.body)[0] == 0 and (to_numpy(obs.so.body)[1:8] == 9).all()
 
 
 def test_update_requires_consecutive_steps(observed: tuple[Config, State, Observer]) -> None:
@@ -154,6 +249,11 @@ def test_fresh_starts_unlabelled_with_bonds_of_unknown_age(tiny_cfg: Config) -> 
     assert block["alive"] == int(alive.sum()) and block["labels_step"] == 0
     assert [block[k] for k in ("arch_labelled", "intent_evaluated", "intent_labelled")] == [0, 0, 0]
     assert [block[k] for k in ("archetype", "archetype_match", "intent", "intent_match")] == [None] * 4
+    head = block["social"]  # the initial snapshot: a head without a record (its snapshot is the origin)
+    assert list(head) == HEAD_KEYS and head["social_version"] == SOCIAL_VERSION
+    assert head["snapshot_step"] == head["origin"] == 0
+    assert head["houses"] == {"alive": int(alive.sum()), "exact": True, "unknown_immigrant": 0}
+    assert obs.take_records() == [] and obs.society.records == []
 
 
 def test_labels_and_the_block_agree(observed: tuple[Config, State, Observer]) -> None:
@@ -217,8 +317,15 @@ def test_archetype_block_once_archetypes_are_warm(tiny_cfg: Config) -> None:
 def test_sidecar_round_trip(observed: tuple[Config, State, Observer], tmp_path: Path) -> None:
     cfg, s, obs = observed
     side = obs.sidecar()
-    assert set(side) == {*ObsState._fields, "meta"}
+    assert set(side) == {
+        *ObsState._fields,
+        *(f"soc.{f}" for f in SocState._fields),
+        *HOST_KEYS,
+        "meta",
+    }
+    assert "host.pending" not in side  # no report is stored in the sidecar: every record is in the social log
     assert side["meta"].dtype.kind == "U" and side["meta"].ndim == 0
+    assert side["host.summary"].dtype.kind == "U" and side["host.summary"].ndim == 0
     meta = _meta(side)
     d = dims(cfg)
     assert meta | {"alife_version": None, "config_hash": None} == {
@@ -231,7 +338,13 @@ def test_sidecar_round_trip(observed: tuple[Config, State, Observer], tmp_path: 
         "dims": 2,
         "config_hash": None,
         "alife_version": None,
+        "social_version": SOCIAL_VERSION,
+        "social_digest": SOC15.digest(),
+        "track_version": TRACK_VERSION,
+        "house_rate": cfg.game.house_rate,
+        "house_seed": cfg.run.seed,
     }
+    assert OBSERVER_FORMAT == 2 and meta["house_rate"] == 1 / 2048
     rd = RunDir.create(tmp_path / "run", cfg)
     path = rd.save_checkpoint(s, cfg, observers=side)
     assert rd.observer_files() == [(AT, rd.observer_path(AT))] and rd.observer_path(AT).is_file()
@@ -243,12 +356,21 @@ def test_sidecar_round_trip(observed: tuple[Config, State, Observer], tmp_path: 
     assert rd.read_observers(AT - 1) is None and not [
         p for p in rd.observers_dir.iterdir() if p.suffix == ".tmp"
     ]
-    opened, note = Observer.open(rd, load_checkpoint(path, cfg), cfg)
+    opened, note = Observer.open(rd, load_checkpoint(path, cfg), cfg, social=SOC15)
     assert note is None and opened.step == AT
     assert _same(opened.sidecar(), side)
     for f in ObsState._fields:
         assert np.array_equal(to_numpy(getattr(opened.o, f)), to_numpy(getattr(obs.o, f))), f
+    for f in SocState._fields:
+        assert np.array_equal(to_numpy(getattr(opened.so, f)), to_numpy(getattr(obs.so, f))), f
+    # the block, head included, is equal as a dict and in key order at every level
     assert opened.row_block() == obs.row_block()
+    assert json.dumps(opened.row_block()) == json.dumps(obs.row_block())
+    assert list(opened.row_block()["social"]) == HEAD_KEYS
+    # the restored society continues as the original would (the same slots, the same ids)
+    assert opened.society.kin_slots.tolist() == obs.society.kin_slots.tolist()
+    assert opened.society.col_slots.tolist() == obs.society.col_slots.tolist()
+    assert opened.society.take_records() == [] and opened.society.snapshot_step == 60
 
 
 @pytest.fixture(scope="module")
@@ -267,6 +389,31 @@ def _with_meta(**fields) -> object:
     return edit
 
 
+def _g1_sidecar(a: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """What a format-1 (G1) sidecar holds: the ``ObsState`` members and a meta without the social fields."""
+    meta = {k: v for k, v in _meta(a).items() if not k.startswith(("social_", "track_", "house_"))}
+    keep = {k: v for k, v in a.items() if k in ObsState._fields}
+    return {**keep, "meta": np.array(json.dumps({**meta, "observer_format": 1}, sort_keys=True))}
+
+
+def _host(**edits: np.ndarray) -> object:
+    def edit(a: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        return {**a, **edits}
+
+    return edit
+
+
+def _with_memberships(**edits: np.ndarray) -> object:
+    """Host members with a short membership list for the kin family (ids 1 and 2 below next_id 3)."""
+    base = {
+        "host.kin.next_id": np.array(3, np.int64),
+        "host.kin.system": np.array([1, 2], np.int64),
+        "host.kin.key": np.array([5, 9], np.int64),
+    }
+    return _host(**{**base, **edits})
+
+
+I64 = np.int64
 MISMATCHES = [
     *[
         pytest.param(_with_meta(**{key: value}), f"meta.{key}", id=f"meta-{key}")
@@ -279,16 +426,94 @@ MISMATCHES = [
             ("n_max", 7),
             ("dims", 3),
             ("config_hash", "f" * 64),
+            ("social_version", SOCIAL_VERSION + 1),
+            ("social_digest", "0" * 64),
+            ("track_version", TRACK_VERSION + 1),
+            ("house_rate", 0.25),
+            ("house_seed", 12345),
         )
     ],
     pytest.param(lambda a: {**a, "meta": np.array("not json {")}, "not JSON", id="meta-garbage"),
     pytest.param(lambda a: {**a, "meta": np.array("[1, 2]")}, "not a JSON object", id="meta-list"),
+    pytest.param(lambda a: {k: v for k, v in a.items() if k != "meta"}, "has no meta", id="meta-missing"),
     pytest.param(lambda a: {k: v for k, v in a.items() if k != "arch"}, "missing ['arch']", id="missing"),
+    pytest.param(
+        lambda a: {k: v for k, v in a.items() if k != "soc.kin"}, "missing ['soc.kin']", id="missing-soc"
+    ),
+    pytest.param(
+        lambda a: {k: v for k, v in a.items() if k != "host.n_ref"},
+        "missing ['host.n_ref']",
+        id="missing-host",
+    ),
     pytest.param(lambda a: {**a, "extra": np.zeros(3, np.int32)}, "unexpected ['extra']", id="extra"),
     pytest.param(lambda a: {**a, "arch": a["arch"].astype(np.int64)}, "array 'arch'", id="dtype"),
     pytest.param(lambda a: {**a, "slot_kin": a["slot_kin"].astype(np.int32)}, "array 'slot_kin'", id="bool"),
     pytest.param(lambda a: {**a, "intent": a["intent"][:, :3]}, "array 'intent'", id="shape"),
     pytest.param(lambda a: {**a, "uid": np.flip(a["uid"]).copy()}, "uids", id="uid"),
+    pytest.param(lambda a: {**a, "soc.uid": np.flip(a["soc.uid"]).copy()}, "uids", id="soc-uid"),
+    pytest.param(
+        lambda a: {**a, "soc.kin": a["soc.kin"].astype(np.int64)}, "array 'soc.kin'", id="soc-dtype"
+    ),
+    pytest.param(lambda a: {**a, "soc.rel": a["soc.rel"][:, :-1]}, "array 'soc.rel'", id="soc-shape"),
+    pytest.param(
+        lambda a: {**a, "soc.house": a["soc.house"].astype(np.int32)}, "array 'soc.house'", id="soc-house"
+    ),
+    # a format-1 sidecar gets the format reason, not a list of the missing soc.* / host.* members
+    pytest.param(_g1_sidecar, "meta.observer_format is 1, expected 2;", id="format-1"),
+    # one case per check of Society.from_arrays (the host members; the cases of test_game_society apply to it)
+    pytest.param(_host(**{"host.n_ref": np.array(5, np.int32)}), "host.n_ref is int32", id="host-dtype"),
+    pytest.param(_host(**{"host.prev_step": np.zeros(1, I64)}), "host.prev_step is int64", id="host-rank"),
+    pytest.param(_host(**{"host.summary": np.array(5)}), "host.summary is", id="host-summary-dtype"),
+    pytest.param(
+        _host(**{"host.summary": np.array("{no")}), "host.summary is not JSON", id="host-summary-json"
+    ),
+    pytest.param(
+        _host(**{"host.summary": np.array("[1]")}), "host.summary is not an object", id="host-summary-list"
+    ),
+    pytest.param(
+        _host(**{"host.summary": np.array('{"houses": {}}')}),
+        "host.summary is not an object",
+        id="host-summary-keys",
+    ),
+    pytest.param(_host(**{"host.kin.next_id": np.array(0, I64)}), "next_id", id="host-next-id"),
+    pytest.param(
+        _with_memberships(**{"host.kin.key": np.array([5], I64)}), "differ in length", id="host-lengths"
+    ),
+    pytest.param(
+        _with_memberships(**{"host.kin.system": np.array([1, 3], I64)}), "outside", id="host-system-range"
+    ),
+    pytest.param(_with_memberships(**{"host.kin.key": np.array([9, 5], I64)}), "sorted", id="host-unsorted"),
+    pytest.param(
+        _with_memberships(**{"host.kin.slots": np.zeros(3, I64)}),
+        "host.kin.slots has shape",
+        id="host-slots-shape",
+    ),
+    pytest.param(
+        _with_memberships(**{"host.kin.slots": np.array([9] + [-1] * 15, I64)}),
+        "host.kin.slots holds an id that is not",
+        id="host-slot-unknown",
+    ),
+    pytest.param(
+        _with_memberships(**{"host.kin.slots": np.array([1, 1] + [-1] * 14, I64)}),
+        "twice",
+        id="host-slot-twice",
+    ),
+    pytest.param(
+        _host(**{"host.terr.ema": np.zeros((3, 1024), I64)}), "host.terr.ema has shape", id="host-terr-shape"
+    ),
+    pytest.param(
+        _host(**{"host.terr.ids": np.array([3, 3], I64), "host.terr.ema": np.zeros((3, 1024), I64)}),
+        "host.terr.ids holds an id twice",
+        id="host-terr-ids",
+    ),
+    pytest.param(_host(**{"host.prev_step": np.array(AT + 1, I64)}), "host.prev_step", id="host-prev-late"),
+    pytest.param(
+        _host(**{"host.window_start": np.array(AT + 5, I64)}), "host.window_start", id="host-window-late"
+    ),
+    pytest.param(
+        _host(**{"host.house_origin": np.array(AT + 1, I64)}), "host.house_origin", id="host-origin-late"
+    ),
+    pytest.param(_host(**{"host.n_ref": np.array(-2, I64)}), "host.n_ref is -2", id="host-n-ref"),
 ]
 
 
@@ -309,10 +534,42 @@ def test_sidecar_mismatch_falls_back_to_fresh(
     cfg = _observing(tiny_cfg)
     rd = _copy_with(saved, tmp_path / "run", edit)
     state = load_checkpoint(rd.checkpoint_at(AT), cfg)
-    obs, note = Observer.open(rd, state, cfg)
+    obs, note = Observer.open(rd, state, cfg, social=SOC15)
     assert note is not None and note.startswith("observers: ") and reason in note and WARM_NOTE in note
+    assert f"; {RESTART_NOTE} {AT} (houses seeded from clades; new ids, records with origin {AT})" in note
     assert obs.step == AT and not to_numpy(obs.o.n_obs).any()  # fresh: nothing accumulated or labelled
     assert not to_numpy(obs.o.label_intent).any() and not to_numpy(obs.o.label_arch).any()
+    # fresh social tracking: a new origin, the houses seeded from clades (exact only at origin 0)
+    assert obs.society.house_origin == AT and obs.society.snapshot_step == AT
+    assert obs.row_block()["social"]["origin"] == AT and obs.row_block()["social"]["snapshot_step"] == AT
+    assert obs.take_records() == []
+
+
+def test_a_format_1_sidecar_note_is_exactly_the_format(saved: Path, tmp_path: Path, tiny_cfg: Config) -> None:
+    """A G1 sidecar is refused for its observer_format before any other check, whatever its members."""
+    cfg = _observing(tiny_cfg)
+    rd = _copy_with(saved, tmp_path / "run", _g1_sidecar)
+    state = load_checkpoint(rd.checkpoint_at(AT), cfg)
+    _, note = Observer.open(rd, state, cfg, social=SOC15)
+    assert note is not None and note.startswith(
+        "observers: meta.observer_format is 1, expected 2; labels warm up"
+    )
+    assert "missing" not in note and "soc." not in note and "host." not in note
+
+
+def test_the_default_social_rules_do_not_read_a_sidecar_of_another_cadence(
+    saved: Path, tmp_path: Path, tiny_cfg: Config
+) -> None:
+    """`saved` was written with snapshots every 15 steps; the module default (250) is another social digest,
+    hence a fresh start with the note: houses, ids and records are comparable only under the same rules."""
+    cfg = _observing(tiny_cfg)
+    rd = _copy_with(saved, tmp_path / "run", lambda a: a)
+    state = load_checkpoint(rd.checkpoint_at(AT), cfg)
+    obs, note = Observer.open(rd, state, cfg)
+    assert note is not None and "meta.social_digest" in note and RESTART_NOTE in note
+    assert obs.social.snapshot_every == 250
+    obs, note = Observer.open(rd, state, cfg, social=SOC15)
+    assert note is None and obs.social.snapshot_every == 15
 
 
 def test_a_corrupt_or_absent_sidecar_falls_back_to_fresh(
@@ -325,13 +582,13 @@ def test_a_corrupt_or_absent_sidecar_falls_back_to_fresh(
     path.write_bytes(b"this is not a zip file")
     with pytest.raises(CheckpointError, match="unreadable observer sidecar"):
         rd.read_observers(AT)
-    obs, note = Observer.open(rd, state, cfg)
-    assert note is not None and "unreadable" in note and WARM_NOTE in note
+    obs, note = Observer.open(rd, state, cfg, social=SOC15)
+    assert note is not None and "unreadable" in note and WARM_NOTE in note and RESTART_NOTE in note
     assert obs.step == AT and not to_numpy(obs.o.n_obs).any()
     path.write_bytes(path.read_bytes()[:0])  # a truncated file is unreadable too
-    assert "unreadable" in (Observer.open(rd, state, cfg)[1] or "")
+    assert "unreadable" in (Observer.open(rd, state, cfg, social=SOC15)[1] or "")
     path.unlink()
-    obs, note = Observer.open(rd, state, cfg)
+    obs, note = Observer.open(rd, state, cfg, social=SOC15)
     assert note is not None and f"no sidecar at step {AT}" in note and WARM_NOTE in note
 
 
@@ -377,7 +634,7 @@ def test_a_wrong_kind_of_file_is_an_unreadable_sidecar(
     with pytest.raises(CheckpointError, match=f"unreadable observer sidecar.*{reason}"):
         rd.read_observers(AT)
     state = load_checkpoint(rd.checkpoint_at(AT), cfg)
-    obs, note = Observer.open(rd, state, cfg)
+    obs, note = Observer.open(rd, state, cfg, social=SOC15)
     assert note is not None and "unreadable" in note and WARM_NOTE in note
     assert obs.step == AT and not to_numpy(obs.o.n_obs).any()
 
@@ -403,9 +660,12 @@ def test_load_rejects_a_member_that_is_not_an_array(saved: Path, tiny_cfg: Confi
     state = load_checkpoint(rd.checkpoint_at(AT), cfg)
     arrays = rd.read_observers(AT)
     assert arrays is not None
-    obs = Observer.fresh(state, cfg)
+    obs = Observer.fresh(state, cfg, social=SOC15)
     loaded, reason = obs._load({**arrays, "arch": b"not an array"})  # type: ignore[dict-item]
     assert loaded is None and "array 'arch' is not an array" in reason
+    loaded, reason = obs._load({**arrays, "soc.kin": b"not an array"})  # type: ignore[dict-item]
+    assert loaded is None and "array 'soc.kin' is not an array" in reason
+    assert obs._load(arrays)[0] is not None  # the sidecar itself is valid for it
 
 
 def test_another_ruleset_never_reads_these_accumulators(saved: Path, tiny_cfg: Config) -> None:
@@ -413,12 +673,19 @@ def test_another_ruleset_never_reads_these_accumulators(saved: Path, tiny_cfg: C
     rd = RunDir.open(saved)
     state = load_checkpoint(rd.checkpoint_at(AT), cfg)
     sweep = dataclasses.replace(RULES_V1, arch_k=5, arch_warm=96)
-    obs, note = Observer.open(rd, state, cfg, rules=sweep)
+    obs, note = Observer.open(rd, state, cfg, rules=sweep, social=SOC15)
     assert note is not None and "meta.rules_digest" in note and "96 steps for archetypes" in note
     assert obs.rules is sweep and not to_numpy(obs.o.n_obs).any()
     slower = dataclasses.replace(RULES_V1, every=4)  # even the evaluation period is part of the identity
-    assert "meta.rules_digest" in (Observer.open(rd, state, cfg, rules=slower)[1] or "")
-    assert Observer.open(rd, state, cfg, rules=RULES_V1)[1] is None  # the rules it was written under
+    assert "meta.rules_digest" in (Observer.open(rd, state, cfg, rules=slower, social=SOC15)[1] or "")
+    assert "meta.rules_digest" in (Observer.open(rd, state, cfg, rules=SETTLER4, social=SOC15)[1] or "")
+    assert (
+        Observer.open(rd, state, cfg, rules=RULES_V1, social=SOC15)[1] is None
+    )  # the rules it was written under
+    # the social rules are part of the identity too: any threshold or the cadence
+    other = dataclasses.replace(SOC15, kin_enter=(9, 9))
+    obs, note = Observer.open(rd, state, cfg, social=other)
+    assert note is not None and "meta.social_digest" in note and obs.social is other
 
 
 def test_the_note_is_only_for_a_resume(saved: Path, tmp_path: Path, tiny_cfg: Config) -> None:
@@ -427,11 +694,12 @@ def test_the_note_is_only_for_a_resume(saved: Path, tmp_path: Path, tiny_cfg: Co
     cfg = _observing(tiny_cfg)
     state = load_checkpoint(RunDir.open(saved).checkpoint_at(AT), cfg)
     elsewhere = RunDir.create(tmp_path / "fork", cfg)
-    obs, note = Observer.open(elsewhere, state, cfg)
+    obs, note = Observer.open(elsewhere, state, cfg, social=SOC15)
     assert note is None and not to_numpy(obs.o.n_obs).any() and obs.step == AT
+    assert obs.society.house_origin == AT  # a fork's houses start at its own origin (exact only at step 0)
     rd = _copy_with(saved, tmp_path / "resume", lambda a: a)
     rd.observer_path(AT).unlink()  # a checkpoint without a sidecar: a resume, so the note
-    assert "no sidecar" in (Observer.open(rd, state, cfg)[1] or "")
+    assert "no sidecar" in (Observer.open(rd, state, cfg, social=SOC15)[1] or "")
 
 
 def test_a_resume_with_a_corrupt_sidecar_exits_zero(
@@ -452,11 +720,18 @@ def test_a_resume_with_a_corrupt_sidecar_exits_zero(
 # --- resume -----------------------------------------------------------------------------------------------
 
 
+def _log(rd: RunDir) -> bytes:
+    return rd.social_path.read_bytes()
+
+
 @pytest.mark.parametrize(
     ("d3", "total", "stop"),
     [
+        pytest.param(False, 60, 15, id="2d-15+45-on-a-snapshot"),
+        pytest.param(False, 60, 16, id="2d-16+44-after-a-snapshot"),
         pytest.param(False, 60, 30, id="2d-30+30"),
         pytest.param(False, 60, 37, id="2d-37+23"),
+        pytest.param(True, 60, 16, id="3d-16+44-after-a-snapshot"),
         pytest.param(True, 60, 30, id="3d-30+30"),
         pytest.param(True, 60, 37, id="3d-37+23"),
         pytest.param(False, 240, 137, id="2d-137+103-archetypes"),
@@ -470,13 +745,18 @@ def test_resume_labels_equal_uninterrupted(
     tiny3d_cfg: Config,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A run stopped at ``stop`` (not a multiple of the evaluation period 8) and resumed has, bit for bit, the
-    observer state and the ``observers`` blocks of the uninterrupted run, and says nothing on stderr."""
+    """A run stopped at ``stop`` (not a multiple of the evaluation period 8; 15 is a snapshot step and 16 the
+    step after one, neither a row step) and resumed has, bit for bit, the observer state (labels and social
+    state, the host society included), the ``observers`` blocks (the ``social`` head in the same key order at
+    every level) and the social log of the uninterrupted run, and says nothing on stderr."""
+    social_every(monkeypatch, 15)
     cfg = _observing(tiny3d_cfg if d3 else tiny_cfg)
     ref = _run(cfg, tmp_path / "ref", total)
     split = _run(cfg, tmp_path / "split", stop)
     assert stop in [st for st, _ in split.observer_files()]  # the stop is checkpointed, with its sidecar
+    assert [r["step"] for r in split.social_records()] == list(range(15, stop + 1, 15))
     capsys.readouterr()
     _continue(split, cfg, total - stop, quiet=False)
     assert "observers:" not in capsys.readouterr().err  # the sidecar at `stop` was valid
@@ -487,66 +767,101 @@ def test_resume_labels_equal_uninterrupted(
     blocks = {r["step"]: r["observers"] for r in ref.metrics_rows()}
     resumed = {r["step"]: r["observers"] for r in split.metrics_rows() if r["step"] > stop}
     assert resumed and all(blocks[st] == block for st, block in resumed.items())
+    assert all(json.dumps(blocks[st]) == json.dumps(block) for st, block in resumed.items())
     assert blocks[total]["intent_labelled"] > 0
+    assert _log(split) == _log(ref) and len(ref.social_records()) == total // 15
 
 
 @pytest.mark.parametrize("d3", [False, True], ids=["2d", "3d"])
+@pytest.mark.parametrize("where", ["row-35", "step-16"])
 def test_resume_after_a_sigint_equals_uninterrupted(
     d3: bool,
+    where: str,
     tiny_cfg: Config,
     tiny3d_cfg: Config,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A Ctrl-C delivered while the interval row of step 35 is written (35 is neither a multiple of 8 nor a
-    scheduled checkpoint) stops the run cleanly with a checkpoint and its sidecar at 35; the resumed run ends
-    with the observer state and the ``observers`` blocks of the uninterrupted one."""
-    cfg = _observing(tiny3d_cfg if d3 else tiny_cfg, "run.metrics_every=5", "run.heavy_metrics_every=5")
+    scheduled checkpoint; ``metrics_every`` 5), or raised by the observer's update of step 16 (the step after
+    the snapshot of 15, between rows; ``metrics_every`` 10), stops the run cleanly with a checkpoint and its
+    sidecar at that step; the resumed run ends with the observer state, the ``observers`` blocks and the
+    social log of the uninterrupted one."""
+    social_every(monkeypatch, 15)
+    extra = ["run.metrics_every=5", "run.heavy_metrics_every=5"] if where == "row-35" else []
+    cfg = _observing(tiny3d_cfg if d3 else tiny_cfg, *extra)
     ref = _run(cfg, tmp_path / "ref", 60)
+    stop = 35 if where == "row-35" else 16
+    fired: list[int] = []
 
     def interrupt(state: State, row: dict) -> None:
         if row["step"] == 35:
             signal.raise_signal(signal.SIGINT)
 
+    real_update = Observer.update
+
+    def update_then_interrupt(self: Observer, state: State, acts, t: int) -> None:
+        real_update(self, state, acts, t)
+        if t == 16 and not fired:  # the latch is read after the update, in the same iteration
+            fired.append(t)
+            signal.raise_signal(signal.SIGINT)
+
+    if where == "step-16":
+        monkeypatch.setattr(Observer, "update", update_then_interrupt)
     split = RunDir.create(tmp_path / "split", cfg)
     before = signal.getsignal(signal.SIGINT)
-    res = runner.run(split, cfg, init_state(cfg), 60, quiet=True, on_interval=interrupt)
+    res = runner.run(
+        split, cfg, init_state(cfg), 60, quiet=True, on_interval=interrupt if where == "row-35" else None
+    )
     assert (res.status, res.exit_code) == ("interrupted", runner.ExitCode.INTERRUPTED)
-    assert int(to_numpy(res.state.step)) == 35 and signal.getsignal(signal.SIGINT) is before
+    assert int(to_numpy(res.state.step)) == stop and signal.getsignal(signal.SIGINT) is before
     del res
-    assert [st for st, _ in split.observer_files()] == [0, 30, 35]  # the stop has its sidecar too
+    want = [0, 30, 35] if where == "row-35" else [0, 16]
+    assert [st for st, _ in split.observer_files()] == want  # the stop has its sidecar too
+    assert [r["step"] for r in split.social_records()] == list(range(15, stop + 1, 15))
     capsys.readouterr()
-    _continue(split, cfg, 25, quiet=False)
-    assert "observers:" not in capsys.readouterr().err  # the sidecar at 35 was valid
+    _continue(split, cfg, 60 - stop, quiet=False)
+    assert "observers:" not in capsys.readouterr().err  # the sidecar at the stop was valid
     a, b = ref.read_observers(60), split.read_observers(60)
     assert a is not None and b is not None and _same(a, b)
     blocks = {r["step"]: r["observers"] for r in ref.metrics_rows()}
-    resumed = {r["step"]: r["observers"] for r in split.metrics_rows() if r["step"] > 35}
-    assert sorted(resumed) == [40, 45, 50, 55, 60] and all(
-        blocks[st] == block for st, block in resumed.items()
-    )
+    resumed = {r["step"]: r["observers"] for r in split.metrics_rows() if r["step"] > stop}
+    assert sorted(resumed) == ([40, 45, 50, 55, 60] if where == "row-35" else [20, 30, 40, 50, 60])
+    assert all(json.dumps(blocks[st]) == json.dumps(block) for st, block in resumed.items())
+    assert _log(split) == _log(ref)
 
 
 # --- pruning and truncation -------------------------------------------------------------------------------
 
 
-def test_prune_and_truncate_cut_sidecars(tiny_cfg: Config, tmp_path: Path) -> None:
+def test_prune_and_truncate_cut_sidecars(
+    tiny_cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    social_every(monkeypatch, 15)
     cfg = _observing(tiny_cfg, "run.keep_checkpoints=1")
     rd = _run(cfg, tmp_path / "keep1", 120)
     assert [st for st, _ in rd.checkpoints()] == [0, 120]  # step 0 and the newest
     assert [st for st, _ in rd.observer_files()] == [0, 120]  # a sidecar lives as long as its checkpoint
+    # pruning never removes the social log: it holds every record, though most checkpoints are gone
+    assert [r["step"] for r in rd.social_records()] == list(range(15, 121, 15))
 
     cfg = _observing(tiny_cfg, "run.keep_checkpoints=3")
     rd = _run(cfg, tmp_path / "keep3", 120)
     assert [st for st, _ in rd.checkpoints()] == [0, 60, 90, 120]
     assert [st for st, _ in rd.observer_files()] == [0, 60, 90, 120]
+    assert [r["step"] for r in rd.social_records()] == list(range(15, 121, 15))
     twin = tmp_path / "twin"
     shutil.copytree(rd.path, twin)
+    original = _log(rd)
     rd.truncate_after(60)
     assert [st for st, _ in rd.checkpoints()] == [0, 60] and [st for st, _ in rd.observer_files()] == [0, 60]
     assert rd.read_observers(60) is not None and rd.read_observers(90) is None
+    assert [r["step"] for r in rd.social_records()] == [15, 30, 45, 60]  # the log is cut with the sidecars
+    assert _log(rd) == b"".join(original.splitlines(keepends=True)[:4])
     RunDir.open(twin).truncate_after(90, keep_director=True)  # a replay keeps the director files, not these
     assert [st for st, _ in RunDir.open(twin).observer_files()] == [0, 60, 90]
+    assert [r["step"] for r in RunDir.open(twin).social_records()] == list(range(15, 91, 15))
 
     # an orphan (a crash between the sidecar and its checkpoint) is removed by the next prune
     shutil.copyfile(rd.observer_path(60), rd.observer_path(45))
@@ -555,9 +870,10 @@ def test_prune_and_truncate_cut_sidecars(tiny_cfg: Config, tmp_path: Path) -> No
     assert [st for st, _ in rd.observer_files()] == [
         0
     ]  # 60 was rewritten without observers: its sidecar is gone
+    assert [r["step"] for r in rd.social_records()] == [15, 30, 45, 60]  # and the log is not a sidecar
 
     off = _run(apply_overrides(tiny_cfg, ["run.checkpoint_every=30"]), tmp_path / "off", 60)
-    assert not (off.path / "observers").exists() and off.observer_files() == []
+    assert not (off.path / "observers").exists() and off.observer_files() == [] and off.social_records() == []
 
 
 def test_checkpoint_without_observers_removes_a_stale_sidecar(
@@ -579,7 +895,10 @@ def test_checkpoint_without_observers_removes_a_stale_sidecar(
 # --- the metrics block ------------------------------------------------------------------------------------
 
 
-def test_metrics_block_only_when_observing(tiny_cfg: Config, tmp_path: Path) -> None:
+def test_metrics_block_only_when_observing(
+    tiny_cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    social_every(monkeypatch, 15)
     cfg = _observing(tiny_cfg)
     on = _run(cfg, tmp_path / "on", 60)
     off = _run(apply_overrides(cfg, ["game.observe=false"]), tmp_path / "off", 60)
@@ -612,3 +931,67 @@ def test_metrics_block_only_when_observing(tiny_cfg: Config, tmp_path: Path) -> 
     assert last["arch_labelled"] == 0 and last["archetype"] is None  # the archetype warm-up is 192 steps
     # JSON-clean: the stored row is exactly what the observer reported
     assert json.loads(json.dumps(last)) == last
+    # the social head: the last settled snapshot (rows at 10, 20, ..., 60; snapshots at 15, 30, 45, 60; the
+    # initial snapshot, at the origin 0, before the first), no reports, and the record it names
+    assert [r["observers"]["social"]["snapshot_step"] for r in rows] == [0, 15, 30, 30, 45, 60]
+    records = {(r["origin"], r["step"]): r for r in on.social_records()}
+    assert sorted(step for _, step in records) == [15, 30, 45, 60]
+    for row in rows:
+        head = row["observers"]["social"]
+        assert list(head) == HEAD_KEYS and head["social_version"] == SOCIAL_VERSION and head["origin"] == 0
+        assert "reports" not in head and "reports" not in row["observers"]
+        assert head["houses"]["exact"] is True and head["houses"]["unknown_immigrant"] == 0
+        if head["snapshot_step"] > head["origin"]:
+            rec = records[(head["origin"], head["snapshot_step"])]
+            assert head == {
+                "social_version": rec["social_version"],
+                "snapshot_step": rec["step"],
+                "origin": rec["origin"],
+                **rec["summary"],
+            }
+            assert json.dumps(head) == json.dumps(
+                {
+                    "social_version": rec["social_version"],
+                    "snapshot_step": rec["step"],
+                    "origin": rec["origin"],
+                    **rec["summary"],
+                }
+            )
+        else:
+            assert (head["origin"], head["snapshot_step"]) not in records  # the initial snapshot: no record
+    assert len(json.dumps(rows[-1]["observers"]["social"])) < 512  # the head's budget (0.5 KB)
+    assert off.social_records() == [] and not off.observers_dir.exists()
+
+
+def test_sidecar_refuses_untaken_records(tiny_cfg: Config, tmp_path: Path) -> None:
+    """A checkpoint must never stand for a snapshot whose record is in neither the social log nor the
+    sidecar: at a snapshot step ``sidecar()`` raises until ``take_records()`` has run, then succeeds, and the
+    record is not lost by the refusal."""
+    cfg = _observing(tiny_cfg)
+    s = init_state(cfg)
+    fn = make_step(cfg, observe=True)
+    obs = Observer.fresh(s, cfg, social=SOC15)
+    assert obs.sidecar()["meta"].ndim == 0  # nothing pending, nothing untaken: fine at any step
+    for t in range(1, 16):
+        s, out = fn(s)
+        obs.update(s, out.acts, t)
+        mx.eval(s, out.base(), *obs.arrays())
+    with pytest.raises(RuntimeError, match=r"1 snapshot record\(s\) not taken"):
+        obs.sidecar()  # the snapshot of step 15 is settled by the call, its record is untaken
+    with pytest.raises(RuntimeError, match="not taken"):
+        obs.sidecar()  # and still is
+    records = obs.take_records()
+    assert [r["step"] for r in records] == [15] and records[0]["origin"] == 0
+    side = obs.sidecar()
+    assert _meta(side)["step"] == 15 and obs.take_records() == []
+    # a later snapshot behaves the same: the refusal never discards, the next take returns exactly it
+    for t in range(16, 31):
+        s, out = fn(s)
+        obs.update(s, out.acts, t)
+        mx.eval(s, out.base(), *obs.arrays())
+    with pytest.raises(RuntimeError):
+        obs.sidecar()
+    assert [r["step"] for r in obs.take_records()] == [30]
+    rd = RunDir.create(tmp_path / "run", cfg)
+    rd.save_checkpoint(s, cfg, observers=obs.sidecar())
+    assert rd.read_observers(30) is not None

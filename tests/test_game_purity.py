@@ -15,6 +15,7 @@ computed once (§28.2).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from collections.abc import Callable
@@ -31,13 +32,20 @@ from alife.config import Config, apply_overrides, config_to_dict, load_config
 from alife.game.observe import EVAL_BIT, ObsIn, obs_in
 from alife.game.observer import Observer
 from alife.game.rules import RULES_V1
+from alife.game.social import SOCIAL_V1
 from alife.runio import DIRECTOR_LOG_FILE, RunDir, load_checkpoint
 from alife.state import CounterIdx as C
 from alife.state import State, init_state, state_digest, to_numpy
 from alife.step import StepOut, make_step
+from game_helpers import social_every
 
 COMPILED_STEPS = 60
 EAGER_STEPS = 20
+# The step-level arms run the whole observer, social part included, with snapshots every 15 steps so that
+# snapshots and their settles happen inside the 60 compiled and 20 eager steps. They do not take the records,
+# so each snapshot is settled at the next ``update`` (the labels tool's path); the runner-level arms take them
+# at the snapshot step and append them to the social log (the runner's path) with ``social_every``.
+SOC15 = dataclasses.replace(SOCIAL_V1, snapshot_every=15)
 
 
 def _same(a, b) -> bool:
@@ -94,7 +102,7 @@ def test_observing_does_not_change_the_trajectory(
     off = make_step(cfg, compile=compiled)
     on = make_step(cfg, compile=compiled, observe=True)
     s_off, s_on = init_state(cfg), init_state(cfg)
-    obs = Observer.fresh(s_on, cfg)
+    obs = Observer.fresh(s_on, cfg, social=SOC15)
     catastrophes = immigrants = 0
     for t in range(steps):
         if director and t in (0, steps // 2):  # the one-step levers are consumed by the step: set them again
@@ -118,6 +126,14 @@ def test_observing_does_not_change_the_trajectory(
     # the observer actually ran: it accumulated, and (past the intent warm-up) evaluated rows
     assert int(to_numpy(obs.o.n_obs).max()) == steps and int(to_numpy(obs.o.arch).max()) > 0
     assert (steps < RULES_V1.intent_warm) == (not (to_numpy(obs.o.match_intent) & EVAL_BIT).any())
+    # ... and so did the social layer: its snapshots were taken, settled and recorded inside the run
+    records = obs.take_records()
+    assert [r["step"] for r in records] == list(range(15, steps + 1, 15))
+    assert obs.society.snapshot_step == (steps // 15) * 15
+    assert all(r["origin"] == 0 and r["summary"]["houses"]["alive"] > 0 for r in records)
+    assert all(
+        r["summary"]["houses"]["exact"] and not r["summary"]["houses"]["unknown_immigrant"] for r in records
+    )
 
 
 def test_observer_inputs_exclude_the_key() -> None:
@@ -378,10 +394,14 @@ def _files(rd: RunDir) -> list[str]:
 
 
 @pytest.mark.parametrize("d3", [False, True], ids=["2d", "3d"])
-def test_runner_files_identical_except_observers(d3: bool, tmp_path: Path) -> None:
+def test_runner_files_identical_except_observers(
+    d3: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """60 steps with and without observers: the checkpoints' state digests, the event chunks and the stored
     rows are equal; the only differences are the ``observers`` block of every row of the observing run and its
-    ``observers/`` sidecars, which the other run does not have at all."""
+    ``observers/`` files (the sidecars and the social log, whose records are at 15, 30, 45 and 60), which the
+    other run does not have at all."""
+    social_every(monkeypatch, 15)
     base = load_config(
         preset="tiny3d" if d3 else "tiny",
         overrides=[
@@ -416,8 +436,10 @@ def test_runner_files_identical_except_observers(d3: bool, tmp_path: Path) -> No
     assert [st for st, _ in on.observer_files()] == [0, 30, 60]
     assert [f for f in _files(off) if f not in _files(on)] == []  # nothing else is missing from the on run
     assert [f for f in _files(on) if f not in _files(off)] == [
-        f"observers/step_{st:010d}.npz" for st in (0, 30, 60)
+        "observers/social.jsonl",
+        *[f"observers/step_{st:010d}.npz" for st in (0, 30, 60)],
     ]
+    assert [r["step"] for r in on.social_records()] == [15, 30, 45, 60] and off.social_records() == []
     # the stored config differs in game.observe only
     c_off, c_on = (json.loads((rd.path / "config.json").read_text()) for rd in (off, on))
     default_game = config_to_dict(Config())["game"]  # {"observe": False, "house_rate": 1/2048}
@@ -426,7 +448,7 @@ def test_runner_files_identical_except_observers(d3: bool, tmp_path: Path) -> No
     assert c_off == c_on
 
 
-def test_director_log_unchanged_by_observers(tmp_path: Path) -> None:
+def test_director_log_unchanged_by_observers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A live Gardener (rule tier) acts on the run's vital signs; with observers on, its log, the checkpoints
     and the stored rows are those of the run without. Few founders make the director act (a regeneration pulse
     and an immigration pulse at step 20). The log's entries come from coarse vitals and could stay equal after
@@ -441,6 +463,7 @@ def test_director_log_unchanged_by_observers(tmp_path: Path) -> None:
         "--set", "run.checkpoint_every=30",
         "--director", "live", "--steps", "60", "--quiet",
     ]  # fmt: skip
+    social_every(monkeypatch, 15)
     runs = {}
     for name, extra in (("off", []), ("on", ["--set", "game.observe=true"])):
         assert cli.main([*argv, *extra, "--out", str(tmp_path / name)]) == 0
@@ -455,3 +478,4 @@ def test_director_log_unchanged_by_observers(tmp_path: Path) -> None:
     assert _stored_rows(off) == _stored_rows(on)
     assert all("observers" in r for r in on.metrics_rows())
     assert max(r["observers"]["alive"] for r in on.metrics_rows()) > 24  # the immigrants were observed
+    assert [r["step"] for r in on.social_records()] == [15, 30, 45, 60] and off.social_records() == []

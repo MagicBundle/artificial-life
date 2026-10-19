@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import mlx.core as mx
@@ -382,6 +383,10 @@ def test_truncate_after_on_fresh_run(micro_cfg: Config, tmp_path: Path) -> None:
     rd.truncate_after(100)
     assert rd.metrics_rows() == [] and rd.latest_checkpoint() is None
     assert not (rd.path / "metrics.jsonl").exists()
+    # the social log is never created by a cut: a run that never observes has no observers/ at all
+    assert not rd.observers_dir.exists() and not rd.social_path.exists() and rd.social_records() == []
+    rd.truncate_after(0, keep_director=True)
+    assert not rd.observers_dir.exists()
 
 
 def test_save_checkpoint_reads_step_from_state(micro_cfg: Config, tmp_path: Path) -> None:
@@ -391,3 +396,220 @@ def test_save_checkpoint_reads_step_from_state(micro_cfg: Config, tmp_path: Path
     back = load_checkpoint(path, micro_cfg)
     assert int(to_numpy(back.step)) == 123
     assert back.W1.shape == (dims(micro_cfg).n, dims(micro_cfg).w1_rows, dims(micro_cfg).h)
+
+
+# --- the social log (DESIGN §29.10) -----------------------------------------------------------------------
+
+
+def _social(step: int, window_start: int | None = None, origin: int = 0) -> dict:
+    """A record shaped like a snapshot's: nested tables, floats, None, booleans and a non-ASCII name."""
+    return {
+        "step": step,
+        "social_version": 1,
+        "origin": origin,
+        "window_start": step - 15 if window_start is None else window_start,
+        "summary": {"houses": {"alive": step // 3, "exact": origin == 0}, "colonies": {"converged": True}},
+        "houses": {"id": [step, step + 1], "name": ["Thraeloust", "Ærin é"], "size": [4, 2]},
+        "relations": {"a": [], "sim": [0.1234, None], "distinct": [True, None]},
+        "purity_mean": step / 7,
+    }
+
+
+def _tree(root: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_append_and_read_social(micro_cfg: Config, tmp_path: Path) -> None:
+    rd = RunDir.create(tmp_path / "run", micro_cfg)
+    assert runio.SOCIAL_FILE == "social.jsonl" and rd.social_path == rd.path / "observers" / "social.jsonl"
+    assert rd.social_records() == []
+    rd.append_social([])  # a no-op that creates neither observers/ nor the file
+    rd.append_social(iter(()))
+    assert not rd.observers_dir.exists() and not rd.social_path.exists()
+    # records are written with `step` first, whatever the order of the keys, and numpy values are plain JSON
+    odd = {"b": np.int64(3), "step": np.int32(15), "a": [np.float32(0.5), float("nan")]}
+    rd.append_social([odd])
+    assert rd.social_path.read_text() == '{"step": 15, "b": 3, "a": [0.5, null]}\n'
+    rd.append_social([_social(30), _social(45)])
+    rd.append_social(_social(s) for s in (60, 75))  # any iterable
+    assert [r["step"] for r in rd.social_records()] == [15, 30, 45, 60, 75]
+    assert rd.social_records()[1] == _social(30)
+    assert all(line.startswith('{"step": ') for line in rd.social_path.read_text().splitlines())
+    # the file is not an observer sidecar: the sidecar listing never sees it
+    assert rd.observer_files() == []
+    # invalid calls raise before anything is written
+    before = rd.social_path.read_bytes()
+    for bad in (
+        [{"a": 1}],  # no step
+        [{"step": "90"}],  # not an int
+        [{"step": 90.0}],
+        [{"step": True}],
+        [_social(90), _social(90)],  # not strictly increasing
+        [_social(105), _social(100)],
+        ["step"],
+    ):
+        with pytest.raises(ValueError, match="step"):
+            rd.append_social(bad)  # type: ignore[arg-type]
+        assert rd.social_path.read_bytes() == before
+    # a torn last line (a crash mid-append) is ignored on read; a corrupt line elsewhere raises
+    with open(rd.social_path, "a") as f:
+        f.write('{"step": 90, "social_ver')
+    assert [r["step"] for r in rd.social_records()] == [15, 30, 45, 60, 75]
+    lines = rd.social_path.read_text().splitlines(keepends=True)
+    rd.social_path.write_text("".join([*lines[:2], '{"step": 31, "x\n', *lines[2:]]))
+    with pytest.raises(json.JSONDecodeError):
+        rd.social_records()
+
+
+def test_truncate_after_cuts_social(micro_cfg: Config, tmp_path: Path) -> None:
+    rd = RunDir.create(tmp_path / "run", micro_cfg)
+    rd.append_social([_social(s) for s in (15, 30, 45, 60, 75)])
+    original = rd.social_path.read_text().splitlines(keepends=True)
+    for keep_director in (False, True):  # the log is cut whatever keep_director is
+        twin = tmp_path / f"twin{keep_director}"
+        shutil.copytree(rd.path, twin)
+        t = RunDir.open(twin)
+        t.truncate_after(45, keep_director=keep_director)
+        assert t.social_path.read_text() == "".join(original[:3])  # 15, 30, 45 with their original bytes
+        t.truncate_after(14, keep_director=keep_director)
+        assert t.social_path.read_text() == "" and t.social_records() == []  # all cut: an empty file
+        t.append_social([_social(15)])
+        assert t.social_path.read_text() == original[0]
+    # a cut at a step between two records, and past the last
+    twin = tmp_path / "between"
+    shutil.copytree(rd.path, twin)
+    RunDir.open(twin).truncate_after(59)
+    assert RunDir.open(twin).social_path.read_text() == "".join(original[:3])
+    RunDir.open(twin).truncate_after(1000)
+    assert RunDir.open(twin).social_path.read_text() == "".join(original[:3])
+
+    # a file whose complete records are all <= the step but which ends in a torn tail is still rewritten
+    torn = tmp_path / "torn"
+    shutil.copytree(rd.path, torn)
+    t = RunDir.open(torn)
+    t.truncate_after(30)
+    with open(t.social_path, "a") as f:
+        f.write(_dumps_prefix(_social(45)))
+    assert not t.social_path.read_text().endswith("\n")
+    t.truncate_after(30)  # no record is removed, the tail is
+    assert t.social_path.read_text() == "".join(original[:2])
+    t.append_social([_social(45)])  # the next append is not glued to a fragment
+    assert [r["step"] for r in t.social_records()] == [15, 30, 45]
+    assert t.social_path.read_text() == "".join(original[:3])
+
+    # a complete last line without its newline is kept (and gets one)
+    nolf = tmp_path / "nolf"
+    shutil.copytree(rd.path, nolf)
+    t = RunDir.open(nolf)
+    t.social_path.write_text("".join(original[:2]).rstrip("\n"))
+    t.truncate_after(30)
+    assert t.social_path.read_text() == "".join(original[:2])
+
+    # keep_director=True keeps director.jsonl and cuts the log; keep_director=False cuts both
+    for keep_director in (True, False):
+        d = tmp_path / f"director{keep_director}"
+        shutil.copytree(rd.path, d)
+        t = RunDir.open(d)
+        t.append_jsonl(
+            "director.jsonl", [{"step_applied": 30, "kind": "x"}, {"step_applied": 60, "kind": "y"}]
+        )
+        t.truncate_after(45, keep_director=keep_director)
+        assert [r["step"] for r in t.social_records()] == [15, 30, 45]
+        assert len(t.read_jsonl("director.jsonl")) == (2 if keep_director else 1)
+
+    # the log is not an observer sidecar: pruning and the sidecar listing never touch it
+    cfg = apply_overrides(micro_cfg, ["run.keep_checkpoints=1"])
+    pr = RunDir.create(tmp_path / "prune", cfg)
+    pr.append_social([_social(15), _social(30)])
+    s = _scene(cfg)
+    for step in (0, 10, 20):
+        pr.save_checkpoint(_at_step(s, step), cfg, observers={"x": np.zeros(2, np.int32)})
+    assert [st for st, _ in pr.observer_files()] == [0, 20] and len(pr.social_records()) == 2
+    pr.truncate_after(5)
+    assert [st for st, _ in pr.observer_files()] == [0] and len(pr.social_records()) == 0
+
+    # a failing os.replace leaves the old file and no tmp file
+    broken = tmp_path / "broken"
+    shutil.copytree(rd.path, broken)
+    b = RunDir.open(broken)
+    real_replace = runio.os.replace
+
+    def crash_on_log(src, dst):
+        if str(dst).endswith("social.jsonl"):
+            raise OSError("power cut")
+        real_replace(src, dst)
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(runio.os, "replace", crash_on_log)
+        with pytest.raises(OSError, match="power cut"):
+            b.truncate_after(30)
+    assert b.social_path.read_text() == "".join(original) and not list(b.path.rglob("*.tmp"))
+
+
+def _dumps_prefix(rec: dict, n: int = 40) -> str:
+    return runio._dumps(rec)[:n]
+
+
+@pytest.mark.parametrize(
+    ("bad_line", "error"),
+    [
+        pytest.param('{"step": 31, "x', json.JSONDecodeError, id="corrupt-middle-line"),
+        pytest.param('{"step": "31"}', ValueError, id="step-not-an-int"),
+        pytest.param('{"step": 31.0}', ValueError, id="step-a-float"),
+        pytest.param('{"step": true}', ValueError, id="step-a-bool"),
+        pytest.param('{"x": 1}', ValueError, id="no-step"),
+        pytest.param("[31]", ValueError, id="not-an-object"),
+    ],
+)
+def test_truncate_after_social_refuses_a_corrupt_log(
+    bad_line: str, error: type[Exception], micro_cfg: Config, tmp_path: Path
+) -> None:
+    """A log that cannot be parsed whole fails the cut before anything is changed: the checkpoints, a sidecar,
+    an event chunk, the metrics rows after the step and the log itself are byte-unchanged."""
+    rd = RunDir.create(tmp_path / "run", micro_cfg)
+    s = _scene(micro_cfg)
+    for s0, s1 in ((0, 30), (30, 60)):
+        rd.append_metrics([{"step": s1, "steps": s1 - s0}])
+        rd.write_events(s0, s1, _births(list(range(s0, s1))), _deaths([s0, s1 - 1]))
+        rd.save_checkpoint(_at_step(s, s1), micro_cfg, observers={"x": np.arange(3, dtype=np.int32)})
+    rd.save_checkpoint(_at_step(s, 0), micro_cfg)
+    rd.append_social([_social(15), _social(30), _social(45), _social(60)])
+    lines = rd.social_path.read_text().splitlines(keepends=True)
+    rd.social_path.write_text("".join([*lines[:2], bad_line + "\n", *lines[2:]]))
+    before = _tree(rd.path)
+    for keep_director in (False, True):
+        with pytest.raises(error):
+            rd.truncate_after(30, keep_director=keep_director)
+        assert _tree(rd.path) == before  # not a byte changed, nothing created
+    assert not list(rd.path.rglob("*.tmp"))
+    # the error names the line for a record without an int step
+    if error is ValueError:
+        with pytest.raises(ValueError, match=r"record 3 "):
+            rd.truncate_after(30)
+    # the same text as the LAST line: a corrupt fragment is a torn append and is dropped; a complete line that
+    # is not a record still raises
+    rd.social_path.write_text("".join(lines) + bad_line)
+    if error is json.JSONDecodeError:
+        rd.truncate_after(30)
+        assert [r["step"] for r in rd.social_records()] == [15, 30]
+    else:
+        with pytest.raises(ValueError, match=r"record 5 "):
+            rd.truncate_after(30)
+
+
+def test_resume_refuses_a_corrupt_social_log(
+    micro_cfg: Config, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`alife resume` on a directory whose log has a corrupt middle line exits 1 with the traceback on stderr,
+    having changed nothing in the directory."""
+    from alife import cli, runner
+
+    rd = RunDir.create(tmp_path / "run", micro_cfg)
+    rd.save_checkpoint(_at_step(_scene(micro_cfg), 30), micro_cfg)
+    rd.append_social([_social(15), _social(30), _social(45)])
+    lines = rd.social_path.read_text().splitlines(keepends=True)
+    rd.social_path.write_text("".join([lines[0], "not json\n", *lines[1:]]))
+    before = _tree(rd.path)
+    capsys.readouterr()
+    assert cli.main(["resume", str(rd.path), "--steps", "5"]) == int(runner.ExitCode.ERROR) == 1
+    assert "JSONDecodeError" in capsys.readouterr().err and _tree(rd.path) == before

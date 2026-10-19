@@ -4,7 +4,9 @@ step clock, the match bits, and the pinned ``RuleSet`` (``INTENT_VERSION`` 1).""
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import itertools
+import json
 from collections.abc import Sequence
 from typing import Any
 
@@ -62,7 +64,7 @@ def test_every_field_enters_the_digest() -> None:
         "gatherer": (8, 10), "hunter": (8, 20), "provider": (2, 5), "trader": (2, 3),
         "nomad_speed": (513, 5), "nomad_persist": (10, 25), "settler_speed": (257, 10), "bud_window": 33,
         "hunt": 65, "flee_hurt": 9, "flee_thrust": 129, "defend": 129, "care": (2, 10),
-        "bond_age": (25, 120), "signal": 129, "feed": (2, 2), "roam": (769, 10),
+        "bond_age": (25, 120), "signal": 129, "feed": (2, 2), "roam": (769, 10), "settler_body": 4,
     }  # fmt: skip
     assert set(changed) == {f.name for f in dataclasses.fields(RuleSet)}
     digests = {RULES_V1.digest()}
@@ -71,9 +73,26 @@ def test_every_field_enters_the_digest() -> None:
     assert len(digests) == len(changed) + 1
 
 
+def test_settler_body_leaves_the_digest_while_inert() -> None:
+    """A field added after version 1 is left out of the digest at its inert value (0), so the G1 pin and the
+    digest of every G1-era rule set stand; at any positive value it changes the digest."""
+    assert RULES_V1.settler_body == 0 and RuleSet(settler_body=0).digest() == RULES_V1_DIGEST
+    sweep = dataclasses.replace(RULES_V1, arch_k=5, arch_warm=96)
+    assert dataclasses.replace(sweep, settler_body=0).digest() == sweep.digest()
+    on = {dataclasses.replace(RULES_V1, settler_body=n).digest() for n in (1, 3, 4, 9)}
+    assert len(on) == 4 and RULES_V1_DIGEST not in on
+    assert dataclasses.replace(sweep, settler_body=4).digest() not in {sweep.digest(), *on}
+    # the hashed JSON of an inert rule set has no settler_body key at all: the G1 digest, recomputed by hand
+    fields = {k: v for k, v in dataclasses.asdict(RULES_V1).items() if k != "settler_body"}
+    text = json.dumps(fields, sort_keys=True, separators=(",", ":"))
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() == RULES_V1_DIGEST
+    assert rules._POST_V1_INERT == {"settler_body": 0}
+
+
 def test_ruleset_rejects_nonsense() -> None:
     for kw in ({"arch_k": 0}, {"intent_k": 31}, {"every": 0}, {"hold": 0}, {"arch_warm": -1},
-               {"gatherer": (7, 0)}, {"hunter": (-1, 5)}, {"bond_age": (24, 24)}):  # fmt: skip
+               {"gatherer": (7, 0)}, {"hunter": (-1, 5)}, {"bond_age": (24, 24)},
+               {"settler_body": -1}, {"settler_body": 1 << 31}):  # fmt: skip
         with pytest.raises(ValueError, match="RuleSet"):
             RuleSet(**kw)
 
@@ -251,6 +270,58 @@ def test_archetype_rules_nomad_and_settler(tiny_cfg: Config, nd: int) -> None:
     assert not _arch(tiny_cfg, nd, speed=200, vpos=vec(x=200))["settler"]
     # no archetype but Settler/Nomad depends on movement
     assert not any(_arch(tiny_cfg, nd, speed=60, vpos=vec(x=60)).values())  # a Generalist row
+
+
+SETTLER4 = dataclasses.replace(RULES_V1, settler_body=4)
+
+
+def _settler(cfg: Config, rs: RuleSet, body: int | None, nd: int = 2, **cols: Any) -> bool:
+    m6 = _m6(nd, **cols)
+    arg = None if body is None else mx.array([body], dtype=mx.int32)
+    out = rules.archetype_matches(m6, mx.zeros((1, B, 2), mx.int32), cfg, rs, arg)
+    return bool(np_(out)[0, ARCHETYPE_NAMES.index("settler")])
+
+
+@pytest.mark.parametrize("nd", [2, 3])
+def test_settler_colony_clause(tiny_cfg: Config, nd: int) -> None:
+    """Settler also matches a row in a bond component of at least ``settler_body`` members (body 3 and 4 at
+    ``settler_body`` 4), whatever its speed; under ``RULES_V1`` the body is ignored."""
+    vec = (200,) + (0,) * (nd - 1)
+    fast = {"speed": 200, "vpos": vec}  # moving fast: not a Settler by speed
+    assert not _settler(tiny_cfg, SETTLER4, 3, nd, **fast)
+    assert _settler(tiny_cfg, SETTLER4, 4, nd, **fast)  # inclusive edge
+    assert _settler(tiny_cfg, SETTLER4, 9, nd, **fast)
+    assert not _settler(tiny_cfg, SETTLER4, 0, nd, **fast)  # a row reset since the snapshot: body 0
+    # slow rows are Settlers by the speed rule at any body
+    assert _settler(tiny_cfg, SETTLER4, 0, nd, speed=25) and _settler(tiny_cfg, SETTLER4, 3, nd, speed=25)
+    assert not _settler(tiny_cfg, SETTLER4, 3, nd, speed=26)
+    # RULES_V1 ignores the body: slow rows with body 9 are Settlers exactly when the speed rule says so
+    for speed in (0, 25, 26, 200):
+        want = 10 * speed < 256
+        assert _settler(tiny_cfg, RULES_V1, 9, nd, speed=speed) is want
+        assert _settler(tiny_cfg, RULES_V1, None, nd, speed=speed) is want
+        assert _settler(tiny_cfg, RULES_V1, 0, nd, speed=speed) is want
+    # a smaller threshold admits smaller components
+    assert _settler(tiny_cfg, dataclasses.replace(RULES_V1, settler_body=2), 2, nd, **fast)
+    assert not _settler(tiny_cfg, dataclasses.replace(RULES_V1, settler_body=2), 1, nd, **fast)
+
+
+def test_settler_rules_need_the_body(tiny_cfg: Config) -> None:
+    """Rules with ``settler_body`` > 0 raise without a body, never silently label by speed alone; evaluate
+    passes the body through, and ignores it under rules that do not use it."""
+    with pytest.raises(ValueError, match="settler_body = 4 needs the rows' body sizes"):
+        _settler(tiny_cfg, SETTLER4, None, speed=200, vpos=(200, 0))
+    o = init_obs(obs_in(init_state(tiny_cfg)), tiny_cfg)
+    with pytest.raises(ValueError, match="settler_body"):
+        evaluate(o, tiny_cfg, SETTLER4)
+    n = dims(tiny_cfg).n
+    body = mx.full((n,), 9, dtype=mx.int32)
+    got = evaluate(o, tiny_cfg, SETTLER4, body)
+    assert np.array_equal(
+        np_(evaluate(o, tiny_cfg, RULES_V1, body).match_arch), np_(evaluate(o, tiny_cfg, RULES_V1).match_arch)
+    )
+    # an all-zero accumulator is at rest: every row matches Settler by speed, and the body adds nothing
+    assert np.array_equal(np_(got.match_arch), np_(evaluate(o, tiny_cfg, RULES_V1).match_arch))
 
 
 def _reference_labels(row: Sequence[bool]) -> tuple[int, int]:

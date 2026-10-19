@@ -229,8 +229,11 @@ def update(o: ObsState, oi: ObsIn, a: Acts, cfg: Config, rs: RuleSet) -> ObsStat
     )
 
 
-def evaluate(o: ObsState, cfg: Config, rs: RuleSet) -> ObsState:
+def evaluate(o: ObsState, cfg: Config, rs: RuleSet, body: mx.array | None = None) -> ObsState:
     """Evaluate the labels from the windowed means (run at ``state.step % rs.every == 0``, on the step clock).
+
+    ``body`` (N,) int32 is each row's bond-component size at the last social snapshot, read only by rule sets
+    with ``rs.settler_body > 0`` (the Settler colony clause, which raises without it).
 
     A row is labelled once observed ``rs.arch_warm`` (archetypes) or ``rs.intent_warm`` (intents) steps. The
     archetype label is the rule outcome; the displayed intent goes through the hysteresis. ``match_arch`` and
@@ -241,7 +244,7 @@ def evaluate(o: ObsState, cfg: Config, rs: RuleSet) -> ObsState:
     m6s = o.arch_slot >> rs.arch_k
     m3 = o.intent >> rs.intent_k
 
-    ma = rules.archetype_matches(m6, m6s, cfg, rs)
+    ma = rules.archetype_matches(m6, m6s, cfg, rs, body)
     primary, secondary = rules.archetype_labels(ma)
     warm_a = o.n_obs >= rs.arch_warm
     generalist_bit = 1 << (Archetype.GENERALIST.value - 1)
