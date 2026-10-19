@@ -29,6 +29,7 @@ SIM_MODULES = {
     "lifecycle",
     "step",
     "invariants",
+    "groups",  # the generic pure-MLX grouping primitives (§29.3)
     "game.observe",  # the pure-MLX observer update and rules (§28): no host reads, like the simulation
     "game.rules",
 }  # rule 5
@@ -191,6 +192,8 @@ def test_source_tree(rule) -> None:
     mods = list(_modules())
     assert {"ops", "state", "step", "bonds", "director.rules", "director.actions"} <= {m for m, _ in mods}
     assert {"game.observe", "game.rules", "game.observer"} <= {m for m, _ in mods}
+    # the generic modules of §29, a device half and a host half
+    assert {"groups", "tracking"} <= {m for m, _ in mods}
     violations = [v for mod, tree in mods for v in rule(mod, tree)]
     assert violations == []
 
@@ -210,6 +213,8 @@ def test_rules_are_not_vacuous() -> None:
     assert bad(rule_setitem, "game.observe", "def f(d):\n    d['a'] = 1\n")  # and so do the game modules
     assert bad(rule_setitem, "game.observer", "def f(d):\n    d['a'] = 1\n")  # the host observer too
     assert bad(rule_setitem, "game.rules", "def f(d):\n    d['a'] = 1\n")
+    assert bad(rule_setitem, "groups", "def f(d):\n    d['a'] = 1\n")  # the generic device module is scanned
+    assert not bad(rule_setitem, "tracking", "def f(d):\n    d['a'] = 1\n")  # the host module is not
     assert bad(rule_random, "brain", "def f():\n    return mx.random.normal((3,))\n")
     assert bad(rule_random, "brain", "def f():\n    mx.random.seed(0)\n")
     assert not bad(
@@ -223,6 +228,13 @@ def test_rules_are_not_vacuous() -> None:
     assert bad(rule_host_reads, "game.rules", "def f(x):\n    return int(Intent.NONE)\n")  # use .value
     assert bad(rule_host_reads, "game.observe", "def f(x):\n    return int(ActFlag.BUDDED)\n")  # use .value
     assert not bad(rule_host_reads, "game.observe", "def f(x):\n    return ActFlag.BUDDED.value\n")
+    assert bad(rule_host_reads, "groups", "def f(x):\n    return int(x.sum())\n")
+    assert bad(rule_host_reads, "groups", "def f(x):\n    return x.item()\n")
+    assert not bad(
+        rule_host_reads, "groups", "def f(rate):\n    return min(int(rate * 2.0**64), 2**64 - 1)\n"
+    )
+    # tracking is host numpy by design and not a simulation module
+    assert not bad(rule_host_reads, "tracking", "def f(x):\n    return int(x.sum())\n")
     assert not bad(rule_host_reads, "invariants", "def full_check(s):\n    return s.energy.item()\n")
     assert not bad(rule_host_reads, "metrics", "def f(s):\n    return s.energy.item()\n")
 
