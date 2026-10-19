@@ -24,10 +24,10 @@ from alife.analysis import w0
 from alife.config import dims, load_config
 from alife.runio import RunDir
 from alife.state import init_state
-from alife.weather import WeatherParams
+from alife.weather import START_SET, WeatherParams
 from helpers import ON_GPU
 
-P0 = WeatherParams()
+P0 = START_SET  # the spec's starting set (spec 3.3); the defaults are the W0 result (weather.DEFAULT_POOLS)
 SMALL = {
     "n": 32,
     "dx": 5.0,
@@ -778,6 +778,12 @@ def test_wall_clock_columns() -> None:
     assert w["s_at_30"] == pytest.approx(48.0) and w["min_at_30"] == pytest.approx(0.8)
 
 
+def test_params_hash_of_the_defaults_and_the_start_set() -> None:
+    """``{}`` reproduces the confirmed W0 set and ``START_SET`` round 0's start set (docs/STORMS_W0.md)."""
+    assert w0.params_hash(WeatherParams.from_dict({})).startswith("7832e060")
+    assert w0.params_hash(P0).startswith("bf468155")
+
+
 def test_min_image_and_json_cleaning() -> None:
     assert w0.min_image_np(np.array([170.0, -170.0, 10.0]), 320.0) == pytest.approx([-150.0, 150.0, 10.0])
     out = json.loads(
@@ -1040,9 +1046,7 @@ def _shell_density(monkeypatch, drop_j: bool, steps: int = 200, m: int = 60_000)
     """Density of uniform tracers within 0.5 of a steady tilted interface, against uniform, after ``steps``
     steps in the frozen wind of spec test 14b (a uniform flux under ``h1 = H1 + 8 sin(2 pi x / L)``)."""
     n = 64
-    p = replace(
-        WeatherParams(), n=n, dx=2.5, gamma=0.0, k_E=0.0, tau_rad=0.0, seed_rate=0.0, z_sl=1e-3, f0=0.0
-    )
+    p = replace(P0, n=n, dx=2.5, gamma=0.0, k_E=0.0, tau_rad=0.0, seed_rate=0.0, z_sl=1e-3, f0=0.0)
     cfg = load_config(preset="64k3d", overrides=[f"world.size={p.L:g}"])
     d = dims(cfg)
     x = (np.arange(n) + 0.5) * p.dx

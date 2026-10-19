@@ -345,6 +345,7 @@ owner's delegation of 2026-10-19, to revisit (cadence, the GUI architecture, dir
 Each step is one PR, merged before the next.
 
 1. **W0, offline prototype.** No engine change: a standalone MLX script with passive tracers.
+   - **Status (2026-10-19):** every criterion but the cost (1.116 ms) passes; see [`docs/STORMS_W0.md`](STORMS_W0.md).
    - **Exit criteria** (accepted by the owner as written, 2026-10-19):
      - 2–6 storms per hemisphere at any time;
      - median storm lifetime of at least 3,000 steps;

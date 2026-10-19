@@ -36,7 +36,20 @@ _F32 = mx.float32
 _I32 = mx.int32
 
 # (x, y, sx, sy, amp, vx, vy): centre, Gaussian widths (sx <= 0: a zonal band), amplitude, drift per step.
+# The W0 result (docs/STORMS_W0.md, set r4_3p36_q111_v009): 3 pools per hemisphere, 32 x 16, 36 units from
+# each equator, drifting west at 0.009 units per step (D8). The centres keep the 6 decimals of the confirmed
+# parameter file, so ``WeatherParams()`` is that set exactly (params hash 7832e060).
 DEFAULT_POOLS: tuple[tuple[float, ...], ...] = (
+    (53.333333, 36.0, 32.0, 16.0, 1.0, -0.009, 0.0),
+    (160.0, 36.0, 32.0, 16.0, 1.0, -0.009, 0.0),
+    (266.666667, 36.0, 32.0, 16.0, 1.0, -0.009, 0.0),
+    (0.0, 284.0, 32.0, 16.0, 1.0, -0.009, 0.0),
+    (106.666667, 284.0, 32.0, 16.0, 1.0, -0.009, 0.0),
+    (213.333333, 284.0, 32.0, 16.0, 1.0, -0.009, 0.0),
+)
+
+# The pools of the W0 spec's starting set (§3.3): 2 static pools per hemisphere, 48 units from each equator.
+START_POOLS: tuple[tuple[float, ...], ...] = (
     (80.0, 48.0, 32.0, 16.0, 1.0, 0.0, 0.0),
     (240.0, 48.0, 32.0, 16.0, 1.0, 0.0, 0.0),
     (0.0, 272.0, 32.0, 16.0, 1.0, 0.0, 0.0),
@@ -50,9 +63,11 @@ MEAN_FLOW_LIMIT: dict[tuple[int, float], float] = {(1, 0.04): 0.352, (3, 0.10): 
 
 @dataclass(frozen=True)
 class WeatherParams:
-    """The parameters of the W0 weather model; the defaults are the starting set of spec §3.3.
+    """The parameters of the W0 weather model; the defaults are the W0 result (``docs/STORMS_W0.md``).
 
-    Every field is hashable (``pools`` is a tuple of 7-tuples), so a ``WeatherParams`` keys
+    The tuning changed four fields of the spec's starting set (§3.3, kept as ``START_SET``): ``gamma`` 24 →
+    21.6, ``q_pool`` 1.10 → 1.11, ``pools`` (``START_POOLS`` → ``DEFAULT_POOLS``, with drift) and ``zeta_th``
+    0.0075 → 0.00625. Every field is hashable (``pools`` is a tuple of 7-tuples), so a ``WeatherParams`` keys
     ``functools.cache`` and closes over a compiled step. ``validate()`` returns messages (empty = valid); the
     model itself never validates, so a test may build parameters that break a rule on purpose.
     """
@@ -72,12 +87,12 @@ class WeatherParams:
     f0: float = 0.025
     # moisture
     Qs: float = 1.0
-    gamma: float = 24.0
+    gamma: float = 21.6
     tau_c: float = 8.0
     k_E: float = 0.1
     u_gust: float = 0.02
     q_bg: float = 0.70
-    q_pool: float = 1.10
+    q_pool: float = 1.11
     m_min: float = 1.0
     # relaxation and damping
     tau_rad: float = 2000.0
@@ -108,7 +123,7 @@ class WeatherParams:
     z_sl: float = 4.0
     # detection (host side, spec §6)
     detect_every: int = 25
-    zeta_th: float = 0.0075
+    zeta_th: float = 0.00625
     p_th: float = 1e-4
     a_min: int = 25
     r_min: int = 4
@@ -323,6 +338,11 @@ class WeatherParams:
             "rule 18: detection parameters out of range",
         )
         return bad
+
+
+# The starting set of the W0 spec (§3.3), where the tuning began: the reference of the model tests, and the
+# base that the tuning rounds' sparse parameter files override (each run's ``params.json`` has its full set).
+START_SET = WeatherParams(gamma=24.0, q_pool=1.10, pools=START_POOLS, zeta_th=0.0075)
 
 
 def _coerce(base: WeatherParams, key: str, val: Any) -> Any:

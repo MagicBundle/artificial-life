@@ -19,10 +19,10 @@ import pytest
 
 from alife import weather as W
 from alife.config import load_config
-from alife.weather import WeatherForcing, WeatherParams, WeatherState
+from alife.weather import START_SET, WeatherForcing, WeatherParams, WeatherState
 from helpers import ON_GPU
 
-P0 = WeatherParams()
+P0 = START_SET  # the spec's starting set (spec 3.3): the reference of the model tests
 TWO_PI = 2.0 * math.pi
 
 
@@ -98,7 +98,8 @@ def same_diag(a, b, what: str = "") -> None:
 
 
 def test_paper_values() -> None:
-    p = WeatherParams()
+    """The derived values of the spec's starting set (spec 3.1, 3.3)."""
+    p = START_SET
     assert p.validate() == []
     assert p.c_ext == pytest.approx(0.900, abs=1e-3)
     assert p.c_bc == pytest.approx(0.300, abs=1e-3)
@@ -112,6 +113,22 @@ def test_paper_values() -> None:
     assert d["inertial_period_pole"] == pytest.approx(251.3, abs=0.1)
     assert d["potential_intensity"] == pytest.approx(0.11, abs=0.01)
     assert d["mean_flow_limit"] == 0.352
+
+
+def test_defaults_are_the_w0_result() -> None:
+    """The defaults are the confirmed W0 set (docs/STORMS_W0.md): the start set with four fields changed."""
+    p = WeatherParams()
+    assert p.validate() == []
+    changed = {f for f, v in p.to_dict().items() if v != START_SET.to_dict()[f]}
+    assert changed == {"gamma", "q_pool", "pools", "zeta_th"}
+    assert (p.gamma, p.q_pool, p.zeta_th) == (21.6, 1.11, 0.00625)
+    assert p.pools == W.DEFAULT_POOLS and len(p.pools) == 6
+    assert {row[1] for row in p.pools} == {36.0, 284.0}  # 3 pools per hemisphere, 36 units from each equator
+    assert all(row[2:] == (32.0, 16.0, 1.0, -0.009, 0.0) for row in p.pools)  # westward drift (D8)
+    assert p.eps == pytest.approx(0.675)
+    assert p.c_moist == pytest.approx(0.1769, abs=1e-3)
+    assert p.ld_moist_pool == pytest.approx(10.90, abs=0.05)
+    assert p.derived()["potential_intensity"] == pytest.approx(0.154, abs=0.002)
 
 
 RULE_CASES = [
@@ -167,7 +184,7 @@ def test_params_json_round_trip_and_hash() -> None:
     assert q == p
     assert hash(q) == hash(p)
     assert isinstance(q.pools, tuple) and all(isinstance(r, tuple) for r in q.pools)
-    assert WeatherParams.from_dict({}) == P0
+    assert WeatherParams.from_dict({}) == WeatherParams()
     assert WeatherParams.from_dict({"sl_order": 3.0}).sl_order == 3
     with pytest.raises(ValueError, match="unknown"):
         WeatherParams.from_dict({"f_zero": 1.0})
