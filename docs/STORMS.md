@@ -5,7 +5,9 @@ influence the meteorology of an alien planet, built on alife's evolutionary engi
 Owner decisions so far:
 - game-plausible physics is enough;
 - storm systems and an evolving aerial biosphere are combined and coupled;
-- G3 onwards target the 3D storm world (§9.1 (a), 2026-10-19), gated by W0.
+- G3 onwards target the 3D storm world (§9.1 (a), 2026-10-19), gated by W0;
+- W0 runs model B on the torus with two hemispheres, a separate warm-pool map and a 160 × 160 weather grid, against
+  the exit criteria of §8 as written (§9.2, §9.3, §9.7, §9.9, 2026-10-19).
 
 It builds on `docs/GAMES.md`, the gaming vertical. G1's observers are built in PR #27, where DESIGN §28 lands;
 its Metal purity gate passed on 2026-10-19. G2–G5 are designed, not built. `docs/DESIGN.md` stays normative, and
@@ -35,7 +37,8 @@ note merges after it.
   - Storm deaths take the corpse path.
   - Weather fields are not energy.
 - **Decided:** G3 onwards target the 3D storm world, which reverses GAMES §10.7's 64k 2D choice for G3–G5 (§9.1).
-- **Main open decisions** (§9): the target step rate (3D runs at 14.4 steps/s) and the weather model.
+- **Decided for W0** (§9): model B, the two-hemisphere torus, the warm-pool map and the 160 × 160 grid.
+- **Main open decision** (§9.8): the target step rate (3D runs at 14.4 steps/s).
 
 ## 2. Starting point
 
@@ -291,7 +294,7 @@ research `MENU` stays byte-identical.
 Each step is one PR, merged before the next.
 
 1. **W0, offline prototype.** No engine change: a standalone MLX script with passive tracers.
-   - **Exit criteria** (placeholders for the owner):
+   - **Exit criteria** (accepted by the owner as written, 2026-10-19):
      - 2–6 storms per hemisphere at any time;
      - median storm lifetime of at least 3,000 steps;
      - extrapolation track error at a 1,000-step lead of 0.5–2 storm radii, so forecasting is a skill but not hopeless;
@@ -321,7 +324,10 @@ world, with `STRM` and a 2D weather map as the first client), W3, G4 with W4 (on
 W0 has no engine code, so it can run alongside G2. If W0 fails and model A also fails its budget, §9.1 comes back to
 the owner.
 
-## 9. Open decisions (owner)
+## 9. Decisions (owner)
+
+Decided 2026-10-19: items 1, 2, 3, 7 and 9. Items 4, 5, 6 and 8 are open; they are needed by W1 (4, 5), W2 (6)
+and G3 (8).
 
 1. **Which world G3 onwards target.** *Decided 2026-10-19:* **(a)**.
    - **(a) The 3D storm world** (gated by W0). It reopens:
@@ -333,20 +339,20 @@ the owner.
    - **(b) Keep 64k 2D for G3–G5**, with storms after G5.
    - **(c) Weather on 2D first**, since W1 is dims-agnostic: storms and steering at 59 steps/s, with no floaters, as a
      staging step.
-2. **Weather model.** B (*recommended*), C (3–6 ms, real towers, more tuning) or A (scripted).
-3. **Geometry.** A torus with sinusoidal rotation and two hemispheres (*recommended*), or one f-plane where every storm
-   spins the same way.
+2. **Weather model.** *Decided 2026-10-19:* B. The options were B, C (3–6 ms, real towers, more tuning) or A (scripted).
+3. **Geometry.** *Decided 2026-10-19:* a torus with sinusoidal rotation and two hemispheres. The alternative was one
+   f-plane where every storm spins the same way.
 4. **Weather energy.** Through regrowth and the corpse path only (*recommended*), or storm damage as a 17th ledger slot
    (state, checkpoints and goldens change).
 5. **Senses.** Wind through velocity and nuclei through c2 (*recommended*), or dedicated wind or moisture inputs (a
    genome-layout bump).
 6. **First couplings.** Rain seeding and shade (*recommended*), plus temperature-peaked growth later.
-7. **Heat sources.** A separate warm-pool map T_s with its own levers (*recommended*: storms then do not simply form
-   over the food patches, and food follows rain), or the fertility patches (no new lever, but food and storms cannot be
-   set apart).
+7. **Heat sources.** *Decided 2026-10-19:* a separate warm-pool map T_s with its own levers, so storms do not simply
+   form over the food patches, and food follows rain. The alternative was the fertility patches (no new lever, but food
+   and storms cannot be set apart).
 8. **Target step rate for the storm world.** 14.4 steps/s with `GAME_SPECS` re-derived, the fused kNN kernel first,
    or a smaller 3D world. C = 24 is ruled out by occupancy.
-9. **Weather grid.** 160 × 160 at 2 units (*recommended*), or the 80-cell field lattice.
+9. **Weather grid.** *Decided 2026-10-19:* 160 × 160 at 2 units. The alternative was the 80-cell field lattice.
 
 ## 10. Sources
 
