@@ -31,6 +31,7 @@ SIM_MODULES = {
     "invariants",
     "game.observe",  # the pure-MLX observer update and rules (§28): no host reads, like the simulation
     "game.rules",
+    "weather",  # the W0 weather model (STORMS §3.2): pure MLX, wired into the step in W1
 }  # rule 5
 DIRECTOR_MODULES = {f"director.{p.stem}" for p in (SRC / "director").glob("*.py")}  # host-side, scanned too
 GAME_MODULES = {
@@ -223,6 +224,9 @@ def test_rules_are_not_vacuous() -> None:
     assert bad(rule_host_reads, "game.rules", "def f(x):\n    return int(Intent.NONE)\n")  # use .value
     assert bad(rule_host_reads, "game.observe", "def f(x):\n    return int(ActFlag.BUDDED)\n")  # use .value
     assert not bad(rule_host_reads, "game.observe", "def f(x):\n    return ActFlag.BUDDED.value\n")
+    assert bad(
+        rule_host_reads, "weather", "def f(x):\n    return float(x.sum())\n"
+    )  # the W0 weather model too
     assert not bad(rule_host_reads, "invariants", "def full_check(s):\n    return s.energy.item()\n")
     assert not bad(rule_host_reads, "metrics", "def f(s):\n    return s.energy.item()\n")
 
