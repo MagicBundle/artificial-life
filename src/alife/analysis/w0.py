@@ -32,7 +32,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -59,6 +59,8 @@ FORECAST_ORIGIN_EVERY = 250
 SPEED_BINS = 2000  # the background-wind histograms: [0, SPEED_MAX_BIN] in SPEED_BINS bins
 SPEED_MAX_BIN = 0.5
 KM_NEVER = "> max observed age"
+KM_MIN_RISK = 5  # a Kaplan-Meier curve is not read at or after an age where fewer subjects are at risk
+SPLIT_NEAR_TIE = 0.9  # tracker rule 4: overlaps within 10% of a track's best count as tied (ZETA decides)
 
 
 # --- small utilities ----------------------------------------------------------------------------------------
@@ -412,7 +414,9 @@ class Tracker:
     """Persistent storm ids across detections (spec §6).
 
     Order of one ``update``: (1) overlaps between each active track's last footprint and the new storm
-    components, greedy by descending overlap (ties: centroid distance, then lower track id, then component);
+    components, greedy by descending overlap, where an overlap within 10% of that track's best counts as tied
+    with it and ties go to the component with the higher peak vorticity (a split keeps the id with the core,
+    not with a larger but dying fragment), then centroid distance, lower track id, component;
     (3) an active track left without a component that overlaps components taken by other tracks has merged
     into the track of its best-overlap component and ends there; (4) a component left without a track that
     overlaps a track becomes a new track with ``parent`` = the track it overlaps most (a split); (2) the
@@ -489,7 +493,8 @@ class Tracker:
         lab_flat = det.lab.ravel()
         by_label = {c.label: i for i, c in enumerate(comps)}
         act = self.active()
-        pairs: list[tuple[int, float, int, int]] = []  # (-overlap, distance, track id, component index)
+        # (-effective overlap, -peak vorticity of the component, distance, track id, component index)
+        pairs: list[tuple[int, float, float, int, int]] = []
         for tr in act:
             labs = lab_flat[tr.last_flat]
             labs = labs[labs > 0]
@@ -497,18 +502,23 @@ class Tracker:
                 continue
             ul, cnt = np.unique(labs, return_counts=True)
             last = tr.dets[-1]
-            for lbl, cn in zip(ul.tolist(), cnt.tolist(), strict=True):
-                ci = by_label.get(lbl)
-                if ci is None:
-                    continue  # overlaps a band or a weak region: not a storm
+            rows = [(lbl, cn) for lbl, cn in zip(ul.tolist(), cnt.tolist(), strict=True) if lbl in by_label]
+            if not rows:
+                continue  # it overlaps only bands or weak regions: not storms
+            best = max(cn for _, cn in rows)
+            for lbl, cn in rows:
+                ci = by_label[lbl]
                 dist = float(
                     np.hypot(min_image_np(comps[ci].x - last.x, p.L), min_image_np(comps[ci].y - last.y, p.L))
                 )
-                pairs.append((-cn, dist, tr.id, ci))
+                # a piece within 10% of the track's best overlap counts as tied with it, and the stronger
+                # piece (peak vorticity) wins the tie, so a dying polar fragment does not take the id
+                eff = best if cn >= SPLIT_NEAR_TIE * best else cn
+                pairs.append((-eff, -comps[ci].zeta_max_f0, dist, tr.id, ci))
         pairs.sort()
         track_of_comp: dict[int, int] = {}
         comp_of_track: dict[int, int] = {}
-        for _, _, tid, ci in pairs:
+        for _, _, _, tid, ci in pairs:
             if tid in comp_of_track or ci in track_of_comp:
                 continue
             comp_of_track[tid] = ci
@@ -517,14 +527,14 @@ class Tracker:
 
         # (3) tracks explained by a merger; (4) components explained by a split
         explained_tracks: set[int] = set()
-        for _, _, tid, ci in pairs:
+        for _, _, _, tid, ci in pairs:
             if tid in comp_of_track or tid in explained_tracks:
                 continue
             tr = by_id[tid]
             tr.end_reason, tr.merged_into = "merged", track_of_comp[ci]
             explained_tracks.add(tid)
         parent_of_comp: dict[int, int] = {}
-        for _, _, tid, ci in pairs:
+        for _, _, _, tid, ci in pairs:
             if ci not in track_of_comp and ci not in parent_of_comp:
                 parent_of_comp[ci] = tid
 
@@ -628,15 +638,76 @@ def storm_counts(
 
 @dataclass
 class KaplanMeier:
+    """A Kaplan-Meier curve with delayed entry, plus the subjects it was built from.
+
+    ``ages`` are the event ages, ``survival``, ``n_risk`` and ``n_events`` the curve, its risk set and its
+    event count at each of them. ``median`` is ``None`` when the curve never reaches 0.5. A curve is not to be
+    read where fewer than ``min_risk`` subjects are at risk (``thin_age`` is the first such event age): a
+    median at or after it is flagged ``median_reliable = False``.
+    """
+
     ages: np.ndarray
     survival: np.ndarray
     n_risk: np.ndarray
     n_events: np.ndarray
     median: float | None  # None: the curve never reaches 0.5
     max_age: float
+    dur: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    event: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
+    entry: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    min_risk: int = KM_MIN_RISK
 
     def median_text(self) -> str:
         return f"{self.median:g}" if self.median is not None else f"{KM_NEVER} ({self.max_age:g})"
+
+    @property
+    def thin_age(self) -> float | None:
+        """The first event age with fewer than ``min_risk`` subjects at risk (``None``: never)."""
+        idx = np.flatnonzero(self.n_risk < self.min_risk)
+        return float(self.ages[idx[0]]) if idx.size else None
+
+    @property
+    def n_risk_at_median(self) -> int | None:
+        if self.median is None:
+            return None
+        return int(self.n_risk[int(np.flatnonzero(self.ages == self.median)[0])])
+
+    @property
+    def median_reliable(self) -> bool:
+        """False when the median is at or after the first age whose risk set is thinner than ``min_risk``."""
+        thin = self.thin_age
+        return self.median is None or thin is None or self.median < thin
+
+    @property
+    def reached(self) -> float:
+        """The median, or the longest observed age when the curve stays above 0.5 (a lower bound)."""
+        return self.median if self.median is not None else self.max_age
+
+    def at_risk_at(self, age: float) -> int:
+        """Subjects at risk at ``age``: entered before it and still observed at it."""
+        return int(((self.entry < age) & (self.dur >= age)).sum())
+
+    def survival_before(self, age: float) -> float:
+        """The curve just before ``age`` (1 before the first event): ``median >= threshold`` is the same as
+        ``survival_before(threshold) > 0.5``."""
+        done = self.survival[self.ages < age]
+        return float(done[-1]) if done.size else 1.0
+
+    def summary(self) -> dict[str, Any]:
+        """The numbers that say how far a median can be trusted (JSON-ready)."""
+        return {
+            "n": int(self.dur.size),
+            "events": int(self.event.sum()),
+            "censored": int(self.dur.size - self.event.sum()),
+            "median": self.median,
+            "median_text": self.median_text(),
+            "reached": self.reached,
+            "max_age": self.max_age,
+            "n_risk_at_median": self.n_risk_at_median,
+            "min_risk": self.min_risk,
+            "thin_age": self.thin_age,
+            "median_reliable": self.median_reliable,
+        }
 
 
 def kaplan_meier(
@@ -645,7 +716,8 @@ def kaplan_meier(
     """Kaplan-Meier survival with delayed entry (left truncation).
 
     A subject is at risk at age ``a`` when ``entry < a <= duration``; ``event`` False is a censoring at
-    ``duration``. The median is the first age with ``S <= 0.5``, ``None`` if the curve stays above it.
+    ``duration``. An event at the subject's own entry age (``entry == duration``) was never at risk and is not
+    counted. The median is the first age with ``S <= 0.5``, ``None`` if the curve stays above it.
     """
     dur = np.asarray(duration, dtype=np.float64)
     ev = np.asarray(event, dtype=bool)
@@ -654,7 +726,7 @@ def kaplan_meier(
     s = 1.0
     for tau in np.unique(dur[ev]):
         at_risk = int(((ent < tau) & (dur >= tau)).sum())
-        d = int(((dur == tau) & ev).sum())
+        d = int(((dur == tau) & ev & (ent < tau)).sum())
         if at_risk > 0:
             s *= 1.0 - d / at_risk
         ages.append(float(tau))
@@ -669,7 +741,21 @@ def kaplan_meier(
         np.array(nev),
         median,
         float(dur.max()) if dur.size else 0.0,
+        dur,
+        ev,
+        ent,
     )
+
+
+def _km_of(q: Sequence[Track], t_spin: int | None) -> KaplanMeier:
+    """The curve of the tracks ``q``: duration ``t_last - t_first``, event = ended, entry age
+    ``max(0, t_spin - t_first)`` (``t_spin`` ``None``: no truncation, full histories)."""
+    if not q:
+        return kaplan_meier([], [], [])
+    dur = [tr.t_last - tr.t_first for tr in q]
+    ev = [tr.ended for tr in q]
+    ent = [0 if t_spin is None else max(0, t_spin - tr.t_first) for tr in q]
+    return kaplan_meier(dur, ev, ent)
 
 
 def lifetime_stats(
@@ -680,30 +766,77 @@ def lifetime_stats(
     Duration ``t_last - t_first``; the event is a dissipation or a merger, and a track still active at the end
     is censored. Storms born in the spin-up enter at age ``t_spin - t_first`` (left truncation). The median
     passes when it is at least ``threshold``, or when the curve stays above 0.5 and the longest observed age
-    reaches ``threshold``.
+    reaches ``threshold``; that is decided by the curve before ``threshold`` alone.
+
+    The median is a reading of storm lifetimes only where the risk set is not thin: ``n_risk_at_median``,
+    ``thin_age`` (the first event age with fewer than ``KM_MIN_RISK`` at risk) and ``median_reliable`` say
+    whether it is, and ``reading`` puts it in words. The criterion is judged on the median as written
+    whatever the flag says; companions that do not depend on a few short fragments are reported beside it
+    (``companions``): the share of the window's storm detections that belong to storms observed living at
+    least ``threshold`` steps (and whether it exceeds one half, which is the criterion read on detections
+    instead of storms), the curve over full histories (every qualifying track of the run, no
+    truncation, the spin-up genesis included), the curve without split-born tracks, and the curve per
+    hemisphere (``by_hemisphere``).
     """
-    q = [tr for tr in qualifying(tracks, min_dets) if tr.t_last >= t_spin]
-    dur = [tr.t_last - tr.t_first for tr in q]
-    ev = [tr.ended for tr in q]
-    ent = [max(0, t_spin - tr.t_first) for tr in q]
-    km = (
-        kaplan_meier(dur, ev, ent)
-        if q
-        else KaplanMeier(np.zeros(0), np.zeros(0), np.zeros(0), np.zeros(0), None, 0.0)
-    )
-    done = [d for d, e in zip(dur, ev, strict=True) if e]
-    reached = km.median if km.median is not None else km.max_age
+    qual = qualifying(tracks, min_dets)
+    q = [tr for tr in qual if tr.t_last >= t_spin]
+    km = _km_of(q, t_spin)
+    done = [tr.t_last - tr.t_first for tr in q if tr.ended]
+    win_dets = [sum(1 for d in tr.dets if d.t >= t_spin) for tr in q]
+    n_dets = sum(win_dets)
+    long_dets = sum(n for tr, n in zip(q, win_dets, strict=True) if tr.t_last - tr.t_first >= threshold)
+    split_born = [tr for tr in q if tr.parent]
+    if km.median is None:
+        reading = (
+            f"median not reached: survival stays above 0.5 up to the longest observed age {km.max_age:g}"
+        )
+    elif km.median_reliable:
+        reading = f"median {km.median:g} read with {km.n_risk_at_median} at risk"
+    else:
+        reading = (
+            f"NOT READABLE: median {km.median:g} is at or after age {km.thin_age:g}, where fewer than "
+            f"{km.min_risk} storms are at risk ({km.n_risk_at_median} at the median)"
+        )
+    companions = {
+        "share_detections_in_long_storms": long_dets / n_dets if n_dets else math.nan,
+        # the criterion read on detections instead of storms: the median over detections of the lifetime of
+        # the storm they belong to is at least ``threshold`` exactly when more than half are in long storms
+        "detection_weighted_pass": bool(n_dets and 2 * long_dets > n_dets),
+        "detections": n_dets,
+        "detections_in_long_storms": long_dets,
+        "long_storm_steps": threshold,
+        "full_histories": _km_of(qual, None).summary(),
+        "without_split_born": _km_of([tr for tr in q if not tr.parent], t_spin).summary(),
+        "split_born": {
+            "n": len(split_born),
+            "events": sum(1 for tr in split_born if tr.ended),
+            "median_duration": float(np.median([tr.t_last - tr.t_first for tr in split_born]))
+            if split_born
+            else None,
+        },
+    }
     return {
         "km": km,
         "n": len(q),
-        "events": int(sum(ev)),
-        "censored": int(len(q) - sum(ev)),
+        "events": int(sum(tr.ended for tr in q)),
+        "censored": int(sum(not tr.ended for tr in q)),
         "median": km.median,
         "median_text": km.median_text(),
         "max_age": km.max_age,
+        "n_risk_at_median": km.n_risk_at_median,
+        "thin_age": km.thin_age,
+        "median_reliable": km.median_reliable,
+        "reading": reading,
+        "n_risk_at_threshold": km.at_risk_at(threshold),
+        "survival_before_threshold": km.survival_before(threshold),
         "naive_median_completed": float(np.median(done)) if done else None,
-        "pass": bool(q) and reached >= threshold,
+        "pass": bool(q) and km.reached >= threshold,
         "threshold": threshold,
+        "companions": companions,
+        "by_hemisphere": {
+            name: _km_of([tr for tr in q if tr.hemi == h], t_spin).summary()
+            for h, name in enumerate(("north", "south"))
+        },
     }
 
 
@@ -739,7 +872,10 @@ def forecast_stats(
     The forecast is the least-squares line through the unwrapped positions, evaluated at ``t0 + lead``, and is
     verified against the same track's detection at ``t0 + lead`` (dropped, with the cause counted, if there is
     none). Errors are in units of the track's ``r_eq`` at ``t0``. The jitter floor is the median 2D error that
-    pure centroid noise of the fitted size would give: ``√(2 ln 2) σ̂ √(1/n + (lead - t̄)²/S_tt + 1)``.
+    pure centroid noise of the fitted size would give: ``√(2 ln 2) σ̂ √(1/n + (lead - t̄)²/S_tt + 1)``. The
+    floor assumes white centroid noise: a storm that meanders slowly (an anchored one) has correlated centroid
+    errors, the fit residuals understate them, and the floor reads low for it (the start set: 0.10 to 0.13
+    radii against errors of 0.58 to 0.81). Only the skill condition protects the D9 reading there.
     """
     every = detect_every or p.detect_every
     slots = origin_every // every + 1
@@ -772,9 +908,7 @@ def forecast_stats(
                         why = "beyond the end of the run"
                     elif tr.ended and target > tr.t_last:
                         why = "track merged" if tr.end_reason == "merged" else "track dissipated"
-                    elif not tr.ended and target > tr.t_last:
-                        why = "beyond the end of the run"
-                    else:
+                    else:  # inside the run: a gap in the detections (an active track coasting at the target)
                         why = "coasting at the target"
                     drop(lead, why)
                     continue
@@ -795,6 +929,7 @@ def forecast_stats(
                 rows[lead].append(
                     {
                         "id": tr.id,
+                        "hemi": tr.hemi,
                         "t0": t0,
                         "err": err,
                         "persist": pers,
@@ -810,8 +945,18 @@ def forecast_stats(
         flo = np.array([x["floor"] for x in rs])
         med_e = float(np.median(err)) if err.size else math.nan
         med_p = float(np.median(per)) if per.size else math.nan
+        hemi = np.array([x["hemi"] for x in rs])
+        by_hemi: dict[str, Any] = {}
+        for h, name in enumerate(("north", "south")):
+            sel = hemi == h
+            by_hemi[name] = {
+                "n": int(sel.sum()),
+                "median_error": float(np.median(err[sel])) if sel.any() else math.nan,
+                "median_persistence": float(np.median(per[sel])) if sel.any() else math.nan,
+            }
         out["leads"][lead] = {
             "n": int(err.size),
+            "by_hemisphere": by_hemi,
             "median_error": med_e,
             "p25": float(np.quantile(err, 0.25)) if err.size else math.nan,
             "p75": float(np.quantile(err, 0.75)) if err.size else math.nan,
@@ -2268,19 +2413,19 @@ def run_bench(
     pos = mx.stack(
         [rng_pos[:, 0] * p.L, rng_pos[:, 1] * p.L, d_.z_lo + rng_pos[:, 2] * (d_.z_hi - d_.z_lo)], axis=-1
     )
-    al = W.alpha(mx.random.uniform(shape=(m,), key=mx.random.key(3)), p)
+    caps = mx.random.uniform(shape=(m,), key=mx.random.key(3))
 
-    def sampler(w: WeatherState, ps: mx.array, a: mx.array, cnt: mx.array):
-        new, nh, nw, ne = tracer_move(w, ps, a, p, cfg)
+    def sampler(w: WeatherState, ps: mx.array, cap: mx.array, cnt: mx.array):
+        new, nh, nw, ne = tracer_move(w, ps, W.alpha(cap, p), p, cfg)  # alpha is part of the timed graph
         return new, cnt + mx.stack([nh, nw, ne]).astype(mx.int32)
 
     sfn = mx.compile(sampler)
     cnt = mx.zeros((3,), dtype=mx.int32)
-    pos, cnt = sfn(ws2, pos, al, cnt)
+    pos, cnt = sfn(ws2, pos, caps, cnt)
     mx.eval(pos, cnt)
     t1 = time.perf_counter()
     for i in range(steps):
-        pos, cnt = sfn(ws2, pos, al, cnt)
+        pos, cnt = sfn(ws2, pos, caps, cnt)
         if (i + 1) % 10 == 0:
             mx.eval(pos, cnt)
     mx.eval(pos, cnt)
@@ -2288,7 +2433,7 @@ def run_bench(
     cs = []
     for _ in range(min(steps, 500)):
         t1 = time.perf_counter()
-        pos, cnt = sfn(ws2, pos, al, cnt)
+        pos, cnt = sfn(ws2, pos, caps, cnt)
         mx.eval(pos, cnt)
         cs.append(time.perf_counter() - t1)
     c_sync = np.array(cs) * 1e3
@@ -2591,6 +2736,92 @@ def stationarity(
     return out
 
 
+HYPER_GATE = 0.8  # the health gate on max (u1 - u2)^2 / (g'(h1 + h2)); the exact eigenvalue test also gates
+MASS_GATE = 1e-5  # relative drift of the column mass
+LIMITER_SHARE_GATE = 0.05  # share of qualifying detections that are limiter-bound
+LIMITER_H_FACTOR = 1.5  # a detection is limiter-bound when min h1 <= LIMITER_H_FACTOR * h_min (the outcrop)
+FORECAST_BAND = (0.5, 2.0)  # the 1000-step median error must lie in this many radii (STORMS 8)
+MOBILITY_RADII = 0.5  # median drift per 1000 steps below this: the error is mostly centroid jitter
+
+
+def forecast_criterion(f1000: dict[str, Any]) -> dict[str, Any]:
+    """Criterion 3 from the 1000-step row of ``forecast_stats``, with the D9 reading.
+
+    ``in_range`` is the criterion as written (median error between 0.5 and 2 radii); the criterion counts as
+    met (``evidence``) only if the median also exceeds the median jitter floor and the skill against
+    persistence is positive. ``mobility`` flags a median drift under 0.5 radii per 1000 steps.
+    """
+    n = f1000["n"]
+    med = f1000["median_error"]
+    in_range = bool(n > 0 and FORECAST_BAND[0] <= med <= FORECAST_BAND[1])
+    exceeds = bool(n > 0 and med > f1000["median_floor"])
+    skill_pos = bool(n > 0 and f1000["skill"] > 0)
+    evidence = in_range and exceeds and skill_pos
+    if not in_range:
+        reading = "not met"
+    elif evidence:
+        reading = "met, and above the jitter floor with positive skill over persistence"
+    else:
+        reading = "met as written, not evidence of forecastable motion"
+    return {
+        "in_range": in_range,
+        "exceeds_jitter_floor": exceeds,
+        "skill_positive": skill_pos,
+        "evidence": evidence,
+        "mobility": bool(n == 0 or f1000["drift_radii_median"] < MOBILITY_RADII),
+        "reading": reading,
+    }
+
+
+def health_gate(
+    *,
+    n_safety: int,
+    hyper_max: float,
+    eig_complex: int,
+    eps_local_max: float,
+    mass_dev: float,
+    limiter_share: float,
+) -> dict[str, bool]:
+    """The run's health gate (spec §3.4): every entry must hold. A NaN fails its entry."""
+    return {
+        "no_safety_clips": n_safety == 0,
+        "hyperbolicity_below_0.8": bool(hyper_max < HYPER_GATE),
+        "exact_eigenvalue_test_real": eig_complex == 0,
+        "eps_local_max_below_1": bool(eps_local_max < 1.0),
+        "mass_drift_below_1e-5": bool(mass_dev < MASS_GATE),
+        "limiter_bound_share_at_most_5%": bool(limiter_share <= LIMITER_SHARE_GATE),
+    }
+
+
+def early_stop_inputs(
+    cnt: dict[str, Any], life: dict[str, Any], fc: dict[str, Any], min_median: float = 1000.0
+) -> dict[str, Any]:
+    """The D10 early-stop test per hemisphere (spec §3.4): at least one storm on average, a Kaplan-Meier
+    median lifetime of at least ``min_median`` steps (the longest observed age if the curve stays above 0.5)
+    and a median drift of at least 0.5 radii per 1000 steps. ``run_meets`` is true when both hemispheres meet
+    all three: the early stop fires when, after round 2, no run does. Each value is reported with the
+    risk-set figures that say whether it can be read."""
+    f1000 = fc["leads"][1000]
+    out: dict[str, Any] = {}
+    for name in ("north", "south"):
+        km = life["by_hemisphere"][name]
+        mean_storms = cnt[name]["mean"] if name in cnt else math.nan
+        drift = f1000["by_hemisphere"][name]["median_persistence"]
+        ok_storms = bool(mean_storms >= 1.0)
+        ok_life = bool(km["n"] > 0 and km["reached"] >= min_median)
+        ok_drift = bool(drift >= MOBILITY_RADII)
+        out[name] = {
+            "mean_storms": mean_storms,
+            "lifetime_km": km,
+            "drift_radii_per_1000": drift,
+            "drift_n": f1000["by_hemisphere"][name]["n"],
+            "meets": {"storms": ok_storms, "lifetime": ok_life, "drift": ok_drift},
+            "ok": ok_storms and ok_life and ok_drift,
+        }
+    out["run_meets"] = all(out[h]["ok"] for h in ("north", "south"))
+    return out
+
+
 def assemble_metrics(
     res: StudyResult,
     *,
@@ -2644,6 +2875,15 @@ def assemble_metrics(
             "max_age": life["max_age"],
             "naive_median_completed": life["naive_median_completed"],
             "wall": wall(life["median"] if life["median"] is not None else life["max_age"]),
+            "n_risk_at_median": life["n_risk_at_median"],
+            "thin_age": life["thin_age"],
+            "min_risk": KM_MIN_RISK,
+            "median_reliable": life["median_reliable"],
+            "reading": life["reading"],
+            "n_risk_at_threshold": life["n_risk_at_threshold"],
+            "survival_before_threshold": life["survival_before_threshold"],
+            "companions": life["companions"],
+            "by_hemisphere": life["by_hemisphere"],
         },
     }
     timed_add(
@@ -2656,26 +2896,17 @@ def assemble_metrics(
     # --- criterion 3: forecast
     f1000 = fc["leads"][1000]
     med = f1000["median_error"]
-    in_range = bool(f1000["n"] > 0 and 0.5 <= med <= 2.0)
-    exceeds = bool(f1000["n"] > 0 and med > f1000["median_floor"])
-    skill_pos = bool(f1000["n"] > 0 and f1000["skill"] > 0)
-    evidence = in_range and exceeds and skill_pos
-    mobility = bool(f1000["n"] == 0 or f1000["drift_radii_median"] < 0.5)
-    if not in_range:
-        reading = "not met"
-    elif evidence:
-        reading = "met, and above the jitter floor with positive skill over persistence"
-    else:
-        reading = "met as written, not evidence of forecastable motion"
+    fcrit = forecast_criterion(f1000)
+    mobility = fcrit["mobility"]
     c3 = {
         "value": med,
         "threshold": "0.5 <= median extrapolation error at a 1000-step lead <= 2 storm radii "
         "(D9: also above the jitter floor, skill > 0)",
-        "pass": evidence,
+        "pass": fcrit["evidence"],
         "detail": {
-            "pass_as_written": in_range,
-            "d9_reading": reading,
-            "exceeds_jitter_floor": exceeds,
+            "pass_as_written": fcrit["in_range"],
+            "d9_reading": fcrit["reading"],
+            "exceeds_jitter_floor": fcrit["exceeds_jitter_floor"],
             "median_jitter_floor": f1000["median_floor"],
             "skill_vs_persistence": f1000["skill"],
             "median_persistence_error": f1000["median_persistence"],
@@ -2789,6 +3020,7 @@ def assemble_metrics(
             "bands": bands,
         },
         "forecast": {"slots": fc["slots"], "need": fc["need"]},
+        "early_stop": early_stop_inputs(cnt, life, fc),
         "drift": _strip(dr, "records"),
         "latitudes": lat,
         "core": {
@@ -2821,19 +3053,19 @@ def assemble_metrics(
     # --- health
     cnts = {k: int(v) for k, v in zip(ACC_CNT, sim.totals_cnt, strict=True)}
     sums = {k: float(v) for k, v in zip(ACC_SUM, sim.totals_sum, strict=True)}
-    qd_bound = sum(1 for d in qd if d.h1_min <= 1.5 * p.h_min)
+    qd_bound = sum(1 for d in qd if d.h1_min <= LIMITER_H_FACTOR * p.h_min)
     limiter_share = qd_bound / len(qd) if qd else 0.0
     q_res = rec.q_last - rec.q0 - (sums["sum_E"] - sums["sum_C"] + sums["sum_Qseed"] + sums["q_clamp"])
     gn = [r["grid_noise"] for r in rec.rows if r["t"] >= t_spin]
     stat = stationarity(rec.rows, t_spin, t_end)
-    gate = {
-        "no_safety_clips": cnts["n_safety"] == 0,
-        "hyperbolicity_below_0.8": bool(sim.max_run[2] < 0.8),
-        "exact_eigenvalue_test_real": rec.eig_complex == 0,
-        "eps_local_max_below_1": bool(sim.max_run[3] < 1.0),
-        "mass_drift_below_1e-5": bool(rec.mass_dev < 1e-5),
-        "limiter_bound_share_at_most_5%": bool(limiter_share <= 0.05),
-    }
+    gate = health_gate(
+        n_safety=cnts["n_safety"],
+        hyper_max=float(sim.max_run[2]),
+        eig_complex=rec.eig_complex,
+        eps_local_max=float(sim.max_run[3]),
+        mass_dev=rec.mass_dev,
+        limiter_share=limiter_share,
+    )
     health = {
         "counters": cnts,
         "sums": sums,
@@ -3181,6 +3413,42 @@ def _climate_lines(m: dict[str, Any], p: WeatherParams) -> list[str]:
         f"- Kaplan-Meier lifetime median: {d2['median_text']} steps; naive median of completed tracks "
         f"{_f(d2['naive_median_completed'])}; longest observed age {_fw(d2['max_age'])}."
     )
+    out.append(
+        f"- Reading of the median: {d2['reading']}. At risk at the criterion age (3000): "
+        f"{d2['n_risk_at_threshold']}; survival just before it {_f(d2['survival_before_threshold'])}; "
+        f"first age with fewer than {d2['min_risk']} at risk: "
+        f"{_f(d2['thin_age']) if d2['thin_age'] is not None else 'none'}."
+    )
+    cm = d2["companions"]
+    out.append(
+        f"- Companions (not the criterion): {_f(100 * cm['share_detections_in_long_storms'], 3)}% of the "
+        f"window's {cm['detections']} storm detections belong to storms observed living at least "
+        f"{cm['long_storm_steps']:g} steps (the criterion read on detections: "
+        f"{_yn(cm['detection_weighted_pass'])}); Kaplan-Meier over full histories (no truncation, spin-up "
+        f"included) median {cm['full_histories']['median_text']} (n {cm['full_histories']['n']}, "
+        f"reliable {_yn(cm['full_histories']['median_reliable'])}); without split-born tracks median "
+        f"{cm['without_split_born']['median_text']} (n {cm['without_split_born']['n']}); "
+        f"split-born tracks {cm['split_born']['n']} (median duration "
+        f"{_f(cm['split_born']['median_duration'])})."
+    )
+    for h in ("north", "south"):
+        v = d2["by_hemisphere"][h]
+        out.append(
+            f"- Lifetime, {h}: n {v['n']}, events {v['events']}, median {v['median_text']}, at risk at the "
+            f"median {v['n_risk_at_median'] if v['n_risk_at_median'] is not None else '-'}, reliable "
+            f"{_yn(v['median_reliable'])}."
+        )
+    es = dg["early_stop"]
+    out.append(
+        "- Early-stop test (D10, per hemisphere: mean storms >= 1, Kaplan-Meier median >= 1000, median drift "
+        f">= 0.5 radii per 1000 steps): run meets it {_yn(es['run_meets'])}; "
+        + "; ".join(
+            f"{h}: storms {_f(es[h]['mean_storms'])}, lifetime "
+            f"{es[h]['lifetime_km']['median_text']}, drift {_f(es[h]['drift_radii_per_1000'])}"
+            for h in ("north", "south")
+        )
+        + "."
+    )
     lat = dg["latitudes"]
     out.append(
         f"- Latitudes (centroid y, 8-unit bins in `lat_hist.png`; poles at {p.L / 4:g} and {3 * p.L / 4:g}): "
@@ -3209,6 +3477,17 @@ def _forecast_lines(m: dict[str, Any]) -> list[str]:
         f"- Mobility: median drift per 1000 steps {_f(d3['median_drift_per_1000_radii'])} radii; flag (under "
         f"0.5 radii, the error is mostly centroid jitter): "
         f"{_yn(d3['mobility_flag_median_drift_below_0.5_radii'])}."
+    )
+    bh = d3["leads"]["1000"]["by_hemisphere"]
+    out.append(
+        "- Median drift per 1000 steps by hemisphere (radii): "
+        + ", ".join(f"{h} {_f(bh[h]['median_persistence'])} (n {bh[h]['n']})" for h in ("north", "south"))
+        + "."
+    )
+    out.append(
+        "- The jitter floor assumes white centroid noise; a slowly meandering (anchored) storm has "
+        "correlated centroid errors that the fit residuals understate, so the floor reads low for it and "
+        "only the skill condition protects the D9 reading there."
     )
     out.append(f"- Drops at the 1000-step lead by cause: {d3['drops']}.")
     for lead, v in d3["leads"].items():
@@ -3607,14 +3886,14 @@ def write_study_outputs(
     written += ["tracks.csv", "storms.csv", "timeseries.csv"]
     put("report.md", render_report(metrics, p))
     if plots:
-        try:
+        try:  # matplotlib is the optional analysis extra: w0_plots imports it on its first figure
             from alife.analysis import w0_plots
-        except ImportError as e:  # matplotlib is the optional analysis extra
-            (progress or print)(f"skipping figures and movies: {e}")
-        else:
+
             written += w0_plots.write_all(
                 out, res, metrics, arrays, movies=movies and st.movies, progress=progress
             )
+        except ImportError as e:
+            (progress or print)(f"skipping figures and movies: {e}")
     return written
 
 
@@ -3663,11 +3942,11 @@ def prepare_out(out: Path, overwrite: bool) -> None:
 
 
 def finish_out(out: Path, written: Sequence[str]) -> None:
-    """Record the files of this run in the ``.w0`` marker (frames included)."""
-    files = sorted(
-        {*written, *(str(f.relative_to(out)) for f in out.rglob("*") if f.is_file() and f.name != MARKER)}
-    )
-    (out / MARKER).write_text(dumps({"files": files}), encoding="utf-8")
+    """Record the files of this run in the ``.w0`` marker: the names written, plus the snapshots in
+    ``frames/`` (a figure step that fails half way may have left some). Nothing else that happens to be in
+    ``out`` is recorded, so ``--overwrite`` never removes a file this tool did not write."""
+    frames = (str(f.relative_to(out)) for f in (out / "frames").glob("t*.png") if f.is_file())
+    (out / MARKER).write_text(dumps({"files": sorted({*written, *frames})}), encoding="utf-8")
 
 
 # --- command line -------------------------------------------------------------------------------------------
@@ -3685,6 +3964,20 @@ def _load_params(path: str | None, sets: Sequence[str]) -> WeatherParams:
             raise ValueError(f"--set needs KEY=VALUE, got {s!r}")
         d[k.strip()] = json.loads(v)
     return WeatherParams.from_dict(d)
+
+
+def _load_json(path: str | None, flag: str) -> dict[str, Any] | None:
+    """The JSON object at ``path`` (``None`` when the flag is absent). A missing file, bad JSON or a value
+    that is not an object is a ``ValueError`` that names the flag."""
+    if not path:
+        return None
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{flag} {path}: {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError(f"{flag} {path} must hold a JSON object")
+    return data
 
 
 def _parse_auto(text: str) -> tuple[int, float, float, float, int]:
@@ -3828,10 +4121,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-    try:
+    try:  # read what is attached first: --overwrite may delete these very files (a study re-run in place)
+        bench = _load_json(args.bench_json, "--bench-json")
+        vortex = _load_json(args.vortex_json, "--vortex-json")
         forbid_out(out, st.tracers_run)
         prepare_out(out, args.overwrite)
-    except (ValueError, FileExistsError) as e:
+    except (OSError, ValueError) as e:  # FileExistsError and JSONDecodeError are subclasses
         print(f"error: {e}", file=sys.stderr)
         return 2
     written: list[str] = []
@@ -3844,10 +4139,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         say(dumps({k: v["text"] for k, v in table["lines"].items()}))
         finish_out(out, written)
         return 0
-    bench = None
-    if args.bench_json:
-        bench = json.loads(Path(args.bench_json).read_text(encoding="utf-8"))
-    vortex = json.loads(Path(args.vortex_json).read_text(encoding="utf-8")) if args.vortex_json else None
+    for name, attached in (("bench.json", bench), ("vortex_decay.json", vortex)):
+        if attached is not None:  # keep the measurement beside the study (it may have been in this directory)
+            (out / name).write_text(dumps(attached), encoding="utf-8")
+            written.append(name)
     if args.bench:
         cfg = uniform_cfg(p)
         try:

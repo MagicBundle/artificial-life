@@ -405,7 +405,8 @@ class WeatherForcing(NamedTuple):
 
 class WeatherDiag(NamedTuple):
     """Per-step diagnostics, all derived from inputs (MLX 0.32 compile rule); ``E``, ``C``, ``Qseed`` only
-    with ``debug``."""
+    with ``debug``. ``courant_max``, ``speed_max``, ``hyper_max`` and ``n_safety`` are evaluated on the winds
+    entering the damping sub-step (``_damp``); the other counters and sums are end-of-step."""
 
     n_limited: mx.array
     n_clamp: mx.array
@@ -705,7 +706,11 @@ def _damp(
     """S7: friction, optional ν-Laplacian, divergence damping, the safety tripwire.
 
     Returns ``(u, v, n_safety, courant_max, speed_max, hyper_max)``. The speeds and the hyperbolicity ratio
-    use the winds entering S7 (post-S6), whose shifts the friction needs anyway.
+    use the winds entering S7 (post-S6, before friction, damping and the seeds of the same step), whose
+    shifts the friction needs anyway; spec S9 lists ``hyper_max`` with the end-of-step diagnostics, and the
+    two differ by one step's damping and seed (0.0394 against 0.0374 at the extreme of the 60 000-step start
+    set run). Computing it from the final winds would build a second set of centre-average shifts of the
+    step's output arrays, which MLX 0.32.3 ``mx.compile`` does not allow (module docstring).
     """
     dt, dx = p.dt, p.dx
     ev = _east(v)

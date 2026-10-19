@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import math
+import sys
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -23,6 +25,7 @@ from alife.config import dims, load_config
 from alife.runio import RunDir
 from alife.state import init_state
 from alife.weather import WeatherParams
+from helpers import ON_GPU
 
 P0 = WeatherParams()
 SMALL = {
@@ -204,13 +207,55 @@ def test_detect_on_a_balanced_vortex_reads_its_core_values() -> None:
     assert c.rx > 0.97 and c.ry > 0.97 and c.n_rain == c.area  # p_th = 0: every cell counts as rainy
 
 
+def _block_frame(p: WeatherParams) -> tuple[w0.Frame, np.ndarray]:
+    """An 8 x 8 block of corner vorticity rising to the east (0.01 to 0.08), with rain over and around it."""
+    fr = _frame(p)
+    z, pp = fr.zeta.copy(), fr.P.copy()
+    for c in range(6, 14):
+        z[6:14, c] = 0.01 * (c - 5)
+    pp[5:16, 5:16] = 1e-3
+    return fr._replace(zeta=z, P=pp), z
+
+
+def test_detect_centroid_is_weighted_by_the_excess_vorticity() -> None:
+    p = replace(P0, n=40)
+    fr, z = _block_frame(p)
+    (c,) = w0.detect(fr, p).storms
+    zc = w0.corners_to_centres(z.astype(np.float64))
+    jj, ii = np.nonzero(zc >= p.zeta_th)
+    ang = 2.0 * math.pi * (ii + 0.5) * p.dx / p.L
+
+    def circ(w: np.ndarray) -> float:
+        return float(math.atan2((w * np.sin(ang)).sum(), (w * np.cos(ang)).sum()) * p.L / (2.0 * math.pi))
+
+    x_weighted, x_plain = circ(zc[jj, ii] - p.zeta_th), circ(np.ones(ii.size))
+    assert abs(x_weighted - x_plain) > 0.3  # the weights matter in this fixture
+    assert c.x == pytest.approx(x_weighted, abs=1e-6)
+
+
+def test_detect_dh1_is_the_ring_between_one_and_two_equivalent_radii_above_the_footprint_minimum() -> None:
+    p = replace(P0, n=40)
+    fr, _ = _block_frame(p)
+    (c,) = w0.detect(fr, p).storms
+    j, i = np.mgrid[0 : p.n, 0 : p.n]
+    d = np.hypot((i + 0.5) * p.dx - c.x, (j + 0.5) * p.dx - c.y)
+    h1 = np.full((p.n, p.n), 32.0, dtype=np.float32)
+    h1[c.flat // p.n, c.flat % p.n] = 31.0
+    h1[(d > c.r_eq) & (d <= 2 * c.r_eq)] = 30.0  # the ring (footprint cells beyond r_eq included)
+    h1[(d > 2 * c.r_eq) & (d <= 3 * c.r_eq)] = 10.0  # beyond it: must not count
+    core = c.flat[d.ravel()[c.flat] <= c.r_eq][0]
+    h1[core // p.n, core % p.n] = 28.0  # the footprint minimum, inside r_eq
+    (c2,) = w0.detect(fr._replace(h1=h1), p).storms
+    assert c2.h1_min == 28.0 and c2.dh1 == pytest.approx(30.0 - 28.0, abs=1e-5)
+
+
 # --- 21. the tracker -----------------------------------------------------------------------------------
 
 N40 = 40
 P40 = replace(P0, n=N40)  # L = 80, miss_grace 2, min_dets 3
 
 
-def _comp(label: int, rect: tuple[int, int, int, int], hemi: int = 0) -> w0.Comp:
+def _comp(label: int, rect: tuple[int, int, int, int], hemi: int = 0, zeta: float = 1.0) -> w0.Comp:
     j0, i0, h, w = rect
     jj, ii = np.meshgrid(np.arange(j0, j0 + h), np.arange(i0, i0 + w), indexing="ij")
     area = h * w
@@ -222,7 +267,7 @@ def _comp(label: int, rect: tuple[int, int, int, int], hemi: int = 0) -> w0.Comp
         area=area,
         r_eq=P40.dx * math.sqrt(area / math.pi),
         r_max=3.0,
-        zeta_max_f0=1.0,
+        zeta_max_f0=zeta,
         wind_max=0.1,
         h1_min=30.0,
         dh1=1.0,
@@ -236,11 +281,13 @@ def _comp(label: int, rect: tuple[int, int, int, int], hemi: int = 0) -> w0.Comp
     )
 
 
-def _det(t: int, rects: list[tuple[int, int, int, int]]) -> w0.Detection:
+def _det(
+    t: int, rects: list[tuple[int, int, int, int]], zetas: Sequence[float] | None = None
+) -> w0.Detection:
     lab = np.zeros((N40, N40), dtype=np.int32)
     comps = []
     for k, r in enumerate(rects, start=1):
-        c = _comp(k, r)
+        c = _comp(k, r, zeta=1.0 if zetas is None else zetas[k - 1])
         lab.ravel()[c.flat] = k
         comps.append(c)
     return w0.Detection(t, lab, comps, [], len(comps), 0)
@@ -283,6 +330,46 @@ def test_tracker_split_starts_a_child_with_its_parent() -> None:
     assert ids[0] == 1 and ids[1] == 2
     t1, t2 = tr.finish()
     assert t2.parent == 1 and t2.t_first == 100 and not t1.ended
+
+
+def _split_pair(zetas: tuple[float, float], right: tuple[int, int, int, int]) -> list[int]:
+    """Track 1 holds a 19 x 10 footprint; it splits into a left piece (19 x 4, overlap 76) and ``right``."""
+    tr = w0.Tracker(P40)
+    big = (1, 10, 19, 10)
+    _run(tr, {25: [big], 50: [big], 75: [big]})
+    ids = tr.update(_det(100, [(1, 10, 19, 4), right], zetas=zetas))
+    assert sorted(ids) == [1, 2]
+    return ids
+
+
+def test_tracker_split_near_tie_keeps_the_id_with_the_stronger_core() -> None:
+    """The right piece overlaps 72 cells against 76 (within 10%): the stronger of the two keeps the id, so a
+    dying fragment with a few more overlapping cells does not take the storm's identity."""
+    right = (2, 15, 18, 4)  # 18 x 4 = 72 cells
+    assert _split_pair((0.3, 0.6), right) == [2, 1]  # the right piece is the core: it continues track 1
+    assert _split_pair((0.6, 0.3), right) == [1, 2]  # the left piece is both larger and stronger
+    tr = w0.Tracker(P40)
+    big = (1, 10, 19, 10)
+    _run(tr, {25: [big], 50: [big], 75: [big]})
+    tr.update(_det(100, [(1, 10, 19, 4), right], zetas=(0.3, 0.6)))
+    t1, t2 = tr.finish()
+    assert t2.parent == 1 and t2.t_first == 100 and t1.t_last == 100 and not t1.ended
+
+
+def test_tracker_split_without_a_tie_keeps_the_largest_overlap_whatever_the_vorticity() -> None:
+    right = (10, 15, 10, 4)  # 40 cells against 76: not within 10%
+    assert _split_pair((0.3, 0.9), right) == [1, 2]
+    assert _split_pair((0.9, 0.3), right) == [1, 2]
+
+
+def test_tracker_merger_near_tie_between_pieces_still_follows_the_larger_overlap() -> None:
+    """Two tracks overlap one component: the track with the larger overlap continues, vorticity plays no part
+    (it is the component's, the same for both)."""
+    tr = w0.Tracker(P40)
+    a, b = (10, 10, 4, 6), (10, 18, 4, 4)
+    _run(tr, {25: [a, b], 50: [a, b], 75: [a, b]})
+    ids = tr.update(_det(100, [(10, 11, 4, 11)], zetas=(0.2,)))
+    assert ids == [1]
 
 
 def test_tracker_one_detection_gap_continues_and_counts() -> None:
@@ -364,15 +451,45 @@ def test_tracker_fallback_never_crosses_hemispheres() -> None:
     assert tr.finish()[0].missed == 1
 
 
+def test_tracker_fallback_gate_is_the_larger_of_the_two_radii() -> None:
+    """A small storm and a much larger one 8 units away, with no cell in common, are the same storm: the gate
+    is max(r_track, r_det) (8.7 here), not the smaller radius (2.3)."""
+    tr = w0.Tracker(P40)
+    for t in (25, 50, 75):
+        tr.update(_det(t, [(10, 10, 2, 2)]))  # r_eq 2.3
+    big = (6, 12, 10, 6)  # 60 cells, r_eq 8.7, centroid 8 units east of the small storm's
+    assert tr.update(_det(100, [big])) == [1]
+    (track,) = tr.finish()
+    assert len(track.dets) == 4 and track.dets[-1].r_eq > 8.0
+    far = w0.Tracker(P40)
+    for t in (25, 50, 75):
+        far.update(_det(t, [(10, 10, 2, 2)]))
+    assert far.update(_det(100, [(6, 20, 10, 6)])) == [2]  # 24 units away: outside even the larger radius
+
+
 # --- storm counts, 22. Kaplan-Meier, lifetimes ---------------------------------------------------------
 
 
-def _track(tid: int, times, xs, ys, r: float = 5.0, hemi: int = 0, end: str = "") -> w0.Track:
+def _track(tid: int, times, xs, ys, r=5.0, hemi: int = 0, end: str = "") -> w0.Track:
+    """A track at the given positions; ``r`` is one radius or one per detection."""
+    rs = np.broadcast_to(np.asarray(r, dtype=float), (len(times),))
     dets = [
         w0.Det(
-            int(t), float(x) % 320, float(y) % 320, float(x), float(y), r, 80, hemi, 1.0, 0.1, 30.0, 1.0, 1.0
+            int(t),
+            float(x) % 320,
+            float(y) % 320,
+            float(x),
+            float(y),
+            float(rr),
+            80,
+            hemi,
+            1.0,
+            0.1,
+            30.0,
+            1.0,
+            1.0,
         )
-        for t, x, y in zip(times, xs, ys, strict=True)
+        for t, x, y, rr in zip(times, xs, ys, rs, strict=True)
     ]
     return w0.Track(tid, hemi, dets, end_reason=end)
 
@@ -422,6 +539,102 @@ def test_lifetime_stats_truncation_and_the_beyond_max_age_pass() -> None:
     short = _track(5, range(4000, 4100, 25), [50] * 4, [50] * 4, end="dissipated")
     only_short = w0.lifetime_stats([short, died], t_spin=1000, min_dets=3)
     assert only_short["median"] == 75.0 and not only_short["pass"]
+
+
+def test_kaplan_meier_counts_no_event_at_the_entry_age() -> None:
+    """A subject whose event is at its own entry age was never at risk: counting it would give 1/3 here and a
+    negative curve when such events outnumber the risk set."""
+    km = w0.kaplan_meier([1000, 1000, 2000, 3000], [1, 1, 1, 0], [1000, 0, 0, 0])
+    assert km.n_risk[0] == 3 and km.n_events[0] == 1 and km.survival[0] == pytest.approx(2.0 / 3.0)
+    km = w0.kaplan_meier([5, 5, 5, 10], [1, 1, 1, 0], [5, 5, 0, 0])
+    assert km.survival[0] == pytest.approx(0.5) and km.n_events[0] == 1  # not 1 - 3/2
+
+
+def test_kaplan_meier_risk_set_flags_and_helpers() -> None:
+    km = w0.kaplan_meier([10, 20, 30, 40, 50, 60, 70], [1, 1, 1, 1, 0, 0, 0])
+    assert list(km.n_risk) == [7, 6, 5, 4]
+    assert km.thin_age == 40.0 and km.min_risk == w0.KM_MIN_RISK == 5
+    assert km.median == 40.0 and km.n_risk_at_median == 4 and not km.median_reliable  # at the first thin age
+    assert km.reached == 40.0
+    assert km.at_risk_at(25.0) == 5 and km.at_risk_at(40.0) == 4 and km.at_risk_at(71.0) == 0
+    assert km.survival_before(10.0) == 1.0 and km.survival_before(11.0) == pytest.approx(6 / 7)
+    assert km.survival_before(40.0) == pytest.approx(4 / 7)
+    ok = w0.kaplan_meier([10, 20, 30, 40, 50, 60, 70, 80, 90], [1, 1, 1, 1, 1, 0, 0, 0, 0])
+    assert list(ok.n_risk) == [9, 8, 7, 6, 5] and ok.median == 50.0
+    assert ok.thin_age is None and ok.median_reliable and ok.n_risk_at_median == 5
+    few = w0.kaplan_meier([10, 20, 30], [1, 0, 0])  # three subjects: always a thin risk set, no median
+    assert few.median is None and few.median_reliable and few.n_risk_at_median is None
+    assert few.reached == 30.0 and few.thin_age == 10.0
+    s = ok.summary()
+    assert s["n"] == 9 and s["events"] == 5 and s["censored"] == 4 and s["median_reliable"] is True
+    empty = w0.kaplan_meier([], [], [])
+    assert empty.median is None and empty.summary()["n"] == 0 and empty.survival_before(5.0) == 1.0
+
+
+def test_lifetime_stats_applies_the_entry_age_of_storms_born_in_the_spin_up() -> None:
+    """A long storm born at t = 0 is not at risk at the young ages of the storms born in the window (its entry
+    age is 3000); ignoring that entry gives a median of 200 instead of 100."""
+    a = _track(1, range(3000, 3125, 25), [10] * 5, [40] * 5, end="dissipated")  # age 100
+    b = _track(2, range(3200, 3425, 25), [20] * 9, [40] * 9, end="dissipated")  # age 200
+    long_ = _track(3, range(0, 5025, 25), [30] * 201, [40] * 201)  # alive, age 5000 at the end
+    st = w0.lifetime_stats([a, b, long_], t_spin=3000, min_dets=3)
+    assert st["median"] == 100.0 and st["n_risk_at_median"] == 2
+    assert w0.kaplan_meier([100, 200, 5000], [1, 1, 0]).median == 200.0  # what ignoring the entry gives
+    assert st["thin_age"] == 100.0 and not st["median_reliable"]
+    assert st["reading"].startswith("NOT READABLE") and not st["pass"]
+
+
+def _fragments_and_storms() -> tuple[list[w0.Track], int]:
+    """The start-set pathology: four storms born in the spin-up that live to the end, and 21 split-born
+    fragments of 75 to 575 steps that are the only storms at risk at the young ages."""
+    t_spin = 1000
+    tracks = []
+    for k, (x, y, h) in enumerate(((10, 40, 0), (50, 40, 0), (10, 250, 1), (50, 250, 1))):
+        tracks.append(_track(k + 1, range(0, 30025, 25), [x] * 1201, [y] * 1201, hemi=h))
+    for k in range(21):
+        dur = 75 + 25 * k
+        first = 2000 + 100 * k
+        tr = _track(
+            10 + k, range(first, first + dur + 25, 25), [90] * (dur // 25 + 1), [40] * (dur // 25 + 1)
+        )
+        tr.end_reason, tr.parent = "dissipated", 1
+        tracks.append(tr)
+    return tracks, t_spin
+
+
+def test_lifetime_median_is_flagged_and_companions_show_the_long_storms() -> None:
+    tracks, t_spin = _fragments_and_storms()
+    st = w0.lifetime_stats(tracks, t_spin=t_spin, min_dets=3)
+    assert st["n"] == 25 and st["events"] == 21 and st["censored"] == 4
+    assert st["median"] == 325.0 and not st["pass"]  # the fragments decide the median, as written
+    assert st["n_risk_at_median"] == 11 and st["median_reliable"] and st["thin_age"] == 500.0
+    assert st["reading"] == "median 325 read with 11 at risk"
+    # the criterion age: only the four old storms are at risk, and the curve has fallen to zero before it
+    assert st["n_risk_at_threshold"] == 4 and st["survival_before_threshold"] == pytest.approx(0.0)
+    cm = st["companions"]
+    frag_dets = sum(4 + k for k in range(21))
+    long_dets = 4 * ((30000 - t_spin) // 25 + 1)
+    assert cm["detections"] == frag_dets + long_dets and cm["detections_in_long_storms"] == long_dets
+    assert cm["share_detections_in_long_storms"] == pytest.approx(long_dets / (frag_dets + long_dets))
+    assert cm["share_detections_in_long_storms"] > 0.9 and cm["detection_weighted_pass"] is True
+    assert cm["without_split_born"]["n"] == 4 and cm["without_split_born"]["median"] is None
+    assert cm["without_split_born"]["reached"] == 30000.0
+    assert cm["split_born"] == {"n": 21, "events": 21, "median_duration": 325.0}
+    # over full histories the four old storms are at risk at the young ages too, which moves the median
+    assert cm["full_histories"]["n"] == 25 and cm["full_histories"]["median"] == 375.0
+    bh = st["by_hemisphere"]
+    assert bh["north"]["n"] == 2 + 21 and bh["south"]["n"] == 2 and bh["south"]["median"] is None
+    assert bh["south"]["reached"] == 30000.0
+
+
+def test_lifetime_criterion_is_decided_by_the_curve_before_the_threshold() -> None:
+    """median >= 3000 is the same as survival > 0.5 before 3000: a single late death, the only storm at risk
+    at 6000, gives a median that is flagged unreadable and does not change the verdict."""
+    tracks = [_track(k, range(0, 4025, 25), [10 * k] * 161, [40] * 161) for k in range(1, 5)]
+    tracks += [_track(9, range(0, 6025, 25), [90] * 241, [40] * 241, end="dissipated")]
+    st = w0.lifetime_stats(tracks, t_spin=100, min_dets=3)
+    assert st["median"] == 6000.0 and st["n_risk_at_median"] == 1 and not st["median_reliable"]
+    assert st["pass"] and st["survival_before_threshold"] == 1.0 and st["n_risk_at_threshold"] == 5
 
 
 # --- 23. forecast error --------------------------------------------------------------------------------
@@ -487,6 +700,29 @@ def test_forecast_unwraps_across_the_seam() -> None:
     x = 300 + 0.04 * t  # crosses x = 320 at t = 500
     f = _fc([_track(1, t, x, 100 + 0.0 * t)])["leads"][1000]
     assert f["median_error"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_forecast_error_is_in_radii_of_the_storm_at_the_origin() -> None:
+    t = np.arange(0, 2025, 25)
+    x = 0.01 * t + np.where(t == 2000, 10.0, 0.0)  # 10 units off the line at the target
+    r = np.where(t <= 1000, 5.0, 10.0)  # the storm doubles its radius by the target
+    f = _fc([_track(1, t, x, 100 + 0.0 * t, r=r)])["leads"][1000]
+    assert f["n"] == 1 and f["median_error"] == pytest.approx(10.0 / 5.0)  # r_eq at t0, not at the target
+    assert f["median_persistence"] == pytest.approx(20.0 / 5.0)
+
+
+def test_forecast_drop_causes_inside_and_beyond_the_run_and_the_hemisphere_split() -> None:
+    t = np.arange(0, 2000, 25)  # an active track whose last detection is 1975, in a run that ends at 2000
+    f = _fc([_track(1, t, 0.01 * t, 100 + 0.0 * t)])["leads"][1000]
+    assert f["drops"] == {"coasting at the target": 1, "beyond the end of the run": 3}
+    t = np.arange(0, 2025, 25)
+    north = _track(1, t, 0.01 * t, 100 + 0.0 * t, hemi=0)
+    south = _track(2, t, 50 + 0.0 * t, 250 + 0.0 * t, hemi=1)
+    f = _fc([north, south])["leads"][1000]
+    assert f["n"] == 2
+    assert f["by_hemisphere"]["north"]["median_persistence"] == pytest.approx(2.0)
+    assert f["by_hemisphere"]["south"]["median_persistence"] == pytest.approx(0.0)
+    assert f["by_hemisphere"]["north"]["n"] == f["by_hemisphere"]["south"]["n"] == 1
 
 
 # --- 24. drift -----------------------------------------------------------------------------------------
@@ -656,6 +892,14 @@ def test_hash_binning_equals_the_engines_neighbour_search(tiny_overflow_cfg) -> 
     counts = w0.occupancy_counts(mx.array(pos), cfg)
     assert counts.shape == (d.g_hash_z, d.g_hash, d.g_hash)
     assert int(counts.sum()) == d.n
+    # the whole array against an independent binning (a transposed x and y leave the maximum unchanged)
+    cx = np.floor(pos[:, 0] / np.float32(d.cell_hash)).astype(np.int64) % d.g_hash
+    cy = np.floor(pos[:, 1] / np.float32(d.cell_hash)).astype(np.int64) % d.g_hash
+    cz = np.clip(np.floor(pos[:, 2] / np.float32(d.cell_hash_z)).astype(np.int64), 0, d.g_hash_z - 1)
+    ref = np.zeros((d.g_hash_z, d.g_hash, d.g_hash), dtype=np.int64)
+    np.add.at(ref, (cz, cy, cx), 1)
+    assert np.array_equal(np.array(counts), ref)
+    assert not np.array_equal(ref, ref.transpose(0, 2, 1))  # x and y are told apart by this fixture
     assert int(counts.max()) == int(nb.max_occupancy)
     assert int((counts > cfg.sensing.cell_capacity).sum()) == int(nb.overflow_cells) > 0  # not vacuous
     # the recorded argmax cell holds the band maximum, inside the band's layers
@@ -965,6 +1209,44 @@ def test_causal_storm_stats() -> None:
     assert w0._causal_stats([a, b, c], 250, 3, 1)["count"] == 1
 
 
+def _anchored_snapshot(p: WeatherParams) -> w0.Snapshot:
+    """A snapshot at t = 500 with one established storm (track 7, hemisphere 0) just east of pool 0."""
+    comp = replace(_comp(1, (10, 10, 4, 4)), x=82.0, y=50.0)
+    tracker = w0.Tracker(p)
+    tracker.tracks = [_track(7, [450, 475, 500], [82.0] * 3, [50.0] * 3)]
+    det = w0.Detection(500, np.zeros((p.n, p.n), dtype=np.int32), [comp], [], 1, 0)
+    return w0.Snapshot(500, None, None, tracker, p.pools, None, det, [7])  # type: ignore[arg-type]
+
+
+def test_pool_shift_lags_are_read_from_the_tracks_of_the_perturbed_run(monkeypatch) -> None:
+    """Genesis lag: first detection of a storm born after t0 inside the shifted pool's supersaturated
+    footprint. Displacement lag: first detection where the anchored storm has covered half of the shift (the
+    projection on the shift vector, 0.5 and not another fraction)."""
+    p = P0
+    snap = _anchored_snapshot(p)
+    op = w0.PoolOp.parse_shift("500,0,40,0")  # pool 0 from (80, 48) to (120, 48)
+    t = np.arange(500, 1025, 25)
+    anchored = _track(7, t, 82.0 + 0.12 * (t - 500), 50.0 + 0 * t)  # 0.12 units per step along the shift
+    inside = _track(9, range(700, 900, 25), [121.0] * 8, [49.0] * 8)  # born at 700 in the new footprint
+    outside = _track(10, range(600, 800, 25), [250.0] * 8, [49.0] * 8)  # born earlier, far from it
+    monkeypatch.setattr(w0, "run_fork", lambda *a, **k: ([anchored, inside, outside], w0.LightLog()))
+    out = w0.pool_experiment(snap, p, op, horizon=525, ctrl=[])
+    assert out["shift_units"] == 40.0 and out["hemisphere"] == "north"
+    assert (
+        out["genesis_lag"] == 200 and out["genesis_track"] == 9
+    )  # the storm born at 700, not the one at 600
+    assert (
+        out["first_detection_lag"] is not None and out["first_detection_lag"] < 200
+    )  # the old storm arrives
+    anc = out["anchored"]
+    assert anc["id"] == 7 and anc["displacement_lag"] == 175  # 21 units = 0.525 of 40 at +175 (0.45 at +150)
+    assert anc["max_fraction_of_shift"] == pytest.approx(0.12 * 500 / 40.0)
+    never = _track(7, t, 82.0 + 0.001 * (t - 500), 50.0 + 0 * t)
+    monkeypatch.setattr(w0, "run_fork", lambda *a, **k: ([never], w0.LightLog()))
+    out = w0.pool_experiment(snap, p, op, horizon=525, ctrl=[])
+    assert out["anchored"]["displacement_lag"] is None and out["genesis_lag"] is None
+
+
 def test_pool_experiment_and_run_steerability_on_a_vortex() -> None:
     p = _vortex_params()
     sim = w0.Sim(p, 0)
@@ -1010,6 +1292,235 @@ def test_vortex_decay_table_lines_and_limit() -> None:
     assert all(v["decay_step"] is None and v["text"] == "> 50" for v in tab["lines"].values())
     assert tab["lines"]["cubic SL (kappa_d 0.10)"]["sl_order"] == 3
     assert tab["lines"]["nu 0.02, kappa_d 0 (the probe)"]["kappa_d"] == 0.0
+
+
+# --- the criteria, the health gate and the early-stop test -----------------------------------------------
+
+
+def _row(**kw) -> dict:
+    base = {"n": 10, "median_error": 1.0, "median_floor": 0.5, "skill": 0.2, "drift_radii_median": 1.0}
+    return {**base, **kw}
+
+
+def test_forecast_criterion_reads_every_branch_of_d9() -> None:
+    fcrit = w0.forecast_criterion
+    ok = fcrit(_row())
+    assert ok["evidence"] and ok["in_range"] and ok["exceeds_jitter_floor"] and ok["skill_positive"]
+    assert ok["reading"].startswith("met, and above the jitter floor") and not ok["mobility"]
+    below = fcrit(_row(median_floor=1.2))  # in range, but the jitter alone gives that much
+    assert below["in_range"] and not below["evidence"] and not below["exceeds_jitter_floor"]
+    assert below["reading"] == "met as written, not evidence of forecastable motion"
+    equal = fcrit(_row(median_floor=1.0))  # the floor must be exceeded, not matched
+    assert not equal["evidence"] and equal["reading"].startswith("met as written")
+    noskill = fcrit(_row(skill=-0.1))
+    assert noskill["in_range"] and not noskill["evidence"] and not noskill["skill_positive"]
+    assert not fcrit(_row(skill=0.0))["evidence"]
+    for med in (0.49, 2.01):
+        r = fcrit(_row(median_error=med))
+        assert not r["in_range"] and not r["evidence"] and r["reading"] == "not met"
+    for med in (0.5, 2.0):  # the band is closed
+        assert fcrit(_row(median_error=med, median_floor=0.1))["evidence"]
+    assert (
+        fcrit(_row(drift_radii_median=0.49))["mobility"]
+        and not fcrit(_row(drift_radii_median=0.5))["mobility"]
+    )
+    none = fcrit(
+        _row(n=0, median_error=math.nan, median_floor=math.nan, skill=math.nan, drift_radii_median=math.nan)
+    )
+    assert not none["in_range"] and not none["evidence"] and none["mobility"] and none["reading"] == "not met"
+
+
+GATE_OK = dict(n_safety=0, hyper_max=0.5, eig_complex=0, eps_local_max=0.9, mass_dev=1e-6, limiter_share=0.05)
+GATE_BAD = {
+    "no_safety_clips": dict(n_safety=1),
+    "hyperbolicity_below_0.8": dict(hyper_max=0.8),
+    "exact_eigenvalue_test_real": dict(eig_complex=1),
+    "eps_local_max_below_1": dict(eps_local_max=1.0),
+    "mass_drift_below_1e-5": dict(mass_dev=1e-5),
+    "limiter_bound_share_at_most_5%": dict(limiter_share=0.0501),
+}
+
+
+def test_health_gate_has_these_thresholds_and_fails_on_nan() -> None:
+    assert all(w0.health_gate(**GATE_OK).values()) and set(w0.health_gate(**GATE_OK)) == set(GATE_BAD)
+    for name, bad in GATE_BAD.items():
+        gate = w0.health_gate(**{**GATE_OK, **bad})
+        assert [k for k, v in gate.items() if not v] == [name], name
+    just_in = dict(hyper_max=0.7999, eps_local_max=0.9999, mass_dev=9.9e-6, limiter_share=0.05)
+    assert all(w0.health_gate(**{**GATE_OK, **just_in}).values())
+    for key in ("hyper_max", "eps_local_max", "mass_dev", "limiter_share"):
+        assert not all(w0.health_gate(**{**GATE_OK, key: math.nan}).values()), key
+
+
+def _hemisphere_tracks() -> list[w0.Track]:
+    t = np.arange(0, 3025, 25)
+    return [
+        _track(1, t, 0.01 * t, 100 + 0 * t, hemi=0),
+        _track(2, t, 0.01 * t + 150, 100 + 0 * t, hemi=0),
+        _track(3, t, 50 + 0 * t, 250 + 0 * t, hemi=1),
+        _track(4, t, 150 + 0 * t, 250 + 0 * t, hemi=1),
+    ]
+
+
+def test_early_stop_inputs_are_per_hemisphere() -> None:
+    tracks = _hemisphere_tracks()
+    times = w0.detection_times(1000, 3000, 25)
+    cnt = w0.storm_counts(tracks, times, 3)
+    life = w0.lifetime_stats(tracks, 1000, 3)
+    fc = w0.forecast_stats(tracks, P0, 1000, 3000, 3)
+    es = w0.early_stop_inputs(cnt, life, fc)
+    assert es["north"]["ok"] and es["north"]["meets"] == {"storms": True, "lifetime": True, "drift": True}
+    assert es["north"]["mean_storms"] == 2.0 and es["north"]["drift_radii_per_1000"] == pytest.approx(2.0)
+    assert es["south"]["meets"] == {"storms": True, "lifetime": True, "drift": False}  # stationary storms
+    assert es["south"]["drift_radii_per_1000"] == pytest.approx(0.0) and es["south"]["drift_n"] > 0
+    assert not es["run_meets"] and es["south"]["lifetime_km"]["reached"] == 3000.0
+    # the lifetime bound is on the Kaplan-Meier median (or the longest age when it is not reached)
+    short = [
+        *_hemisphere_tracks()[:2],
+        _track(
+            5,
+            np.arange(0, 600, 25),
+            0 * np.arange(0, 600, 25) + 9,
+            0 * np.arange(0, 600, 25) + 250,
+            hemi=1,
+            end="dissipated",
+        ),
+    ]
+    life2 = w0.lifetime_stats(short, 1000, 3)
+    cnt2 = w0.storm_counts(short, times, 3)
+    es2 = w0.early_stop_inputs(cnt2, life2, fc)
+    assert not es2["south"]["meets"]["storms"] and not es2["south"]["meets"]["lifetime"]
+
+
+@pytest.fixture(scope="module")
+def mini_study():
+    p = WeatherParams.from_dict(SMALL)
+    st = w0.Settings(steps=300, t_spin=100, uniform_tracers=200)
+    return w0.run_study(p, st)
+
+
+def _gate(m: dict) -> dict:
+    return m["health"]["gate"]
+
+
+def test_assemble_metrics_passes_a_clean_run_and_fails_each_gate_entry(mini_study, monkeypatch) -> None:
+    res = mini_study
+    metrics, _ = w0.assemble_metrics(res)
+    assert all(_gate(metrics).values()) and metrics["health"]["pass"]
+    n_safety = w0.ACC_CNT.index("n_safety")
+
+    def run(**ov) -> dict:
+        cnt = res.sim.totals_cnt.copy()
+        cnt[n_safety] = ov.get("n_safety", 0)
+        mxr = np.array([0.4, 0.2, ov.get("hyper", 0.5), ov.get("eps", 0.9)])
+        monkeypatch.setattr(res.sim, "totals_cnt", cnt)
+        monkeypatch.setattr(res.sim, "max_run", mxr)
+        monkeypatch.setattr(res.rec, "eig_complex", ov.get("eig", 0))
+        monkeypatch.setattr(res.rec, "mass_dev", ov.get("mass", 1e-7))
+        return w0.assemble_metrics(res)[0]
+
+    assert all(_gate(run()).values())
+    cases = {
+        "no_safety_clips": dict(n_safety=3),
+        "hyperbolicity_below_0.8": dict(hyper=0.81),
+        "exact_eigenvalue_test_real": dict(eig=2),
+        "eps_local_max_below_1": dict(eps=1.01),
+        "mass_drift_below_1e-5": dict(mass=2e-5),
+    }
+    for name, ov in cases.items():
+        m = run(**ov)
+        assert [k for k, v in _gate(m).items() if not v] == [name], name
+        assert not m["health"]["pass"] and "health" in m["verdict"]["failed"]
+    m = run(hyper=0.79, mass=9e-6)
+    assert all(_gate(m).values())
+    assert m["health"]["hyper_max"] == pytest.approx(0.79) and m["health"]["eps_local_max"] == pytest.approx(
+        0.9
+    )
+
+
+def test_assemble_metrics_reads_the_forecast_criterion_in_each_d9_branch(mini_study, monkeypatch) -> None:
+    """The three readings through the whole assembly, on synthetic tracks with known forecast errors."""
+    res = mini_study
+    monkeypatch.setattr(res.st, "t_spin", 1000)
+    monkeypatch.setattr(res.st, "steps", 2000)
+    t = np.arange(0, 2025, 25)
+    rng = np.random.default_rng(5)
+    still = [_track(k, t, 100 + 0.0 * t, 100 + 0.0 * t) for k in range(1, 4)]  # no motion: error 0
+    jitter = [
+        _track(k, t, 100 + 1.2 * rng.standard_normal(t.size), 100 + 1.2 * rng.standard_normal(t.size), r=10.0)
+        for k in range(1, 40)
+    ]  # centroid noise only: 0.5 to 2 radii of error, at the floor, worse than persistence
+    x = np.where(t <= 1000, 0.01 * t, 10.0 + 0.018 * (t - 1000))
+    turning = [
+        _track(k, t, x + 20 * k, 100 + 0.0 * t) for k in range(1, 4)
+    ]  # a speed change after the origin
+
+    def reading(tracks: list[w0.Track]) -> dict:
+        monkeypatch.setattr(res, "tracks", tracks)
+        c3 = w0.assemble_metrics(res)[0]["criteria"]["forecast"]
+        return {"pass": c3["pass"], **c3["detail"]}
+
+    d = reading(still)
+    assert d["d9_reading"] == "not met" and d["pass"] is False and d["pass_as_written"] is False
+    d = reading(jitter)
+    assert d["d9_reading"] == "met as written, not evidence of forecastable motion"
+    assert d["pass_as_written"] is True and d["pass"] is False and d["skill_vs_persistence"] < 0
+    d = reading(turning)
+    assert d["d9_reading"].startswith("met, and above the jitter floor") and d["pass"] is True
+    assert 0.5 <= d["leads"]["1000"]["median_error"] <= 2.0 and d["skill_vs_persistence"] > 0
+
+
+def test_assemble_metrics_limiter_share_counts_h1_at_or_below_one_and_a_half_h_min(
+    mini_study, monkeypatch
+) -> None:
+    res = mini_study
+    p = res.p
+    tracks = [_track(k, range(100, 301, 25), [10 * k] * 9, [40] * 9) for k in range(1, 13)]  # 108 detections
+    dets = [d for tr in tracks for d in tr.dets]
+    for d in dets[:5]:
+        d.h1_min = 1.5 * p.h_min  # limiter-bound: exactly at the threshold counts
+    for d in dets[5:25]:
+        d.h1_min = 2.5 * p.h_min  # thin, but not bound: must not count
+    monkeypatch.setattr(res, "tracks", tracks)
+    m, _ = w0.assemble_metrics(res)
+    assert m["health"]["limiter_bound_detections"] == 5 and len(dets) == 108
+    assert m["health"]["limiter_bound_share"] == pytest.approx(5 / 108)
+    assert _gate(m)["limiter_bound_share_at_most_5%"]
+    dets[5].h1_min = 1.4 * p.h_min
+    m, _ = w0.assemble_metrics(res)
+    assert m["health"]["limiter_bound_detections"] == 6 and not _gate(m)["limiter_bound_share_at_most_5%"]
+
+
+def test_assemble_metrics_moisture_residual_includes_the_clamped_moisture(mini_study, monkeypatch) -> None:
+    res = mini_study
+    sums = np.zeros(len(w0.ACC_SUM))
+    for name, v in (("q_clamp", 1.0), ("sum_E", 20.0), ("sum_C", 14.0), ("sum_Qseed", 2.0)):
+        sums[w0.ACC_SUM.index(name)] = v
+    monkeypatch.setattr(res.sim, "totals_sum", sums)
+    monkeypatch.setattr(res.rec, "q0", 100.0)
+    monkeypatch.setattr(res.rec, "q_last", 105.0)
+    m, _ = w0.assemble_metrics(res)
+    assert m["health"]["q_budget_residual"] == pytest.approx(105.0 - 100.0 - (20.0 - 14.0 + 2.0 + 1.0))
+    assert m["health"]["q_budget_residual_relative"] == pytest.approx(-0.04)
+
+
+@pytest.mark.filterwarnings("ignore:Mean of empty slice")  # the stationarity blocks of a 300-step study
+def test_assemble_metrics_reports_the_lifetime_flags_and_the_early_stop(mini_study, monkeypatch) -> None:
+    res = mini_study
+    tracks, _ = _fragments_and_storms()
+    monkeypatch.setattr(res, "tracks", tracks)
+    monkeypatch.setattr(res.st, "t_spin", 1000)
+    monkeypatch.setattr(res.st, "steps", 30000)
+    m, _ = w0.assemble_metrics(res)
+    c2 = m["criteria"]["lifetime"]
+    assert c2["pass"] is False and c2["value"] == 325.0
+    d = c2["detail"]
+    assert d["median_reliable"] and d["n_risk_at_median"] == 11 and d["n_risk_at_threshold"] == 4
+    assert d["companions"]["share_detections_in_long_storms"] > 0.9 and d["reading"].startswith("median 325")
+    es = m["diagnostics"]["early_stop"]
+    assert set(es) >= {"north", "south", "run_meets"} and es["north"]["lifetime_km"]["n"] == 23
+    json.dumps(m, default=str)  # serialisable (the CLI writes it with w0.dumps)
+    assert json.loads(w0.dumps(m))["criteria"]["lifetime"]["detail"]["companions"]["split_born"]["n"] == 21
 
 
 # --- 27. the command line ------------------------------------------------------------------------------
@@ -1254,3 +1765,111 @@ def test_cli_vortex_decay_and_bench_only(tmp_path: Path) -> None:
         and m["numerics"]["vortex_decay"]["n"] == 32
     )
     assert "Unforced-vortex decay" in (out3 / "report.md").read_text()
+
+
+# --- the command line, review fixes ---------------------------------------------------------------------
+
+
+def test_cli_attached_json_is_read_before_overwrite_and_kept(tmp_path: Path, capsys) -> None:
+    """A study re-run in its own directory deletes the files its marker lists, bench.json included, so the
+    attached JSON is read first and written back beside the new study (the bench is a one-off GPU run)."""
+    small = _write_small(tmp_path)
+    out = tmp_path / "x"
+    bench_args = ["--params", str(small), "--bench", "--bench-steps", "10", "--bench-m", "300"]
+    assert w0.main([*bench_args, "--out", str(out), "--quiet"]) == 0
+    bench = out / "bench.json"
+    first = json.loads(bench.read_text())
+    args = ["--params", str(small), "--steps", "50", "--spin-up", "25", "--out", str(out), "--no-plots"]
+    assert w0.main([*args, "--overwrite", "--bench-json", str(bench), "--quiet"]) == 0
+    assert (
+        json.loads(bench.read_text()) == first
+        and "bench.json" in json.loads((out / w0.MARKER).read_text())["files"]
+    )
+    m = json.loads((out / "metrics.json").read_text())
+    assert m["criteria"]["cost"]["value"] == pytest.approx(first["B_plus_C_ms"]) and m["bench"] == first
+    capsys.readouterr()
+    # an unreadable attachment is an error with return code 2, and nothing in the directory is removed
+    before = sorted(f.name for f in out.iterdir())
+    for bad in (tmp_path / "missing.json", tmp_path / "broken.json", tmp_path / "list.json"):
+        if bad.name == "broken.json":
+            bad.write_text("{")
+        elif bad.name == "list.json":
+            bad.write_text("[1, 2]")
+        assert w0.main([*args, "--overwrite", "--bench-json", str(bad), "--quiet"]) == 2, bad.name
+        assert capsys.readouterr().err.startswith("error: --bench-json"), bad.name
+        assert sorted(f.name for f in out.iterdir()) == before
+    assert w0.main([*args, "--overwrite", "--vortex-json", str(tmp_path / "missing.json"), "--quiet"]) == 2
+    assert capsys.readouterr().err.startswith("error: --vortex-json")
+    assert (out / "metrics.json").is_file()
+
+
+def test_cli_default_run_survives_a_missing_matplotlib(tmp_path: Path, monkeypatch, capsys) -> None:
+    """matplotlib is an optional extra: the plots module imports it on its first figure, so the run must
+    skip the figures with a message, finish, and record its files, not crash after writing the report."""
+    monkeypatch.setitem(sys.modules, "matplotlib", None)  # `import matplotlib` now raises ImportError
+    out = tmp_path / "nompl"
+    args = ["--params", str(_write_small(tmp_path)), "--steps", "75", "--spin-up", "25", "--out", str(out)]
+    assert w0.main(args) == 0
+    assert "skipping figures and movies" in capsys.readouterr().out
+    assert (out / "report.md").is_file() and not list(out.glob("*.png")) and not list(out.glob("*.gif"))
+    files = json.loads((out / w0.MARKER).read_text())["files"]
+    assert "report.md" in files and "metrics.json" in files
+
+
+def test_marker_lists_what_this_run_wrote_and_its_frames_only(tmp_path: Path) -> None:
+    out = tmp_path / "o"
+    w0.prepare_out(out, False)
+    (out / "report.md").write_text("ours")
+    (out / "stray.txt").write_text("not ours")
+    (out / "frames").mkdir()
+    (out / "frames" / "t0000100.png").write_bytes(b"png")
+    (out / "frames" / "notes.txt").write_text("not ours")
+    w0.finish_out(out, ["report.md"])
+    assert json.loads((out / w0.MARKER).read_text())["files"] == ["frames/t0000100.png", "report.md"]
+    w0.prepare_out(out, True)
+    assert not (out / "report.md").exists() and not (out / "frames" / "t0000100.png").exists()
+    assert (out / "stray.txt").exists() and (out / "frames" / "notes.txt").exists()
+
+
+def _same(a, b, what: str = "") -> None:
+    x, y = np.asarray(a), np.asarray(b)
+    if ON_GPU and x.dtype.kind == "f":
+        np.testing.assert_allclose(x, y, rtol=1e-6, atol=1e-6, err_msg=what)
+    else:
+        assert np.array_equal(x, y), what
+
+
+def _tracked_sim(compile: bool) -> w0.Sim:
+    """The driver's whole compiled composition: key split + step + fold, the tracer rigs (plain and
+    floor-held) and a non-zero momentum forcing (an impulse from step 25 for 25 steps), with detection."""
+    p = WeatherParams.from_dict({**SMALL, "seed_rate": 0.05})
+    cfg = w0.uniform_cfg(p)
+    rigs = [
+        w0.TracerRig(p, cfg, None, None, m=300, key=1, floor_held=h, compile=compile) for h in (False, True)
+    ]
+    sim = w0.Sim(p, 3, momentum=True, rig=rigs[0], rig_floor_held=rigs[1], compile=compile)
+    arrays = w0.impulse_arrays(p, w0.ImpulseSpec(25, p.L / 2, p.L / 4, 0.04, 0.02, 20.0, 25))
+    zeros = tuple(mx.zeros((p.n, p.n), dtype=mx.float32) for _ in range(4))
+    sim.at(25, lambda s: s._set_momentum(*arrays))
+    sim.at(50, lambda s: s._set_momentum(*zeros))
+    sim.advance(100)
+    return sim
+
+
+def test_compiled_driver_equals_eager_with_tracers_and_an_impulse() -> None:
+    """The graphs W1 composes from this module (fused key + step + fold, the tracer step, a momentum forcing)
+    give the same run compiled and eager."""
+    a, b = _tracked_sim(True), _tracked_sim(False)
+    for f in a.ws._fields:
+        _same(getattr(a.ws, f), getattr(b.ws, f), f)
+    _same(a.key, b.key, "key")
+    for rig_a, rig_b in ((a.rig, b.rig), (a.rig_floor_held, b.rig_floor_held)):
+        _same(rig_a.pos, rig_b.pos, "tracer positions")
+        _same(rig_a.peak, rig_b.peak, "running peak")
+    a.read_interval(), b.read_interval()
+    _same(a.totals_cnt, b.totals_cnt, "counters")
+    _same(a.totals_sum, b.totals_sum, "sums")
+    _same(a.max_run, b.max_run, "maxima")
+    ta, tb = a.tracker.finish(), b.tracker.finish()
+    assert [(t.id, len(t.dets)) for t in ta] == [(t.id, len(t.dets)) for t in tb]
+    assert float(np.abs(np.array(a.ws.u1)).max()) > 0.0 and a.totals_cnt.sum() >= 0
