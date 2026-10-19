@@ -1093,7 +1093,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--observe",
         action="store_true",
-        help="also time the step with the game observers against the plain step (interleaved blocks)",
+        help="also time the step with the game observers (social snapshots included) against the plain step "
+        "(interleaved blocks), and the parts of one snapshot",
     )
     p.add_argument("--json", default=None, metavar="PATH")
     p.set_defaults(func=_cmd_bench)

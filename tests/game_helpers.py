@@ -19,7 +19,7 @@ from alife.game.observe import ObsIn, ObsState, evaluate, init_obs, update
 from alife.game.rules import RULES_V1, RuleSet
 from alife.game.social import SOCIAL_V1, Expo, Rel, SocialRules, SocIn
 from alife.game.society import Society, host_snap
-from alife.state import to_numpy
+from alife.state import State, init_state, to_numpy
 from alife.step import ActFlag, Acts
 
 
@@ -248,3 +248,16 @@ def window_reference(
                 rel[Rel.BOND_SLOTS.value, prev_kin[i], prev_sg[i, slot]] += 1
                 shared[prev_kin[i], prev_sg[i, slot]] += a["share_out"][i, slot]
     return rel, expo, shared
+
+
+def planted_state(cfg: Config) -> State:
+    """``init_state`` with the founders' tags planted in three tight clouds, so that kin groups are tracked
+    (the scattered tags of an unseeded tiny world track none)."""
+    s = init_state(cfg)
+    n0, n = cfg.population.n_init, dims(cfg).n
+    tag = to_numpy(s.tag).copy()
+    centres = np.array([[-0.6, -0.6, -0.6, -0.6], [0.5, 0.5, -0.5, 0.5], [0.0, 0.6, 0.6, -0.6]])
+    rng = np.random.default_rng(3)
+    tag[:n0] = centres[rng.integers(0, 3, n0)] + rng.normal(0, 0.02, (n0, tag.shape[1]))
+    assert tag.shape[0] == n
+    return s._replace(tag=mx.array(tag.astype(np.float32)))

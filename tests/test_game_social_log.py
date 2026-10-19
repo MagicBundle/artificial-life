@@ -22,13 +22,13 @@ import pytest
 
 from alife import cli, runio
 from alife import runner as runner_mod
-from alife.config import Config, apply_overrides, dims
+from alife.config import Config, apply_overrides
 from alife.game.observer import Observer
 from alife.game.social import SOCIAL_V1
 from alife.runio import RunDir
 from alife.state import State, init_state, to_numpy
 from alife.step import make_step
-from game_helpers import social_every
+from game_helpers import planted_state, social_every
 
 END = 60
 SOC15 = dataclasses.replace(SOCIAL_V1, snapshot_every=15)
@@ -352,18 +352,6 @@ def test_row_head_matches_the_record(tiny_cfg: Config, tmp_path: Path) -> None:
     assert all(r["summary"]["houses"]["exact"] for r in records if r["origin"] == 0)
 
 
-def _planted_state(cfg: Config) -> State:
-    """``init_state`` with the founders' tags planted in three tight clouds, so kin groups are tracked."""
-    s = init_state(cfg)
-    n0, n = cfg.population.n_init, dims(cfg).n
-    tag = to_numpy(s.tag).copy()
-    centres = np.array([[-0.6, -0.6, -0.6, -0.6], [0.5, 0.5, -0.5, 0.5], [0.0, 0.6, 0.6, -0.6]])
-    rng = np.random.default_rng(3)
-    tag[:n0] = centres[rng.integers(0, 3, n0)] + rng.normal(0, 0.02, (n0, tag.shape[1]))
-    assert tag.shape[0] == n
-    return s._replace(tag=mx.array(tag.astype(np.float32)))
-
-
 @pytest.mark.parametrize("dim", ["2d", "3d"])
 def test_resume_equality_with_kin_groups_and_territory(
     dim: str, tiny_cfg: Config, tiny3d_cfg: Config, tmp_path: Path
@@ -373,7 +361,7 @@ def test_resume_equality_with_kin_groups_and_territory(
     whose tags are planted in three clouds tracks three kin groups: a resume at 37 (between snapshots) and at
     30 (on one) ends with the reference's log, byte for byte, and its sidecar member by member."""
     cfg = _cfg(tiny3d_cfg if dim == "3d" else tiny_cfg)
-    ref = _run(cfg, tmp_path / "ref", END, _planted_state(cfg))
+    ref = _run(cfg, tmp_path / "ref", END, planted_state(cfg))
     records = ref.social_records()
     assert [r["step"] for r in records] == [15, 30, 45, 60]
     assert all(r["summary"]["kin_groups"]["tracked"] == 3 for r in records), [
@@ -386,7 +374,7 @@ def test_resume_equality_with_kin_groups_and_territory(
     side = ref.read_observers(END)
     assert side is not None and side["host.kin.system"].size > 0 and side["host.terr.ids"].size == 3
     for stop in (30, 37):
-        split = _run(cfg, tmp_path / f"split{stop}", stop, _planted_state(cfg))
+        split = _run(cfg, tmp_path / f"split{stop}", stop, planted_state(cfg))
         _resume(split.path, "--until", str(END))
         split = RunDir.open(split.path)
         assert _log(split) == _log(ref), stop
