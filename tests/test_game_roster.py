@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from alife.config import Config, apply_overrides
+from alife.game import society
 from alife.game.observer import Observer
 from alife.game.rules import ARCHETYPE_NAMES, RULES_V1
 from alife.game.social import DEATH_CAUSES, KIN_NAME_SALT, SOCIAL_V1, SocialRules
@@ -171,10 +172,15 @@ def test_a_group_with_no_member_in_a_top_house_gets_a_generated_name(tiny_cfg: C
             assert name != first
 
 
-def test_a_name_held_by_a_live_group_takes_the_id_and_is_free_when_its_holder_ends(tiny_cfg: Config) -> None:
-    """Two groups admitted together with the same dominant house: the first (by id) has the name, the second
-    ``f"{name} {id}"``. When the holder of the plain name ends, a group admitted later takes the plain name;
-    one admitted while it is held takes its own id."""
+def gen_name(gid: int, sr: SocialRules = SOCIAL_V1) -> str:
+    """The generated name of a kin group (``splitmix64(id, kin_name_salt)``)."""
+    return raw_house_names(np.array([gid]), sr.kin_name_salt)[0]
+
+
+def test_a_house_name_is_given_to_one_live_group_and_free_when_its_holder_ends(tiny_cfg: Config) -> None:
+    """Two groups admitted together with the same dominant house: the first (by id) has the house's name, the
+    second a name generated from its own id (named after no house). When the holder of the house's name ends,
+    a group admitted later takes the house's name; one admitted while it is held is generated too."""
     cfg = tiny_cfg
     rng = np.random.default_rng(5)
     sc = Scene(cfg)
@@ -186,27 +192,72 @@ def test_a_name_held_by_a_live_group_takes_the_id_and_is_free_when_its_holder_en
     base = name_of(5)
     names = drv.society.kin_names
     lo, hi = sorted(names)
-    assert names[lo] == (base, 5) and names[hi] == (f"{base} {hi}", 5)
+    assert names[lo] == (base, 5) and names[hi] == (gen_name(hi), -1)
+    assert gen_name(hi) != base and " " not in gen_name(hi)  # no id appended: it is a name of its own
     holder = lo
     a_id = int(drv.society.kin_slots[drv.kin_lut[_bin(A_BIN)]])
     holder_rows = a if a_id == lo else b
-    # the holder of the plain name ends; D gathers and is admitted: it takes the plain name
+    # the holder of the house's name ends; D gathers and is admitted: it takes the house's name
     si1 = sc.copy_si()
     si1["tag"][holder_rows] = lattice(40, 10)
     si1["tag"][d] = cloud(rng, C_BIN, 10)
     rec1 = drv.advance(si1, 250)
     live = dict(drv.society.kin_names)
-    assert holder not in live and live[hi] == (f"{base} {hi}", 5)
+    assert holder not in live and live[hi] == (gen_name(hi), -1)
     (d_id,) = set(live) - {hi}
     assert live[d_id] == (base, 5)
-    assert sorted(rec1["kin_groups"]["name"]) == sorted([base, f"{base} {hi}"])
-    # E gathers while D holds the plain name: it takes its own id
+    assert sorted(rec1["kin_groups"]["name"]) == sorted([base, gen_name(hi)])
+    # E gathers while D holds the house's name: its own generated name
     si2 = {k: v.copy() for k, v in si1.items()}
     si2["tag"][e] = cloud(rng, (6, 6, 6, 6), 10)
     drv.advance(si2, 500)
     live = dict(drv.society.kin_names)
     (e_id,) = set(live) - {hi, d_id}
-    assert live[e_id] == (f"{base} {e_id}", 5) and len({nm for nm, _ in live.values()}) == 3
+    assert live[e_id] == (gen_name(e_id), -1) and len({nm for nm, _ in live.values()}) == 3
+
+
+def test_several_groups_of_one_clade_get_distinct_names(tiny_cfg: Config) -> None:
+    """The main case of an observer attached mid-run (a resume with ``game.observe`` on, a fork): houses are
+    seeded from clades, so six kin groups of one clade have the same one house. The first has its name, the
+    others generated ones, and no name has an id appended; a group of another clade has its own house's."""
+    cfg = tiny_cfg
+    rng = np.random.default_rng(0)
+    sc = Scene(cfg)
+    for i in range(6):
+        sc.add(cloud(rng, (2 + 2 * i, 3, 3, 3), 12), clade=2)
+    sc.add(cloud(rng, (12, 12, 12, 12), 12), clade=1)
+    drv = SocDriver(cfg, sc.si, step=1_490_000)
+    names = drv.society.kin_names
+    assert len(names) == 7 and len({nm for nm, _ in names.values()}) == 7
+    assert all(" " not in nm for nm, _ in names.values())
+    named = {a: (i, nm) for i, (nm, a) in names.items() if a >= 0}  # house -> (group, name)
+    assert sorted(named) == [1, 2] and named[1][1] == name_of(1) and named[2][1] == name_of(2)
+    clade2 = sorted(set(names) - {named[1][0]})
+    assert len(clade2) == 6 and named[2][0] == clade2[0]  # the first group of the clade has the house's name
+    assert all(names[i] == (gen_name(i), -1) for i in clade2[1:])  # the others, generated from their ids
+
+
+def test_a_generated_name_that_is_held_takes_the_id(
+    tiny_cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The suffix is the last resort: two groups with no house name whose generated names are the same (the
+    generator is made to return one name for the kin salt) get the name and ``f"{name} {id}"``."""
+    cfg = tiny_cfg
+    rng = np.random.default_rng(4)
+    sc = Scene(cfg)
+    for i in range(16):  # sixteen houses of 20 lone rows
+        sc.add(lattice(20 * i, 20), clade=100 + i)
+    sc.add(cloud(rng, (4, 4, 4, 4), 9))
+    sc.add(cloud(rng, (9, 9, 9, 9), 9))  # two groups of one-row houses
+    real = society.house_names
+    monkeypatch.setattr(
+        society,
+        "house_names",
+        lambda ids, salt: ["Same"] * len(ids) if salt == SOCIAL_V1.kin_name_salt else real(ids, salt),
+    )
+    drv = SocDriver(cfg, sc.si)
+    lo, hi = sorted(drv.society.kin_names)
+    assert drv.society.kin_names[lo] == ("Same", -1) and drv.society.kin_names[hi] == (f"Same {hi}", -1)
 
 
 def _bin(b: tuple[int, int, int, int]) -> int:

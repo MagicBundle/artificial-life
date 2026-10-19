@@ -10,11 +10,13 @@ empirical gate (the channel reads only arrays that are already kernel boundaries
 runs on the CPU in the suite and on Metal before merge. The value tests cannot see a regrouping of the fused
 float kernels that leaves every value unchanged (it can change Metal's rounding), so a structural test pins
 the channel's read set on the traced graph: which trajectory arrays the channel reads, and that S12 is
-computed once (§28.2).
+computed once (§28.2). A second one compares the fused kernels of the compiled step with observe off and on,
+because ``mx.compile`` merges identical sub-expressions and so reads more than the eager graph shows.
 """
 
 from __future__ import annotations
 
+import collections
 import dataclasses
 import json
 import re
@@ -26,7 +28,7 @@ import numpy as np
 import pytest
 from mlx.utils import tree_flatten
 
-from alife import actions, bonds, brain, cli, energy, lifecycle, runner, spatial
+from alife import actions, bonds, brain, cli, energy, layout, lifecycle, runner, spatial
 from alife import step as step_mod
 from alife.config import Config, apply_overrides, config_to_dict, load_config
 from alife.game.observe import EVAL_BIT, ObsIn, obs_in
@@ -166,27 +168,28 @@ CHANNEL_TAPS = frozenset(
     }
 )  # fmt: skip
 
-_DOT_PRIM = re.compile(r'\{ (\d+) \[label ="[^"]+"')
+_DOT_PRIM = re.compile(r'\{ (\d+) \[label ="([^"]+)"')
 _DOT_IN = re.compile(r'"([^"]+)" -> (\d+)$')
 _DOT_OUT = re.compile(r'(\d+) -> "([^"]+)"$')
 
 
-def _parse_dot(path: Path) -> tuple[set[str], dict[str, str], dict[str, list[str]]]:
-    """Primitive ids, the producer primitive of every array name, and the input array names of every
-    primitive, from an ``mx.export_to_dot`` file. Primitive ids are object addresses: they agree across two
-    exports made in the same process, which is what the comparison below relies on."""
-    prims: set[str] = set()
+def _parse_dot(path: Path) -> tuple[dict[str, str], dict[str, str], dict[str, list[str]]]:
+    """The label of every primitive, the producer primitive of every array name, and the input array names of
+    every primitive, from an ``mx.export_to_dot`` file. Primitive ids are object addresses: they agree across
+    two exports made in the same process, which is what the eager comparison below relies on; the compiled
+    comparison uses the labels only."""
+    labels: dict[str, str] = {}
     producer: dict[str, str] = {}
     inputs: dict[str, list[str]] = {}
     for raw in path.read_text().splitlines():
         line = raw.strip()
         if m := _DOT_PRIM.match(line):
-            prims.add(m.group(1))
+            labels[m.group(1)] = m.group(2)
         elif m := _DOT_IN.match(line):
             inputs.setdefault(m.group(2), []).append(m.group(1))
         elif m := _DOT_OUT.match(line):
             producer[m.group(2)] = m.group(1)
-    return prims, producer, inputs
+    return labels, producer, inputs
 
 
 def _channel_taps(
@@ -199,10 +202,16 @@ def _channel_taps(
 
     A tap is an array produced by a primitive of the trajectory graph (the new state and ``out.base()``) that
     the channel reads: an input of a primitive only the channel uses, or a channel output itself. Returns the
-    names of the allowed taps found, the auto-assigned names of any other tap, and the number of
-    ``share_slots`` calls. The allowed arrays are captured by wrapping the sub-step functions and named
-    through the keyword arguments of ``export_to_dot``. ``mutate`` installs a deliberate break after the
-    wrappers (the meta-tests).
+    names of the allowed taps found, the unlisted taps (the auto-assigned names of the arrays read by a
+    channel op, and ``Acts.<field>`` for a channel field that *is* an unlisted trajectory array, returned
+    with no op of its own), and the number of ``share_slots`` calls. The allowed arrays are captured by
+    wrapping the sub-step functions and named through the keyword arguments of ``export_to_dot``; every other
+    channel field is named ``acts_<field>`` so that a field that is a trajectory array is seen. ``mutate``
+    installs a deliberate break after the wrappers (the meta-tests).
+
+    This is the *eager* graph. ``mx.compile`` also merges identical sub-expressions (CSE), so a channel
+    expression that repeats a trajectory one reads the intermediate of a fused kernel although it lists only
+    allowed arrays here: ``test_the_channel_regroups_no_float_kernel_of_the_compiled_step`` covers that.
     """
     cap: dict = {"sl_all": []}
     real = (
@@ -272,14 +281,24 @@ def _channel_taps(
     trajectory = [v for _, v in tree_flatten((s1, out.base()))]
     f_traj, f_acts = tmp_path / "trajectory.dot", tmp_path / "acts.dot"
     mx.export_to_dot(str(f_traj), *trajectory)
-    mx.export_to_dot(str(f_acts), *out.acts, **allowed)
+    # a field that is one of the listed arrays (the same object) is a listed tap; any other field is named so
+    # that, if it is a trajectory array, its producer is found (a field with no op is nobody's input)
+    seen = {id(a) for a in allowed.values()}
+    fields: dict[str, mx.array] = {}
+    for name, a in zip(out.acts._fields, out.acts, strict=True):
+        if id(a) not in seen:
+            seen.add(id(a))
+            fields[f"acts_{name}"] = a
+    mx.export_to_dot(str(f_acts), *out.acts, **allowed, **fields)
     p_traj, _, _ = _parse_dot(f_traj)
     p_acts, producer, inputs = _parse_dot(f_acts)
     taps: set[str] = set()
-    for prim in p_acts - p_traj:  # primitives only the channel uses
+    for prim in p_acts.keys() - p_traj.keys():  # primitives only the channel uses
         taps.update(a for a in inputs.get(prim, []) if producer.get(a) in p_traj)
     taps.update(a for a, prim in producer.items() if prim in p_traj and a in allowed)  # outputs read directly
-    return {t for t in taps if t in allowed}, sorted(t for t in taps if t not in allowed), len(cap["sl_all"])
+    unlisted = sorted(t for t in taps if t not in allowed)
+    unlisted += [f"Acts.{k.removeprefix('acts_')}" for k in fields if producer.get(k) in p_traj]  # no op
+    return {t for t in taps if t in allowed}, unlisted, len(cap["sl_all"])
 
 
 CHANNEL_CONFIGS = [
@@ -328,6 +347,19 @@ def _valid_from_nbr_valid(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(step_mod, "_acts", acts)
 
 
+def _thrust_as_a_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutant: a channel field *is* the post-S8 float thrust (no op of its own: it is no primitive's input, so
+    only the field check of ``_channel_taps`` sees it; the ``EMITTED`` flag still taps ``emit_post``)."""
+    orig = step_mod._acts
+    monkeypatch.setattr(
+        step_mod,
+        "_acts",
+        lambda f, sl, thrust0, y, alive0, cfg: orig(f, sl, thrust0, y, alive0, cfg)._replace(
+            emit=f.act.thrust
+        ),
+    )
+
+
 def _second_share(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutant: S12 is computed twice (the same values; a second consumer of every float node of the share)."""
     once = energy.share_slots
@@ -343,6 +375,7 @@ MUTANTS = [
     pytest.param(_thrust_after_the_mask, id="post-S8-thrust"),
     pytest.param(_second_share, id="2nd-S12"),
     pytest.param(_valid_from_nbr_valid, id="nbr-valid"),
+    pytest.param(_thrust_as_a_field, id="post-S8-thrust-as-a-field"),
 ]
 
 
@@ -355,12 +388,16 @@ def test_the_structural_probe_catches_value_neutral_breaks(
     assert unnamed or n_share != 1
     if mutant is _valid_from_nbr_valid:
         assert len(unnamed) == 1 and n_share == 1  # exactly the one new read: nbr.valid
+    if mutant is _thrust_as_a_field:
+        assert unnamed == ["Acts.emit"] and n_share == 1  # the field itself, which no op reads
 
 
 @pytest.mark.parametrize("mutant", MUTANTS)
 @pytest.mark.parametrize("preset", ["tiny", "tiny3d"])
 def test_the_mutants_are_value_neutral(mutant: Callable[[pytest.MonkeyPatch], None], preset: str) -> None:
-    """The premise of the meta-test: a mutated channel returns the same arrays as the real one."""
+    """The premise of the meta-test: a mutated channel returns the same arrays as the real one. The field
+    mutant cannot: its field holds the trajectory array itself. It leaves the step's own outputs and every
+    other field equal."""
     cfg = load_config(preset=preset, overrides=["brain.weight_dtype=float32"])
     s = init_state(cfg)
     mx.eval(s)
@@ -370,7 +407,165 @@ def test_the_mutants_are_value_neutral(mutant: Callable[[pytest.MonkeyPatch], No
         mutant(m)
         _, mutated = step_mod.step(s, cfg, observe=True)
         mx.eval(mutated)
+    if mutant is _thrust_as_a_field:
+        assert _same(real.base(), mutated.base())
+        same_fields = [
+            _same(a, b)
+            for name, a, b in zip(real.acts._fields, real.acts, mutated.acts, strict=True)
+            if name != "emit"
+        ]
+        assert all(same_fields) and not _same(real.acts.emit, mutated.acts.emit)
+    else:
+        assert _same(real, mutated)
+
+
+# --- the compiled trajectory, structurally -----------------------------------------------------------------
+
+# ``mx.compile`` merges identical sub-expressions (CSE), so the eager read set above is not the compiled one:
+# a channel expression that repeats a trajectory sub-expression (the decode's ``tanh(y_turn)``, the solvency
+# cancel of the thrust, ...) reads only listed arrays when traced eagerly, but in the compiled step it is the
+# same node as the trajectory's, and so it makes an intermediate of a fused float kernel a kernel output (or
+# splits the kernel). This compares the fused kernels of the compiled step with observe off and on.
+#
+# The trajectory graph is the ancestors of the new state and ``out.base()``, exported after one call of the
+# compiled step and before anything is evaluated (the export is of the compiled tape, ``Compiled*`` labels
+# being fused kernels, not of the JIT cache). A primitive's signature is its label (the operations fused into
+# it) and its number of outputs: a kernel whose arithmetic is regrouped, split or given an output has another
+# one, and a kernel whose inputs come from a kernel that changed has not. The channel may change only kernels
+# made of comparisons, selects, bit operations and casts: they cannot round, so a regrouping of them cannot
+# change a result on any device. Today these are exactly three groups, the same in 2D and 3D, f32 and
+# f16: the ``HIT`` bit (``Combat.hit`` becomes a kernel output, so the ``ATTACK_HITS`` counter's kernel splits
+# before its cast; G1), the ``KILLED`` bit (its comparison is the ``DEATHS_KILLED`` counter's own, so CSE
+# merges the two, on purpose, and splits the counter's kernel before its cast) and the post-S8 ``bond_target``
+# (the select kernel of the S9 partner gains a second output).
+_EXACT_OPS = (
+    "Compiled",
+    "Broadcast",
+    "GreaterEqual",
+    "Greater",
+    "Equal",
+    "Select",
+    "BitwiseAnd",
+    "AsType",
+)
+_EXACT_LABEL = re.compile("(?:" + "|".join(_EXACT_OPS) + ")+")
+
+
+def _kernel_signatures(path: Path) -> collections.Counter[tuple[str, int]]:
+    """The multiset of (label, number of outputs) of the primitives of an exported graph. Neither the inputs
+    of a kernel nor the output a consumer reads are part of it: a kernel is changed by what is fused into it
+    and by what it has to write, not by where its inputs come from."""
+    labels, producer, _ = _parse_dot(path)
+    n_out = collections.Counter(producer.values())
+    return collections.Counter((label, n_out[p]) for p, label in labels.items())
+
+
+def _compiled_kernels(cfg: Config, observe: bool, path: Path) -> collections.Counter:
+    fn = make_step(cfg, compile=True, observe=observe)
+    s = init_state(cfg)
+    mx.eval(s)
+    s1, out = fn(s)  # not evaluated: the arrays still carry the compiled tape
+    mx.export_to_dot(str(path), *[v for _, v in tree_flatten((s1, out.base() if observe else out))])
+    return _kernel_signatures(path)
+
+
+def _compiled_difference(
+    cfg: Config,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutate: Callable[[pytest.MonkeyPatch], None] | None = None,
+) -> tuple[list[str], list[str]]:
+    """``(inexact, differing)``: the labels of the kernels that differ between the compiled step with observe
+    off and on (``mutate`` applied to the latter), those not made of the exact ops above and all of them."""
+    off = _compiled_kernels(cfg, False, tmp_path / "off.dot")
+    if mutate is not None:
+        mutate(monkeypatch)
+    on = _compiled_kernels(cfg, True, tmp_path / "on.dot")
+    monkeypatch.undo()
+    differing = sorted({sig[0] for sig in (off - on) + (on - off)})
+    return [lab for lab in differing if not _EXACT_LABEL.fullmatch(lab)], differing
+
+
+@pytest.mark.parametrize(("preset", "overrides"), CHANNEL_CONFIGS)
+def test_the_channel_regroups_no_float_kernel_of_the_compiled_step(
+    preset: str, overrides: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """§28.2, §29.2: with observe on, the fused kernels of the compiled step differ from those with observe
+    off only in comparisons, selects, bit operations and casts (see above): no kernel with a
+    float operation (a ``Tanh``, ``Multiply``, ``Divide``, ...) is regrouped, split or given an output. It
+    is the guard that sees ``mx.compile``'s merging of identical sub-expressions (the eager test cannot)."""
+    inexact, differing = _compiled_difference(
+        load_config(preset=preset, overrides=overrides), monkeypatch, tmp_path
+    )
+    assert differing, "the channel changes no kernel at all: the comparison is vacuous"
+    assert not inexact, f"the channel changes {len(inexact)} kernel(s) with other operations: {inexact}"
+
+
+def _cse_mutant(expr: Callable[[Config, mx.array, mx.array, mx.array], mx.array]):
+    """Mutant: a channel field depends, value-neutrally, on ``expr``, which repeats a sub-expression of the
+    step from allowed arrays only (the field gains ``expr > 1e30``, never true for a bounded value)."""
+
+    def mutate(monkeypatch: pytest.MonkeyPatch) -> None:
+        orig = step_mod._acts
+
+        def acts(f, sl, thrust0, y, alive0, cfg):
+            a = orig(f, sl, thrust0, y, alive0, cfg)
+            junk = (expr(cfg, f.costs.solvent, thrust0, y) > 1e30).astype(mx.int16)
+            return a._replace(thrust=a.thrust + junk)
+
+        monkeypatch.setattr(step_mod, "_acts", acts)
+
+    return mutate
+
+
+CSE_MUTANTS = [
+    # actions.mask's cancel of the thrust: a read of the post-S8 float thrust, as G1's mutant, by CSE
+    pytest.param(
+        _cse_mutant(lambda cfg, solvent, thrust0, y: mx.where(solvent, thrust0, 0.0)), id="cse-thrust"
+    ),
+    # the decode of the turn, of the contraction and of the defence, from y (a listed tap)
+    pytest.param(
+        _cse_mutant(lambda cfg, solvent, thrust0, y: cfg.physics.turn_max * mx.tanh(y[:, layout.OUT_TURN])),
+        id="cse-turn",
+    ),
+    pytest.param(
+        _cse_mutant(lambda cfg, solvent, thrust0, y: mx.tanh(y[:, layout.OUT_CONTRACT])), id="cse-contract"
+    ),
+    pytest.param(
+        _cse_mutant(lambda cfg, solvent, thrust0, y: mx.sigmoid(y[:, layout.OUT_DEFEND])), id="cse-defend"
+    ),
+]
+
+
+@pytest.mark.parametrize("mutant", CSE_MUTANTS)
+def test_the_cse_mutants_are_value_neutral(mutant: Callable[[pytest.MonkeyPatch], None]) -> None:
+    """The premise of the next test: a mutated channel returns the same arrays as the real one."""
+    cfg = load_config(preset="tiny", overrides=["brain.weight_dtype=float32"])
+    s = init_state(cfg)
+    mx.eval(s)
+    _, real = step_mod.step(s, cfg, observe=True)
+    mx.eval(real)
+    with pytest.MonkeyPatch.context() as m:
+        mutant(m)
+        _, mutated = step_mod.step(s, cfg, observe=True)
+        mx.eval(mutated)
     assert _same(real, mutated)
+
+
+@pytest.mark.parametrize("mutant", [*CSE_MUTANTS, MUTANTS[0], MUTANTS[3]])
+@pytest.mark.parametrize("overrides", [["brain.weight_dtype=float32"], []], ids=["f32", "f16"])
+def test_the_compiled_probe_catches_value_neutral_breaks(
+    mutant: Callable[[pytest.MonkeyPatch], None],
+    overrides: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Every mutant leaves the trajectory unchanged (the field mutant changes that one field) and splits, or
+    gives an output to, a fused float kernel of the compiled step. The first four read only listed arrays when
+    traced eagerly, which is why the eager test misses them; the last two are caught there too."""
+    cfg = load_config(preset="tiny", overrides=overrides)
+    inexact, _ = _compiled_difference(cfg, monkeypatch, tmp_path, mutate=mutant)
+    assert inexact
 
 
 # --- through the runner and the CLI -------------------------------------------------------------------------

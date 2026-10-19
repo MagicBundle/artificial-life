@@ -508,7 +508,8 @@ queries. Factions that behave as factions must therefore be groups in tag space.
 - **Names and the roster in G2** (DESIGN §29.14). A chronicle needs characters, so a kin group is **named once, when it is
   admitted**, and keeps the name for as long as it is tracked: the name of its dominant house (the named top-16 house
   with the most of its members; `named_after` says which), else a generated name from the house name generator on its
-  id; a name held by a live group gets the id appended. The names are saved in the sidecar. Each listed kin group also
+  id; a house's name goes to one live group at a time (the next group of the same house gets a generated name), and a
+  generated name that is held gets the id appended. The names are saved in the sidecar. Each listed kin group also
   carries, in its table row: its **births and deaths by cause** over the window (counted on the device for the slot it
   held, from the channel's per-row death cause, so a mass die-off beyond the 2,048 death records of a step is still
   counted whole; null for a group admitted at this snapshot), its **centroid** (a circular mean on the torus) and its

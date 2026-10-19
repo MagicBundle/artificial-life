@@ -15,7 +15,7 @@ import pytest
 from alife import layout, metrics, runio
 from alife.analysis import phylo
 from alife.config import Config, apply_overrides, dims, load_config
-from alife.game.social import HOUSE_UNKNOWN, SOCIAL_V1, SocialRules, soc_in
+from alife.game.social import HOUSE_UNKNOWN, SOCIAL_V1, Expo, Rel, SocialRules, soc_in
 from alife.game.society import (
     CODA,
     NUCLEUS,
@@ -1229,11 +1229,41 @@ def _cap_scene(cfg: Config, generation: int) -> dict[str, np.ndarray]:
     return sc.si
 
 
+RECORD_BUDGET = 16 * 1024  # DESIGN §29.11: the widest plausible record of the scene below, with headroom
+HEAD_BUDGET = 512
+
+
+def _renumbered(soc: Society, cfg: Config, kin_offset: int, col_offset: int, step: int) -> Society:
+    """``soc`` as it would be late in a long run: every kin-group id raised by ``kin_offset`` and every colony
+    id by ``col_offset`` (tracker ids are never reused, so they grow with the run), and each kin group named
+    with the longest generated name (10 letters) and its id, the form of a name that was held when it was
+    given."""
+    a = soc.arrays()
+    for fam, off in (("kin", kin_offset), ("col", col_offset)):
+        a[f"host.{fam}.system"] = a[f"host.{fam}.system"] + off
+        a[f"host.{fam}.slots"] = np.where(a[f"host.{fam}.slots"] >= 0, a[f"host.{fam}.slots"] + off, -1)
+        a[f"host.{fam}.next_id"] = np.array(int(a[f"host.{fam}.next_id"]) + off, np.int64)
+    a["host.terr.ids"] = np.where(a["host.terr.ids"] >= 0, a["host.terr.ids"] + kin_offset, -1)
+    names = [
+        [i + kin_offset, f"{'B' * 10} {i + kin_offset}", after]
+        for i, _, after in json.loads(str(a["host.kin.names"]))
+    ]
+    a["host.kin.names"] = np.array(runio._dumps(names))
+    out, why = Society.from_arrays(a, cfg, SOCIAL_V1, step=step)
+    assert out is not None, why
+    return out
+
+
 def test_head_and_record_size_budget(tiny3d_cfg: Config) -> None:
     """A synthetic 64k-like 3-D snapshot with every cap reached (17 window ids, 16 rows in each top table, 32
-    events, 32 relations, 32 house events of each kind, 7-digit steps, 8-digit ids) and the roster's columns
-    at their widest (a name, six-digit window births and deaths by cause and seven archetype shares for every
-    listed group): the record is at most 12 KB and the head at most 0.5 KB."""
+    events, 32 relations, 32 house events of each kind, 7-digit steps, 8-digit house ids) and every column at
+    the widest value a long 64k run plausibly gives it: six-digit kin-group ids and seven-digit colony ids
+    (tracker ids are never reused), names of 10 letters and the id, window counts of six to eight digits
+    (the 250-step window of ``runs/64k_s0`` at 1.5M steps: 115k attacks, 780k proposals, 22.6M quanta shared,
+    6.8M bond-steps, spread over the listed pairs, each at its largest), exposures of ten digits with three
+    decimals, and the roster's columns (six-digit births and deaths by cause, seven archetype shares). The
+    record is at most 16 KB, the head at most 0.5 KB. (A scene with one-attack pairs and two-digit ids gave
+    10,951 B; the 64k_s0 window with long-run ids 12.5 KB; this one 13.3 KB.)"""
     cfg = tiny3d_cfg
     base = 1_490_000
     first = _cap_scene(cfg, 0)
@@ -1241,6 +1271,7 @@ def test_head_and_record_size_budget(tiny3d_cfg: Config) -> None:
     assert (
         drv.society.head()["kin_groups"]["tracked"] == 17 and drv.society.head()["colonies"]["tracked"] == 40
     )
+    drv.society = _renumbered(drv.society, cfg, 100_000, 1_000_000, base)
     # 16 kin groups hold a slot and one is OTHER; 16 colonies hold a slot and 24 are "other tracked" (F)
     kin_rows = drv.kin_slot_rows()
     in_group = kin_rows[first["alive"]]
@@ -1269,12 +1300,27 @@ def test_head_and_record_size_budget(tiny3d_cfg: Config) -> None:
         acts["attack_target"][attacker] = rows[b]
         acts["nbr"][attacker, 0] = rows[b]
     acts["q_kin"][:] = np.where(first["alive"][:, None], [300, -200], 0)
-    # the roster: six-digit window counts for every slot (the window of 250 steps of a 64k run can hold that
-    # many births), and a label for every row, so that every share has digits
-    g = SOCIAL_V1.slots + 1
+    # the window's counts: each listed pair at the width of the whole window's total (a bound, not a sum), the
+    # exposure sums at ten digits with a third (j = 2) or a sixth (j = 5) so that three decimals are written
+    g, k = SOCIAL_V1.slots + 1, drv.so.expo.shape[-1]
+    rel = np.zeros((5, g, g), np.int64)
+    expo = np.zeros((2, g, g, k), np.int64)
+    shared = np.zeros((g, g), np.int64)
+    for i, (a, b) in enumerate(pairs):
+        rel[Rel.ATTACKS, a, b], rel[Rel.HITS, a, b], rel[Rel.KILLS, a, b] = (
+            999_000 + i,
+            998_000 + i,
+            99_000 + i,
+        )
+        rel[Rel.BONDS, a, b], rel[Rel.BOND_SLOTS, a, b] = 997_000 + i, 9_990_000 + i
+        shared[a, b] = 99_900_000 + i
+        expo[Expo.ATTACK, a, b, 2], expo[Expo.BOND, a, b, 5] = 2_999_998 - i, 5_999_999 - i
     drv.so = drv.so._replace(
         births=mx.array(900_000 + np.arange(g), dtype=mx.int64),
         deaths=mx.array(800_000 + 17 * np.arange(4 * g).reshape(4, g), dtype=mx.int64),
+        rel=drv.so.rel + mx.array(rel),
+        expo=drv.so.expo + mx.array(expo),
+        shared=drv.so.shared + mx.array(shared),
     )
     labels = 1 + np.random.default_rng(3).integers(0, 7, size=first["alive"].shape).astype(np.int32)
     rec = drv.advance(_cap_scene(cfg, 1), base + 250, make_acts(acts), arch=labels)
@@ -1296,10 +1342,29 @@ def test_head_and_record_size_budget(tiny3d_cfg: Config) -> None:
     kg = rec["kin_groups"]
     assert None not in kg["births"] and None not in kg["deaths"] and None not in kg["arch"]
     assert None not in kg["x"] and len(kg["name"]) == 16 and all(len(a) == 7 for a in kg["arch"])
-    # the budgets (the sizes here are the measured ones of this scene)
+    # ... and every column is at its width
+    assert {len(str(i)) for i in kg["id"]} == {6} and {len(n) for n in kg["name"]} == {17}
+    assert {len(str(i)) for i in rec["colonies"]["id"]} == {7}
+    rl = rec["relations"]
+    assert {len(str(i)) for i in (*rl["a"], *rl["b"])} == {6}
+    for col, digits in (
+        ("attacks", 6),
+        ("hits", 6),
+        ("kills", 5),
+        ("bonds", 6),
+        ("bond_slots", 7),
+        ("shared", 8),
+    ):
+        assert {len(str(v)) for v in rl[col]} == {digits}, col
+    for col in ("exp_attacks", "exp_bonds"):
+        assert all(len(f"{v:.3f}") >= 10 for v in rl[col]), col
+    # the budgets. House names are regenerated at every snapshot: add what the longest possible name, a
+    # 10-letter one with " <8-digit id>" (a collision among the top houses), would add to each of them.
+    widest_house = len("B" * 10) + len(" 99999999")
+    allowance = sum(widest_house - len(n) for n in rec["houses"]["name"])
     size, hsize = len(runio._dumps(rec)), len(runio._dumps(head))
-    assert size <= 12 * 1024, size
-    assert hsize <= 512, hsize
+    assert size + allowance <= RECORD_BUDGET, (size, allowance)
+    assert hsize <= HEAD_BUDGET, hsize
     _valid_json(rec, head)
 
 
@@ -1465,6 +1530,16 @@ def _case(name: str, arrays: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         a["host.kin.names"] = np.array(_names_json(lambda items: items[:-1], a))
     elif name == "names_group_extra":
         a["host.kin.names"] = np.array(_names_json(lambda items: [*items, [10_000, "Zzz", None]], a))
+    elif name == "names_id_over_int64":  # a JSON int that no int64 array can hold
+        a["host.kin.names"] = np.array('[[100000000000000000000, "X", null]]')
+    elif name == "names_id_int64_max":  # a well-formed item, but not a tracked group
+        a["host.kin.names"] = np.array(_names_json(lambda items: [*items, [2**63 - 1, "Zzz", None]], a))
+    elif name == "names_house_over_int64":
+        a["host.kin.names"] = np.array(_names_json(lambda items: [[items[0][0], "A", 2**63], *items[1:]], a))
+    elif name == "names_too_deep":  # nested past the parser's recursion limit
+        a["host.kin.names"] = np.array("[" * 100_000 + "]" * 100_000)
+    elif name == "summary_too_deep":
+        a["host.summary"] = np.array('{"houses": ' + "[" * 100_000 + "]" * 100_000 + "}")
     else:
         raise AssertionError(name)
     return a
@@ -1495,7 +1570,10 @@ CASES = [
     ("names_empty_name", "holds an item"), ("names_bad_house", "holds an item"),
     ("names_bool_id", "holds an item"), ("names_unsorted", "sorted by id"),
     ("names_duplicate", "sorted by id"), ("names_group_missing", "exactly the tracked"),
-    ("names_group_extra", "exactly the tracked"),
+    ("names_group_extra", "exactly the tracked"), ("names_id_over_int64", "holds an item"),
+    ("names_id_int64_max", "exactly the tracked"), ("names_house_over_int64", "holds an item"),
+    ("names_too_deep", "host.kin.names is not JSON"),
+    ("summary_too_deep", "host.summary is not JSON"),
 ]  # fmt: skip
 
 
@@ -1514,6 +1592,23 @@ def test_from_arrays_rejects(name: str, needle: str, tiny_cfg: Config) -> None:
     assert good["host.houses"].size >= 2 and len(json.loads(str(good["host.kin.names"]))) >= 3
     soc, reason = Society.from_arrays(_case(name, good), cfg, SOCIAL_V1, step=750)
     assert soc is None and needle in reason, (name, reason)
+
+
+def test_from_arrays_accepts_a_house_id_up_to_int64_max(tiny_cfg: Config) -> None:
+    """The bound on the ids of a sidecar's names is the int64 range, inclusive: a house id of 2^63 - 1 is a
+    well-formed item (2^63 is not, see ``CASES``)."""
+    cfg = tiny_cfg
+    si, _ = _sim_scene(cfg)
+    drv = SocDriver(cfg, si)
+    drv.advance(si, 250)
+    arrays = drv.society.arrays()
+    first = json.loads(str(arrays["host.kin.names"]))[0][0]
+    arrays["host.kin.names"] = np.array(
+        _names_json(lambda items: [[first, items[0][1], 2**63 - 1], *items[1:]], arrays)
+    )
+    soc, why = Society.from_arrays(arrays, cfg, SOCIAL_V1, step=250)
+    assert soc is not None, why
+    assert soc.kin_names[first][1] == 2**63 - 1
 
 
 def test_from_arrays_rejects_a_foreign_society(tiny_cfg: Config) -> None:

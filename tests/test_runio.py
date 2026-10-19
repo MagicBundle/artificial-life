@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 
 import mlx.core as mx
@@ -387,6 +389,94 @@ def test_truncate_after_on_fresh_run(micro_cfg: Config, tmp_path: Path) -> None:
     assert not rd.observers_dir.exists() and not rd.social_path.exists() and rd.social_records() == []
     rd.truncate_after(0, keep_director=True)
     assert not rd.observers_dir.exists()
+
+
+class _Stop(BaseException):
+    """A power cut: not an ``Exception``, so nothing under test can swallow it."""
+
+
+@contextlib.contextmanager
+def _power_cut(root: Path, k: int) -> Iterator[None]:
+    """Raise ``_Stop`` at the ``k``-th (from 0) write or delete under ``root``, before it happens."""
+    seen = {"n": 0}
+    real = (Path.unlink, runio._atomic_write_text, runio._write_npz)
+
+    def tick(path: Path) -> None:
+        if str(path).startswith(str(root)):
+            if seen["n"] == k:
+                raise _Stop
+            seen["n"] += 1
+
+    def unlink(self: Path, *a: object, **kw: object) -> None:
+        tick(self)
+        real[0](self, *a, **kw)
+
+    def write_text(path: Path, *a: object, **kw: object) -> None:
+        tick(path)
+        real[1](path, *a, **kw)
+
+    def write_npz(path: Path, *a: object, **kw: object) -> None:
+        tick(path)
+        real[2](path, *a, **kw)
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(Path, "unlink", unlink)
+        m.setattr(runio, "_atomic_write_text", write_text)
+        m.setattr(runio, "_write_npz", write_npz)
+        yield
+
+
+def test_truncate_after_stopped_anywhere_loses_nothing(micro_cfg: Config, tmp_path: Path) -> None:
+    """`alife resume --checkpoint 20` stopped by a power cut at any point of the cut, then a plain `resume`
+    (which loads the newest checkpoint and cuts again): a log is never cut while a checkpoint after the step
+    is still there to be resumed from (the records between would be lost for good), and finishing the cut
+    gives exactly the files of an uninterrupted one. The run has every kind of file the cut touches: rows, the
+    director log and archive, the social log, event chunks (one spans the step), checkpoints with sidecars."""
+    cfg = apply_overrides(micro_cfg, ["run.keep_checkpoints=3"])
+    rd = RunDir.create(tmp_path / "pristine", cfg)
+    s = _scene(cfg)
+    for s0, s1 in ((0, 30), (30, 60)):
+        rd.write_events(s0, s1, _births(list(range(s0, s1))), _deaths([s0, s1 - 1]))
+    rd.append_metrics([{"step": t, "steps": 10} for t in range(10, 61, 10)])
+    rd.append_jsonl("director.jsonl", [{"step_applied": t, "kind": "x"} for t in (10, 30, 50)])
+    rd.write_json("director_archive.json", {"as_of_step": 60})
+    rd.append_social([_social(t) for t in range(15, 61, 15)])
+    for step in (0, 20, 40, 60):
+        rd.save_checkpoint(_at_step(s, step), cfg, observers={"x": np.arange(3, dtype=np.int32)})
+    assert [st for st, _ in rd.checkpoints()] == [0, 20, 40, 60]
+    base = _tree(rd.path)
+    uncut = shutil.copytree(rd.path, tmp_path / "uncut")
+    RunDir.open(uncut).truncate_after(20)
+    want = _tree(uncut)
+    assert want != base and not list(uncut.rglob("*.tmp"))
+
+    def is_log(rel: str) -> bool:  # everything the cut rewrites or deletes but the checkpoints and sidecars
+        return not rel.startswith("checkpoints/") and not rel.startswith("observers/step_")
+
+    k = 0
+    while True:
+        twin = shutil.copytree(rd.path, tmp_path / f"stop{k}")
+        with _power_cut(twin, k):
+            try:
+                RunDir.open(twin).truncate_after(20)
+                stopped = False
+            except _Stop:
+                stopped = True
+        here = RunDir.open(twin)
+        tree = _tree(twin)
+        logs_cut = any(tree.get(rel) != data for rel, data in base.items() if is_log(rel)) or any(
+            is_log(rel) for rel in tree.keys() - base.keys()
+        )
+        later = [st for st, _ in here.checkpoints() if st > 20]
+        assert not (logs_cut and later), f"stopped at operation {k}: logs cut with checkpoints {later} left"
+        if not later:  # nothing after the step: a plain resume takes the checkpoint at the step
+            assert here.latest_checkpoint() == here.checkpoint_at(20), k
+        RunDir.open(twin).truncate_after(20)  # the next resume cuts again
+        assert _tree(twin) == want, f"stopped at operation {k}: finishing the cut differs from one cut"
+        if not stopped:
+            break
+        k += 1
+    assert k >= 10  # the cut has a dozen separate writes and deletes: the loop did stop in the middle of it
 
 
 def test_save_checkpoint_reads_step_from_state(micro_cfg: Config, tmp_path: Path) -> None:

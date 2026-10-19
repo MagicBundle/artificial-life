@@ -308,7 +308,7 @@ class Observer:
             return None, "the sidecar has no meta"
         try:
             meta = json.loads(str(arrays["meta"]))
-        except ValueError:
+        except (ValueError, RecursionError):  # not JSON, or nested too deeply to parse
             return None, "the sidecar's meta is not JSON"
         if not isinstance(meta, dict):
             return None, "the sidecar's meta is not a JSON object"

@@ -664,23 +664,49 @@ class RunDir:
 
         The social log ``observers/social.jsonl`` is cut to its records with step ≤ ``step``, always, whatever
         ``keep_director`` is (it belongs to the trajectory, like the sidecars, and a replay regenerates it).
-        It is parsed whole before anything else changes, so a corrupt line before the last
-        (``json.JSONDecodeError``) or a record without an int ``step`` (``ValueError``) fails the call with
-        the directory untouched. The kept records are re-serialised as the metrics rows are, which gives back
-        the bytes the runner wrote, and the file is rewritten atomically even when no record is removed,
-        because that also drops a torn last line (left in place, it would have the resumed run's first record
-        glued onto it). An absent log stays absent.
+        Every log that is cut is read and parsed whole before anything changes, so a corrupt line before the
+        last (``json.JSONDecodeError``) or a social record without an int ``step`` (``ValueError``) fails the
+        call with the directory untouched. The kept records are re-serialised as the metrics rows are, which
+        gives back the bytes the runner wrote, and a log is rewritten atomically even when no record is
+        removed, because that also drops a torn last line (left in place, it would have the resumed run's
+        first record glued onto it). An absent social log stays absent.
+
+        **Order, and a stop in the middle.** The later checkpoints and sidecars go first (the newest
+        checkpoint, which ``LATEST`` may name, last) and ``LATEST`` is rewritten; only then are the logs and
+        the event chunks cut. A stop (a crash, a kill) before the first deletion leaves the directory as it
+        was; after the checkpoint at ``step`` is the newest, a plain ``resume`` takes it and calls this again,
+        and every cut is idempotent, so the logs end up cut exactly as an uninterrupted call would have cut
+        them. In the other order a stop after a log was cut left ``LATEST`` on a later checkpoint, and a
+        plain ``resume`` would continue from it with the records of the steps between lost for good.
         """
         social = self._parse_social()  # first: a log that cannot be parsed fails before any change
+        metrics = None
         if (self.path / METRICS_FILE).exists():
-            kept = [r for r in self.metrics_rows() if r["step"] <= step]
-            _atomic_write_text(self.path / METRICS_FILE, "".join(_dumps(r) + "\n" for r in kept))
-        if not keep_director:
-            self._truncate_director(step)
+            metrics = "".join(_dumps(r) + "\n" for r in self.metrics_rows() if r["step"] <= step)
+        director = [] if keep_director else self._director_cut(step)
+        # the commit: from here the newest checkpoint is the one at (or before) ``step``
+        for st, path in self.checkpoints():  # ascending: the newest, which LATEST may name, goes last
+            if st > step:
+                path.unlink()
+        for st, path in self.observer_files():  # whatever keep_director is: a sidecar belongs to its step
+            if st > step:
+                path.unlink(missing_ok=True)
+        latest = self.latest_checkpoint()
+        if latest is not None:
+            _atomic_write_text(self.checkpoint_dir / LATEST_FILE, latest.name + "\n")
+        else:
+            (self.checkpoint_dir / LATEST_FILE).unlink(missing_ok=True)
+        # the cuts, each of which gives the same files again if it is repeated
+        if metrics is not None:
+            _atomic_write_text(self.path / METRICS_FILE, metrics)
+        for path, text in director:
+            if text is None:
+                path.unlink(missing_ok=True)
+            else:
+                _atomic_write_text(path, text)
         if social is not None:
             kept_social = [r for r in social if r["step"] <= step]
             _atomic_write_text(self.social_path, "".join(_dumps(r) + "\n" for r in kept_social))
-
         for kind in ("births", "deaths"):
             for s0, s1, path in self.event_files(kind):
                 if s1 <= step:
@@ -694,23 +720,14 @@ class RunDir:
                 _write_npz(path.with_name(f"{kind}_{s0:010d}_{step:010d}.npz"), trimmed)
                 path.unlink()
 
-        for st, path in self.checkpoints():
-            if st > step:
-                path.unlink()
-        for st, path in self.observer_files():  # whatever keep_director is: a sidecar belongs to its step
-            if st > step:
-                path.unlink(missing_ok=True)
-        latest = self.latest_checkpoint()
-        if latest is not None:
-            _atomic_write_text(self.checkpoint_dir / LATEST_FILE, latest.name + "\n")
-        else:
-            (self.checkpoint_dir / LATEST_FILE).unlink(missing_ok=True)
-
-    def _truncate_director(self, step: int) -> None:
+    def _director_cut(self, step: int) -> list[tuple[Path, str | None]]:
+        """What ``truncate_after`` does to the director files, read now and applied later: ``(path, new
+        text)``, or ``(path, None)`` for the archive taken after ``step``, which is deleted."""
+        cuts: list[tuple[Path, str | None]] = []
         for name in (DIRECTOR_LOG_FILE, JOURNAL_FILE):
             if (self.path / name).exists():
                 kept = [r for r in self.read_jsonl(name) if (at := _record_step(r)) is None or at <= step]
-                _atomic_write_text(self.path / name, "".join(_dumps(r) + "\n" for r in kept))
+                cuts.append((self.path / name, "".join(_dumps(r) + "\n" for r in kept)))
         archive = self.path / DIRECTOR_ARCHIVE_FILE
         if archive.exists():
             try:
@@ -718,7 +735,8 @@ class RunDir:
             except (OSError, json.JSONDecodeError):
                 as_of = None
             if not isinstance(as_of, int) or as_of > step:  # rewritten at the next checkpoint
-                archive.unlink()
+                cuts.append((archive, None))
+        return cuts
 
     def dump_diag(self, s: State, step: int) -> Path:
         """Write ``diag/step_<step>.safetensors`` (a full state file) after an invariant violation."""

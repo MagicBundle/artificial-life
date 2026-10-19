@@ -110,6 +110,7 @@ NUCLEUS: Final = ("a", "e", "i", "o", "u", "y", "ae", "ai", "au", "ea", "ei", "i
 CODA: Final = ("n", "r", "s", "l", "th", "nd", "rn", "st", "x", "m", "sk", "rd", "ll", "v", "ck", "sh")
 
 _EVENT_NAMES: Final = tuple(k.name.lower() for k in EventKind)
+_INT64_MAX: Final = 2**63 - 1  # the ids of a sidecar's names are held in int64 arrays
 
 
 class SocietyState(NamedTuple):
@@ -499,11 +500,12 @@ class Society:
 
         A group keeps the name it was admitted with. A group admitted now (no entry yet), in id order, takes
         the name of the top-16 house that has the most of its members (ties to the smaller house id) and
-        ``named_after`` is that house's id; with no member in a top-16 house its name is generated from the
-        house name generator on ``splitmix64(id, kin_name_salt)`` and ``named_after`` is -1. A name already
-        held by a live tracked group (kept, or given earlier in this loop) gets ``f" {id}"`` appended, again
-        if that name is held too. Entries of groups no longer tracked are dropped, so a name can be held
-        again by a later group.
+        ``named_after`` is that house's id, unless a live tracked group (kept, or given earlier in this loop)
+        already holds that name: then, as with no member in a top-16 house, its name is generated from the
+        house name generator on ``splitmix64(id, kin_name_salt)`` and ``named_after`` is -1. (Several groups
+        of one clade have the one house of the clade: a house name is given to the first of them only.) A
+        generated name that is held too gets ``f" {id}"`` appended, again if that name is held. Entries of
+        groups no longer tracked are dropped, so a name can be held again by a later group.
         """
         top = dict(zip(houses_table["id"], houses_table["name"], strict=True))
         top_ids = np.array(sorted(top), dtype=np.int64)
@@ -516,12 +518,14 @@ class Society:
                 continue
             members = house[row_id == gid]
             members = members[np.isin(members, top_ids)]
+            name, after = None, -1
             if members.size:
                 cand, count = np.unique(members, return_counts=True)
                 best = int(cand[np.lexsort((cand, -count))[0]])
-                name, after = top[best], best
-            else:
-                name, after = house_names(np.array([gid]), self.sr.kin_name_salt)[0], -1
+                if top[best] not in held:
+                    name, after = top[best], best
+            if name is None:
+                name = house_names(np.array([gid]), self.sr.kin_name_salt)[0]
             while name in held:
                 name = f"{name} {gid}"
             held.add(name)
@@ -982,7 +986,7 @@ def _parse_host(
         return names
     try:
         summary = json.loads(str(arrays["host.summary"]))
-    except ValueError:
+    except (ValueError, RecursionError):  # not JSON, or nested too deeply to parse
         return "host.summary is not JSON"
     if not isinstance(summary, dict) or not set(SUMMARY_KEYS) <= set(summary):
         return f"host.summary is not an object with the keys {list(SUMMARY_KEYS)}"
@@ -1019,7 +1023,7 @@ def _parse_names(raw: np.ndarray, tracked: np.ndarray) -> tuple[tuple[int, str, 
     valid: well-formed items, ascending ids, and exactly the ids of the tracked kin groups."""
     try:
         items = json.loads(str(raw))
-    except ValueError:
+    except (ValueError, RecursionError):  # not JSON, or nested too deeply to parse
         return "host.kin.names is not JSON"
     if not isinstance(items, list):
         return "host.kin.names is not a list"
@@ -1029,10 +1033,10 @@ def _parse_names(raw: np.ndarray, tracked: np.ndarray) -> tuple[tuple[int, str, 
             isinstance(item, list)
             and len(item) == 3
             and type(item[0]) is int
-            and item[0] >= 1
+            and 1 <= item[0] <= _INT64_MAX  # ids are held as int64
             and isinstance(item[1], str)
             and item[1] != ""
-            and (item[2] is None or (type(item[2]) is int and item[2] >= 0))
+            and (item[2] is None or (type(item[2]) is int and 0 <= item[2] <= _INT64_MAX))
         )
         if not ok:
             return "host.kin.names holds an item that is not [id >= 1, name, house id or null]"

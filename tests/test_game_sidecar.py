@@ -435,6 +435,10 @@ MISMATCHES = [
     ],
     pytest.param(lambda a: {**a, "meta": np.array("not json {")}, "not JSON", id="meta-garbage"),
     pytest.param(lambda a: {**a, "meta": np.array("[1, 2]")}, "not a JSON object", id="meta-list"),
+    # nested past the parser's recursion limit: a reason, not a RecursionError out of `alife resume`
+    pytest.param(
+        lambda a: {**a, "meta": np.array("[" * 100_000 + "]" * 100_000)}, "not JSON", id="meta-too-deep"
+    ),
     pytest.param(lambda a: {k: v for k, v in a.items() if k != "meta"}, "has no meta", id="meta-missing"),
     pytest.param(lambda a: {k: v for k, v in a.items() if k != "arch"}, "missing ['arch']", id="missing"),
     pytest.param(
@@ -466,6 +470,21 @@ MISMATCHES = [
     pytest.param(_host(**{"host.summary": np.array(5)}), "host.summary is", id="host-summary-dtype"),
     pytest.param(
         _host(**{"host.summary": np.array("{no")}), "host.summary is not JSON", id="host-summary-json"
+    ),
+    pytest.param(
+        _host(**{"host.summary": np.array("[" * 100_000 + "]" * 100_000)}),
+        "host.summary is not JSON",
+        id="host-summary-too-deep",
+    ),
+    pytest.param(
+        _host(**{"host.kin.names": np.array('[[100000000000000000000, "X", null]]')}),
+        "host.kin.names holds an item",
+        id="host-names-over-int64",
+    ),
+    pytest.param(
+        _host(**{"host.kin.names": np.array("[" * 100_000 + "]" * 100_000)}),
+        "host.kin.names is not JSON",
+        id="host-names-too-deep",
     ),
     pytest.param(
         _host(**{"host.summary": np.array("[1]")}), "host.summary is not an object", id="host-summary-list"

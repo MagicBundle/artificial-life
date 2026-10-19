@@ -16,7 +16,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | path | what |
 |---|---|
 | `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`) |
-| `tests/` | pytest suite. 2,088 fast tests passed on the CPU device at G2 (`-m "not slow"`, about 9 minutes) plus the slow ones |
+| `tests/` | pytest suite. 2,160 fast tests passed and 5 were skipped on the CPU device after the G2 review fixes (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; 9 to 12 minutes depending on load) plus the slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
@@ -418,21 +418,23 @@ and resumed once. There is one run per condition apart from the seed pair.
      full food, so they need a 3D port.
    - **Speed.** The fused Metal neighbour kernel (below) matters if more or longer 3D runs are wanted: about 14.7 steps/s,
      with the search at 79% of the step.
-3. **Games G1** (branch `games/g1-observers`, DESIGN §28, Review-log row I44, `docs/GAMES.md` §9). Built and tested on
+3. **Games G1** (merged as PR #27, `1ad339c`; DESIGN §28, Review-log row I44, `docs/GAMES.md` §9). Built and tested on
    the CPU and on Metal. Status and what follows:
    - **The Metal purity gate: passed** on the M5 Pro on 2026-10-19. `tests/test_game_purity.py` and
      `tests/test_game_acts.py` gave 26 passed on the GPU, so observing leaves the compiled step's rounding alone on Metal
      too (§28.1, §28.8; row I44).
-   - **After merge: the 64k benches and the calibration** (procedures in §28.8, GPU needed): `alife bench --observe`, the stream rate
+   - **Post-merge work: the 64k benches and the calibration** (procedures in §28.8, GPU needed): `alife bench --observe`, the stream rate
      and the step rate during an LLM call at 64k 2D; `python -m alife.analysis.labels` on `64k_s0` and `64k3d_s0`, which
      may change the thresholds under `INTENT_VERSION` 2.
    - **Owner decisions** (`docs/GAMES.md` §10, items 11 and 12): thresholds as code constants, and the verdict criterion.
-   - G2 is the next item.
+   - G2 (next item) is built on top of it.
 4. **Games G2** (branch `games/g2-social`, DESIGN §29, Review-log row I45, `docs/GAMES.md` §9). Built on top of G1 and
    tested on the CPU only, because the GPU was in use. Status and what follows:
    - **The Metal gate, before merge** (the coordinator): `uv run pytest tests/test_game_purity.py tests/test_groups.py -q
      -p no:cacheprovider` on the default device, without a `-m` filter. The purity file is G1's gate with G2's 20 channel
-     taps, and `test_groups.py` holds the `splitmix64`, `hash_below` and exact-sum equality tests (§29.2, §29.12).
+     taps and, since the review fixes, a comparison of the compiled step's fused kernels with observe off and on (its list of
+     allowed operations is of operations, not kernel names: if Metal groups them differently, read the printed labels
+     before widening it), and `test_groups.py` holds the `splitmix64`, `hash_below` and exact-sum equality tests (§29.2, §29.12).
    - **After merge: the 64k bench and the calibration** (GPU needed, procedures in §29.12): `uv run alife bench --preset 64k
      --observe --steps 600 --json obs_64k.json`; `python -m alife.analysis.social` on `runs/64k_s0 --from 1490000 --steps
      2500` and `runs/64k3d_s0 --from 450000 --steps 2500`, at `--every 250` and `--every 1000`. They give the snapshot
@@ -445,7 +447,7 @@ and resumed once. There is one run per condition apart from the seed pair.
      clause at `settler_body` 4, makes it the default under `INTENT_VERSION` 2 and pins its digest. G2 builds the clause
      inert (`settler_body` 0), so version 1 and `RULES_V1` are unchanged. The verdict criterion (GAMES §10 item 12) is
      still open and changes the list.
-   - **The roster** (the last stage of G2, DESIGN §29.14): kin groups are named once at admission, the record lists the
+   - **The roster** (stage 7 of G2, DESIGN §29.14; stage 8 applied the review's findings): kin groups are named once at admission, the record lists the
      houses founded and extinct, and each listed kin group has its window births and deaths by cause, centroid and
      archetype mix. The GPU verification also reports `houses.founded_share` from `python -m alife.analysis.social` on
      `64k3d_s1` and `64k_s0` (the share of members in houses founded since the start against those seeded from clades), so
