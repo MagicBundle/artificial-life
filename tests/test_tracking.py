@@ -836,6 +836,24 @@ def test_dominance_entering_and_leaving_ids() -> None:
     assert d.state().ema[0, 0] == (6 << 8) << 2
 
 
+def test_dominance_current_map() -> None:
+    """``current()`` is None before the first update, then the map of the last update, also for a state
+    restored from ``state()`` (the territory of a resumed run)."""
+    d = Dominance((3, 2), k=1, min_count=1)
+    assert d.current() is None
+    counts = np.array([[5, 0, 1], [0, 4, 0], [2, 2, 0], [0, 0, 7], [3, 1, 0], [0, 0, 0]])
+    m = d.update(np.array([4, 8]), counts)
+    cur = d.current()
+    assert all(np.array_equal(a, b) for a, b in zip(m, cur, strict=True))
+    s = d.state()
+    twin = Dominance((3, 2), k=1, min_count=1, state=DominanceState(s.ids.copy(), s.ema.copy()))
+    assert all(np.array_equal(a, b) for a, b in zip(m, twin.current(), strict=True))
+    d.update(np.array([4, 8]), counts[::-1])  # a later update changes it
+    assert not np.array_equal(d.current().owner, m.owner) or not np.array_equal(
+        d.current().purity_q16, m.purity_q16
+    )
+
+
 def test_dominance_borders() -> None:
     # 3 x 2 grid (code y * 3 + x): row 0 is [1, 1, 2], row 1 is [2, unowned, 2]
     owner_by_cell = [1, 1, 2, 2, -1, 2]

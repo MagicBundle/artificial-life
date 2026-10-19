@@ -474,6 +474,11 @@ class Dominance:
     def state(self) -> DominanceState:
         return DominanceState(self._ids.copy(), None if self._ema is None else self._ema.copy())
 
+    def current(self) -> DominanceMap | None:
+        """The map of the last update (recomputed from the smoothed counts, so it also serves a restored
+        state); None before the first update."""
+        return None if self._ema is None else self._map(self._ids, self._ema)
+
     def update(self, ids: np.ndarray, counts: np.ndarray) -> DominanceMap:
         ids = _vec(ids, "ids")
         cells = self._nx * self._ny

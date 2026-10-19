@@ -32,6 +32,7 @@ SIM_MODULES = {
     "groups",  # the generic pure-MLX grouping primitives (§29.3)
     "game.observe",  # the pure-MLX observer update and rules (§28): no host reads, like the simulation
     "game.rules",
+    "game.social",  # the pure-MLX social state and its update (§29)
 }  # rule 5
 DIRECTOR_MODULES = {f"director.{p.stem}" for p in (SRC / "director").glob("*.py")}  # host-side, scanned too
 GAME_MODULES = {
@@ -192,8 +193,8 @@ def test_source_tree(rule) -> None:
     mods = list(_modules())
     assert {"ops", "state", "step", "bonds", "director.rules", "director.actions"} <= {m for m, _ in mods}
     assert {"game.observe", "game.rules", "game.observer"} <= {m for m, _ in mods}
-    # the generic modules of §29, a device half and a host half
-    assert {"groups", "tracking"} <= {m for m, _ in mods}
+    # the generic modules of §29, a device half and a host half, and the game layer built on them
+    assert {"groups", "tracking", "game.social", "game.society"} <= {m for m, _ in mods}
     violations = [v for mod, tree in mods for v in rule(mod, tree)]
     assert violations == []
 
@@ -215,6 +216,8 @@ def test_rules_are_not_vacuous() -> None:
     assert bad(rule_setitem, "game.rules", "def f(d):\n    d['a'] = 1\n")
     assert bad(rule_setitem, "groups", "def f(d):\n    d['a'] = 1\n")  # the generic device module is scanned
     assert not bad(rule_setitem, "tracking", "def f(d):\n    d['a'] = 1\n")  # the host module is not
+    assert bad(rule_setitem, "game.society", "def f(d):\n    d['a'] = 1\n")  # the host game module is scanned
+    assert bad(rule_setitem, "game.social", "def f(x):\n    x[0] += 1\n")
     assert bad(rule_random, "brain", "def f():\n    return mx.random.normal((3,))\n")
     assert bad(rule_random, "brain", "def f():\n    mx.random.seed(0)\n")
     assert not bad(
@@ -230,6 +233,10 @@ def test_rules_are_not_vacuous() -> None:
     assert not bad(rule_host_reads, "game.observe", "def f(x):\n    return ActFlag.BUDDED.value\n")
     assert bad(rule_host_reads, "groups", "def f(x):\n    return int(x.sum())\n")
     assert bad(rule_host_reads, "groups", "def f(x):\n    return x.item()\n")
+    assert bad(rule_host_reads, "game.social", "def f(sr):\n    return int(sr.slots)\n")  # sr is no safe root
+    assert bad(rule_host_reads, "game.social", "def f(x):\n    return int(SocialKind.A)\n")  # use .value
+    assert not bad(rule_host_reads, "game.social", "def f(sr):\n    return sr.slots + 1\n")
+    assert not bad(rule_host_reads, "game.society", "def f(x):\n    return int(x.sum())\n")  # host numpy
     assert not bad(
         rule_host_reads, "groups", "def f(rate):\n    return min(int(rate * 2.0**64), 2**64 - 1)\n"
     )
