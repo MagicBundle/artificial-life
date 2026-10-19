@@ -278,6 +278,57 @@ research `MENU` stays byte-identical.
   draws spheres in a box, so this is new client work.
 - **Faithful view.** The director runs in the viewed loop, as in the `alife play` process (GAMES §3.1).
 
+### 6.5 Playability and the GUI
+
+Owner direction (2026-10-19): a Civilization-like cadence in a high-autonomy world. The player observes regularly,
+gives few inputs and watches the consequences unfold. The narrative observer and world reports are core features. The rest of this section is the coordinator's choice under the
+owner's delegation of 2026-10-19, to revisit (cadence, the GUI architecture, direct powers in G3).
+
+| Civilization | storm world | at 14.4 steps/s |
+|---|---|---|
+| turn | chapter of 6,000 steps: report, influence refresh, save point; optional auto-pause | 6.9 min |
+| end-turn summary | World Report; a template ticker line per 250-step snapshot | chapter end; 17 s |
+| advisors | code predicates over vitals, tracks and events, worded by the narrator; never causal | — |
+| notifications | alerts raised by the world, each with a place to fly to; auto-pause per class | event-driven |
+| eras | seasons; era changes by fork at a chapter boundary (GAMES §7.4) | 2.3–21 min |
+
+- **Input.** One influence-costed decision per chapter, at most three alert-driven moves, forecasts optional.
+- **Time controls.** Pause, slow (0.25–0.5×, interpolated), 1×.
+  - At 14.4 steps/s, 1× is the maximum, so fast-forward needs §9.8 headroom.
+  - Time-lapse is playback of recorded, decimated frames (GAMES §8.2), not simulation.
+- **World Report** (N1 offline after G2; live in G3; storm facts in W3).
+  - Code builds at most 40 facts: validated labels, social events, vitals, logged entries, storm tracks.
+  - The model writes placeholders, never numbers or names. A versioned checker drops failing sentences, with a
+    template as the fallback.
+  - No model text is fed back. Reports go in `reports.jsonl`, and replay never calls the model.
+  - Until storm-world labels are re-validated, only exact counts, events and storms are narrated.
+- **Consequences.**
+  - Exact counts by cause, kin group and region, from device bincounts. Death records are capped at 2,048 per step.
+  - Markers at `step_applied`, worded "since", never "because"; a storm × kin impact matrix (W3).
+  - After G4, a counterfactual twin: a fork without the entry, exact for this world, opt-in, run while paused or
+    between sessions.
+- **Direct powers** (G3: the built regional actions; W4: the storm verbs).
+  - A player power grid lands them within 2 s, not at rule boundaries.
+  - Each has a short-cooldown `GAME_SPECS` row and stays outside the intent pipeline.
+- **Cast.** All live storms, the top 5–8 lineages (kin groups named after their dominant house) and one focused
+  organism, handed off at death to its eldest descendant or nearest kin.
+- **GUI.** One window with two areas; the research window stays as the Lab.
+  - The world view is the Metal view. It zooms from the planet map to a storm, a swarm and an organism. Storms,
+    lineages, swarms, organisms and warm pools are clickable, with follow modes and cones.
+  - The control center docks left, right or bottom. It holds the time controls, the intent prompt with preview and
+    confirm, the verbs, the chronicle, reports, alerts, forecasts and scores.
+- **Data path.** One `alife play` process. Presentation-only lines never change the trajectory, and picking is a client
+  hit test.
+
+  | channel | content |
+  |---|---|
+  | stdout, ALSTRM v1 | `FRM1` and alive-only frames, `IDNT`, `INTN`, `TERR`, `EVNT`, `STRM`, `VOL1`; proposed `MAP1` (weather maps), `ENVS` (effects, cooldowns, warm pools), `PLAN`, `ALRT`, `RPRT`, `FOCS` |
+  | stdin, ≤ 4,096 B per line | §27.11 commands, plus `intent`, `confirm`, `cancel`, `power`, `forecast`, `focus`, `rate`, `alerts` |
+  | files | `commands.jsonl`, `director.jsonl`, `reports.jsonl`, `observers/social.jsonl`: history and replay |
+- **Measured before W4.**
+  - W0 steerability: track deflection per impulse, and the storm response to a warm-pool change.
+  - The combined 3D play-loop bench: step, observers, weather, stream, client rendering, and an LLM call in flight.
+
 ## 7. Risks
 
 | risk | mitigation |
@@ -306,7 +357,9 @@ Each step is one PR, merged before the next.
      - parameters, storm drift per 250 steps, movies and the cost;
      - the wave speeds c_ext and c_bc, and the Froude number u/c_bc and Δh₁/H₁ in storm cores. The 0.1–0.2 core winds
        of §4 need c_bc of at least 0.2–0.4;
-     - the maximum (u₁ − u₂)²/(g′(h₁+h₂)), which must stay below 1, the long-wave hyperbolicity bound.
+     - the maximum (u₁ − u₂)²/(g′(h₁+h₂)), which must stay below 1, the long-wave hyperbolicity bound;
+     - wall-clock at 14.4 and 30 steps/s; the storm-to-organism lifetime ratio; steerability (track deflection per wind
+       impulse; genesis or displacement lag after a warm-pool change).
    - **Fallback:** A, if B fails within a fixed tuning budget.
 2. **W1, engine weather layer.**
    - `weather.enabled`, the fields, `Stream.WEATHER`, wind as a drag force, rain into regeneration and `K_est`, and the
@@ -319,8 +372,8 @@ Each step is one PR, merged before the next.
 5. **W4, storm levers and intent** on G4's pipeline (`STORM_MENU`).
 6. **W5, client.** `VOL1`, `STRM` and the volumetric view.
 
-**Interleaving with GAMES G2–G5** (§9.1 decided for the storm world): G2, W0, W1, W2, G3 (the play loop on the storm
-world, with `STRM` and a 2D weather map as the first client), W3, G4 with W4 (one golden-safe change), W5, then G5.
+**Interleaving with GAMES G2–G5** (§9.1 decided for the storm world): G2, W0 with N1, W1, W2, G3 (the play loop on the
+storm world, with `STRM` and a 2D weather map as the first client), W3, G4 with W4 (one golden-safe change), W5, then G5.
 W0 has no engine code, so it can run alongside G2. If W0 fails and model A also fails its budget, §9.1 comes back to
 the owner.
 
@@ -351,7 +404,10 @@ and G3 (8).
    form over the food patches, and food follows rain. The alternative was the fertility patches (no new lever, but food
    and storms cannot be set apart).
 8. **Target step rate for the storm world.** 14.4 steps/s with `GAME_SPECS` re-derived, the fused kNN kernel first,
-   or a smaller 3D world. C = 24 is ruled out by occupancy.
+   or a smaller 3D world. C = 24 is ruled out by occupancy. Restated as wall-clock targets (§6.5): forecast feedback
+   within 15–70 s, storm arcs of 3–10 min, lever response within 1–2 min, a power lands within 2 s, fast-forward of at
+   least 2× where offered. The fused kNN kernel is tried first, a smaller world only if it misses; decided before W2
+   (coordinator's choice under the owner's delegation of 2026-10-19, to revisit).
 9. **Weather grid.** *Decided 2026-10-19:* 160 × 160 at 2 units. The alternative was the 80-cell field lattice.
 
 ## 10. Sources
