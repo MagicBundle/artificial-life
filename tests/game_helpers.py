@@ -37,6 +37,20 @@ def make_oi(arrays: Mapping[str, Any]) -> ObsIn:
     return ObsIn(**{f: mx.array(np.asarray(arrays[f])) for f in ObsIn._fields})
 
 
+def blank_social_acts(n: int, k: int, m: int) -> dict[str, np.ndarray]:
+    """The social-tracking additions of ``Acts`` (§29.2) for ``n`` rows, ``k`` neighbours and ``m`` lanes: no
+    target, no neighbour, no kin query, no birth lane."""
+    return {
+        "attack_target": np.full(n, -1, np.int32),
+        "bond_target": np.full(n, -1, np.int32),
+        "q_kin": np.zeros((n, 2), np.int16),
+        "nbr": np.full((n, k), -1, np.int32),
+        "born_row": np.full(m, -1, np.int32),
+        "born_parent": np.full(m, -1, np.int32),
+        "born_uid": np.full(m, -1, np.int64),
+    }
+
+
 def blank_acts(cfg: Config) -> dict[str, np.ndarray]:
     d = dims(cfg)
     return {
@@ -47,6 +61,7 @@ def blank_acts(cfg: Config) -> dict[str, np.ndarray]:
         "thrust": np.zeros(d.n, np.int16),
         "defend": np.zeros(d.n, np.int16),
         "emit": np.zeros(d.n, np.int16),
+        **blank_social_acts(d.n, d.k, d.m),
     }
 
 

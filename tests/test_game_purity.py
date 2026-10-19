@@ -25,9 +25,9 @@ import numpy as np
 import pytest
 from mlx.utils import tree_flatten
 
-from alife import actions, bonds, cli, energy, lifecycle, runner
+from alife import actions, bonds, brain, cli, energy, lifecycle, runner, spatial
 from alife import step as step_mod
-from alife.config import Config, apply_overrides, load_config
+from alife.config import Config, apply_overrides, config_to_dict, load_config
 from alife.game.observe import EVAL_BIT, ObsIn, obs_in
 from alife.game.observer import Observer
 from alife.game.rules import RULES_V1
@@ -134,13 +134,18 @@ def test_observer_inputs_exclude_the_key() -> None:
 
 # --- the channel's read set, structurally -------------------------------------------------------------------
 
-# The trajectory arrays the observer channel may read (§28.2): the decode thrust before S8 (it also feeds the
-# cost term), the post-S8 defend and emit (inputs of the S11 gather and of the S17 deposit), the solvency
-# mask, the lane kind and parent, the S11 attack, hit and gain, the S9 formed bits and the S12 slot flows.
+# The trajectory arrays the observer channel may read (§28.2, §29.2): the decode thrust before S8 (it also
+# feeds the cost term), the post-S8 defend and emit (inputs of the S11 gather and of the S17 deposit), the
+# solvency mask, the lane kind and parent, the S11 attack, hit and gain, the S9 formed bits and the S12 slot
+# flows; and for social tracking the post-S8 attack and bond targets, the S9 proposer bits, the S14 death
+# cause, the neighbour rows, the brain output y (the one new float tap: a kernel output read by two column
+# slices) and the birth records' child rows and uids.
 CHANNEL_TAPS = frozenset(
     {
         "thrust0", "defend_post", "emit_post", "solvent", "lanes_kind", "lanes_parent",
         "cb_attack", "cb_hit", "cb_gain", "formed", "sl_out", "sl_got",
+        "attack_target_post", "bond_target_post", "as_prop", "dt_cause", "nbr_idx", "y",
+        "births_slot", "births_uid",
     }
 )  # fmt: skip
 
@@ -186,8 +191,9 @@ def _channel_taps(
     real = (
         actions.mask, energy.pay_costs, energy.pay_costs3, energy.combat, energy.share_slots,
         bonds.form_bonds, lifecycle.allocate_lanes,
+        brain.forward, spatial.find_neighbors, lifecycle.deaths, lifecycle.reproduce,
     )  # fmt: skip
-    r_mask, r_pay, r_pay3, r_combat, r_share, r_form, r_lanes = real
+    r_mask, r_pay, r_pay3, r_combat, r_share, r_form, r_lanes, r_fwd, r_nbr, r_deaths, r_repro = real
 
     def mask(act, keep):
         out = r_mask(act, keep)
@@ -213,6 +219,10 @@ def _channel_taps(
     monkeypatch.setattr(energy, "share_slots", share_slots)
     monkeypatch.setattr(bonds, "form_bonds", keep("fb", r_form))
     monkeypatch.setattr(lifecycle, "allocate_lanes", keep("lanes", r_lanes))
+    monkeypatch.setattr(brain, "forward", keep("fwd", r_fwd))
+    monkeypatch.setattr(spatial, "find_neighbors", keep("nbr", r_nbr))
+    monkeypatch.setattr(lifecycle, "deaths", keep("dt", r_deaths))
+    monkeypatch.setattr(lifecycle, "reproduce", keep("rp", r_repro))
     if mutate is not None:
         mutate(monkeypatch)
     s = init_state(cfg)
@@ -233,6 +243,14 @@ def _channel_taps(
         "formed": cap["fb"][2],
         "sl_out": sl.out,
         "sl_got": sl.got,
+        "attack_target_post": cap["post"].attack_target,
+        "bond_target_post": cap["post"].bond_target,
+        "as_prop": cap["fb"][3],
+        "dt_cause": cap["dt"].cause,
+        "nbr_idx": cap["nbr"].idx,
+        "y": cap["fwd"][1],
+        "births_slot": cap["rp"].records.slot,
+        "births_uid": cap["rp"].records.uid,
     }
     trajectory = [v for _, v in tree_flatten((s1, out.base()))]
     f_traj, f_acts = tmp_path / "trajectory.dot", tmp_path / "acts.dot"
@@ -258,22 +276,39 @@ CHANNEL_CONFIGS = [
 def test_channel_reads_only_the_allowed_arrays(
     preset: str, overrides: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """§28.2: S12 is computed once, and the channel reads no float array of the trajectory beyond the pre-S8
-    thrust, the post-S8 defend and emit and the integer and boolean flows. A reader of anything else (for
-    example the post-S8 float thrust) or a second S12 would add a consumer to a fused float chain, which can
-    change the compiled step's rounding on Metal while leaving every value of the CPU tests unchanged."""
+    """§28.2, §29.2: S12 is computed once, and the channel reads no float array of the trajectory beyond the
+    pre-S8 thrust, the post-S8 defend and emit, the brain output ``y`` (a kernel output, two column slices)
+    and the integer and boolean flows. A reader of anything else (for example the post-S8 float thrust or
+    the neighbour validity) or a second S12 would add a consumer to a fused float chain, which can change the
+    compiled step's rounding on Metal while leaving every value of the CPU tests unchanged."""
     taps, unnamed, n_share = _channel_taps(
         load_config(preset=preset, overrides=overrides), monkeypatch, tmp_path
     )
     assert n_share == 1, f"share_slots was called {n_share} times"
     assert not unnamed, f"the channel reads {len(unnamed)} unlisted trajectory arrays: {unnamed}"
     assert taps == CHANNEL_TAPS  # all of them are read, so the probe is not vacuous
+    assert len(CHANNEL_TAPS) == 20  # G1's 12 and the 8 of G2 (§29.2)
 
 
 def _thrust_after_the_mask(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutant: the channel reads the post-S8 float thrust (same values, a new consumer of a fused chain)."""
     orig = step_mod._acts
-    monkeypatch.setattr(step_mod, "_acts", lambda f, sl, thrust0, cfg: orig(f, sl, f.act.thrust, cfg))
+    monkeypatch.setattr(
+        step_mod, "_acts", lambda f, sl, thrust0, y, alive0, cfg: orig(f, sl, f.act.thrust, y, alive0, cfg)
+    )
+
+
+def _valid_from_nbr_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutant: the channel builds ``nbr`` through ``nbr.valid`` (same values: invalid entries hold the row's
+    own index, so ``where(valid, idx, row)`` is ``idx``; one new trajectory array read)."""
+    orig = step_mod._acts
+
+    def acts(f, sl, thrust0, y, alive0, cfg):
+        rows = mx.arange(f.nbr.idx.shape[0], dtype=mx.int32)[:, None]
+        nbr = f.nbr._replace(idx=mx.where(f.nbr.valid, f.nbr.idx, rows))
+        return orig(f._replace(nbr=nbr), sl, thrust0, y, alive0, cfg)
+
+    monkeypatch.setattr(step_mod, "_acts", acts)
 
 
 def _second_share(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -287,13 +322,38 @@ def _second_share(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(energy, "share_slots", twice)
 
 
-@pytest.mark.parametrize("mutant", [_thrust_after_the_mask, _second_share], ids=["post-S8-thrust", "2nd-S12"])
+MUTANTS = [
+    pytest.param(_thrust_after_the_mask, id="post-S8-thrust"),
+    pytest.param(_second_share, id="2nd-S12"),
+    pytest.param(_valid_from_nbr_valid, id="nbr-valid"),
+]
+
+
+@pytest.mark.parametrize("mutant", MUTANTS)
 def test_the_structural_probe_catches_value_neutral_breaks(
     mutant: Callable[[pytest.MonkeyPatch], None], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Both mutants leave every value, and so every other test of this file, unchanged on the CPU."""
+    """Every mutant leaves every value, and so every other test of this file, unchanged on the CPU."""
     _, unnamed, n_share = _channel_taps(load_config(preset="tiny"), monkeypatch, tmp_path, mutate=mutant)
     assert unnamed or n_share != 1
+    if mutant is _valid_from_nbr_valid:
+        assert len(unnamed) == 1 and n_share == 1  # exactly the one new read: nbr.valid
+
+
+@pytest.mark.parametrize("mutant", MUTANTS)
+@pytest.mark.parametrize("preset", ["tiny", "tiny3d"])
+def test_the_mutants_are_value_neutral(mutant: Callable[[pytest.MonkeyPatch], None], preset: str) -> None:
+    """The premise of the meta-test: a mutated channel returns the same arrays as the real one."""
+    cfg = load_config(preset=preset, overrides=["brain.weight_dtype=float32"])
+    s = init_state(cfg)
+    mx.eval(s)
+    _, real = step_mod.step(s, cfg, observe=True)
+    mx.eval(real)
+    with pytest.MonkeyPatch.context() as m:
+        mutant(m)
+        _, mutated = step_mod.step(s, cfg, observe=True)
+        mx.eval(mutated)
+    assert _same(real, mutated)
 
 
 # --- through the runner and the CLI -------------------------------------------------------------------------
@@ -360,7 +420,10 @@ def test_runner_files_identical_except_observers(d3: bool, tmp_path: Path) -> No
     ]
     # the stored config differs in game.observe only
     c_off, c_on = (json.loads((rd.path / "config.json").read_text()) for rd in (off, on))
-    assert c_off.pop("game") == {"observe": False} and c_on.pop("game") == {"observe": True} and c_off == c_on
+    default_game = config_to_dict(Config())["game"]  # {"observe": False, "house_rate": 1/2048}
+    assert c_off.pop("game") == default_game
+    assert c_on.pop("game") == {**default_game, "observe": True}  # the on-run's only game override
+    assert c_off == c_on
 
 
 def test_director_log_unchanged_by_observers(tmp_path: Path) -> None:

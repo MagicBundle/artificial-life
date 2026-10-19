@@ -1,6 +1,6 @@
-"""§28.2 the observer channel (G1): ``step(..., observe=True)`` returns ``StepOutG``, whose ``Acts`` agree
-with the ledger, the counters and the post-S8 actions; ``energy.share`` is
-``share_from_slots(share_slots(...))``."""
+"""§28.2 the observer channel (G1) and its social-tracking additions (G2, §29.2): ``step(..., observe=True)``
+returns ``StepOutG``, whose ``Acts`` agree with the ledger, the counters, the post-S8 actions, the neighbour
+rows, the brain output and the birth lanes; ``energy.share`` is ``share_from_slots(share_slots(...))``."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ import numpy as np
 import pytest
 from mlx.utils import tree_flatten
 
-from alife import actions, brain, energy, layout, ops
+from alife import actions, brain, energy, layout, lifecycle, ops, spatial
 from alife.actions import Actions
 from alife.config import Config, apply_overrides, dims
 from alife.game.rules import RULES_V1
 from alife.state import CounterIdx as C
 from alife.state import LedgerIdx as L
 from alife.state import State, init_state, to_numpy
-from alife.step import ActFlag, Acts, StepOut, StepOutG, make_step, step
+from alife.step import KIN_Q_CLIP, ActFlag, Acts, StepOut, StepOutG, make_step, step
 from helpers import ON_GPU, set_output_bias
 
 STEPS = 40
@@ -71,9 +71,15 @@ def test_step_returns_stepout_unless_observing(tiny_cfg: Config) -> None:
 
 
 def test_act_flag_bits_and_dtypes(tiny_cfg: Config) -> None:
-    assert [f.value for f in ActFlag] == [1, 2, 4, 8, 16]
-    assert [f.name for f in ActFlag] == ["ATTACKED", "HIT", "FORMED", "BUDDED", "EMITTED"]
-    n, b = dims(tiny_cfg).n, layout.B
+    assert [f.value for f in ActFlag] == [1, 2, 4, 8, 16, 32, 64]
+    names = ["ATTACKED", "HIT", "FORMED", "BUDDED", "EMITTED", "PROPOSED", "KILLED"]
+    assert [f.name for f in ActFlag] == names
+    assert Acts._fields == (
+        *("attack_gain", "share_out", "share_got", "flags", "thrust", "defend", "emit"),  # G1
+        *("attack_target", "bond_target", "q_kin", "nbr", "born_row", "born_parent", "born_uid"),  # G2
+    )
+    d = dims(tiny_cfg)
+    n, m, k, b = d.n, d.m, d.k, layout.B
     _, out = make_step(tiny_cfg, observe=True)(init_state(tiny_cfg))
     mx.eval(out)
     a = out.acts
@@ -81,36 +87,85 @@ def test_act_flag_bits_and_dtypes(tiny_cfg: Config) -> None:
     assert (a.flags.shape, a.thrust.shape, a.defend.shape, a.emit.shape) == ((n,),) * 4
     assert (a.attack_gain.dtype, a.share_out.dtype, a.share_got.dtype) == (mx.int32,) * 3
     assert (a.flags.dtype, a.thrust.dtype, a.defend.dtype, a.emit.dtype) == (mx.uint8, *(mx.int16,) * 3)
+    shapes = (a.attack_target.shape, a.bond_target.shape, a.q_kin.shape, a.nbr.shape)
+    assert shapes == ((n,), (n,), (n, 2), (n, k))
+    assert (a.born_row.shape, a.born_parent.shape, a.born_uid.shape) == ((m,),) * 3
+    assert (a.attack_target.dtype, a.bond_target.dtype, a.q_kin.dtype, a.nbr.dtype) == (
+        mx.int32, mx.int32, mx.int16, mx.int32,
+    )  # fmt: skip
+    assert (a.born_row.dtype, a.born_parent.dtype, a.born_uid.dtype) == (mx.int32, mx.int32, mx.int64)
+    assert KIN_Q_CLIP == 127.0 and round(256 * KIN_Q_CLIP) <= np.iinfo(np.int16).max
 
 
 class _Post(NamedTuple):
     thrust: np.ndarray
     defend: np.ndarray
     emit: np.ndarray
+    attack_target: np.ndarray  # (N,) post-S8
+    bond_target: np.ndarray
+    y: np.ndarray  # (N, D_OUT) float32, the brain output
+    nbr_idx: np.ndarray  # (N, K) the neighbour finder's idx and valid
+    nbr_valid: np.ndarray
+    lane_kind: np.ndarray  # (M,) the lane allocation
+    lane_parent: np.ndarray
 
 
 def _post_s8(prev: State, cfg: Config) -> _Post:
-    """The quantised post-S8 actions of an eager step from ``prev``: ``actions.mask`` is spied on, and the
-    last ``Actions`` it returns is the one S8 masks by solvency (``decode`` masks by ``alive`` before it)."""
+    """The quantised post-S8 actions, targets, brain output, neighbours and lanes of an eager step from
+    ``prev``: ``actions.mask``, ``brain.forward``, ``spatial.find_neighbors`` and ``lifecycle.allocate_lanes``
+    are spied on, and the last ``Actions`` ``mask`` returns is the one S8 masks by solvency (``decode`` masks
+    by ``alive`` before it)."""
     seen: list[Actions] = []
-    real = actions.mask
+    got: dict[str, Any] = {}
+    real_mask, real_fwd = actions.mask, brain.forward
+    real_nbr, real_lanes = spatial.find_neighbors, lifecycle.allocate_lanes
 
-    def spy(act, keep):
-        out = real(act, keep)
+    def spy_mask(act, keep):
+        out = real_mask(act, keep)
         if isinstance(out, Actions):
             seen.append(out)
         return out
 
+    def once(name, fn):
+        def wrapped(*a, **k):
+            assert name not in got, f"{name} called twice"
+            got[name] = fn(*a, **k)
+            return got[name]
+
+        return wrapped
+
     with pytest.MonkeyPatch.context() as m:
-        m.setattr(actions, "mask", spy)
+        m.setattr(actions, "mask", spy_mask)
+        m.setattr(brain, "forward", once("fwd", real_fwd))
+        m.setattr(spatial, "find_neighbors", once("nbr", real_nbr))
+        m.setattr(lifecycle, "allocate_lanes", once("lanes", real_lanes))
         _, out = make_step(cfg, compile=False)(prev)
         mx.eval(out)
     act = seen[-1]
+    nbr, lanes = got["nbr"], got["lanes"]
     return _Post(
         _np(mx.round(256.0 * act.thrust).astype(mx.int16)),
         _np(mx.round(256.0 * act.defend).astype(mx.int16)),
         _np(ops.floor_i32(act.emit * 256.0).sum(axis=1).astype(mx.int16)),
+        _np(act.attack_target),
+        _np(act.bond_target),
+        _np(got["fwd"][1]),
+        _np(nbr.idx),
+        _np(nbr.valid),
+        _np(lanes.kind),
+        _np(lanes.parent),
     )
+
+
+# The brain-output columns of the kin feature in the attack and bond queries (§29.2): written as literals, and
+# tied to the layout names by ``test_q_kin_columns_are_the_kin_components``.
+Q_KIN_COLS = (31, 25)
+
+
+def _q_kin_ref(y: np.ndarray, alive0: np.ndarray) -> np.ndarray:
+    """``round(256·clip(y_kin, ±127))`` of both queries as int16, 0 on rows dead at the step's start."""
+    q = np.rint(np.float32(256.0) * np.clip(y[:, list(Q_KIN_COLS)], -KIN_Q_CLIP, KIN_Q_CLIP))
+    return np.where(alive0[:, None], q, 0).astype(np.int16)
 
 
 def _arm(name: str, tiny_cfg: Config, tiny3d_cfg: Config) -> tuple[Config, dict[int, float]]:
@@ -135,6 +190,54 @@ def _starve(s: State) -> tuple[State, np.ndarray]:
     return s._replace(energy=mx.array(energy_)), rows
 
 
+def _check_social_acts(a: Acts, out: StepOutG, post: _Post, prev: State, s: State, where: str) -> None:
+    """The additions of §29.2 against the spied sub-steps of an eager step from ``prev``."""
+    n, k = post.nbr_idx.shape
+    alive0 = _np(prev.alive)
+    fl = _np(a.flags)
+    c = _np(out.counters)
+    # the targets are the post-S8 targets, the kin queries the quantised columns of the brain output
+    assert np.array_equal(_np(a.attack_target), post.attack_target), where
+    assert np.array_equal(_np(a.bond_target), post.bond_target), where
+    assert np.array_equal(_np(a.q_kin), _q_kin_ref(post.y, alive0)), where
+    assert np.abs(_np(a.q_kin).astype(np.int64)).max() <= round(256 * KIN_Q_CLIP), where
+    # the neighbour rows: the finder's idx where valid; validity is exactly "idx is not the row's own index"
+    rows = np.arange(n)[:, None]
+    assert np.array_equal(post.nbr_valid, post.nbr_idx != rows), where
+    assert np.array_equal(_np(a.nbr), np.where(post.nbr_valid, post.nbr_idx, -1)), where
+    nb = _np(a.nbr)
+    assert alive0[nb[nb >= 0]].all(), where  # sensed neighbours were alive at the step's start
+    # a proposal formed a bond with its bond target; a mutual pair is two PROPOSED rows
+    prop, formed = (fl & ActFlag.PROPOSED.value) > 0, (fl & ActFlag.FORMED.value) > 0
+    bt = _np(a.bond_target)
+    assert (bt[prop] >= 0).all() and formed[prop].all() and formed[bt[prop]].all(), where
+    assert prop.sum() == c[C.BOND_PROPOSERS], where
+    # the flag KILLED is the DEATHS_KILLED popcount, and a killed row was some attacker's target
+    killed = (fl & ActFlag.KILLED.value) > 0
+    assert killed.sum() == c[C.DEATHS_KILLED], where
+    attacked = (fl & ActFlag.ATTACKED.value) > 0
+    assert set(np.flatnonzero(killed)) <= set(_np(a.attack_target)[attacked]), where
+    survivor = _np(s.alive) & (_np(s.uid) == _np(prev.uid))  # a reused row holds a newborn's new uid
+    assert alive0[killed].all() and not survivor[killed].any(), where
+    # the birth lanes: the records' rows and uids, the parent row on birth lanes only
+    births = out.births
+    born_row, born_uid, born_parent = (_np(x) for x in (a.born_row, a.born_uid, a.born_parent))
+    assert np.array_equal(born_row, _np(births.slot)) and np.array_equal(born_uid, _np(births.uid)), where
+    kind = post.lane_kind
+    is_birth = kind == lifecycle.LaneKind.BIRTH.value
+    assert np.array_equal(born_row >= 0, kind != lifecycle.LaneKind.PAD.value), where
+    assert np.array_equal(born_parent >= 0, is_birth), where
+    assert np.array_equal(born_parent[is_birth], post.lane_parent[is_birth]), where
+    assert (born_parent[~is_birth] == -1).all(), where
+    used = born_row >= 0
+    assert np.array_equal(_np(s.uid)[born_row[used]], born_uid[used]), where  # the newborn row holds the uid
+    assert np.array_equal(  # the parent row held the uid the record names, and it survived
+        _np(prev.uid)[born_parent[is_birth]], _np(births.parent_uid)[is_birth]
+    ), where
+    assert _np(s.alive)[born_parent[is_birth]].all(), where
+    assert k == nb.shape[1], where
+
+
 @pytest.mark.parametrize("arm", ["2d", "3d", "biased", "immigration"])
 def test_acts_match_the_ledger_and_counters(arm: str, tiny_cfg: Config, tiny3d_cfg: Config) -> None:
     cfg, bias = _arm(arm, tiny_cfg, tiny3d_cfg)
@@ -142,7 +245,9 @@ def test_acts_match_the_ledger_and_counters(arm: str, tiny_cfg: Config, tiny3d_c
     if bias:
         s = set_output_bias(s, cfg, bias)
     fn = make_step(cfg, observe=True)
-    seen = dict.fromkeys(("attack", "hit", "formed", "bud", "imm", "both", "share", "emit", "insolvent"), 0)
+    seen = dict.fromkeys(
+        ("attack", "hit", "formed", "bud", "imm", "both", "share", "emit", "insolvent"), 0
+    ) | dict.fromkeys(("proposed", "nbr", "q_nonzero"), 0)
     for t in range(STEPS):
         starved = np.array([], np.int64)
         if t in STARVE_AT:
@@ -170,6 +275,8 @@ def test_acts_match_the_ledger_and_counters(arm: str, tiny_cfg: Config, tiny3d_c
         assert np.array_equal(_np(a.thrust), post.thrust), where
         assert np.array_equal(_np(a.defend), post.defend), where
         assert np.array_equal(_np(a.emit), post.emit), where
+        # the social-tracking additions (§29.2): targets, kin queries, neighbour rows, birth lanes, two flags
+        _check_social_acts(a, out, post, prev, s, where)
         thrust, defend, emit = (_np(x).astype(np.int64) for x in (a.thrust, a.defend, a.emit))
         assert thrust.min() >= -256 and thrust.max() <= 256, where
         assert defend.min() >= 0 and defend.max() <= 256, where
@@ -178,10 +285,14 @@ def test_acts_match_the_ledger_and_counters(arm: str, tiny_cfg: Config, tiny3d_c
         assert c[C.INSOLVENT] >= len(starved), where
         for x in (a.thrust, a.defend, a.emit, a.attack_gain, a.share_out, a.flags):
             assert not _np(x)[starved].any(), where
+        for x in (a.attack_target, a.bond_target):  # and the S8 mask cancels its targets
+            assert (_np(x)[starved] == -1).all(), where
         # every act is zero on rows dead at the step's start
         dead0 = ~alive0
-        for x in (a.attack_gain, a.share_out, a.share_got, a.flags, a.thrust, a.defend, a.emit):
+        for x in (a.attack_gain, a.share_out, a.share_got, a.flags, a.thrust, a.defend, a.emit, a.q_kin):
             assert not _np(x)[dead0].any(), where
+        for x in (a.attack_target, a.bond_target, a.nbr):  # the new per-row acts are −1 there
+            assert (_np(x)[dead0] == -1).all(), where
         seen["attack"] += c[C.ATTACKS]
         seen["hit"] += c[C.ATTACK_HITS]
         seen["formed"] += c[C.BONDS_FORMED]
@@ -191,12 +302,83 @@ def test_acts_match_the_ledger_and_counters(arm: str, tiny_cfg: Config, tiny3d_c
         seen["share"] += int(led[L.FLOW_SHARED] > 0)
         seen["emit"] += c[C.EMITTERS]
         seen["insolvent"] += c[C.INSOLVENT]
+        seen["proposed"] += has[ActFlag.PROPOSED]
+        seen["nbr"] += int((_np(a.nbr) >= 0).any(axis=1).sum())
+        seen["q_nonzero"] += int(_np(a.q_kin).any(axis=1).sum())
     # the arm exercises what it checks: every act fires, and the immigration arm has both lane kinds at once
-    for k in ("attack", "hit", "formed", "bud", "share", "emit", "insolvent"):
+    for k in ("attack", "hit", "formed", "bud", "share", "emit", "insolvent", "proposed", "nbr", "q_nonzero"):
         assert seen[k] > 0, (arm, k)
     assert (seen["imm"] > 0) == (arm == "immigration")
     if arm == "immigration":
         assert seen["both"] > 0
+
+
+def test_killed_flag_under_forced_attacks(tiny_cfg: Config) -> None:
+    """With every founder attacking and holding 800 quanta, victims are drained to 0 and die KILLED: the
+    flag's popcount is DEATHS_KILLED and each killed row was an attack target (``_check_social_acts``)."""
+    s = set_output_bias(init_state(tiny_cfg), tiny_cfg, BIAS)
+    e = _np(s.energy).copy()
+    e[_np(s.alive)] = 800
+    s = s._replace(energy=mx.array(e))
+    fn = make_step(tiny_cfg, observe=True)
+    kills = 0
+    for t in range(6):
+        prev = s
+        s, out = fn(prev)
+        mx.eval(s, out)
+        _check_social_acts(out.acts, out, _post_s8(prev, tiny_cfg), prev, s, f"step {t}")
+        kills += int(((_np(out.acts.flags) & ActFlag.KILLED.value) > 0).sum())
+    assert kills > 0
+
+
+def test_q_kin_columns_are_the_kin_components() -> None:
+    """The kin feature is φ[NBR_KIN − 1] (φ = desc[..., 1:]), so its query weights are column NBR_KIN − 1
+    of the attack and bond query blocks: 29 + 2 = 31 and 23 + 2 = 25, in both dims."""
+    assert layout.NBR_FEATURE_NAMES[1:][layout.NBR_KIN - 1] == "kin"
+    assert [layout.OUTPUT_NAMES[c] for c in Q_KIN_COLS] == ["q_attack2", "q_bond2"]
+    assert Q_KIN_COLS == (layout.OUT_Q_ATTACK + layout.NBR_KIN - 1, layout.OUT_Q_BOND + layout.NBR_KIN - 1)
+    for nd in (2, 3):  # the 3D layout appends to the 2D one (the _DZ queries come last)
+        lay = layout.for_dims(nd)
+        assert [lay.OUTPUT_NAMES[c] for c in Q_KIN_COLS] == ["q_attack2", "q_bond2"]
+
+
+@pytest.mark.parametrize("d3", [False, True], ids=["2d", "3d"])
+def test_q_kin_clips_and_masks(d3: bool, tiny_cfg: Config, tiny3d_cfg: Config) -> None:
+    """Saturated weights drive the kin outputs to about ±132, past KIN_Q_CLIP, so the quantised value is
+    ±round(256·127) = ±32512 on the living rows; a dead row is 0 whatever the brain computed for it."""
+    cfg = tiny3d_cfg if d3 else tiny_cfg
+    d, clip = dims(cfg), cfg.brain.weight_clip
+    s = init_state(cfg)
+    alive = _np(s.alive)
+    assert 0 < alive.sum() < d.n  # a dead row exists, and its brain is evaluated too
+    w1, w2 = (_np(w).astype(np.float32) for w in (s.W1, s.W2))
+    w1[:] = 0.0
+    w1[:, layout.IN_BIAS, :] = clip  # every hidden unit is tanh(clip) = 0.9993, on dead rows too
+    w2[:, :, Q_KIN_COLS[0]] = clip  # y_kin_attack ≈ +clip·(H·tanh(clip) + 1) ≈ +132
+    w2[:, :, Q_KIN_COLS[1]] = -clip  # y_kin_bond ≈ −132
+    W1, W2 = mx.array(w1).astype(d.wdtype), mx.array(w2).astype(d.wdtype)
+    s = s._replace(W1=W1, W2=W2)
+    assert clip * (d.h * np.tanh(clip) + 1) > KIN_Q_CLIP  # the premise: the unclipped value exceeds the bound
+    s1, out = make_step(cfg, observe=True)(s)
+    mx.eval(s1, out)
+    q = _np(out.acts.q_kin)
+    lim = round(256 * KIN_Q_CLIP)
+    assert (q[alive] == [lim, -lim]).all() and not q[~alive].any()
+    # the same state through the eager step: the clip is not a compilation artefact
+    _, o_eager = make_step(cfg, compile=False, observe=True)(s)
+    assert np.array_equal(_np(o_eager.acts.q_kin), q)
+
+
+def test_q_kin_is_the_unclipped_quantisation_below_the_bound(tiny_cfg: Config) -> None:
+    """Between the bounds the value is round(256·y), an exact int16 of the float32 output."""
+    s = init_state(tiny_cfg)
+    _, out = make_step(tiny_cfg, observe=True)(s)
+    post = _post_s8(s, tiny_cfg)
+    mx.eval(out)
+    y = post.y[:, list(Q_KIN_COLS)]
+    alive = _np(s.alive)
+    assert np.abs(y[alive]).max() < KIN_Q_CLIP and np.abs(y[alive]).max() > 0
+    assert np.array_equal(_np(out.acts.q_kin)[alive], np.rint(np.float32(256.0) * y[alive]).astype(np.int16))
 
 
 @pytest.mark.parametrize("dtype", ["float32", "float16"])

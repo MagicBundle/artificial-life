@@ -1,4 +1,5 @@
-"""§28 game config: ``game.observe`` is a POST_V01 observer key, never hashed, and a resume key (G1)."""
+"""§28, §29 game config: ``game.observe`` and ``game.house_rate`` are POST_V01 observer keys, never hashed,
+and resume keys. ``house_rate`` is an observer-only key with a working default (1/2048), not "off" (G2)."""
 
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from alife.config import (
     POST_V01_KEYS,
     UNHASHED_KEYS,
     Config,
+    ConfigError,
     GameConfig,
     apply_overrides,
     config_from_dict,
@@ -39,18 +41,38 @@ K64_3D_HASH = "df54434fe947dea8f36e5e23223f9676df1ee784959806c31eafb235012ee242"
 K64_3D_ENABLED = "2a4dfd22ed2e28359e6c01526b0460ede280f93ebee382872acca8c412098bba"
 
 OBSERVE = "game.observe=true"
+HOUSE_RATE = "game.house_rate=0.25"  # a non-default rate (the default is 1/2048)
 ENABLED = "director.enabled=true"
 
 
 def test_game_keys_are_post_v01_and_observer_keys() -> None:
     game_keys = {("game", f.name) for f in dataclasses.fields(GameConfig)}
     assert game_keys <= set(POST_V01_KEYS)  # a game key missing from the list would move every hash
-    assert OBSERVER_KEYS == (("game", "observe"),)
+    assert OBSERVER_KEYS == (("game", "observe"), ("game", "house_rate"))
+    assert game_keys == set(OBSERVER_KEYS)  # every game key is an observer key: none can move a hash
     assert not set(OBSERVER_KEYS) & set(UNHASHED_KEYS)
     assert tuple(key for _, key in UNHASHED_KEYS) == DIRECTOR_POLICY_KEYS  # unchanged: observe is not in it
-    assert "observe" not in DIRECTOR_POLICY_KEYS
+    assert "observe" not in DIRECTOR_POLICY_KEYS and "house_rate" not in DIRECTOR_POLICY_KEYS
     assert GameConfig().observe is False and Config().game == GameConfig()
-    assert config_to_dict(Config())["game"] == {"observe": False}
+    assert config_to_dict(Config())["game"] == {"observe": False, "house_rate": 1 / 2048}
+    assert GameConfig().house_rate == 2.0**-11  # exact in binary: the hash cut is 2^53 (§29.4)
+
+
+def test_house_rate_is_a_working_default_and_validated() -> None:
+    """An observer-only key may default to a working value (CLAUDE.md): unlike every hashed post-v0.1 key,
+    its default is not "off" (0, which would make the houses the clades plus one per immigrant)."""
+    assert GameConfig().house_rate > 0
+    base = load_config(preset="tiny")
+    for ok in ("0", "0.0", "1", "1.0", "0.25", "0.000488281"):
+        assert apply_overrides(base, [f"game.house_rate={ok}"]).game.house_rate == float(ok)
+    for bad in ("-0.001", "1.0001", "2", "nan", "inf", "-inf"):
+        with pytest.raises(ConfigError, match=r"game\.house_rate must be in \[0, 1\]"):
+            apply_overrides(base, [f"game.house_rate={bad}"])
+    with pytest.raises(ConfigError, match=r"game\.house_rate"):
+        apply_overrides(base, ["game.house_rate=fast"])
+    with pytest.raises(ConfigError, match=r"game\.house_rate"):  # a config file with a non-number
+        config_from_dict({"game": {"house_rate": "0.5"}})
+    assert config_from_dict({"game": {"house_rate": 1}}).game.house_rate == 1.0  # an int is a float
 
 
 @pytest.mark.parametrize(
@@ -70,6 +92,12 @@ def test_observe_never_enters_the_hash(preset: str, plain: str, enabled: str) ->
         assert config_hash(off) == want, (preset, extra)
         assert config_hash(on) == want, (preset, extra)
         assert config_hash(apply_overrides(on, ["game.observe=false"])) == want
+        # the house rate, at a non-default value, with the observers off and on, at the bounds too
+        for rate in (HOUSE_RATE, "game.house_rate=0", "game.house_rate=1"):
+            for flag in ([], [OBSERVE]):
+                cfg = load_config(preset=preset, overrides=[*extra, *flag, rate])
+                assert cfg.game.house_rate == float(rate.split("=")[1]) != GameConfig().house_rate
+                assert config_hash(cfg) == want, (preset, extra, flag, rate)
 
 
 def test_old_config_without_game_section_loads() -> None:
@@ -78,8 +106,13 @@ def test_old_config_without_game_section_loads() -> None:
     del old["game"]  # a config.json written before the section existed
     back = config_from_dict(old)
     validate(back)
-    assert back == cfg and back.game.observe is False
+    assert back == cfg and back.game.observe is False and back.game.house_rate == GameConfig().house_rate
     assert config_hash(back) == TINY_HASH_V01
+    # a G1-era config.json (a game section without house_rate) loads with the default rate
+    g1 = config_to_dict(cfg)
+    g1["game"] = {"observe": True}
+    assert config_from_dict(g1).game == GameConfig(observe=True)
+    assert config_hash(config_from_dict(g1)) == TINY_HASH_V01
     old3 = config_to_dict(load_config(preset="tiny3d"))
     del old3["game"]
     assert config_hash(config_from_dict(old3)) == TINY3D_HASH
@@ -114,10 +147,25 @@ def test_resume_accepts_game_observe_key(small_run: Path, tmp_path: Path) -> Non
     assert cli.main(["resume", str(copy), "--set", OBSERVE, "--steps", "20", "--quiet"]) == 0
     rd = RunDir.open(copy)
     assert rd.config().game.observe is True
-    assert json.loads((copy / "config.json").read_text())["game"] == {"observe": True}
+    assert json.loads((copy / "config.json").read_text())["game"] == {"observe": True, "house_rate": 1 / 2048}
     assert config_hash(rd.config()) == before  # load_checkpoint's hash check passed on the unchanged hash
     assert [r["step"] for r in rd.metrics_rows()] == [10, 20, 30, 40, 50]
     assert [st for st, _ in rd.checkpoints()][-1] == 50
+
+
+def test_resume_accepts_game_house_rate_key(small_run: Path, tmp_path: Path) -> None:
+    """``game.house_rate`` is an observer key: resume may change it (unhashed: the checkpoint still loads)."""
+    copy = tmp_path / "run"
+    shutil.copytree(small_run, copy)
+    before = RunDir.open(copy).meta()["config_hash"]
+    assert cli.main(["resume", str(copy), "--set", HOUSE_RATE, "--steps", "20", "--quiet"]) == 0
+    rd = RunDir.open(copy)
+    assert rd.config().game.house_rate == 0.25 and rd.config().game.observe is False
+    assert json.loads((copy / "config.json").read_text())["game"] == {"observe": False, "house_rate": 0.25}
+    assert config_hash(rd.config()) == before
+    assert [r["step"] for r in rd.metrics_rows()] == [10, 20, 30, 40, 50]
+    assert all("observers" not in r for r in rd.metrics_rows())  # observers stay off: the key is inert
+    assert not (copy / "observers").exists()
 
 
 def test_resume_with_observe_writes_observer_rows_and_sidecar(
@@ -135,7 +183,9 @@ def test_resume_with_observe_writes_observer_rows_and_sidecar(
     assert "observers:" in capsys.readouterr().err  # the note: no sidecar at the resumed step
 
 
-@pytest.mark.parametrize("override", ["game.nope=1", "game.observe.x=1", "game=1"])
+@pytest.mark.parametrize(
+    "override", ["game.nope=1", "game.observe.x=1", "game.house_rate.x=1", "game=1", "game.house=0.5"]
+)
 def test_resume_rejects_other_game_keys(
     small_run: Path, override: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -149,11 +199,18 @@ def test_resume_rejects_other_game_keys(
 
 
 def test_resume_help_names_the_game_key(capsys: pytest.CaptureFixture[str]) -> None:
-    """``--set`` of ``resume`` advertises every section it accepts (run, director and game.observe)."""
+    """``--set`` of ``resume`` advertises every section it accepts (run, director and the game keys)."""
     capsys.readouterr()
     assert cli.main(["resume", "--help"]) == 0  # main turns argparse's SystemExit(0) into a return code
     text = " ".join(capsys.readouterr().out.split())
-    assert "run.KEY=VALUE|director.KEY=VALUE|game.observe=BOOL" in text
+    assert "run.KEY=VALUE|director.KEY=VALUE|game.KEY=VALUE" in text
+
+
+def test_resume_error_lists_the_two_game_keys(small_run: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    capsys.readouterr()
+    assert cli.main(["resume", str(small_run), "--set", "game.nope=1", "--checkpoint", "0"]) == 2
+    err = " ".join(capsys.readouterr().err.split())
+    assert "game.<key> for ['house_rate', 'observe']" in err
 
 
 def test_fork_can_set_observe(small_run: Path, tmp_path: Path) -> None:

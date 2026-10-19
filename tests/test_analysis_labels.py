@@ -25,7 +25,7 @@ from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, RULES_V1, Archetype,
 from alife.runio import RunDir, load_checkpoint
 from alife.state import init_state, to_numpy
 from alife.step import ActFlag, make_step
-from game_helpers import make_acts
+from game_helpers import blank_social_acts, make_acts
 from helpers import set_output_bias
 
 STUDY: dict[str, Any] = {
@@ -708,6 +708,7 @@ def test_step_outcomes() -> None:
         "thrust": np.zeros(n, np.int16),
         "defend": np.zeros(n, np.int16),
         "emit": np.zeros(n, np.int16),
+        **blank_social_acts(n, 1, 1),  # the outcomes read none of the social additions
     }
     a["flags"][:] = [0, ActFlag.BUDDED.value, ActFlag.ATTACKED.value | ActFlag.FORMED.value, 0xFF]
     a["thrust"][:] = [0, -200, 256, -1]

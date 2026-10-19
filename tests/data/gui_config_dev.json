@@ -85,6 +85,7 @@
     "season_period": 0
   },
   "game": {
+    "house_rate": 0.00048828125,
     "observe": false
   },
   "mutation": {
