@@ -249,7 +249,7 @@ def deposit_chem(emit: mx.array, fcell: mx.array, active: mx.array, cfg: Config)
     so the result is independent of atomic order). ``n_cells`` is FG² in 2D and FZ·FG² in 3D (§27.6).
     """
     n_cells = dims(cfg).n_cells
-    quanta = mx.maximum(ops.floor_i32(emit * 256.0), 0)  # (N,NCH); emit ∈ [0, 1) → [0, 255]
+    quanta = mx.maximum(ops.floor_i32(emit * 256.0), 0)  # (N,NCH); emit ∈ [0, 1] → [0, 256]
     flat = fcell[:, None] + mx.arange(layout.NCH, dtype=mx.int32) * n_cells  # (N,NCH)
     mask = mx.broadcast_to(active[:, None], flat.shape)
     return ops.scatter_add_i32(layout.NCH * n_cells, flat, quanta, mask)

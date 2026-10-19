@@ -84,6 +84,9 @@
     "season_mode": "per_patch",
     "season_period": 5000
   },
+  "game": {
+    "observe": false
+  },
   "mutation": {
     "buoy_init": 0.0,
     "buoy_sigma": 0.0,

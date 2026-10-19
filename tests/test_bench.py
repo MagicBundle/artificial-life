@@ -65,12 +65,144 @@ def test_smoke_all_parts_on_tiny(tiny_cfg: Config) -> None:
 def test_minimal_report_and_validation(micro_cfg: Config) -> None:
     r = run_bench(micro_cfg, steps=1, warmup=0)
     assert r["warmup"] == 1  # the compile call always runs untimed
-    assert not {"stages", "determinism", "brain_variants"} & r.keys()
+    assert not {"stages", "determinism", "brain_variants", "observe"} & r.keys()
     assert "stages" not in format_report(r)
     with pytest.raises(ValueError, match="steps"):
         run_bench(micro_cfg, steps=0)
     with pytest.raises(ValueError, match="warmup"):
         run_bench(micro_cfg, steps=1, warmup=-1)
+
+
+def test_observers_block(tiny_cfg: Config) -> None:
+    """``observe=True`` adds the observers' cost against the plain step, as blocks in the order C O O C."""
+    r = run_bench(tiny_cfg, steps=3, warmup=1, observe=True)
+    json.dumps(r, allow_nan=False)
+    ob = r["observe"]
+    assert set(ob) == {
+        "warmup",
+        "block_pairs",
+        "steps_per_block",
+        "control_ms_median",
+        "observed_ms_median",
+        "overhead_ms_median",
+        "control_ms_per_step",
+        "observed_ms_per_step",
+        "overhead_ms_mean",
+        "observed_steps_per_s",
+        "trajectory_match",
+    }
+    assert ob["observed_ms_per_step"] > 0 and ob["control_ms_per_step"] > 0 and ob["observed_steps_per_s"] > 0
+    assert ob["overhead_ms_median"] == pytest.approx(ob["observed_ms_median"] - ob["control_ms_median"])
+    assert ob["overhead_ms_mean"] == pytest.approx(ob["observed_ms_per_step"] - ob["control_ms_per_step"])
+    assert ob["observed_steps_per_s"] == pytest.approx(1e3 / ob["observed_ms_per_step"])
+    assert ob["block_pairs"] == 2 and ob["steps_per_block"] == 1  # max(steps // 2, 1)
+    assert ob["warmup"] == 8  # the first evaluation (rules.every) is in the untimed warm-up, never timed
+    assert ob["trajectory_match"] is True
+    assert "observers (2 block pairs of 1 steps)" in format_report(
+        r
+    ) and "trajectory identical" in format_report(r)
+    assert run_bench(tiny_cfg, steps=3, warmup=20, observe=True)["observe"]["warmup"] == 20
+
+
+def test_observers_block_runs_the_observer_in_every_step(
+    tiny_cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The observed arm folds every step (warm-up included) of each of its blocks into a fresh observer."""
+    from alife.game.observer import Observer
+
+    seen: list[int] = []
+    real = Observer.update
+
+    def spy(self: Observer, state, acts, t: int) -> None:
+        seen.append(t)
+        real(self, state, acts, t)
+
+    monkeypatch.setattr(Observer, "update", spy)
+    ob = bench._bench_observe(tiny_cfg, 2, 1)  # warm-up 8 (rules.every), 1 timed step per block
+    assert ob["warmup"] == 8
+    assert seen == [*range(1, 10), *range(1, 10)]  # two observed blocks, each from a fresh observer
+
+
+def test_observers_blocks_run_control_observed_observed_control(
+    tiny_cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C O O C, not C O C O: with a drift linear in time the observed blocks of the second order sit on
+    average one block later than the control blocks, which biases the overhead by one block's drift."""
+    from alife.game.observer import Observer
+
+    order: list[str] = []
+    real_init, real_fresh = bench.init_state, Observer.fresh
+
+    def init_spy(cfg: Config):
+        order.append("control")  # every block starts from init_state; an observed one renames it below
+        return real_init(cfg)
+
+    def fresh_spy(state, cfg: Config, **kw):
+        order[-1] = "observed"
+        return real_fresh(state, cfg, **kw)
+
+    monkeypatch.setattr(bench, "init_state", init_spy)
+    monkeypatch.setattr(Observer, "fresh", staticmethod(fresh_spy))
+    ob = bench._bench_observe(tiny_cfg, 2, 1)
+    assert order == ["control", "observed", "observed", "control"] and ob["block_pairs"] == 2
+
+
+def test_observers_block_sees_a_changed_trajectory(tiny_cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If observing ever changed the state, the report says so."""
+    real = bench.step_mod.make_step
+
+    def make_step_bad(cfg: Config, **kw):
+        fn = real(cfg, **kw)
+        if not kw.get("observe"):
+            return fn
+
+        def perturbed(s):
+            s2, out = fn(s)
+            return s2._replace(total=s2.total + 1), out
+
+        return perturbed
+
+    monkeypatch.setattr(bench.step_mod, "make_step", make_step_bad)
+    ob = bench._bench_observe(tiny_cfg, 2, 1)
+    assert ob["trajectory_match"] is False
+    assert "trajectory DIFFERS" in format_report({**_report_stub(), "observe": ob})
+
+
+def _report_stub() -> dict:
+    """The fields ``format_report`` needs before its optional parts."""
+    return {
+        "alife_version": "x",
+        "mlx_version": "x",
+        "platform": "x",
+        "device": "x",
+        "config": {
+            "n_max": 1,
+            "max_births_per_step": 1,
+            "n_init": 1,
+            "world_size": 1.0,
+            "k_neighbors": 1,
+            "cell_capacity": 1,
+            "hidden": 1,
+            "weight_dtype": "float32",
+            "brain_impl": "x",
+            "compile": True,
+            "runtime_checks": False,
+        },
+        "compile_s": 0.0,
+        "ms_per_step": 1.0,
+        "ms_per_step_median": 1.0,
+        "ms_per_step_p90": 1.0,
+        "steps_per_s": 1.0,
+        "peak_mem_gb": 0.0,
+        "n_alive_start": 1,
+        "n_alive_end": 1,
+        "births": 0,
+        "deaths": 0,
+        "diag_ok": True,
+        "diag_flags": [],
+        "invariants_ok": True,
+        "donation": {"verdict": "ok", "excess_gb": 0.0, "excess_over_weights": 0.0},
+    }
 
 
 def test_staged_pipeline_equals_step(tiny_cfg: Config) -> None:

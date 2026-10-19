@@ -11,6 +11,7 @@ import pytest
 
 from alife import layout, metrics
 from alife.config import (
+    OBSERVER_KEYS,
     OVERLAYS,
     PRESETS,
     R_HARD,
@@ -359,6 +360,8 @@ def test_hash_ignores_run_and_tracks_dynamics() -> None:
         for key, val in vals.items():
             if (sec, key) in UNHASHED_KEYS:
                 continue  # the director's policy is read between steps only (see test_director_config)
+            if (sec, key) in OBSERVER_KEYS:
+                continue  # observers never change the trajectory (see test_game_config)
             if isinstance(val, bool):
                 new = not val
             elif isinstance(val, int):

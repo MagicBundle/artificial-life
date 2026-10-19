@@ -52,7 +52,7 @@ def cached_states(out_dir: Path) -> list[tuple[int, Path]]:
     return sorted(found)
 
 
-def _compare(
+def compare_row(
     stored: dict[str, Any], counters: list[mx.array], ledgers: list[mx.array], total: int, *, nd: int = 2
 ) -> list[str]:
     """Keys whose recomputed value differs from ``stored`` (interval keys plus ``E_total``); ``nd`` is the
@@ -113,7 +113,7 @@ def resimulate(
         stored = rows.get(t)
         if stored is not None:
             if stored["steps"] == len(counters):
-                bad = _compare(stored, counters, ledgers, int(to_numpy(state.total)), nd=dims(cfg).nd)
+                bad = compare_row(stored, counters, ledgers, int(to_numpy(state.total)), nd=dims(cfg).nd)
                 if bad:
                     raise ResimMismatch(f"step {t}: re-simulated values differ from metrics.jsonl in {bad}")
                 checked += 1

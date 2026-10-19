@@ -13,6 +13,9 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
   total is inflated by the extra syncs.
 - **Determinism** (``determinism``): two runs of ``steps`` steps from ``init_state`` compare state digests.
 - **Brain variants** (``brain_variants``): ``brain.forward`` timed for every ``impl`` × ``weight_dtype``.
+- **Observers** (``observe``, §28): the step with the game observers (``make_step(observe=True)`` and
+  ``Observer.update``, evaluations included) against the plain step, as blocks (control, observed, observed,
+  control) of the runner's own loop, with a check that the trajectories are bitwise equal.
 """
 
 from __future__ import annotations
@@ -67,12 +70,13 @@ def run_bench(
     stages: bool = False,
     determinism: bool = False,
     brain_variants: bool = False,
+    observe: bool = False,
 ) -> dict[str, Any]:
     """Run the benchmark suite and return a JSON-compatible report.
 
     ``warmup`` steps (at least the compile call) run before anything is timed; ``steps`` steps are timed.
     The optional parts reuse ``steps`` and ``warmup`` (determinism: 2 × ``steps`` steps; brain variants:
-    ``steps`` timed forward calls per variant).
+    ``steps`` timed forward calls per variant; observers: four blocks of ``steps // 2`` timed steps).
     """
     if steps < 1:
         raise ValueError(f"steps must be >= 1, got {steps}")
@@ -87,6 +91,8 @@ def run_bench(
         report["determinism"] = _determinism(fn, cfg, steps)
     if brain_variants:
         report["brain_variants"] = _brain_variants(cfg, steps, warmup)
+    if observe:
+        report["observe"] = _bench_observe(cfg, steps, warmup)
     return report
 
 
@@ -262,6 +268,80 @@ def _determinism(fn: Callable[[State], Any], cfg: Config, steps: int) -> dict[st
         del s, out
     (da, wa), (db, wb) = digests
     return {"steps": steps, "digest_a": da, "digest_b": db, "match": da == db, "wall_s": [wa, wb]}
+
+
+# --- observers ------------------------------------------------------------------------------------------
+
+OBSERVE_BLOCKS: Final = 2  # control/observed block pairs, in the order C O O C (the leading arm alternates)
+
+
+def _bench_observe(cfg: Config, steps: int, warmup: int) -> dict[str, Any]:
+    """The cost of the game observers (§28) as the runner pays it, against the plain step.
+
+    Two arms, each following the runner's loop with one blocking eval per step: the *control* is
+    ``make_step(cfg)`` and ``mx.eval(state, out)``; the *observed* arm is ``make_step(cfg, observe=True)``
+    plus ``Observer.update`` (the labels' evaluation every ``rules.every`` steps included) and
+    ``mx.eval(state, out.base(), *obs.arrays())``. They run as blocks in the order control, observed,
+    observed, control (the leading arm alternates in each pair, so that a drift linear in time, such as a
+    thermal one, cancels from the difference of the means; in the order C O C O it would not), each
+    restarting from ``init_state(cfg)`` with the same warm-up and the same number of timed steps
+    (``max(steps // 2, 1)``). Each arm's step compiles once; the observer's two closures compile again for
+    each block, in its untimed warm-up. The warm-up covers at least the first evaluation step, so that its
+    compile is never timed.
+
+    The median step times give ``overhead_ms_median``; the evaluation steps (one in ``rules.every``) are
+    slower than the others, which a median hides, so ``overhead_ms_mean`` and ``observed_steps_per_s`` are
+    from the means. ``trajectory_match`` compares the state digests at the end of the first two blocks: the
+    observers must not change the trajectory (§28.2).
+    """
+    from alife.game.observer import Observer  # local: only this part of the benchmark needs the game package
+    from alife.game.rules import RULES_V1
+
+    warm = max(warmup, 1, RULES_V1.every)
+    per_block = max(steps // 2, 1)
+    control_fn = step_mod.make_step(cfg)
+    observed_fn = step_mod.make_step(cfg, observe=True)
+    times: dict[str, list[float]] = {"control": [], "observed": []}
+    digests: dict[str, str] = {}
+
+    def block(arm: str) -> None:
+        s = init_state(cfg)
+        obs = Observer.fresh(s, cfg) if arm == "observed" else None
+        for i in range(warm + per_block):
+            t0 = time.perf_counter()
+            if obs is None:
+                s, out = control_fn(s)
+                mx.eval(s, out)
+            else:
+                s, out = observed_fn(s)
+                obs.update(s, out.acts, i + 1)
+                mx.eval(s, out.base(), *obs.arrays())
+            if i >= warm:
+                times[arm].append(time.perf_counter() - t0)
+        if arm not in digests:  # the first block of each arm
+            digests[arm] = state_digest(s)
+        del s, out, obs
+
+    for pair in range(OBSERVE_BLOCKS):  # C O, then O C: the mean block time of both arms is the same
+        first, second = ("control", "observed") if pair % 2 == 0 else ("observed", "control")
+        block(first)
+        block(second)
+    ctl, obs_t = times["control"], times["observed"]
+    ctl_med, obs_med = statistics.median(ctl), statistics.median(obs_t)
+    ctl_mean, obs_mean = statistics.fmean(ctl), statistics.fmean(obs_t)
+    return {
+        "warmup": warm,
+        "block_pairs": OBSERVE_BLOCKS,
+        "steps_per_block": per_block,
+        "control_ms_median": 1e3 * ctl_med,
+        "observed_ms_median": 1e3 * obs_med,
+        "overhead_ms_median": 1e3 * (obs_med - ctl_med),
+        "control_ms_per_step": 1e3 * ctl_mean,
+        "observed_ms_per_step": 1e3 * obs_mean,
+        "overhead_ms_mean": 1e3 * (obs_mean - ctl_mean),
+        "observed_steps_per_s": 1.0 / obs_mean,
+        "trajectory_match": digests["control"] == digests["observed"],
+    }
 
 
 # --- brain variants -------------------------------------------------------------------------------------
@@ -646,4 +726,13 @@ def format_report(report: dict[str, Any]) -> str:
                     f"  {v['impl']:<7} {v['weight_dtype']:<9} {v['ms_median']:8.3f} ms"
                     + (f"  {bw:7.1f} GB/s" if bw is not None else "")
                 )
+    if "observe" in r:
+        ob = r["observe"]
+        lines.append(
+            f"observers ({ob['block_pairs']} block pairs of {ob['steps_per_block']} steps): "
+            f"control {ob['control_ms_median']:.2f} ms, observed {ob['observed_ms_median']:.2f} ms median "
+            f"(overhead {ob['overhead_ms_median']:+.2f} ms median, {ob['overhead_ms_mean']:+.2f} ms mean); "
+            f"{ob['observed_steps_per_s']:.1f} steps/s observed; trajectory "
+            f"{'identical' if ob['trajectory_match'] else 'DIFFERS'}"
+        )
     return "\n".join(lines)

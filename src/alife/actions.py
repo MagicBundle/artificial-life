@@ -20,7 +20,7 @@ class Actions(NamedTuple):
     thrust: mx.array  # (N,) f32 in (−1, 1)
     turn: mx.array  # (N,) f32 radians
     msg: mx.array  # (N,MSG) f32
-    emit: mx.array  # (N,NCH) f32 in [0, 1)
+    emit: mx.array  # (N,NCH) f32 in [0, 1] (tanh reaches 1.0 in float32)
     harvest: mx.array  # (N,) f32 in (0, 1)
     grip: mx.array  # (N,) f32 in (0, 1)
     contract: mx.array  # (N,) f32 in (−1, 1)

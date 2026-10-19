@@ -84,6 +84,9 @@
     "season_mode": "global",
     "season_period": 0
   },
+  "game": {
+    "observe": false
+  },
   "mutation": {
     "buoy_init": 0.0,
     "buoy_sigma": 0.0,

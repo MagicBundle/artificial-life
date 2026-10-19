@@ -145,11 +145,11 @@ def test_resim_compare_uses_the_3d_names() -> None:
     stored = {**metrics.interval_row(50, c, lg, {}, {}, nd=3), "E_total": 77}
     stored = json.loads(json.dumps(stored))  # as read back from metrics.jsonl
     counters, ledgers = [mx.array(r) for r in c], [mx.array(r) for r in lg]
-    assert resim._compare(stored, counters, ledgers, 77, nd=3) == []
+    assert resim.compare_row(stored, counters, ledgers, 77, nd=3) == []
     stored["ledger"]["HEAT_BUOYANCY"] += 1
-    assert resim._compare(stored, counters, ledgers, 77, nd=3) == ["ledger"]
+    assert resim.compare_row(stored, counters, ledgers, 77, nd=3) == ["ledger"]
     with pytest.raises(ValueError, match="columns"):
-        resim._compare(stored, counters, ledgers, 77)  # a 3D run compared as 2D is refused, not scrambled
+        resim.compare_row(stored, counters, ledgers, 77)  # a 3D run compared as 2D is refused, not scrambled
 
 
 # --- §27.9: the 3D interval keys ----------------------------------------------------------------------------
@@ -197,14 +197,14 @@ def test_resim_compare_checks_the_3d_interval_keys() -> None:
     lg = rs.integers(0, 1000, (5, len(LedgerIdx))).astype(np.int64)
     stored = json.loads(json.dumps(metrics.interval_row(50, c, lg, {}, {}, nd=3)))
     counters, ledgers = [mx.array(r) for r in c], [mx.array(r) for r in lg]
-    assert resim._compare(stored, counters, ledgers, 0, nd=3) == []
+    assert resim.compare_row(stored, counters, ledgers, 0, nd=3) == []
     for key in INTERVAL_3D:
         bad = {**stored, key: stored[key] + 1}
-        assert resim._compare(bad, counters, ledgers, 0, nd=3) == [key]
+        assert resim.compare_row(bad, counters, ledgers, 0, nd=3) == [key]
     old = {
         k: v for k, v in stored.items() if k not in INTERVAL_3D
     }  # a row written before PR 4 still compares
-    assert resim._compare(old, counters, ledgers, 0, nd=3) == []
+    assert resim.compare_row(old, counters, ledgers, 0, nd=3) == []
 
 
 # --- §27.9: the 3D snapshot keys ----------------------------------------------------------------------------

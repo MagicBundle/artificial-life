@@ -289,11 +289,18 @@ def test_view_and_bench_delegate(run_dir: Path, tmp_path: Path, monkeypatch: pyt
         "stages": True,
         "determinism": False,
         "brain_variants": False,
+        "observe": False,
         "n": 1024,
         "hidden": 24,
     }
+    assert cli.main([*argv, "--observe"]) == 0
+    assert seen["observe"] is True
     monkeypatch.setattr(bench, "run_bench", lambda cfg, **kw: {"determinism": {"match": False}})
     assert cli.main(["bench", "--preset", "tiny", "--determinism"]) == 1
+    monkeypatch.setattr(bench, "run_bench", lambda cfg, **kw: {"observe": {"trajectory_match": False}})
+    assert cli.main(["bench", "--preset", "tiny", "--observe"]) == 1
+    monkeypatch.setattr(bench, "run_bench", lambda cfg, **kw: {"observe": {"trajectory_match": True}})
+    assert cli.main(["bench", "--preset", "tiny", "--observe"]) == 0
 
 
 def test_bench_smoke(tmp_path: Path) -> None:
@@ -305,6 +312,28 @@ def test_bench_smoke(tmp_path: Path) -> None:
     argv = ["bench", "--preset", "tiny", *F32, "--steps", "5", "--warmup", "2", "--json", str(out)]
     assert cli.main(argv) == 0
     assert isinstance(json.loads(out.read_text()), dict)
+
+
+def test_bench_observe_smoke(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """``bench --observe`` runs the interleaved observer blocks and prints their line."""
+    out = tmp_path / "bench.json"
+    argv = [
+        "bench",
+        "--preset",
+        "tiny",
+        *F32,
+        "--steps",
+        "4",
+        "--warmup",
+        "1",
+        "--observe",
+        "--json",
+        str(out),
+    ]
+    assert cli.main(argv) == 0
+    ob = json.loads(out.read_text())["observe"]
+    assert ob["trajectory_match"] is True and ob["observed_steps_per_s"] > 0
+    assert "trajectory" not in capsys.readouterr().err
 
 
 def test_usage_and_config_errors(tmp_path: Path) -> None:

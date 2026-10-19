@@ -196,6 +196,14 @@ class DirectorConfig:  # ecosystem director (docs/DIRECTOR.md); added after v0.1
 
 
 @dataclass(frozen=True)
+class GameConfig:  # the games vertical (docs/GAMES.md, §28); added after v0.1
+    # Observers (§28): the step also returns the observer channel and the runner folds it into accumulators,
+    # labels, the metrics block and the sidecar. Never changes the trajectory: unhashed (``OBSERVER_KEYS``)
+    # and a resume key.
+    observe: bool = False
+
+
+@dataclass(frozen=True)
 class RunConfig:  # excluded from config_hash; on resume only observer/cadence keys may change (§18)
     seed: int = 0
     steps: int = 100_000
@@ -226,6 +234,7 @@ class Config:
     mutation: MutationConfig = field(default_factory=MutationConfig)
     fields: FieldConfig = field(default_factory=FieldConfig)
     director: DirectorConfig = field(default_factory=DirectorConfig)
+    game: GameConfig = field(default_factory=GameConfig)
     run: RunConfig = field(default_factory=RunConfig)
 
 
@@ -599,6 +608,7 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("fields", "photic_lambda"),
     ("energy", "buoyancy_cost"),
     ("energy", "buoyancy_cap_cost"),
+    ("game", "observe"),
 )
 
 # The POST_V01 keys of the 3D world (docs/3D.md, §27.1). In a 2D world every one but ``world.dims`` must keep
@@ -635,6 +645,9 @@ UNHASHED_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("director", "yoke_log"),
 )
 DIRECTOR_POLICY_KEYS: Final = tuple(key for _, key in UNHASHED_KEYS)
+# POST_V01 keys read only by host-side observers (§28): omitted from ``config_hash`` at every value. Separate
+# from ``UNHASHED_KEYS``, from which ``DIRECTOR_POLICY_KEYS`` (the director's resume keys) is derived.
+OBSERVER_KEYS: Final[tuple[tuple[str, str], ...]] = (("game", "observe"),)
 DIRECTOR_MODES: Final = ("off", "live", "replay")
 RANDOM_PERSONA: Final = "random"  # arm R of DIRECTOR.md §9: yoked to another run's discretionary moves
 PERSONAS: Final = ("gardener", "trickster", "architect", RANDOM_PERSONA)
@@ -675,14 +688,15 @@ def require_2d(cfg: Config, what: str) -> None:
 def config_hash(cfg: Config) -> str:
     """SHA-256 hex of the canonical JSON of every section except ``run``.
 
-    Keys added after v0.1 (``POST_V01_KEYS``) are omitted at their defaults (``UNHASHED_KEYS``: always), and a
-    section left empty by that (``director``) is omitted too, so pre-director runs keep their hash.
+    Keys added after v0.1 (``POST_V01_KEYS``) are omitted at their defaults (``UNHASHED_KEYS`` and
+    ``OBSERVER_KEYS``: always), and a section left empty by that (``director``, ``game``) is omitted too, so
+    pre-director and pre-game runs keep their hash.
     """
     d = config_to_dict(cfg)
     d.pop("run")
     defaults = config_to_dict(Config())
     for sec, key in POST_V01_KEYS:
-        if (sec, key) in UNHASHED_KEYS or d[sec][key] == defaults[sec][key]:
+        if (sec, key) in UNHASHED_KEYS or (sec, key) in OBSERVER_KEYS or d[sec][key] == defaults[sec][key]:
             del d[sec][key]
     for sec in {sec for sec, _ in POST_V01_KEYS}:
         if not d[sec]:

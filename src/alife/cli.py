@@ -28,6 +28,7 @@ from alife.config import (
     DEFAULT_PRESET,
     DIRECTOR_MODES,
     DIRECTOR_POLICY_KEYS,
+    OBSERVER_KEYS,
     OVERLAYS,
     PERSONAS,
     PRESETS,
@@ -61,8 +62,8 @@ from alife.state import DeathCause, State, State3, agent_fields, default_env, in
 from alife.step import make_step
 
 # run.* keys that resume may change: observers, cadences and the director mode (§18). Everything else goes
-# through a fork. The director's policy keys (director.persona, ...) may change too: they never reach the
-# compiled step.
+# through a fork. The director's policy keys (director.persona, ...) and game.observe (RESUME_GAME_KEYS) may
+# change too: they never reach the trajectory.
 RESUME_KEYS: frozenset[str] = frozenset(
     {
         "steps",
@@ -78,6 +79,9 @@ RESUME_KEYS: frozenset[str] = frozenset(
     }
 )
 RESUME_DIRECTOR_KEYS: frozenset[str] = frozenset(DIRECTOR_POLICY_KEYS)
+# The observer keys (game.observe) are read by host-side observers only and are not hashed, so resume may
+# change them too (§28.6).
+RESUME_GAME_KEYS: frozenset[str] = frozenset(key for _, key in OBSERVER_KEYS)
 
 LLM_DEFAULT_EVERY = 25_000  # steps between LLM calls with a bare --llm
 
@@ -439,8 +443,10 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
 
 def _resume_allowed(item: str) -> bool:
     section, _, key = item.partition("=")[0].strip().partition(".")
-    return (section == "run" and key in RESUME_KEYS) or (
-        section == "director" and key in RESUME_DIRECTOR_KEYS
+    return (
+        (section == "run" and key in RESUME_KEYS)
+        or (section == "director" and key in RESUME_DIRECTOR_KEYS)
+        or (section == "game" and key in RESUME_GAME_KEYS)
     )
 
 
@@ -453,8 +459,8 @@ def _cmd_resume(a: argparse.Namespace) -> int:
     bad = [item for item in items if not _resume_allowed(item)]
     if bad:
         raise ConfigError(
-            f"resume accepts only --set run.<key> for {sorted(RESUME_KEYS)} and director.<key> for "
-            f"{sorted(RESUME_DIRECTOR_KEYS)}; got {bad} "
+            f"resume accepts only --set run.<key> for {sorted(RESUME_KEYS)}, director.<key> for "
+            f"{sorted(RESUME_DIRECTOR_KEYS)} and game.<key> for {sorted(RESUME_GAME_KEYS)}; got {bad} "
             "(seed, compile, runtime_checks and dynamics changes need `alife run --init-from`)"
         )
     base = rd.config()
@@ -851,6 +857,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         stages=a.stages,
         determinism=a.determinism,
         brain_variants=a.brain_variants,
+        observe=a.observe,
     )
     text = _dumps(report)
     if a.json is not None:
@@ -861,6 +868,10 @@ def _cmd_bench(a: argparse.Namespace) -> int:
     det = report.get("determinism")
     if isinstance(det, Mapping) and det.get("match") is False:
         print("determinism check FAILED: the two runs' state digests differ", file=sys.stderr)
+        return int(ExitCode.ERROR)
+    obs = report.get("observe")
+    if isinstance(obs, Mapping) and obs.get("trajectory_match") is False:
+        print("observer purity check FAILED: observing changed the trajectory", file=sys.stderr)
         return int(ExitCode.ERROR)
     return int(ExitCode.OK)
 
@@ -972,7 +983,12 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--steps", type=_non_negative, default=None)
     g.add_argument("--until", type=_non_negative, default=None, metavar="STEP")
     p.add_argument("--checkpoint", type=_checkpoint_arg, default=None, metavar="STEP|latest")
-    p.add_argument("--set", action="append", default=[], metavar="run.KEY=VALUE|director.KEY=VALUE")
+    p.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="run.KEY=VALUE|director.KEY=VALUE|game.observe=BOOL",
+    )
     p.add_argument(
         "--director",
         choices=DIRECTOR_MODES,
@@ -1074,6 +1090,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stages", action="store_true")
     p.add_argument("--determinism", action="store_true")
     p.add_argument("--brain-variants", action="store_true")
+    p.add_argument(
+        "--observe",
+        action="store_true",
+        help="also time the step with the game observers against the plain step (interleaved blocks)",
+    )
     p.add_argument("--json", default=None, metavar="PATH")
     p.set_defaults(func=_cmd_bench)
 
