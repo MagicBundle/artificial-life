@@ -11,12 +11,13 @@ import numpy as np
 import pytest
 
 from alife import layout
-from alife.config import Config, apply_overrides
+from alife.config import Config, apply_overrides, config_from_dict, config_to_dict
 from alife.game.observe import (
     OBS_CAP,
     VQ_MAX,
     ArchCol,
     IntentCol,
+    ObsIn,
     ObsState,
     care_out,
     ema,
@@ -28,10 +29,10 @@ from alife.game.observe import (
     speed_unit,
     update,
 )
-from alife.game.rules import ARCHETYPE_NAMES, RULES_V1, Archetype
+from alife.game.rules import ARCHETYPE_NAMES, N_INTENT_COLS, RULES_V1, RULES_V2, Archetype, Intent, RuleSet
 from alife.state import CounterIdx as C
 from alife.state import init_state, to_numpy
-from alife.step import ActFlag, make_step
+from alife.step import ActFlag, Acts, make_step
 from game_helpers import Driver, blank_acts, living, make_acts, make_oi, np_state
 from helpers import set_output_bias
 
@@ -143,6 +144,7 @@ def test_reset_of_died_and_new_rows(micro_cfg: Config) -> None:
         label_arch=mx.full((n, 2), 3, dtype=I32),
         match_arch=mx.full((n,), 5, dtype=I32),
         label_intent=mx.full((n,), 6, dtype=I32),
+        held=mx.full((n,), 9, dtype=I32),
         match_intent=mx.full((n,), 7, dtype=I32),
         cand=mx.full((n,), 8, dtype=I32),
         cand_n=mx.full((n,), 2, dtype=I32),
@@ -177,11 +179,15 @@ def test_reset_of_died_and_new_rows(micro_cfg: Config) -> None:
     assert s["uid"][:5].tolist() == [0, -1, 10, 3, 11]
     assert s["n_obs"][:5].tolist() == [2, 0, 0, 2, 0]
     for r in (1, 2, 4):  # reset rows are zero everywhere
-        for f in ("arch", "arch_slot", "intent", "label_arch", "match_arch", "label_intent", "match_intent"):
+        for f in (
+            *("arch", "arch_slot", "intent", "label_arch", "match_arch"),
+            *("label_intent", "held", "match_intent"),
+        ):
             assert not s[f][r].any(), (f, r)
         assert s["cand"][r] == 0 and s["cand_n"][r] == 0 and s["since_bud"][r] == OBS_CAP
     for r in (0, 3):  # kept rows keep labels and accumulate
         assert (s["label_arch"][r] == 3).all() and s["label_intent"][r] == 6 and s["cand_n"][r] == 2
+        assert s["held"][r] == 9  # the hysteresis label is kept like the displayed one
         assert s["arch"][r, ArchCol.HARVEST.value] == 100 + 100 - (100 >> RULES_V1.arch_k)
     assert s["since_bud"][0] == 1 and s["since_bud"][3] == OBS_CAP
 
@@ -274,11 +280,11 @@ def test_init_obs_shapes_and_bonds(micro_cfg: Config, micro3d_cfg: Config) -> No
         n = len(oi["alive"])
         shapes = {
             **dict.fromkeys(("uid", "n_obs", "since_bud", "match_arch", "label_intent"), (n,)),
-            **dict.fromkeys(("match_intent", "cand", "cand_n"), (n,)),
+            **dict.fromkeys(("match_intent", "cand", "cand_n", "held"), (n,)),
             **dict.fromkeys(("slot_uid", "slot_age", "slot_kin"), (n, B)),
             "arch": (n, n_arch_cols(nd)),
             "arch_slot": (n, B, 2),
-            "intent": (n, 7),
+            "intent": (n, 10),
             "label_arch": (n, 2),
         }
         assert {f: getattr(o, f).shape for f in ObsState._fields} == shapes
@@ -301,6 +307,7 @@ def test_init_obs_shapes_and_bonds(micro_cfg: Config, micro3d_cfg: Config) -> No
             "label_arch",
             "match_arch",
             "label_intent",
+            "held",
             "cand_n",
         ):
             assert not s[f].any(), f
@@ -338,7 +345,8 @@ def test_inputs_quantisation(dims_: str, micro_cfg: Config, micro3d_cfg: Config)
     kin_prev[1] = [False, False, False, True]  # slot 3 carries nothing sent
     x6, xs, x3 = quantise_inputs(make_oi(oi), make_acts(acts), mx.array(kin_prev), cfg)
     assert x6.dtype == xs.dtype == x3.dtype == I32
-    assert x6.shape == (cfg_n, n_arch_cols(nd)) and xs.shape == (cfg_n, B, 2) and x3.shape == (cfg_n, 7)
+    assert x6.shape == (cfg_n, n_arch_cols(nd)) and xs.shape == (cfg_n, B, 2)
+    assert x3.shape == (cfg_n, N_INTENT_COLS) and N_INTENT_COLS == 10
     x6, xs, x3 = np_(x6), np_(xs), np_(x3)
 
     q = np.clip(np.round(vel * scale), -VQ_MAX, VQ_MAX).astype(np.int32)
@@ -365,6 +373,7 @@ def test_inputs_quantisation(dims_: str, micro_cfg: Config, micro3d_cfg: Config)
     assert x3[:4, col.EMIT.value].tolist() == [300, 0, 765, 128]
     assert (x3[:, col.HARVEST.value] == oi["last_harvest"]).all()
     assert x3[:2, col.CARE.value].tolist() == [8, 0]  # the previous step's kin slots, not the current ones
+    assert x3[:4, col.FORMED.value].tolist() == [0, 256, 0, 0]  # ActFlag.FORMED: row 1 only
     assert (x3 >= 0).all()
     assert np_(care_out(mx.array(kin_prev), make_acts(acts).share_out))[:2].tolist() == [8, 0]
 
@@ -373,6 +382,89 @@ def test_speed_unit_without_thrust(micro_cfg: Config) -> None:
     assert speed_unit(micro_cfg) == micro_cfg.physics.thrust_max / micro_cfg.physics.drag
     nothrust = apply_overrides(micro_cfg, ["physics.thrust_max=0.0"])
     assert speed_unit(nothrust) == nothrust.physics.v_max
+
+
+def _flow_reference(cfg: Config, row: dict[str, object]) -> tuple[int, int]:
+    """The visible net flow of one row as plain Python integers (an independent formulation of the flow in
+    ``quantise_inputs``): gains less losses, the four costs as floors of the coefficient times the quantised
+    action, ``(FLOW_POS, FLOW_NEG)`` its positive and negative parts."""
+    ec = cfg.energy
+    q = row["thrust"]
+    cost = (ec.move_cost * q * q) // 65536 + (ec.defend_cost * row["defend"]) // 256
+    cost += (ec.emit_cost * row["emit"]) // 256 + (
+        ec.attack_cost if row["flags"] & ActFlag.ATTACKED.value else 0
+    )
+    flow = row["harvest"] + row["gain"] + row["inflow"] - sum(row["out"]) - row["loss"] - cost
+    return max(flow, 0), max(-flow, 0)
+
+
+def test_flow_and_formed_inputs(micro_cfg: Config) -> None:
+    """FORMED enters as 256 per FORMED step and the flow is gains less losses less the four visible costs,
+    split into non-negative halves; checked on a scene of positive, negative and zero net flows, then through
+    the accumulator."""
+    cfg, rs = micro_cfg, RULES_V2
+    A, F = ActFlag.ATTACKED.value, ActFlag.FORMED.value
+    rows = [  # harvest, gain, inflow, out (per slot), loss, thrust, defend, emit, flags
+        dict(harvest=300, gain=50, inflow=20, out=[10, 5, 0, 0], loss=0, thrust=200, defend=100, emit=300,
+             flags=A | F),
+        dict(harvest=0, gain=0, inflow=0, out=[30, 0, 0, 0], loss=500, thrust=-256, defend=256, emit=765,
+             flags=0),
+        dict(harvest=0, gain=0, inflow=0, out=[0, 0, 0, 0], loss=0, thrust=0, defend=0, emit=0, flags=F),
+        dict(harvest=0, gain=0, inflow=0, out=[0, 0, 0, 0], loss=0, thrust=0, defend=0, emit=0, flags=A),
+        dict(harvest=100, gain=0, inflow=0, out=[0, 0, 0, 0], loss=0, thrust=-200, defend=0, emit=0, flags=0),
+        dict(harvest=7, gain=0, inflow=1, out=[0, 0, 3, 0], loss=2, thrust=31, defend=1, emit=5, flags=0),
+    ]  # fmt: skip
+    oi = living(cfg, len(rows))
+    acts = blank_acts(cfg)
+    for r, row in enumerate(rows):
+        oi["last_harvest"][r], oi["last_inflow"][r], oi["last_loss"][r] = (
+            row["harvest"],
+            row["inflow"],
+            row["loss"],
+        )
+        acts["attack_gain"][r], acts["share_out"][r] = row["gain"], row["out"]
+        acts["thrust"][r], acts["defend"][r], acts["emit"][r], acts["flags"][r] = (
+            row["thrust"], row["defend"], row["emit"], row["flags"],
+        )  # fmt: skip
+    n = len(oi["alive"])
+    x3 = np_(quantise_inputs(make_oi(oi), make_acts(acts), mx.zeros((n, B), mx.bool_), cfg)[2])
+    col = IntentCol
+    want = np.array([_flow_reference(cfg, row) for row in rows])
+    assert want.tolist() == [[214, 0], [0, 709], [0, 0], [0, 50], [39, 0], [2, 0]]  # worked by hand
+    assert x3[: len(rows), col.FLOW_POS.value].tolist() == want[:, 0].tolist()
+    assert x3[: len(rows), col.FLOW_NEG.value].tolist() == want[:, 1].tolist()
+    assert x3[: len(rows), col.FORMED.value].tolist() == [256, 0, 256, 0, 0, 0]
+    assert not x3[len(rows) :, col.FLOW_POS.value : col.FLOW_NEG.value + 1].any()  # dead rows: no flow
+    assert (want.min(axis=1) == 0).all() and want[:, 0].max() > 0 and want[:, 1].max() > 0  # both signs
+    # through the accumulator: the same inputs twice give A = x + (x − (x >> 3)) in every new column
+    o = init_obs(make_oi(oi), cfg)
+    for _ in range(2):
+        o = update(o, make_oi(oi), make_acts(acts), cfg, rs)
+    a = np_(o.intent)[: len(rows)]
+    x = x3[: len(rows)]
+    assert (a[:, 7:] == 2 * x[:, 7:] - (x[:, 7:] >> rs.intent_k)).all()
+    assert a[0, col.FORMED.value] == 256 + 256 - (256 >> rs.intent_k)
+
+
+def test_flow_cost_does_not_wrap(micro_cfg: Config) -> None:
+    """``move_cost·q²`` with q = 256 is 2^36 at ``move_cost = 2^20`` (and overflows int32 from 2^15): the flow
+    is
+    int64, so the cost term is exactly 2^20. ``validate`` bounds the coefficients only from below."""
+    d = config_to_dict(micro_cfg)
+    d["energy"]["move_cost"] = 1 << 20
+    cfg = config_from_dict(d)  # not validated: only the quantisation is under test
+    oi, acts = living(cfg, 2), blank_acts(cfg)
+    acts["thrust"][:2] = [256, -256]
+    x3 = np_(quantise_inputs(make_oi(oi), make_acts(acts), mx.zeros((len(oi["alive"]), B), mx.bool_), cfg)[2])
+    assert x3[:2, IntentCol.FLOW_NEG.value].tolist() == [1 << 20, 1 << 20]
+    assert not x3[:2, IntentCol.FLOW_POS.value].any()
+    d["energy"]["move_cost"] = 1 << 15  # the first coefficient at which int32 would wrap (2^15·2^16 = 2^31)
+    x3 = np_(
+        quantise_inputs(
+            make_oi(oi), make_acts(acts), mx.zeros((len(oi["alive"]), B), mx.bool_), config_from_dict(d)
+        )[2]
+    )
+    assert x3[:2, IntentCol.FLOW_NEG.value].tolist() == [1 << 15, 1 << 15]
 
 
 def test_update_outputs_do_not_alias_inputs(micro_cfg: Config) -> None:
@@ -398,6 +490,17 @@ def test_update_outputs_do_not_alias_inputs(micro_cfg: Config) -> None:
     mx.eval(*e1, *e2)
     for f in ObsState._fields:
         assert np.array_equal(np_(getattr(e1, f)), np_(getattr(e2, f))), f
+    # and under the version-2 rules, which read the body and the post-step state (the observer's closure)
+    v2, body = RULES_V2, mx.full((o.uid.shape[0],), 5, dtype=I32)
+
+    def fold_eval(o_: ObsState, oi_: ObsIn, a_: Acts, b_: mx.array) -> ObsState:
+        return evaluate(update(o_, oi_, a_, cfg, v2), cfg, v2, body=b_, oi=oi_)
+
+    e1, e2 = mx.compile(fold_eval)(o, oi, acts, body), fold_eval(o, oi, acts, body)
+    mx.eval(*e1, *e2)
+    for f, a1, a2 in zip(ObsState._fields, e1, e2, strict=True):
+        assert np.array_equal(np_(a1), np_(a2)), f
+        assert all(a1 is not x for x in [*o, *oi, *acts, body]), f
 
 
 def test_evaluate_reads_the_body_for_the_settler_clause(micro_cfg: Config) -> None:
@@ -414,7 +517,7 @@ def test_evaluate_reads_the_body_for_the_settler_clause(micro_cfg: Config) -> No
     body = np.zeros(n, np.int32)
     body[:rows] = [0, 3, 4, 5, 9, 1]
     settler_bit = 1 << (Archetype.SETTLER.value - 1)
-    on = evaluate(o, cfg, settler4, mx.array(body))
+    on = evaluate(o, cfg, settler4, body=mx.array(body))
     assert [bool(m & settler_bit) for m in np_(on.match_arch)[:rows]] == [
         False,
         False,
@@ -431,7 +534,7 @@ def test_evaluate_reads_the_body_for_the_settler_clause(micro_cfg: Config) -> No
         Archetype.SETTLER.value,
         Archetype.GENERALIST.value,
     ]
-    off = evaluate(o, cfg, rs, mx.array(body))
+    off = evaluate(o, cfg, rs, body=mx.array(body))
     assert not (np_(off.match_arch)[:rows] & settler_bit).any()
     assert np.array_equal(np_(off.label_arch), np_(evaluate(o, cfg, rs).label_arch))
     assert ARCHETYPE_NAMES[Archetype.SETTLER.value - 1] == "settler"
@@ -452,21 +555,25 @@ BIAS = {
 }
 
 
+@pytest.mark.parametrize("rs", [RULES_V1, RULES_V2], ids=["v1", "v2"])
 @pytest.mark.parametrize("dims_", ["2d", "3d"])
-def test_observer_invariants_on_real_steps(dims_: str, tiny_cfg: Config, tiny3d_cfg: Config) -> None:
+def test_observer_invariants_on_real_steps(
+    dims_: str, rs: RuleSet, tiny_cfg: Config, tiny3d_cfg: Config
+) -> None:
     cfg = apply_overrides(tiny_cfg if dims_ == "2d" else tiny3d_cfg, IMMIGRATION)
-    rs = RULES_V1
     s = set_output_bias(init_state(cfg), cfg, BIAS)
     fn = make_step(cfg, observe=True)
     o = init_obs(obs_in(s), cfg)
     mx.eval(*o)
-    seen = dict.fromkeys(("reset_old", "replaced", "kin", "flows", "imm", "births", "both", "bonded"), 0)
+    seen = dict.fromkeys(
+        ("reset_old", "replaced", "kin", "flows", "imm", "births", "both", "bonded", "overlay"), 0
+    )
     for t in range(80):
         prev_s, prev_o = s, o
         s, out = fn(prev_s)
         o = update(prev_o, obs_in(s), out.acts, cfg, rs)
         if int(np_(s.step)) % rs.every == 0:
-            o = evaluate(o, cfg, rs)
+            o = evaluate(o, cfg, rs, body=mx.zeros_like(o.n_obs), oi=obs_in(s))
         mx.eval(s, out.base(), *o)  # one eval per step, as the runner does
         where = f"{dims_} step {t}"
         alive, uid = np_(s.alive), np_(s.uid)
@@ -475,9 +582,19 @@ def test_observer_invariants_on_real_steps(dims_: str, tiny_cfg: Config, tiny3d_
         reset = ~alive | (uid != pre["uid"])
         assert (cur["n_obs"][reset] == 0).all(), where
         assert (cur["n_obs"][~reset] == np.minimum(pre["n_obs"][~reset] + 1, OBS_CAP)).all(), where
-        for f in ("arch", "arch_slot", "intent", "label_arch", "match_arch", "label_intent", "match_intent"):
+        for f in (
+            *("arch", "arch_slot", "intent", "label_arch", "match_arch"),
+            *("label_intent", "held", "match_intent"),
+        ):
             assert not cur[f][reset].any(), (where, f)
         assert (cur["cand"][reset] == 0).all() and (cur["cand_n"][reset] == 0).all(), where
+        # the displayed intent is the held one, except where the Budding overlay shows (and then the
+        # predicate's bit is set); version 1 has no overlay
+        shown = cur["label_intent"] != cur["held"]
+        assert shown.sum() == 0 or rs.bud_overlay, where
+        assert (cur["label_intent"][shown] == Intent.BUDDING.value).all(), where
+        assert (cur["match_intent"][shown] & (1 << (Intent.BUDDING.value - 1)) != 0).all(), where
+        seen["overlay"] += int(shown.sum())
         assert (cur["since_bud"][reset] == OBS_CAP).all() and (cur["uid"] == np.where(alive, uid, -1)).all()
         seen["reset_old"] += int((reset & (pre["uid"] >= 0)).sum())
         # (b) a slot whose bond is not the one it had accumulates from scratch, with age 0 or 1
@@ -502,8 +619,9 @@ def test_observer_invariants_on_real_steps(dims_: str, tiny_cfg: Config, tiny3d_
         seen["imm"] += int(c[C.IMMIGRANTS] > 0)
         seen["births"] += int(c[C.BIRTHS] > 0)
         seen["both"] += int(c[C.IMMIGRANTS] > 0 and c[C.BIRTHS] > 0)
-    # the scenario exercised what the invariants talk about
-    assert all(seen[k] > 0 for k in seen), seen
+    # the scenario exercised what the invariants talk about (the overlay is version 2's, and may not show in
+    # steps of a small world: the forecast is tested on its own)
+    assert all(seen[k] > 0 for k in seen if k != "overlay"), seen
 
 
 def test_same_step_row_reuse_resets_the_observer(micro_cfg: Config) -> None:
@@ -532,3 +650,71 @@ def test_same_step_row_reuse_resets_the_observer(micro_cfg: Config) -> None:
     assert cur["uid"][0] == int(np_(s.uid)[0]) and cur["n_obs"][0] == 0
     assert not cur["arch"][0].any() and not cur["intent"][0].any() and cur["since_bud"][0] == OBS_CAP
     assert (cur["n_obs"][1:8] == 4).all()  # the other founders carry on
+
+
+@pytest.mark.parametrize("dims_", ["2d", "3d"])
+def test_flow_matches_the_energy_change_on_real_steps(
+    dims_: str, tiny_cfg: Config, tiny3d_cfg: Config
+) -> None:
+    """Sign conventions of the Budding flow on real steps: for a row that kept its uid, paid its costs, did
+    not bud and ended below ``e_max``, the visible flow differs from the energy change plus the basal due
+    only by the costs the observer does not see (turn, grip, contract, message and harvest effort, and in 3D
+    pitch and buoyancy), within one quantum per quantised term. A flipped sign or a missing or doubled term
+    shows up here, which the offline scores (that share the formula) cannot catch.
+
+    One known gap, documented in ``quantise_inputs``: the step charges ``attack_cost`` on the decoded attack,
+    while ``ATTACKED`` is unset when the target became a partner at S9, so a row without the flag may also be
+    short of one ``attack_cost`` in the flow."""
+    cfg = apply_overrides(tiny_cfg if dims_ == "2d" else tiny3d_cfg, IMMIGRATION)
+    ec, rs = cfg.energy, RULES_V2
+    s = set_output_bias(init_state(cfg), cfg, BIAS)
+    fn = make_step(cfg, observe=True)
+    o = init_obs(obs_in(s), cfg)
+    mx.eval(*o)
+    invisible_max = (  # each float term is at most its coefficient (turn 3D: |turn| + |pitch| <= 2·turn_max)
+        ec.turn_cost * (2 if dims_ == "3d" else 1)
+        + ec.grip_cost
+        + B * ec.contract_cost
+        + layout.MSG * ec.msg_cost
+        + ec.harvest_cost
+        + (ec.buoyancy_cost + ec.buoyancy_cap_cost if dims_ == "3d" else 0)
+    )
+    seen = dict.fromkeys(("rows", "positive", "negative", "flagged", "gap"), 0)
+    lo, hi_flagged, hi_unflagged = 0, 0, 0
+    for _ in range(40):
+        prev = s
+        s, out = fn(prev)
+        oi, a = obs_in(s), out.acts
+        x3 = quantise_inputs(oi, a, o.slot_kin, cfg)[2]
+        o = update(o, oi, a, cfg, rs)
+        mx.eval(s, out.base(), *o, x3)
+        x = np_(x3).astype(np.int64)
+        flow = x[:, IntentCol.FLOW_POS.value] - x[:, IntentCol.FLOW_NEG.value]
+        assert not (x[:, IntentCol.FLOW_POS.value] * x[:, IntentCol.FLOW_NEG.value]).any()  # one half only
+        e0, e1 = np_(prev.energy).astype(np.int64), np_(s.energy).astype(np.int64)
+        n_bonds0 = (np_(prev.partner) >= 0).sum(axis=1)
+        basal_due = ec.basal_cost + np_(prev.brain_cost).astype(np.int64) + ec.bond_upkeep * n_bonds0
+        flags = np_(a.flags)
+        budded = (flags & ActFlag.BUDDED.value) != 0
+        flagged = (flags & ActFlag.ATTACKED.value) != 0
+        rows = (
+            np_(prev.alive)
+            & np_(s.alive)
+            & (np_(prev.uid) == np_(s.uid))
+            & ~budded
+            & (e1 < ec.e_max)
+            & (e1 > 0)  # a solvent row; an insolvent one pays what it holds and ends at 0
+        )
+        d = flow - (e1 - e0) - basal_due
+        lo = min(lo, int(d[rows].min(initial=0)))
+        hi_flagged = max(hi_flagged, int(d[rows & flagged].max(initial=0)))
+        hi_unflagged = max(hi_unflagged, int(d[rows & ~flagged].max(initial=0)))
+        seen["rows"] += int(rows.sum())
+        seen["positive"] += int(((flow > 0) & rows).sum())
+        seen["negative"] += int(((flow < 0) & rows).sum())
+        seen["flagged"] += int((rows & flagged).sum())
+        seen["gap"] += int((rows & ~flagged & (d > invisible_max + 4)).sum())
+    assert seen["rows"] > 500 and seen["positive"] > 0 and seen["negative"] > 0 and seen["flagged"] > 0, seen
+    # the quantised floors differ from the float ones by at most 1 per term (4 terms)
+    assert lo >= -4 and hi_flagged <= invisible_max + 4, (lo, hi_flagged, invisible_max)
+    assert hi_unflagged <= invisible_max + ec.attack_cost + 4, (hi_unflagged, invisible_max)

@@ -33,7 +33,7 @@ from alife import step as step_mod
 from alife.config import Config, apply_overrides, config_to_dict, load_config
 from alife.game.observe import EVAL_BIT, ObsIn, obs_in
 from alife.game.observer import Observer
-from alife.game.rules import RULES_V1
+from alife.game.rules import RULES_V2
 from alife.game.social import SOCIAL_V1
 from alife.runio import DIRECTOR_LOG_FILE, RunDir, load_checkpoint
 from alife.state import CounterIdx as C
@@ -127,7 +127,7 @@ def test_observing_does_not_change_the_trajectory(
     assert int(to_numpy(s_on.step)) == steps
     # the observer actually ran: it accumulated, and (past the intent warm-up) evaluated rows
     assert int(to_numpy(obs.o.n_obs).max()) == steps and int(to_numpy(obs.o.arch).max()) > 0
-    assert (steps < RULES_V1.intent_warm) == (not (to_numpy(obs.o.match_intent) & EVAL_BIT).any())
+    assert (steps < RULES_V2.intent_warm) == (not (to_numpy(obs.o.match_intent) & EVAL_BIT).any())
     # ... and so did the social layer: its snapshots were taken, settled and recorded inside the run
     records = obs.take_records()
     assert [r["step"] for r in records] == list(range(15, steps + 1, 15))
@@ -142,6 +142,7 @@ def test_observer_inputs_exclude_the_key() -> None:
     """The observer reads a handful of State fields and never the RNG key or the weights (§28.1)."""
     assert set(ObsIn._fields) == {
         "alive", "uid", "parent_uid", "partner", "vel", "last_harvest", "last_inflow", "last_loss",
+        "energy", "brain_cost",
     }  # fmt: skip
     assert "key" not in ObsIn._fields
     assert not {"W1", "W2", "pend_W1", "pend_W2", "h", "msg", "tag"} & set(ObsIn._fields)
@@ -627,7 +628,7 @@ def test_runner_files_identical_except_observers(
     assert [r["step"] for r in off.metrics_rows()] == list(range(10, 61, 10))
     assert _stored_rows(off) == _stored_rows(on)
     assert all("observers" not in r for r in off.metrics_rows())
-    assert all(r["observers"]["intent_version"] == 1 for r in on.metrics_rows())
+    assert all(r["observers"]["intent_version"] == 2 for r in on.metrics_rows())
     assert not off.observers_dir.exists() and off.observer_files() == []
     assert [st for st, _ in on.observer_files()] == [0, 30, 60]
     assert [f for f in _files(off) if f not in _files(on)] == []  # nothing else is missing from the on run

@@ -23,8 +23,16 @@ from alife import cli, runner
 from alife.config import Config, apply_overrides, dims
 from alife.game import social as soc
 from alife.game.observe import EVAL_BIT, OBS_CAP, ObsState, evaluate, init_obs, obs_in, update
-from alife.game.observer import OBSERVER_FORMAT, SIDECAR_FORMAT, Labels, Observer
-from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V1, Archetype, RuleSet
+from alife.game.observer import DEFAULT_RULES, OBSERVER_FORMAT, SIDECAR_FORMAT, Labels, Observer
+from alife.game.rules import (
+    ARCHETYPE_NAMES,
+    INTENT_NAMES,
+    INTENT_VERSION,
+    RULES_V1,
+    RULES_V2,
+    Archetype,
+    RuleSet,
+)
 from alife.game.social import SOCIAL_V1, SOCIAL_VERSION, SocState
 from alife.game.society import HOST_KEYS, Society, host_snap
 from alife.runio import CheckpointError, RunDir, _write_npz, load_checkpoint
@@ -50,6 +58,7 @@ BLOCK_KEYS = [
 SOC15 = dataclasses.replace(SOCIAL_V1, snapshot_every=15)  # snapshots at 15, 30, 45, 60 inside the fixtures
 SETTLER4 = dataclasses.replace(RULES_V1, settler_body=4)
 SETTLER16 = dataclasses.replace(SETTLER4, arch_warm=16)  # archetypes are labelled within a short test
+V2_WARM16 = dataclasses.replace(RULES_V2, arch_warm=16)  # the same for the version-2 rules (settler_body 4)
 AT = 61  # the step of the module's observer: 24-step warm-up + 4 evaluations to the first intent label
 WARM_NOTE = "labels warm up (192 steps for archetypes, 24 for intents)"
 RESTART_NOTE = "social tracking restarts at step"
@@ -121,8 +130,15 @@ def observed(tiny_cfg: Config) -> tuple[Config, State, Observer]:
 @pytest.mark.parametrize("compiled", [True, False], ids=["compiled", "eager"])
 @pytest.mark.parametrize(
     "rules",
-    [RULES_V1, dataclasses.replace(RULES_V1, every=4, hold=2), SETTLER16],
-    ids=["v1", "every4-hold2", "settler4-warm16"],
+    [
+        RULES_V1,
+        dataclasses.replace(RULES_V1, every=4, hold=2),
+        SETTLER16,
+        RULES_V2,
+        dataclasses.replace(RULES_V2, every=4, hold=2),
+        V2_WARM16,
+    ],
+    ids=["v1", "every4-hold2", "settler4-warm16", "v2", "v2-every4-hold2", "v2-warm16"],
 )
 def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules: RuleSet) -> None:
     """On real steps the Observer (compiled, as the run is, or eager) equals the reference fold, field by
@@ -131,7 +147,8 @@ def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules:
     (every 15 here, so snapshots and relabels fall inside the 80 steps) ``snapshot``, the host settle and
     ``relabel``. The Settler clause (``settler_body`` 4) reads the body of the last snapshot: the reference
     ``evaluate`` takes the body from the observer's ``so.body`` after the same step, before the step's own
-    snapshot is settled (the labels of step t are evaluated from the previous snapshot)."""
+    snapshot is settled (the labels of step t are evaluated from the previous snapshot). The version-2 rules
+    also read the step's post-step ``ObsIn`` (the Budding forecast); the reference passes it likewise."""
     cfg = _observing(tiny_cfg, f"run.compile={'true' if compiled else 'false'}")
     s = init_state(cfg)
     fn = make_step(cfg, observe=True)
@@ -152,7 +169,7 @@ def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules:
         ref_so = soc.update(ref_so, soc.soc_in(s), out.acts, cfg, SOC15)
         ref_body = ref_so.body
         if t % rules.every == 0:
-            ref = evaluate(ref, cfg, rules, ref_body if rules.settler_body else None)
+            ref = evaluate(ref, cfg, rules, body=ref_body if rules.settler_body else None, oi=obs_in(s))
             evaluated += 1
         snap = soc.snapshot(kin0, ref_so, soc.soc_in(s), out.acts, cfg, SOC15) if t % 15 == 0 else None
         mx.eval(s, out.base(), *obs.arrays(), *ref, *ref_so, *(snap if snap is not None else ()))
@@ -172,11 +189,11 @@ def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules:
     assert evaluated == 80 // rules.every and int(to_numpy(obs.o.label_intent).max()) > 0
     assert snapshots == 5 and obs.society.snapshot_step == 75 and ref_society.snapshot_step == 75
     if (
-        rules.settler_body
+        rules.settler_body and rules.arch_warm < 80
     ):  # the clause was in play: rows in a body of >= 4 matched Settler that the speed rule
         # alone (the same accumulators, no clause) would not have
         bit = 1 << (Archetype.SETTLER.value - 1)
-        without = evaluate(obs.o, cfg, dataclasses.replace(rules, settler_body=0)).match_arch
+        without = evaluate(obs.o, cfg, dataclasses.replace(rules, settler_body=0), oi=obs_in(s)).match_arch
         with_clause = to_numpy(obs.o.match_arch)
         assert int(((with_clause & bit) != 0).sum()) > int(((to_numpy(without) & bit) != 0).sum())
         assert int((to_numpy(obs.so.body) >= rules.settler_body).sum()) > 0
@@ -332,7 +349,7 @@ def test_sidecar_round_trip(observed: tuple[Config, State, Observer], tmp_path: 
         "format": SIDECAR_FORMAT,
         "observer_format": OBSERVER_FORMAT,
         "intent_version": INTENT_VERSION,
-        "rules_digest": RULES_V1.digest(),
+        "rules_digest": DEFAULT_RULES.digest(),
         "step": AT,
         "n_max": d.n,
         "dims": 2,
@@ -344,7 +361,12 @@ def test_sidecar_round_trip(observed: tuple[Config, State, Observer], tmp_path: 
         "house_rate": cfg.game.house_rate,
         "house_seed": cfg.run.seed,
     }
-    assert OBSERVER_FORMAT == 2 and meta["house_rate"] == 1 / 2048
+    assert OBSERVER_FORMAT == 3 and meta["house_rate"] == 1 / 2048
+    assert (
+        DEFAULT_RULES is RULES_V2
+        and meta["rules_digest"] == RULES_V2.digest()
+        and meta["intent_version"] == 2
+    )
     rd = RunDir.create(tmp_path / "run", cfg)
     path = rd.save_checkpoint(s, cfg, observers=side)
     assert rd.observer_files() == [(AT, rd.observer_path(AT))] and rd.observer_path(AT).is_file()
@@ -394,6 +416,15 @@ def _g1_sidecar(a: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     meta = {k: v for k, v in _meta(a).items() if not k.startswith(("social_", "track_", "house_"))}
     keep = {k: v for k, v in a.items() if k in ObsState._fields}
     return {**keep, "meta": np.array(json.dumps({**meta, "observer_format": 1}, sort_keys=True))}
+
+
+def _g2_sidecar(a: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """What a format-2 (G2, version-1 rules) sidecar holds: no ``held``, seven intent columns and
+    ``observer_format`` 2 (the members of the social layer are the same)."""
+    keep = {k: v for k, v in a.items() if k != "held"}
+    keep["intent"] = a["intent"][:, :7].copy()
+    meta = {**_meta(a), "observer_format": 2, "intent_version": 1, "rules_digest": RULES_V1.digest()}
+    return {**keep, "meta": np.array(json.dumps(meta, sort_keys=True))}
 
 
 def _host(**edits: np.ndarray) -> object:
@@ -463,7 +494,9 @@ MISMATCHES = [
         lambda a: {**a, "soc.house": a["soc.house"].astype(np.int32)}, "array 'soc.house'", id="soc-house"
     ),
     # a format-1 sidecar gets the format reason, not a list of the missing soc.* / host.* members
-    pytest.param(_g1_sidecar, "meta.observer_format is 1, expected 2;", id="format-1"),
+    pytest.param(_g1_sidecar, "meta.observer_format is 1, expected 3;", id="format-1"),
+    # ... and so does the previous format (G2, 7 intent columns, no `held`), before its other differences
+    pytest.param(_g2_sidecar, "meta.observer_format is 2, expected 3;", id="format-2"),
     # one case per check of Society.from_arrays (the host members; the cases of test_game_society apply to it)
     pytest.param(_host(**{"host.n_ref": np.array(5, np.int32)}), "host.n_ref is int32", id="host-dtype"),
     pytest.param(_host(**{"host.prev_step": np.zeros(1, I64)}), "host.prev_step is int64", id="host-rank"),
@@ -571,7 +604,7 @@ def test_a_format_1_sidecar_note_is_exactly_the_format(saved: Path, tmp_path: Pa
     state = load_checkpoint(rd.checkpoint_at(AT), cfg)
     _, note = Observer.open(rd, state, cfg, social=SOC15)
     assert note is not None and note.startswith(
-        "observers: meta.observer_format is 1, expected 2; labels warm up"
+        "observers: meta.observer_format is 1, expected 3; labels warm up"
     )
     assert "missing" not in note and "soc." not in note and "host." not in note
 
@@ -699,12 +732,35 @@ def test_another_ruleset_never_reads_these_accumulators(saved: Path, tiny_cfg: C
     assert "meta.rules_digest" in (Observer.open(rd, state, cfg, rules=slower, social=SOC15)[1] or "")
     assert "meta.rules_digest" in (Observer.open(rd, state, cfg, rules=SETTLER4, social=SOC15)[1] or "")
     assert (
-        Observer.open(rd, state, cfg, rules=RULES_V1, social=SOC15)[1] is None
-    )  # the rules it was written under
+        Observer.open(rd, state, cfg, rules=RULES_V1, social=SOC15)[1] is not None
+    )  # not the version-1 rules
+    assert (
+        Observer.open(rd, state, cfg, rules=RULES_V2, social=SOC15)[1] is None
+    )  # the rules it was written under (the default)
     # the social rules are part of the identity too: any threshold or the cadence
     other = dataclasses.replace(SOC15, kin_enter=(9, 9))
     obs, note = Observer.open(rd, state, cfg, social=other)
     assert note is not None and "meta.social_digest" in note and obs.social is other
+
+
+def test_a_sidecar_of_version_1_rules_is_refused_by_version_2_and_loads_under_version_1(
+    tiny_cfg: Config, tmp_path: Path
+) -> None:
+    """The rules' digest is the identity of the accumulators (the Budding flow columns and the hold state
+    mean something only under the rules that wrote them): a sidecar written under ``RULES_V1`` is refused
+    under ``RULES_V2`` with a note naming ``rules_digest``, and loads under ``RULES_V1``, and the reverse."""
+    cfg = _observing(tiny_cfg)
+    for written, other in ((RULES_V1, RULES_V2), (RULES_V2, RULES_V1)):
+        s, obs = _manual(cfg, 40, rules=written)
+        rd = RunDir.create(tmp_path / f"run_{written.digest()[:6]}", cfg)
+        path = rd.save_checkpoint(s, cfg, observers=obs.sidecar())
+        state = load_checkpoint(path, cfg)
+        refused, note = Observer.open(rd, state, cfg, rules=other, social=SOC15)
+        assert note is not None and "meta.rules_digest" in note and not to_numpy(refused.o.n_obs).any()
+        kept, note = Observer.open(rd, state, cfg, rules=written, social=SOC15)
+        assert note is None and np.array_equal(to_numpy(kept.o.n_obs), to_numpy(obs.o.n_obs))
+        assert to_numpy(kept.o.n_obs).any()
+        assert _meta(obs.sidecar())["rules_digest"] == written.digest()
 
 
 def test_the_note_is_only_for_a_resume(saved: Path, tmp_path: Path, tiny_cfg: Config) -> None:

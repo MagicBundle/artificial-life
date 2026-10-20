@@ -39,7 +39,7 @@ from alife.config import Config, config_hash, dims
 from alife.game import observe
 from alife.game import social as soc
 from alife.game.observe import EVAL_BIT, ObsState
-from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V1, RuleSet
+from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V2, RuleSet
 from alife.game.social import SOCIAL_V1, SOCIAL_VERSION, SocialRules, SocState
 from alife.game.society import HOST_KEYS, Society, host_snap
 from alife.runio import CheckpointError, RunDir
@@ -57,14 +57,14 @@ __all__ = [
     "SocialLabels",
 ]
 
-OBSERVER_FORMAT: Final = 2  # the sidecar's members and their meaning; bump with any change to either
+OBSERVER_FORMAT: Final = 3  # the sidecar's members and their meaning; bump with any change to either
 SIDECAR_FORMAT: Final = "alife-observers"  # the ``format`` of the sidecar's meta
 
 # The rules a run's observer uses, looked up at call time (``Observer.fresh`` / ``open`` with ``rules=None``
 # or ``social=None``). No config key sets them (DESIGN §28.1, §29.9): the labels tool passes its own
 # ``rules``, and tests that need snapshots in a short run replace ``DEFAULT_SOCIAL`` (``monkeypatch``) or
 # pass ``social=``.
-DEFAULT_RULES: RuleSet = RULES_V1
+DEFAULT_RULES: RuleSet = RULES_V2
 DEFAULT_SOCIAL: SocialRules = SOCIAL_V1
 
 # Meta fields that must equal the observer's own for a sidecar to load, checked in this order (``format``
@@ -161,7 +161,8 @@ class Observer:
             o_: ObsState, so_: SocState, oi: observe.ObsIn, si: soc.SocIn, a: Acts
         ) -> tuple[ObsState, SocState]:
             o2, so2 = observe.update(o_, oi, a, cfg, rules), soc.update(so_, si, a, cfg, social)
-            return observe.evaluate(o2, cfg, rules, so2.body), so2  # the Settler clause reads the body
+            # the Settler clause reads the body, the Budding forecast the post-step state
+            return observe.evaluate(o2, cfg, rules, body=so2.body, oi=oi), so2
 
         def snap(
             kin0: mx.array, so_: SocState, si: soc.SocIn, a: Acts | None, arch: mx.array | None = None

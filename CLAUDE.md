@@ -12,11 +12,12 @@ assesses research directions against prior work. `docs/3D.md` is the 3D world (g
 seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`.
 `docs/GAMES.md` is the design of the gaming vertical (owner decisions in its §10); its build step G1, the observer
 layer (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`; normative spec `DESIGN.md` §28), is
-implemented, with provisional thresholds (`INTENT_VERSION` 1) until the calibration run; its build step G2, social
+implemented, with `INTENT_VERSION` 2 (`RULES_V2`, the default, calibrated offline on the G1 study windows; its
+validation on held-out windows is pending, DESIGN §28.4, §28.8; `RULES_V1` stays defined with its G1 digest); its build step G2, social
 tracking (houses, kin groups, colonies, territory, relations, and a roster of kin-group names, house events and
 per-group window counts; generic `groups.py` and `tracking.py`; normative spec `DESIGN.md` §29), is implemented, with
-provisional thresholds (`SOCIAL_VERSION` 1); the Settler colony clause is built but stays off until `INTENT_VERSION` 2
-(DESIGN §28.4).
+provisional thresholds (`SOCIAL_VERSION` 1); the Settler colony clause is on in `RULES_V2` (`settler_body` 4,
+DESIGN §28.4).
 
 ## Conventions
 

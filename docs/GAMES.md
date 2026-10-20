@@ -223,38 +223,56 @@ second rule also matches, a secondary one.
 
 | archetype | rule (windowed means) | prevalence |
 |---|---|---|
-| Gatherer | harvest / I ≥ 0.7 | most agents (mean harvest 239–295 q per agent-step) |
-| Hunter | attack_gain / I ≥ 0.35 | unknown. Attack gain is 14–18% of all income in 3D (RESULTS_3D §3), but attacks are sparse (0.06 per agent-step), so measure the distribution first |
-| Provider | Σ share_out / I ≥ 0.2 | rare (1–2.5% of agents share) |
-| Trader | Provider, with some slot where `min(out, in) / max(out, in) ≥ 0.5` | very rare |
-| Nomad | persistence ≥ 0.6 and speed ≥ 0.4·u | unknown. The mean speed is about 0.27·u in 3D (`speed_mean` 0.025–0.029 per 50k window from step 100k) |
-| Settler / Colonial | speed < 0.1·u, or in a colony of 4 or more | unknown. 35% are in bodies of 4 or more (2D and 3D) |
-| Generalist | none of the above | the rest |
+| Gatherer | harvest ≥ 0.75·`harvest_max` (a harvest level, no longer a share of the income) | 14% (2D) and 46% (3D) of labelled agents at the calibration windows |
+| Hunter | attack_gain / I ≥ 0.35 | 0.9% / 4.0% |
+| Provider | Σ share_out / I ≥ 0.2 | 0.7% / 0.2% |
+| Trader | Provider, with some slot where `min(out, in) / max(out, in) ≥ 0.5` | 0.1% / 0.01% |
+| Nomad | persistence ≥ 0.6 and speed ≥ 0.4·u | 0.2% / 1.3% |
+| Settler / Colonial | speed < 0.1·u, or in a bonded body of 4 or more (at the last social snapshot) | 49% / 34% (the rule's prevalence) |
+| Unspecialised (the Generalist) | none of the above: no income or movement rule matched | 47% / 46% (primary): mostly agents that harvest below 3/4 of the maximum and match no other rule |
+
+The prevalences are those of the calibration windows (DESIGN §28.8). The Gatherer rule of version 1 (harvest ≥ 0.7 of the
+income) matched 98% (2D) and 93% (3D) of agents, because nearly all income is harvest; it failed the validity test.
+Version 2's Gatherer is the rate of the best harvesters, so most agents are now Unspecialised: moderate harvesters (a
+median of 0.57 / 0.53 of `harvest_max`), not agents with mixed income. The enum and the report key stay `generalist`;
+`rules.ARCHETYPE_DISPLAY` is the table of the words a player sees (the coordinator's choice C9 of 2026-10-19, to revisit).
 
 **Intents.** Intents are evaluated by the observer every s = 8 steps. Event predicates such as "harvested > 0", "emitted"
 or "formed a bond" hold for nearly every agent (harvest effort is a sigmoid, 87% of 3D agents emit, about 3,700 bonds
 form per step). With 0.06 attacks and 0.19 bond formations per agent-step, "any attack in 8 steps" would cover about
 37% of agents and "any new bond" about 78%. Intents therefore use magnitude thresholds on the k = 3 means:
-- the order runs from rarest to commonest, and the first match wins;
+- the order puts the rarer, more specific states first, with one deliberate exception: Feeding precedes Signalling,
+  because in 3D one clade both harvests at the cap and emits, and the label placed first takes those agents. The first
+  match wins;
 - a label changes only after the new rule has held at 4 consecutive evaluations, on the step clock, so labels do not
-  depend on playback speed.
+  depend on playback speed. Budding, a forecast of an event, is the exception: it is shown at each evaluation where it
+  holds, over the intent that the hold keeps underneath (the coordinator's choice C10 of 2026-10-19, to revisit).
 
 The order:
-1. Budding.
+1. Budding: about to bud. Energy is just below the budding threshold and, at the agent's recent net energy flow, reaches
+   it within about 10 steps. It is a forecast of energy and income, not of the decision to bud (in 3D 37% of budders wait
+   above the threshold with their reproduce output off, which the observer cannot see).
 2. Hunting: attack-flag mean ≥ 0.25, about two attempts per 8 steps.
 3. Fleeing: hurt, with |thrust| ≥ 0.5.
-4. Defending: defend ≥ 0.5.
-5. Caring: sharing to a parent or child partner, by `parent_uid`.
-6. Bonding: a new partner whose bond has lasted at least 24 steps, the flicker scale in RESULTS_3D §5.4.
-7. Signalling: Σ emit ≥ 0.5.
-8. Feeding: harvest ≥ 0.5·`harvest_max`.
+4. Caring: sharing at least `harvest_max`/10 per step with a parent or child partner, by `parent_uid`.
+5. Defending: guarding after a recent hit: hurt within about the last 31 steps, with the guard at 0.75 or more. The guard
+   does not react to hits, so the UI must not say that the agent raised it because of the attack.
+6. Tethering (the Bonding intent): forming and dropping bonds again and again, mostly with the same neighbours: at least
+   one formation in four steps over about the last 8 steps. In these worlds that is bond flicker (94% with the same
+   neighbours in 3D, RESULTS_3D §5.4), not a new lasting partner; version 1's meaning failed the validity test in both
+   worlds. Show the bond count beside it. The enum and the report key stay `bonding`; `rules.INTENT_DISPLAY` is the table
+   of the words a player sees (the coordinator's choice C8 of 2026-10-19, to revisit).
+7. Feeding: harvest ≥ 0.75·`harvest_max`.
+8. Signalling: Σ emit ≥ 0.75.
 9. Roaming: |thrust| ≥ 0.3.
 10. Resting.
 
-G1 measures the coverage of each rule before the order is fixed.
+In 3D a Gatherer is usually Feeding (the two use the same level on different windows). For about a fifth of agents the
+displayed (held) intent is more than 56 steps old.
 
 **Thresholds are absolute and versioned** (`INTENT_VERSION`). They are not per-world quantiles, which would label 10% of
-agents Hunters in a peaceful world. They are calibrated once on `64k_s0` and `64k3d_s0` and pinned in DESIGN.
+agents Hunters in a peaceful world. Version 2 was calibrated on dumps of the G1 study windows of `64k_s0` and `64k3d_s0`
+and validated on held-out windows (`64k_s0` from 1,500,000, `64k3d_s1`, `64k3d_s2`); DESIGN §28.4 pins it.
 
 ### 4.5 Validity test (G1, before any UI work)
 
@@ -268,6 +286,16 @@ Run on `resim` replays of the reference runs:
 
 `analysis/mi.py` supplies the MI estimators and permutation nulls; the AUC and the matched random label are new code.
 Labels that fail are dropped from the UI.
+
+**Outcome.** G1's GPU study (version 1 rules) failed Gatherer, Defending (the 0.6 coverage cap), Budding and Feeding in
+both worlds and Bonding, Signalling, Roaming and Caring (too few positives) in 3D. Version 2 passes every archetype and
+every intent on the calibration windows, offline, under the rule, the first-match display and the replayed hold, in both
+worlds (thinnest displayed margins: 3D Roaming +0.082, 3D Resting +0.101, 2D Hunting +0.102). The validation on the three
+held-out windows is pending (GPU; DESIGN §28.8): a label that fails there is dropped from the UI under version 2 and the
+rule set stays as pinned. Stability: the displayed label changes about 5.3 (2D) and 6.5 (3D) times per 1,000 steps in
+the replay, against G1's 1.98 and 4.12 (the Budding overlay adds about 1.7 and 2.3). The hold (4 × 8 = 32 steps) equals the
+agents' 32-step clock, which makes thresholds near a clock-driven mean flicker; a hold or period that does not resonate
+would help every intent, and is flagged for G3. No stability criterion is set.
 
 ## 5. Pillar II in detail: the Architect Director
 
@@ -812,8 +840,9 @@ What a game adds:
 
 ## 9. Build plan (proposed; one PR per step, each merged before the next)
 
-- **G1. Observers.** **Built** (DESIGN §28, Review-log row I44; the thresholds are provisional, `INTENT_VERSION` 1,
-  until the calibration run).
+- **G1. Observers.** **Built** (DESIGN §28, Review-log row I44). Its rules are `INTENT_VERSION` 1 as built; G2's last
+  stage replaced them with `INTENT_VERSION` 2 (`RULES_V2`, calibrated offline, the validation on held-out windows
+  pending: DESIGN §28.4, §28.8, row I45).
   - `game.observe` (unhashed), `StepOutG.acts`, and `BirthRecords.parent_slot` (moved to G2, see below).
   - The accumulators, archetype and intent rules (`INTENT_VERSION`), and the observer sidecar.
   - `signals.decode` and the SIGNALS analysis generalised to 3D (needed only when a game world is 3D).
@@ -855,8 +884,13 @@ What a game adds:
       `game.house_rate` stays 1/2048; the GPU verification reports, on `64k3d_s1` and `64k_s0`, the share of members in
       houses founded after the observer's start against those seeded from clades (`analysis.social`), so that the owner can
       re-decide it.
-    - The Settler colony clause is built but inert at `settler_body` 0. `INTENT_VERSION` stays 1; version 2 brings the
-      clause with the calibration fixes of G1's failing labels, in one change after a data study (DESIGN §28.4).
+    - **`INTENT_VERSION` 2** (the last stage, one change after a data study, DESIGN §28.4, §28.8): `RULES_V2` is the
+      default and carries the Settler colony clause at `settler_body` 4 with the calibration fixes of G1's failing labels
+      (Gatherer a harvest level, Defending after a recent hit, Budding a forecast shown outside the hold, Bonding shown as
+      Tethering, Feeding and Signalling at 3/4 and 0.75, Caring ahead of Defending and Feeding ahead of Signalling).
+      `RULES_V1` stays defined and keeps its G1 digest. The calibration is offline; the validation on held-out windows is
+      the coordinator's GPU run. The Budding overlay, the renamed labels and the clause at 4 are the coordinator's choices
+      of 2026-10-19 under the owner's delegation, to revisit.
     - The snapshot cadence is a field of `SocialRules`, not a config key. The reports go to `observers/social.jsonl`,
       not into the rows.
     - The **Family** row of §3 (a host lineage store, an ancestry panel, a "kin nearby" list) is deferred to G3, with
@@ -927,7 +961,7 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
     `rules.ARCHITECT` and `test_director_rules.py` give the Architect discretionary moves when the LLM tier is off.
     Correct the two sentences (*recommended*), or change the code under a new rules version.
 11. **Label thresholds as code (G1).** G1 builds the thresholds of the archetype and intent rules as versioned code
-    constants (`rules.RuleSet`, `INTENT_VERSION` 1, a pinned digest), not as config keys, so a label means the same in
+    constants (`rules.RuleSet`, `INTENT_VERSION` 2, a pinned digest), not as config keys, so a label means the same in
     every world and the sidecar can tell which rules wrote it (DESIGN §28.4). *Recommended:* keep. The alternative,
     per-world config keys, needs a decision on whether they enter `config_hash` (they would move every hash that sets
     them) and a sweep interface for the calibration.
@@ -947,9 +981,13 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
     system that ends and comes back gets a new id. The values stay provisional until the calibration.
 16. **`INTENT_VERSION` 2 (G2).** *Decided 2026-10-19:* version 2 carries the Settler clause and the calibration fixes of
     G1's GPU study (Gatherer, Defending, Budding, Feeding, and in 3D Bonding, Signalling, Roaming and Caring's too few
-    positives, because G3 onwards targets the 3-D storm world). The redesigned rules come from a later data study whose
-    one change defines `RULES_V2`, makes it the default under version 2 and pins its digest. G2 builds the clause, inert
-    at its version-1 value, and keeps version 1 (DESIGN §28.4).
+    positives, because G3 onwards targets the 3-D storm world). The redesigned rules come from a data study whose one
+    change defines `RULES_V2`, makes it the default under version 2 and pins its digest (DESIGN §28.4); G2's earlier
+    stages built the clause inert at its version-1 value. *Built* in G2's last stage. The coordinator's choices under the
+    owner's delegation of 2026-10-19 (to revisit): the Budding overlay (§4.4's hold sentence), the display names
+    Tethering (Bonding) and Unspecialised (Generalist), the meaning changes of Gatherer, Defending and Budding, and the
+    colony clause at 4 (its body-only part does not predict a low radius of gyration in 2D; against the slow rows it
+    carries information, DESIGN §28.4).
 17. **Houses of observers attached mid-run (G2).** *Decided 2026-10-19:* seeded from clades, immigrant lineages as
     `HOUSE_UNKNOWN`, flagged inexact. No offline rebuild tool.
 18. **Relation baseline (G2).** *Decided 2026-10-19:* the per-step sensed-neighbour exposure by actor slot, neighbour

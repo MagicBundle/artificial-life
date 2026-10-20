@@ -26,7 +26,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/3D.md` | the 3D world with gravity and a floor (owner decisions, layout, fields, Swift viewer, PR plan); built in PRs #15 to #20, normative spec `docs/DESIGN.md` §27 |
 | `docs/RESULTS_3D.md` | the first long 3D run, `runs/64k3d_s0` (500k steps): population and `K`, vertical niches and buoyancy, bodies, evolutionary activity, comparison with 2D; figures and tables in `docs/results_3d/`, scripts in `analysis_cache/64k3d_s0/results3d/` (git-ignored) |
 | `docs/RESULTS_3D_RUNS.md` | the four 500k-step `64k3d` runs (seed 0, seed 1, half food, director live): replication, the density control, the director in 3D, bodies and activity across runs; figures and tables in `docs/results_3d_runs/`, scripts in `analysis_cache/64k3d_runs/` (git-ignored) |
-| `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with provisional label thresholds (`INTENT_VERSION` 1) until the calibration run; G2, social tracking (houses, kin groups, colonies, territory, relations; `src/alife/groups.py`, `tracking.py`, `game/social.py`, `game/society.py`, `python -m alife.analysis.social`; the reports are `observers/social.jsonl` in an observing run's directory; normative spec `docs/DESIGN.md` §29, Review-log row I45) is built with provisional thresholds (`SOCIAL_VERSION` 1); G3 to G5 are not built |
+| `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with `INTENT_VERSION` 2 label rules (`RULES_V2`, calibrated offline; held-out validation pending, DESIGN §28.4, §28.8); G2, social tracking (houses, kin groups, colonies, territory, relations; `src/alife/groups.py`, `tracking.py`, `game/social.py`, `game/society.py`, `python -m alife.analysis.social`; the reports are `observers/social.jsonl` in an observing run's directory; normative spec `docs/DESIGN.md` §29, Review-log row I45) is built with provisional thresholds (`SOCIAL_VERSION` 1); G3 to G5 are not built |
 | `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13) |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
@@ -425,7 +425,7 @@ and resumed once. There is one run per condition apart from the seed pair.
      too (§28.1, §28.8; row I44).
    - **Post-merge work: the 64k benches and the calibration** (procedures in §28.8, GPU needed): `alife bench --observe`, the stream rate
      and the step rate during an LLM call at 64k 2D; `python -m alife.analysis.labels` on `64k_s0` and `64k3d_s0`, which
-     may change the thresholds under `INTENT_VERSION` 2.
+     was the calibration that led to `INTENT_VERSION` 2 (item 4, DESIGN §28.8).
    - **Owner decisions** (`docs/GAMES.md` §10, items 11 and 12): thresholds as code constants, and the verdict criterion.
    - G2 (next item) is built on top of it.
 4. **Games G2** (branch `games/g2-social`, DESIGN §29, Review-log row I45, `docs/GAMES.md` §9). Built on top of G1 and
@@ -441,12 +441,19 @@ and resumed once. There is one run per condition apart from the seed pair.
      cost, the churn rate and the Jaccard distributions, and may change θ, the kin-group thresholds, `n_band` and the slot
      slack under `SOCIAL_VERSION` 2. Every threshold is provisional until then; the matching cost on the CPU was about
      8 ms against the 2 ms planned, which is worth timing on the GPU day.
-   - **The data study for `INTENT_VERSION` 2** (DESIGN §28.4): `python -m alife.analysis.labels` on the G1 reference
-     checkpoints, then one change that redesigns the rules of the labels that failed G1's validity study (Gatherer,
-     Defending, Budding, Feeding, and in 3D Bonding, Signalling, Roaming and Caring), defines `RULES_V2` with the Settler
-     clause at `settler_body` 4, makes it the default under `INTENT_VERSION` 2 and pins its digest. G2 builds the clause
-     inert (`settler_body` 0), so version 1 and `RULES_V1` are unchanged. The verdict criterion (GAMES §10 item 12) is
-     still open and changes the list.
+   - **`INTENT_VERSION` 2 is built** (the last stage of G2, DESIGN §28.4, §28.8, row I45): one change redesigned the rules
+     of the labels that failed G1's validity study (Gatherer, Defending, Budding, Feeding, and in 3D Bonding, Signalling,
+     Roaming and Caring), defined `RULES_V2` with the Settler clause at `settler_body` 4, made it the default and pinned
+     its digest (`dc78f771…b4f7`; `RULES_V1` keeps `156ad496…c009`). It was calibrated offline on dumps of the two G1
+     study windows, and the implementation is checked exact against the offline predicates. **Next, on the GPU (the
+     coordinator):** the five `python -m alife.analysis.labels` runs of DESIGN §28.8 (the two calibration windows as an
+     implementation check, then `64k_s0` from 1,500,000 and `64k3d_s1`, `64k3d_s2` from 450,000 as the held-out
+     validation, about 47 minutes), the Metal purity gate again and `alife bench --preset 64k --observe` for the v2
+     overhead. A label that fails a held-out window is dropped from the UI, not re-tuned on held-out data. **Open for the
+     owner** (coordinator choices of 2026-10-19 under the delegation, to revisit): the Budding overlay, the display
+     names Tethering (Bonding) and Unspecialised (Generalist), the meaning changes of Gatherer, Defending and Budding
+     (GAMES §4.4), the Settler clause at 4, and the stability of the displayed label (5.3 and 6.5 changes per 1,000
+     steps against G1's 1.98 and 4.12). The verdict criterion (GAMES §10 item 12) is the one §28.8 applies to the held-out windows.
    - **The roster** (stage 7 of G2, DESIGN §29.14; stage 8 applied the review's findings): kin groups are named once at admission, the record lists the
      houses founded and extinct, and each listed kin group has its window births and deaths by cause, centroid and
      archetype mix. The GPU verification also reports `houses.founded_share` from `python -m alife.analysis.social` on

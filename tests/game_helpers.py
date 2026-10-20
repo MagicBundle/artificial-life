@@ -16,7 +16,7 @@ from alife import layout
 from alife.config import Config, dims
 from alife.game import observer, social
 from alife.game.observe import ObsIn, ObsState, evaluate, init_obs, update
-from alife.game.rules import RULES_V1, RuleSet
+from alife.game.rules import RULES_V2, RuleSet
 from alife.game.social import SOCIAL_V1, Expo, Rel, SocialRules, SocIn
 from alife.game.society import Society, host_snap
 from alife.state import State, init_state, to_numpy
@@ -45,6 +45,8 @@ def blank_oi(cfg: Config) -> dict[str, np.ndarray]:
         "last_harvest": np.zeros(d.n, np.int32),
         "last_inflow": np.zeros(d.n, np.int32),
         "last_loss": np.zeros(d.n, np.int32),
+        "energy": np.zeros(d.n, np.int32),
+        "brain_cost": np.zeros(d.n, np.int32),
     }
 
 
@@ -101,19 +103,24 @@ def np_state(o: ObsState) -> dict[str, np.ndarray]:
 
 
 class Driver:
-    """One observer on a synthetic constant (or per-step) input, evaluated on the global step clock."""
+    """One observer on a synthetic constant (or per-step) input, evaluated on the global step clock. ``rs``
+    defaults to the version-2 rules (pass ``RULES_V1`` for the G1 behaviour); the evaluation is given the
+    inputs the rules read: the step's ``ObsIn`` and the rows' bond-component sizes (``body``, zeros unless
+    ``step`` is given one)."""
 
-    def __init__(self, cfg: Config, oi: ObsIn, *, start: int = 0, rs: RuleSet = RULES_V1) -> None:
+    def __init__(self, cfg: Config, oi: ObsIn, *, start: int = 0, rs: RuleSet = RULES_V2) -> None:
         self.cfg, self.rs, self.t = cfg, rs, start
         self.o = init_obs(oi, cfg)
         mx.eval(*self.o)
 
-    def step(self, oi: ObsIn, acts: Acts) -> ObsState:
+    def step(self, oi: ObsIn, acts: Acts, body: mx.array | None = None) -> ObsState:
         """Update with one step's inputs; evaluate if the new step count is a multiple of ``rs.every``."""
         self.t += 1
         self.o = update(self.o, oi, acts, self.cfg, self.rs)
         if self.t % self.rs.every == 0:
-            self.o = evaluate(self.o, self.cfg, self.rs)
+            if body is None:
+                body = mx.zeros((self.o.uid.shape[0],), dtype=mx.int32)
+            self.o = evaluate(self.o, self.cfg, self.rs, body=body, oi=oi)
         mx.eval(*self.o)
         return self.o
 

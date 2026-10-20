@@ -1,6 +1,7 @@
 """Do the game labels predict behaviour? The validity test of docs/GAMES.md §4.5 (DESIGN §28.8).
 
-A labelled row is a claim about what the agent does: a Gatherer lives on harvest, a Hunting agent attacks.
+A labelled row is a claim about what the agent does: a Gatherer harvests near the maximum rate, a Hunting
+agent attacks.
 This tool checks the claims. It re-simulates a run from a checkpoint with the observers on (``game.observe``
 need not be set in the run), and at *cohort* steps ``T`` (multiples of ``rules.every``, so the labels are
 fresh) it snapshots the labelled rows. It then follows each cohort row for the next ``H`` steps, while it
@@ -67,8 +68,8 @@ from alife.analysis.resim import ResimMismatch, compare_row
 from alife.analysis.signals import load_state
 from alife.config import Config, config_hash, dims
 from alife.game.observe import EVAL_BIT, care_out
-from alife.game.observer import Observer
-from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V1, Archetype, RuleSet
+from alife.game.observer import DEFAULT_RULES, Observer
+from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, Archetype, RuleSet
 from alife.runio import RunDir
 from alife.state import State, to_numpy
 from alife.step import ActFlag, Acts, make_step
@@ -622,7 +623,7 @@ def study(
     n_perm: int = 200,
     seed: int = 0,
     verify: bool = True,
-    rules: RuleSet = RULES_V1,
+    rules: RuleSet = DEFAULT_RULES,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     """The validity study of a run from step ``start`` for ``steps`` steps (see the module docstring).
