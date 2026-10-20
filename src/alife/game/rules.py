@@ -170,8 +170,9 @@ INTENT_NAMES: Final = tuple(i.name.lower() for i in Intent if i is not Intent.NO
 # The names a player sees, by key. The keys (the enum names, lower case) stay what the reports, the metrics
 # stream and the sidecar use; this is the one table of the human-facing words (a rename touches only it, the
 # docs and the tests that pin it). "Unspecialised" is the label of a row that matched no income or movement
-# rule; "Tethering" is forming and dropping bonds again and again, mostly with the same neighbours (the
-# formation-rate rule of version 2, not the lasting new partner that the word "bonding" promises).
+# rule; "Tethering" is forming and dropping bonds again and again (in 3D mostly re-forming a pair seen
+# earlier; not measured in 2D): the formation-rate rule of version 2, not the lasting new partner that the
+# word "bonding" promises).
 ARCHETYPE_DISPLAY: Final = MappingProxyType(
     {
         "gatherer": "Gatherer",
@@ -245,7 +246,8 @@ class RuleSet:
     care: tuple[int, int] = (1, 10)  # Caring: m_care >= 1 and m_care >= harvest_max/10
     # v1 Bonding: a non-kin slot with lo <= age < hi; unused while bond_rate > 0
     bond_age: tuple[int, int] = (24, 120)
-    bond_rate: int = 64  # Bonding: m_formed >= this (> 0 selects it, static; 64 = one formation in 4 steps)
+    # Bonding: m_formed >= this (> 0 selects it, static); 64 = flag mean 0.25 (period 3 on, period 4 flickers)
+    bond_rate: int = 64
     signal: int = 192  # Signalling: m_emit >= this deposit quanta per step (about 0.75; v1 128)
     feed: tuple[int, int] = (3, 4)  # Feeding: m_harvest(k_intent) >= 1 and >= harvest_max·3/4 (v1 (1, 2))
     roam: tuple[int, int] = (768, 10)  # Roaming: m_thrust >= 76.8 (0.3)

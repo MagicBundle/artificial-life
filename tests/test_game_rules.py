@@ -637,7 +637,7 @@ def test_intent_predicates_v2_at_their_edges(tiny_cfg: Config) -> None:
     assert _intent(c, emit=192, **v2)["signalling"] and not _intent(c, emit=191, **v2)["signalling"]
     assert _intent(c, harvest=300, **v2)["feeding"] and not _intent(c, harvest=299, **v2)["feeding"]
     assert not _intent(c, **v2)["feeding"]
-    # Bonding: a formation rate m_formed >= 64 (one formation in 4 steps); the slot ages are ignored
+    # Bonding: a formation rate m_formed >= 64 (a flag mean of 0.25 on the EMA); the slot ages are ignored
     assert _intent(c, formed=64, **v2)["bonding"] and not _intent(c, formed=63, **v2)["bonding"]
     assert not _intent(c, ages=[50], formed=0, **v2)["bonding"]
     assert not _intent(c, ages=[24, 60, 119], formed=0, **v2)["bonding"]
@@ -1006,6 +1006,16 @@ def test_budding_overlay_is_displayed_outside_the_hold(micro_cfg: Config) -> Non
     rest = Intent.RESTING.value
     z = at(blank, True, flow_pos=500)
     assert row(z) == (B_, 0, rest, 1)
+    # the same row once Resting is held (four evaluations without a match): Budding is shown over Resting,
+    # a held intent like any other (spec 3.5), and Resting is back at once when the forecast ends
+    r = blank
+    for i in range(4):
+        r = at(r, False, flow_pos=500)
+        assert row(r)[:2] == ((0, 0) if i < 3 else (rest, rest))
+    assert row(r) == (rest, rest, rest, 0)
+    rb = at(r, True, flow_pos=500)
+    assert row(rb) == (B_, rest, rest, 0) and np_(rb.match_intent)[0] & 1
+    assert row(at(rb, False, flow_pos=500)) == (rest, rest, rest, 0)
     # not warm: nothing is displayed, even if the forecast holds
     cold = evaluate(_obs(cfg, 10, intent=feeding), cfg, rs, body=_overlay_inputs(cfg, forecast=True)[1],
                     oi=_overlay_inputs(cfg, forecast=True)[0])  # fmt: skip
@@ -1017,6 +1027,17 @@ def test_budding_overlay_is_displayed_outside_the_hold(micro_cfg: Config) -> Non
     cool = evaluate(_obs(cfg, 22, intent=feeding), cfg, rs, body=body_f, oi=oi_f)
     assert not np_(cool.label_intent).any() and not np_(cool.match_intent).any()
     assert np_(evaluate(_obs(cfg, 24, intent=feeding), cfg, rs, body=body_f, oi=oi_f).label_intent).all()
+    # the age gate binds where a row is warm before it can bud: with intent_warm 8 and min_age 20 a row of
+    # 15 observed steps is evaluated, the forecast holds on its energy and flow, and it is too young to bud;
+    # at 19 it is still too young (the gate reads n_obs, not n_obs + 1), at 20 it buds
+    young = dataclasses.replace(rs, intent_warm=8)
+    assert young.intent_warm <= 15 < cfg.repro.min_age <= 20
+    for n_obs, buds in ((15, False), (19, False), (20, True)):
+        g = evaluate(_obs(cfg, n_obs, intent=feeding), cfg, young, body=body_f, oi=oi_f)
+        bit = np_(g.match_intent) & 1
+        assert bool(bit.all()) == buds and bool(bit.any()) == buds
+        assert bool((np_(g.label_intent) == B_).all()) == buds
+        assert np_(g.match_intent).all()  # evaluated: the other bits (or Resting) are set whatever the age
     # a bond to row 0 is a bond (the count is partner >= 0): it shifts the forecast's edge by h·bond_upkeep
     slot0 = mx.concatenate([mx.zeros_like(oi_f.partner[:, :1]), oi_f.partner[:, 1:]], axis=1)
     bonded = evaluate(_obs(cfg, 400, intent=feeding), cfg, rs, body=body_f, oi=oi_f._replace(partner=slot0))

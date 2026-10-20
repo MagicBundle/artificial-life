@@ -257,10 +257,11 @@ The order:
 4. Caring: sharing at least `harvest_max`/10 per step with a parent or child partner, by `parent_uid`.
 5. Defending: guarding after a recent hit: hurt within about the last 31 steps, with the guard at 0.75 or more. The guard
    does not react to hits, so the UI must not say that the agent raised it because of the attack.
-6. Tethering (the Bonding intent): forming and dropping bonds again and again, mostly with the same neighbours: at least
-   one formation in four steps over about the last 8 steps. In these worlds that is bond flicker (94% with the same
-   neighbours in 3D, RESULTS_3D §5.4), not a new lasting partner; version 1's meaning failed the validity test in both
-   worlds. Show the bond count beside it. The enum and the report key stay `bonding`; `rules.INTENT_DISPLAY` is the table
+6. Tethering (the Bonding intent): forming and dropping bonds again and again, in 3D mostly with the same neighbours:
+   a formation-flag mean of at least 0.25 over about the last 8 steps (a bond formed every 3 steps is always on, every 4
+   steps it flickers across the threshold). In 3D that is bond flicker (94% of new bonds re-form a pair seen earlier in
+   the window, RESULTS_3D §5.4; the partners' identity is not measured in 2D), not a new lasting partner; version 1's
+   meaning failed the validity test in both worlds. Show the bond count beside it. The enum and the report key stay `bonding`; `rules.INTENT_DISPLAY` is the table
    of the words a player sees (the coordinator's choice C8 of 2026-10-19, to revisit).
 7. Feeding: harvest ≥ 0.75·`harvest_max`.
 8. Signalling: Σ emit ≥ 0.75.
@@ -961,14 +962,16 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
     `rules.ARCHITECT` and `test_director_rules.py` give the Architect discretionary moves when the LLM tier is off.
     Correct the two sentences (*recommended*), or change the code under a new rules version.
 11. **Label thresholds as code (G1).** G1 builds the thresholds of the archetype and intent rules as versioned code
-    constants (`rules.RuleSet`, `INTENT_VERSION` 2, a pinned digest), not as config keys, so a label means the same in
-    every world and the sidecar can tell which rules wrote it (DESIGN §28.4). *Recommended:* keep. The alternative,
+    constants (`rules.RuleSet`, `INTENT_VERSION` 1 as G1 built it and 2 as G2 changed it, a pinned digest each), not
+    as config keys, so a label means the same in every world and the sidecar can tell which rules wrote it (DESIGN §28.4). *Recommended:* keep. The alternative,
     per-world config keys, needs a decision on whether they enter `config_hash` (they would move every hash that sets
     them) and a sweep interface for the calibration.
 12. **The verdict criterion (G1, provisional).** A label passes the validity test (§4.5) when its AUC against the
     matched random label has `p ≤ 0.01` and `auc − null_mean ≥ 0.05`, with at least 30 positives and 30 negatives, at
     least 99 permutations, and (intents) a coverage maximum of at most 0.6 (DESIGN §28.8). The numbers are G1's
-    placeholders; confirm or change them before the calibration run on `64k_s0` and `64k3d_s0`.
+    placeholders and still provisional: the owner has not confirmed them. They are applied as written to the held-out
+    windows of `INTENT_VERSION` 2 (DESIGN §28.8) and are fixed before those reports are read; confirm or change them
+    before then.
 13. **The house rate (G2).** *Decided 2026-10-19:* `game.house_rate` defaults to 1/2048, not "off". It is an
     observer-only key, unhashed at every value and inert while `game.observe` is off, so a working default breaks
     nothing. CLAUDE.md records the exception to the "new keys default to off" convention.

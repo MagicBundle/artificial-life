@@ -21,6 +21,7 @@ import pytest
 
 from alife import cli, runner
 from alife.config import Config, apply_overrides, dims
+from alife.game import observer
 from alife.game import social as soc
 from alife.game.observe import EVAL_BIT, OBS_CAP, ObsState, evaluate, init_obs, obs_in, update
 from alife.game.observer import DEFAULT_RULES, OBSERVER_FORMAT, SIDECAR_FORMAT, Labels, Observer
@@ -59,6 +60,10 @@ SOC15 = dataclasses.replace(SOCIAL_V1, snapshot_every=15)  # snapshots at 15, 30
 SETTLER4 = dataclasses.replace(RULES_V1, settler_body=4)
 SETTLER16 = dataclasses.replace(SETTLER4, arch_warm=16)  # archetypes are labelled within a short test
 V2_WARM16 = dataclasses.replace(RULES_V2, arch_warm=16)  # the same for the version-2 rules (settler_body 4)
+# A forecast that holds for most rows (6,000 steps: at the default 10 only a handful of rows of 48 steps of
+# `tiny` bud-forecast and none of `tiny3d`), so that the Budding overlay is in play in the fold and the resume
+# tests; short warm-up and period so that it shows within the fixtures.
+V2_FORCED_BUD = dataclasses.replace(V2_WARM16, bud_horizon=6000, every=4, hold=2, intent_warm=8)
 AT = 61  # the step of the module's observer: 24-step warm-up + 4 evaluations to the first intent label
 WARM_NOTE = "labels warm up (192 steps for archetypes, 24 for intents)"
 RESTART_NOTE = "social tracking restarts at step"
@@ -137,8 +142,9 @@ def observed(tiny_cfg: Config) -> tuple[Config, State, Observer]:
         RULES_V2,
         dataclasses.replace(RULES_V2, every=4, hold=2),
         V2_WARM16,
+        V2_FORCED_BUD,
     ],
-    ids=["v1", "every4-hold2", "settler4-warm16", "v2", "v2-every4-hold2", "v2-warm16"],
+    ids=["v1", "every4-hold2", "settler4-warm16", "v2", "v2-every4-hold2", "v2-warm16", "v2-forced-forecast"],
 )
 def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules: RuleSet) -> None:
     """On real steps the Observer (compiled, as the run is, or eager) equals the reference fold, field by
@@ -148,7 +154,9 @@ def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules:
     ``relabel``. The Settler clause (``settler_body`` 4) reads the body of the last snapshot: the reference
     ``evaluate`` takes the body from the observer's ``so.body`` after the same step, before the step's own
     snapshot is settled (the labels of step t are evaluated from the previous snapshot). The version-2 rules
-    also read the step's post-step ``ObsIn`` (the Budding forecast); the reference passes it likewise."""
+    also read the step's post-step ``ObsIn`` (the Budding forecast); the reference passes it likewise. The
+    forced-forecast rule set makes the Budding overlay fire (a label different from the held intent), which
+    the default version-2 rules do on a handful of rows of ``tiny`` and on none of ``tiny3d``."""
     cfg = _observing(tiny_cfg, f"run.compile={'true' if compiled else 'false'}")
     s = init_state(cfg)
     fn = make_step(cfg, observe=True)
@@ -159,7 +167,7 @@ def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules:
     snap0 = soc.snapshot(ref_so.kin, ref_so, soc.soc_in(s), None, cfg, SOC15)  # the initial snapshot
     kin_lut, col_lut = ref_society.initialise(host_snap(snap0), 0)
     ref_so = soc.relabel(ref_so, snap0, mx.array(kin_lut), mx.array(col_lut))
-    evaluated = snapshots = 0
+    evaluated = snapshots = overlaid = 0
     for t in range(1, 81):
         s, out = fn(s)
         obs.update(s, out.acts, t)
@@ -171,6 +179,7 @@ def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules:
         if t % rules.every == 0:
             ref = evaluate(ref, cfg, rules, body=ref_body if rules.settler_body else None, oi=obs_in(s))
             evaluated += 1
+            overlaid += int((to_numpy(ref.label_intent) != to_numpy(ref.held)).sum())
         snap = soc.snapshot(kin0, ref_so, soc.soc_in(s), out.acts, cfg, SOC15) if t % 15 == 0 else None
         mx.eval(s, out.base(), *obs.arrays(), *ref, *ref_so, *(snap if snap is not None else ()))
         if snap is not None:
@@ -187,6 +196,10 @@ def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules:
         for f in SocState._fields:
             assert np.array_equal(to_numpy(getattr(obs.so, f)), to_numpy(getattr(ref_so, f))), (t, f)
     assert evaluated == 80 // rules.every and int(to_numpy(obs.o.label_intent).max()) > 0
+    if rules is V2_FORCED_BUD:
+        assert overlaid > 0  # the overlay was in play, and the observer equalled the fold through it
+    elif not rules.bud_overlay:
+        assert overlaid == 0  # version 1 shows the held intent
     assert snapshots == 5 and obs.society.snapshot_step == 75 and ref_society.snapshot_step == 75
     if (
         rules.settler_body and rules.arch_warm < 80
@@ -800,22 +813,25 @@ def _log(rd: RunDir) -> bytes:
 
 
 @pytest.mark.parametrize(
-    ("d3", "total", "stop"),
+    ("d3", "total", "stop", "forced"),
     [
-        pytest.param(False, 60, 15, id="2d-15+45-on-a-snapshot"),
-        pytest.param(False, 60, 16, id="2d-16+44-after-a-snapshot"),
-        pytest.param(False, 60, 30, id="2d-30+30"),
-        pytest.param(False, 60, 37, id="2d-37+23"),
-        pytest.param(True, 60, 16, id="3d-16+44-after-a-snapshot"),
-        pytest.param(True, 60, 30, id="3d-30+30"),
-        pytest.param(True, 60, 37, id="3d-37+23"),
-        pytest.param(False, 240, 137, id="2d-137+103-archetypes"),
+        pytest.param(False, 60, 15, False, id="2d-15+45-on-a-snapshot"),
+        pytest.param(False, 60, 16, False, id="2d-16+44-after-a-snapshot"),
+        pytest.param(False, 60, 30, False, id="2d-30+30"),
+        pytest.param(False, 60, 37, False, id="2d-37+23"),
+        pytest.param(True, 60, 16, False, id="3d-16+44-after-a-snapshot"),
+        pytest.param(True, 60, 30, False, id="3d-30+30"),
+        pytest.param(True, 60, 37, False, id="3d-37+23"),
+        pytest.param(False, 240, 137, False, id="2d-137+103-archetypes"),
+        pytest.param(False, 60, 30, True, id="2d-30+30-overlay"),
+        pytest.param(True, 60, 37, True, id="3d-37+23-overlay"),
     ],
 )
 def test_resume_labels_equal_uninterrupted(
     d3: bool,
     total: int,
     stop: int,
+    forced: bool,
     tiny_cfg: Config,
     tiny3d_cfg: Config,
     tmp_path: Path,
@@ -825,8 +841,12 @@ def test_resume_labels_equal_uninterrupted(
     """A run stopped at ``stop`` (not a multiple of the evaluation period 8; 15 is a snapshot step and 16 the
     step after one, neither a row step) and resumed has, bit for bit, the observer state (labels and social
     state, the host society included), the ``observers`` blocks (the ``social`` head in the same key order at
-    every level) and the social log of the uninterrupted run, and says nothing on stderr."""
+    every level) and the social log of the uninterrupted run, and says nothing on stderr. With ``forced`` the
+    rules are ``V2_FORCED_BUD`` (period 4, a forecast that holds for most rows): the Budding overlay is shown
+    in the run, and the label differs from the held intent in the sidecars that are compared."""
     social_every(monkeypatch, 15)
+    if forced:
+        monkeypatch.setattr(observer, "DEFAULT_RULES", V2_FORCED_BUD)
     cfg = _observing(tiny3d_cfg if d3 else tiny_cfg)
     ref = _run(cfg, tmp_path / "ref", total)
     split = _run(cfg, tmp_path / "split", stop)
@@ -837,6 +857,11 @@ def test_resume_labels_equal_uninterrupted(
     assert "observers:" not in capsys.readouterr().err  # the sidecar at `stop` was valid
     a, b = ref.read_observers(total), split.read_observers(total)
     assert a is not None and b is not None and _same(a, b)
+    if forced:  # the overlay was in play: the displayed intent differs from the held one somewhere
+        assert any(
+            (z := ref.read_observers(st)) is not None and (z["label_intent"] != z["held"]).any()
+            for st, _ in ref.observer_files()
+        )
     if total > 200:  # past the archetype warm-up: the comparison covers labelled rows
         assert (a["label_arch"][:, 0] > 0).any() and (a["label_intent"] > 0).any()
     blocks = {r["step"]: r["observers"] for r in ref.metrics_rows()}

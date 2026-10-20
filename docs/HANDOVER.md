@@ -453,7 +453,7 @@ and resumed once. There is one run per condition apart from the seed pair.
      owner** (coordinator choices of 2026-10-19 under the delegation, to revisit): the Budding overlay, the display
      names Tethering (Bonding) and Unspecialised (Generalist), the meaning changes of Gatherer, Defending and Budding
      (GAMES §4.4), the Settler clause at 4, and the stability of the displayed label (5.3 and 6.5 changes per 1,000
-     steps against G1's 1.98 and 4.12). The verdict criterion (GAMES §10 item 12) is the one §28.8 applies to the held-out windows.
+     steps against G1's 1.98 and 4.12). The verdict criterion (GAMES §10 item 12) is still provisional: the owner has not confirmed it; §28.8 applies it to the held-out windows as written, and it is fixed before their reports are read.
    - **The roster** (stage 7 of G2, DESIGN §29.14; stage 8 applied the review's findings): kin groups are named once at admission, the record lists the
      houses founded and extinct, and each listed kin group has its window births and deaths by cause, centroid and
      archetype mix. The GPU verification also reports `houses.founded_share` from `python -m alife.analysis.social` on
