@@ -1023,13 +1023,21 @@ def _wind_formula(
 
 
 def _clip_wind(
-    uh: mx.array, vh: mx.array, w: mx.array, edge: mx.array, p: WeatherParams
+    uh: mx.array,
+    vh: mx.array,
+    w: mx.array,
+    edge: mx.array,
+    p: WeatherParams,
+    valid: mx.array | None = None,
 ) -> tuple[mx.array, mx.array, mx.array, mx.array, mx.array]:
-    """Clip ``||u_h|| <= u_max`` (direction kept) and ``|w| <= w_edge`` where ``edge``; count both."""
+    """Clip ``||u_h|| <= u_max`` (direction kept) and ``|w| <= w_edge`` where ``edge``; count both. With
+    ``valid`` the two counts include only the rows where it is true (the clip itself applies to every row)."""
     sp = mx.sqrt(uh * uh + vh * vh)
     over = sp > p.u_max
     scale = p.u_max / mx.maximum(sp, p.u_max)
     w_over = edge & (mx.abs(w) > p.w_edge)
+    if valid is not None:  # static: dead rows hold stale positions, so they are not counted
+        over, w_over = over & valid, w_over & valid
     wc = mx.where(edge, mx.clip(w, -p.w_edge, p.w_edge), w)
     return uh * scale, vh * scale, wc, over.astype(_I32).sum(), w_over.astype(_I32).sum()
 
@@ -1051,6 +1059,7 @@ def sample_wind(
     *,
     field_cell: float = 4.0,
     fields: WindFields | None = None,
+    valid: mx.array | None = None,
 ) -> AgentWind:
     """The wind at agent positions ``pos`` (M, 3): pure gathers, any M (spec §4).
 
@@ -1059,7 +1068,9 @@ def sample_wind(
     fields (``h1, h2, D1, D2, J``), of ``u`` on the u-grid and of ``v`` on the v-grid, then ``_wind_formula``.
     ``||u_h||`` is clipped to ``u_max`` and ``|w|`` to ``w_edge`` in the floor and surface field layers
     (``z < field_cell`` or ``z >= height − field_cell``), both counted. Mid-column ``w`` is not clipped.
-    ``fields`` are the precomputed ``wind_fields(ws, p)`` (built once per weather step by the caller).
+    ``fields`` are the precomputed ``wind_fields(ws, p)`` (built once per weather step by the caller). With
+    ``valid`` ((M,) bool) the two clip counts exclude the rows where it is false (the engine passes
+    ``alive``: dead rows rest at stale positions); ``None`` counts every row.
     """
     n = p.n
     wf = wind_fields(ws, p) if fields is None else fields
@@ -1075,8 +1086,30 @@ def sample_wind(
     uh, vh, w = _wind_formula(z, zi, (uu[:, 0], vv[:, 0], uu[:, 1], vv[:, 1]), c[:, 2], c[:, 3], c[:, 4], p)
     fz = round(p.height / field_cell)
     edge = (z < field_cell) | (z >= (fz - 1) * field_cell)
-    uh, vh, w, n_h, n_w = _clip_wind(uh, vh, w, edge, p)
+    uh, vh, w, n_h, n_w = _clip_wind(uh, vh, w, edge, p, valid)
     return AgentWind(mx.stack([uh, vh, w], axis=-1), n_h, n_w)
+
+
+def sample_wind_h(
+    ws: WeatherState, pos: mx.array, p: WeatherParams, *, valid: mx.array | None = None
+) -> AgentWind:
+    """The 2D wind at agent positions ``pos`` (M, 2) (W1, DESIGN §30): the **layer-1** wind ``(u1, v1)``
+    bilinear on its own C-grid (u at ``(i + 1, j + ½)·dx``, v at ``(i + ½, j + 1)·dx``), no surface-layer
+    factor and no vertical wind, clipped to ``||u_h|| <= u_max``. ``u`` is (M, 2); ``n_clip_w`` is 0.
+    ``valid`` as in ``sample_wind``."""
+    n = p.n
+    ugrid = ws.u1.reshape(n * n, 1)
+    vgrid = ws.v1.reshape(n * n, 1)
+    gx, gy = pos[:, 0] / p.dx, pos[:, 1] / p.dx
+    uu = _bilinear_rows(ugrid, gx - 1.0, gy - 0.5, n)[:, 0]
+    vv = _bilinear_rows(vgrid, gx - 0.5, gy - 1.0, n)[:, 0]
+    sp = mx.sqrt(uu * uu + vv * vv)
+    over = sp > p.u_max
+    if valid is not None:  # static
+        over = over & valid
+    scale = p.u_max / mx.maximum(sp, p.u_max)
+    n_h = over.astype(_I32).sum()
+    return AgentWind(mx.stack([uu * scale, vv * scale], axis=-1), n_h, n_h * 0)
 
 
 def wind_layers(
@@ -1273,4 +1306,72 @@ def validate_config(cfg: Config) -> list[str]:
             f"weather.rain_gain {wc.rain_gain:g} too large: rain_gain*(H1 + H2 - 2*h_min)/gamma must be "
             "<= 2^30 (the int32 range of a column's rain)"
         )
+    return bad
+
+
+# --- the wind the engine applies, and the update (W1 build step 2, DESIGN §30) ---------------------------
+
+
+class AgentForce(NamedTuple):
+    """The wind as the engine step uses it."""
+
+    force: mx.array  # (N, nd) float32: ``alpha·drag·u_air``, the drag force of the moving air
+    speed: mx.array  # (N,) float32: the air speed (clipped wind, jet included), not the agent's
+    breaks: mx.array | None  # (N,) bool: ``speed > storm_break_u``; None when ``storm_break_u == 0``
+    clip_bad: mx.array  # () bool: some alive row's wind was clipped (a health signal, W0 saw none)
+
+
+def agent_wind(
+    ws: WeatherState, pos: mx.array, buoy_cap: mx.array | None, alive: mx.array, cfg: Config
+) -> AgentForce:
+    """The wind force on every row at ``pos`` (start-of-step positions) from the stored weather ``ws``.
+
+    3D (``buoy_cap`` given): ``u_air`` is ``sample_wind`` at ``(x, y, z)`` and the coupling is ``alpha0 +
+    alpha1·buoy_cap``. 2D (``buoy_cap is None``): ``u_air`` is the layer-1 wind at ``(x, y)`` and the
+    coupling is ``alpha0`` (``alpha1`` is inert without a cap). The force is ``alpha·drag·u_air``:
+    ``physics.integrate`` divides it by the same ``drag``, so an unobstructed agent drifts at
+    ``alpha·u_air``. ``alive`` keeps dead rows out of the clip counts; their force is zeroed by the physics
+    (``survivor``).
+    """
+    p = params_from_config(cfg)
+    drag = cfg.physics.drag
+    if buoy_cap is not None:  # static: 3D
+        wf = wind_fields(ws, p)  # built once per step (module docstring: never twice in one graph)
+        aw = sample_wind(ws, pos, p, field_cell=cfg.world.field_cell, fields=wf, valid=alive)
+        a = alpha(buoy_cap, p)[:, None]
+    else:
+        aw = sample_wind_h(ws, pos, p, valid=alive)
+        a = p.alpha0
+    force = a * drag * aw.u
+    speed = mx.sqrt((aw.u * aw.u).sum(axis=-1))
+    breaks = speed > cfg.weather.storm_break_u if cfg.weather.storm_break_u > 0 else None
+    return AgentForce(force, speed, breaks, (aw.n_clip_h + aw.n_clip_w) > 0)
+
+
+def advance(ws: WeatherState, t: mx.array, key: mx.array, cfg: Config) -> tuple[WeatherState, WeatherDiag]:
+    """One weather step at engine step ``t`` (an int32 () array): the warm pools of step ``t``, ``qs = 1``,
+    no momentum forcing. ``key`` is the ``k_disturb`` key of the step's weather stream split. In W1 the result
+    depends on no agent array (DESIGN §30)."""
+    p = params_from_config(cfg)
+    fo = WeatherForcing(warm_pools(p, t), mx.ones((p.n, p.n), dtype=_F32))
+    return step(ws, fo, key, p)
+
+
+# The W0 health gate (STORMS_W0): hyperbolicity below this, and the local moisture ratio below 1.
+_HYPER_GATE: Final = 0.8
+
+
+def health(wd: WeatherDiag, wind: AgentForce) -> mx.array:
+    """() bool: any W0 health-gate quantity fires this step (limiter or clamp counters, hyperbolicity at the
+    gate, a local moisture ratio of 1) or a wind sample was clipped. Advisory, ``Diag.WEATHER_WARN``."""
+    bad = wind.clip_bad | (wd.hyper_max >= _HYPER_GATE) | (wd.eps_local_max >= 1.0)
+    for n in (
+        wd.n_limited,
+        wd.n_clamp,
+        wd.n_cond_limited,
+        wd.n_relax_limited,
+        wd.n_evap_limited,
+        wd.n_safety,
+    ):
+        bad = bad | (n > 0)
     return bad

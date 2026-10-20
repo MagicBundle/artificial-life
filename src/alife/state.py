@@ -125,6 +125,9 @@ class Diag(IntFlag):
     POS_RANGE = 256
     CELL_OVERFLOW_WARN = 1 << 16
     VCLIP_WARN = 1 << 17
+    WEATHER_WARN = (
+        1 << 18
+    )  # the W0 health gate of the weather layer fired, or a wind sample was clipped (§30)
 
 
 ERROR_MASK: Final = 0xFFFF

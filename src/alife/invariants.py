@@ -73,6 +73,8 @@ def device_check(
     overflow_cells: mx.array,
     v_clips: mx.array,
     cfg: Config,
+    *,
+    weather_bad: mx.array | None = None,
 ) -> mx.array:
     """int32 ``Diag`` bits for this step, OR-ed into ``s.diag`` by the step.
 
@@ -101,6 +103,8 @@ def device_check(
     )
     if d.d3:  # static: the 3D-only fields
         nonfinite = nonfinite | ~(mx.all(mx.isfinite(s.pitch)) & mx.all(mx.isfinite(s.buoy_cap)))
+    if cfg.weather.enabled:  # static: the stored weather state
+        nonfinite = nonfinite | ~mx.all(mx.isfinite(s.wx))
     field_bad = mx.any((s.resource < 0) | (s.resource > R_HARD))
     if cfg.director.enabled:  # static: the director's env levers are live
         field_bad = field_bad | env_out_of_range(s, cfg)
@@ -123,6 +127,8 @@ def device_check(
         (overflow_cells > 0, Diag.CELL_OVERFLOW_WARN),
         (v_clips > 0, Diag.VCLIP_WARN),
     )
+    if weather_bad is not None:  # static: weather on
+        checks = (*checks, (weather_bad, Diag.WEATHER_WARN))
     bits = mx.array(0, dtype=_I32)
     for cond, bit in checks:
         bits = bits | mx.where(cond, bit.value, 0).astype(_I32)

@@ -14,7 +14,20 @@ from typing import NamedTuple
 
 import mlx.core as mx
 
-from alife import actions, bonds, brain, fields, invariants, layout, lifecycle, ops, physics, sensing, spatial
+from alife import (
+    actions,
+    bonds,
+    brain,
+    fields,
+    invariants,
+    layout,
+    lifecycle,
+    ops,
+    physics,
+    sensing,
+    spatial,
+    weather,
+)
 from alife import energy as en
 from alife.actions import Actions
 from alife.config import Config, dims
@@ -118,6 +131,8 @@ class _Flows(NamedTuple):
     z_floor: mx.array | None = None  # () survivors clamped at the floor (Integrated3)
     z_surface: mx.array | None = None  # () survivors clamped at the surface
     grounded: mx.array | None = None  # (N,) bool, physics.grounded of the start-of-step pos (not masked)
+    # Weather only (None when weather.enabled is false): the advisory WEATHER_WARN input (§30).
+    weather_bad: mx.array | None = None  # () bool, weather.health
 
 
 def step(
@@ -134,6 +149,11 @@ def step(
     a = age(t, s.birth_step)
     nbr = spatial.find_neighbors(s.pos, s.alive, cfg)  # S2
     geom = bonds.bond_geometry(s.pos, s.partner, cfg)  # S3
+    wthr = cfg.weather.enabled  # static: the weather layer (§30)
+    if wthr:
+        ws = weather.unpack(s.wx)  # S3w: the weather stored at the end of the previous step, unpacked once
+        wind = weather.agent_wind(ws, s.pos, s.buoy_cap if d3 else None, s.alive, cfg)
+        kw = mx.random.split(ks[Stream.WEATHER], 2)  # kw[0]: the disturbance key (S17); kw[1]: the hazard
     fcell = fields.cell_index(s.pos, cfg)  # S4
     if d3:  # static: the yaw-and-pitch frame and the start-of-step grounding (§27.6)
         gr = physics.grounded(s.pos, cfg)
@@ -198,12 +218,15 @@ def step(
     )  # S14
 
     sv = dt.survivor  # S15
+    wind_f = wind.force if wthr else None
     if d3:  # static: gravity, buoyancy, the floor and the surface (§27.3)
-        F = physics.forces3(s.pos, s.heading, s.pitch, act, mo, s.buoy_cap, nbr, sv, dt.partner, cfg)
+        F = physics.forces3(
+            s.pos, s.heading, s.pitch, act, mo, s.buoy_cap, nbr, sv, dt.partner, cfg, wind=wind_f
+        )
         it = physics.integrate3(s.pos, s.heading, s.pitch, F, act.grip, act.turn, mo.pitch, gr, sv, cfg)
         pos, vel, heading, v_clips = it.pos, it.vel, it.heading, it.v_clips
     else:
-        F = physics.forces(s.pos, s.heading, act, nbr, sv, dt.partner, cfg)
+        F = physics.forces(s.pos, s.heading, act, nbr, sv, dt.partner, cfg, wind=wind_f)
         pos, vel, heading, v_clips = physics.integrate(s.pos, s.heading, F, act.grip, act.turn, sv, cfg)
     s1 = s._replace(
         alive=sv,
@@ -235,6 +258,9 @@ def step(
     resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env)
     patch_pos = fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env)
     s2 = s2._replace(chem=chem, resource=resource, patch_pos=patch_pos, key=key_next, step=t + 1)
+    if wthr:  # static: advance the weather (it reads no agent array: DESIGN §30)
+        ws2, wd = weather.advance(ws, t, kw[0], cfg)
+        s2 = s2._replace(wx=weather.pack(ws2))
     if env is not None:  # static: director enabled
         s2 = consume_env(s2, env, lanes)
 
@@ -261,6 +287,8 @@ def step(
     )
     if d3:  # static
         flows = flows._replace(z_floor=it.z_floor, z_surface=it.z_surface, grounded=gr)
+    if wthr:  # static
+        flows = flows._replace(weather_bad=weather.health(wd, wind))
     s_new, out = _finish(s2, s, cfg, flows)  # S18
     if observe:  # static
         return s_new, StepOutG(*out, acts=_acts(flows, sl, thrust0, cfg))
@@ -434,6 +462,7 @@ def _finish(s_new: State, s: State, cfg: Config, f: _Flows) -> tuple[State, Step
             max_cell_occ = ops.scatter_add_i32(d.fg * d.fg, f.fcell % (d.fg * d.fg), 1, s.alive).max()
         else:
             max_cell_occ = ops.scatter_add_i32(d.fg * d.fg, f.fcell, 1, s.alive).max()
+        extra = {} if f.weather_bad is None else {"weather_bad": f.weather_bad}  # static: weather on
         bits = invariants.device_check(
             s_new,
             ledger,
@@ -443,6 +472,7 @@ def _finish(s_new: State, s: State, cfg: Config, f: _Flows) -> tuple[State, Step
             f.nbr.overflow_cells,
             f.v_clips,
             cfg,
+            **extra,
         )
         # The start-of-step levers, as the step used them (some are consumed by it).
         if cfg.director.enabled:  # static
