@@ -784,6 +784,37 @@ def test_params_hash_of_the_defaults_and_the_start_set() -> None:
     assert w0.params_hash(P0).startswith("bf468155")
 
 
+def _params_file(tmp_path: Path, d: dict) -> str:
+    f = tmp_path / "p.json"
+    f.write_text(json.dumps(d))
+    return str(f)
+
+
+def test_load_params_resolves_sparse_files_against_the_start_set(tmp_path: Path) -> None:
+    """The tuning rounds' sparse files are overrides of ``START_SET`` (their runs' recorded sets), not of the
+    defaults, which are the W0 result since the results commit; without a file the base is the defaults."""
+    # {} is the start set (round 0's r0_start), not the confirmed set
+    p = w0._load_params(_params_file(tmp_path, {}), [])
+    assert p == START_SET and w0.params_hash(p).startswith("bf468155")
+    # a one-key file (round 0's r0_qpool105) changes that key of the start set only
+    p = w0._load_params(_params_file(tmp_path, {"q_pool": 1.05}), [])
+    assert p == replace(START_SET, q_pool=1.05)
+    assert (p.gamma, p.zeta_th, p.pools) == (24.0, 0.0075, W.START_POOLS)
+    assert p != replace(WeatherParams(), q_pool=1.05)  # what the defaults as the base would have given
+    # a file that spells out the four changed fields resolves to the confirmed set
+    result = {"gamma": 21.6, "q_pool": 1.11, "pools": [list(r) for r in W.DEFAULT_POOLS], "zeta_th": 0.00625}
+    p = w0._load_params(_params_file(tmp_path, result), [])
+    assert p == WeatherParams() and w0.params_hash(p).startswith("7832e060")
+    # no file: the defaults, and --set goes on top of whichever base applies
+    assert w0._load_params(None, []) == WeatherParams()
+    assert w0._load_params(None, ["q_pool=1.05"]) == replace(WeatherParams(), q_pool=1.05)
+    assert w0._load_params(_params_file(tmp_path, {}), ["q_pool=1.05"]) == replace(START_SET, q_pool=1.05)
+    with pytest.raises(ValueError, match="unknown weather parameter"):
+        w0._load_params(_params_file(tmp_path, {"no_such_key": 1}), [])
+    help_ = next(a.help for a in w0.build_parser()._actions if "--params" in a.option_strings)
+    assert "START_SET" in help_ and "defaults" in help_
+
+
 def test_min_image_and_json_cleaning() -> None:
     assert w0.min_image_np(np.array([170.0, -170.0, 10.0]), 320.0) == pytest.approx([-150.0, 150.0, 10.0])
     out = json.loads(
@@ -1527,6 +1558,32 @@ def test_assemble_metrics_reports_the_lifetime_flags_and_the_early_stop(mini_stu
     assert json.loads(w0.dumps(m))["criteria"]["lifetime"]["detail"]["companions"]["split_born"]["n"] == 21
 
 
+DETECTION_KEYS = ("zeta_th", "p_th", "a_min", "r_min", "miss_grace", "min_dets", "detect_every")
+
+
+def test_deviations_compare_the_detection_thresholds_with_the_start_set(mini_study) -> None:
+    """The report's "detection thresholds changed" line is against ``START_SET`` (the spec's thresholds), not
+    the defaults: a confirmed-set study lists ``zeta_th``, a start-set study lists nothing."""
+    start = {k: getattr(START_SET, k) for k in DETECTION_KEYS}
+
+    def line(**ov: float) -> list[str]:
+        res = replace(mini_study, p=replace(mini_study.p, **{**start, **ov}))
+        devs = w0.assemble_metrics(res)[0]["deviations"]
+        return [d for d in devs if d.startswith("detection thresholds changed")]
+
+    assert START_SET.zeta_th != WeatherParams().zeta_th  # the two bases differ, so the test tells them apart
+    assert line() == []  # a start-set study: nothing changed (the defaults as the base listed zeta_th 0.0075)
+    assert line(zeta_th=WeatherParams().zeta_th) == [
+        "detection thresholds changed from the start set: zeta_th = 0.00625"
+    ]  # the confirmed set (the defaults as the base listed nothing)
+    assert line(zeta_th=0.00625, a_min=6) == [
+        "detection thresholds changed from the start set: zeta_th = 0.00625, a_min = 6"
+    ]
+    assert line(zeta_th=0.0036, r_min=2) == [
+        "detection thresholds changed from the start set: zeta_th = 0.0036, r_min = 2"
+    ]
+
+
 # --- 27. the command line ------------------------------------------------------------------------------
 
 
@@ -1575,7 +1632,9 @@ def test_cli_smoke_writes_every_output(tmp_path: Path) -> None:
     assert ts[0].startswith("t,n_storms_north") and len(ts) == 1 + 300 // 25
     assert "occ_hz0" in ts[0] and "fh_occ_hz12" in ts[0] and "zq3" in ts[0]
     pj = json.loads((out / "params.json").read_text())
-    assert pj["hash"] == w0.params_hash(WeatherParams.from_dict(SMALL)) and pj["validate"] == []
+    # a --params file is a sparse override of START_SET (the CLI's contract), not of the defaults
+    expected = WeatherParams.from_dict(SMALL, base=START_SET)
+    assert pj["hash"] == w0.params_hash(expected) and pj["validate"] == []
     assert pj["mlx_version"] and "cli" in pj and "derived" in pj
     report = (out / "report.md").read_text()
     assert report.startswith("# W0 run ") and "14.4" in report and "## Wall-clock" in report

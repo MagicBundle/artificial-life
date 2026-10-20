@@ -131,6 +131,18 @@ def test_defaults_are_the_w0_result() -> None:
     assert p.derived()["potential_intensity"] == pytest.approx(0.154, abs=0.002)
 
 
+def test_from_dict_overrides_the_given_base() -> None:
+    """A sparse override goes over ``base`` (default: the defaults); unknown keys are rejected on any base."""
+    assert WeatherParams.from_dict({}) == WeatherParams()
+    assert WeatherParams.from_dict({}, base=START_SET) == START_SET
+    p = WeatherParams.from_dict({"q_pool": 1.05, "n": 64}, base=START_SET)
+    assert p == replace(START_SET, q_pool=1.05, n=64) and (p.gamma, p.zeta_th) == (24.0, 0.0075)
+    assert WeatherParams.from_dict({"q_pool": 1.05}).gamma == 21.6  # the defaults when no base is given
+    for base in (None, START_SET):
+        with pytest.raises(ValueError, match="unknown weather parameter"):
+            WeatherParams.from_dict({"no_such_key": 1}, base=base)
+
+
 RULE_CASES = [
     ("rule 1", {"n": 4}),
     ("rule 1", {"dx": 0.0}),

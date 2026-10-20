@@ -345,7 +345,10 @@ owner's delegation of 2026-10-19, to revisit (cadence, the GUI architecture, dir
 Each step is one PR, merged before the next.
 
 1. **W0, offline prototype.** No engine change: a standalone MLX script with passive tracers.
-   - **Status (2026-10-19):** every criterion but the cost (1.116 ms) passes; see [`docs/STORMS_W0.md`](STORMS_W0.md).
+   - **Status (2026-10-19):** every criterion but the cost passes. The cost with the pool drift is 1.163 ms
+     ((B) + (C); 1.131 ms in one graph; 1.116 ms with a static pool map). A forecaster that knows the pool drift
+     errs by 0.33 radii, below the forecast lower bound, so W3 and W4 must add uncertainty to storm motion; see
+     [`docs/STORMS_W0.md`](STORMS_W0.md).
    - **Exit criteria** (accepted by the owner as written, 2026-10-19):
      - 2–6 storms per hemisphere at any time;
      - median storm lifetime of at least 3,000 steps;

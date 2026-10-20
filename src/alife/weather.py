@@ -144,9 +144,10 @@ class WeatherParams:
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> WeatherParams:
-        """A sparse override over the defaults; unknown keys are rejected (like the presets)."""
-        base = cls()
+    def from_dict(cls, d: dict[str, Any], base: WeatherParams | None = None) -> WeatherParams:
+        """A sparse override over ``base`` (default: the defaults); unknown keys are rejected (like the
+        presets)."""
+        base = cls() if base is None else base
         names = {f.name for f in fields(cls)}
         unknown = sorted(set(d) - names)
         if unknown:

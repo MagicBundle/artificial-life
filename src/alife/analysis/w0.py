@@ -3113,7 +3113,7 @@ def assemble_metrics(
         deviations.append(
             "sl_order 3 (Catmull-Rom) in place of STORMS 3.2 step 1's bilinear semi-lagrangian advection"
         )
-    base = WeatherParams()
+    base = W.START_SET  # the detection thresholds of the spec's starting set, not of the (tuned) defaults
     changed = [
         k
         for k in ("zeta_th", "p_th", "a_min", "r_min", "miss_grace", "min_dets", "detect_every")
@@ -3953,6 +3953,10 @@ def finish_out(out: Path, written: Sequence[str]) -> None:
 
 
 def _load_params(path: str | None, sets: Sequence[str]) -> WeatherParams:
+    """The parameters of a study. A ``--params`` file is a sparse override of ``weather.START_SET`` (the
+    spec's starting set, which the tuning rounds' files were written against: ``{}`` is the start set).
+    Without one the base is the ``WeatherParams`` defaults (the W0 confirmed set). ``--set`` overrides go on
+    top of either."""
     d: dict[str, Any] = {}
     if path:
         d = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -3963,7 +3967,7 @@ def _load_params(path: str | None, sets: Sequence[str]) -> WeatherParams:
         if not _:
             raise ValueError(f"--set needs KEY=VALUE, got {s!r}")
         d[k.strip()] = json.loads(v)
-    return WeatherParams.from_dict(d)
+    return WeatherParams.from_dict(d, base=W.START_SET if path else None)
 
 
 def _load_json(path: str | None, flag: str) -> dict[str, Any] | None:
@@ -3993,7 +3997,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m alife.analysis.w0",
         description="The W0 storm study: runs the weather model offline on MLX (docs/STORMS.md, W0 spec).",
     )
-    ap.add_argument("--params", help="sparse JSON override of the start set ({} gives the start set)")
+    ap.add_argument(
+        "--params",
+        help="sparse JSON override of weather.START_SET, the spec's starting set ({} gives it; the tuning "
+        "rounds' files are written against it). Without --params the base is the WeatherParams defaults "
+        "(the W0 confirmed set)",
+    )
     ap.add_argument(
         "--set", action="append", default=[], metavar="KEY=VALUE", help="one parameter override (JSON value)"
     )
