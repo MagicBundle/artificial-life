@@ -61,7 +61,7 @@ from typing import Any, Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import layout, ops
+from alife import layout, ops, spatial
 from alife.analysis import mi
 from alife.analysis.resim import ResimMismatch, compare_row
 from alife.analysis.signals import load_state
@@ -672,6 +672,7 @@ def study(
 
     oc_step = mx.compile(outcomes_fn) if cfg.run.compile else outcomes_fn
     tr_step = mx.compile(track_fn) if cfg.run.compile else track_fn
+    spatial.prepare_knn(cfg)  # the self-check of the fused search, once per process (§4)
     step_fn = make_step(cfg, observe=True)
 
     copy_points: dict[int, list[str]] = {}
