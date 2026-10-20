@@ -39,3 +39,45 @@ Three things in the files to read with care:
 - `n_alive_start`, `n_alive_end`, births and deaths of the three `64k3d` files are identical (26 178, 15 804, 4 033,
   14 407). C changes a trajectory only where a hash cell overflows, so no cell did in these 231 steps
   (20 warm-up, 11 donation-check and 200 timed).
+
+## 2026-10-20, M5 Pro (the fused Metal neighbour search, Review-log row I48)
+
+- **Machine and software:** as above (M5 Pro, 48 GB, mlx 0.32.3, Python 3.12.11), on the tree of this change (branch
+  `perf/fused-knn`, origin/main 1ad339c plus the change). The machine was shared with other, lighter jobs (load average
+  about 2.5 to 3, CPU only: the GPU was reserved for these runs); one process at a time.
+- **Command:** `alife bench --preset <preset> --stages`, as above, once with `ALIFE_KNN=mlx` (the pure-MLX search, the
+  reference) and once with the default (`auto`: the kernel in 3D on Metal). The 2D `64k` kernel file was made with
+  `ALIFE_KNN=metal`, because `auto` keeps the MLX path in 2D. The `config` block of each file is unchanged; the
+  environment block gains `knn_impl` (`"metal"` or `"mlx"`), which says which search the step was traced with. `64k3d`
+  at `C` = 48 was run twice per search (`_r2` files, in the order metal, mlx after the first pair) to show the spread.
+- **Equal trajectories:** each pair has the same `n_alive_end`, births and deaths (15 804, 4 033, 14 407 for `64k3d`;
+  19 038, 4 844, 11 867 for `64k`; 283, 41, 176 for `tiny3d`), as the bitwise equality of the two searches requires.
+
+| file | what | steps/s | ms/step | neighbours (ms, staged) | peak memory, GB (GiB in the file) |
+|---|---|---|---|---|---|
+| `2026-10-20_m5pro_64k3d_C48_mlx.json` (`_r2`) | `64k3d` C = 48, MLX search | 14.83 (14.77) | 67.44 (67.73) | 54.5 (54.8) | 3.31 (3.085) |
+| `2026-10-20_m5pro_64k3d_C48_metal.json` (`_r2`) | `64k3d` C = 48, **fused kernel** | **75.19 (75.06)** | **13.30 (13.32)** | **0.42 (0.42)** | **1.07 (0.993)** |
+| `2026-10-20_m5pro_64k3d_C32_metal.json` | `64k3d` C = 32, kernel | 75.16 | 13.31 | 0.43 | 1.07 (0.993) |
+| `2026-10-20_m5pro_64k3d_C24_metal.json` | `64k3d` C = 24, kernel | 74.95 | 13.34 | 0.42 | 1.07 (0.993) |
+| `2026-10-20_m5pro_64k_mlx.json` | 2D `64k` C = 16, MLX search | 61.34 | 16.30 | 6.21 | 1.19 (1.112) |
+| `2026-10-20_m5pro_64k_metal.json` | 2D `64k` C = 16, kernel (`ALIFE_KNN=metal`) | 92.96 | 10.76 | 0.36 | 0.91 (0.848) |
+| `2026-10-20_m5pro_tiny3d_metal.json` | `tiny3d` C = 16, kernel | 416.2 | 2.40 | 0.38 | 0.017 (0.016) |
+
+The MLX-search numbers at `C` = 32 and 24 and for `tiny3d` were measured too (44.40 ms and 22.52 steps/s, 40.01 ms and
+25.00 steps/s, 2.55 ms and 392.7 steps/s) and agree with the 2026-10-16 files above to 3%; they are not kept as files.
+
+Read with care:
+
+- The kernel step is 5.07 times faster at `C` = 48 (67.4 to 13.3 ms) and the time no longer depends on `C` (13.30, 13.31
+  and 13.34 ms at `C` = 48, 32 and 24): the kernel's work follows the occupied candidates, not `Q`, so the
+  capacity that the floor pile needs costs nothing here (the cost of a cell over `C` is still the candidates lost, §4). In 2D, where the MLX search was 6.2 ms of 18.7, the
+  gain is 1.52 times (16.3 to 10.76 ms).
+- "Neighbours" is the whole staged search stage (cell hash, sort, `searchsorted`, kernel and dispatch), not the kernel
+  alone; the stages sum to more than the fused step (`inflation` 1.11 to 1.19 for the kernel files, against 1.02 to
+  1.15), because each staged function is evaluated on its own.
+- The `donation` check is informative with the kernel: at `C` = 48 the normal steps peak 0.335 GiB above the resident
+  baseline and the step that keeps its input state alive 0.924 GiB (`saved_over_weights` 0.97 of the weight bytes, limit
+  0.25), `ok: true`, "weights updated in place". With the MLX search both excesses were 2.446 GiB, the search's own peak,
+  and the check could not say (the note above).
+- `n_alive_end`, births and deaths equal those of the 2026-10-16 files for `64k3d`, `64k` and `tiny3d` (same seed, same
+  config hash), so the search did not change the trajectories (§4, F21).

@@ -743,8 +743,8 @@ What a game adds:
   - **Content.** 2D has the signal tools, the pygame viewer, and the Swift viewer's face-on 2D view. It also has the
     thinnest content: kill share 0.13, a median largest body of 73, and a predation ratio of 0.078. The chosen lever,
     `attack_mult`, is aimed at that (§10.4).
-  - **3D later.** 3D has more to see (depth zones, reefs, kill share 0.50) but needs the deferred fused Metal kNN kernel
-    (DESIGN §27.13) to reach 30 steps/s at 64k.
+  - **3D later.** 3D has more to see (depth zones, reefs, kill share 0.50) and no longer needs the fused Metal kNN kernel
+    (built, DESIGN §4, row I48) to reach 30 steps/s at 64k: `64k3d` runs at about 75 steps/s on the M5 Pro.
 
 ### 8.4 Further risks
 
