@@ -1,0 +1,228 @@
+{
+ "chapter": [
+  792000,
+  798000
+ ],
+ "config_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+ "dims": 2,
+ "entities": [],
+ "excluded": {
+  "entries_before_start": 0,
+  "events_churn": 0,
+  "events_suspect": 0,
+  "facts_dropped": [],
+  "interventions_dropped": 0,
+  "labels": {},
+  "name_clash": [],
+  "quota": {},
+  "social": null,
+  "windows_confounded": 0
+ },
+ "facts": [
+  {
+   "end": 798000,
+   "id": "F1",
+   "kind": "chapter",
+   "start": 792000
+  },
+  {
+   "change": -0.11682242990654206,
+   "deep_dip": false,
+   "from": 21400,
+   "id": "F2",
+   "kind": "population",
+   "min": 18640,
+   "min_row": 1517900,
+   "min_steps": 100,
+   "to": 18900
+  },
+  {
+   "aged": 260,
+   "catastrophe": 0,
+   "id": "F3",
+   "killed": 1900,
+   "kind": "deaths",
+   "starved": 14100,
+   "total": 16260
+  },
+  {
+   "births": 13660,
+   "id": "F4",
+   "immigrants": 200,
+   "kind": "births"
+  },
+  {
+   "action": "regen_pulse",
+   "duration": 5000,
+   "end": null,
+   "end_by": null,
+   "entry": 0,
+   "id": "F5",
+   "kind": "intervention",
+   "open_to": 1518000,
+   "params": {
+    "mult": 1.5
+   },
+   "restored": null,
+   "rule": null,
+   "source": "llm",
+   "src": "the director's model",
+   "step": 793000
+  },
+  {
+   "action": "immigration_pulse",
+   "duration": null,
+   "end": null,
+   "end_by": null,
+   "entry": 1,
+   "id": "F6",
+   "kind": "intervention",
+   "open_to": null,
+   "params": {
+    "count": 200
+   },
+   "restored": null,
+   "rule": null,
+   "source": "llm",
+   "src": "the director's model",
+   "step": 796000
+  }
+ ],
+ "labels": {
+  "env_default": true,
+  "intent_version": 1,
+  "key_found": true,
+  "rules_digest": "156ad4963b84ffe9636e9ba4fdd7592632c669bf6e490687d8eb2b38b9aec009"
+ },
+ "origin": 0,
+ "quiet": false,
+ "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
+ "report_version": 1,
+ "run": {
+  "seed": 0
+ },
+ "snapshots": [
+  {
+   "alive": 1250,
+   "id": "S792250",
+   "step": 792250
+  },
+  {
+   "alive": 1500,
+   "id": "S792500",
+   "step": 792500
+  },
+  {
+   "alive": 1750,
+   "id": "S792750",
+   "step": 792750
+  },
+  {
+   "alive": 1000,
+   "id": "S793000",
+   "step": 793000
+  },
+  {
+   "alive": 1250,
+   "id": "S793250",
+   "step": 793250
+  },
+  {
+   "alive": 1500,
+   "id": "S793500",
+   "step": 793500
+  },
+  {
+   "alive": 1750,
+   "id": "S793750",
+   "step": 793750
+  },
+  {
+   "alive": 1000,
+   "id": "S794000",
+   "step": 794000
+  },
+  {
+   "alive": 1250,
+   "id": "S794250",
+   "step": 794250
+  },
+  {
+   "alive": 1500,
+   "id": "S794500",
+   "step": 794500
+  },
+  {
+   "alive": 1750,
+   "id": "S794750",
+   "step": 794750
+  },
+  {
+   "alive": 1000,
+   "id": "S795000",
+   "step": 795000
+  },
+  {
+   "alive": 1250,
+   "id": "S795250",
+   "step": 795250
+  },
+  {
+   "alive": 1500,
+   "id": "S795500",
+   "step": 795500
+  },
+  {
+   "alive": 1750,
+   "id": "S795750",
+   "step": 795750
+  },
+  {
+   "alive": 1000,
+   "id": "S796000",
+   "step": 796000
+  },
+  {
+   "alive": 1250,
+   "id": "S796250",
+   "step": 796250
+  },
+  {
+   "alive": 1500,
+   "id": "S796500",
+   "step": 796500
+  },
+  {
+   "alive": 1750,
+   "id": "S796750",
+   "step": 796750
+  },
+  {
+   "alive": 1000,
+   "id": "S797000",
+   "step": 797000
+  },
+  {
+   "alive": 1250,
+   "id": "S797250",
+   "step": 797250
+  },
+  {
+   "alive": 1500,
+   "id": "S797500",
+   "step": 797500
+  },
+  {
+   "alive": 1750,
+   "id": "S797750",
+   "step": 797750
+  },
+  {
+   "alive": 1000,
+   "id": "S798000",
+   "step": 798000
+  }
+ ],
+ "start_step": 0,
+ "world_key": "69b4e21ad6b6016b17c11d6a1d9b3371c03b4b9f590fdb4a04752515c13a01d8"
+}

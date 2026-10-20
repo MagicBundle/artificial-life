@@ -1,0 +1,277 @@
+{
+ "chapter": [
+  450000,
+  456000
+ ],
+ "config_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+ "dims": 3,
+ "entities": [
+  {
+   "display": "House Phouth",
+   "id": 6,
+   "kind": "house",
+   "name": "Phouth",
+   "name_from": 456000,
+   "ref": "H6"
+  },
+  {
+   "display": "the Dreanor kin",
+   "id": 2,
+   "kind": "kin_group",
+   "name": "Dreanor",
+   "name_from": 456000,
+   "ref": "K2"
+  }
+ ],
+ "excluded": {
+  "entries_before_start": 0,
+  "events_churn": 0,
+  "events_suspect": 0,
+  "facts_dropped": [],
+  "interventions_dropped": 0,
+  "labels": {},
+  "name_clash": [],
+  "quota": {},
+  "social": null,
+  "windows_confounded": 0
+ },
+ "facts": [
+  {
+   "end": 456000,
+   "id": "F1",
+   "kind": "chapter",
+   "start": 450000
+  },
+  {
+   "change": 0.014282256112321472,
+   "deep_dip": false,
+   "from": 41310,
+   "id": "F2",
+   "kind": "population",
+   "min": 40950,
+   "min_row": 1517900,
+   "min_steps": 100,
+   "to": 41900
+  },
+  {
+   "aged": 410,
+   "catastrophe": 0,
+   "id": "F3",
+   "killed": 6100,
+   "kind": "deaths",
+   "starved": 19200,
+   "total": 25710
+  },
+  {
+   "births": 26300,
+   "id": "F4",
+   "immigrants": 0,
+   "kind": "births"
+  },
+  {
+   "from": 5,
+   "id": "F5",
+   "kind": "lineages",
+   "to": 5
+  },
+  {
+   "from_count": 13674,
+   "from_of": 41310,
+   "from_share": 0.33100944081336237,
+   "id": "F6",
+   "kind": "top_lineage",
+   "to_count": 13995,
+   "to_of": 41900,
+   "to_share": 0.3340095465393795
+  },
+  {
+   "family": "archetype",
+   "from_count": 8675,
+   "from_of": 41310,
+   "from_share": 0.20999757927862503,
+   "id": "F7",
+   "key": "hunter",
+   "kind": "label",
+   "label": "Hunter",
+   "to_count": 9008,
+   "to_of": 41900,
+   "to_share": 0.21498806682577565
+  },
+  {
+   "family": "intent",
+   "from_count": 18176,
+   "from_of": 41310,
+   "from_share": 0.4399903171145001,
+   "id": "F8",
+   "key": "resting",
+   "kind": "label",
+   "label": "Resting",
+   "to_count": 18855,
+   "to_of": 41900,
+   "to_share": 0.45
+  },
+  {
+   "born": 3400,
+   "died": 3200,
+   "died_killed": 1100,
+   "entity": 2,
+   "id": "F9",
+   "kind": "group",
+   "of": 41900,
+   "rank": 1,
+   "share": 0.1899761336515513,
+   "size": 7960
+  },
+  {
+   "alive_from": 9,
+   "alive_to": 9,
+   "exact": true,
+   "extinct": 0,
+   "first_seen": 0,
+   "id": "F10",
+   "kind": "houses",
+   "largest": 6,
+   "largest_name": "Zaeld",
+   "largest_size": 13363,
+   "largest_strict": true,
+   "origin": 0
+  }
+ ],
+ "labels": {
+  "env_default": true,
+  "intent_version": 1,
+  "key_found": true,
+  "rules_digest": "156ad4963b84ffe9636e9ba4fdd7592632c669bf6e490687d8eb2b38b9aec009"
+ },
+ "origin": 0,
+ "quiet": true,
+ "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
+ "report_version": 1,
+ "run": {
+  "seed": 0
+ },
+ "snapshots": [
+  {
+   "alive": 1250,
+   "id": "S450250",
+   "step": 450250
+  },
+  {
+   "alive": 1500,
+   "id": "S450500",
+   "step": 450500
+  },
+  {
+   "alive": 1750,
+   "id": "S450750",
+   "step": 450750
+  },
+  {
+   "alive": 1000,
+   "id": "S451000",
+   "step": 451000
+  },
+  {
+   "alive": 1250,
+   "id": "S451250",
+   "step": 451250
+  },
+  {
+   "alive": 1500,
+   "id": "S451500",
+   "step": 451500
+  },
+  {
+   "alive": 1750,
+   "id": "S451750",
+   "step": 451750
+  },
+  {
+   "alive": 1000,
+   "id": "S452000",
+   "step": 452000
+  },
+  {
+   "alive": 1250,
+   "id": "S452250",
+   "step": 452250
+  },
+  {
+   "alive": 1500,
+   "id": "S452500",
+   "step": 452500
+  },
+  {
+   "alive": 1750,
+   "id": "S452750",
+   "step": 452750
+  },
+  {
+   "alive": 1000,
+   "id": "S453000",
+   "step": 453000
+  },
+  {
+   "alive": 1250,
+   "id": "S453250",
+   "step": 453250
+  },
+  {
+   "alive": 1500,
+   "id": "S453500",
+   "step": 453500
+  },
+  {
+   "alive": 1750,
+   "id": "S453750",
+   "step": 453750
+  },
+  {
+   "alive": 1000,
+   "id": "S454000",
+   "step": 454000
+  },
+  {
+   "alive": 1250,
+   "id": "S454250",
+   "step": 454250
+  },
+  {
+   "alive": 1500,
+   "id": "S454500",
+   "step": 454500
+  },
+  {
+   "alive": 1750,
+   "id": "S454750",
+   "step": 454750
+  },
+  {
+   "alive": 1000,
+   "id": "S455000",
+   "step": 455000
+  },
+  {
+   "alive": 1250,
+   "id": "S455250",
+   "step": 455250
+  },
+  {
+   "alive": 1500,
+   "id": "S455500",
+   "step": 455500
+  },
+  {
+   "alive": 1750,
+   "id": "S455750",
+   "step": 455750
+  },
+  {
+   "alive": 1000,
+   "id": "S456000",
+   "step": 456000
+  }
+ ],
+ "start_step": 0,
+ "world_key": "df54434fe947dea8f36e5e23223f9676df1ee784959806c31eafb235012ee242"
+}

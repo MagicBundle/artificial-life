@@ -1,0 +1,337 @@
+{
+ "chapter": [
+  2106000,
+  2112000
+ ],
+ "config_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+ "dims": 2,
+ "entities": [
+  {
+   "display": "House Kreoth",
+   "id": 1,
+   "kind": "house",
+   "name": "Kreoth",
+   "name_from": 2112000,
+   "ref": "H1"
+  },
+  {
+   "display": "the Dreanor kin",
+   "id": 2,
+   "kind": "kin_group",
+   "name": "Dreanor",
+   "name_from": 2112000,
+   "ref": "K2"
+  },
+  {
+   "display": "the Pheask kin",
+   "id": 9,
+   "kind": "kin_group",
+   "name": "Pheask",
+   "name_from": 2112000,
+   "ref": "K9"
+  },
+  {
+   "display": "the Glouth kin",
+   "id": 14,
+   "kind": "kin_group",
+   "name": "Glouth",
+   "name_from": 2112000,
+   "ref": "K14"
+  }
+ ],
+ "excluded": {
+  "entries_before_start": 0,
+  "events_churn": 0,
+  "events_suspect": 0,
+  "facts_dropped": [],
+  "interventions_dropped": 0,
+  "labels": {},
+  "name_clash": [],
+  "quota": {},
+  "social": null,
+  "windows_confounded": 0
+ },
+ "facts": [
+  {
+   "end": 2112000,
+   "id": "F1",
+   "kind": "chapter",
+   "start": 2106000
+  },
+  {
+   "change": -0.08650519031141868,
+   "deep_dip": false,
+   "from": 28900,
+   "id": "F2",
+   "kind": "population",
+   "min": 25870,
+   "min_row": 1517900,
+   "min_steps": 100,
+   "to": 26400
+  },
+  {
+   "aged": 260,
+   "catastrophe": 0,
+   "id": "F3",
+   "killed": 3900,
+   "kind": "deaths",
+   "starved": 14200,
+   "total": 18360
+  },
+  {
+   "births": 15860,
+   "id": "F4",
+   "immigrants": 0,
+   "kind": "births"
+  },
+  {
+   "from": 14,
+   "id": "F5",
+   "kind": "lineages",
+   "to": 3
+  },
+  {
+   "from_count": 12716,
+   "from_of": 28900,
+   "from_share": 0.44,
+   "id": "F6",
+   "kind": "top_lineage",
+   "to_count": 22704,
+   "to_of": 26400,
+   "to_share": 0.86
+  },
+  {
+   "family": "archetype",
+   "from_count": 15895,
+   "from_of": 28900,
+   "from_share": 0.55,
+   "id": "F7",
+   "key": "settler",
+   "kind": "label",
+   "label": "Settler",
+   "to_count": 18744,
+   "to_of": 26400,
+   "to_share": 0.71
+  },
+  {
+   "family": "archetype",
+   "from_count": 3179,
+   "from_of": 28900,
+   "from_share": 0.11,
+   "id": "F8",
+   "key": "hunter",
+   "kind": "label",
+   "label": "Hunter",
+   "to_count": 1584,
+   "to_of": 26400,
+   "to_share": 0.06
+  },
+  {
+   "born": 7900,
+   "died": 6300,
+   "died_killed": 1500,
+   "entity": 2,
+   "id": "F9",
+   "kind": "group",
+   "of": 26400,
+   "rank": 1,
+   "share": 0.61,
+   "size": 16104
+  },
+  {
+   "born": 400,
+   "died": 2300,
+   "died_killed": 600,
+   "entity": 14,
+   "id": "F10",
+   "kind": "group",
+   "of": 26400,
+   "rank": 2,
+   "share": 0.0446969696969697,
+   "size": 1180
+  },
+  {
+   "event": "merged",
+   "family": "kin_group",
+   "id": "F11",
+   "kind": "event",
+   "other": 2,
+   "overlap": 1990,
+   "reid": false,
+   "s0": 2108250,
+   "s1": 2108500,
+   "size": 2020,
+   "system": 14
+  },
+  {
+   "event": "dissolved",
+   "family": "kin_group",
+   "id": "F12",
+   "kind": "event",
+   "other": -1,
+   "overlap": 0,
+   "reid": false,
+   "s0": 2109500,
+   "s1": 2109750,
+   "size": 1140,
+   "system": 9
+  },
+  {
+   "alive_from": 11,
+   "alive_to": 4,
+   "exact": true,
+   "extinct": 7,
+   "first_seen": 0,
+   "id": "F13",
+   "kind": "houses",
+   "largest": 1,
+   "largest_name": "Zaeld",
+   "largest_size": 21800,
+   "largest_strict": true,
+   "origin": 0
+  },
+  {
+   "id": "F14",
+   "kind": "colonies",
+   "largest_size": 40,
+   "tracked": 5
+  }
+ ],
+ "labels": {
+  "env_default": true,
+  "intent_version": 1,
+  "key_found": true,
+  "rules_digest": "156ad4963b84ffe9636e9ba4fdd7592632c669bf6e490687d8eb2b38b9aec009"
+ },
+ "origin": 0,
+ "quiet": false,
+ "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
+ "report_version": 1,
+ "run": {
+  "seed": 0
+ },
+ "snapshots": [
+  {
+   "alive": 1250,
+   "id": "S2106250",
+   "step": 2106250
+  },
+  {
+   "alive": 1500,
+   "id": "S2106500",
+   "step": 2106500
+  },
+  {
+   "alive": 1750,
+   "id": "S2106750",
+   "step": 2106750
+  },
+  {
+   "alive": 1000,
+   "id": "S2107000",
+   "step": 2107000
+  },
+  {
+   "alive": 1250,
+   "id": "S2107250",
+   "step": 2107250
+  },
+  {
+   "alive": 1500,
+   "id": "S2107500",
+   "step": 2107500
+  },
+  {
+   "alive": 1750,
+   "id": "S2107750",
+   "step": 2107750
+  },
+  {
+   "alive": 1000,
+   "id": "S2108000",
+   "step": 2108000
+  },
+  {
+   "alive": 1250,
+   "id": "S2108250",
+   "step": 2108250
+  },
+  {
+   "alive": 1500,
+   "id": "S2108500",
+   "step": 2108500
+  },
+  {
+   "alive": 1750,
+   "id": "S2108750",
+   "step": 2108750
+  },
+  {
+   "alive": 1000,
+   "id": "S2109000",
+   "step": 2109000
+  },
+  {
+   "alive": 1250,
+   "id": "S2109250",
+   "step": 2109250
+  },
+  {
+   "alive": 1500,
+   "id": "S2109500",
+   "step": 2109500
+  },
+  {
+   "alive": 1750,
+   "id": "S2109750",
+   "step": 2109750
+  },
+  {
+   "alive": 1000,
+   "id": "S2110000",
+   "step": 2110000
+  },
+  {
+   "alive": 1250,
+   "id": "S2110250",
+   "step": 2110250
+  },
+  {
+   "alive": 1500,
+   "id": "S2110500",
+   "step": 2110500
+  },
+  {
+   "alive": 1750,
+   "id": "S2110750",
+   "step": 2110750
+  },
+  {
+   "alive": 1000,
+   "id": "S2111000",
+   "step": 2111000
+  },
+  {
+   "alive": 1250,
+   "id": "S2111250",
+   "step": 2111250
+  },
+  {
+   "alive": 1500,
+   "id": "S2111500",
+   "step": 2111500
+  },
+  {
+   "alive": 1750,
+   "id": "S2111750",
+   "step": 2111750
+  },
+  {
+   "alive": 1000,
+   "id": "S2112000",
+   "step": 2112000
+  }
+ ],
+ "start_step": 0,
+ "world_key": "69b4e21ad6b6016b17c11d6a1d9b3371c03b4b9f590fdb4a04752515c13a01d8"
+}
