@@ -363,8 +363,11 @@ def test_moist_budgets_close_with_and_without_debug_arrays() -> None:
         sums["Qseed"] += _np(d.Qseed).sum()
         for k in diag_sums:
             diag_sums[k] += float(_np(getattr(d, k)))
-        assert abs(float(_np(d.sum_E)) - _np(d.E).sum() * p.dt) <= 1e-6 * max(_np(d.E).sum(), 1e-12)
-        assert abs(float(_np(d.sum_C)) - _np(d.C).sum() * p.dt) <= 1e-6 * max(_np(d.C).sum(), 1e-12)
+        # sum_E and sum_C are float32 reductions in MLX; numpy sums the same float32 cells in another
+        # order, so the two agree to the float32 summation error of 48² terms (1.7e-6 relative was
+        # measured on the Linux CPU), not to 1e-6.
+        assert abs(float(_np(d.sum_E)) - _np(d.E).sum() * p.dt) <= 2e-5 * max(_np(d.E).sum(), 1e-12)
+        assert abs(float(_np(d.sum_C)) - _np(d.C).sum() * p.dt) <= 2e-5 * max(_np(d.C).sum(), 1e-12)
     assert sums["C"] > 0 and sums["E"] > 0 and sums["Qseed"] > 0  # not vacuous
     assert abs(_np(out.h1).sum() + _np(out.h2).sum() - m0) / m0 <= 1e-6
     dq = _np(out.Q).sum() - q0
