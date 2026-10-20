@@ -51,8 +51,8 @@ def test_observer_key() -> None:
 
 def test_layout_frozen() -> None:
     """Changing the stream layout must come with an RNG_LAYOUT_VERSION bump (update this snapshot then)."""
-    assert rng.RNG_LAYOUT_VERSION == 2
-    assert {1, 2} == set(rng.RNG_COMPATIBLE_VERSIONS)
+    assert rng.RNG_LAYOUT_VERSION == 3
+    assert {1, 2, 3} == set(rng.RNG_COMPATIBLE_VERSIONS)
     assert rng.NUM_STREAMS == 16
     assert {s.name: s.value for s in rng.Stream} == {
         "NOISE": 0,
@@ -64,6 +64,7 @@ def test_layout_frozen() -> None:
         "MUT_GENES": 6,
         "IMMIGRANT": 7,
         "CATASTROPHE": 8,
+        "WEATHER": 9,
     }
     assert {s.name: s.value for s in rng.InitStream} == {
         "POS": 0,

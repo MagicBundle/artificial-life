@@ -25,11 +25,11 @@ import numpy as np
 from alife import config as config_mod
 from alife import metrics, physics, runner, stream
 from alife.config import (
+    ALL_OVERLAYS,
     DEFAULT_PRESET,
     DIRECTOR_MODES,
     DIRECTOR_POLICY_KEYS,
     OBSERVER_KEYS,
-    OVERLAYS,
     PERSONAS,
     PRESETS,
     RANDOM_PERSONA,
@@ -222,8 +222,8 @@ def _layer(base: Config, *, overlays: Sequence[str], path: str | None, overrides
     """``base`` < overlays < file < ``--set``, with ``load_config``'s rules (a fork's config, §18)."""
     d = config_to_dict(base)
     for ov in overlays:
-        if ov not in OVERLAYS:
-            raise ConfigError(f"unknown overlay {ov!r} (choose from {OVERLAYS})")
+        if ov not in ALL_OVERLAYS:
+            raise ConfigError(f"unknown overlay {ov!r} (choose from {ALL_OVERLAYS})")
         config_mod._merge_layer(d, config_mod._read_preset(ov), f"overlay {ov}")
     if path is not None:
         config_mod._merge_layer(d, config_mod._read_file(Path(path)), str(path))
@@ -919,7 +919,7 @@ def _config_args(
 ) -> None:
     p.add_argument("--preset", choices=PRESETS, default=None, help=preset_help or f"default {DEFAULT_PRESET}")
     if overlays:
-        p.add_argument("--overlay", action="append", default=[], choices=OVERLAYS)
+        p.add_argument("--overlay", action="append", default=[], choices=ALL_OVERLAYS)
     p.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE")
 
 

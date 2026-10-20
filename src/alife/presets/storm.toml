@@ -1,0 +1,18 @@
+# storm overlay: the storm world's weather layer on (docs/STORMS.md, DESIGN §30). A WORLD overlay, not part of
+# OVERLAYS: it needs a world that holds the confirmed 160-cell weather (320 wide; in 3D 80 tall), such as
+# 64k3d, and fails validation on the others. Compose it as `--preset 64k3d --overlay storm`.
+#
+# The three coupling values are PROVISIONAL (W2 calibrates them); the W0 weather itself is the default
+# parameter set of [weather].
+[weather]
+enabled = true
+# NOMINAL (floor quantisation costs about 7%). Measured on 64k3d in the W1 review: the largest column gets about
+# 130 q per step (P max 0.003), 0.09% of the base regeneration (about 56 agents of K), 6% of columns raining.
+# A local food source, a negligible global perturbation.
+rain_gain = 50000.0
+# Saturates at 2e-3 per step, 1.4x the 1/700 baseline mortality, for an agent in air at >= u0 + span = 0.09. The
+# population-mean effect is about 1e-4 of baseline: numerically inert here, on purpose, until W2 calibrates.
+storm_p = 0.002
+# Above the layer-2 jet (0.05) and the core median (0.052); W0 core winds p90 0.061, max 0.081.
+storm_u0 = 0.06
+storm_span = 0.03

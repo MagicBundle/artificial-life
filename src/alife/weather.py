@@ -23,7 +23,7 @@ from __future__ import annotations
 import functools
 import math
 from dataclasses import dataclass, fields, replace
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 import mlx.core as mx
 
@@ -1097,3 +1097,180 @@ def wind_layers(
     edge = (kk == 0) | (kk == fz - 1)
     uh, vh, w, _, _ = _clip_wind(uh, vh, w, edge, p)
     return mx.stack([uh, vh, w], axis=1)
+
+
+# --- engine coupling (W1, DESIGN §30) -----------------------------------------------------------------------
+# The config, the packed state field and the validation. The step wiring (wind, rain, hazard) follows in the
+# later build steps; everything here is host-side Python on config values, or builds the rest state.
+
+N_WX = 9  # the arrays of ``WeatherState``, stacked in its field order into ``State.wx``
+
+# The ``WeatherParams`` fields that are not ``[weather]`` keys. W0 tuned none of them after round 0, the
+# mean-flow stability rule is tabulated for these numerics only, and every config key is a hashed degree of
+# freedom. A later change makes one a key (in ``POST_V01_KEYS``) with this value as its default.
+ENGINE_FIXED: Final[dict[str, Any]] = {
+    "dt": 1.0,
+    "h_min": 2.0,
+    "m_min": 1.0,
+    "c_half": 1e-3,
+    "Qs": 1.0,
+    "nu": 0.0,
+    "kappa_d": 0.04,
+    "sl_order": 1,
+    "u_safe": 0.3,
+    "seed_q": 0.0,
+    "seed_qsigma": 6.0,
+    "seed_w2": 0.0,
+    "detect_every": 25,
+    "zeta_th": 0.00625,
+    "p_th": 1e-4,
+    "a_min": 25,
+    "r_min": 4,
+    "miss_grace": 2,
+    "min_dets": 3,
+}
+
+# A column's rain stays below this: the int32 ranges of ``floor_i32``, the increment and ``exact_sum`` hold.
+_INT_BOUND: Final = 2.0**30
+
+
+def pack(ws: WeatherState) -> mx.array:
+    """``State.wx``: the nine arrays of ``ws`` stacked in field order, (N_WX, n, n) float32."""
+    return mx.stack(list(ws))
+
+
+def unpack(wx: mx.array) -> WeatherState:
+    """The inverse of ``pack`` (nine slices)."""
+    return WeatherState(*(wx[i] for i in range(N_WX)))
+
+
+@functools.cache
+def _params(wc: Any, size: float, height: float, dims: int) -> WeatherParams:
+    n = wc.cells
+    pools = tuple(tuple(wc.pools[i : i + 7]) for i in range(0, len(wc.pools), 7))
+    own = {f.name for f in fields(WeatherParams)}
+    kw = {f.name: getattr(wc, f.name) for f in fields(wc) if f.name in own and f.name != "pools"}
+    return WeatherParams(
+        n=n,
+        dx=size / n,
+        height=height if dims == 3 else wc.H1 + wc.H2,
+        pools=pools,
+        **ENGINE_FIXED,
+        **kw,
+    )
+
+
+def params_from_config(cfg: Config) -> WeatherParams:
+    """The ``WeatherParams`` of a config: a name-keyed copy of ``cfg.weather`` plus ``n = cells``, ``dx =
+    world.size / cells``, ``height`` (``world.height`` in 3D, ``H1 + H2`` in 2D) and ``ENGINE_FIXED``.
+    Cached on the weather section and the three world values it reads. ``validate_config`` guards the inputs
+    (``cells`` and ``pools``) before this is built."""
+    return _params(cfg.weather, cfg.world.size, cfg.world.height, cfg.world.dims)
+
+
+@functools.cache
+def _rest_off() -> mx.array:
+    p = WeatherParams()
+    return pack(init_state(p, default_forcing(p, mx.array(0, dtype=_I32))))
+
+
+def rest_array(cfg: Config, step: mx.array | int = 0) -> mx.array:
+    """The rest state of a config as a packed ``wx``: ``h = (H1, H2)``, ``u = v = 0``, ``Q = min(Q_e(T_s(t)),
+    Q_s)`` under the pools of step ``step``, ``P = Dc = 0``. ``step`` is a scalar array or a Python int (it
+    reaches ``warm_pools`` as an int32 array). A weather-off config gets the step-0 array of the default
+    parameters whatever ``step`` is, so a filled array is bitwise the one a native weather-off state carries.
+    """
+    if not cfg.weather.enabled:
+        return _rest_off()
+    p = params_from_config(cfg)
+    t = (step if isinstance(step, mx.array) else mx.array(step)).astype(_I32)
+    return pack(init_state(p, default_forcing(p, t)))
+
+
+def validate_config(cfg: Config) -> list[str]:
+    """Messages for every violated weather rule of an enabled config (empty = valid). Never raises: the guards
+    run before any parameter is built, and a failed guard returns at once.
+
+    Order: guards; the ``WeatherParams`` rules (W0 spec §2.5 rules 1-14, 16, 18); the world rules (W-1 the
+    cells are a multiple of the field lattice, W-2 the pool centres lie in the domain, the 3D geometry and
+    load rules via ``check_world``, the 2D load rules R3 and R4); the coupling keys.
+    """
+    wc, w, ph = cfg.weather, cfg.world, cfg.physics
+    bad: list[str] = []
+    # 0. Guards, before ``params_from_config`` computes ``dx = world.size / cells``.
+    if not (math.isfinite(w.size) and w.size > 0 and math.isfinite(w.field_cell) and w.field_cell > 0):
+        bad.append("weather needs a finite world.size > 0 and world.field_cell > 0")
+    n = wc.cells
+    if not (isinstance(n, int) and not isinstance(n, bool) and 8 <= n <= 1024):
+        bad.append(f"weather.cells must be an integer in [8, 1024], got {n!r}")
+    if len(wc.pools) % 7 != 0:
+        bad.append(
+            "weather.pools must hold 7 numbers per pool (x, y, sx, sy, amp, vx, vy), "
+            f"got {len(wc.pools)} values"
+        )
+    if not all(math.isfinite(x) for x in wc.pools):
+        bad.append("weather.pools must be finite numbers")
+    if bad:
+        return bad
+    p = params_from_config(cfg)
+    bad += p.validate()
+    d3 = w.dims == 3
+    # 2. World rules.
+    ratio = w.size / w.field_cell
+    if ratio == round(ratio) and round(ratio) > 0 and n % round(ratio) != 0:
+        bad.append(
+            f"rule W-1: weather.cells {n} must be a multiple of the field lattice FG = {round(ratio)} "
+            "(the rain is a block mean onto it)"
+        )
+    for i in range(0, len(wc.pools), 7):
+        x, y = wc.pools[i], wc.pools[i + 1]
+        if not (0.0 <= x < w.size and 0.0 <= y < w.size):
+            bad.append(
+                f"rule W-2: pool {i // 7} centre ({x:g}, {y:g}) must lie in [0, world.size = {w.size:g})"
+            )
+    if d3:
+        bad += check_world(p, cfg)
+    else:  # R3 and R4: the horizontal load rules, with the surface-layer factor absent (a = alpha0)
+        a = wc.alpha0
+        if ph.drag > 0:
+            speed = (ph.thrust_max + a * ph.drag * wc.u_max) / ph.drag
+            if not speed <= ph.v_max:
+                bad.append(
+                    f"rule 16 (2D): (thrust_max + alpha0*drag*u_max)/drag = {speed:.4g} must be <= "
+                    f"v_max = {ph.v_max:g}"
+                )
+        load = ph.thrust_max + a * ph.drag * wc.u_max
+        if not load < 2 * ph.radius * ph.k_repel:
+            bad.append(
+                f"rule R4 (2D): thrust_max + alpha0*drag*u_max = {load:.4g} must be < 2*radius*k_repel = "
+                f"{2 * ph.radius * ph.k_repel:.4g}"
+            )
+    # 4. Coupling keys.
+    if not 0.0 <= wc.storm_p <= 1.0:
+        bad.append(f"weather.storm_p must be in [0, 1], got {wc.storm_p}")
+    if not wc.storm_u0 >= 0.0:
+        bad.append(f"weather.storm_u0 must be >= 0, got {wc.storm_u0}")
+    if not wc.storm_span > 0.0:
+        bad.append(f"weather.storm_span must be > 0, got {wc.storm_span}")
+    if not (wc.storm_break_u == 0.0 or wc.storm_break_u >= wc.storm_u0):
+        bad.append(
+            f"weather.storm_break_u {wc.storm_break_u} must be 0 (off) or >= weather.storm_u0 "
+            f"{wc.storm_u0}: the threshold acts on the air speed including the layer-2 jet"
+        )
+    if not 0.0 <= wc.rain_floor <= 1.0:
+        bad.append(f"weather.rain_floor must be in [0, 1], got {wc.rain_floor}")
+    if not d3 and wc.rain_floor != 0.0:
+        bad.append(f"weather.rain_floor must be 0 in a 2D world (no layers), got {wc.rain_floor}")
+    if cfg.director.enabled and wc.rain_floor != 0.0:
+        bad.append(
+            "weather.rain_floor must be 0 when director.enabled: the floor K and the seasonal table do not "
+            f"carry the rain, got {wc.rain_floor}"
+        )
+    if not wc.rain_gain >= 0.0:
+        bad.append(f"weather.rain_gain must be >= 0, got {wc.rain_gain}")
+    elif wc.gamma > 0 and not wc.rain_gain * (wc.H1 + wc.H2 - 2.0 * p.h_min) / wc.gamma <= _INT_BOUND:
+        bad.append(
+            f"weather.rain_gain {wc.rain_gain:g} too large: rain_gain*(H1 + H2 - 2*h_min)/gamma must be "
+            "<= 2^30 (the int32 range of a column's rain)"
+        )
+    return bad

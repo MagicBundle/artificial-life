@@ -11,7 +11,7 @@ from typing import Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import brain, config, fields, layout, ops, rng
+from alife import brain, config, fields, layout, ops, rng, weather
 from alife.config import Config, dims, is_3d
 
 R_HARD: Final = config.R_HARD  # (1 << 24) − 1: hard per-cell resource cap (§10.9)
@@ -189,6 +189,9 @@ class State(NamedTuple):
     env_cat_center: mx.array  # (2,) f32: catastrophe centre
     env_cat_radius: mx.array  # () f32: catastrophe radius (0 = none)
     env_cat_kill_p: mx.array  # () f32: per-agent kill probability inside the radius (reset after one step)
+    # The weather (docs/STORMS.md, DESIGN §30): the nine WeatherState arrays stacked, (N_WX, wn, wn) f32.
+    # Stored at its rest state and carried unchanged while ``cfg.weather.enabled`` is false.
+    wx: mx.array
 
     @property
     def env(self) -> Env:
@@ -236,7 +239,7 @@ AGENT_FIELDS: Final = State._fields[: State._fields.index("W2") + 1]
 
 
 class State3(NamedTuple):
-    """The state of a 3D world (§27.4): ``State``'s 47 fields in the same order, then ``EXTRA_3D_FIELDS``.
+    """The state of a 3D world (§27.4): ``State``'s 48 fields in the same order, then ``EXTRA_3D_FIELDS``.
 
     ``pos`` and ``vel`` are (N,3), ``resource`` is (FZ,FG,FG) and ``chem`` (NCH,FZ,FG,FG); every other shared
     field is as in ``State``. A parallel type, so ``State``, its digests and 2D checkpoints never change.
@@ -289,6 +292,7 @@ class State3(NamedTuple):
     env_cat_center: mx.array  # (2,): the catastrophe is a vertical column
     env_cat_radius: mx.array
     env_cat_kill_p: mx.array
+    wx: mx.array  # (N_WX, wn, wn): the weather, as in State
     pitch: mx.array  # (N,) f32 in [−PITCH_MAX, PITCH_MAX]; stale on dead rows, like heading
     buoy_cap: mx.array  # (N,) f32 in [0, 1]: heritable buoyancy cap (effective cap buoy_cap·buoyancy_max)
 
@@ -297,6 +301,61 @@ class State3(NamedTuple):
 
 EXTRA_3D_FIELDS: Final = ("pitch", "buoy_cap")  # appended after State's fields (per-agent, leading dim N)
 AGENT_FIELDS_3D: Final = AGENT_FIELDS + EXTRA_3D_FIELDS
+
+# The 49 fields of ``State3`` as they stood before ``wx`` (docs/STORMS.md §3.3, DESIGN §30), frozen as a
+# literal: ``legacy_state_digest_3d`` hashes exactly these, in this order, so a field added in the middle of
+# ``State3`` cannot change it. A trajectory-neutral field is frozen out of the legacy digests like this one.
+V0_FIELDS_3D: Final = (
+    "alive",
+    "uid",
+    "parent_uid",
+    "clade",
+    "generation",
+    "birth_step",
+    "energy",
+    "pos",
+    "vel",
+    "heading",
+    "h",
+    "msg",
+    "last_loss",
+    "last_harvest",
+    "last_inflow",
+    "partner",
+    "rev",
+    "tag",
+    "mut_sigma",
+    "mut_rate",
+    "offspring_frac",
+    "brain_cost",
+    "W1",
+    "W2",
+    "pend_slot",
+    "pend_W1",
+    "pend_W2",
+    "resource",
+    "chem",
+    "patch_pos",
+    "patch_vel",
+    "key",
+    "step",
+    "next_uid",
+    "total",
+    "total0",
+    "ledger_cum",
+    "diag",
+    "env_regen_mult",
+    "env_season_amp",
+    "env_season_period",
+    "env_drift_mult",
+    "env_patch_gain",
+    "env_imm_request",
+    "env_cat_center",
+    "env_cat_radius",
+    "env_cat_kill_p",
+    "pitch",
+    "buoy_cap",
+)
 
 
 def state_cls(cfg: Config) -> type[State] | type[State3]:
@@ -399,6 +458,7 @@ def _initial_state(cfg: Config) -> State | State3:
         ledger_cum=full((N_LEDGER,), 0, mx.int64),
         diag=mx.array(0, dtype=mx.int32),
         **default_env(cfg),
+        wx=weather.rest_array(cfg),
     )
     if d.d3:  # static: dead rows rest on the floor at (0, 0, z_lo); every row's cap starts at buoy_init
         s = State3(
@@ -473,6 +533,7 @@ def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]:
         "env_cat_center": ((2,), f32),
         "env_cat_radius": ((), f32),
         "env_cat_kill_p": ((), f32),
+        "wx": ((weather.N_WX, d.wn, d.wn), f32),
         **({"pitch": ((n,), f32), "buoy_cap": ((n,), f32)} if d.d3 else {}),  # State3 (§27.4)
     }
 
@@ -497,15 +558,22 @@ def state_from_arrays(d: Mapping[str, mx.array], cfg: Config | None = None) -> S
     """Rebuild a state from a name-keyed mapping; the key set must equal the state type's fields exactly.
 
     The type is ``state_cls(cfg)``, or without ``cfg`` ``State3`` when the keys include ``EXTRA_3D_FIELDS``.
-    The one exception: when ``cfg`` is given for a 2D world and every missing key is an ``env_*`` field (a
-    pre-director checkpoint), those fields are filled with the inert ``default_env(cfg)``.
+    The one exception, when ``cfg`` is given: a key set that lacks only fillable fields is completed. A 2D
+    file may lack the ``env_*`` fields (pre-director) and ``wx`` (pre-weather), a 3D file ``wx``. ``env_*``
+    get the inert ``default_env(cfg)``; ``wx`` gets ``weather.rest_array(cfg, step)`` with the file's own
+    ``step``, so a fork that turns weather on starts from the rest state of its own parameters under the
+    pools of the step it resumes at (a calm start: the storms need their spin-up, DESIGN §30).
     """
     keys = set(d)
     cls = state_cls(cfg) if cfg is not None else State3 if set(EXTRA_3D_FIELDS) <= keys else State
     want = set(cls._fields)
-    if cls is State and cfg is not None and keys < want and (want - keys) <= set(ENV_FIELDS):
-        d = {**default_env(cfg), **d}
-        keys = set(d)
+    if cfg is not None and keys < want and "step" in keys:
+        fillable = (set(ENV_FIELDS) | {"wx"}) if cls is State else {"wx"}
+        if (want - keys) <= fillable:
+            wx = {"wx": weather.rest_array(cfg, d["step"])} if "wx" in want - keys else {}
+            env = default_env(cfg) if (want - keys) & set(ENV_FIELDS) else {}
+            d = {**env, **wx, **d}
+            keys = set(d)
     if keys != want:
         missing, extra = sorted(want - keys), sorted(keys - want)
         raise ValueError(f"state arrays do not match {cls.__name__} fields: missing={missing}, extra={extra}")
@@ -539,8 +607,25 @@ def legacy_state_digest(s: State) -> str:
 
     It equals the digest the engine produced before the ``env_*`` fields existed, so the golden pin and
     bit-identity checks against old trajectories stay comparable. ``state_digest`` also covers ``env_*``.
-    A 3D state has no v0 digest (``TypeError``).
+    A 3D state has its own frozen digest (``legacy_state_digest_3d``; ``TypeError`` here).
     """
     if isinstance(s, State3):
         raise TypeError("legacy_state_digest is defined for 2D states only (the v0 layout)")
     return _digest(s, V0_FIELDS)
+
+
+def legacy_state_digest_3d(s: State3) -> str:
+    """``state_digest`` restricted to the 49 frozen fields ``State3`` had before ``wx`` (``V0_FIELDS_3D``).
+
+    For an unchanged trajectory it equals the ``state_digest`` the 3D engine produced before the weather layer
+    existed, so ``GOLDEN_3D`` and the bit-identity checks against old trajectories stay comparable.
+    """
+    if not isinstance(s, State3):
+        raise TypeError("legacy_state_digest_3d is defined for 3D states only")
+    return _digest(s, V0_FIELDS_3D)
+
+
+def legacy_digest(s: State | State3) -> str:
+    """The frozen digest of a state's own dimension: ``legacy_state_digest`` for ``State``,
+    ``legacy_state_digest_3d`` for ``State3``."""
+    return legacy_state_digest_3d(s) if isinstance(s, State3) else legacy_state_digest(s)
