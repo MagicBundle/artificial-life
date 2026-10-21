@@ -21,11 +21,11 @@ from alife.analysis.resim import ResimMismatch
 from alife.config import Config, apply_overrides
 from alife.game.observe import EVAL_BIT
 from alife.game.observer import Observer
-from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, RULES_V1, Archetype, Intent
+from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, RULES_V1, RULES_V2, Archetype, Intent
 from alife.runio import RunDir, load_checkpoint
 from alife.state import init_state, to_numpy
 from alife.step import ActFlag, make_step
-from game_helpers import make_acts
+from game_helpers import blank_social_acts, make_acts
 from helpers import set_output_bias
 
 STUDY: dict[str, Any] = {
@@ -708,6 +708,7 @@ def test_step_outcomes() -> None:
         "thrust": np.zeros(n, np.int16),
         "defend": np.zeros(n, np.int16),
         "emit": np.zeros(n, np.int16),
+        **blank_social_acts(n, 1, 1),  # the outcomes read none of the social additions
     }
     a["flags"][:] = [0, ActFlag.BUDDED.value, ActFlag.ATTACKED.value | ActFlag.FORMED.value, 0xFF]
     a["thrust"][:] = [0, -200, 256, -1]
@@ -749,7 +750,7 @@ def _documented(rep: Mapping[str, Any]) -> None:
             *SCORE_KEYS,
             "per_cohort",
         }
-    assert rep["intent_version"] == 1 and rep["rules_digest"] == RULES_V1.digest()
+    assert rep["intent_version"] == 2 and rep["rules_digest"] == RULES_V2.digest()
     assert set(rep["flips_per_1000"]) == {"intent", "archetype"}
     cov = rep["coverage"]
     assert set(cov) == {"evaluations", "intent_match", "intent", "archetype", "archetype_match"}
@@ -829,6 +830,23 @@ def test_study_uses_a_valid_sidecar_and_never_one_of_other_rules(tiny_cfg: Confi
     rep = labels.study(path, **quick, rules=other, log=lambda _: None)
     assert rep["observer_start"]["source"] == "fresh" and "rules_digest" in rep["observer_start"]["note"]
     assert rep["rules_digest"] == other.digest() != RULES_V1.digest()
+
+
+def test_study_with_the_version_1_rules_carries_the_g1_pin(run_dir: Path) -> None:
+    """``RULES_V1`` stays a rule set the tool can run: the report names the G1 digest and the version-1
+    values, and has the documented shape (the version-2 rules are the default of the other tests)."""
+    rep = labels.study(run_dir, **STUDY, rules=RULES_V1, log=lambda _: None)
+    assert set(rep) == TOP_KEYS and rep["rows_verified"] > 0
+    assert rep["rules_digest"] == "156ad4963b84ffe9636e9ba4fdd7592632c669bf6e490687d8eb2b38b9aec009"
+    assert rep["rules_digest"] == RULES_V1.digest() != RULES_V2.digest()
+    assert rep["params"]["rules"] == dataclasses.asdict(RULES_V1) and rep["params"]["rules"]["gatherer"] == (
+        7,
+        10,
+    )
+    assert list(rep["archetypes"]) == list(ARCHETYPE_NAMES) and list(rep["intents"]) == list(INTENT_NAMES)
+    json.dumps(rep, allow_nan=False)
+    default = labels.study(run_dir, **STUDY, log=lambda _: None)  # the default rules are version 2's
+    assert default["rules_digest"] == RULES_V2.digest() and default["params"]["rules"]["bud_horizon"] == 10
 
 
 def test_study_from_a_cached_state(run_dir: Path, tmp_path: Path) -> None:

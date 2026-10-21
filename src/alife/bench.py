@@ -13,9 +13,10 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
   total is inflated by the extra syncs.
 - **Determinism** (``determinism``): two runs of ``steps`` steps from ``init_state`` compare state digests.
 - **Brain variants** (``brain_variants``): ``brain.forward`` timed for every ``impl`` × ``weight_dtype``.
-- **Observers** (``observe``, §28): the step with the game observers (``make_step(observe=True)`` and
-  ``Observer.update``, evaluations included) against the plain step, as blocks (control, observed, observed,
-  control) of the runner's own loop, with a check that the trajectories are bitwise equal.
+- **Observers** (``observe``, §28, §29.12): the step with the game observers (``make_step(observe=True)``,
+  ``Observer.update`` and ``Observer.take_records``, evaluations and social snapshots included) against the
+  plain step, as blocks (control, observed, observed, control) of the runner's own loop, with a check that
+  the trajectories are bitwise equal; and the parts of one social snapshot (``observe.social``).
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from typing import Any, Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import actions, bonds, brain, fields, invariants, lifecycle, physics, sensing, spatial
+from alife import actions, bonds, brain, fields, invariants, lifecycle, metrics, physics, sensing, spatial
 from alife import energy as en
 from alife import step as step_mod
 from alife.actions import Actions
@@ -274,35 +275,62 @@ def _determinism(fn: Callable[[State], Any], cfg: Config, steps: int) -> dict[st
 # --- observers ------------------------------------------------------------------------------------------
 
 OBSERVE_BLOCKS: Final = 2  # control/observed block pairs, in the order C O O C (the leading arm alternates)
+SOCIAL_REPS: Final = 10  # timed repetitions of each part of a social snapshot (observe.social)
+
+
+def _median_ms(fn: Callable[[], Any], reps: int) -> float:
+    """Median wall time of ``fn()`` over ``reps`` calls, in ms (``fn`` evaluates what it builds)."""
+    times = []
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        fn()
+        times.append(time.perf_counter() - t0)
+    return 1e3 * statistics.median(times)
 
 
 def _bench_observe(cfg: Config, steps: int, warmup: int) -> dict[str, Any]:
-    """The cost of the game observers (§28) as the runner pays it, against the plain step.
+    """The cost of the game observers (§28, §29) as the runner pays it, against the plain step.
 
     Two arms, each following the runner's loop with one blocking eval per step: the *control* is
     ``make_step(cfg)`` and ``mx.eval(state, out)``; the *observed* arm is ``make_step(cfg, observe=True)``
-    plus ``Observer.update`` (the labels' evaluation every ``rules.every`` steps included) and
-    ``mx.eval(state, out.base(), *obs.arrays())``. They run as blocks in the order control, observed,
-    observed, control (the leading arm alternates in each pair, so that a drift linear in time, such as a
-    thermal one, cancels from the difference of the means; in the order C O C O it would not), each
-    restarting from ``init_state(cfg)`` with the same warm-up and the same number of timed steps
-    (``max(steps // 2, 1)``). Each arm's step compiles once; the observer's two closures compile again for
-    each block, in its untimed warm-up. The warm-up covers at least the first evaluation step, so that its
-    compile is never timed.
+    plus ``Observer.update`` (the labels' evaluation every ``rules.every`` steps and the social snapshot every
+    ``social.snapshot_every`` steps included), ``mx.eval(state, out.base(), *obs.arrays())`` and
+    ``obs.take_records()`` (the records are dropped: the runner's append and fsync, about 1 ms per snapshot,
+    are not timed), so that a snapshot settles at its own step. They run as blocks in the order control,
+    observed, observed, control (the leading arm alternates in each pair, so that a drift linear in time, such
+    as a thermal one, cancels from the difference of the means; in the order C O C O it would not), each
+    restarting from ``init_state(cfg)`` with the same warm-up and the same number of timed steps. The rules
+    and the social rules are ``observer.DEFAULT_RULES`` and ``observer.DEFAULT_SOCIAL``, read at call time.
 
-    The median step times give ``overhead_ms_median``; the evaluation steps (one in ``rules.every``) are
-    slower than the others, which a median hides, so ``overhead_ms_mean`` and ``observed_steps_per_s`` are
-    from the means. ``trajectory_match`` compares the state digests at the end of the first two blocks: the
-    observers must not change the trajectory (§28.2).
+    Nothing that compiles is timed: the observer's closures compile again for each block, so the warm-up
+    covers the first evaluation step and the first snapshot step (the first trace of the snapshot closure
+    with real ``Acts``, its settle and its relabel): ``warm = max(warmup, 1, rules.every, S + 1)`` with
+    ``S = social.snapshot_every``. The timed steps of a block are ``ceil(max(steps // 2, 1) / S) * S``, so
+    that they hold a whole number of snapshots, ``steps_per_block / S`` of them.
+
+    The median step times give ``overhead_ms_median``; the evaluation and snapshot steps are slower than the
+    others, which a median hides, so ``overhead_ms_mean`` and ``observed_steps_per_s`` are from the means.
+    ``snapshot_step_ms_mean`` (steps that are multiples of ``S``: the snapshot's device part and its settle)
+    and ``other_step_ms_mean`` split the observed mean. ``trajectory_match`` compares the state digests at the
+    end of the first two blocks: the observers must not change the trajectory (§28.2).
+
+    ``social`` times, on a state stepped ``warm`` steps with a fresh observer, ``SOCIAL_REPS`` repetitions of
+    each part of one snapshot: ``metrics.components`` alone (``social.colony_iters`` rounds), the snapshot
+    closure (device part), ``Society.settle`` on a copy of the society (host part) and the heavy metrics
+    (``metrics.snapshot_metrics(heavy=True)``, which the runner computes at the same step when the game
+    cadence coincides, §29.9). On ``init_state`` there are few bonds: ``analysis.social`` on an evolved
+    checkpoint is the realistic number.
     """
-    from alife.game.observer import Observer  # local: only this part of the benchmark needs the game package
-    from alife.game.rules import RULES_V1
+    from alife.game import observer as observer_mod  # local: only this part needs the game package
+    from alife.game.observer import Observer
 
-    warm = max(warmup, 1, RULES_V1.every)
-    per_block = max(steps // 2, 1)
+    rules, sr = observer_mod.DEFAULT_RULES, observer_mod.DEFAULT_SOCIAL
+    every = sr.snapshot_every
+    warm = max(warmup, 1, rules.every, every + 1)
+    per_block = -(-max(steps // 2, 1) // every) * every
     control_fn = step_mod.make_step(cfg)
     observed_fn = step_mod.make_step(cfg, observe=True)
-    times: dict[str, list[float]] = {"control": [], "observed": []}
+    times: dict[str, list[float]] = {"control": [], "observed": [], "snapshot": [], "other": []}
     digests: dict[str, str] = {}
 
     def block(arm: str) -> None:
@@ -317,8 +345,12 @@ def _bench_observe(cfg: Config, steps: int, warmup: int) -> dict[str, Any]:
                 s, out = observed_fn(s)
                 obs.update(s, out.acts, i + 1)
                 mx.eval(s, out.base(), *obs.arrays())
+                obs.take_records()
             if i >= warm:
-                times[arm].append(time.perf_counter() - t0)
+                dt = time.perf_counter() - t0
+                times[arm].append(dt)
+                if obs is not None:
+                    times["snapshot" if (i + 1) % every == 0 else "other"].append(dt)
         if arm not in digests:  # the first block of each arm
             digests[arm] = state_digest(s)
         del s, out, obs
@@ -330,6 +362,8 @@ def _bench_observe(cfg: Config, steps: int, warmup: int) -> dict[str, Any]:
     ctl, obs_t = times["control"], times["observed"]
     ctl_med, obs_med = statistics.median(ctl), statistics.median(obs_t)
     ctl_mean, obs_mean = statistics.fmean(ctl), statistics.fmean(obs_t)
+    snap_t, other_t = times["snapshot"], times["other"]
+
     return {
         "warmup": warm,
         "block_pairs": OBSERVE_BLOCKS,
@@ -341,7 +375,64 @@ def _bench_observe(cfg: Config, steps: int, warmup: int) -> dict[str, Any]:
         "observed_ms_per_step": 1e3 * obs_mean,
         "overhead_ms_mean": 1e3 * (obs_mean - ctl_mean),
         "observed_steps_per_s": 1.0 / obs_mean,
+        "snapshot_step_ms_mean": 1e3 * statistics.fmean(snap_t) if snap_t else None,
+        "other_step_ms_mean": 1e3 * statistics.fmean(other_t) if other_t else None,
         "trajectory_match": digests["control"] == digests["observed"],
+        "social": _bench_social(cfg, observed_fn, warm),
+    }
+
+
+def _bench_social(cfg: Config, observed_fn: Callable[[State], Any], warm: int) -> dict[str, Any]:
+    """``SOCIAL_REPS`` timed repetitions of each part of one social snapshot (``observe.social``), on a state
+    stepped ``warm`` steps with a fresh observer: ``metrics.components`` alone, the snapshot closure (device),
+    ``Society.settle`` on a copy of the society (host) and the heavy metrics."""
+    from alife.game import observer as observer_mod
+    from alife.game.observer import Observer
+    from alife.game.social import soc_in
+    from alife.game.society import Society, host_snap
+
+    sr = observer_mod.DEFAULT_SOCIAL
+    s = init_state(cfg)
+    obs = Observer.fresh(s, cfg)
+    for i in range(warm):
+        s, out = observed_fn(s)
+        obs.update(s, out.acts, i + 1)
+        mx.eval(s, out.base(), *obs.arrays())
+        obs.take_records()
+    si, so, acts = soc_in(s), obs.so, out.acts
+    mx.eval(*so)  # the last settle's relabel is lazy
+
+    def comps(partner: mx.array, alive: mx.array) -> tuple[mx.array, mx.array]:
+        return metrics.components(partner, alive, sr.colony_iters)
+
+    comp_fn = mx.compile(comps) if cfg.run.compile else comps
+    mx.eval(comp_fn(s.partner, s.alive))  # compile, untimed
+    components_ms = _median_ms(lambda: mx.eval(comp_fn(s.partner, s.alive)), SOCIAL_REPS)
+    arch = obs.o.label_arch[:, 0]
+    snap = obs._snap_fn(so.kin, so, si, acts, arch)
+    mx.eval(*snap)
+    device_ms = _median_ms(lambda: mx.eval(*obs._snap_fn(so.kin, so, si, acts, arch)), SOCIAL_REPS)
+    h = host_snap(snap)
+    arrays, step_next = obs.society.arrays(), obs.society.snapshot_step + sr.snapshot_every
+    settle_times = []
+    for _ in range(SOCIAL_REPS):
+        copy, reason = Society.from_arrays(arrays, cfg, sr, step=obs.step)
+        if copy is None:
+            raise RuntimeError(f"the society does not round-trip through its sidecar form: {reason}")
+        t0 = time.perf_counter()
+        copy.settle(h, step_next)
+        settle_times.append(time.perf_counter() - t0)
+    host_ms = 1e3 * statistics.median(settle_times)
+    metrics.snapshot_metrics(s, cfg, heavy=True)  # compile, untimed
+    heavy_ms = _median_ms(lambda: metrics.snapshot_metrics(s, cfg, heavy=True), SOCIAL_REPS)
+    return {
+        "snapshot_every": sr.snapshot_every,
+        "reps": SOCIAL_REPS,
+        "components_ms_median": components_ms,
+        "snapshot_device_ms_median": device_ms,
+        "snapshot_host_ms_median": host_ms,
+        "heavy_ms_median": heavy_ms,
+        "amortised_ms_per_step": (device_ms + host_ms) / sr.snapshot_every,
     }
 
 
@@ -736,4 +827,18 @@ def format_report(report: dict[str, Any]) -> str:
             f"{ob['observed_steps_per_s']:.1f} steps/s observed; trajectory "
             f"{'identical' if ob['trajectory_match'] else 'DIFFERS'}"
         )
+        if "social" in ob:
+            so = ob["social"]
+
+            def ms(v: float | None) -> str:
+                return "n/a" if v is None else f"{v:.2f} ms"
+
+            lines.append(
+                f"social (a snapshot every {so['snapshot_every']} steps): snapshot step "
+                f"{ms(ob['snapshot_step_ms_mean'])}, other steps {ms(ob['other_step_ms_mean'])}; "
+                f"one snapshot {so['snapshot_device_ms_median']:.2f} ms device + "
+                f"{so['snapshot_host_ms_median']:.2f} ms host (components "
+                f"{so['components_ms_median']:.2f} ms; heavy metrics {so['heavy_ms_median']:.2f} ms) = "
+                f"{so['amortised_ms_per_step']:.3f} ms/step amortised"
+            )
     return "\n".join(lines)

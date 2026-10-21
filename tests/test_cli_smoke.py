@@ -22,6 +22,7 @@ from alife import cli
 from alife.config import load_config
 from alife.runio import RunDir, checkpoint_metadata, load_checkpoint
 from alife.state import state_digest, to_numpy
+from game_helpers import social_every
 
 F32 = ["--set", "brain.weight_dtype=float32"]
 # CPU MLX matmul is slow (≈ 0.2 s for the default 256-row weight-diversity Gram matrix); 64 rows keep the
@@ -314,8 +315,12 @@ def test_bench_smoke(tmp_path: Path) -> None:
     assert isinstance(json.loads(out.read_text()), dict)
 
 
-def test_bench_observe_smoke(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """``bench --observe`` runs the interleaved observer blocks and prints their line."""
+def test_bench_observe_smoke(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``bench --observe`` runs the interleaved observer blocks and prints their line. The bench reads the
+    snapshot cadence at call time: at the default 250 steps each block would run 501 steps."""
+    social_every(monkeypatch, 4)
     out = tmp_path / "bench.json"
     argv = [
         "bench",
@@ -333,6 +338,8 @@ def test_bench_observe_smoke(tmp_path: Path, capsys: pytest.CaptureFixture[str])
     assert cli.main(argv) == 0
     ob = json.loads(out.read_text())["observe"]
     assert ob["trajectory_match"] is True and ob["observed_steps_per_s"] > 0
+    assert ob["steps_per_block"] == 4 and ob["social"]["snapshot_every"] == 4
+    assert ob["social"]["heavy_ms_median"] > 0 and ob["snapshot_step_ms_mean"] > 0
     assert "trajectory" not in capsys.readouterr().err
 
 

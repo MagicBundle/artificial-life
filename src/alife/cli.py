@@ -62,8 +62,8 @@ from alife.state import DeathCause, State, State3, agent_fields, default_env, in
 from alife.step import make_step
 
 # run.* keys that resume may change: observers, cadences and the director mode (§18). Everything else goes
-# through a fork. The director's policy keys (director.persona, ...) and game.observe (RESUME_GAME_KEYS) may
-# change too: they never reach the trajectory.
+# through a fork. The director's policy keys (director.persona, ...) and the observer keys game.observe and
+# game.house_rate (RESUME_GAME_KEYS) may change too: they never reach the trajectory.
 RESUME_KEYS: frozenset[str] = frozenset(
     {
         "steps",
@@ -79,8 +79,8 @@ RESUME_KEYS: frozenset[str] = frozenset(
     }
 )
 RESUME_DIRECTOR_KEYS: frozenset[str] = frozenset(DIRECTOR_POLICY_KEYS)
-# The observer keys (game.observe) are read by host-side observers only and are not hashed, so resume may
-# change them too (§28.6).
+# The observer keys (game.observe, game.house_rate) are read by host-side observers only and are not hashed,
+# so resume may change them too (§28.6, §29).
 RESUME_GAME_KEYS: frozenset[str] = frozenset(key for _, key in OBSERVER_KEYS)
 
 LLM_DEFAULT_EVERY = 25_000  # steps between LLM calls with a bare --llm
@@ -1006,7 +1006,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--set",
         action="append",
         default=[],
-        metavar="run.KEY=VALUE|director.KEY=VALUE|game.observe=BOOL",
+        metavar="run.KEY=VALUE|director.KEY=VALUE|game.KEY=VALUE",
     )
     p.add_argument(
         "--director",
@@ -1112,7 +1112,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--observe",
         action="store_true",
-        help="also time the step with the game observers against the plain step (interleaved blocks)",
+        help="also time the step with the game observers (social snapshots included) against the plain step "
+        "(interleaved blocks), and the parts of one snapshot",
     )
     p.add_argument("--json", default=None, metavar="PATH")
     p.set_defaults(func=_cmd_bench)

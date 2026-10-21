@@ -12,9 +12,17 @@ assesses research directions against prior work. `docs/3D.md` is the 3D world (g
 seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`.
 `docs/GAMES.md` is the design of the gaming vertical (owner decisions in its §10); its build step G1, the observer
 layer (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`; normative spec `DESIGN.md` §28), is
-implemented, with provisional thresholds (`INTENT_VERSION` 1) until the calibration run. The fused Metal neighbour
+implemented, with `INTENT_VERSION` 2 (`RULES_V2`, the default, calibrated offline on the G1 study windows; it
+passed the provisional criterion on three held-out windows on the GPU, 2026-10-21, DESIGN §28.4, §28.8; `RULES_V1` stays defined with its G1 digest); its build step G2, social
+tracking (houses, kin groups, colonies, territory, relations, and a roster of kin-group names, house events and
+per-group window counts; generic `groups.py` and `tracking.py`; normative spec `DESIGN.md` §29), is implemented, with
+provisional thresholds (`SOCIAL_VERSION` 1, measured on the GPU, none changed); the Settler colony clause is on in `RULES_V2` (`settler_body` 4,
+DESIGN §28.4). The fused Metal neighbour
 search (`src/alife/knn_metal.py`, `DESIGN.md` §4, row I48) is built: 75 steps/s at `64k3d` instead of 15, bitwise the
 same trajectory. It is the default on Metal in 2D and 3D (row I52); `ALIFE_KNN=mlx` forces the pure-MLX path.
+`docs/STORMS.md` designs the storm world (the 3D target of G3 onwards); its offline weather prototype W0
+(`src/alife/weather.py`, `python -m alife.analysis.w0`, row I46, results in `docs/STORMS_W0.md`; no engine change) passes
+every exit criterion but the cost one (about 1.16 ms a step against 1.0), so its wiring into the step (W1) is not built.
 
 ## Conventions
 
@@ -27,6 +35,8 @@ same trajectory. It is the default on Metal in 2D and 3D (row I52); `ALIFE_KNN=m
   that the ledger closes.
 - New config keys must default to "off" and be added to `config.POST_V01_KEYS`, so existing runs keep their
   config hash and still resume.
+- Observer-only keys (`config.OBSERVER_KEYS`), which are unhashed at every value and inert while `game.observe` is off,
+  may default to a working value.
 - Avoid GPU float32 matmul for anything that must be accurate (Metal reduced precision, DESIGN F20).
 - Custom Metal kernels live only in `src/alife/knn_metal.py` (`mx.fast.metal_kernel`, lint rule 6). Each must be
   bitwise equal to the pure-MLX path it replaces (`tests/test_spatial_metal.py`, run with `-m ""` on the Mac and on
