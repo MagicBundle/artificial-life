@@ -1,4 +1,4 @@
-"""§27.4 the 3D state: ``State3`` (State's 47 fields, then pitch and buoy_cap), its schema, founders uniform
+"""§27.4 the 3D state: ``State3`` (State's 48 fields, then pitch and buoy_cap), its schema, founders uniform
 in the volume, dead rows on the floor, (de)serialisation, digests, checkpoints and ``make_scene``."""
 
 from __future__ import annotations
@@ -56,8 +56,8 @@ def _host(s: State | State3) -> dict[str, np.ndarray]:
 
 
 def test_state3_fields(micro_cfg: Config, cfg3: Config) -> None:
-    assert len(State._fields) == 47  # State itself is unchanged
-    assert State3._fields[:47] == State._fields and State3._fields[47:] == EXTRA_3D_FIELDS
+    assert len(State._fields) == 48  # State's 38 v0 fields, the 9 env_* fields and wx
+    assert State3._fields[:48] == State._fields and State3._fields[48:] == EXTRA_3D_FIELDS
     assert EXTRA_3D_FIELDS == ("pitch", "buoy_cap") and AGENT_FIELDS_3D == AGENT_FIELDS + EXTRA_3D_FIELDS
     assert state_cls(micro_cfg) is State and agent_fields(micro_cfg) == AGENT_FIELDS
     assert state_cls(cfg3) is State3 and agent_fields(cfg3) == AGENT_FIELDS_3D

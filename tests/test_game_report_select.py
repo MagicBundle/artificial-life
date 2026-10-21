@@ -1,4 +1,4 @@
-"""The select-and-order mode of the world report (docs/DESIGN.md §30; SELECT_PROMPT_VERSION 1): the prompt, the
+"""The select-and-order mode of the world report (docs/DESIGN.md §31; SELECT_PROMPT_VERSION 1): the prompt, the
 schema, the validation of a reply, the policy over the attempts, the record, and its replay. No socket: the client
 is a fake with scripted exchanges (the HTTP side is in ``test_analysis_world_report.py``)."""
 
@@ -690,7 +690,7 @@ def test_any_edit_of_a_stored_record_is_a_mismatch(select_record, path, value, n
 
 def test_the_audit_fields_of_the_exchange_are_not_replayed_only_their_shape(select_record) -> None:
     """model, url, latency_s, usage and finish_reason cannot be re-derived from the facts: an edit of their values
-    passes the replay (DESIGN 30.10), an empty model or a URL that is not a chat endpoint does not."""
+    passes the replay (DESIGN 31.10), an empty model or a URL that is not a chat endpoint does not."""
     sheet, rec = select_record
     edited = mutate(
         mutate(rec, ["model"], "another-model"), ["url"], "http://elsewhere:1/v1/chat/completions"

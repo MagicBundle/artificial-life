@@ -32,7 +32,7 @@ from alife import bonds, ops
 from alife.config import Config, dims, require_2d
 from alife.render import COLOR_MODES, DEFAULT_LAYERS, Viewport, render_frame, write_png
 from alife.runio import write_state_file
-from alife.state import ERROR_MASK, CounterIdx, Diag, State, age, n_counters, to_numpy
+from alife.state import ERROR_MASK, CounterIdx, Diag, State, age, n_counters, storm_counter_index, to_numpy
 from alife.step import make_step
 
 if TYPE_CHECKING:
@@ -119,7 +119,13 @@ class ViewerSession:
         self.frame: np.ndarray | None = None  # last rendered (H,W,3) uint8 image
         self.dirty = True  # the view changed since the last frame
         self.steps_per_s = 0.0
-        self._acc = mx.zeros((n_counters(dims(cfg).nd),), dtype=mx.int32)  # counters summed over the interval
+        nd = dims(cfg).nd
+        self._acc = mx.zeros(
+            (n_counters(nd, cfg.weather.enabled),), dtype=mx.int32
+        )  # counters, interval sums
+        self._deaths_idx: tuple[int, ...] = _DEATH_COUNTERS + (
+            (storm_counter_index(nd),) if cfg.weather.enabled else ()
+        )
         self._acc_steps = 0
         self._last_interval: tuple[int, int, int] | None = None  # (births, deaths, steps)
         self._rate_t0 = time.perf_counter()
@@ -199,7 +205,7 @@ class ViewerSession:
         frame, lv, acc = host[0], host[1], host[2]
 
         births = int(acc[CounterIdx.BIRTHS])
-        deaths = int(sum(int(acc[i]) for i in _DEATH_COUNTERS))
+        deaths = int(sum(int(acc[i]) for i in self._deaths_idx))
         if self._acc_steps >= self.cfg.run.metrics_every:  # latch a completed HUD interval
             self._last_interval = (births, deaths, self._acc_steps)
             self._acc = mx.zeros_like(self._acc)

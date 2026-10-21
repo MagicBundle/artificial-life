@@ -1,4 +1,4 @@
-"""The world report of an observed run (docs/DESIGN.md §30; the N1 step of docs/GAMES.md §9).
+"""The world report of an observed run (docs/DESIGN.md §31; the N1 step of docs/GAMES.md §9).
 
 ::
 

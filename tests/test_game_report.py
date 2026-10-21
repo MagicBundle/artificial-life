@@ -1,5 +1,5 @@
 """The fact sheet, the lever fold, the spans, the event frames, the assembly and the ticker of the world report
-(docs/DESIGN.md §30), on a synthetic observed run (``report_synth``: hand-written files in the engine's
+(docs/DESIGN.md §31), on a synthetic observed run (``report_synth``: hand-written files in the engine's
 formats) and on scripted logs. CPU only, no socket, no write into a run directory."""
 
 # ruff: noqa: E501  (expected report texts and fixture tables are long lines)

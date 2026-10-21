@@ -1,4 +1,4 @@
-"""Build ``tests/data/report_corpus.json``, the regression corpus of the world report's lexicon (docs/DESIGN.md §30,
+"""Build ``tests/data/report_corpus.json``, the regression corpus of the world report's lexicon (docs/DESIGN.md §31,
 R6): the sentences of the director's 131 model journals (three runs, read-only) with the owner-side hand labels of
 the sentences that credit an intervention (``credit``), presuppose that it works or was needed (``presume``), use a
 temporal connective (``temporal``) or another causal word (``causal_other``), and the 61 ``reason`` strings of the

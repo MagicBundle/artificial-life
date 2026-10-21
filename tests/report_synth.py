@@ -1,4 +1,4 @@
-"""A synthetic observed run for the world report's tests (docs/DESIGN.md §30): hand-written files in the exact
+"""A synthetic observed run for the world report's tests (docs/DESIGN.md §31): hand-written files in the exact
 formats the engine writes (``metrics.jsonl`` rows with the ``observers`` block, ``observers/social.jsonl``
 records with column tables, ``director.jsonl``, ``config.json``, ``meta.json`` and a sidecar holding only its
 ``meta``), no simulation. ``tests/data/report_run_synth/`` is ``write_run`` with its defaults (a test pins that

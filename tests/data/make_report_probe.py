@@ -1,4 +1,4 @@
-"""Write ``tests/data/report_probe/*.json``: the twelve sheets of the narrator probe (docs/DESIGN.md §30), in the
+"""Write ``tests/data/report_probe/*.json``: the twelve sheets of the narrator probe (docs/DESIGN.md §31), in the
 fact-sheet format of ``game.report``, with the kin-group event frames of ``tracking.Event`` (``system`` the new id
 of a split or a born group, the ended id of a merge or a dissolution). The numbers are those of the probe's synthetic
 chapters (2D and 3D, quiet and eventful, a collapse after a catastrophe, an unobserved run); ``report_crafted.json``

@@ -15,8 +15,8 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 
 | path | what |
 |---|---|
-| `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, the fused Metal neighbour kernel (`knn_metal.py`, DESIGN §4), the offline W0 weather prototype (`weather.py`, `analysis/w0.py`, `docs/STORMS_W0.md`), `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`; N1 adds `game/report.py`, `templates.py`, `lexicon.py` and `analysis/world_report.py`, `docs/DESIGN.md` §30) |
-| `tests/` | pytest suite. 2,772 fast tests passed, 84 were skipped (the GPU-only kernel tests and N1's `llm` test among them) and 1 xfailed on the CPU device after merging `games/g2-social` (with main #28, #29) into N1 (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; 11 minutes) plus the slow ones |
+| `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, the fused Metal neighbour kernel (`knn_metal.py`, DESIGN §4), the offline W0 weather prototype (`weather.py`, `analysis/w0.py`, `docs/STORMS_W0.md`), `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`; N1 adds `game/report.py`, `templates.py`, `lexicon.py` and `analysis/world_report.py`, `docs/DESIGN.md` §31) |
+| `tests/` | pytest suite. 3,035 fast tests passed, 84 were skipped (the GPU-only kernel tests and N1's `llm` test among them) and 1 xfailed on the CPU device after merging main (G2 #30, W1 #32) into N1 (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; about 12 minutes) plus the slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
@@ -26,8 +26,8 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/3D.md` | the 3D world with gravity and a floor (owner decisions, layout, fields, Swift viewer, PR plan); built in PRs #15 to #20, normative spec `docs/DESIGN.md` §27 |
 | `docs/RESULTS_3D.md` | the first long 3D run, `runs/64k3d_s0` (500k steps): population and `K`, vertical niches and buoyancy, bodies, evolutionary activity, comparison with 2D; figures and tables in `docs/results_3d/`, scripts in `analysis_cache/64k3d_s0/results3d/` (git-ignored) |
 | `docs/RESULTS_3D_RUNS.md` | the four 500k-step `64k3d` runs (seed 0, seed 1, half food, director live): replication, the density control, the director in 3D, bodies and activity across runs; figures and tables in `docs/results_3d_runs/`, scripts in `analysis_cache/64k3d_runs/` (git-ignored) |
-| `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with `INTENT_VERSION` 2 label rules (`RULES_V2`, calibrated offline and validated on three held-out windows on the GPU, 2026-10-21, DESIGN §28.4, §28.8); G2, social tracking (houses, kin groups, colonies, territory, relations; `src/alife/groups.py`, `tracking.py`, `game/social.py`, `game/society.py`, `python -m alife.analysis.social`; the reports are `observers/social.jsonl` in an observing run's directory; normative spec `docs/DESIGN.md` §29, Review-log row I45) is built, run on the GPU (2026-10-21) and has provisional thresholds (`SOCIAL_VERSION` 1, measured, none changed); N1, the offline World Report (`python -m alife.analysis.world_report`; code-written template sentences with a checker, and an optional local model that only selects and orders them; normative spec `docs/DESIGN.md` §30, Review-log row I49) is built with provisional thresholds (`REPORT_VERSION` 1); G3 to G5 are not built |
-| `docs/STORMS.md`, `docs/STORMS_W0.md` | the storm world (an alien-planet weather game on the engine; G3 onwards target it) and the results of its offline weather prototype W0 (DESIGN Review-log row I46): every exit criterion but the cost (about 1.16 ms a step against 1.0) passes |
+| `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with `INTENT_VERSION` 2 label rules (`RULES_V2`, calibrated offline and validated on three held-out windows on the GPU, 2026-10-21, DESIGN §28.4, §28.8); G2, social tracking (houses, kin groups, colonies, territory, relations; `src/alife/groups.py`, `tracking.py`, `game/social.py`, `game/society.py`, `python -m alife.analysis.social`; the reports are `observers/social.jsonl` in an observing run's directory; normative spec `docs/DESIGN.md` §29, Review-log row I45) is built, run on the GPU (2026-10-21) and has provisional thresholds (`SOCIAL_VERSION` 1, measured, none changed); N1, the offline World Report (`python -m alife.analysis.world_report`; code-written template sentences with a checker, and an optional local model that only selects and orders them; normative spec `docs/DESIGN.md` §31, Review-log row I49) is built with provisional thresholds (`REPORT_VERSION` 1); G3 to G5 are not built |
+| `docs/STORMS.md` | the storm world (an alien-planet weather game on the 3D world): the weather model, the coupling, the plan W0 to W5; W0 (the offline model, `weather.py`, `docs/STORMS_W0.md`) and W1 (the engine weather layer, normative spec `docs/DESIGN.md` §30) are built and off by default |
 | `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13), before (2026-10-16) and with (2026-10-20) the fused Metal neighbour kernel |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
@@ -299,6 +299,50 @@ and resumed once. There is one run per condition apart from the seed pair.
 - **Outputs.** The figures and tables are in `docs/results_3d_runs/`, the scripts and full outputs in
   `analysis_cache/64k3d_runs/` (git-ignored).
 
+## Storm world: W0 and W1 (`docs/STORMS.md`, DESIGN §30)
+
+- **Current state.** W0 (the offline weather model, `weather.py`, `docs/STORMS_W0.md`; row I46, PR #28) and W1 (the engine
+  weather layer, DESIGN §30; row I47; branch `games/w1-weather`, built on `games/w0-storms`) are implemented and **off by
+  default**. With `weather.enabled = false` the engine is bit-identical to its parent: the 2D and 3D digest matrix, the
+  goldens (`GOLDEN`, and `GOLDEN_3D` over the new `legacy_state_digest_3d`) and every config hash are unchanged. A
+  weather-on run is `--preset 64k3d --overlay storm`. What exists: a hashed `[weather]` section (33 keys), `State.wx`,
+  wind as a drag force, rain into the regrowth (and so `K_est`), the storm hazard (`DeathCause.STORM`, `DEATHS_STORM`),
+  explicit wind bond breaking, the `weather` metrics block, `alife bench --weather`, and the weather-only spin-up
+  `alife run --weather-spinup N` (storms need about 15,000 steps from a calm start; 80 s on the CPU).
+- **Results (CPU smoke; the GPU results are in the next bullet).** The 200-step `64k3d` + `storm` run at 1,024 rows closes the ledger and agrees compiled
+  against eager on `wx`; the CPU marginal of the weather is +6.75 ms per step at that size (`bench --weather`). The
+  hazard at the overlay is numerically inert (no storm death in a short run), the rain is a local source and a 0.09%
+  global perturbation, and **the layer-2 jet of about 0.05 is on whenever the weather is on and is the dominant
+  coupling**, not the storms (DESIGN §30.1).
+- **GPU results (M5 Pro, 2026-10-21, W1 at 80b50d0; DESIGN §30.8, §30.9, §30.11, row I47 (4b)).**
+  - *Metal gate: passed.* `pytest -m ""` on the default device: 797 passed, 2 skipped, 1 xfailed (the MLX duplicate-roll
+    compile bug, still in 0.32.3), 0 failed. The fused weather-on step compiles on Metal, so the separate-advance fallback
+    is not needed. The base-versus-head digest matrix, run as a script on the GPU, was bit-identical (0 DIFF, the same 116
+    INFO lines as on the CPU; its pytest forms passed too). The whole fast suite on Metal (`-m "not slow"`, the I26
+    failure deselected) gave 2,298 passed, 0 failed.
+  - *Cost: target met.* `bench --weather` at `64k3d` + `storm` with the fused kNN kernel: marginal about 0.5 ms (0.47 to
+    0.64 ms over five runs; single pairs up to 1.1 ms; in the two published runs 0.47 to 0.50 ms, 3.4 to 3.6% of the 13.8 ms
+    weather-off step, 3.3 to 3.5% of the on step), 69.6 steps/s with the weather on. The unpaired `--stages` delta (1.02 ms)
+    is noise-affected.
+  - *Occupancy go/no-go: no-go on `C` = 64.* A fork of `64k3d_s0` at 450,000 with the `storm` overlay and a 15,000-step
+    weather spin-up, 20,000 coupled steps at 68.6 steps/s: `max_occupancy` 18 (trigger 43), `cell_overflow` 0, no health
+    bit, ledger closed, `deaths_storm` 144 (0.016% of the 883,002 deaths in the window, nearly inert as a cause of death at
+    the provisional values; the population followed the weather-off source within 0.1% at 470,000, but `speed_mean` was 5%
+    higher with the storms on). `cell_capacity` stays 48. `C` = 64 is
+    free of step time under the fused kernel, so it is available if W2's repeat (calibrated `storm_*`, a young
+    population, 30,000 steps; this run was 20,000 from a spread population) fires the trigger; the other response is a
+    lower `u_max` or `alpha` (C17). Neither was applied.
+  - W1 is merge-ready on the §30.11 criteria; the merge is the owner's go (the G2 items are applied, see "Merge order").
+- **Next (W2).** Calibrate `rain_gain` and `storm_*` on a still-air control of each seed (`storm_u0` in 0.03 to 0.05,
+  `storm_p` from the `weather` block's `storm_exposure` and `air_speed_p99`); **a jet-removed (`weather.r2` raised) or
+  tracer arm before any ecological effect is attributed to storms**; rain seeding and shade with the same band weights as
+  the food; wind-relative observer fields (`INTENT_VERSION` 2). Director runs need `rain_floor = 0` (enforced).
+- **Merge order (done on the branch).** G2 (`games/g2-social`) was merged into W1's branch before the W1 merge, and the G2
+  follow-ups of the W1 build notes (`g2_followups.md`) were applied there: `DEATH_CAUSES` stays the pre-storm tuple and
+  `death_causes(cfg)` adds `storm` under weather (a `STORM` row would otherwise index past the cause scatter),
+  `compare_row(weather=...)` in `analysis/social.py`, regenerated GUI fixtures, and the weather-off identity of the
+  observer sidecars and `social.jsonl` (DESIGN §30.7).
+
 ## GUI follow-ups (PR #3, merged)
 
 - **Fork pre-fill:** in Fork mode the levers are loaded from `runs/SOURCE/config.json`, where a missing
@@ -478,7 +522,11 @@ and resumed once. There is one run per condition apart from the seed pair.
      Family row (a host lineage store and an ancestry panel), and sharing the snapshot's components with the heavy
      metrics. Copying the sidecar and the social log into a fork is G3 or G4.
    - Then G3 (play loop and view), on the storm world after W0 to W2 (`docs/STORMS.md` §8).
-5. **Games N1, the offline World Report** (branch `games/n1-report`, on top of `games/g2-social`; DESIGN §30, Review-log row I49,
+5. **Storm world** (`docs/STORMS.md`; W0 merged as PR #28, row I46; W1 is built on `games/w1-weather`, DESIGN §30, row I47, PR #32,
+   and its GPU gate, cost and occupancy results are recorded in the section above). Next: W2 (calibration, controls
+   including a jet-removed arm, seeding and shade, and a 30,000-step occupancy repeat from a young population). G3 and
+   the later steps on the storm world wait for it.
+6. **Games N1, the offline World Report** (branch `games/n1-report`, on top of `games/g2-social`; DESIGN §31, Review-log row I49,
    `docs/GAMES.md` §9). Built and tested on the CPU only; no engine change, no config key and no LLM call was made in the build. Status and what follows:
    - **What it is.** `python -m alife.analysis.world_report build RUN --from S --to S --out F.jsonl [--llm --model ID]`, `verify` and
      `probe`. Code computes a fact sheet from an **observed** run and writes every sentence from 88 templates; a checker (R1 to R7)
@@ -487,25 +535,20 @@ and resumed once. There is one run per condition apart from the seed pair.
      the chapter's entries, and the `env` check ties it to the rows (exit 1 on a disagreement).
    - **Checked on real data (CPU).** The lever fold equals the `env` block of every row of `eval_s0_C`, `eval_s1_C` and `64k3d_s0_dir`; the block lists every
      lever the rows show away from default in all 540 chapters examined, with 0 checker exclusions; a real tiny observed director fork
-     (`tests/data/report_e2e/`) builds and verifies with exit 0 (DESIGN §30.13).
-   - **Review fixes (stage 4, `N1 stage 4: review fixes`).** 15 findings of the third review, 14 applied and one narrowed (DESIGN §30.14 item 15;
+     (`tests/data/report_e2e/`) builds and verifies with exit 0 (DESIGN §31.13).
+   - **Review fixes (stage 4, `N1 stage 4: review fixes`).** 15 findings of the third review, 14 applied and one narrowed (DESIGN §31.14 item 15;
      the disposition is `n1/build/disposition.md`): a patch move is a point event with no persistence claim (S-pos deleted); a span that ends at the
      chapter's first row is not listed; HP-dip; the relation sentence; `--out` merges instead of truncating; a request goes only to a chat URL;
      malformed input is exit 2. `tests/data/report_e2e/golden.json` and `TEMPLATE_DIGEST` were re-pinned.
-   - **Next, the coordinator (GPU, when no run or timing is going; `lms ps` first):** the validation of DESIGN §30.13: fork A (`64k_s0:1500000`, no
+   - **Next, the coordinator (GPU, when no run or timing is going; `lms ps` first):** the validation of DESIGN §31.13: fork A (`64k_s0:1500000`, no
      director) and fork B (`eval_s0_C:120000` with `--director replay`), both `--set game.observe=true`; then `build`, `build --llm --model
      google/gemma-4-26b-a4b-qat`, `verify` and `probe --n 24`; then `pytest -m llm --model google/gemma-4-26b-a4b-qat tests/test_analysis_world_report.py`.
-     Report facts per chapter, exclusions by reason, checker exclusions (target 0), the measures of §30.11 and latency.
+     Report facts per chapter, exclusions by reason, checker exclusions (target 0), the measures of §31.11 and latency.
    - **Owner read** (20 chapters, template against select, blind): decides whether the select mode is kept, whether the window sentences W are shown,
-     and whether the template reports are fit for G3 to show. Proposed targets are in DESIGN §30.12.
+     and whether the template reports are fit for G3 to show. Proposed targets are in DESIGN §31.12.
    - **Open:** the owner's confirmation of C12 to C14 (the one read-only `GET /api/v0/models`); no label is narrated for a `RULES_V2` run until its verdict
-     rows are added by the change that validates `RULES_V2`; the provisional thresholds of DESIGN §30.14.
+     rows are added by the change that validates `RULES_V2`; the provisional thresholds of DESIGN §31.14.
    - **G3** consumes the Python API (`build_sheet`, `narrate`, `ticker`) and appends `reports.jsonl` at the run root; the report never writes into a run directory.
-6. **Storm world W0** (merged as PR #28; `docs/STORMS.md` §8, `docs/STORMS_W0.md`, DESIGN Review-log row I46). The
-   offline weather prototype (`src/alife/weather.py`, `python -m alife.analysis.w0`; no engine change) passes every
-   exit criterion except the cost one: 1.163 ms a step for the weather step plus the per-agent wind sampler against the
-   1.0 ms budget. Next: the owner's decision on the cost (accept, trim the model or the grid), then W1 (wiring the
-   weather into the step); G3 and the later steps on the storm world wait for it.
 7. Optional engine work, deferred in DESIGN §23.2:
    - done: the fused Metal kernel for the neighbour search (`src/alife/knn_metal.py`, DESIGN §4 and F21, row I48;
      `ALIFE_KNN=auto|mlx|metal`, the kernel is the default in 3D on Metal and `ALIFE_KNN=metal` selects it in 2D).
@@ -516,4 +559,5 @@ and resumed once. There is one run per condition apart from the seed pair.
    - a mean-speed metric, so "sessile vs mobile" is measurable;
    - `inspect` showing the resumed total instead of the original `steps`.
 8. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
-   it in the DESIGN Review log.
+   it in the DESIGN Review log. A trajectory-neutral state field is instead frozen out of the legacy digests
+   (`V0_FIELDS`, `V0_FIELDS_3D`).

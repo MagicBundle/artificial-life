@@ -545,8 +545,8 @@ def test_missing_non_env_key_and_foreign_versions_are_refused(tiny_cfg: Config, 
     mx.save_safetensors(str(bad), no_diag, meta)
     with pytest.raises(CheckpointError, match="diag"):
         load_checkpoint(bad, tiny_cfg)
-    # RNG layout versions: 1 and 2 load, anything else is refused.
-    for version, ok in (("1", True), ("2", True), ("3", False), ("0", False)):
+    # RNG layout versions: 1, 2 and 3 load, anything else is refused.
+    for version, ok in (("1", True), ("2", True), ("3", True), ("4", False), ("0", False)):
         p = tmp_path / f"v{version}.safetensors"
         mx.save_safetensors(str(p), arrays, {**meta, "rng_layout_version": version})
         if ok:
@@ -654,8 +654,8 @@ def test_config_hash_rules() -> None:
 
 
 def test_catastrophe_stream_leaves_existing_streams_unchanged() -> None:
-    assert rng.Stream.CATASTROPHE == 8 and rng.RNG_LAYOUT_VERSION == 2
-    assert {1, 2} == set(rng.RNG_COMPATIBLE_VERSIONS)
+    assert rng.Stream.CATASTROPHE == 8 and rng.RNG_LAYOUT_VERSION == 3
+    assert {1, 2, 3} == set(rng.RNG_COMPATIBLE_VERSIONS)
     key_next, ks = rng.step_keys(mx.random.key(123))
     # Keys of streams 0-7 (and the carried key) as produced by layout version 1: a change here moves a stream.
     v1 = [
@@ -670,3 +670,7 @@ def test_catastrophe_stream_leaves_existing_streams_unchanged() -> None:
     ]
     assert _np(ks)[:8].tolist() == v1 and _np(key_next).tolist() == [1896456402, 17229315]
     assert _np(ks)[rng.Stream.CATASTROPHE].tolist() == [3063393795, 3258762642]
+    # Stream.WEATHER (layout version 3) took reserved index 9 of the same 16-way split: streams 0-8 and the
+    # carried key are the values above, and the reserved streams behind it did not move.
+    assert _np(ks)[rng.Stream.WEATHER].tolist() == [746215100, 4249825658]
+    assert _np(ks)[10].tolist() == [1465319571, 557049323] and _np(ks).shape == (16, 2)

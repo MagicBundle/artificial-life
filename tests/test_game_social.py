@@ -14,6 +14,7 @@ from alife.analysis import phylo
 from alife.config import Config, apply_overrides, dims
 from alife.game import social
 from alife.game.social import (
+    DEATH_CAUSES,
     HOUSE_UNKNOWN,
     SOCIAL_V1,
     Expo,
@@ -486,7 +487,7 @@ def test_window_life_on_hand_lanes(micro_cfg: Config) -> None:
     so = init_soc(make_si(before), cfg, sr)
     slots = [0, 0, 1, 1, 2, 2, 3, 3, other, other, 1, 2, *([-1] * (n - 12))]
     so = so._replace(kin=mx.array(np.array(slots, np.int32)))
-    assert np_(so.births).shape == (g,) and np_(so.deaths).shape == (len(DeathCause), g)
+    assert np_(so.births).shape == (g,) and np_(so.deaths).shape == (len(DEATH_CAUSES), g)
     assert not np_(so.births).any() and not np_(so.deaths).any()
     # step 1: births from rows 0, 2, 8 (OTHER) and 0; an immigrant; six deaths of all four causes
     births = [(20, 0, 100), (21, 2, 101), (22, 8, 102), (23, 0, 103)]
@@ -501,11 +502,11 @@ def test_window_life_on_hand_lanes(micro_cfg: Config) -> None:
         acts["death_cause"][row] = cause.value
         after["alive"][row] = False
     acts["death_cause"][40] = DeathCause.AGED.value  # inconsistent: row 40 was dead at the start
-    ref_b, ref_d = life_reference(np.array(slots, np.int32), acts, g, len(DeathCause))
+    ref_b, ref_d = life_reference(np.array(slots, np.int32), acts, g, len(DEATH_CAUSES))
     so1 = eval_soc(update(so, make_si(after), make_acts(acts), cfg, sr))
     want_b = np.zeros(g, np.int64)
     want_b[[0, 1, other]] = [2, 1, 1]
-    want_d = np.zeros((len(DeathCause), g), np.int64)
+    want_d = np.zeros((len(DEATH_CAUSES), g), np.int64)
     for row, cause in deaths.items():
         want_d[cause.value, slots[row]] += 1
     assert np.array_equal(np_(so1.births), want_b) and np.array_equal(ref_b, want_b)
@@ -520,7 +521,7 @@ def test_window_life_on_hand_lanes(micro_cfg: Config) -> None:
     acts2 = _lanes(blank_acts(cfg), births2)
     acts2["death_cause"][20] = DeathCause.STARVED.value
     after2["alive"][20] = False
-    b2, d2 = life_reference(kin1, acts2, g, len(DeathCause))
+    b2, d2 = life_reference(kin1, acts2, g, len(DEATH_CAUSES))
     so2 = eval_soc(update(so1, make_si(after2), make_acts(acts2), cfg, sr))
     assert np.array_equal(np_(so2.births), want_b + b2) and np.array_equal(np_(so2.deaths), want_d + d2)
     assert (want_b + b2)[1] == 2 and (want_d + d2)[DeathCause.STARVED.value, 0] == 2
@@ -543,7 +544,7 @@ def test_window_life_matches_counters(tiny_cfg: Config) -> None:
     reference built from the channel and the previous slots (slots reshuffled at every snapshot)."""
     cfg = apply_overrides(tiny_cfg, [*IMMIGRATION, "population.max_age=40"])
     sr = dataclasses.replace(SOCIAL_V1, snapshot_every=EVERY)
-    g, nc = sr.slots + 1, len(DeathCause)
+    g, nc = sr.slots + 1, len(DEATH_CAUSES)
     s = set_output_bias(init_state(cfg), cfg, BIAS)
     fn = make_step(cfg, observe=True)
     so = init_soc(soc_in(s), cfg, sr)

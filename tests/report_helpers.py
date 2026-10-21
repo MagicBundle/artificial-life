@@ -1,4 +1,4 @@
-"""Scripted fact sheets for the world report's tests (docs/DESIGN.md §30): ``mk_sheet`` builds a sheet from the
+"""Scripted fact sheets for the world report's tests (docs/DESIGN.md §31): ``mk_sheet`` builds a sheet from the
 parts a test cares about with ``report.compose_sheet`` (the function ``build_sheet`` ends in), and
 ``random_sheet`` draws one from a seeded ``random.Random`` that satisfies the invariants of the real sheets
 (rank prefixes, event frames, the lever state of the block), so every template is reached."""

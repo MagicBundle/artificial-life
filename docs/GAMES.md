@@ -8,8 +8,8 @@ engine at `aef79c2`. The brief's three pillars are:
 - social lineage.
 
 `docs/DESIGN.md` stays normative. Every feature starts off by default, so existing runs, their `config_hash` and the 2D
-golden digest stay as they are. The one new live lever chosen for G4, `attack_mult` (§10.4), changes the 3D golden
-digest, which that PR re-pins deliberately (§5.4).
+golden digest stay as they are. The one new live lever chosen for G4, `attack_mult` (§10.4), adds a `State` field; the
+3D golden digest does not move, because W1 froze the 3D field list in `legacy_state_digest_3d` (§5.4).
 
 ## 1. Summary
 
@@ -98,7 +98,7 @@ S8 costs, S10 harvest, S11 combat, S12 share.
 |---|---|---|---|
 | Natural-language command | persona `architect` and `director.goal` (the precedent); `director/llm.py` strict `json_schema`; `llm.clean_text` | A new intent schema (§7.1). The LLM parses the player's text into an intent vector and never chooses parameters. | Medium. |
 | Intent → parameters | `director/actions.py` `clamp`, `validate_entry`, `apply`; `rules.eligibility` | A deterministic compiler (`COMPILER_VERSION`). Its proposals are eligibility-checked and clamped at landing (§5.3). | Medium. Pure Python, unit-tested. |
-| New live levers | `GAME_MENU` and `GAME_SPECS` (used only in game worlds); new `env_*` fields read under the static `cfg.director.enabled` (`step.py`); `invariants.ENV_*` | `env_attack_mult`, `env_share_q8`, `env_basal_mult` and `env_mut_mult`, plus a `regen_set` action (§5.4). `MENU`, the yoked sampler and the existing prompts stay byte-identical. | High. Dynamics, ledger tests, State3 loading, 3D golden re-pin. |
+| New live levers | `GAME_MENU` and `GAME_SPECS` (used only in game worlds); new `env_*` fields read under the static `cfg.director.enabled` (`step.py`); `invariants.ENV_*` | `env_attack_mult`, `env_share_q8`, `env_basal_mult` and `env_mut_mult`, plus a `regen_set` action (§5.4). `MENU`, the yoked sampler and the existing prompts stay byte-identical. | High. Dynamics, ledger tests, State3 loading (the 3D golden is frozen by W1, §5.4; `death_causes(cfg)` keeps the observer's cause rows apart from `STORM`, DESIGN §30.7). |
 | Era change | fork (`run --init-from RUN:STEP --set …`); `config_hash` | A config-only change is planned as a fork at a chapter boundary. The fork recompiles (4.5–5.9 s) and must re-apply the env (§8.2). | Low (exists); Medium (UX). |
 | Influence | `director/pacing.py` (`BUDGET_WINDOW`, cooldowns, `drama`); `MENU` `Spec` rows; `rules.PersonaParams` | Player entries get their own pacing scope in game time, from a `GAME_SPECS` table (§5.5). | Medium. Clamp, validation, fold and cooldowns take the spec table as a parameter. |
 | Tension curve | counters `DEATHS_KILLED`, `ATTACKS`, `BIRTHS`; `Vitals.fall` | A new `intensity` vital (an EMA of the kill and death rate, as in Left 4 Dead), steered by `game_master` within the system budget. | Medium. |
@@ -164,7 +164,7 @@ as intent), and what it **lives on** (its income sources over a window, shown as
 The brief's `If (Energy < Threshold) → Search(Resource_Field)` describes the kind of policy that evolves, since energy is
 input 1. But the brain has no such threshold to display, so the UI presents intents as observations, not rules.
 
-**The same limit binds the words about the world (N1, DESIGN §30).** A chapter report may state what the files record: counts at
+**The same limit binds the words about the world (N1, DESIGN §31).** A chapter report may state what the files record: counts at
 a step, a window between two steps, a name taken from a roster, a label only where its validity study passed robustly. It may
 not credit an intervention with an outcome, imply an order between two facts, or give a motive. The sentences are templates
 rendered by code from a fact sheet and re-checked by a second line (a closed vocabulary, a lexicon of causal, presupposing and
@@ -205,7 +205,9 @@ they move to G2.
 own-index contract), the birth lanes `born_row`, `born_parent` and `born_uid`, and the flag bits `PROPOSED` and `KILLED`.
 The parent row travels in `Acts` (`born_parent`), not in `BirthRecords.parent_slot`: a new `BirthRecords` field would
 change the event files of every run. The S12 partner is still not in the channel. The roster (§6.2, §6.3) adds one more
-field, `death_cause` (the S14 cause of every row that died, which the capped death records cannot give).
+field, `death_cause` (the S14 cause of every row that died, which the capped death records cannot give). With the storm
+weather (W1, DESIGN §30.7) a fifth cause, `storm`, exists: `social.death_causes(cfg)` adds its row to the window counts only
+when `weather.enabled`, and a weather-off run's sidecar and social log keep their G2 bytes.
 
 ### 4.3 Accumulators
 
@@ -391,11 +393,14 @@ The owner chose `attack_mult` for G4 (§10.4). The other rows are designed but d
 
 **Compatibility.**
 - `legacy_state_digest` covers only the 38 frozen v0 fields, so the 2D golden does not move.
-- `state_digest` hashes every field name, so any new env field moves the 3D golden. The G4 PR re-pins `GOLDEN_3D`
-  (DESIGN §27.8) deliberately on Linux-x86_64-cpu, with a Review-log row. The alternative is to first freeze a 3D field
-  list, as `V0_FIELDS` does for 2D. `regen_set` alone adds no field.
-- `state_from_arrays` fills missing env fields with inert values only for 2D `State`. G4 extends this to `State3`, with a
-  test that loads a pre-game 3D checkpoint (`runs/64k3d_s0`). Otherwise every existing 3D run fails to load.
+- `state_digest` hashes every field name, so any new env field moves it. **W1 (storms, DESIGN §30.3) already froze the 3D
+  field list**: `state.V0_FIELDS_3D` is the 49 names `State3` had before W1's `wx`, `legacy_state_digest_3d` hashes them,
+  and `GOLDEN_3D` is compared over it and is not re-pinned. So the G4 PR appends its four `env_*` fields to `State3`
+  **without a re-pin**: `V0_FIELDS_3D` stays as it is, and G4 only extends the fill set and its tests. (If G4 merges
+  before W1, it freezes the list itself and W1 reuses it.) `regen_set` alone adds no field.
+- `state_from_arrays` fills missing env fields with inert values only for 2D `State`; since W1 a missing `wx` is filled
+  for both dims (the fill set of `State3` is `{"wx"}`). G4 extends the `State3` set with its env fields, with a test that
+  loads a pre-game 3D checkpoint (`runs/64k3d_s0`). Otherwise every existing 3D run fails to load.
 
 ### 5.5 Game pacing in real time
 
@@ -849,7 +854,7 @@ What a game adds:
 | LLM latency and GPU sharing | median 3.6–4.4 s, 18 s cold; one GPU for the model and the step | Parse off the step thread (§5.7), bench contention in G1, direct powers as a fallback. |
 | Platform | MLX: Metal on Apple Silicon at speed, Linux CPU slowly. Python host loop | Mac-first. A Windows or console port needs a new backend, a non-Python host and per-backend goldens. |
 | Evolution is slow in wall time | about 13 generations per 10 min (3D, 30 steps/s) | Ecological goals, time-lapse, chapters across sessions. |
-| Engine regressions | CLAUDE.md conventions | `game.*` keys off and in `POST_V01_KEYS`. Scatters only in `ops.py`; static branches only. 2D digest matrix and CI goldens on every PR. Deliberate 3D golden re-pin in G4. |
+| Engine regressions | CLAUDE.md conventions | `game.*` keys off and in `POST_V01_KEYS`. Scatters only in `ops.py`; static branches only. 2D digest matrix and CI goldens on every PR. The 3D golden is frozen (`legacy_state_digest_3d`, W1), so G4 needs no re-pin. |
 
 ## 9. Build plan (proposed; one PR per step, each merged before the next)
 
@@ -916,7 +921,7 @@ What a game adds:
       (whether 1000 is better is not established: those studies had 2 snapshots), so a colony id at 250 is not a stable identity; the host settle is 32 and 38 ms per snapshot;
       under 0.1% of members are in houses founded within 2,500 steps. The stream rate and the step rate with an LLM call in
       flight were not run.
-- **N1. World Report, offline.** **Built** (DESIGN §30, Review-log row I49; `REPORT_VERSION` 1, every threshold provisional until the
+- **N1. World Report, offline.** **Built** (DESIGN §31, Review-log row I49; `REPORT_VERSION` 1, every threshold provisional until the
   owner read). `python -m alife.analysis.world_report build | verify | probe` (the module is not `analysis.report`, which is the activity
   report) turns an **observed** run's files into a chapter report: headline, lead, a body of at most six sentences, a complete
   interventions block and a ticker. It is offline and host-side, with no engine change, no config key and no live UI.
@@ -924,7 +929,7 @@ What a game adds:
     fact sheet (`game/report.py`) and writes every sentence from 88 templates over a closed vocabulary (`game/templates.py`); a checker
     (rules R1 to R7, `game/lexicon.py`) re-derives each string from the facts. **Select-and-order** (`--llm --model ID`) lets a local model
     choose and order code-written candidates by id and nothing else; the model's text is never shown, quoted or put into a prompt.
-    The section order of the body is code's (C13) and the mandatory sentences cannot be dropped. **Free prose is off** (DESIGN §30.12).
+    The section order of the body is code's (C13) and the mandatory sentences cannot be dropped. **Free prose is off** (DESIGN §31.12).
     The preflight `GET /api/v0/models` is read-only and allowed (C14); the tool never loads or unloads a model.
   - **Replay:** records hold the facts, the candidates, the model's per-attempt choices and the rendered report; `verify` recomputes the
     sheet from the run and replays the choice, with no model call (exit 1 on a mismatch, 3 when the run changed under equal versions).
@@ -936,8 +941,8 @@ What a game adds:
     - **Review fixes (stage 4).** A patch move is a point event (the patches drift every step, so "still in place" was false); an
       intervention whose span ended at the chapter's first row is not listed (the lever it restored is a standing line); a deep dip is
       headlined "Population dipped to {min}"; the relation sentence says "on a victim that died in the same step"; a build of one range
-      keeps the records of another; a request goes only to a `/chat/completions` URL (DESIGN §30.1, §30.14 item 15).
-    - **Not run:** the GPU validation (the observed forks A and B of DESIGN §30.13), `probe` and `build --llm` against a real model, and the owner read
+      keeps the records of another; a request goes only to a `/chat/completions` URL (DESIGN §31.1, §31.14 item 15).
+    - **Not run:** the GPU validation (the observed forks A and B of DESIGN §31.13), `probe` and `build --llm` against a real model, and the owner read
       (20 chapters, template against select, blind). The build made no LLM call.
     - **Not in N1:** `alife play`, a report panel, a worker and `reports.jsonl` in a run directory (G3); player commands (G4); storm facts
       (W3; the storm-world report built on the same sheet, `docs/STORMS.md` §6.5, which records what N1 built).
@@ -958,7 +963,7 @@ What a game adds:
 - **G4. Player intent.**
   - The intent schema and prompt, the compiler, `commands.jsonl`, the preview, `source:"player"`, and the separate pacing
     scope.
-  - `GAME_MENU` with `attack_mult` (§10.4), inert-fill for `State3`, and the 3D golden re-pin.
+  - `GAME_MENU` with `attack_mult` (§10.4), and inert-fill for `State3` (no 3D golden re-pin: W1 froze the list, §5.4).
   - `GAME_SPECS`, and the `game_master` persona with its `PersonaParams` and the intensity vital.
   - Direct powers beyond G3's, and the `game_master` safety re-scope.
   - Era changes: a checkpoint at the boundary, then a fork with `reapply_env` and `copy_director_log`.
@@ -992,7 +997,7 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
    - `regen_set` only lifts the time limit of an existing lever.
 
    Consequences for v1:
-   - `attack_mult` adds a `State` field, so G4 re-pins the 3D golden.
+   - `attack_mult` adds a `State` field; the 3D golden stays (W1's `V0_FIELDS_3D`, §5.4).
    - In compiler version 1 the harshness, cooperation and tempo dimensions compile to no-ops, which the preview states.
    - Long scarcity uses a 36,000-step `regen_pulse`.
    - The schema keeps all eight dimensions, so later levers do not change it.

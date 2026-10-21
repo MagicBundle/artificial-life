@@ -1,4 +1,4 @@
-"""The blacklist of the world report's second line (docs/DESIGN.md §30, R6): words and phrases that no report
+"""The blacklist of the world report's second line (docs/DESIGN.md §31, R6): words and phrases that no report
 sentence may contain, whatever the template.
 
 The report's sentences are all written by code from a closed set of templates (``game.templates``); this

@@ -1,4 +1,4 @@
-"""The templates of the world report (docs/DESIGN.md §30, ``TEMPLATE_VERSION``): every sentence a report
+"""The templates of the world report (docs/DESIGN.md §31, ``TEMPLATE_VERSION``): every sentence a report
 shows is one of these strings with its slots filled from the fact sheet (``game.report``), nothing else.
 
 A template is data: an id, a role (``lead``, ``body``, ``headline``, ``block``, ``ticker``), a text with
@@ -715,7 +715,7 @@ BLOCK_ROLES: Final = ("block", "ticker")  # the roles in which lever words and r
 
 # --- section order and salience order -----------------------------------------------------------------------
 
-# The sections of a body, in the order they are displayed whatever the mode (docs/DESIGN.md §30, rev 3 F5):
+# The sections of a body, in the order they are displayed whatever the mode (docs/DESIGN.md §31, rev 3 F5):
 # the
 # order between sections is code's, so no sentence can be placed next to another by a model. Inside a section:
 # events by (end step, -size, id); groups by (rank or -size, id), each followed by its G-c; labels by

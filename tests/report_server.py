@@ -1,5 +1,5 @@
 """A local mock of an OpenAI-compatible chat server with LM Studio's read-only ``/api/v0/models`` listing, for the
-world report's tests (docs/DESIGN.md §30). It binds ``127.0.0.1`` on a free port; no test reaches any other host.
+world report's tests (docs/DESIGN.md §31). It binds ``127.0.0.1`` on a free port; no test reaches any other host.
 
 ``Server(models={"m": "loaded"})`` answers ``GET /api/v0/models`` with that list (``models=None``: the endpoint
 does not exist, a 404, like another server). ``POST`` bodies are recorded in ``requests``; the replies are the

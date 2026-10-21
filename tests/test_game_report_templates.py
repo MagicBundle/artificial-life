@@ -1,4 +1,4 @@
-"""The templates, the lexicon and the checker of the world report (docs/DESIGN.md §30): the catalogue is valid and
+"""The templates, the lexicon and the checker of the world report (docs/DESIGN.md §31): the catalogue is valid and
 pinned, every template renders and passes the checker on scripted and random sheets, each rule R1 to R7 passes
 and fails where it should, and the crafted sentences of the reviews and the corpus of the director's journals are
 rejected. CPU only; no socket."""

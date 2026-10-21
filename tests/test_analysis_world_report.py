@@ -1,4 +1,4 @@
-"""The world report's command line (docs/DESIGN.md §30): ``build``, ``verify`` and ``probe`` of
+"""The world report's command line (docs/DESIGN.md §31): ``build``, ``verify`` and ``probe`` of
 ``python -m alife.analysis.world_report``. The template build and ``verify`` run with the network patched out; the
 select mode talks to a local mock server (``tests/report_server.py``) and no other host. The one test that needs a
 real server is marked ``llm`` and runs only with ``--model`` (an explicit opt-in) or with both ``ALIFE_LLM_URL`` and
@@ -915,7 +915,7 @@ def e2e_copy(tmp_path: Path) -> Path:
 
 def test_e2e_the_engines_env_blocks_are_the_fold_of_the_director_log(e2e_view) -> None:
     """`tests/data/make_report_e2e.py`: a tiny CPU fork replayed with a hand-written director log. The `env` blocks are
-    the engine's own output, and the report's lever fold reproduces every one of them (the MUST of DESIGN §30)."""
+    the engine's own output, and the report's lever fold reproduces every one of them (the MUST of DESIGN §31)."""
     view = e2e_view
     R.check_env(view, 2500, 10000)
     env = {r["step"]: r["env"] for r in view.rows}

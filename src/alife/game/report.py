@@ -1,4 +1,4 @@
-"""The world report, offline (docs/DESIGN.md §30; the N1 step of docs/GAMES.md §9): a chapter report built
+"""The world report, offline (docs/DESIGN.md §31; the N1 step of docs/GAMES.md §9): a chapter report built
 from a run's files, with every sentence written by code from a closed set of templates and checked again.
 
 This module has three parts, all pure functions of the run's files (no engine call, no array, no device, no
@@ -105,7 +105,7 @@ class ReportError(ValueError):
 
 @dataclass(frozen=True)
 class ReportRules:
-    """Every threshold of the sheet and the assembly; provisional values (docs/DESIGN.md §30) that the
+    """Every threshold of the sheet and the assembly; provisional values (docs/DESIGN.md §31) that the
     calibration and the owner read confirm. No config key: these are the report's own, pinned by
     ``digest``."""
 
@@ -144,7 +144,7 @@ class ReportRules:
 
 REPORT_V1: Final = ReportRules()
 
-# --- the label table (docs/DESIGN.md §30; GAMES §9) ---------------------------------------------------------
+# --- the label table (docs/DESIGN.md §31; GAMES §9) ---------------------------------------------------------
 
 # (intent_version, rules_digest, dims, world_key) -> label -> (verdict, n_pos, margin, p, n_perm), from the
 # two
@@ -2150,7 +2150,7 @@ def ticker(sheet: Mapping[str, Any], rules: ReportRules = REPORT_V1) -> list[dic
     return [{"step": x["step"], "text": x["text"]} for x in _ticker_lines(sheet, rules)]
 
 
-# --- the select-and-order mode (docs/DESIGN.md §30; SELECT_PROMPT_VERSION 1) ------------------------------
+# --- the select-and-order mode (docs/DESIGN.md §31; SELECT_PROMPT_VERSION 1) ------------------------------
 #
 # The model sees code-written candidate sentences and replies with candidate ids. Nothing it writes is shown,
 # quoted or put into a prompt: the reply is parsed entry by entry (a bad entry is dropped, a bad structure
