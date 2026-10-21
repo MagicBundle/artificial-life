@@ -406,7 +406,8 @@ class StepOut(NamedTuple):
 ```
 
 With the static `observe` the step returns `StepOutG` instead: `StepOut`'s four fields plus `acts: Acts`, the observer
-channel of the games vertical (§28.2). It changes no state value and no `StepOut` field.
+channel of the games vertical (§28.2; G2's additions, which also keep the S6 output `y` and read the lane arrays, are
+§29.2). It changes no state value and no `StepOut` field.
 
 ---
 
@@ -1565,9 +1566,9 @@ Bitwise-identical trajectories are guaranteed when all of these match:
 `run.seed`, `run.compile` and `run.runtime_checks` are therefore fixed for the lifetime of a run directory: resume
 rejects overrides of them (§18). With a director, the decision log (`director.jsonl`, §26) is one more input: the same
 log replays bitwise (§26.8). The guarantee covers checkpoint/resume, and holds **whatever** the metrics, render, checkpoint or viewer cadence
-(observer purity). Observer purity also covers `game.observe` (§28): a run with the game observers on has the
-trajectory of the same run with them off, at every step, so `game.observe` is omitted from `config_hash` and may be
-changed on resume. The labels are themselves reproducible under this contract (§28.7).
+(observer purity). Observer purity also covers `game.observe` and `game.house_rate` (§28, §29): a run with the game
+observers on has the trajectory of the same run with them off, at every step, so both keys are omitted from
+`config_hash` and may be changed on resume. The labels are themselves reproducible under this contract (§28.7).
 
 **How each mechanism is made deterministic.**
 1. **No float scatter-add anywhere in the simulation.** All contested writes are int32 add or max, which are
@@ -1751,6 +1752,8 @@ artificial-life/
     step.py                      StepOut, StepOutG, Acts, ActFlag, step, make_step
     invariants.py                device_check (in-graph), full_check (host, exhaustive)
     metrics.py                   components, snapshot_metrics, interval_row, carrying_capacity
+    groups.py                    pure MLX, generic: splitmix64, hash-founded inherited labels, masked and exact bin counts, grid codes (§29.3)
+    tracking.py                  host numpy, generic: SystemTracker (persistent ids), grid_clusters, Dominance, sticky_slots, deadband (§29.3)
     runio.py                     RunDir, checkpoints, metrics/events writers, truncation, diag dumps
     runner.py                    run loop, cadences, SIGINT handling, exit codes
     render.py                    Viewport, render_frame, write_png, VideoWriter
@@ -1762,13 +1765,16 @@ artificial-life/
                                  the step, config, fields, state and invariants (§30); §22.6 rule 5
     weather_obs.py               host numpy: the `weather` block of a metrics row (§30.8); not a lint module
     weather_spinup.py            host driver: `alife run --weather-spinup N` (§30.9); not a lint module
-    game/                        the games vertical, build step G1 (§28): observe (pure-MLX observer state and update),
-                                 rules (archetype and intent rules, INTENT_VERSION), observer (host Observer, sidecar)
-    analysis/                    offline analysis (never imported by the step; not under the §22.6 lint scope): host-only
-                                 numpy analysis of finished runs: phylo, activity, report, plots, mi, resim, signals: §19.3;
-                                 labels (the validity study of the game labels): §28.8; and the offline MLX study driver of
-                                 the W0 weather prototype: w0 (runs `weather.py` on MLX, detects and tracks storms on the
-                                 host, moves passive tracers, measures the cost) and w0_plots (its figures and movies)
+    game/                        the games vertical, build steps G1 (§28) and G2 (§29): observe (pure-MLX observer state and update),
+                                 rules (archetype and intent rules, INTENT_VERSION), social (pure-MLX SocState, SocialRules),
+                                 society (host Society: houses, kin groups, colonies, territory, relations),
+                                 observer (host Observer, sidecar, social records)
+    analysis/                    offline, host-only numpy analysis of finished runs (never imported by the step;
+                                 scanned by the §22.6 lint, which it passes); phylo, activity, report, plots, mi, resim, signals: §19.3;
+                                 labels (the validity study of the game labels): §28.8; social (calibration, churn and cost of the
+                                 social trackers): §29.12; and the offline MLX study driver of the W0 weather prototype: w0
+                                 (runs `weather.py` on MLX, detects and tracks storms on the host, moves passive tracers,
+                                 measures the cost) and w0_plots (its figures and movies)
   tests/                         §22
 ```
 
@@ -2053,8 +2059,11 @@ def reproduce(s: State, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: C
 
 # step.py
 class StepOut(NamedTuple): counters; ledger; births: BirthRecords; deaths: DeathRecords     # §3
-class ActFlag(IntFlag): ATTACKED = 1; HIT = 2; FORMED = 4; BUDDED = 8; EMITTED = 16     # bits of Acts.flags (§28.2)
+KIN_Q_CLIP: Final = 127.0                                                                # |y_kin| bound of Acts.q_kin (§29.2)
+class ActFlag(IntFlag): ATTACKED = 1; HIT = 2; FORMED = 4; BUDDED = 8; EMITTED = 16; PROPOSED = 32; KILLED = 64   # bits of Acts.flags (§28.2, §29.2)
 class Acts(NamedTuple): attack_gain; share_out; share_got; flags; thrust; defend; emit  # the observer channel (§28.2)
+    # G2 (§29.2), appended in this order: attack_target; bond_target; q_kin; nbr; born_row; born_parent; born_uid;
+    # death_cause (the roster, §29.14)
 class StepOutG(NamedTuple): counters; ledger; births; deaths; acts: Acts; def base(self) -> StepOut   # §28.2
 def step(s: State | State3, cfg: Config, *, observe: bool = False
          ) -> tuple[State | State3, StepOut | StepOutG]            # State3 in 3D (§27.8); observe: static, StepOutG (§28.2)
@@ -2087,6 +2096,7 @@ def carrying_capacity(s: State, cfg: Config, step: mx.array | None = None, env: 
 
 # runio.py
 FORMAT_VERSION: Final = 1
+SOCIAL_FILE: Final = "social.jsonl"            # observers/social.jsonl, the social log (§29.10)
 class RunDir:
     path: Path
     @classmethod
@@ -2101,6 +2111,9 @@ class RunDir:
     def observer_path(self, step: int) -> Path                      # observers/step_<t:010d>.npz (OBSERVERS_DIR)
     def observer_files(self) -> list[tuple[int, Path]]
     def read_observers(self, step: int) -> dict[str, np.ndarray] | None   # None if absent; CheckpointError if unreadable
+    def append_social(self, records: Iterable[Mapping[str, Any]]) -> None   # observers/social.jsonl: append + fsync, `step` first;
+                    # [] is a no-op that creates nothing; ValueError unless every record has an int `step`, increasing in the call (§29.10)
+    def social_records(self) -> list[dict[str, Any]]                        # [] if absent; a torn last line is ignored
     def checkpoints(self) -> list[tuple[int, Path]]
     def latest_checkpoint(self) -> Path | None
     def append_metrics(self, rows: Iterable[Mapping[str, Any]]) -> None
@@ -2108,8 +2121,10 @@ class RunDir:
     def read_jsonl(self, name: str) -> list[dict[str, Any]]                          # a torn last line is ignored
     def write_json(self, name: str, obj: Any) -> None                                # atomic (director_archive.json)
     def write_events(self, s0: int, s1: int, births: Mapping[str, np.ndarray], deaths: Mapping[str, np.ndarray]) -> None
-    def truncate_after(self, step: int, *, keep_director: bool = False) -> None   # also cuts the director files (§26.3)
-                                                                                  # and the observer sidecars after `step` (§28.6)
+    def truncate_after(self, step: int, *, keep_director: bool = False) -> None   # also cuts the director files (§26.3),
+                                                                                  # the observer sidecars after `step` (§28.6) and
+                                                                                  # the social log, always, parsed first (§29.10);
+                                                                                  # checkpoints go before the logs are cut (§29.10)
     def dump_diag(self, s: State, step: int) -> Path
 def write_state_file(path: Path, s: State, cfg: Config) -> None   # atomic (*.tmp + os.replace); checkpoint metadata
 def checkpoint_metadata(path: Path) -> dict[str, str]
@@ -2184,47 +2199,98 @@ def rain_regen(rain: RainIn, cfg: Config) -> mx.array                           
 # weather_obs.py (host): weather_block(wx, air_speed, cfg, occupancy=, overlap_deep=) -> dict (§30.8)
 # weather_spinup.py (host): spinup(cfg, n, *, step, key, compile, progress) -> wx; advance_chain(...) (§30.9)
 
-# game/  (§28; imported explicitly: alife.game.observe, alife.game.rules, alife.game.observer)
+
+# groups.py (pure MLX) and tracking.py (host numpy): generic, no game names (§29.3)
+DUMP: Final = 1024; TRACK_VERSION: Final = 1
+def splitmix64(x, seed) -> mx.array; hash_cut(rate) -> int; hash_below(x, seed, rate) -> mx.array   # = the `hit` of phylo.marker_roots
+def lane_rows(n, born_row) -> mx.array; inherit(prev, keep, lane, lane_vals, fill) -> mx.array
+def masked_bincount(size, idx, mask) -> mx.array; limb_bits(lanes) -> int                           # int32 counts; the limb width
+def masked_bincount_exact(size, idx, val, mask, bits) -> mx.array                                  # int64 sums by limbs
+def grid_code(x, lo, hi, bins) -> mx.array; plane_cell(pos, size, cells, axes=(0, 1)) -> mx.array
+class EventKind(IntEnum): BORN; SPLIT; MERGED; DISSOLVED;  class Event(NamedTuple): step; kind; system; size; other; overlap
+class SystemTracker:
+    def __init__(self, theta: tuple[int, int], state: TrackerState | None = None)       # ValueError on an invalid state
+    def observe(self, step, cur: Members, credit=None, admit=None) -> tuple[Assignment, list[Event], Diagnostics]
+    def state(self) -> TrackerState
+def grid_clusters(counts, shape, occ_min, periodic=None) -> np.ndarray                               # root code or -1 per bin
+class Dominance:
+    def __init__(self, shape, k, min_count, periodic=(True, True), state=None)
+    def update(self, ids, counts) -> DominanceMap; def current(self) -> DominanceMap | None; def state(self) -> DominanceState
+def sticky_slots(prev, ranked, slack) -> np.ndarray; deadband(ref, value, shift) -> tuple[int, bool]
+def lookup_table(size, keys, values, fill) -> np.ndarray; rank_by_size(ids, sizes) -> np.ndarray; circular_mean(x, size) -> float
+
+# game/  (§28, §29; imported explicitly: alife.game.observe, .rules, .social, .society, .observer)
 # rules.py (the leaf of the package)
-INTENT_VERSION: Final = 1; VQ_MAX: Final = 1 << 15; EVAL_BIT: Final = 1 << 30
+INTENT_VERSION: Final = 2; VQ_MAX: Final = 1 << 15; EVAL_BIT: Final = 1 << 30
 class Archetype(IntEnum): NONE; GATHERER; HUNTER; PROVIDER; TRADER; NOMAD; SETTLER; GENERALIST        # 0..7
 class Intent(IntEnum): NONE; BUDDING; HUNTING; FLEEING; DEFENDING; CARING; BONDING; SIGNALLING; FEEDING; ROAMING; RESTING
 class ArchCol(IntEnum): HARVEST; GAIN; INFLOW; OUTFLOW; SPEED           # then V_POS[c] = 5 + c, V_NEG[c] = 5 + nd + c
-class IntentCol(IntEnum): ATTACK; HURT; THRUST; DEFEND; EMIT; HARVEST; CARE
-@dataclass(frozen=True) class RuleSet: arch_k=6; intent_k=3; every=8; hold=4; arch_warm=192; intent_warm=24; ...  # §28.4
-    def digest(self) -> str                       # sha256 of the canonical JSON of every field
+class IntentCol(IntEnum): ATTACK; HURT; THRUST; DEFEND; EMIT; HARVEST; CARE; FORMED; FLOW_POS; FLOW_NEG     # N_INTENT_COLS = 10
+@dataclass(frozen=True) class RuleSet: arch_k=6; intent_k=3; every=8; hold=4; arch_warm=192; intent_warm=24; ...;
+                                       gatherer_level; settler_body; bud_horizon; bud_cost; bud_overlay; defend_hurt;
+                                       bond_rate; intent_order                       # the defaults are RULES_V2 (§28.4)
+    def digest(self) -> str                       # sha256 of the canonical JSON of every field, a post-v1 field at its inert value left out
     def check(self, cfg: Config) -> None          # ValueError unless every accumulator column fits int32 (§28.3)
-RULES_V1: Final = RuleSet(); ARCH_PRIORITY; ARCHETYPE_NAMES; INTENT_NAMES
-def archetype_matches(m6, m6s, cfg, rs) -> mx.array            # (N,6) bool; archetype_labels(match) -> (primary, secondary)
-def intent_matches(m3, since_bud, slot_age, slot_kin, cfg, rs) -> mx.array       # (N,9) bool; first_intent(match) -> (N,)
+RULES_V1: Final = RuleSet(gatherer=(7, 10), defend=128, signal=128, feed=(1, 2), **_POST_V1_INERT); RULES_V2: Final = RuleSet()
+ARCH_PRIORITY; ARCHETYPE_NAMES; INTENT_NAMES; ARCHETYPE_DISPLAY; INTENT_DISPLAY   # the display tables: read-only key -> word
+def archetype_matches(m6, m6s, cfg, rs, body=None) -> mx.array # (N,6) bool; body required iff rs.settler_body > 0; archetype_labels(match) -> (primary, secondary)
+class BudIn(NamedTuple): energy; brain_cost; n_bonds; n_obs                       # (N,) int32, post-step values
+def budding_forecast(m3, b: BudIn, cfg, rs) -> mx.array                           # (N,) bool, int64
+def intent_matches(m3, since_bud, slot_age, slot_kin, cfg, rs, *, bud=None) -> mx.array   # (N,9) bool; bud required iff rs.bud_horizon > 0
+def first_intent(match, order=(1, ..., 9)) -> (N,) int32                          # first match in rs.intent_order
 def hysteresis(label, cand, cand_n, raw, hold) -> tuple[mx.array, mx.array, mx.array]; pack_bits(match) -> (N,) int32
 # observe.py (pure MLX; no scatter, no setitem, no host sync)
 OBS_CAP: Final = 1 << 30
-class ObsIn(NamedTuple): alive; uid; parent_uid; partner; vel; last_harvest; last_inflow; last_loss  # never key, never weights
+class ObsIn(NamedTuple): alive; uid; parent_uid; partner; vel; last_harvest; last_inflow; last_loss; energy; brain_cost   # never key, never weights
 class ObsState(NamedTuple): uid; n_obs; arch; arch_slot; intent; since_bud; slot_uid; slot_age; slot_kin;
-                            label_arch; match_arch; label_intent; match_intent; cand; cand_n                   # §28.3
+                            label_arch; match_arch; label_intent; held; match_intent; cand; cand_n             # §28.3
 def obs_in(s: State | State3) -> ObsIn; def init_obs(oi: ObsIn, cfg: Config) -> ObsState
 def update(o: ObsState, oi: ObsIn, a: Acts, cfg: Config, rs: RuleSet) -> ObsState      # every step, after the step
-def evaluate(o: ObsState, cfg: Config, rs: RuleSet) -> ObsState                         # when step % rs.every == 0
+def evaluate(o: ObsState, cfg: Config, rs: RuleSet, *, body=None, oi=None) -> ObsState  # when step % rs.every == 0; body iff settler_body > 0, oi iff bud_horizon > 0
 def ema(acc, x, k) -> mx.array; care_out(slot_kin_prev, share_out) -> (N,) int32; speed_unit(cfg) -> float
 def quantise_inputs(oi, a, slot_kin_prev, cfg) -> tuple[mx.array, mx.array, mx.array]   # (x6, xs, x3)
+# social.py (pure MLX; §29.3, §29.9)
+SOCIAL_VERSION: Final = 1; HOUSE_UNKNOWN: Final = -2; KIN_NAME_SALT: Final = 0x6B696E6E616D65; DEATH_CAUSES: Final   # §29.14
+@dataclass(frozen=True) class SocialRules: snapshot_every=250; slots=16; ...; kin_name_salt=KIN_NAME_SALT   # provisional; digest(), check(cfg)
+SOCIAL_V1: Final = SocialRules()
+class SocIn(NamedTuple): alive; uid; parent_uid; clade; partner; tag; pos; next_uid               # never key, never weights
+class SocState(NamedTuple): uid; house; house_from; kin; colony; body; slot_group; rel; expo; shared; births; deaths   # per row, plus the windows
+class Snap(NamedTuple): ...                                                                        # the snapshot arrays, all derived
+def soc_in(s) -> SocIn; init_soc(si, cfg, sr) -> SocState; update(so, si, a: Acts, cfg, sr) -> SocState    # update: every step
+def snapshot(kin0, so, si, a: Acts | None, cfg, sr, arch=None) -> Snap; relabel(so, snap, kin_lut, col_lut) -> SocState   # at snapshot steps
+                                                                      # arch: (N,) int32 primary archetype labels, None = all unlabelled (§29.14)
+# society.py (host; §29.4–§29.8)
+class Society:
+    def __init__(self, cfg, sr, state=None); def initialise(self, h, step) -> tuple[np.ndarray, np.ndarray]    # (kin_lut, col_lut)
+    def settle(self, h, step) -> tuple[np.ndarray, np.ndarray]    # appends the snapshot's record to `records`
+    def head(self) -> dict; take_records(self) -> list[dict]; territory(self) -> tuple[DominanceMap | None, np.ndarray]
+    def arrays(self) -> dict[str, np.ndarray]; @classmethod from_arrays(cls, arrays, cfg, sr, *, step=None) -> tuple[Society | None, str]
+def host_snap(snap: Snap) -> dict[str, np.ndarray]                                                  # the one host transfer
 # observer.py (host)
-OBSERVER_FORMAT: Final = 1; SIDECAR_FORMAT: Final = "alife-observers"
+OBSERVER_FORMAT: Final = 3; SIDECAR_FORMAT: Final = "alife-observers"
+DEFAULT_RULES: RuleSet = RULES_V2; DEFAULT_SOCIAL: SocialRules = SOCIAL_V1     # looked up at call time (§29.9)
 class Labels(NamedTuple): arch_primary; arch_secondary; arch_match; intent; intent_match   # (N,) int32 device arrays
+class SocialLabels(NamedTuple): house; kin_slot; colony_slot                                # device arrays, the last settled snapshot
 class Observer:
-    def __init__(self, cfg: Config, o: ObsState, step: int, rules: RuleSet = RULES_V1)     # calls rules.check(cfg)
-    @classmethod def fresh(cls, state, cfg, *, rules=RULES_V1) -> "Observer"
-    @classmethod def open(cls, rd: RunDir, state, cfg, *, rules=RULES_V1) -> tuple["Observer", str | None]   # §28.6
+    def __init__(self, cfg: Config, o: ObsState, so: SocState, society: Society, step: int, rules: RuleSet, social: SocialRules)
+                                                                    # calls rules.check(cfg) and social.check(cfg)
+    @classmethod def fresh(cls, state, cfg, *, rules=None, social=None) -> "Observer"    # None: the module default, at call time
+    @classmethod def open(cls, rd: RunDir, state, cfg, *, rules=None, social=None) -> tuple["Observer", str | None]   # §29.10
     def update(self, state: State, acts: Acts, t: int) -> None       # lazy; ValueError unless t == self.step + 1
-    def arrays(self) -> tuple[mx.array, ...]                          # for the caller's single mx.eval
+    def arrays(self) -> tuple[mx.array, ...]                          # ObsState, SocState, a pending Snap: the caller's single mx.eval
     def row_block(self) -> dict[str, Any]; def labels(self) -> Labels; def host_labels(self) -> dict[str, np.ndarray]
-    def sidecar(self) -> dict[str, np.ndarray]                        # one array per ObsState field, and "meta"
+    def take_records(self) -> list[dict[str, Any]]                    # the snapshot records settled since the last call (§29.9)
+    def social_labels(self) -> SocialLabels; def territory(self) -> tuple[DominanceMap | None, np.ndarray]
+    def sidecar(self) -> dict[str, np.ndarray]                        # ObsState fields, soc.<field>, host.*, "meta"; RuntimeError if a record is untaken
 
 # analysis/labels.py  (§28.8; host-side)
 def study(run, *, start: int, steps: int, states_dir=None, warmup: int = 256, cohort_every: int = 256,
           arch_horizon: int = 1000, arch_min_obs: int = 100, intent_horizon: int = 10, n_perm: int = 200,
-          seed: int = 0, verify: bool = True, rules: RuleSet = RULES_V1, log=print) -> dict[str, Any]   # JSON-safe report
+          seed: int = 0, verify: bool = True, rules: RuleSet = DEFAULT_RULES, log=print) -> dict[str, Any]   # JSON-safe report
 def auc(x: np.ndarray, y: np.ndarray) -> float; def verdict(score, coverage_max=None, *, is_intent=False) -> str
+# analysis/social.py  (§29.12; host-side)
+def study(run, *, start: int, steps: int, every=None, states_dir=None, verify: bool = True,
+          time_components: bool = False, log=print) -> dict[str, Any]   # JSON-safe report: thresholds, tracker counts, churn, timing
 # analysis/resim.py: compare_row(stored, counters, ledgers, total, *, nd=2) -> list[str]   (was _compare)
 ```
 
@@ -2303,9 +2369,10 @@ S18 `weather_bad = weather.health(wd, wind)` into `device_check`, and `counters`
 `bench._StagedStep` mirrors all of it.
 
 **With `observe`** (static argument of `step`/`make_step`) S8 keeps the decode output's `thrust` (`thrust0 = act.thrust`,
-taken before `actions.mask`); S12 calls `energy.share_slots` and `energy.share_from_slots`, the same graph as
-`energy.share`, and keeps the per-slot flows; S18 returns `StepOutG` with `_acts(flows, sl, thrust0, cfg)`; nothing else
-changes (§28.2). `bench._StagedStep` does not mirror it, because it changes no `State` or `StepOut` value.
+taken before `actions.mask`) and the S6 output (`y0 = y`, a Python reference); S12 calls `energy.share_slots` and
+`energy.share_from_slots`, the same graph as `energy.share`, and keeps the per-slot flows; S18 returns `StepOutG` with
+`_acts(flows, sl, thrust0, y0, s.alive, cfg)`, which in G2 also reads the post-S8 targets, `nbr.idx`, `as_prop`,
+`dt.cause`, the lane arrays and the birth records, and slices two columns of `y`; nothing else changes (§28.2, §29.2). `bench._StagedStep` does not mirror it, because it changes no `State` or `StepOut` value.
 
 `finish` is a private helper in `step.py`. It also computes
 `max_cell_occ = ops.scatter_add_i32(FG², fcell, 1, s.alive).max()`, the start-of-step field-cell occupancy that
@@ -2478,10 +2545,13 @@ class DirectorConfig:                  # added after v0.1; docs/DIRECTOR.md
     yoke_log: str = ""                 # random persona only (§26.11): the director.jsonl whose discretionary moves it matches
 
 @dataclass(frozen=True)
-class GameConfig:                      # the games vertical (§28); added after v0.1
+class GameConfig:                      # the games vertical (§28, §29); added after v0.1
     observe: bool = False              # observers: the step also returns the observer channel and the runner folds it into
                                        # accumulators, labels, the metrics block and the sidecar. Never changes the trajectory:
                                        # unhashed (config.OBSERVER_KEYS) and a resume key
+    house_rate: float = 1 / 2048       # a birth founds a house iff splitmix64(uid, run.seed) < house_rate·2^64 (§29.4); read only
+                                       # by the host observer: unhashed (config.OBSERVER_KEYS), a resume key, inert while observe
+                                       # is off, hence a working default rather than "off" (CLAUDE.md); 1/2048 is exact in binary
 
 @dataclass(frozen=True)
 class WeatherConfig:                   # the storm world's engine weather layer (§30); added after v0.1
@@ -2562,12 +2632,14 @@ except `run`. **Keys added after v0.1 are omitted from the hash at their default
 `fields.season_amplitude`, `fields.season_mode`, `director.enabled`, `world.dims`, `world.height` (§27.1),
 `physics.gravity`, `physics.floor_eps`, `physics.buoyancy_max`, `mutation.buoy_init`, `mutation.buoy_sigma`,
 `fields.benthic_lambda`, `fields.photic_amp`, `fields.photic_lambda`, `energy.buoyancy_cost`,
-`energy.buoyancy_cap_cost` (§27.1, §27.3–§27.5, §27.7), `game.observe` (§28) and every key of `weather` (§30.2; each changes
-the compiled step, so none is unhashed); the
+`energy.buoyancy_cap_cost` (§27.1, §27.3–§27.5, §27.7), `game.observe` (§28), `game.house_rate` (§29) and every key of
+`weather` (§30.2; each changes the compiled step, so none is unhashed); the
 director's policy keys `persona`, `goal`, `rule_every`, `budget_per_100k`, (step 3) `llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` and (§26.11) `yoke_log` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
-because only `enabled` changes the compiled step). `game.observe` is omitted at every value too, but it is in its own list,
-`config.OBSERVER_KEYS`, not in `UNHASHED_KEYS` (from which `config.DIRECTOR_POLICY_KEYS`, the director's resume keys,
-is derived): it is read only by host-side observers and never changes the trajectory (§28.1). A section that this
+because only `enabled` changes the compiled step). `game.observe` and `game.house_rate` are omitted at every value too,
+but they are in their own list, `config.OBSERVER_KEYS`, not in `UNHASHED_KEYS` (from which
+`config.DIRECTOR_POLICY_KEYS`, the director's resume keys, is derived): they are read only by host-side observers and
+never change the trajectory (§28.1, §29.1), and they are inert while `game.observe` is off, so they may default to a
+working value (`house_rate` is 1/2048) where every other post-v0.1 key defaults to off. A section that this
 leaves empty (`director`, `game`, `weather`) is omitted from the hashed dict too, so the hash does not change when a section is
 added. A
 `config.json` that predates them therefore loads with the
@@ -2599,8 +2671,9 @@ changes the hash, as for any dynamics key.
   `weather.validate_config` returns the messages (guards, W0's parameter rules, the world rules W-1 and W-2, the load
   rules R1 to R4, the coupling keys, `director.enabled` implies `rain_floor == 0`): §30.2. The overlay name check
   accepts `config.ALL_OVERLAYS = OVERLAYS + WORLD_OVERLAYS`.
-- **Game:** `game.observe` is a plain bool. There is no cross-key rule: the int32 headroom of the observer
-  accumulators is checked by `RuleSet.check(cfg)` when an observer is built (§28.3), not by `validate`.
+- **Game:** `game.observe` is a plain bool and `0 ≤ game.house_rate ≤ 1`. There is no cross-key rule: the int32 headroom
+  of the observer accumulators is checked by `RuleSet.check(cfg)` when an observer is built (§28.3), and the static bin
+  and lane counts of the social layer by `SocialRules.check(cfg)` (§29.3), not by `validate`.
 - **Fields (seasons):** `season_period ≥ 0`; `0 ≤ season_amplitude ≤ 1`; `season_period ≥ 1` when
   `season_amplitude > 0`; `season_mode ∈ {global, per_patch}`.
 - **Physics stability:** `stability_number ≤ 1.8`; `thrust_max < 2·radius·k_repel`; `v_max ≤ physics.radius`;
@@ -2649,6 +2722,7 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
   journal.jsonl                                director runs only: one-liners and LLM call records, never read by the simulation
   director_archive.json                        director runs only: the behaviour archive at the last checkpoint
   observers/step_<t:010d>.npz                  observing runs only (game.observe): the observer state at each checkpoint, §28.6
+  observers/social.jsonl                       observing runs only: one record per social snapshot (§29.11), cut on resume
   media/                                       render and video outputs; viewer snapshots snap_<step>.safetensors
 ```
 
@@ -2698,14 +2772,22 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
      Resume accepts only `--set run.*` overrides of observer and cadence keys (`steps`, `metrics_every`,
      `checkpoint_every`, `keep_checkpoints`, `heavy_metrics_every`, `components_iters`, `diversity_sample`), the
      director mode `run.director` (`--director MODE` is a shortcut, translated before this check) and the director's
-     policy keys `director.persona|goal|rule_every|budget_per_100k`, and the observer key `game.observe` (§28.6).
+     policy keys `director.persona|goal|rule_every|budget_per_100k`, and the observer keys `game.observe` and
+     `game.house_rate` (§28.6, §29.10).
      Overriding `run.seed`, `run.compile` or
      `run.runtime_checks`, or any dynamics key (`director.enabled` included), is a config error (exit 2): those
      changes go through a fork. `--director live|replay` on a run whose `director.enabled` is false is a config error
      that points to `run --init-from`. The accepted overrides are written back to `config.json`, and the cadences are
      revalidated (§17).
   4. `truncate_after(step)`: drop metrics rows with `step > ckpt_step`, delete or trim event chunks that extend
-     past it, and delete checkpoints and observer sidecars after it (they belong to the abandoned continuation). An event chunk
+     past it, and delete checkpoints and observer sidecars after it (they belong to the abandoned continuation). The
+     checkpoints and sidecars go first and `LATEST` is rewritten, then the logs and chunks are cut: a stop in the middle
+     leaves a state that the next `resume` cuts again to the same files, and no log is cut while a later checkpoint is
+     left to resume from (§29.10). Everything that is cut is read first, so a log that cannot be parsed fails the call with
+     the directory untouched. The social
+     log `observers/social.jsonl` is cut to its records with step ≤ the checkpoint step, always, a replay included, after
+     being parsed whole: a corrupt line before the last, or a record without an int step, fails the resume with exit 1
+     before anything is cut (§29.10). An event chunk
      `*_<s0>_<s1>.npz` holds the records with `s0 ≤ step < s1`, where a record's `step` is the index of the step
      during which it happened, so a checkpoint at `state.step = s1` contains exactly the chunks ending at `s1`; a
      trimmed chunk is renamed `*_<s0>_<ckpt_step>.npz`. The director files are cut the same way, unless the mode is
@@ -2737,7 +2819,8 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
     in `meta.json` as `weather_spinup`); a source whose weather is already on cannot be spun up (exit 2).
   - **Observers.** `--set game.observe=…` works as for any key (it is unhashed, so the fork's `config_hash` equals the
     source's when only it differs). A fork never receives the source's sidecar: its observers start fresh, a replay
-    fork included (§28.6).
+    fork included (§28.6). Nor does it receive the social log: the fork's `observers/social.jsonl` starts absent, and its
+    first record has `origin` = `window_start` = the fork step (§29.10).
   - **Admission check.** `invariants.full_check(s, new_cfg)` runs on the loaded state before the first step. A
     state that violates the new config (e.g. `E > e_max` after lowering `e_max`, genes outside new bounds) is
     refused with exit 4.
@@ -2827,8 +2910,10 @@ Every row has these groups:
   - `carrying_capacity_est` (first row only).
 - **Observers** (`observers`, only when `game.observe`, appended last, after `carrying_capacity_est` when present):
   a nested block of the last label evaluation: `intent_version`, `labels_step`, `alive`, `arch_labelled`,
-  `intent_evaluated`, `intent_labelled`, and the share dicts `archetype`, `archetype_match`, `intent` and
-  `intent_match` (§28.5). A row of a non-observing run has none of it.
+  `intent_evaluated`, `intent_labelled`, the share dicts `archetype`, `archetype_match`, `intent` and
+  `intent_match` (§28.5), and, last, `social`: the head of the last settled social snapshot (§29.11), at most 0.5 KB,
+  joined to its record in `observers/social.jsonl` on (`origin`, `snapshot_step`). The reports themselves are in the
+  social log, not in the rows. A row of a non-observing run has none of it.
 
 **Heavy metrics** are added every `heavy_metrics_every` steps:
 - **Bodies.** Connected components over bonds on the GPU:
@@ -3017,10 +3102,11 @@ alife run      [--preset tiny|dev|64k|256k|tiny3d|64k3d] [--overlay fast|storm .
                [--llm | --llm-every N] [--llm-url URL] [--llm-model NAME] [--persona NAME] [--goal TEXT]
                [--yoke-log PATH] [--weather-spinup N]
 alife resume   RUN [--steps N | --until STEP] [--checkpoint STEP|latest] [--set run.key=value ...]
-               [--set director.key=value ...] [--set game.observe=true|false] [--director off|live|replay] [--quiet]
+               [--set director.key=value ...] [--set game.key=value ...] [--director off|live|replay] [--quiet]
                [--llm | --llm-every N] [--llm-url URL] [--llm-model NAME] [--persona NAME] [--goal TEXT]
                [--yoke-log PATH]
-               (only observer/cadence run.* keys, run.director, the director's policy keys and game.observe, §18;
+               (only observer/cadence run.* keys, run.director, the director's policy keys and game.observe and
+               game.house_rate, §18;
                dynamics changes go through run --init-from)
 alife render   RUN [--checkpoint STEP|latest] [--steps N] [--every K] [--out PATH(.png|.mp4|dir)]
                [--size WxH] [--fps 30] [--layers agents,bonds,resource,chem] [--color tag|energy|clade]
@@ -3108,15 +3194,18 @@ Options:
 - `--brain-variants` times `brain.forward` over all N rows for `impl ∈ {matmul, einsum}` ×
   `weight_dtype ∈ {float16, bfloat16, float32}`, reporting ms and weight GB/s. A variant the backend rejects
   is reported with its error rather than aborting the bench.
-- `--observe` adds the `observe` block: the step with the game observers against the plain step, in blocks (control,
-  observed, observed, control) of the runner's own loop (§28.8). It exits 1 when the two trajectories differ.
+- `--observe` adds the `observe` block: the step with the game observers (the social snapshots included) against the
+  plain step, in blocks (control, observed, observed, control) of the runner's own loop, and the parts of one social
+  snapshot (§28.8, §29.12). It exits 1 when the two trajectories differ.
 - The throughput run also reports the final `diag` flags and an `invariants.full_check` of the final state,
   so day-one backend gaps (e.g. int64 on Metal, §23.3) show up in the bench output.
 
 **Observers** (§28). There is no `--observe` flag on `run` or `resume`: `--set game.observe=true` is the interface
 (`run`, a fork, and `resume`). `resume` rejects any other `--set game.<key>`, and the message names `game.<key>`.
 The validity tool of the labels is not an `alife` subcommand: `python -m alife.analysis.labels RUN --from STEP
---steps N --out FILE.json` (§28.8), like `python -m alife.analysis.signals`.
+--steps N --out FILE.json` (§28.8), like `python -m alife.analysis.signals`; nor is the social study,
+`python -m alife.analysis.social RUN --from STEP --steps N --out FILE.json [--every S] [--states DIR] [--no-verify]
+[--time-components]` (§29.12). `resume --set game.house_rate=R` is accepted like `game.observe`.
 
 **Exit codes** (`runner.ExitCode`):
 
@@ -3215,6 +3304,7 @@ Pinned details (impl, WP5):
 | `test_director_env.py` | `State.env` view and `default_env`; `legacy_state_digest` is exactly the v0 encoding. Director enabled with inert env equals director off (`legacy_state_digest`, counters, ledgers; 60 compiled steps; plain and seasons+immigration); director off passes `env_*` through. Each knob: `regen_mult` (0 / 0.5 / 2 / 3.7 against a numpy floor, whole-step `INJECT_REGEN`), `patch_gain` (0 removes a lone patch; weights match a float64 reference), `drift_mult` (0 freezes; ×5 displacement), the season override (period 0 → weights exactly 1; sine reference; config seasons + inert env bit-identical to director off). `imm_request`: admitted over several steps with the remainder carried, `INJECT_IMMIGRATION` matching, capped by capacity with the rest left pending, `max` with the periodic rule. Catastrophe: deaths only inside the radius (torus minimum image), `kill_p` 1 and 0.5, cause `CATASTROPHE`, counter, records, `kill_p` reset, radius 0 / `kill_p` 0 inert. Ledger closes under scripted catastrophes, requests and lever changes (`full_check` every step, deterministic digest), compiled vs eager write-back, checkpoint round trip with non-default env, pre-director (v1, 38 arrays) checkpoint loads inert and resumes (also as a run directory), a missing non-env key and an RNG version outside {1, 2} are refused, out-of-range env flagged by `full_check` and (enabled) `FIELD_RANGE`, config hash rules, stream 8 and the frozen keys of streams 0–7. |
 | `test_director_*.py` (vitals, archive, actions, rules, log, replay, config) | Build step 2, see §26.9. |
 | `test_game_*.py` (config, acts, observe, rules, sidecar, purity), `test_analysis_labels.py` | Games G1 (the observer layer), see §28.9. |
+| `test_groups.py`, `test_tracking.py`, `test_game_social.py`, `test_game_society.py`, `test_game_roster.py`, `test_game_houses.py`, `test_game_social_log.py`, `test_analysis_social.py` | Games G2 (social tracking), see §29.13; several G1 files above are edited too. |
 | `test_weather.py`, `test_analysis_w0.py` | The W0 weather prototype (STORMS §3.2) and its offline study driver, see I46. |
 
 ### 22.2 Whole-step invariant tests (`test_step_invariants.py`)
@@ -3378,9 +3468,9 @@ collected only under `-m slow` (the nightly job and the cloud worker).
 4. `mx.async_eval` is never used in `src/alife`.
 5. There is no `.item()`, `np.asarray` or `float(`/`int(` on arrays inside the simulation modules (`spatial`,
    `fields`, `sensing`, `brain`, `actions`, `bonds`, `physics`, `energy`, `lifecycle`, `step`, `invariants`; and,
-   since the games vertical, `game.observe` and `game.rules`; and, since the W0 weather prototype, `weather`, which the
-   engine step now imports from W1 on; its host drivers `weather_obs` and `weather_spinup` are not in the list, because
-   they evaluate and read the device). This is
+   since the games vertical, `game.observe` and `game.rules`; since G2, `groups` and `game.social`; and, since the
+   W0 weather prototype, `weather`, which the engine step now imports from W1 on; its host drivers `weather_obs` and
+   `weather_spinup` are not in the list, because they evaluate and read the device). This is
    a heuristic AST check plus an allow-list.
    In those modules an enum or flag constant is written `X.Y.value`, never `int(X.Y)`: `int()` and `float()` apply
    only to names in `SAFE_ROOTS` (`cfg`, `d`, `math`, `layout`, `dims`, `self`). `knn_metal` is a simulation module
@@ -3390,15 +3480,16 @@ collected only under `-m slow` (the nightly job and the cloud worker).
    the string in `getattr`) appears only in `knn_metal`: one reviewed file for every custom kernel source, each of
    which must be bitwise equal to the pure-MLX path it replaces (§4). The meta-test has a bad snippet for each form.
 
-Scope. Rule 2 also covers the host-side `director.*` modules and every `game.*` module (the pure-MLX `game.observe` and
-`game.rules`, which rule 5 covers too, and the host `game.observer`): no subscript assignment, dict keys included, so a dict
-of the host observer is built with literals and comprehensions. The scan
-globs `src/alife/director/`, `src/alife/game/` and `src/alife/analysis/` (`analysis/` added by the I48 review fixes, so
-that rule 6 holds repo-wide; every rule passes there, the W0 study driver `analysis/w0.py` and its figures
-`analysis/w0_plots.py` included, and `test_source_tree` asserts that `analysis.resim` and `analysis.labels` are scanned),
-and the meta-test (`test_rules_are_not_vacuous`) has bad examples for rule 2 over `game.observe`, `game.observer` and
-`game.rules`, and for rule 5 over `game.rules`, `game.observe` and `weather`. `weather` (the W0 weather prototype, pure
-MLX like the simulation modules) is in the rule-2 and rule-5 scope as one of the `SIM_MODULES`.
+Scope. Rule 2 also covers the host-side `director.*` modules and every `game.*` module (the pure-MLX `game.observe`,
+`game.rules` and `game.social`, which rule 5 covers too, and the host `game.observer` and `game.society`): no subscript
+assignment, dict keys included, so a dict of the host observer is built with literals and comprehensions. `groups` and
+`weather` (the W0 weather prototype, pure MLX) are simulation modules (rules 2 and 5); `tracking` is host numpy by design
+and is not scanned. The scan globs `src/alife/director/`, `src/alife/game/` and `src/alife/analysis/` (`analysis/` added
+by the I48 review fixes, so that rule 6 holds repo-wide; rules 1, 3, 4, 5 and 6 pass there (rule 2 covers `director.*` and `game.*` by design, not `analysis.*`), the W0 study driver `analysis/w0.py` and
+its figures `analysis/w0_plots.py` included, and `test_source_tree` asserts that `analysis.resim` and `analysis.labels`
+are scanned), and the meta-test (`test_rules_are_not_vacuous`) has bad examples for rule 2 over `game.observe`,
+`game.observer`, `game.rules`, `game.society`, `game.social` and `groups` (and a good one over `tracking`), and for
+rule 5 over `game.rules`, `game.observe`, `game.social`, `groups` and `weather` (and a good one over `game.society`).
 
 ### 22.7 Performance bench (not gating)
 
@@ -6274,26 +6365,30 @@ which also gives the `n/K_floor` series of item 4.
 The first build step of the gaming vertical (`docs/GAMES.md` §4, §6.6, §9 G1; Review-log row I44). Observers turn what an
 agent does into windowed means, an **archetype** (what it lives on) and an **intent** (what it is doing), without
 touching the simulation. They are off by default and observer-only. This section is normative for them. The label
-thresholds are **provisional** (`INTENT_VERSION` 1) until the calibration run (§28.8): they may change under a new
-version, never silently.
+rules are `INTENT_VERSION` 2 (`RULES_V2`), calibrated offline on the G1 reference windows (§28.8); the validation on
+three held-out windows was run on 2026-10-21 and every label passed the provisional criterion (§28.8). They may
+change under a new version, never silently. The second build step, social
+tracking, is §29, and version 2 lands with it.
 
 ### 28.1 Scope, principles and deferrals
 
 **Principles.**
 - Observers never write `State`, never read `state.key` or any weight, and never change the trajectory. With
   `game.observe` on, the trajectory is bitwise the one with it off (§28.7).
-- Hashing follows the trajectory: `game.observe` is omitted from `config_hash` at every value.
+- Hashing follows the trajectory: `game.observe` (and, since G2, `game.house_rate`) is omitted from `config_hash` at every
+  value.
 - The compiled step is unchanged with the flag off (§28.2). There is no new scatter or setitem outside `ops.py` (the game
   modules use none; `step.py` calls the existing `ops.scatter_add_i32`), no new energy path and no ledger term, and no
   golden moves.
 - Every act and every rule input is dims-agnostic. Velocity has `nd` components and is the only input whose shape
   depends on the dims, so G1 works in 2D and in 3D, and both are tested.
 
-**Config** (§17). `GameConfig.observe: bool = False` is a field of `Config` between `director` and `run`.
-- `("game", "observe")` is in `POST_V01_KEYS` and in the new `config.OBSERVER_KEYS`. `config_hash` deletes a key that is
-  in `UNHASHED_KEYS` or in `OBSERVER_KEYS` at every value. `OBSERVER_KEYS` is a separate tuple so that
+**Config** (§17). `GameConfig` is a field of `Config` between `director` and `run`: G1 has `observe: bool = False`, G2
+adds `house_rate: float = 1/2048` (§29.1, §29.4).
+- Both game keys are in `POST_V01_KEYS` and in the new `config.OBSERVER_KEYS` (G1 had `("game", "observe")` alone).
+  `config_hash` deletes a key that is in `UNHASHED_KEYS` or in `OBSERVER_KEYS` at every value. `OBSERVER_KEYS` is a separate tuple so that
   `DIRECTOR_POLICY_KEYS` (derived from `UNHASHED_KEYS`, the director's resume keys) does not change.
-- **The hash does not move.** `config_to_dict` emits `"game": {"observe": b}`. The loop deletes `("game", "observe")` at
+- **The hash does not move.** `config_to_dict` emits `"game": {"observe": b, "house_rate": r}`. The loop deletes both game keys at
   every value, and the empty-section rule (over the sections of `POST_V01_KEYS`, which now contains `game`) then deletes
   the empty `game` section. The hashed dict is therefore exactly the pre-G1 dict: every existing preset and run keeps its
   hash, and toggling the flag never changes it. The invariant this relies on, which a test pins: every `GameConfig` field
@@ -6309,15 +6404,18 @@ version, never silently.
 | `64k3d` | `df54434fe947dea8f36e5e23223f9676df1ee784959806c31eafb235012ee242` (`runs/64k3d_s0`) | `2a4dfd22ed2e28359e6c01526b0460ede280f93ebee382872acca8c412098bba` |
 
 - A `config.json` without a `game` section loads with the default (`config_from_dict` is sparse) and hashes as before.
-  `validate` has no game rule (§17). The `tests/data/gui_config_*.json` fixtures carry the new section, because
+  `validate` has one game rule, `0 ≤ game.house_rate ≤ 1` (§17). The `tests/data/gui_config_*.json` fixtures carry the new section, because
   `test_gui_sync` compares them with `config_to_dict`; the Swift argument tables do not change, because a key at its
   default is not passed.
 - **Thresholds are code constants, not config keys.** The windows, thresholds and order of the labels are fields of the
   frozen `rules.RuleSet`, versioned by `INTENT_VERSION` and identified by `RuleSet.digest()` (§28.4), so a label means the
   same in every world. `game.observe` is the only key of G1. This is G1's choice, pending the owner's confirmation (GAMES
-  §10 item 11; the verdict criterion of §28.8 is item 12).
+  §10 item 11; the verdict criterion of §28.8 is item 12). G2 adds one key, `game.house_rate`, whose default is a working
+  value: an observer-only key may have one (CLAUDE.md, owner decision of 2026-10-19), because it is unhashed at every
+  value and inert while `game.observe` is off. G2's snapshot cadence and thresholds are fields of `SocialRules`, not
+  keys (§29.3).
 - **Resume** (§18). `cli.RESUME_GAME_KEYS` is the set of keys of `OBSERVER_KEYS`, and `_resume_allowed` accepts
-  `game.<key>` for them, so observers can be attached to an existing run. Any other `--set game.<key>` exits 2 and the
+  `game.<key>` for them (`game.observe` and, since G2, `game.house_rate`), so observers can be attached to an existing run. Any other `--set game.<key>` exits 2 and the
   message names `game.<key>`. `load_checkpoint` keeps checking the hash, which is equal. The accepted override is written
   back to `config.json` by the existing `save_config`. There is no `--observe` shortcut flag: `--set game.observe=true` is
   the interface, and the GUI gets nothing in G1.
@@ -6325,18 +6423,21 @@ version, never silently.
   differs. A fork never receives the source's sidecar (§28.6).
 
 **Deferred.**
-- To G2: `BirthRecords.parent_slot`; houses, kin groups, colonies, territory and relations; with them, the acts
-  `attack_target`, `bond_target` and `q_kin` (they serve only the relations and the per-kin-group temperament); and the
-  "in a colony of 4 or more" clause of Settler (G1's Settler is the speed rule alone).
+- **Built in G2 (§29):** houses, kin groups, colonies, territory and relations, with the acts `attack_target`,
+  `bond_target` and `q_kin` and a parent-row channel in place of `BirthRecords.parent_slot` (§29.2), and the "in a colony
+  of 4 or more" clause of Settler, on in `RULES_V2` (`settler_body` 4, §28.4).
 - Until a game world is 3D: `analysis/signals.decode` and the SIGNALS analysis in 3D.
 - To G3: the stream tags (`IDNT`, `INTN`, `TERR`, `EVNT`), `alife play`, picking and the HUD, the archetype and intent
   colour modes, and the combined play-loop bench (step, observers, stream and director together).
-- To G3 (rewind and replay) or G4 (era change): copying the source's sidecar into a fork. Every fork, a replay fork
+- To G3 (rewind and replay) or G4 (era change): copying the source's sidecar (and, since G2, the social log) into a
+  fork. Every fork, a replay fork
   (`run --init-from SRC --director replay --replay-log LOG`, the bitwise path of §26.8) included, starts its observers
   fresh. Its trajectory is the source's but its labels are not: they are unset during the warm-up and then agree with the
   source's only approximately, because accumulator residuals below `2^k` and the hysteresis state differ.
 - To G4: observer values in the director's vitals. `DESCRIPTOR_NAMES` is unchanged.
-- Later, on the GPU: the calibration on `64k_s0` and `64k3d_s0` and the 64k benches (§28.8). The Metal purity run passed before merge (row I44).
+- Done on the GPU on 2026-10-21 (row I45): the validation of `INTENT_VERSION` 2 on three held-out windows (every label
+  passes the provisional criterion), the 64k benches, and the Metal purity run for the version-2 observer (§28.8). The
+  Metal purity run had passed before merge for G1 (row I44).
 
 ### 28.2 The observer channel (`step.py`, `energy.py`)
 
@@ -6352,6 +6453,8 @@ class ActFlag(IntFlag):
     FORMED = 4     # bond formed at S9, either end (2·BONDS_FORMED rows)
     BUDDED = 8     # parent of a birth lane at S16 (BIRTHS rows)
     EMITTED = 16   # some channel's deposit quanta floor(256·emit_c) > 0 (EMITTERS)
+    PROPOSED = 32  # G2 (§29.2): a proposal that formed a bond with bond_target (BOND_PROPOSERS)
+    KILLED = 64    # G2: died KILLED at S14 this step (DEATHS_KILLED)
 class Acts(NamedTuple):
     attack_gain: mx.array  # (N,) int32
     share_out: mx.array    # (N,B) int32
@@ -6360,6 +6463,15 @@ class Acts(NamedTuple):
     thrust: mx.array       # (N,) int16, round(256·act.thrust) of the post-S8 actions
     defend: mx.array       # (N,) int16, round(256·act.defend) of the post-S8 actions
     emit: mx.array         # (N,) int16, Σ_c floor(256·act.emit_c), the S17 deposit quanta, in [0, 768]
+    # G2 (§29.2), appended after the seven above:
+    attack_target: mx.array  # (N,) int32, post-S8, −1 none
+    bond_target: mx.array    # (N,) int32, post-S8, −1 none
+    q_kin: mx.array          # (N, 2) int16, round(256·clip(y_kin, ±127)) of the attack and bond queries
+    nbr: mx.array            # (N, K) int32 sensed neighbour rows, −1 invalid
+    born_row: mx.array       # (M,) int32 child row per lane, −1 padding
+    born_parent: mx.array    # (M,) int32 parent row per birth lane, −1 otherwise
+    born_uid: mx.array       # (M,) int64 uid per lane, −1 padding
+    death_cause: mx.array    # (N,) int8 DeathCause of a row that died this step, −1 elsewhere
 class StepOutG(NamedTuple):   # counters, ledger, births, deaths, acts
     def base(self) -> StepOut # the StepOut part
 ```
@@ -6374,8 +6486,8 @@ class StepOutG(NamedTuple):   # counters, ledger, births, deaths, acts
 | `defend` | the post-S8 `act.defend`, the input of the S11 gather `act.defend[t0]` | `round(256·v)` |
 | `emit` | the S17 deposit quanta `floor_i32(256·act.emit)` summed over the channels, post-S8 | `Σ_c emit_q`, in [0, 768] (3 channels × 256: `tanh` reaches exactly 1.0 in float32, so `floor(256·emit_c)` reaches 256) |
 
-**Not in the channel** (G2): the attack and bond targets, `q_kin`, and the S12 partner. The per-slot flows need no partner
-(§28.3). **Read from `State` instead**, after the step and free: `last_harvest`, `last_inflow` and `last_loss` (written
+**Not in the channel:** the S12 partner and `nbr.valid`. The per-slot flows need no partner (§28.3), and the neighbour
+rows carry their own validity (§29.2). (G1 left the targets and `q_kin` to G2, which added them: §29.2.) **Read from `State` instead**, after the step and free: `last_harvest`, `last_inflow` and `last_loss` (written
 for survivors, cleared for newborns), `vel`, `alive`, `uid`, `parent_uid` and `partner`. Dead rows have `uid = −1`.
 
 **Code.** `energy.share` is split into two functions with the same primitives in the same order (§10.6):
@@ -6384,10 +6496,10 @@ for survivors, cleared for newborns), `vel`, `alive`, `uid`, `parent_uid` and `p
 signature and callers. In `step`, under the static flag only: `thrust0 = act.thrust` just before `actions.mask(act,
 c.solvent)` (a Python reference to the decode output; it adds no graph node); S12 calls `share_slots` and then
 `share_from_slots` **once** (the else-branch keeps `en.share`, so no float node of S12 gains a consumer and nothing depends
-on compile merging duplicates); and S18 returns `StepOutG(*out, acts=_acts(flows, sl, thrust0, cfg))`. `_acts` builds the
+on compile merging duplicates); and S18 returns `StepOutG(*out, acts=_acts(flows, sl, thrust0, y0, s.alive, cfg))` (G1 had neither `y0` nor `s.alive`: §29.2). `_acts` builds the
 flags with `ActFlag.X.value` (never `int(ActFlag.X)`, which rule 5 of §22.6 rejects), the budded mask with
 `ops.scatter_add_i32(n, lanes.parent, 1, birth) > 0` (distinct parents: Σ = the births), and `emit_q` with the expression
-of the `EMITTERS` counter and of `fields.deposit_chem`. At 65,536 rows `acts` is 43 B per row, about 2.8 MB per step; the
+of the `EMITTERS` counter and of `fields.deposit_chem`. At 65,536 rows `acts` is 43 B per row, about 2.8 MB per step (88 B and 5.8 MB with G2's additions, §29.2); the
 runner folds it into the accumulators in the same eval and never retains it.
 
 **The step with the flag off is unchanged.** `observe` is a Python bool constant: with `False`, `step` runs the same
@@ -6424,10 +6536,38 @@ state and `out.base()`) and of `out.acts` with `mx.export_to_dot` in the same pr
 so they agree across the two files). A *tap* is an array produced by a trajectory primitive that a channel-only primitive
 reads, or a channel output itself. The taps must be exactly the twelve arrays of this section (the decode thrust, the
 post-S8 defend and emit, the solvency mask, the lane kind and parent, `Combat.attack`, `hit` and `gain`, `formed`, and the
-S12 per-slot `out` and `got`), and `share_slots` must be called once. Two mutants that leave every value unchanged (the
-channel reading the post-S8 thrust, and a second S12) add one and four unlisted taps; a meta-test requires the probe to
-report both. A slow-marked comparison of the compiled kernel lists (the MLX JIT cache) was considered and not built: it
-depends on MLX's cache layout and names, and the graph test pins the same property.
+S12 per-slot `out` and `got`), with G2's eight (§29.2) twenty in all, and `share_slots` must be called once. A channel
+field that is itself an unlisted trajectory array, returned with no op of its own (so that it is no primitive's input), is
+a tap too and is reported as `Acts.<field>`: the probe names every field that is not one of the listed arrays (an identity
+check) and looks up its producer. Two mutants that leave every value unchanged (the channel reading the post-S8 thrust,
+and a second S12) add one and four unlisted taps, G2's third (§29.2) adds one, and a fourth (the post-S8 thrust returned
+as the `emit` field) adds the field; a meta-test requires the probe to report all four.
+
+**The compiled trajectory.** The eager trace cannot see `mx.compile`'s merging of identical sub-expressions (CSE): a
+channel expression that repeats a trajectory one reads only listed arrays when traced eagerly, but once compiled it is the
+trajectory's own node, so it gives an intermediate of a fused float kernel a second consumer or splits the kernel. Four
+such mutants (each folds an expression into a field as `expr > 1e30`, never true: `where(solvent, thrust0, 0.0)`, the
+cancel that `actions.mask` applies to the thrust; `turn_max·tanh(y_turn)`; `tanh(y_contract)`; `sigmoid(y_defend)`) leave
+every value unchanged, read only listed arrays and pass the eager probe, and each splits a fused float kernel of the
+compiled step (for the turn, `CompiledTanhBroadcastMultiplyBroadcastSelect` into a `Tanh`/`Multiply` kernel and a
+`Select`). `test_the_channel_regroups_no_float_kernel_of_the_compiled_step` (the same three configurations) therefore
+compares the compiled step with observe off and on. It calls `make_step(cfg, compile=True, observe=…)` once per setting
+and exports the trajectory outputs (the new state and `out.base()`) with `mx.export_to_dot` before anything is evaluated:
+that is the compiled tape (`Compiled*` labels are fused kernels), not the JIT cache whose layout and names an earlier
+decision not to compare kernel lists rested on. A primitive's signature is its label (the operations fused into it) and
+its number of outputs: a kernel whose arithmetic is regrouped, split or given an output has another one, and a kernel whose
+inputs come from a kernel that changed has not. The kernels in the difference of the two multisets must have labels
+made only of comparisons, selects, bit operations and casts (`Broadcast`, `Greater`, `GreaterEqual`, `Equal`, `Select`,
+`BitwiseAnd`, `AsType`), none of which can round, so that no kernel with a float operation (`Tanh`, `Multiply`, `Divide`,
+...) is regrouped, split or given an output; and the difference must not be empty. Today it is three integer groups, the same in
+2D and 3D and with float32 and float16 weights: the `HIT` bit (`Combat.hit` becomes a kernel output, so the `ATTACK_HITS`
+counter's `…GreaterBitwiseAndAsType` kernel splits before its cast; G1), the `KILLED` bit (its comparison `dt.cause ==
+KILLED` is the `DEATHS_KILLED` counter's, so CSE merges the two, on purpose, and splits the counter's `…EqualAsType`
+kernel; `cause.astype(int8) == KILLED` would not; it is integer and harmless, and left as written) and the post-S8
+`bond_target` (the select kernel of the S9 partner gains a second output). A meta-test requires the four mutants, G1's
+post-S8-thrust mutant and the field mutant to give a difference with an inexact kernel (tiny, float32 and float16). The
+gate is on the CPU compile; on Metal the same file confirms that the fusion there groups the same operations (the list is
+of operations, not of kernel names).
 
 This is a design guide, not a proof: fusion is an MLX internal, and an integer node that gains a reader could still move
 a boundary next to float ops on Metal. Purity is an **empirical** property, gated by the tests (§28.7, §28.9). If Metal
@@ -6438,8 +6578,9 @@ not be moved to the hashed keys silently.
 
 The module has no host sync, no Python branch on an array value, no scatter and no setitem; it is in the scope of rules 2
 and 5 of §22.6 (enum constants are written `X.Y.value`). `ObsIn` is the only view of `State` an observer takes
-(`alive`, `uid`, `parent_uid`, `partner`, `vel`, `last_harvest`, `last_inflow`, `last_loss`): it has no `key` and no
-weight field. Constants: `OBS_CAP = 1 << 30` (saturation of counters, and "older than the observation" or "never"),
+(`alive`, `uid`, `parent_uid`, `partner`, `vel`, `last_harvest`, `last_inflow`, `last_loss` and, since version 2,
+`energy` and `brain_cost`, the Budding forecast's inputs): it has no `key` and no weight field (`brain_cost` is the
+int32 L1 term of the basal cost, set at birth, not a weight). Constants: `OBS_CAP = 1 << 30` (saturation of counters, and "older than the observation" or "never"),
 `VQ_MAX = 1 << 15` (clip of quantised velocity components and speed).
 
 **`ObsState`** (one row per `State` row; `B` = bond slots, `nd` = dims):
@@ -6450,16 +6591,17 @@ weight field. Constants: `OBS_CAP = 1 << 30` (saturation of counters, and "older
 | `n_obs` | (N,) int32 | steps observed since the occupant appeared, saturating at `OBS_CAP` |
 | `arch` | (N, 5+2nd) int32 | archetype accumulators, `ArchCol` HARVEST, GAIN, INFLOW, OUTFLOW, SPEED, then V_POS[c] = 5 + c and V_NEG[c] = 5 + nd + c |
 | `arch_slot` | (N, B, 2) int32 | per-slot accumulators: [..., 0] share out, [..., 1] share got |
-| `intent` | (N, 7) int32 | intent accumulators, `IntentCol` ATTACK, HURT, THRUST, DEFEND, EMIT, HARVEST, CARE |
+| `intent` | (N, 10) int32 | intent accumulators, `IntentCol` ATTACK, HURT, THRUST, DEFEND, EMIT, HARVEST, CARE, then (version 2) FORMED, FLOW_POS, FLOW_NEG |
 | `since_bud` | (N,) int32 | steps since the last bud (`OBS_CAP` = never) |
 | `slot_uid` | (N, B) int64 | partner uid per slot at the last update (−1 empty) |
 | `slot_age` | (N, B) int32 | steps the slot's bond has been seen (`OBS_CAP` = predates the observation) |
 | `slot_kin` | (N, B) bool | the slot's partner is this row's parent or child |
 | `label_arch` | (N, 2) int32 | primary, secondary `Archetype` (NONE = 0) |
 | `match_arch` | (N,) int32 | rule bits at the last evaluation (§28.4) |
-| `label_intent` | (N,) int32 | displayed `Intent` (after the hysteresis) |
+| `label_intent` | (N,) int32 | displayed `Intent`: the held intent, except where the Budding overlay shows BUDDING (§28.4) |
+| `held` | (N,) int32 | the hysteresis label (`label_intent` equals it except where the overlay shows BUDDING; always, under rules without the overlay) |
 | `match_intent` | (N,) int32 | predicate bits \| `EVAL_BIT` at the last evaluation |
-| `cand`, `cand_n` | (N,) int32 | the hysteresis candidate and the consecutive evaluations it has held |
+| `cand`, `cand_n` | (N,) int32 | the hysteresis state of `held`: the candidate and the consecutive evaluations it has held (under the overlay `cand` is the raw first match of the eight predicates other than Budding) |
 
 **The accumulator.** `ema(A, x, k) = A + x − (A >> k)` in int32 with `x ≥ 0`, so `A ≥ 0`; the mean is `A >> k`.
 - A constant `x` converges exactly to `A = x << k` (the last increments are 1), so the mean is `x` with no dead zone.
@@ -6471,17 +6613,27 @@ weight field. Constants: `OBS_CAP = 1 << 30` (saturation of counters, and "older
 
 **Headroom.** `validate` bounds `harvest_max`, `attack_max` and `share_rate` below `2^16` (§17). The per-step bound `X` of
 each column is: `harvest_max` (arch HARVEST, intent HARVEST), `attack_max` (arch GAIN), `B·share_rate` (arch INFLOW and
-OUTFLOW, intent CARE), `share_rate` (the per-slot columns), `VQ_MAX` (SPEED and the velocity halves), 256 (the flags and
-the |thrust| and defend columns) and 768 (EMIT: 3 channels × 256). `RuleSet.check(cfg)` raises `ValueError`, naming the column and `k`,
+OUTFLOW, intent CARE), `share_rate` (the per-slot columns), `VQ_MAX` (SPEED and the velocity halves), 256 (the flags,
+FORMED and the |thrust| and defend columns) and 768 (EMIT: 3 channels × 256). The two flow columns (version 2) are bounded by
+the visible terms of a step: FLOW_POS by `harvest_max + attack_max + B·share_rate` (harvest, attack gain, Σ got; 8,400 at
+the defaults) and FLOW_NEG by `e_max + B·share_rate + move_cost + defend_cost + NCH·emit_cost + attack_cost` (the hit's
+`last_loss` is at most `e_max`, because combat takes from the victim's post-harvest energy and harvest is clipped to the
+headroom, plus Σ out and the four quantised costs, each at most its coefficient; 1,004,230 at the defaults). Both
+columns exist under every rule set. `RuleSet.check(cfg)` raises `ValueError`, naming the column and `k`,
 unless `X·(2^k + 1) ≤ 2^31 − 1` for every column of both families (`arch_k` for the archetype and per-slot columns,
 `intent_k` for the intent columns). `Observer.__init__` and the study tool call it, so a calibration sweep with a large `k`
 fails loudly instead of wrapping. At the default `share_rate` the largest safe `arch_k` is 15 (the SPEED and velocity
 columns, bounded by `VQ_MAX`, are the limit; 16 fails naming `arch.speed`); at `share_rate = 2^16 − 1` it is 12 (13 fails
-naming `arch.inflow`). The GAMES bound (6,800 per step at `k = 16`, 4.46e8) is tested too.
+naming `arch.inflow`). The GAMES bound (6,800 per step at `k = 16`, 4.46e8) is tested too. **The largest `intent_k`** that
+`check` accepts at `e_max = 10^6` is 11 (`1,004,230·(2^11 + 1) ≤ 2^31 − 1 < 1,004,230·(2^12 + 1)`; 12 fails naming
+`intent.flow_neg`), where version 1 allowed 19 (set by `intent.care`) at the default `share_rate`; this holds for
+version-1 sweeps too, since the columns are accumulated whatever the rules (so `RULES_V1` evaluates exactly as in G1 but no
+longer validates a wide-window sweep with `intent_k` 12 to 19, which G1 accepted).
 
 The ratio tests `den·x ≥ num·y` are int32 as well, so `check` also requires `max(num, den)·X ≤ 2^31 − 1` for each of them,
-with `X` the largest compared mean: the windowed income `harvest_max + attack_max + B·share_rate` for Gatherer, Hunter and
-Provider, `share_rate` for Trader, `max(B·share_rate, harvest_max)` for Caring, `harvest_max` for Feeding; Roaming
+with `X` the largest compared mean: the windowed income `harvest_max + attack_max + B·share_rate` for Gatherer's share
+test, Hunter and Provider, `share_rate` for Trader, `max(B·share_rate, harvest_max)` for Caring, `harvest_max` for Feeding
+and Gatherer's level test (`gatherer_level`); Roaming
 compares `den·m_thrust` (`m_thrust ≤ 256`) with the constant `num`, so it needs `max(num, den·256) ≤ 2^31 − 1`. (The
 Nomad and Settler tests are int64.) A sweep `RuleSet` that scales a v1 ratio by 10^5 is refused, naming the field, instead
 of wrapping and mislabelling rows.
@@ -6493,8 +6645,20 @@ of wrapping and mislabelling rows.
   accumulator; the mean component is `m⁺ − m⁻`. Both start at 0, so a reset needs no offset.
 - Archetype columns: `[last_harvest, attack_gain, last_inflow, Σ_b share_out, sp, vq⁺, vq⁻]`. Per-slot: `[share_out,
   share_got]`. Intent columns: `[256 if ATTACKED, 256 if last_loss > 0, |thrust|, defend, emit, last_harvest,
-  care_out]`, where `care_out(slot_kin_prev, share_out) = Σ_b where(slot_kin_prev, share_out, 0)` uses the relation of the
-  start-of-step bond (the previous update's `slot_kin`).
+  care_out, 256 if FORMED, max(flow, 0), max(−flow, 0)]`, where `care_out(slot_kin_prev, share_out) = Σ_b where(slot_kin_prev,
+  share_out, 0)` uses the relation of the start-of-step bond (the previous update's `slot_kin`).
+- **The flow** (version 2, the Budding forecast's input) is the step's visible net energy flow `flow = last_harvest +
+  attack_gain + last_inflow − Σ_b share_out − last_loss − cost`, with the four costs the channel carries as quantised
+  floors: `cost = (move_cost·q²) >> 16 + (defend_cost·defend) >> 8 + (emit_cost·emit) >> 8 + attack_cost·[ATTACKED]` for
+  `q` the signed `round(256·thrust)` of the channel (after the solvency mask). Every shift is parenthesised, and the
+  flow is computed in **int64**, because `validate` bounds the cost coefficients only from below (`move_cost·q²` overflows
+  int32 from `move_cost = 2^15`); each half is at most its `check` bound, so the cast back to int32 is safe. `last_inflow` is
+  Σ_b share_got (S12 sets `E − Σ out + Σ got`). What the flow leaves out is what `RuleSet.bud_cost` stands for: the turn,
+  grip, contract, message and harvest effort, and in 3D the pitch and buoyancy terms. One known gap: the step charges
+  `attack_cost` on the decoded attack, while `ATTACKED` is unset when the target became a partner at S9 (`energy.combat`
+  drops the attack, its cost was paid at S8). `Acts.attack_target ≥ 0` would be the exact charge but was not what the
+  calibration scored (the dumps lack the target), so switching it needs a rescore. The sign conventions are tested on real
+  steps against the energy change (§28.9).
 
 **`update(o, oi, a, cfg, rs)`** (after every step) folds the step in:
 - `keep = alive & (uid == o.uid)`: the same occupant as at the last update. Everything of a row with `keep` false is reset
@@ -6506,7 +6670,7 @@ of wrapping and mislabelling rows.
   this row, or this row's parent is the partner. A slot is the *same bond* when the row is kept and `su == o.slot_uid ≥ 0`;
   the per-slot accumulators and the age continue only then (age + 1, saturating), otherwise they reset (age 1 for a new
   partner, 0 for an empty slot).
-- `since_bud` is 0 on a BUDDED step, else it increments (saturating).
+- `since_bud` is 0 on a BUDDED step, else it increments (saturating). `held` resets with the labels.
 - **Why the per-slot flows need no S12 partner.** A nonzero `share_out[i,b]` or `share_got[i,b]` occurs only on the bond
   that occupied slot `b` at the start of the step, whose partner uid is the previous update's `slot_uid[i,b]`. `out` needs
   `partner == partner0` (§10.6); `in[i,b]` needs the partner's own gate, hence its start-of-step slot pointing at `i`, and
@@ -6517,84 +6681,165 @@ of wrapping and mislabelling rows.
   defeat donation, F1), and every output derives from an input (the MLX 0.32 compile quirk of `consume_env`, §16.3).
 
 **`init_obs(oi, cfg)`**: nothing accumulated or labelled, `since_bud = OBS_CAP`, `slot_uid` and `slot_kin` from `oi`, and
-`slot_age = where(su >= 0, OBS_CAP, 0)`: bonds of unknown age are never "new". `evaluate(o, cfg, rs)` is §28.4. Both
-`update` and `update`+`evaluate` are compiled by the host observer as two closures over `(cfg, rs)` with `mx.compile` iff
+`slot_age = where(su >= 0, OBS_CAP, 0)`: bonds of unknown age are never "new". `evaluate(o, cfg, rs, *, body=None, oi=None)` is §28.4.
+Both `update` and `update`+`evaluate` are compiled by the host observer (with G2's social fold, snapshot and relabel, §29.9) as closures over `(cfg, rs)` with `mx.compile` iff
 `cfg.run.compile`, so the compile mode follows the run's and labels are reproducible under the same contract as the
 trajectory (§14.2). They run in `runner.run` after each step, in its single `mx.eval`, never inside the step.
 
 ### 28.4 Rules (`game/rules.py`)
 
-`INTENT_VERSION = 1` covers every archetype and intent rule, threshold, window and the order; any change bumps it. It is
-**provisional** until the calibration run. The thresholds are the fields of the frozen `RuleSet`; `RULES_V1` is its
-`INTENT_VERSION` 1 instance. `RuleSet.digest()` is the sha256 of `json.dumps(dataclasses.asdict(rs), sort_keys=True,
-separators=(",", ":"))` (tuples become lists), and a test pins `RULES_V1.digest()` next to `INTENT_VERSION`
-(`156ad4963b84ffe9636e9ba4fdd7592632c669bf6e490687d8eb2b38b9aec009`), so a threshold edit without a version bump fails the
-suite; the sidecar stores the digest (§28.6). `ARCH_PRIORITY` is part of the version but not of the digest (it is not a
-field), so a test pins it as a literal. Every threshold is an integer `(num, den)` pair tested as `den·x ≥ num·y`
-(`<` for Settler), so a label is an exact function of the accumulators. `RuleSet.__post_init__` rejects nonsense (a `k`
-outside [1, 30], `every` or `hold` below 1, a zero denominator, `bond_age` with `lo ≥ hi`); `check` is §28.3.
+`INTENT_VERSION = 2` covers every archetype and intent rule, threshold, window and the order; any change bumps it.
+`RULES_V2` (the default, `RuleSet()`) is its instance; `RULES_V1` stays defined, naming its version-1 values, and keeps
+its G1 digest. Fields added after version 1 have an inert value that reproduces version 1 (`_POST_V1_INERT`); `digest()`
+leaves a field out while it holds that value. A test pins both digests (`RULES_V1` `156ad496…c009`, `RULES_V2`
+`dc78f771…b4f7`). The thresholds are the fields of the frozen `RuleSet`. `RuleSet.digest()` is the sha256 of
+`json.dumps(dataclasses.asdict(rs), sort_keys=True, separators=(",", ":"))` (tuples become lists), leaving out each field of
+`_POST_V1_INERT` while it holds its inert value (the pattern of `config_hash` for post-v0.1 keys), so a threshold edit
+without a version bump fails the suite; the sidecar stores the digest (§28.6). `ARCH_PRIORITY` is part of the version but
+not of the digest (it is not a field), so a test pins it as a literal; the intent priority is the field `intent_order`
+and is in the digest. Every threshold is an integer `(num, den)` pair tested as `den·x ≥ num·y` (`<` for Settler), so a label is
+an exact function of the accumulators. `RuleSet.__post_init__` rejects nonsense (a `k` outside [1, 30], `every` or `hold`
+below 1, a zero denominator, `bond_age` with `lo ≥ hi`, a negative `settler_body`, `defend_hurt`, `bond_rate`, `bud_horizon`
+or `bud_cost`, a `bud_overlay` that is not a bool, an `intent_order` that is not a tuple permuting 1 to 9); `check` is §28.3.
 
 **Means.** `m = A >> k`: archetype columns use `arch_k`, intent columns `intent_k`; flags enter as 256 per set step; speed and
-velocity are in units of `u/256`. `I = m_harvest + m_gain + m_inflow` is the windowed income.
+velocity are in units of `u/256`. `I = m_harvest + m_gain + m_inflow` is the windowed income. `hm` = `energy.harvest_max`
+(400 in every preset), `me` = `repro.min_energy` (40,000), `ma` = `repro.min_age` (20).
 
-| field | v1 value | meaning |
-|---|---|---|
-| `arch_k`, `intent_k` | 6, 3 | windows of about `3·2^k` steps to 95% |
-| `every`, `hold` | 8, 4 | evaluate when `state.step % every == 0`; a displayed intent changes after `hold` consecutive evaluations |
-| `arch_warm`, `intent_warm` | 192, 24 (= 3 << k) | `n_obs` before a row is labelled |
-| `gatherer` | (7, 10) | `I ≥ 1` and `10·m_harvest ≥ 7·I` |
-| `hunter` | (7, 20) | `m_gain ≥ 1` and `20·m_gain ≥ 7·I` |
-| `provider` | (1, 5) | `m_out ≥ 1` and `5·m_out ≥ I` |
-| `trader` | (1, 2) | Provider, and a slot `b` with `mn = min(out_b, in_b) ≥ 1` and `2·mn ≥ max(out_b, in_b)` (per-slot means) |
-| `nomad_speed`, `nomad_persist` | (512, 5), (9, 25) | `5·m_s ≥ 512` (0.4u = 102.4 units) and `25·Σ_c(m⁺_c − m⁻_c)² ≥ 9·m_s²` (int64; persistence ≥ 0.6) |
-| `settler_speed` | (256, 10) | `10·m_s < 256` (0.1u); the colony clause is G2 |
-| `bud_window` | 32 (= every·hold) | Budding: `since_bud < 32` |
-| `hunt` | 64 | Hunting: `m_attack ≥ 64` (flag mean 0.25) |
-| `flee_hurt`, `flee_thrust` | 8, 128 | Fleeing: `m_hurt ≥ 8` (hurt within about 11 steps) and `m_thrust ≥ 128` (0.5) |
-| `defend` | 128 | Defending: `m_defend ≥ 128` (0.5) |
-| `care` | (1, 10) | Caring: `m_care ≥ 1` and `10·m_care ≥ harvest_max` (40 q/step at 400) |
-| `bond_age` | (24, 120) | Bonding: a slot with `¬slot_kin` and `24 ≤ slot_age < 120` |
-| `signal` | 128 | Signalling: `m_emit ≥ 128` deposit quanta per step (Σ_c emit_c ≈ 0.5) |
-| `feed` | (1, 2) | Feeding: `m_harvest ≥ 1` and `2·m_harvest ≥ harvest_max` (intent window) |
-| `roam` | (768, 10) | Roaming: `10·m_thrust ≥ 768` (0.3) |
+| field | `RULES_V1` | `RULES_V2` (default) | inert (post-v1) | meaning |
+|---|---|---|---|---|
+| `arch_k`, `intent_k` | 6, 3 | 6, 3 | | windows of about `3·2^k` steps to 95% |
+| `every`, `hold` | 8, 4 | 8, 4 | | evaluate when `state.step % every == 0`; a displayed intent changes after `hold` consecutive evaluations |
+| `arch_warm`, `intent_warm` | 192, 24 | 192, 24 | | `n_obs` before a row is labelled (= 3 << k) |
+| `gatherer` | (7, 10) | **(0, 1)** | | Gatherer share: `I ≥ 1` and `den·m_harvest ≥ num·I` ((0, 1) leaves `I ≥ 1`) |
+| `gatherer_level` | (0, 1) | **(3, 4)** | (0, 1) | Gatherer level: `m_harvest ≥ 1` and `den·m_harvest ≥ num·hm` (k = 6) |
+| `hunter` | (7, 20) | (7, 20) | | `m_gain ≥ 1` and `20·m_gain ≥ 7·I` |
+| `provider` | (1, 5) | (1, 5) | | `m_out ≥ 1` and `5·m_out ≥ I` |
+| `trader` | (1, 2) | (1, 2) | | Provider, and a slot `b` with `mn = min(out_b, in_b) ≥ 1` and `2·mn ≥ max(out_b, in_b)` (per-slot means) |
+| `nomad_speed`, `nomad_persist` | (512, 5), (9, 25) | same | | `5·m_s ≥ 512` (0.4u = 102.4 units) and `25·Σ_c(m⁺_c − m⁻_c)² ≥ 9·m_s²` (int64; persistence ≥ 0.6) |
+| `settler_speed` | (256, 10) | (256, 10) | | `10·m_s < 256` (0.1u); or the colony clause `settler_body` |
+| `settler_body` | 0 (off) | **4** | 0 | Settler also if the row's bond component has `body ≥ settler_body` members (G2, below); a value in [0, 2^31 − 1] is accepted |
+| `bud_window` | 32 | 32 | | v1 Budding: `since_bud < bud_window` (= `every·hold`); unused while `bud_horizon > 0` |
+| `bud_horizon` | 0 | **10** | 0 | `h`; > 0 selects the forecast (static): `E < me` and `E + h·(m_flow − basal − c) ≥ me` and `n_obs ≥ ma` (int64) |
+| `bud_cost` | 0 | **24** | 0 | `c`: quanta per step of the action costs the observer does not see |
+| `bud_overlay` | False | **True** | False | Budding is displayed at every evaluation where it holds, outside the hold |
+| `hunt` | 64 | 64 | | Hunting: `m_attack ≥ 64` (flag mean 0.25) |
+| `flee_hurt`, `flee_thrust` | 8, 128 | 8, 128 | | Fleeing: `m_hurt ≥ 8` (hurt within about 11 steps) and `m_thrust ≥ 128` (0.5) |
+| `defend` | 128 | **192** | | Defending: `m_defend ≥ defend` (0.75 in version 2) |
+| `defend_hurt` | 0 | **1** | 0 | Defending also needs `m_hurt ≥ defend_hurt` (0: always true) |
+| `care` | (1, 10) | (1, 10) | | Caring: `m_care ≥ 1` and `10·m_care ≥ hm` (40 q/step at 400) |
+| `bond_age` | (24, 120) | (24, 120) | | v1 Bonding: a slot with `¬slot_kin` and `24 ≤ slot_age < 120`; unused while `bond_rate > 0` |
+| `bond_rate` | 0 | **64** | 0 | Bonding: `m_formed ≥ bond_rate` (> 0 selects it, static; 64 is a formation-flag mean of 0.25 on the k = 3 EMA: a steady formation every 3 steps reads 74 to 97 and is always on, one every 4 steps reads 52 to 77 and flickers across the threshold) |
+| `signal` | 128 | **192** | | Signalling: `m_emit ≥ signal` deposit quanta per step (Σ_c emit_c ≈ 0.75 in version 2) |
+| `feed` | (1, 2) | **(3, 4)** | | Feeding: `m_harvest ≥ 1` and `den·m_harvest ≥ num·hm` (intent window) |
+| `roam` | (768, 10) | (768, 10) | | Roaming: `10·m_thrust ≥ 768` (0.3) |
+| `intent_order` | (1, …, 9) | **(1, 2, 3, 5, 4, 6, 8, 7, 9)** | (1, …, 9) | `Intent` values in first-match priority |
 
-`bud_window`, `flee_hurt`, `care`, the upper bound of Bonding, the kin exclusion and the guards `m_care ≥ 1` and `m_harvest ≥
-1` (they only stop a world with `harvest_max < 10` from labelling every row Caring and Feeding) are G1's provisional
-choices. Budding needs a window of 32 steps or a single bud could never hold for 4 evaluations; kin bonds, mostly child
-bonds, are Caring's.
+Why each inert value reproduces version 1 exactly: `gatherer_level` (0, 1) adds `m_harvest ≥ 1`, which the v1 share test already
+implies (`I ≥ 1` and `10·h ≥ 7·I` give `h ≥ 1` in integers); in version 2, `gatherer` (0, 1) leaves `I ≥ 1`, which `h ≥ 1` implies;
+`defend_hurt` 0 adds `m_hurt ≥ 0`, which always holds; `settler_body`, `bud_horizon` and `bond_rate` at 0 select the version-1
+code paths statically; `bud_overlay` False is G1's shared hold, and `intent_order` (1, …, 9) is G1's order. Version 2's
+other thresholds are G1's, and `RULES_V1` names the four fields whose defaults changed (`gatherer`, `defend`, `signal`, `feed`).
+
+**Version 2: what changed and why** (the evidence is §28.8; each is a meaning change to GAMES §4.4):
+- **Gatherer** is a harvest level, `m_harvest ≥ 0.75·hm`; the v1 share of income (0.7) matched 98% (2D) and 93% (3D) of agents,
+  since nearly all income is harvest. Generalist becomes the commonest primary label (46%).
+- **Defending** needs a hit within about 31 steps (`m_hurt ≥ 1`) and the guard at 0.75: v1's guard at 0.5 matched 83% of agents
+  and broke the coverage cap. Its validity rests on the guard level: the hurt gate only caps the coverage, and the guard
+  does not react to hits (a random gate of the same size scores the same AUC in 2D), so the label means "guarding after a recent hit".
+- **Budding** is a forecast of energy: `E < me` and, at the windowed net flow of the visible terms less the basal due and
+  `c = 24` for what the observer does not see, `E` reaches `me` within `h = 10` steps; it needs the post-step `energy` and
+  `brain_cost` (`ObsIn`), two flow columns (`FLOW_POS`, `FLOW_NEG`) and `n_bonds` (occupied slots of `State.partner`). It is
+  a forecast of energy and income, not of the decision to bud (3D precision 0.44: 37% of 3D budders wait above `me` with
+  their reproduce output off, which the observer cannot see). v1's "bud within 32 steps" had no signal (AUC 0.496).
+- **Budding is an overlay**: any label shown through the hold appears 24 steps late and stays at least 32, which would cap a
+  perfect 10-step forecast near 0.66. Budding is therefore displayed at every evaluation where its predicate holds, over the
+  held intent, and never enters the hysteresis; the label is mostly on screen for one evaluation (8 steps), so a UI may want
+  a minimum on-screen time (a rendering choice, not a rule).
+- **Bonding** is a formation rate, `m_formed ≥ 64` (a new `FORMED` column). In 3D it is mostly bond flicker with the same
+  neighbours (94% of new bonds re-form a pair seen earlier in the window, RESULTS_3D §5.4; the partners' identity is not measured
+  in 2D), not a new lasting partner: the v1 meaning failed in both worlds and cannot be validated with the current outcome. Its display name is **Tethering**.
+- **Feeding** is `(3, 4)` of `hm` (v1 `(1, 2)` matched 67% and 79% of agents); **Signalling** is 192 (the v1 128 matched 60%
+  in 3D); Roaming is v1's (a k = 4 variant scored below k = 3 jointly).
+- **The order**: Caring before Defending (Caring is the rarest, and no longer depends on the hurt rate) and Feeding before
+  Signalling (in 3D one clade both harvests at the cap and emits, and the label placed first takes those agents; at the v1
+  position the 3D Feeding margin fell to +0.121 without the hold and +0.070 with it). The columns of `intent_matches` stay in
+  `Intent` order; only `first_intent` permutes.
+- **Settler** gains the colony clause at `settler_body` 4 (G2, below).
 
 **Labels.** `Archetype`: NONE = 0, GATHERER, HUNTER, PROVIDER, TRADER, NOMAD, SETTLER, GENERALIST = 7. `Intent`: NONE = 0,
-BUDDING, HUNTING, FLEEING, DEFENDING, CARING, BONDING, SIGNALLING, FEEDING, ROAMING, RESTING = 10.
-- `archetype_matches(m6, m6s, cfg, rs)` gives the (N, 6) non-exclusive rule matrix in enum order 1 to 6. `archetype_labels`
+BUDDING, HUNTING, FLEEING, DEFENDING, CARING, BONDING, SIGNALLING, FEEDING, ROAMING, RESTING = 10. The enum names, the lower-case
+keys of the reports and the stream, and the bit positions never change; the words a player sees are one table,
+`rules.ARCHETYPE_DISPLAY` and `rules.INTENT_DISPLAY` (read-only mappings keyed by the report keys): the same word capitalised,
+except `generalist` → **Unspecialised** (no income or movement rule matched) and `bonding` → **Tethering** (forming and dropping
+bonds again and again; in 3D mostly with the same neighbours). Nothing in the stream or the GUI reads them yet (the metrics block
+carries keys, and the Swift side has no label code), so they are for G3's HUD and the docs.
+- `archetype_matches(m6, m6s, cfg, rs, body=None)` gives the (N, 6) non-exclusive rule matrix in enum order 1 to 6; Gatherer is
+  `(I ≥ 1 and den·h ≥ num·I)` for `gatherer`, and `(h ≥ 1 and ld·h ≥ ln·hm)` for `gatherer_level`, both required. `archetype_labels`
   masks Provider out where Trader matches, takes the primary as the first match in `ARCH_PRIORITY` = (Trader, Provider,
   Hunter, Gatherer, Nomad, Settler) (income before movement), else GENERALIST, and the secondary as the second match, else
   NONE (so a Generalist has secondary NONE, and a Trader is never a Provider secondary). The first match is the minimum
   index of the matching columns, not an `argmax`.
-- `intent_matches(m3, since_bud, slot_age, slot_kin, cfg, rs)` gives the (N, 9) predicate matrix for BUDDING to ROAMING;
-  `first_intent` takes the first in that order (rarest to commonest), else RESTING.
+- `intent_matches(m3, since_bud, slot_age, slot_kin, cfg, rs, *, bud=None)` gives the (N, 9) predicate matrix for BUDDING to
+  ROAMING, in `Intent` value order. The gates are static on the rules: with `bud_horizon > 0` Budding is `budding_forecast` and
+  `bud` (a `BudIn(energy, brain_cost, n_bonds, n_obs)` of post-step values) is required (`ValueError` without it); with
+  `bond_rate > 0` Bonding is `m_formed ≥ bond_rate` and the slot ages are ignored.
+- `budding_forecast(m3, b, cfg, rs)`: `(E < me) & (E + h·(m_flow − basal − c) ≥ me) & (n_obs ≥ ma)` in int64, with `m_flow =
+  (A_pos >> k) − (A_neg >> k)` and `basal = basal_cost + brain_cost + bond_upkeep·n_bonds`, all read at the evaluation
+  (`n_obs ≥ ma` implies `age ≥ ma`: it is vacuous at the defaults, `intent_warm` 24 > 20, but correct for any `ma`).
+- `first_intent(match, order)` takes the first matching predicate in `order` (the field `intent_order`; a static column
+  permutation, default the value order of G1), else RESTING.
 - `hysteresis(label, cand, cand_n, raw, hold)`: a raw label that differs from the displayed one becomes the candidate and the
   displayed label switches to it once it has held at `hold` consecutive evaluations; a return to the displayed label clears
   the candidate; `raw = NONE` (not warm, or reset) clears everything at once.
 
-**`evaluate(o, cfg, rs)`**, run at `state.step % every == 0`: computes the means; sets `warm_a = n_obs ≥ arch_warm` and
-`warm_i = n_obs ≥ intent_warm`; `label_arch = where(warm_a, (primary, secondary), NONE)`; `match_arch = where(warm_a,
+**`evaluate(o, cfg, rs, *, body=None, oi=None)`**, run at `state.step % every == 0`: computes the means; sets `warm_a = n_obs ≥ arch_warm`
+and `warm_i = n_obs ≥ intent_warm`; `label_arch = where(warm_a, (primary, secondary), NONE)`; `match_arch = where(warm_a,
 pack(matches) | GENERALIST bit if none matched, 0)` (bit `a − 1` is archetype `a`; `pack_bits` multiplies by constants,
-since `1 << array` is unsupported in MLX); `raw = where(warm_i, first_intent, NONE)` then the hysteresis; `match_intent =
-where(warm_i, pack(matches) | RESTING bit if none | EVAL_BIT, 0)`, so `EVAL_BIT` marks every evaluated row (the denominator
-of the coverage). Labels change only at evaluations, on the global step clock, so they are independent of playback speed
-and of the step a run was resumed at. A displayed intent needs `hold` consecutive evaluations after the warm-up: for a row
-observed from step 0 the evaluations at 24, 32, 40 and 48, so `intent_labelled` is 0 until step 48 while
-`intent_evaluated` counts from step 24.
+since `1 << array` is unsupported in MLX); `match_intent = where(warm_i, pack(matches) | RESTING bit if none matched, Budding
+included | EVAL_BIT, 0)`, so `EVAL_BIT` marks every evaluated row (the denominator of the coverage). The intent goes through the
+hysteresis into `held`: `raw = where(warm_i, first_intent(held_matches, intent_order), NONE)`, where `held_matches` leaves out
+the Budding column under `bud_overlay`. Under the overlay `label_intent = where(warm_i & budding, BUDDING, held)`, otherwise
+`held`; a row whose only match is Budding has the raw label RESTING in the hysteresis and displays BUDDING. `oi`, the
+post-step `ObsIn` of the evaluation step, is required when `bud_horizon > 0` (the forecast reads the energy, the brain cost and
+the bond count, which are not accumulated), and `body` when `settler_body > 0`: a `ValueError` names the missing input, never
+silently evaluating a rule set without its inputs. Labels change only at evaluations, on the global step clock, so they are
+independent of playback speed and of the step a run was resumed at. A displayed *held* intent needs `hold` consecutive
+evaluations after the warm-up: for a row observed from step 0 the evaluations at 24, 32, 40 and 48, so `intent_labelled` is 0
+until step 48 while `intent_evaluated` counts from step 24; Budding can be displayed from the first evaluation where it holds.
+
+**The Settler colony clause (G2, §29.6; on in `RULES_V2`).** `RuleSet.settler_body` adds `body ≥ settler_body` to the Settler
+rule, where `body` is `SocState.body`, the size of the row's bond component at the **last social snapshot** (0 for a row
+reset since), so the clause lags by up to `snapshot_every` steps. The gate is static on the rules: with `settler_body ==
+0` the clause is off and `body` is ignored, so `RULES_V1` labels exactly as on G1; with a positive value
+`archetype_matches` requires `body` and raises `ValueError` without it, never speed-only labels under a digest that names
+the colony clause. `evaluate` passes `body` through and the Observer passes `so.body`. The labels tool's Settler outcome
+stays −Rg². At 4 (consistent with `colony_enter` 4) the Settler label passes (2D +0.213, 3D +0.135) but the clause lowers the
+3D margin from +0.403 (speed only); against the slow rows the colony part alone carries information (among the non-slow
+rows, body ≥ 4 against body < 4: +0.106 in 2D and +0.081 in 3D), though in 3D a "colony" is often the percolating bond
+network. The coordinator keeps 4 (owner to revisit; the alternatives 9 and 16 scored +0.229 / +0.177 and +0.237 / +0.193 on
+the pooled test).
+
+**Version 2 was one change.** The Settler clause and the fixes of the labels that failed G1's GPU validity study land
+together, so that no version names two rule sets and a row's `intent_version` identifies its rules (G2 itself changed no
+rule, and its stages up to this one left `INTENT_VERSION` 1 and `RULES_V1` the default). The change defines `RULES_V2`, sets
+`INTENT_VERSION = 2` and `observer.DEFAULT_RULES = RULES_V2` (which the bench and the labels tool read), pins both digests next to
+the version and bumps `OBSERVER_FORMAT` to 3 (§28.6). A fix that adds a `RuleSet` field gives it an inert version-1 value that
+the digest leaves out; a fix that changes the default of an existing field makes `RULES_V1` name that field's version-1 value
+explicitly, so `RULES_V1.digest()` keeps its pin.
 
 ### 28.5 Runner integration and the `observers` block (`game/observer.py`, `runner.py`)
 
-`Observer(cfg, o, step, rules=RULES_V1)` owns one `ObsState` and the host step counter, calls `rules.check(cfg)`, and
-compiles its two closures (§28.3). It never stores a `State` array (it passes `obs_in(state)`, a few fields, into its update
+`Observer(cfg, o, so, society, step, rules, social)` owns one `ObsState`, one `SocState` and the host `Society` (G2,
+§29.9) and the host step counter, calls `rules.check(cfg)` and `social.check(cfg)`, and compiles its closures (§28.3). It never stores a `State` array (it passes `obs_in(state)`, a few fields, into its update
 and keeps only the result) and never reads the key.
-- `Observer.fresh(state, cfg, *, rules)`: `init_obs`, evaluated at once (no lazy reference to the state survives; the loop
-  donates it). `Observer.open(rd, state, cfg, *, rules) -> (observer, note)`: §28.6.
+- `Observer.fresh(state, cfg, *, rules=None, social=None)`: `init_obs` (and G2's `init_soc` and initial snapshot),
+  evaluated at once (no lazy reference to the state survives; the loop donates it). `Observer.open(rd, state, cfg, *,
+  rules=None, social=None) -> (observer, note)`: §28.6, §29.10. None means `observer.DEFAULT_RULES` or
+  `DEFAULT_SOCIAL` as of the call.
 - `update(state, acts, t)`: lazy; raises `ValueError` unless `t == step + 1`; evaluates the labels as well when `t % every
-  == 0`. `arrays()` is the tuple for the caller's single `mx.eval`.
+  == 0`, and (G2) folds the social state and, at a snapshot step, queues the snapshot (§29.9). `arrays()` is the tuple for
+  the caller's single `mx.eval`; it then also holds `SocState` and a pending snapshot.
 - `labels() -> Labels(arch_primary, arch_secondary, arch_match, intent, intent_match)` as device arrays, `host_labels()` as
   numpy (they are for G3 and the study tool). `sidecar()` is §28.6. `row_block()` is below.
 
@@ -6603,7 +6848,8 @@ and keeps only the result) and never reads the key.
    lines the GUI reads).
 2. The step is `make_step(cfg, observe=True)`. In the loop: `state, out = step_fn(state)`, then `obs.update(state, out.acts,
    t + 1)`, `out = out.base()` (the acts are never retained in the interval's `outs`) and `mx.eval(state, out,
-   *obs.arrays())`: still exactly one blocking eval per step.
+   *obs.arrays())`: still exactly one blocking eval per step; and, since G2, `rd.append_social(obs.take_records())`
+   right after that eval (§29.9).
 3. Every checkpoint, the initial one included, is written with `observers=obs.sidecar()` (§28.6).
 4. After `metrics.interval_row` the row gets `row["observers"] = obs.row_block()`, so `metrics.py` and its clash check are
    not involved. The director and `on_interval` see the row with the block; the director reads named keys only, so its
@@ -6617,15 +6863,18 @@ and keeps only the result) and never reads the key.
 present; absent otherwise; §19.2):
 
 ```text
-"observers": {"intent_version": 1, "labels_step": int, "alive": int, "arch_labelled": int, "intent_evaluated": int,
+"observers": {"intent_version": 2, "labels_step": int, "alive": int, "arch_labelled": int, "intent_evaluated": int,
               "intent_labelled": int,
               "archetype": {name: share},        # primary label among arch_labelled; sums to 1
               "archetype_match": {name: share},  # per-rule matches among arch_labelled, non-exclusive (generalist = none matched)
               "intent": {name: share},           # displayed label among intent_labelled; sums to 1
-              "intent_match": {name: share}}     # per-rule coverage among rows with EVAL_BIT (the §4.5 coverage)
+              "intent_match": {name: share},     # per-rule coverage among rows with EVAL_BIT (the §4.5 coverage)
+              "social": {...}}                  # G2: the head of the last settled social snapshot (§29.11)
 ```
 
-Names are the lower-case enum names without NONE. `alive = Σ(o.uid ≥ 0)` and `labels_step = t − t % every`. Each of the four
+Names are the lower-case enum names without NONE (the keys; the words a player sees are `rules.ARCHETYPE_DISPLAY` and
+`INTENT_DISPLAY`, §28.4). The `intent` shares count the displayed label, which includes the Budding overlay, and
+`intent_match` the predicate bits. `alive = Σ(o.uid ≥ 0)` and `labels_step = t − t % every`. Each of the four
 share dicts is None as a whole while its denominator is 0 (`arch_labelled`, `arch_labelled`, `intent_labelled`,
 `intent_evaluated`). `intent_version` is the module constant `INTENT_VERSION`, whatever `RuleSet` the observer was built
 with (a sweep `RuleSet` is identified by `rules_digest` in the sidecar). The block is computed with comparisons and sums on
@@ -6634,8 +6883,11 @@ the device and one host transfer through `state.to_numpy`; the dicts are literal
 ### 28.6 The observer sidecar and resume (`runio.py`, `game/observer.py`)
 
 **File.** `observers/step_<t:010d>.npz` in the run directory, next to `checkpoints/`: one array per `ObsState` field under its
-name, plus `meta`, a 0-d unicode array holding the JSON `{"format": "alife-observers", "observer_format": 1,
-"intent_version": 1, "rules_digest", "step", "n_max", "dims", "config_hash", "alife_version"}` (`OBSERVER_FORMAT` and
+name, plus `meta`, a 0-d unicode array holding the JSON `{"format": "alife-observers", "observer_format": 3,
+"intent_version": 2, "rules_digest", "step", "n_max", "dims", "config_hash", "alife_version",
+"social_version", "social_digest", "track_version", "house_rate", "house_seed"}` (format 2 was G2's, never released:
+`soc.<field>` for every `SocState` field and the society's `host.*` members join the array per `ObsState` field, §29.10;
+format 3 is `INTENT_VERSION` 2's: `ObsState` gains `held` and `intent` is (N, 10)) (`OBSERVER_FORMAT` and
 `SIDECAR_FORMAT` in `game/observer.py`; bump `OBSERVER_FORMAT` with any change to the fields or their meaning). It is written
 with `_write_npz` (atomic `*.tmp`, fsync and `os.replace`, compressed) and read with `np.load(allow_pickle=False)`.
 
@@ -6650,16 +6902,22 @@ with `_write_npz` (atomic `*.tmp`, fsync and `os.replace`, compressed) and read 
   sidecar first means every complete checkpoint of an observing run has its sidecar (a crash in between leaves only an
   orphan sidecar, which pruning removes), and a checkpoint and its sidecar always come from the same save.
 - `_prune`, after deleting checkpoints, unlinks every sidecar whose step has no remaining checkpoint. `truncate_after(step)`
-  unlinks the sidecars with a later step, always, whatever `keep_director` is.
-- `observers/` is created only when a sidecar is written, so the file listing of a non-observing run is unchanged.
+  unlinks the sidecars with a later step, always, whatever `keep_director` is; it also cuts the social log (§29.10).
+- `observers/` is created only when a sidecar is written or a social record is appended (§29.10), so the file listing of
+  a non-observing run is unchanged.
 
 **Load on resume.** The sidecar at `state.step` is valid only if every meta field except `alife_version` matches (`format`,
-`observer_format`, `intent_version`, `rules_digest`, `step`, `n_max`, `dims`, `config_hash`), where `rules_digest` must equal
+`observer_format`, `intent_version`, `rules_digest`, `step`, `n_max`, `dims`, `config_hash`, and since G2
+`social_version`, `social_digest`, `track_version`, `house_rate`, `house_seed`), where `rules_digest` must equal
 the digest of the `RuleSet` passed to `Observer.open` (a calibration sweep with another `arch_k`, `intent_k` or `every`
 therefore never reads accumulators scaled for, or hysteresis state left by, other rules); the array names equal
-`ObsState._fields`, with the shapes and dtypes of `init_obs`; and `uid` equals `where(state.alive, state.uid, −1)`. If valid,
+`ObsState._fields` (G2: plus `soc.<field>` and `host.*`, the checks in the order of §29.10), with the shapes and dtypes of
+`init_obs`; and `uid` equals `where(state.alive, state.uid, −1)`. If valid,
 the observer is built from it. Otherwise it starts with `fresh`, and the note is `observers: <reason>; labels warm up (192
-steps for archetypes, 24 for intents)` (the numbers from the `RuleSet`). The note is returned only when `rd` has a checkpoint
+steps for archetypes, 24 for intents)` (the numbers from the `RuleSet`; a G1- or G2-era sidecar is refused at
+`observer_format`, and a sidecar written under `RULES_V1` is refused under `RULES_V2` at `rules_digest`, and the reverse; an
+observing run that resumes across the version-2 change loses at most 192 steps of archetype labels and 48 of intent labels), which since G2 ends `; social tracking restarts at
+step <t> (houses seeded from clades; new ids, records with origin <t>)` (§29.10). The note is returned only when `rd` has a checkpoint
 at that step (a resume, not a new run or a fork); it is never an error and never an exit code.
 
 **Invariant.** A resumed run's labels equal an uninterrupted run's, bit for bit: the sidecar holds the full `ObsState` after
@@ -6669,7 +6927,7 @@ stop step, including one that is not a multiple of 8 and a SIGINT. Tested in 2D 
 unscheduled stop, checkpointed with its sidecar).
 
 **Fork.** No sidecar is carried: every fork, a replay fork included, starts its observers fresh (§28.1). The meta check
-already makes a later copy safe.
+already makes a later copy safe. The social log is not copied either (§29.10).
 
 ### 28.7 Determinism and purity
 
@@ -6683,15 +6941,15 @@ already makes a later copy safe.
   step (§28.2). The gate is empirical (the channel reads only arrays that are already kernel boundaries, or integers; this
   guides the design): CPU tests over dtypes, director branches, dims and compile modes, and the same file on Metal before
   merge (§28.9, §28.8).
-- **Key and weights.** `ObsIn` has no key and no weight field (tested).
+- **Key and weights.** `ObsIn`, and G2's `SocIn`, have no key and no weight field (tested).
 
 ### 28.8 The validity tool and `bench --observe`
 
-**`python -m alife.analysis.labels RUN --from STEP --steps N --out FILE.json`** (`analysis/labels.py`; host-side numpy, outside
-the §22.6 lint scope; the validity test of GAMES §4.5). Options: `--states DIR` (a resim cache), `--warmup 256`,
+**`python -m alife.analysis.labels RUN --from STEP --steps N --out FILE.json`** (`analysis/labels.py`; host-side numpy, scanned
+by the §22.6 lint (rules 1, 3, 4, 5 and 6 pass over `analysis/`); the validity test of GAMES §4.5). Options: `--states DIR` (a resim cache), `--warmup 256`,
 `--cohort-every 256` (a multiple of `rules.every`), `--arch-horizon 1000`, `--arch-min-obs 100`, `--intent-horizon 10`,
-`--n-perm 200`, `--seed 0`, `--no-verify`. In Python it is `study(run, start=, steps=, …, rules=RULES_V1)` (`start`, because
-`from` is a keyword). The run directory is read only, and `--out` must be outside it. A ValueError (bad parameters, no cohort
+`--n-perm 200`, `--seed 0`, `--no-verify`. In Python it is `study(run, start=, steps=, …, rules=DEFAULT_RULES)` (`start`, because
+`from` is a keyword; `DEFAULT_RULES` is `observer.DEFAULT_RULES`, `RULES_V2`, bound when the function is defined). The run directory is read only, and `--out` must be outside it. A ValueError (bad parameters, no cohort
 fits) is exit 2, a re-simulated row that differs from `metrics.jsonl` is exit 1.
 - **Stepping** (the resim pattern): load the state at `STEP` (`signals.load_state`), `cfg = rd.config()`, `rules.check(cfg)`,
   step with `make_step(cfg, observe=True)` and `Observer.open(rd, …, rules=rules)` (the report says `"sidecar"` or `"fresh"`;
@@ -6744,6 +7002,176 @@ fits) is exit 2, a re-simulated row that differs from `metrics.jsonl` is exit 1.
   {…}}`, `intents{name: {…}}`, `coverage{…}` and `flips_per_1000{intent, archetype}`. It is JSON-safe (`null` for undefined
   numbers, `allow_nan=False`) and deterministic for a given run, parameters and device (no wall time in it).
 
+**Calibration and validation of `INTENT_VERSION` 2.**
+- **The G1 failures.** `python -m alife.analysis.labels` with `RULES_V1` (`rules_digest` `156ad496…`) at c56d0e1, 6,000 steps and
+  19 cohorts each from step 1,490,000 of `runs/64k_s0` (2D) and 450,000 of `runs/64k3d_s0` (3D), 200 permutations, at the verdict
+  below as written (GAMES §10 item 12, still open: Roaming in 3D fails only on the 0.05 margin and Defending only on the 0.6
+  cap, so a changed criterion changes the list). Intent figures are of the displayed label against the matched random label
+  (`auc_label`, `coverage_max.label`):
+
+| label | 2D `64k_s0` | 3D `64k3d_s0` | fails on |
+|---|---|---|---|
+| Gatherer (archetype) | AUC 0.36 (null 0.47), prevalence 0.98 | AUC 0.16 (null 0.45), prevalence 0.93 | AUC below the null: the rule matches nearly every agent |
+| Defending | coverage max 0.81 (the rule's 0.83) | coverage max 0.76 (the rule's 0.83) | the 0.6 coverage cap (the AUC passes: 0.93 and 0.78 against nulls of 0.51 and 0.53) |
+| Budding | AUC 0.496 | AUC 0.495 | no signal (null 0.500) |
+| Feeding | AUC 0.41 (rule prevalence 0.67) | AUC 0.25 (rule prevalence 0.79) | AUC below the null |
+| Bonding | passes | AUC 0.41 | AUC below the null |
+| Signalling | passes | AUC 0.38 (rule prevalence 0.60) | AUC below the null |
+| Roaming | passes | AUC 0.553 against null 0.510 | the margin (below 0.05) |
+| Caring | passes | 8 positives | insufficient (fewer than 30 positives) |
+
+- **Offline calibration.** The study was re-run with a dump of the per-row features, the 64-step input history, the policy
+  probe and the outcomes at all horizons (scratch tooling, not repository code: 19 cohorts of about 33,000 (2D) and 44,000
+  (3D) rows), so that candidate rules could be scored in seconds with the study's own code (the permutation null, strata and
+  `labels.verdict`). Six designers each took labels, and an integration scored all ten intents jointly (`RULES_V2`
+  against nine one-change alternatives, scores in the coordinator's notes); an independent review rebuilt the scores and
+  found no tuned optimum. The displayed label cannot be replayed from one snapshot, so three proxies were used: FM (first
+  match at `T`, no hold), HY (the hold-4 replay over `T−48…T`, then the overlay) and C4 (rows whose last four raw labels
+  agree). Every label passes, pooled, under the rule, FM and HY in both worlds, and in all 19 cohorts under the rule and FM
+  (under the review's HY7 replay one 2D Fleeing cohort fails the permutation test, with 35 displayed positives, and 2D Hunting's
+  smallest cohort margin is +0.060; the pooled verdicts are unaffected). Under the review's seven display proxies the thinnest
+  pooled displayed margins are 3D Roaming +0.082, 3D Resting +0.101 and 2D Hunting +0.102; FM overstates the event labels by up
+  to 0.18, so margins are quoted on the worst proxy. Margin = AUC − null mean of the
+  displayed label for intents (FM, with HY beside it) and of the rule bit for archetypes; `cov` is the displayed share's
+  cohort maximum (archetypes: the match prevalence):
+
+| label | 2D margin FM (HY) | 2D cov | 3D margin FM (HY) | 3D cov |
+|---|---|---|---|---|
+| Budding | +0.379 (+0.379) | 0.010 | +0.215 (+0.215) | 0.013 |
+| Hunting | +0.287 (+0.105) | 0.010 | +0.347 (+0.197) | 0.076 |
+| Fleeing | +0.315 (+0.139) | 0.005 | +0.303 (+0.171) | 0.012 |
+| Caring | +0.365 (+0.259) | 0.005 | +0.363 (+0.287) | 0.004 |
+| Defending | +0.283 (+0.265) | 0.039 | +0.182 (+0.172) | 0.138 |
+| Bonding | +0.344 (+0.270) | 0.125 | +0.304 (+0.252) | 0.134 |
+| Feeding | +0.366 (+0.246) | 0.161 | +0.215 (+0.178) | 0.202 |
+| Signalling | +0.448 (+0.449) | 0.065 | +0.266 (+0.269) | 0.086 |
+| Roaming | +0.253 (+0.181) | 0.267 | +0.152 (+0.113) | 0.178 |
+| Resting | +0.237 (+0.188) | 0.343 | +0.168 (+0.129) | 0.182 |
+| Gatherer | +0.258 | 0.138 | +0.366 | 0.465 |
+| Hunter | +0.254 | 0.009 | +0.301 | 0.040 |
+| Provider | +0.414 | 0.007 | +0.431 | 0.002 |
+| Trader | +0.469 | 0.001 | +0.482 (32 positives) | 0.0001 |
+| Nomad | +0.450 | 0.002 | +0.277 | 0.013 |
+| Settler | +0.213 | 0.491 | +0.135 | 0.336 |
+
+  Generalist (the commonest primary label: 0.465 and 0.461) is prevalence only; Resting is displayed on 0.34 (2D) and 0.18 (3D)
+  of the labelled rows.
+- **Stability.** The displayed label changes more: HY replay 5.3 (2D) and 6.5 (3D) per 1,000 steps against G1's 1.98 and 4.12
+  (the overlay adds about 1.7 and 2.3), and for about a fifth of agents the held intent is older than 56 steps. GAMES §4.5 measures
+  stability and sets no criterion. The hold (4 × 8 = 32 steps) equals the agents' 32-step clock (`sensing.clock_period`), which
+  makes thresholds near a clock-driven mean flicker: a hold or period that does not resonate would help every intent, and is
+  flagged for G3.
+- **Exactness of the implementation** (a check written for this change, CPU, run on the two calibration dumps and never on a
+  held-out one). The implemented MLX functions were applied to the dumped state: `observe.quantise_inputs` on the dumped
+  64-step history for the new columns (FORMED, FLOW_POS, FLOW_NEG, EMA k = 3 with the validity gate), the dumped accumulators
+  for the old ones, `rules.intent_matches` with `BudIn` from the dumped energy, brain cost and partners,
+  `rules.archetype_matches` with the offline bond-component sizes, and `observe.evaluate` end to end. They equal the
+  predicates of the calibration spec written as plain numpy integer formulas on **every** row (629,577 in 2D and 837,059 in
+  3D; 20,837 and 30,794 of them rows whose whole life fits the history), the match bits, `cand` (the raw first match of the
+  eight held predicates) and the displayed Budding label included; the archetype rules equal on all 551,467 and 725,477
+  archetype rows, with Hunter, Provider, Trader and Nomad equal to the bits the G1 study dumped. Against the calibration's
+  own replay (a warm start of the first 8 inputs for rows older than the history) they differ on 4 Budding and 8 Bonding bits
+  (2D) and 11 and 9 (3D) and on no row that fits the history, the counts the calibration reported. Rule prevalences:
+  2D Budding 0.0089, Hunting 0.0094, Fleeing 0.0049, Defending 0.0416, Caring 0.0043, Bonding 0.1491, Signalling 0.0976,
+  Feeding 0.2140, Roaming 0.4461, Resting 0.3375 and Gatherer 0.1381; 3D 0.0125, 0.0728, 0.0193, 0.2164, 0.0048, 0.2988, 0.4881,
+  0.4867, 0.4877, 0.1794 and Gatherer 0.4649.
+- **The held-out validation (the procedure; run on 2026-10-21, results in the next item).** Five windows, each the real labels tool with the default
+  rules, `--n-perm 200` and all other options at their defaults: the calibration windows (`64k_s0` from 1,490,000, `64k3d_s0` from 450,000;
+  an implementation check) and three held-out ones (`64k_s0` from 1,500,000, `64k3d_s1` and `64k3d_s2` from 450,000), 6,000 steps
+  each (about 47 minutes in all), every report carrying `intent_version` 2 and `rules_digest` `dc78f771…`. *Step A, the
+  calibration windows, before the held-out reports are opened.* If the device and MLX version are those of the G1 study,
+  `report.json` equals the G1 reports and the trajectory is the G1 one, so: the seven predicates other than Budding, Bonding and
+  Resting give `auc_rule`, `null_mean` and `p` equal to the offline values (same bits, same permutation stream); Budding, Bonding
+  and Resting agree within 2e-4 (the offline replays differ on 4 and 8 rows of 629,577 in 2D, 11 and 9 of 837,059 in 3D);
+  Gatherer, Hunter, Provider, Trader and Nomad equal the offline archetype scores; Settler differs by construction (the body is
+  the last snapshot's, up to 249 steps old, over all alive rows), with a prevalence near 0.462–0.491 (2D) and 0.312–0.336 (3D),
+  and all zeros would show a body that is not fed (0.318 and 0.052). Budding's displayed score is checked as `n_pos` equal to
+  the rule's with an AUC within 0.001, **not** as equal scores: the label pool leaves out the rows whose held label is NONE and
+  the random stream differs, so `n`, `null_mean` and `p` differ on a correct implementation. The other displayed margins are
+  information: flag one only if it lies more than 0.03 outside the range of the review's display proxies (2D Signalling
+  +0.337…+0.451, Feeding +0.215…+0.366; 3D Defending +0.122…+0.182, Roaming +0.082…+0.152, Resting +0.101…+0.168). The coverage
+  maxima should match the offline `cov152` within about 0.01 for the rules. *Step B, the held-out windows.* The criterion
+  (**provisional**, GAMES §10 item 12: fixed before the held-out reports are read, and the owner has not yet confirmed it):
+  every archetype and every intent has `verdict == "pass"` on each of the three windows, for intents the
+  displayed label with the 0.6 coverage cap on the displayed share. Also reported: `verdict_rule`, the rule coverage maxima,
+  prevalences and `flips_per_1000`. A `verdict_rule` failure on coverage with `verdict` passing is reported, not blocking (the
+  3D rules of Signalling, Feeding and Roaming cover 0.49 of rows on the calibration window). *Pre-declared outcomes.* All pass:
+  `RULES_V2` ships and the five headline tables are recorded here and in GAMES §4.5. A label fails on a held-out window: do
+  not re-tune on held-out data; either the label is not shown under version 2 (GAMES §4.5: failing labels are dropped from the
+  UI, a G3 display rule, and the rule set stays as pinned), or a fix goes into a later version validated on new windows. The
+  documented fallbacks (each a later fix that consumes these windows): Signalling `m_emit ≥ 256`; Feeding at 4/5 or 7/8 of `hm`;
+  Budding `h = 28` on the shared hold if the overlay is refused; the `settler_body` alternatives.
+- **Decisions the coordinator took under the owner's delegation of 2026-10-19 (to revisit).** The Budding overlay is accepted (a
+  change to GAMES §4.4's hold sentence). The labels whose meaning changed are renamed or rewritten in GAMES §4.4: Gatherer is a
+  harvest level, Defending is guarding after a recent hit, Budding is a forecast, Bonding is shown as **Tethering** and
+  Generalist as **Unspecialised** (§28.4); the Settler colony clause stays at 4.
+- **Risks the GPU decides.** The 3D rules of Feeding, Signalling and Roaming each cover 0.49 of rows (0.11 below the cap) and ride
+  on one rich clade of the seed-0 population, so seeds 1 and 2 may differ (the displayed shares are 0.09 to 0.23). Thin displayed
+  margins (3D Roaming, 3D Resting, 2D Hunting under the hold). Defending's AUC rests on the 0.75 guard split (a held-out 3D seed
+  whose clades all guard at 0.75 or more would thin it). 3D Budding is weaker (precision 0.44). The calibration is one window per
+  world and its 19 cohorts sit 256 steps apart.
+- **Results of the GPU validation (2026-10-21).** Metal, M5 Pro, MLX 0.32.3, Python 3.12.11 (the G1 study's versions), the
+  `games/g2-social` tree at 73a4dd2, the five `python -m alife.analysis.labels` runs with the default rules (`intent_version`
+  2, `rules_digest` `dc78f771…b4f7`), `--steps 6000`, `--n-perm 200`, one run at a time. The criterion was the one fixed above
+  and was not changed after any report was read (**provisional**: the owner has not confirmed it, GAMES §10 item 12). Every
+  row was rechecked from the report's raw fields against the tool's verdict: no mismatch. The reports are in the
+  coordinator's scratch directory (not committed). *Step A (the calibration windows) passes.* The trajectory is G1's (the
+  calibration reports equal G1's, so the same device and MLX give the same bits); the seven exact predicates (Hunting,
+  Fleeing, Defending, Caring, Signalling, Feeding, Roaming) give `auc_rule`, `null_mean`, `p` and `n_pos` bit-equal to the
+  offline values in both worlds; Budding, Bonding and Resting agree within 2e-4 (2D Resting differs by 1.8e-6 in AUC; 3D
+  Budding by 2.1e-5 with `n_pos` 10,470 against the offline 10,471); all ten rule prevalences equal the table to four decimals;
+  Gatherer equals the offline score bit for bit, and Hunter, Provider, Trader and Nomad equal G1's reports; Settler's
+  prevalence is 0.488 (2D, band 0.462 to 0.491) and 0.334 (3D, band 0.312 to 0.336), so the body is fed; Budding's displayed
+  `n_pos` equals the rule's (5,583 and 10,470) with an AUC within 8e-5; no displayed margin lies outside the review's proxy
+  range by more than 0.03; the rule coverage maxima are within 0.013 of the offline ones. *Step B (the three held-out
+  windows): every archetype and every intent's displayed label passes on all three: 30 of 30 intent cells and 18 of 18
+  archetype cells.* No label failed a held-out window, so no label is marked "not validated on held-out data", and nothing
+  was re-tuned. Displayed margin (AUC − null mean) and verdict, then the coverage maximum as displayed/rule:
+
+| label | held 2D `64k_s0`@1,500,000 | held 3D `64k3d_s1`@450,000 | held 3D `64k3d_s2`@450,000 |
+|---|---|---|---|
+| Budding | +0.382 pass, 0.012/0.011 | +0.209 pass, 0.021/0.020 | +0.253 pass, 0.019/0.018 |
+| Hunting | +0.157 pass, 0.004/0.012 | +0.179 pass, 0.039/0.071 | +0.180 pass, 0.064/0.086 |
+| Fleeing | +0.207 pass, 0.001/0.006 | +0.322 pass, 0.003/0.022 | +0.332 pass, 0.004/0.025 |
+| Defending | +0.272 pass, 0.034/0.043 | +0.180 pass, 0.116/0.196 | +0.329 pass, 0.070/0.144 |
+| Caring | +0.269 pass, 0.005/0.006 | +0.232 pass, 0.001/0.004 | +0.273 pass, 0.003/0.007 |
+| Bonding (shown as Tethering) | +0.281 pass, 0.095/0.157 | +0.298 pass, 0.146/0.298 | +0.339 pass, 0.086/0.163 |
+| Signalling | +0.455 pass, 0.059/0.084 | +0.200 pass, 0.171/**0.674** | +0.359 pass, 0.027/0.171 |
+| Feeding | +0.242 pass, 0.185/0.226 | +0.223 pass, 0.225/0.484 | +0.233 pass, 0.351/0.515 |
+| Roaming | +0.193 pass, 0.258/0.431 | +0.124 pass, 0.103/0.385 | +0.193 pass, 0.215/0.449 |
+| Resting | +0.183 pass, 0.395/0.368 | +0.112 pass, 0.219/0.207 | +0.134 pass, 0.207/0.215 |
+| Gatherer | +0.254 pass | +0.392 pass | +0.396 pass |
+| Hunter | +0.258 pass | +0.301 pass | +0.245 pass |
+| Provider | +0.407 pass | +0.355 pass | +0.387 pass |
+| Trader | +0.458 pass | +0.442 pass | +0.394 pass |
+| Nomad | +0.452 pass | +0.318 pass | +0.316 pass |
+| Settler | +0.218 pass | +0.325 pass | +0.325 pass |
+
+  - **Read as follows.** Every p is 0.0050, the floor for 200 permutations. The thinnest margins are 3D Resting +0.112 and 3D
+    Roaming +0.124 among the intents (both held-out `64k3d_s1`) and 2D Settler +0.218 among the archetypes; all are well over
+    the 0.05 floor. The smallest counts in a passing row are 3D Trader 53 positives (`64k3d_s1`; 219 on `s2`, 32 on the
+    calibration window), 2D Fleeing 126 displayed positives and 3D Caring 370, against the floor of 30. Generalist is prevalence
+    only (0.42, 0.43, 0.40 held out).
+  - **Reported, not blocking** (declared before the run): on `64k3d_s1` the Signalling *predicate* covers 0.674 of rows, over the
+    0.6 cap, so its `verdict_rule` is `fail`; the displayed label covers 0.171 there and its verdict is `pass`. This is the
+    risk named above (the 3D rules of Signalling, Feeding and Roaming cover about 0.49 of rows on the calibration window and
+    ride on one rich clade): it happened for Signalling on one of the two other seeds. The other predicate coverages are
+    below 0.6 (the highest: 3D Feeding 0.515 on `s2`, Signalling 0.493 and Roaming 0.496 on the calibration window). A
+    later version that takes the documented fallback (Signalling `m_emit ≥ 256`, Feeding at 4/5 or 7/8 of `hm`) would
+    consume these windows.
+  - **Stability got worse, as predicted, and by more than the replay said.** `flips_per_1000` of the displayed intent: 7.07
+    (calibration) and 7.05 (held) in 2D, 9.55, 9.40 and 9.22 in 3D (calibration, `s1`, `s2`), against G1's 1.98 and 4.12:
+    3.6 times in 2D and 2.2 to 2.3 times in 3D. The offline replays gave 6.4 (2D) and 7.6 (3D) on the review's HY7 proxy, so
+    2D is a little above and 3D 1.7 to 2.0 above it. The archetype flips also rose (6.4 to 6.6 in 2D against 1.33; 4.5 to 5.7
+    in 3D against 3.52); the Settler colony clause and the Gatherer level could explain it, which is untested. GAMES §4.5
+    sets no stability criterion.
+  - **What this evidence does not show.** The 2D held-out window is the same run as the 2D calibration window, 4,000 steps
+    after its end (1,490,000 + 6,000 against 1,500,000): held out in time, not in population. The two 3D windows are other
+    seeds of the same preset at the same step, so they are held out in lineage but share the preset, the world and the run
+    length. Both worlds are the 64k presets. The stored rows of `runs/64k_s0` end at step 1,504,009, so on the held-out 2D
+    window 41 stored rows were checked and the rest of the 6,000 steps were re-simulated with no stored row to compare (the
+    3D windows verified 60 of 60). The criterion is the placeholder of GAMES §10 item 12.
+
 **`alife bench --observe`** adds `report["observe"]` (`bench._bench_observe`). It is not the `_throughput` loop (which times
 steps after 10 donation steps and a calibration step on `(s, acc)`). Two arms follow the runner's loop with one blocking
 eval per step: the *control* is `make_step(cfg)` with `mx.eval(state, out)`; the *observed* arm is `make_step(cfg,
@@ -6757,11 +7185,13 @@ holds `control_ms_median`, `observed_ms_median`, `overhead_ms_median` (their dif
 `observed_ms_per_step` and `overhead_ms_mean` (means), `observed_steps_per_s` (from the mean, because the evaluation steps,
 one in 8, are slower and a median hides them), `warmup`, `block_pairs`, `steps_per_block`, and `trajectory_match` (the state
 digests at the end of the first control and the first observed block are equal). `format_report` prints one line, and the CLI
-exits 1 when `trajectory_match` is false.
+exits 1 when `trajectory_match` is false. With G2 the observed arm also folds the social state and takes the snapshot
+records after each eval, the warm-up and the block length follow the snapshot cadence, and the report gains
+`snapshot_step_ms_mean`, `other_step_ms_mean` and an `observe.social` part (§29.12).
 
-**Procedures for the GPU** (later, once the Mac's GPU is free; nothing else may use the GPU or LM Studio during the
-timings). Metal purity before merge: `uv run pytest tests/test_game_purity.py -q -p no:cacheprovider` on the default device,
-without a `-m` filter, so every arm runs (2D compiled {float32, float16} × {director off, on}, 3D compiled {float32 off,
+**Procedures for the GPU** (run on 2026-10-21 with the GPU reserved, except the stream rate and the step rate with LLM
+calls in flight, which that session did not run; nothing else may use the GPU or LM Studio during the timings). Metal purity before merge: `uv run pytest tests/test_game_purity.py -q -p no:cacheprovider` on the default device,
+without a `-m` filter (G2 adds `tests/test_groups.py` to the Metal gate, §29.12), so every arm runs (2D compiled {float32, float16} × {director off, on}, 3D compiled {float32 off,
 float16 on}, the eager arms, and the two runner-level tests). Step with observers: `uv run alife bench --preset 64k
 --observe --steps 600 --json obs_64k.json`, and the same with `--set director.enabled=true`; report `observed_steps_per_s`
 against the 30 steps/s target and `overhead_ms_median`. Stream rate (`alife stream` prints no timing and runs no observers):
@@ -6769,17 +7199,22 @@ against the 30 steps/s target and `overhead_ms_median`. Stream rate (`alife stre
 frames/s = 600 / (t₆₆₀ − t₆₀), which removes start-up and compile time; repeat both once and report the mean. Step rate with
 LLM calls in flight: loop `uv run alife llm-check --preset 64k` in a second shell while `bench --observe` runs, and compare
 with the run without the loop (a proxy: a full director prompt has a longer prefill and generation; the combined play loop is
-G3's bench). Calibration: `python -m alife.analysis.labels runs/64k_s0 --from <ckpt> --steps 6000 --out …`, and the same on
-`runs/64k3d_s0`. The host-side scoring cost of a 64k calibration (about 500,000 pooled intent rows and 200 permutations per
-score; each permutation re-sorts the strata inside `mi.permute_within`) is unmeasured and estimated at tens of minutes of
-single-core numpy.
+G3's bench). Validation of `INTENT_VERSION` 2: the five `python -m alife.analysis.labels` commands above; and the version-2
+observer is to pass the Metal gate again (`tests/test_game_purity.py` on the default device, no `-m` filter) and be benched
+(`alife bench --preset 64k --observe --steps 600 --json obs_64k_v2.json`; report `overhead_ms_median` against G1's: three more
+accumulator columns, +768 KB at 64k, about 20 elementwise ops per step and the overlay at evaluations, and the per-row `held`,
++256 KB). The host-side scoring cost of a 64k calibration (about 500,000 pooled intent rows and 200 permutations per
+score; each permutation re-sorts the strata inside `mi.permute_within`) was estimated at tens of minutes of
+single-core numpy; measured on 2026-10-21, a whole window (6,000 steps of re-simulation, then the 200 permutations) took
+6.1 to 6.4 minutes in 2D and 12.4 to 13.9 minutes in 3D (about 52 minutes for the five).
 
 ### 28.9 Tests
 
 All of them are in the fast suite and run on the CPU; none is marked `slow`. The compile of the observer's closures
 dominates their time (`test_update_outputs_do_not_alias_inputs` takes about 24 s on a cold MLX CPU JIT cache and 0.05 s
 warm; CI caches the directory, §22.0).
-- `test_game_config.py`: every `GameConfig` field is a `POST_V01_KEYS` key and `OBSERVER_KEYS == (("game", "observe"),)`,
+- `test_game_config.py`: every `GameConfig` field is a `POST_V01_KEYS` key and `OBSERVER_KEYS == (("game", "observe"),
+  ("game", "house_rate"))` (G1 had the first alone),
   disjoint from `UNHASHED_KEYS`, with `DIRECTOR_POLICY_KEYS` unchanged; the eight pinned hashes (§28.1) equal with the flag
   on and off; an old config without `game` loads with the same hash; an unknown `game.nope` is rejected; resume accepts
   `game.observe` (exit 0, `config.json` true, rows after the resume carry the block, a sidecar at the end, the note on
@@ -6804,30 +7239,57 @@ warm; CI caches the directory, §22.0).
   run has no `observers/`, every row of the on run has the block); `test_director_log_unchanged_by_observers` (a live
   gardener at `rule_every` 20 that acts: `director.jsonl`, checkpoint digests and rows equal); and the structural tests of
   §28.2 (`test_channel_reads_only_the_allowed_arrays` in three configurations, and the meta-test that the probe reports the
-  two value-neutral mutants).
+  value-neutral mutants: two in G1, four with G2's; and the compiled-kernel comparison
+  `test_the_channel_regroups_no_float_kernel_of_the_compiled_step` in the same three configurations, with its mutants).
 - `test_game_observe.py`: the accumulator (constant input converges exactly for `k` in {3, 6}, a spike decays without going
   negative, the windowed-mean identity in integers over 2^15 steps, the headroom at `VQ_MAX` with `k = 6` and 6,800 with
   `k = 16`); the reset of dead and new rows; slot identity, age and kin in both directions (a kin needs a living row);
-  `init_obs`; the input quantisation; `speed_unit`; no output aliases an input (compiled); `test_observer_invariants_on_real_steps`
-  in 2D and 3D (with immigration and forced bonds, shares and reproduction: reset rows, slot resets, the §28.3 claim that
-  nonzero flows occur only on the previous update's `slot_uid`, Σ BUDDED = `BIRTHS`); and a same-step row reuse on a micro
+  `init_obs` (shapes with `held` (N,) and `intent` (N, 10)); the input quantisation; `speed_unit`; no output aliases an input
+  (compiled, the version-2 evaluation included); `held` resets with the labels; the FORMED input (256 per FORMED step, through the accumulator) and the flow
+  columns against an independent Python-integer formula on a scene of positive, negative and zero net flows (thrust ±200,
+  defend, emit, ATTACKED, two `share_out` slots, `attack_gain`, `last_harvest`, `last_inflow`, `last_loss`), and with
+  `move_cost = 2^20` (and 2^15) the cost term does not wrap; `test_flow_matches_the_energy_change_on_real_steps` in 2D and 3D
+  (40 steps with immigration and forced bonds, shares and reproduction: for rows that kept their uid, paid their costs, did
+  not bud and ended below `e_max`, `flow − ΔE − basal_due` lies in `[−4, invisible_max + 4]` for rows with the ATTACKED
+  flag and in `[−4, invisible_max + attack_cost + 4]` for the others, the documented attack-charge gap, where `invisible_max` is
+  the turn, grip, contract, message and harvest terms at their coefficients plus, in 3D, pitch and buoyancy: it catches a sign
+  or a missing term, which the offline scores, sharing the formula, cannot);
+  `test_observer_invariants_on_real_steps` in 2D and 3D for both rule sets (with immigration and forced bonds, shares and
+  reproduction: reset rows, slot resets, the §28.3 claim that nonzero flows occur only on the previous update's `slot_uid`, Σ
+  BUDDED = `BIRTHS`, and `label_intent ≠ held` only where BUDDING is shown with its bit set); and a same-step row reuse on a micro
   config (row 0 starves at S14 and the immigrant lands on it at S16).
-- `test_game_rules.py`: `INTENT_VERSION == 1` and the pinned `RULES_V1.digest()`; every field enters the digest;
-  `RuleSet` rejects nonsense; `check` bounds int32 for tiny, 64k, tiny3d and 64k3d and at the validated extremes, and names
-  the column, and bounds each int32 ratio (at the largest value it accepts a ratio compares correctly at the largest mean);
-  `ARCH_PRIORITY` is pinned as a literal, with the pairs Provider+Hunter and Gatherer+Nomad; the edges (inclusive and exclusive) of every archetype and intent rule; the priority and the secondary; the
-  order of the intents; the hysteresis; the warm gating (191/192 and 23/24); two observers started at different phases
-  mod 8 agree at every evaluation; a single bud is displayed at every phase; the match and eval bits; `pack_bits`.
-- `test_game_sidecar.py`: the Observer (compiled and eager, `RULES_V1` and `every = 4, hold = 2`) equals the reference fold
-  field by field on 80 real steps; consecutive steps are required; a window that would overflow int32 is refused; the
+- `test_game_rules.py`: `INTENT_VERSION == 2`, `RuleSet() == RULES_V2` and both pinned digests (the V2 canonical JSON
+  literal too); every field enters the digest, off `RULES_V2` and (the post-v1 ones) off `RULES_V1`, where the inert value
+  leaves the G1 pin; `RuleSet` rejects nonsense (the new fields included); `check` bounds int32 for tiny, 64k, tiny3d and 64k3d
+  and at the validated extremes, names the column, bounds the flow columns (11 is the largest `intent_k`, 12 names
+  `intent.flow_neg`; every visible term of the two bounds is counted, each tested with the column one over its limit and a
+  term left out letting it through) and each int32 ratio (`gatherer_level` included; at the largest value it accepts a ratio compares
+  correctly at the largest mean); `ARCH_PRIORITY` is pinned as a literal, with the pairs Provider+Hunter and Gatherer+Nomad, and
+  `RULES_V2.intent_order` too; the edges (inclusive and exclusive) of every archetype and intent rule under both rule sets
+  (`_arch` and `_intent` take `rs`; v1 assertions go through `RULES_V1`); Gatherer v2 (300 yes, 299 no, whatever the income
+  share, `harvest_max` 0 with and without other income); `budding_forecast` at its edges (the energy edge, `E = me`, `n_obs = ma − 1`, a negative flow,
+  `brain_cost = 2^31 − 1` without wrap, bonds shifting the edge by `h·bond_upkeep` each) and `intent_matches` raising without
+  `bud`; the priority and the secondary; the order of the intents, v1's and v2's (Caring before Defending, Feeding before
+  Signalling, 200 random rows against a numpy reference); the overlay on synthetic means (Budding shown at the evaluation where the
+  forecast holds with `held`, `cand` and `cand_n` untouched, Feeding at once after, a Hunting candidate counting through,
+  the Budding bit carried, not warm gives NONE, also where the row is old enough to bud but not warm (`n_obs` 22), a bond to row 0
+  counted by the forecast, `evaluate` without `oi` or `body` raising); `evaluate` hands `intent_order` to the first match (held
+  Caring over Defending and Feeding over Signalling, the reverse under `RULES_V1`); the display-name table; the
+  hysteresis; the warm gating (191/192 and 23/24); two observers started at different phases mod 8 agree at every evaluation,
+  under both rule sets; a single bud is displayed at every phase (v1), and a Budding forecast is displayed at the first
+  evaluation where it holds at every phase (v2); the match and eval bits; `pack_bits`.
+- `test_game_sidecar.py`: the Observer (compiled and eager, `RULES_V1`, `RULES_V2` and each with `every = 4, hold = 2`, and
+  the clause rule sets) equals the reference fold field by field on 80 real steps (the reference `evaluate` is given the body and the step's `ObsIn`); consecutive steps are required; a window that would overflow int32 is refused; the
   sidecar round-trips through `save_checkpoint`, `read_observers` and `Observer.open`; for each meta field (`rules_digest`
   included), a missing array, a wrong dtype or shape, a uid mismatch and a corrupt file the observer is fresh, the note names
   the reason and the CLI exits 0 (also for a bare `.npy` and for an archive with a non-`.npy` member, which `np.load`
-  accepts); the note is only for a resume; `test_resume_labels_equal_uninterrupted` (2D and 3D, 30+30
+  accepts), a G1 sidecar and a G2-format one (7 intent columns, no `held`) at `observer_format` first; a sidecar written under
+  `RULES_V1` is refused under `RULES_V2` with a note naming `rules_digest` and loads under `RULES_V1`, and the reverse; the note is only for a resume; `test_resume_labels_equal_uninterrupted` (2D and 3D, 30+30
   and 37+23 of 60 steps, and 137+103 of 240 so that archetype labels are in the comparison; and a SIGINT while the interval
   row of step 35 is written, in 2D and 3D): the sidecar and the rows' blocks equal, nothing on stderr; pruning and `truncate_after` cut the sidecars and a non-observing run never creates
   `observers/`; a checkpoint without observers removes a stale sidecar; the block's keys, and its shares sum to 1 or are None.
-- `test_analysis_labels.py`: the AUC against a brute-force value; the matched random null and the strata; the exposure
+- `test_analysis_labels.py`: a study with `rules=RULES_V1` whose report carries the G1 pin and the version-1 values, and the
+  default report carries `RULES_V2`'s digest and `intent_version` 2; the AUC against a brute-force value; the matched random null and the strata; the exposure
   normalisation, the pools and the outcomes on synthetic tables; the verdict edges (including the margin over the null mean
   rather than over 0.5, and `insufficient` below 99 permutations); every score the two scoring functions compute (pooled, per
   cohort, complete, survivors, censored; archetype and intent) on an age-confounded table, which must score like the random
@@ -6842,6 +7304,1037 @@ warm; CI caches the directory, §22.0).
   step of each block, the blocks run in the order C O O C, a perturbed trajectory is flagged, `_StagedStep` unchanged);
   `test_cli_smoke.py::test_view_and_bench_delegate` pins the `observe` keyword, and `test_cli_smoke.py` also gains
   `test_bench_observe_smoke` (the CLI `bench --observe` end to end).
+- **G2** edits several of the files above (the `Acts` fields in `test_game_acts.py`, the 20 taps in `test_game_purity.py`,
+  `OBSERVER_KEYS` and `house_rate` in `test_game_config.py`, `settler_body` in `test_game_rules.py`, `body` in
+  `test_game_observe.py`, format 2 and the social log in `test_game_sidecar.py`, `test_runio.py`, `test_bench.py`,
+  `test_cli_smoke.py`, `test_lint.py`) and adds new files; the list is §29.13.
+
+## 29. Social tracking (games G2)
+
+The second build step of the gaming vertical (`docs/GAMES.md` §6, §9 G2; Review-log row I45). It turns the agents of an
+observing run into **houses** (named sub-lineages), **kin groups** (the factions the agents perceive), **colonies**
+(bonded bodies with a persistent identity), **territory** (spatial dominance), **relations** between kin groups (attacks,
+kills, bonds, energy shared, each against a proximity baseline) and **temperament**, without touching the simulation.
+A **roster** (§29.14) gives each kin group a name, lists the houses founded and gone extinct, and counts each group's
+births and deaths by cause, so that a chronicle has characters and events.
+It is observer-only and on with `game.observe`. This section is normative for it. Every threshold is **provisional**
+(`SOCIAL_VERSION` 1) until the calibration run (§29.12): it may change under a new version, never silently.
+
+### 29.1 Scope, principles and deferrals
+
+**Principles.** The principles of §28.1 hold unchanged: observers never write `State`, never read `state.key` or a
+weight, and never feed back, so the trajectory with `game.observe` on is bitwise the one with it off (§28.7, §29.2). On
+top of them:
+- With `observe` off, the compiled step, `StepOut`, `State`, the RNG, every config hash and both goldens are unchanged.
+  A non-observing run's file listing, checkpoint state digests, event chunks and stored rows are unchanged; its
+  `config.json` and its checkpoints' `metadata.config` gain `game.house_rate` at its default, which is hash-neutral
+  and the only INFO line of the digest comparison (§29.13).
+- No scatter or setitem outside `ops.py`: the device code calls `ops.scatter_add_i32`, `ops.scatter_max_i32` and
+  `ops.place` only (through `groups`). Host numpy setitem lives in `tracking.py` (not a rule-2 module);
+  `game/society.py` is in rule 2's scope (all of `game.*`) and builds arrays through `tracking` helpers and dicts by
+  literals and comprehensions.
+- No new energy path and no ledger term: G2 reads flows and moves no energy.
+- Fixed shapes and static branches only: Python branches on config constants, `SocialRules` fields or the step clock.
+- Everything on the host is deterministic (sorted arrays, `np.unique`, `np.lexsort`, float64 numpy, no RNG): the same
+  trajectory under the same `SocialRules` writes the same bytes (§29.10).
+
+**What G2 builds.**
+- The channel additions of §29.2.
+- Two **generic engine modules** with no game names (§29.3), reusable by a later game whose tracked systems are not
+  agents (the owner's example: storms on an alien planet, on a grid periodic in longitude only): `groups.py` (pure
+  MLX) and `tracking.py` (host numpy).
+- The game layer: `game/social.py` (pure MLX `SocState`, its per-step update, the snapshot arrays, `SocialRules`) and
+  `game/society.py` (host `Society`: houses, kin groups, colonies, territory, relations, temperament, the `social` row
+  head and the snapshot records, the sidecar arrays), §29.4 to §29.8.
+- The Settler colony clause G1 deferred (§28.4), behind `RuleSet.settler_body`, **inert at its version-1 value 0**: in
+  `RULES_V1` it is off. It is on (`settler_body` 4) in `RULES_V2`, which is the default under `INTENT_VERSION` 2: version 2
+  (the clause with the calibration fixes of the labels that failed G1's validity study) lands in this same change, so that
+  no version names two rule sets (§28.4).
+- Observer wiring, sidecar format 2, the social log `observers/social.jsonl` with its `runio` support and resume
+  equality (§29.9, §29.10); the head and the record (§29.11); `python -m alife.analysis.social` and the `social` part of
+  `bench --observe` (§29.12).
+- The roster (§29.14, the last stage): kin-group names, house events, and the window births and deaths by cause, the
+  centroid and the archetype mix of each listed kin group, with one more channel field (`death_cause`), three more
+  `SocState` arrays and two more host members.
+
+**Config** (§17). One new key, `GameConfig.house_rate: float = 1/2048`, in `POST_V01_KEYS` and `OBSERVER_KEYS`
+(unhashed at every value, a resume key, inert while `game.observe` is off). `validate` bounds it to [0, 1]. Its
+default is a working value, not "off": the exception for observer-only keys that the owner decided on 2026-10-19 and
+that CLAUDE.md records (Conventions). GAMES §6.2 plans r ≈ 1/2,000 (a house every 44–69 steps at 64k); `1/2048` is the
+nearest power of two and exact in binary (the cut is `2^53`, §29.3). The snapshot cadence and every threshold are
+**not** config keys: they are fields of the frozen `social.SocialRules`, versioned by `SOCIAL_VERSION` and identified
+by `SocialRules.digest()` (§29.3), as G1's `RuleSet` (§28.1).
+
+**Deferred.**
+- To G3: the stream tags (`IDNT`, `TERR`, `EVNT`) and the `house`, `kin_group` and `colony` colour modes; moving the
+  host part of a snapshot off the step thread (`Society.settle` is a pure function of the host `Snap` and the society
+  state); sharing the snapshot's component labels with the heavy metrics at the game cadence (§29.9); the play-loop
+  bench; the **Family** row of GAMES §3 Pillar III (a host lineage store fed by births, an ancestry panel, a "kin nearby"
+  list), which needs picking and the HUD.
+- To G3 or G4: copying the sidecar and the social log into a fork. Every fork starts its observers fresh (§28.1), so
+  its houses are seeded from clades and its `observers/social.jsonl` starts absent (§29.10).
+- Built, in the last stage of G2 and in one change (after a data study on the G1 reference checkpoints): `INTENT_VERSION` 2,
+  that is the redesigned rules of the labels that failed G1's validity study, `RULES_V2` (those rules with `settler_body`
+  4), `RULES_V2` as the default and the pin of `RULES_V2.digest()` (§28.4). Its GPU validation on three held-out windows
+  (2026-10-21) passed the provisional criterion on every label (§28.8).
+- To G4 and G5: narration of relation events by the LLM; the per-kin-group temperament validated against a cross-group
+  `kin_attack_bias`; any test that dominance is defence.
+- Done on the GPU on 2026-10-21 (§29.12, row I45): the Metal purity gate and the Metal `splitmix64` equality test (509
+  passed), the churn rate, the 64k snapshot cost and the house-rate report. The provisional thresholds were measured, not
+  changed: `SOCIAL_VERSION` stays 1, and the colony tracker's churn at the 250 cadence is the open item (§29.12).
+- Not built, by the owner's decisions of 2026-10-19: an exact house rebuild for observers attached mid-run (they are
+  seeded from clades, immigrant lineages as `HOUSE_UNKNOWN`, and flagged inexact, §29.4); id resurrection for systems
+  that end and come back (an ended id is never revived: a system that returns gets a new id, §29.3).
+
+### 29.2 The channel additions (`step.py`)
+
+`Acts` (§28.2) gains eight fields, appended in this order after G1's seven (the first seven for social tracking, the
+eighth, `death_cause`, for the roster, §29.14), and `ActFlag` two bits. Under the static
+`observe`, `step` keeps `y0 = y` (the brain output, a Python reference that adds no node) next to `thrust0`, and the
+return is `StepOutG(*out, acts=_acts(flows, sl, thrust0, y0, s.alive, cfg))` (`s.alive` is a step input, not a
+trajectory primitive, so reading it is no tap). With `observe` off, `y0 = None` adds nothing and `_acts` is not called.
+
+| act | shape, dtype | source | notes |
+|---|---|---|---|
+| `attack_target` | (N,) int32 | the post-S8 `act.attack_target` | −1 none; a row index of the start-of-step state; the attack happened iff `ATTACKED` |
+| `bond_target` | (N,) int32 | the post-S8 `act.bond_target` | −1 none; the partner of a `PROPOSED` row |
+| `q_kin` | (N, 2) int16 | the brain output `y`, columns `OUT_Q_ATTACK + NBR_KIN − 1` and `OUT_Q_BOND + NBR_KIN − 1` (31 and 25, in 2D and 3D) | `round(256·clip(v, ±KIN_Q_CLIP))` with `KIN_Q_CLIP = 127`, in [−32512, 32512]; masked to 0 in integers on rows dead at the step's start (the brain evaluates dead rows too) |
+| `nbr` | (N, K) int32 | `nbr.idx` (S2) | `where(idx != row, idx, −1)`: invalid entries hold the row's own index (§4), so validity is exact without reading `nbr.valid` |
+| `born_row` | (M,) int32 | `rp.records.slot` | child row of a birth or immigrant lane, −1 for padding |
+| `born_parent` | (M,) int32 | `where(lanes.kind == BIRTH, lanes.parent, −1)` | the parent-row channel: −1 for immigrant and padding lanes |
+| `born_uid` | (M,) int64 | `rp.records.uid` | −1 for padding |
+| `death_cause` | (N,) int8 | `dt.cause` (S14) | the `DeathCause` of a row that died this step (0 starved, 1 killed, 2 aged, 3 catastrophe), −1 elsewhere: the array the `KILLED` bit already reads, so no new tap; unlike the death records (capped at DL = 2M per step) it covers every dead row |
+| flag `PROPOSED` = 32 | bit of `flags` | `as_prop` (S9, `bonds.form_bonds`) | popcount = `BOND_PROPOSERS`; both ends of a mutual bond |
+| flag `KILLED` = 64 | bit of `flags` | `dt.cause == DeathCause.KILLED` (S14) | popcount = `DEATHS_KILLED` |
+
+**Why a parent-row channel and not `BirthRecords.parent_slot`.** `BirthRecords` is a field of `StepOut`, and the runner
+stacks every field into `events/births_*.npz`. A new field would change the event files of every run, or need a second
+records type under the flag, which breaks `StepOutG.base() == StepOut` and `test_runner_files_identical_except_observers`.
+A row index also means nothing outside its step (rows are reused), so it should not be logged. The three lane arrays in
+`Acts` keep `StepOut`, the event columns and `runio`'s event code untouched, and `Observer.update(state, acts, t)` keeps
+its signature. `BirthRecords.parent_slot` is therefore not built.
+
+**Not in the channel:** the S12 partner (the slot identity attributes the per-slot flows, §28.3), `nbr.valid`,
+`nbr.dist` and the eligibility masks. At 65,536 rows G2's additions are 45 B per row (88 B per row with G1's 43, 5.8 MB
+a step) plus 16 B per lane, folded in the same eval and never retained.
+
+**Purity with the flag on.** The new reads are integer or boolean arrays (`act.attack_target`, `act.bond_target`,
+`nbr.idx`, `as_prop`, `dt.cause`, the lane arrays, the birth records) plus one new float tap, **`y`**. `death_cause` is
+a cast of the same `dt.cause` that the `KILLED` bit reads: it adds no consumer of a trajectory array, so `CHANNEL_TAPS`
+stays at 20. G1's three float
+taps (`thrust0`, `defend_post`, `emit_post`, §28.2) are unchanged. On the traced graph `y`'s producer is a `Squeeze`
+(float32 weights) or an `AsType` (float16) and its consumers are 16 `Slice`s in 2D and 20 in 3D, so it is already a
+kernel output and a new `Slice` reader adds a consumer of the same kind; `nbr.idx` is a `Select` read by 8 `Gather`s. As
+in G1 this guides the design and the gate is empirical (§28.2):
+- `test_channel_reads_only_the_allowed_arrays`: `CHANNEL_TAPS` grows from 12 to 20 (`attack_target_post`,
+  `bond_target_post`, `as_prop`, `dt_cause`, `nbr_idx`, `y`, `births_slot`, `births_uid`), and the probe also wraps
+  `brain.forward`, `spatial.find_neighbors`, `lifecycle.deaths` and `lifecycle.reproduce`. The taps must equal the
+  list exactly, in all three configurations.
+- A third value-neutral mutant, `_valid_from_nbr_valid` (the channel builds `nbr` with `nbr.valid`), adds one unlisted
+  tap, and a fourth, `_thrust_as_a_field` (the post-S8 float thrust returned as the `emit` field, no op of its own), is
+  reported as `Acts.emit`: the probe names every channel field that is not a listed array and looks up its producer
+  (§28.2). The meta-test requires the probe to report all four mutants. A new test shows that they leave every value
+  unchanged (the field mutant: the step's own outputs and the other fields), which is the premise.
+- The eager probe cannot see CSE, so `test_the_channel_regroups_no_float_kernel_of_the_compiled_step` compares the fused
+  kernels of the compiled step with observe off and on (§28.2): they may differ only in integer and boolean kernels, as
+  they do today (three groups). Four value-neutral CSE mutants of the decode's expressions and the thrust cancel, G1's
+  mutant and the field mutant are caught by it (`test_the_compiled_probe_catches_value_neutral_breaks`).
+- The trajectory arms (`test_observing_does_not_change_the_trajectory`, the two runner-level tests, the director-log
+  test) run the whole observer, social part included, with `snapshot_every = 15`, so that snapshots and their settles
+  happen inside the 60 compiled and 20 eager steps.
+- If Metal ever differs, stop and report, as for G1 (§28.2).
+
+### 29.3 Generic modules and the snapshot cadence
+
+#### `groups.py` (pure MLX; joins `SIM_MODULES` of the lint, §22.6)
+
+No game names; every function is shape-static and branch-free on array values.
+- `splitmix64(x, seed)`: uint64, bit-identical to `analysis.phylo.splitmix64` (constants are `mx.array(np.uint64(c))`:
+  a Python int of 2^63 or more fails in MLX 0.32.3 with `std::bad_cast`). `hash_cut(rate)` is
+  `min(int(rate·2^64), 2^64 − 1)`; `hash_below(x, seed, rate)` is `splitmix64(x, seed) < cut`, **compared as a uint64
+  array, never as a Python int** (the same `bad_cast`, and every rate in [0.5, 1) has a cut of 2^63 or more). All True
+  at `rate ≥ 1`, all False at 0 (static branches), `ValueError` for a negative or NaN rate. Exactly the `hit` of
+  `phylo.marker_roots`.
+- `lane_rows(n, born_row)`: (N,) row → lane, −1 if none (`ops.scatter_max_i32`; child rows are distinct, so it is a
+  placement). `inherit(prev, keep, lane, lane_vals, fill)`: newborn rows take their lane's value, kept rows their
+  previous value, every other row `fill` (`ops.place`).
+- `masked_bincount(size, idx, mask)`: (size,) int32 counts of `idx` where `mask`. Masked lanes go to
+  `size + (lane & (DUMP − 1))` with `DUMP = 1024` (one hot atomic address is avoided), then
+  `ops.scatter_add_i32(size + DUMP, …)[:size]`. Exact while the lane count is at most 2^31 − 1.
+- `limb_bits(lanes)` is the largest `w ≤ 11` with `lanes·(2^w − 1) ≤ 2^31 − 1`;
+  `masked_bincount_exact(size, idx, val, mask, bits)` is the exact int64 Σ `val` per bin by `ceil(bits / w)` limbs,
+  each an int32 scatter whose bin sums cannot overflow. It generalises the `exact_sum` argument (`ops.py`) to any
+  lane count: `w = 11` up to 2^20 lanes (every 64k sum), 9 for the 4N-lane sums at `n_max = 2^20`.
+- `grid_code(x, lo, hi, bins)`: mixed-radix int32 code of `clip(floor((x − lo)·bins/(hi − lo)), 0, bins − 1)` per
+  column, column 0 most significant (with `lo = −1`, `hi = 1`, `bins = 16` the scale is 8.0, exact on every IEEE
+  backend). `plane_cell(pos, size, cells, axes=(0, 1))`: the cell of a projection on the plane of two position columns
+  (the game passes its floor axes; z is height).
+
+Metal is unverified for this module: `tests/test_groups.py` runs on the default device, so the coordinator's Metal run
+covers the `splitmix64` equality (§29.12).
+
+#### `tracking.py` (host numpy; not a lint-scoped module)
+
+Generic: "systems" with persistent ids, "members" with int64 keys (uids, grid cells, bins). `TRACK_VERSION = 1`.
+`Members(label, key)` is the unique (label, key) pairs of the **candidates**: every current system that may continue a
+tracked one. `admit` (sorted labels, a subset of the candidates) are those that may **found** a new system. With
+leave < enter this is the hysteresis: a system gets an id only once it reaches the enter threshold and keeps it while it
+stays a candidate. `SystemTracker(theta, state).observe(step, cur, credit=None, admit=None) -> (Assignment, events,
+Diagnostics)` follows, in this order:
+1. *First snapshot* (`state.step == −1`): ids `1, 2, …` to the admitted labels in the order (−size, label); other
+   candidates get no id; no events.
+2. *Credit* `(child, parent)`: keys new since the last snapshot inherit the previous memberships of their parent key
+   (uid mode passes newborns; footprint mode passes none). A' = previous memberships plus the credited pairs.
+3. *Overlap* over every candidate: a many-to-many join of A' and `cur` on key (sort and `searchsorted`), counted by
+   `np.unique` over the int64 pair code `p·2^32 + l'`. `|A'_p|`, `|B_l|` and `c(p, l)`.
+4. *Accept* iff `θ_den·c ≥ θ_num·(|A'_p| + |B_l| − c)`, in int64 (Jaccard ≥ θ).
+5. *Greedy one-to-one*: accepted candidates sorted by (−c, p, l); each is taken if its `p` and `l` are both unused.
+   A matched label keeps id `p`, admitted or not.
+6. *Unmatched current `l`*: not admitted → no id, no event, its keys are not stored. Admitted → `p* = argmax_p c(p, l)`
+   (ties to the smaller `p`); if `c(p*, l) > 0` and `p*` is matched, `SPLIT(new id, other = p*)`, else `BORN(new id,
+   other = p* if c > 0 else −1)`. New ids in the order (−size, label).
+7. *Unmatched previous `p`*: `l* = argmax c(p, l)` over the labels that hold an id after steps 5–6 (ties to the smaller
+   label). If `c(p, l*) > 0` and `l*` is matched, `MERGED(p, other = id(l*))`; else `DISSOLVED(p, other = id(l*) if
+   c > 0 else −1)`. `size` is `|A_p|` (unextended).
+8. Events are ordered: ended systems (MERGED, DISSOLVED) by id, then new ones (BORN, SPLIT) by id. `size` and `overlap`
+   count keys: members in uid mode, cells or bins in footprint mode.
+9. The state becomes the current memberships of the id-holding labels.
+
+A fragmentation (both halves below θ) is `DISSOLVED(A, other = larger half)` plus two `BORN(other = A)` when both
+halves are admitted. A system that falls below the leave threshold ends; if it comes back above the enter threshold it
+is a **new id** (no resurrection; an ended id is never revived or reused). Empty inputs: no previous system → every
+admitted label is `BORN` with `other = −1` (no events at the first snapshot); no current candidate → every previous
+system is `DISSOLVED` with `other = −1`; both empty → no events; an empty `TrackerState` round-trips. `Diagnostics`
+holds `n_prev`, `n_cur`, `n_admitted`, `n_matched`, the Jaccard of every matched pair and the best Jaccard of every
+unmatched previous system (for the calibration tool only). `TrackerState(system, key, next_id, step)` is the last
+snapshot's memberships sorted by (key, system); `SystemTracker` validates a given state and raises `ValueError`.
+
+- `grid_clusters(counts, shape, occ_min, periodic=None) -> (prod(shape),) int64`: a bin is *occupied* iff `counts ≥
+  occ_min`; occupied bins are joined by **face adjacency** (±1 along one axis, 2·D neighbours, an axis wraps only if
+  `periodic`) by min-label propagation over the sparse occupied set with one pointer jump per round, until a fixed
+  point; the label of a component is its smallest code. A non-empty bin below `occ_min` is *attached* to the label of
+  its most populous occupied face neighbour (ties to the smaller code), else −1; attached bins never join components.
+- `Dominance(shape, k, min_count, periodic=(True, True), state=None).update(ids, counts) -> DominanceMap(owner,
+  purity_q16, border)` on a 2-D grid of `C = nx·ny` cells (code `y·nx + x`): the EMA of G1's accumulator per column in
+  int64 (`x = count << 8`; a column whose id was not tracked at the previous update starts at `E = x << k`, else
+  `E ← E + x − (E >> k)`; ids no longer present are dropped; the last column "other" is always tracked). `owner(c)` is
+  the id of the argmax column (ties to the lower column), −1 if "other" or if `Σ E < (min_count << 8) << k`;
+  `purity_q16 = E[c, owner]·65536 // Σ E[c, :]`. `border[c, 0]` (east) and `[c, 1]` (north): the owner differs from the
+  neighbour's and one of the two is owned; the neighbour wraps only on a periodic axis. `current()` recomputes the map
+  of the last update from the smoothed counts (a restored state has one too).
+- `sticky_slots(prev, ranked, slack)`: `prev` the (F,) slot → id map (−1 empty), `ranked` the tracked ids by rank. A
+  slotted id keeps its slot iff it is in `ranked[:F + slack]`; the free slots, ascending, take the unslotted ids in rank
+  order. `deadband(ref, value, shift) -> (new_ref, changed)`: `(value, True)` if `ref < 0` or `|value − ref| > ref >>
+  shift`, else `(ref, False)`. `lookup_table`, `rank_by_size`, `circular_mean` are small helpers; `lookup_table`
+  raises for an out-of-range key and `circular_mean` for an empty array.
+
+#### The snapshot cadence and `SocialRules`
+
+Everything the host does happens at a **snapshot**, every `snapshot_every` steps on the global step clock (the GAMES §5.5
+game cadence, 250), so snapshots, like labels, are independent of the metrics cadence and of the step a run was resumed
+at. `SocialRules` (`game/social.py`) holds the cadence and every threshold, **provisional, `SOCIAL_VERSION` 1**. A
+pair `(a, s)` is the threshold `max(a, n_ref >> s)` for the reference population `n_ref`; `(num, den)` is a ratio
+tested in integers.
+
+| field | v1 value | meaning |
+|---|---|---|
+| `snapshot_every` | 250 | steps between snapshots |
+| `slots`, `slot_slack` | 16, 4 | F named slots per family (`G = F + 1`, OTHER = F); a slotted id keeps its slot while tracked and ranked below `F + slack` |
+| `kin_bins` | 16 | bins per tag dimension over [−1, 1] (width 1/8); 16⁴ = 65,536 bins |
+| `kin_occ`, `kin_enter`, `kin_leave` | (2, 12), (8, 9), (4, 10) | a bin is occupied iff count ≥ `max(2, n_ref >> 12)`; a kin group gets an id iff size ≥ `max(8, n_ref >> 9)` and keeps it while ≥ `max(4, n_ref >> 10)` |
+| `n_band` | 3 | `n_ref` follows `n_alive` only when `|n_alive − n_ref| > n_ref >> 3` (12.5%) |
+| `colony_enter`, `colony_leave`, `colony_iters` | 4, 3, 32 | a colony gets an id iff it is a bond component of ≥ 4 alive agents and keeps it while ≥ 3; `metrics.components` rounds (the run key `run.components_iters` is not used) |
+| `theta`, `uid_spacing` | (3, 10), 300 | match iff Jaccard ≥ 0.3; uid matching iff `snapshot_every ≤ 300`, else footprint matching |
+| `foot_cells`, `terr_cells` | 128, 32 | footprint grid and territory grid per floor axis |
+| `terr_k`, `terr_min` | 2, 1 | territory EMA shift (about 3·4 snapshots to 95%); a cell is owned only if its smoothed total is ≥ 1 agent |
+| `sim_sample`, `sim_distinct` | 64, (1, 4) | members per kin group in the mean tag similarity; a pair is *distinct* iff similarity < 0.25 |
+| `events_max`, `relations_max` | 32, 32 | rows listed per record |
+| `sim_salt`, `name_salt`, `kin_name_salt` | `0x6B696E73`, `0x686F757365`, `0x6B696E6E616D65` | member choice of the similarity subsample; house names; kin-group names that no house gives, or whose house name a live group holds (§29.14) |
+
+`__post_init__` rejects nonsense (`snapshot_every` or `slots` below 1, `colony_leave` below 2 or above `colony_enter`,
+a leave threshold above the enter threshold at any population, a zero denominator, …). `digest()` is the sha256 of the
+canonical JSON of every field, as `RuleSet.digest()` (§28.4); a test pins `SOCIAL_V1.digest()`
+(`df6ba5e483e9f2fcf23508deeaee142b7e20ace317509d3881df6d8815483d7c`, re-pinned when the roster added `kin_name_salt`) and requires every field to change it, so a
+threshold edit without a version bump fails the suite; the sidecar and every record store the digest. `check(cfg)`
+raises `ValueError` unless every static bin count and lane count of the device code fits int32. A run's social rules are
+`observer.DEFAULT_SOCIAL` (= `SOCIAL_V1`); `analysis.social --every` sweeps the cadence with `dataclasses.replace`
+(§29.12), and tests replace `DEFAULT_SOCIAL` with `monkeypatch` (`social_every(monkeypatch, s)` in
+`tests/game_helpers.py`), which is the only override (§29.9).
+
+### 29.4 Houses (`game/social.py`, `game/society.py`)
+
+A **house** is a named sub-lineage within a clade (GAMES §6.2). Houses are labels for the story, not what agents respond
+to.
+- **Device**, every step (`social.update`): a birth inherits the house of its **parent row** (`SocState.house[p]`,
+  `p = born_parent`: a survivor, so no write conflicts with a read) unless `groups.hash_below(born_uid, run.seed,
+  game.house_rate)`, in which case the child founds a house with id = its uid. Immigrants found their own house.
+  Founders' house is their clade (`init_soc`: clade = uid for the founders). `SocState.house` is (N,) int64: the
+  founder's uid, `HOUSE_UNKNOWN = −2`, or −1 for a dead row. A row whose occupant changed (`uid` differs, G1's reset
+  rule) is reset before the newborn's value is written, so a row reused in its death step takes the newborn's.
+  `SocState.house_from` (N,) int64 is the house a house was founded from, inherited with the house (§29.14): a house
+  founded by a birth takes `house[p]`, one founded by an immigrant −1, a child that founds nothing takes `house_from[p]`;
+  −1 for the run's founders, for an observer's start and for dead rows.
+- **Equivalence.** For a run from step 0 the live house of every agent equals `uid_of(nearest_root(tree.parent,
+  marker_roots(tree, house_rate, run.seed)))` of `phylo.load_tree(run)`: tree index = uid there, the founders (uids
+  0…n_init−1) have clade = uid, and every root of `marker_roots` is a founder, an immigrant or a hashed birth. Tested
+  at rates 0, 1/8 and 1 with immigration (`test_game_houses.py`).
+- **Mid-run starts.** A fresh observer seeds houses from clades, **immigrant lineages with `HOUSE_UNKNOWN`** (immigrants
+  and all their descendants carry clade `n_init`, which is not a house: uid `n_init` is the run's first birth, an
+  unrelated agent). Children of a `HOUSE_UNKNOWN` row inherit it unless they found a house. `Society.house_origin` is
+  the observer's start step; houses are **exact iff `house_origin == 0`**, and the head and every record say `exact`.
+  A fork starts fresh (§28.1), so the houses of a fork after step 0 are inexact (a fork from step 0 holds only founders,
+  so its houses are exact). There is no offline rebuild: an exact rebuild needs the birth log from step 0 (43.6M records
+  in `64k_s0`).
+- **Host**, at a snapshot: `np.unique` over the alive rows with `house ≥ 0`: `alive` (distinct houses),
+  `unknown_immigrant` (alive rows with `HOUSE_UNKNOWN`), and the top 16 by (−size, id) with the `clade` of the house's
+  first alive row and a **name**. With `h = splitmix64(id, name_salt)`: `name = (ONSET[h & 31] + NUCLEUS[(h >> 5) & 15] +
+  ONSET[(h >> 9) & 31] + NUCLEUS[(h >> 14) & 15] + CODA[(h >> 18) & 15]).capitalize()`, tables `ONSET`, `NUCLEUS`,
+  `CODA` in `society.py`; a name shared within the top 16 gets `f" {id}"` appended for every house after the first (by
+  id). `HOUSE_UNKNOWN` is never named. The houses founded and gone extinct between two snapshots are listed too
+  (`house_events`, §29.14).
+
+### 29.5 Kin groups (the factions, GAMES §10 item 8)
+
+Agents discriminate kin only through tag similarity, so factions that behave as factions are groups in tag space.
+- **Reference population.** `n_ref, rescaled = deadband(n_ref, n_alive, n_band)` (`n_ref = −1` before the first
+  snapshot): the thresholds follow the population only when it has moved by more than 12.5% of `n_ref`, so a ±1 change
+  of `n_alive` across a multiple of 4,096 changes no threshold; a real change rescales them once and the record says so
+  (`thresholds.rescaled`). An EMA of `n_alive` would still cross a step of `n >> 12` back and forth while it hovers at
+  it; the deadband cannot.
+- **Thresholds** `occ_min = max(2, n_ref >> 12)`, `enter = max(8, n_ref >> 9)`, `leave = max(4, n_ref >> 10)`.
+- **Clustering.** `root = grid_clusters(bin_counts, (16,)*4, occ_min)` (tag space is a box: no periodic axis); each
+  alive row's group is `root[bins]`; candidates are the groups of size ≥ `leave`, admitted those ≥ `enter`; rows in
+  groups without an id or in unaffiliated bins are OTHER.
+- **Matching** by `SystemTracker.observe(…, admit=…)`. *Uid mode* (`snapshot_every ≤ uid_spacing`): members are the
+  uids of the candidates' rows, credit = `(uid, parent_uid)` of alive rows with `uid ≥` the previous snapshot's
+  `next_uid` and `parent_uid ≥ 0` (one generation). *Footprint mode*: members are the occupied and attached bins of the
+  candidates, no credit; candidate sizes and the table's sizes stay agent counts, and the events' `size` and `overlap`
+  count bins. A tracked group survives while it stays at or above `leave`; a group oscillating around `enter` is born
+  once; one oscillating around `leave` without reaching `enter` is never tracked.
+- **Slots.** `sticky_slots(prev, rank_by_size(tracked ids, sizes), slot_slack)`: a group keeps its device slot (the value
+  G3's `IDNT` stream and colour modes carry) while it is tracked and ranks within the top 20. `kin_lut` (65,536,) int32
+  maps every bin to its group's slot, else OTHER (`lookup_table`); `social.relabel` writes it back to `SocState.kin`.
+- **Similarity** (the kin baseline). For each pair of slotted groups, the mean of `exp(−‖t_i − t_j‖² / tag_scale²)` over
+  the ordered pairs of their subsamples, where a subsample is the `sim_sample` members with the smallest
+  `phylo.splitmix64(uid, sim_salt)`; float64, 4 decimals. A pair is *distinct* iff `sim_distinct[1]·sim <
+  sim_distinct[0]`. The diagonal (pairs `i ≠ j` inside one group) is its **`sim_self`**, reported for every slotted group
+  in the record's `kin_groups` table (None below 2 members): the **chaining report**. Single linkage still chains within a
+  clade (within-group kin 0.22 in 2D on `64k_s0`): it is reported, not fixed (a mode-seeking rule would trade chaining
+  for flicker), and a chained group has a low `sim_self`.
+- **Summary per slotted group:** id, name and `named_after` (§29.14), slot, size, mean tag (4 floats, 3 decimals),
+  dominant clade and its share, `sim_self`, the centroid `x` and `y`, the archetype mix `arch` and the window `births`
+  and `deaths` by cause (§29.14); in 3D also `z_mean` (2 decimals) and `band_frac`, the fractions of its members in the `metrics.N_BANDS` = 4
+  height bands of `metrics.z_band` (4 decimals), the **depth-niche** row of GAMES §3 Pillar III (clade–band MI 0.63 nats
+  in `64k3d_s0`), from `Snap.pos` already on the host.
+- **Evidence for the provisional values** (measured on CPU numpy, read-only, face adjacency with attachment; between-group
+  kin of the top three ≈ 0.00 in every row; thresholds from the instantaneous `n_alive`, which equals `n_ref` at a first
+  snapshot):
+
+  | checkpoint (alive, clades) | rule | groups | top sizes | unaffiliated | top-group clade purity, within kin |
+  |---|---|---|---|---|---|
+  | `64k_s0` 1.5M (33,862, 4) | w 1/4, occ `n >> 11` = 16 | 5 | 21,581 · 7,066 · 2,801 · 2,177 | 0.4% | 0.98, 0.18 |
+  | | **w 1/8, occ `n >> 12`** = 8 | 55 (15 at `n >> 9` = 66) | 16,876 · 5,678 · 2,102 · 1,837 · 1,189 | 7.9% | 1.00, 0.22 |
+  | `64k3d_s0` 500k (40,413, 4) | w 1/4, occ 19 | 5 | 20,746 · 11,141 · 8,125 | 0.3% | **0.79**, 0.41 |
+  | | **w 1/8, occ 9** | 35 (8 at `n >> 9` = 78) | 16,700 · 8,088 · 7,735 · 2,527 · 1,860 | 4.7% | 0.97, 0.59 |
+
+  GAMES §6.3's example width 1/4 chains two 3-D clades whose mean tags are 0.92 apart into one group (purity 0.79) and
+  gives only 4–5 groups in 2D; 1/8 separates them and gives 15 and 8 tracked groups, which fits F = 16. The owner chose
+  width 1/8 with single linkage on 2026-10-19. Many of the 55 groups in `64k_s0` sit near the enter threshold, hence the
+  hysteresis. **Not measured:** stability over a sequence of snapshots; §29.12 reports the churn rate.
+- Host cost (measured on the two checkpoints): histogram 0.5–0.9 ms, clustering 1.3–1.5 ms; matching about 8 ms at 33k
+  members with 5k credit pairs on the CPU (the plan assumed 2 ms; timed on the GPU day at 5.0 ms in 2D and 7.5 ms in 3D per snapshot, §29.12); similarity 12 ms
+  for 136 pair kernels.
+
+### 29.6 Colonies
+
+A colony is a bond component with a persistent identity (GAMES §6.4), presented as a reef or a mat, not an organism.
+- **Bodies** come from `metrics.components(partner, alive, colony_iters)` at the snapshot (the run key
+  `run.components_iters` may change at a resume and is not read, so the colony labelling is part of the social
+  digest). Candidates are the components with ≥ `colony_leave` (3) alive members, admitted those with ≥ `colony_enter`
+  (4); the label is the root row. The same hysteresis as kin groups, so that a body of 4 that loses one member does not
+  end and come back under a new id. `converged` is reported, never acted on.
+- **Matching:** uid mode as for kin groups (newborns are credited to their parent's colony, GAMES §6.4); footprint mode:
+  the keys are the distinct `foot` cells (128² floor grid) of a colony's members (a 3-D body is a sheet whose centroid
+  moves 0.08 units over 300 steps, RESULTS_3D §5.4).
+- **θ = 0.3** (provisional): the strict-uid Jaccard of the largest 3-D body with its start is 0.59 at 100 steps and 0.41
+  at 300 (RESULTS_3D §5.4); newborn credit raises it and θ stays below the 300-step value. The owner kept θ and the
+  hysteresis on 2026-10-19; §29.12 calibrates the value.
+- **Slots** (sticky, as kin groups): the slotted 16 of the tracked ids → slots 0…15, other tracked colonies → F;
+  `col_lut` (N,) int32 maps root rows to slots, else −1.
+- **Summary per slotted colony:** id, slot, size, `kin_group` (the plurality of the kin ids of its members that hold one,
+  ties to the smaller id, −1 if none), the centroid (`circular_mean` on x and y over `world.size`, the plain mean of z
+  in 3D, 2 decimals).
+- `SocState.body` (component size at the snapshot, 0 for a row reset since) feeds the Settler clause (§28.4).
+- Evidence (measured): 1,286 colonies of ≥ 4 (9,999 members) in `64k_s0`, 1,287 (14,567) in `64k3d_s0`; greedy matching
+  of 1,271 candidate pairs 2.0–2.3 ms.
+
+### 29.7 Territory
+
+- The device counts the alive agents per floor cell (`terr_cells`², via `groups.plane_cell`) and per **window** slot at
+  the snapshot (`Snap.terr`), so territory, relations and temperament of one record share one slot → id map (the map
+  set at the previous snapshot).
+- The host runs `Dominance.update(ids = the window's slotted ids, counts)` (§29.3), the columns of empty slots dropped
+  (with no tracked group, only "other"). The aquarium floor is a torus, so both axes are periodic. Reported:
+  `owned_cells`, `purity_mean` (over owned cells, Q16 / 65536, 4 decimals, None if none) and the cells per window id.
+  The map is kept (`Observer.territory()`, for G3). Labelled "dominance", never "control", until a test shows defence
+  (GAMES §6.5). Host cost about 1 ms.
+
+### 29.8 Relations and temperament
+
+Per window `(window_start, step]` and per ordered pair of window slots `(a, b)` (OTHER is id −1):
+`attacks`, `hits`, `kills`, `bonds` (formed proposals), `shared` (energy quanta), `bond_slots` (bond-steps, the
+normaliser of `shared`), and the proximity baselines
+
+```
+exp_attacks[a, b] = Σ_j EXPO[ATTACK, a, b, j] / (j + 1)   = Σ over the window's attacks by a of n_ib / n_i
+exp_bonds[a, b]   = Σ_j EXPO[BOND, a, b, j] / (j + 1)     = Σ over the window's formed proposals by a of n_ib / n_i
+```
+
+with `n_ib` the actor's valid sensed neighbours in slot `b` and `n_i` all of them: the expected counts had every attacker
+or proposer picked a uniformly random sensed neighbour. The owner chose this per-step baseline on 2026-10-19 over the free
+co-occupancy baseline of the territory counts, which counts who shares a cell rather than whom an actor could have
+picked. It is the per-group form of `KIN_ATTACK_BASE` and `KIN_BOND_BASE` (§19.1), which sum a per-row neighbour mean over
+the actors. A pooled ratio `attacks_a·Σ_i n_ib / Σ_i n_i` would weight crowded actors more (one actor with 1 neighbour in
+`b`, one with 8 of which 1 in `b`: expectation 1.125, pooled 0.44). The `n_i − 1` axis keeps the device part a plain
+count for every validated K (an exact `L/n_i` weighting with `L = lcm(1..K)` overflows int32 from K = 23, and
+`sensing.k_neighbors` goes up to 27·`cell_capacity`). Float64, 3 decimals; None when the actor slot made no attack (no
+proposal). `Σ_b exp_attacks[a, b] = attacks_a` up to float rounding (the integer identity is §29.9's).
+
+Also `sim` and `distinct` (§29.5): None unless both ids hold a slot at this snapshot; for a pair inside one group `sim`
+is that group's `sim_self` and `distinct` is None.
+
+**Listed pairs** (the record budget, §29.11): the pairs with `attacks + bonds + shared > 0`; if more than
+`relations_max`, the first `relations_max` by (−(attacks + bonds), −shared, a, b), and `relations_dropped` counts the
+rest. Pairs with exposure only feed the baselines and are not listed. The listed pairs are output sorted by (a, b), with
+`a` and `b` the **ids** (OTHER = −1), not the slots. Labels such as "war" are G4's narration, not G2's.
+
+**Temperament.** Per window slot, `q_attack_kin = (q_sums[0] − q_sums[1]) / (256·q_rows)` and `q_bond_kin = (q_sums[2] −
+q_sums[3]) / (256·q_rows)` (4 decimals; None if `q_rows = 0`), `rows`; from the snapshot step's `q_kin` (one step of all
+members, not a window mean: this keeps the per-step cost down; positive means the query prefers kin as targets). Every
+named window slot is listed, and OTHER (id −1) last and only when it has rows.
+
+### 29.9 Observer integration (`game/social.py`, `game/observer.py`, `runner.py`)
+
+**Device state** (`social.py`, pure MLX, in the scope of rules 2 and 5 of §22.6; `SocialRules` fields are Python ints used
+directly, never `int(sr.x)`, because `sr` is not a `SAFE_ROOTS` root). `SocIn` is the only view of `State` the social
+layer takes (`alive`, `uid`, `parent_uid`, `clade`, `partner`, `tag`, `pos`, `next_uid`): no key, no weight.
+
+| `SocState` field | shape, dtype | meaning |
+|---|---|---|
+| `uid` | (N,) int64 | `where(alive, uid, −1)` at the last update: the observed occupant |
+| `house` | (N,) int64 | house id, `HOUSE_UNKNOWN` (−2), −1 dead (§29.4) |
+| `house_from` | (N,) int64 | the house of the founder's parent, inherited with the house: −1 none, `HOUSE_UNKNOWN` if the parent's house was unknown (§29.4, §29.14) |
+| `kin` | (N,) int32 | kin slot: 0…F−1 named, F = OTHER (untracked, unaffiliated, immigrant), −1 dead |
+| `colony` | (N,) int32 | colony slot: 0…F−1 named, F = other tracked colony, −1 none or unknown |
+| `body` | (N,) int32 | bond-component size at the last snapshot, 0 if unknown (rows reset since) |
+| `slot_group` | (N, B) int32 | kin slot of each bond slot's partner after the last update, −1 empty |
+| `rel` | (5, G, G) int64 | window counts in `Rel` order (ATTACKS, HITS, KILLS, BONDS, BOND_SLOTS), `[actor slot, target slot]` |
+| `expo` | (2, G, G, K) int64 | window neighbour lanes of attackers and proposers: `[actor slot, neighbour slot, n_i − 1]` |
+| `shared` | (G, G) int64 | window energy shared, `[sender slot, receiver slot]` |
+| `births` | (G,) int64 | window births by the slot the newborn inherits (its parent's at the start of the step), immigrants not counted (§29.14) |
+| `deaths` | (4, G) int64 | window deaths by `DeathCause` (rows) and the dead row's start-of-step slot, from `Acts.death_cause` (§29.14) |
+
+- `init_soc(si, cfg, sr)`: houses as §29.4 (`house_from = −1`), `kin = where(alive, OTHER, −1)`, `colony = −1`, `body = 0`,
+  `slot_group` from the partners' slots, zero matrices and zero `births` and `deaths`.
+- `update(so, si, a, cfg, sr)`, every step, after G1's `observe.update`, in the same closure. Rows whose occupant
+  changed are reset (`keep = alive & (uid == so.uid)`, G1's rule). Newborn rows take their lane's house (§29.4) and the
+  parent's kin slot (OTHER for immigrants). The relations of the step use the **start-of-step slots** `g0 = so.kin`
+  (every acting row and target was alive then): `ATTACKS` from `ATTACKED`, `HITS` from `HIT`, `KILLS` from an attack
+  whose target has the `KILLED` flag, `BONDS` from `PROPOSED` (a mutual bond is two proposals), `BOND_SLOTS` from the
+  occupied bond slots; `expo` counts, for each attacker and proposer, its valid neighbours by slot at index `n_i − 1`;
+  `shared` is the exact int64 Σ `share_out` by (sender slot, partner slot), `bits = 16` since `share_rate < 2^16`. `births`
+  counts the birth lanes by the start-of-step slot of the parent row and `deaths` the rows with a `death_cause` by cause and
+  start-of-step slot (a lane whose parent, or a cause on a row that, was dead at the start is not counted). Counts go through
+  `groups.masked_bincount*`.
+- **Per-step identities (tested, exact in integers):** Σ `ATTACKS` = `ATTACKS` counter, Σ `HITS` = `ATTACK_HITS`,
+  Σ `BONDS` = `BOND_PROPOSERS`, Σ `shared` = `FLOW_SHARED`, Σ `BOND_SLOTS` = occupied slots of the start-of-step state, the
+  distinct targets of the kill lanes are exactly the `DEATHS_KILLED` rows, `Σ_b expo[ATTACK, a, b, j] = (j + 1)·
+  #{attackers in a with n_i = j + 1}` (the same for proposers), Σ `births` = `BIRTHS` and Σ `deaths[c]` = the counter of
+  cause c (`DEATHS_STARVED`, `_KILLED`, `_AGED`, `_CATASTROPHE`).
+- `snapshot(kin0, so, si, a, cfg, sr, arch=None) -> Snap`, only at snapshot steps, in its own compiled closure; `kin0` is
+  the slot array before this step's update and `arch` the rows' primary archetype labels (`Labels.arch_primary` as of the
+  last evaluation; the observer passes `o.label_arch[:, 0]`; None reads as all unlabelled). It computes the components and component sizes (`colony_iters` rounds), the tag
+  `bins` and the 65,536-bin histogram, the floor cells (`cell` at `terr_cells`, `foot` at `foot_cells`), the territory
+  counts with the window's slots, the temperament sums (`q_sums` (4, G) int64, `q_rows` (G,)) and the window matrices
+  and counts, and carries `arch` (masked by alive) and `house_from`.
+  At the initial snapshot of a fresh observer `a` is None (static) and the temperament is zero. Every array of `Snap` is a
+  derived real op; no `State` array is held. Counts use `groups.masked_bincount` (masked lanes spread over the dump
+  region) rather than a masked `ops.scatter_add_i32`, which would pile ~30k dead rows onto bin 0.
+- `relabel(so, snap, kin_lut, col_lut)`, at settle: `kin = kin_lut[snap.bins]`, `colony = col_lut[snap.comp]`, `body`
+  from the snapshot, `slot_group` recomputed, the three window matrices and the `births` and `deaths` counts zeroed. `uid`, `house` and `body` are real ops so
+  that no output aliases an input (the MLX 0.32 `mx.compile` quirk of `consume_env`, §16.3; tested compiled).
+
+**Device cost at 64k** (65,536 rows, K = 8, B = 4; estimates, the GPU day's measurements are in §29.12): `SocState` is 52 B per row (3.4 MB)
+plus 52 KB of matrices and counts; the houses, kin and body inheritance about 0.05 ms a step; the relation counts (0.52M lanes) and
+exposure (1.05M lanes) 0.2–0.5 ms a step; the energy shared 0.1 ms; at a snapshot the components (32 + 1 rounds) 3–6 ms,
+the bins, histogram, cells, territory and temperament 0.3 ms, and the host transfer of `Snap` (about 100 B per row in 2D and 104 B in 3D, and 384 KB of fixed arrays: 6.9 and 7.2 MB at 65,536 rows; measured
+on `tiny` and `tiny3d`) 1–2 ms. Host: `Society.settle` 25 ms measured on a synthetic 64k-like snapshot on the CPU (15–30 ms planned), plus the
+append and fsync of a record (about 1 ms), plus, when the steps coincide, the heavy metrics' own components (below).
+
+**The observer** (`Observer(cfg, o, so, society, step, rules, social)`; `rules.check(cfg)` and `social.check(cfg)` at
+construction). Module constants `DEFAULT_RULES = RULES_V2` (version 2, §28.4) and `DEFAULT_SOCIAL = SOCIAL_V1`;
+`Observer.fresh(state, cfg, *, rules=None, social=None)` and `Observer.open(rd, state, cfg, *, rules=None, social=None)`
+take None to mean the module default **as of the call**. The runner passes nothing, the bench passes nothing and reads
+`observer.DEFAULT_SOCIAL` for its cadence, and the labels tool passes its `rules`. No config key sets the cadence; tests
+replace `DEFAULT_SOCIAL` with `monkeypatch` (`social_every`), and a module-scoped fixture, which cannot use
+`monkeypatch`, passes `social=` explicitly. The closures (compiled iff `cfg.run.compile`) are `fold` (G1's `update`
+then `social.update`), `fold_eval` (adds `evaluate(…, body=so.body)`), `snap` and `relabel`.
+- `update(state, acts, t)`: (1) settles a pending snapshot; (2) folds the step; (3) if `t % social.snapshot_every == 0`,
+  computes `snap(previous so.kin, so, si, acts, o.label_arch[:, 0])` and keeps it **pending**; (4) `arrays()` returns ObsState, SocState and
+  the pending `Snap`, so the caller's single `mx.eval` covers them: still one blocking eval per step.
+- `_settle()`: one host transfer of the pending `Snap`, `Society.settle(h, snapshot_step)` (which appends the snapshot's
+  record to `society.records`), a lazy `relabel` (evaluated with the next step), the pending snap cleared. Called first
+  by `update`, `row_block`, `take_records`, `sidecar`, `labels`, `host_labels`, `social_labels` and `territory`, so every
+  reader sees the settled state. The runner settles each snapshot at its own step (it takes the records right after the
+  step's eval); a caller that does not take them (the labels tool, the step-level purity arms) settles it at `update(t +
+  1)` or at its next read. **Both paths give the same records and, from the next update on, the same state** (tested).
+- `row_block()` is G1's keys then `social`, the head of the last settled snapshot (§29.11). It carries no report and makes
+  no observable change: it settles a pending snapshot first, as every reader does, so any caller may call it at any step.
+- `take_records() -> list[dict]` settles first, returns the records of the snapshots settled since the last call, in
+  snapshot order, and forgets them. A caller that never takes them keeps them in memory (one record of ≤ 16 KB per
+  `snapshot_every` steps).
+- `sidecar()` settles first and **raises `RuntimeError` while a record is untaken**, so that a checkpoint never stands
+  for a snapshot whose record is neither in the log nor anywhere else (the sidecar carries no reports). The runner takes
+  the records before every checkpoint, so this never fires in a run; it guards a later caller such as G3's play loop.
+- **Runner** (the one change to `runner.run`): in the observing branch, right after `mx.eval(state, out,
+  *obs.arrays())`, `rd.append_social(obs.take_records())`. The record of the snapshot at step t is therefore appended and
+  fsynced at t, after t's eval and before t's metrics row, director boundary and checkpoint, whether or not t is a row
+  step. `append_social([])` (every other step) is a no-op that creates nothing. The non-observing branch, the checkpoint
+  closure and the row code are unchanged.
+- `fresh`: `init_obs`, `init_soc`, then an initial snapshot (eval, transfer, `Society.initialise`, `relabel`) evaluated at
+  once; `house_origin = step`; the initial snapshot has no record. `open` validates a sidecar against a *blank*
+  observer (`init_obs`, `init_soc`, no snapshot) and calls `fresh` only on fallback.
+- Read API for G3 and the tools: `social_labels() -> SocialLabels(house, kin_slot, colony_slot)` (device),
+  `territory() -> (DominanceMap | None, slot ids)`, `take_records()`, `society` (slot ids, names). `labels.study` is
+  unchanged: it calls `update`, `arrays()` and `row_block()` and never takes records or writes a sidecar.
+
+**Heavy metrics at the game cadence.** The runner's heavy metrics run `metrics.components` (with `run.components_iters`) on
+every step that is a multiple of `run.heavy_metrics_every`. At the GAMES §5.5 game cadence `heavy_metrics_every` is 250
+(or 50, 125), because a live director's `rule_every` = 250 must be a multiple of it, so every snapshot step also pays the
+heavy components: twice per snapshot, +0.012–0.024 ms a step amortised (estimate; `bench --observe` measures it as
+`heavy_ms_median`: 5.4 ms (2D) and 7.4 ms (3D) per call on a fresh state, 2026-10-21). G2 does not share them: sharing needs `colony_iters == run.components_iters` and a runner change,
+for a cost below the per-step noise. G3's play loop, which owns the game cadence, may pass the snapshot's labels into
+the heavy metrics when the two coincide.
+
+### 29.10 Persistence: sidecar format 2 and the social log
+
+#### The sidecar (`game/observer.py`)
+
+`OBSERVER_FORMAT = 3` (bump with any change to the members or their meaning; 2 was this format before version 2's `held` and the wider `intent`). Members: every `ObsState` field under its
+name, `soc.<field>` for every `SocState` field, the host state below, and `meta`. Host members (all numpy; `Society.arrays()`
+and `Society.from_arrays`):
+- `host.kin.system`, `host.kin.key`, `host.col.system`, `host.col.key` (int64, (m,)), the tracked memberships;
+- `host.kin.next_id`, `host.col.next_id`, `host.prev_step`, `host.prev_next_uid`, `host.window_start`, `host.house_origin`,
+  `host.n_ref` (int64, 0-d; `n_ref` −1 before the first snapshot);
+- `host.kin.slots`, `host.col.slots` ((F,) int64, −1 empty);
+- `host.terr.ids` ((r,) int64) and `host.terr.ema` ((r + 1, C) int64, C = `terr_cells`²; a society that has not settled yet
+  holds a zero (1, C) array, and a restored map counts as started iff `prev_step > house_origin`);
+- `host.houses` ((m,) int64, strictly increasing, ids ≥ 0): the houses with live members at the last snapshot, from which
+  the next one lists the houses founded and extinct (§29.14);
+- `host.kin.names`: a 0-d unicode JSON list `[[id, name, house id or null], ...]` by id, the names of the tracked kin
+  groups (§29.14), dumped with `runio._dumps`;
+- `host.summary`: a 0-d unicode JSON object, the three summary objects of the last settled snapshot, which the row head
+  repeats until the next one (§29.11). It **MUST** be dumped with `runio._dumps` in insertion order, never with
+  `sort_keys` (G1's meta idiom would reorder `kin_groups`, `colonies` and the top-level keys, so a resumed run's head would
+  differ in key order from an uninterrupted one's although the dicts are equal); `json.loads` keeps the order.
+
+No report is stored: every record is in `observers/social.jsonl` before the checkpoint is written. `meta` adds
+`social_version`, `social_digest` (it covers `snapshot_every`, `colony_iters` and every threshold), `track_version`,
+`house_rate` and `house_seed` (`run.seed`) to G1's fields.
+
+**`_load` order (MUST).** The first failure is the note's reason, and nothing raises (a JSON value nested past the parser's
+recursion limit is "not JSON", and a name id or house id above 2^63 − 1 is a malformed item, so a sidecar whose zip is
+intact but whose content is not, a hand-edited one for instance, gives the fresh fallback and not a traceback out of
+`alife resume`): (1) `meta` exists and parses as a JSON
+object; (2) `meta.format`, then `meta.observer_format` (a G1 sidecar's note reads exactly `meta.observer_format is 1,
+expected 2`, not a list of missing `soc.*`/`host.*` names); (3) the other meta fields, G1's and the new ones; (4) the member
+names; (5) the shapes and dtypes of the `ObsState` and `SocState` members against the blank observer; (6) `uid` and
+`soc.uid` against `where(alive, uid, −1)`; (7) `Society.from_arrays(arrays, cfg, sr, step=…) -> (Society | None, reason)`,
+which checks the dtype and rank of every host member, `system` and `key` of equal length, memberships sorted by (key,
+system) without duplicate pairs, `next_id ≥ 1` and `0 < system < next_id`, each slot −1 or an id present in that family's
+memberships and no id twice, `host.terr.ids` distinct and `host.terr.ema` of shape (len(ids) + 1, C), `host.houses`
+strictly increasing and non-negative, `host.kin.names` a JSON list of well-formed `[id ≥ 1, non-empty name, house id ≥ 0
+or null]` items (ids at most 2^63 − 1), sorted by id without duplicates, naming exactly the tracked kin groups (the distinct ids of
+`host.kin.system`), `host.summary` a JSON object with the three summary keys, `prev_step`, `window_start` and `house_origin` ≤ the step (the sidecar's), and
+`n_ref ≥ −1`. A `from_arrays` failure reads `the sidecar's host state is invalid (<reason>)`. Otherwise the observer is
+fresh with the note `observers: <reason>; labels warm up (192 steps for archetypes, 24 for intents); social tracking
+restarts at step <t> (houses seeded from clades; new ids, records with origin <t>)`. The note is returned only on a resume,
+as in §28.6. The size at 64k is about 17.5 MB uncompressed (G1's `ObsState` 12.8 MB, `SocState` 3.4 MB, memberships and the house set
+about 1 MB), less compressed. G2 has not shipped, so the roster's `soc.house_from`, `soc.births`, `soc.deaths`, `host.houses`
+and `host.kin.names` are part of format 2: a sidecar written before them is refused by the member-name check
+(`the sidecar's arrays differ (…)`) and the run restarts its observers fresh. Prune and the fork rule are G1's.
+
+#### The social log `observers/social.jsonl` (`runio.py`)
+
+- **File.** `observers/social.jsonl`, next to the sidecars: one JSON object per line, the record of one snapshot (§29.11),
+  key `step` (the snapshot step) first, in increasing step order, one per snapshot after the observer's origin.
+  Append-only and fsynced, a torn last line ignored on read: the rules of `metrics.jsonl`, `director.jsonl` and
+  `journal.jsonl`. A record holds no wall-clock, `alife_version` or host field, so the same trajectory under the same
+  rules writes the same bytes.
+- **`runio` additions.** `SOCIAL_FILE = "social.jsonl"` and `RunDir.social_path`; `_OBSERVER_RE` does not match the name,
+  so `observer_files()` and `_prune` never see the file. `RunDir.append_social(records)`: an empty iterable is a no-op
+  that creates neither `observers/` nor the file; otherwise `ValueError` unless every record has an int `step` (a numpy
+  integer is accepted, a bool never) strictly increasing within the call; then `observers_dir.mkdir(exist_ok=True)` and an
+  append with `step` first, flushed and fsynced. `RunDir.social_records()`: `[]` if absent, a torn last line ignored, a
+  corrupt line elsewhere raises `json.JSONDecodeError`.
+- **`truncate_after(step, *, keep_director=False)` cuts the log, always, whatever `keep_director` is** (MUST): the log
+  belongs to the trajectory, like the sidecars, and a replay regenerates it. An absent file stays absent. Otherwise, in
+  this order: (1) *Parse first.* The log is read and parsed whole as the first statement of `truncate_after`, ahead of everything
+  else (the metrics rows and the director files are read before anything changes as well): a torn last line is dropped, a corrupt line elsewhere raises `json.JSONDecodeError`, and a complete line
+  that is not an object with an int `step` (a bool, float or string included) raises `ValueError` naming the record. Unlike
+  the director cut, which keeps records without a step, the social cut refuses to guess a record's place. Both errors
+  leave the directory untouched: no checkpoint, sidecar, event chunk or log has been changed (`alife resume` has
+  rewritten `config.json` just before, only with `--set`, as for a corrupt line of `metrics.jsonl`; the error reaches
+  `cli.main`'s catch-all: a traceback on stderr and exit 1). (2) *Rewrite.* After the checkpoints and sidecars after the step are gone (the order below) and with the metrics and
+  director cuts, the file is rewritten with `_atomic_write_text` to the parsed records with `step ≤ step`, re-serialised with `_dumps` as the
+  metrics rows are: for every line the runner writes, a load and dump gives the same bytes, so the kept lines are
+  byte-equal to the originals. The rewrite **MUST** happen even when no record is removed, because it also drops a torn
+  last line: left in place, that fragment would have the resumed run's first appended record glued onto it, one corrupt
+  line in the middle of the file.
+- **Order of the cut, and a stop in the middle (MUST).** `truncate_after` reads and parses everything it will cut, then
+  deletes the checkpoints and sidecars after the step (ascending, so that the newest, which `LATEST` may name, goes
+  last) and rewrites `LATEST`, and only then rewrites the metrics, director and social logs and cuts the event chunks.
+  A stop before the first deletion leaves the directory as it was; after the last, the checkpoint at the step is the
+  newest, a plain `alife resume` loads it and cuts again, and every cut gives the same files when repeated, so the logs
+  end exactly as an uninterrupted cut would have left them. A log is therefore never cut while a checkpoint after the step
+  is left to resume from; in the other order (logs first), a stop after the social rewrite left `LATEST` on a later
+  checkpoint, and a plain `resume` continued from it with the records of the steps in between lost for good (silently:
+  that sidecar is valid). `metrics.jsonl` and the event chunks had the same window before G2. Tested by stopping the cut
+  at each of its writes and deletes in turn (`test_truncate_after_stopped_anywhere_loses_nothing`); the test fails on the
+  logs-first order.
+- **Write order (MUST).** The record of the snapshot at step t is appended at t, after t's eval and before t's row,
+  director boundary and checkpoint (§29.9). At every complete checkpoint s the log holds every record with step ≤ s,
+  durable before the checkpoint's sidecar and state file are written, and the sidecar has no untaken record. A separate
+  file is what lets the record be written at the snapshot step itself: its place is its snapshot step, not a row, so
+  unscheduled stops, several snapshots per row interval and a resume that changes `run.metrics_every` do not move a record.
+- **Resume.** `alife resume` cuts the log at the checkpoint step before the runner starts, and the resumed observer, whose
+  host state is exact, appends the records after it. A record written after that checkpoint (a crash after an append; a
+  continuation abandoned through `--checkpoint STEP`) has a later step, so it is cut and then written again identically.
+  If the sidecar falls back to fresh, the records up to the step stay and the new observer's records carry `origin` = the
+  step: ids are comparable only within one origin. The new observer's row heads carry `origin` too (§29.11), so after a
+  fallback at a snapshot step s, where the log keeps the previous observer's record of s, a head with `snapshot_step` s and
+  the new origin joins no record (it is the new observer's initial snapshot); heads join records on (`origin`,
+  `snapshot_step`), never on the step alone.
+- **Fork.** A fork creates a new run directory and copies nothing into it but a replay fork's director log. Its log starts
+  absent, the source's is neither copied nor read, and its first record has `origin` = `window_start` = the fork step.
+  Its `summary.houses.exact` is `house_origin == 0` (§29.4): false for a fork after step 0, true for one from step 0.
+- **Replay.** `resume RUN --director replay` truncates with `keep_director=True`: the director files are kept and the
+  social log is cut like the sidecars. The replayed continuation reproduces the trajectory, so with the same rules and a
+  valid sidecar it appends records equal to the cut ones (tested).
+- **Non-observing runs.** The log exists only after an observing runner's first record, and `truncate_after` never creates
+  it: a run that never observes has neither the file nor `observers/`. A run resumed with `game.observe=true` gets the file
+  at its first snapshot, with `origin` = the resume step.
+- **Invariant.** For any stop step and any checkpoint resumed from (a stop at a snapshot step, one step after it or
+  between rows, a SIGINT, a crash after an append with or without a torn last line, several snapshots per row interval),
+  with the same config or with `run.metrics_every` changed at the resume: the resumed run's `observers/social.jsonl` equals
+  the uninterrupted run's **byte for byte**, its sidecars equal the uninterrupted run's member by member at every checkpoint
+  step both runs have, and its rows' `observers` blocks equal the uninterrupted run's at every row step after the stop that
+  both runs have (with a changed `metrics_every` the rows fall at other steps, so only the common ones compare). Checked on
+  a host model of this write order and cut, built on `runio`'s own helpers (1,149 cases: the log does not depend on the row
+  cadence; every unscheduled stop of a 75-step run with snapshots every 15, resumed from every checkpoint it left, with
+  `metrics_every` 10 or 5 and `keep_director` false or true; every crash point, torn or after an append or a row; a double
+  crash; every final log equal to the uninterrupted one; the re-serialisation of every line byte-stable; a corrupt middle
+  line and a record without an int step raising and leaving the directory byte-unchanged), with two negative controls that
+  fail as expected (no cut, and a cut that rewrites only when it removes a record). The same model run against the
+  implemented `truncate_after` (`--runio`) passes all 1,149 cases. Tested on real runs (§29.13).
+- **Cost.** At most 16 KB per record (§29.11); a resume reads and rewrites the log once, as it does `metrics.jsonl`
+  (about 80 MB for a 1.5M-step 64k run with every cap reached and every column at its widest, estimated under 1 s).
+
+### 29.11 The `social` row head and the snapshot record (observing runs only)
+
+G1's `observers` block (§28.5) gains a last key, `social`: the head of the last settled snapshot. Each snapshot's report
+travels only in its record, one line of `observers/social.jsonl`. A *table* is a JSON object of equal-length column lists
+(`{"id": [...], "size": [...], …}`, rows in the stated order; an empty table keeps its columns with empty lists).
+
+```text
+"social": {"social_version": 1, "snapshot_step": int,          # the last settled snapshot, <= the row's step
+  "origin": int,                                               # host.house_origin: with snapshot_step, the record's key
+  "houses": {"alive": int, "exact": bool, "unknown_immigrant": int},
+  "kin_groups": {"tracked": int, "other": int},
+  "colonies": {"tracked": int, "members": int, "largest": int, "converged": bool, "match": "uid"|"footprint"}}
+record = {"step": s1,                                          # the snapshot step, first: the log's order and cut key
+  "social_version": 1, "social_digest": str,                  # SocialRules.digest() (64 hex): cadence, every threshold
+  "origin": int,                                               # the step the observer started fresh
+  "window_start": s0,                                          # the window is (s0, s1]: the previous snapshot or origin
+  "summary": {"houses": {…}, "kin_groups": {…}, "colonies": {…}},   # the row head's three objects at s1
+  "thresholds": {"n_ref": int, "rescaled": bool, "occ_min": int, "kin_enter": int, "kin_leave": int},
+  "houses": table(id, name, size, clade) ≤ 16,
+  "house_events": {"founded": table(id, step, parent_house) ≤ events_max, "extinct": table(id, step) ≤ events_max,
+                   "founded_dropped": int, "extinct_dropped": int},               # §29.14
+  "kin_groups": table(id, name, named_after, slot, size, tag, clade, clade_share, sim_self, x, y, arch, births, deaths
+                      [, z_mean, band_frac]) ≤ 16,                                # the roster's columns: §29.14
+  "colonies": table(id, slot, size, kin_group, x, y[, z]) ≤ 16,
+  "events": table(step, family, kind, id, size, other, overlap) ≤ events_max, "events_dropped": int,
+  "event_counts": {"kin_group": {"born", "split", "merged", "dissolved"}, "colony": {…}},
+  "relations": table(a, b, attacks, hits, kills, bonds, shared, bond_slots, exp_attacks, exp_bonds, sim, distinct)
+               ≤ relations_max, "relations_dropped": int,
+  "temperament": table(id, q_attack_kin, q_bond_kin, rows) ≤ F + 1,
+  "territory": {"owned_cells": int, "purity_mean": float | None, "cells": table(id, cells) ≤ F + 1}}
+```
+
+- **Rows keep the head and nothing beyond it.** The rows are the time series that the director (G4's vitals), the GUI and
+  the labels tool read, G1's label shares already live there, and the head costs about 0.28 KB a row. It names the record
+  it summarises by (`origin`, `snapshot_step`): `row.observers.social` equals `{social_version, snapshot_step:
+  record.step, origin: record.origin, **record.summary}` for the record with that `origin` and `step`. The head of an
+  observer's initial snapshot (`snapshot_step == origin`) has no record, and after a fresh fallback at a snapshot step the
+  log may hold the previous observer's record of that step under another origin (§29.10), so a reader joins on both keys.
+  Between snapshots the head repeats (rows every 100 steps, snapshots every 250). The tables, events, relations,
+  temperament and territory travel only in the record.
+- The tables list: `houses` by (−size, id); `house_events` by id; `kin_groups` and `colonies` by slot; `events` the largest first (by size, then
+  kind in the order born, split, merged, dissolved, then id, then family), at most `events_max`; `relations` as §29.8;
+  `temperament` by window slot; `territory.cells` every named window id, zero-cell ids included. `kin_group.size` is the
+  agent count in both matching modes.
+- **Budget (MUST, tested):** the row head ≤ 0.5 KB; a record ≤ 16 KB at every cap (F = 16, 17 window ids, `events_max` 32,
+  `relations_max` 32, 32 house events of each kind, 3D columns, 7-digit steps) with every column at the widest value a long
+  64k run plausibly gives it. Nothing in the code bounds a record by its bytes (the caps bound its rows), so the budget is
+  what the test scene shows with headroom, and the scene is built to be the widest: six-digit kin-group ids and seven-digit
+  colony ids (tracker ids are never reused, so they grow with a run: the test renumbers a restored society), kin names of
+  ten letters and the id, window counts of six to eight digits for every listed pair (the 250-step window of `runs/64k_s0`
+  at 1.5M steps has 115k attacks, 780k proposals, 22.6M quanta shared and 6.8M bond-steps in all; each pair is given the
+  width of the whole), exposures of ten digits with three decimals, eight-digit house ids, and the roster's columns (six-digit
+  `births` and `deaths` by cause, seven archetype shares). Measured: 13,255 B for the record, plus 178 B that the longest
+  house names (ten letters and `" <8-digit id>"`, which a collision adds) would add, so 13.4 KB, and 271 B for the head, with
+  `json.dumps` in `runio._dumps`'s separators. An earlier scene with one-attack pairs and two-digit ids measured 10,951 B
+  (9,526 B before the roster), which a review showed was not the widest: the `64k_s0` window with long-run ids is 12.5 KB.
+  Of the record, the relations are 3,392 B, the kin-group table 3,940 B, the events 1,546 B and the house events 1,534 B.
+  A 64k row is about 2.1 KB today (`runs/64k_s0/metrics.jsonl`, 31.4 MB for
+  15,041 rows), so the head adds about 14% (about 4.4 MB to a 1.5M-step run's `metrics.jsonl`). The social log of that run
+  holds 6,000 records: about 80 MB at the widest measured size and at most 98 MB at the budget (typical records are
+  smaller: about 12 KB, 72 MB, for the `64k_s0` window).
+  Every runner start, director rebuild, labels verification and resim verification parses `metrics.jsonl` in full and never
+  the log; only a resume (the cut) and `analysis.social` read it.
+- Built with literals and comprehensions (rule 2). G1's keys are unchanged; `intent_version` is the module constant, 2 since the version-2 change.
+  `metrics.py`, `DESCRIPTOR_NAMES` and the director's vitals are unchanged.
+
+### 29.12 Tooling
+
+**`python -m alife.analysis.social RUN --from STEP --steps N --out FILE.json`** (`analysis/social.py`; host-side, scanned by the
+§22.6 lint (rules 1, 3, 4, 5 and 6 pass over `analysis/`); the calibration, churn and snapshot cost on a real checkpoint). Options `--every S` (the study's rules are
+`dataclasses.replace(SOCIAL_V1, snapshot_every=S)`, the output records their digest; without it `observer.DEFAULT_SOCIAL`
+at call time), `--states DIR` (a resim cache), `--no-verify`, `--time-components`. In Python it is `study(run, *, start,
+steps, every=None, states_dir=None, verify=True, time_components=False, log=print)`. The run directory is read only and
+`--out` must be outside it. A mismatch (a re-simulated row or record that differs from the stored one) is exit 1, bad
+parameters (and a corrupt stored log) exit 2.
+- **Stepping** as `labels.study`: `signals.load_state`, `cfg = rd.config()` with `game.observe=true`, `make_step(cfg,
+  observe=True)`, `Observer.open(…, social=rules)` (the report says `"sidecar"` or `"fresh"`), one eval per step followed by
+  `obs.take_records()` as in the runner (nothing is appended anywhere), `resim.compare_row` on the stored rows unless
+  `--no-verify`.
+- **Stored records.** Unless `--no-verify`, a study record is compared with the stored record of the same step when both
+  have the same `origin` and `social_digest` (the study loaded the run's sidecar at `--from` and runs the run's rules).
+  Comparable records must be equal, compared by their `runio._dumps` serialisation, key order included (`records_verified`
+  counts them; a difference is a mismatch, naming the differing top-level keys). A study that starts fresh or sweeps
+  `--every` has none: `records_verified` 0, `records_comparable` false, and `records_note` says why (in this order:
+  `--no-verify`, no stored log, no study snapshot on a stored step, another digest, another origin).
+- **Report.** Top-level keys `social_version`, `social_digest`, `track_version`, `records_note`, `snapshots`, `churn`,
+  `timing`. Per snapshot: the step; `thresholds` (`n_ref`, `rescaled`, `occ_min`, `kin_enter`, `kin_leave`); per family
+  `n_prev`, `n_cur`, `n_admitted`, `n_matched`, the Jaccard quantiles (10/50/90) of matched pairs and of the best
+  unmatched candidates, and the event counts; kin groups also `occupied_bins`, `unaffiliated_frac`, `tracked`, `sizes` and
+  the quantiles of `sim_self` over the slotted groups (the chaining report); colonies also `tracked`, `members`,
+  `largest`, `converged`, `match`; `houses` (`alive`, `unknown_immigrant`, `members`, and the split of the members between
+  the houses seeded at the study's start and those founded since, §29.14). A quantile object is `{n, p10, p50, p90}`. Per study and family the
+  **churn** `{born, ended_within, share}`: ids born in the study that ended within 3 snapshots. `timing` is kept apart
+  (the rest is deterministic for a run, parameters and device): per snapshot the eval time of the snapshot step against the
+  median of the 8 steps before it, the `settle` time (the `take_records()` call at the snapshot step) and, with
+  `--time-components`, the median of 3 timed evaluations of `metrics.components` alone on that state.
+- **GPU procedure** (the coordinator; nothing else may use the GPU or LM Studio during the timings): `runs/64k_s0 --from
+  1490000 --steps 2500` and `runs/64k3d_s0 --from 450000 --steps 2500`, at `--every 250` and `--every 1000` (footprint mode);
+  θ, `kin_occ`, `kin_enter`, `kin_leave`, `n_band` and the slack are then confirmed or changed under `SOCIAL_VERSION` 2.
+  The same runs on `64k3d_s1` and `64k_s0` report `houses.founded_share` (the owner's check of `game.house_rate`, §29.14).
+
+**`alife bench --observe`** (`bench._bench_observe`, §28.8) now times the whole observer, social fold included. Its rules are
+`observer.DEFAULT_RULES` and `observer.DEFAULT_SOCIAL`, read as module attributes at call time (so `social_every` reaches
+it). No compile is timed and the mean holds a whole number of snapshots:
+- `warm = max(warmup, 1, rules.every, S + 1)` with `S = social.snapshot_every`: the first in-loop snapshot is the first trace
+  of the `snap` closure with real `Acts` (`fresh` traced it with `a = None`), and the closures compile again in each block;
+  with `S + 1` that snapshot, its settle and its relabel are untimed.
+- `per_block = ceil(max(steps // 2, 1) / S)·S`, so each block's timed steps hold exactly `per_block / S` snapshots. At
+  `--steps 600` and S = 250: 251 warm-up and 500 timed steps per block, 3,004 steps in the four blocks; `observe.social`
+  steps another fresh observer `warm` steps (251), so the bench takes 3,255 steps in all.
+- The observed arm calls `obs.take_records()` after each eval, as the runner does (the records are dropped; the runner's
+  append and fsync of about 1 ms per snapshot are not timed), so the settle falls on the snapshot step. The report adds
+  `snapshot_step_ms_mean` (steps `t % S == 0`) and `other_step_ms_mean`.
+- `report["observe"]["social"]` (`bench._bench_social`): on a state stepped `warm` steps with a fresh observer, `reps = 10`
+  timed repetitions each of `metrics.components` alone (with `colony_iters`), of the `snap` closure (evaluated), of
+  `Society.settle` on a copy (`from_arrays(arrays())`) and of the heavy metrics (`metrics.snapshot_metrics(…,
+  heavy=True)`): `components_ms_median`, `snapshot_device_ms_median`, `snapshot_host_ms_median`, `heavy_ms_median`,
+  `amortised_ms_per_step = (device + host) / S`, `snapshot_every`, `reps`. `format_report` prints one more line. On
+  `init_state` there are few bonds, so `analysis.social` on an evolved checkpoint is the realistic number.
+
+**For the coordinator, after the GPU run:** (1) Metal, before merge: `uv run pytest tests/test_game_purity.py
+tests/test_groups.py -q -p no:cacheprovider` on the default device, no `-m` filter (the purity file is G1's gate with G2's
+taps and the compiled-kernel comparison of §28.2, whose allowed operations are of operations, not kernel names: if Metal groups them differently, read the labels it prints before widening the list; `test_groups.py` is the `splitmix64`, `hash_below` and exact-sum equality test); (2) `uv run alife bench --preset 64k
+--observe --steps 600 --json obs_64k.json`: `observed_steps_per_s` against the 30 steps/s target, `overhead_ms_median`, the
+snapshot step mean and `observe.social`; (3) the calibration above on `runs/64k_s0` and `runs/64k3d_s0`.
+
+**Results of the GPU day (2026-10-21; Metal, M5 Pro, MLX 0.32.3, Python 3.12.11; the `games/g2-social` tree at 73a4dd2; GPU jobs
+run one at a time; another session's CPU tests ran during part of it, which can add a few percent to host timings).**
+- **Metal gate.** The twelve files of the game and analysis suites (`test_game_purity`, `test_game_acts`, `test_groups`,
+  `test_game_social`, `test_game_society`, `test_game_roster`, `test_game_rules`, `test_game_observe`, `test_game_sidecar`,
+  `test_game_social_log`, `test_analysis_labels`, `test_analysis_social`) with `-m ""` on the default device: 509 passed, 0
+  failed, 202.7 s. This includes the compiled-kernel comparison and the `splitmix64`, `hash_below` and exact-sum equality
+  tests, so observing leaves the compiled step's rounding alone on Metal for the G2 observer too.
+- **Benches** (`alife bench --observe --steps 600`; the plain run is the same without `--observe`):
+
+| | 64k (2D) | 64k3d |
+|---|---|---|
+| plain steps/s | 59.7 | 14.3 |
+| observed steps/s (target 30) | 54.8 | 13.9 |
+| `overhead_ms_median` (mean) | 1.38 (1.40) | 2.07 (2.12) |
+| snapshot step against the other steps | 27.6 against 18.2 ms (hitch +9.4) | 84.0 against 71.9 ms (hitch +12.1) |
+| `trajectory_match` | true | true |
+| components / snapshot device / snapshot host (medians, ms) | 1.20 / 1.37 / 6.70 | 1.17 / 1.34 / 5.23 |
+| heavy metrics (ms per call) | 5.44 | 7.42 |
+| `amortised_ms_per_step` | 0.032 | 0.026 |
+| compile (s) / peak memory (GB) | 4.1 / 1.11 | 5.6 / 3.08 |
+
+  The 64k3d column was measured before the fused kNN kernel (I48): with it `64k3d` runs at about 75 steps/s, so the same observer
+  cost is about 15% of a step; a re-measurement on the GPU is pending.
+
+  G1's bench at 64k (no social part) gave 0.48 ms overhead and 61.0 observed steps/s, so G2 adds about 0.9 ms a step (the
+  social fold on every step, the wider channel and the version-2 observer); the control step was itself 0.9 ms slower in that
+  session (16.8 against 15.9 ms), and the contention above may account for part of it. The bench's snapshot parts run on a
+  fresh state with few bonds, so they understate the snapshot cost on an evolved population (below). The 3D bench prints a
+  `donation.ok = false` warning ("W1/W2 probably copied every step"), the plain run too, so it is not an observer effect; it
+  was not investigated. The stream rate and the step rate with LLM calls in flight were not run.
+- **Calibration** (`python -m alife.analysis.social`, 2,500 steps from each checkpoint, `SOCIAL_VERSION` 1 digest `df6ba5e4…`;
+  the stored metric rows verified, 25 of 25 with no mismatch; none of the runs has a stored social log, so no record was
+  compared). Kin groups, per window (min / median / max over snapshots):
+
+| window (every) | groups | tracked | matched Jaccard p50 | `sim_self` p50 | unaffiliated | churn (born; ended within 3; share) |
+|---|---|---|---|---|---|---|
+| 2D `64k_s0`@1,490,000 (250) | 15 / 19 / 21 | 12 / 14 / 15 | 0.86 / 0.87 / 0.88 | 0.84 | 0.077 | 12; 7; 0.58 |
+| 2D `64k_s0`@1,490,000 (1000) | 15 / 17 / 19 | 11 / 12.5 / 14 | 0.83 / 0.83 / 0.84 | 0.80 | 0.076 | 4; 0; 0.00 |
+| 3D `64k3d_s0`@450,000 (250) | 9 / 12 / 15 | 7 / 8 / 9 | 0.75 / 0.80 / 0.81 | 0.70 | 0.047 | 6; 4; 0.67 |
+| 3D `64k3d_s0`@450,000 (1000) | 12 / 12.5 / 13 | 8 / 8.5 / 9 | 0.71 / 0.75 / 0.78 | 0.70 | 0.048 | 1; 0; 0.00 |
+| 2D `64k_s0`@1,500,000 (250) | 22 / 23.5 / 28 | 15 / 15.5 / 16 | 0.84 / 0.85 / 0.87 | 0.84 | 0.080 | 5; 2; 0.40 |
+| 3D `64k3d_s1`@450,000 (250) | 9 / 12 / 13 | 5 / 8 / 9 | 0.70 / 0.77 / 0.80 | 0.72 | 0.059 | 12; 6; 0.50 |
+
+  The kin groups track well: matched Jaccard p50 0.75 to 0.87 at tens of groups, one dissolution in six runs, and no churn
+  ended in the 1000-cadence studies (4 and 1 ids born, over 2 snapshots each, so that is no evidence of stability). The churn
+  shares at 250 rest on 1 to 12 ids born, so they are imprecise. The sizes are stable (2D
+  largest three about 18.9k, 5.2k and 3.1k members; 3D about 19k to 23k, 10.5k and 6.4k).
+
+  Colonies (bond components of at least 4; uid matching at every 250, footprint matching at every 1000, whose spacing exceeds
+  `uid_spacing` 300):
+
+| window (every) | colonies | members | largest | matched | matched Jaccard p50 | churn (born; ended within 3; share) |
+|---|---|---|---|---|---|---|
+| 2D `64k_s0`@1,490,000 (250) | 1,964 to 2,048 | 9.4k to 9.7k | 46 to 91 | 390 to 460 | 0.40 | 8,987; 7,496; 0.83 |
+| 2D `64k_s0`@1,490,000 (1000) | 1,964 to 2,048 | 9.9k | 58 to 76 | 810 to 941 | 0.50 | 1,165; 257; 0.22 |
+| 3D `64k3d_s0`@450,000 (250) | 2,662 to 2,777 | 15.8k to 16.1k | 1,092 to 1,746 | 628 to 757 | 0.43 | 10,772; 8,598; 0.80 |
+| 3D `64k3d_s0`@450,000 (1000) | 2,715 to 2,722 | 15.9k | 1,151 to 1,166 | 684 to 747 | 0.40 | 2,128; 662; 0.31 |
+| 2D `64k_s0`@1,500,000 (250) | 2,042 to 2,137 | 10.3k to 10.7k | 61 to 156 | 447 to 498 | 0.41 | 9,412; 7,772; 0.83 |
+| 3D `64k3d_s1`@450,000 (250) | 1,114 to 1,210 | 18.5k to 18.8k | 10,723 to 13,086 | 247 to 319 | 0.56 | 4,358; 3,485; 0.80 |
+
+  The colony tracker is the weak part at the 250 cadence: 80 to 83% of the ids born end within 3 snapshots, and only 21 to 26%
+  of the current components match a tracked one, at a Jaccard p50 near 0.4, close to the matching floor θ = 0.3. The
+  1000-cadence rows read 22% (2D) and 31% (3D), but they are **not comparable** with the 250 rows: each `--every 1000` study
+  holds only 2 snapshots (2,500 steps), so "ended within 3 snapshots" is measured over a single transition and is
+  right-censored, where the 250 studies hold 10 snapshots; and the matcher differs (footprint against uid). `64k3d_s1` holds
+  one giant bonded colony of 10.7k to 13.1k members. The conclusion for G3 and the chronicle: the 250 cadence churns, so a
+  colony id at 250 is not a stable identity; whether the 1000 cadence with footprint matching is better is not established
+  (a like-for-like study would hold at least 10 snapshots at 1000, which is 10,000 steps), and θ or the matching rule would
+  be a `SOCIAL_VERSION` 2 question. No threshold was changed by this run.
+- **Snapshot cost on the evolved checkpoints** (the `timing` part, per snapshot): the snapshot step's eval costs +1.3 ms (2D)
+  and +1.7 ms (3D) over the median of the 8 steps before it; the `take_records()` settle, all host work, takes 32 ms (2D) and
+  38 ms (3D) at every 250 and 24 ms and 30 ms at every 1000; `metrics.components` alone 1.2 ms. Amortised, (extra eval +
+  settle) / S is 0.13 ms a step (2D) and 0.16 (3D) at every 250 and about 0.028 and 0.034 at every 1000 (median hitch 3.4 and
+  3.8 ms plus median settle 24.3 and 29.8 ms, over 1,000), against the bench's 0.03,
+  which understates it. The kin-group matching (`SystemTracker.observe`, from a cProfile run that inflates small calls by
+  perhaps 20 to 30%) takes 5.0 ms (2D) and 7.5 ms (3D) per snapshot, against the plan's 2 ms and the CPU estimate of 8 ms; the
+  whole `_kin` is 6.8 and 9.3 ms, the colony tracker 5.9 and 9.4 ms, and `_similarity` about 9 to 10 ms a call.
+- **House-rate report** (`houses.founded_share`, `game.house_rate` 1/2048, at the last snapshot, step start + 2,500):
+
+| window | members | founded members | founded houses | founded share | houses alive |
+|---|---|---|---|---|---|
+| 3D `64k3d_s1`@450,000 | 42,964 | 39 | 23 | 0.00091 | 27 |
+| 2D `64k_s0`@1,500,000 | 33,804 | 23 | 17 | 0.00068 | 21 |
+| 2D `64k_s0`@1,490,000 (calibration) | 33,744 | 26 | 18 | 0.00077 | 22 |
+| 3D `64k3d_s0`@450,000 (calibration) | 45,013 | 38 | 25 | 0.00084 | 29 |
+
+  After 2,500 steps under 0.1% of the members are in houses founded since the start (it was 8.9e-5 at the first snapshot, in
+  2D), and the houses alive stay at 6 to 29, essentially the clade-seeded ones. `game.house_rate` was left at 1/2048; the
+  owner confirmed it with these numbers on 2026-10-21: keep 1/2048 for now (GAMES §10 item 13).
+
+### 29.13 Tests
+
+Short runs get snapshots through `social_every(monkeypatch, s)` (§29.9) or an explicit `social=`; unless a test says
+otherwise the cadence is `snapshot_every = 15` with tiny's `metrics_every = 10`, so snapshots fall both on row steps (30,
+60, …) and between rows (15, 45, …), and stops fall on, just after and between snapshots. Run-level tests compare
+`observers/social.jsonl` byte for byte. A test that sets `run.metrics_every` also sets `checkpoint_every` and
+`heavy_metrics_every` to multiples of it (`validate` requires it).
+- `test_groups.py`: `splitmix64` equals `phylo.splitmix64` (eager and compiled, four seeds, 5,004 values including 2^31 ± 1,
+  2^40 + 7, 2^62 + 3); `hash_below` at rates {0, 2^-11, 0.3, 0.5, 0.75, 1} equals `phylo.marker_roots`' `hit` and is strict
+  at the cut; lanes and `inherit` on hand lanes; `masked_bincount` against `np.add.at` (all masked, none masked, every lane
+  on one bin, negative indices on masked lanes; the dump region never leaks); `limb_bits` and `masked_bincount_exact` at
+  the worst case of each limb sum up to 2^22 lanes and bits {15, 16, 31}; `grid_code` and `plane_cell` at every 1/8 mark
+  and one ulp around. It runs on the default device, so the coordinator's Metal run covers it.
+- `test_tracking.py`: one test per case of §29.3 (identity, turnover with the inclusive edge `10·c == 3·union`, `BORN`,
+  `SPLIT`, `MERGED`, both `DISSOLVED` forms, fragmentation, greedy order, ties, input-order invariance, credit, footprint
+  mode, first snapshot, state round trip, admission, empty inputs), `sticky_slots`, `deadband`, `grid_clusters` (against a
+  breadth-first reference in 2-D and 4-D), `Dominance` (borders in all four periodicity combinations, a non-square shape,
+  `ids = []`, random counts against an integer reference), and a differential test of 40 random 14-snapshot sequences
+  against a separate set-based reference of the rules that exercises every event kind.
+- `test_game_social.py`: houses on hand lanes, `HOUSE_UNKNOWN` seeding, kin-slot inheritance; per step over four arms (2D,
+  3D, biased, immigration) the identities of §29.9 against the engine's counters and every window matrix against an
+  independent numpy loop; territory counts; snapshot arrays; `relabel` resets the window; no output aliases an input
+  (compiled); `SocIn` has no key and no weight field; `SocialRules` rejections and the pinned digest. The roster (§29.14):
+  `house_from` on hand lanes (founded from the parent's house, inherited, immigrant, unknown parent, a reused row), the
+  window births and deaths by cause on hand lanes (strays not counted, the window sums, the snapshot carries it, `relabel`
+  zeroes it) and over 60 real steps with immigration and a mass die-off against the counters and a numpy reference, and
+  the snapshot's `arch` (masked, compiled equals eager, no alias).
+- `test_game_society.py`: planted tag clouds (thresholds `n >> 12`, `>> 9`, `>> 10`, sticky slots, OTHER, the device `kin`
+  equal to the host mapping), the deadband (32,767 / 32,768 change nothing; a 20% change rescales once), hysteresis over
+  8 snapshots, colonies (chains of 2, 3, 4, 9; keep at 3, end at 2), the match mode by spacing (250 uid, 301 footprint),
+  similarity and `sim_self` against brute force (and a chain of bins has a lower `sim_self`), house names, depth bands,
+  the empty cases (no alive row, no occupied bin, no colony, extinct), the keys and key order of the head and every table
+  (the roster's included), the size budget at every cap with every column at its widest (record ≤ 16 KB, head ≤ 0.5 KB;
+  13,255 B and 271 B: six-digit kin ids and seven-digit colony ids, ten-letter names, window counts of six to eight digits,
+  ten-digit exposures), and one rejection case per `from_arrays` check (the host members `host.houses` and
+  `host.kin.names` included; a name id above 2^63 − 1 and JSON nested past the recursion limit in `host.kin.names` and
+  `host.summary` give a reason, not an exception).
+- `test_game_roster.py` (§29.14): a group is named after its dominant house once (12 members to 8 of a house with the
+  smaller id; kept when another leads later; a group admitted later named from its own members), a tie goes to the smaller
+  house id, the names survive a sidecar round trip with the next record equal, the generator fallback (and its own salt),
+  a house's name given to one live group (the second has a generated name) and free again after its holder ends, six groups
+  of one clade with six distinct names and no id appended, and the suffix as the last resort (a generator made to repeat a
+  name); house events on a scripted lineage (founded with their
+  parent house, an immigrant, an unknown parent, extinct, a house founded and extinct inside a window seen by neither
+  snapshot, no events at the initial snapshot), the cap with its overflow counts, events equal after a restore; window
+  counts belong to the group and not to the slot (a group admitted into a freed slot has none); the centroid across the
+  seam and the archetype mix (unlabelled members left out, None without labels), 2D and 3D; and a whole `Observer` on
+  60 real steps against a numpy reference (counts, mix, centroid, names stable and distinct).
+- `test_game_houses.py`: houses equal `nearest_root(marker_roots)` of `phylo.load_tree(run)` at rates 0, 1/8 and 1 (300
+  steps, immigration every 5 steps, sidecars at 100, 200, 300); determinism of the sidecars and the log; a fork after
+  immigrants is seeded from clades (`exact` false, `HOUSE_UNKNOWN` counted, its log absent, first record with its own
+  origin, the source's log untouched) and a fork from `RUN:0` is exact.
+- `test_game_social_log.py`: the cut at every step 0…60 with and without `keep_director` (byte-equal); resume equality at
+  stops 1, 14, 15, 16, 29, 30, 31, 44, 45, 46, 59 (and 15, 16, 45 in 3D), also from an abandoned continuation; a crash with
+  a torn tail; the row cadence (5, 10, 30 and a resume with `--set run.metrics_every=5`); a replay resume; the two settle
+  paths agree; a reader settles a pending snapshot; the row head equals the record on (`origin`, `snapshot_step`) including
+  a fresh fallback; resume equality with planted kin groups and territory (tiny worlds track none); and one `slow` test
+  that resumes from every checkpoint of a run with `metrics_every = checkpoint_every = 1`.
+- `test_analysis_social.py`: churn, the quantiles and the snapshot entry on synthetic input; a tiny study (documented
+  keys, determinism apart from `timing`, the run directory byte-unchanged, `rows_verified > 0`, a diverging stored row is
+  exit 1, `records_comparable` false at another cadence), tiny3d, footprint matching, `--time-components`, a cached state,
+  bad parameters (exit 2), and a study on an observing run (`records_verified == 2`, an edited stored record is exit 1);
+  the houses entry on synthetic input (the id equal to the start's `next_uid` counts as founded) and on a run at rates 1
+  and 0 (§29.14).
+- **Edited G1 tests:** `test_game_acts.py` (the new fields' shapes and dtypes, `death_cause` per cause against the counters, the
+  death records and the `KILLED` flag, including a step with more deaths than records; the targets equal the post-S8 targets, `q_kin`
+  the quantised `y` columns, `nbr` the validity-masked neighbour rows, the lanes the birth records; the popcounts of
+  `PROPOSED` and `KILLED` equal `BOND_PROPOSERS` and `DEATHS_KILLED`; the new per-row acts are −1 or 0 on dead rows;
+  forced kills; the clip and the mask of `q_kin`); `test_game_purity.py` (§29.2: 20 taps, the third and fourth mutants, the
+  value-neutrality test, the compiled-kernel comparison with its six mutants, `snapshot_every = 15` in every arm, the `game`
+  section of `config.json` and the extra `observers/social.jsonl` in the on-run's file list); `test_game_config.py` (`OBSERVER_KEYS` is the two game keys and
+  equals the set of `GameConfig` fields, the defaults, the eight pinned hashes with `house_rate` at non-default values,
+  `validate`, resume accepting `--set game.house_rate=0.25` and listing both keys, the `--set` metavar, a resume with
+  `social_every` whose log holds only the record of step 45 with `origin` 30 and `exact` false); `test_game_rules.py`
+  (`settler_body` leaves the digest unchanged at 0 and changes it above 0, is rejected below 0, the clause edges at body 3
+  and 4, `body=None` raises; all of it for the post-v1 fields of version 2 now: §28.9); `test_game_observe.py` (`evaluate` with `body`); `test_game_sidecar.py` (the `SOC15`
+  driver and `take_records` after each eval, the format-2 round trip, fallback for each new meta field, a format-1 sidecar
+  and each `from_arrays` check, the reference fold with the Settler rule set, untaken records, resume stops at 15, 16, 30,
+  37 and 137 including key order, a SIGINT at step 16, prune and truncate cutting the log, the head in the rows);
+  `test_runio.py` (`append_social`, `social_records`, the cut including a torn tail, a failing replace, `keep_director`,
+  and a corrupt log refused with the directory byte-unchanged, `alife resume` exit 1; no `observers/` appears in a fresh
+  run); `test_bench.py` (every observe test at `social_every(monkeypatch, 4)` under the §29.12 formulas, `observe.social`,
+  `take_records` after each eval and no file written, the first snapshot of each block in the warm-up); `test_cli_smoke.py`
+  (`test_bench_observe_smoke`); `test_lint.py` (`groups` and `game.social` in `SIM_MODULES`, `test_source_tree` asserts
+  the four new modules, meta-tests for each); `test_analysis_labels.py` (`test_step_outcomes` builds `Acts` with the
+  helper `blank_social_acts`); the three `tests/data/gui_config_*.json` fixtures regenerated.
+- **Flag-off identity:** the unchanged `test_step_returns_stepout_unless_observing`, the goldens, the pinned hashes and the
+  digest comparison (below).
+
+**Verification** (CPU; the GPU items are the coordinator's, §29.12):
+
+```bash
+uv run ruff check src tests && uv run ruff format --check src tests
+uv run pytest -m "not slow" -q --deselect tests/test_lifecycle.py::test_lifecycle_compiles_and_matches_eager   # I26
+uv run pytest -q tests/test_game_purity.py tests/test_game_houses.py tests/test_game_sidecar.py \
+  tests/test_game_social_log.py tests/test_runio.py          # every arm, slow ones included
+cd gui && swift build && swift test                           # the fixtures changed
+```
+
+- **2D digest matrix** against a fresh baseline: `git archive origin/main src` into a scratch directory, the matrix (15
+  trajectory cases, 3 runner cases, config hashes, layout) run once on the baseline and once on the tree; it must exit 0,
+  "bit-identical". The only INFO lines are `game.house_rate` added to a run's `config.json` and to the checkpoints'
+  `metadata.config`. Any other difference (file listing, state digests, event chunks, rows) fails the gate; in particular
+  no non-observing run may list `observers/` or `observers/social.jsonl`.
+- **tiny3d digest:** the `state_digest` after 50 compiled float32 steps of `tiny3d` equals the baseline's.
+- **The social-log model with `--runio`** passes all 1,149 cases against the implemented `truncate_after` (it fails on a
+  tree without the social log, after 116 cases, at the first case with a record after its resume checkpoint).
+- The eight pinned hashes of §28.1 hold; `test_game_config.py` checks them with `house_rate` set.
+- **Run on the GPU on 2026-10-21:** the Metal run without a `-m` filter, `alife bench --preset 64k --observe` and the
+  calibration; the results are at the end of §29.12.
+
+### 29.14 The roster (stage 7)
+
+A chronicle needs characters with names and events (the playability assessment; the coordinator's choice C7 of
+2026-10-19). The roster adds four things to the social record, observer-only and with no change when `observe` is off:
+names for kin groups, a list of house events, and, per listed kin group, its window births and deaths by cause, its
+centroid and its archetype mix. The contracts of §29.2 and §29.9 to §29.11 apply unchanged. G2 has not shipped, so
+`SOCIAL_VERSION` stays 1 and the roster's members are part of format 2 (the version-2 change then took `OBSERVER_FORMAT`
+to 3, §28.6). `SocialRules` gains
+`kin_name_salt` (default `KIN_NAME_SALT = 0x6B696E6E616D65`, "kinname"), so the pin of `SOCIAL_V1.digest()` is re-pinned
+(`df6ba5e4…`; no record carries the earlier digest).
+
+**Kin-group names** (`Society._name_groups`; host state `Society.kin_names`, id → (name, `named_after`)).
+- A kin group is named **once, at the snapshot that admits it** (a fresh observer's initial snapshot included), and keeps
+  the name for as long as it is tracked.
+- The name is that of its **dominant house**: among the members of the group (all its rows, slotted or not) whose house
+  is one of the record's named top-16 houses (§29.4), the house with the most members, ties to the smaller house id;
+  `named_after` is that house's id. A group with no member in a top-16 house takes a name from the house name generator
+  (§29.4) on `splitmix64(id, kin_name_salt)`, with `named_after` null.
+- A house's name is given to **one live group at a time**: if a live tracked group, kept from the last snapshot or given
+  earlier in the same one (groups are named in increasing id), already holds the dominant house's name, the group takes
+  the generated name instead, with `named_after` null. (An earlier version suffixed the held house name with the group
+  id; but for an observer that starts after step 0 the houses are seeded from clades, so all the kin groups of
+  one clade have the one house of the clade, and the suffix rule gave a clade of six groups "X", "X 2", … "X 6" for life,
+  which defeats the point of names. The first group of the clade, by id, keeps the house's name, the others have names of
+  their own.) A generated name that is held too gets `f" {id}"` appended, again if that is held too: the last resort,
+  which needs two ids whose generated names coincide. Entries of groups that are no longer tracked are dropped, so a name
+  is free again when its holder ends; ids are never reused (§29.3).
+- `name` and `named_after` are columns of the record's `kin_groups` table. The names are host state: `host.kin.names` in
+  the sidecar, checked on load against the tracked ids, so a resumed run goes on with the names it had.
+
+**House events** (`record.house_events`). `Society.houses` is the sorted set of houses with live members (`house ≥ 0`) at
+the last snapshot (`host.houses` in the sidecar). At a snapshot `founded` is the set of houses with live members now and
+none at the last snapshot, and `extinct` the reverse, each by ascending id, listed up to `events_max` with the rest
+counted in `founded_dropped` and `extinct_dropped`. A `founded` row is `(id, step, parent_house)`: `id` is the house id,
+which is its founder's uid (§29.4), so a separate founder column would repeat it; `step` is the snapshot's (the step at
+which the house was seen, as for `events`); `parent_house` is the house of the founder's parent, folded on the device from
+the birth lanes into `SocState.house_from` (§29.4, which all members of a house share), and null for an immigrant, a
+founder of the run, an observer's start and a parent of unknown house. An `extinct` row is `(id, step)`. A house founded
+and extinct inside one window is seen by neither snapshot, and the initial snapshot of a fresh observer has no events.
+
+**Window counts.** `SocState.births` (G,) counts the birth lanes by the start-of-step slot of the parent row, which is the
+slot the newborn inherits (immigrants are not births), and `SocState.deaths` (4, G) the rows with a `death_cause` by cause
+and start-of-step slot; both are exact int64 sums (`groups.masked_bincount`, over `ops.scatter_add_i32`) of the channel,
+carried by the snapshot and zeroed by `relabel`. Deaths come from `Acts.death_cause` (§29.2), which covers every dead row,
+never from the death records (capped at DL = 2M per step). In the table, `births` is an int and `deaths` four ints in
+`social.DEATH_CAUSES` order (starved, killed, aged, catastrophe). They are the counts of the slot that the group held in
+the window (the previous snapshot's slot map, as for relations, temperament and territory), looked up **by id**: a group
+that held no slot in the window (admitted at this snapshot, or ranked beyond the slots) has null, and the counts of a
+group that ends at the snapshot are not listed (it has no row). A newborn counts for the group it was born into, which
+need not be the one it lands in at the next snapshot.
+
+**Centroid and archetype mix**, at the snapshot, over the members of a group by its new slot. `x` and `y` are the
+`circular_mean` of the floor positions over `world.size` (2 decimals; `z_mean` is the height in 3D). `arch` is the shares
+(3 decimals) of the primary archetypes (`rules.ARCHETYPE_NAMES` order) among the members that have a label, None if none
+has one. The labels are those of the last evaluation (`rules.every` steps at most before the snapshot), and a row that
+changed occupant since is unlabelled (G1's reset rule).
+
+**`game.house_rate`** stays 1/2048 (owner decision 1, §29.1). To let the owner decide on it, the study (§29.12) reports per
+snapshot `houses.members`, `seeded_members`, `founded_members`, `founded_houses` and `founded_share`: the members of houses
+with an id below the start state's `next_uid` (seeded from clades, or founded before the start) against those of houses
+founded since. The GPU verification ran it on `64k3d_s1` and `64k_s0` (2026-10-21): 0.0009 and 0.0007 of the members after 2,500 steps
+(§29.12); the owner confirmed 1/2048 on 2026-10-21 (GAMES §10 item 13).
+
+**Cost.** Device: `SocState` +8 B per row (`house_from`) and 0.7 KB of window counts, one more int8 per row in the
+channel, and per step two more `masked_bincount`s (over the M lanes and the N rows). Host: the names cost a pass over the
+rows for each group admitted at that snapshot (the first snapshot of an observer admits most of them), the house events two
+`setdiff1d`s over the live houses, and the centroid, mix and counts one sort of the listed rows. The record size is measured
+in §29.11; the timings are those of the GPU day (§29.12: the `take_records()` settle on evolved checkpoints, 24 to 38 ms).
 
 ---
 
@@ -7445,7 +8938,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I30 | feat: director build step 3 (`docs/DIRECTOR.md` §7): the LLM tier, off by default, no change to the compiled step or to any earlier hash. (1) `director.llm_every` (0 = off, else a multiple of `rule_every`), `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` (policy keys: `POST_V01_KEYS` and `UNHASHED_KEYS`) and `run.llm_url`, `run.llm_model` (resume keys); CLI `--llm`, `--llm-every`, `--llm-url`, `--llm-model`, `--persona`, `--goal` on `run` (fork included) and `resume`, which exit 2 unless the effective mode is `live`. (2) `director/llm.py` (the JSON schema generated from `actions.MENU` with `minimum`/`maximum`/`maxLength`, the untrusted-reply validator, a stdlib client that follows no redirect, ignores proxies, caps size and wall time and never raises) and `director/prompt.py` (persona, goal as delimited data, menu with effect descriptions, vital signs and trends, this boundary's safety actions, the last five interventions with their measured effect, budget). (3) Roles: the rule tier keeps reverts and the safety rules at every boundary (`rules.decide_safety`); at `t % llm_every == 0` the model makes the discretionary moves and the rule tier's discretionary rules (`decide_discretionary`) are only the fallback of a failed, invalid or fully refused call; the call is synchronous inside the existing hook. With the tier off the director calls `rules.decide` as before: same decisions, same log, `RULES_VERSION` unchanged. (4) `source: "llm"` entries (with `llm_call`), accepted by `validate_entry` and `validate_log`; one `llm_call` record per call in `journal.jsonl` (raw prompt and response, outcome, clamps, rejections, fallback); the header records `llm_every`/`llm_model` only while the tier is on. Replay never builds a client. Deviations from the proposal: synchronous instead of async (reply applied at the same boundary), `fertility_shift` offered to the model in its gain form only, no `--no-llm` (use `--llm-every 0`). Tests: `tests/test_director_llm.py`, the `llm` marker, and the edits in §26.9 (two existing tests used `llm` as their example of an unknown source). |
 | I31 | feat: director build step 4 (`docs/DIRECTOR.md` §14): the GUI Director panel, plus one CLI command. `alife llm-check` (§21) sends one tiny structured-output request under the director's own `llm.Client` and `response_format` and prints `OK model=... latency=...s` (exit 0) or `FAIL <kind>: <detail>` (exit 1, `ExitCode.ERROR`; exit 2 for a malformed URL, empty model or non-positive `--timeout`). No engine, config or hash change; no new config key; Python changes are `cli.py` and `tests/test_cli_llm_check.py` (mock-server cases for OK, HTTP error, empty content, invalid JSON, schema violation, timeout, closed port). |
 | I32 | feat: the `random` persona for evaluation arm R (`docs/DIRECTOR.md` §9, §15), yoked to another run's discretionary moves. (1) `director.persona = random` (`PERSONAS`) and the policy key `director.yoke_log` (`POST_V01_KEYS`, `UNHASHED_KEYS`: no hash changes); `--yoke-log PATH` on `run`, fork and `resume`; `validate` ties them together (a yoke log and `llm_every = 0` for `random`, no yoke log for any other persona). (2) `director/yoked.py`: `yoked_steps` (discretionary entries of a log per step: `source` rule or llm, not a safety rule, never a revert; `rules.SAFETY_RULES` are named constants shared with the rules), `load` (exists, replay pre-validation, steps on R's boundaries, sha256), `candidates` (the eligible menu actions via `rules.eligibility`), `sample_params` (uniform and log-uniform over the live menu bounds) and a stateless per-draw generator. (3) `Director`: R uses the Gardener's `PersonaParams` and keeps reverts and the safety rules; at a yoked step it makes the same number of random eligible moves, or journals "nothing eligible"; entries `rule: random`, `persona: random`, `yoked_to`; the header records `yoke_log` and `yoke_sha256`; a live resume warns on stderr when the file changed. Replay never reads the yoke log. (4) The CLI checks the yoke log (exit 2) before any directory is created or touched; the GUI offers Random with a "Yoked to run" picker. No engine, step or hash change; every other persona is byte-identical. Interpretations: the sampler returns `(raw, duration)` like a rule's proposal; the patch of a gain change or a loss is drawn among the free ones (a draw cannot be refused for a locked patch); a new header is appended when a resume finds another yoke file; the one existing test that pinned `PERSONAS` was updated. Tests: `tests/test_director_random.py`. |
-| I33 | feat: offline evolutionary-activity analysis (§19.3, `docs/ACTIVITY.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) Package `alife.analysis` (host-only numpy, never imported by the step, outside the §22.6 lint scope): `phylo` (the phylogeny rebuilt from the event logs by streaming the chunks, with a coverage report against `metrics.jsonl` and the final checkpoint; pointer-jumping lineage labels; Bedau's neutral shadow and a permuted heritability null), `activity` (one pass over grid windows: cohort-subtree and paraphyletic marker components; Bedau–Packard `D`, `A_cum`, `Ā`, `A_new` histograms; Channon's component-normalised activity against a reset shadow, computed in expectation; threshold crossings), `report` (classification none/bounded/unbounded per window with every threshold swept, `summary.json`) and `plots`. (2) CLI `alife activity RUN` (§21), writing to `RUN/activity` by default and never modifying the run's files. (3) Optional extra `analysis = ["matplotlib>=3.9"]` (§16); without it the command writes tables only. Deviations from the 1998 paper, documented in the note: the primary `A_new` window is `[a', 10^0.2 a']`, because the literal `a' ± 0.05 (a_max − a')` degenerates on a heavy-tailed run; the asymptotic definitions are applied as trends over finite windows. Limitation: runs that start at step 0 only (forks need founders from a checkpoint). Tests: `tests/test_analysis_activity.py`. |
+| I33 | feat: offline evolutionary-activity analysis (§19.3, `docs/ACTIVITY.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) Package `alife.analysis` (host-only numpy, never imported by the step; scanned by the §22.6 lint since I48, which it passes): `phylo` (the phylogeny rebuilt from the event logs by streaming the chunks, with a coverage report against `metrics.jsonl` and the final checkpoint; pointer-jumping lineage labels; Bedau's neutral shadow and a permuted heritability null), `activity` (one pass over grid windows: cohort-subtree and paraphyletic marker components; Bedau–Packard `D`, `A_cum`, `Ā`, `A_new` histograms; Channon's component-normalised activity against a reset shadow, computed in expectation; threshold crossings), `report` (classification none/bounded/unbounded per window with every threshold swept, `summary.json`) and `plots`. (2) CLI `alife activity RUN` (§21), writing to `RUN/activity` by default and never modifying the run's files. (3) Optional extra `analysis = ["matplotlib>=3.9"]` (§16); without it the command writes tables only. Deviations from the 1998 paper, documented in the note: the primary `A_new` window is `[a', 10^0.2 a']`, because the literal `a' ± 0.05 (a_max − a')` degenerates on a heavy-tailed run; the asymptotic definitions are applied as trends over finite windows. Limitation: runs that start at step 0 only (forks need founders from a checkpoint). Tests: `tests/test_analysis_activity.py`. |
 | I34 | feat: offline signal-information analysis (§19.3, `docs/SIGNALS.md`), no change to the engine, the step, any config key or hash, or the golden digest. (1) `alife.analysis.mi` (numpy only): KSG estimator 1 on ranks with random tie-breaking (exactly MI-preserving; the integer, zero-inflated signals and targets made the Gao et al. 2017 mixed estimator biased by about +0.07 bits), a Miller–Madow binned cross-check, shuffle nulls with z and permutation p, conditional MI over strata. (2) `alife.analysis.resim`: in-memory re-simulation to steps without a checkpoint, every `metrics.jsonl` row compared exactly, states written with `runio.write_state_file` to a cache outside the run (`analysis_cache/`, git-ignored). `runs/64k_s0` changed dynamics at its 120k resume (I26's `fields.fertility` change), so 0–120k is re-simulated with the run's original commit `f09b32a`; all 10,000 rows to 1M match. (3) `alife.analysis.signals`: `decode` mirrors S0–S8 of `step.step` (a test checks it against the stored `msg` and the `EMITTERS` counter), per-agent tables, the estimate grid and markdown/trend tables; entry point `python -m alife.analysis.signals`, no `alife` subcommand and no new dependency. Tests: `tests/test_analysis_mi.py`, `tests/test_analysis_resim.py`, `tests/test_analysis_signals.py`. |
 | I35 | feat: the `random` persona inherits the pacing parameters of the persona that made its yoke log (§26.11, `docs/DIRECTOR.md` §9, §15), so that arm R can be yoked to the Trickster arm C (budget 6 per 100k) as well as to B. Before, `yoked.PARAMS_PERSONA = "gardener"` fixed R's budget, cooldown scale and thresholds, capping it at the Gardener's maximum of 4. (1) `yoked.inherited` reads the persona and the effective `budget_per_100k` of the yoke log's first header; `yoked.load` returns them (`Yoke.persona`, `.budget`, `.personas`) and refuses (`LogError`, exit 2, before anything is written) a header persona of `random` or an unknown name; `PARAMS_PERSONA` became `FALLBACK_PERSONA` (the Gardener, for a log with no header or no persona). (2) Budget: an explicit `director.budget_per_100k` is capped by the inherited persona's maximum, `0` takes the header's budget, else the persona's default (`yoked.effective_budget`). (3) R's header gains `params_persona`; a replay takes persona and budget from its own first header. Only budgets, cooldowns and safety-rule thresholds are inherited; the boredom rule, minimum gap, drama gating and the model stay off. R yoked to a Gardener log makes the same entries and reaches the same state digest as before (checked against the previous code); its header has the new field, and with `budget_per_100k = 0` it takes B's recorded budget rather than the Gardener default (the same for a default B). Interpretations: a yoke log that was resumed with another persona uses the first header's persona (stderr warning), not the persona in force at each step, since R's budget window and cooldowns are one policy per run; the persona check covers every header. No engine, step, config key or hash change. Tests: `tests/test_director_random.py`. |
 | I36 | feat: 3D world PR 1, dims plumbing (`docs/3D.md` §10 item 1; new §27.0 and §27.1), no behaviour change: `validate` still rejects `world.dims = 3` (`config.DIMS_SUPPORTED = (2,)`), and every 2D trajectory, config hash, metrics row and checkpoint and `meta.json` key set is unchanged (golden digest not re-pinned, no `FORMAT_VERSION` or `RNG_LAYOUT_VERSION` bump; a CPU digest matrix of 2D trajectories and runs matched bit for bit). (1) `world.dims` (2) and `world.height` (0) in `POST_V01_KEYS` and the new `THREE_D_KEYS`; `is_3d`, `require_2d`; `Dims` gains `nd`, `d3`, `lay`, `fz`, `n_cells`, `field_shape`, `g_hash_z`, `cell_hash_z`, and `q`, `w1_rows`, `params` go through `lay`; the world-dimensions validation (2D: the 3D keys keep their defaults; 3D: height, FZ, FZ·FG² ≤ 2²⁰, G_z, `2·height ≤ size`, `K ≤ 27·C`, `chem_diffusion ≤ 1/6`, `resource_diffusion_q8 ≤ 42`), every 2D message verbatim; only finite ratios are rounded (a non-finite `size` or `height` is a `ConfigError`, not an `OverflowError`). (2) `layout.Layout`, `for_dims`, `genome_layout_version` and `GENOME_LAYOUT_VERSION_3D = 2` with the frozen append-only 3D tables (D_IN 84 with inputs 69–83 ending in `IN_HEIGHT`, `IN_PITCH`, `IN_GROUNDED`; D_OUT 39 with `OUT_PITCH`, `OUT_BUOYANCY`, `OUT_Q_BOND_DZ`, `OUT_Q_ATTACK_DZ`); the D_IN/D_OUT reads in brain, sensing, metrics, bench, state and the schema go through `dims(cfg).lay` (equal Python ints in 2D); D18 amended. (3) `state.expected_layout` is the one State schema (`runio._expected_layout` stays as an alias for `tests/test_runio.py`; the private `invariants._expected_layout` is removed); `LedgerIdx.HEAT_BUOYANCY` alias of slot 15, `sinks(nd)`, `ledger_names(nd)` (definitions only). (4) `dims` metadata only when dims ≠ 2 (absent = 2D); `load_checkpoint` refuses a cross-dimension file; a fork refuses a `world.dims`/`world.height` change (exit 4); `render`, `view`, `render_frame`, the viewer and `analysis.signals` refuse a 3D config before loading (`require_2d`, exit 2). (5) `tests/helpers.make_scene` takes the pos, vel, W2, resource and chem shapes from the config's state (2D unchanged). Interpretations: `actions.decode` keeps `layout.F` (the 2D query block width in both dims; PR 2 appends the z component); `cli._agent_info` and the `make_scene` State class wait for `State3` (PR 2). Tests: `tests/test_layout_dims.py`, `tests/test_dims_config.py`, `tests/test_dims_runio.py`. |
@@ -7457,7 +8950,8 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I42 | feat: 3D world PR 6, ecology (`docs/3D.md` §10 item 6; new §27.13; the evaluation PR took I41, so this row is I42 and final; the GPU measurements are item (7), the first long run is the results PR's): no change to the compiled step, the state, the RNG, any config key or its default, any config hash, golden digest or 2D output (the CPU digest comparison of the 2D config hashes, the initial 2D `K_est` of `tiny` and `dev` and the `tiny` state digest after 30 compiled steps against origin/main 748ad5b is identical; the only differences are the new preset and its two hashes). (1) **`K_est` in 3D is occupancy-weighted** (owner decision 2026-10-14; §27.10): `Σ_k regen_k·min(1, FZ·p_k)/c_ref`, `p_k` the share of the alive agents in field layer `k` (`fields.cell_index // FG²`, the layer harvest uses), the floor layer alone when nobody is alive, so it equals PR 4's floor-only value in the benthic limit and the plain sum over the layers for an even column; `metrics.layer_occupancy_weights` is new, the 2D branch is the same integer sum over `c_ref`; the first row, `inspect`, the director's `n/K_est`, rescue size and prompt read it; the prompt qualifier is now `prompt.K_NOTE_3D` (the 2D messages stay byte-identical, pinned by sha256; after review it says "in the floor layer", not "on the floor": the layer is `z < field_cell`, which is not the grounded state). Behaviour recorded after review: with `n ≤ FZ` alive every occupied layer has weight 1, so `K_est` is not continuous at `n = 0` (largest just before a total collapse of a spread population; §27.10). (2) **`64k3d`** (`presets/64k3d.toml`, `config.PRESETS`, the Swift `Preset` enum and the `PresetFileTests` list; owner decision: gravity 0.015): 320 × 320 × 80, FG 80, FZ 20, hash grid 53 × 53 × 13, `K = 8`, `C = 24` **provisional** (the evidence for it was taken at `regen_max` 320; at 1 700 the food can feed about 20 agents in the hottest floor hash cell, a margin of about 1×, so `cell_overflow` and `max_occupancy` at the benthic steady state and `bench --stages` on the Mac decide), `brain_cost_per_l1` 0.0905 (founder brain 37.63 q against 2D's 37.64), buoyancy costs 16 and 8, `regen_max` 1 700 for a `K_est` of 33 600 at 70% of the agents in the floor layer (an upper-end assumption: `DEV3D` read 48% at 2 500 steps; 61 500 at step 0, 17 800 floor only; mean of 16 seeds), `n_init` 16 384 (0.49 of that `K_est`, a hedge and not the "near K" the owner asked for, to be signed off: the first generation multiplies the founders by 1.4 to 1.7, the cloud crash was at 2.5× to 5× the `K_est`, and that seeding at 1× would crash is an extrapolation), the 64k run cadences; the derivations, the cloud evidence (gravity sweep, buoyancy costs, `C` and `K`, the `K = 12` conflict with `validate`) and what remains to be measured are §27.13. (3) **Tests** (new): `test_config.py::test_preset_table_3d`; in `test_metrics_3d.py` the occupancy weights and `K_est` on built scenes against a float64 host reference (all benthic, even column, mixed, top layer, nobody alive, dead rows, layer edges, the live environment, a 2D state, a few survivors: saturated weights and the jump at `n = 0`) and `test_k_est_band_of_the_64k3d_initial_state` (the lazy `_initial_state`, three seeds, the weights never materialised); in `test_director_3d.py` the prompt qualifier, `Director._vitals` on built scenes, a spread population flagged at about three times the floor-only size, the 40-founder Gardener run (a rescue raises its own `K_est` and the flag stays set), and a strict `xfail` for the blocked-note journal across a resume (2D and 3D); in `test_affordances_3d.py` 400 compiled `tiny3d` steps (every affordance, floor and surface clamps, `HEAT_BUOYANCY`, heights and pitch in range, the mutating cap, deposits in the volume, swimming apart from sinking) and a passive-agent sinking test; `test_ecology_3d.py` (marker `slow`, `DEV3D`, 2 500 steps; collected only under `-m slow`, **not run**: its helpers were exercised by a 300-step CPU probe, 6 827 agents at the step-57 peak and 4 213 at step 300, no overflow, floor clamps and `HEAT_BUOYANCY` positive, and its new assertions by a 60-step run; the full run belongs to the cloud worker or the nightly job and takes 30 to 40 minutes there, 11 on the Mac CPU). (4) **Existing tests edited, all for the rule changes above**: `test_dims_config.py::test_defaults_are_2d` leaves out `64k3d` as it leaves out `tiny3d`; `test_metrics_3d.py::test_carrying_capacity_of_tiny3d_is_comparable_to_tiny` puts every founder on the floor (the benthic limit), and the docstrings and one comment of the four PR 4 floor-layer tests say that their scenes have nobody alive (their assertions are unchanged and pass: with nobody alive the floor layer alone counts); `test_cli_report_3d.py::test_the_first_row_estimates_the_capacity_on_the_floor_layer` is now `…_by_occupancy` (the first row against the step-0 checkpoint to 5%, and between 1 000 and 1 500 instead of 300 to 500); `test_director_3d.py` asserts the new qualifier text, `…_use_the_floor_layer_k_est` is now `…_use_the_occupancy_weighted_k_est` (the logged `k_est` against a host reference of the weights, and between the floor layer's value and all the layers'), the Gardener fixture starts 150 founders instead of 40 (`_gardener_argv` takes `founders=`; see the findings below) and its assertion `n_alive > 40` is now `n_alive > 150 + the rescue's immigrants` (at 150 founders the old bound passed after a 70% decline), and the row dict of `_window_ctx` became the helper `_synthetic_row` (no assertion changed). **Two findings in the director, not fixed** (§27.10). (a) With 40 founders the occupancy rule leaves `n/K_est` at 0.14 to 0.15 for the whole 200-step run: a rescue raises its own `K_est` (immigrants uniform in the volume, a 1.5× pulse), so the extinction flag stays set for a population that has recovered (250 to 290 agents, twice the floor-layer rule's), and the rescue stays wanted and blocked by its cooldown at every boundary; pinned by `test_a_3d_rescue_raises_its_own_k_est_and_the_flag_stays_set` and a scene test; the 3D calibration of `risk_k_frac` (and the rescue's feedback) is an explicit gate before a 3D director run (§27.13). (b) `Director._blocked`, which journals a blocked rule only when it was not blocked at the previous boundary, is kept per process and not rebuilt on a live resume, so the resumed process journals the note once more, and `test_a_resumed_3d_live_run_is_the_uninterrupted_run_and_its_log_replays` (journal bytes equal) failed at 40 founders. `director.jsonl`, the archive, the rows and the state are identical across the resume. The code is shared with 2D; the director is left as it is (the evaluation runs on it), the fixture starts 150 founders, for which the flag clears at step 60 and no rule is blocked at the resume, and `test_a_blocked_note_is_journalled_once_across_a_resume` is a strict `xfail` (2D and 3D) to be un-marked by the fix (it needs a persisted set: the journal holds only the new notes). Also recorded: the `K_est` rule is not in the log header, so a 3D live run begun before PR 6 and live-resumed here switches rule without a trace and should be replayed or restarted. Interpretations: the nobody-alive case counts the floor layer (so an extinct run reports PR 4's value); uniform founders weigh the two edge layers 0.77 (`p = (field_cell − r)/(height − 2r)` against 1/FZ), so an even-in-z start is 91% of the plain sum; the steady state of the sizing is taken as 70% of the agents in the floor layer (an interpolation between the cloud sweeps at g = 0.01 and 0.03 that sits at the upper end); on `tiny3d` at its own gravity 0.03 the n/K_est of the extinction-risk criterion is 0.19 at step 10 and 0.27 to 0.39 later under the new rule (0.54 to 0.71 under the old), and at `64k3d`'s 0.015 it is 0.17 to 0.19 at steps 10 to 40 and 0.21 to 0.30 for thousands of steps (`DEV3D` 0.24 to 0.25), so its margin to 0.2 is smaller (§27.10). Swift: `Preset.k64_3d` ("64k3d") and a `64k3d` test each in `World3DLeverTests` (the preset's values, and an unchanged run passing the preset name alone) and `PresetFileTests` (the scalars, the engine-default cadence); `swift build -Xswiftc -warnings-as-errors` and `swift test` pass (the GPU suites stay skipped). **Review fixes** (a second commit; the findings were verified against CPU probes and `results/cloud-3.md`, `cloud-6.md`): (a) tests: the slow ecology test checks resting and swimming agents in the *final state* (the run-wide grounded ratio lay in (0, 1) from the founders' uniform start whatever happened) and floor clamps in the last 500 steps, and bounds hash-cell overflow by the fraction of steps with any overflow (at most 1%) instead of overflowing cells per agent-step (which admitted a cell overflowing on half the steps); the 400-step run counts surviving agents whose pitch changes (the founders' random pitch made "non-zero" pass with the pitch dynamics frozen; checked by a mutation, and counted by `uid` so a child taking a freed row is not a change) and `test_signals_reach_the_water` checks that the layers three or more above the floor hold every chemical after two steps (a mutation that deposits on the floor layer alone passed before); `n_alive > 150 + immigrants`; the comment of the column scene (two layers at weight 1, four at 0.75); new tests for a spread population, the 40-founder rescue, a few survivors and the blocked-note `xfail`. (b) Docs: §27.10 records the saturation for `n ≤ FZ`, the rescue's feedback, the 3D calibration of `risk_k_frac` at g = 0.015 (thin margin; a gate before a 3D director run), the K_est-rule and blocked-note consequences of a live resume, and the wording "in the floor layer" (§10.10 gives the weight `min(1, FZ·p_k)`); §27.13 quotes the gravity recommendation as 0.01 to 0.015 (0.02 untested), 28 for the floor pile and 36 for the ball, says the evidence for `C` was taken at `regen_max` 320 and adds `C` against the food (about 20 agents in the hottest floor hash cell at 1 700), the 70% as an upper-end assumption with the `DEV3D` and `tiny3d` shares, the settled fractions (they grow again after 10 000 steps, so a short run's value is a lower bound), `n_init` as an extrapolation to be signed off, the `(N, Q)` transients (1.0 to 1.4 GB; §15.5 has a `64k3d` column) and the runtime of the slow test (30 to 40 minutes on the cloud worker); the preset's comments agree with it. Not changed: the director code (`_blocked`, the rescue's feedback, the header), `regen_max`, `n_init`, `C`. Not done (no GPU; done in (7)): `bench --stages`, confirming `C` at the benthic steady state, a `64k3d` tuning run, the cloud/CI run of `test_ecology_3d.py`. **Extension (third commit; the owner's decision of 2026-10-15 and the cloud-7 run of this PR; where it contradicts the text above, it supersedes it).** (5) **The director's extinction-risk test reads the floor layer's `K` in 3D** (owner decision 2026-10-15; §27.10): `metrics.floor_carrying_capacity` is new (the floor layer's live regeneration over `c_ref`, PR 4's rule; in 2D it returns `carrying_capacity`); `Vitals` gains `k_floor`, `n_over_k_floor` and `n_over_k_risk` (3D only; `k_floor` and `n_over_k_floor` default to `None`, so 2D vitals carry nothing new), `Tracker.vitals` takes an optional `k_floor`, and `Director._vitals` passes it for a 3D config only; the flag is `n/K_floor < risk_k_frac` or `fall > risk_fall`. `k_est`, `n_over_k` (the crowding ratio of the log and the prompt), the rescue's size (`0.1·k_est`), the first row and `inspect` keep the occupancy-weighted value. The 3D prompt's viability line gains the floor ratio and number (`prompt.K_FLOOR_NOTE_3D`); a 3D log entry's `vitals` gains `k_floor` and `n_over_k_floor` after `n_over_k`; a 3D rescue's reason reads `n/K_floor …`. **2D is byte-identical**: the vitals' log keys and order (pinned by a test), the reason, the prompts (the sha256 pins pass unchanged) and every 2D director test. **`RULES_VERSION` stays 1**: the rule parameters are unchanged, 2D logs and replays do not change by a byte, and a bump would rewrite the header of every 2D log and make a live resume of a running 2D evaluation arm append a second header (§27.10). It resolves finding (a) above: the rescue no longer keeps its own flag set (40 founders: `n/K_floor` 0.098, a rescue of 131 immigrants, the flag clear from step 60 at 0.40 to 0.48), narrows the 3D calibration gate to a confirmation of `risk_k_frac` against `n/K_floor` (the margin is 2.7 to 3.7×, not 4 to 25%; the interpretations above that call it smaller are superseded) and to the rescue's size (still `0.1·K_est`, 131 against 41 on `tiny3d`, the menu's cap of 1 024 at `64k3d`), and the live-resume caveat now concerns the vitals' `K` and the rescue's size, not the flag. Cloud-7 measured the occupancy-weighted `K_est` at about 4× the realised `DEV3D` population (14 190 initial and 12 759 final against about 3 100 agents); `alife inspect` read 65 167 for `64k3d` on the step-20 checkpoint of its 20-step run, and the step-0 value is 64 270 for seed 0 (inside the 16-seed range of 58 200 to 64 900, about the size of `n_cap`): the rule is kept for every consumer but the flag. **Existing tests edited:** the Gardener fixture returns to PR 4's 40 founders (`FOUNDERS`; at 150 the floor-layer rule fires no rescue, `n/K_floor` 0.37; the flag clears at step 60 and no rule is blocked at the resume, so the journal still compares equal; `_gardener_argv` loses its `founders=` parameter, the `gardener40` fixture is merged into `gardener_run`, and `n_alive > FOUNDERS + immigrants` replaces `n_alive > 150 + immigrants`); `test_a_spread_population_is_flagged_at_three_times_the_floor_only_size` is now `…_is_judged_against_the_floor_layer_not_the_occupancy_weighted_k` and `test_a_3d_rescue_raises_its_own_k_est_and_the_flag_stays_set` is now `…_but_no_longer_keeps_the_flag_set` (each pins the converse); `_window_ctx` gives a 3D context a `k_floor` of 250 and the two 3D prompt tests assert the floor clause; `test_the_director_vitals_use_the_occupancy_weighted_k_est` and `test_the_vitals_of_a_3d_run_use_the_occupancy_weighted_k_est` also check `k_floor`, `n_over_k_floor`, the reason and the key order; the two strict `xfail`s of `Director._blocked` are kept. **New tests:** `test_metrics_3d.py` (`test_floor_k_is_the_floor_layer_alone_wherever_the_agents_live` on six scenes against an independent float64 reference, `test_floor_k_follows_the_live_environment`, `test_floor_k_in_2d_is_the_one_k`), `test_director_vitals.py` (`test_2d_vitals_have_one_k_and_the_log_keys_of_build_step_2`, `test_3d_extinction_risk_reads_the_floor_layer_k_and_every_other_reader_keeps_k_est`, `test_3d_fall_criterion_is_independent_of_the_capacities`, `test_3d_compact_adds_the_floor_k_after_n_over_k_and_is_json_ready`), `test_director_rules.py` (`test_the_rescue_reason_names_the_ratio_the_flag_read_and_its_size_reads_k_est`, `test_a_blocked_3d_rescue_is_noted_with_the_floor_layer_ratio`), `test_director_3d.py` (`test_the_3d_prompt_says_which_capacity_the_extinction_flag_reads`); three mutations (the flag reading `n_over_k`, `Director._vitals` passing no `k_floor`, the rescue sized by `k_floor`) are caught by three, four and two tests. (6) **`C` = 48 for `64k3d`** (provisional when written, confirmed by (7)): the cloud-7 run of `test_ecology_3d.py` on Linux CPU at `C` = 24 failed its overflow gate and nothing else (one floor hash cell first over `C` at step 2 151 for 5 steps and then continuously from step 2 207 to the end, 299 steps in all, a pile of 31 still growing, 11.96% of the steps against 1%). `64k3d.toml` and the `DEV3D` configuration of the test (`CELL_CAPACITY`, set and checked equal to the preset's; the gate is unchanged) now have `cell_capacity` 48, `test_preset_table_3d` asserts `C` = 48 and `Q` = 27·48 = 1 296, and §27.13, §15.5 and `docs/3D.md` carry the derived numbers: `(N, Q)` arrays of 340 MB (170 at `C` = 24), transients of 2.0 to 2.7 GB, a total of 2.8 to 3.5 GB (3.2 GB scaled from cloud-7's 1.99 GB peak for `64k3d` at `C` = 24), and the cost from the cloud CPU (`DEV3D`: 2.1× the step time and 1.7× the memory of `C` = 16, about 1.6× the time of `C` = 24; `64k3d` about 7 s/step on that CPU at `C` = 48 against 4.3 at 24). **`C` = 48 was provisional pending `bench --stages` on the Mac; (7) confirms it.** **Review fixes (fourth commit; ten findings, all confirmed, none changes behaviour):** (a) a test through `Director` itself for the 3D-only gate of `Director._vitals` (`test_a_2d_director_carries_one_k_through_its_vitals_log_rescue_and_prompt`): without the gate the 2D vitals, log keys, rescue reason and prompt would all change and no test failed (a mutation shows the new one does); (b) the `Vitals` and module docstrings of `vitals.py` name `k_floor` as the second live input; (c) the Gardener test's comment on the one rescue is corrected (the flag does ask again at step 40, by the `fall` criterion, and the cooldown blocks it) and a journal assertion (one blocked note, at step 40) replaces the count of log entries as the discriminating check; (d) corrections to the cloud-7 evidence in §27.10, §27.13, the preset's comment and the test's header: 65 167 is `alife inspect` on the step-20 checkpoint (the step-0 value is 64 270 for seed 0, inside the 16-seed range and below `n_cap`), the overflow began at step 2 151 (5 steps) and has been continuous since step 2 207, the population range from step 1 500 is 2 985 to 3 142 (3 134 at the end); (e) the margin of `n/K_floor` to `risk_k_frac` is 2.7 to 3.7×; the rescue raises `K_est` from 1 309 to 1 700-2 050, 2.8 to 3.3× the pulsed floor layer's `K` of 614, not 3.2×; the floor-layer figures of the calibration paragraph and its `rule_every` table are `n/K_floor` (PR 4's `K_est`), not `n/K_est`; `prompt.K_FLOOR_NOTE_3D` is quoted as the constant and the rendered clause described apart. **Checks (CPU only, the GPU was busy):** `ruff check` and `ruff format --check` clean; the fast suite on the CPU device (rerun after the review fixes): 1 465 passed, 3 skipped, 2 strict xfails (`Director._blocked`) and the known Mac-CPU failure `test_lifecycle.py::test_lifecycle_compiles_and_matches_eager`; the 2D digest matrix against origin/main 748ad5b (config hashes, state digests of 30 compiled steps, the 2D director runs including their `director.jsonl`, journal and archive bytes) bit-identical, the only differences being the new `64k3d` hashes (the preset's hash changes with `C`). Not run (at that commit; the first three are done in (7)): the slow test at `C` = 48 (the cloud worker's, about 50 to 55 minutes against 32), `bench --stages`, the Swift tests (`gui/` is unchanged and the GUI reads no `cell_capacity`). **Measurements and the owner's decision of 2026-10-16 (fifth commit; supersedes the items above that call `C` provisional or the GPU measurements not done).** (7) **`C` = 48 is confirmed** (owner decision 2026-10-16), on measurements at a3d46eb that change no code, no config value, no hash and no digest: (a) `alife bench --stages` on the M5 Pro (new `docs/bench/`: five JSON reports and a README): `64k3d` 14.4 steps/s at `C` = 48 (69.2 ms per step, neighbour search 56.2 ms, peak 3.31 GB, 3.08 GiB in the file), 22.0 at 32 and 24.9 at 24; 2D `64k` 59.3 (16.9 ms, 6.3 ms, 1.19 GB); `tiny3d` 411. The 30 to 40 steps/s of docs/3D.md §9 was for `C` = 16: the search costs about 4.3 ms per 100 candidates per agent in 2D and 3D alike and scales with `Q` = 27·`C`, and `C` = 48 triples `Q` again; the deferred fused Metal neighbour kernel (§23.2) is the lever. The memory is the arithmetic's (§15.5 now carries the measured peaks, 3.31 GB; GB is 10^9 bytes there, the `bench` fields are GiB). The `donation` check of `bench` reports `ok: false` at `C` = 48 and 32 because the search sets the peak in both the normal and the copying step (equal peaks): it is blind at that size, an open item (§27.13). (b) A 30 000-step run of `64k3d` (seed 0, director off, 33 min at 14.9 steps/s, peak 3.32 GB): `full_check` OK, the ledger exact on all 300 rows, no hash overflow, `max_occupancy` 37, population 24 491 at step 100, a minimum of 11 603 at 1 200, a peak of 42 730 at 13 100 and 29 010 at 30 000, still falling. (c) Cloud-8 and cloud-9 (`DEV3D`, `C` = 48, Linux CPU, results in `claude/cloud-results`): `test_ecology_3d` passes (3 706 s), 20 000 steps without an overflow, peak occupancy 43 at step 10 705; the fast suite, both goldens and the 2D digest comparison pass at a3d46eb there too. (d) The realisation of `K_est` (the formula is unchanged, owner decision): `DEV3D`'s population is 0.78 to 0.79 of the occupancy-weighted `K_est` at its plateau (steps 12 500 to 14 000) and 0.63 at 20 000, against 0.25 at step 2 500 when the column was not yet in use, and the floor layer's `K` underestimates by more than 2× once it is colonised (`n/K_floor` 1.29 at 6 000, 2.15 to 2.65 from 9 000, 2.16 at 20 000); recorded in §27.10 and §27.13. Cloud-9 writes 130 fewer agents per 500 steps over its last 1 000, which its own table contradicts (10 328, 10 140 and 10 195 are 133 fewer per 1 000 steps); §27.13 quotes the table. (e) Docs and comments: §27.13 (the intro, the cost and memory tables with the bench numbers, the population table's two new rows, the `K_est` realisation note, the first measurements and what remains), §15.5, "provisional" removed for `C` in §1 (the preset table), §17 (the `64k3d` row), §22.5, the introduction of §27 and §27.3, and in §27.10 the sentence that called `K_est` a ceiling the population never approaches and the references to "to measure 5"; docs/3D.md (header, §9 with the measured 14.4 steps/s against the 30 to 40 estimate, PR plan item 6); `presets/64k3d.toml` and the docstrings and comments of `test_ecology_3d.py` and `test_config.py` (comments only: no value, no assertion changed; they called `C` provisional against the owner's decision, so the comment-only extension of the scope is kept). (f) **Review fixes (sixth commit; ten findings, none changes behaviour):** the memory figures are in one unit, GB = 10^9 bytes (the arithmetic's and the `peak_mem_gb` of `metrics.jsonl`), and §15.5 and §27.13 say that the `*_gb` fields of the `bench` reports are GiB: the peak is 3.31 GB at `C` = 48 (2.49 at 32, 2.18 at 24, 1.19 for 2D `64k`; 3.08, 2.32, 2.03 and 1.11 GiB in the files), the transients 2.63, 1.81 and 1.49 GB (the last 0.1 GB over the arithmetic's 1.0 to 1.4, the total inside its range), the 30 000-step run's 3.32 GB is the same peak to 8 MB and the state's 0.686 GB and `state_gb` 0.639 are the same bytes; the 2D `64k` column of §15.5 carries its measured peak; the donation paragraph says that the *excess over the baseline* (`excess_gb` = `excess_copy_gb` = 2.446 GiB, 2.63 GB), not the peak, is equal in the normal and the copying step; the neighbour search is 56 of the 71 ms of the staged step (79%; the fused step is 69.2 ms), not of 69; `n/K_floor` of `DEV3D` is 2.15 to 2.65 from step 9 000 (2.16 at 20 000), not 2.2 to 2.65; the filled-column `K_est` realisation is 0.62 to 0.79 in §27.10; predation is 66% of the deaths of `DEV3D`'s last 1 000 steps; the no-search bound is 67 steps/s; `docs/bench/README.md` counts 231 steps (20 warm-up, 11 donation-check, 200 timed) and gives the peak in GB and GiB. **Checks (CPU only, no GPU used):** `ruff check` and `ruff format --check` clean (122 files); the fast suite on the CPU device: 1 484 passed, 3 skipped, 2 strict xfails (`Director._blocked`) and the known Mac-CPU failure `test_lifecycle.py::test_lifecycle_compiles_and_matches_eager`, in 5 min 42 s; the 2D digest comparison (`digest_compare.py`) exits 0, bit-identical to the 2D baseline; rerun after (f) with the same counts (5 min 54 s), ruff clean and the digest comparison exit 0. Not done: the first long run (the results PR), tuning of `regen_max` and `n_init` and the owner's sign-off of the latter, a seed other than 0 at 64k scale, the fused neighbour kernel, an informative donation check at 3D scale. |
 | I43 | fix: the director's extinction-risk flag is season-aware (rules version 2) and the blocked-rule set survives a live resume (host-side director code only; owner decisions 2026-10-16: "exempt the forced amplitude", and the `Director._blocked` fix recorded in §27.10; `docs/DIRECTOR.md` §16, §26.3, §26.5 to §26.9, `docs/EVALUATION.md` §3.3 and §5). No change to the compiled step, the state, the RNG, any config key or its default, any config hash, the 2D or 3D golden digest, or any non-director trajectory; a run without seasons has the vitals, flag, reasons, notes, prompts, journal and log of rules version 1 byte for byte (the existing sha256 and key-order pins pass unchanged, and `test_director_seasons.py` pins the tracker), the one new byte in such a log being the header's `rules_version`. (1) **Why.** The evaluation found that the fall criterion (`fall > 0.3` within 50k steps) fires on every seasonal trough: arms C fired 34 and 38 rescues (56 and 60 safety-rule entries: a rescue is two), and each rescue also spends the model's budget (`docs/EVALUATION.md` §3.3). (2) **The model** (`director/seasons.py`; §26.5): regeneration is `floor(regen_max·clip(base + Σ gain·(1 + A sin …)·G, 0, 1))`, not proportional to the season's weight (on `eval_s0_C`, A = 0.6, the regeneration swings ±0.40, the engine's map ±0.45, not ±0.6), so the capacity over one cycle is sampled through the engine (`metrics.seasonal_capacity_table`: 32 phases of `fields.regen_rate` over the sum without seasons; the floor layer in 3D; 33 map evaluations per boundary, 0.02 s on the CPU at the `64k` size), the forced fall is the vital sign's own formula on that capacity under each window's regime (`season_amp`, `season_period` from the rows' `env`) and the lower of the fall with and without each window's `regen_mult` (so a boom begun after the last peak narrows the exemption: a 40% crash on such a trough is flagged; the end of a pulse stays flagged), and the flag reads the excess `1 − (1 − fall)/(1 − forced)`; the n/K criterion and 3D's `k_floor` are unchanged, `Vitals.fall` stays the observed value, `fall_seasonal` and `fall_excess` are logged after it when seasons are in force. The rescue's reason names the split; a fall that version 1 would have flagged and the seasons account for leaves the journal note `seasonal_exemption (…)`, once per run of boundaries; the LLM prompt's viability line gains a clause then. Validated read only on `runs/eval_*` (tables from the nearest checkpoint): windows at which the fall sets the flag, 891 → 55 (s0 C), 808 → 119 (s1 C), 129 → 0 (s0 R), 1 018 → 198 (s0 RC), 614 → 141 (s1 RC) of 1 380, the seasonless windows unchanged; limits: no population lag (RC's period 3 056 still flags 106 of 600 windows), the end of a regeneration pulse is a fall the seasons did not force and stays flagged, patch-gain changes are not followed (the rows record only the lowest and highest gain; a gain raised after the last peak widens the exemption). (3) **Versioning.** `RULES_VERSION` = 2, `RuleParams.rules_version` selects the behaviour; replay never decides, so every implemented version (1, 2; a header without the key is 1) validates and replays byte-identically, any other is a `LogError`; a live run continues under the version of its log's latest header (no silent switch on resume, no second header for it, also for a header that predates the key; a stderr note; the CLI refusing an unknown version before touching the directory, tested by a resume from a checkpoint before the last); a new run or a fork takes 2, except a new `random` run (arm R), which takes the version of its yoke log's first header like the rest of what it inherits (§26.11 R3), so that an R or RC arm started against the evaluation's version-1 logs runs version 1's safety rules; no in-place upgrade. (4) **`Director._blocked`** (every rule noted at the boundary, whether or not the journal wrote the note again) is saved as `blocked` in `director_archive.json` at each checkpoint and restored by a live `Director` started at the checkpoint's step (`as_of_step == start step`; a missing, older, unreadable or other-step archive restores the empty set, the old behaviour): the journal of a resumed run equals the uninterrupted run's; the two strict `xfail` tests of §27.10 are tests. (5) Tests: `test_director_seasons.py` (51), additions to `test_director_log.py`, `test_director_random.py`, `test_director_3d.py`, `test_director_replay.py`; `test_director_rules.py` and `test_cli_smoke.py` pin version 2.  CI: the fast-suite job's `timeout-minutes` goes from 20 to 30 (§22.0); the suite had grown to 16 to 18 minutes with the 3D work and this PR's end-to-end tests pushed it past 20. |
 | I44 | feat: games G1, the observer layer (`docs/GAMES.md` §4, §6.6, §9; new §28), off by default and observer-only; built in five commits on `games/g1-observers` (the channel, the observer state and rules, the host observer and the runner, the tooling, these docs) and a review-fix commit. (1) Config: section `game` with `game.observe` (bool, false; in `POST_V01_KEYS` and the new `OBSERVER_KEYS`, omitted from `config_hash` at every value; separate from `UNHASHED_KEYS`, so `DIRECTOR_POLICY_KEYS` is unchanged); `resume --set game.observe=…` is accepted (`cli._resume_allowed`, `RESUME_GAME_KEYS`; any other `game.<key>` is exit 2 and the message names it); a fork may set it and starts its observers fresh, a replay fork included. The thresholds of the labels are code constants of a versioned `RuleSet`, not config keys (G1's choice, pending the owner's confirmation: GAMES §10 item 11; GAMES §3.1 corrected). (2) Step: `step(s, cfg, *, observe=False)`, `make_step(…, observe=False)`; with `observe` (static) the step returns `StepOutG` = `StepOut`'s fields plus `acts: Acts` (attack gain, per-slot share out and net received, `ActFlag` attacked/hit/formed/budded/emitted, thrust and defend as `round(256·v)` int16, emit as the Σ of the S17 deposit quanta); the thrust is quantised from the decode output and masked by solvency in integers, so that the channel reads only arrays that are already kernel boundaries; `energy.share` is split into `energy.share_slots` and `energy.share_from_slots` (same primitives, same order; S12 is computed once with `observe` on); §3 and §16.3 name the static `observe` branch, which `bench._StagedStep` does not mirror. (3) Package `alife.game`: `observe` (pure MLX `ObsState`, accumulators `A += x − (A >> k)` with k = 6 and 3, reset on death or a new uid, per-slot bond identity by partner uid), `rules` (`INTENT_VERSION` 1, provisional, with a pinned `RULES_V1.digest()` and an int32 headroom check `RuleSet.check`: Gatherer, Hunter, Provider, Trader, Nomad, Settler (speed only; the colony clause is G2), Generalist; ten intents in first-match order with a 4-evaluation hysteresis every 8 steps on the step clock), `observer` (host `Observer`: folded in the step's single eval, the `observers` block of `metrics.jsonl` rows of observing runs, the sidecar). (4) Persistence: `observers/step_<t:010d>.npz`, atomic, written before each checkpoint of an observing run, loaded on resume when its meta, including `rules_digest`, matches (otherwise a stderr note and a fresh warm-up), pruned with its checkpoint and cut by `truncate_after`; resumed labels equal uninterrupted ones. (5) Tooling: `python -m alife.analysis.labels` (§4.5 validity: AUC against matched random labels, archetypes exposure-normalised over the observed part of the horizon with complete-case, survivor and censored columns, coverage, flip rates; never writes into the run directory), `alife bench --observe` (control and observed arms in blocks C O O C); `resim._compare` is public as `compare_row` (one source call site, six test calls). Unchanged: the compiled step with `observe` off, `State`, the RNG, every config hash (`TINY_HASH_V01`, `K64_HASH`, `TINY_ENABLED`, `K64_ENABLED`, and the newly pinned `TINY3D_HASH`, `TINY3D_ENABLED`, `K64_3D_HASH`, `K64_3D_ENABLED`, computed on 905580a), the 2D and 3D goldens, every trajectory, `StepOut`, the event columns, and the rows and files of non-observing runs; with `observe` on the trajectory is bitwise the one with it off (2D and 3D, compiled and eager, float32 and float16 weights, director branches off and on, CPU; Metal (M5 Pro, 2026-10-19, on 6d839cc): `tests/test_game_purity.py` and `tests/test_game_acts.py` 26 passed; every `test_game_*.py`, `test_analysis_labels.py` and the determinism files 167 passed, 2 skipped (the goldens are pinned to Linux CPU)). **As built, where it differs from the plan** (all in §28): every ratio threshold is an integer `(num, den)` pair tested as `den·x ≥ num·y`; the largest safe `arch_k` at the default `share_rate` is 15, not 19 (the speed and velocity columns, bounded by `VQ_MAX`, limit it; 12 at `share_rate` 2^16 − 1 as planned); Caring and Feeding also need a mean of at least 1 (no change at `harvest_max` 400); the first match is the minimum index of the matching columns, not an `argmax`; the runner calls `make_step(cfg)` and `save_checkpoint(state, cfg)` literally when not observing, so the existing test doubles of both keep working; `intent_labelled` is 0 until step 48 (the displayed intent needs 4 evaluations after the 24-step warm-up) while `intent_evaluated` counts from step 24; `read_observers` returns the raw array dict, `save_checkpoint` treats an empty mapping as no sidecar and `_prune` removes any sidecar without a checkpoint; in the labels tool, `study(start=…)` (CLI `--from`), the random streams are `[seed, label_index, variant]`, an intent's `auc_label` pool is the complete rows that carry a displayed label (`auc_rule` uses every complete evaluated row), each intent verdict applies its own score's coverage maximum, and the report has extra keys (`cohorts`, `params.rules`, `params.verdict`, `exposure`, prevalences, `coverage_max`); in the bench, the warm-up is `max(warmup, 1, rules.every)`, `observed_steps_per_s` is from the mean, the block has extra keys (`overhead_ms_mean`, `trajectory_match`, …) and the CLI exits 1 when `trajectory_match` is false. **Review fixes** (the review-fix commit): the bound of `emit` is 768, not 765 (`tanh` reaches 1.0 in float32: `RuleSet.check`, the `Acts` comment, §28.2, §28.3 and GAMES; a saturated-weights test reaches it); `RuleSet.check` also bounds the int32 ratio comparisons (a v1 ratio scaled by 10^5 wrapped and mislabelled rows); a structural CPU test pins the channel's read set on the traced graph and that S12 runs once, which no value test can see (§28.2); the verdict is `insufficient` below 99 permutations, where no label can reach `p ≤ 0.01`; `bench --observe` runs the blocks as C O O C (C O C O left a linear drift in the overhead); `read_observers` and `Observer._load` turn a bare `.npy` or an archive with a non-`.npy` member into the fresh-observers fallback, as §28.6 says; `resume --help` names `game.observe`; tests added for the insolvent mask in every acts arm, the age-matched null in every score of both scoring functions, the verdict margin, `ARCH_PRIORITY` as a literal, a SIGINT resume and the saturated emit; GAMES gets the Metal purity gate as a merge condition and the two open G1 questions (§10 items 11 and 12), HANDOVER a next-steps item. Deferred: `BirthRecords.parent_slot`, houses, kin groups, colonies (G2); `signals.decode` in 3D; stream tags, `alife play` and the play-loop bench (G3); copying the sidecar into a fork (G3 or G4); the calibration, the verdict criterion (provisional until the owner confirms it) and the 64k benches (later, on the GPU, §28.8). Edited tests: `test_config.py::test_hash_ignores_run_and_tracks_dynamics` skips `OBSERVER_KEYS`; `tests/data/gui_config_*.json` regenerated; `test_lint.py` scans `game/` (rule 2 over `game.*`, rule 5 over `game.observe` and `game.rules`, new meta-test lines); `test_metrics_3d.py` calls `resim.compare_row`; `test_bench.py` covers `observe`; `test_cli_smoke.py::test_view_and_bench_delegate` pins the new keyword, and `test_cli_smoke.py` also gains `test_bench_observe_smoke` (the CLI `bench --observe` end to end). New tests: `test_game_config.py`, `test_game_acts.py`, `test_game_purity.py`, `test_game_observe.py`, `test_game_rules.py`, `test_game_sidecar.py`, `test_analysis_labels.py` (shared helper `tests/game_helpers.py`); 68 deliberate breaks of the new code over the four code stages were each caught by a test, but one that is an equivalent change (`<` against `<=` in Settler: `10·m = 256` has no integer solution); six survived the first pass and each got a test that kills it. Checks (verify stage, at the review-fix tree, all on the CPU device): [ruff: `ruff check src tests` and `ruff format --check src tests` clean (137 files); fast suite (`test_lifecycle_compiles_and_matches_eager` deselected, the known Mac-CPU failure of I26): 1737 passed, 5 skipped, 25 deselected, 0 failed in 9 min 27 s (1707 passed before the review fixes; the 5 skips are environmental: the two goldens pinned on Linux x86-64, the real-LLM test, no ffmpeg, no pygame); `tests/test_game_purity.py` in full, every arm: 17 passed in 24 s (all 8 trajectory arms, the key test, the two runner-level tests, the director-log test, and the three structural configurations with their two meta-tests; none is marked `slow`); `swift build` and `swift test` in `gui/`: build complete, 68 tests in 11 suites passed; digest comparison: with a fresh baseline (`git archive origin/main src`, origin/main still 905580a after a fetch; the baseline run imported `alife` from the extracted tree) the 2D digest matrix (15 trajectory cases, 3 runner cases, config hashes, layout) run on this tree exits 0, "bit-identical", and its only INFO lines are 12 additions of `game` (`{"observe": false}`) to a run's `config.json` or to a checkpoint's metadata config; the tiny3d `state_digest` after 50 compiled float32 steps is `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd` on origin/main and on this tree; Metal (M5 Pro, 2026-10-19, on 6d839cc): `tests/test_game_purity.py` and `tests/test_game_acts.py` 26 passed; every `test_game_*.py`, `test_analysis_labels.py` and the determinism files 167 passed, 2 skipped (the goldens are pinned to Linux CPU)]. |
-| I46 | feat: storms W0, the offline weather prototype (`docs/STORMS.md` §3.2 and §8 W0; owner decisions of 2026-10-19: model B, a two-hemisphere torus with `f(y) = f0·sin(2πy/L)`, a separate warm-pool map `T_s`, 160 × 160 cells of 2 units, Δt = 1 engine step), built as a standalone module with its study driver and tests, in three commits on `games/w0-storms` (the model, the driver, review fixes), and a fourth with the results. **No engine change.** (1) **What.** `weather.py`: two stacked shallow-water layers with moisture on a periodic C-grid, one step of nine sub-steps (semi-Lagrangian advection, flux-form continuity with a positivity limiter, a Strang-split Coriolis rotation around the forward-backward pressure kick, evaporation, condensation with the latent-heating mass transfer, radiative mass return, damping with a divergence damper and a speed tripwire, seeded disturbances), the agent-wind sampler (`sample_wind`, `wind_layers`, `alpha`; STORMS §4) and `WeatherParams` with the validation rules of the W0 spec §2.5; `analysis/w0.py` with `analysis/w0_plots.py`: the offline study driver (storm detection and tracking on the host, passive tracers on exactly the agents' wind, the occupancy binning of `spatial._find_neighbors_3d`, the six exit criteria of STORMS §8, the health gate, the cost measurement, the unforced-vortex table and the steerability experiments); `tests/test_weather.py` (113 tests, one strict xfail pinning an MLX duplicate-roll compile bug) and `tests/test_analysis_w0.py` (106 tests). `--params FILE` is a sparse override of `START_SET` (the base that the tuning rounds' files were written against; without a file the base is the defaults, and `WeatherParams.from_dict(d, base=None)` takes the base), and the report's detection-threshold deviation compares with `START_SET`. (2) **Nothing in the engine changes**: the step, `State`/`State3`, `config.py` (keys, defaults, `POST_V01_KEYS`, validation), the `rng.py` streams, the presets, the goldens and the digests are untouched, and nothing under `src/alife` imports `weather` except `analysis/w0.py`; no config hash, digest or trajectory moves. (3) **Docs and lint only.** `DESIGN.md` §16 (the `weather.py` entry, and `w0` and `w0_plots` under `analysis/`, whose description now also covers an offline MLX driver, still never imported by the step and outside the lint scope) and §22.6 (`weather` joins the rule-5 modules and the meta-test sentence); `tests/test_lint.py` adds `"weather"` to `SIM_MODULES` and a rule-5 bad example. (4) **Deviations from STORMS §3.2.** D3: `q_pool > 1` (default 1.11 since the W0 results, start set 1.10, range 1.0 to 1.2), so `Q_e > Q_s` over warm-pool cores; with `Q_e ≤ Q_s` no storm formed in seven probe runs, because a steady core with ε < 1 needs evaporation inside the saturated core. D7: a moist-thickness limiter on evaporation (`m = h₁ − γQ ≥ m_min`), without which broad warm areas ran away. Also the divergence damping `κ_d` in place of the probe's `ν`, an optional cubic semi-lagrangian step (a deviation from step 1 when used), and every rolled copy of an array built once per step (MLX 0.32.3 `mx.compile` crashes on duplicate rolls; W1 inherits the rule). Two smaller departures from the W0 spec: `courant_max`, `speed_max`, `hyper_max` and `n_safety` are evaluated on the winds entering the damping sub-step (the shifts friction builds anyway) and not on the final winds, and the 1.8x lifetime ratio of the unforced-vortex regression (spec test 6b) is tested on an f-plane (on the beta-plane it is 1.71 at N = 96 and 1.93 at N = 160, Rossby radiation shortens both lives), with the 1 200-step bound tested on the beta-plane at N = 64. (5) **Results** (`docs/STORMS_W0.md`, 2026-10-19). Tuned on the M5 Pro GPU in 41 distinct studies of 60,000 steps (round 0, four rounds of 8, the confirmation on keys 1 and 2; 46 study runs with the five round-0 threshold re-reads, which repeat the round-0 trajectories and are not counted against the budget), then the §9a steerability forks, the deliverables study and the cost bench. The confirmed set `r4_3p36_q111_v009` (params hash `7832e060`) is the start set with `gamma` 21.6, `q_pool` 1.11, 3 warm pools per hemisphere (32 × 16, 36 units from each equator) drifting west at 0.009 per step (D8, accepted as the mobility lever) and `zeta_th` 0.00625 (0.25 f0); it is now the `WeatherParams` default, and the spec's starting set stays as `weather.START_SET`, on which the model tests run. On both confirmation keys: 2 to 4 storms per hemisphere at every time; a median lifetime of named storms (peak ζ ≥ 0.5 f0: coordinator ruling C11 under the owner's delegation, to be revisited with the owner; storms are named with hindsight, and named in real time the lifetime passes at 22,125 and 14,175 but the named count falls below 2 at 1.4% to 11.9% of times) of 23,375 and 19,550 steps (as written 16,550 and 14,100, but 100 on the tuning key, where shed fragments of 3 to 5 detections decide it); a 1,000-step forecast error of 0.63 radii (0.626 on key 2), above the jitter floor (0.11) with skill +0.50 and +0.48 over persistence (a forecaster that knows the pool drift errs by only 0.33 radii, below the 0.5 lower bound, so the pass belongs to the least-squares method of the spec and W3 and W4 must add uncertainty to storm motion); tracer peaks of at most 30 against C = 48; latitudes reported; a clean health gate, the `m` limiter never engaged. **The cost fails**: with the pool drift of the confirmed set (B) + (C) = 1.163 ms against 1.0 ms ((B) 0.807, (C) 0.356; 1.131 ms in one graph; single runs), and 1.116 ms with the static pool map of the CLI bench (median of 3), dispatch-bound, so W0 does not pass as written; a cost-only failure is an engineering issue, not a trigger for the model-A fallback. The storms are anchored to their warm pools and move with them; a pool shift or gain steers them within 175 to 1,500 steps, a wind impulse barely does. W1 has not started. |
+| I45 | feat: games G2, social tracking (`docs/GAMES.md` §6, §9 G2; new §29), observer-only, on with `game.observe`; built in eleven commits on `games/g2-social` (the config and the channel, `groups` and `tracking`, `game.social` and `game.society`, the labels clause with the observer wiring and the social log, the tools and the bench, the docs, the roster, whose commit also edits the docs, the fixes of the review, the label rules of `INTENT_VERSION` 2, the fixes of their review, and the GPU results). (1) Config: `game.house_rate` (1/2048, a working default: observer-only keys may default to a working value, the owner's decision of 2026-10-19, recorded in CLAUDE.md), in `POST_V01_KEYS` and `OBSERVER_KEYS` (unhashed at every value, resumable, inert while `game.observe` is off); `validate` bounds it to [0, 1]. The snapshot cadence and every threshold are `SocialRules` fields, not config keys. (2) Channel (static `observe`): `Acts` gains `attack_target`, `bond_target`, `q_kin` (int16, `round(256·clip(y, ±127))` of the kin columns of both queries), `nbr` (neighbour rows, validity from the own-index contract) and the birth lanes `born_row`, `born_parent` (the parent-row channel, in place of `BirthRecords.parent_slot`, so that `StepOut` and the event files stay unchanged), `born_uid`, and for the roster `death_cause` (int8: the S14 cause of every row that died this step, −1 elsewhere, a cast of the `dt.cause` array that `KILLED` already reads); `ActFlag` gains `PROPOSED` and `KILLED`; the structural test's allowed taps grow from 12 to 20, and `y` is the only new float tap (an existing kernel output read by `Slice`s; G1's three float taps are unchanged). (3) Generic modules without game names: `groups` (pure MLX: `splitmix64` bit-equal to `phylo.splitmix64`, the cut compared as a uint64 array, hash-founded inherited labels, masked and exact limb bin counts with the limb width set by the lane count, grid codes, plane cells), `tracking` (host: `SystemTracker` with one-to-one greedy matching on overlap at Jaccard ≥ θ, an admission set for enter/leave hysteresis and events born/split/merged/dissolved with provenance, `grid_clusters`, `Dominance` with per-axis periodicity, `sticky_slots`, `deadband`). (4) Game layer: `game.social` (`SocState`, `SocialRules`, `SOCIAL_VERSION` 1, provisional, digest pinned) and `game.society`: houses (founded by `splitmix64(uid, run.seed) < rate·2^64`, inherited by parent row, immigrants found their own; equal to `nearest_root(marker_roots)` for a run from step 0; seeded from clades for mid-run starts, immigrant lineages as `HOUSE_UNKNOWN`; top 16 named), kin groups (65,536-bin tag grid, occupied bins at `max(2, n_ref >> 12)`, face adjacency with attachment, entering at `max(8, n_ref >> 9)` and leaving below `max(4, n_ref >> 10)`, `n_ref` with a 12.5% deadband, 16 sticky slots; within-group tag similarity `sim_self`, the chaining report; mean height and height bands in 3D), colonies (bond components from `metrics.components` with the rules' own rounds, entering at 4 and leaving below 3; uid matching with newborn credit up to 300-step spacing, footprint matching beyond), territory (32² floor grid, EMA k = 2, owner, purity, borders), relations per snapshot window (attacks, hits, kills, formed proposals, energy shared, bond-steps, a per-actor neighbour-exposure baseline, sampled tag similarity), temperament. (5) Labels: the Settler colony clause, behind `RuleSet.settler_body` (0, off, in `RULES_V1`; rules with a positive value need the body and raise without one); post-v1 fields at their inert value are left out of the digest, so `RULES_V1` keeps its G1 pin; through the first eight commits `INTENT_VERSION` stayed 1 and `RULES_V1` the default, and version 2 (the clause at `settler_body` 4 with the fixes of the labels that failed G1's validity study) came in the ninth, in one change, so that one version never names two rule sets (item 11). (6) Persistence: sidecar `OBSERVER_FORMAT` 2 with `soc.*`, `host.*` and new meta (no reports), checked format first and validated by `Society.from_arrays`; the social log `observers/social.jsonl` (`runio`: `SOCIAL_FILE`, `RunDir.append_social`, `RunDir.social_records`): one record per snapshot, appended and fsynced by the runner at the snapshot step before its row and checkpoint, read with the torn-last-line rule, cut by `truncate_after` to the records with step ≤ the resume step (always, a replay included; parsed whole before anything in the directory changes, a corrupt middle line or a record without an int step raising; then an atomic rewrite of the kept records, re-serialised as metrics rows are, which is byte-equal for the runner's lines, with a torn tail dropped), absent for a non-observing run and never copied into a fork; `Observer.sidecar()` refuses untaken records; for any stop step the resumed log equals the uninterrupted one byte for byte, and sidecars and row blocks equal it at the steps both runs have. (7) Rows: `observers.social`, the head of the last settled snapshot, joined to its record on `origin` and `snapshot_step` (≤ 0.5 KB, dumped in insertion order); the reports travel only in the log (≤ 16 KB a record; 13,255 B and 271 B at every cap on synthetic 64k-like values with every column at its widest: long-run ids, window counts of six to eight digits, the roster's columns; the earlier, narrower scenes gave 10,951 B and, before the roster, 7,494 B), so `metrics.jsonl` grows by about 14%. (8) Tools: `python -m alife.analysis.social` (with churn, and its records checked against the stored log), `bench --observe` gains `social` (heavy metrics included) and untimed snapshot compiles (`warm = max(warmup, 1, every, S + 1)`, whole snapshots per block). (9) Roster (the seventh commit, owner-delegated choice C7 of 2026-10-19, DESIGN §29.14): kin groups are named once at admission (the name of the dominant named top-16 house, else a name generated on `splitmix64(id, SocialRules.kin_name_salt)`, a house's name goes to one live group at a time, the next group of the same house gets a generated name, and a generated name that is held gets the group id appended; `host.kin.names` in the sidecar); each record lists the houses founded (id, step, parent house, from the new `SocState.house_from`) and extinct (id, step) since the last snapshot, capped at `events_max` of each with overflow counts (`host.houses` in the sidecar); each listed kin group carries `name`, `named_after`, the centroid `x`, `y`, the archetype mix `arch` (from the new `arch` input of `social.snapshot`, the observer's primary labels) and its window `births` and `deaths` by cause (the new device counts `SocState.births` and `deaths`, from the new channel field `Acts.death_cause`, looked up by id in the window's slot map); the study reports the members of houses seeded at its start against those founded since (`houses.founded_share`), the check of `game.house_rate`, which stays 1/2048. (10) Review fixes (the eighth commit; a review of the seven by engine, persistence and semantics lenses gave nine findings, all of which held and were applied). *Engine:* the structural taps test reads the eager graph and cannot see `mx.compile`'s merging of identical sub-expressions, so value-neutral channel mutants that pass it still split a fused float kernel of the compiled step; a compiled-kernel comparison with observe off and on was added (the kernels in the difference may contain only comparisons, selects, bit operations and casts; today three integer groups), with the four CSE mutants as its meta-tests, and the false sentence of §28.2 that the graph test pins the same property was corrected; a channel field that is itself an unlisted trajectory array, returned with no op, is now a tap (`Acts.<field>`; a fourth eager mutant). *Persistence:* `Society.from_arrays` and `Observer._load` no longer raise on a sidecar of well-typed members with malformed values (a name or house id above 2^63 − 1, JSON nested past the recursion limit in `meta`, `host.summary` and `host.kin.names`), so `alife resume` falls back to fresh observers with the note instead of exiting 1; `truncate_after` deletes the later checkpoints and sidecars and rewrites `LATEST` before it cuts the logs and the event chunks (every cut is idempotent), so a stop in the middle can no longer lose the records between a checkpoint and a later one (the window existed for `metrics.jsonl` and the event chunks before G2), tested by stopping the cut before each of its writes and deletes. *Semantics:* the record budget is now set from a test scene of the widest plausible values (long-run ids, window counts of six to eight digits, ten-letter names), 13,255 B, and is 16 KB, not 12 KB (the one-attack scene that gave 10,951 B was not the widest: a 64k_s0 window with long-run ids gives 12.5 KB); the byte size is still not enforced, the row caps bound it; a house's name goes to one live kin group at a time, the next group of the same house gets a generated name (a revision of the roster's rule that suffixed the held name, which gave all the groups of a clade, the case of every observer attached after step 0, one name and an id each for life); stale figures (§28.2, §28.6, §29.9, the bench step count of §29.12, HANDOVER) were corrected. Two departures from the plan: the budget number and the naming rule. `step.py` and the channel are unchanged, so the flag-off digests and the Metal state of the stage 7 `_acts` stand. (11) `INTENT_VERSION` 2 (the ninth commit, after a data study on dumps of the two G1 study windows; DESIGN §28.3, §28.4, §28.8): one change defines `RULES_V2` (the default, `RuleSet()`), sets `INTENT_VERSION = 2` and `observer.DEFAULT_RULES = RULES_V2` (which the bench and the labels tool read), bumps `OBSERVER_FORMAT` to 3 (`ObsState` gains `held`, `intent` is (N, 10): a G1- or G2-era sidecar is refused at `observer_format`, and the observers restart fresh) and pins both digests (`RULES_V2` `dc78f771…b4f7`; `RULES_V1` keeps `156ad496…c009`). G1's GPU validity study had failed Gatherer, Defending (the 0.6 coverage cap), Budding and Feeding in both worlds and Bonding, Signalling, Roaming and Caring in 3D. In version 2: Gatherer is a harvest level (`gatherer_level` (3, 4), the share `gatherer` off at (0, 1)); Defending needs a hit and a raised guard (`defend_hurt` 1, `defend` 192); Budding is an energy forecast (`bud_horizon` 10, `bud_cost` 24, two flow columns, `ObsIn.energy` and `brain_cost`, `BudIn`, `budding_forecast`) displayed outside the hold (`bud_overlay`, `ObsState.held`); Bonding is a formation rate (`bond_rate` 64, a FORMED column); Feeding is (3, 4) of `harvest_max` and Signalling 192; Caring precedes Defending and Feeding precedes Signalling (`intent_order`, `first_intent(match, order)`); Settler gains the colony clause at 4. `RULES_V1` names the four defaults it changes (`gatherer`, `defend`, `signal`, `feed`) and the eight post-v1 fields at their inert value (`_POST_V1_INERT`, left out of `digest()`), so it keeps its pin and evaluates as G1. `IntentCol` gains FORMED, FLOW_POS and FLOW_NEG (`N_INTENT_COLS` 10, accumulated under every rule set); `RuleSet.check` gains the three bounds (the largest `intent_k` at `e_max = 10^6` falls from 19 to 11, 12 naming `intent.flow_neg`) and the ratio `gatherer_level`; `evaluate(o, cfg, rs, *, body=None, oi=None)` requires `oi` when `bud_horizon > 0`. The flow is computed in int64 (`validate` bounds the cost coefficients only from below). Coordinator choices of 2026-10-19 under the owner's delegation (to revisit): the Budding overlay; the display names **Tethering** (Bonding) and **Unspecialised** (Generalist), one table `rules.ARCHETYPE_DISPLAY` / `INTENT_DISPLAY` (enums, keys and reports unchanged; nothing in the stream or the GUI reads names yet); the meanings of Gatherer, Defending and Budding (GAMES §4.4); the clause at 4. Evidence: the offline study (every label passes on the calibration windows under the rule, the first-match display and the replayed hold; thinnest displayed margins 3D Roaming +0.082, 3D Resting +0.101, 2D Hunting +0.102), an exactness check of the implementation on the dumps (§28.8: the MLX functions equal the offline predicates on all 629,577 and 837,059 intent rows and on all archetype rows), and the GPU validation on three held-out windows, **pending** (§28.8). The trajectory is untouched (observers read the channel and never write it; `Acts`, `step.py` and the flag-off digests unchanged). **As built, where it differs from the plan** (all in §29 unless said): `RuleSet` rejects an `intent_order` with non-`int` members, a bool included; the sign test of the flow on real steps allows the documented attack-charge gap for rows without the `ATTACKED` flag (`+ attack_cost`); the display tables are an addition (the plan named the labels only); the roster's `founded` rows are `(id, step, parent_house)` without a separate founder column, because the house id is its founder's uid; the death cause is a new int8 field of `Acts` read from the `dt_cause` array that was already a tap (the plan allowed a new integer tap, none was needed: `CHANNEL_TAPS` stays 20); `SocialRules.kin_name_salt` re-pinned `SOCIAL_V1.digest()` (`df6ba5e4…`, no record carries the old digest) and `OBSERVER_FORMAT` stays 2 because G2 has not shipped; the snapshot counts with `groups.masked_bincount` (masked lanes spread over a dump region) and not a masked `ops.scatter_add_i32`, which would pile the dead rows onto bin 0 (same values); `relabel` makes `uid`, `house` and `body` real ops so that no output aliases an input (tested compiled); `Society.from_arrays(arrays, cfg, sr, *, step=None)` takes the sidecar step, which its "≤ the step" checks need; `Observer._load` has two reasons that the plan did not name (a sidecar without `meta`, and a wrapper around a `from_arrays` failure); `Observer.labels()` and `host_labels()` settle a pending snapshot like every reader; `Dominance.current()` lets `Society.territory()` serve a restored state; `RuleSet` bounds `settler_body` to 2^31 − 1 (an int32 comparison); `append_social` accepts a numpy integer step, never a bool; the spies of the bench observe tests also see the social part's own fresh observer; the kin-group matching costs about 8 ms at 33k members with 5k credit pairs on the CPU against the 2 ms of the plan (to be timed on the GPU day). **Mutation checks:** 214 deliberate single-line breaks of the new code over the five code stages (6 of `_acts`, 64 of `groups` and `tracking`, 65 of `social` and `society`, 33 of `runio`, `runner`, `observer` and `rules`, 46 of `analysis.social` and `bench`) and 59 of the roster (16 of `social`, 35 of `society`, 2 of `_acts`, 2 of `observer`, 4 of `analysis.social`) were each caught by a test, except 17 that are equivalent changes or invisible on the CPU (a redundant mask, a never-read count, a tie key of a sort that is already ordered, a timing repetition count, the pending snapshot missing from `arrays()` whose buffer donation only matters on Metal; and, in the roster, a guard on the parent slot of a birth whose negative index lands in the dump region on the CPU, the events table computed and discarded at the initial snapshot, and a `max(members, 1)` behind an `if members`); every other survivor of a first pass got a test (the roster's tie rule and most-members rule of the names; one redundant lane check was removed). The review fixes were checked the same way: 26 single-line breaks of the stage 8 code and its tests (the naming guard and fallback, the id bounds and the recursion catches of the sidecar parse, each of the four log cuts moved ahead of the checkpoint deletion, `LATEST`, the sidecar and archive deletions, the channel-field check, the operation list and the signature of the compiled-kernel comparison, an evaluated export) were each caught except two that are equivalent (using only one side of the kernel difference: for every mutant both sides hold the inexact labels); an id-boundary break (`<` for `<=` at 2^63 − 1) survived a first pass and got a test, and a break that dropped the input labels from the kernel signature survived and showed that they were redundant (a kernel is changed by its own operations and outputs, not by its inputs), so they were removed from it. Unchanged: the compiled step with `observe` off, `State`, `StepOut`, the event columns, the RNG, every config hash, the goldens; for a non-observing run the file listing, checkpoint state digests, event chunks and stored rows (its `config.json` and checkpoints' `metadata.config` gain `game.house_rate` at its default, hash-neutral); with `observe` on the trajectory is bitwise the one with it off. Deferred: stream tags and colour modes, off-thread snapshots, Family, sharing the components with the heavy metrics (G3); copying the sidecar and the social log into a fork (G3/G4); the GPU validation of `INTENT_VERSION` 2 on held-out windows (item 11); relation narration and temperament validation (G4/G5); the calibration, the churn rate and the 64k costs (GPU). Edited tests: `test_game_acts.py` (15 items, was 9), `test_game_purity.py` (46, was 17: 20 taps, the third and fourth mutants and their value-neutrality test, the compiled-kernel comparison in three configurations with four CSE mutants, `snapshot_every = 15` in every arm, the log in the on-run's file list), `test_game_config.py` (21, was 15), `test_game_rules.py` (57, was 32: the digests, the post-v1 fields, the flow bounds term by term, Gatherer v2, the v2 edges, the forecast, the order, the overlay, the display names), `test_game_observe.py` (29, was 22: the FORMED and flow inputs, the int64 cost, the sign test on real steps in 2D and 3D, `held`), `test_game_sidecar.py` (104, was 45; the version-2 rule sets in the equality fold, a version-1 sidecar refused under version 2 and the reverse, a format-2 sidecar refused at `observer_format`), `test_runio.py` (26, was 16: the cut stopped before each write and delete), `test_bench.py` (26, was 12), `test_cli_smoke.py` (17, one test edited), `test_lint.py` (8, `groups` and `game.social` in `SIM_MODULES`), `test_analysis_labels.py` (45, one line: `test_step_outcomes` builds `Acts` through the new `blank_social_acts`; and a study with `RULES_V1` whose report carries the G1 pin), `tests/game_helpers.py` (the social drivers, `social_every`, `planted_state`, the numpy reference of the relation window; `blank_oi` with `energy` and `brain_cost`, `Driver` with the rules' inputs) and the three `tests/data/gui_config_*.json` fixtures (regenerated). New tests: `test_groups.py` (48), `test_tracking.py` (89, with a differential test of 40 random 14-snapshot sequences against a set-based reference), `test_game_social.py` (22), `test_game_society.py` (72), `test_game_roster.py` (15), `test_game_houses.py` (5), `test_game_social_log.py` (28: 27 fast and one `slow` resume from every checkpoint), `test_analysis_social.py` (28). Checks (verify stage, at the tree of the review-fix commit, all on the CPU device because the GPU was reserved by another job; the Swift build and tests ran at the docs commit before it, and no GUI file changed after): [ruff: `ruff check src tests` and `ruff format --check src tests` clean (150 files); fast suite (`test_lifecycle_compiles_and_matches_eager` deselected, the known Mac-CPU failure of I26): 2160 passed, 5 skipped, 26 deselected, 0 failed in 9 min 22 s on the CPU device (the 5 skips are environmental: the two goldens pinned on Linux x86-64, the real-LLM test, no ffmpeg, no pygame; G1 had 1737 passed); `tests/test_game_purity.py` in full, every arm, no `-m` filter: 46 passed in 19 s (all trajectory arms, the key test, the two runner-level tests, the director-log test, the three structural configurations with their meta-tests and the value-neutrality test, and the compiled-kernel comparison in the same three configurations with its mutants and their value-neutrality test; none is marked `slow`) (G1 had 17); the houses replay and the resume equality files `test_game_houses.py`, `test_game_sidecar.py`, `test_game_social_log.py` (with its `slow` test) and `test_runio.py`: 151 passed in 1 min 48 s; digest comparison: with a fresh baseline (`git archive origin/main src`, origin/main = 1ad339c, the squash merge of the G1 tree; the baseline run imported `alife` from the extracted tree) the 2D digest matrix (15 trajectory cases, 3 runner cases, config hashes, layout) run on this tree exits 0, "bit-identical", and its only INFO lines are 12 additions of `game.house_rate` (= 0.00048828125) to a run's `config.json` or to a checkpoint's metadata config; the tiny3d `state_digest` after 50 compiled float32 steps is `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd` on origin/main and on this tree; the social-log model (`protocol_model.py --runio`, which runs `runio`'s own `truncate_after`, run again after its reorder): 1,149 cases pass, `keep_director` false and true, both negative controls fail as expected, and against origin/main it fails after 116 cases (the first case with a record after its resume checkpoint); `swift build` in `gui/` complete and `swift test --filter AlifeCoreTests` 93 tests in 7 suites passed (`AlifeControlTests` not run: its GPU render tests would use Metal); version 2 (the ninth commit), same checks on the CPU: ruff clean (150 files); the game and analysis test files in full without a `-m` filter (rules, observe, sidecar, purity, labels, roster, social, society, acts, config, `analysis.social`): 450 passed in 2 min 24 s; the fast suite (`test_lifecycle_compiles_and_matches_eager` deselected): 2196 passed, 5 skipped, 26 deselected, 0 failed in 10 min 26 s (2160 at the review fixes); the resume and houses files (`test_game_houses.py`, `test_game_sidecar.py`, `test_game_social_log.py` with its `slow` test, `test_runio.py`): 159 passed in 2 min; the 2D digest matrix against the same origin/main baseline: exit 0, "bit-identical", its only INFO lines the 12 `game.house_rate` additions; the tiny3d `state_digest` `556de6c6…cf6d2fd`, equal to origin/main's; the social-log model, 1,149 cases; the exactness check of the calibration dumps (§28.8): MLX equals numpy on every row of both worlds, and equals the calibration's own replay except on the 4 and 8 (2D) and 11 and 9 (3D) rows it reported; a mutation pass of 53 single-line breaks of the new code in `rules`, `observe` and `observer` (47 caught at once; the 6 survivors, namely the `h >= 1` guard of the Gatherer level in a world without harvest, the attack-cost and attack-gain terms of the flow bounds, the warm gate of the overlay for a row old enough to bud but not warm, a bond to row 0 in the bond count and the order handed to the first match, got tests and were caught on the rerun); Metal: pending at that commit and done in (13) (the plan was that the coordinator runs `tests/test_game_purity.py`, which now also holds the compiled-kernel comparison and runs the version-2 observer, and `tests/test_groups.py` without a `-m` filter on the default device, `alife bench --preset 64k --observe --steps 600` (overhead against G1's), the five labels runs of §28.8, the calibration of §29.12 and the house-rate report of §29.14)]. (12) Review fixes of `INTENT_VERSION` 2 (the tenth commit; a review of the ninth, verdict approve with no must-fix, gave one low-medium, three low and one test finding that held, all applied; two informational notes needed no change beyond one sentence). *Docs:* the pass criterion of §28.8 is worded as it is everywhere else, provisional and fixed before the held-out reports are read (the owner has not confirmed it; the phrase "as confirmed" came from the plan), in DESIGN, HANDOVER and GAMES §10 item 12; the Bonding threshold `bond_rate` 64 is a formation-flag mean of 0.25 on the k = 3 EMA (a formation every 3 steps reads 74 to 97 and is always on, every 4 steps 52 to 77 and flickers across the threshold), not "one formation in 4 steps" (DESIGN, GAMES §4.4, `rules.py`); "mostly with the same neighbours" is a 3D measurement (RESULTS_3D §5.4, 94% of new bonds re-form a pair seen earlier in the window) and is said so, the 2D partners' identity being unmeasured; GAMES §10 item 11 no longer says that G1 built `INTENT_VERSION` 2; §28.5 says that `RULES_V1` evaluates as G1 but no longer validates a sweep with `intent_k` 12 to 19. *Tests (no source change):* the overlay test gains a row held at Resting (Budding is shown over it and Resting returns at once) and an age-gate case (`intent_warm` 8, rows of 15, 19 and 20 observed steps against `min_age` 20), the reference-fold test gains a forced-forecast rule set (`bud_horizon` 6000, period 4, hold 2, warm-up 8) and asserts that the overlay fired, and two resume cases (2D 30 + 30, 3D 37 + 23) run the forced rules and assert that label differs from held in the sidecars compared. The review's two mutants (the overlay skipped over a held Resting; `n_obs + 1` in the forecast's age) and a sidecar load that resets `held` to the label are each caught now (the first two passed all 186 tests before). Checks, on the CPU device at the tenth commit: ruff clean (150 files); the game and analysis files in full: 454 passed (450); the fast suite: 2200 passed, 5 skipped, 26 deselected, 0 failed (2196); the resume and houses files: 163 passed; the exactness check of the calibration dumps re-run, unchanged (0 differences in both worlds, the same 4 and 8, 11 and 9 rows against the offline replay); the 2D digest matrix against the same origin/main baseline: exit 0, bit-identical, its only INFO lines the 12 `game.house_rate` additions; the tiny3d `state_digest` `556de6c6…cf6d2fd`, equal to origin/main's; the social-log model, 1,149 cases. Metal: pending at that commit and done in (13). (13) GPU gate, benches, calibration and held-out validation (the eleventh commit; docs only, no source change; Metal, M5 Pro, MLX 0.32.3, Python 3.12.11, the tree of the tenth commit, GPU jobs one at a time, nothing written in any run directory). *Metal gate:* the twelve game and analysis files (purity, acts, groups, social, society, roster, rules, observe, sidecar, social log, labels, analysis.social) with `-m ""`: 509 passed, 0 failed, 202.7 s. *Benches (`alife bench --observe --steps 600`):* 64k 54.8 observed steps/s against 59.7 plain (G1 61.0), `overhead_ms_median` 1.38 (G1 0.48), snapshot hitch +9.4 ms; 64k3d 13.9 against 14.3, overhead 2.07, hitch +12.1 ms (measured before the fused kNN kernel, I48: with it `64k3d` runs at about 75 steps/s, so the same observer cost is about 15% of a step; a re-measurement on the GPU is pending); `trajectory_match` true in both; the 3D bench's `donation.ok = false` also appears in the plain run (not an observer effect, not investigated). *Social calibration (`analysis.social`, 2,500 steps, every 250 and 1000):* kin groups track (matched Jaccard p50 0.75 to 0.87, one dissolution in six runs); colonies churn 80 to 83% at 250 (21 to 26% of current components match a tracked one), and 22% (2D) and 31% (3D) in the 2-snapshot studies at 1000, which are not comparable; the `take_records()` settle costs 32 ms (2D) and 38 ms (3D) per snapshot on evolved states (0.13 and 0.16 ms a step amortised, the bench's 0.03 understates it); kin-group matching 5.0 and 7.5 ms against the plan's 2 ms; `houses.founded_share` 0.00068 (2D) and 0.00091 (3D) after 2,500 steps. No threshold was changed, `SOCIAL_VERSION` stays 1. *Labels v2:* step A on the calibration windows passes (the seven exact predicates bit-equal to the offline values, Budding, Bonding and Resting within 2e-4, Gatherer, Hunter, Provider, Trader and Nomad as expected, Settler prevalence in its band); step B: every archetype and every intent's displayed label passes the provisional criterion on all three held-out windows (`64k_s0`@1,500,000, `64k3d_s1`@450,000, `64k3d_s2`@450,000; 30 of 30 intent cells, 18 of 18 archetype cells; thinnest margins 3D Resting +0.112, 3D Roaming +0.124, 2D Settler +0.218), nothing re-tuned and no label marked as not validated; reported, not blocking: the 3D `64k3d_s1` Signalling predicate covers 0.674 (over 0.6; the displayed label covers 0.171 and passes); `flips_per_1000` of the intent rose to 7.05 and 7.07 (2D) and 9.2 to 9.6 (3D) against G1's 1.98 and 4.12. The held-out 2D window is the calibration run 4,000 steps later (41 stored rows verified), the criterion is still provisional for the owner (GAMES §10 item 12). Not run: the stream rate, the step rate with LLM calls in flight. |
+| I46 | feat: storms W0, the offline weather prototype (`docs/STORMS.md` §3.2 and §8 W0; owner decisions of 2026-10-19: model B, a two-hemisphere torus with `f(y) = f0·sin(2πy/L)`, a separate warm-pool map `T_s`, 160 × 160 cells of 2 units, Δt = 1 engine step), built as a standalone module with its study driver and tests, in three commits on `games/w0-storms` (the model, the driver, review fixes), and a fourth with the results. **No engine change.** (1) **What.** `weather.py`: two stacked shallow-water layers with moisture on a periodic C-grid, one step of nine sub-steps (semi-Lagrangian advection, flux-form continuity with a positivity limiter, a Strang-split Coriolis rotation around the forward-backward pressure kick, evaporation, condensation with the latent-heating mass transfer, radiative mass return, damping with a divergence damper and a speed tripwire, seeded disturbances), the agent-wind sampler (`sample_wind`, `wind_layers`, `alpha`; STORMS §4) and `WeatherParams` with the validation rules of the W0 spec §2.5; `analysis/w0.py` with `analysis/w0_plots.py`: the offline study driver (storm detection and tracking on the host, passive tracers on exactly the agents' wind, the occupancy binning of `spatial._find_neighbors_3d`, the six exit criteria of STORMS §8, the health gate, the cost measurement, the unforced-vortex table and the steerability experiments); `tests/test_weather.py` (113 tests, one strict xfail pinning an MLX duplicate-roll compile bug) and `tests/test_analysis_w0.py` (106 tests). `--params FILE` is a sparse override of `START_SET` (the base that the tuning rounds' files were written against; without a file the base is the defaults, and `WeatherParams.from_dict(d, base=None)` takes the base), and the report's detection-threshold deviation compares with `START_SET`. (2) **Nothing in the engine changes**: the step, `State`/`State3`, `config.py` (keys, defaults, `POST_V01_KEYS`, validation), the `rng.py` streams, the presets, the goldens and the digests are untouched, and nothing under `src/alife` imports `weather` except `analysis/w0.py`; no config hash, digest or trajectory moves. (3) **Docs and lint only.** `DESIGN.md` §16 (the `weather.py` entry, and `w0` and `w0_plots` under `analysis/`, whose description now also covers an offline MLX driver, still never imported by the step and scanned by the lint since I48 (§22.6)) and §22.6 (`weather` joins the rule-5 modules and the meta-test sentence); `tests/test_lint.py` adds `"weather"` to `SIM_MODULES` and a rule-5 bad example. (4) **Deviations from STORMS §3.2.** D3: `q_pool > 1` (default 1.11 since the W0 results, start set 1.10, range 1.0 to 1.2), so `Q_e > Q_s` over warm-pool cores; with `Q_e ≤ Q_s` no storm formed in seven probe runs, because a steady core with ε < 1 needs evaporation inside the saturated core. D7: a moist-thickness limiter on evaporation (`m = h₁ − γQ ≥ m_min`), without which broad warm areas ran away. Also the divergence damping `κ_d` in place of the probe's `ν`, an optional cubic semi-lagrangian step (a deviation from step 1 when used), and every rolled copy of an array built once per step (MLX 0.32.3 `mx.compile` crashes on duplicate rolls; W1 inherits the rule). Two smaller departures from the W0 spec: `courant_max`, `speed_max`, `hyper_max` and `n_safety` are evaluated on the winds entering the damping sub-step (the shifts friction builds anyway) and not on the final winds, and the 1.8x lifetime ratio of the unforced-vortex regression (spec test 6b) is tested on an f-plane (on the beta-plane it is 1.71 at N = 96 and 1.93 at N = 160, Rossby radiation shortens both lives), with the 1 200-step bound tested on the beta-plane at N = 64. (5) **Results** (`docs/STORMS_W0.md`, 2026-10-19). Tuned on the M5 Pro GPU in 41 distinct studies of 60,000 steps (round 0, four rounds of 8, the confirmation on keys 1 and 2; 46 study runs with the five round-0 threshold re-reads, which repeat the round-0 trajectories and are not counted against the budget), then the §9a steerability forks, the deliverables study and the cost bench. The confirmed set `r4_3p36_q111_v009` (params hash `7832e060`) is the start set with `gamma` 21.6, `q_pool` 1.11, 3 warm pools per hemisphere (32 × 16, 36 units from each equator) drifting west at 0.009 per step (D8, accepted as the mobility lever) and `zeta_th` 0.00625 (0.25 f0); it is now the `WeatherParams` default, and the spec's starting set stays as `weather.START_SET`, on which the model tests run. On both confirmation keys: 2 to 4 storms per hemisphere at every time; a median lifetime of named storms (peak ζ ≥ 0.5 f0: coordinator ruling C11 under the owner's delegation, to be revisited with the owner; storms are named with hindsight, and named in real time the lifetime passes at 22,125 and 14,175 but the named count falls below 2 at 1.4% to 11.9% of times) of 23,375 and 19,550 steps (as written 16,550 and 14,100, but 100 on the tuning key, where shed fragments of 3 to 5 detections decide it); a 1,000-step forecast error of 0.63 radii (0.626 on key 2), above the jitter floor (0.11) with skill +0.50 and +0.48 over persistence (a forecaster that knows the pool drift errs by only 0.33 radii, below the 0.5 lower bound, so the pass belongs to the least-squares method of the spec and W3 and W4 must add uncertainty to storm motion); tracer peaks of at most 30 against C = 48; latitudes reported; a clean health gate, the `m` limiter never engaged. **The cost fails**: with the pool drift of the confirmed set (B) + (C) = 1.163 ms against 1.0 ms ((B) 0.807, (C) 0.356; 1.131 ms in one graph; single runs), and 1.116 ms with the static pool map of the CLI bench (median of 3), dispatch-bound, so W0 does not pass as written; a cost-only failure is an engineering issue, not a trigger for the model-A fallback. The storms are anchored to their warm pools and move with them; a pool shift or gain steers them within 175 to 1,500 steps, a wind impulse barely does. W1 has not started. |
 | I47 | feat: storms W1, the engine weather layer (`docs/STORMS.md` §3.3, §4, §8 W1; owner decisions of 2026-10-19 and the coordinator's choices C15 and C17, marked "to revisit"; new §30), off by default; built in six commits on `games/w1-weather` from `games/w0-storms` at 4337484, then merged with `origin/main` b905e34 (#28 and #29): ce4f3d6 (config, state, digests, RNG, the overlay, validation), 868dc2e (wind and the update), 1c8da1c (rain, hazard, counters, bonds), 8fbb15e (reporting, cost tool, spin-up), the docs commit and the review fixes. **Metal gate passed, GPU marginal about 0.5 ms (0.47 to 0.64 ms over five runs; target 1.0), occupancy go/no-go: no-go on `C` = 64 (peak 18 of 43; results in (4b)).** W1 is merge-ready on the §30.11 criteria; the merge is the owner's go. (1) **What.** Config: section `weather` with 33 keys, every key hashed (`POST_V01_KEYS`), inert at the defaults, with rule W-0 (a non-default weather key while the weather is off is rejected), and `weather.validate_config` (guards, W0's parameter rules, W-1 cells a multiple of `FG`, W-2 pool centres in the domain, the load rules R1 to R4, the coupling keys, the int32 bound of `rain_gain`, and, coordinator choice C17, `director.enabled` implies `rain_floor == 0`); the world overlay `storm` (`config.WORLD_OVERLAYS`, `ALL_OVERLAYS`; `OVERLAYS` stays `("fast",)`; provisional `rain_gain` 50000, `storm_p` 0.002, `storm_u0` 0.06, `storm_span` 0.03); no preset changes. State: one packed field `wx` `(9, cells, cells)` float32 in `State` and `State3`, stored as the rest state and carried unchanged with the weather off, `Dims.wn`, the pre-weather fill in `state_from_arrays` (`weather.rest_array(cfg, step)`), `FORMAT_VERSION` unchanged. RNG: `Stream.WEATHER = 9`, `RNG_LAYOUT_VERSION` 3, compatible {1, 2, 3}. Step (all behind the static `weather.enabled`): S3w unpacks `wx` once and samples the wind at the start-of-step positions (`weather.agent_wind`; 3D with the surface-layer profile and `alpha0 + alpha1·buoy_cap`, 2D layer 1 and `alpha0`); S15 adds the wind as a drag force (`forces`/`forces3` `wind=`, not contact-attenuated, `integrate` unchanged); S17 advances the weather (`weather.advance`, the pools of step `t`) and feeds the rain (`RainIn`, `rain_regen`: an int32 term on the cloud band `[zi, zi + dc]` with P-weighted block means, added after the floor, not scaled by the director lever, booked in `INJECT_REGEN`, so no ledger term); S14 the hazard (`lifecycle.storm_mask`, `DeathCause.STORM = 4`, excess deaths only, below the catastrophe); S9 the explicit bond break above `storm_break_u`; `DEATHS_STORM` is the last counter (`n_counters(nd, weather)`, 28 and 31 wide; every consumer takes the flag); `Diag.WEATHER_WARN = 1 << 18`, advisory, outside `ERROR_MASK`. `K_est` and the floor `K` include the stored rain (`metrics.rain_of`). Reporting: the `weather` block of a metrics row (`weather_obs.py`, with `spatial.hash_occupancy` and `overlap_deep`), `invariants._check_weather`, `alife bench --weather` and the `wind` and `weather` staged rows, and, under C17, `alife run --weather-spinup N` (`weather_spinup.py`: the weather alone for `N` steps on a separate key chain, ending in the pools of the start step; fresh runs and forks). (2) **Digest evidence.** The 2D digest matrix plus the 3D cases (tiny3d f32, director inert and levers, `game.observe` with sidecar bytes, eager and staged arms, six runner cases), run on the CPU against a fresh `git archive` of 4337484 at stage 1 and at stage 5: both runs exit 0, "bit-identical", 0 DIFF and 0 WARNING over 22 trajectory and 6 runner cases (116 INFO lines, all of the kinds named next). `tiny3d`, 50 compiled float32 steps: `legacy_state_digest_3d` at head and `state_digest` at 4337484 are both `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd`; `GOLDEN` and `GOLDEN_3D` are not re-pinned. All 12 preset and preset-plus-`fast` config hashes and the pinned hashes of §28.1 are unchanged. The only INFO differences are the `weather` table of `config.json` and checkpoint metadata, `Dims.wn`, `rng_layout_version` 3, the `wx` tensor, and the head-only hash of `64k3d` + `storm`. (3) **Tests.** 254 new tests in seven files (`test_weather_config.py` 82, `test_weather_state.py` 28, `test_weather_wind.py` 22, `test_weather_engine.py` 30, `test_weather_coupling.py` 38, `test_weather_obs.py` 37, `test_weather_spinup.py` 17; two are `slow`; 228 at stage 5, 26 added by the review fixes), with `tests/weather_helpers.py`; edited: `test_weather.py` (one import check: `weather.py` imports only `ops` at run time), `test_state.py`, `test_cli_smoke.py`, the rng and director_env pins, `make_scene`, the three `tests/data/gui_config_*.json` fixtures (regenerated: the `weather` table only), and `PresetFileTests.swift` (the `storm` file). Mutation checks: dropping the staged storm mask, wind force or rain term fails the staged-equals-fused test. Fast suite (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected, the known Mac-CPU failure of I26): 2207 passed, 6 skipped, 27 deselected, 1 xfailed in 9 min 52 s (2132 at stage 3, 2181 at stages 4 and 5, 2207 at stage 6; the 6 skips are environmental: the two goldens pinned on Linux x86-64, the real-LLM test, no ffmpeg, no pygame, no matplotlib); `ruff check` and `ruff format --check` clean (152 files). `swift test --filter AlifeCoreTests`: 93 passed (`AlifeControlTests` needs Metal and was not run). (4) **Cost** (CPU, smoke size: `64k3d` + `storm`, 1,024 rows, `L` = 320, 160-cell weather): `alife bench --weather --weather-pairs 3` gives 31.98 ms off and 38.74 ms on, a marginal **+6.75 ms median** (+6.99 mean; pairs 6.60, 6.71, 7.01); the weather alone runs at 5.2 ms per step, so a 15,000-step spin-up takes about 80 s. These are CPU figures at a size that says nothing about the GPU: the target (at most 1.0 ms on the M5 Pro; 1.0 to 1.25 ms reported for a ruling; W0 measured 1.131 ms in one graph) is the coordinator's. (4b) **GPU results** (M5 Pro, Metal, MLX 0.32.3, 2026-10-21, W1 at 80b50d0, the merge of b905e34; §30.8, §30.9, §30.11). *Metal gate:* `pytest -m ""` on the default device over the weather, `test_analysis_w0`, `test_spatial_metal`, `test_lint`, step, physics, lifecycle, fields, metrics and bench tests: 797 passed, 2 skipped (the CPU-recorded tiny3d digest, no `matplotlib`), 1 xfailed (the MLX duplicate-roll compile bug, still there in 0.32.3), 0 failed, 350.7 s; the fused weather-on step compiles on Metal, so the separate-advance fallback stays unbuilt; the base-versus-head digest matrix as a script on the GPU: bit-identical, 0 DIFF, the same 116 INFO lines as on the CPU (its pytest forms also passed there); the whole fast suite on Metal (`-m "not slow"`, the I26 failure deselected): 2 298 passed, 0 failed. *Cost* (`64k3d` + `storm`, fused kNN kernel on, `bench --weather` interleaved pairs): marginal median 0.501 ms (50-step blocks) and 0.467 ms (300-step blocks), 3.4 to 3.6% of the 13.8 ms weather-off step (3.3 to 3.5% of the on step), 14.25 to 14.32 ms on (69.6 steps/s); three further runs gave 0.641, 0.524 and 0.535 ms, so about 0.5 ms (0.47 to 0.64 ms over five runs, single pairs up to 1.1 ms): the 1.0 ms target is met, with about half the budget for the median; the unpaired `--stages` fused delta of 1.02 ms is noise-affected and not the measure; staged rows wind 0.86 ms and weather 1.18 ms (inflated by syncs). *Occupancy go/no-go:* a fork of `64k3d_s0` at 450 000 with the `storm` overlay and a 15 000-step weather spin-up, 20 000 coupled steps at 68.6 steps/s: `max_occupancy` 18 (trigger 43; the weather-off continuation reads 17), `cell_overflow` 0, `CELL_OVERFLOW_WARN` never fired, `diag` 0 in all 200 rows, ledger closed in all rows, `hyper_max` at most 0.033, `mass_rel` at most 5.2e-7, `storm_proxy` 5 to 7, `deaths_storm` 144 (0.016% of the 883 002 deaths, nearly inert as a cause of death at the provisional values; the population followed the weather-off source within 0.1% at 470 000, but `speed_mean` was 5% higher). **Decision: no-go; `cell_capacity` stays 48.** Caveats: 20 000 coupled steps instead of 30 000, and a spread starting population. No code or parameter changed.
 (5) **Choices made under the owner's delegation, to revisit** (D1 to D16 of the W1 spec, C17): D1 a nested 33-key section rather than a params file; D2 the numerics, sizes and detection fixed in `ENGINE_FIXED`; D3 one world overlay `storm`, no preset; D4 one packed field `wx`; D5 `wx` stored unconditionally (a conditional field was reviewed and rejected: four state types, and a class switch on a fork); D6 the 2D wind is layer 1 with `alpha0` only; D7 the rain band is the cloud `[zi, zi + dc]`, not "the layers that span the interface" (a deviation from STORMS §4, recorded there); D8 hazard = a ramp of the air speed, one uniform per row every step; D9 the wind break is an explicit speed threshold; D10 `WEATHER_WARN` as one sticky advisory bit; D11 the `weather` block's storm count is a proxy of candidate storms; D12 the provisional overlay values (numerically inert hazard, a local rain source and 0.09% global perturbation, and the layer-2 jet of about 0.05 as the dominant always-on coupling, F8); D13 `WORLD_OVERLAYS`; D14 the `rain_gain` bound is the int32 derivation; D15 `zi` and `dc` are P-weighted block means; D16 `storm_break_u` is 0 or `>= storm_u0`; C17 the weather-only spin-up and the `director.enabled -> rain_floor == 0` rule. (6) **As built, where it differs from the spec.** `sample_wind_h` returns an `AgentWind` (`u` of shape `(M, 2)`) and has no `fields=`; `device_check` receives its `weather_bad` keyword only with the weather on (a test spies on the old call); the compiled-versus-eager test runs each of 50 steps through both from the same state (counters, ledger and integers exact, floats `allclose`, `wx` bitwise), because 2D `tiny` already diverges between them at step 26 with the weather off (§14.2), and the 200-step smoke test asserts `wx` bitwise rather than the state digest; the compile-based tests are fast, not slow; `config.py` imports `alife.weather` at module level (acyclic, tested); `check_world` is kept and called from `validate_config`; `bench._stage_fns` and `--weather-pairs` (default 2, the spec gave both two and three pairs) were added; `weather_spinup.py` is a host module (`weather.py` is under the rule that bans `mx.eval`), its flag is on `alife run` (there is no `fork` command), and a fork whose source has the weather on is refused (its `wx` is not a rest state); `overlap_deep` is a compiled closure cached per config hash and `run.compile`; `weather_obs` also defines `layer1_vorticity` and `storm_exposure`; `analysis/w0.py` keeps `label_periodic`, `centre_winds`, `corners_to_centres`, `hemisphere_sign`, `occupancy_counts` and `band_peaks` as aliases. The G2 items (`DEATH_CAUSES` as a literal plus `death_causes(cfg)`, the social tests, `compare_row(weather=)` in `analysis/social.py`, regenerating G2's GUI fixtures) are not in this branch and are listed for whichever of G2 and W1 merges second (§30.7). One pre-existing failure: the slow `test_compiled_vs_eager_trajectories` fails on this Mac CPU at 4337484 and at head. (6b) **Review fixes (stage 6).** A weather-off file now forks into a weather-on config of any `weather.cells` (`load_checkpoint` refills `wx` from `rest_array(cfg, step)` when the file's own config had the weather off, §30.3); the overlap-closure cache is keyed by `run.compile` as well; the legacy-3D-digest test no longer equates the digest with `State3._fields` minus `wx` (G4 extends the tuple); 26 tests close the gaps found by mutation (the 2D wind clip, dead rows in the clip count and `clip_bad`, the vertical-only clip, the closed-form drift through `make_step` at `drag` 1 and 2, the snapshot's alive selection and band peaks, the hazard key, the bond break in every slot, `rain_in`'s `zi`, NaN before the rain cast, R4 at `drag` != 1, the hazard and bond-break branches in the compiled-versus-eager test); four doc inaccuracies (STORMS §4, the spin-up key statement, `vitals.py`, the `rain_gain` bound) corrected. Not changed: `meta.json` keeps the creation `rng_layout_version` on a resume (§18). (7) **Not done (the merge with b905e34, the GPU gate, the digest matrix on the GPU, and the cost and occupancy runs are done, (4b)):** a 30 000-step occupancy run from a young population, and W2's calibration, controls (still air, a jet-removed or tracer arm) and seeding. |
 | I48 | perf: the fused Metal neighbour search (§23.2 item 1; §4 "Fused Metal path", §27.2, §27.13, new F21; owner delegation of 2026-10-19, coordinator decisions C16): on a Metal GPU the scan, the strict `R²` mask, the K-best selection and the K-gather of `find_neighbors` run as one `mx.fast.metal_kernel` (`src/alife/knn_metal.py`, new; one thread per sorted rank, no atomic: it writes only row `order[r]`, a permutation), with the pure-MLX code unchanged as the reference, the CPU path and the fallback. **A pure performance change: no config key, no `POST_V01_KEYS` entry, no hash, no `FORMAT_VERSION` or RNG change, no golden or digest change, and existing runs resume onto it.** (1) **Selection** (`spatial.knn_impl(cfg, impl=None)`, static, decided when the step is traced; `find_neighbors` gains the keyword `impl`): `ALIFE_KNN` = `auto` (default), `mlx` or `metal`. `auto` takes the kernel in a **3D** world on Metal with the GPU as default device and `K ≤ 64`, and the MLX path otherwise, **2D included** (the 2D kernel is bitwise equal too and 1.5× faster; making it the 2D default is the owner's later call); `mlx` forces the reference; `metal` raises where the kernel cannot run. An environment variable and not a config key, because the numbers do not depend on it. (2) **Guards** (the review's F2 and F3, mandatory here): `knn_metal.VERIFIED_MLX = {"0.32.3"}` (`available()` is false on another MLX until the GPU tests have been re-run on it); `knn_metal.self_check()` run once per process and dimension by `spatial.prepare_knn` from the CLI entry points (`run`, fork, `resume`, `bench`, `render`, `view`, `stream`, `resim`, `labels`, `signals`) before `make_step`: both searches on a 2 048-agent scene with stacked lattices, scattered agents, overfull cells and NaN dead rows, compared bitwise; a mismatch or a kernel that does not build warns (`RuntimeWarning`) and turns the kernel off for the process (`ALIFE_KNN=metal` then raises); `K > 64` runs the MLX path under `auto` and raises under `metal` (above it the kernel loses to the MLX path); `meta.json` records `knn_impl` (new key: at `RunDir.create` and at every launch, so a resume says what it used), the `bench` environment block records it, and `scan_select` raises `ValueError` (not `assert`: `python -O` removes asserts) on a non-`bool` alive mask, non-float32 `spos`, any wrong shape or dtype of `spos`, `start`, `order`, `cxy`, `cz` and `alive`, `K` outside [1, 64], and `n·K·nd ≥ 2³¹` (the kernel indexes with int32). Where Metal is there and the GPU is the default device but the MLX is not in `VERIFIED_MLX`, `prepare_knn` warns once per process (`RuntimeWarning`) that `auto` runs the MLX search, about 5 times slower in 3D. The self-check scene also holds pairs at, just inside and just outside `R` along every axis and finite dead rows; it is a canary for environment drift (sort, contraction, `sqrt`, tie order), not a full check, and a library caller should call `prepare_knn` itself. (3) **Lint rule 6** (`test_lint.py`, §22.6): `metal_kernel` only in `knn_metal`; `knn_metal` joins the simulation modules (rules 2 and 5), with its host-side `self_check` on the rule-5 allow-list; a meta-test snippet for each form of the name. (4) **Why it is bitwise equal** (F21): on Metal `argpartition` is a stable merge sort, so equal distances keep the candidate order `q = t·C + j` and the kernel's strict-`<` insertion in increasing `q` reproduces it; MLX's compiled kernels do not contract `a*b + c` and the kernel is written one operation per statement under `fp contract(off)`; the minimum image `d − L·rint(d/L)` equals `ops.min_image` on every float32 in (−L, L) (five L); the mask is `d² < float32(R·R)` and the root is `metal::precise::sqrt`. The CPU `argpartition` is not stable and keeps the MLX path. (5) **Evidence** (M5 Pro, MLX 0.32.3, 2026-10-19 to 20; negative controls: each of a `<=` insertion, a `<=` mask, a one-expression `d²`, plain `sqrt`, `metal::round`, a reversed stencil, the self slot kept and no first-`C` bound fails 5 to 52 of the new tests): `tests/test_spatial_metal.py`, 100 tests (84 need the GPU and are skipped on the Linux CI): 53 crafted scenes, each asserting its tie, boundary, `R` or overflow case, and 4 full-size scenes; 30 random geometries (400 more under `slow`); out-of-contract inputs; 20 repeated calls byte-identical; the stability of Metal's `argpartition`; the exhaustive minimum image; **inside the compiled step** (F4 of the review): the real `step.step` with both searches computed on its own S2 inputs and compared on every field every step, on a lattice start where ties occur in the real step, 60 steps on `tiny3d` (fed either path) and `tiny`, with a kernel-only step in lockstep (`state_digest` every 10 steps, counters and ledger every step); `ALIFE_KNN=metal` against `mlx` for `tiny`, `tiny3d` and `micro3d` and for `64k3d` from `init_state` (200 steps, `slow`); the guards. The probe's 2 500 random geometries (515 580 rows tied at the K boundary, 780 130 tied inside K), the five real checkpoints and 2 000 + 1 000 + 300 compiled steps (`64k3d`, `64k`, `tiny3d`) were equal as well, and the review found no counterexample in 169 adversarial scenes and 400 + 800 more random geometries (these probe and review figures are not reproducible from the repo: `docs/bench/README.md`). The review also found, by mutation, what the first suite could not see, and the review-fix commit adds a test for each: a constant `float32(R)·float32(R)` instead of the once-rounded `float32(R·R)` (half of the 3-decimal radii differ by an ulp), `metal::round` or `ax·(1/L)` in y only, and `math_mode: fast` (equal on every validated scene, different from MLX at exactly L/2 with `R > L/2`); each of these three mutants now fails 4 or 5 of the non-`slow` tests (0 before). Also found: MLX 0.32.3's compile cache can serve a compiled function another one's fused kernel when their scalar constants print alike when concatenated (F21 item 6), which made one random geometry fail only after a crafted `L = 12, R = 6.5` scene had run; the tests now compare the compiled kernel with the compiled MLX search. On this tree: `runs/64k3d_s0` step 450 000, 2 000 steps, 21 `state_digest` checks, the per-step counters and ledgers, births and deaths all equal with the kernel and without; the same for `runs/64k_s0` step 1 500 000, 1 000 steps, 11 checks. (6) **Speed** (§27.13, `docs/bench/2026-10-20_*`): `64k3d` (C = 48) 14.8 → 75.1 steps/s (67.4 → 13.3 ms, 5.07×; the same 13.3 ms at C = 32 and 24), staged search 54.5 → 0.42 ms, peak 3.31 → 1.07 GB, the donation check informative and `ok`; 2D `64k` 61.3 → 93.0 steps/s with `ALIFE_KNN=metal`. (7) **Limits**: the identity is a measured property of MLX 0.32.3's sort and code generation and of this chip's Metal compiler, not an API guarantee (hence the version set and the self-check, and the GPU tests on every MLX bump and macOS major); other Apple GPUs untested; `fast` math mode produced no mismatch on any validated scene, and differs from MLX only at exactly L/2 with `R > L/2` (unvalidated geometry), so `math_mode: safe` is cheap insurance, pinned by a test; ties are exercised on constructed scenes (real checkpoints have none). Edited tests: `test_runio.py::test_create_open_and_meta` (the meta key set gains `knn_impl`), `test_lint.py` (rule 6, the scope). Checks (`test_lifecycle_compiles_and_matches_eager`, the known Mac failure of I26, deselected in every fast suite). After the review fixes (commit "perf: fused kNN review fixes"): `ruff check` and `ruff format --check` clean (139 files); `tests/test_spatial_metal.py` and `tests/test_lint.py` in full (`-m ""`, the `slow` random geometries included) on the Metal GPU: 109 passed in 63 s, none skipped; the whole fast suite on the Metal GPU with the kernel selected for 3D (`auto`): 1 829 passed, 7 skipped, 32 deselected, 0 failed, in 3 min 42 s; on the CPU device the files this change touches (`test_spatial_metal`, `test_lint`, `test_runio`, `test_dims_runio`, `test_spatial`, `test_spatial_3d`, `test_bench`, the CLI smoke tests): 152 passed, 77 skipped (the GPU-only tests), 0 failed. From the first commit, not re-run after the fixes (which change no traced code: only the argument checks, a warning and tests): the whole fast suite on the CPU device, 1 752 passed, 69 skipped, 32 deselected, 0 failed, in 7 min 51 s; the same with `ALIFE_KNN=metal` (the kernel in 2D too): 1 809 passed, 5 failed, all five in `test_stream.py`, whose child processes set the CPU as default device, where `ALIFE_KNN=metal` is refused by design; 2D digest matrix (15 trajectory cases, 3 runner cases, config hashes, layout) on the CPU against a fresh `git archive` of 1ad339c: bit-identical, the only INFO lines being the added `knn_impl` of each `meta.json` (`digest_compare.py` as the G1 notes use it, with `runs.*.meta` in its subset-only list); the tiny3d `state_digest` after 50 compiled float32 steps on the CPU is `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd` on 1ad339c and on this tree. |

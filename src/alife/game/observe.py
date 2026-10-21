@@ -85,6 +85,8 @@ class ObsIn(NamedTuple):
     last_harvest: mx.array  # (N,) int32
     last_inflow: mx.array  # (N,) int32
     last_loss: mx.array  # (N,) int32
+    energy: mx.array  # (N,) int32: post-step energy (the Budding forecast)
+    brain_cost: mx.array  # (N,) int32: the L1 term of the basal cost, set at birth (the Budding forecast)
 
 
 def obs_in(s: State | State3) -> ObsIn:
@@ -97,16 +99,18 @@ class ObsState(NamedTuple):
     n_obs: mx.array  # (N,) int32: steps observed since the occupant appeared, saturating at OBS_CAP
     arch: mx.array  # (N, 5+2nd) int32 accumulators (ArchCol)
     arch_slot: mx.array  # (N, B, 2) int32 accumulators: [..., 0] share out, [..., 1] share got, per slot
-    intent: mx.array  # (N, 7) int32 accumulators (IntentCol)
+    intent: mx.array  # (N, 10) int32 accumulators (IntentCol)
     since_bud: mx.array  # (N,) int32: steps since the last bud (OBS_CAP = never)
     slot_uid: mx.array  # (N, B) int64: partner uid per slot at the last update (-1 empty)
     slot_age: mx.array  # (N, B) int32: steps the slot's bond has been seen (OBS_CAP = predates observation)
     slot_kin: mx.array  # (N, B) bool: the slot's partner is this row's parent or child
     label_arch: mx.array  # (N, 2) int32: primary, secondary Archetype (NONE = 0)
     match_arch: mx.array  # (N,) int32: rule bits (bit a−1 = Archetype a) at the last eval
-    label_intent: mx.array  # (N,) int32: displayed Intent (hysteresis)
+    # (N,) int32: displayed Intent (the held intent; BUDDING where the overlay shows it)
+    label_intent: mx.array
+    held: mx.array  # (N,) int32: the hysteresis label (= label_intent except where the Budding overlay shows)
     match_intent: mx.array  # (N,) int32: predicate bits (bit i−1 = Intent i) | EVAL_BIT at the last eval
-    cand: mx.array  # (N,) int32: candidate intent
+    cand: mx.array  # (N,) int32: candidate intent (of ``held``)
     cand_n: mx.array  # (N,) int32: consecutive evaluations the candidate has held
 
 
@@ -140,11 +144,20 @@ def _slots(oi: ObsIn) -> tuple[mx.array, mx.array]:
 def quantise_inputs(
     oi: ObsIn, a: Acts, slot_kin_prev: mx.array, cfg: Config
 ) -> tuple[mx.array, mx.array, mx.array]:
-    """This step's non-negative accumulator inputs ``(x6 (N,5+2nd), xs (N,B,2), x3 (N,7))`` in int32.
+    """This step's non-negative accumulator inputs ``(x6 (N,5+2nd), xs (N,B,2), x3 (N,10))`` in int32.
 
     Velocity is in units of u/256, clipped to ±VQ_MAX; each component is split into its positive and negative
     parts, each with its own accumulator, so the mean component is ``m⁺ − m⁻`` and no negative number is ever
     shifted. Flags enter as 256 per set step; ``emit`` is in deposit quanta (Σ_c floor(256·emit_c)).
+
+    The last two intent columns are the halves of the step's visible net energy flow, the Budding
+    forecast's input: gains (harvest, attack gain, Σ got) less losses (Σ out, the hit's ``last_loss``, and
+    the four action costs that the channel quantises: move, defend, emit and attack, each as the floor of its
+    coefficient times the quantised action). The step charges more (turn, grip, contract, message and harvest
+    effort, pitch and buoyancy), which ``RuleSet.bud_cost`` stands for. ``ATTACKED`` stands for the attack
+    charge. The flow is int64, because ``validate`` bounds the cost coefficients only from below
+    (``move_cost·q²`` with ``q <= 256`` overflows int32 from ``move_cost = 2^15``); each half is at most its
+    ``RuleSet.check`` bound, so the cast back is safe.
     """
     scale = 256.0 / speed_unit(cfg)
     vq = mx.clip(mx.round(oi.vel * scale), -VQ_MAX, VQ_MAX).astype(_I32)
@@ -160,6 +173,22 @@ def quantise_inputs(
     )
     xs = mx.stack([a.share_out, a.share_got], axis=2)
     f = a.flags.astype(_I32)
+    ec = cfg.energy
+    q = a.thrust.astype(_I64)  # round(256·thrust) after the solvency mask, signed
+    cost = (  # the visible action costs of the step, as quantised floors (shifts parenthesised)
+        ((ec.move_cost * q * q) >> 16)
+        + ((ec.defend_cost * a.defend.astype(_I64)) >> 8)
+        + ((ec.emit_cost * a.emit.astype(_I64)) >> 8)
+        + mx.where((f & ActFlag.ATTACKED.value) != 0, ec.attack_cost, 0).astype(_I64)
+    )
+    flow = (
+        oi.last_harvest.astype(_I64)
+        + a.attack_gain.astype(_I64)
+        + oi.last_inflow.astype(_I64)
+        - a.share_out.astype(_I64).sum(axis=1)
+        - oi.last_loss.astype(_I64)
+        - cost
+    )
     x3 = mx.stack(
         [
             mx.where((f & ActFlag.ATTACKED.value) != 0, 256, 0),
@@ -169,6 +198,9 @@ def quantise_inputs(
             a.emit.astype(_I32),
             oi.last_harvest,
             care_out(slot_kin_prev, a.share_out),
+            mx.where((f & ActFlag.FORMED.value) != 0, 256, 0),
+            mx.maximum(flow, 0).astype(_I32),
+            mx.maximum(-flow, 0).astype(_I32),
         ],
         axis=1,
     )
@@ -195,6 +227,7 @@ def init_obs(oi: ObsIn, cfg: Config) -> ObsState:
         label_arch=mx.zeros((n, 2), dtype=_I32),
         match_arch=zero,
         label_intent=zero,
+        held=zero,
         match_intent=zero,
         cand=zero,
         cand_n=zero,
@@ -223,42 +256,71 @@ def update(o: ObsState, oi: ObsIn, a: Acts, cfg: Config, rs: RuleSet) -> ObsStat
         label_arch=mx.where(k1, o.label_arch, 0),  # a reset row is unlabelled at once
         match_arch=mx.where(keep, o.match_arch, 0),
         label_intent=mx.where(keep, o.label_intent, 0),
+        held=mx.where(keep, o.held, 0),
         match_intent=mx.where(keep, o.match_intent, 0),
         cand=mx.where(keep, o.cand, 0),
         cand_n=mx.where(keep, o.cand_n, 0),
     )
 
 
-def evaluate(o: ObsState, cfg: Config, rs: RuleSet) -> ObsState:
+def evaluate(
+    o: ObsState, cfg: Config, rs: RuleSet, *, body: mx.array | None = None, oi: ObsIn | None = None
+) -> ObsState:
     """Evaluate the labels from the windowed means (run at ``state.step % rs.every == 0``, on the step clock).
 
+    ``body`` (N,) int32 is each row's bond-component size at the last social snapshot, read only by rule sets
+    with ``rs.settler_body > 0`` (the Settler colony clause, which raises without it). ``oi`` is the
+    post-step ``ObsIn`` of the evaluation step, read only by rule sets with ``rs.bud_horizon > 0`` (the
+    Budding forecast reads the energy, the brain cost and the bond count, which are not accumulated;
+    ``ValueError`` without it). A rule set is never silently evaluated without its inputs.
+
     A row is labelled once observed ``rs.arch_warm`` (archetypes) or ``rs.intent_warm`` (intents) steps. The
-    archetype label is the rule outcome; the displayed intent goes through the hysteresis. ``match_arch`` and
-    ``match_intent`` hold the per-rule bits (the Generalist and Resting bits stand for "no rule matched"), and
-    ``match_intent`` also carries ``EVAL_BIT`` on every evaluated row (the denominator of the coverage).
+    archetype label is the rule outcome; the intent goes through the hysteresis into ``held``, and the
+    displayed ``label_intent`` is ``held``, except that under ``rs.bud_overlay`` Budding is displayed at every
+    evaluation where its predicate holds, over the held intent, and never enters the hysteresis (``cand`` and
+    ``cand_n`` are then the state of ``held``, counted over the other eight predicates). ``match_arch`` and
+    ``match_intent`` hold the per-rule bits (the Generalist and Resting bits stand for "no rule matched",
+    Budding included), and ``match_intent`` also carries ``EVAL_BIT`` on every evaluated row (the denominator
+    of the coverage).
     """
     m6 = o.arch >> rs.arch_k
     m6s = o.arch_slot >> rs.arch_k
     m3 = o.intent >> rs.intent_k
 
-    ma = rules.archetype_matches(m6, m6s, cfg, rs)
+    ma = rules.archetype_matches(m6, m6s, cfg, rs, body)
     primary, secondary = rules.archetype_labels(ma)
     warm_a = o.n_obs >= rs.arch_warm
     generalist_bit = 1 << (Archetype.GENERALIST.value - 1)
     bits_a = rules.pack_bits(ma) | mx.where(ma.any(axis=1), 0, generalist_bit)
     label_arch = mx.where(warm_a[:, None], mx.stack([primary, secondary], axis=1), 0)
 
-    mi = rules.intent_matches(m3, o.since_bud, o.slot_age, o.slot_kin, cfg, rs)
+    bud_in = None
+    if rs.bud_horizon > 0:  # static: the forecast reads the post-step state
+        if oi is None:
+            raise ValueError("evaluate: RuleSet.bud_horizon > 0 needs oi (the post-step ObsIn)")
+        n_bonds = (oi.partner >= 0).astype(_I32).sum(axis=1)
+        bud_in = rules.BudIn(oi.energy, oi.brain_cost, n_bonds, o.n_obs)
+    mi = rules.intent_matches(m3, o.since_bud, o.slot_age, o.slot_kin, cfg, rs, bud=bud_in)
     warm_i = o.n_obs >= rs.intent_warm
     resting_bit = 1 << (Intent.RESTING.value - 1)
     bits_i = rules.pack_bits(mi) | mx.where(mi.any(axis=1), 0, resting_bit) | EVAL_BIT
-    raw = mx.where(warm_i, rules.first_intent(mi), Intent.NONE.value)
-    label, cand, cand_n = rules.hysteresis(o.label_intent, o.cand, o.cand_n, raw, rs.hold)
+    held_mi = mi
+    if rs.bud_overlay:  # static: Budding is displayed over the held intent and never enters the hysteresis
+        keep_cols = mx.array([[i != Intent.BUDDING.value for i in range(1, Intent.RESTING.value)]])
+        held_mi = mi & keep_cols
+    raw = mx.where(warm_i, rules.first_intent(held_mi, rs.intent_order), Intent.NONE.value)
+    held, cand, cand_n = rules.hysteresis(o.held, o.cand, o.cand_n, raw, rs.hold)
+    label = (
+        mx.where(warm_i & mi[:, Intent.BUDDING.value - 1], Intent.BUDDING.value, held)
+        if rs.bud_overlay
+        else held
+    )
 
     return o._replace(
         label_arch=label_arch.astype(_I32),
         match_arch=mx.where(warm_a, bits_a, 0).astype(_I32),
-        label_intent=label,
+        label_intent=label.astype(_I32),
+        held=held,
         match_intent=mx.where(warm_i, bits_i, 0).astype(_I32),
         cand=cand,
         cand_n=cand_n,

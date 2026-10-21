@@ -202,6 +202,10 @@ class GameConfig:  # the games vertical (docs/GAMES.md, §28); added after v0.1
     # labels, the metrics block and the sidecar. Never changes the trajectory: unhashed (``OBSERVER_KEYS``)
     # and a resume key.
     observe: bool = False
+    # Houses (§29.4), read only by the host observer while ``observe`` is on; unhashed and a resume key. A
+    # working default, not "off": an observer-only key (CLAUDE.md). A birth founds a house iff
+    # splitmix64(uid, run.seed) < house_rate·2^64; 1/2048 is exact in binary.
+    house_rate: float = 1 / 2048
 
 
 # The default warm pools of ``[weather]`` (``weather.DEFAULT_POOLS``, flat: 7 floats per pool).
@@ -671,6 +675,7 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("energy", "buoyancy_cost"),
     ("energy", "buoyancy_cap_cost"),
     ("game", "observe"),
+    ("game", "house_rate"),
     ("weather", "enabled"),
     ("weather", "cells"),
     ("weather", "H1"),
@@ -740,9 +745,10 @@ UNHASHED_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("director", "yoke_log"),
 )
 DIRECTOR_POLICY_KEYS: Final = tuple(key for _, key in UNHASHED_KEYS)
-# POST_V01 keys read only by host-side observers (§28): omitted from ``config_hash`` at every value. Separate
-# from ``UNHASHED_KEYS``, from which ``DIRECTOR_POLICY_KEYS`` (the director's resume keys) is derived.
-OBSERVER_KEYS: Final[tuple[tuple[str, str], ...]] = (("game", "observe"),)
+# POST_V01 keys read only by host-side observers (§28, §29): omitted from ``config_hash`` at every value and
+# inert while ``game.observe`` is off, so they may default to a working value. Separate from
+# ``UNHASHED_KEYS``, from which ``DIRECTOR_POLICY_KEYS`` (the director's resume keys) is derived.
+OBSERVER_KEYS: Final[tuple[tuple[str, str], ...]] = (("game", "observe"), ("game", "house_rate"))
 DIRECTOR_MODES: Final = ("off", "live", "replay")
 RANDOM_PERSONA: Final = "random"  # arm R of DIRECTOR.md §9: yoked to another run's discretionary moves
 PERSONAS: Final = ("gardener", "trickster", "architect", RANDOM_PERSONA)
@@ -1160,6 +1166,10 @@ def validate(cfg: Config) -> None:
                 f"director.rule_every {di.rule_every} must be a multiple of run.metrics_every "
                 f"{ru.metrics_every} and run.heavy_metrics_every {ru.heavy_metrics_every}",
             )
+
+    # Game (§29.4): observer-only; `game.observe` is a plain bool (no rule), the house rate is a probability.
+    gm = cfg.game
+    req(0.0 <= gm.house_rate <= 1.0, f"game.house_rate must be in [0, 1], got {gm.house_rate}")
 
     if errs:
         raise ConfigError(f"{len(errs)} config problem(s): " + "; ".join(errs))
