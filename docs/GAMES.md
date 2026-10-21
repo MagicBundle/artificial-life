@@ -924,6 +924,10 @@ What a game adds:
     - Labels are narrated only on a key in the version-1 verdict table; `INTENT_VERSION` 2 is the default, so a new run narrates no label
       until the change that validates `RULES_V2` adds its rows.
     - The window sentence W is off and its facts are gated against confounders; whether any are shown is the owner read's decision.
+    - **Review fixes (stage 4).** A patch move is a point event (the patches drift every step, so "still in place" was false); an
+      intervention whose span ended at the chapter's first row is not listed (the lever it restored is a standing line); a deep dip is
+      headlined "Population dipped to {min}"; the relation sentence says "on a victim that died in the same step"; a build of one range
+      keeps the records of another; a request goes only to a `/chat/completions` URL (DESIGN §30.1, §30.14 item 15).
     - **Not run:** the GPU validation (the observed forks A and B of DESIGN §30.13), `probe` and `build --llm` against a real model, and the owner read
       (20 chapters, template against select, blind). The build made no LLM call.
     - **Not in N1:** `alife play`, a report panel, a worker and `reports.jsonl` in a run directory (G3); player commands (G4); storm facts

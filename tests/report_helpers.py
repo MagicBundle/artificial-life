@@ -388,7 +388,6 @@ def _random_interventions(rng: random.Random, a: int, b: int) -> tuple[list[dict
     levers = (
         ("regen", {"mult": 0.5}),
         ("drift", {"mult": 4.0}),
-        ("patch:5:pos", {"patch": 5, "x": 1.5, "y": 2.0}),
     )
     for lever, extra in levers:
         if rng.random() < 0.15:

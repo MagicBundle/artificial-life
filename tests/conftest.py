@@ -56,8 +56,8 @@ def micro3d_cfg() -> Config:
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Options of the ``llm``-marked test of the world report (tests/test_analysis_world_report.py): the id of
-    a model that is already loaded and the chat-completions URL. Without ``--model`` (or ``ALIFE_LLM_MODEL``)
-    that test is skipped."""
+    a model that is already loaded and the chat-completions URL. Without ``--model`` (or both
+    ``ALIFE_LLM_URL`` and ``ALIFE_LLM_MODEL``) that test is skipped; ``ALIFE_LLM_MODEL`` alone does not."""
     parser.addoption("--model", default=None, help="model id for the llm-marked world report test")
     parser.addoption(
         "--llm-url", default=None, help="chat-completions URL for the llm-marked world report test"

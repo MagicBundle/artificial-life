@@ -289,12 +289,6 @@ def _s_rows() -> list[Template]:
             {"s": s, "patch": _s(k, "patch", "id"), "gain": _s(k, "gain", "lever")},
         ),
         _t(
-            "S-pos",
-            "block",
-            "From step {s}, patch {patch} has been at ({x}, {y}).",
-            {"s": s, "patch": _s(k, "patch", "id"), "x": _s(k, "x", "lever"), "y": _s(k, "y", "lever")},
-        ),
-        _t(
             "S-seasons",
             "block",
             "From step {s}, the seasons have had a period of {period} steps and an amplitude of {amp}.",
@@ -609,7 +603,8 @@ def _catalogue() -> dict[str, Template]:
         _t(
             "R",
             "body",
-            "Members of {A} attacked members of {B} {attacks} times; {kills} of the attacks {be} fatal.",
+            "Members of {A} attacked members of {B} {attacks} times; {kills} of the attacks {be} on a victim "
+            "that died in the same step.",
             {
                 "A": _s("relation", "a", "kin"),
                 "B": _s("relation", "b", "kin"),
@@ -660,6 +655,7 @@ def _catalogue() -> dict[str, Template]:
         _t("HP-down", "headline", "Population fell to {to}", {"to": _s(pop, "to")}),
         _t("HP-flat", "headline", "Population unchanged at {to}", {"to": _s(pop, "to")}),
         _t("HP-near", "headline", "Population at {to}", {"to": _s(pop, "to")}),
+        _t("HP-dip", "headline", "Population dipped to {min}", {"min": _s(pop, "min")}),
         _t("HE-born", "headline", "{sys} formed", _HE_SYS),
         _t("HE-split", "headline", "{sys} split from {other}", _HE_BOTH),
         _t("HE-merged", "headline", "{sys} merged into {other}", _HE_BOTH),

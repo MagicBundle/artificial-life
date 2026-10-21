@@ -34,8 +34,8 @@ def test_catalogue_is_valid_and_complete() -> None:
         "G-r1", "G-r2", "G-r3", "G-s", "G-c", "E-born", "E-born-o", "E-split", "E-merged", "E-dissolved",
         "E-dissolved-o", "CE-born", "CE-split", "CE-merged", "CE-dissolved", "H-1", "H-1n", "H-1e", "H-1ne",
         "H-1x", "H-1xn", "H-1xe", "H-1xne", "H-2", "LB-a", "LB-i", "R", "C", "C-1", "END", "HP-up", "HP-down",
-        "HP-flat", "HP-near", "HE-born", "HE-split", "HE-merged", "HE-dissolved", "HH", "HL", "I-regen", "I-loss",
-        "I-seasons", "I-drift", "I-fert", "I-move", "I-imm", "I-cat", "S-regen", "S-gain", "S-pos", "S-seasons",
+        "HP-flat", "HP-near", "HP-dip", "HE-born", "HE-split", "HE-merged", "HE-dissolved", "HH", "HL", "I-regen", "I-loss",
+        "I-seasons", "I-drift", "I-fert", "I-move", "I-imm", "I-cat", "S-regen", "S-gain", "S-seasons",
         "S-drift", "I-more", "X-regen", "X-regen-1", "X-gain", "X-gain-1", "X-replaced", "X-open", "W", "T-pop",
     }  # fmt: skip
     assert expect <= set(TEMPLATES)
@@ -138,8 +138,12 @@ def test_agreement_phrases() -> None:
     assert r("H-1", alive_to=1).startswith("1 house had living members at step")
     assert r("H-1ne", first_seen=1, extinct=1).endswith("; 1 was new and 1 died out.")
     assert r("H-1ne", first_seen=2, extinct=3).endswith("; 2 were new and 3 died out.")
-    assert r("R", kills=1, attacks=12).endswith("12 times; 1 of the attacks was fatal.")
-    assert r("R", kills=0, attacks=12).endswith("12 times; 0 of the attacks were fatal.")
+    assert r("R", kills=1, attacks=12).endswith(
+        "12 times; 1 of the attacks was on a victim that died in the same step."
+    )
+    assert r("R", kills=0, attacks=12).endswith(
+        "12 times; 0 of the attacks were on a victim that died in the same step."
+    )
     assert r("G-c", born=1).startswith("In the chapter, 1 agent was born into")
     assert r("HH", extinct=1) == "1 house died out"
     assert r("I-more", n=1) == "1 further setting is in place and is not listed."
@@ -405,6 +409,18 @@ def test_r5_gates_are_rederived_from_the_facts() -> None:
     assert _gate(flat, "P-flat", population=R._Ctx(flat).one("population")) == []
     assert _gate(up, "P-flat", population=R._Ctx(up).one("population"))
     assert _gate(up, "HP-down", population=R._Ctx(up).one("population"))
+    # 'dipped' only for a deep dip (a minimum under 80% of both ends' lower one)
+    crash = mk_sheet(kinds={"population": [pop(1000, 1000, 300)]})
+    assert _gate(crash, "HP-dip", population=R._Ctx(crash).one("population")) == []
+    assert _gate(up, "HP-dip", population=R._Ctx(up).one("population"))  # no minimum
+    shallow = mk_sheet(kinds={"population": [pop(1000, 1000, 900)]})
+    assert _gate(shallow, "HP-dip", population=R._Ctx(shallow).one("population"))
+    # a colony that went on under a new id has neither colony sentence
+    ev0 = {"kind": "event", "family": "colony", "event": "born", "system": 22, "other": 21, "size": 78,
+           "overlap": 76, "s0": 2500, "s1": 2750, "reid": True}  # fmt: skip
+    assert R._event_template(ev0) is None and R._event_template({**ev0, "event": "dissolved"}) is None
+    assert R._event_template({**ev0, "reid": False}) == "CE-born"
+    assert R._event_template({**ev0, "event": "split"}) == "CE-split"
     # 'lowest' only if the minimum is below both ends
     assert _gate(up, "P-low", population=R._Ctx(up).one("population"))
     # rank words need the carried rank
@@ -470,12 +486,28 @@ def test_r5_gates_of_the_block() -> None:
     assert _gate(sheet, "I-loss", intervention=regen)  # the action is another
     assert _gate(sheet, "X-regen-1", intervention=iv["drift_change3"])
     assert _gate(sheet, "X-open", intervention=iv["immigration_pulse6"])  # a point has no end
+    move = iv["fertility_shift5"]  # a patch move is a point too: no "still in place", no end clause at all
+    assert _gate(sheet, "I-move", intervention=move) == []
+    for x in ("X-open", "X-replaced", "X-gain", "X-gain-1"):
+        assert _gate(
+            sheet,
+            x,
+            intervention={
+                **move,
+                "end": A0 + 2000,
+                "end_by": "replaced",
+                "restored": {"gain": 1.0, "patch": 6},
+            },
+        )
+    assert R._end_template({**move, "end": A0 + 2000, "end_by": "replaced", "open_to": None}) is None
     dropped = mk_sheet(kinds={"population": [pop(100, 100)]}, excluded={"interventions_dropped": 3})
     assert _gate(dropped, "I-more") == []
     assert _gate(sheet, "I-more")  # nothing was dropped
     st = ctx.kinds["standing"][0]
     assert _gate(sheet, "S-gain", standing=st) == []
-    assert _gate(sheet, "S-pos", standing=st)
+    assert (
+        "S-pos" not in TEMPLATES
+    )  # a patch position is a point event: no standing line, no persistence claim
     assert _gate(sheet, "S-regen", standing=st)
     # W only if the sentences of windows are on, the window fact exists and lies inside the span and the chapter
     w = {
@@ -587,7 +619,7 @@ def test_2000_random_sheets_have_no_exclusion() -> None:
 
 def test_templates_pin_digests() -> None:
     """Every table the stored records depend on is pinned: a change is a deliberate change of a version."""
-    assert templates.TEMPLATE_DIGEST == "e3ea26dd247a941cd8f97c4dc92353d9474339ea0a6993ca494e9d5268ce3ef2"
+    assert templates.TEMPLATE_DIGEST == "6d9d8a7b48238599ae81aa61d0a58aefd027309993f46f4790433c3f198a65dc"
     assert lexicon.LEXICON_DIGEST == "bdc398239891aa65cbbfb72106a8b6d80413de866a92ab3260dd2aa1cdee516b"
     assert R.REPORT_V1.digest() == "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d"
     assert R.label_table_digest() == "9d8b3f339aad261a5e1458511c1c4e1d7434cd838c50e06b3aba0c3b2e395abf"

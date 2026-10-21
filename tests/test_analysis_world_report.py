@@ -1,7 +1,8 @@
 """The world report's command line (docs/DESIGN.md §30): ``build``, ``verify`` and ``probe`` of
 ``python -m alife.analysis.world_report``. The template build and ``verify`` run with the network patched out; the
 select mode talks to a local mock server (``tests/report_server.py``) and no other host. The one test that needs a
-real server is marked ``llm`` and runs only with ``--model`` (or ``ALIFE_LLM_MODEL``)."""
+real server is marked ``llm`` and runs only with ``--model`` (an explicit opt-in) or with both ``ALIFE_LLM_URL`` and
+``ALIFE_LLM_MODEL``; ``ALIFE_LLM_MODEL`` alone never makes a call."""
 
 # ruff: noqa: E501
 
@@ -119,11 +120,78 @@ def test_build_resumes_and_keeps_what_matches(tmp_path, capsys) -> None:
     assert run("build", TINY, *ARGS, "--out", out) == 0
     assert out.read_bytes() == first
     assert "(2000, 3000] template kept" in capsys.readouterr().out
-    # another cut rebuilds: the file then holds the chapters of this build only
+    # another cut: the file keeps the records of the chapters this build does not cover
     assert run("build", TINY, "--from", "1000", "--to", "3000", "--chapter", "2000", "--out", out) == 0
     assert [(r["chapter_start"], r["step"]) for r in lines(out)] == [(1000, 2000), (2000, 3000)]
     assert run("build", TINY, "--from", "1000", "--to", "2000", "--chapter", "1000", "--out", out) == 0
-    assert [(r["chapter_start"], r["step"]) for r in lines(out)] == [(1000, 2000)]
+    assert [(r["chapter_start"], r["step"]) for r in lines(out)] == [(1000, 2000), (2000, 3000)]
+
+
+def test_a_build_of_one_range_never_deletes_the_records_of_another(tmp_path, capsys) -> None:
+    """The review's e1 case: build 1000..3000, then 2000..3000 on the same file, then junk lines in the file."""
+    out = tmp_path / "r.jsonl"
+    cut = ["--chapter", "1000", "--out", out]
+    assert run("build", TINY, "--from", "1000", "--to", "3000", *cut) == 0
+    full = out.read_bytes()
+    assert run("build", TINY, "--from", "2000", "--to", "3000", *cut) == 0
+    assert out.read_bytes() == full  # the (1000, 2000] record is still there
+    # lines that are not report records stay (after the records), and the records stay sorted by step
+    recs = lines(out)
+    out.write_text(
+        json.dumps(recs[1]) + "\n[1, 2]\n" + json.dumps("a string") + "\n" + json.dumps(recs[0]) + "\n"
+    )
+    assert run("build", TINY, "--from", "2000", "--to", "3000", *cut) == 0
+    got = [json.loads(x) for x in out.read_text().splitlines()]
+    assert got == [recs[0], recs[1], [1, 2], "a string"]
+
+
+def test_a_template_build_over_select_records_warns_before_it_rewrites(
+    tmp_path, server, capsys, monkeypatch
+) -> None:
+    server.respond = lambda body: valid_reply(body)
+    out = tmp_path / "r.jsonl"
+    one = ["--from", "1000", "--to", "2000", "--chapter", "1000", "--out", out]
+    assert run("build", TINY, *one, *llm_args(server)) == 0
+    sel = out.read_bytes()
+    seen: list[tuple[bytes, str]] = []
+    real = W.write_records
+
+    def spy(path, records):
+        if not seen:  # the file and the warnings printed so far, when the first rewrite starts
+            seen.append((path.read_bytes(), capsys.readouterr().err))
+        real(path, records)
+
+    capsys.readouterr()
+    monkeypatch.setattr(W, "write_records", spy)
+    assert run("build", TINY, *one) == 0
+    assert seen[0][0] == sel and "1 select records" in seen[0][1]  # warned while the file was intact
+    assert lines(out)[0]["mode"] == "template"
+
+
+def test_a_fully_kept_llm_build_sends_no_request_and_needs_no_loaded_model(tmp_path, server, capsys) -> None:
+    server.respond = lambda body: valid_reply(body)
+    out = tmp_path / "r.jsonl"
+    assert run("build", TINY, *ARGS, "--out", out, *llm_args(server)) == 0
+    n_get, n_post = len(server.gets), len(server.requests)
+    server.models = {}  # the model is no longer loaded: a build that has nothing to ask does not care
+    capsys.readouterr()
+    assert run("build", TINY, *ARGS, "--out", out, *llm_args(server)) == 0
+    assert (len(server.gets), len(server.requests)) == (n_get, n_post)
+    assert "no preflight" in capsys.readouterr().out
+    assert (
+        run("build", TINY, *ARGS, "--out", tmp_path / "other.jsonl", *llm_args(server)) == 2
+    )  # needs the model
+
+
+def test_a_build_where_every_model_chapter_fell_back_says_so(tmp_path, server, capsys) -> None:
+    server.respond = lambda body: "garbage"
+    out = tmp_path / "r.jsonl"
+    assert run("build", TINY, *ARGS, "--out", out, *llm_args(server)) == 0
+    err = capsys.readouterr().err
+    assert "every one of the 2 chapters that asked the model fell back" in err
+    server.respond = lambda body: valid_reply(body)
+    assert run("build", TINY, *ARGS, "--out", out, *llm_args(server)) == 0
+    assert "fell back" not in capsys.readouterr().err
 
 
 def test_build_rebuilds_a_record_whose_version_or_facts_differ(tmp_path, capsys) -> None:
@@ -305,6 +373,42 @@ def test_an_unreachable_server_is_a_refused_preflight(tmp_path, server, capsys) 
     assert run("build", TINY, *ARGS, "--out", out, "--llm", "--model", "gem", "--url", url) == 2
     assert "does not answer" in capsys.readouterr().err
     assert run("build", TINY, *ARGS, "--out", out, "--llm", "--model", "gem", "--url", "ftp://x/y") == 2
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/v0/models/unload", "/api/v0/models/load", "/v1/models", "/v1/chat/completions/x", "/"]
+)
+def test_a_url_that_is_not_the_chat_completions_endpoint_is_refused_before_any_call(
+    tmp_path, server, capsys, path
+) -> None:
+    """The only POST goes to .../chat/completions: a management endpoint is never the target (the owner's rule)."""
+    url = server.url.rsplit("/v1/chat/completions", 1)[0] + path
+    out = tmp_path / "r.jsonl"
+    assert run("build", TINY, *ARGS, "--out", out, "--llm", "--model", "gem", "--url", url) == 2
+    assert run("probe", "--sheets", PROBE, "--model", "gem", "--url", url, "--out", tmp_path / "p.json") == 2
+    assert (
+        run("build", TINY, *ARGS, "--out", out, "--llm", "--model", "gem", "--url", url, "--no-preflight")
+        == 2
+    )
+    assert server.gets == [] and server.requests == [] and not out.exists()
+    assert "must end in /chat/completions" in capsys.readouterr().err
+
+
+def test_is_chat_url() -> None:
+    for ok in (
+        "http://h:1/v1/chat/completions",
+        "https://h/chat/completions/",
+        "http://h/x/y/chat/completions?a=1",
+    ):
+        assert R.is_chat_url(ok)
+    for bad in (
+        "http://h:1/api/v0/models/unload",
+        "http://h:1",
+        "http://h/chat/completions/x",
+        "",
+        "http://[::1",
+    ):
+        assert not R.is_chat_url(bad)
 
 
 def test_preflight_function_states(server) -> None:
@@ -587,6 +691,22 @@ def test_verify_bad_parameters(built, capsys) -> None:
     assert run("verify", TINY) == 2
 
 
+def test_verify_never_overwrites_its_input_and_needs_a_record(built, capsys) -> None:
+    out, tmp = built
+    before = out.read_bytes()
+    assert run("verify", TINY, "--reports", out, "--out", out) == 2 and out.read_bytes() == before
+    link = tmp / "link.jsonl"
+    link.symlink_to(out)  # the same file through another name
+    assert run("verify", TINY, "--reports", out, "--out", link) == 2 and out.read_bytes() == before
+    assert run("verify", TINY, "--reports", link, "--out", out) == 2 and out.read_bytes() == before
+    assert "must not be the --reports file" in capsys.readouterr().err
+    empty = tmp / "empty.jsonl"
+    empty.write_text("\n")
+    v = tmp / "v.json"
+    assert run("verify", TINY, "--reports", empty, "--out", v) == 2 and not v.exists()  # nothing to verify
+    assert "no records" in capsys.readouterr().err
+
+
 def test_verify_is_for_the_run_that_built_the_report_resumed_copy_agrees(built) -> None:
     out, tmp = built
     resumed = DATA / "report_tiny_resumed"
@@ -667,7 +787,7 @@ def test_call_metrics_of_one_record() -> None:
     body = R.candidates(sheet)[0]
 
     class One:
-        url, model = "http://127.0.0.1:9/x", "m"
+        url, model = "http://127.0.0.1:9/v1/chat/completions", "m"
 
         def __init__(self, order: list[str], headline: str = "H1") -> None:
             self.text = json.dumps({"headline": headline, "order": order})
@@ -718,6 +838,64 @@ def test_probe_refuses_bad_parameters_and_a_model_that_is_not_loaded(tmp_path, s
     assert run(*base, "--model", "gem", "--no-preflight") == 2
 
 
+# --- malformed input is exit 2, never a traceback (exit 1 means "the report disagrees with the run") -----------------
+
+
+def _rows(d: Path, f) -> None:
+    path = d / "metrics.jsonl"
+    path.write_text("".join(json.dumps(f(json.loads(x))) + "\n" for x in path.read_text().splitlines()))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "no_steps",
+        "alive_str",
+        "social_lists",
+        "meta_list",
+        "director_lists",
+        "director_no_params",
+        "config_list",
+    ],
+)
+def test_malformed_run_files_are_exit_2(tmp_path, capsys, name) -> None:
+    d = tmp_path / "run"
+    shutil.copytree(TINY, d)
+    mutate = {
+        "no_steps": lambda: _rows(d, lambda r: {k: v for k, v in r.items() if k != "steps"}),
+        "alive_str": lambda: _rows(
+            d, lambda r: {**r, "observers": {**r["observers"], "alive": "x"}} if r.get("observers") else r
+        ),
+        "social_lists": lambda: (d / "observers" / "social.jsonl").write_text("[1]\n[2]\n"),
+        "meta_list": lambda: (d / "meta.json").write_text("[]"),
+        "director_lists": lambda: (d / "director.jsonl").write_text("[1]\n"),
+        "director_no_params": lambda: (d / "director.jsonl").write_text(
+            json.dumps({"step_applied": 1500, "source": "rule", "action": "regen_pulse"}) + "\n"
+        ),
+        "config_list": lambda: (d / "config.json").write_text("[]"),
+    }[name]
+    mutate()
+    out = tmp_path / "r.jsonl"
+    assert run("build", d, *ARGS, "--out", out) == 2 and not out.exists()
+    assert capsys.readouterr().err.startswith("error:")
+
+
+def test_a_probe_sheet_of_the_wrong_shape_is_exit_2(tmp_path, server) -> None:
+    sheets = tmp_path / "sheets"
+    sheets.mkdir()
+    (sheets / "a.json").write_text("[]")
+    assert (
+        run("probe", "--sheets", sheets, "--model", "gem", "--url", server.url, "--out", tmp_path / "p.json")
+        == 2
+    )
+    assert server.requests == []
+    (sheets / "a.json").write_text(json.dumps(R.build_sheet(R.load_run(TINY), 1000, 2000)))
+    assert (
+        run("probe", "--sheets", sheets, "--model", "gem", "--url", server.url, "--out", sheets / "a.json")
+        == 2
+    )
+
+
 # --- an observed director fork of the real engine, end to end ----------------------------------------------------------
 
 E2E = DATA / "report_e2e"
@@ -755,13 +933,14 @@ def test_e2e_the_engines_env_blocks_are_the_fold_of_the_director_log(e2e_view) -
 
 
 def test_e2e_the_block_lists_every_lever_the_engine_holds_away_from_default(e2e_view) -> None:
-    """The engine's levers away from default at the first row of a chapter, read from that row's `env` block alone,
-    are exactly the levers that have a line in the chapter's block (one holder each)."""
+    """The engine's levers away from default for the first step of a chapter (the `env` block of the row after the row
+    a: the director acts after its step's row, so that row shows the entries applied at a), read from the engine's
+    rows alone, are exactly the levers that have a line in the chapter's block (one holder each)."""
     view = e2e_view
     cfg, rows = view.cfg, {r["step"]: r for r in view.rows}
     held = {}
     for a, b in ((2500, 4000), (4000, 6000), (6000, 8000), (8000, 10000)):
-        env = rows[a]["env"]
+        env = rows[a + 100]["env"]
         engine = set()
         if env["regen_mult"] != 1.0:
             engine.add("regen")
@@ -778,15 +957,18 @@ def test_e2e_the_block_lists_every_lever_the_engine_holds_away_from_default(e2e_
         holders = [f["lever"] for f in sheet["facts"] if f["kind"] == "standing"] + [
             R.lever_of(f["action"], f["params"])
             for f in sheet["facts"]
-            if f["kind"] == "intervention" and f["step"] < a and (f["end"] is None or f["end"] >= a)
+            if f["kind"] == "intervention" and f["step"] <= a and (f["end"] is None or f["end"] > a)
         ]
         assert sorted(holders) == sorted(engine), (a, holders, engine)
         held[a] = sorted(engine)
     assert held == {
         2500: [],
-        4000: ["regen"],
+        4000: ["regen", "seasons"],
         6000: ["patch:0:gain", "regen", "seasons"],
-        8000: ["patch:0:gain", "regen", "seasons"],
+        8000: [
+            "patch:0:gain",
+            "seasons",
+        ],  # the pulse's revert, applied at the row 8,000, has restored the rate
     }
 
 
@@ -821,12 +1003,14 @@ def test_e2e_the_block_of_each_chapter_is_the_lever_state_not_the_recent_entries
     out = tmp_path / "r.jsonl"
     assert run("build", E2E, *E2E_ARGS, "--out", out) == 0
     blocks = [[i["text"] for i in r["report"]["interventions"]] for r in lines(out)]
-    assert [len(b) for b in blocks] == [3, 6, 6, 8]
+    assert [len(b) for b in blocks] == [3, 6, 6, 6]
     # chapter 3: the pulse ended at 8,000 (a revert inside the chapter's last row), the other two are still in place
     assert "It ended at step 8,000; food regrowth returned to its base rate." in blocks[2]
     assert blocks[2].count("It was still in place at step 8,000.") == 2
     # the 4,000 chapter lists the seasons and the fertility shift as in force; the first lists neither (not yet applied)
     assert not any("seasons" in x for x in blocks[0]) and any("seasons" in x for x in blocks[1])
+    # the last chapter does not list the pulse whose span ended at its first row (nothing of it lies in the chapter)
+    assert not any("food regrowth" in x for x in blocks[3])
 
 
 def test_e2e_a_log_that_disagrees_with_the_rows_exits_1_before_anything_is_written(tmp_path, capsys) -> None:
@@ -869,12 +1053,22 @@ def test_e2e_an_unobserved_run_exits_2_with_the_hint_and_writes_nothing(tmp_path
 @pytest.mark.llm
 def test_real_server_one_narration_on_the_tiny_golden_sheet(request) -> None:
     """Structure only: one ``narrate`` of the tiny golden sheet against a real server, with the preflight. Runs only
-    with ``--model ID`` (and optionally ``--llm-url``), or ``ALIFE_LLM_MODEL`` / ``ALIFE_LLM_URL``; the model must
+    with ``--model ID`` (and optionally ``--llm-url``; the default URL is LM Studio's), or with both
+    ``ALIFE_LLM_URL`` and ``ALIFE_LLM_MODEL`` set; ``ALIFE_LLM_MODEL`` alone is not an opt-in. The model must
     already be loaded (this test never loads one)."""
-    model = request.config.getoption("--model") or os.environ.get("ALIFE_LLM_MODEL")
-    if not model:
-        pytest.skip("pass --model ID (a model that is already loaded) to run against a real server")
-    url = request.config.getoption("--llm-url") or os.environ.get("ALIFE_LLM_URL") or W.DEFAULT_URL
+    opt_model, env_url, env_model = (
+        request.config.getoption("--model"),
+        os.environ.get("ALIFE_LLM_URL"),
+        os.environ.get("ALIFE_LLM_MODEL"),
+    )
+    if opt_model:
+        model, url = opt_model, request.config.getoption("--llm-url") or env_url or W.DEFAULT_URL
+    elif env_model and env_url:
+        model, url = env_model, request.config.getoption("--llm-url") or env_url
+    else:
+        pytest.skip(
+            "pass --model ID (a model that is already loaded), or set ALIFE_LLM_URL and ALIFE_LLM_MODEL"
+        )
     pf = W.preflight(url, model)
     assert W.preflight_refusal(pf, model, False) is None, pf
     from alife.director.llm import Client

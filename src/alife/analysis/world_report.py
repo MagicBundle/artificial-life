@@ -208,6 +208,38 @@ def _chapter_line(a: int, b: int, rec: Mapping[str, Any], how: str) -> str:
     return "; ".join(parts)
 
 
+def _split_records(path: Path) -> tuple[dict[tuple[int, int], dict[str, Any]], list[Any]]:
+    """The file's records by ``(chapter_start, step)`` (the last one of a repeated key), and its other lines
+    (anything that is not a report record) in file order."""
+    keyed: dict[tuple[int, int], dict[str, Any]] = {}
+    other: list[Any] = []
+    for r in read_records(path):
+        ok = (
+            isinstance(r, dict) and isinstance(r.get("chapter_start"), int) and isinstance(r.get("step"), int)
+        )
+        if ok and not isinstance(r["chapter_start"], bool) and not isinstance(r["step"], bool):
+            keyed[(r["chapter_start"], r["step"])] = r
+        else:
+            other.append(r)
+    return keyed, other
+
+
+def pending_chapters(
+    sheets: Sequence[Mapping[str, Any]],
+    out: Path,
+    *,
+    mode: str,
+    model: str | None,
+    rules: R.ReportRules = R.REPORT_V1,
+) -> int:
+    """How many of ``sheets`` a build over ``out`` would build anew (the others are kept as they are)."""
+    old, _other = _split_records(out)
+    versions = R.record_versions(rules)
+    return sum(
+        not keeps(old.get(tuple(s["chapter"])), R.facts_digest(s), mode, model, versions) for s in sheets
+    )
+
+
 def build_reports(
     sheets: Sequence[Mapping[str, Any]],
     out: Path,
@@ -217,19 +249,26 @@ def build_reports(
     rules: R.ReportRules = R.REPORT_V1,
 ) -> int:
     """Build (or resume) the records of ``sheets`` (the chapters in order) into ``out``; the exit code.
-    ``client`` None is the template mode. The file is rewritten atomically after every chapter: the chapters
-    done, then the stored records of the chapters still to do."""
+    ``client`` None is the template mode. The file is rewritten atomically after every chapter, and a rewrite
+    keeps everything it does not replace: the records of other chapters (a build of a range never deletes the
+    records of another one) and any line that is not a report record, the records sorted by ``(step,
+    chapter_start)`` and the other lines after them. Only a record of a chapter of this build is replaced;
+    when that drops a select record (a template build over model records) the warning comes first."""
     mode = "template" if client is None else "select"
     model = None if client is None else client.model
     versions = R.record_versions(rules)
-    old = {
-        (r["chapter_start"], r["step"]): r
-        for r in read_records(out)
-        if isinstance(r, dict) and isinstance(r.get("chapter_start"), int) and isinstance(r.get("step"), int)
-    }
+    old, other = _split_records(out)
     keys = [tuple(s["chapter"]) for s in sheets]
+    if mode == "template":
+        n_sel = sum(1 for k in keys if old.get(k, {}).get("mode") == "select")
+        if n_sel:
+            _warn(
+                f"{n_sel} select records of {out} (model replies, not regenerable) will be replaced by "
+                "template records"
+            )
     done: list[dict[str, Any]] = []
-    kept = built = replaced_selects = 0
+    kept = built = 0
+    all_old = dict(old)
     for n, sheet in enumerate(sheets):
         a, b = keys[n]
         prior = old.get((a, b))
@@ -237,12 +276,11 @@ def build_reports(
             rec, how = prior, "kept"
             kept += 1
         else:
-            if isinstance(prior, dict) and prior.get("mode") == "select" and mode == "template":
-                replaced_selects += 1
             rec, how = R.narrate(sheet, client, rules=rules, attempts=attempts), "built"
             built += 1
         done.append(rec)
-        write_records(out, [*done, *(old[c] for c in keys[n + 1 :] if c in old)])
+        all_old[(a, b)] = rec
+        write_records(out, [*(all_old[k] for k in sorted(all_old, key=lambda k: (k[1], k[0]))), *other])
         _say(_chapter_line(a, b, rec, how))
         if rec["excluded_candidates"]:
             n_bad = len(rec["excluded_candidates"])
@@ -250,8 +288,12 @@ def build_reports(
         dropped = sheet["excluded"]["interventions_dropped"]
         if dropped > 0:
             _warn(f"({a}, {b}]: {dropped} settings are not listed (the block cap)")
-    if replaced_selects:
-        _warn(f"{replaced_selects} select records of {out} were replaced by template records")
+    asked = [r for r in done if r["mode"] == "select" and r["attempts"]]
+    if asked and all(r["fallback"] in R.RETRY_OUTCOMES for r in asked):
+        _warn(
+            f"every one of the {len(asked)} chapters that asked the model fell back to the template report "
+            "(the server may have stopped answering): read the attempts, and build again to retry them"
+        )
     _say(f"wrote {out}: {len(done)} chapters ({kept} kept, {built} built)")
     return OK
 
@@ -451,11 +493,26 @@ def _client(url: str, model: str, timeout_s: float) -> Any:
     return Client(url, model, timeout_s, R.SELECT_MAX_TOKENS, R.SELECT_TEMPERATURE)
 
 
-def _check_preflight(url: str, model: str, no_preflight: bool) -> int | None:
-    """Run the preflight; the exit code to stop with (2), or None to go on."""
+def _check_url(url: str) -> int | None:
+    """The exit code (2) if ``url`` is not an http(s) chat-completions URL, else None. A request is only ever
+    sent to ``.../chat/completions``: never to a model-management endpoint."""
     if not is_http_url(url):
         print(f"error: --url must be an http(s) URL, got {url!r}", file=sys.stderr)
         return USAGE
+    if not R.is_chat_url(url):
+        print(
+            f"error: --url must end in {R.CHAT_PATH} (the only endpoint a request is sent to), got {url!r}",
+            file=sys.stderr,
+        )
+        return USAGE
+    return None
+
+
+def _check_preflight(url: str, model: str, no_preflight: bool) -> int | None:
+    """Run the preflight; the exit code to stop with (2), or None to go on."""
+    stop = _check_url(url)
+    if stop is not None:
+        return stop
     pf = preflight(url, model)
     why = preflight_refusal(pf, model, no_preflight)
     if why is not None:
@@ -467,6 +524,16 @@ def _check_preflight(url: str, model: str, no_preflight: bool) -> int | None:
 
 def _inside(out: Path, run: Path) -> bool:
     return out.resolve().is_relative_to(run.resolve())
+
+
+def _same_file(x: Path, y: Path) -> bool:
+    """Whether two paths name the same file (resolved, or one file through two links)."""
+    try:
+        if x.resolve() == y.resolve():
+            return True
+        return x.exists() and y.exists() and os.path.samefile(x, y)
+    except OSError:
+        return False
 
 
 def _cmd_build(a: argparse.Namespace) -> int:
@@ -489,9 +556,15 @@ def _cmd_build(a: argparse.Namespace) -> int:
     client = None
     if a.llm:
         url = a.url or DEFAULT_URL
-        stop = _check_preflight(url, a.model, a.no_preflight)
+        stop = _check_url(url)  # also when the preflight is skipped below
         if stop is not None:
             return stop
+        if pending_chapters(sheets, a.out, mode="select", model=a.model) > 0:
+            stop = _check_preflight(url, a.model, a.no_preflight)
+            if stop is not None:
+                return stop
+        else:
+            _say("every chapter is kept: no request will be sent, no preflight")
         client = _client(url, a.model, a.timeout)
     return build_reports(sheets, a.out, client=client, attempts=a.attempts)
 
@@ -503,7 +576,13 @@ def _cmd_verify(a: argparse.Namespace) -> int:
     if not a.reports.is_file():
         print(f"error: {a.reports} is not a file", file=sys.stderr)
         return USAGE
+    if _same_file(a.out, a.reports):
+        print("error: --out must not be the --reports file (it would overwrite the records)", file=sys.stderr)
+        return USAGE
     records = read_records(a.reports)
+    if not records:
+        print(f"error: {a.reports} holds no records: there is nothing to verify", file=sys.stderr)
+        return USAGE
     code, summary = verify_reports(R.load_run(a.run), records)
     head = {"run": str(a.run), "reports": str(a.reports), "versions": R.record_versions()}
     write_json(a.out, {**head, **summary})
@@ -518,6 +597,9 @@ def _cmd_probe(a: argparse.Namespace) -> int:
     files = sorted(a.sheets.glob("*.json")) if a.sheets.is_dir() else []
     if not files:
         print(f"error: no *.json sheets in {a.sheets}", file=sys.stderr)
+        return USAGE
+    if any(_same_file(a.out, p) for p in files):
+        print("error: --out must not be one of the sheet files", file=sys.stderr)
         return USAGE
     sheets = [(p.stem, json.loads(p.read_text(encoding="utf-8"))) for p in files]
     bad = [name for name, s in sheets if s.get("report_rules_digest") != R.REPORT_V1.digest()]
@@ -588,6 +670,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return e.code
     except (ValueError, OSError, ConfigError, CheckpointError) as e:  # LogError is a ConfigError
         print(f"error: {e}", file=sys.stderr)
+        return USAGE
+    except (KeyError, TypeError, AttributeError, IndexError) as e:
+        # a run, log or sheet file of the wrong shape: bad input (2), not a mismatch with the run (1)
+        print(f"error: malformed input ({type(e).__name__}: {str(e)[:200]})", file=sys.stderr)
         return USAGE
 
 

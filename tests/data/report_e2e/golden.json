@@ -139,7 +139,7 @@
    "The lowest count was 270, in the 100 steps to step 6,200.",
    "The Thiodiov kin was the largest kin group at step 8,000, with 37 members, 12.7% of the population."
   ],
-  "candidate_set_digest": "b371bc16e602c8855dbe41df3bac5a7e628f15bbb3c1cce4bda9c2e9fe2668c5",
+  "candidate_set_digest": "96a9f8e883df2869c6d5bbc614db078104a2964c0a18747134f5762a1e4691e6",
   "chapter": [
    6000,
    8000
@@ -209,7 +209,7 @@
    "There were 538 births.",
    "Counting houses traced from step 2,000, 65 houses had living members at step 10,000, against 75 at step 8,000; 10 died out."
   ],
-  "candidate_set_digest": "03718ff6424f9b68bf4b301bbb76ae7de64853a5544d5917509f28f517820d42",
+  "candidate_set_digest": "00a99a571d9374120c7f2046134b3ad12f96920e410cab83264b295473bda067",
   "chapter": [
    8000,
    10000
@@ -224,11 +224,9 @@
     "group": 2
    }
   },
-  "facts_digest": "61adfa9b57164c140e7d36ed94a92f5782e4366a149be9fc10657eb8ba6f3c54",
+  "facts_digest": "100dbc834f1ae3310222048c7572d7ddd8fc33969b3612a45db5b1e1f0ac0bba",
   "headline": "Population fell to 268",
   "interventions": [
-   "At step 3,000, the director's rule extinction_rescue set food regrowth to 1.5 times its base rate for 5,000 steps.",
-   "It ended at step 8,000; food regrowth returned to its base rate.",
    "At step 4,000, the director's model set the seasons to a period of 2,000 steps and an amplitude of 0.3.",
    "It was still in place at step 10,000.",
    "At step 5,000, the director's model set the fertility of patch 0 to 1.5 times its base value.",

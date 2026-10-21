@@ -39,6 +39,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, NamedTuple
+from urllib.parse import urlsplit
 
 import numpy as np
 
@@ -69,6 +70,8 @@ __all__ = [
     "compose_sheet",
     "facts_digest",
     "fold_levers",
+    "is_chat_url",
+    "is_point",
     "judge_attempt",
     "known_social_digest",
     "label_table_digest",
@@ -284,6 +287,15 @@ def load_run(path: str | Path) -> RunView:
 
 TIMED: Final = ("regen_pulse", "habitat_loss")
 POINTS: Final = ("immigration_pulse", "catastrophe")
+
+
+def is_point(action: str, params: Mapping[str, Any]) -> bool:
+    """Whether an entry is a point event: it happens at one step and has no span. immigration_pulse and
+    catastrophe write no lever; a patch move writes the position lever but is reported as a point too, since
+    the patch drifts every step and a single write says nothing about where it is later."""
+    return action in POINTS or (action == "fertility_shift" and "gain" not in params)
+
+
 LEVER_ORDER: Final = ("regen", "seasons", "drift")
 
 
@@ -456,7 +468,7 @@ def _iv_fact(
         "end": end,
         "end_by": end_by,
         "restored": None if restored is None else dict(restored),
-        "open_to": b if end is None and e["action"] not in POINTS else None,
+        "open_to": b if end is None and not is_point(e["action"], e["params"]) else None,
     }
 
 
@@ -466,8 +478,11 @@ def spans(
     """The intervention facts of the chapter ``(a, b]`` and what was left out.
 
     Forward entries (source ``rule`` or ``llm``) with ``step_applied`` in [a, b) (in force inside the
-    chapter), then forward entries before ``a`` whose span reaches the row at ``a`` (open, or ending at ``a``
-    or later). An entry at ``s`` is in force for steps s+1 to e, with e the ``step_applied`` of the next
+    chapter), then forward entries before ``a`` whose span contains the step ``a + 1`` (open, or ending after
+    ``a``: an entry whose span ends at ``a`` has nothing in the chapter, and the lever it restored, if not to
+    its default, is a standing line). Points (immigration_pulse, catastrophe and a patch move, see
+    ``is_point``) are listed only inside the chapter and have no span. An entry at ``s`` is in force for
+    steps s+1 to e, with e the ``step_applied`` of the next
     entry on its lever in the fold order (forward, or a revert of any entry) when that is at most ``b``, else
     open at ``b``; the director acts after its step's row, so the rows ``s`` and ``e`` bound the span
     exactly. ``end_by`` is ``elapsed`` (a revert whose ``reverts`` is ``s``; ``restored`` its params),
@@ -485,8 +500,9 @@ def spans(
         if e["source"] == "revert" or s >= b:
             continue
         lv = lever_of(e["action"], e["params"])
+        point = is_point(e["action"], e["params"])
         end = end_by = restored = None
-        if lv is not None:
+        if lv is not None and not point:
             for s2, j in order[pos + 1 :]:
                 if s2 > b:
                     break
@@ -498,7 +514,7 @@ def spans(
                     else:
                         end_by = "replaced"
                     break
-        listed = a <= s < b or (lv is not None and s < a and (end is None or end >= a))
+        listed = a <= s < b or (lv is not None and not point and s < a and (end is None or end > a))
         if listed:
             made.append(_iv_fact(i, e, end, end_by, restored, b))
     chapter = sorted((f for f in made if f["step"] >= a), key=lambda f: (f["step"], f["entry"]))
@@ -524,25 +540,37 @@ def standing_facts(
     """The levers that a revert left away from their default: "from step {s}, ...", in lever order.
 
     The levers as of the row ``a`` that the latest write before it (a revert) left away from the default; a
-    lever held by a forward entry is listed by that entry's own intervention fact. With ``b``, also the levers
-    that a revert applied inside the chapter writes away from the default when no listed intervention ends at
-    that step (the forward entry was before ``start_step``: a replay fork applies its revert all the same)."""
-    out = [
-        _standing(lv, st.step, st.entry, st.value)
-        for lv, st in fold_levers(entries, a, start_step, cfg).items()
-        if entries[st.entry]["source"] == "revert" and away_from_default(lv, st.value, cfg)
-    ]
+    lever held by a forward entry is listed by that entry's own intervention fact. With ``b``, a lever that
+    any entry writes inside the chapter ``[a, b)`` has no line of the first kind (the chapter overwrites it:
+    "has been" would be false at ``b``), and the levers that the last write inside the chapter, a revert,
+    leaves away from the default get a line when no listed intervention ends at that step (the forward entry
+    was before ``start_step``: a replay fork applies its revert all the same; or it ended at ``a``). A patch
+    position is never a standing lever (a move is a point event)."""
+    inside: dict[str, tuple[int, int]] = {}
     if b is not None:
-        ended = {(f["end"], lever_of(f["action"], f["params"])) for f in listed if f["end"] is not None}
-        last: dict[str, tuple[int, int]] = {}
         for s, i in _in_fold_order(entries, start_step):
             lv = lever_of(entries[i]["action"], entries[i]["params"])
             if a <= s < b and lv is not None:
-                last.update({lv: (s, i)})
-        for lv, (s, i) in last.items():
+                inside.update({lv: (s, i)})
+    out = [
+        _standing(lv, st.step, st.entry, st.value)
+        for lv, st in fold_levers(entries, a, start_step, cfg).items()
+        if entries[st.entry]["source"] == "revert"
+        and not lv.endswith(":pos")
+        and lv not in inside
+        and away_from_default(lv, st.value, cfg)
+    ]
+    if b is not None:
+        ended = {(f["end"], lever_of(f["action"], f["params"])) for f in listed if f["end"] is not None}
+        for lv, (s, i) in inside.items():
             e = entries[i]
             value = _lever_value(lv, e["params"])
-            if e["source"] == "revert" and (s, lv) not in ended and away_from_default(lv, value, cfg):
+            if (
+                e["source"] == "revert"
+                and not lv.endswith(":pos")
+                and (s, lv) not in ended
+                and away_from_default(lv, value, cfg)
+            ):
                 out.append(_standing(lv, s, i, value))
     return sorted(out, key=lambda f: (_lever_key(f["lever"]), f["step"]))
 
@@ -660,7 +688,6 @@ def _event_facts(
     prev_alive = {r["step"]: alive_of(r) for r in rd.records if r.get("origin") == recs[0].get("origin")}
     for rec in recs:
         evs = _rows_of(rec["events"])
-        kin = [e for e in evs if e["family"] == "kin_group"]
         th = rec["thresholds"]
         n_ref = th["n_ref"]
         num, den = rules.event_pop_gate
@@ -671,7 +698,7 @@ def _event_facts(
             or abs(now - n_ref) * den > n_ref * num
             or abs(now - before) * den > before * num
         )
-        pairs = {(e["kind"], e["id"], e["other"]) for e in kin}
+        pairs = {(e["family"], e["kind"], e["id"], e["other"]) for e in evs}
         for e in evs:
             fam, kind = e["family"], e["kind"]
             if fam == "kin_group":
@@ -686,10 +713,9 @@ def _event_facts(
                 continue
             partner = {"born": "dissolved", "dissolved": "born"}.get(kind)
             reid = (
-                fam == "kin_group"
-                and partner is not None
+                partner is not None
                 and e["other"] >= 0
-                and ((partner, e["other"], e["id"]) in pairs or 2 * e["overlap"] > e["size"])
+                and ((fam, partner, e["other"], e["id"]) in pairs or 2 * e["overlap"] > e["size"])
             )
             out.append(
                 {
@@ -1371,7 +1397,7 @@ _GATED_WORDS: Final[Mapping[str, frozenset[str]]] = {
     "split": frozenset({"E-split", "CE-split", "HE-split"}),
     "merged": frozenset({"E-merged", "CE-merged", "HE-merged"}),
     "dissolved": frozenset({"E-dissolved", "E-dissolved-o", "CE-dissolved", "HE-dissolved"}),
-    "fatal": frozenset({"R"}),
+    "dipped": frozenset({"HP-dip"}),
     "stopped": frozenset({"END"}),
     "catastrophe": frozenset({"D-2", "I-cat"}),
     "replaced": frozenset({"X-replaced"}),
@@ -1399,7 +1425,19 @@ def _gate_problems(ctx: _Ctx, tid: str, f: Mapping[str, Mapping[str, Any]]) -> l
 
     pop = f.get("population")
     if (
-        t in ("P-up", "P-down", "P-flat", "P-near", "P-zero", "HP-up", "HP-down", "HP-flat", "HP-near")
+        t
+        in (
+            "P-up",
+            "P-down",
+            "P-flat",
+            "P-near",
+            "P-zero",
+            "HP-up",
+            "HP-down",
+            "HP-flat",
+            "HP-near",
+            "HP-dip",
+        )
         and pop
     ):
         fr, to, ch = pop["from"], pop["to"], pop.get("change")
@@ -1416,6 +1454,8 @@ def _gate_problems(ctx: _Ctx, tid: str, f: Mapping[str, Mapping[str, Any]]) -> l
             need(fr != to and ch is not None and _sign(ch) == "0", "near")
         if t == "P-zero":
             need(fr == 0 and to > 0 and ch is None, "zero")
+        if t == "HP-dip":
+            need(bool(pop["deep_dip"]) and "min" in pop and pop["min"] < min(fr, to), "dip")
     if t == "P-low" and pop:
         need("min" in pop and pop["min"] < min(pop["from"], pop["to"]), "lowest")
     if t in ("D-1", "D-2"):
@@ -1492,6 +1532,8 @@ def _gate_problems(ctx: _Ctx, tid: str, f: Mapping[str, Mapping[str, Any]]) -> l
             need(iv["action"] == action, "action")
         if t in ("I-fert", "I-move"):
             need(iv["action"] == "fertility_shift" and ("gain" in iv["params"]) == (t == "I-fert"), "action")
+        if t.startswith("X-"):
+            need(not is_point(iv["action"], iv["params"]), "point")
         if t.startswith("X-regen"):
             need(iv["end_by"] == "elapsed" and iv["action"] == "regen_pulse", "elapsed")
             back = (iv.get("restored") or {}).get("mult")
@@ -1503,14 +1545,14 @@ def _gate_problems(ctx: _Ctx, tid: str, f: Mapping[str, Mapping[str, Any]]) -> l
         if t == "X-replaced":
             need(iv["end_by"] == "replaced" and iv["end"] is not None, "replaced")
         if t == "X-open":
-            need(iv["end_by"] is None and iv["action"] not in POINTS, "open")
+            need(iv["end_by"] is None and not is_point(iv["action"], iv["params"]), "open")
     st = f.get("standing")
     if st and t.startswith("S-"):
         lever = {"S-regen": "regen", "S-seasons": "seasons", "S-drift": "drift"}.get(t)
         if lever:
             need(st["lever"] == lever, "lever")
         else:
-            need(st["lever"].endswith(":gain" if t == "S-gain" else ":pos"), "lever")
+            need(st["lever"].endswith(":gain"), "lever")
     if t == "I-more":
         need(ctx.by_id["excluded"]["interventions_dropped"] >= 1, "dropped")
     w = f.get("window")
@@ -1765,6 +1807,8 @@ def _event_template(ev: Mapping[str, Any]) -> str | None:
     kind, o = ev["event"], ev["other"]
     pre = "E-" if ev["family"] == "kin_group" else "CE-"
     if ev["family"] == "colony":
+        if ev["reid"] and kind in ("born", "dissolved"):
+            return None  # a colony that went on under a new id: the colony sentences have no clause to say so
         return pre + kind
     if kind == "born":
         return "E-born-o" if o >= 0 else "E-born"
@@ -1797,6 +1841,8 @@ def _headline_picks(ctx: _Ctx) -> list[tuple[str, dict[str, Mapping[str, Any]]]]
         hp = "HP-near"
     else:
         hp = "HP-up" if to > fr else "HP-down"
+    if pop["deep_dip"] and not (ch is not None and ch <= -rules.headline_change):
+        hp = "HP-dip"  # a crash that the endpoints hide (or a rise over it): say the dip, not the endpoints
     big = (
         pop["deep_dip"] or (ch is None and to != fr) or (ch is not None and abs(ch) >= rules.headline_change)
     )
@@ -1948,7 +1994,7 @@ def block_items(ctx: _Ctx, excluded: list[dict[str, Any]] | None = None) -> list
 
     for st in ctx.kinds.get("standing", ()):
         lever = st["lever"]
-        tid = _S_TEMPLATE.get(lever) or ("S-gain" if lever.endswith(":gain") else "S-pos")
+        tid = _S_TEMPLATE.get(lever) or "S-gain"
         add(tid, {"standing": st}, st["id"])
     windows = {w["intervention"]: w for w in ctx.kinds.get("window", ())}
     for iv in ctx.kinds.get("intervention", ()):
@@ -1966,7 +2012,7 @@ def block_items(ctx: _Ctx, excluded: list[dict[str, Any]] | None = None) -> list
 
 
 def _end_template(iv: Mapping[str, Any]) -> str | None:
-    if iv["action"] in POINTS:
+    if is_point(iv["action"], iv["params"]):
         return None
     if iv["end_by"] == "elapsed":
         r = iv["restored"]
@@ -2119,6 +2165,18 @@ SELECT_SEED_TAG: Final = 17  # the stream tag of the request seed (the director'
 MAX_REPLY_CHARS: Final = 4096  # a longer reply is invalid (the schema allows a few dozen characters)
 DROP_REASONS: Final = ("not_a_string", "unknown_id", "repeat", "beyond_k")
 OUTCOMES: Final = ("ok", "invalid", "failed", "too_few")
+CHAT_PATH: Final = "/chat/completions"
+
+
+def is_chat_url(url: str) -> bool:
+    """Whether the path of ``url`` ends in ``/chat/completions``, the only endpoint a report request is sent
+    to (the owner's LLM rule: no management endpoint is ever the target of a POST)."""
+    try:
+        return urlsplit(url).path.rstrip("/").endswith(CHAT_PATH)
+    except ValueError:
+        return False
+
+
 RETRY_OUTCOMES: Final = ("invalid", "failed", "too_few")  # the outcomes after which the next attempt is made
 ENTRY_CHARS: Final = 24  # characters of a dropped entry kept in a record
 
@@ -2435,6 +2493,11 @@ def narrate(
     model named explicitly. No global state; the client's HTTP call is the only side effect."""
     if attempts < 1:
         raise ValueError("attempts must be at least 1")
+    if client is not None:
+        if not isinstance(client.model, str) or not client.model.strip():
+            raise ValueError("the client must name its model (a non-empty string): every request names it")
+        if not isinstance(client.url, str) or not is_chat_url(client.url):
+            raise ValueError(f"the client's URL must end in {CHAT_PATH}, got {client.url!r}")
     cands = candidates(sheet, rules)
     k = body_k(sheet, cands[0], rules)
     views = _cand_views(cands)
@@ -2510,7 +2573,9 @@ def verify_record(
     headlines against the candidate-set digest and the stored views, a select record's messages rebuilt byte
     for byte, every attempt parsed again (outcome, choice) with the policy, then the report and the ticker
     rendered again; any difference is ``mismatch``. With nothing wrong, ``stale`` if the recomputed sheet's
-    digest is not the record's, else ``ok``."""
+    digest is not the record's, else ``ok``. The audit fields of the exchange (``model``, ``url``, each
+    attempt's ``latency_s``, ``usage`` and ``finish_reason``) cannot be re-derived from the facts: only the
+    shape of ``model`` and ``url`` is checked, so an edit of their values passes."""
     current = record_versions(rules)
     diffs = {k: [rec.get(k), v] for k, v in current.items() if rec.get(k) != v}
     sheet_differs = sheet_now is not None and facts_digest(sheet_now) != rec.get("facts_digest")
@@ -2554,6 +2619,12 @@ def _replay(rec: Mapping[str, Any], rules: ReportRules) -> list[str]:
             reasons.append("mode: a template record holds a model, messages, attempts or a fallback")
         choice = None
     elif mode == "select":
+        # model, url, latency_s, usage and finish_reason are audit data of the exchange: nothing in the
+        # stored facts can reproduce them, so only the shape is checked (a model and a chat URL)
+        if not isinstance(rec["model"], str) or not rec["model"].strip():
+            reasons.append("model: a select record names no model")
+        if not isinstance(rec["url"], str) or not is_chat_url(rec["url"]):
+            reasons.append(f"url: a select record's URL does not end in {CHAT_PATH}")
         vacuous = _vacuous(cands)
         same("messages", rec["messages"], None if vacuous else select_messages(sheet, cands, rules))
         same(

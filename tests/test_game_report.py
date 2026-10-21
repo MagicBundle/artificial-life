@@ -456,7 +456,7 @@ def test_relations_are_exact_or_absent(rv) -> None:
     assert all(k not in rel for k in ("expected", "ratio", "exp_attacks"))
     body, _, _ = texts(rev)
     assert (
-        "Members of the Shaemund kin attacked members of the Braelix kin 12 times; 4 of the attacks were fatal."
+        "Members of the Shaemund kin attacked members of the Braelix kin 12 times; 4 of the attacks were on a victim that died in the same step."
         in body
     )
 
@@ -857,15 +857,29 @@ def test_a_revert_that_restores_a_non_default_value_is_a_standing_line() -> None
     ]
     assert not facts_of(later, "intervention")
     assert later["excluded"]["interventions_dropped"] == 0
-    # at the row of the revert itself the loss is still in force and listed; the lever is not yet restored
+    # at the row of the revert itself the loss has nothing in the chapter: it is not listed (its span ends at a),
+    # and the lever it restored is a standing line that is true for the whole chapter
     edge = R.build_sheet(view, 295_000, 301_000)
-    (iv,) = facts_of(edge, "intervention")
+    assert not facts_of(edge, "intervention")
+    (st,) = facts_of(edge, "standing")
+    assert (st["lever"], st["gain"], st["step"]) == ("patch:12:gain", 1.75, 295_000)
+    assert block_of(edge) == [
+        "From step 295,000, the fertility of patch 12 has been 1.75 times its base value."
+    ]
+    # one step earlier the loss is listed with its end inside the chapter and there is no standing line
+    inside = R.build_sheet(view, 294_000, 300_000)
+    (iv,) = facts_of(inside, "intervention")
     assert (iv["end"], iv["end_by"]) == (295_000, "elapsed") and iv["restored"] == {"patch": 12, "gain": 1.75}
-    assert not facts_of(edge, "standing")
+    assert not facts_of(inside, "standing")
     assert (
-        block_of(edge)[1]
+        block_of(inside)[1]
         == "It ended at step 295,000; the fertility of patch 12 returned to 1.75 times its base value."
     )
+    # a chapter that overwrites a standing lever has no standing line for it (it would be false at b)
+    over = [*ents, E(298_000, "llm", "habitat_loss", {"patch": 12, "gain": 0.25}, 1_000)]
+    over_view = RS.make_view(246_000, 312_000, over)
+    ov = R.build_sheet(over_view, 297_000, 303_000)
+    assert not facts_of(ov, "standing") and [f["step"] for f in facts_of(ov, "intervention")] == [298_000]
 
 
 def test_a_replay_forks_dangling_revert_is_a_standing_line() -> None:
@@ -902,9 +916,12 @@ def test_no_quota_of_five_and_the_cap_of_24() -> None:
     assert len([t for t in block_of(sheet) if t.startswith("At step")]) == 9
     # more than 24 settings in force: the cap keeps the latest, counts the rest and the block says so
     many = [E(900_000 + 100 * j, "llm", "fertility_shift", {"patch": j, "gain": 0.5}) for j in range(24)]
-    many += [
+    many += [E(902_400 + 100 * j, "llm", "fertility_shift", {"patch": 24 + j, "gain": 0.5}) for j in range(6)]
+    # patch moves are points: they are listed in the chapter that holds them and never as a setting in force
+    moves = [
         E(902_400 + 100 * j, "llm", "fertility_shift", {"patch": j, "x": 1.5, "y": 2.5}) for j in range(6)
     ]
+    assert not facts_of(R.build_sheet(*lone(moves)), "intervention")
     view, a, b = lone(many)
     sheet = R.build_sheet(view, a, b)
     ivs = facts_of(sheet, "intervention")
@@ -928,6 +945,35 @@ def test_points_have_a_line_and_no_end() -> None:
     ]
     assert not facts_of(sheet, "window")
     assert sheet["excluded"]["windows_confounded"] == 0
+
+
+def test_a_patch_move_is_a_point_with_no_persistence_claim() -> None:
+    """Patches drift every step (`fields.drift_patches`), so "it was still in place" and "has been at" are false a
+    few steps after a move: the move is a point event (a line in its chapter, no end clause, never a standing
+    line, never carried into later chapters)."""
+    ents = [E(1_002_000, "llm", "fertility_shift", {"patch": 7, "x": 556.25, "y": 14.54}),
+            E(1_004_000, "llm", "fertility_shift", {"patch": 7, "x": 20.0, "y": 30.0})]  # fmt: skip
+    view, a, b = lone(ents)
+    sheet = R.build_sheet(view, a, b)
+    first, second = facts_of(sheet, "intervention")
+    for f in (first, second):
+        assert (
+            f["end"] is None
+            and f["end_by"] is None
+            and f["open_to"] is None
+            and not facts_of(sheet, "window")
+        )
+    assert block_of(sheet) == [
+        "At step 1,002,000, the director's model moved patch 7 to (556.25, 14.54).",
+        "At step 1,004,000, the director's model moved patch 7 to (20, 30).",
+    ]
+    later = R.build_sheet(view, b, b + 3_000)  # a later chapter says nothing about the patch's position
+    assert not facts_of(later, "intervention") and not facts_of(later, "standing") and block_of(later) == []
+    assert "S-pos" not in templates.TEMPLATES and "S-pos" not in templates.TEMPLATE_VOCAB
+    persistence = {"still", "remained", "stayed", "kept", "has been", "have been", "in place", "now"}
+    for tid in ("I-move", "T:I-move"):
+        text = templates.TEMPLATES[tid].text.lower()
+        assert not any(w in text for w in persistence)
 
 
 def test_same_step_entries_are_ordered_by_log_index() -> None:
@@ -1485,7 +1531,8 @@ def test_the_template_headline(rv) -> None:
     assert (
         head(R.build_sheet(rv, 2000, 3000)) == "The Kraiost kin formed"
     )  # the largest event (55 * 50 >= 1,150)
-    assert head(R.build_sheet(rv, 1000, 2000)) == "Population rose to 1,100"  # a deep dip: the population's
+    # a deep dip under a rise: the dip, not the endpoints (1,050 at the start, 1,100 at the end, 775 at the lowest)
+    assert head(R.build_sheet(rv, 1000, 2000)) == "Population dipped to 775"
 
 
 def test_headline_candidates_in_select_mode() -> None:
@@ -1504,7 +1551,12 @@ def test_headline_candidates_in_select_mode() -> None:
     big = mk_sheet(kinds={**small, "population": [pop(1000, 1200, 1000)]}, ents=kin)
     assert [h["text"] for h in R.candidates(big)[1]] == ["Population rose to 1,200"]
     crash = mk_sheet(kinds={**small, "population": [pop(1000, 1020, 500)]}, ents=kin)
-    assert [h["text"] for h in R.candidates(crash)[1]] == ["Population rose to 1,020"]
+    assert [h["text"] for h in R.candidates(crash)[1]] == ["Population dipped to 500"]
+    # a crash that recovers to the start is not "unchanged", and a fall of 10% or more keeps its fall
+    level = mk_sheet(kinds={"population": [pop(1000, 1000, 300)]})
+    assert R.template_report(level)["headline"]["text"] == "Population dipped to 300"
+    fell = mk_sheet(kinds={"population": [pop(1000, 600, 300)]})
+    assert R.template_report(fell)["headline"]["text"] == "Population fell to 600"
     # nothing to say but the lineages: HP and HL
     lin = mk_sheet(kinds={"population": [pop(1000, 1020, 1000)], "lineages": small["lineages"]})
     assert [h["text"] for h in R.candidates(lin)[1]] == [
@@ -1548,9 +1600,7 @@ BORN_19 = "Between step 1,514,500 and step 1,514,750, the Kraiost kin formed wit
 SPLIT_31 = "Between step 1,513,000 and step 1,513,250, the Shaemund kin split from the Braelix kin with 1,210 members."
 GC_12 = "In the chapter, 3,100 agents were born into the Braelix kin and 4,900 of its members died, 610 of them by attack."
 GR_12 = "The Braelix kin was the largest kin group at step 1,518,000, with 5,020 members, 23.7% of the population."
-RAIDS = (
-    "Members of the Braelix kin attacked members of the Torvane kin 412 times; 61 of the attacks were fatal."
-)
+RAIDS = "Members of the Braelix kin attacked members of the Torvane kin 412 times; 61 of the attacks were on a victim that died in the same step."
 BIRTHS = "There were 41,950 births."
 TL = "At step 1,512,000 the largest lineage held 41.0% of the agents, and at step 1,518,000 the largest held 42.0%."
 LN = "The number of lineages with living members went from 9 to 7."
@@ -1637,10 +1687,10 @@ def test_select_c1_a_crash_in_a_chapter_that_ends_level_is_not_quiet() -> None:
     body, _rep = select(sheet, "B-1", "TL")
     assert (
         body == [DEATHS, LOW, BIRTHS, TL]
-        and R.template_report(sheet)["headline"]["text"] == "Population rose to 30,900"
+        and R.template_report(sheet)["headline"]["text"] == "Population dipped to 8,900"
     )
     assert [h["text"] for h in R.candidates(sheet)[1]] == [
-        "Population rose to 30,900"
+        "Population dipped to 8,900"
     ]  # the crash: no choice of headline
     # the model leaves the crash out: the mandatory sentence is added all the same
     body, _ = select(sheet, "TL")
@@ -1759,8 +1809,8 @@ def test_select_keeps_the_models_order_among_groups_labels_and_relations() -> No
     ]  # a G-c never goes before its group
     assert body([g1, gc1, g2, gc2]) == [ids[g1], ids[gc1], ids[g2], ids[gc2]]
     r_ids = [c["id"] for c in cands[0] if c["template"] == "R"]
-    r1 = "Members of the Braelix kin attacked members of the Shaemund kin 412 times; 61 of the attacks were fatal."
-    r2 = "Members of the Shaemund kin attacked members of the Braelix kin 20 times; 1 of the attacks was fatal."
+    r1 = "Members of the Braelix kin attacked members of the Shaemund kin 412 times; 61 of the attacks were on a victim that died in the same step."
+    r2 = "Members of the Shaemund kin attacked members of the Braelix kin 20 times; 1 of the attacks was on a victim that died in the same step."
     assert body(r_ids) == [r1, r2] and body(r_ids[::-1]) == [r2, r1]
     # relations come after the groups whatever the order of the reply
     assert body([r_ids[0], g1]) == [ids[g1], r1]
@@ -1951,14 +2001,25 @@ def test_2000_random_logs_the_block_lists_every_lever_once_and_windows_lie_in_th
         sheet = R.build_sheet(view, a, b)  # the env check inside compares the fold with the independent model
         ivs, st = facts_of(sheet, "intervention"), facts_of(sheet, "standing")
         assert sheet["excluded"]["interventions_dropped"] == 0
-        away = away_levers(RS.oracle_state(ents, a))
-        for lv in away:
+        # the state in force for the chapter's first step (the entries up to the row a, the one at a included); a
+        # patch position is a point event and has no holder line
+        away = {lv for lv in away_levers(RS.oracle_state(ents, a + 1)) if not lv.endswith(":pos")}
+        rewritten = {R.lever_of(e["action"], e["params"]) for e in ents if a < e["step_applied"] < b}
+        for lv in away - rewritten:
             holders = [f for f in st if f["lever"] == lv] + [
                 f for f in ivs
-                if R.lever_of(f["action"], f["params"]) == lv and f["step"] < a and (f["end"] is None or f["end"] >= a)
+                if R.lever_of(f["action"], f["params"]) == lv and f["step"] <= a and (f["end"] is None or f["end"] > a)
             ]  # fmt: skip
             assert len(holders) == 1, (seed, lv, holders)
-        assert {f["lever"] for f in st} <= away
+        for lv in rewritten:  # a lever that the chapter overwrites is not "has been" at the end
+            assert not [f for f in st if f["lever"] == lv and f["step"] < a], (seed, lv)
+        assert {f["lever"] for f in st} <= away | rewritten
+        assert not [f for f in st if f["lever"].endswith(":pos")]
+        for f in ivs:  # a point has no span; nothing listed has its span ended by the row a
+            if R.is_point(f["action"], f["params"]):
+                assert a <= f["step"] < b and f["end"] is None and f["open_to"] is None
+            else:
+                assert f["step"] >= a or f["end"] is None or f["end"] > a
         for w in facts_of(sheet, "window"):
             iv = next(f for f in ivs if f["id"] == w["intervention"])
             lo, hi = max(iv["step"], a), min(iv["end"] if iv["end"] is not None else b, b)

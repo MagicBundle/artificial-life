@@ -16,7 +16,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | path | what |
 |---|---|
 | `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`; N1 adds `game/report.py`, `templates.py`, `lexicon.py` and `analysis/world_report.py`, `docs/DESIGN.md` §30) |
-| `tests/` | pytest suite. 2,516 fast tests passed and 6 were skipped on the CPU device after N1 (2,160 and 5 after the G2 review fixes; the sixth skip is N1's `llm` test) (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; 9 to 12 minutes depending on load) plus the slow ones |
+| `tests/` | pytest suite. 2,538 fast tests passed and 6 were skipped on the CPU device after the N1 review fixes (2,516 after N1's first three commits; 2,160 and 5 after the G2 review fixes; the sixth skip is N1's `llm` test) (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; 9 to 12 minutes depending on load) plus the slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
@@ -473,6 +473,10 @@ and resumed once. There is one run per condition apart from the seed pair.
    - **Checked on real data (CPU).** The lever fold equals the `env` block of every row of `eval_s0_C`, `eval_s1_C` and `64k3d_s0_dir`; the block lists every
      lever the rows show away from default in all 540 chapters examined, with 0 checker exclusions; a real tiny observed director fork
      (`tests/data/report_e2e/`) builds and verifies with exit 0 (DESIGN §30.13).
+   - **Review fixes (stage 4, `N1 stage 4: review fixes`).** 15 findings of the third review, 14 applied and one narrowed (DESIGN §30.14 item 15;
+     the disposition is `n1/build/disposition.md`): a patch move is a point event with no persistence claim (S-pos deleted); a span that ends at the
+     chapter's first row is not listed; HP-dip; the relation sentence; `--out` merges instead of truncating; a request goes only to a chat URL;
+     malformed input is exit 2. `tests/data/report_e2e/golden.json` and `TEMPLATE_DIGEST` were re-pinned.
    - **Next, the coordinator (GPU, when no run or timing is going; `lms ps` first):** the validation of DESIGN §30.13: fork A (`64k_s0:1500000`, no
      director) and fork B (`eval_s0_C:120000` with `--director replay`), both `--set game.observe=true`; then `build`, `build --llm --model
      google/gemma-4-26b-a4b-qat`, `verify` and `probe --n 24`; then `pytest -m llm --model google/gemma-4-26b-a4b-qat tests/test_analysis_world_report.py`.

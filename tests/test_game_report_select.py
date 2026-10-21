@@ -688,6 +688,44 @@ def test_any_edit_of_a_stored_record_is_a_mismatch(select_record, path, value, n
     assert any(needle in r for r in got["reasons"]), got["reasons"]
 
 
+def test_the_audit_fields_of_the_exchange_are_not_replayed_only_their_shape(select_record) -> None:
+    """model, url, latency_s, usage and finish_reason cannot be re-derived from the facts: an edit of their values
+    passes the replay (DESIGN 30.10), an empty model or a URL that is not a chat endpoint does not."""
+    sheet, rec = select_record
+    edited = mutate(
+        mutate(rec, ["model"], "another-model"), ["url"], "http://elsewhere:1/v1/chat/completions"
+    )
+    edited = mutate(mutate(edited, ["attempts", 0, "latency_s"], 99.0), ["attempts", 1, "usage"], {"x": 1})
+    edited = mutate(edited, ["attempts", 1, "finish_reason"], "length")
+    assert status(edited, sheet)["status"] == "ok"
+    for path, value, needle in (
+        (["model"], "", "no model"),
+        (["model"], None, "no model"),
+        (["url"], "http://127.0.0.1:1234/api/v0/models/unload", "chat/completions"),
+        (["url"], None, "chat/completions"),
+    ):
+        got = status(mutate(rec, path, value), sheet)
+        assert got["status"] == "mismatch" and any(needle in r for r in got["reasons"]), (path, got)
+
+
+def test_narrate_requires_a_named_model_and_a_chat_endpoint() -> None:
+    sheet = probe_sheet(EVENTFUL)
+    for model in ("", "  ", None):
+        client = Fake(first_n(5), model=model)
+        with pytest.raises(ValueError, match="model"):
+            R.narrate(sheet, client)
+        assert client.bodies == []
+
+    class Elsewhere(Fake):
+        url = "http://127.0.0.1:1234/api/v0/models/unload"
+
+    client = Elsewhere(first_n(5))
+    with pytest.raises(ValueError, match="chat/completions"):
+        R.narrate(sheet, client)
+    assert client.bodies == []
+    R.narrate(sheet, None)  # the template mode has no client
+
+
 def test_dropping_or_adding_an_attempt_or_a_choice_changes_the_replay(select_record) -> None:
     sheet, rec = select_record
     extra = json.loads(json.dumps(rec))
