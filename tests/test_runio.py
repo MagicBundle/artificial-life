@@ -223,7 +223,7 @@ def test_create_open_and_meta(micro_cfg: Config, tmp_path: Path) -> None:
     assert set(meta) == {
         "format_version", "alife_version", "mlx_version", "python", "platform", "device", "git_rev",
         "created_utc", "seed", "config_hash", "rng_layout_version", "genome_layout_version", "parent",
-        "status",
+        "status", "knn_impl",
     }  # fmt: skip
     assert meta["status"] == "running" and meta["parent"] == "other:100"
     assert meta["config_hash"] == config_hash(micro_cfg) and meta["seed"] == micro_cfg.run.seed

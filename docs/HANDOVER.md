@@ -1,6 +1,6 @@
 # Handover
 
-Status of the `alife` project as of 2026-10-19 (the games vertical's observers are built, G1 and G2, and so is its offline World Report, N1, `docs/GAMES.md`; after the director evaluation, `docs/EVALUATION.md`; the 3D world is built, PRs #15 to #20, `docs/3D.md`; its first long run is analysed in `docs/RESULTS_3D.md`, and a second seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`), written for the next coding
+Status of the `alife` project as of 2026-10-21 (the games vertical's observers are built, G1 and G2, and so is its offline World Report, N1, `docs/GAMES.md`; after the director evaluation, `docs/EVALUATION.md`; the 3D world is built, PRs #15 to #20, `docs/3D.md`; its first long run is analysed in `docs/RESULTS_3D.md`, and a second seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`), written for the next coding
 session (a local Claude Code session on the owner's MacBook Pro, M5 Pro, 48 GB). Read this, then `CLAUDE.md`, then the parts of
 `docs/DESIGN.md` you need.
 
@@ -15,8 +15,8 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 
 | path | what |
 |---|---|
-| `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`; N1 adds `game/report.py`, `templates.py`, `lexicon.py` and `analysis/world_report.py`, `docs/DESIGN.md` §30) |
-| `tests/` | pytest suite. 2,538 fast tests passed and 6 were skipped on the CPU device after the N1 review fixes (2,516 after N1's first three commits; 2,160 and 5 after the G2 review fixes; the sixth skip is N1's `llm` test) (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; 9 to 12 minutes depending on load) plus the slow ones |
+| `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, the fused Metal neighbour kernel (`knn_metal.py`, DESIGN §4), the offline W0 weather prototype (`weather.py`, `analysis/w0.py`, `docs/STORMS_W0.md`), `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`; N1 adds `game/report.py`, `templates.py`, `lexicon.py` and `analysis/world_report.py`, `docs/DESIGN.md` §30) |
+| `tests/` | pytest suite. 2,434 fast tests passed, 83 were skipped (the GPU-only kernel tests among them) and 1 xfailed on the CPU device after merging main (#28, #29) into G2 (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; about 11 minutes) plus the slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
@@ -26,8 +26,9 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/3D.md` | the 3D world with gravity and a floor (owner decisions, layout, fields, Swift viewer, PR plan); built in PRs #15 to #20, normative spec `docs/DESIGN.md` §27 |
 | `docs/RESULTS_3D.md` | the first long 3D run, `runs/64k3d_s0` (500k steps): population and `K`, vertical niches and buoyancy, bodies, evolutionary activity, comparison with 2D; figures and tables in `docs/results_3d/`, scripts in `analysis_cache/64k3d_s0/results3d/` (git-ignored) |
 | `docs/RESULTS_3D_RUNS.md` | the four 500k-step `64k3d` runs (seed 0, seed 1, half food, director live): replication, the density control, the director in 3D, bodies and activity across runs; figures and tables in `docs/results_3d_runs/`, scripts in `analysis_cache/64k3d_runs/` (git-ignored) |
-| `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with `INTENT_VERSION` 2 label rules (`RULES_V2`, calibrated offline; held-out validation pending, DESIGN §28.4, §28.8); G2, social tracking (houses, kin groups, colonies, territory, relations; `src/alife/groups.py`, `tracking.py`, `game/social.py`, `game/society.py`, `python -m alife.analysis.social`; the reports are `observers/social.jsonl` in an observing run's directory; normative spec `docs/DESIGN.md` §29, Review-log row I45) is built with provisional thresholds (`SOCIAL_VERSION` 1); N1, the offline World Report (`python -m alife.analysis.world_report`; code-written template sentences with a checker, and an optional local model that only selects and orders them; normative spec `docs/DESIGN.md` §30, Review-log row I49) is built with provisional thresholds (`REPORT_VERSION` 1); G3 to G5 are not built |
-| `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13) |
+| `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with `INTENT_VERSION` 2 label rules (`RULES_V2`, calibrated offline and validated on three held-out windows on the GPU, 2026-10-21, DESIGN §28.4, §28.8); G2, social tracking (houses, kin groups, colonies, territory, relations; `src/alife/groups.py`, `tracking.py`, `game/social.py`, `game/society.py`, `python -m alife.analysis.social`; the reports are `observers/social.jsonl` in an observing run's directory; normative spec `docs/DESIGN.md` §29, Review-log row I45) is built, run on the GPU (2026-10-21) and has provisional thresholds (`SOCIAL_VERSION` 1, measured, none changed); N1, the offline World Report (`python -m alife.analysis.world_report`; code-written template sentences with a checker, and an optional local model that only selects and orders them; normative spec `docs/DESIGN.md` §30, Review-log row I49) is built with provisional thresholds (`REPORT_VERSION` 1); G3 to G5 are not built |
+| `docs/STORMS.md`, `docs/STORMS_W0.md` | the storm world (an alien-planet weather game on the engine; G3 onwards target it) and the results of its offline weather prototype W0 (DESIGN Review-log row I46): every exit criterion but the cost (about 1.16 ms a step against 1.0) passes |
+| `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13), before (2026-10-16) and with (2026-10-20) the fused Metal neighbour kernel |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
 | `.github/workflows/ci.yml` | Linux CPU CI: ruff, ruff format check, fast suite; nightly slow suite |
@@ -416,8 +417,8 @@ and resumed once. There is one run per condition apart from the seed pair.
      elasticity to regeneration is about 0.65. No result requires a change; the sign-off of `n_init` is still open.
    - **Signals.** The signal-information tools are 2D-only (`require_2d`), and emitters stay at 0.86 to 0.88 in 3D at
      full food, so they need a 3D port.
-   - **Speed.** The fused Metal neighbour kernel (below) matters if more or longer 3D runs are wanted: about 14.7 steps/s,
-     with the search at 79% of the step.
+   - **Speed.** Done: the fused Metal neighbour kernel (item 6, DESIGN §4, row I48) takes `64k3d` from about 14.8 to
+     75 steps/s (a 100 000-step run in about 22 minutes), with bitwise the same trajectory.
 3. **Games G1** (merged as PR #27, `1ad339c`; DESIGN §28, Review-log row I44, `docs/GAMES.md` §9). Built and tested on
    the CPU and on Metal. Status and what follows:
    - **The Metal purity gate: passed** on the M5 Pro on 2026-10-19. `tests/test_game_purity.py` and
@@ -428,41 +429,54 @@ and resumed once. There is one run per condition apart from the seed pair.
      was the calibration that led to `INTENT_VERSION` 2 (item 4, DESIGN §28.8).
    - **Owner decisions** (`docs/GAMES.md` §10, items 11 and 12): thresholds as code constants, and the verdict criterion.
    - G2 (next item) is built on top of it.
-4. **Games G2** (branch `games/g2-social`, DESIGN §29, Review-log row I45, `docs/GAMES.md` §9). Built on top of G1 and
-   tested on the CPU only, because the GPU was in use. Status and what follows:
-   - **The Metal gate, before merge** (the coordinator): `uv run pytest tests/test_game_purity.py tests/test_groups.py -q
-     -p no:cacheprovider` on the default device, without a `-m` filter. The purity file is G1's gate with G2's 20 channel
-     taps and, since the review fixes, a comparison of the compiled step's fused kernels with observe off and on (its list of
-     allowed operations is of operations, not kernel names: if Metal groups them differently, read the printed labels
-     before widening it), and `test_groups.py` holds the `splitmix64`, `hash_below` and exact-sum equality tests (§29.2, §29.12).
-   - **After merge: the 64k bench and the calibration** (GPU needed, procedures in §29.12): `uv run alife bench --preset 64k
-     --observe --steps 600 --json obs_64k.json`; `python -m alife.analysis.social` on `runs/64k_s0 --from 1490000 --steps
-     2500` and `runs/64k3d_s0 --from 450000 --steps 2500`, at `--every 250` and `--every 1000`. They give the snapshot
-     cost, the churn rate and the Jaccard distributions, and may change θ, the kin-group thresholds, `n_band` and the slot
-     slack under `SOCIAL_VERSION` 2. Every threshold is provisional until then; the matching cost on the CPU was about
-     8 ms against the 2 ms planned, which is worth timing on the GPU day.
+4. **Games G2** (branch `games/g2-social`, DESIGN §29, Review-log row I45, `docs/GAMES.md` §9). Built on top of G1,
+   tested on the CPU, then on Metal on 2026-10-21 (below). Status and what follows:
+   - **GPU day, 2026-10-21** (Metal, M5 Pro, MLX 0.32.3; full figures in DESIGN §29.12 and §28.8, row I45 item 13):
+     - **The Metal gate passed:** the twelve game and analysis test files with `-m ""` on the default device gave 509 passed,
+       0 failed, in 202.7 s (the purity file with the compiled-kernel comparison, `test_groups.py` with the `splitmix64`,
+       `hash_below` and exact-sum equality tests). The merge condition of G2 is met.
+     - **Benches** (`alife bench --preset 64k --observe --steps 600`): 54.8 observed steps/s at 64k 2D against the 30 target
+       (59.7 plain; G1 61.0), overhead 1.38 ms a step (G1 0.48), a snapshot step 9.4 ms slower than the others; 64k3d 13.9
+       against 14.3, overhead 2.07 ms, hitch 12.1 ms. The 3D bench shows `donation.ok = false` in the plain run too: not an
+       observer effect, not investigated. The stream rate and the step rate with LLM calls in flight were not run.
+     - **Calibration** (`python -m alife.analysis.social`, `runs/64k_s0` from 1,490,000 and 1,500,000, `runs/64k3d_s0` and
+       `64k3d_s1` from 450,000, 2,500 steps): kin groups track well (matched Jaccard p50 0.75 to 0.87; the kin-group
+       matching costs 5.0 and 7.5 ms per snapshot, the plan said 2). **Colonies are the weak part at the 250 cadence:**
+       80 to 83% of ids end within 3 snapshots and 21 to 26% of current components match a tracked one, so the 250 cadence
+       churns; whether 1000 is better is not established (the `--every 1000` studies had only 2 snapshots, so their 22%
+       (2D) and 31% (3D) are not comparable with the 10-snapshot 250 studies). The host settle costs 32 ms (2D) and 38 ms (3D) per
+       snapshot on evolved states, 0.13 and 0.16 ms a step amortised. **No threshold was changed** (`SOCIAL_VERSION` stays 1);
+       whether to change θ or the matching rule, or to use the 1000 cadence for colonies, is open for the coordinator and
+       G3's chronicle.
+     - **Houses:** `houses.founded_share` after 2,500 steps is 0.00068 (2D) and 0.00091 (3D), under 0.1% of members, so
+       `game.house_rate` 1/2048 yields almost no new houses in that time; left unchanged for the owner to re-decide (GAMES
+       §10 item 13).
    - **`INTENT_VERSION` 2 is built** (the last stage of G2, DESIGN §28.4, §28.8, row I45): one change redesigned the rules
      of the labels that failed G1's validity study (Gatherer, Defending, Budding, Feeding, and in 3D Bonding, Signalling,
      Roaming and Caring), defined `RULES_V2` with the Settler clause at `settler_body` 4, made it the default and pinned
      its digest (`dc78f771…b4f7`; `RULES_V1` keeps `156ad496…c009`). It was calibrated offline on dumps of the two G1
-     study windows, and the implementation is checked exact against the offline predicates. **Next, on the GPU (the
-     coordinator):** the five `python -m alife.analysis.labels` runs of DESIGN §28.8 (the two calibration windows as an
-     implementation check, then `64k_s0` from 1,500,000 and `64k3d_s1`, `64k3d_s2` from 450,000 as the held-out
-     validation, about 47 minutes), the Metal purity gate again and `alife bench --preset 64k --observe` for the v2
-     overhead. A label that fails a held-out window is dropped from the UI, not re-tuned on held-out data. **Open for the
+     study windows, and the implementation is checked exact against the offline predicates. **Validated on the GPU on
+     2026-10-21:** step A on the calibration windows passes (the seven exact predicates bit-equal to the offline values); on the
+     three held-out windows (`64k_s0` from 1,500,000, `64k3d_s1` and `64k3d_s2` from 450,000) every archetype and every
+     intent's displayed label passes the provisional criterion (30 of 30 intent cells and 18 of 18 archetype cells; thinnest
+     margins 3D Resting +0.112, 3D Roaming +0.124, 2D Settler +0.218). Nothing was re-tuned and no label is marked as not
+     validated. Caveats: the 3D Signalling predicate covers 0.674 of rows on `64k3d_s1` (over the 0.6 cap; the displayed
+     label covers 0.171 and passes), and the 2D held-out window is the calibration run 4,000 steps later, not another run.
+     The Metal purity gate and the v2 bench are in the GPU day above. **Open for the
      owner** (coordinator choices of 2026-10-19 under the delegation, to revisit): the Budding overlay, the display
      names Tethering (Bonding) and Unspecialised (Generalist), the meaning changes of Gatherer, Defending and Budding
-     (GAMES §4.4), the Settler clause at 4, and the stability of the displayed label (5.3 and 6.5 changes per 1,000
-     steps against G1's 1.98 and 4.12). The verdict criterion (GAMES §10 item 12) is still provisional: the owner has not confirmed it; §28.8 applies it to the held-out windows as written, and it is fixed before their reports are read.
+     (GAMES §4.4), the Settler clause at 4, and the stability of the displayed label (measured on the GPU windows:
+     7.05 and 7.07 changes per 1,000 steps in 2D and 9.2 to 9.6 in 3D, 3.6 and 2.2 to 2.3 times G1's 1.98 and 4.12; the replay said
+     5.3 and 6.5). The verdict criterion (GAMES §10 item 12) is still provisional: the owner has not confirmed it; §28.8 applies it to the held-out windows as written, and it was fixed before their reports were read.
    - **The roster** (stage 7 of G2, DESIGN §29.14; stage 8 applied the review's findings): kin groups are named once at admission, the record lists the
      houses founded and extinct, and each listed kin group has its window births and deaths by cause, centroid and
-     archetype mix. The GPU verification also reports `houses.founded_share` from `python -m alife.analysis.social` on
-     `64k3d_s1` and `64k_s0` (the share of members in houses founded since the start against those seeded from clades), so
-     that the owner can re-decide `game.house_rate` (1/2048, GAMES §10 item 13).
+     archetype mix. The GPU verification reported `houses.founded_share` from `python -m alife.analysis.social` on
+     `64k3d_s1` and `64k_s0` (see the GPU day above), so that the owner can re-decide `game.house_rate` (1/2048, GAMES §10
+     item 13).
    - **Deferred to G3**: the stream tags and colour modes, moving the host part of a snapshot off the step thread, the
      Family row (a host lineage store and an ancestry panel), and sharing the snapshot's components with the heavy
      metrics. Copying the sidecar and the social log into a fork is G3 or G4.
-   - Then G3 (play loop and view).
+   - Then G3 (play loop and view), on the storm world after W0 to W2 (`docs/STORMS.md` §8).
 5. **Games N1, the offline World Report** (branch `games/n1-report`, on top of `games/g2-social`; DESIGN §30, Review-log row I49,
    `docs/GAMES.md` §9). Built and tested on the CPU only; no engine change, no config key and no LLM call was made in the build. Status and what follows:
    - **What it is.** `python -m alife.analysis.world_report build RUN --from S --to S --out F.jsonl [--llm --model ID]`, `verify` and
@@ -486,9 +500,19 @@ and resumed once. There is one run per condition apart from the seed pair.
    - **Open:** the owner's confirmation of C12 to C14 (the one read-only `GET /api/v0/models`); no label is narrated for a `RULES_V2` run until its verdict
      rows are added by the change that validates `RULES_V2`; `docs/STORMS.md` §6.5 is not on this branch; the provisional thresholds of DESIGN §30.14.
    - **G3** consumes the Python API (`build_sheet`, `narrate`, `ticker`) and appends `reports.jsonl` at the run root; the report never writes into a run directory.
-6. Optional engine work, deferred in DESIGN §23.2:
-   - a fused Metal kernel for the neighbour search, the biggest stage;
+6. **Storm world W0** (merged as PR #28; `docs/STORMS.md` §8, `docs/STORMS_W0.md`, DESIGN Review-log row I46). The
+   offline weather prototype (`src/alife/weather.py`, `python -m alife.analysis.w0`; no engine change) passes every
+   exit criterion except the cost one: 1.163 ms a step for the weather step plus the per-agent wind sampler against the
+   1.0 ms budget. Next: the owner's decision on the cost (accept, trim the model or the grid), then W1 (wiring the
+   weather into the step); G3 and the later steps on the storm world wait for it.
+7. Optional engine work, deferred in DESIGN §23.2:
+   - done: the fused Metal kernel for the neighbour search (`src/alife/knn_metal.py`, DESIGN §4 and F21, row I48;
+     `ALIFE_KNN=auto|mlx|metal`, the kernel is the default in 3D on Metal and `ALIFE_KNN=metal` selects it in 2D).
+     It is exact only on the MLX versions in `knn_metal.VERIFIED_MLX` and a startup self-check guards the rest. **On
+     every MLX bump and macOS major update**, run `uv run pytest tests/test_spatial_metal.py -m "" -q` on the Mac (the
+     GPU equality tests; they run on an unlisted version), then add the version to `VERIFIED_MLX`, or leave it out;
+     the remaining custom kernels of DESIGN §23.2 item 1 (tiled GEMV, splat renderer) are still deferred;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
    - `inspect` showing the resumed total instead of the original `steps`.
-7. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
+8. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
    it in the DESIGN Review log.

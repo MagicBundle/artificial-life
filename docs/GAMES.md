@@ -299,9 +299,13 @@ Labels that fail are dropped from the UI.
 both worlds and Bonding, Signalling, Roaming and Caring (too few positives) in 3D. Version 2 passes every archetype and
 every intent on the calibration windows, offline, under the rule, the first-match display and the replayed hold, in both
 worlds (thinnest displayed margins: 3D Roaming +0.082, 3D Resting +0.101, 2D Hunting +0.102). The validation on the three
-held-out windows is pending (GPU; DESIGN §28.8): a label that fails there is dropped from the UI under version 2 and the
-rule set stays as pinned. Stability: the displayed label changes about 5.3 (2D) and 6.5 (3D) times per 1,000 steps in
-the replay, against G1's 1.98 and 4.12 (the Budding overlay adds about 1.7 and 2.3). The hold (4 × 8 = 32 steps) equals the
+held-out windows was run on the GPU on 2026-10-21 (DESIGN §28.8): every archetype and every intent's displayed label passes the
+provisional criterion of §10 item 12 on all three (`64k_s0` from 1,500,000, `64k3d_s1` and `64k3d_s2` from 450,000; the thinnest
+margins are 3D Resting +0.112, 3D Roaming +0.124 and 2D Settler +0.218), nothing was re-tuned, and no label is marked as not
+validated. The 2D window is the calibration run 4,000 steps later, so it is held out in time, not in population. One caveat: the
+3D Signalling predicate covers 0.674 of rows on `64k3d_s1`, over the 0.6 cap, though the displayed label covers 0.171 and passes.
+Stability: the displayed label changes 7.05 and 7.07 (2D) and 9.2 to 9.6 (3D) times per 1,000 steps on the GPU windows (the replay
+said about 5.3 and 6.5; the Budding overlay adds about 1.7 and 2.3), against G1's 1.98 and 4.12. The hold (4 × 8 = 32 steps) equals the
 agents' 32-step clock, which makes thresholds near a clock-driven mean flicker; a hold or period that does not resonate
 would help every intent, and is flagged for G3. No stability criterion is set.
 
@@ -822,7 +826,8 @@ What a game adds:
     from a one-row decode. The protagonists at scale are groups.
   - (c) LLM narration of a few focal agents at narrative cadence, as an observer (*recommended*). Never one LLM per agent:
     Generative Agents cost thousands of dollars for 25 agents over two game days.
-- **First world: 64k 2D at 30 steps/s** (the owner's decision, §10.7).
+- **First world: 64k 2D at 30 steps/s** (the owner's decision, §10.7) for G1 and G2. G3 onwards target the 3D storm
+  world (`docs/STORMS.md`, owner, 2026-10-19), whose step rate is open (STORMS §9.8).
   - **Budget.** The step takes 16.9 ms of the 33 ms frame. The remaining 16 ms must hold the observers (est. under
     0.5 ms), the stream and an LLM parse sharing the GPU.
   - **Stream.** At 30 fps it carries about 25 MB/s with alive-only frames (about 0.83 MB at 33k agents), or 45 MB/s with
@@ -832,8 +837,8 @@ What a game adds:
   - **Content.** 2D has the signal tools, the pygame viewer, and the Swift viewer's face-on 2D view. It also has the
     thinnest content: kill share 0.13, a median largest body of 73, and a predation ratio of 0.078. The chosen lever,
     `attack_mult`, is aimed at that (§10.4).
-  - **3D later.** 3D has more to see (depth zones, reefs, kill share 0.50) but needs the deferred fused Metal kNN kernel
-    (DESIGN §27.13) to reach 30 steps/s at 64k.
+  - **3D next.** 3D has more to see (depth zones, reefs, kill share 0.50) and no longer needs the fused Metal kNN kernel
+    (built, DESIGN §4, row I48) to reach 30 steps/s at 64k: `64k3d` runs at about 75 steps/s on the M5 Pro.
 
 ### 8.4 Further risks
 
@@ -849,8 +854,8 @@ What a game adds:
 ## 9. Build plan (proposed; one PR per step, each merged before the next)
 
 - **G1. Observers.** **Built** (DESIGN §28, Review-log row I44). Its rules are `INTENT_VERSION` 1 as built; G2's last
-  stage replaced them with `INTENT_VERSION` 2 (`RULES_V2`, calibrated offline, the validation on held-out windows
-  pending: DESIGN §28.4, §28.8, row I45).
+  stage replaced them with `INTENT_VERSION` 2 (`RULES_V2`, calibrated offline, validated on three held-out windows on
+  the GPU on 2026-10-21: DESIGN §28.4, §28.8, row I45).
   - `game.observe` (unhashed), `StepOutG.acts`, and `BirthRecords.parent_slot` (moved to G2, see below).
   - The accumulators, archetype and intent rules (`INTENT_VERSION`), and the observer sidecar.
   - `signals.decode` and the SIGNALS analysis generalised to 3D (needed only when a game world is 3D).
@@ -876,8 +881,8 @@ What a game adds:
       a replay fork included, starts its observers fresh, so its labels agree with the source's only approximately
       after the warm-up.
     - The stream tags and the colour modes are G3's, observer values in the director's vitals are G4's.
-- **G2. Social tracking.** **Built** (DESIGN §29, Review-log row I45; every threshold is provisional,
-  `SOCIAL_VERSION` 1, until the calibration run). Houses, kin groups, the colony tracker, territory, the relation
+- **G2. Social tracking.** **Built, and run on the GPU on 2026-10-21** (DESIGN §29, Review-log row I45; every threshold is
+  provisional, `SOCIAL_VERSION` 1: the calibration run measured them and changed none). Houses, kin groups, the colony tracker, territory, the relation
   matrices and temperament, on two generic modules (`groups.py`, pure MLX, and `tracking.py`, host numpy) with the
   game layer in `game/social.py` and `game/society.py`.
   - **As built, and deferred.**
@@ -896,17 +901,20 @@ What a game adds:
       default and carries the Settler colony clause at `settler_body` 4 with the calibration fixes of G1's failing labels
       (Gatherer a harvest level, Defending after a recent hit, Budding a forecast shown outside the hold, Bonding shown as
       Tethering, Feeding and Signalling at 3/4 and 0.75, Caring ahead of Defending and Feeding ahead of Signalling).
-      `RULES_V1` stays defined and keeps its G1 digest. The calibration is offline; the validation on held-out windows is
-      the coordinator's GPU run. The Budding overlay, the renamed labels and the clause at 4 are the coordinator's choices
+      `RULES_V1` stays defined and keeps its G1 digest. The calibration was offline; the validation on held-out windows ran on
+      the GPU on 2026-10-21 and every label passed the provisional criterion (item 12; DESIGN §28.8). The Budding overlay, the renamed labels and the clause at 4 are the coordinator's choices
       of 2026-10-19 under the owner's delegation, to revisit.
     - The snapshot cadence is a field of `SocialRules`, not a config key. The reports go to `observers/social.jsonl`,
       not into the rows.
     - The **Family** row of §3 (a host lineage store, an ancestry panel, a "kin nearby" list) is deferred to G3, with
       the stream tags and colour modes.
-    - **Merge condition:** `tests/test_game_purity.py` and `tests/test_groups.py` on Metal, without a `-m` filter (the
-      roster adds one int8 field to the channel from an array that is already a tap); the calibration, the churn rate, the
-      house-rate report and the 64k costs also wait for the GPU, with the procedure of DESIGN §29.12
-      (`python -m alife.analysis.social`, `alife bench --observe`).
+    - **Merge condition, met 2026-10-21:** `tests/test_game_purity.py` and `tests/test_groups.py` on Metal, without a `-m`
+      filter (the twelve game and analysis files gave 509 passed, 202.7 s). The 64k bench, the calibration, the churn rate,
+      the house-rate report and the costs were measured the same day (DESIGN §29.12): observed 54.8 steps/s in 2D (target 30)
+      and 13.9 in 3D, overhead 1.38 and 2.07 ms a step; kin groups track well; **colonies churn 80 to 83% at the 250 cadence**
+      (whether 1000 is better is not established: those studies had 2 snapshots), so a colony id at 250 is not a stable identity; the host settle is 32 and 38 ms per snapshot;
+      under 0.1% of members are in houses founded within 2,500 steps. The stream rate and the step rate with an LLM call in
+      flight were not run.
 - **N1. World Report, offline.** **Built** (DESIGN §30, Review-log row I49; `REPORT_VERSION` 1, every threshold provisional until the
   owner read). `python -m alife.analysis.world_report build | verify | probe` (the module is not `analysis.report`, which is the activity
   report) turns an **observed** run's files into a chapter report: headline, lead, a body of at most six sentences, a complete
@@ -932,10 +940,15 @@ What a game adds:
       (20 chapters, template against select, blind). The build made no LLM call.
     - **Not in N1:** `alife play`, a report panel, a worker and `reports.jsonl` in a run directory (G3); player commands (G4); storm facts
       (W3); `docs/STORMS.md` §6.5 is not on this branch, so its edit (the storm-world report built on the same sheet) is left to the branch that carries it.
-- **G3. Play loop and view.**
+- **G3. Play loop and view.** On the 3D storm world, after W0–W2 (`docs/STORMS.md` §8 gives the interleaving); the
+  face-on 2D HUD below is reopened for it.
   - `alife play` with the fixed-timestep scheduler.
   - The stream tags `IDNT`, `INTN`, `TERR`, `EVNT`, with Swift decoders and fixtures.
-  - Picking and a HUD in the Swift viewer (2D worlds face-on, as today), and the new colour modes.
+  - Picking and a HUD in the Swift viewer, and the new colour modes.
+  - The World window (Metal view, docked control center): alerts, 6,000-step chapters, the ticker and the live World
+    Report; recap playback (`docs/STORMS.md` §6.5).
+  - Direct powers of the built regional actions through a player power grid, with their `GAME_SPECS` rows and the
+    separate pacing scope (moved from G4).
   - Saves:
     - dead rows canonicalised, with a save-load-step digest test;
     - recorded ALSTRM replay files.
@@ -946,7 +959,7 @@ What a game adds:
     scope.
   - `GAME_MENU` with `attack_mult` (§10.4), inert-fill for `State3`, and the 3D golden re-pin.
   - `GAME_SPECS`, and the `game_master` persona with its `PersonaParams` and the intensity vital.
-  - Direct powers.
+  - Direct powers beyond G3's, and the `game_master` safety re-scope.
   - Era changes: a checkpoint at the boundary, then a fork with `reapply_env` and `copy_director_log`.
   - Lever-response sweeps to calibrate the compiler.
 - **G5. Evaluation.**
@@ -982,10 +995,16 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
    - In compiler version 1 the harshness, cooperation and tempo dimensions compile to no-ops, which the preview states.
    - Long scarcity uses a 36,000-step `regen_pulse`.
    - The schema keeps all eight dimensions, so later levers do not change it.
+
+  *Reopened 2026-10-19* for the storm world (`docs/STORMS.md` §9.1): the case above rests on 2D's thin predation, and
+  3D's kill share is 0.50. Revisit before G4.
 5. **During a parse.** Keep stepping (*recommended*), or pause until the player has confirmed the preview (§5.7).
+   *Coordinator's choice under the owner's delegation of 2026-10-19, to revisit:* pause while composing in 3D, where a
+   parse slows the step anyway; keep stepping in 2D (`docs/STORMS.md` §6.5).
 6. **Rewind.** Era changes need the fork with `reapply_env` and `copy_director_log` either way (§7.4). The question is
    only what backs rewind: in-place resume into a copied run directory (*recommended*), or the same fork (§8.2).
-7. **First world.** *Decided:* 64k 2D at 30 steps/s (§8.3).
+7. **First world.** *Decided:* 64k 2D at 30 steps/s (§8.3). *Amended 2026-10-19:* G1 and G2 stay on it; G3 onwards
+   target the 3D storm world (`docs/STORMS.md` §9.1), with the step rate open (STORMS §9.8).
 8. **Factions.** *Decided:* kin groups (tag clusters, which agents perceive) are the factions, for relations and
    territory (§6.3, §6.5). Houses stay as genealogical names only (§6.2).
 9. **"Trader".** Reserve it for reciprocal sharing and call one-way givers "Providers" (*recommended*), or add an exchange
@@ -1001,9 +1020,14 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
 12. **The verdict criterion (G1, provisional).** A label passes the validity test (§4.5) when its AUC against the
     matched random label has `p ≤ 0.01` and `auc − null_mean ≥ 0.05`, with at least 30 positives and 30 negatives, at
     least 99 permutations, and (intents) a coverage maximum of at most 0.6 (DESIGN §28.8). The numbers are G1's
-    placeholders and still provisional: the owner has not confirmed them. They are applied as written to the held-out
-    windows of `INTENT_VERSION` 2 (DESIGN §28.8) and are fixed before those reports are read; confirm or change them
-    before then.
+    placeholders and still provisional: the owner has not confirmed them. They were applied as written to the three held-out
+    windows of `INTENT_VERSION` 2 (DESIGN §28.8), fixed before those reports were read. *Result, 2026-10-21:* every archetype
+    and every intent's displayed label passes on all three windows (30 of 30 intent cells and 18 of 18 archetype cells; every
+    p at its 0.005 floor; thinnest margins 3D Resting +0.112, 3D Roaming +0.124, 2D Settler +0.218; fewest positives 53, for 3D
+    Trader). No label failed, so none is marked as not validated and no rule was changed. Reported, not blocking: the 3D
+    Signalling predicate covers 0.674 of rows on `64k3d_s1` (its displayed label, 0.171). The evidence is limited: the 2D
+    window is the calibration run 4,000 steps later. A different criterion would have to be applied to new windows, because
+    these are read. Confirm or change the criterion.
 13. **The house rate (G2).** *Decided 2026-10-19:* `game.house_rate` defaults to 1/2048, not "off". It is an
     observer-only key, unhashed at every value and inert while `game.observe` is off, so a working default breaks
     nothing. CLAUDE.md records the exception to the "new keys default to off" convention.
