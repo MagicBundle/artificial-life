@@ -13,6 +13,8 @@ seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`.
 `docs/GAMES.md` is the design of the gaming vertical (owner decisions in its §10); its build step G1, the observer
 layer (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`; normative spec `DESIGN.md` §28), is
 implemented, with provisional thresholds (`INTENT_VERSION` 1) until the calibration run.
+`docs/STORMS.md` is the storm world; W0 (the model, `weather.py`, `docs/STORMS_W0.md`) and W1 (`weather.*` config,
+`State.wx`, wind/rain/hazard in the step; `DESIGN.md` §30) are implemented and off by default.
 
 ## Conventions
 
@@ -26,6 +28,8 @@ implemented, with provisional thresholds (`INTENT_VERSION` 1) until the calibrat
 - New config keys must default to "off" and be added to `config.POST_V01_KEYS`, so existing runs keep their
   config hash and still resume.
 - Avoid GPU float32 matmul for anything that must be accurate (Metal reduced precision, DESIGN F20).
+- A trajectory-neutral state field is frozen out of the legacy digests (`V0_FIELDS`, `V0_FIELDS_3D`), so the goldens
+  do not move when such a field is added.
 - Checks before pushing: `uv run ruff check src tests`, `uv run ruff format --check src tests`,
   `uv run pytest -m "not slow" -q`. A trajectory change needs a deliberate golden-digest re-pin.
 - The GUI (`gui/`, SwiftUI, macOS 14+) shells out to `.venv/bin/alife`. Keep its lever list in sync with

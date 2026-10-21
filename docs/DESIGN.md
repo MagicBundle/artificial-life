@@ -175,7 +175,7 @@ The canonical order is `State._fields`. It is the order used by `state_to_arrays
 host iteration. Checkpoint files are keyed by name, and their key order is not significant (F15). The shapes are
 those of a 2D world; `state.expected_layout(cfg)` is the one schema for both dims (§27.1). A 3D world differs in
 the rows marked "3D" and, through `W1_ROWS` and `D_OUT` (§2.1), in the weight widths, and its state is the parallel
-type `State3`: these 47 fields, then `pitch` and `buoy_cap` (§27.4).
+type `State3`: these 48 fields, then `pitch` and `buoy_cap` (§27.4).
 
 **Per-agent rows (leading dim N).** "Canonical when dead" means the value is forced at death and checked by the
 invariants. Other dead-row values are stale and must never be read without an `alive` mask.
@@ -253,9 +253,14 @@ between steps without a recompile, and read by the compiled step only when `cfg.
 | `env_cat_center` | (2,) | float32 | catastrophe centre (torus coordinates) | zeros | finite |
 | `env_cat_radius` | () | float32 | catastrophe radius; 0 = none | 0 | [0, L/2] |
 | `env_cat_kill_p` | () | float32 | per-agent kill probability inside the radius; reset to 0 after the step it applied in (§12.9) | 0 | [0, 1] |
+| `wx` | (9, wn, wn) | float32 | the weather (§30.3): `(h1, h2, u1, v1, u2, v2, Q, P, Dc)` stacked, `wn = weather.cells`; the rest state, carried unchanged while `weather.enabled` is false | `weather.rest_array(cfg)` | finite; `h >= h_min` |
 
 `state.default_env(cfg)` returns the inert arrays for a config. `env_season_amp` is allowed up to 1 (inclusive)
 because `validate` allows `season_amplitude = 1`; the weight `1 − A` is then 0 at the trough, never negative.
+
+`wx` (W1, §30) is the 48th field, after `env_cat_kill_p`. It is not part of `V0_FIELDS`, `ENV_FIELDS` or the legacy digests
+(`V0_FIELDS_3D` freezes `State3`'s 49 earlier names, §30.3), and `state_from_arrays(d, cfg)` fills it with
+`weather.rest_array(cfg, step)` for a file that lacks it.
 
 **Derived quantities** are never stored, to remove a class of inconsistency.
 - During step `t` (the value of `state.step` at the start of the step), `age = t − 1 − birth_step` (int32).
@@ -297,6 +302,7 @@ class State(NamedTuple):           # every field is an mx.array, in exactly the 
     env_regen_mult: mx.array; env_season_amp: mx.array; env_season_period: mx.array; env_drift_mult: mx.array
     env_patch_gain: mx.array; env_imm_request: mx.array; env_cat_center: mx.array; env_cat_radius: mx.array
     env_cat_kill_p: mx.array
+    wx: mx.array                   # the packed weather state (N_WX, wn, wn), §30.3
     @property
     def env(self) -> Env: ...      # grouped read-only view of the env_* fields (Env.regen_mult, ...)
 ```
@@ -323,6 +329,12 @@ labels tool and `bench --observe` pass `observe=True` whatever `cfg.game.observe
 and the seasonal override sit behind a static `if cfg.director.enabled:`. With the director off the traced graph
 is the one it was before the env fields existed, and the `env_*` arrays pass through unchanged. With it on and
 inert env values, the trajectory is bit-identical to director-off (tested, `test_director_env.py`).
+
+**Weather branches.** Every weather line sits behind the static `cfg.weather.enabled` (W1, §30.4): S3w unpacks `wx` and
+samples the wind at the start-of-step positions, S9 ORs the wind bond-break flag, S14 passes the storm mask, S15 adds
+the wind force, S17 advances the weather and feeds the rain to `update_resource`, and S18 passes `weather_bad` to
+`device_check`. With the weather off the traced graph is the one it was before `wx` existed, and `wx` passes through
+unchanged. With it on, the weather does not read any agent array (§30.1).
 
 Ordered sub-steps:
 - **"Start-of-step"** means the input `s`.
@@ -859,6 +871,13 @@ Newborns are placed in S16 and are not integrated in their birth step.
 
 **Terminal speed** under full thrust with no grip is 0.1 u/step, so crossing the 64k world takes about 10⁴ steps.
 
+**Wind (weather on, §30.5).** `forces(…, wind=)` and `forces3(…, wind=)` add a force `alpha·drag·u_air` (an (N,nd)
+array, already multiplied) after the lift term and before the survivor mask. It is **not** contact-attenuated, like
+gravity and buoyancy, and `integrate`/`integrate3` are unchanged: an unobstructed agent drifts at `alpha·u_air`, a
+grounded gripping agent at `alpha·u/(1 + grip_gain·grip)` horizontally, and the `v_max` clip is the net. With
+`wind=None` (weather off) the graph is the one above. The load rules that keep it inside the speed and repulsion
+budgets are `validate`'s (§30.2).
+
 All physics is gathers plus elementwise work. There is no float scatter, so it is deterministic.
 
 ---
@@ -885,7 +904,8 @@ All physics is gathers plus elementwise work. There is no float scatter, so it i
 
 - **Regeneration (S17)** (§13.2). Each cell gains
   `inc = clip(min(regen_rate_c, resource_cap − R_c), 0, ∞)`, giving `INJECT_REGEN = Σ inc`. Regeneration stops at
-  `resource_cap`. Corpses and spills may push `R` above the cap; regeneration is then 0.
+  `resource_cap`. Corpses and spills may push `R` above the cap; regeneration is then 0. With the weather on,
+  `regen_rate_c` also holds the integer rain term (§30.6), which `INJECT_REGEN` therefore books.
 - **Immigration (S16, optional).** Each immigrant brings `e_init + S`, giving `INJECT_IMMIGRATION`.
 
 ### 10.3 Costs (S8, `energy.pay_costs`), per alive agent per step
@@ -983,6 +1003,8 @@ flows to the observer channel (§28.2); the traced graph of `share` is unchanged
     the new cause `CATASTROPHE` (3). Catastrophe deaths are *excess* deaths only: an agent that any other rule
     already kills keeps that cause, so the precedence above is unchanged and `INSOLVENT ≤ DEATHS_STARVED` still
     holds. The corpse (`E + S`) takes the ordinary corpse path above, so there is no new ledger term.
+  - **Storm (weather only, §12.10).** With `storm_mask`, rows get the cause `STORM` (4) on the same excess-death rule,
+    below the catastrophe: a row in both masks dies as `CATASTROPHE`. The corpse takes the ordinary path.
   - **Rescue.** A solvent agent drained to 0 by combat at S11 survives if bond inflow at S12 lifts it above 0. This
     is intended: it is a cooperative defence that bodies can evolve. Insolvent agents cannot be rescued.
 - **Reproduction (S16).** For each parent:
@@ -1013,7 +1035,8 @@ is `state.ledger_cum`.
 
 No director action adds a ledger term. A catastrophe death is a corpse (`FLOW_CORPSE`), an immigration request is
 admitted through the ordinary immigrant lanes (`INJECT_IMMIGRATION`), and a regeneration multiplier or patch gain
-only changes the integer regeneration amount (`INJECT_REGEN`).
+only changes the integer regeneration amount (`INJECT_REGEN`). The weather adds no ledger term either (§30): the rain is an
+integer addition to the regeneration amount, booked in `INJECT_REGEN`, and a storm death is a corpse (`FLOW_CORPSE`).
 
 **Per-step closure.** This is checked on device every step (`Diag.LEDGER`) and in tests on the host (2D; in 3D
 `L[15]` is a sink too, §27.7):
@@ -1295,6 +1318,15 @@ with cause `CATASTROPHE`, counted in `DEATHS_CATASTROPHE`. After the step `env_c
 cannot repeat; `env_cat_center` and `env_cat_radius` stay as set (they are inert at `kill_p = 0`, and the last
 geometry stays inspectable). In 3D the disc is a vertical column: only x and y count (§27.4).
 
+### 12.10 Storm deaths (weather, off unless `weather.enabled`)
+
+With the weather on, `lifecycle.storm_mask(speed, alive, ks[Stream.WEATHER] second half, cfg)` marks an alive agent iff
+its uniform draw is below `storm_p·clip((speed − storm_u0)/storm_span, 0, 1)`, with `speed` the **air** speed at the
+agent (jet included, §30.5). `deaths(..., storm_mask=)` kills the marked agents that would otherwise survive and are not
+marked by the catastrophe, with cause `DeathCause.STORM` (4), counted in `DEATHS_STORM` (the last counter, §30.7). The draw
+is made every step the weather is on, so stream use never depends on `storm_p`. The corpse takes the ordinary path
+(`FLOW_CORPSE`): no ledger term. Details: §30.7.
+
 ---
 
 ## 13. Fields: the cellular-automaton substrate
@@ -1367,6 +1399,9 @@ taken in integers so it stays exact on long runs. `A ∈ [0, 1]` keeps `w_p ≥ 
   - The product `R·64 < 2³⁰`.
 - Setting `resource_diffusion_q8 = 0` disables diffusion.
 - Corpses (S14) and combat spill (S11) are int scatter-adds into `R`.
+- With the weather on, the regeneration of each cell is `floor_i32(regen_max·fertility·…) + rain_regen` (§30.6): an int32
+  rain term from the weather's rain rate, cloud level and depth, added after the floor and not scaled by the
+  director's regeneration lever. `inc` is clipped as above, so `INJECT_REGEN = Σ inc` books it.
 
 ### 13.3 Chemical / signal channels (NCH = 3, float32)
 
@@ -1407,11 +1442,11 @@ chem_c ← (1 − λ_c) · (chem_c + D_c · (roll₄(chem_c) − 4·chem_c))
 
 - `state.key` (uint32[2]) is the only simulation RNG state.
 - Every step: `k = split(state.key, 2)`, `key_next = k[0]`, `ks = split(k[1], NUM_STREAMS)`.
-- `NUM_STREAMS = 16` is frozen, because split is not prefix-stable (F3). `RNG_LAYOUT_VERSION = 2` is stored in every
+- `NUM_STREAMS = 16` is frozen, because split is not prefix-stable (F3). `RNG_LAYOUT_VERSION = 3` is stored in every
   checkpoint.
 - New consumers take a reserved index. Every layout change bumps the version. A change that moves no existing
-  stream key (taking a reserved index, as `CATASTROPHE` did for version 2) keeps the older versions in
-  `rng.RNG_COMPATIBLE_VERSIONS = {1, 2}`, so their checkpoints load and resume. Loading a checkpoint whose version is
+  stream key (taking a reserved index, as `CATASTROPHE` did for version 2 and `WEATHER` for version 3) keeps the older
+  versions in `rng.RNG_COMPATIBLE_VERSIONS = {1, 2, 3}`, so their checkpoints load and resume. Loading a checkpoint whose version is
   not in that set is refused with exit code 4. A change that did move a key must bump the version without adding
   the old one to the set.
 
@@ -1426,7 +1461,8 @@ chem_c ← (1 − λ_c) · (chem_c + D_c · (roll₄(chem_c) − 4·chem_c))
 | `MUT_GENES` | 6 | σ, p, tag, frac | `split(·, 4)` → `normal (M,)`, `normal (M,)`, `normal (M,T)`, `normal (M,)` |
 | `IMMIGRANT` | 7 | immigrant pos, heading, tag, W1, W2 | `split(·, 5)`; drawn only if immigration is possible (`immigration_possible`) |
 | `CATASTROPHE` | 8 | director catastrophe kill draw | `uniform(0, 1, (N,))`; drawn every step only if `director.enabled` |
-| — | 9–15 | reserved | — |
+| `WEATHER` | 9 | weather disturbances and the storm hazard (§30.4) | `split(·, 2)`: `[0]` is the disturbance key of `weather.step`, `[1]` the hazard key (`uniform(0, 1, (N,))`); both drawn every step only if `weather.enabled` |
+| — | 10–15 | reserved | — |
 
 **Init** (`rng.init_keys(seed)`): `split(key(seed), 16)`, with these `InitStream` slots:
 - 0 `POS` (founder positions, `U[0, L)²`)
@@ -1485,12 +1521,15 @@ the 38 frozen v0 fields (`state.V0_FIELDS`) in v0 order with the same per-field 
 state it equals what `state_digest` returned before the `env_*` fields existed. Bit-identity checks against
 pre-director trajectories (the golden pin, `alife bench` baselines) use `legacy_state_digest`; everything else uses
 the stricter `state_digest`. With the director enabled and inert env values, `legacy_state_digest` equals the
-director-off one at every step (§3).
+director-off one at every step (§3). The 3D engine has the same freeze: `legacy_state_digest_3d(s)` hashes the literal
+`state.V0_FIELDS_3D`, the 49 names `State3` had before `wx` (§30.3), and `legacy_digest(s)` picks by state type. For an
+unchanged trajectory it equals the `state_digest` the 3D engine produced before the weather layer. A trajectory-neutral
+field is frozen out of the legacy digests; with the weather off, the carried `wx` is such a field.
 
 **Golden test.** `tests/test_determinism.py::test_golden` pins the `tiny_cfg` (tiny preset, f32 weights)
 `legacy_state_digest` after 50 steps (the pin was not changed by the env fields). It runs only
 when `mlx.__version__` equals the version recorded next to the golden value, so an MLX upgrade becomes a deliberate
-change. The 3D golden (`state_digest` of `tiny3d_cfg`) is §27.8's.
+change. The 3D golden (`legacy_state_digest_3d` of `tiny3d_cfg`, which equals the earlier `state_digest`) is §27.8's.
 
 ---
 
@@ -1638,8 +1677,10 @@ artificial-life/
     stream.py                    `alife stream`: the binary frame protocol, control lines, --follow (§27.11)
     bench.py                     throughput, stages, donation health, determinism, brain variants
     cli.py                       argparse entry point `alife`
-    weather.py                   the W0 weather prototype (model B, STORMS §3.2): pure MLX, not imported by the step
-                                 until W1; §22.6 rule 5
+    weather.py                   the weather layer (model B, STORMS §3.2) and its engine coupling: pure MLX, imported by
+                                 the step, config, fields, state and invariants (§30); §22.6 rule 5
+    weather_obs.py               host numpy: the `weather` block of a metrics row (§30.8); not a lint module
+    weather_spinup.py            host driver: `alife run --weather-spinup N` (§30.9); not a lint module
     game/                        the games vertical, build step G1 (§28): observe (pure-MLX observer state and update),
                                  rules (archetype and intent rules, INTENT_VERSION), observer (host Observer, sidecar)
     analysis/                    offline analysis (never imported by the step; not under the §22.6 lint scope): host-only
@@ -1674,7 +1715,7 @@ artificial-life/
 class ConfigError(ValueError): ...
 @dataclass(frozen=True) class WorldConfig; PopulationConfig; SensingConfig; BrainConfig; PhysicsConfig
 @dataclass(frozen=True) class BondConfig; EnergyConfig; CombatConfig; ReproConfig; MutationConfig
-@dataclass(frozen=True) class FieldConfig; DirectorConfig; GameConfig; RunConfig    # §17; GameConfig: §28
+@dataclass(frozen=True) class FieldConfig; DirectorConfig; GameConfig; WeatherConfig; RunConfig    # §17; GameConfig: §28; WeatherConfig: §30
 @dataclass(frozen=True) class Config: world; population; sensing; brain; physics; bonds; energy; combat;
                                       repro; mutation; fields; director; game; run
 @dataclass(frozen=True) class Dims:
@@ -1728,14 +1769,16 @@ def ledger_names(nd: int) -> tuple[str, ...]                               # slo
 def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]   # the one State schema (§27.1)
 class CounterIdx(IntEnum): ...     # §19.1 (N_COUNTERS = 27)
 class Counter3D(IntEnum): Z_FLOOR_CLAMPS = 27; Z_SURFACE_CLAMPS = 28; GROUNDED = 29    # 3D only (§27.8)
-def n_counters(nd: int) -> int                                             # len(StepOut.counters): 27 | 30 (3D)
+def n_counters(nd: int, weather: bool = False) -> int                      # len(StepOut.counters): 27 | 30 (3D); +1 with weather (§30.7)
+def storm_counter_index(nd: int) -> int                                    # DEATHS_STORM, the last counter: 27 | 30 (3D)
 class Diag(IntFlag): ...           # §22.3
-class DeathCause(IntEnum): STARVED = 0; KILLED = 1; AGED = 2; CATASTROPHE = 3
+class DeathCause(IntEnum): STARVED = 0; KILLED = 1; AGED = 2; CATASTROPHE = 3; STORM = 4     # STORM: weather hazard (§30.7)
 R_HARD: Final = (1 << 24) - 1
-class State(NamedTuple): ...       # §2.3 (47 fields: V0_FIELDS (38) + ENV_FIELDS (9)); State.env -> Env view
+class State(NamedTuple): ...       # §2.3 (48 fields: V0_FIELDS (38) + ENV_FIELDS (9) + wx); State.env -> Env view
 class Env(NamedTuple): regen_mult; season_amp; season_period; drift_mult; patch_gain; imm_request; cat_center; cat_radius; cat_kill_p
 ENV_FIELDS: Final = ("env_regen_mult", ...); V0_FIELDS: Final = State._fields[:38]
-class State3(NamedTuple): ...      # §27.4: State's 47 fields, then EXTRA_3D_FIELDS = ("pitch", "buoy_cap"); .env as State
+class State3(NamedTuple): ...      # §27.4: State's 48 fields, then EXTRA_3D_FIELDS = ("pitch", "buoy_cap"); .env as State
+V0_FIELDS_3D: Final = ("alive", ...)   # the literal 49 names State3 had before wx (§30.3); legacy_state_digest_3d hashes them
 AGENT_FIELDS; AGENT_FIELDS_3D = AGENT_FIELDS + EXTRA_3D_FIELDS               # per-agent fields (leading dim N)
 def state_cls(cfg: Config) -> type                                         # State3 if world.dims == 3, else State
 def agent_fields(cfg: Config) -> tuple[str, ...]                           # AGENT_FIELDS_3D | AGENT_FIELDS
@@ -1749,16 +1792,19 @@ def state_to_arrays(s: State | State3) -> dict[str, mx.array]
 def state_from_arrays(d: Mapping[str, mx.array], cfg: Config | None = None) -> State | State3
                     # type state_cls(cfg) (without cfg: State3 iff the keys hold EXTRA_3D_FIELDS); key SET must equal its
                     # _fields, built in _fields order; exception: with a 2D cfg, a set missing only env_* keys (a
-                    # pre-director checkpoint) is filled from default_env(cfg)
+                    # pre-director checkpoint) is filled from default_env(cfg); a missing wx (pre-weather file, 2D or 3D) from
+                    # weather.rest_array(cfg, d["step"]) (§30.3)
 def state_digest(s: State | State3) -> str                                 # sha256 over all fields in type(s)._fields order (host)
 def legacy_state_digest(s: State) -> str                                   # same encoding over V0_FIELDS only (§14.2); TypeError for State3
+def legacy_state_digest_3d(s: State3) -> str                               # over V0_FIELDS_3D (§30.3); TypeError for State
+def legacy_digest(s: State | State3) -> str                                # the frozen digest of the state's own dimension
 def to_numpy(a: mx.array) -> np.ndarray                                    # the only host read path: bf16 → f32 on device (exact, F17)
 
 # rng.py
 class Stream(IntEnum): NOISE = 0; BOND_PRIO = 1; BIRTH_PRIO = 2; PLACEMENT = 3; MUT_W1 = 4; MUT_W2 = 5
-                       MUT_GENES = 6; IMMIGRANT = 7; CATASTROPHE = 8
+                       MUT_GENES = 6; IMMIGRANT = 7; CATASTROPHE = 8; WEATHER = 9
 class InitStream(IntEnum): POS = 0; HEADING = 1; W1 = 2; W2 = 3; TAG = 4; PATCH_POS = 5; PATCH_VEL = 6; STATE_KEY = 7
-NUM_STREAMS: Final = 16; RNG_LAYOUT_VERSION: Final = 2; RNG_COMPATIBLE_VERSIONS: Final = frozenset({1, 2})
+NUM_STREAMS: Final = 16; RNG_LAYOUT_VERSION: Final = 3; RNG_COMPATIBLE_VERSIONS: Final = frozenset({1, 2, 3})
 def step_keys(key: mx.array) -> tuple[mx.array, mx.array]                 # (key_next (2,), ks (16,2))
 def init_keys(seed: int) -> mx.array                                       # (16,2)
 def observer_key(seed: int, step: int) -> mx.array
@@ -1804,14 +1850,14 @@ def fertility(patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
               env: Env | None = None) -> mx.array                         # (FG,FG) f32 in [0,1]; 3D (FZ,FG,FG) (§27.5)
 def vertical_profile(cfg: Config) -> mx.array                              # 3D: (FZ,1,1) f32, V[0] = 1 (§27.5)
 def regen_rate(patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
-               env: Env | None = None) -> mx.array                        # (FG,FG) int32; 3D (FZ,FG,FG)
+               env: Env | None = None, rain: RainIn | None = None) -> mx.array     # (FG,FG) int32; 3D (FZ,FG,FG); rain: §30.6
 def cell_index(pos: mx.array, cfg: Config) -> mx.array                    # (N,) int32; 3D z-major (§27.5)
 def sample_fields(resource: mx.array, chem: mx.array, fcell: mx.array, heading: mx.array, cfg: Config,
                   *, pitch: mx.array | None = None) -> FieldObs              # pitch required in 3D (§27.6)
 def deposit_chem(emit: mx.array, fcell: mx.array, active: mx.array, cfg: Config) -> mx.array   # (NCH*n_cells,) int32
 def update_chem(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array     # 3D: 7-point, mirrored z (§27.6)
 def update_resource(resource: mx.array, patch_pos: mx.array, cfg: Config, step: mx.array | None = None,
-                    env: Env | None = None) -> tuple[mx.array, mx.array]
+                    env: Env | None = None, rain: RainIn | None = None) -> tuple[mx.array, mx.array]
                     # (resource', inc (FG,FG) int32) — regen then int diffusion; 3D (FZ,FG,FG), int_diffuse_3d
 def drift_patches(patch_pos: mx.array, patch_vel: mx.array, cfg: Config, env: Env | None = None) -> mx.array
 
@@ -1855,13 +1901,14 @@ def symmetric_ok(partner: mx.array, rev: mx.array, alive: mx.array) -> mx.array 
 
 # physics.py
 def forces(pos: mx.array, heading: mx.array, act: Actions, nbr: Neighbors, survivor: mx.array,
-           partner: mx.array, cfg: Config) -> mx.array                              # (N,2)
+           partner: mx.array, cfg: Config, *, wind: mx.array | None = None) -> mx.array     # (N,2); wind: the force alpha·drag·u_air (§30.5)
 def integrate(pos: mx.array, heading: mx.array, force: mx.array, grip: mx.array, turn: mx.array,
               survivor: mx.array, cfg: Config) -> tuple[mx.array, mx.array, mx.array, mx.array]
                     # (pos, vel, heading, n_clipped () int32); asserts (N,2) positions
 def grounded(pos: mx.array, cfg: Config) -> mx.array                        # 3D: (N,) bool, z ≤ z_ground (§27.3)
 def forces3(pos: mx.array, heading: mx.array, pitch: mx.array, act: Actions, mo: Motion3, buoy_cap: mx.array,
-            nbr: Neighbors, survivor: mx.array, partner: mx.array, cfg: Config) -> mx.array    # 3D: (N,3) (§27.3)
+            nbr: Neighbors, survivor: mx.array, partner: mx.array, cfg: Config,
+            *, wind: mx.array | None = None) -> mx.array                     # 3D: (N,3) (§27.3); wind as in forces (§30.5)
 class Integrated3(NamedTuple): pos; vel; heading; pitch; v_clips; z_floor; z_surface      # counts () int32
 def integrate3(pos: mx.array, heading: mx.array, pitch: mx.array, force: mx.array, grip: mx.array, turn: mx.array,
                dpitch: mx.array, on_floor: mx.array, survivor: mx.array, cfg: Config) -> Integrated3   # 3D (§27.3)
@@ -1898,8 +1945,10 @@ class Deaths(NamedTuple): survivor; dead; energy; uid; partner; rev; resource; c
     # rows, −1 elsewhere. Unused record lanes (deaths and births) hold uid/parent_uid/slot −1 and 0 elsewhere.
 def flush_pending(W1, W2, pend_slot, pend_W1, pend_W2) -> tuple[mx.array, mx.array]   # via ops.set_rows
 def deaths(alive, solvent, energy, lost, age, uid, generation, clade, partner, rev, resource, fcell, cfg: Config,
-           *, cat_mask: mx.array | None = None) -> Deaths
-    # dead = alive & (~solvent | E == 0 | aged) | excess catastrophe deaths (cat_mask); cause precedence in §10.7
+           *, cat_mask: mx.array | None = None, storm_mask: mx.array | None = None) -> Deaths
+    # dead = alive & (~solvent | E == 0 | aged) | excess catastrophe deaths (cat_mask) | excess storm deaths (storm_mask,
+    # below the catastrophe); cause precedence in §10.7
+def storm_mask(speed: mx.array, alive: mx.array, key: mx.array, cfg: Config) -> mx.array     # (N,) bool, §30.7
 def catastrophe_mask(pos: mx.array, alive: mx.array, env: Env, key: mx.array, cfg: Config) -> mx.array   # (N,) bool, §12.9
                     # 3D: a vertical column, x and y only (§27.4)
 class Lanes(NamedTuple): parent; slot; kind; n_req; n_birth; n_imm                 # (M,),(M,),(M,),(),(),()
@@ -1925,7 +1974,8 @@ def make_step(cfg: Config, *, compile: bool | None = None, observe: bool = False
 
 # invariants.py
 def device_check(s: State, ledger: mx.array, prev_total: mx.array, max_cell_occ: mx.array,
-                 max_attackers: mx.array, overflow_cells: mx.array, v_clips: mx.array, cfg: Config) -> mx.array
+                 max_attackers: mx.array, overflow_cells: mx.array, v_clips: mx.array, cfg: Config,
+                 *, weather_bad: mx.array | None = None) -> mx.array     # weather_bad: WEATHER_WARN, only passed with weather on (§30.8)
                     # int32 Diag bits for this step (ORed into s.diag by step); 3D terms in §27.8
 def env_out_of_range(s: State, cfg: Config) -> mx.array                   # device bool: any env_* value non-finite / outside §2.2 ranges
 def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | None = None) -> list[str]
@@ -1937,10 +1987,11 @@ def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | 
 def components(partner: mx.array, alive: mx.array, iters: int) -> tuple[mx.array, mx.array]   # labels, converged
 def snapshot_metrics(s: State, cfg: Config, *, heavy: bool) -> dict[str, Any]     # host floats/ints/lists
 def interval_row(step: int, counters: np.ndarray, ledgers: np.ndarray, snap: Mapping[str, Any],
-                 perf: Mapping[str, float], *, nd: int = 2) -> dict[str, Any]
-                    # counters (T, n_counters(nd)), ledgers (T,16); the ledger keyed by ledger_names(nd) (§27.8)
+                 perf: Mapping[str, float], *, nd: int = 2, weather: bool = False) -> dict[str, Any]
+                    # counters (T, n_counters(nd, weather)), ledgers (T,16); the ledger keyed by ledger_names(nd) (§27.8);
+                    # weather: adds deaths_storm after child_bonds (§30.7)
 def carrying_capacity(s: State, cfg: Config, step: mx.array | None = None, env: Env | None = None) -> float
-                    # step + env: the live regeneration (the director's K_est, §26.5)
+                    # step + env: the live regeneration (the director's K_est, §26.5); with weather on, the stored rain (§30.6)
                     # 3D: each layer's regeneration weighted by the share of the alive agents in it (§27.10)
 
 # runio.py
@@ -2017,11 +2068,30 @@ class FdControl: ...                              # stdin control lines on a dae
 # bench.py
 def run_bench(cfg: Config, *, steps: int = 200, warmup: int = 20, stages: bool = False,
               determinism: bool = False, brain_variants: bool = False,
-              observe: bool = False) -> dict[str, Any]   # JSON-compatible; observe: the "observe" block (§28.8)
+              observe: bool = False, weather: bool = False,
+              weather_pairs: int = 2) -> dict[str, Any]   # JSON-compatible; observe: the "observe" block (§28.8); weather: the "weather" block (§30.9)
+def stages_for(cfg: Config) -> tuple[tuple[str, str], ...]                   # STAGES; with weather on, plus ("wind", "S3w") and ("weather", "S17w")
 def format_report(report: dict[str, Any]) -> str                            # terminal summary of a report
 
 # cli.py
 def main(argv: Sequence[str] | None = None) -> int
+
+# weather.py  (§30; the model of STORMS_W0 plus the engine coupling; pure MLX)
+N_WX: Final = 9; ENGINE_FIXED: Final[dict[str, Any]]
+def pack(ws: WeatherState) -> mx.array; def unpack(wx: mx.array) -> WeatherState                  # (N_WX, n, n) f32 <-> nine arrays
+def params_from_config(cfg: Config) -> WeatherParams                                              # cached; name-keyed copy + ENGINE_FIXED
+def rest_array(cfg: Config, step: mx.array | int = 0) -> mx.array                                 # the packed rest state (§30.3)
+def validate_config(cfg: Config) -> list[str]                                                     # never raises (§30.2)
+class AgentForce(NamedTuple): force; speed; breaks; clip_bad                                      # (N,nd) f32, (N,) f32, (N,) bool | None, () bool
+def agent_wind(ws, pos, buoy_cap | None, alive, cfg) -> AgentForce                                # 3D with buoy_cap, else 2D (§30.5)
+def sample_wind_h(ws, pos, p, *, valid=None) -> AgentWind                                         # 2D layer-1 sampler; sample_wind(..., valid=) in 3D
+def advance(ws, t, key, cfg) -> tuple[WeatherState, WeatherDiag]                                  # one engine step of weather (§30.4)
+def health(wd: WeatherDiag, wind: AgentForce) -> mx.array                                         # () bool: WEATHER_WARN input (§30.8)
+class RainIn(NamedTuple): P; zi; dc                                                               # (n, n) f32 each
+def rain_in(ws, cfg) -> RainIn; def rain_for(ws, cfg) -> RainIn | None                            # None when rain_gain == 0
+def rain_regen(rain: RainIn, cfg: Config) -> mx.array                                             # int32 (FG,FG) | (FZ,FG,FG) (§30.6)
+# weather_obs.py (host): weather_block(wx, air_speed, cfg, occupancy=, overlap_deep=) -> dict (§30.8)
+# weather_spinup.py (host): spinup(cfg, n, *, step, key, compile, progress) -> wx; advance_chain(...) (§30.9)
 
 # game/  (§28; imported explicitly: alife.game.observe, alife.game.rules, alife.game.observer)
 # rules.py (the leaf of the package)
@@ -2132,6 +2202,14 @@ these arguments.
 **In 3D** (static `d3`, the table of §27.8) S4 also computes the grounding and passes the pitch, S7 adds
 `decode_motion3`, S8 calls `pay_costs3`, S15 calls `forces3` and `integrate3` and writes the pitch back, and
 `finish` adds the `HEAT_BUOYANCY` column, `Counter3D` and the column occupancy; the 2D lines above are unchanged.
+
+**With `weather.enabled`** (static) the wiring above gains the lines of §30.4 and nothing else changes: S3w
+`ws = weather.unpack(s.wx)`, `wind = weather.agent_wind(ws, s.pos, s.buoy_cap if d3 else None, s.alive, cfg)` and
+`kw = split(ks[Stream.WEATHER], 2)`; S9 `flag | wind.breaks[:, None]` (when `storm_break_u > 0`); S14 `storm_mask=`
+`lifecycle.storm_mask(wind.speed, s.alive, kw[1], cfg)`; S15 `wind=wind.force`; S17 `ws2, wd = weather.advance(ws, t,
+kw[0], cfg)`, `rain = weather.rain_for(ws2, cfg)`, `update_resource(..., rain=rain)` and `wx = weather.pack(ws2)`;
+S18 `weather_bad = weather.health(wd, wind)` into `device_check`, and `counters` gain the last entry `DEATHS_STORM`.
+`bench._StagedStep` mirrors all of it.
 
 **With `observe`** (static argument of `step`/`make_step`) S8 keeps the decode output's `thrust` (`thrust0 = act.thrust`,
 taken before `actions.mask`); S12 calls `energy.share_slots` and `energy.share_from_slots`, the same graph as
@@ -2315,6 +2393,23 @@ class GameConfig:                      # the games vertical (§28); added after 
                                        # unhashed (config.OBSERVER_KEYS) and a resume key
 
 @dataclass(frozen=True)
+class WeatherConfig:                   # the storm world's engine weather layer (§30); added after v0.1
+    enabled: bool = False              # static: the compiled step carries the weather update, wind, rain and hazard
+    cells: int = 160                   # weather grid side n; dx = world.size / cells; a multiple of FG (rule W-1)
+    H1: float = 32.0; H2: float = 48.0                       # layer rest depths; H1 + H2 = world.height in 3D
+    g_top: float = 9.18256e-3; g_prime: float = 5.16862e-3; f0: float = 0.025
+    gamma: float = 21.6; tau_c: float = 8.0; k_E: float = 0.1; u_gust: float = 0.02; q_bg: float = 0.70; q_pool: float = 1.11
+    tau_rad: float = 2000.0; r1: float = 2e-4; c_d: float = 2e-3; r2: float = 1e-4
+    pools: tuple[float, ...] = (...)   # 42 floats, 7 per pool (x, y, sx, sy, amp, vx, vy) = weather.DEFAULT_POOLS flat
+    seed_rate: float = 0.02; seed_v: float = 0.02; seed_sigma: float = 12.0; seed_jitter: float = 0.5
+    alpha0: float = 0.25; alpha1: float = 0.75; u_max: float = 0.3; w_edge: float = 0.03; z_sl: float = 4.0
+    rain_gain: float = 0.0             # nominal quanta per column per step per unit rain rate; 0 = no rain food
+    rain_floor: float = 0.0            # extra share of the rain in the floor layer (3D); 0 with a director
+    storm_p: float = 0.0               # peak per-step storm kill probability; 0 = no hazard
+    storm_u0: float = 0.06; storm_span: float = 0.03   # air speed where the hazard starts and the range of its ramp
+    storm_break_u: float = 0.0         # air speed above which a bond slot breaks; 0 = off, else >= storm_u0
+
+@dataclass(frozen=True)
 class RunConfig:                       # excluded from config_hash; on resume only observer/cadence keys may change (§18)
     seed: int = 0
     steps: int = 100_000
@@ -2338,6 +2433,7 @@ class Config:
     energy: EnergyConfig = EnergyConfig(); combat: CombatConfig = CombatConfig()
     repro: ReproConfig = ReproConfig(); mutation: MutationConfig = MutationConfig()
     fields: FieldConfig = FieldConfig(); director: DirectorConfig = DirectorConfig(); game: GameConfig = GameConfig()
+    weather: WeatherConfig = WeatherConfig()
     run: RunConfig = RunConfig()
 ```
 
@@ -2352,6 +2448,7 @@ class Config:
 | `tiny3d` | `tiny`'s, plus `world: dims 3, height 24`; `physics: gravity 0.03, floor_eps 0.1, buoyancy_max 0.04`; `energy: buoyancy_cost 16, buoyancy_cap_cost 8`; `mutation: buoy_init 0.5, buoy_sigma 0.02`; `fields: chem_diffusion [0.16, 0.10, 0.16], benthic_lambda 8, photic_amp 0.5, photic_lambda 8` (provisional, §27.8) |
 | `64k3d` | `64k`'s, plus `world: size 320, dims 3, height 80`; `physics: gravity 0.015, floor_eps 0.1, buoyancy_max 0.04`; `sensing.cell_capacity 48` (confirmed 2026-10-16, was 24 until cloud-7); `energy: brain_cost_per_l1 0.0905, buoyancy_cost 16, buoyancy_cap_cost 8`; `mutation: buoy_init 0.5, buoy_sigma 0.02`; `fields: n_patches 8, patch_sigma 24, regen_max 1700, chem_diffusion [0.16, 0.10, 0.16], benthic_lambda 8, photic_amp 0.5, photic_lambda 8` (as derived and not yet tuned, §27.13) |
 | `fast` (overlay) | `sensing: k_neighbors 6, cell_capacity 12`; `brain.hidden 24` |
+| `storm` (world overlay, `config.WORLD_OVERLAYS`) | `weather: enabled true, rain_gain 50000, storm_p 0.002, storm_u0 0.06, storm_span 0.03` (provisional, §30.2); for a world that holds the 160-cell weather, such as `64k3d` |
 
 **Loading** (`load_config`). Precedence, lowest first:
 1. dataclass defaults;
@@ -2374,12 +2471,13 @@ except `run`. **Keys added after v0.1 are omitted from the hash at their default
 `fields.season_amplitude`, `fields.season_mode`, `director.enabled`, `world.dims`, `world.height` (§27.1),
 `physics.gravity`, `physics.floor_eps`, `physics.buoyancy_max`, `mutation.buoy_init`, `mutation.buoy_sigma`,
 `fields.benthic_lambda`, `fields.photic_amp`, `fields.photic_lambda`, `energy.buoyancy_cost`,
-`energy.buoyancy_cap_cost` (§27.1, §27.3–§27.5, §27.7), `game.observe` (§28); the
+`energy.buoyancy_cap_cost` (§27.1, §27.3–§27.5, §27.7), `game.observe` (§28) and every key of `weather` (§30.2; each changes
+the compiled step, so none is unhashed); the
 director's policy keys `persona`, `goal`, `rule_every`, `budget_per_100k`, (step 3) `llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` and (§26.11) `yoke_log` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
 because only `enabled` changes the compiled step). `game.observe` is omitted at every value too, but it is in its own list,
 `config.OBSERVER_KEYS`, not in `UNHASHED_KEYS` (from which `config.DIRECTOR_POLICY_KEYS`, the director's resume keys,
 is derived): it is read only by host-side observers and never changes the trajectory (§28.1). A section that this
-leaves empty (`director`, `game`) is omitted from the hashed dict too, so the hash does not change when a section is
+leaves empty (`director`, `game`, `weather`) is omitted from the hashed dict too, so the hash does not change when a section is
 added. A
 `config.json` that predates them therefore loads with the
 defaults (sparse dicts fill missing keys, and a missing `director` section is the default one), hashes exactly as
@@ -2406,6 +2504,10 @@ changes the hash, as for any dynamics key.
   `run.metrics_every` and `run.heavy_metrics_every` (§26.2). LLM tier (§26.10): `llm_every` is 0 or a positive
   multiple of `rule_every`; `0 ≤ llm_temperature ≤ 2`; `llm_timeout_s` positive and finite; `llm_max_tokens ≥ 1`;
   `run.llm_model` non-empty; with `llm_every > 0`, `run.llm_url` is an http(s) URL with a host.
+- **Weather:** with `weather.enabled` false every other weather key must keep its default (rule W-0); with it true,
+  `weather.validate_config` returns the messages (guards, W0's parameter rules, the world rules W-1 and W-2, the load
+  rules R1 to R4, the coupling keys, `director.enabled` implies `rain_floor == 0`): §30.2. The overlay name check
+  accepts `config.ALL_OVERLAYS = OVERLAYS + WORLD_OVERLAYS`.
 - **Game:** `game.observe` is a plain bool. There is no cross-key rule: the int32 headroom of the observer
   accumulators is checked by `RuleSet.check(cfg)` when an observer is built (§28.3), not by `validate`.
 - **Fields (seasons):** `season_period ≥ 0`; `0 ≤ season_amplitude ≤ 1`; `season_period ≥ 1` when
@@ -2445,7 +2547,7 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
   meta.json                                    see below
   metrics.jsonl                                one JSON object per metrics interval (§19.2), key "step" first
   checkpoints/
-    step_0000000000.safetensors                every State field by name (state_to_arrays), env_* included
+    step_0000000000.safetensors                every State field by name (state_to_arrays), env_* and wx included
     step_0000010000.safetensors
     LATEST                                     text: file name of the newest complete checkpoint
   events/
@@ -2471,9 +2573,11 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
   `alife_version`, `mlx_version`, `weight_dtype`, and `config` (the canonical config JSON), so a state file is
   self-describing; a 3D state also records `dims` (absent = 2D, §27.1).
 - **Versions and pre-director files.** `load_checkpoint` accepts any `rng_layout_version` in
-  `rng.RNG_COMPATIBLE_VERSIONS` ({1, 2}); new files write 2 (`meta.json` too). A file written before the `env_*`
-  fields (38 arrays) loads with inert env values from `default_env(cfg)`: `state_from_arrays(d, cfg)` fills the
-  missing keys only when every missing key is an `env_*` field, and any other mismatch still raises. A pre-director
+  `rng.RNG_COMPATIBLE_VERSIONS` ({1, 2, 3}); new files write 3 (`meta.json` too). A file written before the `env_*`
+  fields (38 arrays) loads with inert env values from `default_env(cfg)`, and a file written before the weather layer
+  (no `wx`) with the rest state `weather.rest_array(cfg, step)` (§30.3): `state_from_arrays(d, cfg)` fills the
+  missing keys only when every missing key is an `env_*` field or `wx` (a 3D file may lack only `wx`), and any other
+  mismatch still raises. New files do not load in older code. A pre-director
   run directory therefore resumes under a director-off config (same hash), and forks (`--init-from`, hash check off)
   under a director-enabled config start with inert env. `env_*` shapes and dtypes are checked like every field.
 - **Atomic writes.** Each checkpoint is written to `*.tmp` and moved into place with `os.replace`. Only then is
@@ -2535,6 +2639,9 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
     starts with `run.director = off` (whatever the source ran) unless `--director` is given, and a new log starts
     empty. The one exception is a replay fork (`--director replay --replay-log LOG`), which copies `LOG` verbatim
     (§26.8). Resume never resets the environment.
+  - **Weather.** The source's `wx` is kept. A fork that turns the weather on from a weather-off source starts from the
+    rest state (a calm start), and `--weather-spinup N` (§30.9) advances the weather alone for `N` steps first (recorded
+    in `meta.json` as `weather_spinup`); a source whose weather is already on cannot be spun up (exit 2).
   - **Observers.** `--set game.observe=…` works as for any key (it is unhashed, so the fork's `config_hash` equals the
     source's when only it differs). A fork never receives the source's sidecar: its observers start fresh, a replay
     fork included (§28.6).
@@ -2547,7 +2654,7 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
 
 ## 19. Metrics for emergence
 
-### 19.1 Per-step counters (`CounterIdx`, `StepOut.counters`, int32 (27,); 2D, 3D (30,): §27.8)
+### 19.1 Per-step counters (`CounterIdx`, `StepOut.counters`, int32 (27,); 2D, 3D (30,): §27.8; weather +1: §30.7)
 
 | idx | name | idx | name |
 |---|---|---|---|
@@ -2566,14 +2673,16 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
 | 12 | `BONDS_FORMED` (pairs) | 25 | `BOND_PROPOSERS` (`as_prop` rows; a mutual pair counts 2) |
 | | | 26 | `DEATHS_CATASTROPHE` (director catastrophe deaths, §12.9; 0 when the director is off) |
 
-`DEATHS_STARVED + DEATHS_KILLED + DEATHS_AGED + DEATHS_CATASTROPHE` equals the number of deaths in the step.
+`DEATHS_STARVED + DEATHS_KILLED + DEATHS_AGED + DEATHS_CATASTROPHE` equals the number of deaths in the step (with the
+weather on, plus `DEATHS_STORM`, the last counter: index 27 in 2D and 30 in 3D after `Counter3D`, `state.storm_counter_index`,
+so no index above moves).
 
 All four kin counters and `BOND_PROPOSERS` are assembled by `step.finish` (§16.3).
 
 `BONDS_BROKEN` is the decrease in occupied slots across S9a plus across S14, halved. The runner keeps the per-step
 `StepOut`s of an interval as small evaluated arrays and stacks them on the host at the flush. That gives counters
 `(T,27)` and ledgers `(T,16)` as int64 sums, so no step's events are lost. In 3D the counters are `(T,30)`: the 27
-above, then `state.Counter3D` (§27.8).
+above, then `state.Counter3D` (§27.8); with the weather on one more column, `DEATHS_STORM`, so `(T,28)` and `(T,31)`.
 
 ### 19.2 Interval row (`metrics.jsonl`)
 
@@ -2587,7 +2696,8 @@ Every row has these groups:
   `deaths_catastrophe` (always present, 0 with the director off), `deaths_unlogged`, `insolvent`.
 - **Interactions:**
   - `attacks`, `attack_hits`;
-  - `bonds_formed`, `bonds_broken`, `child_bonds`, `bonds_total`, `mean_bonds_per_agent`;
+  - `bonds_formed`, `bonds_broken`, `child_bonds`, `bonds_total`, `mean_bonds_per_agent` (with the weather on, `deaths_storm`,
+    the interval sum, follows `child_bonds`; §30.7);
   - `sharers_frac`, `emitters_frac`;
   - `predation_ratio` = Σ`FLOW_STOLEN` / Σ`FLOW_HARVEST`.
 - **Kin:**
@@ -2615,6 +2725,9 @@ Every row has these groups:
 - **Environment** (`env`, only when `director.enabled`): the live levers at the snapshot (`regen_mult`, `season_amp`,
   `season_period`, `drift_mult`, `imm_request`, `cat_radius`, `cat_kill_p`, and the range and zero-count of
   `patch_gain`). The row is written before the director acts at that step, so `env` shows what the interval ran with.
+- **Weather** (`weather`, only when `weather.enabled`, after `env`): the nested block of §30.8 (wind maxima, the layer-2
+  jet, rain, storm proxy, conservation drift, hyperbolicity, occupancy by band, `storm_exposure`, air-speed percentiles,
+  `overlap_deep`). A row of a weather-off run has none of it.
 - **Health:**
   - `diag`;
   - `cell_overflow` (interval sum), `max_occupancy` (interval max), `v_clips`;
@@ -2804,12 +2917,12 @@ Pinned details (impl, WP6):
 ## 21. CLI (`alife`, argparse, entry point `alife.cli:main`)
 
 ```text
-alife run      [--preset tiny|dev|64k|256k|tiny3d|64k3d] [--overlay fast ...] [--config PATH] [--set section.key=value ...]
+alife run      [--preset tiny|dev|64k|256k|tiny3d|64k3d] [--overlay fast|storm ...] [--config PATH] [--set section.key=value ...]
                [--seed S] [--steps N] [--out DIR] [--overwrite] [--init-from RUN[:STEP]|FILE.safetensors]
                [--metrics-every N] [--checkpoint-every N] [--checks cheap|off] [--no-compile] [--quiet]
                [--director off|live|replay] [--replay-log LOG]
                [--llm | --llm-every N] [--llm-url URL] [--llm-model NAME] [--persona NAME] [--goal TEXT]
-               [--yoke-log PATH]
+               [--yoke-log PATH] [--weather-spinup N]
 alife resume   RUN [--steps N | --until STEP] [--checkpoint STEP|latest] [--set run.key=value ...]
                [--set director.key=value ...] [--set game.observe=true|false] [--director off|live|replay] [--quiet]
                [--llm | --llm-every N] [--llm-url URL] [--llm-model NAME] [--persona NAME] [--goal TEXT]
@@ -2823,8 +2936,8 @@ alife inspect  RUN [--checkpoint STEP|latest] [--json] [--check] [--agent UID]
 alife view     [RUN | --preset P [--set ...]] [--checkpoint STEP|latest] [--steps-per-frame N] [--size WxH]
 alife stream   [RUN|FILE | --preset P [--set ...]] [--checkpoint STEP|latest] [--every K] [--steps N]
                [--follow [--poll SECONDS]] [--color tag|energy|clade] [--fields] [--field-z K] [--no-control]
-alife bench    [--preset P] [--overlay fast] [--set ...] [--steps 200] [--warmup 20] [--stages]
-               [--determinism] [--brain-variants] [--observe] [--json PATH]
+alife bench    [--preset P] [--overlay fast|storm] [--set ...] [--steps 200] [--warmup 20] [--stages]
+               [--determinism] [--brain-variants] [--observe] [--weather [--weather-pairs N]] [--json PATH]
 alife llm-check [--llm-url URL] [--llm-model NAME] [--timeout SECONDS] [--preset P]
 alife activity RUN [--out DIR] [--grid N] [--marker-rates R,...] [--horizons H,...] [--shadows N] [--seed S]
                [--windows A:B,...] [--start STEP] [--reuse] [--no-plots] [--quiet]
@@ -2833,6 +2946,12 @@ alife activity RUN [--out DIR] [--grid N] [--marker-rates R,...] [--horizons H,.
 **`activity`** never modifies the run's files: it writes `activity.npz`, `summary.json`, `classification.txt` and the
 figures to `--out` (default `RUN/activity`), §19.3 and `docs/ACTIVITY.md`. `--start` (default: the run's first step,
 the fork step for a fork) analyses from that step, with the agents alive then as founders.
+
+**`--weather-spinup N`** (`run`, fresh or `--init-from`; §30.9) advances the weather alone for `N` steps before the agents
+feel it. It needs `weather.enabled` (exit 2 otherwise, before anything is written) and refuses a fork whose source already
+has the weather on. **`bench --weather`** times the step with the weather on against the same config with it off, in
+interleaved blocks (needs `weather.enabled`, exit 2 otherwise); `--weather-pairs N` sets the number of off/on pairs
+(default 2). The `storm` overlay composes as `--preset 64k3d --overlay storm`.
 
 **`run`** creates the run directory and the initial state (or loads `--init-from`), then calls `runner.run`. Every
 metrics interval it prints one status line: step, population, births/deaths, bonds, largest body (heavy steps),
@@ -3081,13 +3200,14 @@ metrics interval. On any error bit it dumps the state to `diag/`, prints the dec
 | 256 | `POS_RANGE` | `pos < 0` or `pos ≥ L` |
 | 1<<16 | `CELL_OVERFLOW_WARN` | warning: `overflow_cells > 0` |
 | 1<<17 | `VCLIP_WARN` | warning: `v_clips > 0` |
+| 1<<18 | `WEATHER_WARN` | advisory (weather on): the W0 health gate fired (limiter or clamp counters, `hyper_max >= 0.8`, `eps_local_max >= 1`) or a wind sample was clipped (§30.8) |
 
 `ERROR_MASK = 0xFFFF`. Warning bits never stop a run, and they are reported in metrics.
 
 **Coverage.** The Diag bits cover exactly these §2.2/§8.1/§10 invariants: ledger closure and the theft identity
 (`LEDGER`); alive energy range and dead energy 0 (`ENERGY_RANGE`); dead `uid = −1` and dead rows without bonds
 (`DEAD_DIRTY`); bond symmetry, no duplicates, `partner < 0 ⇔ rev < 0` (`BOND_ASYM`); finiteness of `pos`, `vel`, `h`
-and `chem` (`NONFINITE`); resource range (`FIELD_RANGE`); int32 preconditions (`INT_HEADROOM`); the population cap
+and `chem` (`NONFINITE`, which with the weather on also covers `wx`); resource range (`FIELD_RANGE`); int32 preconditions (`INT_HEADROOM`); the population cap
 (`CAPACITY`); and position range (`POS_RANGE`). Everything else in §22.2 (uid uniqueness and monotonicity, gene,
 `h`, `heading`, `tag` and `chem` ranges, the pending-buffer invariant, the remaining dead-row canonical fields, age)
 is checked only by the host `full_check`. The 3D terms of both checks (no new bit) are in §27.8.
@@ -3164,7 +3284,9 @@ collected only under `-m slow` (the nightly job and the cloud worker).
 4. `mx.async_eval` is never used in `src/alife`.
 5. There is no `.item()`, `np.asarray` or `float(`/`int(` on arrays inside the simulation modules (`spatial`,
    `fields`, `sensing`, `brain`, `actions`, `bonds`, `physics`, `energy`, `lifecycle`, `step`, `invariants`; and,
-   since the games vertical, `game.observe` and `game.rules`; and, since the W0 weather prototype, `weather`). This is
+   since the games vertical, `game.observe` and `game.rules`; and, since the W0 weather prototype, `weather`, which the
+   engine step now imports from W1 on; its host drivers `weather_obs` and `weather_spinup` are not in the list, because
+   they evaluate and read the device). This is
    a heuristic AST check plus an allow-list.
    In those modules an enum or flag constant is written `X.Y.value`, never `int(X.Y)`: `int()` and `float()` apply
    only to names in `SAFE_ROOTS` (`cfg`, `d`, `math`, `layout`, `dims`, `self`).
@@ -4125,7 +4247,7 @@ height in code and docs: `H` is the hidden size.
 | Q4 | immigrants | uniform in the volume |
 
 **Accepted technical choices** (one line each in docs/3D.md §12): the append-only genome layout (§27.1); a parallel
-`State3` (State's 47 fields, then `pitch`, `buoy_cap`), so `State` and every 2D digest stay as they are; ledger slot
+`State3` (State's 47 fields, then `pitch`, `buoy_cap`; 48 fields with `wx` since W1, §30.3), so `State` and every 2D digest stay as they are; ledger slot
 15 keeps the canonical name `RESERVED` with `HEAT_BUOYANCY` as an alias named per dims in metrics; the existing RNG
 streams with 3D-only draw shapes (`RNG_LAYOUT_VERSION` stays 2); offspring in a cone behind the parent with vertical
 reflection; `Counter3D` (27–29) appended to `StepOut.counters` in 3D only; mirrored field z-gradients; the vertical
@@ -4344,6 +4466,9 @@ F_i = thrust_max · a_i · att_i · fwd_i                       fwd_i = body_axe
   no 3D code (`BondGeom.off` is (N,B,nd)) and the bitwise pair antisymmetry of §9 holds in 3D. The body forces act
   on z only, so x and y stay antisymmetric under gravity.
 - Non-survivors get 0.
+- With the weather on, `forces3(…, wind=)` adds the wind force (`alpha·drag·u_air`, `alpha = alpha0 + alpha1·buoy_cap`)
+  after the lift term and before the survivor mask, not contact-attenuated (§30.5). Its vertical part is never gripped,
+  and the 3D norm clip below is the net.
 
 **Grounding.** `physics.grounded(pos, cfg) = z ≤ Dims.z_ground` (§27.2), from the start-of-step position, inclusive:
 for a float32 z, exactly `z ≤ r + floor_eps` or `z = z_lo`, so an agent resting on the floor is always grounded, and
@@ -4406,8 +4531,8 @@ z; the level floor against `forces`/`integrate` bit for bit; the 2D guard; compi
 
 ### 27.4 The 3D state, the buoyancy-cap trait and placement (PR 2)
 
-**`State3`.** A 3D world's state is `state.State3`, a NamedTuple parallel to `State`: `State`'s 47 fields in the
-same order, then `state.EXTRA_3D_FIELDS = ("pitch", "buoy_cap")`. `State` itself, every 2D digest and the 2D
+**`State3`.** A 3D world's state is `state.State3`, a NamedTuple parallel to `State`: `State`'s 48 fields (47 until the
+weather layer added `wx`, §30.3) in the same order, then `state.EXTRA_3D_FIELDS = ("pitch", "buoy_cap")`. `State` itself, every 2D digest and the 2D
 checkpoint key set are unchanged. `State3.env` is the same `Env` view; `env_cat_center` stays (2,), because the
 catastrophe is a vertical column. `state_cls(cfg)` and `agent_fields(cfg)` (`AGENT_FIELDS_3D = AGENT_FIELDS +
 EXTRA_3D_FIELDS`) pick per dims; `mx.compile` takes and returns `State3` as it does `State` (F12).
@@ -4425,8 +4550,9 @@ EXTRA_3D_FIELDS`) pick per dims; `mx.compile` takes and returns `State3` as it d
 **Schema and serialisation.** `expected_layout(cfg)` appends `pitch` and `buoy_cap` in 3D. `state_to_arrays` and
 `state_digest` follow `type(s)._fields`. `state_from_arrays(d, cfg)` builds `state_cls(cfg)` (without `cfg`:
 `State3` exactly when the keys include `EXTRA_3D_FIELDS`) and requires its exact key set, so a state never crosses
-dimensions (after the `dims` metadata check of §27.1); the pre-director `env_*` fill applies to 2D only.
-`legacy_state_digest` is 2D only (`TypeError`: a 3D state has no v0 layout). `load_checkpoint`, `full_check` and
+dimensions (after the `dims` metadata check of §27.1); the pre-director `env_*` fill applies to 2D only, and the
+pre-weather `wx` fill to both (§30.3). `legacy_state_digest` is 2D only (`TypeError`: a 3D state has no v0 layout; its
+frozen digest is `legacy_state_digest_3d`, §30.3). `load_checkpoint`, `full_check` and
 `alife inspect` read the fields of the state's own type.
 
 **Initial state** (`init_state`, 3D branch; the 2D lines are unchanged).
@@ -4731,7 +4857,8 @@ returns `Integrated3`; the static `observe` branch of §16.3 changes no state or
 | 28 | `Z_SURFACE_CLAMPS` | survivors stopped by the surface (pre-clamp `z ≥ z_hi` with `v_z > 0`) |
 | 29 | `GROUNDED` | agents grounded at the start of the step that survived it (`physics.grounded(s.pos) & s.alive & ~dead`; `IN_GROUNDED` is not masked). A row that dies in the step (starvation, age, combat, a catastrophe) is not counted, so `Σ GROUNDED ≤ Σ N_ALIVE` and the interval's `grounded_frac` (§27.9) is a share in [0, 1]; counted over the start-of-step alive set (as PR 3 first defined it), a mass death inflated the numerator against the end-of-step `N_ALIVE` (review of PR 4) |
 
-`n_counters(nd)` is 27 in 2D and 30 in 3D. `metrics.interval_row` and the viewer's accumulator size by it; the
+`n_counters(nd)` is 27 in 2D and 30 in 3D (`n_counters(nd, weather=True)` is one more, `DEATHS_STORM` last, §30.7).
+`metrics.interval_row` and the viewer's accumulator size by it; the
 runner stacks the step's counters as they come. Under gravity every surviving agent resting on the floor clamps
 every step, so `Z_FLOOR_CLAMPS` is about `GROUNDED` and is not an anomaly signal; the surface count is the separate one.
 
@@ -4790,8 +4917,10 @@ runs matches bit for bit; the 2D golden is not re-pinned).
 It keeps `tiny`'s `C = 16` and `K = 8`, which a floor pile under gravity overflows (§27.3, a warning bit); they are
 sized for `64k3d` in PR 6. `tiny3d` with the `fast` overlay validates too (`K = 6 ≤ 27·12`).
 
-**3D golden digest.** `tests/test_determinism_3d.py::test_golden_3d` (marker `golden`) pins `state_digest` (every
-field of `State3`; `legacy_state_digest` is 2D only) of `tiny3d_cfg` after 50 compiled steps. The actuator and both
+**3D golden digest.** `tests/test_determinism_3d.py::test_golden_3d` (marker `golden`) pins `legacy_state_digest_3d`
+(the 49 fields `State3` had at PR 3's pin, `state.V0_FIELDS_3D`; before W1 it was `state_digest` over every field, and
+the value is the same: `wx` was frozen out, §30.3, and `GOLDEN_3D` was not re-pinned) of `tiny3d_cfg` after 50
+compiled steps. The actuator and both
 costs are on, so `ledger_cum[HEAT_BUOYANCY] > 0` (asserted) and the pin covers slot 15. Like §14.2's golden it is
 keyed by the MLX version and the platform, and it is recorded on the CI platform, `Linux-x86_64-cpu` with MLX
 0.32.3, never on the Mac (CPU kernels round differently across architectures). Procedure: while
@@ -5188,6 +5317,10 @@ independent float64 reference, equal to `carrying_capacity` in the benthic limit
 `step` and `env`, and equal to the one `K_est` in 2D).
 
 **Tests edited.** `test_dims_config_pr2.py::BAD_PR2` lost its `director.enabled` case: the rule it pinned is gone. PR 6's edits for the occupancy rule are in its Review-log row (I42); the converses of its two limit-pinning tests and the Gardener's return to 40 founders are in the row's extension.
+
+**Rain in `K_est` (W1).** With the weather on, `carrying_capacity`, `floor_carrying_capacity` and so the director's `K_est`
+and extinction-risk flag add the stored rain (`metrics.rain_of`, §30.6). The floor `K` holds rain only when
+`weather.rain_floor > 0`, which `validate` forbids under a director.
 
 ### 27.11 The CLI in 3D: reporting, refusals and `alife stream` (PR 4)
 
@@ -6565,6 +6698,444 @@ warm; CI caches the directory, §22.0).
 
 ---
 
+## 30. Storm weather (W1)
+
+The second build step of the storm world (`docs/STORMS.md` §3.3, §4, §8 W1; Review-log row I47). The weather layer of W0
+(`weather.py`, `docs/STORMS_W0.md`) is wired into the engine: a hashed `[weather]` section, one packed state field, wind
+as a drag force, rain-fed regrowth, a storm hazard and bond breaking, all behind a static `weather.enabled` that is off
+by default. This section is normative for them. The coupling values of the `storm` overlay are **provisional**: W2
+calibrates them. (§29 is reserved for the games build step G2, which merges separately; this section does not depend on
+it, except where §30.7 says so.)
+
+### 30.1 Scope, principles and deferrals
+
+**Principles.**
+- With `weather.enabled = false` every trajectory, `StepOut`, metrics row, config hash and golden is unchanged (§30.3
+  lists exactly what does change: the carried `wx` array, the `weather` table of a `config.json`, the RNG layout
+  number).
+- No 17th ledger slot. Weather energy enters only through `INJECT_REGEN` (rain) and the corpse path (storm deaths).
+- Senses and genome layout are unchanged: wind is felt through the agent's own `vel`, nuclei through c2.
+- **In W1 the weather does not depend on the agents** (no seeding, no shade). `wx` at step `t` is a function of
+  `(WeatherConfig, world.size, run.seed, t)` alone, because the key chain is `state.key -> step_keys`, which reads no
+  agent array. W2's seeding and shade remove this property. It is what makes the weather-only spin-up (§30.9) and the
+  test of §30.10 possible.
+- Pure MLX, as the other simulation modules (§22.6): no scatter or setitem outside `ops.py`, no host sync, branches
+  only on config constants, no float32 matmul.
+
+**What the weather does to a run, measured on the confirmed W0 model at the overlay's values** (W1 review, on the live
+agents of `runs/64k3d_s0`; the figures belong to those runs and are not DESIGN constants).
+- *The dominant always-on coupling is the layer-2 jet, not the storms.* Weather on includes a zonal-mean layer-2 jet of
+  **about 0.05** (STORMS §4 assumed a background of about 0.01). Agents above the interface height (about z = 32; 40% of
+  the still-air agents) feel `alpha·u` of 0.020 to 0.028 per step against their own speeds of 0.025 to 0.034. The
+  `jet_max_l2` metric (§30.8) shows it. **A weather-on effect must not be attributed to storms** without an arm that
+  removes or damps the jet (`weather.r2` raised; W2 confirms the key, or runs the tracer arm).
+- *The rain is a local food source and a 0.1% to 2% global perturbation* of the base regeneration: 0.09% at the
+  overlay's `rain_gain`, 1.9% at a gain of 1e6 (the int32 bound, about 3e8 at the confirmed set, is far above both).
+  `rain_gain` is nominal (§30.6).
+- *The hazard is numerically inert at the overlay's values*: the population-mean storm mortality is far below the
+  baseline mortality, and a short run sees no storm death. W2 sets `storm_u0` and `storm_p` from the `weather` block's
+  `storm_exposure`, `air_speed_p99` and `jet_max_l2` (§30.8). Storm deaths are exercised in the tests by a prescribed
+  wind (§30.10).
+
+**Deferred** (W2 and later): rain seeding by c2 and cloud shade (they put agents in the weather's loop), `qs` and
+momentum forcing beyond constants, wind-relative observer fields and any `INTENT_VERSION` or `OBSERVER_FORMAT` change,
+storm tracking in the engine, warm-pool and wind-impulse levers and `STORM_MENU` (`State.env` gains nothing), the
+temperature-peaked growth response, `VOL1`/`STRM`/`MAP1` stream records, the client and GUI, a Metal kernel for the
+weather step, wind-aware director rules, the calibration of `rain_gain` and `storm_*`. The weather-only spin-up of §30.9
+is built under coordinator choice C17 (it was deferred in the first plan).
+
+### 30.2 Config (`config.WeatherConfig`, `Config.weather`)
+
+A nested frozen section between `game` and `run`, 33 keys, **every key hashed** (`POST_V01_KEYS`; none in
+`UNHASHED_KEYS` or `OBSERVER_KEYS`: each changes the compiled step). `config_hash` omits them at their defaults and drops
+the empty `weather` table, so **every existing run and preset keeps its hash** (the pinned hashes of §28.1 and
+`TINY_HASH_V01`, `K64_HASH` do not move; all 12 preset and preset-plus-`fast` hashes equal those before W1). Names are
+`weather.WeatherParams`' field names exactly (`H1`, `k_E`, ...), so `weather.params_from_config(cfg)` (cached on the
+section and the three world values it reads) is a name-keyed copy.
+
+| keys | default | meaning |
+|---|---|---|
+| `enabled` | `false` | static switch of every weather branch |
+| `cells` | 160 | grid side `n`; `dx = world.size / cells` (320 / 160 = 2 units) |
+| `H1`, `H2` | 32.0, 48.0 | layer rest depths; `H1 + H2` must equal `world.height` in 3D |
+| `g_top`, `g_prime`, `f0` | 9.18256e-3, 5.16862e-3, 0.025 | gravities, Coriolis amplitude |
+| `gamma`, `tau_c`, `k_E`, `u_gust`, `q_bg`, `q_pool` | 21.6, 8.0, 0.1, 0.02, 0.70, 1.11 | moisture (`q_pool > 1`, STORMS_W0) |
+| `tau_rad`, `r1`, `c_d`, `r2` | 2000.0, 2e-4, 2e-3, 1e-4 | radiative relaxation, damping |
+| `pools` | 42 floats | flat, 7 per pool `(x, y, sx, sy, amp, vx, vy)`; default `weather.DEFAULT_POOLS` |
+| `seed_rate`, `seed_v`, `seed_sigma`, `seed_jitter` | 0.02, 0.02, 12.0, 0.5 | disturbances |
+| `alpha0`, `alpha1`, `u_max`, `w_edge`, `z_sl` | 0.25, 0.75, 0.3, 0.03, 4.0 | agent wind (STORMS §4) |
+| `rain_gain` | 0.0 | **nominal** quanta per field column per step per unit of rain rate `P`; 0 = rain feeds nothing |
+| `rain_floor` | 0.0 | extra share of `rain_gain·P` added to the floor layer (3D); must be 0 in 2D and under a director |
+| `storm_p`, `storm_u0`, `storm_span` | 0.0, 0.06, 0.03 | hazard (§30.7); `storm_p = 0` = off |
+| `storm_break_u` | 0.0 | air speed above which a bond slot breaks; 0 = off, else `>= storm_u0` |
+
+**What is not a key** (`weather.ENGINE_FIXED`): `dt = 1` (one engine step, no sub-cadence), `h_min = 2`, `m_min = 1`,
+`c_half = 1e-3`, `Qs = 1`, `nu = 0`, `kappa_d = 0.04`, `sl_order = 1`, `u_safe = 0.3`, `seed_q = 0`, `seed_qsigma = 6`,
+`seed_w2 = 0`, and the seven host detection fields (`detect_every`, `zeta_th`, `p_th`, `a_min`, `r_min`, `miss_grace`,
+`min_dets`). W0 tuned none of them after round 0, the mean-flow stability rule is tabulated only for these numerics, and
+each key is a hashed degree of freedom. A later change makes one a key, in `POST_V01_KEYS`, with this value as its default.
+
+**Defaults.** The config defaults and `WeatherParams()` defaults are separate objects, and a test asserts they agree
+field by field by name (and, for a 320-wide config, as a whole object), so a later change of a `WeatherParams` default
+cannot silently change a hashed config. Not `params_from_config(Config()) == WeatherParams()`: the default `world.size`
+is 1024, so `dx` would be 6.4.
+
+**The overlay.** `storm` (`src/alife/presets/storm.toml`) is a **world overlay**: `config.WORLD_OVERLAYS = ("storm",)`,
+`ALL_OVERLAYS = OVERLAYS + WORLD_OVERLAYS` is what `load_config`, `_read_preset` and the CLI's `--overlay` accept.
+`OVERLAYS` stays `("fast",)` ("composes with every preset"), because three consumers rely on that (the 2D-default test,
+the digest matrix's preset-by-overlay loop, and `OVERLAYS == ("fast",)` in the config tests). It composes as
+`--preset 64k3d --overlay storm` and fails validation on a world that cannot hold the confirmed weather (`tiny`, ...). No
+preset changes. The file sets `enabled = true`, `rain_gain = 50000` (**nominal**; about 7% of it is lost to the
+`floor_i32` of each used layer), `storm_p = 0.002`, `storm_u0 = 0.06` (above the jet and the core median) and
+`storm_span = 0.03`, all **provisional**; `storm_break_u` stays 0; `rain_floor` stays 0.
+
+**Validation** (`weather.validate_config`, called by `config.validate`; it returns messages and never raises, so a bad
+value is a `ConfigError`, never a traceback). Rule W-0 first: with `weather.enabled = false`, every other weather key must
+keep its default (`weather.<key> is inert while weather.enabled is false`), so no config changes its hash without
+changing its behaviour. With the weather on, in order:
+0. **Guards**, before any parameter is built: `world.size` and `world.field_cell` finite and positive; `cells` an int in
+   `[8, 1024]` (the upper bound is the allocation, and equals the field lattice's own bound); `len(pools) % 7 == 0`;
+   every pool value finite. If a guard fails its messages are returned and the rest is skipped.
+1. `params_from_config(cfg).validate()`: W0 spec §2.5 rules 1 to 14, 16 and 18, unchanged.
+2. **World rules.** W-1: `cells` is a multiple of the field lattice `FG = size / field_cell` (the rain remap is a block
+   mean; 64k3d: 160 % 80 = 0; a 2D `64k` world needs `cells = 512`, outside the measured cost). W-2: every pool centre
+   lies in `[0, world.size)` (the default pools are 320-wide coordinates). In 3D `check_world` (the height rule
+   `H1 + H2 = world.height`, `0 < z_sl <= world.field_cell`, R2, R3); in 2D R3 and R4.
+3. **Load rules** (STORMS §3.3), at the 64k3d values (`gravity 0.015`, `buoyancy_max 0.04`, `thrust_max 0.1`, `drag 1`,
+   `radius 1`, `k_repel 0.08`, `v_max 0.5`; `2r·k_repel = 0.16`):
+
+   | rule | formula | 64k3d value |
+   |---|---|---|
+   | R1 | `alpha0, alpha1 >= 0`, `a = alpha0 + alpha1 <= 1` | 0.25, 0.75: `a = 1`, at the bound |
+   | R2 (3D vertical non-penetration) | `thrust_max + max(g, bmax - g) + a·drag·w_edge < 2r·k_repel` | 0.1 + 0.025 + 0.03 = 0.155 < 0.16; `w_edge < 0.035` at `a = 1` |
+   | R3 (horizontal speed budget) | `(thrust_max + a·drag·u_max)/drag <= v_max` | 0.1 + 0.3 = 0.4 <= 0.5 (`u_max = 0.4` passes, `0.4001` fails). It bounds the horizontal part only; mid-column `w` is not clipped by the sampler, and the 3D norm clip of `integrate3` (`V_CLIPS`) is the net |
+   | R4 (2D horizontal, replaces R2) | `a = alpha0`: `thrust_max + a·drag·u_max < 2r·k_repel` (strict) | 0.1 + 0.25·0.3 = 0.175 > 0.16: fails at `u_max = 0.3`; a 2D weather config needs `u_max < 0.24` |
+
+4. **Coupling keys.** `0 <= storm_p <= 1`, `storm_u0 >= 0`, `storm_span > 0`, `0 <= rain_floor <= 1` (0 in 2D);
+   `storm_break_u == 0` or `>= storm_u0` (the threshold acts on the air speed *including the layer-2 jet*, so a smaller
+   value would break every upper-column bond continuously; wind shear alone cannot break a bond, so the explicit
+   threshold is the only mechanism); `rain_gain >= 0` and, when `gamma > 0`, `rain_gain·(H1 + H2 - 2·h_min)/gamma <= 2^30`
+   (the int32 derivation: the rain rate is bounded by `P <= (h1 - h_min)/gamma`, so a column's rain stays below 2^30 and
+   the `floor_i32`, increment and `exact_sum` ranges hold with a factor 2 to spare; not a policy cap); and
+   **`director.enabled` implies `rain_floor == 0`** (coordinator choice C17: the floor `K` and the seasonal table do not
+   carry the rain, §30.6).
+5. Not a rule, reported: the horizontal pair-penetration exposure of the confirmed set in 3D. The wind adds to the
+   horizontal force (`thrust_max + a·drag·u_max = 0.4 > 0.16` at the confirmed set); common-mode wind moves neighbours
+   together, so only the differential `(a_i - a_j)·u` and grip matter. Against a gripping neighbour the contact force is
+   `R = (g_j·F_i - g_i·F_j)/(g_i + g_j)` with `g = drag·(1 + grip_gain·grip)`, which at `a = 1`, full thrust and
+   z = 3 above the floor is `0.083 + (0.56 to 0.60)·u1`, reaching the repulsion limit 0.16 at `u1` of about 0.13
+   (W0's steered storms reached 0.132 to 0.140). A rule would reject the confirmed set, so `overlap_deep` (§30.8) is the
+   monitor, and W2 reads it before using strong winds.
+
+### 30.3 State, checkpoints and digests
+
+**One packed field.** `State` and `State3` gain `wx`: `(N_WX, cells, cells)` float32, `N_WX = 9`, the nine arrays of
+`weather.WeatherState` in its field order `(h1, h2, u1, v1, u2, v2, Q, P, Dc)`; `P` and `Dc` are stored, `T_s` is not (it
+is `warm_pools(p, t)` of `state.step`). `weather.pack` / `unpack` convert; `N_WX == len(WeatherState._fields)` is tested.
+`wx` is appended after `env_cat_kill_p` in `State` (48 fields) and sits between `env_cat_kill_p` and `pitch` in `State3`
+(`State3._fields[:48] == State._fields`; 50 fields). `Dims.wn = weather.cells`; `expected_layout` has
+`"wx": ((N_WX, wn, wn), f32)`. **Weather off, the array is still stored** (the rest state, 0.92 MB at 160 cells, 0.13% of a
+64k3d checkpoint), carried unchanged and never read or written by the step. A conditional field (a state type with `wx`
+only when the weather is on) was rejected: it doubles the state types, and a fork that turns the weather on would change
+the state class mid-run.
+
+**Initial and inert values.** `weather.rest_array(cfg, step=0)`: `h = (H1, H2)`, `u = v = 0`,
+`Q = min(Q_e(T_s(t)), Qs)` under the warm pools of step `t`, `P = Dc = 0`. A weather-off config always gets the step-0
+array of the default parameters, whatever `step` is, so a filled array is bitwise the one a native weather-off state
+carries. `state_from_arrays(d, cfg)` fills a key set that lacks only fillable fields: a 2D `State` file may lack the `env_*`
+fields (pre-director) and `wx` (pre-weather), a `State3` file `wx`; `wx` gets `rest_array(cfg, step)` with the file's own
+`step`, so a fork that turns the weather on starts from the rest state of its own parameters under the pools of the step it
+resumes at (the pools drift by about 0.009 per step: 2,250 units by step 250,000). Without `cfg` the strict key check stays.
+`FORMAT_VERSION` stays 1: old files still load, new files do not load in old code (the same one-way compatibility as the
+`env_*` fields).
+
+**Calm start and the pool-phase transient.** Storms need about 15,000 steps to mature from the rest state (STORMS_W0). A
+run that turns the weather on starts calm. A *resume at step N of a weather-off checkpoint under a weather-on config*
+(`check_hash=False`) carries that file's step-0 rest state under the pools of step N: the same kind of transient. Both need
+the spin-up; `alife run --weather-spinup N` (§30.9) removes them, and ends in the pools of the start step.
+
+**The frozen legacy digests.** `state_digest` hashes every field name, so adding `wx` moves it for every state. No test
+pins a value of `state_digest`; the pins are `GOLDEN` (`legacy_state_digest`, `V0_FIELDS`, unchanged) and `GOLDEN_3D`.
+For 3D, `state.V0_FIELDS_3D` is the literal tuple of `State3`'s 49 field names as they stood at 4337484 (a literal, not a
+slice, so that adding a field in the middle cannot change it), `legacy_state_digest_3d(s) = _digest(s, V0_FIELDS_3D)` and
+`legacy_digest(s)` dispatches by type. For an unchanged trajectory `legacy_state_digest_3d` equals the `state_digest` the
+3D engine produced before W1, so **`GOLDEN_3D` is not re-pinned**; the test compares over `legacy_state_digest_3d`, and
+the frozen-list test has the literal of the 49 names. The convention: a trajectory-neutral state field is frozen out of the
+legacy digests. GAMES §5.4's compatibility note follows (G4 appends its `env_*` fields without a re-pin).
+
+**Identity with the weather off** (proved by the digest matrix and the tests of §30.10):
+
+| item | claim |
+|---|---|
+| compiled step, `StepOut`, counters (27 / 30 wide), ledger | unchanged: every weather line is behind `cfg.weather.enabled` |
+| `config_hash`, `config.json` | hash unchanged; `config.json` and checkpoint `metadata.config` gain a `weather` table at defaults (hash-neutral) |
+| `GOLDEN`, `GOLDEN_3D` | unchanged values, over `legacy_state_digest`, `legacy_state_digest_3d` |
+| checkpoint metadata `rng_layout_version` | 3 instead of 2 (compatible set {1, 2, 3}) |
+| tensors of a checkpoint | the old tensors bitwise, plus `wx` |
+| metrics rows | unchanged: no `weather` block, no `deaths_storm` |
+
+### 30.4 RNG and the step wiring
+
+`Stream.WEATHER = 9` took a reserved index, as `CATASTROPHE` did: `RNG_LAYOUT_VERSION = 3`,
+`RNG_COMPATIBLE_VERSIONS = {1, 2, 3}`, and every other stream's key is unchanged (§14.1). With the weather on,
+`step.step` does, statically, `kw = split(ks[Stream.WEATHER], 2)`: `kw[0]` is the disturbance key (the key
+`weather.step` receives) and `kw[1]` the hazard key (one `uniform((N,))` draw per step). Both are drawn every step the
+weather is on, whether or not any hazard is active, so the stream use does not depend on the levers.
+
+All branches are on the static `wthr = cfg.weather.enabled`; `d3` selects the sampler. New code is in `weather.py` (a
+section "the wind the engine applies, and the update") so that `bench._stage_fns` calls the same functions.
+
+| point | line | W1 addition |
+|---|---|---|
+| S3w, after S3 | | `ws = weather.unpack(s.wx)` once; `wind = weather.agent_wind(ws, s.pos, s.buoy_cap if d3 else None, s.alive, cfg)` at the **start-of-step positions**; `kw` |
+| S9 | `flag = act.release \| (geom.length > break_length)` | `\| wind.breaks[:, None]` when `wind.breaks is not None` (`storm_break_u > 0`) |
+| S14 | `lifecycle.deaths(..., cat_mask=)` | `storm_mask=lifecycle.storm_mask(wind.speed, s.alive, kw[1], cfg)`, always passed with the weather on, even at `storm_p = 0` |
+| S15 | `physics.forces3(...)` / `forces(...)` | keyword-only `wind=wind.force` |
+| S17 | `update_resource(...)` | before it `ws2, wd = weather.advance(ws, t, kw[0], cfg)` and `rain = weather.rain_for(ws2, cfg)` (None when `rain_gain == 0`); `update_resource(..., rain=rain)`; `s2._replace(wx=weather.pack(ws2))` |
+| S18 `_finish` | `device_check` | `weather_bad=weather.health(wd, wind)` (only passed with the weather on, so the weather-off call is exactly the old call) |
+
+An agent at step `t` feels the weather produced by step `t - 1` (`s.wx`), and the update at step `t` advances that same
+`s.wx` under `warm_pools(p, s.step)`. `weather.advance(ws, t, key, cfg)` builds the forcing from the warm pools of step `t`
+(an int32 array, never a Python int) and a constant `qs = 1`, and calls `weather.step` with no momentum
+forcing. **Fusion.** The graph builds `wind_fields` once per step and passes it as `fields=` (MLX 0.32.3 `mx.compile`
+crashes when the same roll of the same array is built twice, `tests/test_weather.py`'s strict xfail). The fused
+`unpack -> agent_wind -> advance -> pack` graph compiles on the CPU and `wx` equals the eager result bitwise. Metal is
+untested here (§30.11).
+
+**`float32` `t`.** `state.step` is int32; `warm_pools` casts it to float32, exact below 2^24 steps (about 13 days at
+14.4 steps/s) and rounded above it, so a pool centre is then off by less than 0.005 unit near 10^7 steps. No change.
+
+### 30.5 Wind (`physics`, `weather.agent_wind`)
+
+`physics.forces3` and `physics.forces` take a keyword-only `wind: mx.array | None = None` holding the **force**
+`alpha·drag·u_air` already multiplied. It is added after the lift term (3D) and before the survivor mask, so it is
+**not contact-attenuated** (the attenuation factors the thrust only, like gravity and buoyancy) and non-survivors still
+get 0. With `wind=None` the graph is the old graph. `integrate` and `integrate3` are unchanged: `v = F/gamma` with
+`gamma_xy = drag·(1 + grip_gain·grip)` on grounded rows and `gamma_z = drag`, then the `v_max` clip (counted in
+`V_CLIPS`) and the floor and surface clamps. Consequences, all tested: an unobstructed agent drifts at `alpha·u`; a
+grounded agent with `grip = 1` drifts at `alpha·u/(1 + grip_gain)` horizontally (grip shelters); vertical wind is never
+gripped.
+
+`weather.agent_wind(ws, pos, buoy_cap, alive, cfg) -> AgentForce(force (N, nd) f32, speed (N,) f32, breaks (N,) bool |
+None, clip_bad () bool)`.
+- **3D** (`buoy_cap` given): `sample_wind(..., fields=wf, valid=alive)` of the clipped air velocity (`‖u_h‖ <= u_max`,
+  `|w| <= w_edge` in the floor and surface field layers); `alpha = alpha0 + alpha1·buoy_cap`. `valid=` is an optional
+  argument of `sample_wind` and `_clip_wind` that keeps dead rows out of the two clip counts (their positions are stale);
+  `valid=None` is the W0 behaviour.
+- **2D** (`buoy_cap is None`): `sample_wind_h(ws, pos, p, valid=)`, the layer-1 wind `(u1, v1)` bilinear on its C-grid at
+  `(x, y)`, no surface-layer factor and no vertical wind, clipped to `‖u_h‖ <= u_max`; it returns an `AgentWind` whose `u`
+  is `(M, 2)`. `alpha = alpha0` (no cap exists; `alpha1` is inert in 2D).
+- `speed` is the **air** speed of the clipped wind (jet included), not the agent's: the hazard and the bond rule read it.
+  `breaks = speed > storm_break_u` only when `storm_break_u > 0`. `clip_bad = (n_clip_h + n_clip_w) > 0` over alive rows;
+  W0 measured no clip at the confirmed winds, so a clip is a health signal (§30.8).
+
+### 30.6 Rain-fed regrowth, `K_est` and the floor `K`
+
+`fields.regen_rate` and `fields.update_resource` take `rain: RainIn | None = None`. `RainIn(P, zi, dc)` is three
+`(cells, cells)` float32 arrays (rain rate, interface height `H·h1/(h1 + h2)`, cloud depth), built by `weather.rain_in`;
+`weather.rain_for` returns None when `rain_gain == 0`, so a zero gain leaves the graph and the resource field as they were.
+`regen_rate(...) = floor_i32(base) + rain_regen(rain, cfg)`: the rain term is **not** scaled by the director's regeneration
+lever (a weather-driven source). `inc = clip(min(regen, resource_cap - R), 0, inf)` is unchanged, so `INJECT_REGEN = Σ inc`
+already books the rain and the ledger closes with no new term.
+
+`weather.rain_regen(rain, cfg)` is int32, `(FG, FG)` in 2D and `(FZ, FG, FG)` in 3D. With `r = cells // FG` (rule W-1):
+1. Block reduction to the field lattice: `P_c` is the mean over the `r x r` block; `zi_c` and `dc_c` are **P-weighted**
+   block means `Σ(P·x)/max(ΣP, 1e-30)`, so a block with one raining cell takes that cell's condensation level and depth.
+2. `q = rain_gain·P_c` quanta per column per step. 2D: `floor_i32(q)`.
+3. 3D: the **cloud band** is `[zi_c, zi_c + dc_c]`. For field layer `k` (edges `fc·k`, `fc·(k + 1)`): `f_k = clip((min(hi,
+   fc(k+1)) - max(lo, fc·k))/fc, 0, 1)`, `w_k = f_k / max(Σ_k f_k, 1e-6)`, `rain_k = floor_i32(q·w_k)`, plus
+   `floor_i32(rain_floor·q)` in layer 0. A column's rain food is `rain_gain·P` whatever the cloud depth, split over the
+   layers the cloud overlaps.
+4. **`rain_gain` is nominal**: `floor_i32` per layer drops about half a quantum per used layer, so the injected rain is
+   biased low (about 7% at the overlay's 5e4, 0.3% at 1e6). Tests compare with the floors, not with `rain_gain·P`.
+5. **Deviation D7 from STORMS §4.** STORMS §4 puts the food in "the field layers that span the interface h1". This puts
+   it in the band `[zi, zi + dc]`, which starts at the condensation level, because the condensate fills from there up to
+   its diagnosed top. Measured at gain 1e6: 26% of the rain falls in layers 0 to 7 (z < 32), 74% in layers 8 to 15, 0.01% in
+   layers 16 to 19; so the 40% of agents at z 4 to 32 are fed only when `zi` dips below 32, the agents at z >= 76 never are,
+   and those at 32 to 76 get most of it. **W2's seeding band** (STORMS §4: "c2 averaged over the cloud layers") must use the
+   same weights `w_k`, so that seeding and feeding stay at the same layers.
+
+**`K_est` and the floor `K` rebuild what was injected.** `metrics.rain_of(s, cfg)` is `weather.rain_in(unpack(s.wx), cfg)`
+when the weather is on and `rain_gain > 0`, else None; `_layer_regen` passes it to `regen_rate`. It reads the **stored**
+`wx`, the `P`, `Dc`, `h1`, `h2` that the last step's `update_resource` used, so `carrying_capacity`,
+`floor_carrying_capacity` and the director's `K_est` include the rain exactly. `K_est` now follows the instantaneous rain:
+0.09% of the base regeneration at the overlay, and at a gain of 1e6 (1.9%) at most about 4% of the occupancy-weighted `K_est`.
+`seasonal_capacity_table` builds `regen_rate` without rain (a ratio of seasonal swings; the rain is neither seasonal nor
+scaled by the lever). The floor `K` holds rain only when `rain_floor > 0` (the band starts above the floor layer), so the
+director's extinction-risk flag and the seasonal table agree only while **`rain_floor = 0`**: the overlay keeps it, and
+`validate` requires it whenever `director.enabled` (§30.2). On the GPU the engine evaluates `rain_gain·P_c·w_k` in a fused
+kernel while the host recomputes it eagerly, and a 1-ulp difference can flip a floor by one quantum in a few 1e-5 of
+raining cells per step; the ledger is unaffected (it books what was injected) and the `K_est` error is negligible, so the
+tests assert the rebuild exactly on the CPU and within one quantum per cell on the GPU.
+
+### 30.7 The storm hazard, counters, bonds and observers
+
+**Hazard.** `lifecycle.storm_mask(speed, alive, key, cfg) -> (N,) bool`:
+`p_i = storm_p·clip((speed_i - storm_u0)/storm_span, 0, 1)`, one `uniform((N,))` from the hazard key every step the weather
+is on, `alive & (u < p_i)`. `DeathCause.STORM = 4`. `lifecycle.deaths(..., storm_mask=)` makes storm deaths **excess
+deaths only**: `storm = alive & storm_mask & ~dead & ~cat`, so every other cause keeps precedence and a row in both the
+catastrophe and the storm mask dies as `CATASTROPHE` (§12.9). The corpse (`E + S`) takes the ordinary path to the floor
+cell (`FLOW_CORPSE`); there is no new ledger term. Death records carry `cause = 4` unchanged.
+
+**Counters.** `state.n_counters(nd, weather=False)` is `27 + 3·[nd = 3] + [weather]`: 27 / 28 (2D), 30 / 31 (3D). The new
+counter `DEATHS_STORM` is **last**, after `Counter3D`, so no existing index moves (`state.storm_counter_index(nd)` = 27 in
+2D, 30 in 3D). Every consumer of `n_counters(nd)` takes the flag, default False, so weather-off widths are unchanged:
+`viewer`, `runner` (`interval_row`, the status line), `metrics.interval_row(..., weather=)` (adds `deaths_storm`, the
+interval sum, after `child_bonds`, only with the weather on, and checks the width), `analysis.resim.compare_row(weather=)`,
+`analysis.labels` and `analysis.phylo`, `director.vitals.aggregate` (`deaths_storm` is in the denominator of
+`kill_share`), and `bench._throughput`. `DEATHS_STARVED + DEATHS_KILLED + DEATHS_AGED + DEATHS_CATASTROPHE +
+DEATHS_STORM` equals the number of deaths in the step.
+
+**Bond breaking.** `flag = act.release | (geom.length > break_length) | wind.breaks[:, None]` (static, `storm_break_u > 0`).
+`bonds.break_bonds` is OR-symmetric across a bond's two ends, so a bond breaks when either end is above the threshold. It
+is explicit rather than physical (storm-scale shear cannot stretch a bond), counted in `BONDS_BROKEN`.
+
+**Wind sensing.** None added: `IN_VEL` and `IN_VEL_UP` read `state.vel`, which now includes the wind drift.
+
+**Observers.** The observer labels (G1, `INTENT_VERSION` 1) use `vel`; with the weather on they include the wind drift and
+are **not wind-relative** (W2 bumps `INTENT_VERSION` and `OBSERVER_FORMAT`). A weather-on observed run is allowed; its
+labels are not calibrated for it. **For G2** (`game/social.py`, branch `games/g2-social`, not in this tree): its
+`DEATH_CAUSES` iterates `DeathCause`, which now has `STORM`, and the cause scatter does not clip, so with weather on a
+`STORM` row would index past `n_causes·g` (undefined on the GPU) and the sidecar shape of every observing run would
+change. Whichever of W1 and G2 merges second makes `DEATH_CAUSES` the literal pre-storm tuple (`starved, killed, aged,
+catastrophe`) and `death_causes(cfg) = DEATH_CAUSES + ("storm",)` when `cfg.weather.enabled`, takes every length from
+`death_causes(cfg)`, and passes `weather=cfg.weather.enabled` in `analysis/social.py`'s `compare_row` call. The list is
+kept in the W1 build notes (`g2_followups.md`).
+
+### 30.8 The `weather` metrics block, health and checks
+
+**Block** (`out["weather"]` of a metrics row, weather-on runs only, after `env`; `src/alife/weather_obs.py`, host numpy,
+not a lint module). `snapshot_metrics` adds `wx` and the air speed of the live agents (`weather.agent_wind`, eager, outside
+the step; one sampling per metrics row) to its single device transfer (about 1.2 MB). All values are floats or ints, never
+None (no agents gives 0.0).
+
+| key | meaning |
+|---|---|
+| `wind_max_l1`, `wind_max_l2` | max centre speed of each layer |
+| `jet_max_l2` | `max_y \|mean_x u2\|`: the layer-2 jet (0.05 expected) |
+| `rain_total` | `Σ P·dx²`: this step's rain rate integrated over the planet |
+| `rain_cells` | share of cells with `P >= p_th` (1e-4) |
+| `vort_cells` | share of cells with cyclonic `zeta_c >= zeta_th` (0.00625), hemisphere-signed |
+| `storm_proxy` | 8-connected periodic components of the `vort_cells` mask with area `>= a_min` (25) and `>= r_min` (4) rain cells: **a count of candidate storms, not tracks** (W3 tracks) |
+| `mass_rel`, `q_total` | `Σ(h1 + h2)/(n²·H) - 1` and `ΣQ` (W0 bound 1e-5 for the first) |
+| `hyper_max` | `max (u1-u2)²/(g'(h1+h2))` (gate 0.8) |
+| `occ_hz0`, `occ_hz1_11`, `occ_hz12` (3D) | snapshot peak agents per hash cell in the floor, mid and surface bands |
+| `storm_exposure` | mean over alive agents of the hazard ramp `clip((speed - storm_u0)/storm_span, 0, 1)`; what W2 multiplies by `storm_p` to get the population-mean storm mortality. A diagnostic at the snapshot's positions, not the step's exact quantity |
+| `air_speed_p99`, `air_speed_max` | 99th percentile and maximum of the air speed over alive agents (jet included) |
+| `overlap_deep` | alive agents with a neighbour closer than `0.5·radius` (one neighbour search per metrics row, a compiled closure cached per config hash; the first row pays its compile) |
+
+`label_periodic`, `centre_winds`, `corners_to_centres` and `hemisphere_sign` moved to `weather_obs`, and
+`spatial.hash_occupancy(pos, alive, cfg)` and `spatial.band_peaks` from `analysis/w0.py`, which keeps the names as aliases
+(the occupancy gained the `alive` mask the W0 copy did not have). `interval_row` already reports `max_occupancy`,
+`cell_overflow` and the `CELL_OVERFLOW_WARN` bit: the STORMS §3.3 "occupancy and overflow under storm forcing" reports.
+
+**The occupancy go/no-go (pre-registered, the coordinator's run).** W0's occupancy numbers (peaks 21 to 30 of `C = 48`)
+are for tracers reseeded from a uniform source, which prevents accumulation; real offspring stay within 2 units of the
+parent, so convergence (rate `alpha·D`, `D` about 5e-3 per step) can pile agents, and the still-air peak is already 37 of
+48. **A weather-on 64k3d run on the GPU, long enough for the storms to mature (at least 30,000 steps), that reaches
+`max_occupancy >= 0.9·C` (43) or fires `CELL_OVERFLOW_WARN` is a W1 finding, not a note, with the named consequence:
+`sensing.cell_capacity = 64` (a hashed key) and its cost (the 3D neighbour work scales with `Q = 27·C`: about +33%, taking
+14.4 steps/s to about 11 to 12).** The CPU smoke run is far too small to say.
+
+**Health: `Diag.WEATHER_WARN = 1 << 18`**, a warn bit outside `ERROR_MASK`, ORed by `_finish` (gated by
+`runtime_checks != "off"`) when `weather.health(wd, wind)` is true: any of the W0 health-gate counters `n_limited`,
+`n_clamp`, `n_cond_limited`, `n_relax_limited`, `n_evap_limited`, `n_safety` is positive; `hyper_max >= 0.8`;
+`eps_local_max >= 1`; or `wind.clip_bad`. It is **advisory**: the margin of one term is small (`eps_local_max` 0.92 against
+the gate 1 on a third RNG chain; W0 recorded 0.915), so an occasional bit in a long run means "read the `weather` block",
+not "broken". `invariants.device_check` also folds `isfinite(s.wx)` into `NONFINITE` when the weather is on, and
+`full_check` runs `_check_weather` (host): `wx` finite, layer thicknesses at or above `h_min - 1e-4`, `Q >= 0`, relative
+column-mass drift below 1e-4. `runner.diag_names` and `bench._diag_report` decode by the `Diag` enum.
+
+### 30.9 Cost and tools
+
+**Target.** At most **1.0 ms** of marginal cost per engine step on the M5 Pro (STORMS §8 W0 criterion 5, restated for W1):
+the compiled step with the weather on minus the same config with it off, GPU, 64k3d, `compile = true`, median of block
+pairs. W0 measured the layer alone at 1.131 ms in one graph (0.807 for the step with drifting pools plus 0.356 for the
+sampler timed apart: 1.163), dispatch-bound; the engine adds the rain remap, the hazard draw, the force add, the
+pack/unpack and the masks, plausibly 0.05 to 0.15 ms. Expected about 1.2 ms, about 1.7% of the 69 ms step. If the bands
+are missed: up to 1.0 passes; 1.0 to 1.25 ms is reported for the coordinator to rule; above 1.25 look for avoidable
+dispatches with `--stages` and a Metal capture. The physics and the confirmed parameters are not changed to buy time.
+
+**`alife bench --weather [--weather-pairs N]`** (`bench.run_bench(..., weather=True, weather_pairs=2)`,
+`_bench_weather`): needs `weather.enabled` (else `ConfigError`, exit 2). Times blocks in the order off, on, on, off (two
+pairs; three pairs alternate the leading arm) with the off arm `replace(cfg, weather=WeatherConfig())`, and reports
+`off_ms_median`, `on_ms_median`, `marginal_ms_median`, `marginal_ms_mean`, `pair_marginal_ms`, `steps_per_s_on`.
+`bench --stages` gains two rows with the weather on, `("wind", "S3w")` and `("weather", "S17w")` (`bench.stages_for(cfg)`
+returns `STAGES` unchanged for weather off), and `_stage_fns` mirrors every weather line of `step.step`
+(§30.4); `tests/test_weather_obs.py` checks the staged pipeline equals the fused step bitwise in eager mode, in 2D and 3D,
+with deaths, births and rain. The staged total is inflated by syncs, so the stages locate time and the `--weather` pair
+gives the number.
+
+**CPU numbers (smoke size: `64k3d` + `storm`, 1,024 rows, `L = 320`, 160-cell weather).** `alife bench --weather
+--weather-pairs 3`: 31.98 ms off, 38.74 ms on, **a marginal +6.75 ms median** (+6.99 mean; pairs 6.60, 6.71, 7.01). The
+weather alone runs at 5.2 ms per step on the CPU. These bear no relation to the GPU figure, which is the coordinator's.
+
+**The weather-only spin-up (`alife run --weather-spinup N`, `src/alife/weather_spinup.py`; coordinator choice C17).**
+Because the weather is agent-independent, its steps can run without agents: for a fresh run or an `--init-from` fork whose
+config has the weather on, the weather alone advances for `N` steps and the agents start on the result. Storms need about
+15,000 steps (about 80 s on the CPU at 5.2 ms per step). `spinup(cfg, n, step=S, key=)` runs the steps `S-n .. S-1`
+(`S-n` may be negative) from the rest state of the pools of step `S-n`, in chunks of 16 steps with the engine's own
+`weather.advance`, so it ends consistent with the pools of the start step `S` (no pool-phase transient). It uses a key
+chain derived from the state key by a third split, `split(key, 3)[2]`, which no engine stream uses, so its disturbances
+repeat none of the engine's draws; a chain started from the engine's own state and key reproduces the engine's `wx`
+bitwise (tested). It records `weather_spinup` in `meta.json`. Without the weather on, or with a weather-on fork source (its
+`wx` is not a rest state), it exits 2 before anything is written; Ctrl-C during it sets the status `interrupted`. The
+spun-up `wx` is in the step-`S` checkpoint, so a resume needs nothing.
+
+### 30.10 Determinism and tests
+
+**Determinism.** The weather is float32 and deterministic per backend like the chemicals (§13.3). Compiled and eager
+trajectories differ in rounding (§14.2) with the weather off as well; the weather-on tests therefore compare per step from
+the same input state (counters, ledger and integers exactly, floats `allclose`, **`wx` bitwise**), and compare two
+compiled (or two eager) runs when an identity is claimed.
+
+**Tests** (all on the CPU; 228 new in seven files, two of them `slow`; the fast suite 2181 passed at stage 4):
+- `test_weather_config.py` (81): the section and its defaults against `WeatherParams`, `POST_V01_KEYS`, hashes (no existing
+  config hash moves), rule W-0, every validation rule above with a crafted bad config and the boundary values, the
+  overlay and `WORLD_OVERLAYS`, the CLI choices.
+- `test_weather_state.py` (27, one slow): `wx` in both states, `expected_layout`, the frozen `V0_FIELDS_3D`, the rest
+  fill (pre-weather 2D and 3D files, the file's own `step`, weather-off always step 0), checkpoint round trip, the
+  `runs/64k3d_s0` checkpoint read-only (slow).
+- `test_weather_wind.py` (14): `forces`/`forces3` with `wind=None` bitwise unchanged, no contact attenuation,
+  `agent_wind` against `sample_wind`, the closed-form drift of a lone grounded agent with and without grip, the clips and
+  `valid=`, a long strong-wind run with `full_check` clean.
+- `test_weather_engine.py` (25): the inert-on identity (alpha, `rain_gain`, `storm_p`, `storm_break_u` zero, legacy fields
+  bitwise equal to weather off, 2D and 3D, compiled and eager), agent independence of `wx` against a standalone chain, 50
+  compiled-vs-eager steps, the fused graph, resume, `health` on each term, `Diag.WEATHER_WARN`, `device_check`.
+- `test_weather_coupling.py` (31): counter widths and consumers, the mask ramp, cause precedence, the ledger closed with a
+  prescribed wind that kills, bond breaks at either end, `rain_regen` by hand, `INJECT_REGEN` against the rebuild,
+  `carrying_capacity` and floor `K` with rain, a 300-step ledger run with rain, storms, a catastrophe and immigration, a
+  runner run with `deaths_storm`.
+- `test_weather_obs.py` (33, one slow): the moved helpers, the block on hand-built states (Gaussian vortices for the storm
+  proxy), `hash_occupancy`, `overlap_deep` against brute force, `_check_weather`, staged equals fused, `bench --weather`,
+  the smoke run of 200 steps (slow: 1,024 rows, compiled and eager, `wx` bitwise equal, ledger closed).
+- `test_weather_spinup.py` (17): the chain against the engine's `wx`, chunking, the pool phase, the key chain, the CLI.
+- Edited existing tests (the pinned `Diag` and `DeathCause` values, `test_weather.py`'s import check, `make_scene`, the
+  three GUI fixtures `tests/data/gui_config_*.json` regenerated, the state, rng and director_env pins, the counter-width
+  assertions, `test_cli_smoke.py`) and `PresetFileTests.swift` (the `storm` file).
+
+The tests with a prescribed wind (`weather_helpers.fixed_wx`) exist because the overlay's own values do not reach the
+hazard in a short run.
+
+### 30.11 Open items for the coordinator, and what W2 inherits
+
+**Pending, the coordinator's (GPU):** the Metal gate; the GPU marginal against the 1.0 ms target; the occupancy go/no-go
+of §30.8. The Metal gate has four parts: (1) the digest matrix with the weather off, run on the default device, base
+against head (every legacy digest, `out_digest`, counter, ledger and metrics row equal); (2) the fused step compiles on
+Metal (`make_step` on a 3D and a 2D storm config; no `unordered_map::at` IndexError) and the compiled-versus-eager test
+passes with `ON_GPU` (agent floats `allclose`, integers, counters and ledger exact); if it fails, the weather advance
+becomes its own compiled call (`adv(s) -> (wx', wd)` reading only `s.wx`, `s.step` and `s.key`), the trajectory and every
+digest are unchanged, and the one extra launch is measured by the same bench; (3) inert-on equality on Metal over 50
+steps (a difference such as fast-math fusing `f + 0.0` is a finding to rule on, with `mx.where(a > 0, f + wind, f)` as the
+fix); (4) the cost. **W1 is not merge-ready until the Metal gate is reported.**
+
+**W2 inherits:** calibrate `rain_gain` and `storm_*` on a still-air control of each seed (`storm_u0` in 0.03 to 0.05
+first); a jet-removed (`r2` raised) or tracer arm before any ecological effect is attributed to storms; the sensitivity
+of the hazard to `storm_u0` (mortality share of baseline rises steeply as it falls below the jet); seeding and shade with
+the band weights of §30.6; wind-relative observer fields with `INTENT_VERSION` 2.
+
+---
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -6651,6 +7222,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I43 | fix: the director's extinction-risk flag is season-aware (rules version 2) and the blocked-rule set survives a live resume (host-side director code only; owner decisions 2026-10-16: "exempt the forced amplitude", and the `Director._blocked` fix recorded in §27.10; `docs/DIRECTOR.md` §16, §26.3, §26.5 to §26.9, `docs/EVALUATION.md` §3.3 and §5). No change to the compiled step, the state, the RNG, any config key or its default, any config hash, the 2D or 3D golden digest, or any non-director trajectory; a run without seasons has the vitals, flag, reasons, notes, prompts, journal and log of rules version 1 byte for byte (the existing sha256 and key-order pins pass unchanged, and `test_director_seasons.py` pins the tracker), the one new byte in such a log being the header's `rules_version`. (1) **Why.** The evaluation found that the fall criterion (`fall > 0.3` within 50k steps) fires on every seasonal trough: arms C fired 34 and 38 rescues (56 and 60 safety-rule entries: a rescue is two), and each rescue also spends the model's budget (`docs/EVALUATION.md` §3.3). (2) **The model** (`director/seasons.py`; §26.5): regeneration is `floor(regen_max·clip(base + Σ gain·(1 + A sin …)·G, 0, 1))`, not proportional to the season's weight (on `eval_s0_C`, A = 0.6, the regeneration swings ±0.40, the engine's map ±0.45, not ±0.6), so the capacity over one cycle is sampled through the engine (`metrics.seasonal_capacity_table`: 32 phases of `fields.regen_rate` over the sum without seasons; the floor layer in 3D; 33 map evaluations per boundary, 0.02 s on the CPU at the `64k` size), the forced fall is the vital sign's own formula on that capacity under each window's regime (`season_amp`, `season_period` from the rows' `env`) and the lower of the fall with and without each window's `regen_mult` (so a boom begun after the last peak narrows the exemption: a 40% crash on such a trough is flagged; the end of a pulse stays flagged), and the flag reads the excess `1 − (1 − fall)/(1 − forced)`; the n/K criterion and 3D's `k_floor` are unchanged, `Vitals.fall` stays the observed value, `fall_seasonal` and `fall_excess` are logged after it when seasons are in force. The rescue's reason names the split; a fall that version 1 would have flagged and the seasons account for leaves the journal note `seasonal_exemption (…)`, once per run of boundaries; the LLM prompt's viability line gains a clause then. Validated read only on `runs/eval_*` (tables from the nearest checkpoint): windows at which the fall sets the flag, 891 → 55 (s0 C), 808 → 119 (s1 C), 129 → 0 (s0 R), 1 018 → 198 (s0 RC), 614 → 141 (s1 RC) of 1 380, the seasonless windows unchanged; limits: no population lag (RC's period 3 056 still flags 106 of 600 windows), the end of a regeneration pulse is a fall the seasons did not force and stays flagged, patch-gain changes are not followed (the rows record only the lowest and highest gain; a gain raised after the last peak widens the exemption). (3) **Versioning.** `RULES_VERSION` = 2, `RuleParams.rules_version` selects the behaviour; replay never decides, so every implemented version (1, 2; a header without the key is 1) validates and replays byte-identically, any other is a `LogError`; a live run continues under the version of its log's latest header (no silent switch on resume, no second header for it, also for a header that predates the key; a stderr note; the CLI refusing an unknown version before touching the directory, tested by a resume from a checkpoint before the last); a new run or a fork takes 2, except a new `random` run (arm R), which takes the version of its yoke log's first header like the rest of what it inherits (§26.11 R3), so that an R or RC arm started against the evaluation's version-1 logs runs version 1's safety rules; no in-place upgrade. (4) **`Director._blocked`** (every rule noted at the boundary, whether or not the journal wrote the note again) is saved as `blocked` in `director_archive.json` at each checkpoint and restored by a live `Director` started at the checkpoint's step (`as_of_step == start step`; a missing, older, unreadable or other-step archive restores the empty set, the old behaviour): the journal of a resumed run equals the uninterrupted run's; the two strict `xfail` tests of §27.10 are tests. (5) Tests: `test_director_seasons.py` (51), additions to `test_director_log.py`, `test_director_random.py`, `test_director_3d.py`, `test_director_replay.py`; `test_director_rules.py` and `test_cli_smoke.py` pin version 2.  CI: the fast-suite job's `timeout-minutes` goes from 20 to 30 (§22.0); the suite had grown to 16 to 18 minutes with the 3D work and this PR's end-to-end tests pushed it past 20. |
 | I44 | feat: games G1, the observer layer (`docs/GAMES.md` §4, §6.6, §9; new §28), off by default and observer-only; built in five commits on `games/g1-observers` (the channel, the observer state and rules, the host observer and the runner, the tooling, these docs) and a review-fix commit. (1) Config: section `game` with `game.observe` (bool, false; in `POST_V01_KEYS` and the new `OBSERVER_KEYS`, omitted from `config_hash` at every value; separate from `UNHASHED_KEYS`, so `DIRECTOR_POLICY_KEYS` is unchanged); `resume --set game.observe=…` is accepted (`cli._resume_allowed`, `RESUME_GAME_KEYS`; any other `game.<key>` is exit 2 and the message names it); a fork may set it and starts its observers fresh, a replay fork included. The thresholds of the labels are code constants of a versioned `RuleSet`, not config keys (G1's choice, pending the owner's confirmation: GAMES §10 item 11; GAMES §3.1 corrected). (2) Step: `step(s, cfg, *, observe=False)`, `make_step(…, observe=False)`; with `observe` (static) the step returns `StepOutG` = `StepOut`'s fields plus `acts: Acts` (attack gain, per-slot share out and net received, `ActFlag` attacked/hit/formed/budded/emitted, thrust and defend as `round(256·v)` int16, emit as the Σ of the S17 deposit quanta); the thrust is quantised from the decode output and masked by solvency in integers, so that the channel reads only arrays that are already kernel boundaries; `energy.share` is split into `energy.share_slots` and `energy.share_from_slots` (same primitives, same order; S12 is computed once with `observe` on); §3 and §16.3 name the static `observe` branch, which `bench._StagedStep` does not mirror. (3) Package `alife.game`: `observe` (pure MLX `ObsState`, accumulators `A += x − (A >> k)` with k = 6 and 3, reset on death or a new uid, per-slot bond identity by partner uid), `rules` (`INTENT_VERSION` 1, provisional, with a pinned `RULES_V1.digest()` and an int32 headroom check `RuleSet.check`: Gatherer, Hunter, Provider, Trader, Nomad, Settler (speed only; the colony clause is G2), Generalist; ten intents in first-match order with a 4-evaluation hysteresis every 8 steps on the step clock), `observer` (host `Observer`: folded in the step's single eval, the `observers` block of `metrics.jsonl` rows of observing runs, the sidecar). (4) Persistence: `observers/step_<t:010d>.npz`, atomic, written before each checkpoint of an observing run, loaded on resume when its meta, including `rules_digest`, matches (otherwise a stderr note and a fresh warm-up), pruned with its checkpoint and cut by `truncate_after`; resumed labels equal uninterrupted ones. (5) Tooling: `python -m alife.analysis.labels` (§4.5 validity: AUC against matched random labels, archetypes exposure-normalised over the observed part of the horizon with complete-case, survivor and censored columns, coverage, flip rates; never writes into the run directory), `alife bench --observe` (control and observed arms in blocks C O O C); `resim._compare` is public as `compare_row` (one source call site, six test calls). Unchanged: the compiled step with `observe` off, `State`, the RNG, every config hash (`TINY_HASH_V01`, `K64_HASH`, `TINY_ENABLED`, `K64_ENABLED`, and the newly pinned `TINY3D_HASH`, `TINY3D_ENABLED`, `K64_3D_HASH`, `K64_3D_ENABLED`, computed on 905580a), the 2D and 3D goldens, every trajectory, `StepOut`, the event columns, and the rows and files of non-observing runs; with `observe` on the trajectory is bitwise the one with it off (2D and 3D, compiled and eager, float32 and float16 weights, director branches off and on, CPU; Metal (M5 Pro, 2026-10-19, on 6d839cc): `tests/test_game_purity.py` and `tests/test_game_acts.py` 26 passed; every `test_game_*.py`, `test_analysis_labels.py` and the determinism files 167 passed, 2 skipped (the goldens are pinned to Linux CPU)). **As built, where it differs from the plan** (all in §28): every ratio threshold is an integer `(num, den)` pair tested as `den·x ≥ num·y`; the largest safe `arch_k` at the default `share_rate` is 15, not 19 (the speed and velocity columns, bounded by `VQ_MAX`, limit it; 12 at `share_rate` 2^16 − 1 as planned); Caring and Feeding also need a mean of at least 1 (no change at `harvest_max` 400); the first match is the minimum index of the matching columns, not an `argmax`; the runner calls `make_step(cfg)` and `save_checkpoint(state, cfg)` literally when not observing, so the existing test doubles of both keep working; `intent_labelled` is 0 until step 48 (the displayed intent needs 4 evaluations after the 24-step warm-up) while `intent_evaluated` counts from step 24; `read_observers` returns the raw array dict, `save_checkpoint` treats an empty mapping as no sidecar and `_prune` removes any sidecar without a checkpoint; in the labels tool, `study(start=…)` (CLI `--from`), the random streams are `[seed, label_index, variant]`, an intent's `auc_label` pool is the complete rows that carry a displayed label (`auc_rule` uses every complete evaluated row), each intent verdict applies its own score's coverage maximum, and the report has extra keys (`cohorts`, `params.rules`, `params.verdict`, `exposure`, prevalences, `coverage_max`); in the bench, the warm-up is `max(warmup, 1, rules.every)`, `observed_steps_per_s` is from the mean, the block has extra keys (`overhead_ms_mean`, `trajectory_match`, …) and the CLI exits 1 when `trajectory_match` is false. **Review fixes** (the review-fix commit): the bound of `emit` is 768, not 765 (`tanh` reaches 1.0 in float32: `RuleSet.check`, the `Acts` comment, §28.2, §28.3 and GAMES; a saturated-weights test reaches it); `RuleSet.check` also bounds the int32 ratio comparisons (a v1 ratio scaled by 10^5 wrapped and mislabelled rows); a structural CPU test pins the channel's read set on the traced graph and that S12 runs once, which no value test can see (§28.2); the verdict is `insufficient` below 99 permutations, where no label can reach `p ≤ 0.01`; `bench --observe` runs the blocks as C O O C (C O C O left a linear drift in the overhead); `read_observers` and `Observer._load` turn a bare `.npy` or an archive with a non-`.npy` member into the fresh-observers fallback, as §28.6 says; `resume --help` names `game.observe`; tests added for the insolvent mask in every acts arm, the age-matched null in every score of both scoring functions, the verdict margin, `ARCH_PRIORITY` as a literal, a SIGINT resume and the saturated emit; GAMES gets the Metal purity gate as a merge condition and the two open G1 questions (§10 items 11 and 12), HANDOVER a next-steps item. Deferred: `BirthRecords.parent_slot`, houses, kin groups, colonies (G2); `signals.decode` in 3D; stream tags, `alife play` and the play-loop bench (G3); copying the sidecar into a fork (G3 or G4); the calibration, the verdict criterion (provisional until the owner confirms it) and the 64k benches (later, on the GPU, §28.8). Edited tests: `test_config.py::test_hash_ignores_run_and_tracks_dynamics` skips `OBSERVER_KEYS`; `tests/data/gui_config_*.json` regenerated; `test_lint.py` scans `game/` (rule 2 over `game.*`, rule 5 over `game.observe` and `game.rules`, new meta-test lines); `test_metrics_3d.py` calls `resim.compare_row`; `test_bench.py` covers `observe`; `test_cli_smoke.py::test_view_and_bench_delegate` pins the new keyword, and `test_cli_smoke.py` also gains `test_bench_observe_smoke` (the CLI `bench --observe` end to end). New tests: `test_game_config.py`, `test_game_acts.py`, `test_game_purity.py`, `test_game_observe.py`, `test_game_rules.py`, `test_game_sidecar.py`, `test_analysis_labels.py` (shared helper `tests/game_helpers.py`); 68 deliberate breaks of the new code over the four code stages were each caught by a test, but one that is an equivalent change (`<` against `<=` in Settler: `10·m = 256` has no integer solution); six survived the first pass and each got a test that kills it. Checks (verify stage, at the review-fix tree, all on the CPU device): [ruff: `ruff check src tests` and `ruff format --check src tests` clean (137 files); fast suite (`test_lifecycle_compiles_and_matches_eager` deselected, the known Mac-CPU failure of I26): 1737 passed, 5 skipped, 25 deselected, 0 failed in 9 min 27 s (1707 passed before the review fixes; the 5 skips are environmental: the two goldens pinned on Linux x86-64, the real-LLM test, no ffmpeg, no pygame); `tests/test_game_purity.py` in full, every arm: 17 passed in 24 s (all 8 trajectory arms, the key test, the two runner-level tests, the director-log test, and the three structural configurations with their two meta-tests; none is marked `slow`); `swift build` and `swift test` in `gui/`: build complete, 68 tests in 11 suites passed; digest comparison: with a fresh baseline (`git archive origin/main src`, origin/main still 905580a after a fetch; the baseline run imported `alife` from the extracted tree) the 2D digest matrix (15 trajectory cases, 3 runner cases, config hashes, layout) run on this tree exits 0, "bit-identical", and its only INFO lines are 12 additions of `game` (`{"observe": false}`) to a run's `config.json` or to a checkpoint's metadata config; the tiny3d `state_digest` after 50 compiled float32 steps is `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd` on origin/main and on this tree; Metal (M5 Pro, 2026-10-19, on 6d839cc): `tests/test_game_purity.py` and `tests/test_game_acts.py` 26 passed; every `test_game_*.py`, `test_analysis_labels.py` and the determinism files 167 passed, 2 skipped (the goldens are pinned to Linux CPU)]. |
 | I46 | feat: storms W0, the offline weather prototype (`docs/STORMS.md` §3.2 and §8 W0; owner decisions of 2026-10-19: model B, a two-hemisphere torus with `f(y) = f0·sin(2πy/L)`, a separate warm-pool map `T_s`, 160 × 160 cells of 2 units, Δt = 1 engine step), built as a standalone module with its study driver and tests, in three commits on `games/w0-storms` (the model, the driver, review fixes), and a fourth with the results. **No engine change.** (1) **What.** `weather.py`: two stacked shallow-water layers with moisture on a periodic C-grid, one step of nine sub-steps (semi-Lagrangian advection, flux-form continuity with a positivity limiter, a Strang-split Coriolis rotation around the forward-backward pressure kick, evaporation, condensation with the latent-heating mass transfer, radiative mass return, damping with a divergence damper and a speed tripwire, seeded disturbances), the agent-wind sampler (`sample_wind`, `wind_layers`, `alpha`; STORMS §4) and `WeatherParams` with the validation rules of the W0 spec §2.5; `analysis/w0.py` with `analysis/w0_plots.py`: the offline study driver (storm detection and tracking on the host, passive tracers on exactly the agents' wind, the occupancy binning of `spatial._find_neighbors_3d`, the six exit criteria of STORMS §8, the health gate, the cost measurement, the unforced-vortex table and the steerability experiments); `tests/test_weather.py` (113 tests, one strict xfail pinning an MLX duplicate-roll compile bug) and `tests/test_analysis_w0.py` (106 tests). `--params FILE` is a sparse override of `START_SET` (the base that the tuning rounds' files were written against; without a file the base is the defaults, and `WeatherParams.from_dict(d, base=None)` takes the base), and the report's detection-threshold deviation compares with `START_SET`. (2) **Nothing in the engine changes**: the step, `State`/`State3`, `config.py` (keys, defaults, `POST_V01_KEYS`, validation), the `rng.py` streams, the presets, the goldens and the digests are untouched, and nothing under `src/alife` imports `weather` except `analysis/w0.py`; no config hash, digest or trajectory moves. (3) **Docs and lint only.** `DESIGN.md` §16 (the `weather.py` entry, and `w0` and `w0_plots` under `analysis/`, whose description now also covers an offline MLX driver, still never imported by the step and outside the lint scope) and §22.6 (`weather` joins the rule-5 modules and the meta-test sentence); `tests/test_lint.py` adds `"weather"` to `SIM_MODULES` and a rule-5 bad example. (4) **Deviations from STORMS §3.2.** D3: `q_pool > 1` (default 1.11 since the W0 results, start set 1.10, range 1.0 to 1.2), so `Q_e > Q_s` over warm-pool cores; with `Q_e ≤ Q_s` no storm formed in seven probe runs, because a steady core with ε < 1 needs evaporation inside the saturated core. D7: a moist-thickness limiter on evaporation (`m = h₁ − γQ ≥ m_min`), without which broad warm areas ran away. Also the divergence damping `κ_d` in place of the probe's `ν`, an optional cubic semi-lagrangian step (a deviation from step 1 when used), and every rolled copy of an array built once per step (MLX 0.32.3 `mx.compile` crashes on duplicate rolls; W1 inherits the rule). Two smaller departures from the W0 spec: `courant_max`, `speed_max`, `hyper_max` and `n_safety` are evaluated on the winds entering the damping sub-step (the shifts friction builds anyway) and not on the final winds, and the 1.8x lifetime ratio of the unforced-vortex regression (spec test 6b) is tested on an f-plane (on the beta-plane it is 1.71 at N = 96 and 1.93 at N = 160, Rossby radiation shortens both lives), with the 1 200-step bound tested on the beta-plane at N = 64. (5) **Results** (`docs/STORMS_W0.md`, 2026-10-19). Tuned on the M5 Pro GPU in 41 distinct studies of 60,000 steps (round 0, four rounds of 8, the confirmation on keys 1 and 2; 46 study runs with the five round-0 threshold re-reads, which repeat the round-0 trajectories and are not counted against the budget), then the §9a steerability forks, the deliverables study and the cost bench. The confirmed set `r4_3p36_q111_v009` (params hash `7832e060`) is the start set with `gamma` 21.6, `q_pool` 1.11, 3 warm pools per hemisphere (32 × 16, 36 units from each equator) drifting west at 0.009 per step (D8, accepted as the mobility lever) and `zeta_th` 0.00625 (0.25 f0); it is now the `WeatherParams` default, and the spec's starting set stays as `weather.START_SET`, on which the model tests run. On both confirmation keys: 2 to 4 storms per hemisphere at every time; a median lifetime of named storms (peak ζ ≥ 0.5 f0: coordinator ruling C11 under the owner's delegation, to be revisited with the owner; storms are named with hindsight, and named in real time the lifetime passes at 22,125 and 14,175 but the named count falls below 2 at 1.4% to 11.9% of times) of 23,375 and 19,550 steps (as written 16,550 and 14,100, but 100 on the tuning key, where shed fragments of 3 to 5 detections decide it); a 1,000-step forecast error of 0.63 radii (0.626 on key 2), above the jitter floor (0.11) with skill +0.50 and +0.48 over persistence (a forecaster that knows the pool drift errs by only 0.33 radii, below the 0.5 lower bound, so the pass belongs to the least-squares method of the spec and W3 and W4 must add uncertainty to storm motion); tracer peaks of at most 30 against C = 48; latitudes reported; a clean health gate, the `m` limiter never engaged. **The cost fails**: with the pool drift of the confirmed set (B) + (C) = 1.163 ms against 1.0 ms ((B) 0.807, (C) 0.356; 1.131 ms in one graph; single runs), and 1.116 ms with the static pool map of the CLI bench (median of 3), dispatch-bound, so W0 does not pass as written; a cost-only failure is an engineering issue, not a trigger for the model-A fallback. The storms are anchored to their warm pools and move with them; a pool shift or gain steers them within 175 to 1,500 steps, a wind impulse barely does. W1 has not started. |
+| I47 | feat: storms W1, the engine weather layer (`docs/STORMS.md` §3.3, §4, §8 W1; owner decisions of 2026-10-19 and the coordinator's choices C15 and C17, marked "to revisit"; new §30), off by default; built in five commits on `games/w1-weather` from `games/w0-storms` at 4337484 (PR #28 not yet merged): ce4f3d6 (config, state, digests, RNG, the overlay, validation), 868dc2e (wind and the update), 1c8da1c (rain, hazard, counters, bonds), 8fbb15e (reporting, cost tool, spin-up) and the docs commit. **Metal gate, GPU marginal and occupancy go/no-go: pending (coordinator).** W1 is not merge-ready until the Metal gate (§30.11) is reported. (1) **What.** Config: section `weather` with 33 keys, every key hashed (`POST_V01_KEYS`), inert at the defaults, with rule W-0 (a non-default weather key while the weather is off is rejected), and `weather.validate_config` (guards, W0's parameter rules, W-1 cells a multiple of `FG`, W-2 pool centres in the domain, the load rules R1 to R4, the coupling keys, the int32 bound of `rain_gain`, and, coordinator choice C17, `director.enabled` implies `rain_floor == 0`); the world overlay `storm` (`config.WORLD_OVERLAYS`, `ALL_OVERLAYS`; `OVERLAYS` stays `("fast",)`; provisional `rain_gain` 50000, `storm_p` 0.002, `storm_u0` 0.06, `storm_span` 0.03); no preset changes. State: one packed field `wx` `(9, cells, cells)` float32 in `State` and `State3`, stored as the rest state and carried unchanged with the weather off, `Dims.wn`, the pre-weather fill in `state_from_arrays` (`weather.rest_array(cfg, step)`), `FORMAT_VERSION` unchanged. RNG: `Stream.WEATHER = 9`, `RNG_LAYOUT_VERSION` 3, compatible {1, 2, 3}. Step (all behind the static `weather.enabled`): S3w unpacks `wx` once and samples the wind at the start-of-step positions (`weather.agent_wind`; 3D with the surface-layer profile and `alpha0 + alpha1·buoy_cap`, 2D layer 1 and `alpha0`); S15 adds the wind as a drag force (`forces`/`forces3` `wind=`, not contact-attenuated, `integrate` unchanged); S17 advances the weather (`weather.advance`, the pools of step `t`) and feeds the rain (`RainIn`, `rain_regen`: an int32 term on the cloud band `[zi, zi + dc]` with P-weighted block means, added after the floor, not scaled by the director lever, booked in `INJECT_REGEN`, so no ledger term); S14 the hazard (`lifecycle.storm_mask`, `DeathCause.STORM = 4`, excess deaths only, below the catastrophe); S9 the explicit bond break above `storm_break_u`; `DEATHS_STORM` is the last counter (`n_counters(nd, weather)`, 28 and 31 wide; every consumer takes the flag); `Diag.WEATHER_WARN = 1 << 18`, advisory, outside `ERROR_MASK`. `K_est` and the floor `K` include the stored rain (`metrics.rain_of`). Reporting: the `weather` block of a metrics row (`weather_obs.py`, with `spatial.hash_occupancy` and `overlap_deep`), `invariants._check_weather`, `alife bench --weather` and the `wind` and `weather` staged rows, and, under C17, `alife run --weather-spinup N` (`weather_spinup.py`: the weather alone for `N` steps on a separate key chain, ending in the pools of the start step; fresh runs and forks). (2) **Digest evidence.** The 2D digest matrix plus the 3D cases (tiny3d f32, director inert and levers, `game.observe` with sidecar bytes, eager and staged arms, six runner cases), run on the CPU against a fresh `git archive` of 4337484 at stage 1 and at stage 5: both runs exit 0, "bit-identical", 0 DIFF and 0 WARNING over 22 trajectory and 6 runner cases (116 INFO lines, all of the kinds named next). `tiny3d`, 50 compiled float32 steps: `legacy_state_digest_3d` at head and `state_digest` at 4337484 are both `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd`; `GOLDEN` and `GOLDEN_3D` are not re-pinned. All 12 preset and preset-plus-`fast` config hashes and the pinned hashes of §28.1 are unchanged. The only INFO differences are the `weather` table of `config.json` and checkpoint metadata, `Dims.wn`, `rng_layout_version` 3, the `wx` tensor, and the head-only hash of `64k3d` + `storm`. (3) **Tests.** 228 new tests in seven files (`test_weather_config.py` 81, `test_weather_state.py` 27, `test_weather_wind.py` 14, `test_weather_engine.py` 25, `test_weather_coupling.py` 31, `test_weather_obs.py` 33, `test_weather_spinup.py` 17; two are `slow`), with `tests/weather_helpers.py`; edited: `test_weather.py` (one import check: `weather.py` imports only `ops` at run time), `test_state.py`, `test_cli_smoke.py`, the rng and director_env pins, `make_scene`, the three `tests/data/gui_config_*.json` fixtures (regenerated: the `weather` table only), and `PresetFileTests.swift` (the `storm` file). Mutation checks: dropping the staged storm mask, wind force or rain term fails the staged-equals-fused test. Fast suite (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected, the known Mac-CPU failure of I26): 2181 passed, 6 skipped, 27 deselected, 1 xfailed in 11 min 5 s (2132 at stage 3, 2181 at stages 4 and 5; the 6 skips are environmental: the two goldens pinned on Linux x86-64, the real-LLM test, no ffmpeg, no pygame, no matplotlib); `ruff check` and `ruff format --check` clean (152 files). `swift test --filter AlifeCoreTests`: 93 passed (`AlifeControlTests` needs Metal and was not run). (4) **Cost** (CPU, smoke size: `64k3d` + `storm`, 1,024 rows, `L` = 320, 160-cell weather): `alife bench --weather --weather-pairs 3` gives 31.98 ms off and 38.74 ms on, a marginal **+6.75 ms median** (+6.99 mean; pairs 6.60, 6.71, 7.01); the weather alone runs at 5.2 ms per step, so a 15,000-step spin-up takes about 80 s. These are CPU figures at a size that says nothing about the GPU: the target (at most 1.0 ms on the M5 Pro; 1.0 to 1.25 ms reported for a ruling; W0 measured 1.131 ms in one graph) is the coordinator's. (5) **Choices made under the owner's delegation, to revisit** (D1 to D16 of the W1 spec, C17): D1 a nested 33-key section rather than a params file; D2 the numerics, sizes and detection fixed in `ENGINE_FIXED`; D3 one world overlay `storm`, no preset; D4 one packed field `wx`; D5 `wx` stored unconditionally (a conditional field was reviewed and rejected: four state types, and a class switch on a fork); D6 the 2D wind is layer 1 with `alpha0` only; D7 the rain band is the cloud `[zi, zi + dc]`, not "the layers that span the interface" (a deviation from STORMS §4, recorded there); D8 hazard = a ramp of the air speed, one uniform per row every step; D9 the wind break is an explicit speed threshold; D10 `WEATHER_WARN` as one sticky advisory bit; D11 the `weather` block's storm count is a proxy of candidate storms; D12 the provisional overlay values (numerically inert hazard, a local rain source and 0.09% global perturbation, and the layer-2 jet of about 0.05 as the dominant always-on coupling, F8); D13 `WORLD_OVERLAYS`; D14 the `rain_gain` bound is the int32 derivation; D15 `zi` and `dc` are P-weighted block means; D16 `storm_break_u` is 0 or `>= storm_u0`; C17 the weather-only spin-up and the `director.enabled -> rain_floor == 0` rule. (6) **As built, where it differs from the spec.** `sample_wind_h` returns an `AgentWind` (`u` of shape `(M, 2)`) and has no `fields=`; `device_check` receives its `weather_bad` keyword only with the weather on (a test spies on the old call); the compiled-versus-eager test runs each of 50 steps through both from the same state (counters, ledger and integers exact, floats `allclose`, `wx` bitwise), because 2D `tiny` already diverges between them at step 26 with the weather off (§14.2), and the 200-step smoke test asserts `wx` bitwise rather than the state digest; the compile-based tests are fast, not slow; `config.py` imports `alife.weather` at module level (acyclic, tested); `check_world` is kept and called from `validate_config`; `bench._stage_fns` and `--weather-pairs` (default 2, the spec gave both two and three pairs) were added; `weather_spinup.py` is a host module (`weather.py` is under the rule that bans `mx.eval`), its flag is on `alife run` (there is no `fork` command), and a fork whose source has the weather on is refused (its `wx` is not a rest state); `overlap_deep` is a compiled closure cached per config hash; `weather_obs` also defines `layer1_vorticity` and `storm_exposure`; `analysis/w0.py` keeps `label_periodic`, `centre_winds`, `corners_to_centres`, `hemisphere_sign`, `occupancy_counts` and `band_peaks` as aliases. The G2 items (`DEATH_CAUSES` as a literal plus `death_causes(cfg)`, the social tests, `compare_row(weather=)` in `analysis/social.py`, regenerating G2's GUI fixtures) are not in this branch and are listed for whichever of G2 and W1 merges second (§30.7). One pre-existing failure: the slow `test_compiled_vs_eager_trajectories` fails on this Mac CPU at 4337484 and at head. (7) **Not done, the coordinator's:** the Metal gate of §30.11 (the weather-off matrix on the GPU, the fused step compiling on Metal with its fallback ready, inert-on equality on Metal, the cost), the occupancy go/no-go (a weather-on 64k3d run of at least 30,000 steps reaching `max_occupancy >= 43` or `CELL_OVERFLOW_WARN` makes `cell_capacity = 64` a W1 finding), and W2's calibration, controls (still air, a jet-removed or tracer arm) and seeding. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

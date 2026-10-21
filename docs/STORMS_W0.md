@@ -475,9 +475,12 @@ question of W0 spec §4 does not bind at these winds, and the floor and surface 
 - **Spec text to carry over** (build notes): the tracker's tie rule for splits, the `miss_grace` reading (two misses
   tolerated), test 6b's beta-plane bound (the 160 × 160 table gives 2,025 steps with the default numerics), and the
   `analysis/__init__.py` docstring.
-- **Not measured in W0**: the floor-held tracer arm, and agent (not tracer) occupancy, which W1 and W2 measure.
+- **Not measured in W0**: the floor-held tracer arm, and agent (not tracer) occupancy, which W1 and W2 measure. (W1 built
+  the measurement, the `weather` block's `occ_hz*` keys and `max_occupancy`, with a pre-registered go/no-go for
+  `cell_capacity`; the long GPU run that reads it is the coordinator's, DESIGN §30.8.)
 - **The movies are not in the repository** and the scratchpad is temporary; they should be copied somewhere durable.
-- HANDOVER next steps and a CLAUDE.md line for W0 (W0 spec §1) are not in this commit.
+- ~~HANDOVER next steps and a CLAUDE.md line for W0 (W0 spec §1) are not in this commit.~~ Carried by the W1 change
+  (stage 5): `CLAUDE.md` names W0 and W1, and `HANDOVER.md` has the storm-world state and next steps.
 
 ## 11. Files
 

@@ -27,6 +27,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/RESULTS_3D.md` | the first long 3D run, `runs/64k3d_s0` (500k steps): population and `K`, vertical niches and buoyancy, bodies, evolutionary activity, comparison with 2D; figures and tables in `docs/results_3d/`, scripts in `analysis_cache/64k3d_s0/results3d/` (git-ignored) |
 | `docs/RESULTS_3D_RUNS.md` | the four 500k-step `64k3d` runs (seed 0, seed 1, half food, director live): replication, the density control, the director in 3D, bodies and activity across runs; figures and tables in `docs/results_3d_runs/`, scripts in `analysis_cache/64k3d_runs/` (git-ignored) |
 | `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with provisional label thresholds (`INTENT_VERSION` 1) until the calibration run; G2 to G5 are not built |
+| `docs/STORMS.md` | the storm world (an alien-planet weather game on the 3D world): the weather model, the coupling, the plan W0 to W5; W0 (the offline model, `weather.py`, `docs/STORMS_W0.md`) and W1 (the engine weather layer, normative spec `docs/DESIGN.md` §30) are built and off by default |
 | `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13) |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
@@ -297,6 +298,35 @@ and resumed once. There is one run per condition apart from the seed pair.
 - **Outputs.** The figures and tables are in `docs/results_3d_runs/`, the scripts and full outputs in
   `analysis_cache/64k3d_runs/` (git-ignored).
 
+## Storm world: W0 and W1 (`docs/STORMS.md`, DESIGN §30)
+
+- **Current state.** W0 (the offline weather model, `weather.py`, `docs/STORMS_W0.md`; row I46, PR #28) and W1 (the engine
+  weather layer, DESIGN §30; row I47; branch `games/w1-weather`, built on `games/w0-storms`) are implemented and **off by
+  default**. With `weather.enabled = false` the engine is bit-identical to its parent: the 2D and 3D digest matrix, the
+  goldens (`GOLDEN`, and `GOLDEN_3D` over the new `legacy_state_digest_3d`) and every config hash are unchanged. A
+  weather-on run is `--preset 64k3d --overlay storm`. What exists: a hashed `[weather]` section (33 keys), `State.wx`,
+  wind as a drag force, rain into the regrowth (and so `K_est`), the storm hazard (`DeathCause.STORM`, `DEATHS_STORM`),
+  explicit wind bond breaking, the `weather` metrics block, `alife bench --weather`, and the weather-only spin-up
+  `alife run --weather-spinup N` (storms need about 15,000 steps from a calm start; 80 s on the CPU).
+- **Results (CPU smoke only).** The 200-step `64k3d` + `storm` run at 1,024 rows closes the ledger and agrees compiled
+  against eager on `wx`; the CPU marginal of the weather is +6.75 ms per step at that size (`bench --weather`). The
+  hazard at the overlay is numerically inert (no storm death in a short run), the rain is a local source and a 0.09%
+  global perturbation, and **the layer-2 jet of about 0.05 is on whenever the weather is on and is the dominant
+  coupling**, not the storms (DESIGN §30.1).
+- **Pending, the coordinator's (GPU).** The Metal gate of DESIGN §30.11 (the weather-off matrix on the GPU, the fused step
+  compiling on Metal, inert-on equality, with the separate-advance fallback ready); the GPU marginal against the 1.0 ms
+  target; the occupancy go/no-go (a weather-on 64k3d run of at least 30,000 steps; `max_occupancy >= 43` or
+  `CELL_OVERFLOW_WARN` makes `sensing.cell_capacity = 64` a W1 finding). **W1 is not merge-ready until the Metal gate is
+  reported.**
+- **Next (W2).** Calibrate `rain_gain` and `storm_*` on a still-air control of each seed (`storm_u0` in 0.03 to 0.05,
+  `storm_p` from the `weather` block's `storm_exposure` and `air_speed_p99`); **a jet-removed (`weather.r2` raised) or
+  tracer arm before any ecological effect is attributed to storms**; rain seeding and shade with the same band weights as
+  the food; wind-relative observer fields (`INTENT_VERSION` 2). Director runs need `rain_floor = 0` (enforced).
+- **Merge order.** When G2 (`games/g2-social`) and W1 merge, the second one applies the items in the W1 build notes
+  (`g2_followups.md`): `DEATH_CAUSES` must stay the pre-storm tuple with a `death_causes(cfg)` that adds `storm` (a
+  correctness fix: a `STORM` row would index past the cause scatter), `compare_row(weather=...)` in
+  `analysis/social.py`, regenerated GUI fixtures, and expected conflicts in `bench.py` and `cli.py`.
+
 ## GUI follow-ups (PR #3, merged)
 
 - **Fork pre-fill:** in Fork mode the levers are loaded from `runs/SOURCE/config.json`, where a missing
@@ -432,4 +462,8 @@ and resumed once. There is one run per condition apart from the seed pair.
    - a mean-speed metric, so "sessile vs mobile" is measurable;
    - `inspect` showing the resumed total instead of the original `steps`.
 5. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
-   it in the DESIGN Review log.
+   it in the DESIGN Review log. A trajectory-neutral state field is instead frozen out of the legacy digests
+   (`V0_FIELDS`, `V0_FIELDS_3D`).
+6. **Storm world** (`docs/STORMS.md`; W1 is built, DESIGN §30): the Metal gate, the GPU marginal and the occupancy go/no-go
+   (the coordinator's, GPU), then W2 (calibration, controls including a jet-removed arm, seeding and shade). See the
+   section above.
