@@ -308,16 +308,26 @@ and resumed once. There is one run per condition apart from the seed pair.
   wind as a drag force, rain into the regrowth (and so `K_est`), the storm hazard (`DeathCause.STORM`, `DEATHS_STORM`),
   explicit wind bond breaking, the `weather` metrics block, `alife bench --weather`, and the weather-only spin-up
   `alife run --weather-spinup N` (storms need about 15,000 steps from a calm start; 80 s on the CPU).
-- **Results (CPU smoke only).** The 200-step `64k3d` + `storm` run at 1,024 rows closes the ledger and agrees compiled
+- **Results (CPU smoke; the GPU results are in the next bullet).** The 200-step `64k3d` + `storm` run at 1,024 rows closes the ledger and agrees compiled
   against eager on `wx`; the CPU marginal of the weather is +6.75 ms per step at that size (`bench --weather`). The
   hazard at the overlay is numerically inert (no storm death in a short run), the rain is a local source and a 0.09%
   global perturbation, and **the layer-2 jet of about 0.05 is on whenever the weather is on and is the dominant
   coupling**, not the storms (DESIGN §30.1).
-- **Pending, the coordinator's (GPU).** The Metal gate of DESIGN §30.11 (the weather-off matrix on the GPU, the fused step
-  compiling on Metal, inert-on equality, with the separate-advance fallback ready); the GPU marginal against the 1.0 ms
-  target; the occupancy go/no-go (a weather-on 64k3d run of at least 30,000 steps; `max_occupancy >= 43` or
-  `CELL_OVERFLOW_WARN` makes `sensing.cell_capacity = 64` a W1 finding). **W1 is not merge-ready until the Metal gate is
-  reported.**
+- **GPU results (M5 Pro, 2026-10-21, W1 at 80b50d0; DESIGN §30.8, §30.9, §30.11, row I47 (4b)).**
+  - *Metal gate: passed.* `pytest -m ""` on the default device: 797 passed, 2 skipped, 1 xfailed (the MLX duplicate-roll
+    compile bug, still in 0.32.3), 0 failed. The fused weather-on step compiles on Metal, so the separate-advance fallback
+    is not needed. The base-versus-head digest matrix was not run as a script on the GPU (its pytest forms passed; the
+    matrix was bit-identical on the CPU).
+  - *Cost: target met.* `bench --weather` at `64k3d` + `storm` with the fused kNN kernel: marginal 0.47 to 0.50 ms (3.4 to
+    3.6% of the 13.8 ms step), 69.6 steps/s with the weather on. The unpaired `--stages` delta (1.02 ms) is noise-affected.
+  - *Occupancy go/no-go: no-go on `C` = 64.* A fork of `64k3d_s0` at 450,000 with the `storm` overlay and a 15,000-step
+    weather spin-up, 20,000 coupled steps at 68.6 steps/s: `max_occupancy` 18 (trigger 43), `cell_overflow` 0, no health
+    bit, ledger closed, `deaths_storm` 144 (nearly inert at the provisional values). `cell_capacity` stays 48. `C` = 64 is
+    free of step time under the fused kernel, so it is available if W2's repeat (calibrated `storm_*`, a young
+    population, 30,000 steps; this run was 20,000 from a spread population) fires the trigger; the other response is a
+    lower `u_max` or `alpha` (C17). Neither was applied.
+  - W1 is merge-ready on the §30.11 criteria; the merge is the owner's go (and the G2 items under "Merge order" apply to
+    whichever of G2 and W1 merges second).
 - **Next (W2).** Calibrate `rain_gain` and `storm_*` on a still-air control of each seed (`storm_u0` in 0.03 to 0.05,
   `storm_p` from the `weather` block's `storm_exposure` and `air_speed_p99`); **a jet-removed (`weather.r2` raised) or
   tracer arm before any ecological effect is attributed to storms**; rain seeding and shade with the same band weights as
@@ -469,6 +479,6 @@ and resumed once. There is one run per condition apart from the seed pair.
 5. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
    it in the DESIGN Review log. A trajectory-neutral state field is instead frozen out of the legacy digests
    (`V0_FIELDS`, `V0_FIELDS_3D`).
-6. **Storm world** (`docs/STORMS.md`; W1 is built, DESIGN §30): the Metal gate, the GPU marginal and the occupancy go/no-go
-   (the coordinator's, GPU), then W2 (calibration, controls including a jet-removed arm, seeding and shade). See the
-   section above.
+6. **Storm world** (`docs/STORMS.md`; W1 is built and its GPU gate, cost and occupancy results are recorded, DESIGN §30):
+   the W1 merge (the owner's go), then W2 (calibration, controls including a jet-removed arm, seeding and shade, and a
+   30,000-step occupancy repeat from a young population). See the section above.

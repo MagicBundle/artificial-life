@@ -370,9 +370,13 @@ Each step is one PR, merged before the next.
        impulse; genesis or displacement lag after a warm-pool change).
    - **Fallback:** A, if B fails within a fixed tuning budget.
 2. **W1, engine weather layer.**
-   - **Status (built, off by default; `DESIGN.md` §30, row I47; pending the coordinator: the Metal gate, the GPU marginal,
-     the occupancy go/no-go).** The CPU marginal at smoke size is +6.75 ms (1,024 rows; GPU 1.0 ms target: the
-     coordinator's). W2 inherits: the calibration of `rain_gain` and `storm_*` (the hazard is numerically inert at the
+   - **Status (built, off by default; `DESIGN.md` §30, row I47; GPU results of 2026-10-21 recorded).** The Metal gate
+     passed (797 passed, 0 failed on the default device, the fused weather-on step compiles on Metal). The GPU marginal at
+     `64k3d` with the fused kNN kernel is 0.47 to 0.50 ms per step (3.4 to 3.6% of the 13.8 ms step; target at most 1.0 ms,
+     met; the CPU smoke-size figure was +6.75 ms). The occupancy go/no-go says no-go on `C` = 64: a 20,000-step weather-on
+     run from `64k3d_s0` at 450,000 peaked at `max_occupancy` 18 (trigger 43), no overflow, so `cell_capacity` stays 48
+     (caveats: 20,000 steps rather than 30,000, a spread starting population; W2 repeats it with calibrated values).
+     W2 inherits: the calibration of `rain_gain` and `storm_*` (the hazard is numerically inert at the
      overlay), a still-air control per seed, and a jet-removed (`weather.r2` raised) or tracer arm, because the layer-2 jet
      of about 0.05 is on whenever the weather is on. The weather-only spin-up (`alife run --weather-spinup N`, coordinator
      choice C17) is built.
