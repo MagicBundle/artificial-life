@@ -840,7 +840,7 @@ Tuning risks (`docs/3D.md` §9):
    (`require_2d`), so a 3D port is the next analysis.
 6. **Metrics.** The floor-layer share and `K_floor` per row would avoid the approximations of §2. Logging death
    positions would let the corpses' fall be measured.
-7. **Speed.** The fused Metal neighbour kernel (`DESIGN.md` §23.2) matters if longer or more 3D runs are wanted. At
+7. **Speed.** The fused Metal neighbour kernel (`DESIGN.md` §23.2) matters if longer or more 3D runs are wanted (since built, I48: 75 steps/s at `C` = 48, `DESIGN.md` §27.13). At
    14.6 steps/s, 1M steps take about 19 h, and the search is 79% of the step.
 
 ## 11. Files
