@@ -52,3 +52,13 @@ def micro3d_cfg() -> Config:
     from helpers import MICRO3D  # not at import: helpers reads the default device (ON_GPU)
 
     return load_config(preset="tiny3d", overrides=list(MICRO3D))
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Options of the ``llm``-marked test of the world report (tests/test_analysis_world_report.py): the id of
+    a model that is already loaded and the chat-completions URL. Without ``--model`` (or ``ALIFE_LLM_MODEL``)
+    that test is skipped."""
+    parser.addoption("--model", default=None, help="model id for the llm-marked world report test")
+    parser.addoption(
+        "--llm-url", default=None, help="chat-completions URL for the llm-marked world report test"
+    )

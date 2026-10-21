@@ -18,8 +18,11 @@ write into the run directory; ``import alife.config`` loads ``mlx.core`` but not
    sections (the mandatory sentences, then the candidates by salience, displayed in the section order), the
    headline and the interventions block, as plain text lines.
 
-An optional model may only choose among the candidates (the select-and-order mode of a later step); this
-module never calls one and never reads model-written text.
+An optional model may only choose among the candidates (the select-and-order mode: ``select_messages``,
+``select_schema``, ``parse_choice``, ``narrate``): its reply is a list of candidate ids, validated entry by
+entry and stored for audit, never rendered, quoted or put into a prompt. ``narrate`` is the one function of
+this module with a side effect (the HTTP call of the ``Client`` it is given); ``verify_record`` replays a
+stored record without ever calling a model.
 
 Lint (rule 2, ``tests/test_lint.py``): no subscript assignment anywhere in this module, dict keys included.
 Dicts and lists are built by literals, comprehensions and ``update``.
@@ -50,26 +53,38 @@ __all__ = [
     "CHECKER_VERSION",
     "KNOWN_SOCIAL",
     "LABEL_VERDICTS",
+    "MAX_REPLY_CHARS",
     "REPORT_V1",
     "REPORT_VERSION",
+    "SELECT_PROMPT_VERSION",
     "LeverState",
     "ReportError",
     "ReportRules",
     "RunView",
     "assemble",
+    "body_k",
     "build_sheet",
     "candidates",
     "check_string",
     "compose_sheet",
     "facts_digest",
     "fold_levers",
+    "judge_attempt",
     "known_social_digest",
     "label_table_digest",
     "lead_of",
     "load_run",
+    "narrate",
+    "parse_choice",
+    "record_versions",
+    "select_messages",
+    "select_schema",
+    "select_seed",
+    "settle",
     "spans",
     "template_report",
     "ticker",
+    "verify_record",
 ]
 
 REPORT_VERSION: Final = 1
@@ -1976,6 +1991,16 @@ def _within(c: Mapping[str, Any], pos: Mapping[str, int] | None, group_pos: Mapp
     return (0, pos.get(c["id"], len(pos)), *c["order"][1:])
 
 
+def body_k(
+    sheet: Mapping[str, Any], body: Sequence[Mapping[str, Any]], rules: ReportRules = REPORT_V1
+) -> int:
+    """The number of body sentences of a chapter: ``k_body`` (6), ``k_quiet`` (3) in a quiet chapter, raised
+    to the number of mandatory candidates when that is larger. The template mode, the select prompt, its
+    schema and its validation all use this one number."""
+    k = rules.k_quiet if sheet["quiet"] else rules.k_body
+    return max(k, sum(1 for c in body if c["mandatory"]))
+
+
 def assemble(
     sheet: Mapping[str, Any],
     cands: tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]],
@@ -1994,12 +2019,11 @@ def assemble(
     model, a group's own sentence before its G-c. Nothing here is written by a model: every text is a
     candidate."""
     body, heads, block, _ = cands
-    k = rules.k_quiet if sheet["quiet"] else rules.k_body
+    k = body_k(sheet, body, rules)
     mand = [c for c in body if c["mandatory"]]
     by_id = {c["id"]: c for c in body}
     pos: dict[str, int] | None = None
     if choice is None:
-        k = max(k, len(mand))
         rest = [c for c in body if not c["mandatory"]][: max(0, k - len(mand))]
         chosen = [(c, "mandatory") for c in mand] + [(c, "template") for c in rest]
     else:
@@ -2078,3 +2102,493 @@ def ticker(sheet: Mapping[str, Any], rules: ReportRules = REPORT_V1) -> list[dic
     largest kin-group event of the snapshot; else "Step {s}: the population was {n}." where the count is
     known. Every line passes the checker. The window sentence is never in the ticker."""
     return [{"step": x["step"], "text": x["text"]} for x in _ticker_lines(sheet, rules)]
+
+
+# --- the select-and-order mode (docs/DESIGN.md §30; SELECT_PROMPT_VERSION 1) ------------------------------
+#
+# The model sees code-written candidate sentences and replies with candidate ids. Nothing it writes is shown,
+# quoted or put into a prompt: the reply is parsed entry by entry (a bad entry is dropped, a bad structure
+# makes the attempt ``invalid``), the policy picks the first attempt that is usable, and ``assemble`` renders
+# only candidates, in the code's section order.
+
+SELECT_PROMPT_VERSION: Final = 1
+SELECT_SCHEMA_NAME: Final = "world_report_select"
+SELECT_TEMPERATURE: Final = 0.4
+SELECT_MAX_TOKENS: Final = 200
+SELECT_SEED_TAG: Final = 17  # the stream tag of the request seed (the director's is 16)
+MAX_REPLY_CHARS: Final = 4096  # a longer reply is invalid (the schema allows a few dozen characters)
+DROP_REASONS: Final = ("not_a_string", "unknown_id", "repeat", "beyond_k")
+OUTCOMES: Final = ("ok", "invalid", "failed", "too_few")
+RETRY_OUTCOMES: Final = ("invalid", "failed", "too_few")  # the outcomes after which the next attempt is made
+ENTRY_CHARS: Final = 24  # characters of a dropped entry kept in a record
+
+SELECT_SYSTEM: Final = (
+    "You are the editor of a chapter report about a simulated world. Code wrote and checked every sentence, "
+    "and you cannot add or change words. Choose the body sentences a reader most needs, most important "
+    "first, and choose one headline. Code fixes the order between kinds of sentence, so the order you give "
+    "matters only among sentences of the same kind. Sentences marked [always] are shown even if you leave "
+    "them out. Do not choose two sentences that repeat each other. Reply with the ids only, as JSON."
+)
+# The lines of the user message (the format is part of the prompt digest).
+_USER_FORMAT: Final = {
+    "chapter": "Chapter: steps {a} to {b} of a {dims}D world.",
+    "lead": "Lead (always first): {text}",
+    "body": "Body candidates (choose {lo} to {hi}):",
+    "body_all": "Body candidates (choose {lo}):",
+    "line": "{id}: {text}",
+    "always": "{id} [always]: {text}",
+    "head": "Headline candidates (choose 1):",
+}
+
+
+def source_words_digest() -> str:
+    """sha256 of the words that name the author of an intervention and of the rule identifiers (their content
+    reaches the sheet's block, which the version numbers do not pin)."""
+    return hashlib.sha256(
+        _canon(
+            {"source_words": dict(templates.SOURCE_WORDS), "rule_names": sorted(templates.RULE_NAMES)}
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def select_prompt_digest() -> str:
+    """sha256 of everything fixed in the select request: the system message, the user message's format, the
+    schema's name, the sampling values, the seed stream and the reply limit."""
+    return hashlib.sha256(
+        _canon(
+            {
+                "version": SELECT_PROMPT_VERSION,
+                "system": SELECT_SYSTEM,
+                "user": dict(_USER_FORMAT),
+                "schema_name": SELECT_SCHEMA_NAME,
+                "temperature": SELECT_TEMPERATURE,
+                "max_tokens": SELECT_MAX_TOKENS,
+                "seed_tag": SELECT_SEED_TAG,
+                "max_reply_chars": MAX_REPLY_CHARS,
+                "drop_reasons": list(DROP_REASONS),
+            }
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def record_versions(rules: ReportRules = REPORT_V1) -> dict[str, Any]:
+    """Every version number and table digest a record stores and ``verify`` compares (§8): the versions of
+    the sheet, the templates, the checker and the select prompt, and the digests of the content they do not
+    pin."""
+    return {
+        "report_version": REPORT_VERSION,
+        "template_version": templates.TEMPLATE_VERSION,
+        "checker_version": CHECKER_VERSION,
+        "select_prompt_version": SELECT_PROMPT_VERSION,
+        "report_rules_digest": rules.digest(),
+        "template_digest": templates.TEMPLATE_DIGEST,
+        "lexicon_digest": lexicon.LEXICON_DIGEST,
+        "label_table_digest": label_table_digest(),
+        "known_social_digest": known_social_digest(),
+        "source_words_digest": source_words_digest(),
+        "select_prompt_digest": select_prompt_digest(),
+    }
+
+
+def select_n_min(k: int, body: Sequence[Mapping[str, Any]]) -> int:
+    """The fewest entries a usable reply holds: ``k - 1``, or every candidate when there are fewer (a one-id
+    reply would leave only the lead and the mandatory sentences, N14)."""
+    return min(k - 1, len(body))
+
+
+def _vacuous(cands: tuple[Any, ...]) -> bool:
+    """True when the model would have nothing to choose (no body or no headline candidate): no request."""
+    return not cands[0] or not cands[1]
+
+
+def select_messages(
+    sheet: Mapping[str, Any],
+    cands: tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]],
+    rules: ReportRules = REPORT_V1,
+) -> list[dict[str, str]]:
+    """The chat messages of the select request: the fixed system message and a user message made of the
+    chapter, the lead, the body candidates in salience order (the mandatory ones marked ``[always]``) and the
+    headline candidates. Every text in it is a candidate string written by code; no intervention, window or
+    setting and nothing a model wrote."""
+    body, heads = cands[0], cands[1]
+    lead = lead_of(sheet, rules)
+    if lead is None or not body or not heads:
+        raise ReportError("the sheet has no lead, body or headline candidate to put in a prompt")
+    k = body_k(sheet, body, rules)
+    a, b = sheet["chapter"]
+    f = _USER_FORMAT
+    lo, hi = select_n_min(k, body), min(k, len(body))
+    lines = [
+        f["chapter"].format(a=f"{a:,}", b=f"{b:,}", dims=sheet["dims"]),
+        f["lead"].format(text=lead["text"]),
+        "",
+        f["body" if lo < hi else "body_all"].format(lo=lo, hi=hi),
+        *[f["always" if c["mandatory"] else "line"].format(id=c["id"], text=c["text"]) for c in body],
+        "",
+        f["head"],
+        *[f["line"].format(id=h["id"], text=h["text"]) for h in heads],
+    ]
+    return [{"role": "system", "content": SELECT_SYSTEM}, {"role": "user", "content": "\n".join(lines)}]
+
+
+def select_schema(
+    cands: tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]],
+    k: int,
+) -> dict[str, Any]:
+    """The strict JSON schema of the reply: a headline id and 1 to ``k`` body ids (at least ``select_n_min``),
+    every string and array bounded. ``uniqueItems`` is stated but not relied on (the parser drops repeats)."""
+    body, heads = cands[0], cands[1]
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["headline", "order"],
+        "properties": {
+            "headline": {"type": "string", "maxLength": 4, "enum": [h["id"] for h in heads]},
+            "order": {
+                "type": "array",
+                "minItems": select_n_min(k, body),
+                "maxItems": k,
+                "uniqueItems": True,
+                "items": {"type": "string", "maxLength": 4, "enum": [c["id"] for c in body]},
+            },
+        },
+    }
+
+
+def select_seed(run_seed: int, step: int, attempt: int) -> int:
+    """The ``seed`` request parameter of attempt ``attempt`` (0, 1, ..) for the chapter ending at ``step``: a
+    non-negative int31 of ``(run.seed, step, 17, attempt)``. A server may ignore it."""
+    return (
+        int(np.random.SeedSequence([run_seed, step, SELECT_SEED_TAG, attempt]).generate_state(1)[0])
+        & 0x7FFFFFFF
+    )
+
+
+def _no_constant(name: str) -> Any:
+    raise ValueError(f"the JSON constant {name} is not allowed")
+
+
+def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError(f"duplicate key {next(k for k in keys if keys.count(k) > 1)!r}")
+    return dict(pairs)
+
+
+def _entry_repr(x: Any) -> str:
+    """A dropped entry as a short, JSON-safe string for a record (never a nested value)."""
+    if isinstance(x, str):
+        return x.translate({c: " " for c in range(32)}).replace("\x7f", " ")[:ENTRY_CHARS]
+    if x is None or isinstance(x, bool | int | float):
+        return repr(x)[:ENTRY_CHARS]
+    return f"<{type(x).__name__}>"
+
+
+def parse_choice(
+    text: str,
+    cands: tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]],
+    k: int,
+) -> dict[str, Any]:
+    """The model's reply as a choice: ``{"outcome": "ok"|"invalid"|"too_few", "error": str|None, "choice":
+    {"headline": id|None, "order": [ids], "dropped": [{"entry", "reason"}]}|None}``.
+
+    **Reply level** (``invalid``, no choice): not one JSON object, a duplicate key, ``NaN`` or
+    ``Infinity``, keys other than exactly ``headline`` and ``order``, ``order`` not a list, a reply of more
+    than ``MAX_REPLY_CHARS``. **Entry level** (the entry is dropped, never the reply): not a string, an
+    unknown id, a repeat (the first stays), beyond ``k``. An unknown or non-string headline is ``None`` (the
+    template headline is then used). Fewer kept entries than ``select_n_min`` is ``too_few`` (the choice is
+    kept for the record)."""
+    body, heads = cands[0], cands[1]
+    if len(text) > MAX_REPLY_CHARS:
+        return {
+            "outcome": "invalid",
+            "error": f"the reply is longer than {MAX_REPLY_CHARS} characters",
+            "choice": None,
+        }
+    try:
+        data = json.loads(text, parse_constant=_no_constant, object_pairs_hook=_unique_pairs)
+    except (ValueError, RecursionError) as e:
+        return {
+            "outcome": "invalid",
+            "error": f"not valid JSON ({type(e).__name__}: {str(e)[:80]})",
+            "choice": None,
+        }
+    if not isinstance(data, dict):
+        return {
+            "outcome": "invalid",
+            "error": f"the reply is a {type(data).__name__}, not an object",
+            "choice": None,
+        }
+    if set(data) != {"headline", "order"}:
+        return {
+            "outcome": "invalid",
+            "error": f"the keys are {sorted(data)[:4]}, not headline and order",
+            "choice": None,
+        }
+    entries = data["order"]
+    if not isinstance(entries, list):
+        return {"outcome": "invalid", "error": "order is not a list", "choice": None}
+    ids = {c["id"] for c in body}
+    kept: list[str] = []
+    dropped: list[dict[str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, str):
+            reason = "not_a_string"
+        elif entry not in ids:
+            reason = "unknown_id"
+        elif entry in kept:
+            reason = "repeat"
+        elif len(kept) >= k:
+            reason = "beyond_k"
+        else:
+            kept.append(entry)
+            continue
+        dropped.append({"entry": _entry_repr(entry), "reason": reason})
+    head = data["headline"]
+    head_id = head if isinstance(head, str) and head in {h["id"] for h in heads} else None
+    choice = {"headline": head_id, "order": kept, "dropped": dropped}
+    need = select_n_min(k, body)
+    if len(kept) < need:
+        return {"outcome": "too_few", "error": f"{len(kept)} entries kept, {need} needed", "choice": choice}
+    return {"outcome": "ok", "error": None, "choice": choice}
+
+
+def judge_attempt(
+    attempt: Mapping[str, Any],
+    cands: tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]],
+    k: int,
+) -> dict[str, Any]:
+    """``{"outcome", "error", "choice"}`` of a stored attempt, derived again from its ``response``: an attempt
+    with no response failed (the HTTP call, a timeout or an empty reply); any other is parsed."""
+    response = attempt.get("response")
+    if not isinstance(response, str):
+        return {"outcome": "failed", "error": attempt.get("error"), "choice": None}
+    return parse_choice(response, cands, k)
+
+
+def settle(attempts: Sequence[Mapping[str, Any]]) -> tuple[int | None, str | None]:
+    """The policy over the attempts in order: ``(index of the attempt used, fallback)``. The first attempt
+    that is ``ok`` is used (``fallback`` "headline" if its headline was unknown, else None); with none, the
+    report is the template report and ``fallback`` is the last attempt's outcome."""
+    for i, a in enumerate(attempts):
+        if a["outcome"] == "ok":
+            return i, ("headline" if a["choice"]["headline"] is None else None)
+    return None, (attempts[-1]["outcome"] if attempts else None)
+
+
+def _attempt(
+    ex: Any,
+    seed: int,
+    cands: tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]],
+    k: int,
+) -> dict[str, Any]:
+    """One request's outcome as a record entry from the client's ``Exchange``. The reply text is cleaned
+    (control characters dropped, whitespace collapsed) and stored; the cleaned text is what is parsed, so a
+    replay parses the same bytes."""
+    from alife.director.llm import clean_text  # lazy: keeps the module's import light
+
+    latency = round(float(ex.latency_s), 3)
+    finish = clean_text(ex.finish_reason, 40) if isinstance(ex.finish_reason, str) else None
+    base = {"seed": seed, "latency_s": latency, "finish_reason": finish, "usage": ex.usage}
+    if ex.error is not None or not isinstance(ex.text, str):
+        error = clean_text(ex.error or "no reply", 200)
+        return {**base, "outcome": "failed", "error": error, "response": None, "choice": None}
+    response = clean_text(ex.text, MAX_REPLY_CHARS + 1)
+    if not response:
+        return {
+            **base,
+            "outcome": "failed",
+            "error": "empty: the reply has no content",
+            "response": None,
+            "choice": None,
+        }
+    return {**base, "response": response, **parse_choice(response, cands, k)}
+
+
+def _digest_of(x: Any) -> str:
+    return hashlib.sha256(_canon(x).encode("utf-8")).hexdigest()
+
+
+def _cand_views(
+    cands: tuple[Any, ...],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """The stored form of the candidates, the headlines and the strings the checker excluded."""
+    body, heads, _block, excluded = cands
+    return (
+        [{k: c[k] for k in ("id", "template", "cites", "text", "mandatory", "salience")} for c in body],
+        [{k: h[k] for k in ("id", "template", "cites", "text")} for h in heads],
+        [{k: x[k] for k in ("template", "cites", "reasons")} for x in excluded],
+    )
+
+
+def narrate(
+    sheet: Mapping[str, Any],
+    client: Any | None,
+    *,
+    rules: ReportRules = REPORT_V1,
+    attempts: int = 2,
+) -> dict[str, Any]:
+    """The record (§8) of a chapter's report. ``client`` None is the template mode: no request. Otherwise
+    ``client`` (a ``director.llm.Client``: ``url``, ``model`` and ``chat(body)``) gets one select request per
+    attempt, at most ``attempts``, stopping at the first that is usable; after the attempts the template
+    report is used and ``fallback`` says why. The request body is built here (never ``Client.body``) with the
+    model named explicitly. No global state; the client's HTTP call is the only side effect."""
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+    cands = candidates(sheet, rules)
+    k = body_k(sheet, cands[0], rules)
+    views = _cand_views(cands)
+    log: list[dict[str, Any]] = []
+    messages: list[dict[str, str]] | None = None
+    request: dict[str, Any] | None = None
+    if client is not None and not _vacuous(cands):
+        messages = select_messages(sheet, cands, rules)
+        request = {"temperature": SELECT_TEMPERATURE, "max_tokens": SELECT_MAX_TOKENS}
+        fmt = {
+            "type": "json_schema",
+            "json_schema": {"name": SELECT_SCHEMA_NAME, "strict": True, "schema": select_schema(cands, k)},
+        }
+        a, b = sheet["chapter"]
+        for i in range(attempts):
+            seed = select_seed(sheet["run"]["seed"], b, i)
+            payload = {
+                "model": client.model,
+                "messages": [dict(m) for m in messages],
+                **request,
+                "seed": seed,
+                "stream": False,
+                "response_format": fmt,
+            }
+            log.append(_attempt(client.chat(payload), seed, cands, k))
+            if log[-1]["outcome"] == "ok":
+                break
+    used, fallback = settle(log)
+    choice = None if used is None else log[used]["choice"]
+    report = assemble(
+        sheet,
+        cands,
+        None if choice is None else {"headline": choice["headline"], "order": choice["order"]},
+        rules,
+    )
+    a, b = sheet["chapter"]
+    return {
+        "step": b,
+        "chapter_start": a,
+        **record_versions(rules),
+        "facts_digest": facts_digest(sheet),
+        "candidate_set_digest": _digest_of([views[0], views[1]]),
+        "facts": sheet,
+        "candidates": views[0],
+        "headlines": views[1],
+        "excluded_candidates": views[2],
+        "mode": "template" if client is None else "select",
+        "model": None if client is None else client.model,
+        "url": None if client is None else client.url,
+        "messages": messages,
+        "request": request,
+        "attempts": log,
+        "fallback": fallback,
+        "report": report,
+        "ticker": ticker(sheet, rules),
+    }
+
+
+def _plain(x: Any) -> Any:
+    """``x`` as it reads back from JSON (tuples are lists), to compare a computed value with a stored one."""
+    return json.loads(json.dumps(x, allow_nan=False))
+
+
+def verify_record(
+    rec: Mapping[str, Any], sheet_now: Mapping[str, Any] | None, rules: ReportRules = REPORT_V1
+) -> dict[str, Any]:
+    """Replay of one stored record (§8), never calling a model. ``sheet_now`` is the sheet recomputed from the
+    run for the record's chapter (None if the caller did not recompute it).
+
+    ``{"status", "sheet_differs", "versions", "reasons"}``: ``versions_differ`` when a version number or a
+    table digest of the record is not the code's (``versions`` lists them; the sheet comparison is still
+    reported); else the replay from the **stored** facts: the facts against their digest, the candidates and
+    headlines against the candidate-set digest and the stored views, a select record's messages rebuilt byte
+    for byte, every attempt parsed again (outcome, choice) with the policy, then the report and the ticker
+    rendered again; any difference is ``mismatch``. With nothing wrong, ``stale`` if the recomputed sheet's
+    digest is not the record's, else ``ok``."""
+    current = record_versions(rules)
+    diffs = {k: [rec.get(k), v] for k, v in current.items() if rec.get(k) != v}
+    sheet_differs = sheet_now is not None and facts_digest(sheet_now) != rec.get("facts_digest")
+    if diffs:
+        return {"status": "versions_differ", "sheet_differs": sheet_differs, "versions": diffs, "reasons": []}
+    reasons: list[str] = []
+    try:
+        reasons = _replay(rec, rules)
+    except (ReportError, KeyError, TypeError, ValueError, IndexError, AttributeError) as e:
+        reasons = [f"the stored record cannot be replayed ({type(e).__name__}: {str(e)[:120]})"]
+    status = "mismatch" if reasons else ("stale" if sheet_differs else "ok")
+    return {"status": status, "sheet_differs": sheet_differs, "versions": {}, "reasons": reasons}
+
+
+def _replay(rec: Mapping[str, Any], rules: ReportRules) -> list[str]:
+    sheet = rec["facts"]
+    reasons: list[str] = []
+
+    def same(name: str, stored: Any, computed: Any) -> None:
+        if stored != _plain(computed):
+            reasons.append(f"{name}: the stored value is not the one the code computes from the stored facts")
+
+    if facts_digest(sheet) != rec["facts_digest"]:
+        reasons.append("facts_digest: the stored facts do not match their digest")
+    if [sheet["chapter"][1], sheet["chapter"][0]] != [rec["step"], rec["chapter_start"]]:
+        reasons.append("step: the record's chapter is not the chapter of its facts")
+    cands = candidates(sheet, rules)
+    views = _cand_views(cands)
+    if _digest_of([views[0], views[1]]) != rec["candidate_set_digest"]:
+        reasons.append(
+            "candidate_set_digest: the stored candidates and headlines differ from the recomputed ones"
+        )
+    same("candidates", rec["candidates"], views[0])
+    same("headlines", rec["headlines"], views[1])
+    same("excluded_candidates", rec["excluded_candidates"], views[2])
+    k = body_k(sheet, cands[0], rules)
+    mode = rec["mode"]
+    log = rec["attempts"]
+    if mode == "template":
+        if log or rec["model"] is not None or rec["messages"] is not None or rec["fallback"] is not None:
+            reasons.append("mode: a template record holds a model, messages, attempts or a fallback")
+        choice = None
+    elif mode == "select":
+        vacuous = _vacuous(cands)
+        same("messages", rec["messages"], None if vacuous else select_messages(sheet, cands, rules))
+        same(
+            "request",
+            rec["request"],
+            None if vacuous else {"temperature": SELECT_TEMPERATURE, "max_tokens": SELECT_MAX_TOKENS},
+        )
+        if vacuous and log:
+            reasons.append("attempts: a request was recorded for a chapter with nothing to choose")
+        judged: list[dict[str, Any]] = []
+        for i, att in enumerate(log):
+            j = judge_attempt(att, cands, k)
+            judged.append(j)
+            if (att["outcome"], att["choice"]) != (j["outcome"], _plain(j["choice"])):
+                reasons.append(
+                    f"attempts[{i}]: the stored outcome or choice is not the one the stored reply gives"
+                )
+            if j["outcome"] != "failed" and att["error"] != j["error"]:
+                reasons.append(f"attempts[{i}]: the stored error is not the one the stored reply gives")
+            if att["seed"] != select_seed(sheet["run"]["seed"], rec["step"], i):
+                reasons.append(f"attempts[{i}]: the seed is not the one of the chapter and attempt")
+        used, fallback = settle(judged)
+        if used is not None and used != len(log) - 1:
+            reasons.append("attempts: an attempt follows the one that was used")
+        if rec["fallback"] != fallback:
+            reasons.append(f"fallback: stored {rec['fallback']!r}, replay {fallback!r}")
+        choice = None if used is None else judged[used]["choice"]
+    else:
+        raise ReportError(f"unknown mode {mode!r}")
+    report = assemble(
+        sheet,
+        cands,
+        None if choice is None else {"headline": choice["headline"], "order": choice["order"]},
+        rules,
+    )
+    same("report", rec["report"], report)
+    same("ticker", rec["ticker"], ticker(sheet, rules))
+    return reasons
