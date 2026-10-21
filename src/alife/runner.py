@@ -16,8 +16,9 @@ Cadences (all in units of ``state.step``):
 
 With ``game.observe`` the step also returns the observer channel, an ``Observer`` folds it in the same single
 eval (its arrays are evaluated with the state and the ``StepOut``), the metrics rows gain an ``observers``
-block and every checkpoint is accompanied by an observer sidecar (§28.5, §28.6). It never changes the
-trajectory.
+block and every checkpoint is accompanied by an observer sidecar (§28.5, §28.6). The record of each social
+snapshot is appended to ``observers/social.jsonl`` right after the eval of its own step, before that step's
+row, director boundary and checkpoint (§29.10). It never changes the trajectory.
 """
 
 from __future__ import annotations
@@ -176,8 +177,9 @@ def run(
 
     With ``cfg.game.observe`` the observers continue from the run's sidecar at the starting step if it is
     valid (otherwise they start fresh, and a resume says so on stderr, unless ``quiet``); the step's acts are
-    folded into them in the step's eval and never retained, and a checkpoint at the starting step is written
-    with the sidecar. With it off every line is as without observers.
+    folded into them in the step's eval and never retained, the records of the social snapshots settled at
+    that step are appended to the run's social log (``RunDir.append_social``), and a checkpoint at the
+    starting step is written with the sidecar. With it off every line is as without observers.
     """
     if steps < 0:
         raise ValueError(f"steps must be ≥ 0, got {steps}")
@@ -236,6 +238,7 @@ def run(
                 obs.update(state, out.acts, t + 1)
                 out = out.base()  # the acts are never retained in `outs`
                 mx.eval(state, out, *obs.arrays())  # still exactly one blocking eval per step
+                rd.append_social(obs.take_records())  # a snapshot's record is durable at its own step
             else:
                 mx.eval(state, out)
             outs.append(out)

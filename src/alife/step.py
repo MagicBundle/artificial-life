@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from enum import IntFlag
-from typing import NamedTuple
+from typing import Final, NamedTuple
 
 import mlx.core as mx
 
@@ -48,6 +48,8 @@ __all__ = [
 _I32 = mx.int32
 _I64 = mx.int64
 
+KIN_Q_CLIP: Final = 127.0  # |y_kin| bound of ``Acts.q_kin``: round(256·127) = 32512 fits int16 (§29.2)
+
 
 class StepOut(NamedTuple):
     counters: mx.array  # (n_counters(nd),) int32: CounterIdx (§19.1), then Counter3D in 3D (§27.8)
@@ -64,6 +66,8 @@ class ActFlag(IntFlag):
     FORMED = 4  # bond formed at S9, either end (2·BONDS_FORMED rows)
     BUDDED = 8  # parent of a birth lane at S16 (BIRTHS rows)
     EMITTED = 16  # some channel's deposit quanta floor(256·emit_c) > 0 (EMITTERS)
+    PROPOSED = 32  # bonds.form_bonds as_prop: a proposal that formed a bond with bond_target (BOND_PROPOSERS)
+    KILLED = 64  # died KILLED at S14 this step (DEATHS_KILLED)
 
 
 class Acts(NamedTuple):
@@ -76,6 +80,16 @@ class Acts(NamedTuple):
     thrust: mx.array  # (N,) int16: round(256·act.thrust) of the post-S8 actions
     defend: mx.array  # (N,) int16: round(256·act.defend) of the post-S8 actions
     emit: mx.array  # (N,) int16: Σ_c floor(256·act.emit_c), the S17 deposit quanta, in [0, 768]
+    # Social tracking (§29.2), appended after G1's seven fields:
+    attack_target: mx.array  # (N,) int32: post-S8 attack target row (start-of-step state), −1 none
+    bond_target: mx.array  # (N,) int32: post-S8 bond target row, −1 none; the partner of a PROPOSED row
+    q_kin: mx.array  # (N, 2) int16: round(256·clip(y_kin, ±KIN_Q_CLIP)), attack and bond query; 0 if dead
+    nbr: mx.array  # (N, K) int32: sensed neighbour rows of the start-of-step state, −1 invalid
+    born_row: mx.array  # (M,) int32: child row per lane, −1 padding
+    born_parent: mx.array  # (M,) int32: parent row per birth lane, −1 for immigrant and padding lanes
+    born_uid: mx.array  # (M,) int64: uid per lane, −1 padding
+    # Roster (§29.2, stage 7), appended after the social-tracking fields:
+    death_cause: mx.array  # (N,) int8: DeathCause of a row that died at S14 this step, −1 elsewhere
 
 
 class StepOutG(NamedTuple):
@@ -157,6 +171,7 @@ def step(
     else:
         c = en.pay_costs(s.energy, act, nb0, s.brain_cost, s.alive, cfg)
     thrust0 = act.thrust if observe else None  # static: the decode output, which S8 also reads (§28.2)
+    y0 = y if observe else None  # static: the brain output the kin queries are quantised from (§29.2)
     act = actions.mask(act, c.solvent)
 
     flag = act.release | (geom.length > cfg.bonds.break_length)  # S9
@@ -263,18 +278,25 @@ def step(
         flows = flows._replace(z_floor=it.z_floor, z_surface=it.z_surface, grounded=gr)
     s_new, out = _finish(s2, s, cfg, flows)  # S18
     if observe:  # static
-        return s_new, StepOutG(*out, acts=_acts(flows, sl, thrust0, cfg))
+        return s_new, StepOutG(*out, acts=_acts(flows, sl, thrust0, y0, s.alive, cfg))
     return s_new, out
 
 
-def _acts(f: _Flows, sl: en.ShareSlots, thrust0: mx.array, cfg: Config) -> Acts:
-    """The observer channel (§28.2). Every float is quantised from a value the step already materialises, and
-    the thrust is masked by solvency in integers, so the channel adds no consumer to a fused float chain."""
+def _acts(
+    f: _Flows, sl: en.ShareSlots, thrust0: mx.array, y: mx.array, alive0: mx.array, cfg: Config
+) -> Acts:
+    """The observer channel (§28.2, §29.2). Every float is quantised from a value the step already
+    materialises, and the thrust is masked by solvency in integers, so the channel adds no consumer to a fused
+    float chain. ``y`` is the brain output (a kernel output read by two column slices), ``alive0`` the
+    start-of-step alive mask (a step input). ``death_cause`` is the S14 cause array that the KILLED bit
+    already reads, cast to int8 (the per-cause counts of the roster come from it, never from the capped death
+    records)."""
     n = dims(cfg).n
     birth = f.lanes.kind == lifecycle.LaneKind.BIRTH.value
     budded = ops.scatter_add_i32(n, f.lanes.parent, 1, birth) > 0  # distinct parents: Σ = n_birth
     emit_q = ops.floor_i32(f.act.emit * 256.0)  # the expression of _counters and fields.deposit_chem
     emitted = (emit_q > 0).any(axis=1)  # the expression of the EMITTERS counter
+    killed = f.dt.cause == DeathCause.KILLED.value  # the expression of the DEATHS_KILLED counter
     u8, i16 = mx.uint8, mx.int16
     flags = (
         f.cb.attack.astype(u8) * ActFlag.ATTACKED.value
@@ -282,10 +304,26 @@ def _acts(f: _Flows, sl: en.ShareSlots, thrust0: mx.array, cfg: Config) -> Acts:
         | f.formed.astype(u8) * ActFlag.FORMED.value
         | budded.astype(u8) * ActFlag.BUDDED.value
         | emitted.astype(u8) * ActFlag.EMITTED.value
+        | f.as_prop.astype(u8) * ActFlag.PROPOSED.value
+        | killed.astype(u8) * ActFlag.KILLED.value
     )
     thrust = mx.where(f.costs.solvent, mx.round(256.0 * thrust0).astype(i16), 0)  # = round(256·masked thrust)
     defend = mx.round(256.0 * f.act.defend).astype(i16)
-    return Acts(f.cb.gain, sl.out, sl.got, flags, thrust, defend, emit_q.sum(axis=1).astype(i16))
+    # The kin columns of the attack and bond queries (the _select score is φ·q, with φ = desc[..., 1:], so the
+    # kin feature NBR_KIN is column NBR_KIN − 1 of a query block). The brain evaluates dead rows too: mask in
+    # integers, after the cast.
+    qa = y[:, layout.OUT_Q_ATTACK + layout.NBR_KIN - 1]
+    qb = y[:, layout.OUT_Q_BOND + layout.NBR_KIN - 1]
+    q = mx.round(256.0 * mx.clip(mx.stack([qa, qb], axis=1), -KIN_Q_CLIP, KIN_Q_CLIP)).astype(i16)
+    q_kin = mx.where(alive0[:, None], q, 0)
+    rows = mx.arange(n, dtype=_I32)[:, None]
+    nbr = mx.where(f.nbr.idx != rows, f.nbr.idx, -1)  # invalid entries hold the row's own index (spatial.py)
+    born_parent = mx.where(birth, f.lanes.parent, -1)
+    return Acts(
+        f.cb.gain, sl.out, sl.got, flags, thrust, defend, emit_q.sum(axis=1).astype(i16),
+        f.act.attack_target, f.act.bond_target, q_kin, nbr,
+        f.rp.records.slot, born_parent, f.rp.records.uid, f.dt.cause.astype(mx.int8),
+    )  # fmt: skip
 
 
 def consume_env(s: State, env: Env, lanes: lifecycle.Lanes) -> State:
