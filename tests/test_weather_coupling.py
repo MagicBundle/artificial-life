@@ -255,6 +255,24 @@ def test_a_director_catastrophe_beats_the_storm_in_the_engine() -> None:
     assert (_np(out.deaths.cause)[dv] == DeathCause.CATASTROPHE).all()
 
 
+def test_the_hazard_draws_from_the_second_half_of_the_weather_split(kind: str) -> None:
+    """``kw = split(ks[WEATHER], 2)``: ``kw[0]`` is the disturbance key (S17), ``kw[1]`` the hazard's. The
+    storm deaths of one step are the mask of ``kw[1]``, recomputed here from the state key; the mask of
+    ``kw[0]`` is a different set, so reading the wrong half fails."""
+    cfg = _cfg(kind, "weather.storm_p=1", "weather.storm_u0=0", "weather.storm_span=0.25")
+    nd = 3 if kind == "3d" else 2
+    s = init_state(cfg)._replace(wx=fixed_wx(cfg, u1=0.1, u2=0.1))
+    _, ks = step_keys(s.key)
+    kw = mx.random.split(ks[Stream.WEATHER], 2)
+    wind = W.agent_wind(W.unpack(s.wx), s.pos, s.buoy_cap if kind == "3d" else None, s.alive, cfg)
+    m = [_np(lifecycle.storm_mask(wind.speed, s.alive, k, cfg)) for k in (kw[0], kw[1])]
+    assert not np.array_equal(m[0], m[1]) and 0 < m[1].sum() < _np(s.alive).sum()
+    s1, out = make_step(cfg, compile=False)(s)
+    mx.eval(s1, out)
+    assert _np(out.counters)[storm_counter_index(nd)] == m[1].sum()
+    assert (_np(s1.alive) == (_np(s.alive) & ~m[1])).all()  # exactly the drawn agents are gone (no births)
+
+
 # --- the wind breaks bonds (spec §6.3, §9.5) --------------------------------------------------------------
 
 
@@ -299,6 +317,24 @@ def test_a_strong_wind_at_either_end_breaks_the_bond_and_it_is_counted() -> None
         mx.eval(s2, out)
         assert _np(s2.partner)[0, 0] == 1 and _np(out.counters)[CounterIdx.BONDS_BROKEN] == 0
     assert _np(out.counters)[CounterIdx.BONDS_TOTAL] == 1
+
+
+def test_a_windy_row_breaks_the_bonds_in_every_slot() -> None:
+    """Row 0 (in the wind) holds bonds in its slots 0 and 1, to rows 1 and 2 which are in calmer air: both
+    break, and both are counted (the flag is per row, not per slot)."""
+    cfg = storm3d_config("weather.storm_u0=0.02", "weather.storm_break_u=0.07")
+    wx = _step_wind(cfg, edge=10, speed=0.08)
+    pts = [[20.0, 100.0, 40.0], [23.0, 100.0, 40.0], [23.0, 99.0, 41.0]]
+    s = make_scene(
+        cfg, [{"pos": q} for q in pts], bonds=[(0, 0, 1, 0), (0, 1, 2, 0)], wx=wx
+    )  # row 0: slot 0 -> row 1, slot 1 -> row 2
+    sp = _np(W.agent_wind(W.unpack(s.wx), s.pos, s.buoy_cap, s.alive, cfg).speed)[:3]
+    assert sp[0] > cfg.weather.storm_break_u > sp[1:].max() > 0.02
+    assert (_np(s.partner)[0, :2] == [1, 2]).all() and _np(s.partner)[2, 0] == 0
+    s2, out = make_step(cfg, compile=False)(s)
+    mx.eval(s2, out)
+    assert (_np(s2.partner)[:3] == -1).all()
+    assert _np(out.counters)[CounterIdx.BONDS_BROKEN] == 2 and _np(out.counters)[CounterIdx.BONDS_TOTAL] == 0
 
 
 def test_the_break_flag_is_the_air_speed_not_the_agents() -> None:
@@ -400,6 +436,42 @@ def test_rain_regen_2d_is_the_floor_of_the_block_mean() -> None:
         out[5, 10] == int(np.floor(np.float32(1e6) * np.float32(0.03) / np.float32(4)))
         and out.sum() == out[5, 10]
     )
+
+
+def test_rain_in_is_the_stored_rain_with_its_condensation_level_and_cloud_depth(kind: str) -> None:
+    """``zi = H·h1/(h1 + h2)`` with ``H`` the world height (3D) or ``H1 + H2`` (2D), computed here from the
+    layer thicknesses, ``P`` and ``Dc`` straight from the state."""
+    cfg = _cfg(kind, "weather.rain_gain=1000000")
+    rng = np.random.default_rng(4)
+    n = cfg.weather.cells
+    ws = W.unpack(fixed_wx(cfg))
+    h1 = ws.h1 * mx.array(rng.uniform(0.8, 1.2, (n, n)).astype(np.float32))
+    h2 = ws.h2 * mx.array(rng.uniform(0.8, 1.2, (n, n)).astype(np.float32))
+    P = mx.array(rng.uniform(0, 0.01, (n, n)).astype(np.float32))
+    Dc = mx.array(rng.uniform(0, 30, (n, n)).astype(np.float32))
+    r = W.rain_in(ws._replace(h1=h1, h2=h2, P=P, Dc=Dc), cfg)
+    height = cfg.world.height if kind == "3d" else cfg.weather.H1 + cfg.weather.H2
+    a, b = _np(h1).astype(np.float64), _np(h2).astype(np.float64)
+    np.testing.assert_allclose(_np(r.zi), height * a / (a + b), rtol=1e-5)
+    assert np.array_equal(_np(r.P), _np(P)) and np.array_equal(_np(r.dc), _np(Dc))
+
+
+def test_rain_regen_makes_no_nan_before_the_integer_cast(kind: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No rain in a block (0/0 in the weighted means) and a cloud outside every layer must not reach
+    ``floor_i32`` as a NaN: casting one is undefined (0 on ARM CPU, other values elsewhere)."""
+    floor = W.ops.floor_i32
+    seen: list[bool] = []
+
+    def checked(x):
+        seen.append(bool(np.isfinite(np.array(x)).all()))
+        return floor(x)
+
+    monkeypatch.setattr(W.ops, "floor_i32", checked)
+    extra = ("weather.rain_floor=0.5",) if kind == "3d" else ()
+    cfg = _cfg(kind, "weather.rain_gain=1000000", *extra)
+    for cells in ({}, {(10, 20): (0.01, 28.0, 9.0)}, {(3, 3): (0.01, 79.9, 0.0)}):
+        W.rain_regen(_rain(cfg, cells), cfg)
+    assert seen and all(seen)
 
 
 def test_rain_for_is_none_without_gain_and_regen_rate_composes() -> None:

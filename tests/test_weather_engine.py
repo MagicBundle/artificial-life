@@ -32,7 +32,7 @@ from alife.state import (
     to_numpy,
 )
 from alife.step import make_step
-from helpers import ledger_net
+from helpers import ledger_net, make_scene
 from weather_helpers import fixed_wx, storm2d_config, storm3d_config
 
 STEPS = 50
@@ -155,12 +155,22 @@ def _same_up_to_float_noise(a, b, cls) -> None:
             assert np.array_equal(x, y), name
 
 
-def test_the_compiled_step_matches_the_eager_step(cfg: Config) -> None:
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ("weather.storm_p=0.0",),
+        ("weather.storm_p=0.05", "weather.storm_u0=0.02", "weather.storm_span=0.2"),  # the hazard branch
+        ("weather.storm_p=0.0", "weather.storm_u0=0.02", "weather.storm_break_u=0.05"),  # the bond break
+    ],
+    ids=["calm", "hazard", "bond-break"],
+)
+def test_the_compiled_step_matches_the_eager_step(cfg: Config, extra: tuple[str, ...]) -> None:
     """50 steps; each step is run by the compiled and the eager function **from the same input state** (the
     compiled trajectory). Free-running the two diverges after a few dozen steps with the weather off as well
     (a 1.5e-8 float difference flips a discrete choice; 2D ``tiny`` at step 26), so equality of whole
-    trajectories is not a property of the engine (DESIGN §14.2); equality of one step is."""
-    c = apply_overrides(cfg, ["weather.storm_p=0.0"])
+    trajectories is not a property of the engine (DESIGN §14.2); equality of one step is. The storm hazard
+    (``storm_p > 0``) and the wind bond break (``storm_break_u > 0``) are the two extra branches."""
+    c = apply_overrides(cfg, list(extra))
     s = init_state(c)._replace(wx=fixed_wx(c, u1=0.12, v1=-0.08, u2=0.05, v2=0.03))  # winds that act
     fe, fc = make_step(c, compile=False), make_step(c, compile=True)
     for t in range(STEPS):
@@ -179,6 +189,8 @@ def test_the_compiled_step_matches_the_eager_step(cfg: Config) -> None:
         s = sc
     assert dims(c).nd == (3 if isinstance(s, State3) else 2)
     assert int(to_numpy(s.alive).sum()) > 0 and not int(to_numpy(s.diag)) & ERROR_MASK
+    if c.weather.storm_p > 0:  # the branch was exercised: some agent died of the storm
+        assert int(to_numpy(s.alive).sum()) < int(to_numpy(init_state(c).alive).sum())
 
 
 def test_the_fused_wind_and_update_graph_compiles_and_equals_eager(cfg: Config) -> None:
@@ -340,6 +352,26 @@ def test_a_clipped_wind_sets_the_warn_bit_in_the_step_and_it_is_sticky() -> None
     for _ in range(3):
         s2, out = fn(s2)
     assert int(to_numpy(s2.diag)) & Diag.WEATHER_WARN  # sticky like every diag bit
+
+
+def test_dead_rows_in_a_strong_wind_do_not_set_the_warn_bit_in_the_step() -> None:
+    """The dead rows rest at (0, 0) and the wind there is clipped; the alive agents are in still air, so the
+    health signal stays quiet. With one agent in the same wind the bit is set (the control)."""
+    c = storm2d_config()
+    n = c.weather.cells
+    col = mx.arange(n)[None, :]
+    ws = W.unpack(W.rest_array(c))
+    # u_max = 0.2 < 0.25 < u_safe = 0.3: clipped, but below the weather's own safety gate
+    u = mx.where((col <= 3) | (col == n - 1), 0.25, 0.0) * mx.ones((n, n))
+    wx = W.pack(ws._replace(u1=u))
+    fn = make_step(c, compile=False)
+    pts = [{"pos": [100.0 + 20.0 * k, 100.0]} for k in range(5)]
+    s, out = fn(make_scene(c, pts, wx=wx))
+    mx.eval(s, out)
+    assert not int(to_numpy(s.diag)) & Diag.WEATHER_WARN
+    s, out = fn(make_scene(c, [{"pos": [4.0, 100.0]}, *pts], wx=wx))
+    mx.eval(s, out)
+    assert int(to_numpy(s.diag)) & Diag.WEATHER_WARN
 
 
 def test_the_ledger_is_unaffected_by_the_wind(cfg: Config) -> None:

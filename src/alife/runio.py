@@ -225,13 +225,24 @@ def checkpoint_metadata(path: Path) -> dict[str, str]:
     return {str(k): str(v) for k, v in meta.items()}
 
 
+def _file_weather_off(meta: dict[str, str]) -> bool:
+    """True when the state file's own config (its metadata) had the weather off, so its ``wx`` is the constant
+    weather-off array of the default parameters, not a weather state to keep."""
+    try:
+        return not bool(json.loads(meta["config"])["weather"]["enabled"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> State:
     """Load a state file; ``CheckpointError`` on a version/shape mismatch, or a config-hash one if checked.
 
     Keys are matched by name (their order in the file is arbitrary, F15). The file's ``dims`` (absent = 2)
     must equal ``world.dims``: a state never crosses dimensions (§27.1). The RNG layout version must be in
     ``rng.RNG_COMPATIBLE_VERSIONS``. A pre-director file (no ``env_*`` arrays) loads with inert env values.
-    The result is evaluated.
+    A file whose own config had the weather off loads into a weather-on ``cfg`` with ``wx`` replaced by the
+    rest array of ``cfg`` (its shape follows ``weather.cells``, which the file's constant array does not;
+    DESIGN §30.3). The result is evaluated.
     """
     path = Path(path)
     meta = checkpoint_metadata(path)
@@ -255,6 +266,8 @@ def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> Stat
         raise CheckpointError(f"{path}: incompatible checkpoint: {', '.join(bad)}")
     try:
         arrays = mx.load(str(path), format="safetensors")
+        if cfg.weather.enabled and "wx" in arrays and _file_weather_off(meta):
+            arrays = {k: v for k, v in arrays.items() if k != "wx"}  # refilled from rest_array(cfg, step)
         s = state_from_arrays(arrays, cfg)
         mx.eval(s)  # loads are lazy; read now so a later replace of the file cannot affect this state
     except (ValueError, RuntimeError, OSError) as e:

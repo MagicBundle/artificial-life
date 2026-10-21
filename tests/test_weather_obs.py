@@ -257,6 +257,66 @@ def test_the_snapshot_block_follows_the_state(cfg: Config) -> None:
     assert b["jet_max_l2"] == pytest.approx(0.04, rel=1e-2)
 
 
+def _wavy(cfg: Config, amp: float = 0.08) -> mx.array:
+    """A non-uniform wind: ``u1 = amp·sin(2π x/L)`` and ``v1 = amp·cos(2π y/L)`` on the faces, ``u2 = -u1/2``,
+    and a fast ``u1`` of 0.18 on the face at ``x = 0``, where the dead rows rest (so in 2D they read the
+    largest speed of all)."""
+    p = W.params_from_config(cfg)
+    ws = W.unpack(W.rest_array(cfg))
+    f = (np.arange(p.n) + 1.0) * p.dx
+    u1 = np.broadcast_to(amp * np.sin(2 * np.pi * f / p.L)[None, :], (p.n, p.n)).astype(np.float32)
+    v1 = np.broadcast_to(amp * np.cos(2 * np.pi * f / p.L)[:, None], (p.n, p.n)).astype(np.float32)
+    u1[:, -1] = 0.18
+    return W.pack(ws._replace(u1=mx.array(u1), v1=mx.array(v1), u2=mx.array(-0.5 * u1)))
+
+
+def test_the_snapshot_wiring_selects_the_alive_rows(cfg: Config) -> None:
+    """With a non-uniform wind and dead rows resting at ``(0, 0)`` (z_lo in 3D): the air-speed figures and the
+    band peaks are those of the alive rows alone."""
+    d = dims(cfg)
+    s = init_state(cfg)._replace(wx=_wavy(cfg))
+    snap = metrics.snapshot_metrics(s, cfg, heavy=False)["weather"]
+    alive = to_numpy(s.alive)
+    wind = W.agent_wind(W.unpack(s.wx), s.pos, s.buoy_cap if d.d3 else None, s.alive, cfg)
+    speed = to_numpy(wind.speed)
+    wc = cfg.weather
+
+    def figures(v: np.ndarray) -> tuple[float, float, float]:
+        ramp = np.clip((v - wc.storm_u0) / wc.storm_span, 0, 1).mean()
+        return float(v.max()), float(np.quantile(v, 0.99)), float(ramp)
+
+    got = (snap["air_speed_max"], snap["air_speed_p99"], snap["storm_exposure"])
+    np.testing.assert_allclose(got, figures(speed[alive]), rtol=1e-5, atol=1e-9)
+    # the control: the dead rows are not in the same air, so including them would change a figure
+    assert not np.allclose(figures(speed), figures(speed[alive]), rtol=1e-3, atol=1e-9)
+    if not d.d3:
+        assert not {"occ_hz0", "occ_hz1_11", "occ_hz12"} & set(snap)
+        return
+    peaks, _ = spatial.band_peaks(spatial.hash_occupancy(s.pos, s.alive, cfg))
+    assert [snap["occ_hz0"], snap["occ_hz1_11"], snap["occ_hz12"]] == [int(v) for v in np.array(peaks)]
+    # the control: counting the dead rows would put all of them in one floor cell
+    unmasked, _ = spatial.band_peaks(spatial.hash_occupancy(s.pos, None, cfg))
+    assert int(unmasked[0]) >= d.n - int(alive.sum()) > snap["occ_hz0"]
+
+
+def test_band_peaks_split_the_floor_the_mid_column_and_the_surface() -> None:
+    """A surface cell with the largest count does not leak into the mid band; the floor has its own."""
+    counts = np.zeros((13, 4, 4), np.int32)
+    counts[0, 1, 2] = 4  # floor
+    counts[5, 0, 3] = 3  # mid-column
+    counts[12, 2, 2] = 9  # surface: the largest of all
+    counts[11, 3, 3] = 2  # the top mid layer (hash layer G_z - 2)
+    peaks, cells = spatial.band_peaks(mx.array(counts))
+    assert [int(v) for v in np.array(peaks)] == [4, 3, 9]
+    assert [int(v) for v in np.array(cells)] == [1 * 4 + 2, 5 * 16 + 0 * 4 + 3, 12 * 16 + 2 * 4 + 2]
+    counts[12, 2, 2] = 0
+    counts[11, 3, 3] = 8  # now the top mid layer wins the mid band and the surface band is empty
+    peaks, _ = spatial.band_peaks(mx.array(counts))
+    assert [int(v) for v in np.array(peaks)] == [4, 8, 0]
+    assert [int(v) for v in np.array(spatial.band_peaks(mx.array(counts[:2]))[0])] == [4, 0, 0]  # G_z = 2
+    assert [int(v) for v in np.array(spatial.band_peaks(mx.array(counts[:2]))[1])][1] == -1  # no mid band
+
+
 def test_overlap_deep_counts_alive_agents_with_a_close_neighbour(cfg: Config) -> None:
     """Brute force on the positions: alive agents with another alive agent closer than 0.5 radius."""
     r = cfg.physics.radius
@@ -277,6 +337,17 @@ def test_overlap_deep_counts_alive_agents_with_a_close_neighbour(cfg: Config) ->
     want = int((dist.min(axis=1) < 0.5 * r).sum())
     assert want >= 2
     assert snap["weather"]["overlap_deep"] == want
+
+
+def test_the_overlap_function_cache_keeps_eager_and_compiled_apart() -> None:
+    """``run.compile`` is not in the config hash: an eager closure must not be served to a compiled config."""
+    eager = replace(storm2d_config(), run=replace(storm2d_config().run, compile=False))
+    comp = replace(eager, run=replace(eager.run, compile=True))
+    assert metrics.config_hash(eager) == metrics.config_hash(comp)
+    f_eager, f_comp = metrics._overlap_deep_fn(eager), metrics._overlap_deep_fn(comp)
+    assert f_eager is not f_comp and metrics._overlap_deep_fn(eager) is f_eager
+    s = init_state(eager)
+    assert int(f_eager(s.pos, s.alive)) == int(f_comp(s.pos, s.alive))
 
 
 def test_a_runner_row_carries_the_block(tmp_path) -> None:

@@ -18,7 +18,7 @@ import pytest
 from alife import cli, invariants, weather_spinup
 from alife import weather as W
 from alife.config import Config
-from alife.rng import InitStream, init_keys
+from alife.rng import InitStream, Stream, init_keys, step_keys
 from alife.runio import RunDir, load_checkpoint
 from alife.state import ERROR_MASK, init_state, to_numpy
 from alife.step import make_step
@@ -106,11 +106,26 @@ def test_the_start_step_sets_the_pool_phase_not_the_key(cfg: Config) -> None:
     assert np.isfinite(c).all() and not np.array_equal(c, to_numpy(W.rest_array(cfg, 0)))
 
 
+def _chain_keys(key: mx.array, steps: int) -> set[bytes]:
+    """Every key the engine's chain makes from ``key`` over ``steps`` steps: the chain key itself, and at each
+    step the next chain key, the 16 stream keys of ``step_keys`` and the two halves of the weather split."""
+    out = {to_numpy(key).tobytes()}
+    for _ in range(steps):
+        key, ks = step_keys(key)
+        out |= {to_numpy(k).tobytes() for k in (key, *ks, *mx.random.split(ks[Stream.WEATHER], 2))}
+    return out
+
+
 def test_the_spinup_key_chain_is_not_the_engines(cfg: Config) -> None:
-    key = _state_key(cfg)
-    k = to_numpy(weather_spinup.spinup_key(key))
-    engine = [to_numpy(a) for a in (*mx.random.split(key, 2), *mx.random.split(key, 16))]
-    assert not any(np.array_equal(k, e) for e in engine) and not np.array_equal(k, to_numpy(key))
+    """The engine takes ``split(key, 2)`` and then ``split(child, 16)`` from the state key (``step_keys``);
+    the spin-up chain starts at ``split(key, 3)[2]``. Over 50 steps and 3 seeds the chains share no key."""
+    for seed in (0, 1, 7):
+        key = init_keys(seed)[InitStream.STATE_KEY]
+        spin = weather_spinup.spinup_key(key)
+        assert not np.array_equal(to_numpy(spin), to_numpy(key))
+        mine, theirs = _chain_keys(spin, 50), _chain_keys(key, 50)
+        assert len(mine) == len(theirs) == 1 + 50 * 19  # the chain key and 19 distinct keys per step
+        assert not mine & theirs, seed
 
 
 def test_a_state_with_a_spun_up_weather_steps_cleanly() -> None:

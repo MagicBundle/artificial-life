@@ -20,7 +20,7 @@ import pytest
 from alife import layout, metrics, rng
 from alife import weather as W
 from alife.config import Config, config_hash, config_to_dict, dims, load_config
-from alife.runio import FORMAT_VERSION, CheckpointError, load_checkpoint
+from alife.runio import FORMAT_VERSION, CheckpointError, load_checkpoint, write_state_file
 from alife.state import (
     V0_FIELDS,
     V0_FIELDS_3D,
@@ -207,6 +207,34 @@ def test_the_fill_uses_the_files_own_step(storm3d: Config, micro3d_cfg: Config) 
     )
 
 
+def test_a_weather_off_file_forks_into_a_weather_on_config_of_any_cells(tmp_path: Path) -> None:
+    """A file written with the weather off carries the constant (9,160,160) array; a fork that turns the
+    weather on at ``weather.cells != 160`` takes the rest array of its own parameters (DESIGN §30.3)."""
+    ov = ["world.size=640", "brain.weight_dtype=float32"]
+    off = load_config(preset="tiny", overrides=ov)
+    on = load_config(
+        preset="tiny", overrides=[*ov, "weather.enabled=true", "weather.u_max=0.2", "weather.cells=320"]
+    )
+    s = init_state(off)._replace(step=mx.array(7, dtype=mx.int32))
+    assert s.wx.shape == (9, 160, 160) and on.weather.cells == 320
+    path = tmp_path / "off.safetensors"
+    write_state_file(path, s, off)
+    back = load_checkpoint(path, on, check_hash=False)
+    assert back.wx.shape == (9, 320, 320)
+    assert np.array_equal(_np(back.wx), _np(W.rest_array(on, 7)))
+    assert legacy_state_digest(back) == legacy_state_digest(s)  # nothing else changes
+    with pytest.raises(CheckpointError, match="config_hash"):  # a resume (hash checked) still refuses
+        load_checkpoint(path, on)
+    # a weather-on file keeps its own wx, and a wrong-shaped one is still refused
+    won = init_state(on)._replace(wx=W.rest_array(on, 0) + 1.0)
+    path2 = tmp_path / "on.safetensors"
+    write_state_file(path2, won, on)
+    assert np.array_equal(_np(load_checkpoint(path2, on).wx), _np(won.wx))
+    small = ["world.size=320", "brain.weight_dtype=float32", "weather.enabled=true", "weather.u_max=0.2"]
+    with pytest.raises(CheckpointError, match="wx"):  # a weather-on file of another cells is not refilled
+        load_checkpoint(path2, load_config(preset="tiny", overrides=small), check_hash=False)
+
+
 def test_the_strict_checks_stay(micro_cfg: Config, micro3d_cfg: Config) -> None:
     s2, s3 = init_state(micro_cfg), init_state(micro3d_cfg)
     with pytest.raises(ValueError, match="wx"):  # without cfg nothing is filled
@@ -285,8 +313,9 @@ def test_the_legacy_3d_digest_is_the_digest_of_the_49_pre_wx_fields(micro3d_cfg:
         h.update(f"{name}|{a.dtype}|{tuple(a.shape)}|".encode())
         h.update(np.ascontiguousarray(to_numpy(a)).tobytes())
     assert legacy_state_digest_3d(s) == h.hexdigest()
-    # the same value as state_digest restricted to State3 minus wx, which is what the pre-W1 state_digest was
-    assert legacy_state_digest_3d(s) == _digest(s, tuple(f for f in State3._fields if f != "wx"))
+    # Only the literal list is the contract: G4 appends env_* fields to State3 and must leave the 49 names
+    # (and so this digest) unchanged (DESIGN §30.3, GAMES §5.4); no equality with ``State3._fields`` minus wx.
+    assert len(V0_FIELDS_3D) == 49
     assert state_digest(s) != legacy_state_digest_3d(s)
 
 

@@ -20,6 +20,7 @@ from alife.config import Config, dims
 from alife.layout import B
 from alife.state import ERROR_MASK, Diag, init_state, to_numpy
 from alife.step import make_step
+from helpers import make_scene
 from weather_helpers import (
     fixed_wx,
     floor_scene,
@@ -355,6 +356,76 @@ def test_vertical_clip_applies_in_the_edge_layers_only(cfg3: Config) -> None:
     assert int(W.sample_wind(ws, pos, p, field_cell=cfg.world.field_cell, valid=none_alive).n_clip_w) == 0
 
 
+def _local_wind(cfg: Config, edge: int, speed: float) -> W.WeatherState:
+    """Both layers blow at ``speed`` in the weather columns ``i <= edge`` and in the last one (the u face at
+    ``x = 0`` is column ``n - 1``), and not at all elsewhere."""
+    ws = W.unpack(W.rest_array(cfg))
+    n = cfg.weather.cells
+    col = mx.arange(n)[None, :]
+    u = mx.where((col <= edge) | (col == n - 1), speed, 0.0) * mx.ones((n, n))
+    return ws._replace(u1=u, u2=u)
+
+
+def test_the_2d_horizontal_clip_keeps_the_direction_and_counts_alive_rows_only(cfg2: Config) -> None:
+    """R4 and "clipped to u_max" rest on this clip (spec 4.2): a 2D wind above ``u_max`` is cut to it."""
+    d = dims(cfg2)
+    p = W.params_from_config(cfg2)
+    ws = W.unpack(fixed_wx(cfg2, u1=0.3, v1=0.4))  # |u| = 0.5 against u_max = 0.2
+    pos, alive = floor_scene(cfg2, [(50.0, 50.0), (100.0, 100.0), (150.0, 60.0)])
+    plain = W.sample_wind_h(ws, pos, p)
+    masked = W.sample_wind_h(ws, pos, p, valid=alive)
+    assert int(plain.n_clip_h) == d.n and int(masked.n_clip_h) == 3  # dead rows rest in the wind, uncounted
+    assert int(plain.n_clip_w) == int(masked.n_clip_w) == 0
+    u = to_numpy(masked.u)
+    np.testing.assert_allclose(np.hypot(u[:, 0], u[:, 1]), p.u_max, rtol=1e-6)  # every row, dead ones too
+    np.testing.assert_allclose(u[:, 1] / u[:, 0], 0.4 / 0.3, rtol=1e-5)  # the direction is kept
+    aw = W.agent_wind(ws, pos, None, alive, cfg2)
+    bound = p.alpha0 * cfg2.physics.drag * p.u_max
+    f = to_numpy(aw.force)[:3]
+    np.testing.assert_allclose(np.hypot(f[:, 0], f[:, 1]), bound, rtol=1e-5)  # the cap is reached, not passed
+    assert bool(aw.clip_bad)
+    # below the cap nothing is clipped and nothing is flagged
+    calm = W.agent_wind(W.unpack(fixed_wx(cfg2, u1=0.1, v1=0.1)), pos, None, alive, cfg2)
+    assert not bool(calm.clip_bad) and float(to_numpy(calm.speed)[0]) == pytest.approx(
+        math.sqrt(0.02), rel=1e-5
+    )
+
+
+@pytest.mark.parametrize("kind", ["3d", "2d"])
+def test_dead_rows_in_a_strong_wind_do_not_set_clip_bad(kind: str, cfg3: Config, cfg2: Config) -> None:
+    """Dead rows hold stale positions: a wind that clips only there is not a health signal (spec 7.3)."""
+    cfg = cfg3 if kind == "3d" else cfg2
+    d = dims(cfg)
+    ws = _local_wind(cfg, edge=3, speed=5.0)  # columns 0 to 3 (x < 8): the dead rows rest at x = 0
+    pts = [(100.0 + 20.0 * k, 100.0, 40.0)[: d.nd] for k in range(5)]
+    pos, alive = floor_scene(cfg, pts)
+    cap = mx.full((d.n,), 0.5, dtype=mx.float32) if d.d3 else None
+    quiet = W.agent_wind(ws, pos, cap, alive, cfg)
+    assert not bool(quiet.clip_bad)  # the alive rows are in still air
+    p = W.params_from_config(cfg)
+    sample = W.sample_wind if d.d3 else W.sample_wind_h
+    counted_all = sample(ws, pos, p)  # control: the unmasked count does see the dead rows
+    assert int(counted_all.n_clip_h) + int(counted_all.n_clip_w) >= d.n - len(pts)  # h in 2D, w at the floor
+    # one alive row in the wind sets it
+    pos2, alive2 = floor_scene(cfg, [(4.0, 100.0, 40.0)[: d.nd], *pts])
+    assert bool(W.agent_wind(ws, pos2, cap, alive2, cfg).clip_bad)
+
+
+def test_a_vertical_only_clip_sets_clip_bad_in_3d() -> None:
+    """``clip_bad`` covers both counts: ``w`` cut in the edge layers, with no horizontal clip, is a flag."""
+    cfg = storm3d_config("weather.w_edge=0.001")
+    p = W.params_from_config(cfg)
+    ws = wavy_ws(cfg, 0.1)  # |u_h| <= 0.14 < u_max = 0.3, divergent so w is non-zero
+    xs = np.linspace(5.0, 315.0, 24, dtype=f32)
+    pos, alive = floor_scene(cfg, [(float(x), 100.0, 2.0) for x in xs])  # the floor layer
+    cap = mx.full((dims(cfg).n,), 0.5, dtype=mx.float32)
+    raw = W.sample_wind(ws, pos, p, field_cell=cfg.world.field_cell, valid=alive)
+    assert int(raw.n_clip_h) == 0 and int(raw.n_clip_w) > 0
+    assert bool(W.agent_wind(ws, pos, cap, alive, cfg).clip_bad)
+    mid, alive_m = floor_scene(cfg, [(float(x), 100.0, 40.0) for x in xs])  # mid-column: not clipped
+    assert not bool(W.agent_wind(ws, mid, cap, alive_m, cfg).clip_bad)
+
+
 def test_a_wind_force_above_the_speed_budget_is_clipped_by_integrate3(cfg3: Config) -> None:
     """R3 keeps the horizontal budget under ``v_max``; the 3D norm clip of ``integrate3`` is the net."""
     d, ph = dims(cfg3), cfg3.physics
@@ -397,6 +468,50 @@ def test_engine_invariants_hold_under_a_strong_wind_for_200_steps(cfg3: Config) 
     alive = to_numpy(s.alive)
     assert alive.sum() > 0 and np.isfinite(to_numpy(s.wx)).all()
     # the wind moved the population: the mean drift of the survivors is the wind's, not a random walk's
+    # (measured 11.5 over 200 steps; with the buoyancy cap taken as 0 in the engine call it is 4.5)
     end = to_numpy(s.pos)
     both = alive & (to_numpy(s.uid) < 64)
-    assert both.any() and np.abs(((end[both, 0] - start[both, 0] + 160.0) % 320.0) - 160.0).mean() > 5.0
+    assert both.any() and np.abs(((end[both, 0] - start[both, 0] + 160.0) % 320.0) - 160.0).mean() > 8.0
+
+
+# --- the engine, closed forms through make_step ------------------------------------------------------------
+
+
+def _lone(cfg: Config, wx: mx.array, **agent):
+    """One alive agent with zero weights (all brain outputs 0: no thrust, grip = sigmoid(0) = 0.5, no
+    buoyancy) on the floor at (160, 160), in the prescribed wind ``wx``."""
+    d = dims(cfg)
+    pos = [160.0, 160.0] + ([d.z_lo] if d.d3 else [])
+    return make_scene(cfg, [{"pos": pos, **agent}], wx=wx)
+
+
+@pytest.mark.parametrize("drag", [1.0, 2.0])
+def test_a_lone_grounded_agent_drifts_at_alpha_u_over_the_grip_drag_through_make_step(drag: float) -> None:
+    """3D: ``Dxy = (alpha0 + alpha1·cap)·phi(z)·u1/(1 + grip_gain·0.5)`` in one step whatever ``physics.drag``
+    is (the wind force is ``alpha·drag·u``, the integrator divides by ``drag`` again), so a wrong alpha, a
+    missing drag factor or a wrong cap in the engine call all fail."""
+    cfg = storm3d_config(f"physics.drag={drag}", "weather.w_edge=0.01")
+    d, p = dims(cfg), W.params_from_config(cfg)
+    wx = fixed_wx(cfg, u1=0.1, v1=-0.05)
+    for cap in (0.0, 0.5, 1.0):
+        s = _lone(cfg, wx, buoy_cap=cap)
+        s1, out = make_step(cfg, compile=False)(s)
+        mx.eval(s1, out)
+        assert bool(to_numpy(s1.alive)[0])
+        want = (p.alpha0 + p.alpha1 * cap) * min(d.z_lo / p.z_sl, 1.0) * np.array([0.1, -0.05])
+        want = want / (1.0 + cfg.physics.grip_gain * 0.5)
+        np.testing.assert_allclose(to_numpy(s1.vel)[0, :2], want, rtol=1e-5)
+        np.testing.assert_allclose(to_numpy(s1.pos)[0, :2] - 160.0, want, atol=3e-5)
+    assert abs(want[0]) > 0.005  # the drift is real (alpha is not tiny)
+
+
+@pytest.mark.parametrize("drag", [1.0, 2.0])
+def test_a_lone_agent_drifts_at_alpha0_u_over_the_grip_drag_through_make_step_2d(drag: float) -> None:
+    """2D: ``alpha0·u1/(1 + grip_gain·0.5)`` (R4 at ``drag = 2`` needs the smaller ``u_max``)."""
+    cfg = storm2d_config(f"physics.drag={drag}", "weather.u_max=0.1")
+    s = _lone(cfg, fixed_wx(cfg, u1=0.08, v1=0.03))
+    s1, out = make_step(cfg, compile=False)(s)
+    mx.eval(s1, out)
+    want = cfg.weather.alpha0 * np.array([0.08, 0.03]) / (1.0 + cfg.physics.grip_gain * 0.5)
+    np.testing.assert_allclose(to_numpy(s1.vel)[0], want, rtol=1e-5)
+    np.testing.assert_allclose(to_numpy(s1.pos)[0] - 160.0, want, atol=3e-5)

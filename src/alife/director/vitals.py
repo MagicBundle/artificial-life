@@ -47,8 +47,10 @@ class Window:
     n_alive_min: float | None  # lowest per-step population in the window
     n_alive_last: float | None  # the last row's mean population
     births: int
-    deaths: int  # starved + killed + aged + catastrophe
-    kill_share: float | None  # deaths_killed / deaths, catastrophe deaths in the denominator
+    deaths: int  # starved + killed + aged + catastrophe + storm
+    kill_share: (
+        float | None
+    )  # deaths_killed / deaths, every cause (starved, aged, catastrophe, storm) in the denominator
     emitters_frac: float | None
     sharers_frac: float | None
     bonds_per_agent: float | None

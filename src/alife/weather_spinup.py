@@ -33,8 +33,9 @@ CHUNK = 16  # weather steps per evaluation: enough to hide dispatch latency, sma
 
 
 def spinup_key(key: mx.array) -> mx.array:
-    """The start of the spin-up key chain, from the state key. ``split(key, 2)`` and ``split(key, 16)`` are
-    what the engine takes from ``key``; a split into three is a different draw, so the chain is separate."""
+    """The start of the spin-up key chain, from the state key. The engine takes ``split(key, 2)`` and then
+    ``split(child, 16)`` from ``key`` (``rng.step_keys``); a split into three is a different draw, so the
+    chain is separate (tests: no key in common over 50 steps)."""
     return mx.random.split(key, 3)[2]
 
 

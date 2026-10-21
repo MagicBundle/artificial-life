@@ -229,8 +229,9 @@ def _body_z_extent(labels: np.ndarray, sizes: np.ndarray, alive: np.ndarray, z: 
 
 def _overlap_deep_fn(cfg: Config) -> Callable[[mx.array, mx.array], mx.array]:
     """The compiled count of alive agents whose nearest neighbour is closer than ``0.5·radius`` (one neighbour
-    search; compiled so that its (N, Q) intermediates fuse as in the step), cached per config."""
-    key = config_hash(cfg)
+    search; compiled so that its (N, Q) intermediates fuse as in the step), cached per config and per
+    ``run.compile`` (the config hash ignores the latter)."""
+    key = (config_hash(cfg), cfg.run.compile)
     fn = _OVERLAP_FNS.get(key)
     if fn is None:
         half = 0.5 * cfg.physics.radius
@@ -243,7 +244,7 @@ def _overlap_deep_fn(cfg: Config) -> Callable[[mx.array, mx.array], mx.array]:
     return fn
 
 
-_OVERLAP_FNS: dict[str, Callable[[mx.array, mx.array], mx.array]] = {}
+_OVERLAP_FNS: dict[tuple[str, bool], Callable[[mx.array, mx.array], mx.array]] = {}
 
 
 def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str, Any]:

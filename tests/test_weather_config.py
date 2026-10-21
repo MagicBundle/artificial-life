@@ -427,6 +427,16 @@ def test_the_2d_load_rules(storm2d: Config) -> None:
     assert has(msgs(storm2d, alpha0=0.5, alpha1=0.5, u_max=0.2), "rule R4")  # 0.1 + 0.1 = 0.2
 
 
+def test_the_2d_load_rules_scale_with_the_drag(storm2d: Config) -> None:
+    """R4 and rule 16 carry ``alpha0·drag·u_max``: the wind force is ``alpha·drag·u``."""
+    heavy = replace(storm2d, physics=replace(storm2d.physics, drag=2.0))
+    assert has(msgs(heavy, u_max=0.2), "rule R4")  # 0.1 + 0.25·2·0.2 = 0.2 (drag 1: 0.15 passes)
+    assert msgs(heavy, u_max=0.1) == []  # 0.1 + 0.05
+    light = replace(storm2d, physics=replace(storm2d.physics, drag=0.5))
+    assert msgs(light, u_max=0.3) == []  # 0.1 + 0.25·0.5·0.3 = 0.1375 (drag 1: 0.175 fails)
+    assert has(msgs(light, u_max=0.5), "rule R4")  # 0.1 + 0.0625 = 0.1625
+
+
 # --- validation: the coupling keys ----------------------------------------------------------------
 
 
