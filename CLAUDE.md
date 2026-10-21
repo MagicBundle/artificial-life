@@ -18,6 +18,10 @@ tracking (houses, kin groups, colonies, territory, relations, and a roster of ki
 per-group window counts; generic `groups.py` and `tracking.py`; normative spec `DESIGN.md` §29), is implemented, with
 provisional thresholds (`SOCIAL_VERSION` 1); the Settler colony clause is on in `RULES_V2` (`settler_body` 4,
 DESIGN §28.4).
+`docs/GAMES.md` §9 N1, the offline World Report (`python -m alife.analysis.world_report build | verify | probe`,
+`src/alife/game/report.py`, `templates.py`, `lexicon.py`; normative spec `DESIGN.md` §30), is implemented: code writes every
+sentence from templates and checks it, a local model (`--llm --model ID`) only selects and orders candidate ids, and no
+model-written text is ever shown or put into a prompt. Its thresholds are provisional until the owner read.
 
 ## Conventions
 
@@ -35,6 +39,10 @@ DESIGN §28.4).
 - Avoid GPU float32 matmul for anything that must be accurate (Metal reduced precision, DESIGN F20).
 - Checks before pushing: `uv run ruff check src tests`, `uv run ruff format --check src tests`,
   `uv run pytest -m "not slow" -q`. A trajectory change needs a deliberate golden-digest re-pin.
+- The world report (DESIGN §30) never calls an LM Studio management endpoint (no load, unload or switch) and sends `model`
+  explicitly; its only network calls are the chat POST and the read-only `GET /api/v0/models` preflight. Run `--llm` and
+  `probe` only when no GPU job or timing runs. A change to a template, the lexicon, the label table or the select prompt
+  changes a digest that `verify` compares: bump the version and re-pin.
 - The GUI (`gui/`, SwiftUI, macOS 14+) shells out to `.venv/bin/alife`. Keep its lever list in sync with
   config keys, and build it with `cd gui && swift build`.
 

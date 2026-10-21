@@ -718,6 +718,151 @@ def test_probe_refuses_bad_parameters_and_a_model_that_is_not_loaded(tmp_path, s
     assert run(*base, "--model", "gem", "--no-preflight") == 2
 
 
+# --- an observed director fork of the real engine, end to end ----------------------------------------------------------
+
+E2E = DATA / "report_e2e"
+E2E_ARGS = ["--from", "2500", "--to", "10000", "--chapter", "2000"]
+
+
+@pytest.fixture(scope="module")
+def e2e_view() -> R.RunView:
+    return R.load_run(E2E)
+
+
+def e2e_copy(tmp_path: Path) -> Path:
+    copy = tmp_path / "run"
+    shutil.copytree(E2E, copy)
+    return copy
+
+
+def test_e2e_the_engines_env_blocks_are_the_fold_of_the_director_log(e2e_view) -> None:
+    """`tests/data/make_report_e2e.py`: a tiny CPU fork replayed with a hand-written director log. The `env` blocks are
+    the engine's own output, and the report's lever fold reproduces every one of them (the MUST of DESIGN §30)."""
+    view = e2e_view
+    R.check_env(view, 2500, 10000)
+    env = {r["step"]: r["env"] for r in view.rows}
+    assert (
+        env[3000]["regen_mult"] == 1.0 and env[3100]["regen_mult"] == 1.5
+    )  # the pulse acts after the row at 3000
+    assert (
+        env[8000]["regen_mult"] == 1.5 and env[8100]["regen_mult"] == 1.0
+    )  # and its revert after the row at 8000
+    assert env[4100]["season_amp"] == pytest.approx(0.3) and env[4100]["season_period"] == 2000
+    assert env[5000]["patch_gain_max"] == 1.0 and env[5100]["patch_gain_max"] == 1.5
+    assert env[9100]["drift_mult"] == 2.0 and env[2500]["drift_mult"] == 1.0
+    assert [e["step_applied"] for e in view.entries] == [3000, 3000, 4000, 5000, 8000, 9000]
+    assert view.start_step == 2000
+
+
+def test_e2e_the_block_lists_every_lever_the_engine_holds_away_from_default(e2e_view) -> None:
+    """The engine's levers away from default at the first row of a chapter, read from that row's `env` block alone,
+    are exactly the levers that have a line in the chapter's block (one holder each)."""
+    view = e2e_view
+    cfg, rows = view.cfg, {r["step"]: r for r in view.rows}
+    held = {}
+    for a, b in ((2500, 4000), (4000, 6000), (6000, 8000), (8000, 10000)):
+        env = rows[a]["env"]
+        engine = set()
+        if env["regen_mult"] != 1.0:
+            engine.add("regen")
+        if env["drift_mult"] != 1.0:
+            engine.add("drift")
+        if (
+            env["season_amp"] != cfg.fields.season_amplitude
+            or env["season_period"] != cfg.fields.season_period
+        ):
+            engine.add("seasons")
+        if env["patch_gain_min"] != 1.0 or env["patch_gain_max"] != 1.0 or env["patches_off"]:
+            engine.add("patch:0:gain")
+        sheet = R.build_sheet(view, a, b)
+        holders = [f["lever"] for f in sheet["facts"] if f["kind"] == "standing"] + [
+            R.lever_of(f["action"], f["params"])
+            for f in sheet["facts"]
+            if f["kind"] == "intervention" and f["step"] < a and (f["end"] is None or f["end"] >= a)
+        ]
+        assert sorted(holders) == sorted(engine), (a, holders, engine)
+        held[a] = sorted(engine)
+    assert held == {
+        2500: [],
+        4000: ["regen"],
+        6000: ["patch:0:gain", "regen", "seasons"],
+        8000: ["patch:0:gain", "regen", "seasons"],
+    }
+
+
+def test_e2e_build_then_verify_exits_0_and_reports_equal_the_golden(tmp_path, no_network) -> None:
+    out, v = tmp_path / "r.jsonl", tmp_path / "v.json"
+    assert run("build", E2E, *E2E_ARGS, "--out", out) == 0
+    recs = lines(out)
+    golden = json.loads((E2E / "golden.json").read_text())
+    assert len(recs) == len(golden) == 4
+    for rec, g in zip(recs, golden, strict=True):
+        assert [rec["chapter_start"], rec["step"]] == g["chapter"]
+        assert (
+            rec["facts_digest"] == g["facts_digest"]
+            and rec["candidate_set_digest"] == g["candidate_set_digest"]
+        )
+        rep = rec["report"]
+        assert rep["headline"]["text"] == g["headline"] and rep["lead"] == g["lead"]
+        assert [b["text"] for b in rep["body"]] == g["body"]
+        assert [i["text"] for i in rep["interventions"]] == g["interventions"] and rec["ticker"] == g[
+            "ticker"
+        ]
+        assert {k: x for k, x in rec["facts"]["excluded"].items() if x} == g["excluded"]
+        assert rec["excluded_candidates"] == [] and rec["mode"] == "template"
+    assert run("verify", E2E, "--reports", out, "--out", v) == 0
+    res = json.loads(v.read_text())
+    assert res["counts"] == {"ok": 4} and res["exit"] == 0
+    # a second build over the same file keeps every record
+    assert run("build", E2E, *E2E_ARGS, "--out", out) == 0 and lines(out) == recs
+
+
+def test_e2e_the_block_of_each_chapter_is_the_lever_state_not_the_recent_entries(tmp_path) -> None:
+    out = tmp_path / "r.jsonl"
+    assert run("build", E2E, *E2E_ARGS, "--out", out) == 0
+    blocks = [[i["text"] for i in r["report"]["interventions"]] for r in lines(out)]
+    assert [len(b) for b in blocks] == [3, 6, 6, 8]
+    # chapter 3: the pulse ended at 8,000 (a revert inside the chapter's last row), the other two are still in place
+    assert "It ended at step 8,000; food regrowth returned to its base rate." in blocks[2]
+    assert blocks[2].count("It was still in place at step 8,000.") == 2
+    # the 4,000 chapter lists the seasons and the fertility shift as in force; the first lists neither (not yet applied)
+    assert not any("seasons" in x for x in blocks[0]) and any("seasons" in x for x in blocks[1])
+
+
+def test_e2e_a_log_that_disagrees_with_the_rows_exits_1_before_anything_is_written(tmp_path, capsys) -> None:
+    copy = e2e_copy(tmp_path)
+    log = copy / "director.jsonl"
+    log.write_text(log.read_text().replace('"mult": 1.5}', '"mult": 1.4}'))
+    out = tmp_path / "r.jsonl"
+    assert run("build", copy, *E2E_ARGS, "--out", out) == 1
+    assert "regen_mult" in capsys.readouterr().err and not out.exists()
+    # a report built from the real run does not verify against the doctored log: an env failure is exit 1
+    good = tmp_path / "good.jsonl"
+    assert run("build", E2E, *E2E_ARGS, "--out", good) == 0
+    assert run("verify", copy, "--reports", good, "--out", tmp_path / "v.json") == 1
+    res = json.loads((tmp_path / "v.json").read_text())
+    assert {r["status"] for r in res["results"] if r["chapter"] != [2500, 4000]} == {"error"}
+
+
+def test_e2e_a_log_with_a_missing_entry_cannot_be_checked(tmp_path) -> None:
+    copy = e2e_copy(tmp_path)
+    log = copy / "director.jsonl"
+    rows = [x for x in log.read_text().splitlines() if '"step_applied": 5000' not in x]
+    log.write_text("\n".join(rows) + "\n")
+    assert run("build", copy, *E2E_ARGS, "--out", tmp_path / "r.jsonl") == 1
+
+
+def test_e2e_an_unobserved_run_exits_2_with_the_hint_and_writes_nothing(tmp_path, capsys) -> None:
+    copy = e2e_copy(tmp_path)
+    rows = [json.loads(x) for x in (copy / "metrics.jsonl").read_text().splitlines()]
+    (copy / "metrics.jsonl").write_text(
+        "".join(json.dumps({k: v for k, v in r.items() if k != "observers"}) + "\n" for r in rows)
+    )
+    out = tmp_path / "r.jsonl"
+    assert run("build", copy, *E2E_ARGS, "--out", out) == 2
+    assert "--set game.observe=true" in capsys.readouterr().err and not out.exists()
+
+
 # --- the one test that needs a real server -----------------------------------------------------------------------
 
 

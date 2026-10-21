@@ -4055,6 +4055,9 @@ environment refolded after each accepted action. Text from the reply (`expected_
 control and format characters, collapsed and cut to its limit; nothing is evaluated, no text is ever fed back into a
 prompt (earlier interventions are shown by action name and numbers), and the reply is used for nothing beyond menu
 selection.
+The world report's select mode (§30.9) applies the same discipline to a reply of candidate ids: one object, exact keys, no duplicate keys,
+no `NaN`, ids checked entry by entry, and no text of a reply is ever shown, quoted or put into a prompt (no `journal.jsonl`, `reason` or
+`llm_call` is read by the report either, §30.2).
 
 **Prompt (L7).** `prompt.system_message`: the persona paragraph (the Architect's also carries `director.goal`, verbatim,
 between `<goal>` tags and introduced as data), the rules of the reply, and the menu with an effect description per action,
@@ -4080,6 +4083,8 @@ pre-validation accepts them, and replay never calls the model. A replay of a liv
 bitwise identical in digest, rows and log (tested, also with `urllib` and sockets patched to fail). A resumed live run
 re-asks the model for the boundaries after the checkpoint (the journal and log are truncated to it first), so its
 decisions need not equal the uninterrupted run's; the log is the source of truth.
+The world report's replay (§30.10) follows the same rule for its own records: `verify` never calls a model, and the model's choice is
+stored per attempt and re-run through the policy, never regenerated.
 
 **Real server.** `tests/test_director_llm.py` has one test marked `llm` that runs only when `ALIFE_LLM_URL` is set (and
 optionally `ALIFE_LLM_MODEL`); the default runs never need LM Studio.
@@ -6857,6 +6862,10 @@ accumulator columns, +768 KB at 64k, about 20 elementwise ops per step and the o
 score; each permutation re-sorts the strata inside `mi.permute_within`) is unmeasured and estimated at tens of minutes of
 single-core numpy.
 
+**The world report reads these verdicts** (§30.6): `game/report.py`'s `LABEL_VERDICTS` holds the per-label verdict, `n_pos`, margin and permutation `p` of
+the two version-1 studies above, keyed by `(intent_version, rules_digest, dims, world_key)`; a label is cited only on a robust pass (`n_pos` ≥ 100,
+margin ≥ 0.10). The rows of a `RULES_V2` run are added by the change that validates it, from its held-out reports, never by the report module.
+
 ### 28.9 Tests
 
 All of them are in the fast suite and run on the CPU; none is marked `slow`. The compile of the observer's closures
@@ -7893,6 +7902,457 @@ rows for each group admitted at that snapshot (the first snapshot of an observer
 `setdiff1d`s over the live houses, and the centroid, mix and counts one sort of the listed rows. The record size is measured
 in §29.11; the timings are for the GPU day (`alife bench --observe`, `analysis.social`).
 
+## 30. World Report, offline (games N1)
+
+The first narrative layer of the gaming vertical (`docs/GAMES.md` §9 N1; Review-log row I49). `python -m alife.analysis.world_report`
+turns a run's files into a **chapter report**: a headline, a lead, a body of at most six sentences, an interventions block
+and a ticker, for each chapter `(a, b]` of the run. **Code computes a fact sheet and writes every sentence from a closed
+set of templates**; a **checker** re-derives each sentence from the facts as a second line; an optional local model
+(`--llm`) only **selects and orders** code-written candidates and writes nothing that is shown. It is offline and
+host-side: no change to the simulation, `State`, the step, the config, the hashes or any golden, no live UI and no write
+into a run directory. This section is normative for it. Every threshold is **provisional** (`REPORT_VERSION` 1,
+`TEMPLATE_VERSION` 1, `CHECKER_VERSION` 1, `SELECT_PROMPT_VERSION` 1) until the owner read of §30.12: it may change under
+a new version, never silently.
+
+**Coordinator decisions** (under the owner's delegation of 2026-10-19, to revisit): **C12** templates first, the model
+only selects and orders, free prose off (§30.12); **C13** the section order of the body is code's, the model orders only
+inside a section and cannot drop the mandatory set; **C14** the read-only `GET /api/v0/models` preflight is allowed (the
+REST equivalent of `lms ps`; §30.11). The specification the build followed is the third revision of `n1/spec.md` after two
+adversarial reviews (55 crafted false or misleading sentences, 12 findings); §30.14 lists where the build differs.
+
+### 30.1 Scope, invariants and the command line
+
+**Modules.** `game/templates.py` (the 88 templates, agreement markers, the closed vocabulary of 137 words, the source
+words and rule identifiers, the section and salience orders; data with a pinned digest and import-time checks),
+`game/lexicon.py` (the checker's blacklists, digest pinned), `game/report.py` (sheet, spans, candidates, checker,
+assembly, ticker, select client, record, replay) and `analysis/world_report.py` (the CLI, the resume logic, the
+preflight, the probe). The three game modules are in `tests/test_lint.py`'s `GAME_MODULES` (rule 2: no scatter, no
+subscript assignment). `alife.analysis.report` is the activity report (`cli.py`), hence the module name.
+
+**Invariants (MUST).** Observer-only reads: the run directory is read-only and `--out` must be outside it; no MLX
+computation and no array (`import alife.config` loads `mlx.core` and nothing is evaluated), no checkpoint state, and from the
+observer sidecars only the `meta` member (`np.load(…, allow_pickle=False)["meta"]`). **Every shown string is a template
+rendered by code from the sheet**: the model's reply is a list of candidate ids, stored for audit, never rendered, quoted
+or put into a prompt (the L8 rule of §26.10 holds: `journal.jsonl` is never opened, no `reason` or `llm_call` is read, no
+earlier report or reply is shown). `verify` and every test except the `llm`-marked one open no socket. **The owner's LLM
+rule is absolute:** the tool never loads, unloads or switches a model, calls no LM Studio management endpoint, sends
+`model` explicitly on every request (`--model` is required with `--llm`, there is no default), and its only requests are
+`POST` to the chat-completions URL and the read-only preflight `GET`.
+
+```text
+python -m alife.analysis.world_report build RUN --from STEP --to STEP --out FILE.jsonl
+       [--chapter 6000] [--llm --model ID [--url URL] [--timeout 120] [--attempts 2] [--no-preflight]]
+python -m alife.analysis.world_report verify RUN --reports FILE.jsonl --out FILE.json
+python -m alife.analysis.world_report probe --sheets DIR --model ID [--url URL] --n 24 --out FILE.json
+```
+
+**`build`** cuts chapters `(a, b]` at multiples of `--chapter` on the global step clock inside `[--from, --to]` (the first and
+last may be partial). Every cut must be the step of a row that carries the `observers` block with its `social` head and a
+multiple of the snapshot cadence (250), and a chapter's rows must cover it (Σ `steps` = b − a); otherwise exit 2 (an
+unobserved run gets the hint `--set game.observe=true` on a fork). Every chapter is cut and checked **before** the
+preflight and before any write. Without `--llm` it builds the template report and uses no network; with it, one select
+request per chapter, sequentially. **Resume:** a record in an existing `--out` is kept iff `(chapter_start, step,
+facts_digest, mode, model)` and every version and table digest (§30.10) match; a template record is rebuilt under `--llm`
+(and a select record by a template build, with a warning), and a select record whose `fallback` is `invalid`, `failed` or
+`too_few` is rebuilt, so that a later `--llm` build retries it. The file is rewritten atomically (tmp, fsync,
+`os.replace`) after every chapter: the chapters done, then the stored records of those still to do. **`verify`** replays
+(§30.10) and never calls a model. **`probe`** (the coordinator only, §30.11) measures the select mode on stored sheets.
+**Exit codes** (as `analysis/labels.py`, plus 3): 0 ok or `versions_differ`; 1 a mismatch under equal versions or a failed
+env check (§30.4); 2 bad parameters, missing rows, `--out` inside RUN, a refused preflight, a chapter the run can no longer
+cut; 3 `stale` (the recomputed sheet differs while every version and table digest is equal). The precedence is 2, then 1,
+then 3, then 0.
+
+**Python API** (`game/report.py`; pure except `narrate`): `build_sheet(rd, a, b, rules=REPORT_V1)`, `facts_digest(sheet)` (sha256 of
+the sorted-key compact JSON with `allow_nan=False`: a non-finite number in a sheet is a bug that raises), `fold_levers`,
+`spans`, `standing_facts`, `check_env`, `candidates(sheet)` → `(body, headlines, block, excluded)`, `check_string(text, slots,
+sheet, block)` → reasons, `template_report`, `ticker`, `select_messages`, `select_schema`, `parse_choice`, `assemble`,
+`narrate(sheet, client or None, *, rules, attempts)` → the record (its HTTP call is the only side effect; no global state, so
+G3 can run it on a worker), `verify_record`. It reuses `director.llm.Client(...).chat(body)` and `llm.clean_text` with its own
+body (never `Client.body`) and re-implements `llm.parse_reply`'s strictness.
+
+### 30.2 Inputs and how they join
+
+| file | read | never read |
+|---|---|---|
+| `metrics.jsonl` | `step`, `steps`, `n_alive_min`, `births`, `immigrants`, `deaths_starved/killed/aged/catastrophe`, `clades_alive`, `top_clade_share`, `env` (director runs), `observers` (§28.5) with `intent_version`, `arch_labelled`, `intent_labelled` and the `social` head (`origin` included) | `n_alive` (a mean), `wall_s`, `steps_per_s`, `peak_mem_gb`, all else |
+| `observers/social.jsonl` | records with step in (a, b]; the origin's earlier records for names | n/a |
+| `director.jsonl` (`log.read_log`, `entries_of`) | `step_applied`, `source`, `rule` (`.get`: some entries have none), `action`, `params`, `duration`, `reverts` | `reason`, `llm_call`, `vitals`, `prev`; `journal.jsonl` |
+| one sidecar | `meta.rules_digest`, `meta.intent_version` of the latest with step ≤ b | every array member |
+| `config.json`, `meta.json` | `dims` (from `config.load_config`: a 2D `config.json` has no `world.dims`), `run.seed`, `fields.season_*`, the world key (§30.6), `start_step` | n/a |
+
+**Observed runs only.** Population counts are `observers.alive` at row steps (exact), never the mean `n_alive`; the
+unobserved `runs/eval_*` are reached through observed forks (`alife run --init-from RUN:STEP --director replay
+--replay-log … --set game.observe=true`). **Social facts** need a record at every snapshot step in (a, b], all of one
+`origin ≤ a`, with a `social_digest` in `KNOWN_SOCIAL` (digest → `snapshot_every`, `slots`); otherwise all are excluded with the
+reason (for example "observer restarted at step X"). Rows join records on `(origin, snapshot_step)` only. **The alive
+identity:** at a snapshot step s, `alive(s) = summary.kin_groups.other + Σ kin_groups.size`; at a row step it must equal
+`observers.alive`, else social facts are excluded. **Exactness:** counts are exact integers; a share is carried with its
+count `round(share × denominator)` and its denominator, and a product more than 1e-6 from an integer drops the fact
+(`excluded.facts_dropped`). Kin-group deaths come from the records' window counts, never from `events/deaths_*` (capped).
+The sheet is a pure function of rows, records and entries with step ≤ b, the sidecar meta and the config; it does not
+depend on key order or on `wall_s`.
+
+### 30.3 The fact sheet
+
+**Shape.** `report_version`, `report_rules_digest`, `run`, `config_hash`, `world_key`, `dims`, `chapter` [a, b], `origin`,
+`start_step`, `quiet`, `labels` {`intent_version`, `rules_digest`, `key_found`, `env_default`}, `entities`, `facts`, `snapshots`
+(the pseudo-facts `S<step>` of the ticker) and `excluded` {`labels`, `social`, `events_suspect`, `events_churn`,
+`interventions_dropped`, `windows_confounded`, `quota`, `name_clash`, `entries_before_start`, `facts_dropped`}. Fact ids
+`F1…Fn` follow the kind order and each kind's key. Entities are `K<id>` kin groups ("the {name} kin", the name from the
+latest record of the origin at or before the fact's record that lists the id, else "kin group {id}") and `H<id>` houses
+("House {name}"); there are no clade or colony entities, since no file names them. **Name clash:** if two entities of a
+sheet would render the same string, every entity of that string renders as "kin group {id}" and `excluded.name_clash` lists
+it (a name is released when its group is untracked and a later group can take it, even in the snapshot in which the first
+ends). Ids in "kin group {id}" render without thousands separators. Field names are in time order; no key is named
+effect, impact or cause.
+
+| kind | fields | source and gate | quota |
+|---|---|---|---|
+| `chapter` | `start`, `end` | the cuts | 1 |
+| `population` | `from`, `to`, `change` (absent when `from` = 0), `min`, `min_row`, `min_steps`, `deep_dip` | `observers.alive` at rows a, b; the least `n_alive_min` of the rows in (a, b] with its row and `steps` (the minimum is known only to that row's interval); `deep_dip` = `min` < 0.8 × min(`from`, `to`) | 1 |
+| `deaths`, `births` | the four causes and `total`; `births`, `immigrants` | Σ of the rows in (a, b] | 1, 1 |
+| `lineages`, `top_lineage` | `from`, `to`; shares and counts (`from_of`, `to_of`) | `clades_alive`, `top_clade_share` at rows a, b; **dropped when an immigrant lineage bin may exist** (`immigration_on`, a forward `immigration_pulse` entry before b, or arrivals in the chapter): every immigrant shares the bin `n_init` | 1, 1 |
+| `intervention`, `standing` | §30.4 | the lever fold and the director entries | cap 24 |
+| `window` | §30.4 | gated | ≤ 5, latest first |
+| `label` | `label` (display), `key`, `family`, shares, counts, `from_of`, `to_of` | §30.6 | ≤ 6, by salience |
+| `group` | `entity`, `size`, `of`, `share`, `rank`, `born`, `died`, `died_killed` | record at b; `rank` only if `summary.kin_groups.tracked` equals the table's length **and only for a prefix with no equal neighbour** (rank r is carried iff ranks 1…r−1 are and size_r > size_(r+1)), so a tie at the top carries no rank word; `born`/`died`/`died_killed` only if every record of (a, b] lists the group with non-null counts | ≤ 6 by (rank or −size, id) |
+| `event` | `event` (born, split, merged, dissolved), `family`, `system`, `other`, `size`, `overlap`, `s0`, `s1`, `reid` | §30.5 | ≤ 6 by (−size, s1, id): the largest is never the one dropped |
+| `houses` | `alive_from`, `alive_to`, `first_seen`, `extinct`, `exact`, `origin`, `largest`, `largest_name`, `largest_size`, `largest_strict` | `houses.alive` of row a's head and of the record at b; Σ over the records of the founded count (a house founded and extinct inside one window is seen by neither); `largest_strict` = row 0's size above row 1's | 1 |
+| `relation` | `a` (the attacker), `b`, `attacks`, `kills` | `relations` rows summed per pair over (a, b]; both groups slotted in every record of (a, b], `distinct` in the latest, `relations_dropped` = 0 everywhere, attacks ≥ 10. **No `expected` or `ratio`**: a pair is listed only in windows with an attack, bond or share, so a ratio against Σ `exp_attacks` is biased high by construction | ≤ 3 by (−attacks, a, b) |
+| `colonies` | `tracked`, `largest_size` | `summary.colonies` at b; absent when none is tracked | 1 |
+| `run_end` | `step`, `alive` | the run's last row, only if above b, off-grid, the last chapter, with 0 alive | 1 |
+
+Absent sources give absent facts, never zeros. **Quota and ties:** each capped kind keeps its first facts in the key order
+of its row and counts the rest in `excluded.quota[kind]`; ties in every key are broken by ids, never by input order.
+**Quiet chapter** (versioned predicate): no kin-group event fact, no intervention with step in [a, b), |change| < 0.05 and
+not `deep_dip`; it sets the body length to 3.
+
+### 30.4 Intervention spans, the lever fold and the block
+
+**Levers.** A forward entry (source `rule` or `llm`) writes one lever, extending `actions.lever_keys`: `regen`
+(`regen_pulse`), `patch:p:gain` (`habitat_loss`; `fertility_shift` with `gain`), `patch:p:pos` (a move), `seasons`, `drift`.
+`immigration_pulse` and `catastrophe` write none (**points**). A `revert` entry writes its action's lever with its `params`,
+the values it restores, which are not always the defaults. **`fold_levers(entries, t, start_step, cfg)` is the one source of
+lever state:** every entry with `start_step` < `step_applied` < t, forward or revert whatever entry the revert ends, in
+(`step_applied`, log index) order, each writing its lever with its params and its step. Defaults: `regen`, `drift` and `patch:p:gain`
+1, `seasons` (`fields.season_period`, `fields.season_amplitude`), none for a patch position (any move is "away"). A replay fork
+applies every entry after `start_step`, reverts included, so a revert of an entry before `start_step` is part of the fold.
+
+**Span.** An entry applied at s is in force for steps s+1…e, with e the `step_applied` of the next entry on the lever in
+the fold order (a forward entry, or a revert **of any entry**) when e ≤ b, else open at b; the director acts after its
+step's row, so rows s and e bound the span exactly. `end_by` is `elapsed` (a revert whose `reverts` is s; `restored` its
+params), `replaced` (any other later entry on the lever) or null. Entries with `step_applied` ≤ `start_step` are ignored as
+forward entries (`excluded.entries_before_start`): a fork restarts the levers inert. On the director logs of
+`runs/eval_s0_C`, `eval_s1_C` and `64k3d_s0_dir`, 67 timed effects ended `elapsed` at s + duration exactly and none otherwise
+(§30.13).
+
+**Env check (MUST).** In a director run every row r in [a, b] carries an `env` block equal (as float32) to the fold at r over
+`state.default_env(cfg)`: `regen_mult`, `season_amp`, `season_period`, `drift_mult` and the implied `patch_gain_min`, `_max`,
+`patches_off`; otherwise exit 1 (a director run whose rows carry no `env` cannot be checked and is exit 1 too). The keys the
+check does not compare (`imm_request`, `cat_radius`, `cat_kill_p`, `cat_center`) are not "environment" anywhere in this
+section. The check passes on the engine's own output (the committed real fork `tests/data/report_e2e/`) and on the three real director
+logs, in every row of each (§30.13).
+
+**The block is the engine's lever state at a plus the chapter's entries**, with no quota of five: (1) `intervention` facts:
+forward entries with s in [a, b) and forward entries with s < a whose span reaches the row at a (open, or ending at a or
+later); (2) `standing` facts: every lever the latest write before a (a revert) left away from its default, shown "from step {s}"
+with the writing entry's step and values; for a fork also a revert applied inside the chapter whose forward entry is before
+`start_step`. Every lever the fold holds away from its default at a has **exactly one** holder line (a property test on
+2,000 random logs). A hard cap of 24 lines (chapter entries first, then in-force entries latest first, then standing) bounds
+a sheet; entries beyond it count in `excluded.interventions_dropped`, the block ends with I-more and a non-zero count is a
+`build` warning.
+
+**Window facts** (a juxtaposition, gated), for timed actions only: `(w0, w1] = (max(s, a), min(e or b, b)]`, inside the span
+and the chapter. Omitted if `w1 − w0` < 1,000, if it equals (a, b], or if a row is missing. **Confounder gate:** built only
+if no other entry of any action (points and reverts included) has `step_applied` in [w0, w1), the fold at w1 holds no lever
+away from default except this entry's own, and Σ `immigrants` and Σ `deaths_catastrophe` over (w0, w1] are 0 (a failure counts
+in `excluded.windows_confounded`). On the four director logs 52 of 125 ungated windows (42%) held an `immigration_pulse`. The W
+sentence is **off** (`window_sentences` false); the facts stay in the sheet.
+
+### 30.5 Event frames, suspect and churn events
+
+The record's `events` rows are `tracking.Event`s with `id` = `Event.system`: **born** (`system` the new id, `other` −1 or the
+previous system it overlaps most, `size` current, `overlap` shared with `other`), **split** (the new id, the parent, current,
+shared with the parent), **merged** (the ended id, the survivor, previous at `s0`, shared) and **dissolved** (the ended id, −1 or the
+new system holding most of its members, previous at `s0`, shared). An event happened in its record's window (`s0`, `s1`] =
+(`window_start`, `step`], which frames state, never a step. **`overlap` is not a count of members of `size`:** in uid mode
+newborns are credited to their parent's system, so for dissolved and merged events `overlap` can exceed `size` (scenario T1:
+size 1,100, overlap 1,500). It is printed only for **born** events. An event is **`reid`** if the record holds the partner event of
+a re-identification pair (a born event with system n and `other` o, and a dissolved event with system o and `other` n; scenario T2:
+1,080 of 1,100 members continue under a new id) or if it is born or dissolved with `other` ≥ 0 and 2 × `overlap` > `size`; a
+`reid` event keeps its sentence and is never a headline. The event's kind is the field `event` (`kind` is the fact kind).
+
+A kin-group event of record R is **suspect** if R's thresholds were rescaled, if `|alive(R.step) − n_ref| × 20 > n_ref`
+(stale thresholds: a steady 2% fall per window trips this where no per-window gate does), or if
+`|alive(R.step) − alive(R.window_start)| × 20 > alive(R.window_start)`; **churn** if below 2 × `kin_enter` (colonies below 32). Both
+are counted in `excluded`.
+
+### 30.6 Labels: which may be cited
+
+`LABEL_VERDICTS[(intent_version, rules_digest, dims, world_key)]` maps to a verdict per label from the offline validity
+studies of §28.8; `world_key` is the `config_hash` of the config with `director` and `game` at their defaults (seeds and forks of a world
+share it; `64k3d_s0_half` does not). The table holds **version-1 rows only** (from `labels_64k_s0.json` and `labels_64k3d_s0.json`, sha256 `64303e05…`, `527c6c1d…`; the
+`RULES_V1` digest `156ad496…`): it has a row for no `RULES_V2` run, and since `INTENT_VERSION` is 2 by default **a new run has no
+key and the report narrates no label** until the change that validates `RULES_V2` adds its rows (the label cases are tested with a patched table).
+**One rule set over the chapter:** every row in [a, b] carries one `observers.intent_version`, equal to the latest sidecar's
+(≤ b) `meta.intent_version`, and its `meta.rules_digest` is the key's. **Restart gate:** one social `origin` over every
+row of [a, b], at most a − 192 (`label_warm`), and `arch_labelled`, `intent_labelled` ≥ 100 at both ends; failures read
+"observer restarted", "rules differ" or "too few labelled" in `excluded.labels`. **Citable** iff the verdict is `pass`,
+`n_pos` ≥ 100, `margin` = auc − null mean ≥ 0.10 and `p` = 1/(`n_perm` + 1): a robust pass (a borderline pass such as 2D
+Bonding is not). **Withheld** ("environment changed") if any row in [a, b] has a lever key (`regen_mult`, `season_amp`,
+`season_period`, `drift_mult`, `patch_gain_min/max`, `patches_off`) other than the default (not `cat_radius`, which stays after a
+catastrophe, nor `imm_request`), a patch move in the fold has s < b, or a `catastrophe` entry has `step_applied` in [a − 250, b).
+Shares are of labelled agents (`from_of`, `to_of`), never of the population, never with a rank or majority word, never Generalist.
+Display names: the v1 enum names; v2 Bonding is "Tethering" and Generalist "Unspecialised".
+
+### 30.7 Templates, assembly and the section order
+
+**Rendering.** Integers with thousands separators; `change` a signed percentage with one decimal; shares percentages with one
+decimal; lever values at most two decimals with trailing zeros stripped (float32 0.6000000238 renders "0.6"); "step 1,506,000".
+Ids are not counts and render unseparated. Direction words follow the **rendered** change: a change that renders "+0.0%" or
+"-0.0%" gets P-near ("The population was {from} at the start and {to} at the end of the chapter."), never "rose" or "fell".
+**Agreement table** (data, digest pinned): each count slot has a singular and a plural noun and the **first** count slot
+a verb form ("There was 1 death", "1 colony was tracked", "1 house had living members"); a test renders every count slot of
+every template at 0, 1 and 2. **Slot boundary:** a `{slot}` is preceded by the start, a space or "(" and followed by a
+space, "," "." ";" ":" ")" or the end; no template has a literal digit (checked at import); templates are capitalised
+sentences ending in "." (headlines without it). The 88 templates are the catalogue of `templates.py`; their ids and conditions:
+
+| id | condition |
+|---|---|
+| P-up, P-down, P-flat, P-near, P-zero | the lead, always first, by the rendered change (P-zero when `from` = 0 < `to`) |
+| P-low | min < min(from, to); **mandatory if `deep_dip`** |
+| D-1, D-2 | total > 0; D-2 names the catastrophe cause |
+| B-1, B-2 | births; B-2 adds the arrivals from outside |
+| LN, TL | lineages changed; the largest lineage's share at a and b (neither when the immigrant bin may exist) |
+| G-r1..3, G-s, G-c | a group with its carried rank / without; its chapter counts |
+| E-born, E-born-o, E-split, E-merged, E-dissolved, E-dissolved-o | kin-group events with their window; no overlap number after a dissolved event ("the group it overlapped most was {other}") |
+| CE | colony events |
+| H-1 (variants), H-2 | houses alive, new and died out ("Counting houses traced from step {origin}, " if not `exact`); the largest house if strictly largest |
+| LB-a, LB-i | an archetype / intent label share |
+| R | "Members of {A} attacked members of {B} {attacks} times; {kills} of the attacks were fatal." |
+| C, C-1 | colonies tracked |
+| END | "The run stopped at step {step} with {alive} agents alive." (mandatory when it exists; last) |
+| HP-up/down/flat/near, HE, HH, HL | headlines: the population; the largest non-`reid` kin-group event; houses that died out; lineages |
+| I-regen, I-loss, I-seasons, I-drift, I-fert, I-move, I-imm, I-cat, S-regen, S-gain, S-pos, S-seasons, S-drift, I-more, X-elapsed (X-regen-1, X-gain, X-gain-1), X-replaced, X-open, W | the block |
+| T:<id>, T-pop | the ticker lines |
+
+The source of an intervention is named by `SOURCE_WORDS`: a rule entry by its own identifier as an opaque name ("the
+director's rule {rule}", "the director" if the entry has none), source `llm` "the director's model": plain words such as
+"rescue", "damper" would presuppose an effect. Lever values are multiples of base, never "raised" or "cut".
+Headlines never cite an intervention or window.
+
+**Assembly.** A report is headline, lead (P-*), body and **interventions block**: first the `standing` facts (S-lines, in lever order),
+then per intervention fact, by (step, log index), its I-line, X-clause (none for points) and W if any, then I-more. The block is
+complete (§30.4), after the body, and never seen, selected or reordered by the model. **The section order (code, fixed, digest
+pinned):** D; P-low; kin-group events by (s1, −size, id); groups (G-r, G-s, each followed by its G-c) by (rank or −size, id); B; LN;
+TL; H-1, H-2; labels by (−|to_share − from_share|, label); R by (−attacks, a, b); colony events by (s1, −size); C; END. The model
+can neither move a sentence across sections nor between a section and the lead, so it cannot place two facts next to each other that
+the code did not. **Salience order** (the selection key of template mode): D; P-low; kin-group events by (−size, s1, id); G-r rank 1
+and its G-c; B; LN; TL; H; labels; R; other groups; colony events; C. **Mandatory** (always in the body, in both modes): D when
+total > 0, P-low when `deep_dip`, every kin-group event fact tied at the largest `size` (the first three by (s1, id)), END; at most
+six are mandatory, and k is raised to that number when it is smaller. **Template mode:** the headline HP if |change| ≥ 0.1 or
+`deep_dip`, else HE of the largest non-`reid` event if size × 50 ≥ alive(b), else HH (extinct ≥ 1 and `exact`), else HP; the body is the first k = 6 (3 in a quiet chapter) candidates
+by salience, displayed in the section order. **Select mode** offers the template headline and at most one alternative
+(the first eligible of HE, HH, HL), and **only the template headline when |change| ≥ 0.1 or `deep_dip`**.
+Candidates are distinct (one per template and fact); `candidates` returns at most 36 body candidates and the offered
+headlines. A chapter with no body or no headline candidate makes no request.
+
+### 30.8 The checker (`CHECKER_VERSION` 1)
+
+`check_string(text, slots, sheet, block)` runs on every rendered candidate, headline, block item and ticker line before the
+candidate set is formed; a failing string is excluded with its reasons (`excluded_candidates`), never shown. `slots` is the
+candidate dict `{template, slots}`, or `None` for the text rules alone (the corpus and crafted items). Tests require zero exclusions
+on every fixture, 2,000 random sheets and the real director blocks, so one in a real build is a bug that `build` prints.
+
+| id | rule |
+|---|---|
+| R1 | the template id is in the pinned table; its slots are exactly the template's (fact, field) pairs |
+| R2 | slot boundaries; no literal digit in a template |
+| R3 | closed vocabulary: every lower-cased word of the rendered text, with entity and label display names and numbers masked (name tokens only, not "the", "kin" or "House"), is in `TEMPLATE_VOCAB` |
+| R4 | the multiset of number tokens equals the multiset of the rendered slot values |
+| R5 | gates re-derived from the facts, independently of the template's condition and per fact kind: "rose"/"fell" agree with the rendered change; "largest" only with the fact's rank 1, `top_lineage`, `largest_strict` or `colonies`; "second/third largest" only with the carried rank; "lowest" only if min < min(from, to); "died out" and HH only if extinct ≥ 1 (HH also `exact`); "new" only if `first_seen` ≥ 1; "overlapped" only in E-dissolved with `other` ≥ 0; the event verb equals the event kind and HE only on a non-`reid` event; W only if `window_sentences` and the window lies inside the span and the chapter |
+| R6 | the lexicon (`lexicon.py`): the causal, presupposition, inference, motive, person, forecast, taxonomy and evaluative lists (stems with an inflection test) never match on the text with display names masked; lever words only in block items and ticker lines (save D-2's "catastrophe"); label names only in LB-*; rule identifiers only in block items and the ticker |
+| R7 | length ≤ 240 characters (headline ≤ 100) |
+
+### 30.9 Select-and-order mode (`--llm`; `SELECT_PROMPT_VERSION` 1)
+
+**Prompt.** The system message is fixed (`SELECT_SYSTEM`, "Code wrote and checked every sentence, and you cannot add or change
+words … Reply with the ids only, as JSON"). The user message is "Chapter: steps {a} to {b} of a {2|3}D world.", "Lead (always first): …",
+"Body candidates (choose {n_min} to {min(k, n_body)}):" (or "choose {n}" when equal), one line per candidate in salience order
+(`C3 [always]: …` for the mandatory ones) and "Headline candidates (choose 1):". It holds no intervention, window or setting and nothing
+a model wrote; its format and the system message are in the select prompt digest.
+
+**Schema and request.** Strict `json_schema` `world_report_select`: `headline` an enum of the offered ids, `order` an array of
+`n_min` to k unique body ids (`maxLength` 4 on every string); k = 6, 3 in a quiet chapter, raised to the number of mandatory sentences; `n_min` =
+min(k − 1, the number of body candidates). `uniqueItems` is stated and not relied on. The request is `{model, messages,
+temperature 0.4, max_tokens 200, seed, stream: false, response_format}` with `seed` = `SeedSequence([run.seed, b, 17,
+attempt])` as int31 (the director uses 16, `attempt` counted from 0); timeout 120 s; two attempts.
+
+**Validation and policy.** **Reply level** (`invalid`): not one JSON object, a duplicate key, `NaN`/`Infinity`, keys other than exactly
+`headline` and `order`, `order` not a list, or more than 4,096 characters (the stored reply is `clean_text(reply, 4097)` and
+is what `parse_choice` reads); an empty content, an HTTP error or a timeout is `failed`. **Entry level** (the entry is dropped with
+its reason `not_a_string`, `unknown_id`, `repeat` or `beyond_k`, never the reply): an unknown or non-string headline gives the template headline
+(`fallback: "headline"`); **fewer than `n_min` kept entries is `too_few`**. After `invalid`, `failed` or `too_few`, the next attempt
+(next seed, same messages); the first attempt that is none of these is used; after the attempts, the template report is used and
+`fallback` is the last outcome. **Assembly:** the headline; the lead; the body set = the kept entries plus the missing mandatory candidates,
+**displayed in the section order of §30.7**, with events in time order inside their section and the other sentences in
+the model's relative order (those it did not choose after the chosen ones, in the section's key order); the block. Body items record their origin
+(`model`, `mandatory`, `template`).
+
+### 30.10 The ticker, the record and replay
+
+**Ticker** (template only). For each snapshot step s in (a, b], by priority: one line "Step {s}: " + the I-line for each entry with
+step in [s − 250, s) (two entries on one step give two lines, in log order); else the E-sentence of the record's largest
+non-suspect kin-group event; else "Step {s}: the population was {n}." (n = alive(s); absent where social facts are excluded and s
+is not a row step). Each line passes the checker; W is never in the ticker.
+
+**Record** (one JSON line per chapter, `step` first): `chapter_start`; `report_version`, `template_version`, `checker_version`,
+`select_prompt_version`; `report_rules_digest`, `template_digest`, `lexicon_digest`, `label_table_digest`, `known_social_digest`,
+`source_words_digest`, `select_prompt_digest`; `facts_digest`, `candidate_set_digest` (sha256 of the canonical JSON of the
+candidates and headlines); `facts`, `candidates`, `headlines`, `excluded_candidates`; `mode` (`template` or `select`), `model`, `url`,
+`messages`, `request`, `attempts` (each: `seed`, `latency_s`, `finish_reason`, `usage`, `outcome`, `error`, `response` and
+`choice` {`headline`, `order`, `dropped`}), `fallback`; `report` {`headline`, `lead`, `body`, `interventions`} and `ticker`. A record is
+self-contained (about 12 to 20 KB) and holds no wall clock beyond `latency_s`.
+
+**Replay** (`verify`; never calls a model and builds no `Client`). Per record: (1) other versions than the code's, or another
+`label_table_digest`, `known_social_digest`, `source_words_digest` or `select_prompt_digest` (the content of tables and the prompt, which the
+version numbers do not pin): `versions_differ`, reported with the current verdicts (exit 0) and **not replayed from its stored facts**;
+(2) always, the sheet recomputed from the run: another digest under equal versions and digests is `stale` (exit 3); another digest and other versions is
+reported as `versions_differ` **and** `sheet_differs` (exit 0: the run or the code changed and the two cannot be told apart); (3) from
+the **stored** facts: candidates and headlines with another `candidate_set_digest` are a mismatch (exit 1), and for a select record
+`select_messages` rebuilt from the stored facts, candidates and headlines must equal the stored `messages` byte for byte; (4)
+`parse_choice` and the policy are re-run over every stored attempt (each `choice`, the attempt used, `fallback`), then `assemble`,
+render and `ticker`: `report` and `ticker` byte-equal, else exit 1. The model's choice is stored, never regenerated. Forks start
+their observers fresh (§28.6), so a fork's first chapters have `origin` = the fork step and inexact houses.
+
+### 30.11 Latency, GPU sharing and the preflight
+
+Measured on the director's calls (`gemma-4-26b-a4b-it-mlx@8bit`, `eval_s0_C`: 56 calls, median 3.6 s, p90 5.6 s; `google/gemma-4-26b-a4b-qat`,
+`64k3d_s0_dir`: 20 calls, 2.80 s median, 3.07 s p90; the free-prose probe, 108 calls, 4.75 / 6.48 s, **first call 58.3 s although the model
+was loaded**, so no caller may block on a first request). A select request (0.6 to 1.4k tokens in, about 40 out) is estimated at 1 to 2 s idle
+and about twice that beside a stepping world; 3D is unmeasured. `build --llm` is sequential, one request per chapter, no stepping in the
+tool; it uses the GPU through LM Studio, so the coordinator runs `--llm` and `probe` only when no GPU job or timing runs.
+
+**Preflight** (always, in `analysis/world_report.py`; `game/report.py` has no socket code): `GET {base}/api/v0/models` (the base of the chat URL), refused with exit 2
+unless `--model` is listed with `state` `loaded`, so a request never makes LM Studio load a model; `lms ps` is the manual check.
+`--no-preflight` still issues the GET and is accepted only when the endpoint does not answer with a models list (another server);
+`probe` and the `llm` test always preflight. The GET is read-only (coordinator choice C14, §30.14 item 13). **G3 rules,
+so the API fits:** the request starts at a chapter end, asynchronously, one in flight per process; an intent parse (G4) pre-empts it;
+the world never pauses; the template report shows at once and the select report replaces it on arrival. The director's LLM tier is
+off in game worlds (a delayed director call would change the trajectory through the shared server).
+
+**`probe`** (coordinator only) sends `--n` select calls over the sheets of `tests/data/report_probe/` (12 sheets in this format) and
+reports validity, entry drops by reason, fallbacks after the attempts, latency, mandatory omissions, the agreement with the
+salience order (Kendall τ-b of the raw order, also over the pairs inside one section, the only order that is used; Jaccard of the set
+with the template's first k; headline agreement) and the call metrics.
+
+### 30.12 Evidence, the owner read and why free prose is off
+
+The director's 131 LLM journals (275 sentences) and 61 `reason` strings are the R6 regression: explicit credit in 23 journals (18%),
+credit or presupposed efficacy in 45 (34%); `tests/data/report_corpus.json` (built once by `make_report_corpus.py`) holds them and the tests
+never read `runs/`. A probe of free prose kept 68.1%, 73.1% and 83.7% of sentences (three prompt wordings) and, per the review, a
+blacklist checker passed 46 of 48 crafted false or misleading items, with 3 to 5 false or misleading kept items in 180 to 209 (about three
+flags in a 20-report read). **Free prose stays off** until a design with a closed vocabulary, positional binding, temporal
+predicates, mandatory code items, slot boundaries and item-level validation passes an owner read; the closed vocabulary and the
+sheet of this section are where such a design starts.
+
+**What no template can say** (the 55 crafted items and B1, B2 are the fixture `tests/data/report_crafted.json`, none is producible, and
+none equals a candidate of its sheet): implied credit and causal connectives (no body or headline template names an intervention; the vocabulary has none of
+after, before, since, until, following, amid, so, then, as, because, despite or recovered); false order (no template relates two facts in time;
+the section order is code's in both modes; the block is fixed, last and in step order); omission of the main fact (the mandatory set, `too_few`, a
+headline that is the population's under a crash, the quiet predicate that excludes `deep_dip`); an ended effect credited (spans and windows; an ended
+effect says "It ended at step {end}"); superlatives and quantities (rank words only in G-r, direction verbs follow the sign); wrong subject
+or field (each slot is one field of the template's own fact; the relation's subject is the attacker); invented names, behaviour words and
+failed labels; loaded verbs.
+
+**Residual risk.** Juxtaposition, in two places. (1) The window sentence, "From step 465,000 to step 468,000, while this was in place, the population went from
+9,150 to 9,800" is exact, has no direction word and states its window, yet reads as credit; it is off. (2) Adjacent facts in the
+code-owned section order (deaths, then the lowest count, then events) are read as a sequence; the owner read covers the one fixed order.
+
+**The owner read** decides: 20 validation chapters as template and select reports, blind and shuffled; the owner picks the better of each pair and
+flags any sentence or adjacency that "implies a cause that is not in the facts". Proposed G3 targets: validity ≥ 95%, fallbacks ≤ 5%, select
+preferred in ≥ 12 of 20, no flag the select order adds (a flag in both is a template defect). The template mode needs the same read,
+unflagged, before G3 shows it. The free-prose baseline (re-scored for selection only): the body in code order 19/36, 14/33 and 16/34, mean τ-b
+0.78, 0.73, 0.79; the largest event omitted 0/27, 1/26, 2/25; headlines cited the population in all 103 valid replies.
+
+### 30.13 Tests and the real-log checks
+
+CPU only; no socket except the local mock server (`tests/report_server.py`, which also serves `/api/v0/models`). Four new test files and one
+conftest change: `tests/test_game_report.py` (the sheet, spans, windows, labels, event frames, assembly, ticker, the golden tiny run),
+`tests/test_game_report_templates.py` (templates, lexicon, the checker, the crafted items, the corpus, the probe sheets),
+`tests/test_game_report_select.py` (the prompt, `parse_choice`, the policy, `narrate`, record and replay; the fourth file is not in the
+specification, which listed three), `tests/test_analysis_world_report.py` (the CLI, resume, preflight, probe, and the real-engine fork) and the options
+`--model`, `--llm-url` in `tests/conftest.py`. Helpers `tests/report_helpers.py`, `report_synth.py`, `report_server.py`. Fixtures in `tests/data/`
+(their `make_report_*.py` makers; only `make_report_tiny.py` and `make_report_e2e.py` simulate): `report_run_synth/` (a hand-written observed run),
+`report_probe/` (12 sheets), `report_crafted.json`, `report_corpus.json`, `report_tiny/` and `report_tiny_resumed/` (real CPU engine output, with
+`golden.json`), `report_e2e/` (below).
+
+- **Sheet and spans:** exact sums; row gap, off-grid cut and unobserved run exit 2; `wall_s` or `n_alive` changes leave the digest unchanged;
+  two origins, `origin > a`, an unknown `social_digest` and an alive mismatch exclude social facts; the 1e-6 rule; ranks at 16 versus 17 tracked;
+  ties; the name clash; the immigrant bin; `from` = 0; extinction; a `rule`-less entry; the label gates; `reason` and `journal.jsonl` sentinels
+  absent from sheet, candidates and prompt; the span cases (the s11 case, open, an entry at b, a timed supersession, a revert restoring a non-default
+  value, a replay fork's dangling revert, a fertility shift under a habitat loss, no quota of five); the window gate; and on 2,000 random logs
+  every window inside its span and chapter, the implied levers equal to a reference fold and **every lever away from default at a with exactly one block line**.
+- **Templates and checker:** every template renders and passes on 2,000 random sheets; the vocabulary, strings, `SOURCE_WORDS`, plurals and orders pinned by digest; R1 to R7 each passing
+  and failing; the agreement table at 0, 1 and 2; P-near; the crafted fixture; the corpus (the lexicon alone rejects all 24 credit, 24 presupposition,
+  10 temporal and 5 other-causal sentences and all 61 reasons, and the closed vocabulary rejects every corpus sentence); `r6check` (the lexicon over a sheet that triggers every
+  template and the ticker: zero hits outside the exemptions); `check_string` is pure.
+- **Select and replay:** every reply-level and entry-level case; the policy over two attempts; `too_few`; on 2,000 random replies the lead first, every
+  mandatory sentence, no repeat, the section order whatever the choice, the block complete and last; the select fixtures C1 to C5 and N12 to N14 as assembled text;
+  the body of the request carries `model`, the schema and the seed; the preflight refuses a model that is not loaded; `--no-preflight` is refused when the endpoint answers;
+  `verify` passes with `socket.socket` and `urllib.request.urlopen` patched to raise; the 23 edits of a stored record are all a mismatch; a changed label table, `KNOWN_SOCIAL`,
+  `SOURCE_WORDS` or prompt under equal versions is `versions_differ`; `stale` exits 3; a changed run under other versions reports both; the resume key.
+- **A real observed director fork** (`tests/data/report_e2e/`, `make_report_e2e.py`): a tiny CPU source run forked at step 2,000 with `--director replay` and a
+  hand-written log (a rule's regeneration pulse and its revert, an immigration pulse, seasons, a fertility shift, a drift change) and `game.observe=true`, for
+  8,000 steps. The fork's `env` blocks are the engine's own output: the tests check that the fold reproduces every row, that the block of each chapter lists exactly the levers
+  that the row's `env` shows away from default, that `build` then `verify` exit 0 with texts equal to `golden.json`, that a doctored log (a changed value, a missing entry)
+  exits 1 before anything is written and that an unobserved copy exits 2 with the hint. Re-running the maker reproduces the committed files byte for byte.
+- **Versions pinned:** `ReportRules().digest()` (`5382d0c0…`), `TEMPLATE_DIGEST` (`e3ea26dd…`), `LEXICON_DIGEST` (`bdc39823…`), the select prompt digest (`7800edad…`).
+- **Real server** (marked `llm`, only with `--model` or `ALIFE_LLM_MODEL`): one `narrate` on the tiny golden sheet with the preflight, structure only. The coordinator runs it with
+  `--model google/gemma-4-26b-a4b-qat`; the build ran no LLM call.
+
+**Real-log checks** (read-only on `runs/`, scripts outside the repository, results below; the tests never read `runs/`). On the director logs of `eval_s0_C`
+(108 entries), `eval_s1_C` (109) and `64k3d_s0_dir` (45), against their 13,800, 13,800 and 5,001 metrics rows: **the lever fold equals the `env` block of every row** in all three
+(2D and 3D; the check ran over each whole run); in the 6,000-step chapters whose first row has an `env` block (229, 229 and 82), the block has exactly one holder line for each lever
+the row's `env` shows away from default, and the holders' implied patch gains equal the row's (0 failures; 105 `eval_s0_C` chapters have a standing line, from the patch-12 revert that restored 1.75); the blocks of
+all 544 chapters render through the sheet's own composition with **0 checker exclusions** (2,006, 1,575 and 102 lines); the 67 timed effects ended `elapsed` at s + duration exactly (25, 27, 15); and
+`build` on each of the three runs exits 2 with the `--set game.observe=true` hint. The window and label facts need an `observers` block and are not reachable from
+these unobserved runs: the coordinator's validation (below) covers them.
+
+**Validation** (coordinator, GPU, after the fast suite is green). A: `alife run --init-from runs/64k_s0:1500000 --steps 36000 --set game.observe=true --out <A>` (no director: labels, groups and
+events; chapters `--from 1500500 --to 1536000`, which is a `RULES_V2` run: no label is narrated until its rows exist, and the labels tool pinned to `RULES_V1` on one window of A
+exercises the label cases). B: the replay fork `alife run --init-from runs/eval_s0_C:120000 --director replay --replay-log runs/eval_s0_C/director.jsonl --steps 36000 --set game.observe=true
+--out <B>` (seasons from 125,000, so B exercises the standing lines, the confounder gate and the label withholding, not a window sentence), `--from 120500 --to 156000`. Then `build`, `build --llm --model
+google/gemma-4-26b-a4b-qat` (`lms ps` first), `verify` and `probe --n 24`; report facts per chapter, exclusions by reason, checker exclusions (target 0), the measures of §30.11 and the
+latency; then the owner read.
+
+### 30.14 Deviations from the specification, decisions, open points and what is not in N1
+
+**Deviations as built** (the specification is `n1/spec.md` revision 3).
+1. The kind of an event fact is the field `event`.
+2. An intervention fact is also listed when its span ends exactly at row a (`e ≥ a`): otherwise a revert applied at a would leave a standing line that is false for the chapter.
+3. Standing lines are holder-based (the latest write before a is a revert and is away from default); for a fork a revert applied inside the chapter whose forward entry is before `start_step` also gets one.
+4. New fields: intervention `rule`, `src`, `open_to`; houses `largest_name`; group `of`; label `key`; top-lineage `from_of`, `to_of`; the sheet's `snapshots`.
+5. Template ids differ from the specification's: added G-r1..3, `E-born-o`, `E-dissolved-o`, the H-1 variants, `C-1`, `X-regen-1`, `X-gain`, `X-gain-1`, and HP-near ("Population at {to}") for a change that renders 0.0%; I-more uses agreement markers.
+6. `candidates` returns only the offered headlines (H1, and H2 when allowed). `check_string` takes the candidate dict, or `None`.
+7. The label restart gate requires one social origin over every row of [a, b], not only row a.
+8. The prompt reads "choose {n_min} to {min(k, n_body)}" (or "choose {n}"), since a one-id reply is `too_few`.
+9. The record has the extra field `select_prompt_digest`, compared with the other versions: a changed prompt under equal version numbers is `versions_differ`, not a messages mismatch.
+10. A chapter with no body or no headline candidate makes no request (mode `select`, `attempts` empty, messages null, `fallback` null, the template report).
+11. The stored reply is `clean_text(reply, 4097)`; more than 4,096 characters is `invalid`; empty after cleaning is `failed`.
+12. `build` cuts and checks every chapter before the preflight and before any write; `verify` does not replay a `versions_differ` record; a chapter the run can no longer cut is status `error`.
+13. The preflight is in `analysis/world_report.py`; `--no-preflight` still issues the GET.
+14. The crafted fixture has 57 items: B1's two kept sentences are real candidates (their defect is omission, covered by the select fixtures).
+
+**Open points** (the coordinator or the owner). The owner's confirmation of C12 to C14, and of the one read-only `GET /api/v0/models` against the "no management endpoint" rule (if declined for good,
+`--no-preflight` becomes the only mode and `lms ps` the only check); the base `INTENT_VERSION` (2 here, so no run has a label key until `RULES_V2` has validated rows; the label table is v1-only); END is new wording; a fork of a
+source with immigrants or patch moves carries state the report cannot see (the bin, the patch positions); `versions_differ` with `sheet_differs` cannot say run or code; the provisional values (`dip_mandatory` 0.8, `labelled_min` 100, the 24-line cap, the
+250-step catastrophe margin, headline change 10%, quiet 5%, `window_min` 1,000, event gates 1/20, colony events ≥ 32, relations ≥ 10 attacks, n_pos ≥ 100, margin ≥ 0.10, k 6 and 3); the frequency of the T2 case is unmeasured; "House {name}" beside "the {name} kin"
+can read as one entity because kin names are borrowed from houses at admission (cosmetic); the GPU validation, `probe` and the owner read of §30.12 have not been run.
+
+**Not in N1.** No live UI (`alife play`, a report panel, a worker, `reports.jsonl` in a run directory, a `runio` cut: G3); no model-written text; no unobserved runs; no storm facts before W3; no forecast; no counterfactual twin (after
+G4); no player commands or relation states (G4); no obituaries, territory or K-based vitals; no change to the director. `docs/STORMS.md` §6.5 (the storm-world report) is not on this branch: its edit waits for the branch that carries that file.
+
 ---
 
 ## Review log
@@ -7981,6 +8441,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I43 | fix: the director's extinction-risk flag is season-aware (rules version 2) and the blocked-rule set survives a live resume (host-side director code only; owner decisions 2026-10-16: "exempt the forced amplitude", and the `Director._blocked` fix recorded in §27.10; `docs/DIRECTOR.md` §16, §26.3, §26.5 to §26.9, `docs/EVALUATION.md` §3.3 and §5). No change to the compiled step, the state, the RNG, any config key or its default, any config hash, the 2D or 3D golden digest, or any non-director trajectory; a run without seasons has the vitals, flag, reasons, notes, prompts, journal and log of rules version 1 byte for byte (the existing sha256 and key-order pins pass unchanged, and `test_director_seasons.py` pins the tracker), the one new byte in such a log being the header's `rules_version`. (1) **Why.** The evaluation found that the fall criterion (`fall > 0.3` within 50k steps) fires on every seasonal trough: arms C fired 34 and 38 rescues (56 and 60 safety-rule entries: a rescue is two), and each rescue also spends the model's budget (`docs/EVALUATION.md` §3.3). (2) **The model** (`director/seasons.py`; §26.5): regeneration is `floor(regen_max·clip(base + Σ gain·(1 + A sin …)·G, 0, 1))`, not proportional to the season's weight (on `eval_s0_C`, A = 0.6, the regeneration swings ±0.40, the engine's map ±0.45, not ±0.6), so the capacity over one cycle is sampled through the engine (`metrics.seasonal_capacity_table`: 32 phases of `fields.regen_rate` over the sum without seasons; the floor layer in 3D; 33 map evaluations per boundary, 0.02 s on the CPU at the `64k` size), the forced fall is the vital sign's own formula on that capacity under each window's regime (`season_amp`, `season_period` from the rows' `env`) and the lower of the fall with and without each window's `regen_mult` (so a boom begun after the last peak narrows the exemption: a 40% crash on such a trough is flagged; the end of a pulse stays flagged), and the flag reads the excess `1 − (1 − fall)/(1 − forced)`; the n/K criterion and 3D's `k_floor` are unchanged, `Vitals.fall` stays the observed value, `fall_seasonal` and `fall_excess` are logged after it when seasons are in force. The rescue's reason names the split; a fall that version 1 would have flagged and the seasons account for leaves the journal note `seasonal_exemption (…)`, once per run of boundaries; the LLM prompt's viability line gains a clause then. Validated read only on `runs/eval_*` (tables from the nearest checkpoint): windows at which the fall sets the flag, 891 → 55 (s0 C), 808 → 119 (s1 C), 129 → 0 (s0 R), 1 018 → 198 (s0 RC), 614 → 141 (s1 RC) of 1 380, the seasonless windows unchanged; limits: no population lag (RC's period 3 056 still flags 106 of 600 windows), the end of a regeneration pulse is a fall the seasons did not force and stays flagged, patch-gain changes are not followed (the rows record only the lowest and highest gain; a gain raised after the last peak widens the exemption). (3) **Versioning.** `RULES_VERSION` = 2, `RuleParams.rules_version` selects the behaviour; replay never decides, so every implemented version (1, 2; a header without the key is 1) validates and replays byte-identically, any other is a `LogError`; a live run continues under the version of its log's latest header (no silent switch on resume, no second header for it, also for a header that predates the key; a stderr note; the CLI refusing an unknown version before touching the directory, tested by a resume from a checkpoint before the last); a new run or a fork takes 2, except a new `random` run (arm R), which takes the version of its yoke log's first header like the rest of what it inherits (§26.11 R3), so that an R or RC arm started against the evaluation's version-1 logs runs version 1's safety rules; no in-place upgrade. (4) **`Director._blocked`** (every rule noted at the boundary, whether or not the journal wrote the note again) is saved as `blocked` in `director_archive.json` at each checkpoint and restored by a live `Director` started at the checkpoint's step (`as_of_step == start step`; a missing, older, unreadable or other-step archive restores the empty set, the old behaviour): the journal of a resumed run equals the uninterrupted run's; the two strict `xfail` tests of §27.10 are tests. (5) Tests: `test_director_seasons.py` (51), additions to `test_director_log.py`, `test_director_random.py`, `test_director_3d.py`, `test_director_replay.py`; `test_director_rules.py` and `test_cli_smoke.py` pin version 2.  CI: the fast-suite job's `timeout-minutes` goes from 20 to 30 (§22.0); the suite had grown to 16 to 18 minutes with the 3D work and this PR's end-to-end tests pushed it past 20. |
 | I44 | feat: games G1, the observer layer (`docs/GAMES.md` §4, §6.6, §9; new §28), off by default and observer-only; built in five commits on `games/g1-observers` (the channel, the observer state and rules, the host observer and the runner, the tooling, these docs) and a review-fix commit. (1) Config: section `game` with `game.observe` (bool, false; in `POST_V01_KEYS` and the new `OBSERVER_KEYS`, omitted from `config_hash` at every value; separate from `UNHASHED_KEYS`, so `DIRECTOR_POLICY_KEYS` is unchanged); `resume --set game.observe=…` is accepted (`cli._resume_allowed`, `RESUME_GAME_KEYS`; any other `game.<key>` is exit 2 and the message names it); a fork may set it and starts its observers fresh, a replay fork included. The thresholds of the labels are code constants of a versioned `RuleSet`, not config keys (G1's choice, pending the owner's confirmation: GAMES §10 item 11; GAMES §3.1 corrected). (2) Step: `step(s, cfg, *, observe=False)`, `make_step(…, observe=False)`; with `observe` (static) the step returns `StepOutG` = `StepOut`'s fields plus `acts: Acts` (attack gain, per-slot share out and net received, `ActFlag` attacked/hit/formed/budded/emitted, thrust and defend as `round(256·v)` int16, emit as the Σ of the S17 deposit quanta); the thrust is quantised from the decode output and masked by solvency in integers, so that the channel reads only arrays that are already kernel boundaries; `energy.share` is split into `energy.share_slots` and `energy.share_from_slots` (same primitives, same order; S12 is computed once with `observe` on); §3 and §16.3 name the static `observe` branch, which `bench._StagedStep` does not mirror. (3) Package `alife.game`: `observe` (pure MLX `ObsState`, accumulators `A += x − (A >> k)` with k = 6 and 3, reset on death or a new uid, per-slot bond identity by partner uid), `rules` (`INTENT_VERSION` 1, provisional, with a pinned `RULES_V1.digest()` and an int32 headroom check `RuleSet.check`: Gatherer, Hunter, Provider, Trader, Nomad, Settler (speed only; the colony clause is G2), Generalist; ten intents in first-match order with a 4-evaluation hysteresis every 8 steps on the step clock), `observer` (host `Observer`: folded in the step's single eval, the `observers` block of `metrics.jsonl` rows of observing runs, the sidecar). (4) Persistence: `observers/step_<t:010d>.npz`, atomic, written before each checkpoint of an observing run, loaded on resume when its meta, including `rules_digest`, matches (otherwise a stderr note and a fresh warm-up), pruned with its checkpoint and cut by `truncate_after`; resumed labels equal uninterrupted ones. (5) Tooling: `python -m alife.analysis.labels` (§4.5 validity: AUC against matched random labels, archetypes exposure-normalised over the observed part of the horizon with complete-case, survivor and censored columns, coverage, flip rates; never writes into the run directory), `alife bench --observe` (control and observed arms in blocks C O O C); `resim._compare` is public as `compare_row` (one source call site, six test calls). Unchanged: the compiled step with `observe` off, `State`, the RNG, every config hash (`TINY_HASH_V01`, `K64_HASH`, `TINY_ENABLED`, `K64_ENABLED`, and the newly pinned `TINY3D_HASH`, `TINY3D_ENABLED`, `K64_3D_HASH`, `K64_3D_ENABLED`, computed on 905580a), the 2D and 3D goldens, every trajectory, `StepOut`, the event columns, and the rows and files of non-observing runs; with `observe` on the trajectory is bitwise the one with it off (2D and 3D, compiled and eager, float32 and float16 weights, director branches off and on, CPU; Metal (M5 Pro, 2026-10-19, on 6d839cc): `tests/test_game_purity.py` and `tests/test_game_acts.py` 26 passed; every `test_game_*.py`, `test_analysis_labels.py` and the determinism files 167 passed, 2 skipped (the goldens are pinned to Linux CPU)). **As built, where it differs from the plan** (all in §28): every ratio threshold is an integer `(num, den)` pair tested as `den·x ≥ num·y`; the largest safe `arch_k` at the default `share_rate` is 15, not 19 (the speed and velocity columns, bounded by `VQ_MAX`, limit it; 12 at `share_rate` 2^16 − 1 as planned); Caring and Feeding also need a mean of at least 1 (no change at `harvest_max` 400); the first match is the minimum index of the matching columns, not an `argmax`; the runner calls `make_step(cfg)` and `save_checkpoint(state, cfg)` literally when not observing, so the existing test doubles of both keep working; `intent_labelled` is 0 until step 48 (the displayed intent needs 4 evaluations after the 24-step warm-up) while `intent_evaluated` counts from step 24; `read_observers` returns the raw array dict, `save_checkpoint` treats an empty mapping as no sidecar and `_prune` removes any sidecar without a checkpoint; in the labels tool, `study(start=…)` (CLI `--from`), the random streams are `[seed, label_index, variant]`, an intent's `auc_label` pool is the complete rows that carry a displayed label (`auc_rule` uses every complete evaluated row), each intent verdict applies its own score's coverage maximum, and the report has extra keys (`cohorts`, `params.rules`, `params.verdict`, `exposure`, prevalences, `coverage_max`); in the bench, the warm-up is `max(warmup, 1, rules.every)`, `observed_steps_per_s` is from the mean, the block has extra keys (`overhead_ms_mean`, `trajectory_match`, …) and the CLI exits 1 when `trajectory_match` is false. **Review fixes** (the review-fix commit): the bound of `emit` is 768, not 765 (`tanh` reaches 1.0 in float32: `RuleSet.check`, the `Acts` comment, §28.2, §28.3 and GAMES; a saturated-weights test reaches it); `RuleSet.check` also bounds the int32 ratio comparisons (a v1 ratio scaled by 10^5 wrapped and mislabelled rows); a structural CPU test pins the channel's read set on the traced graph and that S12 runs once, which no value test can see (§28.2); the verdict is `insufficient` below 99 permutations, where no label can reach `p ≤ 0.01`; `bench --observe` runs the blocks as C O O C (C O C O left a linear drift in the overhead); `read_observers` and `Observer._load` turn a bare `.npy` or an archive with a non-`.npy` member into the fresh-observers fallback, as §28.6 says; `resume --help` names `game.observe`; tests added for the insolvent mask in every acts arm, the age-matched null in every score of both scoring functions, the verdict margin, `ARCH_PRIORITY` as a literal, a SIGINT resume and the saturated emit; GAMES gets the Metal purity gate as a merge condition and the two open G1 questions (§10 items 11 and 12), HANDOVER a next-steps item. Deferred: `BirthRecords.parent_slot`, houses, kin groups, colonies (G2); `signals.decode` in 3D; stream tags, `alife play` and the play-loop bench (G3); copying the sidecar into a fork (G3 or G4); the calibration, the verdict criterion (provisional until the owner confirms it) and the 64k benches (later, on the GPU, §28.8). Edited tests: `test_config.py::test_hash_ignores_run_and_tracks_dynamics` skips `OBSERVER_KEYS`; `tests/data/gui_config_*.json` regenerated; `test_lint.py` scans `game/` (rule 2 over `game.*`, rule 5 over `game.observe` and `game.rules`, new meta-test lines); `test_metrics_3d.py` calls `resim.compare_row`; `test_bench.py` covers `observe`; `test_cli_smoke.py::test_view_and_bench_delegate` pins the new keyword, and `test_cli_smoke.py` also gains `test_bench_observe_smoke` (the CLI `bench --observe` end to end). New tests: `test_game_config.py`, `test_game_acts.py`, `test_game_purity.py`, `test_game_observe.py`, `test_game_rules.py`, `test_game_sidecar.py`, `test_analysis_labels.py` (shared helper `tests/game_helpers.py`); 68 deliberate breaks of the new code over the four code stages were each caught by a test, but one that is an equivalent change (`<` against `<=` in Settler: `10·m = 256` has no integer solution); six survived the first pass and each got a test that kills it. Checks (verify stage, at the review-fix tree, all on the CPU device): [ruff: `ruff check src tests` and `ruff format --check src tests` clean (137 files); fast suite (`test_lifecycle_compiles_and_matches_eager` deselected, the known Mac-CPU failure of I26): 1737 passed, 5 skipped, 25 deselected, 0 failed in 9 min 27 s (1707 passed before the review fixes; the 5 skips are environmental: the two goldens pinned on Linux x86-64, the real-LLM test, no ffmpeg, no pygame); `tests/test_game_purity.py` in full, every arm: 17 passed in 24 s (all 8 trajectory arms, the key test, the two runner-level tests, the director-log test, and the three structural configurations with their two meta-tests; none is marked `slow`); `swift build` and `swift test` in `gui/`: build complete, 68 tests in 11 suites passed; digest comparison: with a fresh baseline (`git archive origin/main src`, origin/main still 905580a after a fetch; the baseline run imported `alife` from the extracted tree) the 2D digest matrix (15 trajectory cases, 3 runner cases, config hashes, layout) run on this tree exits 0, "bit-identical", and its only INFO lines are 12 additions of `game` (`{"observe": false}`) to a run's `config.json` or to a checkpoint's metadata config; the tiny3d `state_digest` after 50 compiled float32 steps is `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd` on origin/main and on this tree; Metal (M5 Pro, 2026-10-19, on 6d839cc): `tests/test_game_purity.py` and `tests/test_game_acts.py` 26 passed; every `test_game_*.py`, `test_analysis_labels.py` and the determinism files 167 passed, 2 skipped (the goldens are pinned to Linux CPU)]. |
 | I45 | feat: games G2, social tracking (`docs/GAMES.md` §6, §9 G2; new §29), observer-only, on with `game.observe`; built in ten commits on `games/g2-social` (the config and the channel, `groups` and `tracking`, `game.social` and `game.society`, the labels clause with the observer wiring and the social log, the tools and the bench, the docs, the roster, whose commit also edits the docs, the fixes of the review, the label rules of `INTENT_VERSION` 2, and the fixes of their review). (1) Config: `game.house_rate` (1/2048, a working default: observer-only keys may default to a working value, the owner's decision of 2026-10-19, recorded in CLAUDE.md), in `POST_V01_KEYS` and `OBSERVER_KEYS` (unhashed at every value, resumable, inert while `game.observe` is off); `validate` bounds it to [0, 1]. The snapshot cadence and every threshold are `SocialRules` fields, not config keys. (2) Channel (static `observe`): `Acts` gains `attack_target`, `bond_target`, `q_kin` (int16, `round(256·clip(y, ±127))` of the kin columns of both queries), `nbr` (neighbour rows, validity from the own-index contract) and the birth lanes `born_row`, `born_parent` (the parent-row channel, in place of `BirthRecords.parent_slot`, so that `StepOut` and the event files stay unchanged), `born_uid`, and for the roster `death_cause` (int8: the S14 cause of every row that died this step, −1 elsewhere, a cast of the `dt.cause` array that `KILLED` already reads); `ActFlag` gains `PROPOSED` and `KILLED`; the structural test's allowed taps grow from 12 to 20, and `y` is the only new float tap (an existing kernel output read by `Slice`s; G1's three float taps are unchanged). (3) Generic modules without game names: `groups` (pure MLX: `splitmix64` bit-equal to `phylo.splitmix64`, the cut compared as a uint64 array, hash-founded inherited labels, masked and exact limb bin counts with the limb width set by the lane count, grid codes, plane cells), `tracking` (host: `SystemTracker` with one-to-one greedy matching on overlap at Jaccard ≥ θ, an admission set for enter/leave hysteresis and events born/split/merged/dissolved with provenance, `grid_clusters`, `Dominance` with per-axis periodicity, `sticky_slots`, `deadband`). (4) Game layer: `game.social` (`SocState`, `SocialRules`, `SOCIAL_VERSION` 1, provisional, digest pinned) and `game.society`: houses (founded by `splitmix64(uid, run.seed) < rate·2^64`, inherited by parent row, immigrants found their own; equal to `nearest_root(marker_roots)` for a run from step 0; seeded from clades for mid-run starts, immigrant lineages as `HOUSE_UNKNOWN`; top 16 named), kin groups (65,536-bin tag grid, occupied bins at `max(2, n_ref >> 12)`, face adjacency with attachment, entering at `max(8, n_ref >> 9)` and leaving below `max(4, n_ref >> 10)`, `n_ref` with a 12.5% deadband, 16 sticky slots; within-group tag similarity `sim_self`, the chaining report; mean height and height bands in 3D), colonies (bond components from `metrics.components` with the rules' own rounds, entering at 4 and leaving below 3; uid matching with newborn credit up to 300-step spacing, footprint matching beyond), territory (32² floor grid, EMA k = 2, owner, purity, borders), relations per snapshot window (attacks, hits, kills, formed proposals, energy shared, bond-steps, a per-actor neighbour-exposure baseline, sampled tag similarity), temperament. (5) Labels: the Settler colony clause, behind `RuleSet.settler_body` (0, off, in `RULES_V1`; rules with a positive value need the body and raise without one); post-v1 fields at their inert value are left out of the digest, so `RULES_V1` keeps its G1 pin; through the first eight commits `INTENT_VERSION` stayed 1 and `RULES_V1` the default, and version 2 (the clause at `settler_body` 4 with the fixes of the labels that failed G1's validity study) came in the ninth, in one change, so that one version never names two rule sets (item 11). (6) Persistence: sidecar `OBSERVER_FORMAT` 2 with `soc.*`, `host.*` and new meta (no reports), checked format first and validated by `Society.from_arrays`; the social log `observers/social.jsonl` (`runio`: `SOCIAL_FILE`, `RunDir.append_social`, `RunDir.social_records`): one record per snapshot, appended and fsynced by the runner at the snapshot step before its row and checkpoint, read with the torn-last-line rule, cut by `truncate_after` to the records with step ≤ the resume step (always, a replay included; parsed whole before anything in the directory changes, a corrupt middle line or a record without an int step raising; then an atomic rewrite of the kept records, re-serialised as metrics rows are, which is byte-equal for the runner's lines, with a torn tail dropped), absent for a non-observing run and never copied into a fork; `Observer.sidecar()` refuses untaken records; for any stop step the resumed log equals the uninterrupted one byte for byte, and sidecars and row blocks equal it at the steps both runs have. (7) Rows: `observers.social`, the head of the last settled snapshot, joined to its record on `origin` and `snapshot_step` (≤ 0.5 KB, dumped in insertion order); the reports travel only in the log (≤ 16 KB a record; 13,255 B and 271 B at every cap on synthetic 64k-like values with every column at its widest: long-run ids, window counts of six to eight digits, the roster's columns; the earlier, narrower scenes gave 10,951 B and, before the roster, 7,494 B), so `metrics.jsonl` grows by about 14%. (8) Tools: `python -m alife.analysis.social` (with churn, and its records checked against the stored log), `bench --observe` gains `social` (heavy metrics included) and untimed snapshot compiles (`warm = max(warmup, 1, every, S + 1)`, whole snapshots per block). (9) Roster (the seventh commit, owner-delegated choice C7 of 2026-10-19, DESIGN §29.14): kin groups are named once at admission (the name of the dominant named top-16 house, else a name generated on `splitmix64(id, SocialRules.kin_name_salt)`, a house's name goes to one live group at a time, the next group of the same house gets a generated name, and a generated name that is held gets the group id appended; `host.kin.names` in the sidecar); each record lists the houses founded (id, step, parent house, from the new `SocState.house_from`) and extinct (id, step) since the last snapshot, capped at `events_max` of each with overflow counts (`host.houses` in the sidecar); each listed kin group carries `name`, `named_after`, the centroid `x`, `y`, the archetype mix `arch` (from the new `arch` input of `social.snapshot`, the observer's primary labels) and its window `births` and `deaths` by cause (the new device counts `SocState.births` and `deaths`, from the new channel field `Acts.death_cause`, looked up by id in the window's slot map); the study reports the members of houses seeded at its start against those founded since (`houses.founded_share`), the check of `game.house_rate`, which stays 1/2048. (10) Review fixes (the eighth commit; a review of the seven by engine, persistence and semantics lenses gave nine findings, all of which held and were applied). *Engine:* the structural taps test reads the eager graph and cannot see `mx.compile`'s merging of identical sub-expressions, so value-neutral channel mutants that pass it still split a fused float kernel of the compiled step; a compiled-kernel comparison with observe off and on was added (the kernels in the difference may contain only comparisons, selects, bit operations and casts; today three integer groups), with the four CSE mutants as its meta-tests, and the false sentence of §28.2 that the graph test pins the same property was corrected; a channel field that is itself an unlisted trajectory array, returned with no op, is now a tap (`Acts.<field>`; a fourth eager mutant). *Persistence:* `Society.from_arrays` and `Observer._load` no longer raise on a sidecar of well-typed members with malformed values (a name or house id above 2^63 − 1, JSON nested past the recursion limit in `meta`, `host.summary` and `host.kin.names`), so `alife resume` falls back to fresh observers with the note instead of exiting 1; `truncate_after` deletes the later checkpoints and sidecars and rewrites `LATEST` before it cuts the logs and the event chunks (every cut is idempotent), so a stop in the middle can no longer lose the records between a checkpoint and a later one (the window existed for `metrics.jsonl` and the event chunks before G2), tested by stopping the cut before each of its writes and deletes. *Semantics:* the record budget is now set from a test scene of the widest plausible values (long-run ids, window counts of six to eight digits, ten-letter names), 13,255 B, and is 16 KB, not 12 KB (the one-attack scene that gave 10,951 B was not the widest: a 64k_s0 window with long-run ids gives 12.5 KB); the byte size is still not enforced, the row caps bound it; a house's name goes to one live kin group at a time, the next group of the same house gets a generated name (a revision of the roster's rule that suffixed the held name, which gave all the groups of a clade, the case of every observer attached after step 0, one name and an id each for life); stale figures (§28.2, §28.6, §29.9, the bench step count of §29.12, HANDOVER) were corrected. Two departures from the plan: the budget number and the naming rule. `step.py` and the channel are unchanged, so the flag-off digests and the Metal state of the stage 7 `_acts` stand. (11) `INTENT_VERSION` 2 (the ninth commit, after a data study on dumps of the two G1 study windows; DESIGN §28.3, §28.4, §28.8): one change defines `RULES_V2` (the default, `RuleSet()`), sets `INTENT_VERSION = 2` and `observer.DEFAULT_RULES = RULES_V2` (which the bench and the labels tool read), bumps `OBSERVER_FORMAT` to 3 (`ObsState` gains `held`, `intent` is (N, 10): a G1- or G2-era sidecar is refused at `observer_format`, and the observers restart fresh) and pins both digests (`RULES_V2` `dc78f771…b4f7`; `RULES_V1` keeps `156ad496…c009`). G1's GPU validity study had failed Gatherer, Defending (the 0.6 coverage cap), Budding and Feeding in both worlds and Bonding, Signalling, Roaming and Caring in 3D. In version 2: Gatherer is a harvest level (`gatherer_level` (3, 4), the share `gatherer` off at (0, 1)); Defending needs a hit and a raised guard (`defend_hurt` 1, `defend` 192); Budding is an energy forecast (`bud_horizon` 10, `bud_cost` 24, two flow columns, `ObsIn.energy` and `brain_cost`, `BudIn`, `budding_forecast`) displayed outside the hold (`bud_overlay`, `ObsState.held`); Bonding is a formation rate (`bond_rate` 64, a FORMED column); Feeding is (3, 4) of `harvest_max` and Signalling 192; Caring precedes Defending and Feeding precedes Signalling (`intent_order`, `first_intent(match, order)`); Settler gains the colony clause at 4. `RULES_V1` names the four defaults it changes (`gatherer`, `defend`, `signal`, `feed`) and the eight post-v1 fields at their inert value (`_POST_V1_INERT`, left out of `digest()`), so it keeps its pin and evaluates as G1. `IntentCol` gains FORMED, FLOW_POS and FLOW_NEG (`N_INTENT_COLS` 10, accumulated under every rule set); `RuleSet.check` gains the three bounds (the largest `intent_k` at `e_max = 10^6` falls from 19 to 11, 12 naming `intent.flow_neg`) and the ratio `gatherer_level`; `evaluate(o, cfg, rs, *, body=None, oi=None)` requires `oi` when `bud_horizon > 0`. The flow is computed in int64 (`validate` bounds the cost coefficients only from below). Coordinator choices of 2026-10-19 under the owner's delegation (to revisit): the Budding overlay; the display names **Tethering** (Bonding) and **Unspecialised** (Generalist), one table `rules.ARCHETYPE_DISPLAY` / `INTENT_DISPLAY` (enums, keys and reports unchanged; nothing in the stream or the GUI reads names yet); the meanings of Gatherer, Defending and Budding (GAMES §4.4); the clause at 4. Evidence: the offline study (every label passes on the calibration windows under the rule, the first-match display and the replayed hold; thinnest displayed margins 3D Roaming +0.082, 3D Resting +0.101, 2D Hunting +0.102), an exactness check of the implementation on the dumps (§28.8: the MLX functions equal the offline predicates on all 629,577 and 837,059 intent rows and on all archetype rows), and the GPU validation on three held-out windows, **pending** (§28.8). The trajectory is untouched (observers read the channel and never write it; `Acts`, `step.py` and the flag-off digests unchanged). **As built, where it differs from the plan** (all in §29 unless said): `RuleSet` rejects an `intent_order` with non-`int` members, a bool included; the sign test of the flow on real steps allows the documented attack-charge gap for rows without the `ATTACKED` flag (`+ attack_cost`); the display tables are an addition (the plan named the labels only); the roster's `founded` rows are `(id, step, parent_house)` without a separate founder column, because the house id is its founder's uid; the death cause is a new int8 field of `Acts` read from the `dt_cause` array that was already a tap (the plan allowed a new integer tap, none was needed: `CHANNEL_TAPS` stays 20); `SocialRules.kin_name_salt` re-pinned `SOCIAL_V1.digest()` (`df6ba5e4…`, no record carries the old digest) and `OBSERVER_FORMAT` stays 2 because G2 has not shipped; the snapshot counts with `groups.masked_bincount` (masked lanes spread over a dump region) and not a masked `ops.scatter_add_i32`, which would pile the dead rows onto bin 0 (same values); `relabel` makes `uid`, `house` and `body` real ops so that no output aliases an input (tested compiled); `Society.from_arrays(arrays, cfg, sr, *, step=None)` takes the sidecar step, which its "≤ the step" checks need; `Observer._load` has two reasons that the plan did not name (a sidecar without `meta`, and a wrapper around a `from_arrays` failure); `Observer.labels()` and `host_labels()` settle a pending snapshot like every reader; `Dominance.current()` lets `Society.territory()` serve a restored state; `RuleSet` bounds `settler_body` to 2^31 − 1 (an int32 comparison); `append_social` accepts a numpy integer step, never a bool; the spies of the bench observe tests also see the social part's own fresh observer; the kin-group matching costs about 8 ms at 33k members with 5k credit pairs on the CPU against the 2 ms of the plan (to be timed on the GPU day). **Mutation checks:** 214 deliberate single-line breaks of the new code over the five code stages (6 of `_acts`, 64 of `groups` and `tracking`, 65 of `social` and `society`, 33 of `runio`, `runner`, `observer` and `rules`, 46 of `analysis.social` and `bench`) and 59 of the roster (16 of `social`, 35 of `society`, 2 of `_acts`, 2 of `observer`, 4 of `analysis.social`) were each caught by a test, except 17 that are equivalent changes or invisible on the CPU (a redundant mask, a never-read count, a tie key of a sort that is already ordered, a timing repetition count, the pending snapshot missing from `arrays()` whose buffer donation only matters on Metal; and, in the roster, a guard on the parent slot of a birth whose negative index lands in the dump region on the CPU, the events table computed and discarded at the initial snapshot, and a `max(members, 1)` behind an `if members`); every other survivor of a first pass got a test (the roster's tie rule and most-members rule of the names; one redundant lane check was removed). The review fixes were checked the same way: 26 single-line breaks of the stage 8 code and its tests (the naming guard and fallback, the id bounds and the recursion catches of the sidecar parse, each of the four log cuts moved ahead of the checkpoint deletion, `LATEST`, the sidecar and archive deletions, the channel-field check, the operation list and the signature of the compiled-kernel comparison, an evaluated export) were each caught except two that are equivalent (using only one side of the kernel difference: for every mutant both sides hold the inexact labels); an id-boundary break (`<` for `<=` at 2^63 − 1) survived a first pass and got a test, and a break that dropped the input labels from the kernel signature survived and showed that they were redundant (a kernel is changed by its own operations and outputs, not by its inputs), so they were removed from it. Unchanged: the compiled step with `observe` off, `State`, `StepOut`, the event columns, the RNG, every config hash, the goldens; for a non-observing run the file listing, checkpoint state digests, event chunks and stored rows (its `config.json` and checkpoints' `metadata.config` gain `game.house_rate` at its default, hash-neutral); with `observe` on the trajectory is bitwise the one with it off. Deferred: stream tags and colour modes, off-thread snapshots, Family, sharing the components with the heavy metrics (G3); copying the sidecar and the social log into a fork (G3/G4); the GPU validation of `INTENT_VERSION` 2 on held-out windows (item 11); relation narration and temperament validation (G4/G5); the calibration, the churn rate and the 64k costs (GPU). Edited tests: `test_game_acts.py` (15 items, was 9), `test_game_purity.py` (46, was 17: 20 taps, the third and fourth mutants and their value-neutrality test, the compiled-kernel comparison in three configurations with four CSE mutants, `snapshot_every = 15` in every arm, the log in the on-run's file list), `test_game_config.py` (21, was 15), `test_game_rules.py` (57, was 32: the digests, the post-v1 fields, the flow bounds term by term, Gatherer v2, the v2 edges, the forecast, the order, the overlay, the display names), `test_game_observe.py` (29, was 22: the FORMED and flow inputs, the int64 cost, the sign test on real steps in 2D and 3D, `held`), `test_game_sidecar.py` (104, was 45; the version-2 rule sets in the equality fold, a version-1 sidecar refused under version 2 and the reverse, a format-2 sidecar refused at `observer_format`), `test_runio.py` (26, was 16: the cut stopped before each write and delete), `test_bench.py` (26, was 12), `test_cli_smoke.py` (17, one test edited), `test_lint.py` (8, `groups` and `game.social` in `SIM_MODULES`), `test_analysis_labels.py` (45, one line: `test_step_outcomes` builds `Acts` through the new `blank_social_acts`; and a study with `RULES_V1` whose report carries the G1 pin), `tests/game_helpers.py` (the social drivers, `social_every`, `planted_state`, the numpy reference of the relation window; `blank_oi` with `energy` and `brain_cost`, `Driver` with the rules' inputs) and the three `tests/data/gui_config_*.json` fixtures (regenerated). New tests: `test_groups.py` (48), `test_tracking.py` (89, with a differential test of 40 random 14-snapshot sequences against a set-based reference), `test_game_social.py` (22), `test_game_society.py` (72), `test_game_roster.py` (15), `test_game_houses.py` (5), `test_game_social_log.py` (28: 27 fast and one `slow` resume from every checkpoint), `test_analysis_social.py` (28). Checks (verify stage, at the tree of the review-fix commit, all on the CPU device because the GPU was reserved by another job; the Swift build and tests ran at the docs commit before it, and no GUI file changed after): [ruff: `ruff check src tests` and `ruff format --check src tests` clean (150 files); fast suite (`test_lifecycle_compiles_and_matches_eager` deselected, the known Mac-CPU failure of I26): 2160 passed, 5 skipped, 26 deselected, 0 failed in 9 min 22 s on the CPU device (the 5 skips are environmental: the two goldens pinned on Linux x86-64, the real-LLM test, no ffmpeg, no pygame; G1 had 1737 passed); `tests/test_game_purity.py` in full, every arm, no `-m` filter: 46 passed in 19 s (all trajectory arms, the key test, the two runner-level tests, the director-log test, the three structural configurations with their meta-tests and the value-neutrality test, and the compiled-kernel comparison in the same three configurations with its mutants and their value-neutrality test; none is marked `slow`) (G1 had 17); the houses replay and the resume equality files `test_game_houses.py`, `test_game_sidecar.py`, `test_game_social_log.py` (with its `slow` test) and `test_runio.py`: 151 passed in 1 min 48 s; digest comparison: with a fresh baseline (`git archive origin/main src`, origin/main = 1ad339c, the squash merge of the G1 tree; the baseline run imported `alife` from the extracted tree) the 2D digest matrix (15 trajectory cases, 3 runner cases, config hashes, layout) run on this tree exits 0, "bit-identical", and its only INFO lines are 12 additions of `game.house_rate` (= 0.00048828125) to a run's `config.json` or to a checkpoint's metadata config; the tiny3d `state_digest` after 50 compiled float32 steps is `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd` on origin/main and on this tree; the social-log model (`protocol_model.py --runio`, which runs `runio`'s own `truncate_after`, run again after its reorder): 1,149 cases pass, `keep_director` false and true, both negative controls fail as expected, and against origin/main it fails after 116 cases (the first case with a record after its resume checkpoint); `swift build` in `gui/` complete and `swift test --filter AlifeCoreTests` 93 tests in 7 suites passed (`AlifeControlTests` not run: its GPU render tests would use Metal); version 2 (the ninth commit), same checks on the CPU: ruff clean (150 files); the game and analysis test files in full without a `-m` filter (rules, observe, sidecar, purity, labels, roster, social, society, acts, config, `analysis.social`): 450 passed in 2 min 24 s; the fast suite (`test_lifecycle_compiles_and_matches_eager` deselected): 2196 passed, 5 skipped, 26 deselected, 0 failed in 10 min 26 s (2160 at the review fixes); the resume and houses files (`test_game_houses.py`, `test_game_sidecar.py`, `test_game_social_log.py` with its `slow` test, `test_runio.py`): 159 passed in 2 min; the 2D digest matrix against the same origin/main baseline: exit 0, "bit-identical", its only INFO lines the 12 `game.house_rate` additions; the tiny3d `state_digest` `556de6c6…cf6d2fd`, equal to origin/main's; the social-log model, 1,149 cases; the exactness check of the calibration dumps (§28.8): MLX equals numpy on every row of both worlds, and equals the calibration's own replay except on the 4 and 8 (2D) and 11 and 9 (3D) rows it reported; a mutation pass of 53 single-line breaks of the new code in `rules`, `observe` and `observer` (47 caught at once; the 6 survivors, namely the `h >= 1` guard of the Gatherer level in a world without harvest, the attack-cost and attack-gain terms of the flow bounds, the warm gate of the overlay for a row old enough to bud but not warm, a bond to row 0 in the bond count and the order handed to the first match, got tests and were caught on the rerun); Metal: pending (the coordinator runs `tests/test_game_purity.py`, which now also holds the compiled-kernel comparison and runs the version-2 observer, and `tests/test_groups.py` without a `-m` filter on the default device, `alife bench --preset 64k --observe --steps 600` (overhead against G1's), the five labels runs of §28.8, the calibration of §29.12 and the house-rate report of §29.14)]. (12) Review fixes of `INTENT_VERSION` 2 (the tenth commit; a review of the ninth, verdict approve with no must-fix, gave one low-medium, three low and one test finding that held, all applied; two informational notes needed no change beyond one sentence). *Docs:* the pass criterion of §28.8 is worded as it is everywhere else, provisional and fixed before the held-out reports are read (the owner has not confirmed it; the phrase "as confirmed" came from the plan), in DESIGN, HANDOVER and GAMES §10 item 12; the Bonding threshold `bond_rate` 64 is a formation-flag mean of 0.25 on the k = 3 EMA (a formation every 3 steps reads 74 to 97 and is always on, every 4 steps 52 to 77 and flickers across the threshold), not "one formation in 4 steps" (DESIGN, GAMES §4.4, `rules.py`); "mostly with the same neighbours" is a 3D measurement (RESULTS_3D §5.4, 94% of new bonds re-form a pair seen earlier in the window) and is said so, the 2D partners' identity being unmeasured; GAMES §10 item 11 no longer says that G1 built `INTENT_VERSION` 2; §28.5 says that `RULES_V1` evaluates as G1 but no longer validates a sweep with `intent_k` 12 to 19. *Tests (no source change):* the overlay test gains a row held at Resting (Budding is shown over it and Resting returns at once) and an age-gate case (`intent_warm` 8, rows of 15, 19 and 20 observed steps against `min_age` 20), the reference-fold test gains a forced-forecast rule set (`bud_horizon` 6000, period 4, hold 2, warm-up 8) and asserts that the overlay fired, and two resume cases (2D 30 + 30, 3D 37 + 23) run the forced rules and assert that label differs from held in the sidecars compared. The review's two mutants (the overlay skipped over a held Resting; `n_obs + 1` in the forecast's age) and a sidecar load that resets `held` to the label are each caught now (the first two passed all 186 tests before). Checks, on the CPU device at the tenth commit: ruff clean (150 files); the game and analysis files in full: 454 passed (450); the fast suite: 2200 passed, 5 skipped, 26 deselected, 0 failed (2196); the resume and houses files: 163 passed; the exactness check of the calibration dumps re-run, unchanged (0 differences in both worlds, the same 4 and 8, 11 and 9 rows against the offline replay); the 2D digest matrix against the same origin/main baseline: exit 0, bit-identical, its only INFO lines the 12 `game.house_rate` additions; the tiny3d `state_digest` `556de6c6…cf6d2fd`, equal to origin/main's; the social-log model, 1,149 cases. Metal: pending, as listed above. |
+| I49 | feat: games N1, the offline World Report (`docs/GAMES.md` §9 N1; new §30), observer-only and off the engine: no change to the simulation, `State`, the step, the RNG, any config key or hash, either golden, `runio`, `runner`, the director package or the GUI, and no new config key (the thresholds are the fields of a frozen `ReportRules` with a digest). Built in three commits on `games/n1-report`, on top of `games/g2-social` (G2 with `INTENT_VERSION` 2): (1) templates, lexicon, sheet, checker, assembly and ticker; (2) select-and-order mode, the record, replay and the CLI; (3) the remaining tests, the real-log checks and the docs. (1) Modules: `game/templates.py` (88 templates, agreement markers, a closed vocabulary of 137 words, `SOURCE_WORDS`, the section and salience orders), `game/lexicon.py` (the second line's blacklists), `game/report.py` (the sheet and its lever fold, spans, standing lines, gated windows, the label gate, suspect and churn events, quotas, the name clash; `candidates`, `check_string` with rules R1 to R7, `assemble`, `ticker`; `select_messages`, `select_schema`, `parse_choice`, the policy, `narrate`, `record_versions`, `verify_record`) and `analysis/world_report.py` (`build`, `verify`, `probe`, the resume, the atomic rewrite, the preflight); all three game modules are in `tests/test_lint.py`'s `GAME_MODULES`. (2) Decisions under the owner's delegation (to revisit): C12 templates first, the model only selects and orders, free prose off; C13 the section order is code's and the model orders only inside a section above the mandatory set; C14 the read-only `GET /api/v0/models` preflight (the REST equivalent of `lms ps`). No LLM call was made in the build. (3) The specification followed is `n1/spec.md` revision 3 after two adversarial reviews (55 crafted false or misleading sentences, 12 findings each round); every crafted case is a fixture and none is producible; §30.14 lists the deviations of the build. (4) Tests (316 passed and 1 skipped in the four files, 7 of them on the real fork): `test_game_report.py`, `test_game_report_templates.py`, `test_game_report_select.py` (a fourth file, not in the specification), `test_analysis_world_report.py`; random sheets (2,000), random logs (2,000), random replies (2,000), 200 narrations replayed, the 23 edits of a stored record, a corpus of 131 director journals (275 sentences, 61 reasons) all rejected by the lexicon alone; fixtures `report_run_synth`, `report_probe`, `report_crafted`, `report_corpus`, `report_tiny` (+ `_resumed`, real CPU engine output) and `report_e2e` (a real observed director fork: the engine's own `env` blocks equal the report's fold, `build` then `verify` exit 0, a doctored log exits 1). (5) Real-log checks, read-only on `runs/` (scripts outside the repository): on `eval_s0_C`, `eval_s1_C` and `64k3d_s0_dir` the fold equals the `env` block of every row (13,800, 13,800 and 5,001), the block has exactly one holder line for every lever the rows show away from default in 540 chapters, 544 chapters render with 0 checker exclusions, 67 timed effects ended `elapsed` at s + duration exactly; `build` on those unobserved runs exits 2 with the hint. (6) Checks, on the CPU device: ruff clean; the fast suite 2,516 passed, 6 skipped, 26 deselected in 12 minutes (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected); the real-fork maker reproduces its committed files byte for byte. **Not run:** the GPU validation (observed forks A and B of §30.13), `build --llm` and `probe` against a real model, the `llm` test (`--model google/gemma-4-26b-a4b-qat`, the coordinator's), and the owner read of 20 chapters; `docs/STORMS.md` §6.5 is not on this branch. **Open:** the owner's confirmation of C12 to C14; no label for a `RULES_V2` run until its verdict rows are added by the change that validates it; the provisional thresholds of §30.14. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

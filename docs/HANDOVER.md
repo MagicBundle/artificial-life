@@ -1,6 +1,6 @@
 # Handover
 
-Status of the `alife` project as of 2026-10-19 (the games vertical's observers are built, G1 and G2, `docs/GAMES.md`; after the director evaluation, `docs/EVALUATION.md`; the 3D world is built, PRs #15 to #20, `docs/3D.md`; its first long run is analysed in `docs/RESULTS_3D.md`, and a second seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`), written for the next coding
+Status of the `alife` project as of 2026-10-19 (the games vertical's observers are built, G1 and G2, and so is its offline World Report, N1, `docs/GAMES.md`; after the director evaluation, `docs/EVALUATION.md`; the 3D world is built, PRs #15 to #20, `docs/3D.md`; its first long run is analysed in `docs/RESULTS_3D.md`, and a second seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`), written for the next coding
 session (a local Claude Code session on the owner's MacBook Pro, M5 Pro, 48 GB). Read this, then `CLAUDE.md`, then the parts of
 `docs/DESIGN.md` you need.
 
@@ -15,8 +15,8 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 
 | path | what |
 |---|---|
-| `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`) |
-| `tests/` | pytest suite. 2,160 fast tests passed and 5 were skipped on the CPU device after the G2 review fixes (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; 9 to 12 minutes depending on load) plus the slow ones |
+| `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`; N1 adds `game/report.py`, `templates.py`, `lexicon.py` and `analysis/world_report.py`, `docs/DESIGN.md` §30) |
+| `tests/` | pytest suite. 2,516 fast tests passed and 6 were skipped on the CPU device after N1 (2,160 and 5 after the G2 review fixes; the sixth skip is N1's `llm` test) (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; 9 to 12 minutes depending on load) plus the slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
@@ -26,7 +26,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/3D.md` | the 3D world with gravity and a floor (owner decisions, layout, fields, Swift viewer, PR plan); built in PRs #15 to #20, normative spec `docs/DESIGN.md` §27 |
 | `docs/RESULTS_3D.md` | the first long 3D run, `runs/64k3d_s0` (500k steps): population and `K`, vertical niches and buoyancy, bodies, evolutionary activity, comparison with 2D; figures and tables in `docs/results_3d/`, scripts in `analysis_cache/64k3d_s0/results3d/` (git-ignored) |
 | `docs/RESULTS_3D_RUNS.md` | the four 500k-step `64k3d` runs (seed 0, seed 1, half food, director live): replication, the density control, the director in 3D, bodies and activity across runs; figures and tables in `docs/results_3d_runs/`, scripts in `analysis_cache/64k3d_runs/` (git-ignored) |
-| `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with `INTENT_VERSION` 2 label rules (`RULES_V2`, calibrated offline; held-out validation pending, DESIGN §28.4, §28.8); G2, social tracking (houses, kin groups, colonies, territory, relations; `src/alife/groups.py`, `tracking.py`, `game/social.py`, `game/society.py`, `python -m alife.analysis.social`; the reports are `observers/social.jsonl` in an observing run's directory; normative spec `docs/DESIGN.md` §29, Review-log row I45) is built with provisional thresholds (`SOCIAL_VERSION` 1); G3 to G5 are not built |
+| `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with `INTENT_VERSION` 2 label rules (`RULES_V2`, calibrated offline; held-out validation pending, DESIGN §28.4, §28.8); G2, social tracking (houses, kin groups, colonies, territory, relations; `src/alife/groups.py`, `tracking.py`, `game/social.py`, `game/society.py`, `python -m alife.analysis.social`; the reports are `observers/social.jsonl` in an observing run's directory; normative spec `docs/DESIGN.md` §29, Review-log row I45) is built with provisional thresholds (`SOCIAL_VERSION` 1); N1, the offline World Report (`python -m alife.analysis.world_report`; code-written template sentences with a checker, and an optional local model that only selects and orders them; normative spec `docs/DESIGN.md` §30, Review-log row I49) is built with provisional thresholds (`REPORT_VERSION` 1); G3 to G5 are not built |
 | `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13) |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
@@ -463,9 +463,28 @@ and resumed once. There is one run per condition apart from the seed pair.
      Family row (a host lineage store and an ancestry panel), and sharing the snapshot's components with the heavy
      metrics. Copying the sidecar and the social log into a fork is G3 or G4.
    - Then G3 (play loop and view).
-5. Optional engine work, deferred in DESIGN §23.2:
+5. **Games N1, the offline World Report** (branch `games/n1-report`, on top of `games/g2-social`; DESIGN §30, Review-log row I49,
+   `docs/GAMES.md` §9). Built and tested on the CPU only; no engine change, no config key and no LLM call was made in the build. Status and what follows:
+   - **What it is.** `python -m alife.analysis.world_report build RUN --from S --to S --out F.jsonl [--llm --model ID]`, `verify` and
+     `probe`. Code computes a fact sheet from an **observed** run and writes every sentence from 88 templates; a checker (R1 to R7)
+     re-derives each string; `--llm` lets a local model only select and order candidate ids (coordinator choices C12 to C14 under the
+     owner's delegation, to revisit); free prose is off. The block of interventions is the engine's lever state at the start of the chapter plus
+     the chapter's entries, and the `env` check ties it to the rows (exit 1 on a disagreement).
+   - **Checked on real data (CPU).** The lever fold equals the `env` block of every row of `eval_s0_C`, `eval_s1_C` and `64k3d_s0_dir`; the block lists every
+     lever the rows show away from default in all 540 chapters examined, with 0 checker exclusions; a real tiny observed director fork
+     (`tests/data/report_e2e/`) builds and verifies with exit 0 (DESIGN §30.13).
+   - **Next, the coordinator (GPU, when no run or timing is going; `lms ps` first):** the validation of DESIGN §30.13: fork A (`64k_s0:1500000`, no
+     director) and fork B (`eval_s0_C:120000` with `--director replay`), both `--set game.observe=true`; then `build`, `build --llm --model
+     google/gemma-4-26b-a4b-qat`, `verify` and `probe --n 24`; then `pytest -m llm --model google/gemma-4-26b-a4b-qat tests/test_analysis_world_report.py`.
+     Report facts per chapter, exclusions by reason, checker exclusions (target 0), the measures of §30.11 and latency.
+   - **Owner read** (20 chapters, template against select, blind): decides whether the select mode is kept, whether the window sentences W are shown,
+     and whether the template reports are fit for G3 to show. Proposed targets are in DESIGN §30.12.
+   - **Open:** the owner's confirmation of C12 to C14 (the one read-only `GET /api/v0/models`); no label is narrated for a `RULES_V2` run until its verdict
+     rows are added by the change that validates `RULES_V2`; `docs/STORMS.md` §6.5 is not on this branch; the provisional thresholds of DESIGN §30.14.
+   - **G3** consumes the Python API (`build_sheet`, `narrate`, `ticker`) and appends `reports.jsonl` at the run root; the report never writes into a run directory.
+6. Optional engine work, deferred in DESIGN §23.2:
    - a fused Metal kernel for the neighbour search, the biggest stage;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
    - `inspect` showing the resumed total instead of the original `steps`.
-6. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
+7. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
    it in the DESIGN Review log.

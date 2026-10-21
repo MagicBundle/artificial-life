@@ -1,0 +1,275 @@
+[
+ {
+  "body": [
+   "There were 265 deaths: 229 by starvation, 36 by attack and 0 by old age.",
+   "The lowest count was 184, in the 100 steps to step 2,600.",
+   "The Sydrird kin was the largest kin group at step 4,000, with 18 members, 7.1% of the population.",
+   "In the chapter, 42 agents were born into the Sydrird kin and 40 of its members died, 8 of them by attack.",
+   "There were 318 births and 16 arrivals from outside.",
+   "Counting houses traced from step 2,000, 109 houses had living members at step 4,000, against 106 at step 2,500; 15 were new and 12 died out."
+  ],
+  "candidate_set_digest": "a2775f66d7f31d5d18df75b022f8c27bcbb9dd472e044dfecc28ff0c2c3a3ea2",
+  "chapter": [
+   2500,
+   4000
+  ],
+  "excluded": {
+   "events_churn": 20,
+   "events_suspect": 2,
+   "facts_dropped": [
+    "immigrant lineage bin"
+   ],
+   "windows_confounded": 1
+  },
+  "facts_digest": "ffd8b1fac47d503c6dcc21e446e611528c1da7b74369b4fe5b499b8da0501021",
+  "headline": "Population rose to 255",
+  "interventions": [
+   "At step 3,000, the director's rule extinction_rescue set food regrowth to 1.5 times its base rate for 5,000 steps.",
+   "It was still in place at step 4,000.",
+   "At step 3,000, the director's rule extinction_rescue queued 16 immigrants."
+  ],
+  "lead": "The population rose from 186 to 255 (+37.1%).",
+  "ticker": [
+   {
+    "step": 2750,
+    "text": "Step 2,750: the population was 195."
+   },
+   {
+    "step": 3000,
+    "text": "Step 3,000: the population was 198."
+   },
+   {
+    "step": 3250,
+    "text": "Step 3,250: At step 3,000, the director's rule extinction_rescue set food regrowth to 1.5 times its base rate for 5,000 steps."
+   },
+   {
+    "step": 3250,
+    "text": "Step 3,250: At step 3,000, the director's rule extinction_rescue queued 16 immigrants."
+   },
+   {
+    "step": 3500,
+    "text": "Step 3,500: the population was 233."
+   },
+   {
+    "step": 3750,
+    "text": "Step 3,750: the population was 239."
+   },
+   {
+    "step": 4000,
+    "text": "Step 4,000: the population was 255."
+   }
+  ]
+ },
+ {
+  "body": [
+   "There were 529 deaths: 419 by starvation, 110 by attack and 0 by old age.",
+   "The lowest count was 253, in the 100 steps to step 4,300.",
+   "Between step 5,250 and step 5,500, kin group 10 formed with 18 members, 8 of them from kin group 2.",
+   "The Thiodiov kin was the largest kin group at step 6,000, with 25 members, 8.8% of the population.",
+   "There were 558 births.",
+   "Counting houses traced from step 2,000, 92 houses had living members at step 6,000, against 109 at step 4,000; 17 died out."
+  ],
+  "candidate_set_digest": "e98290c02365dbc8930e6ee6b34c595441fa3e0340dd905e6bc195d34783928c",
+  "chapter": [
+   4000,
+   6000
+  ],
+  "excluded": {
+   "events_churn": 49,
+   "events_suspect": 3,
+   "facts_dropped": [
+    "immigrant lineage bin"
+   ],
+   "name_clash": [
+    "the Sydrird kin"
+   ],
+   "quota": {
+    "group": 1
+   }
+  },
+  "facts_digest": "f5fa0ca640c8f3cf0943e51752d850cca9a7f19c167d7a4e26a0426edaff9d9e",
+  "headline": "Population rose to 284",
+  "interventions": [
+   "At step 3,000, the director's rule extinction_rescue set food regrowth to 1.5 times its base rate for 5,000 steps.",
+   "It was still in place at step 6,000.",
+   "At step 4,000, the director's model set the seasons to a period of 2,000 steps and an amplitude of 0.3.",
+   "It was still in place at step 6,000.",
+   "At step 5,000, the director's model set the fertility of patch 0 to 1.5 times its base value.",
+   "It was still in place at step 6,000."
+  ],
+  "lead": "The population rose from 255 to 284 (+11.4%).",
+  "ticker": [
+   {
+    "step": 4250,
+    "text": "Step 4,250: At step 4,000, the director's model set the seasons to a period of 2,000 steps and an amplitude of 0.3."
+   },
+   {
+    "step": 4500,
+    "text": "Step 4,500: the population was 259."
+   },
+   {
+    "step": 4750,
+    "text": "Step 4,750: the population was 262."
+   },
+   {
+    "step": 5000,
+    "text": "Step 5,000: the population was 270."
+   },
+   {
+    "step": 5250,
+    "text": "Step 5,250: At step 5,000, the director's model set the fertility of patch 0 to 1.5 times its base value."
+   },
+   {
+    "step": 5500,
+    "text": "Step 5,500: Between step 5,250 and step 5,500, kin group 10 formed with 18 members, 8 of them from kin group 2."
+   },
+   {
+    "step": 5750,
+    "text": "Step 5,750: the population was 264."
+   },
+   {
+    "step": 6000,
+    "text": "Step 6,000: the population was 284."
+   }
+  ]
+ },
+ {
+  "body": [
+   "There were 666 deaths: 437 by starvation, 229 by attack and 0 by old age.",
+   "The lowest count was 270, in the 100 steps to step 6,200.",
+   "The Thiodiov kin was the largest kin group at step 8,000, with 37 members, 12.7% of the population."
+  ],
+  "candidate_set_digest": "b371bc16e602c8855dbe41df3bac5a7e628f15bbb3c1cce4bda9c2e9fe2668c5",
+  "chapter": [
+   6000,
+   8000
+  ],
+  "excluded": {
+   "events_churn": 45,
+   "events_suspect": 1,
+   "facts_dropped": [
+    "immigrant lineage bin"
+   ],
+   "quota": {
+    "group": 3
+   }
+  },
+  "facts_digest": "71c4271323fe9b0ae68a4b2b0aa9f66c1c5ed88d1772531dcde97abe31f23ffe",
+  "headline": "Population rose to 291",
+  "interventions": [
+   "At step 3,000, the director's rule extinction_rescue set food regrowth to 1.5 times its base rate for 5,000 steps.",
+   "It ended at step 8,000; food regrowth returned to its base rate.",
+   "At step 4,000, the director's model set the seasons to a period of 2,000 steps and an amplitude of 0.3.",
+   "It was still in place at step 8,000.",
+   "At step 5,000, the director's model set the fertility of patch 0 to 1.5 times its base value.",
+   "It was still in place at step 8,000."
+  ],
+  "lead": "The population rose from 284 to 291 (+2.5%).",
+  "ticker": [
+   {
+    "step": 6250,
+    "text": "Step 6,250: the population was 286."
+   },
+   {
+    "step": 6500,
+    "text": "Step 6,500: the population was 303."
+   },
+   {
+    "step": 6750,
+    "text": "Step 6,750: the population was 305."
+   },
+   {
+    "step": 7000,
+    "text": "Step 7,000: the population was 311."
+   },
+   {
+    "step": 7250,
+    "text": "Step 7,250: the population was 301."
+   },
+   {
+    "step": 7500,
+    "text": "Step 7,500: the population was 289."
+   },
+   {
+    "step": 7750,
+    "text": "Step 7,750: the population was 289."
+   },
+   {
+    "step": 8000,
+    "text": "Step 8,000: the population was 291."
+   }
+  ]
+ },
+ {
+  "body": [
+   "There were 561 deaths: 323 by starvation, 238 by attack and 0 by old age.",
+   "The lowest count was 265, in the 100 steps to step 9,700.",
+   "The Briabysk kin was the largest kin group at step 10,000, with 50 members, 18.7% of the population.",
+   "In the chapter, 120 agents were born into the Briabysk kin and 97 of its members died, 66 of them by attack.",
+   "There were 538 births.",
+   "Counting houses traced from step 2,000, 65 houses had living members at step 10,000, against 75 at step 8,000; 10 died out."
+  ],
+  "candidate_set_digest": "03718ff6424f9b68bf4b301bbb76ae7de64853a5544d5917509f28f517820d42",
+  "chapter": [
+   8000,
+   10000
+  ],
+  "excluded": {
+   "events_churn": 38,
+   "events_suspect": 9,
+   "facts_dropped": [
+    "immigrant lineage bin"
+   ],
+   "quota": {
+    "group": 2
+   }
+  },
+  "facts_digest": "61adfa9b57164c140e7d36ed94a92f5782e4366a149be9fc10657eb8ba6f3c54",
+  "headline": "Population fell to 268",
+  "interventions": [
+   "At step 3,000, the director's rule extinction_rescue set food regrowth to 1.5 times its base rate for 5,000 steps.",
+   "It ended at step 8,000; food regrowth returned to its base rate.",
+   "At step 4,000, the director's model set the seasons to a period of 2,000 steps and an amplitude of 0.3.",
+   "It was still in place at step 10,000.",
+   "At step 5,000, the director's model set the fertility of patch 0 to 1.5 times its base value.",
+   "It was still in place at step 10,000.",
+   "At step 9,000, the director's model set the drift of food patches to 2 times its base speed.",
+   "It was still in place at step 10,000."
+  ],
+  "lead": "The population fell from 291 to 268 (-7.9%).",
+  "ticker": [
+   {
+    "step": 8250,
+    "text": "Step 8,250: the population was 286."
+   },
+   {
+    "step": 8500,
+    "text": "Step 8,500: the population was 291."
+   },
+   {
+    "step": 8750,
+    "text": "Step 8,750: the population was 282."
+   },
+   {
+    "step": 9000,
+    "text": "Step 9,000: the population was 290."
+   },
+   {
+    "step": 9250,
+    "text": "Step 9,250: At step 9,000, the director's model set the drift of food patches to 2 times its base speed."
+   },
+   {
+    "step": 9500,
+    "text": "Step 9,500: the population was 278."
+   },
+   {
+    "step": 9750,
+    "text": "Step 9,750: the population was 273."
+   },
+   {
+    "step": 10000,
+    "text": "Step 10,000: the population was 268."
+   }
+  ]
+ }
+]
