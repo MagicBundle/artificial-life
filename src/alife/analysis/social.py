@@ -53,7 +53,7 @@ from typing import Any, Final
 import mlx.core as mx
 import numpy as np
 
-from alife import metrics
+from alife import metrics, spatial
 from alife.analysis.resim import ResimMismatch, compare_row
 from alife.analysis.signals import load_state
 from alife.config import config_hash, dims
@@ -247,6 +247,7 @@ def study(
     stored = rd.social_records() if verify else []
     stored_by_step = {int(r["step"]): r for r in stored}
     last_row = max(rows, default=-1)
+    spatial.prepare_knn(cfg)  # the self-check of the fused search, once per process (§4)
     step_fn = make_step(cfg, observe=True)
     log(
         f"social: {rd.path} from step {start} to {end}, a snapshot every {sr.snapshot_every} steps, "

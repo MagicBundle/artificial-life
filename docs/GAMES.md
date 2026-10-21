@@ -516,8 +516,8 @@ A house is a named sub-lineage within a clade.
   last snapshot, from the set of houses with live members at consecutive snapshots, up to `events_max` of each with
   the rest counted. The house id is its founder's uid, so no separate founder field. A house founded and extinct
   inside one window is seen by neither snapshot. The study (`analysis.social`) reports the share of members in houses
-  founded since its start against those seeded from clades, so that the owner can re-decide the rate (§10 item 13)
-  from `64k3d_s1` and `64k_s0`.
+  founded since its start against those seeded from clades, for the owner's decision on the rate (§10 item 13,
+  confirmed 2026-10-21: keep 1/2048) from `64k3d_s1` and `64k_s0`.
 
 ### 6.3 Kin groups: factions the agents perceive
 
@@ -888,8 +888,8 @@ What a game adds:
     - The **roster** (the last stage, DESIGN §29.14) is built: kin-group names, house events, and each listed kin
       group's window births and deaths by cause, centroid and archetype mix (§6.2, §6.3), for the chronicle of G4.
       `game.house_rate` stays 1/2048; the GPU verification reports, on `64k3d_s1` and `64k_s0`, the share of members in
-      houses founded after the observer's start against those seeded from clades (`analysis.social`), so that the owner can
-      re-decide it.
+      houses founded after the observer's start against those seeded from clades (`analysis.social`); the owner confirmed
+      1/2048 on 2026-10-21 (§10 item 13).
     - **`INTENT_VERSION` 2** (the last stage, one change after a data study, DESIGN §28.4, §28.8): `RULES_V2` is the
       default and carries the Settler colony clause at `settler_body` 4 with the calibration fixes of G1's failing labels
       (Gatherer a harvest level, Defending after a recent hit, Budding a forecast shown outside the hold, Bonding shown as
@@ -904,7 +904,8 @@ What a game adds:
     - **Merge condition, met 2026-10-21:** `tests/test_game_purity.py` and `tests/test_groups.py` on Metal, without a `-m`
       filter (the twelve game and analysis files gave 509 passed, 202.7 s). The 64k bench, the calibration, the churn rate,
       the house-rate report and the costs were measured the same day (DESIGN §29.12): observed 54.8 steps/s in 2D (target 30)
-      and 13.9 in 3D, overhead 1.38 and 2.07 ms a step; kin groups track well; **colonies churn 80 to 83% at the 250 cadence**
+      and 13.9 in 3D, overhead 1.38 and 2.07 ms a step (the 3D figures were measured before the fused kNN kernel, I48: with it 64k3d runs at
+      about 75 steps/s, so the same observer cost is about 15% of a step; a re-measurement on the GPU is pending); kin groups track well; **colonies churn 80 to 83% at the 250 cadence**
       (whether 1000 is better is not established: those studies had 2 snapshots), so a colony id at 250 is not a stable identity; the host settle is 32 and 38 ms per snapshot;
       under 0.1% of members are in houses founded within 2,500 steps. The stream rate and the step rate with an LLM call in
       flight were not run.
@@ -1000,7 +1001,7 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
     these are read. Confirm or change the criterion.
 13. **The house rate (G2).** *Decided 2026-10-19:* `game.house_rate` defaults to 1/2048, not "off". It is an
     observer-only key, unhashed at every value and inert while `game.observe` is off, so a working default breaks
-    nothing. CLAUDE.md records the exception to the "new keys default to off" convention.
+    nothing. CLAUDE.md records the exception to the "new keys default to off" convention. Confirmed by the owner 2026-10-21, after the GPU verification (founded_share 0.00068 in 2D and 0.00091 in 3D after 2,500 steps): keep 1/2048 for now.
 14. **Kin-group grid width (G2).** *Decided 2026-10-19:* width 1/8 with single linkage. Chaining within a clade is
     reported (`sim_self`), not fixed by a mode-seeking rule. Width 1/4 merges two 3-D clades and leaves 4–5 groups in 2D
     (DESIGN §29.5).
