@@ -16,7 +16,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | path | what |
 |---|---|
 | `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, the fused Metal neighbour kernel (`knn_metal.py`, DESIGN §4), the offline W0 weather prototype (`weather.py`, `analysis/w0.py`, `docs/STORMS_W0.md`), `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`; N1 adds `game/report.py`, `templates.py`, `lexicon.py` and `analysis/world_report.py`, `docs/DESIGN.md` §30) |
-| `tests/` | pytest suite. 2,434 fast tests passed, 83 were skipped (the GPU-only kernel tests among them) and 1 xfailed on the CPU device after merging main (#28, #29) into G2 (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; about 11 minutes) plus the slow ones |
+| `tests/` | pytest suite. 2,772 fast tests passed, 84 were skipped (the GPU-only kernel tests and N1's `llm` test among them) and 1 xfailed on the CPU device after merging `games/g2-social` (with main #28, #29) into N1 (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; 11 minutes) plus the slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
@@ -498,7 +498,7 @@ and resumed once. There is one run per condition apart from the seed pair.
    - **Owner read** (20 chapters, template against select, blind): decides whether the select mode is kept, whether the window sentences W are shown,
      and whether the template reports are fit for G3 to show. Proposed targets are in DESIGN §30.12.
    - **Open:** the owner's confirmation of C12 to C14 (the one read-only `GET /api/v0/models`); no label is narrated for a `RULES_V2` run until its verdict
-     rows are added by the change that validates `RULES_V2`; `docs/STORMS.md` §6.5 is not on this branch; the provisional thresholds of DESIGN §30.14.
+     rows are added by the change that validates `RULES_V2`; the provisional thresholds of DESIGN §30.14.
    - **G3** consumes the Python API (`build_sheet`, `narrate`, `ticker`) and appends `reports.jsonl` at the run root; the report never writes into a run directory.
 6. **Storm world W0** (merged as PR #28; `docs/STORMS.md` §8, `docs/STORMS_W0.md`, DESIGN Review-log row I46). The
    offline weather prototype (`src/alife/weather.py`, `python -m alife.analysis.w0`; no engine change) passes every

@@ -939,7 +939,7 @@ What a game adds:
     - **Not run:** the GPU validation (the observed forks A and B of DESIGN §30.13), `probe` and `build --llm` against a real model, and the owner read
       (20 chapters, template against select, blind). The build made no LLM call.
     - **Not in N1:** `alife play`, a report panel, a worker and `reports.jsonl` in a run directory (G3); player commands (G4); storm facts
-      (W3); `docs/STORMS.md` §6.5 is not on this branch, so its edit (the storm-world report built on the same sheet) is left to the branch that carries it.
+      (W3; the storm-world report built on the same sheet, `docs/STORMS.md` §6.5, which records what N1 built).
 - **G3. Play loop and view.** On the 3D storm world, after W0–W2 (`docs/STORMS.md` §8 gives the interleaving); the
   face-on 2D HUD below is reopened for it.
   - `alife play` with the fixed-timestep scheduler.
