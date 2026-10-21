@@ -33,7 +33,7 @@ from typing import Any, Final
 import mlx.core as mx
 import numpy as np
 
-from alife import layout, rng
+from alife import layout, rng, spatial
 from alife.config import Config, config_from_dict, config_hash, config_to_dict, is_3d, save_config, validate
 from alife.state import State, expected_layout, state_from_arrays, state_to_arrays, to_numpy
 
@@ -391,6 +391,7 @@ class RunDir:
             "python": platform.python_version(),
             "platform": f"{sys.platform}-{platform.machine()}",
             "device": str(mx.default_device()),
+            "knn_impl": spatial.knn_impl(cfg),  # the neighbour search this process traces (§4)
             "git_rev": _git_rev(),
             "created_utc": _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "seed": cfg.run.seed,
