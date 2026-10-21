@@ -23,7 +23,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import config as config_mod
-from alife import metrics, physics, runner, stream
+from alife import metrics, physics, runner, stream, weather_spinup
 from alife.config import (
     ALL_OVERLAYS,
     DEFAULT_PRESET,
@@ -336,6 +336,47 @@ def _launch(rd: RunDir, cfg: Config, box: list[State], steps: int, quiet: bool) 
 # --- run / fork / resume --------------------------------------------------------------------------------
 
 
+def _check_spinup(a: argparse.Namespace, cfg: Config, src_cfg: Config | None = None) -> None:
+    """``--weather-spinup N`` needs the weather on, and a fork's source must not have carried a weather
+    state of its own (the spin-up starts from the rest state and replaces it). Checked before any write."""
+    if a.weather_spinup is None:
+        return
+    if not cfg.weather.enabled:
+        raise ConfigError("--weather-spinup needs weather.enabled = true (for example --overlay storm)")
+    if src_cfg is not None and src_cfg.weather.enabled:
+        raise ConfigError(
+            "--weather-spinup starts from the rest state: the source run already has an evolving weather "
+            "state, so fork it without --weather-spinup"
+        )
+
+
+def _spin_weather(a: argparse.Namespace, rd: RunDir, cfg: Config, box: list[State]) -> int | None:
+    """Replace the weather state of ``box[0]`` by the spin-up of ``--weather-spinup`` steps (a no-op without
+    the flag). Returns an exit code when interrupted, else None. Records the steps in the run's meta."""
+    n = a.weather_spinup
+    if n is None:
+        return None
+    s = box.pop()
+    step = int(to_numpy(s.step))
+    last = 0
+
+    def progress(done: int, total: int) -> None:
+        nonlocal last
+        if not a.quiet and (done == total or done - last >= 1000):
+            print(f"weather spin-up: {done}/{total} steps", flush=True)
+            last = done
+
+    try:
+        wx = weather_spinup.spinup(cfg, n, step=step, key=s.key, compile=cfg.run.compile, progress=progress)
+    except KeyboardInterrupt:
+        rd.update_meta(status="interrupted")
+        print("interrupted during the weather spin-up", file=sys.stderr)
+        return int(ExitCode.INTERRUPTED)
+    box.append(s._replace(wx=wx))
+    rd.update_meta(weather_spinup=n)
+    return None
+
+
 def _cmd_run(a: argparse.Namespace) -> int:
     overrides = _run_overrides(a)
     if a.init_from is not None:
@@ -348,11 +389,14 @@ def _cmd_run(a: argparse.Namespace) -> int:
             "a replay continues an existing state: use `run --init-from SRC --director replay --replay-log "
             "LOG` or `resume RUN --director replay`"
         )
+    _check_spinup(a, cfg)
     out = Path(a.out) if a.out else _default_out(a.preset or DEFAULT_PRESET, cfg.run.seed)
     rd = RunDir.create(out, cfg, overwrite=a.overwrite)
     rd.update_meta(start_step=0)
     _announce(rd, cfg, 0, cfg.run.steps, a.quiet)
-    return _launch(rd, cfg, [init_state(cfg)], cfg.run.steps, a.quiet)
+    box = [init_state(cfg)]
+    code = _spin_weather(a, rd, cfg, box)
+    return code if code is not None else _launch(rd, cfg, box, cfg.run.steps, a.quiet)
 
 
 def _fork_source(spec: str) -> tuple[Path, str]:
@@ -384,6 +428,7 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
     cfg = _layer(src_cfg, overlays=a.overlay, path=a.config, overrides=overrides)
     _check_llm_flags(a, cfg)
     _check_yoke(cfg)
+    _check_spinup(a, cfg, src_cfg)
     replay = cfg.run.director == "replay"
     if replay != (a.replay_log is not None):
         raise ConfigError("--director replay and --replay-log LOG go together")
@@ -438,7 +483,8 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
         )
     box = [s]
     del s  # the runner must hold the only reference to the state (donation rule, F1)
-    return _launch(rd, cfg, box, cfg.run.steps, a.quiet)
+    code = _spin_weather(a, rd, cfg, box)
+    return code if code is not None else _launch(rd, cfg, box, cfg.run.steps, a.quiet)
 
 
 def _resume_allowed(item: str) -> bool:
@@ -858,6 +904,8 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         determinism=a.determinism,
         brain_variants=a.brain_variants,
         observe=a.observe,
+        weather=a.weather,
+        weather_pairs=a.weather_pairs,
     )
     text = _dumps(report)
     if a.json is not None:
@@ -973,6 +1021,14 @@ def build_parser() -> argparse.ArgumentParser:
     _llm_args(p)
     p.add_argument(
         "--replay-log", default=None, metavar="PATH", help="director.jsonl to replay (with --init-from)"
+    )
+    p.add_argument(
+        "--weather-spinup",
+        type=_non_negative,
+        default=None,
+        metavar="N",
+        help="advance the weather alone for N steps before the agents feel it (needs weather.enabled; "
+        "storms mature in about 15000 steps; a fork's source must not have the weather on)",
     )
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(func=_cmd_run)
@@ -1094,6 +1150,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--observe",
         action="store_true",
         help="also time the step with the game observers against the plain step (interleaved blocks)",
+    )
+    p.add_argument(
+        "--weather",
+        action="store_true",
+        help="also time the step with the weather layer on against the same config with it off "
+        "(interleaved blocks; needs weather.enabled, for example --overlay storm)",
+    )
+    p.add_argument(
+        "--weather-pairs",
+        type=_positive,
+        default=2,
+        metavar="N",
+        help="off/on block pairs of the --weather measurement (default 2: off on on off)",
     )
     p.add_argument("--json", default=None, metavar="PATH")
     p.set_defaults(func=_cmd_bench)

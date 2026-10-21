@@ -7,14 +7,14 @@ Observers only: nothing here touches ``state.key`` or feeds back into the simula
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Final
 
 import mlx.core as mx
 import numpy as np
 
-from alife import fields, layout, ops, rng, weather
-from alife.config import Config, dims, is_3d
+from alife import fields, layout, ops, rng, spatial, weather, weather_obs
+from alife.config import Config, config_hash, dims, is_3d
 from alife.state import (
     ENV_FIELDS,
     Counter3D,
@@ -227,6 +227,25 @@ def _body_z_extent(labels: np.ndarray, sizes: np.ndarray, alive: np.ndarray, z: 
     return {"body_z_extent_mean": float(ext.mean()), "body_z_extent_max": float(ext.max())}
 
 
+def _overlap_deep_fn(cfg: Config) -> Callable[[mx.array, mx.array], mx.array]:
+    """The compiled count of alive agents whose nearest neighbour is closer than ``0.5·radius`` (one neighbour
+    search; compiled so that its (N, Q) intermediates fuse as in the step), cached per config."""
+    key = config_hash(cfg)
+    fn = _OVERLAP_FNS.get(key)
+    if fn is None:
+        half = 0.5 * cfg.physics.radius
+
+        def count(pos: mx.array, alive: mx.array) -> mx.array:
+            nb = spatial.find_neighbors(pos, alive, cfg)
+            return ((nb.dist[:, 0] < half) & alive).astype(mx.int32).sum()
+
+        fn = _OVERLAP_FNS[key] = mx.compile(count) if cfg.run.compile else count
+    return fn
+
+
+_OVERLAP_FNS: dict[str, Callable[[mx.array, mx.array], mx.array]] = {}
+
+
 def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str, Any]:
     """Host floats/ints/lists describing the current state, with one host transfer (§19.2).
 
@@ -237,7 +256,9 @@ def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str
     ``tag_var`` is the trace of the population (ddof 0) covariance. ``resource_mean`` is per field cell (every
     layer in 3D) and ``chem_mean`` per channel over all its cells. A 3D world adds the keys of
     ``_snapshot_3d`` (and, when ``heavy``, ``body_z_extent_*``) after ``diag``; the 2D dict is unchanged
-    (§27.9).
+    (§27.9). With ``weather.enabled`` the stored ``wx``, the air speed at the live agents, the peak hash-cell
+    occupancy (3D) and the count of deeply overlapping agents join the one transfer, and the dict gains the
+    ``weather`` block of ``weather_obs.weather_block`` after ``env``; a weather-off dict is unchanged (§30).
     """
     n_init = cfg.population.n_init
     d3 = dims(cfg).d3
@@ -266,6 +287,11 @@ def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str
         dev.update({name: getattr(s, name) for name in ENV_FIELDS})
     if d3:  # static: the per-agent arrays of the 3D keys (§27.9)
         dev.update(pos_z=s.pos[:, 2], vel=s.vel, pitch=s.pitch, buoy_cap=s.buoy_cap, clade=s.clade)
+    if cfg.weather.enabled:  # static: the weather block's inputs join the one transfer (§30)
+        wind = weather.agent_wind(weather.unpack(s.wx), s.pos, s.buoy_cap if d3 else None, s.alive, cfg)
+        dev.update(wx=s.wx, air_speed=wind.speed, overlap_deep=_overlap_deep_fn(cfg)(s.pos, s.alive))
+        if d3:
+            dev["occupancy"] = spatial.band_peaks(spatial.hash_occupancy(s.pos, s.alive, cfg))[0]
     if heavy:
         labels, converged = components(s.partner, s.alive, cfg.run.components_iters)
         dev["body_sizes"] = ops.scatter_add_i32(s.alive.shape[0], labels, 1, s.alive)
@@ -331,6 +357,14 @@ def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str
         out.update(_snapshot_3d(h, cfg))
     if cfg.director.enabled:
         out["env"] = _env_summary(h)
+    if cfg.weather.enabled:
+        out["weather"] = weather_obs.weather_block(
+            h["wx"],
+            h["air_speed"][alive],
+            cfg,
+            occupancy=h.get("occupancy"),
+            overlap_deep=int(h["overlap_deep"]),
+        )
     if heavy:
         out.update(_body_stats(h["body_sizes"], n_alive, bool(h["bodies_converged"])))
         if d3:

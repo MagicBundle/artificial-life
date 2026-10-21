@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import mlx.core as mx
 import numpy as np
 
-from alife import bonds, layout
+from alife import bonds, layout, weather
 from alife.config import Config, dims
 from alife.state import R_HARD, Diag, LedgerIdx, State, expected_layout, sinks, to_numpy, total_energy
 
@@ -363,6 +363,28 @@ def _check_step(
     r.rows(np.isin(uid, dead_uids) & alive, "resurrection: uid from this step's death records is alive")
 
 
+_WEATHER_H_TOL = 1e-4  # float32 slack below h_min (the limiter keeps layer thicknesses at or above it)
+_WEATHER_MASS_TOL = 1e-4  # relative drift of the total column mass (W0 saw 1e-5 at worst)
+
+
+def _check_weather(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
+    """The stored weather state of an enabled config (DESIGN §30): finite, thicknesses at or above ``h_min``,
+    humidity non-negative, and the column mass within a relative ``1e-4`` of ``n²·(H1 + H2)``."""
+    p = weather.params_from_config(cfg)
+    wx = a["wx"]
+    if not np.isfinite(wx).all():
+        r.problems.append("weather: wx has a non-finite value")
+        return
+    ws = weather.WeatherState(*(wx[i].astype(np.float64) for i in range(weather.N_WX)))
+    r.rows(
+        (ws.h1 < p.h_min - _WEATHER_H_TOL).any(axis=1) | (ws.h2 < p.h_min - _WEATHER_H_TOL).any(axis=1),
+        f"weather: a layer thickness below h_min = {p.h_min:g}",
+    )
+    r.rows((ws.Q < 0).any(axis=1), "weather: negative humidity Q")
+    drift = (ws.h1 + ws.h2).sum() / (p.n * p.n * (p.H1 + p.H2)) - 1.0
+    r.check(abs(drift) < _WEATHER_MASS_TOL, f"weather: column mass drifted by {drift:.3g} (relative)")
+
+
 def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | None = None) -> list[str]:
     """Host numpy check of every §22.2 invariant; ``[]`` means OK. Stateless.
 
@@ -383,6 +405,8 @@ def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | 
     _check_rows(r, a, cfg)
     if dims(cfg).d3:  # its own meta-test (tests/test_invariants_3d.py)
         _check_rows_3d(r, a, cfg)
+    if cfg.weather.enabled:
+        _check_weather(r, a, cfg)
     if prev is not None:
         p = {
             name: to_numpy(getattr(prev, name))
