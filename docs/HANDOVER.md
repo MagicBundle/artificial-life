@@ -316,13 +316,18 @@ and resumed once. There is one run per condition apart from the seed pair.
 - **GPU results (M5 Pro, 2026-10-21, W1 at 80b50d0; DESIGN §30.8, §30.9, §30.11, row I47 (4b)).**
   - *Metal gate: passed.* `pytest -m ""` on the default device: 797 passed, 2 skipped, 1 xfailed (the MLX duplicate-roll
     compile bug, still in 0.32.3), 0 failed. The fused weather-on step compiles on Metal, so the separate-advance fallback
-    is not needed. The base-versus-head digest matrix was not run as a script on the GPU (its pytest forms passed; the
-    matrix was bit-identical on the CPU).
-  - *Cost: target met.* `bench --weather` at `64k3d` + `storm` with the fused kNN kernel: marginal 0.47 to 0.50 ms (3.4 to
-    3.6% of the 13.8 ms step), 69.6 steps/s with the weather on. The unpaired `--stages` delta (1.02 ms) is noise-affected.
+    is not needed. The base-versus-head digest matrix, run as a script on the GPU, was bit-identical (0 DIFF, the same 116
+    INFO lines as on the CPU; its pytest forms passed too). The whole fast suite on Metal (`-m "not slow"`, the I26
+    failure deselected) gave 2,298 passed, 0 failed.
+  - *Cost: target met.* `bench --weather` at `64k3d` + `storm` with the fused kNN kernel: marginal about 0.5 ms (0.47 to
+    0.64 ms over five runs; single pairs up to 1.1 ms; in the two published runs 0.47 to 0.50 ms, 3.4 to 3.6% of the 13.8 ms
+    weather-off step, 3.3 to 3.5% of the on step), 69.6 steps/s with the weather on. The unpaired `--stages` delta (1.02 ms)
+    is noise-affected.
   - *Occupancy go/no-go: no-go on `C` = 64.* A fork of `64k3d_s0` at 450,000 with the `storm` overlay and a 15,000-step
     weather spin-up, 20,000 coupled steps at 68.6 steps/s: `max_occupancy` 18 (trigger 43), `cell_overflow` 0, no health
-    bit, ledger closed, `deaths_storm` 144 (nearly inert at the provisional values). `cell_capacity` stays 48. `C` = 64 is
+    bit, ledger closed, `deaths_storm` 144 (0.016% of the 883,002 deaths in the window, nearly inert as a cause of death at
+    the provisional values; the population followed the weather-off source within 0.1% at 470,000, but `speed_mean` was 5%
+    higher with the storms on). `cell_capacity` stays 48. `C` = 64 is
     free of step time under the fused kernel, so it is available if W2's repeat (calibrated `storm_*`, a young
     population, 30,000 steps; this run was 20,000 from a spread population) fires the trigger; the other response is a
     lower `u_max` or `alpha` (C17). Neither was applied.

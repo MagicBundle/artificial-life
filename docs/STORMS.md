@@ -371,9 +371,12 @@ Each step is one PR, merged before the next.
    - **Fallback:** A, if B fails within a fixed tuning budget.
 2. **W1, engine weather layer.**
    - **Status (built, off by default; `DESIGN.md` §30, row I47; GPU results of 2026-10-21 recorded).** The Metal gate
-     passed (797 passed, 0 failed on the default device, the fused weather-on step compiles on Metal). The GPU marginal at
-     `64k3d` with the fused kNN kernel is 0.47 to 0.50 ms per step (3.4 to 3.6% of the 13.8 ms step; target at most 1.0 ms,
-     met; the CPU smoke-size figure was +6.75 ms). The occupancy go/no-go says no-go on `C` = 64: a 20,000-step weather-on
+     passed (797 passed, 0 failed on the default device, the fused weather-on step compiles on Metal; the weather-off digest
+     matrix run as a script on the GPU was bit-identical, and the whole fast suite on Metal gave 2,298 passed, 0 failed).
+     The GPU marginal at `64k3d` with the fused kNN kernel is about 0.5 ms per step (0.47 to 0.64 ms over five runs; in the
+     two published runs 0.47 to 0.50 ms, 3.4 to 3.6% of the 13.8 ms weather-off step, 3.3 to 3.5% of the on step; target at
+     most 1.0 ms, met; the CPU smoke-size figure was +6.75 ms). The occupancy go/no-go says no-go on `C` = 64: a 20,000-step
+     weather-on
      run from `64k3d_s0` at 450,000 peaked at `max_occupancy` 18 (trigger 43), no overflow, so `cell_capacity` stays 48
      (caveats: 20,000 steps rather than 30,000, a spread starting population; W2 repeats it with calibrated values).
      W2 inherits: the calibration of `rain_gain` and `storm_*` (the hazard is numerically inert at the
