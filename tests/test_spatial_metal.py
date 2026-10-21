@@ -859,7 +859,13 @@ def _spy_scan_select(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 @gpu
 @pytest.mark.parametrize(
     ("preset", "feeds", "lattice"),
-    [("tiny3d", "mlx", 1.5), ("tiny3d", "metal", 1.5), ("tiny3d", "mlx", 0.0), ("tiny", "mlx", 1.5)],
+    [
+        ("tiny3d", "mlx", 1.5),
+        ("tiny3d", "metal", 1.5),
+        ("tiny3d", "mlx", 0.0),
+        ("tiny", "mlx", 1.5),
+        ("tiny", "metal", 1.5),  # 2D is under auto too (I52): the kernel feeds the step
+    ],
 )
 def test_search_inside_the_compiled_step_bitwise(
     monkeypatch: pytest.MonkeyPatch, preset: str, feeds: str, lattice: float
@@ -941,14 +947,24 @@ def test_compiled_step_bitwise(monkeypatch: pytest.MonkeyPatch, preset: str) -> 
 
 
 @gpu
-def test_auto_traces_the_kernel_in_3d_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ALIFE_KNN", raising=False)
+@pytest.mark.parametrize("preset", ["tiny", "tiny3d"])
+def test_auto_traces_the_kernel_in_2d_and_3d(monkeypatch: pytest.MonkeyPatch, preset: str) -> None:
+    """``auto`` (the default) traces the kernel in both dimensions (I52), ``ALIFE_KNN=mlx`` neither, and the
+    provenance records say which (``meta.json`` and the bench environment)."""
+    from alife.bench import _environment
+
+    cfg = load_config(preset=preset, overrides=["brain.weight_dtype=float32"])
     calls = _spy_scan_select(monkeypatch)
-    for preset, expect in (("tiny3d", True), ("tiny", False)):
+    for env, expect in ((None, True), ("auto", True), ("mlx", False)):
+        if env is None:
+            monkeypatch.delenv("ALIFE_KNN", raising=False)
+        else:
+            monkeypatch.setenv("ALIFE_KNN", env)
         calls.clear()
-        cfg = load_config(preset=preset, overrides=["brain.weight_dtype=float32"])
         step_mod.make_step(cfg)(init_state(cfg))
-        assert bool(calls) is expect, preset
+        assert bool(calls) is expect, (preset, env)
+        assert _environment(cfg)["knn_impl"] == ("metal" if expect else "mlx"), (preset, env)
+        assert spatial.prepare_knn(cfg) == ("metal" if expect else "mlx"), (preset, env)
 
 
 @gpu
@@ -977,8 +993,9 @@ def test_64k3d_step_bitwise(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @gpu
-def test_unverified_mlx_version_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = load_config(preset="tiny3d")
+@pytest.mark.parametrize("preset", ["tiny", "tiny3d"])
+def test_unverified_mlx_version_falls_back(monkeypatch: pytest.MonkeyPatch, preset: str) -> None:
+    cfg = load_config(preset=preset)
     assert knn_metal.available() and spatial.knn_impl(cfg) == "metal"
     monkeypatch.setattr(knn_metal, "VERIFIED_MLX", frozenset({"0.0.0"}))
     assert not knn_metal.available()
@@ -1000,9 +1017,12 @@ def test_self_check_passes_and_is_memoised(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @gpu
+@pytest.mark.parametrize("preset", ["tiny", "tiny3d"])
 @pytest.mark.parametrize("fault", ["wrong_values", "raises"])
-def test_self_check_mismatch_disables_the_kernel(monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
-    cfg = load_config(preset="tiny3d")
+def test_self_check_mismatch_disables_the_kernel(
+    monkeypatch: pytest.MonkeyPatch, fault: str, preset: str
+) -> None:
+    cfg = load_config(preset=preset)
     monkeypatch.setattr(knn_metal, "_CHECKED", frozenset())
     monkeypatch.setattr(knn_metal, "_MISMATCH", False)
     real = knn_metal.scan_select
@@ -1060,21 +1080,25 @@ def test_selection_rules(pretend_metal: None, monkeypatch: pytest.MonkeyPatch) -
     c3, c2 = load_config(preset="tiny3d"), load_config(preset="tiny")
     assert knn_metal.available()
     assert spatial.knn_impl(c3) == "metal"  # auto: the kernel in 3D
-    assert spatial.knn_impl(c2) == "mlx"  # auto: 2D keeps the MLX path
+    assert spatial.knn_impl(c2) == "metal"  # and in 2D (the owner's decision of 2026-10-21, I52)
     assert spatial.knn_impl(c2, "metal") == "metal" and spatial.knn_impl(c3, "metal") == "metal"
     assert spatial.knn_impl(c3, "mlx") == "mlx" and spatial.knn_impl(c2, "mlx") == "mlx"
     monkeypatch.setenv("ALIFE_KNN", "mlx")
-    assert spatial.knn_impl(c3) == "mlx"
+    assert spatial.knn_impl(c3) == "mlx" and spatial.knn_impl(c2) == "mlx"  # forces the reference path
     assert spatial.knn_impl(c3, "metal") == "metal"  # impl overrides the environment
+    assert spatial.knn_impl(c2, "metal") == "metal"
     monkeypatch.setenv("ALIFE_KNN", "metal")
     assert spatial.knn_impl(c2) == "metal" and spatial.knn_impl(c3, "mlx") == "mlx"
+    assert spatial.knn_impl(c2, "mlx") == "mlx"
     monkeypatch.setenv("ALIFE_KNN", "auto")
-    assert spatial.knn_impl(c3) == "metal"
+    assert spatial.knn_impl(c3) == "metal" and spatial.knn_impl(c2) == "metal"
 
 
-def test_k_bound(pretend_metal: None) -> None:
-    ok = _cfg3(C=48, K=knn_metal.K_MAX)
-    big = _cfg3(C=48, K=knn_metal.K_MAX + 1)
+@pytest.mark.parametrize("nd", [2, 3])
+def test_k_bound(pretend_metal: None, nd: int) -> None:
+    mk = _cfg3 if nd == 3 else _cfg2
+    ok = mk(C=48, K=knn_metal.K_MAX)
+    big = mk(C=48, K=knn_metal.K_MAX + 1)
     assert spatial.knn_impl(ok) == "metal"
     assert spatial.knn_impl(big) == "mlx"  # auto falls back above the bound
     assert spatial.knn_impl(big, "mlx") == "mlx"
@@ -1084,38 +1108,43 @@ def test_k_bound(pretend_metal: None) -> None:
 
 def test_unverified_mlx_says_so_once(pretend_metal: None, monkeypatch: pytest.MonkeyPatch) -> None:
     """Metal is there but this MLX is not in ``VERIFIED_MLX``: ``auto`` takes the MLX path (about 5 times
-    slower in 3D) and ``prepare_knn`` says so, once. It stays silent where the kernel was not going to be used
-    anyway."""
+    slower in 3D, 1.5 times in 2D) and ``prepare_knn`` says so, once, in either dimension. It stays silent
+    where the kernel was not going to be used anyway."""
     monkeypatch.setattr(knn_metal, "VERIFIED_MLX", frozenset({"0.0.0"}))
     monkeypatch.setattr(knn_metal, "_NOTED", False)
     c3, c2 = load_config(preset="tiny3d"), load_config(preset="tiny")
     quiet: list[Callable[[], str]] = [
-        lambda: spatial.prepare_knn(c2),  # 2D keeps the MLX path under auto
         lambda: spatial.prepare_knn(_cfg3(C=48, K=knn_metal.K_MAX + 1)),  # K above the bound
+        lambda: spatial.prepare_knn(_cfg2(C=16, K=knn_metal.K_MAX + 1)),  # and in 2D
     ]
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         for call in quiet:
             assert call() == "mlx"
         monkeypatch.setenv("ALIFE_KNN", "mlx")
-        assert spatial.prepare_knn(c3) == "mlx"  # asked for
+        assert spatial.prepare_knn(c3) == "mlx" and spatial.prepare_knn(c2) == "mlx"  # asked for
         monkeypatch.delenv("ALIFE_KNN")
         monkeypatch.setattr(spatial, "_on_gpu", lambda: False)
-        assert spatial.prepare_knn(c3) == "mlx"  # the CPU is the default device
+        assert spatial.prepare_knn(c3) == "mlx" and spatial.prepare_knn(c2) == "mlx"  # the CPU is the default
         monkeypatch.setattr(spatial, "_on_gpu", lambda: True)
         monkeypatch.setattr(knn_metal, "_capable", lambda: False)
-        assert spatial.prepare_knn(c3) == "mlx"  # no Metal at all
+        assert spatial.prepare_knn(c3) == "mlx" and spatial.prepare_knn(c2) == "mlx"  # no Metal at all
         monkeypatch.setattr(knn_metal, "_capable", lambda: True)
     assert not knn_metal._NOTED
-    with pytest.warns(RuntimeWarning, match=r"MLX .* not in knn_metal.VERIFIED_MLX.*ALIFE_KNN=mlx") as rec:
-        assert spatial.prepare_knn(c3) == "mlx"
-    assert len(rec) == 1 and rec[0].filename == __file__  # attributed to the caller of prepare_knn
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        assert spatial.prepare_knn(c3) == "mlx"  # once per process
+    for first, later in ((c2, c3), (c3, c2)):  # either dimension warns, and once per process for both
+        monkeypatch.setattr(knn_metal, "_NOTED", False)
+        with pytest.warns(
+            RuntimeWarning, match=r"MLX .* not in knn_metal.VERIFIED_MLX.*ALIFE_KNN=mlx"
+        ) as rec:
+            assert spatial.prepare_knn(first) == "mlx"
+        assert len(rec) == 1 and rec[0].filename == __file__  # attributed to the caller of prepare_knn
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert spatial.prepare_knn(later) == "mlx" and spatial.prepare_knn(first) == "mlx"  # once
     monkeypatch.setenv("ALIFE_KNN", "metal")
-    with pytest.raises(RuntimeError, match="verified MLX"):
-        spatial.prepare_knn(c3)  # asked for: an error, not a warning
+    for c in (c3, c2):
+        with pytest.raises(RuntimeError, match="verified MLX"):
+            spatial.prepare_knn(c)  # asked for: an error, not a warning
 
 
 def test_invalid_selection_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1133,10 +1162,11 @@ def test_cpu_default_device_selects_the_mlx_path(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(knn_metal, "_capable", lambda: True)
     monkeypatch.setattr(spatial, "_on_gpu", lambda: False)
     monkeypatch.delenv("ALIFE_KNN", raising=False)
-    cfg = load_config(preset="tiny3d")
-    assert spatial.knn_impl(cfg) == "mlx" and spatial.prepare_knn(cfg) == "mlx"
-    with pytest.raises(RuntimeError):
-        spatial.knn_impl(cfg, "metal")  # ALIFE_KNN=metal on the CPU raises
+    for preset in ("tiny3d", "tiny"):
+        cfg = load_config(preset=preset)
+        assert spatial.knn_impl(cfg) == "mlx" and spatial.prepare_knn(cfg) == "mlx"
+        with pytest.raises(RuntimeError):
+            spatial.knn_impl(cfg, "metal")  # ALIFE_KNN=metal on the CPU raises
     monkeypatch.setattr(knn_metal, "_capable", lambda: False)
     monkeypatch.setattr(spatial, "_on_gpu", lambda: True)
     assert spatial.knn_impl(cfg) == "mlx"  # no Metal backend
@@ -1172,13 +1202,12 @@ def test_prepare_knn_runs_the_self_check_once_per_use(monkeypatch: pytest.Monkey
     monkeypatch.setattr(knn_metal, "self_check", lambda nd=3: ran.append(nd) or True)
     monkeypatch.delenv("ALIFE_KNN", raising=False)
     assert spatial.prepare_knn(load_config(preset="tiny3d")) == "metal" and ran == [3]
-    assert spatial.prepare_knn(load_config(preset="tiny")) == "mlx" and ran == [
-        3
-    ]  # 2D, auto: no kernel, no check
+    assert spatial.prepare_knn(load_config(preset="tiny")) == "metal" and ran == [3, 2]  # 2D, auto: checked
     monkeypatch.setenv("ALIFE_KNN", "mlx")
-    assert spatial.prepare_knn(load_config(preset="tiny3d")) == "mlx" and ran == [3]
+    assert spatial.prepare_knn(load_config(preset="tiny3d")) == "mlx" and ran == [3, 2]
+    assert spatial.prepare_knn(load_config(preset="tiny")) == "mlx" and ran == [3, 2]  # forced: no check
     monkeypatch.setenv("ALIFE_KNN", "metal")
-    assert spatial.prepare_knn(load_config(preset="tiny")) == "metal" and ran == [3, 2]
+    assert spatial.prepare_knn(load_config(preset="tiny")) == "metal" and ran == [3, 2, 2]
 
 
 def test_self_check_returns_false_where_the_kernel_cannot_run(monkeypatch: pytest.MonkeyPatch) -> None:

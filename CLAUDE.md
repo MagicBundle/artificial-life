@@ -14,7 +14,7 @@ seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`.
 layer (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`; normative spec `DESIGN.md` §28), is
 implemented, with provisional thresholds (`INTENT_VERSION` 1) until the calibration run. The fused Metal neighbour
 search (`src/alife/knn_metal.py`, `DESIGN.md` §4, row I48) is built: 75 steps/s at `64k3d` instead of 15, bitwise the
-same trajectory.
+same trajectory. It is the default on Metal in 2D and 3D (row I52); `ALIFE_KNN=mlx` forces the pure-MLX path.
 
 ## Conventions
 
