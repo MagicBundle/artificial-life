@@ -23,7 +23,7 @@ from typing import Any
 
 import mlx.core as mx
 
-from alife import metrics, runio
+from alife import metrics, runio, spatial
 from alife.config import dims
 from alife.runio import RunDir
 from alife.state import to_numpy
@@ -96,6 +96,7 @@ def resimulate(
     rows = {int(r["step"]): r for r in rd.metrics_rows()} if verify else {}
     log(f"resim: {rd.path} from step {t} to {todo[-1]}, verify={verify} ({len(rows)} rows)")
 
+    spatial.prepare_knn(cfg)  # the self-check of the fused search, once per process (§4)
     step_fn = make_step(cfg)
     counters: list[mx.array] = []
     ledgers: list[mx.array] = []

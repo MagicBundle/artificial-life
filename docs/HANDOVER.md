@@ -15,8 +15,8 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 
 | path | what |
 |---|---|
-| `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`) |
-| `tests/` | pytest suite. 2,160 fast tests passed and 5 were skipped on the CPU device after the G2 review fixes (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; 9 to 12 minutes depending on load) plus the slow ones |
+| `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, the fused Metal neighbour kernel (`knn_metal.py`, DESIGN §4), the offline W0 weather prototype (`weather.py`, `analysis/w0.py`, `docs/STORMS_W0.md`), `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`) |
+| `tests/` | pytest suite. 2,434 fast tests passed, 83 were skipped (the GPU-only kernel tests among them) and 1 xfailed on the CPU device after merging main (#28, #29) into G2 (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; about 11 minutes) plus the slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
@@ -27,7 +27,8 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/RESULTS_3D.md` | the first long 3D run, `runs/64k3d_s0` (500k steps): population and `K`, vertical niches and buoyancy, bodies, evolutionary activity, comparison with 2D; figures and tables in `docs/results_3d/`, scripts in `analysis_cache/64k3d_s0/results3d/` (git-ignored) |
 | `docs/RESULTS_3D_RUNS.md` | the four 500k-step `64k3d` runs (seed 0, seed 1, half food, director live): replication, the density control, the director in 3D, bodies and activity across runs; figures and tables in `docs/results_3d_runs/`, scripts in `analysis_cache/64k3d_runs/` (git-ignored) |
 | `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with `INTENT_VERSION` 2 label rules (`RULES_V2`, calibrated offline and validated on three held-out windows on the GPU, 2026-10-21, DESIGN §28.4, §28.8); G2, social tracking (houses, kin groups, colonies, territory, relations; `src/alife/groups.py`, `tracking.py`, `game/social.py`, `game/society.py`, `python -m alife.analysis.social`; the reports are `observers/social.jsonl` in an observing run's directory; normative spec `docs/DESIGN.md` §29, Review-log row I45) is built, run on the GPU (2026-10-21) and has provisional thresholds (`SOCIAL_VERSION` 1, measured, none changed); G3 to G5 are not built |
-| `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13) |
+| `docs/STORMS.md`, `docs/STORMS_W0.md` | the storm world (an alien-planet weather game on the engine; G3 onwards target it) and the results of its offline weather prototype W0 (DESIGN Review-log row I46): every exit criterion but the cost (about 1.16 ms a step against 1.0) passes |
+| `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13), before (2026-10-16) and with (2026-10-20) the fused Metal neighbour kernel |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
 | `.github/workflows/ci.yml` | Linux CPU CI: ruff, ruff format check, fast suite; nightly slow suite |
@@ -416,8 +417,8 @@ and resumed once. There is one run per condition apart from the seed pair.
      elasticity to regeneration is about 0.65. No result requires a change; the sign-off of `n_init` is still open.
    - **Signals.** The signal-information tools are 2D-only (`require_2d`), and emitters stay at 0.86 to 0.88 in 3D at
      full food, so they need a 3D port.
-   - **Speed.** The fused Metal neighbour kernel (below) matters if more or longer 3D runs are wanted: about 14.7 steps/s,
-     with the search at 79% of the step.
+   - **Speed.** Done: the fused Metal neighbour kernel (item 6, DESIGN §4, row I48) takes `64k3d` from about 14.8 to
+     75 steps/s (a 100 000-step run in about 22 minutes), with bitwise the same trajectory.
 3. **Games G1** (merged as PR #27, `1ad339c`; DESIGN §28, Review-log row I44, `docs/GAMES.md` §9). Built and tested on
    the CPU and on Metal. Status and what follows:
    - **The Metal purity gate: passed** on the M5 Pro on 2026-10-19. `tests/test_game_purity.py` and
@@ -474,10 +475,20 @@ and resumed once. There is one run per condition apart from the seed pair.
    - **Deferred to G3**: the stream tags and colour modes, moving the host part of a snapshot off the step thread, the
      Family row (a host lineage store and an ancestry panel), and sharing the snapshot's components with the heavy
      metrics. Copying the sidecar and the social log into a fork is G3 or G4.
-   - Then G3 (play loop and view).
-5. Optional engine work, deferred in DESIGN §23.2:
-   - a fused Metal kernel for the neighbour search, the biggest stage;
+   - Then G3 (play loop and view), on the storm world after W0 to W2 (`docs/STORMS.md` §8).
+5. **Storm world W0** (merged as PR #28; `docs/STORMS.md` §8, `docs/STORMS_W0.md`, DESIGN Review-log row I46). The
+   offline weather prototype (`src/alife/weather.py`, `python -m alife.analysis.w0`; no engine change) passes every
+   exit criterion except the cost one: 1.163 ms a step for the weather step plus the per-agent wind sampler against the
+   1.0 ms budget. Next: the owner's decision on the cost (accept, trim the model or the grid), then W1 (wiring the
+   weather into the step); G3 and the later steps on the storm world wait for it.
+6. Optional engine work, deferred in DESIGN §23.2:
+   - done: the fused Metal kernel for the neighbour search (`src/alife/knn_metal.py`, DESIGN §4 and F21, row I48;
+     `ALIFE_KNN=auto|mlx|metal`, the kernel is the default in 3D on Metal and `ALIFE_KNN=metal` selects it in 2D).
+     It is exact only on the MLX versions in `knn_metal.VERIFIED_MLX` and a startup self-check guards the rest. **On
+     every MLX bump and macOS major update**, run `uv run pytest tests/test_spatial_metal.py -m "" -q` on the Mac (the
+     GPU equality tests; they run on an unlisted version), then add the version to `VERIFIED_MLX`, or leave it out;
+     the remaining custom kernels of DESIGN §23.2 item 1 (tiled GEMV, splat renderer) are still deferred;
    - a mean-speed metric, so "sessile vs mobile" is measurable;
    - `inspect` showing the resumed total instead of the original `steps`.
-6. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
+7. If a change alters trajectories, re-pin the golden digest deliberately (tests/test_determinism.py) and note
    it in the DESIGN Review log.

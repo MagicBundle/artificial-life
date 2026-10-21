@@ -17,7 +17,11 @@ passed the provisional criterion on three held-out windows on the GPU, 2026-10-2
 tracking (houses, kin groups, colonies, territory, relations, and a roster of kin-group names, house events and
 per-group window counts; generic `groups.py` and `tracking.py`; normative spec `DESIGN.md` §29), is implemented, with
 provisional thresholds (`SOCIAL_VERSION` 1, measured on the GPU, none changed); the Settler colony clause is on in `RULES_V2` (`settler_body` 4,
-DESIGN §28.4).
+DESIGN §28.4). The fused Metal neighbour
+search (`src/alife/knn_metal.py`, `DESIGN.md` §4, row I48) is built: 75 steps/s at `64k3d` instead of 15, bitwise the
+same trajectory. `docs/STORMS.md` designs the storm world (the 3D target of G3 onwards); its offline weather prototype W0
+(`src/alife/weather.py`, `python -m alife.analysis.w0`, row I46, results in `docs/STORMS_W0.md`; no engine change) passes
+every exit criterion but the cost one (about 1.16 ms a step against 1.0), so its wiring into the step (W1) is not built.
 
 ## Conventions
 
@@ -33,6 +37,10 @@ DESIGN §28.4).
 - Observer-only keys (`config.OBSERVER_KEYS`), which are unhashed at every value and inert while `game.observe` is off,
   may default to a working value.
 - Avoid GPU float32 matmul for anything that must be accurate (Metal reduced precision, DESIGN F20).
+- Custom Metal kernels live only in `src/alife/knn_metal.py` (`mx.fast.metal_kernel`, lint rule 6). Each must be
+  bitwise equal to the pure-MLX path it replaces (`tests/test_spatial_metal.py`, run with `-m ""` on the Mac and on
+  every MLX bump, which is then added to `knn_metal.VERIFIED_MLX`), fall back to that path off Metal, and write no
+  contested outputs. `ALIFE_KNN=auto|mlx|metal` selects the neighbour search (DESIGN §4, I48).
 - Checks before pushing: `uv run ruff check src tests`, `uv run ruff format --check src tests`,
   `uv run pytest -m "not slow" -q`. A trajectory change needs a deliberate golden-digest re-pin.
 - The GUI (`gui/`, SwiftUI, macOS 14+) shells out to `.venv/bin/alife`. Keep its lever list in sync with
