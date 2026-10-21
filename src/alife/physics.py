@@ -21,12 +21,16 @@ def forces(
     survivor: mx.array,
     partner: mx.array,
     cfg: Config,
+    *,
+    wind: mx.array | None = None,
 ) -> mx.array:
     """Total force per agent (N,2): contact-attenuated thrust, springs and repulsion (§9).
 
     Evaluated at start-of-step ``pos``/``heading`` with the post-S14 ``partner``. A contact is a valid
     neighbour that survives and is closer than ``2r``; thrust is scaled by
-    ``max(0, 1 − n_contacts/thrust_contact_limit)`` (F18). Non-survivors get 0.
+    ``max(0, 1 − n_contacts/thrust_contact_limit)`` (F18). Non-survivors get 0. ``wind`` ((N,2), the
+    already-multiplied drag force ``alpha·drag·u_air``, W1 §30) is added unattenuated; ``None`` is the
+    weather-off graph.
     """
     ph = cfg.physics
     two_r = 2.0 * ph.radius
@@ -38,6 +42,8 @@ def forces(
     u = nbr.off / mx.maximum(nbr.dist, layout.EPS_LEN)[..., None]
     rep = mx.where(contact[..., None], (-ph.k_repel * (two_r - nbr.dist))[..., None] * u, 0.0).sum(axis=1)
     f = f_thrust + rep + bonds.spring_forces(pos, partner, act.contract, cfg)
+    if wind is not None:  # static: weather on
+        f = f + wind
     return mx.where(survivor[:, None], f, 0.0)
 
 
@@ -102,12 +108,16 @@ def forces3(
     survivor: mx.array,
     partner: mx.array,
     cfg: Config,
+    *,
+    wind: mx.array | None = None,
 ) -> mx.array:
     """Total force per agent (N,3) in a 3D world (§27.3): ``forces`` plus gravity and buoyancy.
 
     Thrust acts along the body's forward axis (``ops.body_axes``) and is contact-attenuated as in 2D (F18);
     repulsion and springs use the (N,K,3) and (N,B,3) offsets. Gravity ``−gravity·ẑ`` and the buoyancy
     ``buoyancy_max·buoy_cap·mo.buoy·ẑ`` are body forces on z only and are not attenuated. Non-survivors get 0.
+    ``wind`` ((N,3), the already-multiplied drag force ``alpha·drag·u_air``, W1 §30) is added after them,
+    also unattenuated; ``None`` is the weather-off graph.
     """
     ph = cfg.physics
     two_r = 2.0 * ph.radius
@@ -121,6 +131,8 @@ def forces3(
     f = f_thrust + rep + bonds.spring_forces(pos, partner, act.contract, cfg)
     lift = ph.buoyancy_max * buoy_cap * mo.buoy - ph.gravity  # (N,) along +z
     f = mx.concatenate([f[:, :2], f[:, 2:] + lift[:, None]], axis=1)
+    if wind is not None:  # static: weather on
+        f = f + wind
     return mx.where(survivor[:, None], f, 0.0)
 
 

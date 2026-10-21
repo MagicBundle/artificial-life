@@ -125,6 +125,9 @@ The weather update runs in S17 before `update_resource` and stores P and D_c for
 
 ### 3.3 Engine rules
 
+**Status (W1, built):** the rules below are implemented and off by default; the normative text is `DESIGN.md` §30. Where W1
+chose differently or measured something, a note says so.
+
 - **Off by default.**
   - A hashed `weather.enabled`, false, in `POST_V01_KEYS`. It is dims-agnostic: in 2D it uses only the horizontal
     wind.
@@ -134,7 +137,8 @@ The weather update runs in S17 before `update_resource` and stores P and D_c for
     - the 2D golden and digest matrix use `legacy_state_digest` (`V0_FIELDS`) and do not move;
     - in 3D, whichever of G4 and W1 lands first freezes `State3`'s field list as it then stands (49 names today) in a
       `legacy_state_digest_3d`. `GOLDEN_3D` is then not re-pinned and still proves the weather-off and lever-off paths,
-      and GAMES §5.4's compatibility note is updated to match.
+      and GAMES §5.4's compatibility note is updated to match. *(W1 landed first: `state.V0_FIELDS_3D` is the 49 names;
+      DESIGN §30.3.)*
 - **Old checkpoints.** `state_from_arrays` fills the weather fields of older 2D and 3D checkpoints with the rest state
   (h = H₁, H₂; u = 0; Q = Q₀; P = 0; D_c = 0), so a fork can turn weather on. Test this on a `runs/64k3d_s0` checkpoint.
 - **RNG.** Seed disturbances and the hazard draw take a reserved stream, `Stream.WEATHER` = 9, drawn every step with
@@ -159,11 +163,11 @@ The weather update runs in S17 before `update_resource` and stores P and D_c for
 |---|---|---|---|
 | weather → organisms | **wind**: a drag force `F_w = α·drag·u_air(pos)` inside `forces3`, not contact-attenuated. Then `v = F/γ`: grip shelters grounded agents, and the `v_max` clip and the §2.2 invariants hold | `physics.forces3` | none, like gravity |
 | weather → organisms | **heritable wind coupling**: `α = α₀ + α₁·buoy_cap`. Riding updrafts then depends on the lift trait and can be selected; with α independent of the cap, free lift would make a low cap cheaper | as above | none |
-| weather → organisms | **calibration**: against the measured speeds (0.024–0.034 per step). Background wind about 0.01 or less outside storms; horizontal storm cores up to 0.1–0.2 (≤ `v_max` − `thrust_max`); vertical within the load limits | W0, W1 | — |
-| weather → organisms | **rain-fed food at the cloud**: `regen_rate(patch_pos, cfg, step, env, rain=P, cloud=D_c)` adds κP to the field layers that span the interface h₁ (the condensation height), remapped 2:1 from the weather grid, plus an optional floor term. `K_est` and the floor `K` call it with the stored fields, so they rebuild exactly the regeneration injected and the safety rules stay calibrated (tested) | `fields.regen_rate`; `metrics.carrying_capacity` | `INJECT_REGEN` |
+| weather → organisms | **calibration**: against the measured speeds (0.024–0.034 per step). Background wind about 0.01 or less outside storms (*W1 measured the layer-2 jet at 0.05, 5x this, and it is on whenever weather is on: it is the dominant always-on coupling, DESIGN §30.1*); horizontal storm cores up to 0.1–0.2 (≤ `v_max` − `thrust_max`); vertical within the load limits | W0, W1 | — |
+| weather → organisms | **rain-fed food at the cloud**: `regen_rate(patch_pos, cfg, step, env, rain=P, cloud=D_c)` adds κP to the field layers that span the interface h₁ (the condensation height), remapped 2:1 from the weather grid, plus an optional floor term. `K_est` calls it with the stored fields, so it rebuilds exactly the regeneration injected and the safety rules stay calibrated (tested); the floor `K` holds the rain only with `rain_floor > 0`, because the band starts above the floor layer (DESIGN §30.6) | `fields.regen_rate`; `metrics.carrying_capacity` | `INJECT_REGEN` *(W1, deviation D7: the food goes to the band `[zi, zi + dc]` from the condensation level to the diagnosed cloud top, with P-weighted block means of `zi` and `dc`, total `rain_gain·P` per column; not to "the layers that span the interface". The seeding row below must use the same layer weights `w_k`; DESIGN §30.6.)* |
 | weather → organisms | **cloud shade**: the same call dims the photic term by D_c | the fertility profile | `INJECT_REGEN` |
 | weather → organisms | **storm hazard**: a kill probability from wind speed above a threshold, drawn from `Stream.WEATHER`. Its own mask goes to `lifecycle.deaths`, independent of the director. Storm deaths are excess deaths only, and a row in both masks dies as `CATASTROPHE`. `DeathCause.STORM` = 4. Counters are `CounterIdx` (27), then `Counter3D` (3, in 3D), then `DEATHS_STORM` with weather on: `n_counters(nd, weather) = 27 + 3·[nd = 3] + [weather]`. `interval_row`, the viewer and bench take the flag, so weather-off rows and widths are unchanged. Bond breaking is explicit (OR with wind above a threshold): storm-scale shear is far too weak to stretch a bond | `lifecycle`; `state.n_counters` | the corpse path |
-| organisms → weather | **rain seeding**: c2 averaged over the cloud layers (the field layers spanning h₁, which also get the rain-fed food), taken as its excess over that band's lattice mean and upsampled to the weather grid; through a saturating response it lowers Q_s by at most a fixed factor | the condensation step | none. Emission costs `floor(20·Σemit)` in `HEAT_ACTION`, which is 0 below Σemit = 0.05 while the deposit is up to 12 quanta per channel, so a little seeding is free. W2 calibrates κ and the response so that sub-threshold emission alone does not trigger rain-out |
+| organisms → weather | **rain seeding**: c2 averaged over the cloud layers (the field layers spanning h₁, which also get the rain-fed food), taken as its excess over that band's lattice mean and upsampled to the weather grid; through a saturating response it lowers Q_s by at most a fixed factor | the condensation step | none. Emission costs `floor(20·Σemit)` in `HEAT_ACTION`, which is 0 below Σemit = 0.05 while the deposit is up to 12 quanta per channel, so a little seeding is free. W2 calibrates κ and the response so that sub-threshold emission alone does not trigger rain-out *(W2: use the same band weights `w_k` as the rain-fed food, DESIGN §30.6.)* |
 | organisms → weather | **shade on the seas**: dense populations lower T_s or the evaporation rate below them, so there is less moisture, fewer storms and less rain-fed food. That is a negative loop. Full Daisyworld regulation also needs a growth response that peaks in temperature (Watson & Lovelock 1983), which is later work | the evaporation step | none |
 
 - **Seeding.** c2 already carries a seed-dependent background: a mean of 4.8–6.6 in seed 0 and 0.2–1.4 in seed 1 over
@@ -366,6 +370,19 @@ Each step is one PR, merged before the next.
        impulse; genesis or displacement lag after a warm-pool change).
    - **Fallback:** A, if B fails within a fixed tuning budget.
 2. **W1, engine weather layer.**
+   - **Status (built, off by default; `DESIGN.md` §30, row I47; GPU results of 2026-10-21 recorded).** The Metal gate
+     passed (797 passed, 0 failed on the default device, the fused weather-on step compiles on Metal; the weather-off digest
+     matrix run as a script on the GPU was bit-identical, and the whole fast suite on Metal gave 2,298 passed, 0 failed).
+     The GPU marginal at `64k3d` with the fused kNN kernel is about 0.5 ms per step (0.47 to 0.64 ms over five runs; in the
+     two published runs 0.47 to 0.50 ms, 3.4 to 3.6% of the 13.8 ms weather-off step, 3.3 to 3.5% of the on step; target at
+     most 1.0 ms, met; the CPU smoke-size figure was +6.75 ms). The occupancy go/no-go says no-go on `C` = 64: a 20,000-step
+     weather-on
+     run from `64k3d_s0` at 450,000 peaked at `max_occupancy` 18 (trigger 43), no overflow, so `cell_capacity` stays 48
+     (caveats: 20,000 steps rather than 30,000, a spread starting population; W2 repeats it with calibrated values).
+     W2 inherits: the calibration of `rain_gain` and `storm_*` (the hazard is numerically inert at the
+     overlay), a still-air control per seed, and a jet-removed (`weather.r2` raised) or tracer arm, because the layer-2 jet
+     of about 0.05 is on whenever the weather is on. The weather-only spin-up (`alife run --weather-spinup N`, coordinator
+     choice C17) is built.
    - `weather.enabled`, the fields, `Stream.WEATHER`, wind as a drag force, rain into regeneration and `K_est`, and the
      hazard.
    - The frozen legacy 3D digest, inert fill, the load rules, and tests.
@@ -383,8 +400,8 @@ the owner.
 
 ## 9. Decisions (owner)
 
-Decided 2026-10-19: items 1, 2, 3, 7 and 9. Items 4, 5, 6 and 8 are open; they are needed by W1 (4, 5), W2 (6)
-and G3 (8).
+Decided 2026-10-19: items 1, 2, 3, 7 and 9. Items 4 and 5 were settled for W1 by the coordinator's choice C15 under the
+owner's delegation (to revisit). Items 6 and 8 are open; they are needed by W2 (6) and G3 (8).
 
 1. **Which world G3 onwards target.** *Decided 2026-10-19:* **(a)**.
    - **(a) The 3D storm world** (gated by W0). It reopens:
@@ -400,9 +417,10 @@ and G3 (8).
 3. **Geometry.** *Decided 2026-10-19:* a torus with sinusoidal rotation and two hemispheres. The alternative was one
    f-plane where every storm spins the same way.
 4. **Weather energy.** Through regrowth and the corpse path only (*recommended*), or storm damage as a 17th ledger slot
-   (state, checkpoints and goldens change).
+   (state, checkpoints and goldens change). *Coordinator's choice C15 (under the owner's delegation, to revisit): the
+   recommended form, built in W1.*
 5. **Senses.** Wind through velocity and nuclei through c2 (*recommended*), or dedicated wind or moisture inputs (a
-   genome-layout bump).
+   genome-layout bump). *Coordinator's choice C15 (to revisit): the recommended form, built in W1 (wind through `vel`).*
 6. **First couplings.** Rain seeding and shade (*recommended*), plus temperature-peaked growth later.
 7. **Heat sources.** *Decided 2026-10-19:* a separate warm-pool map T_s with its own levers, so storms do not simply
    form over the food patches, and food follows rain. The alternative was the fertility patches (no new lever, but food

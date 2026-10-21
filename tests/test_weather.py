@@ -1288,15 +1288,16 @@ def test_weather_is_pure_mlx_and_lint_scanned() -> None:
     from test_lint import SIM_MODULES  # the lint scans weather under rule 5
 
     assert "weather" in SIM_MODULES
-    # nothing in the engine imports weather (W0 is offline): only analysis/w0.py may
-    root = Path(W.__file__).parent
-    for path in root.rglob("*.py"):
-        if path.name in ("weather.py", "w0.py", "w0_plots.py"):
-            continue
-        assert not any(
-            isinstance(nd, ast.ImportFrom | ast.Import) and "weather" in ast.unparse(nd)
-            for nd in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
-        ), path
+    # W1 wires weather into the engine (config, state, the step), so the engine may import it; what must hold
+    # is that weather imports no other alife module at run time (ops only; config is TYPE_CHECKING), which
+    # keeps config -> weather -> ops free of cycles.
+    runtime = set()
+    for node in ast.parse(src).body:  # module level, outside `if TYPE_CHECKING`
+        if isinstance(node, ast.ImportFrom) and node.module == "alife":
+            runtime |= {a.name for a in node.names}
+        elif isinstance(node, ast.ImportFrom | ast.Import) and "alife" in ast.unparse(node):
+            runtime.add(ast.unparse(node))
+    assert runtime == {"ops"}
 
 
 # --- review fixes: hand values for the damping, the evaporation target, the pool shape and the gate -------

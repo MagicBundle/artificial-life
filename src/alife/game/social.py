@@ -35,7 +35,7 @@ import mlx.core as mx
 
 from alife import groups, layout, metrics
 from alife.config import Config, dims
-from alife.state import DeathCause, State, State3
+from alife.state import State, State3
 from alife.step import ActFlag, Acts
 
 __all__ = [
@@ -50,6 +50,7 @@ __all__ = [
     "SocIn",
     "SocState",
     "SocialRules",
+    "death_causes",
     "init_soc",
     "relabel",
     "snapshot",
@@ -60,11 +61,22 @@ __all__ = [
 SOCIAL_VERSION: Final = 1
 HOUSE_UNKNOWN: Final = -2  # an immigrant lineage seeded mid-run (§29.4): never named, counted apart
 KIN_NAME_SALT: Final = 0x6B696E6E616D65  # "kinname": the generated names of kin groups (§29.14)
-DEATH_CAUSES: Final = tuple(c.name.lower() for c in DeathCause)  # the rows of ``SocState.deaths``
+# The rows of ``SocState.deaths`` with the weather off: the causes of death that exist without it, by
+# ``DeathCause`` value. A literal, not an iteration of ``DeathCause``, so that ``DeathCause.STORM`` (W1,
+# DESIGN §30.7) adds no row to the state and the sidecar of a weather-off run; ``death_causes(cfg)`` is the
+# tuple a run uses.
+DEATH_CAUSES: Final = ("starved", "killed", "aged", "catastrophe")
 
 _I32 = mx.int32
 _I64 = mx.int64
 _I32_MAX: Final = 2**31 - 1
+
+
+def death_causes(cfg: Config) -> tuple[str, ...]:
+    """The rows of ``SocState.deaths`` for ``cfg``: ``DEATH_CAUSES``, plus ``"storm"`` (``DeathCause.STORM``
+    = 4) when the weather layer is on (DESIGN §29.4, §30.7). Every row count of the social layer is its
+    length."""
+    return (*DEATH_CAUSES, "storm") if cfg.weather.enabled else DEATH_CAUSES
 
 
 @dataclasses.dataclass(frozen=True)
@@ -147,7 +159,7 @@ class SocialRules:
             ("relation counts", (4 + b) * n),  # attack, hit, kill, bond, and the B bond slots of every row
             ("neighbour exposure", 2 * n * k),
             ("energy shared", n * b),
-            ("temperament and deaths by cause", 4 * n),  # (4, G) and (C, G) with C = 4 causes
+            ("temperament and deaths by cause", 4 * n),  # (4, G) and (C, G), C = 4 or 5 causes
         )
         for name, count in lanes:
             if count > _I32_MAX:
@@ -156,6 +168,7 @@ class SocialRules:
             ("kin bins", self.kin_bins**layout.T),
             ("relation bins", 5 * g * g),
             ("exposure bins", 2 * g * g * k),
+            ("death bins", len(death_causes(cfg)) * g),
             ("territory bins", self.terr_cells**2 * g),
             ("footprint cells", self.foot_cells**2),
         )
@@ -288,7 +301,7 @@ def init_soc(si: SocIn, cfg: Config, sr: SocialRules) -> SocState:
         expo=mx.zeros((len(Expo), g, g, d.k), dtype=_I64),
         shared=mx.zeros((g, g), dtype=_I64),
         births=mx.zeros((g,), dtype=_I64),
-        deaths=mx.zeros((len(DEATH_CAUSES), g), dtype=_I64),
+        deaths=mx.zeros((len(death_causes(cfg)), g), dtype=_I64),
     )
 
 
@@ -379,9 +392,9 @@ def update(so: SocState, si: SocIn, a: Acts, cfg: Config, sr: SocialRules) -> So
     is_birth = (a.born_row >= 0) & birth & (parent_slot >= 0)
     births = so.births + groups.masked_bincount(g, parent_slot, is_birth).astype(_I64)
     cause = a.death_cause.astype(_I32)
-    n_causes = len(DEATH_CAUSES)
+    n_causes = len(death_causes(cfg))
     deaths = so.deaths + groups.masked_bincount(
-        n_causes * g, cause * g + g0, (cause >= 0) & (g0 >= 0)
+        n_causes * g, cause * g + g0, (cause >= 0) & (cause < n_causes) & (g0 >= 0)
     ).astype(_I64).reshape(n_causes, g)
 
     slot_group = _slot_groups(si.partner, kin)

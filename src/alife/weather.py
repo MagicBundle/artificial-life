@@ -23,7 +23,7 @@ from __future__ import annotations
 import functools
 import math
 from dataclasses import dataclass, fields, replace
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 import mlx.core as mx
 
@@ -1023,13 +1023,21 @@ def _wind_formula(
 
 
 def _clip_wind(
-    uh: mx.array, vh: mx.array, w: mx.array, edge: mx.array, p: WeatherParams
+    uh: mx.array,
+    vh: mx.array,
+    w: mx.array,
+    edge: mx.array,
+    p: WeatherParams,
+    valid: mx.array | None = None,
 ) -> tuple[mx.array, mx.array, mx.array, mx.array, mx.array]:
-    """Clip ``||u_h|| <= u_max`` (direction kept) and ``|w| <= w_edge`` where ``edge``; count both."""
+    """Clip ``||u_h|| <= u_max`` (direction kept) and ``|w| <= w_edge`` where ``edge``; count both. With
+    ``valid`` the two counts include only the rows where it is true (the clip itself applies to every row)."""
     sp = mx.sqrt(uh * uh + vh * vh)
     over = sp > p.u_max
     scale = p.u_max / mx.maximum(sp, p.u_max)
     w_over = edge & (mx.abs(w) > p.w_edge)
+    if valid is not None:  # static: dead rows hold stale positions, so they are not counted
+        over, w_over = over & valid, w_over & valid
     wc = mx.where(edge, mx.clip(w, -p.w_edge, p.w_edge), w)
     return uh * scale, vh * scale, wc, over.astype(_I32).sum(), w_over.astype(_I32).sum()
 
@@ -1051,6 +1059,7 @@ def sample_wind(
     *,
     field_cell: float = 4.0,
     fields: WindFields | None = None,
+    valid: mx.array | None = None,
 ) -> AgentWind:
     """The wind at agent positions ``pos`` (M, 3): pure gathers, any M (spec §4).
 
@@ -1059,7 +1068,9 @@ def sample_wind(
     fields (``h1, h2, D1, D2, J``), of ``u`` on the u-grid and of ``v`` on the v-grid, then ``_wind_formula``.
     ``||u_h||`` is clipped to ``u_max`` and ``|w|`` to ``w_edge`` in the floor and surface field layers
     (``z < field_cell`` or ``z >= height − field_cell``), both counted. Mid-column ``w`` is not clipped.
-    ``fields`` are the precomputed ``wind_fields(ws, p)`` (built once per weather step by the caller).
+    ``fields`` are the precomputed ``wind_fields(ws, p)`` (built once per weather step by the caller). With
+    ``valid`` ((M,) bool) the two clip counts exclude the rows where it is false (the engine passes
+    ``alive``: dead rows rest at stale positions); ``None`` counts every row.
     """
     n = p.n
     wf = wind_fields(ws, p) if fields is None else fields
@@ -1075,8 +1086,30 @@ def sample_wind(
     uh, vh, w = _wind_formula(z, zi, (uu[:, 0], vv[:, 0], uu[:, 1], vv[:, 1]), c[:, 2], c[:, 3], c[:, 4], p)
     fz = round(p.height / field_cell)
     edge = (z < field_cell) | (z >= (fz - 1) * field_cell)
-    uh, vh, w, n_h, n_w = _clip_wind(uh, vh, w, edge, p)
+    uh, vh, w, n_h, n_w = _clip_wind(uh, vh, w, edge, p, valid)
     return AgentWind(mx.stack([uh, vh, w], axis=-1), n_h, n_w)
+
+
+def sample_wind_h(
+    ws: WeatherState, pos: mx.array, p: WeatherParams, *, valid: mx.array | None = None
+) -> AgentWind:
+    """The 2D wind at agent positions ``pos`` (M, 2) (W1, DESIGN §30): the **layer-1** wind ``(u1, v1)``
+    bilinear on its own C-grid (u at ``(i + 1, j + ½)·dx``, v at ``(i + ½, j + 1)·dx``), no surface-layer
+    factor and no vertical wind, clipped to ``||u_h|| <= u_max``. ``u`` is (M, 2); ``n_clip_w`` is 0.
+    ``valid`` as in ``sample_wind``."""
+    n = p.n
+    ugrid = ws.u1.reshape(n * n, 1)
+    vgrid = ws.v1.reshape(n * n, 1)
+    gx, gy = pos[:, 0] / p.dx, pos[:, 1] / p.dx
+    uu = _bilinear_rows(ugrid, gx - 1.0, gy - 0.5, n)[:, 0]
+    vv = _bilinear_rows(vgrid, gx - 0.5, gy - 1.0, n)[:, 0]
+    sp = mx.sqrt(uu * uu + vv * vv)
+    over = sp > p.u_max
+    if valid is not None:  # static
+        over = over & valid
+    scale = p.u_max / mx.maximum(sp, p.u_max)
+    n_h = over.astype(_I32).sum()
+    return AgentWind(mx.stack([uu * scale, vv * scale], axis=-1), n_h, n_h * 0)
 
 
 def wind_layers(
@@ -1097,3 +1130,309 @@ def wind_layers(
     edge = (kk == 0) | (kk == fz - 1)
     uh, vh, w, _, _ = _clip_wind(uh, vh, w, edge, p)
     return mx.stack([uh, vh, w], axis=1)
+
+
+# --- engine coupling (W1, DESIGN §30) -----------------------------------------------------------------------
+# The config, the packed state field and the validation. The step wiring (wind, rain, hazard) follows in the
+# later build steps; everything here is host-side Python on config values, or builds the rest state.
+
+N_WX = 9  # the arrays of ``WeatherState``, stacked in its field order into ``State.wx``
+
+# The ``WeatherParams`` fields that are not ``[weather]`` keys. W0 tuned none of them after round 0, the
+# mean-flow stability rule is tabulated for these numerics only, and every config key is a hashed degree of
+# freedom. A later change makes one a key (in ``POST_V01_KEYS``) with this value as its default.
+ENGINE_FIXED: Final[dict[str, Any]] = {
+    "dt": 1.0,
+    "h_min": 2.0,
+    "m_min": 1.0,
+    "c_half": 1e-3,
+    "Qs": 1.0,
+    "nu": 0.0,
+    "kappa_d": 0.04,
+    "sl_order": 1,
+    "u_safe": 0.3,
+    "seed_q": 0.0,
+    "seed_qsigma": 6.0,
+    "seed_w2": 0.0,
+    "detect_every": 25,
+    "zeta_th": 0.00625,
+    "p_th": 1e-4,
+    "a_min": 25,
+    "r_min": 4,
+    "miss_grace": 2,
+    "min_dets": 3,
+}
+
+# A column's rain stays below this: the int32 ranges of ``floor_i32``, the increment and ``exact_sum`` hold.
+_INT_BOUND: Final = 2.0**30
+
+
+def pack(ws: WeatherState) -> mx.array:
+    """``State.wx``: the nine arrays of ``ws`` stacked in field order, (N_WX, n, n) float32."""
+    return mx.stack(list(ws))
+
+
+def unpack(wx: mx.array) -> WeatherState:
+    """The inverse of ``pack`` (nine slices)."""
+    return WeatherState(*(wx[i] for i in range(N_WX)))
+
+
+@functools.cache
+def _params(wc: Any, size: float, height: float, dims: int) -> WeatherParams:
+    n = wc.cells
+    pools = tuple(tuple(wc.pools[i : i + 7]) for i in range(0, len(wc.pools), 7))
+    own = {f.name for f in fields(WeatherParams)}
+    kw = {f.name: getattr(wc, f.name) for f in fields(wc) if f.name in own and f.name != "pools"}
+    return WeatherParams(
+        n=n,
+        dx=size / n,
+        height=height if dims == 3 else wc.H1 + wc.H2,
+        pools=pools,
+        **ENGINE_FIXED,
+        **kw,
+    )
+
+
+def params_from_config(cfg: Config) -> WeatherParams:
+    """The ``WeatherParams`` of a config: a name-keyed copy of ``cfg.weather`` plus ``n = cells``, ``dx =
+    world.size / cells``, ``height`` (``world.height`` in 3D, ``H1 + H2`` in 2D) and ``ENGINE_FIXED``.
+    Cached on the weather section and the three world values it reads. ``validate_config`` guards the inputs
+    (``cells`` and ``pools``) before this is built."""
+    return _params(cfg.weather, cfg.world.size, cfg.world.height, cfg.world.dims)
+
+
+@functools.cache
+def _rest_off() -> mx.array:
+    p = WeatherParams()
+    return pack(init_state(p, default_forcing(p, mx.array(0, dtype=_I32))))
+
+
+def rest_array(cfg: Config, step: mx.array | int = 0) -> mx.array:
+    """The rest state of a config as a packed ``wx``: ``h = (H1, H2)``, ``u = v = 0``, ``Q = min(Q_e(T_s(t)),
+    Q_s)`` under the pools of step ``step``, ``P = Dc = 0``. ``step`` is a scalar array or a Python int (it
+    reaches ``warm_pools`` as an int32 array). A weather-off config gets the step-0 array of the default
+    parameters whatever ``step`` is, so a filled array is bitwise the one a native weather-off state carries.
+    """
+    if not cfg.weather.enabled:
+        return _rest_off()
+    p = params_from_config(cfg)
+    t = (step if isinstance(step, mx.array) else mx.array(step)).astype(_I32)
+    return pack(init_state(p, default_forcing(p, t)))
+
+
+def validate_config(cfg: Config) -> list[str]:
+    """Messages for every violated weather rule of an enabled config (empty = valid). Never raises: the guards
+    run before any parameter is built, and a failed guard returns at once.
+
+    Order: guards; the ``WeatherParams`` rules (W0 spec §2.5 rules 1-14, 16, 18); the world rules (W-1 the
+    cells are a multiple of the field lattice, W-2 the pool centres lie in the domain, the 3D geometry and
+    load rules via ``check_world``, the 2D load rules R3 and R4); the coupling keys.
+    """
+    wc, w, ph = cfg.weather, cfg.world, cfg.physics
+    bad: list[str] = []
+    # 0. Guards, before ``params_from_config`` computes ``dx = world.size / cells``.
+    if not (math.isfinite(w.size) and w.size > 0 and math.isfinite(w.field_cell) and w.field_cell > 0):
+        bad.append("weather needs a finite world.size > 0 and world.field_cell > 0")
+    n = wc.cells
+    if not (isinstance(n, int) and not isinstance(n, bool) and 8 <= n <= 1024):
+        bad.append(f"weather.cells must be an integer in [8, 1024], got {n!r}")
+    if len(wc.pools) % 7 != 0:
+        bad.append(
+            "weather.pools must hold 7 numbers per pool (x, y, sx, sy, amp, vx, vy), "
+            f"got {len(wc.pools)} values"
+        )
+    if not all(math.isfinite(x) for x in wc.pools):
+        bad.append("weather.pools must be finite numbers")
+    if bad:
+        return bad
+    p = params_from_config(cfg)
+    bad += p.validate()
+    d3 = w.dims == 3
+    # 2. World rules.
+    ratio = w.size / w.field_cell
+    if ratio == round(ratio) and round(ratio) > 0 and n % round(ratio) != 0:
+        bad.append(
+            f"rule W-1: weather.cells {n} must be a multiple of the field lattice FG = {round(ratio)} "
+            "(the rain is a block mean onto it)"
+        )
+    for i in range(0, len(wc.pools), 7):
+        x, y = wc.pools[i], wc.pools[i + 1]
+        if not (0.0 <= x < w.size and 0.0 <= y < w.size):
+            bad.append(
+                f"rule W-2: pool {i // 7} centre ({x:g}, {y:g}) must lie in [0, world.size = {w.size:g})"
+            )
+    if d3:
+        bad += check_world(p, cfg)
+    else:  # R3 and R4: the horizontal load rules, with the surface-layer factor absent (a = alpha0)
+        a = wc.alpha0
+        if ph.drag > 0:
+            speed = (ph.thrust_max + a * ph.drag * wc.u_max) / ph.drag
+            if not speed <= ph.v_max:
+                bad.append(
+                    f"rule 16 (2D): (thrust_max + alpha0*drag*u_max)/drag = {speed:.4g} must be <= "
+                    f"v_max = {ph.v_max:g}"
+                )
+        load = ph.thrust_max + a * ph.drag * wc.u_max
+        if not load < 2 * ph.radius * ph.k_repel:
+            bad.append(
+                f"rule R4 (2D): thrust_max + alpha0*drag*u_max = {load:.4g} must be < 2*radius*k_repel = "
+                f"{2 * ph.radius * ph.k_repel:.4g}"
+            )
+    # 4. Coupling keys.
+    if not 0.0 <= wc.storm_p <= 1.0:
+        bad.append(f"weather.storm_p must be in [0, 1], got {wc.storm_p}")
+    if not wc.storm_u0 >= 0.0:
+        bad.append(f"weather.storm_u0 must be >= 0, got {wc.storm_u0}")
+    if not wc.storm_span > 0.0:
+        bad.append(f"weather.storm_span must be > 0, got {wc.storm_span}")
+    if not (wc.storm_break_u == 0.0 or wc.storm_break_u >= wc.storm_u0):
+        bad.append(
+            f"weather.storm_break_u {wc.storm_break_u} must be 0 (off) or >= weather.storm_u0 "
+            f"{wc.storm_u0}: the threshold acts on the air speed including the layer-2 jet"
+        )
+    if not 0.0 <= wc.rain_floor <= 1.0:
+        bad.append(f"weather.rain_floor must be in [0, 1], got {wc.rain_floor}")
+    if not d3 and wc.rain_floor != 0.0:
+        bad.append(f"weather.rain_floor must be 0 in a 2D world (no layers), got {wc.rain_floor}")
+    if cfg.director.enabled and wc.rain_floor != 0.0:
+        bad.append(
+            "weather.rain_floor must be 0 when director.enabled: the floor K and the seasonal table do not "
+            f"carry the rain, got {wc.rain_floor}"
+        )
+    if not wc.rain_gain >= 0.0:
+        bad.append(f"weather.rain_gain must be >= 0, got {wc.rain_gain}")
+    elif wc.gamma > 0 and not wc.rain_gain * (wc.H1 + wc.H2 - 2.0 * p.h_min) / wc.gamma <= _INT_BOUND:
+        bad.append(
+            f"weather.rain_gain {wc.rain_gain:g} too large: rain_gain*(H1 + H2 - 2*h_min)/gamma must be "
+            "<= 2^30 (the int32 range of a column's rain)"
+        )
+    return bad
+
+
+# --- the wind the engine applies, and the update (W1 build step 2, DESIGN §30) ---------------------------
+
+
+class AgentForce(NamedTuple):
+    """The wind as the engine step uses it."""
+
+    force: mx.array  # (N, nd) float32: ``alpha·drag·u_air``, the drag force of the moving air
+    speed: mx.array  # (N,) float32: the air speed (clipped wind, jet included), not the agent's
+    breaks: mx.array | None  # (N,) bool: ``speed > storm_break_u``; None when ``storm_break_u == 0``
+    clip_bad: mx.array  # () bool: some alive row's wind was clipped (a health signal, W0 saw none)
+
+
+def agent_wind(
+    ws: WeatherState, pos: mx.array, buoy_cap: mx.array | None, alive: mx.array, cfg: Config
+) -> AgentForce:
+    """The wind force on every row at ``pos`` (start-of-step positions) from the stored weather ``ws``.
+
+    3D (``buoy_cap`` given): ``u_air`` is ``sample_wind`` at ``(x, y, z)`` and the coupling is ``alpha0 +
+    alpha1·buoy_cap``. 2D (``buoy_cap is None``): ``u_air`` is the layer-1 wind at ``(x, y)`` and the
+    coupling is ``alpha0`` (``alpha1`` is inert without a cap). The force is ``alpha·drag·u_air``:
+    ``physics.integrate`` divides it by the same ``drag``, so an unobstructed agent drifts at
+    ``alpha·u_air``. ``alive`` keeps dead rows out of the clip counts; their force is zeroed by the physics
+    (``survivor``).
+    """
+    p = params_from_config(cfg)
+    drag = cfg.physics.drag
+    if buoy_cap is not None:  # static: 3D
+        wf = wind_fields(ws, p)  # built once per step (module docstring: never twice in one graph)
+        aw = sample_wind(ws, pos, p, field_cell=cfg.world.field_cell, fields=wf, valid=alive)
+        a = alpha(buoy_cap, p)[:, None]
+    else:
+        aw = sample_wind_h(ws, pos, p, valid=alive)
+        a = p.alpha0
+    force = a * drag * aw.u
+    speed = mx.sqrt((aw.u * aw.u).sum(axis=-1))
+    breaks = speed > cfg.weather.storm_break_u if cfg.weather.storm_break_u > 0 else None
+    return AgentForce(force, speed, breaks, (aw.n_clip_h + aw.n_clip_w) > 0)
+
+
+def advance(ws: WeatherState, t: mx.array, key: mx.array, cfg: Config) -> tuple[WeatherState, WeatherDiag]:
+    """One weather step at engine step ``t`` (an int32 () array): the warm pools of step ``t``, ``qs = 1``,
+    no momentum forcing. ``key`` is the ``k_disturb`` key of the step's weather stream split. In W1 the result
+    depends on no agent array (DESIGN §30)."""
+    p = params_from_config(cfg)
+    fo = WeatherForcing(warm_pools(p, t), mx.ones((p.n, p.n), dtype=_F32))
+    return step(ws, fo, key, p)
+
+
+# The W0 health gate (STORMS_W0): hyperbolicity below this, and the local moisture ratio below 1.
+_HYPER_GATE: Final = 0.8
+
+
+def health(wd: WeatherDiag, wind: AgentForce) -> mx.array:
+    """() bool: any W0 health-gate quantity fires this step (limiter or clamp counters, hyperbolicity at the
+    gate, a local moisture ratio of 1) or a wind sample was clipped. Advisory, ``Diag.WEATHER_WARN``."""
+    bad = wind.clip_bad | (wd.hyper_max >= _HYPER_GATE) | (wd.eps_local_max >= 1.0)
+    for n in (
+        wd.n_limited,
+        wd.n_clamp,
+        wd.n_cond_limited,
+        wd.n_relax_limited,
+        wd.n_evap_limited,
+        wd.n_safety,
+    ):
+        bad = bad | (n > 0)
+    return bad
+
+
+# --- rain-fed regrowth (W1 build step 3, DESIGN §30) ------------------------------------------------------
+
+
+class RainIn(NamedTuple):
+    """What the resource field needs of the weather: three (n, n) float32 arrays on the weather grid."""
+
+    P: mx.array  # the rain rate of the last weather step
+    zi: mx.array  # the interface height ``H·h1/(h1 + h2)``: the condensation level
+    dc: mx.array  # the cloud depth ``D_c``
+
+
+def rain_in(ws: WeatherState, cfg: Config) -> RainIn:
+    """The rain, the condensation level and the cloud depth of ``ws`` (the state after a weather step)."""
+    return RainIn(ws.P, interface_height(ws, params_from_config(cfg)), ws.Dc)
+
+
+def rain_for(ws: WeatherState, cfg: Config) -> RainIn | None:
+    """``rain_in`` when rain feeds the resource (``rain_gain > 0``, static), else None: the field update and
+    ``K_est`` then take exactly the code path that has no rain term."""
+    return rain_in(ws, cfg) if cfg.weather.rain_gain > 0 else None
+
+
+def _blocks(a: mx.array, fg: int) -> mx.array:
+    """(n, n) -> (fg, r, fg, r) with ``r = n // fg`` (validate rule W-1: ``cells % fg == 0``)."""
+    r = a.shape[-1] // fg
+    return a.reshape(fg, r, fg, r)
+
+
+def rain_regen(rain: RainIn, cfg: Config) -> mx.array:
+    """The rain as integer regeneration quanta per field cell per step: ``(FG, FG)`` int32 in 2D, ``(FZ, FG,
+    FG)`` in 3D (§30; the term added to ``fields.regen_rate``).
+
+    The weather grid is reduced to the field lattice by 2x2 (``cells // FG``) blocks: the rain rate by its
+    mean, the condensation level and the cloud depth by their rain-weighted means (a block with one raining
+    cell takes that cell's level and depth). ``q = rain_gain·P`` is the column's food per step. 2D:
+    ``floor(q)``. 3D: the cloud occupies ``[zi, zi + dc]``; layer ``k`` (``[fc·k, fc·(k + 1)]``) has the
+    overlap fraction ``f_k`` and takes ``floor(q·f_k/Σf)``, so a column's food is ``rain_gain·P`` whatever
+    the cloud depth (less the floors: about half a quantum per used layer); ``rain_floor·q`` more goes to
+    layer 0. Reshapes and reductions only: no scatter, and nothing branches on an array value.
+    """
+    wc, w = cfg.weather, cfg.world
+    fg = round(w.size / w.field_cell)
+    pc = _blocks(rain.P, fg).mean(axis=(1, 3))
+    q = wc.rain_gain * pc
+    if w.dims != 3:  # static: one layer
+        return ops.floor_i32(q)
+    fz, fc = round(w.height / w.field_cell), w.field_cell
+    ps = _blocks(rain.P, fg).sum(axis=(1, 3))
+    den = mx.maximum(ps, 1e-30)
+    zi = _blocks(rain.P * rain.zi, fg).sum(axis=(1, 3)) / den
+    dc = _blocks(rain.P * rain.dc, fg).sum(axis=(1, 3)) / den
+    k = mx.arange(fz, dtype=_F32).reshape(fz, 1, 1)
+    frac = mx.clip((mx.minimum(zi + dc, fc * (k + 1.0)) - mx.maximum(zi, fc * k)) / fc, 0.0, 1.0)
+    share = frac / mx.maximum(frac.sum(axis=0), 1e-6)
+    out = ops.floor_i32(q * share)
+    if wc.rain_floor > 0:  # static: the floor layer's extra share
+        floor_q = ops.floor_i32(wc.rain_floor * q)
+        out = out + mx.concatenate([floor_q[None], mx.zeros((fz - 1, fg, fg), dtype=_I32)])
+    return out

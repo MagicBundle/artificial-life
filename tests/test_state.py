@@ -18,11 +18,13 @@ from alife.state import (
     N_LEDGER,
     R_HARD,
     V0_FIELDS,
+    V0_FIELDS_3D,
     CounterIdx,
     DeathCause,
     Diag,
     LedgerIdx,
     State,
+    State3,
     _initial_state,
     age,
     init_state,
@@ -32,6 +34,7 @@ from alife.state import (
     to_numpy,
     total_energy,
 )
+from alife.weather import N_WX
 from helpers import make_scene
 
 
@@ -87,6 +90,7 @@ def _expected_schema(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]
         "env_cat_center": ((2,), f32),
         "env_cat_radius": ((), f32),
         "env_cat_kill_p": ((), f32),
+        "wx": ((N_WX, d.wn, d.wn), f32),
     }
 
 
@@ -135,12 +139,40 @@ _V0 = (
 
 def test_field_order() -> None:
     assert _V0 == State._fields[:38] == V0_FIELDS and len(_V0) == 38
-    assert State._fields[38:] == ENV_FIELDS and len(ENV_FIELDS) == 9 and len(State._fields) == 47
+    assert State._fields[38:47] == ENV_FIELDS and len(ENV_FIELDS) == 9 and len(State._fields) == 48
+    assert State._fields[47] == "wx"
     assert (
         tuple(f"env_{n}" for n in State.env.fget(init_state(load_config(preset="tiny")))._fields)
         == ENV_FIELDS
     )
     assert AGENT_FIELDS[-1] == "W2" and len(AGENT_FIELDS) == 24
+
+
+# The 49 State3 fields before `wx`: frozen, because `legacy_state_digest_3d` (and GOLDEN_3D) hash exactly
+# these. Written out a second time here on purpose: the list in `state.py` must not drift with the type.
+_V0_3D = (
+    *_V0,
+    "env_regen_mult",
+    "env_season_amp",
+    "env_season_period",
+    "env_drift_mult",
+    "env_patch_gain",
+    "env_imm_request",
+    "env_cat_center",
+    "env_cat_radius",
+    "env_cat_kill_p",
+    "pitch",
+    "buoy_cap",
+)
+
+
+def test_frozen_3d_field_list() -> None:
+    assert V0_FIELDS_3D == _V0_3D and len(_V0_3D) == 49 and len(set(_V0_3D)) == 49
+    assert set(_V0_3D) <= set(State3._fields)
+    assert [f for f in State3._fields if f not in _V0_3D] == ["wx"]  # the one field added since
+    assert State3._fields[:48] == State._fields and State3._fields[47] == "wx"
+    # the 2D list is still the first 38 fields: neither wx nor env_* is in it
+    assert "wx" not in V0_FIELDS and not set(ENV_FIELDS) & set(V0_FIELDS)
 
 
 @pytest.mark.parametrize("preset", ["tiny", "dev", "64k", "256k"])
@@ -276,10 +308,11 @@ def test_enums() -> None:
     assert CounterIdx.DEATHS_CATASTROPHE == 26
     assert CounterIdx.BOND_PROPOSERS == 25 and CounterIdx.V_CLIPS == 20 and CounterIdx.KIN_BOND_SUM == 23
     assert (DeathCause.STARVED, DeathCause.KILLED, DeathCause.AGED, DeathCause.CATASTROPHE) == (0, 1, 2, 3)
+    assert DeathCause.STORM == 4 and len(DeathCause) == 5  # the weather hazard (W1, DESIGN §30)
     assert Diag.LEDGER == 1 and Diag.POS_RANGE == 256 and Diag.INT_HEADROOM == 64
-    assert Diag.CELL_OVERFLOW_WARN == 1 << 16 and Diag.VCLIP_WARN == 1 << 17
+    assert Diag.CELL_OVERFLOW_WARN == 1 << 16 and Diag.VCLIP_WARN == 1 << 17 and Diag.WEATHER_WARN == 1 << 18
     errors = [f for f in Diag if f & ERROR_MASK]
-    assert len(errors) == 9 and not (Diag.CELL_OVERFLOW_WARN & ERROR_MASK)
+    assert len(errors) == 9 and not ((Diag.CELL_OVERFLOW_WARN | Diag.WEATHER_WARN) & ERROR_MASK)
     assert R_HARD == (1 << 24) - 1
 
 

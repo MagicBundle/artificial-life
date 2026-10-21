@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import mlx.core as mx
 
-from alife import layout, ops
+from alife import layout, ops, weather
 from alife.config import Config, dims, seasons_on
 
 if TYPE_CHECKING:  # state imports this module; the annotation alone must not create an import cycle
@@ -102,17 +102,26 @@ def vertical_profile(cfg: Config) -> mx.array:
 
 
 def regen_rate(
-    patch_pos: mx.array, cfg: Config, step: mx.array | None = None, env: Env | None = None
+    patch_pos: mx.array,
+    cfg: Config,
+    step: mx.array | None = None,
+    env: Env | None = None,
+    rain: weather.RainIn | None = None,
 ) -> mx.array:
     """Per-cell regeneration ``floor(regen_max·fertility)``, (FG,FG) int32 (seasonal at ``step`` if given).
 
     With ``env`` the product is scaled by ``env.regen_mult`` after ``regen_max·fertility``, so 1.0 is exact.
-    In 3D it has the fertility's shape (FZ,FG,FG) (§27.5).
+    In 3D it has the fertility's shape (FZ,FG,FG) (§27.5). With ``rain`` (the weather's, None when weather is
+    off or ``rain_gain`` is 0) the integer ``weather.rain_regen`` is added after the floor: the director's
+    regeneration lever does not scale it (§30).
     """
     rate = cfg.fields.regen_max * fertility(patch_pos, cfg, step, env)
     if env is not None:  # static: director enabled
         rate = rate * env.regen_mult
-    return ops.floor_i32(rate)
+    base = ops.floor_i32(rate)
+    if rain is not None:  # static: rain feeds the resource
+        return base + weather.rain_regen(rain, cfg)
+    return base
 
 
 def cell_index(pos: mx.array, cfg: Config) -> mx.array:
@@ -308,17 +317,19 @@ def update_resource(
     cfg: Config,
     step: mx.array | None = None,
     env: Env | None = None,
+    rain: weather.RainIn | None = None,
 ) -> tuple[mx.array, mx.array]:
     """Regenerate then integer-diffuse the resource: ``(resource', inc (FG,FG) int32)`` (§13.2, §10.2).
 
     ``inc = clip(min(regen_rate, resource_cap − R), 0, ∞)`` (``INJECT_REGEN = Σ inc``), so regeneration stops
     at ``resource_cap``; the exact flux stencil ``ops.int_diffuse`` then conserves the total. ``step`` (the
     step index during the step) selects the seasonal weights; it is ignored with seasons off. ``env`` is the
-    director's live levers (None when the director is off). In 3D both are (FZ,FG,FG) and the stencil is
+    director's live levers (None when the director is off); ``rain`` is the weather's rain term for
+    ``regen_rate`` (``INJECT_REGEN`` then books it, §30). In 3D both are (FZ,FG,FG) and the stencil is
     ``ops.int_diffuse_3d``, with no flux through the floor and the surface (§27.6).
     """
     fi = cfg.fields
-    inc = mx.maximum(mx.minimum(regen_rate(patch_pos, cfg, step, env), fi.resource_cap - resource), 0)
+    inc = mx.maximum(mx.minimum(regen_rate(patch_pos, cfg, step, env, rain), fi.resource_cap - resource), 0)
     if dims(cfg).d3:
         return ops.int_diffuse_3d(resource + inc, fi.resource_diffusion_q8), inc
     return ops.int_diffuse(resource + inc, fi.resource_diffusion_q8), inc

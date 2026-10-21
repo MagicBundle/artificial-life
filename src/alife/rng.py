@@ -15,12 +15,14 @@ from typing import Final
 import mlx.core as mx
 
 NUM_STREAMS: Final = 16
-RNG_LAYOUT_VERSION: Final = 2  # 2: Stream.CATASTROPHE took reserved index 8 (the key layout is unchanged)
-RNG_COMPATIBLE_VERSIONS: Final = frozenset({1, 2})  # layout versions whose checkpoints this code resumes
+# 2: Stream.CATASTROPHE took reserved index 8; 3: Stream.WEATHER took reserved index 9. The key layout
+# is unchanged by both.
+RNG_LAYOUT_VERSION: Final = 3
+RNG_COMPATIBLE_VERSIONS: Final = frozenset({1, 2, 3})  # layout versions whose checkpoints this code resumes
 
 
 class Stream(IntEnum):
-    """Per-step streams ``ks[Stream.X]``; indices 9–15 are reserved."""
+    """Per-step streams ``ks[Stream.X]``; indices 10–15 are reserved."""
 
     NOISE = 0
     BOND_PRIO = 1
@@ -31,6 +33,7 @@ class Stream(IntEnum):
     MUT_GENES = 6
     IMMIGRANT = 7
     CATASTROPHE = 8
+    WEATHER = 9  # W1: split in two statically, the weather disturbance key and the storm hazard key
 
 
 class InitStream(IntEnum):

@@ -47,8 +47,10 @@ class Window:
     n_alive_min: float | None  # lowest per-step population in the window
     n_alive_last: float | None  # the last row's mean population
     births: int
-    deaths: int  # starved + killed + aged + catastrophe
-    kill_share: float | None  # deaths_killed / deaths, catastrophe deaths in the denominator
+    deaths: int  # starved + killed + aged + catastrophe + storm
+    kill_share: (
+        float | None
+    )  # deaths_killed / deaths, every cause (starved, aged, catastrophe, storm) in the denominator
     emitters_frac: float | None
     sharers_frac: float | None
     bonds_per_agent: float | None
@@ -96,7 +98,9 @@ def aggregate(rows: Sequence[Mapping[str, Any]]) -> Window:
     steps = sum(r.get("steps") or 1 for r in rows)
     killed = sum(r.get("deaths_killed", 0) for r in rows)
     deaths = killed + sum(
-        r.get(k, 0) for r in rows for k in ("deaths_starved", "deaths_aged", "deaths_catastrophe")
+        r.get(k, 0)
+        for r in rows
+        for k in ("deaths_starved", "deaths_aged", "deaths_catastrophe", "deaths_storm")
     )
     lows = [v for r in rows if (v := r.get("n_alive_min", r.get("n_alive"))) is not None]
     n_last = rows[-1].get("n_alive")

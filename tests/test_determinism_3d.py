@@ -2,7 +2,8 @@
 
 Same seed → identical state digests; different seeds → different digests; ``runtime_checks`` only touches
 ``diag``; compiled and eager steps agree; and the 3D golden digest of ``tiny3d_cfg`` after 50 steps
-(``golden``), over ``state_digest`` (every field of ``State3``; ``legacy_state_digest`` is 2D only).
+(``golden``), over ``legacy_state_digest_3d``: the 49 fields ``State3`` had before ``wx`` (DESIGN §30), so
+adding the trajectory-neutral weather field did not move the pin and ``GOLDEN_3D`` was not re-pinned.
 """
 
 from __future__ import annotations
@@ -14,13 +15,23 @@ import numpy as np
 import pytest
 
 from alife.config import Config, apply_overrides
-from alife.state import LedgerIdx, State3, init_state, n_counters, state_digest, to_numpy
+from alife.state import (
+    LedgerIdx,
+    State3,
+    init_state,
+    legacy_state_digest_3d,
+    n_counters,
+    state_digest,
+    to_numpy,
+)
 from alife.step import make_step
 
 STEPS = 50
 
 # The 3D digest of ``tiny3d_cfg`` after 50 compiled steps, buoyancy on (so ``HEAT_BUOYANCY`` is in the pin).
 # It is only meaningful for the MLX version and platform it was recorded on; anywhere else the test skips.
+# The value is over ``legacy_state_digest_3d`` (the 49 pre-weather fields), which for an unchanged trajectory
+# is the ``state_digest`` it was recorded with: it was not re-pinned when ``wx`` was added.
 # An empty digest is not pinned yet: on the pinned platform the test skips and prints the digest to record.
 GOLDEN_3D = {
     "mlx": "0.32.3",
@@ -100,7 +111,7 @@ def test_golden_3d(base_run) -> None:
         pytest.skip(f"3D golden digest pinned for MLX {GOLDEN_3D['mlx']} on {GOLDEN_3D['platform']}")
     s = base_run[0]
     assert int(to_numpy(s.ledger_cum)[LedgerIdx.HEAT_BUOYANCY]) > 0
-    digest = state_digest(s)
+    digest = legacy_state_digest_3d(s)
     if not GOLDEN_3D["digest"]:
         pytest.skip(f"3D golden digest not pinned yet: record {digest} in GOLDEN_3D (DESIGN §27.8)")
     assert digest == GOLDEN_3D["digest"]
