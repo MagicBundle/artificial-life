@@ -98,7 +98,7 @@ S8 costs, S10 harvest, S11 combat, S12 share.
 |---|---|---|---|
 | Natural-language command | persona `architect` and `director.goal` (the precedent); `director/llm.py` strict `json_schema`; `llm.clean_text` | A new intent schema (§7.1). The LLM parses the player's text into an intent vector and never chooses parameters. | Medium. |
 | Intent → parameters | `director/actions.py` `clamp`, `validate_entry`, `apply`; `rules.eligibility` | A deterministic compiler (`COMPILER_VERSION`). Its proposals are eligibility-checked and clamped at landing (§5.3). | Medium. Pure Python, unit-tested. |
-| New live levers | `GAME_MENU` and `GAME_SPECS` (used only in game worlds); new `env_*` fields read under the static `cfg.director.enabled` (`step.py`); `invariants.ENV_*` | `env_attack_mult`, `env_share_q8`, `env_basal_mult` and `env_mut_mult`, plus a `regen_set` action (§5.4). `MENU`, the yoked sampler and the existing prompts stay byte-identical. | High. Dynamics, ledger tests, State3 loading (the 3D golden is frozen by W1, §5.4). |
+| New live levers | `GAME_MENU` and `GAME_SPECS` (used only in game worlds); new `env_*` fields read under the static `cfg.director.enabled` (`step.py`); `invariants.ENV_*` | `env_attack_mult`, `env_share_q8`, `env_basal_mult` and `env_mut_mult`, plus a `regen_set` action (§5.4). `MENU`, the yoked sampler and the existing prompts stay byte-identical. | High. Dynamics, ledger tests, State3 loading (the 3D golden is frozen by W1, §5.4; `death_causes(cfg)` keeps the observer's cause rows apart from `STORM`, DESIGN §30.7). |
 | Era change | fork (`run --init-from RUN:STEP --set …`); `config_hash` | A config-only change is planned as a fork at a chapter boundary. The fork recompiles (4.5–5.9 s) and must re-apply the env (§8.2). | Low (exists); Medium (UX). |
 | Influence | `director/pacing.py` (`BUDGET_WINDOW`, cooldowns, `drama`); `MENU` `Spec` rows; `rules.PersonaParams` | Player entries get their own pacing scope in game time, from a `GAME_SPECS` table (§5.5). | Medium. Clamp, validation, fold and cooldowns take the spec table as a parameter. |
 | Tension curve | counters `DEATHS_KILLED`, `ATTACKS`, `BIRTHS`; `Vitals.fall` | A new `intensity` vital (an EMA of the kill and death rate, as in Left 4 Dead), steered by `game_master` within the system budget. | Medium. |
@@ -198,7 +198,9 @@ they move to G2.
 own-index contract), the birth lanes `born_row`, `born_parent` and `born_uid`, and the flag bits `PROPOSED` and `KILLED`.
 The parent row travels in `Acts` (`born_parent`), not in `BirthRecords.parent_slot`: a new `BirthRecords` field would
 change the event files of every run. The S12 partner is still not in the channel. The roster (§6.2, §6.3) adds one more
-field, `death_cause` (the S14 cause of every row that died, which the capped death records cannot give).
+field, `death_cause` (the S14 cause of every row that died, which the capped death records cannot give). With the storm
+weather (W1, DESIGN §30.7) a fifth cause, `storm`, exists: `social.death_causes(cfg)` adds its row to the window counts only
+when `weather.enabled`, and a weather-off run's sidecar and social log keep their G2 bytes.
 
 ### 4.3 Accumulators
 
