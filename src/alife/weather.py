@@ -1375,3 +1375,64 @@ def health(wd: WeatherDiag, wind: AgentForce) -> mx.array:
     ):
         bad = bad | (n > 0)
     return bad
+
+
+# --- rain-fed regrowth (W1 build step 3, DESIGN §30) ------------------------------------------------------
+
+
+class RainIn(NamedTuple):
+    """What the resource field needs of the weather: three (n, n) float32 arrays on the weather grid."""
+
+    P: mx.array  # the rain rate of the last weather step
+    zi: mx.array  # the interface height ``H·h1/(h1 + h2)``: the condensation level
+    dc: mx.array  # the cloud depth ``D_c``
+
+
+def rain_in(ws: WeatherState, cfg: Config) -> RainIn:
+    """The rain, the condensation level and the cloud depth of ``ws`` (the state after a weather step)."""
+    return RainIn(ws.P, interface_height(ws, params_from_config(cfg)), ws.Dc)
+
+
+def rain_for(ws: WeatherState, cfg: Config) -> RainIn | None:
+    """``rain_in`` when rain feeds the resource (``rain_gain > 0``, static), else None: the field update and
+    ``K_est`` then take exactly the code path that has no rain term."""
+    return rain_in(ws, cfg) if cfg.weather.rain_gain > 0 else None
+
+
+def _blocks(a: mx.array, fg: int) -> mx.array:
+    """(n, n) -> (fg, r, fg, r) with ``r = n // fg`` (validate rule W-1: ``cells % fg == 0``)."""
+    r = a.shape[-1] // fg
+    return a.reshape(fg, r, fg, r)
+
+
+def rain_regen(rain: RainIn, cfg: Config) -> mx.array:
+    """The rain as integer regeneration quanta per field cell per step: ``(FG, FG)`` int32 in 2D, ``(FZ, FG,
+    FG)`` in 3D (§30; the term added to ``fields.regen_rate``).
+
+    The weather grid is reduced to the field lattice by 2x2 (``cells // FG``) blocks: the rain rate by its
+    mean, the condensation level and the cloud depth by their rain-weighted means (a block with one raining
+    cell takes that cell's level and depth). ``q = rain_gain·P`` is the column's food per step. 2D:
+    ``floor(q)``. 3D: the cloud occupies ``[zi, zi + dc]``; layer ``k`` (``[fc·k, fc·(k + 1)]``) has the
+    overlap fraction ``f_k`` and takes ``floor(q·f_k/Σf)``, so a column's food is ``rain_gain·P`` whatever
+    the cloud depth (less the floors: about half a quantum per used layer); ``rain_floor·q`` more goes to
+    layer 0. Reshapes and reductions only: no scatter, and nothing branches on an array value.
+    """
+    wc, w = cfg.weather, cfg.world
+    fg = round(w.size / w.field_cell)
+    pc = _blocks(rain.P, fg).mean(axis=(1, 3))
+    q = wc.rain_gain * pc
+    if w.dims != 3:  # static: one layer
+        return ops.floor_i32(q)
+    fz, fc = round(w.height / w.field_cell), w.field_cell
+    ps = _blocks(rain.P, fg).sum(axis=(1, 3))
+    den = mx.maximum(ps, 1e-30)
+    zi = _blocks(rain.P * rain.zi, fg).sum(axis=(1, 3)) / den
+    dc = _blocks(rain.P * rain.dc, fg).sum(axis=(1, 3)) / den
+    k = mx.arange(fz, dtype=_F32).reshape(fz, 1, 1)
+    frac = mx.clip((mx.minimum(zi + dc, fc * (k + 1.0)) - mx.maximum(zi, fc * k)) / fc, 0.0, 1.0)
+    share = frac / mx.maximum(frac.sum(axis=0), 1e-6)
+    out = ops.floor_i32(q * share)
+    if wc.rain_floor > 0:  # static: the floor layer's extra share
+        floor_q = ops.floor_i32(wc.rain_floor * q)
+        out = out + mx.concatenate([floor_q[None], mx.zeros((fz - 1, fg, fg), dtype=_I32)])
+    return out

@@ -53,13 +53,19 @@ def cached_states(out_dir: Path) -> list[tuple[int, Path]]:
 
 
 def compare_row(
-    stored: dict[str, Any], counters: list[mx.array], ledgers: list[mx.array], total: int, *, nd: int = 2
+    stored: dict[str, Any],
+    counters: list[mx.array],
+    ledgers: list[mx.array],
+    total: int,
+    *,
+    nd: int = 2,
+    weather: bool = False,
 ) -> list[str]:
-    """Keys whose recomputed value differs from ``stored`` (interval keys plus ``E_total``); ``nd`` is the
-    run's dims (``metrics.interval_row``)."""
+    """Keys whose recomputed value differs from ``stored`` (interval keys plus ``E_total``); ``nd`` and
+    ``weather`` are the run's dims and ``weather.enabled`` (``metrics.interval_row``)."""
     c = to_numpy(mx.stack(counters))
     lg = to_numpy(mx.stack(ledgers))
-    row = metrics.interval_row(int(stored["step"]), c, lg, {}, {}, nd=nd)
+    row = metrics.interval_row(int(stored["step"]), c, lg, {}, {}, nd=nd, weather=weather)
     bad = [k for k, v in row.items() if k not in _PERF_KEYS and k in stored and stored[k] != v]
     if "E_total" in stored and stored["E_total"] != total:
         bad.append("E_total")
@@ -113,7 +119,14 @@ def resimulate(
         stored = rows.get(t)
         if stored is not None:
             if stored["steps"] == len(counters):
-                bad = compare_row(stored, counters, ledgers, int(to_numpy(state.total)), nd=dims(cfg).nd)
+                bad = compare_row(
+                    stored,
+                    counters,
+                    ledgers,
+                    int(to_numpy(state.total)),
+                    nd=dims(cfg).nd,
+                    weather=cfg.weather.enabled,
+                )
                 if bad:
                     raise ResimMismatch(f"step {t}: re-simulated values differ from metrics.jsonl in {bad}")
                 checked += 1

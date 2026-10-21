@@ -39,7 +39,17 @@ from alife import step as step_mod
 from alife.actions import Actions
 from alife.config import BRAIN_IMPLS, WEIGHT_DTYPES, Config, config_hash, dims
 from alife.rng import Stream, step_keys
-from alife.state import ERROR_MASK, CounterIdx, Diag, State, age, init_state, state_digest, to_numpy
+from alife.state import (
+    ERROR_MASK,
+    CounterIdx,
+    Diag,
+    State,
+    age,
+    init_state,
+    state_digest,
+    storm_counter_index,
+    to_numpy,
+)
 
 DONATION_STEPS: Final = 10
 DONATION_LIMIT: Final = 0.25  # healthy when a copying step peaks > 0.25 × bytes(W1 + W2) higher (§15.4)
@@ -215,6 +225,7 @@ def _throughput(fn: Callable[[State], Any], cfg: Config, steps: int, warmup: int
             + c[CounterIdx.DEATHS_KILLED]
             + c[CounterIdx.DEATHS_AGED]
             + c[CounterIdx.DEATHS_CATASTROPHE]
+            + (c[storm_counter_index(dims(cfg).nd)] if cfg.weather.enabled else 0)
         ),
         **_diag_report(int(to_numpy(s.diag))),
         "invariants_ok": not problems,

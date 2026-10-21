@@ -128,7 +128,13 @@ def _concat(chunks: list[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
 
 
 def _status_line(row: dict[str, Any]) -> str:
-    deaths = row["deaths_starved"] + row["deaths_killed"] + row["deaths_aged"] + row["deaths_catastrophe"]
+    deaths = (
+        row["deaths_starved"]
+        + row["deaths_killed"]
+        + row["deaths_aged"]
+        + row["deaths_catastrophe"]
+        + row.get("deaths_storm", 0)
+    )
     sps = row.get("steps_per_s")
     parts = [
         f"step {row['step']}",
@@ -256,7 +262,15 @@ def run(
             deaths.append(_records(host, "deaths"))
             snap = metrics.snapshot_metrics(state, cfg, heavy=t % he == 0)
             perf = {"wall_s": wall, "peak_mem_gb": mx.get_peak_memory() / 1e9}
-            row = metrics.interval_row(t, host["counters"], host["ledgers"], snap, perf, nd=dims(cfg).nd)
+            row = metrics.interval_row(
+                t,
+                host["counters"],
+                host["ledgers"],
+                snap,
+                perf,
+                nd=dims(cfg).nd,
+                weather=cfg.weather.enabled,
+            )
             if first_row:
                 row["carrying_capacity_est"] = metrics.carrying_capacity(state, cfg)
                 first_row = False

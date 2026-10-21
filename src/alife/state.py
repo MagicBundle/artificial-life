@@ -106,8 +106,15 @@ class Counter3D(IntEnum):
     GROUNDED = 29  # alive agents grounded at the start of the step (physics.grounded)
 
 
-def n_counters(nd: int) -> int:
-    """The length of ``StepOut.counters`` in an ``nd``-dimensional world: 27 in 2D, 30 in 3D."""
+def n_counters(nd: int, weather: bool = False) -> int:
+    """The length of ``StepOut.counters`` in an ``nd``-dimensional world: 27 in 2D, 30 in 3D, one more with
+    the weather layer on (``DEATHS_STORM``, the last entry, §30)."""
+    return N_COUNTERS + (len(Counter3D) if nd == 3 else 0) + (1 if weather else 0)
+
+
+def storm_counter_index(nd: int) -> int:
+    """The index of ``DEATHS_STORM`` in a weather-on ``StepOut.counters``: last, after ``Counter3D`` in 3D, so
+    no existing index moves (27 in 2D, 30 in 3D)."""
     return N_COUNTERS + (len(Counter3D) if nd == 3 else 0)
 
 
@@ -138,6 +145,7 @@ class DeathCause(IntEnum):
     KILLED = 1
     AGED = 2
     CATASTROPHE = 3  # director catastrophe (env.cat_*), only for agents that would otherwise have survived
+    STORM = 4  # weather hazard (weather.storm_*), only for agents that would otherwise have survived
 
 
 class State(NamedTuple):

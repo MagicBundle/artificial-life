@@ -96,7 +96,9 @@ def aggregate(rows: Sequence[Mapping[str, Any]]) -> Window:
     steps = sum(r.get("steps") or 1 for r in rows)
     killed = sum(r.get("deaths_killed", 0) for r in rows)
     deaths = killed + sum(
-        r.get(k, 0) for r in rows for k in ("deaths_starved", "deaths_aged", "deaths_catastrophe")
+        r.get(k, 0)
+        for r in rows
+        for k in ("deaths_starved", "deaths_aged", "deaths_catastrophe", "deaths_storm")
     )
     lows = [v for r in rows if (v := r.get("n_alive_min", r.get("n_alive"))) is not None]
     n_last = rows[-1].get("n_alive")

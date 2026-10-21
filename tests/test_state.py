@@ -308,6 +308,7 @@ def test_enums() -> None:
     assert CounterIdx.DEATHS_CATASTROPHE == 26
     assert CounterIdx.BOND_PROPOSERS == 25 and CounterIdx.V_CLIPS == 20 and CounterIdx.KIN_BOND_SUM == 23
     assert (DeathCause.STARVED, DeathCause.KILLED, DeathCause.AGED, DeathCause.CATASTROPHE) == (0, 1, 2, 3)
+    assert DeathCause.STORM == 4 and len(DeathCause) == 5  # the weather hazard (W1, DESIGN §30)
     assert Diag.LEDGER == 1 and Diag.POS_RANGE == 256 and Diag.INT_HEADROOM == 64
     assert Diag.CELL_OVERFLOW_WARN == 1 << 16 and Diag.VCLIP_WARN == 1 << 17 and Diag.WEATHER_WARN == 1 << 18
     errors = [f for f in Diag if f & ERROR_MASK]

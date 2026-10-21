@@ -13,7 +13,7 @@ from typing import Any, Final
 import mlx.core as mx
 import numpy as np
 
-from alife import fields, layout, ops, rng
+from alife import fields, layout, ops, rng, weather
 from alife.config import Config, dims, is_3d
 from alife.state import (
     ENV_FIELDS,
@@ -26,6 +26,7 @@ from alife.state import (
     ledger_names,
     n_counters,
     sinks,
+    storm_counter_index,
     to_numpy,
 )
 
@@ -372,6 +373,7 @@ def interval_row(
     perf: Mapping[str, float],
     *,
     nd: int = 2,
+    weather: bool = False,
 ) -> dict[str, Any]:
     """One ``metrics.jsonl`` row from stacked counters (T,27), ledgers (T,16) and a snapshot (§19.2).
 
@@ -384,9 +386,11 @@ def interval_row(
     ``z_floor_clamps`` and ``z_surface_clamps`` (interval sums), ``grounded_frac`` (``GROUNDED``, the agents
     that were grounded at the start of a step and survived it, over the ``N_ALIVE`` steps: the share of
     agent-steps spent grounded, in [0, 1] whatever dies) and ``buoy_heat`` (the interval sum of ledger
-    slot 15, ``HEAT_BUOYANCY``), after ``v_clips`` (§27.9).
+    slot 15, ``HEAT_BUOYANCY``), after ``v_clips`` (§27.9). ``weather`` (the run's ``weather.enabled``) adds
+    the last counter, ``DEATHS_STORM``, to the expected width and ``deaths_storm`` (interval sum) to the row
+    after ``child_bonds``; a weather-off row has neither (§30).
     """
-    width = n_counters(nd)
+    width = n_counters(nd, weather)
     c = np.asarray(counters, dtype=np.int64)
     if c.ndim == 2 and c.shape[1] != width:
         raise ValueError(f"counters have {c.shape[1]} columns, a {nd}D world has {width}")
@@ -409,6 +413,8 @@ def interval_row(
         "n_alive_min": int(c[:, CounterIdx.N_ALIVE].min()) if t else None,
     }
     row.update({name: int(cs[idx]) for name, idx in _SUMMED})
+    if weather:  # DEATHS_STORM is the last counter (storm_counter_index), right after child_bonds in the row
+        row["deaths_storm"] = int(cs[storm_counter_index(nd)])
     row.update(
         {
             "bonds_total": _ratio(int(cs[CounterIdx.BONDS_TOTAL]), t),
@@ -493,9 +499,16 @@ def layer_occupancy_weights(s: State3, cfg: Config) -> np.ndarray:
     return np.minimum(1.0, d.fz * p)
 
 
+def rain_of(s: State | State3, cfg: Config) -> weather.RainIn | None:
+    """The rain term the state's last step fed the resource with, rebuilt from the stored ``wx`` (``P``,
+    ``Dc``, ``h1``, ``h2``): None with weather off or ``rain_gain == 0`` (§30)."""
+    return weather.rain_for(weather.unpack(s.wx), cfg) if cfg.weather.enabled else None
+
+
 def _layer_regen(s: State | State3, cfg: Config, step: mx.array | None, env: Env | None) -> np.ndarray:
-    """Integer regeneration per field cell, ``regen_rate``'s: (FG, FG) in 2D, (FZ, FG, FG) in 3D."""
-    return to_numpy(fields.regen_rate(s.patch_pos, cfg, step, env)).astype(np.int64)
+    """Integer regeneration per field cell, ``regen_rate``'s: (FG, FG) in 2D, (FZ, FG, FG) in 3D. With the
+    weather's rain on it includes the rain of the state's last step, exactly (``rain_of``)."""
+    return to_numpy(fields.regen_rate(s.patch_pos, cfg, step, env, rain_of(s, cfg))).astype(np.int64)
 
 
 def _c_ref(cfg: Config) -> float:

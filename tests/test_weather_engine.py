@@ -67,6 +67,11 @@ def _run(c: Config, steps: int, *, compile: bool, s0=None):
     return digs, np.stack(cnts), np.stack(leds), s
 
 
+def _same_counters(off: np.ndarray, on: np.ndarray) -> bool:
+    """The weather-on counters are the weather-off ones plus the last entry, ``DEATHS_STORM`` (0 here)."""
+    return on.shape[1] == off.shape[1] + 1 and np.array_equal(off, on[:, :-1]) and not on[:, -1].any()
+
+
 # --- the inert-on identity (spec §9.1) ----------------------------------------------------------------------
 
 
@@ -75,7 +80,7 @@ def test_inert_weather_on_is_the_weather_off_engine_eager(cfg: Config) -> None:
     a = _run(_off(cfg), 20, compile=False)
     b = _run(_inert(cfg), 20, compile=False)
     assert a[0] == b[0]
-    assert np.array_equal(a[1], b[1]) and np.array_equal(a[2], b[2])
+    assert _same_counters(a[1], b[1]) and np.array_equal(a[2], b[2])
     assert int(to_numpy(b[3].diag)) == 0  # the health gate stays quiet on a calm start
     assert not np.array_equal(to_numpy(a[3].wx), to_numpy(b[3].wx))  # the weather did advance
 
@@ -84,7 +89,7 @@ def test_inert_weather_on_is_the_weather_off_engine_compiled(cfg: Config) -> Non
     a = _run(_off(cfg), STEPS, compile=True)
     b = _run(_inert(cfg), STEPS, compile=True)
     assert a[0] == b[0]
-    assert np.array_equal(a[1], b[1]) and np.array_equal(a[2], b[2])
+    assert _same_counters(a[1], b[1]) and np.array_equal(a[2], b[2])
     assert not np.array_equal(to_numpy(a[3].wx), to_numpy(b[3].wx))
 
 

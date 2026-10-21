@@ -63,7 +63,8 @@ _I64 = mx.int64
 
 
 class StepOut(NamedTuple):
-    counters: mx.array  # (n_counters(nd),) int32: CounterIdx (§19.1), then Counter3D in 3D (§27.8)
+    # (n_counters(nd, weather),) int32: CounterIdx (§19.1), Counter3D in 3D (§27.8), DEATHS_STORM (§30)
+    counters: mx.array
     ledger: mx.array  # (16,) int64, this step's ledger (LedgerIdx, §10.8)
     births: BirthRecords
     deaths: DeathRecords
@@ -180,6 +181,8 @@ def step(
     act = actions.mask(act, c.solvent)
 
     flag = act.release | (geom.length > cfg.bonds.break_length)  # S9
+    if wthr and wind.breaks is not None:  # static: storm_break_u > 0, an explicit air-speed threshold (§30)
+        flag = flag | wind.breaks[:, None]
     partner, rev, broken = bonds.break_bonds(s.partner, s.rev, flag & geom.valid)
     partner, rev, formed, as_prop = bonds.form_bonds(
         partner, rev, s.alive & c.solvent & act.bond_want, act.bond_target, ks[Stream.BOND_PRIO]
@@ -200,6 +203,9 @@ def step(
         if env is not None
         else None
     )
+    # The hazard mask is built every step weather is on, even at storm_p = 0 (all false), so the stream use
+    # does not depend on the lever.
+    storm = lifecycle.storm_mask(wind.speed, s.alive, kw[1], cfg) if wthr else None
     dt = lifecycle.deaths(
         s.alive,
         c.solvent,
@@ -215,6 +221,7 @@ def step(
         fcell,
         cfg,
         cat_mask=cat_mask,
+        storm_mask=storm,
     )  # S14
 
     sv = dt.survivor  # S15
@@ -255,11 +262,16 @@ def step(
 
     dep = fields.deposit_chem(act.emit, fcell, c.solvent, cfg)  # S17
     chem = fields.update_chem(s2.chem, dep, cfg)
-    resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env)
+    rain = None
+    if (
+        wthr
+    ):  # static: advance the weather (it reads no agent array: DESIGN §30); the new rain feeds the field
+        ws2, wd = weather.advance(ws, t, kw[0], cfg)
+        rain = weather.rain_for(ws2, cfg)  # None when rain_gain == 0
+    resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env, rain)
     patch_pos = fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env)
     s2 = s2._replace(chem=chem, resource=resource, patch_pos=patch_pos, key=key_next, step=t + 1)
-    if wthr:  # static: advance the weather (it reads no agent array: DESIGN §30)
-        ws2, wd = weather.advance(ws, t, kw[0], cfg)
+    if wthr:  # static
         s2 = s2._replace(wx=weather.pack(ws2))
     if env is not None:  # static: director enabled
         s2 = consume_env(s2, env, lanes)
@@ -389,7 +401,8 @@ def _kin_sum(desc: mx.array, k: mx.array, rows: mx.array) -> mx.array:
 
 
 def _counters(s_new: State, alive0: mx.array, f: _Flows, cfg: Config) -> mx.array:
-    """The (27,) int32 per-step counters of §19.1; ``alive0`` is the start-of-step ``alive``.
+    """The (27,) int32 per-step counters of §19.1; ``alive0`` is the start-of-step ``alive``. With weather on
+    ``DEATHS_STORM`` is appended last (28 in 2D, 31 in 3D, ``state.n_counters(nd, True)``).
 
     In 3D the three ``Counter3D`` counts follow (30,): the floor and surface clamps of this step's integration
     and the agents that were grounded at its start and survived it (§27.8: a row that died this step is not
@@ -443,6 +456,10 @@ def _counters(s_new: State, alive0: mx.array, f: _Flows, cfg: Config) -> mx.arra
             Counter3D.GROUNDED: count(f.grounded & alive0 & ~dt.dead),
         }
         counters = mx.concatenate([counters, mx.stack([extra[i].astype(_I32) for i in Counter3D])])
+    if cfg.weather.enabled:  # static: DEATHS_STORM, last, so no index moves (state.storm_counter_index)
+        counters = mx.concatenate(
+            [counters, count(dt.cause == DeathCause.STORM.value).astype(_I32).reshape(1)]
+        )
     return counters
 
 
