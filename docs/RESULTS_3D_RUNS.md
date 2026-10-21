@@ -750,7 +750,7 @@ Steps 400k–500k ([`results_3d_runs/bodies_endstate.csv`](results_3d_runs/bodie
 6. **`regen_max` and `n_init` (owner).** Full food gives 1.25 to 1.35× the sizing aim at n = 2; the population's
    elasticity to regeneration is about 0.65 (half-food run and damper pulses alike). No result here requires a change.
 7. **Unchanged from `RESULTS_3D.md` §10:** the signal-information tools need a 3D port (emitters 0.86 to 0.88 at full
-   food, 0.51 at half food); the fused Metal neighbour kernel matters for longer or more runs; per-row floor-layer
+   food, 0.51 at half food); the fused Metal neighbour kernel matters for longer or more runs (since built, I48); per-row floor-layer
    share, `K_floor` and death positions would remove approximations.
 
 ## 10. Files

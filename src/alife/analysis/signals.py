@@ -285,6 +285,7 @@ def analyse(
     rd = RunDir.open(Path(run))
     cfg = rd.config()
     require_2d(cfg, "the signal analysis")
+    spatial.prepare_knn(cfg)  # the self-check of the fused search, once per process (§4)
     step_fn = make_step(cfg)
     results: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []

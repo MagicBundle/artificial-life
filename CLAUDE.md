@@ -12,7 +12,9 @@ assesses research directions against prior work. `docs/3D.md` is the 3D world (g
 seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`.
 `docs/GAMES.md` is the design of the gaming vertical (owner decisions in its §10); its build step G1, the observer
 layer (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`; normative spec `DESIGN.md` §28), is
-implemented, with provisional thresholds (`INTENT_VERSION` 1) until the calibration run.
+implemented, with provisional thresholds (`INTENT_VERSION` 1) until the calibration run. The fused Metal neighbour
+search (`src/alife/knn_metal.py`, `DESIGN.md` §4, row I48) is built: 75 steps/s at `64k3d` instead of 15, bitwise the
+same trajectory.
 
 ## Conventions
 
@@ -26,6 +28,10 @@ implemented, with provisional thresholds (`INTENT_VERSION` 1) until the calibrat
 - New config keys must default to "off" and be added to `config.POST_V01_KEYS`, so existing runs keep their
   config hash and still resume.
 - Avoid GPU float32 matmul for anything that must be accurate (Metal reduced precision, DESIGN F20).
+- Custom Metal kernels live only in `src/alife/knn_metal.py` (`mx.fast.metal_kernel`, lint rule 6). Each must be
+  bitwise equal to the pure-MLX path it replaces (`tests/test_spatial_metal.py`, run with `-m ""` on the Mac and on
+  every MLX bump, which is then added to `knn_metal.VERIFIED_MLX`), fall back to that path off Metal, and write no
+  contested outputs. `ALIFE_KNN=auto|mlx|metal` selects the neighbour search (DESIGN §4, I48).
 - Checks before pushing: `uv run ruff check src tests`, `uv run ruff format --check src tests`,
   `uv run pytest -m "not slow" -q`. A trajectory change needs a deliberate golden-digest re-pin.
 - The GUI (`gui/`, SwiftUI, macOS 14+) shells out to `.venv/bin/alife`. Keep its lever list in sync with

@@ -109,6 +109,7 @@ def _environment(cfg: Config) -> dict[str, Any]:
         "python": platform.python_version(),
         "platform": f"{sys.platform}-{platform.machine()}",
         "device": str(mx.default_device()),
+        "knn_impl": spatial.knn_impl(cfg),  # "metal" (the fused kernel) or "mlx" (§4)
         "config_hash": config_hash(cfg),
         "config": {
             "n_max": d.n,

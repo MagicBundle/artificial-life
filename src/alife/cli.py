@@ -23,7 +23,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import config as config_mod
-from alife import metrics, physics, runner, stream
+from alife import metrics, physics, runner, spatial, stream
 from alife.config import (
     DEFAULT_PRESET,
     DIRECTOR_MODES,
@@ -324,11 +324,23 @@ def _announce(rd: RunDir, cfg: Config, step: int, steps: int, quiet: bool) -> No
         )
 
 
+def _knn_guard(cfg: Config) -> None:
+    """Before any step is traced: self-check the fused Metal search once and settle the search ``cfg``
+    will use (``spatial.prepare_knn``, §4). An ``ALIFE_KNN`` that cannot be honoured is a config error."""
+    try:
+        spatial.prepare_knn(cfg)
+    except (RuntimeError, ValueError) as e:
+        raise ConfigError(str(e)) from e
+
+
 def _launch(rd: RunDir, cfg: Config, box: list[State], steps: int, quiet: bool) -> int:
     """Run ``steps`` steps from the state in ``box``, with the director ``cfg.run.director`` names (if any).
 
-    The runner must hold the only reference to the state (donation rule, F1), so it is popped here.
+    The runner must hold the only reference to the state (donation rule, F1), so it is popped here. The search
+    this process uses is recorded in ``meta.json`` (``knn_impl``), like ``mlx_version`` and ``device``.
     """
+    _knn_guard(cfg)
+    rd.update_meta(knn_impl=spatial.knn_impl(cfg))
     director = make_director(rd, cfg, int(to_numpy(box[0].step)))
     return int(runner.run(rd, cfg, box.pop(), steps, quiet=quiet, director=director).exit_code)
 
@@ -348,6 +360,7 @@ def _cmd_run(a: argparse.Namespace) -> int:
             "a replay continues an existing state: use `run --init-from SRC --director replay --replay-log "
             "LOG` or `resume RUN --director replay`"
         )
+    _knn_guard(cfg)  # before RunDir.create, which records the search in meta.json
     out = Path(a.out) if a.out else _default_out(a.preset or DEFAULT_PRESET, cfg.run.seed)
     rd = RunDir.create(out, cfg, overwrite=a.overwrite)
     rd.update_meta(start_step=0)
@@ -426,6 +439,7 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
             print(f"  {p}", file=sys.stderr)
         return int(ExitCode.CHECKPOINT)
     step = int(to_numpy(s.step))
+    _knn_guard(cfg)
     out = Path(a.out) if a.out else _default_out("fork", cfg.run.seed)
     rd = RunDir.create(out, cfg, overwrite=a.overwrite, parent=origin)
     rd.update_meta(start_step=step)
@@ -472,6 +486,7 @@ def _cmd_resume(a: argparse.Namespace) -> int:
     cfg = apply_overrides(base, items)
     _check_llm_flags(a, cfg)
     _check_yoke(cfg)
+    _knn_guard(cfg)
     path = _select_checkpoint(rd, a.checkpoint)
     state = load_checkpoint(path, cfg)
     step = int(to_numpy(state.step))
@@ -528,6 +543,7 @@ def _cmd_render(a: argparse.Namespace) -> int:
     out = Path(a.out) if a.out else media / f"render_{step:010d}_{step + a.steps:010d}.mp4"
     if out.suffix and out.suffix.lower() not in VIDEO_SUFFIXES:
         raise ConfigError(f"--out {out}: use a directory (PNG sequence) or one of {sorted(VIDEO_SUFFIXES)}")
+    _knn_guard(cfg)
     step_fn = make_step(cfg)
     with VideoWriter(out, size, a.fps) as vw:
         vw.write(frame(state))
@@ -723,6 +739,7 @@ def _cmd_view(a: argparse.Namespace) -> int:
         cfg = load_config(preset=a.preset, overrides=a.set)
         config_mod.require_2d(cfg, "alife view")
         state, rd = init_state(cfg), None
+    _knn_guard(cfg)
     box = [state]
     del state
     from alife.viewer import run_viewer
@@ -766,6 +783,7 @@ def _cmd_stream(a: argparse.Namespace) -> int:
         view.check(cfg)
         box.append(init_state(cfg))
     control = stream.NoControl() if a.no_control else stream.FdControl()
+    _knn_guard(cfg)
     stream.serve(
         cfg,
         mode="follow" if a.follow else "simulate",
@@ -850,6 +868,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
     from alife.bench import run_bench
 
     cfg = load_config(preset=a.preset, overlays=a.overlay, overrides=a.set)
+    _knn_guard(cfg)
     report = run_bench(
         cfg,
         steps=a.steps,

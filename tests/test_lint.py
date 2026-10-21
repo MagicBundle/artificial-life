@@ -19,6 +19,7 @@ AT_MODULES = {"ops", "render"}  # rule 1: `.at[` only here (render: uint32 compo
 SETITEM_ALLOW = {("ops", "set_rows")}  # rule 2: array subscript assignment
 SIM_MODULES = {
     "spatial",
+    "knn_metal",  # the fused Metal kernel (§4): no host reads or setitem, except the host-side self_check
     "fields",
     "sensing",
     "brain",
@@ -37,16 +38,22 @@ GAME_MODULES = {
     f"game.{p.stem}" for p in (SRC / "game").glob("*.py")
 }  # the games vertical (§28), scanned too
 SETITEM_MODULES = SIM_MODULES | {"ops", "rng", "state", "stream"} | DIRECTOR_MODULES | GAME_MODULES  # rule 2
-HOST_ALLOW = {("invariants", "full_check")}  # rule 5: the host-side exhaustive check reads numpy by design
+HOST_ALLOW = {  # rule 5: host-side checks that read arrays by design
+    ("invariants", "full_check"),
+    ("knn_metal", "self_check"),  # the once-per-process startup comparison of the kernel with the MLX search
+    ("knn_metal", "_check_scene"),  # builds that comparison's scene in numpy
+}
+METAL_KERNEL_MODULES = {"knn_metal"}  # rule 6: the only module that builds a custom Metal kernel
 KEYLESS_RANDOM = {"key", "split"}  # take the key (or seed) positionally by design
 SAFE_ROOTS = {"cfg", "d", "math", "layout", "dims", "self"}  # float()/int() of config-derived Python values
 
 
 def _modules() -> Iterator[tuple[str, ast.Module]]:
-    """Every module of ``alife``, of ``alife.director`` and of ``alife.game`` (named ``<package>.<stem>``)."""
+    """Every module of ``alife`` and of its packages ``director``, ``game`` and ``analysis`` (named
+    ``<package>.<stem>``)."""
     for path in sorted(SRC.glob("*.py")):
         yield path.stem, ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for package in ("director", "game"):
+    for package in ("director", "game", "analysis"):
         for path in sorted((SRC / package).glob("*.py")):
             yield f"{package}.{path.stem}", ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
@@ -183,7 +190,25 @@ def rule_host_reads(mod: str, tree: ast.AST) -> list[str]:
     return out
 
 
-RULES = (rule_at, rule_setitem, rule_random, rule_async_eval, rule_host_reads)
+def rule_metal_kernel(mod: str, tree: ast.AST) -> list[str]:
+    """6. ``mx.fast.metal_kernel`` is called only in ``knn_metal``, the one reviewed file of kernel
+    sources (each must be bitwise equal to the pure-MLX path it replaces, DESIGN §4 and F21)."""
+    if mod in METAL_KERNEL_MODULES:
+        return []
+    out = []
+    for fn, node in _functions(tree):
+        hit = (
+            (isinstance(node, ast.Attribute) and node.attr == "metal_kernel")
+            or (isinstance(node, ast.Name) and node.id == "metal_kernel")
+            or (isinstance(node, ast.Constant) and node.value == "metal_kernel")  # getattr(mx.fast, "...")
+            or (isinstance(node, ast.ImportFrom) and any(a.name == "metal_kernel" for a in node.names))
+        )
+        if hit:
+            out.append(f"{mod}.{fn or '<module>'}:{node.lineno}: metal_kernel outside knn_metal")
+    return out
+
+
+RULES = (rule_at, rule_setitem, rule_random, rule_async_eval, rule_host_reads, rule_metal_kernel)
 
 
 @pytest.mark.parametrize("rule", RULES, ids=lambda r: r.__name__)
@@ -191,6 +216,10 @@ def test_source_tree(rule) -> None:
     mods = list(_modules())
     assert {"ops", "state", "step", "bonds", "director.rules", "director.actions"} <= {m for m, _ in mods}
     assert {"game.observe", "game.rules", "game.observer"} <= {m for m, _ in mods}
+    assert {"spatial", "knn_metal"} <= {m for m, _ in mods}
+    assert {"analysis.resim", "analysis.labels"} <= {
+        m for m, _ in mods
+    }  # rule 6 is repo-wide: analysis is scanned
     violations = [v for mod, tree in mods for v in rule(mod, tree)]
     assert violations == []
 
@@ -224,6 +253,21 @@ def test_rules_are_not_vacuous() -> None:
     assert bad(rule_host_reads, "game.observe", "def f(x):\n    return int(ActFlag.BUDDED)\n")  # use .value
     assert not bad(rule_host_reads, "game.observe", "def f(x):\n    return ActFlag.BUDDED.value\n")
     assert not bad(rule_host_reads, "invariants", "def full_check(s):\n    return s.energy.item()\n")
+    assert not bad(rule_host_reads, "knn_metal", "def self_check(s):\n    return np.array(s)\n")
+    assert bad(
+        rule_host_reads, "knn_metal", "def scan_select(s):\n    return np.array(s)\n"
+    )  # only self_check
+    assert bad(rule_setitem, "knn_metal", "def f(x):\n    x[0] = 1\n")
+    for snippet in (
+        "mx.fast.metal_kernel(name='k')",
+        "mlx.core.fast.metal_kernel(name='k')",
+        "getattr(mx.fast, 'metal_kernel')",
+        "metal_kernel(name='k')",
+    ):
+        assert bad(rule_metal_kernel, "spatial", f"def f():\n    return {snippet}\n"), snippet
+    assert bad(rule_metal_kernel, "ops", "from mlx.core.fast import metal_kernel\n")
+    assert not bad(rule_metal_kernel, "knn_metal", "def f():\n    return mx.fast.metal_kernel(name='k')\n")
+    assert not bad(rule_metal_kernel, "spatial", "def f():\n    return knn_metal.scan_select(1)\n")
     assert not bad(rule_host_reads, "metrics", "def f(s):\n    return s.energy.item()\n")
 
 
