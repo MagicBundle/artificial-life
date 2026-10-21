@@ -905,7 +905,7 @@ What a game adds:
       filter (the twelve game and analysis files gave 509 passed, 202.7 s). The 64k bench, the calibration, the churn rate,
       the house-rate report and the costs were measured the same day (DESIGN §29.12): observed 54.8 steps/s in 2D (target 30)
       and 13.9 in 3D, overhead 1.38 and 2.07 ms a step; kin groups track well; **colonies churn 80 to 83% at the 250 cadence**
-      (22% and 31% at 1000), so a colony id at 250 is not a stable identity; the host settle is 32 and 38 ms per snapshot;
+      (whether 1000 is better is not established: those studies had 2 snapshots), so a colony id at 250 is not a stable identity; the host settle is 32 and 38 ms per snapshot;
       under 0.1% of members are in houses founded within 2,500 steps. The stream rate and the step rate with an LLM call in
       flight were not run.
 - **N1. World Report, offline** (after G2, alongside W0). `game/report.py` (fact sheet, placeholders, checker,

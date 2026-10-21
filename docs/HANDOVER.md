@@ -442,8 +442,9 @@ and resumed once. There is one run per condition apart from the seed pair.
      - **Calibration** (`python -m alife.analysis.social`, `runs/64k_s0` from 1,490,000 and 1,500,000, `runs/64k3d_s0` and
        `64k3d_s1` from 450,000, 2,500 steps): kin groups track well (matched Jaccard p50 0.75 to 0.87; the kin-group
        matching costs 5.0 and 7.5 ms per snapshot, the plan said 2). **Colonies are the weak part at the 250 cadence:**
-       80 to 83% of ids end within 3 snapshots and 21 to 26% of current components match a tracked one; at the 1000 cadence
-       with footprint matching the churn is 22% (2D) and 31% (3D). The host settle costs 32 ms (2D) and 38 ms (3D) per
+       80 to 83% of ids end within 3 snapshots and 21 to 26% of current components match a tracked one, so the 250 cadence
+       churns; whether 1000 is better is not established (the `--every 1000` studies had only 2 snapshots, so their 22%
+       (2D) and 31% (3D) are not comparable with the 10-snapshot 250 studies). The host settle costs 32 ms (2D) and 38 ms (3D) per
        snapshot on evolved states, 0.13 and 0.16 ms a step amortised. **No threshold was changed** (`SOCIAL_VERSION` stays 1);
        whether to change θ or the matching rule, or to use the 1000 cadence for colonies, is open for the coordinator and
        G3's chronicle.
