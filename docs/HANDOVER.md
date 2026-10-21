@@ -437,7 +437,8 @@ and resumed once. There is one run per condition apart from the seed pair.
        `hash_below` and exact-sum equality tests). The merge condition of G2 is met.
      - **Benches** (`alife bench --preset 64k --observe --steps 600`): 54.8 observed steps/s at 64k 2D against the 30 target
        (59.7 plain; G1 61.0), overhead 1.38 ms a step (G1 0.48), a snapshot step 9.4 ms slower than the others; 64k3d 13.9
-       against 14.3, overhead 2.07 ms, hitch 12.1 ms. The 3D bench shows `donation.ok = false` in the plain run too: not an
+       against 14.3, overhead 2.07 ms, hitch 12.1 ms (the 64k3d figures predate the fused kNN kernel, I48: with it 64k3d runs at about
+       75 steps/s, so the same observer cost is about 15% of a step; a re-measurement on the GPU is pending). The 3D bench shows `donation.ok = false` in the plain run too: not an
        observer effect, not investigated. The stream rate and the step rate with LLM calls in flight were not run.
      - **Calibration** (`python -m alife.analysis.social`, `runs/64k_s0` from 1,490,000 and 1,500,000, `runs/64k3d_s0` and
        `64k3d_s1` from 450,000, 2,500 steps): kin groups track well (matched Jaccard p50 0.75 to 0.87; the kin-group
@@ -449,7 +450,7 @@ and resumed once. There is one run per condition apart from the seed pair.
        whether to change θ or the matching rule, or to use the 1000 cadence for colonies, is open for the coordinator and
        G3's chronicle.
      - **Houses:** `houses.founded_share` after 2,500 steps is 0.00068 (2D) and 0.00091 (3D), under 0.1% of members, so
-       `game.house_rate` 1/2048 yields almost no new houses in that time; left unchanged for the owner to re-decide (GAMES
+       `game.house_rate` 1/2048 yields almost no new houses in that time; confirmed by the owner on 2026-10-21: keep 1/2048 for now (GAMES
        §10 item 13).
    - **`INTENT_VERSION` 2 is built** (the last stage of G2, DESIGN §28.4, §28.8, row I45): one change redesigned the rules
      of the labels that failed G1's validity study (Gatherer, Defending, Budding, Feeding, and in 3D Bonding, Signalling,
@@ -471,7 +472,7 @@ and resumed once. There is one run per condition apart from the seed pair.
    - **The roster** (stage 7 of G2, DESIGN §29.14; stage 8 applied the review's findings): kin groups are named once at admission, the record lists the
      houses founded and extinct, and each listed kin group has its window births and deaths by cause, centroid and
      archetype mix. The GPU verification reported `houses.founded_share` from `python -m alife.analysis.social` on
-     `64k3d_s1` and `64k_s0` (see the GPU day above), so that the owner can re-decide `game.house_rate` (1/2048, GAMES §10
+     `64k3d_s1` and `64k_s0` (see the GPU day above), and the owner confirmed `game.house_rate` 1/2048 on 2026-10-21 (GAMES §10
      item 13).
    - **Deferred to G3**: the stream tags and colour modes, moving the host part of a snapshot off the step thread, the
      Family row (a host lineage store and an ancestry panel), and sharing the snapshot's components with the heavy

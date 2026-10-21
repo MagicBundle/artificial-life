@@ -467,6 +467,24 @@ def test_the_snapshot_step_is_timed_against_the_eight_steps_before_it(
     assert t["eval_ms"] < 100  # the snapshot step is fast, and not slow because of its neighbours
 
 
+def test_the_study_prepares_the_fused_search_before_it_builds_the_step(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As ``analysis.labels`` does (DESIGN §4): the self-check of the fused kNN kernel runs once per process,
+    before ``make_step``, so a 3D study on Metal never uses the kernel unchecked."""
+    order: list[str] = []
+    real = social.make_step
+    monkeypatch.setattr(social.spatial, "prepare_knn", lambda cfg: order.append("prepare_knn"))
+
+    def make(cfg, **kw):
+        order.append("make_step")
+        return real(cfg, **kw)
+
+    monkeypatch.setattr(social, "make_step", make)
+    social.study(run_dir, start=50, steps=10, every=10, verify=False, log=lambda _: None)
+    assert order == ["prepare_knn", "make_step"]
+
+
 def test_study_detects_a_diverging_row(run_dir: Path, tmp_path: Path) -> None:
     bad = tmp_path / "run"
     shutil.copytree(run_dir, bad)
