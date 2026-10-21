@@ -84,12 +84,18 @@ def _search(cfg: Config, pos: mx.array, alive: mx.array, impl: str, compiled: bo
 
 
 def _assert_same(cfg: Config, pos: np.ndarray, alive: np.ndarray) -> spatial.Neighbors:
-    """The kernel equals the MLX search, eager and compiled; returns the MLX reference (eager)."""
+    """The kernel equals the MLX search: eager against eager, and compiled against the compiled MLX search
+    (the form the step runs in). Not against the eager MLX search: MLX 0.32.3's compile cache can hand a
+    compiled function the fused elementwise kernel of another one whose scalar constants print alike when
+    concatenated (cell size 12.0 with G = 1, then 1.0 with G = 21, in ``floor(p / c) % G``), which makes a
+    compiled function differ from its own eager result, depending on the order of the tests (DESIGN F21 item
+    6). Both searches share that preamble, so they stay equal to each other. Returns the MLX reference."""
     p, a = mx.array(pos.astype(np.float32)), mx.array(alive)
     ref = _search(cfg, p, a, "mlx", False)
     for compiled in (False, True):
+        want = _search(cfg, p, a, "mlx", True) if compiled else ref
         ker = _search(cfg, p, a, "metal", compiled)
-        assert not any(_diff(ker, ref).values()), (compiled, _diff(ker, ref))
+        assert not any(_diff(ker, want).values()), (compiled, _diff(ker, want))
     return ref
 
 
@@ -111,9 +117,9 @@ def _ties_at_k(cfg: Config, pos: np.ndarray, alive: np.ndarray) -> int:
     return int((v[:, k - 1] & v[:, k] & (d[:, k - 1] == d[:, k])).sum())
 
 
-def _pairs_at_r(cfg: Config, pos: np.ndarray, alive: np.ndarray) -> int:
-    """Ordered pairs of alive agents at d² exactly float32(R·R), by float32 brute force (n small)."""
-    L, R = np.float32(cfg.world.size), cfg.sensing.radius
+def _d2_matrix(cfg: Config, pos: np.ndarray, alive: np.ndarray) -> np.ndarray:
+    """Float32 brute-force d² between alive agents (min image in x and y, the diagonal at inf; n small)."""
+    L = np.float32(cfg.world.size)
     p = pos[alive].astype(np.float32)
     d = p[None, :, :] - p[:, None, :]
     d[..., :2] = d[..., :2] - L * np.rint(d[..., :2] / L)
@@ -121,7 +127,22 @@ def _pairs_at_r(cfg: Config, pos: np.ndarray, alive: np.ndarray) -> int:
     for ax in range(1, p.shape[1]):
         d2 = d2 + d[..., ax] * d[..., ax]
     np.fill_diagonal(d2, np.inf)
-    return int((d2 == np.float32(R * R)).sum())
+    return d2
+
+
+def _pairs_at_r(cfg: Config, pos: np.ndarray, alive: np.ndarray) -> int:
+    """Ordered pairs of alive agents at d² exactly float32(R·R), by float32 brute force (n small)."""
+    return int((_d2_matrix(cfg, pos, alive) == np.float32(cfg.sensing.radius**2)).sum())
+
+
+def _pairs_between_rr(cfg: Config, pos: np.ndarray, alive: np.ndarray) -> int:
+    """Ordered pairs whose d² is inside float32(R·R) (the float64 product rounded once) but not inside
+    float32(R)·float32(R), or the other way round: the pairs that tell the two roundings of the constant
+    apart."""
+    R = cfg.sensing.radius
+    a, b = np.float32(R * R), np.float32(R) * np.float32(R)
+    d2 = _d2_matrix(cfg, pos, alive)
+    return int(((d2 < a) != (d2 < b)).sum())
 
 
 # --- crafted scenes -------------------------------------------------------------------------------
@@ -340,6 +361,76 @@ def _scene_seams_2d() -> _Scene:
     return (_cfg2(), *_pad(np.array([[x, y] for x in xs for y in ys], np.float32), 1024, 2))
 
 
+def _straddle(R: float, x0: float = 20.0) -> tuple[float, float] | None:
+    """``(x0, x1)`` (float32 values) whose x gap has d² between float32(R·R) (the double product rounded
+    once, as MLX casts ``R * R``) and float32(R)·float32(R) (the constant computed in float32), or None if
+    the two agree."""
+    a, b = np.float32(R * R), np.float32(R) * np.float32(R)
+    if a == b:
+        return None
+    c = np.float32(np.float32(x0) + np.float32(R))
+    for k in range(-40, 41):
+        p1 = c
+        for _ in range(abs(k)):
+            p1 = np.nextafter(p1, np.float32(1e9) if k > 0 else np.float32(0))
+        d2 = (p1 - np.float32(x0)) ** 2
+        if (d2 < a) != (d2 < b):
+            return float(np.float32(x0)), float(p1)
+    return None
+
+
+def _scene_rr_straddle(nd: int) -> Callable[[], _Scene]:
+    """R = 7.91 in L = 100.3: float32(R·R) = 62.5681 and float32(R)·float32(R) differ by one ulp, and the pair
+    at x = 20.0 and 27.90999984741211 (d² = 62.568096) sits between them: a kernel that squares the float32
+    radius instead of using the once-rounded double product misses the pair."""
+
+    def build() -> _Scene:
+        sc = _straddle(7.91)
+        assert sc is not None
+        pts = [[sc[0], 40.0, 10.0][:nd], [sc[1], 40.0, 10.0][:nd]]
+        cfg = _cfg3(L=100.3, H=24.0, R=7.91) if nd == 3 else _cfg2(L=100.3, R=7.91)
+        return (cfg, *_pad(np.array(pts, np.float32), 1024, nd))
+
+    return build
+
+
+def _scene_half_l(nd: int, L: float, R: float) -> Callable[[], _Scene]:
+    """Pairs exactly L/2 apart along x, along y and along both, with R > L/2 (an unvalidated world: the
+    validated ones have G_h >= 3, so |d| = L/2 >= 1.5·R is masked anyway). The minimum image of a difference
+    of exactly L/2 is where rint (to even) and round (away from zero) part, and where x·(1/L) can differ
+    from x/L."""
+
+    def build() -> _Scene:
+        half = np.float32(L) / np.float32(2)
+        pts = []
+        for base in (0.0, 1.0):
+            a = np.array([base, base, 10.0][:nd], np.float32)
+            for step in ((half, 0.0), (0.0, half), (half, half)):
+                b = a.copy()
+                b[:2] = a[:2] + np.array(step, np.float32)
+                pts += [b]
+            pts += [a]
+        cfg = _cfg3(L=L, H=12.0, R=R) if nd == 3 else _cfg2(L=L, R=R)
+        return (cfg, *_pad(np.array(pts, np.float32), 1024, nd))
+
+    return build
+
+
+def _scene_recip(nd: int) -> Callable[[], _Scene]:
+    """L = 31.373 and a pair at x = 15.686501 (float32), one ulp off L/2, with R > L/2: ``x/L`` and
+    ``x·(1/L)``
+    round differently here, which is also where ``math_mode: fast`` (a reciprocal multiply) parts from
+    MLX (DESIGN F21 item 5)."""
+
+    def build() -> _Scene:
+        L = 31.373
+        pts = [[0.0, 1.0, 10.0][:nd], [15.686500549316406, 1.0, 10.0][:nd]]
+        cfg = _cfg3(L=L, H=20.0, R=L / 2 + 0.7) if nd == 3 else _cfg2(L=L, R=L / 2 + 0.7)
+        return (cfg, *_pad(np.array(pts, np.float32), 1024, nd))
+
+    return build
+
+
 def _scene_dead_nan_2d() -> _Scene:
     rng = _rng("dead2")
     pts = np.stack([rng.random(1024) * 128, rng.random(1024) * 128], 1).astype(np.float32)
@@ -351,6 +442,7 @@ def _scene_dead_nan_2d() -> _Scene:
 # name -> (builder, what the scene must exhibit: ties inside K, ties at the K boundary, pairs exactly at R, an
 # overflowed cell). The expectations keep a scene from becoming vacuous (a lattice that stopped tying, ...).
 TIE_K, TIE_BOUND, AT_R, OVERFLOW = "tie_in_k", "tie_at_k_boundary", "pairs_at_R", "overflow"
+BETWEEN_RR = "pairs_between_the_roundings_of_R2"
 SCENES: dict[str, tuple[Callable[[], _Scene], frozenset[str]]] = {
     "3d_symmetric_shells": (_scene_symmetric_shells, frozenset({TIE_K, TIE_BOUND})),
     "3d_identical_x20": (_scene_identical_x20, frozenset({TIE_K, OVERFLOW})),
@@ -384,6 +476,15 @@ SCENES: dict[str, tuple[Callable[[], _Scene], frozenset[str]]] = {
     },
     "2d_empty": (_scene_empty(2), frozenset()),
     "2d_dead_nan": (_scene_dead_nan_2d, frozenset()),
+    "3d_rr_straddle_R7.91": (_scene_rr_straddle(3), frozenset({BETWEEN_RR})),
+    "2d_rr_straddle_R7.91": (_scene_rr_straddle(2), frozenset({BETWEEN_RR})),
+    **{
+        f"{nd}d_half_L{L:g}_R{R:g}": (_scene_half_l(nd, L, R), frozenset())
+        for nd in (3, 2)
+        for L, R in ((12.0, 6.5), (12.6, 7.0), (10.0, 5.5), (7.7, 4.0))
+    },
+    "3d_recip_L31.373": (_scene_recip(3), frozenset()),
+    "2d_recip_L31.373": (_scene_recip(2), frozenset()),
 }
 
 
@@ -393,6 +494,7 @@ def _scene_stats(cfg: Config, pos: np.ndarray, alive: np.ndarray, ref: spatial.N
         TIE_BOUND: _ties_at_k(cfg, pos, alive),
         AT_R: _pairs_at_r(cfg, pos, alive),
         OVERFLOW: int(ref.overflow_cells.item()),
+        BETWEEN_RR: _pairs_between_rr(cfg, pos, alive),
     }
 
 
@@ -496,8 +598,10 @@ def _random_cases(seed: int, count: int) -> list[tuple[Config, np.ndarray, np.nd
     cases = []
     while len(cases) < count:
         nd = int(rng.choice([2, 3]))
-        R = float(rng.choice([1.0, 2.0, 3.0, 4.5, 6.0, 6.5]))
-        L = float(R * rng.integers(1 if nd == 3 else 3, 24) + rng.choice([0.0, 0.0, 0.37, 1.9]))
+        R = float(
+            rng.choice([1.0, 2.0, 3.0, 4.5, 6.0, 6.5, 5.3, 7.91, 0.7, 6.1])
+        )  # 5.3 and 7.91: R·R not dyadic
+        L = float(R * rng.integers(1 if nd == 3 else 3, 24) + rng.choice([0.0, 0.0, 0.37, 1.9, 0.123]))
         H = (
             max(R, float(min(L / 2, R * rng.integers(1, 6) + rng.choice([0.0, 0.0, 0.41]))))
             if nd == 3
@@ -545,6 +649,35 @@ def test_random_geometries_bitwise(seed: int, count: int) -> None:
         tied_k += _ties_in_k(ref)
         tied_bound += _ties_at_k(cfg, pos, alive)
     assert tied_k > 0 and tied_bound > 0, "the generators stopped producing ties"
+
+
+@gpu
+def test_r_squared_constant_is_the_once_rounded_product() -> None:
+    """``d² < float32(R·R)`` with the double product rounded once, as MLX casts the Python scalar. For a
+    non-dyadic R the constant differs by an ulp from float32(R)·float32(R) about half the time, and a pair
+    whose d² falls between the two is in the MLX search and not in a kernel that squares the float32 radius.
+    3-decimal radii, 3D and 2D, each with such a pair (found per radius)."""
+    rng = np.random.default_rng(7)
+    done = 0
+    for R in np.round(rng.uniform(2.0, 9.0, 400), 3):
+        sc = _straddle(float(R))
+        if sc is None:
+            continue
+        nd = 3 if done % 2 else 2
+        L = float(np.round(R * 13 + 0.3, 3))
+        cfg = _cfg3(L=L, H=24.0, R=float(R)) if nd == 3 else _cfg2(L=L, R=float(R))
+        pts = [[sc[0], 40.0, 10.0][:nd], [sc[1], 40.0, 10.0][:nd]]
+        pos, alive = _pad(np.array(pts, np.float32), 1024, nd)
+        ref = _assert_same(cfg, pos, alive)
+        assert _pairs_between_rr(cfg, pos, alive) == 2  # the two ordered pairs of the one pair
+        inside = _d2_matrix(cfg, pos, alive)[0, 1] < np.float32(float(R) * float(R))
+        assert int(np.array(ref.valid).sum()) == 2 * int(
+            inside
+        )  # in both lists or in neither, by the double product
+        done += 1
+        if done == 24:
+            break
+    assert done == 24
 
 
 @gpu
@@ -656,6 +789,11 @@ def test_min_image_exhaustive(L: float) -> None:
 
     m = re.search(r"float ax = [^\n]*\n(.*?)const float dx = ax - mx_;", knn_metal._SRC, re.S)
     assert m and "rint" in m[1] and "__LF__" in m[1], "the minimum-image statements moved in knn_metal._SRC"
+    # the y statements are the x statements with the letters swapped (so the x probe covers the y axis too)
+    my = re.search(r"float ay = [^\n]*\n(.*?)const float dy = ay - my_;", knn_metal._SRC, re.S)
+    assert my and "rint" in my[1], "the y minimum-image statements moved in knn_metal._SRC"
+    swapped = my[1].replace("qy", "qx").replace("my_", "mx_").replace("ay", "ax")
+    assert swapped == m[1], "the y minimum image is not the x one with the letters swapped"
     pragma = "#pragma METAL fp contract(off)" if "#pragma METAL fp contract(off)" in knn_metal._SRC else ""
     src = (
         f"{pragma}\nuint i = thread_position_in_grid.x;\nfloat ax = D[i];\n{m[1]}out[i] = ax - mx_;\n"
@@ -888,7 +1026,9 @@ def test_self_check_mismatch_disables_the_kernel(monkeypatch: pytest.MonkeyPatch
 
 
 def test_self_check_scene_has_ties_and_overflow() -> None:
-    """The scene the startup self-check compares is not trivial (CPU: the reference alone)."""
+    """The scene the startup self-check compares is not trivial (CPU: the reference alone): exact ties,
+    overfull cells, pairs at, just inside and just outside R, and dead rows both NaN and finite (a finite dead
+    row on top of a live agent is what a kernel that ignored ``alive`` would list)."""
     for nd in (3, 2):
         cfg, pos, alive = knn_metal._check_scene(nd)
         assert pos.shape == (2048, nd) and pos.dtype == np.float32 and alive.dtype == bool
@@ -896,6 +1036,12 @@ def test_self_check_scene_has_ties_and_overflow() -> None:
         mx.eval(ref)
         assert _ties_in_k(ref) > 100 and int(ref.overflow_cells.item()) > 0
         assert int(np.array(ref.valid).sum()) > 2000 and not np.array(ref.valid)[~alive].any()
+        assert _pairs_at_r(cfg, pos, alive) >= 2 * nd  # exactly R, along every axis
+        d2 = _d2_matrix(cfg, pos, alive)
+        r2 = np.float32(cfg.sensing.radius**2)
+        assert (d2 < r2).any(axis=1).sum() > 100 and ((d2 > r2) & (d2 < r2 * np.float32(1.0001))).any()
+        dead = pos[~alive]
+        assert np.isnan(dead).all(axis=1).any() and np.isfinite(dead).all(axis=1).any()
 
 
 # --- selection rules (CPU) ------------------------------------------------------------------------
@@ -934,6 +1080,42 @@ def test_k_bound(pretend_metal: None) -> None:
     assert spatial.knn_impl(big, "mlx") == "mlx"
     with pytest.raises(RuntimeError, match="k_neighbors <= 64"):
         spatial.knn_impl(big, "metal")
+
+
+def test_unverified_mlx_says_so_once(pretend_metal: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Metal is there but this MLX is not in ``VERIFIED_MLX``: ``auto`` takes the MLX path (about 5 times
+    slower in 3D) and ``prepare_knn`` says so, once. It stays silent where the kernel was not going to be used
+    anyway."""
+    monkeypatch.setattr(knn_metal, "VERIFIED_MLX", frozenset({"0.0.0"}))
+    monkeypatch.setattr(knn_metal, "_NOTED", False)
+    c3, c2 = load_config(preset="tiny3d"), load_config(preset="tiny")
+    quiet: list[Callable[[], str]] = [
+        lambda: spatial.prepare_knn(c2),  # 2D keeps the MLX path under auto
+        lambda: spatial.prepare_knn(_cfg3(C=48, K=knn_metal.K_MAX + 1)),  # K above the bound
+    ]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for call in quiet:
+            assert call() == "mlx"
+        monkeypatch.setenv("ALIFE_KNN", "mlx")
+        assert spatial.prepare_knn(c3) == "mlx"  # asked for
+        monkeypatch.delenv("ALIFE_KNN")
+        monkeypatch.setattr(spatial, "_on_gpu", lambda: False)
+        assert spatial.prepare_knn(c3) == "mlx"  # the CPU is the default device
+        monkeypatch.setattr(spatial, "_on_gpu", lambda: True)
+        monkeypatch.setattr(knn_metal, "_capable", lambda: False)
+        assert spatial.prepare_knn(c3) == "mlx"  # no Metal at all
+        monkeypatch.setattr(knn_metal, "_capable", lambda: True)
+    assert not knn_metal._NOTED
+    with pytest.warns(RuntimeWarning, match=r"MLX .* not in knn_metal.VERIFIED_MLX.*ALIFE_KNN=mlx") as rec:
+        assert spatial.prepare_knn(c3) == "mlx"
+    assert len(rec) == 1 and rec[0].filename == __file__  # attributed to the caller of prepare_knn
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert spatial.prepare_knn(c3) == "mlx"  # once per process
+    monkeypatch.setenv("ALIFE_KNN", "metal")
+    with pytest.raises(RuntimeError, match="verified MLX"):
+        spatial.prepare_knn(c3)  # asked for: an error, not a warning
 
 
 def test_invalid_selection_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1005,33 +1187,99 @@ def test_self_check_returns_false_where_the_kernel_cannot_run(monkeypatch: pytes
     assert knn_metal.self_check(3) is False and frozenset() == knn_metal._CHECKED
 
 
-def test_static_asserts_of_scan_select() -> None:
-    n, nd = 64, 3
-    cfg = _cfg3(n=n)
+def test_scan_select_checks_its_inputs() -> None:
+    """The kernel does no bounds checking, so ``scan_select`` raises ``ValueError`` (and not ``assert``, which
+    ``python -O`` removes) on any shape, dtype or size the kernel would index out of bounds with. The checks
+    run before anything is built, so this needs no GPU."""
+    for nd in (3, 2):
+        n = 64
+        cfg = _cfg3(n=n) if nd == 3 else _cfg2(n=n)
+        d = dims(cfg)
+        args: dict[str, Any] = dict(
+            spos=mx.zeros((n, nd)),
+            start=mx.zeros(d.g_hash**2 * d.g_hash_z + 1, dtype=mx.int32),
+            order=mx.arange(n, dtype=mx.int32),
+            cxy=mx.zeros((n, 2), dtype=mx.int32),
+            cz=mx.zeros(n if nd == 3 else 1, dtype=mx.int32),
+            alive=mx.ones(n, dtype=mx.bool_),
+        )
+        static = dict(nd=nd, g=d.g_hash, gz=d.g_hash_z, c=d.c, k=d.k, n=n)
+
+        def check(**over: Any) -> None:
+            knn_metal._validate(**{**args, **static, **over})  # noqa: B023 (called within the iteration)
+
+        check()  # the consistent arguments pass
+        bad: list[tuple[str, dict[str, Any]]] = [
+            ("bool alive", dict(alive=mx.ones(n, dtype=mx.int32))),
+            ("float32 positions", dict(spos=mx.zeros((n, nd), dtype=mx.float16))),
+            ("not", dict(spos=mx.zeros((n - 1, nd)))),  # a short array would be read out of bounds
+            ("not", dict(spos=mx.zeros((n, 5 - nd)))),  # the other dimensionality's data
+            ("alive", dict(alive=mx.ones(n + 1, dtype=mx.bool_))),
+            ("order", dict(order=mx.arange(n - 1, dtype=mx.int32))),
+            ("order", dict(order=mx.arange(n, dtype=mx.float32))),  # a float order would be read as bits
+            ("start", dict(start=mx.zeros(10, dtype=mx.int32))),  # a start of the wrong length
+            ("start", dict(start=args["start"].astype(mx.float32))),
+            ("cxy", dict(cxy=mx.zeros((5, 2), dtype=mx.int32))),
+            ("cxy", dict(cxy=mx.zeros((n, 3), dtype=mx.int32))),
+            ("cxy", dict(cxy=mx.zeros((n, 2)))),
+            ("cz", dict(cz=mx.zeros(n + 3 if nd == 3 else n, dtype=mx.int32))),  # (N,) in 3D, (1,) in 2D
+            ("cz", dict(cz=mx.zeros(n if nd == 3 else 1))),  # a float layer index
+            ("K in", dict(k=knn_metal.K_MAX + 1)),
+            ("K in", dict(k=0)),
+            ("nd must", dict(nd=4)),
+            ("positive", dict(n=0)),
+            ("positive", dict(c=0)),
+            ("overflow", dict(n=17_000_000, k=64)),  # n·K·nd >= 2**31 in 2D and 3D, checked before any shape
+        ]
+        for match, over in bad:
+            with pytest.raises(ValueError, match=match):
+                check(**over)
+    cfg = _cfg3(n=64)
     d = dims(cfg)
-    args: dict[str, Any] = dict(
-        spos=mx.zeros((n, nd)),
+    ok = dict(
+        spos=mx.zeros((64, 3)),
         start=mx.zeros(d.g_hash**2 * d.g_hash_z + 1, dtype=mx.int32),
-        order=mx.arange(n, dtype=mx.int32),
-        cxy=mx.zeros((n, 2), dtype=mx.int32),
-        cz=mx.zeros(n, dtype=mx.int32),
-        alive=mx.ones(n, dtype=mx.bool_),
+        order=mx.arange(64, dtype=mx.int32),
+        cxy=mx.zeros((64, 2), dtype=mx.int32),
+        cz=mx.zeros(64, dtype=mx.int32),
+        alive=mx.ones(64, dtype=mx.bool_),
     )
-    static = dict(nd=nd, g=d.g_hash, gz=d.g_hash_z, c=d.c, k=d.k, n=n, L=128.0, R=6.0)
+    with pytest.raises(
+        ValueError, match="bool alive"
+    ):  # the public function raises too, before building a kernel
+        knn_metal.scan_select(
+            **{**ok, "alive": mx.ones(64, dtype=mx.int32)},
+            nd=3,
+            g=d.g_hash,
+            gz=d.g_hash_z,
+            c=d.c,
+            k=d.k,
+            n=64,
+            L=128.0,
+            R=6.0,
+        )
 
-    def call(**over: Any) -> Any:
-        return knn_metal.scan_select(**{**args, **static, **over})
 
-    with pytest.raises(AssertionError, match="bool alive"):
-        call(alive=mx.ones(n, dtype=mx.int32))
-    with pytest.raises(AssertionError, match="float32 positions"):
-        call(spos=mx.zeros((n, nd), dtype=mx.float16))
-    with pytest.raises(AssertionError, match="not"):
-        call(spos=mx.zeros((n - 1, nd)))  # a short array would be read out of bounds
-    with pytest.raises(AssertionError, match="not"):
-        call(spos=mx.zeros((n, 2)))  # 2D data for a 3D kernel
-    with pytest.raises(AssertionError, match="K in"):
-        call(k=knn_metal.K_MAX + 1)
+def test_kernel_compile_options_are_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``math_mode: safe`` is explicit: ``fast`` multiplies by the reciprocal in ``d / L`` and parts from MLX
+    at a difference of one ulp from L/2 (``test_crafted_scenes_bitwise[2d_recip_L31.373]`` sees it on the
+    GPU; this pins the option on any machine). Also the pragma, the header and the row-contiguous inputs."""
+    seen: dict[str, Any] = {}
+
+    def spy(**kw: Any) -> Any:
+        seen.update(kw)
+        return lambda **_: None
+
+    monkeypatch.setattr(mx.fast, "metal_kernel", spy, raising=False)
+    knn_metal._kernel.cache_clear()
+    try:
+        knn_metal._kernel(128.0, 6.0, 36.0)
+    finally:
+        knn_metal._kernel.cache_clear()
+    assert seen["compile_options"] == {"math_mode": "safe"}
+    assert seen["ensure_row_contiguous"] is True and seen["header"] == knn_metal._HEADER
+    assert seen["source"].count("#pragma METAL fp contract(off)") == 1
+    assert "fast::" not in seen["source"] and "metal::fast" not in seen["source"]
 
 
 def test_hex_literals_are_the_float32_values() -> None:

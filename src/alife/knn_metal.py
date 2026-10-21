@@ -32,11 +32,14 @@ import mlx.core as mx
 # own kernels), so a new MLX is added here by the change that re-runs those tests, and not before.
 VERIFIED_MLX: frozenset[str] = frozenset({"0.32.3"})
 K_MAX = 64  # the kernel keeps 5 K-element private arrays per thread: above this it loses to the MLX path (§4)
-_THREADGROUP = 64  # 32 to 256 are within ±3% (report §5)
+_THREADGROUP = (
+    64  # 32 to 256 were within ±3% in the probe (docs/bench/README.md: not reproducible from the repo)
+)
 
 _I32 = mx.int32
 _MISMATCH = False  # set by ``self_check``: the kernel disagreed with the MLX path on this machine
 _CHECKED: frozenset[int] = frozenset()  # the world dimensionalities ``self_check`` has run for
+_NOTED = False  # ``note_unverified`` has warned in this process
 
 
 def _capable() -> bool:
@@ -49,6 +52,29 @@ def available() -> bool:
     version in ``VERIFIED_MLX`` and no ``self_check`` mismatch. Reads only capability flags, never an
     array. Whether the *default device* is the GPU is the caller's check (``spatial.knn_impl``)."""
     return bool(not _MISMATCH and _capable() and mx.__version__ in VERIFIED_MLX)
+
+
+def unverified_mlx() -> bool:
+    """Metal and ``mx.fast.metal_kernel`` are there but this MLX version is not in ``VERIFIED_MLX``: the
+    kernel is off and, under ``auto``, the pure-MLX search runs (about 5 times slower at 64k3d)."""
+    return _capable() and mx.__version__ not in VERIFIED_MLX
+
+
+def note_unverified() -> bool:
+    """Warn once per process (``RuntimeWarning``) that the kernel is off because this MLX is unverified.
+    True if it warned. Host side; ``spatial.prepare_knn`` calls it when ``auto`` would take the kernel."""
+    global _NOTED
+    if _NOTED or not unverified_mlx():
+        return False
+    _NOTED = True
+    warnings.warn(
+        f"MLX {mx.__version__} is not in knn_metal.VERIFIED_MLX {sorted(VERIFIED_MLX)}: the fused Metal "
+        "neighbour search is off and the pure-MLX search runs (about 5 times slower in 3D). Re-run "
+        "tests/test_spatial_metal.py on this MLX and list it, or set ALIFE_KNN=mlx to silence this",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+    return True
 
 
 def _f32_lit(x: float) -> str:
@@ -154,6 +180,51 @@ def _kernel(L: float, R: float, rr: float) -> Any:
     )
 
 
+def _validate(
+    spos: mx.array,
+    start: mx.array,
+    order: mx.array,
+    cxy: mx.array,
+    cz: mx.array,
+    alive: mx.array,
+    *,
+    nd: int,
+    g: int,
+    gz: int,
+    c: int,
+    k: int,
+    n: int,
+) -> None:
+    """The kernel does no bounds checking, so every size and dtype it indexes with is checked here, with
+    ``ValueError`` (not ``assert``: ``python -O`` removes asserts and the kernel would read out of bounds)."""
+
+    def need(ok: bool, what: str) -> None:
+        if not ok:
+            raise ValueError(f"the Metal neighbour search: {what}")
+
+    need(nd in (2, 3), f"nd must be 2 or 3, got {nd}")
+    need(min(g, gz, c, n) >= 1, f"g, gz, c and n must be positive, got {(g, gz, c, n)}")
+    need(1 <= k <= K_MAX, f"supports K in [1, {K_MAX}], got {k}")
+    need(n * k * nd < 2**31 and g * g * gz < 2**31 - 1, "the sizes overflow the kernel's int32 indexing")
+    need(alive.dtype == mx.bool_, "needs a bool alive mask")
+    need(spos.dtype == mx.float32, "needs float32 positions")
+    need(spos.shape == (n, nd), f"spos {spos.shape} is not (N={n}, nd={nd})")
+    need(alive.shape == (n,), f"alive {alive.shape} is not (N={n},)")
+    need(
+        order.shape == (n,) and order.dtype == _I32,
+        f"order must be int32 ({n},), got {order.dtype} {order.shape}",
+    )
+    need(
+        start.shape == (g * g * gz + 1,) and start.dtype == _I32,
+        f"start must be int32 ({g * g * gz + 1},), got {start.dtype} {start.shape}",
+    )
+    need(
+        cxy.shape == (n, 2) and cxy.dtype == _I32, f"cxy must be int32 ({n}, 2), got {cxy.dtype} {cxy.shape}"
+    )
+    cz_shape = (n,) if nd == 3 else (1,)
+    need(cz.shape == cz_shape and cz.dtype == _I32, f"cz must be int32 {cz_shape}, got {cz.dtype} {cz.shape}")
+
+
 def scan_select(
     spos: mx.array,
     start: mx.array,
@@ -176,14 +247,10 @@ def scan_select(
     ``spos`` (N, nd) float32 is ``pos[order]``; ``start`` (G²·G_z + 1,) the run starts of the sorted
     hash cells; ``order`` (N,) the sort permutation (dead rows last); ``cxy`` (N, 2) int32 the x/y
     cells; ``cz`` (N,) int32 the clamped z layer (a (1,) dummy in 2D); ``alive`` (N,) bool. Static:
-    every size is a template constant.
+    every size is a template constant. The shapes, dtypes and sizes are checked (``ValueError``) because the
+    kernel does no bounds checking.
     """
-    assert alive.dtype == mx.bool_, "the Metal neighbour search needs a bool alive mask"
-    assert spos.dtype == mx.float32, "the Metal neighbour search needs float32 positions"
-    assert spos.shape == (n, nd), f"spos {spos.shape} is not (N={n}, nd={nd})"
-    assert order.shape == (n,) and alive.shape == (n,), "order and alive must have N rows"
-    assert 1 <= k <= K_MAX, f"the Metal neighbour search supports K in [1, {K_MAX}], got {k}"
-    assert 0 < n < 2**31, "the Metal neighbour search indexes with int32"
+    _validate(spos, start, order, cxy, cz, alive, nd=nd, g=g, gz=gz, c=c, k=k, n=n)
     kern = _kernel(float(L), float(R), float(R * R))
     grid = -(-n // _THREADGROUP) * _THREADGROUP
     idx, valid, off, dist = kern(
@@ -202,7 +269,8 @@ def scan_select(
 
 def _check_scene(nd: int) -> tuple[Any, Any, Any]:
     """``(cfg, pos, alive)`` of a 2 048-agent scene with exact ties: stacked lattices (identical positions and
-    equal distances, overfull cells), scattered agents, and dead rows with NaN positions."""
+    equal distances, overfull cells), pairs at, just inside and just outside ``R`` along every axis, scattered
+    agents, and dead rows (half with NaN positions, half with a finite one on top of a live agent)."""
     import numpy as np
 
     from alife.config import load_config
@@ -225,13 +293,27 @@ def _check_scene(nd: int) -> tuple[Any, Any, Any]:
 
     stacked = np.repeat(lattice(6), 3, axis=0) * 1.0 + 20.0  # spacing 1, three agents per site
     sparse = lattice(8) * 3.0 + 70.0  # spacing 3, one agent per site
-    scatter = rng.random((n - len(stacked) - len(sparse), nd)) * cfg.world.size
-    pos = np.concatenate([stacked, sparse, scatter])[:n]
+    R = float(cfg.sensing.radius)
+    r32 = np.float32(R)
+    gaps = [r32, np.nextafter(r32, np.float32(0)), np.nextafter(r32, np.float32(2 * R))]  # R, R-ulp, R+ulp
+    edge: list[
+        Any
+    ] = []  # pairs exactly at, just inside and just outside R along every axis (1.5 + gap < 8: exact)
+    for i, gap in enumerate(gaps):
+        for ax in range(nd):
+            o = [1.5 if j == ax else (4.5 if j == 2 else 1.5 + 3 * (nd * i + ax)) for j in range(nd)]
+            edge += [o, [v + float(gap) if j == ax else v for j, v in enumerate(o)]]
+    edge = np.asarray(edge, np.float64)
+    scatter = rng.random((n - len(stacked) - len(sparse) - len(edge), nd)) * cfg.world.size
+    pos = np.concatenate([stacked, sparse, edge, scatter])[:n]
     if nd == 3:
         z = np.clip(pos[:, 2] % cfg.world.height, 1.0, cfg.world.height - 1.0)
         pos = np.concatenate([pos[:, :2], z[:, None]], axis=1)
     alive = np.arange(n) % 17 != 0
-    pos = np.where(alive[:, None], pos, np.nan).astype(np.float32)
+    dead = ~alive
+    # half of the dead rows keep a finite position, on a live agent's site (a kernel that ignored ``alive``
+    # would list them); the other half are NaN
+    pos = np.where(dead[:, None] & (np.arange(n)[:, None] % 2 == 0), np.nan, pos).astype(np.float32)
     return cfg, pos, alive
 
 

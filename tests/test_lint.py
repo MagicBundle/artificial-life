@@ -41,6 +41,7 @@ SETITEM_MODULES = SIM_MODULES | {"ops", "rng", "state", "stream"} | DIRECTOR_MOD
 HOST_ALLOW = {  # rule 5: host-side checks that read arrays by design
     ("invariants", "full_check"),
     ("knn_metal", "self_check"),  # the once-per-process startup comparison of the kernel with the MLX search
+    ("knn_metal", "_check_scene"),  # builds that comparison's scene in numpy
 }
 METAL_KERNEL_MODULES = {"knn_metal"}  # rule 6: the only module that builds a custom Metal kernel
 KEYLESS_RANDOM = {"key", "split"}  # take the key (or seed) positionally by design
@@ -48,10 +49,11 @@ SAFE_ROOTS = {"cfg", "d", "math", "layout", "dims", "self"}  # float()/int() of 
 
 
 def _modules() -> Iterator[tuple[str, ast.Module]]:
-    """Every module of ``alife``, of ``alife.director`` and of ``alife.game`` (named ``<package>.<stem>``)."""
+    """Every module of ``alife`` and of its packages ``director``, ``game`` and ``analysis`` (named
+    ``<package>.<stem>``)."""
     for path in sorted(SRC.glob("*.py")):
         yield path.stem, ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for package in ("director", "game"):
+    for package in ("director", "game", "analysis"):
         for path in sorted((SRC / package).glob("*.py")):
             yield f"{package}.{path.stem}", ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
@@ -215,6 +217,9 @@ def test_source_tree(rule) -> None:
     assert {"ops", "state", "step", "bonds", "director.rules", "director.actions"} <= {m for m, _ in mods}
     assert {"game.observe", "game.rules", "game.observer"} <= {m for m, _ in mods}
     assert {"spatial", "knn_metal"} <= {m for m, _ in mods}
+    assert {"analysis.resim", "analysis.labels"} <= {
+        m for m, _ in mods
+    }  # rule 6 is repo-wide: analysis is scanned
     violations = [v for mod, tree in mods for v in rule(mod, tree)]
     assert violations == []
 

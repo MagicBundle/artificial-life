@@ -63,8 +63,10 @@ Three things in the files to read with care:
 | `2026-10-20_m5pro_64k_metal.json` | 2D `64k` C = 16, kernel (`ALIFE_KNN=metal`) | 92.96 | 10.76 | 0.36 | 0.91 (0.848) |
 | `2026-10-20_m5pro_tiny3d_metal.json` | `tiny3d` C = 16, kernel | 416.2 | 2.40 | 0.38 | 0.017 (0.016) |
 
-The MLX-search numbers at `C` = 32 and 24 and for `tiny3d` were measured too (44.40 ms and 22.52 steps/s, 40.01 ms and
-25.00 steps/s, 2.55 ms and 392.7 steps/s) and agree with the 2026-10-16 files above to 3%; they are not kept as files.
+The MLX-search comparison at `C` = 32 and 24 and for `tiny3d` uses the 2026-10-16 files above (21.96, 24.89 and 411.1
+steps/s; 45.54, 40.18 and 2.43 ms), which were not re-measured: a re-measurement made in the probe (44.40 and 40.01 ms,
+2.55 ms) is not kept as a file and is not used. The two MLX-path files that were re-measured and kept (`64k_mlx`,
+`64k3d_C48_mlx`) are within 5% of their 2026-10-16 counterparts (61.34 against 59.30 steps/s; 14.83 against 14.45).
 
 Read with care:
 
@@ -73,11 +75,21 @@ Read with care:
   capacity that the floor pile needs costs nothing here (the cost of a cell over `C` is still the candidates lost, §4). In 2D, where the MLX search was 6.2 ms of 18.7, the
   gain is 1.52 times (16.3 to 10.76 ms).
 - "Neighbours" is the whole staged search stage (cell hash, sort, `searchsorted`, kernel and dispatch), not the kernel
-  alone; the stages sum to more than the fused step (`inflation` 1.11 to 1.19 for the kernel files, against 1.02 to
-  1.15), because each staged function is evaluated on its own.
+  alone; the stages sum to more than the fused step (`inflation` 1.11 to 1.19 for the 64k and 64k3d kernel files,
+  2.1 for `tiny3d` where 0.38 ms of search is in a 2.4 ms step, against 1.02 to 1.15 for the MLX-path files), because each staged function is evaluated on its own.
 - The `donation` check is informative with the kernel: at `C` = 48 the normal steps peak 0.335 GiB above the resident
   baseline and the step that keeps its input state alive 0.924 GiB (`saved_over_weights` 0.97 of the weight bytes, limit
   0.25), `ok: true`, "weights updated in place". With the MLX search both excesses were 2.446 GiB, the search's own peak,
   and the check could not say (the note above).
 - `n_alive_end`, births and deaths equal those of the 2026-10-16 files for `64k3d`, `64k` and `tiny3d` (same seed, same
   config hash), so the search did not change the trajectories (§4, F21).
+
+### Probe figures not reproducible from the repo
+
+The kernel was developed against a probe whose scripts and output are not in the tree. These figures, quoted in
+DESIGN §4 and Review-log row I48, are labelled accordingly there: the threadgroup width sweep (32 to 256 within
+±3%), the K sweep behind `K_MAX` (search alone, kernel against MLX path: K = 64 11.9 against 59 ms; K = 128 43
+against 65 ms; K = 192 88 against 78 ms, so a crossover near K = 170), the worst case (every scanned cell near `C`:
+30 to 140 times faster than the MLX path), the 2 500 random geometries and 169 adversarial scenes, and the 73
+steps/s of a real `alife run` with metrics and checkpoints. What the repo does reproduce is
+`tests/test_spatial_metal.py` and `alife bench` with `ALIFE_KNN=mlx` against the default.

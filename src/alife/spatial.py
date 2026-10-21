@@ -73,13 +73,18 @@ def knn_impl(cfg: Config, impl: str | None = None) -> str:
 def prepare_knn(cfg: Config) -> str:
     """The search ``cfg`` will use, after ``knn_metal.self_check`` has run once for its dimension (host side).
 
-    Called by the CLI entry points before ``make_step``: when the kernel would be selected, it is first
-    run against the pure-MLX search on a small scene with exact ties; on a mismatch it warns and the
-    kernel is off for the process (``ALIFE_KNN=metal`` then raises, as it does wherever the kernel
-    cannot run). Returns ``knn_impl``.
+    Called by the CLI entry points before ``make_step`` (and by any library caller that wants the self-check;
+    one that skips it gets only the version guard): when the kernel would be selected, it is first run against
+    the pure-MLX search on a small scene with exact ties; on a mismatch it warns and the kernel is off for the
+    process (``ALIFE_KNN=metal`` then raises, as it does wherever the kernel cannot run). Where the kernel
+    would have been chosen but the MLX version is not in ``knn_metal.VERIFIED_MLX``, it warns once (the MLX
+    search is about 5 times slower in 3D). Returns ``knn_impl``.
     """
+    d = dims(cfg)
     if knn_impl(cfg) == "metal":
-        knn_metal.self_check(dims(cfg).nd)
+        knn_metal.self_check(d.nd)
+    elif d.d3 and d.k <= knn_metal.K_MAX and _on_gpu() and os.environ.get("ALIFE_KNN", "auto") == "auto":
+        knn_metal.note_unverified()  # the kernel is what auto would have taken
     return knn_impl(cfg)
 
 
