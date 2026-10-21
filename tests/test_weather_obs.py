@@ -40,7 +40,15 @@ KEYS_COMMON = {
     "air_speed_max",
     "overlap_deep",
 }
+KEYS_RAIN = {  # with rain_gain > 0 (the storm overlay): the nominal and realised rain shares (DESIGN §32)
+    "rain_band_share",
+    "rain_global_share",
+    "rain_real_band_share",
+    "rain_real_global_share",
+    "rain_clipped_frac",
+}
 KEYS_OCC = {"occ_hz0", "occ_hz1_11", "occ_hz12"}
+KEYS_SPEEDS = {"total_speed_p99", "eddy_speed_p99"}  # W2: given by the snapshot, not by a bare block call
 
 
 @pytest.fixture(scope="module", params=["3d", "2d"])
@@ -114,6 +122,9 @@ def test_block_keys_3d_and_2d() -> None:
     b3 = _block(c3, _rest(c3), [0.01, 0.02], occupancy=np.array([3, 5, 2]), overlap_deep=4)
     b2 = _block(c2, _rest(c2), [0.01])
     assert set(b3) == KEYS_COMMON | KEYS_OCC and set(b2) == KEYS_COMMON
+    # the W2 speed quantiles come with their inputs (the engine's snapshot always gives them)
+    b2s = _block(c2, _rest(c2), [0.01], total_speed=[0.02, 0.03], eddy_speed=[0.0, 0.01])
+    assert set(b2s) == KEYS_COMMON | KEYS_SPEEDS
     assert (b3["occ_hz0"], b3["occ_hz1_11"], b3["occ_hz12"], b3["overlap_deep"]) == (3, 5, 2, 4)
     json.dumps(b3, allow_nan=False)  # plain floats and ints, nothing non-finite
     assert all(isinstance(v, int | float) for v in b3.values())
@@ -228,9 +239,20 @@ def _snapshot(cfg: Config, steps: int = 3, prep=None):
     return s, metrics.snapshot_metrics(s, cfg, heavy=False)
 
 
+def _snapshot_keys(cfg: Config) -> set[str]:
+    """The keys of the engine's block: the W1 ones, the speed quantiles, the occupancy in 3D and the rain
+    shares with rain (the seeding and shade keys only with their gains, tested with them)."""
+    return (
+        KEYS_COMMON
+        | KEYS_SPEEDS
+        | (KEYS_OCC if dims(cfg).d3 else set())
+        | (KEYS_RAIN if cfg.weather.rain_gain > 0 else set())
+    )
+
+
 def test_the_snapshot_has_the_block_only_with_weather_on(cfg: Config) -> None:
     _, snap = _snapshot(cfg)
-    assert set(snap["weather"]) == KEYS_COMMON | (KEYS_OCC if dims(cfg).d3 else set())
+    assert set(snap["weather"]) == _snapshot_keys(cfg)
     assert snap["weather"]["overlap_deep"] == 0
     assert snap["weather"]["mass_rel"] == pytest.approx(0.0, abs=1e-6)
     off = replace(cfg, weather=WeatherConfig())
@@ -361,7 +383,7 @@ def test_a_runner_row_carries_the_block(tmp_path) -> None:
     rows = rd.metrics_rows()
     assert [r["step"] for r in rows] == [3, 6]
     for r in rows:
-        assert set(r["weather"]) == KEYS_COMMON | KEYS_OCC and "deaths_storm" in r
+        assert set(r["weather"]) == _snapshot_keys(cfg) and "deaths_storm" in r
         assert r["ledger_error"] == 0 and r["weather"]["mass_rel"] == pytest.approx(0.0, abs=1e-6)
 
 
@@ -414,14 +436,15 @@ def test_stages_for_weather_off_is_the_stage_table(tiny_cfg: Config) -> None:
     assert dict(bench.stages_for(storm2d_config()))["wind"] == "S3w"
 
 
-def _staged_equals_fused(cfg: Config, steps: int = 4) -> None:
+def _staged_equals_fused(cfg: Config, steps: int = 4, wx: mx.array | None = None) -> None:
     cfg = replace(cfg, run=replace(cfg.run, compile=False))
     fused = make_step(cfg)
     staged = bench._StagedStep(cfg)
     s0 = init_state(cfg)
     s0 = s0._replace(
         birth_step=mx.where(s0.alive, -50, s0.birth_step),  # founders old enough to breed
-        wx=fixed_wx(cfg, u1=0.06, v1=0.03, u2=0.06, v2=0.03),  # a wind that kills, breaks bonds and rains
+        # a wind that kills, breaks bonds and rains (or the given weather)
+        wx=fixed_wx(cfg, u1=0.06, v1=0.03, u2=0.06, v2=0.03) if wx is None else wx,
     )
     mx.eval(s0)
     s, holder = s0, [s0]
@@ -563,7 +586,7 @@ def test_the_smoke_run_writes_the_weather_block_and_matches_without_compile(tmp_
         assert [r["step"] for r in rows] == [25, 50, 75, 100, 125, 150, 175, 200]
         for r in rows:
             assert {"storm_exposure", "air_speed_p99", "air_speed_max", "jet_max_l2"} <= set(r["weather"])
-            assert set(r["weather"]) == KEYS_COMMON | KEYS_OCC and "deaths_storm" in r
+            assert set(r["weather"]) == _snapshot_keys(rd.config()) and "deaths_storm" in r
             assert r["ledger_error"] == 0 and not r["diag"] & ERROR_MASK
             assert abs(r["weather"]["mass_rel"]) < 1e-5
         final[name] = load_checkpoint(out / "checkpoints" / "step_0000000200.safetensors", rd.config())

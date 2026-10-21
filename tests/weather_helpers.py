@@ -4,6 +4,7 @@ uniform wind, and hand-built physics inputs."""
 from __future__ import annotations
 
 import functools
+import hashlib
 
 import mlx.core as mx
 import numpy as np
@@ -13,6 +14,8 @@ from alife.actions import Actions, Motion3
 from alife.config import Config, dims, load_config
 from alife.layout import MSG, NCH, B
 from alife.spatial import Neighbors
+from alife.state import init_state, state_digest, to_numpy
+from alife.step import CounterIdx, make_step
 
 SMALL3D = (
     "population.n_max=256",
@@ -107,3 +110,37 @@ def spun_ws(cfg: Config, steps: int = 500) -> W.WeatherState:
         ws, _ = fn(ws, mx.array(t, dtype=mx.int32), k)
     mx.eval(ws)
     return ws
+
+
+STRONG = (
+    "weather.rain_gain=1000000",
+    "weather.storm_p=0.3",
+    "weather.storm_u0=0.0",
+    "weather.storm_span=0.02",
+    "weather.storm_break_u=0.01",
+)  # the hazard and the bond break active on a spun-up weather
+
+
+def trajectory_digest(cfg: Config, *, compile: bool, steps: int = 30) -> tuple[str, int, int]:
+    """``(sha256, storm deaths, bonds broken)`` of ``steps`` engine steps from a spun-up weather (500
+    standalone steps, plus a layer-2 jet of 0.07): the digest chains the state digest (``wx`` included) and
+    the step output's counters, ledger and birth and death records of every step. This is what the W1
+    engine (3799009) and the W2 engine with every new key at its default must agree on."""
+    ws = spun_ws(cfg)
+    wx = W.pack(ws._replace(u2=ws.u2 + 0.07))
+    fn = make_step(cfg, compile=compile)
+    s = init_state(cfg)._replace(wx=wx)
+    h = hashlib.sha256()
+    storm = broken = 0
+    for _ in range(steps):
+        s, out = fn(s)
+        mx.eval(s, out)
+        h.update(state_digest(s).encode())
+        for leaf in (out.counters, out.ledger, *out.births, *out.deaths):
+            a = to_numpy(leaf)
+            h.update(str((a.dtype, a.shape)).encode())
+            h.update(a.tobytes())
+        c = to_numpy(out.counters)
+        storm += int(c[-1])
+        broken += int(c[CounterIdx.BONDS_BROKEN])
+    return h.hexdigest(), storm, broken

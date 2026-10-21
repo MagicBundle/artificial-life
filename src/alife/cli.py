@@ -925,6 +925,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         observe=a.observe,
         weather=a.weather,
         weather_pairs=a.weather_pairs,
+        weather_org=a.weather_org,
     )
     text = _dumps(report)
     if a.json is not None:
@@ -1178,11 +1179,18 @@ def build_parser() -> argparse.ArgumentParser:
         "(interleaved blocks; needs weather.enabled, for example --overlay storm)",
     )
     p.add_argument(
+        "--weather-org",
+        action="store_true",
+        help="also time the step with the organism couplings (weather.seed_gain, weather.shade_gain) on "
+        "against the same config with them 0 (interleaved blocks; needs weather.enabled and one of them "
+        "above 0)",
+    )
+    p.add_argument(
         "--weather-pairs",
         type=_positive,
         default=2,
         metavar="N",
-        help="off/on block pairs of the --weather measurement (default 2: off on on off)",
+        help="off/on block pairs of the --weather and --weather-org measurements (default 2: off on on off)",
     )
     p.add_argument("--json", default=None, metavar="PATH")
     p.set_defaults(func=_cmd_bench)

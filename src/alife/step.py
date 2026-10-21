@@ -278,10 +278,12 @@ def step(
     dep = fields.deposit_chem(act.emit, fcell, c.solvent, cfg)  # S17
     chem = fields.update_chem(s2.chem, dep, cfg)
     rain = None
-    if (
-        wthr
-    ):  # static: advance the weather (it reads no agent array: DESIGN §30); the new rain feeds the field
-        ws2, wd = weather.advance(ws, t, kw[0], cfg)
+    if wthr:  # static: advance the weather; the new rain feeds the field
+        # The organism forcing (DESIGN §32) reads the start-of-step ``s.chem``, ``s.pos``, ``s.alive``: one
+        # step of lag, no draw. None while ``seed_gain``/``shade_gain`` are 0, so the weather then reads no
+        # agent array (DESIGN §30).
+        qs, t_mult = weather.organism_forcing(s.chem, s.pos, s.alive, ws, cfg)
+        ws2, wd = weather.advance(ws, t, kw[0], cfg, qs=qs, t_mult=t_mult)
         rain = weather.rain_for(ws2, cfg)  # None when rain_gain == 0
     resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env, rain)
     patch_pos = fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env)

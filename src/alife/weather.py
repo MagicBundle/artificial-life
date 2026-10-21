@@ -1427,13 +1427,56 @@ def agent_wind(
     return AgentForce(force, speed, breaks, (aw.n_clip_h + aw.n_clip_w) > 0)
 
 
-def advance(ws: WeatherState, t: mx.array, key: mx.array, cfg: Config) -> tuple[WeatherState, WeatherDiag]:
-    """One weather step at engine step ``t`` (an int32 () array): the warm pools of step ``t``, ``qs = 1``,
-    no momentum forcing. ``key`` is the ``k_disturb`` key of the step's weather stream split. In W1 the result
-    depends on no agent array (DESIGN §30)."""
+def air_speeds(
+    ws: WeatherState, pos: mx.array, buoy_cap: mx.array | None, alive: mx.array, cfg: Config
+) -> tuple[mx.array, mx.array]:
+    """``(total, eddy)`` air speeds of every row, ``(N,)`` float32 each: ``|u_air|`` (the clipped wind, jet
+    and ``w`` included) and ``sqrt(|u_h - ū_h|² + w²)`` (the eddy speed of ``storm_eddy``), whatever the
+    config keys. For the metrics rows (eager, once per snapshot); ``agent_wind`` is what the step uses."""
     p = params_from_config(cfg)
-    fo = WeatherForcing(warm_pools(p, t), mx.ones((p.n, p.n), dtype=_F32))
+    if buoy_cap is not None:  # static: 3D
+        aw = sample_wind(ws, pos, p, field_cell=cfg.world.field_cell, valid=alive, eddy=True)
+        ue = mx.concatenate([aw.u_eddy, aw.u[:, 2:3]], axis=-1)
+    else:
+        aw = sample_wind_h(ws, pos, p, valid=alive, eddy=True)
+        ue = aw.u_eddy
+    return mx.sqrt((aw.u * aw.u).sum(axis=-1)), mx.sqrt((ue * ue).sum(axis=-1))
+
+
+def advance(
+    ws: WeatherState,
+    t: mx.array,
+    key: mx.array,
+    cfg: Config,
+    qs: mx.array | None = None,
+    t_mult: mx.array | None = None,
+) -> tuple[WeatherState, WeatherDiag]:
+    """One weather step at engine step ``t`` (an int32 () array): the warm pools of step ``t`` times the shade
+    ``t_mult``, the seeding factor ``qs`` on ``Q_s``, no momentum forcing. ``key`` is the ``k_disturb`` key of
+    the step's weather stream split.
+
+    ``qs`` and ``t_mult`` are the (n, n) organism forcings of ``organism_forcing`` (DESIGN §32); None (the
+    default, and what the step passes with ``seed_gain = 0`` / ``shade_gain = 0``) takes exactly the W1
+    expressions: ``qs = 1`` and ``T_s`` unscaled, so without them the result depends on no agent array."""
+    p = params_from_config(cfg)
+    t_s = warm_pools(p, t)
+    if t_mult is not None:  # static: shade (W2)
+        t_s = t_s * t_mult
+    fo = WeatherForcing(t_s, qs if qs is not None else mx.ones((p.n, p.n), dtype=_F32))
     return step(ws, fo, key, p)
+
+
+def organism_forcing(
+    chem: mx.array, pos: mx.array, alive: mx.array, ws: WeatherState, cfg: Config
+) -> tuple[mx.array | None, mx.array | None]:
+    """``(qs, t_mult)`` for ``advance`` from the **start-of-step** state: the seeding factor from ``chem`` and
+    the stored weather ``ws``, the shade from ``pos`` and ``alive``. Each is None while its gain is 0
+    (static), so a world without the couplings builds the W1 graph. No random draw; the engine and the
+    staged benchmark call this one function (DESIGN §32)."""
+    wc = cfg.weather
+    qs = seeding_qs(chem, ws, cfg) if wc.seed_gain > 0 else None
+    t_mult = shade_mult(pos, alive, cfg) if wc.shade_gain > 0 else None
+    return qs, t_mult
 
 
 # The W0 health gate (STORMS_W0): hyperbolicity below this, and the local moisture ratio below 1.
@@ -1547,8 +1590,8 @@ def _repeat_blocks(a: mx.array, n: int) -> mx.array:
     return mx.broadcast_to(a[:, None, :, None], (fg, r, fg, r)).reshape(n, n)
 
 
-def seeding_qs(chem: mx.array, ws: WeatherState, cfg: Config) -> mx.array:
-    """The rain-seeding factor on the threshold ``Q_s``, (n, n) float32 in ``[1 - seed_gain, 1]``.
+def seeding_response(chem: mx.array, ws: WeatherState, cfg: Config) -> mx.array:
+    """The saturating seeding response ``r`` on the field lattice, ``(FG, FG)`` float32 in ``[0, 1)``.
 
     ``chem`` is the field state's chemical channels, ``(NCH, FZ, FG, FG)`` (3D) or ``(NCH, FG, FG)`` (2D);
     ``ws`` the stored weather. The signal is the c2 averaged over the cloud layers, ``b = Σ_k w_k·chem[2, k]``
@@ -1557,13 +1600,10 @@ def seeding_qs(chem: mx.array, ws: WeatherState, cfg: Config) -> mx.array:
     floor: where it does not rain ``D_c`` is 0, so a rain-weighted band would be empty and seeding could
     not start a rain).
 
-    The excess over the lattice mean, ``e = b - mean(b)·(1 + 1e-4)``, goes through the saturating response
-    ``r = e⁺/(e⁺ + seed_c0)`` (zero for ``e <= 0``: no anti-seeding). The 1e-4 dead band is far above the
-    float32 rounding of the mean over the lattice and of the layer weights (they sum to 1 to 6e-8), so a
-    uniform c2 gives ``qs == 1`` exactly. Then ``qs = 1 - seed_gain·r`` is repeated over the 2x2 weather
-    cells of each field column. 2D: the band is the single layer. Reshapes, reductions and arithmetic only;
-    no random draw. The caller evaluates it on the start-of-step state.
-    """
+    The excess over the lattice mean, ``e = b - mean(b)·(1 + 1e-4)``, goes through ``r = e⁺/(e⁺ + seed_c0)``
+    (zero for ``e <= 0``: no anti-seeding). The 1e-4 dead band is far above the float32 rounding of the mean
+    over the lattice and of the layer weights (they sum to 1 to 6e-8), so a uniform c2 gives ``r == 0``
+    exactly. 2D: the band is the single layer. Reshapes, reductions and arithmetic only; no random draw."""
     wc, w = cfg.weather, cfg.world
     p = params_from_config(cfg)
     fg = round(w.size / w.field_cell)
@@ -1575,8 +1615,16 @@ def seeding_qs(chem: mx.array, ws: WeatherState, cfg: Config) -> mx.array:
         b = chem[2]
     mean = b.mean()
     e = mx.maximum(b - mean * (1.0 + _SEED_DEADBAND), 0.0)
-    r = e / (e + wc.seed_c0)
-    return _repeat_blocks(1.0 - wc.seed_gain * r, p.n)
+    return e / (e + wc.seed_c0)
+
+
+def seeding_qs(chem: mx.array, ws: WeatherState, cfg: Config) -> mx.array:
+    """The rain-seeding factor on the threshold ``Q_s``, (n, n) float32 in ``[1 - seed_gain, 1]``:
+    ``qs = 1 - seed_gain·r`` with ``r`` of ``seeding_response``, repeated over the 2x2 weather cells of each
+    field column. The caller evaluates it on the start-of-step state (``organism_forcing``)."""
+    return _repeat_blocks(
+        1.0 - cfg.weather.seed_gain * seeding_response(chem, ws, cfg), params_from_config(cfg).n
+    )
 
 
 def _box3(a: mx.array) -> mx.array:
@@ -1587,19 +1635,22 @@ def _box3(a: mx.array) -> mx.array:
     return (_south(row) + row + _north(row)) / 3.0
 
 
-def shade_mult(pos: mx.array, alive: mx.array, cfg: Config) -> mx.array:
-    """The shade on the warm-pool map ``T_s``, (n, n) float32 in ``[1 - shade_gain, 1]`` (multiply ``T_s``).
+def shade_strength(pos: mx.array, alive: mx.array, cfg: Config) -> mx.array:
+    """The shade ``s`` on the field lattice, ``(FG, FG)`` float32 in ``[0, shade_gain)``.
 
     The alive agents are counted per field column (all heights; ``ops.scatter_add_i32``) and averaged over the
-    periodic 3x3 neighbourhood, ``d`` agents per column. ``s = shade_gain·d/(d + shade_n0)`` and the factor
-    is ``1 - s`` repeated over the 2x2 weather cells of each column. The box mean is separable (``_box3``).
-    Dead rows are excluded (their positions are stale); no random draw. The caller passes the
-    start-of-step ``pos`` and ``alive``.
-    """
+    periodic 3x3 neighbourhood, ``d`` agents per column; ``s = shade_gain·d/(d + shade_n0)``. The box mean is
+    separable (``_box3``). Dead rows are excluded (their positions are stale); no random draw."""
     wc, w = cfg.weather, cfg.world
-    n = params_from_config(cfg).n
     fg = round(w.size / w.field_cell)
     cxy = ops.floor_i32(pos[:, :2] / w.field_cell) % fg
     cnt = ops.scatter_add_i32(fg * fg, cxy[:, 1] * fg + cxy[:, 0], 1, alive).reshape(fg, fg).astype(_F32)
     d = _box3(cnt)
-    return _repeat_blocks(1.0 - wc.shade_gain * d / (d + wc.shade_n0), n)
+    return wc.shade_gain * d / (d + wc.shade_n0)
+
+
+def shade_mult(pos: mx.array, alive: mx.array, cfg: Config) -> mx.array:
+    """The shade on the warm-pool map ``T_s``, (n, n) float32 in ``[1 - shade_gain, 1]`` (multiply ``T_s``):
+    ``1 - s`` of ``shade_strength`` repeated over the 2x2 weather cells of each field column. The caller
+    passes the start-of-step ``pos`` and ``alive`` (``organism_forcing``)."""
+    return _repeat_blocks(1.0 - shade_strength(pos, alive, cfg), params_from_config(cfg).n)

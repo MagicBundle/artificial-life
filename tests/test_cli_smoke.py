@@ -293,6 +293,7 @@ def test_view_and_bench_delegate(run_dir: Path, tmp_path: Path, monkeypatch: pyt
         "observe": False,
         "weather": False,
         "weather_pairs": 2,
+        "weather_org": False,
         "n": 1024,
         "hidden": 24,
     }
@@ -300,6 +301,8 @@ def test_view_and_bench_delegate(run_dir: Path, tmp_path: Path, monkeypatch: pyt
     assert seen["observe"] is True
     assert cli.main([*argv, "--weather", "--weather-pairs", "3"]) == 0
     assert seen["weather"] is True and seen["weather_pairs"] == 3
+    assert cli.main([*argv, "--weather-org"]) == 0
+    assert seen["weather_org"] is True and seen["weather"] is False
     monkeypatch.setattr(bench, "run_bench", lambda cfg, **kw: {"determinism": {"match": False}})
     assert cli.main(["bench", "--preset", "tiny", "--determinism"]) == 1
     monkeypatch.setattr(bench, "run_bench", lambda cfg, **kw: {"observe": {"trajectory_match": False}})

@@ -23,6 +23,7 @@ from alife.weather import WeatherParams
 
 TWO_PI: Final = 2.0 * math.pi
 BAND_KEYS: Final = ("occ_hz0", "occ_hz1_11", "occ_hz12")  # peak agents per hash cell: floor, mid, surface
+RAIN_BAND: Final = (8, 14)  # the cloud band of the rain shares: field layers 8-13 (z 32-56 at field_cell 4)
 
 # --- storm detection helpers (moved from analysis/w0.py) --------------------------------------------------
 
@@ -99,6 +100,31 @@ def storm_exposure(speed: np.ndarray, u0: float, span: float) -> float:
     return float(np.clip((speed.astype(np.float64) - u0) / span, 0.0, 1.0).mean())
 
 
+def _share(num: float, den: float) -> float:
+    return float(num) / float(den) if den else 0.0
+
+
+def rain_shares(audit: np.ndarray) -> dict[str, float]:
+    """The nominal and realised rain shares of DESIGN §32 from the per-layer sums of ``metrics.rain_audit``.
+
+    ``audit`` is ``(4, layers)``: the regeneration ``base`` without rain, the nominal ``rain`` term, the
+    realised increment ``inc_total = clip(min(base + rain, cap - R), 0)`` and the realised rain
+    ``rain_real = inc_total - inc_base``, each summed over a layer. The band is ``RAIN_BAND`` (all of a 2D
+    world's single layer). Nominal: ``rain / (rain + base)``, a statement about the forcing; realised:
+    ``rain_real / inc_total``; ``rain_clipped_frac = 1 - Σ rain_real / Σ rain`` (0 without rain)."""
+    a = np.asarray(audit, dtype=np.int64)
+    base, rain, inc, real = a[0], a[1], a[2], a[3]
+    lo, hi = RAIN_BAND if base.size > 1 else (0, 1)
+    b = slice(lo, hi)
+    return {
+        "rain_band_share": _share(rain[b].sum(), rain[b].sum() + base[b].sum()),
+        "rain_global_share": _share(rain.sum(), rain.sum() + base.sum()),
+        "rain_real_band_share": _share(real[b].sum(), inc[b].sum()),
+        "rain_real_global_share": _share(real.sum(), inc.sum()),
+        "rain_clipped_frac": 1.0 - _share(real.sum(), rain.sum()) if rain.sum() else 0.0,
+    }
+
+
 def weather_block(
     wx: np.ndarray,
     air_speed: np.ndarray,
@@ -106,6 +132,11 @@ def weather_block(
     *,
     occupancy: np.ndarray | None = None,
     overlap_deep: int = 0,
+    total_speed: np.ndarray | None = None,
+    eddy_speed: np.ndarray | None = None,
+    seed_r: np.ndarray | None = None,
+    shade_s: np.ndarray | None = None,
+    rain_audit: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """The ``weather`` block of one metrics row (DESIGN §30), plain floats and ints.
 
@@ -119,6 +150,13 @@ def weather_block(
     hemisphere) of area ``a_min`` or more with at least ``r_min`` raining cells: a count of candidate storms,
     not of tracks. ``storm_exposure`` and the air-speed quantiles are at the snapshot's positions and are the
     table the calibration of ``storm_u0`` reads.
+
+    W2 (DESIGN §32), each key group present only when its input is given (the engine's snapshot gives them
+    when the coupling is on): ``total_speed`` and ``eddy_speed`` (the alive rows' ``|u_air|`` and eddy speed)
+    give ``total_speed_p99`` and ``eddy_speed_p99`` (``air_speed_*`` and ``storm_exposure`` stay on the hazard
+    speed); ``seed_r`` (the ``(FG, FG)`` seeding response) gives ``seed_r_mean``, ``seed_r_hi_share`` (columns
+    with ``r > 0.5``) and ``seed_lower_mean`` (``seed_gain·mean r``); ``shade_s`` (the ``(FG, FG)`` shade)
+    gives ``shade_s_mean`` and ``shade_s_max``; ``rain_audit`` (see ``rain_shares``) the rain shares.
     """
     p = weather.params_from_config(cfg)
     wc = cfg.weather
@@ -163,4 +201,19 @@ def weather_block(
             "overlap_deep": int(overlap_deep),
         }
     )
+    if total_speed is not None and eddy_speed is not None:
+        for name, v in (("total", total_speed), ("eddy", eddy_speed)):
+            v = np.asarray(v, dtype=np.float64).reshape(-1)
+            block[f"{name}_speed_p99"] = float(np.quantile(v, 0.99)) if v.size else 0.0
+    if seed_r is not None:
+        r = np.asarray(seed_r, dtype=np.float64)
+        block["seed_r_mean"] = float(r.mean())
+        block["seed_r_hi_share"] = float((r > 0.5).mean())
+        block["seed_lower_mean"] = float(wc.seed_gain * r.mean())
+    if shade_s is not None:
+        sh = np.asarray(shade_s, dtype=np.float64)
+        block["shade_s_mean"] = float(sh.mean())
+        block["shade_s_max"] = float(sh.max())
+    if rain_audit is not None:
+        block.update(rain_shares(rain_audit))
     return block
