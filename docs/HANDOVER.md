@@ -195,10 +195,10 @@ What to know:
   run cold; an `if: always()` save would pin a partial cache under the same key (owner's decision, not applied).
 - **CI** runs `-n 4 --dist loadfile` on a pinned `ubuntu-24.04` (the goldens depend on the image's g++; `ImageOS` is in the
   MLX cache key); the Linux time is not measured yet (read it off the first runs, which also pay the goldens' cold
-  compile and the ambiguous kernels, and lower the 120-minute timeout). **Open:** `fix/mlx-compile-collision` is unmerged
-  and now only needs its docs (F21 item 6, §15.4, the CLAUDE.md line and a row): its test code is ported into
-  `tests/kernel_ambiguity.py`, `worker_cache.py`, `compile_probe.py` and `test_mlx_compile_collision.py` here (DESIGN §22.0
-  item 5); drop its `tests/` files and `conftest.py` hunk and rebase it after this PR.
+  compile and the ambiguous kernels, and lower the 120-minute timeout). **Done after it:** the docs of the guard branch `fix/mlx-compile-collision`
+  (F21 item 6: the cause and a re-audit of the entry points; the §15.4 sentence; the CLAUDE.md line; Review-log row I53) landed as a docs-only change; its test
+  code is ported (DESIGN §22.0 item 5). The re-audit lists the tools that compile several configurations in one
+  process, which the guard does not cover (F21 item 6).
 
 ## Verified state
 
