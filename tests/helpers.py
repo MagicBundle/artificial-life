@@ -188,7 +188,7 @@ def make_scene(
         out["chem"] = mx.zeros(base["chem"].shape, dtype=mx.float32)
     else:
         out["chem"] = mx.array(np.broadcast_to(np.asarray(chem, np.float32), base["chem"].shape).copy())
-    for name in ("patch_pos", "patch_vel", "key", "step", "ledger_cum", "diag", *ENV_FIELDS):
+    for name in ("patch_pos", "patch_vel", "key", "step", "ledger_cum", "diag", *ENV_FIELDS, "wx"):
         out[name] = mx.array(base[name]).astype(dtypes[name])
     out["next_uid"] = mx.array(int(arr["uid"].max(initial=-1)) + 1, dtype=mx.int64)
     for name, value in fields.items():

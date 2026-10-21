@@ -20,9 +20,8 @@ provisional thresholds (`SOCIAL_VERSION` 1, measured on the GPU, none changed); 
 DESIGN §28.4). The fused Metal neighbour
 search (`src/alife/knn_metal.py`, `DESIGN.md` §4, row I48) is built: 75 steps/s at `64k3d` instead of 15, bitwise the
 same trajectory. It is the default on Metal in 2D and 3D (row I52); `ALIFE_KNN=mlx` forces the pure-MLX path.
-`docs/STORMS.md` designs the storm world (the 3D target of G3 onwards); its offline weather prototype W0
-(`src/alife/weather.py`, `python -m alife.analysis.w0`, row I46, results in `docs/STORMS_W0.md`; no engine change) passes
-every exit criterion but the cost one (about 1.16 ms a step against 1.0), so its wiring into the step (W1) is not built.
+`docs/STORMS.md` is the storm world; W0 (the model, `weather.py`, `docs/STORMS_W0.md`) and W1 (`weather.*` config,
+`State.wx`, wind/rain/hazard in the step; `DESIGN.md` §30) are implemented and off by default.
 
 ## Conventions
 
@@ -38,6 +37,8 @@ every exit criterion but the cost one (about 1.16 ms a step against 1.0), so its
 - Observer-only keys (`config.OBSERVER_KEYS`), which are unhashed at every value and inert while `game.observe` is off,
   may default to a working value.
 - Avoid GPU float32 matmul for anything that must be accurate (Metal reduced precision, DESIGN F20).
+- A trajectory-neutral state field is frozen out of the legacy digests (`V0_FIELDS`, `V0_FIELDS_3D`), so the goldens
+  do not move when such a field is added.
 - Custom Metal kernels live only in `src/alife/knn_metal.py` (`mx.fast.metal_kernel`, lint rule 6). Each must be
   bitwise equal to the pure-MLX path it replaces (`tests/test_spatial_metal.py`, run with `-m ""` on the Mac and on
   every MLX bump, which is then added to `knn_metal.VERIFIED_MLX`), fall back to that path off Metal, and write no

@@ -302,7 +302,14 @@ def study(
         stored_row = rows.get(t)
         if stored_row is not None:
             if stored_row["steps"] == len(counters):
-                bad = compare_row(stored_row, counters, ledgers, int(to_numpy(state.total)), nd=nd)
+                bad = compare_row(
+                    stored_row,
+                    counters,
+                    ledgers,
+                    int(to_numpy(state.total)),
+                    nd=nd,
+                    weather=cfg.weather.enabled,
+                )
                 if bad:
                     raise ResimMismatch(
                         f"step {t}: observed re-simulation differs from metrics.jsonl in {bad}"

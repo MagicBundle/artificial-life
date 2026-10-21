@@ -192,7 +192,7 @@ def _starve(s: State) -> tuple[State, np.ndarray]:
     return s._replace(energy=mx.array(energy_)), rows
 
 
-CAUSE_COUNTERS = {
+CAUSE_COUNTERS = {  # the four causes of a weather-off world; DeathCause.STORM (W1) has its own counter
     DeathCause.STARVED: C.DEATHS_STARVED,
     DeathCause.KILLED: C.DEATHS_KILLED,
     DeathCause.AGED: C.DEATHS_AGED,
@@ -214,6 +214,7 @@ def _check_death_cause(a: Acts, out: StepOutG, prev: State, s: State, where: str
     counts = {cause: int((dc == cause.value).sum()) for cause in DeathCause}
     for cause, counter in CAUSE_COUNTERS.items():
         assert counts[cause] == c[counter], (where, cause)
+    assert counts[DeathCause.STORM] == 0, where  # weather-off worlds
     assert sum(counts.values()) == int(alive0.sum() - survivor.sum()), where
     killed = (_np(a.flags) & ActFlag.KILLED.value) > 0
     assert np.array_equal(killed, dc == DeathCause.KILLED.value), where

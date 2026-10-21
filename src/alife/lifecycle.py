@@ -98,6 +98,20 @@ def catastrophe_mask(pos: mx.array, alive: mx.array, env: Env, key: mx.array, cf
     return alive & inside & (u < env.cat_kill_p)
 
 
+def storm_mask(speed: mx.array, alive: mx.array, key: mx.array, cfg: Config) -> mx.array:
+    """(N,) bool: alive agents that draw below the storm hazard ``p_i`` (§30).
+
+    ``p_i = storm_p·clip((speed_i − storm_u0)/storm_span, 0, 1)`` with ``speed`` the air speed at the agent
+    (``weather.agent_wind``), not its own. One uniform per row is drawn from ``key`` (the hazard half of the
+    ``Stream.WEATHER`` split) every step weather is on, whether or not any hazard is active, so the stream use
+    is independent of the levers (``storm_p = 0`` gives an all-false mask).
+    """
+    wc = cfg.weather
+    p = wc.storm_p * mx.clip((speed - wc.storm_u0) / wc.storm_span, 0.0, 1.0)
+    u = mx.random.uniform(shape=(speed.shape[0],), key=key)
+    return alive & (u < p)
+
+
 def deaths(
     alive: mx.array,
     solvent: mx.array,
@@ -114,13 +128,16 @@ def deaths(
     cfg: Config,
     *,
     cat_mask: mx.array | None = None,
+    storm_mask: mx.array | None = None,
 ) -> Deaths:
     """S14: ``dead = alive & (~solvent | E == 0 | aged)``; corpses, canonical rows, bonds, records (§10.7).
 
     Cause, first match wins: ``STARVED`` if insolvent, ``KILLED`` if ``E == 0`` after a loss this step,
     ``STARVED`` if ``E == 0``, else ``AGED``. ``cat_mask`` (the director's catastrophe, None when off)
     kills additional agents: an alive row in the mask that none of those causes already kills dies as
-    ``CATASTROPHE``, so every other cause keeps precedence. Corpses (``E + S``) are scatter-added into the
+    ``CATASTROPHE``, so every other cause keeps precedence. ``storm_mask`` (the weather hazard, None when
+    weather is off) does the same with ``STORM``, below the catastrophe: a row in both dies as
+    ``CATASTROPHE``. Corpses (``E + S``) are scatter-added into the
     dead agent's field cell, then the field is hard-capped at ``R_HARD``. Death records hold the first ``DL``
     dead rows by index. In 3D corpses sink: they land in the floor cell ``(0, cy, cx)`` below the dead agent,
     ``fcell % FG²`` (§27.6).
@@ -133,7 +150,15 @@ def deaths(
     cat = None
     if cat_mask is not None:  # static: director enabled
         cat = alive & cat_mask & ~dead  # excess deaths only
+    storm = None
+    if storm_mask is not None:  # static: weather enabled
+        storm = alive & storm_mask & ~dead  # excess deaths only
+        if cat is not None:  # static
+            storm = storm & ~cat  # the catastrophe keeps precedence
+    if cat is not None:  # static
         dead = dead | cat
+    if storm is not None:  # static
+        dead = dead | storm
     survivor = alive & ~dead
 
     cause = mx.where(
@@ -145,6 +170,8 @@ def deaths(
             mx.where(zero, DeathCause.STARVED.value, DeathCause.AGED.value),
         ),
     )
+    if storm is not None:  # static: weather enabled
+        cause = mx.where(storm, DeathCause.STORM.value, cause)
     if cat is not None:  # static: director enabled
         cause = mx.where(cat, DeathCause.CATASTROPHE.value, cause)
     cause = mx.where(dead, cause, -1).astype(_I32)

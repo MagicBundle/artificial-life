@@ -253,3 +253,41 @@ def _find_neighbors_3d(pos: mx.array, alive: mx.array, cfg: Config, *, metal: bo
         overflow_cells=(count > c).sum().astype(_I32),
         max_occupancy=count.max().astype(_I32),
     )
+
+
+# --- occupancy of the 3D hash grid (W1, DESIGN §30) ---------------------------------------------------------
+
+
+def hash_occupancy(pos: mx.array, alive: mx.array | None, cfg: Config) -> mx.array:
+    """Agents per hash cell, binned exactly as ``_find_neighbors_3d`` does: ``(G_z, G, G)`` int32. ``alive``
+    keeps dead rows (their stale positions) out of the count; ``None`` counts every row. The two binning lines
+    are the search's own, so the maximum equals ``Neighbors.max_occupancy``."""
+    d = dims(cfg)
+    g, gz = d.g_hash, d.g_hash_z
+    cxy = mx.floor(pos[:, :2] / d.cell_hash).astype(_I32) % g
+    cz = mx.clip(mx.floor(pos[:, 2] / d.cell_hash_z).astype(_I32), 0, gz - 1)
+    cid = (cz * g + cxy[:, 1]) * g + cxy[:, 0]
+    return ops.scatter_add_i32(g * g * gz, cid, 1, alive).reshape(gz, g, g)
+
+
+def band_peaks(counts: mx.array) -> tuple[mx.array, mx.array]:
+    """Per band (floor = hash layer 0, mid = layers 1 to G_z - 2, surface = layer G_z - 1) the largest cell
+    count and the flat id of the argmax cell in the ``(G_z, G, G)`` volume. Both ``(3,)`` int32. A band that
+    does not exist (``G_z`` below 3 has no mid band) reads 0 and -1."""
+    gz, g = counts.shape[0], counts.shape[1]
+    zero = counts[0, 0, 0] * 0
+    bands: list[tuple[mx.array | None, int]] = [
+        (counts[0:1], 0),
+        (counts[1 : gz - 1] if gz > 2 else None, g * g),
+        (counts[gz - 1 : gz], (gz - 1) * g * g),
+    ]
+    mxs, cells = [], []
+    for sub, off in bands:
+        if sub is None:
+            mxs.append(zero)
+            cells.append(zero - 1)
+        else:
+            flat = sub.reshape(-1)
+            mxs.append(flat.max())
+            cells.append(flat.argmax().astype(_I32) + off)
+    return mx.stack(mxs).astype(_I32), mx.stack(cells).astype(_I32)

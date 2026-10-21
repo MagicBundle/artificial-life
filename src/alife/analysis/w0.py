@@ -39,7 +39,7 @@ from typing import Any, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import ops
+from alife import ops, spatial, weather_obs
 from alife import weather as W
 from alife.config import Config, dims, load_config
 from alife.metrics import N_BANDS, z_band
@@ -136,43 +136,12 @@ def _git_rev() -> str | None:
 
 # --- storm detection (spec §6) ------------------------------------------------------------------------------
 
-_NEIGHBOURS = tuple((dj, di) for dj in (-1, 0, 1) for di in (-1, 0, 1) if dj or di)
-
-
-def label_periodic(mask: np.ndarray, group: np.ndarray | None = None) -> tuple[np.ndarray, int]:
-    """Periodic 8-connected component labelling by min-label propagation (deterministic).
-
-    Every masked cell starts with its flat index plus one and takes the minimum label over its eight rolled
-    neighbours until a fixed point (with pointer jumping, which only shortens the iteration), so seams and
-    corners join. Cells join only when ``group`` agrees (the study passes the hemisphere sign, so a region
-    never crosses an equator). Labels are renumbered ``1 .. K`` in order of the smallest flat index of each
-    component; ``0`` is the background. Returns ``(labels (N, M) int32, K)``."""
-    mask = np.asarray(mask, dtype=bool)
-    size = mask.size
-    big = size + 1
-    lab = np.where(mask, np.arange(1, size + 1, dtype=np.int64).reshape(mask.shape), 0)
-    if group is not None:
-        group = np.broadcast_to(np.asarray(group), mask.shape)
-        same = {s: np.roll(group, s, (0, 1)) == group for s in _NEIGHBOURS}
-    while True:
-        cur = np.where(mask, lab, big)
-        new = cur.copy()
-        for s in _NEIGHBOURS:
-            nb = np.roll(cur, s, (0, 1))
-            if group is not None:
-                nb = np.where(same[s], nb, big)
-            new = np.minimum(new, nb)
-        new = np.where(mask, new, 0)
-        jump = np.where(mask, new.ravel()[np.maximum(new.ravel() - 1, 0)].reshape(mask.shape), 0)
-        new = np.where(mask, np.minimum(new, np.where(jump > 0, jump, new)), 0)
-        if np.array_equal(new, lab):
-            break
-        lab = new
-    out = np.zeros(mask.shape, dtype=np.int32)
-    if mask.any():
-        _, inv = np.unique(lab[mask], return_inverse=True)
-        out[mask] = inv.reshape(-1) + 1
-    return out, int(out.max())
+# The periodic labelling and the centre/corner helpers moved to ``alife.weather_obs`` in W1 (the engine's
+# metrics rows use them); the names stay importable from here.
+label_periodic = weather_obs.label_periodic
+centre_winds = weather_obs.centre_winds
+corners_to_centres = weather_obs.corners_to_centres
+hemisphere_sign = weather_obs.hemisphere_sign
 
 
 class Frame(NamedTuple):
@@ -197,23 +166,6 @@ def read_frame(ws: WeatherState, p: WeatherParams, t: int) -> Frame:
     arrs = (z, ws.P, ws.h1, ws.h2, ws.u1, ws.v1, ws.u2, ws.v2, ws.Q)
     mx.eval(*arrs)
     return Frame(t, *(np.array(a) for a in arrs))
-
-
-def centre_winds(u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """u and v averaged to the cell centres: ``½(u + u[i-1])`` and ``½(v + v[j-1])``."""
-    return 0.5 * (u + np.roll(u, 1, 1)), 0.5 * (v + np.roll(v, 1, 0))
-
-
-def corners_to_centres(z: np.ndarray) -> np.ndarray:
-    """``¼(ζ + W(ζ) + S(ζ) + S(W(ζ)))``: the four corners around each centre."""
-    zw = np.roll(z, 1, 1)
-    return 0.25 * (z + zw + np.roll(z, 1, 0) + np.roll(zw, 1, 0))
-
-
-def hemisphere_sign(p: WeatherParams) -> np.ndarray:
-    """``sign f(y_c)`` per centre row, (N, 1) int8; never zero (centre rows avoid y = 0 and L/2)."""
-    yc = (np.arange(p.n) + 0.5) * p.dx
-    return np.where(np.sin(TWO_PI * yc / p.L) >= 0, 1, -1).astype(np.int8)[:, None]
 
 
 @dataclass(frozen=True)
@@ -1057,36 +1009,11 @@ def latitude_stats(
 
 def occupancy_counts(pos: mx.array, cfg: Config) -> mx.array:
     """Agents per hash cell, binned exactly as ``spatial._find_neighbors_3d`` does (spec §5): ``(G_z, G, G)``
-    int32. The three lines below are the engine's, copied verbatim."""
-    d = dims(cfg)
-    g, gz = d.g_hash, d.g_hash_z
-    cxy = mx.floor(pos[:, :2] / d.cell_hash).astype(mx.int32) % g
-    cz = mx.clip(mx.floor(pos[:, 2] / d.cell_hash_z).astype(mx.int32), 0, gz - 1)
-    cid = (cz * g + cxy[:, 1]) * g + cxy[:, 0]
-    return ops.scatter_add_i32(g * g * gz, cid, 1).reshape(gz, g, g)
+    int32. The binning moved to ``spatial.hash_occupancy`` (W1), which also takes an ``alive`` mask."""
+    return spatial.hash_occupancy(pos, None, cfg)
 
 
-def band_peaks(counts: mx.array) -> tuple[mx.array, mx.array]:
-    """Per band (floor = hash layer 0, mid = layers 1 to G_z - 2, surface = layer G_z - 1) the largest cell
-    count and the flat id of the argmax cell in the ``(G_z, G, G)`` volume. Both ``(3,)`` int32. A band that
-    does not exist (``G_z`` below 3 has no mid band) reads 0 and -1."""
-    gz, g = counts.shape[0], counts.shape[1]
-    zero = counts[0, 0, 0] * 0
-    bands: list[tuple[mx.array | None, int]] = [
-        (counts[0:1], 0),
-        (counts[1 : gz - 1] if gz > 2 else None, g * g),
-        (counts[gz - 1 : gz], (gz - 1) * g * g),
-    ]
-    mxs, cells = [], []
-    for sub, off in bands:
-        if sub is None:
-            mxs.append(zero)
-            cells.append(zero - 1)
-        else:
-            flat = sub.reshape(-1)
-            mxs.append(flat.max())
-            cells.append(flat.argmax().astype(mx.int32) + off)
-    return mx.stack(mxs).astype(mx.int32), mx.stack(cells).astype(mx.int32)
+band_peaks = spatial.band_peaks  # moved to ``spatial`` in W1; the name stays importable from here
 
 
 def decode_cell(cid: int, cfg: Config) -> tuple[int, int, int]:

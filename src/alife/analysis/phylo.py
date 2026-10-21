@@ -209,6 +209,7 @@ def load_tree(
         for k in ("births", "immigrants", "deaths_starved", "deaths_killed", "deaths_aged", "deaths_unlogged")
     }
     deaths_catastrophe = int(sum(r.get("deaths_catastrophe", 0) for r in rows))
+    deaths_storm = int(sum(r.get("deaths_storm", 0) for r in rows))
     n_imm = int(np.count_nonzero((parent < 0) & (birth >= 0)))
     report: dict[str, Any] = {
         "run": str(rd.path),
@@ -228,8 +229,14 @@ def load_tree(
     }
     if deaths_catastrophe:
         report["metrics_totals"]["deaths_catastrophe"] = deaths_catastrophe
+    if deaths_storm:
+        report["metrics_totals"]["deaths_storm"] = deaths_storm
     deaths_metric = (
-        totals["deaths_starved"] + totals["deaths_killed"] + totals["deaths_aged"] + deaths_catastrophe
+        totals["deaths_starved"]
+        + totals["deaths_killed"]
+        + totals["deaths_aged"]
+        + deaths_catastrophe
+        + deaths_storm
     )
     report["births_match_metrics"] = (
         report["births_logged"] + n_imm == totals["births"] + totals["immigrants"]

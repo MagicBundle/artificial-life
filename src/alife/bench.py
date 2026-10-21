@@ -17,6 +17,10 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
   ``Observer.update`` and ``Observer.take_records``, evaluations and social snapshots included) against the
   plain step, as blocks (control, observed, observed, control) of the runner's own loop, with a check that
   the trajectories are bitwise equal; and the parts of one social snapshot (``observe.social``).
+- **Weather** (``weather``, W1): the step with the engine weather layer on against the same config with it
+  off, as blocks (off, on, on, off). The trajectories differ by construction, so none is compared. The
+  marginal cost per step is the number STORMS §8 W1 asks for; ``stages`` adds the rows ``wind`` and
+  ``weather`` when the layer is on.
 """
 
 from __future__ import annotations
@@ -37,10 +41,21 @@ import numpy as np
 from alife import actions, bonds, brain, fields, invariants, lifecycle, metrics, physics, sensing, spatial
 from alife import energy as en
 from alife import step as step_mod
+from alife import weather as wthr
 from alife.actions import Actions
-from alife.config import BRAIN_IMPLS, WEIGHT_DTYPES, Config, config_hash, dims
+from alife.config import BRAIN_IMPLS, WEIGHT_DTYPES, Config, ConfigError, WeatherConfig, config_hash, dims
 from alife.rng import Stream, step_keys
-from alife.state import ERROR_MASK, CounterIdx, Diag, State, age, init_state, state_digest, to_numpy
+from alife.state import (
+    ERROR_MASK,
+    CounterIdx,
+    Diag,
+    State,
+    age,
+    init_state,
+    state_digest,
+    storm_counter_index,
+    to_numpy,
+)
 
 DONATION_STEPS: Final = 10
 DONATION_LIMIT: Final = 0.25  # healthy when a copying step peaks > 0.25 × bytes(W1 + W2) higher (§15.4)
@@ -60,7 +75,29 @@ STAGES: Final[tuple[tuple[str, str], ...]] = (
     ("finish", "S18"),
 )
 
+# The two rows the weather layer adds (W1): the wind sampling at S3w and the weather update with the rain
+# remap at S17w, in pipeline order.
+_WIND_STAGE: Final = ("wind", "S3w")
+_WEATHER_STAGE: Final = ("weather", "S17w")
+
+
+def stages_for(cfg: Config) -> tuple[tuple[str, str], ...]:
+    """``STAGES`` for a weather-off config (so its report is unchanged), with the ``wind`` row after ``sense``
+    and the ``weather`` row before ``fields`` when the weather layer is on."""
+    if not cfg.weather.enabled:
+        return STAGES
+    out: list[tuple[str, str]] = []
+    for st in STAGES:
+        if st[0] == "fields":
+            out.append(_WEATHER_STAGE)
+        out.append(st)
+        if st[0] == "sense":
+            out.append(_WIND_STAGE)
+    return tuple(out)
+
+
 _GB: Final = float(1 << 30)
+WEATHER_PAIRS: Final = 2  # off/on block pairs, in the order off on on off (the leading arm alternates)
 
 
 def run_bench(
@@ -72,17 +109,24 @@ def run_bench(
     determinism: bool = False,
     brain_variants: bool = False,
     observe: bool = False,
+    weather: bool = False,
+    weather_pairs: int = WEATHER_PAIRS,
 ) -> dict[str, Any]:
     """Run the benchmark suite and return a JSON-compatible report.
 
     ``warmup`` steps (at least the compile call) run before anything is timed; ``steps`` steps are timed.
     The optional parts reuse ``steps`` and ``warmup`` (determinism: 2 × ``steps`` steps; brain variants:
-    ``steps`` timed forward calls per variant; observers: four blocks of ``steps // 2`` timed steps).
+    ``steps`` timed forward calls per variant; observers and weather: ``2 * pairs`` blocks of ``steps // 2``
+    timed steps; ``weather`` needs ``cfg.weather.enabled``).
     """
     if steps < 1:
         raise ValueError(f"steps must be >= 1, got {steps}")
     if warmup < 0:
         raise ValueError(f"warmup must be >= 0, got {warmup}")
+    if weather and not cfg.weather.enabled:
+        raise ConfigError("bench --weather needs weather.enabled = true (for example --overlay storm)")
+    if weather_pairs < 1:
+        raise ValueError(f"weather_pairs must be >= 1, got {weather_pairs}")
     report: dict[str, Any] = {**_environment(cfg), "steps": steps, "warmup": max(warmup, 1)}
     fn = step_mod.make_step(cfg)
     report.update(_throughput(fn, cfg, steps, warmup))
@@ -94,6 +138,8 @@ def run_bench(
         report["brain_variants"] = _brain_variants(cfg, steps, warmup)
     if observe:
         report["observe"] = _bench_observe(cfg, steps, warmup)
+    if weather:
+        report["weather"] = _bench_weather(cfg, steps, warmup, weather_pairs)
     return report
 
 
@@ -217,6 +263,7 @@ def _throughput(fn: Callable[[State], Any], cfg: Config, steps: int, warmup: int
             + c[CounterIdx.DEATHS_KILLED]
             + c[CounterIdx.DEATHS_AGED]
             + c[CounterIdx.DEATHS_CATASTROPHE]
+            + (c[storm_counter_index(dims(cfg).nd)] if cfg.weather.enabled else 0)
         ),
         **_diag_report(int(to_numpy(s.diag))),
         "invariants_ok": not problems,
@@ -436,6 +483,61 @@ def _bench_social(cfg: Config, observed_fn: Callable[[State], Any], warm: int) -
     }
 
 
+def _bench_weather(cfg: Config, steps: int, warmup: int, pairs: int = WEATHER_PAIRS) -> dict[str, Any]:
+    """The marginal cost of the engine weather layer: the compiled step with ``cfg`` (weather on) against the
+    same config with the layer off (``replace(cfg, weather=WeatherConfig())``), STORMS §8 W1.
+
+    Each arm follows the runner's loop (one blocking eval per step). The blocks run off, on, on, off for two
+    pairs (the leading arm alternates in each pair, so that a drift linear in time, such as a thermal one,
+    cancels from the difference of the means), each from ``init_state`` with the same warm-up and
+    ``max(steps // 2, 1)`` timed steps; each arm's step compiles once. The trajectories differ by
+    construction (the wind moves agents), so none is compared: the cost is of the step the config describes.
+    ``marginal_ms_median`` is the difference of the median step times over all blocks of each arm,
+    ``marginal_ms_mean`` of the means; ``pair_marginal_ms`` the same median difference within each pair.
+    """
+    cfg_off = replace(cfg, weather=WeatherConfig())
+    fns = {"off": step_mod.make_step(cfg_off), "on": step_mod.make_step(cfg)}
+    cfgs = {"off": cfg_off, "on": cfg}
+    warm, per_block = max(warmup, 1), max(steps // 2, 1)
+    times: dict[str, list[float]] = {"off": [], "on": []}
+    pair_times: list[dict[str, list[float]]] = []
+
+    def block(arm: str, into: list[float]) -> None:
+        s = init_state(cfgs[arm])
+        for i in range(warm + per_block):
+            t0 = time.perf_counter()
+            s, out = fns[arm](s)
+            mx.eval(s, out)
+            if i >= warm:
+                into.append(time.perf_counter() - t0)
+        del s, out
+
+    for pair in range(pairs):  # off on, then on off, ...: the mean block time of both arms is the same
+        cur: dict[str, list[float]] = {"off": [], "on": []}
+        for arm in ("off", "on") if pair % 2 == 0 else ("on", "off"):
+            block(arm, cur[arm])
+        pair_times.append(cur)
+        for arm in cur:
+            times[arm].extend(cur[arm])
+    off_med, on_med = statistics.median(times["off"]), statistics.median(times["on"])
+    off_mean, on_mean = statistics.fmean(times["off"]), statistics.fmean(times["on"])
+    return {
+        "warmup": warm,
+        "block_pairs": pairs,
+        "steps_per_block": per_block,
+        "off_ms_median": 1e3 * off_med,
+        "on_ms_median": 1e3 * on_med,
+        "marginal_ms_median": 1e3 * (on_med - off_med),
+        "off_ms_mean": 1e3 * off_mean,
+        "on_ms_mean": 1e3 * on_mean,
+        "marginal_ms_mean": 1e3 * (on_mean - off_mean),
+        "pair_marginal_ms": [
+            1e3 * (statistics.median(p["on"]) - statistics.median(p["off"])) for p in pair_times
+        ],
+        "steps_per_s_on": 1.0 / on_mean,
+    }
+
+
 # --- brain variants -------------------------------------------------------------------------------------
 
 
@@ -524,9 +626,11 @@ class _Interact(NamedTuple):
 
 
 def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
-    """One function per sub-step group of ``STAGES``; together they are exactly ``step.step``, including its
-    static 3D branches (§27.8)."""
+    """One function per sub-step group of ``stages_for(cfg)``; together they are exactly ``step.step``,
+    including its static 3D branches (§27.8) and, with ``weather.enabled``, the wind (S3w) and the weather
+    update (S17w), which call the same ``weather`` functions as the step (§30)."""
     d3 = dims(cfg).d3
+    wthr_on = cfg.weather.enabled  # static
 
     def flush(
         W1: mx.array, W2: mx.array, slot: mx.array, pW1: mx.array, pW2: mx.array
@@ -563,7 +667,22 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             return act, actions.decode_motion3(y, s.alive, cfg)
         return actions.decode(y, desc, nbr, s.partner, s.alive, cfg)
 
-    def interact(s: State, act: Actions, se: _Sense, ks: mx.array, mo: actions.Motion3 | None) -> _Interact:
+    def kw1(ks: mx.array) -> mx.array:
+        """The hazard key of the step's weather stream split (``step.step``'s ``kw[1]``)."""
+        return mx.random.split(ks[Stream.WEATHER], 2)[1]
+
+    def wind_force(s: State) -> wthr.AgentForce:
+        """S3w: the stored weather sampled at the start-of-step positions."""
+        return wthr.agent_wind(wthr.unpack(s.wx), s.pos, s.buoy_cap if d3 else None, s.alive, cfg)
+
+    def interact(
+        s: State,
+        act: Actions,
+        se: _Sense,
+        ks: mx.array,
+        mo: actions.Motion3 | None,
+        wind: wthr.AgentForce | None,
+    ) -> _Interact:
         if d3:  # static
             nb0 = bonds.n_bonds(s.partner)
             c = en.pay_costs3(s.energy, act, mo, nb0, s.brain_cost, s.buoy_cap, s.alive, cfg)
@@ -572,6 +691,8 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             c = en.pay_costs(s.energy, act, bonds.n_bonds(s.partner), s.brain_cost, s.alive, cfg)
         act = actions.mask(act, c.solvent)
         flag = act.release | (se.geom.length > cfg.bonds.break_length)
+        if wind is not None and wind.breaks is not None:  # static: storm_break_u > 0
+            flag = flag | wind.breaks[:, None]
         partner, rev, broken = bonds.break_bonds(s.partner, s.rev, flag & se.geom.valid)
         partner, rev, formed, as_prop = bonds.form_bonds(
             partner, rev, s.alive & c.solvent & act.bond_want, act.bond_target, ks[Stream.BOND_PRIO]
@@ -587,6 +708,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             if env is not None
             else None
         )
+        storm = lifecycle.storm_mask(wind.speed, s.alive, kw1(ks), cfg) if wind is not None else None
         dt = lifecycle.deaths(
             s.alive,
             c.solvent,
@@ -602,6 +724,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             se.fcell,
             cfg,
             cat_mask=cat_mask,
+            storm_mask=storm,
         )
         return _Interact(c, act, partner, rev, formed, as_prop, broken, slots_s9, got, cb, sh, e_over, dt, mo)
 
@@ -612,12 +735,16 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         dt: lifecycle.Deaths,
         mo: actions.Motion3 | None,
         gr: mx.array | None,
+        wind: wthr.AgentForce | None,
     ) -> tuple[mx.array, ...]:
+        wind_f = wind.force if wind is not None else None  # static
         if d3:  # static: Integrated3 (a NamedTuple; its first three are pos, vel, heading as in 2D)
             sv = dt.survivor
-            F = physics.forces3(s.pos, s.heading, s.pitch, act, mo, s.buoy_cap, nbr, sv, dt.partner, cfg)
+            F = physics.forces3(
+                s.pos, s.heading, s.pitch, act, mo, s.buoy_cap, nbr, sv, dt.partner, cfg, wind=wind_f
+            )
             return physics.integrate3(s.pos, s.heading, s.pitch, F, act.grip, act.turn, mo.pitch, gr, sv, cfg)
-        F = physics.forces(s.pos, s.heading, act, nbr, dt.survivor, dt.partner, cfg)
+        F = physics.forces(s.pos, s.heading, act, nbr, dt.survivor, dt.partner, cfg, wind=wind_f)
         return physics.integrate(s.pos, s.heading, F, act.grip, act.turn, dt.survivor, cfg)
 
     def reproduce(
@@ -652,17 +779,27 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         counts = mx.stack([lanes.n_req, lanes.n_birth, lanes.n_imm])
         return (lanes.parent, lanes.slot, lanes.kind, counts), rp
 
-    def field_update(s2: State, it: _Interact, fcell: mx.array) -> tuple[mx.array, ...]:
+    def weather_update(
+        s: State, ks: mx.array, wind: wthr.AgentForce
+    ) -> tuple[mx.array, wthr.RainIn | None, mx.array]:
+        """S17w: advance the stored weather one step; returns the new packed ``wx``, the rain for the
+        resource update (None when ``rain_gain == 0``) and the ``WEATHER_WARN`` input."""
+        ws2, wd = wthr.advance(wthr.unpack(s.wx), s.step, mx.random.split(ks[Stream.WEATHER], 2)[0], cfg)
+        return wthr.pack(ws2), wthr.rain_for(ws2, cfg), wthr.health(wd, wind)
+
+    def field_update(
+        s2: State, it: _Interact, fcell: mx.array, rain: wthr.RainIn | None = None
+    ) -> tuple[mx.array, ...]:
         dep = fields.deposit_chem(it.act.emit, fcell, it.costs.solvent, cfg)
         chem = fields.update_chem(s2.chem, dep, cfg)
         env = s2.env if cfg.director.enabled else None  # static
-        resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env)
+        resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env, rain)
         return chem, resource, regen_inc, fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env)
 
     def finish(s2: State, s: State, flows: Any) -> tuple[State, Any]:
         return step_mod._finish(s2, s, cfg, flows)
 
-    return {
+    fns = {
         "flush": flush,
         "neighbors": neighbors,
         "sense": sense,
@@ -674,6 +811,10 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         "fields": field_update,
         "finish": finish,
     }
+    if wthr_on:  # static
+        fns["wind"] = wind_force
+        fns["weather"] = weather_update
+    return fns
 
 
 class _StagedStep:
@@ -683,7 +824,8 @@ class _StagedStep:
         use = cfg.run.compile if compile is None else compile
         self.cfg = cfg
         self.fns = {k: (mx.compile(f) if use else f) for k, f in _stage_fns(cfg).items()}
-        self.times: dict[str, list[float]] = {name: [] for name, _ in STAGES}
+        self.stages = stages_for(cfg)
+        self.times: dict[str, list[float]] = {name: [] for name, _ in self.stages}
 
     def _run(self, name: str, *args: Any) -> Any:
         t0 = time.perf_counter()
@@ -710,14 +852,19 @@ class _StagedStep:
         d3 = dims(self.cfg).d3
         dec = self._run("decode", y, se.desc, nbr, s)
         act, mo = dec if d3 else (dec, None)
-        it = self._run("interact", s, act, se, ks, mo)
-        moved = self._run("physics", s, it.act, nbr, it.dt, it.mo, se.grounded)
+        wthr_on = self.cfg.weather.enabled
+        wind = self._run("wind", s) if wthr_on else None
+        it = self._run("interact", s, act, se, ks, mo, wind)
+        moved = self._run("physics", s, it.act, nbr, it.dt, it.mo, se.grounded, wind)
         (parent, slot, kind, counts), rp = self._run("reproduce", s, it, h_new, moved, se.age, ks)
         lanes = lifecycle.Lanes(parent, slot, kind, counts[0], counts[1], counts[2])
-        chem, resource, regen_inc, patch_pos = self._run("fields", rp.state, it, se.fcell)
+        wx2, rain, weather_bad = self._run("weather", s, ks, wind) if wthr_on else (None, None, None)
+        chem, resource, regen_inc, patch_pos = self._run("fields", rp.state, it, se.fcell, rain)
         s2 = rp.state._replace(
             chem=chem, resource=resource, patch_pos=patch_pos, key=key_next, step=s.step + 1
         )
+        if wthr_on:  # static
+            s2 = s2._replace(wx=wx2)
         if self.cfg.director.enabled:  # static
             s2 = step_mod.consume_env(s2, s.env, lanes)
         flows = step_mod._Flows(
@@ -740,6 +887,7 @@ class _StagedStep:
             formed=it.formed,
             broken=it.broken,
             slots_s9=it.slots_s9,
+            weather_bad=weather_bad,
         )
         if d3:  # static: the Counter3D inputs
             flows = flows._replace(z_floor=moved.z_floor, z_surface=moved.z_surface, grounded=se.grounded)
@@ -761,10 +909,10 @@ def _bench_stages(cfg: Config, steps: int, warmup: int, fused_ms: float) -> dict
     staged.reset_times()
     for _ in range(steps):
         staged(holder)
-    ms = {name: 1e3 * statistics.fmean(staged.times[name]) for name, _ in STAGES}
+    ms = {name: 1e3 * statistics.fmean(staged.times[name]) for name, _ in staged.stages}
     total = math.fsum(ms.values())
     return {
-        "labels": dict(STAGES),
+        "labels": dict(staged.stages),
         "ms": ms,
         "frac": {name: v / total if total > 0 else 0.0 for name, v in ms.items()},
         "total_ms": total,
@@ -841,4 +989,12 @@ def format_report(report: dict[str, Any]) -> str:
                 f"{so['components_ms_median']:.2f} ms; heavy metrics {so['heavy_ms_median']:.2f} ms) = "
                 f"{so['amortised_ms_per_step']:.3f} ms/step amortised"
             )
+    if "weather" in r:
+        wt = r["weather"]
+        lines.append(
+            f"weather ({wt['block_pairs']} block pairs of {wt['steps_per_block']} steps): "
+            f"off {wt['off_ms_median']:.2f} ms, on {wt['on_ms_median']:.2f} ms median "
+            f"(marginal {wt['marginal_ms_median']:+.2f} ms median, {wt['marginal_ms_mean']:+.2f} ms mean); "
+            f"{wt['steps_per_s_on']:.1f} steps/s with weather"
+        )
     return "\n".join(lines)

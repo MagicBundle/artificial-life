@@ -22,7 +22,8 @@ from urllib.parse import urlsplit
 import mlx.core as mx
 import numpy as np
 
-from alife import layout
+from alife import layout, weather
+from alife.weather import DEFAULT_POOLS as _WEATHER_POOLS
 
 R_HARD: Final = (1 << 24) - 1  # hard resource cap per field cell (§10.9); re-exported as state.R_HARD
 
@@ -207,6 +208,58 @@ class GameConfig:  # the games vertical (docs/GAMES.md, §28); added after v0.1
     house_rate: float = 1 / 2048
 
 
+# The default warm pools of ``[weather]`` (``weather.DEFAULT_POOLS``, flat: 7 floats per pool).
+_POOLS_FLAT: Final[tuple[float, ...]] = tuple(float(x) for row in _WEATHER_POOLS for x in row)
+
+
+@dataclass(frozen=True)
+class WeatherConfig:  # the storm world's engine weather layer (docs/STORMS.md, DESIGN §30); added after v0.1
+    """Every key changes the compiled step, so every key is hashed (``POST_V01_KEYS``) and is inert at its
+    default while ``enabled`` is false (``validate``). Field names equal ``weather.WeatherParams``' where both
+    exist; the numerics a tuning never touched are ``weather.ENGINE_FIXED``."""
+
+    enabled: bool = False  # static: the compiled step carries the weather update, wind, rain and hazard
+    cells: int = 160  # weather grid side n; dx = world.size / cells (a multiple of the field lattice FG)
+    # layers: rest depths (H1 + H2 = world.height in 3D) and gravities, Coriolis amplitude
+    H1: float = 32.0
+    H2: float = 48.0
+    g_top: float = 9.18256e-3
+    g_prime: float = 5.16862e-3
+    f0: float = 0.025
+    # moisture
+    gamma: float = 21.6
+    tau_c: float = 8.0
+    k_E: float = 0.1
+    u_gust: float = 0.02
+    q_bg: float = 0.70
+    q_pool: float = 1.11
+    # relaxation and damping
+    tau_rad: float = 2000.0
+    r1: float = 2e-4
+    c_d: float = 2e-3
+    r2: float = 1e-4
+    # warm pools: flat, 7 per pool (x, y, sx, sy, amp, vx, vy)
+    pools: tuple[float, ...] = _POOLS_FLAT
+    # disturbances
+    seed_rate: float = 0.02
+    seed_v: float = 0.02
+    seed_sigma: float = 12.0
+    seed_jitter: float = 0.5
+    # the wind the agents feel (STORMS §4)
+    alpha0: float = 0.25
+    alpha1: float = 0.75
+    u_max: float = 0.3
+    w_edge: float = 0.03
+    z_sl: float = 4.0
+    # coupling to the organisms
+    rain_gain: float = 0.0  # nominal quanta per field column per step per unit of rain rate; 0 = no rain food
+    rain_floor: float = 0.0  # extra share of the rain added to the floor layer (3D)
+    storm_p: float = 0.0  # peak per-step storm kill probability; 0 = no hazard
+    storm_u0: float = 0.06  # air speed where the hazard starts
+    storm_span: float = 0.03  # air speed range over which it ramps to storm_p
+    storm_break_u: float = 0.0  # air speed above which a bond slot breaks; 0 = off
+
+
 @dataclass(frozen=True)
 class RunConfig:  # excluded from config_hash; on resume only observer/cadence keys may change (§18)
     seed: int = 0
@@ -239,6 +292,7 @@ class Config:
     fields: FieldConfig = field(default_factory=FieldConfig)
     director: DirectorConfig = field(default_factory=DirectorConfig)
     game: GameConfig = field(default_factory=GameConfig)
+    weather: WeatherConfig = field(default_factory=WeatherConfig)
     run: RunConfig = field(default_factory=RunConfig)
 
 
@@ -276,10 +330,15 @@ class Dims:
     z_lo: float  # the smallest float32 ≥ physics.radius
     z_hi: float  # the largest float32 ≤ height − physics.radius
     z_ground: float  # max(z_lo, the largest float32 ≤ radius + floor_eps): grounded iff z ≤ z_ground
+    wn: int  # weather grid side (weather.cells): the packed State.wx is (N_WX, wn, wn)
 
 
 PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d", "64k3d")
-OVERLAYS: tuple[str, ...] = ("fast",)
+OVERLAYS: tuple[str, ...] = ("fast",)  # compose with every preset
+# Overlays that need a particular world (DESIGN §30): validated against whatever preset they land on, and not
+# part of ``OVERLAYS`` (which means "composes with every preset").
+WORLD_OVERLAYS: tuple[str, ...] = ("storm",)
+ALL_OVERLAYS: tuple[str, ...] = OVERLAYS + WORLD_OVERLAYS  # what the loaders and the CLI accept
 DEFAULT_PRESET: Final = "64k"
 
 WEIGHT_DTYPES: Final[Mapping[str, mx.Dtype]] = {
@@ -368,6 +427,7 @@ def dims(cfg: Config) -> Dims:
         z_lo=z_lo,
         z_hi=z_hi,
         z_ground=z_ground,
+        wn=cfg.weather.cells,
     )
 
 
@@ -526,8 +586,10 @@ def apply_overrides(cfg: Config, overrides: Sequence[str]) -> Config:
 
 
 def _read_preset(name: str) -> dict[str, Any]:
-    if name not in PRESETS and name not in OVERLAYS:
-        raise ConfigError(f"unknown preset or overlay {name!r} (presets: {PRESETS}, overlays: {OVERLAYS})")
+    if name not in PRESETS and name not in ALL_OVERLAYS:
+        raise ConfigError(
+            f"unknown preset or overlay {name!r} (presets: {PRESETS}, overlays: {ALL_OVERLAYS})"
+        )
     text = importlib.resources.files("alife.presets").joinpath(f"{name}.toml").read_text(encoding="utf-8")
     return tomllib.loads(text)
 
@@ -561,8 +623,8 @@ def load_config(
         raise ConfigError(f"unknown preset {name!r} (choose from {PRESETS})")
     _merge_layer(base, _read_preset(name), f"preset {name}")
     for ov in overlays:
-        if ov not in OVERLAYS:
-            raise ConfigError(f"unknown overlay {ov!r} (choose from {OVERLAYS})")
+        if ov not in ALL_OVERLAYS:
+            raise ConfigError(f"unknown overlay {ov!r} (choose from {ALL_OVERLAYS})")
         _merge_layer(base, _read_preset(ov), f"overlay {ov}")
     if path is not None:
         p = Path(path)
@@ -614,6 +676,39 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("energy", "buoyancy_cap_cost"),
     ("game", "observe"),
     ("game", "house_rate"),
+    ("weather", "enabled"),
+    ("weather", "cells"),
+    ("weather", "H1"),
+    ("weather", "H2"),
+    ("weather", "g_top"),
+    ("weather", "g_prime"),
+    ("weather", "f0"),
+    ("weather", "gamma"),
+    ("weather", "tau_c"),
+    ("weather", "k_E"),
+    ("weather", "u_gust"),
+    ("weather", "q_bg"),
+    ("weather", "q_pool"),
+    ("weather", "tau_rad"),
+    ("weather", "r1"),
+    ("weather", "c_d"),
+    ("weather", "r2"),
+    ("weather", "pools"),
+    ("weather", "seed_rate"),
+    ("weather", "seed_v"),
+    ("weather", "seed_sigma"),
+    ("weather", "seed_jitter"),
+    ("weather", "alpha0"),
+    ("weather", "alpha1"),
+    ("weather", "u_max"),
+    ("weather", "w_edge"),
+    ("weather", "z_sl"),
+    ("weather", "rain_gain"),
+    ("weather", "rain_floor"),
+    ("weather", "storm_p"),
+    ("weather", "storm_u0"),
+    ("weather", "storm_span"),
+    ("weather", "storm_break_u"),
 )
 
 # The POST_V01 keys of the 3D world (docs/3D.md, §27.1). In a 2D world every one but ``world.dims`` must keep
@@ -1019,6 +1114,19 @@ def validate(cfg: Config) -> None:
             ru.heavy_metrics_every >= 1 and ru.heavy_metrics_every % ru.metrics_every == 0,
             "run.heavy_metrics_every must be a positive multiple of run.metrics_every",
         )
+
+    # Weather (DESIGN §30). Off: every weather key is inert, so it must keep its default (no config can
+    # change its hash without changing its behaviour). On: weather.validate_config returns the messages.
+    wthr = cfg.weather
+    if not wthr.enabled:
+        wdef = WeatherConfig()
+        for f in dataclasses.fields(WeatherConfig):
+            if f.name != "enabled" and getattr(wthr, f.name) != getattr(wdef, f.name):
+                errs.append(
+                    f"weather.{f.name} is inert while weather.enabled is false: it must keep its default"
+                )
+    else:
+        errs.extend(weather.validate_config(cfg))
 
     # Director (valid in 3D too: the column catastrophe, scaled radius bounds and 3D prompt, §27.10).
     req(di.persona in PERSONAS, f"director.persona {di.persona!r} not in {PERSONAS}")

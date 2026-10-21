@@ -545,8 +545,9 @@ class Society:
         ``name`` and ``named_after`` are the group's roster entry. ``x`` and ``y`` are the centroid of its
         members (``circular_mean`` over the torus; ``z_mean`` is the height), ``arch`` the shares of the
         primary archetypes (``rules.ARCHETYPE_NAMES`` order) among its members that have a label (None if
-        none has). ``births`` and the ``deaths`` by cause (``social.DEATH_CAUSES`` order) are the window's,
-        counted for the slot the group had in the window, so they are None for a group that held none then.
+        none has). ``births`` and the ``deaths`` by cause (``social.death_causes(cfg)`` order) are the
+        window's, counted for the slot the group had in the window, so they are None for a group that held
+        none then.
         """
         sr, d = self.sr, self.d
         f = sr.slots
