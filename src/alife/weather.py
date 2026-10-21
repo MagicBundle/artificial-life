@@ -10,7 +10,8 @@ engine does not import this module until W1.
 
 Pure MLX like the simulation modules (§22.6 rule 5): no host reads, no branching on array values (static
 branches only on ``WeatherParams`` fields, ``debug`` and the presence of the optional momentum forcing), fixed
-shapes, every random draw with ``key=``, no scatter, no matmul (F20), float32 throughout.
+shapes, every random draw with ``key=``, no scatter outside ``ops`` (``shade_mult``'s one count), no matmul
+(F20), float32 throughout.
 
 MLX 0.32.3's ``mx.compile`` crashes when the same roll of the same array is built twice and a later stage
 again builds duplicate rolls of a result that depends on them (spec §2.1). Every stage here takes the shifts
@@ -59,6 +60,10 @@ START_POOLS: tuple[tuple[float, ...], ...] = (
 # Largest stable uniform speed of the dry coupled step (spec §2.5 rule 14, measured at 45 degrees, no
 # friction), by (sl_order, kappa_d). Only the tabulated numerics have an entry.
 MEAN_FLOW_LIMIT: dict[tuple[int, float], float] = {(1, 0.04): 0.352, (3, 0.10): 0.370}
+
+
+# ``WeatherParams`` fields added after the W0 study (omitted from ``to_dict`` at their default).
+_POST_W0: Final = ("seed_dmin",)
 
 
 @dataclass(frozen=True)
@@ -129,6 +134,8 @@ class WeatherParams:
     r_min: int = 4
     miss_grace: int = 2
     min_dets: int = 3
+    # organisms -> weather (W2, DESIGN §32): the floor of the cloud depth that the seeding band uses
+    seed_dmin: float = 8.0
 
     def __post_init__(self) -> None:
         pools = tuple(tuple(float(x) for x in row) for row in self.pools)
@@ -137,10 +144,14 @@ class WeatherParams:
     # --- JSON ---------------------------------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain Python values (pools as lists of lists), ready for ``json.dumps``."""
+        """Plain Python values (pools as lists of lists), ready for ``json.dumps``. The fields added after W0
+        (``_POST_W0``) are left out at their default, so the W0 parameter hashes (``analysis/w0.params_hash``)
+        and the parameter files of the W0 runs are unchanged."""
+        dflt = WeatherParams.__dataclass_fields__
         return {
             f.name: ([list(row) for row in self.pools] if f.name == "pools" else getattr(self, f.name))
             for f in fields(self)
+            if not (f.name in _POST_W0 and getattr(self, f.name) == dflt[f.name].default)
         }
 
     @classmethod
@@ -454,6 +465,7 @@ class AgentWind(NamedTuple):
     u: mx.array  # (M, 3): (u_h, v_h, w) after the clips
     n_clip_h: mx.array  # () int32: samples with ||u_h|| > u_max
     n_clip_w: mx.array  # () int32: edge-layer samples with |w| > w_edge
+    u_eddy: mx.array | None = None  # (M, 2): u_h minus the zonal mean of the same layer, only with eddy=True
 
 
 def warm_pools(p: WeatherParams, t: mx.array | None = None) -> mx.array:
@@ -958,7 +970,9 @@ def alpha(buoy_cap: mx.array, p: WeatherParams) -> mx.array:
 
 class WindFields(NamedTuple):
     """The centre fields of the wind formula, each (N, N): the interface height, the centre-averaged winds of
-    both layers, the layer divergences and the interface (Leibniz) term ``J``."""
+    both layers, the layer divergences and the interface (Leibniz) term ``J``; and ``zbar`` (4, N), the zonal
+    means of the staggered winds that the eddy wind subtracts (a default, so a positional unpack of the old
+    eight fields fails loudly)."""
 
     zi: mx.array
     u1: mx.array
@@ -968,6 +982,13 @@ class WindFields(NamedTuple):
     d1: mx.array
     d2: mx.array
     jump: mx.array
+    zbar: mx.array | None = None  # (4, n): x-means of the staggered u1, v1, u2, v2 per row (eddy wind, §32)
+
+
+def _zbar(ws: WeatherState) -> mx.array:
+    """The zonal (x) means of the **staggered** winds ``u1, v1, u2, v2``, (4, n): what ``sample_wind`` reads
+    when it interpolates along y, so a zonally uniform wind has exactly zero eddy. No roll."""
+    return mx.stack([ws.u1.mean(axis=-1), ws.v1.mean(axis=-1), ws.u2.mean(axis=-1), ws.v2.mean(axis=-1)])
 
 
 def wind_fields(ws: WeatherState, p: WeatherParams) -> WindFields:
@@ -988,7 +1009,7 @@ def wind_fields(ws: WeatherState, p: WeatherParams) -> WindFields:
     zy = (_north(zi) - _south(zi)) / (2.0 * p.dx)
     phi = mx.minimum(zi / p.z_sl, 1.0)
     jump = (phi * uc[0] - uc[1]) * zx + (phi * vc[0] - vc[1]) * zy
-    return WindFields(zi, uc[0], vc[0], uc[1], vc[1], div[0], div[1], jump)
+    return WindFields(zi, uc[0], vc[0], uc[1], vc[1], div[0], div[1], jump, _zbar(ws))
 
 
 def _wind_formula(
@@ -1052,6 +1073,15 @@ def _bilinear_rows(table: mx.array, gx: mx.array, gy: mx.array, n: int) -> mx.ar
     return (1.0 - ay) * ((1.0 - ax) * g[0] + ax * g[1]) + ay * ((1.0 - ax) * g[2] + ax * g[3])
 
 
+def _interp_rows(t: mx.array, g: mx.array, n: int) -> mx.array:
+    """Periodic linear interpolation of the rows ``t`` (K, n) at index coordinates ``g`` (M,): (K, M)."""
+    f = mx.floor(g)
+    a = g - f
+    i0 = f.astype(_I32) % n
+    i1 = (i0 + 1) % n
+    return (1.0 - a) * mx.take(t, i0, axis=1) + a * mx.take(t, i1, axis=1)
+
+
 def sample_wind(
     ws: WeatherState,
     pos: mx.array,
@@ -1060,6 +1090,7 @@ def sample_wind(
     field_cell: float = 4.0,
     fields: WindFields | None = None,
     valid: mx.array | None = None,
+    eddy: bool = False,
 ) -> AgentWind:
     """The wind at agent positions ``pos`` (M, 3): pure gathers, any M (spec §4).
 
@@ -1071,6 +1102,11 @@ def sample_wind(
     ``fields`` are the precomputed ``wind_fields(ws, p)`` (built once per weather step by the caller). With
     ``valid`` ((M,) bool) the two clip counts exclude the rows where it is false (the engine passes
     ``alive``: dead rows rest at stale positions); ``None`` counts every row.
+
+    ``eddy=True`` (W2, DESIGN §32) also returns ``u_eddy`` (M, 2): the clipped ``u_h`` minus ``ū_h``, the
+    zonal mean (``WindFields.zbar``) of the same layer at the agent's latitude, linear in y on the rows the
+    winds live on (u at ``(j + ½)·dx``, v at ``(j + 1)·dx``), selected by ``z < z_i`` and scaled by ``φ(z)``
+    below the interface exactly as ``_wind_formula`` does for the wind itself.
     """
     n = p.n
     wf = wind_fields(ws, p) if fields is None else fields
@@ -1087,16 +1123,26 @@ def sample_wind(
     fz = round(p.height / field_cell)
     edge = (z < field_cell) | (z >= (fz - 1) * field_cell)
     uh, vh, w, n_h, n_w = _clip_wind(uh, vh, w, edge, p, valid)
-    return AgentWind(mx.stack([uh, vh, w], axis=-1), n_h, n_w)
+    if not eddy:  # static
+        return AgentWind(mx.stack([uh, vh, w], axis=-1), n_h, n_w)
+    zb = _zbar(ws) if wf.zbar is None else wf.zbar
+    ub = _interp_rows(mx.stack([zb[0], zb[2]]), gy - 0.5, n)
+    vb = _interp_rows(mx.stack([zb[1], zb[3]]), gy - 1.0, n)
+    phi = mx.minimum(z / p.z_sl, 1.0)
+    below = z < zi
+    ubh = mx.where(below, phi * ub[0], ub[1])
+    vbh = mx.where(below, phi * vb[0], vb[1])
+    return AgentWind(mx.stack([uh, vh, w], axis=-1), n_h, n_w, mx.stack([uh - ubh, vh - vbh], axis=-1))
 
 
 def sample_wind_h(
-    ws: WeatherState, pos: mx.array, p: WeatherParams, *, valid: mx.array | None = None
+    ws: WeatherState, pos: mx.array, p: WeatherParams, *, valid: mx.array | None = None, eddy: bool = False
 ) -> AgentWind:
     """The 2D wind at agent positions ``pos`` (M, 2) (W1, DESIGN §30): the **layer-1** wind ``(u1, v1)``
     bilinear on its own C-grid (u at ``(i + 1, j + ½)·dx``, v at ``(i + ½, j + 1)·dx``), no surface-layer
     factor and no vertical wind, clipped to ``||u_h|| <= u_max``. ``u`` is (M, 2); ``n_clip_w`` is 0.
-    ``valid`` as in ``sample_wind``."""
+    ``valid`` as in ``sample_wind``. ``eddy=True`` adds ``u_eddy``: the clipped wind minus the zonal mean of
+    layer 1 at the agent's latitude (``sample_wind``'s ``eddy``)."""
     n = p.n
     ugrid = ws.u1.reshape(n * n, 1)
     vgrid = ws.v1.reshape(n * n, 1)
@@ -1109,7 +1155,12 @@ def sample_wind_h(
         over = over & valid
     scale = p.u_max / mx.maximum(sp, p.u_max)
     n_h = over.astype(_I32).sum()
-    return AgentWind(mx.stack([uu * scale, vv * scale], axis=-1), n_h, n_h * 0)
+    u = mx.stack([uu * scale, vv * scale], axis=-1)
+    if not eddy:  # static
+        return AgentWind(u, n_h, n_h * 0)
+    ub = _interp_rows(ws.u1.mean(axis=-1)[None], gy - 0.5, n)[0]
+    vb = _interp_rows(ws.v1.mean(axis=-1)[None], gy - 1.0, n)[0]
+    return AgentWind(u, n_h, n_h * 0, u - mx.stack([ub, vb], axis=-1))
 
 
 def wind_layers(
@@ -1161,6 +1212,7 @@ ENGINE_FIXED: Final[dict[str, Any]] = {
     "r_min": 4,
     "miss_grace": 2,
     "min_dets": 3,
+    "seed_dmin": 8.0,  # W2: the floor of the cloud depth of the seeding band, 2·field_cell (DESIGN §32)
 }
 
 # A column's rain stays below this: the int32 ranges of ``floor_i32``, the increment and ``exact_sum`` hold.
@@ -1288,7 +1340,8 @@ def validate_config(cfg: Config) -> list[str]:
     if not (wc.storm_break_u == 0.0 or wc.storm_break_u >= wc.storm_u0):
         bad.append(
             f"weather.storm_break_u {wc.storm_break_u} must be 0 (off) or >= weather.storm_u0 "
-            f"{wc.storm_u0}: the threshold acts on the air speed including the layer-2 jet"
+            f"{wc.storm_u0}: the threshold acts on the hazard speed (the eddy speed under "
+            "weather.storm_eddy, else the air speed including the layer-2 jet)"
         )
     if not 0.0 <= wc.rain_floor <= 1.0:
         bad.append(f"weather.rain_floor must be in [0, 1], got {wc.rain_floor}")
@@ -1306,6 +1359,17 @@ def validate_config(cfg: Config) -> list[str]:
             f"weather.rain_gain {wc.rain_gain:g} too large: rain_gain*(H1 + H2 - 2*h_min)/gamma must be "
             "<= 2^30 (the int32 range of a column's rain)"
         )
+    # W2 couplings (DESIGN §32). The comparisons are written so that a NaN fails them.
+    if not 0.0 <= wc.seed_gain <= 0.1:
+        bad.append(f"weather.seed_gain must be in [0, 0.1], got {wc.seed_gain}")
+    if not (wc.seed_c0 > 0.0 and math.isfinite(wc.seed_c0)):
+        bad.append(f"weather.seed_c0 must be finite and > 0, got {wc.seed_c0}")
+    if not 0.0 <= wc.shade_gain <= 0.05:
+        bad.append(f"weather.shade_gain must be in [0, 0.05], got {wc.shade_gain}")
+    if not (wc.shade_n0 > 0.0 and math.isfinite(wc.shade_n0)):
+        bad.append(f"weather.shade_n0 must be finite and > 0, got {wc.shade_n0}")
+    if not 0.0 <= wc.wind_scale <= 1.0:
+        bad.append(f"weather.wind_scale must be in [0, 1], got {wc.wind_scale}")
     return bad
 
 
@@ -1316,7 +1380,8 @@ class AgentForce(NamedTuple):
     """The wind as the engine step uses it."""
 
     force: mx.array  # (N, nd) float32: ``alpha·drag·u_air``, the drag force of the moving air
-    speed: mx.array  # (N,) float32: the air speed (clipped wind, jet included), not the agent's
+    speed: mx.array  # (N,) float32: the hazard speed: the air speed (clipped wind, jet included), or under
+    # ``storm_eddy`` the eddy speed; not the agent's
     breaks: mx.array | None  # (N,) bool: ``speed > storm_break_u``; None when ``storm_break_u == 0``
     clip_bad: mx.array  # () bool: some alive row's wind was clipped (a health signal, W0 saw none)
 
@@ -1332,18 +1397,32 @@ def agent_wind(
     ``physics.integrate`` divides it by the same ``drag``, so an unobstructed agent drifts at
     ``alpha·u_air``. ``alive`` keeps dead rows out of the clip counts; their force is zeroed by the physics
     (``survivor``).
+
+    W2 (DESIGN §32), each a static branch on a config constant: ``wind_eddy_force`` drives the agents with
+    the eddy wind ``(u_h - ū_h, w)`` instead of ``u_air`` (the weather is untouched); ``wind_scale``
+    multiplies the force (0: still air for the agents); ``storm_eddy`` makes ``speed`` the eddy speed
+    ``sqrt(|u_h - ū_h|² + w²)``, which the hazard and the bond break read. The defaults take exactly the
+    W1 expressions.
     """
     p = params_from_config(cfg)
+    wc = cfg.weather
     drag = cfg.physics.drag
+    eddy = wc.storm_eddy or wc.wind_eddy_force
     if buoy_cap is not None:  # static: 3D
         wf = wind_fields(ws, p)  # built once per step (module docstring: never twice in one graph)
-        aw = sample_wind(ws, pos, p, field_cell=cfg.world.field_cell, fields=wf, valid=alive)
+        aw = sample_wind(ws, pos, p, field_cell=cfg.world.field_cell, fields=wf, valid=alive, eddy=eddy)
         a = alpha(buoy_cap, p)[:, None]
+        ue = mx.concatenate([aw.u_eddy, aw.u[:, 2:3]], axis=-1) if eddy else aw.u
     else:
-        aw = sample_wind_h(ws, pos, p, valid=alive)
+        aw = sample_wind_h(ws, pos, p, valid=alive, eddy=eddy)
         a = p.alpha0
-    force = a * drag * aw.u
-    speed = mx.sqrt((aw.u * aw.u).sum(axis=-1))
+        ue = aw.u_eddy if eddy else aw.u
+    drive = ue if wc.wind_eddy_force else aw.u
+    force = a * drag * drive
+    if wc.wind_scale != 1.0:  # static
+        force = wc.wind_scale * force
+    hz = ue if wc.storm_eddy else aw.u
+    speed = mx.sqrt((hz * hz).sum(axis=-1))
     breaks = speed > cfg.weather.storm_break_u if cfg.weather.storm_break_u > 0 else None
     return AgentForce(force, speed, breaks, (aw.n_clip_h + aw.n_clip_w) > 0)
 
@@ -1405,6 +1484,18 @@ def _blocks(a: mx.array, fg: int) -> mx.array:
     return a.reshape(fg, r, fg, r)
 
 
+def cloud_weights(zi: mx.array, dc: mx.array, cfg: Config) -> mx.array:
+    """The share of a column's cloud in each field layer, ``(FZ, FG, FG)`` (3D only): the cloud occupies
+    ``[zi, zi + dc]``, layer ``k`` (``[fc·k, fc·(k + 1)]``) has the overlap fraction ``f_k`` and the weight
+    ``f_k/Σf``. ``zi`` and ``dc`` are ``(FG, FG)``. One function for the rain food (``rain_regen``) and the
+    seeding band (``seeding_qs``): they act on the same layers (DESIGN §32)."""
+    w = cfg.world
+    fz, fc = round(w.height / w.field_cell), w.field_cell
+    k = mx.arange(fz, dtype=_F32).reshape(fz, 1, 1)
+    frac = mx.clip((mx.minimum(zi + dc, fc * (k + 1.0)) - mx.maximum(zi, fc * k)) / fc, 0.0, 1.0)
+    return frac / mx.maximum(frac.sum(axis=0), 1e-6)
+
+
 def rain_regen(rain: RainIn, cfg: Config) -> mx.array:
     """The rain as integer regeneration quanta per field cell per step: ``(FG, FG)`` int32 in 2D, ``(FZ, FG,
     FG)`` in 3D (§30; the term added to ``fields.regen_rate``).
@@ -1416,23 +1507,99 @@ def rain_regen(rain: RainIn, cfg: Config) -> mx.array:
     overlap fraction ``f_k`` and takes ``floor(q·f_k/Σf)``, so a column's food is ``rain_gain·P`` whatever
     the cloud depth (less the floors: about half a quantum per used layer); ``rain_floor·q`` more goes to
     layer 0. Reshapes and reductions only: no scatter, and nothing branches on an array value.
+
+    ``weather.rain_zonal`` (W2, a control) replaces ``P``, ``P·zi`` and ``P·dc`` by their x-means before the
+    reduction: the same layer weights, but the food depends on latitude only.
     """
     wc, w = cfg.weather, cfg.world
     fg = round(w.size / w.field_cell)
-    pc = _blocks(rain.P, fg).mean(axis=(1, 3))
+    rp, pz, pd = rain.P, rain.P * rain.zi, rain.P * rain.dc
+    if wc.rain_zonal:  # static (W2): the x-mean of each, so the food depends on latitude only
+        rp, pz, pd = (mx.broadcast_to(a.mean(axis=-1, keepdims=True), a.shape) for a in (rp, pz, pd))
+    pc = _blocks(rp, fg).mean(axis=(1, 3))
     q = wc.rain_gain * pc
     if w.dims != 3:  # static: one layer
         return ops.floor_i32(q)
-    fz, fc = round(w.height / w.field_cell), w.field_cell
-    ps = _blocks(rain.P, fg).sum(axis=(1, 3))
+    fz = round(w.height / w.field_cell)
+    ps = _blocks(rp, fg).sum(axis=(1, 3))
     den = mx.maximum(ps, 1e-30)
-    zi = _blocks(rain.P * rain.zi, fg).sum(axis=(1, 3)) / den
-    dc = _blocks(rain.P * rain.dc, fg).sum(axis=(1, 3)) / den
-    k = mx.arange(fz, dtype=_F32).reshape(fz, 1, 1)
-    frac = mx.clip((mx.minimum(zi + dc, fc * (k + 1.0)) - mx.maximum(zi, fc * k)) / fc, 0.0, 1.0)
-    share = frac / mx.maximum(frac.sum(axis=0), 1e-6)
+    zi = _blocks(pz, fg).sum(axis=(1, 3)) / den
+    dc = _blocks(pd, fg).sum(axis=(1, 3)) / den
+    share = cloud_weights(zi, dc, cfg)
     out = ops.floor_i32(q * share)
     if wc.rain_floor > 0:  # static: the floor layer's extra share
         floor_q = ops.floor_i32(wc.rain_floor * q)
         out = out + mx.concatenate([floor_q[None], mx.zeros((fz - 1, fg, fg), dtype=_I32)])
     return out
+
+
+# --- organisms -> weather (W2, DESIGN §32) ---------------------------------------------------------------
+
+
+# The relative dead band of the seeding excess (``seeding_qs``): above the float32 rounding of a lattice mean.
+_SEED_DEADBAND: Final = 1e-4
+
+
+def _repeat_blocks(a: mx.array, n: int) -> mx.array:
+    """(FG, FG) -> (n, n): each value repeated over its ``n // FG`` square block (reshape and broadcast)."""
+    fg = a.shape[-1]
+    r = n // fg
+    return mx.broadcast_to(a[:, None, :, None], (fg, r, fg, r)).reshape(n, n)
+
+
+def seeding_qs(chem: mx.array, ws: WeatherState, cfg: Config) -> mx.array:
+    """The rain-seeding factor on the threshold ``Q_s``, (n, n) float32 in ``[1 - seed_gain, 1]``.
+
+    ``chem`` is the field state's chemical channels, ``(NCH, FZ, FG, FG)`` (3D) or ``(NCH, FG, FG)`` (2D);
+    ``ws`` the stored weather. The signal is the c2 averaged over the cloud layers, ``b = Σ_k w_k·chem[2, k]``
+    with the weights of ``cloud_weights`` (the layers the rain food uses) at the column's interface height
+    ``zi`` (plain 2x2 block mean) and cloud depth ``max(block mean of D_c, seed_dmin)`` (plain means and a
+    floor: where it does not rain ``D_c`` is 0, so a rain-weighted band would be empty and seeding could
+    not start a rain).
+
+    The excess over the lattice mean, ``e = b - mean(b)·(1 + 1e-4)``, goes through the saturating response
+    ``r = e⁺/(e⁺ + seed_c0)`` (zero for ``e <= 0``: no anti-seeding). The 1e-4 dead band is far above the
+    float32 rounding of the mean over the lattice and of the layer weights (they sum to 1 to 6e-8), so a
+    uniform c2 gives ``qs == 1`` exactly. Then ``qs = 1 - seed_gain·r`` is repeated over the 2x2 weather
+    cells of each field column. 2D: the band is the single layer. Reshapes, reductions and arithmetic only;
+    no random draw. The caller evaluates it on the start-of-step state.
+    """
+    wc, w = cfg.weather, cfg.world
+    p = params_from_config(cfg)
+    fg = round(w.size / w.field_cell)
+    if w.dims == 3:  # static
+        zi = _blocks(interface_height(ws, p), fg).mean(axis=(1, 3))
+        dc = mx.maximum(_blocks(ws.Dc, fg).mean(axis=(1, 3)), p.seed_dmin)
+        b = (cloud_weights(zi, dc, cfg) * chem[2]).sum(axis=0)
+    else:
+        b = chem[2]
+    mean = b.mean()
+    e = mx.maximum(b - mean * (1.0 + _SEED_DEADBAND), 0.0)
+    r = e / (e + wc.seed_c0)
+    return _repeat_blocks(1.0 - wc.seed_gain * r, p.n)
+
+
+def _box3(a: mx.array) -> mx.array:
+    """The periodic 3x3 mean of the last two axes, separable: a 1x3 mean along x, then a 3x1 mean along y of
+    that result. ``a`` is rolled by its two x shifts once and the row mean by its two y shifts once (the
+    once-per-array rule); the sum is conserved."""
+    row = (_west(a) + a + _east(a)) / 3.0
+    return (_south(row) + row + _north(row)) / 3.0
+
+
+def shade_mult(pos: mx.array, alive: mx.array, cfg: Config) -> mx.array:
+    """The shade on the warm-pool map ``T_s``, (n, n) float32 in ``[1 - shade_gain, 1]`` (multiply ``T_s``).
+
+    The alive agents are counted per field column (all heights; ``ops.scatter_add_i32``) and averaged over the
+    periodic 3x3 neighbourhood, ``d`` agents per column. ``s = shade_gain·d/(d + shade_n0)`` and the factor
+    is ``1 - s`` repeated over the 2x2 weather cells of each column. The box mean is separable (``_box3``).
+    Dead rows are excluded (their positions are stale); no random draw. The caller passes the
+    start-of-step ``pos`` and ``alive``.
+    """
+    wc, w = cfg.weather, cfg.world
+    n = params_from_config(cfg).n
+    fg = round(w.size / w.field_cell)
+    cxy = ops.floor_i32(pos[:, :2] / w.field_cell) % fg
+    cnt = ops.scatter_add_i32(fg * fg, cxy[:, 1] * fg + cxy[:, 0], 1, alive).reshape(fg, fg).astype(_F32)
+    d = _box3(cnt)
+    return _repeat_blocks(1.0 - wc.shade_gain * d / (d + wc.shade_n0), n)

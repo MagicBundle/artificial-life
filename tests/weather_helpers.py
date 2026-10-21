@@ -3,6 +3,8 @@ uniform wind, and hand-built physics inputs."""
 
 from __future__ import annotations
 
+import functools
+
 import mlx.core as mx
 import numpy as np
 
@@ -92,3 +94,16 @@ def floor_scene(cfg: Config, pts: list[tuple[float, ...]]) -> tuple[mx.array, mx
         pos[:, 2] = d.z_lo
     pos[: len(pts)] = pts
     return mx.array(pos), mx.array(np.arange(d.n) < len(pts))
+
+
+@functools.cache
+def spun_ws(cfg: Config, steps: int = 500) -> W.WeatherState:
+    """The weather of ``cfg`` after ``steps`` standalone weather steps from the rest state (one key chain,
+    compiled): about 4% of the cells rain and the winds are non-trivial after 500 steps (CPU: 2.6 s)."""
+    fn = mx.compile(lambda ws, t, k: W.advance(ws, t, k, cfg))
+    ws, key = W.unpack(W.rest_array(cfg)), mx.random.key(1)
+    for t in range(1, steps + 1):
+        key, k = mx.random.split(key)
+        ws, _ = fn(ws, mx.array(t, dtype=mx.int32), k)
+    mx.eval(ws)
+    return ws

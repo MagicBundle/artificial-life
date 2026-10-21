@@ -258,6 +258,19 @@ class WeatherConfig:  # the storm world's engine weather layer (docs/STORMS.md, 
     storm_u0: float = 0.06  # air speed where the hazard starts
     storm_span: float = 0.03  # air speed range over which it ramps to storm_p
     storm_break_u: float = 0.0  # air speed above which a bond slot breaks; 0 = off
+    # W2 couplings (docs/STORMS.md §4, DESIGN §32); every one is off (or neutral) at its default
+    seed_gain: float = (
+        0.0  # rain seeding: the condensation threshold Q_s falls by at most this fraction; 0 = off
+    )
+    seed_c0: float = 2.0  # c2 excess (over the lattice mean) where the seeding response is half of seed_gain
+    shade_gain: float = 0.0  # shade on the seas: T_s falls by at most this fraction under crowds; 0 = off
+    shade_n0: float = 8.0  # agents per field column (3x3 mean) where the shade is half of shade_gain
+    wind_scale: float = (
+        1.0  # multiplies the wind force on the agents; 0 = still air for them, weather runs on
+    )
+    rain_zonal: bool = False  # the rain food is the x-mean of the rain: latitude only (a control)
+    storm_eddy: bool = False  # the hazard and the bond break read the speed relative to the zonal mean
+    wind_eddy_force: bool = False  # the wind force uses the eddy wind (u - zonal mean, w); a control
 
 
 @dataclass(frozen=True)
@@ -709,6 +722,14 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("weather", "storm_u0"),
     ("weather", "storm_span"),
     ("weather", "storm_break_u"),
+    ("weather", "seed_gain"),
+    ("weather", "seed_c0"),
+    ("weather", "shade_gain"),
+    ("weather", "shade_n0"),
+    ("weather", "wind_scale"),
+    ("weather", "rain_zonal"),
+    ("weather", "storm_eddy"),
+    ("weather", "wind_eddy_force"),
 )
 
 # The POST_V01 keys of the 3D world (docs/3D.md, §27.1). In a 2D world every one but ``world.dims`` must keep
