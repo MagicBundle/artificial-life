@@ -733,7 +733,8 @@ What a game adds:
     from a one-row decode. The protagonists at scale are groups.
   - (c) LLM narration of a few focal agents at narrative cadence, as an observer (*recommended*). Never one LLM per agent:
     Generative Agents cost thousands of dollars for 25 agents over two game days.
-- **First world: 64k 2D at 30 steps/s** (the owner's decision, §10.7).
+- **First world: 64k 2D at 30 steps/s** (the owner's decision, §10.7) for G1 and G2. G3 onwards target the 3D storm
+  world (`docs/STORMS.md`, owner, 2026-10-19), whose step rate is open (STORMS §9.8).
   - **Budget.** The step takes 16.9 ms of the 33 ms frame. The remaining 16 ms must hold the observers (est. under
     0.5 ms), the stream and an LLM parse sharing the GPU.
   - **Stream.** At 30 fps it carries about 25 MB/s with alive-only frames (about 0.83 MB at 33k agents), or 45 MB/s with
@@ -743,7 +744,7 @@ What a game adds:
   - **Content.** 2D has the signal tools, the pygame viewer, and the Swift viewer's face-on 2D view. It also has the
     thinnest content: kill share 0.13, a median largest body of 73, and a predation ratio of 0.078. The chosen lever,
     `attack_mult`, is aimed at that (§10.4).
-  - **3D later.** 3D has more to see (depth zones, reefs, kill share 0.50) and no longer needs the fused Metal kNN kernel
+  - **3D next.** 3D has more to see (depth zones, reefs, kill share 0.50) and no longer needs the fused Metal kNN kernel
     (built, DESIGN §4, row I48) to reach 30 steps/s at 64k: `64k3d` runs at about 75 steps/s on the M5 Pro.
 
 ### 8.4 Further risks
@@ -788,10 +789,17 @@ What a game adds:
     - The stream tags and the colour modes are G3's, observer values in the director's vitals are G4's.
 - **G2. Social tracking.** Houses, kin groups, the colony tracker, territory and the relation matrices. Benches of
   `components` at 250-step cadence.
-- **G3. Play loop and view.**
+- **N1. World Report, offline** (after G2, alongside W0). `game/report.py` (fact sheet, placeholders, checker,
+  template) and `python -m alife.analysis.report`, validated on observed 2D runs; no engine change.
+- **G3. Play loop and view.** On the 3D storm world, after W0–W2 (`docs/STORMS.md` §8 gives the interleaving); the
+  face-on 2D HUD below is reopened for it.
   - `alife play` with the fixed-timestep scheduler.
   - The stream tags `IDNT`, `INTN`, `TERR`, `EVNT`, with Swift decoders and fixtures.
-  - Picking and a HUD in the Swift viewer (2D worlds face-on, as today), and the new colour modes.
+  - Picking and a HUD in the Swift viewer, and the new colour modes.
+  - The World window (Metal view, docked control center): alerts, 6,000-step chapters, the ticker and the live World
+    Report; recap playback (`docs/STORMS.md` §6.5).
+  - Direct powers of the built regional actions through a player power grid, with their `GAME_SPECS` rows and the
+    separate pacing scope (moved from G4).
   - Saves:
     - dead rows canonicalised, with a save-load-step digest test;
     - recorded ALSTRM replay files.
@@ -802,7 +810,7 @@ What a game adds:
     scope.
   - `GAME_MENU` with `attack_mult` (§10.4), inert-fill for `State3`, and the 3D golden re-pin.
   - `GAME_SPECS`, and the `game_master` persona with its `PersonaParams` and the intensity vital.
-  - Direct powers.
+  - Direct powers beyond G3's, and the `game_master` safety re-scope.
   - Era changes: a checkpoint at the boundary, then a fork with `reapply_env` and `copy_director_log`.
   - Lever-response sweeps to calibrate the compiler.
 - **G5. Evaluation.**
@@ -838,10 +846,16 @@ owner decides. Items 11 and 12 came up in G1 (below) and are open too.
    - In compiler version 1 the harshness, cooperation and tempo dimensions compile to no-ops, which the preview states.
    - Long scarcity uses a 36,000-step `regen_pulse`.
    - The schema keeps all eight dimensions, so later levers do not change it.
+
+  *Reopened 2026-10-19* for the storm world (`docs/STORMS.md` §9.1): the case above rests on 2D's thin predation, and
+  3D's kill share is 0.50. Revisit before G4.
 5. **During a parse.** Keep stepping (*recommended*), or pause until the player has confirmed the preview (§5.7).
+   *Coordinator's choice under the owner's delegation of 2026-10-19, to revisit:* pause while composing in 3D, where a
+   parse slows the step anyway; keep stepping in 2D (`docs/STORMS.md` §6.5).
 6. **Rewind.** Era changes need the fork with `reapply_env` and `copy_director_log` either way (§7.4). The question is
    only what backs rewind: in-place resume into a copied run directory (*recommended*), or the same fork (§8.2).
-7. **First world.** *Decided:* 64k 2D at 30 steps/s (§8.3).
+7. **First world.** *Decided:* 64k 2D at 30 steps/s (§8.3). *Amended 2026-10-19:* G1 and G2 stay on it; G3 onwards
+   target the 3D storm world (`docs/STORMS.md` §9.1), with the step rate open (STORMS §9.8).
 8. **Factions.** *Decided:* kin groups (tag clusters, which agents perceive) are the factions, for relations and
    territory (§6.3, §6.5). Houses stay as genealogical names only (§6.2).
 9. **"Trader".** Reserve it for reciprocal sharing and call one-way givers "Providers" (*recommended*), or add an exchange
