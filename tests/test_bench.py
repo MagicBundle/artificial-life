@@ -730,11 +730,12 @@ def test_play_bench_does_not_count_saving_as_boundary_work(
 
     No millisecond bound: the injected delay is long against the runner's own boundary work on any machine
     that runs the suite, so the claim is a ratio. A bench that counted the save inside `boundary` would have
-    `boundary >= save` (a boundary's span holds the save), and the bound sits at half of it."""
+    `boundary >= save` (a boundary's span holds the save), and the bound sits at three quarters of it
+    (1.5 s of runner work per boundary, eight times what the slowest CI runner measured)."""
     from alife import play
     from alife.runio import RunDir
 
-    delay_s = 1.2
+    delay_s = 2.0
     monkeypatch.setattr(play, "PLAY_CADENCE", {**PLAY_CADENCE, "checkpoint_every": 10})
     real = RunDir.save_checkpoint
 
@@ -749,4 +750,4 @@ def test_play_bench_does_not_count_saving_as_boundary_work(
     )
     c = r["arms"][0]["components_ms"]
     assert c["save"] >= 1e3 * delay_s, "the save part holds the disk's time"
-    assert c["boundary"] < c["save"] / 2, (c["save"], c["boundary"])
+    assert c["boundary"] < 0.75 * c["save"], (c["save"], c["boundary"])
