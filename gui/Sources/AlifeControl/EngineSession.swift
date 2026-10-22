@@ -50,9 +50,18 @@ final class EngineSession {
 
     var isRunning: Bool { process.isRunning }
 
+    /// The folder to run in is gone (reported in the repository status line's words).
+    struct MissingFolder: LocalizedError {
+        let path: String
+        var errorDescription: String? { RepoFolder.missingMessage(path) }
+    }
+
     /// Starts `executable` with `arguments` in `directory`, its stdout drained by a reader thread into a mailbox. Throws
     /// if the process cannot be launched.
     static func launch(executable: URL, arguments: [String], directory: URL) throws -> Launched {
+        // A missing working directory makes `Process.run` throw "The file <last component> doesn't exist.", which names
+        // neither the folder nor the problem. "Open 3D viewer" and the World window read `repoReady`, which can be stale.
+        guard RepoFolder.isDirectory(directory.path) else { throw MissingFolder(path: directory.path) }
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments

@@ -66,7 +66,8 @@ struct ContentView: View {
                         .foregroundStyle(.green)
                         .font(.caption)
                 } else {
-                    Label(".venv/bin/alife not found in this folder.", systemImage: "exclamationmark.triangle.fill")
+                    Label(controller.repoProblem ?? ".venv/bin/alife not found in this folder.",
+                          systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                         .font(.caption)
                     HStack {
@@ -74,9 +75,11 @@ struct ContentView: View {
                             .disabled(busy)
                         Button("Re-check") { controller.refreshRepo() }
                     }
-                    Text("Runs `uv sync --extra viewer --extra video` in the repository and streams the output to the log.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if controller.repoFolderExists {
+                        Text("Runs `uv sync --inexact --extra viewer --extra video` in the repository and streams the output to the log. It installs what is missing and removes nothing.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .padding(6)
