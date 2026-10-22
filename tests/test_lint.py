@@ -34,6 +34,7 @@ SIM_MODULES = {
     "game.observe",  # the pure-MLX observer update and rules (§28): no host reads, like the simulation
     "game.rules",
     "game.social",  # the pure-MLX social state and its update (§29)
+    "game.tracers",  # the tracer rig and the dumps' device arrays (§32): observer-only, pure MLX
     "weather",  # the W0 weather model (STORMS §3.2): pure MLX, wired into the step in W1
 }  # rule 5
 DIRECTOR_MODULES = {f"director.{p.stem}" for p in (SRC / "director").glob("*.py")}  # host-side, scanned too

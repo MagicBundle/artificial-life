@@ -240,7 +240,8 @@ def study(
 
     state = load_state(rd, cfg, states_dir, start)
     first_uid = int(to_numpy(state.next_uid))
-    obs, note = Observer.open(rd, state, cfg, social=sr)  # ValueError for rules this world cannot hold
+    # ValueError for rules this world cannot hold
+    obs, note = Observer.open(rd, state, cfg, social=sr, tracers=False)
     resumed = any(st == start for st, _ in rd.checkpoints())
     source = "sidecar" if resumed and note is None else "fresh"
     rows = {int(r["step"]): r for r in rd.metrics_rows()} if verify else {}

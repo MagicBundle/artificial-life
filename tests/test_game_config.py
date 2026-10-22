@@ -49,13 +49,23 @@ ENABLED = "director.enabled=true"
 def test_game_keys_are_post_v01_and_observer_keys() -> None:
     game_keys = {("game", f.name) for f in dataclasses.fields(GameConfig)}
     assert game_keys <= set(POST_V01_KEYS)  # a game key missing from the list would move every hash
-    assert OBSERVER_KEYS == (("game", "observe"), ("game", "house_rate"))
+    assert OBSERVER_KEYS == (
+        ("game", "observe"),
+        ("game", "house_rate"),
+        ("game", "tracers"),
+        ("game", "tracer_period"),
+    )
     assert game_keys == set(OBSERVER_KEYS)  # every game key is an observer key: none can move a hash
     assert not set(OBSERVER_KEYS) & set(UNHASHED_KEYS)
     assert tuple(key for _, key in UNHASHED_KEYS) == DIRECTOR_POLICY_KEYS  # unchanged: observe is not in it
     assert "observe" not in DIRECTOR_POLICY_KEYS and "house_rate" not in DIRECTOR_POLICY_KEYS
     assert GameConfig().observe is False and Config().game == GameConfig()
-    assert config_to_dict(Config())["game"] == {"observe": False, "house_rate": 1 / 2048}
+    assert config_to_dict(Config())["game"] == {
+        "observe": False,
+        "house_rate": 1 / 2048,
+        "tracers": 0,
+        "tracer_period": 500,
+    }
     assert GameConfig().house_rate == 2.0**-11  # exact in binary: the hash cut is 2^53 (§29.4)
 
 
@@ -148,7 +158,10 @@ def test_resume_accepts_game_observe_key(small_run: Path, tmp_path: Path) -> Non
     assert cli.main(["resume", str(copy), "--set", OBSERVE, "--steps", "20", "--quiet"]) == 0
     rd = RunDir.open(copy)
     assert rd.config().game.observe is True
-    assert json.loads((copy / "config.json").read_text())["game"] == {"observe": True, "house_rate": 1 / 2048}
+    assert json.loads((copy / "config.json").read_text())["game"] == {
+        **config_to_dict(Config())["game"],
+        "observe": True,
+    }
     assert config_hash(rd.config()) == before  # load_checkpoint's hash check passed on the unchanged hash
     assert [r["step"] for r in rd.metrics_rows()] == [10, 20, 30, 40, 50]
     assert [st for st, _ in rd.checkpoints()][-1] == 50
@@ -162,7 +175,12 @@ def test_resume_accepts_game_house_rate_key(small_run: Path, tmp_path: Path) -> 
     assert cli.main(["resume", str(copy), "--set", HOUSE_RATE, "--steps", "20", "--quiet"]) == 0
     rd = RunDir.open(copy)
     assert rd.config().game.house_rate == 0.25 and rd.config().game.observe is False
-    assert json.loads((copy / "config.json").read_text())["game"] == {"observe": False, "house_rate": 0.25}
+    assert json.loads((copy / "config.json").read_text())["game"] == {
+        "observe": False,
+        "house_rate": 0.25,
+        "tracers": 0,
+        "tracer_period": 500,
+    }
     assert config_hash(rd.config()) == before
     assert [r["step"] for r in rd.metrics_rows()] == [10, 20, 30, 40, 50]
     assert all("observers" not in r for r in rd.metrics_rows())  # observers stay off: the key is inert
@@ -249,7 +267,7 @@ def test_resume_error_lists_the_two_game_keys(small_run: Path, capsys: pytest.Ca
     capsys.readouterr()
     assert cli.main(["resume", str(small_run), "--set", "game.nope=1", "--checkpoint", "0"]) == 2
     err = " ".join(capsys.readouterr().err.split())
-    assert "game.<key> for ['house_rate', 'observe']" in err
+    assert "game.<key> for ['house_rate', 'observe', 'tracer_period', 'tracers']" in err
 
 
 def test_fork_can_set_observe(small_run: Path, tmp_path: Path) -> None:

@@ -13,6 +13,7 @@ metrics do not import the 4,000-line driver.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import Any, Final
 
 import numpy as np
@@ -23,6 +24,12 @@ from alife.weather import WeatherParams
 
 TWO_PI: Final = 2.0 * math.pi
 BAND_KEYS: Final = ("occ_hz0", "occ_hz1_11", "occ_hz12")  # peak agents per hash cell: floor, mid, surface
+RAIN_BAND: Final = (8, 14)  # the cloud band of the rain shares: field layers 8-13 (z 32-56 at field_cell 4)
+# The z bands of the coupling block and the dumps' analysis, as fractions of the world height (0-4, 4-32,
+# 32-56, 56-80 at height 80): the floor layer, the lower column, the cloud band, the upper layer.
+Z_BAND_FRACTIONS: Final = (0.0, 0.05, 0.4, 0.7, 1.0)
+UB_QUANTILE: Final = 0.9  # the tracers' per-band top decile of g that marks an updraft boundary
+HOLD_W_MIN: Final = 0.002  # the smallest |w| of the agents that enter the hold regression
 
 # --- storm detection helpers (moved from analysis/w0.py) --------------------------------------------------
 
@@ -99,6 +106,31 @@ def storm_exposure(speed: np.ndarray, u0: float, span: float) -> float:
     return float(np.clip((speed.astype(np.float64) - u0) / span, 0.0, 1.0).mean())
 
 
+def _share(num: float, den: float) -> float:
+    return float(num) / float(den) if den else 0.0
+
+
+def rain_shares(audit: np.ndarray) -> dict[str, float]:
+    """The nominal and realised rain shares of DESIGN §32 from the per-layer sums of ``metrics.rain_audit``.
+
+    ``audit`` is ``(4, layers)``: the regeneration ``base`` without rain, the nominal ``rain`` term, the
+    realised increment ``inc_total = clip(min(base + rain, cap - R), 0)`` and the realised rain
+    ``rain_real = inc_total - inc_base``, each summed over a layer. The band is ``RAIN_BAND`` (all of a 2D
+    world's single layer). Nominal: ``rain / (rain + base)``, a statement about the forcing; realised:
+    ``rain_real / inc_total``; ``rain_clipped_frac = 1 - Σ rain_real / Σ rain`` (0 without rain)."""
+    a = np.asarray(audit, dtype=np.int64)
+    base, rain, inc, real = a[0], a[1], a[2], a[3]
+    lo, hi = RAIN_BAND if base.size > 1 else (0, 1)
+    b = slice(lo, hi)
+    return {
+        "rain_band_share": _share(rain[b].sum(), rain[b].sum() + base[b].sum()),
+        "rain_global_share": _share(rain.sum(), rain.sum() + base.sum()),
+        "rain_real_band_share": _share(real[b].sum(), inc[b].sum()),
+        "rain_real_global_share": _share(real.sum(), inc.sum()),
+        "rain_clipped_frac": 1.0 - _share(real.sum(), rain.sum()) if rain.sum() else 0.0,
+    }
+
+
 def weather_block(
     wx: np.ndarray,
     air_speed: np.ndarray,
@@ -106,6 +138,11 @@ def weather_block(
     *,
     occupancy: np.ndarray | None = None,
     overlap_deep: int = 0,
+    total_speed: np.ndarray | None = None,
+    eddy_speed: np.ndarray | None = None,
+    seed_r: np.ndarray | None = None,
+    shade_s: np.ndarray | None = None,
+    rain_audit: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """The ``weather`` block of one metrics row (DESIGN §30), plain floats and ints.
 
@@ -119,6 +156,13 @@ def weather_block(
     hemisphere) of area ``a_min`` or more with at least ``r_min`` raining cells: a count of candidate storms,
     not of tracks. ``storm_exposure`` and the air-speed quantiles are at the snapshot's positions and are the
     table the calibration of ``storm_u0`` reads.
+
+    W2 (DESIGN §32), each key group present only when its input is given (the engine's snapshot gives them
+    when the coupling is on): ``total_speed`` and ``eddy_speed`` (the alive rows' ``|u_air|`` and eddy speed)
+    give ``total_speed_p99`` and ``eddy_speed_p99`` (``air_speed_*`` and ``storm_exposure`` stay on the hazard
+    speed); ``seed_r`` (the ``(FG, FG)`` seeding response) gives ``seed_r_mean``, ``seed_r_hi_share`` (columns
+    with ``r > 0.5``) and ``seed_lower_mean`` (``seed_gain·mean r``); ``shade_s`` (the ``(FG, FG)`` shade)
+    gives ``shade_s_mean`` and ``shade_s_max``; ``rain_audit`` (see ``rain_shares``) the rain shares.
     """
     p = weather.params_from_config(cfg)
     wc = cfg.weather
@@ -163,4 +207,103 @@ def weather_block(
             "overlap_deep": int(overlap_deep),
         }
     )
+    if total_speed is not None and eddy_speed is not None:
+        for name, v in (("total", total_speed), ("eddy", eddy_speed)):
+            v = np.asarray(v, dtype=np.float64).reshape(-1)
+            block[f"{name}_speed_p99"] = float(np.quantile(v, 0.99)) if v.size else 0.0
+    if seed_r is not None:
+        r = np.asarray(seed_r, dtype=np.float64)
+        block["seed_r_mean"] = float(r.mean())
+        block["seed_r_hi_share"] = float((r > 0.5).mean())
+        block["seed_lower_mean"] = float(wc.seed_gain * r.mean())
+    if shade_s is not None:
+        sh = np.asarray(shade_s, dtype=np.float64)
+        block["shade_s_mean"] = float(sh.mean())
+        block["shade_s_max"] = float(sh.max())
+    if rain_audit is not None:
+        block.update(rain_shares(rain_audit))
     return block
+
+
+# --- the coupling block (W2, DESIGN §32) ---
+
+
+def z_band_edges(height: float) -> np.ndarray:
+    """The four z bands' five edges, ``Z_BAND_FRACTIONS · height``."""
+    return np.asarray(Z_BAND_FRACTIONS, dtype=np.float64) * height
+
+
+def z_band(z: np.ndarray, height: float) -> np.ndarray:
+    """The band index 0-3 of each height (a height at the lid belongs to the top band)."""
+    edges = z_band_edges(height)
+    return np.clip(np.searchsorted(edges, np.asarray(z, dtype=np.float64), side="right") - 1, 0, 3)
+
+
+def _opt(x: float) -> float | None:
+    return None if not math.isfinite(x) else float(x)
+
+
+def hold_index(vz: np.ndarray, w: np.ndarray) -> float | None:
+    """``-Cov(vz, w)/Var(w)``: minus the slope of the agents' own vertical velocity on the air's, i.e. the
+    **fraction of alpha countered**. The own velocity is ``vel_z`` minus the drift ``alpha·w`` (``alpha``
+    0.25 to 1, about 0.2 to 0.6 for the s0 caps), so an agent that holds its altitude (``vel_z = 0``) has
+    ``hold = alpha``, not 1; 0 ignores the wind (tracers and the WB arm are 0 by construction). Compare
+    runs on the scale of the agents' ``alpha``, not of 1. None for fewer than two rows or no variance."""
+    v, x = np.asarray(vz, dtype=np.float64), np.asarray(w, dtype=np.float64)
+    if x.size < 2 or not x.var() > 0:
+        return None
+    return -float(((v - v.mean()) * (x - x.mean())).mean() / x.var())
+
+
+def coupling_block(
+    agents: Mapping[str, np.ndarray], tracers: Mapping[str, np.ndarray], height: float, field_cell: float
+) -> dict[str, Any]:
+    """The ``coupling`` block of a metrics row (DESIGN §32): the live agents against the tracers, stratified
+    by z band (``Z_BAND_FRACTIONS``).
+
+    ``agents`` holds 1-D arrays of the **live** rows: ``z``, ``g`` (the updraft-boundary index ``|∇_h w|`` at
+    the agent), ``w`` (the air's vertical velocity there) and ``vz_own`` (the agent's own vertical velocity,
+    ``vel_z`` minus the wind drift's); ``tracers`` holds ``z``, ``g`` and ``w``. Keys, each list of four per
+    band:
+
+    * ``n_agents``, ``n_tracers``: rows per band;
+    * ``ub_threshold``: the tracers' ``UB_QUANTILE`` of ``g`` in the band (None if it has no tracer);
+    * ``ub_agents``: the share of the band's agents with ``g`` above it (None without agents or threshold). A
+      population drawn from the tracers' distribution gives 0.10; ``ub_agents_all`` is the share over all the
+      agents of bands with a threshold (the null is 0.10 for any composition);
+    * ``w_mean_agents``, ``w_mean_tracers``: the mean ``w`` per band;
+    * ``hold`` / ``hold_band``: ``hold_index`` over the agents with ``|w| >= HOLD_W_MIN`` and more than one
+    field   layer from the floor and the lid, overall and per band;
+    * ``z_mean_agents``, ``z_mean_tracers``: the mean height.
+    """
+    az, ag, aw, av = (np.asarray(agents[k], dtype=np.float64) for k in ("z", "g", "w", "vz_own"))
+    tz, tg, tw = (np.asarray(tracers[k], dtype=np.float64) for k in ("z", "g", "w"))
+    ab, tb = z_band(az, height), z_band(tz, height)
+    thr: list[float | None] = []
+    ub: list[float | None] = []
+    above = total = 0
+    for b in range(4):
+        gt = tg[tb == b]
+        ga = ag[ab == b]
+        t = float(np.quantile(gt, UB_QUANTILE)) if gt.size else math.nan
+        thr.append(_opt(t))
+        if gt.size and ga.size:
+            hits = int((ga > t).sum())
+            ub.append(hits / ga.size)
+            above, total = above + hits, total + ga.size
+        else:
+            ub.append(None)
+    sel = (np.abs(aw) >= HOLD_W_MIN) & (az >= field_cell) & (az < height - field_cell)
+    return {
+        "n_agents": [int((ab == b).sum()) for b in range(4)],
+        "n_tracers": [int((tb == b).sum()) for b in range(4)],
+        "ub_threshold": thr,
+        "ub_agents": ub,
+        "ub_agents_all": above / total if total else None,
+        "w_mean_agents": [_opt(float(aw[ab == b].mean())) if (ab == b).any() else None for b in range(4)],
+        "w_mean_tracers": [_opt(float(tw[tb == b].mean())) if (tb == b).any() else None for b in range(4)],
+        "hold": hold_index(av[sel], aw[sel]),
+        "hold_band": [hold_index(av[sel & (ab == b)], aw[sel & (ab == b)]) for b in range(4)],
+        "z_mean_agents": _opt(float(az.mean())) if az.size else None,
+        "z_mean_tracers": _opt(float(tz.mean())) if tz.size else None,
+    }

@@ -15,6 +15,7 @@ import pytest
 from alife import layout, metrics, runio
 from alife.analysis import phylo
 from alife.config import Config, apply_overrides, dims, load_config
+from alife.game.rules import INTENT_VERSION
 from alife.game.social import HOUSE_UNKNOWN, SOCIAL_V1, Expo, Rel, SocialRules, soc_in
 from alife.game.society import (
     CODA,
@@ -637,7 +638,7 @@ def test_relations_and_baselines_on_real_steps(tiny_cfg: Config) -> None:
         prev_kin, prev_sg = drv.kin_slot_rows(), np_(drv.so.slot_group)
         s, out = fn(s)
         mx.eval(s, out)
-        an = {f: np_(getattr(out.acts, f)) for f in out.acts._fields}
+        an = {f: np_(getattr(out.acts, f)) for f in out.acts._fields if getattr(out.acts, f) is not None}
         r, e, sh = window_reference(prev_kin, prev_sg, an, g, k)
         win = [win[0] + r, win[1] + e, win[2] + sh]
         for which, flag in ((0, ActFlag.ATTACKED.value), (1, ActFlag.PROPOSED.value)):  # sum_i n_ib / n_i
@@ -1099,9 +1100,9 @@ def test_empty_society(tiny_cfg: Config) -> None:
 
 HEAD_KEYS = ["social_version", "snapshot_step", "origin", "houses", "kin_groups", "colonies"]
 RECORD_KEYS = [
-    "step", "social_version", "social_digest", "origin", "window_start", "summary", "thresholds", "houses",
-    "house_events", "kin_groups", "colonies", "events", "events_dropped", "event_counts", "relations",
-    "relations_dropped", "temperament", "territory",
+    "step", "social_version", "social_digest", "intent_version", "origin", "window_start", "summary",
+    "thresholds", "houses", "house_events", "kin_groups", "colonies", "events", "events_dropped",
+    "event_counts", "relations", "relations_dropped", "temperament", "territory",
 ]  # fmt: skip
 
 
@@ -1134,6 +1135,7 @@ def test_head_and_record_keys(tiny_cfg: Config, tiny3d_cfg: Config) -> None:
         for rec, step, start in ((first, 250, 0), (second, 500, 250)):
             assert list(rec) == RECORD_KEYS and rec["step"] == step and rec["window_start"] == start
             assert rec["origin"] == 0 and rec["social_version"] == 1 and rec["social_digest"] == sr.digest()
+            assert rec["intent_version"] == INTENT_VERSION == 3  # the width key of ``kin_groups.arch``
             assert list(rec["summary"]) == ["houses", "kin_groups", "colonies"]
             assert list(rec["summary"]["houses"]) == ["alive", "exact", "unknown_immigrant"]
             assert list(rec["summary"]["kin_groups"]) == ["tracked", "other"]
@@ -1341,7 +1343,7 @@ def test_head_and_record_size_budget(tiny3d_cfg: Config) -> None:
     assert len(str(he["founded"]["id"][0])) == 8 and len(str(he["extinct"]["id"][0])) == 8
     kg = rec["kin_groups"]
     assert None not in kg["births"] and None not in kg["deaths"] and None not in kg["arch"]
-    assert None not in kg["x"] and len(kg["name"]) == 16 and all(len(a) == 7 for a in kg["arch"])
+    assert None not in kg["x"] and len(kg["name"]) == 16 and all(len(a) == 10 for a in kg["arch"])
     # ... and every column is at its width
     assert {len(str(i)) for i in kg["id"]} == {6} and {len(n) for n in kg["name"]} == {17}
     assert {len(str(i)) for i in rec["colonies"]["id"]} == {7}

@@ -29,7 +29,7 @@ from typing import Final, NamedTuple
 
 import mlx.core as mx
 
-from alife import layout
+from alife import layout, weather
 from alife.config import Config, dims
 from alife.game import rules
 from alife.game.rules import (
@@ -42,6 +42,7 @@ from alife.game.rules import (
     Intent,
     IntentCol,
     RuleSet,
+    arch_layout,
     n_arch_cols,
 )
 from alife.state import State, State3
@@ -87,11 +88,20 @@ class ObsIn(NamedTuple):
     last_loss: mx.array  # (N,) int32
     energy: mx.array  # (N,) int32: post-step energy (the Budding forecast)
     brain_cost: mx.array  # (N,) int32: the L1 term of the basal cost, set at birth (the Budding forecast)
+    # Version 3 (DESIGN §32), set only for a rule set that reads them (``obs_in(s, rs)``), else None:
+    pos: mx.array | None = None  # (N,nd) float32: post-step position (the wind drift's sample point, z)
+    buoy_cap: mx.array | None = None  # (N,) float32 (3D): the drift's coupling and the lift capacity
+    wx: mx.array | None = None  # (N_WX,wn,wn) float32: the post-step weather (the drift)
 
 
-def obs_in(s: State | State3) -> ObsIn:
-    """The observer's view of a state."""
-    return ObsIn(*(getattr(s, f) for f in ObsIn._fields))
+def obs_in(s: State | State3, rs: RuleSet | None = None) -> ObsIn:
+    """The observer's view of a state. The version-3 fields are filled only for a rule set with ``wind_rel``
+    (which has them all: the wind drift reads ``wx``, ``pos`` and, in 3D, ``buoy_cap``, and ``vertical`` the
+    height and the lift capacity)."""
+    base = tuple(getattr(s, f) for f in ObsIn._fields[:10])
+    if rs is None or not rs.wind_rel:
+        return ObsIn(*base)
+    return ObsIn(*base, pos=s.pos, buoy_cap=getattr(s, "buoy_cap", None), wx=s.wx)
 
 
 class ObsState(NamedTuple):
@@ -142,13 +152,20 @@ def _slots(oi: ObsIn) -> tuple[mx.array, mx.array]:
 
 
 def quantise_inputs(
-    oi: ObsIn, a: Acts, slot_kin_prev: mx.array, cfg: Config
+    oi: ObsIn, a: Acts, slot_kin_prev: mx.array, cfg: Config, rs: RuleSet | None = None
 ) -> tuple[mx.array, mx.array, mx.array]:
-    """This step's non-negative accumulator inputs ``(x6 (N,5+2nd), xs (N,B,2), x3 (N,10))`` in int32.
+    """This step's non-negative accumulator inputs ``(x6 (N,width), xs (N,B,2), x3 (N,10))`` in int32.
 
     Velocity is in units of u/256, clipped to ±VQ_MAX; each component is split into its positive and negative
     parts, each with its own accumulator, so the mean component is ``m⁺ − m⁻`` and no negative number is ever
     shifted. Flags enter as 256 per set step; ``emit`` is in deposit quanta (Σ_c floor(256·emit_c)).
+
+    Under ``rs.wind_rel`` the velocity is the one relative to the wind, ``vel − drift`` with ``drift`` the
+    velocity the wind alone would give a free agent (``weather.agent_drift`` on the post-step state; zero, and
+    not evaluated, in a world without weather), and the extra columns of ``arch_layout`` follow the velocity
+    halves: ``WIND`` = |drift|, and under ``rs.vertical`` ``ZPOS`` = round(256·z/H) and ``LIFT`` =
+    round(256·b)·round(256·cap) >> 8, the lift fraction of ``buoyancy_max`` (``b`` is ``Acts.buoy``, the
+    quantised buoyancy output; the capacity alone where the channel has none).
 
     The last two intent columns are the halves of the step's visible net energy flow, the Budding
     forecast's input: gains (harvest, attack gain, Σ got) less losses (Σ out, the hit's ``last_loss``, and
@@ -160,17 +177,33 @@ def quantise_inputs(
     ``RuleSet.check`` bound, so the cast back is safe.
     """
     scale = 256.0 / speed_unit(cfg)
-    vq = mx.clip(mx.round(oi.vel * scale), -VQ_MAX, VQ_MAX).astype(_I32)
-    sp = mx.clip(mx.round(mx.sqrt((oi.vel * oi.vel).sum(axis=1)) * scale), 0, VQ_MAX).astype(_I32)
+    wind_rel = rs is not None and rs.wind_rel
+    vel = oi.vel
+    drift = None
+    if wind_rel and cfg.weather.enabled:  # static: a world without weather has no drift
+        drift = weather.agent_drift(oi.wx, oi.pos, oi.buoy_cap, oi.alive, cfg)
+        vel = vel - drift
+    vq = mx.clip(mx.round(vel * scale), -VQ_MAX, VQ_MAX).astype(_I32)
+    sp = mx.clip(mx.round(mx.sqrt((vel * vel).sum(axis=1)) * scale), 0, VQ_MAX).astype(_I32)
     sent = a.share_out.sum(axis=1)
-    x6 = mx.concatenate(
-        [
-            mx.stack([oi.last_harvest, a.attack_gain, oi.last_inflow, sent, sp], axis=1),
-            mx.maximum(vq, 0),
-            mx.maximum(-vq, 0),
-        ],
-        axis=1,
-    )
+    cols = [
+        mx.stack([oi.last_harvest, a.attack_gain, oi.last_inflow, sent, sp], axis=1),
+        mx.maximum(vq, 0),
+        mx.maximum(-vq, 0),
+    ]
+    if wind_rel:  # static
+        n = sp.shape[0]
+        if drift is None:
+            wind = mx.zeros((n,), dtype=_I32)
+        else:
+            wind = mx.clip(mx.round(mx.sqrt((drift * drift).sum(axis=1)) * scale), 0, VQ_MAX).astype(_I32)
+        cols.append(wind[:, None])
+        if rs.vertical:  # static: 3D
+            zpos = mx.clip(mx.round(oi.pos[:, 2] * (256.0 / cfg.world.height)), 0, 256).astype(_I32)
+            cap = mx.round(oi.buoy_cap * 256.0).astype(_I32)
+            lift = cap if a.buoy is None else (a.buoy.astype(_I32) * cap) >> 8
+            cols.append(mx.stack([zpos, lift], axis=1))
+    x6 = mx.concatenate(cols, axis=1)
     xs = mx.stack([a.share_out, a.share_got], axis=2)
     f = a.flags.astype(_I32)
     ec = cfg.energy
@@ -207,9 +240,9 @@ def quantise_inputs(
     return x6.astype(_I32), xs.astype(_I32), x3.astype(_I32)
 
 
-def init_obs(oi: ObsIn, cfg: Config) -> ObsState:
+def init_obs(oi: ObsIn, cfg: Config, rs: RuleSet | None = None) -> ObsState:
     """The empty observer state for a state: nothing accumulated, nothing labelled, existing bonds of unknown
-    age (``OBS_CAP``: never "new")."""
+    age (``OBS_CAP``: never "new"). ``rs`` sets the archetype accumulator width (``None``: version 2's)."""
     d = dims(cfg)
     n, b = d.n, layout.B
     su, kin = _slots(oi)
@@ -217,7 +250,7 @@ def init_obs(oi: ObsIn, cfg: Config) -> ObsState:
     return ObsState(
         uid=mx.where(oi.alive, oi.uid, -1),
         n_obs=zero,
-        arch=mx.zeros((n, n_arch_cols(d.nd)), dtype=_I32),
+        arch=mx.zeros((n, n_arch_cols(d.nd, rs)), dtype=_I32),
         arch_slot=mx.zeros((n, b, 2), dtype=_I32),
         intent=mx.zeros((n, N_INTENT_COLS), dtype=_I32),
         since_bud=mx.full((n,), OBS_CAP, dtype=_I32),
@@ -241,7 +274,7 @@ def update(o: ObsState, oi: ObsIn, a: Acts, cfg: Config, rs: RuleSet) -> ObsStat
     k1 = keep[:, None]
     su, kin = _slots(oi)
     same = k1 & (su == o.slot_uid) & (su >= 0)  # the bond that existed at the start of this step persists
-    x6, xs, x3 = quantise_inputs(oi, a, o.slot_kin, cfg)
+    x6, xs, x3 = quantise_inputs(oi, a, o.slot_kin, cfg, rs)
     budded = (a.flags.astype(_I32) & ActFlag.BUDDED.value) != 0
     return ObsState(
         uid=mx.where(oi.alive, oi.uid, -1),
@@ -287,7 +320,7 @@ def evaluate(
     m6s = o.arch_slot >> rs.arch_k
     m3 = o.intent >> rs.intent_k
 
-    ma = rules.archetype_matches(m6, m6s, cfg, rs, body)
+    ma = rules.archetype_matches(m6, m6s, cfg, rs, body, arch_layout(dims(cfg).nd, rs))
     primary, secondary = rules.archetype_labels(ma)
     warm_a = o.n_obs >= rs.arch_warm
     generalist_bit = 1 << (Archetype.GENERALIST.value - 1)

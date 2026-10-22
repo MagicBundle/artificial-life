@@ -79,9 +79,9 @@ def has(ms: list[str], text: str) -> bool:
 # --- the section, its defaults, hashing -----------------------------------------------------------
 
 
-def test_the_section_has_the_33_keys_and_all_are_hashed() -> None:
+def test_the_section_has_the_41_keys_and_all_are_hashed() -> None:
     names = [f.name for f in fields(WeatherConfig)]
-    assert len(names) == 33 and names[0] == "enabled"
+    assert len(names) == 41 and names[0] == "enabled"  # 33 of W1, eight couplings of W2 (DESIGN §32)
     assert [(s, k) for s, k in POST_V01_KEYS if s == "weather"] == [("weather", n) for n in names]
     assert not [
         1 for sk in POST_V01_KEYS if sk[0] == "weather" and (sk in UNHASHED_KEYS or sk in OBSERVER_KEYS)
@@ -95,7 +95,8 @@ def test_defaults_agree_with_weather_params_by_field_name() -> None:
     config. ``params_from_config(Config())`` is not compared: the default world is 1024 wide (``dx`` 6.4)."""
     wc, wp = WeatherConfig(), W.WeatherParams()
     names = {f.name for f in fields(WeatherConfig)}
-    own = names - {"enabled", "cells"} - {n for n in names if n.startswith(("rain_", "storm_"))}
+    couplings = {"seed_gain", "seed_c0", "shade_gain", "shade_n0", "wind_scale", "wind_eddy_force"}
+    own = names - {"enabled", "cells"} - {n for n in names if n.startswith(("rain_", "storm_"))} - couplings
     assert own <= {f.name for f in fields(W.WeatherParams)}
     for k in sorted(own - {"pools"}):
         assert getattr(wc, k) == getattr(wp, k), k
@@ -118,7 +119,7 @@ def test_engine_fixed_equals_the_weather_params_defaults_it_stands_for() -> None
     assert {f.name for f in fields(W.WeatherParams)} == (
         keys & {f.name for f in fields(W.WeatherParams)}
     ) | derived | set(W.ENGINE_FIXED)
-    assert len(W.ENGINE_FIXED) == 19  # 12 numerics + the seven host detection fields
+    assert len(W.ENGINE_FIXED) == 20  # 12 numerics + the seven host detection fields + seed_dmin (W2)
 
 
 def test_params_from_config(storm3d: Config, storm2d: Config) -> None:
@@ -188,6 +189,14 @@ def test_the_weather_table_is_omitted_at_defaults_and_hashed_when_changed(storm3
         "storm_u0": 0.05,
         "storm_span": 0.04,
         "storm_break_u": 0.07,
+        "seed_gain": 0.03,
+        "seed_c0": 3.0,
+        "shade_gain": 0.02,
+        "shade_n0": 6.0,
+        "wind_scale": 0.5,
+        "rain_zonal": True,
+        "storm_eddy": True,
+        "wind_eddy_force": True,
     }
     assert set(changes) | {"enabled"} == {f.name for f in fields(WeatherConfig)}
     for k, v in changes.items():

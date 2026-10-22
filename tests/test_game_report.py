@@ -17,7 +17,7 @@ import report_synth as RS
 from alife.config import apply_overrides, config_hash, load_config
 from alife.game import report as R
 from alife.game import templates
-from alife.game.rules import RULES_V1, RULES_V2
+from alife.game.rules import ARCHETYPE_NAMES, RULES_V1, RULES_V2, RULES_V3, for_2d
 from report_helpers import A0, deaths, event, group, houses, interv, mk_sheet, pop
 from report_synth import entry, variant
 
@@ -1170,6 +1170,69 @@ def test_no_label_without_a_key(rv, monkeypatch) -> None:
     assert world_key(rv) == config_hash(
         load_config(preset="tiny", overrides=["brain.weight_dtype=float32", "fields.n_patches=24"])
     )
+
+
+def _v3(rv, *, storm: bool):
+    """The synthetic world as an INTENT_VERSION 3 run (the rows and the sidecar agree), with or without the
+    weather layer (the report reads only ``cfg.weather.enabled``, so the config is replaced, not validated)."""
+    import dataclasses
+
+    share = {
+        "gatherer": 0.25,
+        "drifter": 0.125,
+        "floater": 0.0625,
+        "sinker": 0.375,
+        "hunter": 0.25,
+        "settler": 0.5,
+    }
+    cfg = dataclasses.replace(rv.cfg, weather=dataclasses.replace(rv.cfg.weather, enabled=storm))
+
+    def rows(rs):
+        return [
+            {**r, "observers": {**r["observers"], "intent_version": 3, "archetype_match": share}} for r in rs
+        ]
+
+    side = {**RS.sidecar_meta(), "intent_version": 3, "rules_digest": for_2d(RULES_V3).digest()}
+    return variant(rv, rows=rows, cfg=cfg, sidecars={0: side})
+
+
+def test_version_3_labels_are_withheld_until_their_verdicts_exist(rv) -> None:
+    """The label table is keyed by (intent_version, rules digest, dims, world key): it has no INTENT_VERSION 3 row
+    until the held-out windows of W2b exist, so a V3 run, weather on or off, narrates no label (DESIGN §32.13)."""
+    assert all(k[0] in (1,) for k in R.LABEL_VERDICTS)  # the two version-1 GPU studies only
+    assert {k[1] for k in R.LABEL_VERDICTS}.isdisjoint({RULES_V3.digest(), for_2d(RULES_V3).digest()})
+    for storm in (False, True):
+        sheet = R.build_sheet(_v3(rv, storm=storm), 1000, 2000)
+        assert sheet["labels"]["intent_version"] == 3 and sheet["labels"]["key_found"] is False
+        assert not facts_of(sheet, "label") and sheet["excluded"]["labels"] == {}
+        body, _, _ = texts(sheet)
+        assert not any("label" in line for line in body)
+
+
+def test_a_version_3_storm_run_prints_the_storm_names(rv, monkeypatch) -> None:
+    """Test 9.12: with a verdict row (a stand-in for W2b's), a weather-on V3 report says Grazer and Drifter, a
+    weather-off V3 report says Gatherer; the names pass the checker (R3, R6) through the label slot only."""
+    pass_all = {k: PASS for k in ARCHETYPE_NAMES if k != "generalist"}
+    for storm, gatherer in ((True, "Grazer"), (False, "Gatherer")):
+        v = _v3(rv, storm=storm)
+        monkeypatch.setattr(R, "LABEL_VERDICTS", {(3, for_2d(RULES_V3).digest(), 2, world_key(v)): pass_all})
+        sheet = R.build_sheet(v, 1000, 2000)
+        names = {f["key"]: f["label"] for f in facts_of(sheet, "label")}
+        assert names["gatherer"] == gatherer and names["drifter"] == "Drifter"
+        assert names["floater"] == "Floater" and names["sinker"] == "Sinker" and names["hunter"] == "Hunter"
+        body, _, _ = texts(sheet)  # texts() requires that every candidate passed the checker
+        joined = " ".join(body)
+        assert f"matched {gatherer} at step 1,000" in joined and "matched Drifter at step 1,000" in joined
+        other = "Gatherer" if storm else "Grazer"
+        assert other not in joined
+    # the display function itself
+    assert R._label_display("gatherer", 3, True) == "Grazer" and R._label_display("gatherer", 3) == "Gatherer"
+    assert R._label_display("gatherer", 2, True) == "Gatherer"  # a version-2 log has no storm names
+    assert [R._label_display(k, 3, True) for k in ("drifter", "floater", "sinker")] == [
+        "Drifter",
+        "Floater",
+        "Sinker",
+    ]
 
 
 def test_a_row_version_that_differs_from_the_sidecars_withholds_the_labels(rv, monkeypatch) -> None:

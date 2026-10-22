@@ -41,7 +41,8 @@ def _np(a: mx.array) -> np.ndarray:
 
 
 def _same(a: Any, b: Any) -> bool:
-    fa, fb = tree_flatten(a), tree_flatten(b)
+    fa = [(k, v) for k, v in tree_flatten(a) if v is not None]  # Acts.buoy is None in 2D
+    fb = [(k, v) for k, v in tree_flatten(b) if v is not None]
     return [k for k, _ in fa] == [k for k, _ in fb] and all(
         x.dtype == y.dtype and np.array_equal(_np(x), _np(y)) for (_, x), (_, y) in zip(fa, fb, strict=True)
     )
@@ -78,6 +79,7 @@ def test_act_flag_bits_and_dtypes(tiny_cfg: Config) -> None:
         *("attack_gain", "share_out", "share_got", "flags", "thrust", "defend", "emit"),  # G1
         *("attack_target", "bond_target", "q_kin", "nbr", "born_row", "born_parent", "born_uid"),  # G2
         "death_cause",  # G2 stage 7 (the roster)
+        "buoy",  # the storm world (DESIGN §32): 3D only, None in 2D
     )
     d = dims(tiny_cfg)
     n, m, k, b = d.n, d.m, d.k, layout.B
@@ -96,6 +98,7 @@ def test_act_flag_bits_and_dtypes(tiny_cfg: Config) -> None:
     )  # fmt: skip
     assert (a.born_row.dtype, a.born_parent.dtype, a.born_uid.dtype) == (mx.int32, mx.int32, mx.int64)
     assert a.death_cause.shape == (n,) and a.death_cause.dtype == mx.int8
+    assert a.buoy is None  # no buoyancy in 2D
     assert KIN_Q_CLIP == 127.0 and round(256 * KIN_Q_CLIP) <= np.iinfo(np.int16).max
 
 

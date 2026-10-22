@@ -18,8 +18,11 @@ next read (``row_block``, ``sidecar``, ``labels``, ...). Both paths give the sam
 next update on, the same state.
 
 The sidecar ``observers/step_<t>.npz`` holds one array per ``ObsState`` field, ``soc.<field>`` per
-``SocState`` field, the society's ``host.*`` members and ``meta`` (a JSON string). ``Observer.open`` loads
-it on resume only if every check passes (``_load``) and otherwise starts fresh with a note (never an error).
+``SocState`` field, the society's ``host.*`` members, ``tracer.<field>`` per ``tracers.TracerState`` field
+when ``game.tracers`` is on, and ``meta`` (a JSON string). ``Observer.open`` loads it on resume only if
+every check passes (``_load``) and otherwise starts fresh with a note (never an error). The tracer members
+are the exception: they are optional, so a resume that turns the tracers on, or changes their count,
+restarts only the tracers (reseeded at the live agents of the checkpoint, with a note) and keeps the labels.
 The snapshot records themselves are in the run's social log (``RunDir.append_social``), not in the sidecar.
 
 Lint (rule 2, ``tests/test_lint.py``): no subscript assignment anywhere in this module, dict keys included.
@@ -35,11 +38,13 @@ from typing import Any, Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
+from alife import weather_obs
 from alife.config import Config, config_hash, dims
 from alife.game import observe
 from alife.game import social as soc
+from alife.game import tracers as trc
 from alife.game.observe import EVAL_BIT, ObsState
-from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V2, RuleSet
+from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V3, RuleSet, for_2d
 from alife.game.social import SOCIAL_V1, SOCIAL_VERSION, SocialRules, SocState
 from alife.game.society import HOST_KEYS, Society, host_snap
 from alife.runio import CheckpointError, RunDir
@@ -55,16 +60,18 @@ __all__ = [
     "Labels",
     "Observer",
     "SocialLabels",
+    "default_rules",
 ]
 
-OBSERVER_FORMAT: Final = 3  # the sidecar's members and their meaning; bump with any change to either
+OBSERVER_FORMAT: Final = 4  # the sidecar's members and their meaning; bump with any change to either
 SIDECAR_FORMAT: Final = "alife-observers"  # the ``format`` of the sidecar's meta
 
 # The rules a run's observer uses, looked up at call time (``Observer.fresh`` / ``open`` with ``rules=None``
 # or ``social=None``). No config key sets them (DESIGN §28.1, §29.9): the labels tool passes its own
 # ``rules``, and tests that need snapshots in a short run replace ``DEFAULT_SOCIAL`` (``monkeypatch``) or
-# pass ``social=``.
-DEFAULT_RULES: RuleSet = RULES_V2
+# pass ``social=``. ``DEFAULT_RULES`` is the 3D rule set; ``default_rules(cfg)`` is what a world gets (a 2D
+# world's is the same without the vertical labels, ``rules.for_2d``).
+DEFAULT_RULES: RuleSet = RULES_V3
 DEFAULT_SOCIAL: SocialRules = SOCIAL_V1
 
 # Meta fields that must equal the observer's own for a sidecar to load, checked in this order (``format``
@@ -75,6 +82,8 @@ _META_KEYS: Final = (
     "observer_format",
     "intent_version",
     "rules_digest",
+    "wind_rel",
+    "vertical",
     "step",
     "n_max",
     "dims",
@@ -89,8 +98,19 @@ _NP_DTYPE: Final = {
     mx.int32: np.dtype(np.int32),
     mx.int64: np.dtype(np.int64),
     mx.bool_: np.dtype(np.bool_),
-}  # the dtypes ObsState and SocState use, as they are stored in the sidecar
+    mx.float32: np.dtype(np.float32),
+    mx.uint32: np.dtype(np.uint32),
+}  # the dtypes ObsState, SocState and TracerState use, as they are stored in the sidecar
 _SOC_PREFIX: Final = "soc."
+_TRACER_PREFIX: Final = "tracer."
+_TRACER_KEYS: Final = frozenset(f"{_TRACER_PREFIX}{f}" for f in trc.TracerState._fields)
+
+
+def default_rules(cfg: Config) -> RuleSet:
+    """The rules of a run's observer when none is given: ``DEFAULT_RULES`` (read now, so a test may replace
+    it), without the vertical labels in a 2D world."""
+    rs = DEFAULT_RULES
+    return rs if dims(cfg).d3 or not rs.vertical else for_2d(rs)
 
 
 class Labels(NamedTuple):
@@ -117,6 +137,7 @@ class _Loaded(NamedTuple):
     o: ObsState
     so: SocState
     society: Society
+    tr: trc.TracerState | None  # None: the sidecar holds no valid tracers (the caller reseeds them)
 
 
 def _shares(counts: np.ndarray, names: tuple[str, ...], denominator: int) -> dict[str, float] | None:
@@ -139,6 +160,7 @@ class Observer:
         step: int,
         rules: RuleSet,
         social: SocialRules,
+        tr: trc.TracerState | None = None,
     ) -> None:
         rules.check(cfg)  # a window that would overflow int32 for this world fails here, loudly
         social.check(cfg)
@@ -149,6 +171,7 @@ class Observer:
         self.so = so
         self.society = society
         self.step = step
+        self.tr = tr  # the tracer rig (``game.tracers``), None when off
         self._snap: soc.Snap | None = None  # the pending snapshot (arrays, lazy until the caller's eval)
         self._snap_step = -1
 
@@ -172,22 +195,38 @@ class Observer:
         def relabel(so_: SocState, sn: soc.Snap, kin_lut: mx.array, col_lut: mx.array) -> SocState:
             return soc.relabel(so_, sn, kin_lut, col_lut)
 
+        def tracer_fold(t_: trc.TracerState, wx: mx.array) -> trc.TracerState:
+            return trc.tracer_step(t_, wx, cfg)
+
+        def tracer_seed(
+            t_: trc.TracerState, pos: mx.array, cap: mx.array | None, alive: mx.array
+        ) -> trc.TracerState:
+            return trc.tracer_reseed(t_, pos, cap, alive, cfg)
+
         # The compile mode follows the run's, so labels are reproducible under the same contract as the
         # trajectory (DESIGN §14.2).
         comp = mx.compile if cfg.run.compile else (lambda f: f)
         self._fold, self._fold_eval = comp(fold), comp(fold_eval)
         self._snap_fn, self._relabel = comp(snap), comp(relabel)
+        self._tracer_step, self._tracer_reseed = comp(tracer_fold), comp(tracer_seed)
 
     # --- construction -----------------------------------------------------------------------------------
 
     @classmethod
-    def _blank(cls, state: State, cfg: Config, rules: RuleSet, sr: SocialRules) -> Observer:
+    def _blank(
+        cls, state: State, cfg: Config, rules: RuleSet, sr: SocialRules, with_tracers: bool = True
+    ) -> Observer:
         """An observer at ``state`` with empty accumulators and no snapshot: what a sidecar is validated
-        against (shapes, dtypes, occupants)."""
-        o = observe.init_obs(observe.obs_in(state), cfg)
+        against (shapes, dtypes, occupants). With ``game.tracers`` (and ``with_tracers``) the tracers are
+        seeded at the state's live rows."""
+        o = observe.init_obs(observe.obs_in(state, rules), cfg, rules)
         so = soc.init_soc(soc.soc_in(state), cfg, sr)
+        tr = None
+        if with_tracers and cfg.game.tracers > 0:
+            tr = trc.tracer_init(state.pos, getattr(state, "buoy_cap", None), state.alive, cfg)
+            mx.eval(*tr)
         mx.eval(*o, *so)  # no lazy reference to the state's arrays survives (the loop donates them)
-        return cls(cfg, o, so, Society(cfg, sr), int(to_numpy(state.step)), rules, sr)
+        return cls(cfg, o, so, Society(cfg, sr), int(to_numpy(state.step)), rules, sr, tr)
 
     @classmethod
     def fresh(
@@ -197,13 +236,15 @@ class Observer:
         *,
         rules: RuleSet | None = None,
         social: SocialRules | None = None,
+        tracers: bool = True,
     ) -> Observer:
         """Observers starting at ``state``: nothing accumulated or labelled, existing bonds of unknown age,
         and the initial social snapshot (ids and slots for what is there; no events, relations or record).
-        ``rules`` and ``social`` default to ``DEFAULT_RULES`` and ``DEFAULT_SOCIAL`` as of this call."""
-        rules = DEFAULT_RULES if rules is None else rules
+        ``rules`` and ``social`` default to ``DEFAULT_RULES`` and ``DEFAULT_SOCIAL`` as of this call.
+        ``tracers=False`` leaves the tracer rig off whatever ``game.tracers`` says (the analysis tools)."""
+        rules = default_rules(cfg) if rules is None else rules
         sr = DEFAULT_SOCIAL if social is None else social
-        obs = cls._blank(state, cfg, rules, sr)
+        obs = cls._blank(state, cfg, rules, sr, tracers)
         si = soc.soc_in(state)
         # no step to read: the temperament is zero; the labels are empty, so is the archetype mix
         snap = obs._snap_fn(obs.so.kin, obs.so, si, None, obs.o.label_arch[:, 0])
@@ -222,15 +263,17 @@ class Observer:
         *,
         rules: RuleSet | None = None,
         social: SocialRules | None = None,
+        tracers: bool = True,
     ) -> tuple[Observer, str | None]:
         """Observers for a run continuing from ``state``: the sidecar of its step if it is valid for it,
         else fresh. The note (None if the sidecar was loaded) is returned only on a resume, meaning ``rd``
         has a checkpoint at this step; a new run or a fork starts fresh without one. Never an error.
-        ``rules`` and ``social`` default to ``DEFAULT_RULES`` and ``DEFAULT_SOCIAL`` as of this call."""
-        rules = DEFAULT_RULES if rules is None else rules
+        ``rules`` and ``social`` default to ``DEFAULT_RULES`` and ``DEFAULT_SOCIAL`` as of this call.
+        ``tracers=False`` leaves the tracer rig off (see ``fresh``)."""
+        rules = default_rules(cfg) if rules is None else rules
         sr = DEFAULT_SOCIAL if social is None else social
         t = int(to_numpy(state.step))
-        blank = cls._blank(state, cfg, rules, sr)
+        blank = cls._blank(state, cfg, rules, sr, tracers)
         try:
             arrays = rd.read_observers(t)
         except CheckpointError as e:
@@ -241,8 +284,17 @@ class Observer:
             else:
                 loaded, reason = blank._load(arrays)
         if loaded is not None:
-            return cls(cfg, loaded.o, loaded.so, loaded.society, t, rules, sr), None
-        fresh = cls.fresh(state, cfg, rules=rules, social=sr)
+            # a sidecar without valid tracers (written with the rig off, or with another count) keeps its
+            # labels; the tracers are the blank's, seeded at the checkpoint's live rows
+            tr = blank.tr if loaded.tr is None or not tracers else loaded.tr
+            note = (
+                f"observers: the sidecar at step {t} holds no valid tracers; "
+                f"the {cfg.game.tracers} tracers restart at the live agents"
+                if blank.tr is not None and loaded.tr is None
+                else None
+            )
+            return cls(cfg, loaded.o, loaded.so, loaded.society, t, rules, sr, tr), note
+        fresh = cls.fresh(state, cfg, rules=rules, social=sr, tracers=tracers)
         resumed = any(st == t for st, _ in rd.checkpoints())
         note = (
             f"observers: {reason}; labels warm up ({rules.arch_warm} steps for archetypes, "
@@ -262,6 +314,8 @@ class Observer:
             "observer_format": OBSERVER_FORMAT,
             "intent_version": INTENT_VERSION,
             "rules_digest": self.rules.digest(),
+            "wind_rel": self.rules.wind_rel,
+            "vertical": self.rules.vertical,
             "step": self.step,
             "n_max": d.n,
             "dims": d.nd,
@@ -294,8 +348,35 @@ class Observer:
             **{f: to_numpy(a) for f, a in zip(ObsState._fields, self.o, strict=True)},
             **{f"{_SOC_PREFIX}{f}": to_numpy(a) for f, a in zip(SocState._fields, self.so, strict=True)},
             **self.society.arrays(),
+            **self._tracer_arrays(),
             "meta": np.array(json.dumps(self._meta(), sort_keys=True)),
         }
+
+    def _tracer_arrays(self) -> dict[str, np.ndarray]:
+        """The sidecar's ``tracer.<field>`` members (none while the rig is off)."""
+        if self.tr is None:
+            return {}
+        mx.eval(*self.tr)
+        return {
+            f"{_TRACER_PREFIX}{f}": to_numpy(a) for f, a in zip(trc.TracerState._fields, self.tr, strict=True)
+        }
+
+    def _load_tracers(self, arrays: Mapping[str, np.ndarray]) -> trc.TracerState | None:
+        """The tracers of a sidecar, or None unless every member is present with this observer's shapes and
+        dtypes (a changed ``game.tracers`` or a rig that was off when the sidecar was written)."""
+        if self.tr is None or not set(arrays) >= _TRACER_KEYS:
+            return None
+        for f, ref in zip(trc.TracerState._fields, self.tr, strict=True):
+            a = arrays[f"{_TRACER_PREFIX}{f}"]
+            if (
+                not isinstance(a, np.ndarray)
+                or a.shape != tuple(ref.shape)
+                or a.dtype != _NP_DTYPE[ref.dtype]
+            ):
+                return None
+        tr = trc.TracerState(**{f: mx.array(arrays[f"{_TRACER_PREFIX}{f}"]) for f in trc.TracerState._fields})
+        mx.eval(*tr)
+        return tr
 
     def _load(self, arrays: Mapping[str, np.ndarray]) -> tuple[_Loaded | None, str]:
         """``(loaded, "")`` from a sidecar's arrays if they are valid for this (blank) observer, else
@@ -322,8 +403,9 @@ class Observer:
             *((f"{_SOC_PREFIX}{f}", f) for f in SocState._fields),
         )
         names = {name for name, _ in expected} | {*HOST_KEYS, "meta"}
-        if set(arrays) != names:
-            missing, extra = sorted(names - set(arrays)), sorted(set(arrays) - names)
+        present = set(arrays) - _TRACER_KEYS  # the tracer members are optional
+        if present != names:
+            missing, extra = sorted(names - present), sorted(present - names)
             return None, f"the sidecar's arrays differ (missing {missing}, unexpected {extra})"
         refs = (
             *((f, getattr(self.o, f)) for f in ObsState._fields),
@@ -345,7 +427,7 @@ class Observer:
         o = ObsState(**{f: mx.array(arrays[f]) for f in ObsState._fields})
         so = SocState(**{f: mx.array(arrays[f"{_SOC_PREFIX}{f}"]) for f in SocState._fields})
         mx.eval(*o, *so)
-        return _Loaded(o, so, society), ""
+        return _Loaded(o, so, society, self._load_tracers(arrays)), ""
 
     # --- the per-step fold --------------------------------------------------------------------------------
 
@@ -358,10 +440,17 @@ class Observer:
         if t != self.step + 1:
             raise ValueError(f"observer is at step {self.step}; cannot fold step {t}")
         self._settle()
-        oi, si = observe.obs_in(state), soc.soc_in(state)
+        oi, si = observe.obs_in(state, self.rules), soc.soc_in(state)
         fold = self._fold_eval if t % self.rules.every == 0 else self._fold
         kin0 = self.so.kin  # the start-of-step slots, which the snapshot's temperament is read with
         self.o, self.so = fold(self.o, self.so, oi, si, acts)
+        if self.tr is not None:
+            # the tracers move on the end-of-step weather and are reseeded at live agents every period steps
+            self.tr = self._tracer_step(self.tr, state.wx)
+            if t % self.cfg.game.tracer_period == 0:
+                self.tr = self._tracer_reseed(
+                    self.tr, state.pos, getattr(state, "buoy_cap", None), state.alive
+                )
         if t % self.social.snapshot_every == 0:
             # the primary archetype labels as of the last evaluation (reset rows are already unlabelled)
             self._snap = self._snap_fn(kin0, self.so, si, acts, self.o.label_arch[:, 0])
@@ -371,7 +460,12 @@ class Observer:
     def arrays(self) -> tuple[mx.array, ...]:
         """The observer's arrays (``ObsState``, ``SocState`` and a pending snapshot), for the caller's
         single ``mx.eval``."""
-        return (*self.o, *self.so, *(self._snap if self._snap is not None else ()))
+        return (
+            *self.o,
+            *self.so,
+            *(self.tr if self.tr is not None else ()),
+            *(self._snap if self._snap is not None else ()),
+        )
 
     def _settle(self) -> None:
         """Settle the pending snapshot, if any: one host transfer, ``Society.settle`` (which appends the
@@ -453,6 +547,21 @@ class Observer:
             "intent_match": _shares(match_intent, INTENT_NAMES, eval_n),
             "social": self.society.head(),
         }
+
+    def coupling_block(self, state: State) -> dict[str, Any] | None:
+        """The ``coupling`` block of a metrics row (DESIGN §32): agents against the tracers, by z band; None
+        without tracers or in a 2D world. One eager evaluation and one host transfer, at a metrics row, on
+        the post-step ``state`` the tracers have moved with."""
+        if self.tr is None or not dims(self.cfg).d3:
+            return None
+        inp = trc.coupling_inputs(state, self.tr, self.cfg)
+        mx.eval(*inp)
+        h = {f: to_numpy(a) for f, a in zip(trc.CouplingIn._fields, inp, strict=True)}
+        live = h["alive"]
+        agents = {k: h[k][live] for k in ("z", "g", "w", "vz_own")}
+        tracers = {"z": h["tz"], "g": h["tg"], "w": h["tw"]}
+        w = self.cfg.world
+        return weather_obs.coupling_block(agents, tracers, w.height, w.field_cell)
 
 
 def _short(v: Any) -> str:

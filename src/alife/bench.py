@@ -21,6 +21,9 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
   off, as blocks (off, on, on, off). The trajectories differ by construction, so none is compared. The
   marginal cost per step is the number STORMS §8 W1 asks for; ``stages`` adds the rows ``wind`` and
   ``weather`` when the layer is on.
+- **Weather-org** (``weather_org``, W2): the same blocks with the weather on in both arms, the "off" arm
+  having ``seed_gain = shade_gain = 0``: the marginal cost of the organism couplings (the seeding signal and
+  the shade count, DESIGN §32).
 """
 
 from __future__ import annotations
@@ -111,13 +114,15 @@ def run_bench(
     observe: bool = False,
     weather: bool = False,
     weather_pairs: int = WEATHER_PAIRS,
+    weather_org: bool = False,
 ) -> dict[str, Any]:
     """Run the benchmark suite and return a JSON-compatible report.
 
     ``warmup`` steps (at least the compile call) run before anything is timed; ``steps`` steps are timed.
     The optional parts reuse ``steps`` and ``warmup`` (determinism: 2 × ``steps`` steps; brain variants:
     ``steps`` timed forward calls per variant; observers and weather: ``2 * pairs`` blocks of ``steps // 2``
-    timed steps; ``weather`` needs ``cfg.weather.enabled``).
+    timed steps; ``weather`` needs ``cfg.weather.enabled``, ``weather_org`` also a ``seed_gain`` or
+    ``shade_gain`` above 0).
     """
     if steps < 1:
         raise ValueError(f"steps must be >= 1, got {steps}")
@@ -125,6 +130,14 @@ def run_bench(
         raise ValueError(f"warmup must be >= 0, got {warmup}")
     if weather and not cfg.weather.enabled:
         raise ConfigError("bench --weather needs weather.enabled = true (for example --overlay storm)")
+    if weather_org and not (
+        cfg.weather.enabled and (cfg.weather.seed_gain > 0 or cfg.weather.shade_gain > 0)
+    ):
+        raise ConfigError(
+            "bench --weather-org needs weather.enabled = true and weather.seed_gain or "
+            "weather.shade_gain above 0 (for example --overlay storm --set weather.seed_gain=0.03 "
+            "--set weather.shade_gain=0.02)"
+        )
     if weather_pairs < 1:
         raise ValueError(f"weather_pairs must be >= 1, got {weather_pairs}")
     report: dict[str, Any] = {**_environment(cfg), "steps": steps, "warmup": max(warmup, 1)}
@@ -140,6 +153,8 @@ def run_bench(
         report["observe"] = _bench_observe(cfg, steps, warmup)
     if weather:
         report["weather"] = _bench_weather(cfg, steps, warmup, weather_pairs)
+    if weather_org:
+        report["weather_org"] = _bench_weather(cfg, steps, warmup, weather_pairs, org=True)
     return report
 
 
@@ -483,9 +498,13 @@ def _bench_social(cfg: Config, observed_fn: Callable[[State], Any], warm: int) -
     }
 
 
-def _bench_weather(cfg: Config, steps: int, warmup: int, pairs: int = WEATHER_PAIRS) -> dict[str, Any]:
+def _bench_weather(
+    cfg: Config, steps: int, warmup: int, pairs: int = WEATHER_PAIRS, *, org: bool = False
+) -> dict[str, Any]:
     """The marginal cost of the engine weather layer: the compiled step with ``cfg`` (weather on) against the
-    same config with the layer off (``replace(cfg, weather=WeatherConfig())``), STORMS §8 W1.
+    same config with the layer off (``replace(cfg, weather=WeatherConfig())``), STORMS §8 W1. With ``org``
+    the reference keeps the weather on and sets ``seed_gain = shade_gain = 0``: the marginal cost of the
+    organism couplings (DESIGN §32).
 
     Each arm follows the runner's loop (one blocking eval per step). The blocks run off, on, on, off for two
     pairs (the leading arm alternates in each pair, so that a drift linear in time, such as a thermal one,
@@ -495,7 +514,10 @@ def _bench_weather(cfg: Config, steps: int, warmup: int, pairs: int = WEATHER_PA
     ``marginal_ms_median`` is the difference of the median step times over all blocks of each arm,
     ``marginal_ms_mean`` of the means; ``pair_marginal_ms`` the same median difference within each pair.
     """
-    cfg_off = replace(cfg, weather=WeatherConfig())
+    if org:
+        cfg_off = replace(cfg, weather=replace(cfg.weather, seed_gain=0.0, shade_gain=0.0))
+    else:
+        cfg_off = replace(cfg, weather=WeatherConfig())
     fns = {"off": step_mod.make_step(cfg_off), "on": step_mod.make_step(cfg)}
     cfgs = {"off": cfg_off, "on": cfg}
     warm, per_block = max(warmup, 1), max(steps // 2, 1)
@@ -784,7 +806,11 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
     ) -> tuple[mx.array, wthr.RainIn | None, mx.array]:
         """S17w: advance the stored weather one step; returns the new packed ``wx``, the rain for the
         resource update (None when ``rain_gain == 0``) and the ``WEATHER_WARN`` input."""
-        ws2, wd = wthr.advance(wthr.unpack(s.wx), s.step, mx.random.split(ks[Stream.WEATHER], 2)[0], cfg)
+        ws = wthr.unpack(s.wx)
+        qs, t_mult = wthr.organism_forcing(s.chem, s.pos, s.alive, ws, cfg)  # S17: the start-of-step state
+        ws2, wd = wthr.advance(
+            ws, s.step, mx.random.split(ks[Stream.WEATHER], 2)[0], cfg, qs=qs, t_mult=t_mult
+        )
         return wthr.pack(ws2), wthr.rain_for(ws2, cfg), wthr.health(wd, wind)
 
     def field_update(
@@ -989,12 +1015,17 @@ def format_report(report: dict[str, Any]) -> str:
                 f"{so['components_ms_median']:.2f} ms; heavy metrics {so['heavy_ms_median']:.2f} ms) = "
                 f"{so['amortised_ms_per_step']:.3f} ms/step amortised"
             )
-    if "weather" in r:
-        wt = r["weather"]
-        lines.append(
-            f"weather ({wt['block_pairs']} block pairs of {wt['steps_per_block']} steps): "
-            f"off {wt['off_ms_median']:.2f} ms, on {wt['on_ms_median']:.2f} ms median "
-            f"(marginal {wt['marginal_ms_median']:+.2f} ms median, {wt['marginal_ms_mean']:+.2f} ms mean); "
-            f"{wt['steps_per_s_on']:.1f} steps/s with weather"
-        )
+    for key, label, unit in (
+        ("weather", "weather", "weather"),
+        ("weather_org", "weather-org (seeding and shade)", "the couplings"),
+    ):
+        if key in r:
+            wt = r[key]
+            lines.append(
+                f"{label} ({wt['block_pairs']} block pairs of {wt['steps_per_block']} steps): "
+                f"off {wt['off_ms_median']:.2f} ms, on {wt['on_ms_median']:.2f} ms median "
+                f"(marginal {wt['marginal_ms_median']:+.2f} ms median, "
+                f"{wt['marginal_ms_mean']:+.2f} ms mean); "
+                f"{wt['steps_per_s_on']:.1f} steps/s with {unit}"
+            )
     return "\n".join(lines)

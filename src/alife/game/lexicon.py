@@ -13,6 +13,9 @@ is the independent check that none of them says more than the facts do. It lists
 - ``L1`` lever words (regrowth, patch, immigrant, catastrophe, ...): only in the interventions block and the
   ticker (and the engine's own death cause "catastrophe" in D-2).
 - ``L2`` label names (Hunter, Resting, ...): only in the label sentences (LB-a, LB-i), through the label slot.
+  They include the storm world's display words (Grazer, Drifter, Floater, Sinker;
+  ``game.rules.ARCHETYPE_STORM_DISPLAY``, DESIGN §32.7). The L1 stem of the patch-drift lever is ``drift``
+  without "drifter(s)", which is a label name.
 
 A term is a word (``"because"``), a phrase (``"as a result"``), a stem ending in ``-`` (``"caus-"``: the stem
 and any letters after it, so ``"cause"``, ``"causes"`` and ``"causing"`` all match; an inflection test in
@@ -42,7 +45,9 @@ __all__ = [
     "scan",
 ]
 
-LEXICON_VERSION: Final = 1
+# 2: the storm world's display words joined L2 and the L1 stem "drift" stopped matching "drifter" (W2a,
+# DESIGN §32.13).
+LEXICON_VERSION: Final = 2
 
 LEXICON: Final[Mapping[str, tuple[str, ...]]] = {
     "T2": (
@@ -53,16 +58,17 @@ LEXICON: Final[Mapping[str, tuple[str, ...]]] = {
         "triple-", "re:[a-z]*fold", "dozen-", "percent-", "per cent", "single", "sole",
     ),
     "L1": (
-        "regen-", "regrowth", "pulse-", "immigra-", "founder-", "catastroph-", "drift-", "season-",
-        "fertil-", "patch-", "habitat-", "oasis", "oases", "barren", "interven-", "director-",
+        "regen-", "regrowth", "pulse-", "immigra-", "founder-", "catastroph-", "re:drift(?!ers?\\b)[a-z]*",
+        "season-", "fertil-", "patch-", "habitat-", "oasis", "oases", "barren", "interven-", "director-",
         "command-", "damper-", "lever-", "cooldown-", "budget-", "boom-", "famine-", "drought-",
         "bloom-", "introduc-",
     ),
     "L2": (
-        "gatherer-", "hunter-", "hunting", "provider-", "trader-", "nomad-", "settler-",
-        "generalist-", "re:unspeciali[sz]ed", "budding", "fleeing", "defending", "feeding", "caring",
-        "bonding", "tethering", "re:signall?ing", "roaming", "resting", "re:hunt(?:s|ed)?",
-        "re:fle(?:e|es|d)", "re:defend(?:s|ed)?", "re:roam(?:s|ed)?", "re:tether(?:s|ed)?",
+        "gatherer-", "grazer-", "hunter-", "hunting", "provider-", "trader-", "nomad-", "settler-",
+        "drifter-", "floater-", "sinker-", "generalist-", "re:unspeciali[sz]ed", "budding", "fleeing",
+        "defending", "feeding", "caring", "bonding", "tethering", "re:signall?ing", "roaming", "resting",
+        "re:hunt(?:s|ed)?", "re:fle(?:e|es|d)", "re:defend(?:s|ed)?", "re:roam(?:s|ed)?",
+        "re:tether(?:s|ed)?",
     ),
     "V1": (
         "because", "caus-", "due to", "owing to", "thanks to", "as a result", "result-", "therefore",
