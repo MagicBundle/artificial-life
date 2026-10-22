@@ -212,3 +212,69 @@ def test_the_play_header_keys_match_playheader() -> None:
     )  # fmt: skip
     stream_header = (CORE / "StreamProtocol.swift").read_text(encoding="utf-8")
     assert swift_struct_keys(stream_header, "StreamHeader") == {*legacy, "play"}
+
+
+# --- the `alife play` command line and control grammar (DESIGN §33.2.6, §33.2.8) -------------------------
+
+
+def play_subparser() -> object:
+    import argparse
+
+    from alife import cli
+
+    parser = cli.build_parser()
+    action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    return action.choices["play"]
+
+
+def test_the_play_launch_flags_are_flags_of_alife_play() -> None:
+    """Every `--flag` literal of PlayLaunch.swift is an option of `alife play`; the enums behind the flags
+    that take a choice are the engine's."""
+    text = (CORE / "PlayLaunch.swift").read_text(encoding="utf-8")
+    flags = set(re.findall(r'"(--[a-z][a-z-]*)"', text))
+    assert flags, "no flag found in PlayLaunch.swift"
+    parser = play_subparser()
+    options = {s for a in parser._actions for s in a.option_strings}  # type: ignore[attr-defined]
+    assert flags <= options, sorted(flags - options)
+    # The enums behind --houses and --director are the engine's choices.
+    choices = {s: a.choices for a in parser._actions for s in a.option_strings if a.choices}  # type: ignore[attr-defined]
+    assert swift_enum_values(text, "PlayHouses") == set(choices["--houses"])
+    assert swift_enum_values(text, "PlayDirector") == set(choices["--director"])
+    assert "storm" in choices["--overlay"]
+    assert re.search(r'"--overlay", "storm"', text)
+
+
+def test_the_play_launch_set_keys_are_config_fields() -> None:
+    text = (CORE / "PlayLaunch.swift").read_text(encoding="utf-8")
+    keys = {tuple(m.split(".")) for m in re.findall(r'"([a-z_]+\.[a-z_0-9]+)=', text)}
+    assert keys == {("director", "enabled")}
+    assert keys <= engine_keys()
+
+
+def test_the_play_control_lines_the_window_sends_parse() -> None:
+    """tests/data/play_command_lines.txt is what PlayCommandTests (Swift) checks PlayCommand against; the
+    engine's own parser accepts every line of it, and every command name of the grammar is there."""
+    from alife import play
+
+    text = (ROOT / "tests" / "data" / "play_command_lines.txt").read_text(encoding="utf-8")
+    lines = [ln for ln in text.splitlines() if ln and not ln.startswith("#")]
+    assert lines and len(set(lines)) == len(lines)
+    names = set()
+    for line in lines:
+        command = play.parse_play_command(line)
+        assert command is not None, line
+        names.add(command.name)
+    assert names == set(play.COMMANDS)
+
+
+def test_the_play_world_file_keys_match_playworldfile() -> None:
+    """The keys the launcher decodes from play.json are the ones `cli` gives `RunDir.write_play_json`."""
+    from alife import play
+
+    text = (CORE / "PlayWorlds.swift").read_text(encoding="utf-8")
+    assert swift_struct_keys(text, "PlayWorldFile") == {
+        "play_version", "base_rate", "cadence", "tick", "weather", "planet",
+    }  # fmt: skip
+    assert swift_struct_keys(text, "Cadence") == set(play.PLAY_CADENCE)
+    assert swift_struct_keys(text, "Planet") == {"source", "step", "weather_spinup", "houses", "made_at_step"}
+    assert swift_struct_keys(text, "Weather") == {"dc_ref"}

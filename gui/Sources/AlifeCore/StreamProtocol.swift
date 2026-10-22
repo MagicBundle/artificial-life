@@ -155,8 +155,11 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
     private static func agrees(_ a: Double, _ b: Double) -> Bool { abs(a - b) <= 1e-6 * max(abs(b), 1) }
 
     /// The name of the colour mode `frame` carries, or nil for an index outside `colorModes`.
-    package func colorMode(of frame: StreamFrame) -> String? {
-        colorModes.indices.contains(frame.colorIndex) ? colorModes[frame.colorIndex] : nil
+    package func colorMode(of frame: StreamFrame) -> String? { colorMode(index: frame.colorIndex) }
+
+    /// The name of the colour mode at `index` (a frame's `colorIndex`), nil outside `colorModes`.
+    package func colorMode(index: Int) -> String? {
+        colorModes.indices.contains(index) ? colorModes[index] : nil
     }
 }
 

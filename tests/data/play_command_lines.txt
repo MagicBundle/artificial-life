@@ -1,0 +1,35 @@
+# Every control line the World window can send to `alife play` (gui/Sources/AlifeCore/PlayCommand.swift), one per
+# line. tests/test_gui_sync.py parses each with play.parse_play_command; gui/Tests/AlifeCoreTests/PlayCommandTests.swift
+# checks that PlayCommand produces exactly these lines. Add a line here when the Swift grammar grows.
+pause
+run
+step
+step 25
+rate 0
+rate 0.05
+rate 0.25
+rate 0.5
+rate 1
+rate 2
+rate 16
+rate max
+color tag
+color energy
+color clade
+color house
+color kin
+color archetype
+color intent
+every 1
+every 64
+every auto
+focus 0
+focus 123456789012
+focus 9223372036854775807
+focus off
+follow 7
+follow off
+idnt
+labels on
+labels off
+quit

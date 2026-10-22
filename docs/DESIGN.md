@@ -5775,6 +5775,10 @@ config key, no hash and no digest; the 2D GUI is unchanged (a table of its comma
 the previous commit before the refactor, pins them byte for byte). The protocol is §27.11; the rationale is
 docs/3D.md §8.
 
+*G3a (§33.4).* The process plumbing of `StreamController` (the process, its pipes, the reader thread, the stop ladder, the
+pump) is now `EngineSession`, shared with the World window's `PlayController`; `StreamMailbox` also carries the play records.
+`StreamControllerTests` and `StreamReaderTests` pass unchanged on the extraction.
+
 **Package** (`gui/Package.swift`, Swift 6 language mode, macOS 14, no resources, no unsafe flags):
 
 | target | content |
@@ -9394,7 +9398,7 @@ under a fixed-timestep scheduler with the game observers on, writes the records 
 `play` changes a trajectory: pacing, frames, records and focus are presentation. The section grows with the commits of
 the PR: §33.1 (the stream records) lands first, with the Python encoders (`streamrec.py`), the independent decoder and
 the shared fixtures, then the Swift decoder; the rest follows: §33.2 `alife play`, the runner hook and the scheduler;
-§33.3 files, planets and houses (§33.3.5); §33.4 the World window; §33.5 performance and the gate; §33.6 tests.
+§33.3 files, planets and houses (§33.3.5); §33.4 the World window (shell, renderer, interaction); §33.5 performance and the gate; §33.6 tests.
 
 ### 33.1 The stream records (ALSTRM v1, compatible additions)
 
@@ -9923,6 +9927,53 @@ Tests: `tests/test_play_houses.py` (50, 25 s): the rebuild equals the live sidec
 the source problems (no events, a gap, no deaths, chunks not starting at 0, a fork, a log shorter than the checkpoint's uids); the file (round trip, not a sidecar, kept by `_prune` and `truncate_after`, another rate or seed, malformed and torn); the hash against `phylo` and `groups`; the fold against the rule on 3,000 births, in two stages, against
 the live sidecar at the end of the run, and against the longer tree; `births_between` (trim, tiling); `Observer.fresh(houses=)` (exact with the file, a partial seed is not exact, an empty one is not); `Observer.open` (the file, no file, a sidecar lost at a later checkpoint, no chunks, another rule, a later file, a valid sidecar wins); a fork
 that runs 300 steps keeps the source's houses to the end and every record says exact; `play` end to end (exact planet, `clade`, archive-only under `auto` and `exact`, a gap, a planet of a planet, a bare state file, `--set run.seed`, `--houses` on a world directory or a preset, a planet resumed); the tool's command line.
+
+
+### 33.4 The World window (G3a commits 8 and 9)
+
+The window of `AlifeControl` that plays a world: the planet's map and organisms in a raw-Metal view, with a docked control center. It is a second window of the app (`Window("World", id: "world")`), opened from the Lab (`Open World`) and, with `--world RUN`, at launch (`ContentView` opens it: SwiftUI does not open a window that is not the first scene at launch). The Lab stays and its 3D viewer is untouched. Commit 8 is the shell (this section up to §33.4.5); the renderer follows in §33.4.6 and later.
+
+#### 33.4.1 Pieces
+
+| piece | where | content |
+|---|---|---|
+| `EngineSession` | `AlifeControl/EngineSession.swift` | extracted from `StreamController.Session`: the process, its stdin, the mailbox its reader thread fills, `launch` (pipes, `suppressSIGPIPE`, the reader), `pump` (wake-ups, stderr lines, the exit, in that order), and the stop ladder `Ladder(beforeInterrupt, beforeTerminate)`: `.stream` (quit, EOF, SIGTERM after 2 s: nothing to save) and `.play` (quit, EOF, SIGINT after 30 s, SIGTERM 10 s later). `StreamControllerTests` pass unchanged on it |
+| `StreamMailbox`, `StreamDelivery` | `StreamReader.swift` | the newest header and frame as before, plus `records` (the newest record of each latest-wins tag), `droppedRecords` (counted per tag), `events` (the `EVNT` batches in order, never dropped) |
+| `PlayController` | `AlifeControl/PlayController.swift` | the `alife play` process: phases `idle starting live ended(…) failed(…)`, `start(.resume(PlayResume) \| .planet(PlanetSpec))`, `send(PlayCommand)`, `stop`, `stopForQuit`, `shutdown`, the retired list, `progress` (stderr while `starting`), `requestedRate` |
+| `WorldStore` | `AlifeCore/WorldStore.swift` | value type reduced from the records: the newest of each latest-wins record, the `Chronicle` (ring of 500, ascending by id, an id seen is not new, an id below the ring is not new), serials for the renderer, `revision` |
+| `PlayCommand`, `PlayRate` | `AlifeCore/PlayCommand.swift` | the grammar of §33.2.6; `tests/data/play_command_lines.txt` lists every line, `test_gui_sync.py` parses each with `play.parse_play_command` and `PlayCommandTests` checks the Swift side produces exactly those |
+| `PlayLaunch`, `PlayResume`, `PlanetSpec` | `AlifeCore/PlayLaunch.swift` | the command lines of §33.2.8; every flag is checked against `alife play --help` and `--set director.enabled=true` against `Config` |
+| `PlayCatalogScanner`, `PlayWorldFile`, `PlayLockProbe` | `AlifeCore/PlayWorlds.swift` | what the launcher lists under `runs/` (§33.4.5); `play.json` decoded; the `flock` probe of `play.lock` |
+| `ClockStrip`, `ClockSegment` | `AlifeCore/ClockStrip.swift` | the text and selection of the clock strip from the newest `CLCK` and what was just asked |
+| `DockLayout`, `DockSide` | `AlifeCore/DockLayout.swift` | the free and dock rectangles |
+| `WorldModel`, `WorldView`, `ControlCenterView`, `WorldLauncherModel`, `WorldLauncherView` | `AlifeControl/` | the window |
+| `TerminationGate` | `AlifeControl/AppTermination.swift` | `applicationShouldTerminate` while a world saves |
+
+#### 33.4.2 Data path
+
+The reader thread (`StreamReader`, unchanged in shape) decodes the pipe into `StreamEvent`s and publishes them into the mailbox, waking the main actor (coalesced, `bufferingNewest(1)`) after a chunk that completed a header, a frame, a record or the end. The main actor takes the mailbox in `PlayController.apply`: a header resets the store and makes the phase `live`; each record is reduced into the store; each `EVNT` batch is inserted into the chronicle; `onDelivery(changes)` tells the renderer's owner what changed. The frames of 1.3 MB never pass through a published property: `PlayController.store` is a plain property, `revision` (small, published) increases with every change other than a frame, and `onDelivery` is the cue to redraw. Records are complete (§33.1.1), so a newer one replacing an undelivered older one loses nothing. A stream without the `play` key is accepted and shows a world with nothing in it.
+
+#### 33.4.3 Process lifecycle
+
+- **Stopping a live world** is `quit`, EOF on stdin, then SIGINT after 30 s (the runner's own stop path, which works while the world is paused, §33.2.4), then SIGTERM after 10 s more; the world saves a checkpoint on `quit` (686 MB). **A world being built** (`starting`: the fork, the spin-up and the house rebuild read no stdin) gets SIGINT at once and SIGTERM after 10 s (`interruptNow`); the directory it leaves has no `play.json` (§33.3.3) and the launcher lists it as unfinished. The app deletes nothing.
+- **Retired sessions.** A session asked to stop whose process has not exited is *retired*: `PlayController.retiredWorlds` names its directory, the launcher shows it as "saving…" and refuses Resume for it, and `start` of the same world is refused with a message (`play.lock`, held through the quit checkpoint, is the backstop). A replaced world is retired the same way, and its end is ignored.
+- **Windows.** Closing the World window stops its process with the ladder above and leaves the Lab; closing the last Lab window also dismisses the World; the app quits when the last window closes (unchanged).
+- **App quit.** `AppDelegate.applicationShouldTerminate` answers `.terminateNow` without a process, else asks the world to stop through its ladder and answers `.terminateLater`; `TerminationGate` replies when `PlayController.hasProcess` turns false or after 40 s, and `applicationWillTerminate` (`RunController.shutdown()`, which now also calls `PlayController.shutdown()`) is the last resort, SIGTERM without a grace.
+- **The Lab and the lock.** `RunController` probes `play.lock` of every run at its 2-second refresh (`PlayLockProbe.held`; a lock taken to find out is dropped with its descriptor) and refuses Resume of a locked run with a message.
+
+#### 33.4.4 Window, dock and clock strip
+
+`WorldView` is a `GeometryReader` whose children are placed by `DockLayout.frames(in:side:extent:collapsed:)`: the map view in the free rectangle and the `ControlCenterView` in the dock rectangle, both by `.frame` and `.position` in one `ZStack`, so that changing the side or dragging the divider changes frames and never the identity of the view (an `HSplitView` re-creates its `MTKView` when its children are reordered). The dock never overlaps the map. Side (left, right, bottom; default right), extents (360 pt on a side, 240 at the bottom, clamped to leave the map at least 520 × 360) and the collapsed flag are `@AppStorage`; a divider drag is throttled to 30 updates a second; the window's minimum size is 1100 × 700. The free rectangle's aspect is the camera's (`WorldModel.aspect`).
+
+The **clock strip** is at the top of the dock whichever tab is open: the segmented control `Pause | 0.25x | 0.5x | 1x | 2x | Max` (each sends its `PlayCommand`; `Pause` is `pause`, a rung is `rate M`), `Resume` (`run`, which never changes the rate) when paused, `+1` and, when paused, `+25` (one tick of the storm tracker), the step counter, the readout ("0.98x of 1x", the achieved multiplier over the requested rate, or the stop reason), "late N" in amber and "saving…" from `CLCK.saving`. What the window just asked wins over the clock until the next `CLCK` (at most a quarter of a second): `ClockStrip(clock:requested:baseRate:)`. Tabs are Cast and Chronicle (lists in commit 8; §33.4.8 for the real ones). A **View menu** holds the colour mode (the header's modes), the labels switch (`labels on|off`) and the layers (`WorldDisplay`: agents, agent points, bonds, territory, weather map, frame).
+
+#### 33.4.5 The launcher
+
+`WorldLauncherView` (a sheet, over `WorldLauncherModel`) lists `PlayCatalogScanner.scan(runs/)`: **worlds** (a directory with a version-1 `play.json`: newest checkpoint step from `checkpoints/step_<t>.safetensors`, `meta.json` status, the planet's source and houses mode, `locked` when another process holds `play.lock`), **unfinished** directories (no `play.json` and no checkpoint: a planet build that was cancelled or failed; not resumable) and **sources** (every run with a checkpoint, with its `world.dims`, whether its weather is on, and whether it has event chunks). Resume starts `PlayResume(run:)` at `--rate 1` (D8). *New planet* picks a source and a checkpoint (the newest by default), the weather overlay (on, with a spin-up of 20,000 steps, unless the source's weather is already on: the engine refuses a spin-up then), `director.enabled` (D2), the houses mode (`exact`, `clade`, `auto`; a note says when the source has no event chunks) and a name (the next free of `planet_a`), validates with `PlanetSpec.validate` and starts `PlayRequest.planet`. While `starting` the sheet shows the stderr lines and a Cancel (SIGINT at once).
+
+#### 33.4.6 Tests of the shell
+
+`AlifeCoreTests`: `PlayCommandTests` (every line, the shared file, refusals, the 4,096-byte guard), `PlayLaunchTests`, `PlayWorldsTests` (play.json, the scan, the lock held by the test's own descriptor), `WorldLaunchArgumentTests`, `WorldStoreTests` (latest-wins, events once and in order, the ring, lookups), `ClockStripTests`, `DockLayoutTests`. `AlifeControlTests`: `PlayControllerTests` (a stand-in script with real pipes: the live world and its records, chunking by 7-byte writes, commands in order and a single `quit`, nothing before the header, the ladder with short durations: SIGINT after the first wait, SIGTERM at the end, no signal for a world that quits, a build interrupted at once and its progress, a world still saving refused, quitting ends every process, exit statuses and the last stderr line, a corrupt stream and a bad record stopped, a launch failure, replacement), `PlayMailboxTests`, `WorldLauncherTests`, `AppTerminationTests` (a stub for the world and short durations); `StreamControllerTests` and `StreamReaderTests` unchanged. `tests/test_gui_sync.py` ties the flags of `PlayLaunch`, the command lines, the keys of `play.json` to the engine.
 
 ---
 

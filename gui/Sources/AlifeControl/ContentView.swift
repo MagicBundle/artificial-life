@@ -40,7 +40,15 @@ struct ContentView: View {
         // The main window is the app: when the last one closes the 3D viewer window goes with it, so that the app quits as
         // it did when this was the only window (`applicationShouldTerminateAfterLastWindowClosed`). Another main window
         // (File > New Window) keeps the app and the viewer.
-        .background(WindowCloseObserver(group: "main") { dismissWindow(id: "viewer3d") })
+        .background(WindowCloseObserver(group: "main") {
+            dismissWindow(id: "viewer3d")
+            dismissWindow(id: "world")
+        })
+        .onAppear {
+            if let run = WorldLaunchArgument.parse(CommandLine.arguments), controller.openWorldAtLaunch(run) {
+                openWindow(id: "world")
+            }
+        }
     }
 
     // MARK: Repository
@@ -445,6 +453,10 @@ struct ContentView: View {
             }
             .disabled(controller.viewer3DSource == nil)
             .help(viewer3DHelp)
+            Button("Open World") {
+                openWindow(id: "world")
+            }
+            .help("The game window: the planet's weather map and organisms with a control center. Choose a world there.")
             Button("Inspect") { controller.inspect() }
                 .disabled(busy || !controller.targetRunExists)
                 .help("Runs `alife inspect --check` and prints the result in the log.")
