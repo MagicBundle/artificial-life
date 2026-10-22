@@ -47,7 +47,8 @@ Three things in the files to read with care:
   about 2.5 to 3, CPU only: the GPU was reserved for these runs); one process at a time.
 - **Command:** `alife bench --preset <preset> --stages`, as above, once with `ALIFE_KNN=mlx` (the pure-MLX search, the
   reference) and once with the default (`auto`: the kernel in 3D on Metal). The 2D `64k` kernel file was made with
-  `ALIFE_KNN=metal`, because `auto` keeps the MLX path in 2D. The `config` block of each file is unchanged; the
+  `ALIFE_KNN=metal`, because `auto` kept the MLX path in 2D at that time (since 2026-10-21, row I52, `auto` takes the
+  kernel in 2D too: see the section below). The `config` block of each file is unchanged; the
   environment block gains `knn_impl` (`"metal"` or `"mlx"`), which says which search the step was traced with. `64k3d`
   at `C` = 48 was run twice per search (`_r2` files, in the order metal, mlx after the first pair) to show the spread.
 - **Equal trajectories:** each pair has the same `n_alive_end`, births and deaths (15 804, 4 033, 14 407 for `64k3d`;
@@ -83,6 +84,24 @@ Read with care:
   and the check could not say (the note above).
 - `n_alive_end`, births and deaths equal those of the 2026-10-16 files for `64k3d`, `64k` and `tiny3d` (same seed, same
   config hash), so the search did not change the trajectories (§4, F21).
+
+## 2026-10-21, M5 Pro (the kernel is the default in 2D, Review-log row I52)
+
+- **Software and tree:** mlx 0.32.3, Python 3.12.11, branch `perf/knn-2d-default` (origin/main b905e34 plus the change).
+- **Command:** `alife bench --preset 64k --stages`, once with the default (`auto`, which now selects the kernel in 2D:
+  `knn_impl` is `"metal"` in the file) and once with `ALIFE_KNN=mlx`. One run per file, one process at a time.
+- **Conditions:** the machine was shared with other sessions' CPU jobs (load average 3 to 6), so both files are
+  slower than the 2026-10-20 ones (about 8% for the kernel, 6% for the MLX path); the ratio is what carries over.
+
+| file | what | steps/s | ms/step | neighbours (ms, staged) | peak memory, GB (GiB in the file) |
+|---|---|---|---|---|---|
+| `2026-10-21_m5pro_64k_mlx.json` | 2D `64k` C = 16, `ALIFE_KNN=mlx` | 57.64 | 17.35 | 6.49 | 1.19 (1.112) |
+| `2026-10-21_m5pro_64k_default.json` | 2D `64k` C = 16, default (kernel) | **86.00** | **11.63** | **0.48** | **0.91 (0.848)** |
+
+The default step is 1.49 times faster (1.52 times on 2026-10-20). Both files have the same config hash, `n_alive_end`
+(19 038), births (4 844) and deaths (11 867), as the bitwise equality requires, the donation check `ok` and clean
+invariants. The staged total is 16.7 ms against an 11.63 ms fused step in the kernel file (`inflation` 1.43, against
+1.15 for the MLX file), which is the same effect as the `64k3d` kernel files (the stages are timed on their own).
 
 ### Probe figures not reproducible from the repo
 

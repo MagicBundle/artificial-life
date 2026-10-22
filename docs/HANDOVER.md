@@ -551,7 +551,8 @@ and resumed once. There is one run per condition apart from the seed pair.
    - **G3** consumes the Python API (`build_sheet`, `narrate`, `ticker`) and appends `reports.jsonl` at the run root; the report never writes into a run directory.
 7. Optional engine work, deferred in DESIGN §23.2:
    - done: the fused Metal kernel for the neighbour search (`src/alife/knn_metal.py`, DESIGN §4 and F21, row I48;
-     `ALIFE_KNN=auto|mlx|metal`, the kernel is the default in 3D on Metal and `ALIFE_KNN=metal` selects it in 2D).
+     `ALIFE_KNN=auto|mlx|metal`, the kernel is the default on Metal in 3D and, since row I52 (owner decision 2026-10-21), in 2D too:
+     64k 2D 16.3 to 10.8 ms per step, bitwise the same trajectory; `ALIFE_KNN=mlx` forces the reference path).
      It is exact only on the MLX versions in `knn_metal.VERIFIED_MLX` and a startup self-check guards the rest. **On
      every MLX bump and macOS major update**, run `uv run pytest tests/test_spatial_metal.py -m "" -q` on the Mac (the
      GPU equality tests; they run on an unlisted version), then add the version to `VERIFIED_MLX`, or leave it out;

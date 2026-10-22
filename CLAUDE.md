@@ -19,7 +19,7 @@ per-group window counts; generic `groups.py` and `tracking.py`; normative spec `
 provisional thresholds (`SOCIAL_VERSION` 1, measured on the GPU, none changed); the Settler colony clause is on in `RULES_V2` (`settler_body` 4,
 DESIGN §28.4). The fused Metal neighbour
 search (`src/alife/knn_metal.py`, `DESIGN.md` §4, row I48) is built: 75 steps/s at `64k3d` instead of 15, bitwise the
-same trajectory.
+same trajectory. It is the default on Metal in 2D and 3D (row I52); `ALIFE_KNN=mlx` forces the pure-MLX path.
 `docs/STORMS.md` is the storm world; W0 (the model, `weather.py`, `docs/STORMS_W0.md`) and W1 (`weather.*` config,
 `State.wx`, wind/rain/hazard in the step; `DESIGN.md` §30) are implemented and off by default.
 `docs/GAMES.md` §9 N1, the offline World Report (`python -m alife.analysis.world_report build | verify | probe`,
