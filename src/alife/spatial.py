@@ -41,16 +41,16 @@ def knn_impl(cfg: Config, impl: str | None = None) -> str:
     """``"metal"`` or ``"mlx"``: the search ``find_neighbors`` runs for ``cfg`` (§4 "Fused Metal path").
 
     Decided on the host when the step is traced, from the environment, MLX's capability queries, the
-    default device and two config constants (``world.dims``, ``sensing.k_neighbors``), so it is a
-    trace-time constant like the ``d3`` branches: nothing retraces on it and a compiled step keeps the
+    default device and a config constant (``sensing.k_neighbors``; ``world.dims`` no longer matters), so it
+    is a trace-time constant like the ``d3`` branches: nothing retraces on it and a compiled step keeps the
     path it was traced with. ``impl`` (tests, bench) overrides the ``ALIFE_KNN`` environment variable,
     which defaults to ``"auto"``.
 
     - ``"mlx"``: the pure-MLX search, the reference (and the only one on the CPU).
-    - ``"auto"``: the kernel in a 3D world on Metal with the GPU as default device and
-      ``K ≤ knn_metal.K_MAX``; the pure-MLX search otherwise (2D included: its default is the
-      owner's call, the results are identical).
-    - ``"metal"``: the kernel in any dimension, or ``RuntimeError`` where it cannot run: no Metal, no
+    - ``"auto"``: the kernel, in 2D and in 3D, on Metal with the GPU as default device, a verified MLX,
+      a passing self-check and ``K ≤ knn_metal.K_MAX``; the pure-MLX search otherwise. (2D joined 3D as
+      a default by the owner's decision of 2026-10-21, I52; the results are bitwise identical.)
+    - ``"metal"``: the kernel, or ``RuntimeError`` where it cannot run: no Metal, no
       ``mx.fast.metal_kernel``, an MLX not in ``knn_metal.VERIFIED_MLX``, a failed ``self_check``, a
       CPU default device or ``K > K_MAX``.
     """
@@ -67,7 +67,7 @@ def knn_impl(cfg: Config, impl: str | None = None) -> str:
             f"(one of {sorted(knn_metal.VERIFIED_MLX)}, got {mx.__version__}), a passing self-check, "
             f"the GPU as default device and sensing.k_neighbors <= {knn_metal.K_MAX} (got {d.k})"
         )
-    return "metal" if ok and (want == "metal" or d.d3) else "mlx"
+    return "metal" if ok else "mlx"
 
 
 def prepare_knn(cfg: Config) -> str:
@@ -78,12 +78,12 @@ def prepare_knn(cfg: Config) -> str:
     the pure-MLX search on a small scene with exact ties; on a mismatch it warns and the kernel is off for the
     process (``ALIFE_KNN=metal`` then raises, as it does wherever the kernel cannot run). Where the kernel
     would have been chosen but the MLX version is not in ``knn_metal.VERIFIED_MLX``, it warns once (the MLX
-    search is about 5 times slower in 3D). Returns ``knn_impl``.
+    search is about 5 times slower in 3D and 1.5 times in 2D). Returns ``knn_impl``.
     """
     d = dims(cfg)
     if knn_impl(cfg) == "metal":
         knn_metal.self_check(d.nd)
-    elif d.d3 and d.k <= knn_metal.K_MAX and _on_gpu() and os.environ.get("ALIFE_KNN", "auto") == "auto":
+    elif d.k <= knn_metal.K_MAX and _on_gpu() and os.environ.get("ALIFE_KNN", "auto") == "auto":
         knn_metal.note_unverified()  # the kernel is what auto would have taken
     return knn_impl(cfg)
 

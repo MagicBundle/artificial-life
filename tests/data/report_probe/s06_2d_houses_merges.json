@@ -1,0 +1,395 @@
+{
+ "chapter": [
+  1530000,
+  1536000
+ ],
+ "config_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+ "dims": 2,
+ "entities": [
+  {
+   "display": "House Zaeld",
+   "id": 3,
+   "kind": "house",
+   "name": "Zaeld",
+   "name_from": 1536000,
+   "ref": "H3"
+  },
+  {
+   "display": "the Braelix kin",
+   "id": 12,
+   "kind": "kin_group",
+   "name": "Braelix",
+   "name_from": 1536000,
+   "ref": "K12"
+  },
+  {
+   "display": "the Kraiost kin",
+   "id": 19,
+   "kind": "kin_group",
+   "name": "Kraiost",
+   "name_from": 1536000,
+   "ref": "K19"
+  },
+  {
+   "display": "the Shaemund kin",
+   "id": 31,
+   "kind": "kin_group",
+   "name": "Shaemund",
+   "name_from": 1536000,
+   "ref": "K31"
+  },
+  {
+   "display": "the Gloarn kin",
+   "id": 44,
+   "kind": "kin_group",
+   "name": "Gloarn",
+   "name_from": 1536000,
+   "ref": "K44"
+  },
+  {
+   "display": "the Phouth kin",
+   "id": 45,
+   "kind": "kin_group",
+   "name": "Phouth",
+   "name_from": 1536000,
+   "ref": "K45"
+  }
+ ],
+ "excluded": {
+  "entries_before_start": 0,
+  "events_churn": 0,
+  "events_suspect": 0,
+  "facts_dropped": [],
+  "interventions_dropped": 0,
+  "labels": {},
+  "name_clash": [],
+  "quota": {},
+  "social": null,
+  "windows_confounded": 0
+ },
+ "facts": [
+  {
+   "end": 1536000,
+   "id": "F1",
+   "kind": "chapter",
+   "start": 1530000
+  },
+  {
+   "change": -0.06218905472636816,
+   "deep_dip": false,
+   "from": 40200,
+   "id": "F2",
+   "kind": "population",
+   "min": 37100,
+   "min_row": 1517900,
+   "min_steps": 100,
+   "to": 37700
+  },
+  {
+   "aged": 300,
+   "catastrophe": 0,
+   "id": "F3",
+   "killed": 4400,
+   "kind": "deaths",
+   "starved": 26900,
+   "total": 31600
+  },
+  {
+   "births": 29100,
+   "id": "F4",
+   "immigrants": 0,
+   "kind": "births"
+  },
+  {
+   "from": 8,
+   "id": "F5",
+   "kind": "lineages",
+   "to": 7
+  },
+  {
+   "from_count": 17286,
+   "from_of": 40200,
+   "from_share": 0.43,
+   "id": "F6",
+   "kind": "top_lineage",
+   "to_count": 16965,
+   "to_of": 37700,
+   "to_share": 0.45
+  },
+  {
+   "family": "intent",
+   "from_count": 482,
+   "from_of": 40200,
+   "from_share": 0.011990049751243782,
+   "id": "F7",
+   "key": "caring",
+   "kind": "label",
+   "label": "Caring",
+   "to_count": 716,
+   "to_of": 37700,
+   "to_share": 0.018992042440318303
+  },
+  {
+   "family": "intent",
+   "from_count": 16080,
+   "from_of": 40200,
+   "from_share": 0.4,
+   "id": "F8",
+   "key": "signalling",
+   "kind": "label",
+   "label": "Signalling",
+   "to_count": 13949,
+   "to_of": 37700,
+   "to_share": 0.37
+  },
+  {
+   "born": 3000,
+   "died": 2700,
+   "died_killed": 400,
+   "entity": 12,
+   "id": "F9",
+   "kind": "group",
+   "of": 37700,
+   "rank": 1,
+   "share": 0.18037135278514588,
+   "size": 6800
+  },
+  {
+   "born": 1900,
+   "died": 300,
+   "died_killed": 40,
+   "entity": 44,
+   "id": "F10",
+   "kind": "group",
+   "of": 37700,
+   "rank": 2,
+   "share": 0.05570291777188329,
+   "size": 2100
+  },
+  {
+   "event": "merged",
+   "family": "kin_group",
+   "id": "F11",
+   "kind": "event",
+   "other": 12,
+   "overlap": 1460,
+   "reid": false,
+   "s0": 1531250,
+   "s1": 1531500,
+   "size": 1500,
+   "system": 31
+  },
+  {
+   "event": "split",
+   "family": "kin_group",
+   "id": "F12",
+   "kind": "event",
+   "other": 12,
+   "overlap": 990,
+   "reid": false,
+   "s0": 1533500,
+   "s1": 1533750,
+   "size": 1020,
+   "system": 45
+  },
+  {
+   "event": "born",
+   "family": "kin_group",
+   "id": "F13",
+   "kind": "event",
+   "other": -1,
+   "overlap": 0,
+   "reid": false,
+   "s0": 1532000,
+   "s1": 1532250,
+   "size": 700,
+   "system": 44
+  },
+  {
+   "event": "dissolved",
+   "family": "kin_group",
+   "id": "F14",
+   "kind": "event",
+   "other": -1,
+   "overlap": 0,
+   "reid": false,
+   "s0": 1535000,
+   "s1": 1535250,
+   "size": 610,
+   "system": 19
+  },
+  {
+   "alive_from": 12,
+   "alive_to": 9,
+   "exact": true,
+   "extinct": 3,
+   "first_seen": 0,
+   "id": "F15",
+   "kind": "houses",
+   "largest": 3,
+   "largest_name": "Zaeld",
+   "largest_size": 14100,
+   "largest_strict": true,
+   "origin": 0
+  },
+  {
+   "a": 12,
+   "attacks": 210,
+   "b": 44,
+   "id": "F16",
+   "kills": 31,
+   "kind": "relation"
+  },
+  {
+   "a": 12,
+   "attacks": 96,
+   "b": 19,
+   "id": "F17",
+   "kills": 9,
+   "kind": "relation"
+  },
+  {
+   "id": "F18",
+   "kind": "colonies",
+   "largest_size": 40,
+   "tracked": 14
+  }
+ ],
+ "labels": {
+  "env_default": true,
+  "intent_version": 1,
+  "key_found": true,
+  "rules_digest": "156ad4963b84ffe9636e9ba4fdd7592632c669bf6e490687d8eb2b38b9aec009"
+ },
+ "origin": 0,
+ "quiet": false,
+ "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
+ "report_version": 1,
+ "run": {
+  "seed": 0
+ },
+ "snapshots": [
+  {
+   "alive": 1250,
+   "id": "S1530250",
+   "step": 1530250
+  },
+  {
+   "alive": 1500,
+   "id": "S1530500",
+   "step": 1530500
+  },
+  {
+   "alive": 1750,
+   "id": "S1530750",
+   "step": 1530750
+  },
+  {
+   "alive": 1000,
+   "id": "S1531000",
+   "step": 1531000
+  },
+  {
+   "alive": 1250,
+   "id": "S1531250",
+   "step": 1531250
+  },
+  {
+   "alive": 1500,
+   "id": "S1531500",
+   "step": 1531500
+  },
+  {
+   "alive": 1750,
+   "id": "S1531750",
+   "step": 1531750
+  },
+  {
+   "alive": 1000,
+   "id": "S1532000",
+   "step": 1532000
+  },
+  {
+   "alive": 1250,
+   "id": "S1532250",
+   "step": 1532250
+  },
+  {
+   "alive": 1500,
+   "id": "S1532500",
+   "step": 1532500
+  },
+  {
+   "alive": 1750,
+   "id": "S1532750",
+   "step": 1532750
+  },
+  {
+   "alive": 1000,
+   "id": "S1533000",
+   "step": 1533000
+  },
+  {
+   "alive": 1250,
+   "id": "S1533250",
+   "step": 1533250
+  },
+  {
+   "alive": 1500,
+   "id": "S1533500",
+   "step": 1533500
+  },
+  {
+   "alive": 1750,
+   "id": "S1533750",
+   "step": 1533750
+  },
+  {
+   "alive": 1000,
+   "id": "S1534000",
+   "step": 1534000
+  },
+  {
+   "alive": 1250,
+   "id": "S1534250",
+   "step": 1534250
+  },
+  {
+   "alive": 1500,
+   "id": "S1534500",
+   "step": 1534500
+  },
+  {
+   "alive": 1750,
+   "id": "S1534750",
+   "step": 1534750
+  },
+  {
+   "alive": 1000,
+   "id": "S1535000",
+   "step": 1535000
+  },
+  {
+   "alive": 1250,
+   "id": "S1535250",
+   "step": 1535250
+  },
+  {
+   "alive": 1500,
+   "id": "S1535500",
+   "step": 1535500
+  },
+  {
+   "alive": 1750,
+   "id": "S1535750",
+   "step": 1535750
+  },
+  {
+   "alive": 1000,
+   "id": "S1536000",
+   "step": 1536000
+  }
+ ],
+ "start_step": 0,
+ "world_key": "69b4e21ad6b6016b17c11d6a1d9b3371c03b4b9f590fdb4a04752515c13a01d8"
+}

@@ -1,0 +1,768 @@
+[
+ {
+  "block": [],
+  "candidates": [
+   {
+    "cites": [
+     "F3"
+    ],
+    "id": "C1",
+    "mandatory": true,
+    "template": "D-1",
+    "text": "There were 128 deaths: 102 by starvation, 26 by attack and 0 by old age."
+   },
+   {
+    "cites": [
+     "F2"
+    ],
+    "id": "C2",
+    "mandatory": false,
+    "template": "P-low",
+    "text": "The lowest count was 182, in the 100 steps to step 1,800."
+   },
+   {
+    "cites": [
+     "F1",
+     "F7"
+    ],
+    "id": "C3",
+    "mandatory": false,
+    "template": "G-r1",
+    "text": "The Kroaderd kin was the largest kin group at step 2,000, with 12 members, 6.1% of the population."
+   },
+   {
+    "cites": [
+     "F4"
+    ],
+    "id": "C4",
+    "mandatory": false,
+    "template": "B-1",
+    "text": "There were 128 births."
+   },
+   {
+    "cites": [
+     "F5"
+    ],
+    "id": "C5",
+    "mandatory": false,
+    "template": "LN",
+    "text": "The number of lineages with living members went from 130 to 110."
+   },
+   {
+    "cites": [
+     "F1",
+     "F6"
+    ],
+    "id": "C6",
+    "mandatory": false,
+    "template": "TL",
+    "text": "At step 1,000 the largest lineage held 4.0% of the agents, and at step 2,000 the largest held 5.6%."
+   },
+   {
+    "cites": [
+     "F1",
+     "F10"
+    ],
+    "id": "C7",
+    "mandatory": false,
+    "template": "H-1e",
+    "text": "110 houses had living members at step 2,000, against 131 at step 1,000; 21 died out."
+   },
+   {
+    "cites": [
+     "F1",
+     "F10"
+    ],
+    "id": "C8",
+    "mandatory": false,
+    "template": "H-2",
+    "text": "House Kroaderd was the largest house at step 2,000, with 11 members."
+   },
+   {
+    "cites": [
+     "F1",
+     "F8"
+    ],
+    "id": "C9",
+    "mandatory": false,
+    "template": "G-s",
+    "text": "The Rizaeck kin had 8 members at step 2,000, 4.0% of the population."
+   },
+   {
+    "cites": [
+     "F8"
+    ],
+    "id": "C10",
+    "mandatory": false,
+    "template": "G-c",
+    "text": "In the chapter, 7 agents were born into the Rizaeck kin and 9 of its members died, 0 of them by attack."
+   },
+   {
+    "cites": [
+     "F1",
+     "F9"
+    ],
+    "id": "C11",
+    "mandatory": false,
+    "template": "G-s",
+    "text": "The Sydrird kin had 8 members at step 2,000, 4.0% of the population."
+   },
+   {
+    "cites": [
+     "F1",
+     "F11"
+    ],
+    "id": "C12",
+    "mandatory": false,
+    "template": "C",
+    "text": "6 colonies were tracked at step 2,000; the largest had 10 members."
+   }
+  ],
+  "chapter": [
+   1000,
+   2000
+  ],
+  "excluded": [],
+  "facts_digest": "a87fda061b40f658b5537a95b68dcdc83fd9afc6f1a2437737c0b95d59a535d5",
+  "headlines": [
+   {
+    "id": "H1",
+    "template": "HH",
+    "text": "21 houses died out"
+   },
+   {
+    "id": "H2",
+    "template": "HL",
+    "text": "Lineages went from 130 to 110"
+   }
+  ],
+  "report": {
+   "body": [
+    {
+     "id": "C1",
+     "origin": "mandatory",
+     "text": "There were 128 deaths: 102 by starvation, 26 by attack and 0 by old age."
+    },
+    {
+     "id": "C2",
+     "origin": "template",
+     "text": "The lowest count was 182, in the 100 steps to step 1,800."
+    },
+    {
+     "id": "C3",
+     "origin": "template",
+     "text": "The Kroaderd kin was the largest kin group at step 2,000, with 12 members, 6.1% of the population."
+    }
+   ],
+   "headline": {
+    "id": "H1",
+    "origin": "template",
+    "text": "21 houses died out"
+   },
+   "interventions": [],
+   "lead": "The population was 198 at the start and at the end of the chapter."
+  },
+  "sheet": {
+   "chapter": [
+    1000,
+    2000
+   ],
+   "config_hash": "6e367e566f2b9d6f7a5ba124d03f604fa96d7e6239a008bd89d8e327b8cd23c4",
+   "dims": 2,
+   "entities": [
+    {
+     "display": "House Kroaderd",
+     "id": 13,
+     "kind": "house",
+     "name": "Kroaderd",
+     "name_from": null,
+     "ref": "H13"
+    },
+    {
+     "display": "the Rizaeck kin",
+     "id": 1,
+     "kind": "kin_group",
+     "name": "Rizaeck",
+     "name_from": 2000,
+     "ref": "K1"
+    },
+    {
+     "display": "the Kroaderd kin",
+     "id": 2,
+     "kind": "kin_group",
+     "name": "Kroaderd",
+     "name_from": 2000,
+     "ref": "K2"
+    },
+    {
+     "display": "the Sydrird kin",
+     "id": 3,
+     "kind": "kin_group",
+     "name": "Sydrird",
+     "name_from": 2000,
+     "ref": "K3"
+    }
+   ],
+   "excluded": {
+    "entries_before_start": 0,
+    "events_churn": 10,
+    "events_suspect": 2,
+    "facts_dropped": [],
+    "interventions_dropped": 0,
+    "labels": {},
+    "name_clash": [],
+    "quota": {},
+    "social": null,
+    "windows_confounded": 0
+   },
+   "facts": [
+    {
+     "end": 2000,
+     "id": "F1",
+     "kind": "chapter",
+     "start": 1000
+    },
+    {
+     "change": 0.0,
+     "deep_dip": false,
+     "from": 198,
+     "id": "F2",
+     "kind": "population",
+     "min": 182,
+     "min_row": 1800,
+     "min_steps": 100,
+     "to": 198
+    },
+    {
+     "aged": 0,
+     "catastrophe": 0,
+     "id": "F3",
+     "killed": 26,
+     "kind": "deaths",
+     "starved": 102,
+     "total": 128
+    },
+    {
+     "births": 128,
+     "id": "F4",
+     "immigrants": 0,
+     "kind": "births"
+    },
+    {
+     "from": 130,
+     "id": "F5",
+     "kind": "lineages",
+     "to": 110
+    },
+    {
+     "from_count": 8,
+     "from_of": 198,
+     "from_share": 0.04040404040404041,
+     "id": "F6",
+     "kind": "top_lineage",
+     "to_count": 11,
+     "to_of": 198,
+     "to_share": 0.05555555555555555
+    },
+    {
+     "entity": 2,
+     "id": "F7",
+     "kind": "group",
+     "of": 198,
+     "rank": 1,
+     "share": 0.06060606060606061,
+     "size": 12
+    },
+    {
+     "born": 7,
+     "died": 9,
+     "died_killed": 0,
+     "entity": 1,
+     "id": "F8",
+     "kind": "group",
+     "of": 198,
+     "share": 0.04040404040404041,
+     "size": 8
+    },
+    {
+     "entity": 3,
+     "id": "F9",
+     "kind": "group",
+     "of": 198,
+     "share": 0.04040404040404041,
+     "size": 8
+    },
+    {
+     "alive_from": 131,
+     "alive_to": 110,
+     "exact": true,
+     "extinct": 21,
+     "first_seen": 0,
+     "id": "F10",
+     "kind": "houses",
+     "largest": 13,
+     "largest_name": "Kroaderd",
+     "largest_size": 11,
+     "largest_strict": true,
+     "origin": 0
+    },
+    {
+     "id": "F11",
+     "kind": "colonies",
+     "largest_size": 10,
+     "tracked": 6
+    }
+   ],
+   "labels": {
+    "env_default": true,
+    "intent_version": 2,
+    "key_found": false,
+    "rules_digest": "dc78f771d515b845501cd609275b362acfbc60c47853e813a6d129d3a5cab4f7"
+   },
+   "origin": 0,
+   "quiet": true,
+   "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
+   "report_version": 1,
+   "run": {
+    "seed": 0
+   },
+   "snapshots": [
+    {
+     "alive": 194,
+     "id": "S1250",
+     "step": 1250
+    },
+    {
+     "alive": 193,
+     "id": "S1500",
+     "step": 1500
+    },
+    {
+     "alive": 185,
+     "id": "S1750",
+     "step": 1750
+    },
+    {
+     "alive": 198,
+     "id": "S2000",
+     "step": 2000
+    }
+   ],
+   "start_step": 0,
+   "world_key": "6e367e566f2b9d6f7a5ba124d03f604fa96d7e6239a008bd89d8e327b8cd23c4"
+  },
+  "ticker": [
+   {
+    "step": 1250,
+    "text": "Step 1,250: the population was 194."
+   },
+   {
+    "step": 1500,
+    "text": "Step 1,500: the population was 193."
+   },
+   {
+    "step": 1750,
+    "text": "Step 1,750: the population was 185."
+   },
+   {
+    "step": 2000,
+    "text": "Step 2,000: the population was 198."
+   }
+  ]
+ },
+ {
+  "block": [],
+  "candidates": [
+   {
+    "cites": [
+     "F3"
+    ],
+    "id": "C1",
+    "mandatory": true,
+    "template": "D-1",
+    "text": "There were 159 deaths: 144 by starvation, 15 by attack and 0 by old age."
+   },
+   {
+    "cites": [
+     "F2"
+    ],
+    "id": "C2",
+    "mandatory": false,
+    "template": "P-low",
+    "text": "The lowest count was 184, in the 100 steps to step 2,600."
+   },
+   {
+    "cites": [
+     "F1",
+     "F7"
+    ],
+    "id": "C3",
+    "mandatory": false,
+    "template": "G-r1",
+    "text": "The Kroaderd kin was the largest kin group at step 3,000, with 11 members, 5.6% of the population."
+   },
+   {
+    "cites": [
+     "F7"
+    ],
+    "id": "C4",
+    "mandatory": false,
+    "template": "G-c",
+    "text": "In the chapter, 11 agents were born into the Kroaderd kin and 12 of its members died, 1 of them by attack."
+   },
+   {
+    "cites": [
+     "F4"
+    ],
+    "id": "C5",
+    "mandatory": false,
+    "template": "B-1",
+    "text": "There were 159 births."
+   },
+   {
+    "cites": [
+     "F5"
+    ],
+    "id": "C6",
+    "mandatory": false,
+    "template": "LN",
+    "text": "The number of lineages with living members went from 110 to 101."
+   },
+   {
+    "cites": [
+     "F1",
+     "F6"
+    ],
+    "id": "C7",
+    "mandatory": false,
+    "template": "TL",
+    "text": "At step 2,000 the largest lineage held 5.6% of the agents, and at step 3,000 the largest held 6.1%."
+   },
+   {
+    "cites": [
+     "F1",
+     "F10"
+    ],
+    "id": "C8",
+    "mandatory": false,
+    "template": "H-1e",
+    "text": "101 houses had living members at step 3,000, against 110 at step 2,000; 9 died out."
+   },
+   {
+    "cites": [
+     "F1",
+     "F10"
+    ],
+    "id": "C9",
+    "mandatory": false,
+    "template": "H-2",
+    "text": "House Sydrird was the largest house at step 3,000, with 12 members."
+   },
+   {
+    "cites": [
+     "F1",
+     "F8"
+    ],
+    "id": "C10",
+    "mandatory": false,
+    "template": "G-s",
+    "text": "The Rizaeck kin had 7 members at step 3,000, 3.5% of the population."
+   },
+   {
+    "cites": [
+     "F8"
+    ],
+    "id": "C11",
+    "mandatory": false,
+    "template": "G-c",
+    "text": "In the chapter, 7 agents were born into the Rizaeck kin and 8 of its members died, 0 of them by attack."
+   },
+   {
+    "cites": [
+     "F1",
+     "F9"
+    ],
+    "id": "C12",
+    "mandatory": false,
+    "template": "G-s",
+    "text": "The Sydrird kin had 7 members at step 3,000, 3.5% of the population."
+   },
+   {
+    "cites": [
+     "F9"
+    ],
+    "id": "C13",
+    "mandatory": false,
+    "template": "G-c",
+    "text": "In the chapter, 25 agents were born into the Sydrird kin and 25 of its members died, 5 of them by attack."
+   },
+   {
+    "cites": [
+     "F1",
+     "F11"
+    ],
+    "id": "C14",
+    "mandatory": false,
+    "template": "C",
+    "text": "8 colonies were tracked at step 3,000; the largest had 7 members."
+   }
+  ],
+  "chapter": [
+   2000,
+   3000
+  ],
+  "excluded": [],
+  "facts_digest": "3121ef5a5d63cff152a250baa9d57eaaffd48d920acf8e3de8cec6a81f0d5e54",
+  "headlines": [
+   {
+    "id": "H1",
+    "template": "HH",
+    "text": "9 houses died out"
+   },
+   {
+    "id": "H2",
+    "template": "HL",
+    "text": "Lineages went from 110 to 101"
+   }
+  ],
+  "report": {
+   "body": [
+    {
+     "id": "C1",
+     "origin": "mandatory",
+     "text": "There were 159 deaths: 144 by starvation, 15 by attack and 0 by old age."
+    },
+    {
+     "id": "C2",
+     "origin": "template",
+     "text": "The lowest count was 184, in the 100 steps to step 2,600."
+    },
+    {
+     "id": "C3",
+     "origin": "template",
+     "text": "The Kroaderd kin was the largest kin group at step 3,000, with 11 members, 5.6% of the population."
+    }
+   ],
+   "headline": {
+    "id": "H1",
+    "origin": "template",
+    "text": "9 houses died out"
+   },
+   "interventions": [],
+   "lead": "The population was 198 at the start and at the end of the chapter."
+  },
+  "sheet": {
+   "chapter": [
+    2000,
+    3000
+   ],
+   "config_hash": "6e367e566f2b9d6f7a5ba124d03f604fa96d7e6239a008bd89d8e327b8cd23c4",
+   "dims": 2,
+   "entities": [
+    {
+     "display": "House Sydrird",
+     "id": 253,
+     "kind": "house",
+     "name": "Sydrird",
+     "name_from": null,
+     "ref": "H253"
+    },
+    {
+     "display": "the Rizaeck kin",
+     "id": 1,
+     "kind": "kin_group",
+     "name": "Rizaeck",
+     "name_from": 3000,
+     "ref": "K1"
+    },
+    {
+     "display": "the Kroaderd kin",
+     "id": 2,
+     "kind": "kin_group",
+     "name": "Kroaderd",
+     "name_from": 3000,
+     "ref": "K2"
+    },
+    {
+     "display": "the Sydrird kin",
+     "id": 3,
+     "kind": "kin_group",
+     "name": "Sydrird",
+     "name_from": 3000,
+     "ref": "K3"
+    }
+   ],
+   "excluded": {
+    "entries_before_start": 0,
+    "events_churn": 8,
+    "events_suspect": 0,
+    "facts_dropped": [],
+    "interventions_dropped": 0,
+    "labels": {},
+    "name_clash": [],
+    "quota": {},
+    "social": null,
+    "windows_confounded": 0
+   },
+   "facts": [
+    {
+     "end": 3000,
+     "id": "F1",
+     "kind": "chapter",
+     "start": 2000
+    },
+    {
+     "change": 0.0,
+     "deep_dip": false,
+     "from": 198,
+     "id": "F2",
+     "kind": "population",
+     "min": 184,
+     "min_row": 2600,
+     "min_steps": 100,
+     "to": 198
+    },
+    {
+     "aged": 0,
+     "catastrophe": 0,
+     "id": "F3",
+     "killed": 15,
+     "kind": "deaths",
+     "starved": 144,
+     "total": 159
+    },
+    {
+     "births": 159,
+     "id": "F4",
+     "immigrants": 0,
+     "kind": "births"
+    },
+    {
+     "from": 110,
+     "id": "F5",
+     "kind": "lineages",
+     "to": 101
+    },
+    {
+     "from_count": 11,
+     "from_of": 198,
+     "from_share": 0.05555555555555555,
+     "id": "F6",
+     "kind": "top_lineage",
+     "to_count": 12,
+     "to_of": 198,
+     "to_share": 0.06060606060606061
+    },
+    {
+     "born": 11,
+     "died": 12,
+     "died_killed": 1,
+     "entity": 2,
+     "id": "F7",
+     "kind": "group",
+     "of": 198,
+     "rank": 1,
+     "share": 0.05555555555555555,
+     "size": 11
+    },
+    {
+     "born": 7,
+     "died": 8,
+     "died_killed": 0,
+     "entity": 1,
+     "id": "F8",
+     "kind": "group",
+     "of": 198,
+     "share": 0.03535353535353535,
+     "size": 7
+    },
+    {
+     "born": 25,
+     "died": 25,
+     "died_killed": 5,
+     "entity": 3,
+     "id": "F9",
+     "kind": "group",
+     "of": 198,
+     "share": 0.03535353535353535,
+     "size": 7
+    },
+    {
+     "alive_from": 110,
+     "alive_to": 101,
+     "exact": true,
+     "extinct": 9,
+     "first_seen": 0,
+     "id": "F10",
+     "kind": "houses",
+     "largest": 253,
+     "largest_name": "Sydrird",
+     "largest_size": 12,
+     "largest_strict": true,
+     "origin": 0
+    },
+    {
+     "id": "F11",
+     "kind": "colonies",
+     "largest_size": 7,
+     "tracked": 8
+    }
+   ],
+   "labels": {
+    "env_default": true,
+    "intent_version": 2,
+    "key_found": false,
+    "rules_digest": "dc78f771d515b845501cd609275b362acfbc60c47853e813a6d129d3a5cab4f7"
+   },
+   "origin": 0,
+   "quiet": true,
+   "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
+   "report_version": 1,
+   "run": {
+    "seed": 0
+   },
+   "snapshots": [
+    {
+     "alive": 194,
+     "id": "S2250",
+     "step": 2250
+    },
+    {
+     "alive": 186,
+     "id": "S2500",
+     "step": 2500
+    },
+    {
+     "alive": 195,
+     "id": "S2750",
+     "step": 2750
+    },
+    {
+     "alive": 198,
+     "id": "S3000",
+     "step": 3000
+    }
+   ],
+   "start_step": 0,
+   "world_key": "6e367e566f2b9d6f7a5ba124d03f604fa96d7e6239a008bd89d8e327b8cd23c4"
+  },
+  "ticker": [
+   {
+    "step": 2250,
+    "text": "Step 2,250: the population was 194."
+   },
+   {
+    "step": 2500,
+    "text": "Step 2,500: the population was 186."
+   },
+   {
+    "step": 2750,
+    "text": "Step 2,750: the population was 195."
+   },
+   {
+    "step": 3000,
+    "text": "Step 3,000: the population was 198."
+   }
+  ]
+ }
+]
