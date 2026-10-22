@@ -559,7 +559,7 @@ def test_evnt_shape_and_caps() -> None:
     ):
         with pytest.raises(sr.RecordError):
             sr.encode_evnt(step=5, seq=0, events=[bad])
-    assert set(sr.EVENT_KINDS) == set(range(1, 18))
+    assert set(sr.EVENT_KINDS) == set(range(1, 20))
 
 
 # --- MAP1 -----------------------------------------------------------------------------------------------

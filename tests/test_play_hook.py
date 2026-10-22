@@ -443,9 +443,13 @@ def test_a_pacer_run_has_the_files_of_a_plain_run(tmp_path: Path, monkeypatch: p
     plain, _ = run_plain(cfg, tmp_path / "plain", 30)
     paced, *_ = run_paced(cfg, tmp_path / "paced", 30, [["rate max", "run"], ["pause"], [], ["run"]])
     assert same_events(plain, paced)
-    assert sorted(p.name for p in plain.path.rglob("*") if p.is_file()) == sorted(
-        p.name for p in paced.path.rglob("*") if p.is_file()
-    )
+    names = sorted(p.name for p in plain.path.rglob("*") if p.is_file())
+    played = sorted(p.name for p in paced.path.rglob("*") if p.is_file())
+    # the one file a played world has besides: the kin thread table, with each checkpoint the loop saves (not
+    # the initial one at step 0, whose table is the refold of an empty log)
+    extra = [n for n in played if n.startswith("kinthreads_")]
+    assert extra == [f"kinthreads_{st:010d}.json" for st, _ in paced.checkpoints() if st > 0]
+    assert sorted(n for n in played if n not in extra) == names
 
 
 def test_a_checkpoint_stall_is_announced_and_counted_apart_from_lateness(

@@ -88,7 +88,11 @@ DEATH_COLUMNS: Final[Mapping[str, Any]] = {
 _CKPT_RE: Final = re.compile(r"^step_(\d{10})\.safetensors$")
 _EVENT_RE: Final = re.compile(r"^(births|deaths)_(\d{10})_(\d{10})\.npz$")
 _OBSERVER_RE: Final = re.compile(r"^step_(\d{10})\.npz$")
-_STORMS_STATE_RE: Final = re.compile(r"^storms_(\d{10})\.json$")
+PLAY_STATE_NAMES: Final = (
+    "storms",
+    "kinthreads",
+)  # observers/<name>_<step>.json: a played world's host state
+_PLAY_STATE_RE: Final = re.compile(r"^(storms|kinthreads)_(\d{10})\.json$")
 _DUMP_RE: Final = re.compile(r"^(eco|wx)_(\d{10})\.(?:npz|npy)$")
 _MAX_HEADER: Final = 1 << 26  # sanity bound on a safetensors JSON header
 
@@ -635,9 +639,10 @@ class RunDir:
         for st, p in self.observer_files():
             if st not in remaining:
                 p.unlink(missing_ok=True)
-        for st, p in self.storms_state_files():  # the tracker state lives as long as its checkpoint, too
-            if st not in remaining:
-                p.unlink(missing_ok=True)
+        for name in PLAY_STATE_NAMES:  # so do the tracker state and the kin threads of a played world
+            for st, p in self.play_state_files(name):
+                if st not in remaining:
+                    p.unlink(missing_ok=True)
 
     # observer sidecars (§28.6)
     def observer_path(self, step: int) -> Path:
@@ -673,37 +678,58 @@ class RunDir:
             raise CheckpointError(f"{path}: unreadable observer sidecar: members {bad} are not arrays")
         return arrays
 
-    # storm tracker state and log (§33.3)
-    def storms_state_path(self, step: int) -> Path:
-        return self.observers_dir / f"storms_{step:010d}.json"
+    # a played world's host state (§33.3, G3b §34.1): one JSON file per checkpoint and name
+    def play_state_path(self, name: str, step: int) -> Path:
+        """``observers/<name>_<step>.json`` (``name`` is one of ``PLAY_STATE_NAMES``)."""
+        if name not in PLAY_STATE_NAMES:
+            raise ValueError(f"unknown play state {name!r}")
+        return self.observers_dir / f"{name}_{step:010d}.json"
 
-    def storms_state_files(self) -> list[tuple[int, Path]]:
-        """``(step, path)`` of every storm tracker state file, ascending by step."""
+    def play_state_files(self, name: str) -> list[tuple[int, Path]]:
+        """``(step, path)`` of every state file of ``name``, ascending by step."""
+        if name not in PLAY_STATE_NAMES:
+            raise ValueError(f"unknown play state {name!r}")
         if not self.observers_dir.is_dir():
             return []
         found = [
-            (int(m.group(1)), p)
+            (int(m.group(2)), p)
             for p in self.observers_dir.iterdir()
-            if (m := _STORMS_STATE_RE.match(p.name)) and p.is_file()
+            if (m := _PLAY_STATE_RE.match(p.name)) and m.group(1) == name and p.is_file()
         ]
         return sorted(found)
 
-    def write_storms_state(self, step: int, obj: Any) -> None:
-        """Atomically write ``observers/storms_<step>.json``, the storm tracker's complete state for the
+    def write_play_state(self, name: str, step: int, obj: Any) -> None:
+        """Atomically write ``observers/<name>_<step>.json``, the host state of the played world for the
         checkpoint of ``step``. The play loop writes it before the state file, as the sidecar is."""
         self.observers_dir.mkdir(exist_ok=True)
-        _atomic_write_text(self.storms_state_path(step), _dumps(obj) + "\n")
+        _atomic_write_text(self.play_state_path(name, step), _dumps(obj) + "\n")
 
-    def read_storms_state(self, step: int) -> dict[str, Any] | None:
-        """The tracker state saved for ``step``, None if there is none; ``ValueError`` if it is not a JSON
+    def read_play_state(self, name: str, step: int) -> dict[str, Any] | None:
+        """The state of ``name`` saved for ``step``, None if there is none; ``ValueError`` if it is not a JSON
         object (``OSError`` if it cannot be read)."""
-        path = self.storms_state_path(step)
+        path = self.play_state_path(name, step)
         if not path.is_file():
             return None
         obj = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(obj, dict):
-            raise ValueError(f"{path}: the storm tracker state is not a JSON object")
+            raise ValueError(f"{path}: the {name} state is not a JSON object")
         return obj
+
+    # storm tracker state and log (§33.3)
+    def storms_state_path(self, step: int) -> Path:
+        return self.play_state_path("storms", step)
+
+    def storms_state_files(self) -> list[tuple[int, Path]]:
+        """``(step, path)`` of every storm tracker state file, ascending by step."""
+        return self.play_state_files("storms")
+
+    def write_storms_state(self, step: int, obj: Any) -> None:
+        """The storm tracker's complete state for the checkpoint of ``step`` (``write_play_state``)."""
+        self.write_play_state("storms", step, obj)
+
+    def read_storms_state(self, step: int) -> dict[str, Any] | None:
+        """The tracker state saved for ``step`` (``read_play_state``)."""
+        return self.read_play_state("storms", step)
 
     def append_storms(self, lines: Iterable[Mapping[str, Any]]) -> None:
         """Append tick lines to ``observers/storms.jsonl`` (key ``step`` first) and fsync. Every line needs
@@ -951,7 +977,7 @@ class RunDir:
         The storm log ``observers/storms.jsonl`` and the tracker states ``observers/storms_<t>.json`` of a
         played weather world (§33.3) are cut the same way: the log to its lines with step ≤ ``step`` (parsed
         whole first, rewritten atomically, absent stays absent), the states after ``step`` deleted with the
-        sidecars.
+        sidecars; the kin thread states ``observers/kinthreads_<t>.json`` (G3b) go with them.
 
         **Order, and a stop in the middle.** The later checkpoints and sidecars go first (the newest
         checkpoint, which ``LATEST`` may name, last) and ``LATEST`` is rewritten; only then are the logs and
@@ -974,9 +1000,10 @@ class RunDir:
         for st, path in self.observer_files():  # whatever keep_director is: a sidecar belongs to its step
             if st > step:
                 path.unlink(missing_ok=True)
-        for st, path in self.storms_state_files():  # and so does the storm tracker's state
-            if st > step:
-                path.unlink(missing_ok=True)
+        for name in PLAY_STATE_NAMES:  # and so do the storm tracker's state and the kin threads
+            for st, path in self.play_state_files(name):
+                if st > step:
+                    path.unlink(missing_ok=True)
         latest = self.latest_checkpoint()
         if latest is not None:
             _atomic_write_text(self.checkpoint_dir / LATEST_FILE, latest.name + "\n")

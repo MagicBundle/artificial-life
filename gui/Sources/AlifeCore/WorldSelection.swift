@@ -9,11 +9,14 @@ package enum EventKind {
     package static let directorEntry = 12
     package static let focusDeath = 13, focusHandoff = 14
     package static let checkpoint = 15, renumbered = 16, extinct = 17
+    /// G3b: a kin thread (a group through its id changes) held together for three snapshots, or has been gone for four.
+    package static let kinFormed = 18, kinEnded = 19
 
     package static let registry: [Int: String] = [
         1: "kin_born", 2: "kin_split", 3: "kin_merged", 4: "kin_dissolved", 5: "house_founded", 6: "house_extinct",
         7: "storm_born", 8: "storm_named", 9: "storm_merged", 10: "storm_split", 11: "storm_dissolved",
         12: "director_entry", 13: "focus_death", 14: "focus_handoff", 15: "checkpoint", 16: "renumbered", 17: "extinct",
+        18: "kin_formed", 19: "kin_ended",
     ]
 }
 

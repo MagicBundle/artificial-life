@@ -70,6 +70,8 @@ EVENT_KINDS: Final = {
     15: "checkpoint",
     16: "renumbered",
     17: "extinct",
+    18: "kin_formed",
+    19: "kin_ended",
 }
 EVENT_KEYS: Final = frozenset(["id", "step", "kind", "fam", "a", "b", "x", "y", "z", "imp", "text"])
 CLCK_REASONS: Final = {0: "running", 1: "user pause", 2: "end of steps", 3: "chapter", 4: "alert", 5: "error"}

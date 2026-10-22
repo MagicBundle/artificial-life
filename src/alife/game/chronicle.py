@@ -14,13 +14,18 @@ a hundred ids each), so the backlog rebuilt from the logs (``rebuild_backlog``) 
 ``Chronicler`` gave and a resumed play continues without a clash. A family that has more than a hundred
 events at one step keeps its first hundred.
 
-**Sources.** ``Chronicler.from_record(rec)`` reads a social snapshot record (``observers/social.jsonl``): the
-``events`` table (kin groups; colony events are not narrated, 80% of colony ids end within three snapshots)
-and ``house_events`` (founded in the record's top-16 houses, extinct among the previous record's top 16). The
-chronicler remembers the names of the kin groups and houses it has been shown, so that a dissolved group is
-named by the name it had. ``from_storms`` takes the tracker events of ``storms.StormLayer`` (plain dicts),
-``from_director`` the entries of ``Director.applied``, and ``checkpoint`` ``renumbered`` ``extinct``
-``focus_death`` ``focus_handoff`` are the play loop's own.
+**Sources.** ``Chronicler.from_record(rec)`` reads a social snapshot record (``observers/social.jsonl``):
+the kin groups, folded into **threads** (``game.kinthreads``: a group through its id changes, told when it
+has held together for three snapshots and when it has been gone for four, so the flapping of the raw
+``events`` table is not narrated, DESIGN §34.1), and ``house_events`` (founded in the record's top-16
+houses, extinct among the previous record's top 16). Colony events are not narrated (80% of colony ids end
+within three snapshots). The chronicler remembers the names of the houses it has been shown, so that an
+extinct one is named by the name it had. ``from_storms`` takes a tick of ``storms.StormLayer`` (its tracker
+events as plain dicts and the ids it detected) and applies the **persistence rule**: a birth is told once
+the track has ``STORM_MIN_DETECTIONS`` detections, a naming at once, an end only for a track that was told,
+and the events of the first tick of a layer made by this run (``initial``) are not told. ``from_director``
+takes the entries of ``Director.applied``, and ``checkpoint`` ``renumbered`` ``extinct`` ``focus_death``
+``focus_handoff`` are the play loop's own (a hand-off is one line: the death and the follow passing on).
 
 Host code: no mlx, no array, no subscript assignment (``tests/test_lint.py``).
 """
@@ -32,7 +37,9 @@ from typing import Any, Final
 
 import numpy as np
 
+from alife.game.kinthreads import KinThreads
 from alife.game.society import raw_house_names
+from alife.storms import STORM_MIN_DETECTIONS
 from alife.streamrec import EVENT_KINDS, MAX_TEXT, check_event
 
 __all__ = [
@@ -46,24 +53,26 @@ __all__ = [
     "render",
 ]
 
-CHRONICLE_VERSION: Final = 1
+CHRONICLE_VERSION: Final = 2
 
 KIND: Final = {name: number for number, name in EVENT_KINDS.items()}
 FAMILY_BASE: Final = {"kin": 0, "house": 100, "storm": 200, "director": 300, "focus": 400, "system": 500}
 PER_FAMILY: Final = 100  # ids a family has at one step
-KIN_FAMILY: Final = "kin_group"  # the family name of kin events in the record's ``events`` table
 NAME_MEMORY: Final = 4096  # names remembered; the oldest go first
 ID_MEMORY: Final = 4096  # (step, family) counters remembered
 
 # The closed table. A slot is filled from the event; ``{n}`` is a count, ``{step}`` a step number.
 TEMPLATES: Final = {
-    "kin_born": "{name} formed with {size} members.",
-    "kin_split": "{name} split from {other} with {size} members.",
-    "kin_split_alone": "{name} split off with {size} members.",
-    "kin_merged": "{name} merged into {other} ({size} members).",
-    "kin_merged_alone": "{name} merged ({size} members).",
-    "kin_dissolved": "{name} dissolved at {size} members.",
-    "kin_dissolved_into": "{name} dissolved at {size} members; {overlap} of them are in {other}.",
+    "kin_formed": "{name} has held together since step {s0}: {size} members.",
+    "kin_formed_from": (
+        "{name} has held together since step {s0} after splitting from {other}: {size} members."
+    ),
+    "kin_ended_into": (
+        "{name} merged into {other} at step {s}; it lasted {steps} steps and had up to {peak} members."
+    ),
+    "kin_ended_into_initial": "{name} merged into {other} at step {s}; it had up to {peak} members.",
+    "kin_ended": "{name} dissolved after {steps} steps, up to {peak} members.",
+    "kin_ended_initial": "{name} dissolved, up to {peak} members.",
     "house_founded": "House {name} was founded.",
     "house_founded_from": "House {name} was founded from House {parent}.",
     "house_extinct": "House {name} has no living members.",
@@ -75,9 +84,14 @@ TEMPLATES: Final = {
     "director_entry": "Director: {entry}",
     "focus_death": "Organism {uid} died ({cause}).",
     "focus_death_unknown": "Organism {uid} died.",
-    "focus_handoff_child": "Follow passed to a child.",
-    "focus_handoff_kin": "Follow passed to the nearest member of its kin group.",
-    "focus_handoff_near": "Follow passed to the nearest organism.",
+    "focus_handoff_child": "Organism {uid} died ({cause}); follow passed to a child.",
+    "focus_handoff_kin": (
+        "Organism {uid} died ({cause}); follow passed to the nearest member of its kin group."
+    ),
+    "focus_handoff_near": "Organism {uid} died ({cause}); follow passed to the nearest organism.",
+    "focus_handoff_child_unknown": "Organism {uid} died; follow passed to a child.",
+    "focus_handoff_kin_unknown": "Organism {uid} died; follow passed to the nearest member of its kin group.",
+    "focus_handoff_near_unknown": "Organism {uid} died; follow passed to the nearest organism.",
     "checkpoint": "Checkpoint saved at step {step}.",
     "renumbered": "Storm numbering restarted at step {step}.",
     "extinct": "No organism is alive at step {step}.",
@@ -133,9 +147,14 @@ class Chronicler:
 
     def __init__(self, house_salt: int) -> None:
         self.house_salt = house_salt
-        self._kin: dict[int, str] = {}
+        self.threads = KinThreads()  # the kin groups through their id changes (game.kinthreads)
         self._top: dict[int, str] = {}  # the previous record's listed houses, id -> name
         self._used: dict[tuple[int, str], int] = {}  # (step, family) -> ids handed out
+        # the storm persistence rule: per track id, its detections so far, its born event while it waits for
+        # ``STORM_MIN_DETECTIONS``, and whether the chronicle has told it (born or named) or it was named
+        self._sdets: dict[int, int] = {}
+        self._sheld: dict[int, dict[str, Any]] = {}
+        self._sknown: set[int] = set()
 
     # --- ids --------------------------------------------------------------------------------------------
 
@@ -157,52 +176,42 @@ class Chronicler:
     # --- kin groups and houses: a snapshot record -------------------------------------------------------
 
     def from_record(self, rec: Mapping[str, Any]) -> list[dict[str, Any]]:
-        """The kin-group and house events of one social record, kin first (table order), then houses."""
+        """The kin-thread and house events of one social record, kin first (formed, then ended, by thread),
+        then houses."""
         step = int(rec["step"])
-        kin = rec["kin_groups"]
-        where = {
-            gid: (kin["x"][i], kin["y"][i], kin["z_mean"][i] if "z_mean" in kin else None)
-            for i, gid in enumerate(kin["id"])
-        }
-        self._remember(self._kin, dict(zip(kin["id"], kin["name"], strict=True)))
-        events = [self._kin_event(step, rec["events"], i, where) for i in range(len(rec["events"]["id"]))]
-        events = [e for e in events if e is not None]
+        events = [self._thread_event(t) for t in self.threads.fold(rec)]
         houses = rec["houses"]
         listed = dict(zip(houses["id"], houses["name"], strict=True))
         events += self._house_events(step, rec.get("house_events"), listed)
         self._top = listed
         return self._stamp(events)
 
-    def _kin_name(self, gid: int) -> str:
-        return self._kin.get(gid, f"Kin group {gid}")
+    def restore_threads(self, state: Mapping[str, Any]) -> None:
+        """Take the thread table of a saved ``kinthreads_<t>.json`` (``ValueError`` if it is not usable): the
+        table a stopped play had, with its flags, so a candidate that has not established yet is told when it
+        does."""
+        self.threads = KinThreads.from_state(state)
 
-    def _kin_event(
-        self, step: int, table: Mapping[str, list[Any]], i: int, where: Mapping[int, Sequence[Any]]
-    ) -> dict[str, Any] | None:
-        if table["family"][i] != KIN_FAMILY:
-            return None
-        kind, gid, size = table["kind"][i], table["id"][i], table["size"][i]
-        other, overlap = table["other"][i], table["overlap"][i]
-        name, near = self._kin_name(gid), (self._kin_name(other) if other >= 0 else None)
-        pos = where.get(gid, (None, None, None))
-        if kind == "born":
-            return _event(step, "kin_born", "kin", render("kin_born", name=name, size=size), 1, a=gid, at=pos)
-        if kind == "split":
-            key = "kin_split" if near else "kin_split_alone"
-            text = render(key, name=name, other=near, size=size)
-            return _event(step, "kin_split", "kin", text, 2, a=gid, b=max(other, 0), at=pos)
-        if kind == "merged":
-            key = "kin_merged" if near else "kin_merged_alone"
-            text = render(key, name=name, other=near, size=size)
-            return _event(
-                step, "kin_merged", "kin", text, 1, a=gid, b=max(other, 0), at=where.get(other, pos)
-            )
-        if kind == "dissolved":
-            into = near is not None and overlap > 0
-            key = "kin_dissolved_into" if into else "kin_dissolved"
-            text = render(key, name=name, other=near, size=size, overlap=overlap)
-            return _event(step, "kin_dissolved", "kin", text, 2, a=gid, b=max(other, 0) if into else 0)
-        return None
+    def cast_names(self) -> dict[int, tuple[int, str]]:
+        """``{kin id: (thread id, name as shown)}`` for the kin ids the latest record listed: the Cast keeps
+        one name and one swatch per thread across a re-formation."""
+        return {i: (th.id, th.shown) for th in self.threads.open_threads() for i in th.ids}
+
+    @staticmethod
+    def _thread_event(t: Mapping[str, Any]) -> dict[str, Any]:
+        """The event of a told thread change (``KinThreads.fold``)."""
+        slots: dict[str, Any] = {"name": t["name"], "size": t["size"], "peak": t["peak"]}
+        if t["kind"] == "formed":
+            key = "kin_formed_from" if t["parent"] else "kin_formed"
+            text = render(key, s0=t["first_step"], other=t["parent"], **slots)
+            kind = "kin_formed"
+        else:
+            tail = "_initial" if t["initial"] else ""
+            key = ("kin_ended_into" if t["into"] else "kin_ended") + tail
+            text = render(key, s=t["end_step"], steps=t["steps"], other=t["into"], **slots)
+            kind = "kin_ended"
+        x, y, z = t["pos"]
+        return _event(t["step"], kind, "kin", text, t["imp"], a=t["a"], b=t["b"], at=(x, y, z))
 
     def _house_events(
         self, step: int, events: Mapping[str, Any] | None, listed: Mapping[int, str]
@@ -233,49 +242,87 @@ class Chronicler:
                 )
         return out
 
-    @staticmethod
-    def _remember(memory: dict[int, str], names: Mapping[int, str]) -> None:
-        memory.update(names)  # a dict update, not a subscript assignment
-        for old in list(memory)[: max(0, len(memory) - NAME_MEMORY)]:
-            memory.pop(old)
-
     # --- storms ------------------------------------------------------------------------------------------
 
-    def from_storms(self, events: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-        """The events of a tracker tick. Each input is the dict ``StormLayer`` writes into ``storms.jsonl``:
-        ``kind`` (born, named, merged, split, dissolved), ``step``, ``id``, ``name`` (None while a
-        disturbance), ``other`` and ``other_name`` (the storm it merged into or split from, 0 and None if
-        none), ``x`` ``y``, ``hemi``, ``age`` (steps, for a dissolved one)."""
+    def from_storms(
+        self, step: int, events: Iterable[Mapping[str, Any]], detected: Iterable[int] = ()
+    ) -> list[dict[str, Any]]:
+        """The events of the tracker tick at ``step``, with the persistence rule (DESIGN §34.1). Each event is
+        the dict ``StormLayer`` writes into ``storms.jsonl``: ``kind`` (born, named, merged, split,
+        dissolved), ``step``, ``id``, ``name`` (None while a disturbance), ``other`` and ``other_name`` (the
+        storm it merged into or split from, 0 and None if none), ``x`` ``y``, ``hemi``, ``age`` (steps, for a
+        dissolved one) and ``initial`` (the first tick of a layer made by this run). ``detected`` is the ids
+        the tick detected (the ``storms`` list of the log line).
+
+        A ``born`` or ``split`` track waits until it has ``STORM_MIN_DETECTIONS`` detections and is told
+        then, at this tick; a ``named`` event is told at once and replaces the birth sentence; ``merged`` and
+        ``dissolved`` are told only for a track that was told as born or named (or was named at the first
+        tick); the events of a first tick are not told."""
+        events = list(events)
+        for e in events:
+            if e["kind"] in ("born", "split"):  # an id is born once; a restarted tracker reuses them
+                ident = int(e["id"])
+                self._sdets.update({ident: 0})
+                self._sheld.pop(ident, None)
+                self._sknown.discard(ident)
+        for ident in detected:
+            self._sdets.update({int(ident): self._sdets.get(int(ident), 0) + 1})
         out = []
         for e in events:
-            step, ident, name = int(e["step"]), int(e["id"]), e.get("name")
-            label, other = _label(name, ident), _label(e.get("other_name"), int(e.get("other") or 0))
-            kind = e["kind"]
-            if kind == "born":
-                text, imp = render("storm_born", label=label, hemisphere=HEMISPHERES[int(e["hemi"])]), 1
-            elif kind == "named":
-                text, imp = render("storm_named", name=name or ident), 2
-            elif kind == "merged":
-                text, imp = render("storm_merged", label=label, other=other), 1
-            elif kind == "split":
-                text, imp = render("storm_split", label=label, other=other), 1
-            elif kind == "dissolved":
-                text, imp = render("storm_dissolved", label=label, age=int(e["age"])), 2 if name else 1
-            else:
+            ident, kind = int(e["id"]), e["kind"]
+            if kind not in ("born", "named", "merged", "split", "dissolved"):
                 raise ValueError(f"unknown tracker event {kind!r}")
-            out.append(
-                _event(
-                    step,
-                    f"storm_{kind}",
-                    "storm",
-                    text,
-                    imp,
-                    a=ident,
-                    b=int(e.get("other") or 0),
-                    at=(e["x"], e["y"]),
-                )
-            )
+            if kind in ("born", "split"):
+                if not e.get("initial"):
+                    self._sheld.update({ident: e})
+                continue
+            if kind == "named":
+                self._sheld.pop(ident, None)
+                self._sknown.add(ident)
+                if not e.get("initial"):
+                    out.append(self._storm_event(step, e))
+                continue
+            self._sheld.pop(ident, None)
+            told = ident in self._sknown
+            self._sdets.pop(ident, None)
+            self._sknown.discard(ident)
+            if told:
+                out.append(self._storm_event(step, e))
+        for ident, e in list(self._sheld.items()):
+            if self._sdets.get(ident, 0) >= STORM_MIN_DETECTIONS:
+                self._sheld.pop(ident)
+                self._sknown.add(ident)
+                out.append(self._storm_event(step, e))
+        for memory in (self._sdets, self._sheld):  # ids of tracks that vanished without an end (a restart)
+            for old in list(memory)[: max(0, len(memory) - NAME_MEMORY)]:
+                memory.pop(old)
         return self._stamp(out)
+
+    @staticmethod
+    def _storm_event(step: int, e: Mapping[str, Any]) -> dict[str, Any]:
+        """The event of a told tracker event, dated ``step`` (the tick at which it is told)."""
+        ident, name, kind = int(e["id"]), e.get("name"), e["kind"]
+        label, other = _label(name, ident), _label(e.get("other_name"), int(e.get("other") or 0))
+        if kind == "born":
+            text, imp = render("storm_born", label=label, hemisphere=HEMISPHERES[int(e["hemi"])]), 1
+        elif kind == "named":
+            text, imp = render("storm_named", name=name or ident), 2
+        elif kind == "merged":
+            text, imp = render("storm_merged", label=label, other=other), 1
+        elif kind == "split":
+            text, imp = render("storm_split", label=label, other=other), 1
+        else:
+            text, imp = render("storm_dissolved", label=label, age=int(e["age"])), 2 if name else 1
+        return _event(
+            step,
+            f"storm_{kind}",
+            "storm",
+            text,
+            imp,
+            a=ident,
+            b=int(e.get("other") or 0),
+            at=(e["x"], e["y"]),
+        )
 
     # --- the director, the focus, the play loop ----------------------------------------------------------
 
@@ -295,16 +342,25 @@ class Chronicler:
     def focus_death(
         self, step: int, uid: int, cause: str | None, at: Sequence[float | None]
     ) -> list[dict[str, Any]]:
-        """The death of the followed organism; ``cause`` is a cause name (None if the lanes overflowed)."""
+        """The death of the followed organism when the follow cannot pass on; ``cause`` is a cause name (None
+        if the lanes overflowed)."""
         key = "focus_death" if cause else "focus_death_unknown"
         text = render(key, uid=uid, cause=cause)
         return self._stamp([_event(step, "focus_death", "focus", text, 1, a=uid, at=at)])
 
     def focus_handoff(
-        self, step: int, from_uid: int, to_uid: int, rule: int, at: Sequence[float | None]
+        self,
+        step: int,
+        from_uid: int,
+        to_uid: int,
+        rule: int,
+        at: Sequence[float | None],
+        cause: str | None = None,
     ) -> list[dict[str, Any]]:
-        """The follow passing to ``to_uid`` by rule 1 (a child), 2 (nearest of its kin) or 3 (nearest)."""
-        text = render(HANDOFF_RULES[rule])
+        """The followed organism died and the follow passes to ``to_uid`` by rule 1 (a child), 2 (nearest of
+        its kin) or 3 (nearest): one line for the death and the hand-off."""
+        key = HANDOFF_RULES[rule] + ("" if cause else "_unknown")
+        text = render(key, uid=from_uid, cause=cause)
         return self._stamp([_event(step, "focus_handoff", "focus", text, 1, a=from_uid, b=to_uid, at=at)])
 
     def checkpoint(self, step: int) -> list[dict[str, Any]]:
@@ -328,16 +384,18 @@ def rebuild_backlog(
 ) -> list[dict[str, Any]]:
     """The newest ``limit`` events a play of this run would have produced from its logs: the records of
     ``observers/social.jsonl``, the lines of ``observers/storms.jsonl`` (each with an ``events`` list) and the
-    entries of ``director.jsonl`` (headers excluded by the caller), in order of ``(step, id)``. Names are
-    remembered from the records given, so pass the whole log when exact names of dissolved groups matter.
-    With ``chronicler`` the events are made by that one (a live play's, which then knows the names and the ids
-    handed out, so it continues the log it was started from); otherwise by a new one."""
+    entries of ``director.jsonl`` (headers excluded by the caller), in order of ``(step, id)``. The kin
+    threads and the storm persistence are folds over the whole log, so pass all of it. With ``chronicler`` the
+    events are made by that one (a live play's, which then holds the thread table, the storm counters and the
+    ids handed out, so it continues the log it was started from); otherwise by a new one."""
     chron = Chronicler(house_salt) if chronicler is None else chronicler
     events: list[dict[str, Any]] = []
     for rec in social:
         events += chron.from_record(rec)
     for line in storms:
-        events += chron.from_storms(line.get("events", ()))
+        events += chron.from_storms(
+            int(line["step"]), line.get("events", ()), [s["id"] for s in line.get("storms", ())]
+        )
     events += chron.from_director(director)
     events.sort(key=lambda e: (e["step"], e["id"]))
     return events[-limit:] if limit > 0 else []

@@ -80,7 +80,8 @@ def test_a_paced_run_equals_a_plain_run(
 
 
 def test_the_play_files_are_additions_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The paced storm run has the plain run's files and, besides, the storm log and tracker states."""
+    """The paced storm run has the plain run's files and, besides, the storm log, the tracker states and the
+    kin thread tables."""
     snapshots(monkeypatch, 10)
     cfg = world("storm")
     plain, _ = run_plain(cfg, tmp_path / "plain", 40)
@@ -91,7 +92,11 @@ def test_the_play_files_are_additions_only(tmp_path: Path, monkeypatch: pytest.M
 
     extra = files(paced) - files(plain)
     assert files(plain) <= files(paced)
-    assert extra <= {"observers/storms.jsonl", *{f"observers/storms_{s:010d}.json" for s in (0, 30, 40)}}
+    assert extra <= {
+        "observers/storms.jsonl",
+        *{f"observers/storms_{s:010d}.json" for s in (0, 30, 40)},
+        *{f"observers/kinthreads_{s:010d}.json" for s in (30, 40)},  # G3b: the kin thread table
+    }
     assert {f for f in extra if f.endswith(".json")} >= {
         f"observers/storms_{s:010d}.json" for s in (0, 30, 40)
     }

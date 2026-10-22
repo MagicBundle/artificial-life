@@ -601,6 +601,7 @@ class PlayPacer:
             layer, reason = StormLayer.open(rd, p, dc_ref, self._t, self._tick)
             self.layer = layer
             if self.opt.fresh:
+                layer.initial_pending = True  # the storms its first tick finds were there before (not told)
                 layer.save(rd, self._t)  # an empty tracker, so that a resume at the first checkpoint is exact
             elif layer.restarted:
                 self._events += self.chron.renumbered(self._t)
@@ -681,6 +682,20 @@ class PlayPacer:
             chronicler=self.chron,
         )
         self._events = [*log, *self._events]
+        self._restore_threads(rd)
+
+    def _restore_threads(self, rd: RunDir) -> None:
+        """The kin thread table the checkpoint of this step was saved with, if it is usable: the refold of the
+        social log that made the backlog is its twin (a pure function of the same records), so this only
+        matters when the log was cut at its start. A missing or unusable file leaves the refold."""
+        try:
+            saved = rd.read_play_state("kinthreads", self._t)
+            if saved is not None:
+                self.chron.restore_threads(saved)
+        except (OSError, ValueError) as e:
+            self._note(
+                f"the kin thread state at step {self._t} is unusable ({e}); the social log is refolded"
+            )
 
     @_guard
     def before_step(self, state: State, t: int) -> None:
@@ -742,6 +757,8 @@ class PlayPacer:
         self.sched.begin_save()
         if self.layer is not None:
             self.layer.save(self.rd, t)  # before the state file, as the observer sidecar is
+        if self.obs is not None:
+            self.rd.write_play_state("kinthreads", t, self.chron.threads.state())
         self._send_clock()
 
     @_guard
@@ -946,7 +963,7 @@ class PlayPacer:
         if obs is None:
             return
         ident = obs.identity_rows(state)
-        self._tables = ident.tables
+        self._tables = self._thread_names(ident.tables)
         self._house_top = np.array([h["id"] for h in ident.tables["houses"]], np.int64)
         self._send(
             "IDNT",
@@ -960,7 +977,7 @@ class PlayPacer:
                 house=ident.house,
                 colony=ident.colony,
                 flags=ident.flags,
-                tables=ident.tables,
+                tables=self._tables,
             ),
         )
         if labels and self.labels_on:
@@ -968,6 +985,18 @@ class PlayPacer:
         dom, ids = obs.territory()
         if dom is not None:
             self._send_territory(dom, ids, ident.snapshot_step)
+
+    def _thread_names(self, tables: Mapping[str, Any]) -> dict[str, Any]:
+        """The ``IDNT`` tables with each kin group's name as its thread is shown (frozen at the first listing,
+        with a suffix where two threads share a name) and ``thread``, the thread's id: the Cast keeps one name
+        and one swatch across a re-formation under a new kin id. A group the thread table does not know
+        (before the first record) keeps its name and has no ``thread``."""
+        names = self.chron.cast_names()
+        kin = [
+            {**k, "name": names[k["id"]][1], "thread": names[k["id"]][0]} if k["id"] in names else k
+            for k in tables["kin"]
+        ]
+        return {**tables, "kin": kin}
 
     def _send_territory(self, dom: Any, ids: np.ndarray, snapshot_step: int) -> None:
         nx = ny = self.obs.social.terr_cells  # type: ignore[union-attr]
@@ -1029,7 +1058,8 @@ class PlayPacer:
         assert layer is not None
         tick = layer.tick_at(W.unpack(state.wx), t, **self._shade(state))
         layer.log(self.rd, tick)
-        self._events += self.chron.from_storms(tick.events)
+        detected = [d["id"] for d in tick.line["storms"]] if tick.line is not None else []
+        self._events += self.chron.from_storms(t, tick.events, detected)
         self._write_weather(tick)
 
     def _write_weather(self, tick: Any) -> None:
@@ -1226,14 +1256,14 @@ class PlayPacer:
         valid, uids, causes = (to_numpy(a) for a in (d.valid, d.uid, d.cause))
         hit = np.flatnonzero(valid.astype(bool) & (uids == dead.uid))
         cause = DeathCause(int(causes[hit[0]])).name.lower() if hit.size else None  # None: lanes overflowed
-        self._events += self.chron.focus_death(t, dead.uid, cause, dead.pos)
         found = self._successor(state, dead)
         if found is None:
+            self._events += self.chron.focus_death(t, dead.uid, cause, dead.pos)
             self._send_focus(None, dead.uid)
             self.focus, self._followed = None, None
             return
         new_uid, row, rule = found
-        self._events += self.chron.focus_handoff(t, dead.uid, new_uid, rule, dead.pos)
+        self._events += self.chron.focus_handoff(t, dead.uid, new_uid, rule, dead.pos, cause)
         r = self._read_row(state, row)
         self.focus, self._followed = new_uid, self._cache(new_uid, row, r)
         self._send_focus(r, new_uid, handoff=True, row=row)
