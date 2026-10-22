@@ -45,7 +45,7 @@ import numpy as np
 
 from alife.config import Config, DirectorConfig, GameConfig, config_hash, dims, immigration_on
 from alife.game import lexicon, templates
-from alife.game.rules import ARCHETYPE_DISPLAY, ARCHETYPE_NAMES, INTENT_DISPLAY
+from alife.game.rules import ARCHETYPE_DISPLAY, ARCHETYPE_NAMES, ARCHETYPE_STORM_DISPLAY, INTENT_DISPLAY
 from alife.game.social import DEATH_CAUSES, SOCIAL_V1
 from alife.game.templates import TEMPLATES, render
 from alife.runio import RunDir
@@ -833,10 +833,15 @@ def _relation_facts(recs: Sequence[Mapping[str, Any]], rules: ReportRules) -> li
     return out
 
 
-def _label_display(key: str, version: int) -> str:
+def _label_display(key: str, version: int, storm: bool = False) -> str:
+    """The word a player sees for label ``key`` of rule set ``version``. ``storm`` is true for a version-3
+    report of a weather-on run (``cfg.weather.enabled``): the archetype names are then
+    ``ARCHETYPE_STORM_DISPLAY``'s, so the Gatherer is a Grazer (docs/STORMS.md §6.1; DESIGN §32.7, §31.6).
+    Version 1 has the capitalised key."""
     if version == 1:
         return key.capitalize()
-    return (ARCHETYPE_DISPLAY.get(key) or INTENT_DISPLAY.get(key) or key.capitalize()) if key else key
+    names = ARCHETYPE_STORM_DISPLAY if storm and version >= 3 else ARCHETYPE_DISPLAY
+    return (names.get(key) or INTENT_DISPLAY.get(key) or key.capitalize()) if key else key
 
 
 def _env_default(rd: RunView, a: int, b: int, rules: ReportRules) -> bool:
@@ -901,6 +906,7 @@ def _label_facts(
     if table is None:
         return [], meta
     meta.update({"key_found": True})
+    storm = version >= 3 and bool(rd.cfg.weather.enabled)
     citable = sorted(
         lb
         for lb, (verdict, n_pos, margin, p, n_perm) in table.items()
@@ -943,7 +949,7 @@ def _label_facts(
         out.append(
             {
                 "kind": "label",
-                "label": _label_display(lb, version),
+                "label": _label_display(lb, version, storm),
                 "key": lb,
                 "family": fam,
                 "from_share": sa,

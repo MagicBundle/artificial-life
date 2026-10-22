@@ -226,8 +226,8 @@ def test_section_and_salience_orders_are_pinned() -> None:
         ("V7", ["species", "adapted", "evolving", "mutations", "a clan"], ["adopt", "clap"]),
         ("V8", ["massive", "the worst", "significantly", "last", "first", "total", "totals"], ["lasting", "firstly"]),
         ("T2", ["one", "twenty", "half", "twice", "threefold", "per cent", "thousands"], ["done", "none", "stone"]),
-        ("L1", ["regrowth", "regenerating", "patches", "an immigrant", "catastrophic", "the director's"], ["pat", "pace"]),
-        ("L2", ["Hunter", "hunting", "hunted", "settlers", "Unspecialised", "Tethering", "bonding"], ["hunger", "bond"]),
+        ("L1", ["regrowth", "regenerating", "patches", "an immigrant", "catastrophic", "the director's", "drift", "drifting", "drifted"], ["pat", "pace", "Drifter", "drifters"]),
+        ("L2", ["Hunter", "hunting", "hunted", "settlers", "Unspecialised", "Tethering", "bonding", "Grazer", "grazers", "Drifter", "drifters", "Floater", "Sinker"], ["hunger", "bond", "graze", "drift", "float", "sink"]),
         ("G", ["dominant", "collapse", "extinction", "majority", "sharply"], ["domain", "colleague"]),
     ],
 )  # fmt: skip
@@ -620,7 +620,7 @@ def test_2000_random_sheets_have_no_exclusion() -> None:
 def test_templates_pin_digests() -> None:
     """Every table the stored records depend on is pinned: a change is a deliberate change of a version."""
     assert templates.TEMPLATE_DIGEST == "6d9d8a7b48238599ae81aa61d0a58aefd027309993f46f4790433c3f198a65dc"
-    assert lexicon.LEXICON_DIGEST == "bdc398239891aa65cbbfb72106a8b6d80413de866a92ab3260dd2aa1cdee516b"
+    assert lexicon.LEXICON_DIGEST == "bd82b46362d8e9b400dd59ec75ccf78eed709bbdaea1f85748407f06dc2b1f55"
     assert R.REPORT_V1.digest() == "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d"
     assert R.label_table_digest() == "9d8b3f339aad261a5e1458511c1c4e1d7434cd838c50e06b3aba0c3b2e395abf"
     assert R.known_social_digest() == "4551a6aa56c3d6c8fdc1def7f8fd586c7da1a93d6476625ac4896bb892a22fd4"
@@ -628,7 +628,7 @@ def test_templates_pin_digests() -> None:
         1,
         1,
         1,
-        1,
+        2,
     )
     # the label table's rules digest is the version-1 rule set's, and the social digest the default social rules'
     from alife.game.rules import RULES_V1

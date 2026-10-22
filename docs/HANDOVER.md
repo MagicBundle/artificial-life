@@ -16,7 +16,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | path | what |
 |---|---|
 | `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, the fused Metal neighbour kernel (`knn_metal.py`, DESIGN §4), the offline W0 weather prototype (`weather.py`, `analysis/w0.py`, `docs/STORMS_W0.md`), `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`; W2a adds `game/tracers.py` and `analysis/w2.py`, DESIGN §32; N1 adds `game/report.py`, `templates.py`, `lexicon.py` and `analysis/world_report.py`, `docs/DESIGN.md` §31) |
-| `tests/` | pytest suite. 2,944 fast tests passed on the CPU device at the W2a head, before merging main (N1, the 2D kNN default) into it (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected) plus the slow ones |
+| `tests/` | pytest suite. 3,294 fast tests passed, 89 were skipped (the GPU-only kernel tests, N1's `llm` test and the like) and 1 xfailed on the CPU device after merging main (N1 #31, the 2D kNN default #33) into W2a (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; about 15 minutes) plus the slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
@@ -346,7 +346,7 @@ and resumed once. There is one run per condition apart from the seed pair.
 
 ## Storm world: W2a (`docs/STORMS.md`, DESIGN §32, row I50)
 
-- **Current state.** W2a is built on `games/w2a` from `origin/main` 3799009 (five commits; not merged; the PR is the owner's go). Off by default,
+- **Current state.** W2a is built on `games/w2a` from `origin/main` 3799009 and merged with `origin/main` after N1 and the 2D kNN default (not merged into main; the PR is the owner's go). Off by default,
   and with every new key at its default the engine is the W1 engine bit for bit (digest matrix, eight weather-on trajectory pins and the tiny3d
   legacy digest `556de6c6…` against a fresh archive of 3799009). The observer layer changes by design (`INTENT_VERSION` 3, `OBSERVER_FORMAT` 4,
   `Acts.buoy`). What exists:
@@ -371,9 +371,9 @@ and resumed once. There is one run per condition apart from the seed pair.
   (crowds seed whatever their genes: STORMS §4's "sub-threshold emission alone does not trigger rain-out" is not met; P1c reports the paid share and a hinge is a later variant), and the bond break is not calibrated.
 - **Finding for W2b.** `Diag.WEATHER_WARN` is sticky (set from step 456,100 on in the pilot): a stop rule "WEATHER_WARN in more than 1% of rows" would fire on every run that
   warns once; read the rate from the weather block (`analysis.w2` reports the `hyper_max` share).
-- **N1 consequences are not done** (PR #31 had not merged when W2a was built; DESIGN §32.13, the list is in the build notes): whichever of N1 and W2a merges second edits
-  `report._label_display(key, version, storm)`, the lexicon (L2 names, the L1 stem `drift-` narrowed so it does not match "drifter"), regenerates `LEXICON_DIGEST` and the `tests/data/report_*`
-  fixtures, and resolves the doc conflicts (§31 against §32).
+- **N1 consequences are applied** (commit `W2a: N1 follow-ups`, after `origin/main` with N1 #31 and the 2D kNN default #33 was merged into the branch; DESIGN §32.13): `report._label_display(key, version, storm)`
+  prints Grazer, Drifter, Floater and Sinker in a weather-on V3 run (Gatherer when weather is off); the lexicon's L2 list has the four words and the L1 `drift` stem no longer matches "drifter"
+  (`LEXICON_VERSION` 2, new `LEXICON_DIGEST`); `LABEL_VERDICTS` has **no V3 row**, so N1 narrates no label for a V3 run until W2b's held-out windows add rows (the Floater one by z band, §32.8).
 - Checks of the build: fast suite 2,944 passed (2,697 at the W1 head), `ruff` clean, `swift test --filter AlifeCoreTests` 93 passed. The CPU design numbers (seeding and shade dose-response,
   who is exposed to the jet, the drift of agents) are in DESIGN §32.1.
 
