@@ -56,7 +56,7 @@ def available() -> bool:
 
 def unverified_mlx() -> bool:
     """Metal and ``mx.fast.metal_kernel`` are there but this MLX version is not in ``VERIFIED_MLX``: the
-    kernel is off and, under ``auto``, the pure-MLX search runs (about 5 times slower at 64k3d)."""
+    kernel is off and, under ``auto``, the pure-MLX search runs (5 times slower at 64k3d, 1.5 at 64k)."""
     return _capable() and mx.__version__ not in VERIFIED_MLX
 
 
@@ -69,8 +69,8 @@ def note_unverified() -> bool:
     _NOTED = True
     warnings.warn(
         f"MLX {mx.__version__} is not in knn_metal.VERIFIED_MLX {sorted(VERIFIED_MLX)}: the fused Metal "
-        "neighbour search is off and the pure-MLX search runs (about 5 times slower in 3D). Re-run "
-        "tests/test_spatial_metal.py on this MLX and list it, or set ALIFE_KNN=mlx to silence this",
+        "neighbour search is off and the pure-MLX search runs (about 5 times slower in 3D, 1.5 times in 2D). "
+        "Re-run tests/test_spatial_metal.py on this MLX and list it, or set ALIFE_KNN=mlx to silence this",
         RuntimeWarning,
         stacklevel=3,
     )

@@ -35,7 +35,7 @@ from alife import layout, metrics
 from alife.analysis import phylo
 from alife.config import Config, dims
 from alife.game import social
-from alife.game.rules import ARCHETYPE_NAMES
+from alife.game.rules import ARCHETYPE_NAMES, INTENT_VERSION
 from alife.game.social import SOCIAL_VERSION, Expo, Rel, SocialRules
 from alife.runio import _dumps
 from alife.state import to_numpy
@@ -757,6 +757,7 @@ class Society:
             "step": step,
             "social_version": SOCIAL_VERSION,
             "social_digest": self._digest,
+            "intent_version": INTENT_VERSION,  # the width of ``kin_groups.arch`` (len(ARCHETYPE_NAMES) then)
             "origin": self.house_origin,
             "window_start": self.window_start,
             "summary": summary,

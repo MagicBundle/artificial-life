@@ -247,6 +247,27 @@ def _overlap_deep_fn(cfg: Config) -> Callable[[mx.array, mx.array], mx.array]:
 _OVERLAP_FNS: dict[tuple[str, bool], Callable[[mx.array, mx.array], mx.array]] = {}
 
 
+def rain_audit(s: State | State3, ws: weather.WeatherState, cfg: Config) -> mx.array:
+    """``(4, layers)`` int32 per-layer sums for ``weather_obs.rain_shares`` (DESIGN §32), eager at a snapshot.
+
+    Rows: ``base`` (``fields.regen_rate`` without the rain term), ``rain`` (the nominal ``weather.rain_regen``
+    of the stored weather), ``inc_total = clip(min(base + rain, cap - R), 0)`` (what ``update_resource``
+    books) and ``rain_real = inc_total - inc_base``. ``R`` is the end-of-step resource where the engine used
+    the start-of-step one, the season is that of the last step and the patches are one drift later: exact for
+    cells far from saturation or saturated, off by the one-step change otherwise (an approximation, stated).
+    A layer sum is below ``2³¹`` (6,400 cells of at most 8,000 quanta each); the host adds them in int64."""
+    fg = dims(cfg).fg
+    env = s.env if cfg.director.enabled else None  # static
+    step = s.step - 1
+    base = fields.regen_rate(s.patch_pos, cfg, step, env)
+    rain = weather.rain_regen(weather.rain_in(ws, cfg), cfg)
+    room = cfg.fields.resource_cap - s.resource
+    inc_total = mx.maximum(mx.minimum(base + rain, room), 0)
+    real = inc_total - mx.maximum(mx.minimum(base, room), 0)
+    rows = [a.reshape(-1, fg, fg).sum(axis=(1, 2)) for a in (base, rain, inc_total, real)]
+    return mx.stack(rows).astype(mx.int32)
+
+
 def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str, Any]:
     """Host floats/ints/lists describing the current state, with one host transfer (§19.2).
 
@@ -289,8 +310,17 @@ def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str
     if d3:  # static: the per-agent arrays of the 3D keys (§27.9)
         dev.update(pos_z=s.pos[:, 2], vel=s.vel, pitch=s.pitch, buoy_cap=s.buoy_cap, clade=s.clade)
     if cfg.weather.enabled:  # static: the weather block's inputs join the one transfer (§30)
-        wind = weather.agent_wind(weather.unpack(s.wx), s.pos, s.buoy_cap if d3 else None, s.alive, cfg)
+        ws = weather.unpack(s.wx)
+        buoy = s.buoy_cap if d3 else None
+        wind = weather.agent_wind(ws, s.pos, buoy, s.alive, cfg)
         dev.update(wx=s.wx, air_speed=wind.speed, overlap_deep=_overlap_deep_fn(cfg)(s.pos, s.alive))
+        dev["total_speed"], dev["eddy_speed"] = weather.air_speeds(ws, s.pos, buoy, s.alive, cfg)  # §32
+        if cfg.weather.seed_gain > 0:  # static: the organism couplings' strengths (§32)
+            dev["seed_r"] = weather.seeding_response(s.chem, ws, cfg)
+        if cfg.weather.shade_gain > 0:  # static
+            dev["shade_s"] = weather.shade_strength(s.pos, s.alive, cfg)
+        if cfg.weather.rain_gain > 0:  # static
+            dev["rain_audit"] = rain_audit(s, ws, cfg)
         if d3:
             dev["occupancy"] = spatial.band_peaks(spatial.hash_occupancy(s.pos, s.alive, cfg))[0]
     if heavy:
@@ -365,6 +395,11 @@ def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str
             cfg,
             occupancy=h.get("occupancy"),
             overlap_deep=int(h["overlap_deep"]),
+            total_speed=h["total_speed"][alive],
+            eddy_speed=h["eddy_speed"][alive],
+            seed_r=h.get("seed_r"),
+            shade_s=h.get("shade_s"),
+            rain_audit=h.get("rain_audit"),
         )
     if heavy:
         out.update(_body_stats(h["body_sizes"], n_alive, bool(h["bodies_converged"])))

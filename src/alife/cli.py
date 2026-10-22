@@ -75,7 +75,8 @@ from alife.step import make_step
 
 # run.* keys that resume may change: observers, cadences and the director mode (§18). Everything else goes
 # through a fork. The director's policy keys (director.persona, ...) and the observer keys game.observe and
-# game.house_rate (RESUME_GAME_KEYS) may change too: they never reach the trajectory.
+# game.house_rate, game.tracers, game.tracer_period (RESUME_GAME_KEYS) may change too: they never reach the
+# trajectory.
 RESUME_KEYS: frozenset[str] = frozenset(
     {
         "steps",
@@ -85,14 +86,16 @@ RESUME_KEYS: frozenset[str] = frozenset(
         "heavy_metrics_every",
         "components_iters",
         "diversity_sample",
+        "eco_every",
+        "wx_every",
         "director",
         "llm_url",
         "llm_model",
     }
 )
 RESUME_DIRECTOR_KEYS: frozenset[str] = frozenset(DIRECTOR_POLICY_KEYS)
-# The observer keys (game.observe, game.house_rate) are read by host-side observers only and are not hashed,
-# so resume may change them too (§28.6, §29).
+# The observer keys (game.observe, house_rate, tracers, tracer_period) are read by host-side observers only
+# and are not hashed, so resume may change them too (§28.6, §29).
 RESUME_GAME_KEYS: frozenset[str] = frozenset(key for _, key in OBSERVER_KEYS)
 
 LLM_DEFAULT_EVERY = 25_000  # steps between LLM calls with a bare --llm
@@ -1428,6 +1431,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         observe=a.observe,
         weather=a.weather,
         weather_pairs=a.weather_pairs,
+        weather_org=a.weather_org,
     )
     text = _dumps(report)
     if a.json is not None:
@@ -1750,11 +1754,18 @@ def build_parser() -> argparse.ArgumentParser:
         "(interleaved blocks; needs weather.enabled, for example --overlay storm)",
     )
     p.add_argument(
+        "--weather-org",
+        action="store_true",
+        help="also time the step with the organism couplings (weather.seed_gain, weather.shade_gain) on "
+        "against the same config with them 0 (interleaved blocks; needs weather.enabled and one of them "
+        "above 0)",
+    )
+    p.add_argument(
         "--weather-pairs",
         type=_positive,
         default=2,
         metavar="N",
-        help="off/on block pairs of the --weather measurement (default 2: off on on off)",
+        help="off/on block pairs of the --weather and --weather-org measurements (default 2: off on on off)",
     )
     p.add_argument(
         "--play",

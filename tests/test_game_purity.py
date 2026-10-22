@@ -12,6 +12,10 @@ float kernels that leaves every value unchanged (it can change Metal's rounding)
 the channel's read set on the traced graph: which trajectory arrays the channel reads, and that S12 is
 computed once (§28.2). A second one compares the fused kernels of the compiled step with observe off and on,
 because ``mx.compile`` merges identical sub-expressions and so reads more than the eager graph shows.
+
+The storm world (DESIGN §32) adds a 3D weather arm to the trajectory test and a weather configuration to the
+structural ones: the observer's own compiled fold then evaluates the wind drift (a separate graph that adds no
+reader to a trajectory array), and ``Acts.buoy`` is one more tap (the pre-mask buoyancy output, 3D only).
 """
 
 from __future__ import annotations
@@ -30,16 +34,17 @@ from mlx.utils import tree_flatten
 
 from alife import actions, bonds, brain, cli, energy, layout, lifecycle, runner, spatial
 from alife import step as step_mod
-from alife.config import Config, apply_overrides, config_to_dict, load_config
+from alife.config import Config, apply_overrides, config_to_dict, dims, load_config
 from alife.game.observe import EVAL_BIT, ObsIn, obs_in
 from alife.game.observer import Observer
-from alife.game.rules import RULES_V2
+from alife.game.rules import RULES_V2, RULES_V3, arch_layout, for_2d
 from alife.game.social import SOCIAL_V1
 from alife.runio import DIRECTOR_LOG_FILE, RunDir, load_checkpoint
 from alife.state import CounterIdx as C
 from alife.state import State, init_state, state_digest, to_numpy
 from alife.step import StepOut, make_step
 from game_helpers import social_every
+from weather_helpers import fixed_wx, storm2d_config, storm3d_config
 
 COMPILED_STEPS = 60
 EAGER_STEPS = 20
@@ -51,19 +56,36 @@ SOC15 = dataclasses.replace(SOCIAL_V1, snapshot_every=15)
 
 
 def _same(a, b) -> bool:
-    fa, fb = tree_flatten(a), tree_flatten(b)
+    fa = [(k, v) for k, v in tree_flatten(a) if v is not None]  # Acts.buoy is None in 2D
+    fb = [(k, v) for k, v in tree_flatten(b) if v is not None]
     pairs = zip(fa, fb, strict=True)
     return [k for k, _ in fa] == [k for k, _ in fb] and all(
         x.dtype == y.dtype and np.array_equal(to_numpy(x), to_numpy(y)) for (_, x), (_, y) in pairs
     )
 
 
-def _config(d3: bool, dtype: str, director: bool, compiled: bool = True) -> Config:
+# The storm world's levers for the weather arm: the wind drives the agents (their eddy wind), the hazard reads
+# the eddy speed, and both organism couplings are on, so that the whole new step graph is in the comparison.
+STORM = [
+    "weather.seed_gain=0.03",
+    "weather.shade_gain=0.02",
+    "weather.storm_eddy=true",
+    "weather.wind_eddy_force=true",
+    "weather.storm_p=0.01",
+    "weather.storm_u0=0.0",
+]
+
+
+def _config(d3: bool, dtype: str, director: bool, compiled: bool = True, storm: bool = False) -> Config:
     overrides = [
         f"brain.weight_dtype={dtype}",
         *(["director.enabled=true"] if director else []),
         *([] if compiled else ["run.compile=false"]),  # the Observer follows the run's compile mode
     ]
+    if (
+        storm
+    ):  # 256 rows on the confirmed 320-wide weather: 64k3d + the storm overlay, or tiny at size 320 (2D)
+        return (storm3d_config if d3 else storm2d_config)(*overrides[1:], *STORM)
     return load_config(preset="tiny3d" if d3 else "tiny", overrides=overrides)
 
 
@@ -84,26 +106,34 @@ def _levers(s: State, cfg: Config) -> State:
 # 3D, weight dtype, director on, compiled. Eager mode has no fusion, so only the float32 director-off arms are
 # run eagerly (the Observer then runs eagerly too). Every arm takes 1 to 4 s on the CPU: none is marked slow.
 ARMS = [
-    pytest.param(False, "float32", False, True, id="2d-f32-off"),
-    pytest.param(True, "float32", False, True, id="3d-f32-off"),
-    pytest.param(False, "float32", False, False, id="2d-f32-off-eager"),
-    pytest.param(True, "float32", False, False, id="3d-f32-off-eager"),
-    pytest.param(False, "float16", False, True, id="2d-f16-off"),
-    pytest.param(False, "float32", True, True, id="2d-f32-on"),
-    pytest.param(False, "float16", True, True, id="2d-f16-on"),
-    pytest.param(True, "float16", True, True, id="3d-f16-on"),
+    pytest.param(False, "float32", False, True, False, id="2d-f32-off"),
+    pytest.param(True, "float32", False, True, False, id="3d-f32-off"),
+    pytest.param(False, "float32", False, False, False, id="2d-f32-off-eager"),
+    pytest.param(True, "float32", False, False, False, id="3d-f32-off-eager"),
+    pytest.param(False, "float16", False, True, False, id="2d-f16-off"),
+    pytest.param(False, "float32", True, True, False, id="2d-f32-on"),
+    pytest.param(False, "float16", True, True, False, id="2d-f16-on"),
+    pytest.param(True, "float16", True, True, False, id="3d-f16-on"),
+    # the storm world (§32): weather on with the seeding, the shade, the eddy hazard and the eddy force; the
+    # observer (version 3, wind-relative) folds the post-step wind drift
+    pytest.param(True, "float32", False, True, True, id="storm3d-f32"),
+    pytest.param(False, "float32", False, True, True, id="storm2d-f32"),
+    pytest.param(False, "float32", False, False, True, id="storm2d-f32-eager"),
 ]
 
 
-@pytest.mark.parametrize(("d3", "dtype", "director", "compiled"), ARMS)
+@pytest.mark.parametrize(("d3", "dtype", "director", "compiled", "storm"), ARMS)
 def test_observing_does_not_change_the_trajectory(
-    d3: bool, dtype: str, director: bool, compiled: bool
+    d3: bool, dtype: str, director: bool, compiled: bool, storm: bool
 ) -> None:
-    cfg = _config(d3, dtype, director, compiled)
+    cfg = _config(d3, dtype, director, compiled, storm)
     steps = COMPILED_STEPS if compiled else EAGER_STEPS
     off = make_step(cfg, compile=compiled)
     on = make_step(cfg, compile=compiled, observe=True)
     s_off, s_on = init_state(cfg), init_state(cfg)
+    if storm:  # a prescribed wind, so that the drift column accumulates within the 20 eager steps
+        wx = fixed_wx(cfg, u1=0.12, v1=0.03, u2=0.1, v2=-0.02)
+        s_off, s_on = s_off._replace(wx=wx), s_on._replace(wx=wx)
     obs = Observer.fresh(s_on, cfg, social=SOC15)
     catastrophes = immigrants = 0
     for t in range(steps):
@@ -128,6 +158,16 @@ def test_observing_does_not_change_the_trajectory(
     # the observer actually ran: it accumulated, and (past the intent warm-up) evaluated rows
     assert int(to_numpy(obs.o.n_obs).max()) == steps and int(to_numpy(obs.o.arch).max()) > 0
     assert (steps < RULES_V2.intent_warm) == (not (to_numpy(obs.o.match_intent) & EVAL_BIT).any())
+    if storm:  # the version-3 rules ran on a world with weather: the drift was in the fold
+        assert cfg.weather.enabled
+        if d3:
+            assert obs.rules is RULES_V3 and obs.o.arch.shape[1] == 14
+        else:  # a 2D world gets the V3 rules without the vertical pair (own digest)
+            assert obs.rules.digest() == for_2d(RULES_V3).digest() != RULES_V3.digest()
+            assert obs.o.arch.shape[1] == 10
+        wind = arch_layout(2 + int(d3), obs.rules).wind
+        assert wind == (11 if d3 else 9)
+        assert int(to_numpy(obs.o.arch)[:, wind].max()) > 0  # the WIND column accumulated
     # ... and so did the social layer: its snapshots were taken, settled and recorded inside the run
     records = obs.take_records()
     assert [r["step"] for r in records] == list(range(15, steps + 1, 15))
@@ -139,16 +179,22 @@ def test_observing_does_not_change_the_trajectory(
 
 
 def test_observer_inputs_exclude_the_key() -> None:
-    """The observer reads a handful of State fields and never the RNG key or the weights (§28.1)."""
+    """The observer reads a handful of State fields and never the RNG key or the weights (§28.1). Version 3
+    adds the position, the buoyancy capacity and the weather (§32), set only for a wind-relative rule set."""
     assert set(ObsIn._fields) == {
         "alive", "uid", "parent_uid", "partner", "vel", "last_harvest", "last_inflow", "last_loss",
-        "energy", "brain_cost",
+        "energy", "brain_cost", "pos", "buoy_cap", "wx",
     }  # fmt: skip
     assert "key" not in ObsIn._fields
     assert not {"W1", "W2", "pend_W1", "pend_W2", "h", "msg", "tag"} & set(ObsIn._fields)
     s = init_state(load_config(preset="tiny", overrides=["brain.weight_dtype=float32"]))
     oi = obs_in(s)
-    assert all(a is getattr(s, f) for f, a in zip(ObsIn._fields, oi, strict=True))
+    assert all(a is getattr(s, f) for f, a in zip(ObsIn._fields[:10], oi[:10], strict=True))
+    assert oi.pos is None and oi.buoy_cap is None and oi.wx is None  # the version-2 view
+    s3 = init_state(load_config(preset="tiny3d", overrides=["brain.weight_dtype=float32"]))
+    oi3 = obs_in(s3, RULES_V3)
+    assert oi3.pos is s3.pos and oi3.buoy_cap is s3.buoy_cap and oi3.wx is s3.wx
+    assert obs_in(s3, RULES_V2).wx is None
 
 
 # --- the channel's read set, structurally -------------------------------------------------------------------
@@ -160,7 +206,7 @@ def test_observer_inputs_exclude_the_key() -> None:
 # cause (read by the KILLED bit and, with the roster, by the int8 ``death_cause`` field: one tap), the
 # neighbour rows, the brain output y (the one new float tap: a kernel output read by two column slices)
 # and the birth records' child rows and uids.
-CHANNEL_TAPS = frozenset(
+CHANNEL_TAPS_2D = frozenset(
     {
         "thrust0", "defend_post", "emit_post", "solvent", "lanes_kind", "lanes_parent",
         "cb_attack", "cb_hit", "cb_gain", "formed", "sl_out", "sl_got",
@@ -168,6 +214,14 @@ CHANNEL_TAPS = frozenset(
         "births_slot", "births_uid",
     }
 )  # fmt: skip
+# ... and, in 3D (§32), the buoyancy output before the solvency mask, as ``thrust0``: two trajectory
+# consumers before the mask (the buoyancy due and the mask itself), one more float reader.
+CHANNEL_TAPS_3D = CHANNEL_TAPS_2D | {"buoy0"}
+
+
+def channel_taps(cfg: Config) -> frozenset[str]:
+    return CHANNEL_TAPS_3D if dims(cfg).d3 else CHANNEL_TAPS_2D
+
 
 _DOT_PRIM = re.compile(r'\{ (\d+) \[label ="([^"]+)"')
 _DOT_IN = re.compile(r'"([^"]+)" -> (\d+)$')
@@ -226,6 +280,8 @@ def _channel_taps(
         out = r_mask(act, keep)
         if isinstance(act, actions.Actions):  # the 3D motion mask is a different type
             cap["pre"], cap["post"] = act, out
+        else:
+            cap["mo_pre"] = act
         return out
 
     def keep(name: str, fn):
@@ -259,6 +315,7 @@ def _channel_taps(
     sl = cap["sl_all"][0]
     allowed = {
         "thrust0": cap["pre"].thrust,
+        **({"buoy0": cap["mo_pre"].buoy} if "mo_pre" in cap else {}),
         "defend_post": cap["post"].defend,
         "emit_post": cap["post"].emit,
         "solvent": cap["c"].solvent,
@@ -286,11 +343,12 @@ def _channel_taps(
     # that, if it is a trajectory array, its producer is found (a field with no op is nobody's input)
     seen = {id(a) for a in allowed.values()}
     fields: dict[str, mx.array] = {}
+    present = [a for a in out.acts if a is not None]  # Acts.buoy is None in 2D
     for name, a in zip(out.acts._fields, out.acts, strict=True):
-        if id(a) not in seen:
+        if a is not None and id(a) not in seen:
             seen.add(id(a))
             fields[f"acts_{name}"] = a
-    mx.export_to_dot(str(f_acts), *out.acts, **allowed, **fields)
+    mx.export_to_dot(str(f_acts), *present, **allowed, **fields)
     p_traj, _, _ = _parse_dot(f_traj)
     p_acts, producer, inputs = _parse_dot(f_acts)
     taps: set[str] = set()
@@ -302,10 +360,20 @@ def _channel_taps(
     return {t for t in taps if t in allowed}, unlisted, len(cap["sl_all"])
 
 
+def _channel_config(preset: str, overrides: list[str]) -> Config:
+    """``tiny``, ``tiny3d`` or (``storm3d``) the 3D weather world of the tests (64k3d + the storm overlay with
+    256 rows: tiny3d is not a weather world, §30) with the seeding, the shade and the eddy levers on."""
+    if preset in ("storm3d", "storm2d"):
+        return (storm3d_config if preset == "storm3d" else storm2d_config)(*overrides, *STORM)
+    return load_config(preset=preset, overrides=overrides)
+
+
 CHANNEL_CONFIGS = [
     pytest.param("tiny", ["brain.weight_dtype=float32"], id="tiny-f32"),
     pytest.param("tiny", ["director.enabled=true"], id="tiny-f16-director"),
     pytest.param("tiny3d", ["brain.weight_dtype=float32"], id="tiny3d-f32"),
+    pytest.param("storm3d", ["brain.weight_dtype=float32"], id="storm3d-f32"),
+    pytest.param("storm2d", ["brain.weight_dtype=float32"], id="storm2d-f32"),
 ]
 
 
@@ -318,20 +386,22 @@ def test_channel_reads_only_the_allowed_arrays(
     and the integer and boolean flows. A reader of anything else (for example the post-S8 float thrust or
     the neighbour validity) or a second S12 would add a consumer to a fused float chain, which can change the
     compiled step's rounding on Metal while leaving every value of the CPU tests unchanged."""
-    taps, unnamed, n_share = _channel_taps(
-        load_config(preset=preset, overrides=overrides), monkeypatch, tmp_path
-    )
+    cfg = _channel_config(preset, overrides)
+    taps, unnamed, n_share = _channel_taps(cfg, monkeypatch, tmp_path)
     assert n_share == 1, f"share_slots was called {n_share} times"
     assert not unnamed, f"the channel reads {len(unnamed)} unlisted trajectory arrays: {unnamed}"
-    assert taps == CHANNEL_TAPS  # all of them are read, so the probe is not vacuous
-    assert len(CHANNEL_TAPS) == 20  # G1's 12 and the 8 of G2 (§29.2)
+    assert taps == channel_taps(cfg)  # all of them are read, so the probe is not vacuous
+    # G1's 12 and the 8 of G2 (§29.2); in 3D the buoyancy before the mask (§32)
+    assert len(CHANNEL_TAPS_2D) == 20 and len(channel_taps(cfg)) == (21 if dims(cfg).d3 else 20)
 
 
 def _thrust_after_the_mask(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutant: the channel reads the post-S8 float thrust (same values, a new consumer of a fused chain)."""
     orig = step_mod._acts
     monkeypatch.setattr(
-        step_mod, "_acts", lambda f, sl, thrust0, y, alive0, cfg: orig(f, sl, f.act.thrust, y, alive0, cfg)
+        step_mod,
+        "_acts",
+        lambda f, sl, thrust0, y, alive0, cfg, buoy0=None: orig(f, sl, f.act.thrust, y, alive0, cfg, buoy0),
     )
 
 
@@ -340,10 +410,10 @@ def _valid_from_nbr_valid(monkeypatch: pytest.MonkeyPatch) -> None:
     own index, so ``where(valid, idx, row)`` is ``idx``; one new trajectory array read)."""
     orig = step_mod._acts
 
-    def acts(f, sl, thrust0, y, alive0, cfg):
+    def acts(f, sl, thrust0, y, alive0, cfg, buoy0=None):
         rows = mx.arange(f.nbr.idx.shape[0], dtype=mx.int32)[:, None]
         nbr = f.nbr._replace(idx=mx.where(f.nbr.valid, f.nbr.idx, rows))
-        return orig(f._replace(nbr=nbr), sl, thrust0, y, alive0, cfg)
+        return orig(f._replace(nbr=nbr), sl, thrust0, y, alive0, cfg, buoy0)
 
     monkeypatch.setattr(step_mod, "_acts", acts)
 
@@ -355,9 +425,9 @@ def _thrust_as_a_field(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         step_mod,
         "_acts",
-        lambda f, sl, thrust0, y, alive0, cfg: orig(f, sl, thrust0, y, alive0, cfg)._replace(
-            emit=f.act.thrust
-        ),
+        lambda f, sl, thrust0, y, alive0, cfg, buoy0=None: orig(
+            f, sl, thrust0, y, alive0, cfg, buoy0
+        )._replace(emit=f.act.thrust),
     )
 
 
@@ -495,9 +565,7 @@ def test_the_channel_regroups_no_float_kernel_of_the_compiled_step(
     off only in comparisons, selects, bit operations and casts (see above): no kernel with a
     float operation (a ``Tanh``, ``Multiply``, ``Divide``, ...) is regrouped, split or given an output. It
     is the guard that sees ``mx.compile``'s merging of identical sub-expressions (the eager test cannot)."""
-    inexact, differing = _compiled_difference(
-        load_config(preset=preset, overrides=overrides), monkeypatch, tmp_path
-    )
+    inexact, differing = _compiled_difference(_channel_config(preset, overrides), monkeypatch, tmp_path)
     assert differing, "the channel changes no kernel at all: the comparison is vacuous"
     assert not inexact, f"the channel changes {len(inexact)} kernel(s) with other operations: {inexact}"
 
@@ -509,8 +577,8 @@ def _cse_mutant(expr: Callable[[Config, mx.array, mx.array, mx.array], mx.array]
     def mutate(monkeypatch: pytest.MonkeyPatch) -> None:
         orig = step_mod._acts
 
-        def acts(f, sl, thrust0, y, alive0, cfg):
-            a = orig(f, sl, thrust0, y, alive0, cfg)
+        def acts(f, sl, thrust0, y, alive0, cfg, buoy0=None):
+            a = orig(f, sl, thrust0, y, alive0, cfg, buoy0)
             junk = (expr(cfg, f.costs.solvent, thrust0, y) > 1e30).astype(mx.int16)
             return a._replace(thrust=a.thrust + junk)
 
@@ -567,6 +635,45 @@ def test_the_compiled_probe_catches_value_neutral_breaks(
     cfg = load_config(preset="tiny", overrides=overrides)
     inexact, _ = _compiled_difference(cfg, monkeypatch, tmp_path, mutate=mutant)
     assert inexact
+
+
+def _buoy_cse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutant: a channel field depends, value-neutrally, on the solvency cancel of the buoyancy output (what
+    ``actions.mask`` does to ``mo.buoy``), so ``mx.compile`` merges it with the trajectory's: a read of the
+    post-S8 float buoyancy by CSE, as ``cse-thrust`` is for the thrust."""
+    orig = step_mod._acts
+
+    def acts(f, sl, thrust0, y, alive0, cfg, buoy0=None):
+        a = orig(f, sl, thrust0, y, alive0, cfg, buoy0)
+        junk = (mx.where(f.costs.solvent, buoy0, 0.0) > 1e30).astype(mx.int16)
+        return a._replace(thrust=a.thrust + junk)
+
+    monkeypatch.setattr(step_mod, "_acts", acts)
+
+
+def test_the_buoy_mutant_is_value_neutral() -> None:
+    cfg = load_config(preset="tiny3d", overrides=["brain.weight_dtype=float32"])
+    s = init_state(cfg)
+    mx.eval(s)
+    _, real = step_mod.step(s, cfg, observe=True)
+    mx.eval(real)
+    with pytest.MonkeyPatch.context() as m:
+        _buoy_cse(m)
+        _, mutated = step_mod.step(s, cfg, observe=True)
+        mx.eval(mutated)
+    assert _same(real, mutated)
+
+
+def test_the_compiled_probe_catches_a_read_of_the_masked_buoyancy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The 3D channel's new float tap is the buoyancy before the mask. A repeat of the mask's cancel would
+    read the post-S8 buoyancy through the merged sub-expression: the compiled comparison must see it (the
+    eager one cannot: the repeat is a new array made of listed ones)."""
+    cfg = load_config(preset="tiny3d", overrides=["brain.weight_dtype=float32"])
+    clean, _ = _compiled_difference(cfg, monkeypatch, tmp_path)
+    inexact, _ = _compiled_difference(cfg, monkeypatch, tmp_path, mutate=_buoy_cse)
+    assert not clean and inexact
 
 
 # --- through the runner and the CLI -------------------------------------------------------------------------
@@ -628,7 +735,7 @@ def test_runner_files_identical_except_observers(
     assert [r["step"] for r in off.metrics_rows()] == list(range(10, 61, 10))
     assert _stored_rows(off) == _stored_rows(on)
     assert all("observers" not in r for r in off.metrics_rows())
-    assert all(r["observers"]["intent_version"] == 2 for r in on.metrics_rows())
+    assert all(r["observers"]["intent_version"] == 3 for r in on.metrics_rows())
     assert not off.observers_dir.exists() and off.observer_files() == []
     assert [st for st, _ in on.observer_files()] == [0, 30, 60]
     assert [f for f in _files(off) if f not in _files(on)] == []  # nothing else is missing from the on run

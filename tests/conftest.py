@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import platform
+
+import mlx.core as mx
 import pytest
 
 from alife.config import Config, load_config
+
+
+def pytest_report_header(config: pytest.Config) -> str:
+    """The MLX version and default device in the header, so that a saved log (the Metal purity gate of DESIGN
+    §28.8) says where it ran."""
+    system = f"{platform.system()} {platform.machine()}"
+    return f"mlx {mx.__version__}, default device {mx.default_device()}, {system}"
 
 
 @pytest.fixture(scope="session")

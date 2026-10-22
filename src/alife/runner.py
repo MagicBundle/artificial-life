@@ -19,6 +19,13 @@ eval (its arrays are evaluated with the state and the ``StepOut``), the metrics 
 block and every checkpoint is accompanied by an observer sidecar (§28.5, §28.6). The record of each social
 snapshot is appended to ``observers/social.jsonl`` right after the eval of its own step, before that step's
 row, director boundary and checkpoint (§29.10). It never changes the trajectory.
+
+The W2 instruments (DESIGN §32) follow the same rule. ``game.tracers`` runs the tracer rig inside the observer
+and adds a ``coupling`` block to the metrics rows; ``run.eco_every`` and ``run.wx_every`` write the dumps
+``observers/eco_<step>.npz`` (the live agents' height, own vertical velocity, air vertical velocity, buoyancy
+cap, clade, uid and emission) and ``observers/wx_<step>.npy`` (the ten weather planes) at their own steps. A
+dump's arrays are built from the post-step state and evaluated in the step's own ``mx.eval`` (the loop donates
+the state to the next step), then written; none of them reaches the trajectory.
 """
 
 from __future__ import annotations
@@ -36,6 +43,7 @@ import numpy as np
 
 from alife import metrics
 from alife.config import Config, dims, immigration_on
+from alife.game import tracers
 from alife.game.observer import Observer
 from alife.runio import RunDir
 from alife.state import ERROR_MASK, CounterIdx, Diag, State, to_numpy
@@ -197,6 +205,49 @@ def _status_line(row: dict[str, Any]) -> str:
     return " | ".join(parts)
 
 
+def _dump_arrays(state: State, out: Any, obs: Observer | None, cfg: Config, t: int) -> dict[str, mx.array]:
+    """The device arrays of the run dumps due at step ``t`` (the state after the step), keyed ``eco.<column>``
+    and ``wx``; empty when none is due. Lazy: the caller evaluates them with the step."""
+    ru = cfg.run
+    eco = ru.eco_every > 0 and t % ru.eco_every == 0 and obs is not None
+    wx = ru.wx_every > 0 and t % ru.wx_every == 0
+    cols = tracers.eco_arrays(state, out.acts, obs.tr, cfg) if eco and obs is not None else {}
+    planes = {"wx": tracers.wx_planes(state, cfg)} if wx else {}
+    return {**{f"eco.{k}": v for k, v in cols.items()}, **planes}
+
+
+def _write_dumps(rd: RunDir, dump: dict[str, mx.array], t: int) -> None:
+    """Write the evaluated dumps of step ``t``: the live rows of the ecology columns (sizes in the dump file
+    format of DESIGN §32), the weather planes whole."""
+    if not dump:
+        return
+    host = {k: to_numpy(v) for k, v in dump.items()}
+    if "wx" in host:
+        rd.write_wx(t, host["wx"])
+    if "eco.alive" in host:
+        live = host["eco.alive"].astype(bool)
+        cols = {k[4:]: v for k, v in host.items() if k.startswith("eco.") and k != "eco.alive"}
+        rows = {k: v[live] for k, v in cols.items() if not k.startswith("tracer_")}
+        casts = {
+            "cap": np.float16,
+            "z": np.float16,
+            "vz_own": np.float16,
+            "w_air": np.float16,
+            "emit": np.int16,
+        }
+        rd.write_eco(
+            t,
+            {
+                **{k: v.astype(casts.get(k, v.dtype)) for k, v in rows.items()},
+                **{
+                    k: v.astype(np.float16 if k == "tracer_z" else v.dtype)
+                    for k, v in cols.items()
+                    if k.startswith("tracer_")
+                },
+            },
+        )
+
+
 def _immigrants_pending(state: State, cfg: Config) -> bool:
     """Host read of the director's un-admitted immigration request (False with the director off)."""
     return cfg.director.enabled and int(to_numpy(state.env_imm_request)) > 0
@@ -318,12 +369,15 @@ def run(
             recs: list[dict[str, Any]] = []
             if obs is not None:
                 obs.update(state, out.acts, t + 1)
+                dump = _dump_arrays(state, out, obs, cfg, t + 1)  # lazy; empty on all but the dump steps
                 out = out.base()  # the acts are never retained in `outs`
-                mx.eval(state, out, *obs.arrays())  # still exactly one blocking eval per step
+                mx.eval(state, out, *obs.arrays(), *dump.values())  # still exactly one blocking eval per step
                 recs = obs.take_records()
                 rd.append_social(recs)  # a snapshot's record is durable at its own step
             else:
-                mx.eval(state, out)
+                dump = _dump_arrays(state, out, obs, cfg, t + 1)
+                mx.eval(state, out, *dump.values())
+            _write_dumps(rd, dump, t + 1)
             outs.append(out)
             out_steps.append(t)
             t += 1
@@ -362,6 +416,8 @@ def run(
                 first_row = False
             if obs is not None:
                 row["observers"] = obs.row_block()
+                if (coupling := obs.coupling_block(state)) is not None:
+                    row["coupling"] = coupling
             rd.append_metrics([row])
             outs, out_steps = [], []
 

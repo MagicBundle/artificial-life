@@ -12,20 +12,24 @@ assesses research directions against prior work. `docs/3D.md` is the 3D world (g
 seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`.
 `docs/GAMES.md` is the design of the gaming vertical (owner decisions in its §10); its build step G1, the observer
 layer (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`; normative spec `DESIGN.md` §28), is
-implemented, with `INTENT_VERSION` 2 (`RULES_V2`, the default, calibrated offline on the G1 study windows; it
+implemented, with `INTENT_VERSION` 2 (`RULES_V2`, the default until W2a made `RULES_V3` the default, calibrated offline on the G1 study windows; it
 passed the provisional criterion on three held-out windows on the GPU, 2026-10-21, DESIGN §28.4, §28.8; `RULES_V1` stays defined with its G1 digest); its build step G2, social
 tracking (houses, kin groups, colonies, territory, relations, and a roster of kin-group names, house events and
 per-group window counts; generic `groups.py` and `tracking.py`; normative spec `DESIGN.md` §29), is implemented, with
 provisional thresholds (`SOCIAL_VERSION` 1, measured on the GPU, none changed); the Settler colony clause is on in `RULES_V2` (`settler_body` 4,
 DESIGN §28.4). The fused Metal neighbour
 search (`src/alife/knn_metal.py`, `DESIGN.md` §4, row I48) is built: 75 steps/s at `64k3d` instead of 15, bitwise the
-same trajectory.
+same trajectory. It is the default on Metal in 2D and 3D (row I52); `ALIFE_KNN=mlx` forces the pure-MLX path.
 `docs/STORMS.md` is the storm world; W0 (the model, `weather.py`, `docs/STORMS_W0.md`) and W1 (`weather.*` config,
 `State.wx`, wind/rain/hazard in the step; `DESIGN.md` §30) are implemented and off by default.
 `docs/GAMES.md` §9 N1, the offline World Report (`python -m alife.analysis.world_report build | verify | probe`,
 `src/alife/game/report.py`, `templates.py`, `lexicon.py`; normative spec `DESIGN.md` §31), is implemented: code writes every
 sentence from templates and checks it, a local model (`--llm --model ID`) only selects and orders candidate ids, and no
 model-written text is ever shown or put into a prompt. Its thresholds are provisional until the owner read.
+W2a (`DESIGN.md` §32: eight `weather` keys `seed_gain`, `seed_c0`, `shade_gain`, `shade_n0`, `wind_scale`, `rain_zonal`, `storm_eddy`,
+`wind_eddy_force`; the tracer rig `game.tracers`; `run.eco_every`, `run.wx_every`; `RULES_V3` with `INTENT_VERSION` 3, the default
+observer rules; `python -m alife.analysis.w2`) is implemented and off by default; the calibration and the 14 runs (W2b) are not run, and
+`presets/storm.toml` still holds W1's provisional values.
 `alife play` and the Swift **World** window (the play loop, the stream records, planets, the chronicle, picking and follow; GAMES §9 G3a;
 normative spec `DESIGN.md` §33, row I51) are built; their Mac day (purity on Metal, the bench gate, the click-through) is the coordinator's.
 Presentation-only control lines (`focus follow idnt labels color every`, pacing, frames, records) never change a trajectory; a change to

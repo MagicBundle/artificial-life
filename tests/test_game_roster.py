@@ -32,7 +32,10 @@ from test_game_social import BIAS
 from test_game_society import Scene, cloud
 
 A_BIN, B_BIN, C_BIN = (2, 2, 2, 2), (12, 12, 12, 12), (6, 13, 6, 13)
-OTHER_ARCH_NAMES = ("gatherer", "hunter", "provider", "trader", "nomad", "settler", "generalist")
+OTHER_ARCH_NAMES = (
+    *("gatherer", "hunter", "provider", "trader", "nomad", "settler", "generalist"),
+    *("drifter", "floater", "sinker"),  # version 3 (DESIGN §32): the kin table has ten shares
+)
 
 
 def lattice(start: int, n: int) -> np.ndarray:
@@ -458,10 +461,10 @@ def test_centroid_and_archetype_mix(dim: str, tiny_cfg: Config, tiny3d_cfg: Conf
     rec = drv.advance(sc.si, 250, arch=arch)
     table = by_size(rec)
     ra, rb, rc = table[12], table[9], table[10]
-    assert len(ARCHETYPE_NAMES) == 7 and ARCHETYPE_NAMES == OTHER_ARCH_NAMES
-    assert ra["arch"] == [0.6, 0.3, 0.0, 0.0, 0.0, 0.0, 0.1]
+    assert len(ARCHETYPE_NAMES) == 10 and ARCHETYPE_NAMES == OTHER_ARCH_NAMES
+    assert ra["arch"] == [0.6, 0.3, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
     assert rb["arch"] is None
-    assert rc["arch"] == [0.0, 0.0, 0.7, 0.3, 0.0, 0.0, 0.0]
+    assert rc["arch"] == [0.0, 0.0, 0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     # the centroid: the unit-vector mean of the angles, not the arithmetic mean (which would be ~ 33 here)
     ang = np.array(xs) * (2 * math.pi / size)
     want = (math.atan2(np.sin(ang).sum(), np.cos(ang).sum()) % (2 * math.pi)) * size / (2 * math.pi)
@@ -504,7 +507,7 @@ def test_the_roster_of_a_real_run_matches_a_numpy_reference(
         state, out = fn(state)
         obs.update(state, out.acts, t)
         mx.eval(state, out.base(), *obs.arrays())
-        an = {f: to_numpy(getattr(out.acts, f)) for f in out.acts._fields}
+        an = {f: to_numpy(getattr(out.acts, f)) for f in out.acts._fields if getattr(out.acts, f) is not None}
         b, d = life_reference(prev_kin, an, g, nc)
         win_b, win_d = win_b + b, win_d + d
         c = to_numpy(out.counters)
@@ -528,7 +531,10 @@ def test_the_roster_of_a_real_run_matches_a_numpy_reference(
             assert len(rows) == kg["size"][i]
             labelled = lab[rows][lab[rows] > 0]
             want_arch = (
-                [round(float((labelled == a).sum()) / len(labelled), 3) for a in range(1, 8)]
+                [
+                    round(float((labelled == a).sum()) / len(labelled), 3)
+                    for a in range(1, len(ARCHETYPE_NAMES) + 1)
+                ]
                 if len(labelled)
                 else None
             )

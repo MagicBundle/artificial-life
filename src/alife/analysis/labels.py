@@ -12,6 +12,23 @@ above that of the unlabelled rows: the Mann–Whitney AUC against a matched rand
   is the harvest rate (Gatherer), the attack rate (Hunter), the share-out rate (Provider), the
   ``min(out, got)`` rate (Trader), the radius of gyration squared of the unwrapped track (Nomad) or its
   negative (Settler). Generalist is reported as prevalence only.
+
+  **The storm world** (DESIGN §32). Where the world has weather, the tracker also integrates the track
+  with the wind drift subtracted, ``u_k = u_{k-1} + min_image(Δpos) − drift_k`` (``drift_k`` is
+  ``weather.agent_drift`` of the post-step state of step ``k``), and the primary score of Nomad and Settler
+  under a ``wind_rel`` rule set is the radius of gyration of that track (``rg2_rel``); the raw ``rg2`` score
+  is reported beside it (``auc_raw``, and ``auc_rel`` for the other way round), so that a run under
+  ``--rules v2`` on the same window gives the comparison. The three version-3 archetypes have outcomes of
+  their own, scored over the first ``--arch-min-obs`` observed steps with permutation strata extended by a
+  z band (``Z_BAND_EDGES``): Drifter, the wind share of the horizontal displacement
+  ``|Σ drift| / (|Σ drift| + |Σ own|)``; Floater, within the pool aloft at the cohort step
+  (``z >= ALOFT·H``, 8 of 80) and not pinned at the lid (``z < z_hi − LID_MARGIN``), the altitude held,
+  ``−|z_k − z_T|``; Sinker, over the rows with room to fall, the descent ``z_T − z_k`` normalised by
+  ``min(z_T, arch_min_obs·gravity)``. Each of the three also reports its AUC per z band (``by_band``): a
+  pooled AUC can come from one band, and the Floater's came from the lid before the pinned rows were left out.
+  ``--dump DIR`` writes the
+  calibration table: the pooled per-row accumulator means at the cohort step, the 64-step input history and
+  every outcome, so that candidate thresholds are scored in seconds with this module's own scoring.
 * **Intents** (horizon ``--intent-horizon``, default 10 steps): for the displayed label (``auc_label``) and
   for the predicate bit (``auc_rule``), the number of buds (Budding), attacks (Hunting), ``|thrust|``
   (Fleeing, Roaming and, negated, Resting), defence (Defending), energy sent to kin (Caring), bonds formed
@@ -45,11 +62,13 @@ time in it), and JSON-safe (``null`` for undefined numbers). ``--no-verify`` ski
 trajectory alone on this backend. Usage::
 
     python -m alife.analysis.labels RUN --from STEP --steps N --out FILE.json [--states DIR]
+        [--rules {v2,v3}] [--dump DIR]
 """
 
 from __future__ import annotations
 
 import argparse
+import collections
 import dataclasses
 import json
 import math
@@ -62,14 +81,22 @@ from typing import Any, Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import layout, ops, spatial
+from alife import layout, ops, spatial, weather
 from alife.analysis import mi
 from alife.analysis.resim import ResimMismatch, compare_row
 from alife.analysis.signals import load_state
 from alife.config import Config, config_hash, dims
 from alife.game.observe import EVAL_BIT, care_out
-from alife.game.observer import DEFAULT_RULES, Observer
-from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, Archetype, RuleSet
+from alife.game.observer import Observer, default_rules
+from alife.game.rules import (
+    ARCHETYPE_NAMES,
+    INTENT_NAMES,
+    INTENT_VERSION,
+    RULES_V2,
+    Archetype,
+    RuleSet,
+    arch_layout,
+)
 from alife.runio import RunDir
 from alife.state import State, to_numpy
 from alife.step import ActFlag, Acts, make_step
@@ -91,6 +118,7 @@ P_MAX: Final = 0.01
 MARGIN: Final = 0.05  # auc - null_mean
 COVERAGE_MAX: Final = 0.6  # an intent label or rule that covers more of the evaluated rows than this fails
 N_AGE_BINS: Final = 4
+HISTORY: Final = 64  # steps of per-row input history kept for the dump (DESIGN §32)
 
 # The per-step outcome columns of the cohort trackers (int32 totals).
 OUTCOMES: Final = ("bud", "attack", "formed", "thrust", "defend", "emit", "harvest", "care", "out", "got")
@@ -106,7 +134,23 @@ ARCH_OUTCOMES: Final = {
     "trader": "min_out_got_rate",
     "nomad": "rg2",
     "settler": "neg_rg2",
+    "drifter": "wind_share",
+    "floater": "z_held",
+    "sinker": "descent",
 }
+# Under a wind-relative rule set the Nomad and Settler outcomes are those of the drift-subtracted track.
+ARCH_OUTCOMES_REL: Final = {"nomad": "rg2_rel", "settler": "neg_rg2_rel"}
+# The z bands of the version-3 strata, as fractions of the world height (0-4, 4-32, 32-56, 56-80 of H = 80).
+Z_BAND_EDGES: Final = (0.05, 0.4, 0.7)
+ALOFT: Final = (
+    0.1  # "aloft" is z >= 0.1·H (8 of 80): the Floater's pool at T and the steps its outcome counts
+)
+N_Z_BANDS: Final = len(Z_BAND_EDGES) + 1
+# A row within this distance of the lid ``z_hi`` is *pinned*: the surface clamp zeroes its stored ``v_z``,
+# which satisfies the Floater rule's vertical-speed bound and its outcome (``z_k = z_T``) whatever the agent
+# does, so
+# pinned rows are out of the Floater's pool (as grounded rows are out of the Sinker's).
+LID_MARGIN: Final = 0.1
 # Intent name -> (outcome column, sign); Resting predicts *less* thrust.
 INTENT_OUTCOMES: Final = {
     "budding": ("bud", 1),
@@ -175,7 +219,8 @@ def _score(
 
 def _rng(seed: int, label: int, variant: int) -> np.random.Generator:
     """The stream of one score: ``[seed, label_index, variant]`` (variant 0 pooled, 1–3 secondary columns,
-    ``10 + c`` cohort ``c``). Labels: archetypes 1–7, intent labels ``100 + i``, intent rules ``200 + i``."""
+    ``10 + c`` cohort ``c``, ``20 + b`` z band ``b``). Labels: archetypes 1–7, intent labels ``100 + i``,
+    intent rules ``200 + i``."""
     return np.random.default_rng([seed, label, variant])
 
 
@@ -239,6 +284,31 @@ def _scored_with_cohorts(
     return out
 
 
+def z_bands(z: np.ndarray, height: float) -> np.ndarray:
+    """The version-3 stratum band 0..``N_Z_BANDS`` − 1 of each height (``Z_BAND_EDGES`` of ``height``)."""
+    return np.digitize(np.asarray(z, dtype=np.float64), [e * height for e in Z_BAND_EDGES]).astype(np.int64)
+
+
+def _band_score(
+    band: int,
+    x: np.ndarray,
+    y: np.ndarray,
+    sel: np.ndarray,
+    strata: np.ndarray,
+    height: float,
+    n_perm: int,
+    rng: np.random.Generator,
+) -> dict[str, Any]:
+    """The score of one z band at the cohort step (``Z_BAND_EDGES``), over the rows ``sel`` of that band."""
+    edges = [0.0, *(e * height for e in Z_BAND_EDGES), height]
+    return {
+        "band": band,
+        "z_lo": edges[band],
+        "z_hi": edges[band + 1],
+        **_score(x[sel], y[sel], strata[sel], n_perm, rng),
+    }
+
+
 def score_archetypes(
     tab: Mapping[str, np.ndarray],
     *,
@@ -247,6 +317,12 @@ def score_archetypes(
     n_perm: int,
     seed: int,
     cohort_steps: Sequence[int] | None = None,
+    wind_rel: bool = False,
+    height: float = 80.0,
+    z_floor: float = 8.0,
+    room: float = 1.5,
+    z_pin: float | None = None,
+    only: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Per-archetype scores from the pooled archetype table, one row per pool row of every cohort.
 
@@ -256,6 +332,17 @@ def score_archetypes(
     horizon totals ``harvest``, ``attack``, ``out`` and ``got``. A row is *scored* if observed at least
     ``arch_min_obs`` steps; the primary score is on rates over its observed steps (Rg² over the first
     ``arch_min_obs``).
+
+    The storm world (DESIGN §32) adds optional columns: ``rg2_rel_min``/``rg2_rel_full`` (Rg² of the track
+    with the wind drift subtracted), ``z0`` (height at the cohort step), ``zk_min`` (height after the first
+    ``arch_min_obs`` observed steps) and ``wshare_min`` (the
+    wind share of the horizontal displacement over them). With the first, Nomad and Settler get ``auc_raw``
+    and ``auc_rel`` beside ``auc`` (the primary, on ``rg2_rel`` where ``wind_rel`` and on ``rg2`` otherwise);
+    with the others, Drifter, Floater and Sinker are scored as in the module docstring, ``height`` being the
+    world height, ``z_floor`` the altitude of the Floater's pool, ``z_pin`` the height from which a row is
+    pinned at the lid and left out of that pool (None: no row is) and ``room`` the Sinker's largest descent.
+    Drifter needs no height, so a 2D world scores it too (one z band).
+    ``only`` limits the report to the named archetypes (the calibration sweep of one label).
     """
     cohort = np.asarray(tab["cohort"])
     steps = list(cohort_steps) if cohort_steps is not None else list(range(int(cohort.max(initial=-1)) + 1))
@@ -267,21 +354,46 @@ def score_archetypes(
     tot = {k: np.asarray(tab[k], dtype=np.float64) for k in ("harvest", "attack", "out", "got")}
     low = np.minimum(tot["out"], tot["got"])
     rg_min, rg_full = np.asarray(tab["rg2_min"], np.float64), np.asarray(tab["rg2_full"], np.float64)
+    has_rel = "rg2_rel_min" in tab
+    rel_min = np.asarray(tab["rg2_rel_min"], np.float64) if has_rel else rg_min
+    rel_full = np.asarray(tab["rg2_rel_full"], np.float64) if has_rel else rg_full
+    use_rel = wind_rel and has_rel
+    nom_min, nom_full = (rel_min, rel_full) if use_rel else (rg_min, rg_full)
     # name -> (primary outcome per row, outcome for the complete cases)
     spec: dict[str, tuple[np.ndarray, np.ndarray]] = {
         "gatherer": (tot["harvest"] / per, tot["harvest"]),
         "hunter": (tot["attack"] / per, tot["attack"]),
         "provider": (tot["out"] / per, tot["out"]),
         "trader": (low / per, low),
-        "nomad": (rg_min, rg_full),
-        "settler": (-rg_min, -rg_full),
+        "nomad": (nom_min, nom_full),
+        "settler": (-nom_min, -nom_full),
     }
+    # the version-3 archetypes: (outcome, rows the score is over), strata extended by the z band at T
+    extra: dict[str, np.ndarray] = {}
+    zb = np.zeros(cohort.size, dtype=np.int64)
+    pinned = np.zeros(cohort.size, dtype=bool)
+    if "wshare_min" in tab:  # the wind share of the displacement needs no height: scored in 2D too
+        spec["drifter"] = (np.asarray(tab["wshare_min"], np.float64),) * 2
+        extra["drifter"] = np.ones(cohort.size, dtype=bool)
+    if "z0" in tab:
+        z0 = np.asarray(tab["z0"], np.float64)
+        zb = z_bands(z0, height)
+        pinned = z0 >= z_pin if z_pin is not None else pinned
+        if "zk_min" in tab:
+            held = -np.abs(np.asarray(tab["zk_min"], np.float64) - z0)
+            spec["floater"] = (held, held)
+            extra["floater"] = (z0 >= z_floor) & ~pinned  # the pool aloft at T, off the lid
+            fall = (z0 - np.asarray(tab["zk_min"], np.float64)) / np.maximum(np.minimum(z0, room), 1e-9)
+            spec["sinker"] = (fall, fall)
+            extra["sinker"] = z0 >= room  # rows with room to fall
     match, primary = np.asarray(tab["match"]), np.asarray(tab["primary"])
     out: dict[str, Any] = {}
     for a in Archetype:
         if a is Archetype.NONE:
             continue
         name = a.name.lower()
+        if only is not None and name not in only:  # a calibration sweep scores one label
+            continue
         x = ((match >> (a.value - 1)) & 1).astype(bool)
         entry: dict[str, Any] = {
             "pool": int(x.size),
@@ -290,32 +402,52 @@ def score_archetypes(
         }
         if name in spec:
             y_primary, y_complete = spec[name]
-            entry.update(outcome=ARCH_OUTCOMES[name], horizon=arch_horizon, min_obs=arch_min_obs)
+            sc, fl = scored, full
+            q, st = quart, strata
+            if name in extra:  # the z band joins the strata, and the score is over its own rows
+                sc, fl = scored & extra[name], full & extra[name]
+                q, st = quart * N_Z_BANDS + zb, strata * N_Z_BANDS + zb
+            outcome = (
+                ARCH_OUTCOMES_REL[name] if use_rel and name in ARCH_OUTCOMES_REL else ARCH_OUTCOMES[name]
+            )
+            entry.update(outcome=outcome, horizon=arch_horizon, min_obs=arch_min_obs)
             pooled = _scored_with_cohorts(
-                x, y_primary, scored, cohort, quart, strata, steps, n_perm, seed, a.value, per_cohort=True
+                x, y_primary, sc, cohort, q, st, steps, n_perm, seed, a.value, per_cohort=True
             )
             entry.update(pooled)
             entry["verdict"] = verdict(pooled, n_perm=n_perm)
-            entry["auc_complete"] = _score(
-                x[full], y_complete[full], strata[full], n_perm, _rng(seed, a.value, 1)
-            )
+            entry["auc_complete"] = _score(x[fl], y_complete[fl], st[fl], n_perm, _rng(seed, a.value, 1))
             entry["auc_survived"] = _score(
-                x[scored & full],
-                y_primary[scored & full],
-                strata[scored & full],
-                n_perm,
-                _rng(seed, a.value, 2),
+                x[sc & fl], y_primary[sc & fl], st[sc & fl], n_perm, _rng(seed, a.value, 2)
             )
             entry["auc_censored"] = _score(
-                x[scored & ~full],
-                y_primary[scored & ~full],
-                strata[scored & ~full],
-                n_perm,
-                _rng(seed, a.value, 3),
+                x[sc & ~fl], y_primary[sc & ~fl], st[sc & ~fl], n_perm, _rng(seed, a.value, 3)
             )
-            entry["exposure"] = {
-                side: _exposure(m, n_ok, scored, full) for side, m in (("pos", x), ("neg", ~x))
-            }
+            entry["exposure"] = {side: _exposure(m, n_ok, sc, fl) for side, m in (("pos", x), ("neg", ~x))}
+            if name in extra:  # the AUC per z band at T: where the pooled score comes from
+                entry["by_band"] = [
+                    _band_score(
+                        b, x, y_primary, sc & (zb == b), st, height, n_perm, _rng(seed, a.value, 20 + b)
+                    )
+                    for b in range(N_Z_BANDS)
+                ]
+            if name == "floater":  # the rows left out of the pool because the lid pins them
+                aloft = scored & (z0 >= z_floor)
+                entry["pinned"] = {
+                    "z_pin": z_pin,
+                    "n": int((aloft & pinned).sum()),
+                    "n_match": int((aloft & pinned & x).sum()),
+                }
+            if has_rel and name in ("nomad", "settler"):  # the other way round: the wind-relative comparison
+                sign = 1.0 if name == "nomad" else -1.0
+                for key, col, seed_variant in (("auc_raw", rg_min, 4), ("auc_rel", rel_min, 5)):
+                    entry[key] = _score(
+                        x[scored],
+                        (sign * col)[scored],
+                        strata[scored],
+                        n_perm,
+                        _rng(seed, a.value, seed_variant),
+                    )
         out[name] = entry
     return out
 
@@ -403,11 +535,19 @@ class TrackState(NamedTuple):
     u: mx.array  # (N, nd) float32: the unwrapped track (starts at 0)
     mean: mx.array  # (N, nd) float32: Welford mean of the track
     m2: mx.array  # (N,) float32: Welford sum of squared deviations (Rg² = m2 / n_ok)
+    # The storm world (DESIGN §32): the track with the wind drift subtracted (equal to ``u`` without drift),
+    # and the height: at the cohort step, now, and the steps spent at or above the Floater's altitude.
+    ur: mx.array  # (N, nd) float32: u_k = u_{k-1} + min_image(Δpos) − drift_k
+    mean_r: mx.array  # (N, nd) float32
+    m2_r: mx.array  # (N,) float32
+    z0: mx.array  # (N,) float32: height at the cohort step (0 in 2D)
+    zk: mx.array  # (N,) float32: the last observed height
 
 
 def track_start(member: mx.array, pos: mx.array) -> TrackState:
     """The tracker of a cohort whose members are the rows where ``member``, at positions ``pos``."""
     n, nd = pos.shape
+    z = pos[:, 2] if nd == 3 else mx.zeros((n,), dtype=_F32)
     return TrackState(
         ok=member,
         n_ok=mx.zeros((n,), dtype=_I32),
@@ -416,23 +556,50 @@ def track_start(member: mx.array, pos: mx.array) -> TrackState:
         u=mx.zeros((n, nd), dtype=_F32),
         mean=mx.zeros((n, nd), dtype=_F32),
         m2=mx.zeros((n,), dtype=_F32),
+        ur=mx.zeros((n, nd), dtype=_F32),
+        mean_r=mx.zeros((n, nd), dtype=_F32),
+        m2_r=mx.zeros((n,), dtype=_F32),
+        z0=z,
+        zk=z,
     )
 
 
 def track_step(
-    cuid: mx.array, tr: TrackState, alive: mx.array, uid: mx.array, pos: mx.array, oc: mx.array, size: float
+    cuid: mx.array,
+    tr: TrackState,
+    alive: mx.array,
+    uid: mx.array,
+    pos: mx.array,
+    oc: mx.array,
+    size: float,
+    drift: mx.array | None = None,
 ) -> TrackState:
     """One step: a row is observed while ``alive`` with its cohort uid; its outcomes ``oc`` (N, 10) are added,
     and its position extends the unwrapped track (``u_k = u_{k-1} + min_image(pos_k − pos_{k-1})``, every
     component: ``min_image`` is the identity on z, DESIGN §27.1), whose mean and M2 are a Welford update in
-    float32."""
+    float32.
+
+    ``drift`` (N, nd), the wind drift of the post-step state (``weather.agent_drift``; None: no wind), extends
+    the second track, ``ur_k = ur_{k-1} + min_image(pos_k − pos_{k-1}) − drift_k`` (the index convention of
+    DESIGN §32: the drift of step ``k`` against the displacement from ``k − 1`` to ``k``); without drift it is
+    the first one."""
     ok = tr.ok & alive & (uid == cuid)
     k = ok[:, None]
     n = tr.n_ok + ok.astype(_I32)
-    u = tr.u + mx.where(k, ops.min_image(pos - tr.pos, size), 0.0)
+    nf = mx.maximum(n, 1).astype(_F32)[:, None]
+    step_d = ops.min_image(pos - tr.pos, size)
+    u = tr.u + mx.where(k, step_d, 0.0)
     delta = u - tr.mean
-    mean = tr.mean + delta / mx.maximum(n, 1).astype(_F32)[:, None]
+    mean = tr.mean + delta / nf
     m2 = tr.m2 + (delta * (u - mean)).sum(axis=1)
+    if drift is None:
+        ur, mean_r, m2_r = u, mean, m2
+    else:
+        ur = tr.ur + mx.where(k, step_d - drift, 0.0)
+        delta_r = ur - tr.mean_r
+        mean_r = tr.mean_r + delta_r / nf
+        m2_r = tr.m2_r + (delta_r * (ur - mean_r)).sum(axis=1)
+    z = pos[:, 2] if pos.shape[1] == 3 else mx.zeros_like(tr.zk)
     return TrackState(
         ok=ok,
         n_ok=n,
@@ -441,6 +608,11 @@ def track_step(
         u=u,
         mean=mx.where(k, mean, tr.mean),
         m2=mx.where(ok, m2, tr.m2),
+        ur=ur,
+        mean_r=mx.where(k, mean_r, tr.mean_r),
+        m2_r=mx.where(ok, m2_r, tr.m2_r),
+        z0=tr.z0,
+        zk=mx.where(ok, z, tr.zk),
     )
 
 
@@ -470,15 +642,32 @@ def step_outcomes(acts: Acts, last_harvest: mx.array, kin_prev: mx.array) -> mx.
 
 
 def _host_track(tr: TrackState) -> dict[str, np.ndarray]:
-    """A tracker on the host: ``n_ok``, the ``OUTCOMES`` totals and Rg² (float64 from the float32 M2)."""
+    """A tracker on the host: ``n_ok``, the ``OUTCOMES`` totals, Rg² and the wind-relative Rg² (float64 from
+    the float32 M2), the heights (``z0``, ``zk``) and the horizontal displacements ``u_h`` (raw) and
+    ``ur_h`` (drift subtracted), whose difference is the horizontal displacement the wind gave."""
     n = to_numpy(tr.n_ok)
     m2 = to_numpy(tr.m2).astype(np.float64)
+    m2_r = to_numpy(tr.m2_r).astype(np.float64)
     tot = to_numpy(tr.tot)
     return {
         "n_ok": n,
         "rg2": m2 / np.maximum(n, 1),
+        "rg2_rel": m2_r / np.maximum(n, 1),
+        "z0": to_numpy(tr.z0).astype(np.float64),
+        "zk": to_numpy(tr.zk).astype(np.float64),
+        "u_h": to_numpy(tr.u)[:, :2].astype(np.float64),
+        "ur_h": to_numpy(tr.ur)[:, :2].astype(np.float64),
         **{name: tot[:, i].astype(np.int64) for name, i in _OC.items()},
     }
+
+
+def wind_share(u_h: np.ndarray, ur_h: np.ndarray) -> np.ndarray:
+    """The wind share of the horizontal displacement, ``|Σ drift| / (|Σ drift| + |Σ own|)`` with ``Σ own =
+    ur_h`` (the displacement less the drift) and ``Σ drift = u_h − ur_h``; 0 where nothing moved."""
+    wind = np.linalg.norm(u_h - ur_h, axis=1)
+    own = np.linalg.norm(ur_h, axis=1)
+    den = wind + own
+    return np.where(den > 0, wind / np.where(den > 0, den, 1.0), 0.0)
 
 
 class _Cohort:
@@ -623,20 +812,24 @@ def study(
     n_perm: int = 200,
     seed: int = 0,
     verify: bool = True,
-    rules: RuleSet = DEFAULT_RULES,
+    rules: RuleSet | None = None,
+    dump: Path | None = None,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     """The validity study of a run from step ``start`` for ``steps`` steps (see the module docstring).
 
     Needs a checkpoint of the run (or a cached state in ``states_dir``) at ``start``. The cohorts are the
     multiples of ``rules.every`` from the first at or after ``start + warmup``, every ``cohort_every`` steps,
-    as long as a full horizon fits in the study. Returns the JSON-safe report.
+    as long as a full horizon fits in the study. ``rules`` defaults to ``observer.default_rules(cfg)``.
+    With ``dump`` (a directory) the calibration table is written there (``write_dump``). Returns the
+    JSON-safe report.
     """
+    rd = RunDir.open(Path(run))
+    cfg = rd.config()
+    rules = default_rules(cfg) if rules is None else rules
     _check_params(
         rules, steps, warmup, cohort_every, arch_horizon, arch_min_obs, intent_horizon, n_perm, seed
     )
-    rd = RunDir.open(Path(run))
-    cfg = rd.config()
     rules.check(cfg)
     horizon = max(arch_horizon, intent_horizon)
     _bound_check(cfg, horizon)
@@ -653,7 +846,7 @@ def study(
     size = cfg.world.size
 
     state = load_state(rd, cfg, states_dir, start)
-    obs, note = Observer.open(rd, state, cfg, rules=rules)
+    obs, note = Observer.open(rd, state, cfg, rules=rules, tracers=False)
     resumed = any(st == start for st, _ in rd.checkpoints())
     source = "sidecar" if resumed and note is None else "fresh"
     rows = {int(r["step"]): r for r in rd.metrics_rows()} if verify else {}
@@ -666,13 +859,47 @@ def study(
     def outcomes_fn(acts: Acts, last_harvest: mx.array, kin_prev: mx.array) -> mx.array:
         return step_outcomes(acts, last_harvest, kin_prev)
 
+    d3 = dims(cfg).d3
+    wthr = cfg.weather.enabled
+    # the altitude the Floater's outcome counts and the Sinker's largest descent: fixed by the world, not by
+    # the rule under study, so a dump scores candidate thresholds against one outcome
+    z_floor = ALOFT * cfg.world.height
+    room = arch_min_obs * cfg.physics.gravity if d3 else 0.0
+    z_pin = (
+        dims(cfg).z_hi - LID_MARGIN if d3 else None
+    )  # from here a row is pinned at the lid (the Floater's pool)
+
     def track_fn(
-        cuid: mx.array, tr: TrackState, alive: mx.array, uid: mx.array, pos: mx.array, oc: mx.array
+        cuid: mx.array,
+        tr: TrackState,
+        alive: mx.array,
+        uid: mx.array,
+        pos: mx.array,
+        oc: mx.array,
+        drift: mx.array | None,
     ) -> TrackState:
-        return track_step(cuid, tr, alive, uid, pos, oc, size)
+        return track_step(cuid, tr, alive, uid, pos, oc, size, drift)
+
+    def drift_fn(wx: mx.array, pos: mx.array, buoy_cap: mx.array | None, alive: mx.array) -> mx.array:
+        return weather.agent_drift(wx, pos, buoy_cap, alive, cfg)
+
+    def feat_fn(
+        vel: mx.array, drift: mx.array | None, pos: mx.array, buoy_cap: mx.array | None, buoy: mx.array | None
+    ) -> mx.array:
+        """The dump's per-step input history row: velocity, drift, height and lift fraction (1/256)."""
+        n = vel.shape[0]
+        z = pos[:, 2:3] if d3 else mx.zeros((n, 1), dtype=_F32)
+        if d3 and buoy is not None:
+            lift = ((buoy.astype(_I32) * mx.round(buoy_cap * 256.0).astype(_I32)) >> 8).astype(_F32)[:, None]
+        else:
+            lift = mx.zeros((n, 1), dtype=_F32)
+        return mx.concatenate([vel, vel * 0.0 if drift is None else drift, z, lift], axis=1)
 
     oc_step = mx.compile(outcomes_fn) if cfg.run.compile else outcomes_fn
     tr_step = mx.compile(track_fn) if cfg.run.compile else track_fn
+    drift_step = mx.compile(drift_fn) if cfg.run.compile else drift_fn
+    feat_step = mx.compile(feat_fn) if cfg.run.compile else feat_fn
+    history: collections.deque[np.ndarray] = collections.deque(maxlen=HISTORY)
     spatial.prepare_knn(cfg)  # the self-check of the fused search, once per process (§4)
     step_fn = make_step(cfg, observe=True)
 
@@ -696,12 +923,19 @@ def study(
         state, out = step_fn(state)
         obs.update(state, out.acts, t + 1)
         trackers: list[mx.array] = []
+        buoy_cap = getattr(state, "buoy_cap", None)
+        drift = (
+            drift_step(state.wx, state.pos, buoy_cap, state.alive) if (wthr and (active or dump)) else None
+        )
+        feat = feat_step(state.vel, drift, state.pos, buoy_cap, out.acts.buoy) if dump is not None else None
         if active:
             oc = oc_step(out.acts, state.last_harvest, kin_prev)
             for c in active:
-                c.trk = tr_step(c.cuid, c.trk, state.alive, state.uid, state.pos, oc)
+                c.trk = tr_step(c.cuid, c.trk, state.alive, state.uid, state.pos, oc, drift)
                 trackers.extend(c.trk)
-        mx.eval(state, out.base(), *obs.arrays(), *trackers)
+        mx.eval(state, out.base(), *obs.arrays(), *trackers, *([feat] if feat is not None else []))
+        if feat is not None:  # the 64-step input history of the dump
+            history.append(to_numpy(feat).astype(np.float16))
         if t < last_row:  # only the rows still to be compared need the step's counters
             counters.append(out.counters)
             ledgers.append(out.ledger)
@@ -740,10 +974,10 @@ def study(
                 finished.append(c)
         for c in finished:
             active.remove(c)
-            _collect(c, arch_parts, intent_parts, intent_horizon)
+            _collect(c, arch_parts, intent_parts, intent_horizon, arch_min_obs, wthr, d3)
 
         if t in cohort_steps:
-            active.append(_snapshot(len(cohort_info), t, state, obs))
+            active.append(_snapshot(len(cohort_info), t, state, obs, list(history) if dump else None))
             cohort_info.append({"step": t})
         if t % every == 0 and t >= t0:
             coverage.add(obs.row_block())
@@ -755,22 +989,16 @@ def study(
             t_wall, t_log = time.perf_counter(), t
 
     assert not active, "every cohort has run its full horizon"
-    arch_tab = _concat(
-        arch_parts,
-        (
-            "cohort",
-            "age",
-            "primary",
-            "match",
-            "n_ok",
-            "rg2_min",
-            "rg2_full",
-            "harvest",
-            "attack",
-            "out",
-            "got",
-        ),
-    )
+    arch_keys = (
+        "cohort", "age", "primary", "match", "n_ok", "rg2_min", "rg2_full", "harvest", "attack", "out", "got",
+    )  # fmt: skip
+    if wthr:  # the wind-relative track and the wind share (DESIGN §32)
+        arch_keys += ("rg2_rel_min", "rg2_rel_full", "wshare_min")
+    if d3:
+        arch_keys += ("z0", "zk_min")
+    if dump is not None:
+        arch_keys += ("row", "m6", "hist")
+    arch_tab = _concat(arch_parts, arch_keys)
     intent_tab = _concat(
         intent_parts,
         ("cohort", "age", "label", "match", "complete", *sorted({c for c, _ in INTENT_OUTCOMES.values()})),
@@ -790,6 +1018,11 @@ def study(
         n_perm=n_perm,
         seed=seed,
         cohort_steps=steps_of,
+        wind_rel=rules.wind_rel,
+        height=cfg.world.height,
+        z_floor=z_floor,
+        room=room,
+        z_pin=z_pin,
     )
     intent_scores = score_intents(
         intent_tab,
@@ -799,6 +1032,8 @@ def study(
         cohort_steps=steps_of,
         coverage_max=coverage.maxima(),
     )
+    if dump is not None:
+        write_dump(dump, arch_tab, intent_tab, cohort_info, rules)
     return {
         "run": str(rd.path),
         "config_hash": config_hash(cfg),
@@ -821,6 +1056,10 @@ def study(
                 "coverage_max": COVERAGE_MAX,
             },
             "rules": dataclasses.asdict(rules),
+            "wind_rel_outcomes": bool(wthr and rules.wind_rel),
+            "z_floor": z_floor,
+            "z_pin": z_pin,
+            "sink_room": room,
         },
         "intent_version": INTENT_VERSION,
         "rules_digest": rules.digest(),
@@ -836,9 +1075,12 @@ def study(
     }
 
 
-def _snapshot(index: int, t: int, state: State, obs: Observer) -> _Cohort:
+def _snapshot(
+    index: int, t: int, state: State, obs: Observer, hist: list[np.ndarray] | None = None
+) -> _Cohort:
     """The cohort at step ``t``: the archetype pool (rows with a primary label), the intent pool (rows
-    evaluated, ``EVAL_BIT``), the rows' uid, age (``t − 1 − birth_step``) and labels, and a tracker."""
+    evaluated, ``EVAL_BIT``), the rows' uid, age (``t − 1 − birth_step``) and labels, and a tracker. With
+    ``hist`` (the dump) also the pool rows' accumulator means and their last ``HISTORY`` input rows."""
     lab = obs.host_labels()
     uid = to_numpy(obs.o.uid)
     age = t - 1 - to_numpy(state.birth_step).astype(np.int64)
@@ -854,6 +1096,15 @@ def _snapshot(index: int, t: int, state: State, obs: Observer) -> _Cohort:
         "label": lab["intent"],
         "match_intent": lab["intent_match"],
     }
+    if hist is not None:
+        rows = snap["rows_a"]
+        snap["m6"] = (to_numpy(obs.o.arch)[rows] >> obs.rules.arch_k).astype(np.int32)
+        # (rows, HISTORY, width) float16, the last step last; a short history (the study's first steps) is
+        # padded at the front with zeros
+        h = np.zeros((rows.size, HISTORY, hist[0].shape[1]), dtype=np.float16)
+        if hist:
+            h[:, HISTORY - len(hist) :] = np.stack([x[rows] for x in hist], axis=1)
+        snap["hist"] = h
     cuid = mx.array(np.where(member, uid, -1).astype(np.int64))
     pos = mx.array(to_numpy(state.pos))
     trk = track_start(mx.array(member), pos)
@@ -866,23 +1117,35 @@ def _collect(
     arch_parts: list[dict[str, np.ndarray]],
     intent_parts: list[dict[str, np.ndarray]],
     intent_h: int,
+    min_obs: int,
+    wthr: bool = False,
+    d3: bool = False,
 ) -> None:
     """Append a finished cohort's pool rows to the pooled tables."""
     s = c.snap
     assert c.at_arch is not None and c.at_min is not None and c.at_intent is not None
     ra, ri = s["rows_a"], s["rows_i"]
-    arch_parts.append(
-        {
-            "cohort": np.full(ra.size, c.index, dtype=np.int64),
-            "age": s["age"][ra],
-            "primary": s["primary"][ra],
-            "match": s["match_arch"][ra],
-            "n_ok": c.at_arch["n_ok"][ra],
-            "rg2_min": c.at_min["rg2"][ra],
-            "rg2_full": c.at_arch["rg2"][ra],
-            **{k: c.at_arch[k][ra] for k in ("harvest", "attack", "out", "got")},
-        }
-    )
+    part = {
+        "cohort": np.full(ra.size, c.index, dtype=np.int64),
+        "age": s["age"][ra],
+        "primary": s["primary"][ra],
+        "match": s["match_arch"][ra],
+        "n_ok": c.at_arch["n_ok"][ra],
+        "rg2_min": c.at_min["rg2"][ra],
+        "rg2_full": c.at_arch["rg2"][ra],
+        **{k: c.at_arch[k][ra] for k in ("harvest", "attack", "out", "got")},
+    }
+    if wthr:
+        part.update(
+            rg2_rel_min=c.at_min["rg2_rel"][ra],
+            rg2_rel_full=c.at_arch["rg2_rel"][ra],
+            wshare_min=wind_share(c.at_min["u_h"][ra], c.at_min["ur_h"][ra]),
+        )
+    if d3:
+        part.update(z0=c.at_min["z0"][ra], zk_min=c.at_min["zk"][ra])
+    if "m6" in s:  # the dump
+        part.update(row=ra.astype(np.int64), m6=s["m6"], hist=s["hist"])
+    arch_parts.append(part)
     columns = sorted({col for col, _ in INTENT_OUTCOMES.values()})
     intent_parts.append(
         {
@@ -894,6 +1157,42 @@ def _collect(
             **{k: c.at_intent[k][ri] for k in columns},
         }
     )
+
+
+def write_dump(
+    directory: Path,
+    arch_tab: Mapping[str, np.ndarray],
+    intent_tab: Mapping[str, np.ndarray],
+    cohorts: Sequence[Mapping[str, int]],
+    rules: RuleSet,
+) -> Path:
+    """The calibration table of a study (``labels_dump.npz`` in ``directory``): every column of the pooled
+    archetype table under ``arch.<name>`` (with ``arch.m6``, the pool rows' accumulator means at the cohort
+    step in the ``arch_layout`` of the rules, and ``arch.hist``, their last ``HISTORY`` input rows
+    ``[vel, drift, z, lift]``), the intent table under ``intent.<name>`` and ``meta`` (JSON: the rules, the
+    cohort steps and the layout). Candidate thresholds are scored from it with ``score_archetypes``."""
+    directory.mkdir(parents=True, exist_ok=True)
+    nd = (
+        (arch_tab["m6"].shape[1] - 5 - int(rules.wind_rel) - 2 * int(rules.vertical)) // 2
+        if "m6" in arch_tab
+        else 0
+    )
+    meta = {
+        "rules": dataclasses.asdict(rules),
+        "rules_digest": rules.digest(),
+        "cohorts": list(cohorts),
+        "layout": arch_layout(nd, rules)._asdict(),
+        "history": HISTORY,
+        "history_columns": "vel[nd], drift[nd], z, lift",
+    }
+    path = directory / "labels_dump.npz"
+    np.savez_compressed(
+        path,
+        **{f"arch.{k}": v for k, v in arch_tab.items()},
+        **{f"intent.{k}": v for k, v in intent_tab.items()},
+        meta=np.array(json.dumps(meta, sort_keys=True)),
+    )
+    return path
 
 
 # --- command line ---------------------------------------------------------------------------------------
@@ -916,9 +1215,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--n-perm", type=int, default=200)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-verify", action="store_true", help="skip the check of the stored metrics rows")
+    ap.add_argument(
+        "--rules",
+        choices=("v2", "v3"),
+        default=None,
+        help="the rule set (default: the observer's default for the world, version 3); v2 runs the version-2 "
+        "predicates on the raw velocity, for the wind-relative comparison on the same window",
+    )
+    ap.add_argument(
+        "--dump",
+        type=Path,
+        default=None,
+        help="directory for the calibration table (labels_dump.npz); outside the run directory",
+    )
     a = ap.parse_args(argv)
     if a.out.resolve().is_relative_to(a.run.resolve()):
         ap.error("--out must not be inside the run directory")
+    if a.dump is not None and a.dump.resolve().is_relative_to(a.run.resolve()):
+        ap.error("--dump must not be inside the run directory")
     try:
         report = study(
             a.run,
@@ -933,6 +1247,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             n_perm=a.n_perm,
             seed=a.seed,
             verify=not a.no_verify,
+            rules=RULES_V2 if a.rules == "v2" else None,
+            dump=a.dump,
             log=lambda m: print(m, flush=True),
         )
     except ResimMismatch as e:

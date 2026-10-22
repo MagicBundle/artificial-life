@@ -86,7 +86,9 @@
   },
   "game": {
     "house_rate": 0.00048828125,
-    "observe": false
+    "observe": false,
+    "tracer_period": 500,
+    "tracers": 0
   },
   "mutation": {
     "buoy_init": 0.0,
@@ -140,6 +142,7 @@
     "components_iters": 32,
     "director": "off",
     "diversity_sample": 256,
+    "eco_every": 0,
     "heavy_metrics_every": 1000,
     "keep_checkpoints": 3,
     "llm_model": "gemma-4-26b-a4b-it-mlx@8bit",
@@ -147,7 +150,8 @@
     "metrics_every": 100,
     "runtime_checks": "cheap",
     "seed": 0,
-    "steps": 100000
+    "steps": 100000,
+    "wx_every": 0
   },
   "sensing": {
     "cell_capacity": 16,
@@ -220,11 +224,17 @@
     "r2": 0.0001,
     "rain_floor": 0.0,
     "rain_gain": 0.0,
+    "rain_zonal": false,
+    "seed_c0": 2.0,
+    "seed_gain": 0.0,
     "seed_jitter": 0.5,
     "seed_rate": 0.02,
     "seed_sigma": 12.0,
     "seed_v": 0.02,
+    "shade_gain": 0.0,
+    "shade_n0": 8.0,
     "storm_break_u": 0.0,
+    "storm_eddy": false,
     "storm_p": 0.0,
     "storm_span": 0.03,
     "storm_u0": 0.06,
@@ -233,6 +243,8 @@
     "u_gust": 0.02,
     "u_max": 0.3,
     "w_edge": 0.03,
+    "wind_eddy_force": false,
+    "wind_scale": 1.0,
     "z_sl": 4.0
   },
   "world": {
