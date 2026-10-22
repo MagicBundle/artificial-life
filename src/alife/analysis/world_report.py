@@ -10,6 +10,9 @@
 ``build`` cuts the run into chapters ``(a, b]`` at the multiples of ``--chapter`` inside
 ``[--from, --to]`` and writes one record per chapter: the fact sheet, the candidate sentences (all written
 by code from the templates of ``alife.game.templates`` and checked again), the report and the ticker.
+(Report version 2, DESIGN §34.4: a world played by ``alife play`` writes the same records itself, one at each
+chapter end, to ``RUN/reports.jsonl``; ``verify RUN --reports RUN/reports.jsonl`` replays them, and a build of
+the same chapters writes the same file.)
 Without ``--llm`` the report is the template report and nothing touches the network. With ``--llm`` one
 request per chapter asks the model to *select and order* the candidates (it writes nothing that is shown);
 a reply that is not usable falls back to the template report. ``verify`` replays the stored records without

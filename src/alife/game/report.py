@@ -5,11 +5,16 @@ This module has three parts, all pure functions of the run's files (no engine ca
 write into the run directory; ``import alife.config`` loads ``mlx.core`` but nothing is evaluated):
 
 1. The **fact sheet** (``build_sheet``): the exact counts, steps and shares of one chapter ``(a, b]`` of an
-   observed run, each with the file field it comes from, the director's interventions as spans and as the
-   levers' state (``fold_levers``, ``spans``), the event frames of ``tracking.Event``, and the gates that drop
-   what a file cannot support (social records that do not cover the chapter, labels without a validated
-   verdict, events at an unstable population, a window of a lever that shared the window with others). A
-   sheet is a JSON-able dict; ``facts_digest`` is its identity.
+   observed run, each with the file field it comes from, the director's and the player's interventions as
+   spans and as the levers' state (``fold_levers``, ``spans``), the kin threads of ``game.kinthreads`` (the
+   sentences of the chronicle), the storms of ``observers/storms.jsonl`` after the chronicle's persistence
+   rule, the event frames of ``tracking.Event`` (colonies), and the gates that drop what a file cannot
+   support (social records that do not cover the chapter, labels without a validated verdict, a window of a
+   lever that shared the window with others). A sheet is a JSON-able dict; ``facts_digest`` is its identity.
+   Version 2 (G3b, DESIGN §34.4) is what the live report of ``alife play`` is made of: the first chapter of a
+   world is cut from the origin row of ``meta.json``, an entry of the player is in force from the step it was
+   applied at, and a chapter's facts are a function of the files up to its end, so a report built while the
+   world plays is the one an offline ``verify`` re-derives.
 2. The **candidates and the checker** (``candidates``, ``check_string``): every sentence is a template of
    ``game.templates`` filled with sheet fields; each rendered string is re-derived from the sheet and checked
    against the closed vocabulary, the number multiset, the per-fact gates and the lexicon of ``game.lexicon``
@@ -34,6 +39,7 @@ import dataclasses
 import hashlib
 import json
 import re
+import statistics
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -44,7 +50,7 @@ from urllib.parse import urlsplit
 import numpy as np
 
 from alife.config import Config, DirectorConfig, GameConfig, config_hash, dims, immigration_on
-from alife.game import lexicon, templates
+from alife.game import kinthreads, lexicon, templates
 from alife.game.rules import (
     ARCHETYPE_DISPLAY,
     ARCHETYPE_NAMES,
@@ -70,6 +76,9 @@ __all__ = [
     "ReportError",
     "ReportRules",
     "RunView",
+    "TailError",
+    "ThreadFold",
+    "after_start",
     "assemble",
     "body_k",
     "build_sheet",
@@ -79,6 +88,7 @@ __all__ = [
     "facts_digest",
     "fold_levers",
     "is_chat_url",
+    "is_player",
     "is_point",
     "judge_attempt",
     "known_social_digest",
@@ -96,13 +106,17 @@ __all__ = [
     "select_seed",
     "settle",
     "spans",
+    "storm_facts",
+    "storm_fold",
     "template_report",
+    "thread_facts",
+    "thread_fold",
     "ticker",
     "verify_record",
     "world_key",
 ]
 
-REPORT_VERSION: Final = 1
+REPORT_VERSION: Final = 2
 CHECKER_VERSION: Final = 1
 
 
@@ -126,17 +140,20 @@ class ReportRules:
     catastrophe_margin: int = 250  # labels are withheld from this many steps before a catastrophe
     dip_mandatory: float = 0.8  # the lowest count below this share of the lower endpoint is mandatory
     window_min: int = 1_000  # shortest span of a window fact
-    window_sentences: bool = False  # the W sentence of the block: off until the owner read
+    window_sentences: bool = True  # the W sentence of the block (version 2: it names the rows it compares)
     labelled_min: int = 100  # labelled agents at a and at b for a label fact
     n_pos_min: int = 100  # positive outcomes in a label's validation
     margin_min: float = 0.10  # AUC minus the permutation null, twice the verdict's 0.05
     event_pop_gate: tuple[int, int] = (1, 20)  # an event is suspect if the population moved by 1/20 of a base
-    kin_churn_factor: int = 2  # kin-group events below this multiple of kin_enter are churn
     colony_event_min: int = 32  # colony events below this size are churn
     relation_min_attacks: int = 10
     headline_change: float = 0.1  # |change| from which the headline is the population's
     headline_event_share: int = 50  # an event headlines if size * this >= the population at b
-    quiet_change: float = 0.05
+    quiet_pop: float = 0.03  # QUIET_POP: a chapter whose population moved by less than this may be quiet
+    starve_ratio: float = 1.35  # a row with this many times the chapter's median of starved is told (DS)
+    starve_rows_min: int = 4  # rows a chapter needs before its median of starved says anything
+    largest_move: float = 0.02  # the share of the largest group moved this much: G-r1 is told only then
+    storm_death_min: int = 10  # a row with this many deaths in storms is told (ST-d)
     k_body: int = 6
     k_quiet: int = 3
     block_cap: int = 24
@@ -145,7 +162,8 @@ class ReportRules:
     quota_labels: int = 6
     quota_relations: int = 3
     quota_windows: int = 5
-    max_mandatory_events: int = 3
+    quota_storms: int = 3
+    quota_storm_deaths: int = 3
     exact_tol: float = 1e-6  # a count recovered from a share must be this close to an integer
     max_chars: int = 240
     max_headline_chars: int = 100
@@ -298,8 +316,11 @@ def facts_digest(sheet: Mapping[str, Any]) -> str:
 
 class RunView(NamedTuple):
     """What a sheet reads of a run: the config, ``meta.json``, the metrics rows, the social records, the
-    director's entries (log order, no header) and the observer sidecars' meta (step -> meta dict or a
-    path)."""
+    director's entries (log order, no header), the observer sidecars' meta (step -> meta dict or a path), the
+    storm tracker's log (``observers/storms.jsonl``, a played weather world's) and the saved kin thread tables
+    (step -> the state or its path; a world that was not played has none). A view read with ``tail_from``
+    holds the rows and records from that step on (``load_run``); the sheet of a chapter ``(a, b]`` needs
+    nothing older than ``a``."""
 
     cfg: Config
     meta: Mapping[str, Any]
@@ -307,10 +328,20 @@ class RunView(NamedTuple):
     records: tuple[Mapping[str, Any], ...]
     entries: tuple[Mapping[str, Any], ...]
     sidecars: Mapping[int, Any]
+    storms: tuple[Mapping[str, Any], ...] = ()
+    kin_states: Mapping[int, Any] = {}
+    tail_from: int | None = None
 
     @property
     def start_step(self) -> int:
         return int(self.meta.get("start_step") or 0)
+
+    @property
+    def origin_row(self) -> Mapping[str, Any] | None:
+        """The row a played world has at its start step (``meta.json["origin_row"]``, DESIGN §34.2): the
+        first chapter of a world is cut from it. None for a run that has none."""
+        row = self.meta.get("origin_row")
+        return row if isinstance(row, Mapping) else None
 
     def row(self, step: int) -> Mapping[str, Any] | None:
         return next((r for r in self.rows if r["step"] == step), None)
@@ -332,27 +363,74 @@ class RunView(NamedTuple):
             return None
         return meta if isinstance(meta, dict) else None
 
+    def kin_state(self, step: int) -> Mapping[str, Any] | None:
+        """The kin thread table saved for the checkpoint at ``step`` (None if there is none or it cannot be
+        read: the caller refolds the social log)."""
+        v = self.kin_states.get(step)
+        if v is None or isinstance(v, Mapping):
+            return v
+        try:
+            obj = json.loads(Path(v).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return obj if isinstance(obj, dict) else None
 
-def load_run(path: str | Path) -> RunView:
-    """The files of the run at ``path``, read-only. ``FileNotFoundError`` if it is not a run directory."""
+
+def load_run(
+    path: str | Path,
+    *,
+    tail_from: int | None = None,
+    sidecar_meta: Mapping[int, Mapping[str, Any]] | None = None,
+) -> RunView:
+    """The files of the run at ``path``, read-only. ``FileNotFoundError`` if it is not a run directory.
+
+    With ``tail_from`` the metrics rows and the social records are read from that step on, from the end of
+    their files (``runio.read_jsonl_from``): the sheet of a chapter ``(a, b]`` reads nothing older than ``a``,
+    and a long play's log is not parsed from its first line for its last chapter. ``sidecar_meta`` maps a step
+    to the ``meta`` of the observer sidecar of that step *in memory*: the live report job is started while the
+    sidecar of the chapter's end is still to be written, so it is handed what the file will say."""
     from alife.director.log import entries_of, read_log  # host-side; imported here to keep the import light
 
     rd = RunDir.open(Path(path))
     log = Path(path) / "director.jsonl"
     entries = tuple(entries_of(read_log(log))) if log.is_file() else ()
+    sidecars: dict[int, Any] = dict(rd.observer_files())
+    sidecars.update(sidecar_meta or {})
     return RunView(
         rd.config(),
         rd.meta(),
-        tuple(rd.metrics_rows()),
-        tuple(rd.social_records()),
+        tuple(rd.metrics_rows() if tail_from is None else rd.metrics_rows_from(tail_from)),
+        tuple(rd.social_records() if tail_from is None else rd.social_records_from(tail_from)),
         entries,
-        {step: p for step, p in rd.observer_files()},
+        sidecars,
+        tuple(rd.storms_lines()),
+        dict(rd.play_state_files("kinthreads")),
+        tail_from,
     )
+
+
+# --- the player's entries --------------------------------------------------------------------------------
+
+
+def is_player(entry: Mapping[str, Any]) -> bool:
+    """A record of the player channel: a power (``source`` "player") or the revert written for one
+    (``source`` "revert", ``scope`` "player"). Applied at the top of the iteration of its step, after that
+    step's row and checkpoint (rule P, DESIGN §34.5), so it is in force from its own step ``s`` where a
+    boundary entry is in force from the row after ``s``."""
+    return entry.get("source") == "player" or (
+        entry.get("source") == "revert" and entry.get("scope") == "player"
+    )
+
+
+def after_start(entry: Mapping[str, Any], start_step: int) -> bool:
+    """Whether a replay of the log from ``start_step`` applies ``entry``: a boundary entry at ``step_applied
+    > start_step`` (the log up to the start is the checkpoint's), a player's record at ``step_applied >=
+    start_step`` (a power applied at the origin step is after the checkpoint there)."""
+    return entry["step_applied"] >= start_step if is_player(entry) else entry["step_applied"] > start_step
 
 
 # --- levers ------------------------------------------------------------------------------------------------
 
-TIMED: Final = ("regen_pulse", "habitat_loss")
 POINTS: Final = ("immigration_pulse", "catastrophe")
 
 
@@ -410,21 +488,20 @@ def _lever_key(lever: str) -> tuple[int, int, int]:
 
 
 def _in_fold_order(entries: Sequence[Mapping[str, Any]], start_step: int) -> list[tuple[int, int]]:
-    """``(step_applied, log index)`` of the entries a replay applies (step_applied > start_step), in order."""
-    return sorted(
-        (int(e["step_applied"]), i) for i, e in enumerate(entries) if e["step_applied"] > start_step
-    )
+    """``(step_applied, log index)`` of the entries a replay applies (``after_start``: step_applied >
+    start_step, for a player's record >= start_step), in order."""
+    return sorted((int(e["step_applied"]), i) for i, e in enumerate(entries) if after_start(e, start_step))
 
 
 def fold_levers(
     entries: Sequence[Mapping[str, Any]], t: int, start_step: int, cfg: Config | None = None
 ) -> dict[str, LeverState]:
     """The engine's lever state as of the row at step ``t``: the one source of lever state for the env check
-    and the block. Every entry with ``start_step < step_applied < t``, forward or revert (whatever entry the
-    revert ends), in (``step_applied``, log index) order; each writes its lever with its ``params``. A replay
-    fork applies every entry after ``start_step``, reverts included (``director/__init__.py``), so a revert
-    of an entry before ``start_step`` is part of the fold. Points write no lever. ``cfg`` is accepted for
-    symmetry with ``lever_default`` and unused."""
+    and the block. Every entry with ``start_step < step_applied < t`` (a player's record: ``start_step <=
+    step_applied``), forward or revert (whatever entry the revert ends), in (``step_applied``, log index)
+    order; each writes its lever with its ``params``. A replay fork applies every entry after ``start_step``,
+    reverts included (``director/__init__.py``), so a revert of an entry before ``start_step`` is part of the
+    fold. Points write no lever. ``cfg`` is accepted for symmetry with ``lever_default`` and unused."""
     out: dict[str, LeverState] = {}
     for s, i in _in_fold_order(entries, start_step):
         if s >= t:
@@ -498,7 +575,7 @@ def check_env(rd: RunView, a: int, b: int) -> None:
     rows = [r for r in rd.rows if a <= r["step"] <= b]
     has_env = [r for r in rows if "env" in r]
     if not has_env:
-        if rd.cfg.director.enabled and any(e["step_applied"] > rd.start_step for e in rd.entries):
+        if rd.cfg.director.enabled and any(after_start(e, rd.start_step) for e in rd.entries):
             raise ReportError("the rows of a director run carry no env block: the log cannot be checked", 1)
         return
     for r in has_env:
@@ -554,13 +631,20 @@ def spans(
     open at ``b``; the director acts after its step's row, so the rows ``s`` and ``e`` bound the span
     exactly. ``end_by`` is ``elapsed`` (a revert whose ``reverts`` is ``s``; ``restored`` its params),
     ``replaced`` (any other later entry on the lever) or None. Entries with ``step_applied`` <=
-    ``start_step`` are ignored as forward entries (a fork restarts the levers inert).
+    ``start_step`` are ignored as forward entries (a fork restarts the levers inert); a player's record at
+    ``start_step`` is not (it is applied after the checkpoint there). The listed entries are in force from
+    their own step on when the player made them (they are applied after that step's row), where a boundary
+    entry is in force from the row after it, a difference only in how a window picks its rows.
 
     The facts come in the order the block cap of 24 keeps them: the chapter's entries by (step, log index),
     then the in-force ones latest first; the caller cuts and re-sorts. The second result counts the entries
     ignored."""
     order = _in_fold_order(entries, start_step)
-    ignored = sum(1 for e in entries if e["source"] != "revert" and e["step_applied"] <= min(start_step, b))
+    ignored = sum(
+        1
+        for e in entries
+        if e["source"] != "revert" and not after_start(e, start_step) and e["step_applied"] <= b
+    )
     made: list[dict[str, Any]] = []
     for pos, (s, i) in enumerate(order):
         e = entries[i]
@@ -649,6 +733,9 @@ FACT_KINDS: Final = (
     "population",
     "deaths",
     "births",
+    "turnover",
+    "starve",
+    "stormdeaths",
     "lineages",
     "top_lineage",
     "intervention",
@@ -656,13 +743,16 @@ FACT_KINDS: Final = (
     "window",
     "label",
     "group",
+    "thread",
+    "untold",
     "event",
     "houses",
     "relation",
     "colonies",
+    "storms",
+    "storm",
     "run_end",
 )
-_KIN_FAMILY_RANK: Final = {"kin_group": 0, "colony": 1}
 
 
 def _rows_of(table: Mapping[str, Sequence[Any]] | None) -> list[dict[str, Any]]:
@@ -747,47 +837,34 @@ def _social_gate(rd: RunView, a: int, b: int, rules: ReportRules, by: Mapping[in
     return recs, None
 
 
-def _event_facts(
-    rd: RunView, recs: Sequence[Mapping[str, Any]], rules: ReportRules, excl: dict[str, Any]
+def _colony_events(
+    recs: Sequence[Mapping[str, Any]], rules: ReportRules, excl: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """The event facts of the records (frames of ``tracking.Event``), after the suspect and churn gates."""
+    """The colony event facts of the records (frames of ``tracking.Event``), after the churn gate. The kin
+    group events of the records are not here: version 2 tells the ones the chronicle tells, the kin threads
+    (``thread_fold``, ``thread_facts``), so the churn of a cluster that comes back under a new id is not
+    reported as a split and a merge."""
     out: list[dict[str, Any]] = []
-    prev_alive = {r["step"]: alive_of(r) for r in rd.records if r.get("origin") == recs[0].get("origin")}
     for rec in recs:
         evs = _rows_of(rec["events"])
-        th = rec["thresholds"]
-        n_ref = th["n_ref"]
-        num, den = rules.event_pop_gate
-        now = alive_of(rec)
-        before = prev_alive.get(rec["window_start"], n_ref)
-        suspect = (
-            bool(th["rescaled"])
-            or abs(now - n_ref) * den > n_ref * num
-            or abs(now - before) * den > before * num
-        )
         pairs = {(e["family"], e["kind"], e["id"], e["other"]) for e in evs}
         for e in evs:
-            fam, kind = e["family"], e["kind"]
-            if fam == "kin_group":
-                if suspect:
-                    excl.update({"events_suspect": excl["events_suspect"] + 1})
-                    continue
-                if e["size"] < rules.kin_churn_factor * th["kin_enter"]:
-                    excl.update({"events_churn": excl["events_churn"] + 1})
-                    continue
-            elif e["size"] < rules.colony_event_min:
+            kind = e["kind"]
+            if e["family"] != "colony":
+                continue
+            if e["size"] < rules.colony_event_min:
                 excl.update({"events_churn": excl["events_churn"] + 1})
                 continue
             partner = {"born": "dissolved", "dissolved": "born"}.get(kind)
             reid = (
                 partner is not None
                 and e["other"] >= 0
-                and ((fam, partner, e["other"], e["id"]) in pairs or 2 * e["overlap"] > e["size"])
+                and (("colony", partner, e["other"], e["id"]) in pairs or 2 * e["overlap"] > e["size"])
             )
             out.append(
                 {
                     "kind": "event",
-                    "family": fam,
+                    "family": "colony",
                     "event": kind,
                     "system": int(e["id"]),
                     "other": int(e["other"]),
@@ -798,13 +875,249 @@ def _event_facts(
                     "reid": bool(reid),
                 }
             )
-    out.sort(key=lambda f: (-f["size"], f["s1"], _KIN_FAMILY_RANK[f["family"]], f["system"]))
+    out.sort(key=lambda f: (-f["size"], f["s1"], f["system"]))
     return out
 
 
+# --- the kin threads of a chapter ----------------------------------------------------------------------
+
+
+class TailError(ReportError):
+    """A view read from the end of the logs cannot give the kin thread table at the start of the chapter (no
+    saved table, and the records before it were not read): the caller reads the whole log and tries again."""
+
+
+@dataclasses.dataclass(frozen=True)
+class ThreadFold:
+    """The kin threads over the chapter ``(a, b]``: the events the chronicle tells in it (``KinThreads.fold``
+    over the records of the chapter, from the table at ``a``), the table at ``b``, the largest thread at
+    ``a`` as ``(thread identity, size)`` and the raw kin rows of the chapter that no told event consumed."""
+
+    told: tuple[Mapping[str, Any], ...]
+    table: kinthreads.KinThreads
+    largest_a: tuple[int, int] | None
+    untold: int
+
+
+def _largest(kt: kinthreads.KinThreads) -> tuple[int, int] | None:
+    open_ = kt.open_threads()
+    if not open_:
+        return None
+    th = max(open_, key=lambda t: (t.size, -t.first_id))
+    return th.first_id, th.size
+
+
+def thread_fold(rd: RunView, a: int, b: int, origin: int | None) -> ThreadFold:
+    """The kin thread fold of the chapter ``(a, b]`` of the observer epoch ``origin``: the table at ``a`` is
+    the one saved with the checkpoint of ``a`` (``observers/kinthreads_<a>.json``) when it is usable, else the
+    refold of the social records of the epoch up to ``a`` (a pure function of them: the two are the same
+    table); the records of ``(a, b]`` are then folded and the events they tell are the chapter's. Nothing
+    after ``b`` is read, so the events of a chapter are the same whether the world is still playing or has
+    played on. ``TailError`` for a view cut at ``tail_from`` that has neither the table nor the records."""
+    mine = [r for r in rd.records if r.get("origin") == origin and r["step"] <= b]
+    kt: kinthreads.KinThreads | None = None
+    saved = rd.kin_state(a)
+    if saved is not None and saved.get("origin") == origin and saved.get("step") == a:
+        try:
+            kt = kinthreads.KinThreads.from_state(saved)
+        except ValueError:
+            kt = None
+    if kt is None:
+        if rd.tail_from is not None and a > rd.start_step:
+            raise TailError(
+                f"the kin thread table at step {a} is not saved and the log was read from the end"
+            )
+        kt = kinthreads.KinThreads()
+        for rec in mine:
+            if rec["step"] > a:
+                break
+            kt.fold(rec)
+    largest_a = _largest(kt)
+    told: list[dict[str, Any]] = []
+    for rec in mine:
+        if rec["step"] > a:
+            told += kt.fold(rec)
+    in_chapter = [r for r in mine if r["step"] > a]
+    return ThreadFold(tuple(told), kt, largest_a, kinthreads.kin_untold(in_chapter, told, a, b))
+
+
+def thread_facts(tf: ThreadFold, rules: ReportRules, quota: dict[str, int]) -> list[dict[str, Any]]:
+    """The thread facts of a chapter: the events its fold told, the largest first (the size of a group that
+    formed, the peak of one that ended), at most ``quota_events`` of them (the cut goes to ``quota``)."""
+    out = []
+    for e in tf.told:
+        formed = e["kind"] == "formed"
+        x, y = e["pos"][0], e["pos"][1]
+        out.append(
+            {
+                "kind": "thread",
+                "event": e["kind"],
+                "thread": int(
+                    e["first_id"]
+                ),  # the kin id it first listed: the same however the table was restored
+                "name": e["name"],
+                "other": e["parent"] if formed else e["into"],
+                "first_step": int(e["first_step"]),
+                "end": e["end_step"],
+                "steps": e["steps"],
+                "size": int(e["size"]),
+                "peak": int(e["peak"]),
+                "told": int(e["step"]),
+                "imp": int(e["imp"]),
+                "initial": bool(e["initial"]),
+                "kin": int(e["a"]),
+                "x": x,
+                "y": y,
+            }
+        )
+    out.sort(key=lambda f: (-(f["size"] if f["event"] == "formed" else f["peak"]), f["told"], f["thread"]))
+    if len(out) > rules.quota_events:
+        quota.update({"thread": len(out) - rules.quota_events})
+    return out[: rules.quota_events]
+
+
+# --- the storms of a chapter ---------------------------------------------------------------------------
+
+HEMISPHERES: Final = ("northern", "southern")  # ``hemi`` 0 and 1 of a tracker event
+
+
+@dataclasses.dataclass(frozen=True)
+class StormFold:
+    """The tracker log up to ``b`` after the chronicle's persistence rule: what each track did (``tracks``,
+    by id), the tracker events that were told with the tick they were told at (``told``) and the latest tick
+    (``last``, None without one)."""
+
+    tracks: Mapping[int, Mapping[str, Any]]
+    told: tuple[tuple[int, Mapping[str, Any]], ...]
+    last: Mapping[str, Any] | None
+
+
+def storm_fold(lines: Sequence[Mapping[str, Any]], b: int) -> StormFold:
+    """Fold the lines of ``observers/storms.jsonl`` with step <= ``b`` through the chronicle's own rule
+    (``Chronicler.from_storms``: a birth is told with ``STORM_MIN_DETECTIONS`` detections, a naming at once,
+    an end only for a track that was told, the events of a layer's first tick not at all), keeping for each
+    track its hemisphere, the steps it was born, named and ended at, its strongest vorticity and its latest
+    position."""
+    from alife.game.chronicle import Chronicler  # imported here: the chronicle needs this module's neighbours
+
+    chron = Chronicler(0)
+    tracks: dict[int, dict[str, Any]] = {}
+    told: list[tuple[int, Mapping[str, Any]]] = []
+    last: Mapping[str, Any] | None = None
+    for line in lines:
+        step = int(line["step"])
+        if step > b:
+            break
+        last = line
+        events = line.get("events", ())
+        storms = line.get("storms", ())
+        for e in events:
+            ident, kind = int(e["id"]), e["kind"]
+            cur = tracks.get(ident)
+            if kind in ("born", "split") or cur is None:
+                cur = {
+                    "id": ident,
+                    "name": None,
+                    "hemi": int(e["hemi"]),
+                    "born": int(e["step"]),
+                    "named": None,
+                    "end": None,
+                    "age": None,
+                    "peak": 0.0,
+                    "x": e["x"],
+                    "y": e["y"],
+                    "first_told": None,
+                }
+            if kind == "named":
+                cur = {**cur, "name": e["name"], "named": int(e["step"])}
+            elif kind in ("dissolved", "merged"):
+                cur = {**cur, "end": int(e["step"]), "age": int(e["age"])}
+            tracks.update({ident: cur})
+        for s in storms:
+            ident = int(s["id"])
+            cur = tracks.get(ident)
+            if cur is not None:
+                tracks.update(
+                    {ident: {**cur, "peak": max(cur["peak"], float(s["zeta"])), "x": s["x"], "y": s["y"]}}
+                )
+        chron.from_storms(step, events, [s["id"] for s in storms])
+        for e in chron.told_storm:
+            ident = int(e["id"])
+            told.append((step, e))
+            cur = tracks.get(ident)
+            if cur is not None and cur["first_told"] is None:
+                tracks.update({ident: {**cur, "first_told": step}})
+    return StormFold(tracks, tuple(told), last)
+
+
+def storm_facts(
+    sf: StormFold, a: int, b: int, rules: ReportRules, quota: dict[str, int]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """``(storms, storm)``: the one ``storms`` fact (how many storms were tracked at ``b`` and how many of
+    them named, how many were first told, named and ended in ``(a, b]``, the longest lived) and the ``storm``
+    facts (the storms named or ended in the chapter, the strongest first, at most ``quota_storms``). Both
+    empty for a run with no tracker tick."""
+    if sf.last is None:
+        return [], []
+    from alife.storms import NAME_ZETA
+
+    tracked = [int(s["id"]) for s in sf.last["storms"]]
+    named_at_b = sum(1 for i in tracked if sf.tracks.get(i, {}).get("name") is not None)
+    in_chapter = [(t, e) for t, e in sf.told if a < t <= b]
+    formed = sum(1 for tr in sf.tracks.values() if tr["first_told"] is not None and a < tr["first_told"] <= b)
+    dissolved = sum(1 for _, e in in_chapter if e["kind"] == "dissolved")
+    named_new = sum(1 for _, e in in_chapter if e["kind"] == "named")
+    lived = [
+        tr["age"] if tr["end"] is not None else int(sf.last["step"]) - tr["born"]
+        for tr in sf.tracks.values()
+        if tr["id"] in tracked or (tr["end"] is not None and a < tr["end"] <= b)
+    ]
+    named_in = {int(e["id"]): t for t, e in in_chapter if e["kind"] == "named"}
+    ended_in = {int(e["id"]): t for t, e in in_chapter if e["kind"] == "dissolved"}
+    facts = []
+    for ident in sorted(set(named_in) | set(ended_in)):
+        tr = sf.tracks[ident]
+        if tr["name"] is None:
+            continue  # only a named storm has a name to say; an unnamed track is in the counts
+        facts.append(
+            {
+                "kind": "storm",
+                "storm": ident,
+                "name": tr["name"],
+                "hemisphere": HEMISPHERES[tr["hemi"]],
+                "ratio": tr["peak"] / NAME_ZETA,
+                "named_step": named_in.get(ident),
+                "end": ended_in.get(ident),
+                "age": tr["age"] if ident in ended_in else None,
+                "x": tr["x"],
+                "y": tr["y"],
+            }
+        )
+    facts.sort(key=lambda f: (-f["ratio"], f["storm"]))
+    if len(facts) > rules.quota_storms:
+        quota.update({"storm": len(facts) - rules.quota_storms})
+    summary = {
+        "kind": "storms",
+        "tracked": len(tracked),
+        "named": named_at_b,
+        "formed": formed,
+        "dissolved": dissolved,
+        "named_new": named_new,
+        "longest": max(lived, default=0),
+    }
+    return [summary], facts[: rules.quota_storms]
+
+
 def _group_facts(
-    recs: Sequence[Mapping[str, Any]], rb: Mapping[str, Any], alive_b: int
+    recs: Sequence[Mapping[str, Any]],
+    rb: Mapping[str, Any],
+    alive_b: int,
+    tf: ThreadFold,
+    alive_a: int | None,
 ) -> list[dict[str, Any]]:
+    """The groups of the last record, largest first. The largest one carries the thread it belongs to and the
+    largest thread at the start of the chapter with its share then (``prev_thread``, ``prev_share``), which is
+    what lets the report say who is largest only when that changed."""
     table = _rows_of(rb["kin_groups"])
     table.sort(key=lambda g: (-g["size"], g["id"]))
     complete = rb["summary"]["kin_groups"]["tracked"] == len(table)
@@ -836,10 +1149,22 @@ def _group_facts(
             "size": int(g["size"]),
             "of": int(alive_b),
             "share": g["size"] / alive_b if alive_b else 0.0,
+            "x": g.get("x"),
+            "y": g.get("y"),
         }
         carried = carried and (nxt is None or g["size"] > nxt)
         if carried:
             f.update({"rank": j + 1})
+        if j == 0:
+            th = tf.table.thread_of(int(g["id"]))
+            prev = tf.largest_a
+            f.update(
+                {
+                    "thread": None if th is None else th.first_id,
+                    "prev_thread": None if prev is None else prev[0],
+                    "prev_share": None if prev is None or not alive_a else prev[1] / alive_a,
+                }
+            )
         if listed_all[g["id"]]:
             born, died, killed = totals[g["id"]]
             f.update({"born": born, "died": died, "died_killed": killed})
@@ -848,11 +1173,24 @@ def _group_facts(
 
 
 def _house_facts(
-    recs: Sequence[Mapping[str, Any]], ra: Mapping[str, Any], rb: Mapping[str, Any]
+    recs: Sequence[Mapping[str, Any]],
+    ra: Mapping[str, Any],
+    rb: Mapping[str, Any],
+    before: Mapping[str, Any] | None,
 ) -> list[dict[str, Any]]:
+    """The houses fact: how many have living members at the ends of the chapter, how many were first seen and
+    how many died out, and of those how many had been among the 16 largest at the record before
+    (``extinct_top``, counted from the second record of the chapter on when ``before``, the record at ``a``,
+    is not there)."""
     he = [r["house_events"] for r in recs if r.get("house_events")]
     first = sum(len(h["founded"]["id"]) + h["founded_dropped"] for h in he)
     gone = sum(len(h["extinct"]["id"]) + h["extinct_dropped"] for h in he)
+    top = 0
+    listed = None if before is None else set(before["houses"]["id"])
+    for r in recs:
+        if listed is not None and r.get("house_events"):
+            top += sum(1 for hid in r["house_events"]["extinct"]["id"] if hid in listed)
+        listed = set(r["houses"]["id"])
     sb = rb["summary"]["houses"]
     f: dict[str, Any] = {
         "kind": "houses",
@@ -860,6 +1198,7 @@ def _house_facts(
         "alive_to": int(sb["alive"]),
         "first_seen": first,
         "extinct": gone,
+        "extinct_top": top,
         "exact": bool(sb["exact"]),
         "origin": int(rb["origin"]),
     }
@@ -973,6 +1312,8 @@ def _label_facts(
     if table is None:
         return [], meta
     meta.update({"key_found": True})
+    if ra.get("origin") is True:
+        return [], meta  # the origin row has no labels: the sheet says so (build_sheet)
     storm = version >= 3 and bool(rd.cfg.weather.enabled)
     citable = sorted(lb for lb, row in table.items() if label_passes(row, rules))
     oa, ob = ra["observers"], rb["observers"]
@@ -1036,15 +1377,26 @@ def _window_facts(
     excl: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """A juxtaposition, gated: the population at the ends of the part of a timed effect's span that lies in
-    the chapter, only if nothing else was in force or happening in that window (no other entry, no other lever
-    away from its default, no arrivals, no catastrophe deaths)."""
+    the chapter (an entry with a duration), only if nothing else was in force or happening in that window (no
+    other entry, no other lever away from its default, no arrivals, no catastrophe deaths).
+
+    The ends are rows. "Before" is the last row **at or before** the effect's first step (clamped to ``a``):
+    a row after it already holds part of the effect, so it is never the baseline, and an effect applied
+    between two rows (a power of the player, at any step) is compared from the row before it. "After" is the
+    last row at or before the end of the span. The fact carries the steps of both rows and the step the effect
+    was applied at, so the sentence says exactly what was compared."""
     out = []
+    steps = sorted(s for s in by if a <= s <= b)
+
+    def at_or_before(x: int) -> int | None:
+        return next((s for s in reversed(steps) if s <= x), None)
+
     for f in ivs:
-        if f["action"] not in TIMED:
+        if f["duration"] is None:
             continue
         w0, w1 = max(f["step"], a), min(f["end"] if f["end"] is not None else b, b)
-        r0, r1 = by.get(w0), by.get(w1)
-        if w1 - w0 < rules.window_min or (w0, w1) == (a, b) or r0 is None or r1 is None:
+        s0, s1 = at_or_before(w0), at_or_before(w1)
+        if s0 is None or s1 is None or s1 - s0 < rules.window_min or (s0, s1) == (a, b):
             continue
         lv = lever_of(f["action"], f["params"])
         others = [i for i, e in enumerate(rd.entries) if i != f["entry"] and w0 <= e["step_applied"] < w1]
@@ -1053,7 +1405,7 @@ def _window_facts(
             for k, st in fold_levers(rd.entries, w1, rd.start_step, rd.cfg).items()
             if away_from_default(k, st.value, rd.cfg)
         ]
-        inside = [r for r in rd.rows if w0 < r["step"] <= w1]
+        inside = [r for r in rd.rows if s0 < r["step"] <= s1]
         arrivals = sum(r.get("immigrants") or 0 for r in inside)
         killed = sum(r.get("deaths_catastrophe") or 0 for r in inside)
         if others or any(k != lv for k in away) or arrivals or killed:
@@ -1065,8 +1417,10 @@ def _window_facts(
                 "entry": f["entry"],
                 "w0": w0,
                 "w1": w1,
-                "from": r0["observers"]["alive"],
-                "to": r1["observers"]["alive"],
+                "r0": s0,
+                "r1": s1,
+                "from": by[s0]["observers"]["alive"],
+                "to": by[s1]["observers"]["alive"],
             }
         )
     out.sort(key=lambda f: (-f["w1"], -f["entry"]))
@@ -1077,19 +1431,16 @@ def _entities(
     rd: RunView,
     kinds: Mapping[str, Sequence[Mapping[str, Any]]],
     origin: int | None,
+    table: kinthreads.KinThreads | None = None,
 ) -> list[dict[str, Any]]:
     """The entities the facts name, with the raw name from the records (None if no record at or before the
-    latest citing fact lists the group)."""
+    latest citing fact lists the group). A group that belongs to a thread has the thread's name: the frozen
+    name of the first id the thread had, with the suffix that keeps two lineages of one name apart."""
     limit: dict[int, int] = {}
 
     def want(kid: int, step: int) -> None:
         limit.update({int(kid): max(step, limit.get(int(kid), step))})
 
-    for f in kinds.get("event", ()):
-        if f["family"] == "kin_group":
-            want(f["system"], f["s1"])
-            if f["other"] >= 0:
-                want(f["other"], f["s1"])
     for f in kinds.get("group", ()):
         want(f["entity"], kinds["chapter"][0]["end"])
     for f in kinds.get("relation", ()):
@@ -1098,6 +1449,10 @@ def _entities(
     mine = [r for r in rd.records if r.get("origin") == origin] if origin is not None else list(rd.records)
     ents = []
     for kid, lim in sorted(limit.items()):
+        th = None if table is None else table.thread_of(kid)
+        if th is not None and th.est:
+            ents.append({"kind": "kin_group", "id": kid, "name": th.shown, "name_from": th.first_step})
+            continue
         name, at = _kin_name(mine, kid, lim)
         ents.append({"kind": "kin_group", "id": kid, "name": name, "name_from": at})
     for f in kinds.get("houses", ()):
@@ -1128,7 +1483,6 @@ def compose_sheet(
     Ids ``F1`` to ``Fn`` follow the order of ``FACT_KINDS``; the display names are set here (two entities that
     would render alike all render "kin group {id}"); so are ``quiet`` and the digest of the rules.
     ``build_sheet`` and the tests' scripted sheets both end here."""
-    a, b = header["chapter"]
     facts: list[dict[str, Any]] = []
     n = 0
     for kind in FACT_KINDS:
@@ -1158,13 +1512,15 @@ def compose_sheet(
     ]
     pop = next((f for f in facts if f["kind"] == "population"), None)
     change = None if pop is None else pop.get("change")
+    storms = next((f for f in facts if f["kind"] == "storms"), None)
     quiet = (
         pop is not None
         and change is not None
-        and abs(change) < rules.quiet_change
+        and abs(change) < rules.quiet_pop
         and not pop["deep_dip"]
-        and not any(f["kind"] == "event" and f["family"] == "kin_group" for f in facts)
-        and not any(f["kind"] == "intervention" and a <= f["step"] < b for f in facts)
+        and not any(f["kind"] in ("intervention", "standing") for f in facts)
+        and not (storms is not None and (storms["named_new"] or storms["dissolved"]))
+        and not any(f["kind"] == "thread" and f["imp"] >= 2 for f in facts)
     )
     return {
         "report_version": REPORT_VERSION,
@@ -1192,6 +1548,12 @@ def _check_chapter(
         if row is None:
             raise ReportError(f"the cut {cut} is not the step of a metrics row")
         obs = row.get("observers")
+        if cut == a and row.get("origin") is True:
+            # the origin row of a played world (``meta.json``): the count of the live organisms at the start,
+            # no social head (the observer has taken no snapshot there)
+            if not isinstance(obs, Mapping) or obs.get("alive") is None:
+                raise ReportError(f"the origin row at step {cut} has no count of the living")
+            continue
         if not isinstance(obs, Mapping) or not isinstance(obs.get("social"), Mapping):
             raise ReportError(f"the row at step {cut} has no observers block ({hint})")
     inside = [r for r in rd.rows if a <= r["step"] <= b]
@@ -1206,11 +1568,19 @@ def _check_chapter(
 def build_sheet(rd: RunView, a: int, b: int, rules: ReportRules = REPORT_V1) -> dict[str, Any]:
     """The fact sheet of the chapter ``(a, b]`` of ``rd`` (see the module doc). ``ReportError`` (code 2) if
     the chapter cannot be cut from the run's rows (not on the snapshot grid, a gap in the rows, an unobserved
-    run), code 1 if a row's ``env`` disagrees with the director's log."""
+    run), code 1 if a row's ``env`` disagrees with the director's log.
+
+    The first chapter of a played world starts at its start step, where it has no metrics row: the origin row
+    of ``meta.json`` stands for it, and the facts that need the social head or the labels of the row at ``a``
+    (the houses delta, the label facts) are left out and said to be."""
     steps = [r["step"] for r in rd.rows]
     if steps != sorted(set(steps)):
         raise ReportError("the metrics rows are not in strictly increasing step order")
     by = {r["step"]: r for r in rd.rows}
+    orow = rd.origin_row
+    at_origin = orow is not None and a == rd.start_step and a not in by and orow.get("step") == a
+    if at_origin:
+        by = {a: orow, **by}
     _check_chapter(rd, a, b, rules, by)
     check_env(rd, a, b)
     cfg = rd.cfg
@@ -1219,7 +1589,6 @@ def build_sheet(rd: RunView, a: int, b: int, rules: ReportRules = REPORT_V1) -> 
     excl: dict[str, Any] = {
         "labels": {},
         "social": None,
-        "events_suspect": 0,
         "events_churn": 0,
         "interventions_dropped": 0,
         "windows_confounded": 0,
@@ -1234,6 +1603,11 @@ def build_sheet(rd: RunView, a: int, b: int, rules: ReportRules = REPORT_V1) -> 
             quota.update({kind: len(facts) - n})
         return facts[:n]
 
+    def drop(why: str) -> None:
+        excl.update({"facts_dropped": [*excl["facts_dropped"], why]})
+
+    if at_origin:
+        drop("no social baseline at the origin")
     kinds: dict[str, list[dict[str, Any]]] = {"chapter": [{"kind": "chapter", "start": a, "end": b}]}
     fa, fb = ra["observers"]["alive"], rb["observers"]["alive"]
     pop: dict[str, Any] = {"kind": "population", "from": fa, "to": fb}
@@ -1264,14 +1638,27 @@ def build_sheet(rd: RunView, a: int, b: int, rules: ReportRules = REPORT_V1) -> 
                 ]
             }
         )
-    forward = [e for e in rd.entries if e["source"] != "revert" and rd.start_step < e["step_applied"] < b]
+    if "deaths" in kinds and "births" in kinds and fa + fb > 0:
+        died, born = kinds["deaths"][0]["total"], kinds["births"][0]["births"]
+        kinds.update(
+            {"turnover": [{"kind": "turnover", "born": born, "died": died, "k": died / ((fa + fb) / 2)}]}
+        )
+    kinds.update({"starve": _starve_fact(inside, rules)})
+    kinds.update(
+        {"stormdeaths": cap("stormdeaths", _storm_death_facts(inside, rules), rules.quota_storm_deaths)}
+    )
+    forward = [
+        e
+        for e in rd.entries
+        if e["source"] != "revert" and after_start(e, rd.start_step) and e["step_applied"] < b
+    ]
     bin_may = (
         immigration_on(cfg.population)
         or any(e["action"] == "immigration_pulse" for e in forward)
         or sum(r.get("immigrants") or 0 for r in inside) > 0
     )
     if bin_may:
-        excl.update({"facts_dropped": [*excl["facts_dropped"], "immigrant lineage bin"]})
+        drop("immigrant lineage bin")
     else:
         if ra.get("clades_alive") is not None and rb.get("clades_alive") is not None:
             kinds.update(
@@ -1281,9 +1668,7 @@ def build_sheet(rd: RunView, a: int, b: int, rules: ReportRules = REPORT_V1) -> 
         if sa is not None and sb is not None:
             ca, cb = _exact_count(sa, fa, rules.exact_tol), _exact_count(sb, fb, rules.exact_tol)
             if ca is None or cb is None:
-                excl.update(
-                    {"facts_dropped": [*excl["facts_dropped"], "top lineage: a share is not a whole count"]}
-                )
+                drop("top lineage: a share is not a whole count")
             else:
                 kinds.update(
                     {
@@ -1301,7 +1686,7 @@ def build_sheet(rd: RunView, a: int, b: int, rules: ReportRules = REPORT_V1) -> 
                     }
                 )
 
-    # the director: spans, standing levers, windows
+    # the director and the player: spans, standing levers, windows
     ivs, ex = spans(rd.entries, a, b, rd.start_step, cfg)
     excl.update({"entries_before_start": ex["entries_before_start"]})
     standing = standing_facts(rd.entries, a, rd.start_step, cfg, b, ivs)
@@ -1324,15 +1709,22 @@ def build_sheet(rd: RunView, a: int, b: int, rules: ReportRules = REPORT_V1) -> 
     alive_at: dict[int, int] = {
         s: by[s]["observers"]["alive"] for s in _snapshot_steps(a, b, rules.snapshot_every) if s in by
     }
+    tf: ThreadFold | None = None
     if why is not None:
         excl.update({"social": why})
     else:
         rec_b = next(r for r in recs if r["step"] == b)
         alive_at = {r["step"]: alive_of(r) for r in recs}
-        evs = _event_facts(rd, recs, rules, excl)
-        kinds.update({"event": cap("event", evs, rules.quota_events)})
-        kinds.update({"group": cap("group", _group_facts(recs, rec_b, alive_at[b]), rules.quota_groups)})
-        kinds.update({"houses": _house_facts(recs, ra, rec_b)})
+        tf = thread_fold(rd, a, b, origin)
+        kinds.update({"thread": thread_facts(tf, rules, quota)})
+        if tf.untold > 0:
+            kinds.update({"untold": [{"kind": "untold", "n": tf.untold}]})
+        kinds.update({"event": cap("event", _colony_events(recs, rules, excl), rules.quota_events)})
+        groups = _group_facts(recs, rec_b, alive_at[b], tf, fa)
+        kinds.update({"group": cap("group", groups, rules.quota_groups)})
+        if not at_origin:
+            before = next((r for r in rd.records if r["step"] == a and r.get("origin") == origin), None)
+            kinds.update({"houses": _house_facts(recs, ra, rec_b, before)})
         kinds.update({"relation": cap("relation", _relation_facts(recs, rules), rules.quota_relations)})
         col = rec_b["summary"]["colonies"]
         if col["tracked"] > 0:
@@ -1343,6 +1735,10 @@ def build_sheet(rd: RunView, a: int, b: int, rules: ReportRules = REPORT_V1) -> 
                     ]
                 }
             )
+
+    # the storms: the tracker's log after the persistence rule of the chronicle
+    storms, storm = storm_facts(storm_fold(rd.storms, b), a, b, rules, quota)
+    kinds.update({"storms": storms, "storm": storm})
 
     # the end of the run: the extinction stop writes a final off-grid row
     last = rd.rows[-1]
@@ -1374,11 +1770,39 @@ def build_sheet(rd: RunView, a: int, b: int, rules: ReportRules = REPORT_V1) -> 
     return compose_sheet(
         header=header,
         kinds=kinds,
-        entities=_entities(rd, kinds, origin if why is None else None),
+        entities=_entities(rd, kinds, origin if why is None else None, None if tf is None else tf.table),
         excluded=excl,
         snapshots=snaps,
         rules=rules,
     )
+
+
+def _starve_fact(inside: Sequence[Mapping[str, Any]], rules: ReportRules) -> list[dict[str, Any]]:
+    """The row with the most starved when it is ``starve_ratio`` times the chapter's median row (the alert
+    ``pop_fall`` says the same about its latest row): ``n`` starved in the ``steps`` to step ``s``, against
+    ``median`` (an observed count: the lower middle row). Nothing for a chapter of fewer than
+    ``starve_rows_min`` rows or with no starvation."""
+    rows = [
+        (r["deaths_starved"], r["step"], r["steps"]) for r in inside if r.get("deaths_starved") is not None
+    ]
+    if len(rows) < max(rules.starve_rows_min, 1) or len(rows) != len(inside):
+        return []
+    median = statistics.median_low([n for n, _, _ in rows])
+    n, s, steps = max(rows, key=lambda x: (x[0], -x[1]))
+    if median > 0 and n >= rules.starve_ratio * median:
+        return [{"kind": "starve", "n": int(n), "s": int(s), "steps": int(steps), "median": int(median)}]
+    return []
+
+
+def _storm_death_facts(inside: Sequence[Mapping[str, Any]], rules: ReportRules) -> list[dict[str, Any]]:
+    """The rows with ``storm_death_min`` deaths in storms or more, the largest first."""
+    rows = [
+        {"kind": "stormdeaths", "n": int(r["deaths_storm"]), "s": int(r["step"]), "steps": int(r["steps"])}
+        for r in inside
+        if (r.get("deaths_storm") or 0) >= rules.storm_death_min
+    ]
+    rows.sort(key=lambda f: (-f["n"], f["s"]))
+    return rows
 
 
 # --- reading a sheet ----------------------------------------------------------------------------------------
@@ -1459,13 +1883,13 @@ _GATED_WORDS: Final[Mapping[str, frozenset[str]]] = {
     "lowest": frozenset({"P-low"}),
     "new": frozenset({"H-1n", "H-1ne", "H-1xn", "H-1xne"}),
     "overlapped": frozenset({"E-dissolved-o"}),
-    "formed": frozenset({"E-born", "E-born-o", "CE-born", "HE-born"}),
-    "split": frozenset({"E-split", "CE-split", "HE-split"}),
-    "merged": frozenset({"E-merged", "CE-merged", "HE-merged"}),
-    "dissolved": frozenset({"E-dissolved", "E-dissolved-o", "CE-dissolved", "HE-dissolved"}),
+    "formed": frozenset({"CE-born", "ST-b", "HK-formed"}),
+    "split": frozenset({"CE-split"}),
+    "merged": frozenset({"KT-ended-into", "KT-ended-into-i", "CE-merged", "HK-ended-into"}),
+    "dissolved": frozenset({"KT-ended", "KT-ended-i", "ST-b", "ST-end", "CE-dissolved", "HK-ended"}),
     "dipped": frozenset({"HP-dip"}),
     "stopped": frozenset({"END"}),
-    "catastrophe": frozenset({"D-2", "I-cat"}),
+    "catastrophe": frozenset({"DC", "I-cat"}),
     "replaced": frozenset({"X-replaced"}),
 }
 
@@ -1524,13 +1948,31 @@ def _gate_problems(ctx: _Ctx, tid: str, f: Mapping[str, Mapping[str, Any]]) -> l
             need(bool(pop["deep_dip"]) and "min" in pop and pop["min"] < min(fr, to), "dip")
     if t == "P-low" and pop:
         need("min" in pop and pop["min"] < min(pop["from"], pop["to"]), "lowest")
-    if t in ("D-1", "D-2"):
-        d = f["deaths"]
-        need(
-            d["total"] == d["starved"] + d["killed"] + d["aged"] + d["catastrophe"] and d["total"] > 0,
-            "total",
-        )
-        need((d["catastrophe"] > 0) == (t == "D-2"), "catastrophe")
+        need(bool(pop["deep_dip"]), "a deep dip")
+    if t == "TO":
+        _turnover_problems(ctx, f["turnover"], need)
+    if t == "DC":
+        need(f["deaths"]["catastrophe"] > 0, "catastrophe")
+    if t == "DS":
+        ds = f["starve"]
+        need(ds["median"] > 0 and ds["n"] >= rules.starve_ratio * ds["median"], "starved")
+    if t == "ST-d":
+        need(f["stormdeaths"]["n"] >= rules.storm_death_min, "storm deaths")
+    if t == "ST-n":
+        sn = f["storms"]
+        need(sn["tracked"] >= 1 and 0 <= sn["named"] <= sn["tracked"], "tracked")
+    if t == "ST-b":
+        need(f["storms"]["formed"] + f["storms"]["dissolved"] >= 1, "formed or dissolved")
+    if t == "HS":
+        need(f["storms"]["named_new"] >= 1, "named")
+    if t in ("ST-named", "ST-peak", "ST-end"):
+        _storm_problems(ctx, t, f["storm"], need)
+    if t == "HQ":
+        need(bool(ctx.sheet["quiet"]), "quiet")
+    if t == "KS":
+        need(f["untold"]["n"] >= 1, "untold")
+    if t.startswith(("KT-", "HK-")):
+        _thread_problems(t, f["thread"], need)
     if t in ("B-1", "B-2"):
         need((f["births"]["immigrants"] > 0) == (t == "B-2"), "arrivals")
     if t == "LN":
@@ -1540,23 +1982,15 @@ def _gate_problems(ctx: _Ctx, tid: str, f: Mapping[str, Mapping[str, Any]]) -> l
     g = f.get("group")
     if t in ("G-r1", "G-r2", "G-r3") and g:
         need(g.get("rank") == int(t[-1]), "rank")
+    if t == "G-r1" and g:
+        need(_largest_moved(g, rules), "moved")
     if t == "G-c" and g:
         need(all(g.get(k) is not None for k in ("born", "died", "died_killed")), "counts")
         need(g.get("died_killed", 0) <= g.get("died", 0), "killed")
     ev = f.get("event")
-    if ev and (t.startswith(("E-", "CE-", "HE-"))):
-        kind = t.split("-", 1)[1].split("-")[0]
-        need(ev["event"] == kind, "event kind")
-        need((ev["family"] == "colony") == t.startswith("CE-"), "family")
-        o = ev["other"]
-        if t in ("E-born-o", "E-dissolved-o", "E-split", "E-merged", "HE-split", "HE-merged"):
-            need(o >= 0, "other")
-        if t in ("E-born", "E-dissolved"):
-            need(o < 0, "no other")
-        if t == "E-born-o":
-            need(0 <= ev["overlap"] <= ev["size"], "overlap")
-        if t.startswith("HE-"):
-            need(not ev["reid"] and ev["family"] == "kin_group", "reid")
+    if ev and t.startswith("CE-"):
+        need(ev["event"] == t.split("-", 1)[1].split("-")[0], "event kind")
+        need(ev["family"] == "colony", "family")
     h = f.get("houses")
     if t.startswith("H-1") and h:
         suffix = t[3:]
@@ -1566,7 +2000,7 @@ def _gate_problems(ctx: _Ctx, tid: str, f: Mapping[str, Mapping[str, Any]]) -> l
     if t == "H-2" and h:
         need(h.get("largest_strict") is True, "largest house")
     if t == "HH" and h:
-        need(h["extinct"] >= 1 and h["exact"], "died out")
+        need(h["extinct"] >= 1 and h["exact"] and h.get("extinct_top", 0) >= 1, "died out")
     lb = f.get("label")
     if t in ("LB-a", "LB-i") and lb:
         need(lb["family"] == ("archetype" if t == "LB-a" else "intent"), "family")
@@ -1596,8 +2030,13 @@ def _gate_problems(ctx: _Ctx, tid: str, f: Mapping[str, Mapping[str, Any]]) -> l
         }.get(t)
         if action:
             need(iv["action"] == action, "action")
-        if t in ("I-fert", "I-move"):
-            need(iv["action"] == "fertility_shift" and ("gain" in iv["params"]) == (t == "I-fert"), "action")
+        if t in ("I-fert", "I-fert-d", "I-move"):
+            need(
+                iv["action"] == "fertility_shift" and ("gain" in iv["params"]) == (t != "I-move"),
+                "action",
+            )
+        if t in ("I-fert", "I-fert-d"):
+            need((iv["duration"] is not None) == (t == "I-fert-d"), "duration")
         if t.startswith("X-"):
             need(not is_point(iv["action"], iv["params"]), "point")
         if t.startswith("X-regen"):
@@ -1626,13 +2065,77 @@ def _gate_problems(ctx: _Ctx, tid: str, f: Mapping[str, Mapping[str, Any]]) -> l
         iv2 = ctx.by_id.get(w["intervention"])
         a, b = ctx.sheet["chapter"]
         ok = rules.window_sentences and iv2 is not None and a <= w["w0"] < w["w1"] <= b
+        ok = ok and a <= w["r0"] <= w["w0"] and w["r0"] < w["r1"] <= w["w1"]
         if ok and iv2 is not None:
-            ok = w["w0"] >= iv2["step"] and (iv2["end"] is None or w["w1"] <= iv2["end"])
+            ok = (
+                iv2["duration"] is not None
+                and w["w0"] >= iv2["step"]
+                and (iv2["end"] is None or w["w1"] <= iv2["end"])
+            )
         need(bool(ok), "window")
-    sn = f.get("snapshot")
-    if t == "T-pop":
-        need(sn is not None and sn.get("alive") is not None, "alive")
     return out
+
+
+def _turnover_problems(ctx: _Ctx, tov: Mapping[str, Any], need: Any) -> None:
+    """TO: the counts are the births and the deaths of the chapter and ``k`` is the deaths over the mean of
+    the two population counts."""
+    pop, births, deaths = ctx.one("population"), ctx.one("births"), ctx.one("deaths")
+    ok = pop is not None and births is not None and deaths is not None
+    need(ok, "turnover facts")
+    if ok:
+        need(tov["born"] == births["births"] and tov["died"] == deaths["total"], "counts")
+        mean = (pop["from"] + pop["to"]) / 2
+        need(mean > 0 and abs(tov["k"] - tov["died"] / mean) < 1e-9, "turnover")
+
+
+def _storm_problems(ctx: _Ctx, t: str, st: Mapping[str, Any], need: Any) -> None:
+    """ST-named, ST-peak, ST-end: the storm was named or ended inside the chapter, has a hemisphere the
+    sentence can say and a peak at or above nothing less than zero."""
+    a, b = ctx.sheet["chapter"]
+    if t == "ST-named":
+        need(st["named_step"] is not None and a < st["named_step"] <= b, "named in the chapter")
+    if t == "ST-end":
+        need(
+            st["end"] is not None and a < st["end"] <= b and st["age"] is not None and st["age"] >= 0,
+            "ended in the chapter",
+        )
+    if t == "ST-peak":
+        need(st["hemisphere"] in templates.HEMISPHERE_WORDS and st["ratio"] >= 0, "peak")
+
+
+def _thread_problems(t: str, th: Mapping[str, Any], need: Any) -> None:
+    """KT-*, HK-*: the thread event is of the kind the template says, with the other thread when it names
+    one and the lifetime unless the thread was there from the start."""
+    formed = th["event"] == "formed"
+    if t == "HK-formed":
+        need(formed, "formed")
+    if t == "KT-formed":
+        need(formed and th["other"] is None, "formed")
+    if t == "KT-formed-from":
+        need(formed and th["other"] is not None, "formed from")
+    if t.startswith(("KT-ended", "HK-ended")):
+        need(not formed, "ended")
+    if t in ("KT-ended-into", "KT-ended-into-i", "HK-ended-into"):
+        need(th["other"] is not None, "merged into")
+    if t in ("KT-ended", "KT-ended-i", "HK-ended"):
+        need(th["other"] is None, "dissolved")
+    if t in ("KT-ended-into", "KT-ended"):
+        need(th["steps"] is not None and not th["initial"], "lifetime")
+    if t in ("KT-ended-into-i", "KT-ended-i"):
+        need(th["initial"], "initial")
+
+
+def _largest_moved(g: Mapping[str, Any], rules: ReportRules) -> bool:
+    """Whether the largest group is worth a sentence: it is not the thread that was largest at the start of
+    the chapter, or its share moved by ``largest_move`` (two points), or there is nothing to compare it
+    with."""
+    prev = g.get("prev_share")
+    return (
+        g.get("prev_thread") is None
+        or prev is None
+        or g.get("thread") != g["prev_thread"]
+        or abs(g["share"] - prev) >= rules.largest_move - 1e-12
+    )
 
 
 def _label_citable(ctx: _Ctx, key: str) -> bool:
@@ -1659,11 +2162,11 @@ def _mask(text: str, parts: Sequence[tuple[str, str]]) -> str:
 
 
 def _name_parts(ctx: _Ctx, slot_values: Sequence[tuple[templates.Slot, Any]]) -> list[tuple[str, str]]:
-    """The displays to mask: of each entity slot (the name, or the id of a "kin group {id}" fallback) and the
-    label of each label slot."""
+    """The displays to mask: of each entity slot (the name, or the id of a "kin group {id}" fallback), the
+    label of each label slot and the name of each name slot (a thread or a storm)."""
     parts: list[tuple[str, str]] = []
     for sl, raw in slot_values:
-        if sl.fmt == "label":
+        if sl.fmt in ("label", "name"):
             parts.append((str(raw), str(raw)))
         elif sl.fmt in ("kin", "house"):
             ent = next((e for e in ctx.ents.values() if e["display"] == raw), None)
@@ -1779,7 +2282,10 @@ def check_string(
     for name, word in lexicon.scan(masked, lexicon.NEVER_LISTS):
         reasons.append(f"R6:{name}:{word}")
     for name, word in lexicon.scan(masked, lexicon.LEVER_LISTS):
-        if not block and not (tid == "D-2" and word == "catastrophe"):
+        if not block and not (tid == "DC" and word == "catastrophe"):
+            reasons.append(f"R6:{name}:{word}")
+    for name, word in lexicon.scan(masked, lexicon.STORM_LISTS):
+        if tid is None or not (_base(tid).startswith("ST-") or _base(tid) == "HS"):
             reasons.append(f"R6:{name}:{word}")
     for name, word in lexicon.scan(masked, lexicon.LABEL_LISTS):
         reasons.append(f"R6:{name}:{word}")
@@ -1797,7 +2303,7 @@ def _numeric_slots(tid: str, slot_values: Sequence[tuple[templates.Slot, Any]]):
     return [
         by_name[n]
         for n in templates.tokens_of(t.text)
-        if n in by_name and by_name[n][0].fmt in ("int", "id", "pct", "change", "lever")
+        if n in by_name and by_name[n][0].fmt in ("int", "id", "pct", "change", "lever", "dec1", "dec2")
     ]
 
 
@@ -1814,6 +2320,19 @@ _I_TEMPLATE: Final = {
     "catastrophe": "I-cat",
 }
 _S_TEMPLATE: Final = {"regen": "S-regen", "seasons": "S-seasons", "drift": "S-drift"}
+
+
+QUIET_BODY: Final = ("TO", "KS")  # the sentences of a quiet chapter's body (HQ, the lead and these)
+
+
+def _i_template(iv: Mapping[str, Any]) -> str:
+    """The sentence of an intervention: by action; a fertility gain that has a duration (a Bloom) says so."""
+    tid = _I_TEMPLATE.get(iv["action"])
+    if tid is not None:
+        return tid
+    if "gain" not in iv["params"]:
+        return "I-move"
+    return "I-fert-d" if iv["duration"] is not None else "I-fert"
 
 
 def _try(
@@ -1855,25 +2374,30 @@ def lead_of(sheet: Mapping[str, Any], rules: ReportRules = REPORT_V1) -> dict[st
     return c
 
 
-def _kin_events(ctx: _Ctx) -> list[Mapping[str, Any]]:
+def _threads(ctx: _Ctx) -> list[Mapping[str, Any]]:
+    """The thread facts of a sheet, the largest first (the size of a group that formed, the peak of one that
+    ended)."""
     return sorted(
-        (f for f in ctx.kinds.get("event", ()) if f["family"] == "kin_group"),
-        key=lambda f: (-f["size"], f["s1"], f["system"]),
+        ctx.kinds.get("thread", ()),
+        key=lambda f: (-(f["size"] if f["event"] == "formed" else f["peak"]), f["told"], f["thread"]),
     )
 
 
+def _thread_template(th: Mapping[str, Any]) -> str:
+    """The sentence of a thread event: formed (from another thread or not); ended by merging into another or
+    by dissolving, with the lifetime unless the thread was there from the start of the observer."""
+    if th["event"] == "formed":
+        return "KT-formed-from" if th["other"] is not None else "KT-formed"
+    tail = "-i" if th["initial"] else ""
+    return ("KT-ended-into" if th["other"] is not None else "KT-ended") + tail
+
+
 def _event_template(ev: Mapping[str, Any]) -> str | None:
-    kind, o = ev["event"], ev["other"]
-    pre = "E-" if ev["family"] == "kin_group" else "CE-"
-    if ev["family"] == "colony":
-        if ev["reid"] and kind in ("born", "dissolved"):
-            return None  # a colony that went on under a new id: the colony sentences have no clause to say so
-        return pre + kind
-    if kind == "born":
-        return "E-born-o" if o >= 0 else "E-born"
-    if kind == "dissolved":
-        return "E-dissolved-o" if o >= 0 else "E-dissolved"
-    return pre + kind if o >= 0 else None
+    """The sentence of a colony event (kin group events are thread events, ``_thread_template``)."""
+    kind = ev["event"]
+    if ev["reid"] and kind in ("born", "dissolved"):
+        return None  # a colony that went on under a new id: the colony sentences have no clause to say so
+    return "CE-" + kind
 
 
 def _house_template(h: Mapping[str, Any]) -> str:
@@ -1905,27 +2429,37 @@ def _headline_picks(ctx: _Ctx) -> list[tuple[str, dict[str, Mapping[str, Any]]]]
     big = (
         pop["deep_dip"] or (ch is None and to != fr) or (ch is not None and abs(ch) >= rules.headline_change)
     )
-    events = [e for e in _kin_events(ctx) if not e["reid"]]
+    threads = _threads(ctx)
     houses = ctx.one("houses")
     lineages = ctx.one("lineages")
+    storms = ctx.one("storms")
     he = None
-    if events and events[0]["system"] is not None:
-        tpl = {"born": "HE-born", "split": "HE-split", "merged": "HE-merged", "dissolved": "HE-dissolved"}[
-            events[0]["event"]
-        ]
-        if events[0]["event"] in ("split", "merged") and events[0]["other"] < 0:
-            tpl = None
-        he = None if tpl is None else (tpl, {"event": events[0]})
-    hh = ("HH", {"houses": houses}) if houses and houses["extinct"] >= 1 and houses["exact"] else None
+    if threads:
+        th = threads[0]
+        tpl = "HK-formed" if th["event"] == "formed" else "HK-ended-into" if th["other"] else "HK-ended"
+        he = (tpl, {"thread": th})
+    hs = ("HS", {"storms": storms}) if storms and storms["named_new"] >= 1 else None
+    hh = (
+        ("HH", {"houses": houses})
+        if houses and houses["extinct"] >= 1 and houses["exact"] and houses.get("extinct_top", 0) >= 1
+        else None
+    )
     hl = ("HL", {"lineages": lineages}) if lineages and lineages["from"] != lineages["to"] else None
+    if ctx.sheet["quiet"]:
+        return [("HQ", {})]
     first = (hp, {"population": pop})
-    if not big and he and events[0]["size"] * rules.headline_event_share >= to:
+    weight = (
+        0 if not threads else (threads[0]["size"] if threads[0]["event"] == "formed" else threads[0]["peak"])
+    )
+    if not big and hs:
+        first = hs
+    elif not big and he and weight * rules.headline_event_share >= to:
         first = he
     elif not big and hh:
         first = hh
     if big:
         return [first]
-    alt = next((x for x in (he, hh, hl) if x is not None and x[0][:2] != first[0][:2]), None)
+    alt = next((x for x in (hs, he, hh, hl) if x is not None and x[0][:2] != first[0][:2]), None)
     return [first] if alt is None else [first, alt]
 
 
@@ -1936,8 +2470,10 @@ def candidates(
 
     ``body``: the distinct candidate sentences (one per template and fact) in salience order, each ``{id,
     template, cites, slots, text, mandatory, salience, section, order}`` with ids ``C1``.. in that order. The
-    mandatory ones are deaths when any, the lowest count when the dip is deep, every kin-group event tied at
-    the largest size (three at most, by step and id) and the end of the run.
+    mandatory ones are the turnover, the catastrophe deaths when any, the lowest count when the dip is deep,
+    the number of kin group changes too short to list and the end of the run. The lowest count is a candidate
+    only when the dip is deep, and the largest group only when that changed. A quiet chapter has the turnover
+    and the changes too short to list, and nothing else.
 
     ``headlines``: ``H1`` the template-mode headline and at most ``H2``, an alternative of another kind (none
     under a large change or a crash). ``block``: the interventions block, complete and in order (standing
@@ -1956,40 +2492,76 @@ def candidates(
             items.append((sal, c))
 
     sx = _SECTION_INDEX
+    tov = ctx.one("turnover")
+    if tov:
+        add("TO", {"turnover": tov}, (_SAL["D"], 0), (sx["D"], 0), True)
     d = ctx.one("deaths")
-    if d and d["total"] > 0:
-        add("D-2" if d["catastrophe"] > 0 else "D-1", {"deaths": d}, (_SAL["D"],), (sx["D"],), True)
+    if d and d["catastrophe"] > 0:
+        add("DC", {"deaths": d}, (_SAL["D"], 1), (sx["D"], 1), True)
     pop = ctx.one("population")
-    if pop and "min" in pop and pop["min"] < min(pop["from"], pop["to"]):
-        add("P-low", {"population": pop}, (_SAL["P-low"],), (sx["P-low"],), bool(pop["deep_dip"]))
-    kin = _kin_events(ctx)
-    top = [e for e in kin if kin and e["size"] == kin[0]["size"]]
-    top = sorted(top, key=lambda e: (e["s1"], e["system"]))[: rules.max_mandatory_events]
+    if pop and "min" in pop and pop["deep_dip"] and pop["min"] < min(pop["from"], pop["to"]):
+        add("P-low", {"population": pop}, (_SAL["P-low"],), (sx["P-low"],), True)
+    ds = ctx.one("starve")
+    if ds:
+        add("DS", {"starve": ds}, (_SAL["DS"],), (sx["DS"],))
+    sn = ctx.one("storms")
+    if sn:
+        if sn["tracked"] >= 1:
+            add("ST-n", {"storms": sn}, (_SAL["ST-n"],), (sx["ST"], 0, 0, 0))
+        if sn["formed"] + sn["dissolved"] >= 1:
+            add("ST-b", {"storms": sn}, (_SAL["ST-b"],), (sx["ST"], 1, 0, 0))
+    for j, st in enumerate(ctx.kinds.get("storm", ())):
+        a_, b_ = ctx.chapter["start"], ctx.chapter["end"]
+        if st["named_step"] is not None and a_ < st["named_step"] <= b_:
+            add(
+                "ST-named",
+                {"storm": st},
+                (_SAL["EV"], 2 * j + 1, 0),
+                (sx["ST"], 2, st["named_step"], st["storm"]),
+            )
+        if st["end"] is not None and a_ < st["end"] <= b_:
+            add(
+                "ST-end",
+                {"storm": st},
+                (_SAL["EV"], 2 * j + 1, 1),
+                (sx["ST"], 4, st["end"], st["storm"]),
+            )
+        add(
+            "ST-peak",
+            {"storm": st},
+            (_SAL["ST-peak"], -st["ratio"], st["storm"]),
+            (sx["ST"], 3, st["storm"], 0),
+        )
+    for sd in ctx.kinds.get("stormdeaths", ()):
+        add("ST-d", {"stormdeaths": sd}, (_SAL["ST-d"], -sd["n"], sd["s"]), (sx["ST"], 5, sd["s"], 0))
+    for i, th in enumerate(_threads(ctx)):
+        weight = th["size"] if th["event"] == "formed" else th["peak"]
+        add(
+            _thread_template(th),
+            {"thread": th},
+            (_SAL["EV"], 2 * i, 0),
+            (sx["E"], th["told"], -weight, th["thread"]),
+        )
+    un = ctx.one("untold")
+    if un:
+        add("KS", {"untold": un}, (_SAL["KS"],), (sx["KS"],), True)
     for e in ctx.kinds.get("event", ()):
         tid = _event_template(e)
         if tid is None:
             continue
-        if e["family"] == "kin_group":
-            add(
-                tid,
-                {"event": e},
-                (_SAL["E"], -e["size"], e["s1"], e["system"]),
-                (sx["E"], e["s1"], -e["size"], e["system"]),
-                any(e is m for m in top),
-            )
-        else:
-            add(
-                tid,
-                {"event": e},
-                (_SAL["CE"], -e["size"], e["s1"], e["system"]),
-                (sx["CE"], e["s1"], -e["size"], e["system"]),
-            )
+        add(
+            tid,
+            {"event": e},
+            (_SAL["CE"], -e["size"], e["s1"], e["system"]),
+            (sx["CE"], e["s1"], -e["size"], e["system"]),
+        )
     for g in ctx.kinds.get("group", ()):
         ranked = g.get("rank") in (1, 2, 3)
         tid = f"G-r{g['rank']}" if ranked else "G-s"
         sal = (_SAL["G-top"] if g.get("rank") == 1 else _SAL["G-rest"], -g["size"], g["entity"])
         ordr = (sx["G"], -g["size"], g["entity"])
-        add(tid, {"group": g}, (*sal, 0), (*ordr, 0))
+        if tid != "G-r1" or _largest_moved(g, rules):  # the largest group is told when that changed
+            add(tid, {"group": g}, (*sal, 0), (*ordr, 0))
         if all(g.get(k) is not None for k in ("born", "died", "died_killed")):
             add("G-c", {"group": g}, (*sal, 1), (*ordr, 1))
     b = ctx.one("births")
@@ -2027,6 +2599,8 @@ def candidates(
     end = ctx.one("run_end")
     if end:
         add("END", {"run_end": end}, (_SAL["END"],), (sx["END"],), True)
+    if sheet["quiet"]:  # a quiet chapter says its turnover and how much did not last, and nothing else
+        items = [it for it in items if it[1]["template"] in QUIET_BODY]
     items.sort(key=lambda it: it[0])
     body = []
     for n, (_, c) in enumerate(items, start=1):
@@ -2057,8 +2631,7 @@ def block_items(ctx: _Ctx, excluded: list[dict[str, Any]] | None = None) -> list
         add(tid, {"standing": st}, st["id"])
     windows = {w["intervention"]: w for w in ctx.kinds.get("window", ())}
     for iv in ctx.kinds.get("intervention", ()):
-        tid = _I_TEMPLATE.get(iv["action"]) or ("I-fert" if "gain" in iv["params"] else "I-move")
-        add(tid, {"intervention": iv}, iv["id"])
+        add(_i_template(iv), {"intervention": iv}, iv["id"])
         x = _end_template(iv)
         if x is not None:
             add(x, {"intervention": iv}, iv["id"])
@@ -2174,38 +2747,67 @@ def template_report(sheet: Mapping[str, Any], rules: ReportRules = REPORT_V1) ->
 
 
 def _ticker_lines(sheet: Mapping[str, Any], rules: ReportRules = REPORT_V1) -> list[dict[str, Any]]:
-    """The ticker's lines as candidates (``step``, ``template``, ``cites``, ``slots``, ``text``)."""
+    """The ticker's lines as candidates (``step``, ``template``, ``cites``, ``slots``, ``text``). For each
+    snapshot ``s`` of the chapter, in order of priority: the intervention line of an entry applied in
+    ``[s - 250, s)``; else the sentence of the largest thread event told at ``s``; else the sentence of the
+    first storm named, or else ended, in ``(s - 250, s]``; else nothing (the population is in the lead)."""
     ctx = _Ctx(sheet, rules)
     ex: list[dict[str, Any]] = []
     out: list[dict[str, Any]] = []
+    every = rules.snapshot_every
     for snap in ctx.sheet["snapshots"]:
         s = snap["step"]
         fact = ctx.by_id[snap["id"]]
-        lines = []
-        for iv in ctx.kinds.get("intervention", ()):
-            if s - rules.snapshot_every <= iv["step"] < s:
-                tid = _I_TEMPLATE.get(iv["action"]) or ("I-fert" if "gain" in iv["params"] else "I-move")
-                lines.append(_try(ctx, ex, "T:" + tid, {"intervention": iv, "snapshot": fact}, block=True))
+        lines = [
+            _try(ctx, ex, "T:" + _i_template(iv), {"intervention": iv, "snapshot": fact}, block=True)
+            for iv in ctx.kinds.get("intervention", ())
+            if s - every <= iv["step"] < s
+        ]
         if not lines:
-            evs = sorted(
-                (e for e in ctx.kinds.get("event", ()) if e["s1"] == s and e["family"] == "kin_group"),
-                key=lambda e: (-e["size"], e["system"]),
+            ths = sorted(
+                (th for th in ctx.kinds.get("thread", ()) if th["told"] == s),
+                key=lambda th: (-(th["size"] if th["event"] == "formed" else th["peak"]), th["thread"]),
             )
-            tid = _event_template(evs[0]) if evs else None
-            if tid is not None:
-                lines.append(_try(ctx, ex, "T:" + tid, {"event": evs[0], "snapshot": fact}, block=True))
-        if not lines and snap["alive"] is not None:
-            lines.append(_try(ctx, ex, "T-pop", {"snapshot": fact}, block=True))
-        out.extend({"step": s, **c} for c in lines if c is not None)
+            if ths:
+                lines.append(
+                    _try(
+                        ctx,
+                        ex,
+                        "T:" + _thread_template(ths[0]),
+                        {"thread": ths[0], "snapshot": fact},
+                        block=True,
+                    )
+                )
+        if not lines:
+            for key, tid in (("named_step", "T:ST-named"), ("end", "T:ST-end")):
+                hit = sorted(
+                    (
+                        st
+                        for st in ctx.kinds.get("storm", ())
+                        if st[key] is not None and s - every < st[key] <= s
+                    ),
+                    key=lambda st, key=key: (st[key], st["storm"]),
+                )
+                if hit:
+                    lines.append(_try(ctx, ex, tid, {"storm": hit[0]}, block=True))
+                    break
+        out.extend({"step": _line_step(ctx, x, s), **x} for x in lines if x is not None)
     return out
+
+
+def _line_step(ctx: _Ctx, line: Mapping[str, Any], snapshot: int) -> int:
+    """The step a ticker line is dated: its own ``t`` slot (a storm's step) when it is not a snapshot's."""
+    fid, field = line["slots"]["t"]
+    return int(_get(ctx.by_id[fid], field)) if fid[:1] != "S" else snapshot
 
 
 def ticker(sheet: Mapping[str, Any], rules: ReportRules = REPORT_V1) -> list[dict[str, Any]]:
     """The ticker of a chapter, template only: for each snapshot step ``s`` of (a, b], by priority, one line
     "Step {s}: " + the intervention line of each entry applied in [s - 250, s) (after the snapshot at its
     step; two entries on one step give two lines, in log order); else one line with the sentence of the
-    largest kin-group event of the snapshot; else "Step {s}: the population was {n}." where the count is
-    known. Every line passes the checker. The window sentence is never in the ticker."""
+    largest thread event told at the snapshot; else one with the first storm named, or ended, since the
+    snapshot before; else none: the population filler of version 1 is gone. Every line passes the checker.
+    The window sentence is never in the ticker."""
     return [{"step": x["step"], "text": x["text"]} for x in _ticker_lines(sheet, rules)]
 
 
@@ -2268,6 +2870,16 @@ def source_words_digest() -> str:
     ).hexdigest()
 
 
+def storm_rules_digest() -> str:
+    """sha256 of the constants of the storm persistence rule the sheet's storm facts are made with (the
+    chronicle's: detections a track needs to be told, the vorticity that names a storm)."""
+    from alife.storms import NAME_ZETA, STORM_MIN_DETECTIONS
+
+    return hashlib.sha256(
+        _canon({"min_detections": STORM_MIN_DETECTIONS, "name_zeta": NAME_ZETA}).encode("utf-8")
+    ).hexdigest()
+
+
 def select_prompt_digest() -> str:
     """sha256 of everything fixed in the select request: the system message, the user message's format, the
     schema's name, the sampling values, the seed stream and the reply limit."""
@@ -2302,6 +2914,8 @@ def record_versions(rules: ReportRules = REPORT_V1) -> dict[str, Any]:
         "lexicon_digest": lexicon.LEXICON_DIGEST,
         "label_table_digest": label_table_digest(),
         "known_social_digest": known_social_digest(),
+        "kinthreads_digest": kinthreads.constants_digest(),
+        "storm_rules_digest": storm_rules_digest(),
         "source_words_digest": source_words_digest(),
         "select_prompt_digest": select_prompt_digest(),
     }

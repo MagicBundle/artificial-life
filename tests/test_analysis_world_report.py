@@ -204,7 +204,7 @@ def test_build_rebuilds_a_record_whose_version_or_facts_differ(tmp_path, capsys)
     capsys.readouterr()
     assert run("build", TINY, *ARGS, "--out", out) == 0
     assert "2 chapters (0 kept, 2 built)" in capsys.readouterr().out
-    assert lines(out)[0]["template_version"] == 1 and lines(out)[1]["facts_digest"] != "0" * 64
+    assert lines(out)[0]["template_version"] == 2 and lines(out)[1]["facts_digest"] != "0" * 64
 
 
 def test_build_checks_every_cut_before_writing_or_asking_anything(tmp_path, server, capsys) -> None:
@@ -239,7 +239,7 @@ def test_build_writes_after_every_chapter(tmp_path, monkeypatch) -> None:
     with pytest.raises(KeyboardInterrupt):
         run("build", TINY, *ARGS, "--out", out)
     got = lines(out)
-    assert len(got) == 2 and got[0]["template_version"] == 1 and got[1]["template_version"] == 0
+    assert len(got) == 2 and got[0]["template_version"] == 2 and got[1]["template_version"] == 0
     assert not list(tmp_path.glob(".*"))  # no temporary file is left
     monkeypatch.undo()
     assert run("build", TINY, *ARGS, "--out", out) == 0 and out.read_bytes() == full
@@ -808,7 +808,7 @@ def test_call_metrics_of_one_record() -> None:
     backwards = W.call_metrics(R.narrate(sheet, One(ids[5::-1])))
     assert backwards["tau_b"] == -1.0 and backwards["jaccard"] == 1.0
     skewed = W.call_metrics(R.narrate(sheet, One(ids[6:11])))
-    assert skewed["jaccard"] == 0.0 and skewed["mandatory_omitted"] == ["C1", "C3"]
+    assert skewed["jaccard"] == 0.0 and skewed["mandatory_omitted"] == ["C1"]
     failed = W.call_metrics(R.narrate(sheet, One(["C1"])))
     assert failed["fallback"] == "too_few" and failed["tau_b"] is None and failed["mandatory_omitted"] is None
 

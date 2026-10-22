@@ -5,10 +5,12 @@ the same run stopped at 2,000 and resumed from its middle checkpoint, as the fil
 ``meta`` member only). ``golden.json`` holds the sheet, the candidates, the template report and the ticker of the
 chapters (1,000, 2,000] and (2,000, 3,000] of the first run.
 
-    PYTHONPATH=tests python tests/data/make_report_tiny.py [OUT_DIR]
+    PYTHONPATH=tests python tests/data/make_report_tiny.py [OUT_DIR] [--golden-only]
 
 Slow (two simulations on the CPU, about a minute each); run it once, after a change to the report's output, and
-read the diff. The tests read the committed files and never simulate."""
+read the diff. The tests read the committed files and never simulate. ``--golden-only`` rebuilds ``golden.json``
+from the committed run files, without simulating: the right thing after a change of the report, which does not
+change the engine's output."""
 
 # ruff: noqa: E501  (expected report texts and fixture tables are long lines)
 
@@ -57,16 +59,8 @@ def keep(src: Path, dst: Path) -> None:
             np.savez(dst / "observers" / p.name, meta=z["meta"])
 
 
-def main(out: Path) -> None:
-    base = ["--preset", "tiny", "--set", "brain.weight_dtype=float32", "--set", "game.observe=true",
-            "--metrics-every", "100", "--checkpoint-every", "1500", "--set", "run.heavy_metrics_every=500"]  # fmt: skip
-    with tempfile.TemporaryDirectory() as tmp:
-        a, b = Path(tmp) / "a", Path(tmp) / "b"
-        run(["run", *base, "--steps", "3000", "--out", str(a)])
-        run(["run", *base, "--steps", "2000", "--out", str(b)])
-        run(["resume", str(b), "--checkpoint", "1500", "--until", "3000"])
-        keep(a, out / "report_tiny")
-        keep(b, out / "report_tiny_resumed")
+def write_golden(out: Path) -> None:
+    """``golden.json`` from the committed run files (no simulation)."""
     view = report.load_run(out / "report_tiny")
     golden = []
     for lo, hi in CHAPTERS:
@@ -90,8 +84,23 @@ def main(out: Path) -> None:
     (out / "report_tiny" / "golden.json").write_text(
         json.dumps(golden, indent=1, sort_keys=True) + "\n", encoding="utf-8"
     )
-    print(f"wrote {out}/report_tiny and report_tiny_resumed")
+
+
+def main(out: Path, golden_only: bool = False) -> None:
+    if not golden_only:
+        base = ["--preset", "tiny", "--set", "brain.weight_dtype=float32", "--set", "game.observe=true",
+                "--metrics-every", "100", "--checkpoint-every", "1500", "--set", "run.heavy_metrics_every=500"]  # fmt: skip
+        with tempfile.TemporaryDirectory() as tmp:
+            a, b = Path(tmp) / "a", Path(tmp) / "b"
+            run(["run", *base, "--steps", "3000", "--out", str(a)])
+            run(["run", *base, "--steps", "2000", "--out", str(b)])
+            run(["resume", str(b), "--checkpoint", "1500", "--until", "3000"])
+            keep(a, out / "report_tiny")
+            keep(b, out / "report_tiny_resumed")
+    write_golden(out)
+    print(f"wrote {out}/report_tiny" + ("" if golden_only else " and report_tiny_resumed"))
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent)
+    argv = [a for a in sys.argv[1:] if a != "--golden-only"]
+    main(Path(argv[0]) if argv else Path(__file__).parent, "--golden-only" in sys.argv[1:])

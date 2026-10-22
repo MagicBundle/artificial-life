@@ -34,7 +34,6 @@
  "excluded": {
   "entries_before_start": 0,
   "events_churn": 0,
-  "events_suspect": 0,
   "facts_dropped": [],
   "interventions_dropped": 0,
   "labels": {},
@@ -77,8 +76,15 @@
    "kind": "births"
   },
   {
-   "from": 9,
+   "born": 18768,
+   "died": 18220,
    "id": "F5",
+   "k": 0.5337473634872275,
+   "kind": "turnover"
+  },
+  {
+   "from": 9,
+   "id": "F6",
    "kind": "lineages",
    "to": 9
   },
@@ -86,7 +92,7 @@
    "from_count": 13951,
    "from_of": 33862,
    "from_share": 0.41199574744551415,
-   "id": "F6",
+   "id": "F7",
    "kind": "top_lineage",
    "to_count": 14383,
    "to_of": 34410,
@@ -97,7 +103,7 @@
    "from_count": 20690,
    "from_of": 33862,
    "from_share": 0.6110093910578229,
-   "id": "F7",
+   "id": "F8",
    "key": "settler",
    "kind": "label",
    "label": "Settler",
@@ -110,19 +116,22 @@
    "died": 1870,
    "died_killed": 240,
    "entity": 12,
-   "id": "F8",
+   "id": "F9",
    "kind": "group",
    "of": 34410,
+   "prev_share": null,
+   "prev_thread": null,
    "rank": 1,
    "share": 0.17785527462946818,
-   "size": 6120
+   "size": 6120,
+   "thread": null
   },
   {
    "born": 1480,
    "died": 1420,
    "died_killed": 190,
    "entity": 7,
-   "id": "F9",
+   "id": "F10",
    "kind": "group",
    "of": 34410,
    "rank": 2,
@@ -130,12 +139,18 @@
    "size": 4300
   },
   {
+   "id": "F11",
+   "kind": "untold",
+   "n": 3
+  },
+  {
    "alive_from": 14,
    "alive_to": 14,
    "exact": true,
    "extinct": 0,
+   "extinct_top": 0,
    "first_seen": 0,
-   "id": "F10",
+   "id": "F12",
    "kind": "houses",
    "largest": 3,
    "largest_name": "Zaeld",
@@ -144,7 +159,7 @@
    "origin": 0
   },
   {
-   "id": "F11",
+   "id": "F13",
    "kind": "colonies",
    "largest_size": 40,
    "tracked": 11
@@ -158,8 +173,8 @@
  },
  "origin": 0,
  "quiet": true,
- "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
- "report_version": 1,
+ "report_rules_digest": "6da80b824e0fc50e8e74b4b49dc702057d45f449f8b1de4f321a59f4c4d0dc2f",
+ "report_version": 2,
  "run": {
   "seed": 0
  },

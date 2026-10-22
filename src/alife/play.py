@@ -45,6 +45,8 @@ from alife.director import log as director_log
 from alife.director import pacing, rules
 from alife.game import alerts as alerts_mod
 from alife.game import observer as observer_mod
+from alife.game import report as report_mod
+from alife.game import reportjob
 from alife.game.chronicle import Chronicler, rebuild_backlog
 from alife.game.colors import OBSERVER_MODES, play_colors
 from alife.game.observe import EVAL_BIT
@@ -708,7 +710,11 @@ class PlayPacer:
         )
         self._terr: np.ndarray | None = None  # the latest territory: the (ny, nx) grid of owning kin ids
         self._storms_now: Sequence[Mapping[str, Any]] = ()  # the storms the latest tracker tick detected
-        # the report job starts through this hook (set by its stage)
+        # the report job (DESIGN §34.4): a worker that builds the report of each chapter at its end; None for
+        # a world with no observers or a chapter that is not a whole number of social snapshots
+        self.reports: reportjob.ReportJob | None = None
+        # called with the step of a chapter end, in ``before_checkpoint``, once the announcing ``CLCK`` is
+        # sent
         self.on_chapter_end: Callable[[int], None] | None = None
         # a chapter ended: the pause (if armed) starts at the next ``before_step``
         self._chapter_pending = False
@@ -858,6 +864,7 @@ class PlayPacer:
             for t in streamrec.TAGS
             if t in ("FRMA", "EVNT", "ENVS", "CLCK", "FOCS", "ALRT")
             or (t in ("IDNT", "INTN", "TERR") and obs is not None)
+            or (t == "RPRT" and self._reports_wanted())
             or (t in ("MAP1", "STRM") and self.layer is not None)
         ]
         legacy = streamrec.legacy_header(
@@ -899,6 +906,7 @@ class PlayPacer:
         self._send_weather(state)
         self._flush_events(backlog=True)
         self._send_alert_backlog()
+        self._open_reports()
         self._send_clock()
         self.sched.restart()
         self._t_step = self.clock.monotonic()
@@ -959,6 +967,56 @@ class PlayPacer:
             self._note(
                 f"the kin thread state at step {self._t} is unusable ({e}); the social log is refolded"
             )
+
+    def _reports_wanted(self) -> bool:
+        """Whether this world has live reports: it is observed, its social snapshots are at the cadence a
+        report is cut at (``ReportRules.snapshot_every``) and its chapter is a whole number of them."""
+        grid = report_mod.REPORT_V1.snapshot_every
+        return (
+            self.obs is not None and self.obs.social.snapshot_every == grid and self.opt.chapter % grid == 0
+        )
+
+    def _open_reports(self) -> None:
+        """Open the report job of this world (an observed one whose chapter is a whole number of social
+        snapshots), send the last reports of ``reports.jsonl`` as the backlog and queue the chapters of the
+        last three that have none (a quit just after a chapter end can stop before the worker has written its
+        record; a report is a pure function of the files)."""
+        if not self._reports_wanted():
+            return
+        grid = report_mod.REPORT_V1.snapshot_every
+        planet = self.opt.planet or {}
+        n_origin = int(planet.get("made_at_step", 0)) // self.opt.chapter
+        length = self.opt.chapter
+        self.reports = reportjob.ReportJob(
+            self.rd.path, length=length, n_origin=n_origin, emit=self._emit_report, note=self._note
+        )
+        self.on_chapter_end = self._start_report
+        for step, obj in reportjob.stored_objects(self.rd.path, length=length, n_origin=n_origin):
+            self._emit_report(step, obj, True)
+        start = int(self.rd.meta().get("start_step") or 0)
+        for b in reportjob.missing_chapters(self.rd.reports(), self._t, start, length, grid):
+            self.reports.start(b, None, backlog=True)
+
+    def _emit_report(self, step: int, obj: dict[str, Any], backlog: bool) -> None:
+        """Write an ``RPRT`` (from the loop thread or the report worker: ``post`` takes the write lock)."""
+        self.post(
+            "RPRT",
+            lambda st, seq: streamrec.encode_rprt(step=st, seq=seq, obj=obj, backlog=backlog),
+            step=step,
+        )
+
+    def _start_report(self, t: int) -> None:
+        """A chapter ended at ``t``: queue its report. The sidecar of ``t`` is written inside the checkpoint
+        that has just started, so the worker is handed the ``meta`` it will hold."""
+        if self.reports is not None and self.obs is not None:
+            self.reports.start(t, self.obs.meta())
+
+    def close(self) -> None:
+        """Let the report worker finish what it has (five seconds at most) and join it. ``serve_play`` calls
+        it when the run has ended; a chapter whose report was not finished is rebuilt when the world is
+        opened."""
+        if self.reports is not None and not self.reports.close():
+            self._note("the report worker did not finish within 5 s; it is rebuilt when the world is opened")
 
     @_guard
     def before_step(self, state: State, t: int) -> None:
@@ -1917,6 +1975,7 @@ def serve_play(
         res = runner.run(rd, cfg, box.pop(), steps, quiet=True, director=director, pacer=pacer)
     finally:
         control.close()
+        pacer.close()
     if res.status == "extinct":
         print(
             f"play: the world is extinct at step {int(to_numpy(res.state.step))}", file=sys.stderr, flush=True

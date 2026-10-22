@@ -1190,6 +1190,7 @@ def _play_arm(
             rd, cfg_arm, state, total, quiet=True, director=make_director(rd, cfg_arm, start), pacer=pacer
         )
     finally:
+        pacer.close()  # the report worker finishes before the sink goes
         sink.close()
         thread.join(timeout=60)
     wall = time.perf_counter() - t_all

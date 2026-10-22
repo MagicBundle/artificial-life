@@ -59,6 +59,7 @@ DIRECTOR_ARCHIVE_FILE: Final = "director_archive.json"
 COMMANDS_FILE: Final = "commands.jsonl"  # alife play: one line per power request (G3b spec §6.6)
 ALERTS_FILE: Final = "alerts.jsonl"  # alife play: every alert raised, updated, cleared or held back (§34.3)
 ALERTS_REPLAY_FILE: Final = "alerts.replay.jsonl"  # the wall-clock class's alerts of a replay of the log
+REPORTS_FILE: Final = "reports.jsonl"  # alife play: the world report of every chapter, as N1 records (§34.4)
 OBSERVERS_DIR: Final = "observers"  # the observer sidecars of an observing run (DESIGN §28.6)
 SOCIAL_FILE: Final = "social.jsonl"  # observers/social.jsonl: one record per social snapshot (DESIGN §29.10)
 STORMS_FILE: Final = "storms.jsonl"  # observers/storms.jsonl: one line per tracker tick with storms (§33.3)
@@ -254,6 +255,51 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def read_jsonl_from(path: Path, min_step: int, chunk: int = 1 << 20) -> list[dict[str, Any]]:
+    """The records of a step-ordered JSONL file (metrics rows, social records) with ``step >= min_step``, read
+    from the end of the file: a long play's log is not parsed from its first line to report on its last
+    chapter. Equal to ``[r for r in read_jsonl(path) if r["step"] >= min_step]`` (a torn last line is ignored;
+    a corrupt line inside the range raises ``json.JSONDecodeError``); the file must be in increasing step
+    order, which the runner writes it in. ``chunk`` is the size of a read."""
+    if not path.is_file():
+        return []
+    with open(path, "rb") as f:
+        pos = f.seek(0, os.SEEK_END)
+        buf = b""
+        while True:
+            start = max(0, pos - chunk)
+            f.seek(start)
+            buf = f.read(pos - start) + buf
+            pos = start
+            complete = buf.split(b"\n")
+            if pos > 0:
+                complete = complete[1:]  # the first piece may be the end of a line that began before
+            first = next((ln for ln in complete if ln.strip()), None)
+            if pos == 0 or first is None:
+                if pos == 0:
+                    break
+                continue
+            try:
+                step = json.loads(first).get("step")
+            except json.JSONDecodeError:
+                step = None  # only the torn last line can fail: it is the first piece of a tiny file
+            if isinstance(step, int) and step < min_step:
+                break
+    rows: list[dict[str, Any]] = []
+    for i, line in enumerate(complete):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            if i == len(complete) - 1:
+                break
+            raise
+        if isinstance(rec, dict) and isinstance(rec.get("step"), int) and rec["step"] >= min_step:
+            rows.append(rec)
+    return rows
+
+
 def _append_jsonl(path: Path, records: Iterable[Mapping[str, Any]]) -> None:
     """Append one JSON object per line and fsync."""
     lines = [_dumps(r) for r in records]
@@ -269,6 +315,17 @@ def _record_step(rec: Mapping[str, Any]) -> int | None:
     """The step a log record belongs to: ``step_applied`` (director entries) or ``step`` (rows, headers)."""
     step = rec.get("step_applied", rec.get("step"))
     return step if isinstance(step, int) else None
+
+
+def _is_report(rec: Any) -> bool:
+    """A line of ``reports.jsonl`` that is a report record: an object with int ``chapter_start``, ``step``."""
+    return (
+        isinstance(rec, dict)
+        and isinstance(rec.get("chapter_start"), int)
+        and isinstance(rec.get("step"), int)
+        and not isinstance(rec["chapter_start"], bool)
+        and not isinstance(rec["step"], bool)
+    )
 
 
 def _is_player_record(rec: Mapping[str, Any]) -> bool:
@@ -870,6 +927,32 @@ class RunDir:
         """All rows of ``metrics.jsonl``; a torn last line (a crash mid-append) is ignored."""
         return read_jsonl(self.path / METRICS_FILE)
 
+    def metrics_rows_from(self, step: int) -> list[dict[str, Any]]:
+        """The rows of ``metrics.jsonl`` with ``step >= step``, read from the end (``read_jsonl_from``)."""
+        return read_jsonl_from(self.path / METRICS_FILE, step)
+
+    def social_records_from(self, step: int) -> list[dict[str, Any]]:
+        """The records of the social log with ``step >= step``, read from the end (``read_jsonl_from``)."""
+        return read_jsonl_from(self.social_path, step)
+
+    def reports(self) -> list[dict[str, Any]]:
+        """The report records of ``reports.jsonl`` (``[]`` if there is none), in the file's order: by step,
+        then chapter start. Lines that are not report records (``put_report`` keeps them) are not in it."""
+        return [r for r in self.read_jsonl(REPORTS_FILE) if _is_report(r)]
+
+    def put_report(self, rec: Mapping[str, Any]) -> None:
+        """Put the report record of a chapter into ``reports.jsonl``, replacing the one of the same
+        ``(chapter_start, step)``: an atomic rewrite, the records sorted by ``(step, chapter_start)`` and any
+        line that is not a report record after them (what ``world_report build`` does, so the live file and an
+        offline build are the same file). Called by one thread at a time (the report job)."""
+        old = self.read_jsonl(REPORTS_FILE)
+        keyed = {(r["chapter_start"], r["step"]): r for r in old if _is_report(r)}
+        other = [r for r in old if not _is_report(r)]
+        keyed.update({(rec["chapter_start"], rec["step"]): dict(rec)})
+        ordered = [keyed[k] for k in sorted(keyed, key=lambda k: (k[1], k[0]))]
+        text = "".join(json.dumps(r, allow_nan=False, ensure_ascii=False) + "\n" for r in [*ordered, *other])
+        _atomic_write_text(self.path / REPORTS_FILE, text)
+
     def append_social(self, records: Iterable[Mapping[str, Any]]) -> None:
         """Append snapshot records to ``observers/social.jsonl`` (key ``step`` first) and fsync.
 
@@ -996,7 +1079,8 @@ class RunDir:
         sidecars; the kin thread states ``observers/kinthreads_<t>.json`` (G3b) go with them.
         The alert logs ``alerts.jsonl`` and ``alerts.replay.jsonl`` (G3b, DESIGN §34.3) are cut to their lines
         with step ≤ ``step``, always, whatever ``keep_director`` is: they belong to the trajectory, and a
-        replay regenerates the lines after the checkpoint.
+        replay regenerates the lines after the checkpoint. So is ``reports.jsonl`` (§34.4): its records of the
+        chapters that ended after ``step`` go.
 
         **Order, and a stop in the middle.** The later checkpoints and sidecars go first (the newest
         checkpoint, which ``LATEST`` may name, last) and ``LATEST`` is rewritten; only then are the logs and
@@ -1009,6 +1093,7 @@ class RunDir:
         social = self._parse_social()  # first: a log that cannot be parsed fails before any change
         storms = self._parse_storms()
         alerts = {name: self._parse_alerts(name) for name in (ALERTS_FILE, ALERTS_REPLAY_FILE)}
+        reports = self.read_jsonl(REPORTS_FILE) if (self.path / REPORTS_FILE).exists() else None
         metrics = None
         if (self.path / METRICS_FILE).exists():
             metrics = "".join(_dumps(r) + "\n" for r in self.metrics_rows() if r["step"] <= step)
@@ -1051,6 +1136,12 @@ class RunDir:
             if lines is not None:
                 kept = [r for r in lines if r["step"] <= step]
                 _atomic_write_text(self.path / name, "".join(_dumps(r) + "\n" for r in kept))
+        if reports is not None:  # a chapter that ended after ``step`` has a report the replay regenerates
+            kept_reports = [r for r in reports if not _is_report(r) or r["step"] <= step]
+            _atomic_write_text(
+                self.path / REPORTS_FILE,
+                "".join(json.dumps(r, allow_nan=False, ensure_ascii=False) + "\n" for r in kept_reports),
+            )
         for kind in ("births", "deaths"):
             for s0, s1, path in self.event_files(kind):
                 if s1 <= step:

@@ -33,7 +33,6 @@ NAMES = [
 EXCLUDED = {
     "labels": {},
     "social": None,
-    "events_suspect": 0,
     "events_churn": 0,
     "interventions_dropped": 0,
     "windows_confounded": 0,
@@ -66,16 +65,29 @@ def deaths(starved=100, killed=20, aged=5, catastrophe=0):
     }
 
 
-def group(entity, size, of, rank=None, born=None, died=None, killed=None):
+def group(
+    entity,
+    size,
+    of,
+    rank=None,
+    born=None,
+    died=None,
+    killed=None,
+    thread=None,
+    prev_thread=None,
+    prev_share=None,
+):
     f: dict[str, Any] = {"kind": "group", "entity": entity, "size": size, "of": of, "share": size / of}
     if rank is not None:
         f["rank"] = rank
+    if rank == 1:
+        f.update({"thread": thread, "prev_thread": prev_thread, "prev_share": prev_share})
     if born is not None:
         f.update({"born": born, "died": died, "died_killed": killed})
     return f
 
 
-def event(kind, system, size, other=-1, overlap=0, s0=A0 + 250, s1=A0 + 500, family="kin_group", reid=False):
+def event(kind, system, size, other=-1, overlap=0, s0=A0 + 250, s1=A0 + 500, family="colony", reid=False):
     return {
         "kind": "event",
         "family": family,
@@ -90,6 +102,84 @@ def event(kind, system, size, other=-1, overlap=0, s0=A0 + 250, s1=A0 + 500, fam
     }
 
 
+def thread(
+    event_kind,
+    tid,
+    name,
+    size,
+    *,
+    other=None,
+    first=A0 + 250,
+    told=A0 + 500,
+    end=None,
+    steps=None,
+    peak=None,
+    imp=1,
+    initial=False,
+    kin=None,
+):
+    """A thread fact (a kin group through its id changes): ``formed`` (from ``other``, a name) or ``ended`` (into
+    ``other``, or dissolved). An ended thread that was not there from the start has its lifetime."""
+    ended = event_kind == "ended"
+    if ended and end is None:
+        end = told - 250
+    if ended and steps is None and not initial:
+        steps = end - first
+    return {
+        "kind": "thread",
+        "event": event_kind,
+        "thread": tid,
+        "name": name,
+        "other": other,
+        "first_step": first,
+        "end": end if ended else None,
+        "steps": steps if ended else None,
+        "size": size,
+        "peak": size if peak is None else peak,
+        "told": told,
+        "imp": imp,
+        "initial": initial,
+        "kin": tid if kin is None else kin,
+        "x": 100.0,
+        "y": 50.0,
+    }
+
+
+def storms(tracked=6, named=4, formed=3, dissolved=1, named_new=2, longest=9000):
+    return {
+        "kind": "storms",
+        "tracked": tracked,
+        "named": named,
+        "formed": formed,
+        "dissolved": dissolved,
+        "named_new": named_new,
+        "longest": longest,
+    }
+
+
+def storm(sid, name, *, named=A0 + 1600, end=None, age=None, ratio=1.2, hemisphere="northern"):
+    return {
+        "kind": "storm",
+        "storm": sid,
+        "name": name,
+        "hemisphere": hemisphere,
+        "ratio": ratio,
+        "named_step": named,
+        "end": end,
+        "age": age,
+        "x": 12.5,
+        "y": 80.25,
+    }
+
+
+def untold(n=45):
+    return {"kind": "untold", "n": n}
+
+
+def turnover(born, died, frm, to):
+    return {"kind": "turnover", "born": born, "died": died, "k": died / ((frm + to) / 2)}
+
+
 def houses(
     alive_from=14,
     alive_to=12,
@@ -100,6 +190,7 @@ def houses(
     largest=3,
     size=6700,
     strict=True,
+    extinct_top=None,
 ):
     f = {
         "kind": "houses",
@@ -107,6 +198,7 @@ def houses(
         "alive_to": alive_to,
         "first_seen": first_seen,
         "extinct": extinct,
+        "extinct_top": extinct if extinct_top is None else extinct_top,
         "exact": exact,
         "origin": origin,
     }
@@ -200,6 +292,9 @@ def full_sheet() -> dict[str, Any]:
             "population": [pop(34_410, 21_140, 8_900)],
             "deaths": [deaths(36_050, 5_060, 190, 9_400)],
             "births": [{"kind": "births", "births": 28_030, "immigrants": 7}],
+            "turnover": [turnover(28_030, 50_700, 34_410, 21_140)],
+            "starve": [{"kind": "starve", "n": 8_249, "s": B0 - 1_500, "steps": 250, "median": 5_676}],
+            "stormdeaths": [{"kind": "stormdeaths", "n": 14, "s": B0 - 750, "steps": 250}],
             "lineages": [{"kind": "lineages", "from": 9, "to": 7}],
             "top_lineage": [
                 {
@@ -280,11 +375,23 @@ def full_sheet() -> dict[str, Any]:
                 group(2, 1830, 21_140, 2, 700, 80, 10),
                 group(5, 900, 21_140),
             ],
+            "thread": [
+                thread("formed", 2, "Shaemund", 1210, other="Braelix", imp=2),
+                thread("ended", 3, "Torvane", 980, other="Braelix", peak=1100, imp=2),
+                thread("formed", 4, "Kraiost", 640),
+                thread("ended", 5, "Flauth", 520, other="Braelix", initial=True),
+                thread("ended", 7, "Dreanor", 300, initial=True),
+                thread(
+                    "ended", 6, "Stiorn", 400, steps=3_000, first=A0 - 3_000, end=A0 + 2_000, told=A0 + 2_250
+                ),
+            ],
+            "untold": [untold(45)],
+            "storms": [storms()],
+            "storm": [
+                storm(3, "Phaitraern", named=A0 + 1_600, end=A0 + 5_000, age=8_725, ratio=1.4),
+                storm(4, "Guadouck", named=A0 + 2_000, ratio=1.1, hemisphere="southern"),
+            ],
             "event": [
-                event("split", 2, 1210, 1, 1180),
-                event("dissolved", 3, 980),
-                event("born", 4, 640),
-                event("merged", 5, 520, 1, 505),
                 event("born", 6, 300, 2, 200, family="colony"),
                 event("born", 7, 300, family="colony"),
             ],
@@ -307,8 +414,7 @@ def full_sheet() -> dict[str, Any]:
             "colonies": [{"kind": "colonies", "tracked": 7, "largest_size": 40}],
             "run_end": [{"kind": "run_end", "step": B0 + 230, "alive": 0}],
         },
-        ents=[("kin_group", i, nm) for i, nm in kin]
-        + [("kin_group", 6, None), ("kin_group", 7, None), ("house", 3, "Zaeld")],
+        ents=[("kin_group", i, nm) for i, nm in kin] + [("house", 3, "Zaeld")],
     )
 
 
@@ -333,7 +439,8 @@ def _random_interventions(rng: random.Random, a: int, b: int) -> tuple[list[dict
         )
         source = rng.choice(["rule", "llm"])
         rule = rng.choice([*sorted(R.templates.RULE_NAMES), None]) if source == "rule" else None
-        timed = action in R.TIMED
+        bloom = action == "fertility_shift" and rng.random() < 0.4  # a fertility gain with a duration
+        timed = action in ("regen_pulse", "habitat_loss") or bloom
         end = end_by = restored = None
         if action not in R.POINTS:
             end_by = rng.choice(["elapsed", "replaced", None]) if timed else rng.choice(["replaced", None])
@@ -356,8 +463,12 @@ def _random_interventions(rng: random.Random, a: int, b: int) -> tuple[list[dict
                 "radius": 40.0,
                 "kill_p": rng.choice([0.2, 0.6]),
             },
-            "fertility_shift": rng.choice(
-                [{"patch": 5, "gain": rng.choice([0.25, 1.75])}, {"patch": 6, "x": 300.5, "y": 120.25}]
+            "fertility_shift": (
+                {"patch": 5, "gain": rng.choice([1.5, 2.0])}
+                if bloom
+                else rng.choice(
+                    [{"patch": 5, "gain": rng.choice([0.25, 1.75])}, {"patch": 6, "x": 300.5, "y": 120.25}]
+                )
             ),
         }[action]
         ivs.append(
@@ -444,11 +555,10 @@ def random_sheet(rng: random.Random, rules: R.ReportRules = R.REPORT_V1) -> dict
     if groups:
         kinds["group"] = groups
     evs = []
-    for _ in range(rng.randint(0, 7)):
+    for _ in range(rng.randint(0, 4)):  # colony event frames
         kind = rng.choice(["born", "split", "merged", "dissolved"])
-        fam = rng.choice(["kin_group", "kin_group", "colony"])
         other = -1 if kind in ("born", "dissolved") and rng.random() < 0.5 else rng.choice(ids)
-        size = rng.choice([1, 40, 700, 700, 5000])
+        size = rng.choice([40, 700, 5000])
         evs.append(
             event(
                 kind,
@@ -458,13 +568,73 @@ def random_sheet(rng: random.Random, rules: R.ReportRules = R.REPORT_V1) -> dict
                 rng.randint(0, size) if kind == "born" else 0,
                 a + 250 * rng.randint(0, 3),
                 a + 250 * rng.randint(4, 8),
-                fam,
+                "colony",
                 rng.random() < 0.15,
             )
         )
-    evs.sort(key=lambda f: (-f["size"], f["s1"], f["family"], f["system"]))
+    evs.sort(key=lambda f: (-f["size"], f["s1"], f["system"]))
     if evs:
         kinds["event"] = evs[:6]
+    names = rng.sample(NAMES, 6)
+    ths = []
+    for j in range(
+        rng.randint(0, 6)
+    ):  # the kin threads: formed (from another), merged into another, dissolved
+        what = rng.choice(["formed", "formed_from", "into", "dissolved", "into_initial", "dissolved_initial"])
+        size = rng.choice([1, 40, 700, 5000])
+        told = a + 250 * rng.randint(1, 4)
+        first = a - rng.choice([0, 750, 3000])
+        other = names[(j + 1) % 6] if what in ("formed_from", "into", "into_initial") else None
+        init = what.endswith("initial")
+        ths.append(
+            thread(
+                "formed" if what.startswith("formed") else "ended",
+                j + 1,
+                names[j],
+                size,
+                other=other,
+                first=first,
+                told=told,
+                end=told - 250,
+                steps=None if init else told - 250 - first,
+                peak=size + rng.choice([0, 300]),
+                imp=rng.choice([1, 2]),
+                initial=init,
+            )
+        )
+    if ths:
+        kinds["thread"] = ths
+    if rng.random() < 0.5:
+        kinds["untold"] = [untold(rng.choice([1, 7, 94]))]
+    if "deaths" in kinds and "births" in kinds and frm + to > 0:
+        kinds["turnover"] = [turnover(kinds["births"][0]["births"], kinds["deaths"][0]["total"], frm, to)]
+    if rng.random() < 0.3:
+        kinds["starve"] = [{"kind": "starve", "n": 1500, "s": b - 250, "steps": 250, "median": 1000}]
+    if rng.random() < 0.3:
+        kinds["stormdeaths"] = [
+            {"kind": "stormdeaths", "n": rng.choice([10, 14]), "s": b - 500, "steps": 250}
+        ]
+    if rng.random() < 0.6:
+        kinds["storms"] = [
+            storms(rng.randint(0, 8), 0, rng.randint(0, 3), rng.randint(0, 2), rng.randint(0, 3))
+        ]
+        kinds["storms"][0]["named"] = min(kinds["storms"][0]["tracked"], rng.randint(0, 5))
+        sts = []
+        for j in range(rng.randint(0, 3)):
+            ended = rng.random() < 0.5
+            sts.append(
+                storm(
+                    j + 1,
+                    names[5 - j],
+                    named=a + 100 * rng.randint(1, 5) if (not ended or rng.random() < 0.5) else None,
+                    end=a + 100 * rng.randint(6, 9) if ended else None,
+                    age=rng.choice([0, 300, 8725]) if ended else None,
+                    ratio=rng.choice([1.0, 1.01, 2.5]),
+                    hemisphere=rng.choice(["northern", "southern"]),
+                )
+            )
+        if sts:
+            kinds["storm"] = sts
     if rng.random() < 0.7:
         kinds["houses"] = [
             houses(
@@ -514,9 +684,23 @@ def random_sheet(rng: random.Random, rules: R.ReportRules = R.REPORT_V1) -> dict
         kinds["run_end"] = [{"kind": "run_end", "step": b + 17, "alive": 0}]
     ivs, standing = _random_interventions(rng, a, b)
     kinds["intervention"], kinds["standing"] = ivs, standing
-    if ivs and rng.random() < 0.5:
+    timed = [
+        f
+        for f in ivs
+        if f["duration"] is not None and f["step"] <= a and (f["end"] is None or f["end"] >= b - 250)
+    ]
+    if timed and rng.random() < 0.5:  # a window lies inside the span of a timed entry
         kinds["window"] = [
-            {"kind": "window", "entry": ivs[0]["entry"], "w0": a, "w1": b - 250, "from": 100, "to": 90}
+            {
+                "kind": "window",
+                "entry": timed[0]["entry"],
+                "w0": a,
+                "w1": b - 250,
+                "r0": a,
+                "r1": b - 250,
+                "from": 100,
+                "to": 90,
+            }
         ]
     ents = [("kin_group", i, nm) for i, nm in kin] + [("house", 3, "Zaeld")]
     dropped = rng.choice([0, 0, 1, 5])

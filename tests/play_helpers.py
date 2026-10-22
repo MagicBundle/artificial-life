@@ -168,7 +168,10 @@ def run_paced(
         note=lambda m: None,
     )
     director = make_director(rd, cfg, 0) if cfg.run.director != "off" else None
-    res = runner.run(rd, cfg, init_state(cfg), steps, quiet=True, director=director, pacer=pacer)
+    try:
+        res = runner.run(rd, cfg, init_state(cfg), steps, quiet=True, director=director, pacer=pacer)
+    finally:
+        pacer.close()  # the report worker, if the world has one, finishes before the files are read
     return rd, res, pacer, out
 
 

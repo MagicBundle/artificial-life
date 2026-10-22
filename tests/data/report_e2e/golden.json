@@ -1,27 +1,26 @@
 [
  {
   "body": [
-   "There were 265 deaths: 229 by starvation, 36 by attack and 0 by old age.",
-   "The lowest count was 184, in the 100 steps to step 2,600.",
+   "318 organisms were born and 265 died: a turnover of 1.2 times the population.",
+   "21 starved in the 100 steps to step 3,700, against a median of 15.",
+   "Grodian has held together since step 3,250: 10 members.",
+   "Krusux has held together since step 3,250: 7 members.",
    "The Sydrird kin was the largest kin group at step 4,000, with 18 members, 7.1% of the population.",
-   "In the chapter, 42 agents were born into the Sydrird kin and 40 of its members died, 8 of them by attack.",
-   "There were 318 births and 16 arrivals from outside.",
-   "Counting houses traced from step 2,000, 109 houses had living members at step 4,000, against 106 at step 2,500; 15 were new and 12 died out."
+   "In the chapter, 42 agents were born into the Sydrird kin and 40 of its members died, 8 of them by attack."
   ],
-  "candidate_set_digest": "a2775f66d7f31d5d18df75b022f8c27bcbb9dd472e044dfecc28ff0c2c3a3ea2",
+  "candidate_set_digest": "337bd2fcff69f1cdb7cc925b5c8cdd59eabb8a91a60918f2aff5ad04caa21f16",
   "chapter": [
    2500,
    4000
   ],
   "excluded": {
    "events_churn": 20,
-   "events_suspect": 2,
    "facts_dropped": [
     "immigrant lineage bin"
    ],
    "windows_confounded": 1
   },
-  "facts_digest": "ffd8b1fac47d503c6dcc21e446e611528c1da7b74369b4fe5b499b8da0501021",
+  "facts_digest": "b72436adbd4be4e79d55011cd273dd66a79041f9c5c85a9f8060bad9e83aaeb8",
   "headline": "Population rose to 255",
   "interventions": [
    "At step 3,000, the director's rule extinction_rescue set food regrowth to 1.5 times its base rate for 5,000 steps.",
@@ -31,14 +30,6 @@
   "lead": "The population rose from 186 to 255 (+37.1%).",
   "ticker": [
    {
-    "step": 2750,
-    "text": "Step 2,750: the population was 195."
-   },
-   {
-    "step": 3000,
-    "text": "Step 3,000: the population was 198."
-   },
-   {
     "step": 3250,
     "text": "Step 3,250: At step 3,000, the director's rule extinction_rescue set food regrowth to 1.5 times its base rate for 5,000 steps."
    },
@@ -47,47 +38,35 @@
     "text": "Step 3,250: At step 3,000, the director's rule extinction_rescue queued 16 immigrants."
    },
    {
-    "step": 3500,
-    "text": "Step 3,500: the population was 233."
-   },
-   {
     "step": 3750,
-    "text": "Step 3,750: the population was 239."
-   },
-   {
-    "step": 4000,
-    "text": "Step 4,000: the population was 255."
+    "text": "Step 3,750: Grodian has held together since step 3,250: 10 members."
    }
   ]
  },
  {
   "body": [
-   "There were 529 deaths: 419 by starvation, 110 by attack and 0 by old age.",
-   "The lowest count was 253, in the 100 steps to step 4,300.",
-   "Between step 5,250 and step 5,500, kin group 10 formed with 18 members, 8 of them from kin group 2.",
-   "The Thiodiov kin was the largest kin group at step 6,000, with 25 members, 8.8% of the population.",
-   "There were 558 births.",
-   "Counting houses traced from step 2,000, 92 houses had living members at step 6,000, against 109 at step 4,000; 17 died out."
+   "558 organisms were born and 529 died: a turnover of 2.0 times the population.",
+   "33 starved in the 100 steps to step 5,300, against a median of 20.",
+   "Thiodiov has held together since step 4,750: 16 members.",
+   "Rizaeck dissolved, up to 10 members.",
+   "Grodian dissolved after 2,000 steps, up to 12 members.",
+   "2 further kin group changes did not last long enough to be listed."
   ],
-  "candidate_set_digest": "e98290c02365dbc8930e6ee6b34c595441fa3e0340dd905e6bc195d34783928c",
+  "candidate_set_digest": "ef0b3eee631b4d2ff638b445f600b2e90a5d447de578d18c8324bfc38aa00ac2",
   "chapter": [
    4000,
    6000
   ],
   "excluded": {
-   "events_churn": 49,
-   "events_suspect": 3,
+   "events_churn": 45,
    "facts_dropped": [
     "immigrant lineage bin"
-   ],
-   "name_clash": [
-    "the Sydrird kin"
    ],
    "quota": {
     "group": 1
    }
   },
-  "facts_digest": "f5fa0ca640c8f3cf0943e51752d850cca9a7f19c167d7a4e26a0426edaff9d9e",
+  "facts_digest": "88224fa945a8505a5cae034f034c561eb7ea1bf4a51b29e6e18e746f51b4423a",
   "headline": "Population rose to 284",
   "interventions": [
    "At step 3,000, the director's rule extinction_rescue set food regrowth to 1.5 times its base rate for 5,000 steps.",
@@ -104,49 +83,39 @@
     "text": "Step 4,250: At step 4,000, the director's model set the seasons to a period of 2,000 steps and an amplitude of 0.3."
    },
    {
-    "step": 4500,
-    "text": "Step 4,500: the population was 259."
-   },
-   {
-    "step": 4750,
-    "text": "Step 4,750: the population was 262."
-   },
-   {
-    "step": 5000,
-    "text": "Step 5,000: the population was 270."
-   },
-   {
     "step": 5250,
     "text": "Step 5,250: At step 5,000, the director's model set the fertility of patch 0 to 1.5 times its base value."
    },
    {
     "step": 5500,
-    "text": "Step 5,500: Between step 5,250 and step 5,500, kin group 10 formed with 18 members, 8 of them from kin group 2."
+    "text": "Step 5,500: Drychuask has held together since step 5,000: 7 members."
    },
    {
     "step": 5750,
-    "text": "Step 5,750: the population was 264."
+    "text": "Step 5,750: Rizaeck dissolved, up to 10 members."
    },
    {
     "step": 6000,
-    "text": "Step 6,000: the population was 284."
+    "text": "Step 6,000: Grodian dissolved after 2,000 steps, up to 12 members."
    }
   ]
  },
  {
   "body": [
-   "There were 666 deaths: 437 by starvation, 229 by attack and 0 by old age.",
-   "The lowest count was 270, in the 100 steps to step 6,200.",
-   "The Thiodiov kin was the largest kin group at step 8,000, with 37 members, 12.7% of the population."
+   "673 organisms were born and 666 died: a turnover of 2.3 times the population.",
+   "30 starved in the 100 steps to step 6,400, against a median of 22.",
+   "Staflaex has held together since step 6,250: 8 members.",
+   "Crozer has held together since step 6,750: 11 members.",
+   "Seimeim has held together since step 7,250: 5 members.",
+   "1 further kin group change did not last long enough to be listed."
   ],
-  "candidate_set_digest": "96a9f8e883df2869c6d5bbc614db078104a2964c0a18747134f5762a1e4691e6",
+  "candidate_set_digest": "5fe39d593175062c806d3600b0b0f9e4078fbea26e880167cd4af4034059b327",
   "chapter": [
    6000,
    8000
   ],
   "excluded": {
-   "events_churn": 45,
-   "events_suspect": 1,
+   "events_churn": 42,
    "facts_dropped": [
     "immigrant lineage bin"
    ],
@@ -154,8 +123,8 @@
     "group": 3
    }
   },
-  "facts_digest": "71c4271323fe9b0ae68a4b2b0aa9f66c1c5ed88d1772531dcde97abe31f23ffe",
-  "headline": "Population rose to 291",
+  "facts_digest": "82c34a405effbff6e98e276cd68c1e4c519b57c25efbb5c4f4f2adb64b9e9e56",
+  "headline": "Crozer formed",
   "interventions": [
    "At step 3,000, the director's rule extinction_rescue set food regrowth to 1.5 times its base rate for 5,000 steps.",
    "It ended at step 8,000; food regrowth returned to its base rate.",
@@ -167,56 +136,35 @@
   "lead": "The population rose from 284 to 291 (+2.5%).",
   "ticker": [
    {
-    "step": 6250,
-    "text": "Step 6,250: the population was 286."
-   },
-   {
-    "step": 6500,
-    "text": "Step 6,500: the population was 303."
-   },
-   {
     "step": 6750,
-    "text": "Step 6,750: the population was 305."
-   },
-   {
-    "step": 7000,
-    "text": "Step 7,000: the population was 311."
+    "text": "Step 6,750: Staflaex has held together since step 6,250: 8 members."
    },
    {
     "step": 7250,
-    "text": "Step 7,250: the population was 301."
-   },
-   {
-    "step": 7500,
-    "text": "Step 7,500: the population was 289."
+    "text": "Step 7,250: Crozer has held together since step 6,750: 11 members."
    },
    {
     "step": 7750,
-    "text": "Step 7,750: the population was 289."
-   },
-   {
-    "step": 8000,
-    "text": "Step 8,000: the population was 291."
+    "text": "Step 7,750: Seimeim has held together since step 7,250: 5 members."
    }
   ]
  },
  {
   "body": [
-   "There were 561 deaths: 323 by starvation, 238 by attack and 0 by old age.",
-   "The lowest count was 265, in the 100 steps to step 9,700.",
-   "The Briabysk kin was the largest kin group at step 10,000, with 50 members, 18.7% of the population.",
-   "In the chapter, 120 agents were born into the Briabysk kin and 97 of its members died, 66 of them by attack.",
-   "There were 538 births.",
-   "Counting houses traced from step 2,000, 65 houses had living members at step 10,000, against 75 at step 8,000; 10 died out."
+   "538 organisms were born and 561 died: a turnover of 2.0 times the population.",
+   "25 starved in the 100 steps to step 9,300, against a median of 16.",
+   "Seimeim dissolved after 750 steps, up to 8 members.",
+   "Sydrird dissolved, up to 25 members.",
+   "Drychuask dissolved after 4,250 steps, up to 14 members.",
+   "7 further kin group changes did not last long enough to be listed."
   ],
-  "candidate_set_digest": "00a99a571d9374120c7f2046134b3ad12f96920e410cab83264b295473bda067",
+  "candidate_set_digest": "1c3f7b8fb984399cf8e95640fb834d2538de536195a72de1bb5662c3df61200b",
   "chapter": [
    8000,
    10000
   ],
   "excluded": {
-   "events_churn": 38,
-   "events_suspect": 9,
+   "events_churn": 36,
    "facts_dropped": [
     "immigrant lineage bin"
    ],
@@ -224,8 +172,8 @@
     "group": 2
    }
   },
-  "facts_digest": "100dbc834f1ae3310222048c7572d7ddd8fc33969b3612a45db5b1e1f0ac0bba",
-  "headline": "Population fell to 268",
+  "facts_digest": "1c93f83f7145fb480428ba2f0b1f2e02b32aeb5e21eb9a4042811a0cb03105a1",
+  "headline": "Sydrird dissolved",
   "interventions": [
    "At step 4,000, the director's model set the seasons to a period of 2,000 steps and an amplitude of 0.3.",
    "It was still in place at step 10,000.",
@@ -237,36 +185,20 @@
   "lead": "The population fell from 291 to 268 (-7.9%).",
   "ticker": [
    {
-    "step": 8250,
-    "text": "Step 8,250: the population was 286."
-   },
-   {
-    "step": 8500,
-    "text": "Step 8,500: the population was 291."
-   },
-   {
     "step": 8750,
-    "text": "Step 8,750: the population was 282."
+    "text": "Step 8,750: Seimeim dissolved after 750 steps, up to 8 members."
    },
    {
     "step": 9000,
-    "text": "Step 9,000: the population was 290."
+    "text": "Step 9,000: Sydrird dissolved, up to 25 members."
    },
    {
     "step": 9250,
     "text": "Step 9,250: At step 9,000, the director's model set the drift of food patches to 2 times its base speed."
    },
    {
-    "step": 9500,
-    "text": "Step 9,500: the population was 278."
-   },
-   {
-    "step": 9750,
-    "text": "Step 9,750: the population was 273."
-   },
-   {
     "step": 10000,
-    "text": "Step 10,000: the population was 268."
+    "text": "Step 10,000: Drychuask dissolved after 4,250 steps, up to 14 members."
    }
   ]
  }

@@ -216,8 +216,10 @@ class KinThreads:
         ``thread``, ``name`` (as shown), ``a`` (the thread's current kin id), ``b`` (the kin id of the
         parent or of the thread it merged into, 0 if none), ``pos``, ``size``, ``peak``, ``first_step``,
         ``end_step``, ``steps`` (the lifetime in steps, None for an initial thread), ``life`` (snapshots),
-        ``parent``/``into`` (the other thread as shown, or None), ``initial``, ``imp`` and ``consumed`` (the
-        step of the record whose raw kin row the event consumes, None if it consumes none)."""
+        ``parent``/``into`` (the other thread as shown, or None), ``initial``, ``imp``, ``first_id`` (the kin
+        id the thread first listed: an identity within the observer epoch that, unlike ``thread``, a counter,
+        does not depend on how the table was restored) and ``consumed`` (the step of the record whose raw kin
+        row the event consumes, None if it consumes none)."""
         step = int(rec["step"])
         origin = int(rec.get("origin", 0))
         if self.origin is not None and origin != self.origin:
@@ -405,6 +407,7 @@ class KinThreads:
             "kind": "formed",
             "step": step,
             "thread": th.id,
+            "first_id": th.first_id,
             "name": th.shown,
             "a": th.ids[0],
             "b": parent.ids[0] if parent is not None and parent.ids else 0,
@@ -431,6 +434,7 @@ class KinThreads:
             "kind": "ended",
             "step": step,
             "thread": th.id,
+            "first_id": th.first_id,
             "name": th.shown,
             "a": th.ids[0] if th.ids else 0,
             "b": into.ids[0] if merged and into is not None and into.ids else 0,

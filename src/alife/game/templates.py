@@ -1,6 +1,11 @@
 """The templates of the world report (docs/DESIGN.md §31, ``TEMPLATE_VERSION``): every sentence a report
 shows is one of these strings with its slots filled from the fact sheet (``game.report``), nothing else.
 
+Version 2 (G3b, DESIGN §34.4): the kin sentences are the chronicle's own (a *thread* through its id changes,
+``game.kinthreads``), the storm sentences ``ST-*`` and their headline are new, the deaths list gives way to a
+turnover sentence, the sentence on the changes too short to list (``KS``) and a quiet chapter's headline are
+new, and a player's entry is "the player".
+
 A template is data: an id, a role (``lead``, ``body``, ``headline``, ``block``, ``ticker``), a text with
 ``{slot}`` and ``{marker}`` tokens, the slots (each reads one field of one kind of fact and has a format)
 and the
@@ -33,6 +38,7 @@ __all__ = [
     "AGREE_WORDS",
     "BLOCK_ROLES",
     "DISPLAY_WORDS",
+    "HEMISPHERE_WORDS",
     "RANK_WORDS",
     "RULE_NAMES",
     "SALIENCE_ORDER",
@@ -46,6 +52,7 @@ __all__ = [
     "Slot",
     "Template",
     "fmt_change",
+    "fmt_dec",
     "fmt_int",
     "fmt_lever",
     "fmt_pct",
@@ -57,7 +64,7 @@ __all__ = [
     "validate",
 ]
 
-TEMPLATE_VERSION: Final = 1
+TEMPLATE_VERSION: Final = 2
 
 
 class Slot(NamedTuple):
@@ -65,7 +72,7 @@ class Slot(NamedTuple):
 
     kind: str  # a fact kind, or "chapter", "excluded", "snapshot"
     field: str  # a key of the fact; "params.mult" or "params.center.0" reach into it
-    fmt: str  # int | id | pct | change | lever | kin | house | label | rule | text
+    fmt: str  # int | id | pct | change | lever | dec1 | dec2 | kin | house | label | name | rule | text
 
 
 class Template(NamedTuple):
@@ -92,8 +99,12 @@ AGREE_WORDS: Final[Mapping[str, tuple[str, str]]] = {
     "step": ("step", "steps"),
     "setting": ("setting", "settings"),
     "immigrant": ("immigrant", "immigrants"),
+    "organism": ("organism", "organisms"),
+    "storm": ("storm", "storms"),
+    "change": ("change", "changes"),
 }
 RANK_WORDS: Final = ("largest", "second largest", "third largest")  # the rank words of G-r1, G-r2, G-r3
+HEMISPHERE_WORDS: Final = ("northern", "southern")  # the hemisphere slot of ST-peak (a "text" slot)
 # Words an entity or label display adds around its name ("the Braelix kin", "House Zaeld", "kin group 12").
 DISPLAY_WORDS: Final = ("the", "kin", "house", "group")
 
@@ -110,14 +121,17 @@ SOURCE_WORDS: Final[Mapping[str, str]] = {
     "llm": "the director's model",
     "rule": "the director's rule {rule}",
     "none": "the director",
+    "player": "the player",
 }
 
 
 def source_words(source: str, rule: str | None) -> str:
-    """The words for the author of an entry (``source`` ``rule``, ``llm`` or ``revert``; ``rule`` "
-    "its rule name)."""
+    """The words for the author of an entry (``source`` ``rule``, ``llm``, ``player`` or ``revert``; ``rule``
+    its rule name)."""
     if source == "llm":
         return SOURCE_WORDS["llm"]
+    if source == "player":
+        return SOURCE_WORDS["player"]
     if rule is not None and rule in RULE_NAMES:
         return SOURCE_WORDS["rule"].format(rule=rule)
     return SOURCE_WORDS["none"]
@@ -193,8 +207,23 @@ def _ev_slots(*more: str) -> dict[str, Slot]:
 
 
 _MEMBER = {"member_n": ("size", "member")}
-_HE_SYS = {"sys": _s(_EV, "system", "kin")}
-_HE_BOTH = {**_HE_SYS, "other": _s(_EV, "other", "kin")}
+_KT_FIELDS = {
+    "name": ("name", "name"),
+    "other": ("other", "name"),
+    "s0": ("first_step", "int"),
+    "s": ("end", "int"),
+    "size": ("size", "int"),
+    "peak": ("peak", "int"),
+    "steps": ("steps", "int"),
+}
+
+
+def _kt_slots(*names: str) -> dict[str, Slot]:
+    """The slots of a kin-thread sentence: ``name`` and ``other`` are thread names (a ``name`` slot, masked by
+    the checker), the rest counts and steps of the ``thread`` fact."""
+    return {n: _s("thread", _KT_FIELDS[n][0], _KT_FIELDS[n][1]) for n in names}
+
+
 _GROUP_SLOTS = {
     "K": _s("group", "entity", "kin"),
     "b": _CH_B,
@@ -236,6 +265,18 @@ def _i_rows() -> list[Template]:
             "block",
             "At step {s}, {src} set the fertility of patch {patch} to {gain} times its base value.",
             {**base, "patch": _s(i, "params.patch", "id"), "gain": _s(i, "params.gain", "lever")},
+        ),
+        _t(
+            "I-fert-d",
+            "block",
+            "At step {s}, {src} set the fertility of patch {patch} to {gain} times its base value for "
+            "{duration} steps.",
+            {
+                **base,
+                "patch": _s(i, "params.patch", "id"),
+                "gain": _s(i, "params.gain", "lever"),
+                "duration": _s(i, "duration"),
+            },
         ),
         _t(
             "I-move",
@@ -337,10 +378,12 @@ def _x_rows() -> list[Template]:
 
 
 def _ticker_rows(rows: list[Template]) -> list[Template]:
-    """``T:<id>`` for each intervention line and each event sentence: "Step {t}: " + the sentence."""
+    """``T:<id>`` for each intervention line and each thread sentence: "Step {t}: " + the sentence, with ``t``
+    the step of the snapshot the line belongs to; and for the two storm sentences that carry their own step
+    (``T:ST-named``, ``T:ST-end``) a line dated by the storm's step."""
     out = []
     for r in rows:
-        if (r.id.startswith("I-") and r.id != "I-more") or r.id.startswith("E-"):
+        if (r.id.startswith("I-") and r.id != "I-more") or r.id.startswith("KT-"):
             out.append(
                 Template(
                     "T:" + r.id,
@@ -350,6 +393,25 @@ def _ticker_rows(rows: list[Template]) -> list[Template]:
                     r.agree,
                 )
             )
+    st = "storm"
+    out.append(
+        Template(
+            "T:ST-named",
+            "ticker",
+            "Step {t}: Storm {name} reached named strength.",
+            {"t": _s(st, "named_step"), "name": _s(st, "name", "name")},
+            {},
+        )
+    )
+    out.append(
+        Template(
+            "T:ST-end",
+            "ticker",
+            "Step {t}: Storm {name} dissolved after {age} {step_n}.",
+            {"t": _s(st, "end"), "name": _s(st, "name", "name"), "age": _s(st, "age")},
+            {"step_n": ("age", "step")},
+        )
+    )
     return out
 
 
@@ -396,32 +458,82 @@ def _catalogue() -> dict[str, Template]:
             {"step_n": ("min_steps", "step")},
         ),
         _t(
-            "D-1",
+            "TO",
             "body",
-            "There {be} {total} {death_n}: {starved} by starvation, {killed} by attack and {aged} by "
-            "old age.",
+            "{born} {organism_n} {be} born and {died} died: a turnover of {k} times the population.",
             {
-                "total": _s("deaths", "total"),
-                "starved": _s("deaths", "starved"),
-                "killed": _s("deaths", "killed"),
-                "aged": _s("deaths", "aged"),
+                "born": _s("turnover", "born"),
+                "died": _s("turnover", "died"),
+                "k": _s("turnover", "k", "dec1"),
             },
-            {"be": ("total", "be"), "death_n": ("total", "death")},
+            {"organism_n": ("born", "organism"), "be": ("born", "be")},
         ),
         _t(
-            "D-2",
+            "DC",
             "body",
-            "There {be} {total} {death_n}: {starved} by starvation, {killed} by attack, {aged} by "
-            "old age and "
-            "{catastrophe} by catastrophe.",
+            "{n} {organism_n} died by catastrophe.",
+            {"n": _s("deaths", "catastrophe")},
+            {"organism_n": ("n", "organism")},
+        ),
+        _t(
+            "DS",
+            "body",
+            "{n} starved in the {steps} {step_n} to step {s}, against a median of {median}.",
             {
-                "total": _s("deaths", "total"),
-                "starved": _s("deaths", "starved"),
-                "killed": _s("deaths", "killed"),
-                "aged": _s("deaths", "aged"),
-                "catastrophe": _s("deaths", "catastrophe"),
+                "n": _s("starve", "n"),
+                "steps": _s("starve", "steps"),
+                "s": _s("starve", "s"),
+                "median": _s("starve", "median"),
             },
-            {"be": ("total", "be"), "death_n": ("total", "death")},
+            {"step_n": ("steps", "step")},
+        ),
+        _t(
+            "ST-d",
+            "body",
+            "{n} {organism_n} died in storms in the {steps} {step_n} to step {s}.",
+            {
+                "n": _s("stormdeaths", "n"),
+                "steps": _s("stormdeaths", "steps"),
+                "s": _s("stormdeaths", "s"),
+            },
+            {"organism_n": ("n", "organism"), "step_n": ("steps", "step")},
+        ),
+        _t(
+            "ST-n",
+            "body",
+            "{tracked} {storm_n} {be} tracked at the end of the chapter, {named} of them named.",
+            {"tracked": _s("storms", "tracked"), "named": _s("storms", "named")},
+            {"storm_n": ("tracked", "storm"), "be": ("tracked", "be")},
+        ),
+        _t(
+            "ST-b",
+            "body",
+            "{formed} {storm_n} formed and {dissolved} dissolved during the chapter.",
+            {"formed": _s("storms", "formed"), "dissolved": _s("storms", "dissolved")},
+            {"storm_n": ("formed", "storm")},
+        ),
+        _t(
+            "ST-named",
+            "body",
+            "Storm {name} reached named strength at step {s}.",
+            {"name": _s("storm", "name", "name"), "s": _s("storm", "named_step")},
+        ),
+        _t(
+            "ST-peak",
+            "body",
+            "Storm {name}, in the {hemisphere} hemisphere, peaked at {ratio} times the naming threshold.",
+            {
+                "name": _s("storm", "name", "name"),
+                "hemisphere": _s("storm", "hemisphere", "text"),
+                "ratio": _s("storm", "ratio", "dec2"),
+            },
+        ),
+        _t(
+            "ST-end",
+            "body",
+            "Storm {name} dissolved at step {s} after {age} {step_n}.",
+            {"name": _s("storm", "name", "name"), "s": _s("storm", "end"), "age": _s("storm", "age")},
+            {"step_n": ("age", "step")},
         ),
         _t(
             "B-1",
@@ -490,50 +602,54 @@ def _catalogue() -> dict[str, Template]:
             {"agent_n": ("born", "agent"), "be": ("born", "be")},
         ),
         _t(
-            "E-born",
+            "KT-formed",
             "body",
-            "Between step {s0} and step {s1}, {sys} formed with {size} {member_n}.",
-            _ev_slots("sys"),
+            "{name} has held together since step {s0}: {size} {member_n}.",
+            _kt_slots("name", "s0", "size"),
             _MEMBER,
         ),
         _t(
-            "E-born-o",
+            "KT-formed-from",
             "body",
-            "Between step {s0} and step {s1}, {sys} formed with {size} {member_n}, {overlap} of them "
-            "from {other}.",
-            _ev_slots("sys", "other", "overlap"),
+            "{name} has held together since step {s0} after splitting from {other}: {size} {member_n}.",
+            _kt_slots("name", "s0", "other", "size"),
             _MEMBER,
         ),
         _t(
-            "E-split",
+            "KT-ended-into",
             "body",
-            "Between step {s0} and step {s1}, {sys} split from {other} with {size} {member_n}.",
-            _ev_slots("sys", "other"),
-            _MEMBER,
+            "{name} merged into {other} at step {s}; it lasted {steps} {step_n} and had up to {peak} "
+            "{member_n}.",
+            _kt_slots("name", "other", "s", "steps", "peak"),
+            {"step_n": ("steps", "step"), "member_n": ("peak", "member")},
         ),
         _t(
-            "E-merged",
+            "KT-ended-into-i",
             "body",
-            "Between step {s0} and step {s1}, {sys} merged into {other}; it had {size} {member_n} at "
-            "step {s0}.",
-            _ev_slots("sys", "other"),
-            _MEMBER,
+            "{name} merged into {other} at step {s}; it had up to {peak} {member_n}.",
+            _kt_slots("name", "other", "s", "peak"),
+            {"member_n": ("peak", "member")},
         ),
         _t(
-            "E-dissolved",
+            "KT-ended",
             "body",
-            "Between step {s0} and step {s1}, {sys} dissolved; it had {size} {member_n} at step {s0}.",
-            _ev_slots("sys"),
-            _MEMBER,
+            "{name} dissolved after {steps} {step_n}, up to {peak} {member_n}.",
+            _kt_slots("name", "steps", "peak"),
+            {"step_n": ("steps", "step"), "member_n": ("peak", "member")},
         ),
         _t(
-            "E-dissolved-o",
+            "KT-ended-i",
             "body",
-            "Between step {s0} and step {s1}, {sys} dissolved; it had {size} {member_n} at step "
-            "{s0}, and the group "
-            "it overlapped most was {other}.",
-            _ev_slots("sys", "other"),
-            _MEMBER,
+            "{name} dissolved, up to {peak} {member_n}.",
+            _kt_slots("name", "peak"),
+            {"member_n": ("peak", "member")},
+        ),
+        _t(
+            "KS",
+            "body",
+            "{n} further kin group {change_n} did not last long enough to be listed.",
+            {"n": _s("untold", "n")},
+            {"change_n": ("n", "change")},
         ),
         _t(
             "CE-born",
@@ -656,10 +772,17 @@ def _catalogue() -> dict[str, Template]:
         _t("HP-flat", "headline", "Population unchanged at {to}", {"to": _s(pop, "to")}),
         _t("HP-near", "headline", "Population at {to}", {"to": _s(pop, "to")}),
         _t("HP-dip", "headline", "Population dipped to {min}", {"min": _s(pop, "min")}),
-        _t("HE-born", "headline", "{sys} formed", _HE_SYS),
-        _t("HE-split", "headline", "{sys} split from {other}", _HE_BOTH),
-        _t("HE-merged", "headline", "{sys} merged into {other}", _HE_BOTH),
-        _t("HE-dissolved", "headline", "{sys} dissolved", _HE_SYS),
+        _t("HK-formed", "headline", "{name} formed", _kt_slots("name")),
+        _t("HK-ended-into", "headline", "{name} merged into {other}", _kt_slots("name", "other")),
+        _t("HK-ended", "headline", "{name} dissolved", _kt_slots("name")),
+        _t(
+            "HS",
+            "headline",
+            "{n} {storm_n} reached named strength",
+            {"n": _s("storms", "named_new")},
+            {"storm_n": ("n", "storm")},
+        ),
+        _t("HQ", "headline", "A quiet chapter", {}),
         _t(
             "HH",
             "headline",
@@ -687,20 +810,14 @@ def _catalogue() -> dict[str, Template]:
         _t(
             "W",
             "block",
-            "From step {w0} to step {w1}, while this was in place, the population went from {from} to {to}.",
+            "From {from} at step {r0} to {to} at step {r1}, with the change applied at step {w0}.",
             {
-                "w0": _s("window", "w0"),
-                "w1": _s("window", "w1"),
                 "from": _s("window", "from"),
+                "r0": _s("window", "r0"),
                 "to": _s("window", "to"),
+                "r1": _s("window", "r1"),
+                "w0": _s("window", "w0"),
             },
-        ),
-        # --- the ticker
-        _t(
-            "T-pop",
-            "ticker",
-            "Step {s}: the population was {n}.",
-            {"s": _s("snapshot", "step"), "n": _s("snapshot", "alive")},
         ),
     ]
     rows += _ticker_rows(rows)
@@ -716,15 +833,35 @@ BLOCK_ROLES: Final = ("block", "ticker")  # the roles in which lever words and r
 # --- section order and salience order -----------------------------------------------------------------------
 
 # The sections of a body, in the order they are displayed whatever the mode (docs/DESIGN.md §31, rev 3 F5):
-# the
-# order between sections is code's, so no sentence can be placed next to another by a model. Inside a section:
-# events by (end step, -size, id); groups by (rank or -size, id), each followed by its G-c; labels by
-# (-|change in share|, label); relations by (-attacks, a, b); colony events by (end step, -size).
-SECTION_ORDER: Final = ("D", "P-low", "E", "G", "B", "LN", "TL", "H", "LB", "R", "CE", "C", "END")
+# the order between sections is code's, so no sentence can be placed next to another by a model. Inside a
+# section: the turnover before the catastrophe deaths; the storm sentences by (kind, step, id) with the counts
+# first; thread sentences by (told step, -size, id); groups by (rank or -size, id), each followed by its G-c;
+# labels by (-|change in share|, label); relations by (-attacks, a, b); colony events by (end step, -size).
+SECTION_ORDER: Final = (
+    "D",
+    "P-low",
+    "DS",
+    "ST",
+    "E",
+    "KS",
+    "G",
+    "B",
+    "LN",
+    "TL",
+    "H",
+    "LB",
+    "R",
+    "CE",
+    "C",
+    "END",
+)
 SECTION_OF: Final[Mapping[str, str]] = {
-    **{t: "D" for t in ("D-1", "D-2")},
+    **{t: "D" for t in ("TO", "DC")},
     "P-low": "P-low",
-    **{t: "E" for t in TEMPLATES if t.startswith("E-")},
+    "DS": "DS",
+    **{t: "ST" for t in ("ST-n", "ST-b", "ST-named", "ST-peak", "ST-end", "ST-d")},
+    **{t: "E" for t in TEMPLATES if t.startswith("KT-")},
+    "KS": "KS",
     **{t: "G" for t in ("G-r1", "G-r2", "G-r3", "G-s", "G-c")},
     **{t: "B" for t in ("B-1", "B-2")},
     "LN": "LN",
@@ -737,10 +874,18 @@ SECTION_OF: Final[Mapping[str, str]] = {
     "END": "END",
 }
 # The order in which candidates are taken for a body (template mode takes the first k; ids C1..Cn follow it).
+# "EV" is the thread sentences and the storm sentences of naming and ending, taken in turn (the largest
+# thread event, the strongest storm, the next thread event, ...), so a chapter with many of one kind still
+# says the other.
 SALIENCE_ORDER: Final = (
     "D",
     "P-low",
-    "E",
+    "DS",
+    "ST-n",
+    "ST-b",
+    "EV",
+    "ST-peak",
+    "ST-d",
     "G-top",
     "B",
     "LN",
@@ -750,6 +895,7 @@ SALIENCE_ORDER: Final = (
     "R",
     "G-rest",
     "CE",
+    "KS",
     "C",
     "END",
 )
@@ -775,6 +921,11 @@ def fmt_lever(x: float) -> str:
     return "0" if s in ("-0", "") else s
 
 
+def fmt_dec(x: float, places: int) -> str:
+    """``x`` with exactly ``places`` decimals (``6.0``, ``1.01``)."""
+    return f"{float(x):.{places}f}"
+
+
 _TOKEN = re.compile(r"\{([A-Za-z_0-9]+)\}")
 _WORD = re.compile(r"[a-z]+(?:'[a-z]+)?")
 
@@ -797,7 +948,11 @@ def format_value(slot: Slot, value: Any) -> str:
         return fmt_change(value)
     if f == "lever":
         return fmt_lever(value)
-    return str(value)  # kin | house | label | rule | text: already a display string
+    if f == "dec1":
+        return fmt_dec(value, 1)
+    if f == "dec2":
+        return fmt_dec(value, 2)
+    return str(value)  # kin | house | label | name | rule | text: already a display string
 
 
 def render(tid: str, values: Mapping[str, Any]) -> str:
@@ -831,6 +986,7 @@ def _vocab() -> frozenset[str]:
         words |= {one, many}
     for r in RANK_WORDS:
         words |= set(r.split())
+    words |= set(HEMISPHERE_WORDS)
     for text in SOURCE_WORDS.values():
         words |= template_words(text)
     return frozenset(words)
@@ -889,13 +1045,14 @@ def _digest() -> str:
         },
         "agree_words": {k: list(v) for k, v in AGREE_WORDS.items()},
         "rank_words": list(RANK_WORDS),
+        "hemisphere_words": list(HEMISPHERE_WORDS),
         "display_words": list(DISPLAY_WORDS),
         "rule_names": sorted(RULE_NAMES),
         "source_words": dict(SOURCE_WORDS),
         "section_order": list(SECTION_ORDER),
         "section_of": dict(SECTION_OF),
         "salience_order": list(SALIENCE_ORDER),
-        "formats": ["thousands", "pct1", "signed_pct1", "decimals2_stripped"],
+        "formats": ["thousands", "pct1", "signed_pct1", "decimals2_stripped", "dec1", "dec2"],
     }
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 

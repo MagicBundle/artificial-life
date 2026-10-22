@@ -1,0 +1,9 @@
+{
+ "format_version": 1,
+ "seed": 0,
+ "config_hash": "c03d7089b26dc60b65f555f2cde7e3c3457feb2ffad6148b7f0be22260913fe0",
+ "dims": 3,
+ "start_step": 450000,
+ "weather_spinup": 20000,
+ "status": "done"
+}

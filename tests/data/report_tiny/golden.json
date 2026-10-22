@@ -4,118 +4,21 @@
   "candidates": [
    {
     "cites": [
-     "F3"
+     "F5"
     ],
     "id": "C1",
     "mandatory": true,
-    "template": "D-1",
-    "text": "There were 128 deaths: 102 by starvation, 26 by attack and 0 by old age."
+    "template": "TO",
+    "text": "128 organisms were born and 128 died: a turnover of 0.6 times the population."
    },
    {
     "cites": [
-     "F2"
+     "F13"
     ],
     "id": "C2",
-    "mandatory": false,
-    "template": "P-low",
-    "text": "The lowest count was 182, in the 100 steps to step 1,800."
-   },
-   {
-    "cites": [
-     "F1",
-     "F7"
-    ],
-    "id": "C3",
-    "mandatory": false,
-    "template": "G-r1",
-    "text": "The Kroaderd kin was the largest kin group at step 2,000, with 12 members, 6.1% of the population."
-   },
-   {
-    "cites": [
-     "F4"
-    ],
-    "id": "C4",
-    "mandatory": false,
-    "template": "B-1",
-    "text": "There were 128 births."
-   },
-   {
-    "cites": [
-     "F5"
-    ],
-    "id": "C5",
-    "mandatory": false,
-    "template": "LN",
-    "text": "The number of lineages with living members went from 130 to 110."
-   },
-   {
-    "cites": [
-     "F1",
-     "F6"
-    ],
-    "id": "C6",
-    "mandatory": false,
-    "template": "TL",
-    "text": "At step 1,000 the largest lineage held 4.0% of the agents, and at step 2,000 the largest held 5.6%."
-   },
-   {
-    "cites": [
-     "F1",
-     "F10"
-    ],
-    "id": "C7",
-    "mandatory": false,
-    "template": "H-1e",
-    "text": "110 houses had living members at step 2,000, against 131 at step 1,000; 21 died out."
-   },
-   {
-    "cites": [
-     "F1",
-     "F10"
-    ],
-    "id": "C8",
-    "mandatory": false,
-    "template": "H-2",
-    "text": "House Kroaderd was the largest house at step 2,000, with 11 members."
-   },
-   {
-    "cites": [
-     "F1",
-     "F8"
-    ],
-    "id": "C9",
-    "mandatory": false,
-    "template": "G-s",
-    "text": "The Rizaeck kin had 8 members at step 2,000, 4.0% of the population."
-   },
-   {
-    "cites": [
-     "F8"
-    ],
-    "id": "C10",
-    "mandatory": false,
-    "template": "G-c",
-    "text": "In the chapter, 7 agents were born into the Rizaeck kin and 9 of its members died, 0 of them by attack."
-   },
-   {
-    "cites": [
-     "F1",
-     "F9"
-    ],
-    "id": "C11",
-    "mandatory": false,
-    "template": "G-s",
-    "text": "The Sydrird kin had 8 members at step 2,000, 4.0% of the population."
-   },
-   {
-    "cites": [
-     "F1",
-     "F11"
-    ],
-    "id": "C12",
-    "mandatory": false,
-    "template": "C",
-    "text": "6 colonies were tracked at step 2,000; the largest had 10 members."
+    "mandatory": true,
+    "template": "KS",
+    "text": "2 further kin group changes did not last long enough to be listed."
    }
   ],
   "chapter": [
@@ -123,17 +26,12 @@
    2000
   ],
   "excluded": [],
-  "facts_digest": "a87fda061b40f658b5537a95b68dcdc83fd9afc6f1a2437737c0b95d59a535d5",
+  "facts_digest": "44f421c6e604fd8a585ce5aaa6e8cd577abe5b1b5a69c29271acf0761c7a54b2",
   "headlines": [
    {
     "id": "H1",
-    "template": "HH",
-    "text": "21 houses died out"
-   },
-   {
-    "id": "H2",
-    "template": "HL",
-    "text": "Lineages went from 130 to 110"
+    "template": "HQ",
+    "text": "A quiet chapter"
    }
   ],
   "report": {
@@ -141,23 +39,18 @@
     {
      "id": "C1",
      "origin": "mandatory",
-     "text": "There were 128 deaths: 102 by starvation, 26 by attack and 0 by old age."
+     "text": "128 organisms were born and 128 died: a turnover of 0.6 times the population."
     },
     {
      "id": "C2",
-     "origin": "template",
-     "text": "The lowest count was 182, in the 100 steps to step 1,800."
-    },
-    {
-     "id": "C3",
-     "origin": "template",
-     "text": "The Kroaderd kin was the largest kin group at step 2,000, with 12 members, 6.1% of the population."
+     "origin": "mandatory",
+     "text": "2 further kin group changes did not last long enough to be listed."
     }
    ],
    "headline": {
     "id": "H1",
     "origin": "template",
-    "text": "21 houses died out"
+    "text": "A quiet chapter"
    },
    "interventions": [],
    "lead": "The population was 198 at the start and at the end of the chapter."
@@ -183,7 +76,7 @@
      "id": 1,
      "kind": "kin_group",
      "name": "Rizaeck",
-     "name_from": 2000,
+     "name_from": 1000,
      "ref": "K1"
     },
     {
@@ -206,7 +99,6 @@
    "excluded": {
     "entries_before_start": 0,
     "events_churn": 10,
-    "events_suspect": 2,
     "facts_dropped": [],
     "interventions_dropped": 0,
     "labels": {},
@@ -249,8 +141,23 @@
      "kind": "births"
     },
     {
-     "from": 130,
+     "born": 128,
+     "died": 128,
      "id": "F5",
+     "k": 0.6464646464646465,
+     "kind": "turnover"
+    },
+    {
+     "id": "F6",
+     "kind": "starve",
+     "median": 10,
+     "n": 16,
+     "s": 1600,
+     "steps": 100
+    },
+    {
+     "from": 130,
+     "id": "F7",
      "kind": "lineages",
      "to": 110
     },
@@ -258,7 +165,7 @@
      "from_count": 8,
      "from_of": 198,
      "from_share": 0.04040404040404041,
-     "id": "F6",
+     "id": "F8",
      "kind": "top_lineage",
      "to_count": 11,
      "to_of": 198,
@@ -266,39 +173,73 @@
     },
     {
      "entity": 2,
-     "id": "F7",
+     "id": "F9",
      "kind": "group",
      "of": 198,
+     "prev_share": 0.04040404040404041,
+     "prev_thread": 1,
      "rank": 1,
      "share": 0.06060606060606061,
-     "size": 12
+     "size": 12,
+     "thread": 2,
+     "x": 8.68,
+     "y": 11.12
     },
     {
      "born": 7,
      "died": 9,
      "died_killed": 0,
      "entity": 1,
-     "id": "F8",
+     "id": "F10",
      "kind": "group",
      "of": 198,
      "share": 0.04040404040404041,
-     "size": 8
+     "size": 8,
+     "x": 4.39,
+     "y": 24.59
     },
     {
      "entity": 3,
-     "id": "F9",
+     "id": "F11",
      "kind": "group",
      "of": 198,
      "share": 0.04040404040404041,
-     "size": 8
+     "size": 8,
+     "x": 101.77,
+     "y": 18.84
+    },
+    {
+     "end": null,
+     "event": "formed",
+     "first_step": 1000,
+     "id": "F12",
+     "imp": 1,
+     "initial": false,
+     "kin": 1,
+     "kind": "thread",
+     "name": "Rizaeck",
+     "other": null,
+     "peak": 8,
+     "size": 7,
+     "steps": null,
+     "thread": 1,
+     "told": 1500,
+     "x": 4.11,
+     "y": 22.11
+    },
+    {
+     "id": "F13",
+     "kind": "untold",
+     "n": 2
     },
     {
      "alive_from": 131,
      "alive_to": 110,
      "exact": true,
      "extinct": 21,
+     "extinct_top": 1,
      "first_seen": 0,
-     "id": "F10",
+     "id": "F14",
      "kind": "houses",
      "largest": 13,
      "largest_name": "Kroaderd",
@@ -307,7 +248,7 @@
      "origin": 0
     },
     {
-     "id": "F11",
+     "id": "F15",
      "kind": "colonies",
      "largest_size": 10,
      "tracked": 6
@@ -321,8 +262,8 @@
    },
    "origin": 0,
    "quiet": true,
-   "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
-   "report_version": 1,
+   "report_rules_digest": "6da80b824e0fc50e8e74b4b49dc702057d45f449f8b1de4f321a59f4c4d0dc2f",
+   "report_version": 2,
    "run": {
     "seed": 0
    },
@@ -353,20 +294,8 @@
   },
   "ticker": [
    {
-    "step": 1250,
-    "text": "Step 1,250: the population was 194."
-   },
-   {
     "step": 1500,
-    "text": "Step 1,500: the population was 193."
-   },
-   {
-    "step": 1750,
-    "text": "Step 1,750: the population was 185."
-   },
-   {
-    "step": 2000,
-    "text": "Step 2,000: the population was 198."
+    "text": "Step 1,500: Rizaeck has held together since step 1,000: 7 members."
    }
   ]
  },
@@ -375,136 +304,12 @@
   "candidates": [
    {
     "cites": [
-     "F3"
+     "F5"
     ],
     "id": "C1",
     "mandatory": true,
-    "template": "D-1",
-    "text": "There were 159 deaths: 144 by starvation, 15 by attack and 0 by old age."
-   },
-   {
-    "cites": [
-     "F2"
-    ],
-    "id": "C2",
-    "mandatory": false,
-    "template": "P-low",
-    "text": "The lowest count was 184, in the 100 steps to step 2,600."
-   },
-   {
-    "cites": [
-     "F1",
-     "F7"
-    ],
-    "id": "C3",
-    "mandatory": false,
-    "template": "G-r1",
-    "text": "The Kroaderd kin was the largest kin group at step 3,000, with 11 members, 5.6% of the population."
-   },
-   {
-    "cites": [
-     "F7"
-    ],
-    "id": "C4",
-    "mandatory": false,
-    "template": "G-c",
-    "text": "In the chapter, 11 agents were born into the Kroaderd kin and 12 of its members died, 1 of them by attack."
-   },
-   {
-    "cites": [
-     "F4"
-    ],
-    "id": "C5",
-    "mandatory": false,
-    "template": "B-1",
-    "text": "There were 159 births."
-   },
-   {
-    "cites": [
-     "F5"
-    ],
-    "id": "C6",
-    "mandatory": false,
-    "template": "LN",
-    "text": "The number of lineages with living members went from 110 to 101."
-   },
-   {
-    "cites": [
-     "F1",
-     "F6"
-    ],
-    "id": "C7",
-    "mandatory": false,
-    "template": "TL",
-    "text": "At step 2,000 the largest lineage held 5.6% of the agents, and at step 3,000 the largest held 6.1%."
-   },
-   {
-    "cites": [
-     "F1",
-     "F10"
-    ],
-    "id": "C8",
-    "mandatory": false,
-    "template": "H-1e",
-    "text": "101 houses had living members at step 3,000, against 110 at step 2,000; 9 died out."
-   },
-   {
-    "cites": [
-     "F1",
-     "F10"
-    ],
-    "id": "C9",
-    "mandatory": false,
-    "template": "H-2",
-    "text": "House Sydrird was the largest house at step 3,000, with 12 members."
-   },
-   {
-    "cites": [
-     "F1",
-     "F8"
-    ],
-    "id": "C10",
-    "mandatory": false,
-    "template": "G-s",
-    "text": "The Rizaeck kin had 7 members at step 3,000, 3.5% of the population."
-   },
-   {
-    "cites": [
-     "F8"
-    ],
-    "id": "C11",
-    "mandatory": false,
-    "template": "G-c",
-    "text": "In the chapter, 7 agents were born into the Rizaeck kin and 8 of its members died, 0 of them by attack."
-   },
-   {
-    "cites": [
-     "F1",
-     "F9"
-    ],
-    "id": "C12",
-    "mandatory": false,
-    "template": "G-s",
-    "text": "The Sydrird kin had 7 members at step 3,000, 3.5% of the population."
-   },
-   {
-    "cites": [
-     "F9"
-    ],
-    "id": "C13",
-    "mandatory": false,
-    "template": "G-c",
-    "text": "In the chapter, 25 agents were born into the Sydrird kin and 25 of its members died, 5 of them by attack."
-   },
-   {
-    "cites": [
-     "F1",
-     "F11"
-    ],
-    "id": "C14",
-    "mandatory": false,
-    "template": "C",
-    "text": "8 colonies were tracked at step 3,000; the largest had 7 members."
+    "template": "TO",
+    "text": "159 organisms were born and 159 died: a turnover of 0.8 times the population."
    }
   ],
   "chapter": [
@@ -512,17 +317,12 @@
    3000
   ],
   "excluded": [],
-  "facts_digest": "3121ef5a5d63cff152a250baa9d57eaaffd48d920acf8e3de8cec6a81f0d5e54",
+  "facts_digest": "ea93f301e03e9595254c0b182dbf7845bd0e9eaa0c9aa5793da39345f1d1a6d2",
   "headlines": [
    {
     "id": "H1",
-    "template": "HH",
-    "text": "9 houses died out"
-   },
-   {
-    "id": "H2",
-    "template": "HL",
-    "text": "Lineages went from 110 to 101"
+    "template": "HQ",
+    "text": "A quiet chapter"
    }
   ],
   "report": {
@@ -530,23 +330,13 @@
     {
      "id": "C1",
      "origin": "mandatory",
-     "text": "There were 159 deaths: 144 by starvation, 15 by attack and 0 by old age."
-    },
-    {
-     "id": "C2",
-     "origin": "template",
-     "text": "The lowest count was 184, in the 100 steps to step 2,600."
-    },
-    {
-     "id": "C3",
-     "origin": "template",
-     "text": "The Kroaderd kin was the largest kin group at step 3,000, with 11 members, 5.6% of the population."
+     "text": "159 organisms were born and 159 died: a turnover of 0.8 times the population."
     }
    ],
    "headline": {
     "id": "H1",
     "origin": "template",
-    "text": "9 houses died out"
+    "text": "A quiet chapter"
    },
    "interventions": [],
    "lead": "The population was 198 at the start and at the end of the chapter."
@@ -572,7 +362,7 @@
      "id": 1,
      "kind": "kin_group",
      "name": "Rizaeck",
-     "name_from": 3000,
+     "name_from": 1000,
      "ref": "K1"
     },
     {
@@ -580,7 +370,7 @@
      "id": 2,
      "kind": "kin_group",
      "name": "Kroaderd",
-     "name_from": 3000,
+     "name_from": 1750,
      "ref": "K2"
     },
     {
@@ -588,14 +378,13 @@
      "id": 3,
      "kind": "kin_group",
      "name": "Sydrird",
-     "name_from": 3000,
+     "name_from": 2000,
      "ref": "K3"
     }
    ],
    "excluded": {
     "entries_before_start": 0,
     "events_churn": 8,
-    "events_suspect": 0,
     "facts_dropped": [],
     "interventions_dropped": 0,
     "labels": {},
@@ -638,8 +427,15 @@
      "kind": "births"
     },
     {
-     "from": 110,
+     "born": 159,
+     "died": 159,
      "id": "F5",
+     "k": 0.803030303030303,
+     "kind": "turnover"
+    },
+    {
+     "from": 110,
+     "id": "F6",
      "kind": "lineages",
      "to": 101
     },
@@ -647,7 +443,7 @@
      "from_count": 11,
      "from_of": 198,
      "from_share": 0.05555555555555555,
-     "id": "F6",
+     "id": "F7",
      "kind": "top_lineage",
      "to_count": 12,
      "to_of": 198,
@@ -658,42 +454,90 @@
      "died": 12,
      "died_killed": 1,
      "entity": 2,
-     "id": "F7",
+     "id": "F8",
      "kind": "group",
      "of": 198,
+     "prev_share": 0.06060606060606061,
+     "prev_thread": 2,
      "rank": 1,
      "share": 0.05555555555555555,
-     "size": 11
+     "size": 11,
+     "thread": 2,
+     "x": 8.6,
+     "y": 12.28
     },
     {
      "born": 7,
      "died": 8,
      "died_killed": 0,
      "entity": 1,
-     "id": "F8",
+     "id": "F9",
      "kind": "group",
      "of": 198,
      "share": 0.03535353535353535,
-     "size": 7
+     "size": 7,
+     "x": 4.34,
+     "y": 24.1
     },
     {
      "born": 25,
      "died": 25,
      "died_killed": 5,
      "entity": 3,
-     "id": "F9",
+     "id": "F10",
      "kind": "group",
      "of": 198,
      "share": 0.03535353535353535,
-     "size": 7
+     "size": 7,
+     "x": 103.39,
+     "y": 17.21
+    },
+    {
+     "end": null,
+     "event": "formed",
+     "first_step": 1750,
+     "id": "F11",
+     "imp": 1,
+     "initial": false,
+     "kin": 2,
+     "kind": "thread",
+     "name": "Kroaderd",
+     "other": null,
+     "peak": 12,
+     "size": 11,
+     "steps": null,
+     "thread": 2,
+     "told": 2250,
+     "x": 8.52,
+     "y": 11.44
+    },
+    {
+     "end": null,
+     "event": "formed",
+     "first_step": 2000,
+     "id": "F12",
+     "imp": 1,
+     "initial": false,
+     "kin": 3,
+     "kind": "thread",
+     "name": "Sydrird",
+     "other": null,
+     "peak": 8,
+     "size": 4,
+     "steps": null,
+     "thread": 3,
+     "told": 2500,
+     "x": 103.32,
+     "y": 16.81
     },
     {
      "alive_from": 110,
      "alive_to": 101,
      "exact": true,
      "extinct": 9,
+     "extinct_top": 0,
      "first_seen": 0,
-     "id": "F10",
+     "id": "F13",
      "kind": "houses",
      "largest": 253,
      "largest_name": "Sydrird",
@@ -702,7 +546,7 @@
      "origin": 0
     },
     {
-     "id": "F11",
+     "id": "F14",
      "kind": "colonies",
      "largest_size": 7,
      "tracked": 8
@@ -716,8 +560,8 @@
    },
    "origin": 0,
    "quiet": true,
-   "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
-   "report_version": 1,
+   "report_rules_digest": "6da80b824e0fc50e8e74b4b49dc702057d45f449f8b1de4f321a59f4c4d0dc2f",
+   "report_version": 2,
    "run": {
     "seed": 0
    },
@@ -749,19 +593,11 @@
   "ticker": [
    {
     "step": 2250,
-    "text": "Step 2,250: the population was 194."
+    "text": "Step 2,250: Kroaderd has held together since step 1,750: 11 members."
    },
    {
     "step": 2500,
-    "text": "Step 2,500: the population was 186."
-   },
-   {
-    "step": 2750,
-    "text": "Step 2,750: the population was 195."
-   },
-   {
-    "step": 3000,
-    "text": "Step 3,000: the population was 198."
+    "text": "Step 2,500: Sydrird has held together since step 2,000: 4 members."
    }
   ]
  }
