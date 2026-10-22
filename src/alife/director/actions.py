@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 import numbers
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final, NamedTuple
 
 import mlx.core as mx
@@ -33,6 +33,7 @@ from alife.invariants import (
 from alife.state import State, to_numpy
 
 SOURCES: Final = ("rule", "llm", "revert")
+GAME_SOURCES: Final = (*SOURCES, "player")  # what a record of the player channel (``is_player``) may say
 IMM_PENDING_CAP: Final = 1024  # the most immigrants the director may leave pending in ``env_imm_request``
 MOVE_MAX_FRAC: Final = 0.25  # a patch moves by at most L/4
 CATASTROPHE_RADIUS: Final = (20.0, 200.0)  # the upper end is also capped by L/2
@@ -52,6 +53,8 @@ class Spec:
     cooldown: int
     bounds: Mapping[str, tuple[float, float]]
     duration: tuple[int, int] | None = None  # timed effects only: reverted after this many steps
+    quantum: int | None = None  # durations round up to a multiple of this (None: ``director.rule_every``)
+    excluded: Mapping[str, tuple[float, float]] = field(default_factory=dict)  # open ranges inside a bound
 
 
 # DIRECTOR.md §5. ``set_seasons`` has no mode (it stays ``fields.season_mode``); the mutation-floor nudge is
@@ -67,7 +70,55 @@ MENU: Final[Mapping[str, Spec]] = {
     "drift_change": Spec(1, 50_000, {"mult": (0.5, 10.0)}),
 }
 TIMED: Final = tuple(name for name, spec in MENU.items() if spec.duration is not None)
-_REVERT_PARAMS: Final = {"habitat_loss": ("patch", "gain"), "regen_pulse": ("mult",)}
+_REVERT_PARAMS: Final = {
+    "habitat_loss": ("patch", "gain"),
+    "fertility_shift": ("patch", "gain"),
+    "regen_pulse": ("mult",),
+}
+
+# The player's table (GAMES.md §5.5, G3b spec §6.1.4 and §6.2): an override of ``MENU`` for entries of the
+# player channel (``is_player``), not a subset of it: its durations (3,000 to 12,000) lie below ``MENU``'s
+# lower bounds, round up to 250 (not ``rule_every``), Strike costs 1, and Bloom is a *timed* gain (``MENU``'s
+# gain is permanent). Bounds of a "radius" are written in the units of a 1024-wide world and scaled as the
+# research range is (``radius_bounds``). Everything is provisional until the G3b Mac day; it is data under a
+# version.
+GAME_SPEC_VERSION: Final = "game-v0"
+PLAYER_QUANTUM: Final = 250  # player durations are multiples of the metrics row
+PLAYER_BUDGET: Final = 6  # influence: cost units per ``PLAYER_BUDGET_WINDOW`` steps
+PLAYER_BUDGET_WINDOW: Final = 18_000
+GAME_SPECS: Final[Mapping[str, Spec]] = {
+    "regen_pulse": Spec(
+        1,
+        3_000,
+        {"mult": (0.6, 1.5)},
+        duration=(3_000, 12_000),
+        quantum=PLAYER_QUANTUM,
+        excluded={"mult": (0.9, 1.15)},  # a dead zone: no effect worth a cost, refused rather than clamped
+    ),
+    "fertility_shift": Spec(1, 3_000, {"gain": (1.5, 2.0)}, duration=(3_000, 12_000), quantum=PLAYER_QUANTUM),
+    "habitat_loss": Spec(2, 6_000, {}, duration=(3_000, 12_000), quantum=PLAYER_QUANTUM),
+    "catastrophe": Spec(1, 3_000, {"kill_p": (0.3, 0.6), "radius": (20.0, 80.0)}),
+}
+GAME_POWERS: Final = {
+    "food": "regen_pulse",
+    "bloom": "fertility_shift",
+    "blight": "habitat_loss",
+    "strike": "catastrophe",
+}
+
+
+def is_player(entry: Mapping[str, Any]) -> bool:
+    """True for a record of the player channel: a power (``source`` ``player``) or a revert written for one
+    (``source`` ``revert`` with ``scope`` ``player``). Rule P (G3b spec §6.1.2) applies to these records."""
+    return entry.get("source") == "player" or (
+        entry.get("source") == "revert" and entry.get("scope") == "player"
+    )
+
+
+def is_timed(entry: Mapping[str, Any]) -> bool:
+    """True if the entry has a duration. "Timed" is a property of the entry, not of the action's name:
+    ``fertility_shift`` is permanent in the research menu and timed in the player's."""
+    return entry.get("duration") is not None
 
 
 class EnvView(NamedTuple):
@@ -150,41 +201,66 @@ def _device(value: float, bounds: tuple[float, float]) -> float:
     return _clip(value, *bounds)
 
 
-def radius_bounds(cfg: Config) -> tuple[float, float]:
+def radius_bounds(cfg: Config, specs: Mapping[str, Spec] | None = None) -> tuple[float, float]:
     """The catastrophe radius range: ``CATASTROPHE_RADIUS`` capped by L/2. In 3D the menu's range is scaled
     by ``L / 1024`` (``CATASTROPHE_REF_SIZE``, §27.10): the column covers the same share of the floor as the
-    2D disc of a 1024-wide world, rather than most of a small 3D world."""
+    2D disc of a 1024-wide world, rather than most of a small 3D world. A table that lists a ``radius`` bound
+    for ``catastrophe`` (the player's) gives the range, in the same 1024-world units, scaled the same way."""
+    ref = (specs if specs is not None else MENU)["catastrophe"].bounds.get("radius", CATASTROPHE_RADIUS)
     if is_3d(cfg):
         k = cfg.world.size / CATASTROPHE_REF_SIZE
-        return CATASTROPHE_RADIUS[0] * k, min(CATASTROPHE_RADIUS[1] * k, cfg.world.size / 2)
-    hi = min(CATASTROPHE_RADIUS[1], cfg.world.size / 2)
-    return min(CATASTROPHE_RADIUS[0], hi), hi
+        return ref[0] * k, min(ref[1] * k, cfg.world.size / 2)
+    hi = min(ref[1], cfg.world.size / 2)
+    return min(ref[0], hi), hi
 
 
 # --- live: clamp ------------------------------------------------------------------------------------------
 
 
-def _bounds_of(action: str) -> tuple[int, int]:
-    bounds = MENU[action].duration
+def _bounds_of(action: str, specs: Mapping[str, Spec]) -> tuple[int, int]:
+    bounds = specs[action].duration
     if bounds is None:
         raise ActionError(f"{action} is not a timed action")
     return bounds
 
 
-def _clamp_set_seasons(raw: Mapping[str, Any], view: EnvView, cfg: Config) -> Clamped:
-    lo, hi = MENU["set_seasons"].bounds["period"]
+def _quantum(action: str, specs: Mapping[str, Spec], cfg: Config) -> int:
+    """The multiple a duration of ``action`` rounds up to: the table's, else ``director.rule_every``."""
+    return specs[action].quantum or cfg.director.rule_every
+
+
+def _clamp_set_seasons(
+    raw: Mapping[str, Any],
+    view: EnvView,
+    cfg: Config,
+    duration: int | float | None,
+    specs: Mapping[str, Spec],
+) -> Clamped:
+    lo, hi = specs["set_seasons"].bounds["period"]
     period = int(min(max(round(_number(raw, "period")), lo), hi))
-    amp = _device(_clip(_number(raw, "amp"), *MENU["set_seasons"].bounds["amp"]), ENV_SEASON_AMP)
+    amp = _device(_clip(_number(raw, "amp"), *specs["set_seasons"].bounds["amp"]), ENV_SEASON_AMP)
     return Clamped(
         {"period": period, "amp": amp}, {"period": view.season_period, "amp": view.season_amp}, None
     )
 
 
-def _clamp_fertility_shift(raw: Mapping[str, Any], view: EnvView, cfg: Config) -> Clamped:
+def _clamp_fertility_shift(
+    raw: Mapping[str, Any],
+    view: EnvView,
+    cfg: Config,
+    duration: int | float | None,
+    specs: Mapping[str, Spec],
+) -> Clamped:
     p = _patch(raw, view)
-    if "gain" in raw:
-        gain = _device(_clip(_number(raw, "gain"), *MENU["fertility_shift"].bounds["gain"]), ENV_PATCH_GAIN)
-        return Clamped({"patch": p, "gain": gain}, {"patch": p, "gain": float(view.patch_gain[p])}, None)
+    spec = specs["fertility_shift"]
+    if "gain" in raw or spec.duration is not None:  # a timed table (the player's) has the gain form only
+        gain = _device(_clip(_number(raw, "gain"), *spec.bounds["gain"]), ENV_PATCH_GAIN)
+        d = None
+        if spec.duration is not None:
+            d = _duration(
+                _bounds_of("fertility_shift", specs), duration, _quantum("fertility_shift", specs, cfg)
+            )
+        return Clamped({"patch": p, "gain": gain}, {"patch": p, "gain": float(view.patch_gain[p])}, d)
     size = cfg.world.size
     dx, dy = _number(raw, "dx"), _number(raw, "dy")
     cap = MOVE_MAX_FRAC * size
@@ -195,49 +271,82 @@ def _clamp_fertility_shift(raw: Mapping[str, Any], view: EnvView, cfg: Config) -
     return Clamped({"patch": p, "x": new[0], "y": new[1]}, {"patch": p, "x": old[0], "y": old[1]}, None)
 
 
-def _duration(bounds: tuple[int, int], raw: int | float | None, rule_every: int) -> int:
+def _duration(bounds: tuple[int, int], raw: int | float | None, quantum: int) -> int:
     if raw is None or isinstance(raw, bool) or not math.isfinite(raw):
         raise ActionError(f"a timed action needs a finite duration, got {raw!r}")
     lo, hi = bounds
-    return round_up(int(min(max(round(raw), lo), hi)), rule_every)
+    return round_up(int(min(max(round(raw), lo), hi)), quantum)
 
 
-def _clamp_habitat_loss(raw: Mapping[str, Any], view: EnvView, cfg: Config, duration: int | None) -> Clamped:
+def _clamp_habitat_loss(
+    raw: Mapping[str, Any],
+    view: EnvView,
+    cfg: Config,
+    duration: int | float | None,
+    specs: Mapping[str, Spec],
+) -> Clamped:
     p = _patch(raw, view)
-    d = _duration(_bounds_of("habitat_loss"), duration, cfg.director.rule_every)
+    d = _duration(_bounds_of("habitat_loss", specs), duration, _quantum("habitat_loss", specs, cfg))
     return Clamped({"patch": p, "gain": 0.0}, {"patch": p, "gain": float(view.patch_gain[p])}, d)
+
+
+def _outside(where: str, name: str, v: float, specs: Mapping[str, Spec], action: str) -> None:
+    """``ActionError`` if ``v`` lies strictly inside the open range the table excludes for ``name``."""
+    hole = specs[action].excluded.get(name)
+    if hole is not None and _f32(hole[0]) < v < _f32(hole[1]):
+        raise ActionError(f"{where}: {name} {v!r} lies in the range {hole[0]} to {hole[1]}, which is refused")
 
 
 def _clamp_regen_pulse(
     raw: Mapping[str, Any],
     view: EnvView,
     cfg: Config,
-    duration: int | None,
+    duration: int | float | None,
+    specs: Mapping[str, Spec],
     restore: Mapping[str, Any] | None,
 ) -> Clamped:
-    mult = _device(_clip(_number(raw, "mult"), *MENU["regen_pulse"].bounds["mult"]), ENV_REGEN_MULT)
-    d = _duration(_bounds_of("regen_pulse"), duration, cfg.director.rule_every)
+    mult = _device(_clip(_number(raw, "mult"), *specs["regen_pulse"].bounds["mult"]), ENV_REGEN_MULT)
+    _outside("regen_pulse", "mult", mult, specs, "regen_pulse")
+    d = _duration(_bounds_of("regen_pulse", specs), duration, _quantum("regen_pulse", specs, cfg))
     prev = dict(restore) if restore is not None else {"mult": view.regen_mult}  # superseding keeps the base
     return Clamped({"mult": mult}, prev, d)
 
 
-def _clamp_immigration_pulse(raw: Mapping[str, Any], view: EnvView, cfg: Config) -> Clamped:
-    lo, hi = MENU["immigration_pulse"].bounds["count"]
+def _clamp_immigration_pulse(
+    raw: Mapping[str, Any],
+    view: EnvView,
+    cfg: Config,
+    duration: int | float | None,
+    specs: Mapping[str, Spec],
+) -> Clamped:
+    lo, hi = specs["immigration_pulse"].bounds["count"]
     count = int(min(max(round(_number(raw, "count")), lo), hi, IMM_PENDING_CAP - view.imm_request))
     if count < lo:
         raise ActionError(f"{view.imm_request} immigrants are already pending (cap {IMM_PENDING_CAP})")
     return Clamped({"count": count}, {"pending": view.imm_request}, None)
 
 
-def _clamp_catastrophe(raw: Mapping[str, Any], view: EnvView, cfg: Config) -> Clamped:
+def _clamp_catastrophe(
+    raw: Mapping[str, Any],
+    view: EnvView,
+    cfg: Config,
+    duration: int | float | None,
+    specs: Mapping[str, Spec],
+) -> Clamped:
     centre = _wrap([_number(raw, "x"), _number(raw, "y")], cfg.world.size)
-    radius = _clip(_number(raw, "radius"), *radius_bounds(cfg))
-    kill_p = _clip(_number(raw, "kill_p"), *MENU["catastrophe"].bounds["kill_p"])
+    radius = _clip(_number(raw, "radius"), *radius_bounds(cfg, specs))
+    kill_p = _clip(_number(raw, "kill_p"), *specs["catastrophe"].bounds["kill_p"])
     return Clamped({"center": centre, "radius": radius, "kill_p": kill_p}, {}, None)
 
 
-def _clamp_drift_change(raw: Mapping[str, Any], view: EnvView, cfg: Config) -> Clamped:
-    mult = _device(_clip(_number(raw, "mult"), *MENU["drift_change"].bounds["mult"]), ENV_DRIFT_MULT)
+def _clamp_drift_change(
+    raw: Mapping[str, Any],
+    view: EnvView,
+    cfg: Config,
+    duration: int | float | None,
+    specs: Mapping[str, Spec],
+) -> Clamped:
+    mult = _device(_clip(_number(raw, "mult"), *specs["drift_change"].bounds["mult"]), ENV_DRIFT_MULT)
     return Clamped({"mult": mult}, {"mult": view.drift_mult}, None)
 
 
@@ -248,27 +357,30 @@ def clamp(
     view: EnvView,
     cfg: Config,
     restore: Mapping[str, Any] | None = None,
+    specs: Mapping[str, Spec] | None = None,
 ) -> Clamped:
     """Clamp a rule's raw request to the menu bounds and the device ranges (live mode).
 
     ``raw`` carries the request in its natural form (a move as ``dx, dy``, a catastrophe as ``x, y``); the
     result holds the explicit values that are logged and applied. A timed action's ``duration`` is clamped and
-    rounded up to a multiple of ``director.rule_every``. ``restore`` (regen pulses only) is the value to
-    return to when the new pulse supersedes an active one. Raises ``ActionError`` for an unknown action or an
-    unusable request (missing or non-finite values, a patch that does not exist, a full immigration queue).
+    rounded up to a multiple of the table's ``quantum`` (``director.rule_every`` for ``MENU``). ``restore``
+    (regen pulses only) is the value to return to when the new pulse supersedes an active one. ``specs`` is
+    the table (``MENU``, or ``GAME_SPECS`` for the player's powers). Raises ``ActionError`` for an action not
+    in the table or an unusable request (missing or non-finite values, a patch that does not exist, a full
+    immigration queue, a value in a range the table refuses).
     """
-    if action not in MENU:
+    specs = MENU if specs is None else specs
+    if action not in specs:
         raise ActionError(f"unknown action {action!r}")
-    if action == "habitat_loss":
-        return _clamp_habitat_loss(raw, view, cfg, duration)
     if action == "regen_pulse":
-        return _clamp_regen_pulse(raw, view, cfg, duration, restore)
-    return _CLAMPERS[action](raw, view, cfg)
+        return _clamp_regen_pulse(raw, view, cfg, duration, specs, restore)
+    return _CLAMPERS[action](raw, view, cfg, duration, specs)
 
 
 _CLAMPERS: Final = {
     "set_seasons": _clamp_set_seasons,
     "fertility_shift": _clamp_fertility_shift,
+    "habitat_loss": _clamp_habitat_loss,
     "immigration_pulse": _clamp_immigration_pulse,
     "catastrophe": _clamp_catastrophe,
     "drift_change": _clamp_drift_change,
@@ -314,14 +426,22 @@ def _check_move(where: str, params: Mapping[str, Any], prev: Any, cfg: Config) -
         raise ActionError(f"{where}: the move exceeds L/4 = {MOVE_MAX_FRAC * size:g}")
 
 
-def _check_forward(where: str, action: str, params: Mapping[str, Any], prev: Any, cfg: Config) -> None:
-    bounds = MENU[action].bounds
+def _check_forward(
+    where: str,
+    action: str,
+    params: Mapping[str, Any],
+    prev: Any,
+    cfg: Config,
+    specs: Mapping[str, Spec] | None = None,
+) -> None:
+    specs = MENU if specs is None else specs
+    bounds = specs[action].bounds
     if action == "set_seasons":
         _check_keys(where, params, {"period", "amp"})
         _in_range(where, "period", params["period"], *bounds["period"], integer=True)
         _in_range(where, "amp", params["amp"], *bounds["amp"])
-    elif action == "fertility_shift" and "gain" in params:
-        _check_keys(where, params, {"patch", "gain"})
+    elif action == "fertility_shift" and ("gain" in params or specs[action].duration is not None):
+        _check_keys(where, params, {"patch", "gain"})  # a timed table has the gain form only
         _check_patch(where, params, cfg)
         _in_range(where, "gain", params["gain"], *bounds["gain"])
     elif action == "fertility_shift":
@@ -334,7 +454,7 @@ def _check_forward(where: str, action: str, params: Mapping[str, Any], prev: Any
         _in_range(where, "gain", params["gain"], 0.0, 0.0)
     elif action == "regen_pulse":
         _check_keys(where, params, {"mult"})
-        _in_range(where, "mult", params["mult"], *bounds["mult"])
+        _outside(where, "mult", _in_range(where, "mult", params["mult"], *bounds["mult"]), specs, action)
     elif action == "immigration_pulse":
         _check_keys(where, params, {"count"})
         _in_range(where, "count", params["count"], *bounds["count"], integer=True)
@@ -346,65 +466,116 @@ def _check_forward(where: str, action: str, params: Mapping[str, Any], prev: Any
         for v in c:
             if _in_range(where, "center", v, 0, cfg.world.size) >= cfg.world.size:
                 raise ActionError(f"{where}: center {c!r} is not strictly inside the world")
-        _in_range(where, "radius", params["radius"], *radius_bounds(cfg))
+        _in_range(where, "radius", params["radius"], *radius_bounds(cfg, specs))
         _in_range(where, "kill_p", params["kill_p"], *bounds["kill_p"])
     elif action == "drift_change":
         _check_keys(where, params, {"mult"})
         _in_range(where, "mult", params["mult"], *bounds["mult"])
 
 
-def _check_revert(where: str, action: str, params: Mapping[str, Any], cfg: Config) -> None:
-    names = _REVERT_PARAMS.get(action)
+def _check_revert(
+    where: str, action: str, params: Mapping[str, Any], cfg: Config, specs: Mapping[str, Spec] | None = None
+) -> None:
+    specs = MENU if specs is None else specs
+    names = _REVERT_PARAMS.get(action) if action in specs and specs[action].duration is not None else None
     if names is None:
         raise ActionError(f"{where}: {action!r} has no timed effect to revert")
     _check_keys(where, params, set(names))
-    if action == "habitat_loss":
+    if action in ("habitat_loss", "fertility_shift"):
         _check_patch(where, params, cfg)
         _in_range(where, "gain", params["gain"], *ENV_PATCH_GAIN)
     else:
         _in_range(where, "mult", params["mult"], *ENV_REGEN_MULT)
 
 
-def _check_duration(where: str, action: str, entry: Mapping[str, Any], rule_every: int) -> None:
-    spec, d = MENU[action], entry.get("duration")
+def _check_duration(
+    where: str,
+    action: str,
+    entry: Mapping[str, Any],
+    rule_every: int,
+    specs: Mapping[str, Spec] | None = None,
+) -> None:
+    specs = MENU if specs is None else specs
+    spec, d = specs[action], entry.get("duration")
     if spec.duration is None:
         if d is not None:
             raise ActionError(f"{where}: {action} takes no duration, got {d!r}")
         return
+    quantum = spec.quantum or rule_every
     lo, hi = spec.duration
-    _in_range(where, "duration", d, lo, round_up(hi, rule_every), integer=True)
-    if d % rule_every:
-        raise ActionError(f"{where}: duration {d} is not a multiple of rule_every {rule_every}")
+    _in_range(where, "duration", d, lo, round_up(hi, quantum), integer=True)
+    if d % quantum:
+        name = "rule_every" if spec.quantum is None else "the player's quantum"
+        raise ActionError(f"{where}: duration {d} is not a multiple of {name} {quantum}")
+
+
+def _check_player_fields(where: str, entry: Mapping[str, Any], specs: Mapping[str, Spec]) -> None:
+    """The fields that make a record a player's: its scope, and for a power the command, the power's name
+    (which must be the action's), the table's version and the cost the table gives."""
+    if entry.get("scope") != "player":
+        raise ActionError(f"{where}: a player record must carry scope 'player', got {entry.get('scope')!r}")
+    command = entry.get("command")
+    if command is not None and (isinstance(command, bool) or not isinstance(command, int) or command < 0):
+        raise ActionError(f"{where}: command must be a non-negative integer, got {command!r}")
+    if entry["source"] == "revert":
+        return
+    if isinstance(command, bool) or not isinstance(command, int):
+        raise ActionError(f"{where}: a power must carry the request id as its command")
+    if GAME_POWERS.get(entry.get("power")) != entry["action"]:
+        raise ActionError(f"{where}: power {entry.get('power')!r} is not a power of {entry['action']}")
+    if entry.get("specs") != GAME_SPEC_VERSION:
+        raise ActionError(f"{where}: specs must be {GAME_SPEC_VERSION!r}, got {entry.get('specs')!r}")
+    if entry.get("cost") != specs[entry["action"]].cost:
+        raise ActionError(
+            f"{where}: cost {entry.get('cost')!r} is not the table's {specs[entry['action']].cost}"
+        )
 
 
 def validate_entry(entry: Any, cfg: Config, rule_every: int) -> None:
     """Strict check of one log entry (replay never clamps): ``ActionError`` on anything outside the menu.
 
     Checks the structure, the source and action names, ``step_applied`` (a positive multiple of
-    ``rule_every``), the exact parameter set, every bound (menu and device ranges), the duration of a timed
-    action, and that a patch move carries its previous coordinates and stays within L/4.
+    ``rule_every``; any non-negative integer for a record of the player channel, which is applied at the top
+    of a step), the exact parameter set, every bound (menu and device ranges), the duration of a timed
+    action, and that a patch move carries its previous coordinates and stays within L/4. A record of the
+    player channel (``is_player``) is checked against ``GAME_SPECS`` instead of ``MENU``, and carries its
+    scope, command, power, table version and cost.
     """
     if not isinstance(entry, Mapping):
         raise ActionError(f"a log entry must be an object, got {type(entry).__name__}")
     step = entry.get("step_applied")
     where = f"entry at step {step!r}"
-    if isinstance(step, bool) or not isinstance(step, int) or step <= 0 or step % rule_every:
-        raise ActionError(f"{where}: step_applied must be a positive multiple of rule_every {rule_every}")
+    player = is_player(entry)
+    specs = GAME_SPECS if player else MENU
+    if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+        bad = True
+    else:
+        bad = not player and (step <= 0 or step % rule_every != 0)
+    if bad:
+        raise ActionError(
+            f"{where}: step_applied must be a non-negative integer"
+            if player
+            else f"{where}: step_applied must be a positive multiple of rule_every {rule_every}"
+        )
     action, source, params = entry.get("action"), entry.get("source"), entry.get("params")
-    if action not in MENU:
+    if action not in specs:
         raise ActionError(f"{where}: unknown action {action!r}")
-    if source not in SOURCES:
+    if source not in (GAME_SOURCES if player else SOURCES):
         raise ActionError(f"{where}: unknown source {source!r}")
     if not isinstance(params, Mapping):
         raise ActionError(f"{where}: params must be an object")
     where = f"{where} ({action})"
+    if entry.get("scope") is not None and not player:
+        raise ActionError(f"{where}: only a record of the player channel carries a scope")
+    if player:
+        _check_player_fields(where, entry, specs)
     if source == "revert":
         if entry.get("duration") is not None:
             raise ActionError(f"{where}: a revert has no duration")
-        _check_revert(where, action, params, cfg)
+        _check_revert(where, action, params, cfg, specs)
         return
-    _check_forward(where, action, params, entry.get("prev"), cfg)
-    _check_duration(where, action, entry, rule_every)
+    _check_forward(where, action, params, entry.get("prev"), cfg, specs)
+    _check_duration(where, action, entry, rule_every, specs)
 
 
 # --- apply ------------------------------------------------------------------------------------------------

@@ -1316,7 +1316,9 @@ def environment_object(
     cooldowns: list[dict[str, Any]] = []
     if director is not None:
         entries = list(director.entries)
-        folded = pacing.fold(entries, t)
+        # the rule tier's cooldowns (a player's use of an action cools only the player's); the effects held
+        # are every scope's
+        folded = pacing.fold(entries, t, "rule")
         by_origin = {(e["action"], e["step_applied"]): e for e in entries if e.get("source") != "revert"}
         effects = [
             {

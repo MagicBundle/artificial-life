@@ -32,6 +32,7 @@ from alife.config import (
     DIRECTOR_POLICY_KEYS,
     OBSERVER_KEYS,
     PERSONAS,
+    PLAYER_MODE,
     PRESETS,
     RANDOM_PERSONA,
     Config,
@@ -1271,7 +1272,13 @@ def _play_serve(
         on_ready=ready,
     )
     rd.update_meta(knn_impl=spatial.knn_impl(cfg))
-    director = make_director(rd, cfg, step)
+    if cfg.run.director == "off" and cfg.director.enabled:
+        # The default launch: a world that can take director actions (a planet can) is played in the player
+        # mode, which decides nothing and applies the player's powers. With none applied it is digest-equal to
+        # `off` (inert env, DESIGN §26 D1). `--director rules` is `live` (and takes powers too).
+        cfg = dataclasses.replace(cfg, run=dataclasses.replace(cfg.run, director=PLAYER_MODE))
+        rd.save_config(cfg)
+    director = make_director(rd, cfg, step, game_specs=True)  # the log of a played world may hold powers
     steps = 2**40 if a.until is None else a.until - step
     return play.serve_play(
         rd, cfg, box, steps=steps, options=options, control=control, out=sink, director=director
@@ -1720,7 +1727,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--director",
         choices=("off", "rules"),
         default="off",
-        help="rules: the director's rule tier decides (the world needs director.enabled; no LLM)",
+        help="off (default): no rule tier; a world with director.enabled applies the player's powers "
+        "(DESIGN 34.5). rules: the director's rule tier decides (the world needs director.enabled; no LLM)",
     )
     p.add_argument(
         "--houses",

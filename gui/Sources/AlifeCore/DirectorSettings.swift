@@ -319,8 +319,10 @@ package struct DirectorSource: Equatable {
 
         var s = DirectorSettings()
         if let name = try string("run", "director") {
-            guard let mode = DirectorMode(rawValue: name) else {
-                throw LeverConfigError(message: "run.director is not off, live or replay")
+            // `player` is the mode `alife play` gives a world that can take director actions (DESIGN §34.5): it
+            // decides nothing, so a fork or a resume reads it as the director being off.
+            guard let mode = name == "player" ? DirectorMode.off : DirectorMode(rawValue: name) else {
+                throw LeverConfigError(message: "run.director is not off, live, replay or player")
             }
             s.mode = mode
         }

@@ -56,6 +56,7 @@ LATEST_FILE: Final = "LATEST"
 DIRECTOR_LOG_FILE: Final = "director.jsonl"
 JOURNAL_FILE: Final = "journal.jsonl"
 DIRECTOR_ARCHIVE_FILE: Final = "director_archive.json"
+COMMANDS_FILE: Final = "commands.jsonl"  # alife play: one line per power request (G3b spec §6.6)
 OBSERVERS_DIR: Final = "observers"  # the observer sidecars of an observing run (DESIGN §28.6)
 SOCIAL_FILE: Final = "social.jsonl"  # observers/social.jsonl: one record per social snapshot (DESIGN §29.10)
 STORMS_FILE: Final = "storms.jsonl"  # observers/storms.jsonl: one line per tracker tick with storms (§33.3)
@@ -262,6 +263,12 @@ def _record_step(rec: Mapping[str, Any]) -> int | None:
     """The step a log record belongs to: ``step_applied`` (director entries) or ``step`` (rows, headers)."""
     step = rec.get("step_applied", rec.get("step"))
     return step if isinstance(step, int) else None
+
+
+def _is_player_record(rec: Mapping[str, Any]) -> bool:
+    """A record of the player channel: a power, or the revert written for one (``actions.is_player``, which
+    this repeats because ``director`` imports this module)."""
+    return rec.get("source") == "player" or (rec.get("source") == "revert" and rec.get("scope") == "player")
 
 
 # --- state files ----------------------------------------------------------------------------------------
@@ -926,9 +933,11 @@ class RunDir:
         chunk spanning it to the records with ``step < step`` (renamed ``*_<s0>_<step>.npz``), and deletes
         checkpoints and observer sidecars after ``step`` so they cannot be confused with the resumed
         trajectory (the sidecars always, whatever ``keep_director`` is). The director files
-        are cut the same way (``director.jsonl`` and ``journal.jsonl`` to records with step ≤ ``step``; a
-        ``director_archive.json`` taken after it is deleted), except with ``keep_director`` (a replay, which
-        must never touch the log it replays).
+        are cut the same way (``director.jsonl`` and ``journal.jsonl`` to records with step ≤ ``step``, except
+        that a record of the player channel at ``step`` itself is dropped, and ``commands.jsonl`` to its lines
+        with ``t < step``: rule P, see ``_director_cut``; a ``director_archive.json`` taken after it is
+        deleted), except with ``keep_director`` (a replay, which must never touch the log it replays, nor the
+        player's inputs).
 
         The social log ``observers/social.jsonl`` is cut to its records with step ≤ ``step``, always, whatever
         ``keep_director`` is (it belongs to the trajectory, like the sidecars, and a replay regenerates it).
@@ -1006,12 +1015,30 @@ class RunDir:
 
     def _director_cut(self, step: int) -> list[tuple[Path, str | None]]:
         """What ``truncate_after`` does to the director files, read now and applied later: ``(path, new
-        text)``, or ``(path, None)`` for the archive taken after ``step``, which is deleted."""
+        text)``, or ``(path, None)`` for the archive taken after ``step``, which is deleted.
+
+        **Rule P** (G3b spec §6.1.2): a boundary entry at ``step`` is applied before the checkpoint at
+        ``step`` and so is in it, but a record of the player channel at ``step`` is applied *after* it (at the
+        top of the iteration that starts there) and is not. So an entry is kept if ``step_applied <= step``,
+        and a record of the player channel only if ``step_applied < step``; likewise a line of
+        ``commands.jsonl`` (the player's inputs, whose ``t`` is the step they were handled at) only if
+        ``t < step``."""
         cuts: list[tuple[Path, str | None]] = []
         for name in (DIRECTOR_LOG_FILE, JOURNAL_FILE):
             if (self.path / name).exists():
-                kept = [r for r in self.read_jsonl(name) if (at := _record_step(r)) is None or at <= step]
+                kept = [
+                    r
+                    for r in self.read_jsonl(name)
+                    if (at := _record_step(r)) is None or at < step + (0 if _is_player_record(r) else 1)
+                ]
                 cuts.append((self.path / name, "".join(_dumps(r) + "\n" for r in kept)))
+        if (self.path / COMMANDS_FILE).exists():
+            kept = [
+                r
+                for r in self.read_jsonl(COMMANDS_FILE)
+                if not isinstance(at := r.get("t"), int) or at < step
+            ]
+            cuts.append((self.path / COMMANDS_FILE, "".join(_dumps(r) + "\n" for r in kept)))
         archive = self.path / DIRECTOR_ARCHIVE_FILE
         if archive.exists():
             try:

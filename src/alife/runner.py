@@ -280,6 +280,12 @@ def run(
     so the checkpoint at ``t`` already contains them and a resume never re-applies anything.
     ``director=None`` is the exact behaviour without a director.
 
+    The director also has a **player channel** (G3b, ``Director.apply_pending``): at the top of every
+    iteration ``t``, after ``pacer.before_step``, it applies the powers the pacer queued and the ends of the
+    player's own timed effects (in a replay, the logged records of the channel at ``t``), logging them first.
+    That is after the checkpoint at ``t`` ("rule P"), and a no-op, one comparison, when nothing is queued
+    and no player's effect is running, so a run without a player is the old loop line for line.
+
     With a ``pacer`` (``alife play``, DESIGN §33.2.4) the loop calls its hooks and changes nothing else: it
     may block before a step (``before_step``), it sees each step's output and records (``after_step``),
     brackets every checkpoint, and may ask for a stop (``stop_requested``), which takes the same
@@ -365,6 +371,9 @@ def run(
         while t < end:
             if pacer is not None:
                 pacer.before_step(state, t)  # may block (pause, throttle); a quit returns at once
+            # the player channel: between steps t - 1 and t, after the checkpoint at t (rule P)
+            if director is not None:
+                state = director.apply_pending(state, t, stopping=stopping())
             state, out = step_fn(state)  # rebinding drops the only reference to the previous state
             recs: list[dict[str, Any]] = []
             if obs is not None:
