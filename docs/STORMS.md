@@ -300,11 +300,14 @@ owner's delegation of 2026-10-19, to revisit (cadence, the GUI architecture, dir
 - **Time controls.** Pause, slow (0.25–0.5×, interpolated), 1×.
   - At 14.4 steps/s, 1× is the maximum, so fast-forward needs §9.8 headroom.
   - Time-lapse is playback of recorded, decimated frames (GAMES §8.2), not simulation.
-- **World Report** (N1 offline after G2; live in G3; storm facts in W3).
-  - Code builds at most 40 facts: validated labels, social events, vitals, logged entries, storm tracks.
-  - The model writes placeholders, never numbers or names. A versioned checker drops failing sentences, with a
-    template as the fallback.
-  - No model text is fed back. Reports go in `reports.jsonl`, and replay never calls the model.
+- **World Report** (N1 offline, built; live in G3; storm facts in W3).
+  - Code builds the fact sheet: validated labels, social events, vitals, logged entries (storm tracks from W3).
+  - **N1 as built** (`python -m alife.analysis.world_report build | verify | probe`, DESIGN §31): code writes every
+    sentence from templates over a closed vocabulary, and a versioned checker re-derives each string from the facts.
+    This is the template path (coordinator choice C12). With `--llm --model ID` a local model only selects and
+    orders code-written candidate ids; it writes no text, and free prose is off. The earlier plan, a model that
+    writes placeholders, is not built.
+  - No model text is shown or fed back. In G3 reports go in `reports.jsonl`, and replay never calls the model.
   - Until storm-world labels are re-validated, only exact counts, events and storms are narrated.
 - **Consequences.**
   - Exact counts by cause, kin group and region, from device bincounts. Death records are capped at 2,048 per step.

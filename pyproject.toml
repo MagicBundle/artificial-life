@@ -39,7 +39,7 @@ addopts = "-ra"
 markers = [
   "slow: long-running (nightly)",
   "golden: MLX-version-pinned trajectory digest",
-  "llm: needs a real LM Studio server (runs only with ALIFE_LLM_URL set)",
+  "llm: needs a real LM Studio server (runs only with ALIFE_LLM_URL set, or with --model for the world report)",
 ]
 
 [tool.ruff]

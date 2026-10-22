@@ -1,0 +1,272 @@
+{
+ "chapter": [
+  300000,
+  306000
+ ],
+ "config_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+ "dims": 3,
+ "entities": [
+  {
+   "display": "House Gloarn",
+   "id": 4,
+   "kind": "house",
+   "name": "Gloarn",
+   "name_from": 306000,
+   "ref": "H4"
+  },
+  {
+   "display": "the Stiorn kin",
+   "id": 3,
+   "kind": "kin_group",
+   "name": "Stiorn",
+   "name_from": 306000,
+   "ref": "K3"
+  },
+  {
+   "display": "the Draeck kin",
+   "id": 17,
+   "kind": "kin_group",
+   "name": "Draeck",
+   "name_from": 306000,
+   "ref": "K17"
+  }
+ ],
+ "excluded": {
+  "entries_before_start": 0,
+  "events_churn": 0,
+  "events_suspect": 0,
+  "facts_dropped": [],
+  "interventions_dropped": 0,
+  "labels": {},
+  "name_clash": [],
+  "quota": {},
+  "social": null,
+  "windows_confounded": 0
+ },
+ "facts": [
+  {
+   "end": 306000,
+   "id": "F1",
+   "kind": "chapter",
+   "start": 300000
+  },
+  {
+   "change": 0.031578947368421054,
+   "deep_dip": false,
+   "from": 38000,
+   "id": "F2",
+   "kind": "population",
+   "min": 37640,
+   "min_row": 1517900,
+   "min_steps": 100,
+   "to": 39200
+  },
+  {
+   "aged": 380,
+   "catastrophe": 0,
+   "id": "F3",
+   "killed": 5200,
+   "kind": "deaths",
+   "starved": 17100,
+   "total": 22680
+  },
+  {
+   "births": 23880,
+   "id": "F4",
+   "immigrants": 0,
+   "kind": "births"
+  },
+  {
+   "from": 6,
+   "id": "F5",
+   "kind": "lineages",
+   "to": 6
+  },
+  {
+   "from_count": 11020,
+   "from_of": 38000,
+   "from_share": 0.29,
+   "id": "F6",
+   "kind": "top_lineage",
+   "to_count": 12152,
+   "to_of": 39200,
+   "to_share": 0.31
+  },
+  {
+   "born": 2500,
+   "died": 2100,
+   "died_killed": 700,
+   "entity": 3,
+   "id": "F7",
+   "kind": "group",
+   "of": 39200,
+   "rank": 1,
+   "share": 0.14285714285714285,
+   "size": 5600
+  },
+  {
+   "event": "split",
+   "family": "kin_group",
+   "id": "F8",
+   "kind": "event",
+   "other": 3,
+   "overlap": 610,
+   "reid": false,
+   "s0": 303000,
+   "s1": 303250,
+   "size": 640,
+   "system": 17
+  },
+  {
+   "alive_from": 10,
+   "alive_to": 10,
+   "exact": true,
+   "extinct": 0,
+   "first_seen": 0,
+   "id": "F9",
+   "kind": "houses",
+   "largest": 4,
+   "largest_name": "Zaeld",
+   "largest_size": 11800,
+   "largest_strict": true,
+   "origin": 0
+  }
+ ],
+ "labels": {
+  "env_default": true,
+  "intent_version": 1,
+  "key_found": true,
+  "rules_digest": "156ad4963b84ffe9636e9ba4fdd7592632c669bf6e490687d8eb2b38b9aec009"
+ },
+ "origin": 0,
+ "quiet": false,
+ "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
+ "report_version": 1,
+ "run": {
+  "seed": 0
+ },
+ "snapshots": [
+  {
+   "alive": 1250,
+   "id": "S300250",
+   "step": 300250
+  },
+  {
+   "alive": 1500,
+   "id": "S300500",
+   "step": 300500
+  },
+  {
+   "alive": 1750,
+   "id": "S300750",
+   "step": 300750
+  },
+  {
+   "alive": 1000,
+   "id": "S301000",
+   "step": 301000
+  },
+  {
+   "alive": 1250,
+   "id": "S301250",
+   "step": 301250
+  },
+  {
+   "alive": 1500,
+   "id": "S301500",
+   "step": 301500
+  },
+  {
+   "alive": 1750,
+   "id": "S301750",
+   "step": 301750
+  },
+  {
+   "alive": 1000,
+   "id": "S302000",
+   "step": 302000
+  },
+  {
+   "alive": 1250,
+   "id": "S302250",
+   "step": 302250
+  },
+  {
+   "alive": 1500,
+   "id": "S302500",
+   "step": 302500
+  },
+  {
+   "alive": 1750,
+   "id": "S302750",
+   "step": 302750
+  },
+  {
+   "alive": 1000,
+   "id": "S303000",
+   "step": 303000
+  },
+  {
+   "alive": 1250,
+   "id": "S303250",
+   "step": 303250
+  },
+  {
+   "alive": 1500,
+   "id": "S303500",
+   "step": 303500
+  },
+  {
+   "alive": 1750,
+   "id": "S303750",
+   "step": 303750
+  },
+  {
+   "alive": 1000,
+   "id": "S304000",
+   "step": 304000
+  },
+  {
+   "alive": 1250,
+   "id": "S304250",
+   "step": 304250
+  },
+  {
+   "alive": 1500,
+   "id": "S304500",
+   "step": 304500
+  },
+  {
+   "alive": 1750,
+   "id": "S304750",
+   "step": 304750
+  },
+  {
+   "alive": 1000,
+   "id": "S305000",
+   "step": 305000
+  },
+  {
+   "alive": 1250,
+   "id": "S305250",
+   "step": 305250
+  },
+  {
+   "alive": 1500,
+   "id": "S305500",
+   "step": 305500
+  },
+  {
+   "alive": 1750,
+   "id": "S305750",
+   "step": 305750
+  },
+  {
+   "alive": 1000,
+   "id": "S306000",
+   "step": 306000
+  }
+ ],
+ "start_step": 0,
+ "world_key": "df54434fe947dea8f36e5e23223f9676df1ee784959806c31eafb235012ee242"
+}

@@ -1,0 +1,587 @@
+[
+ {
+  "id": "A1",
+  "sheet": "s09",
+  "text": "After food regrowth ×1.5 for 5,000 steps (the extinction rescue), the population recovered from 9,150 to 9,800.",
+  "why": "credit by 'after' + 'recovered' (a rescue that worked)",
+  "expect": [
+   "R1",
+   "R3",
+   "R6:G",
+   "R6:L1",
+   "R6:V4"
+  ]
+ },
+ {
+  "id": "A2",
+  "sheet": "s09",
+  "text": "Before a catastrophe of radius 40 at (120, 88), kill probability 0.6 (the director's model), the Steiax kin dissolved.",
+  "why": "false order: K2 dissolved at 463,250, after the catastrophe at 463,000",
+  "expect": [
+   "R1",
+   "R3",
+   "R6:L1"
+  ]
+ },
+ {
+  "id": "A3",
+  "sheet": "s09",
+  "text": "The population fell from 30,250 to 8,900 until food regrowth ×1.5 for 5,000 steps (the extinction rescue).",
+  "why": "claims the fall stopped when the rescue began (no per-step data supports it)",
+  "expect": [
+   "R1",
+   "R3",
+   "R6:G",
+   "R6:L1",
+   "R6:V4"
+  ]
+ },
+ {
+  "id": "A4",
+  "sheet": "s04",
+  "text": "While food regrowth ×0.8 for 10,000 steps (the runaway damper) was in force, the population fell from 45,020 to 37,800.",
+  "why": "F2.from is at 1,518,000, before the damper began at 1,519,000",
+  "expect": [
+   "R1",
+   "R3",
+   "R6:L1",
+   "R6:V1"
+  ]
+ },
+ {
+  "id": "A5",
+  "sheet": "s11",
+  "text": "During food regrowth ×0.8 for 10,000 steps (the runaway damper), the population rose from 37,700 to 48,100.",
+  "why": "the damper ended at 1,537,000; the rise is measured to 1,542,000",
+  "expect": [
+   "R1",
+   "R3",
+   "R6:L1",
+   "R6:V1"
+  ]
+ },
+ {
+  "id": "A6",
+  "sheet": "s11",
+  "text": "After the end of food regrowth ×0.8 for 10,000 steps (the runaway damper), the population rose from 37,700 to 48,100.",
+  "why": "F9.from is at 1,536,000, before the end at 1,537,000",
+  "expect": [
+   "R1",
+   "R3",
+   "R6:L1",
+   "R6:V1"
+  ]
+ },
+ {
+  "id": "A7",
+  "sheet": "s02",
+  "text": "Before the Torvane kin dissolved at step 1,516,500, the Flauth kin merged into the Braelix kin.",
+  "why": "false order between world events: the merge (1,517,250) came after the dissolution (1,516,500)",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "A8",
+  "sheet": "s02",
+  "text": "After the Shaemund kin split from the Braelix kin at step 1,513,250, the Torvane kin dissolved.",
+  "why": "post hoc between two world events",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "A9",
+  "sheet": "s02",
+  "text": "With 36,050 deaths from starvation, the population fell to 21,140.",
+  "why": "'with' absolute clause: causal framing without a listed word",
+  "expect": [
+   "R1"
+  ]
+ },
+ {
+  "id": "A10",
+  "sheet": "s02",
+  "text": "The population fell to 21,140 amid 5,060 kills.",
+  "why": "'amid'",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "A11",
+  "sheet": "s02",
+  "text": "Following 41,300 deaths, the population fell to 21,140.",
+  "why": "'following'",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "A12",
+  "sheet": "s02",
+  "text": "The population fell to 21,140 as kills mounted as well.",
+  "why": "causal 'as' hidden by the 'as ... as' exemption; 'kills mounted' is uncited",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "A13",
+  "sheet": "s02",
+  "text": "Kills mounted, so the population fell to 21,140.",
+  "why": "'so' = therefore",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "A14",
+  "sheet": "s02",
+  "text": "Starvation spread and the population then fell to 21,140.",
+  "why": "'then' sequence + uncited claim",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "A15",
+  "sheet": "s09",
+  "text": "The Clevask kin survived until food regrowth ×1.5 for 5,000 steps (the extinction rescue).",
+  "why": "'survived until' = ended at the rescue",
+  "expect": [
+   "R1",
+   "R3",
+   "R6:G",
+   "R6:L1",
+   "R6:V4"
+  ]
+ },
+ {
+  "id": "C1",
+  "sheet": "s02",
+  "text": "The Shaemund kin had the most members, with 1,830.",
+  "why": "K31 is rank 2",
+  "expect": [
+   "R1"
+  ]
+ },
+ {
+  "id": "C2",
+  "sheet": "s02",
+  "text": "The Shaemund kin outnumbered the Braelix kin, with 1,830 members against 5,020.",
+  "why": "false comparative (1,830 < 5,020)",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "C3",
+  "sheet": "s02",
+  "text": "The biggest kin group had 1,830 members, and the Braelix kin had 5,020.",
+  "why": "'biggest' attached to the rank-2 size",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "C4",
+  "sheet": "s02",
+  "text": "The Braelix kin ranked second, with 5,020 members.",
+  "why": "K12 is rank 1; ordinal unlisted",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "C5",
+  "sheet": "s02",
+  "text": "The Shaemund kin was the main kin group, with 1,830 members.",
+  "why": "rank synonym",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "C6",
+  "sheet": "s02",
+  "text": "The population barely changed, ending at 21,140.",
+  "why": "-38.6% called 'barely'",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "C7",
+  "sheet": "s02",
+  "text": "The population held steady at 21,140.",
+  "why": "-38.6% called steady",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "C8",
+  "sheet": "s01",
+  "text": "The population plunged to 34,410.",
+  "why": "it rose 1.6%: direction word unlisted",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "C9",
+  "sheet": "s02",
+  "text": "The population ballooned to 21,140.",
+  "why": "it fell 38.6%",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "C10",
+  "sheet": "s01",
+  "text": "The population went from 33,862 to 34,410, a devastating change of +1.6%.",
+  "why": "+1.6% called devastating; unlisted evaluative",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "C11",
+  "sheet": "s02",
+  "text": "The Shaemund kin was the second largest kin group, with 1,830 members.",
+  "why": "a TRUE rank-2 claim (false negative check)",
+  "expect": [
+   "R1"
+  ]
+ },
+ {
+  "id": "D1",
+  "sheet": "s02",
+  "text": "A quarter of the 41,300 deaths were kills.",
+  "why": "fraction word; true share 12%",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "D2",
+  "sheet": "s02",
+  "text": "Most of the 41,300 deaths were kills.",
+  "why": "'most' quantifier; false",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "D3",
+  "sheet": "s02",
+  "text": "The population fell to 21,140 and no kin group dissolved.",
+  "why": "'no' quantifier; one dissolved",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "D4",
+  "sheet": "s02",
+  "text": "Nearly all of the 41,300 deaths were kills.",
+  "why": "quantifier",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "D5",
+  "sheet": "s02",
+  "text": "Velmar formed at step 1,514,750.",
+  "why": "invented name, sentence-initial",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "D6",
+  "sheet": "s02",
+  "text": "At step 1,514,750, the velmar kin formed.",
+  "why": "invented lowercase name",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "D7",
+  "sheet": "s02",
+  "text": "At step 1,514,750, the northern newcomers formed a kin group.",
+  "why": "nickname + spatial claim not in the facts",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "D8",
+  "sheet": "s02",
+  "text": "More than 5,020 agents belonged to the Braelix kin.",
+  "why": "hedge falsifies an exact count",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "D9",
+  "sheet": "s02",
+  "text": "The Braelix kin killed 610 agents.",
+  "why": "group.killed are K12's members killed, not kills",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "D10",
+  "sheet": "s02",
+  "text": "The number of Hunter agents rose from 2,925 to 2,558.",
+  "why": "count fell 2,925 -> 2,558; G2 checks the share sign only",
+  "expect": [
+   "R1",
+   "R3",
+   "R6:L2"
+  ]
+ },
+ {
+  "id": "D11",
+  "sheet": "s11",
+  "text": "The number of Roaming agents fell from 8,294 to 9,620.",
+  "why": "count rose 8,294 -> 9,620",
+  "expect": [
+   "R1",
+   "R3",
+   "R6:L2"
+  ]
+ },
+ {
+  "id": "D12",
+  "sheet": "s02",
+  "text": "At the start, 2,925 of 21,140 agents were Hunter agents.",
+  "why": "'of' is the end denominator (21,140), not the start one (34,410)",
+  "expect": [
+   "R1",
+   "R3",
+   "R6:L2"
+  ]
+ },
+ {
+  "id": "D13",
+  "sheet": "s02",
+  "text": "The population was 21,140 at step 1,516,900.",
+  "why": "field mismatch inside one fact (value at b, step of the minimum)",
+  "expect": [
+   "R1"
+  ]
+ },
+ {
+  "id": "D14",
+  "sheet": "s02",
+  "text": "There were 41,300 deaths over a third of the chapter.",
+  "why": "ordinal fraction",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "E1",
+  "sheet": "s02",
+  "text": "Members of the Braelix kin mostly gathered food and fed, with 5,020 members.",
+  "why": "Gatherer and Feeding FAILED validity; described anyway",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "E2",
+  "sheet": "s02",
+  "text": "Members of the Braelix kin guarded each other and budded often, with 5,020 members.",
+  "why": "Defending and Budding failed",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "E3",
+  "sheet": "s02",
+  "text": "Many agents settled down and rested, and the population fell to 21,140.",
+  "why": "label claims without a label fact; 'settled' escapes 'settler-'",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "F1",
+  "sheet": "s02",
+  "text": "The Shaemund kin attacked the Braelix kin 412 times.",
+  "why": "direction inverted",
+  "expect": [
+   "R1"
+  ]
+ },
+ {
+  "id": "F2",
+  "sheet": "s02",
+  "text": "The Braelix kin raided the Shaemund kin 412 times, slaughtering 61.",
+  "why": "loaded verbs unlisted",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "G1",
+  "sheet": "s02",
+  "text": "At step 1,513,250, the Braelix kin split from the Shaemund kin with 1,210 members.",
+  "why": "direction inverted relative to the probe's own convention",
+  "expect": [
+   "R1"
+  ]
+ },
+ {
+  "id": "G2",
+  "sheet": "s02",
+  "text": "At step 1,517,250, the Braelix kin merged into the Flauth kin.",
+  "why": "direction inverted",
+  "expect": [
+   "R1"
+  ]
+ },
+ {
+  "id": "G3",
+  "sheet": "s02",
+  "text": "At step 1,516,500, the Torvane kin split.",
+  "why": "a dissolution called a split",
+  "expect": [
+   "R1"
+  ]
+ },
+ {
+  "id": "H1",
+  "sheet": "s02",
+  "text": "The kin group had 5,0201,830 members.",
+  "why": "two placeholders glued: a forged number",
+  "expect": [
+   "R1"
+  ]
+ },
+ {
+  "id": "H2",
+  "sheet": "s02",
+  "text": "The population fell to 21,140k.",
+  "why": "letter suffix: 21,140k",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "H3",
+  "sheet": "s02",
+  "text": "The Braelix kin was the 1st kin group, with 5,020 members.",
+  "why": "ordinal from a rank field",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "H4",
+  "sheet": "s02",
+  "text": "The population declined by -38.6%.",
+  "why": "double negative: declined by -38.6%",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "H5",
+  "sheet": "s02",
+  "text": "There were 5,060190 kills.",
+  "why": "glued",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "H6",
+  "sheet": "s02",
+  "text": "Over 41,300 deaths were counted, about 12% of them kills.",
+  "why": "hedges on exact values",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "H7",
+  "sheet": "s02",
+  "text": "Kin groups split and merged as the population fell to 21,140",
+  "why": "headline: causal as",
+  "expect": [
+   "R1",
+   "R3"
+  ]
+ },
+ {
+  "id": "B1",
+  "sheet": "s09",
+  "text": "Since food regrowth ×1.5 for 5,000 steps (the extinction rescue), the population went from 9,150 to 9,800",
+  "why": "a reply that leads with the rescue and omits the collapse: its headline",
+  "expect": [
+   "R1",
+   "R3",
+   "R6:G",
+   "R6:L1",
+   "R6:V4"
+  ]
+ },
+ {
+  "id": "B2",
+  "sheet": "s11",
+  "text": "Since food regrowth ×0.8 for 10,000 steps (the runaway damper), the population went from 37,700 to 48,100.",
+  "why": "the ended damper credited with the whole chapter's rise (the old template's `since` sentence)",
+  "expect": [
+   "R1",
+   "R3",
+   "R6:L1",
+   "R6:V1"
+  ]
+ }
+]

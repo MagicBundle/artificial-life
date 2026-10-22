@@ -1,0 +1,7 @@
+{"kind": "header", "step": 2000, "rules_version": 1, "persona": "trickster", "goal": "", "rule_every": 1000, "budget_per_100k": 6, "seed": 0}
+{"step_applied": 3000, "source": "rule", "persona": "trickster", "action": "regen_pulse", "params": {"mult": 1.5}, "prev": {"mult": 1.0}, "duration": 5000, "vitals_step": 3000, "rule": "extinction_rescue"}
+{"step_applied": 3000, "source": "rule", "persona": "trickster", "action": "immigration_pulse", "params": {"count": 16}, "prev": {"pending": 0}, "duration": null, "vitals_step": 3000, "rule": "extinction_rescue"}
+{"step_applied": 4000, "source": "llm", "persona": "trickster", "action": "set_seasons", "params": {"period": 2000, "amp": 0.30000001192092896}, "prev": {"period": 0, "amp": 0.0}, "duration": null, "vitals_step": 4000, "llm_call": "llm-4000"}
+{"step_applied": 5000, "source": "llm", "persona": "trickster", "action": "fertility_shift", "params": {"patch": 0, "gain": 1.5}, "prev": {"patch": 0, "gain": 1.0}, "duration": null, "vitals_step": 5000, "llm_call": "llm-5000"}
+{"step_applied": 8000, "source": "revert", "persona": "trickster", "action": "regen_pulse", "params": {"mult": 1.0}, "prev": {}, "duration": null, "vitals_step": 8000, "reverts": 3000}
+{"step_applied": 9000, "source": "llm", "persona": "trickster", "action": "drift_change", "params": {"mult": 2.0}, "prev": {"mult": 1.0}, "duration": null, "vitals_step": 9000, "llm_call": "llm-9000"}

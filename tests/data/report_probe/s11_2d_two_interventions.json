@@ -1,0 +1,366 @@
+{
+ "chapter": [
+  1536000,
+  1542000
+ ],
+ "config_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+ "dims": 2,
+ "entities": [
+  {
+   "display": "House Zaeld",
+   "id": 3,
+   "kind": "house",
+   "name": "Zaeld",
+   "name_from": 1542000,
+   "ref": "H3"
+  },
+  {
+   "display": "the Braelix kin",
+   "id": 12,
+   "kind": "kin_group",
+   "name": "Braelix",
+   "name_from": 1542000,
+   "ref": "K12"
+  },
+  {
+   "display": "the Prialth kin",
+   "id": 51,
+   "kind": "kin_group",
+   "name": "Prialth",
+   "name_from": 1542000,
+   "ref": "K51"
+  },
+  {
+   "display": "the Shoum kin",
+   "id": 52,
+   "kind": "kin_group",
+   "name": "Shoum",
+   "name_from": 1542000,
+   "ref": "K52"
+  }
+ ],
+ "excluded": {
+  "entries_before_start": 0,
+  "events_churn": 0,
+  "events_suspect": 0,
+  "facts_dropped": [],
+  "interventions_dropped": 0,
+  "labels": {},
+  "name_clash": [],
+  "quota": {},
+  "social": null,
+  "windows_confounded": 0
+ },
+ "facts": [
+  {
+   "end": 1542000,
+   "id": "F1",
+   "kind": "chapter",
+   "start": 1536000
+  },
+  {
+   "change": 0.27586206896551724,
+   "deep_dip": false,
+   "from": 37700,
+   "id": "F2",
+   "kind": "population",
+   "min": 37520,
+   "min_row": 1517900,
+   "min_steps": 100,
+   "to": 48100
+  },
+  {
+   "aged": 280,
+   "catastrophe": 0,
+   "id": "F3",
+   "killed": 3700,
+   "kind": "deaths",
+   "starved": 21300,
+   "total": 25280
+  },
+  {
+   "births": 35680,
+   "id": "F4",
+   "immigrants": 0,
+   "kind": "births"
+  },
+  {
+   "from": 7,
+   "id": "F5",
+   "kind": "lineages",
+   "to": 7
+  },
+  {
+   "from_count": 16965,
+   "from_of": 37700,
+   "from_share": 0.45,
+   "id": "F6",
+   "kind": "top_lineage",
+   "to_count": 21164,
+   "to_of": 48100,
+   "to_share": 0.44
+  },
+  {
+   "action": "regen_pulse",
+   "duration": 10000,
+   "end": 1537000,
+   "end_by": "elapsed",
+   "entry": 0,
+   "id": "F7",
+   "kind": "intervention",
+   "open_to": null,
+   "params": {
+    "mult": 0.800000011920929
+   },
+   "restored": {
+    "mult": 1.0
+   },
+   "rule": "runaway_damper",
+   "source": "rule",
+   "src": "the director's rule runaway_damper",
+   "step": 1527000
+  },
+  {
+   "action": "set_seasons",
+   "duration": null,
+   "end": null,
+   "end_by": null,
+   "entry": 1,
+   "id": "F8",
+   "kind": "intervention",
+   "open_to": 1518000,
+   "params": {
+    "amp": 0.4000000059604645,
+    "period": 20000
+   },
+   "restored": null,
+   "rule": "stagnation_response",
+   "source": "rule",
+   "src": "the director's rule stagnation_response",
+   "step": 1539000
+  },
+  {
+   "family": "archetype",
+   "from_count": 1017,
+   "from_of": 37700,
+   "from_share": 0.026976127320954908,
+   "id": "F9",
+   "key": "nomad",
+   "kind": "label",
+   "label": "Nomad",
+   "to_count": 1828,
+   "to_of": 48100,
+   "to_share": 0.038004158004158003
+  },
+  {
+   "family": "intent",
+   "from_count": 8294,
+   "from_of": 37700,
+   "from_share": 0.22,
+   "id": "F10",
+   "key": "roaming",
+   "kind": "label",
+   "label": "Roaming",
+   "to_count": 9620,
+   "to_of": 48100,
+   "to_share": 0.2
+  },
+  {
+   "born": 4100,
+   "died": 3300,
+   "died_killed": 500,
+   "entity": 12,
+   "id": "F11",
+   "kind": "group",
+   "of": 48100,
+   "rank": 1,
+   "share": 0.17255717255717257,
+   "size": 8300
+  },
+  {
+   "event": "split",
+   "family": "kin_group",
+   "id": "F12",
+   "kind": "event",
+   "other": 12,
+   "overlap": 1350,
+   "reid": false,
+   "s0": 1538000,
+   "s1": 1538250,
+   "size": 1400,
+   "system": 52
+  },
+  {
+   "event": "born",
+   "family": "kin_group",
+   "id": "F13",
+   "kind": "event",
+   "other": -1,
+   "overlap": 0,
+   "reid": false,
+   "s0": 1540500,
+   "s1": 1540750,
+   "size": 450,
+   "system": 51
+  },
+  {
+   "alive_from": 9,
+   "alive_to": 9,
+   "exact": true,
+   "extinct": 0,
+   "first_seen": 0,
+   "id": "F14",
+   "kind": "houses",
+   "largest": 3,
+   "largest_name": "Zaeld",
+   "largest_size": 19000,
+   "largest_strict": true,
+   "origin": 0
+  },
+  {
+   "a": 12,
+   "attacks": 133,
+   "b": 52,
+   "id": "F15",
+   "kills": 17,
+   "kind": "relation"
+  }
+ ],
+ "labels": {
+  "env_default": true,
+  "intent_version": 1,
+  "key_found": true,
+  "rules_digest": "156ad4963b84ffe9636e9ba4fdd7592632c669bf6e490687d8eb2b38b9aec009"
+ },
+ "origin": 0,
+ "quiet": false,
+ "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
+ "report_version": 1,
+ "run": {
+  "seed": 0
+ },
+ "snapshots": [
+  {
+   "alive": 1250,
+   "id": "S1536250",
+   "step": 1536250
+  },
+  {
+   "alive": 1500,
+   "id": "S1536500",
+   "step": 1536500
+  },
+  {
+   "alive": 1750,
+   "id": "S1536750",
+   "step": 1536750
+  },
+  {
+   "alive": 1000,
+   "id": "S1537000",
+   "step": 1537000
+  },
+  {
+   "alive": 1250,
+   "id": "S1537250",
+   "step": 1537250
+  },
+  {
+   "alive": 1500,
+   "id": "S1537500",
+   "step": 1537500
+  },
+  {
+   "alive": 1750,
+   "id": "S1537750",
+   "step": 1537750
+  },
+  {
+   "alive": 1000,
+   "id": "S1538000",
+   "step": 1538000
+  },
+  {
+   "alive": 1250,
+   "id": "S1538250",
+   "step": 1538250
+  },
+  {
+   "alive": 1500,
+   "id": "S1538500",
+   "step": 1538500
+  },
+  {
+   "alive": 1750,
+   "id": "S1538750",
+   "step": 1538750
+  },
+  {
+   "alive": 1000,
+   "id": "S1539000",
+   "step": 1539000
+  },
+  {
+   "alive": 1250,
+   "id": "S1539250",
+   "step": 1539250
+  },
+  {
+   "alive": 1500,
+   "id": "S1539500",
+   "step": 1539500
+  },
+  {
+   "alive": 1750,
+   "id": "S1539750",
+   "step": 1539750
+  },
+  {
+   "alive": 1000,
+   "id": "S1540000",
+   "step": 1540000
+  },
+  {
+   "alive": 1250,
+   "id": "S1540250",
+   "step": 1540250
+  },
+  {
+   "alive": 1500,
+   "id": "S1540500",
+   "step": 1540500
+  },
+  {
+   "alive": 1750,
+   "id": "S1540750",
+   "step": 1540750
+  },
+  {
+   "alive": 1000,
+   "id": "S1541000",
+   "step": 1541000
+  },
+  {
+   "alive": 1250,
+   "id": "S1541250",
+   "step": 1541250
+  },
+  {
+   "alive": 1500,
+   "id": "S1541500",
+   "step": 1541500
+  },
+  {
+   "alive": 1750,
+   "id": "S1541750",
+   "step": 1541750
+  },
+  {
+   "alive": 1000,
+   "id": "S1542000",
+   "step": 1542000
+  }
+ ],
+ "start_step": 0,
+ "world_key": "69b4e21ad6b6016b17c11d6a1d9b3371c03b4b9f590fdb4a04752515c13a01d8"
+}

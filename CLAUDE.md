@@ -22,6 +22,10 @@ search (`src/alife/knn_metal.py`, `DESIGN.md` §4, row I48) is built: 75 steps/s
 same trajectory. It is the default on Metal in 2D and 3D (row I52); `ALIFE_KNN=mlx` forces the pure-MLX path.
 `docs/STORMS.md` is the storm world; W0 (the model, `weather.py`, `docs/STORMS_W0.md`) and W1 (`weather.*` config,
 `State.wx`, wind/rain/hazard in the step; `DESIGN.md` §30) are implemented and off by default.
+`docs/GAMES.md` §9 N1, the offline World Report (`python -m alife.analysis.world_report build | verify | probe`,
+`src/alife/game/report.py`, `templates.py`, `lexicon.py`; normative spec `DESIGN.md` §31), is implemented: code writes every
+sentence from templates and checks it, a local model (`--llm --model ID`) only selects and orders candidate ids, and no
+model-written text is ever shown or put into a prompt. Its thresholds are provisional until the owner read.
 
 ## Conventions
 
@@ -45,6 +49,10 @@ same trajectory. It is the default on Metal in 2D and 3D (row I52); `ALIFE_KNN=m
   contested outputs. `ALIFE_KNN=auto|mlx|metal` selects the neighbour search (DESIGN §4, I48).
 - Checks before pushing: `uv run ruff check src tests`, `uv run ruff format --check src tests`,
   `uv run pytest -m "not slow" -q`. A trajectory change needs a deliberate golden-digest re-pin.
+- The world report (DESIGN §31) never calls an LM Studio management endpoint (no load, unload or switch) and sends `model`
+  explicitly; its only network calls are the chat POST and the read-only `GET /api/v0/models` preflight. Run `--llm` and
+  `probe` only when no GPU job or timing runs. A change to a template, the lexicon, the label table or the select prompt
+  changes a digest that `verify` compares: bump the version and re-pin.
 - The GUI (`gui/`, SwiftUI, macOS 14+) shells out to `.venv/bin/alife`. Keep its lever list in sync with
   config keys, and build it with `cd gui && swift build`.
 
