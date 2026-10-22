@@ -21,7 +21,6 @@ outputs and the CLI.
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
 import dataclasses
 import hashlib
@@ -39,7 +38,7 @@ from typing import Any, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import ops, spatial, weather_obs
+from alife import ops, spatial, storms, weather_obs
 from alife import weather as W
 from alife.config import Config, dims, load_config
 from alife.metrics import N_BANDS, z_band
@@ -60,7 +59,6 @@ SPEED_BINS = 2000  # the background-wind histograms: [0, SPEED_MAX_BIN] in SPEED
 SPEED_MAX_BIN = 0.5
 KM_NEVER = "> max observed age"
 KM_MIN_RISK = 5  # a Kaplan-Meier curve is not read at or after an age where fewer subjects are at risk
-SPLIT_NEAR_TIE = 0.9  # tracker rule 4: overlaps within 10% of a track's best count as tied (ZETA decides)
 
 
 # --- small utilities ----------------------------------------------------------------------------------------
@@ -76,10 +74,7 @@ def wall(steps: float) -> dict[str, float]:
     return out
 
 
-def min_image_np(d: Any, length: float) -> Any:
-    """Minimum-image displacement ``d - L*round(d/L)`` (numpy; half-to-even rounding, like
-    ``ops.min_image``)."""
-    return d - length * np.round(np.asarray(d) / length)
+min_image_np = storms.min_image_np
 
 
 def _clean(obj: Any) -> Any:
@@ -144,391 +139,18 @@ corners_to_centres = weather_obs.corners_to_centres
 hemisphere_sign = weather_obs.hemisphere_sign
 
 
-class Frame(NamedTuple):
-    """A host snapshot of the weather state at a detection time: float32 ``(N, N)`` arrays, ``zeta`` at the
-    corners (layer 1), the rest as in ``WeatherState`` plus the derived vorticity."""
-
-    t: int
-    zeta: np.ndarray
-    P: np.ndarray
-    h1: np.ndarray
-    h2: np.ndarray
-    u1: np.ndarray
-    v1: np.ndarray
-    u2: np.ndarray
-    v2: np.ndarray
-    Q: np.ndarray
-
-
-def read_frame(ws: WeatherState, p: WeatherParams, t: int) -> Frame:
-    """The nine fields a detection reads (spec §6), in one device sync."""
-    z = W.vorticity(ws, p)
-    arrs = (z, ws.P, ws.h1, ws.h2, ws.u1, ws.v1, ws.u2, ws.v2, ws.Q)
-    mx.eval(*arrs)
-    return Frame(t, *(np.array(a) for a in arrs))
-
-
-@dataclass(frozen=True)
-class Comp:
-    """A labelled region of the cyclonic-vorticity mask: a storm candidate or a band."""
-
-    label: int
-    hemi: int  # 0 north (y < L/2), 1 south
-    x: float  # circular centroid, [0, L)
-    y: float
-    area: int  # cells
-    r_eq: float  # Δx √(area/π)
-    r_max: float  # largest distance of a footprint cell from the centroid
-    zeta_max_f0: float
-    wind_max: float  # max layer-1 centre speed within 1.5 r_eq of the centroid
-    h1_min: float  # min layer-1 thickness over the footprint
-    dh1: float  # mean h1 over the annulus r_eq < d <= 2 r_eq, minus h1_min
-    rain: float  # Σ P Δx² over the footprint
-    n_rain: int  # footprint cells with P >= p_th
-    rx: float  # mean resultant length per axis (1 = compact, 0 = spread over the period)
-    ry: float
-    ext_x: float  # occupied columns × Δx
-    ext_y: float
-    flat: np.ndarray  # flat indices of the footprint cells
-
-
-@dataclass
-class Detection:
-    """The result of ``detect`` at one time: the storms, the bands and the label image."""
-
-    t: int
-    lab: np.ndarray
-    storms: list[Comp]
-    bands: list[Comp]
-    n_regions: int
-    n_weak: int  # regions that are neither storms nor bands (too small, or without rain)
-
-
-def _window(
-    cx: float, cy: float, reach: float, n: int, dx: float
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Rows, columns (wrapped indices) and the distance of each cell centre from ``(cx, cy)`` for the square
-    window of half-width ``reach``."""
-    m = max(min(math.ceil(reach / dx) + 1, n // 2 - 1), 1)
-    ic, jc = int(cx // dx), int(cy // dx)
-    cols = np.arange(ic - m, ic + m + 1)
-    rows = np.arange(jc - m, jc + m + 1)
-    ddx = (cols + 0.5) * dx - cx
-    ddy = (rows + 0.5) * dx - cy
-    return rows % n, cols % n, np.hypot(ddx[None, :], ddy[:, None])
-
-
-def detect(fr: Frame, p: WeatherParams) -> Detection:
-    """Storm footprints, bands and per-detection quantities from a frame (spec §6).
-
-    Mask ``s·ζ_c >= zeta_th`` (``ζ_c`` the corner average at the centres, ``s`` the hemisphere sign)
-    labelled with ``label_periodic`` per hemisphere. A region with a circular mean resultant length below
-    0.5 on an axis or an extent above ``L/2`` is a **band** (its centroid is undefined): excluded from
-    storms. Otherwise a storm needs ``area >= a_min`` and ``r_min`` cells with ``P >= p_th``. Centroids are
-    circular means with weight ``s·ζ - zeta_th``. ``wind_max`` is the maximum layer-1 centre speed within
-    ``1.5 r_eq`` of the centroid (a balanced vortex peaks near the footprint edge, so the footprint alone
-    would miss it); ``dh1`` uses the annulus ``r_eq < d <= 2 r_eq``."""
-    n, dx, length = p.n, p.dx, p.L
-    s = hemisphere_sign(p)
-    zc = corners_to_centres(fr.zeta.astype(np.float64))
-    sz = s * zc
-    th = p.zeta_th
-    lab, k = label_periodic(sz >= th, group=np.broadcast_to(s, (n, n)))
-    if k == 0:
-        return Detection(fr.t, lab, [], [], 0, 0)
-    jj, ii = np.nonzero(lab)
-    lb = lab[jj, ii]
-    order = np.argsort(lb, kind="stable")
-    jj, ii, lb = jj[order], ii[order], lb[order]
-    starts = np.searchsorted(lb, np.arange(1, k + 2))
-    head = starts[:-1]
-    area = np.diff(starts)
-    w = np.maximum(sz[jj, ii] - th, 0.0) + 1e-9 * th  # the tiny floor only guards an all-zero weight sum
-    ax = TWO_PI * (ii + 0.5) * dx / length
-    ay = TWO_PI * (jj + 0.5) * dx / length
-    sw = np.add.reduceat(w, head)
-    cxs, sxs = np.add.reduceat(w * np.cos(ax), head), np.add.reduceat(w * np.sin(ax), head)
-    cys, sys_ = np.add.reduceat(w * np.cos(ay), head), np.add.reduceat(w * np.sin(ay), head)
-    cx = (np.arctan2(sxs, cxs) * length / TWO_PI) % length
-    cy = (np.arctan2(sys_, cys) * length / TWO_PI) % length
-    rx, ry = np.hypot(cxs, sxs) / sw, np.hypot(cys, sys_) / sw
-    cols = np.bincount(np.unique(lb * n + ii) // n, minlength=k + 1)[1:] * dx
-    rows = np.bincount(np.unique(lb * n + jj) // n, minlength=k + 1)[1:] * dx
-    zmax = np.maximum.reduceat(sz[jj, ii], head) / p.f0
-    h1min = np.minimum.reduceat(fr.h1[jj, ii].astype(np.float64), head)
-    prain = fr.P[jj, ii].astype(np.float64)
-    n_rain = np.add.reduceat((prain >= p.p_th).astype(np.int64), head)
-    rain = np.add.reduceat(prain, head) * dx * dx
-    uc1, vc1 = centre_winds(fr.u1, fr.v1)
-    spd1 = np.hypot(uc1, vc1)
-    flat_all = jj * n + ii
-    storms: list[Comp] = []
-    bands: list[Comp] = []
-    n_weak = 0
-    for q in range(k):
-        label = q + 1
-        sl = slice(int(starts[q]), int(starts[q + 1]))
-        band = bool(rx[q] < 0.5 or ry[q] < 0.5 or cols[q] > length / 2 or rows[q] > length / 2)
-        storm = (not band) and int(area[q]) >= p.a_min and int(n_rain[q]) >= p.r_min
-        if not band and not storm:
-            n_weak += 1
-            continue
-        hemi = 0 if s[int(jj[starts[q]]), 0] > 0 else 1
-        r_eq = dx * math.sqrt(int(area[q]) / math.pi)
-        flat = flat_all[sl]
-        if band:
-            bands.append(
-                Comp(label, hemi, float(cx[q]), float(cy[q]), int(area[q]), r_eq, 0.0, float(zmax[q]), 0.0,
-                     float(h1min[q]), 0.0, float(rain[q]), int(n_rain[q]), float(rx[q]), float(ry[q]),
-                     float(cols[q]), float(rows[q]), flat)
-            )  # fmt: skip
-            continue
-        ddx = min_image_np((ii[sl] + 0.5) * dx - cx[q], length)
-        ddy = min_image_np((jj[sl] + 0.5) * dx - cy[q], length)
-        r_max = float(np.hypot(ddx, ddy).max())
-        rows_w, cols_w, d = _window(float(cx[q]), float(cy[q]), 2.0 * r_eq, n, dx)
-        win = np.ix_(rows_w, cols_w)
-        wind_max = float(spd1[win][d <= 1.5 * r_eq].max(initial=0.0))
-        ring = (d > r_eq) & (d <= 2.0 * r_eq)
-        dh1 = float(fr.h1[win][ring].mean() - h1min[q]) if ring.any() else 0.0
-        storms.append(
-            Comp(label, hemi, float(cx[q]), float(cy[q]), int(area[q]), r_eq, r_max, float(zmax[q]), wind_max,
-                 float(h1min[q]), dh1, float(rain[q]), int(n_rain[q]), float(rx[q]), float(ry[q]),
-                 float(cols[q]), float(rows[q]), flat)
-        )  # fmt: skip
-    return Detection(fr.t, lab, storms, bands, k, n_weak)
-
-
-# --- the tracker (spec §6) ----------------------------------------------------------------------------------
-
-
-@dataclass
-class Det:
-    """One detection of a storm on a track (``ux, uy`` are unwrapped along the track)."""
-
-    t: int
-    x: float
-    y: float
-    ux: float
-    uy: float
-    r_eq: float
-    area: int
-    hemi: int
-    zeta_max_f0: float
-    wind_max: float
-    h1_min: float
-    dh1: float
-    rain: float
-
-
-@dataclass
-class Track:
-    """A storm over time. ``dets`` are real detections only (coasting times are the gaps between them).
-
-    ``end_reason`` is ``""`` while the track is active, ``"dissipated"`` once it has missed more than
-    ``miss_grace`` consecutive detections (it ends at its last detection), or ``"merged"`` (then
-    ``merged_into`` names the track it joined). ``parent`` is the id of the track a split-off storm came from.
-    """
-
-    id: int
-    hemi: int
-    dets: list[Det]
-    parent: int = 0
-    merged_into: int = 0
-    end_reason: str = ""
-    missed: int = 0
-    last_flat: np.ndarray | None = None
-
-    @property
-    def ended(self) -> bool:
-        return bool(self.end_reason)
-
-    @property
-    def t_first(self) -> int:
-        return self.dets[0].t
-
-    @property
-    def t_last(self) -> int:
-        return self.dets[-1].t
-
-    def arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """``(t, ux, uy, r_eq)`` of the real detections."""
-        d = self.dets
-        return (
-            np.array([q.t for q in d], dtype=np.float64),
-            np.array([q.ux for q in d]),
-            np.array([q.uy for q in d]),
-            np.array([q.r_eq for q in d]),
-        )
-
-
-class Tracker:
-    """Persistent storm ids across detections (spec §6).
-
-    Order of one ``update``: (1) overlaps between each active track's last footprint and the new storm
-    components, greedy by descending overlap, where an overlap within 10% of that track's best counts as tied
-    with it and ties go to the component with the higher peak vorticity (a split keeps the id with the core,
-    not with a larger but dying fragment), then centroid distance, lower track id, component;
-    (3) an active track left without a component that overlaps components taken by other tracks has merged
-    into the track of its best-overlap component and ends there; (4) a component left without a track that
-    overlaps a track becomes a new track with ``parent`` = the track it overlaps most (a split); (2) the
-    tracks and components that remain, unexplained by any overlap, are matched by the predicted position
-    (last centroid plus the least-squares velocity of the last four detections times the elapsed time)
-    inside a gate of ``max(r_track, r_det)`` in the same hemisphere, greedy by distance; (5) the other
-    components are births; (6) the other tracks coast, and a track that has missed more than ``miss_grace``
-    consecutive detections ends at its last detection as dissipated. The numbering follows the spec; the
-    explained cases (3, 4) are settled before the position fallback (2) so that a merging or splitting storm
-    is never matched by distance to an unrelated track."""
-
-    def __init__(self, p: WeatherParams) -> None:
-        self.p = p
-        self.tracks: list[Track] = []
-        self.next_id = 1
-
-    def active(self) -> list[Track]:
-        return [tr for tr in self.tracks if not tr.ended]
-
-    def clone(self) -> Tracker:
-        """An independent copy (a forked run continues the same ids)."""
-        return copy.deepcopy(self)
-
-    def _predict(self, tr: Track, t: int) -> tuple[float, float]:
-        d = tr.dets[-4:]
-        last = d[-1]
-        if len(d) < 2:
-            return last.ux, last.uy
-        ts = np.array([q.t for q in d], dtype=np.float64)
-        tc = ts - ts.mean()
-        den = float((tc * tc).sum())
-        bx = float((tc * np.array([q.ux for q in d])).sum()) / den
-        by = float((tc * np.array([q.uy for q in d])).sum()) / den
-        dt = t - last.t
-        return last.ux + bx * dt, last.uy + by * dt
-
-    def _append(self, tr: Track, t: int, c: Comp) -> None:
-        last = tr.dets[-1] if tr.dets else None
-        if last is None:
-            ux, uy = c.x, c.y
-        else:
-            ux = last.ux + float(min_image_np(c.x - last.x, self.p.L))
-            uy = last.uy + float(min_image_np(c.y - last.y, self.p.L))
-        tr.dets.append(
-            Det(
-                t,
-                c.x,
-                c.y,
-                ux,
-                uy,
-                c.r_eq,
-                c.area,
-                c.hemi,
-                c.zeta_max_f0,
-                c.wind_max,
-                c.h1_min,
-                c.dh1,
-                c.rain,
-            )
-        )
-        tr.last_flat = c.flat
-        tr.missed = 0
-
-    def _new(self, t: int, c: Comp, parent: int = 0) -> Track:
-        tr = Track(self.next_id, c.hemi, [], parent=parent)
-        self.next_id += 1
-        self._append(tr, t, c)
-        self.tracks.append(tr)
-        return tr
-
-    def update(self, det: Detection) -> list[int]:
-        """Advance the tracks with a detection; returns the track id of each ``det.storms`` entry."""
-        p, t, comps = self.p, det.t, det.storms
-        lab_flat = det.lab.ravel()
-        by_label = {c.label: i for i, c in enumerate(comps)}
-        act = self.active()
-        # (-effective overlap, -peak vorticity of the component, distance, track id, component index)
-        pairs: list[tuple[int, float, float, int, int]] = []
-        for tr in act:
-            labs = lab_flat[tr.last_flat]
-            labs = labs[labs > 0]
-            if labs.size == 0:
-                continue
-            ul, cnt = np.unique(labs, return_counts=True)
-            last = tr.dets[-1]
-            rows = [(lbl, cn) for lbl, cn in zip(ul.tolist(), cnt.tolist(), strict=True) if lbl in by_label]
-            if not rows:
-                continue  # it overlaps only bands or weak regions: not storms
-            best = max(cn for _, cn in rows)
-            for lbl, cn in rows:
-                ci = by_label[lbl]
-                dist = float(
-                    np.hypot(min_image_np(comps[ci].x - last.x, p.L), min_image_np(comps[ci].y - last.y, p.L))
-                )
-                # a piece within 10% of the track's best overlap counts as tied with it, and the stronger
-                # piece (peak vorticity) wins the tie, so a dying polar fragment does not take the id
-                eff = best if cn >= SPLIT_NEAR_TIE * best else cn
-                pairs.append((-eff, -comps[ci].zeta_max_f0, dist, tr.id, ci))
-        pairs.sort()
-        track_of_comp: dict[int, int] = {}
-        comp_of_track: dict[int, int] = {}
-        for _, _, _, tid, ci in pairs:
-            if tid in comp_of_track or ci in track_of_comp:
-                continue
-            comp_of_track[tid] = ci
-            track_of_comp[ci] = tid
-        by_id = {tr.id: tr for tr in self.tracks}
-
-        # (3) tracks explained by a merger; (4) components explained by a split
-        explained_tracks: set[int] = set()
-        for _, _, _, tid, ci in pairs:
-            if tid in comp_of_track or tid in explained_tracks:
-                continue
-            tr = by_id[tid]
-            tr.end_reason, tr.merged_into = "merged", track_of_comp[ci]
-            explained_tracks.add(tid)
-        parent_of_comp: dict[int, int] = {}
-        for _, _, _, tid, ci in pairs:
-            if ci not in track_of_comp and ci not in parent_of_comp:
-                parent_of_comp[ci] = tid
-
-        # (2) the position fallback among what no overlap explains
-        free_tracks = [tr for tr in act if tr.id not in comp_of_track and tr.id not in explained_tracks]
-        free_comps = [i for i in range(len(comps)) if i not in track_of_comp and i not in parent_of_comp]
-        cand: list[tuple[float, int, int]] = []
-        for tr in free_tracks:
-            px, py = self._predict(tr, t)
-            last = tr.dets[-1]
-            for ci in free_comps:
-                c = comps[ci]
-                if c.hemi != tr.hemi:
-                    continue
-                dist = float(np.hypot(min_image_np(c.x - px, p.L), min_image_np(c.y - py, p.L)))
-                if dist <= max(last.r_eq, c.r_eq):
-                    cand.append((dist, tr.id, ci))
-        cand.sort()
-        for _, tid, ci in cand:
-            if tid in comp_of_track or ci in track_of_comp:
-                continue
-            comp_of_track[tid] = ci
-            track_of_comp[ci] = tid
-
-        ids = [0] * len(comps)
-        for tid, ci in comp_of_track.items():
-            self._append(by_id[tid], t, comps[ci])
-            ids[ci] = tid
-        for ci, c in enumerate(comps):  # (5) births, split-offs included
-            if ci not in track_of_comp:
-                ids[ci] = self._new(t, c, parent_of_comp.get(ci, 0)).id
-        for tr in act:  # (6) coasting and dissipation
-            if tr.id in comp_of_track or tr.id in explained_tracks:
-                continue
-            tr.missed += 1
-            if tr.missed > p.miss_grace:
-                tr.end_reason = "dissipated"
-        return ids
-
-    def finish(self) -> list[Track]:
-        """The tracks, in id order. Tracks still active are alive (censored) at the end of the run."""
-        return sorted(self.tracks, key=lambda tr: tr.id)
+# The detector, the tracker and their types moved to ``alife.storms`` (the play loop needs them without this
+# 4,000-line study driver); the names stay importable from here, unchanged.
+Frame = storms.Frame
+read_frame = storms.read_frame
+Comp = storms.Comp
+Detection = storms.Detection
+detect = storms.detect
+Det = storms.Det
+Track = storms.Track
+Tracker = storms.Tracker
+_window = storms._window
+SPLIT_NEAR_TIE = storms.SPLIT_NEAR_TIE
 
 
 # --- statistics (spec §6) -----------------------------------------------------------------------------------

@@ -32,6 +32,24 @@ struct PlaneUniforms: Equatable {
     var info: SIMD4<Float>
 }
 
+/// The World window's constants (`WorldU` in Shaders.swift), buffer 7 of the world pass: 80 bytes.
+struct WorldUniforms: Equatable {
+    /// xy: the camera target (everything is drawn at its minimum image), z: L, w: 1 / L.
+    var target: SIMD4<Float>
+    /// x: map blend (previous to current), y: map opacity, z: territory alpha, w: the flat-disc threshold in pixels.
+    var params: SIMD4<Float>
+    /// x: p_ref, y: dc_ref, z: zeta_ref, w: cot(fovY / 2).
+    var refs: SIMD4<Float>
+    /// x: pass (0 spheres, 1 flat discs), y: rows listed, z: bonds, w: bit 0 map, bit 1 territory, bit 2 equators.
+    var flags: SIMD4<UInt32>
+    /// x: point alpha, y: point size in pixels, z: the smallest disc radius in pixels.
+    var style: SIMD4<Float>
+
+    static let mapBit: UInt32 = 1
+    static let territoryBit: UInt32 = 2
+    static let equatorBit: UInt32 = 4
+}
+
 /// A translucent quad of the scene: the floor, the surface, or the field slice.
 struct ScenePlane: Equatable {
     var z: Float
@@ -117,6 +135,30 @@ final class DrawGate {
     }
 }
 
+// MARK: - Draw timing
+
+/// What one draw cost (DESIGN §33.5.3): the CPU time to refresh the buffer set and encode the pass, and the GPU's time for
+/// the pass (`gpuEndTime - gpuStartTime` of its command buffer). Drawable acquisition and the compositor are not in either.
+struct DrawTiming: Sendable, Equatable {
+    var cpuMs: Double
+    var gpuMs: Double
+}
+
+/// A texture pair to draw into off the screen, kept between draws (`Renderer.makeOffscreenTarget`).
+final class OffscreenTarget {
+    let color: any MTLTexture
+    let depth: any MTLTexture
+    let width: Int
+    let height: Int
+
+    init(color: any MTLTexture, depth: any MTLTexture, width: Int, height: Int) {
+        self.color = color
+        self.depth = depth
+        self.width = width
+        self.height = height
+    }
+}
+
 // MARK: - Renderer
 
 /// Draws the stream's frames with Metal: instanced sphere impostors for the agents (with a nose for the heading), bond
@@ -174,6 +216,15 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let bondPipeline: any MTLRenderPipelineState
     private let planePipeline: any MTLRenderPipelineState
     private let slicePipeline: any MTLRenderPipelineState
+    // The World window's pipelines (DESIGN 33.4.6).
+    private let agentPipeline: any MTLRenderPipelineState
+    private let flatPipeline: any MTLRenderPipelineState
+    private let worldBondPipeline: any MTLRenderPipelineState
+    private let pointPipeline: any MTLRenderPipelineState
+    private let mapPipeline: any MTLRenderPipelineState
+    /// One-texel stand-ins for the planes and the territory of a world without them.
+    private let blankPlane: any MTLTexture
+    private let blankTerritory: any MTLTexture
     /// Depth tested and written (agents, bonds, box) and depth tested only (translucent planes, the 2D background).
     private let opaqueDepth: any MTLDepthStencilState
     private let overlayDepth: any MTLDepthStencilState
@@ -194,9 +245,38 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// Increases with every frame shown; a slot that holds an older one is refreshed before it is drawn.
     private var frameSerial = 0
     private(set) var frameStep: UInt64?
+    /// Told, from the GPU's completion thread, what each committed draw cost; nil costs nothing (the bench sets it).
+    var timingHandler: (@Sendable (DrawTiming) -> Void)?
+    /// Told, from the display's thread, when a draw into the window was presented (`MTLDrawable.presentedTime`, seconds):
+    /// the intervals between two are what the user sees.
+    var presentedHandler: (@Sendable (CFTimeInterval) -> Void)?
     /// Told when a draw fails (once per distinct message), so the window can say so instead of staying blank.
     var failureHandler: (@MainActor (String) -> Void)?
     private var lastFailure: String?
+
+    // MARK: World state
+
+    /// What the renderer draws: the Lab's `StreamFrame`s, or the World window's records.
+    enum Mode: Equatable { case lab, world }
+    private(set) var mode = Mode.lab
+    /// What the world pass draws besides the camera: the level, the layers, the fade between two maps.
+    struct WorldDraw: Equatable {
+        var level = WorldLevel.planet
+        var display = WorldDisplay()
+        /// The weight of the current map against the previous one (`MapFade`).
+        var mapBlend: Float = 1
+    }
+    var worldDraw = WorldDraw()
+    /// Told when the drawable's size changes in the World (the free rectangle changed), in pixels.
+    var onResize: (@MainActor (CGSize) -> Void)?
+    private var playFrame: PlayFrame?
+    private var playFrameSerial = 0
+    private var mapNow: PlayWeatherMap?
+    private var mapPrevious: PlayWeatherMap?
+    private var mapNowSerial = -1
+    private var mapPreviousSerial = -1
+    private var playTerritory: PlayTerritory?
+    private var playTerritorySerial = -1
 
     /// A set of the GPU buffers one draw reads.
     private final class Slot {
@@ -208,6 +288,34 @@ final class Renderer: NSObject, MTKViewDelegate {
         var field: (any MTLTexture)?
         /// The `frameSerial` this slot holds (-1: nothing).
         var serial = -1
+        /// The World window's buffers and textures. They live here, one set per draw in flight, with the agents': a texture
+        /// written while two or three committed draws still sample it would be a data race (a torn map).
+        let world = WorldSlot()
+    }
+
+    /// The five textures of one delivery of the weather map.
+    struct MapTextures {
+        var rain: (any MTLTexture)?
+        var cloud: (any MTLTexture)?
+        var zeta: (any MTLTexture)?
+        var sea: (any MTLTexture)?
+        var winds: (any MTLTexture)?
+    }
+
+    /// What a buffer set holds for the world pass: the alive-only arrays of the frame, the current and previous weather map
+    /// (the serials of the deliveries they hold), and the territory.
+    private final class WorldSlot {
+        var pos: (any MTLBuffer)?
+        var orient: (any MTLBuffer)?
+        var rgb: (any MTLBuffer)?
+        var bonds: (any MTLBuffer)?
+        var frameSerial = -1
+        var current = MapTextures()
+        var previous = MapTextures()
+        var currentSerial = -1
+        var previousSerial = -1
+        var territory: (any MTLTexture)?
+        var territorySerial = -1
     }
 
     init(device: any MTLDevice) throws {
@@ -259,6 +367,26 @@ final class Renderer: NSObject, MTKViewDelegate {
                                      blend: true)
         slicePipeline = try pipeline("field slice", vertex: Shaders.planeVertex, fragment: Shaders.sliceFragment,
                                      blend: true)
+        agentPipeline = try pipeline("world agents", vertex: Shaders.agentVertexA, fragment: Shaders.agentFragmentA,
+                                     blend: false)
+        flatPipeline = try pipeline("world flat agents", vertex: Shaders.agentVertexA,
+                                    fragment: Shaders.agentFragmentFlat, blend: false)
+        worldBondPipeline = try pipeline("world bonds", vertex: Shaders.bondVertexA, fragment: Shaders.lineFragment,
+                                         blend: false)
+        pointPipeline = try pipeline("world points", vertex: Shaders.pointVertexA, fragment: Shaders.pointFragment,
+                                     blend: true)
+        mapPipeline = try pipeline("world map", vertex: Shaders.mapVertex, fragment: Shaders.mapFragment, blend: false)
+        func blank(_ format: MTLPixelFormat) throws -> any MTLTexture {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: 1, height: 1, mipmapped: false)
+            d.usage = .shaderRead
+            d.storageMode = .shared
+            guard let texture = device.makeTexture(descriptor: d) else { throw Failure.allocation("a blank texture") }
+            var zero: [UInt8] = [0, 0, 0, 0]
+            texture.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &zero, bytesPerRow: 4)
+            return texture
+        }
+        blankPlane = try blank(.r8Unorm)
+        blankTerritory = try blank(.rgba8Unorm)
 
         func depthState(write: Bool) throws -> any MTLDepthStencilState {
             let d = MTLDepthStencilDescriptor()
@@ -277,6 +405,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     /// A new stream: forget the old frame and start from the home pose of the world (`aspect` is the view's).
     func configure(header: StreamHeader?, aspect: Float) {
+        mode = .lab
         self.header = header
         frame = nil
         frameStep = nil
@@ -293,6 +422,64 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     func resetCamera(aspect: Float) { goHome(aspect: aspect) }
 
+    // MARK: World content
+
+    /// A new world: forget the old frame, map and territory. The camera is the owner's (`WorldModel`).
+    func configureWorld(header: StreamHeader?) {
+        mode = .world
+        self.header = header
+        frame = nil
+        playFrame = nil
+        playFrameSerial += 1
+        mapNow = nil
+        mapPrevious = nil
+        mapNowSerial = -1
+        mapPreviousSerial = -1
+        playTerritory = nil
+        playTerritorySerial = -1
+        frameStep = nil
+    }
+
+    /// The `FRMA` to draw from now on (nil: none). `serial` increases with every frame.
+    func showWorld(frame newFrame: PlayFrame?) {
+        playFrame = newFrame
+        playFrameSerial += 1
+        frameStep = newFrame?.step
+    }
+
+    /// A weather map was delivered. The previous one is kept for the fade: `start` says which image the fade starts from
+    /// when a delivery lands during one (`MapFade.deliver`). The first map has no previous one.
+    func deliverWorld(map: PlayWeatherMap, serial: Int, start: MapFade.Start) {
+        if mapNow == nil {
+            mapPrevious = map
+            mapPreviousSerial = serial
+        } else if start == .current {
+            mapPrevious = mapNow
+            mapPreviousSerial = mapNowSerial
+        }
+        mapNow = map
+        mapNowSerial = serial
+    }
+
+    func showWorld(territory: PlayTerritory?, serial: Int) {
+        playTerritory = territory
+        playTerritorySerial = serial
+    }
+
+    /// The textures of the map held by each buffer set, by identity (a test pins that no two sets share one).
+    var mapTextureIdentities: [[ObjectIdentifier]] {
+        slots.map { slot in
+            [slot.world.current, slot.world.previous].flatMap { set in
+                [set.rain, set.cloud, set.zeta, set.sea, set.winds].compactMap { $0.map { ObjectIdentifier($0 as AnyObject) } }
+            }
+        }
+    }
+
+    /// The map serials each buffer set holds, (current, previous).
+    var mapSerialsBySlot: [(current: Int, previous: Int)] {
+        slots.map { ($0.world.currentSerial, $0.world.previousSerial) }
+    }
+
     private func goHome(aspect: Float) {
         guard let header else { return }
         settingHome = true
@@ -304,6 +491,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     // MARK: MTKViewDelegate
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        if mode == .world {
+            onResize?(size)
+            view.needsDisplay = true
+            return
+        }
         if cameraIsHome, size.height >= 1 { goHome(aspect: Float(size.width / size.height)) }
         view.needsDisplay = true
     }
@@ -361,8 +553,8 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // MARK: Offscreen
 
-    /// Draws the current scene into a `width` x `height` texture and reads it back. Blocks until the GPU is done.
-    func renderOffscreen(width: Int, height: Int) throws -> OffscreenImage {
+    /// A texture pair of `width` x `height` to draw into with `drawNow` or `renderOffscreen`.
+    func makeOffscreenTarget(width: Int, height: Int) throws -> OffscreenTarget {
         guard width > 0, height > 0 else { throw Failure.allocation("an empty image") }
         let color = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: Self.colorFormat, width: width, height: height, mipmapped: false)
@@ -376,24 +568,45 @@ final class Renderer: NSObject, MTKViewDelegate {
               let depthTexture = device.makeTexture(descriptor: depth) else {
             throw Failure.allocation("the offscreen textures")
         }
+        return OffscreenTarget(color: colorTexture, depth: depthTexture, width: width, height: height)
+    }
+
+    private func descriptor(for target: OffscreenTarget) -> MTLRenderPassDescriptor {
         let descriptor = MTLRenderPassDescriptor()
-        descriptor.colorAttachments[0].texture = colorTexture
+        descriptor.colorAttachments[0].texture = target.color
         descriptor.colorAttachments[0].loadAction = .clear
         descriptor.colorAttachments[0].storeAction = .store
         descriptor.colorAttachments[0].clearColor = Self.background
-        descriptor.depthAttachment.texture = depthTexture
+        descriptor.depthAttachment.texture = target.depth
         descriptor.depthAttachment.loadAction = .clear
         descriptor.depthAttachment.storeAction = .dontCare
         descriptor.depthAttachment.clearDepth = 1
+        return descriptor
+    }
+
+    /// Draws the current scene into a `width` x `height` texture and reads it back. Blocks until the GPU is done.
+    func renderOffscreen(width: Int, height: Int) throws -> OffscreenImage {
+        let target = try makeOffscreenTarget(width: width, height: height)
         guard let ticket = gate.acquire(intoWindow: false, patience: .seconds(10)) else { throw Failure.busy }
-        try submit(ticket, descriptor: descriptor, size: CGSize(width: width, height: height), drawable: nil,
+        try submit(ticket, descriptor: descriptor(for: target), size: CGSize(width: width, height: height), drawable: nil,
                    waitUntilCompleted: true)
         var bytes = [UInt8](repeating: 0, count: 4 * width * height)
         bytes.withUnsafeMutableBytes {
-            colorTexture.getBytes($0.baseAddress!, bytesPerRow: 4 * width,
+            target.color.getBytes($0.baseAddress!, bytesPerRow: 4 * width,
                                   from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
         }
         return OffscreenImage(width: width, height: height, bgra: bytes)
+    }
+
+    /// Draws the current scene into `target` without waiting for the GPU, the way a draw into the window goes: false, and
+    /// nothing drawn, when all three buffer sets are in flight (the window would try again shortly; the bench counts a
+    /// dropped draw).
+    @discardableResult
+    func drawNow(into target: OffscreenTarget) throws -> Bool {
+        guard let ticket = gate.acquire(intoWindow: false, patience: .milliseconds(0)) else { return false }
+        try submit(ticket, descriptor: descriptor(for: target), size: CGSize(width: target.width, height: target.height),
+                   drawable: nil, waitUntilCompleted: false)
+        return true
     }
 
     // MARK: Drawing
@@ -402,19 +615,22 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// the GPU has finished (at once, if this throws).
     private func submit(_ ticket: DrawGate.Ticket, descriptor: MTLRenderPassDescriptor, size: CGSize,
                         drawable: (any MTLDrawable)?, waitUntilCompleted: Bool) throws {
+        let started = CACurrentMediaTime()
         let slot = slots[ticket.slot]
         guard let commands = queue.makeCommandBuffer() else {
             gate.release(ticket)
             throw Failure.encoding
         }
         // The CPU writes the set before the encoder exists: the GPU has not been told about this draw yet.
-        if let header, let frame {
-            do {
+        do {
+            if mode == .world {
+                try refreshWorld(slot)
+            } else if let header, let frame {
                 try refresh(slot, from: frame, header: header)
-            } catch {
-                gate.release(ticket)
-                throw error
             }
+        } catch {
+            gate.release(ticket)
+            throw error
         }
         guard let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) else {
             gate.release(ticket)
@@ -422,9 +638,19 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         encode(into: encoder, slot: slot, size: size)
         encoder.endEncoding()
-        if let drawable { commands.present(drawable) }
+        let cpuMs = (CACurrentMediaTime() - started) * 1000
+        if let drawable {
+            commands.present(drawable)
+            if let presented = presentedHandler {
+                drawable.addPresentedHandler { presented($0.presentedTime) }
+            }
+        }
         let giveBack = ticket.giveBack
-        commands.addCompletedHandler { _ in giveBack() }
+        let timing = timingHandler
+        commands.addCompletedHandler { done in
+            giveBack()
+            timing?(DrawTiming(cpuMs: cpuMs, gpuMs: (done.gpuEndTime - done.gpuStartTime) * 1000))
+        }
         commands.commit()
         gate.commit(ticket)
         if waitUntilCompleted { commands.waitUntilCompleted() }
@@ -460,6 +686,10 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     private func encode(into encoder: any MTLRenderCommandEncoder, slot: Slot, size: CGSize) {
         guard let header else { return }
+        if mode == .world {
+            encodeWorld(into: encoder, slot: slot, header: header, size: size)
+            return
+        }
         var scene = uniforms(header: header, size: size)
         encoder.setCullMode(.none)
         encoder.setVertexBytes(&scene, length: MemoryLayout<SceneUniforms>.stride, index: 0)
@@ -510,6 +740,180 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         encoder.setDepthStencilState(overlayDepth)
         for plane in planes { draw(plane) }
+    }
+
+    // MARK: World pass
+
+    private func worldUniforms(header: StreamHeader, pass: UInt32) -> WorldUniforms {
+        let L = Float(header.size)
+        let hasMap = mapNow != nil
+        let display = worldDraw.display
+        var bits: UInt32 = 0
+        if display.map, hasMap { bits |= WorldUniforms.mapBit | WorldUniforms.equatorBit }
+        if display.territory, playTerritory != nil { bits |= WorldUniforms.territoryBit }
+        let territoryAlpha = bits & WorldUniforms.territoryBit != 0 ? WorldLevels.territoryAlpha(worldDraw.level) : 0
+        return WorldUniforms(
+            target: SIMD4(camera.target.x, camera.target.y, L, 1 / L),
+            params: SIMD4(worldDraw.mapBlend, WorldLevels.mapOpacity(worldDraw.level), territoryAlpha,
+                          WorldLevels.flatDiscPixels),
+            refs: SIMD4(mapNow?.pRef ?? 0, mapNow?.dcRef ?? 0, mapNow?.zetaRef ?? 0, 1 / tan(camera.fovY / 2)),
+            flags: SIMD4(pass, UInt32(playFrame?.n ?? 0), UInt32(playFrame?.nBonds ?? 0), bits),
+            style: SIMD4(0.55, 1.5, WorldLevels.minDiscPixels, 0))
+    }
+
+    private func encodeWorld(into encoder: any MTLRenderCommandEncoder, slot: Slot, header: StreamHeader, size: CGSize) {
+        let aspect = Float(size.width / size.height)
+        var scene = SceneUniforms(
+            viewProjection: camera.viewProjectionMatrix(aspect: aspect),
+            eye: SIMD4(camera.position, 1),
+            right: SIMD4(camera.right, 0),
+            up: SIMD4(camera.up, 0),
+            world: SIMD4(Float(header.size), Float(header.height), Float(header.radius), 0),
+            counts: SIMD4(UInt32(playFrame?.n ?? 0), UInt32(playFrame?.nBonds ?? 0), UInt32(header.dims), 0),
+            viewport: SIMD4(Float(size.width), Float(size.height), 0, 0))
+        encoder.setCullMode(.none)
+        encoder.setVertexBytes(&scene, length: MemoryLayout<SceneUniforms>.stride, index: 0)
+        encoder.setFragmentBytes(&scene, length: MemoryLayout<SceneUniforms>.stride, index: 0)
+        let display = worldDraw.display
+        let w = slot.world
+
+        func setWorld(_ u: inout WorldUniforms) {
+            encoder.setVertexBytes(&u, length: MemoryLayout<WorldUniforms>.stride, index: 7)
+            encoder.setFragmentBytes(&u, length: MemoryLayout<WorldUniforms>.stride, index: 7)
+        }
+
+        // The map first, with no depth write: everything after it is drawn over it, in 2D too (where the floor is the plane
+        // of the agents). A world with no weather and no territory to show has nothing to draw here.
+        var u = worldUniforms(header: header, pass: 0)
+        if u.flags.w & (WorldUniforms.mapBit | WorldUniforms.territoryBit) != 0 {
+            encoder.setDepthStencilState(overlayDepth)
+            encoder.setRenderPipelineState(mapPipeline)
+            setWorld(&u)
+            let hasMap = mapNow != nil && w.currentSerial >= 0
+            for (set, base) in zip([w.current, w.previous], [0, 4]) {
+                encoder.setFragmentTexture(hasMap ? set.rain : blankPlane, index: base)
+                encoder.setFragmentTexture(hasMap ? set.cloud : blankPlane, index: base + 1)
+                encoder.setFragmentTexture(hasMap ? set.zeta : blankPlane, index: base + 2)
+                encoder.setFragmentTexture(hasMap ? set.sea : blankPlane, index: base + 3)
+            }
+            encoder.setFragmentTexture(playTerritory != nil ? w.territory : blankTerritory, index: 8)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
+
+        // The agents of the newest frame.
+        encoder.setDepthStencilState(opaqueDepth)
+        if let frame = playFrame, frame.n > 0, w.pos != nil {
+            encoder.setVertexBuffer(w.pos, offset: 0, index: 2)
+            encoder.setVertexBuffer(w.orient, offset: 0, index: 3)
+            encoder.setVertexBuffer(w.rgb, offset: 0, index: 4)
+            encoder.setVertexBuffer(w.bonds, offset: 0, index: 5)
+            switch WorldLevels.agentLayer(at: worldDraw.level, display: display) {
+            case .instances:
+                encoder.setRenderPipelineState(agentPipeline)
+                setWorld(&u)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: frame.n)
+                var flat = worldUniforms(header: header, pass: 1)
+                encoder.setRenderPipelineState(flatPipeline)
+                setWorld(&flat)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: frame.n)
+            case .points:
+                encoder.setDepthStencilState(overlayDepth)
+                encoder.setRenderPipelineState(pointPipeline)
+                setWorld(&u)
+                encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: frame.n)
+                encoder.setDepthStencilState(opaqueDepth)
+            case .none:
+                break
+            }
+            if display.bonds, worldDraw.level != .planet, frame.nBonds > 0, w.bonds != nil {
+                encoder.setRenderPipelineState(worldBondPipeline)
+                setWorld(&u)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 4, instanceCount: frame.nBonds)
+            }
+        }
+        if display.frame {
+            encoder.setRenderPipelineState(boxPipeline)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 24)
+        }
+    }
+
+    /// Writes the newest frame, map and territory into `slot` unless it already holds them. Under the draw's ticket, before
+    /// the encoder exists: the GPU has not been told about this draw yet, and no committed draw reads this set.
+    private func refreshWorld(_ slot: Slot) throws {
+        let w = slot.world
+        if let frame = playFrame, w.frameSerial != playFrameSerial {
+            guard copy(frame.pos, into: &w.pos), copy(frame.orient, into: &w.orient), copy(frame.rgb, into: &w.rgb),
+                  copy(frame.bonds, into: &w.bonds, slack: true) else {
+                throw Failure.allocation("the agent buffers")
+            }
+            w.frameSerial = playFrameSerial
+        }
+        if let now = mapNow, let previous = mapPrevious {
+            let plan = MapUploadPlan.make(have: (w.currentSerial, w.previousSerial),
+                                          want: (mapNowSerial, mapPreviousSerial))
+            if plan.swap {
+                swap(&w.current, &w.previous)
+                swap(&w.currentSerial, &w.previousSerial)
+            }
+            if plan.uploadCur {
+                try upload(now, into: &w.current)
+                w.currentSerial = mapNowSerial
+            }
+            if plan.uploadPrev {
+                try upload(previous, into: &w.previous)
+                w.previousSerial = mapPreviousSerial
+            }
+        }
+        if let territory = playTerritory, w.territorySerial != playTerritorySerial {
+            if w.territory?.width != territory.nx || w.territory?.height != territory.ny {
+                let d = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: .rgba8Unorm, width: territory.nx, height: territory.ny, mipmapped: false)
+                d.usage = .shaderRead
+                d.storageMode = .shared
+                w.territory = device.makeTexture(descriptor: d)
+            }
+            guard let texture = w.territory else { throw Failure.allocation("the territory texture") }
+            TerritoryImage.rgba(territory).withUnsafeBytes {
+                texture.replace(region: MTLRegionMake2D(0, 0, territory.nx, territory.ny), mipmapLevel: 0,
+                                withBytes: $0.baseAddress!, bytesPerRow: 4 * territory.nx)
+            }
+            w.territorySerial = playTerritorySerial
+        }
+    }
+
+    /// Writes one delivery of the weather map into `textures`, creating them for its size on first use.
+    private func upload(_ map: PlayWeatherMap, into textures: inout MapTextures) throws {
+        func texture(_ current: (any MTLTexture)?, _ format: MTLPixelFormat, side: Int) throws -> any MTLTexture {
+            if let current, current.width == side, current.height == side, current.pixelFormat == format { return current }
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: side, height: side, mipmapped: false)
+            d.usage = .shaderRead
+            d.storageMode = .shared
+            guard let made = device.makeTexture(descriptor: d) else { throw Failure.allocation("a map texture") }
+            return made
+        }
+        func write<T>(_ values: [T], to texture: any MTLTexture, side: Int, bytesPerPixel: Int) {
+            values.withUnsafeBytes {
+                texture.replace(region: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0, withBytes: $0.baseAddress!,
+                                bytesPerRow: bytesPerPixel * side)
+            }
+        }
+        let n = map.n, nw = map.nw
+        textures.rain = try texture(textures.rain, .r8Unorm, side: n)
+        textures.cloud = try texture(textures.cloud, .r8Unorm, side: n)
+        textures.zeta = try texture(textures.zeta, .r8Snorm, side: n)
+        textures.sea = try texture(textures.sea, .r8Unorm, side: n)
+        textures.winds = try texture(textures.winds, .rgba8Snorm, side: nw)
+        write(map.p, to: textures.rain!, side: n, bytesPerPixel: 1)
+        write(map.dc, to: textures.cloud!, side: n, bytesPerPixel: 1)
+        write(map.zeta, to: textures.zeta!, side: n, bytesPerPixel: 1)
+        write(map.ts, to: textures.sea!, side: n, bytesPerPixel: 1)
+        // The block means of u1, v1, u2, v2 (four planes of nw x nw) as the channels of one texture.
+        let cells = nw * nw
+        var interleaved = [Int8](repeating: 0, count: 4 * cells)
+        for cell in 0..<cells {
+            for plane in 0..<4 { interleaved[4 * cell + plane] = map.winds[plane * cells + cell] }
+        }
+        write(interleaved, to: textures.winds!, side: nw, bytesPerPixel: 4)
     }
 
     // MARK: Upload

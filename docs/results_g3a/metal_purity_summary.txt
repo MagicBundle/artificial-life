@@ -1,0 +1,79 @@
+=== test_play_purity 11:03:16
+exit 0
+...............                                                          [100%]
+15 passed in 36.07s
+=== test_play_hook 11:03:52
+exit 0
+......................                                                   [100%]
+22 passed in 13.58s
+=== test_play_storms 11:04:06
+exit 0
+.................................                                        [100%]
+33 passed in 2.23s
+=== test_play_cli 11:04:09
+exit 0
+................                                                         [100%]
+16 passed in 19.04s
+=== test_stream_records 11:04:28
+exit 0
+........................................                                 [100%]
+40 passed in 0.12s
+=== test_game_purity 11:04:29
+exit 0
+.......................................................                  [100%]
+55 passed in 19.19s
+=== test_game_tracers 11:04:48
+exit 0
+.............................                                            [100%]
+29 passed in 5.94s
+=== test_spatial_metal 11:04:54
+exit 0
+........................................................................ [ 67%]
+..................................                                       [100%]
+106 passed in 30.39s
+=== test_play_chronicle 11:05:25
+exit 0
+...............                                                          [100%]
+15 passed in 1.61s
+=== test_play_colors 11:05:27
+exit 0
+..........                                                               [100%]
+10 passed in 0.13s
+=== test_play_control 11:05:28
+exit 0
+........................................................................ [ 91%]
+.......                                                                  [100%]
+79 passed in 1.93s
+=== test_play_envs 11:05:30
+exit 0
+...                                                                      [100%]
+3 passed in 1.43s
+=== test_play_focus 11:05:32
+exit 0
+.............                                                            [100%]
+13 passed in 4.15s
+=== test_play_houses 11:05:36
+exit 0
+..................................................                       [100%]
+50 passed in 8.89s
+=== test_play_identity 11:05:45
+exit 0
+..............                                                           [100%]
+14 passed in 0.84s
+=== test_play_labels_v3 11:05:46
+exit 0
+.............                                                            [100%]
+13 passed in 1.24s
+=== test_play_planet 11:05:48
+exit 0
+...............                                                          [100%]
+15 passed in 10.36s
+=== test_play_replay 11:05:59
+exit 0
+....                                                                     [100%]
+4 passed in 1.86s
+=== test_play_sched 11:06:01
+exit 0
+.......................                                                  [100%]
+23 passed in 4.20s
+ALLDONE

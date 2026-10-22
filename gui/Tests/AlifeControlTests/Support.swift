@@ -17,6 +17,11 @@ enum Repo {
     static func streamFixtureURL(_ kind: String) -> URL {
         streamData.appendingPathComponent("stream_tiny_\(kind).bin")
     }
+
+    /// A committed play stream (`play_tiny3d`, `play_tiny2d`, `play_tiny3d_n70`).
+    static func playFixtureURL(_ kind: String) -> URL {
+        streamData.appendingPathComponent("play_tiny\(kind).bin")
+    }
 }
 
 /// A fresh empty directory under the system temporary directory, removed by `cleanup()`.

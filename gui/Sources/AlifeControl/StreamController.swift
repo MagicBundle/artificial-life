@@ -50,10 +50,10 @@ final class StreamController: ObservableObject {
     private(set) var directory: URL?
     private var executable: URL?
 
-    private var session: Session?
+    private var session: EngineSession?
     /// Sessions that were replaced by a newer stream and whose process has not finished: each is on its way out (its
     /// `quit` is sent and its grace is running), and `shutdown()` still has to end it if the app quits first.
-    private var retired: [Session] = []
+    private var retired: [EngineSession] = []
     private var rateStart: (time: ContinuousClock.Instant, step: UInt64)?
 
     init() {}
@@ -96,40 +96,23 @@ final class StreamController: ObservableObject {
             for: source, every: control.every, color: control.color, fieldLayer: control.fields ? control.fieldLayer : nil)
         log(["$ " + ([executable.path] + args).map(shellQuote).joined(separator: " ")], false)
 
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = args
-        process.currentDirectoryURL = directory
-        process.environment = RunController.engineEnvironment()
-        let inPipe = Pipe()
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        inPipe.fileHandleForWriting.suppressSIGPIPE()
-        process.standardInput = inPipe
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-        let (exits, exitSink) = AsyncStream.makeStream(of: (Int32, Process.TerminationReason).self)
-        process.terminationHandler = { process in
-            exitSink.yield((process.terminationStatus, process.terminationReason))
-            exitSink.finish()
-        }
+        let launched: EngineSession.Launched
         do {
-            try process.run()
+            launched = try EngineSession.launch(executable: executable, arguments: args, directory: directory)
         } catch {
             let message = "Failed to launch \(executable.path): \(error.localizedDescription)"
             log([message], true)
             phase = .failed(message)
             return
         }
-
-        let mailbox = StreamMailbox()
-        let (wakeups, wake) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
-        StreamReader.start(reading: outPipe.fileHandleForReading, into: mailbox, wake: wake)
-        let errorChunks = RunController.chunks(from: errPipe)
-        let session = Session(process: process, stdin: inPipe.fileHandleForWriting, mailbox: mailbox)
+        let session = launched.session
         self.session = session
         Task { [weak self] in
-            await self?.pump(session, wakeups: wakeups, stderr: errorChunks, exits: exits)
+            await session.pump(
+                launched,
+                deliver: { delivery in self?.apply(delivery, from: session) },
+                lines: { lines in self?.note(lines, from: session) },
+                finished: { status, reason in self?.finish(session, status: status, reason: reason) })
         }
     }
 
@@ -161,7 +144,8 @@ final class StreamController: ObservableObject {
     }
 
     private func stopSession() {
-        session?.requestStop(grace: terminationGrace)
+        session?.requestStop(quit: try? StreamCommand.quit.encoded(),
+                             ladder: EngineSession.Ladder(beforeInterrupt: nil, beforeTerminate: terminationGrace))
     }
 
     // MARK: Commands
@@ -171,7 +155,7 @@ final class StreamController: ObservableObject {
     private func send(_ command: StreamCommand) -> Bool {
         guard let session, !session.stopRequested, phase == .live else { return false }
         do {
-            return try session.write(command)
+            return try session.write(try command.encoded())
         } catch {
             log(["[3d] could not write to the stream: \(error.localizedDescription)"], true)
             return false
@@ -228,97 +212,14 @@ final class StreamController: ObservableObject {
         if send(.fieldLayer(k)) { control.fieldLayer = k }
     }
 
-    // MARK: Session
-
-    /// One `alife stream` process and the handles to it. Main-actor isolated, so it is `Sendable`.
-    @MainActor
-    private final class Session {
-        let process: Process
-        let mailbox: StreamMailbox
-        private(set) var stdin: FileHandle?
-        /// The viewer asked for the end (as opposed to the stream ending, or being cut off for being corrupt).
-        var stopRequested = false
-        private var graceTask: Task<Void, Never>?
-        /// The last non-blank line of the process's stderr: what it says went wrong.
-        var lastError: String?
-        /// How the reader saw the stream end.
-        var end: StreamEnd?
-
-        init(process: Process, stdin: FileHandle, mailbox: StreamMailbox) {
-            self.process = process
-            self.stdin = stdin
-            self.mailbox = mailbox
-        }
-
-        func write(_ command: StreamCommand) throws -> Bool {
-            guard let stdin else { return false }
-            try stdin.write(contentsOf: try command.encoded())
-            return true
-        }
-
-        func closeStdin() {
-            try? stdin?.close()
-            stdin = nil
-        }
-
-        /// A `quit` line, EOF on stdin, and SIGTERM if the process is still running after `grace`. Once only.
-        func requestStop(grace: Duration) {
-            guard !stopRequested else { return }
-            stopRequested = true
-            if let line = try? StreamCommand.quit.encoded() { try? stdin?.write(contentsOf: line) }
-            closeStdin()
-            let process = process
-            graceTask = Task {
-                try? await Task.sleep(for: grace)
-                if !Task.isCancelled, process.isRunning { process.terminate() }
-            }
-        }
-
-        /// SIGTERM now (the app is quitting, or the stream is corrupt).
-        func terminate() {
-            closeStdin()
-            graceTask?.cancel()
-            if process.isRunning { process.terminate() }
-        }
-
-        func release() {
-            graceTask?.cancel()
-            closeStdin()
-        }
-    }
-
     // MARK: Pumping
 
-    /// Runs until the process has exited and both of its pipes have reached end of file, then finishes the session. The
-    /// exit is only looked at after the frames: the last frame and the exit status cannot race.
-    private func pump(_ session: Session, wakeups: AsyncStream<Void>, stderr: AsyncStream<Data>,
-                      exits: AsyncStream<(Int32, Process.TerminationReason)>) async {
-        async let frames: Void = consume(session, wakeups)
-        async let errors: Void = drain(session, stderr)
-        _ = await (frames, errors)
-        for await (status, reason) in exits { finish(session, status: status, reason: reason) }  // yields exactly once
-    }
-
-    private func consume(_ session: Session, _ wakeups: AsyncStream<Void>) async {
-        for await _ in wakeups { apply(session.mailbox.take(), from: session) }
-        apply(session.mailbox.take(), from: session)  // what the last wake-up may have coalesced away
-    }
-
-    private func drain(_ session: Session, _ chunks: AsyncStream<Data>) async {
-        var splitter = LineSplitter()
-        for await data in chunks { note(splitter.feed(data), from: session) }
-        if let rest = splitter.flush() { note([rest], from: session) }
-    }
-
-    private func note(_ lines: [String], from session: Session) {
+    private func note(_ lines: [String], from session: EngineSession) {
         guard !lines.isEmpty else { return }
         log(lines.map { "[3d] " + $0 }, true)
-        if let last = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
-            session.lastError = last
-        }
     }
 
-    private func apply(_ delivery: StreamDelivery, from session: Session) {
+    private func apply(_ delivery: StreamDelivery, from session: EngineSession) {
         guard self.session === session, !session.stopRequested else { return }
         // Nothing arrived (a wake-up whose content the last take already delivered): assigning a @Published property
         // announces a change whatever the value, and each announcement is a redraw of the view.
@@ -361,7 +262,7 @@ final class StreamController: ObservableObject {
         rateStart = (now, step)
     }
 
-    private func finish(_ session: Session, status: Int32, reason: Process.TerminationReason) {
+    private func finish(_ session: EngineSession, status: Int32, reason: Process.TerminationReason) {
         session.release()
         retired.removeAll { $0 === session }
         guard self.session === session else { return }  // a newer stream replaced it
@@ -399,14 +300,5 @@ final class StreamController: ObservableObject {
         case 130: return "alife stream was interrupted (exit code 130)"
         default: return "alife stream exited with code \(status)"
         }
-    }
-}
-
-extension FileHandle {
-    /// Makes a write to this descriptor fail with EPIPE (which `write(contentsOf:)` throws) when the reader has gone,
-    /// instead of delivering SIGPIPE, which ends the process. The app also ignores SIGPIPE as a whole
-    /// (`AppDelegate`); this keeps the descriptor safe on its own, wherever the code runs.
-    func suppressSIGPIPE() {
-        _ = fcntl(fileDescriptor, F_SETNOSIGPIPE, 1)
     }
 }

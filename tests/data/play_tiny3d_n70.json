@@ -1,0 +1,541 @@
+{
+  "about": "Expected decoding of the stream in the .bin file next to this one (DESIGN section 33.1). Regenerate with `uv run python tests/play_fixtures.py --write`.",
+  "kind": "3d_n70",
+  "bytes": 4304,
+  "header": {
+    "protocol": 1,
+    "dims": 3,
+    "L": 48.0,
+    "height": 24.0,
+    "N": 70,
+    "B": 4,
+    "radius": 1.0,
+    "field_cell": 4.0,
+    "FG": 12,
+    "FZ": 6,
+    "NCH": 3,
+    "color_modes": [
+      "tag",
+      "energy",
+      "clade",
+      "house",
+      "kin",
+      "archetype",
+      "intent"
+    ],
+    "color": "tag",
+    "fields": false,
+    "field_z": 0,
+    "step": 10,
+    "run": null,
+    "config_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "mode": "simulate",
+    "every": 1,
+    "source": "preset",
+    "play": {
+      "records": [
+        "FRMA",
+        "IDNT",
+        "INTN",
+        "CLCK"
+      ],
+      "versions": {
+        "FRMA": 1,
+        "IDNT": 1,
+        "INTN": 1,
+        "CLCK": 1
+      },
+      "base_rate": 14.4,
+      "rates": [
+        0.25,
+        0.5,
+        1,
+        2
+      ],
+      "tick": 25,
+      "snapshot_every": 250,
+      "frame_hz": 30,
+      "chapter": 6000,
+      "weather": {
+        "enabled": false,
+        "cells": 160,
+        "dx": 2.0,
+        "f0": 0.025,
+        "coarse": 40,
+        "name_zeta": 0.5,
+        "refs": {
+          "p": 0.004,
+          "dc": 0.0,
+          "u": 0.1,
+          "zeta": 0.025
+        }
+      },
+      "labels": {
+        "intent_version": 3,
+        "arch": [
+          "",
+          "Gatherer",
+          "Hunter",
+          "Provider",
+          "Trader",
+          "Nomad",
+          "Settler",
+          "Unspecialised",
+          "Drifter",
+          "Floater",
+          "Sinker"
+        ],
+        "intent": [
+          "",
+          "Budding",
+          "Hunting",
+          "Fleeing",
+          "Defending",
+          "Caring",
+          "Tethering",
+          "Signalling",
+          "Feeding",
+          "Roaming",
+          "Resting"
+        ],
+        "gate": {
+          "rules_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "world_key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "key_found": true,
+          "archetypes": [
+            2,
+            3
+          ],
+          "intents": [
+            10
+          ]
+        }
+      },
+      "cast": {
+        "kin": 16,
+        "house": 16,
+        "colony": 16
+      },
+      "energy_cap": 16384,
+      "events": {
+        "1": "kin_born",
+        "2": "kin_split",
+        "3": "kin_merged",
+        "4": "kin_dissolved",
+        "5": "house_founded",
+        "6": "house_extinct",
+        "7": "storm_born",
+        "8": "storm_named",
+        "9": "storm_merged",
+        "10": "storm_split",
+        "11": "storm_dissolved",
+        "12": "director_entry",
+        "13": "focus_death",
+        "14": "focus_handoff",
+        "15": "checkpoint",
+        "16": "renumbered",
+        "17": "extinct"
+      },
+      "planet": {
+        "source": null,
+        "houses": "none"
+      }
+    }
+  },
+  "skipped": [],
+  "records": [
+    {
+      "index": 0,
+      "tag": "FRMA",
+      "offset": 1640,
+      "length": 240,
+      "step": 10,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "n": 6,
+        "n_bonds": 3,
+        "color_index": 0,
+        "span": 0,
+        "N": 70,
+        "rows": [
+          0,
+          31,
+          32,
+          63,
+          64,
+          69
+        ],
+        "bonds": [
+          [
+            1,
+            2
+          ],
+          [
+            3,
+            4
+          ],
+          [
+            0,
+            5
+          ]
+        ],
+        "agents": [
+          {
+            "index": 0,
+            "row": 0,
+            "pos": [
+              0.0,
+              0.0,
+              0.5
+            ],
+            "yaw": 0.0,
+            "pitch": -0.0,
+            "rgb": 66051,
+            "uid": 5000000000
+          },
+          {
+            "index": 3,
+            "row": 63,
+            "pos": [
+              63.0,
+              126.0,
+              189.5
+            ],
+            "yaw": 3.9375,
+            "pitch": -1.96875,
+            "rgb": 66114,
+            "uid": 5000000189
+          },
+          {
+            "index": 5,
+            "row": 69,
+            "pos": [
+              69.0,
+              138.0,
+              207.5
+            ],
+            "yaw": 4.3125,
+            "pitch": -2.15625,
+            "rgb": 66120,
+            "uid": 5000000207
+          }
+        ]
+      },
+      "sha256": {
+        "bitmap": "9509fd090fbed3ab7ed3c12fc5c0c6621d33b4f9fd934df36fb18620e3fe3d9d",
+        "pos": "566041e5c95c87ed664e161f54c4db495a7b4087e4e8d8e7c93cb2ba13d1c8d0",
+        "orient": "bc97c8ca62a89dca33bf6b404ba1f67b098db44c77dde43b7f6aa34ac25f8852",
+        "rgb": "d4a1fbee4b2c0b38e3bfce61198c3b5994878f90e912ef40f89a4539ead33ca3",
+        "uid": "6a15c02dfacbb9504b8c407f5c5226741154a334a5e2ac5f6654c829c49cdcc3",
+        "bonds": "f04014935f4f9a664558d648c21e4e522ecfa5565fc5e89dc8379354ed705b32"
+      }
+    },
+    {
+      "index": 1,
+      "tag": "IDNT",
+      "offset": 1888,
+      "length": 212,
+      "step": 10,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "n_rows": 6,
+        "snapshot_step": 10,
+        "json": {
+          "houses": [],
+          "exact": false,
+          "origin": 10,
+          "kin": [],
+          "colonies": [],
+          "unknown_immigrant": 0
+        },
+        "rows": [
+          {
+            "uid": 5000000000,
+            "clade": 1,
+            "house": 255,
+            "kin": 255,
+            "colony": 255,
+            "flags": 0
+          },
+          {
+            "uid": 5000000093,
+            "clade": 2,
+            "house": 255,
+            "kin": 255,
+            "colony": 255,
+            "flags": 0
+          },
+          {
+            "uid": 5000000096,
+            "clade": 3,
+            "house": 255,
+            "kin": 255,
+            "colony": 255,
+            "flags": 0
+          },
+          {
+            "uid": 5000000189,
+            "clade": 4,
+            "house": 255,
+            "kin": 255,
+            "colony": 255,
+            "flags": 0
+          },
+          {
+            "uid": 5000000192,
+            "clade": 5,
+            "house": 255,
+            "kin": 255,
+            "colony": 255,
+            "flags": 0
+          },
+          {
+            "uid": 5000000207,
+            "clade": 6,
+            "house": 255,
+            "kin": 255,
+            "colony": 255,
+            "flags": 0
+          }
+        ]
+      },
+      "sha256": {
+        "json": "ddc7ccc202012180c9c9465d6e7d78706c123901af9115d62e75e11fd7d1b683",
+        "rows": "4ea774e68ad93b9c042ae2cb3cf3a8904bd25fdac113c7b515e77a917d7a22db"
+      }
+    },
+    {
+      "index": 2,
+      "tag": "INTN",
+      "offset": 2108,
+      "length": 104,
+      "step": 10,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "n_rows": 6,
+        "labels_step": 0,
+        "intent_version": 3,
+        "rows": [
+          {
+            "uid": 5000000000,
+            "arch_primary": 0,
+            "arch_secondary": 0,
+            "intent": 0,
+            "flags": 0
+          },
+          {
+            "uid": 5000000093,
+            "arch_primary": 0,
+            "arch_secondary": 0,
+            "intent": 0,
+            "flags": 0
+          },
+          {
+            "uid": 5000000096,
+            "arch_primary": 0,
+            "arch_secondary": 0,
+            "intent": 0,
+            "flags": 0
+          },
+          {
+            "uid": 5000000189,
+            "arch_primary": 0,
+            "arch_secondary": 0,
+            "intent": 0,
+            "flags": 0
+          },
+          {
+            "uid": 5000000192,
+            "arch_primary": 0,
+            "arch_secondary": 0,
+            "intent": 0,
+            "flags": 0
+          },
+          {
+            "uid": 5000000207,
+            "arch_primary": 0,
+            "arch_secondary": 0,
+            "intent": 0,
+            "flags": 0
+          }
+        ]
+      },
+      "sha256": {
+        "rows": "f31edcc6b23d487eb8e0214683c0eb38c1c8fa55baa7dd621fe238113d991c4b"
+      }
+    },
+    {
+      "index": 3,
+      "tag": "FRMA",
+      "offset": 2220,
+      "length": 2008,
+      "step": 11,
+      "seq": 1,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "n": 70,
+        "n_bonds": 0,
+        "color_index": 0,
+        "span": 1,
+        "N": 70,
+        "rows": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69
+        ],
+        "bonds": [],
+        "agents": [
+          {
+            "index": 0,
+            "row": 0,
+            "pos": [
+              0.0,
+              0.0,
+              0.5
+            ],
+            "yaw": 0.0,
+            "pitch": -0.0,
+            "rgb": 66051,
+            "uid": 5000000000
+          },
+          {
+            "index": 35,
+            "row": 35,
+            "pos": [
+              35.0,
+              70.0,
+              105.5
+            ],
+            "yaw": 2.1875,
+            "pitch": -1.09375,
+            "rgb": 66086,
+            "uid": 5000000105
+          },
+          {
+            "index": 69,
+            "row": 69,
+            "pos": [
+              69.0,
+              138.0,
+              207.5
+            ],
+            "yaw": 4.3125,
+            "pitch": -2.15625,
+            "rgb": 66120,
+            "uid": 5000000207
+          }
+        ]
+      },
+      "sha256": {
+        "bitmap": "b233b2492ef8a2ebf3dfb2dc133ec3d0d93f2514786a6ba9681277a17683a41e",
+        "pos": "ccf2afb2ce1a4adf01f36f5c19080e0445df6c2b1c8f9c237eac5a1af44562fe",
+        "orient": "8f2d882359255c0e2eee6cbf1f6895f9fd6b6530e17b9d464a7bf61e90bad8ee",
+        "rgb": "fc9f46599bc68ec47b158b69e0595eaaca6bbb3950f96cc12109b76099fd384d",
+        "uid": "84ffc6c54fd8d7a4fe7108f261368a23692887dbee625dcd375a5e621c47754d",
+        "bonds": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "index": 4,
+      "tag": "CLCK",
+      "offset": 4236,
+      "length": 60,
+      "step": 11,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "rate": 0.0,
+        "achieved": 0.0,
+        "step_ms": 0.0,
+        "frame_ms": 0.0,
+        "late_steps": 0,
+        "save_stall_steps": 0,
+        "reason": 1,
+        "saving": 0,
+        "flags": 0,
+        "fe": 1,
+        "chapter": 0,
+        "in_chapter": 11,
+        "chapter_len": 6000
+      },
+      "sha256": {
+        "body": "e91cb38e6b25910759e1d85d3d3320731521c46d29e9f8ba375b44728c30ff36"
+      }
+    }
+  ]
+}

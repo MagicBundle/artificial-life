@@ -15,7 +15,7 @@ import shutil
 import sys
 import time
 import traceback
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +23,8 @@ import mlx.core as mx
 import numpy as np
 
 from alife import config as config_mod
-from alife import metrics, physics, runner, spatial, stream, weather_spinup
+from alife import metrics, physics, play, runner, spatial, stream, weather_spinup
+from alife.analysis import houses as house_rebuild
 from alife.config import (
     ALL_OVERLAYS,
     DEFAULT_PRESET,
@@ -45,6 +46,7 @@ from alife.config import (
 from alife.director import llm as director_llm
 from alife.director import log as director_log
 from alife.director import make_director, yoked
+from alife.game import housefile
 from alife.invariants import full_check
 from alife.render import (
     COLOR_MODES,
@@ -56,7 +58,17 @@ from alife.render import (
     write_png,
 )
 from alife.rng import InitStream, init_keys
-from alife.runio import DIRECTOR_LOG_FILE, CheckpointError, RunDir, checkpoint_metadata, load_checkpoint
+from alife.runio import (
+    DIRECTOR_LOG_FILE,
+    CheckpointError,
+    PlayLock,
+    PlayLockError,
+    RunDir,
+    checkpoint_metadata,
+    load_checkpoint,
+    play_lock_holder,
+    write_state_file,
+)
 from alife.runner import ExitCode
 from alife.state import DeathCause, State, State3, agent_fields, default_env, init_state, to_numpy
 from alife.step import make_step
@@ -392,10 +404,16 @@ def _spin_weather(a: argparse.Namespace, rd: RunDir, cfg: Config, box: list[Stat
     return None
 
 
-def _cmd_run(a: argparse.Namespace) -> int:
-    overrides = _run_overrides(a)
-    if a.init_from is not None:
-        return _fork(a, overrides)
+# called with a new run's directory and config after every check and before the first write
+BeforeCreate = Callable[[Path, Config], None]
+
+
+def _prepare_run(
+    a: argparse.Namespace, overrides: list[str], *, before_create: BeforeCreate | None = None
+) -> tuple[RunDir, Config, list[State], int | None]:
+    """The new-run path of ``run``, up to ``_launch``: ``(rundir, cfg, [state], exit code or None)``. The exit
+    code is set when the weather spin-up was interrupted. ``before_create(out, cfg)`` runs after every check
+    and before the run directory is created (``play`` takes its lock there)."""
     cfg = load_config(a.config, preset=a.preset, overlays=a.overlay, overrides=overrides)
     _check_llm_flags(a, cfg)
     _check_yoke(cfg)
@@ -407,32 +425,61 @@ def _cmd_run(a: argparse.Namespace) -> int:
     _knn_guard(cfg)  # before RunDir.create, which records the search in meta.json
     _check_spinup(a, cfg)
     out = Path(a.out) if a.out else _default_out(a.preset or DEFAULT_PRESET, cfg.run.seed)
+    if before_create is not None:
+        before_create(out, cfg)
     rd = RunDir.create(out, cfg, overwrite=a.overwrite)
     rd.update_meta(start_step=0)
     _announce(rd, cfg, 0, cfg.run.steps, a.quiet)
     box = [init_state(cfg)]
-    code = _spin_weather(a, rd, cfg, box)
+    return rd, cfg, box, _spin_weather(a, rd, cfg, box)
+
+
+def _cmd_run(a: argparse.Namespace) -> int:
+    overrides = _run_overrides(a)
+    if a.init_from is not None:
+        return _fork(a, overrides)
+    rd, cfg, box, code = _prepare_run(a, overrides)
     return code if code is not None else _launch(rd, cfg, box, cfg.run.steps, a.quiet)
 
 
-def _fork_source(spec: str) -> tuple[Path, str]:
-    """``(state file, origin)`` for ``--init-from RUN[:STEP]|FILE.safetensors``."""
+def _fork_lookup(spec: str) -> tuple[Path, str, RunDir | None, int | None]:
+    """``(state file, origin, run directory, step)`` for ``--init-from RUN[:STEP]|FILE.safetensors``: the
+    run directory and the checkpoint's step are None for a bare state file."""
     p = Path(spec)
     if p.suffix == ".safetensors" or p.is_file():
         if not p.is_file():
             raise CheckpointError(f"--init-from: no state file {p}")
-        return p, str(p)
+        return p, str(p), None, None
     m = _RUN_STEP_RE.match(spec)
     if m and not p.is_dir() and Path(m["run"]).is_dir():
         rd, step = RunDir.open(Path(m["run"])), int(m["step"])
     else:
         rd, step = RunDir.open(p), None
     path = _select_checkpoint(rd, step)
-    return path, f"{rd.path}:{int(checkpoint_metadata(path)['step'])}"
+    at = int(checkpoint_metadata(path)["step"])
+    return path, f"{rd.path}:{at}", rd, at
 
 
-def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
-    """Start a new run directory from another run's state with a changed config (§18 Fork)."""
+def _fork_source(spec: str) -> tuple[Path, str]:
+    """``(state file, origin)`` for ``--init-from RUN[:STEP]|FILE.safetensors``."""
+    path, origin, _, _ = _fork_lookup(spec)
+    return path, origin
+
+
+def _prepare_fork(
+    a: argparse.Namespace,
+    overrides: list[str],
+    *,
+    before_create: BeforeCreate | None = None,
+    require_spinup: bool = False,
+) -> tuple[RunDir | None, Config, list[State], int | None]:
+    """A new run directory from another run's state with a changed config (§18 Fork), up to ``_launch``:
+    ``(rundir, cfg, [state], exit code or None)``: the code is set when the weather spin-up was interrupted
+    (``rundir`` exists) or the state violates the new config (``rundir`` is None: nothing was written).
+
+    ``before_create(out, cfg)`` runs after every check and before the directory is created (``play`` takes its
+    lock there). ``require_spinup`` refuses a fork that turns the weather on without ``--weather-spinup N`` of
+    at least 1 (the rest state has no storms for about 15,000 steps; ``alife play``'s rule)."""
     if a.preset is not None:
         raise ConfigError(
             "--preset cannot be combined with --init-from (the source state's config is the base)"
@@ -445,6 +492,11 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
     _check_llm_flags(a, cfg)
     _check_yoke(cfg)
     _check_spinup(a, cfg, src_cfg)
+    if require_spinup and cfg.weather.enabled and not src_cfg.weather.enabled and not a.weather_spinup:
+        raise ConfigError(
+            "the fork turns the weather on: it needs --weather-spinup N with N >= 1 (the rest state has no "
+            "storms for about 15,000 steps)"
+        )
     replay = cfg.run.director == "replay"
     if replay != (a.replay_log is not None):
         raise ConfigError("--director replay and --replay-log LOG go together")
@@ -485,10 +537,12 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
         print(f"--init-from {a.init_from}: the state violates the new config:", file=sys.stderr)
         for p in problems:
             print(f"  {p}", file=sys.stderr)
-        return int(ExitCode.CHECKPOINT)
+        return None, cfg, [], int(ExitCode.CHECKPOINT)  # (nothing was written)
     step = int(to_numpy(s.step))
     _knn_guard(cfg)
     out = Path(a.out) if a.out else _default_out("fork", cfg.run.seed)
+    if before_create is not None:
+        before_create(out, cfg)
     rd = RunDir.create(out, cfg, overwrite=a.overwrite, parent=origin)
     rd.update_meta(start_step=step)
     if replay:
@@ -500,8 +554,16 @@ def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
         )
     box = [s]
     del s  # the runner must hold the only reference to the state (donation rule, F1)
-    code = _spin_weather(a, rd, cfg, box)
-    return code if code is not None else _launch(rd, cfg, box, cfg.run.steps, a.quiet)
+    return rd, cfg, box, _spin_weather(a, rd, cfg, box)
+
+
+def _fork(a: argparse.Namespace, overrides: list[str]) -> int:
+    """Start a new run directory from another run's state with a changed config (§18 Fork)."""
+    rd, cfg, box, code = _prepare_fork(a, overrides)
+    if code is not None:
+        return code
+    assert rd is not None
+    return _launch(rd, cfg, box, cfg.run.steps, a.quiet)
 
 
 def _resume_allowed(item: str) -> bool:
@@ -513,8 +575,17 @@ def _resume_allowed(item: str) -> bool:
     )
 
 
+def _refuse_if_played(rd: RunDir) -> None:
+    """``resume`` (and any other command that would cut or rewrite a run) refuses a directory that an
+    ``alife play`` process holds (DESIGN §33.3.3): the play would be changed under it."""
+    holder = play_lock_holder(rd.path)
+    if holder is not None:
+        raise ConfigError(f"{rd.path} is being played by process {holder} (play.lock): stop that play first")
+
+
 def _cmd_resume(a: argparse.Namespace) -> int:
     rd = RunDir.open(Path(a.run))
+    _refuse_if_played(rd)
     items = list(a.set)
     if a.director is not None:  # a shortcut for --set run.director=MODE, translated before the key check
         items.append(f"run.director={a.director}")
@@ -849,6 +920,364 @@ def _cmd_stream(a: argparse.Namespace) -> int:
     return int(ExitCode.OK)
 
 
+# --- play -----------------------------------------------------------------------------------------------
+
+_PLAY_HELP = (
+    "play a world: the engine under a fixed-timestep scheduler (pause, 0.25x to 2x of 14.4 steps/s, max) "
+    "with the game observers on, writing the play records of DESIGN 33.1 after an `alife stream` header on "
+    "stdout and reading control lines on stdin: pause, run, step [N], rate M|max, color MODE, every K|auto, "
+    "focus UID|off, follow UID|off, idnt, labels on|off, quit (stdin EOF = quit). RUN is a play world (a "
+    "directory with play.json); research runs are forked (--init-from), or played in place with --adopt. A "
+    "world is saved every 6000 steps and on quit."
+)
+
+
+def _rate_arg(text: str) -> float:
+    """``--rate``: ``max`` or a multiplier (0 starts paused)."""
+    if text == "max":
+        return play.MAX_RATE
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected 'max' or a multiplier, got {text!r}") from None
+    if v != 0 and not play.RATE_MIN <= v <= play.RATE_MAX:
+        raise argparse.ArgumentTypeError(f"expected 0 or a multiplier in [{play.RATE_MIN}, {play.RATE_MAX}]")
+    return v
+
+
+def _play_namespace(a: argparse.Namespace) -> argparse.Namespace:
+    """The namespace of ``run`` that ``_prepare_run`` and ``_prepare_fork`` read, from ``play``'s:
+    ``--director rules`` is ``--director live``, the LLM stays off, nothing is quiet (the window reads the
+    progress lines)."""
+    run_defaults: dict[str, Any] = dict(
+        config=None, seed=None, steps=None, metrics_every=None, checkpoint_every=None, checks=None,
+        no_compile=False, director=None, llm=False, llm_every=None, llm_url=None, llm_model=None,
+        persona=None, goal=None, yoke_log=None, replay_log=None, overwrite=False, quiet=False,
+        weather_spinup=None, init_from=None, preset=None, overlay=[], set=[], out=None,
+    )  # fmt: skip
+    merged = {**run_defaults, **{k: v for k, v in vars(a).items() if k in run_defaults}}
+    merged["director"] = "live" if a.director == "rules" else None
+    return argparse.Namespace(**merged)
+
+
+def _play_items(a: argparse.Namespace) -> list[str]:
+    """What play applies on top of a world's config: the cadence and ``game.observe`` (``--set`` items that
+    resume allows), and the director mode."""
+    mode = "replay" if a.replay else "live" if a.director == "rules" else "off"
+    return [
+        *(f"run.{k}={v}" for k, v in play.PLAY_CADENCE.items()),
+        "game.observe=true",
+        f"run.director={mode}",
+        *(["director.llm_every=0"] if mode == "live" else []),
+    ]
+
+
+def _check_play_tick(cfg: Config) -> None:
+    try:
+        play.check_tick(play.world_tick(cfg))
+    except ValueError as e:
+        raise ConfigError(str(e)) from None
+
+
+def _lock(directory: Path) -> PlayLock:
+    try:
+        return PlayLock(directory).acquire()
+    except PlayLockError as e:
+        raise ConfigError(str(e)) from None
+
+
+def _cmd_play(a: argparse.Namespace) -> int:
+    """``alife play`` (DESIGN §33.2.8): ``protocol_output`` is the first act, so nothing that is printed while
+    a world is prepared (the announcement, the spin-up progress) can reach the protocol stream."""
+    if sum(x is not None for x in (a.run, a.init_from, a.preset)) != 1:
+        raise ConfigError("play needs exactly one of RUN, --init-from SRC and --preset P")
+    if a.run is None:
+        for flag, given in (
+            ("--checkpoint", a.checkpoint is not None),
+            ("--truncate", a.truncate),
+            ("--adopt", a.adopt),
+            ("--replay", a.replay),
+        ):
+            if given:
+                raise ConfigError(f"{flag} applies to a world directory (play RUN)")
+        if a.houses is not None and a.init_from is None:
+            raise ConfigError("--houses applies to a planet (--init-from): a preset starts at step 0")
+        fixed = sorted(
+            k
+            for k in (item.partition("=")[0] for item in a.set)
+            if k.removeprefix("run.") in play.PLAY_CADENCE
+        )
+        if fixed:
+            raise ConfigError(
+                f"play fixes the cadence of a world ({', '.join(f'run.{k}' for k in play.PLAY_CADENCE)}); "
+                f"--set {', '.join(fixed)} would be overridden: remove it"
+            )
+    elif a.set or a.overlay or a.seed is not None or a.out or a.weather_spinup is not None or a.houses:
+        raise ConfigError(
+            "--set, --overlay, --seed, --out, --weather-spinup and --houses make a new world (--init-from "
+            "or --preset); a world directory is played as it is"
+        )
+    if a.replay and a.director == "rules":
+        raise ConfigError("--replay applies the director's log; it cannot also decide (--director rules)")
+    control = stream.NoControl() if a.no_control else stream.FdControl()
+    with stream.protocol_output() as sink:
+        try:
+            return _play_world(a, sink, control) if a.run is None else _play_resume(a, sink, control)
+        finally:
+            control.close()
+
+
+def _houses_source(a: argparse.Namespace, mode: str) -> tuple[RunDir | None, int | None]:
+    """The source run and checkpoint step whose exact houses a planet gets, or ``(None, None)`` for clade
+    houses (``--houses clade``, or ``auto`` with a source that cannot give them: a note on stderr).
+    ``--houses exact`` refuses such a source (``HouseError``, exit 4). A directory listing only (DESIGN
+    §33.3.5): before the source's state is loaded and before anything is written."""
+    if mode == "clade":
+        return None, None
+    _, _, run, step = _fork_lookup(a.init_from)
+    why = (
+        "the source is a state file, not a run directory (it has no event chunks)"
+        if run is None or step is None
+        else house_rebuild.source_problem(run, step)
+    )
+    if why is None:
+        return run, step
+    if mode == "exact":
+        raise house_rebuild.HouseError(why)
+    print(f"houses: {why}; the houses are the clades (approximate)", file=sys.stderr, flush=True)
+    return None, None
+
+
+def _rebuild_houses(mode: str, run: RunDir, step: int, cfg: Config) -> housefile.HouseSeed | None:
+    """The exact houses of ``run``'s checkpoint at ``step`` under the planet's ``house_rate`` and seed. A
+    rebuild that fails is an error under ``--houses exact`` and a note, with clade houses, under ``auto``."""
+    print(f"houses: rebuilding the exact houses of {run.path} at step {step}", file=sys.stderr, flush=True)
+    try:
+        return house_rebuild.rebuild(run.path, step, rate=cfg.game.house_rate, seed=cfg.run.seed)
+    except house_rebuild.HouseError as e:
+        if mode == "exact":
+            raise
+        print(f"houses: {e}; the houses are the clades (approximate)", file=sys.stderr, flush=True)
+        return None
+
+
+def _play_world(a: argparse.Namespace, sink: Any, control: stream.Control) -> int:
+    """A new world: a fork of a checkpoint (a planet) or a preset, locked before anything is written."""
+    ra = _play_namespace(a)
+    overrides = [*_run_overrides(ra), *_play_items(a)]
+    lock: PlayLock | None = None
+    mode = a.houses or "auto"
+    src_run, src_step = _houses_source(a, mode) if a.init_from is not None else (None, None)
+    seed: housefile.HouseSeed | None = None
+
+    def before_create(out: Path, cfg: Config) -> None:
+        nonlocal lock, seed
+        _check_play_tick(cfg)
+        RunDir.require_new(
+            out
+        )  # before the lock file: nothing is written into a directory create would refuse
+        lock = _lock(out)
+        if src_run is not None and src_step is not None:
+            seed = _rebuild_houses(mode, src_run, src_step, cfg)
+
+    try:
+        if a.init_from is not None:
+            rd, cfg, box, code = _prepare_fork(
+                ra, overrides, before_create=before_create, require_spinup=True
+            )
+        else:
+            rd, cfg, box, code = _prepare_run(ra, overrides, before_create=before_create)
+        if code is not None:
+            return code
+        assert rd is not None
+        step = int(to_numpy(box[0].step))
+        if seed is not None:  # before the first checkpoint: the observer opens on it (Observer.open)
+            housefile.write(rd, step, seed, rate=cfg.game.house_rate, run_seed=cfg.run.seed)
+        planet = (
+            {
+                "source": rd.meta().get("parent"),
+                "step": step,
+                "weather_spinup": a.weather_spinup,
+                "houses": "exact" if seed is not None else "clade",
+                "made_at_step": step,
+            }
+            if a.init_from is not None
+            else None
+        )
+        return _play_serve(
+            a, rd, cfg, box, fresh=True, planet=planet, saved=None, control=control, sink=sink,
+            source="run" if a.init_from is not None else "preset",
+        )  # fmt: skip
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+def _cut_listing(rd: RunDir, step: int) -> str:
+    """What playing the checkpoint at ``step`` would delete: the later checkpoints, metrics rows and event
+    chunks."""
+    ckpts = [st for st, _ in rd.checkpoints() if st > step]
+    rows = [r["step"] for r in rd.metrics_rows() if r["step"] > step]
+    chunks = sorted(
+        {(s0, s1) for kind in ("births", "deaths") for s0, s1, _ in rd.event_files(kind) if s1 > step}
+    )
+    return (
+        f"checkpoints {ckpts}, {len(rows)} metrics rows (steps {rows[0]} to {rows[-1]})"
+        if rows
+        else f"checkpoints {ckpts}"
+    ) + f" and {len(chunks)} event chunk(s) {chunks}"
+
+
+def _keep_checkpoints(rd: RunDir, saved: dict[str, Any] | None, play_keep: int) -> int:
+    """``run.keep_checkpoints`` of a world directory played from here on: never below what the world already
+    holds, so that playing it prunes nothing it did not prune before. A play world has ``play_keep``
+    already; a research run adopted with ``--adopt`` keeps its own value, and room for the checkpoint the
+    first save adds (the newest ``keep`` survive, so a lower value would delete the older ones)."""
+    own = rd.config().run.keep_checkpoints
+    held = len(rd.checkpoints()) + 1 if saved is None else 0
+    keep = max(own, play_keep, held)
+    if saved is None and keep != play_keep:
+        print(
+            f"play: --adopt keeps run.keep_checkpoints at {keep} (the run's own {own}, its "
+            f"{held - 1} checkpoints and the next one): nothing is pruned at the first save",
+            file=sys.stderr,
+            flush=True,
+        )
+    return keep
+
+
+def _play_resume(a: argparse.Namespace, sink: Any, control: stream.Control) -> int:
+    """A world directory: ``play.json`` (or ``--adopt``), the chosen checkpoint (``--truncate`` if older than
+    the newest), the logs cut to it as ``resume`` does, played under the pacer."""
+    rd = RunDir.open(Path(a.run))
+    with _lock(rd.path):
+        try:
+            saved = rd.read_play_json()
+        except (ValueError, json.JSONDecodeError) as e:
+            raise ConfigError(str(e)) from None
+        if saved is None and not a.adopt:
+            raise ConfigError(
+                f"{rd.path} has no play.json: it is not a play world. Research runs are forked "
+                "(`alife play --init-from RUN:STEP ...`); to play this directory in place pass --adopt "
+                "(config.json is kept as config.pre_play.json)"
+            )
+        items = _play_items(a)
+        keep = _keep_checkpoints(rd, saved, play.PLAY_CADENCE["keep_checkpoints"])
+        items = [
+            *(i for i in items if not i.startswith("run.keep_checkpoints=")),
+            f"run.keep_checkpoints={keep}",
+        ]
+        bad = [item for item in items if not _resume_allowed(item)]
+        if bad:
+            raise ConfigError(f"play cannot apply {bad} to a run on resume")
+        base = rd.config()
+        if (a.replay or a.director == "rules") and not base.director.enabled:
+            raise ConfigError(
+                f"{rd.path} was started with director.enabled=false, so its compiled step cannot take "
+                "director actions; fork it with `alife play --init-from RUN --director rules` instead"
+            )
+        if a.director == "rules" and saved is not None and saved.get("cadence") != dict(play.PLAY_CADENCE):
+            raise ConfigError(
+                f"{rd.path} was played at the cadence {saved.get('cadence')}, not "
+                f"{dict(play.PLAY_CADENCE)}: the rule tier decides from rows written at that cadence, so "
+                "another cadence is another trajectory of decisions"
+            )
+        cfg = apply_overrides(base, items)
+        _check_play_tick(cfg)
+        _check_yoke(cfg)
+        _knn_guard(cfg)
+        newest = max((st for st, _ in rd.checkpoints()), default=None)
+        path = _select_checkpoint(rd, a.checkpoint)
+        step = int(checkpoint_metadata(path)["step"])
+        if newest is not None and step < newest and not a.truncate:
+            raise ConfigError(
+                f"--checkpoint {step} is older than the newest ({newest}): playing it would delete "
+                f"{_cut_listing(rd, step)}; pass --truncate to do that"
+            )
+        state = load_checkpoint(path, cfg)
+        if a.until is not None and a.until < step:
+            raise ConfigError(f"--until {a.until} is before the checkpoint step {step}")
+        replay = cfg.run.director == "replay"
+        if replay:  # the whole log is checked before anything is written (exit 2)
+            director_log.validate_log(director_log.read_log(rd.path / DIRECTOR_LOG_FILE), cfg)
+        elif cfg.run.director == "live":
+            director_log.rules_version_of(rd.read_jsonl(DIRECTOR_LOG_FILE))
+        # Everything is validated; only now touch the directory.
+        if saved is None:
+            backup = rd.path / "config.pre_play.json"
+            if not backup.exists():  # never overwritten: the first adoption's config is the one worth keeping
+                shutil.copyfile(rd.path / "config.json", backup)
+        rd.save_config(cfg)
+        rd.truncate_after(step, keep_director=replay)
+        print(f"play {rd.path}: step {step}", file=sys.stderr, flush=True)
+        box = [state]
+        del state  # the runner must hold the only reference to the state (donation rule, F1)
+        planet = (saved or {}).get("planet")
+        return _play_serve(
+            a, rd, cfg, box, fresh=False, planet=planet, saved=saved, control=control, sink=sink, source="run"
+        )
+
+
+def _play_serve(
+    a: argparse.Namespace,
+    rd: RunDir,
+    cfg: Config,
+    box: list[State],
+    *,
+    fresh: bool,
+    planet: dict[str, Any] | None,
+    saved: dict[str, Any] | None,
+    control: stream.Control,
+    sink: Any,
+    source: str,
+) -> int:
+    """Run the world in ``box`` under the pacer. ``play.json`` is written in ``on_ready``: after the first
+    checkpoint exists and the cloud-depth scale is known, before the header (so a directory without one is
+    unfinished)."""
+    step = int(to_numpy(box[0].step))
+    if a.until is not None and a.until < step:
+        raise ConfigError(f"--until {a.until} is before the start step {step}")
+    saved = saved or {}
+    base_rate = a.base_rate or saved.get("base_rate") or play.BASE_RATE
+    rate = 1.0 if a.rate is None or a.rate == 0 else a.rate
+    paused = a.rate is None or a.rate == 0 or a.paused
+
+    def ready(info: dict[str, Any]) -> None:
+        dc_ref = info["dc_ref"]
+        try:
+            rd.write_play_json(
+                {
+                    "base_rate": base_rate,
+                    "cadence": dict(play.PLAY_CADENCE),
+                    "tick": info["tick"],
+                    "weather": None if dc_ref is None else {"dc_ref": dc_ref},
+                    "planet": planet,
+                }
+            )
+        except OSError as e:  # not a broken pipe: say what failed
+            raise RuntimeError(f"cannot write play.json: {e}") from e
+
+    options = play.PlayOptions(
+        base_rate=base_rate,
+        rate=rate,
+        paused=paused,
+        frame_hz=a.frame_hz,
+        source=source,
+        run=str(rd.path),
+        planet={"source": planet["source"], "houses": planet["houses"]} if planet else None,
+        dc_ref=((saved.get("weather") or {}).get("dc_ref")),
+        fresh=fresh,
+        until=a.until,
+        on_ready=ready,
+    )
+    rd.update_meta(knn_impl=spatial.knn_impl(cfg))
+    director = make_director(rd, cfg, step)
+    steps = 2**40 if a.until is None else a.until - step
+    return play.serve_play(
+        rd, cfg, box, steps=steps, options=options, control=control, out=sink, director=director
+    )
+
+
 def _floats(text: str) -> tuple[float, ...]:
     try:
         return tuple(float(x) for x in text.split(",") if x.strip())
@@ -913,14 +1342,88 @@ def _cmd_activity(a: argparse.Namespace) -> int:
     return ExitCode.OK
 
 
+def _bench_play_world(a: argparse.Namespace, workdir: Path) -> tuple[Config, Path]:
+    """The world ``bench --play`` plays, saved as a state file in ``workdir``: a preset (a founder population)
+    or a planet (``--play-from SRC[:STEP]``, forked as ``alife play --init-from`` forks it), with the weather
+    spun up by ``--play-spinup N``. Every arm of the bench loads its own copy."""
+    items = argparse.Namespace(replay=False, director="off")
+    template = workdir / "template.safetensors"
+    if a.play_from is not None:
+        ns = argparse.Namespace(
+            init_from=a.play_from, overlay=a.overlay, set=a.set, weather_spinup=a.play_spinup,
+            out=str(workdir / "template"), overwrite=True, quiet=True, director="off", preset=None,
+        )  # fmt: skip
+        ra = _play_namespace(ns)
+        rd, cfg, box, code = _prepare_fork(
+            ra, [*_run_overrides(ra), *_play_items(items)], require_spinup=True
+        )
+        if code is not None or rd is None:
+            raise CheckpointError(f"bench --play: the planet could not be made (exit {code})")
+        write_state_file(template, box[0], cfg)
+        return cfg, template
+    cfg = load_config(preset=a.preset, overlays=a.overlay, overrides=[*a.set, *_play_items(items)])
+    _knn_guard(cfg)
+    state = init_state(cfg)
+    if a.play_spinup:
+        if not cfg.weather.enabled:
+            raise ConfigError("--play-spinup spins the weather up: it needs the weather on (--overlay storm)")
+        wx = weather_spinup.spinup(cfg, a.play_spinup, step=0, key=state.key, compile=cfg.run.compile)
+        state = state._replace(wx=wx)
+    write_state_file(template, state, cfg)
+    return cfg, template
+
+
+def _bench_play(a: argparse.Namespace) -> dict[str, Any]:
+    """``bench --play``: the play loop of ``alife play`` run headless (DESIGN §33.5), in its own report."""
+    import tempfile
+
+    from alife import bench
+
+    workdir = Path(a.play_out) if a.play_out else Path(tempfile.mkdtemp(prefix="alife-bench-play-"))
+    workdir.mkdir(parents=True, exist_ok=True)
+    cfg, template = _bench_play_world(a, workdir)
+    rates = tuple(r.strip() for r in a.play_rates.split(",") if r.strip())
+    wanted = a.play_directors or (
+        "off,rules" if cfg.director.enabled else "off"
+    )  # the rule tier needs the levers
+    directors = tuple(d.strip() for d in wanted.split(",") if d.strip())
+    bad = [d for d in directors if d not in bench.PLAY_DIRECTORS]
+    if bad:
+        raise ConfigError(f"--play-directors takes {bench.PLAY_DIRECTORS}, not {bad}")
+    try:
+        for r in rates:
+            bench._rate_value(r)
+    except ValueError as e:
+        raise ConfigError(str(e)) from None
+    report = bench._environment(cfg)
+    report["play"] = bench.run_play_bench(
+        cfg, template, workdir, steps=a.steps or bench.PLAY_STEPS, warmup=a.play_warmup, rates=rates,
+        directors=directors,
+    )  # fmt: skip
+    report["play"]["workdir"] = str(workdir)
+    return report
+
+
 def _cmd_bench(a: argparse.Namespace) -> int:
     from alife.bench import run_bench
 
+    if a.play:
+        report = _bench_play(a)
+        text = _dumps(report)
+        if a.json is not None:
+            out = Path(a.json)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(text + "\n", encoding="utf-8")
+        print(text)
+        if report["play"]["digests_equal"] is False:
+            print("play bench: a played world's final state differs from the plain run's", file=sys.stderr)
+            return int(ExitCode.ERROR)
+        return int(ExitCode.OK)
     cfg = load_config(preset=a.preset, overlays=a.overlay, overrides=a.set)
     _knn_guard(cfg)
     report = run_bench(
         cfg,
-        steps=a.steps,
+        steps=a.steps or 200,
         warmup=a.warmup,
         stages=a.stages,
         determinism=a.determinism,
@@ -1162,9 +1665,78 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=_cmd_stream)
 
+    p = sub.add_parser("play", help=_PLAY_HELP, description=_PLAY_HELP)
+    p.add_argument(
+        "run", nargs="?", default=None, metavar="RUN", help="a play world (a directory with play.json)"
+    )
+    p.add_argument("--checkpoint", type=_checkpoint_arg, default=None, metavar="STEP|latest")
+    p.add_argument(
+        "--truncate",
+        action="store_true",
+        help="allow --checkpoint older than the newest: later checkpoints, rows and chunks are deleted",
+    )
+    p.add_argument(
+        "--adopt",
+        action="store_true",
+        help="play a directory without play.json in place (config.json is kept as config.pre_play.json)",
+    )
+    p.add_argument(
+        "--replay", action="store_true", help="apply the world's director.jsonl instead of deciding"
+    )
+    p.add_argument("--until", type=_non_negative, default=None, metavar="STEP", help="stop at this step")
+    p.add_argument(
+        "--init-from",
+        default=None,
+        metavar="SRC[:STEP]",
+        help="make a new world from a checkpoint (a planet), as `run --init-from`, saved in --out",
+    )
+    p.add_argument("--preset", choices=PRESETS, default=None, help="make a new world from a preset (tests)")
+    p.add_argument("--overlay", action="append", default=[], choices=ALL_OVERLAYS)
+    p.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE")
+    p.add_argument("--seed", type=_non_negative, default=None)
+    p.add_argument("--out", default=None, metavar="DIR")
+    p.add_argument(
+        "--weather-spinup",
+        type=_non_negative,
+        default=None,
+        metavar="N",
+        help="advance the weather alone for N steps (needed, with N >= 1, when a fork turns the weather on)",
+    )
+    p.add_argument(
+        "--rate",
+        type=_rate_arg,
+        default=None,
+        metavar="0|0.25|0.5|1|2|max",
+        help="start running at this multiple of the base rate (default: start paused)",
+    )
+    p.add_argument("--paused", action="store_true", help="start paused even with --rate")
+    p.add_argument(
+        "--base-rate", type=_positive_seconds, default=None, metavar="SPS", help="steps/s at 1x (14.4)"
+    )
+    p.add_argument(
+        "--frame-hz", type=_positive, default=play.FRAME_HZ, metavar="HZ", help="frames per second"
+    )
+    p.add_argument(
+        "--director",
+        choices=("off", "rules"),
+        default="off",
+        help="rules: the director's rule tier decides (the world needs director.enabled; no LLM)",
+    )
+    p.add_argument(
+        "--houses",
+        choices=("exact", "clade", "auto"),
+        default=None,
+        help="houses of a planet (--init-from): exact rebuilds them from the source's event chunks (exit 4 "
+        "if they are missing), clade takes the clades, auto (default) tries exact and falls back with a note",
+    )
+    p.add_argument("--no-control", action="store_true", help="do not read stdin")
+    p.set_defaults(func=_cmd_play)
+
     p = sub.add_parser("bench", help="throughput, donation health, determinism")
     _config_args(p)
-    p.add_argument("--steps", type=_positive, default=200)
+    p.add_argument(
+        "--steps", type=_positive, default=None, help="timed steps (default 200; 2000 with --play)"
+    )
     p.add_argument("--warmup", type=_non_negative, default=20)
     p.add_argument("--stages", action="store_true")
     p.add_argument("--determinism", action="store_true")
@@ -1194,6 +1766,51 @@ def build_parser() -> argparse.ArgumentParser:
         default=2,
         metavar="N",
         help="off/on block pairs of the --weather and --weather-org measurements (default 2: off on on off)",
+    )
+    p.add_argument(
+        "--play",
+        action="store_true",
+        help="the play loop of `alife play` run headless (DESIGN §33.5): per director mode and rate, the "
+        "achieved rate, step_ms p50/p99/max, the cost of its parts, late steps, bytes by record and the "
+        "digest against a plain run; a report of its own (the other bench parts are skipped). Use the "
+        "planet's config: --preset 64k3d --overlay storm --set director.enabled=true",
+    )
+    p.add_argument(
+        "--play-from",
+        default=None,
+        metavar="SRC[:STEP]",
+        help="--play on a planet: fork this run's checkpoint as `alife play --init-from` does (an evolved "
+        "population, not founders)",
+    )
+    p.add_argument(
+        "--play-spinup",
+        type=_positive,
+        default=None,
+        metavar="N",
+        help="--play: spin the weather up for N steps first (a storm world has no storms for about 15,000 "
+        "steps)",
+    )
+    p.add_argument(
+        "--play-rates", default="max,1", metavar="LIST", help="--play: rates, comma separated (default max,1)"
+    )
+    p.add_argument(
+        "--play-directors",
+        default=None,
+        metavar="LIST",
+        help="--play: director modes (default off,rules when director.enabled is set, else off)",
+    )
+    p.add_argument(
+        "--play-warmup",
+        type=_non_negative,
+        default=300,
+        metavar="N",
+        help="--play: warm-up steps (default 300)",
+    )
+    p.add_argument(
+        "--play-out",
+        default=None,
+        metavar="DIR",
+        help="--play: where the arms' run directories go (default a temp dir)",
     )
     p.add_argument("--json", default=None, metavar="PATH")
     p.set_defaults(func=_cmd_bench)

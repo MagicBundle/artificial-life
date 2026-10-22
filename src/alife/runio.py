@@ -22,7 +22,9 @@ where a record's ``step`` is the index of the step during which it happened; a c
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
+import fcntl
 import json
 import math
 import os
@@ -56,6 +58,12 @@ JOURNAL_FILE: Final = "journal.jsonl"
 DIRECTOR_ARCHIVE_FILE: Final = "director_archive.json"
 OBSERVERS_DIR: Final = "observers"  # the observer sidecars of an observing run (DESIGN §28.6)
 SOCIAL_FILE: Final = "social.jsonl"  # observers/social.jsonl: one record per social snapshot (DESIGN §29.10)
+STORMS_FILE: Final = "storms.jsonl"  # observers/storms.jsonl: one line per tracker tick with storms (§33.3)
+PLAY_FILE: Final = (
+    "play.json"  # a played world's settings; its absence marks a directory as not a play world (§33.3.3)
+)
+PLAY_LOCK_FILE: Final = "play.lock"  # the advisory lock of the one process that plays a directory (§33.3.3)
+PLAY_VERSION: Final = 1
 DUMP_KINDS: Final = ("eco", "wx")  # observers/eco_<step>.npz and observers/wx_<step>.npy (DESIGN §32)
 STATUSES: Final = ("running", "done", "extinct", "violation", "interrupted")
 
@@ -79,12 +87,88 @@ DEATH_COLUMNS: Final[Mapping[str, Any]] = {
 _CKPT_RE: Final = re.compile(r"^step_(\d{10})\.safetensors$")
 _EVENT_RE: Final = re.compile(r"^(births|deaths)_(\d{10})_(\d{10})\.npz$")
 _OBSERVER_RE: Final = re.compile(r"^step_(\d{10})\.npz$")
+_STORMS_STATE_RE: Final = re.compile(r"^storms_(\d{10})\.json$")
 _DUMP_RE: Final = re.compile(r"^(eco|wx)_(\d{10})\.(?:npz|npy)$")
 _MAX_HEADER: Final = 1 << 26  # sanity bound on a safetensors JSON header
 
 
 class CheckpointError(Exception):
     """Incompatible or corrupt checkpoint (version, shape or config-hash mismatch)."""
+
+
+class PlayLockError(Exception):
+    """The directory is being played by another process (``pid``, 0 if unknown)."""
+
+    def __init__(self, path: Path, pid: int) -> None:
+        super().__init__(f"{path} is being played by process {pid} (play.lock): stop that play first")
+        self.pid = pid
+
+
+def _lock_pid(path: Path) -> int:
+    try:
+        return int(path.read_text(encoding="utf-8").split()[0])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+class PlayLock:
+    """The advisory ``flock`` of ``<dir>/play.lock``, held by the one process that plays a directory.
+
+    ``acquire`` creates the directory if need be and the lock file, takes an exclusive non-blocking lock and
+    writes the pid into it (``PlayLockError`` if another process holds it); ``release`` removes the file and
+    drops the lock. The lock goes with the process, so a crash leaves a stale file that locks nothing.
+    ``RunDir.create`` ignores a lock file in an otherwise empty directory, so a new world is locked before
+    anything else is written to it.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self.dir = Path(directory)
+        self.path = self.dir / PLAY_LOCK_FILE
+        self._fd: int | None = None
+
+    def acquire(self) -> PlayLock:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise PlayLockError(self.dir, _lock_pid(self.path)) from None
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        self._fd = fd
+        return self
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        with contextlib.suppress(OSError):
+            self.path.unlink()
+        with contextlib.suppress(OSError):
+            os.close(self._fd)  # closing drops the flock
+        self._fd = None
+
+    def __enter__(self) -> PlayLock:
+        return self.acquire() if self._fd is None else self
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+
+def play_lock_holder(directory: Path) -> int | None:
+    """The pid of the process playing ``directory`` (0 if its pid is unreadable), else None."""
+    path = Path(directory) / PLAY_LOCK_FILE
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return _lock_pid(path)
+    finally:
+        os.close(fd)  # (a lock taken here goes with the descriptor)
+    return None
 
 
 # --- atomic file helpers --------------------------------------------------------------------------------
@@ -374,8 +458,24 @@ class RunDir:
         return self.observers_dir / SOCIAL_FILE
 
     @property
+    def storms_path(self) -> Path:
+        """``observers/storms.jsonl``, the storm log of a played weather world (absent for any other run)."""
+        return self.observers_dir / STORMS_FILE
+
+    @property
     def media_dir(self) -> Path:
         return self.path / "media"
+
+    @staticmethod
+    def require_new(path: Path) -> None:
+        """``FileExistsError`` unless ``path`` is absent or an empty directory (a ``play.lock`` file is not
+        content): what ``create`` checks, for a caller that must know before it writes anything."""
+        path = Path(path)
+        if path.exists():
+            if not path.is_dir():
+                raise FileExistsError(f"{path} exists and is not a directory")
+            if any(p.name != PLAY_LOCK_FILE for p in path.iterdir()):
+                raise FileExistsError(f"{path} is not empty (use overwrite to replace a run directory)")
 
     @classmethod
     def create(cls, path: Path, cfg: Config, *, overwrite: bool = False, parent: str | None = None) -> RunDir:
@@ -385,12 +485,12 @@ class RunDir:
         (has ``meta.json``); anything else is never deleted.
         """
         path = Path(path)
-        if path.exists():
+        if not overwrite:
+            cls.require_new(path)
+        elif path.exists():
             if not path.is_dir():
                 raise FileExistsError(f"{path} exists and is not a directory")
-            if any(path.iterdir()):
-                if not overwrite:
-                    raise FileExistsError(f"{path} is not empty (use overwrite to replace a run directory)")
+            if any(p.name != PLAY_LOCK_FILE for p in path.iterdir()):  # a lock file is not content
                 if not (path / META_FILE).is_file():
                     raise FileExistsError(f"{path} is not a run directory; refusing to overwrite it")
                 shutil.rmtree(path)
@@ -459,6 +559,25 @@ class RunDir:
         meta.update(fields)
         self._write_meta(meta)
 
+    # play.json (§33.3.3)
+    @property
+    def play_path(self) -> Path:
+        return self.path / PLAY_FILE
+
+    def read_play_json(self) -> dict[str, Any] | None:
+        """The world's ``play.json``, None if the directory has none (it is not a play world, or unfinished);
+        ``ValueError`` if it is not a version-1 object."""
+        if not self.play_path.is_file():
+            return None
+        obj = json.loads(self.play_path.read_text(encoding="utf-8"))
+        if not isinstance(obj, dict) or obj.get("play_version") != PLAY_VERSION:
+            raise ValueError(f"{self.play_path}: not a play.json of version {PLAY_VERSION}")
+        return obj
+
+    def write_play_json(self, obj: Mapping[str, Any]) -> None:
+        """Atomically write ``play.json`` (version 1)."""
+        _atomic_write_text(self.play_path, _dumps({**obj, "play_version": PLAY_VERSION}) + "\n")
+
     # checkpoints
     def save_checkpoint(
         self, s: State, cfg: Config, *, observers: Mapping[str, np.ndarray] | None = None
@@ -483,17 +602,33 @@ class RunDir:
         self._prune(cfg.run.keep_checkpoints)
         return path
 
+    def _start_step(self) -> int:
+        """``meta.json`` ``start_step`` (0 for a run from step 0 and for a directory without the key)."""
+        try:
+            return int(self.meta().get("start_step") or 0)
+        except (OSError, ValueError, AttributeError):
+            return 0
+
     def _prune(self, keep: int) -> None:
-        """Keep the newest ``keep`` checkpoints, step 0 and whatever ``LATEST`` names; an observer sidecar
-        lives exactly as long as its checkpoint."""
+        """Keep the newest ``keep`` checkpoints, step 0, the fork's origin checkpoint (``meta.json``
+        ``start_step``) and whatever ``LATEST`` names; an observer sidecar lives exactly as long as its
+        checkpoint.
+
+        The origin is what a fork's phylogeny, activity analysis and recap builders read for their founders
+        (``checkpoint_at(start_step)``); without the protection the third save of a fork deletes it (§18).
+        """
         ckpts = self.checkpoints()
         latest = self.latest_checkpoint()
-        protected = {p for _, p in ckpts[-keep:]} | {p for st, p in ckpts if st == 0}
+        origin = self._start_step()
+        protected = {p for _, p in ckpts[-keep:]} | {p for st, p in ckpts if st in (0, origin)}
         for _, p in ckpts:
             if p not in protected and p != latest:
                 p.unlink(missing_ok=True)
         remaining = {st for st, _ in self.checkpoints()}
         for st, p in self.observer_files():
+            if st not in remaining:
+                p.unlink(missing_ok=True)
+        for st, p in self.storms_state_files():  # the tracker state lives as long as its checkpoint, too
             if st not in remaining:
                 p.unlink(missing_ok=True)
 
@@ -530,6 +665,76 @@ class RunDir:
         if bad:
             raise CheckpointError(f"{path}: unreadable observer sidecar: members {bad} are not arrays")
         return arrays
+
+    # storm tracker state and log (§33.3)
+    def storms_state_path(self, step: int) -> Path:
+        return self.observers_dir / f"storms_{step:010d}.json"
+
+    def storms_state_files(self) -> list[tuple[int, Path]]:
+        """``(step, path)`` of every storm tracker state file, ascending by step."""
+        if not self.observers_dir.is_dir():
+            return []
+        found = [
+            (int(m.group(1)), p)
+            for p in self.observers_dir.iterdir()
+            if (m := _STORMS_STATE_RE.match(p.name)) and p.is_file()
+        ]
+        return sorted(found)
+
+    def write_storms_state(self, step: int, obj: Any) -> None:
+        """Atomically write ``observers/storms_<step>.json``, the storm tracker's complete state for the
+        checkpoint of ``step``. The play loop writes it before the state file, as the sidecar is."""
+        self.observers_dir.mkdir(exist_ok=True)
+        _atomic_write_text(self.storms_state_path(step), _dumps(obj) + "\n")
+
+    def read_storms_state(self, step: int) -> dict[str, Any] | None:
+        """The tracker state saved for ``step``, None if there is none; ``ValueError`` if it is not a JSON
+        object (``OSError`` if it cannot be read)."""
+        path = self.storms_state_path(step)
+        if not path.is_file():
+            return None
+        obj = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(obj, dict):
+            raise ValueError(f"{path}: the storm tracker state is not a JSON object")
+        return obj
+
+    def append_storms(self, lines: Iterable[Mapping[str, Any]]) -> None:
+        """Append tick lines to ``observers/storms.jsonl`` (key ``step`` first) and fsync. Every line needs
+        an int ``step`` and the steps must strictly increase within the call (``ValueError``); an empty
+        iterable is a no-op that creates nothing."""
+        recs = list(lines)
+        if not recs:
+            return
+        last: int | None = None
+        for rec in recs:
+            step = rec.get("step") if isinstance(rec, Mapping) else None
+            if not isinstance(step, int | np.integer) or isinstance(step, bool):
+                raise ValueError("a storm log line needs an int 'step' key")
+            if last is not None and int(step) <= last:
+                raise ValueError(f"storm log steps must increase within a call ({int(step)} after {last})")
+            last = int(step)
+        self.observers_dir.mkdir(exist_ok=True)
+        _append_jsonl(
+            self.storms_path,
+            [{"step": r["step"], **{k: v for k, v in r.items() if k != "step"}} for r in recs],
+        )
+
+    def storms_lines(self) -> list[dict[str, Any]]:
+        """All lines of the storm log, in step order; ``[]`` if there is none. A torn last line is ignored."""
+        return read_jsonl(self.storms_path)
+
+    def _parse_storms(self) -> list[dict[str, Any]] | None:
+        """The storm log parsed whole, with the rule of ``_parse_social`` (None if absent; a torn last line is
+        dropped; a corrupt line elsewhere raises ``json.JSONDecodeError``, a line without an int ``step``
+        ``ValueError``)."""
+        if not self.storms_path.is_file():
+            return None
+        records = read_jsonl(self.storms_path)
+        for i, rec in enumerate(records, start=1):
+            step = rec.get("step") if isinstance(rec, dict) else None
+            if not isinstance(step, int) or isinstance(step, bool):
+                raise ValueError(f"{self.storms_path}: line {i} is not an object with an int 'step'")
+        return records
 
     # run dumps (W2, DESIGN §32): trajectory-bound like the sidecars, but not tied to a checkpoint
     def dump_path(self, kind: str, step: int) -> Path:
@@ -734,6 +939,11 @@ class RunDir:
         removed, because that also drops a torn last line (left in place, it would have the resumed run's
         first record glued onto it). An absent social log stays absent.
 
+        The storm log ``observers/storms.jsonl`` and the tracker states ``observers/storms_<t>.json`` of a
+        played weather world (§33.3) are cut the same way: the log to its lines with step ≤ ``step`` (parsed
+        whole first, rewritten atomically, absent stays absent), the states after ``step`` deleted with the
+        sidecars.
+
         **Order, and a stop in the middle.** The later checkpoints and sidecars go first (the newest
         checkpoint, which ``LATEST`` may name, last) and ``LATEST`` is rewritten; only then are the logs and
         the event chunks cut. A stop (a crash, a kill) before the first deletion leaves the directory as it
@@ -743,6 +953,7 @@ class RunDir:
         plain ``resume`` would continue from it with the records of the steps between lost for good.
         """
         social = self._parse_social()  # first: a log that cannot be parsed fails before any change
+        storms = self._parse_storms()
         metrics = None
         if (self.path / METRICS_FILE).exists():
             metrics = "".join(_dumps(r) + "\n" for r in self.metrics_rows() if r["step"] <= step)
@@ -752,6 +963,9 @@ class RunDir:
             if st > step:
                 path.unlink()
         for st, path in self.observer_files():  # whatever keep_director is: a sidecar belongs to its step
+            if st > step:
+                path.unlink(missing_ok=True)
+        for st, path in self.storms_state_files():  # and so does the storm tracker's state
             if st > step:
                 path.unlink(missing_ok=True)
         latest = self.latest_checkpoint()
@@ -774,6 +988,9 @@ class RunDir:
         if social is not None:
             kept_social = [r for r in social if r["step"] <= step]
             _atomic_write_text(self.social_path, "".join(_dumps(r) + "\n" for r in kept_social))
+        if storms is not None:
+            kept_storms = [r for r in storms if r["step"] <= step]
+            _atomic_write_text(self.storms_path, "".join(_dumps(r) + "\n" for r in kept_storms))
         for kind in ("births", "deaths"):
             for s0, s1, path in self.event_files(kind):
                 if s1 <= step:

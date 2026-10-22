@@ -1382,6 +1382,12 @@ weights are stale by definition, and every lane index is unique, so the write is
 - **Events:** each step's `BirthRecords` (M lanes) and `DeathRecords` (DL = 2M lanes) are flushed to
   `events/*.npz` at metrics intervals (§18). Deaths beyond DL in one step are counted in `DEATHS_UNLOGGED`.
 - Together these allow the full phylogeny to be reconstructed offline.
+- `phylo.load_tree(run, start=, end=)`: `end` bounds the tree at a run step (default: the end of the logs). Chunks
+  starting at or after it are skipped, a chunk that straddles it is trimmed to the records with `step < end`, and the
+  tiling check, `t_end`, the `metrics.jsonl` comparison (rows `step <= end`) and the checkpoint check (the checkpoint at
+  `end`) refer to `[origin, end)`; the report gains `end` and `end_covered` (false if the logs stop earlier). It exists
+  for a source checkpointed before the end of its run (`64k3d_s1` at 450,000 steps has chunks of later steps), which the
+  exact house rebuild of a G3a planet (§33, I51) reads; without `end` nothing changes.
 
 ### 12.9 Catastrophe (director, off unless `director.enabled`)
 
@@ -1771,16 +1777,22 @@ artificial-life/
     weather_spinup.py            host driver: `alife run --weather-spinup N` (§30.9); not a lint module
                                  (W2, §32: `weather.py` also holds the organism couplings and the eddy wind; `weather_obs.py` the
                                  `coupling` block and the rain shares)
+    streamrec.py                 the play stream's record encoders (§33.1): numpy only, in the subscript-assignment lint scan
+    play.py                      host: `alife play`'s scheduler, control grammar and presenter, the `runner.Pacer` (§33.2);
+                                 in the subscript-assignment lint scan, real time only through its `Clock` (rule 7)
+    storms.py                    host: the storm detector and tracker (moved from analysis/w0.py) and `StormLayer`, the
+                                 play loop's storm component (§33.3); in the subscript-assignment lint scan
     game/                        the games vertical, build steps G1 (§28) and G2 (§29): observe (pure-MLX observer state and update),
                                  rules (archetype and intent rules, INTENT_VERSION), social (pure-MLX SocState, SocialRules),
                                  society (host Society: houses, kin groups, colonies, territory, relations),
                                  observer (host Observer, sidecar, social records); W2 adds tracers (pure-MLX tracer rig and the
-                                 device half of the dumps, §32.9)
+                                 device half of the dumps, §32.9), and for the play loop (§33.2) colors (the observer colour
+                                 modes) and chronicle (the EVNT events and their sentences)
     analysis/                    offline, host-only numpy analysis of finished runs (never imported by the step;
                                  scanned by the §22.6 lint, which it passes); phylo, activity, report, plots, mi, resim, signals: §19.3;
                                  labels (the validity study of the game labels): §28.8; social (calibration, churn and cost of the
                                  social trackers): §29.12; and the offline MLX study driver of the W0 weather prototype: w0
-                                 (runs `weather.py` on MLX, detects and tracks storms on the host, moves passive tracers,
+                                 (runs `weather.py` on MLX, tracks storms with `storms.py`, moves passive tracers,
                                  measures the cost) and w0_plots (its figures and movies); w2 (the W2 results pipeline,
                                  `python -m alife.analysis.w2`): §32.9
   tests/                         §22
@@ -2783,7 +2795,9 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
   under a director-enabled config start with inert env. `env_*` shapes and dtypes are checked like every field.
 - **Atomic writes.** Each checkpoint is written to `*.tmp` and moved into place with `os.replace`. Only then is
   `LATEST` rewritten, also atomically. A crash never corrupts the newest complete checkpoint.
-- **Retention.** The newest `keep_checkpoints` are kept, plus `step_0000000000`. An observer sidecar lives exactly as
+- **Retention.** The newest `keep_checkpoints` are kept, plus `step_0000000000` and, for a fork, the origin checkpoint
+  at `meta.json` `start_step` (its founders: `phylo.load_tree`, `alife activity` and the recap builders read it; G3a, I51).
+  An observer sidecar lives exactly as
   long as its checkpoint: pruning removes every sidecar whose step has no remaining checkpoint (§28.6).
 - **Cadence.** Scheduled checkpoints happen only at metrics boundaries. Event records are read to the host at every
   metrics boundary and written as one chunk per checkpoint interval, `[previous checkpoint step, step)`. The runner
@@ -3152,6 +3166,9 @@ alife inspect  RUN [--checkpoint STEP|latest] [--json] [--check] [--agent UID]
 alife view     [RUN | --preset P [--set ...]] [--checkpoint STEP|latest] [--steps-per-frame N] [--size WxH]
 alife stream   [RUN|FILE | --preset P [--set ...]] [--checkpoint STEP|latest] [--every K] [--steps N]
                [--follow [--poll SECONDS]] [--color tag|energy|clade] [--fields] [--field-z K] [--no-control]
+alife play     [RUN [--checkpoint STEP|latest] [--truncate] [--adopt] [--replay] | --init-from SRC[:STEP] | --preset P]
+               [--overlay O] [--set ...] [--weather-spinup N] [--seed S] [--out DIR] [--until STEP] [--rate M|max]
+               [--paused] [--base-rate SPS] [--frame-hz HZ] [--director off|rules] [--no-control]   (§33.2.8)
 alife bench    [--preset P] [--overlay fast|storm] [--set ...] [--steps 200] [--warmup 20] [--stages]
                [--determinism] [--brain-variants] [--observe] [--weather [--weather-pairs N]] [--weather-org] [--json PATH]
 alife llm-check [--llm-url URL] [--llm-model NAME] [--timeout SECONDS] [--preset P]
@@ -3169,6 +3186,9 @@ has the weather on. **`bench --weather`** times the step with the weather on aga
 interleaved blocks (needs `weather.enabled`, exit 2 otherwise); `--weather-pairs N` sets the number of off/on pairs
 (default 2). **`bench --weather-org`** (W2, §32.6) times the step with `seed_gain` and `shade_gain` on against the same config
 with both 0 (the weather on in both; needs `weather.enabled` and one gain above 0, exit 2 otherwise). The `storm` overlay composes as `--preset 64k3d --overlay storm`.
+
+**`play`** (games G3a, §33.2.8) plays a world under the fixed-timestep scheduler with the observers on and writes the play records
+on stdout; `resume` refuses a directory that a `play` process holds (`play.lock`, §33.3.3).
 
 **`run`** creates the run directory and the initial state (or loads `--init-from`), then calls `runner.run`. Every
 metrics interval it prints one status line: step, population, births/deaths, bonds, largest body (heavy steps),
@@ -5796,6 +5816,10 @@ config key, no hash and no digest; the 2D GUI is unchanged (a table of its comma
 the previous commit before the refactor, pins them byte for byte). The protocol is §27.11; the rationale is
 docs/3D.md §8.
 
+*G3a (§33.4).* The process plumbing of `StreamController` (the process, its pipes, the reader thread, the stop ladder, the
+pump) is now `EngineSession`, shared with the World window's `PlayController`; `StreamMailbox` also carries the play records.
+`StreamControllerTests` and `StreamReaderTests` pass unchanged on the extraction.
+
 **Package** (`gui/Package.swift`, Swift 6 language mode, macOS 14, no resources, no unsafe flags):
 
 | target | content |
@@ -5821,6 +5845,11 @@ events before an error and throws it from the next call, and `failure` shows it 
 another chunk soon. Frames keep the orientation as the binary16 bit patterns that were streamed (the renderer uploads a
 `half2` per row), and `Half.float` converts (`Float16` exists only on arm64). The decoder bounds `N` (2²²), `FG` and
 `FZ` (1 024), `B` (64) and `n_bonds` (`N·B`) so that a corrupt header cannot ask for absurd memory.
+
+**Play records** (G3a, §33.1). The header may carry a `play` key (the records an `alife play` world sends and its constants;
+ignored by readers that predate it, so no version bump), after which the stream carries the records `FRMA IDNT INTN TERR EVNT
+STRM MAP1 ENVS CLCK FOCS` instead of `FRM1`; `FrameDecoder` decodes those of version 1 into `StreamEvent.record` and skips the
+rest by length, as it always skipped unknown tags.
 
 **The stream process** (`StreamController`, main-actor isolated, one at a time). The viewer starts
 `.venv/bin/alife stream runs/NAME ...` (no shell) with three pipes:
@@ -7653,8 +7682,9 @@ to.
   unrelated agent). Children of a `HOUSE_UNKNOWN` row inherit it unless they found a house. `Society.house_origin` is
   the observer's start step; houses are **exact iff `house_origin == 0`**, and the head and every record say `exact`.
   A fork starts fresh (§28.1), so the houses of a fork after step 0 are inexact (a fork from step 0 holds only founders,
-  so its houses are exact). There is no offline rebuild: an exact rebuild needs the birth log from step 0 (43.6M records
-  in `64k_s0`).
+  so its houses are exact). A fork of an evolved checkpoint can have the *true* houses all the same: `analysis/houses.py`
+  rebuilds them offline from the source's birth log and `Observer.fresh(houses=)` seeds them (§33.3.5), which makes
+  `house_origin` 0 for that observer (the houses are exact, the records' window still starts at the fork).
 - **Host**, at a snapshot: `np.unique` over the alive rows with `house ≥ 0`: `alive` (distinct houses),
   `unknown_immigrant` (alive rows with `HOUSE_UNKNOWN`), and the top 16 by (−size, id) with the `clade` of the house's
   first alive row and a **name**. With `h = splitmix64(id, name_salt)`: `name = (ONSET[h & 31] + NUCLEUS[(h >> 5) & 15] +
@@ -7843,8 +7873,8 @@ append and fsync of a record (about 1 ms), plus, when the steps coincide, the he
 
 **The observer** (`Observer(cfg, o, so, society, step, rules, social)`; `rules.check(cfg)` and `social.check(cfg)` at
 construction). Module constants `DEFAULT_RULES = RULES_V3` (version 3 since W2a, §32.7; `RULES_V2` was G2's; a 2D world uses `default_rules(cfg)`) and `DEFAULT_SOCIAL = SOCIAL_V1`;
-`Observer.fresh(state, cfg, *, rules=None, social=None)` and `Observer.open(rd, state, cfg, *, rules=None, social=None)`
-take None to mean the module default **as of the call**. The runner passes nothing, the bench passes nothing and reads
+`Observer.fresh(state, cfg, *, rules=None, social=None, houses=None, tracers=True)` and `Observer.open(rd, state, cfg, *, rules=None, social=None, tracers=True)`
+take None to mean the module default **as of the call** (`houses` is a planet's exact houses, §33.3.5; `tracers=False` leaves the tracer rig off, §32.9). The runner passes nothing, the bench passes nothing and reads
 `observer.DEFAULT_SOCIAL` for its cadence, and the labels tool passes its `rules`. No config key sets the cadence; tests
 replace `DEFAULT_SOCIAL` with `monkeypatch` (`social_every`), and a module-scoped fixture, which cannot use
 `monkeypatch`, passes `social=` explicitly. The closures (compiled iff `cfg.run.compile`) are `fold` (G1's `update`
@@ -9968,6 +9998,850 @@ tests pin that, and that a stand-in row prints the storm names (test 9.12, `test
 
 ---
 
+## 33. The play loop and the World window (games G3a)
+
+**Status: built** (G3a PR, branch `games/g3a`, 13 commits (the 12 steps of the build order, the first of them two) on `origin/main` 2d1ab0c, then the stage 7 review fixes and the merge with `origin/main` 39301ba, which brought W2a (§32, `INTENT_VERSION` 3) and the 2D fused kernel: the integration is §33.7; Review-log row I51). The Mac day
+(2026-10-22, M5 Pro: the purity tests on Metal, the gate of §33.5.4, a 20,000-step planet play, the rendered window) **ran**: the
+gate passes, the boundary step is about 40% over the top of its estimate (80 to 90 ms), the results are in §33.5 and §33.6 and in `docs/RESULTS_G3A.md`; the
+click-through by hand is the owner's and **open** (§33.6). `alife play` runs one world under a fixed-timestep scheduler with the game observers on, writes the
+records of §33.1 after the header of `alife stream` (§27.11) and reads control lines from stdin; the World window of
+`AlifeControl` shows them. Nothing in `play` changes a trajectory: pacing, frames, records and focus are presentation (tested by
+digest equality with a plain run, §33.2.4). The section: §33.1 the stream records (`streamrec.py`, the independent decoder, the shared
+fixtures, the Swift decoder); §33.2 `alife play`, the runner hook, the scheduler and the presenter; §33.3 the storm layer, files,
+planets and houses at forks; §33.4 the World window (shell, renderer, interaction); §33.5 performance, `alife bench --play`, the
+gate and `WorldRenderBench`; §33.6 what is built and what is not run.
+
+### 33.1 The stream records (ALSTRM v1, compatible additions)
+
+#### 33.1.1 Conventions (normative here; the Swift decoder is written from it)
+
+All as §27.11: little endian, tag (4 bytes) + `u32 len` + payload, `len` a multiple of 4, unknown tags skipped by `len`.
+Added to the header object (new keys: ignored by old readers, so no version bump): `play` (below). `color_modes` is the
+writer's list; `play` puts `tag energy clade` first (their indices equal `stream`'s) then `house kin archetype intent`. A
+`play` stream sends **no `FRM1`**; the Lab's viewer shows nothing from it and says so (it reads `play.records`).
+**The legacy header keys are pinned**, because `StreamHeader.validate` (Swift) rejects `mode` outside `simulate|follow`, `source` outside
+`run|file|preset`, a `color` outside `color_modes`, and wants `FG`, `FZ`, `field_cell`, `NCH` consistent with `L` and `height`: a play
+header carries `mode:"simulate"`, `source:"run"` (a world directory) or `"preset"`, `every:1`, `fields:false`, `color:"tag"`, and `FG`, `FZ`,
+`field_cell`, `NCH` as `stream` writes them for the world (no field section is sent; the keys stay valid). A reader that does
+not know a tag accepts the header (it ignores `play`) and passes the record on as an `unknownRecord`, so an older
+client shows nothing from a play stream and does not fail (the Swift tests rename the tags of the fixture to pin this).
+
+```text
+play = {"records": ["FRMA","IDNT",...], "versions": {"FRMA":1,...}, "base_rate":14.4, "rates":[0.25,0.5,1,2],
+        "tick":25, "snapshot_every":250, "frame_hz":30, "chapter":6000,
+        "weather": {"enabled":bool, "cells":160, "dx":2.0, "f0":0.025, "coarse":40, "name_zeta":0.5,
+                    "refs":{"p":0.004,"dc":D,"u":0.1,"zeta":0.025}},
+        "labels": {"intent_version":3, "arch":["", "Gatherer"|"Grazer",...,"Drifter","Floater","Sinker"], "intent":["", "Budding",...],
+                   "gate": {"rules_digest":str, "world_key":str, "key_found":bool, "archetypes":[byte...], "intents":[byte...]}},
+                   # display names, index = byte (11 each; a weather world says Grazer); the gate is N1's verdict table (§33.7)
+        "cast": {"kin":16,"house":16,"colony":16}, "energy_cap": int, "events": {"1":"kin_born",...},
+        "planet": {"source":str|null,"houses":"exact"|"clade"|"none"}}
+```
+**Common head of every record, `FRMA` included** (16 bytes): `u64 step` (the step of the state it describes), `u32 seq` (per tag, from 0; a
+gap means a lost record, none in a pipe), `u16 version`, `u16 flags` (tag-specific; bits a version does not define are written as zero and ignored by readers).
+**JSON in records** is UTF-8 from `json.dumps(obj, allow_nan=False, ensure_ascii=False, separators=(",", ":"))` (a NaN or infinity is a writer
+error, caught by the encoder tests); `json_len` is the **unpadded** byte length, followed by 0-3 zero bytes to a multiple of 4, in every record that has JSON.
+
+**Delivery class** (the Swift mailbox, §33.4): *latest-wins* per tag (`FRMA IDNT INTN TERR STRM MAP1 ENVS CLCK FOCS`: a newer
+record replaces an undelivered older one, and a drop is counted) or *queued* (`EVNT`: never dropped, delivered in order,
+deduplicated by `id`). `FRMA` is also latest-wins, as `FRM1` is today. **A latest-wins record is complete**: it never relies on an optional
+section that a newer record might omit (`MAP1` carries `T_s` every time, §33.1.7). The initial state is written in `bind` in this order:
+header, `FRMA`, `IDNT`, `INTN`, `TERR`, `ENVS`, `MAP1`, `STRM`, `EVNT` (backlog), `CLCK`; `idnt` repeats the same set except the header and the backlog.
+
+#### 33.1.2 `FRMA`: alive-only frame (version 1)
+
+| offset | size | field |
+|---|---|---|
+| 0 | 16 | common head: `u64 step`, `u32 seq`, `u16 version`, `u16 flags` (bit 0 diag error, as `FRM1` bit 1) |
+| 16 | 4 | `u32 n`: alive rows listed |
+| 20 | 4 | `u32 n_bonds` |
+| 24 | 4 | `u32 color_index` |
+| 28 | 4 | `u32 span`: steps since the previous `FRMA` written (0 for the first); informational, the client uses the step difference of the frames it was delivered |
+| 32 | 4 | `u32 N`: capacity (redundant with the header; a decoder checks it) |
+| 36 | `4·ceil(N/32)` | **alive bitmap**: `u32` words, bit `r` = row `r` alive (LSB first). `popcount = n` |
+| | `12·n` | **pos**: `(f32 x, f32 y, f32 z)` per listed row, ascending row; z = 0 in 2D |
+| | `4·n` | **orient**: `(f16 yaw, f16 pitch)` |
+| | `4·n` | **rgb**: `u32 0x00RRGGBB` (hurt agents red in every mode, as `FRM1`) |
+| | `8·n` | **uid**: `i64` |
+| | `8·n_bonds` | **bonds**: `(u32 i, u32 j)`, `i < j`, **indices into the listed rows** (not slots), ascending `i` then slot order |
+
+The common head gives `FRMA` a `seq` and a `version`, so the per-tag version rule of §33.1.12 applies to it like to any record. Length is exactly `36 + 4·ceil(N/32) + 28·n + 8·n_bonds`. At 65,536 rows and 42k alive: 1.18 MB + bonds (measured encode: 1.33 MB with
+40k candidate pairs). Compared with `FRM1` (21 B per **slot**, 1.38 MB) it is 14% smaller at 64%
+occupancy and carries the uid; the bitmap replaces a 4-byte row index per row (saving 160 KB at 42k). Row `r`'s position among the listed
+rows is `popcount(bitmap below r)`; the decoder builds `rows[i]` and `slotOfRow[r]` once. Sections start at multiples of 4 bytes; the Swift side copies bytes into aligned buffers.
+
+#### 33.1.3 `IDNT`: identities (version 1; at every snapshot, on `idnt`, at start)
+
+Head(16) + `u32 n_rows`, `u32 snapshot_step`, `u32 json_len`, `u32 reserved` + JSON + pad (§33.1.1) + `n_rows × 16 B`:
+`i64 uid | i32 clade | u8 house_slot | u8 kin_slot | u8 colony_slot | u8 flags` (alive rows, ascending row). Slots index the tables
+below; **254 = listed-as-other, 253 = unknown immigrant lineage (houses of an observer attached mid-run), 255 = none**. A slot byte
+below 16 is the **`slot` field of an entry** of its table, not the entry's position: kin-group and colony slots are sticky
+(`sticky_slots`: a group keeps its slot while it lives, so a swatch keeps its colour) and a dissolved group leaves a gap, so a
+table can have gaps and a decoder checks a row's byte against the entries' `slot` fields (distinct, below 16), not against the table's length.
+The house `slot` is the entry's rank in the top-16 order. flags bit 0 = born after the
+last snapshot: at a snapshot step none is flagged; an `idnt` between snapshots lists the current rows with the slots the observer holds
+(`social_labels()`: newborns inherit their parent's house, kin and colony per step), approximate for the flagged rows.
+```text
+json = {"houses":  [{"slot","id","name","size","clade"} ...<=16],   "exact": bool, "origin": int,
+        "kin":     [{"slot","id","name","named_after","size","clade","clade_share","sim_self","x","y","z"?,"arch":[...10]|null,
+                     "births","deaths":[starved,killed,aged,catastrophe(,storm)]|null} ...<=16],
+        (null where the observer has nothing yet: `sim_self` of a small group, `births` and `deaths` of a group that held no slot in the
+         window, `arch` while the labels warm up; `clade_share`, `x`, `y` only in a table derived before the first record, §33.2.1;
+         `arch` has one share per archetype, `len(ARCHETYPE_NAMES)` = 10 since `INTENT_VERSION` 3, index `i` = archetype `i + 1`, §33.7)
+        "colonies":[{"slot","id","size","kin","x","y"} ...<=16],  "unknown_immigrant": int}
+```
+These are the columns of the G2 record's `houses`, `kin_groups`, `colonies` tables (§29.11, §29.14), copied, not recomputed.
+Per-row slots come from `Observer.social_labels()` (house id mapped to its slot in the listed top-16, kin slot, colony slot).
+Size: 16 B × 42k = 672 KB + about 4 KB JSON (measured rows build 0.11 ms). The client matches rows by **uid** (frames carry it), so
+alignment with a particular `FRMA` is not needed. **Rows born after the last `IDNT` are absent from the client's map** until the next one
+(about 45 births per step, est.: up to 11,000 between snapshots, a quarter of the population at 64k3d); the client shows them as new, with no
+lineage entry. Two things make that harmless: the colour modes are drawn by the server in `FRMA.rgb` and need no `IDNT`, and `FOCS`
+carries the focused row's own slots and labels (§33.1.10), so the inspector is complete for any organism, newborns included.
+
+#### 33.1.4 `INTN`: labels (version 1; every tick, unless `labels off`)
+
+Head(16) + `u32 n_rows`, `u32 labels_step` (the last evaluation, <= step), `u32 intent_version`, `u32 reserved` + `n_rows × 12 B`: `i64 uid |
+u8 arch_primary | u8 arch_secondary | u8 intent | u8 flags`. Bytes are `rules.Archetype` / `rules.Intent` values (0 = none); display
+names are in the header (`play.labels`: `ARCHETYPE_DISPLAY`, `INTENT_DISPLAY`, and `ARCHETYPE_STORM_DISPLAY` in a weather world, as N1 prints them, §33.7; the bytes 8 to 10 are Drifter, Floater and Sinker of `INTENT_VERSION` 3). flags: bit 0 evaluated (past the *intent* warm-up, `intent_warm` 24; the archetype warms up longer, `arch_warm` 192, and its bytes are 0 until then, so a client reads a 0 `arch_primary` as still warming up), bit 1 Budding overlay
+(a forecast, C10). 504 KB at 42k per tick (0.3 MB/s at 1x). Rows are those of `Observer.host_labels()`.
+
+#### 33.1.5 `TERR`: territory (version 1; at every snapshot)
+
+Head(16) + `u16 nx, u16 ny` (32 x 32, `SocialRules.terr_cells`), `u32 snapshot_step`, `u32 json_len`, `u32 reserved` + JSON `{"ids":[kin id by slot]}` (up to 16 entries, -1 for a slot that holds no group; an owner byte names a slot with an id) + `nx·ny`
+bytes **owner slot** (255 none; index `y·nx + x`, cell (x, y) covers `[x·L/nx, (x+1)·L/nx)`) + `nx·ny` bytes **purity** (`round(purity_q16/257)`). Source:
+`Observer.territory()` (the `DominanceMap` owner ids mapped through the kin slot table). 2.1 KB. Borders are drawn by the client where owners differ. The
+overlay is labelled "dominance" (GAMES STORMS §6.5).
+
+#### 33.1.6 `STRM`: storms (version 1; every tick, weather worlds)
+
+Head(16) + `u32 json_len`, `u32 tick`, `u32 n_storms`, `u32 reserved` + JSON:
+```text
+{"detect_step":t, "storms":[{"id","name":str|null,"named":bool,"hemi":0|1,"x","y" (wrapped, [0,L)),"r" (r_eq),"ext":[ex,ey],
+   "zeta":peak lower-layer zeta/f0 so far,"zeta_now","wind","rain","age":steps,"parent":id|0,"state":"active"|"coasting",
+   "track":[[t,ux,uy]...<=24],"pred":[[lead,x,y]...] for leads 250,500,1000}],
+ "ended":[{"id","reason":"dissipated"|"merged","into":id|0}]}
+```
+`track` is unwrapped (`ux`, `uy` of `Det`), so a polyline is continuous across the seam; the client wraps it when drawing. `pred` is the
+tracker's own extrapolation (`Tracker._predict`, made public as `Tracker.predict(track, t)`): "the baseline to beat" of STORMS STORMS §6.3, drawn as a
+faint cone only if the user enables it (W3 owns forecasts). `named` is peak `zeta >= 0.5` (C11); only named storms get a name (the
+house-name generator on `splitmix64(id, STORM_NAME_SALT)`, unique among live storms); others are shown as "disturbance N". Source: `Tracker.active()` and
+`Track.dets[-1]`. Measured: 5.0 KB JSON for 6 storms with 40-point tracks; with 24 points and `pred` about 3.5 KB. Cap 32 storms.
+
+#### 33.1.7 `MAP1`: weather maps (version 1; every tick, weather worlds)
+
+Head(16, flags bit 0 = `T_s` present, bit 1 = winds present; **both are 1 in every version-1 record of a weather world**, the bits stay for evolution) + `u16 n` (160), `u16 nw` (40), `f32 f0` (= `play.weather.f0`), `f32 p_ref, dc_ref, u_ref, zeta_ref`, 8 reserved bytes (planes start at offset 48), then planes, row-major `[cy][cx]`, cell `dx = L/n` = 2 units:
+
+| plane | type | encoding | source |
+|---|---|---|---|
+| `P` rain rate | u8 | `round(255·sqrt(clip(P/p_ref,0,1)))` (companded; decode `(b/255)²·p_ref`) | `wx[P]` |
+| `D_c` cloud depth | u8 | `round(255·clip(D_c/dc_ref,0,1))` | `wx[Dc]` |
+| `zeta` | i8 | `round(127·clip(zeta/zeta_ref,-1,1))`, layer-1 vorticity at the cell centres (`corners_to_centres`, as the detector) | `weather.vorticity` |
+| `T_s` (flag) | u8 | `round(255·T_s)` (the sea temperature the engine forces the weather with at this step: `weather.warm_pools(p, step)` times `weather.shade_mult` of this step's state when `weather.shade_gain > 0`, else the bare pool map); in every record (§33.1.1: records are complete) | analytic |
+| winds (flag) | 4 × i8 `nw²` | block means (4 x 4) of `u1,v1,u2,v2`, `round(127·clip(w/u_ref,-1,1))` | `wx[u1..v2]` |
+
+Sizes: 25.6 KB per full plane; 77 KB without `T_s`, **109 KB with `T_s` and winds, which is what every record carries** (measured quantise: 0.25 ms; `T_s` is analytic and
+changes slowly, but sending it every tick costs 18 KB/s at 1x and removes the case where latest-wins replaces an undelivered record that
+carried it with one that does not, which left the sea map missing for 17 s at 1x and 70 s at 0.25x). Constants `p_ref = 0.004` (W1 review peak 0.003),
+`u_ref = 0.1` (core winds <= 0.081, jet 0.05), `zeta_ref = f0`; `dc_ref` from the
+spun-up weather's 99.9th percentile, computed **once at planet creation** and stored in `play.json.weather.dc_ref` (§33.3), so every session of a world has the same scale; it is in the header. Quantisation error
+is stated, not hidden: the client shows shapes and signs, not values; numbers in the UI come from `STRM`.
+
+#### 33.1.8 `EVNT`: events (version 1; queued)
+
+Head(16, flags bit 0 = backlog at start) + `u32 count`, `u32 json_len` + JSON array of at most 64 events:
+```text
+{"id":u64 monotone per run (step·1000 + index, so a resume keeps order),"step","kind":int,"fam":"kin"|"house"|"storm"|"focus"|"director"|"system",
+ "a":int,"b":int (entity ids, 0 none),"x","y","z" (null if none),"imp":0|1|2,"text":str<=120}
+```
+Kinds (registry in the header `play.events`; an unknown kind is shown by its `text`): 1 kin_born, 2 kin_split, 3 kin_merged, 4 kin_dissolved,
+5 house_founded, 6 house_extinct, 7 storm_born, 8 storm_named, 9 storm_merged, 10 storm_split, 11 storm_dissolved, 12 director_entry,
+13 focus_death, 14 focus_handoff, 15 checkpoint, 16 renumbered, 17 extinct. Sources and filters:
+kin events from the record's `events` table (family `kin_group`; colony events are **not** narrated: 80% of colony ids end within 3
+snapshots at the 250 cadence, §29.12), house events of the record when the house is in the top 16 (founded) or was
+(extinct), storm events from the tracker (birth, first time `zeta >= 0.5`, merge, split, dissolve), `Director.applied`
+through `describe(entry)`, the focus events of §33.2, `checkpoint` per save. `imp`: 2 = shown as a toast (named storm born or
+dissolved, a kin group dissolved or split, extinction), 1 = chronicle, 0 = log only.
+**Texts** come from `game/chronicle.py`'s closed table (`CHRONICLE_VERSION` 1): a fixed sentence per kind with slots filled from the
+event (names, exact counts from the record, steps); "since", never "because"; no label shares, no archetype claims (C8-C10). The
+backlog (flag) is rebuilt at start from the tails of `observers/social.jsonl`, `observers/storms.jsonl` and `director.jsonl`, so a re-opened world has a
+history. Tests render every kind and run N1's checker on the strings once N1 is merged.
+
+#### 33.1.9 `ENVS`: environment (version 1; at every metrics boundary, on `idnt`)
+
+Head(16) + `u32 json_len` + JSON `{"pools":[{"x","y","amp","sx","sy","vx","vy"}] (positions at this step), "season":{"period","amp","phase"}|null,
+"levers":{non-inert env_* values}, "effects":[{"action","params","start","end"|null,"source":"rule"|"llm"|"player"}], "cooldowns":[{"action","ready"}],
+"influence":null}`. `pools` from `weather.warm_pools` parameters and the drift at `state.step`; `effects` and `cooldowns` from `director.jsonl`
+through the pacing fold (`director.pacing.fold`); empty with the director off. `influence` is G3b. Small (<= 2 KB).
+
+#### 33.1.10 `CLCK` and `FOCS`
+
+`CLCK` (version 1, 44 bytes after the head): `f32 rate` (requested multiplier; 0 paused; -1 max), `f32 achieved` (steps/s over 2 s), `f32 step_ms`
+(median of the last 60, engine step only), `f32 frame_ms` (median encode+write), `u32 late_steps` (cumulative; re-anchor drops only, §33.2), `u32 save_stall_steps`
+(cumulative; steps skipped while a checkpoint was written), `u8 reason` (0 running, 1 user pause, 2 end of
+steps, 3 chapter (G3b), 4 alert (G3b), 5 error), `u8 saving`, `u16 flags`, `u32 fe`, `u32 chapter` (step // 6000), `u32 in_chapter`, `u32 chapter_len`.
+`saving` is 1 from `before_checkpoint` to `after_checkpoint`; a `CLCK` is written and flushed at each of the two, so the client knows before the stall begins.
+`FOCS` (version 1, 68 bytes after the head): `i64 uid`, `u32 row`, `u32 flags` (bit 0 alive, bit 1 hand-off this frame, bit 2 followed), `f32 x,y,z`,
+`f32 vx,vy,vz`, `i32 energy` (quanta; `play.energy_cap` gives the cap), `u32 age` (`step - birth_step`), `u32 generation`, `i64 parent_uid`,
+`u8 n_bonds`, `u8 house_slot`, `u8 kin_slot`, `u8 colony_slot` (the observer's current slots for this row, the §33.1.3 byte values), `u8 arch_primary`, `u8 arch_secondary`,
+`u8 intent`, `u8 label_flags` (as `INTN`). One-row device read; the NN inputs and decoded actions of GAMES GAMES §8.3(b) are G3b/G4.
+
+#### 33.1.11 Sizes and rates at 64k3d (42k alive; est. where not measured)
+
+| record | bytes | per second at 1x (14.4 sps) | at max (frames every 2nd step, ~28 fps) |
+|---|---|---|---|
+| `FRMA` | 1.2-1.5 MB | 17-21 MB/s | 33-42 MB/s |
+| `INTN` | 0.50 MB | 0.29 MB/s | 0.7 MB/s (or off) |
+| `IDNT` | 0.68 MB | 0.04 MB/s | 0.1 MB/s |
+| `MAP1` | 109 KB (planes, `T_s` and winds in every record) | 0.06 MB/s | 0.12 MB/s |
+| `STRM`, `EVNT`, `ENVS`, `TERR`, `CLCK`, `FOCS` | <= 12 KB each | < 0.05 MB/s | < 0.1 MB/s |
+| total | | **about 19-22 MB/s** | **about 35-44 MB/s** |
+A pipe reader that stalls blocks the step loop (as `stream` does); the Swift reader drains on its own thread (§27.12), so a slow main actor drops frames, not steps.
+
+#### 33.1.12 Encoders, decoders, fixtures, evolution
+
+- **Python encoders**: `streamrec.py`, pure functions of numpy arrays and dicts (`encode_frma`, `encode_idnt`, ..., `header_play`), no `mlx` import, so
+  the fixtures are device independent. **Independent Python decoder**: `tests/play_decode.py`, written from §33.1 alone (it must not import
+  `streamrec`), extending the style of `tests/stream_decode.py`. **Swift decoders**: `gui/Sources/AlifeCore/PlayRecords.swift` (value types, a `RecordDecoder` used by
+  `FrameDecoder` for tags it knows; unknown tags stay `unknownRecord`). Each checks a record's length against its own head before the payload
+  arrives, the counts against `N` and `kin <= 16`, and refuses a slot byte outside the table (with 253-255 reserved).
+- **Shared fixtures**: `tests/data/play_tiny3d.bin` + `.json` (+ `play_tiny2d.bin`, and **`play_tiny3d_n70.bin`: N = 70, three bitmap words, the last partial**, which N = 64
+  hides), a header and one of every record on a hand-built scene (alive rows with gaps, a bond across the seam, three kin groups, a hand-off, a named storm, a tick with `T_s`, a backlog `EVNT`, an unknown tag `ZZZZ`, two `FRMA` at
+  steps 100 and 104 with a reused row and a dead row between). `tests/play_fixtures.py --write` regenerates; the sidecar holds expected values and SHA-256 per section; Python and Swift decode the same file
+  against the same sidecar; the rebuild-byte-for-byte test runs on every device.
+- **Evolution rules** (§33.1.12): a tag's `version` bumps on a layout change and the writer sends only versions the header lists; a decoder skips a record whose version it does
+  not know (and counts it), which now holds for every tag since all have the common head; new JSON keys, new flag bits, new `kind`s, new tags are compatible; a major bump is a protocol bump (the `ALSTRM` magic) and is not expected.
+
+#### 33.1.13 As built (G3a commits 1 and 2)
+
+- `src/alife/streamrec.py` (numpy only, no `mlx` import; in `test_lint`'s subscript-assignment scan) holds the encoders,
+  `Sequencer` (the per-tag `seq`), `legacy_header` / `header_play` / `weather_block` / `play_header_bytes` and the
+  quantisers (`quantise_map1`, `dequantise_p`). Encoders raise `RecordError` for what the format cannot carry (a bond into a
+  dead row, a slot outside its table, more than 16 table rows, more than 64 events or 32 storms, an event of the wrong shape or a
+  text over 120 characters, NaN in JSON, a JSON over the caps `IDNT` 16 KiB, `EVNT` 32 KiB, `STRM` 24 KiB, `ENVS` 8 KiB,
+  `TERR` 1 KiB). `encode_frma` takes the `N`-row arrays and the alive mask and lists the alive rows; bonds are given as row
+  pairs and written as listed-row indices.
+- Tail padding: a section after the last JSON (`TERR` planes, `MAP1` planes) is padded with zero bytes to a multiple of 4, the
+  decoders check them; for the 32 x 32 `TERR` and the 160-cell `MAP1` there are none. `MAP1` carries `T_s` and the winds in every
+  version-1 record (flags 3); a decoder refuses a version-1 `MAP1` without both bits. The `CLCK` body offsets (after the head):
+  `rate 0, achieved 4, step_ms 8, frame_ms 12, late_steps 16, save_stall_steps 20, reason 24, saving 25, flags 26, fe 28,
+  chapter 32, in_chapter 36, chapter_len 40`; `FOCS`: `uid 0, row 8, flags 12, x 16, y 20, z 24, vx 28, vy 32, vz 36, energy 40,
+  age 44, generation 48, parent_uid 52, n_bonds 60, house 61, kin 62, colony 63, arch_primary 64, arch_secondary 65, intent 66,
+  label_flags 67`.
+- The independent decoder is `tests/play_decode.py` (imports only `stream_decode.decode_header`). The fixtures are
+  `tests/data/play_tiny{3d,2d,3d_n70}.{bin,json}` (written by `tests/play_fixtures.py --write`; rebuilt byte for byte by
+  `tests/test_stream_records.py` on every device, no engine). Swift: `AlifeCore/PlayRecords.swift` (`PlayHeader`,
+  `RecordHead`, `PlayFrame`, `PlayIdentities`, `PlayLabels`, `PlayTerritory`, `PlayStormRecord`, `PlayWeatherMap`,
+  `PlayEventBatch`, `PlayEnvironmentRecord`, `PlayClock`, `PlayFocus`, `StreamRecord`; the JSON-derived types are `Codable`, so
+  the tests compare them with the sidecar by value) with `FrameDecoder` emitting `StreamEvent.record(StreamRecord)`; a record of
+  a known tag whose version is not 1 is skipped by length, reported as `unknownRecord`, and counted in
+  `FrameDecoder.skippedVersions`. `StreamHeader.play` is the decoded `play` key (nil for a plain stream) and is validated with the
+  header (a non-positive rate or cadence, a snapshot cadence that is not a multiple of the tick, weather cells that are not a
+  multiple of the wind blocks, a tag listed twice); `tests/test_gui_sync.py` checks its coding keys against what
+  `streamrec.header_play` writes. A record's length is checked against the counts of its own fixed prefix before the payload is
+  waited for (`lengthMismatch`), against the header's `N` and bond slots, and a slot byte against its table
+  (`malformedRecord(tag:_:)`); `PlayFrame.listedIndex(ofRow:)` is the popcount rank over the bitmap.
+
+#### 33.1.14 Correction while building the observer side (G3a commit 3)
+
+Building `Observer.identity_rows` showed two assumptions of the first Python and Swift decoders to be wrong, and both were corrected
+with it: (1) a slot byte was checked against the **length** of its table, but the observer's slots are sticky and a table has gaps, so
+the check is now "the `slot` field of an entry, or 253 to 255" (`streamrec._entry_slots`, `play_decode._entry_slots_ok`,
+`Slot.isValid(_:among:)` in `PlayRecords.swift`; a table with a repeated or out-of-range entry slot is refused); (2) `IdentityTables`
+required numbers where the record has `null` (`sim_self`, `births`, `x`, `y`, `clade_share` of a kin group, `x`, `y` of a colony),
+which would have failed the decode of a real record; they are optional now. `TERR.ids` keeps its index meaning: a list of the kin id of each
+slot with -1 for an empty one, so that an owner byte is an index into it. The fixtures are unchanged (their slots are dense).
+
+### 33.2 The play loop
+
+The host pieces the loop is built from (§33.2.1 to §33.2.3), the runner hook, the scheduler,
+the grammar and the presenter (§33.2.4 to §33.2.7) and the command (§33.2.8); §33.3.3 and §33.3.4 hold `play.json`, the lock and planets.
+
+#### 33.2.1 `Observer.identity_rows` (the rows and tables of an `IDNT`)
+
+`Observer.identity_rows(state)` returns `IdentityRows`: the alive rows in ascending row order (`row`, `uid`, `clade`), the three slot
+bytes of §33.1.3 per row and the flags byte (bit 0, `FLAG_BORN_SINCE`: `uid >= prev_next_uid`, i.e. born after the last snapshot), the
+`snapshot_step` and the JSON `tables`. It raises `ValueError` if `state` is not at the observer's step, settles a pending snapshot, changes
+no state, and costs one `mx.eval` and one host transfer of six arrays.
+
+- **Slots.** The bytes are the observer's current slots (`social_labels()`): house id mapped to its index in the table's top-16 order
+  (253 for `HOUSE_UNKNOWN`, 254 for any other house), kin and colony slot as they are (`F` = OTHER to 254, negative to 255). Newborns inherit
+  their parent's, so an `idnt` between snapshots is complete and approximate only for the flagged rows.
+- **Tables.** Copied from the newest record taken (`take_records`, remembered as `Observer._last_record`) or settled and not yet taken:
+  `houses` (`slot` = rank), `kin` (the record's `kin_groups` columns, `z_mean` as `z`), `colonies` (`kin_group` as `kin`). Before any
+  record exists (a fresh observer, or one restored from a sidecar, until its first snapshot) they are derived from the rows and the society's
+  names: house sizes and the clade of the first row as `Society._houses` does, kin sizes, plurality clade, centroids (`circular_mean`) and `z` of
+  the rows of each slot, colony sizes and plurality kin group; `sim_self`, `arch`, `births`, `deaths` are `null`. The key sets of the two
+  paths are equal. `exact` is `house_origin == 0`, `origin` the step the houses are exact from, `unknown_immigrant` the rows with house 253.
+- **Colour inputs.** `Observer.color_inputs(houses)` returns the device arrays the colour modes read (house slot bytes against the listed house
+  ids, kin slot bytes, primary archetype, displayed intent); lazy, evaluated with the frame.
+
+Tests: `tests/test_play_identity.py` (2D and 3D observed runs: rows against the state, slots against `social_labels`, tables against the
+record's columns, the derived tables, the flag, every moment through `encode_idnt` and the independent decoder, no change to the observer,
+the stale-state refusal); mutations of the flag comparison and of the house-slot index were caught.
+
+#### 33.2.2 Colour modes (`game/colors.py`)
+
+`play_colors(state, cfg, mode, inputs)` returns the `FRMA.rgb` column. `tag`, `energy` and `clade` are `render.agent_colors`, unchanged;
+`house`, `kin`, `archetype` and `intent` colour a row through a palette by the slot byte (house, kin) or the `rules.Archetype` / `rules.Intent`
+value, and **every mode paints an agent that lost energy last step red** (`state.last_loss > 0`). The palettes are normative because the client
+draws the cast swatches and the territory overlay with them: `SLOT_PALETTE` (16 colours, none red; slot byte `s < 16` takes entry `s`),
+`UNKNOWN_RGB` (253), `OTHER_RGB` (254), `NONE_RGB` (255), `ARCH_PALETTE` (11 entries: none and the ten archetypes, Drifter, Floater and Sinker last) and `INTENT_PALETTE` (index 0 = unlabelled). `PLAY_MODES` equals the
+header's `color_modes` (tested against `streamrec.COLOR_MODES`). Device code, no host read; `house_slot_bytes` and `kin_slot_bytes` are the device
+twins of the host maps of `identity_rows` and are tested to agree (`tests/test_play_colors.py`).
+
+#### 33.2.3 The chronicle (`game/chronicle.py`, `CHRONICLE_VERSION` 1)
+
+`Chronicler` turns sources into `EVNT` events (§33.1.8): `from_record(rec)` (kin-group events of the record's `events` table, with the group's
+name remembered from the `kin_groups` tables so that a dissolved group keeps its name; house events: founded in the record's top-16, extinct among
+the previous record's top-16; colony events are not narrated), `from_storms(events)` (the tracker events `StormLayer` writes, §33.3.1),
+`from_director(entries)` (`describe(entry)`; the position is the entry's `x`, `y` parameters if it has them) and the play loop's own
+`focus_death`, `focus_handoff` (rules 1 to 3), `checkpoint`, `renumbered`, `extinct`.
+
+- **Texts** come from the closed table `TEMPLATES` (24 sentences): slots are names, exact counts of the source record and step numbers. They state
+  what happened and never why ("since", never "because"), name no label share and make no archetype claim (C8 to C10). `render` cuts a text to 120
+  characters. N1's lexicon (`game.lexicon`: the never-lists and the label list) finds nothing in any of them with display names masked; the
+  director's line quotes the lever it pulled and the director's own reason, so the causal list is excluded for it and only the fixed part
+  is checked. The first draft said "appeared"; the lexicon's hedge list (`appear-`) objected, so the sentences say "formed".
+- **Importance** `imp`: 2 (toast) for a named storm reaching named strength, a named storm dissolving, a kin group splitting or dissolving, and
+  extinction; 1 for the other kin, house, storm, director, focus events and `renumbered`; 0 for `checkpoint`.
+- **Ids** `step * 1000 + FAMILY_BASE[fam] + index` (kin 0, house 100, storm 200, director 300, focus 400, system 500; at most 100 per family and
+  step, the first hundred kept), so two sources delivering in either order give the same ids, the backlog gives what the live chronicler gave, and a
+  resumed play cannot clash with the events a client already holds.
+- **Backlog** `rebuild_backlog(social, storms, director, house_salt, limit=64)`: the newest events a play would have produced from `observers/social.jsonl`,
+  `observers/storms.jsonl` (each line's `events`) and `director.jsonl`, ordered by `(step, id)`; checkpoint and focus events are not logged and not in it.
+
+Tests: `tests/test_play_chronicle.py` (every template reachable and within 120 characters, every kind of the registry produced, the lexicon, the
+texts and fields of hand-built records for each case, the ids and their independence of the delivery order, the per-family cap, the backlog equal to the
+live events, and real 2D and 3D snapshot records through the chronicler).
+
+#### 33.2.4 The runner hook (`runner.Pacer`)
+
+`runner.run(..., pacer=None)`. With `pacer is None` every line executes as before (the 2D digest matrix against 2d1ab0c and the tiny3d digest are
+bit-identical, `556de6c6...` legacy). A `Pacer` is a protocol of seven members; the loop calls them and changes nothing else:
+
+| member | where | contract |
+|---|---|---|
+| `stop_requested` | or-ed in wherever `latch.requested` is read (`stopping()`) | a stop the pacer asks for takes the SIGINT path: a short interval row, the events, a checkpoint, status `interrupted`, exit code `INTERRUPTED` |
+| `bind(state, *, rd, cfg, obs, director, quiet, stop_check)` | once, inside `with _sigint(latch)`, after the starting checkpoint and the extinction return, before the loop | `stop_check` is `lambda: latch.requested` |
+| `before_step(state, t)` | first statement of the `while t < end` body | may block (pause, throttle); a stop makes it return, and **exactly one more step runs** |
+| `after_step(state, out, t, social)` | after the `outs.append` / `t += 1` pair | `out` is the base `StepOut`; `social` the snapshot records `obs.take_records()` returned (already appended to the social log; `[]` without observers) |
+| `before_checkpoint(state, t)` / `after_checkpoint(t)` | first and last statements of the `checkpoint()` closure | both call sites of the closure are bracketed (the boundary's periodic or stop checkpoint, and the post-callback stop) |
+| `after_boundary(state, row, t)` | next to `on_interval`, after the director and the checkpoint | |
+| `take_paused_s()` | at a metrics row | `perf.wall_s` becomes `max(wall - paused, 1e-6)`: a pause is not run time, a throttle sleep is (so `steps_per_s` is the achieved rate and the Lab's `MetricsTailer` is not misled) |
+
+- **State is borrowed.** A callback that takes `state` drops every reference before returning (nothing on `self`), so `step_fn(state)` is called with the runner as the only
+  holder (the donation rule, §15.4); it evaluates what it derives and converts to numpy before returning. Tested by the donation health check (the peak memory of a
+  pacer-driven run is within half a state's weights of the plain run's, with a pacer that keeps the state as the negative control, which exceeds it) and by an attribute scan.
+- **Callbacks never raise into the loop.** `run` has no `try/finally`, so a raising callback would skip the checkpoint, the event chunk and the status update and lose
+  up to 6,000 steps. `PlayPacer` wraps every member: a closed reader (`BrokenPipeError`, `ConnectionResetError`; a failed record write is caught at `_write`, so the callback goes on) sets `stop_requested` and swaps the output for a null sink, any other exception (an `OSError` such as a full disk included) does the same with
+  the traceback on stderr, `failure` records which, and every later call returns at once **except `after_step` and `before_checkpoint`**, which keep doing the host work of the files against the null sink: the storm tick of the last step, its line in `storms.jsonl` and the tracker state saved with the checkpoint. A resume after a closed reader, an app crash or a force-quit is therefore the same play (the same storm ids, names, `storms.jsonl` and `STRM`: I51 review fix 1; a presenter bug mid-`after_step` can still leave that one step's tick unprocessed). A later failure of that host work replaces a closed reader as `failure` (and prints its traceback). The runner gained no `try/finally`. (`serve_play` maps `failure` to exit 0 for a closed reader and 1 otherwise.)
+- **While paused, SIGINT works.** The paused wait polls `stop_check` at every 0.25 s tick, so the first Ctrl-C reaches the one-more-step path within a tick and the second raises
+  `KeyboardInterrupt` as today.
+- **Proof obligation** (`tests/test_play_purity.py`): the same world run with `runner.run` alone and with a pacer receiving a seeded random control script (pauses, rates, `step`
+  batches, colours, `every`, `focus`, `follow`, `idnt`, `labels` and invalid lines) and building every record has equal state digests at every checkpoint, equal metrics rows
+  (every key but `wall_s`, `steps_per_s`, `peak_mem_gb`), event chunks, social log, sidecars and `director.jsonl`: 2D, 3D, the storm world, observers on and off, and a live
+  rule-tier director run at the same cadence; and a `quit` at an arbitrary step followed by a resume equals the uninterrupted run on the state, the social log and the sidecar. The hook adds no sync of its
+  own (the one blocking `mx.eval(state, out, *obs.arrays())` per step stays; the pacer's evals are extra and run on frame, tick and command steps).
+
+#### 33.2.5 The scheduler (`play.Scheduler`)
+
+The requested rate is `rate * base_rate` steps per second (`base_rate` 14.4, a play setting and not a config key; `rate` 0.25, 0.5, 1 or 2 in the window, any M in [0.05, 16] accepted,
+infinite for `max`). `Clock` (`monotonic`, `sleep`, `wait(control, timeout)`) is injected; `play.py` reads real time only in `RealClock` (`test_lint` rule 7), so the tests run on a fake.
+
+- **Fixed timestep with a bounded debt.** On run or rate change the schedule is anchored at `now` with nothing issued; step `k` is due at `anchor + k / (rate * base_rate)`. `poll()` returns
+  None (go) when a step is owed, else the seconds to wait, at most 0.25. A step that overruns its slot leaves a debt repaid one step per call, at once; a debt older than 0.25 s is dropped:
+  the schedule is re-anchored on one step due now and the dropped steps are added to `late_steps` (the start-up and the compile of the first step are not lateness: `Scheduler.restart()` runs at the end of `bind` and after the first step, so a cold `alife play` at 1x shows `late_steps == 0`) (**the spec's "burst of at most 2 steps" is this bound: the debt never exceeds 0.25 s of steps, 3 at 1x**).
+  `max` never waits. A boundary step that overruns by less than 0.25 s is not late.
+- **Saving is not lateness.** `before_checkpoint` records the debt and sends `CLCK` with `saving` 1 (before the stall); `after_checkpoint` re-anchors, adds the steps the stall skipped to
+  `save_stall_steps` and sends `CLCK` with `saving` 0.
+- **Pause and batches.** Paused means `before_step` blocks on the control queue in ticks of 0.25 s (a `CLCK`, a look at the reader and at `stop_check` per tick). `step N` pauses and queues a batch of
+  N steps issued unthrottled, with one frame after its last step, then the world stays paused (the `alife stream` semantics, including the queue of batches); `pause` and `run` clear the queue.
+  `rate M` with M > 0 sets the rate **and runs** (`rate 0` pauses): the window's rung buttons send one line.
+- **Frames.** A frame is written when `t % fe == 0` while running, on entering a pause (unless the step already has one), on `color`, on `idnt` and after a batch. `fe = max(1, ceil(r_eff / frame_hz))`
+  with `r_eff = min(rate * base_rate, achieved)` for a finite rate and `achieved` for `max`, recomputed at each `CLCK` tick (250 ms); `achieved` is steps per second over a sliding 2 s window, so `max`
+  at 55 steps/s gives `fe` 2, and a rate the machine cannot hold does not over-produce frames. `every K` overrides it (1 to 64), `every auto` restores it.
+- **Start.** A world opens paused unless `--rate` is given; its header and first records are written in `bind`: the header, `FRMA`, `IDNT`, `INTN`, `TERR`, `ENVS`, `MAP1`, `STRM`, `EVNT` (backlog), `CLCK`.
+- **No wall clock enters the trajectory.** The step count, the order of observer and director calls and every written log line are functions of the step index; records carry the step, not the time.
+
+#### 33.2.6 The control grammar
+
+Lines of stdin as in §27.11 (LF, at most 4,096 bytes, `#` comments, lower case, applied one at a time between steps, `quit` drops the rest, an invalid line is ignored with one note on stderr;
+`stream.FdControl` reads them, EOF reads as `quit`):
+
+```text
+command = "pause" | "run" | "step" [N] | "rate" ( M | "max" ) | "color" MODE | "every" ( K | "auto" )
+        | "focus" ( UID | "off" ) | "follow" ( UID | "off" ) | "idnt" | "labels" ( "on" | "off" ) | "quit"
+```
+`color MODE` is one of the header's `color_modes` and redraws at once (an observer mode needs the observers); `idnt` sends `FRMA`, `IDNT`, `INTN`, `TERR`, `ENVS`, `MAP1`, `STRM` now;
+`labels off` stops `INTN`; `fields` is refused (the Lab's). `focus UID` reports an organism (`FOCS`, at once and about 4 per second), `follow UID` additionally reports every step and hands the follow on at its death
+(§33.2.7); an unknown or dead uid answers with one `FOCS` whose alive flag is clear; `focus UID` cancels a follow. Presentation-only lines (`focus follow idnt labels color every`) change what is written and when,
+never the trajectory (`test_play_purity`). G3b adds `autopause`, `intent`, `confirm`, `power`.
+
+#### 33.2.7 What the pacer produces
+
+`PlayPacer` (`play.py`) is the `Pacer`: a `Scheduler` and the presenter of the stream. It writes through `stream`'s short-write handling to the protocol descriptor (a pipe that stalls blocks the loop, as `alife stream` does).
+
+| work | when |
+|---|---|
+| `FRMA` | per the frame rule of §33.2.5: alive rows, the colour mode's `rgb`, bonds as listed-row indices, `span` the steps since the previous frame |
+| `IDNT`, `TERR` | at a snapshot step (the runner's `take_records` returned a record), at start and on `idnt`; the house table of the newest `IDNT` is what the house colour mode and `FOCS` read |
+| `INTN` | every tick (`t % tick == 0`, 25) unless `labels off`; flags bit 0 = evaluated, bit 1 = the Budding overlay shows (`label_intent != held`) |
+| `MAP1`, `STRM` | every tick of a weather world (`StormLayer.tick_at`; events to the chronicle), and `StormLayer.current` (no detection) at start and on `idnt` |
+| `EVNT` | batches of at most 64 after the step that produced events: the snapshot record's kin and house events, the tracker's events, the director's `applied` entries (after the boundary), the focus events, `checkpoint`, `renumbered`, `extinct`; the backlog of the world's logs (at most 64, flagged) is sent at start, and the same chronicler made it so names and ids continue |
+| `ENVS` | at every metrics boundary (`after_boundary`, after the director) and on `idnt`: the warm pools at the step, the season in force, the `env_*` levers away from their inert values, the active effects and cooldowns folded from the director's entries |
+| `CLCK` | every 250 ms, on every command and around every checkpoint |
+| `FOCS` | per `focus` / `follow` |
+
+- **Tracker and files.** In a weather world the layer is opened at `bind` (`StormLayer.open`: the state saved with the checkpoint of the start step, else a fresh layer; `renumbered` is said once if the
+  step is above 0 and no state exists, and not for a world made by this call, `PlayOptions.fresh`, whose empty tracker is saved so that a resume at its first checkpoint is exact), ticks at `t % tick == 0`, logs each tick
+  to `observers/storms.jsonl` and saves its state in `before_checkpoint`, before the state file (§33.3.2). `dc_ref` is `PlayOptions.dc_ref` (read back from `play.json`) or computed from the state at bind and reported through
+  `on_ready` before the header is written.
+- **Focus.** One device compare finds the row of a uid; later reports verify `uid[row]`. While following, every step reads one row (`uid`, position, velocity, energy, birth step, generation, parent, bond count and the observer's
+  house, kin and colony values and labels) and keeps the position, the raw kin slot and the children seen in `out.births` (lanes whose `parent_uid` is the followed uid). At death (`uid[row] != followed`, authoritative), the cause is read
+  from `out.deaths` by name, **None if the death lanes overflowed (the uid is then not among them)**, and the successor is (1) the eldest living child (smallest uid; the children of the dying step are included), else (2) the
+  nearest living organism of the same kin slot to the cached death point (minimum image), else (3) the nearest living organism, else (4) none. The events `focus_death` and `focus_handoff` (rule 1, 2 or 3) are
+  written at that step and `FOCS` continues on the new uid with bit 1 (hand-off this frame); with none, one `FOCS` with the alive flag clear ends the follow. A plain `focus` that dies sends that one record and ends.
+- **Observers off.** A world without `game.observe` has no `IDNT`, `INTN`, `TERR` and no observer colour modes (refused with a note); the header's `play.records` lists the tags actually sent.
+
+Tests: `test_play_sched.py` (the scheduler on a fake clock: rates, pause and run without drift, re-anchor, debt and `late_steps`, a checkpoint stall, `max`, batches; the pacer: 1x takes N/14.4 s, `CLCK` cadence,
+`fe` from the achieved rate, a paused wait polls the stop check), `test_play_control.py` (the grammar table, the channel on real pipes, every command's effect), `test_play_hook.py` (quit while paused, a real SIGINT while paused,
+a closed reader, a raising callback, the order of `before_checkpoint`, the state file and the tracker file, `after_step` against the social log, the donation check, paused time, an extinct world), `test_play_purity.py`
+(the equality of §33.2.4), `test_play_focus.py` (`FOCS` against the state and against `IDNT` and `INTN`, the four rules on a built scene, the torus, the death point, a death in the step of a birth, a real starvation).
+
+#### 33.2.8 The command `alife play`
+
+```text
+alife play RUN [--checkpoint STEP|latest] [--truncate] [--adopt] [--replay] [--until STEP] [common]
+alife play --init-from SRC[:STEP] [--overlay storm] [--weather-spinup N] [--houses exact|clade|auto] [--seed S] [--out DIR] [--set k=v ...] [common]
+alife play --preset P [--overlay O] [--set k=v ...] [--out DIR] [common]
+common = [--rate 0|0.25|0.5|1|2|max] [--paused] [--base-rate SPS=14.4] [--frame-hz 30] [--director off|rules] [--no-control]
+```
+Exactly one of RUN, `--init-from` and `--preset`; `--checkpoint --truncate --adopt --replay` belong to RUN and `--set --overlay --seed --out --weather-spinup --houses` to a new world (exit 2 otherwise); `--houses` applies to a planet (`--init-from`) only, a preset starts at step 0 with exact houses (§33.3.5).
+`--rate` starts the world running at that multiple of the base rate (0, or none, starts it paused; `--paused` pauses it anyway); `--until STEP` ends the play at that step (status `done`, exit 0).
+
+- **Protocol discipline.** `play` enters `stream.protocol_output()` as its first act, before the fork is prepared, the spin-up, `Observer.open` and `runner.run`: the announcement, the spin-up progress lines and every other print go to stderr (the
+  window shows them as the planet's progress), and the header is the first thing written to the private descriptor, in `PlayPacer.bind`. `runner.run` gets `quiet=True` and `steps = 2**40`. Test: a planet with a spin-up decodes strictly from byte 0.
+- **A world directory** (`play RUN`) resumes like `alife resume` (the chosen checkpoint, default the newest, is loaded and the logs are cut to it by `RunDir.truncate_after`, with `keep_director` for `--replay`), under two guards, because
+  resume on a research run is destructive (it deletes later checkpoints, events and logs, rewrites `config.json` with the game cadence and prunes to 3 checkpoints; `_keep_checkpoints` therefore never lowers `run.keep_checkpoints` of a world directory below what it holds, and `--adopt` raises it to the run's own value or its checkpoint count plus one, so the first save prunes nothing, with a note on stderr): (1) a directory **without `play.json`** is refused (exit 2) unless `--adopt`, which first
+  copies `config.json` to `config.pre_play.json` (never overwritten) and lets `play.json` be written when the play starts; research runs are forked, not played in place; (2) `--checkpoint STEP` older than the newest is refused (exit 2) unless `--truncate`, and the refusal lists
+  what would be cut (the checkpoints, the metrics rows, the event chunks). Everything is validated (config, tick, log, checkpoint) before any file is touched; a refused play changes nothing, the adoption backup included. A plain `resume` of an adopted run still works.
+- **A new world's cadence is play's** (`--set run.metrics_every|heavy_metrics_every|checkpoint_every|keep_checkpoints` is refused, exit 2: it would be overridden). **What play applies** on top of the world's config, through `apply_overrides` and restricted to resume-allowed keys: `PLAY_CADENCE` (`run.metrics_every=250`, `run.heavy_metrics_every=250`, `run.checkpoint_every=6000`, `run.keep_checkpoints=3`),
+  `game.observe=true` and the director mode: `--director off` (default) sets `run.director=off`, `rules` sets `live` with `director.llm_every=0` (the world needs `director.enabled`; one that does not is refused with the fork advice, and so is a world
+  whose recorded cadence in `play.json` is not `PLAY_CADENCE`: the rule tier decides from weighted means over rows written at that cadence, so another cadence is another trajectory of decisions), `--replay` sets `replay`
+  (the whole log is validated first, exit 2, and kept). `director.rule_every` is not touched. A new world gets the same items in its creation overrides, after the user's `--set`. In a world played with a live rule tier the run is reproducible through its `director.jsonl`,
+  not from config and seed alone.
+- **The tick** is `play.world_tick(cfg)`: the weather's `detect_every` (25, calibrated with `miss_grace` and the predictor) in a weather world, `PLAY_TICK` 25 otherwise; there is no flag. It must divide 250 (exit 2).
+- **New worlds** are made by `cli._prepare_fork` (the body of `run --init-from` up to `_launch`, extracted with unchanged behaviour: the same refusals of dimensions, height, radius and `n_init`, the same inert environment reset, `--weather-spinup` as `_spin_weather`) and
+  `cli._prepare_run` (the new-run path of `run`). Both take `before_create(out, cfg)`, called after every check and before `RunDir.create`: `play` takes `play.lock` there. A fork that turns the weather on requires `--weather-spinup N` with N >= 1 (exit 2 otherwise); a weather-on source
+  is forked as it is and refuses a spin-up. `PlayOptions.fresh` is set: the tracker starts empty at the start step and its empty state is saved with the first checkpoint.
+- **Exit codes** (`play.serve_play` over `runner.ExitCode`): 0 for a `quit`, the end of stdin, a closed reader, the `--until` step and an extinct world (which ends before the header, with a note on stderr), always after the runner's checkpoint, event chunk and status update; 130 for a SIGINT (it works while paused);
+  1 when the presenter failed (after the checkpoint, the traceback on stderr); 2 for a config error; 3 for an invariant violation; 4 for a checkpoint error. stderr carries diagnostics only.
+
+### 33.3 The storm layer and its files
+
+#### 33.3.1 `storms.py`
+
+The storm detector and tracker of the W0 prototype (`Frame`, `read_frame`, `Comp`, `Detection`, `detect`, `Det`, `Track`, `Tracker`) moved from
+`analysis/w0.py` to `src/alife/storms.py`; `w0` re-exports every name, and `tests/test_analysis_w0.py` runs unchanged (105 tests). The tracker
+differs from the W0 one in three ways that change no result: `_predict` is public as `Tracker.predict(track, t)` (the extrapolation the `STRM`
+`pred` field reports); `Tracker.update` fills its dictionaries with `setdefault` and a comprehension instead of subscript assignment (the module is
+in the lint scan of rule 2), and `Tracker.compact(keep)` drops ended tracks and all but the last `keep` detections of the others (`update` reads the
+last detection and `predict` the last four). The equality was checked on 300 random periodic scenes with 11,700 updates (803 mergers, 475 splits,
+1,909 dissipations), ids and every track field identical to the 2d1ab0c tracker, and `test_play_storms.py` repeats the compaction check.
+
+`StormLayer(p, dc_ref, tick)` is the play loop's storm component. `tick_at(ws, t)` reads the weather (nine fields, `D_c` and `T_s` in **one** `mx.eval`,
+`read_frame_extra`), detects, tracks and returns a `StormTick(step, strm, planes, events, line)`; `ingest(detection, maps)` is the same without the
+device. The tick is `WeatherParams.detect_every` (25, calibrated with `miss_grace` 2 and the four-detection predictor); the layer takes it as given.
+
+- **Names.** A storm is named when its peak lower-layer vorticity over its whole life reaches `NAME_ZETA` = 0.5 f0 (C11); lower tracks are
+  disturbances. The name is the house-name generator on `splitmix64(id, STORM_NAME_SALT)` (`raw_house_names`), with ` <id>` appended if a live storm
+  holds it, and it never changes while the storm lives.
+- **Events** (the chronicle's input, §33.2.3), in this order per tick, each group by id: `born`/`split` (a new track; `split` when the tracker gave it a
+  parent), `named`, `merged` (into the survivor), `dissolved` (a track that missed more than `miss_grace` ticks; its `age` is first to last detection).
+  Born and split events carry no name (the storm was a disturbance then); `other_name` is the survivor's or parent's.
+- **`STRM` object** (§33.1.6): the active tracks (at most 32, the highest peaks, in id order) with the notes the 40 stored detections cannot give (`age`
+  from the first detection, `zeta` the peak, `ext` the footprint extent). Positions rounded to 2 decimals, `track` the last 24 `[t, ux, uy]`, `pred` the tracker's
+  `predict` at leads 250, 500, 1000 wrapped into the box (empty for a track of one detection), `state` `active` or `coasting`. If the JSON would exceed
+  the 24 KB cap the tracks are shortened to 8, then 4 points without `pred`, then 2.
+- **`MAP1` planes** by `streamrec.quantise_map1` from `P`, `D_c`, the layer-1 vorticity at the cell centres (`corners_to_centres`), `T_s` =
+  `warm_pools(p, t)` (times `shade_mult` of the state at `t` when `shade_gain > 0`: `tick_at` and `current` take it as `t_mult`, which `PlayPacer._shade` builds; it is the start-of-step state of step `t`, so the plane is the `T_s` that step `t` forces with, as `weather.advance` multiplies it) and the four winds; `dc_ref` is the layer's, from `play.json` (`dc_reference(D_c)`: the 99.9th percentile of a spun-up weather, its
+  maximum if that is zero, never below 1e-3, computed once when a world is made).
+- **Persistence.** `StormLayer.state()` is the complete state as plain JSON: `format`, `version`, a hash of the weather parameters, the tick, the step, `next_id`
+  and per active track `id hemi parent missed t_first peak name ext last_flat` and the last 40 detections (13 fields each; Python floats round-trip through JSON
+  exactly). Every field `Tracker.update` reads is in it, so a resumed play is the same play: ids, names, ages, dissipation after `miss_grace`, predictions.
+  `restore` refuses another version or other weather parameters. A stop passes no simulation time, so no track coasts or ends across it.
+
+#### 33.3.2 Files
+
+| file | content | rule |
+|---|---|---|
+| `observers/storms.jsonl` | one line per tick that has storms or events: `{"step", "storms": [{id, x, y, r, zeta, wind, rain}] (the tick's detections), "events": [...]}` (`RunDir.append_storms`) | cut by `RunDir.truncate_after` to step <= the checkpoint's, parsed whole first and rewritten atomically like the social log (a torn last line is dropped, a corrupt earlier line or one without an int `step` fails the call with the directory untouched); an absent log stays absent |
+| `observers/storms_<t>.json` | `StormLayer.state()` at the checkpoint of step `t` (`step` is the checkpoint's, `tick_step` the layer's last tick, which the first `STRM` after a resume reports as `detect_step`; a file without `tick_step` reads as before) (`RunDir.write_storms_state`, `StormLayer.save`) | written by the play loop **before** the state file, as the sidecar is; `_prune` removes the files of checkpoints that are gone (an orphan from a crash between the two goes with the next save), `truncate_after` removes those after the checkpoint |
+
+`StormLayer.open(rd, p, dc_ref, step)` reads the state of the checkpoint and returns `(layer, None)`; if there is none (a weather-off checkpoint turned on, a copied
+run), another tick, other weather parameters or a damaged file it returns a fresh layer and the reason, with `restarted` true for a step above 0: the ids begin again at
+1 and the play loop says so once (the `renumbered` event, §33.2.3). A world made by `--init-from` starts at its fork step without a state and is not "restarted" in the
+user's sense; the caller knows which case it is.
+
+Tests: `tests/test_play_storms.py` (the re-exports; `predict`; compaction; naming at 0.5 f0 and its permanence; unique names; the generator; born, split, merged and dissolved
+events and the `ended` list; wrapped positions and unwrapped tracks; the 32-storm cap and the byte cap; the log lines; **stop and resume equal to an uninterrupted play** on
+eight random scenes at three stop points, on the `STRM` bytes and the events; a storm older than the stored detections; the files through `truncate_after` and `_prune`;
+`open` with a missing, foreign or damaged state; `tick_at` on the W0 balanced vortex against the manual pipeline; the `MAP1` planes against an independent computation and
+through the independent decoder; the real weather resumed; `dc_reference`). Mutations of the state (`missed`, `peak`, `t_first`, the footprint, `next_id`), of the naming threshold
+and of the three file rules were each caught.
+
+#### 33.3.3 `play.json`, `play.lock` and the guards
+
+| file | content | rule |
+|---|---|---|
+| `play.json` | `{play_version: 1, base_rate, cadence: {metrics_every, heavy_metrics_every, checkpoint_every, keep_checkpoints}, tick, weather: {dc_ref} \| null, planet: {source, step, weather_spinup, houses: "exact" \| "clade" \| "none", made_at_step} \| null}` (`RunDir.read_play_json`, `write_play_json`) | written **last**: by the pacer's `on_ready` callback, after the spin-up and the first checkpoint exist and the cloud-depth scale is known, before the header, and rewritten at every open. A directory without one is unfinished (a cancelled planet build) or not a play world, and `play RUN` refuses it. `dc_ref` is computed once, from the spun-up weather, and read back by every later session, so the map scale is the same in all of them. `base_rate` is a play setting (`--base-rate` overrides it) |
+| `play.lock` | the pid of the process playing the directory, under an advisory `flock` (`runio.PlayLock`) | taken **before anything else is written to the directory** (for a new world on the new `--out`, in `before_create`, after the checks) and released, the file removed, at the end of the process, after the quit checkpoint: a world that is still saving is busy. A second `play` is refused (exit 2) and so is `alife resume` (`cli._refuse_if_played`; the Lab's Start and Resume follow in the app). `RunDir.create` ignores a lock file in an otherwise empty directory |
+
+`RunDir` gained `PLAY_FILE`, `PLAY_LOCK_FILE`, `PlayLock`, `PlayLockError`, `play_lock_holder`, `play_path`, `read_play_json` and `write_play_json`.
+
+#### 33.3.4 Planets
+
+A **planet** is a fork of an evolved checkpoint with the weather on and spun up: `alife play --init-from runs/64k3d_s0:500000 --overlay storm --set director.enabled=true --weather-spinup 20000 --out runs/planet_a`. It is `run --init-from` plus the W1 tools
+(`weather_spinup.spinup`, §30.9) behind `cli._prepare_fork`; the founder transient of the source is never replayed. Its `play.json.planet` records the source (`RUN:STEP`), the start step, the spin-up and the houses mode. The fork keeps its origin checkpoint (`meta.start_step`) through `RunDir._prune`
+(§18). The source's observer sidecar cannot cross a fork (its config hash differs), so a planet starts **fresh observers** at the fork, labels warm up, and its houses are the exact ones rebuilt from the source's event chunks when it has them (`--houses auto`, the default; `houses` `"exact"` in `play.json`, `exact` true in every `IDNT`), else the clades (`"clade"`, `exact` false): §33.3.5. Tests: `tests/test_play_planet.py` (a planet on the 256-row 64k3d world: stdout strictly the stream, `play.json`, fresh observers with the rebuilt houses, the spin-up's pools at the start step, the origin checkpoint after the saves, the storm files, the refusals, a cancelled spin-up leaves no `play.json`),
+`tests/test_play_cli.py` (the process: header, quit, EOF, a closed reader, SIGINT, the lock and the Lab's resume, adopt, truncate, flags, `--until`), `tests/test_play_replay.py` (`play --replay` against `resume --director replay`; the log untouched; the rule tier and the cadence guard).
+
+#### 33.3.5 Houses at forks
+
+**The problem.** A house is a pure function of the birth chain (§29.4): a birth founds one iff `splitmix64(uid, seed) < house_rate·2^64`, a founder of the run and an immigrant (a birth without a parent) always do, every other birth takes its parent's. An observer attached to a world already running
+cannot see that chain, so the fallback seeds the clades as houses (§29.4 "Mid-run starts"): **a different game, not a coarser one**. The rebuild below, run on the working set (CPU, read only; `python -m alife.analysis.houses RUN --step S`): `64k3d_s0`@500,000 has 40,413 alive in **79 houses** (the largest hold 26.0%,
+25.4% and 17.7%), against 4 clade houses; `64k3d_s1`@450,000 (whose logs run to 500,000) 42,837 alive in 94 houses (42.1%, 25.4%, 15.6%); `64k_s0`@1,500,000 (2D) 33,862 alive in 76 houses (75.6% in the largest). 3.0 to 3.5 s per rebuild for the 22.5 M agents of `64k3d_s0`. The rebuild reproduces the live
+observer exactly (`tests/test_play_houses.py` compares the house and the house of origin of every alive agent with a live sidecar at five steps of a run with immigration).
+
+**`analysis/houses.py`.** `source_problem(rd, S)` says from a directory listing, before anything is loaded, why the houses of the checkpoint at `S` cannot be rebuilt: the run is itself a fork (`start_step` > 0: its logs lack the births before it), it has no birth or death chunks (an archive that kept only
+the checkpoints), or the chunks do not tile `[0, S)` from step 0 (the first uncovered step is named: "do not cover steps [a, S)"; a chunk reaching past `S` is fine). `rebuild(src, S, rate=, seed=)` runs `phylo.load_tree(src, end=S, check_checkpoint=False)` (tree index = uid for a source from step 0), refuses a tree whose chunks do not tile or
+do not reach `S` and a checkpoint holding uids the log does not know, and returns `houses_of(tree, alive_uids)`: `house` = the uid of the nearest root of `phylo.marker_roots(tree, rate, seed)` and `house_from` = the house of that root's parent (`-1` for a root without one), as a `housefile.HouseSeed` (int64 `uid`, `house`,
+`house_from`, ascending uid). Every failure is a `HouseError` (a `CheckpointError`: exit 4). `rate` and `seed` are the **planet's** `game.house_rate` and `run.seed`: one rule applies to the past and the future (`--set run.seed=N` on the fork re-partitions both; tested). The result for the alive agents does not depend on events after `S`,
+so passing `end` changes the work and the consistency checks, not the houses. `python -m alife.analysis.houses SRC [--step S] [--rate R] [--seed N] [--out RUN]` prints the summary (agents, houses, the largest five) and with `--out` writes the house file into another run directory (never the source's; exit 4 for an unusable source).
+
+**`game/housefile.py`** (numpy and `runio`; `game/` does not import `analysis/`, so its hash is a copy of `phylo.splitmix64`, tested equal to it and to `groups.splitmix64` / `hash_below` for rates 0 to 1). `observers/houses_<S>.npz` holds `uid`, `house`, `house_from` (int64, ascending uid, the agents alive at `S`; about 1 MB at 64k3d) and a JSON `meta`
+`{format: "alife-houses-1", step, rate, seed}`; `read(rd, S, rate=, run_seed=)` refuses (`HouseFileError`) a file of another step, rate or seed, a torn or malformed one. Written atomically, kept for the life of the directory: its name does not match the sidecar pattern, so `_prune` and `truncate_after` leave it.
+`fold(seed, uid, parent_uid, run_seed=, rate=)` extends a seed by births in log order with the rule of `social.update` (an immigrant founds with origin -1; a hash hit founds with its parent's house as origin; any other birth takes its parent's house and origin), vectorised by pointer jumping, and refuses births that are not
+ascending above the seed's uids or whose parent is in no table or not older than the child. `births_between(rd, s, t)` reads the planet's own birth chunks of steps `s <= step < t` (a chunk reaching past `t` is trimmed) and refuses chunks that do not tile `[s, t)` from `s`.
+
+**Seeding.** `Observer.fresh(state, cfg, *, houses=HouseSeed)` sets `house` and `house_from` of the alive rows the seed lists, by uid, before the first snapshot; a row it does not list keeps the clade rule. The houses are **exact** iff every alive row is listed: `Society.initialise(h, step, exact_houses=True)` then sets `house_origin` to 0
+instead of `step`, *before* the snapshot (so the first summary, which the metrics rows and the `IDNT` head repeat until the next snapshot, says `exact` and `origin` 0 at once; setting it afterwards would leave `summary["exact"]` false for a whole snapshot period). Records of an exact planet have `origin` 0 and a `window_start` at the fork; `report.py`
+groups records by origin, which is unchanged for a run (a planet is a new run directory). The sidecar saves `host.house_origin`, so every later resume keeps the planet exact.
+
+**Getting the seed to the observer.** `runner.run` builds the observer with `Observer.open(rd, state, cfg)`, and a resume with a lost or invalid sidecar falls back to `fresh`; so `open` consults the house file itself: without a valid sidecar, `_house_seed` takes the newest file at or before the observer's step `T` (file step `S`):
+at `T == S` the file, at `T > S` the file folded over the run directory's own birth chunks of `[S, T)` (a sidecar lost at a later checkpoint gives the same houses, tested against the sidecar). A file that cannot be used (another rate or seed, torn, chunks missing or not tiling `[S, T)`) gives clade houses and a note
+that `open` returns even on a start that is not a resume ("the house file of step S cannot be used at step T (reason); clade houses"). A valid sidecar always wins. A directory without a house file behaves as before.
+
+**`alife play --init-from SRC[:STEP] [--houses exact|clade|auto]`.** `auto` (the default) rebuilds when it can and falls back with one stderr note; `exact` exits 4 (nothing written, the missing chunk range named) when it cannot; `clade` skips it. The order, for the planet's sake: (1) `_houses_source`, before the source's state is loaded, resolves the checkpoint (`_fork_lookup`) and
+applies `source_problem` (a bare state file has no events); (2) the rebuild runs in `before_create(out, cfg)` (after every check and the lock, before the directory exists, with the fork's own `house_rate` and `run.seed`), so a failure under `exact` leaves nothing behind and `auto` falls back; (3) once `_prepare_fork` has created the
+directory and spun the weather up, the file is written, before the first checkpoint and before `play.json`. `play.json.planet.houses` and the header's `planet.houses` say `"exact"` or `"clade"`. A planet's own logs start at its fork step, so a fork of a planet is not rebuildable ("itself a fork": `exact` exits 4, `auto` falls
+back); a preset or a world directory takes no `--houses` (exit 2). The cost, measured for `64k3d_s0`@500,000 on the CPU: 3.4 s wall and a peak resident set of 2.58 GB, before the spin-up starts; a window that cannot afford it passes `clade`.
+
+Tests: `tests/test_play_houses.py` (50, 25 s): the rebuild equals the live sidecar's house and origin at three checkpoints of a 600-step run with immigration (and the immigrant and hash-founded kinds are present); the planet's rate and seed; the pure `houses_of` against the rule birth by birth on 2,500-agent trees with chains of depth 6 at four rates;
+the source problems (no events, a gap, no deaths, chunks not starting at 0, a fork, a log shorter than the checkpoint's uids); the file (round trip, not a sidecar, kept by `_prune` and `truncate_after`, another rate or seed, malformed and torn); the hash against `phylo` and `groups`; the fold against the rule on 3,000 births, in two stages, against
+the live sidecar at the end of the run, and against the longer tree; `births_between` (trim, tiling); `Observer.fresh(houses=)` (exact with the file, a partial seed is not exact, an empty one is not); `Observer.open` (the file, no file, a sidecar lost at a later checkpoint, no chunks, another rule, a later file, a valid sidecar wins); a fork
+that runs 300 steps keeps the source's houses to the end and every record says exact; `play` end to end (exact planet, `clade`, archive-only under `auto` and `exact`, a gap, a planet of a planet, a bare state file, `--set run.seed`, `--houses` on a world directory or a preset, a planet resumed); the tool's command line.
+
+
+### 33.4 The World window (G3a commits 8 to 10)
+
+The window of `AlifeControl` that plays a world: the planet's map and organisms in a raw-Metal view, with a docked control center. It is a second window of the app (`Window("World", id: "world")`), opened from the Lab (`Open World`) and, with `--world RUN`, at launch (`ContentView` opens it: SwiftUI does not open a window that is not the first scene at launch). The Lab stays and its 3D viewer is untouched. Commit 8 is the shell (this section up to §33.4.5); the renderer follows in §33.4.6 and §33.4.7 (commit 9); the interaction is §33.4.8 (commit 10).
+
+#### 33.4.1 Pieces
+
+| piece | where | content |
+|---|---|---|
+| `EngineSession` | `AlifeControl/EngineSession.swift` | extracted from `StreamController.Session`: the process, its stdin, the mailbox its reader thread fills, `launch` (pipes, `suppressSIGPIPE`, the reader), `pump` (wake-ups, stderr lines, the exit, in that order), and the stop ladder `Ladder(beforeInterrupt, beforeTerminate)`: `.stream` (quit, EOF, SIGTERM after 2 s: nothing to save) and `.play` (quit, EOF, SIGINT after 30 s, SIGTERM 10 s later). `StreamControllerTests` pass unchanged on it |
+| `StreamMailbox`, `StreamDelivery` | `StreamReader.swift` | the newest header and frame as before, plus `records` (the newest record of each latest-wins tag), `droppedRecords` (counted per tag), `events` (the `EVNT` batches in order, never dropped) |
+| `PlayController` | `AlifeControl/PlayController.swift` | the `alife play` process: phases `idle starting live ended(…) failed(…)`, `start(.resume(PlayResume) \| .planet(PlanetSpec))`, `send(PlayCommand)`, `stop`, `stopForQuit`, `shutdown`, the retired list, `progress` (stderr while `starting`), `requestedRate` |
+| `WorldStore` | `AlifeCore/WorldStore.swift` | value type reduced from the records: the newest of each latest-wins record, the `Chronicle` (ring of 500, ascending by id, an id seen is not new, an id below the ring is not new), serials for the renderer, `revision` |
+| `PlayCommand`, `PlayRate` | `AlifeCore/PlayCommand.swift` | the grammar of §33.2.6; `tests/data/play_command_lines.txt` lists every line, `test_gui_sync.py` parses each with `play.parse_play_command` and `PlayCommandTests` checks the Swift side produces exactly those |
+| `PlayLaunch`, `PlayResume`, `PlanetSpec` | `AlifeCore/PlayLaunch.swift` | the command lines of §33.2.8; every flag is checked against `alife play --help` and `--set director.enabled=true` against `Config` |
+| `PlayCatalogScanner`, `PlayWorldFile`, `PlayLockProbe` | `AlifeCore/PlayWorlds.swift` | what the launcher lists under `runs/` (§33.4.5); `play.json` decoded; the `flock` probe of `play.lock` |
+| `ClockStrip`, `ClockSegment` | `AlifeCore/ClockStrip.swift` | the text and selection of the clock strip from the newest `CLCK` and what was just asked |
+| `DockLayout`, `DockSide` | `AlifeCore/DockLayout.swift` | the free and dock rectangles |
+| `WorldModel`, `WorldView`, `ControlCenterView`, `WorldLauncherModel`, `WorldLauncherView` | `AlifeControl/` | the window |
+| `TerminationGate` | `AlifeControl/AppTermination.swift` | `applicationShouldTerminate` while a world saves |
+| `Torus`, `WorldLevels`, `MapFade`, `MapUploadPlan`, `WorldPalette`, `TerritoryImage`, `WorldProjector`, `WorldDisplay` | `AlifeCore/` | the pure parts of the renderer and the overlay (§33.4.6, §33.4.7); `Camera` gains `planet`, `tiledScene`, `wrapTarget` and `world(for:)` |
+| `Renderer` (world mode), `Shaders`, `WorldMetalView`, `WorldMTKView`, `WorldOverlayView` | `AlifeControl/` | the world pass, its shaders, the pointer and the display link, the `Canvas` overlay |
+| `WorldPicker`, `WorldPick`, `Names` | `AlifeCore/WorldPicker.swift` | the hit test and the tooltip words (§33.4.8) |
+| `WorldSelection`, `EventKind`, `ChronicleAction` | `AlifeCore/WorldSelection.swift` | what is picked, the hand-off guard, what a chronicle click does |
+| `FollowTarget`, `FollowState`, `CameraGlide` | `AlifeCore/WorldFollow.swift` | what the camera follows, where that is, how the camera gets there |
+| `WorldKeys`, `WorldAction`, `RateLadder` | `AlifeCore/WorldKeys.swift` | the World's key table and the rate rungs |
+| `CastPolicy`, `CastStorm`, `CastLineage` | `AlifeCore/CastPolicy.swift` | the Cast tab's lists |
+| `Inspector`, `InspectorCard` | `AlifeCore/Inspector.swift` | the words of the card pinned under the tabs |
+| `ChronicleFilter`, `ChronicleReducer`, `ToastQueue` | `AlifeCore/WorldChronicle.swift` | grouping by minute of game time, filters, the toast rule and clock |
+| `WorldModel+Interaction`, `WorldPanels` | `AlifeControl/` | the glue (clicks, hover, selection, follow, fly, keys, toasts) and the Cast, Chronicle, inspector, toast and follow-badge views |
+
+#### 33.4.2 Data path
+
+The reader thread (`StreamReader`, unchanged in shape) decodes the pipe into `StreamEvent`s and publishes them into the mailbox, waking the main actor (coalesced, `bufferingNewest(1)`) after a chunk that completed a header, a frame, a record or the end. The main actor takes the mailbox in `PlayController.apply`: a header resets the store and makes the phase `live`; each record is reduced into the store; each `EVNT` batch is inserted into the chronicle; `onDelivery(changes)` tells the renderer's owner what changed. The frames of 1.3 MB never pass through a published property: `PlayController.store` is a plain property, `revision` (small, published) increases with every change other than a frame, and `onDelivery` is the cue to redraw. Records are complete (§33.1.1), so a newer one replacing an undelivered older one loses nothing. A stream without the `play` key is accepted and shows a world with nothing in it.
+
+#### 33.4.3 Process lifecycle
+
+- **Stopping a live world** is `quit`, EOF on stdin, then SIGINT after 30 s (the runner's own stop path, which works while the world is paused, §33.2.4), then SIGTERM after 10 s more; the world saves a checkpoint on `quit` (686 MB). **A world being built** (`starting`: the fork, the spin-up and the house rebuild read no stdin) gets SIGINT at once and SIGTERM after 10 s (`interruptNow`); the directory it leaves has no `play.json` (§33.3.3) and the launcher lists it as unfinished. The app deletes nothing.
+- **Retired sessions.** A session asked to stop whose process has not exited is *retired*: `PlayController.retiredWorlds` names its directory, the launcher shows it as "saving…" and refuses Resume for it, and `start` of the same world is refused with a message (`play.lock`, held through the quit checkpoint, is the backstop). A replaced world is retired the same way, and its end is ignored.
+- **Windows.** Closing the World window stops its process with the ladder above and leaves the Lab; closing the last Lab window also dismisses the World; the app quits when the last window closes (unchanged).
+- **App quit.** `AppDelegate.applicationShouldTerminate` answers `.terminateNow` without a process, else asks the world to stop through its ladder and answers `.terminateLater`; `TerminationGate` replies when `PlayController.hasProcess` turns false or after 40 s, and `applicationWillTerminate` (`RunController.shutdown()`, which now also calls `PlayController.shutdown()`) is the last resort, SIGTERM without a grace.
+- **The Lab and the lock.** `RunController` probes `play.lock` of every run at its 2-second refresh (`PlayLockProbe.held`; a lock taken to find out is dropped with its descriptor) and refuses Resume of a locked run with a message.
+
+#### 33.4.4 Window, dock and clock strip
+
+`WorldView` is a `GeometryReader` whose children are placed by `DockLayout.frames(in:side:extent:collapsed:)`: the map view in the free rectangle and the `ControlCenterView` in the dock rectangle, both by `.frame` and `.position` in one `ZStack`, so that changing the side or dragging the divider changes frames and never the identity of the view (an `HSplitView` re-creates its `MTKView` when its children are reordered). The dock never overlaps the map. Side (left, right, bottom; default right), extents (360 pt on a side, 240 at the bottom, clamped to leave the map at least 520 × 360) and the collapsed flag are `@AppStorage`; a divider drag is throttled to 30 updates a second; the window's minimum size is 1100 × 700. The free rectangle's aspect is the camera's (`WorldModel.aspect`).
+
+The **clock strip** is at the top of the dock whichever tab is open: the segmented control `Pause | 0.25x | 0.5x | 1x | 2x | Max` (each sends its `PlayCommand`; `Pause` is `pause`, a rung is `rate M`), `Resume` (`run`, which never changes the rate) when paused, `+1` and, when paused, `+25` (one tick of the storm tracker), the step counter, the readout ("0.98x of 1x", the achieved multiplier over the requested rate, or the stop reason), "late N" in amber and "saving…" from `CLCK.saving`. What the window just asked wins over the clock until a `CLCK` shows that rate, or shows another one a second after the asking (`PlayController.settleRequest`: a clock sent before the world read the line does not flip the strip back): `ClockStrip(clock:requested:baseRate:)`. With the dock collapsed the clock is one line over the map (`ClockBadge`: state, "late N", "saving…"). **Layout:** at the bottom the dock is three columns (clock strip, tabs, inspector); on a side the inspector is at most 300 pt and scrolls when it needs more. The toolbar's "Close world" stops the world (it saves) and opens the launcher; `PlayController.onReset` clears the selection and the follow of the old world at `start` and `stop`. Tabs are Cast and Chronicle (§33.4.8); the inspector is pinned under them. A **View menu** holds the colour mode (the header's modes), the intent-labels switch ("Intent labels (stream)": `labels on|off`, held by `PlayController.labelsOn`; nothing is drawn from them on the map) and the layers (`WorldDisplay`: agents, agent points, bonds, territory, weather map, frame).
+
+#### 33.4.5 The launcher
+
+`WorldLauncherView` (a sheet, over `WorldLauncherModel`) lists `PlayCatalogScanner.scan(runs/)`: **worlds** (a directory with a version-1 `play.json`: newest checkpoint step from `checkpoints/step_<t>.safetensors`, `meta.json` status, the planet's source and houses mode, `locked` when another process holds `play.lock`), **unfinished** directories (no `play.json` and no checkpoint: a planet build that was cancelled or failed; not resumable) and **sources** (every run with a checkpoint, with its `world.dims`, whether its weather is on, and whether it has event chunks). Resume starts `PlayResume(run:)` at `--rate 1` (D8). *New planet* picks a source and a checkpoint (the newest by default), the weather overlay (on, with a spin-up of 20,000 steps, unless the source's weather is already on: the engine refuses a spin-up then), `director.enabled` (D2), the houses mode (`exact`, `clade`, `auto`; a note says when the source has no event chunks) and a name (the next free of `planet_a`), validates with `PlanetSpec.validate` and starts `PlayRequest.planet`. While `starting` the sheet shows the stderr lines and a Cancel (SIGINT at once).
+
+#### 33.4.6 The renderer (commit 9)
+
+`Renderer` has two modes: the Lab's (`StreamFrame`, unchanged) and the World's (`configureWorld(header:)`). In the World mode `submit` refreshes the buffer set with `refreshWorld` and `encode` runs `encodeWorld`; the camera is the owner's (`WorldModel`) and is assigned before each draw. Shaders are added to the same source string (`Shaders.swift`, new constants `WorldU`, 80 bytes at buffer 7, pinned by a test) and the sphere shading of the Lab is now one function, `shadeSphere`, called by `sphereFragment` and `agentFragmentA` (the Lab's per-pixel GPU test passes on it unchanged). Entry points are camel case like the file's (`agentVertexA`, `agentFragmentA`, `agentFragmentFlat`, `bondVertexA`, `pointVertexA`, `pointFragment`, `mapVertex`, `mapFragment`), not the spec's snake case.
+
+- **Alive-only.** `FRMA`'s arrays are uploaded as they are (`pos` as `packed_float3`, `orient` as `half2`, `rgb`, `bonds` as `uint2`): the instance id is the listed row, there is no alive test, and no interpolation (§33.4's measured displacement per step: median 0.021 units, p99 0.075).
+- **The torus.** `agentVertexA`, `bondVertexA` and `pointVertexA` place a row at `target.xy + (d - L·rint(d/L))`, `d = pos.xy - target.xy` (`minimumImage`); a bond puts its first end at the image nearest the target and its second at the image nearest the first, so a bond across the seam is one short segment drawn as two half segments in their agents' colours. `Torus` (`wrap`, `wrapDelta`, `nearestImage`) is the same rule on the CPU (ties to even, as `rint`). The map is **one quad of 5 × 5 worlds** centred on the cell of the target, sampled with `address::repeat`, so the torus is tiled wherever the camera looks; the clip scene of the camera is fitted to it (`Camera.tiledScene`: radius `2.5·L·√2`, with margin, so the clip planes hold the quad's corners from the nearest to the farthest zoom). The camera target is kept in `[0, L)²` (`Camera.wrapTarget`) and its height in `[0, height]`; the zoom is clamped to `[4, L / (tan(fov/2)·max(1, aspect))]`, i.e. the visible half extent stays within one world.
+- **Two passes for the organisms.** The same listed rows are drawn twice (`flags.x`): pass 0 the rows whose body projects to at least 3 drawable pixels as ray-traced spheres (`agentFragmentA`), pass 1 the others as flat discs of at least 1.2 pixels (`agentFragmentFlat`: no ray test, a little shading towards the rim, the depth of the billboard). A ray test on a billboard under a pixel would draw nothing. At the planet level neither pass runs (§33.4.7): the optional layer is `pointVertexA`, one translucent 1.5-pixel point per row.
+- **The map pass** is drawn first with no depth write (so it is also the floor of a 2D world, whose agents lie in its plane) and only when there is something to show (a map, or territory): sea from `T_s`, cloud from `D_c`, rain `(b/255)²·p_ref` as a blue-grey wash (the companded byte is used as the intensity), a faint tint where the vorticity has a sign (cyclonic warm, anticyclonic cool), the equators `y = 0` and `y = L/2` as 1-pixel lines, and the territory overlay (kin slot palette, alpha from purity, 25% at the planet and region levels, borders where the owners of neighbouring cells differ). Planes are `R8Unorm` (`P`, `D_c`, `T_s`) and `R8Snorm` (`zeta`) sampled linearly; the winds are uploaded as one `RGBA8Snorm` texture (`u1 v1 u2 v2`) for the wind tracers of W5 and are not read yet. `u = x/L`, `v = y/L`; the planes are row-major `[cy][cx]`, row 0 at `v = 0`, which puts y up on the screen in the planet pose.
+- **The fade.** Every plane is the mix of the previous and the current delivery by `MapFade`: a wall-clock smoothstep of 0.4 s from the delivery of a `MAP1`, started by `WorldModel.deliver`, advanced by a display link that runs only while it does (`WorldMTKView.startAnimating`). A delivery during a fade restarts it from whichever end of it the picture is nearer to (a texture pair cannot hold a mixture); at a pause nothing arrives and a finished fade stays finished. The spec said "restarts from the current blend"; the fade being complete at nearly every delivery, that reading would have shown no fade at all.
+- **Textures live in `Slot`.** Each of the three buffer sets holds its own `cur` and `prev` map textures (with the serials of the deliveries they hold) and territory texture, refreshed under the draw's ticket before the encoder exists, so that no texture is written while a committed draw samples it. `MapUploadPlan.make(have:want:)` picks swap-and-write-one over write-both when the set already holds the wanted previous map; tests pin that the sets share no texture and that a fourth draw writes in place.
+- **Planet pose.** `Camera.planet(size:height:aspect:)`: the map seen from above, x to the right and y up (the way a map reads), the whole world in the smaller dimension (4% margin); a 2D world keeps the Lab's face-on view (`topDown`, y down) with the tiled clip scene (`Camera.world(for:aspect:)`).
+
+#### 33.4.7 Levels and overlays (commit 9)
+
+`WorldLevels.level(distance:fovY:aspect:size:)` from the visible half extent at the floor `h = d·tan(fov/2)·max(1, aspect)`: **organism** when `d < 0.12 L`, else **planet** when `h >= 0.5 L` **and a weather map is in view** (`mapShown`: `display.map` and a `MAP1` held; a 2D or dry world has no planet level, and its home pose shows its organisms), else **region**. The map's opacity is 1, 0.6 and 0.25; the territory's alpha 25%, 25% and 12%. Agents are instances at the region and organism levels (`WorldDisplay.agents`), nothing at the planet level unless the point layer is on (`agentPoints`, default off: 40,413 organisms cover 45% to 82% of the map's pixels at 1.1 to 2.2 px/unit); the View menu's toggle refers to the layer of the level in view. Bonds are drawn at the region and organism levels. The level is published by `WorldModel.level` and is a function of the camera, the free rectangle's aspect and `mapShown`. **The camera's limits** (review fixes): the farthest distance is `WorldLevels.maxDistance(..., home:)`, never nearer than the home pose of the window's shape (a wide window or a bottom dock; otherwise the first drag snapped the view in), and `Camera.keepFloorInReach` tilts a view that would show past the finite tiled map (a long distance at an oblique pitch: `farthestFloorDistance` beyond `tiledReach` = 2 L) to a steeper pitch, never a shallower; an eye under 5% of the reach above the floor is left alone (the edge is a hair under its horizon).
+
+The **overlay** is a SwiftUI `Canvas` over the Metal view (`WorldOverlayView`, `allowsHitTesting(false)`) that watches `OverlayState.revision`, which changes on a tick (`STRM`, `ENVS`), on a camera edit and on every frame while an organism is selected: storm rings (radius `r` in points, at least 5; named storms bright, disturbances dim, coasting dashed, hemispheres in two tints), names (not at the organism level), tracks (unwrapped in `STRM`, so one polyline across the seam: the whole track is shifted by the multiple of `L` that brings the storm to its minimum image), warm pools from `ENVS` as dashed rings, and the selection ring. `WorldProjector` (pure, `AlifeCore`) projects with the camera on the free rectangle at the minimum image of the target; the picker of §33.4.8 uses it too.
+
+#### 33.4.8 Interaction (commit 10)
+
+The decisions are pure types of `AlifeCore`, each with its tests; `WorldModel+Interaction.swift` applies them to the camera, the overlay and the control channel, and `WorldMTKView` turns AppKit events into calls on the model.
+
+**Picking** (`WorldPicker.pick(at:projector:store:display:)`, in the view's points with the origin at the top left, over the newest frame, `STRM`, `ENVS` and `TERR`, every point at the minimum image of the camera target). The pointer and the view are in points; the drawable's pixels do not come into it, so the tolerances are the same number of points at any backing scale. Order: (1) **organisms**, at the region and organism levels and only while they are drawn (`display.agents`); at the planet level organisms are not picked (40,000 of them are under every pointer). For each listed row the projected radius is `r·(h/2)/(w·tan(fov/2))` for a view `h` points high and depth `w`; a row is a candidate within `max(6 pt, projected radius)` of the pointer. Where the projected radius is under 6 pt the winner is the row **nearest the pointer on the screen, ties by depth**; where it is at least 6 pt the winner is the row **nearest the eye among those whose disc holds the pointer**; a hit on a disc beats a near miss on a small row. (2) **Storms**: inside the ring, or within 10 pt of a small one, the one the pointer is nearest to in ring radii. (3) **Warm pools**: inside their ring. (4) A **territory cell** with an owner (`display.territory`): the pointer's ray is cast onto the floor (`floorPoint`, `z = 0`; no hit above the horizon) and the cell is the wrapped point's `(x·nx/L, y·ny/L)`; the pick carries the owner's kin group id. Nothing else is `none`. `WorldPicker.describe` gives the tooltip line ("organism UID · kin · House X", the storm's name or "disturbance N", "warm pool", "KIN territory (dominance)"). A uid with no `IDNT` row (born since the last snapshot) is described as such.
+
+**What a click means** (decision D10). A single click on an organism **selects and follows** it: the world's `follow UID` (the hand-off at death, so the inspector survives it) and the camera on it (`FollowTarget.organism`). A **shift-click** selects only (`focus UID`, no hand-off, the camera stays). A **double click**, or `F` on a selection, also flies in to the organism level. A click on a **storm** selects it and flies there at the region level, never farther out than the camera already is; a double click follows it. A click on a **warm pool** selects it and flies there. A click on a **territory cell** selects the owner kin group (its cast row and its cells are highlighted) and changes nothing else: not the camera, not the global colour mode (a test pins that no line is sent and the frame's colour index is the same). A click on nothing clears the selection and stops the follow (`focus off` if an organism was selected). `Esc` is the same. The selection is a `WorldSelection` (`none`, `organism(uid)`, `storm(id)`, `kin(id)`, `pool(index)`); an organism is a **uid**, never a row (rows are reused after a death). Each frame the overlay resolves the selected uid with a linear scan from the last row (`WorldStore.listedIndex(ofUID:hint:)`); a miss means dead.
+
+**The hand-off.** `PlayController.onEvents` announces, before `onDelivery`, the events of each `EVNT` batch that the chronicle had not seen, with the batch's backlog flag. For a live `focus_handoff` (`a` the dead organism, `b` the successor) `WorldSelection.applyHandoff` moves the selection **only when `a` is what is selected now**, so a late hand-off never overrides a newer click; the camera's follow moves with it when it was on `a`; the pair is kept in `WorldModel.successors` for the inspector's Family row. Until the successor appears in a frame the camera **holds the point the organism died at** (`FollowState.lastPoint`). The backlog loaded at the start moves nothing and raises no toast. A click on the chronicle row of a hand-off selects the successor (the old uid is dead), a death selects the dead uid (the card says so).
+
+**Follow and fly.** `FollowTarget` is `none`, `storm(id)` (the position of its newest `STRM` entry; it holds the last position when the storm ends), `lineage(kinID)` (the circular mean over the torus of the frame's rows whose `IDNT` kin slot is the group's, with the mean height, recomputed every 4th frame; rows born since the last `IDNT` are ignored; the table's `x, y, z` while no row is found) and `organism(uid)`. `CameraGlide` moves the camera's target (and, for a fly, its distance) to the goal with a **critically damped** approach, exact for any step of time: `e' = (e + (v + w e) t) e^{-w t}`, `v' = (v - w (v + w e) t) e^{-w t}`, `w = 1/τ`. The offset is taken at the **nearest image** of the goal (`Torus.wrapDelta`), so a goal across the seam is approached the short way and the camera never whips; the target is wrapped into `[0, L)` by the model. `τ` is 1 s for a follow (the spec's time constant; a goal that moves steadily is trailed by twice its speed times τ, two lags in series) and 0.35 s for a fly; one frame's step is capped at 0.1 s so that a stalled window does not jump. A fly ends when the offset is under 0.02 units, the speed under 0.05 units/s and the distance within 0.2%. The distance of a fly is `WorldLevels.flyDistance`: for a region the one at which the visible half extent is 0.2 L, for an organism 0.08 L (never nearer than 4 units). **A manual drag cancels the follow and the fly** (the selection stays); a zoom cancels only the distance a fly was heading for; `R` and `Esc` cancel both. The display link runs while the glide has not arrived and on every frame delivery while something is followed; a paused world with the camera at rest costs nothing.
+
+**Hover.** The pointer over the map is picked as for a click, at most 60 times a second (a pick projects every listed row, about 42,000), and `OverlayState.hover` carries the pick and its line; the overlay draws a one-line tooltip near the pointer and an outline on a hovered organism or storm. Over a cast row `OverlayState.castHover` highlights the storm's ring or the group's territory. No round trip to the world, and so no need of a live process: the picture of a world that has ended is still named. No tooltip during a press or off the view.
+
+**The Cast** is `CastPolicy` over the records: every live storm (named first, strongest first, then the disturbances; name, hemisphere, the peak `zeta/f0` as a bar full at 1.5, age in minutes of **game time** `steps/(60·B)` at the base rate, `coasting`); the **eight largest kin groups** by size from `IDNT.kin` (ties by slot): name, "named after House X" when the house is in the table, share of the organisms the snapshot lists, the archetype mix as a stacked bar tagged *provisional* unless every archetype in it passes the label gate (§33.7), births and deaths by cause of the last window, the cells of the territory map it owns, with "dynasties approximate" in the header under a clade fork; and the **Focus** (the selected organism and whether the camera follows it). A click on a storm row selects it and flies there, a double click follows; a click on a lineage row selects the kin group and flies to its centroid, a double click follows it. Selected rows are shaded.
+
+**The inspector** is a card pinned at the bottom of the dock whenever something is selected, whichever tab is open (`Inspector.card(for:store:successors:)`). For an organism: the name line (kin group, house, "(approximate)" under a clade fork), the clade (from the `IDNT` row; a newborn has none yet), archetype and intent display names tagged *provisional* unless the label gate of §33.7 passes for that label ("warming up" before the labels are evaluated; the Budding overlay says "(forecast)"), the energy bar over `play.energy_cap`, age in steps and game minutes, generation, bonds, the parent (a button selects it when it is alive in the frame), and a note ("labels are provisional (labels v3: no held-out verdict for this world and rule set)", or the environment, or "validated"); the slots and labels come from the `FOCS` itself, so a newborn is complete. A dead organism says so and names its successor when known; an organism that is not in the frame says "not in the world"; a `FOCS` of another organism is not used (the card has what the frame knows). Storm, kin group and pool cards list their numbers. Children are not listed (not retained).
+
+**The Chronicle tab** is `ChronicleReducer.groups`: newest first, grouped by **minute of game time** (`stepsPerMinute` = `round(60·B)` = 864 at 14.4), with the families of `ChronicleFilter` (Storms, Lineages, Houses, Director, System; the focus's own events belong to System, an unknown family is never hidden). A click flies to the event's `(x, y)` and selects the entity `a` (`ChronicleAction.of`: a storm, a kin group; a house, the director and the system select nothing). **Toasts** (`ToastQueue`): an event of importance 2 that is new and not in the backlog raises one for **3 s**, at most **3** at a time (a burst keeps the newest), once per id; a click on a toast does what a click on its row does. The model schedules its own expiry (`expireToasts`).
+
+**Keys** (`WorldKeys`, its own table; the Lab's `f` is the field slice and `[` `]` the field layers): `space` pause/run (by the clock strip's state), `.` one step, `c` the next colour mode of the header's list, `1 2 3` agents (the 1 px points at the planet level) / bonds / territory, `f` follow the selection (and fly in), `[` `]` one rung slower/faster along 0.25x, 0.5x, 1x, 2x, max (**a paused world has no rate to change: the keys do nothing there**; space resumes), `r` reset the camera, `Esc` clear. A command or control chord is the menu's. Keys act in the whole window (a local key monitor of `WorldMTKView`, for events of its window), whoever has the focus, except while text is being edited.
+
+**Mouse** (additions to §33.4.6): a press that moves less than 4 points is a click (`clickSlop`), with the event's click count; left drag pans only beyond that, Option-click is not a pick (it is the orbit modifier), the pointer is tracked with an `NSTrackingArea` (`.inVisibleRect`, replaced and not piled up in `updateTrackingAreas`).
+
+**Overlay** (additions to §33.4.7): the selected storm and pool get a heavier ring; a selected or hovered kin group's cells are filled and outlined in its colour at every copy of the world that shows in the view (`WorldProjector.cellCorners`); the selection ring is drawn at every level; the follow badge ("Following X", bottom left) and the toasts (top centre) are SwiftUI over the map.
+
+**Found while testing, fixed:** `WorldProjector.points(ofUnits:at:)` placed its far end with `screen`, which wraps again; near the half-world from the target the length came out a world wide (a pool ring of 900 pt instead of 300). Both ends are now placed as they are (`screenOfImage`); a test pins the length at every distance from the target.
+
+**Deviations from the spec text.** (1) A hand-off row of the chronicle selects the successor, not `a`. (2) `[` and `]` do nothing while paused (the spec says "slower/faster along the rate rungs" and the strip has no held rate then). (3) A single click follows with the camera as well as with the world (D10 says "select and follow"); shift-click is the select-only gesture. (4) Hover is throttled to 60 picks a second. (5) The toast queue holds three, not an unbounded stack; the spec fixes the 3 s only. (6) The zoom cancels the fly's distance but not the follow (the spec says only that a drag cancels it).
+
+#### 33.4.9 Tests
+
+`AlifeCoreTests`: `PlayCommandTests` (every line, the shared file, refusals, the 4,096-byte guard), `PlayLaunchTests`, `PlayWorldsTests` (play.json, the scan, the lock held by the test's own descriptor), `WorldLaunchArgumentTests`, `WorldStoreTests` (latest-wins, events once and in order, the ring, lookups), `ClockStripTests`, `DockLayoutTests`, `TorusTests`, `WorldLevelsTests`, `MapFadeTests` (the fade with an injected clock, the upload plan, a randomised check that the plan leaves the set holding what is wanted), `WorldPaletteTests` (with the territory image), `WorldProjectorTests` (the seam, glyphs, tracks across the seam, a storm behind the eye), `PlanetCameraTests` (in `CameraTests.swift`: the pose, the clip planes holding the tiled map from every zoom, the 2D pose). `AlifeControlTests`: `PlayControllerTests` (a stand-in script with real pipes: the live world and its records, chunking by 7-byte writes, commands in order and a single `quit`, nothing before the header, the ladder with short durations: SIGINT after the first wait, SIGTERM at the end, no signal for a world that quits, a build interrupted at once and its progress, a world still saving refused, quitting ends every process, exit statuses and the last stderr line, a corrupt stream and a bad record stopped, a launch failure, replacement), `PlayMailboxTests`, `WorldLauncherTests`, `AppTerminationTests` (a stub for the world and short durations), `WorldModelTests` (the camera, the wrap, the clamp, the level, the refit, on a played fixture), `WorldRenderingTests` (uniform layout, the shader struct, the entry points, the minimum image in every world vertex function); `StreamControllerTests` and `StreamReaderTests` unchanged. Opt-in GPU (`ALIFE_GPU_TESTS=1`, `GPUWorldTests`, 14 tests on the committed play fixtures: the shaders compile and every pipeline builds; every listed row at the pixel the camera predicts, 2D and 3D; a row across the seam at its minimum image and not at the other; a bond across the seam is one short segment; small agents are flat discs; the planet level draws nothing unless the points are on; the layers are independent; the map is oriented row then column with y up, repeats across the seam, has its two equators, and fades between two deliveries; each buffer set holds its own map textures, written in place; the territory tints its cells with the kin palette; the whole scene) and the Lab's `GPURenderTests` unchanged on the refactored sphere shader. `tests/test_gui_sync.py` ties the flags of `PlayLaunch`, the command lines, the keys of `play.json` and the palettes to the engine.
+
+**Commit 10 (interaction).** `AlifeCoreTests` (220 to 320): `WorldKeysTests` (the table, a chord is not ours, the colour cycle, the rate rungs), `WorldPickerTests` (a known camera over the fixture world: the disc rule, the nearest-row rule at the region level, ties by depth, the seam, a reused row, off at the planet level and with the agents hidden, a row behind the eye, storms inside the ring and small ones within 10 pt, pools, the territory cell by ray and across the seam, the floor point as the inverse of the projection, the tooltip words), `WorldSelectionTests` (the hand-off only from what is selected, a chain of hand-offs, `EventKind` equal to the header's registry, what a click on each family of event does), `ChronicleReducerTests` and `ToastQueueTests` (864 steps a minute, grouping, filters, the toast rule, the 3 s, the capacity of 3, once per id, bounded memory), `CastPolicyTests` (the cap of 8, ordering, shares, named after, territory cells by slot, game-minute ages, the bar), `InspectorTests` (a newborn complete from its `FOCS`, the clade from `IDNT`, the parent selectable, a dead organism and its successor, not in the world, approximate dynasties, warming-up labels and the Budding forecast, reserved slots in words, the energy clamp, the storm, kin group and pool cards), `CameraGlideTests` (the closed form against an integration, a step of time does not matter, no overshoot, the shorter way across the seam and no frame that moves it more than half a unit, the lag of a moving goal, fly against follow, the distance, the cap on a stalled frame) and `FollowStateTests` (an organism by uid, the death point, a storm that ends, the circular centroid across the seam, the table fallback, the 4-frame cache), `FlyDistanceTests`, and three more in `WorldProjectorTests` (cell corners, the length of a unit near the half world). `AlifeControlTests` (136 to 186): `WorldInteractionTests` (a stand-in `alife play` that records the control lines: a click selects and follows and sends `follow UID`; shift-click `focus UID`; a click on nothing `focus off`; double click flies in and arrives at the organism level; a storm click and double click; a territory click changes nothing else and sends nothing; a pool; the camera follows, a drag stops it and not the selection, the death point is held until the hand-off; the hand-off guard, the backlog, toasts and their own expiry, the keys, a chronicle click on each family, a cast row, hover and its throttle, a new world forgets everything, a fly never flies out, a zoom cancels only the fly's distance), `WorldViewInputTests` (synthesised `NSEvent`s into `WorldMTKView`: a press and release in place is a click at the right point with the y axis flipped, the slop, shift, option and click count, a release without a press, hover and leaving, the keys and a chord, the tracking area replaced and not piled up), `WorldPanelsTests` (`ImageRenderer`: the overlay draws the storms and pools and more with a selection, a hover, a cast hover and a kin group's territory; the panels build; the inspector, toasts and rows draw; the follow badge's words), and one in `PlayControllerTests` (each batch of new events is announced before the delivery that carries it, the backlog flagged). `tests/test_gui_sync.py` (+3): `EventKind.registry` is `streamrec.EVENT_KINDS` and the named constants are the chronicle's, the cast's death causes are `DeathCause`, a minute is 60·B. **Mutation checks by hand** (92 mutants of the new code, `g3a/build/mut10.json` and `mut10b.json`; 91 built): 11 survived at first. One is an equivalent mutant (an epsilon in the rate ladder), one was a check that was not needed (hover no longer asks for a live world), and nine exposed weak tests, now pinned and re-run caught (`mut10c.json`, `mut10d.json`): the reach of a small storm, a shift-click not stopping the old follow, a fly going out to reach what is nearer, the same for a storm, a chronicle click on a hand-off and on a director entry, the fly's time constant, a menu chord that sent a line the test could not see, and a hover whose test was throttled by its own clock. Writing the test for the sixth also changed the code: an event with no place no longer zooms the camera.
+
+### 33.5 Performance, the bench and the gate
+
+#### 33.5.1 The step loop at 14.4 steps/s
+
+The base rate `B = 14.4` steps/s is a **design rate** (1x), not a ceiling: the cadences of the game (a chapter of 6,000 steps is 6.9 minutes, a ticker line 17 s) were derived with it, and the fused Metal kernel (row I48) makes the 64k3d step with weather 14.25 ms, 69.6 steps/s (measured, §30.9). The budget of a step at 1x is 69.4 ms. Inputs: the engine step with weather 14.3 ms and the observers' fold 1.4 ms per step (G1/G2, measured at 64k 2D; the 3D figure is an estimate of the same order), the snapshot's eval 1.7 ms and settle 38 ms every 250 steps (§29.12, measured), heavy metrics 7.4 ms (§29.9), and from this PR a tracker tick of about 3.4 ms (`read_frame` 0.12, `detect` 2.0, `update` 0.10, `MAP1` quantise 0.25, `STRM` 0.2, `INTN` host labels 0.7; the first four measured on a mature 16k-step weather, the rest estimated) and a frame of about 3.6 ms (colour evaluation and one transfer 1.5, encode 1.6 measured at 42,000 alive, write 0.5; the first and last estimated).
+
+| component (ms) | typical step | frame step | tick step | boundary step (tick, snapshot, metrics row) |
+|---|---|---|---|---|
+| engine step and observer fold | 15.7 | 15.7 | 15.7 | 15.7 + 1.7 |
+| `FRMA` | - | 3.6 | 3.6 | 3.6 |
+| tick work | - | - | 3.4 | 3.4 |
+| settle, `IDNT`, `TERR`, `EVNT` | - | - | - | 40 |
+| the runner's boundary work | - | - | - | +15 to +25 |
+| **total** | 15.7 | 19.3 | 22.7 | **about 80 to 90** |
+| budget at 1x / 2x | 69.4 / 34.7 | | | |
+
+*The table is the estimate made before the bench; the measurement is below.* The costs are medians over the calls of each part, from `alife bench --play` on the M5 Pro (2026-10-22, MLX 0.32.3, the fused kNN kernel, the planet configuration of §33.5.3 forked from `64k3d_s0` at 450,000, 44,955 alive, 4,499 steps per arm; `docs/RESULTS_G3A.md` §4).
+
+| component (ms) | estimate | measured, rate 1 | measured, `max` |
+|---|---|---|---|
+| engine step (reference, no observers) | 14.3 | 14.93 | 14.93 |
+| runner step, typical (`loop_typical`) | 15.7 | 26.98 | 16.62 |
+| of which observer fold (loop minus engine) | 1.4 | 12.04 | 1.69 |
+| `FRMA` | 3.6 | 6.19 | 3.69 |
+| storm tick | 3.4 | 7.54 | 4.30 |
+| labels | 0.7 | 1.32 | 0.83 |
+| tables (`IDNT`, `INTN`, `TERR`) | in the 40 | 3.86 | 3.23 |
+| write (per step) | 0.5 | 0.38 | 0.17 |
+| settle (`loop_snapshot - loop_typical`) | 38 to 40 | 58.76 | 42.68 |
+| the runner's boundary work (no checkpoint) | 15 to 25 | 30.26 | 24.30 |
+| **typical step** (`step_ms_typical`) | 15.7 to 22.7 | **33.45** | **19.11** |
+| **boundary step** (`step_ms_boundary`) | 80 to 90 | **130.05** | **95.13** |
+| checkpoint (686 MB, internal disk) | 50 to 60 (CPU probe) | 933.6 | 977.5 |
+
+(The director-off arm; the `rules` arm differs by under 3% in every row.) **What the measurement changes.** (1) The typical step at 1x fits
+its slot of 69.4 ms with room (33.4 ms); at `max` it is 19.1 ms and a sustained **52.96 steps/s (3.68x), 53.08 (3.69x) with the rule tier**
+is measured (estimate 50 to 56), so fast-forward of at least 2x holds with margin and the ladder stays 0.25x to 2x plus `max`. (2) The
+boundary step (every 250 steps, 17.4 s) is 127.6 to 130.0 ms at 1x: **184 to 187% of a slot**, not the estimated 115 to 130%, with the
+settle (58.8 ms against 38 to 40) and the runner's boundary work (30.3 against 15 to 25) above their estimates. The scheduler's bounded debt absorbs it (`late_steps` 0 in
+every arm and in the 20,000-step play); only a re-anchor after 0.25 s of lag is a `late_step`. At 2x (34.7 ms) the boundary step would be 3.7
+slots; 2x was not benched (the arms are 1 and `max`). (3) The observer fold, the settle and the boundary work cost more at 1x than at `max` (12.0 against 1.7 ms, 58.8
+against 42.7, 30.3 against 24.3): the likely cause is the GPU's clock at light load (§5.1 of the specification), not tested; the fold is derived against the reference engine from a plain run, so it also
+holds any slowdown of the engine step at 1x. (4) A checkpoint is **0.93 to 0.98 s** on the internal disk, **13 skipped slots at 1x** (`save_stall_steps`, never `late_steps`), not the 0.05 to 0.06 s
+of the CPU probe; on the external disk (estimated 1 to 3 s) it was not measured. (5) The stream is 21.17 MB/s at 1x (`FRMA` 98.0%, 1.44 MB a frame) and 39.70 MB/s at `max`.
+The remedy named here if the boundary step proves a visible stutter at 1x, moving the host-only part of the kin matching (7.5 ms) and the colony tracker (9.4 ms) after the step without changing their results (a G3b/G2 follow-up), is more relevant than it was; the click-through
+decides whether the stutter is visible.
+
+#### 33.5.2 The client's frame budget
+
+At 60 Hz the frame is 16.7 ms. CPU per displayed frame (uniforms, the map fade, the `Canvas` overlay only on a change) is under 1 ms, and per arriving frame (14.4 a second at 1x) the copy of 1.3 MB into a buffer set plus the decoder's copies about 1 ms (both estimates). GPU: 42,000 impostors at 1 to 10 pixels (none at the planet level), the map quad and the overlays, about 1.5 to 2 ms (estimate), 9 to 12% of the GPU at 60 fps against the step's 22% at 1x. The queue time-slices, so the risk is **latency, not throughput**: a 14 ms step burst can delay a client frame past 16.7 ms about once per step. The mitigations in order: the display at 30 Hz above 2x; draw only when something moved (a frame or tick delivery, the camera, an active fade or follow; an idle scene costs nothing). None touches the engine.
+
+#### 33.5.3 `alife bench --play`
+
+`alife bench --play` runs the play loop of `alife play` headless and reports it in a report of its own (`bench.run_play_bench`; the other parts of `bench` are skipped; `--json PATH` writes it). Flags: `--steps N` (measured steps per arm, default 2,000), `--play-warmup N` (default 300), `--play-rates max,1`, `--play-directors off,rules` (the default when `director.enabled` is set, else `off`), `--play-spinup N`, `--play-from SRC[:STEP]`, `--play-out DIR`, with `--preset`, `--overlay` and `--set` for the world. The world is the **planet configuration** (`--preset 64k3d --overlay storm --set director.enabled=true`, whose compiled step carries the levers the rule tier needs; `--play-directors rules` without it exits 2): a founder population by default, or, with `--play-from`, a fork of a checkpoint made as `alife play --init-from` makes it (an evolved population, which the observer and settle costs need to be representative). It is saved once as a state file (`--play-spinup N` first spins the weather up, §30.9) and every arm loads its own copy.
+
+For each director mode and rate an **arm** plays the world for `warmup + steps` steps under `PlayPacer` (a subclass with a stopwatch on its parts) with the full record set, `stdout` replaced by a pipe drained by a reader thread, cadence `PLAY_CADENCE` (a metrics row and a snapshot every 250 steps, a checkpoint every 6,000) and `game.observe` on. Per arm the report has: `steps_per_s`, `achieved_x` (over `base_rate`), `step_ms` p50, p99 and max (the time from the exit of `before_step` to the next entry, everything the loop did for the step except waiting for its slot, boundary work included), `step_ms_typical`, `_snapshot` and `_boundary` (a boundary step is also a snapshot step and counts as a boundary), `step_counts` and `part_calls` (how many steps of each kind and how many times each part was timed, which the schedule fixes), `components_ms`, `late_steps`, `save_stall_steps`, `frames`, `bytes_per_s` by tag, `mb_per_s` and the final digest. The **components**: `engine` (the compiled step without observers, from the same state: a reference), `loop_typical` and `loop_snapshot` (the runner's step: engine, observer fold, `take_records`, the social log's append and, on a snapshot, the settle), `observer` (derived: `loop_typical - engine`, at least 0), `settle` (`loop_snapshot - loop_typical`), `frma`, `tick` (the storm layer), `labels`, `tables` (`IDNT`, `INTN`, `TERR` of a snapshot), `events`, `write` (the pipe, per step), `boundary` (the runner's work after the step: stack of the interval, heavy metrics, the weather block, `row_block`, the fsyncs and the director, **without** the checkpoint) and `save`. A part that never ran in the measured window is `null`.
+
+**Purity is part of the report.** Per director mode the same world is also run with `runner.run` and no pacer, and `digests_equal` says that the final state digest of every arm equals it (`alife bench --play` exits 1 if not): pacing, frames, records and focus are not part of the trajectory (§33.2.4), now measured on the machine that plays. The `gate` of an arm reads the numbers of §33.5.4.
+
+#### 33.5.4 The gate (G3a merge, "bench gates the window")
+
+At **1x on the M5 Pro, 64k3d with the storm overlay**: achieved at least 0.98x over 5 minutes (`five_minutes` says whether the arm ran that long: `--steps 4400` is a little over 5 minutes at 14.4 steps/s), `late_steps` 0 (re-anchor drops only; saving is reported apart), `step_ms` p99 at most 66, the maximum reported (80 to 90 expected at the boundary), and the **client's draw p95 at most 25 ms** (§33.5.5); at **max**: achieved at least 2.5x. A miss is reported to the coordinator with the component table; **no physics or parameter is changed to pass.** The numbers are constants of `bench.py` (`PLAY_GATE_1X`, `PLAY_GATE_MAX`) so that the report and this section cannot drift.
+
+**Result (Mac day, 2026-10-22, M5 Pro; `docs/RESULTS_G3A.md` §5): the gate passes, item by item.** 64k3d with the storm overlay, a fork of `64k3d_s0` at 450,000 (spin-up 20,000, 44,955 alive), 4,499 steps per arm after 300 of warm-up, the digest of every arm equal to the plain run's (`d39b433b…dad9b`):
+
+| item | limit | director off | rules | verdict |
+|---|---|---|---|---|
+| achieved at 1x over 5 minutes (312.4 s) | at least 0.98x | 1.00006x | 1.00004x | pass |
+| `late_steps` at 1x | 0 | 0 | 0 | pass |
+| `step_ms` p99 at 1x | at most 66 | 47.6 | 50.4 | pass |
+| `step_ms` maximum at 1x | reported (80 to 90 expected) | 143.8 | 141.1 | reported, above the expectation |
+| the client's draw p95 (42,000 rows, 2200 x 1400, with the `rules` arm at 1x running; §33.5.5) | at most 25 | 2.41 (region, the worst of four) | | pass |
+| achieved at `max` | at least 2.5x | 3.678x | 3.686x | pass |
+
+The maximum and the boundary step (127.6 to 130.0 ms, expected 80 to 90) are findings, not misses (§33.5.1); no physics or parameter was changed.
+
+#### 33.5.5 The client's share: `WorldRenderBench`
+
+`ALIFE_GPU_TESTS=1 swift test --filter WorldRenderBench` (`Tests/AlifeControlTests/WorldRenderBench.swift`) draws synthetic worlds of the geometry of 64k3d (L = 320, height 80) offscreen at 60 Hz in the four views that matter (planet, planet with the 1 px points, region, organism), a new frame at the base rate (every fourth tick) and a new map every 1.7 s, and prints for each the GPU time of the world pass (`MTLCommandBuffer.gpuEndTime - gpuStartTime`) and the CPU time to refresh the buffer set and encode, as p50, p95 and maximum, and the draws **dropped** because all three buffer sets were in flight (the window would try again shortly). "Draw" is exactly that: **drawable acquisition and the compositor are not in it**, so a hand run in the real window also records the present-to-present interval (`Renderer.presentedHandler`, from `MTLDrawable.addPresentedHandler`). Hooks added to `Renderer` for it (no cost while unset): `timingHandler` (`DrawTiming`, called on the GPU's completion thread), `presentedHandler`, `OffscreenTarget`, `makeOffscreenTarget` and `drawNow(into:)` (a draw without waiting, false when no set is free); `renderOffscreen` uses the same target code. Settings by environment: `ALIFE_BENCH_ROWS` (default `64,42000`: the fixture's scale and 64k's), `ALIFE_BENCH_DRAWS` (300 a scenario), `ALIFE_BENCH_HZ` (60), `ALIFE_BENCH_WIDTH` and `ALIFE_BENCH_HEIGHT` (2200 x 1400 pixels); the results go to `world-render-bench.json` in `$ALIFE_GPU_TESTS_OUT`. The test asserts that every tick drew or was dropped and that no draw took a second; it does not assert the gate (a miss is a finding, not a failure). The gate's number is read with `alife bench --play --play-rates 1` running beside it. The arithmetic (`BenchStats`: percentiles by interpolation, the synthetic frame, the environment) has CPU tests (`BenchStatsTests`).
+
+**What has been run.** The Python half on the CPU: `tests/test_bench.py` runs the bench on the 256-row storm world (all four arms, the digests equal, the parts positive, every tag in `bytes_per_s`) and through `cli.main` (`--play-spinup`, the refusals). The Swift half as a smoke on the M5 Pro's GPU (800 x 600 pixels, 64 and 4,096 rows, 60 draws a scenario): the harness works, no draw dropped, GPU time 0.13 to 0.22 ms at the median. **That was not the gate.** On the Mac day (2026-10-22, a debug build, offscreen, 300 draws a scenario at 2200 x 1400, nothing else on the GPU) the GPU time of a draw was 0.62 to 0.65 ms at the median at 64 rows and, at 42,000 rows, 0.65 (planet), 1.01 (planet with points), 2.72 (region) and 1.16 ms (organism), at most 2.83 ms, 0 dropped; the CPU encode p50 was 0.08 to 0.15 ms. **The gate's run**, the 42,000-row scale with 4,200 draws a scenario beside the `rules` arm at 1x (started 25 s into the arm, 282 s long): GPU p50 / p95 / max in ms 0.28 / 0.78 / 2.64 (planet), 0.54 / 1.19 / 3.78 (planet with points), 1.28 / 2.41 / 5.38 (region), 0.58 / 1.24 / 4.85 (organism), CPU encode p95 0.28 to 0.29, 0 dropped; the arm itself gave 1.00002x, `late_steps` 0 and an equal digest. The draw p95 gate is met at a tenth of its limit. Not measured: the present-to-present interval in a real window (`Renderer.presentedHandler`), a release build. The medians beside the engine are lower than those alone (0.28 against 0.65 at the planet level): the likely reason is the GPU's clock state (not tested), so the two sets are not comparable draw for draw (`docs/RESULTS_G3A.md` §3, §6).
+
+### 33.6 What is built, what is not run
+
+The build order of the specification (§8 of `g3a/spec.md`), 13 commits on `games/g3a`: 0 two small engine edits (`RunDir._prune` keeps a fork's origin checkpoint, `phylo.load_tree(end=)`), 1 and 2 the records, Python and Swift, 3 the chronicle and the colour modes, 4 the storm layer, 5 the runner hook and the scheduler, 6 `alife play`, 7 houses at forks, 8 the app shell, 9 the renderer, 10 the interaction, 11 the bench and the docs. The Python tests are `tests/test_stream_records.py`, `test_play_{purity,hook,sched,control,focus,cli,planet,replay,envs,colors,identity,chronicle,storms,houses,labels_v3}.py` (the last is §33.7), `test_runio.py`, `test_analysis_activity.py`, `test_gui_sync.py` and `test_bench.py`; the Swift tests are listed in §33.4.9 and §33.1.13. The decisions D1 to D11 of the spec were taken as recommended by the coordinator (choice C19, to revisit): 14.4 steps/s is 1x; the first planet is a fork of `64k3d_s0` at 500,000 with the storm overlay, a 20,000-step spin-up and `director.enabled`; the dock is on the right at 360 pt; `runner.run(pacer=)` and `EngineSession` as refactors; checkpoints every 6,000 steps and on quit with the origin kept; the chronicle says only what the observers support; the two small engine edits; a planet opens running at 1x; no Swift job in CI (accepted risk); a single click selects and follows; organisms are not instanced at the planet level.
+
+**The Mac day (2026-10-22, M5 Pro, `games/g3a` at `b7020a6`; no code changed; results and logs in `docs/RESULTS_G3A.md`, small data files in `docs/results_g3a/`).**
+1. **Metal purity.** 19 test files run separately on the default device with `-m ""`, 0 failures, 0 skipped: `test_play_{purity 15, hook 22, storms 33, cli 16, chronicle 15, colors 10, control 79, envs 3, focus 13, houses 50, identity 14, labels_v3 13, planet 15, replay 4, sched 23}`, `test_stream_records` 40, `test_game_purity` 55, `test_game_tracers` 29 (W2a's Metal re-run at the merged head, with `Acts.buoy` and the tracers on), `test_spatial_metal` 106 (the subprocess tests of `test_play_cli` spawn the CPU on purpose).
+2. **Swift.** `swift build` and `swift test` pass (AlifeCore 338, AlifeControl 200); `GPURenderTests` 8 and `GPUWorldTests` 14 pass on the GPU.
+3. **The gate (§33.5.4): passes** in both director modes (the table there); the component table is §33.5.1; the client's share §33.5.5.
+4. **A 20,000-step planet play** (`alife play p0 --rate 1 --director rules`, a strict reader attached, 450,001 to 470,002 in 1,393.7 s, 0.997x): 27.85 GB, 20,002 frames, 0 decode errors, 0 trailing bytes, the reader's queue never above 2 records, exit 0, `meta.status` `interrupted`, the lock released, 54 `save_stall_steps` (three periodic saves of 16, 16 and 15 steps, the quit save 7), `late_steps` 0. The chronicle runs at **8.66 events a minute** (201 in 23.2 minutes, peak 25 in a wall minute; ring of 500 = 58 minutes): kin 5.99 (112 of the 201 events are splits and merges, many one group flapping, e.g. "Pruashol merged into Teshash" at 451,000 and "Pruashol split from Teshash" at 451,250), focus 1.38 (16 deaths, 16 hand-offs, 17 focus uids), storm 1.08 (12 born, 7 named, 6 dissolved), system 0.17, director 0.04; importance 2 is 3.3 a minute (a 3 s toast about every 18 s), and **69 of those 77 events are kin splits and dissolutions**. A resume at `--rate max` for 500 steps (470,002 to 470,504) keeps the houses `exact` and the origin checkpoint 450,000.
+5. **The window rendered** (the world pass by the production `Renderer` offscreen, the overlay and dock by SwiftUI, from the snapshot at step 460,001, 44,162 alive): planet, region and organism levels and a selected organism look right (no seams, wrap strip, storm rings and names, territory cells, spheres and bonds, the selection ring, the inspector card with "provisional" tags); the 360-point dock fits at 900 points height. Cosmetic findings: lineage detail lines truncate, "6.216 born" reads as a decimal under a locale separator, the title showed the run's name. That is a look at five pictures, not a click-through.
+6. **The planet** of the Mac day is a fork of `64k3d_s0` at **450,000** (the step the W2a pilot used), not at 500,000 as D2 says; the reason was not recorded, and which step the first planet is to be is the coordinator's to confirm.
+
+**Not run, and still open.**
+1. **The click-through of the World window by hand (the owner's; the checklist is in `docs/HANDOVER.md` and `docs/RESULTS_G3A.md` §9):** launcher (a planet and a resume), the clock strip, picking at each level, follow and the hand-off, the Cast and Chronicle tabs, toasts, keys, the dock on each side and at the 700-point minimum height, closing and quitting while saving. Judge the kin churn of item 4 in the window.
+2. The 2D digest matrix as a script on the GPU against `39301ba`, `tests/test_bench.py` on Metal (the bench itself ran there, its digests equal), and `test_weather_w2_instruments.py` on Metal (W2a's third file, §32.11).
+3. The checkpoint stall on the external disk (686 MB; 0.93 to 0.98 s on the internal one), the present-to-present draw time in a real window and a release build of the client, and a bench at 2x.
+4. The remedies the findings point to, none tried: telling kin splits and merges only when they persist (a hysteresis or a minimum age, in the chronicle, G3b), and moving the host-only part of the settle after the step (§33.5.1).
+
+### 33.7 Integration with W2a and the observer rules of version 3 (the merge with `origin/main` 39301ba)
+
+`origin/main` moved from 2d1ab0c to 39301ba while G3a was built: #33 (the fused kNN kernel by default in 2D, I52) and #34 (W2a, §32,
+I50). G3a was written against `INTENT_VERSION` 2; the merge makes `INTENT_VERSION` 3 and `RULES_V3` (§32.7) the observer rules of every
+world the play loop opens. This section is what the merge changed in G3a, as built (the merge commit and the integration commit are the
+last two of `games/g3a`).
+
+**The merge** (textual; behaviour of both sides kept). `runner.py`: W2a's dump arrays are built from the post-step state and evaluated in
+the step's `mx.eval` (`mx.eval(state, out, *obs.arrays(), *dump.values())`), G3a's `recs = obs.take_records()` feeds `pacer.after_step`; with
+`pacer=None` the loop is W2a's, line for line. `runio.py`: the storm files (`storms.jsonl`, `storms_<t>.json`, `play.json`, `play.lock`) and
+W2a's dumps (`eco_<t>.npz`, `wx_<t>.npy`) both exist; `truncate_after` cuts the storm log, deletes the tracker states and the dumps after
+the step, and `_prune` keeps a fork's origin checkpoint as before. `bench.py`: `--play` (own report) and `--weather-org`. `game/observer.py`:
+`default_rules(cfg)` (`for_2d(RULES_V3)` in a 2D world), the tracer rig and `Observer.fresh(..., houses=, tracers=)` / `open(..., tracers=)`
+beside G3a's `identity_rows`, `color_inputs`, the house seeding and the slot bytes; `OBSERVER_FORMAT` stays 4 (G3a adds no sidecar member).
+
+**What had to change in G3a, found by running its tests on the merged tree and by reading every place that names an archetype or an
+intent.**
+
+1. **The archetype set is ten, not seven** (Drifter, Floater and Sinker are bytes 8 to 10; the enum is `Gatherer` 1 to `Generalist` 7).
+   `colors.ARCH_PALETTE` has 11 entries (the module asserts `len == len(Archetype)`, so the merged tree did not import); the new colours are
+   Drifter (0, 76, 140), Floater (0, 210, 220) and Sinker (139, 90, 43), none red and none equal to another archetype colour; the Swift
+   `WorldPalette.archetypes` is the same table (`test_gui_sync`). The kin groups' `arch` mix in an `IDNT` table has one share per archetype,
+   10 values (`len(ARCHETYPE_NAMES)`, W2a's `Society`), index `i` = archetype `i + 1`; the Swift lineage row no longer requires 7 values, and
+   the worst-case table (16 houses, 16 kin groups of full-precision shares, 16 colonies) is 11,662 bytes against the 16 KiB cap (10,742 with seven shares)
+   (`tests/test_play_labels_v3.py`).
+2. **The header names the version-3 labels** (`streamrec.labels_block`, `PlayHeader.Labels`): `intent_version` 3, `arch` and `intent` as
+   display names indexed by the byte (11 entries each, index 0 empty), and in a **weather world the storm names** (`report.label_names`,
+   which selects `ARCHETYPE_STORM_DISPLAY` exactly when N1's `_label_display` does: version >= 3 and `cfg.weather.enabled`, so the Gatherer
+   is a Grazer). `INTN`, `IDNT` and `FOCS` carry the bytes unchanged; `INTN.intent_version` is 3.
+3. **The validity gate.** N1 withholds labels without a passing held-out verdict for the world, the rule set and the environment (§31, §32.13:
+   `LABEL_VERDICTS` has no version-3 row, and none for version 2 either, so a V3 run narrates no label until W2b adds rows). The stream applies
+   the same gate and the World window shows a label as valid only if all of it holds: (a) the verdict table has a row for
+   `(intent_version, rules_digest, dims, world_key)`, where the digest is the observer's own (`obs.rules.digest()`: a 2D world's differs from
+   `RULES_V3`'s, `for_2d`) and `world_key` is N1's (`report.world_key(cfg)`: the config hash with the director and game sections at their
+   defaults); (b) that label's row passes N1's bar (`report.label_passes`: verdict `pass`, at least `n_pos_min` positives, margin at least
+   `margin_min`, the smallest permutation p; the one function N1's label facts, its per-fact check and the header all call); (c) the
+   environment is at its defaults. (a) and (b) are static and travel in the header as `labels.gate` = `{rules_digest, world_key, key_found,
+   archetypes: [bytes], intents: [bytes]}` (`report.label_gate`; empty lists without a row; `labels_block` refuses a list without
+   `key_found`, a byte outside the name table, a list that is not ascending). (c) is dynamic and the client's: `ENVS.levers` empty (the
+   levers the director has moved from their inert values, §33.1.9, which is N1's "no lever of the rows away from its default"). The
+   client's `LabelValidity` (`AlifeCore`) combines them: before the first `ENVS` nothing is known to be at its default, so nothing is valid;
+   a label that is not valid keeps its name and its *provisional* tag (the inspector row, the cast bar), and the card's note says why ("no
+   held-out verdict for this world and rule set", "the environment is away from its defaults", "no passing verdict for this label", or
+   "validated for this world"); a kin group's mix is valid only if every archetype with a share of 1% or more is. A secondary archetype must
+   pass as well, and a label still warming up (flag bit 0 clear, or a 0 archetype byte) is never valid. **Generalist (byte 7, "no rule matched") is
+   exempt from the per-byte test**: it makes no claim about behaviour, has no verdict row (`analysis/labels.py` reports it as prevalence only; N1 never
+   narrates it), so without the exemption no mix and no Generalist organism could ever be validated; it still needs the rest of the gate (a row for
+   the world, the default environment). The colour modes `archetype` and `intent` paint labels, so the View menu titles them "(provisional)" until
+   every archetype but Generalist (every intent) passes (`LabelValidity.colorModeTitle`). **Today no world has a row, so every label in the window is
+   provisional; a row added to `LABEL_VERDICTS` by W2b opens it for the labels it passes, in the header and in N1 alike, with no change to
+   either.** Deviations from N1: N1 also withholds a chapter's labels when a catastrophe was applied inside it or within 250 steps
+   before it, below its labelled-count floor and after an observer restart; the window applies none of these three (a played world's observers start at the fork and the `evaluated`
+   flag covers the warm-up; the rest are chapter rules, G3b), so it can show as valid a label that N1 would withhold just after a catastrophe;
+   this only matters once a verdict row exists.
+4. **The chronicle and the lexicon.** The chronicle states no label share and makes no archetype claim (C8 to C10), so it needs no gate; N1's
+   lexicon (`LEXICON_VERSION` 2, which lists Grazer, Drifter, Floater and Sinker among its words) finds nothing in any chronicle sentence
+   with the display names masked (`tests/test_play_chronicle.py`, unchanged and passing).
+5. **Fixtures.** The three `tests/data/play_tiny*.bin` / `.json` fixtures were **regenerated** (`uv run python tests/play_fixtures.py
+   --write`) because the header's `labels` object changed shape and content (version 3, 11 names, `gate`; the weather fixture has the
+   storm names, `3d_n70` a made-up gate with a row to exercise the decoder), the kin tables' `arch` has 10 shares and one `INTN` row
+   carries byte 8. New SHA-256 prefixes: `play_tiny3d` bd4fb030 (was 50f082f1), `play_tiny2d` ae50f736 (was 2aee687b), `play_tiny3d_n70`
+   5370007b (was a8dc1d7e); the sync review fixes (below) changed the bytes once more, `INTN.intent_version` 3 in all three, and `play_decode.decode`
+   now checks the `INTN` version and the archetype and intent bytes of `INTN` and `FOCS` against the header's `labels`. Two Swift tests had the fixture's byte offsets written in (`head -c 1504`, `skip=115784`): they now read
+   the header length from the file and take the last 68 bytes.
+6. **Swift.** `PlayHeader.Labels.gate` (optional, so a stream without it has no valid label), `LabelValidity`, the inspector rows and note,
+   `LineageRow(validity:)`; tests in `LabelValidityTests` (gate closed, open, environment moved, byte not listed, mix, secondary,
+   warming up) and the updated palette, header, inspector and fixture tests.
+7. **Unchanged, checked.** The records' other fields; `Observer.identity_rows` and `color_inputs` (they read `labels()`, whatever the rules);
+   the sidecar (an older played world's V2 sidecar does not load, `intent_version` differs: fresh observers, labels warm up, a note; its
+   houses come from the house file as at any fork); `alife play --init-from` and `bench --play` (their `_knn_guard` selects the 2D kernel on
+   Metal as every command now does, #33); `RunDir` keeping a fork's origin checkpoint; the W2a keys (`seed_gain` etc.) reach a played world
+   through `--set`, they are hashed and nothing in the play loop reads them.
+8. **Review fixes of the merge** (two adversarial reviews, five findings, all real; `fix_disposition.md` of the sync directory). (a) The `MAP1`
+   plane `T_s` is the engine's forcing, `warm_pools * shade_mult` when `weather.shade_gain > 0` (§33.1.7): `StormLayer.tick_at` and `current` take
+   an optional `t_mult` that `PlayPacer._shade` builds from the state at that step (the next step's start-of-step state, as `weather.advance`
+   multiplies it); the max difference to the bare pool map was 0.0064 (2 bytes) at `shade_gain` 0.03 and about 13 bytes at 0.05. A world without
+   shade is unchanged. (b) The inspector's Archetype row reads "warming up" while the archetype byte is 0: flag bit 0 is the intent warm-up
+   (§33.1.4), about 170 steps shorter than the archetype's. (c) Generalist is exempt from the per-byte gate test (item 3). (d) The fixtures
+   carry `intent_version` 3 and the test decoder checks the `INTN` version and the label bytes against the header (item 5). (e) The View
+   menu titles the `archetype` and `intent` colour modes "(provisional)" like every other presentation of a label (item 3). No engine
+   file is touched: `step.py`, `weather.py` and the state are as in the merge; the 2D digest matrix is unchanged by construction (`storms.py`
+   and `play.py` are not on the `runner.run(pacer=None)` path).
+
+**Evidence** (CPU, `-p cpu_device`; the Mac day's results are in §33.5 and §33.6). The 2D digest matrix of the merged tree against a fresh `git archive`
+of 39301ba: bit-identical (0 DIFF, no INFO line: G3a adds no config key); the `tiny3d` state digest after 50 compiled float32 steps
+`1fe07a9f…` and its legacy digest `556de6c6…` equal 39301ba's; W2a's eight weather-on trajectory pins pass; `test_play_purity.py`,
+`test_play_hook.py` and `test_play_storms.py` with `-m ""` (the slow cases included) pass: 68 passed in 65 s (the three files, `-m ""`); the fast suite: 3,682 passed, 89 skipped, 37 deselected, 1 xfailed, 0 failed in 20 min 55 s (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected; 3,404 passed on the G3a head, 2,953 on the W2a head);
+`ruff check`, `ruff format --check` clean; `swift build`, `swift build --build-tests` and `swift test` with `-warnings-as-errors`:
+AlifeCoreTests 335 and AlifeControlTests 200 passed.
+After the review fixes (item 8): the fast suite 3,686 passed, 89 skipped, 37 deselected, 1 xfailed (four new tests: the shaded sea plane in the layer and in the play loop, the decoder's label checks, the Generalist byte); the 2D digest matrix against the 39301ba archive again bit-identical (no engine file changed), tiny3d `1fe07a9f…` and legacy `556de6c6…` equal; `swift build`, `build-tests` and `test` with `-warnings-as-errors`: AlifeCoreTests 338 and AlifeControlTests 200 passed (three new Swift tests; with the Inspector guard, the Generalist exemption and the colour-mode tag each reverted by hand they fail).
+
+---
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -10059,6 +10933,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I48 | perf: the fused Metal neighbour search (§23.2 item 1; §4 "Fused Metal path", §27.2, §27.13, new F21; owner delegation of 2026-10-19, coordinator decisions C16): on a Metal GPU the scan, the strict `R²` mask, the K-best selection and the K-gather of `find_neighbors` run as one `mx.fast.metal_kernel` (`src/alife/knn_metal.py`, new; one thread per sorted rank, no atomic: it writes only row `order[r]`, a permutation), with the pure-MLX code unchanged as the reference, the CPU path and the fallback. **A pure performance change: no config key, no `POST_V01_KEYS` entry, no hash, no `FORMAT_VERSION` or RNG change, no golden or digest change, and existing runs resume onto it.** (1) **Selection** (`spatial.knn_impl(cfg, impl=None)`, static, decided when the step is traced; `find_neighbors` gains the keyword `impl`): `ALIFE_KNN` = `auto` (default), `mlx` or `metal`. `auto` takes the kernel in a **3D** world on Metal with the GPU as default device and `K ≤ 64`, and the MLX path otherwise, **2D included** (the 2D kernel is bitwise equal too and 1.5× faster; making it the 2D default is the owner's later call); `mlx` forces the reference; `metal` raises where the kernel cannot run. An environment variable and not a config key, because the numbers do not depend on it. (2) **Guards** (the review's F2 and F3, mandatory here): `knn_metal.VERIFIED_MLX = {"0.32.3"}` (`available()` is false on another MLX until the GPU tests have been re-run on it); `knn_metal.self_check()` run once per process and dimension by `spatial.prepare_knn` from the CLI entry points (`run`, fork, `resume`, `bench`, `render`, `view`, `stream`, `resim`, `labels`, `signals`) before `make_step`: both searches on a 2 048-agent scene with stacked lattices, scattered agents, overfull cells and NaN dead rows, compared bitwise; a mismatch or a kernel that does not build warns (`RuntimeWarning`) and turns the kernel off for the process (`ALIFE_KNN=metal` then raises); `K > 64` runs the MLX path under `auto` and raises under `metal` (above it the kernel loses to the MLX path); `meta.json` records `knn_impl` (new key: at `RunDir.create` and at every launch, so a resume says what it used), the `bench` environment block records it, and `scan_select` raises `ValueError` (not `assert`: `python -O` removes asserts) on a non-`bool` alive mask, non-float32 `spos`, any wrong shape or dtype of `spos`, `start`, `order`, `cxy`, `cz` and `alive`, `K` outside [1, 64], and `n·K·nd ≥ 2³¹` (the kernel indexes with int32). Where Metal is there and the GPU is the default device but the MLX is not in `VERIFIED_MLX`, `prepare_knn` warns once per process (`RuntimeWarning`) that `auto` runs the MLX search, about 5 times slower in 3D. The self-check scene also holds pairs at, just inside and just outside `R` along every axis and finite dead rows; it is a canary for environment drift (sort, contraction, `sqrt`, tie order), not a full check, and a library caller should call `prepare_knn` itself. (3) **Lint rule 6** (`test_lint.py`, §22.6): `metal_kernel` only in `knn_metal`; `knn_metal` joins the simulation modules (rules 2 and 5), with its host-side `self_check` on the rule-5 allow-list; a meta-test snippet for each form of the name. (4) **Why it is bitwise equal** (F21): on Metal `argpartition` is a stable merge sort, so equal distances keep the candidate order `q = t·C + j` and the kernel's strict-`<` insertion in increasing `q` reproduces it; MLX's compiled kernels do not contract `a*b + c` and the kernel is written one operation per statement under `fp contract(off)`; the minimum image `d − L·rint(d/L)` equals `ops.min_image` on every float32 in (−L, L) (five L); the mask is `d² < float32(R·R)` and the root is `metal::precise::sqrt`. The CPU `argpartition` is not stable and keeps the MLX path. (5) **Evidence** (M5 Pro, MLX 0.32.3, 2026-10-19 to 20; negative controls: each of a `<=` insertion, a `<=` mask, a one-expression `d²`, plain `sqrt`, `metal::round`, a reversed stencil, the self slot kept and no first-`C` bound fails 5 to 52 of the new tests): `tests/test_spatial_metal.py`, 100 tests (84 need the GPU and are skipped on the Linux CI): 53 crafted scenes, each asserting its tie, boundary, `R` or overflow case, and 4 full-size scenes; 30 random geometries (400 more under `slow`); out-of-contract inputs; 20 repeated calls byte-identical; the stability of Metal's `argpartition`; the exhaustive minimum image; **inside the compiled step** (F4 of the review): the real `step.step` with both searches computed on its own S2 inputs and compared on every field every step, on a lattice start where ties occur in the real step, 60 steps on `tiny3d` (fed either path) and `tiny`, with a kernel-only step in lockstep (`state_digest` every 10 steps, counters and ledger every step); `ALIFE_KNN=metal` against `mlx` for `tiny`, `tiny3d` and `micro3d` and for `64k3d` from `init_state` (200 steps, `slow`); the guards. The probe's 2 500 random geometries (515 580 rows tied at the K boundary, 780 130 tied inside K), the five real checkpoints and 2 000 + 1 000 + 300 compiled steps (`64k3d`, `64k`, `tiny3d`) were equal as well, and the review found no counterexample in 169 adversarial scenes and 400 + 800 more random geometries (these probe and review figures are not reproducible from the repo: `docs/bench/README.md`). The review also found, by mutation, what the first suite could not see, and the review-fix commit adds a test for each: a constant `float32(R)·float32(R)` instead of the once-rounded `float32(R·R)` (half of the 3-decimal radii differ by an ulp), `metal::round` or `ax·(1/L)` in y only, and `math_mode: fast` (equal on every validated scene, different from MLX at exactly L/2 with `R > L/2`); each of these three mutants now fails 4 or 5 of the non-`slow` tests (0 before). Also found: MLX 0.32.3's compile cache can serve a compiled function another one's fused kernel when their scalar constants print alike when concatenated (F21 item 6), which made one random geometry fail only after a crafted `L = 12, R = 6.5` scene had run; the tests now compare the compiled kernel with the compiled MLX search. On this tree: `runs/64k3d_s0` step 450 000, 2 000 steps, 21 `state_digest` checks, the per-step counters and ledgers, births and deaths all equal with the kernel and without; the same for `runs/64k_s0` step 1 500 000, 1 000 steps, 11 checks. (6) **Speed** (§27.13, `docs/bench/2026-10-20_*`): `64k3d` (C = 48) 14.8 → 75.1 steps/s (67.4 → 13.3 ms, 5.07×; the same 13.3 ms at C = 32 and 24), staged search 54.5 → 0.42 ms, peak 3.31 → 1.07 GB, the donation check informative and `ok`; 2D `64k` 61.3 → 93.0 steps/s with `ALIFE_KNN=metal`. (7) **Limits**: the identity is a measured property of MLX 0.32.3's sort and code generation and of this chip's Metal compiler, not an API guarantee (hence the version set and the self-check, and the GPU tests on every MLX bump and macOS major); other Apple GPUs untested; `fast` math mode produced no mismatch on any validated scene, and differs from MLX only at exactly L/2 with `R > L/2` (unvalidated geometry), so `math_mode: safe` is cheap insurance, pinned by a test; ties are exercised on constructed scenes (real checkpoints have none). Edited tests: `test_runio.py::test_create_open_and_meta` (the meta key set gains `knn_impl`), `test_lint.py` (rule 6, the scope). Checks (`test_lifecycle_compiles_and_matches_eager`, the known Mac failure of I26, deselected in every fast suite). After the review fixes (commit "perf: fused kNN review fixes"): `ruff check` and `ruff format --check` clean (139 files); `tests/test_spatial_metal.py` and `tests/test_lint.py` in full (`-m ""`, the `slow` random geometries included) on the Metal GPU: 109 passed in 63 s, none skipped; the whole fast suite on the Metal GPU with the kernel selected for 3D (`auto`): 1 829 passed, 7 skipped, 32 deselected, 0 failed, in 3 min 42 s; on the CPU device the files this change touches (`test_spatial_metal`, `test_lint`, `test_runio`, `test_dims_runio`, `test_spatial`, `test_spatial_3d`, `test_bench`, the CLI smoke tests): 152 passed, 77 skipped (the GPU-only tests), 0 failed. From the first commit, not re-run after the fixes (which change no traced code: only the argument checks, a warning and tests): the whole fast suite on the CPU device, 1 752 passed, 69 skipped, 32 deselected, 0 failed, in 7 min 51 s; the same with `ALIFE_KNN=metal` (the kernel in 2D too): 1 809 passed, 5 failed, all five in `test_stream.py`, whose child processes set the CPU as default device, where `ALIFE_KNN=metal` is refused by design; 2D digest matrix (15 trajectory cases, 3 runner cases, config hashes, layout) on the CPU against a fresh `git archive` of 1ad339c: bit-identical, the only INFO lines being the added `knn_impl` of each `meta.json` (`digest_compare.py` as the G1 notes use it, with `runs.*.meta` in its subset-only list); the tiny3d `state_digest` after 50 compiled float32 steps on the CPU is `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd` on 1ad339c and on this tree. |
 | I49 | feat: games N1, the offline World Report (`docs/GAMES.md` §9 N1; new §31), observer-only and off the engine: no change to the simulation, `State`, the step, the RNG, any config key or hash, either golden, `runio`, `runner`, the director package or the GUI, and no new config key (the thresholds are the fields of a frozen `ReportRules` with a digest). Built in four commits on `games/n1-report`, on top of `games/g2-social` (G2 with `INTENT_VERSION` 2): (1) templates, lexicon, sheet, checker, assembly and ticker; (2) select-and-order mode, the record, replay and the CLI; (3) the remaining tests, the real-log checks and the docs; (4) the fixes of a third adversarial review (15 findings, `n1/build/disposition.md`): a patch move is a point event (S-pos deleted: patches drift every step, so "still in place" was false), a span ending at the chapter's first row is not listed (the restored lever is a standing line), no standing line for a lever the chapter overwrites, the HP-dip headline, colony re-identification, the relation sentence "on a victim that died in the same step" (was "fatal"), `--out` merges instead of truncating, `verify` refuses `--out` = `--reports` and an empty file, a request goes only to a `/chat/completions` URL, malformed input is exit 2, `narrate` needs a named model, the `llm` test needs `--model` or both environment variables; the rule-identifier residual risk is recorded (§31.12). `TEMPLATE_DIGEST` re-pinned (`6d9d8a7b…`; 88 templates, 139 words), `tests/data/report_e2e/golden.json` regenerated (chapter (8000, 10000] loses the two lines of the pulse that ended at 8,000). (1) Modules: `game/templates.py` (88 templates, agreement markers, a closed vocabulary of 137 words, `SOURCE_WORDS`, the section and salience orders), `game/lexicon.py` (the second line's blacklists), `game/report.py` (the sheet and its lever fold, spans, standing lines, gated windows, the label gate, suspect and churn events, quotas, the name clash; `candidates`, `check_string` with rules R1 to R7, `assemble`, `ticker`; `select_messages`, `select_schema`, `parse_choice`, the policy, `narrate`, `record_versions`, `verify_record`) and `analysis/world_report.py` (`build`, `verify`, `probe`, the resume, the atomic rewrite, the preflight); all three game modules are in `tests/test_lint.py`'s `GAME_MODULES`. (2) Decisions under the owner's delegation (to revisit): C12 templates first, the model only selects and orders, free prose off; C13 the section order is code's and the model orders only inside a section above the mandatory set; C14 the read-only `GET /api/v0/models` preflight (the REST equivalent of `lms ps`). No LLM call was made in the build. (3) The specification followed is `n1/spec.md` revision 3 after two adversarial reviews (55 crafted false or misleading sentences, 12 findings each round); every crafted case is a fixture and none is producible; §31.14 lists the deviations of the build. (4) Tests (346 passed and 1 skipped in the four files and `test_lint.py` after the review fixes, 7 of them on the real fork): `test_game_report.py`, `test_game_report_templates.py`, `test_game_report_select.py` (a fourth file, not in the specification), `test_analysis_world_report.py`; random sheets (2,000), random logs (2,000), random replies (2,000), 200 narrations replayed, the 23 edits of a stored record, a corpus of 131 director journals (275 sentences, 61 reasons) all rejected by the lexicon alone; fixtures `report_run_synth`, `report_probe`, `report_crafted`, `report_corpus`, `report_tiny` (+ `_resumed`, real CPU engine output) and `report_e2e` (a real observed director fork: the engine's own `env` blocks equal the report's fold, `build` then `verify` exit 0, a doctored log exits 1). (5) Real-log checks, read-only on `runs/` (scripts outside the repository): on `eval_s0_C`, `eval_s1_C` and `64k3d_s0_dir` the fold equals the `env` block of every row (13,800, 13,800 and 5,001), the block has exactly one holder line for every lever the rows show away from default (and not overwritten by the chapter) in 540 chapters, 544 chapters render with 0 checker exclusions (also 0 on four more director logs), 67 timed effects ended `elapsed` at s + duration exactly; `build` on those unobserved runs exits 2 with the hint. (6) Checks, on the CPU device: ruff clean; the fast suite 2,538 passed, 6 skipped, 26 deselected in 16 minutes (after the review fixes; 2,516 before) (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected); the real-fork maker reproduces its committed files byte for byte. **Not run:** the GPU validation (observed forks A and B of §31.13), `build --llm` and `probe` against a real model, the `llm` test (`--model google/gemma-4-26b-a4b-qat`, the coordinator's), and the owner read of 20 chapters; `docs/STORMS.md` §6.5 is edited for N1. **Open:** the owner's confirmation of C12 to C14; no label for a `RULES_V2` run until its verdict rows are added by the change that validates it; the provisional thresholds of §31.14. |
 | I50 | feat: storms W2a, the couplings, the observers `INTENT_VERSION` 3 and the instruments (`docs/STORMS.md` §4, §5, §8 W2, §9.6; the W2 spec of the coordinator, whose eight decisions were taken as recommended under the owner's delegation of 2026-10-19, choices C15 and C17, **marked "to revisit"**; new §32; I49 is N1's, #31), off by default; built in six commits on `games/w2a` from `origin/main` 3799009 (W0, W1, G2, the fused kNN kernel): d02f3de (keys and pure functions), 3a53c10 (wiring), 477027c (observers, the Metal gate and the pilot), 1190247 (instruments), the docs commit and the review fixes (stage 6, item (9)). **Metal purity gate passed on the stage-3 tree (51 passed on the default device, 101 with the storm tests; not re-run at the final head, no Metal run has tracers or dumps on), `Acts.buoy` variant 1 fixed, `RULES_V3` frozen from the pilot window; the calibration of the coupling values and the 14 runs are W2b and have not been run.** (1) **What.** Config: eight `weather` keys, hashed, in `POST_V01_KEYS`, inert at the defaults, covered by rule W-0 (the section has 41 keys): `seed_gain` (0 to 0.1), `seed_c0`, `shade_gain` (0 to 0.05), `shade_n0`, `wind_scale` (0 to 1), `rain_zonal`, `storm_eddy`, `wind_eddy_force`; `ENGINE_FIXED["seed_dmin"]`; observer keys `game.tracers`, `game.tracer_period` (unhashed, resume keys) and cadence keys `run.eco_every`, `run.wx_every`. Engine (S17 only; `step.py` has no other weather change): `weather.organism_forcing` on the start-of-step `chem`, `pos`, `alive` gives `qs` (rain seeding: the c2 excess over the lattice mean, averaged over the cloud layers with the same weights as the rain food (`cloud_weights`), through `e/(e + seed_c0)`, lowering `Q_s` by at most `seed_gain`; a `1e-4` relative dead band so a uniform field gives exactly 1) and `t_mult` (shade: alive agents per field column, a separable 3x3 box, `shade_gain·d/(d + shade_n0)` on `T_s`), both None while their gain is 0; `advance(..., qs, t_mult)`; the eddy wind (`WindFields.zbar`, `AgentWind.u_eddy`, `sample_wind(eddy=)`); `agent_wind` applies `wind_scale`, `wind_eddy_force` and `storm_eddy` (the hazard and bond speed); `rain_regen` takes the x-mean under `rain_zonal`. No 17th ledger slot. Metrics: `total_speed_p99`, `eddy_speed_p99`, the nominal and realised rain shares, `seed_*`, `shade_*` (gated), `alife bench --weather-org`. Observers: `INTENT_VERSION` 3 and `RULES_V3` (digest `3515d96e…380a17c`; Nomad and Settler on the velocity relative to the wind, Drifter, Floater and Sinker; the enum 8 to 10 with a placeholder column for Generalist and `ArchLayout`; `weather.agent_drift`; `Acts.buoy` (the tap `buoy0` before the solvency mask; `CHANNEL_TAPS` 20 in 2D and 21 in 3D); `OBSERVER_FORMAT` 4; `labels --rules --dump`, `rg2_rel` and the three outcomes; `ARCHETYPE_STORM_DISPLAY`; 2D worlds use `for_2d(RULES_V3)`). Instruments: the tracer rig (`game/tracers.py`, its own key, optional sidecar members), the `observers/eco_<step>.npz` and `wx_<step>.npy` dumps, the `coupling` block, `python -m alife.analysis.w2` (P1a to P6, 8 x 10,000-step block t-intervals, paired differences, the s1 A - N noise floor). (2) **Digest evidence** (CPU, against a fresh `git archive` of 3799009). Stages 1 and 2: the G2/W1 matrix is bit-identical (0 DIFF; the INFO lines are config tables) and the 8 weather-on trajectory cases (storm3d and storm2d, default and strong, compiled and eager) have the 3799009 sha256 values. Stages 3 and 4: 166 DIFF, all in the observer layer by design (sidecar format 4, `intent_version` 3, the `StepOutG` digest gaining `Acts.buoy`); no state digest, counter, ledger, checkpoint tensor or event differs. tiny3d `legacy_state_digest_3d` is `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd` throughout; the `64k3d` + `storm` config hash and the W0 params hashes are unchanged. (3) **Tests.** 246 new tests in eight files (`test_weather_w2_keys.py` 88, `test_weather_w2_wiring.py` 41, `test_weather_w2_instruments.py` 13, `test_game_storm_rules.py` 13, `test_game_storm_observers.py` 13, `test_game_tracers.py` 29, `test_analysis_labels_storm.py` 12, `test_analysis_w2.py` 37; the counts of stages 1 to 5 were 240, with one miscount in `test_game_storm_observers.py`) plus edits to the G1, G2 and W1 pins (seven more cases); the fast suite (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected, I26): 2953 passed, 83 skipped, 37 deselected, 1 xfailed (2944 passed at stage 4, 2697 at the W1 head); `ruff check`, `ruff format --check` clean; `swift test --filter AlifeCoreTests`: 93 passed. Mutation checks fail as they should (S17 reading the post-update state, the eddy row offsets, the `seed_dmin` floor, reseeding ignoring `alive`, the block index, the sign of `hold`, the ub quantile, a tracer coupled to `wind_scale`). (4) **Metal and cost** (M5 Pro, MLX 0.32.3). `tests/test_game_purity.py` with no marker filter: 51 passed, including the `storm3d` arm and 21 taps in 3D; 101 passed with the storm tests; 284 game and labels tests passed; **all on the stage-3 tree** (stage 4 changed `observer.py`, `runner.py`, `config.py` and `runio.py` afterwards, and the 2D storm variant of stage 6 was run on the CPU only): re-run `test_game_purity.py`, `test_game_tracers.py` and `test_weather_w2_instruments.py` on Metal at the final head before W2b. `bench --observe` with the weather on: observers 0.727 ms per step; `bench --weather-org`: 0.69 ms (spec estimate 0.15 ms). (5) **The pilot** (`64k3d_s0` at 450,000, the prior coupling set, 26,000 steps, 64.2 steps/s): ledger 0 in all 260 rows, `max_occupancy` 16, `overlap_deep` max 4, storm deaths 3.2% of deaths, rain-band nominal share 0.32 to 0.41; the C-W2 window (470,000 to 476,000): all ten intents and nine archetypes pass; Drifter AUC 0.880 (null 0.533), Floater 0.591 (0.514; amended in stage 6: scored off the lid, and evidenced only at z 56 to 78.9 by band, §32.8; the first pass was 0.727 against 0.546), Sinker 0.637 (0.508); the physics-derived thresholds passed the keep rule (the same bar as the held-out criterion, so it validates nothing), none was tuned. Nomad matches 4.9% of rows under V2 and 1.7% under V3. (6) **Deviations from the spec, found while building.** The Floater outcome (the fraction of steps with z >= 8 is saturated at 98%) is the altitude held; `seeding_qs` has the relative dead band; `AgentForce.speed` under `storm_eddy` is built with the force (commit 1); the metrics keys are gated; the rain audit uses the season of the previous step; tracers also work in 2D; the tracer sidecar members are optional (no format bump); the eco dump adds `tracer_z` and `tracer_age`; P1c does not read c2; the pilot ran 26,000 steps; 2D worlds get `for_2d(RULES_V3)`; the `storm3d` purity entry is the 64k3d + storm configuration (tiny3d is not a weather world); the N1 consequences (spec commit 3b) were applied after #31 merged (commit `W2a: N1 follow-ups`, §32.13: `_label_display(key, version, storm)`, `LEXICON_VERSION` 2, no V3 verdict row). (7) **Finding for W2b.** `Diag.WEATHER_WARN` is sticky (set from step 456,100 on in the pilot), so a stop rule of the form "WEATHER_WARN in more than 1% of rows" fires on every run that ever warns; read the rate from the weather block. (8) **Not run, for W2b.** Gate G0 (the occupancy repeat, whose remedy `cell_capacity` 64 is hashed), the calibration stages, the 14 runs, the held-out label windows H1 to H4 and the weather-off windows, `LABEL_VERDICTS` rows, `docs/RESULTS_W2.md`, and the step rate with the tracers and dumps on. `presets/storm.toml` is unchanged. (9) **Stage 6, the review fixes** (two independent reviews; the disposition is in the build notes). The Floater is scored off the lid and per z band (`LID_MARGIN`, `pinned`, `by_band`; the first pass was driven by agents pinned at the ceiling; the pilot margin falls from 0.181 to 0.077, the thresholds and the digest stay), Drifter is scored in 2D too; the weather-on trajectory pins skip off the recording platform; the eco dump's `vz_own` and `w_air`, the rain shares and audit, and `agent_drift` with `drag` != 1 are tested (six surviving mutants now fail); the 2D storm variant of the purity test and a no-observer run in the tracer test; `hold_index` is the fraction of `alpha` countered; the social record carries `intent_version`; DESIGN §28.4, the §16 sketch, §28.9, §32.1, §32.7, §32.8, §32.11 and §32.13 and GAMES §4.4, §4.5 corrected (Nomad and Settler primaries move in a weather world, the keep rule is not a validation, the V2/V3 comparison is not like-for-like, the Metal evidence is the stage-3 tree's, Trader and Provider are reported-only below 30 positives, the displayed rates are primary-label rates). |
+| I51 | feat: games G3a, the play loop and the World window (`docs/GAMES.md` §9 G3a; new §33; specification `g3a/spec.md` after two reviews, 30 findings, all held), built in 13 commits (12 steps) on `games/g3a` from `origin/main` 2d1ab0c (G2, W0/W1 weather, N1, the fused kernel), then merged with `origin/main` 39301ba (W2a I50 and the 2D fused kernel I52; item (10) and §33.7). **No engine behaviour change**: the step, `State`, the RNG, every config key, hash and golden are untouched; there is no new config key (`game.observe`, `director.*` and the resume-allowed `run.*` carry the cadence); the 2D digest matrix against 2d1ab0c (and, after the merge, against 39301ba) and the tiny3d legacy digest (`556de6c6…`) are bit-identical on the CPU; `runner.run(pacer=None)` executes every line as before. (1) **Engine side, small.** `RunDir._prune` keeps a fork's origin checkpoint (`meta.start_step`, D7: a planet lost it at the third save) and drops orphan `storms_<t>.json`; `phylo.load_tree(end=)` bounds the tree at a step (the exact house rebuild of a source checkpointed past `S`); `runner.Pacer` (`bind`, `before_step`, `after_step`, `before_checkpoint`, `after_checkpoint`, `after_boundary`, `take_paused_s`; `stop_requested` or-ed where the SIGINT latch is read; `perf["wall_s"]` net of paused time): the state is borrowed and never stored, and callbacks never raise (the runner has no `try/finally`, so `PlayPacer` catches, swaps the output for a null sink and stops after the checkpoint). (2) **Records** (§33.1): ALSTRM v1 gains the header key `play` and ten records with a common 16-byte head (`FRMA` alive-only frames with a bitmap and compact bond indices, `IDNT`, `INTN`, `TERR`, `STRM`, `MAP1` with `T_s` and winds in every record, `EVNT` queued and deduplicated by id, `ENVS`, `CLCK`, `FOCS`); `streamrec.py` (numpy only), the independent decoder `tests/play_decode.py` written from §33.1, three shared fixtures with a SHA-256 per section, and `PlayRecords.swift`. (3) **Host side** (§33.2, §33.3): `game/chronicle.py` (a closed template table; ids `step·1000 + family base + index`, so the backlog rebuilt from the logs equals the live feed), `game/colors.py`, `Observer.identity_rows`; `storms.py` (the tracker moved out of `analysis/w0.py`, equal on 300 random scenes; `StormLayer`; the complete tracker state at each checkpoint, written before the state file); `play.py` (a `Scheduler` with a bounded debt that never spirals, the control grammar, `PlayPacer`, focus and follow with the hand-off rules); `alife play` (`RUN`, `--init-from` planets with the spin-up required when the weather turns on, `--preset`, `--adopt`, `--truncate`, `--replay`, `--houses`, `play.lock`, `play.json` written last, `protocol_output` first so that nothing a fork prints reaches the stream); `analysis/houses.py` and `game/housefile.py` (exact houses at a fork: 79 alive houses against 4 clade houses for `64k3d_s0` at 500,000, 3.4 s and 2.6 GB). (4) **The window** (§33.4): `EngineSession` extracted from `StreamController`; `PlayController`, `WorldStore`, the launcher, `DockLayout`, the clock strip, `TerminationGate`; the renderer (alive-only instances, the minimum image on the torus, the map and territory textures in `Slot`, the planet, region and organism levels, the overlay); the interaction (picking, `FollowState` and `CameraGlide`, the Cast, the inspector, the Chronicle and toasts, `WorldKeys`); `WorldProjector.points` was fixed near the half world. (5) **Bench** (§33.5): `alife bench --play` (the play loop headless per director mode and rate, the cost of its parts, the gate's numbers, and the digest against a plain run) and `WorldRenderBench` (GPU and CPU time per draw, drops). (6) **Decisions** D1 to D11 of the specification, each its recommendation, taken as the coordinator's choice C19 under the owner's delegation, to revisit (`docs/GAMES.md` §10 item 20). (7) **Checks, all on the CPU unless stated.** The fast suite (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected) 3,404 passed, 84 skipped, 1 xfailed (about 369 new tests); digest equality of a pacer-driven run with a plain one (2D, 3D, the storm world, observers on and off, a live rule tier at equal cadence, a quit at an arbitrary step then a resume); `swift build` and `swift test` with `-warnings-as-errors`: AlifeCoreTests 93 to 320 and AlifeControlTests 68 to 191; hand mutation checks at every stage (14 of the hook and scheduler, 24 of the house rebuild, 26 of the shell and renderer, 92 of the interaction), every survivor either a weak test now pinned or an equivalent mutant; a real engine stream decoded and drawn in Swift; the opt-in GPU tests on the M5 Pro (`GPURenderTests` 8, `GPUWorldTests` 14 and the bench smoke) pass. (8) **Deviations** from the specification are listed where they arise (§33.1.13, §33.1.14, §33.2, §33.3, §33.4, §33.4.8). (9) **Review fixes (stage 7, 14 commits to 15):** a closed reader or presenter failure no longer skips the tracker tick, `storms.jsonl` line and tracker state (resume equality), `--adopt` prunes none of the research run's checkpoints and a `--set` of a cadence key is refused, the scheduler is anchored at the first step, only a closed reader is a quiet stop (a full disk exits 1), `STRM.ended.reason` is `dissipated`, `tick_step` in the tracker state, the Swift header check of `snapshot_every % tick` dropped; client: dock layout at the bottom, a dead organism of the chronicle flies without following, no planet level without a map, the home distance within the limit, the map edge, window-level keys, Close world, the collapsed-dock clock, reset on start/stop, the labels switch renamed, the requested rate settled by the matching `CLCK`, uid 0. (10) **The merge with `origin/main` 39301ba (§33.7).** Conflicts in `CLAUDE.md`, `HANDOVER.md`, `DESIGN.md` (§32 and §33, rows I50, I51, I52 in order), `bench.py`, `game/observer.py`, `runio.py` and `runner.py`, each resolved by keeping both sides (`pacer=None` is W2a's loop; the storm and the play files beside the eco/wx dumps; `--play` and `--weather-org`; `default_rules`, the tracers and `houses=` in one `Observer`). The semantic integration: `INTENT_VERSION` 3 in the stream (ten archetypes, `ARCH_PALETTE` and the Swift palette at 11 entries, the kin groups' mix at 10 shares, the storm names in the header of a weather world), and N1's validity gate carried by the header (`streamrec.labels_block`, `report.label_gate`, `report.label_passes` shared with N1) and applied by the window (`LabelValidity`): no label is shown as valid without a `LABEL_VERDICTS` row for the world, rule set and environment, which no V2 or V3 world has yet. The three play fixtures were regenerated (the header and the kin tables changed shape; two Swift tests lost their hard-coded offsets). Checks on the merged tree: the 2D digest matrix against a fresh archive of 39301ba bit-identical, tiny3d `1fe07a9f…` (legacy `556de6c6…`) equal, W2a's eight weather-on pins pass, the G3a purity tests pass with `-m ""` (68), the fast suite 3,682 passed, 89 skipped, 1 xfailed, `ruff` clean, `swift build`, `build-tests` and `test` with `-warnings-as-errors`: AlifeCoreTests 335 and AlifeControlTests 200 passed. (11) **Review fixes of the merge** (`G3a sync: review fixes`; §33.7 item 8): the `MAP1` sea plane carries the shade of a `shade_gain > 0` world (`tick_at`/`current` take `t_mult`), the archetype row says "warming up" until its byte is set, Generalist is exempt from the per-byte gate test, the fixtures and the test decoder agree on `INTENT_VERSION` 3 and the label bytes, the archetype and intent colour modes are tagged provisional. No engine file; the fast suite 3,686 passed. (12) **Mac day, done 2026-10-22 on the M5 Pro** (`b7020a6`, no code changed; `docs/RESULTS_G3A.md`, data in `docs/results_g3a/`; §33.5, §33.6). Metal purity: 19 test files, 0 failures (the play files, `test_stream_records`, `test_game_purity` 55 and `test_game_tracers` 29 as W2a's re-run at the merged head, `test_spatial_metal` 106); Swift: `swift test` AlifeCore 338 and AlifeControl 200, `GPURenderTests` 8, `GPUWorldTests` 14. **The §33.5.4 gate passes** in both director modes: 1.00006x and 1.00004x over 312.4 s, `late_steps` 0, `step_ms` p99 47.6 and 50.4, the client's draw p95 at most 2.41 ms with the engine running, `max` 3.68x and 3.69x; every arm's digest equals the plain run's. **Findings:** the boundary step is 127.6 to 130.0 ms at 1x (estimate 80 to 90; 1.84 to 1.87 slots, absorbed by the debt), the maximum step 141 to 152 ms, the observer fold 12.0 ms at 1x against 1.7 at `max` (probably the GPU's clock at light load, untested), a checkpoint 0.93 to 0.98 s (13 slots) on the internal disk. A 20,000-step planet play: 27.85 GB, 0 decode errors, 54 save-stall steps, `late_steps` 0, a clean quit and resume; the chronicle runs at 8.66 events a minute and is mostly kin flapping (112 of 201 events are splits and merges; 69 of the 77 importance-2 events). The planet was a fork at 450,000, not 500,000 (D2). **Still open:** the click-through of the window by hand (the owner's), the 2D digest matrix and `test_bench.py` and `test_weather_w2_instruments.py` on Metal, the external-disk stall, a real-window draw time, the kin-churn remedy (G3b). |
 | I52 | perf: the fused Metal neighbour search is the default in 2D too (§4 "Fused Metal path" Selection, §15, §27.2, §27.13; **the owner's decision of 2026-10-21**; a small change on top of I48, branch `perf/knn-2d-default`): `spatial.knn_impl(cfg)` under `auto` (the default of `ALIFE_KNN`) now selects the kernel in a 2D world as it does in 3D, on Metal with the GPU as default device, an MLX in `knn_metal.VERIFIED_MLX`, a passing self-check and `K ≤ 64`; `ALIFE_KNN=mlx` still forces the pure-MLX reference in either dimension, `metal` still raises where the kernel cannot run, and the CPU is unchanged. **A pure performance change, bitwise identical to what it replaces: no config key, no `POST_V01_KEYS` entry, no config hash, golden or digest change, no `FORMAT_VERSION` or RNG change, and existing 2D runs resume onto it** (`meta.json` `knn_impl` reads `"metal"` for a 2D run launched on Metal from now on, which is the only visible difference). Code: the one-line rule in `knn_impl` (`return "metal" if ok else "mlx"`), `prepare_knn` (the self-check now runs for `nd = 2` under `auto`, and `note_unverified` warns for a 2D world on an unlisted MLX, as for 3D), and two messages (5 times slower in 3D, 1.5 times in 2D); checked and unchanged: `knn_metal.self_check(nd)` and its scene (`_check_scene` already builds the 2D scene, covered by `test_self_check_scene_has_ties_and_overflow` for `nd` in (3, 2)), the CLI guard `_knn_guard` (calls `prepare_knn` for any dimension; `analysis.signals`, `labels` and `resim` call it too), `meta.json` and the `bench` environment (both record `knn_impl(cfg)`). **Tests** (`tests/test_spatial_metal.py`; no equality check weakened or removed): the CPU selection tests that asserted 2D to be `mlx` under `auto` now assert `metal` (`test_selection_rules`, with `ALIFE_KNN=mlx` forcing `mlx` in 2D; `test_prepare_knn_runs_the_self_check_once_per_use`, the 2D self-check now runs under `auto` and not under `mlx`; `test_unverified_mlx_says_so_once`, 2D now warns and the once-per-process flag is shared with 3D), `test_k_bound` and `test_cpu_default_device_selects_the_mlx_path` run in 2D as well, and the GPU tests that pinned 3D only are widened: `test_auto_traces_the_kernel_in_2d_and_3d` (a spy proves `auto` traces the kernel for `tiny` and `tiny3d` and `ALIFE_KNN=mlx` does not; `meta`/`bench` provenance and `prepare_knn` agree), `test_unverified_mlx_version_falls_back` and `test_self_check_mismatch_disables_the_kernel` in 2D and 3D, and the dual-step test gains `("tiny", "metal", 1.5)` (2D lattice start, the kernel feeds the step; `("tiny", "mlx", 1.5)` existed). The 2D crafted scenes, the full-size 2D scenes, the random geometries (2D and 3D) and `test_compiled_step_bitwise[tiny]` already ran under both dimensions. **Evidence** (M5 Pro, MLX 0.32.3, 2026-10-21, the machine shared with other sessions' CPU jobs, load average 3 to 6): `ruff check` and `ruff format --check` clean; CPU fast suite (`-p cpu_device -m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected, the I26 failure): 1 972 passed, 88 skipped, 32 deselected, 1 xfailed, 0 failed, in 10 min 1 s; on the Metal GPU `tests/test_spatial_metal.py` and `tests/test_lint.py` with `-m ""` (the `slow` geometries included): 115 passed, none skipped, in 4 min 48 s (109 in I48's final count; +6 are the new parametrizations); the whole fast suite on the Metal GPU, with the kernel now selected in 2D by default (`-m "not slow"`, the same deselection): 2 052 passed, 8 skipped, 32 deselected, 1 xfailed, 0 failed, in 6 min 36 s, so every 2D golden digest, the director and the resume tests pass unchanged on the kernel path; **2D trajectory** (a `make_step` traced with the default and one with `ALIFE_KNN=mlx`, `runs/64k_s0` read-only from step 1 500 000, 1 000 compiled steps, `prepare_knn` first as the CLI does; a spy on `scan_select` shows the kernel traced in the first and not in the second): the 11 `state_digest`s (steps 0, 100, ..., 1 000) are equal, and so is the SHA-256 of every step's counters and ledger (`d68b61a0...`), with births 28 125, deaths 28 301, 33 686 alive at the end and no overflowing cell in either (median 11.2 ms per step with the kernel, 17.2 ms without, 1.53×). **Speed** (`alife bench --preset 64k --stages`, one run per column, `docs/bench/2026-10-21_m5pro_64k_default.json` and `_mlx.json`; the machine was busier than on 2026-10-20, so both are slower than the 2026-10-20 files, whose steps/s were 92.96 and 61.34): default (kernel) 86.0 steps/s, 11.63 ms per step, staged search 0.48 ms, peak 0.848 GiB; `ALIFE_KNN=mlx` 57.6 steps/s, 17.35 ms, staged search 6.49 ms, peak 1.112 GiB; the step is 1.49× faster, and the same 19 038 alive, 4 844 births and 11 867 deaths in both, the same config hash `69b4e21a...`, the donation check `ok` and the invariants clean. On the quiet machine of 2026-10-20 the figures were 16.30 to 10.76 ms (1.52×), staged search 6.21 to 0.36 ms, peak 1.19 to 0.91 GB (`docs/bench/2026-10-20_m5pro_64k_*.json`). Documentation: §4 (the `auto` rule, the guard warning), §15.5 and §27.2 (where they named 2D as keeping the MLX path), §27.13 (the table row and the limits), the test table of §22, `docs/bench/README.md`, `docs/HANDOVER.md` and `CLAUDE.md`. Unchanged and still true: the limits of I48 (the identity is a measured property of MLX 0.32.3 and this chip; re-run the GPU tests on every MLX bump and macOS major). I48 item (1) is kept as written, as history; this row supersedes it for 2D. |
 
 **Open questions for the user.**

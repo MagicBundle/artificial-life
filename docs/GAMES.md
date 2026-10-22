@@ -1,6 +1,6 @@
 # Emergent Worlds: a gaming vertical for alife (design proposal)
 
-Status: **design; G1 and G2 built (DESIGN §28, §29); G3–G5 not built.** The owner decided items 1–4, 7 and 8 on 2026-10-18
+Status: **design; G1 and G2 built (DESIGN §28, §29), N1 built (§31), G3a built (§33; the Mac day ran 2026-10-22 and the gate passes, `docs/RESULTS_G3A.md`; the click-through by hand is open); G3b–G5 not built.** The owner decided items 1–4, 7 and 8 on 2026-10-18
 and items 13–19 on 2026-10-19 (§10). This document maps the owner's brief ("Project: Emergent Worlds", 2026-10-18) onto the
 engine at `aef79c2`. The brief's three pillars are:
 - a motivation-to-action loop instead of scripted state machines;
@@ -132,13 +132,19 @@ S8 costs, S10 harvest, S11 combat, S12 share.
 
 ```
  Swift client ──stdin: intent, confirm, pick, speed, colour──▶ alife play (one process)
-              ◀── ALSTRM frames + IDNT / INTN / TERR / EVNT ───
+              ◀── ALSTRM header + FRMA / IDNT / INTN / TERR / STRM / MAP1 / ENVS / EVNT / CLCK / FOCS ───
  alife play:  scheduler ─ step (compiled; StepOutG when game.observe) ─ observers (accumulators, houses, kin groups,
               colonies, territory) ─ director hook at rule boundaries (reverts, safety, player proposals, game_master)
               ─ checkpoint + observer sidecar
               off the step thread: LLM intent parse → compiler → preview to the client
               logs: director.jsonl (decisions), commands.jsonl (text, exchange, intent, plan, confirmation, outcome)
 ```
+
+**As built in G3a** (DESIGN §33): `alife play` is that process without the intent, confirm and power lines (G3b, G4); the scheduler
+is `runner.run(pacer=)` with a `PlayPacer` (the hook is inert when None, and a pacer never changes a trajectory: digest equality is
+tested), the records are the ten above (`ALRT`, `RPRT` and `PLAN` are G3b), and the control lines are `pause run step rate color every
+focus follow idnt labels quit`. The Swift side is one **World window** (a raw-Metal map and organism view with a docked control
+center) beside the Lab, fed by `PlayController` over a pipe.
 
 Principles carried over from the director:
 - **Environment only.** No intervention edits an agent, genome or brain.
@@ -876,6 +882,16 @@ What a game adds:
     `attack_mult`, is aimed at that (§10.4).
   - **3D next.** 3D has more to see (depth zones, reefs, kill share 0.50) and no longer needs the fused Metal kNN kernel
     (built, DESIGN §4, row I48) to reach 30 steps/s at 64k: `64k3d` runs at about 75 steps/s on the M5 Pro.
+  - **The play loop's budget (G3a, DESIGN §33.5; measured on the Mac day, 2026-10-22, `docs/RESULTS_G3A.md` §4).** 14.4 steps/s is the
+    **design rate (1x)**, not a ceiling: the cadences of C5 and C6 were derived with it, and the engine step takes 14.9 ms of the 69.4 ms
+    slot. Measured on the 64k3d storm planet (44,955 alive): a typical step with observers and a frame is 33.4 ms at 1x and 19.1 at `max`
+    (estimate: 15.7 to 22.7), and the **boundary step** every 250 steps (the tick, the social settle of 58.8 ms at 1x, the metrics row) is
+    127.6 to 130 ms at 1x and 95 at `max` (estimate 80 to 90), which is 1.84 to 1.87 slots; the bounded debt of the scheduler absorbs it
+    without a `late_step` (0 in every arm and in a 20,000-step play). Fast-forward (`max`) is **52.96 steps/s (3.68x)**, 53.08 (3.69x) with
+    the rule tier, so the ladder is 0.25x, 0.5x, 1x, 2x and `max` (2x was not benched). The stream at 1x is 21.17 MB/s (a frame is
+    1.44 MB; 39.70 MB/s at `max`). A checkpoint (686 MB) stalls the loop 0.93 to 0.98 s on the internal disk (13 slots at 1x). The gate
+    of DESIGN §33.5.4 passes (achieved 1.00006x, `step_ms` p99 47.6 ms, the client's draw p95 at most 2.41 ms with the engine running).
+    The instrument is `alife bench --play` with `WorldRenderBench` beside it.
 
 ### 8.4 Further risks
 
@@ -980,20 +996,28 @@ What a game adds:
       (20 chapters, template against select, blind). The build made no LLM call.
     - **Not in N1:** `alife play`, a report panel, a worker and `reports.jsonl` in a run directory (G3); player commands (G4); storm facts
       (W3; the storm-world report built on the same sheet, `docs/STORMS.md` §6.5, which records what N1 built).
-- **G3. Play loop and view.** On the 3D storm world, after W0–W2 (`docs/STORMS.md` §8 gives the interleaving); the
-  face-on 2D HUD below is reopened for it.
-  - `alife play` with the fixed-timestep scheduler.
-  - The stream tags `IDNT`, `INTN`, `TERR`, `EVNT`, with Swift decoders and fixtures.
-  - Picking and a HUD in the Swift viewer, and the new colour modes.
-  - The World window (Metal view, docked control center): alerts, 6,000-step chapters, the ticker and the live World
-    Report; recap playback (`docs/STORMS.md` §6.5).
+- **G3a. The play loop and the World window** (built; DESIGN §33, Review-log row I51; the Mac day ran 2026-10-22, the gate passes, `docs/RESULTS_G3A.md`; the click-through by hand is open). On the 3D storm
+  world, on W1's overlay values (W2 changes coupling values and labels, not records; after the merge with W2a the stream carries the
+  version-3 labels with N1's validity gate, DESIGN §33.7). One process per world, `alife play`:
+  - the fixed-timestep scheduler (pause, 0.25x, 0.5x, 1x, 2x, max) as `runner.run(pacer=)`, with `play.lock`, `play.json`, planets
+    (a fork with the weather on and spun up), exact houses at forks, `--adopt`, `--truncate`, `--replay`;
+  - the stream records `FRMA IDNT INTN TERR EVNT STRM MAP1 ENVS CLCK FOCS`, each with a Swift decoder, an independent Python
+    decoder and shared fixtures; the chronicle's closed template table; the observer colour modes (`house kin archetype
+    intent`); the host storm tracker moved out of `analysis/w0.py` with its persistence;
+  - the World window: the planet map and organisms (minimum image, alive-only frames, semantic levels), picking and follow, the
+    Cast, the inspector, the Chronicle and toasts, the keys; `alife bench --play` and `WorldRenderBench`.
+  - Not in G3a: chapters (a checkpoint every 6,000 steps is a save point only), auto-pause, alerts, the ticker and the live World
+    Report, powers, dead-row canonicalisation, recorded replay files, rewind, offline advance, any LLM.
+- **G3b. Chapters, reports and powers.** After G3a's Mac day (done; the chronicle's kin churn, 112 of 201 events in a 20,000-step play, wants a persistence rule before a ticker or toasts build on it): `autopause`, `power` and `intent` lines, the records `ALRT RPRT
+  PLAN` and the recap file format; 6,000-step chapters with auto-pause, alerts, the ticker and the live World Report (N1's
+  select mode, one request in flight); the report tab, the chapter bar and the recap player;
   - Direct powers of the built regional actions through a player power grid, with their `GAME_SPECS` rows and the
     separate pacing scope (moved from G4).
   - Saves:
     - dead rows canonicalised, with a save-load-step digest test;
     - recorded ALSTRM replay files.
   - Rewind (in-place resume into a copied run directory), with `truncate_after` extended to `commands.jsonl` and
-    observer sidecars.
+    observer sidecars; offline advance.
 - **G4. Player intent.**
   - The intent schema and prompt, the compiler, `commands.jsonl`, the preview, `source:"player"`, and the separate pacing
     scope.
@@ -1095,6 +1119,22 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
 19. **Where the reports live (G2).** *Decided 2026-10-19:* the reports move out of `metrics.jsonl` into the append-only
     `observers/social.jsonl`, which `runio.truncate_after` cuts on resume. Rows keep a head of at most 0.5 KB (DESIGN
     §29.10, §29.11).
+
+20. **G3a: the play loop and the World window (coordinator's choices C19 under the owner's delegation of 2026-10-19, each the
+    spec's recommendation, to revisit; DESIGN §33).**
+    - *D1* 14.4 steps/s is 1x (a play setting, `--base-rate`, one number to change after play-testing); the ladder is 0.25x to 2x
+      plus `max`.
+    - *D2* the first planet is a fork of `64k3d_s0` at 500,000 steps (its events are present, so the houses are exact) with the
+      storm overlay, a 20,000-step spin-up and `director.enabled`; a source without event chunks gets clade houses with a note.
+    - *D3* the dock is on the right, 360 pt, collapsible; the bottom (240 pt) and the left are options.
+    - *D4* `runner.run(pacer=)` instead of a second loop, and `EngineSession` extracted from `StreamController`.
+    - *D5* a checkpoint every 6,000 steps and on quit, the last three and the fork's origin kept, written synchronously with a
+      "saving" state.
+    - *D6* the chronicle says only what the observers support (kin groups, houses, storms, director entries, the focus), in code-written
+      sentences; the labels appear in the inspector and the cast tagged provisional.
+    - *D7* two small engine edits: `RunDir._prune` keeps a fork's origin checkpoint, and `phylo.load_tree(end=)`.
+    - *D8* a planet opens running at 1x. *D9* no Swift job in CI (accepted risk; the Mac checklist has the Swift line).
+      *D10* a single click selects and follows; shift-click selects only. *D11* organisms are not instanced at the planet level.
 
 ## 11. Prior-art sources
 

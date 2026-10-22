@@ -1,0 +1,135 @@
+{
+  "alife_version": "0.1.0",
+  "mlx_version": "0.32.3",
+  "python": "3.12.11",
+  "platform": "darwin-arm64",
+  "device": "Device(gpu, 0)",
+  "knn_impl": "metal",
+  "config_hash": "c03d7089b26dc60b65f555f2cde7e3c3457feb2ffad6148b7f0be22260913fe0",
+  "config": {
+    "n_max": 65536,
+    "n_init": 16384,
+    "max_births_per_step": 1024,
+    "world_size": 320.0,
+    "field_grid": 80,
+    "dims": 3,
+    "world_height": 80.0,
+    "field_grid_z": 20,
+    "k_neighbors": 8,
+    "cell_capacity": 48,
+    "hidden": 32,
+    "weight_dtype": "float16",
+    "brain_impl": "matmul",
+    "compile": true,
+    "runtime_checks": "cheap",
+    "seed": 0
+  },
+  "play": {
+    "steps": 4500,
+    "warmup": 300,
+    "base_rate": 14.4,
+    "frame_hz": 30,
+    "cadence": {
+      "metrics_every": 250,
+      "heavy_metrics_every": 250,
+      "checkpoint_every": 6000,
+      "keep_checkpoints": 3
+    },
+    "engine_ms": 14.884083066135645,
+    "plain_digest": {
+      "rules": "d39b433b69e234e088fc94121b0fa7cf375b32ad19474c745c8d77cc916dad9b"
+    },
+    "arms": [
+      {
+        "name": "rules_1",
+        "director": "rules",
+        "rate": "1",
+        "steps_measured": 4499,
+        "seconds": 312.4256205840502,
+        "steps_per_s": 14.400227457625096,
+        "achieved_x": 1.0000157956684095,
+        "step_ms": {
+          "p50": 33.011416089721024,
+          "p99": 49.47307698661449,
+          "max": 151.50462498422712
+        },
+        "step_counts": {
+          "typical": 4481,
+          "snapshot": 0,
+          "boundary": 18
+        },
+        "part_calls": {
+          "boundary": 19,
+          "events": 4520,
+          "frma": 4500,
+          "labels": 180,
+          "save": 1,
+          "tables": 18,
+          "tick_storms": 180,
+          "write": 4500
+        },
+        "step_ms_typical": 32.988165970891714,
+        "step_ms_snapshot": null,
+        "step_ms_boundary": 126.47714599734172,
+        "components_ms": {
+          "engine": 14.884083066135645,
+          "loop_typical": 26.56183356884867,
+          "loop_snapshot": 83.66914599901065,
+          "observer": 11.677750502713025,
+          "settle": 57.10731243016198,
+          "frma": 6.185666483361274,
+          "tick": 7.36724998569116,
+          "labels": 1.3236045488156378,
+          "tables": 3.7159789935685694,
+          "events": 0.004124944098293781,
+          "write": 0.38716697599738836,
+          "boundary": 30.108375009149313,
+          "save": 944.2314999178052
+        },
+        "late_steps": 0,
+        "save_stall_steps": 13,
+        "frames": 4500,
+        "bytes_per_s": {
+          "CLCK": 245.07593153488295,
+          "ENVS": 33.441559563740164,
+          "EVNT": 47.79377559396709,
+          "FRMA": 20750373.314073093,
+          "HEAD": 0.0,
+          "IDNT": 41815.13659340057,
+          "INTN": 311681.4293845761,
+          "MAP1": 62715.98329026511,
+          "STRM": 2740.044169231949,
+          "TERR": 123.35736079503694
+        },
+        "mb_per_s": 21.169775576138054,
+        "drained_bytes": 7057127188,
+        "wall_s": 334.64367762499023,
+        "n_alive_end": 44955,
+        "digest": "d39b433b69e234e088fc94121b0fa7cf375b32ad19474c745c8d77cc916dad9b",
+        "digest_equal": true,
+        "gate": {
+          "applies": true,
+          "want": {
+            "achieved_x": 0.98,
+            "late_steps": 0,
+            "step_ms_p99": 66.0
+          },
+          "got": {
+            "achieved_x": 1.0000157956684095,
+            "late_steps": 0,
+            "step_ms_p99": 49.47307698661449
+          },
+          "pass": true,
+          "checks": {
+            "achieved_x": true,
+            "late_steps": true,
+            "step_ms_p99": true
+          },
+          "five_minutes": true
+        }
+      }
+    ],
+    "digests_equal": true,
+    "workdir": "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3a/macday/bench_arms_share"
+  }
+}

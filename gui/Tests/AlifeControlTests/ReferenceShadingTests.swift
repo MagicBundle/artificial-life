@@ -26,8 +26,9 @@ import simd
         }
         #expect(constant("noseOffset") == ReferenceSphere.noseOffset)
         #expect(constant("noseRadius") == ReferenceSphere.noseRadius)
-        // The shader's headlight and the nose's paleness, as written.
-        #expect(Shaders.source.contains("mix(in.color, float3(1.0), 0.6)"))
+        // The shader's headlight and the nose's paleness, as written (in `shadeSphere`, which `sphereFragment` and the World's
+        // `agentFragmentA` both call).
+        #expect(Shaders.source.contains("mix(baseColor, float3(1.0), 0.6)"))
         #expect(Shaders.source.contains("base * (0.3 + 0.7 * lambert)"))
     }
 

@@ -48,6 +48,9 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
     package var every: Int
     /// `"run"`, `"file"` or `"preset"`.
     package var source: String
+    /// The `alife play` key: the records the stream carries and the constants of the world. Nil for a plain
+    /// `alife stream`. It is the only key beyond the 21 above that a reader acts on (§33.1).
+    package var play: PlayHeader?
 
     /// Decodes every key explicitly. The synthesized decoder reads an optional property with `decodeIfPresent`, which
     /// would let the `run` key be absent; the protocol says it is a string or null and always present.
@@ -74,6 +77,7 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
         mode = try c.decode(String.self, forKey: .mode)
         every = try c.decode(Int.self, forKey: .every)
         source = try c.decode(String.self, forKey: .source)
+        play = try c.decodeIfPresent(PlayHeader.self, forKey: .play)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -98,6 +102,7 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
         case mode
         case every
         case source
+        case play
     }
 
     /// Limits that keep a corrupt header from asking for absurd memory; the engine's own are tighter
@@ -143,14 +148,18 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
         guard ["run", "file", "preset"].contains(source) else {
             throw bad("source \"\(source)\" is not run, file or preset")
         }
+        try play?.validate()
     }
 
     /// Whether two sizes written by the engine as binary64 agree, allowing for the rounding of a product.
     private static func agrees(_ a: Double, _ b: Double) -> Bool { abs(a - b) <= 1e-6 * max(abs(b), 1) }
 
     /// The name of the colour mode `frame` carries, or nil for an index outside `colorModes`.
-    package func colorMode(of frame: StreamFrame) -> String? {
-        colorModes.indices.contains(frame.colorIndex) ? colorModes[frame.colorIndex] : nil
+    package func colorMode(of frame: StreamFrame) -> String? { colorMode(index: frame.colorIndex) }
+
+    /// The name of the colour mode at `index` (a frame's `colorIndex`), nil outside `colorModes`.
+    package func colorMode(index: Int) -> String? {
+        colorModes.indices.contains(index) ? colorModes[index] : nil
     }
 }
 
@@ -243,7 +252,9 @@ package enum Half {
 package enum StreamEvent: Equatable, Sendable {
     case header(StreamHeader)
     case frame(StreamFrame)
-    /// A record of a tag this version does not know, skipped by its length. The tag is its four bytes as Latin-1.
+    /// A play record (`FRMA`, `IDNT`, ...) of a version this decoder knows (§33.1).
+    case record(StreamRecord)
+    /// A record of a tag, or of a version of a known tag, this version does not know, skipped by its length. The tag is its four bytes as Latin-1.
     case unknownRecord(tag: String, length: Int)
 }
 
@@ -258,6 +269,8 @@ package enum StreamError: Error, Equatable, Sendable, CustomStringConvertible {
     case lengthMismatch(tag: String, declared: Int, expected: Int)
     /// A frame whose content contradicts the header or the specification.
     case malformedFrame(String)
+    /// A play record whose content contradicts the header or the specification (§33.1).
+    case malformedRecord(tag: String, String)
     /// The stream ended inside the header or a record: the process died.
     case truncated(String)
 
@@ -269,6 +282,7 @@ package enum StreamError: Error, Equatable, Sendable, CustomStringConvertible {
         case .lengthMismatch(let tag, let declared, let expected):
             return "stream record \(tag) declares \(declared) bytes but its content takes \(expected)"
         case .malformedFrame(let why): return "malformed stream frame: \(why)"
+        case .malformedRecord(let tag, let why): return "malformed stream record \(tag): \(why)"
         case .truncated(let why): return "truncated stream: \(why)"
         }
     }
@@ -290,6 +304,7 @@ package struct FrameDecoder: Sendable {
     private static let maxHeaderBytes = 1 << 20
     private static let frameTag = "FRM1"
     private static let frameHeadBytes = 32
+    private static let recordHeadBytes = RecordDecoder.headBytes
 
     private var buffer: [UInt8] = []
     /// The first unconsumed byte of `buffer`.
@@ -301,6 +316,8 @@ package struct FrameDecoder: Sendable {
     package private(set) var failure: StreamError?
     /// The header, once it has been decoded.
     package private(set) var header: StreamHeader?
+    /// Records of a known tag whose version this decoder does not know, skipped by length (§33.1).
+    package private(set) var skippedVersions = 0
 
     package init() {}
 
@@ -364,6 +381,15 @@ package struct FrameDecoder: Sendable {
             guard available >= 8 else { return }
             let tag = latin1(at: head, count: 4)
             let length = Int(u32(at: head + 4))
+            if let prefix = RecordDecoder.prefixBytes(tag) {
+                guard let record = try parsePlayRecord(tag, length: length, prefix: prefix, header: header) else {
+                    if skipping != nil { continue }  // a version this decoder does not know: skipped by length
+                    return
+                }
+                events.append(.record(record))
+                head += 8 + length
+                continue
+            }
             guard tag == Self.frameTag else {
                 head += 8
                 skipping = (tag, length, length)
@@ -382,6 +408,37 @@ package struct FrameDecoder: Sendable {
             guard available >= 8 + length else { return }
             events.append(.frame(try decodeFrame(header, payload: head + 8)))
             head += 8 + length
+        }
+    }
+
+    /// The play record of `tag` at `head`, or nil when more bytes are needed or (with `skipping` set) when its version
+    /// is not one this decoder knows. Its length is checked against its own counts as soon as they are in, before the
+    /// payload is waited for.
+    private mutating func parsePlayRecord(_ tag: String, length: Int, prefix: Int, header: StreamHeader) throws
+        -> StreamRecord?
+    {
+        guard length % 4 == 0 else { throw StreamError.malformedRecord(tag: tag, "length \(length) is not a multiple of 4") }
+        guard length >= Self.recordHeadBytes else {
+            throw StreamError.lengthMismatch(tag: tag, declared: length, expected: Self.recordHeadBytes)
+        }
+        guard available >= 8 + Self.recordHeadBytes else { return nil }
+        guard u16(at: head + 8 + 12) == RecordDecoder.version else {
+            head += 8
+            skipping = (tag, length, length)
+            skippedVersions += 1
+            return nil
+        }
+        guard length >= Self.recordHeadBytes + prefix else {
+            throw StreamError.lengthMismatch(tag: tag, declared: length, expected: Self.recordHeadBytes + prefix)
+        }
+        guard available >= 8 + Self.recordHeadBytes + prefix else { return nil }
+        let expected = try buffer.withUnsafeBytes {
+            try RecordDecoder.expectedLength(tag, ByteReader(raw: $0, start: head + 8), header: header)
+        }
+        guard length == expected else { throw StreamError.lengthMismatch(tag: tag, declared: length, expected: expected) }
+        guard available >= 8 + length else { return nil }
+        return try buffer.withUnsafeBytes {
+            try RecordDecoder.decode(tag, ByteReader(raw: $0, start: head + 8), header: header)
         }
     }
 
@@ -478,6 +535,8 @@ package struct FrameDecoder: Sendable {
         UInt32(buffer[offset]) | UInt32(buffer[offset + 1]) << 8 | UInt32(buffer[offset + 2]) << 16
             | UInt32(buffer[offset + 3]) << 24
     }
+
+    private func u16(at offset: Int) -> UInt16 { UInt16(buffer[offset]) | UInt16(buffer[offset + 1]) << 8 }
 
     private func u64(at offset: Int) -> UInt64 {
         UInt64(u32(at: offset)) | UInt64(u32(at: offset + 4)) << 32

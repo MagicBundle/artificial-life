@@ -1,0 +1,388 @@
+{
+  "alife_version": "0.1.0",
+  "mlx_version": "0.32.3",
+  "python": "3.12.11",
+  "platform": "darwin-arm64",
+  "device": "Device(gpu, 0)",
+  "knn_impl": "metal",
+  "config_hash": "c03d7089b26dc60b65f555f2cde7e3c3457feb2ffad6148b7f0be22260913fe0",
+  "config": {
+    "n_max": 65536,
+    "n_init": 16384,
+    "max_births_per_step": 1024,
+    "world_size": 320.0,
+    "field_grid": 80,
+    "dims": 3,
+    "world_height": 80.0,
+    "field_grid_z": 20,
+    "k_neighbors": 8,
+    "cell_capacity": 48,
+    "hidden": 32,
+    "weight_dtype": "float16",
+    "brain_impl": "matmul",
+    "compile": true,
+    "runtime_checks": "cheap",
+    "seed": 0
+  },
+  "play": {
+    "steps": 4500,
+    "warmup": 300,
+    "base_rate": 14.4,
+    "frame_hz": 30,
+    "cadence": {
+      "metrics_every": 250,
+      "heavy_metrics_every": 250,
+      "checkpoint_every": 6000,
+      "keep_checkpoints": 3
+    },
+    "engine_ms": 14.931124984286726,
+    "plain_digest": {
+      "off": "d39b433b69e234e088fc94121b0fa7cf375b32ad19474c745c8d77cc916dad9b",
+      "rules": "d39b433b69e234e088fc94121b0fa7cf375b32ad19474c745c8d77cc916dad9b"
+    },
+    "arms": [
+      {
+        "name": "off_max",
+        "director": "off",
+        "rate": "max",
+        "steps_measured": 4499,
+        "seconds": 84.94482191698626,
+        "steps_per_s": 52.96379341870565,
+        "achieved_x": 3.6780412096323367,
+        "step_ms": {
+          "p50": 19.120833021588624,
+          "p99": 25.975368900690228,
+          "max": 98.07091695256531
+        },
+        "step_counts": {
+          "typical": 4481,
+          "snapshot": 0,
+          "boundary": 18
+        },
+        "part_calls": {
+          "boundary": 19,
+          "events": 4520,
+          "frma": 2250,
+          "labels": 180,
+          "save": 1,
+          "tables": 18,
+          "tick_storms": 180,
+          "write": 4500
+        },
+        "step_ms_typical": 19.111832953058183,
+        "step_ms_snapshot": null,
+        "step_ms_boundary": 95.12604150222614,
+        "components_ms": {
+          "engine": 14.931124984286726,
+          "loop_typical": 16.62268745712936,
+          "loop_snapshot": 59.29920851485804,
+          "observer": 1.6915624728426337,
+          "settle": 42.67652105772868,
+          "frma": 3.6938120028935373,
+          "tick": 4.300541011616588,
+          "labels": 0.826750008855015,
+          "tables": 3.2332285190932453,
+          "events": 0.0016670674085617065,
+          "write": 0.16658403910696507,
+          "boundary": 24.298207950778306,
+          "save": 977.4502090876922
+        },
+        "late_steps": 0,
+        "save_stall_steps": 0,
+        "frames": 2250,
+        "bytes_per_s": {
+          "CLCK": 260.9694093144847,
+          "ENVS": 122.99749136222196,
+          "EVNT": 175.78469956170542,
+          "FRMA": 38160554.33217401,
+          "HEAD": 0.0,
+          "IDNT": 153795.36627632382,
+          "INTN": 1146359.034046402,
+          "MAP1": 230668.32748379462,
+          "STRM": 10077.836184489255,
+          "TERR": 453.7062899215194
+        },
+        "mb_per_s": 39.70246835405518,
+        "drained_bytes": 3608407752,
+        "wall_s": 91.87188854208216,
+        "n_alive_end": 44955,
+        "digest": "d39b433b69e234e088fc94121b0fa7cf375b32ad19474c745c8d77cc916dad9b",
+        "digest_equal": true,
+        "gate": {
+          "applies": true,
+          "want": {
+            "achieved_x": 2.5
+          },
+          "got": {
+            "achieved_x": 3.6780412096323367
+          },
+          "pass": true,
+          "checks": {
+            "achieved_x": true
+          },
+          "five_minutes": false
+        }
+      },
+      {
+        "name": "off_1",
+        "director": "off",
+        "rate": "1",
+        "steps_measured": 4499,
+        "seconds": 312.4108580830507,
+        "steps_per_s": 14.400907918520536,
+        "achieved_x": 1.0000630498972594,
+        "step_ms": {
+          "p50": 33.46212499309331,
+          "p99": 47.62991663534182,
+          "max": 143.76899995841086
+        },
+        "step_counts": {
+          "typical": 4481,
+          "snapshot": 0,
+          "boundary": 18
+        },
+        "part_calls": {
+          "boundary": 19,
+          "events": 4520,
+          "frma": 4500,
+          "labels": 180,
+          "save": 1,
+          "tables": 18,
+          "tick_storms": 180,
+          "write": 4500
+        },
+        "step_ms_typical": 33.447999972850084,
+        "step_ms_snapshot": null,
+        "step_ms_boundary": 130.0454160082154,
+        "components_ms": {
+          "engine": 14.931124984286726,
+          "loop_typical": 26.975583052262664,
+          "loop_snapshot": 85.73966647963971,
+          "observer": 12.044458067975938,
+          "settle": 58.764083427377045,
+          "frma": 6.1872919904999435,
+          "tick": 7.538479461800307,
+          "labels": 1.3200835091993213,
+          "tables": 3.8635205128230155,
+          "events": 0.0040839659050107,
+          "write": 0.3809169866144657,
+          "boundary": 30.26224998757243,
+          "save": 933.6491250433028
+        },
+        "late_steps": 0,
+        "save_stall_steps": 13,
+        "frames": 4500,
+        "bytes_per_s": {
+          "CLCK": 245.08751222611255,
+          "ENVS": 33.4431397938881,
+          "EVNT": 47.79603401630332,
+          "FRMA": 20751353.84147431,
+          "HEAD": 0.0,
+          "IDNT": 41817.11250422372,
+          "INTN": 311696.1574175294,
+          "MAP1": 62718.94683888083,
+          "STRM": 2740.173645861011,
+          "TERR": 123.3631898599203
+        },
+        "mb_per_s": 21.170775921756704,
+        "drained_bytes": 7057127180,
+        "wall_s": 334.6195967498934,
+        "n_alive_end": 44955,
+        "digest": "d39b433b69e234e088fc94121b0fa7cf375b32ad19474c745c8d77cc916dad9b",
+        "digest_equal": true,
+        "gate": {
+          "applies": true,
+          "want": {
+            "achieved_x": 0.98,
+            "late_steps": 0,
+            "step_ms_p99": 66.0
+          },
+          "got": {
+            "achieved_x": 1.0000630498972594,
+            "late_steps": 0,
+            "step_ms_p99": 47.62991663534182
+          },
+          "pass": true,
+          "checks": {
+            "achieved_x": true,
+            "late_steps": true,
+            "step_ms_p99": true
+          },
+          "five_minutes": true
+        }
+      },
+      {
+        "name": "rules_max",
+        "director": "rules",
+        "rate": "max",
+        "steps_measured": 4499,
+        "seconds": 84.75426208309364,
+        "steps_per_s": 53.08287618136715,
+        "achieved_x": 3.686310845928274,
+        "step_ms": {
+          "p50": 19.021500018425286,
+          "p99": 25.96923495177179,
+          "max": 98.61395799089223
+        },
+        "step_counts": {
+          "typical": 4481,
+          "snapshot": 0,
+          "boundary": 18
+        },
+        "part_calls": {
+          "boundary": 19,
+          "events": 4520,
+          "frma": 2250,
+          "labels": 180,
+          "save": 1,
+          "tables": 18,
+          "tick_storms": 180,
+          "write": 4500
+        },
+        "step_ms_typical": 18.990208976902068,
+        "step_ms_snapshot": null,
+        "step_ms_boundary": 95.31091648386791,
+        "components_ms": {
+          "engine": 14.931124984286726,
+          "loop_typical": 16.580354422330856,
+          "loop_snapshot": 59.34918695129454,
+          "observer": 1.6492294380441308,
+          "settle": 42.768832528963685,
+          "frma": 3.7008749786764383,
+          "tick": 4.342625034041703,
+          "labels": 0.8284164359793067,
+          "tables": 3.2633960363455117,
+          "events": 0.0017079291865229607,
+          "write": 0.17533352365717292,
+          "boundary": 24.32754193432629,
+          "save": 980.9595829574391
+        },
+        "late_steps": 0,
+        "save_stall_steps": 0,
+        "frames": 2250,
+        "bytes_per_s": {
+          "CLCK": 261.5561678569787,
+          "ENVS": 123.27403652876727,
+          "EVNT": 176.17993046014098,
+          "FRMA": 38246353.78008449,
+          "HEAD": 0.0,
+          "IDNT": 154141.15678562396,
+          "INTN": 1148936.4853950434,
+          "MAP1": 231186.95766343686,
+          "STRM": 10100.494995292545,
+          "TERR": 454.7263943164903
+        },
+        "mb_per_s": 39.79173461145305,
+        "drained_bytes": 3608407756,
+        "wall_s": 91.67984912497923,
+        "n_alive_end": 44955,
+        "digest": "d39b433b69e234e088fc94121b0fa7cf375b32ad19474c745c8d77cc916dad9b",
+        "digest_equal": true,
+        "gate": {
+          "applies": true,
+          "want": {
+            "achieved_x": 2.5
+          },
+          "got": {
+            "achieved_x": 3.686310845928274
+          },
+          "pass": true,
+          "checks": {
+            "achieved_x": true
+          },
+          "five_minutes": false
+        }
+      },
+      {
+        "name": "rules_1",
+        "director": "rules",
+        "rate": "1",
+        "steps_measured": 4499,
+        "seconds": 312.4178144580219,
+        "steps_per_s": 14.400587264221162,
+        "achieved_x": 1.0000407822375807,
+        "step_ms": {
+          "p50": 33.40837499126792,
+          "p99": 50.36006314912764,
+          "max": 141.08591608237475
+        },
+        "step_counts": {
+          "typical": 4481,
+          "snapshot": 0,
+          "boundary": 18
+        },
+        "part_calls": {
+          "boundary": 19,
+          "events": 4520,
+          "frma": 4500,
+          "labels": 180,
+          "save": 1,
+          "tables": 18,
+          "tick_storms": 180,
+          "write": 4500
+        },
+        "step_ms_typical": 33.39679189957678,
+        "step_ms_snapshot": null,
+        "step_ms_boundary": 127.59879202349111,
+        "components_ms": {
+          "engine": 14.931124984286726,
+          "loop_typical": 26.93329146131873,
+          "loop_snapshot": 83.58062501065433,
+          "observer": 12.002166477032006,
+          "settle": 56.6473335493356,
+          "frma": 6.240208575036377,
+          "tick": 7.504354522097856,
+          "labels": 1.3228330062702298,
+          "tables": 3.933812491595745,
+          "events": 0.004165922291576862,
+          "write": 0.38687553023919463,
+          "boundary": 30.4483330110088,
+          "save": 934.4528749352321
+        },
+        "late_steps": 0,
+        "save_stall_steps": 13,
+        "frames": 4500,
+        "bytes_per_s": {
+          "CLCK": 245.0820550448735,
+          "ENVS": 33.44239514038291,
+          "EVNT": 47.794969777583994,
+          "FRMA": 20750891.786521614,
+          "HEAD": 0.0,
+          "IDNT": 41816.18139370015,
+          "INTN": 311689.2171111584,
+          "MAP1": 62717.55032276741,
+          "STRM": 2740.1126324536935,
+          "TERR": 123.36044302357936
+        },
+        "mb_per_s": 21.170304527844678,
+        "drained_bytes": 7057127180,
+        "wall_s": 334.63265583396424,
+        "n_alive_end": 44955,
+        "digest": "d39b433b69e234e088fc94121b0fa7cf375b32ad19474c745c8d77cc916dad9b",
+        "digest_equal": true,
+        "gate": {
+          "applies": true,
+          "want": {
+            "achieved_x": 0.98,
+            "late_steps": 0,
+            "step_ms_p99": 66.0
+          },
+          "got": {
+            "achieved_x": 1.0000407822375807,
+            "late_steps": 0,
+            "step_ms_p99": 50.36006314912764
+          },
+          "pass": true,
+          "checks": {
+            "achieved_x": true,
+            "late_steps": true,
+            "step_ms_p99": true
+          },
+          "five_minutes": true
+        }
+      }
+    ],
+    "digests_equal": true,
+    "workdir": "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3a/macday/bench_arms"
+  }
+}

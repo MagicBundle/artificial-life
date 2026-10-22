@@ -300,12 +300,19 @@ class Society:
 
     # -- the two entry points -----------------------------------------------------------------------------
 
-    def initialise(self, h: Mapping[str, np.ndarray], step: int) -> tuple[np.ndarray, np.ndarray]:
+    def initialise(
+        self, h: Mapping[str, np.ndarray], step: int, *, exact_houses: bool = False
+    ) -> tuple[np.ndarray, np.ndarray]:
         """The first snapshot of a fresh observer, at ``step``: ids and slots, no events, relations,
-        territory, temperament or record. Returns ``(kin_lut, col_lut)``."""
+        territory, temperament or record. Returns ``(kin_lut, col_lut)``.
+
+        ``house_origin`` is ``step``, so the houses are exact only for an observer that starts at step 0;
+        ``exact_houses`` says the houses in ``h`` are the true ones all the same (a planet's, rebuilt from
+        the source's birth chain, DESIGN §33.3.5) and sets the origin to 0 *before* the snapshot, so the
+        summary of this snapshot already says ``exact``."""
         if self.summary is not None:
             raise RuntimeError("Society.initialise: already initialised")
-        self.house_origin = int(step)
+        self.house_origin = 0 if exact_houses else int(step)
         return self._snapshot(h, int(step), first=True)
 
     def settle(self, h: Mapping[str, np.ndarray], step: int) -> tuple[np.ndarray, np.ndarray]:

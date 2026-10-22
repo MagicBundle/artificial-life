@@ -30,6 +30,12 @@ W2a (`DESIGN.md` §32: eight `weather` keys `seed_gain`, `seed_c0`, `shade_gain`
 `wind_eddy_force`; the tracer rig `game.tracers`; `run.eco_every`, `run.wx_every`; `RULES_V3` with `INTENT_VERSION` 3, the default
 observer rules; `python -m alife.analysis.w2`) is implemented and off by default; the calibration and the 14 runs (W2b) are not run, and
 `presets/storm.toml` still holds W1's provisional values.
+`alife play` and the Swift **World** window (the play loop, the stream records, planets, the chronicle, picking and follow; GAMES §9 G3a;
+normative spec `DESIGN.md` §33, row I51) are built; their Mac day ran 2026-10-22 (purity on Metal, the bench gate: passed; `docs/RESULTS_G3A.md`); the click-through by hand is the owner's.
+Presentation-only control lines (`focus follow idnt labels color every`, pacing, frames, records) never change a trajectory; a change to
+`play.py`, `streamrec.py` or the runner's `Pacer` hook must keep `tests/test_play_purity.py` (digest equality with a plain run) green.
+The stream's labels are `INTENT_VERSION` 3's (ten archetypes, the storm names) and carry N1's held-out verdict gate: a label is shown as valid only
+with a `LABEL_VERDICTS` row for the world and rule set (none for V2 or V3 yet) and the environment at its defaults (`DESIGN.md` §33.7).
 
 ## Conventions
 
@@ -51,14 +57,15 @@ observer rules; `python -m alife.analysis.w2`) is implemented and off by default
   bitwise equal to the pure-MLX path it replaces (`tests/test_spatial_metal.py`, run with `-m ""` on the Mac and on
   every MLX bump, which is then added to `knn_metal.VERIFIED_MLX`), fall back to that path off Metal, and write no
   contested outputs. `ALIFE_KNN=auto|mlx|metal` selects the neighbour search (DESIGN §4, I48).
-- Checks before pushing: `uv run ruff check src tests`, `uv run ruff format --check src tests`,
-  `uv run pytest -m "not slow" -q`. A trajectory change needs a deliberate golden-digest re-pin.
+- Checks before pushing: `uv run ruff check`, `uv run ruff format --check` (the whole repo, as CI runs them; scripts
+  under `docs/` count), `uv run pytest -m "not slow" -q`. A trajectory change needs a deliberate golden-digest re-pin.
 - The world report (DESIGN §31) never calls an LM Studio management endpoint (no load, unload or switch) and sends `model`
   explicitly; its only network calls are the chat POST and the read-only `GET /api/v0/models` preflight. Run `--llm` and
   `probe` only when no GPU job or timing runs. A change to a template, the lexicon, the label table or the select prompt
   changes a digest that `verify` compares: bump the version and re-pin.
 - The GUI (`gui/`, SwiftUI, macOS 14+) shells out to `.venv/bin/alife`. Keep its lever list in sync with
-  config keys, and build it with `cd gui && swift build`.
+  config keys, and build it with `cd gui && swift build`. Swift is not in CI: before a push run `swift build -Xswiftc
+  -warnings-as-errors && swift test` there (`tests/test_gui_sync.py` ties its flags, palettes, event kinds and levels to the engine).
 
 ## Owner preferences
 

@@ -57,6 +57,8 @@ final class RunController: ObservableObject {
     }
     @Published private(set) var repoReady = false
     @Published private(set) var runs: [String] = []
+    /// The runs whose `play.lock` is held by a process (a world being played or saving).
+    @Published private(set) var playLocked: Set<String> = []
     /// The runs with a `director.jsonl`: what a random director can be yoked to (newest first).
     private var runsWithLog: [String] = []
 
@@ -105,6 +107,9 @@ final class RunController: ObservableObject {
         StreamController.shared.log = { [weak self] lines, isError in
             self?.appendStreamLog(lines, isError: isError)
         }
+        PlayController.shared.log = { [weak self] lines, isError in
+            self?.appendStreamLog(lines, isError: isError)
+        }
         // Lives as long as the app (it also refreshes the run list and metrics while idle).
         ticker = Task { [weak self] in
             let clock = ContinuousClock()
@@ -127,7 +132,15 @@ final class RunController: ObservableObject {
 
     var alifeURL: URL { repoURL.appendingPathComponent(".venv/bin/alife") }
 
-    var validationErrors: [String] { settings.validate(existingRuns: Set(runs)) }
+    var validationErrors: [String] {
+        var errors = settings.validate(existingRuns: Set(runs))
+        // A directory the World window plays holds `play.lock` (also while it saves its quit checkpoint); `alife resume`
+        // would be refused, and a second writer must not be started.
+        if settings.mode == .resume, playLocked.contains(settings.sourceRun) {
+            errors.append("'runs/\(settings.sourceRun)' is being played in the World window (play.lock).")
+        }
+        return errors
+    }
 
     /// New run / fork: a note when the typed name is taken and Start will use the next free one.
     var outputNameNote: String? {
@@ -183,6 +196,8 @@ final class RunController: ObservableObject {
         }
         let names = entries.sorted { $0.date > $1.date }.map { $0.name }
         if names != runs { runs = names }
+        let locked = PlayLockProbe.held(among: names, in: runsDir)
+        if locked != playLocked { playLocked = locked }
         runsWithLog = names.filter {
             FileManager.default.fileExists(
                 atPath: runsDir.appendingPathComponent($0).appendingPathComponent("director.jsonl").path)
@@ -435,6 +450,14 @@ final class RunController: ObservableObject {
 
     func closeViewer() { viewerProcess?.terminate() }
 
+    /// `--world RUN` at launch: starts RUN in the World window (the caller opens the window). False if there is no repository
+    /// or no such world.
+    func openWorldAtLaunch(_ run: String) -> Bool {
+        guard repoReady, runs.contains(run) else { return false }
+        PlayController.shared.start(.resume(PlayResume(run: run)), executable: alifeURL, directory: repoURL)
+        return true
+    }
+
     /// The pygame viewer draws a 2D plane (`alife view` refuses a 3D run, exit 2); a 3D run goes to the 3D viewer.
     var pygameViewerAvailable: Bool { targetRunDims != 3 }
 
@@ -467,6 +490,7 @@ final class RunController: ObservableObject {
         stop()
         viewerProcess?.terminate()
         StreamController.shared.shutdown()
+        PlayController.shared.shutdown()
     }
 
     // MARK: Log

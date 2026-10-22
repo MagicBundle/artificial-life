@@ -21,6 +21,9 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
   off, as blocks (off, on, on, off). The trajectories differ by construction, so none is compared. The
   marginal cost per step is the number STORMS §8 W1 asks for; ``stages`` adds the rows ``wind`` and
   ``weather`` when the layer is on.
+- **Play** (``run_play_bench``, G3a, DESIGN §33.5): the play loop of ``alife play`` run headless, once per
+  director mode and rate, with the full record set into a draining reader thread (a pipe), and the cost of its
+  parts; the gate of DESIGN §33.5.3 is read from it. A separate report: ``alife bench --play``.
 - **Weather-org** (``weather_org``, W2): the same blocks with the weather on in both arms, the "off" arm
   having ``seed_gain = shade_gain = 0``: the marginal cost of the organism couplings (the seeding signal and
   the shade count, DESIGN §32).
@@ -36,6 +39,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Final, NamedTuple
 
 import mlx.core as mx
@@ -46,7 +50,16 @@ from alife import energy as en
 from alife import step as step_mod
 from alife import weather as wthr
 from alife.actions import Actions
-from alife.config import BRAIN_IMPLS, WEIGHT_DTYPES, Config, ConfigError, WeatherConfig, config_hash, dims
+from alife.config import (
+    BRAIN_IMPLS,
+    WEIGHT_DTYPES,
+    Config,
+    ConfigError,
+    WeatherConfig,
+    apply_overrides,
+    config_hash,
+    dims,
+)
 from alife.rng import Stream, step_keys
 from alife.state import (
     ERROR_MASK,
@@ -950,6 +963,434 @@ def _bench_stages(cfg: Config, steps: int, warmup: int, fused_ms: float) -> dict
 # --- text report ----------------------------------------------------------------------------------------
 
 
+# --- play (G3a, DESIGN §33.5) ----------------------------------------------------------------------------
+
+PLAY_RATES: Final = ("max", "1")  # the rates of the gate: unthrottled and the base rate
+PLAY_DIRECTORS: Final = ("off", "rules")
+PLAY_WARMUP: Final = 300
+PLAY_STEPS: Final = 2000
+# The gate of DESIGN §33.5.3 (the coordinator's Mac day): at 1x, achieved >= 0.98x, no late steps, p99 step
+# <= 66 ms; at max, achieved >= 2.5x. The client's draw time (p95 <= 25 ms) is the Swift bench's, not here.
+PLAY_GATE_1X: Final = {"achieved_x": 0.98, "late_steps": 0, "step_ms_p99": 66.0}
+PLAY_GATE_MAX: Final = {"achieved_x": 2.5}
+
+
+def _rate_value(rate: str) -> float:
+    if rate == "max":
+        return math.inf
+    value = float(rate)
+    if not 0.05 <= value <= 16:
+        raise ValueError(f"a play rate is max or a multiplier in [0.05, 16], not {rate!r}")
+    return value
+
+
+def _stat(values: list[float]) -> float | None:
+    return statistics.median(values) if values else None
+
+
+def _play_items(director: str) -> list[str]:
+    """What ``alife play`` applies on top of a world's config for a director mode (``cli._play_items``)."""
+    from alife import play
+
+    return [
+        *(f"run.{k}={v}" for k, v in play.PLAY_CADENCE.items()),
+        "game.observe=true",
+        f"run.director={'live' if director == 'rules' else 'off'}",
+        *(["director.llm_every=0"] if director == "rules" else []),
+    ]
+
+
+class _Timing:
+    """The pacer's measurements of one arm: wall time per step and per part, after the warm-up."""
+
+    def __init__(self, warmup: int) -> None:
+        self.warmup = warmup
+        self.start: int | None = None
+        self.recording = False
+        self.work: list[
+            float
+        ] = []  # ms from the exit of before_step to the next entry, whatever the step did
+        self.work_typical: list[float] = []  # (the same, for a step that took no snapshot and no metrics row)
+        self.work_snapshot: list[float] = []
+        self.work_boundary: list[float] = []
+        self.loop_typical: list[float] = []  # ms of the runner's step: before_step exit -> after_step entry
+        self.loop_snapshot: list[float] = []
+        self.parts: dict[str, list[float]] = {}
+        self.first_at: float | None = None
+        self.last_at = 0.0
+        self.bytes_at_first: dict[str, int] = {}
+        self.frames_at_first = 0
+        self.steps = 0
+
+    def add(self, key: str, ms: float) -> None:
+        if self.recording:
+            self.parts.setdefault(key, []).append(ms)
+
+
+def _bench_pacer_class() -> type:
+    """``PlayPacer`` with a stopwatch on its parts (built lazily: the play module is heavy)."""
+    from alife import play
+
+    class BenchPacer(play.PlayPacer):  # type: ignore[misc]
+        timing: _Timing
+        _prev_exit: float | None = None
+        _snap = False
+        _bound = False
+        _write_s = 0.0
+        _saved_ms = 0.0
+        _save_at = 0.0
+        _after_exit = 0.0
+
+        def _lap(self, key: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+            t0 = time.perf_counter()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                self.timing.add(key, 1e3 * (time.perf_counter() - t0))
+
+        def _write(self, tag: str, data: bytes) -> None:
+            t0 = time.perf_counter()
+            super()._write(tag, data)
+            self._write_s += time.perf_counter() - t0
+
+        def _send_frame(self, state: State) -> None:
+            self._lap("frma", super()._send_frame, state)
+
+        def _tick_storms(self, state: State, t: int) -> None:
+            self._lap("tick_storms", super()._tick_storms, state, t)
+
+        def _send_labels(self, state: State) -> None:
+            self._lap("labels", super()._send_labels, state)
+
+        def _send_tables(self, state: State, *, labels: bool = True) -> None:
+            self._lap("tables", super()._send_tables, state, labels=labels)
+
+        def _flush_events(self, *, backlog: bool = False) -> None:
+            self._lap("events", super()._flush_events, backlog=backlog)
+
+        def before_step(self, state: State, t: int) -> None:
+            tm, now = self.timing, time.perf_counter()
+            if tm.start is None:
+                tm.start = t
+            if self._prev_exit is not None and tm.recording:
+                ms = 1e3 * (now - self._prev_exit)
+                tm.work.append(ms)
+                (
+                    tm.work_boundary if self._bound else tm.work_snapshot if self._snap else tm.work_typical
+                ).append(ms)
+            was = tm.recording
+            tm.recording = t - tm.start >= tm.warmup
+            if tm.recording and not was:
+                tm.first_at = now
+                tm.bytes_at_first = dict(self.bytes_by_tag)
+                tm.frames_at_first = self._frames_written
+            if tm.recording:
+                tm.last_at = now
+                tm.steps = t - tm.start - tm.warmup
+            super().before_step(state, t)
+            self._prev_exit = time.perf_counter()
+
+        def after_step(self, state: State, out: Any, t: int, social: list[dict[str, Any]]) -> None:
+            entry = time.perf_counter()
+            self._snap = bool(social)
+            self._bound = t % play.PLAY_CADENCE["metrics_every"] == 0
+            tm = self.timing
+            if tm.recording:
+                (tm.loop_snapshot if self._snap else tm.loop_typical).append(1e3 * (entry - self._prev_exit))
+            self._write_s = 0.0
+            super().after_step(state, out, t, social)
+            tm.add("write", 1e3 * self._write_s)
+            self._after_exit = time.perf_counter()
+
+        def before_checkpoint(self, state: State, t: int) -> None:
+            self._save_at = time.perf_counter()
+            super().before_checkpoint(state, t)
+
+        def after_checkpoint(self, t: int) -> None:
+            super().after_checkpoint(t)
+            self._saved_ms = 1e3 * (time.perf_counter() - self._save_at)
+            self.timing.add("save", self._saved_ms)
+
+        def after_boundary(self, state: State, row: dict[str, Any], t: int) -> None:
+            super().after_boundary(state, row, t)
+            ms = 1e3 * (time.perf_counter() - self._after_exit) - self._saved_ms
+            self._saved_ms = 0.0
+            self.timing.add("boundary", max(ms, 0.0))
+
+    return BenchPacer
+
+
+def _quantiles(values: list[float]) -> dict[str, float | None]:
+    if not values:
+        return {"p50": None, "p99": None, "max": None}
+    a = np.asarray(values)
+    return {"p50": float(np.quantile(a, 0.5)), "p99": float(np.quantile(a, 0.99)), "max": float(a.max())}
+
+
+def _plain_engine_ms(cfg: Config, state: State, steps: int = 100, warmup: int = 30) -> float:
+    """Median ms of the compiled step without observers, from ``state`` (the reference the observer's cost
+    is read against)."""
+    fn = step_mod.make_step(replace(cfg, game=replace(cfg.game, observe=False)))
+    times = []
+    for i in range(warmup + steps):
+        t0 = time.perf_counter()
+        state, out = fn(state)
+        mx.eval(state, out)
+        if i >= warmup:
+            times.append(time.perf_counter() - t0)
+    return 1e3 * statistics.median(times)
+
+
+def _play_arm(
+    cfg: Config, template: Path, workdir: Path, *, name: str, director: str, rate: str, steps: int,
+    warmup: int, frame_hz: int, base_rate: float,
+) -> dict[str, Any]:  # fmt: skip
+    """One arm: the world of ``template`` played ``warmup + steps`` steps under the bench pacer, its stream
+    drained by a reader thread through a pipe."""
+    import os
+    import threading
+
+    from alife import play, runner, stream
+    from alife.director import make_director
+    from alife.runio import RunDir, load_checkpoint
+
+    cfg_arm = apply_overrides(cfg, _play_items(director))
+    state = load_checkpoint(template, cfg_arm, check_hash=False)
+    start = int(to_numpy(state.step))
+    total = warmup + steps
+    rd = RunDir.create(workdir / name, cfg_arm, overwrite=True)
+    rd.update_meta(start_step=start)
+    r_fd, w_fd = os.pipe()
+    drained = [0]
+
+    def drain() -> None:
+        with os.fdopen(r_fd, "rb", buffering=0) as reader:
+            while chunk := reader.read(1 << 20):
+                drained[0] += len(chunk)
+
+    thread = threading.Thread(target=drain, name="bench-reader", daemon=True)
+    thread.start()
+    sink = os.fdopen(w_fd, "wb", buffering=0)
+    timing = _Timing(warmup)
+    options = play.PlayOptions(
+        base_rate=base_rate, rate=_rate_value(rate), paused=False, frame_hz=frame_hz, source="preset",
+        run=str(rd.path), fresh=True, until=start + total,
+    )  # fmt: skip
+    pacer = _bench_pacer_class()(sink, stream.NoControl(), options)
+    pacer.timing = timing
+    t_all = time.perf_counter()
+    try:
+        res = runner.run(
+            rd, cfg_arm, state, total, quiet=True, director=make_director(rd, cfg_arm, start), pacer=pacer
+        )
+    finally:
+        sink.close()
+        thread.join(timeout=60)
+    wall = time.perf_counter() - t_all
+    del state
+    if res.status != "done" or pacer.failure is not None:
+        raise RuntimeError(f"play arm {name} ended {res.status} ({pacer.failure!r}) at {timing.steps} steps")
+    seconds = max(timing.last_at - (timing.first_at or timing.last_at), 1e-9)
+    measured = max(timing.steps, 1)
+    steps_per_s = measured / seconds
+    after = pacer.bytes_by_tag
+    delta = {k: after.get(k, 0) - timing.bytes_at_first.get(k, 0) for k in after}
+    loop_typical = _stat(timing.loop_typical)
+    loop_snapshot = _stat(timing.loop_snapshot)
+    engine = None  # filled by the caller (one reference measurement per run)
+    parts = {k: _stat(v) for k, v in timing.parts.items()}
+    arm = {
+        "name": name,
+        "director": director,
+        "rate": rate,
+        "steps_measured": measured,
+        "seconds": seconds,
+        "steps_per_s": steps_per_s,
+        "achieved_x": steps_per_s / base_rate,
+        "step_ms": _quantiles(timing.work),
+        "step_counts": {
+            "typical": len(timing.work_typical),
+            "snapshot": len(timing.work_snapshot),
+            "boundary": len(timing.work_boundary),
+        },
+        "part_calls": {k: len(v) for k, v in sorted(timing.parts.items())},
+        "step_ms_typical": _stat(timing.work_typical),
+        "step_ms_snapshot": _stat(timing.work_snapshot),
+        "step_ms_boundary": _stat(timing.work_boundary),
+        "components_ms": {
+            "engine": engine,
+            "loop_typical": loop_typical,
+            "loop_snapshot": loop_snapshot,
+            "observer": None,
+            "settle": None if loop_snapshot is None or loop_typical is None else loop_snapshot - loop_typical,
+            "frma": parts.get("frma"),
+            "tick": parts.get("tick_storms"),
+            "labels": parts.get("labels"),
+            "tables": parts.get("tables"),
+            "events": parts.get("events"),
+            "write": parts.get("write"),
+            "boundary": parts.get("boundary"),
+            "save": parts.get("save"),
+        },
+        "late_steps": pacer.sched.late_steps,
+        "save_stall_steps": pacer.sched.save_stall_steps,
+        "frames": pacer._frames_written - timing.frames_at_first,
+        "bytes_per_s": {k: v / seconds for k, v in sorted(delta.items())},
+        "mb_per_s": sum(delta.values()) / seconds / 1e6,
+        "drained_bytes": drained[0],
+        "wall_s": wall,
+        "n_alive_end": int(to_numpy(res.state.alive.sum())),
+        "digest": state_digest(res.state),
+    }
+    return arm
+
+
+def _plain_digest(cfg: Config, template: Path, workdir: Path, *, director: str, total: int) -> str:
+    """The digest of the same world run by ``runner.run`` with no pacer."""
+    from alife import runner
+    from alife.director import make_director
+    from alife.runio import RunDir, load_checkpoint
+
+    cfg_arm = apply_overrides(cfg, _play_items(director))
+    state = load_checkpoint(template, cfg_arm, check_hash=False)
+    start = int(to_numpy(state.step))
+    rd = RunDir.create(workdir / f"plain_{director}", cfg_arm, overwrite=True)
+    rd.update_meta(start_step=start)
+    res = runner.run(rd, cfg_arm, state, total, quiet=True, director=make_director(rd, cfg_arm, start))
+    del state
+    return state_digest(res.state)
+
+
+def _play_gate(arm: dict[str, Any]) -> dict[str, Any]:
+    """The gate of DESIGN §33.5.3 read from an arm. Misses are reported with the component table, never
+    cured by changing a parameter."""
+    if arm["rate"] == "max":
+        want = PLAY_GATE_MAX
+        got = {"achieved_x": arm["achieved_x"]}
+    elif float(arm["rate"]) == 1.0:
+        want = PLAY_GATE_1X
+        got = {
+            "achieved_x": arm["achieved_x"],
+            "late_steps": arm["late_steps"],
+            "step_ms_p99": arm["step_ms"]["p99"],
+        }
+    else:
+        return {"applies": False}
+    checks = {
+        k: (got[k] is not None and (got[k] <= v if k in ("late_steps", "step_ms_p99") else got[k] >= v))
+        for k, v in want.items()
+    }
+    return {
+        "applies": True, "want": want, "got": got, "pass": all(checks.values()), "checks": checks,
+        "five_minutes": arm["seconds"] >= 300,
+    }  # fmt: skip
+
+
+def run_play_bench(
+    cfg: Config,
+    template: Path,
+    workdir: Path,
+    *,
+    steps: int = PLAY_STEPS,
+    warmup: int = PLAY_WARMUP,
+    rates: tuple[str, ...] = PLAY_RATES,
+    directors: tuple[str, ...] = PLAY_DIRECTORS,
+    frame_hz: int | None = None,
+    base_rate: float | None = None,
+) -> dict[str, Any]:
+    """The play loop of ``alife play`` run headless on the world saved in ``template`` (a state file), for
+    each director mode and rate: ``warmup`` steps, then ``steps`` measured, with the full record set drained
+    by a reader thread. ``cfg`` is the world's config (the planet's: weather on, ``director.enabled`` for
+    the rule tier); the cadence of play and ``game.observe`` are applied per arm.
+
+    Returns the ``play`` section of the report. Per arm: the achieved rate, ``step_ms`` p50/p99/max, the
+    cost of the parts, ``late_steps``, ``save_stall_steps``, bytes by tag and the final digest. Per director
+    mode: the digest of a run without a pacer, which every arm must equal (observing, pacing and presenting
+    are not part of the trajectory).
+    """
+    from alife import play
+
+    if steps < 1 or warmup < 0:
+        raise ValueError(f"play bench needs steps >= 1 and warmup >= 0, got {steps} and {warmup}")
+    if not directors or not rates:
+        raise ValueError("play bench needs at least one rate and one director mode")
+    if "rules" in directors and not cfg.director.enabled:
+        raise ConfigError(
+            "bench --play with the rule tier needs director.enabled = true (its compiled step carries the "
+            "levers): pass --set director.enabled=true"
+        )
+    workdir.mkdir(parents=True, exist_ok=True)
+    frame_hz = frame_hz or play.FRAME_HZ
+    base_rate = base_rate or play.BASE_RATE
+    total = warmup + steps
+    from alife.runio import load_checkpoint
+
+    state = load_checkpoint(template, apply_overrides(cfg, _play_items("off")), check_hash=False)
+    engine_ms = _plain_engine_ms(cfg, state)
+    del state
+    plain = {d: _plain_digest(cfg, template, workdir, director=d, total=total) for d in directors}
+    arms = []
+    for director in directors:
+        for rate in rates:
+            arm = _play_arm(
+                cfg, template, workdir, name=f"{director}_{rate}", director=director, rate=rate, steps=steps,
+                warmup=warmup, frame_hz=frame_hz, base_rate=base_rate,
+            )  # fmt: skip
+            comp = arm["components_ms"]
+            comp["engine"] = engine_ms
+            if comp["loop_typical"] is not None:
+                comp["observer"] = max(comp["loop_typical"] - engine_ms, 0.0)
+            arm["digest_equal"] = arm["digest"] == plain[director]
+            arm["gate"] = _play_gate(arm)
+            arms.append(arm)
+    return {
+        "steps": steps, "warmup": warmup, "base_rate": base_rate, "frame_hz": frame_hz,
+        "cadence": dict(play.PLAY_CADENCE), "engine_ms": engine_ms,
+        "plain_digest": plain, "arms": arms, "digests_equal": all(a["digest_equal"] for a in arms),
+    }  # fmt: skip
+
+
+def _format_play(pl: dict[str, Any]) -> list[str]:
+    """The lines of a ``play`` report: one per arm, the parts of the step, and the gate."""
+
+    def ms(v: float | None) -> str:
+        return "-" if v is None else f"{v:.2f}"
+
+    lines = [
+        f"play loop ({pl['warmup']} warm-up + {pl['steps']} steps per arm, base rate {pl['base_rate']:g}, "
+        f"engine alone {pl['engine_ms']:.2f} ms/step); digests "
+        f"{'equal to the plain run' if pl['digests_equal'] else 'DIFFER from the plain run'}"
+    ]
+    for a in pl["arms"]:
+        q, c = a["step_ms"], a["components_ms"]
+        gate = a["gate"]
+        verdict = "" if not gate["applies"] else (" gate PASS" if gate["pass"] else " gate MISS")
+        lines.append(
+            f"  director {a['director']:<5} rate {a['rate']:<3} "
+            f"{a['steps_per_s']:6.1f} steps/s = {a['achieved_x']:.2f}x; "
+            f"step ms p50 {ms(q['p50'])} p99 {ms(q['p99'])} max {ms(q['max'])}; late {a['late_steps']}, "
+            f"save stall {a['save_stall_steps']}; {a['mb_per_s']:.1f} MB/s{verdict}"
+        )
+        lines.append(
+            "      parts (ms): "
+            + ", ".join(
+                f"{k} {ms(c[k])}"
+                for k in (
+                    "loop_typical",
+                    "observer",
+                    "settle",
+                    "frma",
+                    "tick",
+                    "tables",
+                    "write",
+                    "boundary",
+                    "save",
+                )
+            )
+        )
+    return lines
+
+
 def format_report(report: dict[str, Any]) -> str:
     """A short human-readable summary of a ``run_bench`` report."""
     r = report
@@ -1015,6 +1456,8 @@ def format_report(report: dict[str, Any]) -> str:
                 f"{so['components_ms_median']:.2f} ms; heavy metrics {so['heavy_ms_median']:.2f} ms) = "
                 f"{so['amortised_ms_per_step']:.3f} ms/step amortised"
             )
+    if "play" in r:
+        lines += _format_play(r["play"])
     for key, label, unit in (
         ("weather", "weather", "weather"),
         ("weather_org", "weather-org (seeding and shade)", "the couplings"),

@@ -6,7 +6,8 @@ import os
 // the bytes never go through the line-oriented path of `RunController` (which splits on 0x0A and 0x0D, bytes that
 // occur inside any frame). A dedicated thread blocks in `read`, so the pipe is drained as fast as the engine writes
 // (a full 64 KiB pipe would stall the simulation) whatever the main actor is doing. It feeds a `FrameDecoder` and
-// leaves the newest frame in a mailbox; the main actor is woken, with wake-ups coalesced, and takes what is there.
+// leaves the newest frame in a mailbox; the main actor is woken, with wake-ups coalesced, and takes what is there. An
+// `alife play` stream adds records (§33.1): the newest of each latest-wins tag is kept, `EVNT` batches are queued.
 
 /// How a stream ended, as the reader saw it.
 enum StreamEnd: Sendable, Equatable {
@@ -23,17 +24,25 @@ struct StreamDelivery: Sendable, Equatable {
     var header: StreamHeader?
     /// The newest frame; older ones that were not taken are gone.
     var frame: StreamFrame?
+    /// The newest record of each latest-wins tag of an `alife play` stream (`FRMA IDNT INTN TERR STRM MAP1 ENVS CLCK
+    /// FOCS`), by tag; a record that was replaced before it was taken is counted in `droppedRecords`.
+    var records: [String: StreamRecord] = [:]
+    /// The `EVNT` batches since the last take, in order: events are never dropped.
+    var events: [PlayEventBatch] = []
     var end: StreamEnd?
     /// Frames that arrived and were replaced by a newer one before they were taken.
     var dropped = 0
+    /// Play records that were replaced before they were taken, by tag.
+    var droppedRecords: [String: Int] = [:]
     /// Frames that arrived (taken or replaced).
     var received = 0
 
-    var isEmpty: Bool { header == nil && frame == nil && end == nil }
+    var isEmpty: Bool { header == nil && frame == nil && records.isEmpty && events.isEmpty && end == nil }
 }
 
-/// Holds the latest header and frame between the reader thread and the main actor. All access is under one lock;
-/// nothing blocks for long (a frame is stored by reference to its arrays).
+/// Holds the latest header, frame and play records between the reader thread and the main actor. All access is under one
+/// lock; nothing blocks for long (a frame is stored by reference to its arrays). A latest-wins tag keeps the newest
+/// record; `EVNT` batches are queued.
 final class StreamMailbox: Sendable {
     private let state = OSAllocatedUnfairLock(initialState: StreamDelivery())
 
@@ -46,6 +55,19 @@ final class StreamMailbox: Sendable {
             if $0.frame != nil { $0.dropped += 1 }
             $0.frame = frame
             $0.received += 1
+        }
+    }
+
+    func publish(record: StreamRecord) {
+        state.withLock {
+            if case .evnt(let batch) = record {
+                $0.events.append(batch)
+                return
+            }
+            let tag = record.tag
+            if $0.records[tag] != nil { $0.droppedRecords[tag, default: 0] += 1 }
+            $0.records[tag] = record
+            if case .frma = record { $0.received += 1 }
         }
     }
 
@@ -114,6 +136,9 @@ enum StreamReader {
                         published = true
                     case .frame(let frame):
                         mailbox.publish(frame: frame)
+                        published = true
+                    case .record(let record):
+                        mailbox.publish(record: record)
                         published = true
                     case .unknownRecord: break  // a record of a later compatible version
                     }
