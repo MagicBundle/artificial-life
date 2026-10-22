@@ -8,10 +8,17 @@ pacer does two things and nothing else:
   of the observer and director calls and every written log line are functions of the step count, so pacing
   never reaches the trajectory.
 - **Present.** After a step it writes the records of §33.1 (``FRMA``, ``IDNT``, ``INTN``, ``TERR``, ``MAP1``,
-  ``STRM``, ``EVNT``, ``ENVS``, ``CLCK``, ``FOCS``) to the protocol stream. The records are built from arrays
-  it evaluates and converts to numpy before it returns, from the observer's accessors and from the storm
-  layer; it holds no reference to the runner's state (the donation rule: the runner is the only holder when it
-  steps).
+  ``STRM``, ``EVNT``, ``ENVS``, ``CLCK``, ``FOCS``, and from G3b ``ALRT``, ``RPRT`` and ``PLAN``) to the
+  protocol stream. The records are built from arrays it evaluates and converts to numpy before it returns,
+  from the observer's accessors and from the storm layer; it holds no reference to the runner's state (the
+  donation rule: the runner is the only holder when it steps).
+
+The one thing a pacer never does on its own is change the trajectory. A ``power`` line (G3b, DESIGN §34.5) is
+the exception, and it goes through the director: the pacer only *queues* the request
+(``Director.queue_player``, after the dry run that answers a preview), the runner applies it at the top of the
+next iteration, and what was applied is in ``director.jsonl`` before the state is handed back.
+``game.powers.PowerDesk`` writes the ``PLAN`` records and the player's input log (``commands.jsonl``) around
+that.
 
 ``parse_play_command`` is the control grammar (§33.2.6). The module reads no wall clock and sleeps only
 through the injected ``Clock`` (``tests/test_lint.py``), so the scheduler tests run on a fake one. The pacer
@@ -41,10 +48,12 @@ import numpy as np
 from alife import layout, metrics, runner, streamrec
 from alife import weather as W
 from alife.config import Config, config_hash, dims, immigration_on
+from alife.director import actions as director_actions
 from alife.director import log as director_log
 from alife.director import pacing, rules
 from alife.game import alerts as alerts_mod
 from alife.game import observer as observer_mod
+from alife.game import powers as powers_mod
 from alife.game import report as report_mod
 from alife.game import reportjob
 from alife.game.chronicle import Chronicler, rebuild_backlog
@@ -53,7 +62,7 @@ from alife.game.observe import EVAL_BIT
 from alife.game.observer import Observer, default_rules, house_bytes, slot_bytes
 from alife.game.report import label_gate, label_names
 from alife.game.rules import INTENT_VERSION
-from alife.runio import ALERTS_FILE, ALERTS_REPLAY_FILE, DIRECTOR_LOG_FILE, RunDir
+from alife.runio import ALERTS_FILE, ALERTS_REPLAY_FILE, COMMANDS_FILE, DIRECTOR_LOG_FILE, RunDir
 from alife.state import ERROR_MASK, CounterIdx, DeathCause, State, default_env, to_numpy
 from alife.step import StepOut
 from alife.storms import StormLayer, dc_reference
@@ -135,9 +144,9 @@ COMMANDS: Final = (
     "ack",
     "power",
     "intent",
-)  # the last six are G3b's (DESIGN §34.6.1): the grammar is whole, each handler comes with its stage
-# parsed, but the handler is not built yet (each comes with its stage): ``power`` and ``intent`` remain
-UNBUILT_LINES: Final = frozenset({"power", "intent"})
+)  # the last six are G3b's (DESIGN §34.6.1)
+# lines that are parsed but have no handler yet (each G3b line came with its stage; none remains)
+UNBUILT_LINES: Final = frozenset[str]()
 POWER_NAMES: Final = ("food", "bloom", "blight", "strike")
 POWER_KEYS: Final = ("mult", "steps", "patch", "gain", "x", "y", "radius", "kill")
 POWER_INT_KEYS: Final = frozenset({"steps", "patch"})  # the others are decimals
@@ -363,10 +372,14 @@ def _parse_power(args: list[str]) -> PowerLine:
             raise ControlError(f"power names {key} twice")
         if key == "id" or key in POWER_INT_KEYS:
             number: int | float = _uint(value, key)
+            if number > INT64_MAX:
+                raise ControlError(f"{key} does not fit an int64")
         else:
             if not _DECIMAL.fullmatch(value):
                 raise ControlError(f"{key} must be a decimal, got {value!r}")
             number = float(value)
+            if not math.isfinite(number):
+                raise ControlError(f"{key} is too large")
         found = {**found, key: number}
         order.append(key)
     if "id" not in found:
@@ -713,6 +726,8 @@ class PlayPacer:
         # the report job (DESIGN §34.4): a worker that builds the report of each chapter at its end; None for
         # a world with no observers or a chapter that is not a whole number of social snapshots
         self.reports: reportjob.ReportJob | None = None
+        # the player's powers (DESIGN §34.5): previews, requests, the PLAN cards, ``commands.jsonl``
+        self.desk: powers_mod.PowerDesk | None = None
         # called with the step of a chapter end, in ``before_checkpoint``, once the announcing ``CLCK`` is
         # sent
         self.on_chapter_end: Callable[[int], None] | None = None
@@ -859,10 +874,16 @@ class PlayPacer:
         check_tick(self._tick)
         if self.opt.on_ready is not None:
             self.opt.on_ready({"dc_ref": dc_ref, "step": self._t, "tick": self._tick})
+        self.desk = powers_mod.PowerDesk(
+            cfg,
+            director,
+            base_rate=self.opt.base_rate,
+            append=lambda lines: rd.append_jsonl(COMMANDS_FILE, lines),
+        )
         records = [
             t
             for t in streamrec.TAGS
-            if t in ("FRMA", "EVNT", "ENVS", "CLCK", "FOCS", "ALRT")
+            if t in ("FRMA", "EVNT", "ENVS", "CLCK", "FOCS", "ALRT", "PLAN")
             or (t in ("IDNT", "INTN", "TERR") and obs is not None)
             or (t == "RPRT" and self._reports_wanted())
             or (t in ("MAP1", "STRM") and self.layer is not None)
@@ -883,6 +904,7 @@ class PlayPacer:
             config_hash=config_hash(cfg),
             source=self.opt.source,
         )
+        powers = self.desk.header()
         play = streamrec.header_play(
             records=records,
             weather=streamrec.weather_block(enabled=self.layer is not None, dc_ref=dc_ref),
@@ -897,6 +919,8 @@ class PlayPacer:
             chapter=self.opt.chapter,
             autopause=self.autopause.block(),
             alerts=streamrec.alerts_block(alerts_mod.registry()),
+            powers=powers,
+            game_specs=director_actions.GAME_SPEC_VERSION if powers is not None else None,
         )
         self._write("HEAD", streamrec.play_header_bytes(legacy, play))
         self._backlog(rd, state)
@@ -907,6 +931,7 @@ class PlayPacer:
         self._flush_events(backlog=True)
         self._send_alert_backlog()
         self._open_reports()
+        self._send_plans(self.desk.open(rd.metrics_rows(), self._t))
         self._send_clock()
         self.sched.restart()
         self._t_step = self.clock.monotonic()
@@ -1066,6 +1091,7 @@ class PlayPacer:
             if self.obs is not None and self.labels_on:
                 self._send_labels(state)
         self._follow_step(state, out, t)
+        self._player_step(state, t)
         batch_end = self.sched.batch_done
         self.sched.batch_done = False
         if batch_end or (not self.sched.paused and t % self._effective_fe() == 0):
@@ -1125,6 +1151,8 @@ class PlayPacer:
             pause_ok=self._pause_ok(),
         )
         self._emit_alerts()
+        if self.desk is not None:
+            self._send_plans(self.desk.on_row(row))
         self._send_environment(state)
         self._flush_events()
 
@@ -1151,10 +1179,10 @@ class PlayPacer:
             if cmd.name == "quit":
                 self.stop_requested = True
                 return True
-            self._command(cmd, state)
+            self._command(cmd, state, line.strip())
         return False
 
-    def _command(self, cmd: PlayCommand, state: State) -> None:
+    def _command(self, cmd: PlayCommand, state: State, text: str = "") -> None:
         sched, name, arg = self.sched, cmd.name, cmd.arg
         if name == "pause":
             was_running = not sched.paused
@@ -1213,7 +1241,12 @@ class PlayPacer:
             if (note := self.alerts.ack(arg, self._t)) is not None:
                 self._note(note)
             self._emit_alerts()
-        elif name in UNBUILT_LINES:  # G3b's other lines: each handler comes with its stage
+        elif name == "power":
+            self._power(arg, text, state)
+        elif name == "intent":  # reserved for G4: answered with a refusal
+            if self.desk is not None:
+                self._send_plans(self.desk.intent(text, self._t))
+        elif name in UNBUILT_LINES:
             self._note(f"{name}: not available in this build yet")
         else:  # focus, follow
             self._command_focus(cmd, state)
@@ -1226,6 +1259,53 @@ class PlayPacer:
             assert isinstance(arg, int)
             if (note := self.alerts.watch(arg, self.chron.threads)) is not None:
                 self._note(note)
+
+    # --- the player's powers ----------------------------------------------------------------------------
+
+    def _power(self, arg: Any, text: str, state: State) -> None:
+        """A ``power`` line (DESIGN §34.5): answered with a ``PLAN`` (a preview, a refusal or the request
+        queued; the runner applies a queued one at the top of this iteration, or at the first step after the
+        world resumes). Previews and refusals change nothing; a queued request is a trajectory change that is
+        logged when it is applied."""
+        assert isinstance(arg, PowerLine)
+        if self.desk is None:
+            return
+        outs = self.desk.handle(
+            arg,
+            text,
+            self._t,
+            state,
+            paused=self.sched.paused,
+            patch_pos=to_numpy(state.patch_pos),
+            positions=lambda: (to_numpy(state.pos), to_numpy(state.alive)),
+        )
+        self._send_plans(outs)
+        if any(o.plan["status"] == "queued" for o in outs):
+            self._send_environment(state)  # the units the request holds
+
+    def _send_plans(self, outs: Sequence[powers_mod.Out]) -> None:
+        for o in outs:
+            self._send(
+                "PLAN",
+                lambda step, seq, o=o: streamrec.encode_plan(step=step, seq=seq, obj=o.plan, reply=o.reply),
+            )
+
+    def _player_step(self, state: State, t: int) -> None:
+        """After a step: what the director applied or refused at its top (``Director.take_player``), the
+        chronicle rows, the ``PLAN`` records, ``ENVS`` if the environment changed, and a strike's count in its
+        column one step after it was applied."""
+        if self.desk is None or self.desk.mode == "off":  # no director (or not one that has a player channel)
+            return
+        applied, refused = self.director.take_player()
+        if applied or refused:
+            outs, changed = self.desk.after_step(applied, refused, t - 1)
+            if applied:
+                self._events += self.chron.from_director(applied)
+            self._send_plans(outs)
+            if changed:
+                self._send_environment(state)
+        if self.desk.wants_disc():
+            self.desk.set_disc(to_numpy(state.pos), to_numpy(state.alive))
 
     def _resumed(self, *, acknowledge: bool) -> None:
         """The world runs (or steps): the pause by a chapter or an alert is over. A ``run``, a ``step`` or a
@@ -1603,7 +1683,7 @@ class PlayPacer:
 
     def _send_environment(self, state: State) -> None:
         obj = environment_object(
-            state, self.cfg, self.director, self._t, self.layer.p if self.layer else None
+            state, self.cfg, self.director, self._t, self.layer.p if self.layer else None, desk=self.desk
         )
         self._send("ENVS", lambda step, seq: streamrec.encode_envs(step=step, seq=seq, obj=obj))
 
@@ -1857,11 +1937,17 @@ def origin_row(state: State, cfg: Config) -> dict[str, Any] | None:
 
 
 def environment_object(
-    state: State, cfg: Config, director: Any, t: int, params: WeatherParams | None
+    state: State,
+    cfg: Config,
+    director: Any,
+    t: int,
+    params: WeatherParams | None,
+    desk: powers_mod.PowerDesk | None = None,
 ) -> dict[str, Any]:
     """The ``ENVS`` object (DESIGN §33.1.9): the warm pools at step ``t``, the season in force, the levers the
     director has moved from their inert values, and the director's effects and cooldowns folded from its log
-    (empty without a director)."""
+    (empty without a director). A world that takes the player's powers (``desk``) adds the influence, the food
+    patches and the state of each power (DESIGN §34.6)."""
     pools = []
     if params is not None:
         length = params.L
@@ -1902,13 +1988,17 @@ def environment_object(
             for a, end in sorted(folded.ends.items())
             if end + rules.cooldown_steps(a, director.params, director.persona) > t
         ]
+    player: dict[str, Any] = (
+        desk.env_block(t, to_numpy(state.patch_pos), now["patch_gain"]) if desk is not None else {}
+    )  # influence, patches and powers: only a world that takes powers has them
     return {
         "pools": pools,
         "season": season,
         "levers": levers,
         "effects": effects,
         "cooldowns": cooldowns,
-        "influence": None,
+        "influence": player.get("influence"),
+        **{k: v for k, v in player.items() if k != "influence"},
     }
 
 

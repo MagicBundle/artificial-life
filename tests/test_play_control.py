@@ -156,6 +156,10 @@ INVALID = [
     ("power food id=1 mult=1e1", "decimal"),
     ("power food id=1 mult=-1", "decimal"),
     ("power food id=1 steps=6000.5", "non-negative integer"),
+    (f"power food id={2**63} mult=1.3", "int64"),
+    (f"power food id=1 mult=1.3 steps={2**63}", "int64"),
+    (f"power bloom id=1 patch={2**63}", "int64"),
+    ("power strike id=1 x=" + "9" * 400 + " y=1", "too large"),
     ("power food id=1 patch=-2", "non-negative integer"),
     ("power cancel food id=4 mult=1.3", "only id=N"),
     ("power FOOD id=1", "unknown power"),
@@ -322,7 +326,7 @@ def test_an_observer_colour_without_observers_is_refused(tmp_path: Path) -> None
     recs = decoded(out).records
     assert not [r for r in recs if r.tag in ("IDNT", "INTN", "TERR")]
     assert [r.f["color_index"] for r in recs if r.tag == "FRMA"][1] == 1  # energy took effect
-    assert decoded(out).header["play"]["records"] == ["FRMA", "EVNT", "ENVS", "CLCK", "FOCS", "ALRT"]
+    assert decoded(out).header["play"]["records"] == ["FRMA", "EVNT", "ENVS", "CLCK", "FOCS", "ALRT", "PLAN"]
 
 
 def test_invalid_lines_are_noted_and_ignored(tmp_path: Path) -> None:
@@ -339,11 +343,13 @@ def test_invalid_lines_are_noted_and_ignored(tmp_path: Path) -> None:
     assert len(notes) == 3 and "fields" in notes[2] and all("ignored control line" in n for n in notes)
 
 
-def test_the_decide_half_lines_are_noted_until_their_stage_and_change_nothing(tmp_path: Path) -> None:
-    """``power`` and ``intent`` parse (the window sends them) and are answered with a note until the stage
-    that builds their handler; ``watch``, ``unwatch`` and ``ack`` have theirs (alerts, DESIGN §34.3) and
-    answer a group or an alert the world does not have with a note of their own. None of them reaches the
-    focus branch or changes the stream."""
+def test_the_decide_half_lines_have_their_handlers_and_a_world_without_a_director_refuses_powers(
+    tmp_path: Path,
+) -> None:
+    """``watch``, ``unwatch`` and ``ack`` (alerts, DESIGN §34.3) answer a group or an alert the world does not
+    have with a note; ``power`` and ``intent`` (DESIGN §34.5) are answered with a ``PLAN`` that says no (this
+    world has no director, and ``intent`` is reserved): no note, no focus branch, nothing else in the
+    stream."""
     notes: list[str] = []
     lines = [
         "watch 3",
@@ -362,11 +368,18 @@ def test_the_decide_half_lines_are_noted_until_their_stage_and_change_nothing(tm
         out, ScriptControl(script), play.PlayOptions(rate=1.0, paused=False), clock=clock, note=notes.append
     )
     runner.run(rd, cfg, init_state(cfg), 4, quiet=True, pacer=pacer)
-    assert [n.split(":")[0] for n in notes] == [ln.split()[0] for ln in lines]
-    assert [("not available in this build yet" in n) for n in notes] == [False] * 3 + [True] * 3
+    assert [n.split(":")[0] for n in notes] == ["watch", "unwatch", "ack"]
     assert "no kin group 3" in notes[0] and "not watched" in notes[1] and "no alert 466250600" in notes[2]
+    plans = [r for r in decoded(out).records if r.tag == "PLAN"]
+    assert [(p.f["json"]["id"], p.f["json"]["kind"], p.f["json"]["status"], p.f["reply"]) for p in plans] == [
+        (1, "power", "refused", False),
+        (2, "power", "refused", True),
+        (0, "intent", "refused", True),
+    ]
+    assert plans[0].f["json"]["refused"] == "This world has no director, so it takes no power."
+    assert plans[2].f["json"]["refused"] == "intent is not available in this build"
     _, _, _, plain = run(tmp_path / "plain", [[], [], ["rate max"]], steps=4)
-    key = lambda o: [(r.tag, r.step) for r in decoded(o).records if r.tag not in ("CLCK",)]  # noqa: E731
+    key = lambda o: [(r.tag, r.step) for r in decoded(o).records if r.tag not in ("CLCK", "PLAN")]  # noqa: E731
     assert key(out) == key(plain)
 
 

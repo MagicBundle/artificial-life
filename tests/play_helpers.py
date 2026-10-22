@@ -157,6 +157,7 @@ def run_paced(
     out: io.BytesIO | None = None,
     options: play.PlayOptions | None = None,
     pacer_class: type[play.PlayPacer] = play.PlayPacer,
+    game_specs: bool = False,
 ) -> tuple[RunDir, runner.RunResult, play.PlayPacer, io.BytesIO]:
     rd = RunDir.create(path, cfg)
     out = out if out is not None else io.BytesIO()
@@ -167,7 +168,7 @@ def run_paced(
         clock=clock or FakeClock(),
         note=lambda m: None,
     )
-    director = make_director(rd, cfg, 0) if cfg.run.director != "off" else None
+    director = make_director(rd, cfg, 0, game_specs=game_specs) if cfg.run.director != "off" else None
     try:
         res = runner.run(rd, cfg, init_state(cfg), steps, quiet=True, director=director, pacer=pacer)
     finally:

@@ -82,6 +82,14 @@ TEMPLATES: Final = {
     "storm_split": "{label} split from {other}.",
     "storm_dissolved": "{label} dissolved after {age} steps.",
     "director_entry": "Director: {entry}",
+    "power_food": "Food x{mult:g} from step {step:,} for {duration:,} steps.",
+    "power_bloom": "Bloom x{gain:g} on patch {patch} from step {step:,} for {duration:,} steps.",
+    "power_blight": "Blight on patch {patch} from step {step:,} for {duration:,} steps.",
+    "power_strike": "Strike at ({x:.0f}, {y:.0f}), radius {radius:g}, kill chance {kill_p:g}, step {step:,}.",
+    "power_ended": "{label} ended at step {step:,}.",
+    "power_ended_patch": "{label} on patch {patch} ended at step {step:,}.",
+    "power_cancelled": "{label} was cancelled at step {step:,}.",
+    "power_cancelled_patch": "{label} on patch {patch} was cancelled at step {step:,}.",
     "focus_death": "Organism {uid} died ({cause}).",
     "focus_death_unknown": "Organism {uid} died.",
     "focus_handoff_child": "Organism {uid} died ({cause}); follow passed to a child.",
@@ -96,6 +104,12 @@ TEMPLATES: Final = {
     "renumbered": "Storm numbering restarted at step {step}.",
     "extinct": "No organism is alive at step {step}.",
 }
+_POWER_LABEL: Final = {
+    "regen_pulse": "Food",
+    "fertility_shift": "Bloom",
+    "habitat_loss": "Blight",
+    "catastrophe": "Strike",
+}  # the player's names for the director actions (director.actions.GAME_POWERS; this module may not import it)
 HEMISPHERES: Final = ("northern", "southern")
 HANDOFF_RULES: Final = {1: "focus_handoff_child", 2: "focus_handoff_kin", 3: "focus_handoff_near"}
 
@@ -339,15 +353,47 @@ class Chronicler:
     def from_director(self, entries: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         """One event per entry (``Director.applied`` or a log entry), at its ``step_applied``; the position is
         the entry's ``x`` and ``y`` parameters when it has them."""
-        from alife.director import describe  # imported here: the director package is heavy and rarely needed
+        from alife.director import actions, describe  # imported here: the director package is heavy
 
         out = []
         for entry in entries:
+            if actions.is_player(entry):
+                out.append(self._power_event(entry))
+                continue
             params = entry.get("params") or {}
             at = (params.get("x"), params.get("y"))
             text = render("director_entry", entry=describe(entry))
             out.append(_event(int(entry["step_applied"]), "director_entry", "director", text, 1, at=at))
         return self._stamp(out)
+
+    @staticmethod
+    def _power_event(entry: Mapping[str, Any]) -> dict[str, Any]:
+        """The chronicle row of a record of the player channel (DESIGN §34.5): kind ``power_applied``
+        (importance 1) for a power, ``power_ended`` (importance 0) for the revert that ends or cancels one; a
+        strike has a position. No alert (the surfaces of one power are its ``PLAN`` cards, §34.3)."""
+        step, params = int(entry["step_applied"]), entry.get("params") or {}
+        patch = params.get("patch")
+        if entry["source"] == "player":
+            power = entry["power"]
+            slots = {
+                "food": {"mult": params.get("mult"), "duration": entry.get("duration")},
+                "bloom": {"gain": params.get("gain"), "patch": patch, "duration": entry.get("duration")},
+                "blight": {"patch": patch, "duration": entry.get("duration")},
+                "strike": {
+                    "x": (params.get("center") or [0, 0])[0],
+                    "y": (params.get("center") or [0, 0])[1],
+                    "radius": params.get("radius"),
+                    "kill_p": params.get("kill_p"),
+                },
+            }[power]
+            at = tuple(params["center"]) if power == "strike" else (None, None)
+            text = render(f"power_{power}", step=step, **slots)
+            return _event(step, "power_applied", "director", text, 1, at=at)
+        label = _POWER_LABEL[entry["action"]]
+        key = "power_cancelled" if "command" in entry else "power_ended"
+        key += "_patch" if patch is not None else ""
+        text = render(key, label=label, patch=patch, step=step)
+        return _event(step, "power_ended", "director", text, 0)
 
     def focus_death(
         self, step: int, uid: int, cause: str | None, at: Sequence[float | None]

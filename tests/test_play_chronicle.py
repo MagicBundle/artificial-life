@@ -209,8 +209,53 @@ def _masked(text: str) -> str:
     return re.sub("|".join(NAMES), "Name", text)
 
 
+def _player(
+    step: int, power: str, action: str, params: dict[str, Any], duration: int | None
+) -> dict[str, Any]:
+    return {
+        "step_applied": step,
+        "source": "player",
+        "action": action,
+        "params": params,
+        "duration": duration,
+        "command": 1,
+        "power": power,
+        "scope": "player",
+    }
+
+
+def _revert(
+    step: int, action: str, params: dict[str, Any], origin: int, *, command: int | None = None
+) -> dict[str, Any]:
+    cancel = {"command": command} if command is not None else {}
+    return {
+        "step_applied": step,
+        "source": "revert",
+        "action": action,
+        "params": params,
+        "duration": None,
+        "scope": "player",
+        "reverts": origin,
+        **cancel,
+    }
+
+
+PLAYER_ENTRIES = [
+    _player(20, "food", "regen_pulse", {"mult": 1.2999999523162842}, 6000),
+    _player(20, "bloom", "fertility_shift", {"patch": 3, "gain": 1.75}, 3000),
+    _player(21, "blight", "habitat_loss", {"patch": 4, "gain": 0.0}, 3000),
+    _player(22, "strike", "catastrophe", {"center": [10.0, 20.5], "radius": 15.625, "kill_p": 0.45}, None),
+    _revert(6020, "regen_pulse", {"mult": 1.0}, 20),
+    _revert(6021, "fertility_shift", {"patch": 3, "gain": 1.0}, 20, command=9),
+    _revert(6022, "habitat_loss", {"patch": 4, "gain": 1.0}, 21),
+    _revert(6023, "habitat_loss", {"patch": 4, "gain": 1.0}, 21, command=10),
+    _revert(6024, "regen_pulse", {"mult": 1.0}, 20, command=11),
+]
+
+
 def play_loop_events(chron: Chronicler) -> list[dict[str, Any]]:
-    events = chron.focus_death(10, 5_000_000_007, "starved", (1.0, 2.0, 3.0))
+    events = chron.from_director(PLAYER_ENTRIES)
+    events += chron.focus_death(10, 5_000_000_007, "starved", (1.0, 2.0, 3.0))
     events += chron.focus_death(10, 5_000_000_008, None, (None, None, None))
     for rule in (1, 2, 3):
         events += chron.focus_handoff(11, 7, 8, rule, (1.0, 2.0, None), "killed")
@@ -231,8 +276,7 @@ def test_every_template_is_reachable_and_renders_within_the_limit(monkeypatch: p
     assert used == set(TEMPLATES), sorted(set(TEMPLATES) ^ used)
     produced = {e["kind"] for e in events}
     raw_kin = {KIND[k] for k in ("kin_born", "kin_split", "kin_merged", "kin_dissolved")}
-    powers = {KIND["power_applied"], KIND["power_ended"]}  # told with the powers (G3b stage 7)
-    assert produced == set(KIND.values()) - raw_kin - powers, "every kind but the raw kin and power kinds"
+    assert produced == set(KIND.values()) - raw_kin, "every kind but the raw kin"
     for e in events:
         streamrec.check_event(e)
         assert len(e["text"]) <= 120 and "because" not in e["text"].lower()
