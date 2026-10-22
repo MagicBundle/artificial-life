@@ -5789,6 +5789,11 @@ another chunk soon. Frames keep the orientation as the binary16 bit patterns tha
 `half2` per row), and `Half.float` converts (`Float16` exists only on arm64). The decoder bounds `N` (2²²), `FG` and
 `FZ` (1 024), `B` (64) and `n_bonds` (`N·B`) so that a corrupt header cannot ask for absurd memory.
 
+**Play records** (G3a, §33.1). The header may carry a `play` key (the records an `alife play` world sends and its constants;
+ignored by readers that predate it, so no version bump), after which the stream carries the records `FRMA IDNT INTN TERR EVNT
+STRM MAP1 ENVS CLCK FOCS` instead of `FRM1`; `FrameDecoder` decodes those of version 1 into `StreamEvent.record` and skips the
+rest by length, as it always skipped unknown tags.
+
 **The stream process** (`StreamController`, main-actor isolated, one at a time). The viewer starts
 `.venv/bin/alife stream runs/NAME ...` (no shell) with three pipes:
 - **stdout** carries the protocol and never goes through the line splitter of the run log (which cuts on 0x0A and
@@ -9587,7 +9592,17 @@ A pipe reader that stalls blocks the step loop (as `stream` does); the Swift rea
   label_flags 67`.
 - The independent decoder is `tests/play_decode.py` (imports only `stream_decode.decode_header`). The fixtures are
   `tests/data/play_tiny{3d,2d,3d_n70}.{bin,json}` (written by `tests/play_fixtures.py --write`; rebuilt byte for byte by
-  `tests/test_stream_records.py` on every device, no engine). The Swift decoder lands with the next commit.
+  `tests/test_stream_records.py` on every device, no engine). Swift: `AlifeCore/PlayRecords.swift` (`PlayHeader`,
+  `RecordHead`, `PlayFrame`, `PlayIdentities`, `PlayLabels`, `PlayTerritory`, `PlayStormRecord`, `PlayWeatherMap`,
+  `PlayEventBatch`, `PlayEnvironmentRecord`, `PlayClock`, `PlayFocus`, `StreamRecord`; the JSON-derived types are `Codable`, so
+  the tests compare them with the sidecar by value) with `FrameDecoder` emitting `StreamEvent.record(StreamRecord)`; a record of
+  a known tag whose version is not 1 is skipped by length, reported as `unknownRecord`, and counted in
+  `FrameDecoder.skippedVersions`. `StreamHeader.play` is the decoded `play` key (nil for a plain stream) and is validated with the
+  header (a non-positive rate or cadence, a snapshot cadence that is not a multiple of the tick, weather cells that are not a
+  multiple of the wind blocks, a tag listed twice); `tests/test_gui_sync.py` checks its coding keys against what
+  `streamrec.header_play` writes. A record's length is checked against the counts of its own fixed prefix before the payload is
+  waited for (`lengthMismatch`), against the header's `N` and bond slots, and a slot byte against its table
+  (`malformedRecord(tag:_:)`); `PlayFrame.listedIndex(ofRow:)` is the popcount rank over the bitmap.
 
 ---
 

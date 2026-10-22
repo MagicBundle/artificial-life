@@ -151,3 +151,64 @@ def test_the_gui_argument_fixtures_are_what_the_engine_writes() -> None:
         path = ROOT / "tests" / "data" / f"gui_config_{name}.json"
         written = config.config_to_dict(config.load_config(**kwargs))
         assert json.loads(path.read_text(encoding="utf-8")) == json.loads(json.dumps(written)), path.name
+
+
+# --- the `play` header key (DESIGN §33.1) ---------------------------------------------------------------
+
+
+def swift_struct_keys(text: str, name: str) -> set[str]:
+    """The JSON keys `struct NAME` decodes: its stored properties (depth 1 of its body, nested types
+    excluded), renamed by the `CodingKeys` enum of the same body (`case a = "b"`; `case a, b` keep names)."""
+    m = re.search(rf"struct {name}\b[^{{]*\{{", text)
+    assert m, f"struct {name} not found"
+    depth, i = 1, m.end()
+    while depth:
+        depth += {"{": 1, "}": -1}.get(text[i], 0)
+        i += 1
+    lines, depth_at = text[m.end() : i].split("\n"), 1
+    props: list[str] = []
+    renames: dict[str, str] = {}
+    in_keys = False
+    for line in lines:
+        stripped = line.strip()
+        if depth_at == 1 and (v := re.match(r"(?:package |private |public )?var (\w+)\s*:", stripped)):
+            props.append(v.group(1))
+        if re.match(r"(?:private )?enum CodingKeys", stripped):
+            in_keys = True
+        elif in_keys and stripped.startswith("case "):
+            for part in stripped[5:].split(","):
+                part = part.strip()
+                if "=" in part:
+                    k, raw = (x.strip() for x in part.split("="))
+                    renames[k] = raw.strip('"')
+        depth_at += line.count("{") - line.count("}")
+        if in_keys and stripped == "}":
+            in_keys = False
+    return {renames.get(p, p) for p in props}
+
+
+def test_the_play_header_keys_match_playheader() -> None:
+    """The keys `streamrec.header_play` writes are the keys `PlayHeader` (and its nested types) reads: a key
+    the writer adds without the client, or the client expects without the writer, is a protocol drift."""
+    from alife import streamrec as sr
+
+    text = (CORE / "PlayRecords.swift").read_text(encoding="utf-8")
+    play = sr.header_play(
+        records=["FRMA"],
+        weather=sr.weather_block(enabled=True, dc_ref=0.5),
+        labels={"intent_version": 2, "arch": [""], "intent": [""]},
+        energy_cap=1,
+    )
+    assert swift_struct_keys(text, "PlayHeader") == set(play)
+    assert swift_struct_keys(text, "Weather") == set(play["weather"])
+    assert swift_struct_keys(text, "Refs") == set(play["weather"]["refs"])
+    assert swift_struct_keys(text, "Labels") == set(play["labels"])
+    assert swift_struct_keys(text, "Cast") == set(play["cast"])
+    assert swift_struct_keys(text, "Planet") == set(play["planet"])
+    # the legacy header keys the Swift header reads are those `legacy_header` writes, plus `play`
+    legacy = sr.legacy_header(
+        dims=3, size=1.0, height=1.0, n=1, bond_slots=1, radius=1.0, field_cell=1.0, fg=1, fz=1, nch=1,
+        step=0, run=None, config_hash="h", source="preset",
+    )  # fmt: skip
+    stream_header = (CORE / "StreamProtocol.swift").read_text(encoding="utf-8")
+    assert swift_struct_keys(stream_header, "StreamHeader") == {*legacy, "play"}

@@ -115,6 +115,7 @@ enum StreamReader {
                     case .frame(let frame):
                         mailbox.publish(frame: frame)
                         published = true
+                    case .record: break  // a play record: the World window's mailbox takes these (§33.1)
                     case .unknownRecord: break  // a record of a later compatible version
                     }
                 }
