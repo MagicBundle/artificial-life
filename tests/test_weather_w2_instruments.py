@@ -212,6 +212,14 @@ def test_eco_arrays_are_the_live_rows_columns_and_the_channels_emission(stepped)
     np.testing.assert_array_equal(to_numpy(cols["emit"]), to_numpy(out.acts.emit))  # the channel tap, whole
     np.testing.assert_array_equal(to_numpy(cols["uid"]), to_numpy(s.uid))
     np.testing.assert_array_equal(to_numpy(cols["cap"]), to_numpy(s.buoy_cap))
+    # the two columns of the pre-registered P3 statistic and the offline hold analysis: the same quantities
+    # as ``coupling_inputs`` (own vertical velocity minus the drift's z; the air's z at the agent)
+    p = W.params_from_config(cfg)
+    aw = W.sample_wind(W.unpack(s.wx), s.pos, p, field_cell=cfg.world.field_cell, valid=s.alive)
+    drift_z = W.agent_drift(s.wx, s.pos, s.buoy_cap, s.alive, cfg)[:, 2]
+    assert float(mx.abs(drift_z).max()) > 0 and float(mx.abs(aw.u[:, 1]).max()) > 0  # a mutant is visible
+    np.testing.assert_array_equal(to_numpy(cols["vz_own"]), to_numpy(s.vel[:, 2] - drift_z))
+    np.testing.assert_array_equal(to_numpy(cols["w_air"]), to_numpy(aw.u[:, 2]))
     assert set(T.eco_arrays(s, out.acts, None, cfg)) == set(cols) - {"tracer_z", "tracer_age"}
     emit = to_numpy(cols["emit"])[to_numpy(s.alive)]
     assert emit.min() >= 0 and emit.max() <= 768 and emit.max() > 0

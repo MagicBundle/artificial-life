@@ -242,7 +242,7 @@ median of 0.57 / 0.53 of `harvest_max`), not agents with mixed income. The enum 
 **Version 3: the storm world (W2a, DESIGN §32.7; `RULES_V3`, `INTENT_VERSION` 3, the default for every world).** With the weather on, `vel`
 includes the wind drift, so Nomad and Settler read the **velocity relative to the wind** (`vel` minus the velocity the wind alone would give
 a free agent, `weather.agent_drift`); the numeric thresholds are V2's. With the weather off the drift is 0 and the V2 labels are unchanged.
-Three archetypes are added after Settler in the priority order (so no V2 primary label moves; Unspecialised shrinks by the rows they take),
+Three archetypes are added after Settler in the priority order (the order keeps the older labels first; in a weather world Nomad and Settler still move, because they read the velocity relative to the wind: on the pilot window Nomad's primary share fell from 2.5% to 1.0% and Settler's rose from 5.7% to 6.1%; Unspecialised shrinks by the rows the new labels take, 8 points),
 for the aerial biosphere of STORMS §5:
 
 | archetype | rule (windowed means; `u` = `thrust_max/drag` = 0.1) | prevalence (pilot window) |
@@ -254,7 +254,9 @@ for the aerial biosphere of STORMS §5:
 Floater and Sinker are 3D rules written for the `64k3d` physics (gravity 0.015, `buoyancy_max` 0.04, H = 80) and exist only in 3D worlds. The words a
 player sees in a storm world (`rules.ARCHETYPE_STORM_DISPLAY`): Gatherer is shown as **Grazer**, Hunter, Drifter, Floater and Sinker as they are;
 a weather-off world keeps Gatherer. The Floater rule uses the buoyancy *output* the agent chose (the new `Acts.buoy` channel field), not its
-capacity.
+capacity. The prevalences above are **match** rates (the validated bit); the label a player sees is the primary one, and Gatherer comes first in the
+priority, so the displayed rates are lower (pilot: Drifter 3.1%, Floater 0.8%, Sinker 5.1% of the rows; about a third of the Drifter matches, an eighth of the
+Floater matches and half of the Sinker matches show as the new label).
 
 **Intents.** Intents are evaluated by the observer every s = 8 steps. Event predicates such as "harvested > 0", "emitted"
 or "formed a bond" hold for nearly every agent (harvest effort is a sigmoid, 87% of 3D agents emit, about 3,700 bonds
@@ -323,11 +325,14 @@ would help every intent, and is flagged for G3. No stability criterion is set.
 
 **Version 3 (storm world, W2a; DESIGN §32.8).** Calibrated on one pilot window (`64k3d_s0` forked at 450,000 with the storm overlay and the prior
 coupling set, 470,000 to 476,000; the Metal re-simulation matches the stored metrics): all ten intents and all nine archetypes pass. The new
-labels score Drifter AUC 0.880 against a matched random null of 0.533 (outcome: the wind share of the displacement), Floater 0.727 against 0.546
-(altitude held, scored within the agents aloft, with z-band strata) and Sinker 0.637 against 0.508 (descent over the available room); Nomad and
+labels score Drifter AUC 0.880 against a matched random null of 0.533 (outcome: the wind share of the displacement), Floater 0.591 against 0.514
+(altitude held, scored within the agents aloft that are not pinned at the lid, with z-band strata; the first pass, 0.727 against 0.546, was driven by
+agents pinned at the lid, where the surface clamp makes the outcome trivial; **by band the Floater is evidenced only at z 56 to 78.9**, with no signal at
+z 4 to 32 and an inverted score at 32 to 56) and Sinker 0.637 against 0.508 (descent over the available room); Nomad and
 Settler are scored on the displacement with the wind drift subtracted (`rg2_rel`; Nomad matches 1.7% of rows against 4.9% on the raw
-velocity). The physics-derived starting thresholds passed a keep rule fixed before the sweep was read, so none was tuned. Floater's first
-outcome (the share of steps with z ≥ 8) was saturated and replaced by the altitude held. **Not yet validated:** the held-out storm windows, a still-air window
+velocity). The physics-derived starting thresholds passed a keep rule that is the same bar as the held-out criterion, so none was tuned and keeping them validates
+nothing; the held-out windows do. Floater's first outcome (the share of steps with z ≥ 8) was saturated and replaced by the altitude held, chosen among four
+on the pilot dump (so it is fitted to that window). **Not yet validated:** the held-out storm windows, a still-air window
 (where Drifter must have no positives) and the weather-off windows are W2b's; until verdict rows exist the report module narrates no V3 label in a
 storm world. Display of a V3 label in the UI follows the verdict.
 

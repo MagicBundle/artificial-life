@@ -244,6 +244,78 @@ def test_the_floater_is_not_credited_for_height_alone_or_for_a_direction() -> No
     assert labels.score_archetypes(tab, **kw)["floater"]["auc"] == 1.0
 
 
+def test_the_floater_pool_leaves_out_the_rows_pinned_at_the_lid() -> None:
+    """A row at the lid has its vertical velocity clamped to zero, so the rule's speed bound and the outcome
+    ``z_k = z_T`` hold whatever the agent does: pinned rows are out of the pool (as grounded rows are out of
+    the Sinker's), and reported as ``pinned``. Without the exclusion the pinned matches carry the score."""
+    floater = BIT[Archetype.FLOATER]
+    kw: dict[str, Any] = {"arch_horizon": 100, "arch_min_obs": 20, "n_perm": 5, "seed": 0, "wind_rel": True}
+    kw |= {"height": 80.0, "z_floor": 8.0}
+    tab = _table(
+        [
+            # below the lid the Floater matches do no better than the rest (both drift 1.0); at the lid
+            # they match and hold exactly, while the few unmatched pinned rows move
+            {"count": 20, "match": floater, "z0": 40.0, "zk_min": 41.0},
+            {"count": 20, "match": 0, "z0": 40.0, "zk_min": 41.0},
+            {"count": 40, "match": floater, "z0": 79.0, "zk_min": 79.0},
+            {"count": 10, "match": 0, "z0": 79.0, "zk_min": 78.0},
+        ]
+    )
+    with_pins = labels.score_archetypes(tab, **kw)["floater"]  # z_pin None: every row aloft is scored
+    assert with_pins["n"] == 90 and with_pins["auc"] > 0.5 and "pinned" in with_pins
+    assert with_pins["pinned"] == {"z_pin": None, "n": 0, "n_match": 0}
+    off = labels.score_archetypes(tab, z_pin=78.9, **kw)["floater"]
+    assert (off["n"], off["n_pos"]) == (40, 20) and off["auc"] == 0.5  # the lid rows are gone
+    assert off["pinned"] == {"z_pin": 78.9, "n": 50, "n_match": 40}
+    assert off["pool"] == 90  # the prevalence and the pool still count every row
+    # the Sinker and the Drifter keep their pools
+    assert labels.score_archetypes(tab, z_pin=78.9, **kw)["sinker"]["n"] == 90
+
+
+def test_the_three_storm_archetypes_report_their_auc_per_z_band() -> None:
+    """A pooled AUC can come from one band: ``by_band`` scores each band of ``Z_BAND_EDGES`` on its own."""
+    floater = BIT[Archetype.FLOATER]
+    kw: dict[str, Any] = {"arch_horizon": 100, "arch_min_obs": 20, "n_perm": 5, "seed": 0, "wind_rel": True}
+    kw |= {"height": 80.0, "z_floor": 8.0, "z_pin": 78.9}
+    tab = _table(
+        [
+            # band 1 (4-32): matches hold no better than the rest; band 3 (56-80): they hold better
+            {"count": 10, "match": floater, "z0": 20.0, "zk_min": 21.0},
+            {"count": 10, "match": 0, "z0": 20.0, "zk_min": 21.0},
+            {"count": 10, "match": floater, "z0": 60.0, "zk_min": 60.2},
+            {"count": 10, "match": 0, "z0": 60.0, "zk_min": 63.0},
+        ]
+    )
+    f = labels.score_archetypes(tab, **kw)["floater"]
+    bands = f["by_band"]
+    assert [b["band"] for b in bands] == [0, 1, 2, 3]
+    assert [(b["z_lo"], b["z_hi"]) for b in bands] == [(0.0, 4.0), (4.0, 32.0), (32.0, 56.0), (56.0, 80.0)]
+    assert [b["n"] for b in bands] == [0, 20, 0, 20] and bands[0]["auc"] is None
+    assert bands[1]["auc"] == 0.5 and bands[3]["auc"] == 1.0
+    assert sum(b["n"] for b in bands) == f["n"]
+    out = labels.score_archetypes(_table([{"count": 8, "match": 0, "z0": 20.0, "zk_min": 19.0}]), **kw)
+    assert all("by_band" in out[k] for k in ("drifter", "floater", "sinker"))
+
+
+def test_the_drifter_is_scored_in_a_world_without_height() -> None:
+    """The wind share of the displacement needs no z: a 2D table (no ``z0``) scores Drifter, in one band."""
+    drifter = BIT[Archetype.DRIFTER]
+    tab = _table(
+        [
+            {"count": 15, "match": drifter, "wshare_min": 0.9},
+            {"count": 15, "match": 0, "wshare_min": 0.2},
+        ]
+    )
+    tab = {k: v for k, v in tab.items() if k not in ("z0", "zk_min")}
+    kw: dict[str, Any] = {"arch_horizon": 100, "arch_min_obs": 20, "n_perm": 5, "seed": 0, "wind_rel": True}
+    out = labels.score_archetypes(tab, **kw)
+    d = out["drifter"]
+    assert d["outcome"] == "wind_share" and d["auc"] == 1.0 and (d["n"], d["n_pos"]) == (30, 15)
+    assert [b["n"] for b in d["by_band"]] == [30, 0, 0, 0]
+    assert set(out["floater"]) == {"pool", "prevalence_match", "prevalence_primary"}  # needs a height
+    assert set(out["sinker"]) == {"pool", "prevalence_match", "prevalence_primary"}
+
+
 # --- the study ----------------------------------------------------------------------------------------------
 
 STUDY: dict[str, Any] = {

@@ -244,10 +244,11 @@ def _opt(x: float) -> float | None:
 
 
 def hold_index(vz: np.ndarray, w: np.ndarray) -> float | None:
-    """``-Cov(vz, w)/Var(w)``: minus the slope of the agents' own vertical velocity on the air's, i.e. how
-    much of the vertical wind an agent steers against (1 would hold its altitude exactly, 0 ignores the
-    wind, tracers
-    are 0 by construction). None for fewer than two rows or no variance."""
+    """``-Cov(vz, w)/Var(w)``: minus the slope of the agents' own vertical velocity on the air's, i.e. the
+    **fraction of alpha countered**. The own velocity is ``vel_z`` minus the drift ``alpha·w`` (``alpha``
+    0.25 to 1, about 0.2 to 0.6 for the s0 caps), so an agent that holds its altitude (``vel_z = 0``) has
+    ``hold = alpha``, not 1; 0 ignores the wind (tracers and the WB arm are 0 by construction). Compare
+    runs on the scale of the agents' ``alpha``, not of 1. None for fewer than two rows or no variance."""
     v, x = np.asarray(vz, dtype=np.float64), np.asarray(w, dtype=np.float64)
     if x.size < 2 or not x.var() > 0:
         return None

@@ -210,7 +210,7 @@ ARCH_PRIORITY: Final = (
     Archetype.GATHERER,
     Archetype.NOMAD,
     Archetype.SETTLER,
-    Archetype.DRIFTER,  # version 3: after every older archetype, so no version-2 primary label changes
+    Archetype.DRIFTER,  # version 3: after every older archetype (with weather, Nomad and Settler still move)
     Archetype.FLOATER,
     Archetype.SINKER,
 )

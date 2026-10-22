@@ -15,6 +15,7 @@ import pytest
 from alife import layout, metrics, runio
 from alife.analysis import phylo
 from alife.config import Config, apply_overrides, dims, load_config
+from alife.game.rules import INTENT_VERSION
 from alife.game.social import HOUSE_UNKNOWN, SOCIAL_V1, Expo, Rel, SocialRules, soc_in
 from alife.game.society import (
     CODA,
@@ -1099,9 +1100,9 @@ def test_empty_society(tiny_cfg: Config) -> None:
 
 HEAD_KEYS = ["social_version", "snapshot_step", "origin", "houses", "kin_groups", "colonies"]
 RECORD_KEYS = [
-    "step", "social_version", "social_digest", "origin", "window_start", "summary", "thresholds", "houses",
-    "house_events", "kin_groups", "colonies", "events", "events_dropped", "event_counts", "relations",
-    "relations_dropped", "temperament", "territory",
+    "step", "social_version", "social_digest", "intent_version", "origin", "window_start", "summary",
+    "thresholds", "houses", "house_events", "kin_groups", "colonies", "events", "events_dropped",
+    "event_counts", "relations", "relations_dropped", "temperament", "territory",
 ]  # fmt: skip
 
 
@@ -1134,6 +1135,7 @@ def test_head_and_record_keys(tiny_cfg: Config, tiny3d_cfg: Config) -> None:
         for rec, step, start in ((first, 250, 0), (second, 500, 250)):
             assert list(rec) == RECORD_KEYS and rec["step"] == step and rec["window_start"] == start
             assert rec["origin"] == 0 and rec["social_version"] == 1 and rec["social_digest"] == sr.digest()
+            assert rec["intent_version"] == INTENT_VERSION == 3  # the width key of ``kin_groups.arch``
             assert list(rec["summary"]) == ["houses", "kin_groups", "colonies"]
             assert list(rec["summary"]["houses"]) == ["alive", "exact", "unknown_immigrant"]
             assert list(rec["summary"]["kin_groups"]) == ["tracked", "other"]

@@ -249,7 +249,8 @@ def test_the_new_keys_do_not_move_the_config_hash() -> None:
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]:
     """Three 20-step runs of one start: observers with tracers and both dumps (``on``), observers alone
-    (``off``) and the same with tracers but no dumps (``plain``); returns their directories and final states.
+    (``off``), the same with tracers but no dumps (``plain``) and no observer at all (``bare``); returns their
+    directories and final states.
     """
     root = tmp_path_factory.mktemp("trc")
     base = storm3d_config(
@@ -261,6 +262,7 @@ def runs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]:
         ("on", [*TRC, "run.eco_every=10", "run.wx_every=10"]),
         ("off", []),
         ("plain", [*TRC]),
+        ("bare", ["game.observe=false"]),
     ):
         cfg = apply_overrides(base, extra)
         rd = RunDir.create(root / name, cfg)
@@ -273,14 +275,18 @@ def runs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, object]:
 
 
 def test_a_run_with_tracers_and_dumps_has_the_trajectory_of_a_run_without(runs: dict) -> None:
-    assert (
-        state_digest(runs["on_state"]) == state_digest(runs["off_state"]) == state_digest(runs["plain_state"])
-    )
+    digests = {name: state_digest(runs[f"{name}_state"]) for name in ("on", "off", "plain", "bare")}
+    assert len(set(digests.values())) == 1  # tracers and both dumps on == observers alone == no observer
     rows = lambda rd: [  # noqa: E731
-        {k: v for k, v in r.items() if k not in ("coupling", "wall_s", "steps_per_s", "peak_mem_gb")}
+        {
+            k: v
+            for k, v in r.items()
+            if k not in ("coupling", "observers", "wall_s", "steps_per_s", "peak_mem_gb")
+        }
         for r in rd.metrics_rows()
     ]
-    assert rows(runs["on"]) == rows(runs["off"])
+    assert rows(runs["on"]) == rows(runs["off"]) == rows(runs["bare"])
+    assert all("observers" not in r for r in runs["bare"].metrics_rows())
 
 
 def test_the_coupling_block_is_in_the_rows_only_with_tracers(runs: dict) -> None:

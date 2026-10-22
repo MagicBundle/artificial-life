@@ -750,10 +750,15 @@ def _documented(rep: Mapping[str, Any], rs: RuleSet) -> None:
     for name, a in rep["archetypes"].items():
         # Generalist has no outcome; the storm world's labels have one only where it is defined (Floater and
         # Sinker in 3D, Drifter with weather): prevalence only elsewhere
-        if name == "generalist" or (name in ("drifter", "floater", "sinker") and set(a) != ARCH_KEYS):
+        if name == "generalist" or (name in ("drifter", "floater", "sinker") and "outcome" not in a):
             assert set(a) == {"pool", "prevalence_match", "prevalence_primary"}
             continue
-        assert set(a) == ARCH_KEYS and a["verdict"] in VERDICTS, name
+        # the three storm archetypes also report their AUC per z band, and the Floater its pinned rows
+        extra = {"by_band"} if name in ("drifter", "floater", "sinker") else set()
+        extra |= {"pinned"} if name == "floater" else set()
+        assert set(a) == ARCH_KEYS | extra and a["verdict"] in VERDICTS, name
+        if "by_band" in a:
+            assert [b["band"] for b in a["by_band"]] == list(range(labels.N_Z_BANDS))
         for col in ("auc_complete", "auc_survived", "auc_censored"):
             assert set(a[col]) == SCORE_KEYS
     for name, i in rep["intents"].items():

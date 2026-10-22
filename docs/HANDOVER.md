@@ -354,13 +354,14 @@ and resumed once. There is one run per condition apart from the seed pair.
     `shade_gain`, `shade_n0` (the shade of the agents on `T_s`), `wind_scale`, `rain_zonal`, `storm_eddy` (the hazard and bond rule on the speed
     relative to the zonal mean) and `wind_eddy_force` (the agents feel the eddy wind only). The step changes only at S17. No ledger term.
   - **Observers, `INTENT_VERSION` 3** (`RULES_V3`, digest `3515d96e…380a17c`): Nomad and Settler on the velocity relative to the wind (`weather.agent_drift`),
-    Drifter, Floater and Sinker (enum 8 to 10), `Acts.buoy` (a 21st tap in 3D, Metal purity gate passed), `ARCHETYPE_STORM_DISPLAY`
+    Drifter, Floater and Sinker (enum 8 to 10), `Acts.buoy` (a 21st tap in 3D; Metal purity gate passed on the stage-3 tree, to be re-run at the final head before W2b, DESIGN §32.11), `ARCHETYPE_STORM_DISPLAY`
     (Gatherer is "Grazer" in a storm world), `labels --rules {v2,v3} --dump DIR`.
   - **Instruments:** `game.tracers` (passive tracers, its own key), `run.eco_every` and `run.wx_every` (the ecology dump with `emit` and the ten weather planes),
     the `coupling` block (`ub_agents`, `hold`), `bench --weather-org`, and `python -m alife.analysis.w2` (P1a to P6 with block t-intervals and the s1 A - N noise floor).
 - **Pilot (26,000 steps from `64k3d_s0` at 450,000, the prior coupling set).** Ledger closed in all rows, `max_occupancy` 16, storm deaths 3.2% of
-  deaths; on the window 470,000 to 476,000 all ten intents and nine archetypes pass (Drifter 0.880, Floater 0.727, Sinker 0.637 against nulls of
-  0.51 to 0.55); the physics-derived thresholds were kept (a rule fixed before the sweep). Cost on Metal: observers 0.727 ms, organism couplings 0.69 ms.
+  deaths; on the window 470,000 to 476,000 all ten intents and nine archetypes pass (Drifter 0.880, Floater 0.591, Sinker 0.637 against nulls of
+  0.51 to 0.53; the Floater is scored off the lid, and by band it is evidenced only at z 56 to 78.9, DESIGN §32.8); the physics-derived thresholds were kept (so
+  nothing was tuned; the keep rule is not a validation, the held-out windows are). Cost on Metal: observers 0.727 ms, organism couplings 0.69 ms.
 - **Not done (W2b; needs the owner's go, about 10.7 GPU hours and 119 GB):** the occupancy gate G0 (before the calibration; remedy `cell_capacity` 64 is hashed),
   the calibration of `rain_gain`, `storm_*`, `seed_gain`, `shade_gain` (`presets/storm.toml` still holds W1's provisional values), the 14 runs (arms A, N, S, WB, A1, E on
   s0 and s1, A and N on s2, 100,000 steps), the held-out label windows and `LABEL_VERDICTS` rows, `docs/RESULTS_W2.md`. The commands need

@@ -37,14 +37,14 @@ from alife import step as step_mod
 from alife.config import Config, apply_overrides, config_to_dict, dims, load_config
 from alife.game.observe import EVAL_BIT, ObsIn, obs_in
 from alife.game.observer import Observer
-from alife.game.rules import RULES_V2, RULES_V3
+from alife.game.rules import RULES_V2, RULES_V3, arch_layout, for_2d
 from alife.game.social import SOCIAL_V1
 from alife.runio import DIRECTOR_LOG_FILE, RunDir, load_checkpoint
 from alife.state import CounterIdx as C
 from alife.state import State, init_state, state_digest, to_numpy
 from alife.step import StepOut, make_step
 from game_helpers import social_every
-from weather_helpers import storm3d_config
+from weather_helpers import fixed_wx, storm2d_config, storm3d_config
 
 COMPILED_STEPS = 60
 EAGER_STEPS = 20
@@ -82,8 +82,10 @@ def _config(d3: bool, dtype: str, director: bool, compiled: bool = True, storm: 
         *(["director.enabled=true"] if director else []),
         *([] if compiled else ["run.compile=false"]),  # the Observer follows the run's compile mode
     ]
-    if storm:  # 3D, 256 rows on the confirmed 320-wide weather (64k3d + the storm overlay)
-        return storm3d_config(*overrides[1:], *STORM)
+    if (
+        storm
+    ):  # 256 rows on the confirmed 320-wide weather: 64k3d + the storm overlay, or tiny at size 320 (2D)
+        return (storm3d_config if d3 else storm2d_config)(*overrides[1:], *STORM)
     return load_config(preset="tiny3d" if d3 else "tiny", overrides=overrides)
 
 
@@ -115,6 +117,8 @@ ARMS = [
     # the storm world (§32): weather on with the seeding, the shade, the eddy hazard and the eddy force; the
     # observer (version 3, wind-relative) folds the post-step wind drift
     pytest.param(True, "float32", False, True, True, id="storm3d-f32"),
+    pytest.param(False, "float32", False, True, True, id="storm2d-f32"),
+    pytest.param(False, "float32", False, False, True, id="storm2d-f32-eager"),
 ]
 
 
@@ -127,6 +131,9 @@ def test_observing_does_not_change_the_trajectory(
     off = make_step(cfg, compile=compiled)
     on = make_step(cfg, compile=compiled, observe=True)
     s_off, s_on = init_state(cfg), init_state(cfg)
+    if storm:  # a prescribed wind, so that the drift column accumulates within the 20 eager steps
+        wx = fixed_wx(cfg, u1=0.12, v1=0.03, u2=0.1, v2=-0.02)
+        s_off, s_on = s_off._replace(wx=wx), s_on._replace(wx=wx)
     obs = Observer.fresh(s_on, cfg, social=SOC15)
     catastrophes = immigrants = 0
     for t in range(steps):
@@ -152,8 +159,15 @@ def test_observing_does_not_change_the_trajectory(
     assert int(to_numpy(obs.o.n_obs).max()) == steps and int(to_numpy(obs.o.arch).max()) > 0
     assert (steps < RULES_V2.intent_warm) == (not (to_numpy(obs.o.match_intent) & EVAL_BIT).any())
     if storm:  # the version-3 rules ran on a world with weather: the drift was in the fold
-        assert obs.rules is RULES_V3 and cfg.weather.enabled and obs.o.arch.shape[1] == 14
-        assert int(to_numpy(obs.o.arch)[:, 11].max()) > 0  # the WIND column accumulated
+        assert cfg.weather.enabled
+        if d3:
+            assert obs.rules is RULES_V3 and obs.o.arch.shape[1] == 14
+        else:  # a 2D world gets the V3 rules without the vertical pair (own digest)
+            assert obs.rules.digest() == for_2d(RULES_V3).digest() != RULES_V3.digest()
+            assert obs.o.arch.shape[1] == 10
+        wind = arch_layout(2 + int(d3), obs.rules).wind
+        assert wind == (11 if d3 else 9)
+        assert int(to_numpy(obs.o.arch)[:, wind].max()) > 0  # the WIND column accumulated
     # ... and so did the social layer: its snapshots were taken, settled and recorded inside the run
     records = obs.take_records()
     assert [r["step"] for r in records] == list(range(15, steps + 1, 15))
@@ -349,8 +363,8 @@ def _channel_taps(
 def _channel_config(preset: str, overrides: list[str]) -> Config:
     """``tiny``, ``tiny3d`` or (``storm3d``) the 3D weather world of the tests (64k3d + the storm overlay with
     256 rows: tiny3d is not a weather world, §30) with the seeding, the shade and the eddy levers on."""
-    if preset == "storm3d":
-        return storm3d_config(*overrides, *STORM)
+    if preset in ("storm3d", "storm2d"):
+        return (storm3d_config if preset == "storm3d" else storm2d_config)(*overrides, *STORM)
     return load_config(preset=preset, overrides=overrides)
 
 
@@ -359,6 +373,7 @@ CHANNEL_CONFIGS = [
     pytest.param("tiny", ["director.enabled=true"], id="tiny-f16-director"),
     pytest.param("tiny3d", ["brain.weight_dtype=float32"], id="tiny3d-f32"),
     pytest.param("storm3d", ["brain.weight_dtype=float32"], id="storm3d-f32"),
+    pytest.param("storm2d", ["brain.weight_dtype=float32"], id="storm2d-f32"),
 ]
 
 

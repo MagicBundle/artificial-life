@@ -22,8 +22,11 @@ above that of the unlabelled rows: the Mann–Whitney AUC against a matched rand
   their own, scored over the first ``--arch-min-obs`` observed steps with permutation strata extended by a
   z band (``Z_BAND_EDGES``): Drifter, the wind share of the horizontal displacement
   ``|Σ drift| / (|Σ drift| + |Σ own|)``; Floater, within the pool aloft at the cohort step
-  (``z >= ALOFT·H``, 8 of 80), the altitude held, ``−|z_k − z_T|``; Sinker, over the rows with room to
-  fall, the descent ``z_T − z_k`` normalised by ``min(z_T, arch_min_obs·gravity)``. ``--dump DIR`` writes the
+  (``z >= ALOFT·H``, 8 of 80) and not pinned at the lid (``z < z_hi − LID_MARGIN``), the altitude held,
+  ``−|z_k − z_T|``; Sinker, over the rows with room to fall, the descent ``z_T − z_k`` normalised by
+  ``min(z_T, arch_min_obs·gravity)``. Each of the three also reports its AUC per z band (``by_band``): a
+  pooled AUC can come from one band, and the Floater's came from the lid before the pinned rows were left out.
+  ``--dump DIR`` writes the
   calibration table: the pooled per-row accumulator means at the cohort step, the 64-step input history and
   every outcome, so that candidate thresholds are scored in seconds with this module's own scoring.
 * **Intents** (horizon ``--intent-horizon``, default 10 steps): for the displayed label (``auc_label``) and
@@ -143,6 +146,11 @@ ALOFT: Final = (
     0.1  # "aloft" is z >= 0.1·H (8 of 80): the Floater's pool at T and the steps its outcome counts
 )
 N_Z_BANDS: Final = len(Z_BAND_EDGES) + 1
+# A row within this distance of the lid ``z_hi`` is *pinned*: the surface clamp zeroes its stored ``v_z``,
+# which satisfies the Floater rule's vertical-speed bound and its outcome (``z_k = z_T``) whatever the agent
+# does, so
+# pinned rows are out of the Floater's pool (as grounded rows are out of the Sinker's).
+LID_MARGIN: Final = 0.1
 # Intent name -> (outcome column, sign); Resting predicts *less* thrust.
 INTENT_OUTCOMES: Final = {
     "budding": ("bud", 1),
@@ -211,7 +219,8 @@ def _score(
 
 def _rng(seed: int, label: int, variant: int) -> np.random.Generator:
     """The stream of one score: ``[seed, label_index, variant]`` (variant 0 pooled, 1–3 secondary columns,
-    ``10 + c`` cohort ``c``). Labels: archetypes 1–7, intent labels ``100 + i``, intent rules ``200 + i``."""
+    ``10 + c`` cohort ``c``, ``20 + b`` z band ``b``). Labels: archetypes 1–7, intent labels ``100 + i``,
+    intent rules ``200 + i``."""
     return np.random.default_rng([seed, label, variant])
 
 
@@ -280,6 +289,26 @@ def z_bands(z: np.ndarray, height: float) -> np.ndarray:
     return np.digitize(np.asarray(z, dtype=np.float64), [e * height for e in Z_BAND_EDGES]).astype(np.int64)
 
 
+def _band_score(
+    band: int,
+    x: np.ndarray,
+    y: np.ndarray,
+    sel: np.ndarray,
+    strata: np.ndarray,
+    height: float,
+    n_perm: int,
+    rng: np.random.Generator,
+) -> dict[str, Any]:
+    """The score of one z band at the cohort step (``Z_BAND_EDGES``), over the rows ``sel`` of that band."""
+    edges = [0.0, *(e * height for e in Z_BAND_EDGES), height]
+    return {
+        "band": band,
+        "z_lo": edges[band],
+        "z_hi": edges[band + 1],
+        **_score(x[sel], y[sel], strata[sel], n_perm, rng),
+    }
+
+
 def score_archetypes(
     tab: Mapping[str, np.ndarray],
     *,
@@ -292,6 +321,7 @@ def score_archetypes(
     height: float = 80.0,
     z_floor: float = 8.0,
     room: float = 1.5,
+    z_pin: float | None = None,
     only: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Per-archetype scores from the pooled archetype table, one row per pool row of every cohort.
@@ -309,7 +339,9 @@ def score_archetypes(
     wind share of the horizontal displacement over them). With the first, Nomad and Settler get ``auc_raw``
     and ``auc_rel`` beside ``auc`` (the primary, on ``rg2_rel`` where ``wind_rel`` and on ``rg2`` otherwise);
     with the others, Drifter, Floater and Sinker are scored as in the module docstring, ``height`` being the
-    world height, ``z_floor`` the altitude of the Floater's pool and ``room`` the Sinker's largest descent.
+    world height, ``z_floor`` the altitude of the Floater's pool, ``z_pin`` the height from which a row is
+    pinned at the lid and left out of that pool (None: no row is) and ``room`` the Sinker's largest descent.
+    Drifter needs no height, so a 2D world scores it too (one z band).
     ``only`` limits the report to the named archetypes (the calibration sweep of one label).
     """
     cohort = np.asarray(tab["cohort"])
@@ -339,16 +371,18 @@ def score_archetypes(
     # the version-3 archetypes: (outcome, rows the score is over), strata extended by the z band at T
     extra: dict[str, np.ndarray] = {}
     zb = np.zeros(cohort.size, dtype=np.int64)
+    pinned = np.zeros(cohort.size, dtype=bool)
+    if "wshare_min" in tab:  # the wind share of the displacement needs no height: scored in 2D too
+        spec["drifter"] = (np.asarray(tab["wshare_min"], np.float64),) * 2
+        extra["drifter"] = np.ones(cohort.size, dtype=bool)
     if "z0" in tab:
         z0 = np.asarray(tab["z0"], np.float64)
         zb = z_bands(z0, height)
-        if "wshare_min" in tab:
-            spec["drifter"] = (np.asarray(tab["wshare_min"], np.float64),) * 2
-            extra["drifter"] = np.ones(cohort.size, dtype=bool)
+        pinned = z0 >= z_pin if z_pin is not None else pinned
         if "zk_min" in tab:
             held = -np.abs(np.asarray(tab["zk_min"], np.float64) - z0)
             spec["floater"] = (held, held)
-            extra["floater"] = z0 >= z_floor  # the pool aloft at T
+            extra["floater"] = (z0 >= z_floor) & ~pinned  # the pool aloft at T, off the lid
             fall = (z0 - np.asarray(tab["zk_min"], np.float64)) / np.maximum(np.minimum(z0, room), 1e-9)
             spec["sinker"] = (fall, fall)
             extra["sinker"] = z0 >= room  # rows with room to fall
@@ -390,6 +424,20 @@ def score_archetypes(
                 x[sc & ~fl], y_primary[sc & ~fl], st[sc & ~fl], n_perm, _rng(seed, a.value, 3)
             )
             entry["exposure"] = {side: _exposure(m, n_ok, sc, fl) for side, m in (("pos", x), ("neg", ~x))}
+            if name in extra:  # the AUC per z band at T: where the pooled score comes from
+                entry["by_band"] = [
+                    _band_score(
+                        b, x, y_primary, sc & (zb == b), st, height, n_perm, _rng(seed, a.value, 20 + b)
+                    )
+                    for b in range(N_Z_BANDS)
+                ]
+            if name == "floater":  # the rows left out of the pool because the lid pins them
+                aloft = scored & (z0 >= z_floor)
+                entry["pinned"] = {
+                    "z_pin": z_pin,
+                    "n": int((aloft & pinned).sum()),
+                    "n_match": int((aloft & pinned & x).sum()),
+                }
             if has_rel and name in ("nomad", "settler"):  # the other way round: the wind-relative comparison
                 sign = 1.0 if name == "nomad" else -1.0
                 for key, col, seed_variant in (("auc_raw", rg_min, 4), ("auc_rel", rel_min, 5)):
@@ -817,6 +865,9 @@ def study(
     # the rule under study, so a dump scores candidate thresholds against one outcome
     z_floor = ALOFT * cfg.world.height
     room = arch_min_obs * cfg.physics.gravity if d3 else 0.0
+    z_pin = (
+        dims(cfg).z_hi - LID_MARGIN if d3 else None
+    )  # from here a row is pinned at the lid (the Floater's pool)
 
     def track_fn(
         cuid: mx.array,
@@ -971,6 +1022,7 @@ def study(
         height=cfg.world.height,
         z_floor=z_floor,
         room=room,
+        z_pin=z_pin,
     )
     intent_scores = score_intents(
         intent_tab,
@@ -1006,6 +1058,7 @@ def study(
             "rules": dataclasses.asdict(rules),
             "wind_rel_outcomes": bool(wthr and rules.wind_rel),
             "z_floor": z_floor,
+            "z_pin": z_pin,
             "sink_room": room,
         },
         "intent_version": INTENT_VERSION,

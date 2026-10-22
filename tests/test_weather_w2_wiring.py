@@ -9,6 +9,7 @@ new key at its default the step is that engine, bit for bit.
 from __future__ import annotations
 
 import json
+import platform
 from dataclasses import replace
 
 import mlx.core as mx
@@ -16,7 +17,7 @@ import numpy as np
 import pytest
 from mlx.utils import tree_flatten
 
-from alife import bench, cli, invariants, metrics, weather_obs, weather_spinup
+from alife import bench, cli, fields, invariants, metrics, weather_obs, weather_spinup
 from alife import weather as W
 from alife.config import Config, ConfigError, apply_overrides, dims
 from alife.rng import InitStream, Stream, init_keys, step_keys
@@ -69,6 +70,9 @@ def _same(a, b) -> bool:
 # (sha256 of the per-step state digests and step outputs, storm deaths, bonds broken) of 30 steps from a
 # spun-up weather plus a 0.07 jet, computed with ``weather_helpers.trajectory_digest`` on a fresh ``git
 # archive`` of 3799009 (the W1 engine, before any W2 key existed) and on the W2 head. CPU, MLX 0.32 stack.
+# Digests are platform-bound (``test_determinism.GOLDEN`` is the Linux pin and differs): the test skips unless
+# it runs on the recording platform, as ``test_weather_state._PRE_W1_TINY3D_50`` does; the digest matrix
+# against a fresh archive of 3799009 is the cross-code evidence elsewhere.
 PINS = {
     ("3d", "default", True): ("95721c288fdd70f4b1c516026c1d35b18cca1466d0fc11504d314ea76b9a0aea", 2, 1),
     ("3d", "default", False): ("5c8d7091bbef996de864897a965a2f8b19b0d582c4ad1c18dbc0a223a1940cf9", 2, 1),
@@ -89,6 +93,13 @@ def test_the_weather_on_trajectory_is_the_w1_engines(kind: str, strength: str, c
     wc = cfg.weather
     assert (wc.seed_gain, wc.shade_gain, wc.wind_scale) == (0.0, 0.0, 1.0)
     assert not (wc.rain_zonal or wc.storm_eddy or wc.wind_eddy_force)
+    if (mx.__version__, platform.system(), platform.machine(), mx.default_device().type == mx.cpu) != (
+        "0.32.3",
+        "Darwin",
+        "arm64",
+        True,
+    ):
+        pytest.skip("the weather-on pins were recorded on MLX 0.32.3, macOS arm64, CPU")
     got = trajectory_digest(cfg, compile=compile)
     assert got == PINS[(kind, strength, compile)]
     if strength == "strong":
@@ -315,27 +326,31 @@ def test_the_ledger_closes_with_seeding_shade_rain_storms_catastrophe_and_immigr
 
 
 def test_rain_shares_from_hand_sums() -> None:
-    # layers 0..19 in 3D: the band is layers 8-13
-    base = np.full(20, 1000, np.int64)
+    # layers 0..19 in 3D: the band is layers 8-13. Unequal per-layer values, so a band edge one layer off
+    # changes the share, and a clipped fraction other than 1/2, so ``1 - x`` is not ``x``.
+    base = 1000 + 37 * np.arange(20, dtype=np.int64)
     rain = np.zeros(20, np.int64)
-    rain[8:14] = 500
+    rain[8:14] = 100 * np.arange(1, 7)  # 100 .. 600, the edges 8 and 13 are the smallest and the largest
     rain[0] = 100
-    real = rain // 2
+    real = rain * 3 // 10
     inc = base + real
     got = weather_obs.rain_shares(np.stack([base, rain, inc, real]))
     band = slice(8, 14)
-    assert got["rain_band_share"] == pytest.approx(3000 / (3000 + 6000))
-    assert got["rain_global_share"] == pytest.approx(3100 / (3100 + 20000))
-    assert got["rain_real_band_share"] == pytest.approx(1500 / (inc[band].sum()))
+    b_rain, b_base = int(rain[band].sum()), int(base[band].sum())
+    assert (b_rain, b_base) == (2100, 6 * 1000 + 37 * (8 + 9 + 10 + 11 + 12 + 13))
+    assert got["rain_band_share"] == pytest.approx(b_rain / (b_rain + b_base))
+    assert got["rain_global_share"] == pytest.approx(rain.sum() / (rain.sum() + base.sum()))
+    assert got["rain_real_band_share"] == pytest.approx(real[band].sum() / inc[band].sum())
     assert got["rain_real_global_share"] == pytest.approx(real.sum() / inc.sum())
     assert got["rain_clipped_frac"] == pytest.approx(1.0 - real.sum() / rain.sum())
+    assert 0.6 < got["rain_clipped_frac"] < 0.8  # not 1/2
     # no rain: shares 0, nothing clipped
     zero = np.zeros(20, np.int64)
     assert set(weather_obs.rain_shares(np.stack([base, zero, base, zero])).values()) == {0.0}
     # 2D: the single layer is the band
-    one = weather_obs.rain_shares(np.array([[900], [100], [950], [50]]))
+    one = weather_obs.rain_shares(np.array([[900], [100], [930], [30]]))
     assert one["rain_band_share"] == one["rain_global_share"] == pytest.approx(0.1)
-    assert one["rain_clipped_frac"] == pytest.approx(0.5)
+    assert one["rain_clipped_frac"] == pytest.approx(0.7)
 
 
 def test_the_rain_audit_on_a_hand_field(kind: str) -> None:
@@ -356,8 +371,6 @@ def test_the_rain_audit_on_a_hand_field(kind: str) -> None:
     assert np.array_equal(a0[1], per_layer)
     assert np.array_equal(a0[3], a0[1])  # far below the cap: all of the rain is realised
     assert np.array_equal(a0[2], a0[0] + a0[1])
-    from alife import fields
-
     base = _np(fields.regen_rate(s.patch_pos, cfg, mx.array(4, dtype=mx.int32), None)).astype(np.int64)
     assert np.array_equal(a0[0], base.reshape(-1, fg, fg).sum(axis=(1, 2)))
     a1 = _np(metrics.rain_audit(full, ws, cfg))
@@ -373,6 +386,23 @@ def test_the_rain_audit_on_a_hand_field(kind: str) -> None:
     sums = [a.reshape(-1, fg, fg).sum(axis=(1, 2)) for a in (base3, rain, inc_total, real)]
     assert np.array_equal(mid.astype(np.int64), np.stack(sums))
     assert (mid[3] <= mid[1]).all()
+
+
+def test_the_rain_audit_reads_the_season_of_the_step_that_booked_the_rain(kind: str) -> None:
+    """With seasons on the base row depends on the step: the audit runs after the step counter has moved on,
+    so it evaluates the season at ``s.step - 1`` (``update_resource`` is given the pre-increment step)."""
+    cfg = _cfg(kind, "weather.rain_gain=1000000", "fields.season_period=40", "fields.season_amplitude=0.8")
+    ws = spun_ws(cfg)
+    s = init_state(cfg)._replace(wx=W.pack(ws), step=mx.array(5, dtype=mx.int32))
+    fg = dims(cfg).fg
+    audit = _np(metrics.rain_audit(s, ws, cfg)).astype(np.int64)
+
+    def base_at(step: int) -> np.ndarray:
+        r = fields.regen_rate(s.patch_pos, cfg, mx.array(step, dtype=mx.int32), None)
+        return _np(r).astype(np.int64).reshape(-1, fg, fg).sum(axis=(1, 2))
+
+    assert not np.array_equal(base_at(4), base_at(5))  # the season moves the base within one step
+    assert np.array_equal(audit[0], base_at(4))
 
 
 def _snapshot(cfg: Config, wx: mx.array, steps: int = 2):

@@ -60,7 +60,16 @@ def _oi(cfg: Config, rows: int, **fields) -> ObsIn:
 def test_agent_drift_is_the_force_over_drag_of_the_engine() -> None:
     """The velocity the wind alone gives a free agent: ``agent_wind(...).force / drag``, with the eddy wind
     under ``wind_eddy_force`` and the scale under ``wind_scale``."""
-    for extra in ([], ["weather.wind_scale=0.5"], ["weather.wind_eddy_force=true"], ["weather.wind_scale=0"]):
+    for extra in (
+        [],
+        ["weather.wind_scale=0.5"],
+        ["weather.wind_eddy_force=true"],
+        ["weather.wind_scale=0"],
+        [
+            "physics.drag=2.0",
+            "weather.w_edge=0.01",
+        ],  # drag != 1: the force carries a factor ``drag`` that the drift must divide out
+    ):
         cfg = storm3d_config(*extra)
         d = dims(cfg)
         wx = fixed_wx(cfg, u1=0.02, v1=-0.01, u2=0.05, v2=0.03)
@@ -74,6 +83,9 @@ def test_agent_drift_is_the_force_over_drag_of_the_engine() -> None:
         drift = weather.agent_drift(wx, pos, cap, alive, cfg)
         assert drift.shape == (d.n, 3) and drift.dtype == mx.float32
         assert np.array_equal(np_(drift), np_(force / cfg.physics.drag)), extra
+        if "physics.drag=2.0" in extra:
+            assert np.allclose(np_(drift) * 2.0, np_(force), rtol=1e-6, atol=0)
+            assert np.abs(np_(drift) - np_(force)).max() > 0.005  # not the force itself
         if "weather.wind_scale=0" in extra:
             assert not np_(drift).any()
         elif "weather.wind_eddy_force=true" in extra:
