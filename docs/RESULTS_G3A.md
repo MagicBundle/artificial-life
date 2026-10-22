@@ -14,7 +14,7 @@ has not been done (§7).
   2.5. The maximum step (141 to 152 ms) is reported, not gated.
 - **Presentation is not part of the trajectory, on Metal too.** Every arm's final state digest equals the plain `runner.run`'s
   (`d39b433b…dad9b`, four arms, two plain runs).
-- **The estimates of §33.5.1 were right for the typical step and for fast-forward, and too low for the boundary step.** The
+- **The estimates of §33.5.1 were right for fast-forward and for the typical step at `max`, too low for the typical step at 1x (33.4 ms against 15.7 to 22.7, still inside the 69.4 ms slot) and too low for the boundary step.** The
   boundary step (every 250 steps) takes 127 to 130 ms at 1x, not 80 to 90: 1.84 to 1.87 slots of 69.4 ms. The scheduler's
   bounded debt absorbs it (no `late_step`), but it is the largest cost of the loop, which makes the first remedy named in §33.5.1
   (moving the host-only kin matching and colony tracker after the step) more relevant; it was not tried. At `max` the same step is 95 ms. A
@@ -162,9 +162,9 @@ Milliseconds, medians over the calls of each part (`components_ms`).
 
 - **The typical step at `max` and the fast-forward rate are as estimated** (19.1 ms against 19.3 to 22.7; 3.68x against 3.5 to
   3.9x). The ladder 0.25x to 2x plus `max` stands; 2x was not benched (the arms are 1 and `max`).
-- **The boundary step is 40% over the estimate at 1x.** The settle (58.8 ms against 38 to 40) and the runner's boundary work (30.3
+- **The boundary step is about 40% over the top of the estimate (80 to 90 ms) at 1x.** The settle (58.8 ms against 38 to 40) and the runner's boundary work (30.3
   against 15 to 25) account for it; at `max` the same parts cost 42.7 and 24.3. A boundary step is 1.84 to 1.87 slots at 1x
-  (69.4 ms); at 2x (34.7 ms) it would be 3.7 to 3.8 slots, absorbed only if the debt bound allows it (not measured: the bench has
+  (69.4 ms); at 2x (34.7 ms) it would be about 3.7 slots, absorbed only if the debt bound allows it (not measured: the bench has
   rates 1 and `max`).
 - **The observer fold is 12.0 ms at 1x and 1.7 at `max`.** The fold is derived (the loop minus the reference engine from a plain
   run at full load), so it also absorbs any slowdown of the engine step itself at the low duty cycle of 1x. A low GPU clock at light load
