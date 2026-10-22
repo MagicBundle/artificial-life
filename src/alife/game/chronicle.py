@@ -324,12 +324,15 @@ def rebuild_backlog(
     *,
     house_salt: int,
     limit: int = 64,
+    chronicler: Chronicler | None = None,
 ) -> list[dict[str, Any]]:
     """The newest ``limit`` events a play of this run would have produced from its logs: the records of
     ``observers/social.jsonl``, the lines of ``observers/storms.jsonl`` (each with an ``events`` list) and the
     entries of ``director.jsonl`` (headers excluded by the caller), in order of ``(step, id)``. Names are
-    remembered from the records given, so pass the whole log when exact names of dissolved groups matter."""
-    chron = Chronicler(house_salt)
+    remembered from the records given, so pass the whole log when exact names of dissolved groups matter.
+    With ``chronicler`` the events are made by that one (a live play's, which then knows the names and the ids
+    handed out, so it continues the log it was started from); otherwise by a new one."""
+    chron = Chronicler(house_salt) if chronicler is None else chronicler
     events: list[dict[str, Any]] = []
     for rec in social:
         events += chron.from_record(rec)

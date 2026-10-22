@@ -1772,6 +1772,8 @@ artificial-life/
     weather_obs.py               host numpy: the `weather` block of a metrics row (§30.8); not a lint module
     weather_spinup.py            host driver: `alife run --weather-spinup N` (§30.9); not a lint module
     streamrec.py                 the play stream's record encoders (§33.1): numpy only, in the subscript-assignment lint scan
+    play.py                      host: `alife play`'s scheduler, control grammar and presenter, the `runner.Pacer` (§33.2);
+                                 in the subscript-assignment lint scan, real time only through its `Clock` (rule 7)
     storms.py                    host: the storm detector and tracker (moved from analysis/w0.py) and `StormLayer`, the
                                  play loop's storm component (§33.3); in the subscript-assignment lint scan
     game/                        the games vertical, build steps G1 (§28) and G2 (§29): observe (pure-MLX observer state and update),
@@ -9626,8 +9628,8 @@ slot with -1 for an empty one, so that an owner byte is an index into it. The fi
 
 ### 33.2 The play loop (in progress)
 
-This section grows with the PR's commits; what is here so far are the host pieces the loop is built from. The command, the runner
-hook and the scheduler follow (§33.2.4 onwards).
+This section grows with the PR's commits: the host pieces the loop is built from (§33.2.1 to §33.2.3), the runner hook, the scheduler,
+the grammar and the presenter (§33.2.4 to §33.2.7); the command (`alife play`, the planet, `serve_play`) follows.
 
 #### 33.2.1 `Observer.identity_rows` (the rows and tables of an `IDNT`)
 
@@ -9686,6 +9688,100 @@ the previous record's top-16; colony events are not narrated), `from_storms(even
 Tests: `tests/test_play_chronicle.py` (every template reachable and within 120 characters, every kind of the registry produced, the lexicon, the
 texts and fields of hand-built records for each case, the ids and their independence of the delivery order, the per-family cap, the backlog equal to the
 live events, and real 2D and 3D snapshot records through the chronicler).
+
+#### 33.2.4 The runner hook (`runner.Pacer`)
+
+`runner.run(..., pacer=None)`. With `pacer is None` every line executes as before (the 2D digest matrix against 2d1ab0c and the tiny3d digest are
+bit-identical, `556de6c6...` legacy). A `Pacer` is a protocol of seven members; the loop calls them and changes nothing else:
+
+| member | where | contract |
+|---|---|---|
+| `stop_requested` | or-ed in wherever `latch.requested` is read (`stopping()`) | a stop the pacer asks for takes the SIGINT path: a short interval row, the events, a checkpoint, status `interrupted`, exit code `INTERRUPTED` |
+| `bind(state, *, rd, cfg, obs, director, quiet, stop_check)` | once, inside `with _sigint(latch)`, after the starting checkpoint and the extinction return, before the loop | `stop_check` is `lambda: latch.requested` |
+| `before_step(state, t)` | first statement of the `while t < end` body | may block (pause, throttle); a stop makes it return, and **exactly one more step runs** |
+| `after_step(state, out, t, social)` | after the `outs.append` / `t += 1` pair | `out` is the base `StepOut`; `social` the snapshot records `obs.take_records()` returned (already appended to the social log; `[]` without observers) |
+| `before_checkpoint(state, t)` / `after_checkpoint(t)` | first and last statements of the `checkpoint()` closure | both call sites of the closure are bracketed (the boundary's periodic or stop checkpoint, and the post-callback stop) |
+| `after_boundary(state, row, t)` | next to `on_interval`, after the director and the checkpoint | |
+| `take_paused_s()` | at a metrics row | `perf.wall_s` becomes `max(wall - paused, 1e-6)`: a pause is not run time, a throttle sleep is (so `steps_per_s` is the achieved rate and the Lab's `MetricsTailer` is not misled) |
+
+- **State is borrowed.** A callback that takes `state` drops every reference before returning (nothing on `self`), so `step_fn(state)` is called with the runner as the only
+  holder (the donation rule, §15.4); it evaluates what it derives and converts to numpy before returning. Tested by the donation health check (the peak memory of a
+  pacer-driven run is within half a state's weights of the plain run's, with a pacer that keeps the state as the negative control, which exceeds it) and by an attribute scan.
+- **Callbacks never raise into the loop.** `run` has no `try/finally`, so a raising callback would skip the checkpoint, the event chunk and the status update and lose
+  up to 6,000 steps. `PlayPacer` wraps every member: an `OSError` (a closed reader) sets `stop_requested` and swaps the output for a null sink, any other exception does the same with
+  the traceback on stderr, `failure` records which, and every later call is a no-op. The runner gained no `try/finally`. (`serve_play` maps `failure` to exit 0 or 1.)
+- **While paused, SIGINT works.** The paused wait polls `stop_check` at every 0.25 s tick, so the first Ctrl-C reaches the one-more-step path within a tick and the second raises
+  `KeyboardInterrupt` as today.
+- **Proof obligation** (`tests/test_play_purity.py`): the same world run with `runner.run` alone and with a pacer receiving a seeded random control script (pauses, rates, `step`
+  batches, colours, `every`, `focus`, `follow`, `idnt`, `labels` and invalid lines) and building every record has equal state digests at every checkpoint, equal metrics rows
+  (every key but `wall_s`, `steps_per_s`, `peak_mem_gb`), event chunks, social log, sidecars and `director.jsonl`: 2D, 3D, the storm world, observers on and off, and a live
+  rule-tier director run at the same cadence; and a `quit` at an arbitrary step followed by a resume equals the uninterrupted run on the state, the social log and the sidecar. The hook adds no sync of its
+  own (the one blocking `mx.eval(state, out, *obs.arrays())` per step stays; the pacer's evals are extra and run on frame, tick and command steps).
+
+#### 33.2.5 The scheduler (`play.Scheduler`)
+
+The requested rate is `rate * base_rate` steps per second (`base_rate` 14.4, a play setting and not a config key; `rate` 0.25, 0.5, 1 or 2 in the window, any M in [0.05, 16] accepted,
+infinite for `max`). `Clock` (`monotonic`, `sleep`, `wait(control, timeout)`) is injected; `play.py` reads real time only in `RealClock` (`test_lint` rule 7), so the tests run on a fake.
+
+- **Fixed timestep with a bounded debt.** On run or rate change the schedule is anchored at `now` with nothing issued; step `k` is due at `anchor + k / (rate * base_rate)`. `poll()` returns
+  None (go) when a step is owed, else the seconds to wait, at most 0.25. A step that overruns its slot leaves a debt repaid one step per call, at once; a debt older than 0.25 s is dropped:
+  the schedule is re-anchored on one step due now and the dropped steps are added to `late_steps` (**the spec's "burst of at most 2 steps" is this bound: the debt never exceeds 0.25 s of steps, 3 at 1x**).
+  `max` never waits. A boundary step that overruns by less than 0.25 s is not late.
+- **Saving is not lateness.** `before_checkpoint` records the debt and sends `CLCK` with `saving` 1 (before the stall); `after_checkpoint` re-anchors, adds the steps the stall skipped to
+  `save_stall_steps` and sends `CLCK` with `saving` 0.
+- **Pause and batches.** Paused means `before_step` blocks on the control queue in ticks of 0.25 s (a `CLCK`, a look at the reader and at `stop_check` per tick). `step N` pauses and queues a batch of
+  N steps issued unthrottled, with one frame after its last step, then the world stays paused (the `alife stream` semantics, including the queue of batches); `pause` and `run` clear the queue.
+  `rate M` with M > 0 sets the rate **and runs** (`rate 0` pauses): the window's rung buttons send one line.
+- **Frames.** A frame is written when `t % fe == 0` while running, on entering a pause (unless the step already has one), on `color`, on `idnt` and after a batch. `fe = max(1, ceil(r_eff / frame_hz))`
+  with `r_eff = min(rate * base_rate, achieved)` for a finite rate and `achieved` for `max`, recomputed at each `CLCK` tick (250 ms); `achieved` is steps per second over a sliding 2 s window, so `max`
+  at 55 steps/s gives `fe` 2, and a rate the machine cannot hold does not over-produce frames. `every K` overrides it (1 to 64), `every auto` restores it.
+- **Start.** A world opens paused unless `--rate` is given; its header and first records are written in `bind`: the header, `FRMA`, `IDNT`, `INTN`, `TERR`, `ENVS`, `MAP1`, `STRM`, `EVNT` (backlog), `CLCK`.
+- **No wall clock enters the trajectory.** The step count, the order of observer and director calls and every written log line are functions of the step index; records carry the step, not the time.
+
+#### 33.2.6 The control grammar
+
+Lines of stdin as in §27.11 (LF, at most 4,096 bytes, `#` comments, lower case, applied one at a time between steps, `quit` drops the rest, an invalid line is ignored with one note on stderr;
+`stream.FdControl` reads them, EOF reads as `quit`):
+
+```text
+command = "pause" | "run" | "step" [N] | "rate" ( M | "max" ) | "color" MODE | "every" ( K | "auto" )
+        | "focus" ( UID | "off" ) | "follow" ( UID | "off" ) | "idnt" | "labels" ( "on" | "off" ) | "quit"
+```
+`color MODE` is one of the header's `color_modes` and redraws at once (an observer mode needs the observers); `idnt` sends `FRMA`, `IDNT`, `INTN`, `TERR`, `ENVS`, `MAP1`, `STRM` now;
+`labels off` stops `INTN`; `fields` is refused (the Lab's). `focus UID` reports an organism (`FOCS`, at once and about 4 per second), `follow UID` additionally reports every step and hands the follow on at its death
+(§33.2.7); an unknown or dead uid answers with one `FOCS` whose alive flag is clear; `focus UID` cancels a follow. Presentation-only lines (`focus follow idnt labels color every`) change what is written and when,
+never the trajectory (`test_play_purity`). G3b adds `autopause`, `intent`, `confirm`, `power`.
+
+#### 33.2.7 What the pacer produces
+
+`PlayPacer` (`play.py`) is the `Pacer`: a `Scheduler` and the presenter of the stream. It writes through `stream`'s short-write handling to the protocol descriptor (a pipe that stalls blocks the loop, as `alife stream` does).
+
+| work | when |
+|---|---|
+| `FRMA` | per the frame rule of §33.2.5: alive rows, the colour mode's `rgb`, bonds as listed-row indices, `span` the steps since the previous frame |
+| `IDNT`, `TERR` | at a snapshot step (the runner's `take_records` returned a record), at start and on `idnt`; the house table of the newest `IDNT` is what the house colour mode and `FOCS` read |
+| `INTN` | every tick (`t % tick == 0`, 25) unless `labels off`; flags bit 0 = evaluated, bit 1 = the Budding overlay shows (`label_intent != held`) |
+| `MAP1`, `STRM` | every tick of a weather world (`StormLayer.tick_at`; events to the chronicle), and `StormLayer.current` (no detection) at start and on `idnt` |
+| `EVNT` | batches of at most 64 after the step that produced events: the snapshot record's kin and house events, the tracker's events, the director's `applied` entries (after the boundary), the focus events, `checkpoint`, `renumbered`, `extinct`; the backlog of the world's logs (at most 64, flagged) is sent at start, and the same chronicler made it so names and ids continue |
+| `ENVS` | at every metrics boundary (`after_boundary`, after the director) and on `idnt`: the warm pools at the step, the season in force, the `env_*` levers away from their inert values, the active effects and cooldowns folded from the director's entries |
+| `CLCK` | every 250 ms, on every command and around every checkpoint |
+| `FOCS` | per `focus` / `follow` |
+
+- **Tracker and files.** In a weather world the layer is opened at `bind` (`StormLayer.open`: the state saved with the checkpoint of the start step, else a fresh layer; `renumbered` is said once if the
+  step is above 0 and no state exists, and not for a world made by this call, `PlayOptions.fresh`, whose empty tracker is saved so that a resume at its first checkpoint is exact), ticks at `t % tick == 0`, logs each tick
+  to `observers/storms.jsonl` and saves its state in `before_checkpoint`, before the state file (§33.3.2). `dc_ref` is `PlayOptions.dc_ref` (read back from `play.json`) or computed from the state at bind and reported through
+  `on_ready` before the header is written.
+- **Focus.** One device compare finds the row of a uid; later reports verify `uid[row]`. While following, every step reads one row (`uid`, position, velocity, energy, birth step, generation, parent, bond count and the observer's
+  house, kin and colony values and labels) and keeps the position, the raw kin slot and the children seen in `out.births` (lanes whose `parent_uid` is the followed uid). At death (`uid[row] != followed`, authoritative), the cause is read
+  from `out.deaths` by name, **None if the death lanes overflowed (the uid is then not among them)**, and the successor is (1) the eldest living child (smallest uid; the children of the dying step are included), else (2) the
+  nearest living organism of the same kin slot to the cached death point (minimum image), else (3) the nearest living organism, else (4) none. The events `focus_death` and `focus_handoff` (rule 1, 2 or 3) are
+  written at that step and `FOCS` continues on the new uid with bit 1 (hand-off this frame); with none, one `FOCS` with the alive flag clear ends the follow. A plain `focus` that dies sends that one record and ends.
+- **Observers off.** A world without `game.observe` has no `IDNT`, `INTN`, `TERR` and no observer colour modes (refused with a note); the header's `play.records` lists the tags actually sent.
+
+Tests: `test_play_sched.py` (the scheduler on a fake clock: rates, pause and run without drift, re-anchor, debt and `late_steps`, a checkpoint stall, `max`, batches; the pacer: 1x takes N/14.4 s, `CLCK` cadence,
+`fe` from the achieved rate, a paused wait polls the stop check), `test_play_control.py` (the grammar table, the channel on real pipes, every command's effect), `test_play_hook.py` (quit while paused, a real SIGINT while paused,
+a closed reader, a raising callback, the order of `before_checkpoint`, the state file and the tracker file, `after_step` against the social log, the donation check, paused time, an extinct world), `test_play_purity.py`
+(the equality of §33.2.4), `test_play_focus.py` (`FOCS` against the state and against `IDNT` and `INTN`, the four rules on a built scene, the torus, the death point, a death in the step of a birth, a real starvation).
 
 ### 33.3 The storm layer and its files
 

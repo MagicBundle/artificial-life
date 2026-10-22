@@ -579,6 +579,24 @@ class StormLayer:
         }
         return self.ingest(det, maps)
 
+    def current(self, ws: WeatherState, t: int) -> StormTick:
+        """The records of step ``t`` without a detection: the planes read from ``ws`` and the ``STRM`` object
+        of the tracks as the last tick left them (``detect_step`` is that tick), no event, no tracker change.
+        The play loop sends it at start and on ``idnt``, when no tick has just run."""
+        p = self.p
+        warm = W.warm_pools(p, mx.array(t, dtype=mx.int32))
+        fr, (dc, ts) = read_frame_extra(ws, p, t, (ws.Dc, warm))
+        planes = streamrec.quantise_map1(
+            p=fr.P,
+            dc=dc,
+            zeta=corners_to_centres(fr.zeta.astype(np.float64)),
+            ts=ts,
+            winds=np.stack([fr.u1, fr.v1, fr.u2, fr.v2]),
+            dc_ref=self.dc_ref,
+        )
+        strm = self._strm(t, [])
+        return StormTick(t, {**strm, "detect_step": self.step}, planes, [], None)
+
     def ingest(self, det: Detection, maps: Mapping[str, np.ndarray] | None = None) -> StormTick:
         """Fold one detection into the tracker and the notes. ``maps`` (the arrays of ``quantise_map1``) add
         the quantised planes to the result."""

@@ -41,8 +41,15 @@ GAME_MODULES = {
     f"game.{p.stem}" for p in (SRC / "game").glob("*.py")
 }  # the games vertical (§28), scanned too
 SETITEM_MODULES = (
-    SIM_MODULES | {"ops", "rng", "state", "stream", "streamrec", "storms"} | DIRECTOR_MODULES | GAME_MODULES
+    SIM_MODULES
+    | {"ops", "rng", "state", "stream", "streamrec", "storms", "play"}
+    | DIRECTOR_MODULES
+    | GAME_MODULES
 )  # rule 2
+CLOCK_MODULES = {
+    "play"
+}  # rule 7: real time only through the injected Clock (its RealClock is the one reader)
+CLOCK_CLASS = "RealClock"
 HOST_ALLOW = {  # rule 5: host-side checks that read arrays by design
     ("invariants", "full_check"),
     ("knn_metal", "self_check"),  # the once-per-process startup comparison of the kernel with the MLX search
@@ -213,7 +220,31 @@ def rule_metal_kernel(mod: str, tree: ast.AST) -> list[str]:
     return out
 
 
-RULES = (rule_at, rule_setitem, rule_random, rule_async_eval, rule_host_reads, rule_metal_kernel)
+def rule_clock(mod: str, tree: ast.AST) -> list[str]:
+    """7. The play loop reads and waits on real time only through the injected ``Clock``: ``time.sleep``,
+    ``time.monotonic``, ``time.perf_counter`` and ``time.time`` appear only inside ``RealClock``, so the
+    scheduler tests run on a fake clock with no real waiting."""
+    if mod not in CLOCK_MODULES:
+        return []
+    real = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == CLOCK_CLASS]
+    allowed = {id(sub) for c in real for sub in ast.walk(c)}
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and id(node) not in allowed:
+            name = _dotted(node.func)
+            if name in (
+                "time.sleep",
+                "time.monotonic",
+                "time.perf_counter",
+                "time.time",
+                "sleep",
+                "monotonic",
+            ):
+                out.append(f"{mod}:{node.lineno}: {name}( outside the Clock")
+    return out
+
+
+RULES = (rule_at, rule_setitem, rule_random, rule_async_eval, rule_host_reads, rule_metal_kernel, rule_clock)
 
 
 @pytest.mark.parametrize("rule", RULES, ids=lambda r: r.__name__)
@@ -228,7 +259,7 @@ def test_source_tree(rule) -> None:
     # the generic modules of §29, a device half and a host half, and the game layer built on them
     assert {"groups", "tracking", "game.social", "game.society"} <= {m for m, _ in mods}
     assert {"spatial", "knn_metal"} <= {m for m, _ in mods}
-    assert {"storms", "streamrec"} <= {m for m, _ in mods}
+    assert {"storms", "streamrec", "play"} <= {m for m, _ in mods}
     assert {"analysis.resim", "analysis.labels"} <= {
         m for m, _ in mods
     }  # rule 6 is repo-wide: analysis is scanned
@@ -253,6 +284,7 @@ def test_rules_are_not_vacuous() -> None:
     assert bad(rule_setitem, "game.rules", "def f(d):\n    d['a'] = 1\n")
     assert bad(rule_setitem, "streamrec", "def f(d):\n    d['a'] = 1\n")  # the play-record encoders (§33.1)
     assert bad(rule_setitem, "storms", "def f(d):\n    d['a'] = 1\n")  # the storm tracker and layer (§33.3)
+    assert bad(rule_setitem, "play", "def f(d):\n    d['a'] = 1\n")  # the play loop's host module (§33.2)
     assert bad(rule_setitem, "groups", "def f(d):\n    d['a'] = 1\n")  # the generic device module is scanned
     assert not bad(rule_setitem, "tracking", "def f(d):\n    d['a'] = 1\n")  # the host module is not
     assert bad(rule_setitem, "game.society", "def f(d):\n    d['a'] = 1\n")  # the host game module is scanned
@@ -301,6 +333,13 @@ def test_rules_are_not_vacuous() -> None:
     assert not bad(rule_metal_kernel, "knn_metal", "def f():\n    return mx.fast.metal_kernel(name='k')\n")
     assert not bad(rule_metal_kernel, "spatial", "def f():\n    return knn_metal.scan_select(1)\n")
     assert not bad(rule_host_reads, "metrics", "def f(s):\n    return s.energy.item()\n")
+    # rule 7: the play loop's clock
+    assert bad(rule_clock, "play", "def f():\n    time.sleep(1)\n")
+    assert bad(rule_clock, "play", "class Scheduler:\n    def poll(self):\n        return time.monotonic()\n")
+    assert not bad(
+        rule_clock, "play", "class RealClock:\n    def monotonic(self):\n        return time.monotonic()\n"
+    )
+    assert not bad(rule_clock, "stream", "def f():\n    time.sleep(1)\n")
 
 
 # --- project and CI configuration --------------------------------------------------------------------------

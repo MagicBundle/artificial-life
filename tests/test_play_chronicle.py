@@ -345,6 +345,21 @@ def test_the_backlog_equals_what_the_live_chronicler_said() -> None:
     assert rebuild_backlog([], [], [], house_salt=SALT) == []
 
 
+def test_a_live_chronicler_that_made_the_backlog_continues_it() -> None:
+    """``chronicler=`` makes the backlog with the live chronicler: it then knows the names of the groups the
+    log mentioned and the ids it handed out, so the next record of the world names a dissolved group and
+    numbers its events as a play that had never stopped."""
+    cut = SCRIPT[: len(SCRIPT) // 2]
+    chron = Chronicler(SALT)
+    rebuild_backlog(cut, [], [], house_salt=SALT, chronicler=chron)
+    whole = Chronicler(SALT)
+    seen = [e for rec in SCRIPT[: len(cut)] for e in whole.from_record(rec)]
+    assert seen  # the first half said something
+    rest = [e for rec in SCRIPT[len(cut) :] for e in chron.from_record(rec)]
+    expected = [e for rec in SCRIPT[len(cut) :] for e in whole.from_record(rec)]
+    assert rest == expected
+
+
 def test_the_backlog_fits_one_evnt_record() -> None:
     many = [
         record(250 * (i + 1), kin=[(1, "Aldric")], events=[("kin_group", "born", 1, 8, -1, 0)])

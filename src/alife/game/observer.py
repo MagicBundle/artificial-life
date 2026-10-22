@@ -58,6 +58,8 @@ __all__ = [
     "Labels",
     "Observer",
     "SocialLabels",
+    "house_bytes",
+    "slot_bytes",
 ]
 
 OBSERVER_FORMAT: Final = 3  # the sidecar's members and their meaning; bump with any change to either
@@ -571,6 +573,10 @@ def _house_bytes(house: np.ndarray, top: np.ndarray) -> np.ndarray:
         at = np.minimum(np.searchsorted(top[order], house), top.size - 1)
         out = np.where(top[order][at] == house, order[at], out)
     return np.where(house == HOUSE_UNKNOWN, SLOT_UNKNOWN, out).astype(np.uint8)
+
+
+slot_bytes = _slot_bytes  # public names for the play loop's FOCS record (a row's slots against the tables)
+house_bytes = _house_bytes
 
 
 def _houses_from_record(table: Mapping[str, list[Any]]) -> tuple[np.ndarray, list[dict[str, Any]]]:

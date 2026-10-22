@@ -466,6 +466,29 @@ def test_tick_at_equals_the_manual_pipeline_and_ingest(vortex) -> None:
     assert a.planes is not None and b.planes is None
 
 
+def test_current_is_a_tick_without_a_detection(vortex) -> None:
+    """``current`` (the records of a step that is not a tick: at start and on ``idnt``) gives the planes of
+    the weather and the ``STRM`` object of the tracks as they are, and changes nothing in the tracker."""
+    layer, ticks, ws = vortex
+    before = json.dumps(layer.state(), sort_keys=True)
+    cur = layer.current(ws, 100)
+    assert json.dumps(layer.state(), sort_keys=True) == before
+    assert cur.events == [] and cur.line is None and cur.step == 100
+    assert {k: v.tolist() for k, v in cur.planes.items()} == {
+        k: v.tolist() for k, v in ticks[-1].planes.items()
+    }
+    assert cur.strm == ticks[-1].strm  # the same tracks; detect_step is the last tick (100)
+    later = layer.current(
+        ws, 130
+    )  # five detections' worth of steps on: the tracks age, the detection does not
+    assert (
+        later.strm["detect_step"] == 100
+        and later.strm["storms"][0]["age"] == ticks[-1].strm["storms"][0]["age"] + 30
+    )
+    assert later.strm["storms"][0]["state"] == "coasting"
+    assert streamrec.encode_strm(step=130, seq=0, tick=25, obj=later.strm)  # and it encodes
+
+
 def test_the_map_planes_are_the_weather_quantised(vortex) -> None:
     _, ticks, ws = vortex
     planes = ticks[-1].planes

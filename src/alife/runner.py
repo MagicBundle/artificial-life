@@ -29,7 +29,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 import mlx.core as mx
 import numpy as np
@@ -67,6 +67,53 @@ def diag_names(diag: int) -> list[str]:
     if unknown:
         names.append(hex(unknown))
     return names
+
+
+class Pacer(Protocol):
+    """The play loop's hook into ``run`` (DESIGN §33.2.4): a scheduler that may pause between steps and a
+    presenter that writes the stream's records. ``run(pacer=None)`` is the loop without any of it.
+
+    **State is borrowed.** Every callback that takes ``state`` gets the runner's current state as an argument
+    and drops every reference before it returns (nothing is stored on ``self``), so ``step_fn(state)`` is
+    called with the runner as the only holder (the donation rule, §15.4). Callbacks evaluate the arrays they
+    derive and convert them to numpy before returning. **Callbacks never raise**: the loop has no
+    ``try/finally``, so an exception would skip the checkpoint, the event chunk and the status update; an
+    implementation catches its own failures, sets ``stop_requested`` and goes on as a no-op.
+    """
+
+    stop_requested: bool  # or-ed in wherever the SIGINT latch is read: a stop takes the unscheduled-stop path
+
+    def bind(
+        self,
+        state: State,
+        *,
+        rd: RunDir,
+        cfg: Config,
+        obs: Observer | None,
+        director: Director | None,
+        quiet: bool,
+        stop_check: Callable[[], bool],
+    ) -> None:
+        """Once, before the loop (after the starting checkpoint exists)."""
+
+    def before_step(self, state: State, t: int) -> None:
+        """First statement of the loop body, with ``state`` at step ``t``: blocks per the schedule."""
+
+    def after_step(self, state: State, out: StepOut, t: int, social: list[dict[str, Any]]) -> None:
+        """After step ``t - 1 -> t``: ``out`` is the step's base output, ``social`` the snapshot records the
+        observer settled at this step (already appended to the social log)."""
+
+    def before_checkpoint(self, state: State, t: int) -> None:
+        """First statement of the checkpoint closure, before the event chunk and the state file."""
+
+    def after_checkpoint(self, t: int) -> None:
+        """Last statement of the checkpoint closure."""
+
+    def after_boundary(self, state: State, row: dict[str, Any], t: int) -> None:
+        """After the director and the checkpoint of a metrics row, next to ``on_interval``."""
+
+    def take_paused_s(self) -> float:
+        """Seconds spent paused since the last call (not run time: ``perf.wall_s`` excludes them)."""
 
 
 class _Interrupt:
@@ -164,6 +211,7 @@ def run(
     quiet: bool = False,
     on_interval: Callable[[State, dict[str, Any]], None] | None = None,
     director: Director | None = None,
+    pacer: Pacer | None = None,
 ) -> RunResult:
     """Run ``steps`` steps with one blocking eval per step, writing metrics, events and checkpoints.
 
@@ -180,6 +228,12 @@ def run(
     with the interventions applied, after they are durable in ``director.jsonl`` and before the checkpoint,
     so the checkpoint at ``t`` already contains them and a resume never re-applies anything.
     ``director=None`` is the exact behaviour without a director.
+
+    With a ``pacer`` (``alife play``, DESIGN §33.2.4) the loop calls its hooks and changes nothing else: it
+    may block before a step (``before_step``), it sees each step's output and records (``after_step``),
+    brackets every checkpoint, and may ask for a stop (``stop_requested``), which takes the same
+    unscheduled-stop path as a SIGINT (a short interval row, the events, a checkpoint, status
+    ``interrupted``). ``pacer=None`` executes every line as before.
 
     With ``cfg.game.observe`` the observers continue from the run's sidecar at the starting step if it is
     valid (otherwise they start fresh, and a resume says so on stderr, unless ``quiet``); the step's acts are
@@ -217,6 +271,11 @@ def run(
 
     step_fn = make_step(cfg, observe=True) if obs is not None else make_step(cfg)
     latch = _Interrupt()
+
+    def stopping() -> bool:
+        """A SIGINT, or the pacer asking for a stop (a ``quit``, a closed reader, a failure)."""
+        return latch.requested or (pacer is not None and pacer.stop_requested)
+
     outs: list[StepOut] = []
     out_steps: list[int] = []
     births: list[dict[str, np.ndarray]] = []
@@ -227,39 +286,63 @@ def run(
     def checkpoint() -> None:
         """Write the event chunk ``[chunk_s0, t)``, then checkpoint at ``t`` (logs first, §18)."""
         nonlocal births, deaths, chunk_s0, ckpt_step
+        if pacer is not None:
+            pacer.before_checkpoint(state, t)
         rd.write_events(chunk_s0, t, _concat(births), _concat(deaths))
         births, deaths, chunk_s0 = [], [], t
         save_checkpoint()
         if director is not None:
             director.on_checkpoint(t)
         ckpt_step = t
+        if pacer is not None:
+            pacer.after_checkpoint(t)
 
     mx.reset_peak_memory()
     t_wall = time.perf_counter()
 
     with _sigint(latch):
+        if pacer is not None:
+            pacer.bind(
+                state,
+                rd=rd,
+                cfg=cfg,
+                obs=obs,
+                director=director,
+                quiet=quiet,
+                stop_check=lambda: latch.requested,
+            )
         while t < end:
+            if pacer is not None:
+                pacer.before_step(state, t)  # may block (pause, throttle); a quit returns at once
             state, out = step_fn(state)  # rebinding drops the only reference to the previous state
+            recs: list[dict[str, Any]] = []
             if obs is not None:
                 obs.update(state, out.acts, t + 1)
                 out = out.base()  # the acts are never retained in `outs`
                 mx.eval(state, out, *obs.arrays())  # still exactly one blocking eval per step
-                rd.append_social(obs.take_records())  # a snapshot's record is durable at its own step
+                recs = obs.take_records()
+                rd.append_social(recs)  # a snapshot's record is durable at its own step
             else:
                 mx.eval(state, out)
             outs.append(out)
             out_steps.append(t)
             t += 1
+            if pacer is not None:
+                pacer.after_step(state, out, t, recs)
             extinct = (
                 not immigration
                 and int(to_numpy(out.counters)[CounterIdx.N_ALIVE]) == 0
                 and not _immigrants_pending(state, cfg)
             )
-            stop = extinct or latch.requested or t == end
+            stop = extinct or stopping() or t == end
             if t % me and not stop:
                 continue
 
             wall = time.perf_counter() - t_wall
+            if (
+                pacer is not None
+            ):  # a pause is not run time (a throttle sleep is: steps_per_s is the achieved rate)
+                wall = max(wall - pacer.take_paused_s(), 1e-6)
             host = _stack_outs(outs, out_steps)
             births.append(_records(host, "births"))
             deaths.append(_records(host, "deaths"))
@@ -308,7 +391,9 @@ def run(
                     print(line, flush=True)
             if on_interval is not None:
                 on_interval(state, row)
-            if stop or latch.requested:  # a SIGINT may also arrive during the flush or the callback
+            if pacer is not None:
+                pacer.after_boundary(state, row, t)
+            if stop or stopping():  # a SIGINT may also arrive during the flush or the callback
                 if ckpt_step != t:
                     checkpoint()
                 status = "extinct" if extinct else "done" if t == end else "interrupted"
