@@ -26,13 +26,13 @@ import Testing
         let card = Inspector.organism(uid: uid0 + 100, store: store)
         #expect(card.title == "Organism \(uid0 + 100)" && card.alive)
         #expect(card.subtitle == "Cestria · House Aldric")
-        #expect(row(card, "Archetype") == InspectorCard.Row("Archetype", "Gatherer", provisional: true))
+        #expect(row(card, "Archetype") == InspectorCard.Row("Archetype", "Grazer", provisional: true), "a storm world says Grazer")
         #expect(row(card, "Intent") == InspectorCard.Row("Intent", "Roaming", provisional: true))
         #expect(row(card, "Generation")?.value == "12" && row(card, "Bonds")?.value == "1")
         #expect(row(card, "Age")?.value == "4 steps (0.0 game min)")
         #expect(row(card, "Parent")?.value == "organism \(uid0 + 28)")
         #expect(row(card, "Clade") == nil, "the clade is the IDNT row's, which a newborn has not got yet")
-        #expect(card.notes.contains("labels are provisional (labels v2)"))
+        #expect(card.notes.contains("labels are provisional (labels v3: no held-out verdict for this world and rule set)"))
         #expect(card.energy?.fraction == 0.25 && card.energy?.text == "4096 of 16384")
         #expect(row(card, "Follow") != nil, "the fixture's FOCS is followed")
     }
@@ -100,7 +100,7 @@ import Testing
         let budding = try focus(store) { $0.labelFlags = 3; $0.intent = 1 }
         #expect(row(Inspector.organism(uid: uid0 + 100, store: budding), "Intent")?.value == "Budding (forecast)")
         let two = try focus(store) { $0.archSecondary = 2 }
-        #expect(row(Inspector.organism(uid: uid0 + 100, store: two), "Archetype")?.value == "Gatherer / Hunter")
+        #expect(row(Inspector.organism(uid: uid0 + 100, store: two), "Archetype")?.value == "Grazer / Hunter")
     }
 
     @Test func reservedSlotsAreWordsInTheSubtitle() throws {

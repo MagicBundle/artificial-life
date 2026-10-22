@@ -34,6 +34,7 @@ struct CastView: View {
                 Section {
                     ForEach(lineages) { lineage in
                         LineageRow(lineage: lineage, names: store.play?.labels.arch ?? [],
+                                   validity: LabelValidity(labels: store.play?.labels, environment: store.environment?.environment),
                                    selected: model.selection == .kin(id: lineage.id))
                             .contentShape(Rectangle())
                             .onTapGesture(count: 2) { model.selectKin(id: lineage.id, fly: true, follow: true) }
@@ -99,6 +100,8 @@ struct StormRow: View {
 struct LineageRow: View {
     let lineage: CastLineage
     let names: [String]
+    /// The N1 gate on the labels (DESIGN §33.7): a mix is tagged provisional unless every archetype in it is valid.
+    var validity = LabelValidity(labels: nil, environment: nil)
     let selected: Bool
 
     var body: some View {
@@ -113,10 +116,10 @@ struct LineageRow: View {
             if let house = lineage.namedAfter {
                 Text("named after House \(house)").font(.caption2).foregroundStyle(.secondary)
             }
-            if let mix = lineage.archetypes, mix.count == 7 {
+            if let mix = lineage.archetypes, !mix.isEmpty {
                 HStack(spacing: 6) {
                     ArchetypeBar(mix: mix).frame(height: 5).help(mixHelp(mix))
-                    Text("provisional").font(.caption2).foregroundStyle(.secondary)
+                    if !validity.mixIsValid(mix) { Text("provisional").font(.caption2).foregroundStyle(.secondary) }
                 }
             }
             HStack(spacing: 8) {
@@ -135,7 +138,7 @@ struct LineageRow: View {
     /// The archetype shares in words, for the bar's tooltip.
     private func mixHelp(_ mix: [Double]) -> String {
         zip(mix, 1...).filter { $0.0 >= 0.01 }.map { "\(Names.label(UInt8($0.1), in: names)) \(Int(($0.0 * 100).rounded()))%" }
-            .joined(separator: ", ") + " (provisional labels)"
+            .joined(separator: ", ") + (validity.mixIsValid(mix) ? " (validated labels)" : " (provisional labels)")
     }
 }
 

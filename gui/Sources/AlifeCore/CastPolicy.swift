@@ -32,7 +32,7 @@ package struct CastLineage: Equatable, Identifiable, Sendable {
     package var size: Int
     /// Its share of the organisms the last `IDNT` lists.
     package var share: Double
-    /// The mean archetype shares (seven values; provisional labels), nil while the labels warm up.
+    /// The mean archetype shares (one value per archetype, `labels.arch.count - 1`; provisional unless `LabelValidity` says otherwise), nil while the labels warm up.
     package var archetypes: [Double]?
     package var births: Int?
     /// Deaths of the last window by cause (`CastPolicy.deathCauses`).

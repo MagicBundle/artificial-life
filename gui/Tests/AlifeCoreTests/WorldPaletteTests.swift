@@ -6,7 +6,7 @@ import Testing
 @Suite struct WorldPaletteTests {
     @Test func theTablesHaveTheSizesOfTheEngine() {
         #expect(WorldPalette.slots.count == 16)
-        #expect(WorldPalette.archetypes.count == 8)  // none and the seven archetypes
+        #expect(WorldPalette.archetypes.count == 11)  // none and the ten archetypes of version 3
         #expect(WorldPalette.intents.count == 11)  // none and the ten intents
         #expect(Set(WorldPalette.slots).count == 16, "no two slots look alike")
         #expect(!(WorldPalette.slots + WorldPalette.archetypes + WorldPalette.intents).contains(0xFF0000), "red is the hurt colour")

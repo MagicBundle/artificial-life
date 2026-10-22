@@ -1,7 +1,7 @@
 {
   "about": "Expected decoding of the stream in the .bin file next to this one (DESIGN section 33.1). Regenerate with `uv run python tests/play_fixtures.py --write`.",
   "kind": "3d_n70",
-  "bytes": 4052,
+  "bytes": 4304,
   "header": {
     "protocol": 1,
     "dims": 3,
@@ -71,7 +71,7 @@
         }
       },
       "labels": {
-        "intent_version": 2,
+        "intent_version": 3,
         "arch": [
           "",
           "Gatherer",
@@ -80,7 +80,10 @@
           "Trader",
           "Nomad",
           "Settler",
-          "Unspecialised"
+          "Unspecialised",
+          "Drifter",
+          "Floater",
+          "Sinker"
         ],
         "intent": [
           "",
@@ -94,7 +97,19 @@
           "Feeding",
           "Roaming",
           "Resting"
-        ]
+        ],
+        "gate": {
+          "rules_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "world_key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "key_found": true,
+          "archetypes": [
+            2,
+            3
+          ],
+          "intents": [
+            10
+          ]
+        }
       },
       "cast": {
         "kin": 16,
@@ -132,7 +147,7 @@
     {
       "index": 0,
       "tag": "FRMA",
-      "offset": 1388,
+      "offset": 1640,
       "length": 240,
       "step": 10,
       "seq": 0,
@@ -220,7 +235,7 @@
     {
       "index": 1,
       "tag": "IDNT",
-      "offset": 1636,
+      "offset": 1888,
       "length": 212,
       "step": 10,
       "seq": 0,
@@ -296,7 +311,7 @@
     {
       "index": 2,
       "tag": "INTN",
-      "offset": 1856,
+      "offset": 2108,
       "length": 104,
       "step": 10,
       "seq": 0,
@@ -358,7 +373,7 @@
     {
       "index": 3,
       "tag": "FRMA",
-      "offset": 1968,
+      "offset": 2220,
       "length": 2008,
       "step": 11,
       "seq": 1,
@@ -497,7 +512,7 @@
     {
       "index": 4,
       "tag": "CLCK",
-      "offset": 3984,
+      "offset": 4236,
       "length": 60,
       "step": 11,
       "seq": 0,

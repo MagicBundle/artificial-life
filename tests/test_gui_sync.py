@@ -196,13 +196,25 @@ def test_the_play_header_keys_match_playheader() -> None:
     play = sr.header_play(
         records=["FRMA"],
         weather=sr.weather_block(enabled=True, dc_ref=0.5),
-        labels={"intent_version": 2, "arch": [""], "intent": [""]},
+        labels=sr.labels_block(
+            intent_version=3,
+            arch=["", "A"],
+            intent=["", "I"],
+            gate={
+                "rules_digest": "d",
+                "world_key": "k",
+                "key_found": True,
+                "archetypes": [1],
+                "intents": [1],
+            },
+        ),
         energy_cap=1,
     )
     assert swift_struct_keys(text, "PlayHeader") == set(play)
     assert swift_struct_keys(text, "Weather") == set(play["weather"])
     assert swift_struct_keys(text, "Refs") == set(play["weather"]["refs"])
     assert swift_struct_keys(text, "Labels") == set(play["labels"])
+    assert swift_struct_keys(text, "Gate") == set(play["labels"]["gate"])
     assert swift_struct_keys(text, "Cast") == set(play["cast"])
     assert swift_struct_keys(text, "Planet") == set(play["planet"])
     # the legacy header keys the Swift header reads are those `legacy_header` writes, plus `play`

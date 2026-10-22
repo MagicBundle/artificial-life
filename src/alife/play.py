@@ -45,8 +45,9 @@ from alife.director import pacing, rules
 from alife.game.chronicle import Chronicler, rebuild_backlog
 from alife.game.colors import OBSERVER_MODES, play_colors
 from alife.game.observe import EVAL_BIT
-from alife.game.observer import Observer, house_bytes, slot_bytes
-from alife.game.rules import ARCHETYPE_DISPLAY, INTENT_DISPLAY, INTENT_VERSION, Archetype, Intent
+from alife.game.observer import Observer, default_rules, house_bytes, slot_bytes
+from alife.game.report import label_gate, label_names
+from alife.game.rules import INTENT_VERSION
 from alife.runio import DIRECTOR_LOG_FILE, RunDir
 from alife.state import ERROR_MASK, CounterIdx, DeathCause, State, default_env, to_numpy
 from alife.step import StepOut
@@ -635,11 +636,7 @@ class PlayPacer:
         play = streamrec.header_play(
             records=records,
             weather=streamrec.weather_block(enabled=self.layer is not None, dc_ref=dc_ref),
-            labels={
-                "intent_version": INTENT_VERSION,
-                "arch": ["", *(ARCHETYPE_DISPLAY[a.name.lower()] for a in Archetype if a.value > 0)],
-                "intent": ["", *(INTENT_DISPLAY[i.name.lower()] for i in Intent if i.value > 0)],
-            },
+            labels=self._labels_block(cfg, obs),
             energy_cap=cfg.energy.e_max,
             planet=self.opt.planet,
             base_rate=self.opt.base_rate,
@@ -659,6 +656,16 @@ class PlayPacer:
         self._send_clock()
         self.sched.restart()
         self._t_step = self.clock.monotonic()
+
+    @staticmethod
+    def _labels_block(cfg: Config, obs: Observer | None) -> dict[str, Any]:
+        """The header's ``labels`` object (DESIGN §33.1.1): the names of the rule set in force (a weather
+        world's are the storm names, as N1's reports print them) and the held-out verdict gate of N1 for this
+        world and rule set (``report.label_gate``)."""
+        rules = obs.rules if obs is not None else default_rules(cfg)
+        arch, intent = label_names(INTENT_VERSION, cfg.weather.enabled)
+        gate = label_gate(cfg, INTENT_VERSION, rules.digest())
+        return streamrec.labels_block(intent_version=INTENT_VERSION, arch=arch, intent=intent, gate=gate)
 
     def _backlog(self, rd: RunDir, state: State) -> None:
         """The newest 64 events of the world's logs, which also warm the chronicler's names (the events are

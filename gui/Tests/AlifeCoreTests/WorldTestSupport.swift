@@ -20,6 +20,23 @@ enum WorldFixtures {
         return store
     }
 
+    /// The fixture's world with the header's label gate replaced and `levers` in its `ENVS`: the N1 validity cases.
+    static func store(gate: PlayHeader.Labels.Gate?, levers: [String: JSONValue] = [:], kind: String = "3d") throws -> WorldStore {
+        let source = try store(kind)
+        var header = try #require(source.header)
+        header.play?.labels.gate = gate
+        var out = WorldStore()
+        out.reset(header: header)
+        for record in [source.identities.map(StreamRecord.idnt), source.focus.map(StreamRecord.focs),
+                       source.labels.map(StreamRecord.intn), source.frame.map(StreamRecord.frma)].compactMap({ $0 }) {
+            out.apply(record)
+        }
+        var env = try #require(source.environment)
+        env.environment.levers = levers
+        out.apply(.envs(env))
+        return out
+    }
+
     /// A frame of the listed rows at `positions` (uids `first + i`), nothing else filled in.
     static func frame(_ positions: [SIMD3<Float>], first: Int64 = 1000, step: UInt64 = 10, uids: [Int64]? = nil) -> PlayFrame {
         let n = positions.count

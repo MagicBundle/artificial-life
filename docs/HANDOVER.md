@@ -383,7 +383,9 @@ and resumed once. There is one run per condition apart from the seed pair.
 
 ## Games G3a: the play loop and the World window (`docs/GAMES.md` §9, DESIGN §33, row I51)
 
-- **Current state.** Built on branch `games/g3a` (13 commits on `origin/main` 2d1ab0c: G2, W0/W1 weather, N1, the fused kNN kernel).
+- **Current state.** Built on branch `games/g3a` (15 commits on `origin/main` 2d1ab0c: G2, W0/W1 weather, N1, the fused kNN kernel), then
+  merged with `origin/main` 39301ba (W2a #34, the 2D fused kernel #33; DESIGN §33.7): the labels of the stream are `INTENT_VERSION` 3's and carry
+  N1's validity gate (no V3 verdict row exists, so no label is shown as valid; a lever away from its default also withdraws them).
   `alife play` runs one world under a fixed-timestep scheduler and writes ALSTRM records (`FRMA IDNT INTN TERR EVNT STRM MAP1 ENVS CLCK
   FOCS`) to stdout; the **World** window of the Swift app (Lab menu, "Open World", or `--world RUN` at launch) shows them: the planet
   map and organisms in a raw-Metal view (minimum image, alive-only frames, three semantic levels), a docked control center (clock
@@ -399,11 +401,13 @@ and resumed once. There is one run per condition apart from the seed pair.
   - The Swift package has no CI job: run `cd gui && swift build -Xswiftc -warnings-as-errors && swift test` before a push (AlifeCoreTests
     and AlifeControlTests; the GPU tests are opt-in with `ALIFE_GPU_TESTS=1`).
   - Provisional and unmeasured: the chronicle's event rate (the ring of 500 and the 3 s toast), the checkpoint stall (686 MB), the
-    boundary step's cost, the client's GPU time, fast-forward (estimated 3.5 to 3.9x). The labels shown are `INTENT_VERSION` 2 and are
-    tagged provisional everywhere; the chronicle never states one.
+    boundary step's cost, the client's GPU time, fast-forward (estimated 3.5 to 3.9x). The labels shown are `INTENT_VERSION` 3's (Drifter,
+    Floater, Sinker; Grazer in a storm world) and are tagged provisional unless the header's gate (`LABEL_VERDICTS`, as N1) lists them and `ENVS.levers`
+    is empty; today none is listed, so all are provisional. The chronicle never states one.
 - **The Mac day (the coordinator's; DESIGN §33.6).**
   1. The play tests on Metal: `uv run pytest tests/test_play_purity.py tests/test_play_hook.py tests/test_bench.py -q` (default device),
-     and the 2D digest matrix against `2d1ab0c` on the GPU.
+     the 2D digest matrix against `39301ba` (the merge's base; on the GPU the 2D fused kernel is now the default), and W2a's own Metal
+     re-run at the merged head (`test_game_purity.py` with `Acts.buoy` and the tracers, `test_game_tracers.py`, DESIGN §32.11).
   2. The gate of DESIGN §33.5.4 with `alife bench --play --preset 64k3d --overlay storm --set director.enabled=true --play-from
      runs/64k3d_s0:500000 --play-spinup 20000 --steps 4400 --json F.json`, and `ALIFE_GPU_TESTS=1 ALIFE_BENCH_ROWS=42000 swift test
      --filter WorldRenderBench` beside its `1` arms; the checkpoint stall on the internal and the external disk.

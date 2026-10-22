@@ -32,14 +32,37 @@ package struct PlayHeader: Equatable, Sendable, Codable {
     }
 
     package struct Labels: Equatable, Sendable, Codable {
+        /// N1's held-out verdict gate for this world and rule set (DESIGN §33.1.1, §33.7): whether the verdict table has
+        /// a row for it and the bytes of the labels that pass. A label is valid only if its byte is listed (and the
+        /// environment is at its defaults, `LabelValidity`); everything else is provisional.
+        package struct Gate: Equatable, Sendable, Codable {
+            package var rulesDigest: String
+            package var worldKey: String
+            package var keyFound: Bool
+            /// `rules.Archetype` values that pass, ascending.
+            package var archetypes: [Int]
+            /// `rules.Intent` values that pass, ascending.
+            package var intents: [Int]
+
+            private enum CodingKeys: String, CodingKey {
+                case rulesDigest = "rules_digest"
+                case worldKey = "world_key"
+                case keyFound = "key_found"
+                case archetypes, intents
+            }
+        }
+
         package var intentVersion: Int
-        /// Display names by byte value (index 0 is "none").
+        /// Display names by byte value (index 0 is "none"). A weather world's are the storm names (Grazer for
+        /// Gatherer) and a version-3 world has Drifter, Floater and Sinker (bytes 8 to 10).
         package var arch: [String]
         package var intent: [String]
+        /// Absent in a stream of a writer that did not send it: then no label is valid.
+        package var gate: Gate?
 
         private enum CodingKeys: String, CodingKey {
             case intentVersion = "intent_version"
-            case arch, intent
+            case arch, intent, gate
         }
     }
 
@@ -288,7 +311,7 @@ package struct IdentityTables: Equatable, Sendable, Codable {
         package var x: Double?
         package var y: Double?
         package var z: Double?
-        /// The mean archetype shares (seven values), nil while the labels warm up.
+        /// The mean archetype shares (one value per archetype, `labels.arch.count - 1`), nil while the labels warm up.
         package var arch: [Double]?
         /// Births in the last window, nil for a group that held no slot then.
         package var births: Int?

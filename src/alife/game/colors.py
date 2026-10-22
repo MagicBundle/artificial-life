@@ -77,7 +77,10 @@ SLOT_PALETTE: Final = (
     (166, 206, 227),
 )
 # By ``rules.Archetype`` value (index 0 = unlabelled): gatherer, hunter, provider, trader, nomad, settler,
-# generalist ("Unspecialised": a neutral light grey, so it does not read as a class of its own).
+# generalist ("Unspecialised": a neutral light grey, so it does not read as a class of its own), then the
+# version-3 archetypes of a storm world (DESIGN §32.7): drifter, floater, sinker. None is red (the hurt
+# colour) or among the other archetype colours; the Floater's cyan and the Sinker's brown are the vertical
+# pair, the Drifter's dark blue the horizontal one.
 ARCH_PALETTE: Final = (
     NONE_RGB,
     (0, 158, 115),
@@ -87,6 +90,9 @@ ARCH_PALETTE: Final = (
     (204, 121, 167),
     (148, 103, 189),
     (200, 200, 200),
+    (0, 76, 140),
+    (0, 210, 220),
+    (139, 90, 43),
 )
 # By ``rules.Intent`` value (index 0 = none): budding, hunting, fleeing, defending, caring, bonding
 # ("Tethering"), signalling, feeding, roaming, resting.

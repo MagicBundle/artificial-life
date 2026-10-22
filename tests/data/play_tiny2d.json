@@ -1,7 +1,7 @@
 {
   "about": "Expected decoding of the stream in the .bin file next to this one (DESIGN section 33.1). Regenerate with `uv run python tests/play_fixtures.py --write`.",
   "kind": "2d",
-  "bytes": 6316,
+  "bytes": 6588,
   "header": {
     "protocol": 1,
     "dims": 2,
@@ -79,7 +79,7 @@
         }
       },
       "labels": {
-        "intent_version": 2,
+        "intent_version": 3,
         "arch": [
           "",
           "Gatherer",
@@ -88,7 +88,10 @@
           "Trader",
           "Nomad",
           "Settler",
-          "Unspecialised"
+          "Unspecialised",
+          "Drifter",
+          "Floater",
+          "Sinker"
         ],
         "intent": [
           "",
@@ -102,7 +105,14 @@
           "Feeding",
           "Roaming",
           "Resting"
-        ]
+        ],
+        "gate": {
+          "rules_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "world_key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "key_found": false,
+          "archetypes": [],
+          "intents": []
+        }
       },
       "cast": {
         "kin": 16,
@@ -138,7 +148,7 @@
   "skipped": [
     {
       "tag": "ZZZZ",
-      "offset": 5668,
+      "offset": 5940,
       "why": "tag"
     }
   ],
@@ -146,7 +156,7 @@
     {
       "index": 0,
       "tag": "FRMA",
-      "offset": 1452,
+      "offset": 1700,
       "length": 264,
       "step": 100,
       "seq": 0,
@@ -235,8 +245,8 @@
     {
       "index": 1,
       "tag": "IDNT",
-      "offset": 1724,
-      "length": 988,
+      "offset": 1972,
+      "length": 1012,
       "step": 100,
       "seq": 0,
       "version": 1,
@@ -279,6 +289,9 @@
               "arch": [
                 0.5,
                 0.25,
+                0.0,
+                0.0,
+                0.0,
                 0.0,
                 0.0,
                 0.25,
@@ -329,6 +342,9 @@
                 0.0,
                 0.0,
                 1.0,
+                0.0,
+                0.0,
+                0.0,
                 0.0
               ],
               "births": 1,
@@ -413,14 +429,14 @@
         ]
       },
       "sha256": {
-        "json": "f6eef7c7aeb10aae0df32ba7a375fff58fb27dff473dbfc77b7eaa6c61c0949b",
+        "json": "7c74f819171134ec3853fd311bcd6219ab23433a1756c9586c00f5ef9fa0ed2f",
         "rows": "24f766dea41db043498b6034269e3b9fad768838a58257fee55616b0ea0e83df"
       }
     },
     {
       "index": 2,
       "tag": "INTN",
-      "offset": 2720,
+      "offset": 2992,
       "length": 116,
       "step": 100,
       "seq": 0,
@@ -461,7 +477,7 @@
           },
           {
             "uid": 5000000028,
-            "arch_primary": 5,
+            "arch_primary": 8,
             "arch_secondary": 1,
             "intent": 6,
             "flags": 1
@@ -483,13 +499,13 @@
         ]
       },
       "sha256": {
-        "rows": "e179923b8ce6bf772efc5f690e5509771d0a3e9698d96c475837128b75123fda"
+        "rows": "1abd027556277a607d2d304b91288a810afb83c01919e6280d714579549943d4"
       }
     },
     {
       "index": 3,
       "tag": "TERR",
-      "offset": 2844,
+      "offset": 3116,
       "length": 2100,
       "step": 100,
       "seq": 0,
@@ -552,7 +568,7 @@
     {
       "index": 4,
       "tag": "ENVS",
-      "offset": 4952,
+      "offset": 5224,
       "length": 340,
       "step": 100,
       "seq": 0,
@@ -607,7 +623,7 @@
     {
       "index": 5,
       "tag": "EVNT",
-      "offset": 5300,
+      "offset": 5572,
       "length": 292,
       "step": 100,
       "seq": 0,
@@ -652,7 +668,7 @@
     {
       "index": 6,
       "tag": "CLCK",
-      "offset": 5600,
+      "offset": 5872,
       "length": 60,
       "step": 100,
       "seq": 0,
@@ -680,7 +696,7 @@
     {
       "index": 7,
       "tag": "FRMA",
-      "offset": 5704,
+      "offset": 5976,
       "length": 264,
       "step": 104,
       "seq": 1,
@@ -769,7 +785,7 @@
     {
       "index": 8,
       "tag": "EVNT",
-      "offset": 5976,
+      "offset": 6248,
       "length": 172,
       "step": 104,
       "seq": 1,
@@ -801,7 +817,7 @@
     {
       "index": 9,
       "tag": "FOCS",
-      "offset": 6156,
+      "offset": 6428,
       "length": 84,
       "step": 104,
       "seq": 0,
@@ -837,7 +853,7 @@
     {
       "index": 10,
       "tag": "CLCK",
-      "offset": 6248,
+      "offset": 6520,
       "length": 60,
       "step": 104,
       "seq": 1,

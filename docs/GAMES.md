@@ -994,7 +994,8 @@ What a game adds:
     - **Not in N1:** `alife play`, a report panel, a worker and `reports.jsonl` in a run directory (G3); player commands (G4); storm facts
       (W3; the storm-world report built on the same sheet, `docs/STORMS.md` §6.5, which records what N1 built).
 - **G3a. The play loop and the World window** (built; DESIGN §33, Review-log row I51; the Mac day is pending). On the 3D storm
-  world, on W1's overlay values (W2 changes coupling values and labels, not records). One process per world, `alife play`:
+  world, on W1's overlay values (W2 changes coupling values and labels, not records; after the merge with W2a the stream carries the
+  version-3 labels with N1's validity gate, DESIGN §33.7). One process per world, `alife play`:
   - the fixed-timestep scheduler (pause, 0.25x, 0.5x, 1x, 2x, max) as `runner.run(pacer=)`, with `play.lock`, `play.json`, planets
     (a fork with the weather on and spun up), exact houses at forks, `--adopt`, `--truncate`, `--replay`;
   - the stream records `FRMA IDNT INTN TERR EVNT STRM MAP1 ENVS CLCK FOCS`, each with a Swift decoder, an independent Python

@@ -1,7 +1,7 @@
 {
   "about": "Expected decoding of the stream in the .bin file next to this one (DESIGN section 33.1). Regenerate with `uv run python tests/play_fixtures.py --write`.",
   "kind": "3d",
-  "bytes": 115852,
+  "bytes": 116120,
   "header": {
     "protocol": 1,
     "dims": 3,
@@ -83,16 +83,19 @@
         }
       },
       "labels": {
-        "intent_version": 2,
+        "intent_version": 3,
         "arch": [
           "",
-          "Gatherer",
+          "Grazer",
           "Hunter",
           "Provider",
           "Trader",
           "Nomad",
           "Settler",
-          "Unspecialised"
+          "Unspecialised",
+          "Drifter",
+          "Floater",
+          "Sinker"
         ],
         "intent": [
           "",
@@ -106,7 +109,14 @@
           "Feeding",
           "Roaming",
           "Resting"
-        ]
+        ],
+        "gate": {
+          "rules_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "world_key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "key_found": false,
+          "archetypes": [],
+          "intents": []
+        }
       },
       "cast": {
         "kin": 16,
@@ -142,7 +152,7 @@
   "skipped": [
     {
       "tag": "ZZZZ",
-      "offset": 115204,
+      "offset": 115472,
       "why": "tag"
     }
   ],
@@ -150,7 +160,7 @@
     {
       "index": 0,
       "tag": "FRMA",
-      "offset": 1504,
+      "offset": 1748,
       "length": 264,
       "step": 100,
       "seq": 0,
@@ -239,8 +249,8 @@
     {
       "index": 1,
       "tag": "IDNT",
-      "offset": 1776,
-      "length": 988,
+      "offset": 2020,
+      "length": 1012,
       "step": 100,
       "seq": 0,
       "version": 1,
@@ -283,6 +293,9 @@
               "arch": [
                 0.5,
                 0.25,
+                0.0,
+                0.0,
+                0.0,
                 0.0,
                 0.0,
                 0.25,
@@ -333,6 +346,9 @@
                 0.0,
                 0.0,
                 1.0,
+                0.0,
+                0.0,
+                0.0,
                 0.0
               ],
               "births": 1,
@@ -417,14 +433,14 @@
         ]
       },
       "sha256": {
-        "json": "f6eef7c7aeb10aae0df32ba7a375fff58fb27dff473dbfc77b7eaa6c61c0949b",
+        "json": "7c74f819171134ec3853fd311bcd6219ab23433a1756c9586c00f5ef9fa0ed2f",
         "rows": "24f766dea41db043498b6034269e3b9fad768838a58257fee55616b0ea0e83df"
       }
     },
     {
       "index": 2,
       "tag": "INTN",
-      "offset": 2772,
+      "offset": 3040,
       "length": 116,
       "step": 100,
       "seq": 0,
@@ -465,7 +481,7 @@
           },
           {
             "uid": 5000000028,
-            "arch_primary": 5,
+            "arch_primary": 8,
             "arch_secondary": 1,
             "intent": 6,
             "flags": 1
@@ -487,13 +503,13 @@
         ]
       },
       "sha256": {
-        "rows": "e179923b8ce6bf772efc5f690e5509771d0a3e9698d96c475837128b75123fda"
+        "rows": "1abd027556277a607d2d304b91288a810afb83c01919e6280d714579549943d4"
       }
     },
     {
       "index": 3,
       "tag": "TERR",
-      "offset": 2896,
+      "offset": 3164,
       "length": 2100,
       "step": 100,
       "seq": 0,
@@ -556,7 +572,7 @@
     {
       "index": 4,
       "tag": "ENVS",
-      "offset": 5004,
+      "offset": 5272,
       "length": 340,
       "step": 100,
       "seq": 0,
@@ -611,7 +627,7 @@
     {
       "index": 5,
       "tag": "MAP1",
-      "offset": 5352,
+      "offset": 5620,
       "length": 108848,
       "step": 100,
       "seq": 0,
@@ -669,7 +685,7 @@
     {
       "index": 6,
       "tag": "STRM",
-      "offset": 114208,
+      "offset": 114476,
       "length": 620,
       "step": 100,
       "seq": 0,
@@ -775,7 +791,7 @@
     {
       "index": 7,
       "tag": "EVNT",
-      "offset": 114836,
+      "offset": 115104,
       "length": 292,
       "step": 100,
       "seq": 0,
@@ -820,7 +836,7 @@
     {
       "index": 8,
       "tag": "CLCK",
-      "offset": 115136,
+      "offset": 115404,
       "length": 60,
       "step": 100,
       "seq": 0,
@@ -848,7 +864,7 @@
     {
       "index": 9,
       "tag": "FRMA",
-      "offset": 115240,
+      "offset": 115508,
       "length": 264,
       "step": 104,
       "seq": 1,
@@ -937,7 +953,7 @@
     {
       "index": 10,
       "tag": "EVNT",
-      "offset": 115512,
+      "offset": 115780,
       "length": 172,
       "step": 104,
       "seq": 1,
@@ -969,7 +985,7 @@
     {
       "index": 11,
       "tag": "FOCS",
-      "offset": 115692,
+      "offset": 115960,
       "length": 84,
       "step": 104,
       "seq": 0,
@@ -1005,7 +1021,7 @@
     {
       "index": 12,
       "tag": "CLCK",
-      "offset": 115784,
+      "offset": 116052,
       "length": 60,
       "step": 104,
       "seq": 1,

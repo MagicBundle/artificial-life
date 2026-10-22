@@ -16,7 +16,9 @@ package enum WorldPalette {
     /// No slot (255) and unlabelled rows.
     package static let none: UInt32 = 0x383838
     /// By `rules.Archetype` value; index 0 is unlabelled.
-    package static let archetypes: [UInt32] = [none, 0x009E73, 0xD55E00, 0xF0E442, 0x56B4E9, 0xCC79A7, 0x9467BD, 0xC8C8C8]
+    package static let archetypes: [UInt32] = [
+        none, 0x009E73, 0xD55E00, 0xF0E442, 0x56B4E9, 0xCC79A7, 0x9467BD, 0xC8C8C8, 0x004C8C, 0x00D2DC, 0x8B5A2B,
+    ]
     /// By `rules.Intent` value; index 0 is none.
     package static let intents: [UInt32] = [
         none, 0xFF7FBF, 0xD55E00, 0xF0E442, 0x0072B2, 0x7FC97F, 0x9467BD, 0x17BECF, 0x009E73, 0xE69F00, 0x606060,

@@ -345,7 +345,10 @@ import Testing
                 #expect(play.snapshotEvery == 250 && play.chapter == 6000 && play.frameHz == 30)
                 #expect(play.cast == PlayHeader.Cast(kin: 16, house: 16, colony: 16) && play.energyCap == 16384)
                 #expect(play.events["14"] == "focus_handoff" && play.events.count == 17)
-                #expect(play.labels.intentVersion == 2 && play.labels.intent[6] == "Tethering")
+                #expect(play.labels.intentVersion == 3 && play.labels.intent[6] == "Tethering")
+                #expect(play.labels.arch.count == 11 && play.labels.arch[8...] == ["Drifter", "Floater", "Sinker"])
+                #expect(play.labels.arch[1] == (kind == "3d" ? "Grazer" : "Gatherer"), "the weather fixture has the storm names")
+                #expect(play.labels.gate?.keyFound == (kind == "3d_n70"), "only the made-up fixture has a verdict row")
                 #expect(play.weather.enabled == (kind == "3d"))
                 if kind == "3d" {
                     #expect(play.weather.cells == 160 && play.weather.coarse == 40 && play.weather.nameZeta == 0.5)

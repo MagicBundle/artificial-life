@@ -112,7 +112,7 @@ def _tables() -> dict[str, Any]:
                 "x": 6.0,
                 "y": 24.0,
                 "z": 6.5,
-                "arch": [0.5, 0.25, 0.0, 0.0, 0.25, 0.0, 0.0],
+                "arch": [0.5, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0],
                 "births": 2,
                 "deaths": [1, 0, 0, 0, 0],
             },
@@ -144,7 +144,7 @@ def _tables() -> dict[str, Any]:
                 "x": 30.5,
                 "y": 40.5,
                 "z": 12.25,
-                "arch": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                "arch": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
                 "births": 1,
                 "deaths": [0, 0, 0, 0, 0],
             },
@@ -258,11 +258,39 @@ def _map_planes() -> dict[str, np.ndarray]:
     }
 
 
-def _labels() -> dict[str, Any]:
-    return {
-        "intent_version": 2,
-        "arch": ["", "Gatherer", "Hunter", "Provider", "Trader", "Nomad", "Settler", "Unspecialised"],
-        "intent": [
+ARCH = (
+    "Gatherer",
+    "Hunter",
+    "Provider",
+    "Trader",
+    "Nomad",
+    "Settler",
+    "Unspecialised",
+    "Drifter",
+    "Floater",
+    "Sinker",
+)  # by rules.Archetype value - 1
+
+
+def _labels(kind: str) -> dict[str, Any]:
+    """The `play.labels` object of the rule set of version 3 (DESIGN §33.7): ten archetypes (Drifter,
+    Floater and Sinker are bytes 8 to 10), a storm world's names (Grazer for Gatherer) in the weather
+    fixtures, and the N1 gate. `3d` and `2d` are real situations: no verdict row for a version-3 world, so no
+    label is valid. `3d_n70` carries a made-up gate with a row and some passing labels, to exercise the
+    decoder (the digest and the key are not any world's)."""
+    storm = kind == "3d"
+    arch = ["", *("Grazer" if storm and a == "Gatherer" else a for a in ARCH)]
+    gate = {
+        "rules_digest": "d" * 64,
+        "world_key": "0" * 64,
+        "key_found": kind == "3d_n70",
+        "archetypes": [2, 3] if kind == "3d_n70" else [],
+        "intents": [10] if kind == "3d_n70" else [],
+    }
+    return sr.labels_block(
+        intent_version=3,
+        arch=arch,
+        intent=[
             "",
             "Budding",
             "Hunting",
@@ -275,7 +303,8 @@ def _labels() -> dict[str, Any]:
             "Roaming",
             "Resting",
         ],
-    }
+        gate=gate,
+    )
 
 
 def _header(kind: str) -> bytes:
@@ -304,7 +333,7 @@ def _header(kind: str) -> bytes:
     play = sr.header_play(
         records=records,
         weather=weather,
-        labels=_labels(),
+        labels=_labels(kind),
         energy_cap=16384,
         planet={"source": "runs/example:500000", "houses": "exact"} if kind == "3d" else None,
     )
@@ -360,7 +389,7 @@ def _build_main(kind: str) -> bytes:
             labels_step=96,
             intent_version=2,
             uid=uids,
-            arch_primary=np.array([1, 1, 2, 7, 5, 0, 3], np.uint8),
+            arch_primary=np.array([1, 1, 2, 7, 8, 0, 3], np.uint8),
             arch_secondary=np.array([0, 2, 0, 0, 1, 0, 0], np.uint8),
             intent=np.array([9, 10, 2, 8, 6, 0, 1], np.uint8),
             flags=np.array([1, 1, 1, 1, 1, 0, 3], np.uint8),

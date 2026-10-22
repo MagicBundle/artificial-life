@@ -34,6 +34,8 @@ observer rules; `python -m alife.analysis.w2`) is implemented and off by default
 normative spec `DESIGN.md` §33, row I51) are built; their Mac day (purity on Metal, the bench gate, the click-through) is the coordinator's.
 Presentation-only control lines (`focus follow idnt labels color every`, pacing, frames, records) never change a trajectory; a change to
 `play.py`, `streamrec.py` or the runner's `Pacer` hook must keep `tests/test_play_purity.py` (digest equality with a plain run) green.
+The stream's labels are `INTENT_VERSION` 3's (ten archetypes, the storm names) and carry N1's held-out verdict gate: a label is shown as valid only
+with a `LABEL_VERDICTS` row for the world and rule set (none for V2 or V3 yet) and the environment at its defaults (`DESIGN.md` §33.7).
 
 ## Conventions
 

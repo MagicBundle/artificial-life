@@ -45,7 +45,15 @@ import numpy as np
 
 from alife.config import Config, DirectorConfig, GameConfig, config_hash, dims, immigration_on
 from alife.game import lexicon, templates
-from alife.game.rules import ARCHETYPE_DISPLAY, ARCHETYPE_NAMES, ARCHETYPE_STORM_DISPLAY, INTENT_DISPLAY
+from alife.game.rules import (
+    ARCHETYPE_DISPLAY,
+    ARCHETYPE_NAMES,
+    ARCHETYPE_STORM_DISPLAY,
+    INTENT_DISPLAY,
+    INTENT_NAMES,
+    Archetype,
+    Intent,
+)
 from alife.game.social import DEATH_CAUSES, SOCIAL_V1
 from alife.game.templates import TEMPLATES, render
 from alife.runio import RunDir
@@ -74,6 +82,9 @@ __all__ = [
     "is_point",
     "judge_attempt",
     "known_social_digest",
+    "label_gate",
+    "label_names",
+    "label_passes",
     "label_table_digest",
     "lead_of",
     "load_run",
@@ -88,6 +99,7 @@ __all__ = [
     "template_report",
     "ticker",
     "verify_record",
+    "world_key",
 ]
 
 REPORT_VERSION: Final = 1
@@ -204,12 +216,67 @@ KNOWN_SOCIAL: Final[Mapping[str, tuple[int, int]]] = {
 }
 
 
+ARCHETYPE_VALUE: Final = {a.name.lower(): int(a) for a in Archetype if a is not Archetype.NONE}
+INTENT_VALUE: Final = {i.name.lower(): int(i) for i in Intent if i is not Intent.NONE}
+
+
 def label_table_digest() -> str:
     return hashlib.sha256(
         _canon(
             [[list(k), {lb: list(v) for lb, v in t.items()}] for k, t in sorted(LABEL_VERDICTS.items())]
         ).encode()
     ).hexdigest()
+
+
+def label_passes(row: tuple[str, int, float, float, int], rules: ReportRules) -> bool:
+    """True if a ``LABEL_VERDICTS`` row clears the report's bar for citing a label: a ``pass`` with at least
+    ``n_pos_min`` positives, a margin of at least ``margin_min`` and the smallest permutation p-value (the
+    one place the bar is written: the sheet's label facts, the per-fact gate and the play stream's header
+    all read it)."""
+    verdict, n_pos, margin, p, n_perm = row
+    return (
+        verdict == "pass"
+        and n_pos >= rules.n_pos_min
+        and margin >= rules.margin_min
+        and abs(p - 1 / (n_perm + 1)) < 1e-6
+    )
+
+
+def world_key(cfg: Config) -> str:
+    """The key of a world in ``LABEL_VERDICTS``: the config hash with the director and game sections at their
+    defaults (``run`` is never hashed)."""
+    return config_hash(dataclasses.replace(cfg, director=DirectorConfig(), game=GameConfig()))
+
+
+def label_gate(
+    cfg: Config, intent_version: int, rules_digest: str, rules: ReportRules = REPORT_V1
+) -> dict[str, Any]:
+    """The held-out verdict gate of the labels of a world, as N1 applies it (DESIGN §31, §32.13): the table
+    of ``(intent_version, rules_digest, dims, world_key)``. ``key_found`` is false when the table has no row
+    for that rule set in that world (every version-3 world until W2b's held-out windows add rows, and every
+    version-2 one); ``archetypes`` and ``intents`` are the ``rules.Archetype`` / ``rules.Intent`` values (the
+    bytes of the play stream) of the labels that pass, ascending, empty without a row. The environment
+    condition of N1 is the caller's: a label is only valid while no lever is away from its default."""
+    key = world_key(cfg)
+    table = LABEL_VERDICTS.get((intent_version, rules_digest, cfg.world.dims, key))
+    keys = [] if table is None else sorted(lb for lb, row in table.items() if label_passes(row, rules))
+    return {
+        "rules_digest": rules_digest,
+        "world_key": key,
+        "key_found": table is not None,
+        "archetypes": sorted(ARCHETYPE_VALUE[lb] for lb in keys if lb in ARCHETYPE_VALUE),
+        "intents": sorted(INTENT_VALUE[lb] for lb in keys if lb in INTENT_VALUE),
+    }
+
+
+def label_names(version: int, storm: bool) -> tuple[list[str], list[str]]:
+    """The display names of the archetypes and intents of rule set ``version`` indexed by their
+    ``rules.Archetype`` / ``rules.Intent`` value (index 0 is the empty name of "none"), as
+    ``_label_display`` gives them: a version-3 report of a weather-on world says Grazer for Gatherer."""
+    return (
+        ["", *(_label_display(k, version, storm) for k in ARCHETYPE_NAMES)],
+        ["", *(_label_display(k, version, storm) for k in INTENT_NAMES)],
+    )
 
 
 def known_social_digest() -> str:
@@ -907,14 +974,7 @@ def _label_facts(
         return [], meta
     meta.update({"key_found": True})
     storm = version >= 3 and bool(rd.cfg.weather.enabled)
-    citable = sorted(
-        lb
-        for lb, (verdict, n_pos, margin, p, n_perm) in table.items()
-        if verdict == "pass"
-        and n_pos >= rules.n_pos_min
-        and margin >= rules.margin_min
-        and abs(p - 1 / (n_perm + 1)) < 1e-6
-    )
+    citable = sorted(lb for lb, row in table.items() if label_passes(row, rules))
     oa, ob = ra["observers"], rb["observers"]
     why: dict[str, str] = {}
     origins = {r["observers"]["social"].get("origin") for r in rows}
@@ -1254,8 +1314,8 @@ def build_sheet(rd: RunView, a: int, b: int, rules: ReportRules = REPORT_V1) -> 
     kinds.update({"window": cap("window", wins, rules.quota_windows)})
 
     # the world and its labels
-    world_key = config_hash(dataclasses.replace(cfg, director=DirectorConfig(), game=GameConfig()))
-    label_facts, label_meta = _label_facts(rd, a, b, rules, ra, rb, world_key, excl)
+    wkey = world_key(cfg)
+    label_facts, label_meta = _label_facts(rd, a, b, rules, ra, rb, wkey, excl)
     kinds.update({"label": cap("label", label_facts, rules.quota_labels)})
 
     # the social facts, if the records cover the chapter
@@ -1300,7 +1360,7 @@ def build_sheet(rd: RunView, a: int, b: int, rules: ReportRules = REPORT_V1) -> 
     header = {
         "run": {"seed": cfg.run.seed},
         "config_hash": config_hash(cfg),
-        "world_key": world_key,
+        "world_key": wkey,
         "dims": cfg.world.dims,
         "chapter": [a, b],
         "origin": origin,
@@ -1582,14 +1642,7 @@ def _label_citable(ctx: _Ctx, key: str) -> bool:
     )
     if not lab["key_found"] or table is None or key not in table:
         return False
-    verdict, n_pos, margin, p, n_perm = table[key]
-    r = ctx.rules
-    return (
-        verdict == "pass"
-        and n_pos >= r.n_pos_min
-        and margin >= r.margin_min
-        and abs(p - 1 / (n_perm + 1)) < 1e-6
-    )
+    return label_passes(table[key], ctx.rules)
 
 
 def _mask(text: str, parts: Sequence[tuple[str, str]]) -> str:

@@ -211,6 +211,42 @@ def weather_block(*, enabled: bool, dc_ref: float | None) -> dict[str, Any]:
     }
 
 
+def labels_block(
+    *, intent_version: int, arch: Sequence[str], intent: Sequence[str], gate: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The ``play.labels`` header object (DESIGN §33.1.1, §33.7): the rule set's version, the display names
+    indexed by the byte of ``INTN``/``IDNT``/``FOCS`` (index 0 is the empty name of "none"; a weather world
+    says Grazer for Gatherer, §32.7), and the ``gate``: whether N1's held-out verdict table has a row for
+    this world and rule set (``key_found``) and the bytes of the labels that pass it (``archetypes``,
+    ``intents``, ascending). A label is valid only if its byte is listed and the environment is at its
+    defaults (no lever in ``ENVS.levers``, the client's check); everything else is provisional."""
+    if not arch or not intent or arch[0] != "" or intent[0] != "":
+        raise RecordError("label name tables start with the empty name of 'none'")
+    need = {"rules_digest", "world_key", "key_found", "archetypes", "intents"}
+    if set(gate) != need:
+        raise RecordError(f"a label gate has exactly the keys {sorted(need)}, got {sorted(gate)}")
+    for key, names in (("archetypes", arch), ("intents", intent)):
+        vals = gate[key]
+        if list(vals) != sorted(set(vals)) or any(
+            not isinstance(v, int) or isinstance(v, bool) or not 1 <= v < len(names) for v in vals
+        ):
+            raise RecordError(f"gate.{key} must be ascending bytes of the name table, got {list(vals)}")
+    if not gate["key_found"] and (gate["archetypes"] or gate["intents"]):
+        raise RecordError("a gate without a verdict row lists no valid label")
+    return {
+        "intent_version": int(intent_version),
+        "arch": list(arch),
+        "intent": list(intent),
+        "gate": {
+            "rules_digest": str(gate["rules_digest"]),
+            "world_key": str(gate["world_key"]),
+            "key_found": bool(gate["key_found"]),
+            "archetypes": [int(v) for v in gate["archetypes"]],
+            "intents": [int(v) for v in gate["intents"]],
+        },
+    }
+
+
 def header_play(
     *,
     records: Sequence[str],

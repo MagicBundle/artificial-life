@@ -90,11 +90,15 @@ package enum Inspector {
         }
         if let focus {
             if let labels = header?.labels {
+                let validity = LabelValidity(labels: labels, environment: store.environment?.environment)
+                let evaluated = focus.labelFlags & 1 != 0
+                let archValid = evaluated && validity.archetypeIsValid(focus.archPrimary)
+                    && (focus.archSecondary == 0 || validity.archetypeIsValid(focus.archSecondary))
+                let intentValid = evaluated && validity.intentIsValid(focus.intent)
                 card.rows.append(
-                    .init(
-                        "Archetype", archetype(focus, names: labels.arch), provisional: true))
-                card.rows.append(.init("Intent", intent(focus, names: labels.intent), provisional: true))
-                card.notes.append("labels are provisional (labels v\(labels.intentVersion))")
+                    .init("Archetype", archetype(focus, names: labels.arch), provisional: !archValid))
+                card.rows.append(.init("Intent", intent(focus, names: labels.intent), provisional: !intentValid))
+                card.notes.append(validity.note(allValid: archValid && intentValid))
             }
             let cap = Double(header?.energyCap ?? 0)
             if cap > 0 {

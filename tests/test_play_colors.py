@@ -81,8 +81,9 @@ def test_slot_modes_colour_by_the_slot_byte() -> None:
             for b in house.tolist()
         ]
         assert col.tolist() == want, mode
-    arch = np.arange(8)
-    col = to_numpy(observer_colors("archetype", _inputs(8, arch=arch), mx.zeros(8, dtype=mx.bool_)))
+    n_arch = len(ARCH_PALETTE)  # none and the ten archetypes of version 3 (bytes 8 to 10: the storm world's)
+    arch = np.arange(n_arch)
+    col = to_numpy(observer_colors("archetype", _inputs(n_arch, arch=arch), mx.zeros(n_arch, dtype=mx.bool_)))
     assert col.tolist() == [_pack(c) for c in ARCH_PALETTE]
     intent = np.arange(11)
     col = to_numpy(observer_colors("intent", _inputs(11, intent=intent), mx.zeros(11, dtype=mx.bool_)))
@@ -92,7 +93,8 @@ def test_slot_modes_colour_by_the_slot_byte() -> None:
 def test_hurt_rows_are_red_in_every_observer_mode() -> None:
     n = 6
     hurt = mx.array([True, False, True, False, False, True])
-    inp = _inputs(n, house=np.arange(n), kin=np.arange(n), arch=np.arange(1, n + 1) % 8, intent=np.arange(n))
+    arch = np.arange(1, n + 1) % len(ARCH_PALETTE)
+    inp = _inputs(n, house=np.arange(n), kin=np.arange(n), arch=arch, intent=np.arange(n))
     for mode in colors.OBSERVER_MODES:
         col = to_numpy(observer_colors(mode, inp, hurt))
         assert (col[[0, 2, 5]] == _pack(HURT_RGB)).all() and (col[[1, 3, 4]] != _pack(HURT_RGB)).all(), mode

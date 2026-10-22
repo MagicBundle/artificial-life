@@ -195,15 +195,15 @@ import Testing
     @Test func aClockThatDoesNotShowTheAskedRateSettlesItOnlyAfterASecond() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        // After the fixture, the stand-in answers `pause` with the fixture's last CLCK (which is not a paused one) at once and
+        // After the fixture, the stand-in answers `pause` with the fixture's last CLCK (the last 68 bytes; not a paused one) at once and
         // again a second and a half later; the first is a clock sent before the line was read, the second the world's answer.
         let clock = try scratch.script("alife-clock", """
             cat "$1"
             while IFS= read -r line; do
               if [ "$line" = "pause" ]; then
-                dd if="$1" bs=1 skip=115784 count=68 2>/dev/null
+                tail -c 68 "$1"
                 sleep 1.5
-                dd if="$1" bs=1 skip=115784 count=68 2>/dev/null
+                tail -c 68 "$1"
               fi
               if [ "$line" = "quit" ]; then exit 0; fi
             done
@@ -408,10 +408,11 @@ import Testing
     @Test func aRecordThatContradictsTheHeaderIsRefused() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        // The header, then a record whose length is not a multiple of 4: the decoder refuses it and the process is stopped.
+        // The header (magic 8, length 4, the JSON: read from the fixture, so a longer header does not move the cut), then a record whose length is not a multiple of 4: the decoder refuses it and the process is stopped.
         let bad = try scratch.script("alife-bad-record", """
             fixture="$1"
-            head -c 1504 "$fixture"
+            length=$(od -An -tu4 -j8 -N4 "$fixture" | tr -d ' ')
+            head -c $((length + 12)) "$fixture"
             printf 'FRMA\\x07\\x00\\x00\\x00abcdefg'
             exec sleep 30
             """)
