@@ -104,10 +104,20 @@ def _columns(path: Path, names: tuple[str, ...]) -> dict[str, np.ndarray]:
 
 
 def _chunks(
-    rd: RunDir, kind: str, names: tuple[str, ...]
+    rd: RunDir, kind: str, names: tuple[str, ...], end: int | None = None
 ) -> Iterator[tuple[int, int, dict[str, np.ndarray]]]:
+    """The ``kind`` chunks as ``(s0, s1, columns)``. With ``end``, chunks starting at or after it are skipped
+    and a chunk that straddles it is trimmed to the records with ``step < end`` and reported as
+    ``(s0, end)`` (the ``step`` column must be among ``names``)."""
     for s0, s1, path in rd.event_files(kind):
-        yield s0, s1, _columns(path, names)
+        if end is not None and s0 >= end:
+            continue
+        cols = _columns(path, names)
+        if end is not None and s1 > end:
+            keep = cols["step"] < end
+            cols = {k: v[keep] for k, v in cols.items()}
+            s1 = end
+        yield s0, s1, cols
 
 
 def _alive_uids(path: Path) -> np.ndarray:
@@ -133,7 +143,7 @@ def _index_of(uid_all: np.ndarray, u: np.ndarray, what: str) -> np.ndarray:
 
 
 def load_tree(
-    run: Path | str, *, start: int | None = None, check_checkpoint: bool = True
+    run: Path | str, *, start: int | None = None, end: int | None = None, check_checkpoint: bool = True
 ) -> tuple[Tree, dict[str, Any]]:
     """The run's phylogeny and an event-log coverage report.
 
@@ -149,6 +159,14 @@ def load_tree(
     founders are read from its checkpoint at that step). ``start`` (default: ``origin``) restricts the tree to
     the agents alive at that step, which become the founders, and their descendants (``restrict``). The tree
     counts steps from ``start``; the report's ``t0`` is ``start``.
+
+    ``end`` (default: the end of the logs) is an upper bound on the run step the tree reaches: it is what a
+    source checkpointed before the end of its run needs (``64k3d_s1`` at 450,000 steps has event chunks of
+    later steps). Chunks starting at or after ``end`` are skipped and a chunk that straddles it is trimmed to
+    the records with ``step < end``; the tiling check, ``t_end``, the ``metrics.jsonl`` comparison (rows with
+    ``step <= end``) and the checkpoint check (the checkpoint at ``end``) all refer to ``[origin, end)``.
+    Agents alive at ``end`` get ``death = t_end``. If the logs stop before ``end`` the tree stops where they
+    do; the report's ``end`` and ``end_covered`` say so. Without ``end`` nothing changes.
     """
     rd = RunDir.open(Path(run))
     cfg = rd.config()
@@ -156,6 +174,10 @@ def load_tree(
     start = origin if start is None else int(start)
     if start < origin:
         raise ValueError(f"start {start} is before the run's first step {origin}")
+    if end is not None:
+        end = int(end)
+        if end <= start:
+            raise ValueError(f"end {end} is not after the tree's first step {start}")
     if origin == 0:
         founders = np.arange(cfg.population.n_init, dtype=np.int64)
     else:
@@ -164,7 +186,7 @@ def load_tree(
     spans: dict[str, list[tuple[int, int]]] = {"births": [], "deaths": []}
 
     steps, uids, parents = [], [], []
-    for s0, s1, c in _chunks(rd, "births", ("step", "uid", "parent_uid")):
+    for s0, s1, c in _chunks(rd, "births", ("step", "uid", "parent_uid"), end):
         spans["births"].append((s0, s1))
         steps.append(c["step"].astype(np.int64) - origin)
         uids.append(c["uid"].astype(np.int64))
@@ -193,7 +215,7 @@ def load_tree(
     death = np.full(n, t_end, np.int32)
     has_death = np.zeros(n, bool)
     n_death_records = 0
-    for s0, s1, c in _chunks(rd, "deaths", ("step", "uid")):
+    for s0, s1, c in _chunks(rd, "deaths", ("step", "uid"), end):
         spans["deaths"].append((s0, s1))
         u = _index_of(uid_all, c["uid"].astype(np.int64), "dead")
         death[u] = c["step"].astype(np.int64) - origin
@@ -204,6 +226,8 @@ def load_tree(
         return bool(sp) and sp[0][0] == origin and all(a[1] == b[0] for a, b in itertools.pairwise(sp))
 
     rows = rd.metrics_rows()
+    if end is not None:
+        rows = [r for r in rows if r["step"] <= end]
     totals = {
         k: int(sum(r.get(k, 0) for r in rows))
         for k in ("births", "immigrants", "deaths_starved", "deaths_killed", "deaths_aged", "deaths_unlogged")
@@ -225,6 +249,8 @@ def load_tree(
         "metrics_last_step": rows[-1]["step"] if rows else None,
         "chunks_tile": tiles(spans["births"]) and tiles(spans["deaths"]),
         "chunk_spans_equal": spans["births"] == spans["deaths"],
+        "end": end,
+        "end_covered": end is None or t_end + origin == end,
         "duplicate_death_records": int(n_death_records - np.count_nonzero(has_death)),
     }
     if deaths_catastrophe:

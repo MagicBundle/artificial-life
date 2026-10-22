@@ -248,8 +248,9 @@ def _part(cols: dict, lo: int, hi: int) -> dict:
     return {k: np.asarray(v)[m] for k, v in cols.items()}
 
 
-def _hand_run(path, *, uid_of=None, start: int = 0, cuts=(0, 15, 30)) -> RunDir:
-    """A run directory holding the hand tree's events from ``start`` on; ``uid_of`` maps agent → uid."""
+def _hand_run(path, *, uid_of=None, start: int = 0, cuts=(0, 15, 30), per_chunk: bool = False) -> RunDir:
+    """A run directory holding the hand tree's events from ``start`` on; ``uid_of`` maps agent → uid.
+    ``per_chunk`` writes one metrics row per chunk end (counting that chunk's events), not one row at 30."""
     cfg = load_config(preset="tiny", overrides=["population.n_init=2"])
     rd = RunDir.create(path, cfg)
     t = hand_tree()
@@ -274,17 +275,19 @@ def _hand_run(path, *, uid_of=None, start: int = 0, cuts=(0, 15, 30)) -> RunDir:
     }
     for lo, hi in itertools.pairwise(cuts):
         rd.write_events(lo, hi, _part(births, lo, hi), _part(deaths, lo, hi))
+    spans = list(itertools.pairwise(cuts)) if per_chunk else [(start, 30)]
     rd.append_metrics(
         [
             {
-                "step": 30,
-                "births": int(kids.size),
+                "step": hi,
+                "births": int(((t.birth[kids] >= lo) & (t.birth[kids] < hi)).sum()),
                 "immigrants": 0,
-                "deaths_starved": int(dead.size),
+                "deaths_starved": int(((t.death[dead] >= lo) & (t.death[dead] < hi)).sum()),
                 "deaths_killed": 0,
                 "deaths_aged": 0,
                 "deaths_unlogged": 0,
             }
+            for lo, hi in spans
         ]
     )
     if start:
@@ -378,6 +381,72 @@ def test_load_tree_of_a_fork(tmp_path) -> None:
     assert rep["checkpoint_check"]["ok"]
     with pytest.raises(ValueError, match="before the run's first step"):
         phylo.load_tree(rd.path, start=5)
+
+
+def test_load_tree_end_bounds_the_record(tmp_path) -> None:
+    """``end`` reads a run as it stood at that step: later chunks are ignored, the coverage and metrics checks
+    refer to ``[origin, end)``, and the checkpoint at ``end`` is the one checked (a source checkpointed before
+    the end of its run)."""
+    rd = _hand_run(tmp_path / "run", cuts=(0, 10, 20, 30), per_chunk=True)
+    _alive_checkpoint(rd, 20, [0, 2, 3, 4])  # alive at 20: 1 died at 15, 5 at 18, 0 dies during step 20
+    whole, rep30 = phylo.load_tree(rd.path, check_checkpoint=False)
+    _assert_trees_equal(whole, hand_tree())
+    assert rep30["end"] is None and rep30["end_covered"] and rep30["metrics_last_step"] == 30
+
+    tree, rep = phylo.load_tree(rd.path, end=20)
+    _assert_trees_equal(
+        tree,
+        Tree(
+            parent=hand_tree().parent,
+            birth=hand_tree().birth,
+            death=np.array([20, 15, 20, 20, 20, 18], np.int32),
+            t_end=20,
+        ),
+    )
+    assert rep["t_end"] == 20 and rep["end"] == 20 and rep["end_covered"] and rep["chunks_tile"]
+    assert rep["births_match_metrics"] and rep["deaths_match_metrics"] and rep["metrics_last_step"] == 20
+    assert rep["metrics_totals"]["births"] == 4 and rep["deaths_logged"] == 2
+    assert rep["checkpoint_check"]["ok"] and rep["checkpoint_check"]["alive"] == 4
+
+    # an end before a birth drops that agent: births at 5 and 6 only (agents 2 and 3)
+    early, rep10 = phylo.load_tree(rd.path, end=10, check_checkpoint=False)
+    assert early.n == 4 and early.t_end == 10 and rep10["births_logged"] == 2
+    np.testing.assert_array_equal(early.death, [10, 10, 10, 10])
+    assert rep10["births_match_metrics"] and rep10["deaths_match_metrics"]
+
+    # logs that stop before ``end``: the tree stops where they do, and the report says so
+    short, rep_short = phylo.load_tree(rd.path, end=50, check_checkpoint=False)
+    _assert_trees_equal(short, hand_tree())
+    assert rep_short["end"] == 50 and not rep_short["end_covered"] and rep_short["t_end"] == 30
+    with pytest.raises(ValueError, match="end 0"):
+        phylo.load_tree(rd.path, end=0)
+
+
+def test_load_tree_end_inside_a_chunk(tmp_path) -> None:
+    """An ``end`` that falls inside a chunk keeps that chunk's records with ``step < end`` only."""
+    rd = _hand_run(tmp_path / "run", cuts=(0, 15, 30))
+    tree, rep = phylo.load_tree(rd.path, end=13, check_checkpoint=False)
+    assert tree.n == 5 and tree.t_end == 13  # agent 5 is born in step 13: not in [0, 13)
+    np.testing.assert_array_equal(tree.birth, [-1, -1, 5, 6, 12])
+    np.testing.assert_array_equal(tree.death, [13] * 5)
+    assert rep["chunks_tile"] and rep["end_covered"] and rep["t_end"] == 13
+    assert not rep["births_match_metrics"]  # the single row at 30 counts 4 births: the comparison is honest
+    # with ``start`` too: the agents alive at 10 are the founders, the tree ends at 13
+    both, rep_both = phylo.load_tree(rd.path, start=10, end=13, check_checkpoint=False)
+    assert both.t_end == 3 and both.n == 5 and rep_both["t0"] == 10 and rep_both["t_end"] == 13
+    with pytest.raises(ValueError, match="not after"):
+        phylo.load_tree(rd.path, start=10, end=10)
+
+
+def test_load_tree_end_of_a_fork(tmp_path) -> None:
+    uid_of = [100, 101, 102, 103, 200, 201]
+    rd = _hand_run(tmp_path / "fork", uid_of=uid_of, start=10, cuts=(10, 20, 30), per_chunk=True)
+    _alive_checkpoint(rd, 10, [100, 101, 102, 103])
+    _alive_checkpoint(rd, 20, [100, 102, 103, 200])
+    tree, rep = phylo.load_tree(rd.path, end=20)
+    assert rep["origin"] == 10 and rep["t_end"] == 20 and rep["n_init"] == 4 and tree.n == 6
+    assert rep["end_covered"] and rep["chunks_tile"] and rep["checkpoint_check"]["ok"]
+    assert rep["births_match_metrics"] and rep["deaths_match_metrics"]
 
 
 def test_fork_report_uses_run_steps(tmp_path) -> None:

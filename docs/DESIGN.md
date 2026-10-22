@@ -1378,6 +1378,12 @@ weights are stale by definition, and every lane index is unique, so the write is
 - **Events:** each step's `BirthRecords` (M lanes) and `DeathRecords` (DL = 2M lanes) are flushed to
   `events/*.npz` at metrics intervals (§18). Deaths beyond DL in one step are counted in `DEATHS_UNLOGGED`.
 - Together these allow the full phylogeny to be reconstructed offline.
+- `phylo.load_tree(run, start=, end=)`: `end` bounds the tree at a run step (default: the end of the logs). Chunks
+  starting at or after it are skipped, a chunk that straddles it is trimmed to the records with `step < end`, and the
+  tiling check, `t_end`, the `metrics.jsonl` comparison (rows `step <= end`) and the checkpoint check (the checkpoint at
+  `end`) refer to `[origin, end)`; the report gains `end` and `end_covered` (false if the logs stop earlier). It exists
+  for a source checkpointed before the end of its run (`64k3d_s1` at 450,000 steps has chunks of later steps), which the
+  exact house rebuild of a G3a planet (§33, I51) reads; without `end` nothing changes.
 
 ### 12.9 Catastrophe (director, off unless `director.enabled`)
 
