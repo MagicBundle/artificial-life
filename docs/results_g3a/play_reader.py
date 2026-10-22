@@ -7,6 +7,7 @@ Quits (sends `quit`) once the stream's step is >= first step + STOP_AFTER_STEPS.
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
 import os
 import queue
@@ -16,7 +17,7 @@ import sys
 import threading
 import time
 
-import numpy as np  # noqa: E402
+import numpy as np
 
 WT = os.environ["WT"]
 sys.path.insert(0, WT + "/tests")
@@ -27,7 +28,8 @@ out_json, stop_after, follow = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1"
 args = sys.argv[sys.argv.index("--") + 1 :]
 cmd = [os.environ["ALIFE_BIN"], "play", *args]
 t0 = time.time()
-p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(out_json + ".stderr", "wb"), bufsize=0)
+err = open(out_json + ".stderr", "wb")  # noqa: SIM115 (open for the life of the child process)
+p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, bufsize=0)
 
 q: queue.Queue = queue.Queue()
 raw_bytes = 0
@@ -97,9 +99,9 @@ snap_done = set()
 
 
 def dump_snapshot(name):
-    with open(out_json + '.' + name + '.bin', 'wb') as f:
+    with open(out_json + "." + name + ".bin", "wb") as f:
         f.write(hdr_bytes)
-        for tg in ('IDNT', 'INTN', 'TERR', 'STRM', 'MAP1', 'ENVS', 'FRMA', 'FOCS', 'CLCK'):
+        for tg in ("IDNT", "INTN", "TERR", "STRM", "MAP1", "ENVS", "FRMA", "FOCS", "CLCK"):
             if tg in latest:
                 f.write(latest[tg])
         for e in recent_evnt:
@@ -132,7 +134,7 @@ while True:
     r = d.records[0]
     tags[r.tag] += 1
     latest[r.tag] = data
-    if r.tag == 'EVNT':
+    if r.tag == "EVNT":
         recent_evnt.append(data)
     bytes_by_tag[r.tag] += len(data)
     if first_step is None:
@@ -162,21 +164,36 @@ while True:
             focs_uid_changes += 1
             last_focs_uid = r.f["uid"]
     if r.tag == "CLCK":
-        clck.append((wall, r.step, r.f["rate"], r.f["achieved"], r.f["step_ms"], r.f["late_steps"], r.f["save_stall_steps"], r.f["saving"], r.f["reason"]))
-    if r.tag == 'FRMA' and 'mid' not in snap_done and first_step is not None and last_step >= first_step + stop_after // 2:
-        dump_snapshot('mid')
-        snap_done.add('mid')
+        clck.append(
+            (
+                wall,
+                r.step,
+                r.f["rate"],
+                r.f["achieved"],
+                r.f["step_ms"],
+                r.f["late_steps"],
+                r.f["save_stall_steps"],
+                r.f["saving"],
+                r.f["reason"],
+            )
+        )
+    if (
+        r.tag == "FRMA"
+        and "mid" not in snap_done
+        and first_step is not None
+        and last_step >= first_step + stop_after // 2
+    ):
+        dump_snapshot("mid")
+        snap_done.add("mid")
     if not quit_sent and first_step is not None and last_step >= first_step + stop_after:
         p.stdin.write(b"quit\n")
         p.stdin.flush()
         quit_sent = True
         quit_wall = time.time()
 
-dump_snapshot('end')
-try:
+dump_snapshot("end")
+with contextlib.suppress(Exception):
     p.stdin.close()
-except Exception:
-    pass
 rc = p.wait()
 end = time.time()
 
@@ -235,10 +252,24 @@ res = {
         "max": float(np.max([c[4] for c in clck])) if clck else None,
     },
 }
-json.dump(res, open(out_json, "w"), indent=1, default=str)
+with open(out_json, "w") as f:
+    json.dump(res, f, indent=1, default=str)
 with open(out_json + ".events.jsonl", "w") as f:
     for e in events:
-        f.write(json.dumps({"wall_s": round(e[0] - first_rec_wall, 2) if first_rec_wall else None, "step": e[1], "fam": e[2], "kind": e[3], "imp": e[4], "text": e[5], "backlog": e[6]}) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "wall_s": round(e[0] - first_rec_wall, 2) if first_rec_wall else None,
+                    "step": e[1],
+                    "fam": e[2],
+                    "kind": e[3],
+                    "imp": e[4],
+                    "text": e[5],
+                    "backlog": e[6],
+                }
+            )
+            + "\n"
+        )
 with open(out_json + ".clck.jsonl", "w") as f:
     for c in clck:
         f.write(json.dumps(c) + "\n")

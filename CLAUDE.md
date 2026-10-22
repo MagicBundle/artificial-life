@@ -57,8 +57,8 @@ with a `LABEL_VERDICTS` row for the world and rule set (none for V2 or V3 yet) a
   bitwise equal to the pure-MLX path it replaces (`tests/test_spatial_metal.py`, run with `-m ""` on the Mac and on
   every MLX bump, which is then added to `knn_metal.VERIFIED_MLX`), fall back to that path off Metal, and write no
   contested outputs. `ALIFE_KNN=auto|mlx|metal` selects the neighbour search (DESIGN §4, I48).
-- Checks before pushing: `uv run ruff check src tests`, `uv run ruff format --check src tests`,
-  `uv run pytest -m "not slow" -q`. A trajectory change needs a deliberate golden-digest re-pin.
+- Checks before pushing: `uv run ruff check`, `uv run ruff format --check` (the whole repo, as CI runs them; scripts
+  under `docs/` count), `uv run pytest -m "not slow" -q`. A trajectory change needs a deliberate golden-digest re-pin.
 - The world report (DESIGN §31) never calls an LM Studio management endpoint (no load, unload or switch) and sends `model`
   explicitly; its only network calls are the chat POST and the read-only `GET /api/v0/models` preflight. Run `--llm` and
   `probe` only when no GPU job or timing runs. A change to a template, the lexicon, the label table or the select prompt
