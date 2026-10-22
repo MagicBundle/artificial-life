@@ -36,9 +36,10 @@ import mlx.core as mx
 import numpy as np
 
 from alife.config import Config, config_hash, dims
-from alife.game import observe
+from alife.game import housefile, observe
 from alife.game import social as soc
 from alife.game.colors import ColorInputs, house_slot_bytes, kin_slot_bytes
+from alife.game.housefile import HouseFileError, HouseSeed
 from alife.game.observe import EVAL_BIT, ObsState
 from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V2, RuleSet
 from alife.game.social import HOUSE_UNKNOWN, SOCIAL_V1, SOCIAL_VERSION, SocialRules, SocState
@@ -150,6 +151,40 @@ def _shares(counts: np.ndarray, names: tuple[str, ...], denominator: int) -> dic
     return {name: int(c) / denominator for name, c in zip(names, counts, strict=True)}
 
 
+def _seed_houses(so: SocState, houses: HouseSeed) -> tuple[SocState, bool]:
+    """``so`` with ``house`` and ``house_from`` taken from ``houses`` for the alive rows it lists (by uid),
+    and whether it listed every alive row."""
+    if houses.uid.size > 1 and np.any(np.diff(houses.uid) <= 0):
+        raise ValueError("Observer.fresh: the house seed's uids must be strictly ascending")
+    uid = to_numpy(so.uid)
+    alive = uid >= 0
+    if houses.uid.size == 0:
+        return so, bool(not alive.any())
+    pos = np.minimum(np.searchsorted(houses.uid, uid), houses.uid.size - 1)
+    hit = alive & (houses.uid[pos] == uid)
+    house = np.where(hit, houses.house[pos], to_numpy(so.house))
+    house_from = np.where(hit, houses.house_from[pos], to_numpy(so.house_from))
+    seeded = so._replace(
+        house=mx.array(house.astype(np.int64)), house_from=mx.array(house_from.astype(np.int64))
+    )
+    return seeded, bool(hit[alive].all())
+
+
+def _house_seed(rd: RunDir, t: int, cfg: Config) -> tuple[HouseSeed | None, str | None]:
+    """The planet's houses at step ``t`` from the newest house file at or before it: ``(seed, None)``;
+    ``(None, None)`` with no house file; ``(None, note)`` with one that cannot be used."""
+    older = [(s, p) for s, p in housefile.files(rd) if s <= t]
+    if not older:
+        return None, None
+    s = older[-1][0]
+    rate, run_seed = cfg.game.house_rate, cfg.run.seed
+    try:
+        base = housefile.read(rd, s, rate=rate, run_seed=run_seed)
+        return housefile.fold_chunks(rd, base, s, t, run_seed=run_seed, rate=rate), None
+    except HouseFileError as e:
+        return None, f"houses: the house file of step {s} cannot be used at step {t} ({e}); clade houses"
+
+
 class Observer:
     """Per-row game observers on one run: accumulators, labels, the social layer, the metrics block, the
     snapshot records and the sidecar."""
@@ -222,18 +257,27 @@ class Observer:
         *,
         rules: RuleSet | None = None,
         social: SocialRules | None = None,
+        houses: HouseSeed | None = None,
     ) -> Observer:
         """Observers starting at ``state``: nothing accumulated or labelled, existing bonds of unknown age,
         and the initial social snapshot (ids and slots for what is there; no events, relations or record).
-        ``rules`` and ``social`` default to ``DEFAULT_RULES`` and ``DEFAULT_SOCIAL`` as of this call."""
+        ``rules`` and ``social`` default to ``DEFAULT_RULES`` and ``DEFAULT_SOCIAL`` as of this call.
+
+        ``houses`` (a planet's exact houses, ``game.housefile``, DESIGN §33.3.5) sets ``house`` and
+        ``house_from`` of the alive rows it lists, by uid; a row it does not list keeps the clade rule. The
+        houses are *exact* (the head's ``exact`` and ``origin`` 0, as for an observer that started at step 0)
+        only if it lists every alive row."""
         rules = DEFAULT_RULES if rules is None else rules
         sr = DEFAULT_SOCIAL if social is None else social
         obs = cls._blank(state, cfg, rules, sr)
+        exact = False
+        if houses is not None:
+            obs.so, exact = _seed_houses(obs.so, houses)
         si = soc.soc_in(state)
         # no step to read: the temperament is zero; the labels are empty, so is the archetype mix
         snap = obs._snap_fn(obs.so.kin, obs.so, si, None, obs.o.label_arch[:, 0])
         h = host_snap(snap)  # the one host transfer (and the evaluation)
-        kin_lut, col_lut = obs.society.initialise(h, obs.step)
+        kin_lut, col_lut = obs.society.initialise(h, obs.step, exact_houses=exact)
         obs.so = obs._relabel(obs.so, snap, mx.array(kin_lut), mx.array(col_lut))
         mx.eval(*obs.so)
         return obs
@@ -251,6 +295,11 @@ class Observer:
         """Observers for a run continuing from ``state``: the sidecar of its step if it is valid for it,
         else fresh. The note (None if the sidecar was loaded) is returned only on a resume, meaning ``rd``
         has a checkpoint at this step; a new run or a fork starts fresh without one. Never an error.
+
+        Without a valid sidecar, a planet's house file (``observers/houses_<S>.npz``, ``game.housefile``)
+        seeds the houses: the file itself at ``t == S``, or folded over the planet's own birth chunks of
+        ``[S, t)`` (exact houses survive a lost sidecar). A file that cannot be used (another rule, chunks
+        missing) gives clade houses and a note, even on a start that is not a resume.
         ``rules`` and ``social`` default to ``DEFAULT_RULES`` and ``DEFAULT_SOCIAL`` as of this call."""
         rules = DEFAULT_RULES if rules is None else rules
         sr = DEFAULT_SOCIAL if social is None else social
@@ -267,14 +316,22 @@ class Observer:
                 loaded, reason = blank._load(arrays)
         if loaded is not None:
             return cls(cfg, loaded.o, loaded.so, loaded.society, t, rules, sr), None
-        fresh = cls.fresh(state, cfg, rules=rules, social=sr)
+        seed, house_note = _house_seed(rd, t, cfg)
+        fresh = cls.fresh(state, cfg, rules=rules, social=sr, houses=seed)
         resumed = any(st == t for st, _ in rd.checkpoints())
+        if seed is None:
+            how = f"houses seeded from clades; new ids, records with origin {t}"
+        else:
+            how = "houses from the planet's house file" + (
+                "" if fresh.society.house_origin == 0 else f" (not exact: records with origin {t})"
+            )
         note = (
             f"observers: {reason}; labels warm up ({rules.arch_warm} steps for archetypes, "
-            f"{rules.intent_warm} for intents); social tracking restarts at step {t} "
-            f"(houses seeded from clades; new ids, records with origin {t})"
+            f"{rules.intent_warm} for intents); social tracking restarts at step {t} ({how})"
         )
-        return fresh, note if resumed else None
+        if house_note:
+            note = f"{note}; {house_note}"
+        return fresh, note if resumed or house_note else None
 
     # --- the sidecar --------------------------------------------------------------------------------------
 

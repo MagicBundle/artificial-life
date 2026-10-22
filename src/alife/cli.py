@@ -24,6 +24,7 @@ import numpy as np
 
 from alife import config as config_mod
 from alife import metrics, physics, play, runner, spatial, stream, weather_spinup
+from alife.analysis import houses as house_rebuild
 from alife.config import (
     ALL_OVERLAYS,
     DEFAULT_PRESET,
@@ -45,6 +46,7 @@ from alife.config import (
 from alife.director import llm as director_llm
 from alife.director import log as director_log
 from alife.director import make_director, yoked
+from alife.game import housefile
 from alife.invariants import full_check
 from alife.render import (
     COLOR_MODES,
@@ -436,20 +438,28 @@ def _cmd_run(a: argparse.Namespace) -> int:
     return code if code is not None else _launch(rd, cfg, box, cfg.run.steps, a.quiet)
 
 
-def _fork_source(spec: str) -> tuple[Path, str]:
-    """``(state file, origin)`` for ``--init-from RUN[:STEP]|FILE.safetensors``."""
+def _fork_lookup(spec: str) -> tuple[Path, str, RunDir | None, int | None]:
+    """``(state file, origin, run directory, step)`` for ``--init-from RUN[:STEP]|FILE.safetensors``: the
+    run directory and the checkpoint's step are None for a bare state file."""
     p = Path(spec)
     if p.suffix == ".safetensors" or p.is_file():
         if not p.is_file():
             raise CheckpointError(f"--init-from: no state file {p}")
-        return p, str(p)
+        return p, str(p), None, None
     m = _RUN_STEP_RE.match(spec)
     if m and not p.is_dir() and Path(m["run"]).is_dir():
         rd, step = RunDir.open(Path(m["run"])), int(m["step"])
     else:
         rd, step = RunDir.open(p), None
     path = _select_checkpoint(rd, step)
-    return path, f"{rd.path}:{int(checkpoint_metadata(path)['step'])}"
+    at = int(checkpoint_metadata(path)["step"])
+    return path, f"{rd.path}:{at}", rd, at
+
+
+def _fork_source(spec: str) -> tuple[Path, str]:
+    """``(state file, origin)`` for ``--init-from RUN[:STEP]|FILE.safetensors``."""
+    path, origin, _, _ = _fork_lookup(spec)
+    return path, origin
 
 
 def _prepare_fork(
@@ -986,10 +996,12 @@ def _cmd_play(a: argparse.Namespace) -> int:
         ):
             if given:
                 raise ConfigError(f"{flag} applies to a world directory (play RUN)")
-    elif a.set or a.overlay or a.seed is not None or a.out or a.weather_spinup is not None:
+        if a.houses is not None and a.init_from is None:
+            raise ConfigError("--houses applies to a planet (--init-from): a preset starts at step 0")
+    elif a.set or a.overlay or a.seed is not None or a.out or a.weather_spinup is not None or a.houses:
         raise ConfigError(
-            "--set, --overlay, --seed, --out and --weather-spinup make a new world (--init-from or "
-            "--preset); a world directory is played as it is"
+            "--set, --overlay, --seed, --out, --weather-spinup and --houses make a new world (--init-from "
+            "or --preset); a world directory is played as it is"
         )
     if a.replay and a.director == "rules":
         raise ConfigError("--replay applies the director's log; it cannot also decide (--director rules)")
@@ -1001,19 +1013,58 @@ def _cmd_play(a: argparse.Namespace) -> int:
             control.close()
 
 
+def _houses_source(a: argparse.Namespace, mode: str) -> tuple[RunDir | None, int | None]:
+    """The source run and checkpoint step whose exact houses a planet gets, or ``(None, None)`` for clade
+    houses (``--houses clade``, or ``auto`` with a source that cannot give them: a note on stderr).
+    ``--houses exact`` refuses such a source (``HouseError``, exit 4). A directory listing only (DESIGN
+    §33.3.5): before the source's state is loaded and before anything is written."""
+    if mode == "clade":
+        return None, None
+    _, _, run, step = _fork_lookup(a.init_from)
+    why = (
+        "the source is a state file, not a run directory (it has no event chunks)"
+        if run is None or step is None
+        else house_rebuild.source_problem(run, step)
+    )
+    if why is None:
+        return run, step
+    if mode == "exact":
+        raise house_rebuild.HouseError(why)
+    print(f"houses: {why}; the houses are the clades (approximate)", file=sys.stderr, flush=True)
+    return None, None
+
+
+def _rebuild_houses(mode: str, run: RunDir, step: int, cfg: Config) -> housefile.HouseSeed | None:
+    """The exact houses of ``run``'s checkpoint at ``step`` under the planet's ``house_rate`` and seed. A
+    rebuild that fails is an error under ``--houses exact`` and a note, with clade houses, under ``auto``."""
+    print(f"houses: rebuilding the exact houses of {run.path} at step {step}", file=sys.stderr, flush=True)
+    try:
+        return house_rebuild.rebuild(run.path, step, rate=cfg.game.house_rate, seed=cfg.run.seed)
+    except house_rebuild.HouseError as e:
+        if mode == "exact":
+            raise
+        print(f"houses: {e}; the houses are the clades (approximate)", file=sys.stderr, flush=True)
+        return None
+
+
 def _play_world(a: argparse.Namespace, sink: Any, control: stream.Control) -> int:
     """A new world: a fork of a checkpoint (a planet) or a preset, locked before anything is written."""
     ra = _play_namespace(a)
     overrides = [*_run_overrides(ra), *_play_items(a)]
     lock: PlayLock | None = None
+    mode = a.houses or "auto"
+    src_run, src_step = _houses_source(a, mode) if a.init_from is not None else (None, None)
+    seed: housefile.HouseSeed | None = None
 
     def before_create(out: Path, cfg: Config) -> None:
-        nonlocal lock
+        nonlocal lock, seed
         _check_play_tick(cfg)
         RunDir.require_new(
             out
         )  # before the lock file: nothing is written into a directory create would refuse
         lock = _lock(out)
+        if src_run is not None and src_step is not None:
+            seed = _rebuild_houses(mode, src_run, src_step, cfg)
 
     try:
         if a.init_from is not None:
@@ -1026,12 +1077,14 @@ def _play_world(a: argparse.Namespace, sink: Any, control: stream.Control) -> in
             return code
         assert rd is not None
         step = int(to_numpy(box[0].step))
+        if seed is not None:  # before the first checkpoint: the observer opens on it (Observer.open)
+            housefile.write(rd, step, seed, rate=cfg.game.house_rate, run_seed=cfg.run.seed)
         planet = (
             {
                 "source": rd.meta().get("parent"),
                 "step": step,
                 "weather_spinup": a.weather_spinup,
-                "houses": "clade",
+                "houses": "exact" if seed is not None else "clade",
                 "made_at_step": step,
             }
             if a.init_from is not None
@@ -1556,6 +1609,13 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("off", "rules"),
         default="off",
         help="rules: the director's rule tier decides (the world needs director.enabled; no LLM)",
+    )
+    p.add_argument(
+        "--houses",
+        choices=("exact", "clade", "auto"),
+        default=None,
+        help="houses of a planet (--init-from): exact rebuilds them from the source's event chunks (exit 4 "
+        "if they are missing), clade takes the clades, auto (default) tries exact and falls back with a note",
     )
     p.add_argument("--no-control", action="store_true", help="do not read stdin")
     p.set_defaults(func=_cmd_play)

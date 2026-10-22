@@ -14,6 +14,7 @@ import pytest
 
 from alife import cli, play, runner, weather_spinup
 from alife.config import load_config
+from alife.game import housefile
 from alife.runio import RunDir
 from alife.state import init_state
 from play_decode import decode
@@ -68,7 +69,7 @@ def test_a_planet_streams_from_byte_0_and_reports_its_progress_on_stderr(
     d = decode(data)  # strictly: the header is the first thing in the stream, and every byte is a record
     h = d.header["play"]
     assert h["weather"]["enabled"] is True and h["weather"]["refs"]["dc"] > 0
-    assert h["planet"] == {"source": f"{source}:12", "houses": "clade"}
+    assert h["planet"] == {"source": f"{source}:12", "houses": "exact"}  # the source has its events
     assert {"MAP1", "STRM"} <= set(h["records"]) and d.skipped == []
     assert f"weather spin-up: {SPINUP}/{SPINUP} steps" in err and "run " in err  # the progress is stderr's
     tags = [r.tag for r in d.records]
@@ -82,19 +83,21 @@ def test_play_json_is_written_with_the_planet_and_the_cloud_scale(planet: tuple[
     pj = rd.read_play_json()
     assert pj is not None and pj["cadence"] == CADENCE and pj["tick"] == 25
     assert pj["planet"]["step"] == 12 and pj["planet"]["weather_spinup"] == SPINUP
-    assert pj["planet"]["houses"] == "clade" and pj["planet"]["made_at_step"] == 12
+    assert pj["planet"]["houses"] == "exact" and pj["planet"]["made_at_step"] == 12
     assert pj["weather"]["dc_ref"] == decode(data).header["play"]["weather"]["refs"]["dc"] > 0
     assert rd.meta()["start_step"] == 12 and rd.meta()["weather_spinup"] == SPINUP
     assert not (out / "play.lock").exists()
 
 
-def test_the_sidecar_is_not_reused_and_the_houses_say_so(planet: tuple[Path, bytes, str]) -> None:
+def test_the_sidecar_is_not_reused_and_the_houses_are_the_rebuilt_ones(
+    planet: tuple[Path, bytes, str],
+) -> None:
     out, data, _ = planet
     first = next(r for r in decode(data).records if r.tag == "IDNT")
-    assert (
-        first.f["json"]["exact"] is False and first.f["json"]["origin"] == 12
-    )  # fresh observers at the fork
+    # fresh observers at the fork, seeded with the exact houses of the source's birth chain (DESIGN 33.3.5)
+    assert first.f["json"]["exact"] is True and first.f["json"]["origin"] == 0
     assert RunDir.open(out).read_observers(12) is not None  # the planet's own sidecar at its first checkpoint
+    assert [s for s, _ in housefile.files(RunDir.open(out))] == [12]  # and its house file
 
 
 def test_the_spun_up_weather_is_the_start_steps(planet: tuple[Path, bytes, str]) -> None:

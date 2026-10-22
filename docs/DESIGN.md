@@ -7619,8 +7619,9 @@ to.
   unrelated agent). Children of a `HOUSE_UNKNOWN` row inherit it unless they found a house. `Society.house_origin` is
   the observer's start step; houses are **exact iff `house_origin == 0`**, and the head and every record say `exact`.
   A fork starts fresh (§28.1), so the houses of a fork after step 0 are inexact (a fork from step 0 holds only founders,
-  so its houses are exact). There is no offline rebuild: an exact rebuild needs the birth log from step 0 (43.6M records
-  in `64k_s0`).
+  so its houses are exact). A fork of an evolved checkpoint can have the *true* houses all the same: `analysis/houses.py`
+  rebuilds them offline from the source's birth log and `Observer.fresh(houses=)` seeds them (§33.3.5), which makes
+  `house_origin` 0 for that observer (the houses are exact, the records' window still starts at the fork).
 - **Host**, at a snapshot: `np.unique` over the alive rows with `house ≥ 0`: `alive` (distinct houses),
   `unknown_immigrant` (alive rows with `HOUSE_UNKNOWN`), and the top 16 by (−size, id) with the `clade` of the house's
   first alive row and a **name**. With `h = splitmix64(id, name_salt)`: `name = (ONSET[h & 31] + NUCLEUS[(h >> 5) & 15] +
@@ -7809,8 +7810,8 @@ append and fsync of a record (about 1 ms), plus, when the steps coincide, the he
 
 **The observer** (`Observer(cfg, o, so, society, step, rules, social)`; `rules.check(cfg)` and `social.check(cfg)` at
 construction). Module constants `DEFAULT_RULES = RULES_V2` (version 2, §28.4) and `DEFAULT_SOCIAL = SOCIAL_V1`;
-`Observer.fresh(state, cfg, *, rules=None, social=None)` and `Observer.open(rd, state, cfg, *, rules=None, social=None)`
-take None to mean the module default **as of the call**. The runner passes nothing, the bench passes nothing and reads
+`Observer.fresh(state, cfg, *, rules=None, social=None, houses=None)` and `Observer.open(rd, state, cfg, *, rules=None, social=None)`
+take None to mean the module default **as of the call** (`houses` is a planet's exact houses, §33.3.5). The runner passes nothing, the bench passes nothing and reads
 `observer.DEFAULT_SOCIAL` for its cadence, and the labels tool passes its `rules`. No config key sets the cadence; tests
 replace `DEFAULT_SOCIAL` with `monkeypatch` (`social_every`), and a module-scoped fixture, which cannot use
 `monkeypatch`, passes `social=` explicitly. The closures (compiled iff `cfg.run.compile`) are `fold` (G1's `update`
@@ -9393,7 +9394,7 @@ under a fixed-timestep scheduler with the game observers on, writes the records 
 `play` changes a trajectory: pacing, frames, records and focus are presentation. The section grows with the commits of
 the PR: §33.1 (the stream records) lands first, with the Python encoders (`streamrec.py`), the independent decoder and
 the shared fixtures, then the Swift decoder; the rest follows: §33.2 `alife play`, the runner hook and the scheduler;
-§33.3 files, planets and houses; §33.4 the World window; §33.5 performance and the gate; §33.6 tests.
+§33.3 files, planets and houses (§33.3.5); §33.4 the World window; §33.5 performance and the gate; §33.6 tests.
 
 ### 33.1 The stream records (ALSTRM v1, compatible additions)
 
@@ -9793,11 +9794,11 @@ a closed reader, a raising callback, the order of `before_checkpoint`, the state
 
 ```text
 alife play RUN [--checkpoint STEP|latest] [--truncate] [--adopt] [--replay] [--until STEP] [common]
-alife play --init-from SRC[:STEP] [--overlay storm] [--weather-spinup N] [--seed S] [--out DIR] [--set k=v ...] [common]
+alife play --init-from SRC[:STEP] [--overlay storm] [--weather-spinup N] [--houses exact|clade|auto] [--seed S] [--out DIR] [--set k=v ...] [common]
 alife play --preset P [--overlay O] [--set k=v ...] [--out DIR] [common]
 common = [--rate 0|0.25|0.5|1|2|max] [--paused] [--base-rate SPS=14.4] [--frame-hz 30] [--director off|rules] [--no-control]
 ```
-Exactly one of RUN, `--init-from` and `--preset`; `--checkpoint --truncate --adopt --replay` belong to RUN and `--set --overlay --seed --out --weather-spinup` to a new world (exit 2 otherwise).
+Exactly one of RUN, `--init-from` and `--preset`; `--checkpoint --truncate --adopt --replay` belong to RUN and `--set --overlay --seed --out --weather-spinup --houses` to a new world (exit 2 otherwise); `--houses` applies to a planet (`--init-from`) only, a preset starts at step 0 with exact houses (§33.3.5).
 `--rate` starts the world running at that multiple of the base rate (0, or none, starts it paused; `--paused` pauses it anyway); `--until STEP` ends the play at that step (status `done`, exit 0).
 
 - **Protocol discipline.** `play` enters `stream.protocol_output()` as its first act, before the fork is prepared, the spin-up, `Observer.open` and `runner.run`: the announcement, the spin-up progress lines and every other print go to stderr (the
@@ -9884,9 +9885,44 @@ and of the three file rules were each caught.
 
 A **planet** is a fork of an evolved checkpoint with the weather on and spun up: `alife play --init-from runs/64k3d_s0:500000 --overlay storm --set director.enabled=true --weather-spinup 20000 --out runs/planet_a`. It is `run --init-from` plus the W1 tools
 (`weather_spinup.spinup`, §30.9) behind `cli._prepare_fork`; the founder transient of the source is never replayed. Its `play.json.planet` records the source (`RUN:STEP`), the start step, the spin-up and the houses mode. The fork keeps its origin checkpoint (`meta.start_step`) through `RunDir._prune`
-(§18). The source's observer sidecar cannot cross a fork (its config hash differs), so a planet starts **fresh observers** at the fork: houses seeded from clades (`houses` `"clade"` in `play.json` and `exact` false in every `IDNT`), labels warm up; the exact rebuild from the source's event
-chunks comes with `analysis/houses.py` (a later commit of this PR). Tests: `tests/test_play_planet.py` (a planet on the 256-row 64k3d world: stdout strictly the stream, `play.json`, fresh observers, the spin-up's pools at the start step, the origin checkpoint after the saves, the storm files, the refusals, a cancelled spin-up leaves no `play.json`),
+(§18). The source's observer sidecar cannot cross a fork (its config hash differs), so a planet starts **fresh observers** at the fork, labels warm up, and its houses are the exact ones rebuilt from the source's event chunks when it has them (`--houses auto`, the default; `houses` `"exact"` in `play.json`, `exact` true in every `IDNT`), else the clades (`"clade"`, `exact` false): §33.3.5. Tests: `tests/test_play_planet.py` (a planet on the 256-row 64k3d world: stdout strictly the stream, `play.json`, fresh observers with the rebuilt houses, the spin-up's pools at the start step, the origin checkpoint after the saves, the storm files, the refusals, a cancelled spin-up leaves no `play.json`),
 `tests/test_play_cli.py` (the process: header, quit, EOF, a closed reader, SIGINT, the lock and the Lab's resume, adopt, truncate, flags, `--until`), `tests/test_play_replay.py` (`play --replay` against `resume --director replay`; the log untouched; the rule tier and the cadence guard).
+
+#### 33.3.5 Houses at forks
+
+**The problem.** A house is a pure function of the birth chain (§29.4): a birth founds one iff `splitmix64(uid, seed) < house_rate·2^64`, a founder of the run and an immigrant (a birth without a parent) always do, every other birth takes its parent's. An observer attached to a world already running
+cannot see that chain, so the fallback seeds the clades as houses (§29.4 "Mid-run starts"): **a different game, not a coarser one**. The rebuild below, run on the working set (CPU, read only; `python -m alife.analysis.houses RUN --step S`): `64k3d_s0`@500,000 has 40,413 alive in **79 houses** (the largest hold 26.0%,
+25.4% and 17.7%), against 4 clade houses; `64k3d_s1`@450,000 (whose logs run to 500,000) 42,837 alive in 94 houses (42.1%, 25.4%, 15.6%); `64k_s0`@1,500,000 (2D) 33,862 alive in 76 houses (75.6% in the largest). 3.0 to 3.5 s per rebuild for the 22.5 M agents of `64k3d_s0`. The rebuild reproduces the live
+observer exactly (`tests/test_play_houses.py` compares the house and the house of origin of every alive agent with a live sidecar at five steps of a run with immigration).
+
+**`analysis/houses.py`.** `source_problem(rd, S)` says from a directory listing, before anything is loaded, why the houses of the checkpoint at `S` cannot be rebuilt: the run is itself a fork (`start_step` > 0: its logs lack the births before it), it has no birth or death chunks (an archive that kept only
+the checkpoints), or the chunks do not tile `[0, S)` from step 0 (the first uncovered step is named: "do not cover steps [a, S)"; a chunk reaching past `S` is fine). `rebuild(src, S, rate=, seed=)` runs `phylo.load_tree(src, end=S, check_checkpoint=False)` (tree index = uid for a source from step 0), refuses a tree whose chunks do not tile or
+do not reach `S` and a checkpoint holding uids the log does not know, and returns `houses_of(tree, alive_uids)`: `house` = the uid of the nearest root of `phylo.marker_roots(tree, rate, seed)` and `house_from` = the house of that root's parent (`-1` for a root without one), as a `housefile.HouseSeed` (int64 `uid`, `house`,
+`house_from`, ascending uid). Every failure is a `HouseError` (a `CheckpointError`: exit 4). `rate` and `seed` are the **planet's** `game.house_rate` and `run.seed`: one rule applies to the past and the future (`--set run.seed=N` on the fork re-partitions both; tested). The result for the alive agents does not depend on events after `S`,
+so passing `end` changes the work and the consistency checks, not the houses. `python -m alife.analysis.houses SRC [--step S] [--rate R] [--seed N] [--out RUN]` prints the summary (agents, houses, the largest five) and with `--out` writes the house file into another run directory (never the source's; exit 4 for an unusable source).
+
+**`game/housefile.py`** (numpy and `runio`; `game/` does not import `analysis/`, so its hash is a copy of `phylo.splitmix64`, tested equal to it and to `groups.splitmix64` / `hash_below` for rates 0 to 1). `observers/houses_<S>.npz` holds `uid`, `house`, `house_from` (int64, ascending uid, the agents alive at `S`; about 1 MB at 64k3d) and a JSON `meta`
+`{format: "alife-houses-1", step, rate, seed}`; `read(rd, S, rate=, run_seed=)` refuses (`HouseFileError`) a file of another step, rate or seed, a torn or malformed one. Written atomically, kept for the life of the directory: its name does not match the sidecar pattern, so `_prune` and `truncate_after` leave it.
+`fold(seed, uid, parent_uid, run_seed=, rate=)` extends a seed by births in log order with the rule of `social.update` (an immigrant founds with origin -1; a hash hit founds with its parent's house as origin; any other birth takes its parent's house and origin), vectorised by pointer jumping, and refuses births that are not
+ascending above the seed's uids or whose parent is in no table or not older than the child. `births_between(rd, s, t)` reads the planet's own birth chunks of steps `s <= step < t` (a chunk reaching past `t` is trimmed) and refuses chunks that do not tile `[s, t)` from `s`.
+
+**Seeding.** `Observer.fresh(state, cfg, *, houses=HouseSeed)` sets `house` and `house_from` of the alive rows the seed lists, by uid, before the first snapshot; a row it does not list keeps the clade rule. The houses are **exact** iff every alive row is listed: `Society.initialise(h, step, exact_houses=True)` then sets `house_origin` to 0
+instead of `step`, *before* the snapshot (so the first summary, which the metrics rows and the `IDNT` head repeat until the next snapshot, says `exact` and `origin` 0 at once; setting it afterwards would leave `summary["exact"]` false for a whole snapshot period). Records of an exact planet have `origin` 0 and a `window_start` at the fork; `report.py`
+groups records by origin, which is unchanged for a run (a planet is a new run directory). The sidecar saves `host.house_origin`, so every later resume keeps the planet exact.
+
+**Getting the seed to the observer.** `runner.run` builds the observer with `Observer.open(rd, state, cfg)`, and a resume with a lost or invalid sidecar falls back to `fresh`; so `open` consults the house file itself: without a valid sidecar, `_house_seed` takes the newest file at or before the observer's step `T` (file step `S`):
+at `T == S` the file, at `T > S` the file folded over the run directory's own birth chunks of `[S, T)` (a sidecar lost at a later checkpoint gives the same houses, tested against the sidecar). A file that cannot be used (another rate or seed, torn, chunks missing or not tiling `[S, T)`) gives clade houses and a note
+that `open` returns even on a start that is not a resume ("the house file of step S cannot be used at step T (reason); clade houses"). A valid sidecar always wins. A directory without a house file behaves as before.
+
+**`alife play --init-from SRC[:STEP] [--houses exact|clade|auto]`.** `auto` (the default) rebuilds when it can and falls back with one stderr note; `exact` exits 4 (nothing written, the missing chunk range named) when it cannot; `clade` skips it. The order, for the planet's sake: (1) `_houses_source`, before the source's state is loaded, resolves the checkpoint (`_fork_lookup`) and
+applies `source_problem` (a bare state file has no events); (2) the rebuild runs in `before_create(out, cfg)` (after every check and the lock, before the directory exists, with the fork's own `house_rate` and `run.seed`), so a failure under `exact` leaves nothing behind and `auto` falls back; (3) once `_prepare_fork` has created the
+directory and spun the weather up, the file is written, before the first checkpoint and before `play.json`. `play.json.planet.houses` and the header's `planet.houses` say `"exact"` or `"clade"`. A planet's own logs start at its fork step, so a fork of a planet is not rebuildable ("itself a fork": `exact` exits 4, `auto` falls
+back); a preset or a world directory takes no `--houses` (exit 2). The cost, measured for `64k3d_s0`@500,000 on the CPU: 3.4 s wall and a peak resident set of 2.58 GB, before the spin-up starts; a window that cannot afford it passes `clade`.
+
+Tests: `tests/test_play_houses.py` (50, 25 s): the rebuild equals the live sidecar's house and origin at three checkpoints of a 600-step run with immigration (and the immigrant and hash-founded kinds are present); the planet's rate and seed; the pure `houses_of` against the rule birth by birth on 2,500-agent trees with chains of depth 6 at four rates;
+the source problems (no events, a gap, no deaths, chunks not starting at 0, a fork, a log shorter than the checkpoint's uids); the file (round trip, not a sidecar, kept by `_prune` and `truncate_after`, another rate or seed, malformed and torn); the hash against `phylo` and `groups`; the fold against the rule on 3,000 births, in two stages, against
+the live sidecar at the end of the run, and against the longer tree; `births_between` (trim, tiling); `Observer.fresh(houses=)` (exact with the file, a partial seed is not exact, an empty one is not); `Observer.open` (the file, no file, a sidecar lost at a later checkpoint, no chunks, another rule, a later file, a valid sidecar wins); a fork
+that runs 300 steps keeps the source's houses to the end and every record says exact; `play` end to end (exact planet, `clade`, archive-only under `auto` and `exact`, a gap, a planet of a planet, a bare state file, `--set run.seed`, `--houses` on a world directory or a preset, a planet resumed); the tool's command line.
 
 ---
 
