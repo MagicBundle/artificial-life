@@ -352,19 +352,41 @@ def test_a_name_shared_by_two_live_threads_takes_the_lowest_unused_suffix() -> N
 
 @pytest.mark.parametrize(("gap", "name"), [(kt.NAME_GAP - 1, "Brenn II"), (kt.NAME_GAP, "Brenn")])
 def test_a_name_is_free_again_after_name_gap_snapshots(gap: int, name: str) -> None:
-    """A thread established, ended, and a same-name thread established ``gap`` snapshots after it ended: a
-    collision only inside ``NAME_GAP`` (a later thread of the same house keeps the bare name)."""
+    """A thread established, ended, and a same-name thread created ``gap`` snapshots after it ended: a
+    collision only inside ``NAME_GAP`` (a later thread of the same house keeps the bare name). The suffix
+    is taken when the thread is created (its first listing), not when it is established 2 snapshots later."""
     first = regroup(2, "Brenn", at=tag(0.0))
     last_first = 3  # listed at 1, 2, 3, ended at 7
     ended_at = last_first + kt.R + 1
-    start2 = ended_at + gap - 2  # established (third listing) `gap` snapshots after the end
+    start2 = ended_at + gap  # the second thread's first listing, `gap` snapshots after the end
     second = regroup(5, "Brenn", at=tag(0.5))
     sched = {k: [first] for k in range(1, last_first + 1)} | {k: [second] for k in range(start2, start2 + 3)}
     _, told = run(after_anchor(sched, start2 + 3))
     formed = [e for e in told if e["kind"] == "formed"]
     ended = [e for e in told if e["kind"] == "ended"]
-    assert ended[0]["step"] // STEP == ended_at and formed[1]["step"] // STEP == ended_at + gap
+    assert ended[0]["step"] // STEP == ended_at and formed[1]["step"] // STEP == start2 + kt.P - 1
     assert formed[1]["name"] == name
+
+
+def test_a_candidate_is_shown_under_the_name_it_keeps_when_it_is_established() -> None:
+    """The Cast shows a thread from its first listing: a candidate whose name collides with an open
+    thread's is "Brenn II" from the start, not "Brenn" until it is established (third review, stage 8)."""
+    a, b = regroup(2, "Brenn", at=tag(0.0)), regroup(3, "Brenn", at=tag(0.5))
+    sched = {k: [a] for k in range(1, 9)} | {k: [b] for k in range(4, 9)}
+    fold, shown = KinThreads(), []
+    for r in after_anchor(sched, 8):
+        fold.fold(r)
+        shown.append({th.id: th.shown for th in fold.open_threads()})
+    both = [m for m in shown if len(m) >= 3]  # the anchor and both Brenn threads
+    assert both and all(m[fold.owner[3]] == "Brenn II" for m in both)
+    # a candidate that flickers out silently frees its suffix for the next one
+    c = regroup(4, "Brenn", at=tag(0.0, 0.8))
+    sched2 = {k: [a] for k in range(1, 13)} | {4: [b]} | {k: [c] for k in range(9, 13)}
+    fold2 = KinThreads()
+    for r in after_anchor(sched2, 12):
+        fold2.fold(r)
+    assert fold2.thread_of(3) is None  # the flicker is gone, never told
+    assert fold2.thread_of(4).shown == "Brenn II"
 
 
 def test_the_suffix_is_frozen_when_the_other_thread_ends() -> None:
@@ -464,9 +486,9 @@ def test_the_table_is_bounded_and_drops_the_oldest_absent_threads_first() -> Non
 def test_the_constants_are_pinned() -> None:
     """A change to a constant of the rule is a new rule: bump ``KINTHREADS_VERSION`` and re-pin."""
     assert (kt.KINTHREADS_VERSION, kt.P, kt.R, kt.DELTA, kt.TOAST_FACTOR, kt.TOAST_LIFE, kt.NAME_GAP) == (
-        1, 3, 3, 0.15, 4, 8, 8,
+        2, 3, 3, 0.15, 4, 8, 8,
     )  # fmt: skip
-    assert kt.constants_digest() == "897a74dd3e1078a59f9ae3e84e787d44846dcba5338aa83291537f2528bf3f4a"
+    assert kt.constants_digest() == "7aac7f7d078ace94a138133af8453f3a551055e569c34a9d3acffb790ab58569"
 
 
 def test_p0_139_raw_kin_rows_become_45_told_events(p0) -> None:
@@ -499,7 +521,19 @@ def test_p0_a_thread_has_one_name_for_its_whole_life(p0) -> None:
     base = Counter(e["name"].split(" ")[0] for e in told if e["kind"] == "formed")
     assert base["Daudrall"] >= 4, "a house whose name many groups carry"
     suffixed = {e["thread"] for e in told if e["kind"] == "formed" and e["name"].endswith((" II", " III"))}
-    assert len(suffixed) == 3
+    assert len(suffixed) == 2
+
+
+def test_p0_the_cast_shows_one_name_per_thread_from_its_first_listing(p0) -> None:
+    """Before the fix 3 of the 41 threads of the window changed the name the Cast shows (a candidate under the
+    bare name, then "Daudrall II" or "III" at its establishment)."""
+    recs, _, _ = p0
+    fold, seen = KinThreads(), {}
+    for r in recs:
+        fold.fold(r)
+        for th in fold.open_threads():
+            seen.setdefault(th.id, set()).add(th.shown)
+    assert len(seen) == 41 and all(len(names) == 1 for names in seen.values())
 
 
 def test_a_refold_that_starts_mid_log_is_not_the_table(p0) -> None:

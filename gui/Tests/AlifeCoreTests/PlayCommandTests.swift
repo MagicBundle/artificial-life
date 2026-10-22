@@ -69,12 +69,21 @@ import Testing
         .power(PowerCommand(.apply, .food, id: 1, [.init(.mult, .infinity)])),
         .power(PowerCommand(.apply, .food, id: 1, [.init(.steps, 6000.5)])),
         .power(PowerCommand(.apply, .food, id: 1, [.init(.patch, -1)])),
+        // a whole number the line cannot hold: `Int64(_:)` trapped here (third review, stage 8)
+        .power(PowerCommand(.apply, .food, id: 1, [.init(.steps, 1e30)])),
+        .power(PowerCommand(.apply, .blight, id: 1, [.init(.patch, Double(Int64.max))])),
         .power(PowerCommand(.apply, .food, id: 1, [.init(.mult, 1.3), .init(.mult, 1.4)])),
         .power(PowerCommand(.cancel, .food, id: 1, [.init(.mult, 1.3)])),
         .intent(""), .intent("   "), .intent("two\nlines"), .intent("quit\rrun"),
     ])
     func aCommandTheGrammarCannotExpressIsRefused(command: PlayCommand) {
         #expect(throws: PlayCommand.Invalid.self) { try command.line() }
+    }
+
+    @Test func aWholeNumberJustUnderTwoToTheSixtyThirdIsWrittenWhole() throws {
+        let top = Double(Int64.max).nextDown  // 9223372036854774784, the largest Double below 2^63
+        #expect(try PlayCommand.power(PowerCommand(.apply, .food, id: 1, [.init(.steps, top)])).line()
+            == "power food id=1 steps=9223372036854774784")
     }
 
     @Test func aLineIsNeverLongerThanTheWorldAccepts() throws {

@@ -218,7 +218,15 @@ package enum PlayCommand: Equatable, Sendable {
             guard p.value.isFinite, p.value >= 0, !p.key.isWhole || p.value == p.value.rounded() else {
                 throw Invalid(reason: "\(p.key.rawValue) needs \(p.key.isWhole ? "a whole" : "a") non-negative number, not \(p.value)")
             }
-            parts.append(p.key.rawValue + "=" + (p.key.isWhole ? String(Int64(p.value)) : decimal(p.value)))
+            if p.key.isWhole {
+                // `Int64(_:)` traps at 2^63 and above: a value the line cannot hold is refused, not written
+                guard let whole = Int64(exactly: p.value) else {
+                    throw Invalid(reason: "\(p.key.rawValue) needs a whole number that fits in 64 bits, not \(p.value)")
+                }
+                parts.append(p.key.rawValue + "=" + String(whole))
+            } else {
+                parts.append(p.key.rawValue + "=" + decimal(p.value))
+            }
         }
         return parts.joined(separator: " ")
     }

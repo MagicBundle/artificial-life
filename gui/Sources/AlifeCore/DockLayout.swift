@@ -96,13 +96,18 @@ package enum DockBudget {
     package static let tabs: CGFloat = 40
     package static let list: CGFloat = 120
     package static let inspector: CGFloat = 270
+    /// What the Powers tab keeps while a power is chosen: the grid's first row, the sliders, the preview, its cautions and
+    /// Confirm (the tab scrolls to the editor, but a tab of 180 points shows a slider and nothing else). The inspector card
+    /// gives way to it (it is hidden while a power is being set up) and the alert rows before it.
+    package static let editor: CGFloat = 300
     /// A row of the alert stack and the gap under it.
     package static let alertRow: CGFloat = 48
 
     /// The rows of the stack a dock of `dockHeight` can show beside the strip, the tabs and (when one is selected) the
-    /// inspector: three when roomy, fewer when tight, never none (an alert the player cannot see is not an alert).
-    package static func alertRows(dockHeight: CGFloat, inspectorOpen: Bool) -> Int {
-        let fixed = header + clockStrip + tabs + list + (inspectorOpen ? inspector : 0)
+    /// inspector: three when roomy, fewer when tight, never none (an alert the player cannot see is not an alert). While a
+    /// power is chosen (`editing`) the tab keeps `editor` points, not `list`.
+    package static func alertRows(dockHeight: CGFloat, inspectorOpen: Bool, editing: Bool = false) -> Int {
+        let fixed = header + clockStrip + tabs + (editing ? editor : list) + (inspectorOpen ? inspector : 0)
         let fits = Int(((dockHeight - fixed) / alertRow).rounded(.down))
         return min(max(fits, 1), AlertStack.roomyRows)
     }

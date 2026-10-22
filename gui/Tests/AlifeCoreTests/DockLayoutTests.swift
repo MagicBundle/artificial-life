@@ -104,6 +104,24 @@ import Testing
         #expect(DockBudget.alertRows(dockHeight: 5000, inspectorOpen: false) == AlertStack.roomyRows)
     }
 
+    @Test func theTabKeepsRoomForTheEditorWhileAPowerIsChosen() {
+        // Third review, stage 8: with the inspector open and two alert rows the Powers tab was about 180 points, a slider and
+        // nothing else. While a power is chosen the tab keeps `editor` points: the inspector card waits (the view hides it) and
+        // the rows give way, never below one.
+        #expect(DockBudget.alertRows(dockHeight: 700, inspectorOpen: false, editing: true) == 3)
+        #expect(DockBudget.alertRows(dockHeight: 560, inspectorOpen: false, editing: true) == 1)
+        #expect(DockBudget.alertRows(dockHeight: 700, inspectorOpen: false, editing: true)
+            <= DockBudget.alertRows(dockHeight: 700, inspectorOpen: false), "never more rows than when nothing is being set up")
+        for height in stride(from: CGFloat(560), through: 1200, by: 20) {
+            let rows = DockBudget.alertRows(dockHeight: height, inspectorOpen: false, editing: true)
+            let tab = height - DockBudget.header - DockBudget.clockStrip - DockBudget.tabs - CGFloat(rows) * DockBudget.alertRow
+            #expect(tab >= DockBudget.editor || rows == 1, "\(rows) rows leave the tab \(tab) of \(height)")
+        }
+        // the minimum window: 700 points, three rows (144) leave the tab 356, where the old budget with the inspector left 182
+        let tab = 700 - DockBudget.header - DockBudget.clockStrip - DockBudget.tabs - 3 * DockBudget.alertRow
+        #expect(tab >= DockBudget.editor)
+    }
+
     @Test func theRowsNeverOutgrowTheirBudget() {
         for height in stride(from: CGFloat(500), through: 1200, by: 25) {
             for open in [false, true] {

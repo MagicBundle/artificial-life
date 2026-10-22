@@ -5,7 +5,8 @@ move); the compiled step is unchanged.
 
 Modes (``run.director``): ``live`` decides at every rule boundary and appends to ``director.jsonl``;
 ``replay`` applies the entries already in a log and never decides; ``off`` builds no ``Director`` at all;
-``player`` (``alife play``, G3b) decides nothing and applies only what the player queues.
+``player`` (``alife play``, G3b) decides nothing and applies only what the player queues, and ends (at the
+boundary, as ``live`` writes it) a timed effect of the rule tier or the model that the world holds at launch.
 
 **The player channel** (G3b spec §6.1). A player's power cannot wait for a rule boundary (a multiple of
 ``rule_every``, at a metrics row), so the runner calls ``Director.apply_pending(state, t)`` at the *top* of
@@ -166,6 +167,7 @@ class Director:
         self._player_new: list[dict[str, Any]] = []  # applied since the latest row
         self._last_row: tuple[int, Any] = (start_step, None)  # (step, n_alive) of the latest metrics row
         self._player_due: int | None = None
+        self._held_due: int | None = None  # the earliest end of a rule's or the model's effect (player mode)
         if mode == "replay":
             log.validate_log(records, cfg)
             self.pending: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
@@ -285,7 +287,13 @@ class Director:
     # --- the runner's hooks -------------------------------------------------------------------------------
 
     def due(self, t: int) -> bool:
-        return self.mode != "player" and t % self.rule_every == 0
+        """Whether ``t`` is a boundary. The player mode decides nothing, but a world launched in it may hold a
+        timed effect of the rule tier or the model (last played under the director, or an adopted research
+        run): the boundary at or after the effect's end is one, so that its revert is written as it would be
+        in ``live`` mode."""
+        if self.mode == "player":
+            return self._held_due is not None and t >= self._held_due and t % self.rule_every == 0
+        return t % self.rule_every == 0
 
     def observe(self, row: Mapping[str, Any]) -> None:
         """Feed one metrics row (live mode; a replay needs no vital signs). Starts a new row: the entries of
@@ -305,8 +313,8 @@ class Director:
         self.applied, self.llm_line = [], None
         if self.mode == "replay":
             return self._replay(state, t)
-        if self.mode == "player":  # decides nothing
-            return state
+        if self.mode == "player":  # decides nothing; ends what the director began
+            return self._end_held(state, t)
         return self._decide(state, t)
 
     def status_lines(self) -> list[str]:
@@ -413,9 +421,42 @@ class Director:
         self._player_new.extend(entries)
 
     def _refresh_player_due(self, t: int) -> None:
-        """The earliest end of an effect the player holds at ``t``."""
+        """The earliest end of an effect the player holds at ``t``, and (player mode) of one the rule tier or
+        the model holds."""
         active = pacing.fold(self.entries, t).active.values()
         self._player_due = min((e.end for e in active if e.scope == "player"), default=None)
+        self._held_due = min((e.end for e in active if e.scope != "player"), default=None)
+
+    def _end_held(self, state: State, t: int) -> State:
+        """The player mode's boundary: the reverts of the rule tier's and the model's timed effects that are
+        due, written and applied as ``live`` mode writes them (same step, same entry; the vitals are the
+        latest row's, there is no tracker). Nothing else is decided."""
+        work, new = state, []
+        for eff in pacing.due_reverts(pacing.fold(self.entries, t), t, "rule"):
+            clamped = actions.Clamped(dict(eff.restore), {}, None)
+            step, n_alive = self._last_row
+            entry = {
+                "step_applied": t,
+                "source": "revert",
+                "persona": self.name,
+                "action": eff.action,
+                "params": clamped.params,
+                "prev": clamped.prev,
+                "duration": None,
+                "reason": f"end of the effect from step {eff.origin}",
+                "vitals_step": step,
+                "vitals": {"n_alive": n_alive},
+                "reverts": eff.origin,
+            }
+            entry = json.loads(json.dumps(entry, allow_nan=False))
+            work = self._apply(work, entry)
+            new.append(entry)
+        if new:
+            self.rd.append_jsonl(DIRECTOR_LOG_FILE, new)  # durable before the state is handed back
+            self.entries = [*self.entries, *new]
+            self.applied = new
+        self._refresh_player_due(t)
+        return work
 
     def _player_step(
         self, work: State, request: PlayerRequest, t: int, new: Sequence[Mapping[str, Any]]

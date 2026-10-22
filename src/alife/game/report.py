@@ -630,11 +630,14 @@ def spans(
     entry on its lever in the fold order (forward, or a revert of any entry) when that is at most ``b``, else
     open at ``b``; the director acts after its step's row, so the rows ``s`` and ``e`` bound the span
     exactly. ``end_by`` is ``elapsed`` (a revert whose ``reverts`` is ``s``; ``restored`` its params),
-    ``replaced`` (any other later entry on the lever) or None. Entries with ``step_applied`` <=
-    ``start_step`` are ignored as forward entries (a fork restarts the levers inert); a player's record at
-    ``start_step`` is not (it is applied after the checkpoint there). The listed entries are in force from
-    their own step on when the player made them (they are applied after that step's row), where a boundary
-    entry is in force from the row after it, a difference only in how a window picks its rows.
+    ``replaced`` (any other later entry on the lever) or None. A player's record at ``b`` is outside the
+    chapter (it is applied after the checkpoint at ``b``, where the live report is built), and one at ``a``
+    that ends an effect makes that effect's fact in the chapter that starts at ``a``. Entries with
+    ``step_applied`` <= ``start_step`` are ignored as forward entries (a fork restarts the levers inert); a
+    player's record at ``start_step`` is not (it is applied after the checkpoint there). The listed entries
+    are in force from their own step on when the player made them (they are applied after that step's row),
+    where a boundary entry is in force from the row after it, a difference only in how a window picks its
+    rows.
 
     The facts come in the order the block cap of 24 keeps them: the chapter's entries by (step, log index),
     then the in-force ones latest first; the caller cuts and re-sorts. The second result counts the entries
@@ -653,19 +656,26 @@ def spans(
         lv = lever_of(e["action"], e["params"])
         point = is_point(e["action"], e["params"])
         end = end_by = restored = None
+        end_player = False
         if lv is not None and not point:
             for s2, j in order[pos + 1 :]:
-                if s2 > b:
-                    break
                 e2 = entries[j]
+                # a player's record at ``b`` is applied after the checkpoint of ``b``, where the live report
+                # is built: it is not in the chapter ``(a, b]``, whoever reads the files and whenever
+                if s2 > b or (s2 == b and is_player(e2)):
+                    break
                 if lever_of(e2["action"], e2["params"]) == lv:
-                    end = s2
+                    end, end_player = s2, is_player(e2)
                     if e2["source"] == "revert" and e2.get("reverts") == s:
                         end_by, restored = "elapsed", e2["params"]
                     else:
                         end_by = "replaced"
                     break
-        listed = a <= s < b or (lv is not None and not point and s < a and (end is None or end > a))
+        # an effect the player's record ended at ``a`` ended after the checkpoint of ``a``: the chapter that
+        # starts there tells it (a boundary entry's end at ``a`` was told by the chapter that ends there)
+        listed = a <= s < b or (
+            lv is not None and not point and s < a and (end is None or end > a or (end == a and end_player))
+        )
         if listed:
             made.append(_iv_fact(i, e, end, end_by, restored, b))
     chapter = sorted((f for f in made if f["step"] >= a), key=lambda f: (f["step"], f["entry"]))
@@ -1781,11 +1791,14 @@ def _starve_fact(inside: Sequence[Mapping[str, Any]], rules: ReportRules) -> lis
     """The row with the most starved when it is ``starve_ratio`` times the chapter's median row (the alert
     ``pop_fall`` says the same about its latest row): ``n`` starved in the ``steps`` to step ``s``, against
     ``median`` (an observed count: the lower middle row). Nothing for a chapter of fewer than
-    ``starve_rows_min`` rows or with no starvation."""
-    rows = [
-        (r["deaths_starved"], r["step"], r["steps"]) for r in inside if r.get("deaths_starved") is not None
-    ]
-    if len(rows) < max(rules.starve_rows_min, 1) or len(rows) != len(inside):
+    ``starve_rows_min`` rows or with no starvation. Only the rows of the metrics interval count (the longest
+    row of the chapter): the row a stop writes off the grid and the first one after a resume span fewer
+    steps, and a median over them would say less than the sentence's "in the 250 steps"."""
+    if any(r.get("deaths_starved") is None for r in inside):
+        return []
+    longest = max((r["steps"] for r in inside), default=0)
+    rows = [(r["deaths_starved"], r["step"], r["steps"]) for r in inside if r["steps"] == longest]
+    if len(rows) < max(rules.starve_rows_min, 1):
         return []
     median = statistics.median_low([n for n, _, _ in rows])
     n, s, steps = max(rows, key=lambda x: (x[0], -x[1]))

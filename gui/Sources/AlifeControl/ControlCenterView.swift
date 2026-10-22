@@ -29,19 +29,23 @@ struct ControlCenterView: View {
 
     /// On a side: the clock strip, the tabs, and the inspector pinned under them.
     private var sideDock: some View {
-        VStack(spacing: 0) {
+        // (while a power is being set up the inspector card waits: the editor needs the room, and the selection is kept)
+        let card = model.editingPower ? nil : model.inspectorCard
+        return VStack(spacing: 0) {
             ClockStripView(play: play, model: model)
                 .padding(10)
             // The alerts sit between the strip and the tabs; the rows give way before the list does (DESIGN §34.7).
-            AlertStackView(play: play, model: model, maxRows: DockBudget.alertRows(dockHeight: height, inspectorOpen: model.inspectorCard != nil))
+            AlertStackView(play: play, model: model,
+                           maxRows: DockBudget.alertRows(dockHeight: height, inspectorOpen: card != nil, editing: model.editingPower))
                 .padding(.horizontal, 10)
                 .padding(.bottom, 6)
             Divider()
             tabs
             // Whatever is selected is pinned under the tabs, whichever is open (watching first, few inputs).
-            if let card = model.inspectorCard {
+            if let card {
                 Divider()
-                scrollingCard(card).frame(maxHeight: Self.cardMaxHeight, alignment: .top)
+                // (its own height, up to the cap: the frame must not stretch to the cap and leave a blank under the card)
+                scrollingCard(card, fill: false).frame(maxHeight: Self.cardMaxHeight, alignment: .top)
             }
         }
     }
@@ -60,7 +64,7 @@ struct ControlCenterView: View {
                 .frame(maxWidth: .infinity)
             if let card = model.inspectorCard {
                 Divider()
-                scrollingCard(card).frame(width: Self.cardColumn)
+                scrollingCard(card, fill: true).frame(width: Self.cardColumn)
             }
         }
     }
@@ -87,12 +91,18 @@ struct ControlCenterView: View {
     }
 
     /// The card as it is when it fits, and scrolling when the dock gives it less than it needs (a bottom dock, a short window).
-    private func scrollingCard(_ card: InspectorCard) -> some View {
-        ViewThatFits(in: .vertical) {
+    /// `fill`: the card's column takes the dock's whole height (the bottom dock); otherwise it is as tall as its card.
+    @ViewBuilder
+    private func scrollingCard(_ card: InspectorCard, fill: Bool) -> some View {
+        let fitting = ViewThatFits(in: .vertical) {
             InspectorCardView(card: card, model: model)
             ScrollView { InspectorCardView(card: card, model: model) }
         }
-        .frame(maxHeight: .infinity, alignment: .top)
+        if fill {
+            fitting.frame(maxHeight: .infinity, alignment: .top)
+        } else {
+            fitting
+        }
     }
 
     /// The tallest the card gets in a side dock; the list under the tabs keeps at least `listMinHeight`.
@@ -227,7 +237,7 @@ struct ClockStripView: View {
                         .help("Run one tick of the storm tracker (25 steps) and pause")
                 }
                 Spacer()
-                Text(strip.step.map { "step \($0)" } ?? "step -")
+                Text(verbatim: strip.step.map { Numbers.stepLabel($0) } ?? "step -")
                     .font(.callout.monospacedDigit())
             }
             HStack(spacing: 10) {

@@ -511,19 +511,32 @@ class PowerDesk:
         return f"{what}, {left}"[:PLAN_TEXT]
 
     def cautions(
-        self, power: str, entry: Mapping[str, Any], *, paused: bool, count: int | None = None
+        self,
+        power: str,
+        entry: Mapping[str, Any],
+        *,
+        paused: bool,
+        count: int | None = None,
+        exact: bool = True,
     ) -> list[str]:
-        """What the player should know before confirming, each a short code-written clause."""
+        """What the player should know before confirming, each a short code-written clause. A preview or a
+        queued request on a world that is running is made at the step it is asked at, and the power lands a
+        few steps later: its steps are said "if applied now" (``exact`` False). A paused world applies it at
+        the very step, and an applied record is exact."""
         spec, p = POWER_SPECS[power], entry["params"]
         out: list[str] = []
         end = entry["step_applied"] + (entry.get("duration") or 0)
+        lead = "" if exact else "if applied now, "
         if spec.lever == "regen":
-            out = [*out, f"holds the regen lever until step {end:,}"]
+            out = [*out, f"{lead}holds the regen lever until step {end:,}"]
         elif spec.lever == "patch":
-            out = [*out, f"holds patch {p['patch']} until step {end:,}"]
+            out = [*out, f"{lead}holds patch {p['patch']} until step {end:,}"]
         alive, slots = self.alive(), dims(self.cfg).n
         if power in ("food", "bloom") and alive:
-            out = [*out, f"population {alive / slots:.2f} of the world's capacity of {slots:,}"]
+            out = [
+                *out,
+                f"population {alive:,} of {slots:,} slots",
+            ]  # the slots of the state, no carrying capacity
         if power == "strike" and count is not None:
             deaths = count * float(p["kill_p"])
             share = f" ({100 * deaths / alive:.1f}% of the population)" if alive else ""
@@ -724,7 +737,7 @@ class PowerDesk:
             entry=entry,
             entries=after,
             text=self.sentence(line.power, entry, influence(after, t)["have"]),
-            caution=self.cautions(line.power, entry, paused=paused, count=count),
+            caution=self.cautions(line.power, entry, paused=paused, count=count, exact=paused),
         )
         if preview:
             self._log(line.id, t, "preview", "preview", text, entry_step=None)

@@ -104,6 +104,27 @@ fileprivate func chapterClock(chapter: UInt32, step: UInt64, rate: Float = 0, sa
 
     // MARK: What the stream's alerts do to the window
 
+    @Test func aReportLineIsTickerNewsOnlyIfItIsDatedWithinASnapshotOfTheChaptersEnd() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await makeDecideRig(scratch)
+        defer { rig.play.shutdown() }
+        rig.model.resetInteraction()
+        func report(_ ticks: [(Int, String)]) -> PlayReport {
+            let body = ReportBody(
+                chapter: 7, nAbs: 7, a: 24_000, b: 30_000, mode: 0, final: true, withheld: [], headline: .init(id: "H", text: "h", refs: []),
+                lead: nil, body: [], interventions: [], ticker: ticks.map { .init(step: $0.0, text: $0.1) },
+                since: .init(influence: nil, alerts: [:], ending: []), entities: [:],
+                versions: .init(report: 2, template: 2, checker: 1, lexicon: 3), factsDigest: "d", latencyS: nil, fallback: nil)
+            return PlayReport(head: RecordHead(step: 30_000, seq: 0, version: 1, flags: 2), report: body)
+        }
+        // the last line of the report is 750 steps old: it was told when it happened, and the tab keeps it
+        rig.model.handle(reports: [report([(29_000, "Step 29,000: older"), (29_250, "Step 29,250: Merrow formed")])])
+        #expect(rig.model.tickerLine == nil, "a line of 750 steps ago is not news")
+        rig.model.handle(reports: [report([(29_250, "Step 29,250: older"), (29_900, "Step 29,900: Merrow formed")])])
+        #expect(rig.model.tickerLine?.text == "Step 29,900: Merrow formed")
+    }
+
     @Test func theLiveAlertsToastOnceAndTheLogRowIsTheTickerAndTheBacklogIsHistory() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
@@ -301,6 +322,26 @@ fileprivate func chapterClock(chapter: UInt32, step: UInt64, rate: Float = 0, sa
         #expect(rig.model.clockStrip.readout == "alert", "nothing pausing is left on the stack")
     }
 
+    @Test func theChapterAlertIsOffTheStackWhileTheCardIsUp() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await makeDecideRig(scratch)
+        defer { rig.play.shutdown() }
+        // Stopped by the alert: no card, so the chapter's alert is a row like another.
+        rig.play.store.apply(.clck(chapterClock(chapter: 2, step: 12_000, reason: .alert)))
+        #expect(rig.model.chapterCard == nil)
+        let without = rig.model.alertStack(maxRows: 5)
+        #expect(without.rows.map(\.id).contains(12_000_600))
+        // The card is up: it, and the strip's "Chapter 2 complete", announce the chapter; a row would say it a third time in a
+        // dock that has no room (third review, stage 8). The other alerts keep their rows, and the count stays right.
+        rig.play.store.apply(.clck(chapterClock(chapter: 2, step: 12_000, reason: .chapter)))
+        #expect(rig.model.chapterCard != nil)
+        let with = rig.model.alertStack(maxRows: 5)
+        #expect(!with.rows.map(\.id).contains(12_000_600))
+        #expect(with.rows.map(\.id) == without.rows.map(\.id).filter { $0 != 12_000_600 })
+        #expect(rig.model.clockStrip.readout == "Chapter 2 complete")
+    }
+
     // MARK: The chapter notice (the pause is off)
 
     @Test func aWorldThatRunsOnShowsANoticeAndItGoesByItself() async throws {
@@ -402,6 +443,7 @@ fileprivate func chapterClock(chapter: UInt32, step: UInt64, rate: Float = 0, sa
         let rig = try await makeDecideRig(scratch)
         defer { rig.play.shutdown() }
         let food = try #require(rig.model.offers.first { $0.name == .food })
+        rig.model.tab = .powers
         rig.model.choosePower(food)
         // (the fixture's requests are 3, 4 and 9: the window's own start past them)
         #expect(await sent(rig, "power preview food id=10 mult=1.3 steps=6000"))
@@ -414,6 +456,45 @@ fileprivate func chapterClock(chapter: UInt32, step: UInt64, rate: Float = 0, sa
         #expect(rig.model.powers.phase == .idle)
         try await Task.sleep(for: .milliseconds(100))
         #expect(rig.sent.count == 2)
+    }
+
+    @Test func returnSendsAPowerOnlyWhileThePowersTabShowsItsPreview() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await makeDecideRig(scratch)
+        defer { rig.play.shutdown() }
+        rig.model.tab = .powers
+        rig.model.choosePower(try #require(rig.model.offers.first { $0.name == .food }))
+        #expect(await sent(rig, "power preview food id=10 mult=1.3 steps=6000"))
+        hear(rig, plan(10, .preview))
+        #expect(rig.model.returnConfirmsPower)
+        // the player looks at the Cast, folds the card, lets the world run: a stray Return does not apply the old preview
+        rig.model.tab = .cast
+        rig.model.cardCollapsed = true
+        #expect(!rig.model.returnConfirmsPower)
+        rig.model.perform(.confirmPower)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(rig.sent == ["power preview food id=10 mult=1.3 steps=6000"], "nothing was applied")
+        // back on the Powers tab the preview is there again and Return sends it
+        rig.model.tab = .powers
+        #expect(rig.model.returnConfirmsPower)
+        rig.model.perform(.confirmPower)
+        #expect(await eventually { rig.sent.last == "power food id=10 mult=1.3 steps=6000" })
+    }
+
+    @Test func aNewChapterDropsTheUnsentPreviewOfTheChapterBefore() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await makeDecideRig(scratch)
+        defer { rig.play.shutdown() }
+        rig.model.tab = .powers
+        rig.model.choosePower(try #require(rig.model.offers.first { $0.name == .food }))
+        #expect(await sent(rig, "power preview food id=10 mult=1.3 steps=6000"))
+        hear(rig, plan(10, .preview))
+        #expect(rig.model.powers.phase == .previewed(id: 10))
+        rig.play.store.apply(.clck(chapterClock(chapter: 4, step: 24_000, rate: 0, flags: 1)))
+        rig.model.handleClock()
+        #expect(rig.model.powers.phase == .idle && !rig.model.returnConfirmsPower)
     }
 
     @Test func returnWithNothingPreviewedSendsNothing() async throws {

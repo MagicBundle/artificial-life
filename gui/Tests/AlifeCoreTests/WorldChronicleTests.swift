@@ -36,6 +36,13 @@ import Testing
         #expect(groups[0].title == "Minute 2" && groups[2].subtitle == "steps 0 to 863")
     }
 
+    @Test func aGroupHeaderWritesItsStepsGroupedLikeEveryOtherNumber() {
+        // minute 13 of 864 steps: "steps 11232 to 12095" read as a different number than the rows below it (third review, stage 8)
+        let groups = ChronicleReducer.groups(chronicle([event(11_300_000, step: 11_300)]), baseRate: 14.4)
+        #expect(groups.map(\.title) == ["Minute 13"] && groups[0].subtitle == "steps 11,232 to 12,095")
+        #expect(Numbers.stepLabel(468_000) == "step 468,000" && Numbers.stepLabel(0) == "step 0")
+    }
+
     @Test func theGroupsStayWholeWhenTheRateIsChanged() {
         // Game time is steps over 60·B: the commanded rate is not in it, so 0.25x and 2x group the same events alike.
         let events = (0..<20).map { event(UInt64($0 + 1) * 1000, step: ($0 + 1) * 100) }

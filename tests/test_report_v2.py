@@ -61,7 +61,7 @@ P0_CHAPTERS = {
             ),
             (
                 454000,
-                "Step 454,000: Daudrall has held together since step 453,500 after splitting from Leifloan: 423 members.",
+                "Step 454,000: Daudrall IV has held together since step 453,500 after splitting from Leifloan: 423 members.",
             ),
             (
                 454750,
@@ -69,7 +69,7 @@ P0_CHAPTERS = {
             ),
             (
                 455000,
-                "Step 455,000: Daudrall merged into Leifloan at step 454,250; it lasted 750 steps and had up to 477 members.",
+                "Step 455,000: Daudrall IV merged into Leifloan at step 454,250; it lasted 750 steps and had up to 477 members.",
             ),
             (455025, "Step 455,025: Storm Bruakaum reached named strength."),
             (
@@ -98,7 +98,7 @@ P0_CHAPTERS = {
             ),
             (
                 457250,
-                "Step 457,250: Daudrall has held together since step 456,750 after splitting from Leifloan: 163 members.",
+                "Step 457,250: Daudrall II has held together since step 456,750 after splitting from Leifloan: 163 members.",
             ),
             (
                 457750,

@@ -873,6 +873,10 @@ def check_report(r: Mapping[str, Any]) -> None:
             raise RecordError(f"report {part} is a list")
         for v in r[part]:
             _sentence(v, part, keys)
+    ids = [v["id"] for v in (r["headline"], r["lead"]) if v is not None]
+    ids += [v["id"] for part in ("body", "interventions") for v in r[part]]
+    if len(set(ids)) != len(ids):
+        raise RecordError("report sentence ids are unique (a client lists the sentences by id)")
     if r["withheld"] and (
         r["headline"] is not None or r["lead"] is not None or r["body"] or r["interventions"]
     ):

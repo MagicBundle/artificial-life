@@ -37,19 +37,30 @@ package struct ReportCard: Equatable, Sendable {
     /// The body sentences a card shows (the Report tab shows them all).
     package static let cardBodyLines = 6
 
+    /// The lines with ids that are unique in the list: a list of lines is drawn by id, and two sentences of one fact share the
+    /// fact's id in an older record (the world makes them unique now). The second is `id#2`, the third `id#3`.
+    package static func unique(_ lines: [Line]) -> [Line] {
+        var seen: [String: Int] = [:]
+        return lines.map { line in
+            seen[line.id, default: 0] += 1
+            let n = seen[line.id] ?? 1
+            return n == 1 ? line : Line(id: "\(line.id)#\(n)", text: line.text, action: line.action)
+        }
+    }
+
     package static func make(_ record: PlayReport, bodyLimit: Int? = nil) -> ReportCard {
         let report = record.report
         func line(_ sentence: ReportBody.Sentence?) -> Line? {
             sentence.map { Line(id: $0.id, text: $0.text, action: ChronicleAction.of(refs: $0.refs, entities: report.entities)) }
         }
-        let all = report.body.map {
+        let all = unique(report.body.map {
             Line(id: $0.id, text: $0.text, action: ChronicleAction.of(refs: $0.refs, entities: report.entities))
-        }
+        })
         let shown = bodyLimit.map { Array(all.prefix($0)) } ?? all
         return ReportCard(
             chapter: report.chapter, nAbs: report.nAbs, a: report.a, b: report.b, headline: line(report.headline),
             lead: line(report.lead), body: shown, hiddenBody: all.count - shown.count,
-            interventions: report.interventions.compactMap { line($0) }, ticker: report.ticker,
+            interventions: unique(report.interventions.compactMap { line($0) }), ticker: report.ticker,
             withheld: report.isWithheld ? report.withheld.joined(separator: "; ") : nil, ordering: !record.isFinal,
             quiet: report.headline?.id == "HQ", since: report.since, factsDigest: report.factsDigest)
     }

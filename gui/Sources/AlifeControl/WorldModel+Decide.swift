@@ -29,8 +29,12 @@ extension WorldModel {
 
     /// The stack for the dock or the map, `maxRows` high.
     func alertStack(maxRows: Int) -> AlertStackLayout {
-        AlertStack.layout(play.store.alerts, step: currentStep, watch: watch, maxRows: maxRows)
+        AlertStack.layout(play.store.alerts, step: currentStep, watch: watch, maxRows: maxRows,
+                          excluding: chapterCard == nil ? [] : ["chapter"])
     }
+
+    /// A power is being set up in the Powers tab: the side dock gives the tab the room (the inspector card waits).
+    var editingPower: Bool { tab == .powers && powers.offer != nil }
 
     var offers: [PowerOffer] { PowerOffer.offers(header: play.store.play, states: play.store.powerStates) }
 
@@ -54,10 +58,12 @@ extension WorldModel {
         scheduleTimers()
     }
 
-    /// The newest line of a report that just arrived is a line of the ticker (the backlog of a re-opened world is not news).
+    /// The newest line of a report that just arrived is a line of the ticker if it is news: dated within `freshSteps` of the
+    /// chapter's end (a report's lines go back to the chapter's start, and a line of 750 steps ago is not news; the Report tab
+    /// has it). The backlog of a re-opened world is not news either.
     func handle(reports: [PlayReport]) {
         guard let report = reports.last(where: { !$0.isBacklog && !$0.report.isWithheld && $0.isFinal }),
-              let line = report.report.ticker.last else { return }
+              let line = report.report.ticker.last(where: { $0.step > report.report.b - Self.freshSteps }) else { return }
         ticker.show(id: 0, text: line.text, at: now())
         tickerLine = ticker.line
         scheduleTimers()
@@ -150,6 +156,7 @@ extension WorldModel {
             if chapter != lastCardChapter {
                 lastCardChapter = chapter
                 cardCollapsed = false
+                _ = powers.escape()  // a preview or an aim from the chapter before: its steps and cautions are old
             }
             if clock.rate != 0, !clock.saving, !clock.chapterPauseArmed, noticeShownFor < chapter {
                 noticeShownFor = chapter
@@ -165,6 +172,8 @@ extension WorldModel {
     }
 
     static let noticeSeconds = 15.0
+    /// A line of a report is news for the ticker when it is dated this close to the chapter's end (one social snapshot).
+    static let freshSteps = 250
 
     /// Closes the notice of a chapter (its own button, or the time).
     func dismissNotice() {
@@ -234,6 +243,10 @@ extension WorldModel {
     func confirmPower() {
         if let command = powers.confirm() { play.send(command) }
     }
+
+    /// `Return` sends a power only while the Powers tab shows the preview it would send: after a change of tab the preview is
+    /// not on screen, and a key must not apply what the player cannot see (third review, stage 8).
+    var returnConfirmsPower: Bool { tab == .powers && powers.canConfirm }
 
     func cancelPower(_ name: PowerCommand.Name) {
         powers.see(play.store.plans)

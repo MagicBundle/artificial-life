@@ -848,6 +848,9 @@ class PlayPacer:
         stop_check: Callable[[], bool],
     ) -> None:
         self.rd, self.cfg, self.obs, self.director = rd, cfg, obs, director
+        self.alerts.cadence = (
+            cfg.run.metrics_every
+        )  # a row of fewer steps (a stop's, a resume's) is no sample
         self._replaying = replaying(director)
         self._stop_check = stop_check
         self._t = int(to_numpy(state.step))
@@ -1012,13 +1015,18 @@ class PlayPacer:
         planet = self.opt.planet or {}
         n_origin = int(planet.get("made_at_step", 0)) // self.opt.chapter
         length = self.opt.chapter
+        start = int(self.rd.meta().get("start_step") or 0)
         self.reports = reportjob.ReportJob(
-            self.rd.path, length=length, n_origin=n_origin, emit=self._emit_report, note=self._note
+            self.rd.path,
+            length=length,
+            n_origin=n_origin,
+            emit=self._emit_report,
+            note=self._note,
+            start_step=start,
         )
         self.on_chapter_end = self._start_report
         for step, obj in reportjob.stored_objects(self.rd.path, length=length, n_origin=n_origin):
             self._emit_report(step, obj, True)
-        start = int(self.rd.meta().get("start_step") or 0)
         for b in reportjob.missing_chapters(self.rd.reports(), self._t, start, length, grid):
             self.reports.start(b, None, backlog=True)
 
@@ -2008,19 +2016,37 @@ def replaying(director: Any) -> bool:
 
 
 def _effects(entries: Sequence[Mapping[str, Any]], folded: pacing.Pacing) -> list[dict[str, Any]]:
-    """The timed effects a fold holds, as ``ENVS.effects`` objects (every scope's)."""
-    by_origin = {(e["action"], e["step_applied"]): e for e in entries if e.get("source") != "revert"}
-    return [
-        {
-            "action": eff.action,
-            "params": by_origin[(eff.action, eff.origin)]["params"],
-            "start": eff.origin,
-            "end": eff.end,
-            "source": _source(by_origin[(eff.action, eff.origin)]["source"]),
-        }
-        for eff in sorted(folded.active.values(), key=lambda e: (e.origin, e.key))
-        if (eff.action, eff.origin) in by_origin
-    ]
+    """The timed effects a fold holds, as ``ENVS.effects`` objects (every scope's). An effect is its entry:
+    the forward entry of its action at its step that writes its lever (two habitat losses on two patches at
+    one step are two effects, each with its own patch and source)."""
+    forward = [e for e in entries if e.get("source") != "revert"]
+
+    def entry_of(eff: pacing.Effect) -> Mapping[str, Any] | None:
+        return next(
+            (
+                e
+                for e in forward
+                if e["action"] == eff.action
+                and e["step_applied"] == eff.origin
+                and eff.key in director_actions.lever_keys(e["action"], e["params"])
+            ),
+            None,
+        )
+
+    out = []
+    for eff in sorted(folded.active.values(), key=lambda e: (e.origin, e.key)):
+        entry = entry_of(eff)
+        if entry is not None:
+            out.append(
+                {
+                    "action": eff.action,
+                    "params": entry["params"],
+                    "start": eff.origin,
+                    "end": eff.end,
+                    "source": _source(entry["source"]),
+                }
+            )
+    return out
 
 
 def director_effects(director: Any, t: int) -> list[dict[str, Any]]:

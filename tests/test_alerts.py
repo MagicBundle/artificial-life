@@ -199,24 +199,60 @@ def test_a_fall_after_a_regrowth_entry_is_importance_one_never_pauses_and_refers
     assert a["imp"] == 3 and a["pause"] is True and a["ref"] is None
     near = engine(ALL_ARMED)
     steady(near, n=9)  # rows up to 2,250
-    near.on_row(row(2_500, 8_000), 2_500, entries=[entry])  # 500 after the entry: inside
+    near.on_row(
+        row(2_500, 9_100), 2_500, entries=[entry]
+    )  # 500 after the entry: inside; 9% under the maximum
     taken = near.take()
     (b,) = raised([taken])
     assert b["imp"] == 1 and b["pause"] is False and taken.pause is False
     assert b["ref"] == {"kind": "power", "id": 2_000}
     assert b["text"].endswith("A regrowth pulse of x0.80 for 10,000 steps has been active since step 2,000.")
     assert b["expires"] == 2_500 + al.EXPIRE_STEPS  # an importance-1 alert expires
-    # later rows, the entry no longer recent and the fall deeper: the alert is stated, not upgraded
-    near.on_row(row(3_000, 7_500), 3_000, entries=[entry])
+    # later rows, the entry no longer recent and the fall deeper but not yet as deep as a hard one (15%): the
+    # alert is stated, not changed
+    near.on_row(row(2_750, 8_800), 2_750, entries=[entry])
     assert near.take().alerts == []
-    check_all([taken])
+    # once it is as deep as a hard fall it is one whatever came before it: importance 3, it pauses, and it
+    # still states the entry (third review, stage 8)
+    near.on_row(row(3_000, 8_400), 3_000, entries=[entry])
+    up = near.take()
+    (u,) = [a for a in up.alerts if a["class"] == "pop_fall"]
+    assert u["state"] == "updated" and u["imp"] == 3 and u["pause"] is True and up.pause is True
+    assert (
+        u["ref"] == {"kind": "power", "id": 2_000} and "x0.80 for 10,000 steps has been active" in u["text"]
+    )
+    check_all([taken, up])
+    # a fall that is hard at its first row is not demoted: the entry is stated, the alert is importance 3
+    hard = engine(ALL_ARMED)
+    steady(hard, n=9)
+    hard.on_row(row(2_500, 8_000), 2_500, entries=[entry])
+    (h,) = raised([hard.take()])
+    assert h["imp"] == 3 and h["pause"] is True and h["ref"] == {"kind": "power", "id": 2_000}
+
+
+def test_a_regrowth_pulse_that_raises_food_is_no_provenance_for_a_fall() -> None:
+    """A Food x1.3 is not the reason to expect a fall: the fall after it is an ordinary one (third review)."""
+
+    def fall_after(mult: float) -> dict[str, Any]:
+        eng = engine(ALL_ARMED)
+        steady(eng, n=9)
+        e = {"step_applied": 2_250, "source": "player", "action": "regen_pulse", "params": {"mult": mult},
+             "duration": 6_000, "reason": "x"}  # fmt: skip
+        eng.on_row(row(2_500, 9_100), 2_500, entries=[e])
+        (a,) = raised([eng.take()])
+        return a
+
+    up, down = fall_after(1.3), fall_after(0.8)
+    assert up["imp"] == 2 and up["ref"] is None and "Food" not in up["text"]
+    assert down["imp"] == 1 and down["ref"] == {"kind": "power", "id": 2_250}
+    assert fall_after(1.0)["imp"] == 2
 
 
 def test_a_habitat_entry_and_a_player_entry_count_but_a_revert_and_other_actions_do_not() -> None:
     def fall_with(entry: dict[str, Any]) -> dict[str, Any]:
         eng = engine()
         steady(eng)
-        eng.on_row(row(2_500, 8_000), 2_500, entries=[entry])
+        eng.on_row(row(2_500, 9_100), 2_500, entries=[entry])  # 9% under the maximum: not a hard fall
         (a,) = raised([eng.take()])
         return a
 
@@ -224,9 +260,9 @@ def test_a_habitat_entry_and_a_player_entry_count_but_a_revert_and_other_actions
     assert fall_with({**base, "source": "player", "action": "habitat_loss"})["imp"] == 1
     player = fall_with({**base, "source": "player", "action": "regen_pulse", "params": {"mult": 0.7}})
     assert player["text"].endswith("Food x0.70 for 6,000 steps has been active since step 2,400.")
-    assert fall_with({**base, "source": "revert", "action": "regen_pulse"})["imp"] == 3
-    assert fall_with({**base, "source": "rule", "action": "immigration_pulse"})["imp"] == 3
-    assert fall_with({**base, "source": "rule", "action": "regen_pulse", "step_applied": 1_000})["imp"] == 3
+    assert fall_with({**base, "source": "revert", "action": "regen_pulse"})["imp"] == 2
+    assert fall_with({**base, "source": "rule", "action": "immigration_pulse"})["imp"] == 2
+    assert fall_with({**base, "source": "rule", "action": "regen_pulse", "step_applied": 1_000})["imp"] == 2
 
 
 def test_the_starvation_clause_needs_a_ratio_of_one_point_three_five_over_the_median() -> None:
@@ -308,12 +344,50 @@ def test_pop_surge_is_a_rise_of_ten_percent_over_the_minimum_of_the_previous_row
     assert a["text"] == "The population rose from 10,000 to 11,100 in 250 steps."
 
 
-def test_a_partial_row_counts_its_population_but_no_rate() -> None:
+def test_a_partial_row_is_no_sample_of_the_population_and_no_rate() -> None:
+    """The row a stop writes off the grid, and the first one after a resume, span fewer steps than the metrics
+    interval: they add no sample to the windows, no rate and no alert, so a quit and a resume change nothing
+    the engine says (third review, stage 8)."""
     eng = engine()
     t0 = steady(eng)
+    before = (list(eng.rows), list(eng.starved), list(eng.storm_deaths))
     eng.on_row(row(t0 + 1, 10_000, steps=1, storm=500, starved=100_000), t0 + 1)
     assert raised([eng.take()], "storm_toll") == []
-    assert list(eng.starved)[-1] == 5_000 and list(eng.rows)[-1] == (t0 + 1, 10_000)
+    assert (list(eng.rows), list(eng.starved), list(eng.storm_deaths)) == before
+
+
+def test_a_dip_that_only_a_partial_row_sees_is_not_a_fall() -> None:
+    """Uninterrupted, the rows at the steps after 65 hold 60 (a fall of 7.7%, under the 8% that fires); a quit
+    adds a row of 101 steps at a trough of 57 that the grid never samples, and the row after the resume spans
+    149 steps. The fall they show is not raised, and neither enters the windows."""
+    straight, quit_ = engine(cadence=250), engine(cadence=250)
+    t = steady(straight, 10, 65)
+    assert steady(quit_, 10, 65) == t
+    out_a = feed(straight, [60, 60], t)
+    quit_.on_row(row(t + 101, 57, steps=101), t + 101)  # the stop's row
+    out_b = [quit_.take()]
+    quit_.on_row(row(t + 250, 60, steps=149), t + 250)  # the first row after the resume
+    out_b.append(quit_.take())
+    quit_.on_row(row(t + 500, 60), t + 500)
+    out_b.append(quit_.take())
+    assert raised(out_a) == raised(out_b) == []
+    assert not any(s in (t + 101, t + 250) for s, _ in quit_.rows)
+    # a world whose metrics interval is not 250 asks the same of its own rows
+    small = engine(cadence=10)
+    steady(small, 10, 100)
+    small.on_row(row(2_511, 10, steps=4), 2_511)
+    assert raised([small.take()]) == [] and small.rows[-1][0] != 2_511
+
+
+def test_the_first_partial_row_after_an_open_does_not_end_the_silent_first_evaluation() -> None:
+    """The level classes arm silently at the first evaluation after an open; a partial row is not one, so a
+    world resumed at a low population is not told "low" by the full row that follows it."""
+    eng = engine(cadence=250)
+    eng.prime_rows([row(STEP * (i + 1), 10_000) for i in range(24)])
+    eng.on_row(row(6_101, 3_000, steps=101), 6_101)
+    assert raised([eng.take()]) == []
+    eng.on_row(row(6_250, 3_000), 6_250)
+    assert raised([eng.take()]) == [], "the first full row after the open arms silently"
 
 
 # --- storms -------------------------------------------------------------------------------------------------
@@ -1060,9 +1134,16 @@ def test_the_p0_window_raises_the_alerts_the_spec_measured(p0: Any) -> None:
 
 
 def test_the_only_population_alert_is_the_aftermath_of_the_directors_move(p0: Any) -> None:
+    """Raised at 13% under the maximum as the aftermath of the move (importance 1, no pause), and raised to
+    importance 3 at 466,500 when it deepens to 17.5% (a hard fall is one whatever came before it; third
+    review, stage 8), the entry still stated."""
     log, _ = p0
     fall = [m for m in log if m["class"] == "pop_fall"]
-    assert [m["state"] for m in fall] == ["raised", "cleared"]
+    assert [m["state"] for m in fall] == ["raised", "updated", "cleared"]
+    assert (fall[1]["step"], fall[1]["imp"], fall[1]["pause"]) == (466_500, 3, True)
+    assert fall[1]["ref"] == {"kind": "power", "id": 466_000} and fall[1]["text"].endswith(
+        "since step 466,000."
+    )
     first = fall[0]
     assert (first["step"], first["imp"], first["pause"]) == (466_250, 1, False)
     assert first["ref"] == {"kind": "power", "id": 466_000}
@@ -1096,7 +1177,9 @@ def test_the_p0_alerts_are_pinned_by_a_digest_of_their_texts(p0: Any) -> None:
         ],
         separators=(",", ":"),
     )
-    assert len(log) == 35  # 33 raised or cleared by their condition and 2 chapter alerts the fold never `run`
+    assert (
+        len(log) == 36
+    )  # 33 raised or cleared by their condition, one update (the fall), 2 chapter alerts the fold never `run`
     assert hashlib.sha256(blob.encode()).hexdigest() == PINNED_LOG
 
 
@@ -1131,4 +1214,5 @@ def test_the_fold_is_a_pure_function_of_the_logs() -> None:
 
 
 PINNED_CONSTANTS = "5efb0924bb3329c87296a68c889efbd20fae62fb44a0d29537a958d8bb2af253"
-PINNED_LOG = "436b288751d000f855d4d4f1a7a8fba8c13ca286ad5b153684bf1c62818549dd"
+# (stage 8: "Daudrall IV", a name taken at creation, and the update of the fall at 466,500)
+PINNED_LOG = "3e56c84973245218f1a90a6ec112db1645466340a0789e3a705704609e47fe05"

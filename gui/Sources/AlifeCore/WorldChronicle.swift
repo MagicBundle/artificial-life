@@ -42,7 +42,7 @@ package struct ChronicleGroup: Equatable, Identifiable, Sendable {
 
     package var id: Int { minute }
     package var title: String { "Minute \(minute)" }
-    package var subtitle: String { "steps \(steps.lowerBound) to \(steps.upperBound - 1)" }
+    package var subtitle: String { "steps \(Numbers.grouped(steps.lowerBound)) to \(Numbers.grouped(steps.upperBound - 1))" }
 }
 
 package enum ChronicleReducer {

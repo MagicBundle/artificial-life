@@ -15,4 +15,9 @@ package enum Numbers {
     }
 
     package static func grouped(_ value: Int64) -> String { grouped(Int(clamping: value)) }
+
+    /// "step 468,000": a step as the dock and the chronicle write it. `Text("step \(n)")` is a localized string key and groups
+    /// with the machine's separator ("468.000"); the views show this one verbatim.
+    package static func stepLabel(_ step: Int) -> String { "step " + grouped(step) }
+    package static func stepLabel(_ step: UInt64) -> String { stepLabel(Int(clamping: step)) }
 }

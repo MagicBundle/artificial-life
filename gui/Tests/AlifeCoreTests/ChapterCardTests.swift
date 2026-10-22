@@ -99,6 +99,18 @@ import Testing
         return PlayReport(head: RecordHead(step: 6000, seq: 0, version: 1, flags: 2), report: body)
     }
 
+    @Test func twoSentencesOfOneFactAreTwoLinesWithTheirOwnIds() {
+        // A chapter that an effect spans tells "At step 466,000 ... set food regrowth" and "It was still in place": both carried
+        // the id of their fact in older records, and a list drawn by id showed the first twice and dropped the second.
+        var record = record(body: 0)
+        record.report.interventions = [.init(id: "F10", text: "At step 466,000, ...", refs: []), .init(id: "F10", text: "It was still in place at step 468,000.", refs: []),
+                                       .init(id: "F11", text: "From 42,873 ...", refs: [])]
+        let card = ReportCard.make(record)
+        #expect(card.interventions.map(\.id) == ["F10", "F10#2", "F11"])
+        #expect(card.interventions.map(\.text) == ["At step 466,000, ...", "It was still in place at step 468,000.", "From 42,873 ..."])
+        #expect(Set(card.interventions.map(\.id)).count == 3)
+    }
+
     @Test func theCardKeepsSixBodyLinesAndSaysHowManyAreInTheTab() {
         let card = ReportCard.make(record(body: 9), bodyLimit: ReportCard.cardBodyLines)
         #expect(card.body.count == 6 && card.hiddenBody == 3 && ReportCard.cardBodyLines == 6)

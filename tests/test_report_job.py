@@ -536,7 +536,8 @@ def test_since_has_the_influence_the_alerts_and_the_effects_that_end_soon() -> N
     assert within["influence"]["have"] == 5
     assert reportjob.since_of([], [], a, b, 6_000)["influence"] == {"have": 6, "cap": 6}
     # the edges: an effect that ends exactly at the end of the next chapter is listed (a rule's as well as the
-    # player's); an alert raised at the first step of the chapter belongs to the chapter before
+    # player's); an alert raised at the first step of the chapter belongs to it, one at its last step to the
+    # next: the strip is built before the alerts of the row at ``b`` exist, so the interval is ``[a, b)``
     edge = {**rule, "step_applied": 1_002_000, "duration": 10_000}
     assert reportjob.since_of([edge], [], a, b, 6_000)["ending"] == [
         {"action": "regen_pulse", "end": 1_012_000}
@@ -544,9 +545,20 @@ def test_since_has_the_influence_the_alerts_and_the_effects_that_end_soon() -> N
     late = {**edge, "duration": 10_001}
     assert reportjob.since_of([late], [], a, b, 6_000)["ending"] == []
     at_a = [{"step": a, "class": "pop_fall", "state": "raised", "surface": "alert"}]
-    assert reportjob.since_of([], at_a, a, b, 6_000)["alerts"] == {}
+    assert reportjob.since_of([], at_a, a, b, 6_000)["alerts"] == {"pop_fall": 1}
     at_b = [{"step": b, "class": "pop_fall", "state": "raised", "surface": "alert"}]
-    assert reportjob.since_of([], at_b, a, b, 6_000)["alerts"] == {"pop_fall": 1}
+    assert reportjob.since_of([], at_b, a, b, 6_000)["alerts"] == {}
+    # a player's record at ``b`` is after the checkpoint: its cost is not spent, its effect not held, and the
+    # revert that ends an effect at ``b`` has not been written
+    cast_at_b = power(b, cost=2)
+    assert reportjob.since_of([cast_at_b], [], a, b, 6_000) == reportjob.since_of([], [], a, b, 6_000)
+    ends_at_b = {**power(b - 3_000), "duration": 3_000}
+    revert_at_b = {"step_applied": b, "source": "revert", "scope": "player", "action": "regen_pulse",
+                   "params": {"mult": 1.0}, "reverts": b - 3_000, "duration": None}  # fmt: skip
+    assert reportjob.since_of([ends_at_b, revert_at_b], [], a, b, 6_000) == reportjob.since_of(
+        [ends_at_b], [], a, b, 6_000
+    )
+    assert reportjob.since_of([ends_at_b], [], a, b, 6_000)["ending"] == [{"action": "regen_pulse", "end": b}]
 
 
 def test_missing_chapters_are_the_last_three_inside_the_world_on_the_snapshot_grid() -> None:

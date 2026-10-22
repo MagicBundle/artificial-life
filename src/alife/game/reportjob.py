@@ -38,6 +38,7 @@ from alife.game import lexicon, report, templates
 from alife.runio import ALERTS_FILE, DIRECTOR_LOG_FILE, RunDir
 
 __all__ = [
+    "ARRIVAL_REASON",
     "BACKLOG_REPORTS",
     "CLOSE_TIMEOUT_S",
     "ReportJob",
@@ -48,6 +49,7 @@ __all__ = [
     "withheld_object",
 ]
 
+ARRIVAL_REASON: Final = "this world began part way through it"  # the notice of the first, partial chapter
 BACKLOG_REPORTS: Final = 3  # the reports a world being opened is sent, and the chapters rebuilt if missing
 CLOSE_TIMEOUT_S: Final = 5.0  # the join of the worker at shutdown
 
@@ -77,13 +79,20 @@ def since_of(
     up to ``b``): the player's influence at ``b`` (the cap less the cost of the player's entries in the last
     ``PLAYER_BUDGET_WINDOW`` steps), the alerts of the alert surface raised in the chapter by class (the
     chapter alert itself and the rate limit's summary aside), and the timed effects, the director's and the
-    player's, that end within the next chapter."""
-    mine = pacing.fold(entries, b, "player")
+    player's, that end within the next chapter.
+
+    The strip is built inside the checkpoint stall of ``b``, so it holds what exists then and nothing else,
+    for the job and for a world being opened alike: a player's record at ``b`` is applied after the
+    checkpoint (rule P) and is not in it, and the alerts of the row at ``b`` are raised after the checkpoint
+    too, so the alerts counted are those of ``[a, b)`` (one at ``b`` is counted by the next chapter, one at
+    ``a`` by this)."""
+    visible = [e for e in entries if not (report.is_player(e) and int(e["step_applied"]) >= b)]
+    mine = pacing.fold(visible, b, "player")
     used = pacing.budget_used(mine, b, PLAYER_BUDGET_WINDOW)
     raised = Counter(
         str(x["class"])
         for x in alert_lines
-        if a < int(x.get("step", -1)) <= b
+        if a <= int(x.get("step", -1)) < b
         and x.get("state") == "raised"
         and x.get("surface") == "alert"
         and x.get("class") not in ("chapter", "summary")
@@ -183,6 +192,20 @@ def _refs(
     return refs
 
 
+def _intervention_sentences(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The interventions block as ``RPRT`` sentences. A fact can have several sentences (what was done, and
+    that it was still in place), so the ids of a block are made unique: the fact's id for its first sentence,
+    ``<fact>.2``, ``<fact>.3`` for the next ones. A client lists sentences by id."""
+    out = []
+    for i, x in enumerate(items):
+        fact = str(x["fact"])
+        nth = 1 + sum(
+            1 for y in items[:i] if str(y["fact"]) == fact
+        )  # (no subscript assignment in host code)
+        out.append({"id": fact if nth == 1 else f"{fact}.{nth}", "text": x["text"], "refs": []})
+    return out
+
+
 def report_object(
     rec: Mapping[str, Any],
     *,
@@ -231,7 +254,7 @@ def report_object(
             }
             for x in rep["body"]
         ],
-        "interventions": [{"id": x["fact"], "text": x["text"], "refs": []} for x in rep["interventions"]],
+        "interventions": _intervention_sentences(rep["interventions"]),
         "ticker": [{"step": int(t["step"]), "text": t["text"]} for t in rec["ticker"]],
         "since": dict(since),
         "entities": entities,
@@ -320,8 +343,10 @@ class ReportJob:
         note: Callable[[str], None],
         rules: report.ReportRules = report.REPORT_V1,
         clock: Callable[[], float] = time.perf_counter,
+        start_step: int = 0,
     ) -> None:
         self.path, self.length, self.n_origin = Path(path), length, n_origin
+        self.start_step = start_step  # a chapter that began before it is an arrival chapter: no report
         self._emit, self._note, self._rules, self._clock = emit, note, rules, clock
         self._queue: queue.Queue[tuple[int, Mapping[str, Any] | None, bool]] = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -334,7 +359,18 @@ class ReportJob:
 
     def start(self, b: int, sidecar_meta: Mapping[str, Any] | None = None, *, backlog: bool = False) -> None:
         """Queue the report of the chapter ending at ``b`` (``sidecar_meta``: the ``meta`` the observer's
-        sidecar of ``b`` will hold, taken on the loop thread). Cheap: it starts a worker if none runs."""
+        sidecar of ``b`` will hold, taken on the loop thread). Cheap: it starts a worker if none runs. The
+        first chapter of a world that started off the chapter grid began before the world did, so it has no
+        rows to cut a report from: it gets a notice in words, written here, and no job."""
+        if b - self.length < self.start_step:
+            obj = withheld_object(
+                b - self.length, b, n_origin=self.n_origin, length=self.length, reason=ARRIVAL_REASON
+            )
+            try:
+                self._emit(b, obj, backlog)
+            except Exception as e:  # the stream is gone or refuses it: nothing more to say
+                self._note(f"the notice of the chapter ending at step {b} failed: {type(e).__name__}: {e}")
+            return
         with self._lock:
             if self._closed:
                 return

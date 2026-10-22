@@ -348,7 +348,7 @@ extension WorldModel {
             // Continue never pauses; a chapter notice goes with it.
             if clockStrip.paused { play.resume() }
             dismissNotice()
-        case .confirmPower: confirmPower()
+        case .confirmPower: if returnConfirmsPower { confirmPower() }
         }
     }
 

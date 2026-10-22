@@ -13,7 +13,7 @@ sequence: chunking, a stop and a resume cannot change what is told (the state ro
 ``state``/``from_state``, and a refold of ``social.jsonl`` gives the same table). The report job of the live
 play (spec §5.1) and N1's ``_event_facts`` use this same fold.
 
-The rule, with the constants below (``KINTHREADS_VERSION`` 1, every one provisional until the G3b Mac day):
+The rule, with the constants below (``KINTHREADS_VERSION`` 2, every one provisional until the G3b Mac day):
 
 1. A listed id already owned by a thread refreshes it.
 2. A newly listed id (not in the first record of a fold) looks for an *absent* thread (no id listed now, not
@@ -21,9 +21,10 @@ The rule, with the constants below (``KINTHREADS_VERSION`` 1, every one provisio
    absent thread) pairs with tag distance ``< DELTA``, sorted by (distance, thread id, kin id), taken
    greedily. A taken pair is a flap and tells nothing; an id left over starts a *candidate*.
 3. A thread's size is the sum of its listed ids' sizes, its tag their size-weighted mean, its peak the
-   largest size seen. Its name is the name of the first id listed in it, frozen; two established threads
-   that overlap in time (or end less than ``NAME_GAP`` snapshots apart) and share a name are shown with the
-   lowest unused suffix ("Daudrall II"), frozen at establishment.
+   largest size seen. Its name is the name of the first id listed in it, frozen; a thread that shares it
+   with an established thread that is open (or ended less than ``NAME_GAP`` snapshots before) or with a
+   candidate that is open is shown with the lowest unused suffix ("Daudrall II"), taken when the thread is
+   created and frozen: the Cast shows a candidate too, and one thread has one name.
 4. A candidate is **established** at the first snapshot at which it is listed and ``k - first + 1 >= P``;
    ``formed`` is told then.
 5. A thread not listed for ``R + 1`` consecutive snapshots **ends**: told if it was established, silent if
@@ -63,7 +64,7 @@ __all__ = [
     "roman",
 ]
 
-KINTHREADS_VERSION: Final = 1
+KINTHREADS_VERSION: Final = 2
 KINTHREADS_FORMAT: Final = "alife-kinthreads"  # the ``format`` of ``observers/kinthreads_<t>.json``
 P: Final = 3  # snapshots to establish
 R: Final = 3  # snapshots of absence tolerated
@@ -131,7 +132,7 @@ def roman(n: int) -> str:
 @dataclass
 class Thread:
     """One thread. ``name`` is the frozen base name, ``suffix`` 1 (bare) or the number of the suffix taken at
-    establishment (``shown`` is the name as displayed)."""
+    creation (``shown`` is the name as displayed)."""
 
     id: int
     name: str
@@ -332,9 +333,9 @@ class KinThreads:
         self.next_id += 1
         self.threads.update({th.id: th})
         self.owner.update({gid: th.id})
+        self._name(th, k)
         if init:
             th.est, th.est_k = True, k
-            self._name(th, k)
 
     def _rows(self, rec: Mapping[str, Any], step: int) -> list[tuple[str, int, int]]:
         """The raw kin rows of the record: ``(kind, id, other)``."""
@@ -381,12 +382,19 @@ class KinThreads:
             th.exit_into_name = None if th.exit_into is None else self.threads[th.exit_into].shown
 
     def _name(self, th: Thread, k: int) -> None:
-        """Establish the displayed name: the lowest unused suffix among the established threads of the same
-        name that are open or ended less than ``NAME_GAP`` snapshots ago."""
+        """Take the displayed name when the thread is created: the lowest unused suffix among the threads of
+        the same name that are established and open or ended less than ``NAME_GAP`` snapshots ago, and the
+        candidates the Cast shows now (listed at this record or the one before). A candidate that flickers out
+        or stays absent frees its suffix at once."""
         used = {
             o.suffix
             for o in self.threads.values()
-            if o.id != th.id and o.est and o.name == th.name and (not o.ended or k - o.end_k < NAME_GAP)
+            if o.id != th.id
+            and o.name == th.name
+            and (
+                (o.est and (not o.ended or k - o.end_k < NAME_GAP))
+                or (not o.est and not o.ended and o.last >= k - 1)
+            )
         }
         n = 1
         while n in used:
@@ -395,7 +403,6 @@ class KinThreads:
 
     def _establish(self, th: Thread, k: int) -> None:
         th.est, th.est_k = True, k
-        self._name(th, k)
 
     def _toast_size(self, rec: Mapping[str, Any]) -> int:
         enter = (rec.get("thresholds") or {}).get("kin_enter")

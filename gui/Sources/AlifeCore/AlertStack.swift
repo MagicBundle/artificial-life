@@ -77,8 +77,12 @@ package enum AlertStack {
 
     /// The stack at `step`: surface `alert`, not cleared, not acknowledged, not expired; most important first, the newest first
     /// among equals, so that a pausing alert is never the one hidden under the count.
-    package static func layout(_ board: AlertBoard, step: Int, watch: WatchSet = WatchSet(), maxRows: Int = roomyRows) -> AlertStackLayout {
-        let all = board.stack(atStep: step).sorted { a, b in
+    ///
+    /// `excluding` are classes left off: the chapter's alert while the card (or its notice) announces it, so the card, the strip
+    /// and the stack do not say "Chapter 3 complete" three times in a dock that is already tight.
+    package static func layout(_ board: AlertBoard, step: Int, watch: WatchSet = WatchSet(), maxRows: Int = roomyRows,
+                               excluding: Set<String> = []) -> AlertStackLayout {
+        let all = board.stack(atStep: step).filter { !excluding.contains($0.alertClass) }.sorted { a, b in
             if a.imp != b.imp { return a.imp > b.imp }
             return a.id > b.id
         }

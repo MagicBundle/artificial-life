@@ -250,7 +250,7 @@ struct EventRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(event.text).font(.callout).fontWeight(event.imp >= 2 ? .semibold : .regular)
-            Text("step \(event.step)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Text(verbatim: Numbers.stepLabel(event.step)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

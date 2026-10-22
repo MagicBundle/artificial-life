@@ -212,7 +212,8 @@ def test_a_preview_and_the_power_after_it_say_the_same_thing(session: tuple[RunD
         40,
     )
     assert preview["text"] == "Food x1.3 for 40 steps (0.0 min at 1x), cost 1, 5 of 6 units left after."
-    assert preview["caution"][0] == "holds the regen lever until step 52"
+    assert preview["caution"][0] == "if applied now, holds the regen lever until step 52"  # a running world
+    assert applied["caution"][0] == "holds the regen lever until step 52"  # exact: it was applied at step 12
     assert preview["holds"] == "regen" and preview["ends"] == 52 and preview["ready"] == 72
     assert preview["influence"] == {"have": 5, "cap": 6, "window": 400, "free_at": [412]}
     assert preview["precedent"]["line"] == "No earlier case for x1.3." and preview["precedent"]["n"] == 0
@@ -530,6 +531,9 @@ def test_a_power_sent_while_the_world_is_paused_lands_at_the_first_step_after_it
     assert entry["step_applied"] == 10  # the world stood at step 10 the whole time it was paused
     queued = next(p for p in plans(out) if p["status"] == "queued")
     assert queued["caution"][-1] == "lands when the world resumes" and queued["at"] == 10
+    assert (
+        queued["caution"][0] == "holds the regen lever until step 50"
+    )  # a paused world applies it at step 10
     applied = next(p for p in plans(out) if p["status"] == "applied")
     assert applied["at"] == 11 and applied["step_applied"] == 10
     [c] = [c for c in commands(rd) if c["status"] == "queued"]

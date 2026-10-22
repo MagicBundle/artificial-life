@@ -22,9 +22,12 @@ same for the life of the alert: a change of text or importance is re-sent with t
 are folded into one ``summary`` alert. Exempt: importance 3, every class whose pause is armed, ``chapter`` and
 ``engine``.
 
-**Provenance.** A population fall within ``PROVENANCE_STEPS`` after a forward regrowth or habitat entry
-(the player's or the director's) is importance 1, never pauses and refers to that entry; ``pop_low`` stays
-unconditional. The text states the fall and the entry's time, never a cause.
+**Provenance.** A population fall within ``PROVENANCE_STEPS`` after a forward habitat loss or a regrowth
+pulse of a factor under 1 (the player's or the director's: an entry that takes food away) is importance 1,
+never pauses and refers to that entry; ``pop_low`` stays unconditional, and so does a fall as deep as
+``FALL_HARD`` (15% under the maximum of the window): at the raise it is importance 3, and a demoted fall that
+deepens to it is raised to importance 3 and may pause, the entry still stated. The text states the fall and
+the entry's time, never a cause.
 
 **Open.** The engine's state is not saved: a resume re-arms everything, and the first evaluation of a level
 class after ``prime_rows`` arms it silently (no spurious ``pop_low`` at open).
@@ -371,6 +374,9 @@ class AlertEngine:
     armed: Callable[[str], bool] = lambda cls: False
     chapter: int = 6000
     experimental: bool = False
+    cadence: int = (
+        0  # the metrics interval of the world (a full row has this many steps); 0: ``MIN_ROW_STEPS``
+    )
     # --- state ---
     live: dict[tuple[str, str], Alert] = field(default_factory=dict)
     fired: dict[tuple[str, str], float] = field(default_factory=dict)  # last fired step (seconds for engine)
@@ -403,18 +409,29 @@ class AlertEngine:
 
     # --- opening ----------------------------------------------------------------------------------------
 
+    def _min_steps(self) -> int:
+        """The steps a row must span to be a full interval: the world's metrics interval."""
+        return self.cadence or MIN_ROW_STEPS
+
+    def _whole(self, row: Mapping[str, Any]) -> bool:
+        """Whether a row is a sample of the grid: a full interval, or the origin row of a new world (``steps``
+        0). The row a stop writes off the grid, and the first one after a resume, span fewer steps: they add
+        no sample, no rate and no window, so that a quit and a resume change nothing the engine says."""
+        steps = int(row.get("steps", 0))
+        return steps == 0 or steps >= self._min_steps()
+
     def prime_rows(self, rows: Iterable[Mapping[str, Any]]) -> None:
         """Fill the histories from the rows of a resumed world (``metrics.jsonl`` up to the start step),
         silently, and arm the level classes at the first evaluation after this call."""
         for r in rows:
             alive = _alive(r)
-            if alive is None:
+            if alive is None or not self._whole(r):
                 continue
             step = int(r["step"])
             self.rows.append((step, alive))
             if step % self.chapter == 0 and step > 0:
                 self.ends.append((step, alive))
-            if int(r.get("steps", 0)) >= MIN_ROW_STEPS:
+            if int(r.get("steps", 0)) >= self._min_steps():
                 self.starved.append(int(r.get("deaths_starved", 0)))
                 self.storm_deaths.append(int(r.get("deaths_storm", 0)))
         self.opened = True
@@ -640,17 +657,18 @@ class AlertEngine:
         (``{action, start, end, source, params}``)."""
         self.step = t
         alive = _alive(row)
-        full = int(row.get("steps", 0)) >= MIN_ROW_STEPS
-        if alive is not None:
-            self.rows.append((t, alive))
-            self._population(row, t, alive, full, entries, pause_ok)
+        full = int(row.get("steps", 0)) >= self._min_steps()
+        if self._whole(row):
+            if alive is not None:
+                self.rows.append((t, alive))
+                self._population(row, t, alive, full, entries, pause_ok)
+            self.opened = False
         if full:
             self._toll(row, t, pause_ok)
             self.starved.append(int(row.get("deaths_starved", 0)))
             self.storm_deaths.append(int(row.get("deaths_storm", 0)))
         self._director(applied, t, pause_ok)
         self._effects(effects, t, pause_ok)
-        self.opened = False
         self._housekeeping(t)
 
     def _level(self, name: str) -> _Level:
@@ -683,7 +701,9 @@ class AlertEngine:
         if lv.armed and fall >= FALL_FIRE:
             imp = 3 if (fall >= FALL_HARD or one_row >= FALL_HARD_ROW) else 2
             cause = _recent_entry(entries, t)
-            if cause is not None:
+            if (
+                cause is not None and fall < FALL_HARD
+            ):  # a fall as deep as a hard one is one whatever the cause
                 imp = 1
             lv.armed, lv.since = False, t
             if self.opened:
@@ -696,14 +716,19 @@ class AlertEngine:
                 )  # fmt: skip
         elif not lv.armed and not lv.silent:
             live = self.live.get(("pop_fall", "world"))
-            if (
-                live is not None and live.ref is None
-            ):  # a fall that follows an entry stays stated, not upgraded
+            if live is not None and live.ref is None:
                 cause = _recent_entry(entries, t)
-                imp = 1 if cause is not None else 3 if (fall >= FALL_HARD or one_row >= FALL_HARD_ROW) else 2
+                hard = fall >= FALL_HARD or one_row >= FALL_HARD_ROW
+                imp = 1 if cause is not None else 3 if hard else 2
                 if imp > live.imp:
                     text = self._fall_text(row, t, alive, peak, peak_step, full, cause)
                     self._update(live, t, imp=imp, text=text, pause_ok=pause_ok)
+            elif live is not None and fall >= FALL_HARD and live.imp < 3:
+                # a fall that followed an entry is stated, not blamed, and once it is as deep as a hard fall
+                # is, it is one whatever came before it: raised to importance 3, the entry still said
+                cause = _entry_at(entries, int(live.ref["id"])) if live.ref is not None else None
+                text = self._fall_text(row, t, alive, peak, peak_step, full, cause)
+                self._update(live, t, imp=3, text=text, pause_ok=pause_ok)
         # pop_low
         low = max(a for _, a in window)
         lv = self._level("pop_low")
@@ -1172,17 +1197,46 @@ def _alive(row: Mapping[str, Any]) -> int | None:
     return round(n) if isinstance(n, int | float) else None
 
 
+def _lowers_food(e: Mapping[str, Any]) -> bool:
+    """Whether a forward regrowth or habitat entry takes food away: a habitat loss always, a regrowth pulse
+    when its factor is under 1 (a pulse that raises it is no provenance for a fall)."""
+    if e.get("action") == "habitat_loss":
+        return True
+    mult = (e.get("params") or {}).get("mult")
+    return isinstance(mult, int | float) and not isinstance(mult, bool) and mult < 1.0
+
+
 def _recent_entry(entries: Sequence[Mapping[str, Any]], t: int) -> Mapping[str, Any] | None:
-    """The latest forward regrowth or habitat entry applied within ``PROVENANCE_STEPS`` before ``t``."""
+    """The latest forward entry that takes food away (``_lowers_food``) applied within ``PROVENANCE_STEPS``
+    before ``t``."""
     for e in reversed(entries):
         step = e.get("step_applied")
         if not isinstance(step, int):
             continue
         if step < t - PROVENANCE_STEPS:
             break
-        if step <= t and e.get("source") != "revert" and e.get("action") in PROVENANCE_ACTIONS:
+        if (
+            step <= t
+            and e.get("source") != "revert"
+            and e.get("action") in PROVENANCE_ACTIONS
+            and _lowers_food(e)
+        ):
             return e
     return None
+
+
+def _entry_at(entries: Sequence[Mapping[str, Any]], step: int) -> Mapping[str, Any] | None:
+    """The forward provenance entry applied at ``step`` (the one a demoted fall refers to)."""
+    return next(
+        (
+            e
+            for e in reversed(entries)
+            if e.get("step_applied") == step
+            and e.get("source") != "revert"
+            and e.get("action") in PROVENANCE_ACTIONS
+        ),
+        None,
+    )
 
 
 def _power_ref(entry: Mapping[str, Any]) -> dict[str, int | str]:
@@ -1236,15 +1290,19 @@ def fold_logs(
     watch: Sequence[int] = (),
     experimental: bool = False,
     limit: int | None = None,
+    cadence: int | None = None,
 ) -> tuple[list[dict[str, Any]], AlertEngine]:
     """The alerts a play of these logs raises, in the order the live loop calls the engine at one step:
     the social record, the storm tick, the chapter end, then the metrics row. Returns the ``alerts.jsonl``
     lines and the engine. The first row is the first evaluation (level classes arm silently); ``watch`` are
-    kin ids to watch from the first record on."""
+    kin ids to watch from the first record on. ``cadence`` is the metrics interval of the world (the live
+    engine is told it at bind); by default the longest row of ``metrics``."""
     from alife.game.chronicle import Chronicler  # imported here: the chronicle needs this module's neighbours
 
     chron = Chronicler(house_salt)
-    eng = AlertEngine(armed=armed, chapter=chapter, experimental=experimental)
+    if cadence is None:
+        cadence = max((int(r.get("steps", 0)) for r in metrics), default=0)
+    eng = AlertEngine(armed=armed, chapter=chapter, experimental=experimental, cadence=cadence)
     by_step: dict[int, dict[str, list[Any]]] = {}
     for kind, items in (("social", social), ("storms", storms), ("rows", metrics)):
         for it in items:

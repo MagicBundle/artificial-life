@@ -12,37 +12,47 @@ struct PowersTabView: View {
         let _ = play.revision
         let store = play.store
         let offers = model.offers
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                if offers.isEmpty {
-                    Text(store.play?.records.contains("PLAN") == true
-                         ? "This world takes no powers: it was not made with a director."
-                         : "This world takes no powers.")
-                        .font(.callout).foregroundStyle(.secondary)
-                } else {
-                    InfluenceMeterView(influence: store.influence)
-                    grid(offers, step: model.currentStep)
-                    ForEach(PowerCatalog.reserved.indices, id: \.self) { i in
-                        HStack {
-                            Text(PowerCatalog.reserved[i].label).font(.callout)
-                            Spacer()
-                            Text(PowerCatalog.reserved[i].note).font(.caption)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if offers.isEmpty {
+                        Text(store.play?.records.contains("PLAN") == true
+                             ? "This world takes no powers: it was not made with a director."
+                             : "This world takes no powers.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    } else {
+                        InfluenceMeterView(influence: store.influence)
+                        grid(offers, step: model.currentStep)
+                        ForEach(PowerCatalog.reserved.indices, id: \.self) { i in
+                            HStack {
+                                Text(PowerCatalog.reserved[i].label).font(.callout)
+                                Spacer()
+                                Text(PowerCatalog.reserved[i].note).font(.caption)
+                            }
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 8)
                         }
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 8)
+                        if let offer = model.powers.offer {
+                            Divider()
+                            PowerEditorView(offer: offer, model: model, baseRate: store.play?.baseRate ?? 14.4)
+                                .id(Self.editorID)
+                        }
+                        effects(store)
+                        cards(store)
                     }
-                    if let offer = model.powers.offer {
-                        Divider()
-                        PowerEditorView(offer: offer, model: model, baseRate: store.play?.baseRate ?? 14.4)
-                    }
-                    effects(store)
-                    cards(store)
                 }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // In a short dock the editor, its preview and Confirm sit below the grid, out of sight: choosing a power, and the
+            // preview arriving, bring the bottom of the editor into view (nothing moves when the tab is tall enough).
+            .onChange(of: model.powers.phase) { _, phase in
+                if phase != .idle { withAnimation { proxy.scrollTo(Self.editorID, anchor: .bottom) } }
+            }
         }
     }
+
+    static let editorID = "power-editor"
 
     private func grid(_ offers: [PowerOffer], step: Int) -> some View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
