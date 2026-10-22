@@ -15,7 +15,7 @@ import pytest
 
 from alife import play, runner, streamrec
 from alife.play import BASE_RATE as B
-from alife.play import PlayCommand, parse_play_command
+from alife.play import AutopauseLine, PlayCommand, PowerLine, parse_play_command
 from alife.runio import RunDir
 from alife.state import init_state
 from alife.stream import ControlError, FdControl
@@ -47,7 +47,48 @@ VALID = [
     ("labels off", PlayCommand("labels", "off")),
     ("  pause   ", PlayCommand("pause")),
     ("rate\t2", PlayCommand("rate", 2.0)),
+    # G3b (DESIGN §34.6): the lines of the decide half
+    ("autopause on", PlayCommand("autopause", AutopauseLine("all", None, True))),
+    ("autopause off", PlayCommand("autopause", AutopauseLine("all", None, False))),
+    ("autopause chapter on", PlayCommand("autopause", AutopauseLine("chapter", None, True))),
+    ("autopause chapter off", PlayCommand("autopause", AutopauseLine("chapter", None, False))),
+    ("autopause alert pop_fall on", PlayCommand("autopause", AutopauseLine("alert", "pop_fall", True))),
+    (
+        "autopause alert storm_named off",
+        PlayCommand("autopause", AutopauseLine("alert", "storm_named", False)),
+    ),
+    ("watch 12", PlayCommand("watch", 12)),
+    ("watch off", PlayCommand("watch", "off")),
+    ("unwatch 12", PlayCommand("unwatch", 12)),
+    ("ack 466250600", PlayCommand("ack", 466250600)),
+    ("ack 9223372036854775807", PlayCommand("ack", 9223372036854775807)),
+    ("power food id=1", PlayCommand("power", PowerLine("apply", "food", 1))),
+    (
+        "power food id=1 mult=1.3 steps=6000",
+        PlayCommand("power", PowerLine("apply", "food", 1, (("mult", 1.3), ("steps", 6000)))),
+    ),
+    (
+        "power preview bloom id=0 patch=2 gain=1.5 steps=3000",
+        PlayCommand(
+            "power", PowerLine("preview", "bloom", 0, (("patch", 2), ("gain", 1.5), ("steps", 3000)))
+        ),
+    ),
+    (
+        "power blight id=7 patch=0 steps=12000",
+        PlayCommand("power", PowerLine("apply", "blight", 7, (("patch", 0), ("steps", 12000)))),
+    ),
+    (
+        "power strike id=9 x=100.5 y=20 radius=12.5 kill=0.4",
+        PlayCommand(
+            "power",
+            PowerLine("apply", "strike", 9, (("x", 100.5), ("y", 20.0), ("radius", 12.5), ("kill", 0.4))),
+        ),
+    ),
+    ("power cancel food id=4", PlayCommand("power", PowerLine("cancel", "food", 4))),
+    ("intent make it rain", PlayCommand("intent", "make it rain")),
+    ("intent  Make   more FOOD ", PlayCommand("intent", "Make   more FOOD")),
 ]
+
 BLANK = ["", "   ", "# a comment", "  # rate nonsense"]
 INVALID = [
     ("Pause", "unknown command"),
@@ -82,6 +123,44 @@ INVALID = [
     ("fields z 1", "Lab"),
     ("idnt now", "takes 0"),
     ("quit now", "takes 0"),
+    ("autopause", "autopause takes"),
+    ("autopause maybe", "takes 'on' or 'off'"),
+    ("autopause chapter", "autopause takes"),
+    ("autopause chapter maybe", "takes 'on' or 'off'"),
+    ("autopause alert pop_fall", "autopause takes"),
+    ("autopause alert Pop on", "alert class name"),
+    ("autopause alert 1x on", "alert class name"),
+    ("autopause alert pop_fall maybe", "takes 'on' or 'off'"),
+    ("autopause on off", "autopause takes"),
+    ("watch", "takes 1"),
+    ("watch -1", "non-negative integer"),
+    ("watch 1 2", "takes 1"),
+    ("watch 9223372036854775808", "int64"),
+    ("unwatch off", "non-negative integer"),
+    ("unwatch", "takes 1"),
+    ("ack x", "non-negative integer"),
+    ("ack 9223372036854775808", "int64"),
+    ("ack", "takes 1"),
+    ("power", "power name"),
+    ("power preview", "power name"),
+    ("power cancel", "power name"),
+    ("power tea id=1", "unknown power"),
+    ("power food", "needs id=N"),
+    ("power food mult=1.3", "needs id=N"),
+    ("power food id=-1", "non-negative integer"),
+    ("power food id=1.5", "non-negative integer"),
+    ("power food id=1 id=2", "twice"),
+    ("power food id=1 mult", "key=value"),
+    ("power food id=1 speed=2", "key=value"),
+    ("power food id=1 mult=fast", "decimal"),
+    ("power food id=1 mult=1e1", "decimal"),
+    ("power food id=1 mult=-1", "decimal"),
+    ("power food id=1 steps=6000.5", "non-negative integer"),
+    ("power food id=1 patch=-2", "non-negative integer"),
+    ("power cancel food id=4 mult=1.3", "only id=N"),
+    ("power FOOD id=1", "unknown power"),
+    ("intent", "takes a text"),
+    ("intent   ", "takes a text"),
 ]
 
 
@@ -109,8 +188,10 @@ def test_the_colour_modes_are_the_headers() -> None:
 
 def test_the_grammar_commands_are_the_spec_list() -> None:
     assert set(play.COMMANDS) == {
-        *("pause", "run", "step", "rate", "color", "every", "focus", "follow", "idnt", "labels", "quit")
+        *("pause", "run", "step", "rate", "color", "every", "focus", "follow", "idnt", "labels", "quit"),
+        *("autopause", "watch", "unwatch", "ack", "power", "intent"),
     }
+    assert set(play.GAME_LINES) <= set(play.COMMANDS)
 
 
 # --- the channel ------------------------------------------------------------------------------------------
@@ -256,6 +337,35 @@ def test_invalid_lines_are_noted_and_ignored(tmp_path: Path) -> None:
     res = runner.run(rd, cfg, init_state(cfg), 3, quiet=True, pacer=pacer)
     assert res.status == "done"
     assert len(notes) == 3 and "fields" in notes[2] and all("ignored control line" in n for n in notes)
+
+
+def test_the_decide_half_lines_are_noted_until_their_stage_and_change_nothing(tmp_path: Path) -> None:
+    """The six lines of the decide half parse (the window sends them) and are answered with a note until the
+    stage that builds their handler; they must not reach the focus branch or change the stream."""
+    notes: list[str] = []
+    lines = [
+        "autopause on",
+        "watch 3",
+        "unwatch 3",
+        "ack 466250600",
+        "power food id=1 mult=1.3",
+        "power preview strike id=2",
+        "intent more food",
+    ]
+    script = [lines, [], ["rate max"]]
+    clock = FakeClock()
+    cfg = world("2d")
+    rd = RunDir.create(tmp_path / "w", cfg)
+    out = io.BytesIO()
+    pacer = play.PlayPacer(
+        out, ScriptControl(script), play.PlayOptions(rate=1.0, paused=False), clock=clock, note=notes.append
+    )
+    runner.run(rd, cfg, init_state(cfg), 4, quiet=True, pacer=pacer)
+    assert [n.split(":")[0] for n in notes] == [ln.split()[0] for ln in lines]
+    assert all("not available in this build yet" in n for n in notes)
+    _, _, _, plain = run(tmp_path / "plain", [[], [], ["rate max"]], steps=4)
+    key = lambda o: [(r.tag, r.step) for r in decoded(o).records if r.tag not in ("CLCK",)]  # noqa: E731
+    assert key(out) == key(plain)
 
 
 def test_every_sets_the_frame_period_and_clck_reports_it(tmp_path: Path) -> None:

@@ -60,10 +60,14 @@ __all__ = [
     "BASE_RATE",
     "PLAY_CADENCE",
     "PLAY_TICK",
+    "POWER_KEYS",
+    "POWER_NAMES",
+    "AutopauseLine",
     "Clock",
     "PlayCommand",
     "PlayOptions",
     "PlayPacer",
+    "PowerLine",
     "RealClock",
     "Scheduler",
     "check_tick",
@@ -115,7 +119,20 @@ COMMANDS: Final = (
     "idnt",
     "labels",
     "quit",
-)
+    "autopause",
+    "watch",
+    "unwatch",
+    "ack",
+    "power",
+    "intent",
+)  # the last six are G3b's (DESIGN §34.6.1): the grammar is whole, each handler comes with its stage
+GAME_LINES: Final = frozenset(
+    {"autopause", "watch", "unwatch", "ack", "power", "intent"}
+)  # parsed; handlers later
+POWER_NAMES: Final = ("food", "bloom", "blight", "strike")
+POWER_KEYS: Final = ("mult", "steps", "patch", "gain", "x", "y", "radius", "kill")
+POWER_INT_KEYS: Final = frozenset({"steps", "patch"})  # the others are decimals
+_CLASS = re.compile(r"[a-z][a-z0-9_]*")
 _UINT = re.compile(r"[0-9]+")
 _DECIMAL = re.compile(r"[0-9]+(\.[0-9]+)?")
 INT64_MAX: Final = 2**63 - 1
@@ -165,13 +182,37 @@ class RealClock:
 
 
 @dataclass(frozen=True)
+class AutopauseLine:
+    """``autopause`` parsed: ``scope`` ``all`` (every pause), ``chapter`` or ``alert`` (then ``cls`` names the
+    alert class), and ``on``."""
+
+    scope: str
+    cls: str | None
+    on: bool
+
+
+@dataclass(frozen=True)
+class PowerLine:
+    """``power`` parsed: ``verb`` ``preview``, ``apply`` (``power NAME ...``) or ``cancel``; ``power`` one of
+    ``POWER_NAMES``; ``id`` the client's request number; ``params`` the ``key=value`` pairs in the order
+    given (ints for ``steps`` and ``patch``, floats for the rest). The grammar checks the shape of a value;
+    its range is the power's to clamp or refuse."""
+
+    verb: str
+    power: str
+    id: int
+    params: tuple[tuple[str, int | float], ...] = ()
+
+
+@dataclass(frozen=True)
 class PlayCommand:
-    """One control line, parsed. ``arg``: an int (``step``, ``every``, ``focus``, ``follow``), a float
-    (``rate`` M, 0 pauses), a string (``rate`` ``max``, ``color`` MODE, ``every`` ``auto``, ``focus`` /
-    ``follow`` ``off``, ``labels`` ``on`` / ``off``) or None."""
+    """One control line, parsed. ``arg``: an int (``step``, ``every``, ``focus``, ``follow``, ``watch``,
+    ``unwatch``, ``ack``), a float (``rate`` M, 0 pauses), a string (``rate`` ``max``, ``color`` MODE,
+    ``every`` ``auto``, ``focus`` / ``follow`` / ``watch`` ``off``, ``labels`` ``on`` / ``off``, the text of
+    ``intent``), an ``AutopauseLine`` (``autopause``), a ``PowerLine`` (``power``) or None."""
 
     name: str
-    arg: int | float | str | None = None
+    arg: int | float | str | AutopauseLine | PowerLine | None = None
 
 
 def _uint(text: str, what: str) -> int:
@@ -185,9 +226,13 @@ def parse_play_command(line: str, *, modes: Sequence[str] = streamrec.COLOR_MODE
     invalid).
 
     ``pause`` | ``run`` | ``step [N]`` | ``rate (M | max)`` | ``color MODE`` | ``every (K | auto)`` | ``focus
-    (UID | off)`` | ``follow (UID | off)`` | ``idnt`` | ``labels (on | off)`` | ``quit``; lower case,
-    whitespace separated. ``N`` >= 1; ``M`` a decimal, 0 for a pause or in [0.05, 16]; ``K`` in 1..64; ``UID``
-    a non-negative int64. ``fields`` is the Lab's and refused here."""
+    (UID | off)`` | ``follow (UID | off)`` | ``idnt`` | ``labels (on | off)`` | ``quit``; and G3b's
+    ``autopause (on | off | chapter (on | off) | alert CLASS (on | off))`` | ``watch (KIN_ID | off)`` |
+    ``unwatch KIN_ID`` | ``ack ALERT_ID`` | ``power preview NAME id=N [k=v ...]`` |
+    ``power NAME id=N [k=v ...]`` | ``power cancel NAME id=N`` | ``intent TEXT``; lower case (the text of
+    ``intent`` excepted), whitespace separated. ``N`` >= 1; ``M`` a decimal, 0 for a pause or in [0.05, 16];
+    ``K`` in 1..64; ``UID``, ``KIN_ID`` and ``ALERT_ID`` non-negative int64. ``fields`` is the Lab's and
+    refused here."""
     tok = line.split()
     if not tok or tok[0].startswith("#"):
         return None
@@ -242,10 +287,84 @@ def parse_play_command(line: str, *, modes: Sequence[str] = streamrec.COLOR_MODE
         if uid > INT64_MAX:
             raise ControlError("UID does not fit an int64")
         return PlayCommand(name, uid)
-    arity(1, 1)  # labels
-    if args[0] not in ("on", "off"):
-        raise ControlError("labels takes 'on' or 'off'")
-    return PlayCommand(name, args[0])
+    if name == "labels":
+        arity(1, 1)
+        if args[0] not in ("on", "off"):
+            raise ControlError("labels takes 'on' or 'off'")
+        return PlayCommand(name, args[0])
+    return _parse_game_command(name, args, line)
+
+
+def _parse_game_command(name: str, args: list[str], line: str) -> PlayCommand:
+    """The G3b lines (``autopause watch unwatch ack power intent``); ``args`` are the tokens after it."""
+    if name == "intent":  # the text is free: everything after the name, whitespace kept as typed
+        text = line.strip()[len("intent") :].strip()
+        if not text:
+            raise ControlError("intent takes a text")
+        return PlayCommand(name, text)
+    if name == "autopause":
+        return PlayCommand(name, _parse_autopause(args))
+    if name == "power":
+        return PlayCommand(name, _parse_power(args))
+    if len(args) != 1:
+        raise ControlError(f"{name} takes 1 argument(s), got {len(args)}")
+    if name == "watch" and args[0] == "off":
+        return PlayCommand(name, "off")
+    what = {"watch": "KIN_ID", "unwatch": "KIN_ID", "ack": "ALERT_ID"}[name]
+    n = _uint(args[0], what)
+    if n > INT64_MAX:
+        raise ControlError(f"{what} does not fit an int64")
+    return PlayCommand(name, n)
+
+
+def _on_off(token: str, what: str) -> bool:
+    if token not in ("on", "off"):
+        raise ControlError(f"{what} takes 'on' or 'off'")
+    return token == "on"
+
+
+def _parse_autopause(args: list[str]) -> AutopauseLine:
+    if len(args) == 1:
+        return AutopauseLine("all", None, _on_off(args[0], "autopause"))
+    if args and args[0] == "chapter" and len(args) == 2:
+        return AutopauseLine("chapter", None, _on_off(args[1], "autopause chapter"))
+    if args and args[0] == "alert" and len(args) == 3:
+        if not _CLASS.fullmatch(args[1]):
+            raise ControlError(f"autopause alert takes an alert class name, got {args[1]!r}")
+        return AutopauseLine("alert", args[1], _on_off(args[2], "autopause alert"))
+    raise ControlError("autopause takes on|off, chapter on|off or alert CLASS on|off")
+
+
+def _parse_power(args: list[str]) -> PowerLine:
+    verb = "apply"
+    if args and args[0] in ("preview", "cancel"):
+        verb, args = args[0], args[1:]
+    if not args:
+        raise ControlError("power takes a power name")
+    power, rest = args[0], args[1:]
+    if power not in POWER_NAMES:
+        raise ControlError(f"unknown power {power!r}; expected one of {', '.join(POWER_NAMES)}")
+    found: dict[str, int | float] = {}
+    order: list[str] = []
+    for token in rest:
+        key, eq, value = token.partition("=")
+        if not eq or key not in ("id", *POWER_KEYS):
+            raise ControlError(f"power takes key=value pairs of id, {', '.join(POWER_KEYS)}, got {token!r}")
+        if key in found:
+            raise ControlError(f"power names {key} twice")
+        if key == "id" or key in POWER_INT_KEYS:
+            number: int | float = _uint(value, key)
+        else:
+            if not _DECIMAL.fullmatch(value):
+                raise ControlError(f"{key} must be a decimal, got {value!r}")
+            number = float(value)
+        found = {**found, key: number}
+        order.append(key)
+    if "id" not in found:
+        raise ControlError("power needs id=N, a non-negative integer chosen by the client")
+    if verb == "cancel" and len(found) > 1:
+        raise ControlError("power cancel takes only id=N")
+    return PowerLine(verb, power, int(found["id"]), tuple((k, found[k]) for k in order if k != "id"))
 
 
 # --- the scheduler --------------------------------------------------------------------------------------
@@ -842,6 +961,8 @@ class PlayPacer:
             self._send_weather(state)
         elif name == "labels":
             self.labels_on = arg == "on"
+        elif name in GAME_LINES:  # G3b's lines: each handler comes with its stage
+            self._note(f"{name}: not available in this build yet")
         else:  # focus, follow
             self._command_focus(cmd, state)
 

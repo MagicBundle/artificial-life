@@ -33,3 +33,20 @@ idnt
 labels on
 labels off
 quit
+autopause on
+autopause off
+autopause chapter on
+autopause chapter off
+autopause alert pop_fall on
+autopause alert storm_named off
+watch 12
+watch off
+unwatch 12
+ack 466250600
+power preview food id=3 mult=1.3 steps=6000
+power food id=3 mult=1.3 steps=6000
+power bloom id=4 patch=2 gain=1.5 steps=3000
+power blight id=5 patch=0 steps=12000
+power strike id=6 x=100.5 y=20 radius=12.5 kill=0.4
+power cancel food id=3
+intent make more food

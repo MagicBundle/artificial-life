@@ -4,14 +4,14 @@ import Testing
 
 @testable import AlifeCore
 
-/// A committed play stream of `tests/data` (`play_tiny3d`, `play_tiny2d`, `play_tiny3d_n70`: `.bin` and `.json`) and its
+/// A committed play stream of `tests/data` (`play_tiny3d`, `play_tiny2d`, `play_tiny3d_n70` and G3b's `play_tiny3d_g3b`: `.bin` and `.json`) and its
 /// sidecar, which holds the expected decoding produced by the independent Python decoder (`tests/play_decode.py`).
 struct PlayFixture {
     let kind: String
     let bytes: [UInt8]
     let sidecar: [String: Any]
 
-    static let kinds = ["3d", "2d", "3d_n70"]
+    static let kinds = ["3d", "2d", "3d_n70", "3d_g3b"]
 
     init(kind: String) throws {
         self.kind = kind
@@ -119,7 +119,7 @@ func playSectionBytes(_ record: StreamRecord) -> [String: Data] {
         b += le(UInt32(bitPattern: f.energy)) + le(f.age) + le(f.generation) + le(f.parentUid)
         b += [f.nBonds, f.house, f.kin, f.colony, f.archPrimary, f.archSecondary, f.intent, f.labelFlags]
         return ["body": Data(b)]
-    case .strm, .evnt, .envs:
+    case .strm, .evnt, .envs, .alrt, .rprt, .plan:
         return [:]
     }
 }

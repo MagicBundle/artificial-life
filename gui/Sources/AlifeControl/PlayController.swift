@@ -75,6 +75,9 @@ final class PlayController: ObservableObject {
     /// Called, before `onDelivery`, with the events of each `EVNT` batch that the chronicle had not seen, in order, and whether
     /// the batch is the backlog loaded at the start (a hand-off or a toast is the news of a live batch, never of the backlog).
     var onEvents: (@MainActor ([WorldEvent], Bool) -> Void)?
+    /// Called, before `onDelivery`, with what each `ALRT` batch did to the alert board (an alert raised, updated or cleared)
+    /// and whether the batch is the backlog (no toast, no pause for the history of a re-opened world).
+    var onAlerts: (@MainActor ([AlertChange], Bool) -> Void)?
     /// Called when the store was replaced by an empty one (a world started or stopped), before anything of the new world: the
     /// window forgets the selection and the follow of the old one at once, not when the new header arrives.
     var onReset: (@MainActor () -> Void)?
@@ -260,6 +263,19 @@ final class PlayController: ObservableObject {
                 announced.append((fresh, batch.isBacklog))
             }
         }
+        var changed: [(changes: [AlertChange], backlog: Bool)] = []
+        for batch in delivery.alerts {
+            let alertChanges = store.apply(alerts: batch)
+            if !alertChanges.isEmpty {
+                changes.insert(.alerts)
+                changed.append((alertChanges, batch.isBacklog))
+            }
+        }
+        for report in delivery.reports where store.apply(report: report) { changes.insert(.reports) }
+        for plan in delivery.plans {
+            store.apply(plan: plan)
+            changes.insert(.plans)
+        }
         if let end = delivery.end {
             session.end = end
             switch end {
@@ -270,6 +286,7 @@ final class PlayController: ObservableObject {
         }
         if !changes.subtracting(.frame).isEmpty { revision += 1 }
         for (events, backlog) in announced { onEvents?(events, backlog) }
+        for (alertChanges, backlog) in changed { onAlerts?(alertChanges, backlog) }
         if !changes.isEmpty { onDelivery?(changes) }
     }
 

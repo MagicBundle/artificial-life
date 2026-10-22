@@ -105,6 +105,32 @@ import Testing
         #expect(order.last == "delivery" && !zip(order, order.dropFirst()).contains { $0 == "delivery" && $1 == "delivery" }, "\(order)")
     }
 
+    @Test func alertsReportsAndPlansArriveInOrderAndTheAlertsAreAnnounced() async throws {
+        // G3b's stream: a backlog alert, then a live batch of six, three reports and a withheld one, seven plans. The model learns
+        // of what each alert batch did, with the backlog flagged, and the store holds the board, the shelf and the log.
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (script, commands) = try standIn(in: scratch, fixture: "3d_g3b")
+        let (controller, recorder) = make()
+        defer { controller.shutdown() }
+        var announced: [(kinds: [AlertChange.Kind], backlog: Bool)] = []
+        controller.onAlerts = { changes, backlog in announced.append((changes.map(\.kind), backlog)) }
+        controller.start(request, executable: script, directory: scratch.url,
+                         arguments: args(scratch, commands: commands, kind: "3d_g3b"))
+        #expect(await eventually { controller.store.clock?.head.step == 12001 && !controller.store.plans.records.isEmpty })
+        let store = controller.store
+        #expect(store.alerts.alerts.count == 6 && store.reports.entries.count == 4 && store.plans.records.count == 7)
+        #expect(announced.map(\.backlog) == [true, false], "the skipped version-2 batch is not announced")
+        #expect(announced[0].kinds == [.raised])
+        // (the pop_surge row is an update of an alert this client never saw: new to it; the backlog pop_fall is then cleared)
+        #expect(announced[1].kinds == [.raised, .raised, .raised, .raised, .cleared, .raised])
+        #expect(recorder.deliveries.contains { $0.contains(.alerts) } && recorder.deliveries.contains { $0.contains(.plans) })
+        #expect(recorder.deliveries.contains { $0.contains(.reports) })
+        #expect(store.influence?.have == 4 && store.play?.powers?.keys.sorted() == ["food", "strike"])
+        controller.shutdown()
+        #expect(await eventually { !controller.hasProcess })
+    }
+
     @Test func aWorldThatEndsDeliversItsLastRecordsBeforeItFinishes() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
@@ -490,6 +516,26 @@ import Testing
         #expect(delivery.events == batches)
         #expect(delivery.records.isEmpty && !delivery.isEmpty)
         #expect(delivery.droppedRecords.isEmpty)
+    }
+
+    @Test func alertsReportsAndPlansAreQueuedInOrderAndNeverReplaced() throws {
+        let all = try records("3d_g3b")
+        let mailbox = StreamMailbox()
+        for record in all { mailbox.publish(record: record) }
+        let delivery = mailbox.take()
+        #expect(delivery.alerts.map(\.isBacklog) == [true, false] && delivery.alerts.map(\.alerts.count) == [1, 6])
+        #expect(delivery.reports.map(\.mode) == [0, 0, 1, 2] && delivery.reports.map(\.chapter) == [1, 2, 2, 2])
+        #expect(delivery.plans.map(\.plan.status) == [.preview, .queued, .applied, .since, .refused, .cancelled, .refused])
+        #expect(delivery.records["ALRT"] == nil && delivery.records["RPRT"] == nil && delivery.records["PLAN"] == nil)
+        #expect(delivery.droppedRecords["ALRT"] == nil && delivery.droppedRecords["RPRT"] == nil && delivery.droppedRecords["PLAN"] == nil)
+        #expect(!delivery.isEmpty)
+        #expect(mailbox.take().isEmpty)
+        // Each queue alone keeps a delivery from being empty.
+        for record in all where ["ALRT", "RPRT", "PLAN"].contains(record.tag) {
+            let single = StreamMailbox()
+            single.publish(record: record)
+            #expect(!single.take().isEmpty, "\(record.tag)")
+        }
     }
 
     @Test func aRecordThroughTheReaderThreadReachesTheMailbox() async throws {

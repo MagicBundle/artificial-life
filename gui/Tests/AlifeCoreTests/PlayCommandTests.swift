@@ -21,6 +21,25 @@ import Testing
         (.focus(Int64.max), "focus 9223372036854775807"), (.focus(nil), "focus off"),
         (.follow(7), "follow 7"), (.follow(nil), "follow off"),
         (.idnt, "idnt"), (.labels(true), "labels on"), (.labels(false), "labels off"), (.quit, "quit"),
+        (.autopause(.all(true)), "autopause on"), (.autopause(.all(false)), "autopause off"),
+        (.autopause(.chapter(true)), "autopause chapter on"), (.autopause(.chapter(false)), "autopause chapter off"),
+        (.autopause(.alert("pop_fall", true)), "autopause alert pop_fall on"),
+        (.autopause(.alert("storm_named", false)), "autopause alert storm_named off"),
+        (.watch(12), "watch 12"), (.watch(nil), "watch off"), (.unwatch(12), "unwatch 12"),
+        (.ack(466_250_600), "ack 466250600"),
+        (.power(PowerCommand(.preview, .food, id: 3, [.init(.mult, 1.3), .init(.steps, 6000)])),
+         "power preview food id=3 mult=1.3 steps=6000"),
+        (.power(PowerCommand(.apply, .food, id: 3, [.init(.mult, 1.3), .init(.steps, 6000)])),
+         "power food id=3 mult=1.3 steps=6000"),
+        (.power(PowerCommand(.apply, .bloom, id: 4, [.init(.patch, 2), .init(.gain, 1.5), .init(.steps, 3000)])),
+         "power bloom id=4 patch=2 gain=1.5 steps=3000"),
+        (.power(PowerCommand(.apply, .blight, id: 5, [.init(.patch, 0), .init(.steps, 12000)])),
+         "power blight id=5 patch=0 steps=12000"),
+        (.power(PowerCommand(.apply, .strike, id: 6,
+                             [.init(.x, 100.5), .init(.y, 20), .init(.radius, 12.5), .init(.kill, 0.4)])),
+         "power strike id=6 x=100.5 y=20 radius=12.5 kill=0.4"),
+        (.power(PowerCommand(.cancel, .food, id: 3)), "power cancel food id=3"),
+        (.intent("make more food"), "intent make more food"),
     ]
 
     @Test(arguments: cases)
@@ -41,6 +60,18 @@ import Testing
         .rate(.multiplier(16.5)), .rate(.multiplier(.nan)), .rate(.multiplier(.infinity)),
         .every(0), .every(65), .every(-1), .focus(-1), .follow(-5),
         .color(""), .color("Tag"), .color("two words"), .color("kin\nquit"), .color("a;b"), .color("1kin"),
+        .watch(-1), .unwatch(-2), .ack(-3),
+        .autopause(.alert("", true)), .autopause(.alert("Pop", true)), .autopause(.alert("pop fall", false)),
+        .autopause(.alert("pop\nquit", true)), .autopause(.alert("1pop", true)),
+        .power(PowerCommand(.apply, .food, id: -1)),
+        .power(PowerCommand(.apply, .food, id: 1, [.init(.mult, -1.3)])),
+        .power(PowerCommand(.apply, .food, id: 1, [.init(.mult, .nan)])),
+        .power(PowerCommand(.apply, .food, id: 1, [.init(.mult, .infinity)])),
+        .power(PowerCommand(.apply, .food, id: 1, [.init(.steps, 6000.5)])),
+        .power(PowerCommand(.apply, .food, id: 1, [.init(.patch, -1)])),
+        .power(PowerCommand(.apply, .food, id: 1, [.init(.mult, 1.3), .init(.mult, 1.4)])),
+        .power(PowerCommand(.cancel, .food, id: 1, [.init(.mult, 1.3)])),
+        .intent(""), .intent("   "), .intent("two\nlines"), .intent("quit\rrun"),
     ])
     func aCommandTheGrammarCannotExpressIsRefused(command: PlayCommand) {
         #expect(throws: PlayCommand.Invalid.self) { try command.line() }
@@ -52,6 +83,20 @@ import Testing
         #expect(throws: PlayCommand.Invalid.self) {
             try PlayCommand.color(String(repeating: "a", count: PlayCommand.maxLineBytes - 5)).line()
         }
+    }
+
+    @Test func aGameLineIsNeverLongerThanTheWorldAccepts() throws {
+        let limit = PlayCommand.maxLineBytes - "intent ".utf8.count
+        #expect(try PlayCommand.intent(String(repeating: "a", count: limit)).line().utf8.count == PlayCommand.maxLineBytes)
+        #expect(throws: PlayCommand.Invalid.self) { try PlayCommand.intent(String(repeating: "a", count: limit + 1)).line() }
+        #expect(try PlayCommand.intent("  padded  ").line() == "intent padded", "the text is trimmed, never altered inside")
+        #expect(try PlayCommand.intent("Keep CASE").line() == "intent Keep CASE", "the free text keeps its case")
+    }
+
+    @Test func theNamesAndKeysOfAPowerAreTheEnginesGrammar() {
+        #expect(PowerCommand.Name.allCases.map(\.rawValue) == ["food", "bloom", "blight", "strike"])
+        #expect(PowerCommand.Key.allCases.map(\.rawValue) == ["mult", "steps", "patch", "gain", "x", "y", "radius", "kill"])
+        #expect(PowerCommand.Key.allCases.filter(\.isWhole).map(\.rawValue) == ["steps", "patch"])
     }
 
     @Test func aDecimalHasNoExponentAndNoTrailingZeros() {
