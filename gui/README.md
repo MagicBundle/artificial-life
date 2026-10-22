@@ -10,7 +10,9 @@ dependencies and no Python code of its own.
 - A Swift 6 toolchain: Xcode 16 or later, or the command line tools that ship with it
   (`xcode-select --install`). The package builds in Swift 6 language mode (strict concurrency).
 - The engine environment in the repository: `uv sync --extra viewer --extra video`
-  (the app can run this for you with **Set up environment** if `.venv/bin/alife` is missing; it looks for `uv`
+  (the app can run `uv sync --inexact --extra viewer --extra video` for you with **Set up environment** if
+  `.venv/bin/alife` is missing; `--inexact` installs what is missing and removes nothing, where a plain `uv sync`
+  is exact and uninstalls every package outside the requested extras, such as the `analysis` extra; it looks for `uv`
   in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin` and `PATH`)
 
 ## Build and run
@@ -23,7 +25,11 @@ swift build -c release   # optional; binary in .build/release/AlifeControl
 
 Or open it in Xcode: `cd gui && open Package.swift`, select the `AlifeControl` scheme and run.
 
-On first launch pick the repository folder (default `~/artificial-life`); the choice is remembered.
+On first launch pick the repository folder (default `~/artificial-life`); the choice is remembered. If the remembered
+folder no longer exists (a deleted git worktree, say), the app starts with `~/artificial-life` when that holds
+`.venv/bin/alife` and logs one line saying so; otherwise the Repository box says "Folder not found: <path>. Choose the
+repository folder.", and Start and **Set up environment** log that message instead of launching anything. A remembered
+folder that exists is never replaced.
 
 ## Install as an app
 

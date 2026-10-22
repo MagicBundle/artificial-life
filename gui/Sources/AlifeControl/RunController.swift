@@ -40,22 +40,61 @@ struct LineSplitter {
     }
 }
 
+/// Where the repository is when the app starts. The stored folder (UserDefaults) can be gone, typically a git worktree
+/// that was deleted; then the default folder is used if it holds the engine, and otherwise the stored path is kept so
+/// that the status line can name it.
+enum RepoFolder {
+    static let defaultPath = "~/artificial-life"
+
+    static func isDirectory(_ path: String) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: (path as NSString).expandingTildeInPath, isDirectory: &isDir)
+            && isDir.boolValue
+    }
+
+    static func hasEngine(_ path: String) -> Bool {
+        FileManager.default.isExecutableFile(
+            atPath: ((path as NSString).expandingTildeInPath as NSString).appendingPathComponent(".venv/bin/alife"))
+    }
+
+    /// The path to start with, and a log line when it replaces a stored path that does not exist. A stored path that
+    /// exists is never replaced, whether or not it holds the engine.
+    static func initialPath(stored: String?, defaultPath: String) -> (path: String, note: String?) {
+        guard let stored else { return (defaultPath, nil) }
+        if isDirectory(stored) || !isDirectory(defaultPath) || !hasEngine(defaultPath) { return (stored, nil) }
+        return (defaultPath, "Stored repository folder not found: \(stored). Using \(defaultPath).")
+    }
+
+    static func missingMessage(_ path: String) -> String {
+        "Folder not found: \(path). Choose the repository folder."
+    }
+}
+
 /// Owns the engine subprocesses and all UI-visible run state.
 /// Main-actor isolated; pipe and termination handlers feed AsyncStreams that main-actor tasks consume.
 @MainActor
 final class RunController: ObservableObject {
     static let shared = RunController()
-    private static let repoKey = "repoPath"
+    fileprivate static let repoKey = "repoPath"
     private static let maxLogLines = 5000
+
+    /// What "Set up environment" runs (after `uv`). `--inexact` keeps every installed package that the lock does not
+    /// ask for here (the `analysis` extra's matplotlib and its dependencies, anything else): a plain `uv sync` is exact
+    /// and uninstalls them (the dev group is a default group, so it stays either way). Unlike CI's
+    /// `--group dev --extra viewer --extra video`, this cannot remove the `analysis` extra.
+    static let setupArguments = ["sync", "--inexact", "--extra", "viewer", "--extra", "video"]
+    private let saveRepoPath: (String) -> Void
 
     // Repository
     @Published var repoPath: String {
         didSet {
-            UserDefaults.standard.set(repoPath, forKey: Self.repoKey)
+            saveRepoPath(repoPath)
             refreshRepo()
         }
     }
     @Published private(set) var repoReady = false
+    /// False when `repoPath` is not an existing folder (the status line then says so instead of blaming the venv).
+    @Published private(set) var repoFolderExists = true
     @Published private(set) var runs: [String] = []
     /// The runs whose `play.lock` is held by a process (a world being played or saving).
     @Published private(set) var playLocked: Set<String> = []
@@ -99,11 +138,18 @@ final class RunController: ObservableObject {
     private var directorPollCount = 0
     private var appliedDirectorPoll = 0
 
-    private init() {
-        repoPath = UserDefaults.standard.string(forKey: Self.repoKey) ?? "~/artificial-life"
+    /// `isApp` false (tests): no link to the shared stream and play controllers and no ticker.
+    init(storedPath: String? = UserDefaults.standard.string(forKey: RunController.repoKey),
+         savePath: @escaping (String) -> Void = { UserDefaults.standard.set($0, forKey: RunController.repoKey) },
+         defaultPath: String = RepoFolder.defaultPath, isApp: Bool = true) {
+        saveRepoPath = savePath
+        let start = RepoFolder.initialPath(stored: storedPath, defaultPath: defaultPath)
+        repoPath = start.path
         settings.name = Self.defaultRunName()
+        if let note = start.note { appendLines([note], isError: false) }
         refreshRepo()
         loadDirector()
+        guard isApp else { return }
         StreamController.shared.log = { [weak self] lines, isError in
             self?.appendStreamLog(lines, isError: isError)
         }
@@ -164,8 +210,19 @@ final class RunController: ObservableObject {
 
     // MARK: Repository
 
+    /// The status line when the repository folder is missing (nil otherwise).
+    var repoProblem: String? { repoFolderExists ? nil : RepoFolder.missingMessage(repoPath) }
+
+    /// False, with the reason in the log, when the repository folder is missing: nothing is launched from it.
+    private func requireRepoFolder() -> Bool {
+        if RepoFolder.isDirectory(repoPath) { return true }
+        appendLines([RepoFolder.missingMessage(repoPath)], isError: true)
+        return false
+    }
+
     func refreshRepo() {
-        repoReady = FileManager.default.isExecutableFile(atPath: alifeURL.path)
+        repoFolderExists = RepoFolder.isDirectory(repoPath)
+        repoReady = repoFolderExists && RepoFolder.hasEngine(repoPath)
         refreshRuns()
         refreshDirectorCadence()
         refreshPresetWorld3D()
@@ -325,7 +382,7 @@ final class RunController: ObservableObject {
     // MARK: Jobs
 
     func start() {
-        guard canStart else { return }
+        guard requireRepoFolder(), canStart else { return }
         let existing = Set(runs)
         let args = settings.arguments(existingRuns: existing)
         if settings.mode != .resume {
@@ -350,14 +407,13 @@ final class RunController: ObservableObject {
     }
 
     func setupEnvironment() {
-        guard job == nil else { return }
+        guard job == nil, requireRepoFolder() else { return }
         guard let uv = findUV() else {
             appendLines(["Could not find 'uv' in /opt/homebrew/bin, /usr/local/bin, ~/.local/bin or PATH. "
                          + "Install it from https://docs.astral.sh/uv/ and try again."], isError: true)
             return
         }
-        beginJob(.setup, executable: uv, arguments: ["sync", "--extra", "viewer", "--extra", "video"],
-                 keepAwake: false)
+        beginJob(.setup, executable: uv, arguments: Self.setupArguments, keepAwake: false)
     }
 
     /// Single SIGINT: the engine finishes the step, writes a checkpoint and exits.
@@ -519,6 +575,7 @@ final class RunController: ObservableObject {
     /// actor after the process has exited and both pipes have been drained to EOF.
     private func launch(_ executable: URL, _ arguments: [String], prefix: String,
                         onExit: @escaping @MainActor (Int32, Process.TerminationReason) -> Void) -> Process? {
+        guard requireRepoFolder() else { return nil }
         let p = Process()
         p.executableURL = executable
         p.arguments = arguments
