@@ -75,4 +75,23 @@ import Testing
             #expect(d > Camera.planet(size: L, aspect: aspect).distance, "the home pose can be zoomed out from")
         }
     }
+
+    @Test func aWorldWithoutAMapHasNoPlanetLevel() {
+        // The planet level protects the weather map from the organisms; a 2D or dry world has no map to protect.
+        let far = Camera.planet(size: L).distance
+        #expect(level(far) == .planet)
+        #expect(WorldLevels.level(distance: far, fovY: fov, aspect: 1, size: L, mapShown: false) == .region)
+        let near = 0.1 * L
+        #expect(WorldLevels.level(distance: near, fovY: fov, aspect: 1, size: L, mapShown: false) == .organism)
+        #expect(WorldLevels.agentLayer(at: WorldLevels.level(distance: far, fovY: fov, aspect: 1, size: L, mapShown: false),
+                                       display: WorldDisplay()) == .instances)
+    }
+
+    @Test(arguments: [Float(2.4), Float(1.923), Float(0.4)])
+    func theLimitIsNeverNearerThanTheHomePoseOfTheWindow(aspect: Float) {
+        let home = Camera.planet(size: L, aspect: aspect).distance
+        let limit = WorldLevels.maxDistance(size: L, fovY: fov, aspect: aspect, home: home)
+        #expect(limit >= home, "a wide or tall window starts farther out than the one-world rule")
+        #expect(WorldLevels.maxDistance(size: L, fovY: fov, aspect: aspect) == WorldLevels.maxDistance(size: L, fovY: fov, aspect: aspect, home: 0))
+    }
 }

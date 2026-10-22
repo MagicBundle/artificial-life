@@ -38,7 +38,7 @@ package enum WorldSelection: Equatable, Sendable {
     /// old uid and `b` the new). Applied **only when `a` is what is selected now**, so that a hand-off that arrives after the
     /// player clicked something else never overrides the click. True if it was applied.
     package mutating func applyHandoff(_ event: WorldEvent) -> Bool {
-        guard event.kind == EventKind.focusHandoff, event.b > 0, case .organism(let uid) = self, uid == Int64(event.a) else {
+        guard event.kind == EventKind.focusHandoff, event.b >= 0, case .organism(let uid) = self, uid == Int64(event.a) else {
             return false
         }
         self = .organism(uid: Int64(event.b))
@@ -63,9 +63,10 @@ package struct ChronicleAction: Equatable, Sendable {
         case "storm": if event.a > 0 { select = .storm(id: event.a) }
         case "kin": if event.a > 0 { select = .kin(id: event.a) }
         case "focus":
-            if event.kind == EventKind.focusHandoff, event.b > 0 {
+            // (a uid is a real number, 0 included: only the other families number their entities from 1)
+            if event.kind == EventKind.focusHandoff, event.b >= 0 {
                 select = .organism(uid: Int64(event.b))
-            } else if event.a > 0 {
+            } else if event.a >= 0 {
                 select = .organism(uid: Int64(event.a))
             }
         default: break

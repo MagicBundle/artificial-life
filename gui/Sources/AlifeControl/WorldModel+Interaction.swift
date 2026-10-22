@@ -151,8 +151,14 @@ extension WorldModel {
             var state = FollowState(target: .lineage(kinID: id))
             fly(to: state.goal(store: play.store, size: worldSize) ?? place)
         case .organism(let uid):
-            selectOrganism(uid, follow: true, camera: true, fly: false)
-            if play.store.listedIndex(ofUID: uid) == nil { fly(to: place) }
+            if play.store.listedIndex(ofUID: uid) != nil {
+                selectOrganism(uid, follow: true, camera: true, fly: false)
+            } else {
+                // Not in the newest frame (it died): select it for the card and go to where it happened. Following it would
+                // leave the camera on a target that never has a position.
+                selectOrganism(uid, follow: false, camera: false, fly: false)
+                fly(to: place)
+            }
         case .pool, .none:
             setFollow(.none)
             fly(to: place)
@@ -223,6 +229,7 @@ extension WorldModel {
         if !followState.target.isNone {
             goal = followState.goal(store: play.store, size: worldSize)
             distance = isFlying ? flyDistance : nil
+            if goal == nil, isFlying { goal = flyGoal }  // nothing to follow yet (a hand-off not in a frame): go where flown
         } else if isFlying {
             goal = flyGoal
             distance = flyDistance
@@ -248,7 +255,7 @@ extension WorldModel {
     /// start is history and does neither.
     func handle(events fresh: [WorldEvent], backlog: Bool) {
         guard !backlog else { return }
-        for event in fresh where event.kind == EventKind.focusHandoff && event.b > 0 {
+        for event in fresh where event.kind == EventKind.focusHandoff && event.b >= 0 {
             successors[Int64(event.a)] = Int64(event.b)
             if successors.count > 64 { successors = successors.filter { $0.key == Int64(event.a) } }
             var moved = selection

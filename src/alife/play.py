@@ -294,6 +294,12 @@ class Scheduler:
     def _reanchor(self) -> None:
         self._anchor, self._issued = self.clock.monotonic(), 0
 
+    def restart(self) -> None:
+        """Start the schedule from now with nothing issued or owed. The pacer calls it when the world is
+        bound and again when the first step is done: the start-up (observers, files, the first records) and
+        the compile of the first step are not lateness."""
+        self._reanchor()
+
     def pause(self) -> None:
         self.paused = True
         self.queued.clear()
@@ -421,21 +427,33 @@ class _Followed:
     children: frozenset[int] = frozenset()
 
 
+CLOSED_READER: Final = (BrokenPipeError, ConnectionResetError)  # the reader is gone: a normal way to stop
+HOST_WORK: Final = frozenset({"after_step", "before_checkpoint"})  # the callbacks that keep the files exact
+
+
 def _guard(method: Callable[..., Any]) -> Callable[..., Any]:
-    """Run a pacer callback so that it never raises into the runner. An ``OSError`` (a closed reader) stops
-    the play quietly; any other exception stops it with the traceback on stderr and ``failure`` set."""
+    """Run a pacer callback so that it never raises into the runner. A closed reader (``BrokenPipeError``,
+    ``ConnectionResetError``) stops the play quietly; any other exception, ``OSError`` included, stops it
+    with the traceback on stderr and ``failure`` set.
+
+    After a failure the stream is a ``_NullSink``, and the callbacks of ``HOST_WORK`` still run: the storm
+    tick of the last step and the tracker state saved with the checkpoint belong to the files, not to the
+    stream, and a resume must find them (DESIGN §33.3.2). The others return at once."""
+
+    name = method.__name__
+    idle = 0.0 if name == "take_paused_s" else None
 
     @functools.wraps(method)
     def wrapper(self: PlayPacer, *args: Any, **kwargs: Any) -> Any:
-        if self._dead:
-            return 0.0 if method.__name__ == "take_paused_s" else None
+        if self._dead and name not in HOST_WORK:
+            return idle
         try:
             return method(self, *args, **kwargs)
-        except OSError as e:  # BrokenPipeError and friends: the reader is gone
+        except CLOSED_READER as e:
             self._fail(e, quiet=True)
         except Exception as e:
             self._fail(e, quiet=False)
-        return 0.0 if method.__name__ == "take_paused_s" else None
+        return idle
 
     return wrapper
 
@@ -448,8 +466,9 @@ class PlayPacer:
     docstring).
 
     ``out`` is the protocol stream (``stream.protocol_output()``), ``control`` the source of control lines.
-    After the run ``failure`` is None, a ``BrokenPipeError``-like ``OSError`` (the reader closed: a normal way
-    to stop) or the exception that stopped the play."""
+    After the run ``failure`` is None, a ``BrokenPipeError`` or ``ConnectionResetError`` (the reader closed: a
+    normal way to stop) or the exception that stopped the play (an ``OSError`` that is not a closed reader,
+    a full disk say, is one of those)."""
 
     def __init__(
         self,
@@ -512,20 +531,39 @@ class PlayPacer:
     # --- failure ----------------------------------------------------------------------------------------
 
     def _fail(self, exc: BaseException, *, quiet: bool) -> None:
-        self.failure = exc
+        """The first failure stops the play; a later one (the host work of the last step) replaces a closed
+        reader as the reason, so that a full disk is not reported as a normal stop."""
+        first = not self._dead
+        if first or (not quiet and isinstance(self.failure, CLOSED_READER)):
+            self.failure = exc
         self._dead = True
         self.stop_requested = True
         self.out = _NullSink()
         if quiet:
-            self._note(f"the reader closed the stream ({type(exc).__name__}); stopping after a checkpoint")
+            if first:
+                self._note(
+                    f"the reader closed the stream ({type(exc).__name__}); stopping after a checkpoint"
+                )
         else:
-            print("play: the presenter failed; stopping after a checkpoint:", file=sys.stderr, flush=True)
+            print(
+                "play: the presenter failed; stopping after a checkpoint:"
+                if first
+                else "play: a failure after the stop:",
+                file=sys.stderr,
+                flush=True,
+            )
             traceback.print_exception(exc, file=sys.stderr)
 
     # --- output -----------------------------------------------------------------------------------------
 
     def _write(self, tag: str, data: bytes) -> None:
-        write_all(self.out, data)
+        """Write a record. A reader that has gone does not abort the callback: the stream becomes a null sink
+        and the host work of the step (the storm tick, the logs) goes on, so the files stay exact."""
+        try:
+            write_all(self.out, data)
+        except CLOSED_READER as e:
+            self._fail(e, quiet=True)
+            return
         self.bytes_by_tag = {**self.bytes_by_tag, tag: self.bytes_by_tag.get(tag, 0) + len(data)}
 
     def _send(self, tag: str, make: Callable[[int, int], bytes]) -> None:
@@ -619,6 +657,7 @@ class PlayPacer:
         self._send_weather(state)
         self._flush_events(backlog=True)
         self._send_clock()
+        self.sched.restart()
         self._t_step = self.clock.monotonic()
 
     def _backlog(self, rd: RunDir, state: State) -> None:
@@ -664,6 +703,8 @@ class PlayPacer:
         self._step_ms.append((now - self._t_step) * 1e3)
         self._steps_taken += 1
         self._window.append((now, self._steps_taken))
+        if self._steps_taken == 1:
+            self.sched.restart()  # the compile of the first step is not lateness
         for rec in social:
             self._events += self.chron.from_record(rec)
         if social and self.obs is not None:
@@ -1326,7 +1367,7 @@ def serve_play(
             f"play: the world is extinct at step {int(to_numpy(res.state.step))}", file=sys.stderr, flush=True
         )
         return int(runner.ExitCode.OK)
-    if pacer.failure is not None and not isinstance(pacer.failure, OSError):
+    if pacer.failure is not None and not isinstance(pacer.failure, CLOSED_READER):
         return int(runner.ExitCode.ERROR)
     if res.status == "violation":
         return int(res.exit_code)

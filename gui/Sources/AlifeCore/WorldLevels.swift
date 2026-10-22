@@ -27,9 +27,12 @@ package enum WorldLevels {
         distance * tan(fovY / 2) * max(1, aspect)
     }
 
-    package static func level(distance: Float, fovY: Float, aspect: Float, size: Float) -> WorldLevel {
+    /// The level at `distance`. The planet level exists to protect the weather map from 40,000 organisms; a world with no map
+    /// in view (`mapShown` false: a 2D or dry world, or the map switched off) has nothing to protect and shows its organisms at
+    /// the region level however far the camera is.
+    package static func level(distance: Float, fovY: Float, aspect: Float, size: Float, mapShown: Bool = true) -> WorldLevel {
         if distance < organismDistance * size { return .organism }
-        if halfExtent(distance: distance, fovY: fovY, aspect: aspect) >= planetHalfExtent * size { return .planet }
+        if mapShown, halfExtent(distance: distance, fovY: fovY, aspect: aspect) >= planetHalfExtent * size { return .planet }
         return .region
     }
 
@@ -64,9 +67,11 @@ package enum WorldLevels {
     }
 
     /// The farthest the camera may be: the visible half extent at the floor stays within one world, so that the repeating
-    /// map (two and a half worlds each way from the target's cell) always covers the view.
-    package static func maxDistance(size: Float, fovY: Float, aspect: Float) -> Float {
-        size / (tan(fovY / 2) * max(1, aspect))
+    /// map (two and a half worlds each way from the target's cell) always covers the view. Never nearer than `home`, the
+    /// distance of the starting pose in a window of this shape (a wide window, a bottom dock, fits the world by its height
+    /// and sits farther out than the rule above; the first pan or zoom must not snap the view in).
+    package static func maxDistance(size: Float, fovY: Float, aspect: Float, home: Float = 0) -> Float {
+        max(size / (tan(fovY / 2) * max(1, aspect)), home)
     }
 
     /// The nearest: a few agent radii.

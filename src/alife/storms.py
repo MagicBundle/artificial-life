@@ -731,7 +731,7 @@ class StormLayer:
         ]
         active = sorted(active, key=lambda x: x.id)
         ended = [
-            {"id": e["id"], "reason": "merged" if e["kind"] == "merged" else "dissolved", "into": e["other"]}
+            {"id": e["id"], "reason": "merged" if e["kind"] == "merged" else "dissipated", "into": e["other"]}
             for e in events
             if e["kind"] in ("merged", "dissolved")
         ]
@@ -791,6 +791,7 @@ class StormLayer:
             "params": _params_hash(self.p),
             "tick": self.tick,
             "step": self.step,
+            "tick_step": self.step,
             "next_id": self.tracker.next_id,
             "tracks": tracks,
         }
@@ -816,7 +817,7 @@ class StormLayer:
         layer.tracker.tracks = tracks
         layer.tracker.next_id = int(state["next_id"])
         layer.notes = notes
-        layer.step = int(state["step"])
+        layer.step = int(state.get("tick_step", state["step"]))  # the last tick (``step``: the checkpoint's)
         return layer
 
     @classmethod

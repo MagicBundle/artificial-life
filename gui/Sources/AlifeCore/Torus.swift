@@ -52,6 +52,58 @@ extension Camera {
     /// The tiled quad's half side, in worlds.
     package static let tiledHalfExtent: Float = 2.5
 
+    /// How far from the target the tiled map is sure to reach, in every direction: the quad's half side less the half world
+    /// the target may be from the centre of its cell.
+    package static func tiledReach(size: Float) -> Float { (tiledHalfExtent - 0.5) * size }
+
+    /// The distance, along the floor (z = 0), from the target to the farthest floor point in view: the intersection of the
+    /// four corner rays and the top and bottom edges' with the floor. Nil when the horizon is in view (some rays meet the floor
+    /// and some never do: the view of a tilted camera far out); 0 when no ray meets it (the camera looks away from the floor).
+    package func farthestFloorDistance(aspect: Float) -> Float? {
+        let eye = position
+        let half = tan(fovY / 2)
+        let f = forward, r = right, u = up
+        var farthest: Float = 0
+        var missed = false
+        for (sx, sy) in [(-1, 1), (1, 1), (-1, -1), (1, -1), (0, 1), (0, -1)] as [(Float, Float)] {
+            let ray = f + (sx * aspect * half) * r + (sy * half) * u
+            let t = ray.z == 0 ? -1 : -eye.z / ray.z
+            guard t > 0, t.isFinite else {
+                missed = true
+                continue
+            }
+            let hit = eye + t * ray
+            farthest = max(farthest, hypot(hit.x - target.x, hit.y - target.y))
+        }
+        if missed { return farthest > 0 ? nil : 0 }
+        return farthest
+    }
+
+    /// The height of the eye over the floor, as a fraction of the map's reach, under which the map's edge lies within about
+    /// three degrees of the horizon and is not told from it.
+    package static let edgeDepression: Float = 0.05
+
+    /// Tilts the camera towards the floor (a steeper view, never a shallower) until the floor in view lies within the tiled
+    /// map's reach, so that no edge of the map shows (a long distance at an oblique pitch looks far over the finite quad). A
+    /// view from straight above always fits. A camera close to the floor is left alone: the edge of the map is a hair under
+    /// its horizon, where the floor meets the sky anyway (`edgeDepression`). True if the pitch changed.
+    @discardableResult
+    package mutating func keepFloorInReach(size: Float, aspect: Float) -> Bool {
+        let reach = Self.tiledReach(size: size)
+        if abs(position.z) < Self.edgeDepression * reach { return false }
+        if let far = farthestFloorDistance(aspect: aspect), far <= reach { return false }
+        let original = pitch
+        let towardDown: Float = position.z >= 0 ? -1 : 1  // above the floor looks down (pitch < 0), below it looks up
+        let step: Float = 0.5 * .pi / 180
+        var trial = self
+        while abs(trial.pitch) < Self.maxPitch {
+            trial.pitch = min(max(trial.pitch + towardDown * step, -Self.maxPitch), Self.maxPitch)
+            if let far = trial.farthestFloorDistance(aspect: aspect), far <= reach { break }
+        }
+        pitch = trial.pitch
+        return pitch != original
+    }
+
     /// The starting pose of the planet: the map seen from above, x to the right and y up (the way a map reads), the whole
     /// world in view in the smaller dimension of a window of `aspect`.
     package static func planet(size: Float, height: Float = 0, aspect: Float = 1, fovY: Float = Camera.defaultFovY) -> Camera {

@@ -17,6 +17,7 @@ final class WorldMTKView: MTKView {
     private var downPoint: CGPoint?
     private var dragging = false
     private var tracking: NSTrackingArea?
+    private var keyMonitor: Any?
 
     /// A press that moves less than this many points is a click.
     static let clickSlop: CGFloat = 4
@@ -28,11 +29,47 @@ final class WorldMTKView: MTKView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.makeFirstResponder(self)
+        removeKeyMonitor()
         if window == nil {
             stopAnimating()
-        } else if model?.isAnimating == true {
-            startAnimating()  // a fade began before the view had a window to run a display link in
+        } else {
+            installKeyMonitor()
+            if model?.isAnimating == true {
+                startAnimating()  // a fade began before the view had a window to run a display link in
+            }
         }
+    }
+
+    /// The window's keys reach the world whichever view has the focus. After a click in the Cast or the Chronicle the focus is
+    /// in the list, and space or esc would do nothing: a local monitor sees the key first. Text being edited keeps its keys.
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // (AppKit calls the monitor on the main thread; NSEvent is not Sendable, so it is carried across by hand.)
+            nonisolated(unsafe) let key = event
+            let handled = MainActor.assumeIsolated {
+                guard let self, key.window != nil, key.window === self.window else { return false }
+                return self.handleKey(key)
+            }
+            return handled ? nil : event
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+    }
+
+    /// Whether `event` was a World key, and has been acted on. Not while a text field is being edited.
+    func handleKey(_ event: NSEvent) -> Bool {
+        if window?.firstResponder is NSText { return false }
+        let flags = event.modifierFlags
+        guard let model,
+              let action = WorldKeys.action(for: event.charactersIgnoringModifiers ?? "", command: flags.contains(.command),
+                                            control: flags.contains(.control))
+        else { return false }
+        model.perform(action)
+        return true
     }
 
     /// The event's location in the view's points with the origin at the top left (what the picker and the overlay use).
@@ -44,15 +81,7 @@ final class WorldMTKView: MTKView {
     // MARK: Keys
 
     override func keyDown(with event: NSEvent) {
-        let flags = event.modifierFlags
-        guard let model,
-              let action = WorldKeys.action(for: event.charactersIgnoringModifiers ?? "", command: flags.contains(.command),
-                                            control: flags.contains(.control))
-        else {
-            super.keyDown(with: event)
-            return
-        }
-        model.perform(action)
+        if !handleKey(event) { super.keyDown(with: event) }
     }
 
     // MARK: Pointer

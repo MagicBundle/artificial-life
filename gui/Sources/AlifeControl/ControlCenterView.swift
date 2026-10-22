@@ -20,36 +20,85 @@ struct ControlCenterView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            if !collapsed {
-                ClockStripView(play: play)
-                    .padding(10)
-                Divider()
-                Picker("", selection: $tab) {
-                    ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                Group {
-                    switch tab {
-                    case .cast: CastView(play: play, model: model)
-                    case .chronicle: ChronicleView(play: play, model: model)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Whatever is selected is pinned under the tabs, whichever is open (watching first, few inputs).
-                if let card = model.inspectorCard {
-                    Divider()
-                    InspectorCardView(card: card, model: model)
-                }
-            } else {
+            if collapsed {
                 Spacer(minLength: 0)
+            } else if side == .bottom {
+                bottomDock
+            } else {
+                sideDock
             }
         }
         .background(.regularMaterial)
         .background(Color(nsColor: .windowBackgroundColor))
     }
+
+    /// On a side: the clock strip, the tabs, and the inspector pinned under them.
+    private var sideDock: some View {
+        VStack(spacing: 0) {
+            ClockStripView(play: play)
+                .padding(10)
+            Divider()
+            tabs
+            // Whatever is selected is pinned under the tabs, whichever is open (watching first, few inputs).
+            if let card = model.inspectorCard {
+                Divider()
+                scrollingCard(card).frame(maxHeight: Self.cardMaxHeight, alignment: .top)
+            }
+        }
+    }
+
+    /// At the bottom, which is wide and short: the clock strip on the left, the tabs in the middle and the inspector on the
+    /// right, each in its own column so that nothing is pushed out of the dock.
+    private var bottomDock: some View {
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                ClockStripView(play: play).padding(10)
+                Spacer(minLength: 0)
+            }
+            .frame(width: Self.clockColumn)
+            Divider()
+            VStack(spacing: 0) { tabs }
+                .frame(maxWidth: .infinity)
+            if let card = model.inspectorCard {
+                Divider()
+                scrollingCard(card).frame(width: Self.cardColumn)
+            }
+        }
+    }
+
+    private var tabs: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            Group {
+                switch tab {
+                case .cast: CastView(play: play, model: model)
+                case .chronicle: ChronicleView(play: play, model: model)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: Self.listMinHeight, maxHeight: .infinity)
+        }
+    }
+
+    /// The card as it is when it fits, and scrolling when the dock gives it less than it needs (a bottom dock, a short window).
+    private func scrollingCard(_ card: InspectorCard) -> some View {
+        ViewThatFits(in: .vertical) {
+            InspectorCardView(card: card, model: model)
+            ScrollView { InspectorCardView(card: card, model: model) }
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    /// The tallest the card gets in a side dock; the list under the tabs keeps at least `listMinHeight`.
+    static let cardMaxHeight: CGFloat = 300
+    static let listMinHeight: CGFloat = 120
+    static let clockColumn: CGFloat = 300
+    static let cardColumn: CGFloat = 320
 
     private var header: some View {
         HStack(spacing: 8) {
@@ -85,7 +134,6 @@ struct ControlCenterView: View {
 struct ViewMenu: View {
     @ObservedObject var play: PlayController
     @ObservedObject var model: WorldModel
-    @State private var labelsOn = true
 
     var body: some View {
         Menu("View") {
@@ -97,8 +145,10 @@ struct ViewMenu: View {
                 ForEach(modes, id: \.self) { Text($0).tag($0) }
             }
             Divider()
-            Toggle("Labels", isOn: Binding(
-                get: { labelsOn }, set: { labelsOn = $0; play.send(.labels($0)) }))
+            // The world's `labels on|off`: whether it sends the intent labels (INTN) at all. Nothing is drawn from them on the
+            // map; the inspector's intent line reads them.
+            Toggle("Intent labels (stream)", isOn: Binding(
+                get: { play.labelsOn }, set: { play.send(.labels($0)) }))
             Divider()
             // The agent toggle refers to the layer of the level in view: instances close up, the 1 px points at the planet level.
             if model.level == .planet {
@@ -165,5 +215,30 @@ struct ClockStripView: View {
                 }
             }
         }
+    }
+}
+
+/// The clock in one line over the map while the dock is collapsed (the strip is hidden with it): the pause, the lateness and
+/// the checkpoint stall stay visible whichever way the dock is.
+struct ClockBadge: View {
+    @ObservedObject var play: PlayController
+
+    var body: some View {
+        let strip = ClockStrip(clock: play.store.clock, requested: play.requestedRate, baseRate: play.store.play?.baseRate ?? 14.4)
+        HStack(spacing: 8) {
+            Text(strip.readout).foregroundStyle(strip.paused ? Color.primary : Color.secondary)
+            if strip.lateSteps > 0 {
+                Text("late \(strip.lateSteps)").foregroundStyle(.orange)
+            }
+            if strip.saving {
+                Label("saving…", systemImage: "externaldrive").foregroundStyle(.orange)
+            }
+        }
+        .font(.caption.monospacedDigit())
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(.regularMaterial, in: Capsule())
+        .padding(10)
+        .allowsHitTesting(false)
     }
 }

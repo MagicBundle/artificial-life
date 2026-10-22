@@ -134,6 +134,37 @@ def test_a_directory_without_play_json_is_refused_and_adoption_keeps_the_config(
     assert decode(data).header["source"] == "run"
 
 
+def test_adoption_prunes_none_of_the_researchs_checkpoints(tmp_path: Path) -> None:
+    """``--adopt`` keeps the run's own ``keep_checkpoints`` (and room for the next checkpoint): the first save
+    of the play does not delete the older checkpoints of the research run, and says what it keeps."""
+
+    def research(name: str, steps: int, keep: int) -> Path:
+        out = tmp_path / name
+        args = ["run", *TINY, "--out", str(out), "--steps", str(steps), "--checkpoint-every", "30", "--quiet"]
+        assert cli.main([*args, "--set", f"run.keep_checkpoints={keep}"]) == 0
+        return out
+
+    big = research("big", 150, 10)
+    before = [s for s, _ in RunDir.open(big).checkpoints()]
+    assert before == [0, 30, 60, 90, 120, 150]
+    code, _, err = finish(spawn("play", str(big), "--adopt"), "rate max\nrun\nquit\n")
+    assert code == 0, err
+    assert "keeps run.keep_checkpoints at 10" in err
+    rd = RunDir.open(big)
+    assert set(before) <= {s for s, _ in rd.checkpoints()}, "nothing of the research run was pruned"
+    assert rd.config().run.keep_checkpoints == 10
+    # a run that holds more checkpoints than its own value (an edited config): room is made for them
+    small = research("small", 120, 10)
+    cfg_path = small / "config.json"
+    cfg_path.write_text(cfg_path.read_text().replace('"keep_checkpoints": 10', '"keep_checkpoints": 2'))
+    held = [s for s, _ in RunDir.open(small).checkpoints()]
+    assert len(held) > 2
+    code, _, err = finish(spawn("play", str(small), "--adopt"), "rate max\nrun\nquit\n")
+    assert code == 0, err
+    assert set(held) <= {s for s, _ in RunDir.open(small).checkpoints()}
+    assert RunDir.open(small).config().run.keep_checkpoints == len(held) + 1
+
+
 def test_an_older_checkpoint_needs_truncate(tmp_path: Path) -> None:
     out = tmp_path / "w"
     assert (
@@ -165,6 +196,8 @@ def test_the_flags_of_the_three_forms_are_checked_before_anything_is_written(tmp
         (["play", "--preset", "tiny", "--replay"], "--replay applies"),
         (["play", str(out), "--set", "run.seed=1"], "make a new world"),
         (["play", str(out), "--replay", "--director", "rules"], "cannot also decide"),
+        (["play", "--preset", "tiny", "--set", "run.checkpoint_every=200"], "play fixes the cadence"),
+        (["play", "--preset", "tiny", "--set", "run.keep_checkpoints=9"], "would be overridden"),
     ]
     for args, why in cases:
         code, _, err = finish(spawn(*args), "")

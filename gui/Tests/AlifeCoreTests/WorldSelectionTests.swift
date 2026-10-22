@@ -29,9 +29,21 @@ import Testing
         }
         var selection = WorldSelection.organism(uid: 5)
         let death = selection.applyHandoff(event(kind: EventKind.focusDeath, fam: "focus", a: 5))
-        let nobody = selection.applyHandoff(event(kind: EventKind.focusHandoff, fam: "focus", a: 5, b: 0))
+        let nobody = selection.applyHandoff(event(kind: EventKind.focusHandoff, fam: "focus", a: 5, b: -1))
         #expect(!death && !nobody, "a death moves nothing, nor does a hand-off to nobody")
         #expect(selection == .organism(uid: 5))
+    }
+
+    @Test func theOrganismWithUidZeroIsAnOrganismLikeAnyOther() {
+        // The first founder of a world is uid 0: only the other families number their entities from 1.
+        var selection = WorldSelection.organism(uid: 9)
+        let toZero = selection.applyHandoff(event(kind: EventKind.focusHandoff, fam: "focus", a: 9, b: 0))
+        #expect(toZero && selection == .organism(uid: 0))
+        let fromZero = selection.applyHandoff(event(kind: EventKind.focusHandoff, fam: "focus", a: 0, b: 4))
+        #expect(fromZero && selection == .organism(uid: 4))
+        #expect(ChronicleAction.of(event(kind: EventKind.focusDeath, fam: "focus", a: 0, x: 1, y: 2)).select == .organism(uid: 0))
+        #expect(ChronicleAction.of(event(kind: EventKind.focusHandoff, fam: "focus", a: 5, b: 0)).select == .organism(uid: 0))
+        #expect(ChronicleAction.of(event(kind: EventKind.stormNamed, fam: "storm", a: 0)).select == .none, "storm ids start at 1")
     }
 
     @Test func aChainOfHandOffsIsFollowedOneByOne() {

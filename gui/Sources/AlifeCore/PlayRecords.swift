@@ -89,7 +89,6 @@ package struct PlayHeader: Equatable, Sendable, Codable {
         guard baseRate.isFinite, baseRate > 0 else { throw bad("base_rate \(baseRate) is not positive") }
         guard rates.allSatisfy({ $0.isFinite && $0 > 0 }) else { throw bad("a rate is not positive") }
         guard tick > 0, snapshotEvery > 0, frameHz > 0, chapter > 0 else { throw bad("a cadence is not positive") }
-        guard snapshotEvery % tick == 0 else { throw bad("snapshot_every \(snapshotEvery) is not a multiple of tick \(tick)") }
         guard energyCap > 0 else { throw bad("energy_cap \(energyCap) is not positive") }
         guard weather.cells > 0, weather.coarse > 0, weather.cells % weather.coarse == 0 else {
             throw bad("weather.cells \(weather.cells) is not a multiple of weather.coarse \(weather.coarse)")

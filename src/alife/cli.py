@@ -999,6 +999,16 @@ def _cmd_play(a: argparse.Namespace) -> int:
                 raise ConfigError(f"{flag} applies to a world directory (play RUN)")
         if a.houses is not None and a.init_from is None:
             raise ConfigError("--houses applies to a planet (--init-from): a preset starts at step 0")
+        fixed = sorted(
+            k
+            for k in (item.partition("=")[0] for item in a.set)
+            if k.removeprefix("run.") in play.PLAY_CADENCE
+        )
+        if fixed:
+            raise ConfigError(
+                f"play fixes the cadence of a world ({', '.join(f'run.{k}' for k in play.PLAY_CADENCE)}); "
+                f"--set {', '.join(fixed)} would be overridden: remove it"
+            )
     elif a.set or a.overlay or a.seed is not None or a.out or a.weather_spinup is not None or a.houses:
         raise ConfigError(
             "--set, --overlay, --seed, --out, --weather-spinup and --houses make a new world (--init-from "
@@ -1115,6 +1125,24 @@ def _cut_listing(rd: RunDir, step: int) -> str:
     ) + f" and {len(chunks)} event chunk(s) {chunks}"
 
 
+def _keep_checkpoints(rd: RunDir, saved: dict[str, Any] | None, play_keep: int) -> int:
+    """``run.keep_checkpoints`` of a world directory played from here on: never below what the world already
+    holds, so that playing it prunes nothing it did not prune before. A play world has ``play_keep``
+    already; a research run adopted with ``--adopt`` keeps its own value, and room for the checkpoint the
+    first save adds (the newest ``keep`` survive, so a lower value would delete the older ones)."""
+    own = rd.config().run.keep_checkpoints
+    held = len(rd.checkpoints()) + 1 if saved is None else 0
+    keep = max(own, play_keep, held)
+    if saved is None and keep != play_keep:
+        print(
+            f"play: --adopt keeps run.keep_checkpoints at {keep} (the run's own {own}, its "
+            f"{held - 1} checkpoints and the next one): nothing is pruned at the first save",
+            file=sys.stderr,
+            flush=True,
+        )
+    return keep
+
+
 def _play_resume(a: argparse.Namespace, sink: Any, control: stream.Control) -> int:
     """A world directory: ``play.json`` (or ``--adopt``), the chosen checkpoint (``--truncate`` if older than
     the newest), the logs cut to it as ``resume`` does, played under the pacer."""
@@ -1131,6 +1159,11 @@ def _play_resume(a: argparse.Namespace, sink: Any, control: stream.Control) -> i
                 "(config.json is kept as config.pre_play.json)"
             )
         items = _play_items(a)
+        keep = _keep_checkpoints(rd, saved, play.PLAY_CADENCE["keep_checkpoints"])
+        items = [
+            *(i for i in items if not i.startswith("run.keep_checkpoints=")),
+            f"run.keep_checkpoints={keep}",
+        ]
         bad = [item for item in items if not _resume_allowed(item)]
         if bad:
             raise ConfigError(f"play cannot apply {bad} to a run on resume")

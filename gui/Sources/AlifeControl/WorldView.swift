@@ -28,7 +28,7 @@ struct WorldView: View {
         GeometryReader { geometry in
             let frames = DockLayout.frames(in: geometry.size, side: side, extent: extent, collapsed: collapsed)
             ZStack(alignment: .topLeading) {
-                WorldCanvasView(play: play, model: model)
+                WorldCanvasView(play: play, model: model, dockCollapsed: collapsed)
                     .frame(width: frames.free.width, height: frames.free.height)
                     .position(x: frames.free.midX, y: frames.free.midY)
                 ControlCenterView(play: play, model: model, collapsed: $collapsed, side: side)
@@ -58,6 +58,12 @@ struct WorldView: View {
                 .pickerStyle(.segmented)
                 .help("Dock the control center on the left, the right or the bottom")
                 Button("Worlds…") { model.launcherOpen = true }
+                Button("Close world") {
+                    play.stop()
+                    model.launcherOpen = true
+                }
+                .disabled(!play.isActive)
+                .help("Stop the world (it saves a checkpoint first) and open the launcher")
             }
         }
     }
@@ -106,6 +112,8 @@ struct WorldView: View {
 struct WorldCanvasView: View {
     @ObservedObject var play: PlayController
     @ObservedObject var model: WorldModel
+    /// The dock is collapsed: its clock strip is hidden, so the clock is shown over the map.
+    var dockCollapsed = false
 
     var body: some View {
         let _ = play.revision
@@ -118,6 +126,10 @@ struct WorldCanvasView: View {
                 ToastStackView(model: model)
                 FollowBadge(model: model, play: play)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                if dockCollapsed {
+                    ClockBadge(play: play)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                }
             }
             banner
         }

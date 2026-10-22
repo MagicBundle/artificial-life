@@ -210,6 +210,7 @@ def test_born_split_merged_dissolved_events_and_the_ended_list() -> None:
     assert {e["id"]: e["age"] for e in gone[2].events} == {1: 75, 2: 0}
     assert [s["state"] for s in gone[0].strm["storms"]] == ["coasting", "coasting"]
     assert gone[2].strm["storms"] == [] and len(gone[2].strm["ended"]) == 2
+    assert {(e["id"], e["reason"]) for e in gone[2].strm["ended"]} == {(1, "dissipated"), (2, "dissipated")}
 
 
 def test_the_strm_object_wraps_positions_and_keeps_tracks_unwrapped() -> None:
@@ -392,6 +393,22 @@ def test_truncate_after_leaves_a_directory_without_storms_alone_and_checks_the_l
     with pytest.raises(ValueError, match="int 'step'"):
         rd.append_storms([{"x": 1}])
     rd.append_storms([])
+
+
+def test_a_state_saved_at_a_checkpoint_remembers_the_last_tick(world) -> None:
+    """The checkpoint's step is not the layer's step: after a resume the first ``STRM`` still says which tick
+    it shows (``detect_step``), and the old files without ``tick_step`` read as before."""
+    _, rd, _ = world
+    layer = StormLayer(P40, DC_REF, 25)
+    run(layer, scene(3, 6))  # the last tick is at 150
+    layer.save(rd, 163)  # a checkpoint between two ticks
+    back, why = StormLayer.open(rd, P40, DC_REF, 163)
+    assert why is None and back.step == 150 and back.state()["tick_step"] == 150
+    state = json.loads(rd.storms_state_path(163).read_text())
+    assert state["step"] == 163 and state["tick_step"] == 150
+    del state["tick_step"]
+    old = StormLayer.restore(P40, DC_REF, state)
+    assert old.step == 163, "a state without tick_step is read as before"
 
 
 def test_open_restores_the_state_of_the_checkpoint_or_starts_afresh_and_says_so(world) -> None:

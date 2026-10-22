@@ -192,14 +192,17 @@ import Testing
         #expect(await eventually { !controller.hasProcess })
     }
 
-    @Test func theNextClockConfirmsTheRateTheWindowAsked() async throws {
+    @Test func aClockThatDoesNotShowTheAskedRateSettlesItOnlyAfterASecond() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        // After the fixture, the stand-in answers `pause` with the fixture's last CLCK again.
+        // After the fixture, the stand-in answers `pause` with the fixture's last CLCK (which is not a paused one) at once and
+        // again a second and a half later; the first is a clock sent before the line was read, the second the world's answer.
         let clock = try scratch.script("alife-clock", """
             cat "$1"
             while IFS= read -r line; do
               if [ "$line" = "pause" ]; then
+                dd if="$1" bs=1 skip=115784 count=68 2>/dev/null
+                sleep 1.5
                 dd if="$1" bs=1 skip=115784 count=68 2>/dev/null
               fi
               if [ "$line" = "quit" ]; then exit 0; fi
@@ -211,7 +214,9 @@ import Testing
         #expect(await eventually { controller.phase == .live && controller.store.clock != nil })
         controller.pause()
         #expect(controller.requestedRate == .multiplier(0))
-        #expect(await eventually { controller.requestedRate == nil }, "a CLCK arrived: the world speaks for itself")
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(controller.requestedRate == .multiplier(0), "the first clock did not show a pause: the strip keeps what was asked")
+        #expect(await eventually { controller.requestedRate == nil }, "a clock a second after the asking is the world's answer")
         controller.shutdown()
         #expect(await eventually { !controller.hasProcess })
     }

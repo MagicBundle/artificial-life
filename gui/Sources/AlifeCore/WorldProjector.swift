@@ -26,17 +26,20 @@ package struct WorldProjector: Equatable, Sendable {
     package var size: Float
     /// The free rectangle's size, in points.
     package var view: CGSize
+    /// Whether a weather map is in view (the planet level exists only then, `WorldLevels.level`).
+    package var mapShown: Bool
 
-    package init(camera: Camera, size: Float, view: CGSize) {
+    package init(camera: Camera, size: Float, view: CGSize, mapShown: Bool = true) {
         self.camera = camera
         self.size = size
         self.view = view
+        self.mapShown = mapShown
     }
 
     package var aspect: Float { view.height >= 1 ? Float(view.width / view.height) : 1 }
 
     package var level: WorldLevel {
-        WorldLevels.level(distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: size)
+        WorldLevels.level(distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: size, mapShown: mapShown)
     }
 
     /// The image of a world point nearest the camera target.

@@ -63,6 +63,8 @@ final class PlayController: ObservableObject {
     @Published private(set) var progress: [String] = []
     /// What the window asked the rate to be, until the world's next `CLCK` confirms it (`.multiplier(0)`: paused).
     @Published private(set) var requestedRate: PlayRate?
+    /// Whether the world was told to send the intent labels (`labels on|off`; on at the start of every world).
+    @Published private(set) var labelsOn = true
     /// The names of the worlds whose process was asked to stop and has not exited: they are saving.
     @Published private(set) var retiredWorlds: [String] = []
 
@@ -73,6 +75,15 @@ final class PlayController: ObservableObject {
     /// Called, before `onDelivery`, with the events of each `EVNT` batch that the chronicle had not seen, in order, and whether
     /// the batch is the backlog loaded at the start (a hand-off or a toast is the news of a live batch, never of the backlog).
     var onEvents: (@MainActor ([WorldEvent], Bool) -> Void)?
+    /// Called when the store was replaced by an empty one (a world started or stopped), before anything of the new world: the
+    /// window forgets the selection and the follow of the old one at once, not when the new header arrives.
+    var onReset: (@MainActor () -> Void)?
+    /// Seconds from a monotonic origin (tests inject theirs).
+    var now: () -> Double = { ProcessInfo.processInfo.systemUptime }
+    /// A `CLCK` that does not show the rate the window asked for, this long after the asking, is the world's answer: the
+    /// request is dropped (it was refused or clamped).
+    static let confirmWait = 1.0
+    private var requestedAt = 0.0
     /// Where lines for the log go: the command line that starts the world, and its stderr.
     var log: @MainActor ([String], Bool) -> Void = { _, _ in }
     /// The stop ladder of a live world; tests shorten it.
@@ -106,6 +117,8 @@ final class PlayController: ObservableObject {
         revision += 1
         progress = []
         requestedRate = nil
+        labelsOn = true
+        onReset?()
 
         // A world still saving its checkpoint holds `play.lock`; starting it again would only be refused.
         if retired.contains(where: { $0.world == request.world }) {
@@ -147,6 +160,8 @@ final class PlayController: ObservableObject {
         store = WorldStore()
         revision += 1
         requestedRate = nil
+        labelsOn = true
+        onReset?()
     }
 
     /// The app is quitting: ask a live world to stop through its ladder, so that it saves (`applicationShouldTerminate`
@@ -188,8 +203,16 @@ final class PlayController: ObservableObject {
             return false
         }
         switch command {
-        case .pause: requestedRate = .multiplier(0)
-        case .rate(let rate): requestedRate = rate
+        case .pause:
+            requestedRate = .multiplier(0)
+            requestedAt = now()
+        case .rate(let rate):
+            requestedRate = rate
+            requestedAt = now()
+        case .labels(let on):
+            labelsOn = on
+        case .run, .step:
+            requestedRate = nil  // a later intent replaces a pending request; the world's next CLCK says what it holds
         default: break
         }
         return true
@@ -226,7 +249,7 @@ final class PlayController: ObservableObject {
         }
         // The order does not matter between latest-wins records: each is complete by itself (§33.1.1).
         for record in delivery.records.values {
-            if case .clck = record { requestedRate = nil }
+            if case .clck(let clock) = record { settleRequest(after: clock) }
             changes.formUnion(store.apply(record))
         }
         var announced: [(events: [WorldEvent], backlog: Bool)] = []
@@ -280,6 +303,23 @@ final class PlayController: ObservableObject {
     private func isTruncation(_ error: StreamError) -> Bool {
         if case .truncated = error { return true }
         return false
+    }
+
+    /// A `CLCK` arrived: the rate the window asked for is settled when the clock shows it (or, a second after the asking, shows
+    /// something else: the world refused or clamped it). A clock sent before the world read the command shows the old rate and
+    /// settles nothing, so the strip does not flip back to it for a quarter of a second.
+    func settleRequest(after clock: PlayClock) {
+        guard let asked = requestedRate else { return }
+        if Self.confirms(clock.rate, asked) || now() - requestedAt > Self.confirmWait { requestedRate = nil }
+    }
+
+    /// Whether a `CLCK` rate (0 paused, -1 max, else the multiplier) is the rate the window asked for. A clock sent before the
+    /// world read the command shows the old rate and confirms nothing.
+    static func confirms(_ rate: Float, _ asked: PlayRate) -> Bool {
+        switch asked {
+        case .max: return rate < 0
+        case .multiplier(let m): return rate >= 0 && abs(Double(rate) - m) <= 1e-4 * Swift.max(1, m)
+        }
     }
 
     static func describe(status: Int32) -> String {

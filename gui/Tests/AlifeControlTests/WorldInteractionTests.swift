@@ -513,6 +513,144 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         #expect(rig.model.successors.isEmpty && !rig.model.isFlying)
     }
 
+    @Test func aChronicleClickOnADeadOrganismFliesToWhereItDiedAndFollowsNothing() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await makeRig(scratch)
+        defer { rig.play.shutdown() }
+        let gone = uid0 + 999  // not in the newest frame
+        let death = WorldEvent(id: 9100, step: 9, kind: EventKind.focusDeath, fam: "focus", a: Int(gone), b: 0, x: 5, y: 6, z: nil, imp: 1,
+                               text: "Organism died.")
+        rig.model.activate(death)
+        #expect(rig.model.selection == .organism(uid: gone) && rig.model.isFlying)
+        #expect(rig.model.followTarget == .none, "a dead organism has no position to follow")
+        #expect(await sent(rig, "focus \(gone)"))
+        let frames = settle(rig)
+        #expect(frames < 1500 && !rig.model.isFlying, "the fly ended: \(frames)")
+        #expect(abs(rig.model.camera.target.x - 5) < 0.2 && abs(rig.model.camera.target.y - 6) < 0.2)
+        #expect(rig.model.inspectorCard?.alive == false)
+    }
+
+    @Test func aFlyWhileFollowingSomethingNotYetInAFrameGoesWhereItWasSent() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await makeRig(scratch)
+        defer { rig.play.shutdown() }
+        rig.model.setFollow(.organism(uid: uid0 + 999))  // (a successor the frame does not hold yet)
+        rig.model.flyTo(SIMD3(10, 10, 0), distance: nil)
+        #expect(rig.model.advanceCamera(dt: 1.0 / 60), "it moves")
+        settle(rig)
+        #expect(abs(rig.model.camera.target.x - 10) < 0.2 && !rig.model.isFlying)
+    }
+
+    @Test func aWideWindowsHomePoseIsNotSnappedInByTheFirstDrag() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await makeRig(scratch)
+        defer { rig.play.shutdown() }
+        rig.model.setFreeRect(CGRect(x: 0, y: 0, width: 1100, height: 460))  // a bottom dock: 2.39 to 1
+        rig.model.goHome()
+        let home = rig.model.camera.distance
+        rig.model.drag(dx: 1, dy: 0, orbit: false)
+        #expect(abs(rig.model.camera.distance - home) < 1e-3, "\(home) became \(rig.model.camera.distance)")
+        rig.model.zoom(by: 1.5)
+        #expect(rig.model.camera.distance == home, "and it cannot be zoomed out past it")
+    }
+
+    @Test func aWeatherWorldOpensAtThePlanetLevelAndADryOneDoesNot() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let wet = try await makeRig(scratch)
+        defer { wet.play.shutdown() }
+        #expect(wet.play.store.map != nil)
+        wet.model.goHome()
+        #expect(wet.model.level == .planet)
+        wet.model.display.map = false  // no map in view, nothing for the planet level to protect
+        #expect(wet.model.level == .region)
+        wet.model.display.map = true
+        #expect(wet.model.level == .planet)
+        let flat = try Scratch()
+        defer { flat.cleanup() }
+        let dry = try await makeRig(flat, kind: "2d")
+        defer { dry.play.shutdown() }
+        dry.model.goHome()
+        #expect(dry.play.store.map == nil)
+        #expect(dry.model.level == .region, "the organisms of a 2D world are in view at home")
+        #expect(WorldLevels.agentLayer(at: dry.model.level, display: dry.model.display) == .instances)
+    }
+
+    @Test func zoomingOutAtAnObliquePitchTiltsTheViewBackSoNoEdgeOfTheMapShows() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await makeRig(scratch)
+        defer { rig.play.shutdown() }
+        let size = rig.model.worldSize
+        rig.model.edit {
+            $0.pitch = -30 * .pi / 180
+            $0.distance = 100 * size
+        }
+        let camera = rig.model.camera
+        #expect(camera.pitch < -30 * .pi / 180, "steeper than asked")
+        let seen = try #require(camera.farthestFloorDistance(aspect: rig.model.aspect))
+        #expect(seen <= Camera.tiledReach(size: size))
+    }
+
+    @Test func aWorldThatIsStoppedOrReplacedForgetsWhatWasSelectedAtOnce() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await makeRig(scratch)
+        defer { rig.play.shutdown() }
+        rig.model.click(at: try loner(rig), shift: false, clicks: 1)
+        #expect(!rig.model.selection.isNone)
+        rig.play.stop()  // (no header of a new world has arrived: the old selection must not outlive the old store)
+        #expect(rig.model.selection.isNone && rig.model.followTarget == .none && rig.model.inspectorCard == nil)
+    }
+
+    @Test func theRequestedRateStaysUntilTheClockShowsItOrASecondHasPassed() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await makeRig(scratch)
+        defer { rig.play.shutdown() }
+        var now = 100.0
+        rig.play.now = { now }
+        let clock = try #require(rig.play.store.clock)
+        func shows(_ rate: Float) -> PlayClock {
+            var c = clock
+            c.rate = rate
+            return c
+        }
+        rig.play.setRate(.max)
+        #expect(rig.play.requestedRate == .max)
+        rig.play.settleRequest(after: shows(0))  // a periodic CLCK sent before the world read the line
+        #expect(rig.play.requestedRate == .max, "it does not flip the strip back to the old state")
+        rig.play.settleRequest(after: shows(-1))
+        #expect(rig.play.requestedRate == nil, "confirmed")
+        rig.play.pause()
+        #expect(rig.play.requestedRate == .multiplier(0))
+        rig.play.settleRequest(after: shows(2))
+        #expect(rig.play.requestedRate == .multiplier(0))
+        now += 1.5  // a clock this long after the asking is the world's answer, whatever it says
+        rig.play.settleRequest(after: shows(2))
+        #expect(rig.play.requestedRate == nil)
+        rig.play.setRate(.multiplier(0.25))
+        rig.play.resume()  // a later intent replaces the pending one
+        #expect(rig.play.requestedRate == nil)
+        #expect(PlayController.confirms(0.25, .multiplier(0.25)) && !PlayController.confirms(-1, .multiplier(0)))
+        #expect(PlayController.confirms(0, .multiplier(0)) && PlayController.confirms(-1, .max) && !PlayController.confirms(1, .max))
+    }
+
+    @Test func theLabelsSwitchIsTheWorldsAndIsOnAgainInANewWorld() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await makeRig(scratch)
+        defer { rig.play.shutdown() }
+        #expect(rig.play.labelsOn)
+        rig.play.send(.labels(false))
+        #expect(!rig.play.labelsOn)
+        rig.play.stop()
+        #expect(rig.play.labelsOn)
+    }
+
     @Test func aZoomCancelsTheDistanceOfAFlyButNotItsPlace() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
@@ -785,6 +923,36 @@ extension WorldInteractionTests {
         #expect(rig.model.selection.isNone)
         view.keyDown(with: try key("3"))
         #expect(!rig.model.display.territory)
+    }
+
+    @Test func theWorldKeysWorkWhateverHasTheFocusButATextField() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await makeRig(scratch)
+        defer { rig.play.shutdown() }
+        let view = view(for: rig)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: true)
+        let content = NSView(frame: window.contentRect(forFrameRect: window.frame))
+        let list = NSTableView(frame: CGRect(x: 0, y: 0, width: 100, height: 100))  // the Cast or Chronicle list
+        content.addSubview(view)
+        content.addSubview(list)
+        window.contentView = content
+        #expect(window.makeFirstResponder(list), "the focus went to the list")
+        // The monitor of a view in a window hands the key to the model whoever the first responder is...
+        let space = try key(" ")
+        #expect(view.handleKey(space))
+        #expect(await eventually { rig.sent.last == "run" })
+        // ...and a chord or an unknown key is not the world's.
+        let chord = try key(".", flags: .command)
+        let unknown = try key("q")
+        #expect(!view.handleKey(chord) && !view.handleKey(unknown))
+        // Text being edited keeps its keys.
+        let field = NSTextView(frame: CGRect(x: 0, y: 0, width: 100, height: 20))
+        content.addSubview(field)
+        #expect(window.makeFirstResponder(field))
+        let typed = try key(" ")
+        #expect(!view.handleKey(typed))
+        #expect(rig.sent == ["run"], "\(rig.sent)")
     }
 
     @Test func theViewAcceptsKeysAndTheFirstClick() {

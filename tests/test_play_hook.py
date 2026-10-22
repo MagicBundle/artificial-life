@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gc
 import io
+import json
 import os
 import signal
 import threading
@@ -20,7 +21,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from alife import play, runio, runner
+from alife import play, runio, runner, storms
 from alife.runio import RunDir, load_checkpoint
 from alife.state import init_state, state_digest
 from alife.step import StepOut
@@ -37,6 +38,7 @@ from play_helpers import (
     social_text,
     world,
 )
+from test_play_storms import scene
 
 RUN = play.PlayOptions(rate=float("inf"), paused=False, fresh=True)
 
@@ -145,17 +147,124 @@ def test_a_raising_callback_ends_the_same_way_with_the_traceback(
     assert "the presenter broke" in err and "Traceback" in err
 
 
-def test_a_failed_pacer_is_a_no_op_afterwards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """After a failure nothing more is written and nothing else is called into the run."""
+def test_a_failed_pacer_writes_nothing_more_and_does_not_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a failure nothing more is written and the callbacks that wait or present return at once."""
     monkeypatch.setattr(
-        play.PlayPacer, "_send_frame", lambda self, state: (_ for _ in ()).throw(OSError("gone"))
+        play.PlayPacer, "_send_frame", lambda self, state: (_ for _ in ()).throw(BrokenPipeError("gone"))
     )
     _, _, pacer, out = run_paced(world("2d"), tmp_path / "w", 20, [], options=RUN)
-    assert isinstance(pacer.failure, OSError)
+    assert isinstance(pacer.failure, BrokenPipeError)
     size = len(out.getvalue())
-    pacer.before_step(None, 99)
-    pacer.after_step(None, None, 99, [])
+    pacer.before_step(None, 99)  # would raise on the missing state if it did anything
+    pacer.after_boundary(None, {}, 99)
     assert len(out.getvalue()) == size and pacer.take_paused_s() == 0.0
+
+
+def _serve(cfg: Any, path: Path, steps: int, out: Any) -> tuple[RunDir, int]:
+    rd = RunDir.create(path, cfg)
+    code = play.serve_play(
+        rd,
+        cfg,
+        [init_state(cfg)],
+        steps=steps,
+        options=RUN,
+        control=ScriptControl([]),
+        out=out,
+        clock=FakeClock(),
+    )
+    return rd, code
+
+
+def test_an_oserror_that_is_not_a_closed_reader_is_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A full disk (ENOSPC from the storm log) is not "the reader closed": traceback, exit code 1, and the run
+    still ends with its checkpoint; a closed reader is a normal stop (exit 0)."""
+    import errno
+
+    def full(self: Any, rd: Any, tick: Any) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    cfg = world("storm")
+    rd, code = _serve(cfg, tmp_path / "ok", 60, FailingSink(30))
+    assert code == 0 and [s for s, _ in rd.checkpoints()][-1] < 60
+    monkeypatch.setattr(storms.StormLayer, "log", full)
+    rd, code = _serve(cfg, tmp_path / "full", 60, io.BytesIO())
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "No space left on device" in err and "Traceback" in err
+    stop = int(rd.metrics_rows()[-1]["step"])
+    assert stop < 60 and [s for s, _ in rd.checkpoints()][-1] == stop and rd.meta()["status"] == "interrupted"
+
+
+def _storm_scene(monkeypatch: pytest.MonkeyPatch, ticks: int) -> None:
+    """A storm world whose detections are the synthetic scene (the real weather of a 256-row world has no
+    storm in 200 steps), so that the tracker has ids, names and events to carry across a stop."""
+    dets = scene(3, ticks)
+    monkeypatch.setattr(storms.StormLayer, "tick_at", lambda self, ws, t: self.ingest(dets[t // 25 - 1]))
+
+
+def _strm_by_step(out: io.BytesIO) -> dict[int, str]:
+    return {r.step: json.dumps(r.f["json"], sort_keys=True) for r in decoded(out).records if r.tag == "STRM"}
+
+
+@pytest.mark.parametrize("after", [40, 60, 90])
+def test_a_reader_closed_in_a_storm_world_resumes_the_same_play(
+    after: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stop path writes the tracker state of the checkpoint and processes the tick of the last step even
+    when the reader has gone, so the resumed play is the uninterrupted one: the same ``storms.jsonl`` and the
+    same ``STRM`` objects, ids and names included, and no "numbering restarts" (DESIGN §33.3.2)."""
+    snapshots(monkeypatch, 10)
+    _storm_scene(monkeypatch, 8)
+    cfg = world("storm")
+    whole, _, pw, out_w = run_paced(cfg, tmp_path / "whole", 200, [], options=RUN)
+    rd, _, pacer, _ = run_paced(cfg, tmp_path / "w", 200, [], out=FailingSink(after), options=RUN)
+    assert isinstance(pacer.failure, BrokenPipeError)
+    stop = [s for s, _ in rd.checkpoints()][-1]
+    assert 0 < stop < 200 and rd.storms_state_path(stop).is_file(), "the tracker state is with the checkpoint"
+    last_tick = stop // 25 * 25
+    assert [r["step"] for r in rd.storms_lines()] == [
+        r["step"] for r in whole.storms_lines() if r["step"] <= last_tick
+    ]
+    rd.truncate_after(stop)
+    notes: list[str] = []
+    out = io.BytesIO()
+    options = play.PlayOptions(rate=float("inf"), paused=False, dc_ref=pw.layer.dc_ref)
+    pacer2 = play.PlayPacer(out, ScriptControl([]), options, clock=FakeClock(), note=notes.append)
+    runner.run(rd, cfg, load_checkpoint(rd.latest_checkpoint(), cfg), 200 - stop, quiet=True, pacer=pacer2)
+    assert not any("restarts" in n for n in notes) and pacer2.failure is None
+    assert rd.storms_lines() == whole.storms_lines()
+    ref, got = _strm_by_step(out_w), _strm_by_step(out)
+    first = next(r for r in decoded(out).records if r.tag == "STRM")
+    assert first.f["json"]["detect_step"] == last_tick, (
+        "the first STRM names the last tick, not the checkpoint"
+    )
+    later = [t for t in got if t > stop and t % 25 == 0]
+    assert later and all(got[t] == ref[t] for t in later)
+
+
+class SlowStartPacer(play.PlayPacer):
+    """A pacer whose start-up takes one fake second and whose first step (the compile) takes three."""
+
+    def bind(self, *args: Any, **kwargs: Any) -> None:
+        self.clock.now += 1.0  # type: ignore[attr-defined]
+        super().bind(*args, **kwargs)
+
+    def after_step(self, state: Any, out: Any, t: int, social: list[dict[str, Any]]) -> None:
+        if t == 1:
+            self.clock.now += 3.0  # type: ignore[attr-defined]
+        super().after_step(state, out, t, social)
+
+
+def test_the_start_up_and_the_first_compile_are_not_lateness(tmp_path: Path) -> None:
+    """The scheduler starts at the first step, not at the pacer's construction: at 1x a cold start is not
+    "late N" for the rest of the session (the gate of §5.3 is ``late_steps == 0``)."""
+    rate = play.PlayOptions(rate=1.0, paused=False, fresh=True)
+    _, _, pacer, _ = run_paced(world("2d"), tmp_path / "w", 8, [], options=rate, pacer_class=SlowStartPacer)
+    assert pacer.sched.late_steps == 0 and pacer._steps_taken == 8
 
 
 class OrderPacer(play.PlayPacer):

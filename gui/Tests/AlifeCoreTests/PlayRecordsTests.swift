@@ -381,7 +381,7 @@ import Testing
             ("base_rate", play { $0["base_rate"] = 0 }),
             ("a rate", play { $0["rates"] = [1, -2] }),
             ("tick", play { $0["tick"] = 0 }),
-            ("a cadence multiple", play { $0["snapshot_every"] = 251 }),
+            ("a snapshot cadence of zero", play { $0["snapshot_every"] = 0 }),
             ("energy_cap", play { $0["energy_cap"] = 0 }),
             ("weather cells", play { var w = $0["weather"] as! [String: Any]; w["cells"] = 161; $0["weather"] = w }),
             ("a duplicate tag", play { $0["records"] = ["FRMA", "FRMA"] }),
@@ -401,6 +401,11 @@ import Testing
             header["play"] = p
         })
         #expect(decode(extra).error == nil)
+        // The snapshot cadence need not be a multiple of the tick (the engine's `alife play` checks that against its own
+        // constant; a stream written with another cadence, a test's, is still a stream).
+        let odd = decode(try stream(fixture, editingHeader: play { $0["snapshot_every"] = 10 }))
+        let allEvents = try fixture.events().count
+        #expect(odd.error == nil && odd.events.count == allEvents)
         // No play key at all is a plain stream header with play records in it.
         let bare = decode(try stream(fixture, editingHeader: { $0["play"] = nil }))
         let all = try fixture.events().count

@@ -47,7 +47,12 @@ final class WorldModel: ObservableObject {
     let play: PlayController
     let overlay = OverlayState()
     @Published var display = WorldDisplay() {
-        didSet { if display != oldValue { pushDisplay() } }
+        didSet {
+            if display != oldValue {
+                pushDisplay()
+                if display.map != oldValue.map { pushCamera() }  // the planet level exists only while a map is shown
+            }
+        }
     }
     /// The launcher sheet.
     @Published var launcherOpen = false
@@ -103,6 +108,7 @@ final class WorldModel: ObservableObject {
         self.play = play
         play.onDelivery = { [weak self] changes in self?.deliver(changes) }
         play.onEvents = { [weak self] events, backlog in self?.handle(events: events, backlog: backlog) }
+        play.onReset = { [weak self] in self?.resetInteraction() }
     }
 
     // MARK: Free rectangle
@@ -121,6 +127,15 @@ final class WorldModel: ObservableObject {
 
     var worldSize: Float { Float(play.store.header?.size ?? 1) }
 
+    /// Whether a weather map is in view: the planet level (no organisms, the map is the picture) exists only then.
+    var mapShown: Bool { display.map && play.store.map != nil }
+
+    /// The farthest the camera may be in the window as it is now: the rule of `WorldLevels.maxDistance`, and never nearer
+    /// than the starting pose (which a wide or tall free rectangle puts farther out).
+    var distanceLimit: Float {
+        let home = play.store.header.map { Camera.world(for: $0, aspect: aspect).distance } ?? 0
+        return WorldLevels.maxDistance(size: worldSize, fovY: camera.fovY, aspect: aspect, home: home)
+    }
     var height: Float { Float(play.store.header?.height ?? 0) }
 
     // MARK: What the world sent
@@ -144,7 +159,9 @@ final class WorldModel: ObservableObject {
         }
         if changes.contains(.frame) { renderer.showWorld(frame: store.frame) }
         if changes.contains(.map), let map = store.map, store.mapSerial != lastMapSerial {
+            let first = lastMapSerial < 0
             lastMapSerial = store.mapSerial
+            if first { pushCamera() }  // the first map makes the planet level possible
             let start = fade.deliver(at: now())
             renderer.deliverWorld(map: map, serial: store.mapSerial, start: start)
             renderer.worldDraw.mapBlend = fade.blend(at: now())
@@ -226,8 +243,8 @@ final class WorldModel: ObservableObject {
         let size = worldSize
         camera.wrapTarget(size: size)
         camera.target.z = min(max(camera.target.z, 0), max(height, 0))
-        let limit = WorldLevels.maxDistance(size: size, fovY: camera.fovY, aspect: aspect)
-        camera.distance = min(max(camera.distance, WorldLevels.minDistance), max(limit, WorldLevels.minDistance))
+        camera.distance = min(max(camera.distance, WorldLevels.minDistance), max(distanceLimit, WorldLevels.minDistance))
+        camera.keepFloorInReach(size: size, aspect: aspect)  // no edge of the finite tiled map in view
         cameraIsHome = false
         pushCamera()
     }
@@ -249,7 +266,8 @@ final class WorldModel: ObservableObject {
     }
 
     func pushCamera() {
-        let newLevel = WorldLevels.level(distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: worldSize)
+        let newLevel = WorldLevels.level(
+            distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: worldSize, mapShown: mapShown)
         if newLevel != level { level = newLevel }
         overlay.invalidate()
         guard let renderer else { return }
@@ -260,7 +278,7 @@ final class WorldModel: ObservableObject {
 
     /// The projection the overlay and the picker use: the camera on the free rectangle (`size` in points).
     func projector(size: CGSize) -> WorldProjector {
-        WorldProjector(camera: camera, size: worldSize, view: size)
+        WorldProjector(camera: camera, size: worldSize, view: size, mapShown: mapShown)
     }
 
     // MARK: Selection
