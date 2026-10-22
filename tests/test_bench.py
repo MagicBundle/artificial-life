@@ -663,7 +663,7 @@ def test_alife_bench_play_runs_from_the_command_line(
     report = json.loads(capsys.readouterr().out)
     assert json.loads((tmp_path / "bench.json").read_text()) == report
     play = report["play"]
-    assert play["digests_equal"] and [a["director"] for a in play["arms"]] == ["off", "rules"]
+    assert play["digests_equal"] and [a["director"] for a in play["arms"]] == ["off", "rules", "player"]
     assert play["workdir"] == str(tmp_path / "arms") and (tmp_path / "arms" / "template.safetensors").exists()
     assert report["config"]["n_max"] == 256, "the bench report carries the environment"
     assert "stages" not in report and "ms_per_step" not in report, "--play is a report of its own"
@@ -762,3 +762,274 @@ def test_the_bench_pacer_never_waits_at_a_chapter_end() -> None:
     pacer = bench._bench_pacer_class()(io.BytesIO(), stream.NoControl(), play.PlayOptions())
     assert pacer.autopause.chapter is False and pacer.autopause.flags == 0
     assert play.PlayPacer(io.BytesIO(), stream.NoControl(), play.PlayOptions()).autopause.chapter is True
+
+
+# --- bench --play, G3b: the player arm, scripted powers, the chapter and report line (DESIGN §34.8) ------
+
+CHAPTER = 30  # a multiple of the checkpoint cadence of `short_play`
+
+
+def test_the_player_arm_is_the_plain_run_without_powers(tmp_path: Path, short_play: None) -> None:
+    """The player mode decides nothing: its arm, with no power sent, is the plain run bit for bit."""
+    cfg, template = planet_template(tmp_path)
+    r = bench.run_play_bench(
+        cfg, template, tmp_path / "w", steps=40, warmup=10, rates=("max",),
+        directors=("off", "rules", "player"), chapter=CHAPTER,
+    )  # fmt: skip
+    assert [a["director"] for a in r["arms"]] == ["off", "rules", "player"] and r["digests_equal"]
+    player = r["arms"][2]
+    assert player["powers"] is None and player["expected"] == "plain" and player["digest_equal"]
+    assert r["replay_digest"] == {} and r["powers"] is False
+    # the chapter of 30 steps ends once in the 50 steps, and the engine of alerts was timed (a short world
+    # has no
+    # report job: a chapter is a whole number of snapshots, DESIGN §34.4)
+    assert player["chapters"]["ends"] == 1 and player["chapters"]["length"] == CHAPTER
+    assert player["chapters"]["report_ms"] == []
+    assert player["alerts"]["calls"] > 0 and player["alerts"]["ms_total"] > 0
+    json.dumps(r, allow_nan=False)
+
+
+def test_scripted_powers_are_applied_and_the_arm_equals_the_replay_of_its_own_log(
+    tmp_path: Path, short_play: None
+) -> None:
+    from alife.runio import DIRECTOR_LOG_FILE
+
+    cfg, template = planet_template(tmp_path)
+    r = bench.run_play_bench(
+        cfg, template, tmp_path / "w", steps=40, warmup=10, rates=("max", "1"), directors=("off", "player"),
+        chapter=CHAPTER, powers=True,
+    )  # fmt: skip
+    arms = {a["name"]: a for a in r["arms"]}
+    assert set(arms) == {"off_max", "off_1", "player_max", "player_1"} and r["powers"] is True
+    assert arms["off_max"]["powers"] is None and arms["off_max"]["expected"] == "plain"
+    for name in ("player_max", "player_1"):
+        arm = arms[name]
+        powers = arm["powers"]
+        # a Food half way between the end of the warm-up (10) and the chapter's end (30), and a Strike at the
+        # chapter-end
+        # step itself: the script and what the world said of it
+        assert [item["step"] for item in powers["script"]] == [20, CHAPTER]
+        assert powers["script"][0]["line"].startswith("power food id=9001 ")
+        assert powers["script"][1]["line"].startswith("power strike id=9002 ")
+        assert powers["applied"] == [9001, 9002] and powers["all_applied"] and powers["refused"] == []
+        assert len(powers["latency_s"]) == 2 and all(
+            0 < v < bench.PLAY_POWER_LIMIT_S for v in powers["latency_s"]
+        )
+        statuses = [(p["id"], p["status"]) for p in powers["plans"] if p["id"] == 9002]
+        assert statuses[0] == (9002, "queued") and (9002, "applied") in statuses
+        # both are in the arm's own log, as the player's, applied at the steps they were sent at
+        entries = [
+            json.loads(line) for line in (Path(arm["run"]) / DIRECTOR_LOG_FILE).read_text().splitlines()
+        ]
+        player = [e for e in entries if e.get("source") == "player"]
+        assert [(e["step_applied"], e["action"]) for e in player][:2] == [
+            (20, "regen_pulse"),
+            (CHAPTER, "catastrophe"),
+        ]
+        # a world with the player's powers is no longer the plain run's: its digest is its log's, replayed
+        assert (
+            arm["expected"] == "replay" and arm["digest_equal"] and arm["digest"] == r["replay_digest"][name]
+        )
+        assert arm["digest"] != r["plain_digest"]["player"], (
+            "the powers changed the trajectory (they are not presentation)"
+        )
+    assert r["digests_equal"]
+    text = "\n".join(bench._format_play(r))
+    assert "a run with powers: to its log replayed" in text and "powers: applied [9001, 9002]" in text
+    assert "chapter, report, alerts:" in text and "click to applied" in text
+
+
+def test_the_scripted_arm_needs_a_chapter_end_in_its_measured_part(tmp_path: Path, short_play: None) -> None:
+    from alife.config import ConfigError
+
+    cfg, template = planet_template(tmp_path)
+    args = {"rates": ("max",), "directors": ("player",), "powers": True}
+    with pytest.raises(ConfigError, match="chapter end"):  # 10 + 15 steps from 0: the chapter ends at 30
+        bench.run_play_bench(cfg, template, tmp_path / "a", steps=15, warmup=10, chapter=CHAPTER, **args)
+    with pytest.raises(ConfigError, match="chapter end"):  # the warm-up is past it
+        bench.run_play_bench(cfg, template, tmp_path / "b", steps=40, warmup=35, chapter=CHAPTER, **args)
+    with pytest.raises(
+        ConfigError, match="chapter end"
+    ):  # the warm-up ends at it: nothing of the chapter is measured
+        bench.run_play_bench(cfg, template, tmp_path / "b2", steps=20, warmup=30, chapter=CHAPTER, **args)
+    with pytest.raises(
+        ConfigError, match="chapter end"
+    ):  # the arm stops at it: no step to see the strike applied
+        bench.run_play_bench(cfg, template, tmp_path / "b3", steps=20, warmup=10, chapter=CHAPTER, **args)
+    with pytest.raises(ConfigError, match="player director"):
+        bench.run_play_bench(
+            cfg,
+            template,
+            tmp_path / "c",
+            steps=40,
+            warmup=10,
+            rates=("max",),
+            directors=("off",),
+            powers=True,
+        )
+    flat = bench.power_script(cfg, start=1000, warmup=100, total=300, chapter=300)
+    assert [step for step, _ in flat] == [(1100 + 1200) // 2, 1200], "the next end after the start, 1,200"
+
+
+def test_the_player_mode_needs_the_levers_like_the_rule_tier(tmp_path: Path, short_play: None) -> None:
+    from alife.config import ConfigError
+    from alife.runio import write_state_file
+    from weather_helpers import storm3d_config
+
+    cfg = storm3d_config()
+    path = tmp_path / "t.safetensors"
+    write_state_file(path, init_state(cfg), cfg)
+    with pytest.raises(ConfigError, match=r"director\.enabled"):
+        bench.run_play_bench(
+            cfg, path, tmp_path / "w", steps=5, warmup=1, rates=("max",), directors=("player",)
+        )
+
+
+def test_a_scripted_control_hands_a_line_over_when_the_world_reaches_its_step() -> None:
+    control = bench.ScriptedControl(
+        [(30, "power strike id=9002 x=1 y=1"), (20, "power food id=9001 mult=1.3"), (20, "rate 2")]
+    )
+    assert control.poll(0) == [], "the world is not there yet"
+    control.now = 19
+    assert control.poll(0) == []
+    control.now = 20
+    assert control.poll(0) == ["power food id=9001 mult=1.3", "rate 2"], "in order"
+    control = bench.ScriptedControl(
+        [(30, "power strike id=9002 x=1 y=1"), (20, "power food id=9001 mult=1.3")]
+    )
+    control.now = 25
+    assert control.poll(0) == ["power food id=9001 mult=1.3"] and set(control.clicked) == {9001}
+    assert control.poll(0) == [], "once"
+    control.now = 99
+    assert control.poll(0) == ["power strike id=9002 x=1 y=1"] and set(control.clicked) == {9001, 9002}
+    assert control.clicked[9002] >= control.clicked[9001]
+    control.close()
+
+
+def test_the_gate_reads_the_power_latency_and_the_report_time() -> None:
+    arm = {"rate": "1", "achieved_x": 0.99, "late_steps": 0, "step_ms": {"p99": 60.0}, "seconds": 310.0}
+    scripted = {"latency_s": [0.07, 0.12], "all_applied": True}
+    chapters = {"report_ms": [31.0]}
+    gate = bench._play_gate({**arm, "powers": scripted, "chapters": chapters})
+    assert gate["pass"] and gate["want"]["power_applied_p95_s"] == 0.5 and gate["want"]["report_ms"] == 500.0
+    slow = bench._play_gate({**arm, "powers": {**scripted, "latency_s": [0.07, 0.9]}, "chapters": chapters})
+    assert not slow["pass"] and not slow["checks"]["power_applied_p95_s"]
+    assert not bench._play_gate({**arm, "powers": {**scripted, "all_applied": False}})["pass"]
+    assert not bench._play_gate({**arm, "powers": {**scripted, "latency_s": []}})["pass"], (
+        "no click was answered"
+    )
+    late = bench._play_gate({**arm, "powers": scripted, "chapters": {"report_ms": [31.0, 720.0]}})
+    assert not late["pass"] and not late["checks"]["report_ms"]
+    # an arm without powers or chapters is read as before
+    assert bench._play_gate(arm)["want"] == bench.PLAY_GATE_1X
+    assert "report_ms" not in bench._play_gate({**arm, "chapters": {"report_ms": []}})["want"]
+
+
+def test_alife_bench_play_sends_scripted_powers_from_the_command_line(
+    tmp_path: Path, short_play: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from alife import cli
+    from weather_helpers import SMALL3D
+
+    argv = [
+        "bench", "--play", "--preset", "64k3d", "--overlay", "storm", "--steps", "40", "--play-warmup", "10",
+        "--play-rates", "max", "--play-spinup", "20", "--play-directors", "player", "--play-powers",
+        "--play-chapter", str(CHAPTER), "--play-out", str(tmp_path / "arms"),
+        "--json", str(tmp_path / "bench.json"),
+        "--set", "director.enabled=true", "--set", "director.rule_every=20",
+        *[x for o in SMALL3D for x in ("--set", o)],
+    ]  # fmt: skip
+    assert cli.main(argv) == 0
+    play = json.loads(capsys.readouterr().out)["play"]
+    assert [a["name"] for a in play["arms"]] == ["player_max"] and play["powers"] and play["digests_equal"]
+    assert play["arms"][0]["powers"]["applied"] == [9001, 9002]
+    assert cli.main([*argv, "--play-directors", "off"]) == 2, "scripted powers need the player director mode"
+    assert cli.main([*argv[: argv.index("--play-chapter")], "--play-chapter", "7"]) == 2, (
+        "no chapter end in the arm"
+    )
+
+
+def test_alife_bench_play_resumes_a_played_worlds_checkpoint(
+    tmp_path: Path, short_play: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--play-resume` takes a state file (or a run's checkpoint) as it is: the arms start from its step."""
+    from alife import cli
+
+    _, template = planet_template(tmp_path)
+    argv = [
+        "bench", "--play", "--play-resume", str(template), "--steps", "40", "--play-warmup", "10",
+        "--play-rates", "max", "--play-directors", "player", "--play-powers", "--play-chapter", str(CHAPTER),
+        "--play-out", str(tmp_path / "arms"),
+    ]  # fmt: skip
+    assert cli.main(argv) == 0
+    play = json.loads(capsys.readouterr().out)["play"]
+    assert play["arms"][0]["powers"]["all_applied"] and play["digests_equal"]
+    assert cli.main([*argv, "--play-from", "somewhere"]) == 2, "two ways to name the world"
+
+
+def test_the_bench_pacer_reads_a_report_and_a_plan_from_the_records_it_writes() -> None:
+    """The stopwatch parses the records it passes on: the first report that is not the backlog ends a
+    chapter's timer, and an `applied` plan stamps its request (the click-to-applied latency is read from
+    these)."""
+    import io
+    import struct
+    import threading
+
+    from alife import play, stream, streamrec
+
+    pacer = bench._bench_pacer_class()(io.BytesIO(), stream.NoControl(), play.PlayOptions())
+    pacer.timing = bench._Timing(0)
+
+    def rprt(flags: int) -> bytes:
+        return streamrec.record("RPRT", 6000, 0, flags, b"\x00" * 16)
+
+    pacer._chapter_t0 = time.perf_counter() - 0.25
+    pacer._write("RPRT", rprt(1 | 2))  # the backlog of a world being opened: not this chapter's
+    assert pacer.report_ms == [] and pacer._chapter_t0 is not None
+    loop_write = pacer._write_s
+    worker = threading.Thread(target=pacer._write, args=("RPRT", rprt(2)))  # the report job's thread
+    worker.start()
+    worker.join()
+    assert pacer._write_s == loop_write, "only the loop's writes count as the loop's write time"
+    assert len(pacer.report_ms) == 1 and 250 <= pacer.report_ms[0] < 5000 and pacer._chapter_t0 is None
+    pacer._write("RPRT", rprt(2))
+    assert len(pacer.report_ms) == 1, "no chapter is waiting for one"
+
+    def plan(request: int, status: str) -> bytes:
+        js = streamrec.json_bytes({"id": request, "status": status})
+        return streamrec.record("PLAN", 100, 0, 0, struct.pack("<I", len(js)) + streamrec.pad4(js))
+
+    pacer._write("PLAN", plan(9001, "queued"))
+    pacer._write("PLAN", plan(9001, "applied"))
+    first = pacer.applied_at[9001]
+    for request, status in ((9001, "applied"), (9002, "refused")):
+        pacer._write("PLAN", plan(request, status))
+    assert pacer.applied_at[9001] == first, "a second `applied` for the request does not move its stamp"
+    assert pacer.plans == [(9001, "queued"), (9001, "applied"), (9001, "applied"), (9002, "refused")]
+    assert set(pacer.applied_at) == {9001}, "refused is not applied; the first `applied` stands"
+
+
+def test_a_refused_power_is_not_applied_and_fails_the_gate(
+    tmp_path: Path, short_play: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`all_applied` is what the arm saw, not a constant: a second Food while the first runs is refused."""
+    lines = [
+        (20, "power food id=9001 mult=1.3 steps=3000"),
+        (CHAPTER, "power food id=9002 mult=1.3 steps=3000"),
+    ]
+    monkeypatch.setattr(bench, "power_script", lambda *a, **k: lines)
+    cfg, template = planet_template(tmp_path)
+    r = bench.run_play_bench(
+        cfg, template, tmp_path / "w", steps=40, warmup=10, rates=("max",), directors=("player",),
+        chapter=CHAPTER, powers=True,
+    )  # fmt: skip
+    arm = r["arms"][0]
+    powers = arm["powers"]
+    assert powers["applied"] == [9001] and powers["refused"] == [9002] and powers["all_applied"] is False
+    assert len(powers["latency_s"]) == 1
+    assert arm["gate"]["checks"]["power_applied_p95_s"] is False, (
+        "a power that was not applied fails the gate"
+    )
+    assert arm["digest_equal"], (
+        "(a refused request changes nothing: the arm still equals the replay of its log)"
+    )

@@ -1,6 +1,6 @@
 # Emergent Worlds: a gaming vertical for alife (design proposal)
 
-Status: **design; G1 and G2 built (DESIGN §28, §29), N1 built (§31), G3a built (§33; the Mac day ran 2026-10-22 and the gate passes, `docs/RESULTS_G3A.md`; the click-through by hand is open); G3b–G5 not built.** The owner decided items 1–4, 7 and 8 on 2026-10-18
+Status: **design; G1 and G2 built (DESIGN §28, §29), N1 built (§31), G3a built (§33; the Mac day ran 2026-10-22 and the gate passes, `docs/RESULTS_G3A.md`; the click-through by hand is open), G3b built and its Mac day pending (§34; branch `games/g3b`); G3c–G5 not built.** The owner decided items 1–4, 7 and 8 on 2026-10-18
 and items 13–19 on 2026-10-19 (§10). This document maps the owner's brief ("Project: Emergent Worlds", 2026-10-18) onto the
 engine at `aef79c2`. The brief's three pillars are:
 - a motivation-to-action loop instead of scripted state machines;
@@ -441,6 +441,8 @@ The owner chose `attack_mult` for G4 (§10.4). The other rows are designed but d
   loads a pre-game 3D checkpoint (`runs/64k3d_s0`). Otherwise every existing 3D run fails to load.
 
 ### 5.5 Game pacing in real time
+
+*As built in G3b (DESIGN §34.5): the table below is `GAME_SPECS` "game-v0", an override of `MENU` (not a subset) with the player scope, `Spec.quantum` and `Spec.excluded`; Strike's cooldown is 3,000 (D10) and the player's budget is 6 units per 18,000 steps.*
 
 Research pacing does not fit a game. At 30 steps/s the 100k-step budget window (`pacing.BUDGET_WINDOW`) is 56 minutes,
 and the Architect gets 4 units in it. A 50k-step regen pulse plus its 30k cooldown locks the lever for 44 minutes, and
@@ -1008,16 +1010,19 @@ What a game adds:
     Cast, the inspector, the Chronicle and toasts, the keys; `alife bench --play` and `WorldRenderBench`.
   - Not in G3a: chapters (a checkpoint every 6,000 steps is a save point only), auto-pause, alerts, the ticker and the live World
     Report, powers, dead-row canonicalisation, recorded replay files, rewind, offline advance, any LLM.
-- **G3b. Chapters, reports and powers.** After G3a's Mac day (done; the chronicle's kin churn, 112 of 201 events in a 20,000-step play, wants a persistence rule before a ticker or toasts build on it): `autopause`, `power` and `intent` lines, the records `ALRT RPRT
-  PLAN` and the recap file format; 6,000-step chapters with auto-pause, alerts, the ticker and the live World Report (N1's
-  select mode, one request in flight); the report tab, the chapter bar and the recap player;
-  - Direct powers of the built regional actions through a player power grid, with their `GAME_SPECS` rows and the
-    separate pacing scope (moved from G4).
-  - Saves:
-    - dead rows canonicalised, with a save-load-step digest test;
-    - recorded ALSTRM replay files.
-  - Rewind (in-place resume into a copied run directory), with `truncate_after` extended to `commands.jsonl` and
-    observer sidecars; offline advance.
+- **G3b. Chapters, alerts, the live report and direct powers** (built, the Mac day pending; DESIGN §34, Review-log row I54; the specification is `g3b/spec.md` revision 2, every owner decision a coordinator's recommendation, choice C20, to revisit).
+  **Observe-and-poke** (D9): no score, no objective, no win state; storm and lineage events are information, not decisions. What is in it:
+  - the **chronicle quality** first (kin threads: 139 kin rows to 45 told events on the 20,000-step play; storm persistence), then chapters of 6,000 steps with a pause and a card at their end, `autopause`, **alerts** (18 classes, a stack of
+    the `alert` surface only, a provenance rule so that the aftermath of a power never pauses), the **live World Report** (report version 2, template path, built on a worker thread inside the checkpoint stall and replayable byte for byte);
+  - **direct powers** through a player channel of the director (`Director.apply_pending`, rule P: a player's record at step `s` is after the checkpoint at `s`): Food, Bloom, Blight and Strike under `GAME_SPECS` "game-v0" (an override of `MENU`,
+    durations 3,000 to 12,000, influence 6 units per 18,000 steps, `power cancel` with no refund), previews with a versioned precedent, a since card per power; `intent` is answered "not in this build" (G4);
+  - the records `ALRT RPRT PLAN`, the lines `autopause watch unwatch ack power intent`, and the window: chapter bar, alert stack, chapter card, Report and Powers tabs, aiming on the map, keys, ticker, dock icon;
+  - **Not in G3b:** the storm verbs and any weather power (W4: new hashed `env_*` fields), `intent` (G4), the select-and-order LLM mode (G3c), recorded replay files, rewind, offline advance, canonical saves (G3c).
+- **G3c. Time** (not built; DESIGN §35 and Review-log row I55 are reserved for it; spec `g3b/spec.md` §9). After the G3b Mac day:
+  - recorded ALSTRM replay files and the recap player;
+  - rewind as a branch (a clone into a copied run directory, its cost stated), offline advance under the rule tier with per-launch GPU consent;
+  - dead-row canonicalisation of saves only if the save breakdown shows serialisation is at least 40% of the stall, and then with a separate `canonical_digest`, never a change of `state_digest`;
+  - the select-and-order report mode (N1 §31.11, default off, 60 s timeout, a reasoning budget in the client, a `late_steps` gate with a request in flight).
 - **G4. Player intent.**
   - The intent schema and prompt, the compiler, `commands.jsonl`, the preview, `source:"player"`, and the separate pacing
     scope.
@@ -1135,6 +1140,16 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
     - *D7* two small engine edits: `RunDir._prune` keeps a fork's origin checkpoint, and `phylo.load_tree(end=)`.
     - *D8* a planet opens running at 1x. *D9* no Swift job in CI (accepted risk; the Mac checklist has the Swift line).
       *D10* a single click selects and follows; shift-click selects only. *D11* organisms are not instanced at the planet level.
+
+21. **G3b: chapters, alerts, the live report and direct powers (coordinator's choices C20 under the owner's delegation, each the
+    spec's recommendation after review round 2, to revisit; DESIGN §34).**
+    - *D1* G3b now, G3c after the G3b Mac day. *D2* the kin-thread rule (P = 3, R = 3, DELTA = 0.15; storms 8 detections; frozen thread names with
+      a suffix on a collision). *D3* the chapter end pauses; alerts pause only for `pop_fall` at importance 3, `pop_low` and engine failures; the narrative classes are log
+      rows; a fall that follows a regen or habitat entry by at most 500 steps never pauses; the default launch is `player`, not `rules`.
+    - *D4* Food, Bloom, Blight, Strike under "game-v0", 6 units per 18,000 steps, `power cancel`; no weather verb (W4). *D5* `intent` is G4 (the line and the `PLAN` shape are reserved).
+      *D6* the select-and-order mode is G3c, default off. *D7* rewind, storage, digests: G3c. *D8* offline advance: G3c, never default.
+    - *D9* the play contract is observe-and-poke; the Mac day measures inputs per chapter and the objective is decided on that. *D10* Strike costs 1 (radius 6.25 to 25, cooldown 3,000, not GAMES §5.5's 9,000). *D11* Chapter 1 is reported from an origin row in `meta.json`.
+
 
 ## 11. Prior-art sources
 

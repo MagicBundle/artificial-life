@@ -322,9 +322,11 @@ owner's delegation of 2026-10-19, to revisit (cadence, the GUI architecture, dir
   - Markers at `step_applied`, worded "since", never "because"; a storm × kin impact matrix (W3).
   - After G4, a counterfactual twin: a fork without the entry, exact for this world, opt-in, run while paused or
     between sessions.
-- **Direct powers** (G3: the built regional actions; W4: the storm verbs).
-  - A player power grid lands them within 2 s, not at rule boundaries.
-  - Each has a short-cooldown `GAME_SPECS` row and stays outside the intent pipeline.
+- **Direct powers** (G3b: the built regional actions; W4: the storm verbs and new `env_*` fields).
+  - **As built in G3b (DESIGN §34.5):** Food (`regen_pulse`), Bloom (`fertility_shift`), Blight (`habitat_loss`) and Strike (`catastrophe`) under `GAME_SPECS` "game-v0", 6 units of influence per 18,000 steps, `power cancel`, a preview and a since card for each; they land
+    at the top of the next step (a player channel in the runner, rule P), not at rule boundaries, and are logged as `source:"player"` so that a played world replays.
+  - **The existing regional actions only.** The storm verbs (seeding, shade, a warm-pool nudge, a wind impulse) are not powers yet: `seed_gain`, `shade_gain` and the warm pools are hashed config constants compiled into the step, with no `env_*` field to edit (W4: new `State` fields, the Metal gate, golden handling). The power grid reserves two greyed rows for them.
+  - Each has a `GAME_SPECS` row and stays outside the intent pipeline (`intent` is answered "not in this build"; G4).
 - **Cast.** All live storms, the top 5–8 lineages (kin groups named after their dominant house) and one focused
   organism, handed off at death to its eldest descendant or nearest kin.
 - **GUI.** One window with two areas; the research window stays as the Lab.
@@ -337,9 +339,9 @@ owner's delegation of 2026-10-19, to revisit (cadence, the GUI architecture, dir
 
   | channel | content |
   |---|---|
-  | stdout, ALSTRM v1 | **As built in G3a (DESIGN §33.1):** the header with the `play` key, then `FRMA` (alive-only frames; no `FRM1`), `IDNT`, `INTN`, `TERR`, `EVNT`, `STRM`, `MAP1` (weather maps), `ENVS` (pools, effects, cooldowns), `CLCK` (the rate, the achieved rate, `saving`) and `FOCS` (the focused organism). Still proposed: `VOL1` (W5), and `PLAN`, `ALRT`, `RPRT` (G3b) |
-  | stdin, ≤ 4,096 B per line | **As built:** `pause`, `run`, `step [N]`, `rate M\|max`, `color MODE`, `every K\|auto`, `focus UID\|off`, `follow UID\|off`, `idnt`, `labels on\|off`, `quit` (DESIGN §33.2.6). Proposed for G3b/G4: `intent`, `confirm`, `cancel`, `power`, `forecast`, `alerts`, `autopause` |
-  | files | **As built:** `play.json`, `play.lock`, `observers/storms.jsonl` and `observers/storms_<t>.json` (the tracker's state at each checkpoint), `observers/houses_<S>.npz` (a planet's exact houses). Proposed: `commands.jsonl`, `reports.jsonl`; `director.jsonl` and `observers/social.jsonl` as before |
+  | stdout, ALSTRM v1 | **As built in G3a (DESIGN §33.1):** the header with the `play` key, then `FRMA` (alive-only frames; no `FRM1`), `IDNT`, `INTN`, `TERR`, `EVNT`, `STRM`, `MAP1` (weather maps), `ENVS` (pools, effects, cooldowns), `CLCK` (the rate, the achieved rate, `saving`) and `FOCS` (the focused organism). **As built in G3b (DESIGN §34.6):** `ALRT` (alerts), `RPRT` (the chapter's report) and `PLAN` (a power's preview, queue, application, card and refusal), `ENVS` with the player's influence, the food patches and each power's state, `CLCK` with the chapter, its pause and the reason. Still proposed: `VOL1` (W5) |
+  | stdin, ≤ 4,096 B per line | **As built:** `pause`, `run`, `step [N]`, `rate M\|max`, `color MODE`, `every K\|auto`, `focus UID\|off`, `follow UID\|off`, `idnt`, `labels on\|off`, `quit` (DESIGN §33.2.6). **As built in G3b:** `autopause ...`, `watch`, `unwatch`, `ack`, `power [preview\|cancel] NAME id=N k=v ...` and `intent TEXT` (reserved: refused). Proposed for G4: `confirm`, `forecast` |
+  | files | **As built:** `play.json`, `play.lock`, `observers/storms.jsonl` and `observers/storms_<t>.json` (the tracker's state at each checkpoint), `observers/houses_<S>.npz` (a planet's exact houses). **As built in G3b:** `commands.jsonl` (the player's input log), `reports.jsonl`, `alerts.jsonl` (`alerts.replay.jsonl` for a replay), `observers/kinthreads_<t>.json` (the kin-thread table at each checkpoint), `meta.json["origin_row"]`; `director.jsonl` and `observers/social.jsonl` as before |
 - **Measured before W4.**
   - W0 steerability: track deflection per impulse, and the storm response to a warm-pool change.
   - The combined 3D play-loop bench: step, observers, weather, stream, client rendering, and an LLM call in flight. **G3a built the

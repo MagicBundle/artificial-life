@@ -34,6 +34,11 @@ observer rules; `python -m alife.analysis.w2`) is implemented and off by default
 normative spec `DESIGN.md` §33, row I51) are built; their Mac day ran 2026-10-22 (purity on Metal, the bench gate: passed; `docs/RESULTS_G3A.md`); the click-through by hand is the owner's.
 Presentation-only control lines (`focus follow idnt labels color every`, pacing, frames, records) never change a trajectory; a change to
 `play.py`, `streamrec.py` or the runner's `Pacer` hook must keep `tests/test_play_purity.py` (digest equality with a plain run) green.
+**G3b** (chapters, alerts, the live World Report and direct powers; GAMES §9; normative spec `DESIGN.md` §34, row I54; built, the Mac day pending): 6,000-step chapters that end in a pause with a report, alerts
+the world raises (a stack of what the player can act on), a template report built on a worker thread, and four direct powers (Food, Bloom, Blight, Strike) through a player channel in the runner (`Director.apply_pending`, rule P: a player's record at step `s` is after the checkpoint at `s`).
+**A power is the only line that changes a trajectory**: it is a logged `source:"player"` entry of `director.jsonl`, so a played world replays bitwise by `resume --director replay` and `play --replay`; `autopause watch unwatch ack`, `power preview`, a refused `power` and every window element are
+presentation and must leave a plain run's digest unchanged (`tests/test_play_purity.py`, `test_player_channel.py`). The engine edit is inert when the channel is unused (`tests/director_identity.py`, the 2D digest matrix against the previous commit). Keep the Swift keys, alert classes and power names in step with
+`tests/test_gui_sync.py`; `cd gui && swift build -Xswiftc -warnings-as-errors && swift build --build-tests -Xswiftc -warnings-as-errors && swift test`.
 The stream's labels are `INTENT_VERSION` 3's (ten archetypes, the storm names) and carry N1's held-out verdict gate: a label is shown as valid only
 with a `LABEL_VERDICTS` row for the world and rule set (none for V2 or V3 yet) and the environment at its defaults (`DESIGN.md` §33.7).
 
