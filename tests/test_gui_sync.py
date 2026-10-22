@@ -278,3 +278,48 @@ def test_the_play_world_file_keys_match_playworldfile() -> None:
     assert swift_struct_keys(text, "Cadence") == set(play.PLAY_CADENCE)
     assert swift_struct_keys(text, "Planet") == {"source", "step", "weather_spinup", "houses", "made_at_step"}
     assert swift_struct_keys(text, "Weather") == {"dc_ref"}
+
+
+# --- the palettes (DESIGN §33.2.2) and the overlay constants the shaders share --------------------------
+
+
+def swift_palette(text: str, name: str) -> list[int]:
+    """The `0xRRGGBB` literals of `static let NAME: [UInt32]` (`none`: the unlabelled colour, as -1)."""
+    m = re.search(rf"static let {name}: \[UInt32\] = \[(.*?)\]", text, re.S)
+    assert m, f"palette {name} not found"
+    return [
+        int(v, 16) if v.startswith("0x") else -1 for v in re.findall(r"0x[0-9A-Fa-f]{6}|\bnone\b", m.group(1))
+    ]
+
+
+def test_the_world_palettes_are_the_engines() -> None:
+    """The client draws swatches and territory with the table the server paints `FRMA.rgb` with."""
+    from alife.game import colors
+
+    def rgb(c: tuple[int, int, int]) -> int:
+        return (c[0] << 16) | (c[1] << 8) | c[2]
+
+    text = (CORE / "WorldPalette.swift").read_text(encoding="utf-8")
+    assert swift_palette(text, "slots") == [rgb(c) for c in colors.SLOT_PALETTE]
+    none = rgb(colors.NONE_RGB)
+
+    def unlabelled(values: list[int]) -> list[int]:  # index 0 is `none` in the Swift
+        return [none if v == -1 else v for v in values]
+
+    assert unlabelled(swift_palette(text, "archetypes")) == [rgb(c) for c in colors.ARCH_PALETTE]
+    assert unlabelled(swift_palette(text, "intents")) == [rgb(c) for c in colors.INTENT_PALETTE]
+    for name, value in (
+        ("unknown", colors.UNKNOWN_RGB),
+        ("other", colors.OTHER_RGB),
+        ("none", colors.NONE_RGB),
+    ):
+        m = re.search(rf"static let {name}: UInt32 = (0x[0-9A-Fa-f]{{6}})", text)
+        assert m and int(m.group(1), 16) == rgb(value), name
+
+
+def test_the_world_levels_match_the_spec_constants() -> None:
+    """The thresholds of DESIGN §33.4.7 (half a world, 0.12 L, 3 px) are `WorldLevels.swift`'s."""
+    levels = (CORE / "WorldLevels.swift").read_text(encoding="utf-8")
+    assert re.search(r"planetHalfExtent: Float = 0\.5\b", levels)
+    assert re.search(r"organismDistance: Float = 0\.12\b", levels)
+    assert re.search(r"flatDiscPixels: Float = 3\b", levels)

@@ -322,3 +322,78 @@ import simd
         #expect(near(camera.target, sample().target + 10 * sample().forward, 1e-4))
     }
 }
+
+// MARK: - The planet pose and the torus (the World window)
+
+@Suite struct PlanetCameraTests {
+    private let L: Float = 320
+
+    @Test(arguments: [Float(1), Float(16) / 9, Float(9) / 16])
+    func theWholeWorldIsInViewFromAboveWithXRightAndYUp(aspect: Float) throws {
+        let camera = Camera.planet(size: L, aspect: aspect)
+        #expect(camera.pitch == -Camera.maxPitch && camera.yaw == .pi / 2)
+        func ndc(_ p: SIMD3<Float>) throws -> SIMD3<Float> { try #require(camera.ndc(of: p, aspect: aspect)) }
+        for corner in [SIMD3<Float>(0, 0, 0), SIMD3(L, 0, 0), SIMD3(0, L, 0), SIMD3(L, L, 0)] {
+            let n = try ndc(corner)
+            #expect(abs(n.x) <= 1 + 1e-4 && abs(n.y) <= 1 + 1e-4, "\(corner) -> \(n) at aspect \(aspect)")
+            #expect(n.z > 0 && n.z < 1, "inside the clip volume")
+        }
+        let (west, east) = (try ndc(SIMD3(0, L / 2, 0)), try ndc(SIMD3(L, L / 2, 0)))
+        let (south, north) = (try ndc(SIMD3(L / 2, 0, 0)), try ndc(SIMD3(L / 2, L, 0)))
+        #expect(west.x < east.x && south.y < north.y)
+        let centre = try ndc(SIMD3(L / 2, L / 2, 0))
+        #expect(abs(centre.x) < 1e-4 && abs(centre.y) < 1e-4, "centred")
+    }
+
+    @Test func theSmallerDimensionHoldsTheWorld() throws {
+        // A wide window fits the world to its height, a tall one to its width.
+        let wide = Camera.planet(size: L, aspect: 2)
+        let tall = Camera.planet(size: L, aspect: 0.5)
+        let w = try #require(wide.ndc(of: SIMD3(L / 2, L, 0), aspect: 2))
+        let t = try #require(tall.ndc(of: SIMD3(L, L / 2, 0), aspect: 0.5))
+        #expect(abs(w.y - 1 / 1.04) < 0.01 && abs(t.x - 1 / 1.04) < 0.01)
+    }
+
+    @Test func theClipPlanesHoldTheWholeTiledMapFromAnywhereInTheZoomRange() throws {
+        for aspect: Float in [1, 16.0 / 9] {
+            var camera = Camera.planet(size: L, aspect: aspect)
+            let farthest = WorldLevels.maxDistance(size: L, fovY: camera.fovY, aspect: aspect)
+            for pitch in [-Camera.maxPitch, -1.0, -0.5, -0.15] {
+                camera.pitch = pitch
+                for distance in [WorldLevels.minDistance, 40, camera.distance, farthest] {
+                    camera.distance = distance
+                    for target in [SIMD3<Float>(0, 0, 0), SIMD3(L - 1, L - 1, 0), SIMD3(160, 160, 0)] {
+                        camera.target = target
+                        let (near, far) = camera.clipPlanes
+                        // The corners of the repeating quad (two and a half worlds from the cell of the target).
+                        let cell = SIMD2((target.x / L).rounded(.down) + 0.5, (target.y / L).rounded(.down) + 0.5) * L
+                        for sx in [Float(-1), 1] {
+                            for sy in [Float(-1), 1] {
+                                let corner = SIMD3(cell.x + sx * 2.5 * L, cell.y + sy * 2.5 * L, 0)
+                                let depth = simd_dot(corner - camera.position, camera.forward)
+                                #expect(depth <= far + 1e-2, "a corner of the quad is behind the far plane: \(depth) > \(far) at pitch \(pitch)")
+                            }
+                        }
+                        #expect(near > 0 && near < far)
+                        #expect(abs(simd_dot(camera.target - camera.position, camera.forward) - distance) < 1e-2)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test func aTwoDWorldKeepsItsFaceOnViewWithTheTiledClipScene() throws {
+        let header = try PlayFixture(kind: "2d").events().compactMap { event -> StreamHeader? in
+            if case .header(let h) = event { h } else { nil }
+        }.first
+        let h = try #require(header)
+        let camera = Camera.world(for: h, aspect: 1)
+        #expect(camera.pitch == Camera.maxPitch, "from the -z side, y down, as the 2D renderer shows it")
+        #expect(camera.scene == Camera.tiledScene(size: Float(h.size), height: 0))
+        let three = try PlayFixture(kind: "3d").events().compactMap { event -> StreamHeader? in
+            if case .header(let h) = event { h } else { nil }
+        }.first
+        #expect(Camera.world(for: try #require(three), aspect: 1).pitch == -Camera.maxPitch)
+    }
+}
+

@@ -101,7 +101,8 @@ struct WorldView: View {
     }
 }
 
-/// What the free rectangle shows. (The Metal view replaces it with the renderer commit.)
+/// What the free rectangle shows: the Metal view (created once a world is live and kept), the overlay over it, and the
+/// banners for a world that is starting, has ended or failed, or a renderer that cannot draw.
 struct WorldCanvasView: View {
     @ObservedObject var play: PlayController
     @ObservedObject var model: WorldModel
@@ -110,23 +111,44 @@ struct WorldCanvasView: View {
         let _ = play.revision
         ZStack {
             Color(red: 0.035, green: 0.04, blue: 0.055)
-            VStack(spacing: 8) {
-                switch play.phase {
-                case .idle: Text("No world is open. Choose one with Worlds…").foregroundStyle(.secondary)
-                case .starting:
+            // No Metal device is created until a world is live.
+            if play.phase == .live || play.store.header != nil {
+                WorldMetalView(model: model)
+                WorldOverlayView(model: model, overlay: model.overlay, play: play)
+            }
+            banner
+        }
+    }
+
+    @ViewBuilder
+    private var banner: some View {
+        if let failure = model.drawingFailure {
+            text("Cannot draw: \(failure)", error: true)
+        } else {
+            switch play.phase {
+            case .idle: text("No world is open. Choose one with Worlds…")
+            case .starting:
+                VStack(spacing: 8) {
                     ProgressView()
                     Text("Starting \(play.world ?? "the world")…").foregroundStyle(.secondary)
                     Text(play.progress.last ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
-                case .live:
-                    if let frame = play.store.frame {
-                        Text("step \(frame.step), \(frame.n) alive").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                case .ended(let message): Text(message).foregroundStyle(.secondary)
-                case .failed(let message): Text(message).foregroundStyle(.red).textSelection(.enabled)
                 }
+                .padding(16)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            case .live: EmptyView()
+            case .ended(let message): text(message)
+            case .failed(let message): text(message, error: true)
             }
-            .padding(16)
-            .frame(maxWidth: 520)
         }
+    }
+
+    private func text(_ string: String, error: Bool = false) -> some View {
+        Text(string)
+            .foregroundStyle(error ? Color.red : Color.secondary)
+            .multilineTextAlignment(.center)
+            .padding(14)
+            .frame(maxWidth: 520)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .textSelection(.enabled)
     }
 }

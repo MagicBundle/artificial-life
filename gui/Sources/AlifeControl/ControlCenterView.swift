@@ -94,12 +94,18 @@ struct ViewMenu: View {
             Toggle("Labels", isOn: Binding(
                 get: { labelsOn }, set: { labelsOn = $0; play.send(.labels($0)) }))
             Divider()
-            Toggle("Agents", isOn: $model.display.agents)
-            Toggle("Agent points (planet level)", isOn: $model.display.agentPoints)
+            // The agent toggle refers to the layer of the level in view: instances close up, the 1 px points at the planet level.
+            if model.level == .planet {
+                Toggle("Agent points", isOn: $model.display.agentPoints)
+            } else {
+                Toggle("Agents", isOn: $model.display.agents)
+            }
             Toggle("Bonds", isOn: $model.display.bonds)
             Toggle("Territory", isOn: $model.display.territory)
             Toggle("Weather map", isOn: $model.display.map)
             Toggle("Frame", isOn: $model.display.frame)
+            Divider()
+            Button("Reset view") { model.resetCamera() }
         }
         .menuStyle(.borderlessButton)
         .fixedSize()

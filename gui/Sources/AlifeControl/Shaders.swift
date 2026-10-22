@@ -5,8 +5,8 @@
 // download. The price is that the source is first compiled when the viewer opens; the compiler's diagnostics then reach
 // the viewer window (`Renderer.Failure.shaders`). Do not use a backslash or a triple quote in the source.
 //
-// The structs `Scene` and `Plane` mirror `SceneUniforms` and `PlaneUniforms` in Renderer.swift field by field (a test
-// pins the Swift side: 160 and 32 bytes).
+// The structs `Scene`, `Plane` and `WorldU` mirror `SceneUniforms`, `PlaneUniforms` and `WorldUniforms` in Renderer.swift
+// field by field (a test pins the Swift side: 160, 32 and 80 bytes).
 enum Shaders {
     /// The entry points of `source` that `Renderer` builds pipelines from (a test compares them with the source).
     static let sphereVertex = "sphereVertex"
@@ -17,8 +17,18 @@ enum Shaders {
     static let planeVertex = "planeVertex"
     static let planeFragment = "planeFragment"
     static let sliceFragment = "sliceFragment"
+    // The World window's entry points (DESIGN 33.4.6): alive-only agents at their minimum image, the repeating map.
+    static let agentVertexA = "agentVertexA"
+    static let agentFragmentA = "agentFragmentA"
+    static let agentFragmentFlat = "agentFragmentFlat"
+    static let bondVertexA = "bondVertexA"
+    static let pointVertexA = "pointVertexA"
+    static let pointFragment = "pointFragment"
+    static let mapVertex = "mapVertex"
+    static let mapFragment = "mapFragment"
     static let entryPoints = [
         sphereVertex, sphereFragment, bondVertex, boxVertex, lineFragment, planeVertex, planeFragment, sliceFragment,
+        agentVertexA, agentFragmentA, agentFragmentFlat, bondVertexA, pointVertexA, pointFragment, mapVertex, mapFragment,
     ]
 
     static let source = """
@@ -38,6 +48,15 @@ enum Shaders {
     struct Plane {
         float4 color;
         float4 info;       // x: the z of the plane
+    };
+
+    // The World window's constants (buffer 7).
+    struct WorldU {
+        float4 target;     // xy: the camera target (everything is drawn at its minimum image), z: L, w: 1 / L
+        float4 params;     // x: map blend (previous -> current), y: map opacity, z: territory alpha, w: flat-disc threshold in px
+        float4 refs;       // x: p_ref, y: dc_ref, z: zeta_ref, w: cot(fovY / 2)
+        uint4 flags;       // x: pass (0 spheres, 1 flat discs), y: rows listed, z: bonds, w: bit 0 map, bit 1 territory, bit 2 equators
+        float4 style;      // x: point alpha, y: point size in px, z: smallest disc radius in px, w: unused
     };
 
     // The nose of an agent: a small sphere on its forward axis, paler than the body, so the heading shows.
@@ -111,8 +130,8 @@ enum Shaders {
         float depth [[depth(any)]];
     };
 
-    fragment SphereOut sphereFragment(SphereVarying in [[stage_in]],
-                                      constant Scene& scene [[buffer(0)]])
+    // The shading of one impostor: the ray against the body and the nose, the headlight, the depth of the hit.
+    SphereOut shadeSphere(float3 center, float3 forwardAxis, float3 worldPoint, float3 baseColor, constant Scene& scene)
     {
         SphereOut out;
         out.color = float4(0.0);
@@ -120,14 +139,14 @@ enum Shaders {
 
         float radius = scene.world.z;
         float3 origin = scene.eye.xyz;
-        float3 dir = normalize(in.world - origin);
-        float3 noseCenter = in.center + in.forward * (noseOffset * radius);
+        float3 dir = normalize(worldPoint - origin);
+        float3 noseCenter = center + forwardAxis * (noseOffset * radius);
         float noseR = noseRadius * radius;
 
         // Ray against the body and against the nose. The squared miss distance is taken from the component of the
         // offset perpendicular to the ray, which keeps its precision when the eye is far away.
         float tBody = -1.0;
-        float3 oc = origin - in.center;
+        float3 oc = origin - center;
         float b = dot(oc, dir);
         float3 q = oc - dir * b;
         float h = radius * radius - dot(q, q);
@@ -149,13 +168,19 @@ enum Shaders {
         bool useNose = hitNose && (!hitBody || tNose < tBody);
         float t = useNose ? tNose : tBody;
         float3 hit = origin + dir * t;
-        float3 normal = useNose ? (hit - noseCenter) / noseR : (hit - in.center) / radius;
-        float3 base = useNose ? mix(in.color, float3(1.0), 0.6) : in.color;
+        float3 normal = useNose ? (hit - noseCenter) / noseR : (hit - center) / radius;
+        float3 base = useNose ? mix(baseColor, float3(1.0), 0.6) : baseColor;
         float lambert = max(dot(normal, -dir), 0.0);
         out.color = float4(base * (0.3 + 0.7 * lambert), 1.0);
         float4 clip = scene.viewProjection * float4(hit, 1.0);
         out.depth = clip.z / clip.w;
         return out;
+    }
+
+    fragment SphereOut sphereFragment(SphereVarying in [[stage_in]],
+                                      constant Scene& scene [[buffer(0)]])
+    {
+        return shadeSphere(in.center, in.forward, in.world, in.color, scene);
     }
 
     // ---- Lines: bonds and the edges of the box ----
@@ -247,6 +272,238 @@ enum Shaders {
     {
         constexpr sampler cells(coord::normalized, address::clamp_to_edge, filter::nearest);
         return float4(field.sample(cells, in.uv).rgb, plane.color.a);
+    }
+
+    // ---- The World window: alive-only agents at their minimum image, bonds, points and the repeating map ----
+
+    // The image of a point nearest the camera target: x and y are periodic on [0, L), z is not.
+    float3 minimumImage(float3 p, float2 target, float L)
+    {
+        float2 d = p.xy - target;
+        d -= L * rint(d / L);
+        return float3(target + d, p.z);
+    }
+
+    struct AgentVaryingA {
+        float4 position [[position]];
+        float3 center;
+        float3 forward;
+        float3 world;
+        float3 color;
+        float2 corner;     // the billboard's corner in [-1, 1]^2 (the flat discs)
+    };
+
+    // One billboard per listed row (the stream's alive-only arrays: the instance id is the row). Two passes over the same
+    // rows: pass 0 draws the ones whose body projects to at least the threshold as ray-traced spheres, pass 1 the rest as
+    // flat discs of at least a pixel or so, which a ray test would turn into nothing.
+    vertex AgentVaryingA agentVertexA(uint vid [[vertex_id]],
+                                      uint iid [[instance_id]],
+                                      constant Scene& scene [[buffer(0)]],
+                                      device const packed_float3* pos [[buffer(2)]],
+                                      device const half2* orient [[buffer(3)]],
+                                      device const uint* rgb [[buffer(4)]],
+                                      constant WorldU& world [[buffer(7)]])
+    {
+        AgentVaryingA out;
+        out.position = float4(2.0, 2.0, 2.0, 1.0);
+        out.center = float3(0.0);
+        out.forward = float3(1.0, 0.0, 0.0);
+        out.world = float3(0.0);
+        out.color = float3(0.0);
+        out.corner = float2(0.0);
+
+        float radius = scene.world.z;
+        float3 center = minimumImage(float3(pos[iid]), world.target.xy, world.target.z);
+        float3 toCenter = center - scene.eye.xyz;
+        float dist = length(toCenter);
+        float3 viewAxis = cross(scene.up.xyz, scene.right.xyz);
+        float depth = dot(toCenter, viewAxis);
+        if (!(dist > 1.5 * radius) || depth <= 0.0) { return out; }
+
+        // Pixels per world unit at the centre, and the body's projected radius.
+        float perPixel = 0.5 * scene.viewport.y * world.refs.w / depth;
+        bool isFlat = radius * perPixel < world.params.w;
+        if (isFlat != (world.flags.x == 1u)) { return out; }
+
+        float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
+        float3 worldPoint;
+        if (isFlat) {
+            float extent = max(radius * perPixel, world.style.z) / perPixel;
+            worldPoint = center + (scene.right.xyz * corner.x + scene.up.xyz * corner.y) * extent;
+        } else {
+            float3 f = toCenter / dist;
+            float3 bx = normalize(cross(f, scene.up.xyz));
+            float3 by = cross(bx, f);
+            float bound = boundRadius * radius;
+            float extent = bound * rsqrt(max(1.0 - (bound * bound) / (dist * dist), 0.05));
+            worldPoint = center + (bx * corner.x + by * corner.y) * extent;
+        }
+        float2 angles = float2(orient[iid]);
+        float cp = cos(angles.y);
+        out.forward = float3(cp * cos(angles.x), cp * sin(angles.x), sin(angles.y));
+        out.position = scene.viewProjection * float4(worldPoint, 1.0);
+        out.center = center;
+        out.world = worldPoint;
+        out.color = unpackColor(rgb[iid]);
+        out.corner = corner;
+        return out;
+    }
+
+    fragment SphereOut agentFragmentA(AgentVaryingA in [[stage_in]],
+                                      constant Scene& scene [[buffer(0)]])
+    {
+        return shadeSphere(in.center, in.forward, in.world, in.color, scene);
+    }
+
+    // A flat disc: no ray test, a little shading towards the rim, the depth of the billboard.
+    fragment SphereOut agentFragmentFlat(AgentVaryingA in [[stage_in]])
+    {
+        SphereOut out;
+        out.color = float4(0.0);
+        out.depth = 1.0;
+        float r = length(in.corner);
+        if (r > 1.0) {
+            discard_fragment();
+            return out;
+        }
+        out.color = float4(in.color * (1.0 - 0.3 * r * r), 1.0);
+        out.depth = in.position.z;
+        return out;
+    }
+
+    // A bond between listed rows: one segment between the images of its endpoints nearest the target (the first against
+    // the target, the second against the first), drawn as two half segments, each in its agent's colour.
+    vertex LineVarying bondVertexA(uint vid [[vertex_id]],
+                                   uint iid [[instance_id]],
+                                   constant Scene& scene [[buffer(0)]],
+                                   device const packed_float3* pos [[buffer(2)]],
+                                   device const uint* rgb [[buffer(4)]],
+                                   device const uint2* bonds [[buffer(5)]],
+                                   constant WorldU& world [[buffer(7)]])
+    {
+        uint2 ij = bonds[iid];
+        float L = world.target.z;
+        float3 pa = minimumImage(float3(pos[ij.x]), world.target.xy, L);
+        float3 pb = minimumImage(float3(pos[ij.y]), pa.xy, L);
+        bool fromB = vid >= 2u;
+        bool atMiddle = (vid & 1u) != 0u;
+        float3 p = atMiddle ? 0.5 * (pa + pb) : (fromB ? pb : pa);
+        LineVarying out;
+        out.position = scene.viewProjection * float4(p, 1.0);
+        out.color = float4(mix(unpackColor(rgb[fromB ? ij.y : ij.x]), float3(1.0), 0.35), 1.0);
+        return out;
+    }
+
+    // The planet level's optional layer: one translucent point per listed row.
+    struct PointVarying {
+        float4 position [[position]];
+        float pointSize [[point_size]];
+        float4 color;
+    };
+
+    vertex PointVarying pointVertexA(uint vid [[vertex_id]],
+                                     constant Scene& scene [[buffer(0)]],
+                                     device const packed_float3* pos [[buffer(2)]],
+                                     device const uint* rgb [[buffer(4)]],
+                                     constant WorldU& world [[buffer(7)]])
+    {
+        PointVarying out;
+        float3 p = minimumImage(float3(pos[vid]), world.target.xy, world.target.z);
+        out.position = scene.viewProjection * float4(p, 1.0);
+        out.pointSize = world.style.y;
+        out.color = float4(unpackColor(rgb[vid]), world.style.x);
+        return out;
+    }
+
+    fragment float4 pointFragment(PointVarying in [[stage_in]])
+    {
+        return in.color;
+    }
+
+    // The map: one quad of 5 x 5 worlds centred on the cell of the target, sampled with a repeating sampler, so the torus is
+    // tiled wherever the camera looks. u = x / L and v = y / L; the planes are row-major [cy][cx], row 0 at v = 0.
+    struct MapVarying {
+        float4 position [[position]];
+        float2 uv;
+    };
+
+    vertex MapVarying mapVertex(uint vid [[vertex_id]],
+                                constant Scene& scene [[buffer(0)]],
+                                constant WorldU& world [[buffer(7)]])
+    {
+        float L = world.target.z;
+        float2 cell = (floor(world.target.xy * world.target.w) + 0.5) * L;
+        float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
+        float2 xy = cell + corner * (2.5 * L);
+        MapVarying out;
+        out.position = scene.viewProjection * float4(xy, 0.0, 1.0);
+        out.uv = xy * world.target.w;
+        return out;
+    }
+
+    constexpr sampler planeSampler(coord::normalized, address::repeat, filter::linear);
+
+    // Sea from the warm-pool map, cloud from the depth of the cloud layer, rain as a blue-grey wash, a faint tint where the
+    // vorticity has a sign (cyclonic warm, anticyclonic cool), the two equators, and the territory of the kin groups.
+    // Every plane is the mix of the previous and the current delivery by the wall-clock fade.
+    fragment float4 mapFragment(MapVarying in [[stage_in]],
+                                constant WorldU& world [[buffer(7)]],
+                                texture2d<float> rainCur [[texture(0)]],
+                                texture2d<float> cloudCur [[texture(1)]],
+                                texture2d<float> zetaCur [[texture(2)]],
+                                texture2d<float> seaCur [[texture(3)]],
+                                texture2d<float> rainPrev [[texture(4)]],
+                                texture2d<float> cloudPrev [[texture(5)]],
+                                texture2d<float> zetaPrev [[texture(6)]],
+                                texture2d<float> seaPrev [[texture(7)]],
+                                texture2d<float, access::read> territory [[texture(8)]])
+    {
+        const float3 background = float3(0.035, 0.04, 0.055);
+        float2 uv = in.uv;
+        float3 color = float3(0.045, 0.055, 0.075);
+        if ((world.flags.w & 1u) != 0u) {
+            float k = world.params.x;
+            float rain = mix(rainPrev.sample(planeSampler, uv).r, rainCur.sample(planeSampler, uv).r, k);
+            float cloud = mix(cloudPrev.sample(planeSampler, uv).r, cloudCur.sample(planeSampler, uv).r, k);
+            float zeta = mix(zetaPrev.sample(planeSampler, uv).r, zetaCur.sample(planeSampler, uv).r, k);
+            float sea = mix(seaPrev.sample(planeSampler, uv).r, seaCur.sample(planeSampler, uv).r, k);
+            color = mix(float3(0.02, 0.07, 0.14), float3(0.06, 0.22, 0.27), smoothstep(0.1, 0.9, sea));
+            color = mix(color, float3(0.86, 0.90, 0.96), 0.62 * smoothstep(0.05, 0.9, cloud));
+            color = mix(color, float3(0.30, 0.46, 0.70), clamp(1.3 * rain, 0.0, 0.8));
+            color += float3(0.25, 0.06, 0.10) * (0.35 * max(zeta, 0.0)) + float3(0.04, 0.10, 0.28) * (0.35 * max(-zeta, 0.0));
+        }
+        if ((world.flags.w & 4u) != 0u) {
+            float g = uv.y * 2.0;
+            float f = fract(g);
+            float line = 1.0 - smoothstep(0.5, 1.5, min(f, 1.0 - f) / max(fwidth(g), 1e-6));
+            color = mix(color, float3(0.75, 0.80, 0.90), 0.35 * line);
+        }
+        if ((world.flags.w & 2u) != 0u) {
+            float2 size = float2(territory.get_width(), territory.get_height());
+            float2 g = uv * size;
+            g -= size * floor(g / size);
+            float2 cellF = floor(g);
+            float4 here = territory.read(uint2(min(cellF, size - 1.0)));
+            color = mix(color, here.rgb, world.params.z * here.a);
+            // A border where the owners of neighbouring cells differ, a pixel wide, on the side the pixel is on.
+            float2 f = g - cellF;
+            float2 w = fwidth(g);
+            float border = 0.0;
+            for (int axis = 0; axis < 2; ++axis) {
+                float fa = axis == 0 ? f.x : f.y;
+                float wa = axis == 0 ? w.x : w.y;
+                float side = fa < wa ? -1.0 : (fa > 1.0 - wa ? 1.0 : 0.0);
+                if (side != 0.0) {
+                    float2 other = cellF + (axis == 0 ? float2(side, 0.0) : float2(0.0, side));
+                    other -= size * floor(other / size);
+                    float4 there = territory.read(uint2(min(other, size - 1.0)));
+                    bool same = all(there.rgb == here.rgb) && ((there.a > 0.0) == (here.a > 0.0));
+                    if (!same && (there.a > 0.0 || here.a > 0.0)) { border = 1.0; }
+                }
+            }
+            color = mix(color, float3(1.0), 0.4 * border * (world.params.z * 4.0));
+        }
+        return float4(mix(background, color, world.params.y), 1.0);
     }
     """
 }
