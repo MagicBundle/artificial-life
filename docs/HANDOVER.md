@@ -349,7 +349,7 @@ and resumed once. There is one run per condition apart from the seed pair.
 
 ## Games G3a: the play loop and the World window (`docs/GAMES.md` §9, DESIGN §33, row I51)
 
-- **Current state.** Built on branch `games/g3a` (eleven commits on `origin/main` 2d1ab0c: G2, W0/W1 weather, N1, the fused kNN kernel).
+- **Current state.** Built on branch `games/g3a` (13 commits on `origin/main` 2d1ab0c: G2, W0/W1 weather, N1, the fused kNN kernel).
   `alife play` runs one world under a fixed-timestep scheduler and writes ALSTRM records (`FRMA IDNT INTN TERR EVNT STRM MAP1 ENVS CLCK
   FOCS`) to stdout; the **World** window of the Swift app (Lab menu, "Open World", or `--world RUN` at launch) shows them: the planet
   map and organisms in a raw-Metal view (minimum image, alive-only frames, three semantic levels), a docked control center (clock
