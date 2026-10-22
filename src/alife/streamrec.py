@@ -1,4 +1,4 @@
-"""The play-loop stream records, ALSTRM v1 additions (DESIGN §33.1, docs/GAMES.md, G3a).
+"""The play-loop stream records, ALSTRM v1 additions (DESIGN §33.1, §34.6, docs/GAMES.md, G3a and G3b).
 
 Host module, numpy only (no ``mlx`` import): every encoder is a pure function of arrays and dicts, so the
 fixtures of ``tests/play_fixtures.py`` are device independent. The records are written by ``alife play`` after
@@ -25,7 +25,9 @@ import numpy as np
 MAGIC: Final = b"ALSTRM\x00\x01"
 PROTOCOL: Final = 1
 VERSION: Final = 1  # the layout version of every tag below
-TAGS: Final = ("FRMA", "IDNT", "INTN", "TERR", "EVNT", "STRM", "MAP1", "ENVS", "CLCK", "FOCS")
+TAGS: Final = (
+    "FRMA", "IDNT", "INTN", "TERR", "EVNT", "STRM", "MAP1", "ENVS", "CLCK", "FOCS", "ALRT", "RPRT", "PLAN",
+)  # fmt: skip
 VERSIONS: Final = dict.fromkeys(TAGS, VERSION)
 HEAD: Final = struct.Struct("<QIHH")  # step, seq, version, flags
 HEAD_SIZE: Final = 16
@@ -37,7 +39,9 @@ assert HEAD.size == HEAD_SIZE and CLCK_BODY.size == 44 and FOCS_BODY.size == 68 
 
 COLOR_MODES: Final = ("tag", "energy", "clade", "house", "kin", "archetype", "intent")  # play's header list
 FLAG_DIAG: Final = 1 << 0  # FRMA: the state has an invariant (error) diag bit set
-FLAG_BACKLOG: Final = 1 << 0  # EVNT: the events rebuilt at start
+FLAG_BACKLOG: Final = 1 << 0  # EVNT, ALRT, RPRT: the records rebuilt at start
+FLAG_FINAL: Final = 1 << 1  # RPRT: no later report of this chapter and mode will replace it
+FLAG_REPLY: Final = 1 << 0  # PLAN: the reply to a ``power preview``
 FLAG_TS: Final = 1 << 0  # MAP1: the T_s plane is present
 FLAG_WINDS: Final = 1 << 1  # MAP1: the wind blocks are present
 FLAG_BORN_SINCE: Final = 1 << 0  # IDNT row flag: born after the last snapshot
@@ -72,9 +76,14 @@ EVENT_KINDS: Final = {
     17: "extinct",
     18: "kin_formed",
     19: "kin_ended",
+    20: "power_applied",
+    21: "power_ended",
 }
 EVENT_KEYS: Final = frozenset(["id", "step", "kind", "fam", "a", "b", "x", "y", "z", "imp", "text"])
 CLCK_REASONS: Final = {0: "running", 1: "user pause", 2: "end of steps", 3: "chapter", 4: "alert", 5: "error"}
+CLCK_FLAG_CHAPTER_PAUSE: Final = 1 << 0  # CLCK.flags: the pause at a chapter end is armed
+CLCK_FLAG_ALERT_PAUSE: Final = 1 << 1  # CLCK.flags: at least one alert class is armed to pause
+CLCK_FLAGS: Final = CLCK_FLAG_CHAPTER_PAUSE | CLCK_FLAG_ALERT_PAUSE
 
 # The weather maps (MAP1): reference scales of the companded and linear quantisation (DESIGN §33.1).
 F0: Final = 0.025
@@ -91,6 +100,97 @@ EVNT_JSON_CAP: Final = 32 * 1024
 STRM_JSON_CAP: Final = 24 * 1024
 ENVS_JSON_CAP: Final = 8 * 1024
 TERR_JSON_CAP: Final = 1024
+ALRT_JSON_CAP: Final = 24 * 1024
+RPRT_JSON_CAP: Final = 64 * 1024
+PLAN_JSON_CAP: Final = 8 * 1024
+
+# G3b records (DESIGN §34.6).
+MAX_ALERTS: Final = 16  # alerts in one ALRT
+ALERT_ID_BASE: Final = (
+    600  # an alert id is first_step * 1000 + 600 + index (the chronicle's families use 0..500)
+)
+ALERT_TITLE_MAX: Final = 48
+ALERT_TEXT_MAX: Final = 160
+ALERT_IMPORTANCE: Final = (0, 1, 2, 3)  # 0 log only, 1 stack, 2 stack and toast, 3 toast and armed pause
+ALERT_STATES: Final = ("raised", "updated", "cleared")
+ALERT_SURFACES: Final = ("alert", "log")
+ALERT_REF_KINDS: Final = ("storm", "kin", "house", "world", "power", "organism")
+ALERT_KEYS: Final = frozenset(
+    [
+        "id",
+        "version",
+        "step",
+        "class",
+        "key",
+        "state",
+        "surface",
+        "imp",
+        "title",
+        "text",
+        "x",
+        "y",
+        "z",
+        "ref",
+        "pause",
+        "expires",
+        "watched",
+        "calibrated",
+    ]
+)
+ALERT_CLASS_KEYS: Final = frozenset(["imp", "pause", "label", "calibrated", "surface"])
+ALERT_CAP: Final = {"n": 4, "window": 1500, "exempt": ["imp3", "pause", "chapter", "engine"]}
+REPORT_MODES: Final = {0: "template", 1: "select", 2: "away"}
+REPORT_KEYS: Final = frozenset(
+    [
+        "chapter",
+        "n_abs",
+        "a",
+        "b",
+        "mode",
+        "final",
+        "withheld",
+        "headline",
+        "lead",
+        "body",
+        "interventions",
+        "ticker",
+        "since",
+        "entities",
+        "versions",
+        "facts_digest",
+        "latency_s",
+        "fallback",
+    ]
+)
+PLAN_KINDS: Final = ("power", "intent")
+PLAN_STATUSES: Final = ("preview", "queued", "applied", "refused", "since", "cancelled")
+PLAN_KEYS: Final = frozenset(
+    [
+        "id",
+        "kind",
+        "status",
+        "power",
+        "action",
+        "raw",
+        "params",
+        "clamped",
+        "duration",
+        "step_applied",
+        "ends",
+        "cost",
+        "influence",
+        "ready",
+        "holds",
+        "text",
+        "caution",
+        "precedent",
+        "since",
+        "refused",
+    ]
+)
+PLAN_TEXT_MAX: Final = 160
+PLAN_CAUTION_MAX: Final = 100
+EFFECT_SOURCES: Final = ("rule", "llm", "player")
 
 
 class RecordError(ValueError):
@@ -110,6 +210,14 @@ def json_bytes(obj: Any) -> bytes:
         return json.dumps(obj, allow_nan=False, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     except ValueError as e:
         raise RecordError(f"not JSON: {e}") from e
+
+
+def _is_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _is_num(v: Any) -> bool:
+    return isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
 
 
 def _le(a: Any, dtype: str) -> bytes:
@@ -249,6 +357,56 @@ def labels_block(
     }
 
 
+def alerts_block(
+    classes: Mapping[str, Mapping[str, Any]], cap: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """The ``play.alerts`` header object (DESIGN §34.6): the registry of alert classes (each ``imp`` 0 to 3,
+    ``pause`` the class's default, ``label`` its display name, ``calibrated`` whether a measurement backs
+    its threshold, ``surface`` ``alert`` or ``log``) and the global rate cap. ``ALRT`` records name only
+    classes of this registry."""
+    out: dict[str, Any] = {}
+    for name, c in classes.items():
+        if set(c) != ALERT_CLASS_KEYS or not isinstance(name, str) or not name:
+            raise RecordError(f"alert class {name!r} has keys {sorted(c)}, not {sorted(ALERT_CLASS_KEYS)}")
+        if c["imp"] not in ALERT_IMPORTANCE or c["surface"] not in ALERT_SURFACES:
+            raise RecordError(f"alert class {name!r}: importance or surface out of range")
+        if not (
+            isinstance(c["pause"], bool) and isinstance(c["calibrated"], bool) and isinstance(c["label"], str)
+        ):
+            raise RecordError(f"alert class {name!r}: pause and calibrated are booleans, label a string")
+        out = {
+            **out,
+            name: {
+                "imp": c["imp"], "pause": c["pause"], "label": c["label"], "calibrated": c["calibrated"],
+                "surface": c["surface"],
+            },
+        }  # fmt: skip
+    if not out:
+        raise RecordError("the alert registry is empty")
+    return {"version": VERSION, "classes": out, "cap": dict(cap) if cap is not None else dict(ALERT_CAP)}
+
+
+def autopause_block(*, chapter: bool, alert: Mapping[str, bool]) -> dict[str, Any]:
+    """The ``play.autopause`` header object: whether the world pauses at a chapter end and, per alert class,
+    whether a raised alert of the class pauses it (the defaults; the client sends its own choice back with
+    ``autopause`` lines)."""
+    if not isinstance(chapter, bool) or not all(isinstance(v, bool) for v in alert.values()):
+        raise RecordError("autopause flags are booleans")
+    return {"chapter": chapter, "alert": dict(alert)}
+
+
+def powers_block(powers: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """The ``play.powers`` header object: the powers the player can use, by name (``action`` the director
+    action behind it, ``label``, ``cost`` in influence units, ``cooldown`` in steps, and whatever bounds the
+    client draws its sliders from)."""
+    for name, p in powers.items():
+        if not isinstance(name, str) or not name or not {"action", "label", "cost", "cooldown"} <= set(p):
+            raise RecordError(f"power {name!r} needs action, label, cost and cooldown")
+        if not (_is_int(p["cost"]) and _is_int(p["cooldown"]) and p["cost"] >= 0 and p["cooldown"] >= 0):
+            raise RecordError(f"power {name!r}: cost and cooldown are non-negative integers")
+    return {name: dict(p) for name, p in powers.items()}
+
+
 def header_play(
     *,
     records: Sequence[str],
@@ -263,12 +421,29 @@ def header_play(
     frame_hz: int = 30,
     chapter: int = 6000,
     cast: Mapping[str, int] | None = None,
+    alerts: Mapping[str, Any] | None = None,
+    autopause: Mapping[str, Any] | None = None,
+    powers: Mapping[str, Any] | None = None,
+    game_specs: str | None = None,
 ) -> dict[str, Any]:
     """The ``play`` header key: the tags actually sent (a 2D or dry world has no ``MAP1``/``STRM``), their
-    versions and the constants the client needs."""
+    versions and the constants the client needs. G3b's keys (``alerts_block``, ``autopause_block``,
+    ``powers_block`` and the name of the game table) are written only when given, like the other optional
+    keys of the headers, so a world that does not use them has the header it always had."""
     bad = [t for t in records if t not in TAGS]
     if bad or len(set(records)) != len(records):
         raise RecordError(f"records must be distinct known tags, got {list(records)}")
+    extra: dict[str, Any] = {}
+    if alerts is not None:
+        extra = {**extra, "alerts": dict(alerts)}
+    if autopause is not None:
+        extra = {**extra, "autopause": dict(autopause)}
+    if powers is not None:
+        extra = {**extra, "powers": dict(powers)}
+    if game_specs is not None:
+        if not isinstance(game_specs, str) or not game_specs:
+            raise RecordError("game_specs names the game table")
+        extra = {**extra, "game_specs": game_specs}
     return {
         "records": list(records),
         "versions": {t: VERSIONS[t] for t in records},
@@ -286,6 +461,7 @@ def header_play(
         "energy_cap": energy_cap,
         "events": {str(k): v for k, v in EVENT_KINDS.items()},
         "planet": dict(planet) if planet is not None else {"source": None, "houses": "none"},
+        **extra,
     }
 
 
@@ -526,12 +702,265 @@ def encode_evnt(*, step: int, seq: int, events: Sequence[Mapping[str, Any]], bac
     return record("EVNT", step, seq, FLAG_BACKLOG if backlog else 0, body)
 
 
+def check_envs(obj: Mapping[str, Any]) -> None:
+    """The G3b keys of an ``ENVS`` object, when present: ``influence`` (None, or ``have``, ``cap``,
+    ``window`` and the ``free_at`` steps at which spent units come back), ``patches`` (the food patches the
+    powers target: ``i x y gain sigma``), ``powers`` (per power name ``ready``, the step it is ready or
+    None, and ``busy``, the reason it is not usable or None) and the source of every effect (``rule``,
+    ``llm`` or ``player``)."""
+    influence = obj.get("influence")
+    if influence is not None:
+        ok = (
+            isinstance(influence, Mapping)
+            and set(influence) == {"have", "cap", "window", "free_at"}
+            and all(_is_int(influence[k]) and influence[k] >= 0 for k in ("have", "cap", "window"))
+            and isinstance(influence["free_at"], list)
+            and all(_is_int(v) and v >= 0 for v in influence["free_at"])
+            and influence["have"] <= influence["cap"]
+        )
+        if not ok:
+            raise RecordError(f"ENVS influence {influence!r} is not {{have, cap, window, free_at}}")
+    for i, p in enumerate(obj.get("patches", ())):
+        if not (isinstance(p, Mapping) and set(p) == {"i", "x", "y", "gain", "sigma"} and _is_int(p["i"])):
+            raise RecordError(f"ENVS patch {i} is not {{i, x, y, gain, sigma}}")
+        if not all(_is_num(p[k]) for k in ("x", "y", "gain", "sigma")):
+            raise RecordError(f"ENVS patch {i} has a value that is not a finite number")
+    for name, p in (obj.get("powers") or {}).items():
+        ok = isinstance(p, Mapping) and set(p) == {"ready", "busy"}
+        ok = (
+            ok
+            and (p["ready"] is None or _is_int(p["ready"]))
+            and (p["busy"] is None or isinstance(p["busy"], str))
+        )
+        if not (ok and isinstance(name, str)):
+            raise RecordError(f"ENVS power {name!r} is not {{ready, busy}}")
+    for e in obj.get("effects", ()):
+        if e.get("source") not in EFFECT_SOURCES:
+            raise RecordError(f"ENVS effect source {e.get('source')!r} is not one of {EFFECT_SOURCES}")
+
+
 def encode_envs(*, step: int, seq: int, obj: Mapping[str, Any]) -> bytes:
-    """One ``ENVS``: ``{"pools", "season", "levers", "effects", "cooldowns", "influence"}``."""
+    """One ``ENVS``: ``{"pools", "season", "levers", "effects", "cooldowns", "influence"}``, and, from G3b,
+    ``patches`` and ``powers`` (``check_envs``)."""
+    check_envs(obj)
     js = json_bytes(obj)
     if len(js) > ENVS_JSON_CAP:
         raise RecordError(f"ENVS json of {len(js)} bytes exceeds {ENVS_JSON_CAP}")
     return record("ENVS", step, seq, 0, struct.pack("<I", len(js)) + pad4(js))
+
+
+# --- ALRT, RPRT, PLAN (G3b) -----------------------------------------------------------------------------
+
+
+def _text(v: Any, limit: int, what: str) -> None:
+    if not isinstance(v, str) or len(v) > limit:
+        raise RecordError(f"{what} must be a string of at most {limit} characters")
+
+
+def _position(a: Mapping[str, Any]) -> None:
+    for axis in ("x", "y", "z"):
+        if a[axis] is not None and not _is_num(a[axis]):
+            raise RecordError(f"alert {axis} must be a finite number or null")
+
+
+def check_alert(a: Mapping[str, Any], registry: Iterable[str] | None = None) -> None:
+    """The shape of one alert (§34.6): the 18 keys, an id of the alert range (``first_step * 1000 + 600 +
+    index``), a class of the header registry (``registry``, when given), a state and a surface of the closed
+    lists, importance 0 to 3, ``title`` up to 48 characters and ``text`` up to 160, a ``ref`` of a known kind,
+    and a ``version`` that is 1 when raised and 2 or more when updated."""
+    if set(a) != ALERT_KEYS:
+        raise RecordError(f"alert keys {sorted(a)} are not {sorted(ALERT_KEYS)}")
+    if not (_is_int(a["id"]) and a["id"] >= 0 and a["id"] % 1000 >= ALERT_ID_BASE):
+        raise RecordError(f"alert id {a['id']!r} is not first_step * 1000 + {ALERT_ID_BASE} + index")
+    if not (_is_int(a["version"]) and a["version"] >= 1 and _is_int(a["step"]) and a["step"] >= 0):
+        raise RecordError("alert version and step must be integers, version at least 1")
+    if not isinstance(a["class"], str) or (registry is not None and a["class"] not in set(registry)):
+        raise RecordError(f"alert class {a['class']!r} is not in the header's registry")
+    if not isinstance(a["key"], str):
+        raise RecordError("alert key must be a string")
+    if (
+        a["state"] not in ALERT_STATES
+        or a["surface"] not in ALERT_SURFACES
+        or a["imp"] not in ALERT_IMPORTANCE
+    ):
+        raise RecordError(
+            f"alert state, surface or importance out of range: {a['state']!r} {a['surface']!r} {a['imp']!r}"
+        )
+    if (a["state"] == "raised" and a["version"] != 1) or (a["state"] == "updated" and a["version"] < 2):
+        raise RecordError(f"alert state {a['state']!r} does not fit version {a['version']}")
+    _text(a["title"], ALERT_TITLE_MAX, "alert title")
+    _text(a["text"], ALERT_TEXT_MAX, "alert text")
+    _position(a)
+    ref = a["ref"]
+    if ref is not None and not (
+        isinstance(ref, Mapping)
+        and set(ref) == {"kind", "id"}
+        and ref["kind"] in ALERT_REF_KINDS
+        and _is_int(ref["id"])
+    ):
+        raise RecordError(f"alert ref {ref!r} is not {{kind, id}} of a known kind")
+    if not (
+        isinstance(a["pause"], bool) and isinstance(a["watched"], bool) and isinstance(a["calibrated"], bool)
+    ):
+        raise RecordError("alert pause, watched and calibrated are booleans")
+    if a["expires"] is not None and not _is_int(a["expires"]):
+        raise RecordError("alert expires must be a step or null")
+
+
+def encode_alrt(
+    *,
+    step: int,
+    seq: int,
+    alerts: Sequence[Mapping[str, Any]],
+    backlog: bool = False,
+    registry: Iterable[str] | None = None,
+) -> bytes:
+    """One ``ALRT``: at most 16 alerts as a JSON array (``u32 count``, ``u32 json_len``, JSON from offset 24,
+    zero padding). The client keeps the newest ``version`` of an ``id``. ``registry`` is the class names of
+    the header's ``alerts_block``."""
+    if len(alerts) > MAX_ALERTS:
+        raise RecordError(f"ALRT carries {len(alerts)} alerts, the cap is {MAX_ALERTS}")
+    classes = None if registry is None else set(registry)
+    for a in alerts:
+        check_alert(a, classes)
+    if len({a["id"] for a in alerts}) != len(alerts):
+        raise RecordError("an ALRT names an alert id twice")
+    js = json_bytes(list(alerts))
+    if len(js) > ALRT_JSON_CAP:
+        raise RecordError(f"ALRT json of {len(js)} bytes exceeds {ALRT_JSON_CAP}")
+    body = struct.pack("<II", len(alerts), len(js)) + pad4(js)
+    return record("ALRT", step, seq, FLAG_BACKLOG if backlog else 0, body)
+
+
+def _sentence(v: Any, what: str, keys: frozenset[str]) -> None:
+    if not (
+        isinstance(v, Mapping)
+        and set(v) == keys
+        and isinstance(v["text"], str)
+        and isinstance(v["refs"], list)
+    ):
+        raise RecordError(f"report {what} is not {sorted(keys)} with a text and a list of refs")
+    if not all(isinstance(r, str) for r in v["refs"]):
+        raise RecordError(f"report {what} refs are entity keys (strings)")
+
+
+def check_report(r: Mapping[str, Any]) -> None:
+    """The shape of the JSON of an ``RPRT`` (§34.6): the 18 keys, ``mode`` 0 (template), 1 (select) or 2
+    (away), sentences with a ``text`` and their ``refs`` (keys of ``entities``), the cut steps ``a <= b``,
+    the versions of the four parts of the report, and a ``withheld`` list that is empty or leaves the report
+    empty."""
+    if set(r) != REPORT_KEYS:
+        raise RecordError(f"report keys {sorted(r)} are not {sorted(REPORT_KEYS)}")
+    if not all(_is_int(r[k]) and r[k] >= 0 for k in ("chapter", "n_abs", "a", "b")) or r["a"] > r["b"]:
+        raise RecordError("report chapter, n_abs, a and b must be non-negative integers with a <= b")
+    if r["mode"] not in REPORT_MODES or not isinstance(r["final"], bool):
+        raise RecordError(f"report mode {r['mode']!r} or final {r['final']!r} out of range")
+    if not (isinstance(r["withheld"], list) and all(isinstance(w, str) for w in r["withheld"])):
+        raise RecordError("report withheld is a list of reasons")
+    for part in ("headline", "lead"):
+        if r[part] is not None:
+            _sentence(r[part], part, frozenset(["id", "text", "refs"]))
+    for part, keys in (
+        ("body", frozenset(["id", "text", "origin", "refs"])),
+        ("interventions", frozenset(["id", "text", "refs"])),
+    ):
+        if not isinstance(r[part], list):
+            raise RecordError(f"report {part} is a list")
+        for v in r[part]:
+            _sentence(v, part, keys)
+    if r["withheld"] and (
+        r["headline"] is not None or r["lead"] is not None or r["body"] or r["interventions"]
+    ):
+        raise RecordError("a withheld report is empty: no guess is sent")
+    if not (
+        isinstance(r["ticker"], list)
+        and all(isinstance(t, Mapping) and set(t) == {"step", "text"} for t in r["ticker"])
+    ):
+        raise RecordError("report ticker is a list of {step, text}")
+    since = r["since"]
+    if not (
+        isinstance(since, Mapping)
+        and set(since) == {"influence", "alerts", "ending"}
+        and isinstance(since["alerts"], Mapping)
+        and isinstance(since["ending"], list)
+    ):
+        raise RecordError("report since is {influence, alerts, ending}")
+    if not isinstance(r["entities"], Mapping) or not isinstance(r["versions"], Mapping):
+        raise RecordError("report entities and versions are objects")
+    if set(r["versions"]) != {"report", "template", "checker", "lexicon"} or not all(
+        _is_int(v) for v in r["versions"].values()
+    ):
+        raise RecordError("report versions are {report, template, checker, lexicon} integers")
+    if not isinstance(r["facts_digest"], str) or not (r["latency_s"] is None or _is_num(r["latency_s"])):
+        raise RecordError("report facts_digest is a string and latency_s a number or null")
+    if r["fallback"] is not None and not isinstance(r["fallback"], str):
+        raise RecordError("report fallback is a reason or null")
+
+
+def encode_rprt(*, step: int, seq: int, obj: Mapping[str, Any], backlog: bool = False) -> bytes:
+    """One ``RPRT``: ``u32 chapter``, ``u32 mode``, ``u32 json_len``, ``u32 reserved`` and the JSON from
+    offset 32 (up to 64 KiB). ``chapter``, ``mode`` and the *final* flag (bit 1) are those of ``obj``, so the
+    head and the JSON cannot disagree; the client keeps the newest record per ``(chapter, mode)``."""
+    check_report(obj)
+    js = json_bytes(obj)
+    if len(js) > RPRT_JSON_CAP:
+        raise RecordError(f"RPRT json of {len(js)} bytes exceeds {RPRT_JSON_CAP}")
+    body = struct.pack("<IIII", obj["chapter"], obj["mode"], len(js), 0) + pad4(js)
+    flags = (FLAG_BACKLOG if backlog else 0) | (FLAG_FINAL if obj["final"] else 0)
+    return record("RPRT", step, seq, flags, body)
+
+
+def check_plan(p: Mapping[str, Any]) -> None:
+    """The shape of the JSON of a ``PLAN`` (§34.6): the 20 keys, a ``kind`` and ``status`` of the closed
+    lists, a ``text`` up to 160 characters and cautions up to 100, ``refused`` a reason exactly when the
+    status is ``refused``, and ``step_applied`` a step when the status is ``applied``."""
+    if set(p) != PLAN_KEYS:
+        raise RecordError(f"plan keys {sorted(p)} are not {sorted(PLAN_KEYS)}")
+    if not (_is_int(p["id"]) and p["id"] >= 0):
+        raise RecordError("plan id is the client's request number, a non-negative integer")
+    if p["kind"] not in PLAN_KINDS or p["status"] not in PLAN_STATUSES:
+        raise RecordError(f"plan kind {p['kind']!r} or status {p['status']!r} out of range")
+    for k in ("power", "action", "holds"):
+        if p[k] is not None and not isinstance(p[k], str):
+            raise RecordError(f"plan {k} is a string or null")
+    for k in ("duration", "step_applied", "ends", "ready"):
+        if p[k] is not None and not _is_int(p[k]):
+            raise RecordError(f"plan {k} is a step count or null")
+    if not (_is_int(p["cost"]) and p["cost"] >= 0):
+        raise RecordError("plan cost is a non-negative integer")
+    if not all(isinstance(p[k], Mapping) for k in ("raw", "params")):
+        raise RecordError("plan raw and params are objects")
+    if not (isinstance(p["clamped"], list) and all(isinstance(c, str) for c in p["clamped"])):
+        raise RecordError("plan clamped is a list of parameter names")
+    _text(p["text"], PLAN_TEXT_MAX, "plan text")
+    if not isinstance(p["caution"], list):
+        raise RecordError("plan caution is a list")
+    for c in p["caution"]:
+        _text(c, PLAN_CAUTION_MAX, "plan caution")
+    inf = p["influence"]
+    if inf is not None and not (
+        isinstance(inf, Mapping) and set(inf) == {"have", "cap", "window", "free_at"}
+    ):
+        raise RecordError("plan influence is {have, cap, window, free_at} or null")
+    for k in ("precedent", "since"):
+        if p[k] is not None and not isinstance(p[k], Mapping):
+            raise RecordError(f"plan {k} is an object or null")
+    if (p["status"] == "refused") != isinstance(p["refused"], str):
+        raise RecordError("plan refused is a reason exactly when the status is refused")
+    if p["status"] == "applied" and p["step_applied"] is None:
+        raise RecordError("an applied plan names its step")
+
+
+def encode_plan(*, step: int, seq: int, obj: Mapping[str, Any], reply: bool = False) -> bytes:
+    """One ``PLAN``: ``u32 json_len`` and the JSON from offset 20 (up to 8 KiB). ``reply`` (flag bit 0) marks
+    the answer to a ``power preview``; a ``preview`` status is always one."""
+    check_plan(obj)
+    if obj["status"] == "preview" and not reply:
+        raise RecordError("a preview is the reply to a preview request")
+    js = json_bytes(obj)
+    if len(js) > PLAN_JSON_CAP:
+        raise RecordError(f"PLAN json of {len(js)} bytes exceeds {PLAN_JSON_CAP}")
+    return record("PLAN", step, seq, FLAG_REPLY if reply else 0, struct.pack("<I", len(js)) + pad4(js))
 
 
 # --- MAP1 -----------------------------------------------------------------------------------------------
@@ -632,9 +1061,12 @@ def encode_clck(
     chapter_len: int,
     flags: int = 0,
 ) -> bytes:
-    """One ``CLCK`` (44 bytes after the head): the clock and the scheduler's counters (§33.1)."""
+    """One ``CLCK`` (44 bytes after the head): the clock and the scheduler's counters (§33.1). ``flags`` bit 0
+    is "the pause at a chapter end is armed", bit 1 "at least one alert class is armed to pause" (G3b)."""
     if reason not in CLCK_REASONS:
         raise RecordError(f"CLCK reason {reason} is not one of {sorted(CLCK_REASONS)}")
+    if flags & ~CLCK_FLAGS:
+        raise RecordError(f"CLCK flags {flags:#x} set bits other than the chapter and alert pauses")
     body = CLCK_BODY.pack(
         rate,
         achieved,

@@ -19,7 +19,21 @@ import numpy as np
 
 from stream_decode import decode_header
 
-KNOWN = ("FRMA", "IDNT", "INTN", "TERR", "EVNT", "STRM", "MAP1", "ENVS", "CLCK", "FOCS")
+KNOWN = (
+    "FRMA",
+    "IDNT",
+    "INTN",
+    "TERR",
+    "EVNT",
+    "STRM",
+    "MAP1",
+    "ENVS",
+    "CLCK",
+    "FOCS",
+    "ALRT",
+    "RPRT",
+    "PLAN",
+)
 VERSION = 1
 RESERVED_SLOTS = (253, 254, 255)
 MAX_TABLE = 16
@@ -28,6 +42,80 @@ MAX_STORMS = 32
 EVENT_KEYS = {"id", "step", "kind", "fam", "a", "b", "x", "y", "z", "imp", "text"}
 EVENT_FAMILIES = ("kin", "house", "storm", "focus", "director", "system")
 MAP_COARSE = 40
+# G3b (DESIGN §34.6, written from the specification section 7 of the build, not from the encoder)
+MAX_ALERTS = 16
+ALERT_KEYS = set(
+    [
+        "id",
+        "version",
+        "step",
+        "class",
+        "key",
+        "state",
+        "surface",
+        "imp",
+        "title",
+        "text",
+        "x",
+        "y",
+        "z",
+        "ref",
+        "pause",
+        "expires",
+        "watched",
+        "calibrated",
+    ]
+)
+ALERT_STATES = ("raised", "updated", "cleared")
+ALERT_SURFACES = ("alert", "log")
+REF_KINDS = ("storm", "kin", "house", "world", "power", "organism")
+REPORT_KEYS = set(
+    [
+        "chapter",
+        "n_abs",
+        "a",
+        "b",
+        "mode",
+        "final",
+        "withheld",
+        "headline",
+        "lead",
+        "body",
+        "interventions",
+        "ticker",
+        "since",
+        "entities",
+        "versions",
+        "facts_digest",
+        "latency_s",
+        "fallback",
+    ]
+)
+PLAN_KEYS = set(
+    [
+        "id",
+        "kind",
+        "status",
+        "power",
+        "action",
+        "raw",
+        "params",
+        "clamped",
+        "duration",
+        "step_applied",
+        "ends",
+        "cost",
+        "influence",
+        "ready",
+        "holds",
+        "text",
+        "caution",
+        "precedent",
+        "since",
+        "refused",
+    ]
+)
+PLAN_STATUSES = ("preview", "queued", "applied", "refused", "since", "cancelled")
 
 
 @dataclass
@@ -89,7 +177,27 @@ def decode(data: bytes) -> Decoded:
                 records.append(rec)
         pos += 8 + length
     _check_labels(header, records)
+    _check_alerts(header, records)
     return Decoded(header, records, skipped)
+
+
+def _check_alerts(header: dict[str, Any], records: list[Rec]) -> None:
+    """The header's ``play.alerts`` registry (G3b): every class has ``imp`` 0 to 3, ``pause``, ``label``,
+    ``calibrated`` and a ``surface``, and an ``ALRT`` names only classes of it."""
+    block = (header.get("play") or {}).get("alerts")
+    if block is None:
+        return
+    assert set(block) == {"version", "classes", "cap"} and block["version"] == 1
+    for name, c in block["classes"].items():
+        assert set(c) == {"imp", "pause", "label", "calibrated", "surface"}, name
+        assert c["imp"] in (0, 1, 2, 3) and c["surface"] in ALERT_SURFACES
+    assert set(block["cap"]) == {"n", "window", "exempt"}
+    for r in records:
+        if r.tag == "ALRT":
+            for a in r.f["json"]:
+                assert a["class"] in block["classes"], (
+                    f"ALRT@{r.offset}: class {a['class']!r} is not in the registry"
+                )
 
 
 def _check_labels(header: dict[str, Any], records: list[Rec]) -> None:
@@ -262,8 +370,75 @@ def _map1(r: Rec, p: bytes, n_cap: int) -> None:
 def _envs(r: Rec, p: bytes, n_cap: int) -> None:
     (json_len,) = struct.unpack_from("<I", p, 16)
     obj, r.sections["json"], off = _json(p, 20, json_len, "ENVS json")
-    assert off == len(p)
+    assert off == len(p) and json_len <= 8 * 1024
+    inf = obj.get("influence")
+    if inf is not None:
+        assert set(inf) == {"have", "cap", "window", "free_at"} and inf["have"] <= inf["cap"]
+        assert all(isinstance(v, int) for v in inf["free_at"])
+    for patch in obj.get("patches", []):
+        assert set(patch) == {"i", "x", "y", "gain", "sigma"}
+    for name, power in (obj.get("powers") or {}).items():
+        assert set(power) == {"ready", "busy"}, name
+    assert all(e["source"] in ("rule", "llm", "player") for e in obj.get("effects", []))
     r.f = {"json": obj}
+
+
+def _alrt(r: Rec, p: bytes, n_cap: int) -> None:
+    count, json_len = struct.unpack_from("<II", p, 16)
+    obj, r.sections["json"], off = _json(p, 24, json_len, "ALRT json")
+    assert off == len(p) and isinstance(obj, list) and count == len(obj) <= MAX_ALERTS
+    assert json_len <= 24 * 1024 and r.flags & ~1 == 0
+    assert len({a["id"] for a in obj}) == len(obj), "an alert id twice in one record"
+    for a in obj:
+        assert set(a) == ALERT_KEYS
+        assert a["id"] % 1000 >= 600, "alert ids are first_step * 1000 + 600 + index"
+        assert a["state"] in ALERT_STATES and a["surface"] in ALERT_SURFACES and a["imp"] in (0, 1, 2, 3)
+        assert (a["state"] == "raised") <= (a["version"] == 1) and (
+            a["state"] != "updated" or a["version"] >= 2
+        )
+        assert len(a["title"]) <= 48 and len(a["text"]) <= 160
+        assert a["ref"] is None or (set(a["ref"]) == {"kind", "id"} and a["ref"]["kind"] in REF_KINDS)
+        assert (
+            isinstance(a["pause"], bool)
+            and isinstance(a["watched"], bool)
+            and isinstance(a["calibrated"], bool)
+        )
+    r.f = {"count": count, "backlog": bool(r.flags & 1), "json": obj}
+
+
+def _rprt(r: Rec, p: bytes, n_cap: int) -> None:
+    chapter, mode, json_len, reserved = struct.unpack_from("<IIII", p, 16)
+    assert reserved == 0
+    obj, r.sections["json"], off = _json(p, 32, json_len, "RPRT json")
+    assert off == len(p) and json_len <= 64 * 1024 and r.flags & ~3 == 0
+    assert set(obj) == REPORT_KEYS and obj["chapter"] == chapter and obj["mode"] == mode and mode in (0, 1, 2)
+    assert obj["final"] == bool(r.flags & 2), "the final flag is the JSON's"
+    ents = set(obj["entities"])
+    sentences = [
+        x for x in (obj["headline"], obj["lead"], *obj["body"], *obj["interventions"]) if x is not None
+    ]
+    assert all(set(x["refs"]) <= ents for x in sentences), "a ref is a key of entities"
+    if obj["withheld"]:
+        assert not sentences
+    r.f = {
+        "chapter": chapter,
+        "mode": mode,
+        "backlog": bool(r.flags & 1),
+        "final": bool(r.flags & 2),
+        "json": obj,
+    }
+
+
+def _plan(r: Rec, p: bytes, n_cap: int) -> None:
+    (json_len,) = struct.unpack_from("<I", p, 16)
+    obj, r.sections["json"], off = _json(p, 20, json_len, "PLAN json")
+    assert off == len(p) and json_len <= 8 * 1024 and r.flags & ~1 == 0
+    assert set(obj) == PLAN_KEYS and obj["status"] in PLAN_STATUSES and obj["kind"] in ("power", "intent")
+    assert obj["status"] != "preview" or r.flags & 1, "a preview is a reply"
+    assert (obj["status"] == "refused") == (obj["refused"] is not None)
+    assert len(obj["text"]) <= 160 and all(len(c) <= 100 for c in obj["caution"])
+    assert obj["status"] != "applied" or obj["step_applied"] is not None
+    r.f = {"reply": bool(r.flags & 1), "json": obj}
 
 
 def _clck(r: Rec, p: bytes, n_cap: int) -> None:
@@ -283,7 +458,9 @@ def _clck(r: Rec, p: bytes, n_cap: int) -> None:
         in_chapter,
         chapter_len,
     ) = struct.unpack_from("<ffffIIBBHIIII", p, 16)
-    assert reason <= 5 and saving <= 1
+    assert reason <= 5 and saving <= 1 and flags & ~3 == 0, (
+        "CLCK flags: bit 0 chapter pause, bit 1 alert pause"
+    )
     r.sections["body"] = p[16:]
     r.f = {
         "rate": rate,
@@ -340,4 +517,7 @@ _DECODERS = {
     "ENVS": _envs,
     "CLCK": _clck,
     "FOCS": _focs,
+    "ALRT": _alrt,
+    "RPRT": _rprt,
+    "PLAN": _plan,
 }

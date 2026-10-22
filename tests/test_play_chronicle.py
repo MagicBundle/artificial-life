@@ -231,7 +231,8 @@ def test_every_template_is_reachable_and_renders_within_the_limit(monkeypatch: p
     assert used == set(TEMPLATES), sorted(set(TEMPLATES) ^ used)
     produced = {e["kind"] for e in events}
     raw_kin = {KIND[k] for k in ("kin_born", "kin_split", "kin_merged", "kin_dissolved")}
-    assert produced == set(KIND.values()) - raw_kin, "every kind but the four raw kin kinds is produced"
+    powers = {KIND["power_applied"], KIND["power_ended"]}  # told with the powers (G3b stage 7)
+    assert produced == set(KIND.values()) - raw_kin - powers, "every kind but the raw kin and power kinds"
     for e in events:
         streamrec.check_event(e)
         assert len(e["text"]) <= 120 and "because" not in e["text"].lower()

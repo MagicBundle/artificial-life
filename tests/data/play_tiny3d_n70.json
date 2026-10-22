@@ -1,7 +1,7 @@
 {
   "about": "Expected decoding of the stream in the .bin file next to this one (DESIGN section 33.1). Regenerate with `uv run python tests/play_fixtures.py --write`.",
   "kind": "3d_n70",
-  "bytes": 4336,
+  "bytes": 4376,
   "header": {
     "protocol": 1,
     "dims": 3,
@@ -136,7 +136,9 @@
         "16": "renumbered",
         "17": "extinct",
         "18": "kin_formed",
-        "19": "kin_ended"
+        "19": "kin_ended",
+        "20": "power_applied",
+        "21": "power_ended"
       },
       "planet": {
         "source": null,
@@ -149,7 +151,7 @@
     {
       "index": 0,
       "tag": "FRMA",
-      "offset": 1672,
+      "offset": 1712,
       "length": 240,
       "step": 10,
       "seq": 0,
@@ -237,7 +239,7 @@
     {
       "index": 1,
       "tag": "IDNT",
-      "offset": 1920,
+      "offset": 1960,
       "length": 212,
       "step": 10,
       "seq": 0,
@@ -313,7 +315,7 @@
     {
       "index": 2,
       "tag": "INTN",
-      "offset": 2140,
+      "offset": 2180,
       "length": 104,
       "step": 10,
       "seq": 0,
@@ -375,7 +377,7 @@
     {
       "index": 3,
       "tag": "FRMA",
-      "offset": 2252,
+      "offset": 2292,
       "length": 2008,
       "step": 11,
       "seq": 1,
@@ -514,7 +516,7 @@
     {
       "index": 4,
       "tag": "CLCK",
-      "offset": 4268,
+      "offset": 4308,
       "length": 60,
       "step": 11,
       "seq": 0,

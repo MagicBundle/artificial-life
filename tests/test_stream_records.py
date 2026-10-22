@@ -122,7 +122,7 @@ def test_fixture_contents_cover_the_cases_the_spec_names() -> None:
     by_tag = {}
     for r in d.records:
         by_tag.setdefault(r.tag, []).append(r)
-    assert sorted(by_tag) == sorted(sr.TAGS)
+    assert sorted(by_tag) == sorted(pf.G3A_TAGS), "the three first fixtures have the ten records of G3a"
     assert [r.step for r in by_tag["FRMA"]] == [100, 104] and [r.seq for r in by_tag["FRMA"]] == [0, 1]
     a, b = by_tag["FRMA"]
     assert a.a["rows"].tolist() == [0, 1, 2, 3, 4, 10, 21]  # gaps between alive rows
@@ -150,7 +150,7 @@ def test_fixture_contents_cover_the_cases_the_spec_names() -> None:
     assert frames[0].a["rows"].tolist() == [0, 31, 32, 63, 64, 69] and frames[1].f["n"] == 70
     two = decode(pf.paths("2d")[0].read_bytes())
     assert {r.tag for r in two.records}.isdisjoint({"MAP1", "STRM"})
-    assert two.header["play"]["records"] == [t for t in sr.TAGS if t not in ("MAP1", "STRM")]
+    assert two.header["play"]["records"] == [t for t in pf.G3A_TAGS if t not in ("MAP1", "STRM")]
     assert all(
         (r.a["pos"][:, 2] == 0).all() and (r.a["orient"][:, 1] == 0).all()
         for r in two.records
@@ -559,7 +559,7 @@ def test_evnt_shape_and_caps() -> None:
     ):
         with pytest.raises(sr.RecordError):
             sr.encode_evnt(step=5, seq=0, events=[bad])
-    assert set(sr.EVENT_KINDS) == set(range(1, 20))
+    assert set(sr.EVENT_KINDS) == set(range(1, 22))
 
 
 # --- MAP1 -----------------------------------------------------------------------------------------------
@@ -776,3 +776,428 @@ def test_the_decoder_checks_the_label_bytes_against_the_header() -> None:
     ):
         with pytest.raises(AssertionError, match=why):
             _one(8, bad)
+
+
+# --- G3b: ALRT, RPRT, PLAN, and the additions to ENVS, CLCK, EVNT (DESIGN §34.6) ---------------------------
+
+CLASSES = pf.ALERT_CLASSES
+
+
+def _alert(index: int = 0, first: int = 12000, **kw) -> dict:
+    return pf._alert(index, first, **kw)
+
+
+def _plan(status: str = "queued", **kw) -> dict:
+    return pf._plan(status, **kw)
+
+
+def _g3b_header(n: int = 64) -> bytes:
+    legacy = sr.legacy_header(
+        dims=3,
+        size=48.0,
+        height=24.0,
+        n=n,
+        bond_slots=4,
+        radius=1.0,
+        field_cell=4.0,
+        fg=12,
+        fz=6,
+        nch=3,
+        step=0,
+        run=None,
+        config_hash="h",
+        source="preset",
+    )
+    play = sr.header_play(
+        records=["ALRT", "RPRT", "PLAN"],
+        weather=sr.weather_block(enabled=False, dc_ref=None),
+        labels={"intent_version": 3, "arch": ["", "A"], "intent": ["", "I"]},
+        energy_cap=100,
+        alerts=sr.alerts_block(CLASSES),
+    )
+    return sr.play_header_bytes(legacy, play)
+
+
+def _decode_one(record: bytes):
+    d = decode(_g3b_header() + record)
+    assert len(d.records) == 1 and not d.skipped
+    return d.records[0]
+
+
+def test_the_g3b_fixture_has_every_new_record_and_every_case_the_spec_names() -> None:
+    d = decode(pf.paths("3d_g3b")[0].read_bytes())
+    by_tag: dict[str, list] = {}
+    for r in d.records:
+        by_tag.setdefault(r.tag, []).append(r)
+    assert sorted(by_tag) == ["ALRT", "CLCK", "ENVS", "EVNT", "FRMA", "IDNT", "PLAN", "RPRT"]
+    assert [(t, w) for t, _, w in d.skipped] == [("ALRT", "version")], (
+        "an ALRT of version 2 is skipped by length"
+    )
+    play = d.header["play"]
+    assert play["records"] == ["FRMA", "IDNT", "EVNT", "ENVS", "CLCK", "ALRT", "RPRT", "PLAN"]
+    assert play["versions"] == dict.fromkeys(play["records"], 1) and play["game_specs"] == "game-v0"
+    assert set(play["alerts"]["classes"]) == set(CLASSES) and play["alerts"]["cap"]["n"] == 4
+    assert play["autopause"] == {
+        "chapter": True,
+        "alert": {
+            "chapter": True,
+            "pop_fall": True,
+            "storm_named": False,
+            "lineage_formed": False,
+            "pop_surge": False,
+            "storm_strong": False,
+        },
+    }
+    assert set(play["powers"]) == {"food", "strike"} and play["events"]["20"] == "power_applied"
+    backlog_alrt, live_alrt = by_tag["ALRT"]
+    assert backlog_alrt.f["backlog"] and not live_alrt.f["backlog"] and backlog_alrt.flags == 1
+    alerts = live_alrt.f["json"]
+    assert {a["imp"] for a in alerts} == {0, 1, 2, 3} and {a["state"] for a in alerts} == set(sr.ALERT_STATES)
+    assert {a["ref"]["kind"] for a in alerts if a["ref"]} == set(sr.ALERT_REF_KINDS)
+    assert {a["surface"] for a in alerts} == {"alert", "log"} and any(a["watched"] for a in alerts)
+    assert all(a["id"] % 1000 >= 600 and a["id"] // 1000 <= a["step"] for a in alerts), (
+        "ids: first step, 600 + index"
+    )
+    assert any(a["id"] // 1000 != a["step"] for a in alerts), (
+        "an alert keeps its id when it is updated at a later step"
+    )
+    modes = [(r.f["chapter"], r.f["mode"], r.f["backlog"], r.f["final"]) for r in by_tag["RPRT"]]
+    assert modes == [(1, 0, True, True), (2, 0, False, True), (2, 1, False, False), (2, 2, False, True)]
+    assert by_tag["RPRT"][-1].f["json"]["withheld"] and by_tag["RPRT"][-1].f["json"]["headline"] is None
+    plans = by_tag["PLAN"]
+    assert [p.f["json"]["status"] for p in plans] == [
+        "preview",
+        "queued",
+        "applied",
+        "since",
+        "refused",
+        "cancelled",
+        "refused",
+    ]
+    assert [p.f["reply"] for p in plans] == [True, False, False, False, True, False, True]
+    assert (
+        plans[-1].f["json"]["kind"] == "intent" and plans[0].f["json"]["id"] == plans[1].f["json"]["id"] == 3
+    )
+    envs = by_tag["ENVS"][0].f["json"]
+    assert {e["source"] for e in envs["effects"]} == {"player", "rule"}
+    assert envs["influence"] == {"have": 4, "cap": 6, "window": 18000, "free_at": [13000, 15500]}
+    assert len(envs["patches"]) == 2 and envs["powers"]["strike"]["busy"].startswith("cooldown")
+    evnt_kinds = {e["kind"] for r in by_tag["EVNT"] for e in r.f["json"]}
+    assert evnt_kinds == {18, 19, 20, 21}
+    clcks = by_tag["CLCK"]
+    assert [(c.f["reason"], c.f["flags"], c.f["chapter"], c.f["in_chapter"]) for c in clcks] == [
+        (3, 3, 2, 6000),
+        (4, 1, 3, 1),
+    ]
+    idnt = by_tag["IDNT"][0].f["json"]
+    assert [k["thread"] for k in idnt["kin"]] == [4, 5, 6]
+    assert max(len(r.sections["json"]) for r in by_tag["RPRT"]) < sr.RPRT_JSON_CAP
+
+
+def test_g3b_header_keys_are_written_only_when_given() -> None:
+    plain = sr.header_play(records=["FRMA"], weather={}, labels={}, energy_cap=1)
+    assert not {"alerts", "autopause", "powers", "game_specs"} & set(plain), "G3a's header is what it was"
+    rich = sr.header_play(
+        records=["FRMA", "ALRT", "RPRT", "PLAN"],
+        weather={},
+        labels={},
+        energy_cap=1,
+        alerts=sr.alerts_block(CLASSES),
+        autopause=sr.autopause_block(chapter=False, alert={"pop_fall": True}),
+        powers=sr.powers_block(pf.POWERS),
+        game_specs="game-v0",
+    )
+    assert {"alerts", "autopause", "powers", "game_specs"} <= set(rich) and rich["versions"]["PLAN"] == 1
+    assert list(rich["alerts"]["classes"]["chapter"]) == ["imp", "pause", "label", "calibrated", "surface"]
+    assert rich["alerts"]["cap"] == {"n": 4, "window": 1500, "exempt": ["imp3", "pause", "chapter", "engine"]}
+    for bad in (
+        {},
+        {"x": {"imp": 4, **{k: v for k, v in CLASSES["chapter"].items() if k != "imp"}}},
+        {"x": {**CLASSES["chapter"], "surface": "toast"}},
+        {"x": {**CLASSES["chapter"], "pause": 1}},
+        {"x": {"imp": 1}},
+        {"": CLASSES["chapter"]},
+    ):
+        with pytest.raises(sr.RecordError):
+            sr.alerts_block(bad)
+    with pytest.raises(sr.RecordError):
+        sr.autopause_block(chapter=1, alert={})  # type: ignore[arg-type]
+    with pytest.raises(sr.RecordError):
+        sr.powers_block({"food": {"action": "regen_pulse"}})
+    with pytest.raises(sr.RecordError):
+        sr.powers_block({"food": {"action": "a", "label": "Food", "cost": -1, "cooldown": 0}})
+    with pytest.raises(sr.RecordError, match="game table"):
+        sr.header_play(records=["FRMA"], weather={}, labels={}, energy_cap=1, game_specs="")
+    assert dict.fromkeys(sr.TAGS, 1) == sr.VERSIONS and sr.TAGS[-3:] == ("ALRT", "RPRT", "PLAN")
+
+
+def test_alrt_layout_count_padding_and_flags() -> None:
+    alerts = [_alert(0, title="Population fell\u2014caf\u00e9"), _alert(1, id=12000_601 + 0)]
+    alerts[1] = _alert(1)
+    data = sr.encode_alrt(step=12000, seq=7, alerts=alerts, registry=CLASSES, backlog=True)
+    assert (
+        data[:4] == b"ALRT" and len(data) % 4 == 0 and struct.unpack_from("<I", data, 4)[0] == len(data) - 8
+    )
+    count, json_len = struct.unpack_from("<II", data, 8 + 16)
+    assert count == 2 and 8 + 24 + json_len <= len(data) < 8 + 24 + json_len + 4
+    assert data[8 + 24 + json_len :] == b"\x00" * (len(data) - 8 - 24 - json_len)
+    r = _decode_one(data)
+    assert (r.step, r.seq, r.version, r.flags, r.f["count"]) == (12000, 7, 1, 1, 2) and r.f["json"] == alerts
+    assert r.f["json"][0]["title"].endswith("caf\u00e9"), "UTF-8, not escaped"
+    assert not _decode_one(sr.encode_alrt(step=1, seq=0, alerts=[], registry=CLASSES)).f["json"]
+
+
+def test_alrt_refuses_what_the_registry_and_the_text_say_it_cannot_carry() -> None:
+    ok = _alert()
+    cases = {
+        "sixteen at most": [_alert(i) for i in range(17)],
+        "a class outside the registry": [{**ok, "class": "made_up"}],
+        "a state outside the list": [{**ok, "state": "removed"}],
+        "a surface outside the list": [{**ok, "surface": "toast"}],
+        "importance 4": [{**ok, "imp": 4}],
+        "raised is version 1": [{**ok, "version": 2}],
+        "updated is version 2 or more": [{**ok, "state": "updated", "version": 1}],
+        "an id below the alert range": [{**ok, "id": 12000_500}],
+        "a title of 49 characters": [{**ok, "title": "t" * 49}],
+        "a text of 161 characters": [{**ok, "text": "t" * 161}],
+        "a position that is not finite": [{**ok, "x": float("inf")}],
+        "a ref of an unknown kind": [{**ok, "ref": {"kind": "planet", "id": 1}}],
+        "a ref with another key": [{**ok, "ref": {"kind": "kin", "id": 1, "name": "x"}}],
+        "pause as a number": [{**ok, "pause": 1}],
+        "a missing key": [{k: v for k, v in ok.items() if k != "watched"}],
+        "an extra key": [{**ok, "extra": 1}],
+        "the same id twice": [ok, {**ok, "key": "other"}],
+    }
+    for what, alerts in cases.items():
+        with pytest.raises(sr.RecordError):
+            sr.encode_alrt(step=1, seq=0, alerts=alerts, registry=CLASSES)
+        assert what
+    # the limits themselves are fine
+    edge = [_alert(i, title="t" * 48, text="t" * 160) for i in range(16)]
+    assert len(_decode_one(sr.encode_alrt(step=1, seq=0, alerts=edge, registry=CLASSES)).f["json"]) == 16
+    # a registry is optional for the encoder, and the decoder, which has the header, checks it
+    odd = sr.encode_alrt(step=1, seq=0, alerts=[{**ok, "class": "made_up"}])
+    with pytest.raises(AssertionError, match="registry"):
+        decode(_g3b_header() + odd)
+
+
+def test_alrt_json_cap() -> None:
+    big = [_alert(i, title="t" * 48, text="\u20ac" * 160) for i in range(16)]  # 3-byte characters
+    assert len(sr.json_bytes(big)) < sr.ALRT_JSON_CAP, "sixteen of the longest alerts fit"
+    long_keys = [_alert(i, key="k" * 2000) for i in range(16)]  # the key is the one field with no limit
+    with pytest.raises(sr.RecordError, match="exceeds"):
+        sr.encode_alrt(step=1, seq=0, alerts=long_keys, registry=CLASSES)
+
+
+def test_rprt_layout_and_the_head_is_the_json() -> None:
+    obj = pf._report(3, 1, True)
+    data = sr.encode_rprt(step=18000, seq=2, obj=obj, backlog=True)
+    assert data[:4] == b"RPRT" and len(data) % 4 == 0
+    chapter, mode, json_len, reserved = struct.unpack_from("<IIII", data, 8 + 16)
+    assert (chapter, mode, reserved) == (3, 1, 0) and 8 + 32 + json_len <= len(data) < 8 + 32 + json_len + 4
+    r = _decode_one(data)
+    assert (r.flags, r.f["chapter"], r.f["mode"], r.f["backlog"], r.f["final"]) == (3, 3, 1, True, True)
+    assert r.f["json"] == obj
+    live = _decode_one(sr.encode_rprt(step=1, seq=0, obj=pf._report(3, 1, False)))
+    assert (live.flags, live.f["final"], live.f["backlog"]) == (0, False, False)
+    # the independent decoder holds the writer to the head: a flag that is not the JSON's is refused
+    raw = bytearray(data)
+    raw[8 + 14 : 8 + 16] = struct.pack("<H", 1)  # final cleared in the flags, set in the JSON
+    with pytest.raises(AssertionError, match="final"):
+        decode(_g3b_header() + bytes(raw))
+
+
+def test_rprt_refuses_a_malformed_report() -> None:
+    ok = pf._report(2, 0, True)
+    bad = {
+        "mode 3": {**ok, "mode": 3},
+        "a after b": {**ok, "a": 7000, "b": 6000},
+        "a missing key": {k: v for k, v in ok.items() if k != "ticker"},
+        "body that is not a list": {**ok, "body": "x"},
+        "a sentence without refs": {**ok, "lead": {"id": "L", "text": "t"}},
+        "refs that are not keys": {**ok, "headline": {"id": "H", "text": "t", "refs": [7]}},
+        "versions missing a part": {**ok, "versions": {"report": 2}},
+        "a withheld report that says something": {**ok, "withheld": ["no row"]},
+        "latency as a string": {**ok, "latency_s": "fast"},
+        "final as a number": {**ok, "final": 1},
+        "a negative chapter": {**ok, "chapter": -1},
+    }
+    for what, obj in bad.items():
+        with pytest.raises(sr.RecordError):
+            sr.encode_rprt(step=1, seq=0, obj=obj)
+        assert what
+    with pytest.raises(sr.RecordError, match="exceeds"):
+        sr.encode_rprt(
+            step=1,
+            seq=0,
+            obj={
+                **ok,
+                "body": [
+                    {"id": f"B{i}", "text": "t" * 1000, "origin": "sheet", "refs": []} for i in range(70)
+                ],
+            },
+        )
+    big = {
+        **ok,
+        "body": [{"id": f"B{i}", "text": "t" * 1000, "origin": "sheet", "refs": []} for i in range(50)],
+    }
+    assert 8 * 1024 < len(sr.json_bytes(big)) < sr.RPRT_JSON_CAP
+    assert len(_decode_one(sr.encode_rprt(step=1, seq=0, obj=big)).f["json"]["body"]) == 50, "up to 64 KiB"
+    empty = {
+        **ok,
+        "withheld": ["the cut 11000 is not the step of a metrics row"],
+        "headline": None,
+        "lead": None,
+        "body": [],
+        "interventions": [],
+        "ticker": [],
+        "entities": {},
+    }
+    assert _decode_one(sr.encode_rprt(step=1, seq=0, obj=empty)).f["json"]["withheld"]
+    # a ref that is not an entity of the report is the decoder's to refuse
+    dangling = sr.encode_rprt(step=1, seq=0, obj={**ok, "entities": {}})
+    with pytest.raises(AssertionError, match="entities"):
+        decode(_g3b_header() + dangling)
+
+
+def test_plan_layout_statuses_and_the_reply_flag() -> None:
+    data = sr.encode_plan(step=12000, seq=1, obj=_plan("preview"), reply=True)
+    assert data[:4] == b"PLAN" and len(data) % 4 == 0
+    (json_len,) = struct.unpack_from("<I", data, 8 + 16)
+    assert 8 + 20 + json_len <= len(data) < 8 + 20 + json_len + 4
+    r = _decode_one(data)
+    assert (r.flags, r.f["reply"], r.f["json"]["status"]) == (1, True, "preview")
+    for status in sr.PLAN_STATUSES:
+        extra = (
+            {"refused": "no"}
+            if status == "refused"
+            else {"step_applied": 12000}
+            if status == "applied"
+            else {}
+        )
+        reply = status in ("preview", "refused")
+        r = _decode_one(sr.encode_plan(step=1, seq=0, obj=_plan(status, **extra), reply=reply))
+        assert r.f["json"]["status"] == status and r.f["reply"] is reply
+    with pytest.raises(sr.RecordError, match="reply"):
+        sr.encode_plan(step=1, seq=0, obj=_plan("preview"))
+
+
+def test_plan_refuses_a_malformed_plan() -> None:
+    bad = {
+        "an unknown status": {**_plan(), "status": "done"},
+        "an unknown kind": _plan("queued", kind="spell"),
+        "a missing key": {k: v for k, v in _plan().items() if k != "caution"},
+        "a text of 161 characters": _plan(text="t" * 161),
+        "a caution of 101 characters": _plan(caution=["c" * 101]),
+        "a refusal without a reason": _plan("refused", refused=None),
+        "a reason without a refusal": _plan("queued", refused="no"),
+        "an applied plan without its step": _plan("applied"),
+        "a negative cost": _plan(cost=-1),
+        "an id that is not a number": _plan(id="3"),
+        "clamped names that are not strings": _plan(clamped=[1]),
+        "an influence of another shape": _plan(influence={"have": 1}),
+    }
+    for what, obj in bad.items():
+        with pytest.raises(sr.RecordError):
+            sr.encode_plan(step=1, seq=0, obj=obj, reply=True)
+        assert what
+    with pytest.raises(sr.RecordError, match="exceeds"):
+        sr.encode_plan(step=1, seq=0, obj=_plan(raw={"k": "v" * 9000}))
+    edge = _plan(text="t" * 160, caution=["c" * 100] * 3)
+    assert _decode_one(sr.encode_plan(step=1, seq=0, obj=edge)).f["json"]["caution"] == ["c" * 100] * 3
+
+
+def test_envs_additions_are_checked_when_present_and_old_objects_still_pass() -> None:
+    base = {"pools": [], "season": None, "levers": {}, "effects": [], "cooldowns": [], "influence": None}
+    assert _one_envs(base)
+    full = {
+        **base,
+        "influence": {"have": 4, "cap": 6, "window": 18000, "free_at": [13000]},
+        "patches": [{"i": 0, "x": 1.0, "y": 2.0, "gain": 1.5, "sigma": 6.0}],
+        "powers": {"food": {"ready": None, "busy": None}, "strike": {"ready": 15000, "busy": "cooling down"}},
+        "effects": [{"action": "bloom", "params": {}, "start": 0, "end": None, "source": "player"}],
+    }
+    assert _one_envs(full)["patches"][0]["gain"] == 1.5
+    bad = {
+        "influence missing a key": {**base, "influence": {"have": 4, "cap": 6, "window": 18000}},
+        "more influence than the cap": {
+            **base,
+            "influence": {"have": 7, "cap": 6, "window": 18000, "free_at": []},
+        },
+        "free_at as a number": {**base, "influence": {"have": 1, "cap": 6, "window": 18000, "free_at": 5}},
+        "a patch without sigma": {**base, "patches": [{"i": 0, "x": 1.0, "y": 2.0, "gain": 1.5}]},
+        "a patch at infinity": {
+            **base,
+            "patches": [{"i": 0, "x": float("inf"), "y": 2.0, "gain": 1.5, "sigma": 1.0}],
+        },
+        "a power without busy": {**base, "powers": {"food": {"ready": None}}},
+        "a busy that is a number": {**base, "powers": {"food": {"ready": None, "busy": 3}}},
+        "an effect of another source": {**base, "effects": [{"action": "a", "source": "random"}]},
+    }
+    for what, obj in bad.items():
+        with pytest.raises(sr.RecordError):
+            sr.encode_envs(step=1, seq=0, obj=obj)
+        assert what
+
+
+def _one_envs(obj: dict) -> dict:
+    d = decode(_g3b_header() + sr.encode_envs(step=1, seq=0, obj=obj))
+    return d.records[0].f["json"]
+
+
+def test_clck_flags_are_the_two_pause_bits() -> None:
+    assert (sr.CLCK_FLAG_CHAPTER_PAUSE, sr.CLCK_FLAG_ALERT_PAUSE, sr.CLCK_FLAGS) == (1, 2, 3)
+    kw = dict(
+        step=12000,
+        seq=0,
+        rate=1.0,
+        achieved=1.0,
+        step_ms=1.0,
+        frame_ms=1.0,
+        late_steps=0,
+        save_stall_steps=0,
+        reason=3,
+        saving=True,
+        fe=1,
+        chapter=2,
+        in_chapter=6000,
+        chapter_len=6000,
+    )
+    for flags in (0, 1, 2, 3):
+        r = _decode_one(sr.encode_clck(**kw, flags=flags))
+        assert r.f["flags"] == flags and r.f["reason"] == 3 and r.f["chapter"] == 2
+    with pytest.raises(sr.RecordError, match="flags"):
+        sr.encode_clck(**kw, flags=4)
+    raw = bytearray(sr.encode_clck(**kw, flags=3))
+    raw[8 + 16 + 26 : 8 + 16 + 28] = struct.pack("<H", 8)  # the flags field of the body
+    with pytest.raises(AssertionError, match="flags"):
+        decode(_g3b_header() + bytes(raw))
+
+
+def test_power_event_kinds_are_in_the_registry_and_encode() -> None:
+    assert sr.EVENT_KINDS[20] == "power_applied" and sr.EVENT_KINDS[21] == "power_ended"
+    assert sr.EVENT_KINDS[18] == "kin_formed" and sr.EVENT_KINDS[19] == "kin_ended"
+    e = {
+        "id": 12000_300,
+        "step": 12000,
+        "kind": 20,
+        "fam": "director",
+        "a": 0,
+        "b": 0,
+        "x": None,
+        "y": None,
+        "z": None,
+        "imp": 1,
+        "text": "The player set regen to 1.3 for 6000 steps.",
+    }
+    assert _decode_one(sr.encode_evnt(step=12000, seq=0, events=[e])).f["json"] == [e]
+    assert pf.paths("3d_g3b")[0].stat().st_size < 20_000, (
+        "the new records are small: a chapter's worth is some KB"
+    )
+
+
+def test_the_decoder_of_the_new_records_is_written_without_the_encoder() -> None:
+    text = (Path(__file__).parent / "play_decode.py").read_text()
+    assert "streamrec" not in text.replace("``streamrec``", "") or "import streamrec" not in text
+    for needle in ("ALRT", "RPRT", "PLAN", "def _alrt", "def _rprt", "def _plan"):
+        assert needle in text

@@ -344,7 +344,7 @@ import Testing
                 #expect(play.baseRate == 14.4 && play.rates == [0.25, 0.5, 1, 2] && play.tick == 25)
                 #expect(play.snapshotEvery == 250 && play.chapter == 6000 && play.frameHz == 30)
                 #expect(play.cast == PlayHeader.Cast(kin: 16, house: 16, colony: 16) && play.energyCap == 16384)
-                #expect(play.events["14"] == "focus_handoff" && play.events["19"] == "kin_ended" && play.events.count == 19)
+                #expect(play.events["14"] == "focus_handoff" && play.events["21"] == "power_ended" && play.events.count == 21)
                 #expect(play.labels.intentVersion == 3 && play.labels.intent[6] == "Tethering")
                 #expect(play.labels.arch.count == 11 && play.labels.arch[8...] == ["Drifter", "Floater", "Sinker"])
                 #expect(play.labels.arch[1] == (kind == "3d" ? "Grazer" : "Gatherer"), "the weather fixture has the storm names")
