@@ -239,6 +239,23 @@ Version 2's Gatherer is the rate of the best harvesters, so most agents are now 
 median of 0.57 / 0.53 of `harvest_max`), not agents with mixed income. The enum and the report key stay `generalist`;
 `rules.ARCHETYPE_DISPLAY` is the table of the words a player sees (the coordinator's choice C9 of 2026-10-19, to revisit).
 
+**Version 3: the storm world (W2a, DESIGN §32.7; `RULES_V3`, `INTENT_VERSION` 3, the default for every world).** With the weather on, `vel`
+includes the wind drift, so Nomad and Settler read the **velocity relative to the wind** (`vel` minus the velocity the wind alone would give
+a free agent, `weather.agent_drift`); the numeric thresholds are V2's. With the weather off the drift is 0 and the V2 labels are unchanged.
+Three archetypes are added after Settler in the priority order (so no V2 primary label moves; Unspecialised shrinks by the rows they take),
+for the aerial biosphere of STORMS §5:
+
+| archetype | rule (windowed means; `u` = `thrust_max/drag` = 0.1) | prevalence (pilot window) |
+|---|---|---|
+| Drifter | wind drift ≥ 0.015 per step and at least half the agent's own relative speed | 8.8% |
+| Floater | lift ≥ 0.30 of `buoyancy_max`, height ≥ 8 and \|vertical velocity relative to the wind\| ≤ 0.0074 (half the free fall) | 6.8% |
+| Sinker | lift < 0.10 of `buoyancy_max` and descending relative to the wind at ≥ 0.0074 per step | 10.1% |
+
+Floater and Sinker are 3D rules written for the `64k3d` physics (gravity 0.015, `buoyancy_max` 0.04, H = 80) and exist only in 3D worlds. The words a
+player sees in a storm world (`rules.ARCHETYPE_STORM_DISPLAY`): Gatherer is shown as **Grazer**, Hunter, Drifter, Floater and Sinker as they are;
+a weather-off world keeps Gatherer. The Floater rule uses the buoyancy *output* the agent chose (the new `Acts.buoy` channel field), not its
+capacity.
+
 **Intents.** Intents are evaluated by the observer every s = 8 steps. Event predicates such as "harvested > 0", "emitted"
 or "formed a bond" hold for nearly every agent (harvest effort is a sigmoid, 87% of 3D agents emit, about 3,700 bonds
 form per step). With 0.06 attacks and 0.19 bond formations per agent-step, "any attack in 8 steps" would cover about
@@ -303,6 +320,16 @@ Stability: the displayed label changes 7.05 and 7.07 (2D) and 9.2 to 9.6 (3D) ti
 said about 5.3 and 6.5; the Budding overlay adds about 1.7 and 2.3), against G1's 1.98 and 4.12. The hold (4 × 8 = 32 steps) equals the
 agents' 32-step clock, which makes thresholds near a clock-driven mean flicker; a hold or period that does not resonate
 would help every intent, and is flagged for G3. No stability criterion is set.
+
+**Version 3 (storm world, W2a; DESIGN §32.8).** Calibrated on one pilot window (`64k3d_s0` forked at 450,000 with the storm overlay and the prior
+coupling set, 470,000 to 476,000; the Metal re-simulation matches the stored metrics): all ten intents and all nine archetypes pass. The new
+labels score Drifter AUC 0.880 against a matched random null of 0.533 (outcome: the wind share of the displacement), Floater 0.727 against 0.546
+(altitude held, scored within the agents aloft, with z-band strata) and Sinker 0.637 against 0.508 (descent over the available room); Nomad and
+Settler are scored on the displacement with the wind drift subtracted (`rg2_rel`; Nomad matches 1.7% of rows against 4.9% on the raw
+velocity). The physics-derived starting thresholds passed a keep rule fixed before the sweep was read, so none was tuned. Floater's first
+outcome (the share of steps with z ≥ 8) was saturated and replaced by the altitude held. **Not yet validated:** the held-out storm windows, a still-air window
+(where Drifter must have no positives) and the weather-off windows are W2b's; until verdict rows exist the report module narrates no V3 label in a
+storm world. Display of a V3 label in the UI follows the verdict.
 
 ## 5. Pillar II in detail: the Architect Director
 
@@ -902,6 +929,8 @@ What a game adds:
       `RULES_V1` stays defined and keeps its G1 digest. The calibration was offline; the validation on held-out windows ran on
       the GPU on 2026-10-21 and every label passed the provisional criterion (item 12; DESIGN §28.8). The Budding overlay, the renamed labels and the clause at 4 are the coordinator's choices
       of 2026-10-19 under the owner's delegation, to revisit.
+    - **`INTENT_VERSION` 3** (storm world, W2a, DESIGN §32.7, row I50): `RULES_V3` is the default; Nomad and Settler on the wind-relative velocity, and the
+      Drifter, Floater and Sinker archetypes (§4.4). Calibrated on one pilot window and frozen; the held-out validation is W2b's.
     - The snapshot cadence is a field of `SocialRules`, not a config key. The reports go to `observers/social.jsonl`,
       not into the rows.
     - The **Family** row of §3 (a host lineage store, an ancestry panel, a "kin nearby" list) is deferred to G3, with

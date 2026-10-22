@@ -335,7 +335,8 @@ inert env values, the trajectory is bit-identical to director-off (tested, `test
 samples the wind at the start-of-step positions, S9 ORs the wind bond-break flag, S14 passes the storm mask, S15 adds
 the wind force, S17 advances the weather and feeds the rain to `update_resource`, and S18 passes `weather_bad` to
 `device_check`. With the weather off the traced graph is the one it was before `wx` existed, and `wx` passes through
-unchanged. With it on, the weather does not read any agent array (§30.1).
+unchanged. With it on, the weather does not read any agent array (§30.1), unless `seed_gain` or `shade_gain` is above 0: S17 then reads the
+start-of-step `chem`, `pos` and `alive` (W2, §32.6, §32.10).
 
 Ordered sub-steps:
 - **"Start-of-step"** means the input `s`.
@@ -1765,16 +1766,20 @@ artificial-life/
                                  the step, config, fields, state and invariants (§30); §22.6 rule 5
     weather_obs.py               host numpy: the `weather` block of a metrics row (§30.8); not a lint module
     weather_spinup.py            host driver: `alife run --weather-spinup N` (§30.9); not a lint module
+                                 (W2, §32: `weather.py` also holds the organism couplings and the eddy wind; `weather_obs.py` the
+                                 `coupling` block and the rain shares)
     game/                        the games vertical, build steps G1 (§28) and G2 (§29): observe (pure-MLX observer state and update),
                                  rules (archetype and intent rules, INTENT_VERSION), social (pure-MLX SocState, SocialRules),
                                  society (host Society: houses, kin groups, colonies, territory, relations),
-                                 observer (host Observer, sidecar, social records)
+                                 observer (host Observer, sidecar, social records); W2 adds tracers (pure-MLX tracer rig and the
+                                 device half of the dumps, §32.9)
     analysis/                    offline, host-only numpy analysis of finished runs (never imported by the step;
                                  scanned by the §22.6 lint, which it passes); phylo, activity, report, plots, mi, resim, signals: §19.3;
                                  labels (the validity study of the game labels): §28.8; social (calibration, churn and cost of the
                                  social trackers): §29.12; and the offline MLX study driver of the W0 weather prototype: w0
                                  (runs `weather.py` on MLX, detects and tracks storms on the host, moves passive tracers,
-                                 measures the cost) and w0_plots (its figures and movies)
+                                 measures the cost) and w0_plots (its figures and movies); w2 (the W2 results pipeline,
+                                 `python -m alife.analysis.w2`): §32.9
   tests/                         §22
 ```
 
@@ -2196,6 +2201,15 @@ def health(wd: WeatherDiag, wind: AgentForce) -> mx.array                       
 class RainIn(NamedTuple): P; zi; dc                                                               # (n, n) f32 each
 def rain_in(ws, cfg) -> RainIn; def rain_for(ws, cfg) -> RainIn | None                            # None when rain_gain == 0
 def rain_regen(rain: RainIn, cfg: Config) -> mx.array                                             # int32 (FG,FG) | (FZ,FG,FG) (§30.6)
+# W2 (§32): the organism couplings and the controls
+def cloud_weights(zi, dc, cfg) -> mx.array                                                        # (FZ,FG,FG) layer weights, shared by food and seeds
+def seeding_response(chem, ws, cfg) -> mx.array; def seeding_qs(chem, ws, cfg) -> mx.array        # r (FG,FG); qs (n,n) f32 in [1-seed_gain, 1]
+def shade_strength(pos, alive, cfg) -> mx.array; def shade_mult(pos, alive, cfg) -> mx.array      # s (FG,FG); T_s multiplier (n,n)
+def organism_forcing(chem, pos, alive, ws, cfg) -> tuple[mx.array | None, mx.array | None]       # (qs, t_mult) at S17; None while the gain is 0
+def advance(ws, t, key, cfg, *, qs=None, t_mult=None)                                              # W1's advance with the two factors
+def air_speeds(ws, pos, buoy_cap | None, alive, cfg) -> tuple[mx.array, mx.array]                 # total and eddy speed
+def agent_drift(wx, pos, buoy_cap | None, alive, cfg) -> mx.array                                  # (N,nd) velocity the wind alone gives (observers)
+# AgentForce.speed is the eddy speed under storm_eddy; WindFields.zbar, AgentWind.u_eddy and sample_wind(..., eddy=) carry it (§32.5)
 # weather_obs.py (host): weather_block(wx, air_speed, cfg, occupancy=, overlap_deep=) -> dict (§30.8)
 # weather_spinup.py (host): spinup(cfg, n, *, step, key, compile, progress) -> wx; advance_chain(...) (§30.9)
 
@@ -2552,6 +2566,9 @@ class GameConfig:                      # the games vertical (§28, §29); added 
     house_rate: float = 1 / 2048       # a birth founds a house iff splitmix64(uid, run.seed) < house_rate·2^64 (§29.4); read only
                                        # by the host observer: unhashed (config.OBSERVER_KEYS), a resume key, inert while observe
                                        # is off, hence a working default rather than "off" (CLAUDE.md); 1/2048 is exact in binary
+    tracers: int = 0                   # the tracer rig (W2, §32.9): passive tracers moved by the wind; 0 = off; needs observe and
+                                       # weather.enabled. Unhashed (config.OBSERVER_KEYS), a resume key
+    tracer_period: int = 500           # steps between reseeds of the tracers at live agents (about the median age at death)
 
 @dataclass(frozen=True)
 class WeatherConfig:                   # the storm world's engine weather layer (§30); added after v0.1
@@ -2569,6 +2586,14 @@ class WeatherConfig:                   # the storm world's engine weather layer 
     storm_p: float = 0.0               # peak per-step storm kill probability; 0 = no hazard
     storm_u0: float = 0.06; storm_span: float = 0.03   # air speed where the hazard starts and the range of its ramp
     storm_break_u: float = 0.0         # air speed above which a bond slot breaks; 0 = off, else >= storm_u0
+    seed_gain: float = 0.0             # W2 (§32.2): max lowering of Q_s by rain seeding (c2 excess); 0 = off; 0 <= x <= 0.1
+    seed_c0: float = 2.0               # half-saturation of the seeding response (c2 units); > 0
+    shade_gain: float = 0.0            # max fractional cooling of T_s by the shade of the agents; 0 = off; 0 <= x <= 0.05
+    shade_n0: float = 8.0              # half-saturation of the shade (agents per field column); > 0
+    wind_scale: float = 1.0            # multiplies the agents' wind force; 0 = still air for the agents; 0 <= x <= 1
+    rain_zonal: bool = False           # the rain food depends on latitude only (x-mean of P, P·zi, P·dc)
+    storm_eddy: bool = False           # the hazard and bond rule read the eddy speed (relative to the zonal mean)
+    wind_eddy_force: bool = False      # the agents' wind force uses the eddy wind
 
 @dataclass(frozen=True)
 class RunConfig:                       # excluded from config_hash; on resume only observer/cadence keys may change (§18)
@@ -2585,6 +2610,8 @@ class RunConfig:                       # excluded from config_hash; on resume on
     director: str = "off"              # off | live | replay (§26.2); needs director.enabled; resume may change it
     llm_url: str = "http://localhost:1234/v1/chat/completions"   # the LLM tier's endpoint (§26.10)
     llm_model: str = "gemma-4-26b-a4b-it-mlx@8bit"               # the model named in each request; resume may change both
+    eco_every: int = 0                 # W2 (§32.9): write observers/eco_<step>.npz every N steps (0 = off); needs game.observe, weather, 3D
+    wx_every: int = 0                  # write observers/wx_<step>.npy every N steps (0 = off); needs weather; both are resume keys
 
 @dataclass(frozen=True)
 class Config:
@@ -2633,9 +2660,9 @@ except `run`. **Keys added after v0.1 are omitted from the hash at their default
 `physics.gravity`, `physics.floor_eps`, `physics.buoyancy_max`, `mutation.buoy_init`, `mutation.buoy_sigma`,
 `fields.benthic_lambda`, `fields.photic_amp`, `fields.photic_lambda`, `energy.buoyancy_cost`,
 `energy.buoyancy_cap_cost` (§27.1, §27.3–§27.5, §27.7), `game.observe` (§28), `game.house_rate` (§29) and every key of
-`weather` (§30.2; each changes the compiled step, so none is unhashed); the
+`weather` (§30.2, §32.2; each changes the compiled step, so none is unhashed); the
 director's policy keys `persona`, `goal`, `rule_every`, `budget_per_100k`, (step 3) `llm_every`, `llm_temperature`, `llm_timeout_s`, `llm_max_tokens` and (§26.11) `yoke_log` are also in the list but are **omitted at every value**, `config.UNHASHED_KEYS`,
-because only `enabled` changes the compiled step). `game.observe` and `game.house_rate` are omitted at every value too,
+because only `enabled` changes the compiled step). `game.observe`, `game.house_rate` (and since W2 `game.tracers` and `game.tracer_period`, §32.2) are omitted at every value too,
 but they are in their own list, `config.OBSERVER_KEYS`, not in `UNHASHED_KEYS` (from which
 `config.DIRECTOR_POLICY_KEYS`, the director's resume keys, is derived): they are read only by host-side observers and
 never change the trajectory (§28.1, §29.1), and they are inert while `game.observe` is off, so they may default to a
@@ -2669,9 +2696,12 @@ changes the hash, as for any dynamics key.
   `run.llm_model` non-empty; with `llm_every > 0`, `run.llm_url` is an http(s) URL with a host.
 - **Weather:** with `weather.enabled` false every other weather key must keep its default (rule W-0); with it true,
   `weather.validate_config` returns the messages (guards, W0's parameter rules, the world rules W-1 and W-2, the load
-  rules R1 to R4, the coupling keys, `director.enabled` implies `rain_floor == 0`): §30.2. The overlay name check
+  rules R1 to R4, the coupling keys, `director.enabled` implies `rain_floor == 0`): §30.2; and, W2, `0 <= seed_gain <= 0.1`,
+  `seed_c0 > 0`, `0 <= shade_gain <= 0.05`, `shade_n0 > 0`, `0 <= wind_scale <= 1` (§32.2). The overlay name check
   accepts `config.ALL_OVERLAYS = OVERLAYS + WORLD_OVERLAYS`.
-- **Game:** `game.observe` is a plain bool and `0 ≤ game.house_rate ≤ 1`. There is no cross-key rule: the int32 headroom
+- **Game:** `game.observe` is a plain bool and `0 ≤ game.house_rate ≤ 1`. W2 (§32.2): `0 ≤ game.tracers ≤ 2^20` and `game.tracer_period ≥ 1`;
+  `game.tracers > 0` needs `game.observe` and `weather.enabled`; `run.eco_every > 0` needs `game.observe`, `weather.enabled` and a 3D world,
+  `run.wx_every > 0` needs `weather.enabled`. Otherwise there is no cross-key rule: the int32 headroom
   of the observer accumulators is checked by `RuleSet.check(cfg)` when an observer is built (§28.3), and the static bin
   and lane counts of the social layer by `SocialRules.check(cfg)` (§29.3), not by `validate`.
 - **Fields (seasons):** `season_period ≥ 0`; `0 ≤ season_amplitude ≤ 1`; `season_period ≥ 1` when
@@ -2723,6 +2753,7 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
   director_archive.json                        director runs only: the behaviour archive at the last checkpoint
   observers/step_<t:010d>.npz                  observing runs only (game.observe): the observer state at each checkpoint, §28.6
   observers/social.jsonl                       observing runs only: one record per social snapshot (§29.11), cut on resume
+  observers/eco_<t:010d>.npz, wx_<t:010d>.npy  W2 dumps (run.eco_every, run.wx_every): the live agents' ecology columns and the ten weather planes (§32.9); cut on resume
   media/                                       render and video outputs; viewer snapshots snap_<step>.safetensors
 ```
 
@@ -2772,8 +2803,8 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
      Resume accepts only `--set run.*` overrides of observer and cadence keys (`steps`, `metrics_every`,
      `checkpoint_every`, `keep_checkpoints`, `heavy_metrics_every`, `components_iters`, `diversity_sample`), the
      director mode `run.director` (`--director MODE` is a shortcut, translated before this check) and the director's
-     policy keys `director.persona|goal|rule_every|budget_per_100k`, and the observer keys `game.observe` and
-     `game.house_rate` (§28.6, §29.10).
+     policy keys `director.persona|goal|rule_every|budget_per_100k`, and the observer keys `game.observe`,
+     `game.house_rate`, `game.tracers` and `game.tracer_period` (§28.6, §29.10, §32.2); the cadence keys include `run.eco_every` and `run.wx_every`.
      Overriding `run.seed`, `run.compile` or
      `run.runtime_checks`, or any dynamics key (`director.enabled` included), is a config error (exit 2): those
      changes go through a fork. `--director live|replay` on a run whose `director.enabled` is false is a config error
@@ -2903,7 +2934,10 @@ Every row has these groups:
   `patch_gain`). The row is written before the director acts at that step, so `env` shows what the interval ran with.
 - **Weather** (`weather`, only when `weather.enabled`, after `env`): the nested block of §30.8 (wind maxima, the layer-2
   jet, rain, storm proxy, conservation drift, hyperbolicity, occupancy by band, `storm_exposure`, air-speed percentiles,
-  `overlap_deep`). A row of a weather-off run has none of it.
+  `overlap_deep`); W2 adds `total_speed_p99`, `eddy_speed_p99` and, gated on the coupling that makes them meaningful, the rain
+  shares, `seed_*` and `shade_*` (§32.6). A row of a weather-off run has none of it.
+- **Coupling** (`coupling`, only with `game.tracers > 0` in a 3D weather run, after `weather`): the agents against the tracers per z
+  band, `ub_agents`, `hold`, mean `w` and `z` (§32.9).
 - **Health:**
   - `diag`;
   - `cell_overflow` (interval sum), `max_occupancy` (interval max), `v_clips`;
@@ -3116,7 +3150,7 @@ alife view     [RUN | --preset P [--set ...]] [--checkpoint STEP|latest] [--step
 alife stream   [RUN|FILE | --preset P [--set ...]] [--checkpoint STEP|latest] [--every K] [--steps N]
                [--follow [--poll SECONDS]] [--color tag|energy|clade] [--fields] [--field-z K] [--no-control]
 alife bench    [--preset P] [--overlay fast|storm] [--set ...] [--steps 200] [--warmup 20] [--stages]
-               [--determinism] [--brain-variants] [--observe] [--weather [--weather-pairs N]] [--json PATH]
+               [--determinism] [--brain-variants] [--observe] [--weather [--weather-pairs N]] [--weather-org] [--json PATH]
 alife llm-check [--llm-url URL] [--llm-model NAME] [--timeout SECONDS] [--preset P]
 alife activity RUN [--out DIR] [--grid N] [--marker-rates R,...] [--horizons H,...] [--shadows N] [--seed S]
                [--windows A:B,...] [--start STEP] [--reuse] [--no-plots] [--quiet]
@@ -3130,7 +3164,8 @@ the fork step for a fork) analyses from that step, with the agents alive then as
 feel it. It needs `weather.enabled` (exit 2 otherwise, before anything is written) and refuses a fork whose source already
 has the weather on. **`bench --weather`** times the step with the weather on against the same config with it off, in
 interleaved blocks (needs `weather.enabled`, exit 2 otherwise); `--weather-pairs N` sets the number of off/on pairs
-(default 2). The `storm` overlay composes as `--preset 64k3d --overlay storm`.
+(default 2). **`bench --weather-org`** (W2, §32.6) times the step with `seed_gain` and `shade_gain` on against the same config
+with both 0 (the weather on in both; needs `weather.enabled` and one gain above 0, exit 2 otherwise). The `storm` overlay composes as `--preset 64k3d --overlay storm`.
 
 **`run`** creates the run directory and the initial state (or loads `--init-from`), then calls `runner.run`. Every
 metrics interval it prints one status line: step, population, births/deaths, bonds, largest body (heavy steps),
@@ -3205,7 +3240,9 @@ Options:
 The validity tool of the labels is not an `alife` subcommand: `python -m alife.analysis.labels RUN --from STEP
 --steps N --out FILE.json` (§28.8), like `python -m alife.analysis.signals`; nor is the social study,
 `python -m alife.analysis.social RUN --from STEP --steps N --out FILE.json [--every S] [--states DIR] [--no-verify]
-[--time-components]` (§29.12). `resume --set game.house_rate=R` is accepted like `game.observe`.
+[--time-components]` (§29.12). `resume --set game.house_rate=R` is accepted like `game.observe`, and so are `game.tracers` and
+`game.tracer_period`. The labels tool gains `--rules {v2,v3}` and `--dump DIR` (§28.8, §32.7), and the W2 results pipeline is
+`python -m alife.analysis.w2 [ARM@SEED=]RUN... --out FILE.json` (§32.9).
 
 **Exit codes** (`runner.ExitCode`):
 
@@ -3308,6 +3345,7 @@ Pinned details (impl, WP5):
 | `test_game_*.py` (config, acts, observe, rules, sidecar, purity), `test_analysis_labels.py` | Games G1 (the observer layer), see §28.9. |
 | `test_groups.py`, `test_tracking.py`, `test_game_social.py`, `test_game_society.py`, `test_game_roster.py`, `test_game_houses.py`, `test_game_social_log.py`, `test_analysis_social.py` | Games G2 (social tracking), see §29.13; several G1 files above are edited too. |
 | `test_weather.py`, `test_analysis_w0.py` | The W0 weather prototype (STORMS §3.2) and its offline study driver, see I46. |
+| `test_weather_w2_keys.py`, `test_weather_w2_wiring.py`, `test_weather_w2_instruments.py`, `test_game_storm_rules.py`, `test_game_storm_observers.py`, `test_game_tracers.py`, `test_analysis_labels_storm.py`, `test_analysis_w2.py` | Storm couplings W2, see §32.11 and I50. |
 
 ### 22.2 Whole-step invariant tests (`test_step_invariants.py`)
 
@@ -3470,7 +3508,7 @@ collected only under `-m slow` (the nightly job and the cloud worker).
 4. `mx.async_eval` is never used in `src/alife`.
 5. There is no `.item()`, `np.asarray` or `float(`/`int(` on arrays inside the simulation modules (`spatial`,
    `fields`, `sensing`, `brain`, `actions`, `bonds`, `physics`, `energy`, `lifecycle`, `step`, `invariants`; and,
-   since the games vertical, `game.observe` and `game.rules`; since G2, `groups` and `game.social`; and, since the
+   since the games vertical, `game.observe` and `game.rules`; since G2, `groups` and `game.social`; since W2, `game.tracers`; and, since the
    W0 weather prototype, `weather`, which the engine step now imports from W1 on; its host drivers `weather_obs` and
    `weather_spinup` are not in the list, because they evaluate and read the device). This is
    a heuristic AST check plus an allow-list.
@@ -6370,7 +6408,9 @@ touching the simulation. They are off by default and observer-only. This section
 rules are `INTENT_VERSION` 2 (`RULES_V2`), calibrated offline on the G1 reference windows (§28.8); the validation on
 three held-out windows was run on 2026-10-21 and every label passed the provisional criterion (§28.8). They may
 change under a new version, never silently. The second build step, social
-tracking, is §29, and version 2 lands with it.
+tracking, is §29, and version 2 lands with it. **W2a (§32.7) adds `INTENT_VERSION` 3** (`RULES_V3`, now the default: wind-relative speed and
+persistence, Drifter, Floater and Sinker, `OBSERVER_FORMAT` 4); `RULES_V2` stays importable, and with the weather off the V3 labels that V2 had are
+bit-identical to V2's. Where this section says "the default `RULES_V2`" or "version 2" it describes G2's state.
 
 ### 28.1 Scope, principles and deferrals
 
@@ -6543,7 +6583,8 @@ field that is itself an unlisted trajectory array, returned with no op of its ow
 a tap too and is reported as `Acts.<field>`: the probe names every field that is not one of the listed arrays (an identity
 check) and looks up its producer. Two mutants that leave every value unchanged (the channel reading the post-S8 thrust,
 and a second S12) add one and four unlisted taps, G2's third (§29.2) adds one, and a fourth (the post-S8 thrust returned
-as the `emit` field) adds the field; a meta-test requires the probe to report all four.
+as the `emit` field) adds the field; a meta-test requires the probe to report all four. **W2a (§32.7)** adds a
+21st tap in 3D only, `buoy0` (`mo.buoy` captured before `actions.mask`): `CHANNEL_TAPS` is 20 in 2D and 21 in 3D.
 
 **The compiled trajectory.** The eager trace cannot see `mx.compile`'s merging of identical sub-expressions (CSE): a
 channel expression that repeats a trajectory one reads only listed arrays when traced eagerly, but once compiled it is the
@@ -6694,7 +6735,7 @@ trajectory (§14.2). They run in `runner.run` after each step, in its single `mx
 `RULES_V2` (the default, `RuleSet()`) is its instance; `RULES_V1` stays defined, naming its version-1 values, and keeps
 its G1 digest. Fields added after version 1 have an inert value that reproduces version 1 (`_POST_V1_INERT`); `digest()`
 leaves a field out while it holds that value. A test pins both digests (`RULES_V1` `156ad496…c009`, `RULES_V2`
-`dc78f771…b4f7`). The thresholds are the fields of the frozen `RuleSet`. `RuleSet.digest()` is the sha256 of
+`dc78f771…b4f7`; W2a adds `RULES_V3`, §32.7). The thresholds are the fields of the frozen `RuleSet`. `RuleSet.digest()` is the sha256 of
 `json.dumps(dataclasses.asdict(rs), sort_keys=True, separators=(",", ":"))` (tuples become lists), leaving out each field of
 `_POST_V1_INERT` while it holds its inert value (the pattern of `config_hash` for post-v0.1 keys), so a threshold edit
 without a version bump fails the suite; the sidecar stores the digest (§28.6). `ARCH_PRIORITY` is part of the version but
@@ -6830,6 +6871,11 @@ the version and bumps `OBSERVER_FORMAT` to 3 (§28.6). A fix that adds a `RuleSe
 the digest leaves out; a fix that changes the default of an existing field makes `RULES_V1` name that field's version-1 value
 explicitly, so `RULES_V1.digest()` keeps its pin.
 
+**Version 3 was one change as well (W2a, §32.7, §32.8).** It defines `RULES_V3` (the V2 rules on the wind-relative velocity, plus Drifter,
+Floater and Sinker), sets `INTENT_VERSION = 3` and `observer.DEFAULT_RULES = RULES_V3`, pins the V2 digest (unchanged) and the V3 digest
+(`3515d96e…380a17c`, §32.7) and bumps `OBSERVER_FORMAT` to 4. The new `RuleSet` fields are inert at their V2 values, so
+`RULES_V2.digest()` and `RULES_V1.digest()` keep their pins; the thresholds were calibrated on a pilot window and frozen before the change merged.
+
 ### 28.5 Runner integration and the `observers` block (`game/observer.py`, `runner.py`)
 
 `Observer(cfg, o, so, society, step, rules, social)` owns one `ObsState`, one `SocState` and the host `Society` (G2,
@@ -6885,11 +6931,11 @@ the device and one host transfer through `state.to_numpy`; the dicts are literal
 ### 28.6 The observer sidecar and resume (`runio.py`, `game/observer.py`)
 
 **File.** `observers/step_<t:010d>.npz` in the run directory, next to `checkpoints/`: one array per `ObsState` field under its
-name, plus `meta`, a 0-d unicode array holding the JSON `{"format": "alife-observers", "observer_format": 3,
-"intent_version": 2, "rules_digest", "step", "n_max", "dims", "config_hash", "alife_version",
-"social_version", "social_digest", "track_version", "house_rate", "house_seed"}` (format 2 was G2's, never released:
+name, plus `meta`, a 0-d unicode array holding the JSON `{"format": "alife-observers", "observer_format": 4,
+"intent_version": 3, "rules_digest", "step", "n_max", "dims", "config_hash", "alife_version",
+"social_version", "social_digest", "track_version", "house_rate", "house_seed", "wind_rel", "vertical"}` (format 2 was G2's, never released:
 `soc.<field>` for every `SocState` field and the society's `host.*` members join the array per `ObsState` field, §29.10;
-format 3 is `INTENT_VERSION` 2's: `ObsState` gains `held` and `intent` is (N, 10)) (`OBSERVER_FORMAT` and
+format 3 is `INTENT_VERSION` 2's: `ObsState` gains `held` and `intent` is (N, 10); format 4 is `INTENT_VERSION` 3's: the `arch` width and the `wind_rel` and `vertical` meta keys, §32.7) (`OBSERVER_FORMAT` and
 `SIDECAR_FORMAT` in `game/observer.py`; bump `OBSERVER_FORMAT` with any change to the fields or their meaning). It is written
 with `_write_npz` (atomic `*.tmp`, fsync and `os.replace`, compressed) and read with `np.load(allow_pickle=False)`.
 
@@ -6951,7 +6997,7 @@ already makes a later copy safe. The social log is not copied either (§29.10).
 by the §22.6 lint (rules 1, 3, 4, 5 and 6 pass over `analysis/`); the validity test of GAMES §4.5). Options: `--states DIR` (a resim cache), `--warmup 256`,
 `--cohort-every 256` (a multiple of `rules.every`), `--arch-horizon 1000`, `--arch-min-obs 100`, `--intent-horizon 10`,
 `--n-perm 200`, `--seed 0`, `--no-verify`. In Python it is `study(run, start=, steps=, …, rules=DEFAULT_RULES)` (`start`, because
-`from` is a keyword; `DEFAULT_RULES` is `observer.DEFAULT_RULES`, `RULES_V2`, bound when the function is defined). The run directory is read only, and `--out` must be outside it. A ValueError (bad parameters, no cohort
+`from` is a keyword; `DEFAULT_RULES` is `observer.DEFAULT_RULES`, `RULES_V3` since W2a (`RULES_V2` before), bound when the function is defined; W2a adds `--rules {v2,v3}`, `--dump DIR` and the wind-relative `rg2_rel`, §32.7). The run directory is read only, and `--out` must be outside it. A ValueError (bad parameters, no cohort
 fits) is exit 2, a re-simulated row that differs from `metrics.jsonl` is exit 1.
 - **Stepping** (the resim pattern): load the state at `STEP` (`signals.load_state`), `cfg = rd.config()`, `rules.check(cfg)`,
   step with `make_step(cfg, observe=True)` and `Observer.open(rd, …, rules=rules)` (the report says `"sidecar"` or `"fresh"`;
@@ -7209,6 +7255,9 @@ accumulator columns, +768 KB at 64k, about 20 elementwise ops per step and the o
 score; each permutation re-sorts the strata inside `mi.permute_within`) was estimated at tens of minutes of
 single-core numpy; measured on 2026-10-21, a whole window (6,000 steps of re-simulation, then the 200 permutations) took
 6.1 to 6.4 minutes in 2D and 12.4 to 13.9 minutes in 3D (about 52 minutes for the five).
+**Validation of `INTENT_VERSION` 3** (W2a): one pilot window of a storm run (`64k3d_s0` forked at 450,000 with the prior coupling set, 470,000 to
+476,000), on which all ten intents and all nine archetypes pass, with the thresholds of the three new labels frozen at their physics-derived
+starting values; the held-out windows are W2b's, and the Metal purity gate was run on the final tree (§32.8, §32.11).
 
 ### 28.9 Tests
 
@@ -7306,6 +7355,9 @@ warm; CI caches the directory, §22.0).
   step of each block, the blocks run in the order C O O C, a perturbed trajectory is flagged, `_StagedStep` unchanged);
   `test_cli_smoke.py::test_view_and_bench_delegate` pins the `observe` keyword, and `test_cli_smoke.py` also gains
   `test_bench_observe_smoke` (the CLI `bench --observe` end to end).
+- **W2a** edits the G1 and G2 pins (`INTENT_VERSION`, `OBSERVER_FORMAT`, the `Acts` fields and `ObsIn._fields`, the taps 20/21, the accumulator
+  widths, the `storm3d` arm of `test_game_purity.py`) and adds `test_game_storm_rules.py`, `test_game_storm_observers.py` and
+  `test_analysis_labels_storm.py` (§32.11).
 - **G2** edits several of the files above (the `Acts` fields in `test_game_acts.py`, the 20 taps in `test_game_purity.py`,
   `OBSERVER_KEYS` and `house_rate` in `test_game_config.py`, `settler_body` in `test_game_rules.py`, `body` in
   `test_game_observe.py`, format 2 and the social log in `test_game_sidecar.py`, `test_runio.py`, `test_bench.py`,
@@ -7423,7 +7475,7 @@ a step) plus 16 B per lane, folded in the same eval and never retained.
 **Purity with the flag on.** The new reads are integer or boolean arrays (`act.attack_target`, `act.bond_target`,
 `nbr.idx`, `as_prop`, `dt.cause`, the lane arrays, the birth records) plus one new float tap, **`y`**. `death_cause` is
 a cast of the same `dt.cause` that the `KILLED` bit reads: it adds no consumer of a trajectory array, so `CHANNEL_TAPS`
-stays at 20. G1's three float
+stays at 20 (W2a adds a 21st in 3D only, §28.2). G1's three float
 taps (`thrust0`, `defend_post`, `emit_post`, §28.2) are unchanged. On the traced graph `y`'s producer is a `Squeeze`
 (float32 weights) or an `AsType` (float16) and its consumers are 16 `Slice`s in 2D and 20 in 3D, so it is already a
 kernel output and a new `Slice` reader adds a consumer of the same kind; `nbr.idx` is a `Select` read by 8 `Gather`s. As
@@ -7774,7 +7826,7 @@ on `tiny` and `tiny3d`) 1–2 ms. Host: `Society.settle` 25 ms measured on a syn
 append and fsync of a record (about 1 ms), plus, when the steps coincide, the heavy metrics' own components (below).
 
 **The observer** (`Observer(cfg, o, so, society, step, rules, social)`; `rules.check(cfg)` and `social.check(cfg)` at
-construction). Module constants `DEFAULT_RULES = RULES_V2` (version 2, §28.4) and `DEFAULT_SOCIAL = SOCIAL_V1`;
+construction). Module constants `DEFAULT_RULES = RULES_V3` (version 3 since W2a, §32.7; `RULES_V2` was G2's; a 2D world uses `default_rules(cfg)`) and `DEFAULT_SOCIAL = SOCIAL_V1`;
 `Observer.fresh(state, cfg, *, rules=None, social=None)` and `Observer.open(rd, state, cfg, *, rules=None, social=None)`
 take None to mean the module default **as of the call**. The runner passes nothing, the bench passes nothing and reads
 `observer.DEFAULT_SOCIAL` for its cadence, and the labels tool passes its `rules`. No config key sets the cadence; tests
@@ -7822,7 +7874,7 @@ the heavy metrics when the two coincide.
 
 #### The sidecar (`game/observer.py`)
 
-`OBSERVER_FORMAT = 3` (bump with any change to the members or their meaning; 2 was this format before version 2's `held` and the wider `intent`). Members: every `ObsState` field under its
+`OBSERVER_FORMAT = 4` (bump with any change to the members or their meaning; 2 was this format before version 2's `held` and the wider `intent`, 3 was version 2's, 4 is version 3's wind-relative `arch` columns and the `wind_rel` and `vertical` meta keys, §32.7; the optional `tracer.<field>` members of §32.9 are not a bump). Members: every `ObsState` field under its
 name, `soc.<field>` for every `SocState` field, the host state below, and `meta`. Host members (all numpy; `Society.arrays()`
 and `Society.from_arrays`):
 - `host.kin.system`, `host.kin.key`, `host.col.system`, `host.col.key` (int64, (m,)), the tracked memberships;
@@ -7994,7 +8046,7 @@ record = {"step": s1,                                          # the snapshot st
   ten letters and the id, window counts of six to eight digits for every listed pair (the 250-step window of `runs/64k_s0`
   at 1.5M steps has 115k attacks, 780k proposals, 22.6M quanta shared and 6.8M bond-steps in all; each pair is given the
   width of the whole), exposures of ten digits with three decimals, eight-digit house ids, and the roster's columns (six-digit
-  `births` and `deaths` by cause, seven archetype shares). Measured: 13,255 B for the record, plus 178 B that the longest
+  `births` and `deaths` by cause, seven archetype shares; under `INTENT_VERSION` 3 ten, about 0.3 KB more per record by estimate, a reader keys by `intent_version`, §32.13). Measured: 13,255 B for the record, plus 178 B that the longest
   house names (ten letters and `" <8-digit id>"`, which a collision adds) would add, so 13.4 KB, and 271 B for the head, with
   `json.dumps` in `runio._dumps`'s separators. An earlier scene with one-attack pairs and two-digit ids measured 10,951 B
   (9,526 B before the roster), which a review showed was not the widest: the `64k_s0` window with long-run ids is 12.5 KB.
@@ -8363,7 +8415,7 @@ calibrates them. (§29 is the games build step G2, merged before this section; �
 - Senses and genome layout are unchanged: wind is felt through the agent's own `vel`, nuclei through c2.
 - **In W1 the weather does not depend on the agents** (no seeding, no shade). `wx` at step `t` is a function of
   `(WeatherConfig, world.size, run.seed, t)` alone, because the key chain is `state.key -> step_keys`, which reads no
-  agent array. W2's seeding and shade remove this property. It is what makes the weather-only spin-up (§30.9) and the
+  agent array. W2's seeding and shade remove this property when `seed_gain` or `shade_gain` is above 0 (§32.10). It is what makes the weather-only spin-up (§30.9) and the
   test of §30.10 possible.
 - Pure MLX, as the other simulation modules (§22.6): no scatter or setitem outside `ops.py`, no host sync, branches
   only on config constants, no float32 matmul.
@@ -8383,7 +8435,8 @@ agents of `runs/64k3d_s0`; the figures belong to those runs and are not DESIGN c
   `storm_exposure`, `air_speed_p99` and `jet_max_l2` (§30.8). Storm deaths are exercised in the tests by a prescribed
   wind (§30.10).
 
-**Deferred** (W2 and later): rain seeding by c2 and cloud shade (they put agents in the weather's loop), `qs` and
+**Deferred** (W2 and later; W2a built the seeding, the shade on the seas, the wind-relative observer fields and `INTENT_VERSION` 3,
+§32, and not the cloud shade on the photic term): rain seeding by c2 and cloud shade (they put agents in the weather's loop), `qs` and
 momentum forcing beyond constants, wind-relative observer fields and any `INTENT_VERSION` or `OBSERVER_FORMAT` change,
 storm tracking in the engine, warm-pool and wind-impulse levers and `STORM_MENU` (`State.env` gains nothing), the
 temperature-peaked growth response, `VOL1`/`STRM`/`MAP1` stream records, the client and GUI, a Metal kernel for the
@@ -8392,7 +8445,7 @@ is built under coordinator choice C17 (it was deferred in the first plan).
 
 ### 30.2 Config (`config.WeatherConfig`, `Config.weather`)
 
-A nested frozen section between `game` and `run`, 33 keys, **every key hashed** (`POST_V01_KEYS`; none in
+A nested frozen section between `game` and `run`, 33 keys in W1 and 41 since W2 (the eight keys of §32.2), **every key hashed** (`POST_V01_KEYS`; none in
 `UNHASHED_KEYS` or `OBSERVER_KEYS`: each changes the compiled step). `config_hash` omits them at their defaults and drops
 the empty `weather` table, so **every existing run and preset keeps its hash** (the pinned hashes of §28.1 and
 `TINY_HASH_V01`, `K64_HASH` do not move; all 12 preset and preset-plus-`fast` hashes equal those before W1). Names are
@@ -8414,10 +8467,11 @@ section and the three world values it reads) is a name-keyed copy.
 | `rain_floor` | 0.0 | extra share of `rain_gain·P` added to the floor layer (3D); must be 0 in 2D and under a director |
 | `storm_p`, `storm_u0`, `storm_span` | 0.0, 0.06, 0.03 | hazard (§30.7); `storm_p = 0` = off |
 | `storm_break_u` | 0.0 | air speed above which a bond slot breaks; 0 = off, else `>= storm_u0` |
+| `seed_gain`, `seed_c0`, `shade_gain`, `shade_n0`, `wind_scale`, `rain_zonal`, `storm_eddy`, `wind_eddy_force` | 0.0, 2.0, 0.0, 8.0, 1.0, false, false, false | **W2** (§32.2): seeding, shade, the controls |
 
 **What is not a key** (`weather.ENGINE_FIXED`): `dt = 1` (one engine step, no sub-cadence), `h_min = 2`, `m_min = 1`,
 `c_half = 1e-3`, `Qs = 1`, `nu = 0`, `kappa_d = 0.04`, `sl_order = 1`, `u_safe = 0.3`, `seed_q = 0`, `seed_qsigma = 6`,
-`seed_w2 = 0`, and the seven host detection fields (`detect_every`, `zeta_th`, `p_th`, `a_min`, `r_min`, `miss_grace`,
+`seed_w2 = 0`, `seed_dmin = 8` (W2, §32.2), and the seven host detection fields (`detect_every`, `zeta_th`, `p_th`, `a_min`, `r_min`, `miss_grace`,
 `min_dets`). W0 tuned none of them after round 0, the mean-flow stability rule is tabulated only for these numerics, and
 each key is a hashed degree of freedom. A later change makes one a key, in `POST_V01_KEYS`, with this value as its default.
 
@@ -8458,7 +8512,7 @@ changing its behaviour. With the weather on, in order:
    | R4 (2D horizontal, replaces R2) | `a = alpha0`: `thrust_max + a·drag·u_max < 2r·k_repel` (strict) | 0.1 + 0.25·0.3 = 0.175 > 0.16: fails at `u_max = 0.3`; a 2D weather config needs `u_max < 0.24` |
 
 4. **Coupling keys.** `0 <= storm_p <= 1`, `storm_u0 >= 0`, `storm_span > 0`, `0 <= rain_floor <= 1` (0 in 2D);
-   `storm_break_u == 0` or `>= storm_u0` (the threshold acts on the air speed *including the layer-2 jet*, so a smaller
+   `storm_break_u == 0` or `>= storm_u0` (the threshold acts on the hazard speed: the air speed *including the layer-2 jet*, or the eddy speed under `storm_eddy` (W2, §32.5); so a smaller
    value would break every upper-column bond continuously; wind shear alone cannot break a bond, so the explicit
    threshold is the only mechanism); `rain_gain >= 0` and, when `gamma > 0`, `rain_gain·(H1 + H2 - 2·h_min)/gamma <= 2^30`
    (the int32 derivation: the rain rate is bounded by `P <= (h1 - h_min)/gamma`, so a column's rain stays below 2^30 and
@@ -8551,7 +8605,8 @@ section "the wind the engine applies, and the update") so that `bench._stage_fns
 An agent at step `t` feels the weather produced by step `t - 1` (`s.wx`), and the update at step `t` advances that same
 `s.wx` under `warm_pools(p, s.step)`. `weather.advance(ws, t, key, cfg)` builds the forcing from the warm pools of step `t`
 (an int32 array, never a Python int) and a constant `qs = 1`, and calls `weather.step` with no momentum
-forcing. **Fusion.** The graph builds `wind_fields` once per step and passes it as `fields=` (MLX 0.32.3 `mx.compile`
+forcing (W2: `advance(..., qs=, t_mult=)` takes the seeding and shade factors of §32.3, §32.4, both None while their gains are 0, so the graph is
+W1's). **Fusion.** The graph builds `wind_fields` once per step and passes it as `fields=` (MLX 0.32.3 `mx.compile`
 crashes when the same roll of the same array is built twice, `tests/test_weather.py`'s strict xfail). The fused
 `unpack -> agent_wind -> advance -> pack` graph compiles on the CPU and `wx` equals the eager result bitwise. Metal is
 untested here (§30.11).
@@ -8579,7 +8634,8 @@ None, clip_bad () bool)`.
 - **2D** (`buoy_cap is None`): `sample_wind_h(ws, pos, p, valid=)`, the layer-1 wind `(u1, v1)` bilinear on its C-grid at
   `(x, y)`, no surface-layer factor and no vertical wind, clipped to `‖u_h‖ <= u_max`; it returns an `AgentWind` whose `u`
   is `(M, 2)`. `alpha = alpha0` (no cap exists; `alpha1` is inert in 2D).
-- `speed` is the **air** speed of the clipped wind (jet included), not the agent's: the hazard and the bond rule read it.
+- `speed` is the **air** speed of the clipped wind (jet included), not the agent's: the hazard and the bond rule read it
+  (W2, §32.5: the eddy speed under `storm_eddy`; `force` is scaled by `wind_scale` and uses the eddy wind under `wind_eddy_force`).
   `breaks = speed > storm_break_u` only when `storm_break_u > 0`. `clip_bad = (n_clip_h + n_clip_w) > 0` over alive rows;
   W0 measured no clip at the confirmed winds, so a clip is a health signal (§30.8).
 
@@ -8607,7 +8663,8 @@ already books the rain and the ledger closes with no new term.
    its diagnosed top. Measured at gain 1e6: 26% of the rain falls in layers 0 to 7 (z < 32), 74% in layers 8 to 15, 0.01% in
    layers 16 to 19; so the 40% of agents at z 4 to 32 are fed only when `zi` dips below 32, the agents at z >= 76 never are,
    and those at 32 to 76 get most of it. **W2's seeding band** (STORMS §4: "c2 averaged over the cloud layers") must use the
-   same weights `w_k`, so that seeding and feeding stay at the same layers.
+   same weights `w_k`, so that seeding and feeding stay at the same layers (built in W2: `weather.cloud_weights`, called by `rain_regen`
+   and by the seeding, §32.3; with `rain_zonal` the food depends on latitude only, §32.5).
 
 **`K_est` and the floor `K` rebuild what was injected.** `metrics.rain_of(s, cfg)` is `weather.rain_in(unpack(s.wx), cfg)`
 when the weather is on and `rain_gain > 0`, else None; `_layer_regen` passes it to `regen_rate`. It reads the **stored**
@@ -8647,8 +8704,8 @@ is explicit rather than physical (storm-scale shear cannot stretch a bond), coun
 **Wind sensing.** None added: `IN_VEL` and `IN_VEL_UP` read `state.vel`, which now includes the wind drift.
 
 **Observers.** The observer labels (G1, `INTENT_VERSION` 1) use `vel`; with the weather on they include the wind drift and
-are **not wind-relative** (W2 bumps `INTENT_VERSION` and `OBSERVER_FORMAT`). A weather-on observed run is allowed; its
-labels are not calibrated for it. **G2 (§29).** `social.DEATH_CAUSES` was an iteration of `DeathCause`; with `STORM` it would have gained a row in the state and
+are **not wind-relative** (W2a bumped `INTENT_VERSION` to 3 and `OBSERVER_FORMAT` to 4: the version-3 labels are wind-relative,
+§32.7). A weather-on observed run is allowed; the version-3 labels were calibrated on one pilot window only (§32.8). **G2 (§29).** `social.DEATH_CAUSES` was an iteration of `DeathCause`; with `STORM` it would have gained a row in the state and
 the sidecar of every observing run, and with the weather on a `STORM` row would index past `n_causes·G` in the cause scatter
 (the scatter does not clip; undefined on the GPU). It is now the literal pre-storm tuple (`starved, killed, aged,
 catastrophe`) and `social.death_causes(cfg) = DEATH_CAUSES + ("storm",)` when `cfg.weather.enabled`. `init_soc`, the cause
@@ -8680,6 +8737,7 @@ None (no agents gives 0.0).
 | `occ_hz0`, `occ_hz1_11`, `occ_hz12` (3D) | snapshot peak agents per hash cell in the floor, mid and surface bands |
 | `storm_exposure` | mean over alive agents of the hazard ramp `clip((speed - storm_u0)/storm_span, 0, 1)`; what W2 multiplies by `storm_p` to get the population-mean storm mortality. A diagnostic at the snapshot's positions, not the step's exact quantity |
 | `air_speed_p99`, `air_speed_max` | 99th percentile and maximum of the air speed over alive agents (jet included) |
+| W2 keys (§32.6) | `total_speed_p99` and `eddy_speed_p99` always; `rain_band_share`, `rain_global_share`, `rain_real_*`, `rain_clipped_frac` with `rain_gain > 0`; `seed_r_mean`, `seed_r_hi_share`, `seed_lower_mean` with `seed_gain > 0`; `shade_s_mean`, `shade_s_max` with `shade_gain > 0`. `air_speed_*` and `storm_exposure` follow the hazard speed |
 | `overlap_deep` | alive agents with a neighbour closer than `0.5·radius` (one neighbour search per metrics row, a compiled closure cached per config hash; the first row pays its compile) |
 
 `label_periodic`, `centre_winds`, `corners_to_centres` and `hemisphere_sign` moved to `weather_obs`, and
@@ -8789,7 +8847,8 @@ spun-up `wx` is in the step-`S` checkpoint, so a resume needs nothing.
 
 ### 30.10 Determinism and tests
 
-**Determinism.** The weather is float32 and deterministic per backend like the chemicals (§13.3). Compiled and eager
+**Determinism.** (Since W2 the weather depends on the agents when `seed_gain` or `shade_gain` is above 0, and the agent-independence test below
+applies only with both at 0, §32.10.) The weather is float32 and deterministic per backend like the chemicals (§13.3). Compiled and eager
 trajectories differ in rounding (§14.2) with the weather off as well; the weather-on tests therefore compare per step from
 the same input state (counters, ledger and integers exactly, floats `allclose`, **`wx` bitwise**), and compare two
 compiled (or two eager) runs when an identity is claimed.
@@ -8872,10 +8931,488 @@ Metal kernel on the GPU, and `spatial.hash_occupancy` repeats the binning lines 
 one (§30.8 caveats); W2 repeats it with the calibrated `storm_*` and a young population, and then `C` = 64 (free of step
 time under the fused kernel) or a lower `u_max` or `alpha` (C17) is the response if it fires.
 
-**W2 inherits:** calibrate `rain_gain` and `storm_*` on a still-air control of each seed (`storm_u0` in 0.03 to 0.05
+**W2 inherits** (delivered by W2a except the calibration and the runs, which are W2b's, §32.12): calibrate `rain_gain` and `storm_*` on a still-air control of each seed (`storm_u0` in 0.03 to 0.05
 first); a jet-removed (`r2` raised) or tracer arm before any ecological effect is attributed to storms; the sensitivity
 of the hazard to `storm_u0` (mortality share of baseline rises steeply as it falls below the jet); seeding and shade with
 the band weights of §30.6; wind-relative observer fields with `INTENT_VERSION` 2.
+
+## 32. Storm couplings (W2)
+
+The third build step of the storm world (`docs/STORMS.md` §4, §5, §8 W2; Review-log row I50; the coordinator's choices C15
+and C17 and the eight decisions of the W2 spec, taken as recommended and marked "to revisit", §32.12). It is the first step in which the
+organisms act on the weather, and it adds the controls and instruments that the storm experiment needs. W2 is two PRs:
+**W2a**, this section (the engine couplings, the observers `INTENT_VERSION` 3, the instruments and the tools, all built and
+tested; the Metal purity gate and the pilot are done), and **W2b** (the gate G0, the calibration of the provisional values, the 14 runs, the held-out
+label windows and `docs/RESULTS_W2.md`; not run, §32.12). This section is normative for W2a. (§31 is the N1 World Report,
+PR #31, not merged when this section was written; §32.13 lists what it needs from W2a.)
+
+### 32.1 Scope, principles and deferrals
+
+**In W2a.**
+1. Rain seeding and shade on the seas (organisms to weather), both off by default (§32.3, §32.4).
+2. Four controls as keys: `wind_scale`, `rain_zonal`, `storm_eddy` (a storm-relative hazard) and `wind_eddy_force` (an
+   eddy-only wind force) (§32.5), because the layer-2 jet (about 0.05, on whenever the weather is on, §30.1) owns most of
+   the wind exposure.
+3. `INTENT_VERSION` 3 and `OBSERVER_FORMAT` 4: wind-relative speed and persistence, the Drifter, Floater and Sinker
+   archetypes, `Acts.buoy`, the storm display names (§32.7, §32.8).
+4. The instruments: a tracer rig, an ecology dump, a weather dump, the `coupling` block, `python -m alife.analysis.w2`
+   (§32.9).
+
+**Principles.**
+- **With every new key at its default the engine is the W1 engine** (the identity evidence is §32.11): weather off or on,
+  `StepOut`, metrics rows, config hashes, goldens and the compiled graph are unchanged. The one exception is the observer
+  layer, whose sidecar format, `intent_version` and `Acts` change by design (§32.7).
+- **No 17th ledger slot.** Seeding and shade move a threshold and a temperature, not energy. Rain still enters through
+  `INJECT_REGEN` and storm deaths through the corpse path. The ledger test is repeated with every coupling on.
+- No genome or sensing change. The step stays pure MLX: no host sync, no Python branch on an array value, scatters only in
+  `ops.py`.
+- **The weather is no longer agent-independent** when `seed_gain` or `shade_gain` is above 0 (§32.10).
+
+**Deferred.** The bond-break calibration (the wind-attributed break rate has no instrument: no counter, and `StepOut` may
+not change; `storm_break_u` stays 0 in every W2 arm, decision 8). The free-emission hinge (§32.3). The shadow weather (a
+second, unseeded `wx` advanced in the observer, a contingency if the A/N pairing diagnostic falls below 0.5, §32.9).
+Cloud shade on the photic term, temperature-peaked growth, a dedicated nuclei channel, wind and moisture senses, storm
+tracking (W3), levers (W4), `STRM` and `VOL1` records (W5). The calibration of `rain_gain`, `storm_*`, `seed_gain` and
+`shade_gain` (W2b): `presets/storm.toml` is **unchanged** by W2a.
+
+**Evidence behind the lever sizes** (CPU, weather-only runs of the confirmed W0 set, 15,000 steps of spin-up and a
+15,000-step window, and the agents and fields of `runs/64k3d_s{0,1,2}` at 450,000, read only; the figures belong to those
+runs and are not constants).
+- *Seeding.* Uniform `qs` (an upper bound): 0.98 gives rain x1.73, 0.90 x2.43, with the storms a little stronger and none
+  collapsed. With the real spatial maps of `64k3d_s0` held static, `seed_gain` 0.01 / 0.02 / 0.05 give rain x1.08 / x1.18 /
+  x1.53. The response needs about 3,000 steps to reach 80% of its equilibrium. A seeded patch at the equator changes
+  nothing (the background humidity cannot reach a lowered threshold): seeding works only in a pool's moist halo. Seed 1
+  emits almost no c2 (lattice mean 0.24 against 6.0), so seeding is near-inert there (about +1% rain), a small positive
+  and not an exact null.
+- *Shade.* A uniform 5% cooling of `T_s` removes three quarters of the storms (`storm_proxy` 5.8 to 1.5, rain -43%), 10%
+  nearly all. With the real density map, `shade_gain` 0.01 / 0.02 / 0.04 / 0.08 give rain x0.95 / 0.90 / 0.81 / 0.67 and
+  storms x0.97 / 0.90 / 0.76 / 0.48. Seeding 0.02 and shade 0.02 together give rain x1.05: the two loops nearly cancel
+  in rain and are not separable in a combined arm.
+- *Who is exposed to wind.* Total air speed >= 0.04 for 3.9% of agents but eddy speed (below) >= 0.04 for 0.68%; at
+  `storm_u0` 0.04, 80% of the exposed agents are in the jet, not in a storm. W1's "sensitivity to `storm_u0`" is a
+  sensitivity to the jet; `storm_eddy` makes the hazard a storm hazard. Eddy speed p99 over agents is 0.035, maximum 0.062.
+- *Drift.* With the weather on, 13.8% of agents (s1: 17.6%) drift at >= 0.01 per step, the Settler speed threshold; 3.2%
+  at >= 0.02; 0.07% at >= 0.04 (the Nomad threshold). The correction of §32.7 matters for Settler and little for Nomad.
+
+### 32.2 Config
+
+**Eight `WeatherConfig` keys** (`config.POST_V01_KEYS`; hashed, since each changes the compiled step; `config_hash` omits
+them at their defaults, so **every existing run and preset keeps its hash**, the `64k3d` + `storm` hash included; the
+section now has 41 keys). Rule W-0 (§30.2) covers them: each is rejected while `weather.enabled` is false.
+
+| key | default | rule | meaning |
+|---|---|---|---|
+| `seed_gain` | 0.0 | `0 <= x <= 0.1` | maximum lowering of the condensation threshold `Q_s` by seeding; 0 = off (§32.3) |
+| `seed_c0` | 2.0 | `> 0`, finite | half-saturation of the seeding response, in c2 units |
+| `shade_gain` | 0.0 | `0 <= x <= 0.05` | maximum fractional cooling of `T_s` by the shade; 0 = off (§32.4) |
+| `shade_n0` | 8.0 | `> 0`, finite | half-saturation of the shade, in agents per field column |
+| `wind_scale` | 1.0 | `0 <= x <= 1` | multiplies the agents' wind force; 0 = still air for the agents, weather and tracers unchanged (§32.5) |
+| `rain_zonal` | false | | the rain food depends on latitude only: the x-mean of `P`, `P·zi`, `P·dc` before the block reduction (§32.5) |
+| `storm_eddy` | false | | the speed the hazard and the bond rule read is the eddy speed (§32.5) |
+| `wind_eddy_force` | false | | the agents' wind force uses the eddy wind (§32.5) |
+
+`seed_gain` and `shade_gain` are NaN-safe. The `storm_break_u` validate message now reads "the threshold acts on the hazard
+speed (the eddy speed under `storm_eddy`, the air speed including the layer-2 jet otherwise)". `weather.ENGINE_FIXED`
+gains `seed_dmin = 8.0` (twice the field cell; not a key) and `WeatherParams` the matching field; `WeatherParams.to_dict`
+omits `seed_dmin` (and any post-W0 field) at its default, so the W0 parameter files and params hashes (7832e060,
+bf468155) are unchanged. `tests/test_weather_config.py` pins the 41 keys and the 20 `ENGINE_FIXED` entries.
+
+**Observer and cadence keys** (all outside the config hash; resume keys, §18):
+- `game.tracers` (int, 0 = off; `0 <= x <= 2^20`) and `game.tracer_period` (int, 500, `>= 1`; about the organisms'
+  median age at death, 492). In `POST_V01_KEYS` and `OBSERVER_KEYS`, like `game.house_rate`. `game.tracers > 0` needs
+  `game.observe` and `weather.enabled`.
+- `run.eco_every` (int, 0 = off) writes `observers/eco_<step>.npz`: it needs `game.observe`, `weather.enabled` and a 3D
+  world. `run.wx_every` (int, 0 = off) writes `observers/wx_<step>.npy`: it needs `weather.enabled`. Both are in
+  `RunConfig` (so outside the hash) and in `RESUME_KEYS`. W2b uses 250 and 500; `analysis.w2.ECO_WINDOW` is 250, so
+  `run.eco_every` must be 250 for P3 and P4.
+
+The three `tests/data/gui_config_*.json` fixtures are regenerated (the `weather`, `game` and `run` tables gain the keys).
+
+### 32.3 Rain seeding (`weather.seeding_response`, `weather.seeding_qs`)
+
+STORMS §4: c2 averaged over the cloud layers, as its excess over the lattice mean, through a saturating response, lowers `Q_s`
+by at most a fixed factor.
+1. **Band weights, one function for food and seeds.** `weather.cloud_weights(zi, dc, cfg) -> (FZ, FG, FG)` is the layer
+   weights `w_k` of `rain_regen` (§30.6), factored out and called by both; `rain_regen` is bitwise unchanged by the
+   refactor (tested on hand columns and a spun-up state). Seeding and feeding act on the same layers.
+2. **Inputs per field column** (2x2 weather blocks): `zi_c` the plain block mean of the interface height `H·h1/(h1 + h2)`;
+   `dc_c = max(block mean of D_c, seed_dmin)`. Plain means and the `seed_dmin` floor, not the P-weighted means of the food:
+   where it does not rain `P = 0` and `D_c = 0`, so a rain-weighted band would be empty and seeding could never start a
+   rain. Where it rains with `D_c >= seed_dmin` (median 21, p10-p90 8 to 34) the two bands differ only through the averaging.
+3. **Signal.** `b = Σ_k w_k·chem[2, k]` per field column (2D: `chem[2]`); `e = max(b - mean(b)·(1 + 1e-4), 0)`. The mean is
+   the world's, so a uniformly high c2 (seed 0's background) seeds nothing and only local crowds do. **The `1e-4` relative dead band** is an
+   implementation fact: the float32 mean of identical values differs from the value by an ulp, so without it a uniform c2
+   field gave `qs = 1 - 6e-8` and the property "uniform c2 gives `qs == 1` exactly" (tested) failed. It is 6e-4 of c2 at the
+   scale 6 and 1.6e-5 at seed 1's, negligible against `seed_c0`.
+4. **Response.** `r = e/(e + seed_c0)` in [0, 1): saturating, zero for `e <= 0` (no anti-seeding).
+5. **Hook.** `qs = 1 - seed_gain·r` repeated 2x2 to the weather grid (reshape and broadcast, no gather) is
+   `WeatherForcing.qs`, the array that already multiplies `Q_s` in the condensation threshold (§30.4 "a constant `qs = 1`",
+   the array exists for this); `seed_gain = 0` passes `None`, so the graph is W1's. `qs >= 1 - seed_gain`; a runaway is
+   impossible by construction (`seed_gain <= 0.1`, saturating response).
+6. **Timing.** Evaluated at S17 from the **start-of-step** `s.chem` and the stored `wx` (§32.6): one step of lag, no RNG.
+
+**Seeding is density-driven, and this departs from STORMS §4** (decision 7). STORMS §4 asked W2 to calibrate the response "so
+that sub-threshold emission alone does not trigger rain-out". Emission costs `floor(emit_cost·Σ floor(256·emit)/256)` in
+`HEAT_ACTION`, which is 0 for up to 12 quanta (Σemit 0.047) per agent-step, so a crowd emitting the free amount into c2
+reaches about 3.3 at the decay 0.005, within a factor of 2 of the measured 4 to 6. The response is positive for any local
+excess, so **crowds seed whatever their genes**; the hinge (the response on the excess above the free-emission level) is a
+later variant and not built. What W2a gives to decide the question: the eco dump's `emit` column and P1c, the paid share
+`max(emit - 12, 0)` by clade and z band (§32.9). The tool does **not** read the c2 field (only the 25,000-step checkpoints
+hold `chem`), so P1c reports the paid share and the share of agents paying, and nothing about the cloud-band c2 excess. No
+ledger term (§32.1).
+
+### 32.4 Shade on the seas (`weather.shade_strength`, `weather.shade_mult`)
+
+The lever is `T_s`, the warm-pool map (already an array input of `WeatherForcing`), not `k_E`: shading the sea surface
+temperature is the Daisyworld analogue. `shade_strength(pos, alive, cfg) -> (FG, FG)`: the alive agents are counted per
+field column (`ix = floor(x/fc) mod FG`, `ops.scatter_add_i32`, all heights), `d` is the periodic 3x3 box mean of the counts, and
+`s = shade_gain·d/(d + shade_n0)`. The box is **separable**: a 1x3 mean along x, then a 3x1 mean along y of that result, so
+each array is rolled by its two shifts once and no (array, shift) pair is built twice in the compiled graph (the
+once-per-array rule, §30.4; `test_mlx_duplicate_roll_compile_bug_is_still_there`). `shade_mult` is `1 - s` repeated 2x2, in
+`[1 - shade_gain, 1]`; `advance` builds `WeatherForcing(warm_pools(p, t) * t_mult, qs)`. The count is of alive agents, not
+energy or biomass (a choice; a biomass-weighted shade is a later variant). It is called at S17 with the start-of-step
+`s.pos` and `s.alive`. Zero agents give exactly 1; `shade_gain = 0` passes `None`.
+
+Why `shade_gain <= 0.05`: `T_s` is the humidity target `Q_e = q_bg + (q_pool - q_bg)·T_s` and the supersaturated core needs
+`T_s > 0.732`, so a few percent of cooling is steep (§32.1).
+
+### 32.5 Controls and the eddy wind (`weather.agent_wind`, `weather.sample_wind`)
+
+- **`wind_scale`**: `force = wind_scale·a·drag·u_air`. 0 gives zero force; the weather, the rain and the tracers (which use the
+  unscaled coupling) keep running. The hazard and the bond break read the air speed, not the force, so a still-air arm
+  switches them off explicitly (`storm_p 0`, `storm_break_u 0`).
+- **`rain_zonal`**: `weather.rain_regen` takes the x-mean of `P`, `P·zi` and `P·dc` before the block reduction, so the food
+  depends on latitude only: the zonal-mean rain profile that the pools' 35,556-step circuit averages to. The same layer
+  weights; the latitude total is preserved up to the floors (2.2% lost at gain 1e6 and 10.8% at 2e5 on a spun-up state) but
+  **the per-cell supply is not**: the rain spreads from about 2,100 cells at about 120 quanta per step to about 10,600 cells
+  at about 23. `K_est` and the floor `K` inherit it through `rain_regen`.
+- **The eddy wind.** `WindFields` gains `zbar: (4, n)`, the x-means of the **staggered** arrays `ws.u1, v1, u2, v2` themselves
+  (not of the centre-averaged ones: `wind_fields` averages `v` with `_south`, at `(j + ½)dx`, whereas `sample_wind` reads the
+  `v` grid at `gy - 1.0`, so the x-mean of the staggered array is what the sampler reads and a zonally uniform wind has
+  exactly zero eddy speed for a `v` that varies in `y`). The field has a default (`None`), so code that unpacks `WindFields`
+  by position fails loudly. `sample_wind(..., eddy=True)` (and `sample_wind_h`) additionally returns `AgentWind.u_eddy`: `ū`
+  at the agent's latitude by 1-D linear interpolation, selected by `z < zi` and scaled by `phi(z)` below the interface as the
+  full wind is, then `u_eddy = u_h - ū_h` (the clipped `u_h`). 2D: `ū` of layer 1. `weather.air_speeds(...) -> (total, eddy)`
+  gives both speeds (eddy `sqrt(|u_eddy|² + w²)`).
+- **`storm_eddy`**: `AgentForce.speed` is the eddy speed, so the hazard (`lifecycle.storm_mask`), the bond break and the
+  snapshot's `storm_exposure` follow it. No change to the force.
+- **`wind_eddy_force`**: `force = wind_scale·a·drag·(u_eddy, w)`; the weather is untouched (the key is read only in
+  `agent_wind`), independent of `storm_eddy`. It is the clean decomposition: with it on, **A minus E is the zonal-mean (jet)
+  wind and E minus WB the eddy wind**, on the same storms, rain, seeding and shade (arms, §32.12). The weather being
+  untouched is why a jet-removed arm (`r2` raised) cannot do this: it also changes the storms.
+
+Two consequences are documented and not guarded. (1) `|u_h - ū_h|` can in principle reach about `2·u_max`, above the R3/R4 bound
+on `a·u_max`; the measured eddy maximum is 0.062 against `u_max` 0.3, so no rule was added. (2) In a uniform wind above
+`u_max` the clipped `u_h` minus the unclipped `ū_h` is not zero; irrelevant at the measured speeds.
+
+### 32.6 Step wiring, metrics and the bench
+
+**S17** (`step.py`): `qs, t_mult = weather.organism_forcing(s.chem, s.pos, s.alive, ws, cfg)` on the **start-of-step** state (the
+same state the wind was sampled from at S3w; reading the post-update `chem`, `s2.pos` or `s2.alive` fails
+`test_the_seeding_and_the_shade_read_the_start_of_step_state`), then `weather.advance(ws, t, kw[0], cfg, qs=qs, t_mult=t_mult)`.
+Each factor is `None` while its gain is 0 (static), so the graph is W1's. `bench._StagedStep.weather_update` mirrors it.
+`step.py` has no other weather change: the eddy speed and the force come from `agent_wind` (§30.4 S3w).
+
+**The `weather` metrics block** (§30.8) gains, with no `StepOut` change:
+
+| key | present | meaning |
+|---|---|---|
+| `total_speed_p99`, `eddy_speed_p99` | always (weather on) | 99th percentile over alive agents of the total air speed (3D norm, `w` included) and of the eddy speed. `air_speed_*` and `storm_exposure` stay on the **hazard speed** |
+| `rain_band_share`, `rain_global_share` | `rain_gain > 0` | **nominal**: `Σ_band rain / Σ_band (rain + base)` over the cloud band (layers 8 to 13; 2D: the one layer) and over all layers. A statement about the forcing |
+| `rain_real_band_share`, `rain_real_global_share`, `rain_clipped_frac` | `rain_gain > 0` | **realised**: per cell `inc_total = clip(min(base + rain, cap - R), 0)`, `inc_base` likewise without the rain, `rain_real = inc_total - inc_base`; `rain_clipped_frac = 1 - Σ rain_real / Σ rain` over raining cells |
+| `seed_r_mean`, `seed_r_hi_share`, `seed_lower_mean` | `seed_gain > 0` | lattice mean of `r`, the share of columns with `r > 0.5`, and the mean lowering `seed_gain·mean r` |
+| `shade_s_mean`, `shade_s_max` | `shade_gain > 0` | the mean and the maximum of the shade `s` over the lattice |
+
+The keys are **gated** (a W1-style row gains only the two speed keys), so consumers read them with `.get`. The rain audit is
+`metrics.rain_audit` (eager, int32, once per snapshot) and `weather_obs.rain_shares`. It is an approximation, stated: `R` is the
+end-of-step resource where the engine used the start-of-step one (exact for cells far from saturation and for saturated cells),
+the season is that of the step that booked the rain, and the patches are one drift later.
+
+**`alife bench --weather-org`** (`run_bench(weather_org=)`, `_bench_weather(..., org=)`) times the step with the organism
+couplings on against the same config with `seed_gain` and `shade_gain` 0 (the weather stays on in both), in interleaved
+blocks; it needs `weather.enabled` and one of the two gains above 0 (`ConfigError`, exit 2, otherwise). Result on Metal
+(`64k3d` + `storm`, seeding 0.03, shade 0.02): marginal **0.69 ms** median (pairs 0.63, 0.69, 0.67; 14.30 ms off, 14.99 ms
+on, 66.6 steps/s); the spec's estimate was 0.15 ms.
+
+### 32.7 Observers: `INTENT_VERSION` 3 (`game/rules.py`, `game/observe.py`, `game/observer.py`)
+
+**The wind-relative velocity.** With the weather on, `vel` includes the wind drift. `weather.agent_drift(wx, pos, buoy_cap, alive, cfg)
+= agent_wind(...).force / drag` is the velocity the wind alone would give a free agent (the eddy force under
+`wind_eddy_force`, `wind_scale` applied, as the engine applies them). It is evaluated **in the observer's fold on the post-step
+state** (`wx` and `pos` after the step: one step of evolution and 0.03 unit of motion after the force's own sample, below 1%
+of the wind), in a separate compiled graph, so it adds no reader to a trajectory array and needs no purity analysis. It is
+statically gated on `cfg.weather.enabled`; with the weather off the drift is exactly 0 and the labels of `RULES_V3` are
+bit-identical to V2's. `v_rel = vel - drift`. A gripping grounded agent drifts at `drift/(1 + grip_gain·grip)`, so `v_rel`
+over-corrects it (`grip` is not in the state; grounded wind is below 0.005). Index convention: `drift_k` is from the state of
+step `k`, the displacement `k-1 -> k` was driven by the force at step `k-1`; `rg2_rel` subtracts `drift_k`. `ObsIn` gains `pos`,
+`buoy_cap` and `wx` (None unless the rule set needs them: `obs_in(s, rs)`); `test_observer_inputs_exclude_the_key` pins the
+fields.
+
+**`RuleSet` additions** (post-V2 inert fields, `_POST_V1_INERT`: `digest()` leaves them out at their inert value, so
+`RULES_V2.digest()` stays `dc78f771…b4f7`).
+
+| field | inert | meaning |
+|---|---|---|
+| `wind_rel` | False | the velocity accumulators and `ArchCol.SPEED` use `v_rel`; adds the column `WIND` (the drift's 3D norm in the velocity quantum, clipped at `VQ_MAX`) |
+| `vertical` | False | 3D only: adds columns `ZPOS = round(256·z/H)` and `LIFT = (round(256·b)·round(256·cap)) >> 8` (the lift fraction of `buoyancy_max`) and the Floater and Sinker rules; requires `wind_rel`; `check(cfg)` rejects it in 2D |
+| `drifter_wind`, `drifter_ratio` | (0, 1), (0, 1) | Drifter: `m_wind >= 38` (0.015) and `2·m_wind >= m_speed_rel`; requires `wind_rel`; both fields set together |
+| `floater_lift`, `floater_z`, `floater_vz` | (0, 1), 0, 0 | Floater: `m_lift >= 77` (0.30 of `buoyancy_max`; 0.8 of the hover lift 0.375), `m_zpos >= 26` (z >= 8) and `abs(m_vz_rel) <= 19` (half the free fall 0.015 per step = 38.4 quanta) |
+| `sinker_lift`, `sinker_vz` | (0, 1), 0 | Sinker: `m_lift < 26` (0.10) and `m_vz_rel <= -19` |
+
+`RULES_V3 = RuleSet(wind_rel=True, vertical=True, drifter_wind=(38, 1), drifter_ratio=(1, 2), floater_lift=(77, 1),
+floater_z=26, floater_vz=19, sinker_lift=(26, 1), sinker_vz=19)`; `INTENT_VERSION = 3`. **Its digest is
+`3515d96edb93e276363bdefe4e7025ffc0da6d572165f8d1b53d33abb380a17c`** (pinned in `tests/test_game_storm_rules.py`). The values are the
+physics-derived starting values and were **not tuned**: they passed the pre-declared keep rule on the pilot window (§32.8).
+`rules.for_2d(rs)` is the same rules without `vertical` and with the Floater and Sinker thresholds back at their inert values
+(its own digest, `268730d9…3abf` for V3, so a 2D sidecar says what it ran); `observer.default_rules(cfg)` returns `DEFAULT_RULES`
+(`RULES_V3`) in 3D and `for_2d(DEFAULT_RULES)` in 2D. `RULES_V1` and `RULES_V2` stay importable and evaluate as before
+(digests pinned). **Floater and Sinker are 64k3d-physics rules** (gravity 0.015, `buoyancy_max` 0.04, drag 1, H = 80,
+`thrust_max/drag` 0.1); the labels of other worlds need a verdict row before they are shown.
+
+**Enum, match matrix and layout.** `Archetype` keeps `GENERALIST = 7` and gains `DRIFTER = 8`, `FLOATER = 9`, `SINKER = 10`,
+appended after Settler in `ARCH_PRIORITY`, so **every V2 primary label is unchanged** (Generalist shrinks by the rows a new
+label takes; secondary labels may change). Everything downstream indexes the match matrix by `value - 1`, so
+`archetype_matches` returns an `(N, 10)` matrix with a **placeholder column 6 for Generalist** (always false; without it
+`pack_bits` would put Drifter on Generalist's bit) and columns 7 to 9 for the new rules; `_N_ARCH_RULES = len(ARCH_PRIORITY)`. The
+width is no longer inferred from the accumulators: `rules.arch_layout(nd, rs) -> ArchLayout` names the column offsets
+(`V_POS`, `V_NEG`, `WIND`, `ZPOS`, `LIFT`, the width), and `n_arch_cols(nd, rs)` is 9 and 11 (V2), 10 and 14 (V3, 2D and 3D).
+The velocity halves carry `v_rel`, including `vz_rel`. `RuleSet.check(cfg)` bounds the new columns and ratios.
+
+**Display.** `rules.ARCHETYPE_STORM_DISPLAY` maps `gatherer -> Grazer`, `hunter -> Hunter`, `drifter -> Drifter`, `floater -> Floater`,
+`sinker -> Sinker`; the others keep their names. `ARCHETYPE_DISPLAY` gains the three new names. The consumer that picks the storm
+table for a run with `version >= 3` and `weather.enabled` is N1's `report._label_display` (§32.13).
+
+**The channel: `Acts.buoy`** (`step.py` S8). One new field, `buoy: (N,) int16`, `where(solvent, round(256·b0), 0)` (3D only; `None` in
+2D, so code that flattens `Acts` skips None leaves). Of the three variants of the spec (a tap of `mo.buoy`, the quantised
+`y`, or `LIFT` from the state alone), **variant 1 is fixed**: `buoy0 = mo.buoy` is captured *before* `actions.mask(mo, c.solvent)`
+(not "alongside `thrust0`", which comes after the mask and would tap a different array) and the Metal purity gate passed with
+it (§32.11). It is a new float reader before the mask, the situation of `thrust0` (§28.2): `CHANNEL_TAPS` is **20 in 2D and 21 in
+3D** (the tap `buoy0`; `CHANNEL_TAPS_2D` and `CHANNEL_TAPS_3D` in `test_game_purity.py`, and the structural test runs both dimensions). Variants 2 and 3 are not built.
+
+**Sidecar** (§28.6). `OBSERVER_FORMAT = 4`: the `arch` width, the `wind_rel` and `vertical` flags in `meta` (`_META_KEYS`),
+`intent_version` 3 and the V3 `rules_digest`. A format-3 sidecar is refused with that reason and the observer starts fresh
+(labels warm up 192 steps for archetypes and 24 for intents, §28.6). The tracer members are optional (§32.9).
+
+**The validity tool** (`python -m alife.analysis.labels`, §28.8) gains `--rules {v2,v3}` (default: the observer's default for
+the world; `v2` runs V2's predicates on the raw velocity, on the same window, for the wind-relative comparison) and `--dump
+DIR` (`labels_dump.npz`: the pooled tables, the `arch.m6` means and the 64-step input history, so candidate thresholds are
+scored in seconds with the study's own `verdict`, strata and permutation null; the eager "policy probe" of the G2 scratch
+tool is dropped since V3 changes no intent). The cohort tracker (`track_step`, `TrackState`) integrates the displacement with
+the drift subtracted, `ur_k = ur_{k-1} + min_image(Δpos) - drift_k`, and keeps `z0` and `zk`. Outcomes:
+- **Nomad and Settler** are scored on `rg2_rel` (the primary), with the raw `rg2` AUC reported beside it (`auc_raw`, `auc_rel`).
+- **Drifter**: the wind share of the displacement over the first `arch_min_obs` (100) observed steps,
+  `|Σ drift_h| / (|Σ drift_h| + |Σ own|)` with `Σ own = Σ (Δpos - drift)`, strata with a **z band** (0-4, 4-32, 32-56, 56-80:
+  the rule matches 10.8% of agents at z 56-80 and 0.2% below 4, so it is partly "a high-cap agent in the upper-layer wind",
+  which the band controls and the report says).
+- **Floater**, scored **within the pool aloft at the cohort time** (`z_T >= ALOFT`, 0.1 H = 8, fixed by the world and not by
+  `floater_z`, so one dump scores every candidate threshold against one outcome), z-band strata; outcome **altitude held,
+  `-abs(z_k - z_T)` at `arch_min_obs`**. (The spec's outcome, the fraction of the first 100 steps with z >= 8, is saturated:
+  98% of the pool aloft stays above 8, and it scored AUC 0.509 against a null of 0.508. A net signed change scored 0.49
+  because Floaters drift up as often as down. The first pass is recorded in the notes of the build.)
+- **Sinker**: the descent `z_T - z_k` at `arch_min_obs`, normalised by the available room `min(z_T, 100·0.015)`, over rows with
+  `z_T >= 1.5` (a grounded agent has `vel_z` exactly 0 after the floor clamp and is a certain zero), z-band strata.
+The exposure rules are the archetypes' (`arch_min_obs` 100, `arch_horizon` 1000, rates over observed steps).
+
+### 32.8 Calibration and validation of `RULES_V3` (the pilot window; the held-out windows are W2b)
+
+**The pilot (C-W2).** A fork of `runs/64k3d_s0` at 450,000 with the `storm` overlay and a 15,000-step weather spin-up, observers on,
+the **prior set** (`storm_eddy`, `storm_u0` 0.03, `storm_span` 0.03, `storm_p` 0.004, `rain_gain` 1e6, `seed_gain` 0.03,
+`shade_gain` 0.02), 26,000 coupled steps at 64.2 steps/s median on Metal (`run.checkpoint_every 10000`; 26,000 rather than 20,000
+so the window could be verified row by row). Ledger error 0 in all 260 rows, `max_occupancy` 16, `cell_overflow` 0, `overlap_deep`
+max 4; storm deaths 3.2% of all deaths (the prior target is 1 to 5%); nominal rain-band share 0.32 to 0.41, global 1.6 to
+2.6%; `rain_clipped_frac` mean 0.012 (max 0.48 in one row); population 44,954 to 39,688. These are a single run at the prior
+set, not a calibration. The window is 470,000 to 476,000 (20,000 coupled steps in; 19 cohorts, `--n-perm 200`), re-simulated on
+Metal: 60 stored metrics rows match the re-simulation.
+
+**C-W2 under `RULES_V3`**: all ten intents and all nine archetypes pass (`p <= 0.01`, `auc - null >= 0.05`, `n_pos >= 30`).
+The new labels:
+
+| label | AUC | null | match prevalence | outcome |
+|---|---|---|---|---|
+| Drifter | 0.880 | 0.533 | 8.8% | wind share of the displacement |
+| Floater | 0.727 | 0.546 | 6.8% | altitude held, pool aloft |
+| Sinker | 0.637 | 0.508 | 10.1% | descent over the available room |
+
+Nomad (0.783) and Settler (0.633, margin 0.126) pass on `rg2_rel` with the V2 numeric thresholds. **Freeze.** A sweep of 28
+Drifter, 72 Floater and 20 Sinker candidates (`n_perm` 10, margins only) had every margin >= 0.09 and the margin rising with
+strictness, so "maximise the margin" selects the extreme cell and is not a criterion. The rule fixed **before the sweep was
+read**: keep the physics-derived starting values when they pass at `n_perm` 200 with margin >= 0.05 and a match prevalence
+between 1% and 25%. All three did, so **nothing was tuned** and `RULES_V3` is frozen with the digest above.
+
+**C-W2v2 (`--rules v2`, same window).** Nomad matches 4.9% of rows under V2 and 1.7% under V3 (the wind-relative speed drops agents
+the wind carries); the V2 Nomad rule scored on `rg2_rel` gives 0.717, the V3 rule on raw `rg2` 0.777. Settler margin 0.094 (V2) and
+0.126 (V3). Generalist falls from 43.9% to 35.9% (the new labels take 8% of the primary labels, rows that were Generalist). The
+ten intents and four income archetypes are unchanged (same verdicts, prevalences equal to three digits).
+
+**Criterion for the held-out windows** (W2b, fixed here before they are read): H1 and H2 (A on s1 and s2 at 500,000), H3 (A on s0
+at 500,000, a later time and different values but the same fork as the pilot), H4 (still air, `wind_scale 0`), and the weather-off
+windows `runs/64k3d_s0` at 500,000 and `runs/64k_s0` at 1,500,000. Every archetype and intent has `verdict == "pass"` on each
+(the 0.6 coverage cap applies to the intents only). On H4 the wind is exactly 0, so Drifter must have `n_pos == 0` and is
+excluded from the pass count. A label that fails a held-out window is not shown ("not validated in the storm world"), the rule set
+stays pinned, and a fix goes to a later version on new windows. A new label with `n_pos < 30` is "reported only". `LABEL_VERDICTS` rows
+are added by the change that validates them (W2b), keyed by `(version, rules_digest, dims, world_key)`: they cover the storm
+worlds A and S (identical configs across seeds) and the two weather-off worlds, and the N, WB, A1, E, J and A2 configs hash
+differently and get no row, so the report narrates no label in them. **Not yet validated:** V3 in any storm world other than the
+pilot's, in 2D, and on any held-out window. `docs/GAMES.md` §4.5 records the pilot.
+
+### 32.9 Instruments (`game/tracers.py`, `weather_obs.py`, `runio.py`, `analysis/w2.py`)
+
+**The tracer rig** (`game/tracers.py`, pure MLX, observer-only; lint rules 2 and 5). STORMS §5 control 2: passive tracers moved at
+`α_t·u_air(pos)` with `α_t = alpha0 + alpha1·cap` of a live agent. `TracerState(pos (T, nd), alpha (T,), age (T,) i32, key (2,) u32)`;
+`game.tracers` of them (16,384 in the runs). Each step, after the engine step, on the end-of-step `wx`: `v = alpha·u_air` limited to
+`v_max` by norm, `pos = wrap_xy_clamp_z(pos + v)` (the integrator's own clamp). `α_t` uses the config's **unscaled** `alpha0`
+and `alpha1` and the **total** wind, so the tracers move identically in the still-air and eddy-force arms: they are the
+passive-drift null of the full wind. Every `game.tracer_period` steps (a host-scheduled call, like `Observer.evaluate`) all tracers are
+reseeded at uniformly drawn live agents: the live rows first by a unique sort key, `idx = order[floor(u·n_alive)]`, with `u` from the
+rig's own key (`rng.observer_key(run.seed, TRACER_SALT)`, split at each reseed; **never `State.key`**: a run with tracers has the
+trajectory, and the state digest, of a run without). A tracer is thus an agent that stops steering, age-matched to an agent's life.
+2D: layer-1 wind and `alpha0`. The rig lives in the `Observer`; its arrays are the sidecar members `tracer.pos`, `tracer.alpha`,
+`tracer.age`, `tracer.key`, **optional** (no meta key and no format bump): a sidecar without them, or with another tracer count,
+restarts only the tracers and keeps the labels, with a note; resume is exact (10 + 10 steps equal 20). Estimated cost 0.35 ms
+per step; **not measured** with the dumps on.
+
+**Dumps** (`RunDir.write_eco/write_wx`, `dump_path/dump_files/read_eco/read_wx`; written atomically after `obs.update`, built in the
+step's own `mx.eval`, so there is still one blocking eval per step; `RunDir.truncate_after` drops the dumps after the resume step):
+- `observers/eco_<step>.npz` every `run.eco_every` steps (3D): for the live agents `uid`, `clade`, `cap`, `z`, `vz_own = vel_z -
+  drift_z`, `w_air` (the air's vertical velocity at the agent) and **`emit`** (`Acts.emit`, `Σ_c floor(256·emit_c)`; 12 at the free limit),
+  and with tracers `tracer_z` and `tracer_age` (not in the spec: P3's tracer persistence is computed offline from pairs with no
+  reseed between them). About 1 MB.
+- `observers/wx_<step>.npy` every `run.wx_every` steps: f32 `(10, n, n)`, the nine `WeatherState` planes and **plane 9 = `1 - qs`**, the
+  seeding strength evaluated eagerly on the dump step's end-of-step `chem` and `wx` (the `qs` the next step will use; zero without
+  seeding). `chem` is only in the 25,000-step checkpoints, so the plane cannot be rebuilt offline. About 1 MB.
+
+**The `coupling` block** (`row["coupling"]`, tracers on; `weather_obs.coupling_block`; 3D only): for the live agents and the tracers at
+the snapshot, per z band (0-4, 4-32, 32-56, 56-80, `Z_BAND_FRACTIONS` of the height), lists of four: `n_agents`, `n_tracers`,
+`ub_threshold` (the tracers' top decile of `g = |∇_h w|`, the updraft-boundary index, from `weather.wind_layers` by central
+differences), `ub_agents` (the agents' share above it; **0.10 for a population drawn from the tracers' distribution**) and
+`ub_agents_all`, `w_mean_agents`, `w_mean_tracers`, `hold` / `hold_band` (`-Cov(vz_own, w)/Var(w)` over agents with `|w| >= 0.002`
+and more than one field layer from the floor and the lid), `z_mean_agents`, `z_mean_tracers`.
+
+**`python -m alife.analysis.w2 [ARM@SEED=]RUN... --out FILE.json`** (host numpy, scanned by the lint; reads the run directories,
+never writes into them). The definitions, windows and thresholds are fixed by the W2 spec and by `tests/test_analysis_w2.py` on
+synthetic runs. After a 20,000-step transient the 80,000 steps are cut into 8 blocks of 10,000; a statistic is computed per
+block and its interval is the t-interval of the 8 values (7 df, 95%); a contrast uses the 8 paired block differences (the arms
+share the fork and the weather clock); a 16 x 5,000 version is reported as a sensitivity check. A claim is *supported* if both
+seeds' intervals (s0 and s1) exclude 0 with the same sign, *mixed* if one does or they disagree, *not supported* otherwise. For the
+agent statistics a contrast must also exceed in magnitude the **noise floor**, the s1 A - N contrast of the same statistic (seeding
+is near-inert on s1, so it is the run-to-run spread of two runs from one fork). Weather totals reproduce to under 0.5%, so for
+them the thresholds carry the test. The statistics: P1a (`log` of the rain ratio A/N, early steps 1 to 3,000 and late), P1b
+(per `wx` dump, the slope of `P_A - P_N` on `1 - qs_A`, and the cell-wise correlation of the two as a pairing diagnostic), P1c, P2
+(`ub_agents_all`, A - WB and WB - S), P3 (`hold`, A - WB, and 250-step `|dz|` of agents against tracers), P4 (the standardised
+selection gradient of the cap on births and on 250-step survival per block, the contrasts A - WB, A - A1, A - E, WB - S, the cap
+trend and the mean alpha), P5 (the biosphere and the storm deaths by cause, z band and clade), P6 (the §4.1 safety limits).
+P1a and P1b check an *imposed* coupling and cannot fail by design (they say nothing about organisms); the seeding claim rests on P1c
+and on the agreement of the late ratio and the slope with the static-map predictions. **Approximations (stated):** P1c does not read
+c2 (above); a storm death's z band is that of the agent at the last eco dump before its death (death records carry no position;
+agents born since are `unattributed`); `WEATHER_WARN` is reported as the share of rows carrying the sticky bit and, separately, the
+share of rows with `hyper_max >= 0.8`.
+
+### 32.10 Determinism: the weather is no longer agent-independent
+
+W1's property (§30.1: `wx` at step `t` is a function of `(WeatherConfig, world.size, run.seed, t)` alone) holds **only while
+`seed_gain = shade_gain = 0`**. With either on, `wx` depends on the agents (through `s.chem`, `s.pos` and `s.alive`), so a different agent set gives a
+different weather. Toggling `storm_p` still does not change `wx` (the hazard key is drawn every step; the hazard reads, and
+does not write, the weather). The standalone-chain test of §30.10 is gated on both gains being 0; the weather-only spin-up
+(`--weather-spinup`, §30.9) runs feedback-free and is unchanged, so a fork with seeding on starts from the same `wx` as one without. Everything
+else is as W1: float32, deterministic per backend, compiled and eager differ in rounding from step 0 even with the couplings off
+(§14.2, I26), so identities are claimed between two compiled or two eager runs. The weather alone stays cell-wise correlated with a
+perturbed copy (0.987 at `qs` 0.995 and 12,000 steps), but in the coupled runs the shade (and in A the seeding) depends on each
+run's own diverging agents, which no probe measured: the pairing diagnostic of P1b measures it.
+
+### 32.11 Tests and evidence
+
+**New tests (all CPU; 2,944 in the fast suite at the end of stage 4, 2,697 at the W1 head).**
+- `test_weather_w2_keys.py` (88): the eight keys, their rules and W-0, `config_hash` omission, `cloud_weights` and `rain_regen`
+  bitwise, `seeding_qs` (uniform c2 gives 1 exactly, a point crowd lowers it inside its footprint only, monotone and saturating, the
+  band equals `cloud_weights`, `seed_dmin`, 2D, compiled == eager), `shade_mult` (counts equal `histogram2d`, the separable box equals
+  nine rolls and conserves the sum, no duplicate roll in the compiled graph, bounds, zero agents), `rain_zonal`, the eddy wind (zero
+  for a zonally uniform wind including a `v` varying in `y`, eddy = total for a zero-zonal-mean wind, a numpy double on a spun-up
+  state), `wind_scale`, `wind_eddy_force`, `storm_eddy` (mask and exposure follow the hazard speed).
+- `test_weather_w2_wiring.py` (39): S17 reads the start-of-step state (mutation checks), the **weather-on trajectory pins** (storm3d and
+  storm2d, default and strong, compiled and eager: eight sha256 values equal to the 3799009 engine), the ledger closed with seeding, shade, rain, the hazard, a catastrophe and immigration
+  all on, W1's agent-independence tests run with the couplings off (asserted), the metrics keys, `rain_audit` on a hand field
+  (a saturated cell has `rain_real` 0), `bench --weather-org`.
+- `test_game_storm_rules.py` (13), `test_game_storm_observers.py` (12), `test_analysis_labels_storm.py` (9, two `slow`): the V2 and V3
+  digests, boundary values of the new rules, the layout and placeholder column, `wind_rel` with zero drift equal to V2's first columns
+  bitwise, a lone agent in a uniform wind, `Acts.buoy`, sidecar 4 and the refusal of format 3, `rg2_rel` against a numpy double.
+- `test_game_tracers.py` (29), `test_weather_w2_instruments.py` (13), `test_analysis_w2.py` (37): the rig (zero wind, monotone alpha,
+  clamps, uniform live reseed by chi-square, its own key, resume), the dumps and the tenth plane, `coupling_block` (an agent set drawn
+  from the tracers gives `ub ~ 0.10`, from the top decile ~1.0; a counter-steering population gives `hold > 0`), the t-interval, paired
+  differences and the noise-floor rule on synthetic runs. Five mutation checks fail as they should (reseed ignoring `alive`, block
+  index off by one, `hold` sign, the ub quantile, a tracer coupled to `wind_scale`).
+- Edited: `test_weather_config.py`, `test_game_config.py`, `test_game_rules.py`, `test_game_sidecar.py`, `test_game_acts.py`,
+  `test_game_roster.py`, `test_game_society.py`, `test_game_social.py`, `test_analysis_labels.py`, `test_analysis_social.py`,
+  `test_weather_obs.py`, `test_cli_smoke.py`, `test_lint.py` (`game.tracers` in `SIM_MODULES`), `tests/weather_helpers.py`
+  (`spun_ws`, `trajectory_digest`), `tests/game_helpers.py`, and the three GUI fixtures.
+- `test_game_purity.py`: a **`storm3d` arm** in `ARMS` (the 64k3d + storm configuration with the couplings, `storm_eddy`,
+  `wind_eddy_force` and the wind on; tiny3d is not a weather world, rule 16) and a `storm3d` entry in `CHANNEL_CONFIGS`, `CHANNEL_TAPS` 20 in 2D
+  and 21 in 3D, and a buoy CSE mutant on tiny3d.
+
+**Identity against a fresh `git archive` of 3799009 (CPU).** The G2/W1 digest matrix at stages 1 and 2: "OK: bit-identical", 0 DIFF
+(the 256 INFO lines are the `weather` config tables). At stages 3 and 4 it shows 166 DIFF, **all in the observer layer** by design
+(sidecar `arch` shapes and `observer_format` 4, `intent_version` 2 to 3 in the metrics rows of the three observing runs, the
+`StepOutG` digest gaining `Acts.buoy`); no state digest, counter, ledger, checkpoint tensor or event differs. Weather-on
+trajectories (8 cases) are bit-identical to the 3799009 engine with the new keys at their defaults, the strong cases having storm deaths
+and bond breaks. tiny3d, 50 compiled float32 steps: `legacy_state_digest_3d` `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd`, unchanged.
+
+**Metal (M5 Pro, MLX 0.32.3, the merge condition of the observer change).** `tests/test_game_purity.py` on the default device with no
+marker filter: 51 passed on the tree with variant 1, including the `storm3d` arm (observer on and off identical), 21 taps in 3D and 20
+in 2D, the compiled-regroup test with a storm configuration and the buoy CSE mutant; 101 passed with the new storm tests on the final
+tree, and 284 game and labels tests pass on Metal. **Cost:** with the weather on, the observers cost **0.727 ms** per step
+(`overhead_ms_median`, 14.86 ms control, 15.59 ms observed, `trajectory_match` true); the organism couplings cost 0.69 ms (§32.6).
+The step rate with the tracers and dumps on is not measured.
+
+### 32.12 Coordinator choices, the status of the values, and what W2b inherits
+
+**Choices, taken as recommended under the owner's delegation of 2026-10-19 (C15, C17) and marked "to revisit"** (the eight
+decisions of the W2 spec §12):
+1. Seeds: s0 and s1 for all arms, plus s2 for A and N (s1 emits almost no c2).
+2. A storm-relative hazard: `storm_eddy` (the key is built; its value for the runs is W2b's).
+3. Observer scope: V3 with Nomad and Settler wind-relative **and** the three new labels, default for every world, `RULES_V2` kept
+   importable, thresholds calibrated on the pilot window and frozen with the digest before merge, validated on the held-out windows in W2b.
+4. 100,000 coupled steps per run, 14 runs.
+5. The arms: **A** (the calibrated set), **N** (`seed_gain 0`), **S** (`wind_scale 0`, `storm_p 0`, `storm_break_u 0`, `rain_zonal`), **WB**
+   (`wind_scale 0`, `storm_p 0`, `storm_break_u 0`, live rain), **A1** (`alpha1 0`, `alpha0 = 0.25 + 0.75·` the fork's mean cap: 0.42 for s0,
+   0.51 for s1), **E** (`wind_eddy_force`); seeding and shade stay on in every arm but N. Contrasts: A - WB wind and hazard, WB - S the rain
+   pattern, A - N seeding, A - A1 the cap link, A - E the zonal-mean (jet) wind, E - WB the eddy wind. J (`r2` raised, which also strengthens
+   the storms) and A2 (a 2x dose) are optional.
+6. Two PRs: W2a (this section) merges on green CI and the Metal gate; W2b needs the owner's go (about 10.7 GPU hours, 119 GB) and
+   runs under the standing GPU rule.
+7. Seeding is density-driven (§32.3): shipped as specified, with the paid share reported; the hinge is a later variant.
+8. The bond break is not calibrated.
+
+**Values.** The coupling values (`rain_gain`, `storm_*`, `seed_gain`, `shade_gain`) are **provisional**: the prior set of the spec
+(`storm_eddy`, `storm_u0` 0.03, `storm_span` 0.03, `storm_p` 0.004, `rain_gain` 1e6, `seed_gain` 0.03, `shade_gain` 0.02) ran in the pilot
+(§32.8) and nothing was calibrated; `presets/storm.toml` still holds W1's provisional values. W2b's targets (fixed before any run is read):
+storm deaths 1% to 5% of all deaths on both seeds and at most 15% in any 100-step interval; nominal rain share 25% to 60% in the
+cloud band and at most 5% globally; `max_occupancy < 43` and `cell_overflow = 0`; `overlap_deep` mean below 0.1% of the alive agents.
+The occupancy gate G0 (a fresh `64k3d`, the prior set, 30,000 steps) runs **before** the calibration, because its remedy
+(`sensing.cell_capacity = 64`) is hashed.
+
+**For W2b.**
+- `Diag.WEATHER_WARN` is **sticky**: in the pilot it is set from step 456,100 on, so the spec's stop rule "WEATHER_WARN in more than 1%
+  of rows" would fire on every run that ever warns once. The cause is probably a wind-sample clip or a counter (`hyper_max` max
+  0.045 against the gate 0.8). W2b reads the rate from the weather block (`analysis.w2` reports the `hyper_max` share), not from `diag`.
+- Commands need `--set game.observe=true --set game.tracers=16384 --set run.eco_every=250 --set run.wx_every=500 --set
+  run.keep_checkpoints=5` (the windows of §32.8 need checkpoints at 475,000 to 550,000, which `keep 3` prunes).
+- The pilot dump is 608 MB for 19 cohorts; a 6,000-step window of the 14 runs would need about 0.6 GB each.
+
+### 32.13 Consequences for other sections, and for N1
+
+W2a edits: §28 (the intro, §28.2 the taps, §28.4 the rules, §28.6 the sidecar, §28.8 the tool and the validation, §28.9 tests), §29 (§29.9 the
+default rules, §29.10 the sidecar format, §29.11 the roster's archetype shares), §30 (§30.1, §30.2, §30.4, §30.5, §30.6, §30.7, §30.8, §30.10, §30.11), and, where the keys, the block and the tools need it, the engine overview, §16 (layout and
+the API sketch), §17 (config), §18 (run directory, resume), §19 (metrics rows), §21 (CLI) and §22 (tests, lint). `society._kin_table` writes `len(ARCHETYPE_NAMES)` shares, now 10; a log written under `INTENT_VERSION` <= 2 has 7 and one
+log can hold both, so **a reader keys by the record's `intent_version`**. The budget of §29.11 (a 13.4 KB record) grows by about 0.3 KB
+(3 numbers x 16 groups; an estimate), against the 16 KB cap.
+
+**Not done: the N1 consequences (spec §13 item 3b), because #31 had not merged** (`origin/main` was 3799009 when the build ran). Whichever of N1 and W2a merges second
+does the following (the list is `n1_followups.md` of the build notes): `report._label_display(key, version)` becomes
+`_label_display(key, version, storm)`, with `storm` true when `version >= 3` and `cfg.weather.enabled`, using `ARCHETYPE_STORM_DISPLAY` (so a storm run prints
+"Grazer" and "Drifter", a weather-off V3 run "Gatherer"); `lexicon.py` L2 gains "grazer-", "drifter-", "floater-", "sinker-", and the L1 stem "drift-"
+(the patch-drift lever) matches "drifter", so it is narrowed to `re:drift(?!ers?\b)[a-z]*`; the edit changes `LEXICON_DIGEST` (stored in every record), so the N1
+corpus and the `tests/data/report_*` fixtures that run the default observer are regenerated and re-pinned in the same commit; `LABEL_VERDICTS` gets no V3 row until W2b. Until
+then N1 narrates no label for a V3 run (the conservative reading). The conflicts to expect are in the docs (§31 sits where W2a edits §28 to §30 and adds §32) and
+`tests/test_lint.py` (two lines on each side); the code merges cleanly.
 
 ---
 
@@ -8968,6 +9505,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I46 | feat: storms W0, the offline weather prototype (`docs/STORMS.md` §3.2 and §8 W0; owner decisions of 2026-10-19: model B, a two-hemisphere torus with `f(y) = f0·sin(2πy/L)`, a separate warm-pool map `T_s`, 160 × 160 cells of 2 units, Δt = 1 engine step), built as a standalone module with its study driver and tests, in three commits on `games/w0-storms` (the model, the driver, review fixes), and a fourth with the results. **No engine change.** (1) **What.** `weather.py`: two stacked shallow-water layers with moisture on a periodic C-grid, one step of nine sub-steps (semi-Lagrangian advection, flux-form continuity with a positivity limiter, a Strang-split Coriolis rotation around the forward-backward pressure kick, evaporation, condensation with the latent-heating mass transfer, radiative mass return, damping with a divergence damper and a speed tripwire, seeded disturbances), the agent-wind sampler (`sample_wind`, `wind_layers`, `alpha`; STORMS §4) and `WeatherParams` with the validation rules of the W0 spec §2.5; `analysis/w0.py` with `analysis/w0_plots.py`: the offline study driver (storm detection and tracking on the host, passive tracers on exactly the agents' wind, the occupancy binning of `spatial._find_neighbors_3d`, the six exit criteria of STORMS §8, the health gate, the cost measurement, the unforced-vortex table and the steerability experiments); `tests/test_weather.py` (113 tests, one strict xfail pinning an MLX duplicate-roll compile bug) and `tests/test_analysis_w0.py` (106 tests). `--params FILE` is a sparse override of `START_SET` (the base that the tuning rounds' files were written against; without a file the base is the defaults, and `WeatherParams.from_dict(d, base=None)` takes the base), and the report's detection-threshold deviation compares with `START_SET`. (2) **Nothing in the engine changes**: the step, `State`/`State3`, `config.py` (keys, defaults, `POST_V01_KEYS`, validation), the `rng.py` streams, the presets, the goldens and the digests are untouched, and nothing under `src/alife` imports `weather` except `analysis/w0.py`; no config hash, digest or trajectory moves. (3) **Docs and lint only.** `DESIGN.md` §16 (the `weather.py` entry, and `w0` and `w0_plots` under `analysis/`, whose description now also covers an offline MLX driver, still never imported by the step and scanned by the lint since I48 (§22.6)) and §22.6 (`weather` joins the rule-5 modules and the meta-test sentence); `tests/test_lint.py` adds `"weather"` to `SIM_MODULES` and a rule-5 bad example. (4) **Deviations from STORMS §3.2.** D3: `q_pool > 1` (default 1.11 since the W0 results, start set 1.10, range 1.0 to 1.2), so `Q_e > Q_s` over warm-pool cores; with `Q_e ≤ Q_s` no storm formed in seven probe runs, because a steady core with ε < 1 needs evaporation inside the saturated core. D7: a moist-thickness limiter on evaporation (`m = h₁ − γQ ≥ m_min`), without which broad warm areas ran away. Also the divergence damping `κ_d` in place of the probe's `ν`, an optional cubic semi-lagrangian step (a deviation from step 1 when used), and every rolled copy of an array built once per step (MLX 0.32.3 `mx.compile` crashes on duplicate rolls; W1 inherits the rule). Two smaller departures from the W0 spec: `courant_max`, `speed_max`, `hyper_max` and `n_safety` are evaluated on the winds entering the damping sub-step (the shifts friction builds anyway) and not on the final winds, and the 1.8x lifetime ratio of the unforced-vortex regression (spec test 6b) is tested on an f-plane (on the beta-plane it is 1.71 at N = 96 and 1.93 at N = 160, Rossby radiation shortens both lives), with the 1 200-step bound tested on the beta-plane at N = 64. (5) **Results** (`docs/STORMS_W0.md`, 2026-10-19). Tuned on the M5 Pro GPU in 41 distinct studies of 60,000 steps (round 0, four rounds of 8, the confirmation on keys 1 and 2; 46 study runs with the five round-0 threshold re-reads, which repeat the round-0 trajectories and are not counted against the budget), then the §9a steerability forks, the deliverables study and the cost bench. The confirmed set `r4_3p36_q111_v009` (params hash `7832e060`) is the start set with `gamma` 21.6, `q_pool` 1.11, 3 warm pools per hemisphere (32 × 16, 36 units from each equator) drifting west at 0.009 per step (D8, accepted as the mobility lever) and `zeta_th` 0.00625 (0.25 f0); it is now the `WeatherParams` default, and the spec's starting set stays as `weather.START_SET`, on which the model tests run. On both confirmation keys: 2 to 4 storms per hemisphere at every time; a median lifetime of named storms (peak ζ ≥ 0.5 f0: coordinator ruling C11 under the owner's delegation, to be revisited with the owner; storms are named with hindsight, and named in real time the lifetime passes at 22,125 and 14,175 but the named count falls below 2 at 1.4% to 11.9% of times) of 23,375 and 19,550 steps (as written 16,550 and 14,100, but 100 on the tuning key, where shed fragments of 3 to 5 detections decide it); a 1,000-step forecast error of 0.63 radii (0.626 on key 2), above the jitter floor (0.11) with skill +0.50 and +0.48 over persistence (a forecaster that knows the pool drift errs by only 0.33 radii, below the 0.5 lower bound, so the pass belongs to the least-squares method of the spec and W3 and W4 must add uncertainty to storm motion); tracer peaks of at most 30 against C = 48; latitudes reported; a clean health gate, the `m` limiter never engaged. **The cost fails**: with the pool drift of the confirmed set (B) + (C) = 1.163 ms against 1.0 ms ((B) 0.807, (C) 0.356; 1.131 ms in one graph; single runs), and 1.116 ms with the static pool map of the CLI bench (median of 3), dispatch-bound, so W0 does not pass as written; a cost-only failure is an engineering issue, not a trigger for the model-A fallback. The storms are anchored to their warm pools and move with them; a pool shift or gain steers them within 175 to 1,500 steps, a wind impulse barely does. W1 has not started. |
 | I47 | feat: storms W1, the engine weather layer (`docs/STORMS.md` §3.3, §4, §8 W1; owner decisions of 2026-10-19 and the coordinator's choices C15 and C17, marked "to revisit"; new §30), off by default; built in six commits on `games/w1-weather` from `games/w0-storms` at 4337484, then merged with `origin/main` b905e34 (#28 and #29): ce4f3d6 (config, state, digests, RNG, the overlay, validation), 868dc2e (wind and the update), 1c8da1c (rain, hazard, counters, bonds), 8fbb15e (reporting, cost tool, spin-up), the docs commit and the review fixes. **Metal gate passed, GPU marginal about 0.5 ms (0.47 to 0.64 ms over five runs; target 1.0), occupancy go/no-go: no-go on `C` = 64 (peak 18 of 43; results in (4b)).** W1 is merge-ready on the §30.11 criteria; the merge is the owner's go. (1) **What.** Config: section `weather` with 33 keys, every key hashed (`POST_V01_KEYS`), inert at the defaults, with rule W-0 (a non-default weather key while the weather is off is rejected), and `weather.validate_config` (guards, W0's parameter rules, W-1 cells a multiple of `FG`, W-2 pool centres in the domain, the load rules R1 to R4, the coupling keys, the int32 bound of `rain_gain`, and, coordinator choice C17, `director.enabled` implies `rain_floor == 0`); the world overlay `storm` (`config.WORLD_OVERLAYS`, `ALL_OVERLAYS`; `OVERLAYS` stays `("fast",)`; provisional `rain_gain` 50000, `storm_p` 0.002, `storm_u0` 0.06, `storm_span` 0.03); no preset changes. State: one packed field `wx` `(9, cells, cells)` float32 in `State` and `State3`, stored as the rest state and carried unchanged with the weather off, `Dims.wn`, the pre-weather fill in `state_from_arrays` (`weather.rest_array(cfg, step)`), `FORMAT_VERSION` unchanged. RNG: `Stream.WEATHER = 9`, `RNG_LAYOUT_VERSION` 3, compatible {1, 2, 3}. Step (all behind the static `weather.enabled`): S3w unpacks `wx` once and samples the wind at the start-of-step positions (`weather.agent_wind`; 3D with the surface-layer profile and `alpha0 + alpha1·buoy_cap`, 2D layer 1 and `alpha0`); S15 adds the wind as a drag force (`forces`/`forces3` `wind=`, not contact-attenuated, `integrate` unchanged); S17 advances the weather (`weather.advance`, the pools of step `t`) and feeds the rain (`RainIn`, `rain_regen`: an int32 term on the cloud band `[zi, zi + dc]` with P-weighted block means, added after the floor, not scaled by the director lever, booked in `INJECT_REGEN`, so no ledger term); S14 the hazard (`lifecycle.storm_mask`, `DeathCause.STORM = 4`, excess deaths only, below the catastrophe); S9 the explicit bond break above `storm_break_u`; `DEATHS_STORM` is the last counter (`n_counters(nd, weather)`, 28 and 31 wide; every consumer takes the flag); `Diag.WEATHER_WARN = 1 << 18`, advisory, outside `ERROR_MASK`. `K_est` and the floor `K` include the stored rain (`metrics.rain_of`). Reporting: the `weather` block of a metrics row (`weather_obs.py`, with `spatial.hash_occupancy` and `overlap_deep`), `invariants._check_weather`, `alife bench --weather` and the `wind` and `weather` staged rows, and, under C17, `alife run --weather-spinup N` (`weather_spinup.py`: the weather alone for `N` steps on a separate key chain, ending in the pools of the start step; fresh runs and forks). (2) **Digest evidence.** The 2D digest matrix plus the 3D cases (tiny3d f32, director inert and levers, `game.observe` with sidecar bytes, eager and staged arms, six runner cases), run on the CPU against a fresh `git archive` of 4337484 at stage 1 and at stage 5: both runs exit 0, "bit-identical", 0 DIFF and 0 WARNING over 22 trajectory and 6 runner cases (116 INFO lines, all of the kinds named next). `tiny3d`, 50 compiled float32 steps: `legacy_state_digest_3d` at head and `state_digest` at 4337484 are both `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd`; `GOLDEN` and `GOLDEN_3D` are not re-pinned. All 12 preset and preset-plus-`fast` config hashes and the pinned hashes of §28.1 are unchanged. The only INFO differences are the `weather` table of `config.json` and checkpoint metadata, `Dims.wn`, `rng_layout_version` 3, the `wx` tensor, and the head-only hash of `64k3d` + `storm`. (3) **Tests.** 254 new tests in seven files (`test_weather_config.py` 82, `test_weather_state.py` 28, `test_weather_wind.py` 22, `test_weather_engine.py` 30, `test_weather_coupling.py` 38, `test_weather_obs.py` 37, `test_weather_spinup.py` 17; two are `slow`; 228 at stage 5, 26 added by the review fixes), with `tests/weather_helpers.py`; edited: `test_weather.py` (one import check: `weather.py` imports only `ops` at run time), `test_state.py`, `test_cli_smoke.py`, the rng and director_env pins, `make_scene`, the three `tests/data/gui_config_*.json` fixtures (regenerated: the `weather` table only), and `PresetFileTests.swift` (the `storm` file). Mutation checks: dropping the staged storm mask, wind force or rain term fails the staged-equals-fused test. Fast suite (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected, the known Mac-CPU failure of I26): 2207 passed, 6 skipped, 27 deselected, 1 xfailed in 9 min 52 s (2132 at stage 3, 2181 at stages 4 and 5, 2207 at stage 6; the 6 skips are environmental: the two goldens pinned on Linux x86-64, the real-LLM test, no ffmpeg, no pygame, no matplotlib); `ruff check` and `ruff format --check` clean (152 files). `swift test --filter AlifeCoreTests`: 93 passed (`AlifeControlTests` needs Metal and was not run). (4) **Cost** (CPU, smoke size: `64k3d` + `storm`, 1,024 rows, `L` = 320, 160-cell weather): `alife bench --weather --weather-pairs 3` gives 31.98 ms off and 38.74 ms on, a marginal **+6.75 ms median** (+6.99 mean; pairs 6.60, 6.71, 7.01); the weather alone runs at 5.2 ms per step, so a 15,000-step spin-up takes about 80 s. These are CPU figures at a size that says nothing about the GPU: the target (at most 1.0 ms on the M5 Pro; 1.0 to 1.25 ms reported for a ruling; W0 measured 1.131 ms in one graph) is the coordinator's. (4b) **GPU results** (M5 Pro, Metal, MLX 0.32.3, 2026-10-21, W1 at 80b50d0, the merge of b905e34; §30.8, §30.9, §30.11). *Metal gate:* `pytest -m ""` on the default device over the weather, `test_analysis_w0`, `test_spatial_metal`, `test_lint`, step, physics, lifecycle, fields, metrics and bench tests: 797 passed, 2 skipped (the CPU-recorded tiny3d digest, no `matplotlib`), 1 xfailed (the MLX duplicate-roll compile bug, still there in 0.32.3), 0 failed, 350.7 s; the fused weather-on step compiles on Metal, so the separate-advance fallback stays unbuilt; the base-versus-head digest matrix as a script on the GPU: bit-identical, 0 DIFF, the same 116 INFO lines as on the CPU (its pytest forms also passed there); the whole fast suite on Metal (`-m "not slow"`, the I26 failure deselected): 2 298 passed, 0 failed. *Cost* (`64k3d` + `storm`, fused kNN kernel on, `bench --weather` interleaved pairs): marginal median 0.501 ms (50-step blocks) and 0.467 ms (300-step blocks), 3.4 to 3.6% of the 13.8 ms weather-off step (3.3 to 3.5% of the on step), 14.25 to 14.32 ms on (69.6 steps/s); three further runs gave 0.641, 0.524 and 0.535 ms, so about 0.5 ms (0.47 to 0.64 ms over five runs, single pairs up to 1.1 ms): the 1.0 ms target is met, with about half the budget for the median; the unpaired `--stages` fused delta of 1.02 ms is noise-affected and not the measure; staged rows wind 0.86 ms and weather 1.18 ms (inflated by syncs). *Occupancy go/no-go:* a fork of `64k3d_s0` at 450 000 with the `storm` overlay and a 15 000-step weather spin-up, 20 000 coupled steps at 68.6 steps/s: `max_occupancy` 18 (trigger 43; the weather-off continuation reads 17), `cell_overflow` 0, `CELL_OVERFLOW_WARN` never fired, `diag` 0 in all 200 rows, ledger closed in all rows, `hyper_max` at most 0.033, `mass_rel` at most 5.2e-7, `storm_proxy` 5 to 7, `deaths_storm` 144 (0.016% of the 883 002 deaths, nearly inert as a cause of death at the provisional values; the population followed the weather-off source within 0.1% at 470 000, but `speed_mean` was 5% higher). **Decision: no-go; `cell_capacity` stays 48.** Caveats: 20 000 coupled steps instead of 30 000, and a spread starting population. No code or parameter changed. (5) **Choices made under the owner's delegation, to revisit** (D1 to D16 of the W1 spec, C17): D1 a nested 33-key section rather than a params file; D2 the numerics, sizes and detection fixed in `ENGINE_FIXED`; D3 one world overlay `storm`, no preset; D4 one packed field `wx`; D5 `wx` stored unconditionally (a conditional field was reviewed and rejected: four state types, and a class switch on a fork); D6 the 2D wind is layer 1 with `alpha0` only; D7 the rain band is the cloud `[zi, zi + dc]`, not "the layers that span the interface" (a deviation from STORMS §4, recorded there); D8 hazard = a ramp of the air speed, one uniform per row every step; D9 the wind break is an explicit speed threshold; D10 `WEATHER_WARN` as one sticky advisory bit; D11 the `weather` block's storm count is a proxy of candidate storms; D12 the provisional overlay values (numerically inert hazard, a local rain source and 0.09% global perturbation, and the layer-2 jet of about 0.05 as the dominant always-on coupling, F8); D13 `WORLD_OVERLAYS`; D14 the `rain_gain` bound is the int32 derivation; D15 `zi` and `dc` are P-weighted block means; D16 `storm_break_u` is 0 or `>= storm_u0`; C17 the weather-only spin-up and the `director.enabled -> rain_floor == 0` rule. (6) **As built, where it differs from the spec.** `sample_wind_h` returns an `AgentWind` (`u` of shape `(M, 2)`) and has no `fields=`; `device_check` receives its `weather_bad` keyword only with the weather on (a test spies on the old call); the compiled-versus-eager test runs each of 50 steps through both from the same state (counters, ledger and integers exact, floats `allclose`, `wx` bitwise), because 2D `tiny` already diverges between them at step 26 with the weather off (§14.2), and the 200-step smoke test asserts `wx` bitwise rather than the state digest; the compile-based tests are fast, not slow; `config.py` imports `alife.weather` at module level (acyclic, tested); `check_world` is kept and called from `validate_config`; `bench._stage_fns` and `--weather-pairs` (default 2, the spec gave both two and three pairs) were added; `weather_spinup.py` is a host module (`weather.py` is under the rule that bans `mx.eval`), its flag is on `alife run` (there is no `fork` command), and a fork whose source has the weather on is refused (its `wx` is not a rest state); `overlap_deep` is a compiled closure cached per config hash and `run.compile`; `weather_obs` also defines `layer1_vorticity` and `storm_exposure`; `analysis/w0.py` keeps `label_periodic`, `centre_winds`, `corners_to_centres`, `hemisphere_sign`, `occupancy_counts` and `band_peaks` as aliases. The G2 items (`DEATH_CAUSES` as a literal plus `death_causes(cfg)`, the social tests, `compare_row(weather=)` in `analysis/social.py`, regenerating G2's GUI fixtures) were applied when G2 was merged into this branch, item (8) (§30.7). One pre-existing failure: the slow `test_compiled_vs_eager_trajectories` fails on this Mac CPU at 4337484 and at head. (6b) **Review fixes (stage 6).** A weather-off file now forks into a weather-on config of any `weather.cells` (`load_checkpoint` refills `wx` from `rest_array(cfg, step)` when the file's own config had the weather off, §30.3); the overlap-closure cache is keyed by `run.compile` as well; the legacy-3D-digest test no longer equates the digest with `State3._fields` minus `wx` (G4 extends the tuple); 26 tests close the gaps found by mutation (the 2D wind clip, dead rows in the clip count and `clip_bad`, the vertical-only clip, the closed-form drift through `make_step` at `drag` 1 and 2, the snapshot's alive selection and band peaks, the hazard key, the bond break in every slot, `rain_in`'s `zi`, NaN before the rain cast, R4 at `drag` != 1, the hazard and bond-break branches in the compiled-versus-eager test); four doc inaccuracies (STORMS §4, the spin-up key statement, `vitals.py`, the `rain_gain` bound) corrected. Not changed: `meta.json` keeps the creation `rng_layout_version` on a resume (§18). (7) **Not done (the merge with b905e34, the GPU gate, the digest matrix on the GPU, and the cost and occupancy runs are done, (4b)):** a 30 000-step occupancy run from a young population, and W2's calibration, controls (still air, a jet-removed or tracer arm) and seeding. (8) **Integration with G2** (the merge of `games/g2-social`, I45, into this branch; "W1: G2 follow-ups"): `social.DEATH_CAUSES` is the literal pre-storm tuple and `social.death_causes(cfg)` adds `storm` under the weather, taken by `init_soc`, the cause reduction (whose mask also drops a cause at or beyond the row count) and `SocialRules.check` (§30.7); `analysis/social.py` passes `weather=` to `compare_row`; the G2 tests size by `DEATH_CAUSES`; `tests/test_weather_observers.py` is new (nine tests). With the weather off the digest matrix, extended with two G2 runs that hash `observers/social.jsonl` and the sidecars, is bit-identical to `games/g2-social` (`d6bec00`) except the INFO lines for what W1 adds (the `weather` config table and hash entries, `rng_layout_version` 3, the `wx` tensor of the checkpoints). |
 | I48 | perf: the fused Metal neighbour search (§23.2 item 1; §4 "Fused Metal path", §27.2, §27.13, new F21; owner delegation of 2026-10-19, coordinator decisions C16): on a Metal GPU the scan, the strict `R²` mask, the K-best selection and the K-gather of `find_neighbors` run as one `mx.fast.metal_kernel` (`src/alife/knn_metal.py`, new; one thread per sorted rank, no atomic: it writes only row `order[r]`, a permutation), with the pure-MLX code unchanged as the reference, the CPU path and the fallback. **A pure performance change: no config key, no `POST_V01_KEYS` entry, no hash, no `FORMAT_VERSION` or RNG change, no golden or digest change, and existing runs resume onto it.** (1) **Selection** (`spatial.knn_impl(cfg, impl=None)`, static, decided when the step is traced; `find_neighbors` gains the keyword `impl`): `ALIFE_KNN` = `auto` (default), `mlx` or `metal`. `auto` takes the kernel in a **3D** world on Metal with the GPU as default device and `K ≤ 64`, and the MLX path otherwise, **2D included** (the 2D kernel is bitwise equal too and 1.5× faster; making it the 2D default is the owner's later call); `mlx` forces the reference; `metal` raises where the kernel cannot run. An environment variable and not a config key, because the numbers do not depend on it. (2) **Guards** (the review's F2 and F3, mandatory here): `knn_metal.VERIFIED_MLX = {"0.32.3"}` (`available()` is false on another MLX until the GPU tests have been re-run on it); `knn_metal.self_check()` run once per process and dimension by `spatial.prepare_knn` from the CLI entry points (`run`, fork, `resume`, `bench`, `render`, `view`, `stream`, `resim`, `labels`, `signals`) before `make_step`: both searches on a 2 048-agent scene with stacked lattices, scattered agents, overfull cells and NaN dead rows, compared bitwise; a mismatch or a kernel that does not build warns (`RuntimeWarning`) and turns the kernel off for the process (`ALIFE_KNN=metal` then raises); `K > 64` runs the MLX path under `auto` and raises under `metal` (above it the kernel loses to the MLX path); `meta.json` records `knn_impl` (new key: at `RunDir.create` and at every launch, so a resume says what it used), the `bench` environment block records it, and `scan_select` raises `ValueError` (not `assert`: `python -O` removes asserts) on a non-`bool` alive mask, non-float32 `spos`, any wrong shape or dtype of `spos`, `start`, `order`, `cxy`, `cz` and `alive`, `K` outside [1, 64], and `n·K·nd ≥ 2³¹` (the kernel indexes with int32). Where Metal is there and the GPU is the default device but the MLX is not in `VERIFIED_MLX`, `prepare_knn` warns once per process (`RuntimeWarning`) that `auto` runs the MLX search, about 5 times slower in 3D. The self-check scene also holds pairs at, just inside and just outside `R` along every axis and finite dead rows; it is a canary for environment drift (sort, contraction, `sqrt`, tie order), not a full check, and a library caller should call `prepare_knn` itself. (3) **Lint rule 6** (`test_lint.py`, §22.6): `metal_kernel` only in `knn_metal`; `knn_metal` joins the simulation modules (rules 2 and 5), with its host-side `self_check` on the rule-5 allow-list; a meta-test snippet for each form of the name. (4) **Why it is bitwise equal** (F21): on Metal `argpartition` is a stable merge sort, so equal distances keep the candidate order `q = t·C + j` and the kernel's strict-`<` insertion in increasing `q` reproduces it; MLX's compiled kernels do not contract `a*b + c` and the kernel is written one operation per statement under `fp contract(off)`; the minimum image `d − L·rint(d/L)` equals `ops.min_image` on every float32 in (−L, L) (five L); the mask is `d² < float32(R·R)` and the root is `metal::precise::sqrt`. The CPU `argpartition` is not stable and keeps the MLX path. (5) **Evidence** (M5 Pro, MLX 0.32.3, 2026-10-19 to 20; negative controls: each of a `<=` insertion, a `<=` mask, a one-expression `d²`, plain `sqrt`, `metal::round`, a reversed stencil, the self slot kept and no first-`C` bound fails 5 to 52 of the new tests): `tests/test_spatial_metal.py`, 100 tests (84 need the GPU and are skipped on the Linux CI): 53 crafted scenes, each asserting its tie, boundary, `R` or overflow case, and 4 full-size scenes; 30 random geometries (400 more under `slow`); out-of-contract inputs; 20 repeated calls byte-identical; the stability of Metal's `argpartition`; the exhaustive minimum image; **inside the compiled step** (F4 of the review): the real `step.step` with both searches computed on its own S2 inputs and compared on every field every step, on a lattice start where ties occur in the real step, 60 steps on `tiny3d` (fed either path) and `tiny`, with a kernel-only step in lockstep (`state_digest` every 10 steps, counters and ledger every step); `ALIFE_KNN=metal` against `mlx` for `tiny`, `tiny3d` and `micro3d` and for `64k3d` from `init_state` (200 steps, `slow`); the guards. The probe's 2 500 random geometries (515 580 rows tied at the K boundary, 780 130 tied inside K), the five real checkpoints and 2 000 + 1 000 + 300 compiled steps (`64k3d`, `64k`, `tiny3d`) were equal as well, and the review found no counterexample in 169 adversarial scenes and 400 + 800 more random geometries (these probe and review figures are not reproducible from the repo: `docs/bench/README.md`). The review also found, by mutation, what the first suite could not see, and the review-fix commit adds a test for each: a constant `float32(R)·float32(R)` instead of the once-rounded `float32(R·R)` (half of the 3-decimal radii differ by an ulp), `metal::round` or `ax·(1/L)` in y only, and `math_mode: fast` (equal on every validated scene, different from MLX at exactly L/2 with `R > L/2`); each of these three mutants now fails 4 or 5 of the non-`slow` tests (0 before). Also found: MLX 0.32.3's compile cache can serve a compiled function another one's fused kernel when their scalar constants print alike when concatenated (F21 item 6), which made one random geometry fail only after a crafted `L = 12, R = 6.5` scene had run; the tests now compare the compiled kernel with the compiled MLX search. On this tree: `runs/64k3d_s0` step 450 000, 2 000 steps, 21 `state_digest` checks, the per-step counters and ledgers, births and deaths all equal with the kernel and without; the same for `runs/64k_s0` step 1 500 000, 1 000 steps, 11 checks. (6) **Speed** (§27.13, `docs/bench/2026-10-20_*`): `64k3d` (C = 48) 14.8 → 75.1 steps/s (67.4 → 13.3 ms, 5.07×; the same 13.3 ms at C = 32 and 24), staged search 54.5 → 0.42 ms, peak 3.31 → 1.07 GB, the donation check informative and `ok`; 2D `64k` 61.3 → 93.0 steps/s with `ALIFE_KNN=metal`. (7) **Limits**: the identity is a measured property of MLX 0.32.3's sort and code generation and of this chip's Metal compiler, not an API guarantee (hence the version set and the self-check, and the GPU tests on every MLX bump and macOS major); other Apple GPUs untested; `fast` math mode produced no mismatch on any validated scene, and differs from MLX only at exactly L/2 with `R > L/2` (unvalidated geometry), so `math_mode: safe` is cheap insurance, pinned by a test; ties are exercised on constructed scenes (real checkpoints have none). Edited tests: `test_runio.py::test_create_open_and_meta` (the meta key set gains `knn_impl`), `test_lint.py` (rule 6, the scope). Checks (`test_lifecycle_compiles_and_matches_eager`, the known Mac failure of I26, deselected in every fast suite). After the review fixes (commit "perf: fused kNN review fixes"): `ruff check` and `ruff format --check` clean (139 files); `tests/test_spatial_metal.py` and `tests/test_lint.py` in full (`-m ""`, the `slow` random geometries included) on the Metal GPU: 109 passed in 63 s, none skipped; the whole fast suite on the Metal GPU with the kernel selected for 3D (`auto`): 1 829 passed, 7 skipped, 32 deselected, 0 failed, in 3 min 42 s; on the CPU device the files this change touches (`test_spatial_metal`, `test_lint`, `test_runio`, `test_dims_runio`, `test_spatial`, `test_spatial_3d`, `test_bench`, the CLI smoke tests): 152 passed, 77 skipped (the GPU-only tests), 0 failed. From the first commit, not re-run after the fixes (which change no traced code: only the argument checks, a warning and tests): the whole fast suite on the CPU device, 1 752 passed, 69 skipped, 32 deselected, 0 failed, in 7 min 51 s; the same with `ALIFE_KNN=metal` (the kernel in 2D too): 1 809 passed, 5 failed, all five in `test_stream.py`, whose child processes set the CPU as default device, where `ALIFE_KNN=metal` is refused by design; 2D digest matrix (15 trajectory cases, 3 runner cases, config hashes, layout) on the CPU against a fresh `git archive` of 1ad339c: bit-identical, the only INFO lines being the added `knn_impl` of each `meta.json` (`digest_compare.py` as the G1 notes use it, with `runs.*.meta` in its subset-only list); the tiny3d `state_digest` after 50 compiled float32 steps on the CPU is `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd` on 1ad339c and on this tree. |
+| I50 | feat: storms W2a, the couplings, the observers `INTENT_VERSION` 3 and the instruments (`docs/STORMS.md` §4, §5, §8 W2, §9.6; the W2 spec of the coordinator, whose eight decisions were taken as recommended under the owner's delegation of 2026-10-19, choices C15 and C17, **marked "to revisit"**; new §32; I49 is N1's, #31, not merged when this was written), off by default; built in five commits on `games/w2a` from `origin/main` 3799009 (W0, W1, G2, the fused kNN kernel): d02f3de (keys and pure functions), 3a53c10 (wiring), 477027c (observers, the Metal gate and the pilot), 1190247 (instruments) and the docs commit. **Metal purity gate passed (51 passed on the default device, 101 on the final tree), `Acts.buoy` variant 1 fixed, `RULES_V3` frozen from the pilot window; the calibration of the coupling values and the 14 runs are W2b and have not been run.** (1) **What.** Config: eight `weather` keys, hashed, in `POST_V01_KEYS`, inert at the defaults, covered by rule W-0 (the section has 41 keys): `seed_gain` (0 to 0.1), `seed_c0`, `shade_gain` (0 to 0.05), `shade_n0`, `wind_scale` (0 to 1), `rain_zonal`, `storm_eddy`, `wind_eddy_force`; `ENGINE_FIXED["seed_dmin"]`; observer keys `game.tracers`, `game.tracer_period` (unhashed, resume keys) and cadence keys `run.eco_every`, `run.wx_every`. Engine (S17 only; `step.py` has no other weather change): `weather.organism_forcing` on the start-of-step `chem`, `pos`, `alive` gives `qs` (rain seeding: the c2 excess over the lattice mean, averaged over the cloud layers with the same weights as the rain food (`cloud_weights`), through `e/(e + seed_c0)`, lowering `Q_s` by at most `seed_gain`; a `1e-4` relative dead band so a uniform field gives exactly 1) and `t_mult` (shade: alive agents per field column, a separable 3x3 box, `shade_gain·d/(d + shade_n0)` on `T_s`), both None while their gain is 0; `advance(..., qs, t_mult)`; the eddy wind (`WindFields.zbar`, `AgentWind.u_eddy`, `sample_wind(eddy=)`); `agent_wind` applies `wind_scale`, `wind_eddy_force` and `storm_eddy` (the hazard and bond speed); `rain_regen` takes the x-mean under `rain_zonal`. No 17th ledger slot. Metrics: `total_speed_p99`, `eddy_speed_p99`, the nominal and realised rain shares, `seed_*`, `shade_*` (gated), `alife bench --weather-org`. Observers: `INTENT_VERSION` 3 and `RULES_V3` (digest `3515d96e…380a17c`; Nomad and Settler on the velocity relative to the wind, Drifter, Floater and Sinker; the enum 8 to 10 with a placeholder column for Generalist and `ArchLayout`; `weather.agent_drift`; `Acts.buoy` (the tap `buoy0` before the solvency mask; `CHANNEL_TAPS` 20 in 2D and 21 in 3D); `OBSERVER_FORMAT` 4; `labels --rules --dump`, `rg2_rel` and the three outcomes; `ARCHETYPE_STORM_DISPLAY`; 2D worlds use `for_2d(RULES_V3)`). Instruments: the tracer rig (`game/tracers.py`, its own key, optional sidecar members), the `observers/eco_<step>.npz` and `wx_<step>.npy` dumps, the `coupling` block, `python -m alife.analysis.w2` (P1a to P6, 8 x 10,000-step block t-intervals, paired differences, the s1 A - N noise floor). (2) **Digest evidence** (CPU, against a fresh `git archive` of 3799009). Stages 1 and 2: the G2/W1 matrix is bit-identical (0 DIFF; the INFO lines are config tables) and the 8 weather-on trajectory cases (storm3d and storm2d, default and strong, compiled and eager) have the 3799009 sha256 values. Stages 3 and 4: 166 DIFF, all in the observer layer by design (sidecar format 4, `intent_version` 3, the `StepOutG` digest gaining `Acts.buoy`); no state digest, counter, ledger, checkpoint tensor or event differs. tiny3d `legacy_state_digest_3d` is `556de6c6216dd530795fb91c2455c9e9d6f700bf0269c2e60acda212cff6d2fd` throughout; the `64k3d` + `storm` config hash and the W0 params hashes are unchanged. (3) **Tests.** 240 new tests in eight files (`test_weather_w2_keys.py` 88, `test_weather_w2_wiring.py` 39, `test_weather_w2_instruments.py` 13, `test_game_storm_rules.py` 13, `test_game_storm_observers.py` 12, `test_game_tracers.py` 29, `test_analysis_labels_storm.py` 9, `test_analysis_w2.py` 37) plus edits to the G1, G2 and W1 pins (seven more cases); the fast suite (`-m "not slow"`, `test_lifecycle_compiles_and_matches_eager` deselected, I26): 2944 passed, 83 skipped, 37 deselected, 1 xfailed (2697 at the W1 head); `ruff check`, `ruff format --check` clean; `swift test --filter AlifeCoreTests`: 93 passed. Mutation checks fail as they should (S17 reading the post-update state, the eddy row offsets, the `seed_dmin` floor, reseeding ignoring `alive`, the block index, the sign of `hold`, the ub quantile, a tracer coupled to `wind_scale`). (4) **Metal and cost** (M5 Pro, MLX 0.32.3). `tests/test_game_purity.py` with no marker filter: 51 passed, including the `storm3d` arm and 21 taps in 3D; 101 passed with the storm tests on the final tree; 284 game and labels tests passed. `bench --observe` with the weather on: observers 0.727 ms per step; `bench --weather-org`: 0.69 ms (spec estimate 0.15 ms). (5) **The pilot** (`64k3d_s0` at 450,000, the prior coupling set, 26,000 steps, 64.2 steps/s): ledger 0 in all 260 rows, `max_occupancy` 16, `overlap_deep` max 4, storm deaths 3.2% of deaths, rain-band nominal share 0.32 to 0.41; the C-W2 window (470,000 to 476,000): all ten intents and nine archetypes pass; Drifter AUC 0.880 (null 0.533), Floater 0.727 (0.546), Sinker 0.637 (0.508); the physics-derived thresholds passed the keep rule fixed before the sweep, so none was tuned. Nomad matches 4.9% of rows under V2 and 1.7% under V3. (6) **Deviations from the spec, found while building.** The Floater outcome (the fraction of steps with z >= 8 is saturated at 98%) is the altitude held; `seeding_qs` has the relative dead band; `AgentForce.speed` under `storm_eddy` is built with the force (commit 1); the metrics keys are gated; the rain audit uses the season of the previous step; tracers also work in 2D; the tracer sidecar members are optional (no format bump); the eco dump adds `tracer_z` and `tracer_age`; P1c does not read c2; the pilot ran 26,000 steps; 2D worlds get `for_2d(RULES_V3)`; the `storm3d` purity entry is the 64k3d + storm configuration (tiny3d is not a weather world); the N1 consequences (spec commit 3b) are not done because #31 had not merged (the list is in §32.13). (7) **Finding for W2b.** `Diag.WEATHER_WARN` is sticky (set from step 456,100 on in the pilot), so a stop rule of the form "WEATHER_WARN in more than 1% of rows" fires on every run that ever warns; read the rate from the weather block. (8) **Not run, for W2b.** Gate G0 (the occupancy repeat, whose remedy `cell_capacity` 64 is hashed), the calibration stages, the 14 runs, the held-out label windows H1 to H4 and the weather-off windows, `LABEL_VERDICTS` rows, `docs/RESULTS_W2.md`, and the step rate with the tracers and dumps on. `presets/storm.toml` is unchanged. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

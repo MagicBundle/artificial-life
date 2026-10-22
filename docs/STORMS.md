@@ -167,8 +167,8 @@ chose differently or measured something, a note says so.
 | weather → organisms | **rain-fed food at the cloud**: `regen_rate(patch_pos, cfg, step, env, rain=P, cloud=D_c)` adds κP to the field layers that span the interface h₁ (the condensation height), remapped 2:1 from the weather grid, plus an optional floor term. `K_est` calls it with the stored fields, so it rebuilds exactly the regeneration injected and the safety rules stay calibrated (tested); the floor `K` holds the rain only with `rain_floor > 0`, because the band starts above the floor layer (DESIGN §30.6) | `fields.regen_rate`; `metrics.carrying_capacity` | `INJECT_REGEN` *(W1, deviation D7: the food goes to the band `[zi, zi + dc]` from the condensation level to the diagnosed cloud top, with P-weighted block means of `zi` and `dc`, total `rain_gain·P` per column; not to "the layers that span the interface". The seeding row below must use the same layer weights `w_k`; DESIGN §30.6.)* |
 | weather → organisms | **cloud shade**: the same call dims the photic term by D_c | the fertility profile | `INJECT_REGEN` |
 | weather → organisms | **storm hazard**: a kill probability from wind speed above a threshold, drawn from `Stream.WEATHER`. Its own mask goes to `lifecycle.deaths`, independent of the director. Storm deaths are excess deaths only, and a row in both masks dies as `CATASTROPHE`. `DeathCause.STORM` = 4. Counters are `CounterIdx` (27), then `Counter3D` (3, in 3D), then `DEATHS_STORM` with weather on: `n_counters(nd, weather) = 27 + 3·[nd = 3] + [weather]`. `interval_row`, the viewer and bench take the flag, so weather-off rows and widths are unchanged. Bond breaking is explicit (OR with wind above a threshold): storm-scale shear is far too weak to stretch a bond | `lifecycle`; `state.n_counters` | the corpse path |
-| organisms → weather | **rain seeding**: c2 averaged over the cloud layers (the field layers spanning h₁, which also get the rain-fed food), taken as its excess over that band's lattice mean and upsampled to the weather grid; through a saturating response it lowers Q_s by at most a fixed factor | the condensation step | none. Emission costs `floor(20·Σemit)` in `HEAT_ACTION`, which is 0 below Σemit = 0.05 while the deposit is up to 12 quanta per channel, so a little seeding is free. W2 calibrates κ and the response so that sub-threshold emission alone does not trigger rain-out *(W2: use the same band weights `w_k` as the rain-fed food, DESIGN §30.6.)* |
-| organisms → weather | **shade on the seas**: dense populations lower T_s or the evaporation rate below them, so there is less moisture, fewer storms and less rain-fed food. That is a negative loop. Full Daisyworld regulation also needs a growth response that peaks in temperature (Watson & Lovelock 1983), which is later work | the evaporation step | none |
+| organisms → weather | **rain seeding**: c2 averaged over the cloud layers (the field layers spanning h₁, which also get the rain-fed food), taken as its excess over that band's lattice mean and upsampled to the weather grid; through a saturating response it lowers Q_s by at most a fixed factor | the condensation step | none. Emission costs `floor(20·Σemit)` in `HEAT_ACTION`, which is 0 below Σemit = 0.05 while the deposit is up to 12 quanta per channel, so a little seeding is free. W2 calibrates κ and the response so that sub-threshold emission alone does not trigger rain-out *(W2: use the same band weights `w_k` as the rain-fed food, DESIGN §30.6.)* **Built in W2a (DESIGN §32.3), off by default (`weather.seed_gain`, `seed_c0`):** `b = Σ_k w_k·c2_k` with the food's layer weights (`weather.cloud_weights`), plain block means of the interface height and cloud depth with a floor `d_min` = 2 field cells (where it does not rain `P = 0`, so the food's rain-weighted band would be empty and a seed could never start a rain), `e = max(b - mean(b)·(1 + 1e-4), 0)` over the whole lattice, `r = e/(e + seed_c0)`, `Q_s` lowered by `seed_gain·r` (≤ 0.1). **Departure from this row:** the free emission (up to 12 quanta per agent-step, Σemit 0.047) already builds most of c2 (3.3 of the measured 4 to 6), and the response is positive for any local excess, so **crowds seed whatever their genes**. The requirement is not met; the choice is the coordinator's (decision 7 of the W2 spec, to revisit), P1c reports the paid share `max(emit - 12, 0)`, and a hinge on the excess above the free level is a later variant (DESIGN §32.3). |
+| organisms → weather | **shade on the seas**: dense populations lower T_s or the evaporation rate below them, so there is less moisture, fewer storms and less rain-fed food. That is a negative loop. Full Daisyworld regulation also needs a growth response that peaks in temperature (Watson & Lovelock 1983), which is later work | the evaporation step | none *(Built in W2a, DESIGN §32.4, off by default (`weather.shade_gain` ≤ 0.05, `shade_n0`): the lever is `T_s` (the warm-pool map), not `k_E`; `shade_gain·d/(d + shade_n0)` of the alive agents per field column, 3x3 box mean, multiplies `T_s`. It is steep: a uniform 5% cooling removes three quarters of the storms, which is why the bound is 0.05.)* |
 
 - **Seeding.** c2 already carries a seed-dependent background: a mean of 4.8–6.6 in seed 0 and 0.2–1.4 in seed 1 over
   300k–500k, and about 6 in seed 2 at 300k, against a clip of 16. The excess is used for that reason. κ is calibrated on a
@@ -200,6 +200,12 @@ chose differently or measured something, a note says so.
   2. passive tracers that an observer moves at `α_t·u_air(pos)`, where α_t = α₀ + α₁·cap of a randomly sampled live
      agent (resampled at each seeding), with the same floor and surface clamps and the same clipped wind;
   3. an arm with α₁ = 0, where the wind coupling does not depend on the cap.
+
+  *W2 arms (built as keys in W2a, DESIGN §32.5; the runs are W2b's).* **A** the calibrated set; **N** `seed_gain 0` (seeding control);
+  **S** still air with the same mean food profile (`wind_scale 0`, `storm_p 0`, `rain_zonal true`); **WB** wind-blind with live rain
+  (`wind_scale 0`, `storm_p 0`); **A1** `alpha1 0` with `alpha0` at the fork's mean α (0.42 for seed 0, 0.51 for seed 1); **E**
+  `wind_eddy_force`, so that A - E is the zonal-mean (jet) wind and E - WB the eddy wind; seeding and shade stay on in every arm but N. The
+  passive tracers (item 2) are an observer rig inside every arm (`game.tracers`, DESIGN §32.9). Analysis: `python -m alife.analysis.w2`.
 
   Adapted agents should sit at updraft boundaries more often than tracers and hold altitude relative to w. The cap is
   reported, but it is not the criterion.
@@ -389,6 +395,17 @@ Each step is one PR, merged before the next.
    - A DESIGN section and a Review-log row.
 3. **W2, couplings, observers and runs.** Seeding, shade, the wind-relative observer fields, and two seeds against
    still-air and tracer controls. Results document.
+   - **Status (W2a built, 2026-10-22; `DESIGN.md` §32, row I50; W2b not run).** Built and off by default: rain seeding and shade
+     (§4), the controls `wind_scale`, `rain_zonal`, `storm_eddy` and `wind_eddy_force`, the observers' `INTENT_VERSION` 3
+     (`RULES_V3`: Nomad and Settler on the velocity relative to the wind, and Drifter, Floater and Sinker, which are the storm game's
+     drifter, floater and sinker roles of §5; `ARCHETYPE_STORM_DISPLAY` names the gatherer "Grazer"), the tracer rig, the ecology and
+     weather dumps, and `alife.analysis.w2`. With the new keys at their defaults the engine is the W1 engine bit for bit
+     (digest matrix and eight weather-on trajectories against 3799009). The Metal purity gate passed. On a 26,000-step pilot at the
+     prior coupling set (eddy hazard 0.03/0.004, rain 1e6, seeding 0.03, shade 0.02) the ledger closed, storm deaths were 3.2% of
+     deaths and the version-3 labels passed on the pilot window; the thresholds were not tuned. **Not done (W2b, about 10.7 GPU
+     hours and 119 GB, needs the owner's go):** the occupancy gate G0 (before the calibration, because `cell_capacity` 64 is hashed), the
+     calibration of `rain_gain`, `storm_*`, `seed_gain` and `shade_gain` (the values in `storm.toml` are still W1's), the 14 runs, the held-out label
+     windows and `docs/RESULTS_W2.md`. Seeding departs from §4 (crowds seed, not genes).
 4. **W3, storm tracking and forecasting** on G2's event model.
 5. **W4, storm levers and intent** on G4's pipeline (`STORM_MENU`).
 6. **W5, client.** `VOL1`, `STRM` and the volumetric view.
@@ -421,7 +438,8 @@ owner's delegation (to revisit). Items 6 and 8 are open; they are needed by W2 (
    recommended form, built in W1.*
 5. **Senses.** Wind through velocity and nuclei through c2 (*recommended*), or dedicated wind or moisture inputs (a
    genome-layout bump). *Coordinator's choice C15 (to revisit): the recommended form, built in W1 (wind through `vel`).*
-6. **First couplings.** Rain seeding and shade (*recommended*), plus temperature-peaked growth later.
+6. **First couplings.** Rain seeding and shade (*recommended*), plus temperature-peaked growth later. *Built in W2a (DESIGN §32.3, §32.4),
+   off by default; the coordinator took the recommendation (to revisit); the temperature-peaked growth is still later.*
 7. **Heat sources.** *Decided 2026-10-19:* a separate warm-pool map T_s with its own levers, so storms do not simply
    form over the food patches, and food follows rain. The alternative was the fertility patches (no new lever, but food
    and storms cannot be set apart).
