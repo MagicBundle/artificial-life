@@ -221,28 +221,43 @@ import Testing
     @Test func aClockThatDoesNotShowTheAskedRateSettlesItOnlyAfterASecond() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        // After the fixture, the stand-in answers `pause` with the fixture's last CLCK (the last 68 bytes; not a paused one) at once and
-        // again a second and a half later; the first is a clock sent before the line was read, the second the world's answer.
+        // After the fixture, the stand-in answers `pause` and `labels off` each with the fixture's last CLCK (the last 68 bytes; not a
+        // paused one). The answer to `pause` is a clock sent before the line was read; the others come later, and the test decides,
+        // with an injected clock, how long after the asking they are. No sleep stands for the second: a loaded machine cannot move
+        // it, and every wait is for a condition with a generous deadline.
         let clock = try scratch.script("alife-clock", """
             cat "$1"
             while IFS= read -r line; do
-              if [ "$line" = "pause" ]; then
-                tail -c 68 "$1"
-                sleep 1.5
-                tail -c 68 "$1"
-              fi
-              if [ "$line" = "quit" ]; then exit 0; fi
+              case "$line" in
+                pause|"labels off") tail -c 68 "$1" ;;
+                quit) exit 0 ;;
+              esac
             done
             """)
-        let (controller, _) = make()
+        let (controller, recorder) = make()
         defer { controller.shutdown() }
+        var uptime = 0.0
+        controller.now = { uptime }
         controller.start(request, executable: clock, directory: scratch.url, arguments: args(scratch))
         #expect(await eventually { controller.phase == .live && controller.store.clock != nil })
-        controller.pause()
-        #expect(controller.requestedRate == .multiplier(0))
-        try await Task.sleep(for: .milliseconds(500))
+        func clocks() -> Int { recorder.deliveries.filter { $0.contains(.clock) }.count }
+        /// Sends `command` and waits for the clock the stand-in answers it with. The stream is ordered, so the answer to the
+        /// first command follows the whole fixture, and each wait ends only when the controller has handled its clock.
+        func answered(_ command: PlayCommand) async -> Bool {
+            let before = clocks()
+            guard controller.send(command) else { return false }
+            return await eventually { clocks() > before }
+        }
+
+        #expect(await answered(.labels(false)), "the fixture is read through: what follows is the answer to a command")
+        #expect(await answered(.pause))
         #expect(controller.requestedRate == .multiplier(0), "the first clock did not show a pause: the strip keeps what was asked")
-        #expect(await eventually { controller.requestedRate == nil }, "a clock a second after the asking is the world's answer")
+        uptime = 0.9
+        #expect(await answered(.labels(false)))
+        #expect(controller.requestedRate == .multiplier(0), "a clock inside the second is still the old rate")
+        uptime = 1.5
+        #expect(await answered(.labels(false)))
+        #expect(controller.requestedRate == nil, "a clock more than a second after the asking is the world's answer")
         controller.shutdown()
         #expect(await eventually { !controller.hasProcess })
     }
