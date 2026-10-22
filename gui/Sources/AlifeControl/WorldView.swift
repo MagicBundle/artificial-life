@@ -115,6 +115,9 @@ struct WorldCanvasView: View {
             if play.phase == .live || play.store.header != nil {
                 WorldMetalView(model: model)
                 WorldOverlayView(model: model, overlay: model.overlay, play: play)
+                ToastStackView(model: model)
+                FollowBadge(model: model, play: play)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             }
             banner
         }

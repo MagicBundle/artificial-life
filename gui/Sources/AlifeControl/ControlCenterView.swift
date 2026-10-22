@@ -1,7 +1,8 @@
 import AlifeCore
 import SwiftUI
 
-/// The dock of the World window (DESIGN §33.4.6): the clock strip, always visible; the Cast and Chronicle tabs.
+/// The dock of the World window (DESIGN §33.4.6, §33.4.8): the clock strip, always visible; the Cast and Chronicle tabs; the
+/// inspector pinned at the bottom whenever something is selected.
 struct ControlCenterView: View {
     @ObservedObject var play: PlayController
     @ObservedObject var model: WorldModel
@@ -32,11 +33,16 @@ struct ControlCenterView: View {
                 .padding(.vertical, 8)
                 Group {
                     switch tab {
-                    case .cast: CastView(play: play)
-                    case .chronicle: ChronicleView(play: play)
+                    case .cast: CastView(play: play, model: model)
+                    case .chronicle: ChronicleView(play: play, model: model)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Whatever is selected is pinned under the tabs, whichever is open (watching first, few inputs).
+                if let card = model.inspectorCard {
+                    Divider()
+                    InspectorCardView(card: card, model: model)
+                }
             } else {
                 Spacer(minLength: 0)
             }
@@ -157,44 +163,6 @@ struct ClockStripView: View {
                     Label("saving…", systemImage: "externaldrive")
                         .font(.caption).foregroundStyle(.orange)
                 }
-            }
-        }
-    }
-}
-
-/// The Cast tab. (The full cast, its rows and the inspector come with the interaction.)
-struct CastView: View {
-    @ObservedObject var play: PlayController
-
-    var body: some View {
-        let _ = play.revision
-        List {
-            if let storms = play.store.storms?.storms.storms, !storms.isEmpty {
-                Section("Storms") {
-                    ForEach(storms, id: \.id) { storm in
-                        Text(storm.name ?? "disturbance \(storm.id)")
-                    }
-                }
-            }
-            if let kin = play.store.identities?.tables.kin, !kin.isEmpty {
-                Section("Lineages") {
-                    ForEach(kin, id: \.slot) { Text($0.name) }
-                }
-            }
-        }
-    }
-}
-
-/// The Chronicle tab. (Grouping, filters and toasts come with the interaction.)
-struct ChronicleView: View {
-    @ObservedObject var play: PlayController
-
-    var body: some View {
-        let _ = play.revision
-        List(play.store.chronicle.newestFirst, id: \.id) { event in
-            VStack(alignment: .leading, spacing: 2) {
-                Text(event.text).font(.callout)
-                Text("step \(event.step)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
         }
     }

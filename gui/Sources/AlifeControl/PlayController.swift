@@ -67,9 +67,12 @@ final class PlayController: ObservableObject {
     @Published private(set) var retiredWorlds: [String] = []
 
     /// What the world sent. Read by the renderer and the views; changes are announced by `revision` and `onDelivery`.
-    private(set) var store = WorldStore()
+    var store = WorldStore()  // (settable for the tests, which feed it frames)
     /// Called on the main actor after a delivery was applied, with what it changed (a frame, a map, ...).
     var onDelivery: (@MainActor (WorldStore.Changes) -> Void)?
+    /// Called, before `onDelivery`, with the events of each `EVNT` batch that the chronicle had not seen, in order, and whether
+    /// the batch is the backlog loaded at the start (a hand-off or a toast is the news of a live batch, never of the backlog).
+    var onEvents: (@MainActor ([WorldEvent], Bool) -> Void)?
     /// Where lines for the log go: the command line that starts the world, and its stderr.
     var log: @MainActor ([String], Bool) -> Void = { _, _ in }
     /// The stop ladder of a live world; tests shorten it.
@@ -226,8 +229,13 @@ final class PlayController: ObservableObject {
             if case .clck = record { requestedRate = nil }
             changes.formUnion(store.apply(record))
         }
+        var announced: [(events: [WorldEvent], backlog: Bool)] = []
         for batch in delivery.events {
-            if !store.apply(events: batch).isEmpty { changes.insert(.events) }
+            let fresh = store.apply(events: batch)
+            if !fresh.isEmpty {
+                changes.insert(.events)
+                announced.append((fresh, batch.isBacklog))
+            }
         }
         if let end = delivery.end {
             session.end = end
@@ -238,6 +246,7 @@ final class PlayController: ObservableObject {
             }
         }
         if !changes.subtracting(.frame).isEmpty { revision += 1 }
+        for (events, backlog) in announced { onEvents?(events, backlog) }
         if !changes.isEmpty { onDelivery?(changes) }
     }
 

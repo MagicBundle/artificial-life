@@ -144,11 +144,11 @@ import simd
         let (model, play) = try await model(scratch)
         defer { play.shutdown() }
         let r0 = model.overlay.revision
-        model.select(uid: 5_000_000_000)
+        model.setSelection(.organism(uid: 5_000_000_000))
         #expect(model.selectedUID == 5_000_000_000 && model.overlay.revision == r0 + 1)
-        model.select(uid: 5_000_000_000)
+        model.setSelection(.organism(uid: 5_000_000_000))
         #expect(model.overlay.revision == r0 + 1)
-        model.select(uid: nil)
+        model.setSelection(.none)
         #expect(model.selectedUID == nil && model.overlay.revision == r0 + 2)
     }
 

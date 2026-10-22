@@ -59,6 +59,17 @@ import simd
         #expect(abs(r - perUnit * CGFloat(units)) < 0.5, "\(r) against \(perUnit * CGFloat(units))")
     }
 
+    @Test func theLengthOfAUnitDoesNotDependOnWhereTheWrapHappens() throws {
+        // A point half a world from the target is at the edge of the minimum image: its far end, one more unit on, would wrap
+        // to the other side if it were wrapped again. The length is the same wherever in the view the point is.
+        let p = projector(target: SIMD3(0.5, 160, 0), distance: 80)
+        let near = try #require(p.points(ofUnits: 12, at: SIMD3(0.5, 160, 0)))
+        for x: Float in [100, 150, 159, 160.5, 161] {  // up to and past the half world from the target at 0.5
+            let r = try #require(p.points(ofUnits: 12, at: SIMD3(x, 160, 0)))
+            #expect(abs(r - near) < 0.5, "x = \(x): \(r) against \(near)")
+        }
+    }
+
     // MARK: Storms
 
     private func storm(id: Int, x: Double, y: Double, r: Double = 6, track: [[Double]] = [], named: Bool = true,
@@ -122,5 +133,34 @@ import simd
         #expect(projector().level == .planet)
         #expect(projector(distance: 10).level == .organism)
         #expect(projector(distance: 90).level == .region)
+    }
+
+    // MARK: Territory cells
+
+    @Test func aCellsCornersAreTheProjectedCorners() throws {
+        // 32 cells of 10 units over L = 320: cell (3, 5) spans x 30 to 40 and y 50 to 60.
+        let p = projector(target: SIMD3(35, 55, 0), distance: 100)
+        let quad = try #require(p.cellCorners(cx: 3, cy: 5, nx: 32, ny: 32))
+        #expect(quad.count == 4)
+        let expected = [SIMD3<Float>(30, 50, 0), SIMD3(40, 50, 0), SIMD3(40, 60, 0), SIMD3(30, 60, 0)]
+        for (corner, world) in zip(quad, expected) {
+            let at = try #require(p.screen(world))
+            #expect(abs(corner.x - at.x) < 1e-2 && abs(corner.y - at.y) < 1e-2)
+        }
+        // South-west is lower left in the planet pose (y up): the quad is drawn counter-clockwise on the screen.
+        #expect(quad[0].x < quad[1].x && quad[0].y > quad[3].y)
+    }
+
+    @Test func aCellAcrossTheSeamIsDrawnNextToTheTargetAndItsCopiesAWorldAway() throws {
+        let p = projector(target: SIMD3(2, 160, 0), distance: 100)
+        let wrapped = try #require(p.cellCorners(cx: 31, cy: 16, nx: 32, ny: 32))  // x 310 to 320, a few units west of 2
+        let direct = try #require(p.screenOfImage(SIMD3(-5, 165, 0)))
+        let centre = CGPoint(x: wrapped.map(\.x).reduce(0, +) / 4, y: wrapped.map(\.y).reduce(0, +) / 4)
+        #expect(abs(centre.x - direct.x) < 1e-2 && abs(centre.y - direct.y) < 1e-2)
+        let east = try #require(p.cellCorners(cx: 31, cy: 16, nx: 32, ny: 32, shift: SIMD2(1, 0)))
+        let eastCentre = CGPoint(x: east.map(\.x).reduce(0, +) / 4, y: east.map(\.y).reduce(0, +) / 4)
+        let oneWorld = try #require(p.screenOfImage(SIMD3(-5 + 320, 165, 0)))
+        #expect(abs(eastCentre.x - oneWorld.x) < 1e-2)
+        #expect(p.cellCorners(cx: 0, cy: 0, nx: 0, ny: 32) == nil)
     }
 }

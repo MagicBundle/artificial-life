@@ -75,6 +75,36 @@ import Testing
         #expect(await eventually { !controller.hasProcess })
     }
 
+    @Test func eachBatchOfNewEventsIsAnnouncedBeforeTheDeliveryThatCarriesIt() async throws {
+        // The fixture sends a backlog batch (2 events) and a live one (1): the model learns of each, with the backlog flagged,
+        // before `onDelivery` says the store changed (a hand-off must move the selection before the next draw).
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (script, commands) = try standIn(in: scratch)
+        let (controller, _) = make()
+        defer { controller.shutdown() }
+        var order: [String] = []
+        var batches: [(ids: [UInt64], backlog: Bool)] = []
+        controller.onEvents = { events, backlog in
+            batches.append((events.map(\.id), backlog))
+            order.append("events")
+        }
+        let deliveries = controller.onDelivery
+        controller.onDelivery = { changes in
+            if changes.contains(.events) { order.append("delivery") }
+            deliveries?(changes)
+        }
+        controller.start(request, executable: script, directory: scratch.url, arguments: args(scratch, commands: commands))
+        #expect(await eventually { controller.store.clock?.head.step == 104 })
+        let all = batches.flatMap(\.ids)
+        #expect(all.sorted() == controller.store.chronicle.events.map(\.id).sorted(), "every event once")
+        #expect(batches.contains { $0.backlog } && batches.contains { !$0.backlog })
+        #expect(batches.first(where: { !$0.backlog })?.ids == [100_000])
+        // Every delivery that carries events is preceded by their announcements (two batches may share one delivery), and
+        // nothing is announced after the last.
+        #expect(order.last == "delivery" && !zip(order, order.dropFirst()).contains { $0 == "delivery" && $1 == "delivery" }, "\(order)")
+    }
+
     @Test func aWorldThatEndsDeliversItsLastRecordsBeforeItFinishes() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }

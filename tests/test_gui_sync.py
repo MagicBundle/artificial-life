@@ -323,3 +323,54 @@ def test_the_world_levels_match_the_spec_constants() -> None:
     assert re.search(r"planetHalfExtent: Float = 0\.5\b", levels)
     assert re.search(r"organismDistance: Float = 0\.12\b", levels)
     assert re.search(r"flatDiscPixels: Float = 3\b", levels)
+
+
+def test_the_event_kind_numbers_are_the_engines() -> None:
+    """The client acts on a few `EVNT` kinds by number (a hand-off moves the selection, a click on a row
+    selects its entity): `EventKind.registry` is the registry of `streamrec`, and the names are the
+    chronicle's."""
+    from alife import streamrec
+    from alife.game import chronicle
+
+    text = (CORE / "WorldSelection.swift").read_text(encoding="utf-8")
+    m = re.search(r"static let registry: \[Int: String\] = \[(.*?)\n    \]", text, re.S)
+    assert m, "EventKind.registry not found"
+    swift = {int(k): v for k, v in re.findall(r'(\d+): "([a-z_]+)"', m.group(1))}
+    assert swift == dict(streamrec.EVENT_KINDS)
+    assert {v: k for k, v in swift.items()} == dict(chronicle.KIND)
+    # the named constants are those numbers
+    for name, key in (
+        ("kinBorn", "kin_born"),
+        ("focusDeath", "focus_death"),
+        ("focusHandoff", "focus_handoff"),
+        ("stormNamed", "storm_named"),
+        ("stormDissolved", "storm_dissolved"),
+        ("extinct", "extinct"),
+    ):
+        found = re.search(rf"\b{name} = (\d+)", text)
+        assert found and int(found.group(1)) == chronicle.KIND[key], name
+
+
+def test_the_cast_causes_and_the_hemispheres_are_the_engines() -> None:
+    """The cast lists a kin group's deaths by cause in the engine's order, and a storm's hemisphere by the
+    chronicle's words."""
+    from alife import state
+    from alife.game import chronicle
+
+    text = (CORE / "CastPolicy.swift").read_text(encoding="utf-8")
+    m = re.search(r"deathCauses = \[(.*?)\]", text, re.S)
+    assert m
+    assert re.findall(r'"([a-z]+)"', m.group(1)) == [c.name.lower() for c in state.DeathCause]
+    inspector = (CORE / "Inspector.swift").read_text(encoding="utf-8")
+    for word in chronicle.HEMISPHERES:
+        assert f'"{word}"' in text, f"{word} in CastPolicy.swift"
+        assert f'"{word}"' in inspector, f"{word} in Inspector.swift"
+
+
+def test_the_chronicle_minute_is_sixty_base_rate_steps() -> None:
+    """A minute of game time is 60·B steps: 864 at the base rate the engine sends in the header."""
+    from alife import play
+
+    text = (CORE / "WorldChronicle.swift").read_text(encoding="utf-8")
+    assert re.search(r"Int\(\(60 \* baseRate\)\.rounded\(\)\)", text)
+    assert round(60 * play.BASE_RATE) == 864

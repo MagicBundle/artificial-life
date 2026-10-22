@@ -71,4 +71,21 @@ package enum WorldLevels {
 
     /// The nearest: a few agent radii.
     package static let minDistance: Float = 4
+
+    /// The visible half extent, as a fraction of `L`, a fly-to ends at on a storm, a lineage or a place (the region level).
+    package static let flyRegionHalfExtent: Float = 0.2
+    /// The distance a fly-to ends at on an organism, as a fraction of `L` (inside the organism level).
+    package static let flyOrganismDistance: Float = 0.08
+
+    /// The camera distance a fly-to ends at: `level` is `.region` (a storm, a kin group, a place) or `.organism`; the planet
+    /// level is not a destination. Never nearer than `minDistance`.
+    package static func flyDistance(_ level: WorldLevel, size: Float, fovY: Float, aspect: Float) -> Float {
+        switch level {
+        case .organism:
+            return max(flyOrganismDistance * size, minDistance)
+        case .region, .planet:
+            let d = flyRegionHalfExtent * size / (tan(fovY / 2) * max(1, aspect))
+            return min(max(d, minDistance), max(maxDistance(size: size, fovY: fovY, aspect: aspect), minDistance))
+        }
+    }
 }

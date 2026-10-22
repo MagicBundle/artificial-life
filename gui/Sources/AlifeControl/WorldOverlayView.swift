@@ -1,10 +1,10 @@
 import AlifeCore
 import SwiftUI
 
-/// The `Canvas` over the Metal view: the storms (rings, names, tracks), the warm pools and the selected organism, placed with
-/// the camera's projection onto the free rectangle at the minimum image of the camera target (DESIGN §33.4.6). It watches
-/// `OverlayState`, which changes on a tick, on a camera edit and on every frame while an organism is selected, and nothing
-/// else: an idle scene draws nothing.
+/// The `Canvas` over the Metal view: the storms (rings, names, tracks), the warm pools, the selection and what the pointer is
+/// over, placed with the camera's projection onto the free rectangle at the minimum image of the camera target (DESIGN
+/// §33.4.6, §33.4.8). It watches `OverlayState`, which changes on a tick, on a camera edit, on every frame while something is
+/// selected and when the pointer moves onto something else, and nothing else: an idle scene draws nothing.
 struct WorldOverlayView: View {
     let model: WorldModel
     @ObservedObject var overlay: OverlayState
@@ -15,16 +15,39 @@ struct WorldOverlayView: View {
         Canvas { context, size in
             let projector = model.projector(size: size)
             let store = play.store
-            if let environment = store.environment { drawPools(environment, projector, &context) }
-            if let storms = store.storms { drawStorms(projector.glyphs(of: storms.storms), projector.level, &context) }
-            if let uid = model.selectedUID { drawSelection(uid, store, projector, &context) }
+            let selection = model.selection
+            let hover = overlay.hover
+            let castHover = overlay.castHover
+            // Territory first: what a kin group owns, under the rings.
+            if let territory = store.territory {
+                for target in [castHover, selection] {
+                    if case .kin(let id)? = target { drawTerritory(of: id, territory, store, projector, &context) }
+                }
+                if case .territory(_, let kin)? = hover?.pick { drawTerritory(of: kin, territory, store, projector, &context, faint: true) }
+            }
+            if let environment = store.environment {
+                drawPools(environment, projector, selected: selection, &context)
+            }
+            if let storms = store.storms {
+                var marked: Set<Int> = []
+                if case .storm(let id) = selection { marked.insert(id) }
+                if case .storm(let id)? = castHover { marked.insert(id) }
+                if case .storm(let id)? = hover?.pick { marked.insert(id) }
+                drawStorms(projector.glyphs(of: storms.storms), projector.level, selected: selection, marked: marked, &context)
+            }
+            if let uid = selection.organismUID { drawSelection(uid, store, projector, &context) }
+            if case .organism(let uid, let index)? = hover?.pick, uid != selection.organismUID {
+                drawHover(uid, hint: index, store, projector, &context)
+            }
+            if let hover { drawTooltip(hover, in: size, &context) }
         }
         .allowsHitTesting(false)
     }
 
     // MARK: Pieces
 
-    private func drawStorms(_ glyphs: [StormGlyph], _ level: WorldLevel, _ context: inout GraphicsContext) {
+    private func drawStorms(_ glyphs: [StormGlyph], _ level: WorldLevel, selected: WorldSelection, marked: Set<Int>,
+                            _ context: inout GraphicsContext) {
         for glyph in glyphs {
             let tint: Color = glyph.hemisphere == 0 ? Color(red: 1, green: 0.85, blue: 0.4) : Color(red: 0.5, green: 0.85, blue: 1)
             let alpha = glyph.named ? 1.0 : 0.55
@@ -37,6 +60,12 @@ struct WorldOverlayView: View {
                                               width: 2 * glyph.radius, height: 2 * glyph.radius))
             context.stroke(ring, with: .color(tint.opacity(alpha)),
                            style: StrokeStyle(lineWidth: glyph.named ? 2 : 1, dash: glyph.coasting ? [4, 3] : []))
+            if marked.contains(glyph.id) {
+                let isSelected = selected == .storm(id: glyph.id)
+                let r = glyph.radius + 4
+                let outer = Path(ellipseIn: CGRect(x: glyph.center.x - r, y: glyph.center.y - r, width: 2 * r, height: 2 * r))
+                context.stroke(outer, with: .color(.white.opacity(isSelected ? 0.95 : 0.55)), lineWidth: isSelected ? 2 : 1)
+            }
             if level != .organism {
                 let label = glyph.name ?? "disturbance \(glyph.id)"
                 let text = Text(label).font(.caption2).foregroundColor(tint.opacity(alpha))
@@ -45,22 +74,78 @@ struct WorldOverlayView: View {
         }
     }
 
-    private func drawPools(_ environment: PlayEnvironmentRecord, _ projector: WorldProjector, _ context: inout GraphicsContext) {
-        for pool in environment.environment.pools {
+    private func drawPools(_ environment: PlayEnvironmentRecord, _ projector: WorldProjector, selected: WorldSelection,
+                           _ context: inout GraphicsContext) {
+        for (index, pool) in environment.environment.pools.enumerated() {
             let at = SIMD3<Float>(Float(pool.x), Float(pool.y), 0)
             guard let center = projector.screen(at) else { continue }
             let radius = max(projector.points(ofUnits: Float(max(pool.sx, pool.sy)) * 2, at: at) ?? 0, 6)
             let ring = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
-            context.stroke(ring, with: .color(Color(red: 1, green: 0.55, blue: 0.2).opacity(0.45)),
-                           style: StrokeStyle(lineWidth: 1, dash: [2, 3]))
+            let chosen = selected == .pool(index: index)
+            context.stroke(ring, with: .color(chosen ? .white : Color(red: 1, green: 0.55, blue: 0.2).opacity(0.45)),
+                           style: StrokeStyle(lineWidth: chosen ? 2 : 1, dash: [2, 3]))
         }
     }
 
+    /// The cells a kin group owns, outlined and tinted in its colour, at every copy of the world that shows in the view.
+    private func drawTerritory(of kin: Int, _ territory: PlayTerritory, _ store: WorldStore, _ projector: WorldProjector,
+                               _ context: inout GraphicsContext, faint: Bool = false) {
+        guard let slot = territory.ids.firstIndex(of: kin), slot < Slot.maxTable else { return }
+        let bounds = CGRect(origin: .zero, size: projector.view)
+        let color = Color(WorldPalette.slotColor(UInt8(slot)) ?? WorldPalette.other)
+        var fill = Path()
+        for cell in territory.owner.indices where Int(territory.owner[cell]) == slot {
+            let cx = cell % territory.nx, cy = cell / territory.nx
+            for sx in -1...1 {
+                for sy in -1...1 {
+                    guard let quad = projector.cellCorners(cx: cx, cy: cy, nx: territory.nx, ny: territory.ny, shift: SIMD2(sx, sy)),
+                          quad.contains(where: { bounds.insetBy(dx: -40, dy: -40).contains($0) })
+                    else { continue }
+                    fill.move(to: quad[0])
+                    quad.dropFirst().forEach { fill.addLine(to: $0) }
+                    fill.closeSubpath()
+                }
+            }
+        }
+        context.fill(fill, with: .color(color.opacity(faint ? 0.16 : 0.3)))
+        context.stroke(fill, with: .color(.white.opacity(faint ? 0.35 : 0.8)), lineWidth: faint ? 0.8 : 1.2)
+    }
+
     private func drawSelection(_ uid: Int64, _ store: WorldStore, _ projector: WorldProjector, _ context: inout GraphicsContext) {
-        guard let frame = store.frame, let index = store.listedIndex(ofUID: uid) else { return }
+        guard let frame = store.frame, let index = store.listedIndex(ofUID: uid, hint: model.selectionHint) else { return }
+        model.selectionHint = index
         guard let center = projector.screen(frame.position(index)) else { return }
         let radius = max(projector.points(ofUnits: Float(store.header?.radius ?? 1) * 1.8, at: frame.position(index)) ?? 0, 9)
         let ring = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
         context.stroke(ring, with: .color(.white), lineWidth: 2)
+    }
+
+    private func drawHover(_ uid: Int64, hint: Int, _ store: WorldStore, _ projector: WorldProjector, _ context: inout GraphicsContext) {
+        guard let frame = store.frame, let index = store.listedIndex(ofUID: uid, hint: hint),
+              let center = projector.screen(frame.position(index)) else { return }
+        let radius = max(projector.points(ofUnits: Float(store.header?.radius ?? 1) * 1.6, at: frame.position(index)) ?? 0, 7)
+        let ring = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
+        context.stroke(ring, with: .color(.white.opacity(0.7)), lineWidth: 1)
+    }
+
+    /// One line near the pointer, kept inside the view.
+    private func drawTooltip(_ hover: HoverInfo, in size: CGSize, _ context: inout GraphicsContext) {
+        let text = context.resolve(Text(hover.text).font(.caption).foregroundColor(.white))
+        let measured = text.measure(in: CGSize(width: 420, height: 40))
+        let box = CGSize(width: measured.width + 12, height: measured.height + 6)
+        var origin = CGPoint(x: hover.point.x + 14, y: hover.point.y + 18)
+        origin.x = min(max(origin.x, 4), max(size.width - box.width - 4, 4))
+        origin.y = min(max(origin.y, 4), max(size.height - box.height - 4, 4))
+        let rect = CGRect(origin: origin, size: box)
+        context.fill(Path(roundedRect: rect, cornerRadius: 4), with: .color(.black.opacity(0.75)))
+        context.draw(text, at: CGPoint(x: rect.midX, y: rect.midY))
+    }
+}
+
+extension Color {
+    /// A palette colour `0xRRGGBB`.
+    init(_ rgb: UInt32) {
+        let (r, g, b) = WorldPalette.components(rgb)
+        self.init(red: Double(r) / 255, green: Double(g) / 255, blue: Double(b) / 255)
     }
 }

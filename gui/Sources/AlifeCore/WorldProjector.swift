@@ -53,7 +53,9 @@ package struct WorldProjector: Equatable, Sendable {
     /// The length in points of `units` world units across the view at `world`.
     package func points(ofUnits units: Float, at world: SIMD3<Float>) -> CGFloat? {
         let at = image(of: world)
-        guard let a = screen(at), let b = screen(at + camera.right * units) else { return nil }
+        // Both ends are placed as they are: `screen` would wrap the far end again, a world away when `at` is near the
+        // half-world from the target.
+        guard let a = screenOfImage(at), let b = screenOfImage(at + camera.right * units) else { return nil }
         return hypot(a.x - b.x, a.y - b.y)
     }
 
@@ -85,5 +87,22 @@ package struct WorldProjector: Equatable, Sendable {
     package func screenOfImage(_ world: SIMD3<Float>) -> CGPoint? {
         guard let ndc = camera.ndc(of: world, aspect: aspect) else { return nil }
         return CGPoint(x: CGFloat(ndc.x * 0.5 + 0.5) * view.width, y: CGFloat(0.5 - ndc.y * 0.5) * view.height)
+    }
+
+    /// The four corners in points of cell `(cx, cy)` of an `nx` x `ny` territory map, at the image of the cell nearest the
+    /// camera target moved by `shift` worlds (`(1, 0)` is the copy one world to the east); nil if a corner is behind the eye.
+    /// The corners are in order: south-west, south-east, north-east, north-west.
+    package func cellCorners(cx: Int, cy: Int, nx: Int, ny: Int, shift: SIMD2<Int> = .zero) -> [CGPoint]? {
+        guard nx > 0, ny > 0 else { return nil }
+        let w = size / Float(nx), h = size / Float(ny)
+        let centre = Torus.nearestImage(of: SIMD2((Float(cx) + 0.5) * w, (Float(cy) + 0.5) * h),
+                                        to: SIMD2(camera.target.x, camera.target.y), size: size)
+            + SIMD2(Float(shift.x), Float(shift.y)) * size
+        var out: [CGPoint] = []
+        for (sx, sy) in [(-1, -1), (1, -1), (1, 1), (-1, 1)] as [(Float, Float)] {
+            guard let at = screenOfImage(SIMD3(centre.x + sx * w / 2, centre.y + sy * h / 2, 0)) else { return nil }
+            out.append(at)
+        }
+        return out
     }
 }

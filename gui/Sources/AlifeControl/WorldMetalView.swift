@@ -4,13 +4,22 @@ import MetalKit
 import QuartzCore
 import SwiftUI
 
-/// The World's drawing surface: an `MTKView` that takes the pointer. Left drag pans (the map follows the pointer), a right
-/// or Option drag turns the view about its target, the wheel, the trackpad and a pinch zoom; all go through the
-/// `WorldModel`. The keys, picking and follow are added with the interaction (DESIGN §33.4.8).
+/// The World's drawing surface: an `MTKView` that takes the pointer and the keys. Left drag pans (the map follows the pointer),
+/// a right or Option drag turns the view about its target, the wheel, the trackpad and a pinch zoom; a click picks (a double click
+/// flies in), the pointer over something names it, and the keys are `WorldKeys`'s. All go through the `WorldModel` (DESIGN
+/// §33.4.8).
 @MainActor
 final class WorldMTKView: MTKView {
     weak var model: WorldModel?
     private var link: CADisplayLink?
+    /// Where the left button went down (view points, origin at the top left), and whether the pointer has moved far enough
+    /// since for the gesture to be a drag and not a click.
+    private var downPoint: CGPoint?
+    private var dragging = false
+    private var tracking: NSTrackingArea?
+
+    /// A press that moves less than this many points is a click.
+    static let clickSlop: CGFloat = 4
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -26,12 +35,66 @@ final class WorldMTKView: MTKView {
         }
     }
 
+    /// The event's location in the view's points with the origin at the top left (what the picker and the overlay use).
+    private func point(of event: NSEvent) -> CGPoint {
+        let p = convert(event.locationInWindow, from: nil)
+        return CGPoint(x: p.x, y: bounds.height - p.y)
+    }
+
+    // MARK: Keys
+
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags
+        guard let model,
+              let action = WorldKeys.action(for: event.charactersIgnoringModifiers ?? "", command: flags.contains(.command),
+                                            control: flags.contains(.control))
+        else {
+            super.keyDown(with: event)
+            return
+        }
+        model.perform(action)
+    }
+
+    // MARK: Pointer
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        model?.hover(at: point(of: event))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        model?.hover(at: nil)
+    }
+
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        downPoint = point(of: event)
+        dragging = false
+        model?.hover(at: nil)
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if !dragging {
+            guard let start = downPoint else { return }
+            let here = point(of: event)
+            guard hypot(here.x - start.x, here.y - start.y) >= Self.clickSlop else { return }  // still a click
+            dragging = true
+        }
         model?.drag(dx: Float(event.deltaX), dy: Float(event.deltaY), orbit: event.modifierFlags.contains(.option))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer { downPoint = nil; dragging = false }
+        guard !dragging, downPoint != nil, !event.modifierFlags.contains(.option) else { return }
+        model?.click(at: point(of: event), shift: event.modifierFlags.contains(.shift), clicks: max(event.clickCount, 1))
     }
 
     override func rightMouseDragged(with event: NSEvent) {

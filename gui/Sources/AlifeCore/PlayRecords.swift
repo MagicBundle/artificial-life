@@ -110,6 +110,13 @@ package struct RecordHead: Equatable, Sendable {
     package var version: UInt16
     /// Tag-specific; bits a version does not define are zero and ignored.
     package var flags: UInt16
+
+    package init(step: UInt64, seq: UInt32, version: UInt16, flags: UInt16) {
+        self.step = step
+        self.seq = seq
+        self.version = version
+        self.flags = flags
+    }
 }
 
 /// A JSON value of a shape the record schema leaves open (a lever value, an effect's parameters).
@@ -200,6 +207,22 @@ package struct PlayFrame: Equatable, Sendable {
     package var uid: [Int64]
     /// `2·nBonds` listed indices: pairs `(i, j)` with `i < j < n`.
     package var bonds: [UInt32]
+
+    package init(head: RecordHead, n: Int, capacity: Int, colorIndex: Int, span: Int, bitmap: [UInt32], rows: [UInt32], pos: [Float],
+                 orient: [UInt16], rgb: [UInt32], uid: [Int64], bonds: [UInt32]) {
+        self.head = head
+        self.n = n
+        self.capacity = capacity
+        self.colorIndex = colorIndex
+        self.span = span
+        self.bitmap = bitmap
+        self.rows = rows
+        self.pos = pos
+        self.orient = orient
+        self.rgb = rgb
+        self.uid = uid
+        self.bonds = bonds
+    }
 
     package var nBonds: Int { bonds.count / 2 }
     /// Bit 0: the state has an invariant (error) diag bit set.
@@ -461,6 +484,20 @@ package struct WorldEvent: Equatable, Sendable, Codable {
     /// 2 = a toast, 1 = the chronicle, 0 = the log only.
     package var imp: Int
     package var text: String
+
+    package init(id: UInt64, step: Int, kind: Int, fam: String, a: Int, b: Int, x: Double?, y: Double?, z: Double?, imp: Int, text: String) {
+        self.id = id
+        self.step = step
+        self.kind = kind
+        self.fam = fam
+        self.a = a
+        self.b = b
+        self.x = x
+        self.y = y
+        self.z = z
+        self.imp = imp
+        self.text = text
+    }
 }
 
 /// `EVNT`: up to 64 events; queued (never dropped) by the client.

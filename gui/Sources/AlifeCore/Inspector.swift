@@ -1,0 +1,211 @@
+import Foundation
+
+/// The card pinned at the bottom of the dock whenever something is selected (DESIGN §33.4.8): the words and numbers of one
+/// selection, built from the records so that the card is tested without a window.
+package struct InspectorCard: Equatable, Sendable {
+    package struct Row: Equatable, Sendable {
+        package var label: String
+        package var value: String
+        /// Tagged "provisional": a label of the observers, whose thresholds are not validated for storm worlds (C8 to C10).
+        package var provisional = false
+
+        package init(_ label: String, _ value: String, provisional: Bool = false) {
+            self.label = label
+            self.value = value
+            self.provisional = provisional
+        }
+    }
+
+    package var title: String
+    package var subtitle: String?
+    package var rows: [Row] = []
+    /// An organism's energy over the cap, as a fraction in 0...1, with its words.
+    package var energy: (fraction: Double, text: String)?
+    /// Notes under the card: "dynasties approximate", "provisional (labels v2)".
+    package var notes: [String] = []
+    /// An organism's parent, when it can be selected: alive in the newest frame.
+    package var selectableParent: Int64?
+    /// The organism the follow passed to when this one died, once known.
+    package var successor: Int64?
+    package var alive = true
+
+    package static func == (a: InspectorCard, b: InspectorCard) -> Bool {
+        a.title == b.title && a.subtitle == b.subtitle && a.rows == b.rows && a.notes == b.notes
+            && a.selectableParent == b.selectableParent && a.successor == b.successor && a.alive == b.alive
+            && a.energy?.fraction == b.energy?.fraction && a.energy?.text == b.energy?.text
+    }
+}
+
+package enum Inspector {
+    /// The card of the selection; nil for `.none`, a kin group that is no longer listed, or a storm that is gone (the card
+    /// of a storm that ended says so).
+    package static func card(for selection: WorldSelection, store: WorldStore, successors: [Int64: Int64] = [:]) -> InspectorCard? {
+        switch selection {
+        case .none: return nil
+        case .organism(let uid): return organism(uid: uid, store: store, successor: successors[uid])
+        case .storm(let id): return storm(id: id, store: store)
+        case .kin(let id): return kin(id: id, store: store)
+        case .pool(let index): return pool(index: index, store: store)
+        }
+    }
+
+    // MARK: An organism
+
+    /// The organism's card from its `FOCS` (about four a second, and now when it is picked) with `IDNT` for the clade and the
+    /// tables its slots index, and `INTN`'s labels only through `FOCS` (a newborn is complete). A `FOCS` of another organism
+    /// is not this one's: then the card has what the frame knows (that it is alive, and where).
+    package static func organism(uid: Int64, store: WorldStore, successor: Int64? = nil) -> InspectorCard {
+        let header = store.play
+        let tables = store.identities?.tables
+        var card = InspectorCard(title: "Organism \(uid)")
+        let frameIndex = store.listedIndex(ofUID: uid)
+        let focus = store.focus.flatMap { $0.uid == uid ? $0 : nil }
+
+        if let focus, !focus.isAlive {
+            card.alive = false
+            card.subtitle = "no longer alive"
+            card.successor = successor
+            if let successor { card.rows.append(.init("Follow passed to", "organism \(successor)")) }
+            return card
+        }
+        if frameIndex == nil, store.frame != nil, focus == nil {
+            card.alive = false
+            card.subtitle = "not in the world"
+            card.successor = successor
+            if let successor { card.rows.append(.init("Follow passed to", "organism \(successor)")) }
+            return card
+        }
+
+        if let focus, let tables {
+            let kin = Names.kin(slot: focus.kin, tables: tables)
+            let house = Names.house(slot: focus.house, tables: tables)
+            card.subtitle = "\(kin) · House \(house)" + (tables.exact ? "" : " (approximate)")
+            if !tables.exact { card.notes.append("dynasties approximate: this world's houses are the clades of the fork") }
+        } else if let focus {
+            card.subtitle = "kin slot \(focus.kin), house slot \(focus.house)"
+        }
+
+        if let row = store.identity(ofUID: uid) {
+            card.rows.append(.init("Clade", String(row.clade)))
+        }
+        if let focus {
+            if let labels = header?.labels {
+                card.rows.append(
+                    .init(
+                        "Archetype", archetype(focus, names: labels.arch), provisional: true))
+                card.rows.append(.init("Intent", intent(focus, names: labels.intent), provisional: true))
+                card.notes.append("labels are provisional (labels v\(labels.intentVersion))")
+            }
+            let cap = Double(header?.energyCap ?? 0)
+            if cap > 0 {
+                let fraction = min(max(Double(focus.energy) / cap, 0), 1)
+                card.energy = (fraction, "\(focus.energy) of \(Int(cap))")
+            }
+            card.rows.append(.init("Age", ageText(steps: Int(focus.age), baseRate: header?.baseRate ?? 14.4)))
+            card.rows.append(.init("Generation", String(focus.generation)))
+            card.rows.append(.init("Bonds", String(focus.nBonds)))
+            if focus.parentUid >= 0 {
+                card.rows.append(.init("Parent", "organism \(focus.parentUid)"))
+                if store.listedIndex(ofUID: focus.parentUid) != nil { card.selectableParent = focus.parentUid }
+            } else {
+                card.rows.append(.init("Parent", "none (a founder or an immigrant)"))
+            }
+            if focus.isFollowed { card.rows.append(.init("Follow", "passes to a child at its death")) }
+        } else if let index = frameIndex, let frame = store.frame {
+            let p = frame.position(index)
+            card.subtitle = "waiting for its report"
+            card.rows.append(.init("Position", String(format: "%.1f, %.1f", p.x, p.y)))
+        }
+        card.successor = successor
+        if let successor { card.rows.append(.init("Follow passed to", "organism \(successor)")) }
+        return card
+    }
+
+    /// `"Gatherer"` or `"Gatherer / Hunter"`; "warming up" before the labels are evaluated.
+    package static func archetype(_ focus: PlayFocus, names: [String]) -> String {
+        guard focus.labelFlags & 1 != 0 else { return "warming up" }
+        let first = Names.label(focus.archPrimary, in: names)
+        guard focus.archSecondary != 0 else { return first }
+        return "\(first) / \(Names.label(focus.archSecondary, in: names))"
+    }
+
+    /// The intent's name; the Budding overlay (bit 1) is a forecast and says so.
+    package static func intent(_ focus: PlayFocus, names: [String]) -> String {
+        guard focus.labelFlags & 1 != 0 else { return "warming up" }
+        let name = Names.label(focus.intent, in: names)
+        return focus.labelFlags & 2 != 0 ? "\(name) (forecast)" : name
+    }
+
+    /// `"1,250 steps (1.4 game minutes)"`.
+    package static func ageText(steps: Int, baseRate: Double) -> String {
+        let minutes = CastPolicy.ageMinutes(steps: steps, baseRate: baseRate)
+        return "\(steps) steps (" + String(format: "%.1f", minutes) + " game min)"
+    }
+
+    // MARK: A storm, a kin group, a pool
+
+    package static func storm(id: Int, store: WorldStore) -> InspectorCard {
+        let baseRate = store.play?.baseRate ?? 14.4
+        guard let storm = store.storms?.storms.storms.first(where: { $0.id == id }) else {
+            var card = InspectorCard(title: "Storm \(id)")
+            card.subtitle = "dissipated or merged"
+            card.alive = false
+            return card
+        }
+        var card = InspectorCard(title: Names.storm(storm).capitalizedFirst)
+        card.subtitle = (storm.hemi == 0 ? "northern" : "southern") + " hemisphere"
+            + (storm.state == "coasting" ? ", coasting" : "")
+        card.rows = [
+            .init("Peak vorticity", String(format: "%.2f f0", storm.zeta)),
+            .init("Vorticity now", String(format: "%.2f f0", storm.zetaNow)),
+            .init("Wind", String(format: "%.3f", storm.wind)),
+            .init("Rain", String(format: "%.4f", storm.rain)),
+            .init("Radius", String(format: "%.1f units", storm.r)),
+            .init("Age", ageText(steps: storm.age, baseRate: baseRate)),
+        ]
+        if storm.parent > 0 { card.rows.append(.init("Split from", "storm \(storm.parent)")) }
+        if !storm.named { card.notes.append("a disturbance: it has not reached named strength (0.5 f0)") }
+        return card
+    }
+
+    package static func kin(id: Int, store: WorldStore) -> InspectorCard? {
+        guard let cast = CastPolicy.lineages(store.identities, territory: store.territory).first(where: { $0.id == id }) else {
+            var card = InspectorCard(title: "Kin group \(id)")
+            card.subtitle = "not among the groups listed"
+            card.alive = false
+            return card
+        }
+        var card = InspectorCard(title: cast.name)
+        card.subtitle = cast.namedAfter.map { "named after House \($0)" }
+        card.rows = [
+            .init("Members", "\(cast.size) (" + String(format: "%.1f", 100 * cast.share) + "% of the population)"),
+            .init("Territory", "\(cast.territoryCells) cells (dominance)"),
+        ]
+        if let births = cast.births { card.rows.append(.init("Births", String(births))) }
+        if let deaths = CastPolicy.deathSummary(cast.deaths) { card.rows.append(.init("Deaths", deaths)) }
+        return card
+    }
+
+    package static func pool(index: Int, store: WorldStore) -> InspectorCard {
+        var card = InspectorCard(title: "Warm pool")
+        guard let pools = store.environment?.environment.pools, pools.indices.contains(index) else {
+            card.alive = false
+            return card
+        }
+        let pool = pools[index]
+        card.subtitle = "a warm patch of the sea that feeds storms"
+        card.rows = [
+            .init("Position", String(format: "%.0f, %.0f", pool.x, pool.y)),
+            .init("Strength", String(format: "%.2f", pool.amp)),
+        ]
+        return card
+    }
+}
+
+extension String {
+    /// The first letter in capitals ("disturbance 9" -> "Disturbance 9"); the rest as it is.
+    package var capitalizedFirst: String {
+        guard let first else { return self }
+        return first.uppercased() + dropFirst()
+    }
+}
