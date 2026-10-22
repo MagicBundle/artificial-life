@@ -12,7 +12,9 @@ jobs:
   test:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 75  # the fast suite takes 30-60 min on ubuntu-latest when a PR changes src (cold JIT cache; DESIGN §22.0)
+    # The fast suite takes 30-60 min on ubuntu-latest when a PR changes src (cold JIT cache; DESIGN §22.0). G3a's run took
+    # 58.5 of its 75 minutes with about 3 700 tests, and G3b adds about 550 more (4 234 in all), so the limit is 120.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

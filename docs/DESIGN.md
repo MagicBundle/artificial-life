@@ -3339,7 +3339,7 @@ Pinned details (impl, WP5):
   suite has about 1 550 tests and takes about 16 to 20 minutes on ubuntu-latest (warm cache), so the test job's
   `timeout-minutes` was 30 (raised from 20 in I43, whose end-to-end director tests pushed a run past 20 minutes). The
   cache key includes every `src/alife` file, so a PR that changes source starts cold for its new kernels: with G2's
-  tests (about 2 400 in all) such a run was cancelled at 30 minutes at 45% (I45), and the limit is now 75.
+  tests (about 2 400 in all) such a run was cancelled at 30 minutes at 45% (I45), and the limit was raised to 75. G3a's cold run (about 3 700 tests) took 58.5 of those 75 minutes and G3b adds about 550 tests (4 234 in all, I54), so the limit is now 120 (the nightly job's).
 - **Python.** `requires-python = ">=3.12,<3.15"` and a committed `.python-version` (3.12, the minimum supported version, so CI tests the lower bound): mlx 0.32.x has
   wheels only for cp312–cp314, so an unbounded range lets uv pick an interpreter that cannot install it.
 
