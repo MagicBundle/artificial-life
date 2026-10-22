@@ -135,6 +135,30 @@ final class DrawGate {
     }
 }
 
+// MARK: - Draw timing
+
+/// What one draw cost (DESIGN §33.5.3): the CPU time to refresh the buffer set and encode the pass, and the GPU's time for
+/// the pass (`gpuEndTime - gpuStartTime` of its command buffer). Drawable acquisition and the compositor are not in either.
+struct DrawTiming: Sendable, Equatable {
+    var cpuMs: Double
+    var gpuMs: Double
+}
+
+/// A texture pair to draw into off the screen, kept between draws (`Renderer.makeOffscreenTarget`).
+final class OffscreenTarget {
+    let color: any MTLTexture
+    let depth: any MTLTexture
+    let width: Int
+    let height: Int
+
+    init(color: any MTLTexture, depth: any MTLTexture, width: Int, height: Int) {
+        self.color = color
+        self.depth = depth
+        self.width = width
+        self.height = height
+    }
+}
+
 // MARK: - Renderer
 
 /// Draws the stream's frames with Metal: instanced sphere impostors for the agents (with a nose for the heading), bond
@@ -221,6 +245,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// Increases with every frame shown; a slot that holds an older one is refreshed before it is drawn.
     private var frameSerial = 0
     private(set) var frameStep: UInt64?
+    /// Told, from the GPU's completion thread, what each committed draw cost; nil costs nothing (the bench sets it).
+    var timingHandler: (@Sendable (DrawTiming) -> Void)?
+    /// Told, from the display's thread, when a draw into the window was presented (`MTLDrawable.presentedTime`, seconds):
+    /// the intervals between two are what the user sees.
+    var presentedHandler: (@Sendable (CFTimeInterval) -> Void)?
     /// Told when a draw fails (once per distinct message), so the window can say so instead of staying blank.
     var failureHandler: (@MainActor (String) -> Void)?
     private var lastFailure: String?
@@ -524,8 +553,8 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // MARK: Offscreen
 
-    /// Draws the current scene into a `width` x `height` texture and reads it back. Blocks until the GPU is done.
-    func renderOffscreen(width: Int, height: Int) throws -> OffscreenImage {
+    /// A texture pair of `width` x `height` to draw into with `drawNow` or `renderOffscreen`.
+    func makeOffscreenTarget(width: Int, height: Int) throws -> OffscreenTarget {
         guard width > 0, height > 0 else { throw Failure.allocation("an empty image") }
         let color = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: Self.colorFormat, width: width, height: height, mipmapped: false)
@@ -539,24 +568,45 @@ final class Renderer: NSObject, MTKViewDelegate {
               let depthTexture = device.makeTexture(descriptor: depth) else {
             throw Failure.allocation("the offscreen textures")
         }
+        return OffscreenTarget(color: colorTexture, depth: depthTexture, width: width, height: height)
+    }
+
+    private func descriptor(for target: OffscreenTarget) -> MTLRenderPassDescriptor {
         let descriptor = MTLRenderPassDescriptor()
-        descriptor.colorAttachments[0].texture = colorTexture
+        descriptor.colorAttachments[0].texture = target.color
         descriptor.colorAttachments[0].loadAction = .clear
         descriptor.colorAttachments[0].storeAction = .store
         descriptor.colorAttachments[0].clearColor = Self.background
-        descriptor.depthAttachment.texture = depthTexture
+        descriptor.depthAttachment.texture = target.depth
         descriptor.depthAttachment.loadAction = .clear
         descriptor.depthAttachment.storeAction = .dontCare
         descriptor.depthAttachment.clearDepth = 1
+        return descriptor
+    }
+
+    /// Draws the current scene into a `width` x `height` texture and reads it back. Blocks until the GPU is done.
+    func renderOffscreen(width: Int, height: Int) throws -> OffscreenImage {
+        let target = try makeOffscreenTarget(width: width, height: height)
         guard let ticket = gate.acquire(intoWindow: false, patience: .seconds(10)) else { throw Failure.busy }
-        try submit(ticket, descriptor: descriptor, size: CGSize(width: width, height: height), drawable: nil,
+        try submit(ticket, descriptor: descriptor(for: target), size: CGSize(width: width, height: height), drawable: nil,
                    waitUntilCompleted: true)
         var bytes = [UInt8](repeating: 0, count: 4 * width * height)
         bytes.withUnsafeMutableBytes {
-            colorTexture.getBytes($0.baseAddress!, bytesPerRow: 4 * width,
+            target.color.getBytes($0.baseAddress!, bytesPerRow: 4 * width,
                                   from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
         }
         return OffscreenImage(width: width, height: height, bgra: bytes)
+    }
+
+    /// Draws the current scene into `target` without waiting for the GPU, the way a draw into the window goes: false, and
+    /// nothing drawn, when all three buffer sets are in flight (the window would try again shortly; the bench counts a
+    /// dropped draw).
+    @discardableResult
+    func drawNow(into target: OffscreenTarget) throws -> Bool {
+        guard let ticket = gate.acquire(intoWindow: false, patience: .milliseconds(0)) else { return false }
+        try submit(ticket, descriptor: descriptor(for: target), size: CGSize(width: target.width, height: target.height),
+                   drawable: nil, waitUntilCompleted: false)
+        return true
     }
 
     // MARK: Drawing
@@ -565,6 +615,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// the GPU has finished (at once, if this throws).
     private func submit(_ ticket: DrawGate.Ticket, descriptor: MTLRenderPassDescriptor, size: CGSize,
                         drawable: (any MTLDrawable)?, waitUntilCompleted: Bool) throws {
+        let started = CACurrentMediaTime()
         let slot = slots[ticket.slot]
         guard let commands = queue.makeCommandBuffer() else {
             gate.release(ticket)
@@ -587,9 +638,19 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         encode(into: encoder, slot: slot, size: size)
         encoder.endEncoding()
-        if let drawable { commands.present(drawable) }
+        let cpuMs = (CACurrentMediaTime() - started) * 1000
+        if let drawable {
+            commands.present(drawable)
+            if let presented = presentedHandler {
+                drawable.addPresentedHandler { presented($0.presentedTime) }
+            }
+        }
         let giveBack = ticket.giveBack
-        commands.addCompletedHandler { _ in giveBack() }
+        let timing = timingHandler
+        commands.addCompletedHandler { done in
+            giveBack()
+            timing?(DrawTiming(cpuMs: cpuMs, gpuMs: (done.gpuEndTime - done.gpuStartTime) * 1000))
+        }
         commands.commit()
         gate.commit(ticket)
         if waitUntilCompleted { commands.waitUntilCompleted() }

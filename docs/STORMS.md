@@ -297,8 +297,10 @@ owner's delegation of 2026-10-19, to revisit (cadence, the GUI architecture, dir
 | eras | seasons; era changes by fork at a chapter boundary (GAMES §7.4) | 2.3–21 min |
 
 - **Input.** One influence-costed decision per chapter, at most three alert-driven moves, forecasts optional.
-- **Time controls.** Pause, slow (0.25–0.5×, interpolated), 1×.
-  - At 14.4 steps/s, 1× is the maximum, so fast-forward needs §9.8 headroom.
+- **Time controls.** Pause, slow (0.25–0.5×), 1×, 2× and `max`.
+  - **As built in G3a (DESIGN §33.5):** 14.4 steps/s is the design rate (1x), not a ceiling: the fused kernel gives 69.6 steps/s, and fast-forward is
+    expected at 50 to 56 steps/s (3.5 to 3.9x; an estimate until the Mac day's `alife bench --play`), so 2x and `max` are real (§9.8). Organisms
+    are drawn as delivered (a 14.4-Hz frame moves a body 0.2 px at the region level: no interpolation); the map cross-fades over 0.4 s on the wall clock.
   - Time-lapse is playback of recorded, decimated frames (GAMES §8.2), not simulation.
 - **World Report** (N1 offline, built; live in G3; storm facts in W3).
   - Code builds the fact sheet: validated labels, social events, vitals, logged entries (storm tracks from W3).
@@ -329,12 +331,14 @@ owner's delegation of 2026-10-19, to revisit (cadence, the GUI architecture, dir
 
   | channel | content |
   |---|---|
-  | stdout, ALSTRM v1 | `FRM1` and alive-only frames, `IDNT`, `INTN`, `TERR`, `EVNT`, `STRM`, `VOL1`; proposed `MAP1` (weather maps), `ENVS` (effects, cooldowns, warm pools), `PLAN`, `ALRT`, `RPRT`, `FOCS` |
-  | stdin, ≤ 4,096 B per line | §27.11 commands, plus `intent`, `confirm`, `cancel`, `power`, `forecast`, `focus`, `rate`, `alerts` |
-  | files | `commands.jsonl`, `director.jsonl`, `reports.jsonl`, `observers/social.jsonl`: history and replay |
+  | stdout, ALSTRM v1 | **As built in G3a (DESIGN §33.1):** the header with the `play` key, then `FRMA` (alive-only frames; no `FRM1`), `IDNT`, `INTN`, `TERR`, `EVNT`, `STRM`, `MAP1` (weather maps), `ENVS` (pools, effects, cooldowns), `CLCK` (the rate, the achieved rate, `saving`) and `FOCS` (the focused organism). Still proposed: `VOL1` (W5), and `PLAN`, `ALRT`, `RPRT` (G3b) |
+  | stdin, ≤ 4,096 B per line | **As built:** `pause`, `run`, `step [N]`, `rate M\|max`, `color MODE`, `every K\|auto`, `focus UID\|off`, `follow UID\|off`, `idnt`, `labels on\|off`, `quit` (DESIGN §33.2.6). Proposed for G3b/G4: `intent`, `confirm`, `cancel`, `power`, `forecast`, `alerts`, `autopause` |
+  | files | **As built:** `play.json`, `play.lock`, `observers/storms.jsonl` and `observers/storms_<t>.json` (the tracker's state at each checkpoint), `observers/houses_<S>.npz` (a planet's exact houses). Proposed: `commands.jsonl`, `reports.jsonl`; `director.jsonl` and `observers/social.jsonl` as before |
 - **Measured before W4.**
   - W0 steerability: track deflection per impulse, and the storm response to a warm-pool change.
-  - The combined 3D play-loop bench: step, observers, weather, stream, client rendering, and an LLM call in flight.
+  - The combined 3D play-loop bench: step, observers, weather, stream, client rendering, and an LLM call in flight. **G3a built the
+    instrument** (`alife bench --play` and `WorldRenderBench`, DESIGN §33.5; no LLM call in flight yet, that is G3b); its gate is the
+    coordinator's Mac day.
 
 ## 7. Risks
 
@@ -397,7 +401,8 @@ Each step is one PR, merged before the next.
 6. **W5, client.** `VOL1`, `STRM` and the volumetric view.
 
 **Interleaving with GAMES G2–G5** (§9.1 decided for the storm world): G2, W0 with N1, W1, W2, G3 (the play loop on the
-storm world, with `STRM` and a 2D weather map as the first client), W3, G4 with W4 (one golden-safe change), W5, then G5.
+storm world, with `STRM` and a 2D weather map as the first client; split into G3a, the play loop and the World window, built in
+DESIGN §33 on W1's overlay values, and G3b, chapters, alerts, the live report and powers), W3, G4 with W4 (one golden-safe change), W5, then G5.
 W0 has no engine code, so it can run alongside G2. If W0 fails and model A also fails its budget, §9.1 comes back to
 the owner.
 
@@ -432,7 +437,8 @@ owner's delegation (to revisit). Items 6 and 8 are open; they are needed by W2 (
    or a smaller 3D world. C = 24 is ruled out by occupancy. Restated as wall-clock targets (§6.5): forecast feedback
    within 15–70 s, storm arcs of 3–10 min, lever response within 1–2 min, a power lands within 2 s, fast-forward of at
    least 2× where offered. The fused kNN kernel is tried first, a smaller world only if it misses; decided before W2
-   (coordinator's choice under the owner's delegation of 2026-10-19, to revisit).
+   (coordinator's choice under the owner's delegation of 2026-10-19, to revisit). *Built in G3a:* 14.4 steps/s is the design rate (1x), with
+   0.25x to 2x and `max` on top (DESIGN §33.5.1; the measured fast-forward is the Mac day's).
 9. **Weather grid.** *Decided 2026-10-19:* 160 × 160 at 2 units. The alternative was the 80-cell field lattice.
 
 ## 10. Sources

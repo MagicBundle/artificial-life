@@ -67,6 +67,7 @@ from alife.runio import (
     checkpoint_metadata,
     load_checkpoint,
     play_lock_holder,
+    write_state_file,
 )
 from alife.runner import ExitCode
 from alife.state import DeathCause, State, State3, agent_fields, default_env, init_state, to_numpy
@@ -1305,14 +1306,88 @@ def _cmd_activity(a: argparse.Namespace) -> int:
     return ExitCode.OK
 
 
+def _bench_play_world(a: argparse.Namespace, workdir: Path) -> tuple[Config, Path]:
+    """The world ``bench --play`` plays, saved as a state file in ``workdir``: a preset (a founder population)
+    or a planet (``--play-from SRC[:STEP]``, forked as ``alife play --init-from`` forks it), with the weather
+    spun up by ``--play-spinup N``. Every arm of the bench loads its own copy."""
+    items = argparse.Namespace(replay=False, director="off")
+    template = workdir / "template.safetensors"
+    if a.play_from is not None:
+        ns = argparse.Namespace(
+            init_from=a.play_from, overlay=a.overlay, set=a.set, weather_spinup=a.play_spinup,
+            out=str(workdir / "template"), overwrite=True, quiet=True, director="off", preset=None,
+        )  # fmt: skip
+        ra = _play_namespace(ns)
+        rd, cfg, box, code = _prepare_fork(
+            ra, [*_run_overrides(ra), *_play_items(items)], require_spinup=True
+        )
+        if code is not None or rd is None:
+            raise CheckpointError(f"bench --play: the planet could not be made (exit {code})")
+        write_state_file(template, box[0], cfg)
+        return cfg, template
+    cfg = load_config(preset=a.preset, overlays=a.overlay, overrides=[*a.set, *_play_items(items)])
+    _knn_guard(cfg)
+    state = init_state(cfg)
+    if a.play_spinup:
+        if not cfg.weather.enabled:
+            raise ConfigError("--play-spinup spins the weather up: it needs the weather on (--overlay storm)")
+        wx = weather_spinup.spinup(cfg, a.play_spinup, step=0, key=state.key, compile=cfg.run.compile)
+        state = state._replace(wx=wx)
+    write_state_file(template, state, cfg)
+    return cfg, template
+
+
+def _bench_play(a: argparse.Namespace) -> dict[str, Any]:
+    """``bench --play``: the play loop of ``alife play`` run headless (DESIGN §33.5), in its own report."""
+    import tempfile
+
+    from alife import bench
+
+    workdir = Path(a.play_out) if a.play_out else Path(tempfile.mkdtemp(prefix="alife-bench-play-"))
+    workdir.mkdir(parents=True, exist_ok=True)
+    cfg, template = _bench_play_world(a, workdir)
+    rates = tuple(r.strip() for r in a.play_rates.split(",") if r.strip())
+    wanted = a.play_directors or (
+        "off,rules" if cfg.director.enabled else "off"
+    )  # the rule tier needs the levers
+    directors = tuple(d.strip() for d in wanted.split(",") if d.strip())
+    bad = [d for d in directors if d not in bench.PLAY_DIRECTORS]
+    if bad:
+        raise ConfigError(f"--play-directors takes {bench.PLAY_DIRECTORS}, not {bad}")
+    try:
+        for r in rates:
+            bench._rate_value(r)
+    except ValueError as e:
+        raise ConfigError(str(e)) from None
+    report = bench._environment(cfg)
+    report["play"] = bench.run_play_bench(
+        cfg, template, workdir, steps=a.steps or bench.PLAY_STEPS, warmup=a.play_warmup, rates=rates,
+        directors=directors,
+    )  # fmt: skip
+    report["play"]["workdir"] = str(workdir)
+    return report
+
+
 def _cmd_bench(a: argparse.Namespace) -> int:
     from alife.bench import run_bench
 
+    if a.play:
+        report = _bench_play(a)
+        text = _dumps(report)
+        if a.json is not None:
+            out = Path(a.json)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(text + "\n", encoding="utf-8")
+        print(text)
+        if report["play"]["digests_equal"] is False:
+            print("play bench: a played world's final state differs from the plain run's", file=sys.stderr)
+            return int(ExitCode.ERROR)
+        return int(ExitCode.OK)
     cfg = load_config(preset=a.preset, overlays=a.overlay, overrides=a.set)
     _knn_guard(cfg)
     report = run_bench(
         cfg,
-        steps=a.steps,
+        steps=a.steps or 200,
         warmup=a.warmup,
         stages=a.stages,
         determinism=a.determinism,
@@ -1622,7 +1697,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("bench", help="throughput, donation health, determinism")
     _config_args(p)
-    p.add_argument("--steps", type=_positive, default=200)
+    p.add_argument(
+        "--steps", type=_positive, default=None, help="timed steps (default 200; 2000 with --play)"
+    )
     p.add_argument("--warmup", type=_non_negative, default=20)
     p.add_argument("--stages", action="store_true")
     p.add_argument("--determinism", action="store_true")
@@ -1645,6 +1722,51 @@ def build_parser() -> argparse.ArgumentParser:
         default=2,
         metavar="N",
         help="off/on block pairs of the --weather measurement (default 2: off on on off)",
+    )
+    p.add_argument(
+        "--play",
+        action="store_true",
+        help="the play loop of `alife play` run headless (DESIGN §33.5): per director mode and rate, the "
+        "achieved rate, step_ms p50/p99/max, the cost of its parts, late steps, bytes by record and the "
+        "digest against a plain run; a report of its own (the other bench parts are skipped). Use the "
+        "planet's config: --preset 64k3d --overlay storm --set director.enabled=true",
+    )
+    p.add_argument(
+        "--play-from",
+        default=None,
+        metavar="SRC[:STEP]",
+        help="--play on a planet: fork this run's checkpoint as `alife play --init-from` does (an evolved "
+        "population, not founders)",
+    )
+    p.add_argument(
+        "--play-spinup",
+        type=_positive,
+        default=None,
+        metavar="N",
+        help="--play: spin the weather up for N steps first (a storm world has no storms for about 15,000 "
+        "steps)",
+    )
+    p.add_argument(
+        "--play-rates", default="max,1", metavar="LIST", help="--play: rates, comma separated (default max,1)"
+    )
+    p.add_argument(
+        "--play-directors",
+        default=None,
+        metavar="LIST",
+        help="--play: director modes (default off,rules when director.enabled is set, else off)",
+    )
+    p.add_argument(
+        "--play-warmup",
+        type=_non_negative,
+        default=300,
+        metavar="N",
+        help="--play: warm-up steps (default 300)",
+    )
+    p.add_argument(
+        "--play-out",
+        default=None,
+        metavar="DIR",
+        help="--play: where the arms' run directories go (default a temp dir)",
     )
     p.add_argument("--json", default=None, metavar="PATH")
     p.set_defaults(func=_cmd_bench)

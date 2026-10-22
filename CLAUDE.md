@@ -26,6 +26,10 @@ same trajectory.
 `src/alife/game/report.py`, `templates.py`, `lexicon.py`; normative spec `DESIGN.md` §31), is implemented: code writes every
 sentence from templates and checks it, a local model (`--llm --model ID`) only selects and orders candidate ids, and no
 model-written text is ever shown or put into a prompt. Its thresholds are provisional until the owner read.
+`alife play` and the Swift **World** window (the play loop, the stream records, planets, the chronicle, picking and follow; GAMES §9 G3a;
+normative spec `DESIGN.md` §33, row I51) are built; their Mac day (purity on Metal, the bench gate, the click-through) is the coordinator's.
+Presentation-only control lines (`focus follow idnt labels color every`, pacing, frames, records) never change a trajectory; a change to
+`play.py`, `streamrec.py` or the runner's `Pacer` hook must keep `tests/test_play_purity.py` (digest equality with a plain run) green.
 
 ## Conventions
 
@@ -54,7 +58,8 @@ model-written text is ever shown or put into a prompt. Its thresholds are provis
   `probe` only when no GPU job or timing runs. A change to a template, the lexicon, the label table or the select prompt
   changes a digest that `verify` compares: bump the version and re-pin.
 - The GUI (`gui/`, SwiftUI, macOS 14+) shells out to `.venv/bin/alife`. Keep its lever list in sync with
-  config keys, and build it with `cd gui && swift build`.
+  config keys, and build it with `cd gui && swift build`. Swift is not in CI: before a push run `swift build -Xswiftc
+  -warnings-as-errors && swift test` there (`tests/test_gui_sync.py` ties its flags, palettes, event kinds and levels to the engine).
 
 ## Owner preferences
 

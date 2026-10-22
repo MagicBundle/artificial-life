@@ -515,3 +515,229 @@ def test_donation_verdict_arithmetic() -> None:
     assert not bad["ok"] and bad["saved_over_weights"] == pytest.approx(0.05)
     edge = bench._donation(excess=0, excess_copy=int(bench.DONATION_LIMIT * w), weights=w)
     assert not edge["ok"]  # the copying step must be strictly more than the limit above
+
+
+# --- bench --play (G3a, DESIGN §33.5) ---------------------------------------------------------------------
+
+PLAY_CADENCE = {"metrics_every": 10, "heavy_metrics_every": 10, "checkpoint_every": 30, "keep_checkpoints": 3}
+
+
+@pytest.fixture
+def short_play(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Play with a metrics row and a snapshot every 10 steps and a checkpoint every 30."""
+    from alife import play
+    from play_helpers import snapshots
+
+    monkeypatch.setattr(play, "PLAY_CADENCE", PLAY_CADENCE)
+    snapshots(monkeypatch, 10)
+
+
+def planet_template(tmp_path: Path, *overrides: str) -> tuple[Config, Path]:
+    """A 256-row storm world (the planet's configuration in miniature, director levers compiled in) and its
+    state saved as the bench's template."""
+    from alife.runio import write_state_file
+    from weather_helpers import storm3d_config
+
+    cfg = storm3d_config("director.enabled=true", "director.rule_every=20", *overrides)
+    path = tmp_path / "template.safetensors"
+    write_state_file(path, init_state(cfg), cfg)
+    return cfg, path
+
+
+def test_play_bench_reports_every_arm_and_the_digests_equal_the_plain_run(
+    tmp_path: Path, short_play: None
+) -> None:
+    cfg, template = planet_template(tmp_path)
+    r = bench.run_play_bench(
+        cfg, template, tmp_path / "w", steps=40, warmup=10, rates=("max", "1"), directors=("off", "rules")
+    )
+    json.dumps(r, allow_nan=False)  # JSON-compatible, like every report
+    assert [(a["director"], a["rate"]) for a in r["arms"]] == [
+        ("off", "max"), ("off", "1"), ("rules", "max"), ("rules", "1"),
+    ]  # fmt: skip
+    assert r["digests_equal"] and set(r["plain_digest"]) == {"off", "rules"}
+    assert r["engine_ms"] > 0 and r["cadence"] == PLAY_CADENCE
+    for a in r["arms"]:
+        assert a["digest_equal"] and a["digest"] == r["plain_digest"][a["director"]]
+        assert a["steps_measured"] >= 39 and a["steps_per_s"] > 0 and a["seconds"] > 0
+        q = a["step_ms"]
+        assert 0 < q["p50"] <= q["p99"] <= q["max"]
+        c = a["components_ms"]
+        for key in ("engine", "loop_typical", "frma", "write", "tables", "boundary"):
+            assert c[key] is not None and c[key] > 0, (a["name"], key)
+        assert c["observer"] is not None and 0 <= c["observer"] <= c["loop_typical"], (
+            "derived: step less the engine"
+        )
+        assert a["bytes_per_s"]["HEAD"] == 0, "the header went out before the measured window began"
+        assert c["settle"] is not None, "a snapshot every 10 steps"
+        assert a["bytes_per_s"]["FRMA"] > 0 and a["bytes_per_s"]["CLCK"] > 0 and a["mb_per_s"] > 0
+        assert a["bytes_per_s"]["IDNT"] > 0 and a["bytes_per_s"]["MAP1"] > 0 and a["bytes_per_s"]["STRM"] > 0
+        assert a["frames"] > 0 and a["late_steps"] >= 0 and a["save_stall_steps"] >= 0
+        # 50 steps from step 0 (10 of warm-up), a boundary and a snapshot every 10, a tick every 25, a
+        # checkpoint every 30 and at the end: what the stopwatch counted is the schedule's, not the machine's.
+        assert a["step_counts"] == {"typical": 36, "snapshot": 0, "boundary": 3}, (
+            "boundary steps are snapshot steps"
+        )
+        calls = a["part_calls"]
+        assert (calls["boundary"], calls["tables"], calls["save"], calls["tick_storms"], calls["write"]) == (
+            4,
+            4,
+            2,
+            2,
+            40,
+        )
+        assert a["drained_bytes"] >= sum(a["bytes_per_s"].values()) * a["seconds"] * 0.5, (
+            "the reader got the stream"
+        )
+    paced = [a for a in r["arms"] if a["rate"] == "1"]
+    assert all(a["achieved_x"] < 20 for a in paced), "a paced arm cannot run at max speed"
+    maxed = [a for a in r["arms"] if a["rate"] == "max"]
+    assert all(a["steps_per_s"] > p["steps_per_s"] for a, p in zip(maxed, paced, strict=True))
+    text = "\n".join(bench._format_play(r))
+    assert "play loop" in text and "director rules" in text and "equal to the plain run" in text
+
+
+def test_play_bench_gate_reads_the_documented_numbers() -> None:
+    arm = {"rate": "1", "achieved_x": 0.99, "late_steps": 0, "step_ms": {"p99": 60.0}, "seconds": 310.0}
+    g = bench._play_gate(arm)
+    assert g["applies"] and g["pass"] and g["five_minutes"] and g["want"] == bench.PLAY_GATE_1X
+    assert not bench._play_gate({**arm, "achieved_x": 0.97})["pass"]
+    assert not bench._play_gate({**arm, "late_steps": 1})["pass"]
+    assert not bench._play_gate({**arm, "step_ms": {"p99": 67.0}})["pass"]
+    assert not bench._play_gate({**arm, "seconds": 120.0})["five_minutes"]
+    fast = {"rate": "max", "achieved_x": 3.6, "late_steps": 0, "step_ms": {"p99": 40.0}, "seconds": 20.0}
+    assert bench._play_gate(fast)["pass"] and not bench._play_gate({**fast, "achieved_x": 2.4})["pass"]
+    assert bench._play_gate({"rate": "0.5", **{k: v for k, v in arm.items() if k != "rate"}}) == {
+        "applies": False
+    }
+
+
+def test_play_bench_needs_the_levers_for_the_rule_tier(tmp_path: Path, short_play: None) -> None:
+    from alife.config import ConfigError
+    from alife.runio import write_state_file
+    from weather_helpers import storm3d_config
+
+    cfg = storm3d_config()
+    path = tmp_path / "t.safetensors"
+    write_state_file(path, init_state(cfg), cfg)
+    with pytest.raises(ConfigError, match=r"director\.enabled"):
+        bench.run_play_bench(
+            cfg, path, tmp_path / "w", steps=5, warmup=1, rates=("max",), directors=("rules",)
+        )
+    for kwargs in ({"steps": 0}, {"warmup": -1}, {"rates": ()}, {"directors": ()}):
+        args = {"steps": 5, "warmup": 1, "rates": ("max",), "directors": ("off",), **kwargs}
+        with pytest.raises(ValueError):
+            bench.run_play_bench(cfg, path, tmp_path / "w2", **args)
+    with pytest.raises(ValueError, match="rate"):
+        bench._rate_value("99")
+    assert bench._rate_value("max") == float("inf") and bench._rate_value("0.25") == 0.25
+
+
+def test_the_bench_pacer_changes_nothing_it_measures(tmp_path: Path, short_play: None) -> None:
+    """A stopwatch pacer is a presenter like any other: the run is the plain run's, bit for bit (the report's
+    `digests_equal` is that claim)."""
+    cfg, template = planet_template(tmp_path)
+    r = bench.run_play_bench(
+        cfg, template, tmp_path / "w", steps=20, warmup=5, rates=("max",), directors=("off",)
+    )
+    assert r["digests_equal"] and r["arms"][0]["gate"]["applies"]
+
+
+def test_alife_bench_play_runs_from_the_command_line(
+    tmp_path: Path, short_play: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from alife import cli
+    from weather_helpers import SMALL3D
+
+    argv = [
+        "bench", "--play", "--preset", "64k3d", "--overlay", "storm", "--steps", "25", "--play-warmup", "5",
+        "--play-rates", "max", "--play-spinup", "20",
+        "--play-out", str(tmp_path / "arms"), "--json", str(tmp_path / "bench.json"),
+        "--set", "director.enabled=true", "--set", "director.rule_every=20",
+        *[x for o in SMALL3D for x in ("--set", o)],
+    ]  # fmt: skip
+    assert cli.main(argv) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert json.loads((tmp_path / "bench.json").read_text()) == report
+    play = report["play"]
+    assert play["digests_equal"] and [a["director"] for a in play["arms"]] == ["off", "rules"]
+    assert play["workdir"] == str(tmp_path / "arms") and (tmp_path / "arms" / "template.safetensors").exists()
+    assert report["config"]["n_max"] == 256, "the bench report carries the environment"
+    assert "stages" not in report and "ms_per_step" not in report, "--play is a report of its own"
+
+
+def test_alife_bench_play_refuses_what_it_cannot_run(tmp_path: Path, short_play: None) -> None:
+    from alife import cli
+    from weather_helpers import SMALL3D
+
+    base = [
+        "bench",
+        "--play",
+        "--preset",
+        "64k3d",
+        "--steps",
+        "5",
+        "--play-out",
+        str(tmp_path / "a"),
+        *[x for o in SMALL3D for x in ("--set", o)],
+    ]
+    assert cli.main([*base, "--play-rates", "99"]) == 2, "a rate outside [0.05, 16]"
+    assert cli.main([*base, "--play-directors", "llm"]) == 2
+    assert cli.main([*base, "--play-spinup", "10"]) == 2, "a spin-up needs the weather on"
+    assert cli.main([*base, "--play-directors", "rules"]) == 2, "the rule tier needs director.enabled"
+
+
+def test_alife_bench_play_runs_only_the_plain_arm_without_the_director_levers(
+    tmp_path: Path, short_play: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from alife import cli
+    from weather_helpers import SMALL3D
+
+    argv = [
+        "bench", "--play", "--preset", "64k3d", "--steps", "4", "--play-warmup", "1", "--play-rates", "max",
+        "--play-out", str(tmp_path / "arms"), *[x for o in SMALL3D for x in ("--set", o)],
+    ]  # fmt: skip
+    assert cli.main(argv) == 0
+    play = json.loads(capsys.readouterr().out)["play"]
+    assert [(a["director"], a["rate"]) for a in play["arms"]] == [("off", "max")], "no levers, no rule tier"
+    assert play["digests_equal"] and play["arms"][0]["bytes_per_s"].get("MAP1") is None, (
+        "a dry world sends no map"
+    )
+
+
+def test_play_bench_says_so_when_a_played_world_differs_from_the_plain_run(
+    tmp_path: Path, short_play: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`digests_equal` is a measurement, not a constant: against a wrong plain digest it is false, and the
+    report says so (`alife bench --play` exits 1)."""
+    cfg, template = planet_template(tmp_path)
+    monkeypatch.setattr(bench, "_plain_digest", lambda *a, **k: "not the digest")
+    r = bench.run_play_bench(
+        cfg, template, tmp_path / "w", steps=6, warmup=2, rates=("max",), directors=("off",)
+    )
+    assert r["digests_equal"] is False and r["arms"][0]["digest_equal"] is False
+    assert "DIFFER from the plain run" in "\n".join(bench._format_play(r))
+
+
+def test_play_bench_does_not_count_saving_as_boundary_work(
+    tmp_path: Path, short_play: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The checkpoint is its own part: with a save at every boundary and a slow disk, `save` is the disk's and
+    `boundary` is the runner's work without it (the gate reports saving apart from `late_steps`)."""
+    from alife import play
+    from alife.runio import RunDir
+
+    monkeypatch.setattr(play, "PLAY_CADENCE", {**PLAY_CADENCE, "checkpoint_every": 10})
+    real = RunDir.save_checkpoint
+
+    def slow(self: RunDir, *args: object, **kwargs: object) -> object:
+        time.sleep(0.15)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(RunDir, "save_checkpoint", slow)
+    cfg, template = planet_template(tmp_path)
+    r = bench.run_play_bench(
+        cfg, template, tmp_path / "w", steps=25, warmup=5, rates=("max",), directors=("off",)
+    )
+    c = r["arms"][0]["components_ms"]
+    assert c["save"] >= 150 and c["boundary"] < 100, (c["save"], c["boundary"])

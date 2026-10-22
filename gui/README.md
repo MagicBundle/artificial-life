@@ -192,6 +192,25 @@ so the GPU is idle while nothing changes. The shaders are
 compiled when the first stream is shown (an idle window creates no Metal device); if that fails, the window shows the
 compiler's message.
 
+## The World window
+
+The game's window (DESIGN §33.4, `docs/GAMES.md` §9 G3a). **Open World** in the Lab (or `swift run AlifeControl --world RUN`) opens
+it; it plays a world with `alife play` over the stream records of DESIGN §33.1 and shows the planet map and the organisms in a
+raw-Metal view with a control center docked to one side (left, right or bottom; the toolbar and the divider change it).
+
+- **Worlds.** The launcher lists the worlds under `runs/` (a directory with `play.json`; unfinished planet builds are listed as
+  such), resumes one at 1x, or makes a planet from a checkpoint: the storm overlay with a weather spin-up, `director.enabled`, the
+  houses mode. Closing the window stops the process with `quit` (it saves a checkpoint), then SIGINT after 30 s.
+- **Clock strip** (always at the top of the dock): Pause, 0.25x, 0.5x, 1x, 2x, Max, `+1` and (paused) `+25`, the step, the achieved
+  rate ("0.98x of 1x"), "late N" and "saving...".
+- **Map.** Drag pans, right or Option drag turns the view, the wheel and a pinch zoom. Organisms are drawn from the region level
+  inward; at the planet level the map is the picture (the View menu's "Agent points" adds 1 px points).
+- **Picking.** A click on an organism selects and follows it (shift-click selects only, a double click flies in); on a storm it
+  selects and flies there (double click follows); on a territory cell it selects the kin group; on nothing it clears. The pointer
+  over something names it. The inspector card is pinned under the Cast and Chronicle tabs.
+- **Keys** (the map has the focus): `space` pause/run, `.` step, `c` colour mode, `1 2 3` agents, bonds, territory, `f` follow the
+  selection, `[` `]` slower/faster, `r` reset the view, `esc` clear.
+
 ## Files
 
 `Package.swift` has four targets: **`AlifeCore`**, a library of pure logic with no AppKit and no Metal (its declarations
@@ -211,6 +230,11 @@ Testing), **`AlifeCoreTests`** for the library and **`AlifeControlTests`** for t
 - `StreamProtocol.swift`: the incremental decoder of the `alife stream` binary protocol (DESIGN §27.11)
 - `StreamControl.swift`: the encoder of the control lines written to the stream's stdin
 - `Camera.swift`: the orbit and fly camera (view and projection matrices; the clip planes follow the pose)
+- The World window's pure types (DESIGN §33.4): `PlayRecords.swift` (the decoders of the play records), `PlayCommand.swift`,
+  `PlayLaunch.swift`, `PlayWorlds.swift`, `WorldStore.swift` (the reducer of the records and the chronicle), `ClockStrip.swift`,
+  `DockLayout.swift`, `Torus.swift`, `WorldLevels.swift`, `MapFade.swift`, `WorldPalette.swift`, `WorldProjector.swift`, and for the
+  interaction `WorldPicker.swift`, `WorldSelection.swift`, `WorldFollow.swift` (`FollowState`, `CameraGlide`), `WorldKeys.swift`,
+  `CastPolicy.swift`, `Inspector.swift` and `WorldChronicle.swift` (grouping, filters, toasts)
 
 `Sources/AlifeControl/`:
 - `AlifeControlApp.swift`: app entry point and app delegate (ignores SIGPIPE), the main window and the 3D Viewer window
@@ -229,6 +253,10 @@ Testing), **`AlifeCoreTests`** for the library and **`AlifeControlTests`** for t
   snapshot, and the window's controls
 - `ViewerSupport.swift`: the pure parts (keys, speed, pointer-to-camera mapping, the stream's arguments)
 - `WindowCloseObserver.swift`: runs an action when a window closes (or when the last of a group of windows does)
+- The World window: `EngineSession.swift` (the process plumbing shared with `StreamController`), `PlayController.swift` (the
+  `alife play` process), `WorldView.swift`, `ControlCenterView.swift`, `WorldPanels.swift` (Cast, Chronicle, inspector, toasts),
+  `WorldModel.swift` and `WorldModel+Interaction.swift` (camera, selection, follow, keys), `WorldMetalView.swift` and
+  `WorldOverlayView.swift` (the view and its `Canvas` overlay), `WorldLauncherView.swift`, `AppTermination.swift`
 
 Also `scripts/make-app.sh` and `scripts/make-icon.swift` (app bundle, signing, install and the generated icon).
 
@@ -260,5 +288,6 @@ cd gui
 ALIFE_GPU_TESTS=1 swift test --filter GPURenderTests
 ```
 
-Without the variable they are reported as skipped. Run them when the GPU is free (a simulation on it slows both), and
+`GPUWorldTests` (the World's shaders and pixels) and `WorldRenderBench` (the client's draw time, DESIGN §33.5.5, settings by
+`ALIFE_BENCH_*`) are opt in the same way. Without the variable they are reported as skipped. Run them when the GPU is free (a simulation on it slows both), and
 after any change to `Shaders.swift` or `Renderer.swift`.
