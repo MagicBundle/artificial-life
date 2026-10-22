@@ -798,7 +798,7 @@ def study(
     size = cfg.world.size
 
     state = load_state(rd, cfg, states_dir, start)
-    obs, note = Observer.open(rd, state, cfg, rules=rules)
+    obs, note = Observer.open(rd, state, cfg, rules=rules, tracers=False)
     resumed = any(st == start for st, _ in rd.checkpoints())
     source = "sidecar" if resumed and note is None else "fresh"
     rows = {int(r["step"]): r for r in rd.metrics_rows()} if verify else {}

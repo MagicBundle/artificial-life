@@ -86,7 +86,9 @@
   },
   "game": {
     "house_rate": 0.00048828125,
-    "observe": false
+    "observe": false,
+    "tracer_period": 500,
+    "tracers": 0
   },
   "mutation": {
     "buoy_init": 0.0,
@@ -140,6 +142,7 @@
     "components_iters": 32,
     "director": "off",
     "diversity_sample": 256,
+    "eco_every": 0,
     "heavy_metrics_every": 10,
     "keep_checkpoints": 3,
     "llm_model": "gemma-4-26b-a4b-it-mlx@8bit",
@@ -147,7 +150,8 @@
     "metrics_every": 10,
     "runtime_checks": "cheap",
     "seed": 0,
-    "steps": 500
+    "steps": 500,
+    "wx_every": 0
   },
   "sensing": {
     "cell_capacity": 16,

@@ -206,6 +206,12 @@ class GameConfig:  # the games vertical (docs/GAMES.md, §28); added after v0.1
     # working default, not "off": an observer-only key (CLAUDE.md). A birth founds a house iff
     # splitmix64(uid, run.seed) < house_rate·2^64; 1/2048 is exact in binary.
     house_rate: float = 1 / 2048
+    # The tracer rig (W2, DESIGN §32): passive tracers moved by the wind, the null of "agents against passive
+    # drift". Host-observer keys like ``house_rate``: unhashed, a resume key, inert while 0. ``tracers`` is
+    # the count (0 = off; needs ``observe`` and ``weather.enabled``), ``tracer_period`` the steps between
+    # reseeds at live agents.
+    tracers: int = 0
+    tracer_period: int = 500
 
 
 # The default warm pools of ``[weather]`` (``weather.DEFAULT_POOLS``, flat: 7 floats per pool).
@@ -288,6 +294,12 @@ class RunConfig:  # excluded from config_hash; on resume only observer/cadence k
     director: str = "off"  # off | live | replay (needs director.enabled); resume may change it
     llm_url: str = "http://localhost:1234/v1/chat/completions"  # the LLM tier's endpoint (LM Studio)
     llm_model: str = "gemma-4-26b-a4b-it-mlx@8bit"  # the model named in each request
+    # Run dumps (W2, DESIGN §32), cadence keys like ``metrics_every`` (``run`` is outside the hash; a resume
+    # key): ``eco_every`` writes ``observers/eco_<step>.npz`` (per-agent ecology of the live rows; needs
+    # ``game.observe``, ``weather.enabled`` and a 3D world), ``wx_every`` writes ``observers/wx_<step>.npy``
+    # (the ten weather planes; needs ``weather.enabled``). 0 = off.
+    eco_every: int = 0
+    wx_every: int = 0
 
 
 @dataclass(frozen=True)
@@ -689,6 +701,8 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("energy", "buoyancy_cap_cost"),
     ("game", "observe"),
     ("game", "house_rate"),
+    ("game", "tracers"),
+    ("game", "tracer_period"),
     ("weather", "enabled"),
     ("weather", "cells"),
     ("weather", "H1"),
@@ -769,7 +783,13 @@ DIRECTOR_POLICY_KEYS: Final = tuple(key for _, key in UNHASHED_KEYS)
 # POST_V01 keys read only by host-side observers (§28, §29): omitted from ``config_hash`` at every value and
 # inert while ``game.observe`` is off, so they may default to a working value. Separate from
 # ``UNHASHED_KEYS``, from which ``DIRECTOR_POLICY_KEYS`` (the director's resume keys) is derived.
-OBSERVER_KEYS: Final[tuple[tuple[str, str], ...]] = (("game", "observe"), ("game", "house_rate"))
+OBSERVER_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    ("game", "observe"),
+    ("game", "house_rate"),
+    ("game", "tracers"),
+    ("game", "tracer_period"),
+)
+TRACERS_MAX: Final = 1 << 20  # the largest ``game.tracers``
 DIRECTOR_MODES: Final = ("off", "live", "replay")
 RANDOM_PERSONA: Final = "random"  # arm R of DIRECTOR.md §9: yoked to another run's discretionary moves
 PERSONAS: Final = ("gardener", "trickster", "architect", RANDOM_PERSONA)
@@ -1191,6 +1211,26 @@ def validate(cfg: Config) -> None:
     # Game (§29.4): observer-only; `game.observe` is a plain bool (no rule), the house rate is a probability.
     gm = cfg.game
     req(0.0 <= gm.house_rate <= 1.0, f"game.house_rate must be in [0, 1], got {gm.house_rate}")
+    # The tracer rig and the run dumps (W2, DESIGN §32): host observers of the weather, so they need it.
+    req(0 <= gm.tracers <= TRACERS_MAX, f"game.tracers must be in [0, {TRACERS_MAX}], got {gm.tracers}")
+    req(gm.tracer_period >= 1, f"game.tracer_period must be ≥ 1, got {gm.tracer_period}")
+    if gm.tracers > 0:
+        req(gm.observe, "game.tracers > 0 needs game.observe (the tracers are an observer)")
+        req(cfg.weather.enabled, "game.tracers > 0 needs weather.enabled (the tracers move with its wind)")
+    req(ru.eco_every >= 0, f"run.eco_every must be ≥ 0, got {ru.eco_every}")
+    req(ru.wx_every >= 0, f"run.wx_every must be ≥ 0, got {ru.wx_every}")
+    if ru.eco_every > 0:
+        req(
+            gm.observe,
+            "run.eco_every > 0 needs game.observe (the dump holds the observer channel's emission)",
+        )
+        req(
+            cfg.weather.enabled,
+            "run.eco_every > 0 needs weather.enabled (the dump holds the wind at the agents)",
+        )
+        req(w.dims == 3, "run.eco_every > 0 needs a 3D world (the dump holds height and vertical wind)")
+    if ru.wx_every > 0:
+        req(cfg.weather.enabled, "run.wx_every > 0 needs weather.enabled")
 
     if errs:
         raise ConfigError(f"{len(errs)} config problem(s): " + "; ".join(errs))

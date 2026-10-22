@@ -429,9 +429,10 @@ def test_the_study_runs_the_observers_of_the_world_with_game_observe_on(
     seen: list[tuple[bool, str]] = []
     real = Observer.open.__func__  # type: ignore[attr-defined]
 
-    def spy(cls, rd, state, cfg, *, rules=None, social=None):
+    def spy(cls, rd, state, cfg, *, rules=None, social=None, tracers=True):
+        assert tracers is False  # the analysis tools never run the tracer rig
         seen.append((cfg.game.observe, social.digest()))
-        return real(cls, rd, state, cfg, rules=rules, social=social)
+        return real(cls, rd, state, cfg, rules=rules, social=social, tracers=tracers)
 
     monkeypatch.setattr(Observer, "open", classmethod(spy))
     assert RunDir.open(run_dir).config().game.observe is False

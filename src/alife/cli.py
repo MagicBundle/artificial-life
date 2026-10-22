@@ -63,7 +63,8 @@ from alife.step import make_step
 
 # run.* keys that resume may change: observers, cadences and the director mode (§18). Everything else goes
 # through a fork. The director's policy keys (director.persona, ...) and the observer keys game.observe and
-# game.house_rate (RESUME_GAME_KEYS) may change too: they never reach the trajectory.
+# game.house_rate, game.tracers, game.tracer_period (RESUME_GAME_KEYS) may change too: they never reach the
+# trajectory.
 RESUME_KEYS: frozenset[str] = frozenset(
     {
         "steps",
@@ -73,14 +74,16 @@ RESUME_KEYS: frozenset[str] = frozenset(
         "heavy_metrics_every",
         "components_iters",
         "diversity_sample",
+        "eco_every",
+        "wx_every",
         "director",
         "llm_url",
         "llm_model",
     }
 )
 RESUME_DIRECTOR_KEYS: frozenset[str] = frozenset(DIRECTOR_POLICY_KEYS)
-# The observer keys (game.observe, game.house_rate) are read by host-side observers only and are not hashed,
-# so resume may change them too (§28.6, §29).
+# The observer keys (game.observe, house_rate, tracers, tracer_period) are read by host-side observers only
+# and are not hashed, so resume may change them too (§28.6, §29).
 RESUME_GAME_KEYS: frozenset[str] = frozenset(key for _, key in OBSERVER_KEYS)
 
 LLM_DEFAULT_EVERY = 25_000  # steps between LLM calls with a bare --llm
