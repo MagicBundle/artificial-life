@@ -38,20 +38,23 @@ import numpy as np
 from alife.config import Config, config_hash, dims
 from alife.game import observe
 from alife.game import social as soc
+from alife.game.colors import ColorInputs, house_slot_bytes, kin_slot_bytes
 from alife.game.observe import EVAL_BIT, ObsState
 from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V2, RuleSet
-from alife.game.social import SOCIAL_V1, SOCIAL_VERSION, SocialRules, SocState
-from alife.game.society import HOST_KEYS, Society, host_snap
+from alife.game.social import HOUSE_UNKNOWN, SOCIAL_V1, SOCIAL_VERSION, SocialRules, SocState
+from alife.game.society import HOST_KEYS, TOP_HOUSES, Society, host_snap, house_names
 from alife.runio import CheckpointError, RunDir
 from alife.state import State, to_numpy
 from alife.step import Acts
-from alife.tracking import TRACK_VERSION, DominanceMap
+from alife.tracking import TRACK_VERSION, DominanceMap, circular_mean
 
 __all__ = [
     "DEFAULT_RULES",
     "DEFAULT_SOCIAL",
+    "FLAG_BORN_SINCE",
     "OBSERVER_FORMAT",
     "SIDECAR_FORMAT",
+    "IdentityRows",
     "Labels",
     "Observer",
     "SocialLabels",
@@ -91,6 +94,11 @@ _NP_DTYPE: Final = {
     mx.bool_: np.dtype(np.bool_),
 }  # the dtypes ObsState and SocState use, as they are stored in the sidecar
 _SOC_PREFIX: Final = "soc."
+# The slot bytes of the play stream's ``IDNT`` rows (DESIGN §33.1.3).
+SLOT_UNKNOWN: Final = 253  # a house of an immigrant lineage of an observer attached mid-run
+SLOT_OTHER: Final = 254  # listed in no table
+SLOT_NONE: Final = 255
+FLAG_BORN_SINCE: Final = 1  # IDNT row flag: born after the last snapshot
 
 
 class Labels(NamedTuple):
@@ -111,6 +119,20 @@ class SocialLabels(NamedTuple):
     house: mx.array  # (N,) int64 house id (the founder's uid), ``social.HOUSE_UNKNOWN``, -1 dead
     kin_slot: mx.array  # (N,) int32 kin group slot: 0..F-1 named, F = other, -1 dead
     colony_slot: mx.array  # (N,) int32 colony slot: 0..F-1 named, F = other tracked colony, -1 none
+
+
+class IdentityRows(NamedTuple):
+    """The rows and tables of one ``IDNT`` record (DESIGN §33.1.3): the alive rows in ascending row order."""
+
+    row: np.ndarray  # (n,) int64 row index in the state
+    uid: np.ndarray  # (n,) int64
+    clade: np.ndarray  # (n,) int32
+    house: np.ndarray  # (n,) uint8 slot byte: 0..15 listed, 253 unknown lineage, 254 other
+    kin: np.ndarray  # (n,) uint8 slot byte: 0..F-1 named, 254 other, 255 none
+    colony: np.ndarray  # (n,) uint8 slot byte: 0..F-1 named, 254 other tracked colony, 255 none
+    flags: np.ndarray  # (n,) uint8, bit 0 (``FLAG_BORN_SINCE``) = born after the last snapshot
+    snapshot_step: int  # the step of the last settled snapshot (the tables' as-of step)
+    tables: dict[str, Any]  # the IDNT JSON object
 
 
 class _Loaded(NamedTuple):
@@ -151,6 +173,7 @@ class Observer:
         self.step = step
         self._snap: soc.Snap | None = None  # the pending snapshot (arrays, lazy until the caller's eval)
         self._snap_step = -1
+        self._last_record: dict[str, Any] | None = None  # the newest record taken (identity tables, §33.1.3)
 
         def fold(
             o_: ObsState, so_: SocState, oi: observe.ObsIn, si: soc.SocIn, a: Acts
@@ -388,7 +411,81 @@ class Observer:
         Settles a pending snapshot first. The runner appends them to the social log right after each step's
         eval (``RunDir.append_social``); a caller that never takes them keeps them in memory."""
         self._settle()
-        return self.society.take_records()
+        records = self.society.take_records()
+        if records:
+            self._last_record = records[-1]
+        return records
+
+    def color_inputs(self, houses: np.ndarray) -> ColorInputs:
+        """The device arrays the observer colour modes read (``game.colors``): the house slot byte of every
+        row against ``houses`` (the listed top-16 house ids, in table order), the kin slot byte, the primary
+        archetype and the displayed intent. Lazy: the caller evaluates them with the frame."""
+        sl, lb = self.social_labels(), self.labels()
+        return ColorInputs(
+            house_slot_bytes(sl.house, houses),
+            kin_slot_bytes(sl.kin_slot, self.social.slots),
+            lb.arch_primary,
+            lb.intent,
+        )
+
+    def identity_rows(self, state: State) -> IdentityRows:
+        """The rows and tables of an ``IDNT`` record at ``state`` (the state the observer was last updated
+        with; ``ValueError`` otherwise): per alive row its uid, clade and the house, kin group and colony slot
+        bytes, and the JSON tables of the houses, kin groups and colonies (DESIGN §33.1.3).
+
+        The tables are the columns of the last snapshot record taken (``take_records``), copied; before any
+        record exists (a fresh observer, or one restored from a sidecar, until its first snapshot) they are
+        derived from the rows and the society's names (sizes, plurality clade and centroids of the rows; the
+        similarity, archetype mix, births and deaths are None). The slots of the rows are always the
+        observer's current ones (``social_labels``): newborns inherit their parent's, and a row born after the
+        last snapshot (``uid >= prev_next_uid``) is flagged. One host transfer; no device state changes.
+        """
+        self._settle()
+        if int(to_numpy(state.step)) != self.step:
+            raise ValueError(f"identity_rows: the observer is at step {self.step}, the state is not")
+        sl = self.social_labels()
+        d = dims(self.cfg)
+        arrays = (self.so.uid, sl.house, sl.kin_slot, sl.colony_slot, state.clade, state.pos)
+        mx.eval(*arrays)
+        uid_all, house_all, kin_all, col_all, clade_all, pos_all = (to_numpy(a) for a in arrays)
+        rows = np.flatnonzero(uid_all >= 0)
+        uid, house, kin, col = uid_all[rows], house_all[rows], kin_all[rows], col_all[rows]
+        clade, pos = clade_all[rows].astype(np.int32), pos_all[rows]
+        f = self.social.slots
+        rec = self._latest_record()
+        if rec is None:
+            top, houses = _houses_from_rows(house, clade, self.social.name_salt)
+            kin_tab = _kin_from_rows(self.society, kin, clade, pos, self.cfg.world.size, d.d3)
+            col_tab = _colonies_from_rows(self.society, kin, col, pos, self.cfg.world.size)
+        else:
+            top, houses = _houses_from_record(rec["houses"])
+            kin_tab, col_tab = _kin_from_record(rec["kin_groups"]), _colonies_from_record(rec["colonies"])
+        born = uid >= self.society.prev_next_uid
+        tables = {
+            "houses": houses,
+            "exact": self.society.house_origin == 0,
+            "origin": self.society.house_origin,
+            "kin": kin_tab,
+            "colonies": col_tab,
+            "unknown_immigrant": int((house == HOUSE_UNKNOWN).sum()),
+        }
+        return IdentityRows(
+            rows.astype(np.int64),
+            uid.astype(np.int64),
+            clade,
+            _house_bytes(house, top),
+            _slot_bytes(kin, f),
+            _slot_bytes(col, f),
+            np.where(born, FLAG_BORN_SINCE, 0).astype(np.uint8),
+            self.society.snapshot_step,
+            tables,
+        )
+
+    def _latest_record(self) -> dict[str, Any] | None:
+        """The newest settled snapshot record (untaken, else the last one taken), None before any."""
+        if self.society.records:
+            return self.society.records[-1]
+        return self._last_record
 
     # --- reporting ----------------------------------------------------------------------------------------
 
@@ -453,6 +550,164 @@ class Observer:
             "intent_match": _shares(match_intent, INTENT_NAMES, eval_n),
             "social": self.society.head(),
         }
+
+
+# --- the identity tables (IDNT, DESIGN §33.1.3) -------------------------------------------------------------
+
+
+def _slot_bytes(slot: np.ndarray, f: int) -> np.ndarray:
+    """The slot byte of a ``SocState.kin`` / ``colony`` value: ``0..f-1`` as it is, ``f`` (OTHER) to 254, a
+    negative value (no colony) to 255. The host twin of ``colors.kin_slot_bytes``."""
+    return np.where(slot < 0, SLOT_NONE, np.where(slot >= f, SLOT_OTHER, slot)).astype(np.uint8)
+
+
+def _house_bytes(house: np.ndarray, top: np.ndarray) -> np.ndarray:
+    """The slot byte of house ids against ``top`` (the listed ids in table order): the index for a listed
+    house, 253 for an unknown lineage, 254 for any other, 255 for a dead row. The host twin of
+    ``colors.house_slot_bytes``."""
+    out = np.where(house >= 0, SLOT_OTHER, SLOT_NONE).astype(np.int64)
+    if top.size:
+        order = np.argsort(top, kind="stable")
+        at = np.minimum(np.searchsorted(top[order], house), top.size - 1)
+        out = np.where(top[order][at] == house, order[at], out)
+    return np.where(house == HOUSE_UNKNOWN, SLOT_UNKNOWN, out).astype(np.uint8)
+
+
+def _houses_from_record(table: Mapping[str, list[Any]]) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    ids = table["id"]
+    entries = [
+        {
+            "slot": i,
+            "id": ids[i],
+            "name": table["name"][i],
+            "size": table["size"][i],
+            "clade": table["clade"][i],
+        }
+        for i in range(len(ids))
+    ]
+    return np.array(ids, np.int64), entries
+
+
+def _houses_from_rows(
+    house: np.ndarray, clade: np.ndarray, salt: int
+) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    """The top houses of the rows by ``(-size, id)``, with the clade of each house's first row: the rule of
+    ``Society._houses`` applied to the rows now."""
+    sel = house >= 0
+    ids, first, counts = np.unique(house[sel], return_index=True, return_counts=True)
+    top = np.lexsort((ids, -counts))[:TOP_HOUSES]
+    names = house_names(ids[top], salt)
+    entries = [
+        {"slot": i, "id": int(ids[t]), "name": nm, "size": int(counts[t]), "clade": int(clade[sel][first][t])}
+        for i, (t, nm) in enumerate(zip(top.tolist(), names, strict=True))
+    ]
+    return ids[top].astype(np.int64), entries
+
+
+def _kin_from_record(table: Mapping[str, list[Any]]) -> list[dict[str, Any]]:
+    three = "z_mean" in table
+    return [
+        {
+            "slot": table["slot"][i],
+            "id": table["id"][i],
+            "name": table["name"][i],
+            "named_after": table["named_after"][i],
+            "size": table["size"][i],
+            "clade": table["clade"][i],
+            "clade_share": table["clade_share"][i],
+            "sim_self": table["sim_self"][i],
+            "x": table["x"][i],
+            "y": table["y"][i],
+            **({"z": table["z_mean"][i]} if three else {}),
+            "arch": table["arch"][i],
+            "births": table["births"][i],
+            "deaths": table["deaths"][i],
+        }
+        for i in range(len(table["id"]))
+    ]
+
+
+def _colonies_from_record(table: Mapping[str, list[Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "slot": table["slot"][i],
+            "id": table["id"][i],
+            "size": table["size"][i],
+            "kin": table["kin_group"][i],
+            "x": table["x"][i],
+            "y": table["y"][i],
+        }
+        for i in range(len(table["id"]))
+    ]
+
+
+def _centre(pos: np.ndarray, size: float) -> tuple[float, float]:
+    return round(circular_mean(pos[:, 0], size), 2), round(circular_mean(pos[:, 1], size), 2)
+
+
+def _kin_from_rows(
+    society: Society, kin: np.ndarray, clade: np.ndarray, pos: np.ndarray, size: float, three: bool
+) -> list[dict[str, Any]]:
+    """The kin table without a record: one entry per slot that holds a group, from the rows of that slot."""
+    out = []
+    for s in np.flatnonzero(society.kin_slots >= 0).tolist():
+        gid = int(society.kin_slots[s])
+        name, after = society.kin_names.get(gid, (f"Kin group {gid}", -1))
+        m = kin == s
+        n = int(m.sum())
+        clades, counts = np.unique(clade[m], return_counts=True)
+        x, y = _centre(pos[m], size) if n else (None, None)
+        out.append(
+            {
+                "slot": s,
+                "id": gid,
+                "name": name,
+                "named_after": after if after >= 0 else None,
+                "size": n,
+                "clade": int(clades[np.argmax(counts)]) if n else -1,
+                "clade_share": round(int(counts.max()) / n, 4) if n else None,
+                "sim_self": None,
+                "x": x,
+                "y": y,
+                **(
+                    {"z": round(float(pos[m][:, 2].astype(np.float64).mean()), 2) if n else None}
+                    if three
+                    else {}
+                ),
+                "arch": None,
+                "births": None,
+                "deaths": None,
+            }
+        )
+    return out
+
+
+def _colonies_from_rows(
+    society: Society, kin: np.ndarray, col: np.ndarray, pos: np.ndarray, size: float
+) -> list[dict[str, Any]]:
+    """The colony table without a record: one entry per slot that holds a colony, with the plurality kin group
+    of its rows (ties to the smaller id; -1 if none)."""
+    out = []
+    for s in np.flatnonzero(society.col_slots >= 0).tolist():
+        m = col == s
+        n = int(m.sum())
+        held = kin[m]
+        ids, counts = np.unique(
+            society.kin_slots[held[(held >= 0) & (held < society.kin_slots.size)]], return_counts=True
+        )
+        ids, counts = ids[ids >= 0], counts[ids >= 0]
+        x, y = _centre(pos[m], size) if n else (None, None)
+        out.append(
+            {
+                "slot": s,
+                "id": int(society.col_slots[s]),
+                "size": n,
+                "kin": int(ids[np.argmax(counts)]) if ids.size else -1,
+                "x": x,
+                "y": y,
+            }
+        )
+    return out
 
 
 def _short(v: Any) -> str:

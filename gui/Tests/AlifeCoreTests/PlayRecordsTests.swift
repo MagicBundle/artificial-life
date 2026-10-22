@@ -417,7 +417,7 @@ import Testing
     }
 
     @Test(arguments: [(0, "house"), (1, "kin"), (2, "colony")])
-    func aSlotOutsideItsTableIsRefused(column: Int, name: String) throws {
+    func aSlotNoEntryOwnsIsRefused(column: Int, name: String) throws {
         let fixture = try PlayFixture(kind: "3d")
         let offset = try fixture.offset(of: "IDNT")
         let jsonLength = Int(fixture.le32(at: offset + 8 + 24))
@@ -432,6 +432,52 @@ import Testing
         for value in [253, 254, 255] {
             #expect(refused(patched(fixture.bytes, at: rows + 12 + column, [UInt8(value)])) == nil)
         }
+    }
+
+    /// The offset of the first occurrence of `text` inside the `IDNT` record (its JSON), for a same-length patch.
+    private func idntOffset(of text: String, in fixture: PlayFixture) throws -> Int {
+        let start = try fixture.offset(of: "IDNT")
+        let end = start + 8 + Int(fixture.le32(at: start + 4))
+        let needle = Array(text.utf8)
+        let hay = fixture.bytes
+        let at = try #require((start..<(end - needle.count)).first { hay[$0..<($0 + needle.count)].elementsEqual(needle) })
+        return at
+    }
+
+    @Test func aSlotIsTheSlotOfAnEntryNotItsPosition() throws {
+        let fixture = try PlayFixture(kind: "3d")
+        let offset = try fixture.offset(of: "IDNT")
+        let jsonLength = Int(fixture.le32(at: offset + 8 + 24))
+        let rows = offset + 8 + 32 + (jsonLength + 3) / 4 * 4
+        // House entry 1 moves to slot 3 (a gap at 1 and 2); the rows that named slot 1 are then refused ...
+        let moved = patched(fixture.bytes, at: try idntOffset(of: "\"slot\":1,\"id\":5000000030", in: fixture) + 7, [0x33])
+        #expect(isMalformed(refused(moved), "IDNT", containing: "house slot 1"))
+        // ... until they name slot 3: rows 2 and 3 of the fixture hold the house byte 1.
+        var fixed = moved
+        for row in [2, 3] { fixed = patched(fixed, at: rows + 16 * row + 12, [3]) }
+        let events = decode(fixed, chunk: 13)
+        #expect(events.error == nil)
+        let tables = events.events.compactMap { event -> IdentityTables? in
+            if case .record(.idnt(let ids)) = event { ids.tables } else { nil }
+        }.first
+        #expect(tables?.houses.map(\.slot) == [0, 3])
+        // Two entries on one slot are refused, as is a slot of 16 or more.
+        let repeated = patched(fixture.bytes, at: try idntOffset(of: "\"slot\":1,\"id\":5000000030", in: fixture) + 7, [0x30])
+        #expect(isMalformed(refused(repeated), "IDNT", containing: "repeated slot"))
+    }
+
+    /// The record's tables carry null where the observer has nothing yet (a group with no similarity sample, no
+    /// births column for a group that held no slot in the window, a derived table before the first record).
+    @Test func tableValuesTheObserverCannotYetGiveAreNull() throws {
+        let json = """
+            {"houses":[],"exact":false,"origin":250,"kin":[{"slot":3,"id":9,"name":"Nameless 9","named_after":null,\
+            "size":12,"clade":4,"clade_share":null,"sim_self":null,"x":null,"y":null,"arch":null,"births":null,\
+            "deaths":null}],"colonies":[{"slot":0,"id":2,"size":4,"kin":-1,"x":null,"y":null}],"unknown_immigrant":0}
+            """
+        let tables = try JSONDecoder().decode(IdentityTables.self, from: Data(json.utf8))
+        let kin = try #require(tables.kin.first)
+        #expect(kin.slot == 3 && kin.simSelf == nil && kin.births == nil && kin.x == nil && kin.cladeShare == nil)
+        #expect(tables.colonies.first?.x == nil && tables.colonies.first?.kin == -1)
     }
 
     @Test func aTerritoryOwnerOutsideItsTableIsRefused() throws {

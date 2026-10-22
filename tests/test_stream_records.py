@@ -327,11 +327,41 @@ def test_idnt_rows_are_16_bytes_and_slots_are_checked() -> None:
             "kin": np.zeros(5, np.uint8),
             "colony": np.zeros(5, np.uint8),
         }
-        with pytest.raises(sr.RecordError, match="outside its table"):
+        with pytest.raises(sr.RecordError, match="not the slot of a listed entry"):
             sr.encode_idnt(**{**bad, key: np.array([3, 0, 0, 0, 0], np.uint8)}, tables=_tables(3, 3, 3))
         sr.encode_idnt(**{**bad, key: np.array([2, 0, 253, 254, 255], np.uint8)}, tables=_tables(3, 3, 3))
     with pytest.raises(sr.RecordError, match="more than 16"):
         sr.encode_idnt(**kw, tables=_tables(houses=17))
+
+
+def test_idnt_slots_may_be_sparse_because_a_slot_is_sticky() -> None:
+    """A kin group keeps its slot while it lives, so a table can have gaps: a row names the ``slot`` field of
+    an entry, not an entry's position."""
+    tables = _tables(houses=1, kin=0, colonies=0)
+    tables["kin"] = [{"slot": 2}, {"slot": 7}, {"slot": 15}]
+    tables["colonies"] = [{"slot": 4}]
+    kw = dict(
+        step=7,
+        seq=0,
+        snapshot_step=4,
+        uid=np.arange(4, dtype=np.int64),
+        clade=np.zeros(4, np.int32),
+        house=np.array([0, 254, 253, 255], np.uint8),
+        colony=np.array([4, 254, 255, 4], np.uint8),
+        flags=np.zeros(4, np.uint8),
+    )
+    rec = _one(8, sr.encode_idnt(kin=np.array([2, 7, 15, 254], np.uint8), tables=tables, **kw))
+    np.testing.assert_array_equal(rec.a["kin"], [2, 7, 15, 254])
+    for gap in (0, 1, 3, 8, 14):  # below the table size, but no entry owns it
+        with pytest.raises(sr.RecordError, match=f"kin slot {gap} is not the slot"):
+            sr.encode_idnt(kin=np.array([gap, 2, 2, 2], np.uint8), tables=tables, **kw)
+    for bad, match in (
+        ([{"slot": 1}, {"slot": 1}], "repeat a slot"),
+        ([{"slot": 16}], "below 16"),
+        ([{}], "below 16"),
+    ):
+        with pytest.raises(sr.RecordError, match=match):
+            sr.encode_idnt(kin=np.array([254] * 4, np.uint8), tables={**tables, "kin": bad}, **kw)
 
 
 def test_idnt_json_is_padded_unpadded_length_and_utf8() -> None:
@@ -426,7 +456,17 @@ def test_terr_planes_and_padding() -> None:
         ),
     )
     assert rec.length % 4 == 0 and rec.a["purity"].shape == (3, 5)
-    with pytest.raises(sr.RecordError, match="outside its table"):
+    # a slot that holds no kin group (-1 in ids) owns nothing
+    with pytest.raises(sr.RecordError, match="not the slot of a listed entry"):
+        sr.encode_terr(
+            step=3,
+            seq=0,
+            snapshot_step=2,
+            ids=[-1, 5],
+            owner=np.zeros((2, 2), np.uint8),
+            purity=np.zeros((2, 2), np.uint8),
+        )
+    with pytest.raises(sr.RecordError, match="not the slot of a listed entry"):
         sr.encode_terr(
             step=3,
             seq=0,

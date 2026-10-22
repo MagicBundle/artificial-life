@@ -131,6 +131,15 @@ def _slots_ok(values: np.ndarray, size: int, what: str) -> None:
     assert ok.all(), f"{what} slot {int(values[~ok][0])} is outside its table of {size}"
 
 
+def _entry_slots_ok(values: np.ndarray, entries: list[dict[str, Any]], what: str) -> None:
+    """A row's slot byte is the ``slot`` field of an entry of its table or 253 to 255; the entries' slots are
+    distinct and below ``MAX_TABLE`` (a sticky slot leaves gaps, so the position is not the slot)."""
+    slots = [e["slot"] for e in entries]
+    assert all(isinstance(s, int) and 0 <= s < MAX_TABLE for s in slots) and len(set(slots)) == len(slots)
+    ok = np.isin(values, slots) | np.isin(values, RESERVED_SLOTS)
+    assert ok.all(), f"{what} slot {int(values[~ok][0])} is not the slot of a listed entry"
+
+
 def _idnt(r: Rec, p: bytes, n_cap: int) -> None:
     n_rows, snapshot_step, json_len, reserved = struct.unpack_from("<IIII", p, 16)
     assert reserved == 0
@@ -141,9 +150,9 @@ def _idnt(r: Rec, p: bytes, n_cap: int) -> None:
     for key in ("houses", "kin", "colonies"):
         assert len(obj[key]) <= MAX_TABLE
     house, kin, colony = raw[:, 12], raw[:, 13], raw[:, 14]
-    _slots_ok(house, len(obj["houses"]), "house")
-    _slots_ok(kin, len(obj["kin"]), "kin")
-    _slots_ok(colony, len(obj["colonies"]), "colony")
+    _entry_slots_ok(house, obj["houses"], "house")
+    _entry_slots_ok(kin, obj["kin"], "kin")
+    _entry_slots_ok(colony, obj["colonies"], "colony")
     r.f = {"n_rows": n_rows, "snapshot_step": snapshot_step, "json": obj}
     r.a = {
         "uid": np.frombuffer(raw[:, :8].tobytes(), "<i8").copy(),

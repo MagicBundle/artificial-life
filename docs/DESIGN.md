@@ -9444,13 +9444,19 @@ rows is `popcount(bitmap below r)`; the decoder builds `rows[i]` and `slotOfRow[
 
 Head(16) + `u32 n_rows`, `u32 snapshot_step`, `u32 json_len`, `u32 reserved` + JSON + pad (§33.1.1) + `n_rows × 16 B`:
 `i64 uid | i32 clade | u8 house_slot | u8 kin_slot | u8 colony_slot | u8 flags` (alive rows, ascending row). Slots index the tables
-below; **254 = listed-as-other, 253 = unknown immigrant lineage (houses of an observer attached mid-run), 255 = none**. flags bit 0 = born after the
+below; **254 = listed-as-other, 253 = unknown immigrant lineage (houses of an observer attached mid-run), 255 = none**. A slot byte
+below 16 is the **`slot` field of an entry** of its table, not the entry's position: kin-group and colony slots are sticky
+(`sticky_slots`: a group keeps its slot while it lives, so a swatch keeps its colour) and a dissolved group leaves a gap, so a
+table can have gaps and a decoder checks a row's byte against the entries' `slot` fields (distinct, below 16), not against the table's length.
+The house `slot` is the entry's rank in the top-16 order. flags bit 0 = born after the
 last snapshot: at a snapshot step none is flagged; an `idnt` between snapshots lists the current rows with the slots the observer holds
 (`social_labels()`: newborns inherit their parent's house, kin and colony per step), approximate for the flagged rows.
 ```text
 json = {"houses":  [{"slot","id","name","size","clade"} ...<=16],   "exact": bool, "origin": int,
         "kin":     [{"slot","id","name","named_after","size","clade","clade_share","sim_self","x","y","z"?,"arch":[...7]|null,
                      "births","deaths":[starved,killed,aged,catastrophe(,storm)]|null} ...<=16],
+        (null where the observer has nothing yet: `sim_self` of a small group, `births` and `deaths` of a group that held no slot in the
+         window, `arch` while the labels warm up; `clade_share`, `x`, `y` only in a table derived before the first record, §33.2.1)
         "colonies":[{"slot","id","size","kin","x","y"} ...<=16],  "unknown_immigrant": int}
 ```
 These are the columns of the G2 record's `houses`, `kin_groups`, `colonies` tables (§29.11, §29.14), copied, not recomputed.
@@ -9470,7 +9476,7 @@ names are in the header (`play.labels`, from `ARCHETYPE_DISPLAY`, `INTENT_DISPLA
 
 #### 33.1.5 `TERR`: territory (version 1; at every snapshot)
 
-Head(16) + `u16 nx, u16 ny` (32 x 32, `SocialRules.terr_cells`), `u32 snapshot_step`, `u32 json_len`, `u32 reserved` + JSON `{"ids":[kin id by slot]}` + `nx·ny`
+Head(16) + `u16 nx, u16 ny` (32 x 32, `SocialRules.terr_cells`), `u32 snapshot_step`, `u32 json_len`, `u32 reserved` + JSON `{"ids":[kin id by slot]}` (up to 16 entries, -1 for a slot that holds no group; an owner byte names a slot with an id) + `nx·ny`
 bytes **owner slot** (255 none; index `y·nx + x`, cell (x, y) covers `[x·L/nx, (x+1)·L/nx)`) + `nx·ny` bytes **purity** (`round(purity_q16/257)`). Source:
 `Observer.territory()` (the `DominanceMap` owner ids mapped through the kin slot table). 2.1 KB. Borders are drawn by the client where owners differ. The
 overlay is labelled "dominance" (GAMES STORMS §6.5).
@@ -9603,6 +9609,79 @@ A pipe reader that stalls blocks the step loop (as `stream` does); the Swift rea
   `streamrec.header_play` writes. A record's length is checked against the counts of its own fixed prefix before the payload is
   waited for (`lengthMismatch`), against the header's `N` and bond slots, and a slot byte against its table
   (`malformedRecord(tag:_:)`); `PlayFrame.listedIndex(ofRow:)` is the popcount rank over the bitmap.
+
+#### 33.1.14 Correction while building the observer side (G3a commit 3)
+
+Building `Observer.identity_rows` showed two assumptions of the first Python and Swift decoders to be wrong, and both were corrected
+with it: (1) a slot byte was checked against the **length** of its table, but the observer's slots are sticky and a table has gaps, so
+the check is now "the `slot` field of an entry, or 253 to 255" (`streamrec._entry_slots`, `play_decode._entry_slots_ok`,
+`Slot.isValid(_:among:)` in `PlayRecords.swift`; a table with a repeated or out-of-range entry slot is refused); (2) `IdentityTables`
+required numbers where the record has `null` (`sim_self`, `births`, `x`, `y`, `clade_share` of a kin group, `x`, `y` of a colony),
+which would have failed the decode of a real record; they are optional now. `TERR.ids` keeps its index meaning: a list of the kin id of each
+slot with -1 for an empty one, so that an owner byte is an index into it. The fixtures are unchanged (their slots are dense).
+
+### 33.2 The play loop (in progress)
+
+This section grows with the PR's commits; what is here so far are the host pieces the loop is built from. The command, the runner
+hook and the scheduler follow (§33.2.4 onwards).
+
+#### 33.2.1 `Observer.identity_rows` (the rows and tables of an `IDNT`)
+
+`Observer.identity_rows(state)` returns `IdentityRows`: the alive rows in ascending row order (`row`, `uid`, `clade`), the three slot
+bytes of §33.1.3 per row and the flags byte (bit 0, `FLAG_BORN_SINCE`: `uid >= prev_next_uid`, i.e. born after the last snapshot), the
+`snapshot_step` and the JSON `tables`. It raises `ValueError` if `state` is not at the observer's step, settles a pending snapshot, changes
+no state, and costs one `mx.eval` and one host transfer of six arrays.
+
+- **Slots.** The bytes are the observer's current slots (`social_labels()`): house id mapped to its index in the table's top-16 order
+  (253 for `HOUSE_UNKNOWN`, 254 for any other house), kin and colony slot as they are (`F` = OTHER to 254, negative to 255). Newborns inherit
+  their parent's, so an `idnt` between snapshots is complete and approximate only for the flagged rows.
+- **Tables.** Copied from the newest record taken (`take_records`, remembered as `Observer._last_record`) or settled and not yet taken:
+  `houses` (`slot` = rank), `kin` (the record's `kin_groups` columns, `z_mean` as `z`), `colonies` (`kin_group` as `kin`). Before any
+  record exists (a fresh observer, or one restored from a sidecar, until its first snapshot) they are derived from the rows and the society's
+  names: house sizes and the clade of the first row as `Society._houses` does, kin sizes, plurality clade, centroids (`circular_mean`) and `z` of
+  the rows of each slot, colony sizes and plurality kin group; `sim_self`, `arch`, `births`, `deaths` are `null`. The key sets of the two
+  paths are equal. `exact` is `house_origin == 0`, `origin` the step the houses are exact from, `unknown_immigrant` the rows with house 253.
+- **Colour inputs.** `Observer.color_inputs(houses)` returns the device arrays the colour modes read (house slot bytes against the listed house
+  ids, kin slot bytes, primary archetype, displayed intent); lazy, evaluated with the frame.
+
+Tests: `tests/test_play_identity.py` (2D and 3D observed runs: rows against the state, slots against `social_labels`, tables against the
+record's columns, the derived tables, the flag, every moment through `encode_idnt` and the independent decoder, no change to the observer,
+the stale-state refusal); mutations of the flag comparison and of the house-slot index were caught.
+
+#### 33.2.2 Colour modes (`game/colors.py`)
+
+`play_colors(state, cfg, mode, inputs)` returns the `FRMA.rgb` column. `tag`, `energy` and `clade` are `render.agent_colors`, unchanged;
+`house`, `kin`, `archetype` and `intent` colour a row through a palette by the slot byte (house, kin) or the `rules.Archetype` / `rules.Intent`
+value, and **every mode paints an agent that lost energy last step red** (`state.last_loss > 0`). The palettes are normative because the client
+draws the cast swatches and the territory overlay with them: `SLOT_PALETTE` (16 colours, none red; slot byte `s < 16` takes entry `s`),
+`UNKNOWN_RGB` (253), `OTHER_RGB` (254), `NONE_RGB` (255), `ARCH_PALETTE` and `INTENT_PALETTE` (index 0 = unlabelled). `PLAY_MODES` equals the
+header's `color_modes` (tested against `streamrec.COLOR_MODES`). Device code, no host read; `house_slot_bytes` and `kin_slot_bytes` are the device
+twins of the host maps of `identity_rows` and are tested to agree (`tests/test_play_colors.py`).
+
+#### 33.2.3 The chronicle (`game/chronicle.py`, `CHRONICLE_VERSION` 1)
+
+`Chronicler` turns sources into `EVNT` events (§33.1.8): `from_record(rec)` (kin-group events of the record's `events` table, with the group's
+name remembered from the `kin_groups` tables so that a dissolved group keeps its name; house events: founded in the record's top-16, extinct among
+the previous record's top-16; colony events are not narrated), `from_storms(events)` (the tracker events `StormLayer` writes, §33.3.1),
+`from_director(entries)` (`describe(entry)`; the position is the entry's `x`, `y` parameters if it has them) and the play loop's own
+`focus_death`, `focus_handoff` (rules 1 to 3), `checkpoint`, `renumbered`, `extinct`.
+
+- **Texts** come from the closed table `TEMPLATES` (24 sentences): slots are names, exact counts of the source record and step numbers. They state
+  what happened and never why ("since", never "because"), name no label share and make no archetype claim (C8 to C10). `render` cuts a text to 120
+  characters. N1's lexicon (`game.lexicon`: the never-lists and the label list) finds nothing in any of them with display names masked; the
+  director's line quotes the lever it pulled and the director's own reason, so the causal list is excluded for it and only the fixed part
+  is checked. The first draft said "appeared"; the lexicon's hedge list (`appear-`) objected, so the sentences say "formed".
+- **Importance** `imp`: 2 (toast) for a named storm reaching named strength, a named storm dissolving, a kin group splitting or dissolving, and
+  extinction; 1 for the other kin, house, storm, director, focus events and `renumbered`; 0 for `checkpoint`.
+- **Ids** `step * 1000 + FAMILY_BASE[fam] + index` (kin 0, house 100, storm 200, director 300, focus 400, system 500; at most 100 per family and
+  step, the first hundred kept), so two sources delivering in either order give the same ids, the backlog gives what the live chronicler gave, and a
+  resumed play cannot clash with the events a client already holds.
+- **Backlog** `rebuild_backlog(social, storms, director, house_salt, limit=64)`: the newest events a play would have produced from `observers/social.jsonl`,
+  `observers/storms.jsonl` (each line's `events`) and `director.jsonl`, ordered by `(step, id)`; checkpoint and focus events are not logged and not in it.
+
+Tests: `tests/test_play_chronicle.py` (every template reachable and within 120 characters, every kind of the registry produced, the lexicon, the
+texts and fields of hand-built records for each case, the ids and their independence of the delivery order, the per-family cap, the backlog equal to the
+live events, and real 2D and 3D snapshot records through the chronicler).
 
 ---
 

@@ -324,11 +324,24 @@ def frma_length(n_cap: int, n: int, n_bonds: int) -> int:
 # --- tables: IDNT, INTN, TERR ---------------------------------------------------------------------------
 
 
-def _check_slot(values: np.ndarray, size: int, what: str) -> None:
+def _check_slot(values: np.ndarray, valid: Iterable[int], what: str) -> None:
+    """Every slot byte of ``values`` is the slot of a table entry (``valid``) or reserved (253 to 255)."""
     v = np.asarray(values)
-    ok = (v < size) | np.isin(v, RESERVED_SLOTS)
+    ok = np.isin(v, list(valid)) | np.isin(v, RESERVED_SLOTS)
     if not ok.all():
-        raise RecordError(f"{what} slot {int(v[~ok][0])} is outside its table of {size}")
+        raise RecordError(f"{what} slot {int(v[~ok][0])} is not the slot of a listed entry")
+
+
+def _entry_slots(entries: Sequence[Mapping[str, Any]], key: str) -> list[int]:
+    """The ``slot`` fields of a table's entries: distinct integers below ``MAX_TABLE``. A slot is sticky in
+    the observer (a group keeps it while it lives), so a table can have gaps and its entry's position is not
+    its slot."""
+    slots = [e.get("slot") for e in entries]
+    if not all(isinstance(s, int) and not isinstance(s, bool) and 0 <= s < MAX_TABLE for s in slots):
+        raise RecordError(f"IDNT {key} entries need an integer slot below {MAX_TABLE}")
+    if len(set(slots)) != len(slots):
+        raise RecordError(f"IDNT {key} entries repeat a slot")
+    return slots  # type: ignore[return-value]
 
 
 def encode_idnt(
@@ -346,14 +359,18 @@ def encode_idnt(
 ) -> bytes:
     """One ``IDNT``: ``tables`` (the JSON: ``houses``, ``exact``, ``origin``, ``kin``, ``colonies``,
     ``unknown_immigrant``) and one 16-byte row per alive row, ascending row:
-    ``i64 uid | i32 clade | u8 house | u8 kin | u8 colony | u8 flags``."""
+    ``i64 uid | i32 clade | u8 house | u8 kin | u8 colony | u8 flags``. A row's slot byte is the ``slot``
+    field of an entry of its table (the entries' positions need not equal their slots) or 253 to 255."""
     for key in ("houses", "kin", "colonies"):
         if len(tables.get(key, ())) > MAX_TABLE:
             raise RecordError(f"IDNT {key} lists more than {MAX_TABLE} rows")
     n = len(uid)
-    _check_slot(np.asarray(house), len(tables.get("houses", ())), "house")
-    _check_slot(np.asarray(kin), len(tables.get("kin", ())), "kin")
-    _check_slot(np.asarray(colony), len(tables.get("colonies", ())), "colony")
+    for column, key, what in (
+        (house, "houses", "house"),
+        (kin, "kin", "kin"),
+        (colony, "colonies", "colony"),
+    ):
+        _check_slot(np.asarray(column), _entry_slots(tables.get(key, ()), key), what)
     js = json_bytes(tables)
     if len(js) > IDNT_JSON_CAP:
         raise RecordError(f"IDNT json of {len(js)} bytes exceeds {IDNT_JSON_CAP}")
@@ -408,7 +425,7 @@ def encode_terr(
     purity: np.ndarray,
 ) -> bytes:
     """One ``TERR``: ``owner`` and ``purity`` are ``(ny, nx)`` uint8 (row ``y``, column ``x``); ``owner`` is a
-    slot of ``ids`` or 255."""
+    slot of ``ids`` (the kin id of each slot, -1 for a slot that holds none) or 255."""
     owner = np.asarray(owner, np.uint8)
     purity = np.asarray(purity, np.uint8)
     if owner.shape != purity.shape or owner.ndim != 2:
@@ -416,7 +433,7 @@ def encode_terr(
     ny, nx = owner.shape
     if len(ids) > MAX_TABLE:
         raise RecordError(f"TERR lists more than {MAX_TABLE} kin ids")
-    _check_slot(owner.reshape(-1), len(ids), "territory owner")
+    _check_slot(owner.reshape(-1), [i for i, k in enumerate(ids) if k >= 0], "territory owner")
     js = json_bytes({"ids": list(ids)})
     if len(js) > TERR_JSON_CAP:
         raise RecordError("TERR json is too long")

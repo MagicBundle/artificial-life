@@ -154,8 +154,9 @@ package enum JSONValue: Equatable, Sendable, Codable {
     package var string: String? { if case .string(let v) = self { v } else { nil } }
 }
 
-/// The slot byte values of `IDNT`, `TERR` and `FOCS`: an index into the record's table below `MAX_TABLE`, or one of
-/// the reserved values.
+/// The slot byte values of `IDNT`, `TERR` and `FOCS`: a slot below `MAX_TABLE` (in `IDNT` the `slot` field of a table
+/// entry, which need not be the entry's position because a slot is sticky and a group can leave a gap; in `TERR` an
+/// index into `ids`), or one of the reserved values.
 package enum Slot {
     package static let maxTable = 16
     /// The house of an immigrant lineage of an observer attached to a world already running.
@@ -167,6 +168,10 @@ package enum Slot {
     package static func isReserved(_ slot: UInt8) -> Bool { slot >= 253 }
     /// Whether `slot` is valid for a table of `size` rows.
     package static func isValid(_ slot: UInt8, tableSize size: Int) -> Bool { Int(slot) < size || isReserved(slot) }
+    /// Whether `slot` is the slot of one of a table's entries, or reserved.
+    package static func isValid(_ slot: UInt8, among slots: Set<Int>) -> Bool {
+        slots.contains(Int(slot)) || isReserved(slot)
+    }
 }
 
 // MARK: - FRMA
@@ -254,14 +259,17 @@ package struct IdentityTables: Equatable, Sendable, Codable {
         package var namedAfter: Int?
         package var size: Int
         package var clade: Int
-        package var cladeShare: Double
-        package var simSelf: Double
-        package var x: Double
-        package var y: Double
+        /// Nil only for a group the observer lists with no live row (a derived table).
+        package var cladeShare: Double?
+        /// Nil while the group has too few members to sample.
+        package var simSelf: Double?
+        package var x: Double?
+        package var y: Double?
         package var z: Double?
         /// The mean archetype shares (seven values), nil while the labels warm up.
         package var arch: [Double]?
-        package var births: Int
+        /// Births in the last window, nil for a group that held no slot then.
+        package var births: Int?
         /// Deaths in the last window by cause: starved, killed, aged, catastrophe (and storm in a weather world).
         package var deaths: [Int]?
 
@@ -278,8 +286,8 @@ package struct IdentityTables: Equatable, Sendable, Codable {
         package var id: Int
         package var size: Int
         package var kin: Int
-        package var x: Double
-        package var y: Double
+        package var x: Double?
+        package var y: Double?
     }
 
     package var houses: [House]
@@ -807,6 +815,14 @@ enum RecordDecoder {
         guard tables.houses.count <= Slot.maxTable, tables.kin.count <= Slot.maxTable,
             tables.colonies.count <= Slot.maxTable
         else { throw malformed(tag, "a table lists more than \(Slot.maxTable) rows") }
+        let slots = (
+            houses: Set(tables.houses.map(\.slot)), kin: Set(tables.kin.map(\.slot)),
+            colonies: Set(tables.colonies.map(\.slot))
+        )
+        guard slots.houses.count == tables.houses.count, slots.kin.count == tables.kin.count,
+            slots.colonies.count == tables.colonies.count,
+            (slots.houses.union(slots.kin).union(slots.colonies)).allSatisfy({ 0 <= $0 && $0 < Slot.maxTable })
+        else { throw malformed(tag, "a table entry has a repeated slot or one outside 0..<\(Slot.maxTable)") }
         let base = 32 + pad4(jsonLength)
         var rows: [IdentityRow] = []
         rows.reserveCapacity(n)
@@ -814,14 +830,14 @@ enum RecordDecoder {
             let o = base + 16 * i
             let row = IdentityRow(uid: r.i64(o), clade: Int32(bitPattern: r.u32(o + 8)), house: r.u8(o + 12),
                                   kin: r.u8(o + 13), colony: r.u8(o + 14), flags: r.u8(o + 15))
-            guard Slot.isValid(row.house, tableSize: tables.houses.count) else {
-                throw malformed(tag, "house slot \(row.house) is outside a table of \(tables.houses.count)")
+            guard Slot.isValid(row.house, among: slots.houses) else {
+                throw malformed(tag, "house slot \(row.house) is not the slot of a listed house")
             }
-            guard Slot.isValid(row.kin, tableSize: tables.kin.count) else {
-                throw malformed(tag, "kin slot \(row.kin) is outside a table of \(tables.kin.count)")
+            guard Slot.isValid(row.kin, among: slots.kin) else {
+                throw malformed(tag, "kin slot \(row.kin) is not the slot of a listed kin group")
             }
-            guard Slot.isValid(row.colony, tableSize: tables.colonies.count) else {
-                throw malformed(tag, "colony slot \(row.colony) is outside a table of \(tables.colonies.count)")
+            guard Slot.isValid(row.colony, among: slots.colonies) else {
+                throw malformed(tag, "colony slot \(row.colony) is not the slot of a listed colony")
             }
             rows.append(row)
         }

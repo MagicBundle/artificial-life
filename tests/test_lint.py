@@ -223,6 +223,8 @@ def test_source_tree(rule) -> None:
     assert {"game.observe", "game.rules", "game.observer"} <= {m for m, _ in mods}
     # the world report (DESIGN §31): templates, lexicon and report are host-side game modules, scanned too
     assert {"game.report", "game.templates", "game.lexicon"} <= {m for m, _ in mods}
+    # the play loop's host modules (DESIGN §33.2): the chronicle and the observer colour modes
+    assert {"game.chronicle", "game.colors"} <= {m for m, _ in mods}
     # the generic modules of §29, a device half and a host half, and the game layer built on them
     assert {"groups", "tracking", "game.social", "game.society"} <= {m for m, _ in mods}
     assert {"spatial", "knn_metal"} <= {m for m, _ in mods}
