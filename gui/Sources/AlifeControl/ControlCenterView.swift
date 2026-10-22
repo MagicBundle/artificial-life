@@ -8,13 +8,8 @@ struct ControlCenterView: View {
     @ObservedObject var model: WorldModel
     @Binding var collapsed: Bool
     var side: DockSide
-    @State private var tab = Tab.cast
-
-    enum Tab: String, CaseIterable, Identifiable {
-        case cast = "Cast"
-        case chronicle = "Chronicle"
-        var id: String { rawValue }
-    }
+    /// The height the dock has (the alert rows that fit depend on it).
+    var height: CGFloat = 700
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,8 +30,12 @@ struct ControlCenterView: View {
     /// On a side: the clock strip, the tabs, and the inspector pinned under them.
     private var sideDock: some View {
         VStack(spacing: 0) {
-            ClockStripView(play: play)
+            ClockStripView(play: play, model: model)
                 .padding(10)
+            // The alerts sit between the strip and the tabs; the rows give way before the list does (DESIGN §34.7).
+            AlertStackView(play: play, model: model, maxRows: DockBudget.alertRows(dockHeight: height, inspectorOpen: model.inspectorCard != nil))
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
             Divider()
             tabs
             // Whatever is selected is pinned under the tabs, whichever is open (watching first, few inputs).
@@ -52,7 +51,7 @@ struct ControlCenterView: View {
     private var bottomDock: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                ClockStripView(play: play).padding(10)
+                ClockStripView(play: play, model: model).padding(10)
                 Spacer(minLength: 0)
             }
             .frame(width: Self.clockColumn)
@@ -68,17 +67,19 @@ struct ControlCenterView: View {
 
     private var tabs: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
+            Picker("", selection: $model.tab) {
+                ForEach(DockTab.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             Group {
-                switch tab {
+                switch model.tab {
                 case .cast: CastView(play: play, model: model)
                 case .chronicle: ChronicleView(play: play, model: model)
+                case .report: ReportTabView(play: play, model: model)
+                case .powers: PowersTabView(play: play, model: model)
                 }
             }
             .frame(maxWidth: .infinity, minHeight: Self.listMinHeight, maxHeight: .infinity)
@@ -103,7 +104,10 @@ struct ControlCenterView: View {
     private var header: some View {
         HStack(spacing: 8) {
             if !collapsed {
-                Text(play.world ?? "No world").font(.headline).lineLimit(1)
+                Text(WorldTitle.heading(world: play.world, header: play.store.play)).font(.headline).lineLimit(1)
+                if let subtitle = WorldTitle.subtitle(header: play.store.play) {
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
                 Spacer()
                 ViewMenu(play: play, model: model)
             } else {
@@ -166,6 +170,22 @@ struct ViewMenu: View {
             Toggle("Weather map", isOn: $model.display.map)
             Toggle("Frame", isOn: $model.display.frame)
             Divider()
+            // The pauses the world takes by itself. The player's choice is kept and sent to every world after its header.
+            Menu("Pauses") {
+                Toggle("At the end of a chapter", isOn: Binding(
+                    get: { play.store.clock?.chapterPauseArmed ?? true }, set: { model.setChapterPause($0) }))
+                let classes = model.pausableClasses
+                if !classes.isEmpty { Divider() }
+                ForEach(classes, id: \.name) { entry in
+                    Toggle(entry.label, isOn: Binding(
+                        get: { model.alertPauseOn(entry.name) }, set: { model.setAlertPause(entry.name, $0) }))
+                }
+            }
+            Toggle("Skip the second click for a cost-1 power", isOn: Binding(
+                get: { model.defaults.bool(forKey: WorldModel.skipConfirmKey) },
+                set: { model.defaults.set($0, forKey: WorldModel.skipConfirmKey) }))
+            Toggle("Raw kin events (developer)", isOn: $model.debugFilters)
+            Divider()
             Button("Reset view") { model.resetCamera() }
         }
         .menuStyle(.borderlessButton)
@@ -178,12 +198,14 @@ struct ViewMenu: View {
 /// pausing and the "saving..." stall are visible whichever tab is open.
 struct ClockStripView: View {
     @ObservedObject var play: PlayController
+    @ObservedObject var model: WorldModel
 
     var body: some View {
-        let baseRate = play.store.play?.baseRate ?? 14.4
-        let strip = ClockStrip(clock: play.store.clock, requested: play.requestedRate, baseRate: baseRate)
+        let _ = play.revision
+        let strip = model.clockStrip
         let live = play.phase == .live
         VStack(alignment: .leading, spacing: 8) {
+            ChapterBarView(play: play, model: model)
             Picker("Rate", selection: Binding<ClockSegment?>(
                 get: { strip.selected },
                 set: { if let segment = $0 { play.send(segment.command) } })
@@ -227,9 +249,11 @@ struct ClockStripView: View {
 /// the checkpoint stall stay visible whichever way the dock is.
 struct ClockBadge: View {
     @ObservedObject var play: PlayController
+    @ObservedObject var model: WorldModel
 
     var body: some View {
-        let strip = ClockStrip(clock: play.store.clock, requested: play.requestedRate, baseRate: play.store.play?.baseRate ?? 14.4)
+        let _ = play.revision
+        let strip = model.clockStrip
         HStack(spacing: 8) {
             Text(strip.readout).foregroundStyle(strip.paused ? Color.primary : Color.secondary)
             if strip.lateSteps > 0 {

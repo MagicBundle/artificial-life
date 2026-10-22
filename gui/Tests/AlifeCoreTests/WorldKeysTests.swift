@@ -8,7 +8,8 @@ import Testing
         let expected: [(String, WorldAction)] = [
             (" ", .togglePause), (".", .step), ("c", .cycleColor), ("1", .toggleAgents), ("2", .toggleBonds),
             ("3", .toggleTerritory), ("f", .followSelection), ("[", .slower), ("]", .faster), ("r", .resetCamera),
-            ("\u{1B}", .clearSelection),
+            ("\u{1B}", .escape), ("g", .continueRun), ("p", .showPowers), ("a", .flyToAlert), ("k", .acknowledgeAlert),
+            ("\r", .confirmPower), ("\u{3}", .confirmPower),
         ]
         for (key, action) in expected { #expect(WorldKeys.action(for: key) == action, "\(key.debugDescription)") }
         #expect(Set(WorldKeys.characters) == Set(expected.map(\.0)))
@@ -24,8 +25,19 @@ import Testing
         // `f` is the Lab's field slice, `[` and `]` its field layers, `4` its other field key: here follow and the rate, and
         // `4` does nothing.
         #expect(ViewerKeysLike.labBinds("f") && WorldKeys.action(for: "f") == .followSelection)
-        #expect(WorldKeys.action(for: "4") == nil && WorldKeys.action(for: "s") == nil && WorldKeys.action(for: "p") == nil)
+        #expect(WorldKeys.action(for: "4") == nil && WorldKeys.action(for: "s") == nil && WorldKeys.action(for: "x") == nil)
         #expect(WorldKeys.action(for: "+") == nil && WorldKeys.action(for: "") == nil && WorldKeys.action(for: "ab") == nil)
+    }
+
+    @Test func theDecideKeysAreTheSpecsAndEscNeverResumesOrAcknowledges() {
+        // `Esc` has one meaning: one level back (DESIGN §34.7). It is none of Continue, Confirm or Acknowledge, which have keys of
+        // their own, so a press meant to dismiss something cannot commit the player to the next 6,000 steps.
+        #expect(WorldKeys.action(for: "\u{1B}") == .escape)
+        for action in [WorldAction.continueRun, .confirmPower, .acknowledgeAlert, .togglePause] {
+            #expect(WorldKeys.action(for: "\u{1B}") != action)
+        }
+        #expect(WorldKeys.action(for: "G") == .continueRun && WorldKeys.action(for: "P") == .showPowers)
+        #expect(WorldKeys.action(for: "g", command: true) == nil && WorldKeys.action(for: "k", control: true) == nil)
     }
 
     @Test func aCommandOrControlChordIsNotOurs() {

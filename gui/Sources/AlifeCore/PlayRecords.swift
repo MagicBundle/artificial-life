@@ -244,6 +244,8 @@ package enum JSONValue: Equatable, Sendable, Codable {
 
     package var number: Double? { if case .number(let v) = self { v } else { nil } }
     package var string: String? { if case .string(let v) = self { v } else { nil } }
+    package var array: [JSONValue]? { if case .array(let v) = self { v } else { nil } }
+    package var object: [String: JSONValue]? { if case .object(let v) = self { v } else { nil } }
 }
 
 /// The slot byte values of `IDNT`, `TERR` and `FOCS`: a slot below `MAX_TABLE` (in `IDNT` the `slot` field of a table
@@ -922,8 +924,16 @@ package struct PlanBody: Equatable, Sendable, Codable {
             package var catastrophe: Int
         }
 
+        /// A strike's organisms in its column: counted when it was queued and one step after it took effect (nil while the
+        /// second count is not made, and for every other power).
+        package struct Disc: Equatable, Sendable, Codable {
+            package var before: Int
+            package var after: Int?
+        }
+
         package var from: Int
         package var rows: [Row]
+        package var disc: Disc?
     }
 
     /// The client's request number (the `id=N` of the `power` line).

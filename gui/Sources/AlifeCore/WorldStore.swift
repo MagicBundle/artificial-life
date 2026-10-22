@@ -191,6 +191,12 @@ package struct ReportShelf: Equatable, Sendable {
 
     package func report(chapter: Int, mode: Int) -> PlayReport? { entries[Key(chapter: chapter, mode: mode)] }
 
+    /// The report of the chapter with absolute number `nAbs` (a select report that has arrived, else the template one).
+    package func report(nAbs: Int) -> PlayReport? {
+        let held = entries.values.filter { $0.report.nAbs == nAbs }
+        return held.first { $0.mode == 1 && $0.isFinal } ?? held.first { $0.mode == 0 } ?? held.first { $0.mode == 1 }
+    }
+
     /// The chapters held, newest first.
     package var chapters: [Int] { Set(entries.keys.map(\.chapter)).sorted(by: >) }
 

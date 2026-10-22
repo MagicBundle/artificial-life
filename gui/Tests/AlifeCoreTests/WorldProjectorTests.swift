@@ -164,3 +164,58 @@ import simd
         #expect(p.cellCorners(cx: 0, cy: 0, nx: 0, ny: 32) == nil)
     }
 }
+
+/// A click on the map names a place on the floor (DESIGN §34.7: the target of a power).
+@Suite struct WorldProjectorUnprojectTests {
+    private let view = CGSize(width: 900, height: 700)
+
+    private func projector(distance: Float, target: SIMD3<Float>, pitchDown: Bool = true, size: Float = 320) -> WorldProjector {
+        var camera = Camera.planet(size: size, aspect: Float(view.width / view.height))
+        camera.target = target
+        camera.distance = distance
+        if !pitchDown { camera.pitch = 0 }
+        return WorldProjector(camera: camera, size: size, view: view)
+    }
+
+    @Test func aPointOfTheFloorComesBackFromItsPlaceOnTheScreen() throws {
+        let p = projector(distance: 200, target: SIMD3(160, 160, 0))
+        for point in [SIMD3<Float>(160, 160, 0), SIMD3(100, 220, 0), SIMD3(250, 90, 0)] {
+            let at = try #require(p.screen(point))
+            let back = try #require(p.world(at: at))
+            #expect(abs(back.x - point.x) < 0.05 && abs(back.y - point.y) < 0.05, "\(point) -> \(at) -> \(back)")
+        }
+    }
+
+    @Test func aPlaneAboveTheFloorIsHitWhereTheRayCrossesIt() throws {
+        var camera = Camera.overview(size: 48, height: 24, aspect: Float(view.width / view.height))
+        camera.target = SIMD3(24, 24, 12)
+        camera.distance = 60
+        let p = WorldProjector(camera: camera, size: 48, view: view)
+        let point = SIMD3<Float>(30, 20, 12)
+        let at = try #require(p.screen(point))
+        let back = try #require(p.world(at: at, height: 12))
+        #expect(abs(back.x - 30) < 0.05 && abs(back.y - 20) < 0.05)
+        let floor = try #require(p.world(at: at, height: 0))
+        #expect(abs(floor.y - back.y) > 1, "the same pixel on the floor is somewhere else: height matters")
+    }
+
+    @Test func theResultIsWrappedIntoTheWorld() throws {
+        // Looking at the seam: a click beyond the edge of the tile names the place on the other side.
+        let p = projector(distance: 200, target: SIMD3(2, 160, 0))
+        let at = try #require(p.screen(SIMD3(318, 160, 0)))  // 4 units west of the target, across the seam
+        let back = try #require(p.world(at: at))
+        #expect(back.x >= 0 && back.x < 320 && back.y >= 0 && back.y < 320)
+        #expect(abs(back.x - 318) < 0.1 && abs(back.y - 160) < 0.1, "\(back)")
+    }
+
+    @Test func aRayThatNeverReachesThePlaneIsNothing() {
+        // The horizon: level view through the middle of the screen is parallel to the floor.
+        let level = projector(distance: 50, target: SIMD3(160, 160, 10), pitchDown: false)
+        #expect(level.world(at: CGPoint(x: 450, y: 350), height: 0) == nil)
+        // A plane behind the eye is nothing as well.
+        let down = projector(distance: 50, target: SIMD3(160, 160, 0))
+        #expect(down.world(at: CGPoint(x: 450, y: 350), height: 500) == nil)
+        // No view, no place.
+        #expect(WorldProjector(camera: down.camera, size: 320, view: .zero).world(at: .zero) == nil)
+    }
+}

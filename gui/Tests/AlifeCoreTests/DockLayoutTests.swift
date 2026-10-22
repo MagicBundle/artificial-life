@@ -91,3 +91,28 @@ import Testing
         #expect(DockLayout.defaultExtent(for: .bottom) == 240)
     }
 }
+
+@Suite struct DockBudgetTests {
+    @Test func theMinimumWindowWithTheInspectorOpenShowsAtLeastOneRowAndAnEmptierDockShowsThree() {
+        // The window is 1100 x 700 at least (DESIGN §34.7). The dock's fixed parts, the inspector card and the list's minimum
+        // take what they take; the rows get the rest, never fewer than one and never more than three.
+        #expect(DockBudget.alertRows(dockHeight: 700, inspectorOpen: true) == 2, "the spec's cap of two at the minimum window")
+        #expect(DockBudget.alertRows(dockHeight: 650, inspectorOpen: true) == 1)
+        #expect(DockBudget.alertRows(dockHeight: 700, inspectorOpen: false) == 3)
+        #expect(DockBudget.alertRows(dockHeight: 740, inspectorOpen: true) == 3)
+        #expect(DockBudget.alertRows(dockHeight: 100, inspectorOpen: true) == 1, "an alert the player cannot see is not an alert")
+        #expect(DockBudget.alertRows(dockHeight: 5000, inspectorOpen: false) == AlertStack.roomyRows)
+    }
+
+    @Test func theRowsNeverOutgrowTheirBudget() {
+        for height in stride(from: CGFloat(500), through: 1200, by: 25) {
+            for open in [false, true] {
+                let rows = DockBudget.alertRows(dockHeight: height, inspectorOpen: open)
+                #expect((1...AlertStack.roomyRows).contains(rows))
+                let used = DockBudget.header + DockBudget.clockStrip + DockBudget.tabs + DockBudget.list
+                    + (open ? DockBudget.inspector : 0) + CGFloat(rows - 1) * DockBudget.alertRow
+                #expect(used <= height || rows == 1, "\(rows) rows in \(height) (inspector \(open))")
+            }
+        }
+    }
+}

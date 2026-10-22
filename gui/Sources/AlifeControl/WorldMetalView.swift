@@ -29,6 +29,7 @@ final class WorldMTKView: MTKView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.makeFirstResponder(self)
+        model?.observeWindow(window)
         removeKeyMonitor()
         if window == nil {
             stopAnimating()
@@ -68,6 +69,8 @@ final class WorldMTKView: MTKView {
               let action = WorldKeys.action(for: event.charactersIgnoringModifiers ?? "", command: flags.contains(.command),
                                             control: flags.contains(.control))
         else { return false }
+        // Return confirms a previewed power; with none, it is not ours (a focused button may take it)
+        if action == .confirmPower, !model.powers.canConfirm { return false }
         model.perform(action)
         return true
     }

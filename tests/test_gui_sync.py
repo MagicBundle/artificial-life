@@ -308,7 +308,12 @@ def test_the_g3b_records_have_the_keys_the_swift_types_decode() -> None:
     assert swift_struct_keys(plan, "PlanBody") == set(sr.PLAN_KEYS)
     plans = fixture_json("PLAN")
     since = [p["since"] for p in plans if p["since"]]  # type: ignore[index]
-    assert swift_struct_keys(plan, "Since") == keys_of(since)
+    # `disc` is a strike's organisms in its column: only a Strike's card carries it (the fixture's is a
+    # Food's), and `powers.Card` writes it; the Swift type reads it as an optional.
+    assert swift_struct_keys(plan, "Since") - {"disc"} == keys_of(since)
+    assert "disc" in swift_struct_keys(plan, "Since")
+    assert '"disc"' in (ROOT / "src" / "alife" / "game" / "powers.py").read_text(encoding="utf-8")
+    assert swift_struct_keys(plan, "Disc") == {"before", "after"}
     assert swift_struct_keys(plan, "Row") == keys_of([r for s in since for r in s["rows"]])  # type: ignore[index]
 
 
@@ -356,6 +361,71 @@ def test_the_g3b_environment_and_identity_keys_match() -> None:
         )
         assert swift_nested_cases(owner, name) == set(values), name
     assert swift_nested_cases(swift_body(text, "struct Ref"), "Kind") == set(sr.ALERT_REF_KINDS)
+
+
+def test_the_powers_grid_names_what_the_header_and_the_grammar_have() -> None:
+    """The Powers tab reads the header's bounds (``play.powers``) and sends ``power`` lines: the powers it
+    lists,
+    the keys of each line and the header's parameter names are the engine's (DESIGN §34.7)."""
+    from alife import play
+    from alife.config import Config
+    from alife.game import powers
+
+    text = (CORE / "PowersModel.swift").read_text(encoding="utf-8")
+    order = re.search(r"static let order: \[PowerCommand.Name\] = \[([^\]]*)\]", text)
+    assert order is not None
+    assert tuple(n.strip().lstrip(".") for n in order.group(1).split(",")) == play.POWER_NAMES
+    # the keys of each power's line, in the order they are sent (`lineKeys`), are keys the engine takes for it
+    keys = re.search(r"var lineKeys: \[PowerCommand.Key\] \{(.*?)\n    \}", text, re.S)
+    assert keys is not None
+    swift_keys = {
+        m.group(1): [k.strip().lstrip(".") for k in m.group(2).split(",")]
+        for m in re.finditer(r"case \.(\w+): \[([^\]]*)\]", keys.group(1))
+    }
+    for name, spec in powers.POWER_SPECS.items():
+        assert set(swift_keys[name]) <= set(spec.keys), name
+        optional = {"x", "y"} if name in ("bloom", "blight") else set()  # (the window names the patch itself)
+        assert set(swift_keys[name]) >= set(spec.keys) - optional, name
+    # the header's parameter names: each is a line key, but `kill_p`, which the line spells `kill`
+    for name, entry in powers.header_block(Config()).items():
+        for param in entry["params"]:
+            line_key = "kill" if param == "kill_p" else param
+            assert line_key in play.POWER_KEYS, (name, param)
+    assert 'name == "kill_p" ? .kill' in text
+
+
+def test_the_world_keys_are_the_documented_ones() -> None:
+    """``WorldKeys`` is the World window's key table; DESIGN §34.7 lists every key it binds."""
+    text = (CORE / "WorldKeys.swift").read_text(encoding="utf-8")
+    bound: dict[str, str] = {}
+    for labels, action in re.findall(r"case ((?:\"[^\"]+\"(?:, )?)+): return \.(\w+)", text):
+        for key in re.findall(r'"([^"]+)"', labels):
+            bound[key] = action
+    assert bound == {
+        " ": "togglePause",
+        ".": "step",
+        "c": "cycleColor",
+        "1": "toggleAgents",
+        "2": "toggleBonds",
+        "3": "toggleTerritory",
+        "f": "followSelection",
+        "[": "slower",
+        "]": "faster",
+        "r": "resetCamera",
+        "\\u{1B}": "escape",
+        "g": "continueRun",
+        "p": "showPowers",
+        "a": "flyToAlert",
+        "k": "acknowledgeAlert",
+        "\\r": "confirmPower",
+        "\\u{3}": "confirmPower",
+    }
+    design = (ROOT / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+    section = design[design.index("### 34.7") :]
+    for action in ("escape", "continueRun", "showPowers", "flyToAlert", "acknowledgeAlert", "confirmPower"):
+        assert action in section, action
+    # Esc never resumes and never acknowledges (G3b review round 2, finding 21): it has its own action
+    assert bound["\\u{1B}"] == "escape"
 
 
 def test_the_power_grammar_the_window_sends_is_the_engines() -> None:

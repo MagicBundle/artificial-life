@@ -403,3 +403,20 @@ import Testing
         #expect(header.play?.alerts == nil && header.play?.autopause == nil && header.play?.powers == nil && header.play?.gameSpecs == nil)
     }
 }
+
+/// The strike card's count of organisms in its column (DESIGN §34.5.1) is a key the fixtures do not carry: decoded from JSON.
+@Suite struct PlanSinceDiscTests {
+    private func since(_ disc: String) throws -> PlanBody.Since {
+        let json = """
+        {"from": 12000, "rows": [{"step": 12000, "alive": 100, "starved": 1, "killed": 2, "born": 3, "storm": 4, "catastrophe": 5}]\(disc)}
+        """
+        return try JSONDecoder().decode(PlanBody.Since.self, from: Data(json.utf8))
+    }
+
+    @Test func theDiscIsOptionalAndItsSecondCountComesLater() throws {
+        #expect(try since("").disc == nil)
+        #expect(try since(#", "disc": {"before": 160}"#).disc == PlanBody.Since.Disc(before: 160, after: nil))
+        #expect(try since(#", "disc": {"before": 160, "after": 61}"#).disc == PlanBody.Since.Disc(before: 160, after: 61))
+        #expect(try since("").rows.count == 1)
+    }
+}

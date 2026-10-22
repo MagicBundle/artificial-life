@@ -96,10 +96,11 @@ package enum CastPolicy {
             }
     }
 
-    /// `"3 starved, 1 aged"`: the non-zero deaths of a window by cause; nil without a count.
+    /// `"3 starved, 1 aged"`: the non-zero deaths of a window by cause, thousands grouped by a comma whatever the locale; nil
+    /// without a count.
     package static func deathSummary(_ deaths: [Int]?) -> String? {
         guard let deaths else { return nil }
-        let parts = zip(deaths, deathCauses).filter { $0.0 > 0 }.map { "\($0.0) \($0.1)" }
+        let parts = zip(deaths, deathCauses).filter { $0.0 > 0 }.map { "\(Numbers.grouped($0.0)) \($0.1)" }
         return parts.isEmpty ? "none" : parts.joined(separator: ", ")
     }
 }

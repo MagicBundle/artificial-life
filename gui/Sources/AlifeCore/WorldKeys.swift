@@ -14,8 +14,19 @@ package enum WorldAction: Equatable, Sendable {
     /// One rung down or up the rate ladder.
     case slower, faster
     case resetCamera
-    /// Clears the selection and the follow.
-    case clearSelection
+    /// `Esc`, one level at a time and never resuming or acknowledging (DESIGN §34.7): cancel aiming a power, else drop its
+    /// preview, else collapse the chapter card to the map, else clear the selection and the follow.
+    case escape
+    /// Open the Powers tab.
+    case showPowers
+    /// Fly to the newest alert of the stack.
+    case flyToAlert
+    /// Acknowledge the newest alert of the stack that is not acknowledged.
+    case acknowledgeAlert
+    /// Resume at the rate the world holds (the chapter card's Continue). Never pauses.
+    case continueRun
+    /// Send the previewed power.
+    case confirmPower
 }
 
 /// The World's own key table. It is not `ViewerKeys`: there `f` is the field slice and `[` `]` the field layers, which in the
@@ -24,7 +35,10 @@ package enum WorldAction: Equatable, Sendable {
 /// ```text
 /// space  pause / run        .  step                 c  next colour mode
 /// 1 2 3  agents / bonds / territory                 f  follow the selection
-/// [ ]    slower / faster along the rate rungs       r  reset the camera        esc  clear
+/// [ ]    slower / faster along the rate rungs       r  reset the camera
+/// g      continue (run)     p  the Powers tab       return  confirm the previewed power
+/// a      fly to the newest alert                    k  acknowledge the newest alert
+/// esc    one level back: aiming, the preview, the chapter card, the selection (never resumes, never acknowledges)
 /// ```
 package enum WorldKeys {
     /// The action of a key, from `NSEvent.charactersIgnoringModifiers`; nil for a key that does nothing. A command or control
@@ -42,13 +56,20 @@ package enum WorldKeys {
         case "[": return .slower
         case "]": return .faster
         case "r": return .resetCamera
-        case "\u{1B}": return .clearSelection
+        case "\u{1B}": return .escape
+        case "g": return .continueRun
+        case "p": return .showPowers
+        case "a": return .flyToAlert
+        case "k": return .acknowledgeAlert
+        case "\r", "\u{3}": return .confirmPower
         default: return nil
         }
     }
 
     /// Every character that does something, for the help text and for tests.
-    package static let characters: [String] = [" ", ".", "c", "1", "2", "3", "f", "[", "]", "r", "\u{1B}"]
+    package static let characters: [String] = [
+        " ", ".", "c", "1", "2", "3", "f", "[", "]", "r", "\u{1B}", "g", "p", "a", "k", "\r", "\u{3}",
+    ]
 
     /// The mode after `current` in the header's list (the first when `current` is not in it); nil for an empty list.
     package static func nextColorMode(after current: String?, in modes: [String]) -> String? {

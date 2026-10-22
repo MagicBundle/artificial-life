@@ -143,3 +143,102 @@ import Testing
         #expect(queue.toasts.count <= 1)
     }
 }
+
+/// The toasts of alerts and the ticker line (DESIGN §34.7).
+@Suite struct AlertToastAndTickerTests {
+    private func alert(_ id: UInt64, title: String = "Storm Merrow", text: String = "Storm Merrow reached named strength.",
+                       surface: PlayAlert.Surface = .alert, state: PlayAlert.State = .raised) -> PlayAlert {
+        PlayAlert(id: id, version: 1, step: Int(id / 1000), alertClass: "storm_named", key: "S7", state: state, surface: surface, imp: 2,
+                  title: title, text: text, x: 4.5, y: 20.25, z: nil, ref: .init(kind: .storm, id: 7), pause: false, expires: nil,
+                  watched: false, calibrated: true)
+    }
+
+    private func event(_ id: UInt64, imp: Int = 1, fam: String = "storm", kind: Int = 11) -> WorldEvent {
+        WorldEvent(id: id, step: Int(id / 1000), kind: kind, fam: fam, a: 7, b: 0, x: 4.5, y: 20.25, z: nil, imp: imp, text: "event \(id)")
+    }
+
+    @Test func anAlertToastsWithItsTitleAndTextAndAClickGoesToTheStorm() throws {
+        var queue = ToastQueue()
+        queue.push(alerts: [alert(12_000_601)], at: 10)
+        let toast = try #require(queue.toasts.first)
+        #expect(toast.text == "Storm Merrow: Storm Merrow reached named strength." && toast.id == 12_000_601 && toast.expires == 13)
+        #expect(toast.action == ChronicleAction(at: SIMD2(4.5, 20.25), select: .storm(id: 7)))
+        queue.push(alerts: [alert(12_000_602, title: "", text: "plain")], at: 10)
+        #expect(queue.toasts.last?.text == "plain", "no title: the text alone")
+    }
+
+    @Test func anAlertAndAnEventShareOneMemoryAndOneCapacity() {
+        var queue = ToastQueue()
+        queue.push(alerts: [alert(5_000_601)], at: 0)
+        queue.push([event(6_000)], at: 0)
+        queue.push(alerts: [alert(5_000_601), alert(7_000_601), alert(8_000_601)], at: 0)
+        #expect(queue.toasts.map(\.id) == [6_000, 7_000_601, 8_000_601], "the oldest of four went; the repeated alert did not come back")
+    }
+
+    @Test func theTickerShowsTheNewestForSeventeenSeconds() {
+        var ticker = Ticker()
+        #expect(ticker.line == nil && ticker.nextExpiry == nil)
+        ticker.show(events: [event(1_000), event(2_000)], at: 100)
+        #expect(ticker.line?.text == "event 2000" && ticker.line?.expires == 117 && ticker.nextExpiry == 117 && Ticker.duration == 17)
+        ticker.show(events: [event(3_000)], at: 105)
+        #expect(ticker.line?.text == "event 3000" && ticker.line?.expires == 122, "the newest replaces it and restarts the time")
+        let early = ticker.expire(at: 121.9)
+        #expect(!early && ticker.line != nil)
+        let gone = ticker.expire(at: 122)
+        #expect(gone && ticker.line == nil)
+        let again = ticker.expire(at: 130)
+        #expect(!again)
+    }
+
+    @Test func theTickerTellsWhatIsToldAndNotTheFillerOrTheLog() {
+        var ticker = Ticker()
+        ticker.show(events: [event(1_000, imp: 0), event(2_000, fam: "system"), event(3_000, fam: "focus", kind: 14)], at: 0)
+        #expect(ticker.line == nil, "imp 0, system and focus are the log's")
+        ticker.show(events: [event(4_000, imp: 1), event(5_000, imp: 0)], at: 0)
+        #expect(ticker.line?.text == "event 4000", "the last event worth a line")
+        ticker.show(events: [], at: 1)
+        #expect(ticker.line?.text == "event 4000")
+    }
+
+    @Test func aRepeatedEventDoesNotRestartTheLineButAReportsLineAlwaysDoes() {
+        var ticker = Ticker()
+        ticker.show(events: [event(4_000)], at: 0)
+        ticker.show(events: [event(4_000)], at: 10)
+        #expect(ticker.line?.expires == 17, "the same event again (a backlog) changes nothing")
+        ticker.show(id: 0, text: "Storm Merrow reached named strength.", at: 12)
+        #expect(ticker.line?.text == "Storm Merrow reached named strength." && ticker.line?.expires == 29)
+        ticker.show(id: 0, text: "Another.", at: 13)
+        #expect(ticker.line?.text == "Another.")
+        ticker.show(id: 0, text: "", at: 14)
+        #expect(ticker.line?.text == "Another.", "nothing to say is not a line")
+    }
+
+    @Test func aLogSurfaceAlertIsATickerLineWithItsFlyTo() {
+        var ticker = Ticker()
+        ticker.show(alerts: [alert(1_000_601, surface: .alert)], at: 0)
+        #expect(ticker.line == nil, "the stack surface is the stack's")
+        ticker.show(alerts: [alert(2_000_601, text: "Aldric has held together.", surface: .log)], at: 0)
+        #expect(ticker.line?.text == "Aldric has held together." && ticker.line?.action?.select == .storm(id: 7))
+        ticker.show(alerts: [alert(3_000_601, surface: .log, state: .cleared)], at: 1)
+        #expect(ticker.line?.id == 2_000_601, "a clearing is not news")
+        ticker.clear()
+        #expect(ticker.line == nil)
+        ticker.show(events: [event(2_000_601)], at: 2)
+        #expect(ticker.line != nil, "after a clear the same id may show again")
+    }
+
+    @Test func theRawKinEventsAreHiddenInAWorldThatTellsThreads() {
+        func kin(_ id: UInt64, kind: Int) -> WorldEvent {
+            WorldEvent(id: id, step: Int(id / 1000), kind: kind, fam: "kin", a: 1, b: 0, x: nil, y: nil, z: nil, imp: 1, text: "kin \(kind)")
+        }
+        var chronicle = Chronicle()
+        _ = chronicle.insert([kin(1_000, kind: EventKind.kinSplit), kin(2_000, kind: EventKind.kinFormed), kin(3_000, kind: EventKind.kinMerged),
+                              kin(4_000, kind: EventKind.kinEnded)])
+        func kinds(hiding: Bool) -> [Int] {
+            ChronicleReducer.groups(chronicle, baseRate: 14.4, hidingRawKin: hiding).flatMap(\.events).map(\.kind).sorted()
+        }
+        #expect(kinds(hiding: false) == [2, 3, 18, 19], "a G3a world has nothing else of its lineages")
+        #expect(kinds(hiding: true) == [18, 19])
+        #expect(ChronicleReducer.isRawKin(kin(1, kind: 4)) && !ChronicleReducer.isRawKin(kin(1, kind: 18)))
+    }
+}

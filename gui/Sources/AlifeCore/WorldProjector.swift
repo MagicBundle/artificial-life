@@ -53,6 +53,28 @@ package struct WorldProjector: Equatable, Sendable {
         return CGPoint(x: CGFloat(ndc.x * 0.5 + 0.5) * view.width, y: CGFloat(0.5 - ndc.y * 0.5) * view.height)
     }
 
+    /// The point of the plane at height `z` that is under `point` of the view (origin at the top left), wrapped into the world
+    /// `[0, L)^2`. Nil when the ray from the eye through the point does not reach the plane in front of it (a view at the horizon,
+    /// or a plane behind the eye). The inverse of `screen` on that plane, up to the wrap: it is how a click on the map names a
+    /// place for a power.
+    package func world(at point: CGPoint, height z: Float = 0) -> SIMD2<Float>? {
+        guard view.width >= 1, view.height >= 1 else { return nil }
+        let nx = Float(point.x / view.width) * 2 - 1
+        let ny = 1 - Float(point.y / view.height) * 2
+        let half = tan(camera.fovY / 2)
+        let ray = simd_normalize(camera.forward + camera.right * (nx * half * aspect) + camera.up * (ny * half))
+        guard abs(ray.z) > 1e-6 else { return nil }
+        let t = (z - camera.position.z) / ray.z
+        guard t > 0 else { return nil }
+        let hit = camera.position + ray * t
+        guard size > 0 else { return SIMD2(hit.x, hit.y) }
+        func wrapped(_ v: Float) -> Float {
+            let r = v - size * (v / size).rounded(.down)
+            return r >= size ? 0 : r
+        }
+        return SIMD2(wrapped(hit.x), wrapped(hit.y))
+    }
+
     /// The length in points of `units` world units across the view at `world`.
     package func points(ofUnits units: Float, at world: SIMD3<Float>) -> CGFloat? {
         let at = image(of: world)

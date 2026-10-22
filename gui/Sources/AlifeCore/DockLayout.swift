@@ -84,3 +84,26 @@ package enum DockLayout {
         free.height >= 1 ? Float(free.width / free.height) : 1
     }
 }
+
+/// How much of a side dock the fixed parts take, measured through `NSHostingView` at the window's minimum size (the test
+/// `theSideDockFitsTheMinimumWindow`), so that the alert rows give way before the list under the tabs does (DESIGN §34.7).
+package enum DockBudget {
+    /// The dock's header line, the clock strip with the chapter bar (measured: 131 with its padding), the tab picker (40), the least
+    /// the list keeps, and what the inspector card takes (measured: 261 for an organism, 189 for a storm, 126 for a group; the dock
+    /// caps it at 300 and scrolls it).
+    package static let header: CGFloat = 28
+    package static let clockStrip: CGFloat = 132
+    package static let tabs: CGFloat = 40
+    package static let list: CGFloat = 120
+    package static let inspector: CGFloat = 270
+    /// A row of the alert stack and the gap under it.
+    package static let alertRow: CGFloat = 48
+
+    /// The rows of the stack a dock of `dockHeight` can show beside the strip, the tabs and (when one is selected) the
+    /// inspector: three when roomy, fewer when tight, never none (an alert the player cannot see is not an alert).
+    package static func alertRows(dockHeight: CGFloat, inspectorOpen: Bool) -> Int {
+        let fixed = header + clockStrip + tabs + list + (inspectorOpen ? inspector : 0)
+        let fits = Int(((dockHeight - fixed) / alertRow).rounded(.down))
+        return min(max(fits, 1), AlertStack.roomyRows)
+    }
+}

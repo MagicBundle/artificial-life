@@ -35,7 +35,8 @@ struct CastView: View {
                     ForEach(lineages) { lineage in
                         LineageRow(lineage: lineage, names: store.play?.labels.arch ?? [],
                                    validity: LabelValidity(labels: store.play?.labels, environment: store.environment?.environment),
-                                   selected: model.selection == .kin(id: lineage.id))
+                                   selected: model.selection == .kin(id: lineage.id),
+                                   watched: model.watch.contains(lineage.id), onWatch: { model.toggleWatch(kin: lineage.id) })
                             .contentShape(Rectangle())
                             .onTapGesture(count: 2) { model.selectKin(id: lineage.id, fly: true, follow: true) }
                             .onTapGesture { model.selectKin(id: lineage.id, fly: true, follow: false) }
@@ -103,6 +104,9 @@ struct LineageRow: View {
     /// The N1 gate on the labels (DESIGN §33.7): a mix is tagged provisional unless every archetype in it is valid.
     var validity = LabelValidity(labels: nil, environment: nil)
     let selected: Bool
+    /// The group is in the watch set (the lineage alerts read it); `onWatch` toggles it. Nil: no star (a stand-in row).
+    var watched = false
+    var onWatch: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -111,6 +115,11 @@ struct LineageRow: View {
                     .frame(width: 10, height: 10)
                 Text(lineage.name).font(.callout.weight(.semibold)).lineLimit(1)
                 Spacer()
+                if let onWatch {
+                    Button(action: onWatch) { Image(systemName: watched ? "star.fill" : "star") }
+                        .buttonStyle(.borderless).controlSize(.small)
+                        .help(watched ? "Stop watching this group" : "Watch this group: its alerts reach the stack")
+                }
                 Text(String(format: "%.1f%%", 100 * lineage.share)).font(.caption.monospacedDigit())
             }
             if let house = lineage.namedAfter {
@@ -123,12 +132,15 @@ struct LineageRow: View {
                 }
             }
             HStack(spacing: 8) {
-                if let births = lineage.births { Text("\(births) born").font(.caption2).foregroundStyle(.secondary) }
-                if let deaths = CastPolicy.deathSummary(lineage.deaths) {
-                    Text("died: \(deaths)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
+                // (verbatim, grouped by us: a localised Int reads "6.216" in much of Europe, DESIGN §34.7)
+                if let births = lineage.births { Text(verbatim: "\(Numbers.grouped(births)) born").font(.caption2).foregroundStyle(.secondary) }
                 Spacer()
-                Text("\(lineage.territoryCells) cells").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "\(lineage.territoryCells) cells").font(.caption2).foregroundStyle(.secondary)
+            }
+            if let deaths = CastPolicy.deathSummary(lineage.deaths) {
+                // (its own line, and as many as it needs: it was cut to "died: 3091 starved, 3099 killed, 3...")
+                Text(verbatim: "died: \(deaths)").font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.vertical, 2)
@@ -186,7 +198,9 @@ struct ChronicleView: View {
     var body: some View {
         let _ = play.revision
         let baseRate = play.store.play?.baseRate ?? 14.4
-        let groups = ChronicleReducer.groups(play.store.chronicle, filter: model.chronicleFilter, baseRate: baseRate)
+        let groups = ChronicleReducer.groups(
+            play.store.chronicle, filter: model.chronicleFilter, baseRate: baseRate,
+            hidingRawKin: play.store.play?.alerts != nil && !model.debugFilters)
         VStack(spacing: 0) {
             filters
             List {
@@ -313,14 +327,14 @@ struct ToastStackView: View {
     var body: some View {
         VStack(spacing: 6) {
             ForEach(model.toasts) { toast in
-                Text(toast.event.text)
+                Text(toast.text)
                     .font(.callout)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.15)))
                     .onTapGesture {
-                        model.activate(toast.event)
+                        model.activate(toast.action)
                         model.dismissToast(id: toast.id)
                     }
                     .transition(.opacity.combined(with: .move(edge: .top)))

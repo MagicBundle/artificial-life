@@ -28,6 +28,7 @@ struct WorldOverlayView: View {
             if let environment = store.environment {
                 drawPools(environment, projector, selected: selection, &context)
             }
+            drawPowerAim(store, projector, &context)
             if let storms = store.storms {
                 var marked: Set<Int> = []
                 if case .storm(let id) = selection { marked.insert(id) }
@@ -84,6 +85,46 @@ struct WorldOverlayView: View {
             let chosen = selected == .pool(index: index)
             context.stroke(ring, with: .color(chosen ? .white : Color(red: 1, green: 0.55, blue: 0.2).opacity(0.45)),
                            style: StrokeStyle(lineWidth: chosen ? 2 : 1, dash: [2, 3]))
+        }
+    }
+
+    /// The food patches the powers can aim at (while the Powers tab is open or a power is chosen), the one a click would take or
+    /// has taken, and a strike's disc at the pointer or its target (DESIGN §34.7).
+    private func drawPowerAim(_ store: WorldStore, _ projector: WorldProjector, _ context: inout GraphicsContext) {
+        let powers = model.powers
+        guard model.tab == .powers || powers.offer != nil else { return }
+        let patches = store.patches
+        var chosen: Int?
+        if case .patch(let i)? = powers.target {
+            chosen = i
+        } else if powers.isAiming, powers.offer?.scope == .patch, let world = overlay.aimWorld {
+            chosen = PowersModel.nearestPatch(to: world, in: patches, size: Float(model.worldSize))
+        }
+        let green = Color(red: 0.45, green: 0.85, blue: 0.45)
+        for patch in patches {
+            let at = SIMD3<Float>(Float(patch.x), Float(patch.y), 0)
+            guard let center = projector.screen(at) else { continue }
+            let radius = max(projector.points(ofUnits: Float(patch.sigma) * 2, at: at) ?? 0, 8)
+            let ring = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
+            let hot = chosen == patch.i
+            context.stroke(ring, with: .color(hot ? .white : green.opacity(0.6)),
+                           style: StrokeStyle(lineWidth: hot ? 2.5 : 1, dash: hot ? [] : [5, 3]))
+            if hot { context.fill(ring, with: .color(green.opacity(0.18))) }
+            let label = context.resolve(Text("patch \(patch.i)").font(.caption2).foregroundColor(green.opacity(hot ? 1 : 0.7)))
+            context.draw(label, at: CGPoint(x: center.x, y: center.y + radius + 8))
+        }
+        if powers.offer?.scope == .column {
+            var place: SIMD2<Float>?
+            if case .point(let x, let y)? = powers.target { place = SIMD2(Float(x), Float(y)) } else { place = overlay.aimWorld }
+            if let place, let radiusUnits = powers.values[.radius] {
+                let at = SIMD3<Float>(place.x, place.y, 0)
+                if let center = projector.screen(at) {
+                    let radius = max(projector.points(ofUnits: Float(radiusUnits), at: at) ?? 0, 4)
+                    let disc = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
+                    context.fill(disc, with: .color(.red.opacity(0.16)))
+                    context.stroke(disc, with: .color(.red.opacity(0.9)), style: StrokeStyle(lineWidth: 1.5, dash: powers.target == nil ? [4, 3] : []))
+                }
+            }
         }
     }
 
