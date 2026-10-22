@@ -320,7 +320,7 @@
       "fields": {
         "n_rows": 6,
         "labels_step": 0,
-        "intent_version": 2,
+        "intent_version": 3,
         "rows": [
           {
             "uid": 5000000000,

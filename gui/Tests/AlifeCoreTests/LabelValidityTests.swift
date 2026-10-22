@@ -94,6 +94,63 @@ import Testing
         #expect(row(card, "Archetype") == InspectorCard.Row("Archetype", "warming up", provisional: true))
     }
 
+    @Test func theArchetypeWarmsUpLongerThanTheIntent() throws {
+        // Flag bit 0 is the intent warm-up (24 steps); the archetype's is 192, and its byte is 0 until then.
+        let pass = PlayHeader.Labels.Gate(rulesDigest: "d", worldKey: "k", keyFound: true, archetypes: [1], intents: [9])
+        var store = try WorldFixtures.store(gate: pass)
+        var f = try #require(store.focus)
+        f.archPrimary = 0
+        f.archSecondary = 0
+        f.labelFlags = 1
+        store.apply(.focs(f))
+        let card = Inspector.organism(uid: uid0 + 100, store: store)
+        #expect(row(card, "Archetype") == InspectorCard.Row("Archetype", "warming up", provisional: true))
+        #expect(row(card, "Intent") == InspectorCard.Row("Intent", "Roaming", provisional: false))
+        #expect(Inspector.archetype(f, names: ["", "Grazer"]) == "warming up")
+    }
+
+    @Test func generalistMakesNoClaimAndNeedsOnlyTheOpenGate() throws {
+        #expect(LabelValidity.generalist == 7)
+        let v = LabelValidity(labels: labels(gate()), environment: env([:]))
+        #expect(v.archetypeIsValid(7), "no held-out row exists for Generalist; the open gate is enough")
+        #expect(v.mixIsValid([0.5, 0.3, 0, 0, 0, 0, 0.2]))
+        #expect(!v.mixIsValid([0.5, 0.2, 0.1, 0, 0, 0, 0.2]), "Provider (3) still needs its verdict")
+        let closed = LabelValidity(labels: labels(gate(found: false, archetypes: [], intents: [])), environment: env([:]))
+        #expect(!closed.archetypeIsValid(7) && !closed.mixIsValid([0, 0, 0, 0, 0, 0, 1]))
+        let moved = LabelValidity(labels: labels(gate()), environment: env(["regen_mult": .number(0.5)]))
+        #expect(!moved.archetypeIsValid(7) && !moved.mixIsValid([0, 0, 0, 0, 0, 0, 1]))
+        // an organism whose primary is Generalist is tagged only by the gate
+        let pass = PlayHeader.Labels.Gate(rulesDigest: "d", worldKey: "k", keyFound: true, archetypes: [], intents: [9])
+        var store = try WorldFixtures.store(gate: pass)
+        var f = try #require(store.focus)
+        f.archPrimary = 7
+        f.archSecondary = 0
+        store.apply(.focs(f))
+        #expect(row(Inspector.organism(uid: uid0 + 100, store: store), "Archetype")?.provisional == false)
+    }
+
+    @Test func theLabelColourModesAreTaggedUntilEveryLabelPasses() {
+        let arch = ["", "Grazer", "Hunter", "Provider", "", "", "", "Generalist"]
+        let intent = ["", "Budding", "Hunting", "Fleeing"]
+        let some = LabelValidity(labels: labels(gate()), environment: env([:]))
+        #expect(some.colorModeTitle("archetype", arch: arch, intent: intent) == "archetype (provisional)")
+        #expect(some.colorModeTitle("intent", arch: arch, intent: intent) == "intent (provisional)")
+        // modes that paint no label are untouched
+        for mode in ["tag", "energy", "clade", "house", "kin"] {
+            #expect(some.colorModeTitle(mode, arch: arch, intent: intent) == mode)
+        }
+        // every archetype but Generalist, and every intent, pass: the modes lose the tag (an environment move restores it)
+        let all = PlayHeader.Labels.Gate(rulesDigest: "d", worldKey: "k", keyFound: true, archetypes: [1, 2, 3, 4, 5, 6], intents: [1, 2, 3])
+        let full = LabelValidity(labels: labels(all), environment: env([:]))
+        #expect(full.colorModeTitle("archetype", arch: arch, intent: intent) == "archetype")
+        #expect(full.colorModeTitle("intent", arch: arch, intent: intent) == "intent")
+        let moved = LabelValidity(labels: labels(all), environment: env(["regen_mult": .number(0.5)]))
+        #expect(moved.colorModeTitle("archetype", arch: arch, intent: intent) == "archetype (provisional)")
+        // before any header (or without a verdict row) the tag is on, even with no label to check
+        let none = LabelValidity(labels: nil, environment: nil)
+        #expect(none.colorModeTitle("intent", arch: [], intent: []) == "intent (provisional)")
+    }
+
     @Test func theStormFixtureHasTheNamesOfAStormWorld() throws {
         let play = try #require(try WorldFixtures.store().play)
         #expect(play.labels.arch[1] == "Grazer" && play.labels.gate?.keyFound == false)

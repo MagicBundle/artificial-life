@@ -564,10 +564,14 @@ class StormLayer:
 
     # --- one tick -------------------------------------------------------------------------------------------
 
-    def tick_at(self, ws: WeatherState, t: int) -> StormTick:
-        """Read the weather of step ``t`` (one device sync), detect, track, name and build the records."""
+    def tick_at(self, ws: WeatherState, t: int, t_mult: mx.array | None = None) -> StormTick:
+        """Read the weather of step ``t`` (one device sync), detect, track, name and build the records.
+
+        ``t_mult`` is the engine's shade on ``T_s`` (``weather.shade_mult`` of the state at step ``t``, i.e.
+        the next step's start-of-step state; None while ``shade_gain`` is 0). The ``MAP1`` plane is then the
+        ``T_s`` that step ``t`` will force the weather with, ``warm_pools * t_mult``, not the bare pools."""
         p = self.p
-        warm = W.warm_pools(p, mx.array(t, dtype=mx.int32))
+        warm = self._sea(t, t_mult)
         fr, (dc, ts) = read_frame_extra(ws, p, t, (ws.Dc, warm))
         det = detect(fr, p)
         maps = {
@@ -579,12 +583,18 @@ class StormLayer:
         }
         return self.ingest(det, maps)
 
-    def current(self, ws: WeatherState, t: int) -> StormTick:
+    def _sea(self, t: int, t_mult: mx.array | None) -> mx.array:
+        """``T_s`` of step ``t``: the warm pools, times the shade when the world has one (static)."""
+        warm = W.warm_pools(self.p, mx.array(t, dtype=mx.int32))
+        return warm if t_mult is None else warm * t_mult
+
+    def current(self, ws: WeatherState, t: int, t_mult: mx.array | None = None) -> StormTick:
         """The records of step ``t`` without a detection: the planes read from ``ws`` and the ``STRM`` object
         of the tracks as the last tick left them (``detect_step`` is that tick), no event, no tracker change.
-        The play loop sends it at start and on ``idnt``, when no tick has just run."""
+        The play loop sends it at start and on ``idnt``, when no tick has just run. ``t_mult``: as
+        ``tick_at``."""
         p = self.p
-        warm = W.warm_pools(p, mx.array(t, dtype=mx.int32))
+        warm = self._sea(t, t_mult)
         fr, (dc, ts) = read_frame_extra(ws, p, t, (ws.Dc, warm))
         planes = streamrec.quantise_map1(
             p=fr.P,

@@ -467,3 +467,23 @@ def test_a_checkpoint_stall_is_announced_and_counted_apart_from_lateness(
     )
     assert pacer.sched.late_steps == 0 and pacer.sched.save_stall_steps == after["save_stall_steps"]
     assert clcks[-1][1]["saving"] == 0
+
+
+def test_a_shaded_world_sends_the_shaded_sea_plane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With ``weather.shade_gain > 0`` the ``MAP1`` plane ``T_s`` is the engine's forcing of the next step,
+    ``warm_pools * shade_mult`` of the state at that step (DESIGN §33.1.7); at step 0 that is the initial
+    population. With the gain 0 it is the bare pool map, and the plane differs between the two worlds."""
+    from alife import weather as W
+
+    snapshots(monkeypatch, 10)
+    got = {}
+    for gain in ("0.05", "0"):
+        cfg = world("storm", f"weather.shade_gain={gain}", "weather.shade_n0=0.01")
+        _, _, _, out = run_paced(cfg, tmp_path / gain, 2, [[]], options=RUN)
+        got[gain] = next(r for r in decoded(out).records if r.tag == "MAP1" and r.step == 0).a["Ts"]
+        s0 = init_state(cfg)
+        warm = W.warm_pools(W.params_from_config(cfg), mx.array(0, dtype=mx.int32))
+        t_s = warm * W.shade_mult(s0.pos, s0.alive, cfg) if float(gain) > 0 else warm
+        want = np.rint(255 * np.clip(np.array(t_s), 0, 1)).astype(np.uint8)
+        assert np.array_equal(got[gain], want), gain
+    assert not np.array_equal(got["0.05"], got["0"])

@@ -139,14 +139,19 @@ struct ViewMenu: View {
         Menu("View") {
             let modes = play.store.header?.colorModes ?? []
             let current = play.store.frame.flatMap { play.store.header?.colorMode(index: $0.colorIndex) }
+            // The archetype and intent modes paint labels: they are tagged like every other presentation of one (DESIGN §33.7).
+            let labels = play.store.play?.labels
+            let validity = LabelValidity(labels: labels, environment: play.store.environment?.environment)
             Picker("Colour", selection: Binding(
                 get: { current ?? "" }, set: { play.setColor($0) })
             ) {
-                ForEach(modes, id: \.self) { Text($0).tag($0) }
+                ForEach(modes, id: \.self) {
+                    Text(validity.colorModeTitle($0, arch: labels?.arch ?? [], intent: labels?.intent ?? [])).tag($0)
+                }
             }
             Divider()
-            // The world's `labels on|off`: whether it sends the intent labels (INTN) at all. Nothing is drawn from them on the
-            // map; the inspector's intent line reads them.
+            // The world's `labels on|off`: whether it sends the intent labels (INTN) at all. The record itself paints nothing; the
+            // archetype and intent colour modes do (from the host's colours), and the picker above tags them.
             Toggle("Intent labels (stream)", isOn: Binding(
                 get: { play.labelsOn }, set: { play.send(.labels($0)) }))
             Divider()

@@ -449,7 +449,7 @@
       "fields": {
         "n_rows": 7,
         "labels_step": 96,
-        "intent_version": 2,
+        "intent_version": 3,
         "rows": [
           {
             "uid": 5000000000,

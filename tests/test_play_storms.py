@@ -605,3 +605,25 @@ def test_the_layers_events_feed_the_chronicle_and_the_log_rebuilds_them() -> Non
             seen.add(e["text"].split()[0] if e["kind"] != 8 else "named")
         assert rebuild_backlog([], lines, [], house_salt=0x686F757365, limit=10_000) == live, seed
     assert {"Disturbance", "Storm", "named"} <= seen
+
+
+def test_the_sea_plane_carries_the_shade_when_the_world_has_one(vortex) -> None:
+    """``T_s`` of ``MAP1`` is the map the engine forces the weather with: the warm pools times the shade
+    (DESIGN §33.1.7). Without ``t_mult`` it is the bare pool map (the W1 expressions), for ``tick_at`` and
+    ``current`` alike, and the shade reaches the plane only (the tracker input is the detection)."""
+    _, _, ws = vortex
+    shade = 1.0 - 0.05 * mx.broadcast_to(mx.linspace(0.0, 1.0, PV.n)[None, :], (PV.n, PV.n))
+    warm = W.warm_pools(PV, mx.array(100, dtype=mx.int32))
+
+    def byte(a: mx.array) -> np.ndarray:
+        return np.rint(255 * np.clip(np.array(a), 0, 1)).astype(np.uint8)
+
+    bare, shaded = byte(warm), byte(warm * shade)
+    assert not np.array_equal(bare, shaded), "the test shade must move a byte"
+    for read in (lambda lay, **kw: lay.tick_at(ws, 100, **kw), lambda lay, **kw: lay.current(ws, 100, **kw)):
+        none, withm = read(StormLayer(PV, DC_REF, 25)), read(StormLayer(PV, DC_REF, 25), t_mult=shade)
+        assert np.array_equal(none.planes["Ts"], bare)
+        assert np.array_equal(withm.planes["Ts"], shaded)
+        for k in ("P", "Dc", "zeta", "winds"):
+            assert np.array_equal(none.planes[k], withm.planes[k])
+        assert none.strm == withm.strm and none.events == withm.events

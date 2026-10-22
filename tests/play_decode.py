@@ -88,7 +88,31 @@ def decode(data: bytes) -> Decoded:
                 _DECODERS[tag](rec, p, n)
                 records.append(rec)
         pos += 8 + length
+    _check_labels(header, records)
     return Decoded(header, records, skipped)
+
+
+def _check_labels(header: dict[str, Any], records: list[Rec]) -> None:
+    """The label bytes of ``INTN`` and ``FOCS`` index the header's name tables (``play.labels``, §33.7: byte 0
+    is none, a byte must name an entry), and an ``INTN`` carries the header's ``intent_version``."""
+    labels = (header.get("play") or {}).get("labels")
+    if labels is None:
+        return
+    n_arch, n_intent = len(labels["arch"]), len(labels["intent"])
+    for r in records:
+        if r.tag == "INTN":
+            assert r.f["intent_version"] == labels["intent_version"], (
+                f"INTN@{r.offset} intent_version {r.f['intent_version']} != header {labels['intent_version']}"
+            )
+            arch1, arch2, intent = r.a["arch_primary"], r.a["arch_secondary"], r.a["intent"]
+        elif r.tag == "FOCS":
+            arch1, arch2, intent = (np.array([r.f[k]]) for k in ("arch_primary", "arch_secondary", "intent"))
+        else:
+            continue
+        assert arch1.max(initial=0) < n_arch and arch2.max(initial=0) < n_arch, (
+            f"{r.tag}@{r.offset}: archetype byte"
+        )
+        assert intent.max(initial=0) < n_intent, f"{r.tag}@{r.offset}: intent byte past the header's names"
 
 
 def _frma(r: Rec, p: bytes, n_cap: int) -> None:

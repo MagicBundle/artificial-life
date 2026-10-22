@@ -125,9 +125,11 @@ package enum Inspector {
         return card
     }
 
-    /// `"Gatherer"` or `"Gatherer / Hunter"`; "warming up" before the labels are evaluated.
+    /// `"Gatherer"` or `"Gatherer / Hunter"`; "warming up" before the labels are evaluated. Flag bit 0 is the *intent*
+    /// warm-up (24 observed steps); the archetype warms up longer (192), and until then its byte is 0 (once warm the
+    /// primary is never 0: no match is Generalist), so a 0 primary is "warming up" whatever the flag says.
     package static func archetype(_ focus: PlayFocus, names: [String]) -> String {
-        guard focus.labelFlags & 1 != 0 else { return "warming up" }
+        guard focus.labelFlags & 1 != 0, focus.archPrimary != 0 else { return "warming up" }
         let first = Names.label(focus.archPrimary, in: names)
         guard focus.archSecondary != 0 else { return first }
         return "\(first) / \(Names.label(focus.archSecondary, in: names))"

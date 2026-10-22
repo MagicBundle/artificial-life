@@ -302,3 +302,15 @@ def test_the_widest_idnt_table_with_ten_shares_a_group_fits_its_cap() -> None:
 
 def test_default_social_is_unchanged_by_the_labels() -> None:
     assert observer.DEFAULT_SOCIAL is SOCIAL_V1 and play.PLAY_TICK > 0
+
+
+def test_the_swift_gate_exempts_the_generalist_byte() -> None:
+    """``LabelValidity.generalist`` (the one archetype with no verdict row, so it needs only the open gate) is
+    ``rules.Archetype.GENERALIST``, and no ``LABEL_VERDICTS`` row names it (``labels.py`` reports it as
+    prevalence only)."""
+    import re
+
+    swift = (Path(__file__).parent.parent / "gui/Sources/AlifeCore/LabelValidity.swift").read_text()
+    match = re.search(r"static let generalist: UInt8 = (\d+)", swift)
+    assert match and int(match.group(1)) == Archetype.GENERALIST.value
+    assert all("generalist" not in table for table in report.LABEL_VERDICTS.values())

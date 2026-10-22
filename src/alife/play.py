@@ -1015,11 +1015,19 @@ class PlayPacer:
             ),
         )
 
+    def _shade(self, state: State) -> dict[str, mx.array]:
+        """``{"t_mult": shade}`` for the ``MAP1`` sea-temperature plane when the world shades its warm pools
+        (``weather.shade_gain > 0``, static), else no keyword. ``state`` is the state at step ``t``: the
+        start-of-step state of the step that will force the weather with this ``T_s`` (DESIGN §33.1.7)."""
+        if self.cfg.weather.shade_gain > 0:
+            return {"t_mult": W.shade_mult(state.pos, state.alive, self.cfg)}
+        return {}
+
     def _tick_storms(self, state: State, t: int) -> None:
         """The storm layer's tick at ``t``: detect, track, log, then the weather records."""
         layer = self.layer
         assert layer is not None
-        tick = layer.tick_at(W.unpack(state.wx), t)
+        tick = layer.tick_at(W.unpack(state.wx), t, **self._shade(state))
         layer.log(self.rd, tick)
         self._events += self.chron.from_storms(tick.events)
         self._write_weather(tick)
@@ -1041,7 +1049,7 @@ class PlayPacer:
     def _send_weather(self, state: State) -> None:
         if self.layer is None:
             return
-        self._write_weather(self.layer.current(W.unpack(state.wx), self._t))
+        self._write_weather(self.layer.current(W.unpack(state.wx), self._t, **self._shade(state)))
 
     def _send_environment(self, state: State) -> None:
         obj = environment_object(

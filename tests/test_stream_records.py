@@ -48,7 +48,11 @@ def _header(n: int, records: tuple[str, ...] = sr.TAGS) -> bytes:
     play = sr.header_play(
         records=records,
         weather=sr.weather_block(enabled=True, dc_ref=0.5),
-        labels={"intent_version": 2, "arch": ["", "A"], "intent": ["", "I"]},
+        labels={
+            "intent_version": 3,
+            "arch": ["", *(f"A{i}" for i in range(10))],
+            "intent": ["", *(f"I{i}" for i in range(10))],
+        },
         energy_cap=100,
     )
     return sr.play_header_bytes(legacy, play)
@@ -421,7 +425,7 @@ def test_intn_rows_are_12_bytes() -> None:
             step=9,
             seq=0,
             labels_step=8,
-            intent_version=2,
+            intent_version=3,
             uid=uid,
             arch_primary=np.array([1, 7], np.uint8),
             arch_secondary=np.array([0, 3], np.uint8),
@@ -429,7 +433,7 @@ def test_intn_rows_are_12_bytes() -> None:
             flags=np.array([1, 3], np.uint8),
         ),
     )
-    assert len(rec.sections["rows"]) == 24 and rec.f == {"n_rows": 2, "labels_step": 8, "intent_version": 2}
+    assert len(rec.sections["rows"]) == 24 and rec.f == {"n_rows": 2, "labels_step": 8, "intent_version": 3}
     np.testing.assert_array_equal(rec.a["uid"], uid)
     assert rec.a["intent"].tolist() == [9, 1] and rec.a["flags"].tolist() == [1, 3]
 
@@ -745,3 +749,30 @@ def test_decoder_does_not_import_the_encoder() -> None:
     names = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     names |= {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     assert not any("alife" in m or "streamrec" in m for m in names), names
+
+
+def test_the_decoder_checks_the_label_bytes_against_the_header() -> None:
+    """``INTN`` carries the header's ``intent_version`` and its (and ``FOCS``'s) archetype and intent bytes
+    name an entry of the header's tables: the decoder is strict about them."""
+
+    def intn(version: int, arch: int, intent: int) -> bytes:
+        return sr.encode_intn(
+            step=9,
+            seq=0,
+            labels_step=8,
+            intent_version=version,
+            uid=np.array([5], np.int64),
+            arch_primary=np.array([arch], np.uint8),
+            arch_secondary=np.array([0], np.uint8),
+            intent=np.array([intent], np.uint8),
+            flags=np.array([1], np.uint8),
+        )
+
+    assert _one(8, intn(3, 10, 10)).f["intent_version"] == 3  # the last entry of each table
+    for bad, why in (
+        (intn(2, 1, 1), "intent_version"),
+        (intn(3, 11, 1), "archetype"),
+        (intn(3, 1, 11), "intent"),
+    ):
+        with pytest.raises(AssertionError, match=why):
+            _one(8, bad)
