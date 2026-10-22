@@ -26,6 +26,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/3D.md` | the 3D world with gravity and a floor (owner decisions, layout, fields, Swift viewer, PR plan); built in PRs #15 to #20, normative spec `docs/DESIGN.md` §27 |
 | `docs/RESULTS_3D.md` | the first long 3D run, `runs/64k3d_s0` (500k steps): population and `K`, vertical niches and buoyancy, bodies, evolutionary activity, comparison with 2D; figures and tables in `docs/results_3d/`, scripts in `analysis_cache/64k3d_s0/results3d/` (git-ignored) |
 | `docs/RESULTS_3D_RUNS.md` | the four 500k-step `64k3d` runs (seed 0, seed 1, half food, director live): replication, the density control, the director in 3D, bodies and activity across runs; figures and tables in `docs/results_3d_runs/`, scripts in `analysis_cache/64k3d_runs/` (git-ignored) |
+| `docs/RESULTS_G3A.md` | G3a's Mac day on the M5 Pro (2026-10-22): Metal purity, the bench gate (passed) and its component table, the client's share, a 20,000-step planet play (records, chronicle rates, stalls, resume), the rendered window, and what is open (the click-through by hand); small data files in `docs/results_g3a/` |
 | `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with `INTENT_VERSION` 2 label rules (`RULES_V2`, calibrated offline and validated on three held-out windows on the GPU, 2026-10-21, DESIGN §28.4, §28.8) and, since W2a, `INTENT_VERSION` 3 (`RULES_V3`, the default: wind-relative Nomad and Settler plus Drifter, Floater and Sinker, calibrated on one storm pilot window, DESIGN §32.7, §32.8, row I50); G2, social tracking (houses, kin groups, colonies, territory, relations; `src/alife/groups.py`, `tracking.py`, `game/social.py`, `game/society.py`, `python -m alife.analysis.social`; the reports are `observers/social.jsonl` in an observing run's directory; normative spec `docs/DESIGN.md` §29, Review-log row I45) is built, run on the GPU (2026-10-21) and has provisional thresholds (`SOCIAL_VERSION` 1, measured, none changed); N1, the offline World Report (`python -m alife.analysis.world_report`; code-written template sentences with a checker, and an optional local model that only selects and orders them; normative spec `docs/DESIGN.md` §31, Review-log row I49) is built with provisional thresholds (`REPORT_VERSION` 1); G3 to G5 are not built |
 | `docs/STORMS.md` | the storm world (an alien-planet weather game on the 3D world): the weather model, the coupling, the plan W0 to W5; W0 (the offline model, `weather.py`, `docs/STORMS_W0.md`), W1 (the engine weather layer, normative spec `docs/DESIGN.md` §30) and W2a (rain seeding, shade, the controls, the observers' version 3 and the instruments, `docs/DESIGN.md` §32, row I50) are built and off by default; W2b (calibration and the 14 runs) is not run |
 | `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13), before (2026-10-16) and with (2026-10-20) the fused Metal neighbour kernel |
@@ -384,13 +385,16 @@ and resumed once. There is one run per condition apart from the seed pair.
 ## Games G3a: the play loop and the World window (`docs/GAMES.md` §9, DESIGN §33, row I51)
 
 - **Current state.** Built on branch `games/g3a` (15 commits on `origin/main` 2d1ab0c: G2, W0/W1 weather, N1, the fused kNN kernel), then
-  merged with `origin/main` 39301ba (W2a #34, the 2D fused kernel #33; DESIGN §33.7): the labels of the stream are `INTENT_VERSION` 3's and carry
+  merged with `origin/main` 39301ba (W2a #34, the 2D fused kernel #33; DESIGN §33.7), the sync review fixes (`b7020a6`) and the
+  **Mac day, done 2026-10-22** (`docs/RESULTS_G3A.md`, commit "G3a: Mac day results" on top of `b7020a6`). **The PR is to be opened; it is not merged.**
+  The labels of the stream are `INTENT_VERSION` 3's and carry
   N1's validity gate (no V3 verdict row exists, so no label is shown as valid; a lever away from its default also withdraws them).
   `alife play` runs one world under a fixed-timestep scheduler and writes ALSTRM records (`FRMA IDNT INTN TERR EVNT STRM MAP1 ENVS CLCK
   FOCS`) to stdout; the **World** window of the Swift app (Lab menu, "Open World", or `--world RUN` at launch) shows them: the planet
   map and organisms in a raw-Metal view (minimum image, alive-only frames, three semantic levels), a docked control center (clock
   strip, Cast, Chronicle, the inspector pinned under them), picking and follow with the hand-off at death, toasts and keys. Presentation
-  never changes a trajectory (digest equality with a plain run is tested on the CPU); **the Mac-day items below are pending.**
+  never changes a trajectory (digest equality with a plain run is tested on the CPU and, on the Mac day, on Metal in four bench arms).
+  **Mac day: the §33.5.4 gate passes; Metal purity (19 files) and the Swift tests pass; the click-through by hand is the owner's and not done.**
 - **What to know before touching it.**
   - Planets: `alife play --init-from SRC:STEP --overlay storm --set director.enabled=true --weather-spinup N --out DIR` (the weather
     needs a spin-up; houses are rebuilt exactly from the source's event chunks, `--houses exact|clade|auto`). `play.json` is written
@@ -400,21 +404,42 @@ and resumed once. There is one run per condition apart from the seed pair.
     runner has no `try/finally`). `RunDir._prune` now keeps a fork's origin checkpoint.
   - The Swift package has no CI job: run `cd gui && swift build -Xswiftc -warnings-as-errors && swift test` before a push (AlifeCoreTests
     and AlifeControlTests; the GPU tests are opt-in with `ALIFE_GPU_TESTS=1`).
-  - Provisional and unmeasured: the chronicle's event rate (the ring of 500 and the 3 s toast), the checkpoint stall (686 MB), the
-    boundary step's cost, the client's GPU time, fast-forward (estimated 3.5 to 3.9x). The labels shown are `INTENT_VERSION` 3's (Drifter,
+  - Measured on the Mac day (64k3d storm planet, 44,955 alive): 1x holds (1.00006x, `late_steps` 0, `step_ms` p99 47.6 ms), `max` is
+    3.68x (53 steps/s), the boundary step is 127.6 to 130 ms at 1x (a third over the estimate; the scheduler's debt absorbs it), a
+    checkpoint stalls 0.93 to 0.98 s (13 slots) on the internal disk, the client's draw p95 is 2.41 ms. The chronicle runs at 8.66
+    events a minute (ring of 500 = 58 minutes; a toast about every 18 s), **mostly kin splits and merges that flap** (112 of 201 events;
+    69 of the 77 importance-2 events). Still unmeasured: the external-disk checkpoint stall, the present-to-present draw time in a real
+    window, a release build, 2x. The planet of the Mac day is a fork at **450,000**, where D2 says 500,000. The labels shown are `INTENT_VERSION` 3's (Drifter,
     Floater, Sinker; Grazer in a storm world) and are tagged provisional unless the header's gate (`LABEL_VERDICTS`, as N1) lists them and `ENVS.levers`
     is empty; today none is listed, so all are provisional. The chronicle never states one.
-- **The Mac day (the coordinator's; DESIGN §33.6).**
-  1. The play tests on Metal: `uv run pytest tests/test_play_purity.py tests/test_play_hook.py tests/test_bench.py -q` (default device),
-     the 2D digest matrix against `39301ba` (the merge's base; on the GPU the 2D fused kernel is now the default), and W2a's own Metal
-     re-run at the merged head (`test_game_purity.py` with `Acts.buoy` and the tracers, `test_game_tracers.py`, DESIGN §32.11).
-  2. The gate of DESIGN §33.5.4 with `alife bench --play --preset 64k3d --overlay storm --set director.enabled=true --play-from
-     runs/64k3d_s0:500000 --play-spinup 20000 --steps 4400 --json F.json`, and `ALIFE_GPU_TESTS=1 ALIFE_BENCH_ROWS=42000 swift test
-     --filter WorldRenderBench` beside its `1` arms; the checkpoint stall on the internal and the external disk.
-  3. A 20,000-step planet play with the window attached, and the click-through by hand (launcher, clock strip, picking at each level,
-     follow and the hand-off, Cast, Chronicle, toasts, keys, each dock side, closing and quitting while saving).
-  4. `swift build -Xswiftc -warnings-as-errors && swift test` on the merge commit. Results go to `docs/RESULTS_G3A.md`.
-- **Next (G3b).** Chapters of 6,000 steps with auto-pause, alerts, the ticker and the live World Report (N1's select mode, one request in
+- **The click-through, the owner's (not done; the other Mac-day results are in `docs/RESULTS_G3A.md` and DESIGN §33.6).**
+  Start `cd gui && swift run`, Lab menu "Open World" (or `--world RUN`). The launcher lists `runs/`: make a new planet from the launcher
+  (a fork of `64k3d_s0` with the 20,000-step spin-up, about 21 s; the Mac day's `p0` is in scratch, outside `runs/`). Look for:
+  1. **Launcher:** a world listed with its step, source and houses; Resume starts at 1x; cancel a build (it becomes "unfinished"); a
+     world that is saving is "saving..." and Resume is refused.
+  2. **Clock strip:** Pause, 0.25x, 0.5x, 1x, 2x, Max, Resume (rate unchanged), `+1`, `+25` when paused; the readout settles ("0.98x of 1x");
+     "late N" and "saving..." at a checkpoint. Does 2x stutter at the boundary steps (3.7 slots there, not benched)?
+  3. **Picking at each level:** planet (storm, warm pool, territory cell; no organisms), region (organism: click follows, shift-click
+     selects only, double click flies in), organism; hover tooltips; the map fade (0.4 s).
+  4. **Follow and the hand-off:** follow an organism until it dies (the selection moves to its successor, the camera holds the
+     death point meanwhile), a storm until it dissipates, a lineage.
+  5. **Cast and Chronicle:** the eight largest kin groups and live storms; hover highlights; the Chronicle's groups, filters and
+     click-to-fly. **Judge the kin churn**: is the Lineages filter usable, should kin events be off by default?
+  6. **Toasts:** 3 s, at most 3; at the measured rate one every 18 s, nine in ten of them kin.
+  7. **Keys:** `space . c 1 2 3 f [ ] r Esc`; the View menu's archetype and intent colour modes say "(provisional)"; `[` `]` do nothing paused.
+  8. **The dock:** each side, the divider, collapsed (one-line clock), and the window at its 700-point minimum height (the inspector card
+     may crowd the Cast list; not rendered).
+  9. **Close and quit while saving:** the app waits for the world (up to 40 s), the checkpoint completes, no `play.lock` is left.
+  10. **Resume** a world from the launcher, after quitting the app.
+  11. **Cosmetics seen offscreen:** lineage detail lines truncate ("died: 3091 starved, 3099 killed, 3..."), "6.216 born" reads as a decimal
+      under a locale thousands separator, the window title showed a run named `r`.
+  Also open: the 2D digest matrix on the GPU against `39301ba`, `tests/test_bench.py` and `tests/test_weather_w2_instruments.py`
+  on Metal, the external-disk checkpoint stall.
+- **Next.** (1) Open the G3a PR (merged with `origin/main` 39301ba, Mac day done) for the owner's review and the click-through;
+  the owner merges. (2) The kin-churn finding before G3b's ticker and toasts build on the chronicle (a persistence rule for kin
+  splits and merges; none tried). (3) **W2b waits for the owner's go** (the occupancy gate G0, the calibration, the 14 runs, the held-out
+  label windows, `LABEL_VERDICTS` rows; about 10.7 GPU hours and 119 GB); until then every label shown is provisional. (4) The G3b spec.
+- **G3b.** Chapters of 6,000 steps with auto-pause, alerts, the ticker and the live World Report (N1's select mode, one request in
   flight), direct powers, canonicalised saves, recap files, rewind. W2 (the coupling values and the labels of storm worlds) only
   changes values the records already carry.
 
@@ -625,8 +650,8 @@ and resumed once. There is one run per condition apart from the seed pair.
    - **Open:** the owner's confirmation of C12 to C14 (the one read-only `GET /api/v0/models`); no label is narrated for a `RULES_V2` run until its verdict
      rows are added by the change that validates `RULES_V2`; the provisional thresholds of DESIGN §31.14.
    - **G3** consumes the Python API (`build_sheet`, `narrate`, `ticker`) and appends `reports.jsonl` at the run root; the report never writes into a run directory.
-7. **Games G3a** (branch `games/g3a`, DESIGN §33, row I51; the section "Games G3a" above). Built and tested on the CPU, with the Swift
-   build and tests (and a small GPU smoke of the renderer); the Mac day (item list in that section) is the coordinator's.
+7. **Games G3a** (branch `games/g3a`, DESIGN §33, row I51; the section "Games G3a" above). Built and tested on the CPU and, on the Mac day
+   (2026-10-22), on Metal; the gate passes (`docs/RESULTS_G3A.md`). Open: the PR, the owner's click-through (checklist in that section).
 8. Optional engine work, deferred in DESIGN §23.2:
    - done: the fused Metal kernel for the neighbour search (`src/alife/knn_metal.py`, DESIGN §4 and F21, row I48;
      `ALIFE_KNN=auto|mlx|metal`, the kernel is the default on Metal in 3D and, since row I52 (owner decision 2026-10-21), in 2D too:

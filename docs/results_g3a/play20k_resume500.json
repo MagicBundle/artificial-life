@@ -1,0 +1,104 @@
+{
+ "cmd": [
+  "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3a-wt/.venv/bin/alife",
+  "play",
+  "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3a/macday/planets/p0",
+  "--rate",
+  "max",
+  "--director",
+  "rules"
+ ],
+ "exit_code": 0,
+ "wall_s": 10.43,
+ "stream_wall_s": 10.01,
+ "first_step": 470002,
+ "last_step": 470504,
+ "raw_bytes": 292990584,
+ "records_by_tag": {
+  "FRMA": 254,
+  "IDNT": 3,
+  "INTN": 21,
+  "TERR": 3,
+  "ENVS": 4,
+  "MAP1": 21,
+  "STRM": 21,
+  "EVNT": 3,
+  "CLCK": 40
+ },
+ "bytes_by_tag": {
+  "FRMA": 280152188,
+  "IDNT": 1678940,
+  "INTN": 8744856,
+  "TERR": 6432,
+  "ENVS": 2888,
+  "MAP1": 2285976,
+  "STRM": 103832,
+  "EVNT": 10652,
+  "CLCK": 2720
+ },
+ "decode_total_s": 0.1,
+ "decode_max_ms": 1.0,
+ "max_queue_depth": 1,
+ "decode_errors": [],
+ "n_decode_errors": 0,
+ "trailing_bytes_after_last_record": 0,
+ "events_nonbacklog": 3,
+ "events_backlog": 64,
+ "events_per_min_by_family": {
+  "kin": 11.992,
+  "system": 5.996
+ },
+ "events_per_min_total": 17.989,
+ "peak_events_in_a_wall_minute": 3,
+ "events_by_kind": {
+  "kin/2": 1,
+  "kin/3": 1,
+  "system/15": 1
+ },
+ "events_by_importance": {
+  "1": 1,
+  "2": 1,
+  "0": 1
+ },
+ "storm_ids_seen": 6,
+ "named_storms": 6,
+ "named_storm_names": [
+  "Bruakaum",
+  "Chugrox",
+  "Flouflian",
+  "Fuapriond",
+  "Gufleask",
+  "Raigeal"
+ ],
+ "storm_ended_reasons": {},
+ "focs_records": 0,
+ "focs_distinct_uid_changes": 0,
+ "clck_n": 40,
+ "clck_last": [
+  1792663221.524976,
+  470504,
+  -1.0,
+  41.528770446777344,
+  16.53410530090332,
+  0,
+  0,
+  0,
+  0
+ ],
+ "late_steps_last": 0,
+ "save_stall_steps_last": 0,
+ "saving_flag_records": 1,
+ "clck_reasons": {
+  "0": 40
+ },
+ "achieved_samples": {
+  "min": 0.0,
+  "p50": 53.56125450134277,
+  "max": 55.13722229003906
+ },
+ "step_ms_samples": {
+  "p50": 16.452957153320312,
+  "p99": 25.545360298156734,
+  "max": 27.720666885375977
+ }
+}

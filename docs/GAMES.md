@@ -1,6 +1,6 @@
 # Emergent Worlds: a gaming vertical for alife (design proposal)
 
-Status: **design; G1 and G2 built (DESIGN §28, §29), N1 built (§31), G3a built (§33; the Mac day is pending); G3b–G5 not built.** The owner decided items 1–4, 7 and 8 on 2026-10-18
+Status: **design; G1 and G2 built (DESIGN §28, §29), N1 built (§31), G3a built (§33; the Mac day ran 2026-10-22 and the gate passes, `docs/RESULTS_G3A.md`; the click-through by hand is open); G3b–G5 not built.** The owner decided items 1–4, 7 and 8 on 2026-10-18
 and items 13–19 on 2026-10-19 (§10). This document maps the owner's brief ("Project: Emergent Worlds", 2026-10-18) onto the
 engine at `aef79c2`. The brief's three pillars are:
 - a motivation-to-action loop instead of scripted state machines;
@@ -882,13 +882,16 @@ What a game adds:
     `attack_mult`, is aimed at that (§10.4).
   - **3D next.** 3D has more to see (depth zones, reefs, kill share 0.50) and no longer needs the fused Metal kNN kernel
     (built, DESIGN §4, row I48) to reach 30 steps/s at 64k: `64k3d` runs at about 75 steps/s on the M5 Pro.
-  - **The play loop's budget (G3a, DESIGN §33.5; estimates until the Mac day's bench).** 14.4 steps/s is the **design rate (1x)**,
-    not a ceiling: the cadences of C5 and C6 were derived with it, and the step takes 14.3 ms of the 69.4 ms slot. A typical step
-    with observers is about 15.7 ms, a frame step 19.3, a tick step 22.7, and the **boundary step** every 250 steps (the tick, the
-    social settle of 38 ms, the metrics row) about 80 to 90, which the bounded debt of the scheduler absorbs without a `late_step`.
-    Fast-forward (`max`) is expected at 50 to 56 steps/s (3.5 to 3.9x), so the ladder is 0.25x, 0.5x, 1x, 2x and `max`. The stream at
-    1x is 19 to 22 MB/s (a frame is 1.2 to 1.5 MB at 42,000 alive). The gate is in DESIGN §33.5.4 and the instrument is
-    `alife bench --play` with `WorldRenderBench` beside it.
+  - **The play loop's budget (G3a, DESIGN §33.5; measured on the Mac day, 2026-10-22, `docs/RESULTS_G3A.md` §4).** 14.4 steps/s is the
+    **design rate (1x)**, not a ceiling: the cadences of C5 and C6 were derived with it, and the engine step takes 14.9 ms of the 69.4 ms
+    slot. Measured on the 64k3d storm planet (44,955 alive): a typical step with observers and a frame is 33.4 ms at 1x and 19.1 at `max`
+    (estimate: 15.7 to 22.7), and the **boundary step** every 250 steps (the tick, the social settle of 58.8 ms at 1x, the metrics row) is
+    127.6 to 130 ms at 1x and 95 at `max` (estimate 80 to 90), which is 1.84 to 1.87 slots; the bounded debt of the scheduler absorbs it
+    without a `late_step` (0 in every arm and in a 20,000-step play). Fast-forward (`max`) is **52.96 steps/s (3.68x)**, 53.08 (3.69x) with
+    the rule tier, so the ladder is 0.25x, 0.5x, 1x, 2x and `max` (2x was not benched). The stream at 1x is 21.17 MB/s (a frame is
+    1.44 MB; 39.70 MB/s at `max`). A checkpoint (686 MB) stalls the loop 0.93 to 0.98 s on the internal disk (13 slots at 1x). The gate
+    of DESIGN §33.5.4 passes (achieved 1.00006x, `step_ms` p99 47.6 ms, the client's draw p95 at most 2.41 ms with the engine running).
+    The instrument is `alife bench --play` with `WorldRenderBench` beside it.
 
 ### 8.4 Further risks
 
@@ -993,7 +996,7 @@ What a game adds:
       (20 chapters, template against select, blind). The build made no LLM call.
     - **Not in N1:** `alife play`, a report panel, a worker and `reports.jsonl` in a run directory (G3); player commands (G4); storm facts
       (W3; the storm-world report built on the same sheet, `docs/STORMS.md` §6.5, which records what N1 built).
-- **G3a. The play loop and the World window** (built; DESIGN §33, Review-log row I51; the Mac day is pending). On the 3D storm
+- **G3a. The play loop and the World window** (built; DESIGN §33, Review-log row I51; the Mac day ran 2026-10-22, the gate passes, `docs/RESULTS_G3A.md`; the click-through by hand is open). On the 3D storm
   world, on W1's overlay values (W2 changes coupling values and labels, not records; after the merge with W2a the stream carries the
   version-3 labels with N1's validity gate, DESIGN §33.7). One process per world, `alife play`:
   - the fixed-timestep scheduler (pause, 0.25x, 0.5x, 1x, 2x, max) as `runner.run(pacer=)`, with `play.lock`, `play.json`, planets
@@ -1005,7 +1008,7 @@ What a game adds:
     Cast, the inspector, the Chronicle and toasts, the keys; `alife bench --play` and `WorldRenderBench`.
   - Not in G3a: chapters (a checkpoint every 6,000 steps is a save point only), auto-pause, alerts, the ticker and the live World
     Report, powers, dead-row canonicalisation, recorded replay files, rewind, offline advance, any LLM.
-- **G3b. Chapters, reports and powers.** After G3a's Mac day: `autopause`, `power` and `intent` lines, the records `ALRT RPRT
+- **G3b. Chapters, reports and powers.** After G3a's Mac day (done; the chronicle's kin churn, 112 of 201 events in a 20,000-step play, wants a persistence rule before a ticker or toasts build on it): `autopause`, `power` and `intent` lines, the records `ALRT RPRT
   PLAN` and the recap file format; 6,000-step chapters with auto-pause, alerts, the ticker and the live World Report (N1's
   select mode, one request in flight); the report tab, the chapter bar and the recap player;
   - Direct powers of the built regional actions through a player power grid, with their `GAME_SPECS` rows and the

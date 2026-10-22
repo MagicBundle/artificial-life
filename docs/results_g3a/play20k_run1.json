@@ -1,0 +1,120 @@
+{
+ "cmd": [
+  "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3a-wt/.venv/bin/alife",
+  "play",
+  "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3a/macday/planets/p0",
+  "--rate",
+  "1",
+  "--director",
+  "rules"
+ ],
+ "exit_code": 0,
+ "wall_s": 1393.65,
+ "stream_wall_s": 1393.29,
+ "first_step": 450001,
+ "last_step": 470002,
+ "raw_bytes": 27853483692,
+ "records_by_tag": {
+  "FRMA": 20002,
+  "IDNT": 81,
+  "INTN": 801,
+  "TERR": 81,
+  "ENVS": 82,
+  "MAP1": 801,
+  "STRM": 801,
+  "EVNT": 103,
+  "CLCK": 5006,
+  "FOCS": 20002
+ },
+ "bytes_by_tag": {
+  "FRMA": 27293890188,
+  "IDNT": 55669792,
+  "INTN": 410497272,
+  "TERR": 173600,
+  "ENVS": 48176,
+  "MAP1": 87193656,
+  "STRM": 3791692,
+  "EVNT": 36624,
+  "CLCK": 340408,
+  "FOCS": 1840184
+ },
+ "decode_total_s": 10.6,
+ "decode_max_ms": 1.5,
+ "max_queue_depth": 2,
+ "decode_errors": [],
+ "n_decode_errors": 0,
+ "trailing_bytes_after_last_record": 0,
+ "events_nonbacklog": 201,
+ "events_backlog": 0,
+ "events_per_min_by_family": {
+  "storm": 1.077,
+  "kin": 5.986,
+  "focus": 1.378,
+  "system": 0.172,
+  "director": 0.043
+ },
+ "events_per_min_total": 8.656,
+ "peak_events_in_a_wall_minute": 25,
+ "events_by_kind": {
+  "director/12": 1,
+  "focus/13": 16,
+  "focus/14": 16,
+  "kin/1": 14,
+  "kin/2": 56,
+  "kin/3": 56,
+  "kin/4": 13,
+  "storm/7": 12,
+  "storm/8": 7,
+  "storm/11": 6,
+  "system/15": 4
+ },
+ "events_by_importance": {
+  "1": 120,
+  "2": 77,
+  "0": 4
+ },
+ "storm_ids_seen": 12,
+ "named_storms": 7,
+ "named_storm_names": [
+  "Bruakaum",
+  "Chugrox",
+  "Flouflian",
+  "Fuapriond",
+  "Gufleask",
+  "Phaitraern",
+  "Raigeal"
+ ],
+ "storm_ended_reasons": {
+  "dissipated": 6
+ },
+ "focs_records": 20002,
+ "focs_distinct_uid_changes": 17,
+ "clck_n": 5006,
+ "clck_last": [
+  1792663185.415442,
+  470002,
+  1.0,
+  10.247069358825684,
+  24.86135482788086,
+  0,
+  54,
+  0,
+  0
+ ],
+ "late_steps_last": 0,
+ "save_stall_steps_last": 54,
+ "saving_flag_records": 4,
+ "clck_reasons": {
+  "0": 5006
+ },
+ "achieved_samples": {
+  "min": 0.0,
+  "p50": 14.346658706665039,
+  "max": 14.947741508483887
+ },
+ "step_ms_samples": {
+  "p50": 26.048083305358887,
+  "p99": 27.685749053955078,
+  "max": 191.83233642578125
+ }
+}

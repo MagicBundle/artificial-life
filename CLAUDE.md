@@ -31,7 +31,7 @@ W2a (`DESIGN.md` §32: eight `weather` keys `seed_gain`, `seed_c0`, `shade_gain`
 observer rules; `python -m alife.analysis.w2`) is implemented and off by default; the calibration and the 14 runs (W2b) are not run, and
 `presets/storm.toml` still holds W1's provisional values.
 `alife play` and the Swift **World** window (the play loop, the stream records, planets, the chronicle, picking and follow; GAMES §9 G3a;
-normative spec `DESIGN.md` §33, row I51) are built; their Mac day (purity on Metal, the bench gate, the click-through) is the coordinator's.
+normative spec `DESIGN.md` §33, row I51) are built; their Mac day ran 2026-10-22 (purity on Metal, the bench gate: passed; `docs/RESULTS_G3A.md`); the click-through by hand is the owner's.
 Presentation-only control lines (`focus follow idnt labels color every`, pacing, frames, records) never change a trajectory; a change to
 `play.py`, `streamrec.py` or the runner's `Pacer` hook must keep `tests/test_play_purity.py` (digest equality with a plain run) green.
 The stream's labels are `INTENT_VERSION` 3's (ten archetypes, the storm names) and carry N1's held-out verdict gate: a label is shown as valid only

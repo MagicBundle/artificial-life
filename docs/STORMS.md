@@ -305,7 +305,7 @@ owner's delegation of 2026-10-19, to revisit (cadence, the GUI architecture, dir
 - **Input.** One influence-costed decision per chapter, at most three alert-driven moves, forecasts optional.
 - **Time controls.** Pause, slow (0.25–0.5×), 1×, 2× and `max`.
   - **As built in G3a (DESIGN §33.5):** 14.4 steps/s is the design rate (1x), not a ceiling: the fused kernel gives 69.6 steps/s, and fast-forward is
-    expected at 50 to 56 steps/s (3.5 to 3.9x; an estimate until the Mac day's `alife bench --play`), so 2x and `max` are real (§9.8). Organisms
+    measured at 53.0 steps/s (3.68x; 3.69x with the rule tier) on the Mac day's `alife bench --play` (2026-10-22, 44,955 alive, `docs/RESULTS_G3A.md` §4; the estimate was 50 to 56), so 2x and `max` are real (§9.8); 1x holds at 1.00006x with `late_steps` 0, the boundary step every 250 steps is 127.6 to 130 ms (1.84 to 1.87 slots) and absorbed, and a checkpoint stalls 0.93 to 0.98 s. Organisms
     are drawn as delivered (a 14.4-Hz frame moves a body 0.2 px at the region level: no interpolation); the map cross-fades over 0.4 s on the wall clock.
   - Time-lapse is playback of recorded, decimated frames (GAMES §8.2), not simulation.
 - **World Report** (N1 offline, built; live in G3; storm facts in W3).
@@ -343,8 +343,8 @@ owner's delegation of 2026-10-19, to revisit (cadence, the GUI architecture, dir
 - **Measured before W4.**
   - W0 steerability: track deflection per impulse, and the storm response to a warm-pool change.
   - The combined 3D play-loop bench: step, observers, weather, stream, client rendering, and an LLM call in flight. **G3a built the
-    instrument** (`alife bench --play` and `WorldRenderBench`, DESIGN §33.5; no LLM call in flight yet, that is G3b); its gate is the
-    coordinator's Mac day.
+    instrument** (`alife bench --play` and `WorldRenderBench`, DESIGN §33.5; no LLM call in flight yet, that is G3b); its gate was run on the Mac
+    day (2026-10-22) and passes (`docs/RESULTS_G3A.md`; DESIGN §33.5.4); the client's draw p95 is at most 2.41 ms beside the engine at 1x.
 
 ## 7. Risks
 
@@ -456,7 +456,7 @@ owner's delegation (to revisit). Items 6 and 8 are open; they are needed by W2 (
    within 15–70 s, storm arcs of 3–10 min, lever response within 1–2 min, a power lands within 2 s, fast-forward of at
    least 2× where offered. The fused kNN kernel is tried first, a smaller world only if it misses; decided before W2
    (coordinator's choice under the owner's delegation of 2026-10-19, to revisit). *Built in G3a:* 14.4 steps/s is the design rate (1x), with
-   0.25x to 2x and `max` on top (DESIGN §33.5.1; the measured fast-forward is the Mac day's).
+   0.25x to 2x and `max` on top (DESIGN §33.5.1; the measured fast-forward is 3.68x, 53.0 steps/s, on the Mac day, `docs/RESULTS_G3A.md` §4).
 9. **Weather grid.** *Decided 2026-10-19:* 160 × 160 at 2 units. The alternative was the 80-cell field lattice.
 
 ## 10. Sources
