@@ -547,6 +547,8 @@ def planet_template(tmp_path: Path, *overrides: str) -> tuple[Config, Path]:
 def test_play_bench_reports_every_arm_and_the_digests_equal_the_plain_run(
     tmp_path: Path, short_play: None
 ) -> None:
+    from alife import play
+
     cfg, template = planet_template(tmp_path)
     r = bench.run_play_bench(
         cfg, template, tmp_path / "w", steps=40, warmup=10, rates=("max", "1"), directors=("off", "rules")
@@ -589,10 +591,11 @@ def test_play_bench_reports_every_arm_and_the_digests_equal_the_plain_run(
         assert a["drained_bytes"] >= sum(a["bytes_per_s"].values()) * a["seconds"] * 0.5, (
             "the reader got the stream"
         )
+    # Pacing is a ceiling, not a speed: a slow machine can only fall short of it, so these hold on any
+    # runner. (That "max" is unthrottled is the scheduler's own test, on a fake clock.)
     paced = [a for a in r["arms"] if a["rate"] == "1"]
-    assert all(a["achieved_x"] < 20 for a in paced), "a paced arm cannot run at max speed"
-    maxed = [a for a in r["arms"] if a["rate"] == "max"]
-    assert all(a["steps_per_s"] > p["steps_per_s"] for a, p in zip(maxed, paced, strict=True))
+    assert len(paced) == 2 and all(a["achieved_x"] <= 1.25 for a in paced), "a paced arm cannot beat its rate"
+    assert all(a["seconds"] >= 0.8 * (a["steps_measured"] - 1) / play.BASE_RATE for a in paced)
     text = "\n".join(bench._format_play(r))
     assert "play loop" in text and "director rules" in text and "equal to the plain run" in text
 
@@ -723,15 +726,20 @@ def test_play_bench_does_not_count_saving_as_boundary_work(
     tmp_path: Path, short_play: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The checkpoint is its own part: with a save at every boundary and a slow disk, `save` is the disk's and
-    `boundary` is the runner's work without it (the gate reports saving apart from `late_steps`)."""
+    `boundary` is the runner's work without it (the gate reports saving apart from `late_steps`).
+
+    No millisecond bound: the injected delay is long against the runner's own boundary work on any machine
+    that runs the suite, so the claim is a ratio. A bench that counted the save inside `boundary` would have
+    `boundary >= save` (a boundary's span holds the save), and the bound sits at half of it."""
     from alife import play
     from alife.runio import RunDir
 
+    delay_s = 1.2
     monkeypatch.setattr(play, "PLAY_CADENCE", {**PLAY_CADENCE, "checkpoint_every": 10})
     real = RunDir.save_checkpoint
 
     def slow(self: RunDir, *args: object, **kwargs: object) -> object:
-        time.sleep(0.15)
+        time.sleep(delay_s)
         return real(self, *args, **kwargs)
 
     monkeypatch.setattr(RunDir, "save_checkpoint", slow)
@@ -740,4 +748,5 @@ def test_play_bench_does_not_count_saving_as_boundary_work(
         cfg, template, tmp_path / "w", steps=25, warmup=5, rates=("max",), directors=("off",)
     )
     c = r["arms"][0]["components_ms"]
-    assert c["save"] >= 150 and c["boundary"] < 100, (c["save"], c["boundary"])
+    assert c["save"] >= 1e3 * delay_s, "the save part holds the disk's time"
+    assert c["boundary"] < c["save"] / 2, (c["save"], c["boundary"])

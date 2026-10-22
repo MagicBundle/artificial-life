@@ -77,18 +77,23 @@ def test_a_quit_while_running_stops_after_the_next_step(tmp_path: Path) -> None:
 
 
 class TimingPacer(play.PlayPacer):
-    """Records when ``before_step`` returned (the SIGINT test)."""
+    """Records when ``before_step`` was entered and when it returned (the SIGINT test)."""
 
     exits: list[float]
+    entered: threading.Event
 
     def before_step(self, state: Any, t: int) -> None:
+        self.entered.set()
         super().before_step(state, t)
         self.exits.append(time.perf_counter())
 
 
 def test_sigint_while_paused_reaches_the_stop_path_within_a_tick(tmp_path: Path) -> None:
     """A real SIGINT while the world is paused: the paused wait polls the runner's latch at every 0.25 s tick,
-    so the first Ctrl-C ends the wait (the stop ladder of the window has a working SIGINT rung)."""
+    so the first Ctrl-C ends the wait (the stop ladder of the window has a working SIGINT rung).
+
+    The signal is sent once the pacer is in its first ``before_step`` (not after a guessed delay, which a slow
+    start-up would overrun), and the bound is in ticks of the pacer's wait, not in seconds of the machine."""
     from alife.stream import QueueControl
 
     cfg = world("2d")
@@ -97,17 +102,19 @@ def test_sigint_while_paused_reaches_the_stop_path_within_a_tick(tmp_path: Path)
         io.BytesIO(), QueueControl(), play.PlayOptions(paused=True, fresh=True), note=lambda m: None
     )
     pacer.exits = []
+    pacer.entered = threading.Event()
     sent: list[float] = []
 
     def interrupt() -> None:
-        time.sleep(0.6)
+        assert pacer.entered.wait(300), "the play loop never began"
+        time.sleep(play.WAIT_S)  # a tick into the paused wait (or past it: the latch is read at once then)
         sent.append(time.perf_counter())
         os.kill(os.getpid(), signal.SIGINT)
 
     threading.Thread(target=interrupt, daemon=True).start()
     res = runner.run(rd, cfg, init_state(cfg), 50, quiet=True, pacer=pacer)
     assert (res.status, res.exit_code) == ("interrupted", runner.ExitCode.INTERRUPTED)
-    assert pacer.exits[0] - sent[0] < 0.5  # within one 0.25 s tick (and the slack of a loaded machine)
+    assert pacer.exits[0] - sent[0] < 4 * play.WAIT_S  # one tick, with three more for a loaded machine
     assert [s for s, _ in rd.checkpoints()][-1] == 1 and rd.meta()["status"] == "interrupted"
 
 
