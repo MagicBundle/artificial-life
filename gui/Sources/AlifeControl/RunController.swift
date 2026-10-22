@@ -79,8 +79,9 @@ final class RunController: ObservableObject {
     private static let maxLogLines = 5000
 
     /// What "Set up environment" runs (after `uv`). `--inexact` keeps every installed package that the lock does not
-    /// ask for here (the dev group, the `analysis` extra's matplotlib, anything else): a plain `uv sync` is exact and
-    /// uninstalls them. Unlike CI's `--group dev --extra viewer --extra video`, it cannot remove the `analysis` extra.
+    /// ask for here (the `analysis` extra's matplotlib and its dependencies, anything else): a plain `uv sync` is exact
+    /// and uninstalls them (the dev group is a default group, so it stays either way). Unlike CI's
+    /// `--group dev --extra viewer --extra video`, this cannot remove the `analysis` extra.
     static let setupArguments = ["sync", "--inexact", "--extra", "viewer", "--extra", "video"]
     private let saveRepoPath: (String) -> Void
 

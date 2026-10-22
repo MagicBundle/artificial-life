@@ -1,3 +1,4 @@
+import AlifeCore
 import Foundation
 import Testing
 
@@ -76,7 +77,7 @@ import Testing
         // Without the engine (the status line then blames the venv, not the folder) and with it.
         for engine in [false, true] {
             let stored = try folder("stored-\(engine)", in: scratch, engine: engine)
-                let saved = Saved()
+            let saved = Saved()
             let controller = make(stored: stored, default: fallback, saved: saved)
             #expect(controller.repoPath == stored)
             #expect(controller.repoFolderExists)
@@ -124,5 +125,26 @@ import Testing
         // Exact argument list: `--inexact` keeps what is installed; a plain `uv sync --extra ...` would uninstall the
         // dev group and the other extras.
         #expect(RunController.setupArguments == ["sync", "--inexact", "--extra", "viewer", "--extra", "video"])
+    }
+
+    /// "Open 3D viewer" and the World window start their process through `EngineSession.launch`, not `RunController`'s own
+    /// launch, and they read `repoReady`, which is only refreshed on some events. A folder that disappears after that
+    /// must give the same message, not Foundation's "The file ... doesn't exist.", and start nothing.
+    @Test func aStreamOrPlayStartedInAMissingFolderSaysSo() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let script = try scratch.script("alife", "exit 0")
+        let gone = scratch.url.appendingPathComponent("gone-worktree", isDirectory: true)
+        let message = "Failed to launch \(script.path): " + RepoFolder.missingMessage(gone.path)
+
+        let stream = StreamController()
+        stream.start(StreamSource(run: "r", follow: false), executable: script, directory: gone)
+        #expect(stream.phase == .failed(message))
+        #expect(!stream.hasProcess)
+
+        let play = PlayController()
+        play.start(.resume(PlayResume(run: "r")), executable: script, directory: gone)
+        #expect(play.phase == .failed(message))
+        #expect(!play.hasProcess)
     }
 }
