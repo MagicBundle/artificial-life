@@ -2749,7 +2749,9 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
   under a director-enabled config start with inert env. `env_*` shapes and dtypes are checked like every field.
 - **Atomic writes.** Each checkpoint is written to `*.tmp` and moved into place with `os.replace`. Only then is
   `LATEST` rewritten, also atomically. A crash never corrupts the newest complete checkpoint.
-- **Retention.** The newest `keep_checkpoints` are kept, plus `step_0000000000`. An observer sidecar lives exactly as
+- **Retention.** The newest `keep_checkpoints` are kept, plus `step_0000000000` and, for a fork, the origin checkpoint
+  at `meta.json` `start_step` (its founders: `phylo.load_tree`, `alife activity` and the recap builders read it; G3a, I51).
+  An observer sidecar lives exactly as
   long as its checkpoint: pruning removes every sidecar whose step has no remaining checkpoint (§28.6).
 - **Cadence.** Scheduled checkpoints happen only at metrics boundaries. Event records are read to the host at every
   metrics boundary and written as one chunk per checkpoint interval, `[previous checkpoint step, step)`. The runner

@@ -477,12 +477,25 @@ class RunDir:
         self._prune(cfg.run.keep_checkpoints)
         return path
 
+    def _start_step(self) -> int:
+        """``meta.json`` ``start_step`` (0 for a run from step 0 and for a directory without the key)."""
+        try:
+            return int(self.meta().get("start_step") or 0)
+        except (OSError, ValueError, AttributeError):
+            return 0
+
     def _prune(self, keep: int) -> None:
-        """Keep the newest ``keep`` checkpoints, step 0 and whatever ``LATEST`` names; an observer sidecar
-        lives exactly as long as its checkpoint."""
+        """Keep the newest ``keep`` checkpoints, step 0, the fork's origin checkpoint (``meta.json``
+        ``start_step``) and whatever ``LATEST`` names; an observer sidecar lives exactly as long as its
+        checkpoint.
+
+        The origin is what a fork's phylogeny, activity analysis and recap builders read for their founders
+        (``checkpoint_at(start_step)``); without the protection the third save of a fork deletes it (§18).
+        """
         ckpts = self.checkpoints()
         latest = self.latest_checkpoint()
-        protected = {p for _, p in ckpts[-keep:]} | {p for st, p in ckpts if st == 0}
+        origin = self._start_step()
+        protected = {p for _, p in ckpts[-keep:]} | {p for st, p in ckpts if st in (0, origin)}
         for _, p in ckpts:
             if p not in protected and p != latest:
                 p.unlink(missing_ok=True)

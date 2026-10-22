@@ -133,6 +133,35 @@ def test_latest_and_retention(micro_cfg: Config, tmp_path: Path) -> None:
     assert rd.latest_checkpoint() == rd.checkpoint_at(40)
 
 
+def test_prune_protects_the_origin_checkpoint_of_a_fork(micro_cfg: Config, tmp_path: Path) -> None:
+    """A fork (``meta.start_step = S > 0``) keeps its origin checkpoint at every save, as step 0 is kept for a
+    run from the start; its sidecar stays with it and the origin is not counted in ``keep``."""
+    cfg = apply_overrides(micro_cfg, ["run.keep_checkpoints=2"])
+    rd = RunDir.create(tmp_path / "fork", cfg, parent="src:20")
+    rd.update_meta(start_step=20)
+    s = _scene(cfg)
+    obs = {"x": np.arange(3)}
+    for step in (20, 30, 40, 50, 60):
+        rd.save_checkpoint(_at_step(s, step), cfg, observers=obs)
+        kept = [st for st, _ in rd.checkpoints()]
+        assert 20 in kept and kept[-1] == step  # the origin survives the third save and every later one
+    assert [st for st, _ in rd.checkpoints()] == [20, 50, 60]
+    assert [st for st, _ in rd.observer_files()] == [20, 50, 60]
+    assert rd.checkpoint_at(20).is_file()
+
+    # a run from step 0 behaves as before (start_step 0 = step 0 only), and so does a meta without the key
+    rd0 = RunDir.create(tmp_path / "run0", cfg)
+    rd0.update_meta(start_step=0)
+    for step in (0, 10, 20, 30, 40):
+        rd0.save_checkpoint(_at_step(s, step), cfg)
+    assert [st for st, _ in rd0.checkpoints()] == [0, 30, 40]
+    rd1 = RunDir.create(tmp_path / "run1", cfg)
+    assert "start_step" not in rd1.meta()
+    for step in (10, 20, 30, 40):
+        rd1.save_checkpoint(_at_step(s, step), cfg)
+    assert [st for st, _ in rd1.checkpoints()] == [30, 40]
+
+
 def test_version_hash_and_shape_refusal(micro_cfg: Config, tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "s.safetensors"
     write_state_file(path, _scene(micro_cfg, 5), micro_cfg)
