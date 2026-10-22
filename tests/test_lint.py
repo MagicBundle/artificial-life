@@ -41,7 +41,7 @@ GAME_MODULES = {
     f"game.{p.stem}" for p in (SRC / "game").glob("*.py")
 }  # the games vertical (§28), scanned too
 SETITEM_MODULES = (
-    SIM_MODULES | {"ops", "rng", "state", "stream", "streamrec"} | DIRECTOR_MODULES | GAME_MODULES
+    SIM_MODULES | {"ops", "rng", "state", "stream", "streamrec", "storms"} | DIRECTOR_MODULES | GAME_MODULES
 )  # rule 2
 HOST_ALLOW = {  # rule 5: host-side checks that read arrays by design
     ("invariants", "full_check"),
@@ -228,6 +228,7 @@ def test_source_tree(rule) -> None:
     # the generic modules of §29, a device half and a host half, and the game layer built on them
     assert {"groups", "tracking", "game.social", "game.society"} <= {m for m, _ in mods}
     assert {"spatial", "knn_metal"} <= {m for m, _ in mods}
+    assert {"storms", "streamrec"} <= {m for m, _ in mods}
     assert {"analysis.resim", "analysis.labels"} <= {
         m for m, _ in mods
     }  # rule 6 is repo-wide: analysis is scanned
@@ -251,6 +252,7 @@ def test_rules_are_not_vacuous() -> None:
     assert bad(rule_setitem, "game.observer", "def f(d):\n    d['a'] = 1\n")  # the host observer too
     assert bad(rule_setitem, "game.rules", "def f(d):\n    d['a'] = 1\n")
     assert bad(rule_setitem, "streamrec", "def f(d):\n    d['a'] = 1\n")  # the play-record encoders (§33.1)
+    assert bad(rule_setitem, "storms", "def f(d):\n    d['a'] = 1\n")  # the storm tracker and layer (§33.3)
     assert bad(rule_setitem, "groups", "def f(d):\n    d['a'] = 1\n")  # the generic device module is scanned
     assert not bad(rule_setitem, "tracking", "def f(d):\n    d['a'] = 1\n")  # the host module is not
     assert bad(rule_setitem, "game.society", "def f(d):\n    d['a'] = 1\n")  # the host game module is scanned

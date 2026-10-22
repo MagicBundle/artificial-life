@@ -1771,15 +1771,19 @@ artificial-life/
                                  the step, config, fields, state and invariants (§30); §22.6 rule 5
     weather_obs.py               host numpy: the `weather` block of a metrics row (§30.8); not a lint module
     weather_spinup.py            host driver: `alife run --weather-spinup N` (§30.9); not a lint module
+    streamrec.py                 the play stream's record encoders (§33.1): numpy only, in the subscript-assignment lint scan
+    storms.py                    host: the storm detector and tracker (moved from analysis/w0.py) and `StormLayer`, the
+                                 play loop's storm component (§33.3); in the subscript-assignment lint scan
     game/                        the games vertical, build steps G1 (§28) and G2 (§29): observe (pure-MLX observer state and update),
                                  rules (archetype and intent rules, INTENT_VERSION), social (pure-MLX SocState, SocialRules),
                                  society (host Society: houses, kin groups, colonies, territory, relations),
-                                 observer (host Observer, sidecar, social records)
+                                 observer (host Observer, sidecar, social records), and for the play loop (§33.2)
+                                 colors (the observer colour modes) and chronicle (the EVNT events and their sentences)
     analysis/                    offline, host-only numpy analysis of finished runs (never imported by the step;
                                  scanned by the §22.6 lint, which it passes); phylo, activity, report, plots, mi, resim, signals: §19.3;
                                  labels (the validity study of the game labels): §28.8; social (calibration, churn and cost of the
                                  social trackers): §29.12; and the offline MLX study driver of the W0 weather prototype: w0
-                                 (runs `weather.py` on MLX, detects and tracks storms on the host, moves passive tracers,
+                                 (runs `weather.py` on MLX, tracks storms with `storms.py`, moves passive tracers,
                                  measures the cost) and w0_plots (its figures and movies)
   tests/                         §22
 ```
@@ -9682,6 +9686,59 @@ the previous record's top-16; colony events are not narrated), `from_storms(even
 Tests: `tests/test_play_chronicle.py` (every template reachable and within 120 characters, every kind of the registry produced, the lexicon, the
 texts and fields of hand-built records for each case, the ids and their independence of the delivery order, the per-family cap, the backlog equal to the
 live events, and real 2D and 3D snapshot records through the chronicler).
+
+### 33.3 The storm layer and its files
+
+#### 33.3.1 `storms.py`
+
+The storm detector and tracker of the W0 prototype (`Frame`, `read_frame`, `Comp`, `Detection`, `detect`, `Det`, `Track`, `Tracker`) moved from
+`analysis/w0.py` to `src/alife/storms.py`; `w0` re-exports every name, and `tests/test_analysis_w0.py` runs unchanged (105 tests). The tracker
+differs from the W0 one in three ways that change no result: `_predict` is public as `Tracker.predict(track, t)` (the extrapolation the `STRM`
+`pred` field reports); `Tracker.update` fills its dictionaries with `setdefault` and a comprehension instead of subscript assignment (the module is
+in the lint scan of rule 2), and `Tracker.compact(keep)` drops ended tracks and all but the last `keep` detections of the others (`update` reads the
+last detection and `predict` the last four). The equality was checked on 300 random periodic scenes with 11,700 updates (803 mergers, 475 splits,
+1,909 dissipations), ids and every track field identical to the 2d1ab0c tracker, and `test_play_storms.py` repeats the compaction check.
+
+`StormLayer(p, dc_ref, tick)` is the play loop's storm component. `tick_at(ws, t)` reads the weather (nine fields, `D_c` and `T_s` in **one** `mx.eval`,
+`read_frame_extra`), detects, tracks and returns a `StormTick(step, strm, planes, events, line)`; `ingest(detection, maps)` is the same without the
+device. The tick is `WeatherParams.detect_every` (25, calibrated with `miss_grace` 2 and the four-detection predictor); the layer takes it as given.
+
+- **Names.** A storm is named when its peak lower-layer vorticity over its whole life reaches `NAME_ZETA` = 0.5 f0 (C11); lower tracks are
+  disturbances. The name is the house-name generator on `splitmix64(id, STORM_NAME_SALT)` (`raw_house_names`), with ` <id>` appended if a live storm
+  holds it, and it never changes while the storm lives.
+- **Events** (the chronicle's input, §33.2.3), in this order per tick, each group by id: `born`/`split` (a new track; `split` when the tracker gave it a
+  parent), `named`, `merged` (into the survivor), `dissolved` (a track that missed more than `miss_grace` ticks; its `age` is first to last detection).
+  Born and split events carry no name (the storm was a disturbance then); `other_name` is the survivor's or parent's.
+- **`STRM` object** (§33.1.6): the active tracks (at most 32, the highest peaks, in id order) with the notes the 40 stored detections cannot give (`age`
+  from the first detection, `zeta` the peak, `ext` the footprint extent). Positions rounded to 2 decimals, `track` the last 24 `[t, ux, uy]`, `pred` the tracker's
+  `predict` at leads 250, 500, 1000 wrapped into the box (empty for a track of one detection), `state` `active` or `coasting`. If the JSON would exceed
+  the 24 KB cap the tracks are shortened to 8, then 4 points without `pred`, then 2.
+- **`MAP1` planes** by `streamrec.quantise_map1` from `P`, `D_c`, the layer-1 vorticity at the cell centres (`corners_to_centres`), `T_s` =
+  `warm_pools(p, t)` and the four winds; `dc_ref` is the layer's, from `play.json` (`dc_reference(D_c)`: the 99.9th percentile of a spun-up weather, its
+  maximum if that is zero, never below 1e-3, computed once when a world is made).
+- **Persistence.** `StormLayer.state()` is the complete state as plain JSON: `format`, `version`, a hash of the weather parameters, the tick, the step, `next_id`
+  and per active track `id hemi parent missed t_first peak name ext last_flat` and the last 40 detections (13 fields each; Python floats round-trip through JSON
+  exactly). Every field `Tracker.update` reads is in it, so a resumed play is the same play: ids, names, ages, dissipation after `miss_grace`, predictions.
+  `restore` refuses another version or other weather parameters. A stop passes no simulation time, so no track coasts or ends across it.
+
+#### 33.3.2 Files
+
+| file | content | rule |
+|---|---|---|
+| `observers/storms.jsonl` | one line per tick that has storms or events: `{"step", "storms": [{id, x, y, r, zeta, wind, rain}] (the tick's detections), "events": [...]}` (`RunDir.append_storms`) | cut by `RunDir.truncate_after` to step <= the checkpoint's, parsed whole first and rewritten atomically like the social log (a torn last line is dropped, a corrupt earlier line or one without an int `step` fails the call with the directory untouched); an absent log stays absent |
+| `observers/storms_<t>.json` | `StormLayer.state()` at the checkpoint of step `t` (`RunDir.write_storms_state`, `StormLayer.save`) | written by the play loop **before** the state file, as the sidecar is; `_prune` removes the files of checkpoints that are gone (an orphan from a crash between the two goes with the next save), `truncate_after` removes those after the checkpoint |
+
+`StormLayer.open(rd, p, dc_ref, step)` reads the state of the checkpoint and returns `(layer, None)`; if there is none (a weather-off checkpoint turned on, a copied
+run), another tick, other weather parameters or a damaged file it returns a fresh layer and the reason, with `restarted` true for a step above 0: the ids begin again at
+1 and the play loop says so once (the `renumbered` event, §33.2.3). A world made by `--init-from` starts at its fork step without a state and is not "restarted" in the
+user's sense; the caller knows which case it is.
+
+Tests: `tests/test_play_storms.py` (the re-exports; `predict`; compaction; naming at 0.5 f0 and its permanence; unique names; the generator; born, split, merged and dissolved
+events and the `ended` list; wrapped positions and unwrapped tracks; the 32-storm cap and the byte cap; the log lines; **stop and resume equal to an uninterrupted play** on
+eight random scenes at three stop points, on the `STRM` bytes and the events; a storm older than the stored detections; the files through `truncate_after` and `_prune`;
+`open` with a missing, foreign or damaged state; `tick_at` on the W0 balanced vortex against the manual pipeline; the `MAP1` planes against an independent computation and
+through the independent decoder; the real weather resumed; `dc_reference`). Mutations of the state (`missed`, `peak`, `t_first`, the footprint, `next_id`), of the naming threshold
+and of the three file rules were each caught.
 
 ---
 
