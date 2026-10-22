@@ -1,0 +1,1443 @@
+{
+ "journals": 131,
+ "sentences": [
+  {
+   "id": "0.0",
+   "class": "other",
+   "text": "The world is currently too stable, with novelty stagnating at 0.006 and population approaching capacity without significant behavioral shifts."
+  },
+  {
+   "id": "0.1",
+   "class": "other",
+   "text": "By combining a massive immigration pulse with the onset of seasonal cycles, I aim to break the current clade equilibrium and spark new evolutionary trajectories through environmental pressure."
+  },
+  {
+   "id": "1.0",
+   "class": "other",
+   "text": "The population has stabilized but clade diversity is trending downward (84 to 55) and the top clade share is increasing."
+  },
+  {
+   "id": "1.1",
+   "class": "other",
+   "text": "By injecting new founders and speeding up environmental drift, I aim to prevent stagnation and stimulate novelty through spatial reorganization."
+  },
+  {
+   "id": "2.0",
+   "class": "other",
+   "text": "The population is recovering steadily from its previous low, but the budget for interventions is currently at zero."
+  },
+  {
+   "id": "2.1",
+   "class": "other",
+   "text": "I must wait for the budget to replenish before I can introduce further novelty or address the extinction risk flag."
+  },
+  {
+   "id": "3.0",
+   "class": "other",
+   "text": "The population is in a steady decline and the top clade share is rising, suggesting increasing dominance by a few lineages."
+  },
+  {
+   "id": "3.1",
+   "class": "other",
+   "text": "However, with 0 budget remaining from the recent window of interventions, I must remain idle and observe."
+  },
+  {
+   "id": "4.0",
+   "class": "other",
+   "text": "Clade diversity is trending downwards (from 20 to 16) while the top clade share remains relatively high, suggesting a loss of evolutionary breadth."
+  },
+  {
+   "id": "4.1",
+   "class": "other",
+   "text": "I am injecting new lineages via an immigration pulse and creating a fertility oasis to stimulate spatial divergence and prevent further homogenization."
+  },
+  {
+   "id": "5.0",
+   "class": "credit",
+   "text": "The population is rebounding strongly due to the active regen_pulse, but clade diversity has dwindled to 14."
+  },
+  {
+   "id": "5.1",
+   "class": "other",
+   "text": "By destroying the hyper-fertile patch 12 and slowing environmental drift, I aim to break the current dominance of the top clade and force evolutionary experimentation through fragmentation."
+  },
+  {
+   "id": "6.0",
+   "class": "other",
+   "text": "The population has stabilized around 34,108 and clade diversity remains low at 9 clades."
+  },
+  {
+   "id": "6.1",
+   "class": "other",
+   "text": "With the budget spent and several major interventions still cooling down, I must wait for resources to replenish."
+  },
+  {
+   "id": "7.0",
+   "class": "temporal",
+   "text": "The population is in a steady decline, dropping from 30,871 to 19,189 since the last major intervention."
+  },
+  {
+   "id": "7.1",
+   "class": "other",
+   "text": "Clade diversity has collapsed from 14 to 5, and while novelty remains above the threshold, the extinction-risk flag is active."
+  },
+  {
+   "id": "7.2",
+   "class": "other",
+   "text": "I am forced to wait as the budget has been fully depleted by recent safety and manual actions."
+  },
+  {
+   "id": "8.0",
+   "class": "other",
+   "text": "The top clade share is steadily climbing (0.582 to 0.646) while novelty has dipped below the archive threshold (0.022)."
+  },
+  {
+   "id": "8.1",
+   "class": "other",
+   "text": "I am injecting new lineages via immigration and slowing environmental tempo to prevent the current dominant clade from sweeping the torus before new behaviors can emerge."
+  },
+  {
+   "id": "9.0",
+   "class": "credit",
+   "text": "The population is recovering from a low of 16k due to the recent regen pulse, but clade diversity remains dangerously low at only 5 clades."
+  },
+  {
+   "id": "9.1",
+   "class": "other",
+   "text": "By increasing the drift multiplier from 0.5 to 4, I aim to disrupt the dominance of the top clade (0.686 share) by making the landscape more dynamic."
+  },
+  {
+   "id": "10.0",
+   "class": "other",
+   "text": "The population is steadily declining toward the extinction-risk threshold, and clade dominance has surged to 87.5%, threatening diversity."
+  },
+  {
+   "id": "10.1",
+   "class": "other",
+   "text": "However, the budget is currently zero and several critical rescue actions are on cooldown, necessitating a period of observation."
+  },
+  {
+   "id": "11.0",
+   "class": "credit",
+   "text": "The population is recovering steadily from recent immigration pulses, but the budget for the last 100k steps is fully depleted."
+  },
+  {
+   "id": "11.1",
+   "class": "other",
+   "text": "I must wait for the budget to replenish before I can further manipulate the low clade diversity and rising kill share."
+  },
+  {
+   "id": "12.0",
+   "class": "other",
+   "text": "The world is stagnating with only 2 clades alive and a top clade share climbing towards dominance."
+  },
+  {
+   "id": "12.1",
+   "class": "other",
+   "text": "Population is trending downwards while novelty remains stable but low, suggesting a need for fresh genetic material and environmental pressure to prevent a monoculture."
+  },
+  {
+   "id": "13.0",
+   "class": "credit",
+   "text": "The population is surging due to the active regen_pulse, and novelty has spiked alongside a significant increase in sharers."
+  },
+  {
+   "id": "13.1",
+   "class": "other",
+   "text": "I will introduce high-amplitude, short-period seasons to prevent the current boom from stabilizing into a stagnant monoculture."
+  },
+  {
+   "id": "14.0",
+   "class": "other",
+   "text": "The population is in a sharp decline, dropping from 34,280 to 21,135, and the extinction-risk flag is active."
+  },
+  {
+   "id": "14.1",
+   "class": "other",
+   "text": "However, all available rescue actions are currently cooling down or blocked by a zero budget, necessitating a period of observation."
+  },
+  {
+   "id": "15.0",
+   "class": "other",
+   "text": "The population is in a steep decline, dropping from over 30,000 to 13,180, and the extinction-risk flag is active."
+  },
+  {
+   "id": "15.1",
+   "class": "other",
+   "text": "However, I am unable to intervene as my budget for the last 100,000 steps is completely spent."
+  },
+  {
+   "id": "16.0",
+   "class": "credit",
+   "text": "The population is in a state of precipitous collapse, falling from 36,118 to 8,839 as the recent seasonal amplitude and drift have likely outpaced adaptation."
+  },
+  {
+   "id": "16.1",
+   "class": "presume",
+   "text": "While a regen_pulse is active to mitigate extinction, the budget is depleted and most intervention tools are on cooldown."
+  },
+  {
+   "id": "17.0",
+   "class": "other",
+   "text": "The population is recovering from a crash, but the top clade share remains high at 0.699 and novelty is only marginally above the threshold."
+  },
+  {
+   "id": "17.1",
+   "class": "other",
+   "text": "By targeting patch 12, which currently holds a significant fertility advantage, I aim to disrupt the current stability and induce new evolutionary pressures through spatial fragmentation."
+  },
+  {
+   "id": "18.0",
+   "class": "credit",
+   "text": "The population has recovered significantly from its recent low of 8,515 to 25,283, driven by the active regen_pulse and recent immigration."
+  },
+  {
+   "id": "18.1",
+   "class": "other",
+   "text": "However, I am currently constrained by a zero budget and multiple cooldowns on the most effective tools for novelty and rescue."
+  },
+  {
+   "id": "19.0",
+   "class": "other",
+   "text": "The population is recovering from a recent low, but the budget for the last 100,000 steps is exhausted (7/6)."
+  },
+  {
+   "id": "19.1",
+   "class": "other",
+   "text": "With no affordable actions available and several key levers on cooldown, I must remain idle."
+  },
+  {
+   "id": "20.0",
+   "class": "credit",
+   "text": "The population is recovering from a low of 8,875 thanks to the active regen_pulse and pending immigration."
+  },
+  {
+   "id": "20.1",
+   "class": "other",
+   "text": "However, diversity is dangerously low with only 2 clades alive and a high top clade share of 0.531, but the budget is currently empty."
+  },
+  {
+   "id": "21.0",
+   "class": "temporal",
+   "text": "The population is recovering well after recent rescue pulses, but the top clade share is climbing again (0.644), threatening diversity."
+  },
+  {
+   "id": "21.1",
+   "class": "other",
+   "text": "By slowing environmental drift, I aim to reward stable niche occupation and foster more complex social structures like sharing or bonding in localized clusters."
+  },
+  {
+   "id": "22.0",
+   "class": "credit",
+   "text": "The population is surging due to the active regen_pulse, but diversity is stagnating with top clade share climbing toward 0.813 and only 3 clades remaining."
+  },
+  {
+   "id": "22.1",
+   "class": "other",
+   "text": "I am forced to wait as the budget is spent and most interventions are cooling down."
+  },
+  {
+   "id": "23.0",
+   "class": "other",
+   "text": "The population is stabilizing near capacity, but diversity is stagnating with only 3 clades alive and a rising top clade share of 0.792."
+  },
+  {
+   "id": "23.1",
+   "class": "other",
+   "text": "Since the budget is currently at 0, I must wait for replenishment to introduce new evolutionary pressures."
+  },
+  {
+   "id": "24.0",
+   "class": "presume",
+   "text": "The population is declining despite the current regen_pulse, and the top clade share has climbed to a concerning 0.805, indicating low diversity."
+  },
+  {
+   "id": "24.1",
+   "class": "other",
+   "text": "I must wait for the budget to replenish and current effects to expire before attempting to disrupt this dominance."
+  },
+  {
+   "id": "25.0",
+   "class": "other",
+   "text": "The population is in a sharp decline (29,626) and the top clade share has climbed to 0.837, indicating a loss of lineage diversity."
+  },
+  {
+   "id": "25.1",
+   "class": "other",
+   "text": "I will accelerate the drift to prevent the current dominant clade from stabilizing too effectively across the existing fertility patches."
+  },
+  {
+   "id": "26.0",
+   "class": "temporal",
+   "text": "The population is recovering under a regen_pulse, but the budget is depleted and vital rescue actions are on cooldown."
+  },
+  {
+   "id": "26.1",
+   "class": "credit",
+   "text": "I must wait for resources to replenish while the current boom stabilizes the extinction risk."
+  },
+  {
+   "id": "27.0",
+   "class": "presume",
+   "text": "The population is in a freefall, dropping from over 44,000 to just 12,954 despite recent interventions."
+  },
+  {
+   "id": "27.1",
+   "class": "other",
+   "text": "The extinction-risk flag is active and the budget is depleted, leaving me unable to intervene at this moment."
+  },
+  {
+   "id": "28.0",
+   "class": "causal_other",
+   "text": "The population is in a precipitous collapse, dropping from 32,870 to 8,856 as diversity has plummeted to only two clades."
+  },
+  {
+   "id": "28.1",
+   "class": "presume",
+   "text": "While a regen_pulse and pending immigration are active to prevent total extinction, the budget is spent and I must wait for cooldowns and resources to replenish."
+  },
+  {
+   "id": "29.0",
+   "class": "other",
+   "text": "The population is recovering from a crash, but novelty remains low and clade entropy is stagnant."
+  },
+  {
+   "id": "29.1",
+   "class": "other",
+   "text": "By slowing the drift tempo, I aim to provide a more stable stage for the three existing clades to diverge before the next major shift."
+  },
+  {
+   "id": "30.0",
+   "class": "other",
+   "text": "The budget is depleted, and critical rescue tools like immigration and regen_pulse are currently cooling down."
+  },
+  {
+   "id": "30.1",
+   "class": "credit",
+   "text": "Population is recovering from a recent low thanks to the active 1.5x regen_pulse, but extinction risk remains flagged."
+  },
+  {
+   "id": "31.0",
+   "class": "other",
+   "text": "The population is recovering from a recent crash, but the budget for the last 100,000 steps is completely spent (6/6)."
+  },
+  {
+   "id": "31.1",
+   "class": "other",
+   "text": "Furthermore, the necessary rescue tools like regen_pulse are currently on cooldown."
+  },
+  {
+   "id": "32.0",
+   "class": "credit",
+   "text": "The population is recovering from a low point thanks to the active regen_pulse and pending immigration, but I am currently budget-locked."
+  },
+  {
+   "id": "32.1",
+   "class": "other",
+   "text": "With 0 cost units remaining in the current window and several vital levers on cooldown, I must observe the effects of the ongoing boom."
+  },
+  {
+   "id": "33.0",
+   "class": "other",
+   "text": "The population is recovering but novelty has dipped below the 0.025 threshold, and the top clade share is rising toward dominance (0.725)."
+  },
+  {
+   "id": "33.1",
+   "class": "other",
+   "text": "By increasing the drift multiplier, I aim to destabilize the current spatial equilibrium and trigger new behavioral adaptations through rapid habitat shifts."
+  },
+  {
+   "id": "34.0",
+   "class": "other",
+   "text": "The population is approaching capacity, but clade diversity remains stagnant at only 3 clades."
+  },
+  {
+   "id": "34.1",
+   "class": "other",
+   "text": "I am introducing new founders to inject fresh lineages and simultaneously cooling down the most fertile patch to prevent a single-clade monopoly from stabilizing too easily."
+  },
+  {
+   "id": "35.0",
+   "class": "other",
+   "text": "The population has stabilized near 35,000, but novelty is declining (0.0177) and diversity remains stagnant with only 3 clades alive."
+  },
+  {
+   "id": "35.1",
+   "class": "other",
+   "text": "Current budget constraints prevent any immediate intervention to stimulate new lineages or behaviors."
+  },
+  {
+   "id": "36.0",
+   "class": "other",
+   "text": "Clade diversity has fallen to only 2 lineages, and the population is trending downward."
+  },
+  {
+   "id": "36.1",
+   "class": "other",
+   "text": "I am introducing a surge of new founders alongside a resource boom to prevent stagnation and spark fresh evolutionary trajectories."
+  },
+  {
+   "id": "37.0",
+   "class": "presume",
+   "text": "The population is in a sharp decline, dropping from 37k to 28k despite recent immigration."
+  },
+  {
+   "id": "37.1",
+   "class": "other",
+   "text": "I will establish a new high-fertility patch at index 0 to provide a stable anchor for the recovering clades and stimulate divergent evolutionary paths."
+  },
+  {
+   "id": "38.0",
+   "class": "credit",
+   "text": "The population is in a steep decline, dropping from 37,388 to 19,954 as the recent boom subsides."
+  },
+  {
+   "id": "38.1",
+   "class": "other",
+   "text": "While novelty remains high at 0.038, I am constrained by a zero budget and the active regen_pulse."
+  },
+  {
+   "id": "39.0",
+   "class": "other",
+   "text": "The population is in a steep decline, dropping from 43,687 to 12,400, and the extinction-risk flag is active."
+  },
+  {
+   "id": "39.1",
+   "class": "other",
+   "text": "However, I am currently unable to intervene because the budget for this cycle has been fully spent and several vital tools are on cooldown."
+  },
+  {
+   "id": "40.0",
+   "class": "presume",
+   "text": "The population is in a precipitous decline, falling from 35,796 to 8,889 despite the active regen pulse and pending immigration."
+  },
+  {
+   "id": "40.1",
+   "class": "other",
+   "text": "Viability is critical with an extinction-risk flag triggered, but the budget is currently empty and most interventions are on cooldown."
+  },
+  {
+   "id": "41.0",
+   "class": "other",
+   "text": "The world is stagnating with zero new behaviors in 200,000 steps and novelty below the archive threshold."
+  },
+  {
+   "id": "41.1",
+   "class": "presume",
+   "text": "While the population is recovering from a recent low, the current seasonal period of 12,000 is too rapid for complex behavioral divergence."
+  },
+  {
+   "id": "41.2",
+   "class": "other",
+   "text": "I am lengthening the cycle to provide a more stable but shifting landscape."
+  },
+  {
+   "id": "42.0",
+   "class": "temporal",
+   "text": "The population is recovering steadily under the current regen pulse, but budget is at zero."
+  },
+  {
+   "id": "42.1",
+   "class": "causal_other",
+   "text": "I must wait for resources to replenish while the existing environmental shifts drive lineage diversification."
+  },
+  {
+   "id": "43.0",
+   "class": "other",
+   "text": "The population is in a steady decline, dropping from 34,480 to 16,602, and the extinction-risk flag is active."
+  },
+  {
+   "id": "43.1",
+   "class": "other",
+   "text": "However, with a budget of 0 remaining for this window and several critical actions on cooldown, I must remain idle."
+  },
+  {
+   "id": "44.0",
+   "class": "temporal",
+   "text": "The population is recovering under a regen pulse, but diversity remains critically low with only 2 clades alive and the top clade share rising to 0.675."
+  },
+  {
+   "id": "44.1",
+   "class": "other",
+   "text": "Novelty is stagnating, and since the budget is spent and most interventions are on cooldown, I must wait for the environment to stabilize."
+  },
+  {
+   "id": "45.0",
+   "class": "other",
+   "text": "The population is stabilizing but novelty has stagnated at 0.0227, and the top clade share is climbing toward dominance (0.795)."
+  },
+  {
+   "id": "45.1",
+   "class": "other",
+   "text": "By slowing the environmental tempo, I aim to reduce the constant pressure of migration and encourage more complex, localized behavioral niches."
+  },
+  {
+   "id": "46.0",
+   "class": "presume",
+   "text": "The population is trending downward despite the current regen_pulse, and novelty remains stagnant below the target threshold."
+  },
+  {
+   "id": "46.1",
+   "class": "other",
+   "text": "With the budget at zero and major rescue pulses active, I must wait for the environment to stabilize."
+  },
+  {
+   "id": "47.0",
+   "class": "other",
+   "text": "The population is recovering from a recent dip, but the top clade share is steadily climbing toward dominance (0.644)."
+  },
+  {
+   "id": "47.1",
+   "class": "presume",
+   "text": "Budget is currently depleted (6/6), and the regen_pulse required for stability is on cooldown, forcing a period of observation."
+  },
+  {
+   "id": "48.0",
+   "class": "presume",
+   "text": "The population is in a steady decline despite the active regen_pulse, and the extinction-risk flag remains active."
+  },
+  {
+   "id": "48.1",
+   "class": "other",
+   "text": "With zero budget remaining for this step, I must wait for the resource cycle to stabilize or the budget to replenish."
+  },
+  {
+   "id": "49.0",
+   "class": "other",
+   "text": "The world is stagnating with only 3 clades and zero new behaviors in 200,000 steps."
+  },
+  {
+   "id": "49.1",
+   "class": "other",
+   "text": "While population is recovering, the lack of novelty and low clade count suggest a need for environmental instability to drive divergence."
+  },
+  {
+   "id": "50.0",
+   "class": "credit",
+   "text": "The population is in a sharp decline, dropping from 32,745 to 20,700 as the recent regen_pulse fails to offset deaths."
+  },
+  {
+   "id": "50.1",
+   "class": "other",
+   "text": "While novelty is stagnant and extinction risk is flagged, I am currently constrained by a zero budget and active cooldowns."
+  },
+  {
+   "id": "51.0",
+   "class": "other",
+   "text": "The population is in a precipitous decline, dropping from 45,282 to 13,698, and the extinction-risk flag is active."
+  },
+  {
+   "id": "51.1",
+   "class": "other",
+   "text": "However, I am currently unable to intervene as the budget for the last 100,000 steps is fully spent and several vital rescue mechanisms are on cooldown."
+  },
+  {
+   "id": "52.0",
+   "class": "presume",
+   "text": "The population is in a steep decline, dropping from 36,857 to 10,065 despite the current regen pulse."
+  },
+  {
+   "id": "52.1",
+   "class": "other",
+   "text": "While extinction risk is high and novelty has stagnated at 0.0177, I have no remaining budget to intervene this step."
+  },
+  {
+   "id": "53.0",
+   "class": "other",
+   "text": "The population is recovering from a crash but remains at low viability, and novelty has stagnated near the threshold."
+  },
+  {
+   "id": "53.1",
+   "class": "other",
+   "text": "By accelerating the drift of fertile patches, I aim to disrupt the current spatial stability and stimulate new behavioral adaptations through increased environmental flux."
+  },
+  {
+   "id": "54.0",
+   "class": "credit",
+   "text": "The population is recovering thanks to the active regen pulse, but diversity is dangerously low with a top clade share of 0.907 and only 3 clades alive."
+  },
+  {
+   "id": "54.1",
+   "class": "other",
+   "text": "I am unable to intervene as the budget has been fully exhausted by recent rescue operations."
+  },
+  {
+   "id": "55.0",
+   "class": "other",
+   "text": "The population is recovering from a recent low, but the budget for this window is completely exhausted."
+  },
+  {
+   "id": "55.1",
+   "class": "other",
+   "text": "I must wait for resources to replenish while the current lineages stabilize."
+  },
+  {
+   "id": "56.0",
+   "class": "other",
+   "text": "The population is stable but novelty is critically low at 0.00238, and clade entropy suggests a lack of recent evolutionary pressure."
+  },
+  {
+   "id": "56.1",
+   "class": "other",
+   "text": "By injecting new founders alongside seasonal cycles, I aim to break the current equilibrium and spark new behavioral lineages through forced movement."
+  },
+  {
+   "id": "57.0",
+   "class": "other",
+   "text": "The population is currently flagging an extinction risk with a declining number of clades (70 to 62) and a rising top clade share."
+  },
+  {
+   "id": "57.1",
+   "class": "other",
+   "text": "By increasing the drift tempo, I aim to disrupt current stable clusters and stimulate new evolutionary trajectories through forced movement."
+  },
+  {
+   "id": "58.0",
+   "class": "other",
+   "text": "The population is in a steep decline, dropping from 42,075 to 21,647 over the last eight windows."
+  },
+  {
+   "id": "58.1",
+   "class": "other",
+   "text": "While novelty remains stable, the budget is currently at 0/6, preventing any intervention to mitigate the extinction risk."
+  },
+  {
+   "id": "59.0",
+   "class": "other",
+   "text": "The population has stabilized near capacity, but novelty is trending downward toward the archive threshold."
+  },
+  {
+   "id": "59.1",
+   "class": "other",
+   "text": "With no budget remaining for this window, I must wait for replenishment to introduce new shocks."
+  },
+  {
+   "id": "60.0",
+   "class": "credit",
+   "text": "The population is recovering from a low of 17,323 thanks to the active regen_pulse and pending immigration."
+  },
+  {
+   "id": "60.1",
+   "class": "other",
+   "text": "However, my budget is exhausted (0/6), making any intervention impossible at this time."
+  },
+  {
+   "id": "61.0",
+   "class": "other",
+   "text": "The population is in a steep decline, dropping from 48k to under 20k, and the extinction-risk flag is active."
+  },
+  {
+   "id": "61.1",
+   "class": "other",
+   "text": "To prevent a total collapse of diversity while the top clade dominates 76% of the population, I am fragmenting the environment to break their hegemony and seeding a distant oasis for new lineages."
+  },
+  {
+   "id": "62.0",
+   "class": "other",
+   "text": "The population is stabilizing near capacity, but the extinction-risk flag remains active as clade diversity has dwindled to 7."
+  },
+  {
+   "id": "62.1",
+   "class": "other",
+   "text": "Budget is currently depleted from recent rescue interventions, necessitating a period of observation."
+  },
+  {
+   "id": "63.0",
+   "class": "other",
+   "text": "The population is recovering steadily from its recent low, reaching 29,431."
+  },
+  {
+   "id": "63.1",
+   "class": "other",
+   "text": "However, the budget is currently empty after heavy intervention in the previous window, and the extinction risk remains flagged."
+  },
+  {
+   "id": "63.2",
+   "class": "other",
+   "text": "I must wait for the budget to replenish before introducing new shocks."
+  },
+  {
+   "id": "64.0",
+   "class": "other",
+   "text": "The population is in a steep decline, dropping from 36,209 to 18,775, and the extinction-risk flag is active."
+  },
+  {
+   "id": "64.1",
+   "class": "presume",
+   "text": "While a regen_pulse is currently boosting resources, my budget for this period is exhausted and I must wait for cooldowns to reset."
+  },
+  {
+   "id": "65.0",
+   "class": "other",
+   "text": "The top clade share has climbed to 0.972, signaling a dangerous loss of diversity and potential stagnation."
+  },
+  {
+   "id": "65.1",
+   "class": "other",
+   "text": "I am introducing habitat fragmentation in patch 5 to break the dominance, while simultaneously slowing drift to allow new lineages a stable foothold to emerge."
+  },
+  {
+   "id": "66.0",
+   "class": "other",
+   "text": "The population is recovering but diversity is stagnating with a top clade share of 0.977 and only 4 clades alive."
+  },
+  {
+   "id": "66.1",
+   "class": "other",
+   "text": "I am unable to intervene because the budget for the last 100,000 steps has been fully depleted by previous rescue operations."
+  },
+  {
+   "id": "67.0",
+   "class": "other",
+   "text": "The population is in a steep decline, dropping from 34,835 to 18,489, and the extinction-risk flag is active."
+  },
+  {
+   "id": "67.1",
+   "class": "other",
+   "text": "However, the budget for this period is fully spent, preventing any intervention to stabilize the collapsing lineages or increase diversity."
+  },
+  {
+   "id": "68.0",
+   "class": "other",
+   "text": "The world is stagnating with only 2 clades alive and a top clade share of 0.988, indicating extreme genetic homogenization."
+  },
+  {
+   "id": "68.1",
+   "class": "other",
+   "text": "I am injecting new lineages via an immigration pulse and establishing a fresh fertile patch to spark competition and novelty."
+  },
+  {
+   "id": "69.0",
+   "class": "credit",
+   "text": "The population is booming due to the active regen_pulse, but diversity is dangerously low with a top clade share of 0.97 and only 3 clades alive."
+  },
+  {
+   "id": "69.1",
+   "class": "other",
+   "text": "I am introducing a massive seasonal oscillation to break the current stability and encourage new lineages through forced movement."
+  },
+  {
+   "id": "70.0",
+   "class": "other",
+   "text": "The population is recovering but diversity remains critically low with a top clade share of 0.915 and only 3 clades alive."
+  },
+  {
+   "id": "70.1",
+   "class": "other",
+   "text": "I am unable to intervene as the budget for the last 100,000 steps is fully spent."
+  },
+  {
+   "id": "71.0",
+   "class": "presume",
+   "text": "The population is in a steep decline, dropping from 27,842 to 16,455 despite the active regen_pulse."
+  },
+  {
+   "id": "71.1",
+   "class": "presume",
+   "text": "While extinction risk is flagged, I have no remaining budget to intervene and must wait for current pulses to stabilize the system."
+  },
+  {
+   "id": "72.0",
+   "class": "other",
+   "text": "The world is stagnating under a massive monoculture, with the top clade share climbing to 0.97 and clade count dropping to 2."
+  },
+  {
+   "id": "72.1",
+   "class": "other",
+   "text": "I am introducing fresh genetic material via immigration and carving out a barren zone to disrupt the current equilibrium and stimulate novelty."
+  },
+  {
+   "id": "73.0",
+   "class": "other",
+   "text": "The population is stabilizing but diversity is stagnant, with the top clade share remaining high at 0.908 and only three clades alive."
+  },
+  {
+   "id": "73.1",
+   "class": "other",
+   "text": "I am unable to intervene because the budget is exhausted (7/6) and several critical tools are on cooldown."
+  },
+  {
+   "id": "74.0",
+   "class": "other",
+   "text": "The population is stable at 70% of capacity, but diversity is critically low with only two clades alive and a top clade share of 0.983."
+  },
+  {
+   "id": "74.1",
+   "class": "other",
+   "text": "I am forced to wait due to the budget constraint, despite the urgent need for new lineages to counter this homogenization."
+  },
+  {
+   "id": "75.0",
+   "class": "temporal",
+   "text": "The population is recovering under a regen pulse, but diversity is critically low with only 2 clades alive and a top clade share of 0.998."
+  },
+  {
+   "id": "75.1",
+   "class": "other",
+   "text": "I am unable to intervene due to the budget being spent on recent safety actions and current active effects."
+  },
+  {
+   "id": "76.0",
+   "class": "other",
+   "text": "The world is suffering from extreme stagnation; a single clade has achieved total dominance (share 1.0) and clades alive has dropped to 1."
+  },
+  {
+   "id": "76.1",
+   "class": "presume",
+   "text": "Population is declining despite recent rescue efforts, and novelty is plateauing."
+  },
+  {
+   "id": "76.2",
+   "class": "other",
+   "text": "I will introduce high-amplitude, short-period seasons to shatter this equilibrium and force new evolutionary pressures through constant movement."
+  },
+  {
+   "id": "77.0",
+   "class": "temporal",
+   "text": "The population is recovering well under the current regen_pulse, but diversity remains critically low with a top clade share of 0.999 and only 2 clades alive."
+  },
+  {
+   "id": "77.1",
+   "class": "other",
+   "text": "I am unable to intervene as the budget is exhausted for this window."
+  },
+  {
+   "id": "78.0",
+   "class": "causal_other",
+   "text": "The population is in a freefall, plummeting from 37,546 to 14,005 as the single remaining clade fails to adapt."
+  },
+  {
+   "id": "78.1",
+   "class": "other",
+   "text": "Despite the extinction risk flag and critical diversity loss (clades alive: 1), I am paralyzed by a spent budget of 6/6 and active cooldowns on necessary rescue pulses."
+  },
+  {
+   "id": "79.0",
+   "class": "other",
+   "text": "The world has stagnated into a massive mono-clade with zero clade entropy and declining novelty."
+  },
+  {
+   "id": "79.1",
+   "class": "other",
+   "text": "By combining an immigration pulse with the sudden destruction of the most fertile patch (patch 12), I aim to shatter this stability and force new lineages into competitive, fragmented refugia."
+  },
+  {
+   "id": "80.0",
+   "class": "other",
+   "text": "The world is suffering from extreme genetic stagnation; a single clade dominates with zero entropy and near-total population share."
+  },
+  {
+   "id": "80.1",
+   "class": "credit",
+   "text": "While the recent immigration pulse helped stabilize numbers, it failed to break the monoculture."
+  },
+  {
+   "id": "80.2",
+   "class": "other",
+   "text": "By slowing environmental drift, I aim to create more stable spatial niches to foster the emergence of new lineages."
+  },
+  {
+   "id": "81.0",
+   "class": "presume",
+   "text": "The population is in a precipitous decline, dropping from 52,143 to 20,735 despite the active regen_pulse."
+  },
+  {
+   "id": "81.1",
+   "class": "other",
+   "text": "Diversity is critically low with only two clades and a top clade share of 0.996, indicating extreme homogenization."
+  },
+  {
+   "id": "81.2",
+   "class": "other",
+   "text": "I am unable to act as the budget is depleted and necessary rescue pulses are on cooldown."
+  },
+  {
+   "id": "82.0",
+   "class": "other",
+   "text": "The population has stabilized near capacity, but the world is suffering from extreme genetic stagnation with a top clade share of 0.997 and only two clades alive."
+  },
+  {
+   "id": "82.1",
+   "class": "other",
+   "text": "I am currently unable to intervene as the budget is exhausted, so I must wait for resources to replenish to address this lack of diversity."
+  },
+  {
+   "id": "83.0",
+   "class": "credit",
+   "text": "The population is recovering from a low of 10,770 thanks to the active regen_pulse and pending immigration."
+  },
+  {
+   "id": "83.1",
+   "class": "other",
+   "text": "However, diversity remains critically low with only 2 clades alive and a top clade share of 0.991, indicating extreme dominance."
+  },
+  {
+   "id": "83.2",
+   "class": "other",
+   "text": "I am forced to wait as the budget is spent and regen_pulse is currently active."
+  },
+  {
+   "id": "84.0",
+   "class": "credit",
+   "text": "The population is in a freefall, dropping from 49k to 14k as the recent regen pulse ended."
+  },
+  {
+   "id": "84.1",
+   "class": "credit",
+   "text": "With clade dominance extremely high (0.971) and novelty stagnating, I am introducing a long-period seasonal cycle to provide environmental structure without the volatility that caused the recent crash."
+  },
+  {
+   "id": "85.0",
+   "class": "temporal",
+   "text": "The population is recovering under a high-resource regen pulse, but diversity remains critically low with only 2 clades and a top clade share of 0.974."
+  },
+  {
+   "id": "85.1",
+   "class": "other",
+   "text": "I must wait for cooldowns to expire before I can introduce new lineages or environmental shocks to break this stagnation."
+  },
+  {
+   "id": "86.0",
+   "class": "other",
+   "text": "The population is recovering but diversity remains critically low with only two clades alive and a top clade share of 0.95."
+  },
+  {
+   "id": "86.1",
+   "class": "other",
+   "text": "Budget is depleted and necessary rescue actions are currently blocked by cooldowns."
+  },
+  {
+   "id": "87.0",
+   "class": "presume",
+   "text": "The population is in a steady decline despite the active regen pulse, and clade diversity remains critically low with only two clades alive."
+  },
+  {
+   "id": "87.1",
+   "class": "other",
+   "text": "I am unable to intervene as the budget is depleted and several key tools are on cooldown."
+  },
+  {
+   "id": "88.0",
+   "class": "other",
+   "text": "The world is suffering from extreme clade dominance (0.965) and stagnant novelty (0.0223)."
+  },
+  {
+   "id": "88.1",
+   "class": "other",
+   "text": "By injecting new founders and accelerating patch drift, I aim to disrupt the current equilibrium and spark new evolutionary trajectories."
+  },
+  {
+   "id": "89.0",
+   "class": "presume",
+   "text": "The population is declining despite the active regen_pulse, and clade diversity remains critically low with only 2 clades alive."
+  },
+  {
+   "id": "89.1",
+   "class": "other",
+   "text": "The top clade share is dangerously high at 0.987, indicating a lack of competitive novelty."
+  },
+  {
+   "id": "89.2",
+   "class": "other",
+   "text": "I must wait for cooldowns to expire before I can intervene to restore diversity or stabilize the population."
+  },
+  {
+   "id": "90.0",
+   "class": "other",
+   "text": "The population has stabilized near capacity, but diversity is critically low with only two clades and a top clade share of 1.0."
+  },
+  {
+   "id": "90.1",
+   "class": "other",
+   "text": "Since the budget is exhausted, I must wait for the next window to introduce the shocks necessary to break this monoculture."
+  },
+  {
+   "id": "91.0",
+   "class": "other",
+   "text": "The world is in a state of extreme stagnation; clades alive has dropped to 1, and the top clade share is at a maximum of 1.0."
+  },
+  {
+   "id": "91.1",
+   "class": "presume",
+   "text": "While a regen_pulse and immigration_pulse are active to prevent extinction, the lack of budget prevents any further intervention to spark novelty."
+  },
+  {
+   "id": "92.0",
+   "class": "other",
+   "text": "The world is stagnating with a top clade share of 1.0 and declining novelty (0.0172)."
+  },
+  {
+   "id": "92.1",
+   "class": "other",
+   "text": "By combining a large immigration pulse with the destruction of the high-fertility patch 12, I aim to shatter the current monoculture and spark new behavioral trajectories through forced dispersal."
+  },
+  {
+   "id": "93.0",
+   "class": "temporal",
+   "text": "The population is recovering under the current regen_pulse, but diversity remains critically low with only 2 clades and a top clade share of 0.993."
+  },
+  {
+   "id": "93.1",
+   "class": "other",
+   "text": "I am forced to do nothing as the recent heavy interventions have exhausted the budget."
+  },
+  {
+   "id": "94.0",
+   "class": "other",
+   "text": "The population is in a steady decline from 38,052 to 30,986, and diversity is critically low with only two clades alive and a top clade share of 1."
+  },
+  {
+   "id": "94.1",
+   "class": "other",
+   "text": "However, the current budget is 0, preventing any intervention to stimulate novelty or rescue lineage diversity."
+  },
+  {
+   "id": "95.0",
+   "class": "other",
+   "text": "The world is currently undergoing a resource boom, but diversity has collapsed to a single clade with zero entropy."
+  },
+  {
+   "id": "95.1",
+   "class": "other",
+   "text": "I am unable to intervene due to the budget being exhausted in this recent window."
+  },
+  {
+   "id": "96.0",
+   "class": "other",
+   "text": "The population is in a steady decline, and the world has collapsed into a monoculture with only one clade alive."
+  },
+  {
+   "id": "96.1",
+   "class": "presume",
+   "text": "While an immigration pulse is pending to rescue the population, my budget is currently exhausted, preventing any further intervention."
+  },
+  {
+   "id": "97.0",
+   "class": "other",
+   "text": "The world is stagnating with a top clade share of 0.999 and novelty steadily declining to 0.0148."
+  },
+  {
+   "id": "97.1",
+   "class": "other",
+   "text": "While population is stable, the lack of clade diversity (only 2 clades) necessitates a fresh influx of genetic material to prevent evolutionary dead-ends."
+  },
+  {
+   "id": "98.0",
+   "class": "other",
+   "text": "The population is in a steady decline, dropping from 28,045 to 18,253, and the extinction-risk flag is active."
+  },
+  {
+   "id": "98.1",
+   "class": "other",
+   "text": "Diversity has stagnated with only 2 clades alive and a top clade share of 1, indicating extreme dominance."
+  },
+  {
+   "id": "98.2",
+   "class": "other",
+   "text": "I am unable to intervene because the budget for the last 100,000 steps is fully spent."
+  },
+  {
+   "id": "99.0",
+   "class": "other",
+   "text": "The world has stagnated into a monoculture with only one clade alive and top clade share at 1.0."
+  },
+  {
+   "id": "99.1",
+   "class": "other",
+   "text": "Population is stable but novelty has been declining for several windows, necessitating a sudden injection of new genomes and spatial disruption to prevent total evolutionary stasis."
+  },
+  {
+   "id": "100.0",
+   "class": "other",
+   "text": "The world is currently in a state of stagnation; clade entropy is extremely low (0.0325) and the top clade dominates 99.5% of the population, indicating a loss of evolutionary novelty."
+  },
+  {
+   "id": "100.1",
+   "class": "other",
+   "text": "While the extinction-risk flag is active, I am unable to intervene because my recent interventions have exhausted the budget and several necessary tools are on cooldown."
+  },
+  {
+   "id": "101.0",
+   "class": "other",
+   "text": "The world has stagnated into a monoculture with a single clade holding 100% share and zero new novelty in 200,000 steps."
+  },
+  {
+   "id": "101.1",
+   "class": "other",
+   "text": "I am injecting fresh genetic material via immigration and simultaneously carving a void with a catastrophe to disrupt the evolutionary equilibrium."
+  },
+  {
+   "id": "102.0",
+   "class": "credit",
+   "text": "The population is recovering from recent pulses, but diversity remains critically low with a top clade share of 0.998 and only two clades alive."
+  },
+  {
+   "id": "102.1",
+   "class": "other",
+   "text": "I am currently unable to intervene as the budget is exhausted and several key tools are on cooldown."
+  },
+  {
+   "id": "103.0",
+   "class": "other",
+   "text": "The world is stagnating; population is declining, clades are stuck at 2, and the top clade share has returned to absolute dominance (1.0)."
+  },
+  {
+   "id": "103.1",
+   "class": "other",
+   "text": "Novelty is creeping up but hasn't seen a new behavior in 200,000 steps."
+  },
+  {
+   "id": "103.2",
+   "class": "other",
+   "text": "An immigration pulse is needed to inject fresh genomic material and disrupt this evolutionary plateau."
+  },
+  {
+   "id": "104.0",
+   "class": "credit",
+   "text": "The population is surging due to the ongoing regen_pulse, but clade diversity remains critically low with only 2 clades and a top clade share of 0.997."
+  },
+  {
+   "id": "104.1",
+   "class": "other",
+   "text": "While novelty is rising, the lack of budget and active cooldowns prevents any immediate intervention to break the monoculture."
+  },
+  {
+   "id": "105.0",
+   "class": "other",
+   "text": "The population is in a steady decline, dropping from 34k to 24k, while clade diversity has stagnated at only two lineages with a top clade share of 1.0."
+  },
+  {
+   "id": "105.1",
+   "class": "presume",
+   "text": "Although a regen_pulse is currently active, the budget is depleted and I must wait for cooldowns to reset before attempting to inject novelty or rescue the dwindling diversity."
+  },
+  {
+   "id": "106.0",
+   "class": "other",
+   "text": "The population is hovering near capacity but the clade share has climbed to 0.999, indicating extreme stagnation and a loss of lineage diversity."
+  },
+  {
+   "id": "106.1",
+   "class": "other",
+   "text": "With the budget fully spent in the last 100,000 steps and extinction-rescue actions on cooldown, I must wait for resources to replenish."
+  },
+  {
+   "id": "107.0",
+   "class": "temporal",
+   "text": "The population is in a steep decline, dropping from 30,882 to 18,322 since the last major intervention."
+  },
+  {
+   "id": "107.1",
+   "class": "other",
+   "text": "Diversity has collapsed to a single clade with zero entropy, and novelty is stagnating below the target threshold."
+  },
+  {
+   "id": "107.2",
+   "class": "other",
+   "text": "I am forced to wait as the budget is depleted and recent rescue pulses are still cooling down."
+  },
+  {
+   "id": "108.0",
+   "class": "other",
+   "text": "The world is stagnating with a top clade share of 1.0 and extremely low clade entropy (0.00187)."
+  },
+  {
+   "id": "108.1",
+   "class": "other",
+   "text": "While population is stable, the lack of lineage diversity threatens long-term novelty; a pulse of new founders is needed to spark competition."
+  },
+  {
+   "id": "109.0",
+   "class": "presume",
+   "text": "The world is currently under a massive resource boom and pending immigration, yet diversity remains critically low with only 2 clades and a top clade share of 0.999."
+  },
+  {
+   "id": "109.1",
+   "class": "other",
+   "text": "Since the budget is spent and safety interventions are already in progress, I must wait for the environment to stabilize."
+  },
+  {
+   "id": "110.0",
+   "class": "other",
+   "text": "The population has stabilized near 0.72 K_est, but diversity remains critically low with only two clades and a top clade share of 0.993."
+  },
+  {
+   "id": "110.1",
+   "class": "other",
+   "text": "Recent immigration pulses have exhausted the budget, and essential recovery tools like regen_pulse and immigration_pulse are currently cooling down."
+  },
+  {
+   "id": "111.0",
+   "class": "causal_other",
+   "text": "Population and clade count are both trending downward, indicating a potential stagnation-driven extinction risk."
+  },
+  {
+   "id": "111.1",
+   "class": "other",
+   "text": "An immigration pulse is needed to inject new genetic material and boost diversity."
+  },
+  {
+   "id": "112.0",
+   "class": "other",
+   "text": "Population is stable but clade diversity is plummeting (37 clades vs 374 at step 25,000)."
+  },
+  {
+   "id": "112.1",
+   "class": "other",
+   "text": "Top clade share is rising sharply, threatening to dominate the world."
+  },
+  {
+   "id": "112.2",
+   "class": "other",
+   "text": "A double immigration pulse is needed to inject fresh genetic material and boost novelty."
+  },
+  {
+   "id": "113.0",
+   "class": "other",
+   "text": "The population is growing steadily and is well above the extinction-risk threshold, with 18 clades remaining."
+  },
+  {
+   "id": "113.1",
+   "class": "other",
+   "text": "Novelty is currently low (0.024), suggesting a need for future intervention to spark new evolutionary trajectories."
+  },
+  {
+   "id": "114.0",
+   "class": "causal_other",
+   "text": "Population is trending downwards and top clade share is increasing, indicating a potential loss of diversity through competition."
+  },
+  {
+   "id": "114.1",
+   "class": "other",
+   "text": "Since no actions are affordable, no intervention is required at this time."
+  },
+  {
+   "id": "115.0",
+   "class": "other",
+   "text": "Population is stable but top clade share is high (0.645), suggesting a potential loss of diversity."
+  },
+  {
+   "id": "115.1",
+   "class": "other",
+   "text": "An immigration pulse will inject new genetic material and increase population density to fill new niches."
+  },
+  {
+   "id": "116.0",
+   "class": "other",
+   "text": "Population is stable but clade diversity is declining (5 clades alive)."
+  },
+  {
+   "id": "116.1",
+   "class": "other",
+   "text": "An immigration pulse will introduce new founder agents to increase weight diversity and prevent stagnation."
+  },
+  {
+   "id": "117.0",
+   "class": "other",
+   "text": "Population is steadily declining and clade diversity is low with only 4 clades alive."
+  },
+  {
+   "id": "117.1",
+   "class": "other",
+   "text": "An immigration pulse will introduce new lineages to boost diversity and provide a buffer for the population."
+  },
+  {
+   "id": "118.0",
+   "class": "other",
+   "text": "Population and novelty are both trending downwards or stagnating, and the top clade share is relatively high at 0.601."
+  },
+  {
+   "id": "118.1",
+   "class": "other",
+   "text": "An immigration pulse is an effective way to introduce new genetic material and boost the diversity metrics."
+  },
+  {
+   "id": "119.0",
+   "class": "other",
+   "text": "The population is growing steadily and is well within capacity."
+  },
+  {
+   "id": "119.1",
+   "class": "presume",
+   "text": "The current regen_pulse is a famine-inducing dampener to prevent runaway growth, and I will wait for it to expire."
+  },
+  {
+   "id": "120.0",
+   "class": "other",
+   "text": "The population is stable and the top clade share is increasing, suggesting a potential loss of diversity."
+  },
+  {
+   "id": "120.1",
+   "class": "other",
+   "text": "The current regen_pulse is an active effect, and the budget is exhausted, so no action is taken."
+  },
+  {
+   "id": "121.0",
+   "class": "other",
+   "text": "Population is stable but top clade share is increasing, suggesting a potential loss of diversity."
+  },
+  {
+   "id": "121.1",
+   "class": "other",
+   "text": "An immigration pulse will introduce new genetic material and new lineages to boost weight diversity and weight diversity."
+  },
+  {
+   "id": "122.0",
+   "class": "other",
+   "text": "Population is stable but top clade share is creeping up, and novelty is low."
+  },
+  {
+   "id": "122.1",
+   "class": "other",
+   "text": "Introducing new lineages via immigration pulses will inject fresh genetic material into the world."
+  },
+  {
+   "id": "123.0",
+   "class": "credit",
+   "text": "The population is steadily declining from 40,261 to 37,477, likely due to the current regen_pulse famine-mode (mult=0.8)."
+  },
+  {
+   "id": "123.1",
+   "class": "other",
+   "text": "The novelty score is also decreasing, suggesting a need for a period of stability before the next intervention."
+  },
+  {
+   "id": "124.0",
+   "class": "other",
+   "text": "Population is stable and diversity is low with only 3 clades."
+  },
+  {
+   "id": "124.1",
+   "class": "presume",
+   "text": "The current regen_pulse is dampening potential runaway growth, and no budget is available for new interventions."
+  },
+  {
+   "id": "125.0",
+   "class": "other",
+   "text": "Population is growing steadily and top clade share is stable, but novelty is declining and clade diversity is low (3 clades)."
+  },
+  {
+   "id": "125.1",
+   "class": "other",
+   "text": "An immigration pulse will be introduce new genetic material to spark novelty and diversity."
+  },
+  {
+   "id": "126.0",
+   "class": "other",
+   "text": "Population is stable but top clade share is rising, indicating potential stagnation."
+  },
+  {
+   "id": "126.1",
+   "class": "other",
+   "text": "Introducing new lineages via an immigration pulse to boost diversity and clade entropy."
+  },
+  {
+   "id": "127.0",
+   "class": "other",
+   "text": "The population is stable and the top clade share is declining slightly, suggesting a healthy diversity."
+  },
+  {
+   "id": "127.1",
+   "class": "other",
+   "text": "However, the budget is 0, so I cannot act."
+  },
+  {
+   "id": "127.2",
+   "class": "credit",
+   "text": "The current regen_pulse is active and is damping the population growth."
+  },
+  {
+   "id": "128.0",
+   "class": "other",
+   "text": "The population is growing steadily towards capacity, and novelty is slightly increasing."
+  },
+  {
+   "id": "128.1",
+   "class": "other",
+   "text": "No immediate action is required to the environment to prevent extinction or to boost novelty."
+  },
+  {
+   "id": "129.0",
+   "class": "other",
+   "text": "Population is trending downward and novelty is low (0.0182)."
+  },
+  {
+   "id": "129.1",
+   "class": "other",
+   "text": "An immigration pulse will introduce new genetic material to boost diversity and novelty."
+  },
+  {
+   "id": "130.0",
+   "class": "other",
+   "text": "Population is steadily declining and novelty is rising slightly, but clade count remains stagnant at 4."
+  },
+  {
+   "id": "130.1",
+   "class": "other",
+   "text": "An immigration pulse will introduce new genetic lineages to boost diversity and clade entropy."
+  }
+ ],
+ "reasons": [
+  "Introduce a large influx of random founder agents to inject new genetic lineages and disrupt the current clade dominance.",
+  "Initiate a long-term climate cycle to force mass migrations and prevent population stagnation.",
+  "Introduce new genetic lineages to counter the declining clade count and rising top clade dominance.",
+  "Accelerate the movement of fertile patches to disrupt current population clusters and force new migratory behaviors.",
+  "Introduction of new lineages to counter the declining clade count and increase evolutionary potential.",
+  "Creation of a localized resource hotspot to encourage divergent colonization patterns.",
+  "The current hyper-fertile patch will become a barren void, forcing the population to fragment and seek new niches.",
+  "Introduce new genetic lineages to combat the rising dominance of the top clade.",
+  "Slow down the movement of fertile patches to allow new immigrants time to establish stable niches.",
+  "Increasing the environmental tempo will force lineages to adapt more rapidly to shifting resource patches, preventing stagnation.",
+  "Injecting new lineages to break the dominance of the top clade and increase clade entropy.",
+  "Creating a localized resource scarcity to force movement and prevent stagnation in the current population center.",
+  "Rapidly oscillating fertility will disrupt the current population boom and force frequent, small-scale migrations to prevent clade dominance.",
+  "Removing the high-fertility patch (gain 1.75) will fragment the dominant clade and force exploration of less optimal territories.",
+  "Slowing the movement of fertile patches will allow lineages to stabilize in specific regions, potentially increasing local specialization and reducing chaotic migration.",
+  "Increasing the environmental tempo will disrupt the current dominance of the top clade by forcing faster spatial reorganization.",
+  "Slowing the environmental tempo will stabilize patch locations, allowing lineages more time to specialize and potentially increasing clade diversity.",
+  "Increasing the environmental tempo will disrupt the current dominance of the top clade by forcing rapid migration across patches.",
+  "Introduce new genetic lineages to disrupt the dominance of the top clade and boost novelty.",
+  "Reduce the fertility of the currently hyper-productive patch to prevent extreme population concentration and encourage dispersal.",
+  "Injecting new lineages to combat the decline in clade diversity and stimulate novelty.",
+  "A resource boom to support the new immigrants and encourage rapid population expansion.",
+  "Creating a high-fertility hotspot to encourage the concentration of new lineages and drive localized competition.",
+  "A longer, milder seasonal cycle will stabilize the population while encouraging slow-burn migrations to prevent stagnation.",
+  "Slowing the movement of fertile patches to allow lineages more time to specialize and stabilize in specific regions.",
+  "Rapidly oscillating fertility will break the current stasis and force lineages to adapt to frequent migration cycles.",
+  "Increasing the environmental tempo will force lineages to adapt more quickly to shifting fertile zones, potentially breaking the dominance of the current top clade.",
+  "Inject a large wave of new lineages to disrupt the current clade dominance and boost novelty.",
+  "Introduce a rhythmic oscillation in fertility to force large-scale migration and prevent stagnation.",
+  "Increasing the environmental tempo will force faster migration and prevent lineages from over-specializing in stagnant patches.",
+  "Creating a large barren zone to fragment the current dominant clade and force niche exploration.",
+  "Creating a barren zone in patch 5 will fragment the dominant clade and force local adaptation or migration.",
+  "Introduce a large influx of new genetic lineages to break the dominance of the current top clade.",
+  "Create a new high-resource hotspot to encourage the settlement of immigrants and drive divergent evolution.",
+  "A long-period, high-amplitude seasonal cycle will force large-scale migrations and disrupt the current dominance of the top clade.",
+  "Injecting new lineages to break the dominance of the top clade which has reached 0.97 share.",
+  "Creating a spatial bottleneck to force competition and potential niche specialization among the existing population.",
+  "Rapidly oscillating fertility will disrupt the dominance of the current single clade by forcing frequent, intense migrations.",
+  "Introduce new genetic lineages to break the current mono-clade dominance.",
+  "Slowing the movement of fertile patches will allow lineages to stabilize in specific regions, potentially encouraging niche specialization and increasing clade diversity.",
+  "A longer, gentler seasonal cycle will stabilize the crashing population and prevent immediate extinction while encouraging slow migration.",
+  "Injecting new lineages to break the stagnation of the top clade's dominance.",
+  "Increasing environmental tempo to force rapid adaptation and spatial reorganization.",
+  "Introduce new genetic lineages to break the dominance of the current top clade and boost novelty.",
+  "Introducing new lineages to break the extreme dominance of the top clade and stimulate novelty.",
+  "Introduce new genetic lineages to break the current monopoly of the single dominant clade.",
+  "Introduce new lineages to break the monopoly of the single dominant clade.",
+  "Introduce new genetic lineages to break the dominance of the top clade and stimulate novelty.",
+  "Injecting new genetic lineages to break the dominance of the current top clade and increase clade entropy.",
+  "Introduce new lineages to boost diversity and counteract the declining clades alive count.",
+  "Introduce new lineages to increase clade diversity and combat the rising top clade share.",
+  "Introduce new lineages to increase clade diversity and counter the rising top clade share.",
+  "Introduce new lineages to increase weight diversity and break the dominance of the top clade.",
+  "Injecting new lineages to increase clade diversity and counteract the declining number of clades alive.",
+  "Introduce new lineages to increase diversity and prevent stagnation in the top clade share.",
+  "Introduce new lineages to increase clade diversity and counteract the rising top clade share.",
+  "Introduce new lineages to increase diversity and counteract the rising top clade share.",
+  "Introduce new lineages to increase clade diversity and combat the stagnation in novelty.",
+  "Introduce new lineages to increase clade diversity and counteract the rising top clade share.",
+  "Introduce new lineages to increase clade diversity and counter the declining population trend.",
+  "Introduce new lineages to increase diversity and counter the stagnation in clade count and novelty."
+ ]
+}

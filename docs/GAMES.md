@@ -164,6 +164,13 @@ as intent), and what it **lives on** (its income sources over a window, shown as
 The brief's `If (Energy < Threshold) → Search(Resource_Field)` describes the kind of policy that evolves, since energy is
 input 1. But the brain has no such threshold to display, so the UI presents intents as observations, not rules.
 
+**The same limit binds the words about the world (N1, DESIGN §31).** A chapter report may state what the files record: counts at
+a step, a window between two steps, a name taken from a roster, a label only where its validity study passed robustly. It may
+not credit an intervention with an outcome, imply an order between two facts, or give a motive. The sentences are templates
+rendered by code from a fact sheet and re-checked by a second line (a closed vocabulary, a lexicon of causal, presupposing and
+evaluative words, and per-kind gates); a local model, if one is used, only selects and orders code-written candidates, and
+the shown order across kinds of sentence is code's. The intervention block is the engine's lever state, not a list of recent entries.
+
 ### 4.2 Data path
 
 - **From `State`, free.** Needs, harvest and received shares come from `State` (`last_harvest`, `last_inflow`,
@@ -914,8 +921,31 @@ What a game adds:
       (whether 1000 is better is not established: those studies had 2 snapshots), so a colony id at 250 is not a stable identity; the host settle is 32 and 38 ms per snapshot;
       under 0.1% of members are in houses founded within 2,500 steps. The stream rate and the step rate with an LLM call in
       flight were not run.
-- **N1. World Report, offline** (after G2, alongside W0). `game/report.py` (fact sheet, placeholders, checker,
-  template) and `python -m alife.analysis.report`, validated on observed 2D runs; no engine change.
+- **N1. World Report, offline.** **Built** (DESIGN §31, Review-log row I49; `REPORT_VERSION` 1, every threshold provisional until the
+  owner read). `python -m alife.analysis.world_report build | verify | probe` (the module is not `analysis.report`, which is the activity
+  report) turns an **observed** run's files into a chapter report: headline, lead, a body of at most six sentences, a complete
+  interventions block and a ticker. It is offline and host-side, with no engine change, no config key and no live UI.
+  - **The template path is the product** (coordinator choice C12, 2026-10-19, under the owner's delegation, to revisit): code computes the
+    fact sheet (`game/report.py`) and writes every sentence from 88 templates over a closed vocabulary (`game/templates.py`); a checker
+    (rules R1 to R7, `game/lexicon.py`) re-derives each string from the facts. **Select-and-order** (`--llm --model ID`) lets a local model
+    choose and order code-written candidates by id and nothing else; the model's text is never shown, quoted or put into a prompt.
+    The section order of the body is code's (C13) and the mandatory sentences cannot be dropped. **Free prose is off** (DESIGN §31.12).
+    The preflight `GET /api/v0/models` is read-only and allowed (C14); the tool never loads or unloads a model.
+  - **Replay:** records hold the facts, the candidates, the model's per-attempt choices and the rendered report; `verify` recomputes the
+    sheet from the run and replays the choice, with no model call (exit 1 on a mismatch, 3 when the run changed under equal versions).
+  - **As built, and deferred.**
+    - A run must be observed (`game.observe`); the unobserved `eval_*` runs are reached through observed replay forks.
+    - Labels are narrated only on a key in the version-1 verdict table; `INTENT_VERSION` 2 is the default, so a new run narrates no label
+      until the change that validates `RULES_V2` adds its rows.
+    - The window sentence W is off and its facts are gated against confounders; whether any are shown is the owner read's decision.
+    - **Review fixes (stage 4).** A patch move is a point event (the patches drift every step, so "still in place" was false); an
+      intervention whose span ended at the chapter's first row is not listed (the lever it restored is a standing line); a deep dip is
+      headlined "Population dipped to {min}"; the relation sentence says "on a victim that died in the same step"; a build of one range
+      keeps the records of another; a request goes only to a `/chat/completions` URL (DESIGN §31.1, §31.14 item 15).
+    - **Not run:** the GPU validation (the observed forks A and B of DESIGN §31.13), `probe` and `build --llm` against a real model, and the owner read
+      (20 chapters, template against select, blind). The build made no LLM call.
+    - **Not in N1:** `alife play`, a report panel, a worker and `reports.jsonl` in a run directory (G3); player commands (G4); storm facts
+      (W3; the storm-world report built on the same sheet, `docs/STORMS.md` §6.5, which records what N1 built).
 - **G3. Play loop and view.** On the 3D storm world, after W0–W2 (`docs/STORMS.md` §8 gives the interleaving); the
   face-on 2D HUD below is reopened for it.
   - `alife play` with the fixed-timestep scheduler.

@@ -1,0 +1,334 @@
+{
+ "chapter": [
+  462000,
+  468000
+ ],
+ "config_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+ "dims": 3,
+ "entities": [
+  {
+   "display": "House Phouth",
+   "id": 6,
+   "kind": "house",
+   "name": "Phouth",
+   "name_from": 468000,
+   "ref": "H6"
+  },
+  {
+   "display": "the Dreanor kin",
+   "id": 2,
+   "kind": "kin_group",
+   "name": "Dreanor",
+   "name_from": 468000,
+   "ref": "K2"
+  },
+  {
+   "display": "the Gloarn kin",
+   "id": 8,
+   "kind": "kin_group",
+   "name": "Gloarn",
+   "name_from": 468000,
+   "ref": "K8"
+  },
+  {
+   "display": "the Clevask kin",
+   "id": 15,
+   "kind": "kin_group",
+   "name": "Clevask",
+   "name_from": 468000,
+   "ref": "K15"
+  }
+ ],
+ "excluded": {
+  "entries_before_start": 0,
+  "events_churn": 0,
+  "events_suspect": 0,
+  "facts_dropped": [],
+  "interventions_dropped": 0,
+  "labels": {},
+  "name_clash": [],
+  "quota": {},
+  "social": null,
+  "windows_confounded": 0
+ },
+ "facts": [
+  {
+   "end": 468000,
+   "id": "F1",
+   "kind": "chapter",
+   "start": 462000
+  },
+  {
+   "change": -0.6760330578512397,
+   "deep_dip": false,
+   "from": 30250,
+   "id": "F2",
+   "kind": "population",
+   "min": 8900,
+   "min_row": 1517900,
+   "min_steps": 100,
+   "to": 9800
+  },
+  {
+   "aged": 150,
+   "catastrophe": 9400,
+   "id": "F3",
+   "killed": 3300,
+   "kind": "deaths",
+   "starved": 7100,
+   "total": 19950
+  },
+  {
+   "births": 9500,
+   "id": "F4",
+   "immigrants": 0,
+   "kind": "births"
+  },
+  {
+   "from": 5,
+   "id": "F5",
+   "kind": "lineages",
+   "to": 2
+  },
+  {
+   "from_count": 11495,
+   "from_of": 30250,
+   "from_share": 0.38,
+   "id": "F6",
+   "kind": "top_lineage",
+   "to_count": 7252,
+   "to_of": 9800,
+   "to_share": 0.74
+  },
+  {
+   "action": "catastrophe",
+   "duration": null,
+   "end": null,
+   "end_by": null,
+   "entry": 0,
+   "id": "F7",
+   "kind": "intervention",
+   "open_to": null,
+   "params": {
+    "center": [
+     120.0,
+     88.0
+    ],
+    "kill_p": 0.6000000238418579,
+    "radius": 40.0
+   },
+   "restored": null,
+   "rule": null,
+   "source": "llm",
+   "src": "the director's model",
+   "step": 463000
+  },
+  {
+   "action": "regen_pulse",
+   "duration": 5000,
+   "end": null,
+   "end_by": null,
+   "entry": 1,
+   "id": "F8",
+   "kind": "intervention",
+   "open_to": 1518000,
+   "params": {
+    "mult": 1.5
+   },
+   "restored": null,
+   "rule": "extinction_rescue",
+   "source": "rule",
+   "src": "the director's rule extinction_rescue",
+   "step": 465000
+  },
+  {
+   "born": 1400,
+   "died": 700,
+   "died_killed": 200,
+   "entity": 15,
+   "id": "F9",
+   "kind": "group",
+   "of": 9800,
+   "rank": 1,
+   "share": 0.29591836734693877,
+   "size": 2900
+  },
+  {
+   "event": "dissolved",
+   "family": "kin_group",
+   "id": "F10",
+   "kind": "event",
+   "other": -1,
+   "overlap": 0,
+   "reid": false,
+   "s0": 462750,
+   "s1": 463000,
+   "size": 3900,
+   "system": 2
+  },
+  {
+   "event": "dissolved",
+   "family": "kin_group",
+   "id": "F11",
+   "kind": "event",
+   "other": -1,
+   "overlap": 0,
+   "reid": false,
+   "s0": 464000,
+   "s1": 464250,
+   "size": 1700,
+   "system": 8
+  },
+  {
+   "alive_from": 8,
+   "alive_to": 4,
+   "exact": true,
+   "extinct": 4,
+   "first_seen": 0,
+   "id": "F12",
+   "kind": "houses",
+   "largest": 6,
+   "largest_name": "Zaeld",
+   "largest_size": 6200,
+   "largest_strict": true,
+   "origin": 0
+  }
+ ],
+ "labels": {
+  "env_default": true,
+  "intent_version": 1,
+  "key_found": true,
+  "rules_digest": "156ad4963b84ffe9636e9ba4fdd7592632c669bf6e490687d8eb2b38b9aec009"
+ },
+ "origin": 0,
+ "quiet": false,
+ "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
+ "report_version": 1,
+ "run": {
+  "seed": 0
+ },
+ "snapshots": [
+  {
+   "alive": 1250,
+   "id": "S462250",
+   "step": 462250
+  },
+  {
+   "alive": 1500,
+   "id": "S462500",
+   "step": 462500
+  },
+  {
+   "alive": 1750,
+   "id": "S462750",
+   "step": 462750
+  },
+  {
+   "alive": 1000,
+   "id": "S463000",
+   "step": 463000
+  },
+  {
+   "alive": 1250,
+   "id": "S463250",
+   "step": 463250
+  },
+  {
+   "alive": 1500,
+   "id": "S463500",
+   "step": 463500
+  },
+  {
+   "alive": 1750,
+   "id": "S463750",
+   "step": 463750
+  },
+  {
+   "alive": 1000,
+   "id": "S464000",
+   "step": 464000
+  },
+  {
+   "alive": 1250,
+   "id": "S464250",
+   "step": 464250
+  },
+  {
+   "alive": 1500,
+   "id": "S464500",
+   "step": 464500
+  },
+  {
+   "alive": 1750,
+   "id": "S464750",
+   "step": 464750
+  },
+  {
+   "alive": 1000,
+   "id": "S465000",
+   "step": 465000
+  },
+  {
+   "alive": 1250,
+   "id": "S465250",
+   "step": 465250
+  },
+  {
+   "alive": 1500,
+   "id": "S465500",
+   "step": 465500
+  },
+  {
+   "alive": 1750,
+   "id": "S465750",
+   "step": 465750
+  },
+  {
+   "alive": 1000,
+   "id": "S466000",
+   "step": 466000
+  },
+  {
+   "alive": 1250,
+   "id": "S466250",
+   "step": 466250
+  },
+  {
+   "alive": 1500,
+   "id": "S466500",
+   "step": 466500
+  },
+  {
+   "alive": 1750,
+   "id": "S466750",
+   "step": 466750
+  },
+  {
+   "alive": 1000,
+   "id": "S467000",
+   "step": 467000
+  },
+  {
+   "alive": 1250,
+   "id": "S467250",
+   "step": 467250
+  },
+  {
+   "alive": 1500,
+   "id": "S467500",
+   "step": 467500
+  },
+  {
+   "alive": 1750,
+   "id": "S467750",
+   "step": 467750
+  },
+  {
+   "alive": 1000,
+   "id": "S468000",
+   "step": 468000
+  }
+ ],
+ "start_step": 0,
+ "world_key": "df54434fe947dea8f36e5e23223f9676df1ee784959806c31eafb235012ee242"
+}
