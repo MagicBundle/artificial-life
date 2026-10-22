@@ -19,7 +19,7 @@ from alife.runio import PLAY_STATE_NAMES
 from play_helpers import FakeClock, ScriptControl, run_paced, snapshots, world
 from test_play_chronicle import ALD, BRE, SALT, record
 
-RUN = play.PlayOptions(rate=float("inf"), paused=False, fresh=True)
+RUN = play.PlayOptions(rate=float("inf"), paused=False, fresh=True, unattended=True)
 
 
 def bare_pacer(notes: list[str] | None = None) -> play.PlayPacer:

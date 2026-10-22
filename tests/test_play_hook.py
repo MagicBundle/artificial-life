@@ -40,7 +40,7 @@ from play_helpers import (
 )
 from test_play_storms import scene
 
-RUN = play.PlayOptions(rate=float("inf"), paused=False, fresh=True)
+RUN = play.PlayOptions(rate=float("inf"), paused=False, fresh=True, unattended=True)
 
 
 def test_a_quit_while_paused_runs_exactly_one_more_step(
@@ -239,7 +239,7 @@ def test_a_reader_closed_in_a_storm_world_resumes_the_same_play(
     rd.truncate_after(stop)
     notes: list[str] = []
     out = io.BytesIO()
-    options = play.PlayOptions(rate=float("inf"), paused=False, dc_ref=pw.layer.dc_ref)
+    options = play.PlayOptions(rate=float("inf"), paused=False, dc_ref=pw.layer.dc_ref, unattended=True)
     pacer2 = play.PlayPacer(out, ScriptControl([]), options, clock=FakeClock(), note=notes.append)
     runner.run(rd, cfg, load_checkpoint(rd.latest_checkpoint(), cfg), 200 - stop, quiet=True, pacer=pacer2)
     assert not any("restarts" in n for n in notes) and pacer2.failure is None
@@ -447,8 +447,9 @@ def test_a_pacer_run_has_the_files_of_a_plain_run(tmp_path: Path, monkeypatch: p
     played = sorted(p.name for p in paced.path.rglob("*") if p.is_file())
     # the one file a played world has besides: the kin thread table, with each checkpoint the loop saves (not
     # the initial one at step 0, whose table is the refold of an empty log)
-    extra = [n for n in played if n.startswith("kinthreads_")]
-    assert extra == [f"kinthreads_{st:010d}.json" for st, _ in paced.checkpoints() if st > 0]
+    kin = [n for n in played if n.startswith("kinthreads_")]
+    assert kin == [f"kinthreads_{st:010d}.json" for st, _ in paced.checkpoints() if st > 0]
+    extra = [*kin, "alerts.jsonl"]  # and the alerts the world raised (a world that raised none has no file)
     assert sorted(n for n in played if n not in extra) == names
 
 

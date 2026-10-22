@@ -227,6 +227,19 @@ def test_the_rate_flags(tmp_path: Path) -> None:
     assert code == 2
 
 
+def test_the_alerts_flag_takes_experimental_and_nothing_else(tmp_path: Path) -> None:
+    code, d, _ = play_tiny(tmp_path / "a", "quit\n", "--alerts", "experimental", until=None)
+    assert code == 0
+    registry = d.header["play"]["alerts"]["classes"]
+    assert registry["storm_over_lineage"]["calibrated"] is False and "pop_fall" in registry
+    code, _, err = finish(spawn("play", *TINY, "--out", str(tmp_path / "b"), "--alerts", "nope"), "")
+    assert code == 2 and "--alerts" in err
+    assert cli.build_parser().parse_args(["play", "--preset", "tiny", "--alerts", "experimental"]).alerts == (
+        "experimental"
+    )
+    assert cli.build_parser().parse_args(["play", "--preset", "tiny"]).alerts is None
+
+
 def test_until_stops_at_the_step(tmp_path: Path) -> None:
     out = tmp_path / "w"
     p = spawn("play", *TINY, "--out", str(out), "--rate", "max", "--until", "12")

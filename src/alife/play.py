@@ -43,6 +43,7 @@ from alife import weather as W
 from alife.config import Config, config_hash, dims, immigration_on
 from alife.director import log as director_log
 from alife.director import pacing, rules
+from alife.game import alerts as alerts_mod
 from alife.game import observer as observer_mod
 from alife.game.chronicle import Chronicler, rebuild_backlog
 from alife.game.colors import OBSERVER_MODES, play_colors
@@ -50,7 +51,7 @@ from alife.game.observe import EVAL_BIT
 from alife.game.observer import Observer, default_rules, house_bytes, slot_bytes
 from alife.game.report import label_gate, label_names
 from alife.game.rules import INTENT_VERSION
-from alife.runio import DIRECTOR_LOG_FILE, RunDir
+from alife.runio import ALERTS_FILE, ALERTS_REPLAY_FILE, DIRECTOR_LOG_FILE, RunDir
 from alife.state import ERROR_MASK, CounterIdx, DeathCause, State, default_env, to_numpy
 from alife.step import StepOut
 from alife.storms import StormLayer, dc_reference
@@ -75,8 +76,10 @@ __all__ = [
     "RealClock",
     "Scheduler",
     "check_tick",
+    "director_effects",
     "origin_row",
     "parse_play_command",
+    "replaying",
     "serve_play",
     "world_tick",
 ]
@@ -131,8 +134,8 @@ COMMANDS: Final = (
     "power",
     "intent",
 )  # the last six are G3b's (DESIGN §34.6.1): the grammar is whole, each handler comes with its stage
-# parsed, but the handler is not built yet (each comes with its stage)
-UNBUILT_LINES: Final = frozenset({"watch", "unwatch", "ack", "power", "intent"})
+# parsed, but the handler is not built yet (each comes with its stage): ``power`` and ``intent`` remain
+UNBUILT_LINES: Final = frozenset({"power", "intent"})
 POWER_NAMES: Final = ("food", "bloom", "blight", "strike")
 POWER_KEYS: Final = ("mult", "steps", "patch", "gain", "x", "y", "radius", "kill")
 POWER_INT_KEYS: Final = frozenset({"steps", "patch"})  # the others are decimals
@@ -541,8 +544,8 @@ class Autopause:
         if line.scope == "all":
             self.chapter = line.on
             self.alert = dict.fromkeys(self.alert, line.on)
-        elif line.scope == "chapter":
-            self.chapter = line.on
+        elif line.scope == "chapter" or (line.scope == "alert" and line.cls == "chapter"):
+            self.chapter = line.on  # the chapter end is an alert class with its own switch
         else:
             assert line.cls is not None
             if line.cls not in self.alert:
@@ -576,7 +579,10 @@ class PlayOptions:
     ``dc_ref`` is the cloud-depth scale of ``MAP1`` (None: computed from the state at start). ``on_ready``
     runs once the facts of the world are known and before the header is written (the caller writes
     ``play.json`` there); ``until`` is a step at which the stream says "end of steps". ``chapter`` is the
-    chapter length in steps (``CHAPTER``; a multiple of the checkpoint cadence, which the tests shorten)."""
+    chapter length in steps (``CHAPTER``; a multiple of the checkpoint cadence, which the tests shorten).
+    ``alerts_experimental`` switches on the alert classes marked experimental (``--alerts experimental``).
+    ``unattended`` is a world nobody reads (the benchmark's arms, a test's scripted run): no pause is armed at
+    the start, neither at a chapter end nor for an alert, since nobody would press ``run``."""
 
     base_rate: float = BASE_RATE
     rate: float = 1.0
@@ -591,6 +597,8 @@ class PlayOptions:
     until: int | None = None
     on_ready: Callable[[dict[str, Any]], None] | None = None
     chapter: int = CHAPTER
+    alerts_experimental: bool = False
+    unattended: bool = False
 
 
 class _NullSink:
@@ -687,7 +695,19 @@ class PlayPacer:
         self._lock = threading.RLock()
         # chapters and the pauses the world takes by itself (DESIGN §34.2)
         self.chapters = ChapterClock(self.opt.chapter)
-        self.autopause = Autopause()
+        self.autopause = Autopause(alert=alerts_mod.default_autopause())
+        if self.opt.unattended:
+            self.autopause.apply(AutopauseLine("all", None, False))
+        # the alerts the world raises (DESIGN §34.3): a pure engine over the host quantities of each hook
+        self.alerts = alerts_mod.AlertEngine(
+            armed=self._armed, chapter=self.opt.chapter, experimental=self.opt.alerts_experimental
+        )
+        self._alert_pause_pending = False  # an alert asked for a pause: it starts at the next ``before_step``
+        self._replaying = (
+            False  # a replay of the director's log: its engine-class alerts go to their own file
+        )
+        self._terr: np.ndarray | None = None  # the latest territory: the (ny, nx) grid of owning kin ids
+        self._storms_now: Sequence[Mapping[str, Any]] = ()  # the storms the latest tracker tick detected
         # the report job starts through this hook (set by its stage)
         self.on_chapter_end: Callable[[int], None] | None = None
         # a chapter ended: the pause (if armed) starts at the next ``before_step``
@@ -741,6 +761,12 @@ class PlayPacer:
             self._dead = True
             self.stop_requested = True
             self.out = _NullSink()
+            if not quiet:
+                try:  # the failure is an alert of the log (the stream is gone; the clock says "error")
+                    self.alerts.failure(self._t, f"{type(exc).__name__}: {exc}")
+                    self._emit_alerts()
+                except Exception:  # a failure of the failure path changes nothing
+                    pass
             if quiet:
                 if first:
                     self._note(
@@ -801,6 +827,7 @@ class PlayPacer:
         stop_check: Callable[[], bool],
     ) -> None:
         self.rd, self.cfg, self.obs, self.director = rd, cfg, obs, director
+        self._replaying = replaying(director)
         self._stop_check = stop_check
         self._t = int(to_numpy(state.step))
         salt = obs.social.name_salt if obs is not None else 0
@@ -829,7 +856,7 @@ class PlayPacer:
         records = [
             t
             for t in streamrec.TAGS
-            if t in ("FRMA", "EVNT", "ENVS", "CLCK", "FOCS")
+            if t in ("FRMA", "EVNT", "ENVS", "CLCK", "FOCS", "ALRT")
             or (t in ("IDNT", "INTN", "TERR") and obs is not None)
             or (t in ("MAP1", "STRM") and self.layer is not None)
         ]
@@ -862,6 +889,7 @@ class PlayPacer:
             frame_hz=self.opt.frame_hz,
             chapter=self.opt.chapter,
             autopause=self.autopause.block(),
+            alerts=streamrec.alerts_block(alerts_mod.registry()),
         )
         self._write("HEAD", streamrec.play_header_bytes(legacy, play))
         self._backlog(rd, state)
@@ -870,6 +898,7 @@ class PlayPacer:
         self._send_environment(state)
         self._send_weather(state)
         self._flush_events(backlog=True)
+        self._send_alert_backlog()
         self._send_clock()
         self.sched.restart()
         self._t_step = self.clock.monotonic()
@@ -890,8 +919,9 @@ class PlayPacer:
         entries = (
             director_log.entries_of(rd.read_jsonl(DIRECTOR_LOG_FILE)) if self.director is not None else []
         )
+        records = rd.social_records()
         log = rebuild_backlog(
-            rd.social_records(),
+            records,
             rd.storms_lines(),
             entries,
             house_salt=self.chron.house_salt,
@@ -899,6 +929,23 @@ class PlayPacer:
         )
         self._events = [*log, *self._events]
         self._restore_threads(rd)
+        self._open_alerts(rd, records)
+
+    def _open_alerts(self, rd: RunDir, records: Sequence[Mapping[str, Any]]) -> None:
+        """Open the alert engine on the files of this world: the histories of the population from the rows up
+        to the start step (the last 25 and the last chapter ends, the origin row among them), the houses of
+        the social log and the storms the tracker holds as named. All silent: a resume re-arms everything and
+        the first evaluation only arms the level classes."""
+        rows = rd.metrics_rows()
+        ends = [r for r in rows if r["step"] % self.opt.chapter == 0 and r["step"] > 0]
+        origin = rd.meta().get("origin_row")
+        if isinstance(origin, dict) and origin.get("step", 1) % self.opt.chapter == 0:
+            ends = [origin, *ends]
+        have = {r["step"]: r for r in [*ends[-alerts_mod.SLIDE_REFS :], *rows[-(alerts_mod.LOW_ROWS + 1) :]]}
+        self.alerts.prime_rows([have[k] for k in sorted(have)])
+        self.alerts.prime_records(records)
+        if self.layer is not None:
+            self.alerts.prime_storms(i for i, n in self.layer.notes.items() if n.name)
 
     def _restore_threads(self, rd: RunDir) -> None:
         """The kin thread table the checkpoint of this step was saved with, if it is usable: the refold of the
@@ -918,6 +965,8 @@ class PlayPacer:
         self._t = t
         if self._chapter_pending:
             self._begin_chapter_pause(state)
+        if self._alert_pause_pending:
+            self._begin_alert_pause(state)
         pending = self.control.poll(0)
         while True:
             if pending and self._apply(pending, state):
@@ -947,10 +996,12 @@ class PlayPacer:
             self.sched.restart()  # the compile of the first step is not lateness
         for rec in social:
             self._events += self.chron.from_record(rec)
+            self.alerts.on_record(rec, self.chron.told_threads, self.chron.threads, pause_ok=self._pause_ok())
         if social and self.obs is not None:
             self._send_tables(
                 state, labels=False
             )  # a snapshot: identities and territory (INTN follows with the tick)
+            self._territory_alerts(t)
         if t % self._tick == 0:
             if self.layer is not None:
                 self._tick_storms(state, t)
@@ -965,6 +1016,7 @@ class PlayPacer:
             self._ended = True
         if self._extinct(state, out):
             self._events += self.chron.extinct(t)
+        self._emit_alerts()
         self._flush_events()
         self._service()
 
@@ -981,6 +1033,9 @@ class PlayPacer:
         if ended:
             # a chapter ended: the pause (if armed) starts at the next ``before_step``, so no step is owed
             self._chapter_pending = True
+        if ended:
+            self.alerts.on_chapter(t, pause_ok=self._chapter_pause_follows())
+            self._emit_alerts()
         self._send_clock()  # reason 3, saving: the chapter card slides in
         if ended and self.on_chapter_end is not None:
             # the report job starts here, off the loop thread and overlapped with the save; the announcement
@@ -1000,8 +1055,18 @@ class PlayPacer:
     @_guard
     def after_boundary(self, state: State, row: dict[str, Any], t: int) -> None:
         self._t = t
-        if self.director is not None and self.director.applied:
-            self._events += self.chron.from_director(self.director.applied)
+        applied = self.director.applied if self.director is not None else ()
+        if applied:
+            self._events += self.chron.from_director(applied)
+        self.alerts.on_row(
+            row,
+            t,
+            entries=self.director.entries if self.director is not None else (),
+            applied=applied,
+            effects=director_effects(self.director, t),
+            pause_ok=self._pause_ok(),
+        )
+        self._emit_alerts()
         self._send_environment(state)
         self._flush_events()
 
@@ -1042,18 +1107,18 @@ class PlayPacer:
             self._send_clock()
         elif name == "run":
             sched.run()
-            self._pause_reason = 0
+            self._resumed(acknowledge=True)
             self._send_clock()
         elif name == "step":
             assert isinstance(arg, int)
             sched.step(arg)
-            self._pause_reason = 0
+            self._resumed(acknowledge=True)
             self._send_clock()
         elif name == "rate":
             was_running = not sched.paused
             sched.set_rate(MAX_RATE if arg == "max" else float(arg))  # type: ignore[arg-type]
             if not sched.paused or was_running:
-                self._pause_reason = 0
+                self._resumed(acknowledge=self._pause_reason == 3)
             if sched.paused and was_running:
                 self._enter_pause(state)
             self._send_clock()
@@ -1079,10 +1144,115 @@ class PlayPacer:
             if (note := self.autopause.apply(arg)) is not None:
                 self._note(note)
             self._send_clock()
+        elif name == "watch":
+            self._watch(arg)
+        elif name == "unwatch":
+            assert isinstance(arg, int)
+            if (note := self.alerts.unwatch(arg, self.chron.threads)) is not None:
+                self._note(note)
+        elif name == "ack":
+            assert isinstance(arg, int)
+            if (note := self.alerts.ack(arg, self._t)) is not None:
+                self._note(note)
+            self._emit_alerts()
         elif name in UNBUILT_LINES:  # G3b's other lines: each handler comes with its stage
             self._note(f"{name}: not available in this build yet")
         else:  # focus, follow
             self._command_focus(cmd, state)
+
+    def _watch(self, arg: Any) -> None:
+        """``watch KIN_ID`` / ``watch off`` (DESIGN §34.3): the lineage alerts read the watched threads."""
+        if arg == "off":
+            self.alerts.watch_off()
+        else:
+            assert isinstance(arg, int)
+            if (note := self.alerts.watch(arg, self.chron.threads)) is not None:
+                self._note(note)
+
+    def _resumed(self, *, acknowledge: bool) -> None:
+        """The world runs (or steps): the pause by a chapter or an alert is over. A ``run``, a ``step`` or a
+        rate change out of the chapter pause is the player's acknowledgement of the chapter alert."""
+        self._pause_reason = 0
+        if acknowledge:
+            self.alerts.clear_chapter(self._t)
+            self._emit_alerts()
+
+    # --- alerts -----------------------------------------------------------------------------------------
+
+    def _armed(self, cls: str) -> bool:
+        """Whether a raised alert of ``cls`` pauses the world (``autopause``)."""
+        return self.autopause.chapter if cls == "chapter" else self.autopause.alert.get(cls, False)
+
+    def _pause_ok(self) -> bool:
+        """Whether an alert raised now can pause the world: not inside a ``step N`` batch, and not when the
+        pause at a chapter end is certain to follow (the chapter pause wins and carries the other alerts)."""
+        return not self.sched.busy and not (self.chapters.is_end(self._t) and self.autopause.chapter)
+
+    def _emit_alerts(self) -> None:
+        """Write what the engine produced: the lines to ``alerts.jsonl`` first (durable before the client
+        sees them), then ``ALRT`` records of at most 16 alerts, and note a requested pause."""
+        taken = self.alerts.take()
+        if taken.log:
+            self._log_alerts(taken.log)
+        for i in range(0, len(taken.alerts), streamrec.MAX_ALERTS):
+            batch = taken.alerts[i : i + streamrec.MAX_ALERTS]
+            self._send(
+                "ALRT",
+                lambda step, seq, batch=batch: streamrec.encode_alrt(
+                    step=step, seq=seq, alerts=batch, registry=alerts_mod.CLASSES
+                ),
+            )
+        if taken.pause:
+            self._alert_pause_pending = True
+
+    def _log_alerts(self, lines: Sequence[Mapping[str, Any]]) -> None:
+        """Append to ``alerts.jsonl``; in a replay of the director's log the lines of the wall-clock class go
+        to ``alerts.replay.jsonl`` (they differ from the original play's), the rest are the same lines the
+        play wrote."""
+        mine = [m for m in lines if not (self._replaying and m.get("class") == "engine")]
+        other = [m for m in lines if self._replaying and m.get("class") == "engine"]
+        if mine:
+            self.rd.append_jsonl(ALERTS_FILE, mine)
+        if other:
+            self.rd.append_jsonl(ALERTS_REPLAY_FILE, other)
+
+    def _send_alert_backlog(self) -> None:
+        """The alerts still on the stack of a world being opened (flagged as the backlog: no toast, no
+        pause)."""
+        backlog = alerts_mod.backlog(self.rd.read_jsonl(ALERTS_FILE), self._t)
+        if backlog:
+            self.alerts.know(backlog)  # the player can acknowledge what this session did not raise
+            self._send(
+                "ALRT",
+                lambda step, seq: streamrec.encode_alrt(
+                    step=step, seq=seq, alerts=backlog, backlog=True, registry=alerts_mod.CLASSES
+                ),
+            )
+
+    def _begin_alert_pause(self, state: State) -> None:
+        """The first ``before_step`` after an alert asked for a pause (DESIGN §34.3): pause with reason 4,
+        unless the world is already paused (the chapter pause wins), runs a ``step N`` batch or stops."""
+        self._alert_pause_pending = False
+        if self.sched.busy or self.sched.paused or self.stop_requested or self._stop_check():
+            return
+        self.sched.pause()
+        self._enter_pause(state)
+        self._pause_reason = 4
+        self._send_clock()
+
+    def _territory_alerts(self, t: int) -> None:
+        """``storm_over_lineage`` (experimental): the territory of the snapshot just sent against the named
+        storms. Only evaluated with ``--alerts experimental``."""
+        if not self.opt.alerts_experimental or self._terr is None or self.layer is None:
+            return
+        self.alerts.on_territory(
+            t,
+            self._terr,
+            self._storms_now,
+            self.chron.threads,
+            self.cfg.world.size,
+            pause_ok=self._pause_ok(),
+        )
 
     def _enter_pause(self, state: State) -> None:
         if self._last_frame_step != self._t:
@@ -1138,6 +1308,15 @@ class PlayPacer:
             requested = self.sched.steps_per_s
             r_eff = achieved if math.isinf(self.sched.rate) else min(requested, achieved)
             self._fe = max(1, math.ceil(r_eff / self.opt.frame_hz - EPS))
+            self.alerts.engine_check(
+                now,
+                self._t,
+                late_steps=self.sched.late_steps,
+                achieved=achieved,
+                requested=requested,
+                running=self.sched._timed(),
+            )
+            self._emit_alerts()
             self._send_clock()
 
     # --- records ----------------------------------------------------------------------------------------
@@ -1276,6 +1455,7 @@ class PlayPacer:
         nx = ny = self.obs.social.terr_cells  # type: ignore[union-attr]
         listed = [int(i) for i in ids]
         slot_of = {k: s for s, k in enumerate(listed) if k >= 0}
+        self._terr = np.asarray(dom.owner, np.int64).reshape(ny, nx)
         owner = np.array([slot_of.get(int(o), streamrec.SLOT_NONE) for o in dom.owner], np.uint8)
         purity = np.rint(np.asarray(dom.purity_q16, np.float64) / 257.0).astype(np.uint8)
         self._send(
@@ -1334,6 +1514,14 @@ class PlayPacer:
         layer.log(self.rd, tick)
         detected = [d["id"] for d in tick.line["storms"]] if tick.line is not None else []
         self._events += self.chron.from_storms(t, tick.events, detected)
+        self._storms_now = tick.line["storms"] if tick.line is not None else ()
+        self.alerts.on_tick(
+            t,
+            self._storms_now,
+            tick.events,
+            self.chron.told_storm,
+            pause_ok=self._pause_ok(),
+        )
         self._write_weather(tick)
 
     def _write_weather(self, tick: Any) -> None:
@@ -1650,18 +1838,7 @@ def environment_object(
         # the rule tier's cooldowns (a player's use of an action cools only the player's); the effects held
         # are every scope's
         folded = pacing.fold(entries, t, "rule")
-        by_origin = {(e["action"], e["step_applied"]): e for e in entries if e.get("source") != "revert"}
-        effects = [
-            {
-                "action": eff.action,
-                "params": by_origin[(eff.action, eff.origin)]["params"],
-                "start": eff.origin,
-                "end": eff.end,
-                "source": _source(by_origin[(eff.action, eff.origin)]["source"]),
-            }
-            for eff in sorted(folded.active.values(), key=lambda e: (e.origin, e.key))
-            if (eff.action, eff.origin) in by_origin
-        ]
+        effects = _effects(entries, folded)
         cooldowns = [
             {"action": a, "ready": end + rules.cooldown_steps(a, director.params, director.persona)}
             for a, end in sorted(folded.ends.items())
@@ -1675,6 +1852,36 @@ def environment_object(
         "cooldowns": cooldowns,
         "influence": None,
     }
+
+
+def replaying(director: Any) -> bool:
+    """Whether the world plays the director's log back (``play --replay``, ``Director.mode`` ``replay``)."""
+    return getattr(director, "mode", None) == "replay"
+
+
+def _effects(entries: Sequence[Mapping[str, Any]], folded: pacing.Pacing) -> list[dict[str, Any]]:
+    """The timed effects a fold holds, as ``ENVS.effects`` objects (every scope's)."""
+    by_origin = {(e["action"], e["step_applied"]): e for e in entries if e.get("source") != "revert"}
+    return [
+        {
+            "action": eff.action,
+            "params": by_origin[(eff.action, eff.origin)]["params"],
+            "start": eff.origin,
+            "end": eff.end,
+            "source": _source(by_origin[(eff.action, eff.origin)]["source"]),
+        }
+        for eff in sorted(folded.active.values(), key=lambda e: (e.origin, e.key))
+        if (eff.action, eff.origin) in by_origin
+    ]
+
+
+def director_effects(director: Any, t: int) -> list[dict[str, Any]]:
+    """The timed effects the director's log holds at ``t`` (the alert engine's ``effect_ending`` reads
+    them); none without a director."""
+    if director is None:
+        return []
+    entries = list(director.entries)
+    return _effects(entries, pacing.fold(entries, t, "rule"))
 
 
 def _source(source: str) -> str:

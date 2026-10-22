@@ -1272,6 +1272,7 @@ def _play_serve(
         fresh=fresh,
         until=a.until,
         on_ready=ready,
+        alerts_experimental=getattr(a, "alerts", None) == "experimental",
     )
     rd.update_meta(knn_impl=spatial.knn_impl(cfg))
     if cfg.run.director == "off" and cfg.director.enabled:
@@ -1738,6 +1739,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="houses of a planet (--init-from): exact rebuilds them from the source's event chunks (exit 4 "
         "if they are missing), clade takes the clades, auto (default) tries exact and falls back with a note",
+    )
+    p.add_argument(
+        "--alerts",
+        choices=("experimental",),
+        default=None,
+        help="also evaluate the alert classes whose threshold no measurement backs (storm over a lineage; "
+        "they are logged to alerts.jsonl as the log surface, DESIGN 34.3)",
     )
     p.add_argument("--no-control", action="store_true", help="do not read stdin")
     p.set_defaults(func=_cmd_play)

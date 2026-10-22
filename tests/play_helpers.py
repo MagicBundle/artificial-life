@@ -163,7 +163,7 @@ def run_paced(
     pacer = pacer_class(
         out,
         script if hasattr(script, "poll") else ScriptControl(script),
-        options or play.PlayOptions(rate=float("inf"), paused=False, fresh=True),
+        options or play.PlayOptions(rate=float("inf"), paused=False, fresh=True, unattended=True),
         clock=clock or FakeClock(),
         note=lambda m: None,
     )
@@ -174,7 +174,8 @@ def run_paced(
 
 def random_script(seed: int, n_polls: int, uid_pool: Sequence[int]) -> list[list[str]]:
     """A seeded control script: pauses, rates, ``step`` batches, colours, ``every``, ``focus`` and ``follow``,
-    ``idnt`` and ``labels``, ending in ``rate max`` and ``run`` so that the run finishes."""
+    ``idnt`` and ``labels``, ending in ``autopause off``, ``rate max`` and ``run`` so that the run finishes
+    (an alert or a chapter end can pause the world on the way, and nobody else presses ``run``)."""
     rng = random.Random(seed)
     uid_choice = list(uid_pool)
     modes = ["tag", "energy", "clade", "house", "kin", "archetype", "intent"]
@@ -205,7 +206,7 @@ def random_script(seed: int, n_polls: int, uid_pool: Sequence[int]) -> list[list
     script: list[list[str]] = []
     for _ in range(n_polls):
         script.append([rng.choice(makers)() for _ in range(rng.choice([0, 0, 1, 1, 2, 3]))])
-    return [*script, ["rate max", "run"]]
+    return [*script, ["autopause off", "rate max", "run"]]
 
 
 # --- comparing run directories -------------------------------------------------------------------------

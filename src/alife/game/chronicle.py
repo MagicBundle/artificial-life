@@ -155,6 +155,10 @@ class Chronicler:
         self._sdets: dict[int, int] = {}
         self._sheld: dict[int, dict[str, Any]] = {}
         self._sknown: set[int] = set()
+        # what the latest ``from_record`` / ``from_storms`` told, for the alert engine (alerts): the thread
+        # events with their sentences, and the tracker events (raw dicts) that became chronicle events
+        self.told_threads: list[tuple[dict[str, Any], str]] = []
+        self.told_storm: list[dict[str, Any]] = []
 
     # --- ids --------------------------------------------------------------------------------------------
 
@@ -179,7 +183,9 @@ class Chronicler:
         """The kin-thread and house events of one social record, kin first (formed, then ended, by thread),
         then houses."""
         step = int(rec["step"])
-        events = [self._thread_event(t) for t in self.threads.fold(rec)]
+        told = self.threads.fold(rec)
+        events = [self._thread_event(t) for t in told]
+        self.told_threads = [(t, e["text"]) for t, e in zip(told, events, strict=True)]
         houses = rec["houses"]
         listed = dict(zip(houses["id"], houses["name"], strict=True))
         events += self._house_events(step, rec.get("house_events"), listed)
@@ -259,6 +265,7 @@ class Chronicler:
         ``dissolved`` are told only for a track that was told as born or named (or was named at the first
         tick); the events of a first tick are not told."""
         events = list(events)
+        self.told_storm = []
         for e in events:
             if e["kind"] in ("born", "split"):  # an id is born once; a restarted tracker reuses them
                 ident = int(e["id"])
@@ -281,6 +288,7 @@ class Chronicler:
                 self._sknown.add(ident)
                 if not e.get("initial"):
                     out.append(self._storm_event(step, e))
+                    self.told_storm.append(dict(e))
                 continue
             self._sheld.pop(ident, None)
             told = ident in self._sknown
@@ -288,11 +296,13 @@ class Chronicler:
             self._sknown.discard(ident)
             if told:
                 out.append(self._storm_event(step, e))
+                self.told_storm.append(dict(e))
         for ident, e in list(self._sheld.items()):
             if self._sdets.get(ident, 0) >= STORM_MIN_DETECTIONS:
                 self._sheld.pop(ident)
                 self._sknown.add(ident)
                 out.append(self._storm_event(step, e))
+                self.told_storm.append(dict(e))
         for memory in (self._sdets, self._sheld):  # ids of tracks that vanished without an end (a restart)
             for old in list(memory)[: max(0, len(memory) - NAME_MEMORY)]:
                 memory.pop(old)

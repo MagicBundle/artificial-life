@@ -322,7 +322,7 @@ def test_an_observer_colour_without_observers_is_refused(tmp_path: Path) -> None
     recs = decoded(out).records
     assert not [r for r in recs if r.tag in ("IDNT", "INTN", "TERR")]
     assert [r.f["color_index"] for r in recs if r.tag == "FRMA"][1] == 1  # energy took effect
-    assert decoded(out).header["play"]["records"] == ["FRMA", "EVNT", "ENVS", "CLCK", "FOCS"]
+    assert decoded(out).header["play"]["records"] == ["FRMA", "EVNT", "ENVS", "CLCK", "FOCS", "ALRT"]
 
 
 def test_invalid_lines_are_noted_and_ignored(tmp_path: Path) -> None:
@@ -340,9 +340,10 @@ def test_invalid_lines_are_noted_and_ignored(tmp_path: Path) -> None:
 
 
 def test_the_decide_half_lines_are_noted_until_their_stage_and_change_nothing(tmp_path: Path) -> None:
-    """``watch``, ``unwatch``, ``ack``, ``power`` and ``intent`` parse (the window sends them) and are
-    answered with a note until the stage that builds their handler; they must not reach the focus branch or
-    change the stream."""
+    """``power`` and ``intent`` parse (the window sends them) and are answered with a note until the stage
+    that builds their handler; ``watch``, ``unwatch`` and ``ack`` have theirs (alerts, DESIGN §34.3) and
+    answer a group or an alert the world does not have with a note of their own. None of them reaches the
+    focus branch or changes the stream."""
     notes: list[str] = []
     lines = [
         "watch 3",
@@ -362,7 +363,8 @@ def test_the_decide_half_lines_are_noted_until_their_stage_and_change_nothing(tm
     )
     runner.run(rd, cfg, init_state(cfg), 4, quiet=True, pacer=pacer)
     assert [n.split(":")[0] for n in notes] == [ln.split()[0] for ln in lines]
-    assert all("not available in this build yet" in n for n in notes)
+    assert [("not available in this build yet" in n) for n in notes] == [False] * 3 + [True] * 3
+    assert "no kin group 3" in notes[0] and "not watched" in notes[1] and "no alert 466250600" in notes[2]
     _, _, _, plain = run(tmp_path / "plain", [[], [], ["rate max"]], steps=4)
     key = lambda o: [(r.tag, r.step) for r in decoded(o).records if r.tag not in ("CLCK",)]  # noqa: E731
     assert key(out) == key(plain)

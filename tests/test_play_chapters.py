@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from alife import play, runio, runner, streamrec
+from alife.game import alerts
 from alife.play import Autopause, AutopauseLine, ChapterClock
 from alife.runio import RunDir, load_checkpoint
 from alife.state import init_state, state_digest
@@ -92,7 +93,7 @@ def test_the_header_carries_the_chapter_length_and_the_autopause_defaults(tmp_pa
     _, _, _, out = run_paced(world("2d"), tmp_path / "w", 3, [[]], options=options())
     play_block = decoded(out).header["play"]
     assert play_block["chapter"] == L
-    assert play_block["autopause"] == {"chapter": True, "alert": {}}
+    assert play_block["autopause"] == {"chapter": True, "alert": alerts.default_autopause()}
     _, _, _, out6k = run_paced(world("2d"), tmp_path / "w6", 3, [[]], options=options(chapter=play.CHAPTER))
     assert decoded(out6k).header["play"]["chapter"] == 6000
 

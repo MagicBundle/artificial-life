@@ -22,7 +22,7 @@ from alife.state import DeathCause, State, init_state, to_numpy
 from play_decode import Rec, _focs
 from play_helpers import FakeClock, ScriptControl, decoded, run_paced, snapshots, uids, world
 
-RUN = play.PlayOptions(rate=float("inf"), paused=False, fresh=True)
+RUN = play.PlayOptions(rate=float("inf"), paused=False, fresh=True, unattended=True)
 
 
 # --- a built scene ------------------------------------------------------------------------------------------

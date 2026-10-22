@@ -57,6 +57,8 @@ DIRECTOR_LOG_FILE: Final = "director.jsonl"
 JOURNAL_FILE: Final = "journal.jsonl"
 DIRECTOR_ARCHIVE_FILE: Final = "director_archive.json"
 COMMANDS_FILE: Final = "commands.jsonl"  # alife play: one line per power request (G3b spec §6.6)
+ALERTS_FILE: Final = "alerts.jsonl"  # alife play: every alert raised, updated, cleared or held back (§34.3)
+ALERTS_REPLAY_FILE: Final = "alerts.replay.jsonl"  # the wall-clock class's alerts of a replay of the log
 OBSERVERS_DIR: Final = "observers"  # the observer sidecars of an observing run (DESIGN §28.6)
 SOCIAL_FILE: Final = "social.jsonl"  # observers/social.jsonl: one record per social snapshot (DESIGN §29.10)
 STORMS_FILE: Final = "storms.jsonl"  # observers/storms.jsonl: one line per tracker tick with storms (§33.3)
@@ -756,6 +758,20 @@ class RunDir:
         """All lines of the storm log, in step order; ``[]`` if there is none. A torn last line is ignored."""
         return read_jsonl(self.storms_path)
 
+    def _parse_alerts(self, name: str) -> list[dict[str, Any]] | None:
+        """An alert log (``alerts.jsonl``, ``alerts.replay.jsonl``) parsed whole, with the rule of
+        ``_parse_storms`` (None if absent, a torn last line dropped, a line without an int ``step`` raises
+        ``ValueError``)."""
+        path = self.path / name
+        if not path.is_file():
+            return None
+        lines = read_jsonl(path)
+        for i, rec in enumerate(lines, start=1):
+            step = rec.get("step") if isinstance(rec, dict) else None
+            if not isinstance(step, int) or isinstance(step, bool):
+                raise ValueError(f"{path}: line {i} is not an object with an int 'step'")
+        return lines
+
     def _parse_storms(self) -> list[dict[str, Any]] | None:
         """The storm log parsed whole, with the rule of ``_parse_social`` (None if absent; a torn last line is
         dropped; a corrupt line elsewhere raises ``json.JSONDecodeError``, a line without an int ``step``
@@ -978,6 +994,9 @@ class RunDir:
         played weather world (§33.3) are cut the same way: the log to its lines with step ≤ ``step`` (parsed
         whole first, rewritten atomically, absent stays absent), the states after ``step`` deleted with the
         sidecars; the kin thread states ``observers/kinthreads_<t>.json`` (G3b) go with them.
+        The alert logs ``alerts.jsonl`` and ``alerts.replay.jsonl`` (G3b, DESIGN §34.3) are cut to their lines
+        with step ≤ ``step``, always, whatever ``keep_director`` is: they belong to the trajectory, and a
+        replay regenerates the lines after the checkpoint.
 
         **Order, and a stop in the middle.** The later checkpoints and sidecars go first (the newest
         checkpoint, which ``LATEST`` may name, last) and ``LATEST`` is rewritten; only then are the logs and
@@ -989,6 +1008,7 @@ class RunDir:
         """
         social = self._parse_social()  # first: a log that cannot be parsed fails before any change
         storms = self._parse_storms()
+        alerts = {name: self._parse_alerts(name) for name in (ALERTS_FILE, ALERTS_REPLAY_FILE)}
         metrics = None
         if (self.path / METRICS_FILE).exists():
             metrics = "".join(_dumps(r) + "\n" for r in self.metrics_rows() if r["step"] <= step)
@@ -1027,6 +1047,10 @@ class RunDir:
         if storms is not None:
             kept_storms = [r for r in storms if r["step"] <= step]
             _atomic_write_text(self.storms_path, "".join(_dumps(r) + "\n" for r in kept_storms))
+        for name, lines in alerts.items():  # the alert logs: trajectory-bound, cut whatever keep_director is
+            if lines is not None:
+                kept = [r for r in lines if r["step"] <= step]
+                _atomic_write_text(self.path / name, "".join(_dumps(r) + "\n" for r in kept))
         for kind in ("births", "deaths"):
             for s0, s1, path in self.event_files(kind):
                 if s1 <= step:
