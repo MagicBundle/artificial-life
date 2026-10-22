@@ -21,7 +21,17 @@ from alife.analysis.resim import ResimMismatch
 from alife.config import Config, apply_overrides
 from alife.game.observe import EVAL_BIT
 from alife.game.observer import Observer
-from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, RULES_V1, RULES_V2, Archetype, Intent
+from alife.game.rules import (
+    ARCHETYPE_NAMES,
+    INTENT_NAMES,
+    RULES_V1,
+    RULES_V2,
+    RULES_V3,
+    Archetype,
+    Intent,
+    RuleSet,
+    for_2d,
+)
 from alife.runio import RunDir, load_checkpoint
 from alife.state import init_state, to_numpy
 from alife.step import ActFlag, make_step
@@ -734,11 +744,13 @@ def test_step_outcomes() -> None:
 # --- the study ---------------------------------------------------------------------------------------------
 
 
-def _documented(rep: Mapping[str, Any]) -> None:
+def _documented(rep: Mapping[str, Any], rs: RuleSet) -> None:
     assert set(rep) == TOP_KEYS
     assert list(rep["archetypes"]) == list(ARCHETYPE_NAMES) and list(rep["intents"]) == list(INTENT_NAMES)
     for name, a in rep["archetypes"].items():
-        if name == "generalist":
+        # Generalist has no outcome; the storm world's labels have one only where it is defined (Floater and
+        # Sinker in 3D, Drifter with weather): prevalence only elsewhere
+        if name == "generalist" or (name in ("drifter", "floater", "sinker") and set(a) != ARCH_KEYS):
             assert set(a) == {"pool", "prevalence_match", "prevalence_primary"}
             continue
         assert set(a) == ARCH_KEYS and a["verdict"] in VERDICTS, name
@@ -750,7 +762,7 @@ def _documented(rep: Mapping[str, Any]) -> None:
             *SCORE_KEYS,
             "per_cohort",
         }
-    assert rep["intent_version"] == 2 and rep["rules_digest"] == RULES_V2.digest()
+    assert rep["intent_version"] == 3 and rep["rules_digest"] == rs.digest()
     assert set(rep["flips_per_1000"]) == {"intent", "archetype"}
     cov = rep["coverage"]
     assert set(cov) == {"evaluations", "intent_match", "intent", "archetype", "archetype_match"}
@@ -764,7 +776,7 @@ def test_study_on_tiny(run_dir: Path) -> None:
     before = _files(run_dir)
     logs: list[str] = []
     rep = labels.study(run_dir, **STUDY, log=logs.append)
-    _documented(rep)
+    _documented(rep, for_2d(RULES_V3))
     assert _files(run_dir) == before  # read only: names, sizes and mtimes
     assert rep["rows_verified"] > 0 and rep["start"] == 50 and rep["steps"] == 300
     assert rep["observer_start"]["step"] == 50 and rep["observer_start"]["source"] == "fresh"
@@ -785,7 +797,7 @@ def test_study_on_tiny(run_dir: Path) -> None:
 
 def test_study_on_tiny3d(run_dir_3d: Path) -> None:
     rep = labels.study(run_dir_3d, **{**STUDY, "n_perm": 5}, log=lambda _: None)
-    _documented(rep)
+    _documented(rep, RULES_V3)
     assert rep["rows_verified"] > 0 and rep["cohorts"][0]["n_archetype_pool"] > 0
     assert rep["archetypes"]["nomad"]["pool"] == rep["archetypes"]["gatherer"]["pool"]
 
@@ -845,8 +857,13 @@ def test_study_with_the_version_1_rules_carries_the_g1_pin(run_dir: Path) -> Non
     )
     assert list(rep["archetypes"]) == list(ARCHETYPE_NAMES) and list(rep["intents"]) == list(INTENT_NAMES)
     json.dumps(rep, allow_nan=False)
-    default = labels.study(run_dir, **STUDY, log=lambda _: None)  # the default rules are version 2's
-    assert default["rules_digest"] == RULES_V2.digest() and default["params"]["rules"]["bud_horizon"] == 10
+    default = labels.study(
+        run_dir, **STUDY, log=lambda _: None
+    )  # the default rules are version 3's (2D here)
+    assert default["rules_digest"] == for_2d(RULES_V3).digest() != RULES_V2.digest()
+    assert default["params"]["rules"]["bud_horizon"] == 10 and default["params"]["rules"]["wind_rel"] is True
+    v2 = labels.study(run_dir, **STUDY, rules=RULES_V2, log=lambda _: None)
+    assert v2["rules_digest"] == RULES_V2.digest()
 
 
 def test_study_from_a_cached_state(run_dir: Path, tmp_path: Path) -> None:

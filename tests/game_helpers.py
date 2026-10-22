@@ -51,7 +51,8 @@ def blank_oi(cfg: Config) -> dict[str, np.ndarray]:
 
 
 def make_oi(arrays: Mapping[str, Any]) -> ObsIn:
-    return ObsIn(**{f: mx.array(np.asarray(arrays[f])) for f in ObsIn._fields})
+    """An ``ObsIn`` from numpy arrays; the version-3 fields (pos, buoy_cap, wx) are None unless set."""
+    return ObsIn(**{f: mx.array(np.asarray(arrays[f])) if f in arrays else None for f in ObsIn._fields})
 
 
 def blank_social_acts(n: int, k: int, m: int) -> dict[str, np.ndarray]:
@@ -84,7 +85,8 @@ def blank_acts(cfg: Config) -> dict[str, np.ndarray]:
 
 
 def make_acts(arrays: Mapping[str, Any]) -> Acts:
-    return Acts(**{f: mx.array(np.asarray(arrays[f])) for f in Acts._fields})
+    """An ``Acts`` from numpy arrays; ``buoy`` (3D, version 3) is None unless given."""
+    return Acts(**{f: mx.array(np.asarray(arrays[f])) if f in arrays else None for f in Acts._fields})
 
 
 def living(cfg: Config, rows: int, **fields: Any) -> dict[str, np.ndarray]:
@@ -110,7 +112,7 @@ class Driver:
 
     def __init__(self, cfg: Config, oi: ObsIn, *, start: int = 0, rs: RuleSet = RULES_V2) -> None:
         self.cfg, self.rs, self.t = cfg, rs, start
-        self.o = init_obs(oi, cfg)
+        self.o = init_obs(oi, cfg, rs)
         mx.eval(*self.o)
 
     def step(self, oi: ObsIn, acts: Acts, body: mx.array | None = None) -> ObsState:

@@ -24,15 +24,24 @@ from alife.config import Config, apply_overrides, dims
 from alife.game import observer
 from alife.game import social as soc
 from alife.game.observe import EVAL_BIT, OBS_CAP, ObsState, evaluate, init_obs, obs_in, update
-from alife.game.observer import DEFAULT_RULES, OBSERVER_FORMAT, SIDECAR_FORMAT, Labels, Observer
+from alife.game.observer import (
+    DEFAULT_RULES,
+    OBSERVER_FORMAT,
+    SIDECAR_FORMAT,
+    Labels,
+    Observer,
+    default_rules,
+)
 from alife.game.rules import (
     ARCHETYPE_NAMES,
     INTENT_NAMES,
     INTENT_VERSION,
     RULES_V1,
     RULES_V2,
+    RULES_V3,
     Archetype,
     RuleSet,
+    for_2d,
 )
 from alife.game.social import SOCIAL_V1, SOCIAL_VERSION, SocState
 from alife.game.society import HOST_KEYS, Society, host_snap
@@ -143,8 +152,20 @@ def observed(tiny_cfg: Config) -> tuple[Config, State, Observer]:
         dataclasses.replace(RULES_V2, every=4, hold=2),
         V2_WARM16,
         V2_FORCED_BUD,
+        for_2d(RULES_V3),
     ],
-    ids=["v1", "every4-hold2", "settler4-warm16", "v2", "v2-every4-hold2", "v2-warm16", "v2-forced-forecast"],
+    ids=[
+        *(
+            "v1",
+            "every4-hold2",
+            "settler4-warm16",
+            "v2",
+            "v2-every4-hold2",
+            "v2-warm16",
+            "v2-forced-forecast",
+        ),
+        "v3-2d",
+    ],
 )
 def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules: RuleSet) -> None:
     """On real steps the Observer (compiled, as the run is, or eager) equals the reference fold, field by
@@ -161,7 +182,7 @@ def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules:
     s = init_state(cfg)
     fn = make_step(cfg, observe=True)
     obs = Observer.fresh(s, cfg, rules=rules, social=SOC15)
-    ref = init_obs(obs_in(s), cfg)
+    ref = init_obs(obs_in(s, rules), cfg, rules)
     ref_so = soc.init_soc(soc.soc_in(s), cfg, SOC15)
     ref_society = Society(cfg, SOC15)
     snap0 = soc.snapshot(ref_so.kin, ref_so, soc.soc_in(s), None, cfg, SOC15)  # the initial snapshot
@@ -173,11 +194,13 @@ def test_observer_is_the_reference_fold(tiny_cfg: Config, compiled: bool, rules:
         obs.update(s, out.acts, t)
         body = obs.so.body  # the body the step's evaluation used: before this step's snapshot is settled
         kin0 = ref_so.kin
-        ref = update(ref, obs_in(s), out.acts, cfg, rules)
+        ref = update(ref, obs_in(s, rules), out.acts, cfg, rules)
         ref_so = soc.update(ref_so, soc.soc_in(s), out.acts, cfg, SOC15)
         ref_body = ref_so.body
         if t % rules.every == 0:
-            ref = evaluate(ref, cfg, rules, body=ref_body if rules.settler_body else None, oi=obs_in(s))
+            ref = evaluate(
+                ref, cfg, rules, body=ref_body if rules.settler_body else None, oi=obs_in(s, rules)
+            )
             evaluated += 1
             overlaid += int((to_numpy(ref.label_intent) != to_numpy(ref.held)).sum())
         snap = soc.snapshot(kin0, ref_so, soc.soc_in(s), out.acts, cfg, SOC15) if t % 15 == 0 else None
@@ -362,7 +385,9 @@ def test_sidecar_round_trip(observed: tuple[Config, State, Observer], tmp_path: 
         "format": SIDECAR_FORMAT,
         "observer_format": OBSERVER_FORMAT,
         "intent_version": INTENT_VERSION,
-        "rules_digest": DEFAULT_RULES.digest(),
+        "rules_digest": default_rules(cfg).digest(),
+        "wind_rel": True,
+        "vertical": False,  # a 2D world: the version-3 rules without the vertical labels
         "step": AT,
         "n_max": d.n,
         "dims": 2,
@@ -374,11 +399,12 @@ def test_sidecar_round_trip(observed: tuple[Config, State, Observer], tmp_path: 
         "house_rate": cfg.game.house_rate,
         "house_seed": cfg.run.seed,
     }
-    assert OBSERVER_FORMAT == 3 and meta["house_rate"] == 1 / 2048
+    assert OBSERVER_FORMAT == 4 and meta["house_rate"] == 1 / 2048
     assert (
-        DEFAULT_RULES is RULES_V2
-        and meta["rules_digest"] == RULES_V2.digest()
-        and meta["intent_version"] == 2
+        DEFAULT_RULES is RULES_V3
+        and default_rules(cfg) == for_2d(RULES_V3) != RULES_V3
+        and meta["rules_digest"] == for_2d(RULES_V3).digest()
+        and meta["intent_version"] == 3
     )
     rd = RunDir.create(tmp_path / "run", cfg)
     path = rd.save_checkpoint(s, cfg, observers=side)
@@ -438,6 +464,14 @@ def _g2_sidecar(a: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     keep["intent"] = a["intent"][:, :7].copy()
     meta = {**_meta(a), "observer_format": 2, "intent_version": 1, "rules_digest": RULES_V1.digest()}
     return {**keep, "meta": np.array(json.dumps(meta, sort_keys=True))}
+
+
+def _g2_final_sidecar(a: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """What a format-3 (G2 as merged, version-2 rules) sidecar holds: the same members, a meta without
+    ``wind_rel`` and ``vertical`` and with the version-2 rules' identity."""
+    meta = {k: v for k, v in _meta(a).items() if k not in ("wind_rel", "vertical")}
+    meta |= {"observer_format": 3, "intent_version": 2, "rules_digest": RULES_V2.digest()}
+    return {**a, "meta": np.array(json.dumps(meta, sort_keys=True))}
 
 
 def _host(**edits: np.ndarray) -> object:
@@ -507,9 +541,11 @@ MISMATCHES = [
         lambda a: {**a, "soc.house": a["soc.house"].astype(np.int32)}, "array 'soc.house'", id="soc-house"
     ),
     # a format-1 sidecar gets the format reason, not a list of the missing soc.* / host.* members
-    pytest.param(_g1_sidecar, "meta.observer_format is 1, expected 3;", id="format-1"),
+    pytest.param(_g1_sidecar, "meta.observer_format is 1, expected 4;", id="format-1"),
     # ... and so does the previous format (G2, 7 intent columns, no `held`), before its other differences
-    pytest.param(_g2_sidecar, "meta.observer_format is 2, expected 3;", id="format-2"),
+    pytest.param(_g2_sidecar, "meta.observer_format is 2, expected 4;", id="format-2"),
+    # ... and the format of the G2 merge (version-2 rules), which the storm world's version 3 replaces (§32)
+    pytest.param(_g2_final_sidecar, "meta.observer_format is 3, expected 4;", id="format-3"),
     # one case per check of Society.from_arrays (the host members; the cases of test_game_society apply to it)
     pytest.param(_host(**{"host.n_ref": np.array(5, np.int32)}), "host.n_ref is int32", id="host-dtype"),
     pytest.param(_host(**{"host.prev_step": np.zeros(1, I64)}), "host.prev_step is int64", id="host-rank"),
@@ -617,7 +653,7 @@ def test_a_format_1_sidecar_note_is_exactly_the_format(saved: Path, tmp_path: Pa
     state = load_checkpoint(rd.checkpoint_at(AT), cfg)
     _, note = Observer.open(rd, state, cfg, social=SOC15)
     assert note is not None and note.startswith(
-        "observers: meta.observer_format is 1, expected 3; labels warm up"
+        "observers: meta.observer_format is 1, expected 4; labels warm up"
     )
     assert "missing" not in note and "soc." not in note and "host." not in note
 
@@ -748,8 +784,9 @@ def test_another_ruleset_never_reads_these_accumulators(saved: Path, tiny_cfg: C
         Observer.open(rd, state, cfg, rules=RULES_V1, social=SOC15)[1] is not None
     )  # not the version-1 rules
     assert (
-        Observer.open(rd, state, cfg, rules=RULES_V2, social=SOC15)[1] is None
+        Observer.open(rd, state, cfg, rules=default_rules(cfg), social=SOC15)[1] is None
     )  # the rules it was written under (the default)
+    assert "meta.rules_digest" in (Observer.open(rd, state, cfg, rules=RULES_V2, social=SOC15)[1] or "")
     # the social rules are part of the identity too: any threshold or the cadence
     other = dataclasses.replace(SOC15, kin_enter=(9, 9))
     obs, note = Observer.open(rd, state, cfg, social=other)

@@ -39,7 +39,7 @@ from alife.config import Config, config_hash, dims
 from alife.game import observe
 from alife.game import social as soc
 from alife.game.observe import EVAL_BIT, ObsState
-from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V2, RuleSet
+from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V3, RuleSet, for_2d
 from alife.game.social import SOCIAL_V1, SOCIAL_VERSION, SocialRules, SocState
 from alife.game.society import HOST_KEYS, Society, host_snap
 from alife.runio import CheckpointError, RunDir
@@ -55,16 +55,18 @@ __all__ = [
     "Labels",
     "Observer",
     "SocialLabels",
+    "default_rules",
 ]
 
-OBSERVER_FORMAT: Final = 3  # the sidecar's members and their meaning; bump with any change to either
+OBSERVER_FORMAT: Final = 4  # the sidecar's members and their meaning; bump with any change to either
 SIDECAR_FORMAT: Final = "alife-observers"  # the ``format`` of the sidecar's meta
 
 # The rules a run's observer uses, looked up at call time (``Observer.fresh`` / ``open`` with ``rules=None``
 # or ``social=None``). No config key sets them (DESIGN §28.1, §29.9): the labels tool passes its own
 # ``rules``, and tests that need snapshots in a short run replace ``DEFAULT_SOCIAL`` (``monkeypatch``) or
-# pass ``social=``.
-DEFAULT_RULES: RuleSet = RULES_V2
+# pass ``social=``. ``DEFAULT_RULES`` is the 3D rule set; ``default_rules(cfg)`` is what a world gets (a 2D
+# world's is the same without the vertical labels, ``rules.for_2d``).
+DEFAULT_RULES: RuleSet = RULES_V3
 DEFAULT_SOCIAL: SocialRules = SOCIAL_V1
 
 # Meta fields that must equal the observer's own for a sidecar to load, checked in this order (``format``
@@ -75,6 +77,8 @@ _META_KEYS: Final = (
     "observer_format",
     "intent_version",
     "rules_digest",
+    "wind_rel",
+    "vertical",
     "step",
     "n_max",
     "dims",
@@ -91,6 +95,13 @@ _NP_DTYPE: Final = {
     mx.bool_: np.dtype(np.bool_),
 }  # the dtypes ObsState and SocState use, as they are stored in the sidecar
 _SOC_PREFIX: Final = "soc."
+
+
+def default_rules(cfg: Config) -> RuleSet:
+    """The rules of a run's observer when none is given: ``DEFAULT_RULES`` (read now, so a test may replace
+    it), without the vertical labels in a 2D world."""
+    rs = DEFAULT_RULES
+    return rs if dims(cfg).d3 or not rs.vertical else for_2d(rs)
 
 
 class Labels(NamedTuple):
@@ -184,7 +195,7 @@ class Observer:
     def _blank(cls, state: State, cfg: Config, rules: RuleSet, sr: SocialRules) -> Observer:
         """An observer at ``state`` with empty accumulators and no snapshot: what a sidecar is validated
         against (shapes, dtypes, occupants)."""
-        o = observe.init_obs(observe.obs_in(state), cfg)
+        o = observe.init_obs(observe.obs_in(state, rules), cfg, rules)
         so = soc.init_soc(soc.soc_in(state), cfg, sr)
         mx.eval(*o, *so)  # no lazy reference to the state's arrays survives (the loop donates them)
         return cls(cfg, o, so, Society(cfg, sr), int(to_numpy(state.step)), rules, sr)
@@ -201,7 +212,7 @@ class Observer:
         """Observers starting at ``state``: nothing accumulated or labelled, existing bonds of unknown age,
         and the initial social snapshot (ids and slots for what is there; no events, relations or record).
         ``rules`` and ``social`` default to ``DEFAULT_RULES`` and ``DEFAULT_SOCIAL`` as of this call."""
-        rules = DEFAULT_RULES if rules is None else rules
+        rules = default_rules(cfg) if rules is None else rules
         sr = DEFAULT_SOCIAL if social is None else social
         obs = cls._blank(state, cfg, rules, sr)
         si = soc.soc_in(state)
@@ -227,7 +238,7 @@ class Observer:
         else fresh. The note (None if the sidecar was loaded) is returned only on a resume, meaning ``rd``
         has a checkpoint at this step; a new run or a fork starts fresh without one. Never an error.
         ``rules`` and ``social`` default to ``DEFAULT_RULES`` and ``DEFAULT_SOCIAL`` as of this call."""
-        rules = DEFAULT_RULES if rules is None else rules
+        rules = default_rules(cfg) if rules is None else rules
         sr = DEFAULT_SOCIAL if social is None else social
         t = int(to_numpy(state.step))
         blank = cls._blank(state, cfg, rules, sr)
@@ -262,6 +273,8 @@ class Observer:
             "observer_format": OBSERVER_FORMAT,
             "intent_version": INTENT_VERSION,
             "rules_digest": self.rules.digest(),
+            "wind_rel": self.rules.wind_rel,
+            "vertical": self.rules.vertical,
             "step": self.step,
             "n_max": d.n,
             "dims": d.nd,
@@ -358,7 +371,7 @@ class Observer:
         if t != self.step + 1:
             raise ValueError(f"observer is at step {self.step}; cannot fold step {t}")
         self._settle()
-        oi, si = observe.obs_in(state), soc.soc_in(state)
+        oi, si = observe.obs_in(state, self.rules), soc.soc_in(state)
         fold = self._fold_eval if t % self.rules.every == 0 else self._fold
         kin0 = self.so.kin  # the start-of-step slots, which the snapshot's temperament is read with
         self.o, self.so = fold(self.o, self.so, oi, si, acts)

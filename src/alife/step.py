@@ -104,6 +104,8 @@ class Acts(NamedTuple):
     born_uid: mx.array  # (M,) int64: uid per lane, −1 padding
     # Roster (§29.2, stage 7), appended after the social-tracking fields:
     death_cause: mx.array  # (N,) int8: DeathCause of a row that died at S14 this step, −1 elsewhere
+    # Storm world (§32), 3D only (None in 2D): the buoyancy use, appended after the roster field.
+    buoy: mx.array | None = None  # (N,) int16: round(256·mo.buoy) of the pre-mask motion, 0 where not solvent
 
 
 class StepOutG(NamedTuple):
@@ -188,9 +190,11 @@ def step(
     nb0 = bonds.n_bonds(s.partner)  # S8
     if d3:  # static: the pitch turn cost and the buoyancy due (§27.7)
         c = en.pay_costs3(s.energy, act, mo, nb0, s.brain_cost, s.buoy_cap, s.alive, cfg)
+        buoy0 = mo.buoy if observe else None  # static: the pre-mask buoyancy, as thrust0 below (§32)
         mo = actions.mask(mo, c.solvent)
     else:
         c = en.pay_costs(s.energy, act, nb0, s.brain_cost, s.alive, cfg)
+        buoy0 = None
     thrust0 = act.thrust if observe else None  # static: the decode output, which S8 also reads (§28.2)
     y0 = y if observe else None  # static: the brain output the kin queries are quantised from (§29.2)
     act = actions.mask(act, c.solvent)
@@ -320,19 +324,26 @@ def step(
         flows = flows._replace(weather_bad=weather.health(wd, wind))
     s_new, out = _finish(s2, s, cfg, flows)  # S18
     if observe:  # static
-        return s_new, StepOutG(*out, acts=_acts(flows, sl, thrust0, y0, s.alive, cfg))
+        return s_new, StepOutG(*out, acts=_acts(flows, sl, thrust0, y0, s.alive, cfg, buoy0))
     return s_new, out
 
 
 def _acts(
-    f: _Flows, sl: en.ShareSlots, thrust0: mx.array, y: mx.array, alive0: mx.array, cfg: Config
+    f: _Flows,
+    sl: en.ShareSlots,
+    thrust0: mx.array,
+    y: mx.array,
+    alive0: mx.array,
+    cfg: Config,
+    buoy0: mx.array | None = None,
 ) -> Acts:
     """The observer channel (§28.2, §29.2). Every float is quantised from a value the step already
     materialises, and the thrust is masked by solvency in integers, so the channel adds no consumer to a fused
     float chain. ``y`` is the brain output (a kernel output read by two column slices), ``alive0`` the
     start-of-step alive mask (a step input). ``death_cause`` is the S14 cause array that the KILLED bit
     already reads, cast to int8 (the per-cause counts of the roster come from it, never from the capped death
-    records)."""
+    records). ``buoy0`` (3D) is the buoyancy output before the solvency mask, quantised and masked in integers
+    exactly as the thrust (§32)."""
     n = dims(cfg).n
     birth = f.lanes.kind == lifecycle.LaneKind.BIRTH.value
     budded = ops.scatter_add_i32(n, f.lanes.parent, 1, birth) > 0  # distinct parents: Σ = n_birth
@@ -361,10 +372,11 @@ def _acts(
     rows = mx.arange(n, dtype=_I32)[:, None]
     nbr = mx.where(f.nbr.idx != rows, f.nbr.idx, -1)  # invalid entries hold the row's own index (spatial.py)
     born_parent = mx.where(birth, f.lanes.parent, -1)
+    buoy = mx.where(f.costs.solvent, mx.round(256.0 * buoy0).astype(i16), 0) if buoy0 is not None else None
     return Acts(
         f.cb.gain, sl.out, sl.got, flags, thrust, defend, emit_q.sum(axis=1).astype(i16),
         f.act.attack_target, f.act.bond_target, q_kin, nbr,
-        f.rp.records.slot, born_parent, f.rp.records.uid, f.dt.cause.astype(mx.int8),
+        f.rp.records.slot, born_parent, f.rp.records.uid, f.dt.cause.astype(mx.int8), buoy,
     )  # fmt: skip
 
 

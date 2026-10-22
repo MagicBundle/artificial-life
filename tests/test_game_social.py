@@ -310,7 +310,7 @@ def test_relations_match_counters(arm: str, tiny_cfg: Config, tiny3d_cfg: Config
         si = soc_in(s)
         so = eval_soc(update(so, si, a, cfg, sr))
         mx.eval(s, out)
-        an = {f: np_(getattr(a, f)) for f in a._fields}
+        an = {f: np_(getattr(a, f)) for f in a._fields if getattr(a, f) is not None}
         c, led = np_(out.counters), np_(out.ledger)
         r, e, sh = window_reference(prev_kin, prev_sg, an, g, k)
         win_rel, win_expo, win_shared = win_rel + r, win_expo + e, win_shared + sh
@@ -565,7 +565,7 @@ def test_window_life_matches_counters(tiny_cfg: Config) -> None:
         si = soc_in(s)
         so = eval_soc(update(so, si, a, cfg, sr))
         mx.eval(s, out)
-        an = {f: np_(getattr(a, f)) for f in a._fields}
+        an = {f: np_(getattr(a, f)) for f in a._fields if getattr(a, f) is not None}
         c = np_(out.counters)
         b, d = life_reference(prev_kin, an, g, nc)
         where = f"step {t}"

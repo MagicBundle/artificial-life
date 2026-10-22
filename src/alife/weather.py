@@ -1427,6 +1427,17 @@ def agent_wind(
     return AgentForce(force, speed, breaks, (aw.n_clip_h + aw.n_clip_w) > 0)
 
 
+def agent_drift(
+    wx: mx.array, pos: mx.array, buoy_cap: mx.array | None, alive: mx.array, cfg: Config
+) -> mx.array:
+    """The velocity the wind alone would give a free agent, ``(N, nd)`` float32: ``agent_wind(...).force /
+    drag`` (``alpha·u_air``; under ``wind_eddy_force`` the eddy wind, under ``wind_scale`` scaled, as the
+    engine applies it). For the observers (DESIGN §32): the labels' velocity is ``vel - drift``. ``wx`` is
+    the stored (packed) weather and ``pos`` the positions it is sampled at; the observer calls it on the
+    post-step state in its own compiled fold, so the step graph is untouched."""
+    return agent_wind(unpack(wx), pos, buoy_cap, alive, cfg).force / cfg.physics.drag
+
+
 def air_speeds(
     ws: WeatherState, pos: mx.array, buoy_cap: mx.array | None, alive: mx.array, cfg: Config
 ) -> tuple[mx.array, mx.array]:

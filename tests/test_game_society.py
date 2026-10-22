@@ -637,7 +637,7 @@ def test_relations_and_baselines_on_real_steps(tiny_cfg: Config) -> None:
         prev_kin, prev_sg = drv.kin_slot_rows(), np_(drv.so.slot_group)
         s, out = fn(s)
         mx.eval(s, out)
-        an = {f: np_(getattr(out.acts, f)) for f in out.acts._fields}
+        an = {f: np_(getattr(out.acts, f)) for f in out.acts._fields if getattr(out.acts, f) is not None}
         r, e, sh = window_reference(prev_kin, prev_sg, an, g, k)
         win = [win[0] + r, win[1] + e, win[2] + sh]
         for which, flag in ((0, ActFlag.ATTACKED.value), (1, ActFlag.PROPOSED.value)):  # sum_i n_ib / n_i
@@ -1341,7 +1341,7 @@ def test_head_and_record_size_budget(tiny3d_cfg: Config) -> None:
     assert len(str(he["founded"]["id"][0])) == 8 and len(str(he["extinct"]["id"][0])) == 8
     kg = rec["kin_groups"]
     assert None not in kg["births"] and None not in kg["deaths"] and None not in kg["arch"]
-    assert None not in kg["x"] and len(kg["name"]) == 16 and all(len(a) == 7 for a in kg["arch"])
+    assert None not in kg["x"] and len(kg["name"]) == 16 and all(len(a) == 10 for a in kg["arch"])
     # ... and every column is at its width
     assert {len(str(i)) for i in kg["id"]} == {6} and {len(n) for n in kg["name"]} == {17}
     assert {len(str(i)) for i in rec["colonies"]["id"]} == {7}

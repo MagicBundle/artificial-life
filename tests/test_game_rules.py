@@ -23,6 +23,7 @@ from alife.game.rules import (
     ARCH_PRIORITY,
     ARCHETYPE_DISPLAY,
     ARCHETYPE_NAMES,
+    ARCHETYPE_STORM_DISPLAY,
     EVAL_BIT,
     INTENT_DISPLAY,
     INTENT_NAMES,
@@ -46,6 +47,21 @@ from game_helpers import Driver, blank_acts, living, make_acts, make_oi
 RULES_V1_DIGEST = "156ad4963b84ffe9636e9ba4fdd7592632c669bf6e490687d8eb2b38b9aec009"
 RULES_V2_DIGEST = "dc78f771d515b845501cd609275b362acfbc60c47853e813a6d129d3a5cab4f7"
 
+# The fields version 3 added (DESIGN §32): all inert in RULES_V1 and RULES_V2, so their digests stand.
+V3_FIELDS = frozenset(
+    {
+        "wind_rel",
+        "vertical",
+        "drifter_wind",
+        "drifter_ratio",
+        "floater_lift",
+        "floater_z",
+        "floater_vz",
+        "sinker_lift",
+        "sinker_vz",
+    }
+)
+
 B = layout.B
 GENERALIST_BIT = 1 << (Archetype.GENERALIST.value - 1)
 RESTING_BIT = 1 << (Intent.RESTING.value - 1)
@@ -59,7 +75,7 @@ def np_(a: mx.array) -> np.ndarray:
 
 
 def test_rules_digests_are_pinned() -> None:
-    assert INTENT_VERSION == 2
+    assert INTENT_VERSION == 3
     assert RuleSet() == RULES_V2
     assert RULES_V2.digest() == RULES_V2_DIGEST
     assert RULES_V1.digest() == RULES_V1_DIGEST  # the G1 pin, kept: RULES_V1 still evaluates as version 1
@@ -79,7 +95,7 @@ def test_every_field_enters_the_digest() -> None:
         "bond_age": (25, 120), "bond_rate": 65, "signal": 193, "feed": (4, 4), "roam": (769, 10),
         "intent_order": (1, 2, 3, 4, 5, 6, 7, 8, 9),
     }  # fmt: skip
-    assert set(changed) == {f.name for f in dataclasses.fields(RuleSet)}
+    assert set(changed) | V3_FIELDS == {f.name for f in dataclasses.fields(RuleSet)}
     digests = {RULES_V2.digest()}
     for name, value in changed.items():
         digests.add(dataclasses.replace(RULES_V2, **{name: value}).digest())
@@ -89,12 +105,12 @@ def test_every_field_enters_the_digest() -> None:
     post = rules._POST_V1_INERT
     assert set(post) == {
         "settler_body", "gatherer_level", "bud_horizon", "bud_cost", "bud_overlay", "defend_hurt",
-        "bond_rate", "intent_order",
+        "bond_rate", "intent_order", *V3_FIELDS,
     }  # fmt: skip
     v1 = {RULES_V1_DIGEST}
     for name, value in changed.items():
         if name in post:
-            assert getattr(RULES_V2, name) != post[name], name
+            assert getattr(RULES_V2, name) != post[name] or name in V3_FIELDS, name
             assert dataclasses.replace(RULES_V1, **{name: post[name]}).digest() == RULES_V1_DIGEST, name
             value = getattr(RULES_V2, name)
         v1.add(dataclasses.replace(RULES_V1, **{name: value}).digest())
@@ -119,7 +135,11 @@ def test_post_v1_fields_leave_the_digest_while_inert() -> None:
     text = json.dumps(fields, sort_keys=True, separators=(",", ":"))
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() == RULES_V1_DIGEST
     # and the version-2 JSON is the one the calibration pinned (every key, none left out)
-    text2 = json.dumps(dataclasses.asdict(RULES_V2), sort_keys=True, separators=(",", ":"))
+    v2_fields = {
+        k: v for k, v in dataclasses.asdict(RULES_V2).items() if k not in V3_FIELDS
+    }  # inert: left out
+    assert all(getattr(RULES_V2, k) == rules._POST_V1_INERT[k] for k in V3_FIELDS)
+    text2 = json.dumps(v2_fields, sort_keys=True, separators=(",", ":"))
     assert text2 == (
         '{"arch_k":6,"arch_warm":192,"bond_age":[24,120],"bond_rate":64,"bud_cost":24,"bud_horizon":10,'
         '"bud_overlay":true,"bud_window":32,"care":[1,10],"defend":192,"defend_hurt":1,"every":8,'
@@ -351,7 +371,7 @@ def _arch(
     match = np_(
         rules.archetype_matches(_m6(nd, **cols), mx.array(m6s), cfg, rs, mx.array([body], dtype=mx.int32))
     )
-    assert match.shape == (1, 6) and match.dtype == bool
+    assert match.shape == (1, 10) and match.dtype == bool
     return dict(zip(ARCHETYPE_NAMES, match[0].tolist(), strict=False))
 
 
@@ -516,23 +536,29 @@ def test_settler_rules_need_the_body(tiny_cfg: Config) -> None:
 
 
 def _reference_labels(row: Sequence[bool]) -> tuple[int, int]:
-    match = dict(zip(ARCHETYPE_NAMES[:6], row, strict=True))
+    match = dict(zip(ARCHETYPE_NAMES[:6], row[:6], strict=True))
     if match["trader"]:
         match["provider"] = False
-    hits = [a.value for a in ARCH_PRIORITY if match[a.name.lower()]]
+    hits = [a.value for a in ARCH_PRIORITY if match.get(a.name.lower(), False)]  # no V3 label here
     return (hits[0] if hits else Archetype.GENERALIST.value), (hits[1] if len(hits) > 1 else 0)
+
+
+def _matrix(combos: np.ndarray) -> np.ndarray:
+    """The six income and movement columns as an ``archetype_matches`` matrix: Generalist's placeholder column
+    (always false) and the three version-3 columns (here false) follow."""
+    return np.concatenate([combos, np.zeros((combos.shape[0], 4), dtype=bool)], axis=1)
 
 
 def test_archetype_priority_and_secondary() -> None:
     combos = np.array(list(itertools.product([False, True], repeat=6)))
-    primary, secondary = (np_(a) for a in rules.archetype_labels(mx.array(combos)))
+    primary, secondary = (np_(a) for a in rules.archetype_labels(mx.array(_matrix(combos))))
     assert primary.dtype == np.int32 and secondary.dtype == np.int32
     for row, p, s in zip(combos, primary, secondary, strict=True):
         assert (p, s) == _reference_labels(row.tolist()), row
     names = {a.name.lower(): a.value for a in Archetype}
 
     def one(*on: str) -> tuple[int, int]:
-        row = np.array([[name in on for name in ARCHETYPE_NAMES[:6]]])
+        row = _matrix(np.array([[name in on for name in ARCHETYPE_NAMES[:6]]]))
         p, s = rules.archetype_labels(mx.array(row))
         return int(np_(p)[0]), int(np_(s)[0])
 
@@ -1076,15 +1102,27 @@ def test_evaluate_holds_the_intent_in_the_rule_sets_order(micro_cfg: Config) -> 
 
 
 def test_archetype_names_and_priority_are_consistent() -> None:
-    assert ARCHETYPE_NAMES == ("gatherer", "hunter", "provider", "trader", "nomad", "settler", "generalist")
+    older = ("gatherer", "hunter", "provider", "trader", "nomad", "settler", "generalist")
+    assert (*older, "drifter", "floater", "sinker") == ARCHETYPE_NAMES
     intents = (
         *("budding", "hunting", "fleeing", "defending", "caring"),
         *("bonding", "signalling", "feeding", "roaming", "resting"),
     )
     assert intents == INTENT_NAMES
-    assert [a.value for a in Archetype] == list(range(8)) and [i.value for i in Intent] == list(range(11))
-    assert sorted(a.value for a in ARCH_PRIORITY) == [1, 2, 3, 4, 5, 6]
-    # the order is part of INTENT_VERSION 1 but not of RuleSet.digest(): it is pinned here as a literal
+    assert [a.value for a in Archetype] == list(range(11)) and [i.value for i in Intent] == list(range(11))
+    assert sorted(a.value for a in ARCH_PRIORITY) == [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        9,
+        10,
+    ]  # Generalist is "none matched"
+    # the order is part of INTENT_VERSION 1 but not of RuleSet.digest(): it is pinned here as a literal. The
+    # version-3 archetypes come after every older one, so no version-2 primary label changes.
     assert ARCH_PRIORITY == (
         Archetype.TRADER,
         Archetype.PROVIDER,
@@ -1092,6 +1130,9 @@ def test_archetype_names_and_priority_are_consistent() -> None:
         Archetype.GATHERER,
         Archetype.NOMAD,
         Archetype.SETTLER,
+        Archetype.DRIFTER,
+        Archetype.FLOATER,
+        Archetype.SINKER,
     )
     assert ARCH_PRIORITY.index(Archetype.TRADER) < ARCH_PRIORITY.index(Archetype.PROVIDER)
     assert VQ_MAX == 1 << 15 and n_arch_cols(2) == 9 and n_arch_cols(3) == 11
@@ -1117,9 +1158,21 @@ def test_display_names_are_one_table_keyed_by_the_report_keys() -> None:
     stream and the sidecar use them). Coordinator choices C8 and C9: Bonding is shown as Tethering, Generalist
     as Unspecialised."""
     assert tuple(ARCHETYPE_DISPLAY) == ARCHETYPE_NAMES and tuple(INTENT_DISPLAY) == INTENT_NAMES
+    assert tuple(ARCHETYPE_STORM_DISPLAY) == ARCHETYPE_NAMES
     renamed = {k: v for k, v in (*ARCHETYPE_DISPLAY.items(), *INTENT_DISPLAY.items()) if v.lower() != k}
     assert renamed == {"generalist": "Unspecialised", "bonding": "Tethering"}
     assert all(v == k.capitalize() for k, v in INTENT_DISPLAY.items() if k != "bonding")
     assert all(v == k.capitalize() for k, v in ARCHETYPE_DISPLAY.items() if k != "generalist")
     with pytest.raises(TypeError):
         INTENT_DISPLAY["bonding"] = "Bonding"  # type: ignore[index]  # read only
+    # the storm game's names (DESIGN §32): the Gatherer is a Grazer there, everything else is as elsewhere
+    assert {k: v for k, v in ARCHETYPE_STORM_DISPLAY.items() if ARCHETYPE_DISPLAY[k] != v} == {
+        "gatherer": "Grazer"
+    }
+    assert (ARCHETYPE_DISPLAY["drifter"], ARCHETYPE_DISPLAY["floater"], ARCHETYPE_DISPLAY["sinker"]) == (
+        "Drifter",
+        "Floater",
+        "Sinker",
+    )
+    with pytest.raises(TypeError):
+        ARCHETYPE_STORM_DISPLAY["gatherer"] = "Gatherer"  # type: ignore[index]
