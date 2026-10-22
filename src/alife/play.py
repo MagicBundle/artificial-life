@@ -27,6 +27,7 @@ import math
 import re
 import statistics
 import sys
+import threading
 import time
 import traceback
 from collections import deque
@@ -37,11 +38,12 @@ from typing import Any, BinaryIO, Final, Protocol
 import mlx.core as mx
 import numpy as np
 
-from alife import layout, runner, streamrec
+from alife import layout, metrics, runner, streamrec
 from alife import weather as W
 from alife.config import Config, config_hash, dims, immigration_on
 from alife.director import log as director_log
 from alife.director import pacing, rules
+from alife.game import observer as observer_mod
 from alife.game.chronicle import Chronicler, rebuild_backlog
 from alife.game.colors import OBSERVER_MODES, play_colors
 from alife.game.observe import EVAL_BIT
@@ -62,7 +64,9 @@ __all__ = [
     "PLAY_TICK",
     "POWER_KEYS",
     "POWER_NAMES",
+    "Autopause",
     "AutopauseLine",
+    "ChapterClock",
     "Clock",
     "PlayCommand",
     "PlayOptions",
@@ -71,6 +75,7 @@ __all__ = [
     "RealClock",
     "Scheduler",
     "check_tick",
+    "origin_row",
     "parse_play_command",
     "serve_play",
     "world_tick",
@@ -126,9 +131,8 @@ COMMANDS: Final = (
     "power",
     "intent",
 )  # the last six are G3b's (DESIGN §34.6.1): the grammar is whole, each handler comes with its stage
-GAME_LINES: Final = frozenset(
-    {"autopause", "watch", "unwatch", "ack", "power", "intent"}
-)  # parsed; handlers later
+# parsed, but the handler is not built yet (each comes with its stage)
+UNBUILT_LINES: Final = frozenset({"watch", "unwatch", "ack", "power", "intent"})
 POWER_NAMES: Final = ("food", "bloom", "blight", "strike")
 POWER_KEYS: Final = ("mult", "steps", "patch", "gain", "x", "y", "radius", "kill")
 POWER_INT_KEYS: Final = frozenset({"steps", "patch"})  # the others are decimals
@@ -485,15 +489,77 @@ class Scheduler:
         """A checkpoint starts: remember the debt, so the stall's own steps can be told from it."""
         self._owed_at_save = max(self._owed(self.clock.monotonic()), 0) if self._timed() else 0
 
-    def end_save(self) -> None:
+    def end_save(self, *, count: bool = True) -> None:
         """The checkpoint is written: the steps the stall skipped are ``save_stall_steps`` (never late) and
-        the schedule starts again from now."""
+        the schedule starts again from now. ``count=False`` is for a stall the player did not wait through: a
+        chapter end whose pause follows, where the world is about to stop and the stall costs nothing."""
         if self._timed():
-            self.save_stall_steps += max(self._owed(self.clock.monotonic()) - self._owed_at_save, 0)
+            if count:
+                self.save_stall_steps += max(self._owed(self.clock.monotonic()) - self._owed_at_save, 0)
             self._reanchor()
 
     def _timed(self) -> bool:
         return not self.paused and not self.busy and not math.isinf(self.rate)
+
+
+# --- chapters and autopause ------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChapterClock:
+    """Where a step is in the chapters (§34.2). Chapter ``n`` is the steps ``(length (n - 1), length n]``,
+    so a chapter's last step belongs to it: at a boundary the bar reads 100% and the chapter changes at the
+    next step. The first step of a world (``t = 0``) is chapter 1 at 0. A host-only counter: it reads no state
+    and changes no file."""
+
+    length: int = CHAPTER
+
+    def chapter(self, t: int) -> int:
+        """The absolute chapter containing step ``t`` (at least 1)."""
+        return max(1, -(-t // self.length))
+
+    def position(self, t: int) -> tuple[int, int]:
+        """``(chapter, in_chapter)``: ``in_chapter`` is in ``1..length`` once ``t > 0`` and 0 at the start."""
+        chapter = self.chapter(t)
+        return chapter, t - self.length * (chapter - 1)
+
+    def is_end(self, t: int) -> bool:
+        """Whether ``t`` is the end of a chapter (a stop checkpoint at another step is not)."""
+        return t > 0 and t % self.length == 0
+
+
+@dataclass
+class Autopause:
+    """Which pauses the world takes by itself (``autopause`` lines, DESIGN §34.2): at a chapter end, and per
+    alert class. ``alert`` holds the classes the world knows (the header's registry); presentation only."""
+
+    chapter: bool = True
+    alert: dict[str, bool] = dataclasses.field(default_factory=dict)
+
+    def apply(self, line: AutopauseLine) -> str | None:
+        """Sets what ``line`` says; a note (and no change) for an alert class the world does not have."""
+        if line.scope == "all":
+            self.chapter = line.on
+            self.alert = dict.fromkeys(self.alert, line.on)
+        elif line.scope == "chapter":
+            self.chapter = line.on
+        else:
+            assert line.cls is not None
+            if line.cls not in self.alert:
+                return f"autopause: this world has no alert class {line.cls!r}"
+            self.alert = {**self.alert, line.cls: line.on}
+        return None
+
+    @property
+    def flags(self) -> int:
+        """``CLCK.flags``: bit 0 the pause at a chapter end is armed, bit 1 at least one alert class is."""
+        return (streamrec.CLCK_FLAG_CHAPTER_PAUSE if self.chapter else 0) | (
+            streamrec.CLCK_FLAG_ALERT_PAUSE if any(self.alert.values()) else 0
+        )
+
+    def block(self) -> dict[str, Any]:
+        """The header's ``play.autopause``: the defaults the client starts from."""
+        return streamrec.autopause_block(chapter=self.chapter, alert=self.alert)
 
 
 # --- the options ----------------------------------------------------------------------------------------
@@ -509,7 +575,8 @@ class PlayOptions:
     the start step without the ``renumbered`` event and the empty state is saved with the first checkpoint.
     ``dc_ref`` is the cloud-depth scale of ``MAP1`` (None: computed from the state at start). ``on_ready``
     runs once the facts of the world are known and before the header is written (the caller writes
-    ``play.json`` there); ``until`` is a step at which the stream says "end of steps"."""
+    ``play.json`` there); ``until`` is a step at which the stream says "end of steps". ``chapter`` is the
+    chapter length in steps (``CHAPTER``; a multiple of the checkpoint cadence, which the tests shorten)."""
 
     base_rate: float = BASE_RATE
     rate: float = 1.0
@@ -523,6 +590,7 @@ class PlayOptions:
     fresh: bool = False
     until: int | None = None
     on_ready: Callable[[dict[str, Any]], None] | None = None
+    chapter: int = CHAPTER
 
 
 class _NullSink:
@@ -613,6 +681,19 @@ class PlayPacer:
         self._ended = False
         self.seq = streamrec.Sequencer()
         self.bytes_by_tag: dict[str, int] = {}
+        # One lock for everything a worker thread can reach: the write of a whole record (a 1.4 MB FRMA is
+        # several short writes; a lock around one write call would let a worker's record interleave with it),
+        # the byte counters and the failure state. Re-entrant: a failed write calls ``_fail`` under it.
+        self._lock = threading.RLock()
+        # chapters and the pauses the world takes by itself (DESIGN §34.2)
+        self.chapters = ChapterClock(self.opt.chapter)
+        self.autopause = Autopause()
+        # the report job starts through this hook (set by its stage)
+        self.on_chapter_end: Callable[[int], None] | None = None
+        # a chapter ended: the pause (if armed) starts at the next ``before_step``
+        self._chapter_pending = False
+        # why the world paused itself: 3 chapter, 4 alert (0: not, or a pause of the player's own)
+        self._pause_reason = 0
         # what the world is (set in bind)
         self.cfg: Config
         self.rd: RunDir
@@ -653,42 +734,57 @@ class PlayPacer:
     def _fail(self, exc: BaseException, *, quiet: bool) -> None:
         """The first failure stops the play; a later one (the host work of the last step) replaces a closed
         reader as the reason, so that a full disk is not reported as a normal stop."""
-        first = not self._dead
-        if first or (not quiet and isinstance(self.failure, CLOSED_READER)):
-            self.failure = exc
-        self._dead = True
-        self.stop_requested = True
-        self.out = _NullSink()
-        if quiet:
-            if first:
-                self._note(
-                    f"the reader closed the stream ({type(exc).__name__}); stopping after a checkpoint"
+        with self._lock:  # a worker thread can get here through ``post``
+            first = not self._dead
+            if first or (not quiet and isinstance(self.failure, CLOSED_READER)):
+                self.failure = exc
+            self._dead = True
+            self.stop_requested = True
+            self.out = _NullSink()
+            if quiet:
+                if first:
+                    self._note(
+                        f"the reader closed the stream ({type(exc).__name__}); stopping after a checkpoint"
+                    )
+            else:
+                print(
+                    "play: the presenter failed; stopping after a checkpoint:"
+                    if first
+                    else "play: a failure after the stop:",
+                    file=sys.stderr,
+                    flush=True,
                 )
-        else:
-            print(
-                "play: the presenter failed; stopping after a checkpoint:"
-                if first
-                else "play: a failure after the stop:",
-                file=sys.stderr,
-                flush=True,
-            )
-            traceback.print_exception(exc, file=sys.stderr)
+                traceback.print_exception(exc, file=sys.stderr)
 
     # --- output -----------------------------------------------------------------------------------------
 
     def _write(self, tag: str, data: bytes) -> None:
         """Write a record. A reader that has gone does not abort the callback: the stream becomes a null sink
         and the host work of the step (the storm tick, the logs) goes on, so the files stay exact."""
-        try:
-            write_all(self.out, data)
-        except CLOSED_READER as e:
-            self._fail(e, quiet=True)
-            return
-        self.bytes_by_tag = {**self.bytes_by_tag, tag: self.bytes_by_tag.get(tag, 0) + len(data)}
+        with self._lock:
+            try:
+                write_all(self.out, data)
+            except CLOSED_READER as e:
+                self._fail(e, quiet=True)
+                return
+            self.bytes_by_tag = {**self.bytes_by_tag, tag: self.bytes_by_tag.get(tag, 0) + len(data)}
 
     def _send(self, tag: str, make: Callable[[int, int], bytes]) -> None:
         """Write the record ``make(step, seq)`` of ``tag`` at the current step."""
         self._write(tag, make(self._t, self.seq.take(tag)))
+
+    def post(self, tag: str, make: Callable[[int, int], bytes], *, step: int) -> None:
+        """Write the record ``make(step, seq)`` of ``tag`` from a worker thread (the report job, §34.2).
+
+        The sequence number is taken inside the lock that spans the whole write, so that the records of one
+        tag reach the stream in the order of their ``seq`` whichever thread writes them, and never between the
+        short writes of another record. A reader that has gone is the pacer's failure (the loop takes its
+        ordinary stop path at its next call); a record that cannot be made raises in the caller, which is
+        the worker and must report it itself. Nothing is written after the pacer has failed."""
+        with self._lock:
+            if self._dead:
+                return
+            self._write(tag, make(step, self.seq.take(tag)))
 
     # --- the Pacer protocol -----------------------------------------------------------------------------
 
@@ -764,7 +860,8 @@ class PlayPacer:
             tick=self._tick,
             snapshot_every=obs.social.snapshot_every if obs is not None else SNAPSHOT_EVERY,
             frame_hz=self.opt.frame_hz,
-            chapter=CHAPTER,
+            chapter=self.opt.chapter,
+            autopause=self.autopause.block(),
         )
         self._write("HEAD", streamrec.play_header_bytes(legacy, play))
         self._backlog(rd, state)
@@ -819,6 +916,8 @@ class PlayPacer:
     @_guard
     def before_step(self, state: State, t: int) -> None:
         self._t = t
+        if self._chapter_pending:
+            self._begin_chapter_pause(state)
         pending = self.control.poll(0)
         while True:
             if pending and self._apply(pending, state):
@@ -878,13 +977,22 @@ class PlayPacer:
             self.layer.save(self.rd, t)  # before the state file, as the observer sidecar is
         if self.obs is not None:
             self.rd.write_play_state("kinthreads", t, self.chron.threads.state())
-        self._send_clock()
+        ended = self.chapters.is_end(t)
+        if ended:
+            # a chapter ended: the pause (if armed) starts at the next ``before_step``, so no step is owed
+            self._chapter_pending = True
+        self._send_clock()  # reason 3, saving: the chapter card slides in
+        if ended and self.on_chapter_end is not None:
+            # the report job starts here, off the loop thread and overlapped with the save; the announcement
+            # comes first, so the card is there for the report to fill (a worker's record follows the clock)
+            self.on_chapter_end(t)
 
     @_guard
     def after_checkpoint(self, t: int) -> None:
         self._t = t
         self._saving = False
-        self.sched.end_save()
+        # the stall of a chapter end whose pause follows costs the player nothing: they are reading the card
+        self.sched.end_save(count=not self._chapter_pause_follows())
         self._events += self.chron.checkpoint(t)
         self._flush_events()
         self._send_clock()
@@ -929,18 +1037,23 @@ class PlayPacer:
             was_running = not sched.paused
             sched.pause()
             if was_running:
+                self._pause_reason = 0  # a pause of the player's own
                 self._enter_pause(state)
             self._send_clock()
         elif name == "run":
             sched.run()
+            self._pause_reason = 0
             self._send_clock()
         elif name == "step":
             assert isinstance(arg, int)
             sched.step(arg)
+            self._pause_reason = 0
             self._send_clock()
         elif name == "rate":
             was_running = not sched.paused
             sched.set_rate(MAX_RATE if arg == "max" else float(arg))  # type: ignore[arg-type]
+            if not sched.paused or was_running:
+                self._pause_reason = 0
             if sched.paused and was_running:
                 self._enter_pause(state)
             self._send_clock()
@@ -961,7 +1074,12 @@ class PlayPacer:
             self._send_weather(state)
         elif name == "labels":
             self.labels_on = arg == "on"
-        elif name in GAME_LINES:  # G3b's lines: each handler comes with its stage
+        elif name == "autopause":
+            assert isinstance(arg, AutopauseLine)
+            if (note := self.autopause.apply(arg)) is not None:
+                self._note(note)
+            self._send_clock()
+        elif name in UNBUILT_LINES:  # G3b's other lines: each handler comes with its stage
             self._note(f"{name}: not available in this build yet")
         else:  # focus, follow
             self._command_focus(cmd, state)
@@ -969,6 +1087,29 @@ class PlayPacer:
     def _enter_pause(self, state: State) -> None:
         if self._last_frame_step != self._t:
             self._send_frame(state)
+
+    def _chapter_pause_follows(self) -> bool:
+        """Whether the next ``before_step`` will pause the world for the chapter that just ended."""
+        return (
+            self._chapter_pending
+            and self.autopause.chapter
+            and not self.sched.busy
+            and not self.stop_requested
+            and not self._stop_check()
+        )
+
+    def _begin_chapter_pause(self, state: State) -> None:
+        """The first ``before_step`` after a chapter end (DESIGN §34.2): pause if the chapter pause is armed.
+        A ``step N`` batch never pauses by itself, and a pause the player already made only changes its
+        reason; with the pause off the world runs on and the chapter card is a notification."""
+        self._chapter_pending = False
+        if self.sched.busy or not self.autopause.chapter or self.stop_requested or self._stop_check():
+            return
+        if not self.sched.paused:
+            self.sched.pause()
+            self._enter_pause(state)
+        self._pause_reason = 3
+        self._send_clock()
 
     # --- the achieved rate and the frame period ---------------------------------------------------------
 
@@ -1005,8 +1146,19 @@ class PlayPacer:
         now = self.clock.monotonic()
         self._last_clck = now
         reason = (
-            5 if self._dead else 2 if self._ended else 1 if (self.sched.paused and not self.sched.busy) else 0
+            5
+            if self._dead
+            else 2
+            if self._ended
+            else 3
+            if self._chapter_pending or self._pause_reason == 3
+            else 4
+            if self._pause_reason == 4
+            else 1
+            if (self.sched.paused and not self.sched.busy)
+            else 0
         )
+        chapter, in_chapter = self.chapters.position(self._t)
         steps_per_s = self._achieved(now)
         self._send(
             "CLCK",
@@ -1022,9 +1174,10 @@ class PlayPacer:
                 reason=reason,
                 saving=self._saving,
                 fe=self._effective_fe(),
-                chapter=self._t // CHAPTER,
-                in_chapter=self._t % CHAPTER,
-                chapter_len=CHAPTER,
+                chapter=chapter,
+                in_chapter=in_chapter,
+                chapter_len=self.opt.chapter,
+                flags=self.autopause.flags,
             ),
         )
 
@@ -1425,6 +1578,33 @@ def _pad3(a: Any) -> tuple[float, float, float]:
     """A 2- or 3-vector as three floats (z = 0 in 2D)."""
     v = np.asarray(a, np.float64).ravel().tolist()
     return (v[0], v[1], v[2] if len(v) > 2 else 0.0)
+
+
+# --- the origin row ---------------------------------------------------------------------------------------
+
+
+def origin_row(state: State, cfg: Config) -> dict[str, Any] | None:
+    """The row a new world has at its start step (``meta.json["origin_row"]``, §34.2): the first chapter of a
+    world is cut from it, because N1 needs a metrics row at both ends of a chapter and a world has none at the
+    step it starts from. ``{step, steps: 0, origin: true, observers: {alive}, clades_alive,
+    top_clade_share}``, from one ``snapshot_metrics`` and a count of the live organisms; no social head (the
+    observer has taken no snapshot at its start step), so the facts that need one are dropped from that
+    report.
+
+    None when there can be no such cut: the world has no observers, or its start step is off the snapshot grid
+    (its first, partial chapter is an arrival chapter with no report)."""
+    step = int(to_numpy(state.step))
+    if not cfg.game.observe or step % observer_mod.DEFAULT_SOCIAL.snapshot_every:
+        return None
+    snap = metrics.snapshot_metrics(state, cfg, heavy=True)
+    return {
+        "step": step,
+        "steps": 0,
+        "origin": True,
+        "observers": {"alive": int(to_numpy(state.alive).sum())},
+        "clades_alive": snap["clades_alive"],
+        "top_clade_share": snap["top_clade_share"],
+    }
 
 
 # --- ENVS -----------------------------------------------------------------------------------------------

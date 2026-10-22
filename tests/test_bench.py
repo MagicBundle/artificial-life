@@ -750,3 +750,15 @@ def test_play_bench_does_not_count_saving_as_boundary_work(
     c = r["arms"][0]["components_ms"]
     assert c["save"] >= 1e3 * delay_s, "the save part holds the disk's time"
     assert c["boundary"] < c["save"] / 2, (c["save"], c["boundary"])
+
+
+def test_the_bench_pacer_never_waits_at_a_chapter_end() -> None:
+    """A bench arm has no reader to press ``run``: its pacer starts with the chapter pause off (§34.2), so an
+    arm that crosses a chapter end measures the loop instead of waiting."""
+    import io
+
+    from alife import play, stream
+
+    pacer = bench._bench_pacer_class()(io.BytesIO(), stream.NoControl(), play.PlayOptions())
+    assert pacer.autopause.chapter is False and pacer.autopause.flags == 0
+    assert play.PlayPacer(io.BytesIO(), stream.NoControl(), play.PlayOptions()).autopause.chapter is True

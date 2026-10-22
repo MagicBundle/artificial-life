@@ -304,3 +304,30 @@ def test_a_new_world_into_a_non_empty_directory_writes_nothing(tmp_path: Path) -
     code, _, err = finish(spawn("play", *TINY, "--out", str(out)), "")
     assert code == 1 and "not empty" in err
     assert [p.name for p in out.iterdir()] == ["keep.txt"]  # not even a lock file
+
+
+def test_a_new_world_writes_the_origin_row_chapter_one_is_cut_from(tmp_path: Path) -> None:
+    """``meta.json`` gets ``origin_row`` when ``alife play`` creates a world on the snapshot grid (§34.2): the
+    row N1 needs at the first cut, which a new world has not got in ``metrics.jsonl``."""
+    out = tmp_path / "w"
+    code, d, err = play_tiny(out, "quit\n", until="10")
+    assert code == 0, err
+    row = RunDir.open(out).meta()["origin_row"]
+    first = next(r for r in d.records if r.tag == "FRMA")
+    assert row["step"] == 0 and row["steps"] == 0 and row["origin"] is True
+    assert row["observers"] == {"alive": first.f["n"]} and row["clades_alive"] >= 1
+    assert 0.0 < row["top_clade_share"] <= 1.0
+    assert set(row) == {"step", "steps", "origin", "observers", "clades_alive", "top_clade_share"}
+    # it is not a metrics row: the file the runner, the Lab and the analysis scripts read has none at step 0
+    assert 0 not in [r["step"] for r in RunDir.open(out).metrics_rows()]
+
+
+def test_a_resume_keeps_the_origin_row_it_was_made_with(tmp_path: Path) -> None:
+    out = tmp_path / "w"
+    code, _, err = play_tiny(out, "quit\n", until="10")
+    assert code == 0, err
+    before = RunDir.open(out).meta()["origin_row"]
+    code, _, err = finish(spawn("play", str(out), "--until", "20"), "quit\n")
+    assert code == 0, err
+    assert RunDir.open(out).meta()["origin_row"] == before
+    assert RunDir.open(out).meta()["start_step"] == 0

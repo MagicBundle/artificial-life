@@ -1092,6 +1092,8 @@ def _play_world(a: argparse.Namespace, sink: Any, control: stream.Control) -> in
             return code
         assert rd is not None
         step = int(to_numpy(box[0].step))
+        if (origin := play.origin_row(box[0], cfg)) is not None:  # the row Chapter 1 is cut from (§34.2)
+            rd.update_meta(origin_row=origin)
         if seed is not None:  # before the first checkpoint: the observer opens on it (Observer.open)
             housefile.write(rd, step, seed, rate=cfg.game.house_rate, run_seed=cfg.run.seed)
         planet = (

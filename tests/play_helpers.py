@@ -191,6 +191,16 @@ def random_script(seed: int, n_polls: int, uid_pool: Sequence[int]) -> list[list
         lambda: "idnt",
         lambda: f"labels {rng.choice(['on', 'off'])}",
         lambda: rng.choice(["bogus", "rate 99", "fields on", "color nope", "focus -1"]),  # refused, ignored
+        # G3b's presentation lines (DESIGN §34.6.1): an armed pause, a watch, an acknowledgement, a preview
+        lambda: rng.choice(
+            ["autopause on", "autopause off", "autopause chapter on", "autopause chapter off"]
+        ),
+        lambda: rng.choice(["autopause alert pop_fall on", "autopause alert nope off"]),
+        lambda: rng.choice(["watch 3", "watch off", "unwatch 3", "ack 466250600"]),
+        lambda: rng.choice(
+            ["power preview food id=1 mult=1.3", "power strike id=2", "power cancel food id=3"]
+        ),
+        lambda: "intent make it rain",
     ]
     script: list[list[str]] = []
     for _ in range(n_polls):

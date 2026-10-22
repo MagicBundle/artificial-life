@@ -39,6 +39,23 @@ import Testing
         #expect(ClockStrip(clock: clock(rate: 1, reason: .error), baseRate: 14.4).readout == "stopped by an error")
     }
 
+    @Test func aChapterOrAlertPauseIsPausedAndTheCardRunningIsNot() {
+        // Reasons 3 and 4 with rate 0 are the world's own pauses (the chapter end, an alert): the strip shows Pause and why.
+        let chapter = ClockStrip(clock: clock(rate: 0, reason: .chapter), baseRate: 14.4)
+        #expect(chapter.selected == .pause && chapter.paused && chapter.readout == "end of chapter")
+        #expect(chapter.stopReason == "end of chapter")
+        let alert = ClockStrip(clock: clock(rate: 0, reason: .alert), baseRate: 14.4)
+        #expect(alert.selected == .pause && alert.paused && alert.readout == "alert")
+        // The announcement while the checkpoint of a chapter end is written, and a chapter end whose pause is off, carry
+        // reason 3 with the world still running: the strip does not say paused for a second and then run again.
+        let saving = ClockStrip(clock: clock(rate: 1, achieved: 14.112, reason: .chapter, saving: true), baseRate: 14.4)
+        #expect(!saving.paused && saving.selected == .rate(.multiplier(1)) && saving.saving)
+        #expect(saving.readout == "0.98x of 1x")
+        // The window's own request still wins over the clock.
+        let asked = ClockStrip(clock: clock(rate: 0, reason: .chapter), requested: .multiplier(1), baseRate: 14.4)
+        #expect(!asked.paused && asked.selected == .rate(.multiplier(1)))
+    }
+
     @Test func whatTheWindowJustAskedWinsOverTheClockUntilTheNextOne() {
         // Running at 1x; the user picked Pause: the strip shows it at once.
         let asked = ClockStrip(clock: clock(rate: 1), requested: .multiplier(0), baseRate: 14.4)

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import math
 import struct
+import threading
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Final
 
@@ -238,15 +239,19 @@ def record(tag: str, step: int, seq: int, flags: int, body: bytes, version: int 
 
 
 class Sequencer:
-    """The per-tag ``seq`` counters of one stream, from 0."""
+    """The per-tag ``seq`` counters of one stream, from 0. Thread-safe: a worker (the report job) takes the
+    numbers of its own tag while the loop takes the others', and without the lock two threads taking different
+    tags could lose an increment and repeat a ``seq``."""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self._next = dict.fromkeys(TAGS, 0)
 
     def take(self, tag: str) -> int:
-        n = self._next[tag]
-        self._next = {**self._next, tag: n + 1}
-        return n
+        with self._lock:
+            n = self._next[tag]
+            self._next = {**self._next, tag: n + 1}
+            return n
 
 
 def header_bytes(info: Mapping[str, Any]) -> bytes:

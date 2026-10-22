@@ -1041,6 +1041,12 @@ def _bench_pacer_class() -> type:
         _save_at = 0.0
         _after_exit = 0.0
 
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            # an arm has nobody to press `run`: the world must not wait at a chapter end (the stall of a
+            # chapter's save is then a hitch, as in any unattended run)
+            self.autopause.chapter = False
+
         def _lap(self, key: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
             t0 = time.perf_counter()
             try:

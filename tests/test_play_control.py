@@ -191,7 +191,7 @@ def test_the_grammar_commands_are_the_spec_list() -> None:
         *("pause", "run", "step", "rate", "color", "every", "focus", "follow", "idnt", "labels", "quit"),
         *("autopause", "watch", "unwatch", "ack", "power", "intent"),
     }
-    assert set(play.GAME_LINES) <= set(play.COMMANDS)
+    assert set(play.UNBUILT_LINES) <= set(play.COMMANDS)
 
 
 # --- the channel ------------------------------------------------------------------------------------------
@@ -340,11 +340,11 @@ def test_invalid_lines_are_noted_and_ignored(tmp_path: Path) -> None:
 
 
 def test_the_decide_half_lines_are_noted_until_their_stage_and_change_nothing(tmp_path: Path) -> None:
-    """The six lines of the decide half parse (the window sends them) and are answered with a note until the
-    stage that builds their handler; they must not reach the focus branch or change the stream."""
+    """``watch``, ``unwatch``, ``ack``, ``power`` and ``intent`` parse (the window sends them) and are
+    answered with a note until the stage that builds their handler; they must not reach the focus branch or
+    change the stream."""
     notes: list[str] = []
     lines = [
-        "autopause on",
         "watch 3",
         "unwatch 3",
         "ack 466250600",

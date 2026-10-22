@@ -51,7 +51,10 @@ package struct ClockStrip: Equatable, Sendable {
         stopReason = Self.text(of: reason)
         let rate: PlayRate? = requested ?? clock.flatMap { PlayRate(clock: $0.rate) }
         // What the window just asked wins over the clock, which lags by at most a quarter of a second.
-        paused = requested.map { $0 == .multiplier(0) } ?? (reason != .running || clock?.rate == 0)
+        // A chapter or alert reason with a rate above zero is the world still running: it announces the card while the
+        // checkpoint is written (and stays the reason of a chapter end whose pause is off). The pause itself has rate 0.
+        let stopped = [PlayClock.Reason.userPause, .endOfSteps, .error].contains(reason)
+        paused = requested.map { $0 == .multiplier(0) } ?? (stopped || clock?.rate == 0)
         if paused {
             selected = .pause
         } else if let rate, PlayRate.rungs.contains(rate) {
