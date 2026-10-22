@@ -330,3 +330,31 @@ def test_a_pacer_run_has_the_files_of_a_plain_run(tmp_path: Path, monkeypatch: p
     assert sorted(p.name for p in plain.path.rglob("*") if p.is_file()) == sorted(
         p.name for p in paced.path.rglob("*") if p.is_file()
     )
+
+
+def test_a_checkpoint_stall_is_announced_and_counted_apart_from_lateness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow save (here 2 fake seconds) is sent as ``saving`` before it starts and ends, the steps it skipped
+    are ``save_stall_steps`` and never ``late_steps``, and the world goes on at its own pace afterwards."""
+    clock = FakeClock()
+    real = runio.write_state_file
+
+    def slow(path: Path, s: Any, cfg: Any) -> None:
+        if int(np.array(s.step)) == 30:
+            clock.now += 2.0
+        real(path, s, cfg)
+
+    monkeypatch.setattr(runio, "write_state_file", slow)
+    opt = play.PlayOptions(rate=1.0, paused=False, fresh=True)
+    _, _, pacer, out = run_paced(world("2d"), tmp_path / "w", 40, [], clock=clock, options=opt)
+    clcks = [(r.step, r.f) for r in decoded(out).records if r.tag == "CLCK"]
+    assert [s for s, f in clcks if f["saving"]] == [30, 40]  # each save is announced, at its own step
+    before = next(f for s, f in clcks if s == 30 and f["saving"])
+    assert before["save_stall_steps"] == 0  # announced before the stall begins
+    after = next(f for s, f in clcks if s == 30 and not f["saving"] and f["save_stall_steps"])
+    assert (
+        after["save_stall_steps"] == pytest.approx(2.0 * play.BASE_RATE, abs=2) and after["late_steps"] == 0
+    )
+    assert pacer.sched.late_steps == 0 and pacer.sched.save_stall_steps == after["save_stall_steps"]
+    assert clcks[-1][1]["saving"] == 0

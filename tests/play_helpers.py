@@ -6,7 +6,11 @@ from __future__ import annotations
 import dataclasses
 import io
 import json
+import os
 import random
+import subprocess
+import sys
+import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -246,3 +250,36 @@ def decoded(out: io.BytesIO) -> Decoded:
 
 def json_dump(x: Any) -> str:
     return json.dumps(x, sort_keys=True)
+
+
+# --- the command as a process ----------------------------------------------------------------------------
+
+CODE = (
+    "import sys; import mlx.core as mx; mx.set_default_device(mx.cpu); "
+    "from alife.cli import main; sys.exit(main(sys.argv[1:]))"
+)  # the CPU, set before alife is imported: the GPU belongs to the coordinator
+
+
+def spawn(*args: str, stdout: int = subprocess.PIPE) -> subprocess.Popen[bytes]:
+    """``alife <args>`` as a subprocess on the CPU with pipes for stdin, stdout and stderr."""
+    env = {**os.environ, "TMPDIR": os.environ.get("TMPDIR", "/tmp")}
+    return subprocess.Popen(
+        [sys.executable, "-c", CODE, *args],
+        stdin=subprocess.PIPE,
+        stdout=stdout,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+
+
+def finish(p: subprocess.Popen[bytes], send: str = "", timeout: float = 240) -> tuple[int, bytes, str]:
+    """Send ``send`` and close stdin (EOF is a quit), wait for the exit; ``(code, stdout, stderr)``."""
+    out, err = p.communicate(send.encode(), timeout=timeout)
+    return p.returncode, out, err.decode(errors="replace")
+
+
+def wait_for(path: Path, timeout: float = 120) -> None:
+    deadline = time.monotonic() + timeout
+    while not path.exists():
+        assert time.monotonic() < deadline, f"{path} did not appear"
+        time.sleep(0.05)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
@@ -732,3 +733,55 @@ def test_resume_refuses_a_corrupt_social_log(
     capsys.readouterr()
     assert cli.main(["resume", str(rd.path), "--steps", "5"]) == int(runner.ExitCode.ERROR) == 1
     assert "JSONDecodeError" in capsys.readouterr().err and _tree(rd.path) == before
+
+
+# --- play.json, play.lock (DESIGN §33.3.3) -----------------------------------------------------------------
+
+
+def test_create_ignores_a_lock_file_and_nothing_else(micro_cfg: Config, tmp_path: Path) -> None:
+    path = tmp_path / "w"
+    with runio.PlayLock(path):
+        assert (path / "play.lock").read_text().strip().isdigit()
+        RunDir.require_new(path)  # a directory holding only the lock is new
+        rd = RunDir.create(path, micro_cfg)
+        assert (rd.path / "config.json").exists() and (path / "play.lock").exists()
+    assert not (path / "play.lock").exists()  # released: the file is removed with the lock
+    with pytest.raises(FileExistsError, match="not empty"):
+        RunDir.require_new(path)
+    with pytest.raises(FileExistsError, match="not empty"):
+        RunDir.create(path, micro_cfg)
+    (tmp_path / "f").write_text("x")
+    with pytest.raises(FileExistsError, match="not a directory"):
+        RunDir.require_new(tmp_path / "f")
+    assert (
+        RunDir.create(path, micro_cfg, overwrite=True).path == path
+    )  # (unchanged: a run directory is replaced)
+
+
+def test_the_lock_is_exclusive_and_goes_with_the_holder(tmp_path: Path) -> None:
+    held = runio.PlayLock(tmp_path / "w").acquire()
+    assert runio.play_lock_holder(tmp_path / "w") == os.getpid()
+    with pytest.raises(runio.PlayLockError, match="being played"):
+        runio.PlayLock(tmp_path / "w").acquire()
+    assert (tmp_path / "w" / "play.lock").exists()  # the refused attempt did not remove the holder's file
+    held.release()
+    assert runio.play_lock_holder(tmp_path / "w") is None
+    stale = tmp_path / "x"
+    stale.mkdir()
+    (stale / "play.lock").write_text("12345\n")  # a crash leaves a file that locks nothing
+    assert runio.play_lock_holder(stale) is None
+    with runio.PlayLock(stale):
+        assert runio.play_lock_holder(stale) == os.getpid()
+
+
+def test_play_json_round_trips_and_checks_its_version(micro_cfg: Config, tmp_path: Path) -> None:
+    rd = RunDir.create(tmp_path / "w", micro_cfg)
+    assert rd.read_play_json() is None
+    rd.write_play_json({"base_rate": 14.4, "tick": 25})
+    assert rd.read_play_json() == {"base_rate": 14.4, "tick": 25, "play_version": 1}
+    rd.play_path.write_text('{"play_version": 2}')
+    with pytest.raises(ValueError, match=r"play\.json"):
+        rd.read_play_json()
+    rd.play_path.write_text("[]")
+    with pytest.raises(ValueError, match=r"play\.json"):
+        rd.read_play_json()

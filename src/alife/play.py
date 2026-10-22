@@ -37,7 +37,7 @@ from typing import Any, BinaryIO, Final, Protocol
 import mlx.core as mx
 import numpy as np
 
-from alife import layout, streamrec
+from alife import layout, runner, streamrec
 from alife import weather as W
 from alife.config import Config, config_hash, dims, immigration_on
 from alife.director import log as director_log
@@ -67,6 +67,8 @@ __all__ = [
     "Scheduler",
     "check_tick",
     "parse_play_command",
+    "serve_play",
+    "world_tick",
 ]
 
 BASE_RATE: Final = (
@@ -122,6 +124,13 @@ def check_tick(tick: int) -> None:
     """The tick must divide the snapshot cadence (the play records coincide at the boundary)."""
     if tick < 1 or SNAPSHOT_EVERY % tick:
         raise ValueError(f"the tick must divide {SNAPSHOT_EVERY}, got {tick}")
+
+
+def world_tick(cfg: Config) -> int:
+    """The storm tracker's cadence in a world: the weather's own ``detect_every`` (calibrated together with
+    the tracker's ``miss_grace`` and predictor, so there is no flag for it) or ``PLAY_TICK`` without weather.
+    """
+    return W.params_from_config(cfg).detect_every if cfg.weather.enabled else PLAY_TICK
 
 
 # --- the clock ------------------------------------------------------------------------------------------
@@ -1239,7 +1248,7 @@ def environment_object(
     mx.eval(*(getattr(state, f"env_{k}") for k in inert))
     now = {k: np.asarray(to_numpy(getattr(state, f"env_{k}"))) for k in inert}
     levers = {
-        k: (v.tolist() if v.ndim else float(v)) for k, v in now.items() if not np.array_equal(v, inert[k])
+        k: (v.tolist() if v.ndim else v.item()) for k, v in now.items() if not np.array_equal(v, inert[k])
     }
     period, amp = int(now["season_period"]), float(now["season_amp"])
     season = (
@@ -1282,3 +1291,45 @@ def environment_object(
 def _source(source: str) -> str:
     """The entry's source as the stream names it: ``rule``, ``llm`` or ``player`` (any other is a rule)."""
     return source if source in ("rule", "llm", "player") else "rule"
+
+
+# --- the process ------------------------------------------------------------------------------------------
+
+
+def serve_play(
+    rd: RunDir,
+    cfg: Config,
+    box: list[State],
+    *,
+    steps: int,
+    options: PlayOptions,
+    control: Control,
+    out: BinaryIO,
+    director: Any = None,
+    clock: Clock | None = None,
+) -> int:
+    """Play the world in ``box`` for ``steps`` steps under a ``PlayPacer`` and return the process exit code.
+
+    The runner holds the only reference to the state (``box`` is popped here). Every way the play can end has
+    taken the runner's ordinary stop path first (checkpoint, event chunk, status), so the exit code only says
+    why: 0 for a ``quit``, an end of the control channel, a closed reader, the ``until`` step and an extinct
+    world (which ends before the header, with a note on stderr); 130 for a SIGINT; 1 when the presenter failed
+    (after the checkpoint); 3 for an invariant violation. ``control`` is closed on the way out.
+    """
+    pacer = PlayPacer(out, control, options, clock=clock)
+    try:
+        res = runner.run(rd, cfg, box.pop(), steps, quiet=True, director=director, pacer=pacer)
+    finally:
+        control.close()
+    if res.status == "extinct":
+        print(
+            f"play: the world is extinct at step {int(to_numpy(res.state.step))}", file=sys.stderr, flush=True
+        )
+        return int(runner.ExitCode.OK)
+    if pacer.failure is not None and not isinstance(pacer.failure, OSError):
+        return int(runner.ExitCode.ERROR)
+    if res.status == "violation":
+        return int(res.exit_code)
+    if res.status == "interrupted" and not pacer.stop_requested:
+        return int(runner.ExitCode.INTERRUPTED)  # a SIGINT
+    return int(runner.ExitCode.OK)

@@ -18,7 +18,9 @@ where a record's ``step`` is the index of the step during which it happened; a c
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
+import fcntl
 import json
 import math
 import os
@@ -53,6 +55,11 @@ DIRECTOR_ARCHIVE_FILE: Final = "director_archive.json"
 OBSERVERS_DIR: Final = "observers"  # the observer sidecars of an observing run (DESIGN §28.6)
 SOCIAL_FILE: Final = "social.jsonl"  # observers/social.jsonl: one record per social snapshot (DESIGN §29.10)
 STORMS_FILE: Final = "storms.jsonl"  # observers/storms.jsonl: one line per tracker tick with storms (§33.3)
+PLAY_FILE: Final = (
+    "play.json"  # a played world's settings; its absence marks a directory as not a play world (§33.3.3)
+)
+PLAY_LOCK_FILE: Final = "play.lock"  # the advisory lock of the one process that plays a directory (§33.3.3)
+PLAY_VERSION: Final = 1
 STATUSES: Final = ("running", "done", "extinct", "violation", "interrupted")
 
 BIRTH_COLUMNS: Final[Mapping[str, Any]] = {
@@ -81,6 +88,81 @@ _MAX_HEADER: Final = 1 << 26  # sanity bound on a safetensors JSON header
 
 class CheckpointError(Exception):
     """Incompatible or corrupt checkpoint (version, shape or config-hash mismatch)."""
+
+
+class PlayLockError(Exception):
+    """The directory is being played by another process (``pid``, 0 if unknown)."""
+
+    def __init__(self, path: Path, pid: int) -> None:
+        super().__init__(f"{path} is being played by process {pid} (play.lock): stop that play first")
+        self.pid = pid
+
+
+def _lock_pid(path: Path) -> int:
+    try:
+        return int(path.read_text(encoding="utf-8").split()[0])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+class PlayLock:
+    """The advisory ``flock`` of ``<dir>/play.lock``, held by the one process that plays a directory.
+
+    ``acquire`` creates the directory if need be and the lock file, takes an exclusive non-blocking lock and
+    writes the pid into it (``PlayLockError`` if another process holds it); ``release`` removes the file and
+    drops the lock. The lock goes with the process, so a crash leaves a stale file that locks nothing.
+    ``RunDir.create`` ignores a lock file in an otherwise empty directory, so a new world is locked before
+    anything else is written to it.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self.dir = Path(directory)
+        self.path = self.dir / PLAY_LOCK_FILE
+        self._fd: int | None = None
+
+    def acquire(self) -> PlayLock:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise PlayLockError(self.dir, _lock_pid(self.path)) from None
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        self._fd = fd
+        return self
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        with contextlib.suppress(OSError):
+            self.path.unlink()
+        with contextlib.suppress(OSError):
+            os.close(self._fd)  # closing drops the flock
+        self._fd = None
+
+    def __enter__(self) -> PlayLock:
+        return self.acquire() if self._fd is None else self
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+
+def play_lock_holder(directory: Path) -> int | None:
+    """The pid of the process playing ``directory`` (0 if its pid is unreadable), else None."""
+    path = Path(directory) / PLAY_LOCK_FILE
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return _lock_pid(path)
+    finally:
+        os.close(fd)  # (a lock taken here goes with the descriptor)
+    return None
 
 
 # --- atomic file helpers --------------------------------------------------------------------------------
@@ -378,6 +460,17 @@ class RunDir:
     def media_dir(self) -> Path:
         return self.path / "media"
 
+    @staticmethod
+    def require_new(path: Path) -> None:
+        """``FileExistsError`` unless ``path`` is absent or an empty directory (a ``play.lock`` file is not
+        content): what ``create`` checks, for a caller that must know before it writes anything."""
+        path = Path(path)
+        if path.exists():
+            if not path.is_dir():
+                raise FileExistsError(f"{path} exists and is not a directory")
+            if any(p.name != PLAY_LOCK_FILE for p in path.iterdir()):
+                raise FileExistsError(f"{path} is not empty (use overwrite to replace a run directory)")
+
     @classmethod
     def create(cls, path: Path, cfg: Config, *, overwrite: bool = False, parent: str | None = None) -> RunDir:
         """Create a fresh run directory holding ``cfg`` and a ``running`` meta.
@@ -386,12 +479,12 @@ class RunDir:
         (has ``meta.json``); anything else is never deleted.
         """
         path = Path(path)
-        if path.exists():
+        if not overwrite:
+            cls.require_new(path)
+        elif path.exists():
             if not path.is_dir():
                 raise FileExistsError(f"{path} exists and is not a directory")
-            if any(path.iterdir()):
-                if not overwrite:
-                    raise FileExistsError(f"{path} is not empty (use overwrite to replace a run directory)")
+            if any(p.name != PLAY_LOCK_FILE for p in path.iterdir()):  # a lock file is not content
                 if not (path / META_FILE).is_file():
                     raise FileExistsError(f"{path} is not a run directory; refusing to overwrite it")
                 shutil.rmtree(path)
@@ -459,6 +552,25 @@ class RunDir:
         meta = self.meta()
         meta.update(fields)
         self._write_meta(meta)
+
+    # play.json (§33.3.3)
+    @property
+    def play_path(self) -> Path:
+        return self.path / PLAY_FILE
+
+    def read_play_json(self) -> dict[str, Any] | None:
+        """The world's ``play.json``, None if the directory has none (it is not a play world, or unfinished);
+        ``ValueError`` if it is not a version-1 object."""
+        if not self.play_path.is_file():
+            return None
+        obj = json.loads(self.play_path.read_text(encoding="utf-8"))
+        if not isinstance(obj, dict) or obj.get("play_version") != PLAY_VERSION:
+            raise ValueError(f"{self.play_path}: not a play.json of version {PLAY_VERSION}")
+        return obj
+
+    def write_play_json(self, obj: Mapping[str, Any]) -> None:
+        """Atomically write ``play.json`` (version 1)."""
+        _atomic_write_text(self.play_path, _dumps({**obj, "play_version": PLAY_VERSION}) + "\n")
 
     # checkpoints
     def save_checkpoint(

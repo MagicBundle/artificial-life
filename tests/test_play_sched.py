@@ -307,3 +307,23 @@ def test_a_paused_wait_polls_the_stop_check(tmp_path: Path) -> None:
     assert int(rd.metrics_rows()[-1]["step"]) == 1  # exactly one more step ran
     assert clock.waits == 6 and clock.now - 1000.0 < 2.0
     assert [s for s, _ in rd.checkpoints()][-1] == 1
+
+
+def test_a_rate_the_machine_cannot_hold_does_not_over_produce_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """16x asks for 230 steps/s; steps that take 1/55 s give 55: the frame period follows what is achieved
+    (every second step for a 30 Hz display), not what was asked, and the dropped debt is counted late."""
+    snapshots(monkeypatch, 10)
+    clock = FakeClock()
+    CostedPacer.cost = 1 / 55
+    opt = play.PlayOptions(rate=16.0, paused=False, fresh=True)
+    cfg = world("2d", "run.metrics_every=50", "run.heavy_metrics_every=50", "run.checkpoint_every=100")
+    _, _, pacer, out = run_paced(
+        cfg, tmp_path / "w", 400, [], clock=clock, options=opt, pacer_class=CostedPacer
+    )
+    recs = decoded(out).records
+    assert [r.f["fe"] for r in recs if r.tag == "CLCK"][-1] == 2
+    late = [r.step for r in recs if r.tag == "FRMA" and r.step > 200]
+    assert all(b - a == 2 for a, b in pairwise(late))
+    assert pacer.sched.late_steps > 100  # the schedule cannot be kept and sheds what it cannot repay

@@ -3129,6 +3129,9 @@ alife inspect  RUN [--checkpoint STEP|latest] [--json] [--check] [--agent UID]
 alife view     [RUN | --preset P [--set ...]] [--checkpoint STEP|latest] [--steps-per-frame N] [--size WxH]
 alife stream   [RUN|FILE | --preset P [--set ...]] [--checkpoint STEP|latest] [--every K] [--steps N]
                [--follow [--poll SECONDS]] [--color tag|energy|clade] [--fields] [--field-z K] [--no-control]
+alife play     [RUN [--checkpoint STEP|latest] [--truncate] [--adopt] [--replay] | --init-from SRC[:STEP] | --preset P]
+               [--overlay O] [--set ...] [--weather-spinup N] [--seed S] [--out DIR] [--until STEP] [--rate M|max]
+               [--paused] [--base-rate SPS] [--frame-hz HZ] [--director off|rules] [--no-control]   (§33.2.8)
 alife bench    [--preset P] [--overlay fast|storm] [--set ...] [--steps 200] [--warmup 20] [--stages]
                [--determinism] [--brain-variants] [--observe] [--weather [--weather-pairs N]] [--json PATH]
 alife llm-check [--llm-url URL] [--llm-model NAME] [--timeout SECONDS] [--preset P]
@@ -3145,6 +3148,9 @@ feel it. It needs `weather.enabled` (exit 2 otherwise, before anything is writte
 has the weather on. **`bench --weather`** times the step with the weather on against the same config with it off, in
 interleaved blocks (needs `weather.enabled`, exit 2 otherwise); `--weather-pairs N` sets the number of off/on pairs
 (default 2). The `storm` overlay composes as `--preset 64k3d --overlay storm`.
+
+**`play`** (games G3a, §33.2.8) plays a world under the fixed-timestep scheduler with the observers on and writes the play records
+on stdout; `resume` refuses a directory that a `play` process holds (`play.lock`, §33.3.3).
 
 **`run`** creates the run directory and the initial state (or loads `--init-from`), then calls `runner.run`. Every
 metrics interval it prints one status line: step, population, births/deaths, bonds, largest body (heavy steps),
@@ -9629,7 +9635,7 @@ slot with -1 for an empty one, so that an owner byte is an index into it. The fi
 ### 33.2 The play loop (in progress)
 
 This section grows with the PR's commits: the host pieces the loop is built from (§33.2.1 to §33.2.3), the runner hook, the scheduler,
-the grammar and the presenter (§33.2.4 to §33.2.7); the command (`alife play`, the planet, `serve_play`) follows.
+the grammar and the presenter (§33.2.4 to §33.2.7) and the command (§33.2.8); §33.3.3 and §33.3.4 hold `play.json`, the lock and planets.
 
 #### 33.2.1 `Observer.identity_rows` (the rows and tables of an `IDNT`)
 
@@ -9783,6 +9789,35 @@ Tests: `test_play_sched.py` (the scheduler on a fake clock: rates, pause and run
 a closed reader, a raising callback, the order of `before_checkpoint`, the state file and the tracker file, `after_step` against the social log, the donation check, paused time, an extinct world), `test_play_purity.py`
 (the equality of §33.2.4), `test_play_focus.py` (`FOCS` against the state and against `IDNT` and `INTN`, the four rules on a built scene, the torus, the death point, a death in the step of a birth, a real starvation).
 
+#### 33.2.8 The command `alife play`
+
+```text
+alife play RUN [--checkpoint STEP|latest] [--truncate] [--adopt] [--replay] [--until STEP] [common]
+alife play --init-from SRC[:STEP] [--overlay storm] [--weather-spinup N] [--seed S] [--out DIR] [--set k=v ...] [common]
+alife play --preset P [--overlay O] [--set k=v ...] [--out DIR] [common]
+common = [--rate 0|0.25|0.5|1|2|max] [--paused] [--base-rate SPS=14.4] [--frame-hz 30] [--director off|rules] [--no-control]
+```
+Exactly one of RUN, `--init-from` and `--preset`; `--checkpoint --truncate --adopt --replay` belong to RUN and `--set --overlay --seed --out --weather-spinup` to a new world (exit 2 otherwise).
+`--rate` starts the world running at that multiple of the base rate (0, or none, starts it paused; `--paused` pauses it anyway); `--until STEP` ends the play at that step (status `done`, exit 0).
+
+- **Protocol discipline.** `play` enters `stream.protocol_output()` as its first act, before the fork is prepared, the spin-up, `Observer.open` and `runner.run`: the announcement, the spin-up progress lines and every other print go to stderr (the
+  window shows them as the planet's progress), and the header is the first thing written to the private descriptor, in `PlayPacer.bind`. `runner.run` gets `quiet=True` and `steps = 2**40`. Test: a planet with a spin-up decodes strictly from byte 0.
+- **A world directory** (`play RUN`) resumes like `alife resume` (the chosen checkpoint, default the newest, is loaded and the logs are cut to it by `RunDir.truncate_after`, with `keep_director` for `--replay`), under two guards, because
+  resume on a research run is destructive (it deletes later checkpoints, events and logs, rewrites `config.json` with the game cadence and prunes to 3 checkpoints): (1) a directory **without `play.json`** is refused (exit 2) unless `--adopt`, which first
+  copies `config.json` to `config.pre_play.json` (never overwritten) and lets `play.json` be written when the play starts; research runs are forked, not played in place; (2) `--checkpoint STEP` older than the newest is refused (exit 2) unless `--truncate`, and the refusal lists
+  what would be cut (the checkpoints, the metrics rows, the event chunks). Everything is validated (config, tick, log, checkpoint) before any file is touched; a refused play changes nothing, the adoption backup included. A plain `resume` of an adopted run still works.
+- **What play applies** on top of the world's config, through `apply_overrides` and restricted to resume-allowed keys: `PLAY_CADENCE` (`run.metrics_every=250`, `run.heavy_metrics_every=250`, `run.checkpoint_every=6000`, `run.keep_checkpoints=3`),
+  `game.observe=true` and the director mode: `--director off` (default) sets `run.director=off`, `rules` sets `live` with `director.llm_every=0` (the world needs `director.enabled`; one that does not is refused with the fork advice, and so is a world
+  whose recorded cadence in `play.json` is not `PLAY_CADENCE`: the rule tier decides from weighted means over rows written at that cadence, so another cadence is another trajectory of decisions), `--replay` sets `replay`
+  (the whole log is validated first, exit 2, and kept). `director.rule_every` is not touched. A new world gets the same items in its creation overrides, after the user's `--set`. In a world played with a live rule tier the run is reproducible through its `director.jsonl`,
+  not from config and seed alone.
+- **The tick** is `play.world_tick(cfg)`: the weather's `detect_every` (25, calibrated with `miss_grace` and the predictor) in a weather world, `PLAY_TICK` 25 otherwise; there is no flag. It must divide 250 (exit 2).
+- **New worlds** are made by `cli._prepare_fork` (the body of `run --init-from` up to `_launch`, extracted with unchanged behaviour: the same refusals of dimensions, height, radius and `n_init`, the same inert environment reset, `--weather-spinup` as `_spin_weather`) and
+  `cli._prepare_run` (the new-run path of `run`). Both take `before_create(out, cfg)`, called after every check and before `RunDir.create`: `play` takes `play.lock` there. A fork that turns the weather on requires `--weather-spinup N` with N >= 1 (exit 2 otherwise); a weather-on source
+  is forked as it is and refuses a spin-up. `PlayOptions.fresh` is set: the tracker starts empty at the start step and its empty state is saved with the first checkpoint.
+- **Exit codes** (`play.serve_play` over `runner.ExitCode`): 0 for a `quit`, the end of stdin, a closed reader, the `--until` step and an extinct world (which ends before the header, with a note on stderr), always after the runner's checkpoint, event chunk and status update; 130 for a SIGINT (it works while paused);
+  1 when the presenter failed (after the checkpoint, the traceback on stderr); 2 for a config error; 3 for an invariant violation; 4 for a checkpoint error. stderr carries diagnostics only.
+
 ### 33.3 The storm layer and its files
 
 #### 33.3.1 `storms.py`
@@ -9835,6 +9870,23 @@ eight random scenes at three stop points, on the `STRM` bytes and the events; a 
 `open` with a missing, foreign or damaged state; `tick_at` on the W0 balanced vortex against the manual pipeline; the `MAP1` planes against an independent computation and
 through the independent decoder; the real weather resumed; `dc_reference`). Mutations of the state (`missed`, `peak`, `t_first`, the footprint, `next_id`), of the naming threshold
 and of the three file rules were each caught.
+
+#### 33.3.3 `play.json`, `play.lock` and the guards
+
+| file | content | rule |
+|---|---|---|
+| `play.json` | `{play_version: 1, base_rate, cadence: {metrics_every, heavy_metrics_every, checkpoint_every, keep_checkpoints}, tick, weather: {dc_ref} \| null, planet: {source, step, weather_spinup, houses: "exact" \| "clade" \| "none", made_at_step} \| null}` (`RunDir.read_play_json`, `write_play_json`) | written **last**: by the pacer's `on_ready` callback, after the spin-up and the first checkpoint exist and the cloud-depth scale is known, before the header, and rewritten at every open. A directory without one is unfinished (a cancelled planet build) or not a play world, and `play RUN` refuses it. `dc_ref` is computed once, from the spun-up weather, and read back by every later session, so the map scale is the same in all of them. `base_rate` is a play setting (`--base-rate` overrides it) |
+| `play.lock` | the pid of the process playing the directory, under an advisory `flock` (`runio.PlayLock`) | taken **before anything else is written to the directory** (for a new world on the new `--out`, in `before_create`, after the checks) and released, the file removed, at the end of the process, after the quit checkpoint: a world that is still saving is busy. A second `play` is refused (exit 2) and so is `alife resume` (`cli._refuse_if_played`; the Lab's Start and Resume follow in the app). `RunDir.create` ignores a lock file in an otherwise empty directory |
+
+`RunDir` gained `PLAY_FILE`, `PLAY_LOCK_FILE`, `PlayLock`, `PlayLockError`, `play_lock_holder`, `play_path`, `read_play_json` and `write_play_json`.
+
+#### 33.3.4 Planets
+
+A **planet** is a fork of an evolved checkpoint with the weather on and spun up: `alife play --init-from runs/64k3d_s0:500000 --overlay storm --set director.enabled=true --weather-spinup 20000 --out runs/planet_a`. It is `run --init-from` plus the W1 tools
+(`weather_spinup.spinup`, §30.9) behind `cli._prepare_fork`; the founder transient of the source is never replayed. Its `play.json.planet` records the source (`RUN:STEP`), the start step, the spin-up and the houses mode. The fork keeps its origin checkpoint (`meta.start_step`) through `RunDir._prune`
+(§18). The source's observer sidecar cannot cross a fork (its config hash differs), so a planet starts **fresh observers** at the fork: houses seeded from clades (`houses` `"clade"` in `play.json` and `exact` false in every `IDNT`), labels warm up; the exact rebuild from the source's event
+chunks comes with `analysis/houses.py` (a later commit of this PR). Tests: `tests/test_play_planet.py` (a planet on the 256-row 64k3d world: stdout strictly the stream, `play.json`, fresh observers, the spin-up's pools at the start step, the origin checkpoint after the saves, the storm files, the refusals, a cancelled spin-up leaves no `play.json`),
+`tests/test_play_cli.py` (the process: header, quit, EOF, a closed reader, SIGINT, the lock and the Lab's resume, adopt, truncate, flags, `--until`), `tests/test_play_replay.py` (`play --replay` against `resume --director replay`; the log untouched; the rule tier and the cadence guard).
 
 ---
 
