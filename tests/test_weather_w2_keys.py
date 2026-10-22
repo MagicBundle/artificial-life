@@ -694,7 +694,8 @@ def test_a_zonally_uniform_wind_has_no_eddy_even_with_v_varying_in_y(cfg: Config
     else:
         aw = W.sample_wind_h(ws, mx.array(_agents()[:, :2]), p, eddy=True)
     assert np.abs(_np(aw.u)[:, :2]).max() > 0.02  # there is wind to subtract
-    assert np.abs(_np(aw.u_eddy)).max() < 1e-7
+    # float32 rounding of u - zonal mean (Linux CPU measured 1.2e-7, one ulp at 1.0): far below the 0.02 wind
+    assert np.abs(_np(aw.u_eddy)).max() < 1e-6
 
 
 def test_a_wind_with_zero_zonal_mean_is_all_eddy(cfg: Config) -> None:
@@ -796,7 +797,7 @@ def test_a_zonally_uniform_wind_gives_no_horizontal_eddy_force(cfg: Config) -> N
     full = _aw(cfg, ws, s)
     eddy = _aw(cw(cfg, wind_eddy_force=True), ws, s)
     assert np.abs(_np(full.force)[:, :2]).max() > 1e-3
-    assert np.abs(_np(eddy.force)[:, :2]).max() < 1e-7
+    assert np.abs(_np(eddy.force)[:, :2]).max() < 1e-6  # float32 rounding, as above
 
 
 def test_storm_eddy_makes_the_hazard_speed_the_eddy_speed(cfg: Config) -> None:
