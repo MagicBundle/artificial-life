@@ -9368,6 +9368,229 @@ G4); no player commands or relation states (G4); no obituaries, territory or K-b
 
 ---
 
+## 33. The play loop and the World window (games G3a)
+
+**Status: in progress** (G3a PR, branch `games/g3a`; Review-log row I51 when it merges). `alife play` runs one world
+under a fixed-timestep scheduler with the game observers on, writes the records of §33.1 after the header of
+`alife stream` (§27.11) and reads control lines from stdin; the World window of `AlifeControl` shows them. Nothing in
+`play` changes a trajectory: pacing, frames, records and focus are presentation. The section grows with the commits of
+the PR: §33.1 (the stream records) lands first, with the Python encoders (`streamrec.py`), the independent decoder and
+the shared fixtures, then the Swift decoder; the rest follows: §33.2 `alife play`, the runner hook and the scheduler;
+§33.3 files, planets and houses; §33.4 the World window; §33.5 performance and the gate; §33.6 tests.
+
+### 33.1 The stream records (ALSTRM v1, compatible additions)
+
+#### 33.1.1 Conventions (normative here; the Swift decoder is written from it)
+
+All as §27.11: little endian, tag (4 bytes) + `u32 len` + payload, `len` a multiple of 4, unknown tags skipped by `len`.
+Added to the header object (new keys: ignored by old readers, so no version bump): `play` (below). `color_modes` is the
+writer's list; `play` puts `tag energy clade` first (their indices equal `stream`'s) then `house kin archetype intent`. A
+`play` stream sends **no `FRM1`**; the Lab's viewer shows nothing from it and says so (it reads `play.records`).
+**The legacy header keys are pinned**, because `StreamHeader.validate` (Swift) rejects `mode` outside `simulate|follow`, `source` outside
+`run|file|preset`, a `color` outside `color_modes`, and wants `FG`, `FZ`, `field_cell`, `NCH` consistent with `L` and `height`: a play
+header carries `mode:"simulate"`, `source:"run"` (a world directory) or `"preset"`, `every:1`, `fields:false`, `color:"tag"`, and `FG`, `FZ`,
+`field_cell`, `NCH` as `stream` writes them for the world (no field section is sent; the keys stay valid). A reader that does
+not know a tag accepts the header (it ignores `play`) and passes the record on as an `unknownRecord`, so an older
+client shows nothing from a play stream and does not fail (the Swift tests rename the tags of the fixture to pin this).
+
+```text
+play = {"records": ["FRMA","IDNT",...], "versions": {"FRMA":1,...}, "base_rate":14.4, "rates":[0.25,0.5,1,2],
+        "tick":25, "snapshot_every":250, "frame_hz":30, "chapter":6000,
+        "weather": {"enabled":bool, "cells":160, "dx":2.0, "f0":0.025, "coarse":40, "name_zeta":0.5,
+                    "refs":{"p":0.004,"dc":D,"u":0.1,"zeta":0.025}},
+        "labels": {"intent_version":2, "arch":["Gatherer",...], "intent":["Budding",...]},   # display names, index = byte
+        "cast": {"kin":16,"house":16,"colony":16}, "energy_cap": int, "events": {"1":"kin_born",...},
+        "planet": {"source":str|null,"houses":"exact"|"clade"|"none"}}
+```
+**Common head of every record, `FRMA` included** (16 bytes): `u64 step` (the step of the state it describes), `u32 seq` (per tag, from 0; a
+gap means a lost record, none in a pipe), `u16 version`, `u16 flags` (tag-specific; bits a version does not define are written as zero and ignored by readers).
+**JSON in records** is UTF-8 from `json.dumps(obj, allow_nan=False, ensure_ascii=False, separators=(",", ":"))` (a NaN or infinity is a writer
+error, caught by the encoder tests); `json_len` is the **unpadded** byte length, followed by 0-3 zero bytes to a multiple of 4, in every record that has JSON.
+
+**Delivery class** (the Swift mailbox, §33.4): *latest-wins* per tag (`FRMA IDNT INTN TERR STRM MAP1 ENVS CLCK FOCS`: a newer
+record replaces an undelivered older one, and a drop is counted) or *queued* (`EVNT`: never dropped, delivered in order,
+deduplicated by `id`). `FRMA` is also latest-wins, as `FRM1` is today. **A latest-wins record is complete**: it never relies on an optional
+section that a newer record might omit (`MAP1` carries `T_s` every time, §33.1.7). The initial state is written in `bind` in this order:
+header, `FRMA`, `IDNT`, `INTN`, `TERR`, `ENVS`, `MAP1`, `STRM`, `EVNT` (backlog), `CLCK`; `idnt` repeats the same set except the header and the backlog.
+
+#### 33.1.2 `FRMA`: alive-only frame (version 1)
+
+| offset | size | field |
+|---|---|---|
+| 0 | 16 | common head: `u64 step`, `u32 seq`, `u16 version`, `u16 flags` (bit 0 diag error, as `FRM1` bit 1) |
+| 16 | 4 | `u32 n`: alive rows listed |
+| 20 | 4 | `u32 n_bonds` |
+| 24 | 4 | `u32 color_index` |
+| 28 | 4 | `u32 span`: steps since the previous `FRMA` written (0 for the first); informational, the client uses the step difference of the frames it was delivered |
+| 32 | 4 | `u32 N`: capacity (redundant with the header; a decoder checks it) |
+| 36 | `4·ceil(N/32)` | **alive bitmap**: `u32` words, bit `r` = row `r` alive (LSB first). `popcount = n` |
+| | `12·n` | **pos**: `(f32 x, f32 y, f32 z)` per listed row, ascending row; z = 0 in 2D |
+| | `4·n` | **orient**: `(f16 yaw, f16 pitch)` |
+| | `4·n` | **rgb**: `u32 0x00RRGGBB` (hurt agents red in every mode, as `FRM1`) |
+| | `8·n` | **uid**: `i64` |
+| | `8·n_bonds` | **bonds**: `(u32 i, u32 j)`, `i < j`, **indices into the listed rows** (not slots), ascending `i` then slot order |
+
+The common head gives `FRMA` a `seq` and a `version`, so the per-tag version rule of §33.1.12 applies to it like to any record. Length is exactly `36 + 4·ceil(N/32) + 28·n + 8·n_bonds`. At 65,536 rows and 42k alive: 1.18 MB + bonds (measured encode: 1.33 MB with
+40k candidate pairs). Compared with `FRM1` (21 B per **slot**, 1.38 MB) it is 14% smaller at 64%
+occupancy and carries the uid; the bitmap replaces a 4-byte row index per row (saving 160 KB at 42k). Row `r`'s position among the listed
+rows is `popcount(bitmap below r)`; the decoder builds `rows[i]` and `slotOfRow[r]` once. Sections start at multiples of 4 bytes; the Swift side copies bytes into aligned buffers.
+
+#### 33.1.3 `IDNT`: identities (version 1; at every snapshot, on `idnt`, at start)
+
+Head(16) + `u32 n_rows`, `u32 snapshot_step`, `u32 json_len`, `u32 reserved` + JSON + pad (§33.1.1) + `n_rows × 16 B`:
+`i64 uid | i32 clade | u8 house_slot | u8 kin_slot | u8 colony_slot | u8 flags` (alive rows, ascending row). Slots index the tables
+below; **254 = listed-as-other, 253 = unknown immigrant lineage (houses of an observer attached mid-run), 255 = none**. flags bit 0 = born after the
+last snapshot: at a snapshot step none is flagged; an `idnt` between snapshots lists the current rows with the slots the observer holds
+(`social_labels()`: newborns inherit their parent's house, kin and colony per step), approximate for the flagged rows.
+```text
+json = {"houses":  [{"slot","id","name","size","clade"} ...<=16],   "exact": bool, "origin": int,
+        "kin":     [{"slot","id","name","named_after","size","clade","clade_share","sim_self","x","y","z"?,"arch":[...7]|null,
+                     "births","deaths":[starved,killed,aged,catastrophe(,storm)]|null} ...<=16],
+        "colonies":[{"slot","id","size","kin","x","y"} ...<=16],  "unknown_immigrant": int}
+```
+These are the columns of the G2 record's `houses`, `kin_groups`, `colonies` tables (§29.11, §29.14), copied, not recomputed.
+Per-row slots come from `Observer.social_labels()` (house id mapped to its slot in the listed top-16, kin slot, colony slot).
+Size: 16 B × 42k = 672 KB + about 4 KB JSON (measured rows build 0.11 ms). The client matches rows by **uid** (frames carry it), so
+alignment with a particular `FRMA` is not needed. **Rows born after the last `IDNT` are absent from the client's map** until the next one
+(about 45 births per step, est.: up to 11,000 between snapshots, a quarter of the population at 64k3d); the client shows them as new, with no
+lineage entry. Two things make that harmless: the colour modes are drawn by the server in `FRMA.rgb` and need no `IDNT`, and `FOCS`
+carries the focused row's own slots and labels (§33.1.10), so the inspector is complete for any organism, newborns included.
+
+#### 33.1.4 `INTN`: labels (version 1; every tick, unless `labels off`)
+
+Head(16) + `u32 n_rows`, `u32 labels_step` (the last evaluation, <= step), `u32 intent_version`, `u32 reserved` + `n_rows × 12 B`: `i64 uid |
+u8 arch_primary | u8 arch_secondary | u8 intent | u8 flags`. Bytes are `rules.Archetype` / `rules.Intent` values (0 = none); display
+names are in the header (`play.labels`, from `ARCHETYPE_DISPLAY`, `INTENT_DISPLAY`). flags: bit 0 evaluated (past warm-up), bit 1 Budding overlay
+(a forecast, C10). 504 KB at 42k per tick (0.3 MB/s at 1x). Rows are those of `Observer.host_labels()`.
+
+#### 33.1.5 `TERR`: territory (version 1; at every snapshot)
+
+Head(16) + `u16 nx, u16 ny` (32 x 32, `SocialRules.terr_cells`), `u32 snapshot_step`, `u32 json_len`, `u32 reserved` + JSON `{"ids":[kin id by slot]}` + `nx·ny`
+bytes **owner slot** (255 none; index `y·nx + x`, cell (x, y) covers `[x·L/nx, (x+1)·L/nx)`) + `nx·ny` bytes **purity** (`round(purity_q16/257)`). Source:
+`Observer.territory()` (the `DominanceMap` owner ids mapped through the kin slot table). 2.1 KB. Borders are drawn by the client where owners differ. The
+overlay is labelled "dominance" (GAMES STORMS §6.5).
+
+#### 33.1.6 `STRM`: storms (version 1; every tick, weather worlds)
+
+Head(16) + `u32 json_len`, `u32 tick`, `u32 n_storms`, `u32 reserved` + JSON:
+```text
+{"detect_step":t, "storms":[{"id","name":str|null,"named":bool,"hemi":0|1,"x","y" (wrapped, [0,L)),"r" (r_eq),"ext":[ex,ey],
+   "zeta":peak lower-layer zeta/f0 so far,"zeta_now","wind","rain","age":steps,"parent":id|0,"state":"active"|"coasting",
+   "track":[[t,ux,uy]...<=24],"pred":[[lead,x,y]...] for leads 250,500,1000}],
+ "ended":[{"id","reason":"dissipated"|"merged","into":id|0}]}
+```
+`track` is unwrapped (`ux`, `uy` of `Det`), so a polyline is continuous across the seam; the client wraps it when drawing. `pred` is the
+tracker's own extrapolation (`Tracker._predict`, made public as `Tracker.predict(track, t)`): "the baseline to beat" of STORMS STORMS §6.3, drawn as a
+faint cone only if the user enables it (W3 owns forecasts). `named` is peak `zeta >= 0.5` (C11); only named storms get a name (the
+house-name generator on `splitmix64(id, STORM_NAME_SALT)`, unique among live storms); others are shown as "disturbance N". Source: `Tracker.active()` and
+`Track.dets[-1]`. Measured: 5.0 KB JSON for 6 storms with 40-point tracks; with 24 points and `pred` about 3.5 KB. Cap 32 storms.
+
+#### 33.1.7 `MAP1`: weather maps (version 1; every tick, weather worlds)
+
+Head(16, flags bit 0 = `T_s` present, bit 1 = winds present; **both are 1 in every version-1 record of a weather world**, the bits stay for evolution) + `u16 n` (160), `u16 nw` (40), `f32 f0` (= `play.weather.f0`), `f32 p_ref, dc_ref, u_ref, zeta_ref`, 8 reserved bytes (planes start at offset 48), then planes, row-major `[cy][cx]`, cell `dx = L/n` = 2 units:
+
+| plane | type | encoding | source |
+|---|---|---|---|
+| `P` rain rate | u8 | `round(255·sqrt(clip(P/p_ref,0,1)))` (companded; decode `(b/255)²·p_ref`) | `wx[P]` |
+| `D_c` cloud depth | u8 | `round(255·clip(D_c/dc_ref,0,1))` | `wx[Dc]` |
+| `zeta` | i8 | `round(127·clip(zeta/zeta_ref,-1,1))`, layer-1 vorticity at the cell centres (`corners_to_centres`, as the detector) | `weather.vorticity` |
+| `T_s` (flag) | u8 | `round(255·T_s)` (the warm-pool map, `weather.warm_pools(p, step)`); in every record (§33.1.1: records are complete) | analytic |
+| winds (flag) | 4 × i8 `nw²` | block means (4 x 4) of `u1,v1,u2,v2`, `round(127·clip(w/u_ref,-1,1))` | `wx[u1..v2]` |
+
+Sizes: 25.6 KB per full plane; 77 KB without `T_s`, **109 KB with `T_s` and winds, which is what every record carries** (measured quantise: 0.25 ms; `T_s` is analytic and
+changes slowly, but sending it every tick costs 18 KB/s at 1x and removes the case where latest-wins replaces an undelivered record that
+carried it with one that does not, which left the sea map missing for 17 s at 1x and 70 s at 0.25x). Constants `p_ref = 0.004` (W1 review peak 0.003),
+`u_ref = 0.1` (core winds <= 0.081, jet 0.05), `zeta_ref = f0`; `dc_ref` from the
+spun-up weather's 99.9th percentile, computed **once at planet creation** and stored in `play.json.weather.dc_ref` (§33.3), so every session of a world has the same scale; it is in the header. Quantisation error
+is stated, not hidden: the client shows shapes and signs, not values; numbers in the UI come from `STRM`.
+
+#### 33.1.8 `EVNT`: events (version 1; queued)
+
+Head(16, flags bit 0 = backlog at start) + `u32 count`, `u32 json_len` + JSON array of at most 64 events:
+```text
+{"id":u64 monotone per run (step·1000 + index, so a resume keeps order),"step","kind":int,"fam":"kin"|"house"|"storm"|"focus"|"director"|"system",
+ "a":int,"b":int (entity ids, 0 none),"x","y","z" (null if none),"imp":0|1|2,"text":str<=120}
+```
+Kinds (registry in the header `play.events`; an unknown kind is shown by its `text`): 1 kin_born, 2 kin_split, 3 kin_merged, 4 kin_dissolved,
+5 house_founded, 6 house_extinct, 7 storm_born, 8 storm_named, 9 storm_merged, 10 storm_split, 11 storm_dissolved, 12 director_entry,
+13 focus_death, 14 focus_handoff, 15 checkpoint, 16 renumbered, 17 extinct. Sources and filters:
+kin events from the record's `events` table (family `kin_group`; colony events are **not** narrated: 80% of colony ids end within 3
+snapshots at the 250 cadence, §29.12), house events of the record when the house is in the top 16 (founded) or was
+(extinct), storm events from the tracker (birth, first time `zeta >= 0.5`, merge, split, dissolve), `Director.applied`
+through `describe(entry)`, the focus events of §33.2, `checkpoint` per save. `imp`: 2 = shown as a toast (named storm born or
+dissolved, a kin group dissolved or split, extinction), 1 = chronicle, 0 = log only.
+**Texts** come from `game/chronicle.py`'s closed table (`CHRONICLE_VERSION` 1): a fixed sentence per kind with slots filled from the
+event (names, exact counts from the record, steps); "since", never "because"; no label shares, no archetype claims (C8-C10). The
+backlog (flag) is rebuilt at start from the tails of `observers/social.jsonl`, `observers/storms.jsonl` and `director.jsonl`, so a re-opened world has a
+history. Tests render every kind and run N1's checker on the strings once N1 is merged.
+
+#### 33.1.9 `ENVS`: environment (version 1; at every metrics boundary, on `idnt`)
+
+Head(16) + `u32 json_len` + JSON `{"pools":[{"x","y","amp","sx","sy","vx","vy"}] (positions at this step), "season":{"period","amp","phase"}|null,
+"levers":{non-inert env_* values}, "effects":[{"action","params","start","end"|null,"source":"rule"|"llm"|"player"}], "cooldowns":[{"action","ready"}],
+"influence":null}`. `pools` from `weather.warm_pools` parameters and the drift at `state.step`; `effects` and `cooldowns` from `director.jsonl`
+through the pacing fold (`director.pacing.fold`); empty with the director off. `influence` is G3b. Small (<= 2 KB).
+
+#### 33.1.10 `CLCK` and `FOCS`
+
+`CLCK` (version 1, 44 bytes after the head): `f32 rate` (requested multiplier; 0 paused; -1 max), `f32 achieved` (steps/s over 2 s), `f32 step_ms`
+(median of the last 60, engine step only), `f32 frame_ms` (median encode+write), `u32 late_steps` (cumulative; re-anchor drops only, §33.2), `u32 save_stall_steps`
+(cumulative; steps skipped while a checkpoint was written), `u8 reason` (0 running, 1 user pause, 2 end of
+steps, 3 chapter (G3b), 4 alert (G3b), 5 error), `u8 saving`, `u16 flags`, `u32 fe`, `u32 chapter` (step // 6000), `u32 in_chapter`, `u32 chapter_len`.
+`saving` is 1 from `before_checkpoint` to `after_checkpoint`; a `CLCK` is written and flushed at each of the two, so the client knows before the stall begins.
+`FOCS` (version 1, 68 bytes after the head): `i64 uid`, `u32 row`, `u32 flags` (bit 0 alive, bit 1 hand-off this frame, bit 2 followed), `f32 x,y,z`,
+`f32 vx,vy,vz`, `i32 energy` (quanta; `play.energy_cap` gives the cap), `u32 age` (`step - birth_step`), `u32 generation`, `i64 parent_uid`,
+`u8 n_bonds`, `u8 house_slot`, `u8 kin_slot`, `u8 colony_slot` (the observer's current slots for this row, the §33.1.3 byte values), `u8 arch_primary`, `u8 arch_secondary`,
+`u8 intent`, `u8 label_flags` (as `INTN`). One-row device read; the NN inputs and decoded actions of GAMES GAMES §8.3(b) are G3b/G4.
+
+#### 33.1.11 Sizes and rates at 64k3d (42k alive; est. where not measured)
+
+| record | bytes | per second at 1x (14.4 sps) | at max (frames every 2nd step, ~28 fps) |
+|---|---|---|---|
+| `FRMA` | 1.2-1.5 MB | 17-21 MB/s | 33-42 MB/s |
+| `INTN` | 0.50 MB | 0.29 MB/s | 0.7 MB/s (or off) |
+| `IDNT` | 0.68 MB | 0.04 MB/s | 0.1 MB/s |
+| `MAP1` | 109 KB (planes, `T_s` and winds in every record) | 0.06 MB/s | 0.12 MB/s |
+| `STRM`, `EVNT`, `ENVS`, `TERR`, `CLCK`, `FOCS` | <= 12 KB each | < 0.05 MB/s | < 0.1 MB/s |
+| total | | **about 19-22 MB/s** | **about 35-44 MB/s** |
+A pipe reader that stalls blocks the step loop (as `stream` does); the Swift reader drains on its own thread (§27.12), so a slow main actor drops frames, not steps.
+
+#### 33.1.12 Encoders, decoders, fixtures, evolution
+
+- **Python encoders**: `streamrec.py`, pure functions of numpy arrays and dicts (`encode_frma`, `encode_idnt`, ..., `header_play`), no `mlx` import, so
+  the fixtures are device independent. **Independent Python decoder**: `tests/play_decode.py`, written from §33.1 alone (it must not import
+  `streamrec`), extending the style of `tests/stream_decode.py`. **Swift decoders**: `gui/Sources/AlifeCore/PlayRecords.swift` (value types, a `RecordDecoder` used by
+  `FrameDecoder` for tags it knows; unknown tags stay `unknownRecord`). Each checks a record's length against its own head before the payload
+  arrives, the counts against `N` and `kin <= 16`, and refuses a slot byte outside the table (with 253-255 reserved).
+- **Shared fixtures**: `tests/data/play_tiny3d.bin` + `.json` (+ `play_tiny2d.bin`, and **`play_tiny3d_n70.bin`: N = 70, three bitmap words, the last partial**, which N = 64
+  hides), a header and one of every record on a hand-built scene (alive rows with gaps, a bond across the seam, three kin groups, a hand-off, a named storm, a tick with `T_s`, a backlog `EVNT`, an unknown tag `ZZZZ`, two `FRMA` at
+  steps 100 and 104 with a reused row and a dead row between). `tests/play_fixtures.py --write` regenerates; the sidecar holds expected values and SHA-256 per section; Python and Swift decode the same file
+  against the same sidecar; the rebuild-byte-for-byte test runs on every device.
+- **Evolution rules** (§33.1.12): a tag's `version` bumps on a layout change and the writer sends only versions the header lists; a decoder skips a record whose version it does
+  not know (and counts it), which now holds for every tag since all have the common head; new JSON keys, new flag bits, new `kind`s, new tags are compatible; a major bump is a protocol bump (the `ALSTRM` magic) and is not expected.
+
+#### 33.1.13 As built (G3a commits 1 and 2)
+
+- `src/alife/streamrec.py` (numpy only, no `mlx` import; in `test_lint`'s subscript-assignment scan) holds the encoders,
+  `Sequencer` (the per-tag `seq`), `legacy_header` / `header_play` / `weather_block` / `play_header_bytes` and the
+  quantisers (`quantise_map1`, `dequantise_p`). Encoders raise `RecordError` for what the format cannot carry (a bond into a
+  dead row, a slot outside its table, more than 16 table rows, more than 64 events or 32 storms, an event of the wrong shape or a
+  text over 120 characters, NaN in JSON, a JSON over the caps `IDNT` 16 KiB, `EVNT` 32 KiB, `STRM` 24 KiB, `ENVS` 8 KiB,
+  `TERR` 1 KiB). `encode_frma` takes the `N`-row arrays and the alive mask and lists the alive rows; bonds are given as row
+  pairs and written as listed-row indices.
+- Tail padding: a section after the last JSON (`TERR` planes, `MAP1` planes) is padded with zero bytes to a multiple of 4, the
+  decoders check them; for the 32 x 32 `TERR` and the 160-cell `MAP1` there are none. `MAP1` carries `T_s` and the winds in every
+  version-1 record (flags 3); a decoder refuses a version-1 `MAP1` without both bits. The `CLCK` body offsets (after the head):
+  `rate 0, achieved 4, step_ms 8, frame_ms 12, late_steps 16, save_stall_steps 20, reason 24, saving 25, flags 26, fe 28,
+  chapter 32, in_chapter 36, chapter_len 40`; `FOCS`: `uid 0, row 8, flags 12, x 16, y 20, z 24, vx 28, vy 32, vz 36, energy 40,
+  age 44, generation 48, parent_uid 52, n_bonds 60, house 61, kin 62, colony 63, arch_primary 64, arch_secondary 65, intent 66,
+  label_flags 67`.
+- The independent decoder is `tests/play_decode.py` (imports only `stream_decode.decode_header`). The fixtures are
+  `tests/data/play_tiny{3d,2d,3d_n70}.{bin,json}` (written by `tests/play_fixtures.py --write`; rebuilt byte for byte by
+  `tests/test_stream_records.py` on every device, no engine). The Swift decoder lands with the next commit.
+
+---
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in

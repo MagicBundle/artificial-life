@@ -1,0 +1,866 @@
+{
+  "about": "Expected decoding of the stream in the .bin file next to this one (DESIGN section 33.1). Regenerate with `uv run python tests/play_fixtures.py --write`.",
+  "kind": "2d",
+  "bytes": 6316,
+  "header": {
+    "protocol": 1,
+    "dims": 2,
+    "L": 48.0,
+    "height": 0.0,
+    "N": 64,
+    "B": 4,
+    "radius": 1.0,
+    "field_cell": 4.0,
+    "FG": 12,
+    "FZ": 1,
+    "NCH": 3,
+    "color_modes": [
+      "tag",
+      "energy",
+      "clade",
+      "house",
+      "kin",
+      "archetype",
+      "intent"
+    ],
+    "color": "tag",
+    "fields": false,
+    "field_z": 0,
+    "step": 100,
+    "run": null,
+    "config_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "mode": "simulate",
+    "every": 1,
+    "source": "preset",
+    "play": {
+      "records": [
+        "FRMA",
+        "IDNT",
+        "INTN",
+        "TERR",
+        "EVNT",
+        "ENVS",
+        "CLCK",
+        "FOCS"
+      ],
+      "versions": {
+        "FRMA": 1,
+        "IDNT": 1,
+        "INTN": 1,
+        "TERR": 1,
+        "EVNT": 1,
+        "ENVS": 1,
+        "CLCK": 1,
+        "FOCS": 1
+      },
+      "base_rate": 14.4,
+      "rates": [
+        0.25,
+        0.5,
+        1,
+        2
+      ],
+      "tick": 25,
+      "snapshot_every": 250,
+      "frame_hz": 30,
+      "chapter": 6000,
+      "weather": {
+        "enabled": false,
+        "cells": 160,
+        "dx": 2.0,
+        "f0": 0.025,
+        "coarse": 40,
+        "name_zeta": 0.5,
+        "refs": {
+          "p": 0.004,
+          "dc": 0.0,
+          "u": 0.1,
+          "zeta": 0.025
+        }
+      },
+      "labels": {
+        "intent_version": 2,
+        "arch": [
+          "",
+          "Gatherer",
+          "Hunter",
+          "Provider",
+          "Trader",
+          "Nomad",
+          "Settler",
+          "Unspecialised"
+        ],
+        "intent": [
+          "",
+          "Budding",
+          "Hunting",
+          "Fleeing",
+          "Defending",
+          "Caring",
+          "Tethering",
+          "Signalling",
+          "Feeding",
+          "Roaming",
+          "Resting"
+        ]
+      },
+      "cast": {
+        "kin": 16,
+        "house": 16,
+        "colony": 16
+      },
+      "energy_cap": 16384,
+      "events": {
+        "1": "kin_born",
+        "2": "kin_split",
+        "3": "kin_merged",
+        "4": "kin_dissolved",
+        "5": "house_founded",
+        "6": "house_extinct",
+        "7": "storm_born",
+        "8": "storm_named",
+        "9": "storm_merged",
+        "10": "storm_split",
+        "11": "storm_dissolved",
+        "12": "director_entry",
+        "13": "focus_death",
+        "14": "focus_handoff",
+        "15": "checkpoint",
+        "16": "renumbered",
+        "17": "extinct"
+      },
+      "planet": {
+        "source": null,
+        "houses": "none"
+      }
+    }
+  },
+  "skipped": [
+    {
+      "tag": "ZZZZ",
+      "offset": 5668,
+      "why": "tag"
+    }
+  ],
+  "records": [
+    {
+      "index": 0,
+      "tag": "FRMA",
+      "offset": 1452,
+      "length": 264,
+      "step": 100,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "n": 7,
+        "n_bonds": 3,
+        "color_index": 0,
+        "span": 0,
+        "N": 64,
+        "rows": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          10,
+          21
+        ],
+        "bonds": [
+          [
+            0,
+            1
+          ],
+          [
+            2,
+            5
+          ],
+          [
+            2,
+            3
+          ]
+        ],
+        "agents": [
+          {
+            "index": 0,
+            "row": 0,
+            "pos": [
+              1.0,
+              24.0,
+              0.0
+            ],
+            "yaw": 0.5,
+            "pitch": 0.0,
+            "rgb": 4227264,
+            "uid": 5000000000
+          },
+          {
+            "index": 3,
+            "row": 3,
+            "pos": [
+              12.0,
+              11.5,
+              0.0
+            ],
+            "yaw": -3.0,
+            "pitch": 0.0,
+            "rgb": 2138208,
+            "uid": 5000000021
+          },
+          {
+            "index": 6,
+            "row": 21,
+            "pos": [
+              40.0,
+              5.0,
+              0.0
+            ],
+            "yaw": 0.0,
+            "pitch": 0.0,
+            "rgb": 3983480,
+            "uid": 5000000147
+          }
+        ]
+      },
+      "sha256": {
+        "bitmap": "8401eeae2d6f773dce259401ba6128c80c38b669c8ea5c900e10ccddc1582c32",
+        "pos": "f40243044f42937de2af427dc5571d34f854ecdc196dad352b505782cd14cf09",
+        "orient": "aaaebaefc7db56785145a79097f9ea8364e9ac1b523278a7e24e19a942844a2a",
+        "rgb": "ecb823b2b614f559a4361e17668777b29d345a49e781319fc99e874e8b3b90b4",
+        "uid": "004927426e1afa41a289a83c13a1e59ea8d77c111e826ae93edc4e80a1ced6aa",
+        "bonds": "7587e9beda41d4ef6c567f5e2b6b33764995443af5efdf30c585bb15d908f638"
+      }
+    },
+    {
+      "index": 1,
+      "tag": "IDNT",
+      "offset": 1724,
+      "length": 988,
+      "step": 100,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "n_rows": 7,
+        "snapshot_step": 96,
+        "json": {
+          "houses": [
+            {
+              "slot": 0,
+              "id": 5000000000,
+              "name": "Aldric",
+              "size": 4,
+              "clade": 3
+            },
+            {
+              "slot": 1,
+              "id": 5000000030,
+              "name": "Brennar",
+              "size": 2,
+              "clade": 0
+            }
+          ],
+          "exact": true,
+          "origin": 0,
+          "kin": [
+            {
+              "slot": 0,
+              "id": 17,
+              "name": "Aldric kin",
+              "named_after": 0,
+              "size": 3,
+              "clade": 3,
+              "clade_share": 1.0,
+              "sim_self": 0.875,
+              "x": 6.0,
+              "y": 24.0,
+              "z": 6.5,
+              "arch": [
+                0.5,
+                0.25,
+                0.0,
+                0.0,
+                0.25,
+                0.0,
+                0.0
+              ],
+              "births": 2,
+              "deaths": [
+                1,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "slot": 1,
+              "id": 21,
+              "name": "Brennar kin",
+              "named_after": null,
+              "size": 2,
+              "clade": 0,
+              "clade_share": 0.5,
+              "sim_self": 0.75,
+              "x": 11.0,
+              "y": 10.75,
+              "z": 2.75,
+              "arch": null,
+              "births": 0,
+              "deaths": null
+            },
+            {
+              "slot": 2,
+              "id": 22,
+              "name": "Cestria",
+              "named_after": 1,
+              "size": 2,
+              "clade": 9,
+              "clade_share": 0.75,
+              "sim_self": 0.5,
+              "x": 30.5,
+              "y": 40.5,
+              "z": 12.25,
+              "arch": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0
+              ],
+              "births": 1,
+              "deaths": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "colonies": [
+            {
+              "slot": 0,
+              "id": 3,
+              "size": 2,
+              "kin": 17,
+              "x": 11.0,
+              "y": 10.75
+            }
+          ],
+          "unknown_immigrant": 0
+        },
+        "rows": [
+          {
+            "uid": 5000000000,
+            "clade": 3,
+            "house": 0,
+            "kin": 0,
+            "colony": 255,
+            "flags": 0
+          },
+          {
+            "uid": 5000000007,
+            "clade": 3,
+            "house": 0,
+            "kin": 0,
+            "colony": 255,
+            "flags": 0
+          },
+          {
+            "uid": 5000000014,
+            "clade": 0,
+            "house": 1,
+            "kin": 1,
+            "colony": 0,
+            "flags": 0
+          },
+          {
+            "uid": 5000000021,
+            "clade": 5,
+            "house": 1,
+            "kin": 1,
+            "colony": 0,
+            "flags": 0
+          },
+          {
+            "uid": 5000000028,
+            "clade": 9,
+            "house": 254,
+            "kin": 2,
+            "colony": 255,
+            "flags": 0
+          },
+          {
+            "uid": 5000000070,
+            "clade": 1,
+            "house": 253,
+            "kin": 2,
+            "colony": 255,
+            "flags": 1
+          },
+          {
+            "uid": 5000000147,
+            "clade": 2,
+            "house": 255,
+            "kin": 255,
+            "colony": 254,
+            "flags": 0
+          }
+        ]
+      },
+      "sha256": {
+        "json": "f6eef7c7aeb10aae0df32ba7a375fff58fb27dff473dbfc77b7eaa6c61c0949b",
+        "rows": "24f766dea41db043498b6034269e3b9fad768838a58257fee55616b0ea0e83df"
+      }
+    },
+    {
+      "index": 2,
+      "tag": "INTN",
+      "offset": 2720,
+      "length": 116,
+      "step": 100,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "n_rows": 7,
+        "labels_step": 96,
+        "intent_version": 2,
+        "rows": [
+          {
+            "uid": 5000000000,
+            "arch_primary": 1,
+            "arch_secondary": 0,
+            "intent": 9,
+            "flags": 1
+          },
+          {
+            "uid": 5000000007,
+            "arch_primary": 1,
+            "arch_secondary": 2,
+            "intent": 10,
+            "flags": 1
+          },
+          {
+            "uid": 5000000014,
+            "arch_primary": 2,
+            "arch_secondary": 0,
+            "intent": 2,
+            "flags": 1
+          },
+          {
+            "uid": 5000000021,
+            "arch_primary": 7,
+            "arch_secondary": 0,
+            "intent": 8,
+            "flags": 1
+          },
+          {
+            "uid": 5000000028,
+            "arch_primary": 5,
+            "arch_secondary": 1,
+            "intent": 6,
+            "flags": 1
+          },
+          {
+            "uid": 5000000070,
+            "arch_primary": 0,
+            "arch_secondary": 0,
+            "intent": 0,
+            "flags": 0
+          },
+          {
+            "uid": 5000000147,
+            "arch_primary": 3,
+            "arch_secondary": 0,
+            "intent": 1,
+            "flags": 3
+          }
+        ]
+      },
+      "sha256": {
+        "rows": "e179923b8ce6bf772efc5f690e5509771d0a3e9698d96c475837128b75123fda"
+      }
+    },
+    {
+      "index": 3,
+      "tag": "TERR",
+      "offset": 2844,
+      "length": 2100,
+      "step": 100,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "nx": 32,
+        "ny": 32,
+        "snapshot_step": 96,
+        "json": {
+          "ids": [
+            17,
+            21,
+            22
+          ]
+        },
+        "owner_sum": 138184,
+        "purity_sum": 130560,
+        "owner_row3": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          255,
+          255,
+          255,
+          255,
+          255,
+          255,
+          255,
+          255,
+          255,
+          255
+        ]
+      },
+      "sha256": {
+        "json": "f0d3d9b2b085ec2aa6154c2d60b428b7b0abb2850bea5b7c698f04cf507a84a2",
+        "owner": "3d155bcabdd3c77ec70dd29718e90f15eae9dc901c70456573c994e0db25ce40",
+        "purity": "ba8a944c6a30b9f82fad3cdbeda7add4251ea19e9635ec14cbb799cfba094c5f"
+      }
+    },
+    {
+      "index": 4,
+      "tag": "ENVS",
+      "offset": 4952,
+      "length": 340,
+      "step": 100,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "json": {
+          "pools": [
+            {
+              "x": 24.0,
+              "y": 12.0,
+              "amp": 0.5,
+              "sx": 6.0,
+              "sy": 4.0,
+              "vx": 0.0,
+              "vy": 0.0
+            }
+          ],
+          "season": {
+            "period": 4000,
+            "amp": 0.25,
+            "phase": 0.0
+          },
+          "levers": {
+            "env_season_amp": 0.25
+          },
+          "effects": [
+            {
+              "action": "bloom",
+              "params": {
+                "x": 24.0,
+                "y": 12.0
+              },
+              "start": 90,
+              "end": null,
+              "source": "rule"
+            }
+          ],
+          "cooldowns": [
+            {
+              "action": "bloom",
+              "ready": 400
+            }
+          ],
+          "influence": null
+        }
+      },
+      "sha256": {
+        "json": "6a2d668cd0a6379fe046f12c8e6e1d00f3eab4504b6f1138b279ea65120dce34"
+      }
+    },
+    {
+      "index": 5,
+      "tag": "EVNT",
+      "offset": 5300,
+      "length": 292,
+      "step": 100,
+      "seq": 0,
+      "version": 1,
+      "flags": 1,
+      "fields": {
+        "count": 2,
+        "backlog": true,
+        "json": [
+          {
+            "id": 96000,
+            "step": 96,
+            "kind": 1,
+            "fam": "kin",
+            "a": 17,
+            "b": 0,
+            "x": 6.0,
+            "y": 24.0,
+            "z": 6.5,
+            "imp": 1,
+            "text": "A kin group of 3 appeared."
+          },
+          {
+            "id": 99000,
+            "step": 99,
+            "kind": 8,
+            "fam": "storm",
+            "a": 7,
+            "b": 0,
+            "x": 4.5,
+            "y": 20.25,
+            "z": null,
+            "imp": 2,
+            "text": "Storm Merrow reached named strength."
+          }
+        ]
+      },
+      "sha256": {
+        "json": "78e6073d1636fa42bd008d2c8b353216e49a9f0e28187192ade9eb31a3a9f415"
+      }
+    },
+    {
+      "index": 6,
+      "tag": "CLCK",
+      "offset": 5600,
+      "length": 60,
+      "step": 100,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "rate": 1.0,
+        "achieved": 0.984375,
+        "step_ms": 15.5,
+        "frame_ms": 3.25,
+        "late_steps": 0,
+        "save_stall_steps": 0,
+        "reason": 0,
+        "saving": 0,
+        "flags": 0,
+        "fe": 2,
+        "chapter": 0,
+        "in_chapter": 100,
+        "chapter_len": 6000
+      },
+      "sha256": {
+        "body": "0089ca73125b5e6248008982155645e8c04c5bba24806e3ef4a8cfba0bb7080c"
+      }
+    },
+    {
+      "index": 7,
+      "tag": "FRMA",
+      "offset": 5704,
+      "length": 264,
+      "step": 104,
+      "seq": 1,
+      "version": 1,
+      "flags": 1,
+      "fields": {
+        "n": 7,
+        "n_bonds": 3,
+        "color_index": 3,
+        "span": 4,
+        "N": 64,
+        "rows": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          21
+        ],
+        "bonds": [
+          [
+            0,
+            1
+          ],
+          [
+            2,
+            3
+          ],
+          [
+            4,
+            5
+          ]
+        ],
+        "agents": [
+          {
+            "index": 0,
+            "row": 0,
+            "pos": [
+              1.25,
+              24.0,
+              0.0
+            ],
+            "yaw": 0.5,
+            "pitch": 0.0,
+            "rgb": 4227264,
+            "uid": 5000000000
+          },
+          {
+            "index": 3,
+            "row": 3,
+            "pos": [
+              12.0,
+              11.75,
+              0.0
+            ],
+            "yaw": -3.0,
+            "pitch": 0.0,
+            "rgb": 2138208,
+            "uid": 5000000021
+          },
+          {
+            "index": 6,
+            "row": 21,
+            "pos": [
+              40.0,
+              5.0,
+              0.0
+            ],
+            "yaw": 0.0,
+            "pitch": 0.0,
+            "rgb": 3983480,
+            "uid": 5000000147
+          }
+        ]
+      },
+      "sha256": {
+        "bitmap": "5008d0693fc6744e3c91013a3f9dfaea5ac44f911e67100e5d0b25038ecbb2f9",
+        "pos": "943a4c0a64f8458e9b9e94730e0d0994662d127fb02fc92a58e23e0a32a4cffe",
+        "orient": "f849d4638ec0fefffb612236466df4abc8c08be7b487d3e8f112f0008113273a",
+        "rgb": "5d28a7b19094df17ba982aebe7995fcea2af75de85d517ff8c905e7a19550ab3",
+        "uid": "ab3cc0f0bb6c1f2b473ee953a49214ae1c5c5b6bcdba2348ea2dab9228c56701",
+        "bonds": "cd9a54ed1f18bf97db08914e280ea7349e11ca2c4885a4d8052552ceba84208d"
+      }
+    },
+    {
+      "index": 8,
+      "tag": "EVNT",
+      "offset": 5976,
+      "length": 172,
+      "step": 104,
+      "seq": 1,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "count": 1,
+        "backlog": false,
+        "json": [
+          {
+            "id": 100000,
+            "step": 100,
+            "kind": 14,
+            "fam": "focus",
+            "a": 5000000007,
+            "b": 5000000014,
+            "x": 1.0,
+            "y": 24.0,
+            "z": 6.0,
+            "imp": 1,
+            "text": "Follow passed to a child."
+          }
+        ]
+      },
+      "sha256": {
+        "json": "a054196ece767e1073d4331597e00dd2cbfaa1aca76bd8b5847299e1cc12b57c"
+      }
+    },
+    {
+      "index": 9,
+      "tag": "FOCS",
+      "offset": 6156,
+      "length": 84,
+      "step": 104,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "uid": 5000000100,
+        "row": 4,
+        "flags": 7,
+        "x": 20.5,
+        "y": 8.5,
+        "z": 0.0,
+        "vx": 0.25,
+        "vy": -0.125,
+        "vz": 0.0,
+        "energy": 4096,
+        "age": 4,
+        "generation": 12,
+        "parent_uid": 5000000028,
+        "n_bonds": 1,
+        "house": 0,
+        "kin": 2,
+        "colony": 255,
+        "arch_primary": 1,
+        "arch_secondary": 0,
+        "intent": 9,
+        "label_flags": 1
+      },
+      "sha256": {
+        "body": "a88d8233f8adb7c0985ad854799e567665689a460716dae29ec55cae3e4d90e2"
+      }
+    },
+    {
+      "index": 10,
+      "tag": "CLCK",
+      "offset": 6248,
+      "length": 60,
+      "step": 104,
+      "seq": 1,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "rate": -1.0,
+        "achieved": 55.5,
+        "step_ms": 17.75,
+        "frame_ms": 3.5,
+        "late_steps": 3,
+        "save_stall_steps": 21,
+        "reason": 1,
+        "saving": 1,
+        "flags": 0,
+        "fe": 2,
+        "chapter": 0,
+        "in_chapter": 104,
+        "chapter_len": 6000
+      },
+      "sha256": {
+        "body": "39ca80797db7f57df2261c14962aee8805f3bcff72c603740da97fe0f6d0a163"
+      }
+    }
+  ]
+}
