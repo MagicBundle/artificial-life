@@ -5,7 +5,7 @@ specification `g3b/spec.md` revision 2, §10 and §11), run 2026-10-23 (02:45 to
 Metal kNN kernel) on the branch `games/g3b` at `019fdde` (G3b merged with `origin/main` 3a14aa6, the G3a squash 9f84f7c plus #36, and the
 sync review fixes). **No code changed and nothing was committed during the Mac day.** One of its findings (the report's chapter number, §9 item 1) was fixed afterwards in the commit `G3b: report chapters count from the planet origin`; the numbers below are those of the Mac day, at `019fdde`. This note is the record: what was run, what the numbers
 are, three findings of the run (two defects and a pause the owner has since decided to keep), and what is left to the owner. Nobody has clicked through the window by hand and no person has
-played a world in the `player` mode (§10).
+played a world in the `player` mode (§10). The checkpoint on the external drive, which the Mac day could not measure, was measured afterwards (2026-10-23, 07:40 to 08:10; §6.1).
 
 ## Answer
 
@@ -21,6 +21,10 @@ played a world in the `player` mode (§10).
 - **2x holds.** `rules`, `player` and `player` with powers: 1.9923x, 1.9923x and 1.98994x, `late_steps` 0, `step_ms` p99 28.7, 28.9 and 29.0
   against a 34.7 ms slot, digests as at 1x, both powers applied (0.020 and 0.070 s click to applied). The spec names no 2x limit; the
   reading used here is in §6.
+- **The external drive writes the 686 MB checkpoint in 5.6 to 6.4 s, 12 times the internal disk's 0.41 to 0.53 s (§6.1).** Eight saves on each disk, paired: mean 5.76 s against 0.47 s (about
+  119 MB/s against 1.46 GB/s). The spec's estimate of 1 to 3 s was too low. At 1x the stall is 81 to 83 steps (internal 5 to 7); the drive's 1x arms miss the unattended bench's gate
+  (0.9665x and 0.9684x, `late_steps` 4 and 7), and the `max` arms pass it (3.27x and 3.23x). The late steps are not in the saves (§6.1): the drive stalls an `fsync` for 0.2 to 0.4 s now and then.
+  Every arm ends at the plain run's digest. The folder made on the drive was removed.
 - **Metal purity: 34 test files, 1,393 passed, 1 skipped, 0 failed.** The skip needs a loaded model and no model call was made. That includes
   `tests/test_bench.py` (46), which G3a left open. Swift: `swift build`, `swift test` (AlifeCore 469 tests, AlifeControl 252), `GPURenderTests` 8,
   `GPUWorldTests` 14, `WorldRenderBench` 5; at 42,000 rows the draw GPU p50 is at most 2.72 ms (region) with 0 dropped.
@@ -34,7 +38,7 @@ played a world in the `player` mode (§10).
 - **Three findings, none fixed by the Mac day (§9); the first was fixed afterwards, the third is decided.** (1) **The server numbered reports from step 0, not from the planet's origin:** the Report tab read
   "Chapter 79" where the card and the bar read "Chapter 4" (the offscreen render of the Report tab showed it); fixed in `G3b: report chapters count from the planet origin` (§9 item 1). (2) The bench's report time is an arrival notice. (3) A deep fall after the player's own
   power pauses the world; the owner decided on 2026-10-23 that it should (finding 3). Two more observations: Food was refused at the start of p0 by lever exclusivity (by design), and the chapter card is translucent over the map.
-- **Not done:** the checkpoint on the external drive (the volume was not mounted), the second window of the play (a fork of `64k3d_s1`) and the 20,000th step
+- **Not done:** the second window of the play (a fork of `64k3d_s1`) and the 20,000th step
   (the play is 18,001 steps), the client's draw time beside a running engine, the 2D digest matrix on the GPU, `test_weather_w2_instruments` on Metal, and the
   first play-test by a person (D9). The precondition of spec §11 (the owner's click-through of the G3a window) is still open.
 
@@ -220,8 +224,51 @@ the reading used here is the gate's own with the slot halved: achieved at least 
   Its components are close to the `max` row's (observer 2.7 ms, settle 38 to 48 ms, `save` 543 to 683 ms).
 - Click to applied at 2x: 0.020 and 0.070 s (Food and Strike). Alert engine: 782 calls, 9.2 to 9.8 ms.
 - The 31 to 38 save-stall steps at 2x (15 to 20 at 1x) are the periodic save counted in half-length slots; none is late.
-- Not done: **the checkpoint on the external drive.** `/Volumes/M5 PRO external` was not mounted (`ls /Volumes` and `mount`); nothing was written there. The estimate of 1 to 3 s for 686 MB is untested
-  and the card has the same shape for any stall length (spec §3.4). The internal-disk checkpoint is 0.52 to 0.69 s in the bench and 0.68 to 1.01 s from the card's opening in the play (§7.3).
+### 6.1 The checkpoint on the external drive
+
+Run afterwards, 2026-10-23 07:40 to 08:10, with the drive mounted again (`/Volumes/M5 PRO external`, case-sensitive APFS over USB, solid state; 760.1 GB free). `FD` below is
+`g3b/finish/drive` of the session scratch directory; the small files (the JSON of each bench, the checkpoint log, the scripts) are copied to `docs/results_g3b/drive/` (the two Python scripts there are reformatted for the repo's lint; the logic is that of the files that ran).
+
+- **Method.** One new folder on the drive, `coordinator_scratch_2026-10-21/g3b_ckpt_stall_1`, and its twin under `FD/internal`. Each holds `planet/`: a copy of the bench source `p0_bench` with only what a resume reads
+  (`config.json`, `meta.json`, `play.json`, `checkpoints/LATEST` and the 472,000 checkpoint, 686,866,342 bytes, `cmp`-identical to the source). The arms run
+  there: `alife bench --play --preset 64k3d --overlay storm --set director.enabled=true --play-resume PLANET:472000 --steps 2500 --play-warmup 300 --play-directors rules --play-out ...`,
+  so the arm's run directory (its checkpoints, metrics, observer files and the plain and replay reference runs) is on the disk under test. Two saves per arm: the chapter-end save at 474,000
+  (the periodic save of the arm, which has no card) and the final save at 474,800, written by the same `RunDir.save_checkpoint` as the quit save. The numbers are the pacer's stopwatch from
+  `before_checkpoint` to `after_checkpoint`, logged one by one by `FD/bench_ckpt.py` (a driver outside the repo: it runs `alife bench` unchanged and wraps the bench pacer from outside); the mean the
+  bench prints is the average of the two. Order: at `max` internal 1, drive 1, internal 2, drive 2; then at 1x internal 1, drive 1, drive 2, internal 2.
+- **Result, eight saves on each disk.**
+
+| arm | repeat | save at 474,000 (ms) | save at 474,800 (ms) | `save_stall_steps` | `late_steps` | achieved | `step_ms` max (ms) | log |
+|---|---|---|---|---|---|---|---|---|
+| drive, `max` | 1 | 6,369.6 | 5,597.1 | 0 | 0 | 3.2701x | 6,454.8 | `FD/logs/ckpt_drive_1.jsonl`, `bench_drive_1.json` |
+| drive, `max` | 2 | 5,791.7 | 5,572.5 | 0 | 0 | 3.2339x | 5,876.3 | `ckpt_drive_2.jsonl`, `bench_drive_2.json` |
+| internal, `max` | 1 | 527.0 | 458.2 | 0 | 0 | 3.6644x | 607.7 | `ckpt_internal_1.jsonl`, `bench_internal_1.json` |
+| internal, `max` | 2 | 531.6 | 429.2 | 0 | 0 | 3.5371x | 613.9 | `ckpt_internal_2.jsonl`, `bench_internal_2.json` |
+| drive, 1x | 1 | 5,637.2 | 5,618.6 | 161 (81 + 80) | 4 | 0.9665x | 5,749.9 | `ckpt_drive_1x1.jsonl`, `bench_drive_1x1.json` |
+| drive, 1x | 2 | 5,753.7 | 5,734.1 | 166 (83 + 83) | 7 | 0.9684x | 5,864.4 | `ckpt_drive_1x2.jsonl`, `bench_drive_1x2.json` |
+| internal, 1x | 1 | 495.6 | 414.1 | 13 (7 + 6) | 0 | 0.9966x | 600.1 | `ckpt_internal_1x1.jsonl`, `bench_internal_1x1.json` |
+| internal, 1x | 2 | 493.7 | 411.8 | 12 (7 + 5) | 0 | 0.9965x | 609.6 | `ckpt_internal_1x2.jsonl`, `bench_internal_1x2.json` |
+
+  Every checkpoint is 686,866,342 bytes. **The drive's eight saves: 5.57 to 6.37 s, mean 5.76 s (119 MB/s); the internal disk's: 0.41 to 0.53 s, mean 0.47 s (1.46 GB/s); a ratio of 12.2.** The internal numbers agree with the
+  Mac day's (0.52 to 0.69 s in the bench, 0.68 to 1.01 s from the card's opening in the play) and G3a's (0.93 to 0.98 s). Copying the same file onto the drive with `cp` took 6.2 s (110 MB/s;
+  `FD/logs/copy_drive_time.txt`; the internal copy was an APFS clone and says nothing). The spec's estimate of 1 to 3 s was low by a factor of two.
+- **At `max` nothing is owed**, so `save_stall_steps` is 0 by construction and the stall shows only as the longest step (6.45 and 5.88 s on the drive). **At 1x the stall is the steps the schedule skipped:**
+  80 to 83 steps on the drive (5.6 to 5.8 s at 15 steps a second) against 5 to 7 on the internal disk. No save adds a late step (`late_cum` is the same before and after each save in the two arms that logged it).
+- **The gate item at 1x fails on the drive in the unattended bench, for the reason of the saves and one other.** Achieved 0.9665x and 0.9684x (limit 0.98x) and `late_steps` 4 and 7 (limit 0); `step_ms` p99 is 47.9 and 46.4 (limit 66; internal
+  46.0 and 44.2), so the typical step does not change. The achieved shortfall is the two saves counted in the arm's seconds; in a played world the chapter-end save sits behind the card (`end_save(count=False)`), and only the quit save would count.
+  At `max` the gate (2.5x) passes on the drive: 3.27x and 3.23x.
+- **The late steps are not the saves; their cause is probable, not shown.** In the second pair the logger caught them: seven steps added at 472,101, 101 steps into the warm-up and 8 s after the arm's first checkpoint, before any save of the measured part. In the
+  first pair the step was not logged. A probe of the drive (`FD/fsync_probe.py`: 300 appends of a 0.4 kB line with `fsync`, 20 ms apart) found p50 0.59 ms, p90 0.82 ms, **p99 217 ms and a maximum of 377 ms**, against 0.24, 0.34, 0.46 and 0.47 ms
+  on the internal disk (`FD/logs/fsync_probe.txt`). The run appends and fsyncs its logs at every row, and an fsync that blocks for a quarter of a second at 1x is several slots of debt. That fits; a trace of the stalled step was not taken.
+  The consequence for a person is that a world played with its run directory on this drive may show a few late steps at 1x (4 and 7 in 2,800 steps); on the internal disk none occurred in any arm of this note.
+- **Digests.** All eight arms end at `88de4fd3614a...`, the digest of the plain run on the same disk and of every other arm: the disk changes the time, not the trajectory. The bench's `report_ms` (2.7 to 3.5 ms, one 13.8 ms) is still an arrival notice (§5, finding 2).
+- **Space.** Drive free space 760,135,388 KB before (`FD/logs/space_before.txt`), 743,171,184 KB at the end of the runs with 16,962,616 KB in the folder (four arm directories of 4,090,220 KB each and the 686 MB planet),
+  and 760,133,924 KB after the folder was removed (`FD/logs/space_after.txt`; 1.5 MB less than before, from the volume's own metadata and other writers, nothing of the folder's remained: `ls` said "No such file or directory"). The internal side
+  keeps its four arm directories of 4,038,596 KB each under `FD/internal` (about 16 GB; free space 392.1 GB before, 375.2 GB after).
+- **What it means for the card.** The card's shape does not depend on the stall (spec §3.4), and the report (29 to 47 ms) is ready long before the save ends, so the card would read "saving" for about 6 s at a chapter end on this drive instead of 0.5 to 1 s, and the quit save
+  would keep the window open for as long. It was not looked at: this is the bench, no window was open. The runs directory of a played world should stay on the internal disk (as `runs/` is); the drive is for archives, which is what it already holds.
+- **Housekeeping on the drive.** Only the folder `g3b_ckpt_stall_1` was created, filled and removed (`rm -rf` of that path, 08:09:37; the other 42 entries of `coordinator_scratch_2026-10-21` were not touched and the count is unchanged). One
+  empty probe file `.alife_write_probe_g3b` was made and removed at the top of `alife/` to test that the volume accepts writes, just before the folder was made (07:40). Nothing else was written to the drive.
 
 ## 7. An 18,001-step play of the planet
 
@@ -387,7 +434,7 @@ Rendered offscreen from reader snapshots (MD/render/snaps/) with the production 
 3. **Owner item 15, satellite budding of kin threads (constant `P`)**, and **owner item 16, storm namings on the alert surface** (§7.5): both measured here and **both decided by the owner on 2026-10-23**: kin groups that bud off a large group count as new groups in the chronicle (`P` stays 3, `KINTHREADS_VERSION` is unchanged), and storm namings stay on the alert surface. The same day the owner decided the fourth pause (§9 finding 3). None of the three changes behaviour.
 4. **The defects of §9**: 1 (the chapter numbering) is fixed (after the Mac day, `G3b: report chapters count from the planet origin`); 2 (the bench's report time) is a fix for the next change; 3 is decided (the owner, 2026-10-23: the pause stays).
 5. **The second window of the play** (a fork of `64k3d_s1`) and the 20,000th step: only p0, 18,001 steps. The bands were measured on one planet and one window of 21 minutes.
-6. **The checkpoint on the external drive**, **the client's draw beside a running engine**, **the 2D digest matrix on the GPU against 3a14aa6** and **`test_weather_w2_instruments` on Metal**.
+6. **The client's draw beside a running engine**, **the 2D digest matrix on the GPU against 3a14aa6** and **`test_weather_w2_instruments` on Metal**.
 7. **Labels stay provisional** until W2b adds `LABEL_VERDICTS` rows; W2b waits for the owner's go. The Strike cooldown (D10), the grace for a fresh preset world's founding die-off (stage 4) and the lineage alert classes for a watched thread remain the owner's calls.
 
 ## 11. Caveats
@@ -397,6 +444,6 @@ Rendered offscreen from reader snapshots (MD/render/snaps/) with the production 
 - The reader is a script: it never read a card and answered each pause within about two seconds, so the pauses cost 8.6 s of 1,263 s; the stall behind the card and the report time are measured, what a person does is not.
 - The bench measures the loop with a pipe drained by a thread in the same process and unattended (no pause); the client's own copying and decode are not in it.
 - The WorldRenderBench is a debug build offscreen; drawable acquisition and the compositor are not in it, and the present-to-present interval has not been measured.
-- Housekeeping: nothing outside MD was written and nothing was deleted. MD holds the aborted artefacts (`planets/p0_abort1..3`, `planets/p0_repro_done`, `play18k_abort1..3`, `render/snaps_abort1..3`, `repro/`, `dbg/`) and is about 51 GB because of the planet clones. An orphaned `alife-deaf` test process (pid 54955) from earlier Swift runs was
+- Housekeeping: apart from the drive stage (§6.1: a folder on the external drive, made and removed, and `FD` in the scratch directory), nothing outside MD was written and nothing was deleted. MD holds the aborted artefacts (`planets/p0_abort1..3`, `planets/p0_repro_done`, `play18k_abort1..3`, `render/snaps_abort1..3`, `repro/`, `dbg/`) and is about 51 GB because of the planet clones. An orphaned `alife-deaf` test process (pid 54955) from earlier Swift runs was
   still running at the end; it is not this run's and was left.
 - Nothing here validates a label or tunes a constant; the bands of spec §11 are read, not fitted.

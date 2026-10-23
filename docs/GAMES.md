@@ -1021,7 +1021,7 @@ What a game adds:
   - **Measured on the Mac day (2026-10-23, M5 Pro, one planet; `docs/RESULTS_G3B.md`, DESIGN §34.8):** the gate passes at 1x (0.99810x `rules`, 0.99805x `player`, 0.99753x with two scripted powers; `late_steps` 0; `step_ms` p99 42.1 to 43.1 ms), `max` (3.75x to 3.82x) and 2x (1.99x, p99 at most 29.0 ms); click to applied p95 0.102 s;
     digests equal to the plain run (no powers) and to the replay of the arm's log (powers). The report-time item is not readable in the bench (an arm has no history: 2.5 to 2.7 ms is an arrival notice); in an 18,001-step scripted play the report came 29 to 47 ms after the card opened, inside a 0.68 to 1.01 s save.
     Bands of the design: chronicle 3.28 events a minute (G3a 8.66; band 2 to 5), kin 2.04 (5.99; band 1 to 3), alerts of importance 2 or more on the alert surface 0.38 a minute (band at most 0.6); 4 auto-pauses in 18,001 steps, one of them a fall after the player's own Blight (the band says it must not pause: an open decision).
-    Not measured: the external drive, a second window, a person's inputs per chapter (D9: the Mac day's reader is a script).
+    Measured afterwards: the external drive (5.6 to 6.4 s for the checkpoint against 0.4 to 0.5 s internal, `RESULTS_G3B` §6.1). Not measured: a second window, a person's inputs per chapter (D9: the Mac day's reader is a script).
 - **G3c. Time** (not built; DESIGN §35 and Review-log row I55 are reserved for it; spec `g3b/spec.md` §9). After the G3b Mac day:
   - recorded ALSTRM replay files and the recap player;
   - rewind as a branch (a clone into a copied run directory, its cost stated), offline advance under the rule tier with per-launch GPU consent;

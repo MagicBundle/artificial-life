@@ -1,0 +1,153 @@
+{
+  "alife_version": "0.1.0",
+  "mlx_version": "0.32.3",
+  "python": "3.12.11",
+  "platform": "darwin-arm64",
+  "device": "Device(gpu, 0)",
+  "knn_impl": "metal",
+  "config_hash": "c03d7089b26dc60b65f555f2cde7e3c3457feb2ffad6148b7f0be22260913fe0",
+  "config": {
+    "n_max": 65536,
+    "n_init": 16384,
+    "max_births_per_step": 1024,
+    "world_size": 320.0,
+    "field_grid": 80,
+    "dims": 3,
+    "world_height": 80.0,
+    "field_grid_z": 20,
+    "k_neighbors": 8,
+    "cell_capacity": 48,
+    "hidden": 32,
+    "weight_dtype": "float16",
+    "brain_impl": "matmul",
+    "compile": true,
+    "runtime_checks": "cheap",
+    "seed": 0
+  },
+  "play": {
+    "steps": 2500,
+    "warmup": 300,
+    "base_rate": 14.4,
+    "frame_hz": 30,
+    "cadence": {
+      "metrics_every": 250,
+      "heavy_metrics_every": 250,
+      "checkpoint_every": 6000,
+      "keep_checkpoints": 3
+    },
+    "engine_ms": 14.81449999846518,
+    "powers": false,
+    "plain_digest": {
+      "rules": "88de4fd3614ad4f94fa8fa522bd580f0b00d67bc398a86d32ab2eba2c76f883f"
+    },
+    "replay_digest": {},
+    "arms": [
+      {
+        "name": "rules_max",
+        "director": "rules",
+        "rate": "max",
+        "steps_measured": 2499,
+        "seconds": 47.35922412504442,
+        "steps_per_s": 52.76691175095673,
+        "achieved_x": 3.6643688715942173,
+        "step_ms": {
+          "p50": 18.83141603320837,
+          "p99": 24.661688816267997,
+          "max": 607.7014580368996
+        },
+        "step_counts": {
+          "typical": 2489,
+          "snapshot": 0,
+          "boundary": 10
+        },
+        "part_calls": {
+          "alerts": 303,
+          "boundary": 11,
+          "events": 2513,
+          "frma": 1250,
+          "labels": 100,
+          "save": 2,
+          "tables": 10,
+          "tick_storms": 100,
+          "write": 2500
+        },
+        "step_ms_typical": 18.8252090010792,
+        "step_ms_snapshot": null,
+        "step_ms_boundary": 79.16966656921431,
+        "components_ms": {
+          "engine": 14.81449999846518,
+          "loop_typical": 16.771603957749903,
+          "loop_snapshot": 45.3219375340268,
+          "observer": 1.9571039592847228,
+          "settle": 28.5503335762769,
+          "frma": 2.7837915695272386,
+          "tick": 3.838791570160538,
+          "labels": 0.5674795247614384,
+          "tables": 2.71227047778666,
+          "events": 0.001249951310455799,
+          "write": 0.13437500456348062,
+          "boundary": 22.71687495522201,
+          "save": 492.6078125135973
+        },
+        "late_steps": 0,
+        "save_stall_steps": 0,
+        "frames": 1250,
+        "bytes_per_s": {
+          "ALRT": 29.13899088288127,
+          "CLCK": 265.6293516714829,
+          "ENVS": 280.91676427960317,
+          "EVNT": 124.15743941401584,
+          "FRMA": 28265530.71193804,
+          "HEAD": 0.0,
+          "IDNT": 114799.26245508147,
+          "INTN": 854441.1938243941,
+          "MAP1": 229851.738517893,
+          "RPRT": 8.615006000156201,
+          "STRM": 9962.916595808092,
+          "TERR": 451.86551079250665
+        },
+        "mb_per_s": 29.475746146394258,
+        "drained_bytes": 1573124380,
+        "wall_s": 53.93965133302845,
+        "n_alive_end": 33645,
+        "digest": "88de4fd3614ad4f94fa8fa522bd580f0b00d67bc398a86d32ab2eba2c76f883f",
+        "chapters": {
+          "length": 6000,
+          "ends": 1,
+          "report_ms": [
+            2.921291976235807
+          ]
+        },
+        "alerts": {
+          "calls": 303,
+          "ms_total": 2.7846816228702664
+        },
+        "powers": null,
+        "run": "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/finish/drive/internal/bench_1/rules_max",
+        "start": 472000,
+        "total": 2800,
+        "expected": "plain",
+        "digest_equal": true,
+        "gate": {
+          "applies": true,
+          "want": {
+            "achieved_x": 2.5,
+            "report_ms": 500.0
+          },
+          "got": {
+            "achieved_x": 3.6643688715942173,
+            "report_ms": 2.921291976235807
+          },
+          "pass": true,
+          "checks": {
+            "achieved_x": true,
+            "report_ms": true
+          },
+          "five_minutes": false
+        }
+      }
+    ],
+    "digests_equal": true,
+    "workdir": "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/finish/drive/internal/bench_1"
+  }
+}

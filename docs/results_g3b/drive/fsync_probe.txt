@@ -1,0 +1,2 @@
+/Volumes/M5 PRO external/alife/coordinator_scratch_2026-10-21/g3b_ckpt_stall_1 n 300 p50 0.59 p90 0.82 p99 217.00 max 377.23 ms
+/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/finish/drive/tmp n 300 p50 0.24 p90 0.34 p99 0.46 max 0.47 ms

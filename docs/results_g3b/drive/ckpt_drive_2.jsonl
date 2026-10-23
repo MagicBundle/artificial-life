@@ -1,0 +1,2 @@
+{"run": "/Volumes/M5 PRO external/alife/coordinator_scratch_2026-10-21/g3b_ckpt_stall_1/bench_2/rules_max", "step": 474000, "save_ms": 5791.673540952615, "since_before_ms": 5791.709334007464, "save_stall_steps_cum": 0, "recording": true, "bytes": 686866342, "utc": "07:49:50"}
+{"run": "/Volumes/M5 PRO external/alife/coordinator_scratch_2026-10-21/g3b_ckpt_stall_1/bench_2/rules_max", "step": 474800, "save_ms": 5572.4889589473605, "since_before_ms": 5572.5245840149, "save_stall_steps_cum": 0, "recording": true, "bytes": 686866342, "utc": "07:50:11"}

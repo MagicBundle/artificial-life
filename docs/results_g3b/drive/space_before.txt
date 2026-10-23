@@ -1,0 +1,4 @@
+drive df before:
+/dev/disk15s2   976557744 216220060 760135388    23%   14984 7601353880    0%   /Volumes/M5 PRO external
+internal df before:
+/dev/disk3s5  1948404040 1523312408 392051804    80% 3938114 3920518040    0%   /System/Volumes/Data

@@ -1,0 +1,1 @@
+cp $M/planets/p0_bench/checkpoints/step_0000472000.safetensors   0.00s user 0.10s system 1% cpu 6.215 total

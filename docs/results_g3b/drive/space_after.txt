@@ -1,0 +1,13 @@
+drive df before removal 08:09:37
+/dev/disk15s2   976557744 233184264 743171184    24%   15219 7431711840    0%   /Volumes/M5 PRO external
+16962616	/Volumes/M5 PRO external/alife/coordinator_scratch_2026-10-21/g3b_ckpt_stall_1
+bench_1
+bench_1x1
+bench_1x2
+bench_2
+planet
+removed 08:09:37
+0
+ls: /Volumes/M5 PRO external/alife/coordinator_scratch_2026-10-21/g3b_ckpt_stall_1: No such file or directory
+/dev/disk15s2   976557744 216221524 760133924    23%   15011 7601339240    0%   /Volumes/M5 PRO external
+      42
