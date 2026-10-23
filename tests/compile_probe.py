@@ -84,6 +84,9 @@ def probe_one(name: str, steps: int, out: Path) -> None:
         c, e = fc(s), fe(s)
         mx.eval(c, e)
         for (leaf, a), (_, b) in zip(tree_flatten(c), tree_flatten(e), strict=True):
+            if a is None or b is None:  # a field the observer channel leaves out: both None
+                assert a is None and b is None, leaf
+                continue
             x = np.array(a.astype(mx.float32) if a.dtype == mx.bfloat16 else a)
             y = np.array(b.astype(mx.float32) if b.dtype == mx.bfloat16 else b)
             if x.dtype.kind == "f":
