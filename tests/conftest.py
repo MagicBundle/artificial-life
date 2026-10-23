@@ -16,7 +16,8 @@ _JIT: list[worker_cache.Session] = []
 def pytest_configure(config: pytest.Config) -> None:
     """MLX CPU kernels compile into a private cache per test process (``worker_cache``; DESIGN §22.0), so that
     the workers of ``pytest -n`` and concurrent pytest runs never share a half-built library."""
-    worker_cache.limit_mlx_buffer_cache()
+    if worker_cache.cap_applies():
+        worker_cache.limit_mlx_buffer_cache()
     if (session := worker_cache.isolate_for(config)) is not None:
         _JIT.append(session)
 

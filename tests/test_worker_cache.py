@@ -162,8 +162,38 @@ def test_isolate_in_a_given_parent_and_without_a_shared_cache(
     assert not ses.root.exists()
 
 
-def cfg(dist: str) -> pytest.Config:
-    return SimpleNamespace(option=SimpleNamespace(dist=dist, basetemp=None))  # type: ignore[return-value]
+def test_isolate_sweeps_the_directories_of_runs_that_were_killed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A killed run never reaches ``close``; its private cache stays in ``TMPDIR`` until the next ``isolate``
+    finds it older than a day. Younger ones (a run that is going on), other names and symlinks stay."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    old = tmp_path / "alife-jit-old"
+    fake_kernel(worker_cache.kernel_dir(old), "k", age_s=0)
+    young = tmp_path / "alife-jit-young"
+    young.mkdir()
+    other = tmp_path / "other-dir"
+    other.mkdir()
+    link = tmp_path / "alife-jit-link"
+    link.symlink_to(other, target_is_directory=True)
+    t = time.time() - 2 * 24 * 3600
+    for d in (old, other):
+        os.utime(d, (t, t))
+    ses = worker_cache.isolate()
+    try:
+        assert not old.exists()
+        assert young.exists() and other.exists() and link.is_symlink() and ses.root.exists()
+    finally:
+        ses.close()
+    assert worker_cache.sweep_stale(tmp_path, max_age_s=0.0) == 1  # `young`, now "older" than zero seconds
+    assert not young.exists() and other.exists()
+
+
+def cfg(dist: str, tx: tuple[str, ...] | None = None) -> pytest.Config:
+    """The options xdist leaves: ``-n N`` is ``dist`` ("load", ...) with N ``tx`` entries; ``--dist X`` alone
+    is ``dist`` with none (and runs in this process)."""
+    tx = tx if tx is not None else (("popen",) if dist != "no" else ())
+    return SimpleNamespace(option=SimpleNamespace(dist=dist, tx=list(tx), basetemp=None))  # type: ignore[return-value]
 
 
 def test_the_xdist_controller_does_not_isolate_but_workers_and_serial_runs_do(
@@ -175,6 +205,10 @@ def test_the_xdist_controller_does_not_isolate_but_workers_and_serial_runs_do(
     assert worker_cache.is_collector(cfg("load")) and worker_cache.is_collector(cfg("loadfile"))
     assert worker_cache.isolate_for(cfg("loadfile")) is None
     assert not worker_cache.is_collector(cfg("no"))  # serial, or -n 0
+    assert not worker_cache.is_collector(cfg("loadfile", tx=()))  # --dist alone: xdist runs in this process
+    alone = worker_cache.isolate_for(cfg("loadfile", tx=()))
+    assert alone is not None
+    alone.close()
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw3")  # a worker reports dist "no" to its own pytest
     assert not worker_cache.is_collector(cfg("no"))
     ses = worker_cache.isolate_for(cfg("no"))
@@ -203,16 +237,42 @@ def test_a_workers_directory_goes_beside_its_basetemp(
 
 
 def test_the_buffer_cache_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cap is read from the environment and applied through ``mx.set_cache_limit``. Only the Metal
+    allocator is known to keep and return the limit (``set_cache_limit`` returns the one it replaces); a
+    build without Metal (the Linux CPU wheel of CI) may ignore the call, so there it is only called."""
     prev = mx.set_cache_limit(0)  # returns the limit it replaces
     try:
         monkeypatch.delenv("ALIFE_TEST_MLX_CACHE_MB", raising=False)
+        worker_cache.limit_mlx_buffer_cache()
+        monkeypatch.setenv("ALIFE_TEST_MLX_CACHE_MB", "17")
+        worker_cache.limit_mlx_buffer_cache()
+        monkeypatch.setenv("ALIFE_TEST_MLX_CACHE_MB", "-1")  # leave MLX's own limit alone
+        worker_cache.limit_mlx_buffer_cache()
+        if not mx.metal.is_available():
+            return
+        monkeypatch.delenv("ALIFE_TEST_MLX_CACHE_MB")
         worker_cache.limit_mlx_buffer_cache()
         assert mx.set_cache_limit(0) == worker_cache.CACHE_MB << 20
         monkeypatch.setenv("ALIFE_TEST_MLX_CACHE_MB", "17")
         worker_cache.limit_mlx_buffer_cache()
         assert mx.set_cache_limit(5 << 20) == 17 << 20
-        monkeypatch.setenv("ALIFE_TEST_MLX_CACHE_MB", "-1")  # leave MLX's own limit alone
+        monkeypatch.setenv("ALIFE_TEST_MLX_CACHE_MB", "-1")
         worker_cache.limit_mlx_buffer_cache()
         assert mx.set_cache_limit(0) == 5 << 20
     finally:
         mx.set_cache_limit(prev)
+
+
+def test_the_cap_applies_to_workers_and_the_cpu_device_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    prev = mx.default_device()
+    try:
+        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+        mx.set_default_device(mx.cpu)
+        assert worker_cache.cap_applies()
+        if mx.metal.is_available():
+            mx.set_default_device(mx.gpu)
+            assert not worker_cache.cap_applies()  # a serial run on the GPU keeps MLX's own limit
+            monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
+            assert worker_cache.cap_applies()
+    finally:
+        mx.set_default_device(prev)

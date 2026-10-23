@@ -38,6 +38,12 @@ import pytest
 # compiler writes it in place); an older one is complete.
 MIN_AGE_S = 60.0
 
+# A private cache directory older than this belongs to a run that was killed (SIGTERM, SIGKILL, a power cut)
+# before ``Session.close``; ``isolate`` removes it. No pytest run lasts a day.
+STALE_S = 24 * 3600.0
+
+PREFIX = "alife-jit-"
+
 # The default cap on the buffers MLX keeps after freeing them (``limit_mlx_buffer_cache``).
 CACHE_MB = 256
 
@@ -60,8 +66,14 @@ def worker_id() -> str | None:
 
 
 def is_collector(config: pytest.Config) -> bool:
-    """True in the xdist controller (``-n N`` with N > 0): it runs no test, so it compiles nothing."""
-    return worker_id() is None and getattr(config.option, "dist", "no") != "no"
+    """True in the xdist controller (``-n N`` with N > 0, or ``--tx``): it runs no test and compiles nothing.
+
+    ``--dist loadfile`` alone sets ``dist`` but names no worker: xdist then runs the tests in this very
+    process (its own ``_is_distribution_mode`` also asks for ``tx``), so that process is a serial session
+    and compiles.
+    """
+    opt = config.option
+    return worker_id() is None and getattr(opt, "dist", "no") != "no" and bool(getattr(opt, "tx", None))
 
 
 def _link(src: Path, dst: Path) -> None:
@@ -76,6 +88,23 @@ def _link(src: Path, dst: Path) -> None:
 def _pairs(d: Path) -> list[tuple[Path, Path]]:
     """``(source, library)`` of every kernel in ``d``: ``lib<file>.so`` and its ``<file>.cpp``."""
     return [(d / f"{so.name[3:-3]}.cpp", so) for so in d.glob("lib*.so")]
+
+
+def sweep_stale(parent: Path, max_age_s: float = STALE_S) -> int:
+    """Remove the private cache directories (``alife-jit-*``, which only ``isolate`` creates) of ``parent``
+    that are older than ``max_age_s``: a run that is killed never reaches ``Session.close``, and each leaves a
+    farm of about 2,200 hard links. Returns the number removed."""
+    n = 0
+    now = time.time()
+    for d in parent.glob(f"{PREFIX}*"):
+        try:
+            if d.is_symlink() or not d.is_dir() or now - d.stat().st_mtime < max_age_s:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        n += 1
+    return n
 
 
 @dataclass
@@ -119,7 +148,8 @@ def isolate(parent: Path | None = None, min_age_s: float = MIN_AGE_S) -> Session
     shared = kernel_dir(shared_root)
     parent = parent or shared_root
     parent.mkdir(parents=True, exist_ok=True)
-    private_root = Path(tempfile.mkdtemp(prefix="alife-jit-", dir=parent))
+    sweep_stale(parent)
+    private_root = Path(tempfile.mkdtemp(prefix=PREFIX, dir=parent))
     private = kernel_dir(private_root)
     private.mkdir(parents=True)
     seeded = 0
@@ -153,6 +183,13 @@ def isolate_for(config: pytest.Config) -> Session | None:
     return isolate(parent)
 
 
+def cap_applies() -> bool:
+    """Where the buffer cap is applied: on the CPU device and in every xdist worker. A serial run on the GPU
+    keeps MLX's own limit: the cap's effect on Metal speed was not measured (the Metal runs are the purity
+    gate and the owner's checks, DESIGN §28.8), and its memory gain was measured on the CPU device only."""
+    return worker_id() is not None or mx.default_device().type == mx.DeviceType.cpu
+
+
 def limit_mlx_buffer_cache() -> None:
     """Cap the buffers MLX keeps after freeing them at ``ALIFE_TEST_MLX_CACHE_MB`` MB (default ``CACHE_MB``;
     a negative value leaves MLX's own limit, which is the machine's memory size).
@@ -160,7 +197,8 @@ def limit_mlx_buffer_cache() -> None:
     Without the cap a worker that once ran a large test keeps gigabytes of freed buffers for the rest of the
     run (6.6 GB resident for 90 MB live in a measured worker, 12.6 GB for four workers). With 256 MB the
     same four workers peak at 6.8 GB in the same time (DESIGN §22.0, I58). The cap changes no result: it only
-    decides how many freed buffers are kept for reuse.
+    decides how many freed buffers are kept for reuse. Where MLX has no buffer cache to limit (a build
+    without Metal: its allocator may ignore the call) it does nothing.
     """
     mb = int(os.environ.get("ALIFE_TEST_MLX_CACHE_MB", CACHE_MB))
     if mb >= 0:

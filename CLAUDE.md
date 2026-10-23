@@ -63,10 +63,11 @@ with a `LABEL_VERDICTS` row for the world and rule set (none for V2 or V3 yet) a
   every MLX bump, which is then added to `knn_metal.VERIFIED_MLX`), fall back to that path off Metal, and write no
   contested outputs. `ALIFE_KNN=auto|mlx|metal` selects the neighbour search (DESIGN §4, I48).
 - Checks before pushing: `uv run ruff check`, `uv run ruff format --check` (the whole repo, as CI runs them; scripts
-  under `docs/` count), `uv run pytest -m "not slow" -q -n 8 --dist loadfile` (the fast suite in parallel: about 6
+  under `docs/` count), `uv run pytest -m "not slow" -q -n 6 --dist loadfile` (the fast suite in parallel: about 6.5
   minutes on the M5 Pro against 28 serial; with `-p cpu_device` and `PYTHONPATH` for the CPU device as before; plain
-  serial `uv run pytest -m "not slow" -q` still works). At most 8 workers on this Mac while LM Studio holds its
-  model (`-n auto` is 18; DESIGN §22.0, I58). Every pytest process compiles MLX CPU kernels into a private cache
+  serial `uv run pytest -m "not slow" -q` still works). `-n 6` while LM Studio holds its model, `-n 8` only with more
+  than 15 GB free (`vm_stat`), never `-n auto` (18 workers: slower and 16 GB; DESIGN §22.0, I58). `--dist loadfile`
+  is the fast form, no longer needed for correctness. Every pytest process compiles MLX CPU kernels into a private cache
   (`tests/worker_cache.py`), so parallel runs and concurrent sessions do not collide on `$TMPDIR/mlx`; keep one
   `TMPDIR` per agent as the warm cache. A test that fails only in parallel is a defect of the test (relative
   bounds, injected clocks, no shared paths). A fast-suite run leaves about 38 GB in `pytest-of-*` under its `TMPDIR` (three runs kept): delete it after a

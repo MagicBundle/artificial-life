@@ -40,7 +40,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 ```bash
 uv sync --extra viewer --extra video          # Python 3.12 pinned in .python-version
 uv run pytest -m "not slow" -q                # fast suite, one process (about 28 min on the Mac)
-uv run pytest -m "not slow" -q -n 8 --dist loadfile   # the same in parallel (about 6 min; DESIGN section 22.0, I58)
+uv run pytest -m "not slow" -q -n 6 --dist loadfile   # the same in parallel (about 6.5 min; DESIGN section 22.0, I58)
 uv run alife run --preset 64k --steps 20000 --out runs/NAME
 uv run alife resume runs/NAME --steps 100000
 uv run alife view runs/NAME                   # pygame viewer (re-simulates from the latest checkpoint)
@@ -65,12 +65,14 @@ of the Python process). A second SIGINT is a hard exit. Do not use `--quiet` if 
 
 ## Parallel tests (I58)
 
-`pytest-xdist` is in the dev group. The fast suite runs as `uv run pytest -m "not slow" -q -n 8 --dist loadfile`
-(5 min 56 s warm on the M5 Pro against 27 min 38 s serial; 9.1 GB in all; with `-p cpu_device` and `PYTHONPATH` as
+`pytest-xdist` is in the dev group. The fast suite runs as `uv run pytest -m "not slow" -q -n 6 --dist loadfile`
+(6 min 31 s warm on the M5 Pro against 27 min 38 s serial; 7.9 GB in all, `-n 8` is 5 min 56 s and 9.1 GB; with `-p cpu_device` and `PYTHONPATH` as
 before for the CPU device). Why those numbers and the whole measurement table are in DESIGN §22.0 "Parallel runs".
 What to know:
-- **Do not use more than 8 workers while LM Studio holds its model** (about 13 GB is free then). `-n auto` is 18 here.
-  12 workers took 4 min 41 s and peaked at 11.7 to 12.2 GB; try that only with the model unloaded.
+- **Use `-n 6` while LM Studio holds its model; `-n 8` only with more than about 15 GB free** (`vm_stat`, free plus
+  inactive; the worst case of 8 workers is 12.7 GB). **Never `-n auto`**: it is 18 workers here, 435 s against 362 s
+  at `-n 8`, and 16.3 GB. 12 workers took 4 min 41 s and peaked at 11.7 to 12.2 GB; try that only with the model
+  unloaded.
 - **Every pytest process now compiles MLX CPU kernels into a private cache** (`tests/worker_cache.py`, hooked in
   `tests/conftest.py`), seeded from the shared `$TMPDIR/mlx` and merged back into it. Concurrent runs and parallel
   workers no longer collide (before: "File exists" linker errors, aborted workers, once a hang). Keep giving each
@@ -79,8 +81,13 @@ What to know:
 - **Disk:** a fast-suite run leaves about 38 GB under pytest's basetemp, and pytest keeps three runs per `TMPDIR`; a dozen
   measured runs filled the Mac's disk (ENOSPC, the tests then failed). Delete the `pytest-of-*` directory of a `TMPDIR`
   after a run. `tmp_path_retention_policy = "failed"` would stop it; not applied, the owner to confirm.
-- MLX buffers are capped at 256 MB per test process (`ALIFE_TEST_MLX_CACHE_MB`): without it four workers held
-  12.6 GB.
+- MLX buffers are capped at 256 MB per test process on the CPU device and in workers (`ALIFE_TEST_MLX_CACHE_MB`):
+  without it four workers held 12.6 GB. A serial run on the GPU keeps MLX's limit (its effect on Metal speed is
+  unmeasured).
+- A killed serial run leaves `alife-jit-*` in its `TMPDIR` (hard links, no data); the next run sweeps those older
+  than a day. `--dist loadfile` is the fast form, not a correctness condition (the order dependence of
+  `test_director_llm.py` is fixed). CI saves its MLX cache only after a green job, so one red test keeps the next
+  run cold; an `if: always()` save would pin a partial cache under the same key (owner's decision, not applied).
 - **CI** runs `-n 4 --dist loadfile`; the Linux time is not measured yet (read it off the first runs and lower the
   120-minute timeout). **Open:** `fix/mlx-compile-collision` (`tests/jit_cache.py`) is unmerged; on merge, let its
   `isolate` replace `worker_cache.isolate` in `isolate_for` and resolve the `conftest.py` hooks as DESIGN §22.0 says.
