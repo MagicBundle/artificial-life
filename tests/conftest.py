@@ -7,7 +7,23 @@ import platform
 import mlx.core as mx
 import pytest
 
+import worker_cache
 from alife.config import Config, load_config
+
+_JIT: list[worker_cache.Session] = []
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """MLX CPU kernels compile into a private cache per test process (``worker_cache``; DESIGN §22.0), so that
+    the workers of ``pytest -n`` and concurrent pytest runs never share a half-built library."""
+    worker_cache.limit_mlx_buffer_cache()
+    if (session := worker_cache.isolate_for(config)) is not None:
+        _JIT.append(session)
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    while _JIT:
+        _JIT.pop().close()
 
 
 def pytest_report_header(config: pytest.Config) -> str:
