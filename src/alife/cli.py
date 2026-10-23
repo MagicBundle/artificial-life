@@ -61,6 +61,7 @@ from alife.render import (
 from alife.rng import InitStream, init_keys
 from alife.runio import (
     DIRECTOR_LOG_FILE,
+    PRE_PLAY_CONFIG_FILE,
     CheckpointError,
     PlayLock,
     PlayLockError,
@@ -1131,15 +1132,24 @@ def _cut_listing(rd: RunDir, step: int) -> str:
     ) + f" and {len(chunks)} event chunk(s) {chunks}"
 
 
-def _keep_checkpoints(rd: RunDir, saved: dict[str, Any] | None, play_keep: int) -> int:
+def _save_mode(a: argparse.Namespace, saved: dict[str, Any] | None) -> str:
+    """The save mode of this session (DESIGN 34.10): ``--saves``, else play.json's ``saves``, else ``all``."""
+    mode = getattr(a, "saves", None) or (saved or {}).get("saves") or "all"
+    if mode not in play.SAVE_MODES:
+        raise ConfigError(f"play.json's saves is one of {play.SAVE_MODES}, not {mode!r}")
+    return str(mode)
+
+
+def _keep_checkpoints(rd: RunDir, saved: dict[str, Any] | None, play_keep: int, saves: str = "all") -> int:
     """``run.keep_checkpoints`` of a world directory played from here on: never below what the world already
     holds, so that playing it prunes nothing it did not prune before. A play world has ``play_keep``
     already; a research run adopted with ``--adopt`` keeps its own value, and room for the checkpoint the
-    first save adds (the newest ``keep`` survive, so a lower value would delete the older ones)."""
+    first save adds (the newest ``keep`` survive, so a lower value would delete the older ones). The note
+    says so only in the ``all`` save mode: in ``newest`` the first save deletes them (``_newest_note``)."""
     own = rd.config().run.keep_checkpoints
     held = len(rd.checkpoints()) + 1 if saved is None else 0
     keep = max(own, play_keep, held)
-    if saved is None and keep != play_keep:
+    if saved is None and keep != play_keep and saves == "all":
         print(
             f"play: --adopt keeps run.keep_checkpoints at {keep} (the run's own {own}, its "
             f"{held - 1} checkpoints and the next one): nothing is pruned at the first save",
@@ -1147,6 +1157,28 @@ def _keep_checkpoints(rd: RunDir, saved: dict[str, Any] | None, play_keep: int) 
             flush=True,
         )
     return keep
+
+
+def _newest_note(rd: RunDir, saved: dict[str, Any] | None, saves: str, step: int) -> None:
+    """When ``--saves newest`` turns this session to the ``newest`` save mode (DESIGN 34.10), say on stderr,
+    before anything is touched, which checkpoints its first save deletes: every one up to ``step`` but step 0
+    and the origin (the later ones are what ``--truncate`` deletes). Those of a research run played in place
+    (``--adopt``) are the research's: the flag is the explicit way to delete them (a control line is
+    refused)."""
+    if saves != "newest" or (saved or {}).get("saves") == "newest":
+        return
+    origin = rd._start_step()
+    doomed = [st for st, _ in rd.checkpoints() if st <= step and st not in (0, origin)]
+    if not doomed:
+        return
+    whose = "of the research run " if saved is None or rd.adopted else ""
+    steps = f"step {doomed[0]}" if len(doomed) == 1 else f"steps {doomed[0]} to {doomed[-1]}"
+    print(
+        f"play: --saves newest keeps only the newest save and the origin: {len(doomed)} checkpoint(s) "
+        f"{whose}({steps}) are DELETED at the first save",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _play_resume(a: argparse.Namespace, sink: Any, control: stream.Control) -> int:
@@ -1164,8 +1196,9 @@ def _play_resume(a: argparse.Namespace, sink: Any, control: stream.Control) -> i
                 "(`alife play --init-from RUN:STEP ...`); to play this directory in place pass --adopt "
                 "(config.json is kept as config.pre_play.json)"
             )
+        saves = _save_mode(a, saved)  # refuse a bad play.json before anything is touched
         items = _play_items(a)
-        keep = _keep_checkpoints(rd, saved, play.PLAY_CADENCE["keep_checkpoints"])
+        keep = _keep_checkpoints(rd, saved, play.PLAY_CADENCE["keep_checkpoints"], saves)
         items = [
             *(i for i in items if not i.startswith("run.keep_checkpoints=")),
             f"run.keep_checkpoints={keep}",
@@ -1206,8 +1239,9 @@ def _play_resume(a: argparse.Namespace, sink: Any, control: stream.Control) -> i
         elif cfg.run.director == "live":
             director_log.rules_version_of(rd.read_jsonl(DIRECTOR_LOG_FILE))
         # Everything is validated; only now touch the directory.
+        _newest_note(rd, saved, saves, step)
         if saved is None:
-            backup = rd.path / "config.pre_play.json"
+            backup = rd.path / PRE_PLAY_CONFIG_FILE
             if not backup.exists():  # never overwritten: the first adoption's config is the one worth keeping
                 shutil.copyfile(rd.path / "config.json", backup)
         rd.save_config(cfg)
@@ -1241,6 +1275,7 @@ def _play_serve(
     if a.until is not None and a.until < step:
         raise ConfigError(f"--until {a.until} is before the start step {step}")
     saved = saved or {}
+    saves = _save_mode(a, saved)
     base_rate = a.base_rate or saved.get("base_rate") or play.BASE_RATE
     rate = 1.0 if a.rate is None or a.rate == 0 else a.rate
     paused = a.rate is None or a.rate == 0 or a.paused
@@ -1255,6 +1290,7 @@ def _play_serve(
                     "tick": info["tick"],
                     "weather": None if dc_ref is None else {"dc_ref": dc_ref},
                     "planet": planet,
+                    **({"saves": saves} if saves != "all" else {}),  # absent: all (DESIGN 34.10)
                 }
             )
         except OSError as e:  # not a broken pipe: say what failed
@@ -1274,6 +1310,7 @@ def _play_serve(
         until=a.until,
         on_ready=ready,
         alerts_experimental=getattr(a, "alerts", None) == "experimental",
+        saves=saves,
     )
     rd.update_meta(knn_impl=spatial.knn_impl(cfg))
     if cfg.run.director == "off" and cfg.director.enabled:
@@ -1757,6 +1794,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="also evaluate the alert classes whose threshold no measurement backs (storm over a lineage; "
         "they are logged to alerts.jsonl as the log surface, DESIGN 34.3)",
+    )
+    p.add_argument(
+        "--saves",
+        choices=play.SAVE_MODES,
+        default=None,
+        help="all (default): keep the last 3 saves and the origin; newest: only the newest save and the "
+        "origin (kept in play.json; the `saves` control line changes it while playing, DESIGN 34.10)",
     )
     p.add_argument("--no-control", action="store_true", help="do not read stdin")
     p.set_defaults(func=_cmd_play)

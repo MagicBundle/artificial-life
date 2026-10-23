@@ -33,7 +33,12 @@ struct ControlCenterView: View {
         let card = model.editingPower ? nil : model.inspectorCard
         return VStack(spacing: 0) {
             ClockStripView(play: play, model: model)
-                .padding(10)
+                .padding(.horizontal, 10)
+                .padding(.top, 10)
+                .padding(.bottom, 4)
+            StorageStripView(play: play, model: model)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
             // The alerts sit between the strip and the tabs; the rows give way before the list does (DESIGN §34.7).
             AlertStackView(play: play, model: model,
                            maxRows: DockBudget.alertRows(dockHeight: height, inspectorOpen: card != nil, editing: model.editingPower))
@@ -55,7 +60,8 @@ struct ControlCenterView: View {
     private var bottomDock: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                ClockStripView(play: play, model: model).padding(10)
+                ClockStripView(play: play, model: model).padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 4)
+                StorageStripView(play: play, model: model).padding(.horizontal, 10).padding(.bottom, 6)
                 Spacer(minLength: 0)
             }
             .frame(width: Self.clockColumn)
@@ -272,6 +278,7 @@ struct ClockBadge: View {
             if strip.saving {
                 Label("saving…", systemImage: "externaldrive").foregroundStyle(.orange)
             }
+            StorageBadge(storage: model.storage)
         }
         .font(.caption.monospacedDigit())
         .padding(.horizontal, 10)

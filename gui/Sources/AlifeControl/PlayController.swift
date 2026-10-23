@@ -63,6 +63,8 @@ final class PlayController: ObservableObject {
     @Published private(set) var progress: [String] = []
     /// What the window asked the rate to be, until the world's next `CLCK` confirms it (`.multiplier(0)`: paused).
     @Published private(set) var requestedRate: PlayRate?
+    /// The save mode the window asked for and the world has not yet confirmed in a `CLCK` (the toggle shows it at once).
+    @Published private(set) var requestedSaves: SaveMode?
     /// Whether the world was told to send the intent labels (`labels on|off`; on at the start of every world).
     @Published private(set) var labelsOn = true
     /// The names of the worlds whose process was asked to stop and has not exited: they are saving.
@@ -96,6 +98,7 @@ final class PlayController: ObservableObject {
     /// request is dropped (it was refused or clamped).
     static let confirmWait = 1.0
     private var requestedAt = 0.0
+    private var requestedSavesAt = 0.0
     /// Where lines for the log go: the command line that starts the world, and its stderr.
     var log: @MainActor ([String], Bool) -> Void = { _, _ in }
     /// The stop ladder of a live world; tests shorten it.
@@ -129,6 +132,7 @@ final class PlayController: ObservableObject {
         revision += 1
         progress = []
         requestedRate = nil
+        requestedSaves = nil
         labelsOn = true
         originChapter = 0
         onReset?()
@@ -173,6 +177,7 @@ final class PlayController: ObservableObject {
         store = WorldStore()
         revision += 1
         requestedRate = nil
+        requestedSaves = nil
         labelsOn = true
         originChapter = 0
         onReset?()
@@ -225,6 +230,9 @@ final class PlayController: ObservableObject {
             requestedAt = now()
         case .labels(let on):
             labelsOn = on
+        case .saves(let mode):
+            requestedSaves = mode
+            requestedSavesAt = now()
         case .run, .step:
             requestedRate = nil  // a later intent replaces a pending request; the world's next CLCK says what it holds
         default: break
@@ -357,8 +365,24 @@ final class PlayController: ObservableObject {
     /// something else: the world refused or clamped it). A clock sent before the world read the command shows the old rate and
     /// settles nothing, so the strip does not flip back to it for a quarter of a second.
     func settleRequest(after clock: PlayClock) {
-        guard let asked = requestedRate else { return }
-        if Self.confirms(clock.rate, asked) || now() - requestedAt > Self.confirmWait { requestedRate = nil }
+        if let asked = requestedRate,
+           Self.confirms(clock.rate, asked) || now() - requestedAt > Self.confirmWait { requestedRate = nil }
+        // The same for the save mode: the clock shows the mode in force (a world that does not know the line never confirms it).
+        if let asked = requestedSaves,
+           (clock.savesNewestOnly ? SaveMode.newest : .all) == asked || now() - requestedSavesAt > Self.confirmWait {
+            requestedSaves = nil
+        }
+    }
+
+    /// The save mode in force as the window shows it: what it just asked, else the world's last `CLCK`, else the header (DESIGN §34.10).
+    var savesMode: SaveMode {
+        SaveModeView.current(clock: store.clock, header: store.play?.saves, requested: requestedSaves)
+    }
+
+    /// The directory of the world in play (`runs/<world>` under the repository), nil when none is.
+    var worldURL: URL? {
+        guard let directory, let world else { return nil }
+        return directory.appendingPathComponent("runs/\(world)", isDirectory: true)
     }
 
     /// Whether a `CLCK` rate (0 paused, -1 max, else the multiplier) is the rate the window asked for. A clock sent before the

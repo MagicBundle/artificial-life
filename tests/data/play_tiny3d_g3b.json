@@ -1,7 +1,7 @@
 {
   "about": "Expected decoding of the stream in the .bin file next to this one (DESIGN section 33.1). Regenerate with `uv run python tests/play_fixtures.py --write`.",
   "kind": "3d_g3b",
-  "bytes": 15984,
+  "bytes": 16020,
   "header": {
     "protocol": 1,
     "dims": 3,
@@ -258,13 +258,17 @@
           }
         }
       },
-      "game_specs": "game-v0"
+      "game_specs": "game-v0",
+      "saves": {
+        "mode": "newest",
+        "keep": 3
+      }
     }
   },
   "skipped": [
     {
       "tag": "ALRT",
-      "offset": 15880,
+      "offset": 15916,
       "why": "version"
     }
   ],
@@ -272,7 +276,7 @@
     {
       "index": 0,
       "tag": "FRMA",
-      "offset": 2996,
+      "offset": 3032,
       "length": 256,
       "step": 12000,
       "seq": 0,
@@ -357,7 +361,7 @@
     {
       "index": 1,
       "tag": "IDNT",
-      "offset": 3260,
+      "offset": 3296,
       "length": 1044,
       "step": 12000,
       "seq": 0,
@@ -551,7 +555,7 @@
     {
       "index": 2,
       "tag": "ENVS",
-      "offset": 4312,
+      "offset": 4348,
       "length": 700,
       "step": 12000,
       "seq": 0,
@@ -649,7 +653,7 @@
     {
       "index": 3,
       "tag": "EVNT",
-      "offset": 5020,
+      "offset": 5056,
       "length": 364,
       "step": 12000,
       "seq": 0,
@@ -694,7 +698,7 @@
     {
       "index": 4,
       "tag": "ALRT",
-      "offset": 5392,
+      "offset": 5428,
       "length": 336,
       "step": 12000,
       "seq": 0,
@@ -733,7 +737,7 @@
     {
       "index": 5,
       "tag": "RPRT",
-      "offset": 5736,
+      "offset": 5772,
       "length": 1148,
       "step": 12000,
       "seq": 0,
@@ -842,7 +846,7 @@
     {
       "index": 6,
       "tag": "CLCK",
-      "offset": 6892,
+      "offset": 6928,
       "length": 60,
       "step": 12000,
       "seq": 0,
@@ -870,7 +874,7 @@
     {
       "index": 7,
       "tag": "ALRT",
-      "offset": 6960,
+      "offset": 6996,
       "length": 1952,
       "step": 12000,
       "seq": 1,
@@ -1027,7 +1031,7 @@
     {
       "index": 8,
       "tag": "RPRT",
-      "offset": 8920,
+      "offset": 8956,
       "length": 1152,
       "step": 12000,
       "seq": 1,
@@ -1136,7 +1140,7 @@
     {
       "index": 9,
       "tag": "RPRT",
-      "offset": 10080,
+      "offset": 10116,
       "length": 1156,
       "step": 12000,
       "seq": 2,
@@ -1245,7 +1249,7 @@
     {
       "index": 10,
       "tag": "RPRT",
-      "offset": 11244,
+      "offset": 11280,
       "length": 532,
       "step": 12000,
       "seq": 3,
@@ -1305,7 +1309,7 @@
     {
       "index": 11,
       "tag": "PLAN",
-      "offset": 11784,
+      "offset": 11820,
       "length": 552,
       "step": 12000,
       "seq": 0,
@@ -1362,7 +1366,7 @@
     {
       "index": 12,
       "tag": "PLAN",
-      "offset": 12344,
+      "offset": 12380,
       "length": 552,
       "step": 12000,
       "seq": 1,
@@ -1419,7 +1423,7 @@
     {
       "index": 13,
       "tag": "PLAN",
-      "offset": 12904,
+      "offset": 12940,
       "length": 556,
       "step": 12000,
       "seq": 2,
@@ -1476,7 +1480,7 @@
     {
       "index": 14,
       "tag": "PLAN",
-      "offset": 13468,
+      "offset": 13504,
       "length": 668,
       "step": 12000,
       "seq": 3,
@@ -1546,7 +1550,7 @@
     {
       "index": 15,
       "tag": "PLAN",
-      "offset": 14144,
+      "offset": 14180,
       "length": 488,
       "step": 12000,
       "seq": 4,
@@ -1594,7 +1598,7 @@
     {
       "index": 16,
       "tag": "PLAN",
-      "offset": 14640,
+      "offset": 14676,
       "length": 524,
       "step": 12000,
       "seq": 5,
@@ -1651,7 +1655,7 @@
     {
       "index": 17,
       "tag": "PLAN",
-      "offset": 15172,
+      "offset": 15208,
       "length": 364,
       "step": 12000,
       "seq": 6,
@@ -1689,7 +1693,7 @@
     {
       "index": 18,
       "tag": "EVNT",
-      "offset": 15544,
+      "offset": 15580,
       "length": 328,
       "step": 12001,
       "seq": 1,
@@ -1734,7 +1738,7 @@
     {
       "index": 19,
       "tag": "CLCK",
-      "offset": 15916,
+      "offset": 15952,
       "length": 60,
       "step": 12001,
       "seq": 1,
@@ -1749,14 +1753,14 @@
         "save_stall_steps": 13,
         "reason": 4,
         "saving": 0,
-        "flags": 1,
+        "flags": 5,
         "fe": 2,
         "chapter": 3,
         "in_chapter": 1,
         "chapter_len": 6000
       },
       "sha256": {
-        "body": "3a39387f948597491d9ee253e5342a85790449c5beb10ba95870312f0739156b"
+        "body": "52e6619813abc1ca4f8a983a1c149d54a4f435f5154baf937a7d586e659e98f5"
       }
     }
   ]

@@ -50,3 +50,5 @@ power blight id=5 patch=0 steps=12000
 power strike id=6 x=100.5 y=20 radius=12.5 kill=0.4
 power cancel food id=3
 intent make more food
+saves all
+saves newest
