@@ -68,13 +68,23 @@ package enum DockLayout {
         }
     }
 
-    /// The extent a drag of the divider to `point` (in the window's coordinates) asks for.
-    package static func extent(draggingTo point: CGPoint, side: DockSide, in size: CGSize) -> CGFloat {
+    /// How far along the dock's axis a grab at `point` is from the divider's centre (negative on the map's side): a divider
+    /// grabbed at the edge of its strip stays under the pointer instead of jumping to centre on it.
+    package static func grab(at point: CGPoint, divider: CGRect, side: DockSide) -> CGFloat {
+        switch side {
+        case .left, .right: return point.x - divider.midX
+        case .bottom: return point.y - divider.midY
+        }
+    }
+
+    /// The extent a drag of the divider to `point` (in the window's coordinates) asks for, for a divider that was grabbed
+    /// `grab` points from its centre (`grab(at:divider:side:)`).
+    package static func extent(draggingTo point: CGPoint, side: DockSide, in size: CGSize, grab: CGFloat = 0) -> CGFloat {
         let raw: CGFloat
         switch side {
-        case .right: raw = size.width - point.x
-        case .left: raw = point.x
-        case .bottom: raw = size.height - point.y
+        case .right: raw = size.width - (point.x - grab)
+        case .left: raw = point.x - grab
+        case .bottom: raw = size.height - (point.y - grab)
         }
         return clamped(extent: raw, side: side, in: size)
     }
@@ -110,5 +120,43 @@ package enum DockBudget {
         let fixed = header + clockStrip + tabs + (editing ? editor : list) + (inspectorOpen ? inspector : 0)
         let fits = Int(((dockHeight - fixed) / alertRow).rounded(.down))
         return min(max(fits, 1), AlertStack.roomyRows)
+    }
+}
+
+/// Whether the resize cursor is pushed for the dock's divider: while the pointer is on its strip or the strip is being dragged
+/// (the strip follows the pointer, but may lag it), and popped exactly once for each push, also when the strip goes away under
+/// the pointer (a collapsed dock). `onHover` of a view that is positioned by `.position` covers its whole parent, and a pop
+/// without its push takes another view's cursor off the stack; this state is what keeps the two balanced.
+package struct DividerCursor: Equatable, Sendable {
+    package enum Action: Equatable, Sendable { case push, pop, none }
+
+    package private(set) var hovering = false
+    package private(set) var dragging = false
+    package private(set) var pushed = false
+
+    package init() {}
+
+    package mutating func hover(_ inside: Bool) -> Action {
+        hovering = inside
+        return settle()
+    }
+
+    package mutating func drag(_ active: Bool) -> Action {
+        dragging = active
+        return settle()
+    }
+
+    /// The strip left the window.
+    package mutating func disappear() -> Action {
+        hovering = false
+        dragging = false
+        return settle()
+    }
+
+    private mutating func settle() -> Action {
+        let wanted = hovering || dragging
+        guard wanted != pushed else { return .none }
+        pushed = wanted
+        return wanted ? .push : .pop
     }
 }
