@@ -15,10 +15,11 @@ number is written by the same `json.dumps`. The scenes:
 - `3d_n70` (N = 70): three bitmap words, the last partial (rows 64 to 69), which a multiple of 64 hides; a
   bond between rows 31 and 32 and between 63 and 64, and a second `FRMA` with every row alive.
 - `3d_g3b` (N = 64, G3b, DESIGN section 34.6): the header keys `alerts`, `autopause`, `powers` and
-  `game_specs`; a chapter-end scene at step 12000 with `ENVS` (a player effect, `influence`, `patches`,
-  `powers`), `IDNT` kin entries with a `thread`, `EVNT` of kinds 18 to 21, a backlog `ALRT` and `RPRT`, a live
-  `ALRT` (importance 0 to 3; raised, updated and cleared; a ref of each kind) and two `RPRT` (a template
-  report and a select report still pending), `PLAN` records of every status (a preview reply, queued, applied,
+  `game_specs`, and §34.10's `saves` with `CLCK.flags` bit 2 in the last clock; a chapter-end scene at step
+  12000 with `ENVS` (a player effect, `influence`, `patches`, `powers`), `IDNT` kin entries with a `thread`,
+  `EVNT` of kinds 18 to 21, a backlog `ALRT` and `RPRT`, a live `ALRT`
+  (importance 0 to 3; raised, updated and cleared; a ref of each kind) and two `RPRT` (a template report and a
+  select report still pending), `PLAN` records of every status (a preview reply, queued, applied,
   since, refused, cancelled, and an intent refusal), `CLCK` with reasons 3 and 4 and the 1-based chapter
   clock, and an `ALRT` of an unknown version (skipped). The three older fixtures are unchanged by it, so the
   Swift decoder of G3a still reads them.
@@ -390,6 +391,7 @@ def _header(kind: str) -> bytes:
             ),
             "powers": sr.powers_block(POWERS),
             "game_specs": "game-v0",
+            "saves": sr.saves_block(mode="newest", keep=3),  # §34.10: the player switched recording off
         }
     legacy = sr.legacy_header(
         dims=3 if three else 2,
@@ -1033,7 +1035,7 @@ def _build_g3b() -> bytes:
             chapter=3,
             in_chapter=1,
             chapter_len=6000,
-            flags=sr.CLCK_FLAG_CHAPTER_PAUSE,
+            flags=sr.CLCK_FLAG_CHAPTER_PAUSE | sr.CLCK_FLAG_SAVES_NEWEST,
         )
     )
     return sr.flatten(parts)

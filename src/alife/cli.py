@@ -1131,6 +1131,14 @@ def _cut_listing(rd: RunDir, step: int) -> str:
     ) + f" and {len(chunks)} event chunk(s) {chunks}"
 
 
+def _save_mode(a: argparse.Namespace, saved: dict[str, Any] | None) -> str:
+    """The save mode of this session (DESIGN 34.10): ``--saves``, else play.json's ``saves``, else ``all``."""
+    mode = getattr(a, "saves", None) or (saved or {}).get("saves") or "all"
+    if mode not in play.SAVE_MODES:
+        raise ConfigError(f"play.json's saves is one of {play.SAVE_MODES}, not {mode!r}")
+    return str(mode)
+
+
 def _keep_checkpoints(rd: RunDir, saved: dict[str, Any] | None, play_keep: int) -> int:
     """``run.keep_checkpoints`` of a world directory played from here on: never below what the world already
     holds, so that playing it prunes nothing it did not prune before. A play world has ``play_keep``
@@ -1164,6 +1172,7 @@ def _play_resume(a: argparse.Namespace, sink: Any, control: stream.Control) -> i
                 "(`alife play --init-from RUN:STEP ...`); to play this directory in place pass --adopt "
                 "(config.json is kept as config.pre_play.json)"
             )
+        _save_mode(a, saved)  # refuse a bad play.json before anything is touched
         items = _play_items(a)
         keep = _keep_checkpoints(rd, saved, play.PLAY_CADENCE["keep_checkpoints"])
         items = [
@@ -1241,6 +1250,7 @@ def _play_serve(
     if a.until is not None and a.until < step:
         raise ConfigError(f"--until {a.until} is before the start step {step}")
     saved = saved or {}
+    saves = _save_mode(a, saved)
     base_rate = a.base_rate or saved.get("base_rate") or play.BASE_RATE
     rate = 1.0 if a.rate is None or a.rate == 0 else a.rate
     paused = a.rate is None or a.rate == 0 or a.paused
@@ -1255,6 +1265,7 @@ def _play_serve(
                     "tick": info["tick"],
                     "weather": None if dc_ref is None else {"dc_ref": dc_ref},
                     "planet": planet,
+                    **({"saves": saves} if saves != "all" else {}),  # absent: all (DESIGN 34.10)
                 }
             )
         except OSError as e:  # not a broken pipe: say what failed
@@ -1274,6 +1285,7 @@ def _play_serve(
         until=a.until,
         on_ready=ready,
         alerts_experimental=getattr(a, "alerts", None) == "experimental",
+        saves=saves,
     )
     rd.update_meta(knn_impl=spatial.knn_impl(cfg))
     if cfg.run.director == "off" and cfg.director.enabled:
@@ -1757,6 +1769,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="also evaluate the alert classes whose threshold no measurement backs (storm over a lineage; "
         "they are logged to alerts.jsonl as the log surface, DESIGN 34.3)",
+    )
+    p.add_argument(
+        "--saves",
+        choices=play.SAVE_MODES,
+        default=None,
+        help="all (default): keep the last 3 saves and the origin; newest: only the newest save and the "
+        "origin (kept in play.json; the `saves` control line changes it while playing, DESIGN 34.10)",
     )
     p.add_argument("--no-control", action="store_true", help="do not read stdin")
     p.set_defaults(func=_cmd_play)

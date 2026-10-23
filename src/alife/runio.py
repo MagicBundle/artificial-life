@@ -501,9 +501,14 @@ class RunDir:
     """A run directory (§18): config, meta, metrics, checkpoints, events, diag dumps and media."""
 
     path: Path
+    keep_newest: bool
+    """A played world's save mode (DESIGN §34.10): True keeps only the newest checkpoint and the origin at
+    each save, whatever ``run.keep_checkpoints`` says. Set by the play pacer: a runtime setting of this
+    object, not a config key, so it never reaches the config hash or a trajectory."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
+        self.keep_newest = False
 
     # paths
     @property
@@ -652,7 +657,7 @@ class RunDir:
     def save_checkpoint(
         self, s: State, cfg: Config, *, observers: Mapping[str, np.ndarray] | None = None
     ) -> Path:
-        """sidecar + write_state_file + LATEST + prune.
+        """sidecar + write_state_file + LATEST + prune (``keep_newest``: to the newest save and the origin).
 
         ``observers`` (the arrays of ``Observer.sidecar()``) is written to ``observers/step_<t>.npz`` before
         the state file, so every complete checkpoint of an observing run has its sidecar (a crash in between
@@ -669,7 +674,7 @@ class RunDir:
             self.observer_path(step).unlink(missing_ok=True)
         write_state_file(path, s, cfg)
         _atomic_write_text(self.checkpoint_dir / LATEST_FILE, path.name + "\n")
-        self._prune(cfg.run.keep_checkpoints)
+        self._prune(1 if self.keep_newest else cfg.run.keep_checkpoints)
         return path
 
     def _start_step(self) -> int:

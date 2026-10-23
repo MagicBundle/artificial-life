@@ -84,7 +84,9 @@ EVENT_KEYS: Final = frozenset(["id", "step", "kind", "fam", "a", "b", "x", "y", 
 CLCK_REASONS: Final = {0: "running", 1: "user pause", 2: "end of steps", 3: "chapter", 4: "alert", 5: "error"}
 CLCK_FLAG_CHAPTER_PAUSE: Final = 1 << 0  # CLCK.flags: the pause at a chapter end is armed
 CLCK_FLAG_ALERT_PAUSE: Final = 1 << 1  # CLCK.flags: at least one alert class is armed to pause
-CLCK_FLAGS: Final = CLCK_FLAG_CHAPTER_PAUSE | CLCK_FLAG_ALERT_PAUSE
+CLCK_FLAG_SAVES_NEWEST: Final = 1 << 2  # CLCK.flags: the world keeps only the newest save (``saves newest``)
+CLCK_FLAGS: Final = CLCK_FLAG_CHAPTER_PAUSE | CLCK_FLAG_ALERT_PAUSE | CLCK_FLAG_SAVES_NEWEST
+SAVE_MODES: Final = ("all", "newest")  # the save modes of ``saves`` lines and ``play.saves.mode``
 
 # The weather maps (MAP1): reference scales of the companded and linear quantisation (DESIGN §33.1).
 F0: Final = 0.025
@@ -400,6 +402,17 @@ def autopause_block(*, chapter: bool, alert: Mapping[str, bool]) -> dict[str, An
     return {"chapter": chapter, "alert": dict(alert)}
 
 
+def saves_block(*, mode: str, keep: int) -> dict[str, Any]:
+    """The ``play.saves`` header object (DESIGN §34.10): the save mode the world starts in (``all`` keeps the
+    newest ``keep`` saves, ``newest`` only the newest; the origin is kept either way). The client reads the
+    mode back from ``CLCK.flags`` bit 2 afterwards."""
+    if mode not in SAVE_MODES:
+        raise RecordError(f"the save mode is one of {SAVE_MODES}, got {mode!r}")
+    if not _is_int(keep) or keep < 1:
+        raise RecordError("saves.keep is a positive integer")
+    return {"mode": mode, "keep": keep}
+
+
 def powers_block(powers: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     """The ``play.powers`` header object: the powers the player can use, by name (``action`` the director
     action behind it, ``label``, ``cost`` in influence units, ``cooldown`` in steps, and whatever bounds the
@@ -430,11 +443,13 @@ def header_play(
     autopause: Mapping[str, Any] | None = None,
     powers: Mapping[str, Any] | None = None,
     game_specs: str | None = None,
+    saves: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The ``play`` header key: the tags actually sent (a 2D or dry world has no ``MAP1``/``STRM``), their
     versions and the constants the client needs. G3b's keys (``alerts_block``, ``autopause_block``,
     ``powers_block`` and the name of the game table) are written only when given, like the other optional
-    keys of the headers, so a world that does not use them has the header it always had."""
+    keys of the headers, so a world that does not use them has the header it always had. ``saves``
+    (``saves_block``, §34.10) is optional in the same way."""
     bad = [t for t in records if t not in TAGS]
     if bad or len(set(records)) != len(records):
         raise RecordError(f"records must be distinct known tags, got {list(records)}")
@@ -449,6 +464,8 @@ def header_play(
         if not isinstance(game_specs, str) or not game_specs:
             raise RecordError("game_specs names the game table")
         extra = {**extra, "game_specs": game_specs}
+    if saves is not None:
+        extra = {**extra, "saves": dict(saves)}
     return {
         "records": list(records),
         "versions": {t: VERSIONS[t] for t in records},
@@ -1071,11 +1088,12 @@ def encode_clck(
     flags: int = 0,
 ) -> bytes:
     """One ``CLCK`` (44 bytes after the head): the clock and the scheduler's counters (§33.1). ``flags`` bit 0
-    is "the pause at a chapter end is armed", bit 1 "at least one alert class is armed to pause" (G3b)."""
+    is "the pause at a chapter end is armed", bit 1 "at least one alert class is armed to pause" (G3b), bit 2
+    "the world keeps only the newest save" (§34.10)."""
     if reason not in CLCK_REASONS:
         raise RecordError(f"CLCK reason {reason} is not one of {sorted(CLCK_REASONS)}")
     if flags & ~CLCK_FLAGS:
-        raise RecordError(f"CLCK flags {flags:#x} set bits other than the chapter and alert pauses")
+        raise RecordError(f"CLCK flags {flags:#x} set bits other than the pauses and the save mode")
     body = CLCK_BODY.pack(
         rate,
         achieved,

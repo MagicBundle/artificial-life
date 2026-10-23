@@ -836,6 +836,7 @@ def test_the_g3b_fixture_has_every_new_record_and_every_case_the_spec_names() ->
     play = d.header["play"]
     assert play["records"] == ["FRMA", "IDNT", "EVNT", "ENVS", "CLCK", "ALRT", "RPRT", "PLAN"]
     assert play["versions"] == dict.fromkeys(play["records"], 1) and play["game_specs"] == "game-v0"
+    assert play["saves"] == {"mode": "newest", "keep": 3}
     assert set(play["alerts"]["classes"]) == set(CLASSES) and play["alerts"]["cap"]["n"] == 4
     assert play["autopause"] == {
         "chapter": True,
@@ -887,7 +888,7 @@ def test_the_g3b_fixture_has_every_new_record_and_every_case_the_spec_names() ->
     clcks = by_tag["CLCK"]
     assert [(c.f["reason"], c.f["flags"], c.f["chapter"], c.f["in_chapter"]) for c in clcks] == [
         (3, 3, 2, 6000),
-        (4, 1, 3, 1),
+        (4, 1 | sr.CLCK_FLAG_SAVES_NEWEST, 3, 1),
     ]
     idnt = by_tag["IDNT"][0].f["json"]
     assert [k["thread"] for k in idnt["kin"]] == [4, 5, 6]
@@ -1145,8 +1146,9 @@ def _one_envs(obj: dict) -> dict:
     return d.records[0].f["json"]
 
 
-def test_clck_flags_are_the_two_pause_bits() -> None:
-    assert (sr.CLCK_FLAG_CHAPTER_PAUSE, sr.CLCK_FLAG_ALERT_PAUSE, sr.CLCK_FLAGS) == (1, 2, 3)
+def test_clck_flags_are_the_two_pause_bits_and_the_save_mode() -> None:
+    assert (sr.CLCK_FLAG_CHAPTER_PAUSE, sr.CLCK_FLAG_ALERT_PAUSE, sr.CLCK_FLAG_SAVES_NEWEST) == (1, 2, 4)
+    assert sr.CLCK_FLAGS == 7
     kw = dict(
         step=12000,
         seq=0,
@@ -1163,15 +1165,28 @@ def test_clck_flags_are_the_two_pause_bits() -> None:
         in_chapter=6000,
         chapter_len=6000,
     )
-    for flags in (0, 1, 2, 3):
+    for flags in range(8):
         r = _decode_one(sr.encode_clck(**kw, flags=flags))
         assert r.f["flags"] == flags and r.f["reason"] == 3 and r.f["chapter"] == 2
     with pytest.raises(sr.RecordError, match="flags"):
-        sr.encode_clck(**kw, flags=4)
+        sr.encode_clck(**kw, flags=8)
     raw = bytearray(sr.encode_clck(**kw, flags=3))
     raw[8 + 16 + 26 : 8 + 16 + 28] = struct.pack("<H", 8)  # the flags field of the body
     with pytest.raises(AssertionError, match="flags"):
         decode(_g3b_header() + bytes(raw))
+
+
+def test_the_save_mode_is_a_header_block_written_only_when_given() -> None:
+    plain = sr.header_play(records=["FRMA"], weather={}, labels={}, energy_cap=1)
+    assert "saves" not in plain, "an older writer's header is what it was"
+    rich = sr.header_play(
+        records=["FRMA"], weather={}, labels={}, energy_cap=1, saves=sr.saves_block(mode="newest", keep=3)
+    )
+    assert rich["saves"] == {"mode": "newest", "keep": 3}
+    assert sr.SAVE_MODES == ("all", "newest")
+    for bad in ({"mode": "some", "keep": 3}, {"mode": "all", "keep": 0}, {"mode": "all", "keep": True}):
+        with pytest.raises(sr.RecordError):
+            sr.saves_block(**bad)
 
 
 def test_power_event_kinds_are_in_the_registry_and_encode() -> None:
