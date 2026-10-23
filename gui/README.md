@@ -210,12 +210,14 @@ raw-Metal view with a control center docked to one side (left, right or bottom; 
   houses mode. The sheet scrolls its form; the Resume list and *Make planet and play* (the default action: Return) stay in view. Closing the window stops the process with `quit` (it saves a checkpoint), then SIGINT after 30 s.
 - **Clock strip** (always at the top of the dock): Pause, 0.25x, 0.5x, 1x, 2x, Max, `+1` and (paused) `+25`, the step, the achieved
   rate ("0.98x of 1x"), "late N" and "saving...".
-- **Map.** Drag pans, right or Option drag turns the view, the wheel and a pinch zoom. Organisms are drawn from the region level
-  inward; at the planet level the map is the picture (the View menu's "Agent points" adds 1 px points).
+- **Map.** Drag pans, right or Option drag turns the view, the wheel and a pinch zoom. Organisms are drawn at every level as symbols
+  whose size is capped so that single ones stay separable (View > Organism size > Physical draws them at their own size: a
+  carpet at the region level); they fade in as they get big enough to see (the View menu's "Agent points" adds 1 px points at
+  the planet level). View > Brightness (0.8 to 1.5) scales the map; View > Territory is off, borders or tint.
 - **Picking.** A click on an organism selects and follows it (shift-click selects only, a double click flies in); on a storm it
   selects and flies there (double click follows); on a territory cell it selects the kin group; on nothing it clears. The pointer
   over something names it. The inspector card is pinned under the Cast and Chronicle tabs.
-- **Keys** (the map has the focus): `space` pause/run, `.` step, `c` colour mode, `1 2 3` agents, bonds, territory, `f` follow the
+- **Keys** (the map has the focus): `space` pause/run, `.` step, `c` colour mode, `1 2 3` agents, bonds, territory (off, borders, tint), `f` follow the
   selection, `[` `]` slower/faster, `r` reset the view, `esc` clear.
 
 ## Files
