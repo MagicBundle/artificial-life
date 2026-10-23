@@ -4,7 +4,7 @@ The Mac day of chapters, alerts, the live report and direct powers (`docs/DESIGN
 specification `g3b/spec.md` revision 2, §10 and §11), run 2026-10-23 (02:45 to 05:11 local) on the M5 Pro (MLX 0.32.3, Python 3.12.11,
 Metal kNN kernel) on the branch `games/g3b` at `019fdde` (G3b merged with `origin/main` 3a14aa6, the G3a squash 9f84f7c plus #36, and the
 sync review fixes). **No code changed and nothing was committed during the Mac day.** One of its findings (the report's chapter number, §9 item 1) was fixed afterwards in the commit `G3b: report chapters count from the planet origin`; the numbers below are those of the Mac day, at `019fdde`. This note is the record: what was run, what the numbers
-are, three defects the run found, and what is left to the owner. Nobody has clicked through the window by hand and no person has
+are, three findings of the run (two defects and a pause the owner has since decided to keep), and what is left to the owner. Nobody has clicked through the window by hand and no person has
 played a world in the `player` mode (§10).
 
 ## Answer
@@ -28,11 +28,12 @@ played a world in the `player` mode (§10).
   (G3a: 8.66; band 2 to 5), kin 2.04 (G3a: 5.99; band 1 to 3), alerts of importance 2 or more on the alert surface 0.38 a minute (band at most 0.6).
   Kin events are 43 of 69 live events and only 4 of the 13 events of importance 2 (G3a: 69 of 77).
 - **Auto-pauses: 4 in 18,001 steps, at the limit, but not the intended four.** Three were chapter ends; the fourth was a population fall that
-  followed the player's own Blight (finding 3). The spec's band says that must not pause; the stage-8 rule says a fall as deep as 15% pauses whatever
-  the cause. The two texts disagree.
-- **Three defects, none fixed by the Mac day (§9); the first was fixed afterwards.** (1) **The server numbered reports from step 0, not from the planet's origin:** the Report tab read
+  followed the player's own Blight (finding 3). **The owner decided on 2026-10-23 that a population drop of 15% or more pauses the game whatever the
+  cause, including right after the player's own power:** that is the stage-8 rule as built, so the fourth pause is the intended behaviour. The spec's band
+  ("a fall right after a power never pauses") is superseded for falls of 15% or more.
+- **Three findings, none fixed by the Mac day (§9); the first was fixed afterwards, the third is decided.** (1) **The server numbered reports from step 0, not from the planet's origin:** the Report tab read
   "Chapter 79" where the card and the bar read "Chapter 4" (the offscreen render of the Report tab showed it); fixed in `G3b: report chapters count from the planet origin` (§9 item 1). (2) The bench's report time is an arrival notice. (3) A deep fall after the player's own
-  power pauses the world. Two more observations: Food was refused at the start of p0 by lever exclusivity (by design), and the chapter card is translucent over the map.
+  power pauses the world; the owner decided on 2026-10-23 that it should (finding 3). Two more observations: Food was refused at the start of p0 by lever exclusivity (by design), and the chapter card is translucent over the map.
 - **Not done:** the checkpoint on the external drive (the volume was not mounted), the second window of the play (a fork of `64k3d_s1`) and the 20,000th step
   (the play is 18,001 steps), the client's draw time beside a running engine, the 2D digest matrix on the GPU, `test_weather_w2_instruments` on Metal, and the
   first play-test by a person (D9). The precondition of spec §11 (the owner's click-through of the G3a window) is still open.
@@ -272,8 +273,8 @@ with `ack` and `run`, alerts acknowledged, one power of each kind and one cancel
 | 480,000 | 666.2 | 3 | chapter end |
 | 486,000 | 1,086.0 | 3 | chapter end |
 
-At most 4 auto-pauses in 20,000 steps was the band; 4 in 18,001 are at its limit, but the spec's reading was "3 chapter ends and a population pause only if the world itself falls by 15% or
-more, never as the aftermath of a power or a director move". The fourth pause is the aftermath of the player's Blight (below). The reader never let the world wait for long (paused wall time 8.6 s),
+At most 4 auto-pauses in 20,000 steps was the band; 4 in 18,001 are at its limit. The spec's reading was "3 chapter ends and a population pause only if the world itself falls by 15% or
+more, never as the aftermath of a power or a director move". The fourth pause is the aftermath of the player's Blight (below); the owner decided on 2026-10-23 that a fall of 15% or more pauses whatever the cause, so it is the intended one and the band's wording is superseded for such falls. The reader never let the world wait for long (paused wall time 8.6 s),
 so what a player does at a card is not measured.
 
 ### 7.3 The chapter ends and the report
@@ -327,12 +328,12 @@ The window is 21.05 minutes of wall time (1,262.7 s including 8.6 s paused); G3a
 - **By importance:** 0 for 7 events, 1 for 49, 2 for 13 (0.62 a minute, one every 97 s; G3a: 3.3 a minute, one every 18 s). The 13 are 5 storm dissolutions, 4 storm namings and 4 kin events (2 formed, 2 ended).
   Kin events are 4 of the 13 importance-2 events (G3a: 69 of 77). Peak: 7 events in one wall minute.
 - **The kin threads still bud.** From the event file by hand: Viopeiv is the parent in 5 of the 24 "formed" lines, a thread called Pruashol forms, merges back into Viopeiv or Teshash and forms again: four formations (told at steps 474,750, 481,000,
-  484,250 as Pruashol II and 487,250 as Pruashol III) and three merges back (told at 477,000, 485,750 and 486,750; Pruashol III was still alive at the end), and 4 of the 19 ended threads lasted 1,500 steps or less (Shaizur 750, Vuzen 1,250, Pruashol II 1,250, Pheben 1,500). This is owner item 15 (satellite budding, constant `P`), still open
-  and still a story that reads as news at a rate of 2 kin events a minute.
+  484,250 as Pruashol II and 487,250 as Pruashol III) and three merges back (told at 477,000, 485,750 and 486,750; Pruashol III was still alive at the end), and 4 of the 19 ended threads lasted 1,500 steps or less (Shaizur 750, Vuzen 1,250, Pruashol II 1,250, Pheben 1,500). This is owner item 15 (satellite budding, constant `P`), **decided by the owner on 2026-10-23: kin groups that bud off a large group count as new groups
+  in the chronicle; `P` stays 3 and `KINTHREADS_VERSION` is unchanged.** It reads as news at a rate of 2 kin events a minute, inside the band of 1 to 3.
 - **Alerts: 26 raised**, 14 on the alert surface and 12 on the log surface. Alert surface: chapter 3 (importance 3), storm_named 4 and pop_slide 1 (importance 2), effect_ending 3, pop_surge 2 and pop_fall 1 (importance 1;
   the fall was raised to importance 3 by an update). Log surface: storm_ended 5, house_fading 3, lineage_ended 2, lineage_formed 2. 31 `ALRT` records (updates and clears included), 14 acknowledgements sent.
 - **Alert rate:** alerts of importance 2 or more on the alert surface were 8 in 21.05 minutes, **0.38 a minute** (band at most 0.6; the earlier count on G3a's play, folded offline, was 10 alerts of importance 2 or more, 0.42 a minute). The 8 are the 3 chapter ends, 4 storm namings and the population-sliding alert
-  (`calibrated` false). **Storm namings are half of them** (4 of 8; 6 of 10 on the earlier window): owner item 16 (whether storm namings belong on the alert surface); without them the rate is 0.19 a minute and the stack would hold only what a player can act on.
+  (`calibrated` false). **Storm namings are half of them** (4 of 8; 6 of 10 on the earlier window): owner item 16 (whether storm namings belong on the alert surface), **decided by the owner on 2026-10-23: they stay there, as spec D3 has it**; without them the rate is 0.19 a minute and the stack would hold only what a player can act on.
 - 10 alerts were cleared and 1 updated. The spec's "about 28 alerts" prediction, which it called a number from one window, is 26 here.
 
 ### 7.6 Quit and resume
@@ -370,8 +371,9 @@ Rendered offscreen from reader snapshots (MD/render/snaps/) with the production 
    (spec §3.5, the arrival chapter) after 2.5 to 2.7 ms. Offline, `load_run` on the arm's directory raises "the cut 468000 is not the step of a metrics row" (MD/logs/`step4_bench_report_is_withheld.log`). The gate item should either copy the
    source's metrics rows and origin row into the arm or refuse a chapter it cannot report; today it passes vacuously. The real time is §7.3's 29 to 47 ms.
 3. **A population pause that followed the player's own Blight.** At 477,750 `pop_fall` (raised at importance 1 at 477,000, the provenance rule having found Blight in force) was updated to importance 3 and paused: "fell from 48,112 to 37,596 in 1,250 steps. Blight x0.00 for
-   3,000 steps has been active since step 476,509." The fall is 21.9%, past the stage-8 rule's 15%, which makes it importance 3 whatever the cause. The spec's band says a population pause is for a world that falls by itself, never as the aftermath of a power. The two
-   disagree; the choices are to keep the rule (a player is told what their Blight did; one pause), to exempt falls with a provenance at every depth, or to raise the depth for a fall that a provenance explains. A decision for the owner; not changed.
+   3,000 steps has been active since step 476,509." The fall is 21.9%, past the stage-8 rule's 15%, which makes it importance 3 whatever the cause. The spec's band had said a population pause is for a world that falls by itself, never as the aftermath of a power.
+   **Decided by the owner on 2026-10-23: a drop of 15% or more pauses the game whatever the cause, including right after the player's own power.** The stage-8 rule is kept as built (a player is told what their Blight did; one pause); the alternatives
+   (exempting falls with a provenance at every depth, or raising the depth for a fall that a provenance explains) were not taken, and the band's wording is superseded for falls of 15% or more. Not a defect; no code changed.
 4. **Food is refused at the start of p0** by the rule director's `runaway_damper` (§7.4). By design (lever exclusivity); the refusal text says when the lever is back. A player meets it first thing.
 5. **Three aborted sessions, all from the reader, none from the engine.** The reader reset its `run` timer on every repeated `CLCK` while paused, so it never sent `run` at the 477,750 alert pause and the world waited indefinitely. The reader was fixed and a watchdog added (it did not fire in the final run).
    The aborted artefacts are kept in MD (§11).
@@ -382,8 +384,8 @@ Rendered offscreen from reader snapshots (MD/render/snaps/) with the production 
 1. **The click-through by hand is the owner's, and it is the precondition of everything below.** The spec's precondition (the owner's click-through of the G3a window, `RESULTS_G3A` §9 item 1) was open when this Mac day ran. The G3b list is in `docs/HANDOVER.md`: the chapter card (saving,
    ready, folded, the notice with the pause off), the alert stack (acknowledge, fly, watch), the Report and Powers tabs, aiming a Strike and a Bloom on the map, `Esc`'s levels, the dock at 700 points with the inspector open and three alerts, and the card's translucency.
 2. **D9: whether anyone acts without an objective** cannot be read from this run. The reader is a script that acted on a schedule; `commands.jsonl` has 15 lines, all the reader's. The measure the spec asked for (inputs per chapter by a person) needs a person to play `player` mode for a few chapters. The decision stands as taken (observe-and-poke, no score).
-3. **Owner item 15, satellite budding of kin threads (constant `P`)**, and **owner item 16, storm namings on the alert surface** (§7.5): both measured here and both open. Neither is a defect of the build.
-4. **The defects of §9**: 1 (the chapter numbering) is fixed (after the Mac day, `G3b: report chapters count from the planet origin`); 2 (the bench's report time) is a fix for the next change; 3 is a decision.
+3. **Owner item 15, satellite budding of kin threads (constant `P`)**, and **owner item 16, storm namings on the alert surface** (§7.5): both measured here and **both decided by the owner on 2026-10-23**: kin groups that bud off a large group count as new groups in the chronicle (`P` stays 3, `KINTHREADS_VERSION` is unchanged), and storm namings stay on the alert surface. The same day the owner decided the fourth pause (§9 finding 3). None of the three changes behaviour.
+4. **The defects of §9**: 1 (the chapter numbering) is fixed (after the Mac day, `G3b: report chapters count from the planet origin`); 2 (the bench's report time) is a fix for the next change; 3 is decided (the owner, 2026-10-23: the pause stays).
 5. **The second window of the play** (a fork of `64k3d_s1`) and the 20,000th step: only p0, 18,001 steps. The bands were measured on one planet and one window of 21 minutes.
 6. **The checkpoint on the external drive**, **the client's draw beside a running engine**, **the 2D digest matrix on the GPU against 3a14aa6** and **`test_weather_w2_instruments` on Metal**.
 7. **Labels stay provisional** until W2b adds `LABEL_VERDICTS` rows; W2b waits for the owner's go. The Strike cooldown (D10), the grace for a fresh preset world's founding die-off (stage 4) and the lineage alert classes for a watched thread remain the owner's calls.

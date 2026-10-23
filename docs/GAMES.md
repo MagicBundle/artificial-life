@@ -1149,11 +1149,17 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
     spec's recommendation after review round 2, to revisit; DESIGN §34).**
     - *D1* G3b now, G3c after the G3b Mac day. *D2* the kin-thread rule (P = 3, R = 3, DELTA = 0.15; storms 8 detections; frozen thread names with
       a suffix on a collision). *D3* the chapter end pauses; alerts pause only for `pop_fall` at importance 3, `pop_low` and engine failures; the narrative classes are log
-      rows; a fall that follows a regen or habitat entry by at most 500 steps never pauses; the default launch is `player`, not `rules`.
+      rows; a fall shallower than 15% that follows a regen or habitat entry by at most 500 steps never pauses (a fall of 15% or more pauses whatever the cause: the owner, 2026-10-23, below); the default launch is `player`, not `rules`.
     - *D4* Food, Bloom, Blight, Strike under "game-v0", 6 units per 18,000 steps, `power cancel`; no weather verb (W4). *D5* `intent` is G4 (the line and the `PLAN` shape are reserved).
       *D6* the select-and-order mode is G3c, default off. *D7* rewind, storage, digests: G3c. *D8* offline advance: G3c, never default.
     - *D9* the play contract is observe-and-poke; the Mac day was to measure inputs per chapter and the objective is decided on that (it could not: the Mac day's reader is a script, so D9 needs a person to play G3b; `RESULTS_G3B` §10). *D10* Strike costs 1 (radius 6.25 to 25, cooldown 3,000, not GAMES §5.5's 9,000). *D11* Chapter 1 is reported from an origin row in `meta.json`.
-    - **Still the owner's after the Mac day:** item 15 (satellite budding of kin threads, constant `P`: on the Mac day's window a thread named Pruashol formed four times and merged back three times between steps 474,750 and 487,250 and 4 of 19 ended threads lived 1,500 steps or less) and item 16 (storm namings on the alert surface: 4 of the 8 alerts of importance 2 or more, 0.38 a minute in all, 0.19 without them).
+    - **Decided by the owner, 2026-10-23, after the Mac day (the owner's decisions, not the coordinator's; none changed behaviour):**
+      (1) *the fourth pause:* a population fall of 15% or more pauses the game whatever the cause, including right after the player's own power
+      (the stage-8 behaviour; D3's "a fall that follows a power never pauses" is superseded for falls of 15% or more; on the Mac day's window it was the 21.9% fall after the player's Blight);
+      (2) *item 15, satellite budding of kin threads:* kin groups that bud off a large group count as new groups in the chronicle; `P` stays 3 and `KINTHREADS_VERSION` is unchanged
+      (the measure: a thread named Pruashol formed four times and merged back three times between steps 474,750 and 487,250 and 4 of 19 ended threads lived 1,500 steps or less);
+      (3) *item 16, storm namings on the alert surface:* they stay there, as D3 has it (4 of the 8 alerts of importance 2 or more, 0.38 a minute in all, 0.19 without them).
+    - **Still open:** D9 (the objective), which waits for the owner's first play-through of G3b (inputs per chapter), and D10 (the Strike cooldown).
 
 
 ## 11. Prior-art sources
