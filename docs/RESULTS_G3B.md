@@ -3,7 +3,7 @@
 The Mac day of chapters, alerts, the live report and direct powers (`docs/DESIGN.md` §34, Review-log row I54; `docs/GAMES.md` §9 G3b;
 specification `g3b/spec.md` revision 2, §10 and §11), run 2026-10-23 (02:45 to 05:11 local) on the M5 Pro (MLX 0.32.3, Python 3.12.11,
 Metal kNN kernel) on the branch `games/g3b` at `019fdde` (G3b merged with `origin/main` 3a14aa6, the G3a squash 9f84f7c plus #36, and the
-sync review fixes). **No code changed and nothing was committed during the Mac day.** This note is the record: what was run, what the numbers
+sync review fixes). **No code changed and nothing was committed during the Mac day.** One of its findings (the report's chapter number, §9 item 1) was fixed afterwards in the commit `G3b: report chapters count from the planet origin`; the numbers below are those of the Mac day, at `019fdde`. This note is the record: what was run, what the numbers
 are, three defects the run found, and what is left to the owner. Nobody has clicked through the window by hand and no person has
 played a world in the `player` mode (§10).
 
@@ -30,8 +30,8 @@ played a world in the `player` mode (§10).
 - **Auto-pauses: 4 in 18,001 steps, at the limit, but not the intended four.** Three were chapter ends; the fourth was a population fall that
   followed the player's own Blight (finding 3). The spec's band says that must not pause; the stage-8 rule says a fall as deep as 15% pauses whatever
   the cause. The two texts disagree.
-- **Three defects, none fixed here (§9).** (1) **The server numbers reports from step 0, not from the planet's origin:** the Report tab reads
-  "Chapter 79" where the card and the bar read "Chapter 4". (2) The bench's report time is an arrival notice. (3) A deep fall after the player's own
+- **Three defects, none fixed by the Mac day (§9); the first was fixed afterwards.** (1) **The server numbered reports from step 0, not from the planet's origin:** the Report tab read
+  "Chapter 79" where the card and the bar read "Chapter 4" (the offscreen render of the Report tab showed it); fixed in `G3b: report chapters count from the planet origin` (§9 item 1). (2) The bench's report time is an arrival notice. (3) A deep fall after the player's own
   power pauses the world. Two more observations: Food was refused at the start of p0 by lever exclusivity (by design), and the chapter card is translucent over the map.
 - **Not done:** the checkpoint on the external drive (the volume was not mounted), the second window of the play (a fork of `64k3d_s1`) and the 20,000th step
   (the play is 18,001 steps), the client's draw time beside a running engine, the 2D digest matrix on the GPU, `test_weather_w2_instruments` on Metal, and the
@@ -362,9 +362,10 @@ Rendered offscreen from reader snapshots (MD/render/snaps/) with the production 
 
 ## 9. Findings
 
-1. **Defect (G3b): the server numbers reports from step 0, not from the planet's origin.** `cli.py:1270` builds `PlayOptions(planet={"source": ..., "houses": ...})` and drops `made_at_step`; `play.py:1016`
+1. **Defect (G3b), found on the Mac day and fixed afterwards in `G3b: report chapters count from the planet origin`: the server numbered reports from step 0, not from the planet's origin.** `cli.py:1270` builds `PlayOptions(planet={"source": ..., "houses": ...})` and drops `made_at_step`; `play.py:1016`
    reads `planet.get("made_at_step", 0) // chapter` as `n_origin`, which is 0 for every world, so `RPRT.chapter` is the absolute chapter (DESIGN §34.4 says it is `n_abs - n_origin`, the number the player sees). `CLCK.chapter` is absolute by design and the client subtracts the origin chapter it reads from `play.json`
-   (`made_at_step`, 450,000 on p0), so the card and the bar say "Chapter 4" and the Report tab "Chapter 79"; the first report of p0, the chapter that ends at 456,000, reads "Chapter 76" where the client would show "Chapter 1". Not fixed here. The fix is to pass `made_at_step` through (one key at `cli.py` line 1270, which a new planet and a resume share) and a test that a planet made at 450,000 reports chapter 1 for its first chapter on the stream; the tests use worlds that start at 0 and cannot see it.
+   (`made_at_step`, 450,000 on p0), so the card and the bar said "Chapter 4" and the Report tab "Chapter 79" (the Mac-day render of the Report tab showed the bug); the first report of p0, the chapter that ends at 456,000, read "Chapter 76" where the client shows "Chapter 1". The Mac day did not fix it (no code changed that day).
+   **The fix (after the Mac day):** `PlayOptions.origin_step` (new, default 0) carries the `made_at_step` of `play.json`'s planet to the pacer, from `cli.py` for a new planet and for a resume alike (`PlayOptions.planet` is only the header's block and never held it); `play.planet_origin_step`, `reportjob.origin_chapters` and `reportjob.chapter_number` are the one derivation, used by the live `RPRT`, a withheld one and the backlog rebuilt from `reports.jsonl` at bind. `CLCK.chapter` stays absolute and `reports.jsonl` and the offline `world_report build` and `verify` hold steps and no chapter number, so they were never wrong. A world with no planet is unchanged; a `play.json` without a usable `made_at_step` is read as 0, as the client reads it (DESIGN §34.2.1). The tests (`tests/test_report_chapter_origin.py`) fail on `4288a44`: 468,000 to 474,000 on a planet made at 450,000 is chapter 4, the stream of a real `alife play` planet (a fork at step 500, chapters of 500) numbers 1 and 2 where it numbered 2 and 3, the backlog of a resume carries the same numbers, and the files equal the stream. On p0 the Report tab should now read "Chapter 4 · steps 468,000 to 474,000"; this was checked by the tests on a small planet, not by a new render of p0.
 2. **The bench cannot read the report-time item** (§5). `bench --play-resume` gives each arm a fresh run directory with no history, so the chapter (468,000, 474,000] starts before the arm and the report job answers with an arrival notice
    (spec §3.5, the arrival chapter) after 2.5 to 2.7 ms. Offline, `load_run` on the arm's directory raises "the cut 468000 is not the step of a metrics row" (MD/logs/`step4_bench_report_is_withheld.log`). The gate item should either copy the
    source's metrics rows and origin row into the arm or refuse a chapter it cannot report; today it passes vacuously. The real time is §7.3's 29 to 47 ms.
@@ -382,7 +383,7 @@ Rendered offscreen from reader snapshots (MD/render/snaps/) with the production 
    ready, folded, the notice with the pause off), the alert stack (acknowledge, fly, watch), the Report and Powers tabs, aiming a Strike and a Bloom on the map, `Esc`'s levels, the dock at 700 points with the inspector open and three alerts, and the card's translucency.
 2. **D9: whether anyone acts without an objective** cannot be read from this run. The reader is a script that acted on a schedule; `commands.jsonl` has 15 lines, all the reader's. The measure the spec asked for (inputs per chapter by a person) needs a person to play `player` mode for a few chapters. The decision stands as taken (observe-and-poke, no score).
 3. **Owner item 15, satellite budding of kin threads (constant `P`)**, and **owner item 16, storm namings on the alert surface** (§7.5): both measured here and both open. Neither is a defect of the build.
-4. **The defects of §9**: 1 (the chapter numbering) and 2 (the bench's report time) are fixes for the next change; 3 is a decision.
+4. **The defects of §9**: 1 (the chapter numbering) is fixed (after the Mac day, `G3b: report chapters count from the planet origin`); 2 (the bench's report time) is a fix for the next change; 3 is a decision.
 5. **The second window of the play** (a fork of `64k3d_s1`) and the 20,000th step: only p0, 18,001 steps. The bands were measured on one planet and one window of 21 minutes.
 6. **The checkpoint on the external drive**, **the client's draw beside a running engine**, **the 2D digest matrix on the GPU against 3a14aa6** and **`test_weather_w2_instruments` on Metal**.
 7. **Labels stay provisional** until W2b adds `LABEL_VERDICTS` rows; W2b waits for the owner's go. The Strike cooldown (D10), the grace for a fresh preset world's founding die-off (stage 4) and the lineage alert classes for a watched thread remain the owner's calls.

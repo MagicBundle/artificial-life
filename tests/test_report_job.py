@@ -343,6 +343,8 @@ def test_the_pacer_hands_the_observers_meta_to_the_job_and_serve_play_closes_the
 
 
 def test_the_chapter_number_counts_from_the_chapter_the_planet_was_made_in(tmp_path: Path) -> None:
+    """``PlayOptions.origin_step`` (the planet's ``made_at_step``) is the origin; the header's ``planet`` block
+    is not (``tests/test_report_chapter_origin.py`` has the planet made by ``alife play``)."""
     cfg = config()
     rd = RunDir.create(tmp_path / "w", cfg)
     state = init_state(cfg)
@@ -350,7 +352,7 @@ def test_the_chapter_number_counts_from_the_chapter_the_planet_was_made_in(tmp_p
     out = io.BytesIO()
     opt = play.PlayOptions(
         rate=float("inf"), paused=False, fresh=True, unattended=True, chapter=CHAPTER,
-        planet={"made_at_step": 500},
+        origin_step=500,
     )  # fmt: skip
     pacer = play.PlayPacer(out, H.ScriptControl([]), opt, clock=H.FakeClock(), note=lambda m: None)
     try:

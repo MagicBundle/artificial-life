@@ -42,7 +42,9 @@ __all__ = [
     "BACKLOG_REPORTS",
     "CLOSE_TIMEOUT_S",
     "ReportJob",
+    "chapter_number",
     "missing_chapters",
+    "origin_chapters",
     "report_object",
     "since_of",
     "stored_objects",
@@ -57,6 +59,20 @@ Emit = Callable[[int, dict[str, Any], bool], None]  # (step, RPRT object, backlo
 
 
 # --- the object ---------------------------------------------------------------------------------------------
+
+
+def origin_chapters(origin_step: int, length: int) -> int:
+    """``n_origin``: the absolute chapters before a world's own numbering starts, ``origin_step // length``
+    (``origin_step`` is the planet's ``made_at_step``, 0 for a world with no planet). A fork made at 450,000
+    has ``n_origin`` 75, so its first chapter, absolute 76, is "Chapter 1" (DESIGN §34.2.1)."""
+    return max(origin_step, 0) // length
+
+
+def chapter_number(b: int, length: int, n_origin: int) -> int:
+    """The chapter the player sees for the chapter ending at ``b``: ``b // length - n_origin``. The one place
+    the server derives it (the live ``RPRT``, a withheld one, the backlog rebuilt from ``reports.jsonl``); the
+    client's bar and card subtract the same ``n_origin`` from ``CLCK.chapter`` (DESIGN §34.2.1)."""
+    return max(0, b // length - n_origin)
 
 
 def _versions() -> dict[str, int]:
@@ -228,7 +244,7 @@ def report_object(
     headline = rep["headline"]
     n_abs = b // length
     return {
-        "chapter": max(0, n_abs - n_origin),
+        "chapter": chapter_number(b, length, n_origin),
         "n_abs": n_abs,
         "a": a,
         "b": b,
@@ -272,7 +288,7 @@ def withheld_object(
     empty, with the reason; never a guess."""
     n_abs = b // length
     return {
-        "chapter": max(0, n_abs - n_origin),
+        "chapter": chapter_number(b, length, n_origin),
         "n_abs": n_abs,
         "a": a,
         "b": b,

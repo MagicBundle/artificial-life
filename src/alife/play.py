@@ -90,6 +90,7 @@ __all__ = [
     "director_effects",
     "origin_row",
     "parse_play_command",
+    "planet_origin_step",
     "replaying",
     "serve_play",
     "world_tick",
@@ -597,7 +598,11 @@ class PlayOptions:
     chapter length in steps (``CHAPTER``; a multiple of the checkpoint cadence, which the tests shorten).
     ``alerts_experimental`` switches on the alert classes marked experimental (``--alerts experimental``).
     ``unattended`` is a world nobody reads (the benchmark's arms, a test's scripted run): no pause is armed at
-    the start, neither at a chapter end nor for an alert, since nobody would press ``run``."""
+    the start, neither at a chapter end nor for an alert, since nobody would press ``run``.
+    ``origin_step`` is the step the world's chapter numbering starts after (the planet's ``made_at_step`` of
+    ``play.json``, ``planet_origin_step``; 0 for a preset or an adopted run): the report's chapter is
+    ``step // chapter - origin_step // chapter``, as the client's bar and card count it (§34.2.1).
+    ``planet`` is only the header's block (``source``, ``houses``) and does not hold it."""
 
     base_rate: float = BASE_RATE
     rate: float = 1.0
@@ -613,6 +618,7 @@ class PlayOptions:
     on_ready: Callable[[dict[str, Any]], None] | None = None
     chapter: int = CHAPTER
     alerts_experimental: bool = False
+    origin_step: int = 0
     unattended: bool = False
 
 
@@ -1012,9 +1018,8 @@ class PlayPacer:
         if not self._reports_wanted():
             return
         grid = report_mod.REPORT_V1.snapshot_every
-        planet = self.opt.planet or {}
-        n_origin = int(planet.get("made_at_step", 0)) // self.opt.chapter
         length = self.opt.chapter
+        n_origin = reportjob.origin_chapters(self.opt.origin_step, length)
         start = int(self.rd.meta().get("start_step") or 0)
         self.reports = reportjob.ReportJob(
             self.rd.path,
@@ -1915,6 +1920,16 @@ def _pad3(a: Any) -> tuple[float, float, float]:
 
 
 # --- the origin row ---------------------------------------------------------------------------------------
+
+
+def planet_origin_step(planet: Mapping[str, Any] | None) -> int:
+    """The step a world's chapter numbering starts after: ``made_at_step`` of the ``planet`` block of its
+    ``play.json`` (written by ``alife play`` for a planet, §33.3.3), 0 for a world with no planet (a preset
+    played from step 0, an adopted run) and for a ``play.json`` whose planet has no usable ``made_at_step``
+    (not an integer, or not positive). The 0 is also what the client reads from such a file
+    (``ChapterOrigin``, §34.7), so the two numberings agree whatever the file holds."""
+    made = (planet or {}).get("made_at_step")
+    return made if isinstance(made, int) and not isinstance(made, bool) and made > 0 else 0
 
 
 def origin_row(state: State, cfg: Config) -> dict[str, Any] | None:

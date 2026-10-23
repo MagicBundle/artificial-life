@@ -1268,6 +1268,7 @@ def _play_serve(
         source=source,
         run=str(rd.path),
         planet={"source": planet["source"], "houses": planet["houses"]} if planet else None,
+        origin_step=play.planet_origin_step(planet),
         dc_ref=((saved.get("weather") or {}).get("dc_ref")),
         fresh=fresh,
         until=a.until,
