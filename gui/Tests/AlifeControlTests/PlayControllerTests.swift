@@ -353,7 +353,8 @@ import Testing
         #expect(await eventually { controller.progress == ["ready"] })
         let began = ContinuousClock.now
         controller.stop()
-        try await Task.sleep(for: .milliseconds(100))
+        // No sleep stands for the grace: stop() sent SIGINT synchronously and nothing suspends before this line, so the process
+        // is checked a moment after the SIGINT. A pause here could outlast the 300 ms grace on a loaded machine.
         #expect(controller.hasProcess, "SIGINT was sent and ignored; the grace has not run out")
         #expect(await eventually(timeout: .seconds(8)) { !controller.hasProcess })
         #expect(ContinuousClock.now - began >= .milliseconds(250), "SIGTERM came after the grace")
