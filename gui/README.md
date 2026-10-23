@@ -213,10 +213,10 @@ raw-Metal view with a control center docked to one side (left, right or bottom; 
 - **Map.** Drag pans, right or Option drag turns the view, the wheel and a pinch zoom. Organisms are drawn at every level as symbols
   whose size is capped so that single ones stay separable (View > Organism size > Physical draws them at their own size: a
   carpet at the region level); they fade in as they get big enough to see (the View menu's "Agent points" adds 1 px points at
-  the planet level). View > Brightness (0.8 to 1.5) scales the map; View > Territory is off, borders or tint.
+  the planet level). View > Brightness (0.8 to 1.5) scales the map (disabled when no map is in view); View > Territory is off, borders or tint.
 - **Picking.** A click on an organism selects and follows it (shift-click selects only, a double click flies in); on a storm it
   selects and flies there (double click follows); on a territory cell it selects the kin group; on nothing it clears. The pointer
-  over something names it. The inspector card is pinned under the Cast and Chronicle tabs.
+  over something names it. (Organisms are drawn at the planet level but not picked there: zoom to the region level; DESIGN 36.9.) The inspector card is pinned under the Cast and Chronicle tabs.
 - **Keys** (the map has the focus): `space` pause/run, `.` step, `c` colour mode, `1 2 3` agents, bonds, territory (off, borders, tint), `f` follow the
   selection, `[` `]` slower/faster, `r` reset the view, `esc` clear.
 

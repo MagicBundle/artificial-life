@@ -26,6 +26,8 @@ struct ViewMenuInputs: Equatable {
     /// The layers and the look: the agents, bonds, territory (off, borders, tint), the map, the frame, the brightness and the
     /// organism size are all fields of `WorldDisplay`.
     var display: WorldDisplay
+    /// A weather map is in view (`WorldModel.mapShown`): the brightness scales the map's colours, so it has nothing to do without one.
+    var mapShown: Bool
     var chapterPause: Bool
     var pauses: [Pause]
     var skipConfirm: Bool
@@ -45,6 +47,7 @@ struct ViewMenuInputs: Equatable {
         labelsOn = play.labelsOn
         planetLevel = model.level == .planet
         display = model.display
+        mapShown = model.mapShown
         chapterPause = store.clock?.chapterPauseArmed ?? true
         pauses = model.pausableClasses.map { Pause(name: $0.name, label: $0.label, on: model.alertPauseOn($0.name)) }
         skipConfirm = model.defaults.bool(forKey: WorldModel.skipConfirmKey)
@@ -85,9 +88,12 @@ struct ViewMenu: View {
                 Text("Physical size").tag(OrganismSizeMode.physical)
             }
             Toggle("Weather map", isOn: layer(\.map))
+            // The brightness is the weather map's: without a map in view (a world with no MAP1, or the layer off) it would do nothing.
             Picker("Brightness", selection: Binding(get: { inputs.display.exposure }, set: { model.display.exposure = $0 })) {
                 ForEach(WorldDisplay.exposurePresets, id: \.self) { Text("\(Int(($0 * 100).rounded())) %").tag($0) }
             }
+            .disabled(!inputs.mapShown)
+            .help(inputs.mapShown ? "How bright the weather map is" : "The brightness is the weather map's: there is none in view")
             Toggle("Frame", isOn: layer(\.frame))
             Divider()
             // The pauses the world takes by itself. The player's choice is kept and sent to every world after its header.

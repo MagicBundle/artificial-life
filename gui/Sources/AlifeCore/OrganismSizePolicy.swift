@@ -17,8 +17,9 @@ package enum OrganismSizeMode: Int, CaseIterable, Sendable {
 /// ```text
 /// r_cover  = sqrt(c A / (pi N))           c = 0.35: the most the organisms may cover if they do not overlap
 /// r_abs(d) = 4.5 pt                       for d >= 0.20 L
-///          = unbounded                    for d <= 0.08 L; between, log-linear in d from 4.5 pt to r_phys at 0.08 L
-/// r_draw   = clamp(r_phys, r_min, max(r_min, min(r_cover, r_abs(d))))        r_min = 2.5 px
+///          = r_phys(floor) (0.08 L / d)^2  for d <= 0.08 L, which grows faster than r_phys and so never binds on the floor;
+///            between, log-linear in d from 4.5 pt to r_phys(floor) at 0.08 L
+/// r_draw   = clamp(r_phys, r_min, max(r_min, min(r_cover, r_abs(d))))        r_min = min(2.5 px, max(r_cover, 1.5 px))
 /// ```
 ///
 /// Above the organism level the sizes are symbols, not physical sizes: the picture is separable (at least 80% of the organisms in
@@ -27,7 +28,8 @@ package enum OrganismSizeMode: Int, CaseIterable, Sendable {
 package enum OrganismSizePolicy {
     /// The most of the view the organisms may cover.
     package static let coverage: Float = 0.35
-    /// The least radius of a capped organism, in drawable pixels.
+    /// The least radius of a capped organism, in drawable pixels, where the coverage rule does not ask for less
+    /// (`minimumRadius(cover:)`).
     package static let minimumRadius: Float = 2.5
     /// The least radius of an organism at its physical size (v1's smallest disc, `WorldLevels.minDiscPixels`).
     package static let physicalMinimumRadius: Float = 1.2
@@ -35,7 +37,7 @@ package enum OrganismSizePolicy {
     package static let farRadiusPoints: Float = 4.5
     /// The camera distance, as a fraction of `L`, from which the absolute cap is `farRadiusPoints`.
     package static let farDistance: Float = 0.20
-    /// The camera distance, as a fraction of `L`, from which the absolute cap is gone (the organism level's fly-to).
+    /// The camera distance, as a fraction of `L`, at which the absolute cap meets the physical radius of an organism on the floor (the organism level's fly-to); closer it grows faster than that radius.
     package static let nearDistance: Float = 0.08
     /// The instance alpha is a ramp of the drawn radius, in pixels: nothing at `rampLow`, opaque from `rampHigh`.
     package static let rampLow: Float = 1.5
@@ -51,6 +53,14 @@ package enum OrganismSizePolicy {
         return (coverage * max(area, 0) / (Float.pi * Float(rows))).squareRoot()
     }
 
+    /// The least radius for a coverage radius `cover`: `minimumRadius`, but not above the coverage radius itself (so the carpet of
+    /// a crowded small window does not return: review of A0, finding 7), and not below `rampLow`, where the alpha ramp has already
+    /// taken the organism to nothing.
+    package static func minimumRadius(cover: Float) -> Float {
+        guard cover.isFinite else { return minimumRadius }
+        return min(minimumRadius, max(cover, rampLow))
+    }
+
     /// The pixels per world unit of something `depth` units in front of the eye, in a view `viewHeight` pixels high.
     package static func pixelsPerUnit(depth: Float, viewHeight: Float, fovY: Float) -> Float {
         0.5 * viewHeight / (max(depth, 1e-6) * tan(fovY / 2))
@@ -58,16 +68,24 @@ package enum OrganismSizePolicy {
 
     /// The absolute cap at camera distance `distance` (a world of size `size`), in pixels: `farRadiusPoints` far away, the
     /// physical radius of an organism at the floor's depth at `nearDistance * size` at the organism level's edge, log-linear in
-    /// the distance between, and unbounded closer. Continuous from `farDistance * size` down to `nearDistance * size`.
+    /// the distance between, and closer that radius times `(nearDistance * size / distance)^2` (it grows faster than any physical
+    /// radius, so it does not bind there, but it is continuous: no step at `nearDistance * size`). Continuous at every distance.
     package static func absoluteRadius(distance: Float, size: Float, agentRadius: Float, viewHeight: Float, fovY: Float,
                                        pixelsPerPoint: Float) -> Float {
         let far = farRadiusPoints * max(pixelsPerPoint, 0.1)
         let farAt = farDistance * size, nearAt = nearDistance * size
         guard farAt > nearAt, nearAt > 0 else { return far }
         if distance >= farAt { return far }
-        if distance <= nearAt { return .infinity }
         let near = agentRadius * pixelsPerUnit(depth: nearAt, viewHeight: viewHeight, fovY: fovY)
         guard near.isFinite, near > 0 else { return far }
+        if distance <= nearAt {
+            // Closer than the organism level's edge the cap grows with the cube of the zoom: above the physical radius of an
+            // organism on the floor (which grows with its square), so it never binds a row on the floor, yet it is a continuation
+            // of the blend, not a switch: a row above the floor (its physical radius above the floor's) is not held at `near`
+            // just above `nearAt` and released just below it (review of A0, finding 1).
+            let d = max(distance, 1e-3)
+            return agentRadius * pixelsPerUnit(depth: d, viewHeight: viewHeight, fovY: fovY) * (nearAt / d) * (nearAt / d)
+        }
         let t = log(farAt / distance) / log(farAt / nearAt)
         return exp(log(far) + t * (log(near) - log(far)))
     }
@@ -94,7 +112,7 @@ package enum OrganismSizePolicy {
         case .capped:
             let absolute = absoluteRadius(distance: distance, size: size, agentRadius: agentRadius, viewHeight: viewHeight,
                                           fovY: fovY, pixelsPerPoint: pixelsPerPoint)
-            return (min(cover, absolute), minimumRadius)
+            return (min(cover, absolute), minimumRadius(cover: cover))
         }
     }
 

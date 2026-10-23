@@ -203,6 +203,9 @@ import Testing
             ("Brightness", { model.display.exposure = 1.25 }, { model.viewMenu.value.display.exposure == 1.25 }),
             ("Territory", { model.display.territory = .borders }, { model.viewMenu.value.display.territory == .borders }),
             ("Organism size", { model.display.sizeMode = .physical }, { model.viewMenu.value.display.sizeMode == .physical }),
+            // The layer is a field of the inputs and so is whether a map is in view (it disables Brightness, A0 review finding 8).
+            ("Weather map", { model.display.map = false },
+             { !model.viewMenu.value.display.map && model.viewMenu.value.mapShown == model.mapShown }),
         ]
         for (name, change, shown) in edits {
             counts.reset()

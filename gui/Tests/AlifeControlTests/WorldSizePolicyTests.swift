@@ -1,5 +1,6 @@
 import AlifeCore
 import Foundation
+import Metal
 import Testing
 import simd
 
@@ -94,6 +95,26 @@ import simd
         #expect(ticks > 20 && ticks < 120, "about a second at a time constant of a quarter: \(ticks)")
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["ALIFE_GPU_TESTS"] == "1", "set ALIFE_GPU_TESTS=1 (a Metal device)"))
+    func aRendererAttachedLaterIsGivenTheCurrentSizePolicy() async throws {
+        // Review of A0, finding 3: a new view on the existing model (the model outlives its view) drew at the absolute cap until
+        // the first zoom, because only a change of the radius was pushed.
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (model, play, _) = try await rig(scratch)
+        defer { play.shutdown() }
+        let device = try #require(MTLCreateSystemDefaultDevice(), "no Metal device")
+        let first = try Renderer(device: device)
+        model.attach(renderer: first, view: WorldMTKView(frame: .zero, device: nil))
+        #expect(first.worldDraw.coverRadius == model.coverRadius && first.worldDraw.pixelsPerPoint == model.pixelsPerPoint)
+        let second = try Renderer(device: device)
+        #expect(second.worldDraw.coverRadius == .infinity, "a fresh renderer knows nothing")
+        model.attach(renderer: second, view: WorldMTKView(frame: .zero, device: nil))
+        #expect(model.coverRadius.isFinite)
+        #expect(second.worldDraw.coverRadius == model.coverRadius, "the radius: \(second.worldDraw.coverRadius) vs \(model.coverRadius)")
+        #expect(second.worldDraw.pixelsPerPoint == model.pixelsPerPoint)
+    }
+
     @Test func thePhysicalSizeCountsNothingAndHasNoCap() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
@@ -120,6 +141,20 @@ import simd
         // Closer than 0.08 L there is no absolute cap: the cover radius (in points) rules.
         model.edit { $0.distance = 0.05 * model.worldSize }
         #expect(abs(model.drawnRadiusCap - max(model.coverRadius, 2.5) / model.pixelsPerPoint) < 1e-3)
+    }
+
+    @Test func theBrightnessItemKnowsWhetherAMapIsInView() async throws {
+        // Review of A0, finding 8: Brightness scales the weather map's colours, so with no map in view the menu disables it.
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (model, play, _) = try await rig(scratch)
+        defer { play.shutdown() }
+        #expect(play.store.map != nil && model.mapShown, "the 3D fixture holds a weather map")
+        #expect(ViewMenuInputs(play: play, model: model).mapShown)
+        model.display.map = false
+        #expect(!ViewMenuInputs(play: play, model: model).mapShown, "the layer off: no map in view")
+        model.display.map = true
+        #expect(ViewMenuInputs(play: play, model: model).mapShown)
     }
 
     @Test func theBrightnessIsKeptBetweenRuns() async throws {

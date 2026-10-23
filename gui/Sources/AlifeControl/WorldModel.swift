@@ -293,6 +293,9 @@ final class WorldModel: ObservableObject {
         deliver(all)
         pushDisplay()
         pushCamera()
+        // The size policy as it stands (a view made later than the model has seen no change of it: A0 review, finding 3).
+        renderer.worldDraw.pixelsPerPoint = pixelsPerPoint
+        pushCoverRadius()
     }
 
     private func pushDisplay() {

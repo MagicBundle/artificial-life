@@ -307,6 +307,50 @@ struct GPULegibilityTests {
         #expect(measured >= 4 * 2 * 4 * Self.colours.count - 100)
     }
 
+    /// The outline is the silhouette of the organism (the body and the nose together), not of the nose inside the body: a nose that
+    /// faces the camera shows no ring inside the body (the "eye" look of the A0 review, finding 5), a nose that sticks out past the
+    /// body is outlined where it does. Seen from above at 31 px, the nose being at the centre (pitch 90 degrees), off to +x (pitch 0) or between.
+    @Test(arguments: [Float.pi / 2, Float.pi / 4, 0])
+    func theOutlineIsThatOfTheWholeOrganismNotOfItsNose(pitch: Float) throws {
+        let rig = try rig()
+        let L = rig.size
+        var display = rig.renderer.worldDraw.display
+        display.agents = true
+        display.sizeMode = .physical  // 31 px, not the 9 px cap of the distance
+        rig.renderer.worldDraw.display = display
+        let centre = SIMD3<Float>(L / 2, L / 4, 0)  // (off the equator's line)
+        let camera = rig.look(at: centre, distance: 40)
+        rig.renderer.camera = camera
+        rig.renderer.showWorld(frame: Self.frame([centre], colors: [0x3070C0], pitch: pitch))
+        let image = try render(rig, "legibility-nose-ring-pitch\(Int(pitch * 180 / .pi))", width: 1024, height: 1024)
+        let radius = OrganismSizePolicy.pixelsPerUnit(depth: 40, viewHeight: 1024, fovY: camera.fovY) * Float(rig.header.radius)
+        #expect(radius > 25 && radius < 40, "the body's radius in pixels: \(radius)")
+        let (cx, cy) = (image.width / 2, image.height / 2)
+        func isOutline(_ x: Int, _ y: Int) -> Bool {
+            let c = rgb(image.pixel(x, y))
+            return simd_reduce_max(simd_abs(c - SIMD3(repeating: 0.06))) * 255 <= 1.01 || simd_reduce_max(simd_abs(c - SIMD3(repeating: 0.92))) * 255 <= 1.01
+        }
+        // Inside the silhouette of the union: no pixel of the outline's colours (the body is blue, shaded 0.3 to 1.0).
+        var inside = 0
+        for y in 0..<image.height {
+            for x in 0..<image.width {
+                let (dx, dy) = (Float(x - cx), Float(y - cy))
+                // The union's interior: the body's disc to 2 px inside its edge, and the nose's disc to 2 px inside as well.
+                let body = (dx * dx + dy * dy).squareRoot() < radius - 2
+                let nx = 0.75 * radius * cos(pitch)  // (the nose's centre, projected)
+                let nose = ((dx - nx) * (dx - nx) + dy * dy).squareRoot() < 0.5 * radius - 2
+                if (body || nose) && isOutline(x, y) { inside += 1 }
+            }
+        }
+        #expect(inside == 0, "\(inside) outline-coloured pixels inside the organism")
+        // The silhouette itself is outlined: the body's edge on -x (the nose is not there), and for pitch 0 the nose's tip on +x.
+        func ringAlong(sign: Int, from: Float, to: Float) -> Bool {
+            stride(from: from, through: to, by: 0.25).contains { isOutline(cx + sign * Int($0.rounded()), cy) }
+        }
+        #expect(ringAlong(sign: -1, from: radius - 1.5, to: radius + 0.5), "the body's edge has its ring")
+        if pitch == 0 { #expect(ringAlong(sign: 1, from: 1.25 * radius - 1.5, to: 1.25 * radius + 0.5), "the nose's tip has its ring") }
+    }
+
     // MARK: Single organisms (F6, spec 1.9)
 
     /// A dense synthetic frame in the fixture's world, seen from above at the region level: the organisms at the size policy keep at

@@ -11633,7 +11633,8 @@ The owner, on his first play of the World window: the window should monitor live
 The v2 of the World window changes what the owner sees at the planet, region and organism levels, in three PRs (A0 legibility, A1
 orientation and input on the flat map, B the globe). **PR A0** is client only: no engine, stream or config change (no config key,
 `POST_V01_KEYS` untouched, no golden). Sections 36.2 to 36.5 and 36.8 to 36.9 (the globe, the morph, the flight, the input, the
-whole test list, the as-built notes of A1 and B) arrive with those PRs; this change writes 36.1, 36.6 and 36.7 as built in A0.
+whole test list, the as-built notes of A1 and B) arrive with those PRs; this change writes 36.1, 36.6 and 36.7 as built in A0, and 36.9 with what A0's review found
+and left (the limits of A0).
 
 ### 36.1 The diagnosis (measured) and the fixes F1 to F8
 
@@ -11712,8 +11713,9 @@ For a view of `A` pixels with `N` rows inside it:
 ```
 r_phys   = header.radius * pixelsPerUnit(depth)
 r_cover  = sqrt(c A / (pi N)),  c = 0.35
-r_abs(d) = 4.5 pt (9 px at 2x)   for d >= 0.20 L;  unbounded for d <= 0.08 L;  log-linear in d between, up to r_phys at 0.08 L
-r_draw   = clamp(r_phys, r_min, max(r_min, min(r_cover, r_abs))),  r_min = 2.5 px (physical mode: 1.2 px, no cap)
+r_abs(d) = 4.5 pt (9 px at 2x)   for d >= 0.20 L;  log-linear in d between, up to r_phys(floor) at 0.08 L;
+           r_phys(floor)(d) * (0.08 L / d)^2  for d <= 0.08 L   (continuous; grows faster than r_phys, so it never binds on the floor)
+r_draw   = clamp(r_phys, r_min, max(r_min, min(r_cover, r_abs))),  r_min = min(2.5 px, max(r_cover, 1.5 px))  (physical mode: 1.2 px, no cap)
 alpha    = smoothstep(1.5, 3.5, r_draw)           // the instance's opacity: no level switch
 ```
 
@@ -11733,8 +11735,36 @@ axis of a perspective view sometimes 2 px; the contrast is taken against the fir
 (a paler sphere on its forward axis) or of a neighbour next to the body's ring, which is another sphere's pixel (0.4% of the isolated discs of the recorded
 frame measure under 3:1).
 
+The ring is the outline of the organism, not of its parts: a ray that hits the nose in front of the body (the nose's edge lies inside the organism) gets none, so a nose
+facing the camera is not an "eye" inside a ring; the body's edge and a nose that sticks out past the body (a ray that misses the body) are outlined (GPU test
+`theOutlineIsThatOfTheWholeOrganismNotOfItsNose`).
+
 `OutlineContrast` also holds the arithmetic the tests use (WCAG luminance and contrast, the depth cue, the shading of a sphere and a disc). The Lab's sphere
 path is unchanged (scene radius, cue 1, no ring, alpha 1; `ReferenceShadingTests`).
+
+### 36.9 As built in A0: review fixes and the limits that remain
+
+Review of A0 (11 findings; the disposition is in the PR's discussion). **Fixed:** the absolute cap was unbounded below 0.08 L, which in a sparse view (about 40 to 60 rows,
+r_cover above the floor organism's physical radius) released every row above the floor from `near` in one frame (20,638 rows changed radius by up to 1.64 times between
+0.0799 L and 0.0801 L); it now continues as `r_phys(floor) (0.08 L / d)^2` (sweep: no step; largest second difference 0.0013 against 0.057). A renderer attached after the model has a
+count (a second `WorldMetalView` on the same `WorldModel`) is given the cover radius and the pixel scale (`attach`). `WorldRenderBench` sets the cover radius as `WorldModel` does (it measured
+the 9 px cap, 350% coverage, before; `ALIFE_BENCH_NO_COVER=1` restores that, `ALIFE_BENCH_PHYSICAL=1` draws v1's carpet). The outline is not drawn on a nose in front of the body.
+The least radius gives way to `r_cover` (not below 1.5 px, where the alpha ramp has taken the organism to nothing): in a small window the carpet no longer returns (700 x 500 pt
+Home: half visible 69.9% to 78.2%; 520 x 400: 57.0% to 82.0%, with the organisms nearly invisible, 0.2% of the pixels: they are too many for the pixels). The Brightness item is
+disabled when no weather map is in view (`ViewMenuInputs.mapShown`), as it scales the map's colours and a world with no map keeps its dark floor (Y' 0.07 to 0.13).
+
+**Draw cost.** Instances are drawn at every level, so the planet's draw rose (2280 x 1800, 42,000 rows, offscreen, GPU p50, `WorldRenderBench` at the shipped state): capped mode planet 2.50 ms
+(0.64 before A0 at 2200 x 1400), planet with points 3.01, region 2.59, organism 1.43; physical mode planet 4.01, with points 4.47, region 3.87, organism 1.71 (all under the 16.7 ms of a 60 Hz
+frame; the 3.5 ms budget holds for the default mode and not for physical). Physical mode keeps drawing at the planet level: it is a player's choice of v1's picture, and the cost is v1's
+carpet at its overlap. PR B's globe budget (1.5 ms) is below the flat planet's draw: the globe's cap cull and glow are what bring it there.
+
+**Limits left, by design or for a later PR.** (1) The bonds still switch on the derived planet level (a step of 0.005 in the frame's mean luma at that distance); they fade by length in PR B. (2) Organisms
+are not picked at the planet level though they are drawn there as dots of 1.7 pt: a 6 pt tolerance over 40,000 rows would take the pointer from the storms, pools and territory, so picking there is
+the input work of A1/B. (3) Home in a wide short window (1000 x 600, 1280 x 540 pt) keeps 76% and 66% of the organisms half visible: the least radius is not what binds (r_cover is 2.6 to 2.8 px);
+the pitched pose compresses the far rows, so the mean density behind `r_cover` is not the local one. The 80% acceptance is that of the region and organism poses (85.4 to 89.7% at every window size
+tried). (4) The cover radius follows the integer row count: with few rows in view each row entering or leaving moves every size by about 1/(2 sqrt N) (6% at N about 70), smoothed over 0.25 s.
+(5) The kin outline is under 3:1 on 0.1 to 0.7% of the rays of the recorded frame (the nose's silhouette, mid-luminance slots), inside the test's 1%. (6) Brightness is persisted; Territory and Organism size
+reset to "borders and tint" and "capped" at every launch (spec F7 asks for the brightness only; a player who tried the physical size returns to the legible default).
 
 ## Review log
 

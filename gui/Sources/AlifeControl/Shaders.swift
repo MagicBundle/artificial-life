@@ -191,7 +191,9 @@ enum Shaders {
         float3 base = (useNose ? mix(baseColor, float3(1.0), 0.6) : baseColor) * cue;
         float lambert = max(dot(normal, -dir), 0.0);
         out.color = float4(base * (0.3 + 0.7 * lambert), alpha);
-        if (ring > 0.0) {
+        // The outline is the silhouette of the organism: the body's edge, and the nose's edge where the nose sticks out past the body
+        // (a ray that misses the body). A nose in front of the body has its edge inside the organism: no ring there (the "eye" look).
+        if (ring > 0.0 && !(useNose && hitBody)) {
             // The distance of the pixel to the silhouette of the sphere it shows, in pixels: the sphere's radius less its miss distance.
             float rr = useNose ? noseR : radius;
             float miss = sqrt(max(rr * rr - (useNose ? hn : h), 0.0));
