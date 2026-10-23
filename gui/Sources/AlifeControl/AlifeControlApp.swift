@@ -1,3 +1,4 @@
+import AlifeCore
 import AppKit
 import SwiftUI
 
@@ -16,7 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        LaunchMode.current().plan.quitsAfterLastWindow
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         terminationGate.shouldTerminate(
@@ -30,7 +33,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// The entry point: one executable, two apps (`LaunchMode`). The Lab is today's app (the main window, the viewer and the
+/// World window as a second window); Storm Worlds opens straight into the World window and has the Lab one menu item away
+/// (`StormWorldsApp`). The mode is read from the bundle, so `swift run` and a bundle from before the key start the Lab.
 @main
+enum AlifeEntry {
+    static func main() {
+        switch LaunchMode.current().plan.firstScene {
+        case .world: StormWorldsApp.main()
+        case .lab, .viewer3d: AlifeControlApp.main()
+        }
+    }
+}
+
 struct AlifeControlApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var controller = RunController.shared
@@ -42,19 +57,26 @@ struct AlifeControlApp: App {
         }
         .windowResizability(.contentMinSize)
 
-        Window("3D Viewer", id: "viewer3d") {
-            Viewer3DView(stream: StreamController.shared)
-        }
-        .windowResizability(.contentMinSize)
-        .defaultSize(width: 1000, height: 760)
+        Viewer3DScene()
 
         // The game: the map and the organisms with the control center docked beside them. Opened from the Lab (Open
         // World) and, with `--world RUN`, at launch (`ContentView` opens it: a window that is not the first scene is not
         // opened by SwiftUI at launch).
-        Window("World", id: "world") {
+        Window("World", id: AppWindow.world.rawValue) {
             WorldView(play: PlayController.shared)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1280, height: 800)
+    }
+}
+
+/// The 3D viewer window, a second window in both apps.
+struct Viewer3DScene: Scene {
+    var body: some Scene {
+        Window("3D Viewer", id: AppWindow.viewer3d.rawValue) {
+            Viewer3DView(stream: StreamController.shared)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 1000, height: 760)
     }
 }
