@@ -76,6 +76,7 @@ __all__ = [
     "PLAY_TICK",
     "POWER_KEYS",
     "POWER_NAMES",
+    "SAVE_MODES",
     "Autopause",
     "AutopauseLine",
     "ChapterClock",
@@ -145,9 +146,13 @@ COMMANDS: Final = (
     "ack",
     "power",
     "intent",
-)  # the last six are G3b's (DESIGN §34.6.1)
+    "saves",
+)  # the six after ``quit`` are G3b's (DESIGN §34.6.1), ``saves`` is §34.10's
 # lines that are parsed but have no handler yet (each G3b line came with its stage; none remains)
 UNBUILT_LINES: Final = frozenset[str]()
+SAVE_MODES: Final = (
+    streamrec.SAVE_MODES
+)  # ``saves all|newest``: keep the last ``keep`` saves, or only the newest
 POWER_NAMES: Final = ("food", "bloom", "blight", "strike")
 POWER_KEYS: Final = ("mult", "steps", "patch", "gain", "x", "y", "radius", "kill")
 POWER_INT_KEYS: Final = frozenset({"steps", "patch"})  # the others are decimals
@@ -227,8 +232,9 @@ class PowerLine:
 class PlayCommand:
     """One control line, parsed. ``arg``: an int (``step``, ``every``, ``focus``, ``follow``, ``watch``,
     ``unwatch``, ``ack``), a float (``rate`` M, 0 pauses), a string (``rate`` ``max``, ``color`` MODE,
-    ``every`` ``auto``, ``focus`` / ``follow`` / ``watch`` ``off``, ``labels`` ``on`` / ``off``, the text of
-    ``intent``), an ``AutopauseLine`` (``autopause``), a ``PowerLine`` (``power``) or None."""
+    ``every`` ``auto``, ``focus`` / ``follow`` / ``watch`` ``off``, ``labels`` ``on`` / ``off``, ``saves``
+    ``all`` / ``newest``, the text of ``intent``), an ``AutopauseLine`` (``autopause``), a ``PowerLine``
+    (``power``) or None."""
 
     name: str
     arg: int | float | str | AutopauseLine | PowerLine | None = None
@@ -248,7 +254,8 @@ def parse_play_command(line: str, *, modes: Sequence[str] = streamrec.COLOR_MODE
     (UID | off)`` | ``follow (UID | off)`` | ``idnt`` | ``labels (on | off)`` | ``quit``; and G3b's
     ``autopause (on | off | chapter (on | off) | alert CLASS (on | off))`` | ``watch (KIN_ID | off)`` |
     ``unwatch KIN_ID`` | ``ack ALERT_ID`` | ``power preview NAME id=N [k=v ...]`` |
-    ``power NAME id=N [k=v ...]`` | ``power cancel NAME id=N`` | ``intent TEXT``; lower case (the text of
+    ``power NAME id=N [k=v ...]`` | ``power cancel NAME id=N`` | ``intent TEXT``; and §34.10's ``saves (all |
+    newest)``; lower case (the text of
     ``intent`` excepted), whitespace separated. ``N`` >= 1; ``M`` a decimal, 0 for a pause or in [0.05, 16];
     ``K`` in 1..64; ``UID``, ``KIN_ID`` and ``ALERT_ID`` non-negative int64. ``fields`` is the Lab's and
     refused here."""
@@ -315,7 +322,8 @@ def parse_play_command(line: str, *, modes: Sequence[str] = streamrec.COLOR_MODE
 
 
 def _parse_game_command(name: str, args: list[str], line: str) -> PlayCommand:
-    """The G3b lines (``autopause watch unwatch ack power intent``); ``args`` are the tokens after it."""
+    """The G3b lines (``autopause watch unwatch ack power intent``) and ``saves``; ``args`` are the tokens
+    after it."""
     if name == "intent":  # the text is free: everything after the name, whitespace kept as typed
         text = line.strip()[len("intent") :].strip()
         if not text:
@@ -323,6 +331,10 @@ def _parse_game_command(name: str, args: list[str], line: str) -> PlayCommand:
         return PlayCommand(name, text)
     if name == "autopause":
         return PlayCommand(name, _parse_autopause(args))
+    if name == "saves":
+        if len(args) != 1 or args[0] not in SAVE_MODES:
+            raise ControlError(f"saves takes one of {', '.join(SAVE_MODES)}")
+        return PlayCommand(name, args[0])
     if name == "power":
         return PlayCommand(name, _parse_power(args))
     if len(args) != 1:
@@ -602,7 +614,8 @@ class PlayOptions:
     ``origin_step`` is the step the world's chapter numbering starts after (the planet's ``made_at_step`` of
     ``play.json``, ``planet_origin_step``; 0 for a preset or an adopted run): the report's chapter is
     ``step // chapter - origin_step // chapter``, as the client's bar and card count it (§34.2.1).
-    ``planet`` is only the header's block (``source``, ``houses``) and does not hold it."""
+    ``planet`` is only the header's block (``source``, ``houses``) and does not hold it. ``saves`` is the save
+    mode the session starts in (``play.json``'s ``saves``, ``--saves``; ``SAVE_MODES``, DESIGN §34.10)."""
 
     base_rate: float = BASE_RATE
     rate: float = 1.0
@@ -620,6 +633,7 @@ class PlayOptions:
     alerts_experimental: bool = False
     origin_step: int = 0
     unattended: bool = False
+    saves: str = "all"
 
 
 class _NullSink:
@@ -717,6 +731,9 @@ class PlayPacer:
         # chapters and the pauses the world takes by itself (DESIGN §34.2)
         self.chapters = ChapterClock(self.opt.chapter)
         self.autopause = Autopause(alert=alerts_mod.default_autopause())
+        if self.opt.saves not in SAVE_MODES:
+            raise ValueError(f"saves must be one of {SAVE_MODES}, got {self.opt.saves!r}")
+        self.saves = self.opt.saves  # the save mode in force (``saves`` lines, DESIGN §34.10)
         if self.opt.unattended:
             self.autopause.apply(AutopauseLine("all", None, False))
         # the alerts the world raises (DESIGN §34.3): a pure engine over the host quantities of each hook
@@ -854,6 +871,7 @@ class PlayPacer:
         stop_check: Callable[[], bool],
     ) -> None:
         self.rd, self.cfg, self.obs, self.director = rd, cfg, obs, director
+        rd.keep_newest = self.saves == "newest"
         self.alerts.cadence = (
             cfg.run.metrics_every
         )  # a row of fewer steps (a stop's, a resume's) is no sample
@@ -930,6 +948,7 @@ class PlayPacer:
             alerts=streamrec.alerts_block(alerts_mod.registry()),
             powers=powers,
             game_specs=director_actions.GAME_SPEC_VERSION if powers is not None else None,
+            saves=streamrec.saves_block(mode=self.saves, keep=cfg.run.keep_checkpoints, adopted=rd.adopted),
         )
         self._write("HEAD", streamrec.play_header_bytes(legacy, play))
         self._backlog(rd, state)
@@ -1238,6 +1257,10 @@ class PlayPacer:
             self._send_weather(state)
         elif name == "labels":
             self.labels_on = arg == "on"
+        elif name == "saves":
+            assert isinstance(arg, str)
+            self._set_saves(arg)
+            self._send_clock()
         elif name == "autopause":
             assert isinstance(arg, AutopauseLine)
             if (note := self.autopause.apply(arg)) is not None:
@@ -1263,6 +1286,53 @@ class PlayPacer:
             self._note(f"{name}: not available in this build yet")
         else:  # focus, follow
             self._command_focus(cmd, state)
+
+    def _set_saves(self, mode: str) -> None:
+        """``saves all|newest`` (DESIGN §34.10): from the next save on, the world keeps the last
+        ``run.keep_checkpoints`` saves (``all``) or only the newest one (``newest``); the origin is kept
+        either way. Nothing is deleted now: ``RunDir.save_checkpoint`` prunes, after it has written the new
+        save, so one complete save exists at every instant. A change is kept in ``play.json`` (so a resume
+        keeps it) and logged to ``commands.jsonl``; a line that changes nothing does neither. Storage only: it
+        reaches no state, row or log of the trajectory.
+
+        A research run played in place (``alife play RUN --adopt``, ``RunDir.adopted``) holds the research's
+        checkpoints (``init-from RUN:STEP``, the houses, the activity analyses), which a click must not
+        delete: a ``saves newest`` line that would change its mode is refused with a note (the header's
+        ``play.saves.adopted`` tells the client, which does not offer it), and ``alife play RUN --saves
+        newest`` is the explicit way, with a note that says what it deletes."""
+        if mode == "newest" and self.saves != "newest" and self.rd.adopted:
+            self._note(
+                "saves: refused: this world is a research run played in place, and keeping only the newest "
+                "save would delete its checkpoints; `alife play RUN --saves newest` does that on purpose"
+            )
+            return
+        was, self.saves = self.saves, mode
+        self.rd.keep_newest = mode == "newest"
+        if mode == was:
+            return
+        try:
+            if not self._replaying:  # (a replay of the log writes no input log, like the powers)
+                self.rd.append_jsonl(
+                    COMMANDS_FILE,
+                    [{"t": self._t, "verb": "saves", "status": "applied", "mode": mode, "was": was}],
+                )
+            self._persist_saves()
+        except (OSError, ValueError) as e:  # the mode is in force; a resume will not know of it
+            self._note(f"saves: could not keep the mode in the world's files: {e}")
+        self._note(
+            "saves: only the newest save (and the origin) is kept, from the next save on"
+            if mode == "newest"
+            else f"saves: the last {self.cfg.run.keep_checkpoints} saves are kept, from the next save on"
+        )
+
+    def _persist_saves(self) -> None:
+        """``play.json``'s ``saves`` follows the mode (absent: ``all``). A directory with no ``play.json`` (a
+        world driven without ``alife play``) has nothing to keep it in."""
+        obj = self.rd.read_play_json()
+        if obj is None:
+            return
+        kept = {k: v for k, v in obj.items() if k != "saves"}
+        self.rd.write_play_json(kept if self.saves == "all" else {**kept, "saves": self.saves})
 
     def _watch(self, arg: Any) -> None:
         """``watch KIN_ID`` / ``watch off`` (DESIGN §34.3): the lineage alerts read the watched threads."""
@@ -1507,7 +1577,8 @@ class PlayPacer:
                 chapter=chapter,
                 in_chapter=in_chapter,
                 chapter_len=self.opt.chapter,
-                flags=self.autopause.flags,
+                flags=self.autopause.flags
+                | (streamrec.CLCK_FLAG_SAVES_NEWEST if self.saves == "newest" else 0),
             ),
         )
 
@@ -2102,6 +2173,7 @@ def serve_play(
     (after the checkpoint); 3 for an invariant violation. ``control`` is closed on the way out.
     """
     pacer = PlayPacer(out, control, options, clock=clock)
+    rd.keep_newest = options.saves == "newest"  # (also for the starting checkpoint, which precedes bind)
     try:
         res = runner.run(rd, cfg, box.pop(), steps, quiet=True, director=director, pacer=pacer)
     finally:

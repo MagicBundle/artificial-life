@@ -458,8 +458,8 @@ def _clck(r: Rec, p: bytes, n_cap: int) -> None:
         in_chapter,
         chapter_len,
     ) = struct.unpack_from("<ffffIIBBHIIII", p, 16)
-    assert reason <= 5 and saving <= 1 and flags & ~3 == 0, (
-        "CLCK flags: bit 0 chapter pause, bit 1 alert pause"
+    assert reason <= 5 and saving <= 1 and flags & ~7 == 0, (
+        "CLCK flags: bit 0 chapter pause, bit 1 alert pause, bit 2 newest save only"
     )
     r.sections["body"] = p[16:]
     r.f = {

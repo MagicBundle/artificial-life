@@ -67,6 +67,7 @@ PLAY_FILE: Final = (
     "play.json"  # a played world's settings; its absence marks a directory as not a play world (§33.3.3)
 )
 PLAY_LOCK_FILE: Final = "play.lock"  # the advisory lock of the one process that plays a directory (§33.3.3)
+PRE_PLAY_CONFIG_FILE: Final = "config.pre_play.json"  # a research run played in place: its config (§33.3.3)
 PLAY_VERSION: Final = 1
 DUMP_KINDS: Final = ("eco", "wx")  # observers/eco_<step>.npz and observers/wx_<step>.npy (DESIGN §32)
 STATUSES: Final = ("running", "done", "extinct", "violation", "interrupted")
@@ -97,6 +98,11 @@ PLAY_STATE_NAMES: Final = (
 )  # observers/<name>_<step>.json: a played world's host state
 _PLAY_STATE_RE: Final = re.compile(r"^(storms|kinthreads)_(\d{10})\.json$")
 _DUMP_RE: Final = re.compile(r"^(eco|wx)_(\d{10})\.(?:npz|npy)$")
+# The temporary names of what a save writes (``_tmp_path``): the state file and ``LATEST`` in
+# ``checkpoints/``, the observer sidecar and the play-state files in ``observers/``.
+_SAVE_TMP_RE: Final = re.compile(
+    rf"^(?:step_\d{{10}}\.(?:safetensors|npz)|{LATEST_FILE}|(?:{'|'.join(PLAY_STATE_NAMES)})_\d{{10}}\.json)\.tmp$"
+)
 _MAX_HEADER: Final = 1 << 26  # sanity bound on a safetensors JSON header
 
 
@@ -193,6 +199,29 @@ def _fsync_dir(path: Path) -> None:
     except OSError:
         return
     try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _full_sync(path: Path) -> None:
+    """Best effort: put ``path`` on permanent storage, past the drive's own cache (``F_FULLFSYNC``; on macOS
+    ``os.fsync`` stops at the drive, which may still lose the data in a power cut). ``os.fsync`` where the
+    call is missing or the file system refuses it; nothing if the file cannot be opened."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        full = getattr(fcntl, "F_FULLFSYNC", None)
+        if full is not None:
+            try:
+                fcntl.fcntl(fd, full)
+                return
+            except OSError:
+                pass
         os.fsync(fd)
     except OSError:
         pass
@@ -390,6 +419,30 @@ def checkpoint_metadata(path: Path) -> dict[str, str]:
     return {str(k): str(v) for k, v in meta.items()}
 
 
+def state_file_is_complete(path: Path, step: int) -> bool:
+    """True when ``path`` is a whole state file of ``step``: a readable header that names ``step`` and a file
+    at least as long as its last tensor ends (a short or torn write fails; the bytes themselves are not
+    read). The check ``save_checkpoint`` makes before the newest-only mode deletes the older saves."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(8)
+            if len(raw) != 8:
+                return False
+            (size,) = struct.unpack("<Q", raw)
+            if size > _MAX_HEADER:
+                return False
+            header = json.loads(f.read(size))
+        meta = header.get("__metadata__", {})
+        ends = [
+            int(v["data_offsets"][1])
+            for k, v in header.items()
+            if k != "__metadata__" and isinstance(v, dict)
+        ]
+        return str(meta.get("step")) == str(step) and path.stat().st_size >= 8 + size + max(ends, default=0)
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return False
+
+
 def _file_weather_off(meta: dict[str, str]) -> bool:
     """True when the state file's own config (its metadata) had the weather off, so its ``wx`` is the constant
     weather-off array of the default parameters, not a weather state to keep."""
@@ -501,9 +554,21 @@ class RunDir:
     """A run directory (§18): config, meta, metrics, checkpoints, events, diag dumps and media."""
 
     path: Path
+    keep_newest: bool
+    """A played world's save mode (DESIGN §34.10): True keeps only the newest checkpoint and the origin at
+    each save, whatever ``run.keep_checkpoints`` says. Set by the play pacer: a runtime setting of this
+    object, not a config key, so it never reaches the config hash or a trajectory."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
+        self.keep_newest = False
+
+    @property
+    def adopted(self) -> bool:
+        """A research run played in place (``alife play RUN --adopt``): its first adoption kept
+        ``config.json`` as ``config.pre_play.json``, which nothing removes. Its older checkpoints are the
+        research's, which a ``saves newest`` line does not delete (DESIGN 34.10)."""
+        return (self.path / PRE_PLAY_CONFIG_FILE).is_file()
 
     # paths
     @property
@@ -666,7 +731,7 @@ class RunDir:
     def save_checkpoint(
         self, s: State, cfg: Config, *, observers: Mapping[str, np.ndarray] | None = None
     ) -> Path:
-        """sidecar + write_state_file + LATEST + prune.
+        """sidecar + write_state_file + LATEST + prune (``keep_newest``: to the newest save and the origin).
 
         ``observers`` (the arrays of ``Observer.sidecar()``) is written to ``observers/step_<t>.npz`` before
         the state file, so every complete checkpoint of an observing run has its sidecar (a crash in between
@@ -683,7 +748,21 @@ class RunDir:
             self.observer_path(step).unlink(missing_ok=True)
         write_state_file(path, s, cfg)
         _atomic_write_text(self.checkpoint_dir / LATEST_FILE, path.name + "\n")
-        self._prune(cfg.run.keep_checkpoints)
+        keep = cfg.run.keep_checkpoints
+        if self.keep_newest:
+            # The newest-only mode deletes the one older save, so the new one must be whole first: on the
+            # drive, not only in its cache, and readable back (its header names the step, the file reaches its
+            # last tensor). Failing the check, the prune is the ``all`` one, which keeps the older saves.
+            _full_sync(path)
+            if state_file_is_complete(path, step):
+                keep = 1
+            else:
+                print(
+                    f"save: {path} does not read back whole; the older saves are kept",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        self._prune(keep)
         return path
 
     def _start_step(self) -> int:
@@ -700,7 +779,18 @@ class RunDir:
 
         The origin is what a fork's phylogeny, activity analysis and recap builders read for their founders
         (``checkpoint_at(start_step)``); without the protection the third save of a fork deletes it (§18).
+
+        The temporary file of a save (``step_<t>.safetensors.tmp``, ``LATEST.tmp``, a sidecar's or a
+        play-state file's ``.tmp``) that is still there is the debris of a save a kill interrupted (a state
+        file's is up to the size of a save, DESIGN 34.10): the one process that saves the run writes these
+        names only inside ``save_checkpoint`` and the play loop's ``before_checkpoint``, which are done by
+        now, so it is removed too. Other ``*.tmp`` files (a houses file an analysis may be writing) are not.
         """
+        for d in (self.checkpoint_dir, self.observers_dir):
+            if d.is_dir():
+                for tmp in d.iterdir():
+                    if _SAVE_TMP_RE.match(tmp.name):
+                        tmp.unlink(missing_ok=True)
         ckpts = self.checkpoints()
         latest = self.latest_checkpoint()
         origin = self._start_step()
