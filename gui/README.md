@@ -54,7 +54,7 @@ writes each `Info.plist` and signs each bundle with the hardened runtime. The bu
 and the build number from the commit count, the same for both. The signing identity is, in order: `--sign "<identity>"`, the
 first "Developer ID Application" identity in the keychain, the first "Apple Development" identity, then ad-hoc, so with a Developer
 ID installed nothing needs to be named. `--sign -` is ad-hoc and never touches the keychain. `--out DIR` writes the bundles
-somewhere other than `gui/.build`, and `--install-dir DIR` installs somewhere else (for example `~/Applications`). The script
+somewhere other than `gui/.build`, and `--install-dir DIR` installs somewhere else (not the `--out` directory: the script refuses) (for example `~/Applications`). The script
 never uses sudo and refuses, before building, to install over a copy that is running (a run or a world may be active), so quit
 the apps first. Re-run it after any GUI change to refresh the installed copies; the first run with a Developer ID can ask for
 keychain access to the signing key once ("Always Allow" stops the prompt).
@@ -70,20 +70,23 @@ Both apps are only front ends: they use the repository's `.venv` at the configur
 **The two share that setting**, so it is chosen once, in either: the bundles keep it in the shared preferences domain
 `io.github.magicbundle.alife` (`RepoPathStore`). The first time an app starts it takes the folder it already had, from its own
 preferences and then from the Lab's (`io.github.magicbundle.alifecontrol`), and copies it into the shared domain, leaving the
-original where it was. A folder chosen afterwards is written to the shared domain and mirrored to the app's own, so an older Lab
-build still agrees. `swift run` is not a bundle and keeps its own preferences, separate from the installed apps. Other
+original where it was. A folder chosen afterwards is written to the shared domain and to the saving app's own preferences: in the Lab
+that keeps an older Lab build in agreement, but a folder chosen in Storm Worlds is not seen by an older Lab build (the current
+Lab reads the shared domain first). `ALIFE_PREFS_SUITE=name` makes an app read and write that domain instead (it only reads its
+own preferences), for trying a build without touching yours. `swift run` is not a bundle and keeps its own preferences, separate from the installed apps. Other
 preferences (the dock side, window sizes) belong to each app.
 
 Storm Worlds asks for the folder itself, without the Lab: while there is no usable one (no folder, or no `.venv/bin/alife` in
 it) and no world is open, its window shows the folder field with **Choose...** and **Re-check** instead of the launcher (and a
 button for the Lab's **Set up environment** when the folder exists but has no engine); **Settings** (Command-comma) has the
-same field. `--world RUN` works in both apps (`swift run AlifeControl --world RUN`, or `open -a "Storm Worlds" --args --world RUN`).
+same field. `--world RUN` works in both apps (`swift run AlifeControl --world RUN`, or `open -a "Storm Worlds" --args --world RUN`, which works only if the app is not already running).
 `swift run AlifeControl --launch-mode world` runs the game's window arrangement unbundled (a bundle's `AlifeLaunchMode` key,
 `world` or `lab`, says which app it is; no key is the Lab).
 
 Closing the World window of Storm Worlds ends the game and the app, as for any single-window game (the world saves its
 checkpoint first), unless the Lab is open: then the app stays, and **Window > World** reopens the game. Closing the Lab
-there takes only the 3D viewer with it. The Lab window is not reopened at the next launch.
+there takes only the 3D viewer with it, and does not stop a run started in it: that keeps going until you stop it in the Lab
+(**Window > Lab** shows it again) or quit. The Window menu lists the game and the Lab twice, once with the key equivalent. The Lab window is not reopened at the next launch.
 
 `scripts/check-apps.sh` is the smoke test of the bundles: it builds both ad-hoc into a new directory (`--out DIR`), and checks
 each `Info.plist` key, the executable, the icon and `codesign --verify`. It installs and launches nothing. It needs macOS and a

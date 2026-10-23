@@ -71,7 +71,7 @@ BUILD_DIR="${OUT_DIR:-$GUI_DIR/.build}"
 BUILD_DIR="${BUILD_DIR/#\~/$HOME}"
 # Absolute, so that a later `cd` cannot change what it means.
 mkdir -p "$BUILD_DIR"
-BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
+BUILD_DIR="$(cd "$BUILD_DIR" && pwd -P)"
 
 # What differs between the apps. $1 = lab|storm; sets A_* variables.
 app_vars() {
@@ -96,6 +96,10 @@ if [[ $INSTALL -eq 1 ]]; then
     echo "error: $INSTALL_DIR is not writable (this script never uses sudo)." >&2
     echo "Try: $0 --app $WHICH --install --install-dir ~/Applications" >&2
     exit 1
+  fi
+  # Installing replaces the copy in INSTALL_DIR with the bundle in BUILD_DIR; the same directory would delete the new one first.
+  if [[ "$(cd "$INSTALL_DIR" && pwd -P)" == "$BUILD_DIR" ]]; then
+    die "--out and --install-dir are the same directory ($BUILD_DIR): installing would delete the bundles just built. Use another --out."
   fi
   for app in $APPS; do
     app_vars "$app"
@@ -205,7 +209,16 @@ for app in $APPS; do build_app "$app"; done
 #   xcrun notarytool submit "Storm Worlds.zip" --keychain-profile <profile> --wait
 #   xcrun stapler staple "Storm Worlds.app"
 
-# 5. Install.
+# 5. Install. Every copy is checked again first, so that a launch during the build stops the script before it replaces any of
+# them (not after the Lab and before Storm Worlds).
+if [[ $INSTALL -eq 1 ]]; then
+  for app in $APPS; do
+    app_vars "$app"
+    if is_running "$A_ID" "$INSTALL_DIR/$A_DIR/Contents/MacOS/$A_EXEC"; then
+      die "$A_NAME ($A_ID) is running. Quit it first; nothing was installed."
+    fi
+  done
+fi
 for app in $APPS; do
   app_vars "$app"
   if [[ $INSTALL -eq 1 ]]; then

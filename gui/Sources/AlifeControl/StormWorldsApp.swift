@@ -17,8 +17,9 @@ struct StormWorldsApp: App {
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1280, height: 800)
-        // A `Window` scene adds an item to the Window menu that opens it; those two items (without key equivalents) are
-        // replaced by `WindowMenuCommands`', which have them.
+        // Every `Window` scene adds an item to the Window menu that opens it, by title and without a key equivalent. Those stay
+        // (`WindowMenuCommands` adds its own before them), so the game and the Lab are each listed twice, once with its key
+        // equivalent; the "3D Viewer" item opens the viewer window, which is empty until a run is shown (as in the Lab app).
         .commands { WindowMenuCommands(items: plan.windowMenu) }
 
         Window("Alife Control", id: AppWindow.lab.rawValue) {
@@ -66,8 +67,15 @@ struct WorldWindowRoot: View {
     var body: some View {
         Group {
             if controller.repoReady || play.phase != .idle {
-                WorldView(play: play)
-                    .onAppear { startWorldFromArgument() }
+                if argumentHandled {
+                    WorldView(play: play)
+                } else {
+                    // The world is started before `WorldView` exists: its own `onAppear` opens the launcher while the phase is
+                    // idle, which would put a sheet over the world that is starting.
+                    Color.clear
+                        .frame(minWidth: 1100, minHeight: 700)
+                        .onAppear { startWorldFromArgument() }
+                }
             } else {
                 RepoGateView(controller: controller)
             }
@@ -76,7 +84,7 @@ struct WorldWindowRoot: View {
 
     private func startWorldFromArgument() {
         guard !argumentHandled else { return }
-        argumentHandled = true
+        defer { argumentHandled = true }
         if let run = WorldLaunchArgument.parse(CommandLine.arguments) { _ = controller.openWorldAtLaunch(run) }
     }
 }

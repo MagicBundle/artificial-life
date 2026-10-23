@@ -131,6 +131,30 @@ import Testing
         #expect(suites.domains["test-suite"]?.string(forKey: key) == "/saved")
     }
 
+    @Test func theOverrideNeverWritesTheAppsOwnPreferences() {
+        let standard = MemoryDomain(), suites = Suites()
+        standard.set("/owners", forKey: key)
+        let store = RepoPathStore.forApp(
+            info: "lab", environment: [RepoPathStore.suiteOverrideEnvironment: "test-suite"], standard: standard,
+            suite: suites.open)
+        _ = store.load()
+        store.save("/owners")  // what the Repository field does on its own, unchanged
+        store.save("/typed")
+        #expect(standard.string(forKey: key) == "/owners", "the owner's domain is only read")
+        #expect(suites.domains["test-suite"]?.string(forKey: key) == "/typed")
+        #expect(store.load() == "/typed")
+    }
+
+    @Test func theOverrideWithNothingAnywhereStartsEmptyAndStaysInTheSuite() {
+        let standard = MemoryDomain(), suites = Suites()
+        let store = RepoPathStore.forApp(
+            info: nil, environment: [RepoPathStore.suiteOverrideEnvironment: "test-suite"], standard: standard,
+            suite: suites.open)
+        #expect(store.load() == nil)
+        store.save("/x")
+        #expect(standard.string(forKey: key) == nil)
+    }
+
     @Test func theNamesAreTheOnesTheBundlesUse() {
         #expect(RepoPathStore.key == "repoPath")  // unchanged: the Lab has always stored it under this key
         #expect(RepoPathStore.sharedSuite == "io.github.magicbundle.alife")

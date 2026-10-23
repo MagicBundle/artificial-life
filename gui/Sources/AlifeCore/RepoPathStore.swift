@@ -16,7 +16,9 @@ extension UserDefaults: PreferenceDomain {
 /// Both bundles keep it under `RepoPathStore.key` of one shared defaults suite. A value that is not there yet is taken
 /// from the app's own preferences and from the Lab's (`labDomain`, where the Lab has always kept it) and copied into the
 /// suite on first read; what it was copied from is left alone. A save writes the suite and mirrors the value into the
-/// app's own preferences, so that an older Lab build, which reads only those, keeps agreeing.
+/// saving app's own preferences. In the Lab those are the domain an older Lab build reads alone, so that build keeps
+/// agreeing; Storm Worlds' own domain is not the Lab's, so a folder chosen in Storm Worlds is not seen by an older Lab
+/// build (the current one reads the suite first).
 ///
 /// Only a bundle made by `make-app.sh` (it has `LaunchMode.infoKey`) uses the suite. `swift run` and the tests keep their own
 /// preferences domain, separate from the installed apps, as they always did.
@@ -26,8 +28,9 @@ package struct RepoPathStore: Sendable {
     package static let sharedSuite = "io.github.magicbundle.alife"
     /// The Lab's own bundle ID, the preferences domain the stored folder is migrated from.
     package static let labDomain = "io.github.magicbundle.alifecontrol"
-    /// Names a suite to use instead of `sharedSuite` (and no migration from `labDomain`): for trying a bundle without touching
-    /// the owner's preferences.
+    /// Names a suite to use instead of `sharedSuite`, for trying a bundle without touching the owner's preferences: it is read
+    /// and written in place of both the suite and the app's own preferences (which are only read, as a source for the first
+    /// value, and never written), and the Lab's domain is not used.
     package static let suiteOverrideEnvironment = "ALIFE_PREFS_SUITE"
 
     private let shared: any PreferenceDomain
@@ -71,7 +74,9 @@ package struct RepoPathStore: Sendable {
         suite: (String) -> (any PreferenceDomain)? = { UserDefaults(suiteName: $0) }
     ) -> RepoPathStore {
         if let name = environment[suiteOverrideEnvironment], !name.isEmpty, let override = suite(name) {
-            return RepoPathStore(shared: override, own: standard)
+            // `own` is the override too, so that a save never reaches `standard` (an installed app's `standard` is the owner's
+            // domain); `standard` stays a read-only source for the first value.
+            return RepoPathStore(shared: override, own: override, legacy: [standard])
         }
         guard info != nil, let shared = suite(sharedSuite) else {
             return RepoPathStore(shared: standard, own: standard)
