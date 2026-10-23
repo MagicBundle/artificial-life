@@ -22,8 +22,8 @@ played a world in the `player` mode (§10). The checkpoint on the external drive
   against a 34.7 ms slot, digests as at 1x, both powers applied (0.020 and 0.070 s click to applied). The spec names no 2x limit; the
   reading used here is in §6.
 - **The external drive writes the 686 MB checkpoint in 5.6 to 6.4 s, 12 times the internal disk's 0.41 to 0.53 s (§6.1).** Eight saves on each disk, paired: mean 5.76 s against 0.47 s (about
-  119 MB/s against 1.46 GB/s). The spec's estimate of 1 to 3 s was too low. At 1x the stall is 81 to 83 steps (internal 5 to 7); the drive's 1x arms miss the unattended bench's gate
-  (0.9665x and 0.9684x, `late_steps` 4 and 7), and the `max` arms pass it (3.27x and 3.23x). The late steps are not in the saves (§6.1): the drive stalls an `fsync` for 0.2 to 0.4 s now and then.
+  119 MB/s against 1.46 GB/s). The spec's estimate of 1 to 3 s was too low. At 1x the stall is 80 to 83 steps a save (internal 5 to 7); the drive's 1x arms miss the unattended bench's gate
+  (0.9665x and 0.9684x, `late_steps` 4 and 7), and the `max` arms pass it (3.27x and 3.23x). The seven late steps of the second 1x run were not in a save (the first run's four were not located); the likely cause is a drive that now and then stalls an `fsync` for 0.2 to 0.4 s (§6.1; not traced).
   Every arm ends at the plain run's digest. The folder made on the drive was removed.
 - **Metal purity: 34 test files, 1,393 passed, 1 skipped, 0 failed.** The skip needs a loaded model and no model call was made. That includes
   `tests/test_bench.py` (46), which G3a left open. Swift: `swift build`, `swift test` (AlifeCore 469 tests, AlifeControl 252), `GPURenderTests` 8,
@@ -253,11 +253,11 @@ Run afterwards, 2026-10-23 07:40 to 08:10, with the drive mounted again (`/Volum
   Mac day's (0.52 to 0.69 s in the bench, 0.68 to 1.01 s from the card's opening in the play) and G3a's (0.93 to 0.98 s). Copying the same file onto the drive with `cp` took 6.2 s (110 MB/s;
   `FD/logs/copy_drive_time.txt`; the internal copy was an APFS clone and says nothing). The spec's estimate of 1 to 3 s was low by a factor of two.
 - **At `max` nothing is owed**, so `save_stall_steps` is 0 by construction and the stall shows only as the longest step (6.45 and 5.88 s on the drive). **At 1x the stall is the steps the schedule skipped:**
-  80 to 83 steps on the drive (5.6 to 5.8 s at 15 steps a second) against 5 to 7 on the internal disk. No save adds a late step (`late_cum` is the same before and after each save in the two arms that logged it).
+  80 to 83 steps on the drive (5.6 to 5.8 s at 15 steps a second) against 5 to 7 on the internal disk. No save was seen to add a late step: `late_cum` is the same before and after each of the two saves of the one drive arm that logged it (the second 1x run; the first did not log it).
 - **The gate item at 1x fails on the drive in the unattended bench, for the reason of the saves and one other.** Achieved 0.9665x and 0.9684x (limit 0.98x) and `late_steps` 4 and 7 (limit 0); `step_ms` p99 is 47.9 and 46.4 (limit 66; internal
   46.0 and 44.2), so the typical step does not change. The achieved shortfall is the two saves counted in the arm's seconds; in a played world the chapter-end save sits behind the card (`end_save(count=False)`), and only the quit save would count.
   At `max` the gate (2.5x) passes on the drive: 3.27x and 3.23x.
-- **The late steps are not the saves; their cause is probable, not shown.** In the second pair the logger caught them: seven steps added at 472,101, 101 steps into the warm-up and 8 s after the arm's first checkpoint, before any save of the measured part. In the
+- **The late steps of the second run were not in a save; their cause is probable, not shown.** In the second pair the logger caught them: seven steps added at 472,101, 101 steps into the warm-up and 8 s after the arm's first checkpoint, before any save of the measured part. In the
   first pair the step was not logged. A probe of the drive (`FD/fsync_probe.py`: 300 appends of a 0.4 kB line with `fsync`, 20 ms apart) found p50 0.59 ms, p90 0.82 ms, **p99 217 ms and a maximum of 377 ms**, against 0.24, 0.34, 0.46 and 0.47 ms
   on the internal disk (`FD/logs/fsync_probe.txt`). The run appends and fsyncs its logs at every row, and an fsync that blocks for a quarter of a second at 1x is several slots of debt. That fits; a trace of the stalled step was not taken.
   The consequence for a person is that a world played with its run directory on this drive may show a few late steps at 1x (4 and 7 in 2,800 steps); on the internal disk none occurred in any arm of this note.
