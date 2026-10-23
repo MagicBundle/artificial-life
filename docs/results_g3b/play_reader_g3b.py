@@ -1,6 +1,6 @@
 # ruff: noqa: B007, E501, RUF005, SIM105, SIM115, SIM222
-# The reader is kept as it ran on the Mac day (2026-10-23); the style rules above are waived for this file
-# on purpose so that the code that produced the numbers of docs/RESULTS_G3B.md is not edited after the fact.
+# The reader is kept as it ran on the Mac day (2026-10-23), reformatted by `ruff format` only (no logic change); the style rules
+# above are waived for this file on purpose so that the code that produced the numbers of docs/RESULTS_G3B.md is not edited.
 """G3b Mac-day reader: attach a strict reader to `alife play` (Metal), decode every record with tests/play_decode.py,
 answer chapter pauses with `run`, acknowledge alerts, send one power of each kind plus one cancel, keep counts.
 

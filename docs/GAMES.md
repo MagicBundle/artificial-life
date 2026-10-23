@@ -1153,7 +1153,7 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
     - *D4* Food, Bloom, Blight, Strike under "game-v0", 6 units per 18,000 steps, `power cancel`; no weather verb (W4). *D5* `intent` is G4 (the line and the `PLAN` shape are reserved).
       *D6* the select-and-order mode is G3c, default off. *D7* rewind, storage, digests: G3c. *D8* offline advance: G3c, never default.
     - *D9* the play contract is observe-and-poke; the Mac day was to measure inputs per chapter and the objective is decided on that (it could not: the Mac day's reader is a script, so D9 needs a person to play G3b; `RESULTS_G3B` §10). *D10* Strike costs 1 (radius 6.25 to 25, cooldown 3,000, not GAMES §5.5's 9,000). *D11* Chapter 1 is reported from an origin row in `meta.json`.
-    - **Still the owner's after the Mac day:** item 15 (satellite budding of kin threads, constant `P`: on the Mac day's window a thread named Pruashol formed and merged four times in 14,000 steps and 4 of 19 ended threads lived 1,500 steps or less) and item 16 (storm namings on the alert surface: 4 of the 8 alerts of importance 2 or more, 0.38 a minute in all, 0.19 without them).
+    - **Still the owner's after the Mac day:** item 15 (satellite budding of kin threads, constant `P`: on the Mac day's window a thread named Pruashol formed four times and merged back three times between steps 474,750 and 487,250 and 4 of 19 ended threads lived 1,500 steps or less) and item 16 (storm namings on the alert surface: 4 of the 8 alerts of importance 2 or more, 0.38 a minute in all, 0.19 without them).
 
 
 ## 11. Prior-art sources

@@ -61,7 +61,7 @@ played a world in the `player` mode (§10).
   `scratchpad/g3b/macday`, called MD below): `bench_play_rules_player.json`, `bench_play_powers.json`, `bench_play_2x.json` and `bench_play_powers_2x.json` (MD/logs/`step4_{A,B,C,D}_bench.json`),
   `metal_purity_summary.txt` (MD/logs/`step1_summary.txt`), `world_render_bench_alone.json` (MD/render/`gpu_tests_out_bench_alone/world-render-bench.json`),
   `play18k_run1.json`, `play18k_resume500.json`, `play18k_events.jsonl`, `play18k_alerts.jsonl` and `play18k_plans.jsonl` (MD/play18k/), `play_reader_g3b.py`
-  (the reader; needs the environment variables `WT`, `ALIFE_BIN` and `SNAPDIR`; a file-level `noqa` keeps it as it ran) and `summ_bench.py`.
+  (the reader; needs the environment variables `WT`, `ALIFE_BIN` and `SNAPDIR`; a file-level `noqa` waives the style rules; the file is `ruff format`-ted, logic as it ran) and `summ_bench.py`.
   The 4,545 `CLCK` rows (396 KB, `run1.json.clck.jsonl`) are not committed. The JSON records carry the scratch paths they ran in.
 
 ## 2. Metal purity
@@ -144,7 +144,7 @@ and the two sets of numbers are not comparable at the decimal.
   timer; whether the save falls inside the step because of the chapter hooks or because of where the bench's timer sits was not separated.
   The bench has no pause (`unattended`), so the save shows as `save_stall_steps` (15 at 1x, 20 with powers) and none of them is late. In a played world the
   chapter-end save is hidden behind the card (§7.3).
-- The arms with powers are higher in the maximum (766 to 789 against 591 to 610 ms) and in the save timer (651 to 686 against 522 to 550 ms); the checkpoint file has the same size (686,866,342 bytes).
+- The arms with powers are higher in the maximum (766 to 789 against 591 to 610 ms) and in the save timer (651 to 686 against 522 to 550 ms); the checkpoint file has the same size to two bytes (686,866,342 to 686,866,344 bytes).
   Not investigated.
 
 ### 4.2 Components
@@ -326,8 +326,8 @@ The window is 21.05 minutes of wall time (1,262.7 s including 8.6 s paused); G3a
 - **Both totals are inside the bands of spec §11** (2 to 5 total, 1 to 3 kin), but the total is nearer the bottom of its band and its director events are the scripted powers (G3a's total without its 1.38 focus events was 7.28). The kin thread rule did what the spec wanted: kin events fell about 2.9 times (5.99 to 2.04 a minute) on the same planet, 20,000 steps later.
 - **By importance:** 0 for 7 events, 1 for 49, 2 for 13 (0.62 a minute, one every 97 s; G3a: 3.3 a minute, one every 18 s). The 13 are 5 storm dissolutions, 4 storm namings and 4 kin events (2 formed, 2 ended).
   Kin events are 4 of the 13 importance-2 events (G3a: 69 of 77). Peak: 7 events in one wall minute.
-- **The kin threads still bud.** From the event file by hand: Viopeiv is the parent in 5 of the 24 "formed" lines, a thread called Pruashol forms, merges back into Viopeiv or Teshash and forms again four times (Pruashol 474,750, Pruashol 481,000,
-  Pruashol II 483,750 and Pruashol III 486,750), and 4 of the 19 ended threads lasted 1,500 steps or less (Shaizur 750, Vuzen 1,250, Pruashol II 1,250, Pheben 1,500). This is owner item 15 (satellite budding, constant `P`), still open
+- **The kin threads still bud.** From the event file by hand: Viopeiv is the parent in 5 of the 24 "formed" lines, a thread called Pruashol forms, merges back into Viopeiv or Teshash and forms again: four formations (told at steps 474,750, 481,000,
+  484,250 as Pruashol II and 487,250 as Pruashol III) and three merges back (told at 477,000, 485,750 and 486,750; Pruashol III was still alive at the end), and 4 of the 19 ended threads lasted 1,500 steps or less (Shaizur 750, Vuzen 1,250, Pruashol II 1,250, Pheben 1,500). This is owner item 15 (satellite budding, constant `P`), still open
   and still a story that reads as news at a rate of 2 kin events a minute.
 - **Alerts: 26 raised**, 14 on the alert surface and 12 on the log surface. Alert surface: chapter 3 (importance 3), storm_named 4 and pop_slide 1 (importance 2), effect_ending 3, pop_surge 2 and pop_fall 1 (importance 1;
   the fall was raised to importance 3 by an update). Log surface: storm_ended 5, house_fading 3, lineage_ended 2, lineage_formed 2. 31 `ALRT` records (updates and clears included), 14 acknowledgements sent.
@@ -364,7 +364,7 @@ Rendered offscreen from reader snapshots (MD/render/snaps/) with the production 
 
 1. **Defect (G3b): the server numbers reports from step 0, not from the planet's origin.** `cli.py:1270` builds `PlayOptions(planet={"source": ..., "houses": ...})` and drops `made_at_step`; `play.py:1016`
    reads `planet.get("made_at_step", 0) // chapter` as `n_origin`, which is 0 for every world, so `RPRT.chapter` is the absolute chapter (DESIGN §34.4 says it is `n_abs - n_origin`, the number the player sees). `CLCK.chapter` is absolute by design and the client subtracts the origin chapter it reads from `play.json`
-   (`made_at_step`, 450,000 on p0), so the card and the bar say "Chapter 4" and the Report tab "Chapter 79"; the first report of a fresh planet would read "Chapter 75". Not fixed here. The fix is to pass `made_at_step` through (one key at `cli.py` line 1270, which a new planet and a resume share) and a test that a planet made at 450,000 reports chapter 1 for its first chapter on the stream; the tests use worlds that start at 0 and cannot see it.
+   (`made_at_step`, 450,000 on p0), so the card and the bar say "Chapter 4" and the Report tab "Chapter 79"; the first report of p0, the chapter that ends at 456,000, reads "Chapter 76" where the client would show "Chapter 1". Not fixed here. The fix is to pass `made_at_step` through (one key at `cli.py` line 1270, which a new planet and a resume share) and a test that a planet made at 450,000 reports chapter 1 for its first chapter on the stream; the tests use worlds that start at 0 and cannot see it.
 2. **The bench cannot read the report-time item** (§5). `bench --play-resume` gives each arm a fresh run directory with no history, so the chapter (468,000, 474,000] starts before the arm and the report job answers with an arrival notice
    (spec §3.5, the arrival chapter) after 2.5 to 2.7 ms. Offline, `load_run` on the arm's directory raises "the cut 468000 is not the step of a metrics row" (MD/logs/`step4_bench_report_is_withheld.log`). The gate item should either copy the
    source's metrics rows and origin row into the arm or refuse a chapter it cannot report; today it passes vacuously. The real time is §7.3's 29 to 47 ms.
