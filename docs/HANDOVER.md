@@ -16,7 +16,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | path | what |
 |---|---|
 | `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, the fused Metal neighbour kernel (`knn_metal.py`, DESIGN §4), the offline W0 weather prototype (`weather.py`, `analysis/w0.py`, `docs/STORMS_W0.md`), `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`; W2a adds `game/tracers.py` and `analysis/w2.py`, DESIGN §32; N1 adds `game/report.py`, `templates.py`, `lexicon.py` and `analysis/world_report.py`, `docs/DESIGN.md` §31) |
-| `tests/` | pytest suite. 4,252 fast tests passed, 89 were skipped (the GPU-only kernel tests, N1's `llm` test and the like) and 1 xfailed on the CPU device at the head of G3b (`-m "not slow"`, 37 deselected, `test_lifecycle_compiles_and_matches_eager` among them; 32 min 18 s in one process at the second merge-readiness check, 29 min 34 s at the first, about 9 minutes as six parallel shards during the build) plus the slow ones |
+| `tests/` | pytest suite. 4,252 fast tests passed, 89 were skipped (the GPU-only kernel tests, N1's `llm` test and the like) and 1 xfailed on the CPU device at the head of G3b (`-m "not slow"`, 37 deselected, `test_lifecycle_compiles_and_matches_eager` among them; 32 min 18 s in one process at the second merge-readiness check, 29 min 34 s at the first, about 9 minutes as six parallel shards during the build, which shared one kernel cache; since I58 `-n 8 --dist loadfile` takes 6 minutes with a private cache per worker) plus the slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
@@ -39,7 +39,8 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 
 ```bash
 uv sync --extra viewer --extra video          # Python 3.12 pinned in .python-version
-uv run pytest -m "not slow" -q                # fast suite
+uv run pytest -m "not slow" -q                # fast suite, one process (about 28 min on the Mac)
+uv run pytest -m "not slow" -q -n 8 --dist loadfile   # the same in parallel (about 6 min; DESIGN section 22.0, I58)
 uv run alife run --preset 64k --steps 20000 --out runs/NAME
 uv run alife resume runs/NAME --steps 100000
 uv run alife view runs/NAME                   # pygame viewer (re-simulates from the latest checkpoint)
@@ -61,6 +62,28 @@ uv run alife bench --play --preset 64k3d --overlay storm --set director.enabled=
 Overnight runs: plug in, lid open, and either use the GUI's timer or
 `caffeinate -is uv run alife resume ...`. Stop cleanly with exactly one SIGINT (Ctrl+C or `kill -INT <pid>`
 of the Python process). A second SIGINT is a hard exit. Do not use `--quiet` if you want progress lines.
+
+## Parallel tests (I58)
+
+`pytest-xdist` is in the dev group. The fast suite runs as `uv run pytest -m "not slow" -q -n 8 --dist loadfile`
+(5 min 56 s warm on the M5 Pro against 27 min 38 s serial; 9.1 GB in all; with `-p cpu_device` and `PYTHONPATH` as
+before for the CPU device). Why those numbers and the whole measurement table are in DESIGN §22.0 "Parallel runs".
+What to know:
+- **Do not use more than 8 workers while LM Studio holds its model** (about 13 GB is free then). `-n auto` is 18 here.
+  12 workers took 4 min 41 s and peaked at 11.7 to 12.2 GB; try that only with the model unloaded.
+- **Every pytest process now compiles MLX CPU kernels into a private cache** (`tests/worker_cache.py`, hooked in
+  `tests/conftest.py`), seeded from the shared `$TMPDIR/mlx` and merged back into it. Concurrent runs and parallel
+  workers no longer collide (before: "File exists" linker errors, aborted workers, once a hang). Keep giving each
+  agent its own `TMPDIR` as before: that is still the persistent, warm cache. `ALIFE_TEST_JIT_SHARED=1` switches the
+  isolation off. A cold cache costs a parallel run 4 to 5 minutes (799 s against 540 s at `-n 4`).
+- **Disk:** a fast-suite run leaves about 38 GB under pytest's basetemp, and pytest keeps three runs per `TMPDIR`; a dozen
+  measured runs filled the Mac's disk (ENOSPC, the tests then failed). Delete the `pytest-of-*` directory of a `TMPDIR`
+  after a run. `tmp_path_retention_policy = "failed"` would stop it; not applied, the owner to confirm.
+- MLX buffers are capped at 256 MB per test process (`ALIFE_TEST_MLX_CACHE_MB`): without it four workers held
+  12.6 GB.
+- **CI** runs `-n 4 --dist loadfile`; the Linux time is not measured yet (read it off the first runs and lower the
+  120-minute timeout). **Open:** `fix/mlx-compile-collision` (`tests/jit_cache.py`) is unmerged; on merge, let its
+  `isolate` replace `worker_cache.isolate` in `isolate_for` and resolve the `conftest.py` hooks as DESIGN §22.0 says.
 
 ## Verified state
 
