@@ -20,8 +20,11 @@ struct ViewMenuInputs: Equatable {
     /// The colour mode of the frame in view ("" before there is one).
     var current: String
     var labelsOn: Bool
-    /// The level in view is the planet's (the agent toggle then means the 1 px points).
+    /// The level in view is the planet's (the 1 px points then have a toggle of their own). A step of the level, not a continuous
+    /// camera value: the menu is not rebuilt while the player zooms (DESIGN §36.9).
     var planetLevel: Bool
+    /// The layers and the look: the agents, bonds, territory (off, borders, tint), the map, the frame, the brightness and the
+    /// organism size are all fields of `WorldDisplay`.
     var display: WorldDisplay
     var chapterPause: Bool
     var pauses: [Pause]
@@ -68,15 +71,23 @@ struct ViewMenu: View {
             // archetype and intent colour modes do (from the host's colours), and the picker above tags them.
             Toggle("Intent labels (stream)", isOn: Binding(get: { inputs.labelsOn }, set: { play.send(.labels($0)) }))
             Divider()
-            // The agent toggle refers to the layer of the level in view: instances close up, the 1 px points at the planet level.
-            if inputs.planetLevel {
-                Toggle("Agent points", isOn: layer(\.agentPoints))
-            } else {
-                Toggle("Agents", isOn: layer(\.agents))
-            }
+            Toggle("Agents", isOn: layer(\.agents))
+            // The 1 px translucent points exist at the planet level only.
+            if inputs.planetLevel { Toggle("Agent points", isOn: layer(\.agentPoints)) }
             Toggle("Bonds", isOn: layer(\.bonds))
-            Toggle("Territory", isOn: layer(\.territory))
+            Picker("Territory", selection: Binding(get: { inputs.display.territory }, set: { model.display.territory = $0 })) {
+                Text("Off").tag(TerritoryMode.off)
+                Text("Borders").tag(TerritoryMode.borders)
+                Text("Borders and tint").tag(TerritoryMode.tint)
+            }
+            Picker("Organism size", selection: Binding(get: { inputs.display.sizeMode }, set: { model.display.sizeMode = $0 })) {
+                Text("Capped (symbols)").tag(OrganismSizeMode.capped)
+                Text("Physical size").tag(OrganismSizeMode.physical)
+            }
             Toggle("Weather map", isOn: layer(\.map))
+            Picker("Brightness", selection: Binding(get: { inputs.display.exposure }, set: { model.display.exposure = $0 })) {
+                ForEach(WorldDisplay.exposurePresets, id: \.self) { Text("\(Int(($0 * 100).rounded())) %").tag($0) }
+            }
             Toggle("Frame", isOn: layer(\.frame))
             Divider()
             // The pauses the world takes by itself. The player's choice is kept and sent to every world after its header.

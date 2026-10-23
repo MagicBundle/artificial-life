@@ -6,7 +6,7 @@
 // the viewer window (`Renderer.Failure.shaders`). Do not use a backslash or a triple quote in the source.
 //
 // The structs `Scene`, `Plane` and `WorldU` mirror `SceneUniforms`, `PlaneUniforms` and `WorldUniforms` in Renderer.swift
-// field by field (a test pins the Swift side: 160, 32 and 80 bytes).
+// field by field (a test pins the Swift side: 160, 32 and 112 bytes).
 enum Shaders {
     /// The entry points of `source` that `Renderer` builds pipelines from (a test compares them with the source).
     static let sphereVertex = "sphereVertex"
@@ -53,10 +53,12 @@ enum Shaders {
     // The World window's constants (buffer 7).
     struct WorldU {
         float4 target;     // xy: the camera target (everything is drawn at its minimum image), z: L, w: 1 / L
-        float4 params;     // x: map blend (previous -> current), y: map opacity, z: territory alpha, w: flat-disc threshold in px
+        float4 params;     // x: map blend (previous -> current), y: map opacity, z: territory tint alpha, w: flat-disc threshold in px
         float4 refs;       // x: p_ref, y: dc_ref, z: zeta_ref, w: cot(fovY / 2)
         uint4 flags;       // x: pass (0 spheres, 1 flat discs), y: rows listed, z: bonds, w: bit 0 map, bit 1 territory, bit 2 equators
-        float4 style;      // x: point alpha, y: point size in px, z: smallest disc radius in px, w: unused
+        float4 style;      // x: point alpha, y: point size in px, z: smallest radius in px, w: outline width in px (0: none)
+        float4 size;       // x: the cap on the drawn radius in px (huge: physical size), y, z: the alpha ramp's low and high radius in px, w: depth cue slope
+        float4 look;       // x: exposure (the map's brightness), y: territory border alpha, z: depth cue base, w: hemisphere tint weight
     };
 
     // The nose of an agent: a small sphere on its forward axis, paler than the body, so the heading shows.
@@ -130,14 +132,31 @@ enum Shaders {
         float depth [[depth(any)]];
     };
 
-    // The shading of one impostor: the ray against the body and the nose, the headlight, the depth of the hit.
-    SphereOut shadeSphere(float3 center, float3 forwardAxis, float3 worldPoint, float3 baseColor, constant Scene& scene)
+    // sRGB to linear light, and the outline of an impostor: dark on a light pixel, light on a dark one, chosen from the luminance of
+    // the shaded colour of the pixel next to the ring, so that the edge has a contrast of at least 3:1 whatever the colour,
+    // the depth cue and the shading (DESIGN 36.7; OutlineContrast.swift is the same arithmetic).
+    float srgbToLinear(float c)
+    {
+        c = clamp(c, 0.0, 1.0);
+        return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+    }
+
+    float3 outlineFor(float3 shaded)
+    {
+        float l = 0.2126 * srgbToLinear(shaded.r) + 0.7152 * srgbToLinear(shaded.g) + 0.0722 * srgbToLinear(shaded.b);
+        return l > 0.22 ? float3(0.06) : float3(0.92);
+    }
+
+    // The shading of one impostor: the ray against the body and the nose, the headlight, the depth of the hit. `radius` is the
+    // body's, `cue` a brightness factor, `ring` the outline's width in pixels (0: none; `pxPerUnit` pixels per world unit) and
+    // `alpha` the opacity of the whole impostor. The Lab draws with the scene's radius, cue 1, no ring, alpha 1.
+    SphereOut shadeSphere(float3 center, float3 forwardAxis, float3 worldPoint, float3 baseColor, constant Scene& scene,
+                          float radius, float pxPerUnit, float cue, float ring, float alpha)
     {
         SphereOut out;
         out.color = float4(0.0);
         out.depth = 1.0;
 
-        float radius = scene.world.z;
         float3 origin = scene.eye.xyz;
         float3 dir = normalize(worldPoint - origin);
         float3 noseCenter = center + forwardAxis * (noseOffset * radius);
@@ -169,9 +188,20 @@ enum Shaders {
         float t = useNose ? tNose : tBody;
         float3 hit = origin + dir * t;
         float3 normal = useNose ? (hit - noseCenter) / noseR : (hit - center) / radius;
-        float3 base = useNose ? mix(baseColor, float3(1.0), 0.6) : baseColor;
+        float3 base = (useNose ? mix(baseColor, float3(1.0), 0.6) : baseColor) * cue;
         float lambert = max(dot(normal, -dir), 0.0);
-        out.color = float4(base * (0.3 + 0.7 * lambert), 1.0);
+        out.color = float4(base * (0.3 + 0.7 * lambert), alpha);
+        if (ring > 0.0) {
+            // The distance of the pixel to the silhouette of the sphere it shows, in pixels: the sphere's radius less its miss distance.
+            float rr = useNose ? noseR : radius;
+            float miss = sqrt(max(rr * rr - (useNose ? hn : h), 0.0));
+            if ((rr - miss) * pxPerUnit < ring) {
+                // The pixel next to the ring is the one the outline is chosen against: n.v there is the sphere's at (ring + 0.5) px inside.
+                float rrPx = rr * pxPerUnit;
+                float k = clamp((rrPx - ring - 0.5) / max(rrPx, 1e-3), 0.0, 1.0);
+                out.color = float4(outlineFor(base * (0.3 + 0.7 * sqrt(1.0 - k * k))), alpha);
+            }
+        }
         float4 clip = scene.viewProjection * float4(hit, 1.0);
         out.depth = clip.z / clip.w;
         return out;
@@ -180,7 +210,7 @@ enum Shaders {
     fragment SphereOut sphereFragment(SphereVarying in [[stage_in]],
                                       constant Scene& scene [[buffer(0)]])
     {
-        return shadeSphere(in.center, in.forward, in.world, in.color, scene);
+        return shadeSphere(in.center, in.forward, in.world, in.color, scene, scene.world.z, 1.0, 1.0, 0.0, 1.0);
     }
 
     // ---- Lines: bonds and the edges of the box ----
@@ -290,12 +320,18 @@ enum Shaders {
         float3 forward;
         float3 world;
         float3 color;
-        float2 corner;     // the billboard's corner in [-1, 1]^2 (the flat discs)
+        float2 corner;                 // the billboard's corner in [-1, 1]^2 (the flat discs)
+        float radius [[flat]];         // the drawn radius in world units
+        float pxPerUnit [[flat]];      // pixels per world unit at the centre's depth
+        float alpha [[flat]];          // the instance's opacity: a ramp of the drawn radius
+        float cue [[flat]];            // the depth cue: a brightness factor by height
     };
 
     // One billboard per listed row (the stream's alive-only arrays: the instance id is the row). Two passes over the same
-    // rows: pass 0 draws the ones whose body projects to at least the threshold as ray-traced spheres, pass 1 the rest as
-    // flat discs of at least a pixel or so, which a ray test would turn into nothing.
+    // rows: pass 0 draws the ones whose drawn radius is at least the threshold as ray-traced spheres, pass 1 the rest as
+    // flat discs, which a ray test would turn into nothing. The drawn radius is the physical one clamped by the size policy
+    // (DESIGN 36.7): at least the smallest radius, at most the larger of that and the cap; the opacity is a ramp of it, so an
+    // organism too small to see is not drawn and there is no level at which they all appear.
     vertex AgentVaryingA agentVertexA(uint vid [[vertex_id]],
                                       uint iid [[instance_id]],
                                       constant Scene& scene [[buffer(0)]],
@@ -311,25 +347,34 @@ enum Shaders {
         out.world = float3(0.0);
         out.color = float3(0.0);
         out.corner = float2(0.0);
+        out.radius = scene.world.z;
+        out.pxPerUnit = 1.0;
+        out.alpha = 1.0;
+        out.cue = 1.0;
 
-        float radius = scene.world.z;
-        float3 center = minimumImage(float3(pos[iid]), world.target.xy, world.target.z);
+        float3 raw = float3(pos[iid]);
+        float3 center = minimumImage(raw, world.target.xy, world.target.z);
         float3 toCenter = center - scene.eye.xyz;
         float dist = length(toCenter);
         float3 viewAxis = cross(scene.up.xyz, scene.right.xyz);
         float depth = dot(toCenter, viewAxis);
-        if (!(dist > 1.5 * radius) || depth <= 0.0) { return out; }
+        if (depth <= 0.0) { return out; }
 
-        // Pixels per world unit at the centre, and the body's projected radius.
+        // Pixels per world unit at the centre, the body's physical radius in pixels, and the radius it is drawn with.
         float perPixel = 0.5 * scene.viewport.y * world.refs.w / depth;
-        bool isFlat = radius * perPixel < world.params.w;
+        float smallest = world.style.z;
+        float drawnPx = clamp(scene.world.z * perPixel, smallest, max(smallest, world.size.x));
+        float radius = drawnPx / perPixel;
+        if (!(dist > 1.5 * radius)) { return out; }
+        float alpha = smoothstep(world.size.y, world.size.z, drawnPx);
+        if (!(alpha > 0.0)) { return out; }
+        bool isFlat = drawnPx < world.params.w;
         if (isFlat != (world.flags.x == 1u)) { return out; }
 
         float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
         float3 worldPoint;
         if (isFlat) {
-            float extent = max(radius * perPixel, world.style.z) / perPixel;
-            worldPoint = center + (scene.right.xyz * corner.x + scene.up.xyz * corner.y) * extent;
+            worldPoint = center + (scene.right.xyz * corner.x + scene.up.xyz * corner.y) * radius;
         } else {
             float3 f = toCenter / dist;
             float3 bx = normalize(cross(f, scene.up.xyz));
@@ -346,17 +391,23 @@ enum Shaders {
         out.world = worldPoint;
         out.color = unpackColor(rgb[iid]);
         out.corner = corner;
+        out.radius = radius;
+        out.pxPerUnit = perPixel;
+        out.alpha = alpha;
+        out.cue = scene.world.y > 0.0 ? world.look.z + world.size.w * clamp(raw.z / scene.world.y, 0.0, 1.0) : 1.0;
         return out;
     }
 
     fragment SphereOut agentFragmentA(AgentVaryingA in [[stage_in]],
-                                      constant Scene& scene [[buffer(0)]])
+                                      constant Scene& scene [[buffer(0)]],
+                                      constant WorldU& world [[buffer(7)]])
     {
-        return shadeSphere(in.center, in.forward, in.world, in.color, scene);
+        return shadeSphere(in.center, in.forward, in.world, in.color, scene, in.radius, in.pxPerUnit, in.cue, world.style.w, in.alpha);
     }
 
-    // A flat disc: no ray test, a little shading towards the rim, the depth of the billboard.
-    fragment SphereOut agentFragmentFlat(AgentVaryingA in [[stage_in]])
+    // A flat disc: no ray test, a little shading towards the rim, the depth of the billboard, and the same outline as a sphere.
+    fragment SphereOut agentFragmentFlat(AgentVaryingA in [[stage_in]],
+                                         constant WorldU& world [[buffer(7)]])
     {
         SphereOut out;
         out.color = float4(0.0);
@@ -366,7 +417,16 @@ enum Shaders {
             discard_fragment();
             return out;
         }
-        out.color = float4(in.color * (1.0 - 0.3 * r * r), 1.0);
+        float3 base = in.color * in.cue;
+        float ring = world.style.w;
+        float discPx = in.radius * in.pxPerUnit;
+        float shade = 1.0 - 0.3 * r * r;
+        if (ring > 0.0 && (1.0 - r) * discPx < ring) {
+            float k = clamp((discPx - ring - 0.5) / max(discPx, 1e-3), 0.0, 1.0);
+            out.color = float4(outlineFor(base * (1.0 - 0.3 * k * k)), in.alpha);
+        } else {
+            out.color = float4(base * shade, in.alpha);
+        }
         out.depth = in.position.z;
         return out;
     }
@@ -443,9 +503,10 @@ enum Shaders {
 
     constexpr sampler planeSampler(coord::normalized, address::repeat, filter::linear);
 
-    // Sea from the warm-pool map, cloud from the depth of the cloud layer, rain as a blue-grey wash, a faint tint where the
-    // vorticity has a sign (cyclonic warm, anticyclonic cool), the two equators, and the territory of the kin groups.
-    // Every plane is the mix of the previous and the current delivery by the wall-clock fade.
+    // Sea from the warm-pool map, cloud from the depth of the cloud layer, rain as a blue-grey wash, a signed tint where the
+    // vorticity has a sign (cyclonic warm, anticyclonic cool), a faint tint of the sea by hemisphere, the two equators, and the
+    // territory of the kin groups: borders, and a weak tint of each cell in its owner's colour. Every plane is the mix of the
+    // previous and the current delivery by the wall-clock fade. The palette is MapPalette.swift's (a test compares the numbers).
     fragment float4 mapFragment(MapVarying in [[stage_in]],
                                 constant WorldU& world [[buffer(7)]],
                                 texture2d<float> rainCur [[texture(0)]],
@@ -463,14 +524,19 @@ enum Shaders {
         float3 color = float3(0.045, 0.055, 0.075);
         if ((world.flags.w & 1u) != 0u) {
             float k = world.params.x;
-            float rain = mix(rainPrev.sample(planeSampler, uv).r, rainCur.sample(planeSampler, uv).r, k);
-            float cloud = mix(cloudPrev.sample(planeSampler, uv).r, cloudCur.sample(planeSampler, uv).r, k);
+            float rainDepth = mix(rainPrev.sample(planeSampler, uv).r, rainCur.sample(planeSampler, uv).r, k);
+            float cloudDepth = mix(cloudPrev.sample(planeSampler, uv).r, cloudCur.sample(planeSampler, uv).r, k);
             float zeta = mix(zetaPrev.sample(planeSampler, uv).r, zetaCur.sample(planeSampler, uv).r, k);
-            float sea = mix(seaPrev.sample(planeSampler, uv).r, seaCur.sample(planeSampler, uv).r, k);
-            color = mix(float3(0.02, 0.07, 0.14), float3(0.06, 0.22, 0.27), smoothstep(0.1, 0.9, sea));
-            color = mix(color, float3(0.86, 0.90, 0.96), 0.62 * smoothstep(0.05, 0.9, cloud));
-            color = mix(color, float3(0.30, 0.46, 0.70), clamp(1.3 * rain, 0.0, 0.8));
-            color += float3(0.25, 0.06, 0.10) * (0.35 * max(zeta, 0.0)) + float3(0.04, 0.10, 0.28) * (0.35 * max(-zeta, 0.0));
+            float temperature = mix(seaPrev.sample(planeSampler, uv).r, seaCur.sample(planeSampler, uv).r, k);
+            float3 sea = mix(float3(0.08, 0.23, 0.42), float3(0.10, 0.46, 0.55), smoothstep(0.1, 0.9, temperature));
+            // The hemisphere with f > 0 is 0 < y < L/2: v = y / L, and sin(2 pi v) is positive there.
+            float north = smoothstep(-0.2, 0.2, sin(6.2831853 * uv.y));
+            sea = mix(sea, mix(float3(0.10, 0.72, 0.66), float3(0.42, 0.36, 0.92), north), 0.03 * world.look.w);
+            sea = mix(sea, float3(0.92, 0.62, 0.30), 0.30 * smoothstep(0.0, 0.8, zeta));
+            sea = mix(sea, float3(0.32, 0.38, 0.92), 0.30 * smoothstep(0.0, 0.8, -zeta));
+            color = mix(sea, float3(0.40, 0.55, 0.82), clamp(1.4 * rainDepth, 0.0, 0.75));
+            color = mix(color, float3(0.95, 0.97, 1.00), 0.88 * smoothstep(0.03, 0.75, cloudDepth));
+            color = clamp(color * world.look.x, 0.0, 1.0);
         }
         if ((world.flags.w & 4u) != 0u) {
             float g = uv.y * 2.0;
@@ -501,7 +567,7 @@ enum Shaders {
                     if (!same && (there.a > 0.0 || here.a > 0.0)) { border = 1.0; }
                 }
             }
-            color = mix(color, float3(1.0), 0.4 * border * (world.params.z * 4.0));
+            color = mix(color, float3(1.0), world.look.y * border);
         }
         return float4(mix(background, color, world.params.y), 1.0);
     }

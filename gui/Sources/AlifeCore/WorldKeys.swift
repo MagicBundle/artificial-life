@@ -8,7 +8,9 @@ package enum WorldAction: Equatable, Sendable {
     case step
     /// The next colour mode of the header's list.
     case cycleColor
-    case toggleAgents, toggleBonds, toggleTerritory
+    case toggleAgents, toggleBonds
+    /// Off, borders, borders and tint, off ... (the View menu's Territory).
+    case cycleTerritory
     /// Follow the selection with the camera, flying in to it.
     case followSelection
     /// One rung down or up the rate ladder.
@@ -34,7 +36,7 @@ package enum WorldAction: Equatable, Sendable {
 ///
 /// ```text
 /// space  pause / run        .  step                 c  next colour mode
-/// 1 2 3  agents / bonds / territory                 f  follow the selection
+/// 1 2 3  agents / bonds / territory (off, borders, tint)   f  follow the selection
 /// [ ]    slower / faster along the rate rungs       r  reset the camera
 /// g      continue (run)     p  the Powers tab       return  confirm the previewed power
 /// a      fly to the newest alert                    k  acknowledge the newest alert
@@ -51,7 +53,7 @@ package enum WorldKeys {
         case "c": return .cycleColor
         case "1": return .toggleAgents
         case "2": return .toggleBonds
-        case "3": return .toggleTerritory
+        case "3": return .cycleTerritory
         case "f": return .followSelection
         case "[": return .slower
         case "]": return .faster

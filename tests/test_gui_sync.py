@@ -410,7 +410,7 @@ def test_the_world_keys_are_the_documented_ones() -> None:
         "c": "cycleColor",
         "1": "toggleAgents",
         "2": "toggleBonds",
-        "3": "toggleTerritory",
+        "3": "cycleTerritory",
         "f": "followSelection",
         "[": "slower",
         "]": "faster",
