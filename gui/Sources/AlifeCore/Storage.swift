@@ -54,24 +54,32 @@ package enum StorageScan {
         return values.volumeAvailableCapacity.map(Int64.init)
     }
 
+    /// Measures `world`. The saves are the files of `checkpoints/`, followed when that directory is itself a link (a world's saves
+    /// kept on another volume); the logs are every other file of the world. Sizes are what the files take on disk (allocated blocks).
     package static func measure(world: URL, fileManager fm: FileManager = .default) -> StorageSample {
         let root = world.resolvingSymlinksInPath()  // a world archived to another volume is a link to it
         var sample = StorageSample(freeBytes: freeBytes(at: root))
-        guard let walk = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey],
-                                       options: [], errorHandler: { _, _ in true }) else { return sample }
+        if let walk = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey],
+                                    options: [], errorHandler: { _, _ in true }) {
+            for case let url as URL in walk {
+                if walk.level == 1, url.lastPathComponent == "checkpoints" {
+                    walk.skipDescendants()  // counted below, through its link if it is one
+                    continue
+                }
+                if let bytes = size(of: url) { sample.logsBytes += bytes }
+            }
+        }
+        let saves = root.appendingPathComponent("checkpoints", isDirectory: true).resolvingSymlinksInPath()
         var newest: (step: Int, bytes: Int64)?
-        var top = ""  // the entry of the world directory the walk is in (the walk is depth first)
-        for case let url as URL in walk {
-            if walk.level == 1 { top = url.lastPathComponent }
-            guard let bytes = size(of: url) else { continue }
-            if top == "checkpoints" {
+        if let walk = fm.enumerator(at: saves, includingPropertiesForKeys: [.isRegularFileKey],
+                                    options: [], errorHandler: { _, _ in true }) {
+            for case let url as URL in walk {
+                guard let bytes = size(of: url) else { continue }
                 sample.savesBytes += bytes
                 if let step = saveStep(of: url.lastPathComponent) {
                     sample.saveCount += 1
                     if newest.map({ step > $0.step }) ?? true { newest = (step, bytes) }
                 }
-            } else {
-                sample.logsBytes += bytes
             }
         }
         sample.newestSaveBytes = newest?.bytes ?? 0
@@ -124,8 +132,10 @@ package enum StorageHealth: Int, Comparable, Sendable {
     }
 }
 
-/// How the size grew since the world went live and since the chapter began. Fed with the totals of the samples and the chapter of
-/// the latest clock; a prune makes a negative growth.
+/// How the size grew since the world went live and since the chapter began. Fed with the totals of the samples, the chapter of the
+/// latest clock and whether a save was being written: a chapter ends with a save, which belongs to the chapter it closes, so a
+/// chapter's growth counts from the first sample taken once that save is done (a world attached mid-chapter counts from its first
+/// sample). A prune makes a negative growth.
 package struct StorageTrend: Equatable, Sendable {
     package private(set) var sessionStart: Int64?
     package private(set) var chapter: UInt32?
@@ -133,13 +143,14 @@ package struct StorageTrend: Equatable, Sendable {
 
     package init() {}
 
-    package mutating func note(total: Int64, chapter now: UInt32?) {
+    package mutating func note(total: Int64, chapter now: UInt32?, saving: Bool = false) {
         if sessionStart == nil { sessionStart = total }
         guard let now else { return }
         if chapter != now {
             chapter = now
-            chapterStart = total
+            chapterStart = nil
         }
+        if chapterStart == nil, !saving { chapterStart = total }
     }
 
     package func sinceStart(_ total: Int64) -> Int64? { sessionStart.map { total - $0 } }
@@ -154,6 +165,14 @@ package enum SaveModeView {
         if let clock { return clock.savesNewestOnly ? .newest : .all }
         return header.flatMap { SaveMode(rawValue: $0.mode) } ?? .all
     }
+
+    /// Whether the window offers switching to `target`: the world's server knows the line (it sent `play.saves`), and `target` is
+    /// not `newest` in a research run played in place (`adopted`), whose older checkpoints are the research's: the world refuses
+    /// that line, so the switch does not pretend to take it.
+    package static func offers(_ target: SaveMode, header: PlayHeader.Saves?) -> Bool {
+        guard let header else { return false }
+        return !(target == .newest && header.adopted == true)
+    }
 }
 
 /// What the Storage strip and its details say, from a sample. Pure, so the text is tested without a window.
@@ -161,6 +180,10 @@ package struct StorageReadout: Equatable, Sendable {
     package var mode: SaveMode
     /// "2.6 GB", or "measuring…" before the first sample.
     package var total: String
+    /// What the strip says to a screen reader: the size, and the room left when the disk is getting full ("2.1 GB, 1.2 GB free").
+    package var stripText: String
+    /// The room left, printed small beside the size while the disk is getting full (nil while it is not).
+    package var room: String?
     package var saves: String
     package var saveCount: Int
     package var logs: String
@@ -177,13 +200,15 @@ package struct StorageReadout: Equatable, Sendable {
         self.mode = mode
         guard let sample else {
             total = "measuring…"
+            stripText = total
             saves = "-"
             saveCount = 0
             logs = "-"
             health = .ok
             return
         }
-        total = StorageFormat.bytes(sample.totalBytes)
+        let size = StorageFormat.bytes(sample.totalBytes)
+        total = size
         saves = StorageFormat.bytes(sample.savesBytes)
         saveCount = sample.saveCount
         logs = StorageFormat.bytes(sample.logsBytes)
@@ -192,6 +217,9 @@ package struct StorageReadout: Equatable, Sendable {
         sinceChapter = trend.sinceChapter(sample.totalBytes).map(StorageFormat.signed)
         health = StorageHealth.level(free: sample.freeBytes, saveBytes: sample.newestSaveBytes)
         let save = StorageFormat.bytes(sample.newestSaveBytes > 0 ? sample.newestSaveBytes : StorageHealth.typicalSaveBytes)
+        let room = health == .ok ? nil : free
+        self.room = room
+        stripText = room.map { size + ", " + $0 } ?? size
         switch health {
         case .ok: break
         case .low: warning = "Low disk space: \(free ?? "") (a save is about \(save))."

@@ -171,6 +171,7 @@ final class WorldModel: ObservableObject {
         play.onReports = { [weak self] reports in self?.handle(reports: reports) }
         play.onPlans = { [weak self] plans in self?.handle(plans: plans) }
         play.onReset = { [weak self] in self?.resetInteraction() }
+        storage.isLive = { [weak play] in play?.phase == .live }
     }
 
     // MARK: Free rectangle

@@ -175,6 +175,16 @@ private final class StopFlag: @unchecked Sendable {
         #expect(clock(4).savesNewestOnly && !clock(3).savesNewestOnly && clock(4).chapterPauseArmed == false)
     }
 
+    @Test func recordingOffIsNotOfferedInAResearchRunPlayedInPlace() throws {
+        let decode = { (json: String) in try JSONDecoder().decode(PlayHeader.Saves.self, from: Data(json.utf8)) }
+        let adopted = try decode(#"{"mode": "all", "keep": 8, "adopted": true}"#)
+        let world = try decode(#"{"mode": "all", "keep": 3}"#)
+        #expect(adopted.adopted == true && world.adopted == nil, "the key is written only for such a run")
+        #expect(!SaveModeView.offers(.newest, header: adopted) && SaveModeView.offers(.all, header: adopted))
+        #expect(SaveModeView.offers(.newest, header: world) && SaveModeView.offers(.all, header: world))
+        #expect(!SaveModeView.offers(.newest, header: nil) && !SaveModeView.offers(.all, header: nil), "an older server")
+    }
+
     // MARK: What the strip says
 
     @Test func theReadoutNamesTheSplitTheGrowthAndTheRoom() {
@@ -199,5 +209,45 @@ private final class StopFlag: @unchecked Sendable {
         #expect(critical.warning == "Almost no disk space: the next save (about 686 MB) may not fit.")
         let waiting = StorageReadout(sample: nil, mode: .all)
         #expect(waiting.total == "measuring…" && waiting.warning == nil && waiting.free == nil)
+    }
+
+    // MARK: Review fixes
+
+    @Test func aChapterCountsFromTheFirstSampleAfterItsSave() {
+        var trend = StorageTrend()
+        trend.note(total: 2_000, chapter: 3)
+        // the chapter end: the clock carries the new chapter while its save is being written; the save belongs to the old chapter
+        trend.note(total: 2_350, chapter: 4, saving: true)
+        #expect(trend.sinceChapter(2_350) == nil, "no baseline mid-save")
+        trend.note(total: 2_686, chapter: 4, saving: false)
+        #expect(trend.sinceChapter(2_686) == 0, "the 686-byte save landed in chapter 3")
+        trend.note(total: 2_700, chapter: 4, saving: false)
+        #expect(trend.sinceChapter(2_700) == 14 && trend.sinceStart(2_700) == 700)
+        trend.note(total: 2_900, chapter: 4, saving: true)  // a quit save inside the chapter does not move the baseline
+        #expect(trend.sinceChapter(2_900) == 214)
+    }
+
+    @Test func theSavesOfALinkedCheckpointsDirectoryAreCounted() throws {
+        let root = try world(["metrics.jsonl": 1_000])
+        let elsewhere = try world(["step_0000000007.safetensors": 100_000, "step_0000000009.safetensors": 120_000])
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: elsewhere)
+        }
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("checkpoints"), withDestinationURL: elsewhere)
+        let sample = StorageScan.measure(world: root)
+        #expect(sample.saveCount == 2 && near(sample.savesBytes, 220_000, files: 2), "saves \(sample.savesBytes) in \(sample.saveCount)")
+        #expect(near(sample.newestSaveBytes, 120_000))
+        #expect(near(sample.logsBytes, 1_000), "the link is not counted twice, as logs: \(sample.logsBytes)")
+    }
+
+    @Test func theStripShowsTheRoomLeftOnlyWhenTheDiskIsGettingFull() {
+        let ok = StorageReadout(sample: StorageSample(savesBytes: 2_100_000_000, newestSaveBytes: 686_000_000, freeBytes: 400_000_000_000),
+                                mode: .all)
+        #expect(ok.stripText == "2.1 GB" && ok.room == nil)
+        let low = StorageReadout(sample: StorageSample(savesBytes: 2_100_000_000, newestSaveBytes: 686_000_000, freeBytes: 1_500_000_000),
+                                 mode: .all)
+        #expect(low.stripText == "2.1 GB, 1.5 GB free" && low.room == "1.5 GB free")
+        #expect(StorageReadout(sample: nil, mode: .all).stripText == "measuring…")
     }
 }

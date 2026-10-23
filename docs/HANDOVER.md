@@ -486,10 +486,15 @@ The owner's first play asked for a live size of the run on disk and an easy way 
 `alife play --saves`, `play.json` `saves`, `RunDir.keep_newest`): `newest` keeps only the newest save and the origin, prunes at the next
 save (never when the line is sent), keeps the logs; echoed by the header's `play.saves` and `CLCK.flags` bit 2; logged to `commands.jsonl`.
 The window's **Storage strip** under the clock strip shows the world's size (saves and logs, growth since the start and this chapter, free
-space, a warning under three saves of room), measured by the client from the directory, and carries the **All saves | Newest only** switch.
+space, a warning under three saves of room), measured by the client from the directory, and carries the **Recording** switch (on keeps the last saves, off keeps the newest only).
 No trajectory change (`test_play_saves` toggles the mode at random against a plain run). `DockBudget` was re-measured: two alert rows still fit
-beside the inspector at 700 points, three need 760. **Not run:** the strip beside a real planet on the Mac (a person pressing the switch
-during a chapter end), and the size of an adopted research run's older checkpoints being pruned by `newest` (stated in the window's text).
+beside the inspector at 700 points, three need 760; the bottom dock's least height is 192. Review fixes: a research run played in place
+(`--adopt`, `config.pre_play.json`) refuses a `saves newest` line and the window does not offer the switch there (`play.saves.adopted`);
+`--saves newest` says on stderr which checkpoints its first save deletes; in `newest` the new save is flushed past the drive cache
+(`F_FULLFSYNC`) and read back before the old one goes; a killed save's temporary files are removed at the next save. Accepted limit: after a
+quit and a resume in `newest` mode the first chapter report refolds the social log of the play (output identical). **Not run:** the strip
+beside a real planet on the Mac (a person pressing the switch during a chapter end), and the cost of the `F_FULLFSYNC` of a 686 MB save
+(one drive flush a chapter, in `newest` mode only).
 
 ## GUI follow-ups (PR #3, merged)
 

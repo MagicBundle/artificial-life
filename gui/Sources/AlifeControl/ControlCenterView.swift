@@ -41,8 +41,7 @@ struct ControlCenterView: View {
                 .padding(.bottom, 6)
             // The alerts sit between the strip and the tabs; the rows give way before the list does (DESIGN §34.7).
             AlertStackView(play: play, model: model,
-                           maxRows: DockBudget.alertRows(dockHeight: height, inspectorOpen: card != nil, editing: model.editingPower,
-                                             storageNote: model.storageNoteShown))
+                           maxRows: DockBudget.alertRows(dockHeight: height, inspectorOpen: card != nil, editing: model.editingPower))
                 .padding(.horizontal, 10)
                 .padding(.bottom, 6)
             Divider()

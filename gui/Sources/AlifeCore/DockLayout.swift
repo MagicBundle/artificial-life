@@ -25,7 +25,10 @@ package enum DockLayout {
     package static let minExtent: CGFloat = 280
     package static let defaultExtent: CGFloat = 360
     package static let defaultBottomExtent: CGFloat = 240
-    package static let minBottomExtent: CGFloat = 160
+    /// The bottom dock's least height: its header and divider (29), and under them the clock column (the clock strip and the Storage
+    /// strip, measured 151 in any clock state) and the tabs column (the picker and the list's least, 160); the recording switch is
+    /// clipped below that (§34.10, `theBottomDocksClockColumnFitsItsLeastHeight`).
+    package static let minBottomExtent: CGFloat = 192
     /// What is left of a collapsed dock: a strip with the button that opens it.
     package static let collapsedExtent: CGFloat = 28
     package static let dividerThickness: CGFloat = 6
@@ -103,18 +106,15 @@ package enum DockBudget {
     package static let editor: CGFloat = 300
     /// A row of the alert stack and the gap under it.
     package static let alertRow: CGFloat = 48
-    /// The Storage strip under the clock strip (one line of 20 and 6 below it: the size and the save switch; the details are a
-    /// popover), and the line under it that says older saves are deleted at the next save, shown only while that is so (§34.10).
+    /// The Storage strip under the clock strip (one line of 20 and 6 below it: the size and the recording switch; what the switch
+    /// does is in its tooltip and the details popover, never in a second line that would cost the dock a row, §34.10).
     package static let storage: CGFloat = 26
-    package static let storageNote: CGFloat = 16
 
     /// The rows of the stack a dock of `dockHeight` can show beside the strip, the tabs and (when one is selected) the
     /// inspector: three when roomy, fewer when tight, never none (an alert the player cannot see is not an alert). While a
     /// power is chosen (`editing`) the tab keeps `editor` points, not `list`.
-    package static func alertRows(dockHeight: CGFloat, inspectorOpen: Bool, editing: Bool = false,
-                                  storageNote: Bool = false) -> Int {
-        let fixed = header + clockStrip + storage + (storageNote ? Self.storageNote : 0) + tabs + (editing ? editor : list)
-            + (inspectorOpen ? inspector : 0)
+    package static func alertRows(dockHeight: CGFloat, inspectorOpen: Bool, editing: Bool = false) -> Int {
+        let fixed = header + clockStrip + storage + tabs + (editing ? editor : list) + (inspectorOpen ? inspector : 0)
         let fits = Int(((dockHeight - fixed) / alertRow).rounded(.down))
         return min(max(fits, 1), AlertStack.roomyRows)
     }

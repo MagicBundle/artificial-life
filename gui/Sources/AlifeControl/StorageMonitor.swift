@@ -13,12 +13,19 @@ final class StorageMonitor: ObservableObject {
     var measure: @Sendable (URL) -> StorageSample = { StorageScan.measure(world: $0) }
     /// The time between two measurements.
     var period: Duration = .seconds(5)
+    /// Whether the world is still being played. The periodic loop measures once more after it turns false and then ends: a world
+    /// that ended or failed no longer grows, and a new world sends a new header, which starts a new loop.
+    var isLive: @MainActor () -> Bool = { true }
     private(set) var world: URL?
     private(set) var measurements = 0
     private var chapter: UInt32?
     private var wasSaving = false
     private var loop: Task<Void, Never>?
     private var generation = 0
+    /// The numbers of the measurements asked for and of the newest one whose answer was published: a slow answer that was asked
+    /// for before a newer one was published is stale and dropped.
+    private var asked = 0
+    private var published = 0
 
     init() {}
 
@@ -30,8 +37,8 @@ final class StorageMonitor: ObservableObject {
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
-                guard let period = self?.period else { return }
-                try? await Task.sleep(for: period)
+                guard let self, self.isLive() else { return }
+                try? await Task.sleep(for: self.period)
             }
         }
     }
@@ -47,15 +54,21 @@ final class StorageMonitor: ObservableObject {
         wasSaving = false
     }
 
-    /// Measures once, off the main actor, and publishes the result unless the world changed meanwhile.
+    /// Measures once, off the main actor, and publishes the result unless the world changed meanwhile or a newer measurement was
+    /// published first. The growth is told the chapter and the saving state of when the measurement was asked for, which is what
+    /// the directory was in: a scan begun during a save and answered after it is a mid-save total, not a chapter's baseline.
     func refresh() async {
         guard let url = world else { return }
-        let asked = generation
+        let world = generation
+        asked += 1
+        let number = asked
+        let (chapter, saving) = (self.chapter, wasSaving)
         let measure = self.measure
         let fresh = await Task.detached(priority: .utility) { measure(url) }.value
-        guard asked == generation else { return }
+        guard world == generation, number > published else { return }
+        published = number
         measurements += 1
-        trend.note(total: fresh.totalBytes, chapter: chapter)
+        trend.note(total: fresh.totalBytes, chapter: chapter, saving: saving)
         if fresh != sample { sample = fresh }
     }
 

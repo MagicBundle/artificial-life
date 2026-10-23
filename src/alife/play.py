@@ -948,7 +948,7 @@ class PlayPacer:
             alerts=streamrec.alerts_block(alerts_mod.registry()),
             powers=powers,
             game_specs=director_actions.GAME_SPEC_VERSION if powers is not None else None,
-            saves=streamrec.saves_block(mode=self.saves, keep=cfg.run.keep_checkpoints),
+            saves=streamrec.saves_block(mode=self.saves, keep=cfg.run.keep_checkpoints, adopted=rd.adopted),
         )
         self._write("HEAD", streamrec.play_header_bytes(legacy, play))
         self._backlog(rd, state)
@@ -1293,7 +1293,19 @@ class PlayPacer:
         either way. Nothing is deleted now: ``RunDir.save_checkpoint`` prunes, after it has written the new
         save, so one complete save exists at every instant. A change is kept in ``play.json`` (so a resume
         keeps it) and logged to ``commands.jsonl``; a line that changes nothing does neither. Storage only: it
-        reaches no state, row or log of the trajectory."""
+        reaches no state, row or log of the trajectory.
+
+        A research run played in place (``alife play RUN --adopt``, ``RunDir.adopted``) holds the research's
+        checkpoints (``init-from RUN:STEP``, the houses, the activity analyses), which a click must not
+        delete: a ``saves newest`` line that would change its mode is refused with a note (the header's
+        ``play.saves.adopted`` tells the client, which does not offer it), and ``alife play RUN --saves
+        newest`` is the explicit way, with a note that says what it deletes."""
+        if mode == "newest" and self.saves != "newest" and self.rd.adopted:
+            self._note(
+                "saves: refused: this world is a research run played in place, and keeping only the newest "
+                "save would delete its checkpoints; `alife play RUN --saves newest` does that on purpose"
+            )
+            return
         was, self.saves = self.saves, mode
         self.rd.keep_newest = mode == "newest"
         if mode == was:

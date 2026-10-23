@@ -102,10 +102,9 @@ import Testing
         // (the Storage strip, §34.10, took 26 points: three rows with the inspector open need 760 now, not 740)
         #expect(DockBudget.alertRows(dockHeight: 740, inspectorOpen: true) == 2)
         #expect(DockBudget.alertRows(dockHeight: 760, inspectorOpen: true) == 3)
-        // the strip's second line (older saves wait for the next save) takes a row's room only while it shows
-        #expect(DockBudget.alertRows(dockHeight: 700, inspectorOpen: true, storageNote: true) == 1)
-        #expect(DockBudget.alertRows(dockHeight: 700, inspectorOpen: false, storageNote: true) == 3)
-        #expect(DockBudget.storage >= 26 && DockBudget.storageNote >= 15)
+        // switching to Newest does not cost the dock a row: the strip has no second line (review fix)
+        #expect(DockBudget.alertRows(dockHeight: 700, inspectorOpen: true) == 2)
+        #expect(DockBudget.storage >= 26)
         #expect(DockBudget.alertRows(dockHeight: 100, inspectorOpen: true) == 1, "an alert the player cannot see is not an alert")
         #expect(DockBudget.alertRows(dockHeight: 5000, inspectorOpen: false) == AlertStack.roomyRows)
     }

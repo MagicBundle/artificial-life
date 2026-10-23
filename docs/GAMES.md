@@ -1173,6 +1173,10 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
       so); the mode is kept in `play.json` and logged to `commands.jsonl`; the size is measured by the client (stat only, every 5 seconds and
       after each save) and shown in a one-line Storage strip under the clock strip with the switch, a warning under three saves of room; a
       700-point dock keeps its two alert rows beside the inspector, but three need 760 points now.
+    - *After the review (also to revisit):* the switch is a **Recording** toggle (on keeps the last saves, off the newest only), not
+      confirmed (the tooltip says that older saves go at the next save); a research run played in place (`--adopt`) keeps Recording on
+      from the window, since off would delete the research's checkpoints, and only `alife play RUN --saves newest` turns it off there,
+      with a note of what it deletes.
 
 
 ## 11. Prior-art sources

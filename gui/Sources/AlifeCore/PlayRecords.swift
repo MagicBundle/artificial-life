@@ -113,6 +113,9 @@ package struct PlayHeader: Equatable, Sendable, Codable {
     package struct Saves: Equatable, Sendable, Codable {
         package var mode: String
         package var keep: Int
+        /// True for a research run played in place (`alife play RUN --adopt`): the world refuses a `saves newest` line, since its
+        /// older checkpoints are the research's. Absent (nil) for every other world and from an older server.
+        package var adopted: Bool?
     }
 
     /// One entry of `play.powers`: what the power grid draws (G3b, §34.5).

@@ -178,9 +178,6 @@ extension WorldModel {
         storage.start(world: url)
     }
 
-    /// Whether the Storage strip shows its second line (the world keeps the newest save only and older ones are still on disk).
-    var storageNoteShown: Bool { play.savesMode == .newest && storage.readout(mode: .newest).pruningPending }
-
     static let noticeSeconds = 15.0
     /// A line of a report is news for the ticker when it is dated this close to the chapter's end (one social snapshot).
     static let freshSteps = 250

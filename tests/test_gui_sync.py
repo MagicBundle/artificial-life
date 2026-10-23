@@ -222,7 +222,7 @@ def test_the_play_header_keys_match_playheader() -> None:
         autopause=sr.autopause_block(chapter=True, alert={"chapter": True}),
         powers=sr.powers_block({"food": {"action": "a", "label": "l", "cost": 1, "cooldown": 1}}),
         game_specs="game-v0",
-        saves=sr.saves_block(mode="all", keep=3),
+        saves=sr.saves_block(mode="all", keep=3, adopted=True),
     )
     assert swift_struct_keys(text, "PlayHeader") == set(g3b) and set(g3b) - set(play) == {
         "alerts", "autopause", "powers", "game_specs", "saves",

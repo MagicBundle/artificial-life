@@ -13,6 +13,7 @@ import json
 import math
 import struct
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -1184,7 +1185,16 @@ def test_the_save_mode_is_a_header_block_written_only_when_given() -> None:
     )
     assert rich["saves"] == {"mode": "newest", "keep": 3}
     assert sr.SAVE_MODES == ("all", "newest")
-    for bad in ({"mode": "some", "keep": 3}, {"mode": "all", "keep": 0}, {"mode": "all", "keep": True}):
+    # a research run played in place says so, and only then (the block of every other world is unchanged)
+    assert sr.saves_block(mode="all", keep=8, adopted=True) == {"mode": "all", "keep": 8, "adopted": True}
+    assert sr.saves_block(mode="all", keep=3, adopted=False) == {"mode": "all", "keep": 3}
+    bads: list[dict[str, Any]] = [
+        {"mode": "some", "keep": 3},
+        {"mode": "all", "keep": 0},
+        {"mode": "all", "keep": True},
+        {"mode": "all", "keep": 3, "adopted": 1},
+    ]
+    for bad in bads:
         with pytest.raises(sr.RecordError):
             sr.saves_block(**bad)
 

@@ -402,15 +402,19 @@ def autopause_block(*, chapter: bool, alert: Mapping[str, bool]) -> dict[str, An
     return {"chapter": chapter, "alert": dict(alert)}
 
 
-def saves_block(*, mode: str, keep: int) -> dict[str, Any]:
+def saves_block(*, mode: str, keep: int, adopted: bool = False) -> dict[str, Any]:
     """The ``play.saves`` header object (DESIGN §34.10): the save mode the world starts in (``all`` keeps the
     newest ``keep`` saves, ``newest`` only the newest; the origin is kept either way). The client reads the
-    mode back from ``CLCK.flags`` bit 2 afterwards."""
+    mode back from ``CLCK.flags`` bit 2 afterwards. ``adopted`` (written only when true): the world is a
+    research run played in place, which refuses a ``saves newest`` line (its checkpoints are the
+    research's)."""
     if mode not in SAVE_MODES:
         raise RecordError(f"the save mode is one of {SAVE_MODES}, got {mode!r}")
     if not _is_int(keep) or keep < 1:
         raise RecordError("saves.keep is a positive integer")
-    return {"mode": mode, "keep": keep}
+    if not isinstance(adopted, bool):
+        raise RecordError("saves.adopted is a boolean")
+    return {"mode": mode, "keep": keep, **({"adopted": True} if adopted else {})}
 
 
 def powers_block(powers: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:

@@ -21,11 +21,11 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from alife import cli, play, runner, streamrec
+from alife import cli, play, runio, runner, streamrec
 from alife.config import Config, apply_overrides
 from alife.director import actions, make_director, pacing
 from alife.game import powers
-from alife.runio import COMMANDS_FILE, DIRECTOR_LOG_FILE, RunDir, load_checkpoint
+from alife.runio import COMMANDS_FILE, DIRECTOR_LOG_FILE, CheckpointError, RunDir, load_checkpoint
 from alife.state import init_state, state_digest
 from alife.stream import ControlError, NoControl
 from play_decode import Decoded, decode
@@ -445,3 +445,191 @@ def test_a_play_json_that_cannot_be_written_does_not_stop_the_world(
     pacer._set_saves("newest")
     assert pacer.saves == "newest" and rd.keep_newest
     assert any("could not keep the mode" in n for n in notes)
+
+
+# --- a research run played in place (review fixes) ------------------------------------------------------
+
+
+def research_run(path: Path, steps: int = 90, keep: int = 10) -> Path:
+    args = ["run", *TINY, "--out", str(path), "--steps", str(steps), "--checkpoint-every", "30", "--quiet"]
+    assert cli.main([*args, "--set", f"run.keep_checkpoints={keep}"]) == 0
+    return path
+
+
+def test_adopting_with_saves_newest_says_what_is_deleted(tmp_path: Path) -> None:
+    """The note of ``--adopt`` used to say that nothing is pruned at the first save in every mode; with
+    ``--saves newest`` the run's checkpoints go, and the note says which, before anything is touched."""
+    out = research_run(tmp_path / "r")
+    assert steps_of(RunDir.open(out)) == [0, 30, 60, 90]
+    code, d, err = session(str(out), "--adopt", "--saves", "newest", until=100)
+    assert code == 0, err
+    assert "nothing is pruned" not in err
+    assert "3 checkpoint(s) of the research run (steps 30 to 90) are DELETED at the first save" in err, err
+    assert steps_of(RunDir.open(out)) == [0, 100]
+    assert d.header["play"]["saves"] == {"mode": "newest", "keep": 10, "adopted": True}
+    # in the default mode the note is the one it was
+    out2 = research_run(tmp_path / "r2")
+    code, _, err = session(str(out2), "--adopt", until=100)
+    assert code == 0, err
+    assert "nothing is pruned at the first save" in err and "DELETED" not in err
+
+
+def test_the_flag_on_a_later_session_of_an_adopted_run_says_what_is_deleted(tmp_path: Path) -> None:
+    """Once adopted, the directory has a ``play.json`` and is resumed without ``--adopt``; ``--saves newest``
+    there still deletes the research's checkpoints at the first save, and says so (it used to be silent)."""
+    out = research_run(tmp_path / "r")
+    code, _, err = session(str(out), "--adopt", until=100)
+    assert code == 0, err
+    assert steps_of(RunDir.open(out)) == [0, 30, 60, 90, 100]
+    code, _, err = session(str(out), "--saves", "newest", until=110)
+    assert code == 0, err
+    assert "4 checkpoint(s) of the research run (steps 30 to 100) are DELETED at the first save" in err, err
+    assert steps_of(RunDir.open(out)) == [0, 110]
+    # a world that is already in newest mode says nothing more: its first save replaces the newest, as usual
+    code, _, err = session(str(out), "--saves", "newest", until=120)
+    assert code == 0, err
+    assert "DELETED" not in err and steps_of(RunDir.open(out)) == [0, 120]
+
+
+@pytest.mark.parametrize(("steps", "keep"), [(90, 10), (30, 3)])
+def test_a_saves_newest_line_does_not_delete_an_adopted_runs_checkpoints(
+    tmp_path: Path, steps: int, keep: int
+) -> None:
+    """The line is refused in a research run played in place: its checkpoints are read by ``init-from
+    RUN:STEP``, the houses and the activity analyses. ``(30, 3)`` is a run with the play value of
+    ``keep_checkpoints`` and one checkpoint, which a rule on ``keep_checkpoints`` would not have caught; the
+    header says ``adopted`` so that the window does not offer the switch."""
+    out = research_run(tmp_path / "r", steps=steps, keep=keep)
+    before = steps_of(RunDir.open(out))
+    code, d, err = session(str(out), "--adopt", lines="saves newest\n", until=steps + 10)
+    assert code == 0, err
+    rd = RunDir.open(out)
+    assert steps_of(rd) == [*before, steps + 10], "nothing was pruned"
+    assert "saves: refused" in err, err
+    assert rd.adopted
+    assert "saves" not in (rd.read_play_json() or {}) and commands(rd) == []
+    assert d.header["play"]["saves"]["adopted"] is True
+    assert not any(r.tag == "CLCK" and r.f["flags"] & streamrec.CLCK_FLAG_SAVES_NEWEST for r in d.records)
+
+
+def test_a_play_world_still_takes_the_line(tmp_path: Path) -> None:
+    out = tmp_path / "w"
+    code, d, err = session(*TINY, "--out", str(out), lines="saves newest\n", until=40)
+    assert code == 0, err
+    rd = RunDir.open(out)
+    assert rd.read_play_json()["saves"] == "newest"  # type: ignore[index]
+    assert d.header["play"]["saves"] == {"mode": "all", "keep": 3}, "no adopted key"
+    assert not rd.adopted
+
+
+def test_an_adopted_world_in_newest_mode_can_go_back_to_all(micro_cfg: Config, tmp_path: Path) -> None:
+    """Only the line that would delete is refused: ``saves all`` (keep more) is taken, and a ``saves newest``
+    line that changes nothing does nothing, refused or not."""
+    rd = RunDir.create(tmp_path / "w", micro_cfg)
+    (rd.path / runio.PRE_PLAY_CONFIG_FILE).write_text("{}")
+    notes: list[str] = []
+    opts = play.PlayOptions(saves="newest")
+    pacer = play.PlayPacer(io.BytesIO(), NoControl(), opts, clock=FakeClock(), note=notes.append)
+    pacer.rd, pacer.cfg, pacer._t = rd, micro_cfg, 7
+    pacer._set_saves("newest")
+    assert pacer.saves == "newest" and not notes
+    pacer._set_saves("all")
+    assert pacer.saves == "all" and not rd.keep_newest
+    pacer._set_saves("newest")
+    assert pacer.saves == "all" and not rd.keep_newest and "saves: refused" in notes[-1]
+
+
+# --- the files: a bad new save and the debris of a killed one (review fixes) --------------------------
+
+
+def test_a_new_save_that_is_not_whole_does_not_cost_the_last_good_one(
+    micro_cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A write that returns normally and leaves a short file used to prune the last good save in newest
+    mode; the check of the new file makes the prune the ``all`` one instead, and says so on stderr."""
+    rd = RunDir.create(tmp_path / "w", micro_cfg, parent="src:10")
+    rd.update_meta(start_step=10)
+    rd.keep_newest = True
+    s = init_state(micro_cfg)
+
+    def save(step: int) -> None:
+        rd.save_checkpoint(s._replace(step=mx.array(step, dtype=mx.int32)), micro_cfg)
+
+    save(10)
+    save(20)
+    assert steps_of(rd) == [10, 20]
+    real = runio.write_state_file
+
+    def short(path: Path, state: Any, cfg: Config) -> None:
+        real(path, state, cfg)
+        data = path.read_bytes()
+        path.write_bytes(data[: len(data) // 3])
+
+    monkeypatch.setattr(runio, "write_state_file", short)
+    save(30)
+    monkeypatch.undo()
+    assert steps_of(rd) == [10, 20, 30], "the last good save is still there"
+    assert "does not read back whole; the older saves are kept" in capsys.readouterr().err
+    with pytest.raises(CheckpointError):
+        load_checkpoint(rd.latest_checkpoint(), micro_cfg)  # type: ignore[arg-type]
+    load_checkpoint(rd.checkpoint_at(20), micro_cfg)  # type: ignore[arg-type]
+    assert runio.state_file_is_complete(rd.checkpoint_at(20), 20)  # type: ignore[arg-type]
+    assert not runio.state_file_is_complete(rd.checkpoint_at(20), 21), "another step"  # type: ignore[arg-type]
+    assert not runio.state_file_is_complete(rd.checkpoint_at(30), 30)  # type: ignore[arg-type]
+    assert not runio.state_file_is_complete(tmp_path / "missing", 20)
+    save(40)  # a whole save: back to the newest only
+    assert steps_of(rd) == [10, 40]
+
+
+def test_newest_mode_puts_the_new_save_on_the_drive_before_it_deletes_the_old_one(
+    micro_cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``os.fsync`` on macOS leaves the data in the drive's cache, where a power cut loses it; in newest mode
+    the old save is the only fallback, so the new one is flushed past the cache (``F_FULLFSYNC``) while the
+    old one still exists. ``all`` keeps older saves and pays nothing more."""
+    rd = RunDir.create(tmp_path / "w", micro_cfg)
+    s = init_state(micro_cfg)
+    synced: list[tuple[str, list[int]]] = []
+    real = runio._full_sync
+
+    def spy(path: Path) -> None:
+        synced.append((path.name, steps_of(rd)))
+        real(path)
+
+    monkeypatch.setattr(runio, "_full_sync", spy)
+    for step in (0, 10, 20):
+        rd.save_checkpoint(s._replace(step=mx.array(step, dtype=mx.int32)), micro_cfg)
+    assert synced == [], "all mode"
+    rd.keep_newest = True
+    rd.save_checkpoint(s._replace(step=mx.array(30, dtype=mx.int32)), micro_cfg)
+    assert synced == [("step_0000000030.safetensors", [0, 10, 20, 30])], "flushed while the old saves exist"
+    assert steps_of(rd) == [0, 30]
+    runio._full_sync(tmp_path / "missing")  # best effort: a file that is gone is no error
+
+
+def test_a_tmp_file_of_a_killed_save_is_removed_by_the_next_save(micro_cfg: Config, tmp_path: Path) -> None:
+    """The temporary files a save writes and a kill left behind are removed at the next save (a state file's
+    is up to the size of a save); a ``*.tmp`` that is not a save's (a houses file an analysis may be
+    writing) is left alone."""
+    rd = RunDir.create(tmp_path / "w", micro_cfg)
+    rd.keep_newest = True
+    s = init_state(micro_cfg)
+    rd.save_checkpoint(s._replace(step=mx.array(0, dtype=mx.int32)), micro_cfg, observers={"x": np.arange(2)})
+    stray = [
+        rd.checkpoint_dir / "step_0000000050.safetensors.tmp",
+        rd.checkpoint_dir / "LATEST.tmp",
+        rd.observers_dir / "step_0000000050.npz.tmp",
+        rd.observers_dir / "kinthreads_0000000050.json.tmp",
+        rd.observers_dir / "storms_0000000050.json.tmp",
+    ]
+    other = rd.observers_dir / "houses_0000000050.npz.tmp"
+    for p in [*stray, other]:
+        p.write_bytes(b"x" * 100)
+    rd.save_checkpoint(s._replace(step=mx.array(100, dtype=mx.int32)), micro_cfg)
+    assert not any(p.exists() for p in stray)
+    assert other.exists()
+    assert sorted(p.name for p in rd.checkpoint_dir.iterdir()) == [
+        "LATEST",
+        "step_0000000000.safetensors",
+        "step_0000000100.safetensors",
+    ]
