@@ -345,8 +345,9 @@ owner's delegation of 2026-10-19, to revisit (cadence, the GUI architecture, dir
 - **Measured before W4.**
   - W0 steerability: track deflection per impulse, and the storm response to a warm-pool change.
   - The combined 3D play-loop bench: step, observers, weather, stream, client rendering, and an LLM call in flight. **G3a built the
-    instrument** (`alife bench --play` and `WorldRenderBench`, DESIGN §33.5; no LLM call in flight yet, that is G3b); its gate was run on the Mac
+    instrument** (`alife bench --play` and `WorldRenderBench`, DESIGN §33.5; no LLM call in flight yet, that is G3c); its gate was run on the Mac
     day (2026-10-22) and passes (`docs/RESULTS_G3A.md`; DESIGN §33.5.4); the client's draw p95 is at most 2.41 ms beside the engine at 1x.
+    G3b re-ran it with the decide half (chapters, alerts, the report job, powers; DESIGN §34.8, `docs/RESULTS_G3B.md`, 2026-10-23): it passes at 1x, `max` and 2x on the planet (achieved 0.998x at 1x, 3.75x to 3.82x at `max`, 1.99x at 2x; `late_steps` 0; `step_ms` p99 at most 43.1 ms at 1x), the alert engine costs about 21 microseconds a call, and the report job (a worker) is read inside the chapter-end save, 29 to 47 ms against a 0.68 to 1.01 s stall. Still no LLM call in flight (G3c's select-and-order mode).
 
 ## 7. Risks
 

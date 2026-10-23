@@ -1,6 +1,6 @@
 # Emergent Worlds: a gaming vertical for alife (design proposal)
 
-Status: **design; G1 and G2 built (DESIGN §28, §29), N1 built (§31), G3a built (§33; the Mac day ran 2026-10-22 and the gate passes, `docs/RESULTS_G3A.md`; the click-through by hand is open), G3b built and its Mac day pending (§34; branch `games/g3b`); G3c–G5 not built.** The owner decided items 1–4, 7 and 8 on 2026-10-18
+Status: **design; G1 and G2 built (DESIGN §28, §29), N1 built (§31), G3a built (§33; the Mac day ran 2026-10-22 and the gate passes, `docs/RESULTS_G3A.md`; the click-through by hand is open), G3b built, its Mac day ran 2026-10-23 and the gate passes except the report-time item the bench cannot read (§34, `docs/RESULTS_G3B.md`; branch `games/g3b`; the click-through and the first play by a person are open); G3c–G5 not built.** The owner decided items 1–4, 7 and 8 on 2026-10-18
 and items 13–19 on 2026-10-19 (§10). This document maps the owner's brief ("Project: Emergent Worlds", 2026-10-18) onto the
 engine at `aef79c2`. The brief's three pillars are:
 - a motivation-to-action loop instead of scripted state machines;
@@ -1010,7 +1010,7 @@ What a game adds:
     Cast, the inspector, the Chronicle and toasts, the keys; `alife bench --play` and `WorldRenderBench`.
   - Not in G3a: chapters (a checkpoint every 6,000 steps is a save point only), auto-pause, alerts, the ticker and the live World
     Report, powers, dead-row canonicalisation, recorded replay files, rewind, offline advance, any LLM.
-- **G3b. Chapters, alerts, the live report and direct powers** (built, the Mac day pending; DESIGN §34, Review-log row I54; the specification is `g3b/spec.md` revision 2, every owner decision a coordinator's recommendation, choice C20, to revisit).
+- **G3b. Chapters, alerts, the live report and direct powers** (built; the Mac day ran 2026-10-23, `docs/RESULTS_G3B.md`; DESIGN §34, Review-log row I54; the specification is `g3b/spec.md` revision 2, every owner decision a coordinator's recommendation, choice C20, to revisit).
   **Observe-and-poke** (D9): no score, no objective, no win state; storm and lineage events are information, not decisions. What is in it:
   - the **chronicle quality** first (kin threads: 139 kin rows to 45 told events on the 20,000-step play; storm persistence), then chapters of 6,000 steps with a pause and a card at their end, `autopause`, **alerts** (18 classes, a stack of
     the `alert` surface only, a provenance rule so that the aftermath of a power never pauses), the **live World Report** (report version 2, template path, built on a worker thread inside the checkpoint stall and replayable byte for byte);
@@ -1018,6 +1018,10 @@ What a game adds:
     durations 3,000 to 12,000, influence 6 units per 18,000 steps, `power cancel` with no refund), previews with a versioned precedent, a since card per power; `intent` is answered "not in this build" (G4);
   - the records `ALRT RPRT PLAN`, the lines `autopause watch unwatch ack power intent`, and the window: chapter bar, alert stack, chapter card, Report and Powers tabs, aiming on the map, keys, ticker, dock icon;
   - **Not in G3b:** the storm verbs and any weather power (W4: new hashed `env_*` fields), `intent` (G4), the select-and-order LLM mode (G3c), recorded replay files, rewind, offline advance, canonical saves (G3c).
+  - **Measured on the Mac day (2026-10-23, M5 Pro, one planet; `docs/RESULTS_G3B.md`, DESIGN §34.8):** the gate passes at 1x (0.99810x `rules`, 0.99805x `player`, 0.99753x with two scripted powers; `late_steps` 0; `step_ms` p99 42.1 to 43.1 ms), `max` (3.75x to 3.82x) and 2x (1.99x, p99 at most 29.0 ms); click to applied p95 0.102 s;
+    digests equal to the plain run (no powers) and to the replay of the arm's log (powers). The report-time item is not readable in the bench (an arm has no history: 2.5 to 2.7 ms is an arrival notice); in an 18,001-step scripted play the report came 29 to 47 ms after the card opened, inside a 0.68 to 1.01 s save.
+    Bands of the design: chronicle 3.28 events a minute (G3a 8.66; band 2 to 5), kin 2.04 (5.99; band 1 to 3), alerts of importance 2 or more on the alert surface 0.38 a minute (band at most 0.6); 4 auto-pauses in 18,001 steps, one of them a fall after the player's own Blight (the band says it must not pause: an open decision).
+    Not measured: the external drive, a second window, a person's inputs per chapter (D9: the Mac day's reader is a script).
 - **G3c. Time** (not built; DESIGN §35 and Review-log row I55 are reserved for it; spec `g3b/spec.md` §9). After the G3b Mac day:
   - recorded ALSTRM replay files and the recap player;
   - rewind as a branch (a clone into a copied run directory, its cost stated), offline advance under the rule tier with per-launch GPU consent;
@@ -1148,7 +1152,8 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
       rows; a fall that follows a regen or habitat entry by at most 500 steps never pauses; the default launch is `player`, not `rules`.
     - *D4* Food, Bloom, Blight, Strike under "game-v0", 6 units per 18,000 steps, `power cancel`; no weather verb (W4). *D5* `intent` is G4 (the line and the `PLAN` shape are reserved).
       *D6* the select-and-order mode is G3c, default off. *D7* rewind, storage, digests: G3c. *D8* offline advance: G3c, never default.
-    - *D9* the play contract is observe-and-poke; the Mac day measures inputs per chapter and the objective is decided on that. *D10* Strike costs 1 (radius 6.25 to 25, cooldown 3,000, not GAMES §5.5's 9,000). *D11* Chapter 1 is reported from an origin row in `meta.json`.
+    - *D9* the play contract is observe-and-poke; the Mac day was to measure inputs per chapter and the objective is decided on that (it could not: the Mac day's reader is a script, so D9 needs a person to play G3b; `RESULTS_G3B` §10). *D10* Strike costs 1 (radius 6.25 to 25, cooldown 3,000, not GAMES §5.5's 9,000). *D11* Chapter 1 is reported from an origin row in `meta.json`.
+    - **Still the owner's after the Mac day:** item 15 (satellite budding of kin threads, constant `P`: on the Mac day's window a thread named Pruashol formed and merged four times in 14,000 steps and 4 of 19 ended threads lived 1,500 steps or less) and item 16 (storm namings on the alert surface: 4 of the 8 alerts of importance 2 or more, 0.38 a minute in all, 0.19 without them).
 
 
 ## 11. Prior-art sources

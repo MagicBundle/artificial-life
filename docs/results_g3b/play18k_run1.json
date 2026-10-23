@@ -1,0 +1,646 @@
+{
+ "cmd": [
+  "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b-wt/.venv/bin/alife",
+  "play",
+  "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/macday/planets/p0",
+  "--rate",
+  "1",
+  "--director",
+  "rules"
+ ],
+ "exit_code": 0,
+ "wall_s": 1263.18,
+ "stream_wall_s": 1262.71,
+ "paused_wall_s": 8.56,
+ "first_step": 470504,
+ "last_step": 488505,
+ "raw_bytes": 22874754724,
+ "records_by_tag": {
+  "FRMA": 18002,
+  "IDNT": 73,
+  "INTN": 721,
+  "TERR": 73,
+  "ENVS": 86,
+  "MAP1": 721,
+  "STRM": 721,
+  "EVNT": 57,
+  "CLCK": 4545,
+  "RPRT": 6,
+  "ALRT": 31,
+  "PLAN": 26
+ },
+ "bytes_by_tag": {
+  "FRMA": 22410135548,
+  "IDNT": 45745492,
+  "INTN": 336187768,
+  "TERR": 156720,
+  "ENVS": 127412,
+  "MAP1": 78485176,
+  "STRM": 3523808,
+  "EVNT": 26044,
+  "CLCK": 309060,
+  "RPRT": 16196,
+  "ALRT": 13468,
+  "PLAN": 22948
+ },
+ "decode_total_s": 8.3,
+ "decode_max_ms": 1.4,
+ "max_queue_depth": 2,
+ "decode_errors": [],
+ "n_decode_errors": 0,
+ "events_nonbacklog": 69,
+ "events_backlog": 63,
+ "events_per_wall_min_by_family": {
+  "storm": 0.665,
+  "kin": 2.043,
+  "director": 0.38,
+  "system": 0.19
+ },
+ "events_per_wall_min_total": 3.279,
+ "events_per_run_min_by_family": {
+  "storm": 0.67,
+  "kin": 2.057,
+  "director": 0.383,
+  "system": 0.191
+ },
+ "events_per_run_min_total": 3.301,
+ "events_by_kind": {
+  "director/12": 1,
+  "director/20": 4,
+  "director/21": 3,
+  "kin/18": 24,
+  "kin/19": 19,
+  "storm/7": 5,
+  "storm/8": 4,
+  "storm/11": 5,
+  "system/15": 4
+ },
+ "alerts_raised": 26,
+ "alerts_raised_by_class_surface_imp": {
+  "chapter/alert/3": 3,
+  "effect_ending/alert/1": 3,
+  "house_fading/log/0": 3,
+  "lineage_ended/log/0": 2,
+  "lineage_formed/log/0": 2,
+  "pop_fall/alert/1": 1,
+  "pop_slide/alert/2": 1,
+  "pop_surge/alert/1": 2,
+  "storm_ended/log/0": 5,
+  "storm_named/alert/2": 4
+ },
+ "alerts_alert_surface_imp_ge2": 8,
+ "alerts_alert_surface_imp_ge2_per_wall_min": 0.38,
+ "alerts_alert_surface_imp_ge2_per_run_min": 0.383,
+ "alerts_states": {
+  "raised": 26,
+  "cleared": 10,
+  "updated": 1
+ },
+ "alerts_backlog": 0,
+ "acks_sent": 14,
+ "pauses": [
+  {
+   "wall_s": 243.79,
+   "step": 474000,
+   "reason": 3,
+   "flags": 3,
+   "chapter": 79
+  },
+  {
+   "wall_s": 506.34,
+   "step": 477750,
+   "reason": 4,
+   "flags": 3,
+   "chapter": 80
+  },
+  {
+   "wall_s": 666.21,
+   "step": 480000,
+   "reason": 3,
+   "flags": 3,
+   "chapter": 80
+  },
+  {
+   "wall_s": 1086.02,
+   "step": 486000,
+   "reason": 3,
+   "flags": 3,
+   "chapter": 81
+  }
+ ],
+ "pauses_by_cause": {
+  "chapter": 3,
+  "alert": 1
+ },
+ "chapter_ends": [
+  {
+   "step": 474000,
+   "chapter": 79,
+   "t_card": 1792723922.002186,
+   "t_report_s": 0.047,
+   "t_save_done_s": 0.682,
+   "report_inside_stall": true,
+   "report_headline": "2 storms reached named strength",
+   "report_lead": "The population fell from 35,934 to 35,350 (-1.6%)."
+  },
+  {
+   "step": 480000,
+   "chapter": 80,
+   "t_card": 1792724344.148396,
+   "t_report_s": 0.029,
+   "t_save_done_s": 0.96,
+   "report_inside_stall": true,
+   "report_headline": "Population rose to 39,982",
+   "report_lead": "The population rose from 35,350 to 39,982 (+13.1%)."
+  },
+  {
+   "step": 486000,
+   "chapter": 81,
+   "t_card": 1792724763.914571,
+   "t_report_s": 0.03,
+   "t_save_done_s": 1.006,
+   "report_inside_stall": true,
+   "report_headline": "Toutraull formed",
+   "report_lead": "The population rose from 39,982 to 41,451 (+3.7%)."
+  }
+ ],
+ "reports": [
+  {
+   "step": 456000,
+   "chapter": 76,
+   "mode": 0,
+   "backlog": true,
+   "final": true,
+   "withheld": [],
+   "headline": "4 storms reached named strength",
+   "lead": "The population was 44,912 at the start and 44,910 at the end of the chapter.",
+   "n_body": 6,
+   "n_interventions": 0,
+   "latency_s": 0.0229,
+   "fallback": null,
+   "bytes": 2460
+  },
+  {
+   "step": 462000,
+   "chapter": 77,
+   "mode": 0,
+   "backlog": true,
+   "final": true,
+   "withheld": [],
+   "headline": "2 storms reached named strength",
+   "lead": "The population fell from 44,910 to 44,002 (-2.0%).",
+   "n_body": 6,
+   "n_interventions": 0,
+   "latency_s": 0.0333,
+   "fallback": null,
+   "bytes": 2320
+  },
+  {
+   "step": 468000,
+   "chapter": 78,
+   "mode": 0,
+   "backlog": true,
+   "final": true,
+   "withheld": [],
+   "headline": "Population fell to 35,934",
+   "lead": "The population fell from 44,002 to 35,934 (-18.3%).",
+   "n_body": 6,
+   "n_interventions": 3,
+   "latency_s": 0.0474,
+   "fallback": null,
+   "bytes": 2628
+  },
+  {
+   "step": 474000,
+   "chapter": 79,
+   "mode": 0,
+   "backlog": false,
+   "final": true,
+   "withheld": [],
+   "headline": "2 storms reached named strength",
+   "lead": "The population fell from 35,934 to 35,350 (-1.6%).",
+   "n_body": 6,
+   "n_interventions": 5,
+   "latency_s": 0.0466,
+   "fallback": null,
+   "bytes": 3300
+  },
+  {
+   "step": 480000,
+   "chapter": 80,
+   "mode": 0,
+   "backlog": false,
+   "final": true,
+   "withheld": [],
+   "headline": "Population rose to 39,982",
+   "lead": "The population rose from 35,350 to 39,982 (+13.1%).",
+   "n_body": 6,
+   "n_interventions": 8,
+   "latency_s": 0.0283,
+   "fallback": null,
+   "bytes": 3440
+  },
+  {
+   "step": 486000,
+   "chapter": 81,
+   "mode": 0,
+   "backlog": false,
+   "final": true,
+   "withheld": [],
+   "headline": "Toutraull formed",
+   "lead": "The population rose from 39,982 to 41,451 (+3.7%).",
+   "n_body": 6,
+   "n_interventions": 0,
+   "latency_s": 0.0294,
+   "fallback": null,
+   "bytes": 2048
+  }
+ ],
+ "powers": {
+  "1": {
+   "name": "food",
+   "statuses": [
+    "refused"
+   ],
+   "preview_reply_s": 0.001,
+   "click_to_applied_s": null,
+   "step_applied": null
+  },
+  "2": {
+   "name": "bloom",
+   "statuses": [
+    "preview",
+    "queued",
+    "applied",
+    "since",
+    "since",
+    "since"
+   ],
+   "preview_reply_s": 0.003,
+   "click_to_applied_s": 0.054,
+   "step_applied": 472009
+  },
+  "3": {
+   "name": "strike",
+   "statuses": [
+    "preview",
+    "queued",
+    "applied",
+    "since",
+    "since"
+   ],
+   "preview_reply_s": 0.003,
+   "click_to_applied_s": 0.056,
+   "step_applied": 473519
+  },
+  "4": {
+   "name": "food",
+   "statuses": [
+    "preview",
+    "queued",
+    "applied",
+    "since",
+    "since",
+    "since"
+   ],
+   "preview_reply_s": 0.002,
+   "click_to_applied_s": 0.075,
+   "step_applied": 476015
+  },
+  "5": {
+   "name": "blight",
+   "statuses": [
+    "preview",
+    "queued",
+    "applied",
+    "since",
+    "since",
+    "since"
+   ],
+   "preview_reply_s": 0.002,
+   "click_to_applied_s": 0.056,
+   "step_applied": 476509
+  },
+  "6": {
+   "name": "cancel:food",
+   "statuses": [
+    "queued",
+    "cancelled"
+   ],
+   "preview_reply_s": null,
+   "click_to_applied_s": null,
+   "step_applied": null
+  }
+ },
+ "power_items": [
+  {
+   "name": "food",
+   "kind": "power",
+   "at": 476010,
+   "params": "mult=1.3 steps=6000",
+   "tries": 1,
+   "state": "done",
+   "id": 4,
+   "refusals": [
+    "Food is busy: the regen lever is held until step 476,000."
+   ],
+   "step_applied": 476015
+  },
+  {
+   "name": "bloom",
+   "kind": "power",
+   "at": 472004,
+   "params": "patch=2 gain=1.75 steps=3000",
+   "tries": 0,
+   "state": "done",
+   "id": 2,
+   "step_applied": 472009
+  },
+  {
+   "name": "strike",
+   "kind": "power",
+   "at": 473504,
+   "params": "x=160 y=160 radius=6.25 kill=0.45",
+   "tries": 0,
+   "state": "done",
+   "id": 3,
+   "step_applied": 473519
+  },
+  {
+   "name": "blight",
+   "kind": "power",
+   "at": 476504,
+   "params": "patch=0 steps=3000",
+   "tries": 0,
+   "state": "done",
+   "id": 5,
+   "step_applied": 476509
+  },
+  {
+   "name": "food",
+   "kind": "cancel",
+   "after": "food",
+   "delay": 1500,
+   "at": null,
+   "params": "",
+   "tries": 0,
+   "state": "done",
+   "id": 6,
+   "step_applied": 477515
+  }
+ ],
+ "watchdog": [],
+ "partial": false,
+ "plan_counts": {
+  "blight/applied": 1,
+  "blight/preview": 1,
+  "blight/queued": 1,
+  "blight/since": 3,
+  "bloom/applied": 1,
+  "bloom/preview": 1,
+  "bloom/queued": 1,
+  "bloom/since": 3,
+  "food/applied": 1,
+  "food/cancelled": 1,
+  "food/preview": 1,
+  "food/queued": 2,
+  "food/refused": 1,
+  "food/since": 3,
+  "strike/applied": 1,
+  "strike/preview": 1,
+  "strike/queued": 1,
+  "strike/since": 2
+ },
+ "commands_sent": [
+  [
+   34.96,
+   471004,
+   "power preview food id=1 mult=1.3 steps=6000"
+  ],
+  [
+   104.42,
+   472004,
+   "power preview bloom id=2 patch=2 gain=1.75 steps=3000"
+  ],
+  [
+   104.77,
+   472009,
+   "power bloom id=2 patch=2 gain=1.75 steps=3000"
+  ],
+  [
+   163.5,
+   472855,
+   "ack 472825600"
+  ],
+  [
+   208.58,
+   473504,
+   "power preview strike id=3 x=160 y=160 radius=6.25 kill=0.45"
+  ],
+  [
+   209.63,
+   473519,
+   "power strike id=3 x=160 y=160 radius=6.25 kill=0.45"
+  ],
+  [
+   245.28,
+   474000,
+   "ack 474000600"
+  ],
+  [
+   245.79,
+   474000,
+   "ack 474000601"
+  ],
+  [
+   245.79,
+   474000,
+   "run"
+  ],
+  [
+   300.0,
+   474780,
+   "ack 474750600"
+  ],
+  [
+   352.07,
+   475530,
+   "ack 475500600"
+  ],
+  [
+   371.11,
+   475804,
+   "ack 475775600"
+  ],
+  [
+   385.4,
+   476010,
+   "power preview food id=4 mult=1.3 steps=6000"
+  ],
+  [
+   385.76,
+   476015,
+   "power food id=4 mult=1.3 steps=6000"
+  ],
+  [
+   404.24,
+   476281,
+   "ack 476250600"
+  ],
+  [
+   419.72,
+   476504,
+   "power preview blight id=5 patch=0 steps=3000"
+  ],
+  [
+   420.07,
+   476509,
+   "power blight id=5 patch=0 steps=3000"
+  ],
+  [
+   456.32,
+   477031,
+   "ack 477000600"
+  ],
+  [
+   489.93,
+   477515,
+   "power cancel food id=6"
+  ],
+  [
+   508.87,
+   477750,
+   "run"
+  ],
+  [
+   533.56,
+   478105,
+   "ack 478075600"
+  ],
+  [
+   615.23,
+   479281,
+   "ack 479250600"
+  ],
+  [
+   667.44,
+   480000,
+   "ack 480000600"
+  ],
+  [
+   668.22,
+   480000,
+   "ack 480000601"
+  ],
+  [
+   668.22,
+   480000,
+   "run"
+  ],
+  [
+   1087.06,
+   486000,
+   "ack 486000600"
+  ],
+  [
+   1088.04,
+   486000,
+   "run"
+  ],
+  [
+   1114.41,
+   486379,
+   "ack 486350600"
+  ],
+  [
+   1261.97,
+   488504,
+   "quit"
+  ]
+ ],
+ "snapshots": [
+  [
+   "alerts_1",
+   472825,
+   161.9,
+   2288224
+  ],
+  [
+   "strike_preview",
+   473504,
+   209.1,
+   2270948
+  ],
+  [
+   "alerts_2",
+   474000,
+   243.6,
+   2275472
+  ],
+  [
+   "alerts_3",
+   474000,
+   244.3,
+   2276884
+  ],
+  [
+   "chapter_1",
+   474000,
+   244.3,
+   2278008
+  ],
+  [
+   "alerts_4",
+   474750,
+   298.5,
+   2266900
+  ],
+  [
+   "alerts_5",
+   475500,
+   350.5,
+   2160276
+  ],
+  [
+   "alerts_6",
+   475775,
+   369.6,
+   2176240
+  ],
+  [
+   "chapter_2",
+   480000,
+   666.7,
+   2577488
+  ],
+  [
+   "chapter_3",
+   486000,
+   1086.5,
+   2665652
+  ],
+  [
+   "end",
+   488505,
+   1263.2,
+   2696720
+  ]
+ ],
+ "clck_n": 4545,
+ "clck_reasons": {
+  "0": 4505,
+  "3": 30,
+  "4": 10
+ },
+ "late_steps_last": 0,
+ "save_stall_steps_last": 9,
+ "achieved_running": {
+  "p50": 14.357439994812012,
+  "min": 0.0
+ },
+ "step_ms_running": {
+  "p50": 24.822166442871094,
+  "p99": 26.55722999572754,
+  "max": 176.6544189453125
+ }
+}

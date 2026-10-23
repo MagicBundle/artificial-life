@@ -1,0 +1,163 @@
+{
+ "cmd": [
+  "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b-wt/.venv/bin/alife",
+  "play",
+  "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/macday/planets/p0",
+  "--rate",
+  "max",
+  "--director",
+  "rules"
+ ],
+ "exit_code": 0,
+ "wall_s": 10.32,
+ "stream_wall_s": 9.81,
+ "paused_wall_s": 0.0,
+ "first_step": 489008,
+ "last_step": 489510,
+ "raw_bytes": 361298028,
+ "records_by_tag": {
+  "FRMA": 255,
+  "IDNT": 3,
+  "INTN": 21,
+  "TERR": 3,
+  "ENVS": 4,
+  "MAP1": 21,
+  "STRM": 21,
+  "EVNT": 4,
+  "RPRT": 3,
+  "CLCK": 38,
+  "ALRT": 1
+ },
+ "bytes_by_tag": {
+  "FRMA": 346207748,
+  "IDNT": 2037864,
+  "INTN": 10619940,
+  "TERR": 6448,
+  "ENVS": 5384,
+  "MAP1": 2285976,
+  "STRM": 105316,
+  "EVNT": 12500,
+  "RPRT": 8776,
+  "CLCK": 2584,
+  "ALRT": 408
+ },
+ "decode_total_s": 0.1,
+ "decode_max_ms": 1.3,
+ "max_queue_depth": 1,
+ "decode_errors": [],
+ "n_decode_errors": 0,
+ "events_nonbacklog": 3,
+ "events_backlog": 64,
+ "events_per_wall_min_by_family": {
+  "kin": 12.232,
+  "system": 6.116
+ },
+ "events_per_wall_min_total": 18.348,
+ "events_per_run_min_by_family": {
+  "kin": 12.232,
+  "system": 6.116
+ },
+ "events_per_run_min_total": 18.348,
+ "events_by_kind": {
+  "kin/18": 1,
+  "kin/19": 1,
+  "system/15": 1
+ },
+ "alerts_raised": 1,
+ "alerts_raised_by_class_surface_imp": {
+  "lineage_ended/log/0": 1
+ },
+ "alerts_alert_surface_imp_ge2": 0,
+ "alerts_alert_surface_imp_ge2_per_wall_min": 0.0,
+ "alerts_alert_surface_imp_ge2_per_run_min": 0.0,
+ "alerts_states": {
+  "raised": 1
+ },
+ "alerts_backlog": 0,
+ "acks_sent": 0,
+ "pauses": [],
+ "pauses_by_cause": {},
+ "chapter_ends": [],
+ "reports": [
+  {
+   "step": 474000,
+   "chapter": 79,
+   "mode": 0,
+   "backlog": true,
+   "final": true,
+   "withheld": [],
+   "headline": "2 storms reached named strength",
+   "lead": "The population fell from 35,934 to 35,350 (-1.6%).",
+   "n_body": 6,
+   "n_interventions": 5,
+   "latency_s": null,
+   "fallback": null,
+   "bytes": 3296
+  },
+  {
+   "step": 480000,
+   "chapter": 80,
+   "mode": 0,
+   "backlog": true,
+   "final": true,
+   "withheld": [],
+   "headline": "Population rose to 39,982",
+   "lead": "The population rose from 35,350 to 39,982 (+13.1%).",
+   "n_body": 6,
+   "n_interventions": 8,
+   "latency_s": null,
+   "fallback": null,
+   "bytes": 3436
+  },
+  {
+   "step": 486000,
+   "chapter": 81,
+   "mode": 0,
+   "backlog": true,
+   "final": true,
+   "withheld": [],
+   "headline": "Toutraull formed",
+   "lead": "The population rose from 39,982 to 41,451 (+3.7%).",
+   "n_body": 6,
+   "n_interventions": 0,
+   "latency_s": null,
+   "fallback": null,
+   "bytes": 2044
+  }
+ ],
+ "powers": {},
+ "power_items": [],
+ "watchdog": [],
+ "partial": false,
+ "plan_counts": {},
+ "commands_sent": [
+  [
+   9.26,
+   489508,
+   "quit"
+  ]
+ ],
+ "snapshots": [
+  [
+   "end",
+   489510,
+   10.3,
+   2691424
+  ]
+ ],
+ "clck_n": 38,
+ "clck_reasons": {
+  "0": 38
+ },
+ "late_steps_last": 0,
+ "save_stall_steps_last": 0,
+ "achieved_running": {
+  "p50": 55.072195053100586,
+  "min": 0.0
+ },
+ "step_ms_running": {
+  "p50": 16.287978172302246,
+  "p99": 16.393388004302977,
+  "max": 16.4305419921875
+ }
+}
