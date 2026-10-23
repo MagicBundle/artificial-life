@@ -21,7 +21,7 @@ struct WorldLauncherView: View {
             // action below stay where they are.
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    planetBox
+                    LauncherPlanetBox(model: model)
                     if !model.catalog.unfinished.isEmpty { unfinishedBox }
                 }
                 .padding(16)
@@ -124,7 +124,41 @@ struct WorldLauncherView: View {
         }
     }
 
-    private var planetBox: some View {
+    /// The planet's action, outside the scroll area so that it is always in reach; Return triggers it while the form is
+    /// valid (the default action of the sheet; the World window's own keys are not active under a sheet, §34.7).
+    private var footer: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(model.planetErrors, id: \.self) { Text($0).font(.caption).foregroundStyle(.red) }
+            }
+            Spacer()
+            Button("Make planet and play") { model.startPlanet() }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!model.planetErrors.isEmpty || play.isActive)
+        }
+        .padding(16)
+    }
+
+    private func describe(_ world: PlayWorld) -> String {
+        var parts: [String] = []
+        if let step = world.newestStep { parts.append("step \(step)") }
+        if let planet = world.file.planet {
+            parts.append("planet of \(planet.source ?? "a preset")")
+            parts.append("houses \(planet.houses)")
+        }
+        if let status = world.status { parts.append(status) }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// The *New planet* form of the launcher. A view of its own that reads the launcher model and not the play controller: the
+/// controller publishes the stderr of the build while a planet starts, and the form's pop-ups and its name field must not be
+/// evaluated again with each line (a pop-up that is open would be rebuilt under the pointer).
+struct LauncherPlanetBox: View {
+    @ObservedObject var model: WorldLauncherModel
+
+    var body: some View {
+        let _ = ViewProbe.note("LauncherPlanetBox", for: model)
         GroupBox("New planet") {
             VStack(alignment: .leading, spacing: 8) {
                 Picker("Source", selection: Binding(
@@ -158,31 +192,5 @@ struct WorldLauncherView: View {
                 TextField("Name", text: $model.planet.name).textFieldStyle(.roundedBorder)
             }
         }
-    }
-
-    /// The planet's action, outside the scroll area so that it is always in reach; Return triggers it while the form is
-    /// valid (the default action of the sheet; the World window's own keys are not active under a sheet, §34.7).
-    private var footer: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(model.planetErrors, id: \.self) { Text($0).font(.caption).foregroundStyle(.red) }
-            }
-            Spacer()
-            Button("Make planet and play") { model.startPlanet() }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!model.planetErrors.isEmpty || play.isActive)
-        }
-        .padding(16)
-    }
-
-    private func describe(_ world: PlayWorld) -> String {
-        var parts: [String] = []
-        if let step = world.newestStep { parts.append("step \(step)") }
-        if let planet = world.file.planet {
-            parts.append("planet of \(planet.source ?? "a preset")")
-            parts.append("houses \(planet.houses)")
-        }
-        if let status = world.status { parts.append(status) }
-        return parts.joined(separator: " · ")
     }
 }
