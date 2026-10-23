@@ -151,6 +151,7 @@ extension WorldModel {
     /// A `CLCK` arrived: a chapter notice for a world that does not stop, and the attention a stop asks for.
     func handleClock() {
         guard let clock = play.store.clock else { return }
+        storage.note(clock: clock)
         let chapter = Int(clock.chapter)
         if clock.reason == .chapter {
             if chapter != lastCardChapter {
@@ -169,6 +170,12 @@ extension WorldModel {
            attention.paused(atStep: currentStep, windowIsKey: windowIsKey()) {
             requestAttention()
         }
+    }
+
+    /// Starts measuring the world that just sent its header (not again for the same directory: a new view attaches to a world in play).
+    func startStorage() {
+        guard let url = play.worldURL, storage.world != url else { return }
+        storage.start(world: url)
     }
 
     static let noticeSeconds = 15.0
