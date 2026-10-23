@@ -10,14 +10,19 @@ import simd
 ///
 /// ```text
 /// shaded  = base * depthCue * (0.3 + 0.7 n.v)             a sphere (a flat disc: (1 - 0.3 r^2))
-/// outline = L(shaded) > 0.22 ? (0.06, 0.06, 0.06) : (0.92, 0.92, 0.92)
+/// outline = L(shaded) > 0.17 ? (0.06, 0.06, 0.06) : (0.92, 0.92, 0.92)
 /// ```
 ///
 /// A rule on the base colour fails under the shading the renderer keeps (3 of 25 palette colours under 3:1 at a depth cue of 0.62,
-/// 15 of 25 at a sphere's rim); on the shaded colour it cannot: at `L` = 0.22 the dark outline gives 4.9 and the light one 3.3.
+/// 15 of 25 at a sphere's rim); on the shaded colour it cannot.
+///
+/// The threshold is the luminance at which the two outlines have the same contrast: 0.17 gives 4.0 to either side. The pixel next
+/// to the ring is 1 to 2 px inside the edge, wherever the pixel grid falls on the silhouette, and the rule is evaluated at 1.5 px:
+/// the true luminance of that pixel is within about 1.4 times the estimate, which the equal-contrast threshold absorbs (the light
+/// outline holds up to L = 0.243, the dark one down to 0.114). The first draft's 0.22 gave 4.9 and 3.3 and measured 2.88 on the GPU.
 package enum OutlineContrast {
     /// The luminance above which the dark outline is used.
-    package static let threshold: Float = 0.22
+    package static let threshold: Float = 0.17
     package static let dark = SIMD3<Float>(repeating: 0.06)
     package static let light = SIMD3<Float>(repeating: 0.92)
     /// The ring's width in drawable pixels.

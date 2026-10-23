@@ -144,7 +144,7 @@ enum Shaders {
     float3 outlineFor(float3 shaded)
     {
         float l = 0.2126 * srgbToLinear(shaded.r) + 0.7152 * srgbToLinear(shaded.g) + 0.0722 * srgbToLinear(shaded.b);
-        return l > 0.22 ? float3(0.06) : float3(0.92);
+        return l > 0.17 ? float3(0.06) : float3(0.92);
     }
 
     // The shading of one impostor: the ray against the body and the nose, the headlight, the depth of the hit. `radius` is the

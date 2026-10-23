@@ -106,8 +106,8 @@ import simd
 
     @Test func theOutlineRuleInTheShaderIsOutlineContrasts() {
         let source = Shaders.source
-        #expect(source.contains("return l > 0.22 ? float3(0.06) : float3(0.92);"))
-        #expect(OutlineContrast.threshold == 0.22 && OutlineContrast.dark == SIMD3(repeating: 0.06) && OutlineContrast.light == SIMD3(repeating: 0.92))
+        #expect(source.contains("return l > 0.17 ? float3(0.06) : float3(0.92);"))
+        #expect(OutlineContrast.threshold == 0.17 && OutlineContrast.dark == SIMD3(repeating: 0.06) && OutlineContrast.light == SIMD3(repeating: 0.92))
         #expect(source.contains("float l = 0.2126 * srgbToLinear(shaded.r) + 0.7152 * srgbToLinear(shaded.g) + 0.0722 * srgbToLinear(shaded.b);"))
         #expect(source.contains("c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)"))
         // The pixel next to the ring: n.v at (ring + 0.5) px inside, the sphere's headlight 0.3 + 0.7 n.v, the disc's 1 - 0.3 r^2.

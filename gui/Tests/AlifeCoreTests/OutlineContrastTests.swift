@@ -40,14 +40,15 @@ import simd
 
     @Test func theTwoOutlinesAreAtLeastThreeToOneAtTheThreshold() {
         let atThreshold = OutlineContrast.threshold
-        // The luminance L = 0.22 is a linear value: a grey with that relative luminance.
+        // The luminance L = 0.17 is a linear value: a grey with that relative luminance.
         let grey = pow(atThreshold, 1 / 2.4) * 1.055 - 0.055
         let colour = SIMD3<Float>(repeating: grey)
         #expect(abs(OutlineContrast.luminance(colour) - atThreshold) < 2e-3)
         let darkContrast = OutlineContrast.contrast(colour, OutlineContrast.dark)
         let lightContrast = OutlineContrast.contrast(colour, OutlineContrast.light)
-        #expect(darkContrast > 4.8 && darkContrast < 5.0, "the dark outline against L = 0.22: \(darkContrast)")
-        #expect(lightContrast > 3.2 && lightContrast < 3.4, "the light one: \(lightContrast)")
+        #expect(darkContrast > 3.9 && darkContrast < 4.1, "the dark outline against L = 0.17: \(darkContrast)")
+        #expect(lightContrast > 3.9 && lightContrast < 4.1, "the light one: \(lightContrast)")
+        #expect(abs(darkContrast - lightContrast) < 0.1, "the threshold is where the two outlines are equal")
         // Just above the threshold the dark outline is chosen, at it and below the light one.
         #expect(OutlineContrast.outline(forShaded: SIMD3(repeating: grey + 0.01)) == OutlineContrast.dark)
         #expect(OutlineContrast.outline(forShaded: SIMD3(repeating: grey - 0.01)) == OutlineContrast.light)
@@ -77,7 +78,35 @@ import simd
             }
         }
         #expect(cases == colours.count * 9)
-        #expect(worst >= 3.2, "the worst case of the rule is 3.26 at the threshold: \(worst)")
+        #expect(worst >= 3.9, "the worst case of the rule is 4.0 at the threshold: \(worst)")
+    }
+
+    /// The rule is evaluated at 1.5 px inside the edge; the pixel next to the ring is 1 to 2 px inside it, wherever the grid falls on
+    /// the silhouette. Over that range of n.v, for the colours of the tables and a thousand random ones, at the radii the size policy
+    /// draws (3.4, 7, 9 px) and the depth cues, the edge keeps 3:1 (the GPU test measures it on the pixels).
+    @Test func theRuleHoldsWhereverThePixelGridFallsOnTheSilhouette() {
+        var colours = tableColours.map(rgb)
+        var rng = Generator(state: 7)
+        for _ in 0..<1000 {
+            colours.append(SIMD3(Float.random(in: 0...1, using: &rng), Float.random(in: 0...1, using: &rng), Float.random(in: 0...1, using: &rng)))
+        }
+        var worst = Float.infinity
+        for base in colours {
+            for radius: Float in [3.4, 7, 9, 17.5, 53] {
+                for cue in [Float(0.85), 0.92, 1.0] {
+                    let estimated = OutlineContrast.shadedSphere(base: base, depthCue: cue, normalDotView: OutlineContrast.ringNormalDotView(radiusPixels: radius))
+                    let outline = OutlineContrast.outline(forShaded: estimated)
+                    for inside in stride(from: Float(1.0), through: 2.0, by: 0.125) {
+                        let k = min(max((radius - inside) / radius, 0), 1)
+                        let shaded = OutlineContrast.shadedSphere(base: base, depthCue: cue, normalDotView: (1 - k * k).squareRoot())
+                        let contrast = OutlineContrast.contrast(shaded, outline)
+                        worst = min(worst, contrast)
+                        #expect(contrast >= 3, "base \(base) r \(radius) cue \(cue) \(inside) px inside: \(contrast)")
+                    }
+                }
+            }
+        }
+        #expect(worst >= 3, "the worst case: \(worst)")
     }
 
     @Test func aRuleOnTheBaseColourWouldNotHaveHeldUnderTheOldDepthCue() {
