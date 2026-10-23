@@ -227,6 +227,7 @@ extension WorldModel {
         lastAdvance = nil
         overlay.setHover(nil)
         overlay.setCastHover(nil)
+        storage.stop()
     }
 
     /// The distance a fly ends at on something of `level`.

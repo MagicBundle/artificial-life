@@ -151,6 +151,7 @@ extension WorldModel {
     /// A `CLCK` arrived: a chapter notice for a world that does not stop, and the attention a stop asks for.
     func handleClock() {
         guard let clock = play.store.clock else { return }
+        storage.note(clock: clock)
         let chapter = Int(clock.chapter)
         if clock.reason == .chapter {
             if chapter != lastCardChapter {
@@ -170,6 +171,15 @@ extension WorldModel {
             requestAttention()
         }
     }
+
+    /// Starts measuring the world that just sent its header (not again for the same directory: a new view attaches to a world in play).
+    func startStorage() {
+        guard let url = play.worldURL, storage.world != url else { return }
+        storage.start(world: url)
+    }
+
+    /// Whether the Storage strip shows its second line (the world keeps the newest save only and older ones are still on disk).
+    var storageNoteShown: Bool { play.savesMode == .newest && storage.readout(mode: .newest).pruningPending }
 
     static let noticeSeconds = 15.0
     /// A line of a report is news for the ticker when it is dated this close to the chapter's end (one social snapshot).

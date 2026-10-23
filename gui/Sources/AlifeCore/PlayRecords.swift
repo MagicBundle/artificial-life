@@ -108,6 +108,13 @@ package struct PlayHeader: Equatable, Sendable, Codable {
         package var alert: [String: Bool]
     }
 
+    /// `play.saves` (§34.10): the save mode the world started in (`all` or `newest`) and how many saves `all` keeps. The mode is read
+    /// from `CLCK.flags` afterwards.
+    package struct Saves: Equatable, Sendable, Codable {
+        package var mode: String
+        package var keep: Int
+    }
+
     /// One entry of `play.powers`: what the power grid draws (G3b, §34.5).
     package struct Power: Equatable, Sendable, Codable {
         /// The director action behind it.
@@ -148,10 +155,12 @@ package struct PlayHeader: Equatable, Sendable, Codable {
     package var powers: [String: Power]?
     /// The name of the game table the powers come from (`"game-v0"`).
     package var gameSpecs: String?
+    /// §34.10: the save mode the world started in; nil for a world of an older server (which keeps its last saves).
+    package var saves: Saves?
 
     private enum CodingKeys: String, CodingKey {
         case records, versions, rates, tick, chapter, weather, labels, cast, events, planet
-        case alerts, autopause, powers
+        case alerts, autopause, powers, saves
         case baseRate = "base_rate"
         case snapshotEvery = "snapshot_every"
         case frameHz = "frame_hz"
@@ -708,6 +717,8 @@ package struct PlayClock: Equatable, Sendable {
     package var chapterPauseArmed: Bool { flags & 1 != 0 }
     /// Bit 1: at least one alert class is armed to pause the world.
     package var alertPauseArmed: Bool { flags & 2 != 0 }
+    /// Bit 2: the world keeps only the newest save (`saves newest`, §34.10).
+    package var savesNewestOnly: Bool { flags & 4 != 0 }
 }
 
 /// `FOCS`: the focused organism's own row with the observer's current slots.

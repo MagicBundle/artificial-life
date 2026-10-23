@@ -99,7 +99,13 @@ import Testing
         #expect(DockBudget.alertRows(dockHeight: 700, inspectorOpen: true) == 2, "the spec's cap of two at the minimum window")
         #expect(DockBudget.alertRows(dockHeight: 650, inspectorOpen: true) == 1)
         #expect(DockBudget.alertRows(dockHeight: 700, inspectorOpen: false) == 3)
-        #expect(DockBudget.alertRows(dockHeight: 740, inspectorOpen: true) == 3)
+        // (the Storage strip, §34.10, took 26 points: three rows with the inspector open need 760 now, not 740)
+        #expect(DockBudget.alertRows(dockHeight: 740, inspectorOpen: true) == 2)
+        #expect(DockBudget.alertRows(dockHeight: 760, inspectorOpen: true) == 3)
+        // the strip's second line (older saves wait for the next save) takes a row's room only while it shows
+        #expect(DockBudget.alertRows(dockHeight: 700, inspectorOpen: true, storageNote: true) == 1)
+        #expect(DockBudget.alertRows(dockHeight: 700, inspectorOpen: false, storageNote: true) == 3)
+        #expect(DockBudget.storage >= 26 && DockBudget.storageNote >= 15)
         #expect(DockBudget.alertRows(dockHeight: 100, inspectorOpen: true) == 1, "an alert the player cannot see is not an alert")
         #expect(DockBudget.alertRows(dockHeight: 5000, inspectorOpen: false) == AlertStack.roomyRows)
     }
@@ -114,11 +120,12 @@ import Testing
             <= DockBudget.alertRows(dockHeight: 700, inspectorOpen: false), "never more rows than when nothing is being set up")
         for height in stride(from: CGFloat(560), through: 1200, by: 20) {
             let rows = DockBudget.alertRows(dockHeight: height, inspectorOpen: false, editing: true)
-            let tab = height - DockBudget.header - DockBudget.clockStrip - DockBudget.tabs - CGFloat(rows) * DockBudget.alertRow
+            let tab = height - DockBudget.header - DockBudget.clockStrip - DockBudget.storage - DockBudget.tabs
+                - CGFloat(rows) * DockBudget.alertRow
             #expect(tab >= DockBudget.editor || rows == 1, "\(rows) rows leave the tab \(tab) of \(height)")
         }
         // the minimum window: 700 points, three rows (144) leave the tab 356, where the old budget with the inspector left 182
-        let tab = 700 - DockBudget.header - DockBudget.clockStrip - DockBudget.tabs - 3 * DockBudget.alertRow
+        let tab = 700 - DockBudget.header - DockBudget.clockStrip - DockBudget.storage - DockBudget.tabs - 3 * DockBudget.alertRow
         #expect(tab >= DockBudget.editor)
     }
 

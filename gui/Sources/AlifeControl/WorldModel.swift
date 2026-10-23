@@ -66,6 +66,8 @@ struct HoverInfo: Equatable {
 final class WorldModel: ObservableObject {
     let play: PlayController
     let overlay = OverlayState()
+    /// The size of the world on disk (DESIGN §34.10), measured while a world is in play.
+    let storage = StorageMonitor()
     @Published var display = WorldDisplay() {
         didSet {
             if display != oldValue {
@@ -209,7 +211,10 @@ final class WorldModel: ObservableObject {
             interactionFor = store.header
             resetInteraction()
         }
-        if changes.contains(.header) { resendAutopause() }
+        if changes.contains(.header) {
+            resendAutopause()
+            startStorage()
+        }
         if changes.contains(.clock) { handleClock() }
         guard let renderer else { return }
         if changes.contains(.header) || configuredFor != store.header {

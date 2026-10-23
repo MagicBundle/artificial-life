@@ -185,16 +185,18 @@ import Testing
         play.store.apply(.clck(chapterClock()))  // the card is over the map, not in the dock
         let width = DockLayout.defaultExtent
         // The fixed parts, measured, are inside the budget the layout plans with.
-        let strip = height(ClockStripView(play: play, model: model).padding(10), width: width)
+        let strip = height(ClockStripView(play: play, model: model).padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 4), width: width)
+        let storage = height(StorageStripView(play: play, model: model).padding(.horizontal, 10).padding(.bottom, 6), width: width)
         let row = height(AlertRowView(row: AlertStack.row(for: try #require(play.store.alerts.alert(id: 12_000_601))), model: model), width: width - 20)
         let picker = height(Picker("", selection: .constant(DockTab.cast)) { ForEach(DockTab.allCases) { Text($0.rawValue).tag($0) } }
             .pickerStyle(.segmented).labelsHidden().padding(.horizontal, 10).padding(.vertical, 8), width: width)
         let full = try PlayFixtureStore.store("3d")  // (a world with all the records of a G3a card: organism, storm, group)
         let cards = [WorldSelection.organism(uid: 5_000_000_100), .storm(id: 7), .kin(id: 17)].compactMap { Inspector.card(for: $0, store: full) }
         let inspectors = cards.map { height(InspectorCardView(card: $0, model: model), width: width) }
-        print("measured: strip \(strip), alert row \(row), tab picker \(picker), inspector cards \(inspectors) of \(cards.map(\.rows.count)) rows")
+        print("measured: strip \(strip), storage strip \(storage), alert row \(row), tab picker \(picker), inspector cards \(inspectors) of \(cards.map(\.rows.count)) rows")
         #expect(cards.count == 3 && inspectors.allSatisfy { $0 <= DockBudget.inspector + 0.5 || $0 <= 340 })
         #expect(strip <= DockBudget.clockStrip, "the strip is \(strip) high; the budget says \(DockBudget.clockStrip)")
+        #expect(storage <= DockBudget.storage, "the Storage strip is \(storage) high; the budget says \(DockBudget.storage)")
         #expect(row <= DockBudget.alertRow, "an alert row is \(row) high; the budget says \(DockBudget.alertRow)")
         #expect(row <= AlertRowView.height + 0.5)
         #expect(picker <= DockBudget.tabs, "the tabs are \(picker) high; the budget says \(DockBudget.tabs)")
