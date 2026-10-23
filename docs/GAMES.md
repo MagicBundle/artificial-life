@@ -1161,6 +1161,19 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
       (3) *item 16, storm namings on the alert surface:* they stay there, as D3 has it (4 of the 8 alerts of importance 2 or more, 0.38 a minute in all, 0.19 without them).
     - **Still open:** D9 (the objective), which waits for the owner's first play-through of G3b (inputs per chapter), and D10 (the Strike cooldown).
 
+22. **Storage: the size monitor and the save mode (the owner, 2026-10-23, from his first play of the World window; DESIGN §34.10, row I56).**
+    The request: "an important UI element that we should include is live monitoring of run file size, if a run is being recorded. Users should
+    also be able to switch off recording easily from the side panel." A played world records no video; about 99% of its disk is the saves
+    (a 686 MB checkpoint at every chapter end, every 6,000 steps and on quit; the last three and the origin are kept, so a world plateaus near
+    3 GB), the rest the logs (a few MB a chapter, needed by the reports and the replays).
+    - *Decided by the owner:* **switching recording off means keep only the newest save** (plus the origin, which is always kept); saves still
+      happen at chapter ends and on quit, each replacing the previous one; the logs are still written. D5's "the last three" is the default
+      (`all`), `newest` is the switch.
+    - *Built from it (the coordinator's choices, to revisit):* the switch deletes nothing at once, the next save prunes (and the window says
+      so); the mode is kept in `play.json` and logged to `commands.jsonl`; the size is measured by the client (stat only, every 5 seconds and
+      after each save) and shown in a one-line Storage strip under the clock strip with the switch, a warning under three saves of room; a
+      700-point dock keeps its two alert rows beside the inspector, but three need 760 points now.
+
 
 ## 11. Prior-art sources
 

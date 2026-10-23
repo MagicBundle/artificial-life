@@ -479,6 +479,18 @@ and resumed once. There is one run per condition apart from the seed pair.
   (4) **The leftovers of the Mac day** (for the next one; the checkpoint on the external drive was measured afterwards, 5.6 to 6.4 s, `RESULTS_G3B` §6.1): a fork of `64k3d_s1` as the second window, the client's draw beside a running engine, the 2D digest matrix and `test_weather_w2_instruments` on Metal.
   (5) **G3c spec after the owner plays G3b** (DESIGN §35, row I55 reserved): recorded replay files, rewind, offline advance, canonical saves behind a measurement, the select-and-order report mode. **W2b waits for the owner's go** (the occupancy gate G0, the calibration, the 14 runs, the held-out label windows; about 10.7 GPU hours and 119 GB); W4 as before. The decisions to revisit: C20 (every recommendation of review round 2), the fresh-preset grace, the objective (D9), the Strike cooldown (D10).
 
+## Games storage: the size monitor and the save mode (DESIGN §34.10, row I56, `docs/GAMES.md` §10 item 22)
+
+The owner's first play asked for a live size of the run on disk and an easy way to stop "recording". A played world's disk is about 99% saves
+(686 MB per checkpoint on the planet, the last three and the origin kept), the rest logs. **Built:** `saves all|newest` (a control line,
+`alife play --saves`, `play.json` `saves`, `RunDir.keep_newest`): `newest` keeps only the newest save and the origin, prunes at the next
+save (never when the line is sent), keeps the logs; echoed by the header's `play.saves` and `CLCK.flags` bit 2; logged to `commands.jsonl`.
+The window's **Storage strip** under the clock strip shows the world's size (saves and logs, growth since the start and this chapter, free
+space, a warning under three saves of room), measured by the client from the directory, and carries the **All saves | Newest only** switch.
+No trajectory change (`test_play_saves` toggles the mode at random against a plain run). `DockBudget` was re-measured: two alert rows still fit
+beside the inspector at 700 points, three need 760. **Not run:** the strip beside a real planet on the Mac (a person pressing the switch
+during a chapter end), and the size of an adopted research run's older checkpoints being pruned by `newest` (stated in the window's text).
+
 ## GUI follow-ups (PR #3, merged)
 
 - **Fork pre-fill:** in Fork mode the levers are loaded from `runs/SOURCE/config.json`, where a missing
