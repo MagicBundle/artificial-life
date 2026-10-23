@@ -194,6 +194,7 @@ def test_the_grammar_commands_are_the_spec_list() -> None:
     assert set(play.COMMANDS) == {
         *("pause", "run", "step", "rate", "color", "every", "focus", "follow", "idnt", "labels", "quit"),
         *("autopause", "watch", "unwatch", "ack", "power", "intent"),
+        "saves",
     }
     assert set(play.UNBUILT_LINES) <= set(play.COMMANDS)
 

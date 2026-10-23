@@ -39,6 +39,12 @@ package enum AutopauseSetting: Equatable, Sendable {
     case alert(String, Bool)
 }
 
+/// How many saves a world keeps (DESIGN §34.10): `all` the last few (3) and the origin, `newest` only the newest and the origin. The
+/// world's `saves` line sets it; it changes what stays on disk, never the trajectory.
+package enum SaveMode: String, CaseIterable, Equatable, Hashable, Sendable {
+    case all, newest
+}
+
 /// A `power` line (DESIGN §34.5): `power preview NAME id=N ...` dry-runs a power and answers one `PLAN`, `power NAME id=N
 /// ...` queues it and `power cancel NAME id=N` ends a running one. `id` is the client's request number, echoed in every
 /// `PLAN` of the exchange. The grammar checks the shape of a value; its range is the power's to clamp or refuse.
@@ -78,7 +84,7 @@ package struct PowerCommand: Equatable, Sendable {
 
 /// A control line for the stdin of `alife play` (DESIGN §33.2.6, §34.6). The world applies lines one at a time between
 /// steps; the presentation-only ones (`focus follow idnt labels color every autopause watch unwatch ack`, a `power
-/// preview` and a refused `power`) change what is written and when, never the trajectory. An applied `power` or `power
+/// preview` and a refused `power`) change what is written and when, never the trajectory; `saves` changes what stays on disk. An applied `power` or `power
 /// cancel` is the one line that does: the world logs it (`director.jsonl`) so a played world replays.
 ///
 /// ```text
@@ -87,6 +93,7 @@ package struct PowerCommand: Equatable, Sendable {
 ///         | "autopause" ( "on" | "off" | "chapter" ( "on" | "off" ) | "alert" CLASS ( "on" | "off" ) )
 ///         | "watch" ( KIN_ID | "off" ) | "unwatch" KIN_ID | "ack" ALERT_ID
 ///         | "power" [ "preview" | "cancel" ] NAME "id=" N { KEY "=" VALUE } | "intent" TEXT
+///         | "saves" ( "all" | "newest" )
 /// ```
 package enum PlayCommand: Equatable, Sendable {
     case pause
@@ -119,6 +126,8 @@ package enum PlayCommand: Equatable, Sendable {
     case power(PowerCommand)
     /// Reserved (G4): the world answers "intent is not available in this build".
     case intent(String)
+    /// Keeps the last saves (`all`) or only the newest one (`newest`) from the next save on; nothing is deleted at once (§34.10).
+    case saves(SaveMode)
 
     /// A command the grammar cannot express (the world would drop the line with a note on stderr).
     package struct Invalid: Error, Equatable {
@@ -170,6 +179,7 @@ package enum PlayCommand: Equatable, Sendable {
         case .unwatch(let id): return try "unwatch " + Self.identifier(id, "a kin id")
         case .ack(let id): return try "ack " + Self.identifier(id, "an alert id")
         case .power(let power): return try Self.line(of: power)
+        case .saves(let mode): return "saves " + mode.rawValue
         case .intent(let text):
             let trimmed = text.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty, !trimmed.contains(where: { $0.isNewline }) else {

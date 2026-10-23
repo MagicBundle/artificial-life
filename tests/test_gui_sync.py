@@ -222,9 +222,10 @@ def test_the_play_header_keys_match_playheader() -> None:
         autopause=sr.autopause_block(chapter=True, alert={"chapter": True}),
         powers=sr.powers_block({"food": {"action": "a", "label": "l", "cost": 1, "cooldown": 1}}),
         game_specs="game-v0",
+        saves=sr.saves_block(mode="all", keep=3, adopted=True),
     )
     assert swift_struct_keys(text, "PlayHeader") == set(g3b) and set(g3b) - set(play) == {
-        "alerts", "autopause", "powers", "game_specs",
+        "alerts", "autopause", "powers", "game_specs", "saves",
     }  # fmt: skip
     assert swift_struct_keys(text, "Weather") == set(play["weather"])
     assert swift_struct_keys(text, "Refs") == set(play["weather"]["refs"])
@@ -236,6 +237,7 @@ def test_the_play_header_keys_match_playheader() -> None:
     assert swift_struct_keys(text, "Class") == set(next(iter(g3b["alerts"]["classes"].values())))
     assert swift_struct_keys(text, "Cap") == set(g3b["alerts"]["cap"])
     assert swift_struct_keys(text, "Autopause") == set(g3b["autopause"])
+    assert swift_struct_keys(text, "Saves") == set(g3b["saves"])
     # the legacy header keys the Swift header reads are those `legacy_header` writes, plus `play`
     legacy = sr.legacy_header(
         dims=3, size=1.0, height=1.0, n=1, bond_slots=1, radius=1.0, field_cell=1.0, fg=1, fz=1, nch=1,
@@ -345,9 +347,10 @@ def test_the_g3b_environment_and_identity_keys_match() -> None:
     assert f"maxTitle = {sr.ALERT_TITLE_MAX}" in text and f"maxText = {sr.ALERT_TEXT_MAX}" in text
     assert f"maxText = {sr.PLAN_TEXT_MAX}" in text and f"maxCaution = {sr.PLAN_CAUTION_MAX}" in text
     assert f"idBase: UInt64 = {sr.ALERT_ID_BASE}" in text
-    assert (sr.CLCK_FLAG_CHAPTER_PAUSE, sr.CLCK_FLAG_ALERT_PAUSE) == (1, 2)
+    assert (sr.CLCK_FLAG_CHAPTER_PAUSE, sr.CLCK_FLAG_ALERT_PAUSE, sr.CLCK_FLAG_SAVES_NEWEST) == (1, 2, 4)
     assert "var chapterPauseArmed: Bool { flags & 1 != 0 }" in text
     assert "var alertPauseArmed: Bool { flags & 2 != 0 }" in text
+    assert "var savesNewestOnly: Bool { flags & 4 != 0 }" in text
     for name, values in (
         ("State", sr.ALERT_STATES),
         ("Surface", sr.ALERT_SURFACES),
@@ -489,6 +492,24 @@ def test_the_play_control_lines_the_window_sends_parse() -> None:
         assert command is not None, line
         names.add(command.name)
     assert names == set(play.COMMANDS)
+
+
+def test_the_save_modes_the_window_sends_are_the_engines() -> None:
+    """`SaveMode` (PlayCommand.swift) is the grammar of `saves` and of the header's `play.saves.mode`; the
+    strip's words are the engine's help text (DESIGN section 34.10)."""
+    from alife import play
+    from alife import streamrec as sr
+
+    text = (CORE / "PlayCommand.swift").read_text(encoding="utf-8")
+    assert swift_enum_values(text, "SaveMode") == set(play.SAVE_MODES) == set(sr.SAVE_MODES)
+    for mode in play.SAVE_MODES:
+        assert play.parse_play_command(f"saves {mode}") == play.PlayCommand("saves", mode)
+        assert sr.saves_block(mode=mode, keep=3)["mode"] == mode
+    views = (ROOT / "gui" / "Sources" / "AlifeControl" / "StorageViews.swift").read_text(encoding="utf-8")
+    assert (
+        "Recording off keeps only the newest save; your world stays resumable; logs are still written."
+        in views
+    )
 
 
 def test_the_play_world_file_keys_match_playworldfile() -> None:

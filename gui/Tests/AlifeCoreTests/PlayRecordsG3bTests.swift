@@ -151,6 +151,20 @@ import Testing
         #expect(clocks.map(\.chapter) == [2, 3] && clocks.map(\.inChapter) == [6000, 1] && clocks.allSatisfy { $0.chapterLen == 6000 })
     }
 
+    @Test func theSaveModeIsInTheHeaderAndInBitTwoOfTheClock() throws {
+        let clocks = try PlayFixture(kind: Self.kind).events().compactMap { event -> PlayClock? in
+            if case .record(.clck(let c)) = event { c } else { nil }
+        }
+        #expect(clocks.map(\.savesNewestOnly) == [false, true] && clocks.map(\.flags) == [3, 5])
+        let store = try WorldFixtures.store(Self.kind)
+        #expect(store.play?.saves == PlayHeader.Saves(mode: "newest", keep: 3))
+        #expect(SaveModeView.current(clock: store.clock, header: store.play?.saves, requested: nil) == .newest)
+        // An older server's header has no such key and its clocks never set the bit: the world keeps its last saves.
+        let old = try WorldFixtures.store("3d")
+        #expect(old.play?.saves == nil && old.clock?.savesNewestOnly == false)
+        #expect(SaveModeView.current(clock: nil, header: old.play?.saves, requested: nil) == .all)
+    }
+
     @Test func aKinGroupNamesItsThread() throws {
         let store = try WorldFixtures.store(Self.kind)
         let kin = try #require(store.identities?.tables.kin)
