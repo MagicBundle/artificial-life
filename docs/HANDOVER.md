@@ -16,7 +16,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | path | what |
 |---|---|
 | `src/alife/` | engine (step, physics, bonds, energy, lifecycle, fields, brain, ...), run tooling (runner, runio, metrics), render, viewer, bench, CLI, the fused Metal neighbour kernel (`knn_metal.py`, DESIGN §4), the offline W0 weather prototype (`weather.py`, `analysis/w0.py`, `docs/STORMS_W0.md`), `director/` (the host-side ecosystem director, see below) and `game/` (the game observers of build steps G1 and G2, `docs/DESIGN.md` §28 and §29; G2 also adds the generic `groups.py` and `tracking.py` and `analysis/social.py`; W2a adds `game/tracers.py` and `analysis/w2.py`, DESIGN §32; N1 adds `game/report.py`, `templates.py`, `lexicon.py` and `analysis/world_report.py`, `docs/DESIGN.md` §31) |
-| `tests/` | pytest suite. 4,252 fast tests passed, 89 were skipped (the GPU-only kernel tests, N1's `llm` test and the like) and 1 xfailed on the CPU device at the head of G3b (`-m "not slow"`, 37 deselected, `test_lifecycle_compiles_and_matches_eager` among them; 32 min 18 s in one process at the second merge-readiness check, 29 min 34 s at the first, about 9 minutes as six parallel shards during the build, which shared one kernel cache; since I58 `-n 8 --dist loadfile` takes 6 minutes with a private cache per worker) plus the slow ones |
+| `tests/` | pytest suite. 4,252 fast tests passed, 89 were skipped (the GPU-only kernel tests, N1's `llm` test and the like) and 1 xfailed on the CPU device at the head of G3b (`-m "not slow"`, 37 deselected, `test_lifecycle_compiles_and_matches_eager` among them; 32 min 18 s in one process at the second merge-readiness check, 29 min 34 s at the first, about 9 minutes as six parallel shards during the build, which shared one kernel cache; since I58 `-n 6 --dist loadfile` takes 7 minutes with a private cache per worker) plus the slow ones |
 | `docs/DESIGN.md` | the spec: state schema, step order, ledger, RNG streams, config, tests, decision and review logs (the director is §26, the LLM tier §26.10) |
 | `docs/DIRECTOR.md` | the design of the ecosystem director; steps 1 to 4 are built, §12 to §14 record how steps 2 to 4 refine it |
 | `docs/RESEARCH.md` | research directions (emergence, open-endedness, signalling) assessed against prior work, with a recommended order |
@@ -40,7 +40,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 ```bash
 uv sync --extra viewer --extra video          # Python 3.12 pinned in .python-version
 uv run pytest -m "not slow" -q                # fast suite, one process (about 28 min on the Mac)
-uv run pytest -m "not slow" -q -n 6 --dist loadfile   # the same in parallel (about 6.5 min; DESIGN section 22.0, I58)
+uv run pytest -m "not slow" -q -n 6 --dist loadfile   # the same in parallel (about 7 min; DESIGN section 22.0, I58)
 uv run alife run --preset 64k --steps 20000 --out runs/NAME
 uv run alife resume runs/NAME --steps 100000
 uv run alife view runs/NAME                   # pygame viewer (re-simulates from the latest checkpoint)
@@ -66,7 +66,7 @@ of the Python process). A second SIGINT is a hard exit. Do not use `--quiet` if 
 ## Parallel tests (I58)
 
 `pytest-xdist` is in the dev group. The fast suite runs as `uv run pytest -m "not slow" -q -n 6 --dist loadfile`
-(6 min 31 s warm on the M5 Pro against 27 min 38 s serial; 7.9 GB in all, `-n 8` is 5 min 56 s and 9.1 GB; with `-p cpu_device` and `PYTHONPATH` as
+(7 min 0 s warm on the M5 Pro against 27 min 17 s serial; 7.8 GB in all, `-n 8` is 5 min 56 s and 9.1 GB; with `-p cpu_device` and `PYTHONPATH` as
 before for the CPU device). Why those numbers and the whole measurement table are in DESIGN §22.0 "Parallel runs".
 What to know:
 - **Use `-n 6` while LM Studio holds its model; `-n 8` only with more than about 15 GB free** (`vm_stat`, free plus
