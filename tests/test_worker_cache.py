@@ -115,12 +115,25 @@ def test_concurrent_processes_with_private_caches_do_not_collide(tmp_path: Path)
     assert {p: p.stat().st_mtime_ns for p in libs(shared)} == before
 
 
-def fake_kernel(d: Path, name: str, age_s: float) -> None:
+def kernel_source(name: str, consts: tuple[str, ...] = ()) -> str:
+    """The shape of MLX's generated CPU source, enough for ``kernel_ambiguity``: the kernel function (its name
+    is ``tape_kinds_dtypes_hash``, a ``C`` in the kinds per constant) and one ``int32_t`` declaration each."""
+    kinds = "C" * len(consts) or "V"
+    decls = "".join(f"  int32_t tmp_{chr(65 + i)} = {c};\n" for i, c in enumerate(consts))
+    head = f"void Tape{name}_{kinds}_i4_1234_contiguous(int* shape, int64_t** strides, void** args)"
+    return f"{head} {{\n{decls}}}\n"
+
+
+def fake_kernel(d: Path, name: str, age_s: float, consts: tuple[str, ...] = ()) -> None:
     d.mkdir(parents=True, exist_ok=True)
     t = time.time() - age_s
+    (d / f"{name}.cpp").write_text(kernel_source(name, consts))
+    (d / f"lib{name}.so").write_text(name)
     for f in (d / f"{name}.cpp", d / f"lib{name}.so"):
-        f.write_text(name)
         os.utime(f, (t, t))
+
+
+AMBIGUOUS = ("12", "1")  # also (1, 21): the "121" of F21 item 6
 
 
 def test_isolate_seeds_complete_libraries_and_hands_new_ones_back(
@@ -147,6 +160,51 @@ def test_isolate_seeds_complete_libraries_and_hands_new_ones_back(
     assert not ses.root.exists()
     assert (shared / "libnew.so").read_text() == "new" and (shared / "new.cpp").exists()
     assert (shared / "libold.so").read_text() == "old"  # untouched
+
+
+def test_isolate_does_not_seed_an_ambiguous_kernel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shared cache may hold a library compiled by another configuration under a name that two constant
+    lists share (F21 item 6); a process must compile its own, so it is not linked in. A source that cannot be
+    read, and one that is no kernel, count as ambiguous."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    shared = worker_cache.kernel_dir(tmp_path)
+    fake_kernel(shared, "plain", age_s=3600)
+    fake_kernel(shared, "plain2", age_s=3600, consts=("7",))  # one constant pins itself
+    fake_kernel(shared, "pinned", age_s=3600, consts=("0", "48"))  # "048" is no int32 print
+    fake_kernel(shared, "amb", age_s=3600, consts=AMBIGUOUS)
+    fake_kernel(shared, "binary", age_s=3600)
+    (shared / "binary.cpp").write_bytes(b"\xff\xfe\x00")
+    fake_kernel(shared, "nokernel", age_s=3600)
+    (shared / "nokernel.cpp").write_text("int x;")
+    ses = worker_cache.isolate()
+    try:
+        assert ses.seeded == 3
+        assert sorted(p.name for p in ses.private.glob("lib*.so")) == [
+            "libpinned.so",
+            "libplain.so",
+            "libplain2.so",
+        ]
+        assert not (ses.private / "amb.cpp").exists()
+    finally:
+        ses.close()
+    assert (shared / "libamb.so").exists()  # the shared cache itself is untouched
+
+
+def test_close_does_not_hand_back_an_ambiguous_kernel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    ses = worker_cache.isolate()
+    try:
+        fake_kernel(ses.private, "fresh", age_s=0)
+        fake_kernel(ses.private, "freshamb", age_s=0, consts=AMBIGUOUS)
+        fake_kernel(ses.private, "freshbin", age_s=0)
+        (ses.private / "freshbin.cpp").write_bytes(b"\xff\xfe\x00")
+    finally:
+        handed = ses.close()
+    shared = worker_cache.kernel_dir(tmp_path)
+    assert handed == 1
+    assert sorted(p.name for p in shared.iterdir()) == ["fresh.cpp", "libfresh.so"]
 
 
 def test_isolate_in_a_given_parent_and_without_a_shared_cache(

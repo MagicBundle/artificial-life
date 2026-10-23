@@ -11,15 +11,14 @@ MLX reads ``TMPDIR`` at **every** kernel compile (``std::filesystem::temp_direct
 controller and ``-p cpu_device`` importing MLX first do not matter. ``isolate`` does so for the life of the
 process: a fresh private directory, seeded with hard links to the complete libraries already in the shared
 cache (the developer's, or the one CI restores), so that a warm cache still avoids the ``g++`` runs.
-``close`` hands the libraries the process compiled back to the shared cache, one atomic hard link each,
-source first, so that CI's cache step and the next run find them, and restores ``TMPDIR``. Child processes
-of a test (the CLI tests) inherit the private ``TMPDIR`` while the session runs.
+``close`` hands the unambiguous libraries the process compiled back to the shared cache, one atomic hard link
+each, source first, so that CI's cache step and the next run find them, and restores ``TMPDIR``. Child
+processes of a test (the CLI tests) inherit the private ``TMPDIR`` while the session runs.
 
 Kernels whose names are ambiguous (two constant lists whose printed forms concatenate alike share a name;
-F21 item 6) are **not** filtered here: they pass through as the shared cache always passed them. The branch
-``fix/mlx-compile-collision`` (``tests/jit_cache.py``) filters them (``ambiguous``) in an ``isolate`` of the
-same shape (it returns an object with ``close()``); the two combine by letting that ``isolate`` replace this
-one and keeping ``is_collector`` and ``isolate_for`` below, which decide where it runs.
+F21 item 6) are never seeded from the shared cache and never handed back (``kernel_ambiguity.ambiguous``,
+the filter of the branch ``fix/mlx-compile-collision``): a process compiles its own, from its own constants,
+whatever the shared cache holds under that name. A source or library that cannot be read counts as ambiguous.
 """
 
 from __future__ import annotations
@@ -33,6 +32,8 @@ from pathlib import Path
 
 import mlx.core as mx
 import pytest
+
+import kernel_ambiguity
 
 # A library younger than this may still be being written by a process that shares the directory (MLX's
 # compiler writes it in place); an older one is complete.
@@ -85,6 +86,15 @@ def _link(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
+def shareable(cpp: Path) -> bool:
+    """May this kernel pass between the shared cache and a private one? Not if its name is ambiguous
+    (``kernel_ambiguity``) or its source cannot be read."""
+    try:
+        return not kernel_ambiguity.ambiguous(cpp.read_text())
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def _pairs(d: Path) -> list[tuple[Path, Path]]:
     """``(source, library)`` of every kernel in ``d``: ``lib<file>.so`` and its ``<file>.cpp``."""
     return [(d / f"{so.name[3:-3]}.cpp", so) for so in d.glob("lib*.so")]
@@ -129,7 +139,7 @@ class Session:
         try:
             self.shared.mkdir(parents=True, exist_ok=True)
             for cpp, so in _pairs(self.private):
-                if (self.shared / so.name).exists() or not cpp.exists():
+                if (self.shared / so.name).exists() or not cpp.exists() or not shareable(cpp):
                     continue
                 _link(cpp, self.shared / cpp.name)  # the source first: a library is never shared without it
                 _link(so, self.shared / so.name)
@@ -142,7 +152,7 @@ class Session:
 
 def isolate(parent: Path | None = None, min_age_s: float = MIN_AGE_S) -> Session:
     """Point MLX's CPU kernel cache at a fresh private directory under ``parent`` (default: the shared
-    ``TMPDIR``), seeded with the shared cache's complete libraries."""
+    ``TMPDIR``), seeded with the shared cache's complete, unambiguous libraries."""
     tempfile.gettempdir()  # pin Python's own temp dir first: pytest's tmp_path stays where it was
     shared_root = temp_root()
     shared = kernel_dir(shared_root)
@@ -156,7 +166,7 @@ def isolate(parent: Path | None = None, min_age_s: float = MIN_AGE_S) -> Session
     now = time.time()
     for cpp, so in _pairs(shared) if shared.is_dir() else []:
         try:
-            if now - so.stat().st_mtime < min_age_s or not cpp.exists():
+            if now - so.stat().st_mtime < min_age_s or not cpp.exists() or not shareable(cpp):
                 continue
             _link(cpp, private / cpp.name)
             _link(so, private / so.name)
