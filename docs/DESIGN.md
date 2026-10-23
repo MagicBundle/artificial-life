@@ -3330,7 +3330,7 @@ Pinned details (impl, WP5):
   step counts below stand.
 - **`golden`** also pins the platform (`system-machine-device`): CPU kernels may round differently across
   architectures, so the digest is only compared where it was recorded.
-- **CI** (`.github/workflows/ci.yml`, ubuntu-latest): `astral-sh/setup-uv`,
+- **CI** (`.github/workflows/ci.yml`, pinned to ubuntu-24.04: the Linux golden digests depend on the image's g++, which compiles MLX's CPU kernels; on 2026-10-23 ubuntu-latest moved to ubuntu-26.04 and both goldens changed, with no code change, so the runner is pinned and the kernel cache key carries the image (`ImageOS`); moving the image is a deliberate golden re-pin): `astral-sh/setup-uv`,
   `uv sync --locked --group dev --extra viewer --extra video` (so the pygame loop and ffmpeg tests run rather than
   skip), `uv run ruff check`, `uv run ruff format --check`, `uv run pytest -m "not slow" -q -n 4 --dist loadfile` (four
   workers for the runner's four vCPUs, I58; see "Parallel runs" below). A nightly job runs `-m slow` the same way. Both jobs set `TMPDIR=$RUNNER_TEMP` and cache `$RUNNER_TEMP/mlx`: MLX's CPU backend JIT-compiles
