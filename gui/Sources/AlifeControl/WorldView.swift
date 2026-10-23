@@ -41,7 +41,7 @@ struct WorldView: View {
             .coordinateSpace(name: "world")
             .onChange(of: frames.free, initial: true) { _, free in model.setFreeRect(free) }
         }
-        .frame(minWidth: 1100, minHeight: 700)
+        .frame(minWidth: 1100, minHeight: LauncherLayout.windowMinHeight)
         .navigationTitle(WorldTitle.window(world: play.world, header: play.store.play))
         .background(WindowCloseObserver(restorable: false, group: "world") { play.stop() })
         .sheet(isPresented: $model.launcherOpen) {
