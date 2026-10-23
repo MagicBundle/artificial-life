@@ -17,6 +17,13 @@ and resumed play the same play: every field ``Tracker.update`` reads, and the pe
 extent of each active track. It is written next to each checkpoint (``RunDir.write_storms_state``) and read
 back by ``StormLayer.open``.
 
+**Initial storms** (G3b, DESIGN §34.1). The first tick of a layer made by this run (a new world, or one
+whose tracker state was lost) finds the storms that already existed; their ``born`` and ``named`` events
+carry ``"initial": true`` in the tick's line so that the chronicle does not tell them as happenings
+(``game.chronicle``; the persistence rule, ``STORM_MIN_DETECTIONS``, is applied there, on the logged lines).
+The flag is the layer's ``initial_pending``, saved in the state while it is set, so that a stop before the
+first tick does not change what the first tick says.
+
 Host code: numpy only apart from ``read_frame_extra`` (one ``mx.eval`` per tick). No subscript assignment
 (``tests/test_lint.py``): arrays by concatenation and comprehension, dictionaries by literals.
 """
@@ -43,6 +50,7 @@ __all__ = [
     "KEEP_DETS",
     "NAME_ZETA",
     "STORMS_FORMAT",
+    "STORM_MIN_DETECTIONS",
     "STORM_NAME_SALT",
     "STRM_LEADS",
     "TRACK_POINTS",
@@ -492,6 +500,9 @@ class Tracker:
 
 STORMS_FORMAT: Final = "alife-storms"  # the ``format`` of ``observers/storms_<t>.json``
 STORMS_VERSION: Final = 1
+STORM_MIN_DETECTIONS: Final = (
+    8  # detections before the chronicle tells a track's birth (200 steps at tick 25)
+)
 KEEP_DETS: Final = 40  # detections of an active track kept (and persisted)
 TRACK_POINTS: Final = 24  # points of a STRM track polyline
 STRM_LEADS: Final = (250, 500, 1000)  # the STRM extrapolation leads (steps)
@@ -554,6 +565,7 @@ class StormLayer:
     notes: dict[int, Note] = field(default_factory=dict)
     step: int = 0  # the step of the last tick (the checkpoint step for a restored layer)
     restarted: bool = False  # opened at a step > 0 with no tracker state: ids begin again at 1
+    initial_pending: bool = False  # the next tick finds storms that already existed (module docstring)
 
     def __post_init__(self) -> None:
         if not (self.dc_ref > 0 and math.isfinite(self.dc_ref)):
@@ -639,6 +651,9 @@ class StormLayer:
                 ),
             }
         events = self._events(t, first_new, before, named_now, notes)
+        if self.initial_pending:  # the first tick of this layer: what it finds was there before
+            events = [{**e, "initial": True} for e in events]
+            self.initial_pending = False
         tr.compact(KEEP_DETS)
         self.notes = {i: n for i, n in notes.items() if i in {x.id for x in tr.tracks}}
         self.step = t
@@ -804,6 +819,7 @@ class StormLayer:
             "tick_step": self.step,
             "next_id": self.tracker.next_id,
             "tracks": tracks,
+            **({"initial": True} if self.initial_pending else {}),
         }
 
     @classmethod
@@ -826,6 +842,7 @@ class StormLayer:
             notes = {**notes, d["id"]: Note(d["t_first"], d["peak"], d["name"], (d["ext"][0], d["ext"][1]))}
         layer.tracker.tracks = tracks
         layer.tracker.next_id = int(state["next_id"])
+        layer.initial_pending = bool(state.get("initial", False))
         layer.notes = notes
         layer.step = int(state.get("tick_step", state["step"]))  # the last tick (``step``: the checkpoint's)
         return layer
@@ -852,6 +869,9 @@ class StormLayer:
         layer = cls(p, dc_ref, tick)
         layer.step = step
         layer.restarted = step > 0
+        layer.initial_pending = (
+            layer.restarted
+        )  # a restart finds storms that were there; ``fresh`` sets it too
         return layer, reason
 
     def save(self, rd: Any, step: int) -> None:

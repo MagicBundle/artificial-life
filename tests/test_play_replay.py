@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from alife import cli, play
-from alife.runio import DIRECTOR_LOG_FILE, RunDir
+from alife.runio import ALERTS_FILE, ALERTS_REPLAY_FILE, DIRECTOR_LOG_FILE, RunDir
 from play_decode import decode
 from play_helpers import checkpoint_digests, rows, same_events, snapshots
 
@@ -68,6 +68,61 @@ def test_play_replay_equals_resume_replay_and_leaves_the_log_alone(
     d = decode(cap.out)
     envs = [r for r in d.records if r.tag == "ENVS" and r.f["json"]["levers"]]
     assert envs, "the replayed levers reach the ENVS record"
+
+
+def test_a_replay_regenerates_the_same_alerts_and_names_the_directors_moves(
+    live: Path, tmp_path: Path, capfdbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """Every alert class but ``engine`` is a function of the steps, so two replays of one log write the same
+    ``alerts.jsonl`` byte for byte (a replay cuts it to the checkpoint and regenerates the rest), and the
+    moves of the log reach it as ``director_acted`` (DESIGN §34.3)."""
+    played = []
+    for name in ("a", "b"):
+        w = tmp_path / name
+        shutil.copytree(live, w)
+        code = cli.main(
+            ["play", str(w), "--adopt", "--checkpoint", "0", "--truncate", "--replay", "--no-control",
+             "--rate", "max", "--until", "60"]
+        )  # fmt: skip
+        assert code == 0, capfdbinary.readouterr().err.decode(errors="replace")
+        played.append(w)
+    first, second = ((w / ALERTS_FILE).read_bytes() for w in played)
+    assert first == second and first
+    lines = RunDir.open(played[0]).read_jsonl(ALERTS_FILE)
+    entries = [e for e in RunDir.open(live).read_jsonl(DIRECTOR_LOG_FILE) if e.get("kind") != "header"]
+    moves = [m for m in lines if m["class"] == "director_acted"]
+    assert sorted(m["key"] for m in moves) == sorted(
+        f"{e['step_applied']}:{e['action']}" for e in entries if e["source"] in ("rule", "llm")
+    )
+    assert all(m["class"] != "engine" for m in lines)
+    capfdbinary.readouterr()
+
+
+def test_a_replays_wall_clock_alerts_go_to_their_own_file(
+    live: Path, tmp_path: Path, capfdbinary: pytest.CaptureFixture[bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``engine`` class reads the wall clock, so a replay's differ from the original play's: they are
+    written to ``alerts.replay.jsonl`` and ``alerts.jsonl`` keeps the deterministic classes only."""
+    original = play.PlayPacer.after_step
+
+    def late(self: play.PlayPacer, state: object, out: object, t: int, social: list) -> None:
+        original(self, state, out, t, social)
+        if t == 10:
+            self.alerts.failure(t, "a test")  # an engine-class alert, as a slow replay would raise
+            self._emit_alerts()
+
+    monkeypatch.setattr(play.PlayPacer, "after_step", late)
+    w = tmp_path / "w"
+    shutil.copytree(live, w)
+    code = cli.main(
+        ["play", str(w), "--adopt", "--checkpoint", "0", "--truncate", "--replay", "--no-control",
+         "--rate", "max", "--until", "60"]
+    )  # fmt: skip
+    assert code == 0, capfdbinary.readouterr().err.decode(errors="replace")
+    rd = RunDir.open(w)
+    assert [m["class"] for m in rd.read_jsonl(ALERTS_REPLAY_FILE)] == ["engine"]
+    assert "engine" not in {m["class"] for m in rd.read_jsonl(ALERTS_FILE)}
+    capfdbinary.readouterr()
 
 
 def test_a_replay_with_a_log_that_does_not_validate_is_refused_before_anything_is_written(

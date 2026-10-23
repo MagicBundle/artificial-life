@@ -17,7 +17,7 @@ import pytest
 from alife.game import lexicon, templates
 from alife.game import report as R
 from alife.game.templates import TEMPLATES, Slot, Template
-from report_helpers import A0, deaths, full_sheet, interv, mk_sheet, pop, random_sheet
+from report_helpers import A0, deaths, full_sheet, interv, mk_sheet, pop, random_sheet, turnover
 
 DATA = Path(__file__).parent / "data"
 
@@ -30,18 +30,23 @@ def test_catalogue_is_valid_and_complete() -> None:
     assert roles == {"lead", "body", "headline", "block", "ticker"}
     # every id of the specification's catalogue (§4.2), with the variants this implementation names
     expect = {
-        "P-up", "P-down", "P-flat", "P-near", "P-zero", "P-low", "D-1", "D-2", "B-1", "B-2", "LN", "TL",
-        "G-r1", "G-r2", "G-r3", "G-s", "G-c", "E-born", "E-born-o", "E-split", "E-merged", "E-dissolved",
-        "E-dissolved-o", "CE-born", "CE-split", "CE-merged", "CE-dissolved", "H-1", "H-1n", "H-1e", "H-1ne",
+        "P-up", "P-down", "P-flat", "P-near", "P-zero", "P-low", "TO", "DC", "DS", "B-1", "B-2", "LN", "TL",
+        "G-r1", "G-r2", "G-r3", "G-s", "G-c", "KT-formed", "KT-formed-from", "KT-ended-into", "KT-ended-into-i",
+        "KT-ended", "KT-ended-i", "KS", "ST-n", "ST-b", "ST-named", "ST-peak", "ST-end", "ST-d",
+        "CE-born", "CE-split", "CE-merged", "CE-dissolved", "H-1", "H-1n", "H-1e", "H-1ne",
         "H-1x", "H-1xn", "H-1xe", "H-1xne", "H-2", "LB-a", "LB-i", "R", "C", "C-1", "END", "HP-up", "HP-down",
-        "HP-flat", "HP-near", "HP-dip", "HE-born", "HE-split", "HE-merged", "HE-dissolved", "HH", "HL", "I-regen", "I-loss",
-        "I-seasons", "I-drift", "I-fert", "I-move", "I-imm", "I-cat", "S-regen", "S-gain", "S-seasons",
-        "S-drift", "I-more", "X-regen", "X-regen-1", "X-gain", "X-gain-1", "X-replaced", "X-open", "W", "T-pop",
+        "HP-flat", "HP-near", "HP-dip", "HK-formed", "HK-ended-into", "HK-ended", "HS", "HQ", "HH", "HL",
+        "I-regen", "I-loss", "I-seasons", "I-drift", "I-fert", "I-fert-d", "I-move", "I-imm", "I-cat", "S-regen",
+        "S-gain", "S-seasons", "S-drift", "I-more", "X-regen", "X-regen-1", "X-gain", "X-gain-1", "X-replaced",
+        "X-open", "W",
     }  # fmt: skip
-    assert expect <= set(TEMPLATES)
-    assert {t for t in TEMPLATES if t.startswith("T:")} == {
-        "T:" + t for t in TEMPLATES if t.startswith(("I-", "E-")) and t != "I-more"
-    }
+    assert expect == {t for t in TEMPLATES if not t.startswith("T:")}
+    ticker = {"T:" + t for t in TEMPLATES if t.startswith(("I-", "KT-")) and t != "I-more"}
+    assert {t for t in TEMPLATES if t.startswith("T:")} == ticker | {"T:ST-named", "T:ST-end"}
+    # the deaths list, the kin group event sentences of the tracker and the population filler are gone
+    assert not {"D-1", "D-2", "E-born", "E-split", "E-merged", "E-dissolved", "HE-born", "T-pop"} & set(
+        TEMPLATES
+    )
     assert set(templates.SECTION_OF) <= set(TEMPLATES)
     assert set(templates.SECTION_OF.values()) == set(templates.SECTION_ORDER)
     assert templates.SECTION_ORDER[0] == "D" and templates.SECTION_ORDER[-1] == "END"
@@ -89,9 +94,15 @@ def _values_for(t: Template, **over) -> dict:
     for name, sl in t.slots.items():
         out.update(
             {
-                name: {"int": 5, "id": 7, "pct": 0.5, "change": 0.1, "lever": 0.5}.get(
-                    sl.fmt, "the Braelix kin"
-                )
+                name: {
+                    "int": 5,
+                    "id": 7,
+                    "pct": 0.5,
+                    "change": 0.1,
+                    "lever": 0.5,
+                    "dec1": 6.0,
+                    "dec2": 1.25,
+                }.get(sl.fmt, "the Braelix kin")
             }
         )
     out.update(over)
@@ -119,7 +130,8 @@ def test_agreement_at_zero_one_two(tid: str, count: str) -> None:
             assert not re.search(rf"(?<![\d,.])1 ({plurals})\b", text), (tid, text)
         if n == 2:
             assert not re.search(
-                r"(?<![\d,.])2 (was|is|death|birth|member|agent|house|colony|step|setting)\b", text
+                r"(?<![\d,.])2 (was|is|death|birth|member|agent|house|colony|step|setting|organism|storm|change)\b",
+                text,
             ), text
 
 
@@ -127,8 +139,35 @@ def test_agreement_phrases() -> None:
     def r(tid, **kw):
         return templates.render(tid, _values_for(TEMPLATES[tid], **kw))
 
-    assert r("D-1", total=1, starved=1, killed=0, aged=0).startswith("There was 1 death: 1 by starvation,")
-    assert r("D-1", total=2).startswith("There were 2 deaths:")
+    assert (
+        r("TO", born=1, died=0, k=0.0)
+        == "1 organism was born and 0 died: a turnover of 0.0 times the population."
+    )
+    assert r("TO", born=2, died=1, k=1.25).startswith(
+        "2 organisms were born and 1 died: a turnover of 1.2 times"
+    )
+    assert (
+        r("DC", n=1) == "1 organism died by catastrophe."
+        and r("DC", n=3) == "3 organisms died by catastrophe."
+    )
+    assert r("ST-n", tracked=1, named=1) == "1 storm was tracked at the end of the chapter, 1 of them named."
+    assert (
+        r("ST-n", tracked=6, named=4) == "6 storms were tracked at the end of the chapter, 4 of them named."
+    )
+    assert r("ST-b", formed=1, dissolved=0) == "1 storm formed and 0 dissolved during the chapter."
+    assert r("ST-b", formed=0, dissolved=2) == "0 storms formed and 2 dissolved during the chapter."
+    assert (
+        r("HS", n=1) == "1 storm reached named strength" and r("HS", n=3) == "3 storms reached named strength"
+    )
+    assert r("ST-d", n=1, steps=250).startswith("1 organism died in storms in the 250 steps to step")
+    assert r("ST-end", age=1).endswith("after 1 step.") and r("ST-end", age=8725).endswith(
+        "after 8,725 steps."
+    )
+    assert r("DS", steps=1).startswith("5 starved in the 1 step to step")
+    assert r("KS", n=1) == "1 further kin group change did not last long enough to be listed."
+    assert r("KS", n=45) == "45 further kin group changes did not last long enough to be listed."
+    assert r("KT-ended-into", steps=1, peak=1).endswith("it lasted 1 step and had up to 1 member.")
+    assert r("KT-formed", size=1).endswith(": 1 member.")
     assert r("B-2", births=1, immigrants=1) == "There was 1 birth and 1 arrival from outside."
     assert r("B-2", births=0, immigrants=3) == "There were 0 births and 3 arrivals from outside."
     assert r("C-1", tracked=1, largest_size=1) == "1 colony was tracked at step 5; it had 1 member."
@@ -164,6 +203,8 @@ def test_formats() -> None:
         and templates.fmt_lever(-0.0) == "0"
     )
     assert templates.fmt_lever(300.5) == "300.5"
+    assert templates.fmt_dec(6.0, 1) == "6.0" and templates.fmt_dec(6.04, 1) == "6.0"
+    assert templates.fmt_dec(1.0129, 2) == "1.01" and templates.fmt_dec(0, 2) == "0.00"
     # ids are not counts: no thousands separator in a fallback name (B6)
     sheet = mk_sheet(ents=[("kin_group", 1830, None)])
     assert [e["display"] for e in sheet["entities"]] == ["kin group 1830"]
@@ -180,6 +221,8 @@ def test_source_words_and_rule_names() -> None:
     )  # the model's entries carry no rule
     assert templates.source_words("rule", "runaway_damper") == "the director's rule runaway_damper"
     assert templates.source_words("rule", None) == "the director"  # an entry with no rule (N20)
+    assert templates.source_words("player", None) == "the player" == templates.SOURCE_WORDS["player"]
+    assert templates.source_words("player", "boredom") == "the player"  # a power carries no rule
     assert (
         templates.source_words("rule", "not_a_rule") == "the director"
     )  # an unknown identifier is never printed
@@ -192,8 +235,10 @@ def test_vocabulary_is_the_template_words() -> None:
     for t in TEMPLATES.values():
         words |= templates.template_words(t.text)
     assert words <= templates.TEMPLATE_VOCAB
-    assert 100 < len(templates.TEMPLATE_VOCAB) < 160  # "about 130"
-    for banned in ("after", "before", "since", "until", "following", "amid", "so", "then", "as", "because",
+    assert (
+        100 < len(templates.TEMPLATE_VOCAB) < 200
+    )  # "about 130" in version 1, the storm words came in version 2
+    for banned in ("before", "until", "following", "amid", "so", "then", "as", "because",
                    "despite", "recovered", "gathered", "fed", "guarded", "settled", "rested", "effect",
                    "probability", "mostly", "majority", "dominant", "raised", "cut"):  # fmt: skip
         assert banned not in templates.TEMPLATE_VOCAB
@@ -201,10 +246,11 @@ def test_vocabulary_is_the_template_words() -> None:
 
 def test_section_and_salience_orders_are_pinned() -> None:
     assert templates.SECTION_ORDER == (
-        "D", "P-low", "E", "G", "B", "LN", "TL", "H", "LB", "R", "CE", "C", "END",
+        "D", "P-low", "DS", "ST", "E", "KS", "G", "B", "LN", "TL", "H", "LB", "R", "CE", "C", "END",
     )  # fmt: skip
     assert templates.SALIENCE_ORDER == (
-        "D", "P-low", "E", "G-top", "B", "LN", "TL", "H", "LB", "R", "G-rest", "CE", "C", "END",
+        "D", "P-low", "DS", "ST-n", "ST-b", "EV", "ST-peak", "ST-d", "G-top", "B", "LN", "TL", "H", "LB", "R",
+        "G-rest", "CE", "KS", "C", "END",
     )  # fmt: skip
 
 
@@ -224,11 +270,14 @@ def test_section_and_salience_orders_are_pinned() -> None:
         ("V5", ["I", "my", "you"], ["in", "is"]),
         ("V6", ["will fall", "should", "forecasts", "going to", "set to rise", "expected"], ["expert", "the setting"]),
         ("V7", ["species", "adapted", "evolving", "mutations", "a clan"], ["adopt", "clap"]),
-        ("V8", ["massive", "the worst", "significantly", "last", "first", "total", "totals"], ["lasting", "firstly"]),
+        ("V8", ["massive", "the worst", "significantly", "last", "the last chapter", "first", "total", "totals"],
+         ["lasting", "firstly", "lasted", "did not last long enough", "it did not last"]),
         ("T2", ["one", "twenty", "half", "twice", "threefold", "per cent", "thousands"], ["done", "none", "stone"]),
         ("L1", ["regrowth", "regenerating", "patches", "an immigrant", "catastrophic", "the director's", "drift", "drifting", "drifted"], ["pat", "pace", "Drifter", "drifters"]),
         ("L2", ["Hunter", "hunting", "hunted", "settlers", "Unspecialised", "Tethering", "bonding", "Grazer", "grazers", "Drifter", "drifters", "Floater", "Sinker"], ["hunger", "bond", "graze", "drift", "float", "sink"]),
         ("G", ["dominant", "collapse", "extinction", "majority", "sharply"], ["domain", "colleague"]),
+        ("L3", ["a storm", "storms", "Storm", "the northern hemisphere", "a disturbance", "vorticity", "weather",
+                "wind", "winds"], ["train", "grain", "disturb", "weathered", "formed"]),
     ],
 )  # fmt: skip
 def test_stems_match_their_inflections(lst: str, hits: list[str], misses: list[str]) -> None:
@@ -240,7 +289,12 @@ def test_stems_match_their_inflections(lst: str, hits: list[str], misses: list[s
 
 
 def test_lexicon_lists_are_data_and_pinned() -> None:
-    assert set(lexicon.LEXICON) == {*lexicon.NEVER_LISTS, *lexicon.LEVER_LISTS, *lexicon.LABEL_LISTS}
+    assert set(lexicon.LEXICON) == {
+        *lexicon.NEVER_LISTS,
+        *lexicon.LEVER_LISTS,
+        *lexicon.LABEL_LISTS,
+        *lexicon.STORM_LISTS,
+    }
     assert all(isinstance(t, str) and t for terms in lexicon.LEXICON.values() for t in terms)
     assert len(lexicon.LEXICON_DIGEST) == 64
 
@@ -251,14 +305,18 @@ def _bare(text: str) -> str:
 
 def test_r6_lists_are_absent_from_every_template() -> None:
     """The templates themselves never match the 'never' lists; lever words only in the block and the ticker
-    (D-2's 'catastrophe' aside); label names in no template (they come through the label slot)."""
+    (DC's 'catastrophe' aside); storm words only in the storm sentences, their headline and their ticker lines;
+    label names in no template (they come through the label slot)."""
     for t in TEMPLATES.values():
         text = _bare(t.text)
         assert not lexicon.scan(text, lexicon.NEVER_LISTS), (t.id, lexicon.scan(text, lexicon.NEVER_LISTS))
         assert not lexicon.scan(text, lexicon.LABEL_LISTS), t.id
         lever = [w for _, w in lexicon.scan(text, lexicon.LEVER_LISTS)]
         if t.role not in templates.BLOCK_ROLES:
-            assert lever == (["catastrophe"] if t.id == "D-2" else []), (t.id, lever)
+            assert lever == (["catastrophe"] if t.id == "DC" else []), (t.id, lever)
+        storm = lexicon.scan(text, lexicon.STORM_LISTS)
+        base = t.id.removeprefix("T:")
+        assert not storm or base.startswith("ST-") or base == "HS", (t.id, storm)
     for words in (*templates.SOURCE_WORDS.values(), *templates.RANK_WORDS):
         assert not lexicon.scan(words.replace("{rule}", "x"), lexicon.NEVER_LISTS)
     # the agreement words
@@ -273,22 +331,40 @@ def test_r6check_every_rendered_string_of_a_full_sheet() -> None:
     body, heads, block, excluded = R.candidates(sheet)
     assert excluded == []
     seen = {c["template"] for c in body}
-    assert seen >= {"D-2", "P-low", "E-split", "E-dissolved", "E-born", "E-merged", "CE-born", "G-r1", "G-r2",
-                    "G-s", "G-c", "B-2", "LN", "TL", "H-1ne", "H-2", "LB-a", "R", "C", "END"}  # fmt: skip
+    assert seen >= {"TO", "DC", "DS", "P-low", "KT-formed", "KT-formed-from", "KT-ended-into", "KT-ended-into-i",
+                    "KT-ended", "KT-ended-i", "KS", "ST-n", "ST-b", "ST-named", "ST-peak", "ST-end", "ST-d", "CE-born",
+                    "G-r1", "G-r2", "G-s", "G-c", "B-2", "LN", "TL", "H-1ne", "H-2", "LB-a", "R", "C", "END"}  # fmt: skip
     texts = [(c["template"], c["text"], False) for c in body]
     texts += [(h["template"], h["text"], False) for h in heads]
     texts += [(b["template"], b["text"], True) for b in block]
     texts += [("lead", R.lead_of(sheet)["text"], False)]
-    texts += [("ticker", t["text"], True) for t in R.ticker(sheet)]
+    texts += [(t["template"], t["text"], True) for t in R._ticker_lines(sheet)]
     assert len(texts) > 30
+    names = sorted(
+        {
+            f[k]
+            for f in sheet["facts"]
+            if f["kind"] in ("thread", "storm")
+            for k in ("name", "other")
+            if f.get(k)
+        },
+        key=len,
+        reverse=True,
+    )
     for tid, text, is_block in texts:
         masked = R._mask(text, [(e["display"], e["name"] or str(e["id"])) for e in sheet["entities"]])
+        masked = R._mask_words(masked, names)  # the names of threads and storms
         if is_block:
             masked = R._mask_words(masked, sorted(templates.RULE_NAMES))
         assert not lexicon.scan(masked, lexicon.NEVER_LISTS), (tid, text)
         assert not lexicon.scan(masked, lexicon.LABEL_LISTS) or tid in ("LB-a", "LB-i"), (tid, text)
         lever = [w for _, w in lexicon.scan(masked, lexicon.LEVER_LISTS)]
         assert is_block or lever in ([], ["catastrophe"]), (tid, text, lever)
+        storm = lexicon.scan(masked, lexicon.STORM_LISTS)
+        assert not storm or tid.removeprefix("T:").startswith("ST-") or tid.removeprefix("T:") == "HS", (
+            tid,
+            text,
+        )
 
 
 # --- the checker --------------------------------------------------------------------------------------------------
@@ -303,8 +379,9 @@ def _cands(sheet):
 def test_full_sheet_passes_every_rule() -> None:
     sheet = full_sheet()
     by, _heads, block = _cands(sheet)
-    assert {"D-2", "P-low", "E-split", "E-dissolved", "E-born", "E-merged", "G-r1", "G-r2", "G-s", "G-c", "B-2", "LN",
-            "TL", "H-1ne", "H-2", "LB-a", "R", "CE-born", "C", "END"} <= set(by)  # fmt: skip
+    assert {"TO", "DC", "DS", "P-low", "KT-formed", "KT-ended-into", "KT-ended", "KS", "ST-n", "ST-b", "ST-named",
+            "ST-end", "ST-d", "G-r1", "G-r2", "G-s", "G-c", "B-2", "LN", "TL", "H-1ne", "H-2", "LB-a", "R",
+            "CE-born", "C", "END"} <= set(by)  # fmt: skip
     for c in by.values():
         assert R.check_string(c["text"], c, sheet) == [], c["text"]
     for b in block:
@@ -324,7 +401,8 @@ def _check(sheet, tid, facts, block=False):
 def test_r1_template_and_slots() -> None:
     sheet = full_sheet()
     by, _, _ = _cands(sheet)
-    c = by["D-2"]
+    c = by["TO"]
+    assert c["text"] == "28,030 organisms were born and 50,700 died: a turnover of 1.8 times the population."
     assert R.check_string(c["text"], c, sheet) == []
     assert "R1:no template" in R.check_string(c["text"], None, sheet)
     assert any(
@@ -334,18 +412,18 @@ def test_r1_template_and_slots() -> None:
     # other slots than the template's
     assert any(
         r.startswith("R1:slots differ")
-        for r in R.check_string(c["text"], {**c, "slots": {"total": c["slots"]["total"]}}, sheet)
+        for r in R.check_string(c["text"], {**c, "slots": {"born": c["slots"]["born"]}}, sheet)
     )
     # a slot that reads another field, another kind of fact, a fact that does not exist
-    wrong = {**c, "slots": {**c["slots"], "aged": [c["slots"]["aged"][0], "killed"]}}
-    assert any("R1:slot aged" in r for r in R.check_string(c["text"], wrong, sheet))
-    wrong = {**c, "slots": {**c["slots"], "aged": ["F1", "aged"]}}
-    assert any("R1:slot aged" in r for r in R.check_string(c["text"], wrong, sheet))
-    wrong = {**c, "slots": {**c["slots"], "aged": ["F999", "aged"]}}
-    assert any("R1:slot aged" in r for r in R.check_string(c["text"], wrong, sheet))
+    wrong = {**c, "slots": {**c["slots"], "died": [c["slots"]["died"][0], "born"]}}
+    assert any("R1:slot died" in r for r in R.check_string(c["text"], wrong, sheet))
+    wrong = {**c, "slots": {**c["slots"], "died": ["F1", "died"]}}
+    assert any("R1:slot died" in r for r in R.check_string(c["text"], wrong, sheet))
+    wrong = {**c, "slots": {**c["slots"], "died": ["F999", "died"]}}
+    assert any("R1:slot died" in r for r in R.check_string(c["text"], wrong, sheet))
     # the text is not what the template gives
     assert "R1:the text is not the template filled from the sheet" in R.check_string(
-        c["text"].replace("5,060", "5,061"), c, sheet
+        c["text"].replace("50,700", "50,701"), c, sheet
     )
     # cites that are not the facts of the slots
     assert any("cites" in r for r in R.check_string(c["text"], {**c, "cites": ["F1"]}, sheet))
@@ -429,17 +507,69 @@ def test_r5_gates_are_rederived_from_the_facts() -> None:
     assert _gate(sheet, "G-r1", group=g[2])
     assert _gate(sheet, "G-r2", group=g[1])
     assert _gate(sheet, "G-r1", group=g[5])  # a group with no carried rank is never 'the largest'
-    # the event verb equals the event's kind; overlap only on a born event with an origin
+    # the colony event verb equals the event's kind
     ev = {(e["event"], e["system"]): e for e in ctx.kinds["event"]}
-    assert _gate(sheet, "E-split", event=ev[("split", 2)]) == []
-    assert _gate(sheet, "E-merged", event=ev[("split", 2)])
-    assert _gate(sheet, "E-born", event=ev[("dissolved", 3)])
-    assert _gate(sheet, "E-dissolved-o", event=ev[("dissolved", 3)])  # no 'other' to name
-    assert _gate(sheet, "E-dissolved", event=ev[("born", 4)])
-    assert _gate(sheet, "CE-born", event=ev[("born", 4)])  # a kin-group event is not a colony's
-    # no headline for a re-identified group (HE); H-2 only for a strictly largest house; died out; new
-    reid = {**ev[("born", 4)], "reid": True}
-    assert _gate(sheet, "HE-born", event=reid)
+    assert _gate(sheet, "CE-born", event=ev[("born", 6)]) == []
+    assert _gate(sheet, "CE-split", event=ev[("born", 6)])
+    # the thread sentences: formed (from another thread or not), merged into another, dissolved, the lifetime
+    th = {(t["event"], t["thread"]): t for t in ctx.kinds["thread"]}
+    assert _gate(sheet, "KT-formed-from", thread=th[("formed", 2)]) == []
+    assert _gate(sheet, "KT-formed", thread=th[("formed", 2)])  # it split from another thread
+    assert _gate(sheet, "KT-formed", thread=th[("formed", 4)]) == []
+    assert _gate(sheet, "KT-formed-from", thread=th[("formed", 4)])
+    assert _gate(sheet, "KT-ended-into", thread=th[("ended", 3)]) == []
+    assert _gate(sheet, "KT-ended", thread=th[("ended", 3)])  # it merged into another thread
+    assert _gate(sheet, "KT-ended-into", thread=th[("formed", 2)])
+    assert _gate(sheet, "KT-ended-into-i", thread=th[("ended", 3)])  # not a thread of the initial cast
+    assert _gate(sheet, "KT-ended-i", thread=th[("ended", 5)])  # it names the thread it merged into
+    assert _gate(sheet, "KT-ended-into-i", thread=th[("ended", 5)]) == []
+    assert _gate(sheet, "KT-ended-i", thread=th[("ended", 7)]) == []
+    assert _gate(sheet, "KT-ended", thread=th[("ended", 7)])  # an initial thread has no lifetime to state
+    assert _gate(sheet, "HK-formed", thread=th[("formed", 2)]) == []
+    assert _gate(sheet, "HK-formed", thread=th[("ended", 3)])
+    assert _gate(sheet, "HK-ended-into", thread=th[("ended", 3)]) == []
+    assert _gate(sheet, "HK-ended", thread=th[("ended", 3)])
+    # the number of changes too short to list is at least one
+    assert _gate(sheet, "KS", untold=ctx.one("untold")) == []
+    assert _gate(sheet, "KS", untold={**ctx.one("untold"), "n": 0})
+    # the largest group is told when that changed: another thread was the largest, or its share moved by two points
+    top = ctx.kinds["group"][0]
+    assert (
+        _gate(sheet, "G-r1", group={**top, "thread": 2, "prev_thread": 2, "prev_share": top["share"] + 0.019})
+        != []
+    )
+    assert (
+        _gate(sheet, "G-r1", group={**top, "thread": 2, "prev_thread": 2, "prev_share": top["share"] + 0.02})
+        == []
+    )
+    assert (
+        _gate(sheet, "G-r1", group={**top, "thread": 2, "prev_thread": 3, "prev_share": top["share"]}) == []
+    )
+    assert _gate(sheet, "G-r1", group={**top, "thread": None, "prev_thread": None, "prev_share": None}) == []
+    # the storm sentences: named or ended inside the chapter, a hemisphere, the counts
+    st = {s_["storm"]: s_ for s_ in ctx.kinds["storm"]}
+    assert _gate(sheet, "ST-named", storm=st[3]) == [] and _gate(sheet, "ST-end", storm=st[3]) == []
+    assert _gate(sheet, "ST-end", storm=st[4])  # it did not end
+    assert _gate(sheet, "ST-named", storm={**st[3], "named_step": A0 - 5})  # named before the chapter
+    assert _gate(sheet, "ST-end", storm={**st[3], "end": A0 + 9_000_000})
+    assert _gate(sheet, "ST-peak", storm={**st[3], "hemisphere": "eastern"})
+    sn = ctx.one("storms")
+    assert _gate(sheet, "ST-n", storms=sn) == [] and _gate(sheet, "ST-b", storms=sn) == []
+    assert _gate(sheet, "ST-n", storms={**sn, "tracked": 0, "named": 0})
+    assert _gate(sheet, "ST-n", storms={**sn, "named": sn["tracked"] + 1})
+    assert _gate(sheet, "ST-b", storms={**sn, "formed": 0, "dissolved": 0})
+    assert _gate(sheet, "HS", storms=sn) == [] and _gate(sheet, "HS", storms={**sn, "named_new": 0})
+    sd = ctx.one("stormdeaths")
+    assert _gate(sheet, "ST-d", stormdeaths=sd) == [] and _gate(sheet, "ST-d", stormdeaths={**sd, "n": 9})
+    # the starved: a row at 1.35 times the median or more
+    ds = ctx.one("starve")
+    assert _gate(sheet, "DS", starve=ds) == []
+    assert _gate(sheet, "DS", starve={**ds, "n": int(1.35 * ds["median"]) - 1})
+    assert _gate(sheet, "DS", starve={**ds, "median": 0})
+    # the quiet headline only for a quiet chapter
+    assert _gate(sheet, "HQ") and _gate(mk_sheet(kinds={"population": [pop(1000, 1010, 1000)]}), "HQ") == []
+    # no headline for houses that died out unless one of them had been among the largest; H-2 only for a
+    # strictly largest house; died out; new
     h = ctx.one("houses")
     assert _gate(sheet, "H-2", houses={**h, "largest_strict": False})
     assert _gate(sheet, "H-1ne", houses=h) == []
@@ -447,11 +577,22 @@ def test_r5_gates_are_rederived_from_the_facts() -> None:
     assert _gate(sheet, "H-1e", houses={**h, "extinct": 0})  # 'died out' with none
     assert _gate(sheet, "H-1", houses={**h, "exact": False})  # an inexact count without its clause
     assert _gate(sheet, "H-1x", houses=h)
+    assert _gate(sheet, "HH", houses=h) == []
     assert _gate(sheet, "HH", houses={**h, "exact": False})
-    # deaths: D-1 has no catastrophe clause when there were catastrophe deaths
+    assert _gate(sheet, "HH", houses={**h, "extinct_top": 0})  # a turnover of small houses is not a headline
+    # the turnover: the counts of the births and the deaths, k the deaths over the mean population
+    tov = ctx.one("turnover")
+    assert _gate(sheet, "TO", turnover=tov) == []
+    assert _gate(sheet, "TO", turnover={**tov, "k": tov["k"] + 0.01})
+    assert _gate(sheet, "TO", turnover={**tov, "born": tov["born"] + 1})
+    assert _gate(sheet, "TO", turnover={**tov, "died": tov["died"] + 1})
+    # the deaths by catastrophe, only when there were some
     d = ctx.one("deaths")
-    assert _gate(sheet, "D-1", deaths=d)
-    assert _gate(sheet, "D-2", deaths={**d, "catastrophe": 0, "total": d["total"] - d["catastrophe"]})
+    assert _gate(sheet, "DC", deaths=d) == []
+    assert _gate(sheet, "DC", deaths={**d, "catastrophe": 0})
+    # 'lowest' needs a deep dip
+    shallow_low = mk_sheet(kinds={"population": [pop(1000, 1100, 900)]})
+    assert _gate(shallow_low, "P-low", population=R._Ctx(shallow_low).one("population"))
     # arrivals; colonies; the end of the run
     b = ctx.one("births")
     assert _gate(sheet, "B-1", births=b)
@@ -509,7 +650,15 @@ def test_r5_gates_of_the_block() -> None:
         "S-pos" not in TEMPLATES
     )  # a patch position is a point event: no standing line, no persistence claim
     assert _gate(sheet, "S-regen", standing=st)
-    # W only if the sentences of windows are on, the window fact exists and lies inside the span and the chapter
+    # a Bloom has a duration: its sentence says so; an untimed gain does not
+    bloom = {**iv["fertility_shift4"], "duration": 6_000}
+    assert _gate(sheet, "I-fert-d", intervention=bloom) == []
+    assert _gate(sheet, "I-fert", intervention=bloom)
+    assert _gate(sheet, "I-fert-d", intervention=iv["fertility_shift4"])
+    assert R._i_template(bloom) == "I-fert-d" and R._i_template(iv["fertility_shift4"]) == "I-fert"
+    assert R._i_template(iv["fertility_shift5"]) == "I-move"
+    # W: the window fact exists, lies inside the span of a timed entry and the chapter, and names rows at or
+    # before its ends
     w = {
         "id": "F90",
         "kind": "window",
@@ -517,26 +666,27 @@ def test_r5_gates_of_the_block() -> None:
         "entry": 0,
         "w0": A0 + 500,
         "w1": A0 + 1500,
+        "r0": A0 + 500,
+        "r1": A0 + 1500,
         "from": 5,
         "to": 6,
     }
-    assert any("window" in x for x in R._gate_problems(ctx, "W", {"window": w}))  # the rules have it off
-    on = R.ReportRules(window_sentences=True)
-    s2 = mk_sheet(rules=on, kinds={"intervention": [regen]})
-    c2 = R._Ctx(s2, on)
-    reg2 = c2.one("intervention")
-    ok = {
-        "id": "F90",
-        "kind": "window",
-        "intervention": reg2["id"],
-        "w0": A0 + 500,
-        "w1": A0 + 1500,
-        "from": 5,
-        "to": 6,
-    }
-    assert R._gate_problems(c2, "W", {"window": ok}) == []
-    assert R._gate_problems(c2, "W", {"window": {**ok, "w1": A0 + 1501}})  # past the span's end
-    assert R._gate_problems(c2, "W", {"window": {**ok, "w0": A0 + 400}})  # before it started
+    assert R._gate_problems(ctx, "W", {"window": w}) == []
+    assert R._gate_problems(ctx, "W", {"window": {**w, "w1": A0 + 1501}})  # past the span's end
+    assert R._gate_problems(ctx, "W", {"window": {**w, "w0": A0 + 400}})  # before it started
+    assert R._gate_problems(
+        ctx, "W", {"window": {**w, "r0": A0 + 501}}
+    )  # the baseline row is after the entry
+    assert R._gate_problems(ctx, "W", {"window": {**w, "r1": A0 + 1501}})  # the last row is after the span
+    assert R._gate_problems(ctx, "W", {"window": {**w, "r0": A0 - 250}})  # a row before the chapter
+    assert R._gate_problems(ctx, "W", {"window": {**w, "r1": A0 + 500}})  # the two rows are one
+    off = R.ReportRules(window_sentences=False)
+    assert any("window" in x for x in R._gate_problems(R._Ctx(mk_sheet(rules=off), off), "W", {"window": w}))
+    untimed = {**regen, "duration": None}  # only an entry that has a duration has a window
+    s2 = mk_sheet(kinds={"intervention": [untimed]})
+    assert R._gate_problems(
+        R._Ctx(s2), "W", {"window": {**w, "intervention": R._Ctx(s2).one("intervention")["id"]}}
+    )
 
 
 def test_r5_gated_words_need_their_template() -> None:
@@ -544,11 +694,15 @@ def test_r5_gated_words_need_their_template() -> None:
     by, _, _ = _cands(sheet)
     c = by["B-1" if "B-1" in by else "B-2"]
     # a gated word in a template that does not own it
-    t = by["E-split"]
-    text = t["text"].replace("split", "merged")
+    t = by["KT-ended"]
+    text = t["text"].replace("dissolved", "merged")
     why = R.check_string(text, t, sheet)
     assert any("merged" in r for r in why)
     assert any("R5" in r or "R1" in r for r in why)
+    # a storm word outside the storm sentences is refused (R6, L3)
+    assert any(r.startswith("R6:L3") for r in R.check_string("A storm formed.", None, sheet))
+    st = by["ST-named"]
+    assert not any(r.startswith("R6:L3") for r in R.check_string(st["text"], st, sheet))
     assert c  # the candidates exist
 
 
@@ -613,22 +767,22 @@ def test_2000_random_sheets_have_no_exclusion() -> None:
         assert len({x["id"] for x in rep["body"]}) == len(rep["body"])
         assert all(x["text"].startswith("Step ") for x in lines)
     missing = {t for t in TEMPLATES if t not in seen}
-    # the window sentence is off; the rest of the catalogue is reached by the random sheets
-    assert missing == {"W"}, missing
+    # the whole catalogue is reached by the random sheets
+    assert missing == set(), missing
 
 
 def test_templates_pin_digests() -> None:
     """Every table the stored records depend on is pinned: a change is a deliberate change of a version."""
-    assert templates.TEMPLATE_DIGEST == "6d9d8a7b48238599ae81aa61d0a58aefd027309993f46f4790433c3f198a65dc"
-    assert lexicon.LEXICON_DIGEST == "bd82b46362d8e9b400dd59ec75ccf78eed709bbdaea1f85748407f06dc2b1f55"
-    assert R.REPORT_V1.digest() == "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d"
+    assert templates.TEMPLATE_DIGEST == "af0b8df7a415b3978aa474e9c891d8566803c0fb79784d7e98b2d8ee1749d82d"
+    assert lexicon.LEXICON_DIGEST == "d500f90279341ad5aeef6007301c565bef14e2a29b5c838d17b1f49da8eb3229"
+    assert R.REPORT_V1.digest() == "6da80b824e0fc50e8e74b4b49dc702057d45f449f8b1de4f321a59f4c4d0dc2f"
     assert R.label_table_digest() == "9d8b3f339aad261a5e1458511c1c4e1d7434cd838c50e06b3aba0c3b2e395abf"
     assert R.known_social_digest() == "4551a6aa56c3d6c8fdc1def7f8fd586c7da1a93d6476625ac4896bb892a22fd4"
     assert (R.REPORT_VERSION, R.CHECKER_VERSION, templates.TEMPLATE_VERSION, lexicon.LEXICON_VERSION) == (
-        1,
-        1,
+        2,
         1,
         2,
+        3,
     )
     # the label table's rules digest is the version-1 rule set's, and the social digest the default social rules'
     from alife.game.rules import RULES_V1
@@ -639,13 +793,31 @@ def test_templates_pin_digests() -> None:
     assert set(R.KNOWN_SOCIAL) == {SOCIAL_V1.digest()} and R.KNOWN_SOCIAL[SOCIAL_V1.digest()] == (250, 16)
 
 
-def test_deaths_without_a_catastrophe_use_d1() -> None:
-    sheet = mk_sheet(kinds={"population": [pop(100, 90)], "deaths": [deaths(5, 1, 0, 0)]})
+def test_the_turnover_sentence_and_the_interventions_block_in_a_body() -> None:
+    sheet = mk_sheet(
+        kinds={
+            "population": [pop(100, 90)],
+            "deaths": [deaths(5, 1, 0, 0)],
+            "births": [{"kind": "births", "births": 9, "immigrants": 0}],
+            "turnover": [turnover(9, 6, 100, 90)],
+        }
+    )
     body, _, _, ex = R.candidates(sheet)
-    assert ex == [] and body[0]["template"] == "D-1" and body[0]["mandatory"]
-    assert body[0]["text"] == "There were 6 deaths: 5 by starvation, 1 by attack and 0 by old age."
-    sheet = mk_sheet(kinds={"population": [pop(100, 90)], "deaths": [deaths(0, 1, 0, 0)]})
-    assert R.candidates(sheet)[0][0]["text"].startswith("There was 1 death: 0 by starvation, 1 by attack")
+    assert ex == [] and body[0]["template"] == "TO" and body[0]["mandatory"]
+    assert body[0]["text"] == "9 organisms were born and 6 died: a turnover of 0.1 times the population."
+    # no catastrophe deaths: no DC; one organism: the singular form
+    assert "DC" not in {c["template"] for c in body}
+    one = mk_sheet(
+        kinds={
+            "population": [pop(100, 90)],
+            "deaths": [deaths(1, 0, 0, 0)],
+            "births": [{"kind": "births", "births": 1, "immigrants": 0}],
+            "turnover": [turnover(1, 1, 100, 90)],
+        }
+    )
+    assert R.candidates(one)[0][0]["text"].startswith("1 organism was born and 1 died: a turnover of")
+    cat = mk_sheet(kinds={"population": [pop(100, 90)], "deaths": [deaths(0, 1, 0, 3)]})
+    assert [c["text"] for c in R.candidates(cat)[0]] == ["3 organisms died by catastrophe."]
     # the rule identifier is masked in the block and refused in a body
     iv = interv(0, "regen_pulse", A0 + 500, {"mult": 0.5}, duration=5000)
     s = mk_sheet(kinds={"population": [pop(100, 90)], "intervention": [iv]})
@@ -654,6 +826,15 @@ def test_deaths_without_a_catastrophe_use_d1() -> None:
         "runaway_damper" in block[0]["text"]
         and R.check_string(block[0]["text"], block[0], s, block=True) == []
     )
+    # the player is a source of its own (a power, DESIGN §34.5)
+    own = interv(1, "regen_pulse", A0 + 500, {"mult": 1.3}, source="player", rule=None, duration=6000)
+    s = mk_sheet(kinds={"population": [pop(100, 90)], "intervention": [own]})
+    (line,) = [b for b in R.candidates(s)[2] if b["template"] == "I-regen"]
+    assert (
+        line["text"]
+        == "At step 1,512,500, the player set food regrowth to 1.3 times its base rate for 6,000 steps."
+    )
+    assert R.check_string(line["text"], line, s, block=True) == []
 
 
 # --- the probe sheets, the crafted items and the corpus -----------------------------------------------------------
@@ -685,16 +866,19 @@ def test_the_twelve_probe_sheets_have_no_exclusion() -> None:
         assert excluded == [] and heads and body, name
         rep = R.template_report(sheet)
         assert rep["lead"] and rep["headline"]["text"] and len(rep["body"]) >= 1
-        assert [t for t in R.ticker(sheet)], name
+        # the ticker says nothing in a chapter with no entry, thread or storm event (version 2 has no filler)
+        quiet = not any(f["kind"] in ("intervention", "thread", "storm") for f in sheet["facts"])
+        assert bool(R.ticker(sheet)) is (not quiet), name
         assert R.facts_digest(sheet)  # JSON with no NaN
-    # the probe's eventful sheet renders the frames of tracking.Event
+    # the probe's eventful sheet renders the thread events
     s02 = [c["text"] for c in R.candidates(sheets["s02"])[0]]
     assert (
-        "Between step 1,513,000 and step 1,513,250, the Shaemund kin split from the Braelix kin with 1,210 members."
+        "Shaemund has held together since step 1,513,000 after splitting from Braelix: 1,210 members." in s02
+    )
+    assert (
+        "Flauth merged into Braelix at step 1,517,000; it lasted 8,000 steps and had up to 520 members."
         in s02
     )
-    assert ("Between step 1,517,000 and step 1,517,250, the Flauth kin merged into the Braelix kin; it had 520 members at "
-            "step 1,517,000.") in s02  # fmt: skip
 
 
 def test_the_crafted_items_are_rejected_and_none_is_a_candidate() -> None:
@@ -725,12 +909,12 @@ def test_the_crafted_items_are_rejected_and_none_is_a_candidate() -> None:
         if cats == ["R1"]:
             pinned_only_r1.add(it["id"])
         # claiming a template does not help: the text is not what any template gives
-        for tid in ("P-up", "G-r1", "E-split", "D-1"):
+        for tid in ("P-up", "G-r1", "KT-formed-from", "TO"):
             c = next((x for x in R.candidates(sheet)[0] if x["template"] == tid), None)
             if c is not None:
                 assert R.check_string(text, c, sheet), (it["id"], tid)
     # the items whose words are all in the vocabulary are held by R1 alone (only a template renders a string)
-    assert pinned_only_r1 == {"A9", "C1", "C11", "D13", "F1", "G1", "G2", "G3", "H1"}
+    assert pinned_only_r1 == {"A8", "C11", "D13", "F1", "G1", "G2", "G3", "H1"}
 
 
 def test_the_corpus_of_the_directors_journals_is_rejected() -> None:

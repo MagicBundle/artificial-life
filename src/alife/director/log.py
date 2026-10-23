@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from alife.config import Config, ConfigError, is_3d
-from alife.director.actions import TIMED, lever_keys, validate_entry
+from alife.director.actions import GAME_SPEC_VERSION, is_player, is_timed, lever_keys, validate_entry
 from alife.director.rules import RULES_VERSION, SUPPORTED_RULES_VERSIONS
 from alife.runio import read_jsonl
 
@@ -33,11 +33,14 @@ def make_header(
     yoke_sha256: str | None = None,
     params_persona: str | None = None,
     rules_version: int = RULES_VERSION,
+    game_specs: bool = False,
 ) -> dict[str, Any]:
     """The header for a director starting at ``step``; ``budget`` is the effective cost budget per 100k.
     ``yoke_sha256`` (the random persona only) is the fingerprint of the yoke log it was started with, and
     ``params_persona`` the persona whose pacing parameters it inherited from that log. ``rules_version`` is
-    the rules the director runs under: the current ones for a new log, the log's own for a resumed run."""
+    the rules the director runs under: the current ones for a new log, the log's own for a resumed run.
+    ``game_specs`` (``alife play`` only) says the log may carry the player's records, validated against the
+    game table of that version (G3b spec §6.1.7)."""
     d = cfg.director
     return {
         "kind": HEADER_KIND,
@@ -56,6 +59,9 @@ def make_header(
         # Likewise the yoked persona's provenance: the log it follows (as given) and what that file held.
         **({"yoke_log": d.yoke_log, "yoke_sha256": yoke_sha256} if yoke_sha256 is not None else {}),
         **({"params_persona": params_persona} if params_persona is not None else {}),
+        # Like ``dims`` and the LLM keys, only when on: an unconditional key would make ``needs_header``
+        # append a header to every resumed research log.
+        **({"game_specs": GAME_SPEC_VERSION} if game_specs else {}),
     }
 
 
@@ -107,13 +113,16 @@ def read_log(path: Path) -> list[dict[str, Any]]:
 
 def validate_log(records: Sequence[Any], cfg: Config) -> None:
     """Pre-validate a whole log before a replay (A9): ``LogError`` / ``ActionError`` (both exit 2) if any
-    record is malformed, any action unknown, any ``step_applied`` not a multiple of ``rule_every``, any value
+    record is malformed, any action unknown, any ``step_applied`` not a multiple of ``rule_every`` (a record
+    of the player channel, which needs a ``game_specs`` header, may be at any step and is checked against
+    the game table, ``actions.GAME_SPECS``), any value
     outside the menu bounds, the steps go backwards, a revert has nothing to revert, a header says the log
     was written for another ``world.dims`` than this run's, or for rules this code does not implement. Every
     implemented rules version validates: a replay applies the logged entries and never decides."""
     rule_every = cfg.director.rule_every
     active: set[str] = set()
     last = 0
+    game_specs: Any = None  # the ``game_specs`` of the latest header so far: the player's records need it
     for i, rec in enumerate(records):
         if not isinstance(rec, Mapping):
             raise LogError(f"record {i}: not an object")
@@ -121,6 +130,12 @@ def validate_log(records: Sequence[Any], cfg: Config) -> None:
             if rec["kind"] != HEADER_KIND:
                 raise LogError(f"record {i}: unknown kind {rec['kind']!r}")
             check_rules_version(rec.get("rules_version", 1), f"record {i}")
+            game_specs = rec.get("game_specs")
+            if game_specs is not None and game_specs != GAME_SPEC_VERSION:
+                raise LogError(
+                    f"record {i}: game_specs {game_specs!r} is not one this code implements "
+                    f"({GAME_SPEC_VERSION!r}); it was written by another version of alife"
+                )
             written = rec.get("dims", 2)  # absent = a 2D world (§27.10)
             if written != cfg.world.dims:
                 raise LogError(
@@ -128,6 +143,8 @@ def validate_log(records: Sequence[Any], cfg: Config) -> None:
                     f"this run has world.dims = {cfg.world.dims}"
                 )
             continue
+        if is_player(rec) and game_specs is None:
+            raise LogError(f"record {i}: a record of the player channel, but no header names game_specs")
         validate_entry(rec, cfg, rule_every)
         if rec["step_applied"] < last:
             raise LogError(f"record {i}: step {rec['step_applied']} comes after step {last}")
@@ -139,5 +156,5 @@ def validate_log(records: Sequence[Any], cfg: Config) -> None:
                     f"record {i}: a revert of {rec['action']} at step {last} with no active effect"
                 )
             active -= keys
-        elif rec["action"] in TIMED:
+        elif is_timed(rec):
             active |= keys

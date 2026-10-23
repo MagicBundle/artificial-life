@@ -303,7 +303,7 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         rig.model.handle(events: (1...6).map { toastEvent(UInt64($0) * 1000) }, backlog: false)
         #expect(rig.model.toasts.map(\.id) == [4000, 5000, 6000])
         let toast = try #require(rig.model.toasts.last)
-        rig.model.activate(toast.event)
+        rig.model.activate(toast.action)
         rig.model.dismissToast(id: toast.id)
         #expect(rig.model.toasts.map(\.id) == [4000, 5000] && rig.model.selection == .storm(id: 7))
     }
@@ -393,7 +393,7 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         let rig = try await makeRig(scratch)
         defer { rig.play.shutdown() }
         rig.model.click(at: try loner(rig), shift: false, clicks: 1)
-        rig.model.perform(.clearSelection)
+        rig.model.perform(.escape)
         #expect(rig.model.selection.isNone && rig.model.followTarget == .none)
         #expect(await sent(rig, "focus off"))
         rig.model.selectStorm(7, fly: true, follow: true)

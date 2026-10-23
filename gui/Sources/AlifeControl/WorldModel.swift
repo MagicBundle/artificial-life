@@ -13,8 +13,19 @@ final class OverlayState: ObservableObject {
     private(set) var hover: HoverInfo?
     /// The cast row the pointer is over: its storm or territory is highlighted on the map.
     private(set) var castHover: WorldSelection?
+    /// While a power is being aimed: where the pointer is on the map, in points of the free rectangle, and the place on the floor
+    /// under it.
+    private(set) var aimPoint: CGPoint?
+    private(set) var aimWorld: SIMD2<Float>?
 
     func invalidate() { revision &+= 1 }
+
+    func setAim(point: CGPoint?, world: SIMD2<Float>?) {
+        guard point != aimPoint || world != aimWorld else { return }
+        aimPoint = point
+        aimWorld = world
+        invalidate()
+    }
 
     func setHover(_ info: HoverInfo?) {
         guard info != hover else { return }
@@ -27,6 +38,15 @@ final class OverlayState: ObservableObject {
         castHover = selection
         invalidate()
     }
+}
+
+/// The tabs of the control center (DESIGN §34.7).
+enum DockTab: String, CaseIterable, Identifiable {
+    case cast = "Cast"
+    case chronicle = "Chronicle"
+    case report = "Report"
+    case powers = "Powers"
+    var id: String { rawValue }
 }
 
 /// A hover: where the pointer is (in the free rectangle's points), what is under it and the line to show.
@@ -77,8 +97,43 @@ final class WorldModel: ObservableObject {
     @Published var toasts: [ToastQueue.Toast] = []
     /// Which families of event the Chronicle tab lists.
     @Published var chronicleFilter = ChronicleFilter.all
+    /// The open tab of the control center.
+    @Published var tab = DockTab.cast {
+        didSet { if tab != oldValue { overlay.invalidate() } }
+    }
+    /// The exchange with the world about a power (aim, preview, confirm).
+    @Published var powers = PowersModel() {
+        didSet { if powers != oldValue { overlay.invalidate() } }
+    }
+    /// The kin groups the player watches.
+    @Published var watch = WatchSet()
+    /// The line at the bottom of the map.
+    @Published var tickerLine: Ticker.Line?
+    /// The chapter card is folded to a one-line bar (`Esc`, or a power being aimed folds it by itself).
+    @Published var cardCollapsed = false
+    /// The chapter whose notice is on screen: the pause is off, so the world runs on and the card is a notice that goes by itself.
+    @Published var chapterNotice: Int?
+    /// The pauses the player armed or disarmed; sent back to every world after its header.
+    @Published var autopause: AutopausePrefs
+    /// Developer filters of the Chronicle tab (the raw kin events).
+    @Published var debugFilters = false
     /// Where the follow passed when a followed organism died, by the old uid (the inspector's Family row).
     var successors: [Int64: Int64] = [:]
+
+    var ticker = Ticker()
+    var attention = AttentionTracker()
+    var lastCardChapter = 0
+    /// When the notice of a chapter whose pause is off goes (seconds of `now`).
+    var noticeExpires: Double?
+    /// The newest chapter whose notice was shown (a notice is shown once, not at every clock of the chapter).
+    var noticeShownFor = 0
+    var windowObservers: [any NSObjectProtocol] = []
+    let defaults: UserDefaults
+    /// Whether the World window is the one in front; the dock icon is only called when it is not. Tests inject theirs.
+    var windowIsKey: () -> Bool = { true }
+    var requestAttention: () -> Void = {}
+    var setBadge: (String?) -> Void = { _ in }
+    static let autopauseKey = "world.autopause"
 
     var followState = FollowState()
     var glide = CameraGlide()
@@ -104,10 +159,15 @@ final class WorldModel: ObservableObject {
     /// Seconds from a monotonic origin; tests inject theirs.
     var now: () -> Double = { CACurrentMediaTime() }
 
-    init(play: PlayController) {
+    init(play: PlayController, defaults: UserDefaults = .standard) {
         self.play = play
+        self.defaults = defaults
+        autopause = AutopausePrefs(json: defaults.string(forKey: Self.autopauseKey))
         play.onDelivery = { [weak self] changes in self?.deliver(changes) }
         play.onEvents = { [weak self] events, backlog in self?.handle(events: events, backlog: backlog) }
+        play.onAlerts = { [weak self] changes, backlog in self?.handle(alerts: changes, backlog: backlog) }
+        play.onReports = { [weak self] reports in self?.handle(reports: reports) }
+        play.onPlans = { [weak self] plans in self?.handle(plans: plans) }
         play.onReset = { [weak self] in self?.resetInteraction() }
     }
 
@@ -149,6 +209,8 @@ final class WorldModel: ObservableObject {
             interactionFor = store.header
             resetInteraction()
         }
+        if changes.contains(.header) { resendAutopause() }
+        if changes.contains(.clock) { handleClock() }
         guard let renderer else { return }
         if changes.contains(.header) || configuredFor != store.header {
             configuredFor = store.header

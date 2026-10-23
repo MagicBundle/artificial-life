@@ -274,6 +274,9 @@ swift build -Xswiftc -warnings-as-errors     # the build the checks use
 swift test
 ```
 
+The tests find the committed fixtures (`tests/data`) and the preset files (`src/alife/presets`) through the path of the
+source file, so they run inside a checkout of the repository; a copy of `gui/` alone fails on missing files.
+
 The tests need no GPU and never start `alife` (some start a stand-in shell script that plays it). They cover the command
 lines the GUI builds for 2D runs (a table captured before the 3D work, so that a 2D run, fork or resume keeps its
 arguments byte for byte), the 3D lever rules, the preset reader, the stream decoder (the committed fixtures

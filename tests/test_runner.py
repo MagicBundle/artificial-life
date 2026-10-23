@@ -225,9 +225,14 @@ class SpyDirector:
 
     def __init__(self, every: int, act: bool = True) -> None:
         self.every, self.act, self.calls, self.applied = every, act, [], []
+        self.pending: list[tuple[int, int, bool]] = []  # (t, the state's step, stopping) of apply_pending
 
     def due(self, t: int) -> bool:
         return t % self.every == 0
+
+    def apply_pending(self, state, t, *, stopping=False):  # the player channel (G3b): nothing queued here
+        self.pending.append((t, int(to_numpy(state.step)), stopping))
+        return state
 
     def observe(self, row) -> None:
         self.calls.append(("observe", row["step"]))
@@ -247,6 +252,16 @@ class SpyDirector:
 @pytest.fixture(scope="module")
 def dcfg(cfg: Config) -> Config:
     return apply_overrides(cfg, ["director.enabled=true"])
+
+
+def test_the_player_channel_is_called_at_the_top_of_every_iteration_with_the_state_at_that_step(
+    dcfg: Config, tmp_path: Path
+) -> None:
+    """``apply_pending(state, t)`` runs once per loop iteration, before the step (so ``state.step == t``)."""
+    spy = SpyDirector(every=10, act=False)
+    rd = RunDir.create(tmp_path / "run", dcfg)
+    assert runner.run(rd, dcfg, init_state(dcfg), 7, director=spy).status == "done"
+    assert spy.pending == [(t, t, False) for t in range(7)]
 
 
 def test_director_hook_runs_after_the_row_and_before_the_checkpoint(

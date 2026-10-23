@@ -86,6 +86,7 @@ def test_play_json_is_written_with_the_planet_and_the_cloud_scale(planet: tuple[
     assert pj["planet"]["houses"] == "exact" and pj["planet"]["made_at_step"] == 12
     assert pj["weather"]["dc_ref"] == decode(data).header["play"]["weather"]["refs"]["dc"] > 0
     assert rd.meta()["start_step"] == 12 and rd.meta()["weather_spinup"] == SPINUP
+    assert "origin_row" not in rd.meta(), "step 12 is off the snapshot grid: the first chapter is an arrival"
     assert not (out / "play.lock").exists()
 
 

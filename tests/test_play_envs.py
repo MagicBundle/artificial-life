@@ -12,7 +12,7 @@ from alife import play, weather
 from alife.runio import RunDir
 from play_helpers import FakeClock, decoded, director_log, run_paced, snapshots, world
 
-RUN = play.PlayOptions(rate=float("inf"), paused=False, fresh=True)
+RUN = play.PlayOptions(rate=float("inf"), paused=False, fresh=True, unattended=True)
 
 
 def envs(out) -> dict[int, dict]:

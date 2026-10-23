@@ -15,7 +15,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from alife import storms, streamrec
+from alife import runio, storms, streamrec
 from alife import weather as W
 from alife.analysis import w0
 from alife.config import Config, apply_overrides
@@ -340,6 +340,42 @@ def _play(layer: StormLayer, rd: RunDir, dets: list[Detection]) -> list[storms.S
     return ticks
 
 
+def test_every_play_state_file_follows_its_checkpoint(world) -> None:
+    """The kin thread table (G3b) is handled like the tracker state: pruned with its checkpoint, cut by
+    ``truncate_after``, written and read by the generic ``write_play_state`` / ``read_play_state``."""
+    cfg, rd, s = world
+    rd.save_checkpoint(_at_step(s, 0), cfg)
+    for step in (0, 100, 150):
+        for name in runio.PLAY_STATE_NAMES:
+            rd.write_play_state(name, step, {"name": name, "step": step})
+    rd.save_checkpoint(_at_step(s, 100), cfg)  # 150 has no checkpoint: its files are orphans
+    for name in runio.PLAY_STATE_NAMES:
+        assert [st for st, _ in rd.play_state_files(name)] == [0, 100], name
+        assert rd.read_play_state(name, 100) == {"name": name, "step": 100}
+        assert rd.read_play_state(name, 7) is None
+    assert rd.storms_state_files() == rd.play_state_files("storms")
+    assert rd.read_storms_state(100) == rd.read_play_state("storms", 100)
+    assert rd.storms_state_path(100) == rd.observers_dir / "storms_0000000100.json"
+    assert rd.play_state_path("kinthreads", 100) == rd.observers_dir / "kinthreads_0000000100.json"
+    rd.save_checkpoint(_at_step(s, 200), cfg)
+    rd.save_checkpoint(_at_step(s, 300), cfg)  # keep 2: the checkpoints at 0 (kept), 200, 300 remain
+    for name in runio.PLAY_STATE_NAMES:
+        assert [st for st, _ in rd.play_state_files(name)] == [0], f"{name}: 100 went with its checkpoint"
+    for name in runio.PLAY_STATE_NAMES:
+        rd.write_play_state(name, 200, {"x": 1})
+        rd.write_play_state(name, 300, {"x": 1})
+    rd.truncate_after(200)
+    for name in runio.PLAY_STATE_NAMES:
+        assert [st for st, _ in rd.play_state_files(name)] == [0, 200], name
+    rd.play_state_path("kinthreads", 200).write_text("[1, 2]")
+    with pytest.raises(ValueError, match="not a JSON object"):
+        rd.read_play_state("kinthreads", 200)
+    with pytest.raises(ValueError, match="unknown play state"):
+        rd.write_play_state("nope", 0, {})
+    with pytest.raises(ValueError, match="unknown play state"):
+        rd.play_state_files("nope")
+
+
 def test_the_log_and_the_states_follow_the_checkpoints(world) -> None:
     cfg, rd, s = world
     layer = StormLayer(P40, DC_REF, 25)
@@ -597,7 +633,8 @@ def test_the_layers_events_feed_the_chronicle_and_the_log_rebuilds_them() -> Non
         lines, live = [], []
         for d in scene(seed, 50):
             tick = layer.ingest(d)
-            live += chron.from_storms(tick.events)
+            detected = [d["id"] for d in tick.line["storms"]] if tick.line is not None else []
+            live += chron.from_storms(tick.step, tick.events, detected)
             if tick.line is not None:
                 lines.append(json.loads(json.dumps(tick.line)))
         for e in live:

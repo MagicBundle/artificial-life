@@ -18,6 +18,11 @@ extension WorldModel {
     /// A click at `point` (in the free rectangle's points, origin at the top left) with `clicks` the number of clicks of
     /// the sequence (2 is the second click of a double click).
     func click(at point: CGPoint, shift: Bool, clicks: Int) {
+        // While a power is being aimed the map is its target: a click names the place and selects nothing.
+        if powers.isAiming {
+            if clicks == 1 { _ = aimClick(at: point) }
+            return
+        }
         let pick = WorldPicker.pick(at: point, projector: projector(size: freeRect.size), store: play.store, display: display)
         switch pick {
         case .organism(let uid, _):
@@ -35,6 +40,11 @@ extension WorldModel {
 
     /// The pointer moved to `point`, or left the view (nil). No round trip to the world: the same hit test as a click.
     func hover(at point: CGPoint?) {
+        if powers.isAiming {
+            aimHover(at: point)
+            overlay.setHover(nil)
+            return
+        }
         guard let point else {
             overlay.setHover(nil)
             return
@@ -130,9 +140,14 @@ extension WorldModel {
 
     /// A click on a chronicle row or a toast: fly to where it happened and select what it is about.
     func activate(_ event: WorldEvent) {
-        let action = ChronicleAction.of(event)
+        activate(ChronicleAction.of(event))
+    }
+
+    /// A click on a place and an entity: an alert's arrow, a toast, a sentence of a report, a chronicle row.
+    func activate(_ action: ChronicleAction?) {
+        guard let action else { return }
         let place = action.at.map { SIMD3<Float>($0.x, $0.y, 0) }
-        /// Where the event happened; an event with no place goes nowhere.
+        /// Where it happened; an action with no place goes nowhere.
         func fly(to point: SIMD3<Float>?) {
             if let point { flyTo(point, distance: min(camera.distance, flyDistance(.region))) }
         }
@@ -196,6 +211,18 @@ extension WorldModel {
         flyDistance = nil
         toastQueue = ToastQueue()
         toasts = []
+        ticker = Ticker()
+        tickerLine = nil
+        powers = PowersModel()
+        watch = WatchSet()
+        cardCollapsed = false
+        chapterNotice = nil
+        noticeExpires = nil
+        noticeShownFor = 0
+        lastCardChapter = 0
+        attention.reset()
+        setBadge(nil)
+        overlay.setAim(point: nil, world: nil)
         successors = [:]
         lastAdvance = nil
         overlay.setHover(nil)
@@ -264,11 +291,17 @@ extension WorldModel {
             if followState.target == .organism(uid: Int64(event.a)) { setFollow(.organism(uid: Int64(event.b))) }
             startAnimating()
         }
-        let news = ChronicleReducer.toasts(from: fresh, backlog: backlog)
-        guard !news.isEmpty else { return }
-        toastQueue.push(news, at: now())
-        toasts = toastQueue.toasts
-        scheduleToastExpiry()
+        // The alerts toast in a world that has an alert engine (DESIGN §34.7); an event toasts only where there is none.
+        if play.store.play?.alerts == nil {
+            let news = ChronicleReducer.toasts(from: fresh, backlog: backlog)
+            if !news.isEmpty {
+                toastQueue.push(news, at: now())
+                toasts = toastQueue.toasts
+            }
+        }
+        ticker.show(events: fresh, at: now())
+        tickerLine = ticker.line
+        scheduleTimers()
     }
 
     /// Drops the toasts whose time is up.
@@ -280,16 +313,6 @@ extension WorldModel {
     func dismissToast(id: UInt64) {
         toastQueue.dismiss(id: id)
         toasts = toastQueue.toasts
-    }
-
-    private func scheduleToastExpiry() {
-        guard let next = toastQueue.nextExpiry else { return }
-        let wait = max(next - now(), 0) + 0.05
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(wait))
-            self?.expireToasts()
-            if self?.toastQueue.nextExpiry != nil { self?.scheduleToastExpiry() }
-        }
     }
 
     // MARK: Keys
@@ -317,13 +340,24 @@ extension WorldModel {
                 play.setRate(next)
             }
         case .resetCamera: resetCamera()
-        case .clearSelection: clearSelection()
+        case .escape: escape()
+        case .showPowers: tab = .powers
+        case .flyToAlert: flyToNewestAlert()
+        case .acknowledgeAlert: acknowledgeNewest()
+        case .continueRun:
+            // Continue never pauses; a chapter notice goes with it.
+            if clockStrip.paused { play.resume() }
+            dismissNotice()
+        case .confirmPower: if returnConfirmsPower { confirmPower() }
         }
     }
 
     /// The clock strip as the dock shows it (what the window asked wins over the last `CLCK`).
     var clockStrip: ClockStrip {
-        ClockStrip(clock: play.store.clock, requested: play.requestedRate, baseRate: play.store.play?.baseRate ?? 14.4)
+        let store = play.store
+        let alertTitle = store.clock.flatMap { $0.reason == .alert ? store.alerts.pausing(atStep: Int($0.head.step))?.title : nil }
+        return ClockStrip(clock: store.clock, requested: play.requestedRate, baseRate: store.play?.baseRate ?? 14.4,
+                          chapterLabel: chapterBar.label, alertTitle: alertTitle)
     }
 
     // MARK: The inspector

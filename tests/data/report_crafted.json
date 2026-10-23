@@ -88,8 +88,7 @@
   "text": "After the Shaemund kin split from the Braelix kin at step 1,513,250, the Torvane kin dissolved.",
   "why": "post hoc between two world events",
   "expect": [
-   "R1",
-   "R3"
+   "R1"
   ]
  },
  {
@@ -98,7 +97,8 @@
   "text": "With 36,050 deaths from starvation, the population fell to 21,140.",
   "why": "'with' absolute clause: causal framing without a listed word",
   "expect": [
-   "R1"
+   "R1",
+   "R3"
   ]
  },
  {
@@ -170,7 +170,8 @@
   "text": "The Shaemund kin had the most members, with 1,830.",
   "why": "K31 is rank 2",
   "expect": [
-   "R1"
+   "R1",
+   "R3"
   ]
  },
  {

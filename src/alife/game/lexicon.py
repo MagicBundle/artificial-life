@@ -16,6 +16,9 @@ is the independent check that none of them says more than the facts do. It lists
   They include the storm world's display words (Grazer, Drifter, Floater, Sinker;
   ``game.rules.ARCHETYPE_STORM_DISPLAY``, DESIGN §32.7). The L1 stem of the patch-drift lever is ``drift``
   without "drifter(s)", which is a label name.
+- ``L3`` storm words (storm, disturbance, hemisphere, ...): only in the storm sentences of the report (the
+  ``ST-*`` templates, the storm headline and their ticker lines; DESIGN §34.4), so a sentence about a lineage
+  or the population never talks about the weather.
 
 A term is a word (``"because"``), a phrase (``"as a result"``), a stem ending in ``-`` (``"caus-"``: the stem
 and any letters after it, so ``"cause"``, ``"causes"`` and ``"causing"`` all match; an inflection test in
@@ -41,13 +44,16 @@ __all__ = [
     "LEXICON_DIGEST",
     "LEXICON_VERSION",
     "NEVER_LISTS",
+    "STORM_LISTS",
     "compile_terms",
     "scan",
 ]
 
 # 2: the storm world's display words joined L2 and the L1 stem "drift" stopped matching "drifter" (W2a,
 # DESIGN §32.13).
-LEXICON_VERSION: Final = 2
+# 3: the storm words joined as L3 (allowed in the storm sentences only), and V8's "last" no longer matches
+# "did not last" (the sentence on the kin group changes too short to list; G3b, DESIGN §34.4).
+LEXICON_VERSION: Final = 3
 
 LEXICON: Final[Mapping[str, tuple[str, ...]]] = {
     "T2": (
@@ -118,19 +124,26 @@ LEXICON: Final[Mapping[str, tuple[str, ...]]] = {
         "massive", "huge", "enormous", "vast", "tiny", "extrem-", "record-", "unprecedented",
         "historic-", "significant-", "great-", "best", "worst", "critical-", "dangerous-", "concern-",
         "alarm-", "worr-", "healthy", "good", "bad", "total-", "complete-", "absolute-", "first",
-        "last", "never", "ever", "always", "stagna-", "monocultur-", "homogen-",
+        "re:(?<!not\\s)last", "never", "ever", "always", "stagna-", "monocultur-", "homogen-",
     ),
     "G": (
         "dominan-", "dominat-", "majority", "prevail-", "sharp-", "steep-", "dramatic-",
         "precipitous-", "plummet-", "collaps-", "crash-", "freefall", "surg-", "soar-", "explo-",
         "rapid-", "strong-", "extinct-",
     ),
+    "L3": (
+        "storm-", "disturbanc-", "hemispher-", "cyclon-", "hurricane-", "typhoon-", "tornado-", "vortex",
+        "vortices", "vorticity", "zeta", "eddy", "eddies", "monsoon-", "gale-", "squall-", "tempest-",
+        "wind-", "weather", "rain-", "cloud-",
+    ),
 }  # fmt: skip
 
-# Lists that no report string may match; the lever words and the label names are allowed in places (R6).
+# Lists that no report string may match; the lever words, the label names and the storm words are allowed in
+# places (R6).
 NEVER_LISTS: Final = ("T2", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "G")
 LEVER_LISTS: Final = ("L1",)
 LABEL_LISTS: Final = ("L2",)
+STORM_LISTS: Final = ("L3",)
 
 LEXICON_DIGEST: Final = hashlib.sha256(
     json.dumps({"version": LEXICON_VERSION, "lists": LEXICON}, sort_keys=True, separators=(",", ":")).encode()

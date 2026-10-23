@@ -23,7 +23,10 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
   ``weather`` when the layer is on.
 - **Play** (``run_play_bench``, G3a, DESIGN §33.5): the play loop of ``alife play`` run headless, once per
   director mode and rate, with the full record set into a draining reader thread (a pipe), and the cost of its
-  parts; the gate of DESIGN §33.5.3 is read from it. A separate report: ``alife bench --play``.
+  parts; the gate of DESIGN §33.5.3 is read from it. A separate report: ``alife bench --play``. G3b adds
+  the ``player`` director mode, scripted powers (``--play-powers``: a click and the chapter-end step itself,
+  with the click-to-applied latency and a digest checked against ``resume --director replay``), and a line
+  for the chapter, report and alert work (DESIGN §34.8).
 - **Weather-org** (``weather_org``, W2): the same blocks with the weather on in both arms, the "off" arm
   having ``seed_gain = shade_gain = 0``: the marginal cost of the organism couplings (the seeding signal and
   the shade count, DESIGN §32).
@@ -32,10 +35,13 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
 from __future__ import annotations
 
 import gc
+import json
 import math
 import platform
 import statistics
+import struct
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -966,13 +972,18 @@ def _bench_stages(cfg: Config, steps: int, warmup: int, fused_ms: float) -> dict
 # --- play (G3a, DESIGN §33.5) ----------------------------------------------------------------------------
 
 PLAY_RATES: Final = ("max", "1")  # the rates of the gate: unthrottled and the base rate
-PLAY_DIRECTORS: Final = ("off", "rules")
+PLAY_DIRECTORS: Final = ("off", "rules", "player")
 PLAY_WARMUP: Final = 300
 PLAY_STEPS: Final = 2000
 # The gate of DESIGN §33.5.3 (the coordinator's Mac day): at 1x, achieved >= 0.98x, no late steps, p99 step
 # <= 66 ms; at max, achieved >= 2.5x. The client's draw time (p95 <= 25 ms) is the Swift bench's, not here.
 PLAY_GATE_1X: Final = {"achieved_x": 0.98, "late_steps": 0, "step_ms_p99": 66.0}
 PLAY_GATE_MAX: Final = {"achieved_x": 2.5}
+# The powers of DESIGN §34.8 (G3b): a click is applied within half a second (the limit of C6 is two) and the
+# report of a chapter is on its way within half a second of the chapter's end.
+PLAY_GATE_POWERS: Final = {"power_applied_p95_s": 0.5, "report_ms": 500.0}
+PLAY_POWER_LIMIT_S: Final = 2.0
+PLAY_POWER_IDS: Final = (9001, 9002)  # the scripted requests' ids
 
 
 def _rate_value(rate: str) -> float:
@@ -988,6 +999,9 @@ def _stat(values: list[float]) -> float | None:
     return statistics.median(values) if values else None
 
 
+_RUN_DIRECTOR: Final = {"rules": "live", "player": "player"}  # the bench's names for `run.director`
+
+
 def _play_items(director: str) -> list[str]:
     """What ``alife play`` applies on top of a world's config for a director mode (``cli._play_items``)."""
     from alife import play
@@ -995,8 +1009,62 @@ def _play_items(director: str) -> list[str]:
     return [
         *(f"run.{k}={v}" for k, v in play.PLAY_CADENCE.items()),
         "game.observe=true",
-        f"run.director={'live' if director == 'rules' else 'off'}",
+        f"run.director={_RUN_DIRECTOR.get(director, 'off')}",
         *(["director.llm_every=0"] if director == "rules" else []),
+    ]
+
+
+class ScriptedControl:
+    """Control lines handed over when the world reaches a step: the bench's "clicks" (``--play-powers``). The
+    pacer's ``before_step`` sets ``now`` to the step it is at, and ``poll`` gives the lines whose step has
+    been
+    reached, in order, noting when each left (the click of a power, whose latency is read against its ``PLAN``
+    ``applied``)."""
+
+    def __init__(self, script: list[tuple[int, str]]) -> None:
+        self.pending = sorted(script, key=lambda item: item[0])
+        self.now = -1
+        self.clicked: dict[int, float] = {}  # request id -> perf_counter when its line was handed over
+
+    def poll(self, timeout: float | None = 0) -> list[str]:
+        out: list[str] = []
+        while self.pending and self.pending[0][0] <= self.now:
+            _, line = self.pending.pop(0)
+            out.append(line)
+            for token in line.split():
+                if token.startswith("id=") and token[3:].isdigit():
+                    self.clicked[int(token[3:])] = time.perf_counter()
+        if not out and timeout:
+            threading.Event().wait(timeout)
+        return out
+
+    def close(self) -> None:
+        pass
+
+
+def power_script(cfg: Config, *, start: int, warmup: int, total: int, chapter: int) -> list[tuple[int, str]]:
+    """The two scripted powers of the gate (DESIGN §34.8): a Food x1.3 half way between the end of the warm-up
+    and the next chapter's end, and a Strike at the chapter-end step itself (rule P: a power at a step with a
+    checkpoint). The arm must hold that chapter end after its warm-up, with a step to spare to see the strike
+    applied."""
+    from alife.director import actions as dir_actions
+
+    end = (start // chapter + 1) * chapter
+    measured = start + warmup
+    if not measured < end < start + total:
+        raise ConfigError(
+            f"--play-powers needs a chapter end of {chapter} steps inside the measured part of the arm: the "
+            f"arm runs steps {start + 1} to {start + total} (the warm-up ends at {measured}) and the next "
+            f"chapter ends at {end}. Start from a checkpoint nearer to one (--play-resume RUN:STEP) or "
+            "lengthen the arm "
+            "(--steps)"
+        )
+    low, _ = dir_actions.radius_bounds(cfg, dir_actions.GAME_SPECS)
+    middle = float(cfg.world.size) / 2
+    food, strike = PLAY_POWER_IDS
+    return [
+        ((measured + end) // 2, f"power food id={food} mult=1.3 steps=3000"),
+        (end, f"power strike id={strike} x={middle:g} y={middle:g} radius={low:g} kill=0.45"),
     ]
 
 
@@ -1041,6 +1109,25 @@ def _bench_pacer_class() -> type:
         _save_at = 0.0
         _after_exit = 0.0
 
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            # an arm has nobody to press `run`: the world must not wait at a chapter end or for an alert (the
+            # stall of a chapter's save is then a hitch, as in any unattended run)
+            self.autopause.apply(play.AutopauseLine("all", None, False))
+            self.chapter_ends = 0
+            self.report_ms: list[float] = []  # ms from the chapter's end to its report on the stream
+            self.plans: list[tuple[int, str]] = []  # (request id, status) of the PLAN records written
+            self.applied_at: dict[int, float] = {}
+            self._chapter_t0: float | None = None
+            self._loop = threading.current_thread()
+            # the alert engine's work, whichever hook calls it: a part like the others
+            for name in ("on_record", "on_tick", "on_row", "on_chapter", "on_territory", "engine_check"):
+                method = getattr(self.alerts, name)
+                setattr(self.alerts, name, self._timed("alerts", method))
+
+        def _timed(self, key: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+            return lambda *a, **k: self._lap(key, fn, *a, **k)
+
         def _lap(self, key: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
             t0 = time.perf_counter()
             try:
@@ -1051,7 +1138,21 @@ def _bench_pacer_class() -> type:
         def _write(self, tag: str, data: bytes) -> None:
             t0 = time.perf_counter()
             super()._write(tag, data)
-            self._write_s += time.perf_counter() - t0
+            now = time.perf_counter()
+            on_loop = threading.current_thread() is self._loop  # (a report is posted by a worker)
+            if on_loop:
+                self._write_s += now - t0
+            if tag == "PLAN":
+                (size,) = struct.unpack_from("<I", data, 24)  # after the tag, the length and the head
+                obj = json.loads(data[28 : 28 + size])
+                self.plans.append((int(obj["id"]), str(obj["status"])))
+                if obj["status"] == "applied":
+                    self.applied_at.setdefault(int(obj["id"]), now)
+            elif tag == "RPRT" and self._chapter_t0 is not None:
+                (flags,) = struct.unpack_from("<H", data, 22)
+                if not flags & 1:  # not the backlog sent when the world was opened
+                    self.report_ms.append(1e3 * (now - self._chapter_t0))
+                    self._chapter_t0 = None
 
         def _send_frame(self, state: State) -> None:
             self._lap("frma", super()._send_frame, state)
@@ -1087,6 +1188,8 @@ def _bench_pacer_class() -> type:
             if tm.recording:
                 tm.last_at = now
                 tm.steps = t - tm.start - tm.warmup
+            if isinstance(self.control, ScriptedControl):
+                self.control.now = t
             super().before_step(state, t)
             self._prev_exit = time.perf_counter()
 
@@ -1104,6 +1207,9 @@ def _bench_pacer_class() -> type:
 
         def before_checkpoint(self, state: State, t: int) -> None:
             self._save_at = time.perf_counter()
+            if self.chapters.is_end(t):
+                self.chapter_ends += 1
+                self._chapter_t0 = self._save_at  # the report job starts in this call
             super().before_checkpoint(state, t)
 
         def after_checkpoint(self, t: int) -> None:
@@ -1143,10 +1249,11 @@ def _plain_engine_ms(cfg: Config, state: State, steps: int = 100, warmup: int = 
 
 def _play_arm(
     cfg: Config, template: Path, workdir: Path, *, name: str, director: str, rate: str, steps: int,
-    warmup: int, frame_hz: int, base_rate: float,
+    warmup: int, frame_hz: int, base_rate: float, chapter: int | None = None, powers: bool = False,
 ) -> dict[str, Any]:  # fmt: skip
     """One arm: the world of ``template`` played ``warmup + steps`` steps under the bench pacer, its stream
-    drained by a reader thread through a pipe."""
+    drained by a reader thread through a pipe. With ``powers`` (a ``player`` arm) the two scripted powers of
+    the gate are sent as a player would send them, and the arm's log of them is kept for the replay check."""
     import os
     import threading
 
@@ -1172,18 +1279,23 @@ def _play_arm(
     thread.start()
     sink = os.fdopen(w_fd, "wb", buffering=0)
     timing = _Timing(warmup)
+    chapter = chapter or play.CHAPTER
     options = play.PlayOptions(
         base_rate=base_rate, rate=_rate_value(rate), paused=False, frame_hz=frame_hz, source="preset",
-        run=str(rd.path), fresh=True, until=start + total,
+        run=str(rd.path), fresh=True, until=start + total, chapter=chapter,
     )  # fmt: skip
-    pacer = _bench_pacer_class()(sink, stream.NoControl(), options)
+    script = power_script(cfg_arm, start=start, warmup=warmup, total=total, chapter=chapter) if powers else []
+    control = ScriptedControl(script) if script else stream.NoControl()
+    pacer = _bench_pacer_class()(sink, control, options)
     pacer.timing = timing
     t_all = time.perf_counter()
     try:
         res = runner.run(
-            rd, cfg_arm, state, total, quiet=True, director=make_director(rd, cfg_arm, start), pacer=pacer
-        )
+            rd, cfg_arm, state, total, quiet=True,
+            director=make_director(rd, cfg_arm, start, game_specs=director == "player"), pacer=pacer,
+        )  # fmt: skip
     finally:
+        pacer.close()  # the report worker finishes before the sink goes
         sink.close()
         thread.join(timeout=60)
     wall = time.perf_counter() - t_all
@@ -1195,6 +1307,8 @@ def _play_arm(
     steps_per_s = measured / seconds
     after = pacer.bytes_by_tag
     delta = {k: after.get(k, 0) - timing.bytes_at_first.get(k, 0) for k in after}
+    alert_ms = timing.parts.get("alerts", [])
+    applied = sorted(i for i, status in pacer.plans if status == "applied")
     loop_typical = _stat(timing.loop_typical)
     loop_snapshot = _stat(timing.loop_snapshot)
     engine = None  # filled by the caller (one reference measurement per run)
@@ -1241,7 +1355,28 @@ def _play_arm(
         "wall_s": wall,
         "n_alive_end": int(to_numpy(res.state.alive.sum())),
         "digest": state_digest(res.state),
+        "chapters": {"length": chapter, "ends": pacer.chapter_ends, "report_ms": list(pacer.report_ms)},
+        "alerts": {"calls": len(alert_ms), "ms_total": sum(alert_ms)},
+        "powers": None,
+        "run": str(rd.path),
+        "start": start,
+        "total": total,
     }
+    if script:
+        assert isinstance(control, ScriptedControl)
+        latency = [
+            pacer.applied_at[i] - control.clicked[i]
+            for i in PLAY_POWER_IDS
+            if i in pacer.applied_at and i in control.clicked
+        ]
+        arm["powers"] = {
+            "script": [{"step": step, "line": line} for step, line in script],
+            "plans": [{"id": i, "status": status} for i, status in pacer.plans],
+            "applied": applied,
+            "refused": sorted({i for i, status in pacer.plans if status == "refused"}),
+            "latency_s": latency,
+            "all_applied": applied == sorted(PLAY_POWER_IDS),
+        }
     return arm
 
 
@@ -1256,7 +1391,31 @@ def _plain_digest(cfg: Config, template: Path, workdir: Path, *, director: str, 
     start = int(to_numpy(state.step))
     rd = RunDir.create(workdir / f"plain_{director}", cfg_arm, overwrite=True)
     rd.update_meta(start_step=start)
-    res = runner.run(rd, cfg_arm, state, total, quiet=True, director=make_director(rd, cfg_arm, start))
+    played = make_director(rd, cfg_arm, start, game_specs=director == "player")
+    res = runner.run(rd, cfg_arm, state, total, quiet=True, director=played)
+    del state
+    return state_digest(res.state)
+
+
+def _replay_digest(cfg: Config, template: Path, workdir: Path, arm: dict[str, Any]) -> str:
+    """The digest of the world a played arm's own log of the player's powers makes when it is replayed from
+    the arm's first step with no pacer (what ``resume --director replay`` does): a played world with powers is
+    equal to this one, not to the plain run (DESIGN §34.5)."""
+    import shutil
+
+    from alife import runner
+    from alife.director import make_director
+    from alife.runio import DIRECTOR_LOG_FILE, RunDir, load_checkpoint
+
+    items = [i for i in _play_items("player") if not i.startswith("run.director=")] + ["run.director=replay"]
+    cfg_replay = apply_overrides(cfg, items)
+    state = load_checkpoint(template, cfg_replay, check_hash=False)
+    start = int(to_numpy(state.step))
+    rd = RunDir.create(workdir / f"replay_{arm['name']}", cfg_replay, overwrite=True)
+    rd.update_meta(start_step=start)
+    shutil.copyfile(Path(arm["run"]) / DIRECTOR_LOG_FILE, rd.path / DIRECTOR_LOG_FILE)
+    replayed = make_director(rd, cfg_replay, start, game_specs=True)
+    res = runner.run(rd, cfg_replay, state, arm["total"], quiet=True, director=replayed)
     del state
     return state_digest(res.state)
 
@@ -1280,6 +1439,24 @@ def _play_gate(arm: dict[str, Any]) -> dict[str, Any]:
         k: (got[k] is not None and (got[k] <= v if k in ("late_steps", "step_ms_p99") else got[k] >= v))
         for k, v in want.items()
     }
+    # G3b (DESIGN §34.8): the scripted powers are applied within half a second of the click (p95 of the
+    # arm's clicks; the limit of C6 is two) and a chapter's report is on the stream within half a second of
+    # its end
+    latency = (arm.get("powers") or {}).get("latency_s") or []
+    reports = (arm.get("chapters") or {}).get("report_ms") or []
+    if arm.get("powers") is not None:
+        p95 = float(np.quantile(np.asarray(latency), 0.95)) if latency else None
+        want = {**want, "power_applied_p95_s": PLAY_GATE_POWERS["power_applied_p95_s"]}
+        got = {**got, "power_applied_p95_s": p95}
+        checks["power_applied_p95_s"] = (
+            p95 is not None
+            and p95 <= PLAY_GATE_POWERS["power_applied_p95_s"]
+            and arm["powers"]["all_applied"]
+        )
+    if reports:
+        want = {**want, "report_ms": PLAY_GATE_POWERS["report_ms"]}
+        got = {**got, "report_ms": max(reports)}
+        checks["report_ms"] = max(reports) <= PLAY_GATE_POWERS["report_ms"]
     return {
         "applies": True, "want": want, "got": got, "pass": all(checks.values()), "checks": checks,
         "five_minutes": arm["seconds"] >= 300,
@@ -1294,9 +1471,11 @@ def run_play_bench(
     steps: int = PLAY_STEPS,
     warmup: int = PLAY_WARMUP,
     rates: tuple[str, ...] = PLAY_RATES,
-    directors: tuple[str, ...] = PLAY_DIRECTORS,
+    directors: tuple[str, ...] = ("off", "rules"),
     frame_hz: int | None = None,
     base_rate: float | None = None,
+    chapter: int | None = None,
+    powers: bool = False,
 ) -> dict[str, Any]:
     """The play loop of ``alife play`` run headless on the world saved in ``template`` (a state file), for
     each director mode and rate: ``warmup`` steps, then ``steps`` measured, with the full record set drained
@@ -1307,6 +1486,13 @@ def run_play_bench(
     cost of the parts, ``late_steps``, ``save_stall_steps``, bytes by tag and the final digest. Per director
     mode: the digest of a run without a pacer, which every arm must equal (observing, pacing and presenting
     are not part of the trajectory).
+
+    G3b: the ``player`` mode is the rule tier's neighbour (it decides nothing). With ``powers`` its arms send
+    the two scripted powers of the gate (a click, and a strike at the chapter-end step itself; ``chapter`` is
+    the chapter length, ``play.CHAPTER`` by default), and a trajectory with powers is no longer the plain
+    run's: its
+    digest is the one the arm's own log makes when it is replayed (``replay_digest``), and the latency from
+    the click to the ``PLAN`` ``applied`` is in the arm.
     """
     from alife import play
 
@@ -1314,11 +1500,13 @@ def run_play_bench(
         raise ValueError(f"play bench needs steps >= 1 and warmup >= 0, got {steps} and {warmup}")
     if not directors or not rates:
         raise ValueError("play bench needs at least one rate and one director mode")
-    if "rules" in directors and not cfg.director.enabled:
+    if ("rules" in directors or "player" in directors) and not cfg.director.enabled:
         raise ConfigError(
-            "bench --play with the rule tier needs director.enabled = true (its compiled step carries the "
-            "levers): pass --set director.enabled=true"
+            "bench --play with the rule tier or the player needs director.enabled = true (its compiled step "
+            "carries the levers): pass --set director.enabled=true"
         )
+    if powers and "player" not in directors:
+        raise ConfigError("--play-powers sends the powers of a player: it needs the player director mode")
     workdir.mkdir(parents=True, exist_ok=True)
     frame_hz = frame_hz or play.FRAME_HZ
     base_rate = base_rate or play.BASE_RATE
@@ -1330,23 +1518,32 @@ def run_play_bench(
     del state
     plain = {d: _plain_digest(cfg, template, workdir, director=d, total=total) for d in directors}
     arms = []
+    replayed: dict[str, str] = {}
     for director in directors:
         for rate in rates:
             arm = _play_arm(
                 cfg, template, workdir, name=f"{director}_{rate}", director=director, rate=rate, steps=steps,
-                warmup=warmup, frame_hz=frame_hz, base_rate=base_rate,
+                warmup=warmup, frame_hz=frame_hz, base_rate=base_rate, chapter=chapter,
+                powers=powers and director == "player",
             )  # fmt: skip
             comp = arm["components_ms"]
             comp["engine"] = engine_ms
             if comp["loop_typical"] is not None:
                 comp["observer"] = max(comp["loop_typical"] - engine_ms, 0.0)
-            arm["digest_equal"] = arm["digest"] == plain[director]
+            if arm["powers"] is not None:  # a trajectory with the player's powers is its log's, replayed
+                replayed[arm["name"]] = _replay_digest(cfg, template, workdir, arm)
+                arm["expected"] = "replay"
+                arm["digest_equal"] = arm["digest"] == replayed[arm["name"]]
+            else:
+                arm["expected"] = "plain"
+                arm["digest_equal"] = arm["digest"] == plain[director]
             arm["gate"] = _play_gate(arm)
             arms.append(arm)
     return {
         "steps": steps, "warmup": warmup, "base_rate": base_rate, "frame_hz": frame_hz,
-        "cadence": dict(play.PLAY_CADENCE), "engine_ms": engine_ms,
-        "plain_digest": plain, "arms": arms, "digests_equal": all(a["digest_equal"] for a in arms),
+        "cadence": dict(play.PLAY_CADENCE), "engine_ms": engine_ms, "powers": powers,
+        "plain_digest": plain, "replay_digest": replayed, "arms": arms,
+        "digests_equal": all(a["digest_equal"] for a in arms),
     }  # fmt: skip
 
 
@@ -1359,7 +1556,13 @@ def _format_play(pl: dict[str, Any]) -> list[str]:
     lines = [
         f"play loop ({pl['warmup']} warm-up + {pl['steps']} steps per arm, base rate {pl['base_rate']:g}, "
         f"engine alone {pl['engine_ms']:.2f} ms/step); digests "
-        f"{'equal to the plain run' if pl['digests_equal'] else 'DIFFER from the plain run'}"
+        + (
+            "equal to the plain run"
+            + (" (a run with powers: to its log replayed)" if pl.get("powers") else "")
+            if pl["digests_equal"]
+            else "DIFFER from the plain run"
+            + (" or from the replay of an arm's log" if pl.get("powers") else "")
+        )
     ]
     for a in pl["arms"]:
         q, c = a["step_ms"], a["components_ms"]
@@ -1371,6 +1574,26 @@ def _format_play(pl: dict[str, Any]) -> list[str]:
             f"step ms p50 {ms(q['p50'])} p99 {ms(q['p99'])} max {ms(q['max'])}; late {a['late_steps']}, "
             f"save stall {a['save_stall_steps']}; {a['mb_per_s']:.1f} MB/s{verdict}"
         )
+        chapters, alerts, scripted = a.get("chapters"), a.get("alerts"), a.get("powers")
+        if chapters and (chapters["ends"] or (alerts or {}).get("calls")):
+            extras = [f"{chapters['ends']} chapter end(s) of {chapters['length']} steps"]
+            if chapters["report_ms"]:
+                extras.append(
+                    "report on the stream after "
+                    + ", ".join(f"{v:.0f}" for v in chapters["report_ms"])
+                    + " ms"
+                )
+            if alerts:
+                extras.append(f"alert engine {alerts['ms_total']:.1f} ms in {alerts['calls']} calls")
+            lines.append("      chapter, report, alerts: " + "; ".join(extras))
+        if scripted:
+            latency = ", ".join(f"{1e3 * v:.0f}" for v in scripted["latency_s"]) or "-"
+            lines.append(
+                f"      powers: applied {scripted['applied']} of {list(PLAY_POWER_IDS)}, "
+                f"click to applied {latency} ms"
+                + (f", refused {scripted['refused']}" if scripted["refused"] else "")
+                + f"; digest {'equal' if a['digest_equal'] else 'DIFFERS'} to the {a['expected']} run"
+            )
         lines.append(
             "      parts (ms): "
             + ", ".join(

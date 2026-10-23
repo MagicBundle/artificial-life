@@ -78,6 +78,51 @@ package struct PlayHeader: Equatable, Sendable, Codable {
         package var houses: String
     }
 
+    /// `play.alerts` (G3b, DESIGN §34.6): the registry the `ALRT` records name their classes from and the global rate cap.
+    package struct Alerts: Equatable, Sendable, Codable {
+        package struct Class: Equatable, Sendable, Codable {
+            /// The importance the class raises at: 0 log only, 1 the stack, 2 a toast, 3 a toast that may pause.
+            package var imp: Int
+            /// Whether the class pauses the world by default.
+            package var pause: Bool
+            package var label: String
+            /// Whether a measurement backs the class's threshold.
+            package var calibrated: Bool
+            package var surface: PlayAlert.Surface
+        }
+
+        package struct Cap: Equatable, Sendable, Codable {
+            package var n: Int
+            package var window: Int
+            package var exempt: [String]
+        }
+
+        package var version: Int
+        package var classes: [String: Class]
+        package var cap: Cap
+    }
+
+    /// `play.autopause`: the server's defaults (the client sends its own choice back with `autopause` lines).
+    package struct Autopause: Equatable, Sendable, Codable {
+        package var chapter: Bool
+        package var alert: [String: Bool]
+    }
+
+    /// One entry of `play.powers`: what the power grid draws (G3b, §34.5).
+    package struct Power: Equatable, Sendable, Codable {
+        /// The director action behind it.
+        package var action: String
+        package var label: String
+        package var cost: Int
+        package var cooldown: Int
+        /// Where it lands: `global`, `patch` or `column`.
+        package var scope: String?
+        /// The bounds of a timed power's duration, `[low, high]` in steps; nil for a one-step power.
+        package var duration: [Int]?
+        /// The bounds of its parameters, as the server states them (a range, or a list of ranges).
+        package var params: [String: JSONValue]?
+    }
+
     /// The tags the writer actually sends (a 2D or dry world has no `MAP1` and `STRM`).
     package var records: [String]
     package var versions: [String: Int]
@@ -97,13 +142,21 @@ package struct PlayHeader: Equatable, Sendable, Codable {
     /// The event kind registry: kind number (as text) to name.
     package var events: [String: String]
     package var planet: Planet
+    /// G3b keys, present only in a world that uses them.
+    package var alerts: Alerts?
+    package var autopause: Autopause?
+    package var powers: [String: Power]?
+    /// The name of the game table the powers come from (`"game-v0"`).
+    package var gameSpecs: String?
 
     private enum CodingKeys: String, CodingKey {
         case records, versions, rates, tick, chapter, weather, labels, cast, events, planet
+        case alerts, autopause, powers
         case baseRate = "base_rate"
         case snapshotEvery = "snapshot_every"
         case frameHz = "frame_hz"
         case energyCap = "energy_cap"
+        case gameSpecs = "game_specs"
     }
 
     /// Refuses values that cannot describe a world (a bad rate, a tick of zero, a negative cap).
@@ -118,6 +171,16 @@ package struct PlayHeader: Equatable, Sendable, Codable {
         }
         guard weather.dx.isFinite, weather.dx > 0 else { throw bad("weather.dx is not positive") }
         guard Set(records).count == records.count else { throw bad("records lists a tag twice") }
+        if let alerts {
+            guard !alerts.classes.isEmpty else { throw bad("alerts lists no class") }
+            guard alerts.classes.values.allSatisfy({ (0...3).contains($0.imp) }) else {
+                throw bad("an alert class has an importance outside 0 to 3")
+            }
+            guard alerts.cap.n > 0, alerts.cap.window > 0 else { throw bad("the alert cap is not positive") }
+        }
+        if let powers, powers.values.contains(where: { $0.cost < 0 || $0.cooldown < 0 }) {
+            throw bad("a power has a negative cost or cooldown")
+        }
     }
 }
 
@@ -181,6 +244,8 @@ package enum JSONValue: Equatable, Sendable, Codable {
 
     package var number: Double? { if case .number(let v) = self { v } else { nil } }
     package var string: String? { if case .string(let v) = self { v } else { nil } }
+    package var array: [JSONValue]? { if case .array(let v) = self { v } else { nil } }
+    package var object: [String: JSONValue]? { if case .object(let v) = self { v } else { nil } }
 }
 
 /// The slot byte values of `IDNT`, `TERR` and `FOCS`: a slot below `MAX_TABLE` (in `IDNT` the `slot` field of a table
@@ -317,9 +382,12 @@ package struct IdentityTables: Equatable, Sendable, Codable {
         package var births: Int?
         /// Deaths in the last window by cause: starved, killed, aged, catastrophe (and storm in a weather world).
         package var deaths: [Int]?
+        /// The id of the kin thread the group belongs to (G3b, DESIGN §34.1): it is stable across a re-formation under a
+        /// new kin id, and `name` is the thread's frozen name. Nil from a writer that has no threads.
+        package var thread: Int?
 
         private enum CodingKeys: String, CodingKey {
-            case slot, id, name, size, clade, x, y, z, arch, births, deaths
+            case slot, id, name, size, clade, x, y, z, arch, births, deaths, thread
             case namedAfter = "named_after"
             case cladeShare = "clade_share"
             case simSelf = "sim_self"
@@ -564,13 +632,44 @@ package struct PlayEnvironment: Equatable, Sendable, Codable {
         package var ready: Int
     }
 
+    /// The player's influence (G3b, §34.6): `have` units of `cap` are free, and a spent unit comes back at each step of
+    /// `freeAt` (the window is how long a spent unit stays spent).
+    package struct Influence: Equatable, Sendable, Codable {
+        package var have: Int
+        package var cap: Int
+        package var window: Int
+        package var freeAt: [Int]
+
+        private enum CodingKeys: String, CodingKey {
+            case have, cap, window
+            case freeAt = "free_at"
+        }
+    }
+
+    /// A food patch the powers can target (Bloom and Blight land on the nearest one).
+    package struct Patch: Equatable, Sendable, Codable {
+        package var i: Int
+        package var x: Double
+        package var y: Double
+        package var gain: Double
+        package var sigma: Double
+    }
+
+    /// Whether a power can be used now: the step it is ready (nil when it is), and why it is not usable (nil when it is).
+    package struct PowerState: Equatable, Sendable, Codable {
+        package var ready: Int?
+        package var busy: String?
+    }
+
     package var pools: [Pool]
     package var season: Season?
     package var levers: [String: JSONValue]
     package var effects: [Effect]
     package var cooldowns: [Cooldown]
-    /// Null in G3a.
-    package var influence: JSONValue?
+    /// Null before G3b and in a world with no player channel.
+    package var influence: Influence?
+    package var patches: [Patch]?
+    package var powers: [String: PowerState]?
 }
 
 package struct PlayEnvironmentRecord: Equatable, Sendable {
@@ -604,6 +703,11 @@ package struct PlayClock: Equatable, Sendable {
     package var chapter: UInt32
     package var inChapter: UInt32
     package var chapterLen: UInt32
+
+    /// Bit 0 of `flags`: the world pauses by itself at a chapter end.
+    package var chapterPauseArmed: Bool { flags & 1 != 0 }
+    /// Bit 1: at least one alert class is armed to pause the world.
+    package var alertPauseArmed: Bool { flags & 2 != 0 }
 }
 
 /// `FOCS`: the focused organism's own row with the observer's current slots.
@@ -637,6 +741,245 @@ package struct PlayFocus: Equatable, Sendable {
     package var isFollowed: Bool { flags & 4 != 0 }
 }
 
+// MARK: - ALRT
+
+/// One alert (G3b, DESIGN §34.6): something the world wants the player to look at. Its `id` is stable for its life; a change
+/// of text or importance re-sends the same id with a higher `version`, and the end of its condition sends `cleared`.
+package struct PlayAlert: Equatable, Sendable, Codable, Identifiable {
+    package enum State: String, Equatable, Sendable, Codable { case raised, updated, cleared }
+    /// `alert`: the stack, a toast by importance and a pause if armed. `log`: a chronicle row and a ticker line.
+    package enum Surface: String, Equatable, Sendable, Codable { case alert, log }
+
+    package struct Ref: Equatable, Sendable, Codable {
+        package enum Kind: String, Equatable, Sendable, Codable { case storm, kin, house, world, power, organism }
+        package var kind: Kind
+        package var id: Int64
+    }
+
+    /// `first_step * 1000 + 600 + index`.
+    package var id: UInt64
+    package var version: Int
+    package var step: Int
+    /// A class of the header's registry.
+    package var alertClass: String
+    package var key: String
+    package var state: State
+    package var surface: Surface
+    /// 0 log only, 1 the stack, 2 a toast, 3 a toast that pauses when its class is armed.
+    package var imp: Int
+    package var title: String
+    package var text: String
+    package var x: Double?
+    package var y: Double?
+    package var z: Double?
+    package var ref: Ref?
+    /// Whether this alert paused the world.
+    package var pause: Bool
+    package var expires: Int?
+    /// Whether it concerns a watched kin thread.
+    package var watched: Bool
+    package var calibrated: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id, version, step, key, state, surface, imp, title, text, x, y, z, ref, pause, expires, watched, calibrated
+        case alertClass = "class"
+    }
+
+    package static let idBase: UInt64 = 600
+    package static let maxTitle = 48
+    package static let maxText = 160
+}
+
+/// `ALRT`: up to 16 alerts; queued (never dropped) by the client, the newest `version` of an id wins.
+package struct PlayAlertBatch: Equatable, Sendable {
+    package var head: RecordHead
+    package var alerts: [PlayAlert]
+    /// Bit 0 of the head's flags: the history sent at start (no toast, no pause).
+    package var isBacklog: Bool { head.flags & 1 != 0 }
+}
+
+// MARK: - RPRT
+
+/// The N1 report of one chapter, as the world's template path writes it (DESIGN §34.4, §34.6).
+package struct ReportBody: Equatable, Sendable, Codable {
+    /// A headline or a lead: a sentence and the entities (keys of `entities`) its slots name.
+    package struct Sentence: Equatable, Sendable, Codable {
+        package var id: String
+        package var text: String
+        package var refs: [String]
+    }
+
+    /// A body sentence, with the part of the report that made it.
+    package struct Line: Equatable, Sendable, Codable {
+        package var id: String
+        package var text: String
+        package var origin: String
+        package var refs: [String]
+    }
+
+    package struct Tick: Equatable, Sendable, Codable {
+        package var step: Int
+        package var text: String
+    }
+
+    /// A kin group or a storm a sentence names: a click flies to its place.
+    package struct Entity: Equatable, Sendable, Codable {
+        package var kind: String
+        package var id: Int64
+        package var name: String?
+        package var x: Double?
+        package var y: Double?
+    }
+
+    package struct Since: Equatable, Sendable, Codable {
+        package struct Influence: Equatable, Sendable, Codable {
+            package var have: Int
+            package var cap: Int
+        }
+
+        package struct Ending: Equatable, Sendable, Codable {
+            package var action: String
+            package var end: Int
+        }
+
+        package var influence: Influence?
+        /// Alerts raised during the chapter, by class.
+        package var alerts: [String: Int]
+        package var ending: [Ending]
+    }
+
+    package struct Versions: Equatable, Sendable, Codable {
+        package var report: Int
+        package var template: Int
+        package var checker: Int
+        package var lexicon: Int
+    }
+
+    /// The chapter as the player numbers it (1 is the first after the world was made).
+    package var chapter: Int
+    /// The absolute chapter: the steps `(6000 (nAbs - 1), 6000 nAbs]`.
+    package var nAbs: Int
+    package var a: Int
+    package var b: Int
+    /// 0 template, 1 select, 2 away.
+    package var mode: Int
+    /// False for a select report that is still pending (G3c).
+    package var final: Bool
+    /// Why no report could be cut; then every part below is empty, never a guess.
+    package var withheld: [String]
+    package var headline: Sentence?
+    package var lead: Sentence?
+    package var body: [Line]
+    /// What the player did in the chapter; always complete, last.
+    package var interventions: [Sentence]
+    package var ticker: [Tick]
+    package var since: Since
+    package var entities: [String: Entity]
+    package var versions: Versions
+    package var factsDigest: String
+    package var latencyS: Double?
+    package var fallback: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case chapter, a, b, mode, final, withheld, headline, lead, body, interventions, ticker, since, entities
+        case versions, fallback
+        case nAbs = "n_abs"
+        case factsDigest = "facts_digest"
+        case latencyS = "latency_s"
+    }
+
+    package var isWithheld: Bool { !withheld.isEmpty }
+}
+
+/// `RPRT`: the report of a chapter. The client keeps the newest per `(chapter, mode)`.
+package struct PlayReport: Equatable, Sendable {
+    package var head: RecordHead
+    package var report: ReportBody
+
+    /// Bit 0 of the head's flags: the history sent at start.
+    package var isBacklog: Bool { head.flags & 1 != 0 }
+    /// Bit 1: the report will not be replaced (a template report always; a select report once it has arrived).
+    package var isFinal: Bool { head.flags & 2 != 0 }
+    package var chapter: Int { report.chapter }
+    package var mode: Int { report.mode }
+}
+
+// MARK: - PLAN
+
+/// What the world says about a power or an intent (G3b, DESIGN §34.5, §34.6): a preview, the queue, the application, a
+/// refusal, a `since` card that follows the effect and a cancellation. The exchange of one `power` line shares its `id`.
+package struct PlanBody: Equatable, Sendable, Codable {
+    package enum Kind: String, Equatable, Sendable, Codable { case power, intent }
+    package enum Status: String, Equatable, Sendable, Codable { case preview, queued, applied, refused, since, cancelled }
+
+    /// The rows the world kept for the effect after it was applied: `from` is the step it landed at.
+    package struct Since: Equatable, Sendable, Codable {
+        package struct Row: Equatable, Sendable, Codable {
+            package var step: Int
+            package var alive: Int
+            package var starved: Int
+            package var killed: Int
+            package var born: Int
+            package var storm: Int
+            package var catastrophe: Int
+        }
+
+        /// A strike's organisms in its column: counted when it was queued and one step after it took effect (nil while the
+        /// second count is not made, and for every other power).
+        package struct Disc: Equatable, Sendable, Codable {
+            package var before: Int
+            package var after: Int?
+        }
+
+        package var from: Int
+        package var rows: [Row]
+        package var disc: Disc?
+    }
+
+    /// The client's request number (the `id=N` of the `power` line).
+    package var id: Int
+    package var kind: Kind
+    package var status: Status
+    package var power: String?
+    package var action: String?
+    /// The parameters as the player sent them, and as the world clamped them.
+    package var raw: [String: JSONValue]
+    package var params: [String: JSONValue]
+    package var clamped: [String]
+    package var duration: Int?
+    package var stepApplied: Int?
+    package var ends: Int?
+    package var cost: Int
+    package var influence: PlayEnvironment.Influence?
+    package var ready: Int?
+    package var holds: String?
+    /// A code-written sentence (at most 160 characters).
+    package var text: String
+    package var caution: [String]
+    /// A versioned table of earlier cases, its shape the server's (not the world's own log).
+    package var precedent: JSONValue?
+    package var since: Since?
+    package var refused: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, status, power, action, raw, params, clamped, duration, ends, cost, influence, ready, holds, text
+        case caution, precedent, since, refused
+        case stepApplied = "step_applied"
+    }
+
+    package static let maxText = 160
+    package static let maxCaution = 100
+}
+
+/// `PLAN`: queued by the client; the card of a request is the newest record of its `id`.
+package struct PlayPlan: Equatable, Sendable {
+    package var head: RecordHead
+    package var plan: PlanBody
+
+    /// Bit 0 of the head's flags: the answer to a `power preview` (or a refused `intent`).
+    package var isReply: Bool { head.flags & 1 != 0 }
+}
+
 // MARK: - The record enum
 
 /// A decoded play record.
@@ -651,6 +994,10 @@ package enum StreamRecord: Equatable, Sendable {
     case envs(PlayEnvironmentRecord)
     case clck(PlayClock)
     case focs(PlayFocus)
+    /// G3b: queued like `evnt`.
+    case alrt(PlayAlertBatch)
+    case rprt(PlayReport)
+    case plan(PlayPlan)
 
     /// The record's tag as on the wire.
     package var tag: String {
@@ -665,6 +1012,9 @@ package enum StreamRecord: Equatable, Sendable {
         case .envs: "ENVS"
         case .clck: "CLCK"
         case .focs: "FOCS"
+        case .alrt: "ALRT"
+        case .rprt: "RPRT"
+        case .plan: "PLAN"
         }
     }
 
@@ -680,6 +1030,9 @@ package enum StreamRecord: Equatable, Sendable {
         case .envs(let r): r.head
         case .clck(let r): r.head
         case .focs(let r): r.head
+        case .alrt(let r): r.head
+        case .rprt(let r): r.head
+        case .plan(let r): r.head
         }
     }
 }
@@ -726,6 +1079,11 @@ enum RecordDecoder {
     static let maxJSON = 1 << 20
     static let maxEvents = 64
     static let maxStorms = 32
+    static let maxAlerts = 16
+    /// The JSON caps of the G3b records (the writer's: DESIGN §34.6).
+    static let maxAlertJSON = 24 << 10
+    static let maxReportJSON = 64 << 10
+    static let maxPlanJSON = 8 << 10
 
     /// How many bytes after the 8-byte record prefix and the common head `expectedLength` needs, or nil for a
     /// tag this decoder does not know.
@@ -737,6 +1095,9 @@ enum RecordDecoder {
         case "MAP1": 32
         case "EVNT": 8
         case "ENVS": 4
+        case "ALRT": 8
+        case "RPRT": 16
+        case "PLAN": 4
         case "CLCK", "FOCS": 0
         default: nil
         }
@@ -795,6 +1156,19 @@ enum RecordDecoder {
             let jsonLength = Int(r.u32(head))
             try checkJSON(tag, jsonLength)
             return head + 4 + pad4(jsonLength)
+        case "ALRT":
+            let count = Int(r.u32(head)), jsonLength = Int(r.u32(head + 4))
+            guard count <= maxAlerts else { throw malformed(tag, "\(count) alerts exceed the cap of \(maxAlerts)") }
+            try checkJSON(tag, jsonLength, cap: maxAlertJSON)
+            return head + 8 + pad4(jsonLength)
+        case "RPRT":
+            let jsonLength = Int(r.u32(head + 8))
+            try checkJSON(tag, jsonLength, cap: maxReportJSON)
+            return head + 16 + pad4(jsonLength)
+        case "PLAN":
+            let jsonLength = Int(r.u32(head))
+            try checkJSON(tag, jsonLength, cap: maxPlanJSON)
+            return head + 4 + pad4(jsonLength)
         case "CLCK": return head + 44
         case "FOCS": return head + 68
         default: throw malformed(tag, "not a play record")
@@ -805,8 +1179,10 @@ enum RecordDecoder {
         guard rows <= header.capacity else { throw malformed(tag, "\(rows) rows exceed N \(header.capacity)") }
     }
 
-    private static func checkJSON(_ tag: String, _ length: Int) throws {
-        guard length <= maxJSON else { throw malformed(tag, "json_len \(length) exceeds 1 MiB") }
+    private static func checkJSON(_ tag: String, _ length: Int, cap: Int = maxJSON) throws {
+        guard length <= cap else {
+            throw malformed(tag, "json_len \(length) exceeds \(cap == maxJSON ? "1 MiB" : "\(cap >> 10) KiB")")
+        }
     }
 
     /// The record whose payload `r` holds (its length has been checked against `expectedLength`).
@@ -823,6 +1199,9 @@ enum RecordDecoder {
         case "ENVS": return .envs(try envs(head, r))
         case "CLCK": return .clck(try clck(head, r))
         case "FOCS": return .focs(try focs(head, r))
+        case "ALRT": return .alrt(try alrt(head, r))
+        case "RPRT": return .rprt(try rprt(head, r))
+        case "PLAN": return .plan(try plan(head, r))
         default: throw malformed(tag, "not a play record")
         }
     }
@@ -1006,6 +1385,61 @@ enum RecordDecoder {
             throw malformed("FOCS", "\(name) slot \(slot) is not a slot or 253 to 255")
         }
         return focus
+    }
+
+    private static func alrt(_ head: RecordHead, _ r: ByteReader) throws -> PlayAlertBatch {
+        let tag = "ALRT"
+        let count = Int(r.u32(16)), jsonLength = Int(r.u32(20))
+        let alerts: [PlayAlert] = try json(tag, r, at: 24, length: jsonLength)
+        guard alerts.count == count else { throw malformed(tag, "count \(count) but the JSON lists \(alerts.count)") }
+        guard Set(alerts.map(\.id)).count == alerts.count else { throw malformed(tag, "an alert id is listed twice") }
+        for a in alerts {
+            guard (0...3).contains(a.imp) else { throw malformed(tag, "alert \(a.id) has importance \(a.imp), not 0 to 3") }
+            guard a.id % 1000 >= PlayAlert.idBase else { throw malformed(tag, "alert id \(a.id) is not in the alert range") }
+            guard a.title.count <= PlayAlert.maxTitle, a.text.count <= PlayAlert.maxText else {
+                throw malformed(tag, "alert \(a.id) has a title over \(PlayAlert.maxTitle) or a text over \(PlayAlert.maxText) characters")
+            }
+            switch a.state {
+            case .raised where a.version != 1: throw malformed(tag, "alert \(a.id) is raised at version \(a.version)")
+            case .updated where a.version < 2: throw malformed(tag, "alert \(a.id) is updated at version \(a.version)")
+            default: break
+            }
+            guard a.version >= 1 else { throw malformed(tag, "alert \(a.id) has version \(a.version)") }
+        }
+        return PlayAlertBatch(head: head, alerts: alerts)
+    }
+
+    private static func rprt(_ head: RecordHead, _ r: ByteReader) throws -> PlayReport {
+        let tag = "RPRT"
+        let chapter = Int(r.u32(16)), mode = Int(r.u32(20)), jsonLength = Int(r.u32(24))
+        guard r.u32(28) == 0 else { throw malformed(tag, "the reserved word is not zero") }
+        let report: ReportBody = try json(tag, r, at: 32, length: jsonLength)
+        guard report.chapter == chapter, report.mode == mode else {
+            throw malformed(tag, "the head says chapter \(chapter) mode \(mode), the JSON \(report.chapter) and \(report.mode)")
+        }
+        guard (0...2).contains(report.mode) else { throw malformed(tag, "mode \(report.mode) is not 0 to 2") }
+        guard (head.flags & 2 != 0) == report.final else { throw malformed(tag, "the final flag and the JSON disagree") }
+        guard report.a <= report.b else { throw malformed(tag, "the cut \(report.a) is after \(report.b)") }
+        if report.isWithheld, report.headline != nil || report.lead != nil || !report.body.isEmpty || !report.interventions.isEmpty {
+            throw malformed(tag, "a withheld report is empty: no guess is sent")
+        }
+        return PlayReport(head: head, report: report)
+    }
+
+    private static func plan(_ head: RecordHead, _ r: ByteReader) throws -> PlayPlan {
+        let tag = "PLAN"
+        let jsonLength = Int(r.u32(16))
+        let plan: PlanBody = try json(tag, r, at: 20, length: jsonLength)
+        guard plan.text.count <= PlanBody.maxText, plan.caution.allSatisfy({ $0.count <= PlanBody.maxCaution }) else {
+            throw malformed(tag, "a text is over \(PlanBody.maxText) characters or a caution over \(PlanBody.maxCaution)")
+        }
+        guard (plan.status == .refused) == (plan.refused != nil) else {
+            throw malformed(tag, "refused is a reason exactly when the status is refused")
+        }
+        guard plan.status != .applied || plan.stepApplied != nil else { throw malformed(tag, "an applied plan names its step") }
+        guard plan.status != .preview || head.flags & 1 != 0 else { throw malformed(tag, "a preview is the reply to a request") }
+        guard plan.id >= 0, plan.cost >= 0 else { throw malformed(tag, "id and cost are not negative") }
+        return PlayPlan(head: head, plan: plan)
     }
 
     // MARK: JSON

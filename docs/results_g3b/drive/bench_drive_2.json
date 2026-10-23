@@ -1,0 +1,153 @@
+{
+  "alife_version": "0.1.0",
+  "mlx_version": "0.32.3",
+  "python": "3.12.11",
+  "platform": "darwin-arm64",
+  "device": "Device(gpu, 0)",
+  "knn_impl": "metal",
+  "config_hash": "c03d7089b26dc60b65f555f2cde7e3c3457feb2ffad6148b7f0be22260913fe0",
+  "config": {
+    "n_max": 65536,
+    "n_init": 16384,
+    "max_births_per_step": 1024,
+    "world_size": 320.0,
+    "field_grid": 80,
+    "dims": 3,
+    "world_height": 80.0,
+    "field_grid_z": 20,
+    "k_neighbors": 8,
+    "cell_capacity": 48,
+    "hidden": 32,
+    "weight_dtype": "float16",
+    "brain_impl": "matmul",
+    "compile": true,
+    "runtime_checks": "cheap",
+    "seed": 0
+  },
+  "play": {
+    "steps": 2500,
+    "warmup": 300,
+    "base_rate": 14.4,
+    "frame_hz": 30,
+    "cadence": {
+      "metrics_every": 250,
+      "heavy_metrics_every": 250,
+      "checkpoint_every": 6000,
+      "keep_checkpoints": 3
+    },
+    "engine_ms": 14.739312522578984,
+    "powers": false,
+    "plain_digest": {
+      "rules": "88de4fd3614ad4f94fa8fa522bd580f0b00d67bc398a86d32ab2eba2c76f883f"
+    },
+    "replay_digest": {},
+    "arms": [
+      {
+        "name": "rules_max",
+        "director": "rules",
+        "rate": "max",
+        "steps_measured": 2499,
+        "seconds": 53.662766291061416,
+        "steps_per_s": 46.568601895132964,
+        "achieved_x": 3.2339306871620113,
+        "step_ms": {
+          "p50": 19.01291694957763,
+          "p99": 24.989619420375675,
+          "max": 5876.252166926861
+        },
+        "step_counts": {
+          "typical": 2489,
+          "snapshot": 0,
+          "boundary": 10
+        },
+        "part_calls": {
+          "alerts": 305,
+          "boundary": 11,
+          "events": 2513,
+          "frma": 1250,
+          "labels": 100,
+          "save": 2,
+          "tables": 10,
+          "tick_storms": 100,
+          "write": 2500
+        },
+        "step_ms_typical": 19.010625081136823,
+        "step_ms_snapshot": null,
+        "step_ms_boundary": 82.11110398406163,
+        "components_ms": {
+          "engine": 14.739312522578984,
+          "loop_typical": 16.883708478417248,
+          "loop_snapshot": 45.88612500810996,
+          "observer": 2.144395955838263,
+          "settle": 29.00241652969271,
+          "frma": 2.794103987980634,
+          "tick": 4.107833548914641,
+          "labels": 0.5652084364555776,
+          "tables": 2.6718329754658043,
+          "events": 0.0012080417945981026,
+          "write": 0.13143755495548248,
+          "boundary": 23.753333021886647,
+          "save": 5682.081249949988
+        },
+        "late_steps": 0,
+        "save_stall_steps": 0,
+        "frames": 1250,
+        "bytes_per_s": {
+          "ALRT": 25.716154707996594,
+          "CLCK": 236.96132120788747,
+          "ENVS": 247.91863930085992,
+          "EVNT": 109.57318092972461,
+          "FRMA": 24945296.27375873,
+          "HEAD": 0.0,
+          "IDNT": 101314.27013119907,
+          "INTN": 754073.5373297435,
+          "MAP1": 202852.00991983167,
+          "RPRT": 7.603037044103341,
+          "STRM": 8792.614183190059,
+          "TERR": 398.7867469211066
+        },
+        "mb_per_s": 26.013355264402808,
+        "drained_bytes": 1573124352,
+        "wall_s": 70.85695024998859,
+        "n_alive_end": 33645,
+        "digest": "88de4fd3614ad4f94fa8fa522bd580f0b00d67bc398a86d32ab2eba2c76f883f",
+        "chapters": {
+          "length": 6000,
+          "ends": 1,
+          "report_ms": [
+            3.4282499691471457
+          ]
+        },
+        "alerts": {
+          "calls": 305,
+          "ms_total": 2.7668322436511517
+        },
+        "powers": null,
+        "run": "/Volumes/M5 PRO external/alife/coordinator_scratch_2026-10-21/g3b_ckpt_stall_1/bench_2/rules_max",
+        "start": 472000,
+        "total": 2800,
+        "expected": "plain",
+        "digest_equal": true,
+        "gate": {
+          "applies": true,
+          "want": {
+            "achieved_x": 2.5,
+            "report_ms": 500.0
+          },
+          "got": {
+            "achieved_x": 3.2339306871620113,
+            "report_ms": 3.4282499691471457
+          },
+          "pass": true,
+          "checks": {
+            "achieved_x": true,
+            "report_ms": true
+          },
+          "five_minutes": false
+        }
+      }
+    ],
+    "digests_equal": true,
+    "workdir": "/Volumes/M5 PRO external/alife/coordinator_scratch_2026-10-21/g3b_ckpt_stall_1/bench_2"
+  }
+}

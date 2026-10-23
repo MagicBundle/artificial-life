@@ -16,8 +16,8 @@ from typing import Any
 import pytest
 
 from alife.director.llm import Exchange
+from alife.game import kinthreads, templates
 from alife.game import report as R
-from alife.game import templates
 from report_helpers import deaths, mk_sheet, pop, random_sheet
 
 DATA = Path(__file__).parent / "data"
@@ -84,10 +84,9 @@ def test_the_system_message_is_the_specified_text_and_the_prompt_is_pinned() -> 
     assert msgs[1]["content"] == (
         "Chapter: steps 792,000 to 798,000 of a 2D world.\n"
         "Lead (always first): The population fell from 21,400 to 18,900 (-11.7%).\n\n"
-        "Body candidates (choose 3):\n"
-        "C1 [always]: There were 16,260 deaths: 14,100 by starvation, 1,900 by attack and 260 by old age.\n"
-        "C2: The lowest count was 18,640, in the 100 steps to step 1,517,900.\n"
-        "C3: There were 13,660 births and 200 arrivals from outside.\n\n"
+        "Body candidates (choose 2):\n"
+        "C1 [always]: 13,660 organisms were born and 16,260 died: a turnover of 0.8 times the population.\n"
+        "C2: There were 13,660 births and 200 arrivals from outside.\n\n"
         "Headline candidates (choose 1):\n"
         "H1: Population fell to 18,900"
     )
@@ -159,7 +158,7 @@ def test_select_schema_shape_k_and_n_min() -> None:
     small = probe_sheet(SMALL)
     sc = R.candidates(small)
     ss = R.select_schema(sc, R.body_k(small, sc[0]))["properties"]["order"]
-    assert (ss["minItems"], ss["maxItems"]) == (3, 6)  # three candidates: all of them
+    assert (ss["minItems"], ss["maxItems"]) == (2, 6)  # two candidates: both of them
     two = probe_sheet(TWO_HEADS)
     assert R.select_schema(R.candidates(two), 6)["properties"]["headline"]["enum"] == ["H1", "H2"]
     assert (
@@ -281,12 +280,8 @@ def test_fewer_entries_than_n_min_is_too_few_and_keeps_the_choice() -> None:
     assert R.parse_choice(reply("H1", ["C1"]), R.candidates(q), 3)["outcome"] == "too_few"
     assert R.parse_choice(reply("H1", ["C1", "C2"]), R.candidates(q), 3)["outcome"] == "ok"
     s = probe_sheet(SMALL)
-    assert R.parse_choice(reply("H1", ["C1", "C2"]), R.candidates(s), 6)["outcome"] == "too_few"
-    assert R.parse_choice(reply("H1", ["C3", "C1", "C2"]), R.candidates(s), 6)["choice"]["order"] == [
-        "C3",
-        "C1",
-        "C2",
-    ]
+    assert R.parse_choice(reply("H1", ["C1"]), R.candidates(s), 6)["outcome"] == "too_few"
+    assert R.parse_choice(reply("H1", ["C2", "C1"]), R.candidates(s), 6)["choice"]["order"] == ["C2", "C1"]
 
 
 def test_the_reply_may_name_the_mandatory_sentences_and_k_is_a_hard_cap() -> None:
@@ -294,7 +289,7 @@ def test_the_reply_may_name_the_mandatory_sentences_and_k_is_a_hard_cap() -> Non
     cands = R.candidates(sheet)
     got = R.parse_choice(reply("H1", [c["id"] for c in cands[0]]), cands, 6)
     assert len(got["choice"]["order"]) == 6
-    assert [d["reason"] for d in got["choice"]["dropped"]] == ["beyond_k"] * 14
+    assert [d["reason"] for d in got["choice"]["dropped"]] == ["beyond_k"] * 13  # 19 candidates
 
 
 def test_judge_attempt_rederives_the_outcome_from_the_stored_response() -> None:
@@ -493,7 +488,7 @@ def test_the_record_has_the_specified_keys_in_order_and_is_plain_json() -> None:
     assert list(rec) == [
         "step", "chapter_start", "report_version", "template_version", "checker_version", "select_prompt_version",
         "report_rules_digest", "template_digest", "lexicon_digest", "label_table_digest", "known_social_digest",
-        "source_words_digest", "select_prompt_digest", "facts_digest", "candidate_set_digest", "facts", "candidates",
+        "kinthreads_digest", "storm_rules_digest", "source_words_digest", "select_prompt_digest", "facts_digest", "candidate_set_digest", "facts", "candidates",
         "headlines", "excluded_candidates", "mode", "model", "url", "messages", "request", "attempts", "fallback",
         "report", "ticker",
     ]  # fmt: skip
@@ -529,15 +524,16 @@ def test_the_record_is_deterministic_given_the_same_exchanges() -> None:
 def test_record_versions_and_digests_are_pinned() -> None:
     v = R.record_versions()
     assert (v["report_version"], v["template_version"], v["checker_version"], v["select_prompt_version"]) == (
-        1,
-        1,
+        2,
+        2,
         1,
         1,
     )
+    assert v["kinthreads_digest"] == kinthreads.constants_digest()
     assert (
         v["report_rules_digest"] == R.REPORT_V1.digest() and v["template_digest"] == templates.TEMPLATE_DIGEST
     )
-    assert v["source_words_digest"] == "218eec1a2629d43dbcead4cb7eb08535dd18796879ff71d666c1c98bff2ffeb4"
+    assert v["source_words_digest"] == "c0e0566885b49432bbd0792f84c01bcc49b58debe1ee398cf5cf00aeecba5c7d"
     assert v["select_prompt_digest"] == "7800edadecea2996e4e3b80d229b2d8e66c9f29512e9ebccdd32a9e456d938cb"
     assert R.source_words_digest() == v["source_words_digest"]
 
@@ -771,7 +767,7 @@ def test_other_versions_are_versions_differ_with_both_comparisons_reported(selec
         got = status(mutate(rec, [key], 99), sheet)
         assert (
             got["status"] == "versions_differ"
-            and got["versions"] == {key: [99, 1]}
+            and got["versions"] == {key: [99, R.record_versions()[key]]}
             and not got["sheet_differs"]
         )
     for key in (
@@ -780,6 +776,8 @@ def test_other_versions_are_versions_differ_with_both_comparisons_reported(selec
         "lexicon_digest",
         "label_table_digest",
         "known_social_digest",
+        "kinthreads_digest",
+        "storm_rules_digest",
         "source_words_digest",
         "select_prompt_digest",
     ):

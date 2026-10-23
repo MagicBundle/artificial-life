@@ -9,11 +9,12 @@ test that compares them with the report's fold compares the engine's own output.
 ``meta.json`` without host fields, ``metrics.jsonl`` pruned to the fields the report reads, the director log,
 ``observers/social.jsonl`` and each sidecar's ``meta`` member only.
 
-    PYTHONPATH=tests python tests/data/make_report_e2e.py [OUT_DIR] [--fork RUN_DIR]
+    PYTHONPATH=tests python tests/data/make_report_e2e.py [OUT_DIR] [--fork RUN_DIR] [--golden-only]
 
 Slow (two simulations on the CPU, a few minutes) unless ``--fork`` names a fork you already made with the same
-arguments. Run it once, after a change to the report's output, and read the diff. The tests read the committed
-files and never simulate."""
+arguments, or ``--golden-only`` rebuilds ``golden.json`` from the committed files (the right thing after a change
+of the report, which does not change the engine's output). Run it once, after a change to the report's output,
+and read the diff. The tests read the committed files and never simulate."""
 
 # ruff: noqa: E501  (expected report texts are long lines)
 
@@ -115,11 +116,12 @@ def golden(dst: Path) -> list[dict]:
     ]
 
 
-def main(out: Path, fork: Path | None = None) -> None:
+def main(out: Path, fork: Path | None = None, golden_only: bool = False) -> None:
     dst = out / "report_e2e"
     log = dst / "director.jsonl"
-    with tempfile.TemporaryDirectory() as tmp:
-        keep(fork or simulate(Path(tmp), log), dst, log)
+    if not golden_only:
+        with tempfile.TemporaryDirectory() as tmp:
+            keep(fork or simulate(Path(tmp), log), dst, log)
     (dst / "golden.json").write_text(
         json.dumps(golden(dst), indent=1, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -129,5 +131,9 @@ def main(out: Path, fork: Path | None = None) -> None:
 if __name__ == "__main__":
     args = sys.argv[1:]
     fork_dir = Path(args[args.index("--fork") + 1]) if "--fork" in args else None
-    rest = [a for i, a in enumerate(args) if a != "--fork" and (i == 0 or args[i - 1] != "--fork")]
-    main(Path(rest[0]) if rest else Path(__file__).parent, fork_dir)
+    rest = [
+        a
+        for i, a in enumerate(args)
+        if a not in ("--fork", "--golden-only") and (i == 0 or args[i - 1] != "--fork")
+    ]
+    main(Path(rest[0]) if rest else Path(__file__).parent, fork_dir, "--golden-only" in args)

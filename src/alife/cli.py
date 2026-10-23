@@ -32,6 +32,7 @@ from alife.config import (
     DIRECTOR_POLICY_KEYS,
     OBSERVER_KEYS,
     PERSONAS,
+    PLAYER_MODE,
     PRESETS,
     RANDOM_PERSONA,
     Config,
@@ -1091,6 +1092,8 @@ def _play_world(a: argparse.Namespace, sink: Any, control: stream.Control) -> in
             return code
         assert rd is not None
         step = int(to_numpy(box[0].step))
+        if (origin := play.origin_row(box[0], cfg)) is not None:  # the row Chapter 1 is cut from (§34.2)
+            rd.update_meta(origin_row=origin)
         if seed is not None:  # before the first checkpoint: the observer opens on it (Observer.open)
             housefile.write(rd, step, seed, rate=cfg.game.house_rate, run_seed=cfg.run.seed)
         planet = (
@@ -1265,13 +1268,21 @@ def _play_serve(
         source=source,
         run=str(rd.path),
         planet={"source": planet["source"], "houses": planet["houses"]} if planet else None,
+        origin_step=play.planet_origin_step(planet),
         dc_ref=((saved.get("weather") or {}).get("dc_ref")),
         fresh=fresh,
         until=a.until,
         on_ready=ready,
+        alerts_experimental=getattr(a, "alerts", None) == "experimental",
     )
     rd.update_meta(knn_impl=spatial.knn_impl(cfg))
-    director = make_director(rd, cfg, step)
+    if cfg.run.director == "off" and cfg.director.enabled:
+        # The default launch: a world that can take director actions (a planet can) is played in the player
+        # mode, which decides nothing and applies the player's powers. With none applied it is digest-equal to
+        # `off` (inert env, DESIGN §26 D1). `--director rules` is `live` (and takes powers too).
+        cfg = dataclasses.replace(cfg, run=dataclasses.replace(cfg.run, director=PLAYER_MODE))
+        rd.save_config(cfg)
+    director = make_director(rd, cfg, step, game_specs=True)  # the log of a played world may hold powers
     steps = 2**40 if a.until is None else a.until - step
     return play.serve_play(
         rd, cfg, box, steps=steps, options=options, control=control, out=sink, director=director
@@ -1348,6 +1359,16 @@ def _bench_play_world(a: argparse.Namespace, workdir: Path) -> tuple[Config, Pat
     spun up by ``--play-spinup N``. Every arm of the bench loads its own copy."""
     items = argparse.Namespace(replay=False, director="off")
     template = workdir / "template.safetensors"
+    if a.play_resume is not None:
+        if a.play_from is not None:
+            raise ConfigError("--play-resume and --play-from are two ways to name the world: give one")
+        # a played world's checkpoint as it is (a planet some chapters in); the arms resume it
+        src, _ = _fork_source(a.play_resume)
+        cfg = _layer(
+            _embedded_config(src), overlays=a.overlay, path=None, overrides=[*a.set, *_play_items(items)]
+        )
+        _knn_guard(cfg)
+        return cfg, src
     if a.play_from is not None:
         ns = argparse.Namespace(
             init_from=a.play_from, overlay=a.overlay, set=a.set, weather_spinup=a.play_spinup,
@@ -1384,8 +1405,8 @@ def _bench_play(a: argparse.Namespace) -> dict[str, Any]:
     cfg, template = _bench_play_world(a, workdir)
     rates = tuple(r.strip() for r in a.play_rates.split(",") if r.strip())
     wanted = a.play_directors or (
-        "off,rules" if cfg.director.enabled else "off"
-    )  # the rule tier needs the levers
+        "off,rules,player" if cfg.director.enabled else "off"
+    )  # the rule tier and the player need the levers
     directors = tuple(d.strip() for d in wanted.split(",") if d.strip())
     bad = [d for d in directors if d not in bench.PLAY_DIRECTORS]
     if bad:
@@ -1398,7 +1419,7 @@ def _bench_play(a: argparse.Namespace) -> dict[str, Any]:
     report = bench._environment(cfg)
     report["play"] = bench.run_play_bench(
         cfg, template, workdir, steps=a.steps or bench.PLAY_STEPS, warmup=a.play_warmup, rates=rates,
-        directors=directors,
+        directors=directors, chapter=a.play_chapter, powers=a.play_powers,
     )  # fmt: skip
     report["play"]["workdir"] = str(workdir)
     return report
@@ -1720,7 +1741,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--director",
         choices=("off", "rules"),
         default="off",
-        help="rules: the director's rule tier decides (the world needs director.enabled; no LLM)",
+        help="off (default): no rule tier; a world with director.enabled applies the player's powers "
+        "(DESIGN 34.5). rules: the director's rule tier decides (the world needs director.enabled; no LLM)",
     )
     p.add_argument(
         "--houses",
@@ -1728,6 +1750,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="houses of a planet (--init-from): exact rebuilds them from the source's event chunks (exit 4 "
         "if they are missing), clade takes the clades, auto (default) tries exact and falls back with a note",
+    )
+    p.add_argument(
+        "--alerts",
+        choices=("experimental",),
+        default=None,
+        help="also evaluate the alert classes whose threshold no measurement backs (storm over a lineage; "
+        "they are logged to alerts.jsonl as the log surface, DESIGN 34.3)",
     )
     p.add_argument("--no-control", action="store_true", help="do not read stdin")
     p.set_defaults(func=_cmd_play)
@@ -1783,6 +1812,29 @@ def build_parser() -> argparse.ArgumentParser:
         "population, not founders)",
     )
     p.add_argument(
+        "--play-resume",
+        default=None,
+        metavar="SRC[:STEP]",
+        help="--play on a played world: resume this run's checkpoint as it is (the gate of DESIGN §34.8 "
+        "resumes a planet some steps before a chapter's end, so that the arm holds the end, its report and "
+        "the scripted powers)",
+    )
+    p.add_argument(
+        "--play-powers",
+        action="store_true",
+        help="--play: the player arm sends two scripted powers (a Food in the middle of the measured part "
+        "and a Strike at the chapter-end step itself) and reports the click-to-applied latency; its digest "
+        "is then checked against the replay of its own log, not the plain run's (needs the player mode)",
+    )
+    p.add_argument(
+        "--play-chapter",
+        type=_positive,
+        default=None,
+        metavar="N",
+        help="--play: the chapter length in steps (default 6,000; a multiple of the checkpoint cadence; "
+        "the tests shorten it)",
+    )
+    p.add_argument(
         "--play-spinup",
         type=_positive,
         default=None,
@@ -1797,7 +1849,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--play-directors",
         default=None,
         metavar="LIST",
-        help="--play: director modes (default off,rules when director.enabled is set, else off)",
+        help="--play: director modes (off, rules, player; all three when director.enabled is set, else off)",
     )
     p.add_argument(
         "--play-warmup",

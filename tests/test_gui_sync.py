@@ -171,7 +171,8 @@ def swift_struct_keys(text: str, name: str) -> set[str]:
     in_keys = False
     for line in lines:
         stripped = line.strip()
-        if depth_at == 1 and (v := re.match(r"(?:package |private |public )?var (\w+)\s*:", stripped)):
+        stored = depth_at == 1 and "{" not in stripped  # a computed property is no JSON key
+        if stored and (v := re.match(r"(?:package |private |public )?var (\w+)\s*:", stripped)):
             props.append(v.group(1))
         if re.match(r"(?:private )?enum CodingKeys", stripped):
             in_keys = True
@@ -210,13 +211,31 @@ def test_the_play_header_keys_match_playheader() -> None:
         ),
         energy_cap=1,
     )
-    assert swift_struct_keys(text, "PlayHeader") == set(play)
+    g3b = sr.header_play(
+        records=["FRMA"],
+        weather=sr.weather_block(enabled=False, dc_ref=None),
+        labels=play["labels"],
+        energy_cap=1,
+        alerts=sr.alerts_block(
+            {"chapter": {"imp": 3, "pause": True, "label": "c", "calibrated": True, "surface": "alert"}}
+        ),
+        autopause=sr.autopause_block(chapter=True, alert={"chapter": True}),
+        powers=sr.powers_block({"food": {"action": "a", "label": "l", "cost": 1, "cooldown": 1}}),
+        game_specs="game-v0",
+    )
+    assert swift_struct_keys(text, "PlayHeader") == set(g3b) and set(g3b) - set(play) == {
+        "alerts", "autopause", "powers", "game_specs",
+    }  # fmt: skip
     assert swift_struct_keys(text, "Weather") == set(play["weather"])
     assert swift_struct_keys(text, "Refs") == set(play["weather"]["refs"])
     assert swift_struct_keys(text, "Labels") == set(play["labels"])
     assert swift_struct_keys(text, "Gate") == set(play["labels"]["gate"])
     assert swift_struct_keys(text, "Cast") == set(play["cast"])
     assert swift_struct_keys(text, "Planet") == set(play["planet"])
+    assert swift_struct_keys(text, "Alerts") == set(g3b["alerts"])
+    assert swift_struct_keys(text, "Class") == set(next(iter(g3b["alerts"]["classes"].values())))
+    assert swift_struct_keys(text, "Cap") == set(g3b["alerts"]["cap"])
+    assert swift_struct_keys(text, "Autopause") == set(g3b["autopause"])
     # the legacy header keys the Swift header reads are those `legacy_header` writes, plus `play`
     legacy = sr.legacy_header(
         dims=3, size=1.0, height=1.0, n=1, bond_slots=1, radius=1.0, field_cell=1.0, fg=1, fz=1, nch=1,
@@ -224,6 +243,199 @@ def test_the_play_header_keys_match_playheader() -> None:
     )  # fmt: skip
     stream_header = (CORE / "StreamProtocol.swift").read_text(encoding="utf-8")
     assert swift_struct_keys(stream_header, "StreamHeader") == {*legacy, "play"}
+
+
+def swift_body(text: str, header: str) -> str:
+    """The text of the declaration that starts with `header` (`struct X` or `enum X`), braces included."""
+    found = re.search(rf"{re.escape(header)}\b", text)
+    assert found, f"{header} not found"
+    start = found.start()
+    i = text.index("{", start)
+    depth, j = 0, i
+    while True:
+        depth += {"{": 1, "}": -1}.get(text[j], 0)
+        j += 1
+        if depth == 0:
+            return text[start:j]
+
+
+def swift_nested_cases(text: str, name: str) -> set[str]:
+    """The raw values of a nested `enum NAME: String` (one line or several): `case a, b`, `case c = "x"`."""
+    body = swift_body(text, f"enum {name}")
+    body = body[body.index("{") + 1 :]
+    values = set()
+    for m in re.finditer(r"\bcase\s+([^\n}]+)", body):
+        for item in m.group(1).split(","):
+            parsed = re.fullmatch(r'\s*(\w+)\s*(?:=\s*"([^"]+)")?\s*', item)
+            assert parsed, f"cannot read the case {item!r} of {name}"
+            values.add(parsed.group(2) or parsed.group(1))
+    return values
+
+
+def fixture_json(tag: str) -> list[object]:
+    """The JSON object of every `tag` record of the G3b fixture, as the independent decoder read it."""
+    sidecar = json.loads((ROOT / "tests" / "data" / "play_tiny3d_g3b.json").read_text(encoding="utf-8"))
+    return [r["fields"]["json"] for r in sidecar["records"] if r["tag"] == tag]
+
+
+def keys_of(objects: list[dict]) -> set[str]:
+    return {k for o in objects for k in o}
+
+
+def test_the_g3b_records_have_the_keys_the_swift_types_decode() -> None:
+    """ALRT, RPRT and PLAN: the keys `streamrec` checks (and the fixture, read by the independent Python
+    decoder) are the keys of `PlayAlert`, `ReportBody` and `PlanBody` and their nested types."""
+    from alife import streamrec as sr
+
+    text = (CORE / "PlayRecords.swift").read_text(encoding="utf-8")
+    assert swift_struct_keys(text, "PlayAlert") == set(sr.ALERT_KEYS)
+    assert (
+        swift_struct_keys(text, "Ref")
+        == {"kind", "id"}
+        == keys_of([a["ref"] for b in fixture_json("ALRT") for a in b if a["ref"]])
+    )  # type: ignore[index]
+    body = swift_body(text, "struct ReportBody")
+    assert swift_struct_keys(body, "ReportBody") == set(sr.REPORT_KEYS)
+    reports = [r for r in fixture_json("RPRT") if not r["withheld"]]  # type: ignore[index]
+    assert swift_struct_keys(body, "Sentence") == keys_of([r["headline"] for r in reports])
+    assert swift_struct_keys(body, "Line") == keys_of([b for r in reports for b in r["body"]])  # type: ignore[index]
+    assert swift_struct_keys(body, "Tick") == keys_of([t for r in reports for t in r["ticker"]])  # type: ignore[index]
+    assert swift_struct_keys(body, "Entity") == keys_of([e for r in reports for e in r["entities"].values()])  # type: ignore[index]
+    assert swift_struct_keys(body, "Since") == keys_of([r["since"] for r in reports])
+    assert swift_struct_keys(body, "Ending") == keys_of([e for r in reports for e in r["since"]["ending"]])  # type: ignore[index]
+    assert swift_struct_keys(body, "Versions") == keys_of([r["versions"] for r in reports])
+    plan = swift_body(text, "struct PlanBody")
+    assert swift_struct_keys(plan, "PlanBody") == set(sr.PLAN_KEYS)
+    plans = fixture_json("PLAN")
+    since = [p["since"] for p in plans if p["since"]]  # type: ignore[index]
+    # `disc` is a strike's organisms in its column: only a Strike's card carries it (the fixture's is a
+    # Food's), and `powers.Card` writes it; the Swift type reads it as an optional.
+    assert swift_struct_keys(plan, "Since") - {"disc"} == keys_of(since)
+    assert "disc" in swift_struct_keys(plan, "Since")
+    assert '"disc"' in (ROOT / "src" / "alife" / "game" / "powers.py").read_text(encoding="utf-8")
+    assert swift_struct_keys(plan, "Disc") == {"before", "after"}
+    assert swift_struct_keys(plan, "Row") == keys_of([r for s in since for r in s["rows"]])  # type: ignore[index]
+
+
+def test_the_g3b_environment_and_identity_keys_match() -> None:
+    """The keys G3b adds to `ENVS` (influence, patches, powers) and `IDNT.kin` (thread), and the decoded flag
+    bits and caps, are the engine's."""
+    from alife import streamrec as sr
+
+    text = (CORE / "PlayRecords.swift").read_text(encoding="utf-8")
+    envs = fixture_json("ENVS")[0]
+    env = swift_body(text, "struct PlayEnvironment")
+    assert swift_struct_keys(env, "PlayEnvironment") == set(envs)  # type: ignore[arg-type]
+    assert swift_struct_keys(env, "Influence") == set(envs["influence"])  # type: ignore[index]
+    assert swift_struct_keys(env, "Patch") == keys_of(envs["patches"])  # type: ignore[index]
+    assert swift_struct_keys(env, "PowerState") == keys_of(list(envs["powers"].values()))  # type: ignore[index]
+    kin = [k for r in fixture_json("IDNT") for k in r["kin"]]  # type: ignore[index]
+    assert swift_struct_keys(swift_body(text, "struct IdentityTables"), "Kin") == keys_of(kin)
+    sidecar = json.loads((ROOT / "tests" / "data" / "play_tiny3d_g3b.json").read_text(encoding="utf-8"))
+    power = sidecar["header"]["play"]["powers"]["food"]
+    assert swift_struct_keys(swift_body(text, "struct PlayHeader"), "Power") == set(power)
+    # the caps and flag bits the decoder enforces are the writer's
+    assert f"maxAlerts = {sr.MAX_ALERTS}" in text
+    for name, cap in (
+        ("maxAlertJSON", sr.ALRT_JSON_CAP),
+        ("maxReportJSON", sr.RPRT_JSON_CAP),
+        ("maxPlanJSON", sr.PLAN_JSON_CAP),
+    ):
+        assert f"{name} = {cap >> 10} << 10" in text, name
+    assert f"maxTitle = {sr.ALERT_TITLE_MAX}" in text and f"maxText = {sr.ALERT_TEXT_MAX}" in text
+    assert f"maxText = {sr.PLAN_TEXT_MAX}" in text and f"maxCaution = {sr.PLAN_CAUTION_MAX}" in text
+    assert f"idBase: UInt64 = {sr.ALERT_ID_BASE}" in text
+    assert (sr.CLCK_FLAG_CHAPTER_PAUSE, sr.CLCK_FLAG_ALERT_PAUSE) == (1, 2)
+    assert "var chapterPauseArmed: Bool { flags & 1 != 0 }" in text
+    assert "var alertPauseArmed: Bool { flags & 2 != 0 }" in text
+    for name, values in (
+        ("State", sr.ALERT_STATES),
+        ("Surface", sr.ALERT_SURFACES),
+        ("Status", sr.PLAN_STATUSES),
+        ("Kind", sr.PLAN_KINDS),
+    ):
+        owner = (
+            swift_body(text, "struct PlayAlert")
+            if name in ("State", "Surface")
+            else swift_body(text, "struct PlanBody")
+        )
+        assert swift_nested_cases(owner, name) == set(values), name
+    assert swift_nested_cases(swift_body(text, "struct Ref"), "Kind") == set(sr.ALERT_REF_KINDS)
+
+
+def test_the_powers_grid_names_what_the_header_and_the_grammar_have() -> None:
+    """The Powers tab reads the header's bounds (``play.powers``) and sends ``power`` lines: the powers it
+    lists,
+    the keys of each line and the header's parameter names are the engine's (DESIGN §34.7)."""
+    from alife import play
+    from alife.config import Config
+    from alife.game import powers
+
+    text = (CORE / "PowersModel.swift").read_text(encoding="utf-8")
+    order = re.search(r"static let order: \[PowerCommand.Name\] = \[([^\]]*)\]", text)
+    assert order is not None
+    assert tuple(n.strip().lstrip(".") for n in order.group(1).split(",")) == play.POWER_NAMES
+    # the keys of each power's line, in the order they are sent (`lineKeys`), are keys the engine takes for it
+    keys = re.search(r"var lineKeys: \[PowerCommand.Key\] \{(.*?)\n    \}", text, re.S)
+    assert keys is not None
+    swift_keys = {
+        m.group(1): [k.strip().lstrip(".") for k in m.group(2).split(",")]
+        for m in re.finditer(r"case \.(\w+): \[([^\]]*)\]", keys.group(1))
+    }
+    for name, spec in powers.POWER_SPECS.items():
+        assert set(swift_keys[name]) <= set(spec.keys), name
+        optional = {"x", "y"} if name in ("bloom", "blight") else set()  # (the window names the patch itself)
+        assert set(swift_keys[name]) >= set(spec.keys) - optional, name
+    # the header's parameter names: each is a line key, but `kill_p`, which the line spells `kill`
+    for name, entry in powers.header_block(Config()).items():
+        for param in entry["params"]:
+            line_key = "kill" if param == "kill_p" else param
+            assert line_key in play.POWER_KEYS, (name, param)
+    assert 'name == "kill_p" ? .kill' in text
+
+
+def test_the_world_keys_are_the_documented_ones() -> None:
+    """``WorldKeys`` is the World window's key table; DESIGN §34.7 lists every key it binds."""
+    text = (CORE / "WorldKeys.swift").read_text(encoding="utf-8")
+    bound: dict[str, str] = {}
+    for labels, action in re.findall(r"case ((?:\"[^\"]+\"(?:, )?)+): return \.(\w+)", text):
+        for key in re.findall(r'"([^"]+)"', labels):
+            bound[key] = action
+    assert bound == {
+        " ": "togglePause",
+        ".": "step",
+        "c": "cycleColor",
+        "1": "toggleAgents",
+        "2": "toggleBonds",
+        "3": "toggleTerritory",
+        "f": "followSelection",
+        "[": "slower",
+        "]": "faster",
+        "r": "resetCamera",
+        "\\u{1B}": "escape",
+        "g": "continueRun",
+        "p": "showPowers",
+        "a": "flyToAlert",
+        "k": "acknowledgeAlert",
+        "\\r": "confirmPower",
+        "\\u{3}": "confirmPower",
+    }
+    design = (ROOT / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+    section = design[design.index("### 34.7") :]
+    for action in ("escape", "continueRun", "showPowers", "flyToAlert", "acknowledgeAlert", "confirmPower"):
+        assert action in section, action
+    # Esc never resumes and never acknowledges (G3b review round 2, finding 21): it has its own action
+    assert bound["\\u{1B}"] == "escape"
+
+
+def test_the_power_grammar_the_window_sends_is_the_engines() -> None:
+    from alife import play
+
+    text = (CORE / "PlayCommand.swift").read_text(encoding="utf-8")
+    assert swift_nested_cases(text, "Name") == set(play.POWER_NAMES)
+    assert swift_nested_cases(text, "Key") == set(play.POWER_KEYS)
+    assert "isWhole: Bool { self == .steps || self == .patch }" in text
+    assert {"steps", "patch"} == play.POWER_INT_KEYS
 
 
 # --- the `alife play` command line and control grammar (DESIGN §33.2.6, §33.2.8) -------------------------

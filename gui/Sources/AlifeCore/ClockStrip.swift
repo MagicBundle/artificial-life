@@ -39,19 +39,34 @@ package struct ClockStrip: Equatable, Sendable {
     package var saveStallSteps: UInt32
     /// Why the world is not running, if it is not (`CLCK.reason`).
     package var stopReason: String?
+    /// The world stops by itself at the end of a chapter / when an alert class that is armed fires (`CLCK.flags`): the
+    /// strip's lock icon.
+    package var chapterPauseArmed: Bool
+    package var alertPauseArmed: Bool
 
     /// `clock` is the newest `CLCK` (nil before the first), `requested` what the window asked and the world has not yet
-    /// confirmed, `baseRate` the steps per second at 1x.
-    package init(clock: PlayClock?, requested: PlayRate? = nil, baseRate: Double) {
+    /// confirmed, `baseRate` the steps per second at 1x. `chapterLabel` ("Chapter 3") and `alertTitle` name the chapter that
+    /// ended and the alert that stopped the world, when the window knows them (DESIGN §34.7): "Chapter 3 complete".
+    package init(clock: PlayClock?, requested: PlayRate? = nil, baseRate: Double, chapterLabel: String? = nil,
+                 alertTitle: String? = nil) {
         step = clock?.head.step
         lateSteps = clock?.lateSteps ?? 0
         saving = clock?.saving ?? false
         saveStallSteps = clock?.saveStallSteps ?? 0
+        chapterPauseArmed = clock?.chapterPauseArmed ?? false
+        alertPauseArmed = clock?.alertPauseArmed ?? false
         let reason = clock?.reason ?? .running
-        stopReason = Self.text(of: reason)
+        switch reason {
+        case .chapter: stopReason = chapterLabel.map { $0 + " complete" } ?? Self.text(of: reason)
+        case .alert: stopReason = alertTitle.flatMap { $0.isEmpty ? nil : $0 } ?? Self.text(of: reason)
+        default: stopReason = Self.text(of: reason)
+        }
         let rate: PlayRate? = requested ?? clock.flatMap { PlayRate(clock: $0.rate) }
         // What the window just asked wins over the clock, which lags by at most a quarter of a second.
-        paused = requested.map { $0 == .multiplier(0) } ?? (reason != .running || clock?.rate == 0)
+        // A chapter or alert reason with a rate above zero is the world still running: it announces the card while the
+        // checkpoint is written (and stays the reason of a chapter end whose pause is off). The pause itself has rate 0.
+        let stopped = [PlayClock.Reason.userPause, .endOfSteps, .error].contains(reason)
+        paused = requested.map { $0 == .multiplier(0) } ?? (stopped || clock?.rate == 0)
         if paused {
             selected = .pause
         } else if let rate, PlayRate.rungs.contains(rate) {

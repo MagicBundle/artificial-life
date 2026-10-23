@@ -1,7 +1,7 @@
 {
   "about": "Expected decoding of the stream in the .bin file next to this one (DESIGN section 33.1). Regenerate with `uv run python tests/play_fixtures.py --write`.",
   "kind": "3d",
-  "bytes": 116120,
+  "bytes": 116192,
   "header": {
     "protocol": 1,
     "dims": 3,
@@ -141,7 +141,11 @@
         "14": "focus_handoff",
         "15": "checkpoint",
         "16": "renumbered",
-        "17": "extinct"
+        "17": "extinct",
+        "18": "kin_formed",
+        "19": "kin_ended",
+        "20": "power_applied",
+        "21": "power_ended"
       },
       "planet": {
         "source": "runs/example:500000",
@@ -152,7 +156,7 @@
   "skipped": [
     {
       "tag": "ZZZZ",
-      "offset": 115472,
+      "offset": 115544,
       "why": "tag"
     }
   ],
@@ -160,7 +164,7 @@
     {
       "index": 0,
       "tag": "FRMA",
-      "offset": 1748,
+      "offset": 1820,
       "length": 264,
       "step": 100,
       "seq": 0,
@@ -249,7 +253,7 @@
     {
       "index": 1,
       "tag": "IDNT",
-      "offset": 2020,
+      "offset": 2092,
       "length": 1012,
       "step": 100,
       "seq": 0,
@@ -440,7 +444,7 @@
     {
       "index": 2,
       "tag": "INTN",
-      "offset": 3040,
+      "offset": 3112,
       "length": 116,
       "step": 100,
       "seq": 0,
@@ -509,7 +513,7 @@
     {
       "index": 3,
       "tag": "TERR",
-      "offset": 3164,
+      "offset": 3236,
       "length": 2100,
       "step": 100,
       "seq": 0,
@@ -572,7 +576,7 @@
     {
       "index": 4,
       "tag": "ENVS",
-      "offset": 5272,
+      "offset": 5344,
       "length": 340,
       "step": 100,
       "seq": 0,
@@ -627,7 +631,7 @@
     {
       "index": 5,
       "tag": "MAP1",
-      "offset": 5620,
+      "offset": 5692,
       "length": 108848,
       "step": 100,
       "seq": 0,
@@ -685,7 +689,7 @@
     {
       "index": 6,
       "tag": "STRM",
-      "offset": 114476,
+      "offset": 114548,
       "length": 620,
       "step": 100,
       "seq": 0,
@@ -791,7 +795,7 @@
     {
       "index": 7,
       "tag": "EVNT",
-      "offset": 115104,
+      "offset": 115176,
       "length": 292,
       "step": 100,
       "seq": 0,
@@ -836,7 +840,7 @@
     {
       "index": 8,
       "tag": "CLCK",
-      "offset": 115404,
+      "offset": 115476,
       "length": 60,
       "step": 100,
       "seq": 0,
@@ -864,7 +868,7 @@
     {
       "index": 9,
       "tag": "FRMA",
-      "offset": 115508,
+      "offset": 115580,
       "length": 264,
       "step": 104,
       "seq": 1,
@@ -953,7 +957,7 @@
     {
       "index": 10,
       "tag": "EVNT",
-      "offset": 115780,
+      "offset": 115852,
       "length": 172,
       "step": 104,
       "seq": 1,
@@ -985,7 +989,7 @@
     {
       "index": 11,
       "tag": "FOCS",
-      "offset": 115960,
+      "offset": 116032,
       "length": 84,
       "step": 104,
       "seq": 0,
@@ -1021,7 +1025,7 @@
     {
       "index": 12,
       "tag": "CLCK",
-      "offset": 116052,
+      "offset": 116124,
       "length": 60,
       "step": 104,
       "seq": 1,

@@ -67,6 +67,9 @@ final class PlayController: ObservableObject {
     @Published private(set) var labelsOn = true
     /// The names of the worlds whose process was asked to stop and has not exited: they are saving.
     @Published private(set) var retiredWorlds: [String] = []
+    /// The absolute chapter the numbering of this world starts after (`made_at_step / chapter` of a planet, 0 otherwise): the
+    /// chapter bar shows `CLCK.chapter - originChapter`, so the first chapter of a fork is "Chapter 1" (DESIGN §34.2.1).
+    @Published private(set) var originChapter = 0
 
     /// What the world sent. Read by the renderer and the views; changes are announced by `revision` and `onDelivery`.
     var store = WorldStore()  // (settable for the tests, which feed it frames)
@@ -75,6 +78,15 @@ final class PlayController: ObservableObject {
     /// Called, before `onDelivery`, with the events of each `EVNT` batch that the chronicle had not seen, in order, and whether
     /// the batch is the backlog loaded at the start (a hand-off or a toast is the news of a live batch, never of the backlog).
     var onEvents: (@MainActor ([WorldEvent], Bool) -> Void)?
+    /// Called, before `onDelivery`, with what each `ALRT` batch did to the alert board (an alert raised, updated or cleared)
+    /// and whether the batch is the backlog (no toast, no pause for the history of a re-opened world).
+    var onAlerts: (@MainActor ([AlertChange], Bool) -> Void)?
+    /// Called, before `onDelivery`, with the reports a delivery added to the shelf (a backlog's included: see `isBacklog`).
+    var onReports: (@MainActor ([PlayReport]) -> Void)?
+    /// Called, before `onDelivery`, with the `PLAN` records of a delivery in order: the answers to the player's powers.
+    var onPlans: (@MainActor ([PlayPlan]) -> Void)?
+    /// Reads the origin chapter of a world from its `play.json` (tests inject theirs).
+    var readOrigin: @MainActor (URL, Int) -> Int = { ChapterOrigin.chapter(playFile: $0, chapterLength: $1) }
     /// Called when the store was replaced by an empty one (a world started or stopped), before anything of the new world: the
     /// window forgets the selection and the follow of the old one at once, not when the new header arrives.
     var onReset: (@MainActor () -> Void)?
@@ -118,6 +130,7 @@ final class PlayController: ObservableObject {
         progress = []
         requestedRate = nil
         labelsOn = true
+        originChapter = 0
         onReset?()
 
         // A world still saving its checkpoint holds `play.lock`; starting it again would only be refused.
@@ -161,6 +174,7 @@ final class PlayController: ObservableObject {
         revision += 1
         requestedRate = nil
         labelsOn = true
+        originChapter = 0
         onReset?()
     }
 
@@ -218,6 +232,15 @@ final class PlayController: ObservableObject {
         return true
     }
 
+    /// The player acknowledged an alert: the row leaves the stack now, and the world is told (`ack`). False for an unknown id.
+    @discardableResult
+    func acknowledge(alert id: UInt64) -> Bool {
+        guard store.acknowledge(alert: id) else { return false }
+        revision += 1
+        send(.ack(Int64(id)))
+        return true
+    }
+
     func pause() { send(.pause) }
     func resume() { send(.run) }
     func setRate(_ rate: PlayRate) { send(.rate(rate)) }
@@ -246,6 +269,11 @@ final class PlayController: ObservableObject {
             store.reset(header: header)
             changes.insert(.header)
             phase = .live
+            if let directory, let world, let chapter = header.play?.chapter {
+                originChapter = readOrigin(directory.appendingPathComponent("runs/\(world)/play.json"), chapter)
+            } else {
+                originChapter = 0
+            }
         }
         // The order does not matter between latest-wins records: each is complete by itself (§33.1.1).
         for record in delivery.records.values {
@@ -260,6 +288,23 @@ final class PlayController: ObservableObject {
                 announced.append((fresh, batch.isBacklog))
             }
         }
+        var changed: [(changes: [AlertChange], backlog: Bool)] = []
+        for batch in delivery.alerts {
+            let alertChanges = store.apply(alerts: batch)
+            if !alertChanges.isEmpty {
+                changes.insert(.alerts)
+                changed.append((alertChanges, batch.isBacklog))
+            }
+        }
+        var shelved: [PlayReport] = []
+        for report in delivery.reports where store.apply(report: report) {
+            changes.insert(.reports)
+            shelved.append(report)
+        }
+        for plan in delivery.plans {
+            store.apply(plan: plan)
+            changes.insert(.plans)
+        }
         if let end = delivery.end {
             session.end = end
             switch end {
@@ -270,6 +315,9 @@ final class PlayController: ObservableObject {
         }
         if !changes.subtracting(.frame).isEmpty { revision += 1 }
         for (events, backlog) in announced { onEvents?(events, backlog) }
+        for (alertChanges, backlog) in changed { onAlerts?(alertChanges, backlog) }
+        if !shelved.isEmpty { onReports?(shelved) }
+        if !delivery.plans.isEmpty { onPlans?(delivery.plans) }
         if !changes.isEmpty { onDelivery?(changes) }
     }
 

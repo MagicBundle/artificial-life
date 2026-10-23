@@ -28,10 +28,10 @@ struct WorldView: View {
         GeometryReader { geometry in
             let frames = DockLayout.frames(in: geometry.size, side: side, extent: extent, collapsed: collapsed)
             ZStack(alignment: .topLeading) {
-                WorldCanvasView(play: play, model: model, dockCollapsed: collapsed)
+                WorldCanvasView(play: play, model: model, dockCollapsed: collapsed, alertsOverMap: collapsed || side == .bottom)
                     .frame(width: frames.free.width, height: frames.free.height)
                     .position(x: frames.free.midX, y: frames.free.midY)
-                ControlCenterView(play: play, model: model, collapsed: $collapsed, side: side)
+                ControlCenterView(play: play, model: model, collapsed: $collapsed, side: side, height: frames.dock.height)
                     .frame(width: frames.dock.width, height: frames.dock.height)
                     .position(x: frames.dock.midX, y: frames.dock.midY)
                 if !collapsed {
@@ -42,6 +42,7 @@ struct WorldView: View {
             .onChange(of: frames.free, initial: true) { _, free in model.setFreeRect(free) }
         }
         .frame(minWidth: 1100, minHeight: 700)
+        .navigationTitle(WorldTitle.window(world: play.world, header: play.store.play))
         .background(WindowCloseObserver(restorable: false, group: "world") { play.stop() })
         .sheet(isPresented: $model.launcherOpen) {
             if let launcher { WorldLauncherView(model: launcher, play: play, close: { model.launcherOpen = false }) }
@@ -114,6 +115,8 @@ struct WorldCanvasView: View {
     @ObservedObject var model: WorldModel
     /// The dock is collapsed: its clock strip is hidden, so the clock is shown over the map.
     var dockCollapsed = false
+    /// The alert rows are over the map (a bottom dock has no room for them, and a collapsed dock hides them).
+    var alertsOverMap = false
 
     var body: some View {
         let _ = play.revision
@@ -123,11 +126,14 @@ struct WorldCanvasView: View {
             if play.phase == .live || play.store.header != nil {
                 WorldMetalView(model: model)
                 WorldOverlayView(model: model, overlay: model.overlay, play: play)
+                if alertsOverMap { AlertStackOverlay(play: play, model: model) }
+                ChapterCardView(play: play, model: model)
                 ToastStackView(model: model)
+                TickerView(model: model)
                 FollowBadge(model: model, play: play)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 if dockCollapsed {
-                    ClockBadge(play: play)
+                    ClockBadge(play: play, model: model)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
             }

@@ -1,0 +1,43 @@
+== internal 1 start 07:42:00
+/dev/disk3s5  1948404040 1523973728 391390484    80% 3930778 3913904840    0%   /System/Volumes/Data
+== internal 1 end rc=0 07:43:46
+/dev/disk3s5  1948404040 1528015676 387348536    80% 3925408 3873485360    0%   /System/Volumes/Data
+4038596	/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/finish/drive/internal/bench_1
+== drive 1 start 07:43:46
+/dev/disk15s2   976557744 216890848 759464604    23%   14992 7594646040    0%   /Volumes/M5 PRO external
+== drive 1 end rc=0 07:46:05
+/dev/disk15s2   976557744 220981228 755374220    23%   15048 7553742200    0%   /Volumes/M5 PRO external
+4090220	/Volumes/M5 PRO external/alife/coordinator_scratch_2026-10-21/g3b_ckpt_stall_1/bench_1
+== internal 2 start 07:46:05
+/dev/disk3s5  1948404040 1527973568 387390644    80% 3915135 3873906440    0%   /System/Volumes/Data
+== internal 2 end rc=0 07:47:52
+/dev/disk3s5  1948404040 1532040700 383323512    80% 3915280 3833235120    0%   /System/Volumes/Data
+4038596	/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/finish/drive/internal/bench_2
+== drive 2 start 07:47:52
+/dev/disk15s2   976557744 220981188 755374264    23%   15049 7553742640    0%   /Volumes/M5 PRO external
+== drive 2 end rc=0 07:50:11
+/dev/disk15s2   976557744 225071492 751283956    24%   15104 7512839560    0%   /Volumes/M5 PRO external
+4090220	/Volumes/M5 PRO external/alife/coordinator_scratch_2026-10-21/g3b_ckpt_stall_1/bench_2
+ALLDONE
+== internal 1x1 start 07:50:36
+/dev/disk3s5  1948404040 1532029216 383334996    80% 3915294 3833349960    0%   /System/Volumes/Data
+== internal 1x1 end rc=0 07:54:43
+/dev/disk3s5  1948404040 1536072364 379291848    81% 3915349 3792918480    0%   /System/Volumes/Data
+4038596	/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/finish/drive/internal/bench_1x1
+== drive 1x1 start 07:54:43
+/dev/disk15s2   976557744 225072660 751282792    24%   15106 7512827920    0%   /Volumes/M5 PRO external
+== drive 1x1 end rc=0 07:59:21
+/dev/disk15s2   976557744 229162972 747192476    24%   15161 7471924760    0%   /Volumes/M5 PRO external
+4090220	/Volumes/M5 PRO external/alife/coordinator_scratch_2026-10-21/g3b_ckpt_stall_1/bench_1x1
+ALLDONE1X
+== drive 1x2 start 07:59:56
+/dev/disk15s2   976557744 229162944 747192508    24%   15162 7471925080    0%   /Volumes/M5 PRO external
+== drive 1x2 end rc=0 08:04:33
+/dev/disk15s2   976557744 233253188 743102260    24%   15217 7431022600    0%   /Volumes/M5 PRO external
+4090220	/Volumes/M5 PRO external/alife/coordinator_scratch_2026-10-21/g3b_ckpt_stall_1/bench_1x2
+== internal 1x2 start 08:04:33
+/dev/disk3s5  1948404040 1536096268 379267944    81% 3915404 3792679440    0%   /System/Volumes/Data
+== internal 1x2 end rc=0 08:08:38
+/dev/disk3s5  1948404040 1540129236 375234976    81% 3915452 3752349760    0%   /System/Volumes/Data
+4038596	/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/finish/drive/internal/bench_1x2
+ALLDONE1X2

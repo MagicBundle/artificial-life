@@ -157,24 +157,29 @@ def run_paced(
     out: io.BytesIO | None = None,
     options: play.PlayOptions | None = None,
     pacer_class: type[play.PlayPacer] = play.PlayPacer,
+    game_specs: bool = False,
 ) -> tuple[RunDir, runner.RunResult, play.PlayPacer, io.BytesIO]:
     rd = RunDir.create(path, cfg)
     out = out if out is not None else io.BytesIO()
     pacer = pacer_class(
         out,
         script if hasattr(script, "poll") else ScriptControl(script),
-        options or play.PlayOptions(rate=float("inf"), paused=False, fresh=True),
+        options or play.PlayOptions(rate=float("inf"), paused=False, fresh=True, unattended=True),
         clock=clock or FakeClock(),
         note=lambda m: None,
     )
-    director = make_director(rd, cfg, 0) if cfg.run.director != "off" else None
-    res = runner.run(rd, cfg, init_state(cfg), steps, quiet=True, director=director, pacer=pacer)
+    director = make_director(rd, cfg, 0, game_specs=game_specs) if cfg.run.director != "off" else None
+    try:
+        res = runner.run(rd, cfg, init_state(cfg), steps, quiet=True, director=director, pacer=pacer)
+    finally:
+        pacer.close()  # the report worker, if the world has one, finishes before the files are read
     return rd, res, pacer, out
 
 
 def random_script(seed: int, n_polls: int, uid_pool: Sequence[int]) -> list[list[str]]:
     """A seeded control script: pauses, rates, ``step`` batches, colours, ``every``, ``focus`` and ``follow``,
-    ``idnt`` and ``labels``, ending in ``rate max`` and ``run`` so that the run finishes."""
+    ``idnt`` and ``labels``, ending in ``autopause off``, ``rate max`` and ``run`` so that the run finishes
+    (an alert or a chapter end can pause the world on the way, and nobody else presses ``run``)."""
     rng = random.Random(seed)
     uid_choice = list(uid_pool)
     modes = ["tag", "energy", "clade", "house", "kin", "archetype", "intent"]
@@ -191,11 +196,21 @@ def random_script(seed: int, n_polls: int, uid_pool: Sequence[int]) -> list[list
         lambda: "idnt",
         lambda: f"labels {rng.choice(['on', 'off'])}",
         lambda: rng.choice(["bogus", "rate 99", "fields on", "color nope", "focus -1"]),  # refused, ignored
+        # G3b's presentation lines (DESIGN §34.6.1): an armed pause, a watch, an acknowledgement, a preview
+        lambda: rng.choice(
+            ["autopause on", "autopause off", "autopause chapter on", "autopause chapter off"]
+        ),
+        lambda: rng.choice(["autopause alert pop_fall on", "autopause alert nope off"]),
+        lambda: rng.choice(["watch 3", "watch off", "unwatch 3", "ack 466250600"]),
+        lambda: rng.choice(
+            ["power preview food id=1 mult=1.3", "power strike id=2", "power cancel food id=3"]
+        ),
+        lambda: "intent make it rain",
     ]
     script: list[list[str]] = []
     for _ in range(n_polls):
         script.append([rng.choice(makers)() for _ in range(rng.choice([0, 0, 1, 1, 2, 3]))])
-    return [*script, ["rate max", "run"]]
+    return [*script, ["autopause off", "rate max", "run"]]
 
 
 # --- comparing run directories -------------------------------------------------------------------------

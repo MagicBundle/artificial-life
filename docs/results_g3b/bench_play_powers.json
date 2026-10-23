@@ -1,0 +1,392 @@
+{
+  "alife_version": "0.1.0",
+  "mlx_version": "0.32.3",
+  "python": "3.12.11",
+  "platform": "darwin-arm64",
+  "device": "Device(gpu, 0)",
+  "knn_impl": "metal",
+  "config_hash": "c03d7089b26dc60b65f555f2cde7e3c3457feb2ffad6148b7f0be22260913fe0",
+  "config": {
+    "n_max": 65536,
+    "n_init": 16384,
+    "max_births_per_step": 1024,
+    "world_size": 320.0,
+    "field_grid": 80,
+    "dims": 3,
+    "world_height": 80.0,
+    "field_grid_z": 20,
+    "k_neighbors": 8,
+    "cell_capacity": 48,
+    "hidden": 32,
+    "weight_dtype": "float16",
+    "brain_impl": "matmul",
+    "compile": true,
+    "runtime_checks": "cheap",
+    "seed": 0
+  },
+  "play": {
+    "steps": 4500,
+    "warmup": 300,
+    "base_rate": 14.4,
+    "frame_hz": 30,
+    "cadence": {
+      "metrics_every": 250,
+      "heavy_metrics_every": 250,
+      "checkpoint_every": 6000,
+      "keep_checkpoints": 3
+    },
+    "engine_ms": 14.27870849147439,
+    "powers": true,
+    "plain_digest": {
+      "player": "6bbe3bcb33b366a1806d533e7e638a9b03a3254f4f99b6fe7dc0de7f517297bb"
+    },
+    "replay_digest": {
+      "player_1": "bc69570f5f5d00893d77e710a18f5ffb5db6e0359664ac2563fc99eff40f3d04",
+      "player_max": "bc69570f5f5d00893d77e710a18f5ffb5db6e0359664ac2563fc99eff40f3d04"
+    },
+    "arms": [
+      {
+        "name": "player_1",
+        "director": "player",
+        "rate": "1",
+        "steps_measured": 4499,
+        "seconds": 313.2033229160588,
+        "steps_per_s": 14.364470843132692,
+        "achieved_x": 0.9975326974397702,
+        "step_ms": {
+          "p50": 30.69137502461672,
+          "p99": 43.08116577565664,
+          "max": 766.5341250831261
+        },
+        "step_counts": {
+          "typical": 4481,
+          "snapshot": 0,
+          "boundary": 18
+        },
+        "part_calls": {
+          "alerts": 1342,
+          "boundary": 19,
+          "events": 4521,
+          "frma": 4500,
+          "labels": 180,
+          "save": 2,
+          "tables": 18,
+          "tick_storms": 180,
+          "write": 4500
+        },
+        "step_ms_typical": 30.54679196793586,
+        "step_ms_snapshot": null,
+        "step_ms_boundary": 120.14529149746522,
+        "components_ms": {
+          "engine": 14.27870849147439,
+          "loop_typical": 24.267416505608708,
+          "loop_snapshot": 75.00929152593017,
+          "observer": 9.988708014134318,
+          "settle": 50.74187502032146,
+          "frma": 5.666833487339318,
+          "tick": 7.159333559684455,
+          "labels": 1.2048129574395716,
+          "tables": 3.523854014929384,
+          "events": 0.0022079329937696457,
+          "write": 0.36145851481705904,
+          "boundary": 32.351500005461276,
+          "save": 650.6379369529895
+        },
+        "late_steps": 0,
+        "save_stall_steps": 20,
+        "frames": 4500,
+        "bytes_per_s": {
+          "ALRT": 13.882355907077338,
+          "CLCK": 244.90161625953544,
+          "ENVS": 105.22238299761746,
+          "EVNT": 25.057205418294146,
+          "FRMA": 19525657.336780578,
+          "HEAD": 0.0,
+          "IDNT": 39145.612779101735,
+          "INTN": 291838.32134660095,
+          "MAP1": 62560.255803069434,
+          "PLAN": 27.21554778103202,
+          "RPRT": 1.3026681715932735,
+          "STRM": 2672.219413918253,
+          "TERR": 122.98720090630613
+        },
+        "mb_per_s": 19.922414315100706,
+        "drained_bytes": 6572187040,
+        "wall_s": 335.0733928750269,
+        "n_alive_end": 32354,
+        "digest": "bc69570f5f5d00893d77e710a18f5ffb5db6e0359664ac2563fc99eff40f3d04",
+        "chapters": {
+          "length": 6000,
+          "ends": 1,
+          "report_ms": [
+            2.473625005222857
+          ]
+        },
+        "alerts": {
+          "calls": 1342,
+          "ms_total": 27.880412992089987
+        },
+        "powers": {
+          "script": [
+            {
+              "step": 473150,
+              "line": "power food id=9001 mult=1.3 steps=3000"
+            },
+            {
+              "step": 474000,
+              "line": "power strike id=9002 x=160 y=160 radius=6.25 kill=0.45"
+            }
+          ],
+          "plans": [
+            {
+              "id": 9001,
+              "status": "queued"
+            },
+            {
+              "id": 9001,
+              "status": "applied"
+            },
+            {
+              "id": 9001,
+              "status": "since"
+            },
+            {
+              "id": 9002,
+              "status": "queued"
+            },
+            {
+              "id": 9002,
+              "status": "applied"
+            },
+            {
+              "id": 9001,
+              "status": "since"
+            },
+            {
+              "id": 9002,
+              "status": "since"
+            },
+            {
+              "id": 9002,
+              "status": "since"
+            },
+            {
+              "id": 9001,
+              "status": "since"
+            }
+          ],
+          "applied": [
+            9001,
+            9002
+          ],
+          "refused": [],
+          "latency_s": [
+            0.0429553339490667,
+            0.10490683291573077
+          ],
+          "all_applied": true
+        },
+        "run": "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/macday/bench_B/player_1",
+        "start": 472000,
+        "total": 4800,
+        "expected": "replay",
+        "digest_equal": true,
+        "gate": {
+          "applies": true,
+          "want": {
+            "achieved_x": 0.98,
+            "late_steps": 0,
+            "step_ms_p99": 66.0,
+            "power_applied_p95_s": 0.5,
+            "report_ms": 500.0
+          },
+          "got": {
+            "achieved_x": 0.9975326974397702,
+            "late_steps": 0,
+            "step_ms_p99": 43.08116577565664,
+            "power_applied_p95_s": 0.10180925796739757,
+            "report_ms": 2.473625005222857
+          },
+          "pass": true,
+          "checks": {
+            "achieved_x": true,
+            "late_steps": true,
+            "step_ms_p99": true,
+            "power_applied_p95_s": true,
+            "report_ms": true
+          },
+          "five_minutes": true
+        }
+      },
+      {
+        "name": "player_max",
+        "director": "player",
+        "rate": "max",
+        "steps_measured": 4499,
+        "seconds": 83.28183095902205,
+        "steps_per_s": 54.02138675617838,
+        "achieved_x": 3.7514851914012763,
+        "step_ms": {
+          "p50": 18.687583971768618,
+          "p99": 24.37448331387713,
+          "max": 789.2978750169277
+        },
+        "step_counts": {
+          "typical": 4481,
+          "snapshot": 0,
+          "boundary": 18
+        },
+        "part_calls": {
+          "alerts": 538,
+          "boundary": 19,
+          "events": 4521,
+          "frma": 2250,
+          "labels": 180,
+          "save": 2,
+          "tables": 18,
+          "tick_storms": 180,
+          "write": 4500
+        },
+        "step_ms_typical": 18.68149999063462,
+        "step_ms_snapshot": null,
+        "step_ms_boundary": 92.01537497574463,
+        "components_ms": {
+          "engine": 14.27870849147439,
+          "loop_typical": 16.464270476717502,
+          "loop_snapshot": 55.5334584787488,
+          "observer": 2.185561985243112,
+          "settle": 39.0691880020313,
+          "frma": 3.049333521630615,
+          "tick": 3.7548125255852938,
+          "labels": 0.6905630580149591,
+          "tables": 3.3094999380409718,
+          "events": 0.00100000761449337,
+          "write": 0.13193709310144186,
+          "boundary": 24.857374955900013,
+          "save": 685.9872080385685
+        },
+        "late_steps": 0,
+        "save_stall_steps": 0,
+        "frames": 2250,
+        "bytes_per_s": {
+          "ALRT": 52.20826619601325,
+          "CLCK": 264.54749789111406,
+          "ENVS": 395.7165641112724,
+          "EVNT": 94.23423944487395,
+          "FRMA": 36716076.25322923,
+          "HEAD": 0.0,
+          "IDNT": 147217.41655791248,
+          "INTN": 1097535.0919575093,
+          "MAP1": 235274.36626172476,
+          "PLAN": 102.3512559923682,
+          "RPRT": 4.899027738724334,
+          "STRM": 10049.586931053564,
+          "TERR": 462.5258541560327
+        },
+        "mb_per_s": 38.20752919764296,
+        "drained_bytes": 3359168820,
+        "wall_s": 89.66728291695472,
+        "n_alive_end": 32354,
+        "digest": "bc69570f5f5d00893d77e710a18f5ffb5db6e0359664ac2563fc99eff40f3d04",
+        "chapters": {
+          "length": 6000,
+          "ends": 1,
+          "report_ms": [
+            2.5747920153662562
+          ]
+        },
+        "alerts": {
+          "calls": 538,
+          "ms_total": 4.94599889498204
+        },
+        "powers": {
+          "script": [
+            {
+              "step": 473150,
+              "line": "power food id=9001 mult=1.3 steps=3000"
+            },
+            {
+              "step": 474000,
+              "line": "power strike id=9002 x=160 y=160 radius=6.25 kill=0.45"
+            }
+          ],
+          "plans": [
+            {
+              "id": 9001,
+              "status": "queued"
+            },
+            {
+              "id": 9001,
+              "status": "applied"
+            },
+            {
+              "id": 9001,
+              "status": "since"
+            },
+            {
+              "id": 9002,
+              "status": "queued"
+            },
+            {
+              "id": 9002,
+              "status": "applied"
+            },
+            {
+              "id": 9001,
+              "status": "since"
+            },
+            {
+              "id": 9002,
+              "status": "since"
+            },
+            {
+              "id": 9002,
+              "status": "since"
+            },
+            {
+              "id": 9001,
+              "status": "since"
+            }
+          ],
+          "applied": [
+            9001,
+            9002
+          ],
+          "refused": [],
+          "latency_s": [
+            0.01871983299497515,
+            0.02477700007148087
+          ],
+          "all_applied": true
+        },
+        "run": "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/macday/bench_B/player_max",
+        "start": 472000,
+        "total": 4800,
+        "expected": "replay",
+        "digest_equal": true,
+        "gate": {
+          "applies": true,
+          "want": {
+            "achieved_x": 2.5,
+            "power_applied_p95_s": 0.5,
+            "report_ms": 500.0
+          },
+          "got": {
+            "achieved_x": 3.7514851914012763,
+            "power_applied_p95_s": 0.024474141717655586,
+            "report_ms": 2.5747920153662562
+          },
+          "pass": true,
+          "checks": {
+            "achieved_x": true,
+            "power_applied_p95_s": true,
+            "report_ms": true
+          },
+          "five_minutes": false
+        }
+      }
+    ],
+    "digests_equal": true,
+    "workdir": "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/macday/bench_B"
+  }
+}

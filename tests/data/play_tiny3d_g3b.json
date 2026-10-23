@@ -1,0 +1,1763 @@
+{
+  "about": "Expected decoding of the stream in the .bin file next to this one (DESIGN section 33.1). Regenerate with `uv run python tests/play_fixtures.py --write`.",
+  "kind": "3d_g3b",
+  "bytes": 15984,
+  "header": {
+    "protocol": 1,
+    "dims": 3,
+    "L": 48.0,
+    "height": 24.0,
+    "N": 64,
+    "B": 4,
+    "radius": 1.0,
+    "field_cell": 4.0,
+    "FG": 12,
+    "FZ": 6,
+    "NCH": 3,
+    "color_modes": [
+      "tag",
+      "energy",
+      "clade",
+      "house",
+      "kin",
+      "archetype",
+      "intent"
+    ],
+    "color": "tag",
+    "fields": false,
+    "field_z": 0,
+    "step": 12000,
+    "run": null,
+    "config_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "mode": "simulate",
+    "every": 1,
+    "source": "preset",
+    "play": {
+      "records": [
+        "FRMA",
+        "IDNT",
+        "EVNT",
+        "ENVS",
+        "CLCK",
+        "ALRT",
+        "RPRT",
+        "PLAN"
+      ],
+      "versions": {
+        "FRMA": 1,
+        "IDNT": 1,
+        "EVNT": 1,
+        "ENVS": 1,
+        "CLCK": 1,
+        "ALRT": 1,
+        "RPRT": 1,
+        "PLAN": 1
+      },
+      "base_rate": 14.4,
+      "rates": [
+        0.25,
+        0.5,
+        1,
+        2
+      ],
+      "tick": 25,
+      "snapshot_every": 250,
+      "frame_hz": 30,
+      "chapter": 6000,
+      "weather": {
+        "enabled": false,
+        "cells": 160,
+        "dx": 2.0,
+        "f0": 0.025,
+        "coarse": 40,
+        "name_zeta": 0.5,
+        "refs": {
+          "p": 0.004,
+          "dc": 0.0,
+          "u": 0.1,
+          "zeta": 0.025
+        }
+      },
+      "labels": {
+        "intent_version": 3,
+        "arch": [
+          "",
+          "Gatherer",
+          "Hunter",
+          "Provider",
+          "Trader",
+          "Nomad",
+          "Settler",
+          "Unspecialised",
+          "Drifter",
+          "Floater",
+          "Sinker"
+        ],
+        "intent": [
+          "",
+          "Budding",
+          "Hunting",
+          "Fleeing",
+          "Defending",
+          "Caring",
+          "Tethering",
+          "Signalling",
+          "Feeding",
+          "Roaming",
+          "Resting"
+        ],
+        "gate": {
+          "rules_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "world_key": "0000000000000000000000000000000000000000000000000000000000000000",
+          "key_found": false,
+          "archetypes": [],
+          "intents": []
+        }
+      },
+      "cast": {
+        "kin": 16,
+        "house": 16,
+        "colony": 16
+      },
+      "energy_cap": 16384,
+      "events": {
+        "1": "kin_born",
+        "2": "kin_split",
+        "3": "kin_merged",
+        "4": "kin_dissolved",
+        "5": "house_founded",
+        "6": "house_extinct",
+        "7": "storm_born",
+        "8": "storm_named",
+        "9": "storm_merged",
+        "10": "storm_split",
+        "11": "storm_dissolved",
+        "12": "director_entry",
+        "13": "focus_death",
+        "14": "focus_handoff",
+        "15": "checkpoint",
+        "16": "renumbered",
+        "17": "extinct",
+        "18": "kin_formed",
+        "19": "kin_ended",
+        "20": "power_applied",
+        "21": "power_ended"
+      },
+      "planet": {
+        "source": "runs/example:500000",
+        "houses": "exact"
+      },
+      "alerts": {
+        "version": 1,
+        "classes": {
+          "chapter": {
+            "imp": 3,
+            "pause": true,
+            "label": "Chapter complete",
+            "calibrated": true,
+            "surface": "alert"
+          },
+          "pop_fall": {
+            "imp": 3,
+            "pause": true,
+            "label": "Population fall",
+            "calibrated": false,
+            "surface": "alert"
+          },
+          "storm_named": {
+            "imp": 2,
+            "pause": false,
+            "label": "Storm named",
+            "calibrated": true,
+            "surface": "alert"
+          },
+          "lineage_formed": {
+            "imp": 2,
+            "pause": false,
+            "label": "Lineage formed",
+            "calibrated": false,
+            "surface": "log"
+          },
+          "pop_surge": {
+            "imp": 1,
+            "pause": false,
+            "label": "Population surge",
+            "calibrated": false,
+            "surface": "alert"
+          },
+          "storm_strong": {
+            "imp": 1,
+            "pause": false,
+            "label": "Storm strengthening",
+            "calibrated": true,
+            "surface": "log"
+          }
+        },
+        "cap": {
+          "n": 4,
+          "window": 1500,
+          "exempt": [
+            "imp3",
+            "pause",
+            "chapter",
+            "engine"
+          ]
+        }
+      },
+      "autopause": {
+        "chapter": true,
+        "alert": {
+          "chapter": true,
+          "pop_fall": true,
+          "storm_named": false,
+          "lineage_formed": false,
+          "pop_surge": false,
+          "storm_strong": false
+        }
+      },
+      "powers": {
+        "food": {
+          "action": "regen_pulse",
+          "label": "Food",
+          "cost": 1,
+          "cooldown": 3000,
+          "scope": "global",
+          "duration": [
+            3000,
+            12000
+          ],
+          "params": {
+            "mult": [
+              [
+                0.6,
+                0.9
+              ],
+              [
+                1.15,
+                1.5
+              ]
+            ]
+          }
+        },
+        "strike": {
+          "action": "catastrophe",
+          "label": "Strike",
+          "cost": 1,
+          "cooldown": 3000,
+          "scope": "column",
+          "duration": null,
+          "params": {
+            "radius": [
+              6.25,
+              25.0
+            ],
+            "kill_p": [
+              0.3,
+              0.6
+            ]
+          }
+        }
+      },
+      "game_specs": "game-v0"
+    }
+  },
+  "skipped": [
+    {
+      "tag": "ALRT",
+      "offset": 15880,
+      "why": "version"
+    }
+  ],
+  "records": [
+    {
+      "index": 0,
+      "tag": "FRMA",
+      "offset": 2996,
+      "length": 256,
+      "step": 12000,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "n": 7,
+        "n_bonds": 2,
+        "color_index": 0,
+        "span": 0,
+        "N": 64,
+        "rows": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          10,
+          21
+        ],
+        "bonds": [
+          [
+            0,
+            1
+          ],
+          [
+            2,
+            3
+          ]
+        ],
+        "agents": [
+          {
+            "index": 0,
+            "row": 0,
+            "pos": [
+              1.0,
+              24.0,
+              6.0
+            ],
+            "yaw": 0.5,
+            "pitch": 0.5,
+            "rgb": 4227264,
+            "uid": 5000000000
+          },
+          {
+            "index": 3,
+            "row": 3,
+            "pos": [
+              12.0,
+              11.5,
+              3.5
+            ],
+            "yaw": -3.0,
+            "pitch": 1.0,
+            "rgb": 2138208,
+            "uid": 5000000021
+          },
+          {
+            "index": 6,
+            "row": 21,
+            "pos": [
+              40.0,
+              5.0,
+              9.0
+            ],
+            "yaw": 0.0,
+            "pitch": 0.125,
+            "rgb": 3983480,
+            "uid": 5000000147
+          }
+        ]
+      },
+      "sha256": {
+        "bitmap": "8401eeae2d6f773dce259401ba6128c80c38b669c8ea5c900e10ccddc1582c32",
+        "pos": "2f1719858109d817f20d16e6c9d70c62157af47edc8bbd137f8a663912da7960",
+        "orient": "f23cff9ca42bd53db2b6c4ac8a51451e417aea0122bef8ee397274e3bb757ce4",
+        "rgb": "ecb823b2b614f559a4361e17668777b29d345a49e781319fc99e874e8b3b90b4",
+        "uid": "004927426e1afa41a289a83c13a1e59ea8d77c111e826ae93edc4e80a1ced6aa",
+        "bonds": "baed642339816affb3fe8719792d0e4ce82f12db72b7373d244eaa65445800fe"
+      }
+    },
+    {
+      "index": 1,
+      "tag": "IDNT",
+      "offset": 3260,
+      "length": 1044,
+      "step": 12000,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "n_rows": 7,
+        "snapshot_step": 11750,
+        "json": {
+          "houses": [
+            {
+              "slot": 0,
+              "id": 5000000000,
+              "name": "Aldric",
+              "size": 4,
+              "clade": 3
+            },
+            {
+              "slot": 1,
+              "id": 5000000030,
+              "name": "Brennar",
+              "size": 2,
+              "clade": 0
+            }
+          ],
+          "exact": true,
+          "origin": 0,
+          "kin": [
+            {
+              "slot": 0,
+              "id": 17,
+              "name": "Aldric kin",
+              "named_after": 0,
+              "size": 3,
+              "clade": 3,
+              "clade_share": 1.0,
+              "sim_self": 0.875,
+              "x": 6.0,
+              "y": 24.0,
+              "z": 6.5,
+              "arch": [
+                0.5,
+                0.25,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.25,
+                0.0,
+                0.0
+              ],
+              "births": 2,
+              "deaths": [
+                1,
+                0,
+                0,
+                0,
+                0
+              ],
+              "thread": 4
+            },
+            {
+              "slot": 1,
+              "id": 21,
+              "name": "Brennar kin",
+              "named_after": null,
+              "size": 2,
+              "clade": 0,
+              "clade_share": 0.5,
+              "sim_self": 0.75,
+              "x": 11.0,
+              "y": 10.75,
+              "z": 2.75,
+              "arch": null,
+              "births": 0,
+              "deaths": null,
+              "thread": 5
+            },
+            {
+              "slot": 2,
+              "id": 22,
+              "name": "Cestria",
+              "named_after": 1,
+              "size": 2,
+              "clade": 9,
+              "clade_share": 0.75,
+              "sim_self": 0.5,
+              "x": 30.5,
+              "y": 40.5,
+              "z": 12.25,
+              "arch": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              "births": 1,
+              "deaths": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "thread": 6
+            }
+          ],
+          "colonies": [
+            {
+              "slot": 0,
+              "id": 3,
+              "size": 2,
+              "kin": 17,
+              "x": 11.0,
+              "y": 10.75
+            }
+          ],
+          "unknown_immigrant": 0
+        },
+        "rows": [
+          {
+            "uid": 5000000000,
+            "clade": 3,
+            "house": 0,
+            "kin": 0,
+            "colony": 255,
+            "flags": 0
+          },
+          {
+            "uid": 5000000007,
+            "clade": 3,
+            "house": 0,
+            "kin": 0,
+            "colony": 255,
+            "flags": 0
+          },
+          {
+            "uid": 5000000014,
+            "clade": 0,
+            "house": 1,
+            "kin": 1,
+            "colony": 0,
+            "flags": 0
+          },
+          {
+            "uid": 5000000021,
+            "clade": 5,
+            "house": 1,
+            "kin": 1,
+            "colony": 0,
+            "flags": 0
+          },
+          {
+            "uid": 5000000028,
+            "clade": 9,
+            "house": 254,
+            "kin": 2,
+            "colony": 255,
+            "flags": 0
+          },
+          {
+            "uid": 5000000070,
+            "clade": 1,
+            "house": 253,
+            "kin": 2,
+            "colony": 255,
+            "flags": 0
+          },
+          {
+            "uid": 5000000147,
+            "clade": 2,
+            "house": 255,
+            "kin": 255,
+            "colony": 254,
+            "flags": 0
+          }
+        ]
+      },
+      "sha256": {
+        "json": "4e767b5073ea1642ec20a64e4e2a6c5ef751d1aa043a6bd31df30f530445526e",
+        "rows": "dd632a13fc45637649be802dd4f4681feeb64c3b1a268c810065865ff81a5b78"
+      }
+    },
+    {
+      "index": 2,
+      "tag": "ENVS",
+      "offset": 4312,
+      "length": 700,
+      "step": 12000,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "json": {
+          "pools": [
+            {
+              "x": 24.0,
+              "y": 12.0,
+              "amp": 0.5,
+              "sx": 6.0,
+              "sy": 4.0,
+              "vx": 0.0,
+              "vy": 0.0
+            }
+          ],
+          "season": {
+            "period": 4000,
+            "amp": 0.25,
+            "phase": 0.0
+          },
+          "levers": {
+            "env_season_amp": 0.25
+          },
+          "effects": [
+            {
+              "action": "regen_pulse",
+              "params": {
+                "mult": 1.3
+              },
+              "start": 12000,
+              "end": 18000,
+              "source": "player"
+            },
+            {
+              "action": "bloom",
+              "params": {
+                "x": 24.0,
+                "y": 12.0
+              },
+              "start": 9000,
+              "end": null,
+              "source": "rule"
+            }
+          ],
+          "cooldowns": [
+            {
+              "action": "bloom",
+              "ready": 400
+            }
+          ],
+          "influence": {
+            "have": 4,
+            "cap": 6,
+            "window": 18000,
+            "free_at": [
+              13000,
+              15500
+            ]
+          },
+          "patches": [
+            {
+              "i": 0,
+              "x": 24.0,
+              "y": 12.0,
+              "gain": 1.5,
+              "sigma": 6.0
+            },
+            {
+              "i": 1,
+              "x": 8.5,
+              "y": 40.0,
+              "gain": 1.25,
+              "sigma": 4.5
+            }
+          ],
+          "powers": {
+            "food": {
+              "ready": null,
+              "busy": null
+            },
+            "strike": {
+              "ready": 15000,
+              "busy": "cooldown until step 15000"
+            }
+          }
+        }
+      },
+      "sha256": {
+        "json": "e69800df366273953117f57b16452a1fb374bb744dce3bcd273e41f955899766"
+      }
+    },
+    {
+      "index": 3,
+      "tag": "EVNT",
+      "offset": 5020,
+      "length": 364,
+      "step": 12000,
+      "seq": 0,
+      "version": 1,
+      "flags": 1,
+      "fields": {
+        "count": 2,
+        "backlog": true,
+        "json": [
+          {
+            "id": 11500004,
+            "step": 11500,
+            "kind": 18,
+            "fam": "kin",
+            "a": 17,
+            "b": 0,
+            "x": 6.0,
+            "y": 24.0,
+            "z": null,
+            "imp": 1,
+            "text": "Aldric has held together since step 11000: 360 members."
+          },
+          {
+            "id": 11750005,
+            "step": 11750,
+            "kind": 19,
+            "fam": "kin",
+            "a": 21,
+            "b": 17,
+            "x": 11.0,
+            "y": 10.75,
+            "z": null,
+            "imp": 2,
+            "text": "Brennar merged into Aldric at step 11500; it lasted 750 steps."
+          }
+        ]
+      },
+      "sha256": {
+        "json": "8b31cbde797296a312d753ddc92b368bca293fe10395a3ceb41840bdaed281b8"
+      }
+    },
+    {
+      "index": 4,
+      "tag": "ALRT",
+      "offset": 5392,
+      "length": 336,
+      "step": 12000,
+      "seq": 0,
+      "version": 1,
+      "flags": 1,
+      "fields": {
+        "count": 1,
+        "backlog": true,
+        "json": [
+          {
+            "id": 11250600,
+            "version": 1,
+            "step": 11250,
+            "class": "pop_fall",
+            "key": "world",
+            "state": "raised",
+            "surface": "alert",
+            "imp": 3,
+            "title": "Population fell",
+            "text": "The population fell from 42,873 to 37,310 in 250 steps.",
+            "x": null,
+            "y": null,
+            "z": null,
+            "ref": null,
+            "pause": true,
+            "expires": null,
+            "watched": false,
+            "calibrated": false
+          }
+        ]
+      },
+      "sha256": {
+        "json": "850e5197bbabbec95549982690d70ac42f4d13167b92d80d6ca7bc23192d74db"
+      }
+    },
+    {
+      "index": 5,
+      "tag": "RPRT",
+      "offset": 5736,
+      "length": 1148,
+      "step": 12000,
+      "seq": 0,
+      "version": 1,
+      "flags": 3,
+      "fields": {
+        "chapter": 1,
+        "mode": 0,
+        "backlog": true,
+        "final": true,
+        "json": {
+          "chapter": 1,
+          "n_abs": 1,
+          "a": 0,
+          "b": 6000,
+          "mode": 0,
+          "final": true,
+          "withheld": [],
+          "headline": {
+            "id": "HS",
+            "text": "Storm Merrow reached named strength",
+            "refs": [
+              "S7"
+            ]
+          },
+          "lead": {
+            "id": "L",
+            "text": "The population went from 40,000 to 44,500 (+11.2%).",
+            "refs": []
+          },
+          "body": [
+            {
+              "id": "TO",
+              "text": "270,000 were born and 268,000 died: a turnover of 6.0 times the population.",
+              "origin": "sheet",
+              "refs": []
+            },
+            {
+              "id": "K1",
+              "text": "Aldric has held together since step 11000: 360 members.",
+              "origin": "sheet",
+              "refs": [
+                "K17"
+              ]
+            }
+          ],
+          "interventions": [
+            {
+              "id": "I1",
+              "text": "At step 12000 the player set food regrowth to 1.3 times base for 6000 steps.",
+              "refs": []
+            }
+          ],
+          "ticker": [
+            {
+              "step": 11750,
+              "text": "Storm Merrow reached named strength."
+            }
+          ],
+          "since": {
+            "influence": {
+              "have": 4,
+              "cap": 6
+            },
+            "alerts": {
+              "pop_surge": 1
+            },
+            "ending": [
+              {
+                "action": "regen_pulse",
+                "end": 18000
+              }
+            ]
+          },
+          "entities": {
+            "K17": {
+              "kind": "kin",
+              "id": 17,
+              "name": "Aldric",
+              "x": 6.0,
+              "y": 24.0
+            },
+            "S7": {
+              "kind": "storm",
+              "id": 7,
+              "name": "Merrow",
+              "x": 4.5,
+              "y": 20.25
+            }
+          },
+          "versions": {
+            "report": 2,
+            "template": 2,
+            "checker": 1,
+            "lexicon": 3
+          },
+          "facts_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "latency_s": null,
+          "fallback": null
+        }
+      },
+      "sha256": {
+        "json": "568c9e861f5c98ab42a0ece97d99870679b74d9426b7e60ec909f06ba9ecc694"
+      }
+    },
+    {
+      "index": 6,
+      "tag": "CLCK",
+      "offset": 6892,
+      "length": 60,
+      "step": 12000,
+      "seq": 0,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "rate": 1.0,
+        "achieved": 0.984375,
+        "step_ms": 15.5,
+        "frame_ms": 3.25,
+        "late_steps": 0,
+        "save_stall_steps": 13,
+        "reason": 3,
+        "saving": 1,
+        "flags": 3,
+        "fe": 2,
+        "chapter": 2,
+        "in_chapter": 6000,
+        "chapter_len": 6000
+      },
+      "sha256": {
+        "body": "d9fcdb1d853b0de986651343868eb2a932a6cc0f4edb17a728a02a9ccbcf03e5"
+      }
+    },
+    {
+      "index": 7,
+      "tag": "ALRT",
+      "offset": 6960,
+      "length": 1952,
+      "step": 12000,
+      "seq": 1,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "count": 6,
+        "backlog": false,
+        "json": [
+          {
+            "id": 12000600,
+            "version": 1,
+            "step": 12000,
+            "class": "chapter",
+            "key": "2",
+            "state": "raised",
+            "surface": "alert",
+            "imp": 3,
+            "title": "Chapter 2 complete",
+            "text": "Chapter 2 ended at step 12000.",
+            "x": null,
+            "y": null,
+            "z": null,
+            "ref": {
+              "kind": "world",
+              "id": 0
+            },
+            "pause": true,
+            "expires": null,
+            "watched": false,
+            "calibrated": false
+          },
+          {
+            "id": 12000601,
+            "version": 1,
+            "step": 12000,
+            "class": "storm_named",
+            "key": "S7",
+            "state": "raised",
+            "surface": "alert",
+            "imp": 2,
+            "title": "Storm Merrow",
+            "text": "Storm Merrow reached named strength.",
+            "x": 4.5,
+            "y": 20.25,
+            "z": 3.5,
+            "ref": {
+              "kind": "storm",
+              "id": 7
+            },
+            "pause": false,
+            "expires": 15000,
+            "watched": false,
+            "calibrated": false
+          },
+          {
+            "id": 12000602,
+            "version": 1,
+            "step": 12000,
+            "class": "lineage_formed",
+            "key": "K17",
+            "state": "raised",
+            "surface": "log",
+            "imp": 0,
+            "title": "Aldric formed",
+            "text": "Aldric has held together since step 11000.",
+            "x": 6.0,
+            "y": 24.0,
+            "z": 6.5,
+            "ref": {
+              "kind": "kin",
+              "id": 17
+            },
+            "pause": false,
+            "expires": 15000,
+            "watched": true,
+            "calibrated": false
+          },
+          {
+            "id": 11500603,
+            "version": 2,
+            "step": 12000,
+            "class": "pop_surge",
+            "key": "world",
+            "state": "updated",
+            "surface": "alert",
+            "imp": 1,
+            "title": "Population surge",
+            "text": "The population rose from 40,000 to 46,000 in 500 steps.",
+            "x": null,
+            "y": null,
+            "z": null,
+            "ref": {
+              "kind": "power",
+              "id": 3
+            },
+            "pause": false,
+            "expires": 14500,
+            "watched": false,
+            "calibrated": true
+          },
+          {
+            "id": 11250600,
+            "version": 3,
+            "step": 12000,
+            "class": "pop_fall",
+            "key": "world",
+            "state": "cleared",
+            "surface": "alert",
+            "imp": 3,
+            "title": "Population fell",
+            "text": "The population is back above 0.9 of its maximum.",
+            "x": null,
+            "y": null,
+            "z": null,
+            "ref": {
+              "kind": "organism",
+              "id": 5000000007
+            },
+            "pause": true,
+            "expires": null,
+            "watched": false,
+            "calibrated": false
+          },
+          {
+            "id": 11750605,
+            "version": 1,
+            "step": 12000,
+            "class": "storm_strong",
+            "key": "S7",
+            "state": "raised",
+            "surface": "log",
+            "imp": 0,
+            "title": "Storm strengthening",
+            "text": "Storm Merrow reached 0.7 times the naming threshold.",
+            "x": null,
+            "y": null,
+            "z": null,
+            "ref": {
+              "kind": "house",
+              "id": 5000000000
+            },
+            "pause": false,
+            "expires": 14750,
+            "watched": false,
+            "calibrated": false
+          }
+        ]
+      },
+      "sha256": {
+        "json": "9dc5963148de4368d40859042f9ffd112d22230153e6c5aeb798fba31194fd7b"
+      }
+    },
+    {
+      "index": 8,
+      "tag": "RPRT",
+      "offset": 8920,
+      "length": 1152,
+      "step": 12000,
+      "seq": 1,
+      "version": 1,
+      "flags": 2,
+      "fields": {
+        "chapter": 2,
+        "mode": 0,
+        "backlog": false,
+        "final": true,
+        "json": {
+          "chapter": 2,
+          "n_abs": 2,
+          "a": 6000,
+          "b": 12000,
+          "mode": 0,
+          "final": true,
+          "withheld": [],
+          "headline": {
+            "id": "HS",
+            "text": "Storm Merrow reached named strength",
+            "refs": [
+              "S7"
+            ]
+          },
+          "lead": {
+            "id": "L",
+            "text": "The population went from 40,000 to 44,500 (+11.2%).",
+            "refs": []
+          },
+          "body": [
+            {
+              "id": "TO",
+              "text": "270,000 were born and 268,000 died: a turnover of 6.0 times the population.",
+              "origin": "sheet",
+              "refs": []
+            },
+            {
+              "id": "K1",
+              "text": "Aldric has held together since step 11000: 360 members.",
+              "origin": "sheet",
+              "refs": [
+                "K17"
+              ]
+            }
+          ],
+          "interventions": [
+            {
+              "id": "I1",
+              "text": "At step 12000 the player set food regrowth to 1.3 times base for 6000 steps.",
+              "refs": []
+            }
+          ],
+          "ticker": [
+            {
+              "step": 11750,
+              "text": "Storm Merrow reached named strength."
+            }
+          ],
+          "since": {
+            "influence": {
+              "have": 4,
+              "cap": 6
+            },
+            "alerts": {
+              "pop_surge": 1
+            },
+            "ending": [
+              {
+                "action": "regen_pulse",
+                "end": 18000
+              }
+            ]
+          },
+          "entities": {
+            "K17": {
+              "kind": "kin",
+              "id": 17,
+              "name": "Aldric",
+              "x": 6.0,
+              "y": 24.0
+            },
+            "S7": {
+              "kind": "storm",
+              "id": 7,
+              "name": "Merrow",
+              "x": 4.5,
+              "y": 20.25
+            }
+          },
+          "versions": {
+            "report": 2,
+            "template": 2,
+            "checker": 1,
+            "lexicon": 3
+          },
+          "facts_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "latency_s": null,
+          "fallback": null
+        }
+      },
+      "sha256": {
+        "json": "97f24bdda6e2459b13137263b3aa0d4939703127be7e07a0ff4cc974bce0ed6a"
+      }
+    },
+    {
+      "index": 9,
+      "tag": "RPRT",
+      "offset": 10080,
+      "length": 1156,
+      "step": 12000,
+      "seq": 2,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "chapter": 2,
+        "mode": 1,
+        "backlog": false,
+        "final": false,
+        "json": {
+          "chapter": 2,
+          "n_abs": 2,
+          "a": 6000,
+          "b": 12000,
+          "mode": 1,
+          "final": false,
+          "withheld": [],
+          "headline": {
+            "id": "HS",
+            "text": "Storm Merrow reached named strength",
+            "refs": [
+              "S7"
+            ]
+          },
+          "lead": {
+            "id": "L",
+            "text": "The population went from 40,000 to 44,500 (+11.2%).",
+            "refs": []
+          },
+          "body": [
+            {
+              "id": "TO",
+              "text": "270,000 were born and 268,000 died: a turnover of 6.0 times the population.",
+              "origin": "sheet",
+              "refs": []
+            },
+            {
+              "id": "K1",
+              "text": "Aldric has held together since step 11000: 360 members.",
+              "origin": "sheet",
+              "refs": [
+                "K17"
+              ]
+            }
+          ],
+          "interventions": [
+            {
+              "id": "I1",
+              "text": "At step 12000 the player set food regrowth to 1.3 times base for 6000 steps.",
+              "refs": []
+            }
+          ],
+          "ticker": [
+            {
+              "step": 11750,
+              "text": "Storm Merrow reached named strength."
+            }
+          ],
+          "since": {
+            "influence": {
+              "have": 4,
+              "cap": 6
+            },
+            "alerts": {
+              "pop_surge": 1
+            },
+            "ending": [
+              {
+                "action": "regen_pulse",
+                "end": 18000
+              }
+            ]
+          },
+          "entities": {
+            "K17": {
+              "kind": "kin",
+              "id": 17,
+              "name": "Aldric",
+              "x": 6.0,
+              "y": 24.0
+            },
+            "S7": {
+              "kind": "storm",
+              "id": 7,
+              "name": "Merrow",
+              "x": 4.5,
+              "y": 20.25
+            }
+          },
+          "versions": {
+            "report": 2,
+            "template": 2,
+            "checker": 1,
+            "lexicon": 3
+          },
+          "facts_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "latency_s": null,
+          "fallback": "ordering"
+        }
+      },
+      "sha256": {
+        "json": "28b211a787574244f1bc3539394634254f7958eac826268f5595e6f8fc7b88c6"
+      }
+    },
+    {
+      "index": 10,
+      "tag": "RPRT",
+      "offset": 11244,
+      "length": 532,
+      "step": 12000,
+      "seq": 3,
+      "version": 1,
+      "flags": 2,
+      "fields": {
+        "chapter": 2,
+        "mode": 2,
+        "backlog": false,
+        "final": true,
+        "json": {
+          "chapter": 2,
+          "n_abs": 2,
+          "a": 6000,
+          "b": 12000,
+          "mode": 2,
+          "final": true,
+          "withheld": [
+            "the cut 11000 is not the step of a metrics row"
+          ],
+          "headline": null,
+          "lead": null,
+          "body": [],
+          "interventions": [],
+          "ticker": [],
+          "since": {
+            "influence": {
+              "have": 4,
+              "cap": 6
+            },
+            "alerts": {
+              "pop_surge": 1
+            },
+            "ending": [
+              {
+                "action": "regen_pulse",
+                "end": 18000
+              }
+            ]
+          },
+          "entities": {},
+          "versions": {
+            "report": 2,
+            "template": 2,
+            "checker": 1,
+            "lexicon": 3
+          },
+          "facts_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "latency_s": null,
+          "fallback": null
+        }
+      },
+      "sha256": {
+        "json": "4f555ba0bb10bc1142d5ff4d797feba9ff340be210a43a8e881c73a9e99463fb"
+      }
+    },
+    {
+      "index": 11,
+      "tag": "PLAN",
+      "offset": 11784,
+      "length": 552,
+      "step": 12000,
+      "seq": 0,
+      "version": 1,
+      "flags": 1,
+      "fields": {
+        "reply": true,
+        "json": {
+          "id": 3,
+          "kind": "power",
+          "status": "preview",
+          "power": "food",
+          "action": "regen_pulse",
+          "raw": {
+            "mult": 1.3,
+            "steps": 6000
+          },
+          "params": {
+            "mult": 1.3
+          },
+          "clamped": [],
+          "duration": 6000,
+          "step_applied": null,
+          "ends": null,
+          "cost": 1,
+          "influence": {
+            "have": 5,
+            "cap": 6,
+            "window": 18000,
+            "free_at": [
+              30000
+            ]
+          },
+          "ready": null,
+          "holds": "regen",
+          "text": "Food x1.3 for 6000 steps (6.9 min at 1x), cost 1, influence 5 of 6 after.",
+          "caution": [
+            "holds the regen lever until step 18000"
+          ],
+          "precedent": {
+            "step": null,
+            "action": "regen_pulse",
+            "params": {},
+            "rows": []
+          },
+          "since": null,
+          "refused": null
+        }
+      },
+      "sha256": {
+        "json": "7236d2f44b6d6dd3aba80d21c8db6bc8985c4012640d0ecfb171b8257a6ac496"
+      }
+    },
+    {
+      "index": 12,
+      "tag": "PLAN",
+      "offset": 12344,
+      "length": 552,
+      "step": 12000,
+      "seq": 1,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "reply": false,
+        "json": {
+          "id": 3,
+          "kind": "power",
+          "status": "queued",
+          "power": "food",
+          "action": "regen_pulse",
+          "raw": {
+            "mult": 1.3,
+            "steps": 6000
+          },
+          "params": {
+            "mult": 1.3
+          },
+          "clamped": [],
+          "duration": 6000,
+          "step_applied": null,
+          "ends": null,
+          "cost": 1,
+          "influence": {
+            "have": 5,
+            "cap": 6,
+            "window": 18000,
+            "free_at": [
+              30000
+            ]
+          },
+          "ready": null,
+          "holds": "regen",
+          "text": "Food x1.3 for 6000 steps (6.9 min at 1x), cost 1, influence 5 of 6 after.",
+          "caution": [
+            "holds the regen lever until step 18000"
+          ],
+          "precedent": {
+            "step": null,
+            "action": "regen_pulse",
+            "params": {},
+            "rows": []
+          },
+          "since": null,
+          "refused": null
+        }
+      },
+      "sha256": {
+        "json": "66e4ab45adb18341cf4e175b4791affc6cd6f6a744ee05000ff22cd1a6c4c34f"
+      }
+    },
+    {
+      "index": 13,
+      "tag": "PLAN",
+      "offset": 12904,
+      "length": 556,
+      "step": 12000,
+      "seq": 2,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "reply": false,
+        "json": {
+          "id": 3,
+          "kind": "power",
+          "status": "applied",
+          "power": "food",
+          "action": "regen_pulse",
+          "raw": {
+            "mult": 1.3,
+            "steps": 6000
+          },
+          "params": {
+            "mult": 1.3
+          },
+          "clamped": [],
+          "duration": 6000,
+          "step_applied": 12000,
+          "ends": 18000,
+          "cost": 1,
+          "influence": {
+            "have": 5,
+            "cap": 6,
+            "window": 18000,
+            "free_at": [
+              30000
+            ]
+          },
+          "ready": 21000,
+          "holds": "regen",
+          "text": "Food x1.3 for 6000 steps (6.9 min at 1x), cost 1, influence 5 of 6 after.",
+          "caution": [
+            "holds the regen lever until step 18000"
+          ],
+          "precedent": {
+            "step": null,
+            "action": "regen_pulse",
+            "params": {},
+            "rows": []
+          },
+          "since": null,
+          "refused": null
+        }
+      },
+      "sha256": {
+        "json": "dd335fdb93c39b5a1ab9646bcd263c516a243bd2134c2d11b70b0e1b63169acc"
+      }
+    },
+    {
+      "index": 14,
+      "tag": "PLAN",
+      "offset": 13468,
+      "length": 668,
+      "step": 12000,
+      "seq": 3,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "reply": false,
+        "json": {
+          "id": 3,
+          "kind": "power",
+          "status": "since",
+          "power": "food",
+          "action": "regen_pulse",
+          "raw": {
+            "mult": 1.3,
+            "steps": 6000
+          },
+          "params": {
+            "mult": 1.3
+          },
+          "clamped": [],
+          "duration": 6000,
+          "step_applied": 12000,
+          "ends": 18000,
+          "cost": 1,
+          "influence": {
+            "have": 5,
+            "cap": 6,
+            "window": 18000,
+            "free_at": [
+              30000
+            ]
+          },
+          "ready": null,
+          "holds": "regen",
+          "text": "Food x1.3 for 6000 steps (6.9 min at 1x), cost 1, influence 5 of 6 after.",
+          "caution": [
+            "holds the regen lever until step 18000"
+          ],
+          "precedent": {
+            "step": null,
+            "action": "regen_pulse",
+            "params": {},
+            "rows": []
+          },
+          "since": {
+            "from": 12000,
+            "rows": [
+              {
+                "step": 12250,
+                "alive": 44100,
+                "starved": 5600,
+                "killed": 5200,
+                "born": 11000,
+                "storm": 3,
+                "catastrophe": 0
+              }
+            ]
+          },
+          "refused": null
+        }
+      },
+      "sha256": {
+        "json": "404c42d325fca9cfce17cb9ce67fd0a6a493c58a22179fc3fbfac90d513218ac"
+      }
+    },
+    {
+      "index": 15,
+      "tag": "PLAN",
+      "offset": 14144,
+      "length": 488,
+      "step": 12000,
+      "seq": 4,
+      "version": 1,
+      "flags": 1,
+      "fields": {
+        "reply": true,
+        "json": {
+          "id": 4,
+          "kind": "power",
+          "status": "refused",
+          "power": "strike",
+          "action": "catastrophe",
+          "raw": {
+            "mult": 1.3,
+            "steps": 6000
+          },
+          "params": {},
+          "clamped": [],
+          "duration": null,
+          "step_applied": null,
+          "ends": null,
+          "cost": 1,
+          "influence": {
+            "have": 5,
+            "cap": 6,
+            "window": 18000,
+            "free_at": [
+              30000
+            ]
+          },
+          "ready": null,
+          "holds": null,
+          "text": "Food x1.3 for 6000 steps (6.9 min at 1x), cost 1, influence 5 of 6 after.",
+          "caution": [],
+          "precedent": null,
+          "since": null,
+          "refused": "Strike is cooling down until step 15000."
+        }
+      },
+      "sha256": {
+        "json": "dc7da86409cffe7501689a19101d2d81e97bc111c28f21dffd8e52ce1f8413bf"
+      }
+    },
+    {
+      "index": 16,
+      "tag": "PLAN",
+      "offset": 14640,
+      "length": 524,
+      "step": 12000,
+      "seq": 5,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "reply": false,
+        "json": {
+          "id": 3,
+          "kind": "power",
+          "status": "cancelled",
+          "power": "food",
+          "action": "regen_pulse",
+          "raw": {
+            "mult": 1.3,
+            "steps": 6000
+          },
+          "params": {
+            "mult": 1.3
+          },
+          "clamped": [],
+          "duration": 6000,
+          "step_applied": 12000,
+          "ends": 12001,
+          "cost": 1,
+          "influence": {
+            "have": 5,
+            "cap": 6,
+            "window": 18000,
+            "free_at": [
+              30000
+            ]
+          },
+          "ready": null,
+          "holds": "regen",
+          "text": "Food ended early at the player's request.",
+          "caution": [
+            "holds the regen lever until step 18000"
+          ],
+          "precedent": {
+            "step": null,
+            "action": "regen_pulse",
+            "params": {},
+            "rows": []
+          },
+          "since": null,
+          "refused": null
+        }
+      },
+      "sha256": {
+        "json": "4837d43004df4bfd9da35455dc611f0dc7936cd02d442d61b2fafc33a0e776fc"
+      }
+    },
+    {
+      "index": 17,
+      "tag": "PLAN",
+      "offset": 15172,
+      "length": 364,
+      "step": 12000,
+      "seq": 6,
+      "version": 1,
+      "flags": 1,
+      "fields": {
+        "reply": true,
+        "json": {
+          "id": 9,
+          "kind": "intent",
+          "status": "refused",
+          "power": null,
+          "action": null,
+          "raw": {},
+          "params": {},
+          "clamped": [],
+          "duration": null,
+          "step_applied": null,
+          "ends": null,
+          "cost": 0,
+          "influence": null,
+          "ready": null,
+          "holds": null,
+          "text": "intent is not available in this build",
+          "caution": [],
+          "precedent": null,
+          "since": null,
+          "refused": "intent is not available in this build"
+        }
+      },
+      "sha256": {
+        "json": "4a18fb5685746cc4586e55e13e0f6e2ed26ca5212a62b647ffeebf5a43b9cd87"
+      }
+    },
+    {
+      "index": 18,
+      "tag": "EVNT",
+      "offset": 15544,
+      "length": 328,
+      "step": 12001,
+      "seq": 1,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "count": 2,
+        "backlog": false,
+        "json": [
+          {
+            "id": 12000306,
+            "step": 12000,
+            "kind": 20,
+            "fam": "director",
+            "a": 0,
+            "b": 0,
+            "x": 24.0,
+            "y": 12.0,
+            "z": null,
+            "imp": 1,
+            "text": "The player set regen to 1.3 for 6000 steps."
+          },
+          {
+            "id": 12001300,
+            "step": 12001,
+            "kind": 21,
+            "fam": "director",
+            "a": 0,
+            "b": 0,
+            "x": null,
+            "y": null,
+            "z": null,
+            "imp": 0,
+            "text": "The player's regen setting ended."
+          }
+        ]
+      },
+      "sha256": {
+        "json": "8ce0f5400dc8090e128e92c006185d6edcec7313243aaeeaf0d75f8f016c9284"
+      }
+    },
+    {
+      "index": 19,
+      "tag": "CLCK",
+      "offset": 15916,
+      "length": 60,
+      "step": 12001,
+      "seq": 1,
+      "version": 1,
+      "flags": 0,
+      "fields": {
+        "rate": 0.0,
+        "achieved": 0.0,
+        "step_ms": 15.5,
+        "frame_ms": 3.25,
+        "late_steps": 0,
+        "save_stall_steps": 13,
+        "reason": 4,
+        "saving": 0,
+        "flags": 1,
+        "fe": 2,
+        "chapter": 3,
+        "in_chapter": 1,
+        "chapter_len": 6000
+      },
+      "sha256": {
+        "body": "3a39387f948597491d9ee253e5342a85790449c5beb10ba95870312f0739156b"
+      }
+    }
+  ]
+}

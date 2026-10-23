@@ -7,7 +7,7 @@ import os
 // occur inside any frame). A dedicated thread blocks in `read`, so the pipe is drained as fast as the engine writes
 // (a full 64 KiB pipe would stall the simulation) whatever the main actor is doing. It feeds a `FrameDecoder` and
 // leaves the newest frame in a mailbox; the main actor is woken, with wake-ups coalesced, and takes what is there. An
-// `alife play` stream adds records (§33.1): the newest of each latest-wins tag is kept, `EVNT` batches are queued.
+// `alife play` stream adds records (§33.1): the newest of each latest-wins tag is kept, `EVNT`, `ALRT`, `RPRT` and `PLAN` are queued.
 
 /// How a stream ended, as the reader saw it.
 enum StreamEnd: Sendable, Equatable {
@@ -29,6 +29,11 @@ struct StreamDelivery: Sendable, Equatable {
     var records: [String: StreamRecord] = [:]
     /// The `EVNT` batches since the last take, in order: events are never dropped.
     var events: [PlayEventBatch] = []
+    /// The `ALRT`, `RPRT` and `PLAN` records since the last take, each tag in order: like events they are queued, never
+    /// replaced (an alert is deduplicated by its id and a report by its chapter when the store applies it).
+    var alerts: [PlayAlertBatch] = []
+    var reports: [PlayReport] = []
+    var plans: [PlayPlan] = []
     var end: StreamEnd?
     /// Frames that arrived and were replaced by a newer one before they were taken.
     var dropped = 0
@@ -37,12 +42,15 @@ struct StreamDelivery: Sendable, Equatable {
     /// Frames that arrived (taken or replaced).
     var received = 0
 
-    var isEmpty: Bool { header == nil && frame == nil && records.isEmpty && events.isEmpty && end == nil }
+    var isEmpty: Bool {
+        header == nil && frame == nil && records.isEmpty && events.isEmpty && alerts.isEmpty && reports.isEmpty
+            && plans.isEmpty && end == nil
+    }
 }
 
 /// Holds the latest header, frame and play records between the reader thread and the main actor. All access is under one
 /// lock; nothing blocks for long (a frame is stored by reference to its arrays). A latest-wins tag keeps the newest
-/// record; `EVNT` batches are queued.
+/// record; `EVNT`, `ALRT`, `RPRT` and `PLAN` records are queued.
 final class StreamMailbox: Sendable {
     private let state = OSAllocatedUnfairLock(initialState: StreamDelivery())
 
@@ -60,9 +68,12 @@ final class StreamMailbox: Sendable {
 
     func publish(record: StreamRecord) {
         state.withLock {
-            if case .evnt(let batch) = record {
-                $0.events.append(batch)
-                return
+            switch record {
+            case .evnt(let batch): $0.events.append(batch); return
+            case .alrt(let batch): $0.alerts.append(batch); return
+            case .rprt(let report): $0.reports.append(report); return
+            case .plan(let plan): $0.plans.append(plan); return
+            default: break
             }
             let tag = record.tag
             if $0.records[tag] != nil { $0.droppedRecords[tag, default: 0] += 1 }

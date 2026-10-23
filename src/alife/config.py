@@ -291,7 +291,7 @@ class RunConfig:  # excluded from config_hash; on resume only observer/cadence k
     heavy_metrics_every: int = 1000  # components + weight diversity; multiple of metrics_every
     components_iters: int = 32
     diversity_sample: int = 256
-    director: str = "off"  # off | live | replay (needs director.enabled); resume may change it
+    director: str = "off"  # off | live | replay | player (needs director.enabled); resume may change it
     llm_url: str = "http://localhost:1234/v1/chat/completions"  # the LLM tier's endpoint (LM Studio)
     llm_model: str = "gemma-4-26b-a4b-it-mlx@8bit"  # the model named in each request
     # Run dumps (W2, DESIGN §32), cadence keys like ``metrics_every`` (``run`` is outside the hash; a resume
@@ -790,7 +790,9 @@ OBSERVER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("game", "tracer_period"),
 )
 TRACERS_MAX: Final = 1 << 20  # the largest ``game.tracers``
-DIRECTOR_MODES: Final = ("off", "live", "replay")
+DIRECTOR_MODES: Final = ("off", "live", "replay")  # the research modes (``--director`` of run and resume)
+PLAYER_MODE: Final = "player"  # ``alife play``: applies the player's powers, decides nothing (DESIGN §26.8)
+RUN_DIRECTOR_MODES: Final = (*DIRECTOR_MODES, PLAYER_MODE)  # every value ``run.director`` takes
 RANDOM_PERSONA: Final = "random"  # arm R of DIRECTOR.md §9: yoked to another run's discretionary moves
 PERSONAS: Final = ("gardener", "trickster", "architect", RANDOM_PERSONA)
 
@@ -1198,9 +1200,12 @@ def validate(cfg: Config) -> None:
     req(ru.llm_model.strip() != "", "run.llm_model must not be empty")
     if di.llm_every > 0:  # the endpoint is user config: only http(s) is ever contacted (DIRECTOR.md L11)
         req(is_http_url(ru.llm_url), f"run.llm_url must be an http(s) URL, got {ru.llm_url!r}")
-    req(ru.director in DIRECTOR_MODES, f"run.director {ru.director!r} not in {DIRECTOR_MODES}")
+    req(ru.director in RUN_DIRECTOR_MODES, f"run.director {ru.director!r} not in {RUN_DIRECTOR_MODES}")
     if ru.director != "off":
-        req(di.enabled, "run.director live/replay needs director.enabled (use --director, which sets it)")
+        req(
+            di.enabled,
+            "run.director live/replay/player needs director.enabled (use --director, which sets it)",
+        )
         if di.rule_every >= 1 and ru.metrics_every >= 1 and ru.heavy_metrics_every >= 1:
             req(
                 di.rule_every % ru.metrics_every == 0 and di.rule_every % ru.heavy_metrics_every == 0,

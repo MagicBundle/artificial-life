@@ -45,6 +45,11 @@ def n_alive_min(step: int) -> int:
     return min(alive(step - 100), alive(step))
 
 
+def tag_of(gid: int) -> list[float]:
+    """The tag centroid of a kin group: groups are 0.3 apart (the kin threads bridge tags closer than 0.15)."""
+    return [round(0.3 * gid, 3), 0.0, 0.0, 0.0]
+
+
 def groups_at(t: int) -> list[int]:
     """The ids of the slotted kin groups at snapshot ``t``."""
     ids = [1, 2]
@@ -114,8 +119,11 @@ def record_at(step: int) -> dict[str, Any]:
     ids = groups_at(step)
     sizes = {g: size_of(g, step) for g in ids}
     kin = _table(
-        ("id", "name", "named_after", "slot", "size", "births", "deaths"),
-        [(g, NAMES[g], None, j, sizes[g], 5 - g % 2, [2, 1, 0, 0]) for j, g in enumerate(ids)],
+        ("id", "name", "named_after", "slot", "size", "births", "deaths", "tag", "x", "y", "z_mean"),
+        [
+            (g, NAMES[g], None, j, sizes[g], 5 - g % 2, [2, 1, 0, 0], tag_of(g), 10.0 * g, 5.0 * g, 3.0)
+            for j, g in enumerate(ids)
+        ],
     )
     events: list[tuple[Any, ...]] = []
     if step == 1250:
@@ -269,6 +277,14 @@ def variant(
     )
 
 
+def applied_after(e: Mapping[str, Any], start: int) -> bool:
+    """Whether the world that starts at ``start`` applies the entry ``e``: a boundary entry after ``start``, a
+    record of the player channel (a power, or the revert written for one) from ``start`` on, because it is
+    applied after the checkpoint of its step. Written here from the specification, not from the report's code."""
+    player = e["source"] == "player" or (e["source"] == "revert" and e.get("scope") == "player")
+    return e["step_applied"] >= start if player else e["step_applied"] > start
+
+
 def env_rows(
     rows: list[dict[str, Any]], entries: Sequence[Mapping[str, Any]], start: int
 ) -> list[dict[str, Any]]:
@@ -280,7 +296,8 @@ def env_rows(
         regen, amp, period, drift = 1.0, 0.0, 0, 1.0
         gain = [1.0] * 24
         for e in sorted(
-            (e for e in entries if start < e["step_applied"] < r["step"]), key=lambda e: e["step_applied"]
+            (e for e in entries if applied_after(e, start) and e["step_applied"] < r["step"]),
+            key=lambda e: e["step_applied"],
         ):
             p, a = e["params"], e["action"]
             if a == "regen_pulse":
@@ -333,7 +350,10 @@ def oracle_state(entries: Sequence[Mapping[str, Any]], t: int, start: int = 0) -
     """The levers at the row ``t`` by a model that does not import the report's fold: ``regen``, ``drift``,
     ``seasons`` (period, amp), ``gain`` per patch and the patches' moved positions."""
     st: dict[str, Any] = {"regen": 1.0, "drift": 1.0, "seasons": (0, 0.0), "gain": {}, "pos": {}}
-    for e in sorted((e for e in entries if start < e["step_applied"] < t), key=lambda e: e["step_applied"]):
+    for e in sorted(
+        (e for e in entries if applied_after(e, start) and e["step_applied"] < t),
+        key=lambda e: e["step_applied"],
+    ):
         p, a = e["params"], e["action"]
         if a == "regen_pulse":
             st.update({"regen": p["mult"]})

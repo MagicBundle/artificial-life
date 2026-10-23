@@ -105,6 +105,32 @@ import Testing
         #expect(order.last == "delivery" && !zip(order, order.dropFirst()).contains { $0 == "delivery" && $1 == "delivery" }, "\(order)")
     }
 
+    @Test func alertsReportsAndPlansArriveInOrderAndTheAlertsAreAnnounced() async throws {
+        // G3b's stream: a backlog alert, then a live batch of six, three reports and a withheld one, seven plans. The model learns
+        // of what each alert batch did, with the backlog flagged, and the store holds the board, the shelf and the log.
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (script, commands) = try standIn(in: scratch, fixture: "3d_g3b")
+        let (controller, recorder) = make()
+        defer { controller.shutdown() }
+        var announced: [(kinds: [AlertChange.Kind], backlog: Bool)] = []
+        controller.onAlerts = { changes, backlog in announced.append((changes.map(\.kind), backlog)) }
+        controller.start(request, executable: script, directory: scratch.url,
+                         arguments: args(scratch, commands: commands, kind: "3d_g3b"))
+        #expect(await eventually { controller.store.clock?.head.step == 12001 && !controller.store.plans.records.isEmpty })
+        let store = controller.store
+        #expect(store.alerts.alerts.count == 6 && store.reports.entries.count == 4 && store.plans.records.count == 7)
+        #expect(announced.map(\.backlog) == [true, false], "the skipped version-2 batch is not announced")
+        #expect(announced[0].kinds == [.raised])
+        // (the pop_surge row is an update of an alert this client never saw: new to it; the backlog pop_fall is then cleared)
+        #expect(announced[1].kinds == [.raised, .raised, .raised, .raised, .cleared, .raised])
+        #expect(recorder.deliveries.contains { $0.contains(.alerts) } && recorder.deliveries.contains { $0.contains(.plans) })
+        #expect(recorder.deliveries.contains { $0.contains(.reports) })
+        #expect(store.influence?.have == 4 && store.play?.powers?.keys.sorted() == ["food", "strike"])
+        controller.shutdown()
+        #expect(await eventually { !controller.hasProcess })
+    }
+
     @Test func aWorldThatEndsDeliversItsLastRecordsBeforeItFinishes() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
@@ -195,28 +221,43 @@ import Testing
     @Test func aClockThatDoesNotShowTheAskedRateSettlesItOnlyAfterASecond() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
-        // After the fixture, the stand-in answers `pause` with the fixture's last CLCK (the last 68 bytes; not a paused one) at once and
-        // again a second and a half later; the first is a clock sent before the line was read, the second the world's answer.
+        // After the fixture, the stand-in answers `pause` and `labels off` each with the fixture's last CLCK (the last 68 bytes; not a
+        // paused one). The answer to `pause` is a clock sent before the line was read; the others come later, and the test decides,
+        // with an injected clock, how long after the asking they are. No sleep stands for the second: a loaded machine cannot move
+        // it, and every wait is for a condition with a generous deadline.
         let clock = try scratch.script("alife-clock", """
             cat "$1"
             while IFS= read -r line; do
-              if [ "$line" = "pause" ]; then
-                tail -c 68 "$1"
-                sleep 1.5
-                tail -c 68 "$1"
-              fi
-              if [ "$line" = "quit" ]; then exit 0; fi
+              case "$line" in
+                pause|"labels off") tail -c 68 "$1" ;;
+                quit) exit 0 ;;
+              esac
             done
             """)
-        let (controller, _) = make()
+        let (controller, recorder) = make()
         defer { controller.shutdown() }
+        var uptime = 0.0
+        controller.now = { uptime }
         controller.start(request, executable: clock, directory: scratch.url, arguments: args(scratch))
         #expect(await eventually { controller.phase == .live && controller.store.clock != nil })
-        controller.pause()
-        #expect(controller.requestedRate == .multiplier(0))
-        try await Task.sleep(for: .milliseconds(500))
+        func clocks() -> Int { recorder.deliveries.filter { $0.contains(.clock) }.count }
+        /// Sends `command` and waits for the clock the stand-in answers it with. The stream is ordered, so the answer to the
+        /// first command follows the whole fixture, and each wait ends only when the controller has handled its clock.
+        func answered(_ command: PlayCommand) async -> Bool {
+            let before = clocks()
+            guard controller.send(command) else { return false }
+            return await eventually { clocks() > before }
+        }
+
+        #expect(await answered(.labels(false)), "the fixture is read through: what follows is the answer to a command")
+        #expect(await answered(.pause))
         #expect(controller.requestedRate == .multiplier(0), "the first clock did not show a pause: the strip keeps what was asked")
-        #expect(await eventually { controller.requestedRate == nil }, "a clock a second after the asking is the world's answer")
+        uptime = 0.9
+        #expect(await answered(.labels(false)))
+        #expect(controller.requestedRate == .multiplier(0), "a clock inside the second is still the old rate")
+        uptime = 1.5
+        #expect(await answered(.labels(false)))
+        #expect(controller.requestedRate == nil, "a clock more than a second after the asking is the world's answer")
         controller.shutdown()
         #expect(await eventually { !controller.hasProcess })
     }
@@ -312,7 +353,8 @@ import Testing
         #expect(await eventually { controller.progress == ["ready"] })
         let began = ContinuousClock.now
         controller.stop()
-        try await Task.sleep(for: .milliseconds(100))
+        // No sleep stands for the grace: stop() sent SIGINT synchronously and nothing suspends before this line, so the process
+        // is checked a moment after the SIGINT. A pause here could outlast the 300 ms grace on a loaded machine.
         #expect(controller.hasProcess, "SIGINT was sent and ignored; the grace has not run out")
         #expect(await eventually(timeout: .seconds(8)) { !controller.hasProcess })
         #expect(ContinuousClock.now - began >= .milliseconds(250), "SIGTERM came after the grace")
@@ -490,6 +532,26 @@ import Testing
         #expect(delivery.events == batches)
         #expect(delivery.records.isEmpty && !delivery.isEmpty)
         #expect(delivery.droppedRecords.isEmpty)
+    }
+
+    @Test func alertsReportsAndPlansAreQueuedInOrderAndNeverReplaced() throws {
+        let all = try records("3d_g3b")
+        let mailbox = StreamMailbox()
+        for record in all { mailbox.publish(record: record) }
+        let delivery = mailbox.take()
+        #expect(delivery.alerts.map(\.isBacklog) == [true, false] && delivery.alerts.map(\.alerts.count) == [1, 6])
+        #expect(delivery.reports.map(\.mode) == [0, 0, 1, 2] && delivery.reports.map(\.chapter) == [1, 2, 2, 2])
+        #expect(delivery.plans.map(\.plan.status) == [.preview, .queued, .applied, .since, .refused, .cancelled, .refused])
+        #expect(delivery.records["ALRT"] == nil && delivery.records["RPRT"] == nil && delivery.records["PLAN"] == nil)
+        #expect(delivery.droppedRecords["ALRT"] == nil && delivery.droppedRecords["RPRT"] == nil && delivery.droppedRecords["PLAN"] == nil)
+        #expect(!delivery.isEmpty)
+        #expect(mailbox.take().isEmpty)
+        // Each queue alone keeps a delivery from being empty.
+        for record in all where ["ALRT", "RPRT", "PLAN"].contains(record.tag) {
+            let single = StreamMailbox()
+            single.publish(record: record)
+            #expect(!single.take().isEmpty, "\(record.tag)")
+        }
     }
 
     @Test func aRecordThroughTheReaderThreadReachesTheMailbox() async throws {

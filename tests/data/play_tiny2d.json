@@ -1,7 +1,7 @@
 {
   "about": "Expected decoding of the stream in the .bin file next to this one (DESIGN section 33.1). Regenerate with `uv run python tests/play_fixtures.py --write`.",
   "kind": "2d",
-  "bytes": 6588,
+  "bytes": 6660,
   "header": {
     "protocol": 1,
     "dims": 2,
@@ -137,7 +137,11 @@
         "14": "focus_handoff",
         "15": "checkpoint",
         "16": "renumbered",
-        "17": "extinct"
+        "17": "extinct",
+        "18": "kin_formed",
+        "19": "kin_ended",
+        "20": "power_applied",
+        "21": "power_ended"
       },
       "planet": {
         "source": null,
@@ -148,7 +152,7 @@
   "skipped": [
     {
       "tag": "ZZZZ",
-      "offset": 5940,
+      "offset": 6012,
       "why": "tag"
     }
   ],
@@ -156,7 +160,7 @@
     {
       "index": 0,
       "tag": "FRMA",
-      "offset": 1700,
+      "offset": 1772,
       "length": 264,
       "step": 100,
       "seq": 0,
@@ -245,7 +249,7 @@
     {
       "index": 1,
       "tag": "IDNT",
-      "offset": 1972,
+      "offset": 2044,
       "length": 1012,
       "step": 100,
       "seq": 0,
@@ -436,7 +440,7 @@
     {
       "index": 2,
       "tag": "INTN",
-      "offset": 2992,
+      "offset": 3064,
       "length": 116,
       "step": 100,
       "seq": 0,
@@ -505,7 +509,7 @@
     {
       "index": 3,
       "tag": "TERR",
-      "offset": 3116,
+      "offset": 3188,
       "length": 2100,
       "step": 100,
       "seq": 0,
@@ -568,7 +572,7 @@
     {
       "index": 4,
       "tag": "ENVS",
-      "offset": 5224,
+      "offset": 5296,
       "length": 340,
       "step": 100,
       "seq": 0,
@@ -623,7 +627,7 @@
     {
       "index": 5,
       "tag": "EVNT",
-      "offset": 5572,
+      "offset": 5644,
       "length": 292,
       "step": 100,
       "seq": 0,
@@ -668,7 +672,7 @@
     {
       "index": 6,
       "tag": "CLCK",
-      "offset": 5872,
+      "offset": 5944,
       "length": 60,
       "step": 100,
       "seq": 0,
@@ -696,7 +700,7 @@
     {
       "index": 7,
       "tag": "FRMA",
-      "offset": 5976,
+      "offset": 6048,
       "length": 264,
       "step": 104,
       "seq": 1,
@@ -785,7 +789,7 @@
     {
       "index": 8,
       "tag": "EVNT",
-      "offset": 6248,
+      "offset": 6320,
       "length": 172,
       "step": 104,
       "seq": 1,
@@ -817,7 +821,7 @@
     {
       "index": 9,
       "tag": "FOCS",
-      "offset": 6428,
+      "offset": 6500,
       "length": 84,
       "step": 104,
       "seq": 0,
@@ -853,7 +857,7 @@
     {
       "index": 10,
       "tag": "CLCK",
-      "offset": 6520,
+      "offset": 6592,
       "length": 60,
       "step": 104,
       "seq": 1,

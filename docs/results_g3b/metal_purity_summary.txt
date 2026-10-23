@@ -1,0 +1,143 @@
+=== test_alerts 02:45:41
+exit 0
+....................................................................     [100%]
+68 passed in 0.18s
+=== test_analysis_world_report 02:45:41
+exit 0
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_analysis_world_report.py:1069: pass --model ID (a model that is already loaded), or set ALIFE_LLM_URL and ALIFE_LLM_MODEL
+71 passed, 1 skipped in 2.29s
+=== test_bench 02:45:44
+exit 0
+..............................................                           [100%]
+46 passed in 65.46s (0:01:05)
+=== test_g3b_review 02:46:49
+exit 0
+..........                                                               [100%]
+10 passed in 10.19s
+=== test_game_purity 02:47:00
+exit 0
+.......................................................                  [100%]
+55 passed in 18.77s
+=== test_game_report 02:47:19
+exit 0
+........................................................................ [ 76%]
+......................                                                   [100%]
+94 passed in 12.92s
+=== test_game_report_select 02:47:32
+exit 0
+........................................................................ [ 80%]
+.................                                                        [100%]
+89 passed in 5.06s
+=== test_game_report_templates 02:47:38
+exit 0
+........................................................................ [ 69%]
+...............................                                          [100%]
+103 passed in 10.31s
+=== test_gui_sync 02:47:48
+exit 0
+.....................                                                    [100%]
+21 passed in 0.18s
+=== test_kinthreads 02:47:49
+exit 0
+...................................                                      [100%]
+35 passed in 0.41s
+=== test_play_alerts 02:47:50
+exit 0
+...............................                                          [100%]
+31 passed in 7.84s
+=== test_play_chapters 02:47:58
+exit 0
+............................................                             [100%]
+44 passed in 5.45s
+=== test_play_chronicle 02:48:03
+exit 0
+..................                                                       [100%]
+18 passed in 1.13s
+=== test_play_cli 02:48:05
+exit 0
+...................                                                      [100%]
+19 passed in 25.29s
+=== test_play_control 02:48:31
+exit 0
+........................................................................ [ 51%]
+.....................................................................    [100%]
+141 passed in 2.13s
+=== test_play_envs 02:48:33
+exit 0
+...                                                                      [100%]
+3 passed in 1.32s
+=== test_play_focus 02:48:35
+exit 0
+.............                                                            [100%]
+13 passed in 4.26s
+=== test_play_hook 02:48:39
+exit 0
+......................                                                   [100%]
+22 passed in 12.51s
+=== test_play_planet 02:48:52
+exit 0
+...............                                                          [100%]
+15 passed in 10.93s
+=== test_play_powers 02:49:03
+exit 0
+.............................                                            [100%]
+29 passed in 18.07s
+=== test_play_purity 02:49:22
+exit 0
+...............                                                          [100%]
+15 passed in 9.99s
+=== test_play_replay 02:49:32
+exit 0
+......                                                                   [100%]
+6 passed in 2.99s
+=== test_play_sched 02:49:35
+exit 0
+.......................                                                  [100%]
+23 passed in 4.27s
+=== test_play_storm_persist 02:49:40
+exit 0
+..................                                                       [100%]
+18 passed in 0.36s
+=== test_play_storms 02:49:41
+exit 0
+..................................                                       [100%]
+34 passed in 1.22s
+=== test_play_threads 02:49:42
+exit 0
+........                                                                 [100%]
+8 passed in 0.76s
+=== test_player_channel 02:49:43
+exit 0
+...........................................................              [100%]
+59 passed in 0.23s
+=== test_player_run 02:49:44
+exit 0
+............................                                             [100%]
+28 passed in 8.21s
+=== test_powers 02:49:52
+exit 0
+....................................                                     [100%]
+36 passed in 0.15s
+=== test_report_job 02:49:53
+exit 0
+.............................                                            [100%]
+29 passed in 14.76s
+=== test_report_v2 02:50:08
+exit 0
+.................................                                        [100%]
+33 passed in 0.61s
+=== test_runner 02:50:09
+exit 0
+................                                                         [100%]
+16 passed in 1.40s
+=== test_spatial_metal 02:50:10
+exit 0
+........................................................................ [ 67%]
+..................................                                       [100%]
+106 passed in 29.56s
+=== test_stream_records 02:50:40
+exit 0
+.......................................................                  [100%]
+55 passed in 0.15s
+ALLDONE

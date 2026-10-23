@@ -411,6 +411,11 @@ class Observer:
             "house_seed": self.cfg.run.seed,
         }
 
+    def meta(self) -> dict[str, Any]:
+        """The ``meta`` member the sidecar of the observer's current step will hold (host values only; no
+        device read). The live world report is built while the sidecar is still to be written (§34.4)."""
+        return self._meta()
+
     def sidecar(self) -> dict[str, np.ndarray]:
         """The arrays of ``observers/step_<t>.npz``: every ``ObsState`` field under its name, every
         ``SocState`` field as ``soc.<field>``, the society's ``host.*`` members and ``meta`` (a 0-d unicode

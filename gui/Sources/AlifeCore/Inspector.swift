@@ -187,7 +187,7 @@ package enum Inspector {
             .init("Members", "\(cast.size) (" + String(format: "%.1f", 100 * cast.share) + "% of the population)"),
             .init("Territory", "\(cast.territoryCells) cells (dominance)"),
         ]
-        if let births = cast.births { card.rows.append(.init("Births", String(births))) }
+        if let births = cast.births { card.rows.append(.init("Births", Numbers.grouped(births))) }
         if let deaths = CastPolicy.deathSummary(cast.deaths) { card.rows.append(.init("Deaths", deaths)) }
         return card
     }

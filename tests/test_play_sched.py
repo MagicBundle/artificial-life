@@ -198,7 +198,7 @@ def test_step_batches_run_unthrottled_and_mark_their_last_step() -> None:
 
 def test_a_world_at_1x_takes_n_over_14_4_seconds(tmp_path: Path) -> None:
     clock = FakeClock()
-    opt = play.PlayOptions(rate=1.0, paused=False, fresh=True)
+    opt = play.PlayOptions(rate=1.0, paused=False, fresh=True, unattended=True)
     _, res, pacer, out = run_paced(world("2d"), tmp_path / "w", 30, [], clock=clock, options=opt)
     assert res.status == "done" and pacer.failure is None
     assert abs((clock.now - 1000.0) - 30 / B) < 0.3  # the first slot, 29 more, and the boundary waits
@@ -209,7 +209,7 @@ def test_a_world_at_1x_takes_n_over_14_4_seconds(tmp_path: Path) -> None:
 def test_the_pacer_starts_paused_without_a_rate(tmp_path: Path) -> None:
     """A world opened paused waits; the script's ``run`` starts it. Its first records are written at bind."""
     clock = FakeClock()
-    opt = play.PlayOptions(rate=1.0, paused=True, fresh=True)
+    opt = play.PlayOptions(rate=1.0, paused=True, fresh=True, unattended=True)
     _, res, _, out = run_paced(
         world("2d"), tmp_path / "w", 5, [[], [], [], ["run"]], clock=clock, options=opt
     )
@@ -228,7 +228,11 @@ def test_clck_is_written_four_times_a_second_while_paused(tmp_path: Path) -> Non
     rd = RunDir.create(tmp_path / "w", cfg)
     out = io.BytesIO()
     pacer = play.PlayPacer(
-        out, ctl, play.PlayOptions(rate=1.0, paused=True, fresh=True), clock=clock, note=lambda m: None
+        out,
+        ctl,
+        play.PlayOptions(rate=1.0, paused=True, fresh=True, unattended=True),
+        clock=clock,
+        note=lambda m: None,
     )
     runner.run(rd, cfg, init_state(cfg), 3, quiet=True, pacer=pacer)
     clcks = [r for r in decoded(out).records if r.tag == "CLCK"]
@@ -243,7 +247,7 @@ def test_the_frame_period_follows_the_achieved_rate(tmp_path: Path, monkeypatch:
     snapshots(monkeypatch, 10)
     clock = FakeClock()
     CostedPacer.cost = 1 / 55
-    opt = play.PlayOptions(rate=math.inf, paused=False, fresh=True)
+    opt = play.PlayOptions(rate=math.inf, paused=False, fresh=True, unattended=True)
     cfg = world("2d", "run.metrics_every=50", "run.heavy_metrics_every=50", "run.checkpoint_every=100")
     _, _, pacer, out = run_paced(
         cfg, tmp_path / "w", 400, [], clock=clock, options=opt, pacer_class=CostedPacer
@@ -264,7 +268,7 @@ def test_a_finite_rate_caps_the_frame_period_at_the_commanded_rate(
     """At 2x (28.8 steps/s) with a 30 Hz display every step is a frame, and fe stays 1."""
     snapshots(monkeypatch, 10)
     clock = FakeClock()
-    opt = play.PlayOptions(rate=2.0, paused=False, fresh=True)
+    opt = play.PlayOptions(rate=2.0, paused=False, fresh=True, unattended=True)
     _, _, _, out = run_paced(world("2d"), tmp_path / "w", 120, [], clock=clock, options=opt)
     recs = decoded(out).records
     assert {r.f["fe"] for r in recs if r.tag == "CLCK"} == {1}
@@ -274,7 +278,7 @@ def test_a_finite_rate_caps_the_frame_period_at_the_commanded_rate(
 
 def test_every_overrides_the_period_and_auto_restores_it(tmp_path: Path) -> None:
     clock = FakeClock()
-    opt = play.PlayOptions(rate=math.inf, paused=False, fresh=True)
+    opt = play.PlayOptions(rate=math.inf, paused=False, fresh=True, unattended=True)
     script = [["every 5"], *[[]] * 40, ["every auto"]]
     _, _, _, out = run_paced(world("2d"), tmp_path / "w", 60, script, clock=clock, options=opt)
     recs = decoded(out).records
@@ -317,7 +321,7 @@ def test_a_rate_the_machine_cannot_hold_does_not_over_produce_frames(
     snapshots(monkeypatch, 10)
     clock = FakeClock()
     CostedPacer.cost = 1 / 55
-    opt = play.PlayOptions(rate=16.0, paused=False, fresh=True)
+    opt = play.PlayOptions(rate=16.0, paused=False, fresh=True, unattended=True)
     cfg = world("2d", "run.metrics_every=50", "run.heavy_metrics_every=50", "run.checkpoint_every=100")
     _, _, pacer, out = run_paced(
         cfg, tmp_path / "w", 400, [], clock=clock, options=opt, pacer_class=CostedPacer

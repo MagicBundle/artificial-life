@@ -9,7 +9,6 @@
  "excluded": {
   "entries_before_start": 0,
   "events_churn": 0,
-  "events_suspect": 0,
   "facts_dropped": [],
   "interventions_dropped": 0,
   "labels": {},
@@ -52,12 +51,19 @@
    "kind": "births"
   },
   {
+   "born": 13660,
+   "died": 16260,
+   "id": "F5",
+   "k": 0.8069478908188585,
+   "kind": "turnover"
+  },
+  {
    "action": "regen_pulse",
    "duration": 5000,
    "end": null,
    "end_by": null,
    "entry": 0,
-   "id": "F5",
+   "id": "F6",
    "kind": "intervention",
    "open_to": 1518000,
    "params": {
@@ -75,7 +81,7 @@
    "end": null,
    "end_by": null,
    "entry": 1,
-   "id": "F6",
+   "id": "F7",
    "kind": "intervention",
    "open_to": null,
    "params": {
@@ -96,8 +102,8 @@
  },
  "origin": 0,
  "quiet": false,
- "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
- "report_version": 1,
+ "report_rules_digest": "6da80b824e0fc50e8e74b4b49dc702057d45f449f8b1de4f321a59f4c4d0dc2f",
+ "report_version": 2,
  "run": {
   "seed": 0
  },

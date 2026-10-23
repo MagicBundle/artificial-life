@@ -296,6 +296,8 @@ def _blocked(
     if action == "immigration_pulse" and IMM_PENDING_CAP - ctx.env.imm_request < spec.bounds["count"][0]:
         return "the immigration queue is full"
     busy = [k for k in lever_keys(action, params) if k in pc.active and not (override and k == "regen")]
+    if busy and pc.active[busy[0]].scope == "player":  # the player's hold is not superseded, only waited out
+        return f"{busy[0]} is held by the player"
     return f"{busy[0]} already has an active effect" if busy else None
 
 

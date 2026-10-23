@@ -22,7 +22,7 @@ from alife.state import DeathCause, State, init_state, to_numpy
 from play_decode import Rec, _focs
 from play_helpers import FakeClock, ScriptControl, decoded, run_paced, snapshots, uids, world
 
-RUN = play.PlayOptions(rate=float("inf"), paused=False, fresh=True)
+RUN = play.PlayOptions(rate=float("inf"), paused=False, fresh=True, unattended=True)
 
 
 # --- a built scene ------------------------------------------------------------------------------------------
@@ -122,7 +122,8 @@ def test_rule_1_the_eldest_living_child(cfg2d: Config) -> None:
     assert p.focus == 205  # the smallest living child uid, though 210 is nearer; 999 is dead
     (r,) = records(p)
     assert r.f["uid"] == 205 and r.f["row"] == 1 and r.f["flags"] & 0b110 == 0b110  # alive is bit 0
-    assert [e["text"] for e in p._events] == ["Organism 100 died (aged).", "Follow passed to a child."]
+    assert [e["text"] for e in p._events] == ["Organism 100 died (aged); follow passed to a child."]
+    assert [(e["kind"], e["a"], e["b"]) for e in p._events] == [(KIND["focus_handoff"], 100, 205)]
 
 
 def test_rule_2_the_nearest_of_the_same_kin_slot(cfg2d: Config) -> None:
@@ -132,7 +133,9 @@ def test_rule_2_the_nearest_of_the_same_kin_slot(cfg2d: Config) -> None:
     dead = _Followed(uid=100, row=5, pos=(10.0, 10.0), kin=4, children=frozenset({777}))  # the child is gone
     hand_off(p, state, out_of(cfg2d, deaths=[(100, DeathCause.KILLED.value)]), dead)
     assert p.focus == 303  # row 0 is nearest overall, but it is of another kin group
-    assert [e["text"] for e in p._events][1] == "Follow passed to the nearest member of its kin group."
+    assert [e["text"] for e in p._events] == [
+        "Organism 100 died (killed); follow passed to the nearest member of its kin group."
+    ]
 
 
 def test_rule_3_the_nearest_living_organism(cfg2d: Config) -> None:
@@ -142,11 +145,13 @@ def test_rule_3_the_nearest_living_organism(cfg2d: Config) -> None:
     dead = _Followed(uid=100, row=5, pos=(10.0, 10.0), kin=4)  # nobody of kin 4 is alive
     hand_off(p, state, out_of(cfg2d, deaths=[(100, DeathCause.STARVED.value)]), dead)
     assert p.focus == 301
-    assert [e["text"] for e in p._events][1] == "Follow passed to the nearest organism."
+    assert [e["text"] for e in p._events] == [
+        "Organism 100 died (starved); follow passed to the nearest organism."
+    ]
     # without observers rule 2 does not exist: the same scene gives the same answer by rule 3
     q = make_pacer(cfg2d, state)
     hand_off(q, state, out_of(cfg2d, deaths=[(100, DeathCause.STARVED.value)]), dead)
-    assert q.focus == 301 and q._events[1]["kind"] == KIND["focus_handoff"]
+    assert q.focus == 301 and [e["kind"] for e in q._events] == [KIND["focus_handoff"]]
 
 
 def test_the_distance_is_the_torus_distance(cfg2d: Config) -> None:
@@ -177,14 +182,15 @@ def test_a_death_the_lanes_lost_has_no_cause(cfg2d: Config) -> None:
     hand_off(
         p, state, out_of(cfg2d, deaths=[(55, DeathCause.AGED.value)]), _Followed(100, 5, (10.0, 10.0), -1)
     )
-    assert p._events[0]["text"] == "Organism 100 died." and p.focus == 301
+    assert [e["text"] for e in p._events] == ["Organism 100 died; follow passed to the nearest organism."]
+    assert p.focus == 301
 
 
 def test_the_death_point_is_the_cached_previous_position(cfg2d: Config) -> None:
     state = scene(cfg2d, {0: (301, (12.0, 10.0))})
     p = make_pacer(cfg2d, state)
     hand_off(p, state, out_of(cfg2d, deaths=[(100, 0)]), _Followed(100, 5, (33.25, 44.5), -1))
-    assert [(e["x"], e["y"], e["z"]) for e in p._events] == [(33.25, 44.5, None)] * 2
+    assert [(e["x"], e["y"], e["z"]) for e in p._events] == [(33.25, 44.5, None)]
 
 
 def test_a_child_born_in_the_step_its_parent_died_is_the_successor(
@@ -198,7 +204,7 @@ def test_a_child_born_in_the_step_its_parent_died_is_the_successor(
     out = out_of(cfg2d, deaths=[(100, DeathCause.AGED.value)], births=[(400, 100)])
     p._follow_step(state, out, 50)  # row 5 no longer holds uid 100
     assert p.focus == 400
-    assert any(e["text"] == "Follow passed to a child." for e in p._events)
+    assert [e["text"] for e in p._events] == ["Organism 100 died (aged); follow passed to a child."]
 
 
 def test_a_plain_focus_does_not_hand_off(cfg2d: Config) -> None:
@@ -307,8 +313,7 @@ def test_the_followed_organism_starves_and_the_follow_goes_on(
         for e in r.f["json"]
         if e["fam"] == "focus"
     ]
-    assert texts[0][2] == "Organism 5 died (starved)." and texts[1][2].startswith("Follow passed to")
-    assert texts[0][0] == texts[1][0]
+    assert texts[0][2].startswith("Organism 5 died (starved); follow passed to"), "one line, not two"
     step = texts[0][0]
     focs = [r for r in recs if r.tag == "FOCS"]
     assert [r.f["uid"] for r in focs if r.step == step - 1] == [5]

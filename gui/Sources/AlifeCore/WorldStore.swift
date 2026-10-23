@@ -49,6 +49,194 @@ package struct Chronicle: Equatable, Sendable {
     package var newestFirst: [WorldEvent] { events.reversed() }
 }
 
+/// What a delivery did to one alert of the board.
+package struct AlertChange: Equatable, Sendable {
+    package enum Kind: Equatable, Sendable {
+        /// An id the board had not seen (a first sight of an alert already updated or cleared included).
+        case raised
+        /// A higher version of a known id whose condition still holds.
+        case updated
+        /// The end of the alert's condition: the row is removed.
+        case cleared
+    }
+
+    package var kind: Kind
+    package var alert: PlayAlert
+}
+
+/// The alerts of the world, by id (DESIGN §34.3, §34.6): the newest `version` of each, in order of their ids, newest
+/// `capacity` kept. A cleared alert stays in the ring (so a late older version cannot bring it back) but is not on the stack.
+/// Acknowledgement is the player's, and only an explicit one: nothing here acknowledges by itself.
+package struct AlertBoard: Equatable, Sendable {
+    package static let capacity = 200
+
+    /// Ascending by `id`, the newest version of each, cleared ones included.
+    package private(set) var alerts: [PlayAlert] = []
+    /// Ids the player acknowledged (the `ack` line was sent for them).
+    package private(set) var acknowledged: Set<UInt64> = []
+    /// Ids at or below this were trimmed from the ring: an alert with such an id is not new.
+    private var floor: UInt64 = 0
+
+    package init() {}
+
+    /// What `batch` changed, in the order of the batch: an unknown id is `raised`, a known one with a higher version is
+    /// `updated` (or `cleared`), anything else is ignored.
+    @discardableResult
+    package mutating func insert(_ batch: [PlayAlert]) -> [AlertChange] {
+        var changes: [AlertChange] = []
+        for alert in batch where alert.id > floor {
+            let (found, at) = position(of: alert.id)
+            if found {
+                guard alert.version > alerts[at].version else { continue }
+                alerts[at] = alert
+                changes.append(AlertChange(kind: alert.state == .cleared ? .cleared : .updated, alert: alert))
+            } else {
+                alerts.insert(alert, at: at)
+                changes.append(AlertChange(kind: alert.state == .cleared ? .cleared : .raised, alert: alert))
+            }
+        }
+        if alerts.count > Self.capacity {
+            let extra = alerts.count - Self.capacity
+            floor = max(floor, alerts[extra - 1].id)
+            let dropped = Set(alerts[..<extra].map(\.id))
+            alerts.removeFirst(extra)
+            acknowledged.subtract(dropped)
+        }
+        return changes
+    }
+
+    private func position(of id: UInt64) -> (found: Bool, index: Int) {
+        var low = 0, high = alerts.count
+        while low < high {
+            let mid = (low + high) / 2
+            if alerts[mid].id == id { return (true, mid) }
+            if alerts[mid].id < id { low = mid + 1 } else { high = mid }
+        }
+        return (false, low)
+    }
+
+    package func alert(id: UInt64) -> PlayAlert? {
+        let (found, at) = position(of: id)
+        return found ? alerts[at] : nil
+    }
+
+    /// The player's acknowledgement of a known alert; false for an unknown one.
+    @discardableResult
+    package mutating func acknowledge(id: UInt64) -> Bool {
+        guard alert(id: id) != nil else { return false }
+        acknowledged.insert(id)
+        return true
+    }
+
+    /// Whether `alert` is on the stack at `step`: surface `alert`, not cleared, not acknowledged, and not past its `expires`
+    /// (an alert with no expiry, the importance-3 ones, stays until it clears or is acknowledged).
+    package func isOnStack(_ alert: PlayAlert, atStep step: Int) -> Bool {
+        alert.surface == .alert && alert.state != .cleared && !acknowledged.contains(alert.id)
+            && alert.expires.map { $0 > step } ?? true
+    }
+
+    /// The stack, newest first.
+    package func stack(atStep step: Int) -> [PlayAlert] {
+        alerts.reversed().filter { isOnStack($0, atStep: step) }
+    }
+
+    /// The alerts of surface `log` that are not cleared (chronicle rows and ticker lines), newest first.
+    package var logRows: [PlayAlert] {
+        alerts.reversed().filter { $0.surface == .log && $0.state != .cleared }
+    }
+
+    /// The newest alert on the stack that the player has not acknowledged (`k` acknowledges it).
+    package func newestUnacknowledged(atStep step: Int) -> PlayAlert? {
+        stack(atStep: step).first
+    }
+
+    /// The alerts to toast for `changes`: a newly raised alert of the stack surface at importance 2 or more, and not the
+    /// backlog loaded at the start (the history of a re-opened world is not news).
+    package static func toasts(from changes: [AlertChange], backlog: Bool) -> [PlayAlert] {
+        guard !backlog else { return [] }
+        return changes.filter { $0.kind == .raised && $0.alert.surface == .alert && $0.alert.imp >= 2 }.map(\.alert)
+    }
+}
+
+/// The reports of the chapters (DESIGN §34.4): the newest record per `(chapter, mode)`, the newest `capacity` chapters kept.
+package struct ReportShelf: Equatable, Sendable {
+    package static let capacity = 24
+
+    package struct Key: Hashable, Sendable {
+        package var chapter: Int
+        package var mode: Int
+    }
+
+    package private(set) var entries: [Key: PlayReport] = [:]
+
+    package init() {}
+
+    /// Keeps `record` unless the shelf holds a newer one of its key; a pending report never replaces a final one. True if
+    /// the shelf changed.
+    @discardableResult
+    package mutating func insert(_ record: PlayReport) -> Bool {
+        let key = Key(chapter: record.chapter, mode: record.mode)
+        if let held = entries[key] {
+            if held.isFinal && !record.isFinal { return false }
+            if record.head.step < held.head.step { return false }
+            if held == record { return false }
+        }
+        entries[key] = record
+        let chapters = Set(entries.keys.map(\.chapter))
+        if chapters.count > Self.capacity, let oldest = chapters.min() {
+            entries = entries.filter { $0.key.chapter != oldest }
+        }
+        return entries[key] != nil
+    }
+
+    package func report(chapter: Int, mode: Int) -> PlayReport? { entries[Key(chapter: chapter, mode: mode)] }
+
+    /// The report of the chapter with absolute number `nAbs` (a select report that has arrived, else the template one).
+    package func report(nAbs: Int) -> PlayReport? {
+        let held = entries.values.filter { $0.report.nAbs == nAbs }
+        return held.first { $0.mode == 1 && $0.isFinal } ?? held.first { $0.mode == 0 } ?? held.first { $0.mode == 1 }
+    }
+
+    /// The chapters held, newest first.
+    package var chapters: [Int] { Set(entries.keys.map(\.chapter)).sorted(by: >) }
+
+    /// The report to show for `chapter`: a select report that has arrived, else the template one, else a pending select
+    /// (G3c). The away report (mode 2) is its own thing and is never this.
+    package func current(chapter: Int) -> PlayReport? {
+        if let select = report(chapter: chapter, mode: 1), select.isFinal { return select }
+        return report(chapter: chapter, mode: 0) ?? report(chapter: chapter, mode: 1)
+    }
+
+    /// `current` for every chapter held, newest first.
+    package var newestFirst: [PlayReport] { chapters.compactMap { current(chapter: $0) } }
+}
+
+/// What the world said about the player's powers (DESIGN §34.5): the last `capacity` `PLAN` records in arrival order, and the
+/// card of each request, which is the newest record of its `id` (a since card updates in place).
+package struct PlanLog: Equatable, Sendable {
+    package static let capacity = 50
+
+    package private(set) var records: [PlayPlan] = []
+
+    package init() {}
+
+    package mutating func insert(_ plan: PlayPlan) {
+        records.append(plan)
+        if records.count > Self.capacity { records.removeFirst(records.count - Self.capacity) }
+    }
+
+    /// The newest record of request `id`, nil if it has none in the log.
+    package func card(id: Int) -> PlayPlan? { records.last { $0.plan.id == id } }
+
+    /// One card per request, newest request first.
+    package var cards: [PlayPlan] {
+        var seen: Set<Int> = []
+        return records.reversed().filter { seen.insert($0.plan.id).inserted }
+    }
+
+    package var newest: PlayPlan? { records.last }
+}
+
 package struct WorldStore: Sendable {
     /// What a record changed.
     package struct Changes: OptionSet, Sendable {
@@ -65,6 +253,9 @@ package struct WorldStore: Sendable {
         package static let focus = Changes(rawValue: 1 << 8)
         package static let events = Changes(rawValue: 1 << 9)
         package static let header = Changes(rawValue: 1 << 10)
+        package static let alerts = Changes(rawValue: 1 << 11)
+        package static let reports = Changes(rawValue: 1 << 12)
+        package static let plans = Changes(rawValue: 1 << 13)
     }
 
     package private(set) var header: StreamHeader?
@@ -78,6 +269,9 @@ package struct WorldStore: Sendable {
     package private(set) var clock: PlayClock?
     package private(set) var focus: PlayFocus?
     package private(set) var chronicle = Chronicle()
+    package private(set) var alerts = AlertBoard()
+    package private(set) var reports = ReportShelf()
+    package private(set) var plans = PlanLog()
     /// Increase with every record of the kind that arrives (the renderer refreshes a buffer set when its serial is old).
     package private(set) var frameSerial = 0
     package private(set) var mapSerial = 0
@@ -118,6 +312,13 @@ package struct WorldStore: Sendable {
         case .focs(let r): focus = r; changes = .focus
         case .evnt(let batch):
             return apply(events: batch).isEmpty ? [] : .events  // (the revision is bumped by `apply(events:)`)
+        case .alrt(let batch):
+            return apply(alerts: batch).isEmpty ? [] : .alerts  // (likewise)
+        case .rprt(let report):
+            return apply(report: report) ? .reports : []
+        case .plan(let plan):
+            apply(plan: plan)
+            return .plans
         }
         if !changes.isEmpty { revision += 1 }
         return changes
@@ -131,7 +332,45 @@ package struct WorldStore: Sendable {
         return fresh
     }
 
+    /// Adds the alerts of a batch; returns what each did to the board (a backlog's alerts are new the first time too).
+    @discardableResult
+    package mutating func apply(alerts batch: PlayAlertBatch) -> [AlertChange] {
+        let changes = alerts.insert(batch.alerts)
+        if !changes.isEmpty { revision += 1 }
+        return changes
+    }
+
+    /// Shelves a report; true if the shelf changed.
+    @discardableResult
+    package mutating func apply(report: PlayReport) -> Bool {
+        let changed = reports.insert(report)
+        if changed { revision += 1 }
+        return changed
+    }
+
+    package mutating func apply(plan: PlayPlan) {
+        plans.insert(plan)
+        revision += 1
+    }
+
+    /// The player acknowledged an alert (the window sent `ack`); false for an unknown id.
+    @discardableResult
+    package mutating func acknowledge(alert id: UInt64) -> Bool {
+        guard alerts.acknowledge(id: id) else { return false }
+        revision += 1
+        return true
+    }
+
     // MARK: Lookups
+
+    /// The influence the player has, from the newest `ENVS` (nil in a world with no player channel).
+    package var influence: PlayEnvironment.Influence? { environment?.environment.influence }
+    /// The food patches the powers can target.
+    package var patches: [PlayEnvironment.Patch] { environment?.environment.patches ?? [] }
+    /// Whether each power is usable now, by name.
+    package var powerStates: [String: PlayEnvironment.PowerState] { environment?.environment.powers ?? [:] }
+    /// The powers the world offers (the header's), by name; empty for a world with no player channel.
+    package var powerSpecs: [String: PlayHeader.Power] { play?.powers ?? [:] }
 
     /// The identity row of `uid` in the last `IDNT`, nil when it was born since or is not alive.
     package func identity(ofUID uid: Int64) -> IdentityRow? {

@@ -26,7 +26,6 @@
  "excluded": {
   "entries_before_start": 0,
   "events_churn": 0,
-  "events_suspect": 0,
   "facts_dropped": [],
   "interventions_dropped": 0,
   "labels": {},
@@ -69,8 +68,15 @@
    "kind": "births"
   },
   {
-   "from": 5,
+   "born": 26300,
+   "died": 25710,
    "id": "F5",
+   "k": 0.6179545727676962,
+   "kind": "turnover"
+  },
+  {
+   "from": 5,
+   "id": "F6",
    "kind": "lineages",
    "to": 5
   },
@@ -78,7 +84,7 @@
    "from_count": 13674,
    "from_of": 41310,
    "from_share": 0.33100944081336237,
-   "id": "F6",
+   "id": "F7",
    "kind": "top_lineage",
    "to_count": 13995,
    "to_of": 41900,
@@ -89,7 +95,7 @@
    "from_count": 8675,
    "from_of": 41310,
    "from_share": 0.20999757927862503,
-   "id": "F7",
+   "id": "F8",
    "key": "hunter",
    "kind": "label",
    "label": "Hunter",
@@ -102,7 +108,7 @@
    "from_count": 18176,
    "from_of": 41310,
    "from_share": 0.4399903171145001,
-   "id": "F8",
+   "id": "F9",
    "key": "resting",
    "kind": "label",
    "label": "Resting",
@@ -115,20 +121,24 @@
    "died": 3200,
    "died_killed": 1100,
    "entity": 2,
-   "id": "F9",
+   "id": "F10",
    "kind": "group",
    "of": 41900,
+   "prev_share": null,
+   "prev_thread": null,
    "rank": 1,
    "share": 0.1899761336515513,
-   "size": 7960
+   "size": 7960,
+   "thread": null
   },
   {
    "alive_from": 9,
    "alive_to": 9,
    "exact": true,
    "extinct": 0,
+   "extinct_top": 0,
    "first_seen": 0,
-   "id": "F10",
+   "id": "F11",
    "kind": "houses",
    "largest": 6,
    "largest_name": "Zaeld",
@@ -145,8 +155,8 @@
  },
  "origin": 0,
  "quiet": true,
- "report_rules_digest": "5382d0c0491ef8579aabcfc24a66b9ddff8329c972a005f8f1d6478302ed116d",
- "report_version": 1,
+ "report_rules_digest": "6da80b824e0fc50e8e74b4b49dc702057d45f449f8b1de4f321a59f4c4d0dc2f",
+ "report_version": 2,
  "run": {
   "seed": 0
  },

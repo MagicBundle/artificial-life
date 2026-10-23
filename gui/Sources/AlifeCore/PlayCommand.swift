@@ -31,13 +31,62 @@ package enum PlayRate: Equatable, Hashable, Sendable {
     }
 }
 
-/// A control line for the stdin of `alife play` (DESIGN §33.2.6). The world applies lines one at a time between steps;
-/// the presentation-only ones (`focus follow idnt labels color every`) change what is written and when, never the
-/// trajectory.
+/// What an `autopause` line sets (DESIGN §34.2): every pause at once, the pause at a chapter end, or the pause of one alert
+/// class. It changes what the world presents, never the trajectory.
+package enum AutopauseSetting: Equatable, Sendable {
+    case all(Bool)
+    case chapter(Bool)
+    case alert(String, Bool)
+}
+
+/// A `power` line (DESIGN §34.5): `power preview NAME id=N ...` dry-runs a power and answers one `PLAN`, `power NAME id=N
+/// ...` queues it and `power cancel NAME id=N` ends a running one. `id` is the client's request number, echoed in every
+/// `PLAN` of the exchange. The grammar checks the shape of a value; its range is the power's to clamp or refuse.
+package struct PowerCommand: Equatable, Sendable {
+    package enum Verb: Equatable, Sendable { case apply, preview, cancel }
+
+    package enum Name: String, CaseIterable, Sendable { case food, bloom, blight, strike }
+
+    /// `steps` and `patch` are whole numbers, the others decimals.
+    package enum Key: String, CaseIterable, Sendable {
+        case mult, steps, patch, gain, x, y, radius, kill
+        var isWhole: Bool { self == .steps || self == .patch }
+    }
+
+    package struct Parameter: Equatable, Sendable {
+        package var key: Key
+        package var value: Double
+        package init(_ key: Key, _ value: Double) {
+            self.key = key
+            self.value = value
+        }
+    }
+
+    package var verb: Verb
+    package var name: Name
+    package var id: Int
+    /// In the order they are sent.
+    package var parameters: [Parameter]
+
+    package init(_ verb: Verb, _ name: Name, id: Int, _ parameters: [Parameter] = []) {
+        self.verb = verb
+        self.name = name
+        self.id = id
+        self.parameters = parameters
+    }
+}
+
+/// A control line for the stdin of `alife play` (DESIGN §33.2.6, §34.6). The world applies lines one at a time between
+/// steps; the presentation-only ones (`focus follow idnt labels color every autopause watch unwatch ack`, a `power
+/// preview` and a refused `power`) change what is written and when, never the trajectory. An applied `power` or `power
+/// cancel` is the one line that does: the world logs it (`director.jsonl`) so a played world replays.
 ///
 /// ```text
 /// command = "pause" | "run" | "step" [N] | "rate" ( M | "max" ) | "color" MODE | "every" ( K | "auto" )
 ///         | "focus" ( UID | "off" ) | "follow" ( UID | "off" ) | "idnt" | "labels" ( "on" | "off" ) | "quit"
+///         | "autopause" ( "on" | "off" | "chapter" ( "on" | "off" ) | "alert" CLASS ( "on" | "off" ) )
+///         | "watch" ( KIN_ID | "off" ) | "unwatch" KIN_ID | "ack" ALERT_ID
+///         | "power" [ "preview" | "cancel" ] NAME "id=" N { KEY "=" VALUE } | "intent" TEXT
 /// ```
 package enum PlayCommand: Equatable, Sendable {
     case pause
@@ -60,6 +109,16 @@ package enum PlayCommand: Equatable, Sendable {
     /// Starts or stops `INTN` (bandwidth in fast-forward).
     case labels(Bool)
     case quit
+    /// Arms or disarms the pauses the world takes by itself (the chapter end, an alert class).
+    case autopause(AutopauseSetting)
+    /// Adds a kin group (by thread) to the watch set the lineage alerts read; nil clears it.
+    case watch(Int64?)
+    case unwatch(Int64)
+    /// Acknowledges an alert by its id.
+    case ack(Int64)
+    case power(PowerCommand)
+    /// Reserved (G4): the world answers "intent is not available in this build".
+    case intent(String)
 
     /// A command the grammar cannot express (the world would drop the line with a note on stderr).
     package struct Invalid: Error, Equatable {
@@ -106,7 +165,70 @@ package enum PlayCommand: Equatable, Sendable {
         case .focus(let uid): return try "focus " + Self.target(uid)
         case .follow(let uid): return try "follow " + Self.target(uid)
         case .labels(let on): return on ? "labels on" : "labels off"
+        case .autopause(let setting): return try Self.line(of: setting)
+        case .watch(let id): return try "watch " + (id.map { try Self.identifier($0, "a kin id") } ?? "off")
+        case .unwatch(let id): return try "unwatch " + Self.identifier(id, "a kin id")
+        case .ack(let id): return try "ack " + Self.identifier(id, "an alert id")
+        case .power(let power): return try Self.line(of: power)
+        case .intent(let text):
+            let trimmed = text.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.contains(where: { $0.isNewline }) else {
+                throw Invalid(reason: "intent needs a text on one line")
+            }
+            guard trimmed.utf8.count <= Self.maxLineBytes - "intent ".utf8.count else {
+                throw Invalid(reason: "intent is longer than a line may be")
+            }
+            return "intent " + trimmed
         }
+    }
+
+    private static func identifier(_ id: Int64, _ what: String) throws -> String {
+        guard id >= 0 else { throw Invalid(reason: "\(what) is not negative, not \(id)") }
+        return String(id)
+    }
+
+    private static func line(of setting: AutopauseSetting) throws -> String {
+        func word(_ on: Bool) -> String { on ? "on" : "off" }
+        switch setting {
+        case .all(let on): return "autopause " + word(on)
+        case .chapter(let on): return "autopause chapter " + word(on)
+        case .alert(let name, let on):
+            guard name.range(of: #"^[a-z][a-z0-9_]*$"#, options: .regularExpression) != nil else {
+                throw Invalid(reason: "'\(name)' is not an alert class name (lower case letters, digits, '_')")
+            }
+            return "autopause alert \(name) " + word(on)
+        }
+    }
+
+    private static func line(of power: PowerCommand) throws -> String {
+        guard power.id >= 0 else { throw Invalid(reason: "a power id is not negative, not \(power.id)") }
+        var parts = ["power"]
+        switch power.verb {
+        case .apply: break
+        case .preview: parts.append("preview")
+        case .cancel: parts.append("cancel")
+        }
+        parts += [power.name.rawValue, "id=\(power.id)"]
+        if power.verb == .cancel, !power.parameters.isEmpty {
+            throw Invalid(reason: "power cancel takes only an id")
+        }
+        var seen: Set<PowerCommand.Key> = []
+        for p in power.parameters {
+            guard seen.insert(p.key).inserted else { throw Invalid(reason: "power names \(p.key.rawValue) twice") }
+            guard p.value.isFinite, p.value >= 0, !p.key.isWhole || p.value == p.value.rounded() else {
+                throw Invalid(reason: "\(p.key.rawValue) needs \(p.key.isWhole ? "a whole" : "a") non-negative number, not \(p.value)")
+            }
+            if p.key.isWhole {
+                // `Int64(_:)` traps at 2^63 and above: a value the line cannot hold is refused, not written
+                guard let whole = Int64(exactly: p.value) else {
+                    throw Invalid(reason: "\(p.key.rawValue) needs a whole number that fits in 64 bits, not \(p.value)")
+                }
+                parts.append(p.key.rawValue + "=" + String(whole))
+            } else {
+                parts.append(p.key.rawValue + "=" + decimal(p.value))
+            }
+        }
+        return parts.joined(separator: " ")
     }
 
     private static func target(_ uid: Int64?) throws -> String {

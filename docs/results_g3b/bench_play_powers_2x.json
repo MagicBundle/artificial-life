@@ -1,0 +1,201 @@
+{
+  "alife_version": "0.1.0",
+  "mlx_version": "0.32.3",
+  "python": "3.12.11",
+  "platform": "darwin-arm64",
+  "device": "Device(gpu, 0)",
+  "knn_impl": "metal",
+  "config_hash": "c03d7089b26dc60b65f555f2cde7e3c3457feb2ffad6148b7f0be22260913fe0",
+  "config": {
+    "n_max": 65536,
+    "n_init": 16384,
+    "max_births_per_step": 1024,
+    "world_size": 320.0,
+    "field_grid": 80,
+    "dims": 3,
+    "world_height": 80.0,
+    "field_grid_z": 20,
+    "k_neighbors": 8,
+    "cell_capacity": 48,
+    "hidden": 32,
+    "weight_dtype": "float16",
+    "brain_impl": "matmul",
+    "compile": true,
+    "runtime_checks": "cheap",
+    "seed": 0
+  },
+  "play": {
+    "steps": 4500,
+    "warmup": 300,
+    "base_rate": 14.4,
+    "frame_hz": 30,
+    "cadence": {
+      "metrics_every": 250,
+      "heavy_metrics_every": 250,
+      "checkpoint_every": 6000,
+      "keep_checkpoints": 3
+    },
+    "engine_ms": 14.237833034712821,
+    "powers": true,
+    "plain_digest": {
+      "player": "6bbe3bcb33b366a1806d533e7e638a9b03a3254f4f99b6fe7dc0de7f517297bb"
+    },
+    "replay_digest": {
+      "player_2": "bc69570f5f5d00893d77e710a18f5ffb5db6e0359664ac2563fc99eff40f3d04"
+    },
+    "arms": [
+      {
+        "name": "player_2",
+        "director": "player",
+        "rate": "2",
+        "steps_measured": 4499,
+        "seconds": 157.00537895900197,
+        "steps_per_s": 28.655069207372833,
+        "achieved_x": 1.9899353616231132,
+        "step_ms": {
+          "p50": 21.53954200912267,
+          "p99": 29.013027576729655,
+          "max": 796.7399170156568
+        },
+        "step_counts": {
+          "typical": 4481,
+          "snapshot": 0,
+          "boundary": 18
+        },
+        "part_calls": {
+          "alerts": 782,
+          "boundary": 19,
+          "events": 4521,
+          "frma": 4500,
+          "labels": 180,
+          "save": 2,
+          "tables": 18,
+          "tick_storms": 180,
+          "write": 4500
+        },
+        "step_ms_typical": 21.538208005949855,
+        "step_ms_snapshot": null,
+        "step_ms_boundary": 104.28216651780531,
+        "components_ms": {
+          "engine": 14.237833034712821,
+          "loop_typical": 17.111520981416106,
+          "loop_snapshot": 64.91681252373382,
+          "observer": 2.873687946703285,
+          "settle": 47.80529154231772,
+          "frma": 4.355833458248526,
+          "tick": 5.208645481616259,
+          "labels": 0.9440835565328598,
+          "tables": 3.4337079850956798,
+          "events": 0.001249951310455799,
+          "write": 0.2649585367180407,
+          "boundary": 25.948707945644855,
+          "save": 683.4833959583193
+        },
+        "late_steps": 0,
+        "save_stall_steps": 38,
+        "frames": 4500,
+        "bytes_per_s": {
+          "ALRT": 27.69331871830564,
+          "CLCK": 246.00431052802142,
+          "ENVS": 209.9036365410489,
+          "EVNT": 49.98554859734652,
+          "FRMA": 38950899.64781977,
+          "HEAD": 0.0,
+          "IDNT": 78089.91055778753,
+          "INTN": 582175.7993646068,
+          "MAP1": 124798.78160809066,
+          "PLAN": 54.29113356826984,
+          "RPRT": 2.5986370830424796,
+          "STRM": 5330.696346515288,
+          "TERR": 245.34191284018706
+        },
+        "mb_per_s": 39.74213065419465,
+        "drained_bytes": 6572146444,
+        "wall_s": 168.44370625005104,
+        "n_alive_end": 32354,
+        "digest": "bc69570f5f5d00893d77e710a18f5ffb5db6e0359664ac2563fc99eff40f3d04",
+        "chapters": {
+          "length": 6000,
+          "ends": 1,
+          "report_ms": [
+            2.5560419308021665
+          ]
+        },
+        "alerts": {
+          "calls": 782,
+          "ms_total": 9.20091848820448
+        },
+        "powers": {
+          "script": [
+            {
+              "step": 473150,
+              "line": "power food id=9001 mult=1.3 steps=3000"
+            },
+            {
+              "step": 474000,
+              "line": "power strike id=9002 x=160 y=160 radius=6.25 kill=0.45"
+            }
+          ],
+          "plans": [
+            {
+              "id": 9001,
+              "status": "queued"
+            },
+            {
+              "id": 9001,
+              "status": "applied"
+            },
+            {
+              "id": 9001,
+              "status": "since"
+            },
+            {
+              "id": 9002,
+              "status": "queued"
+            },
+            {
+              "id": 9002,
+              "status": "applied"
+            },
+            {
+              "id": 9001,
+              "status": "since"
+            },
+            {
+              "id": 9002,
+              "status": "since"
+            },
+            {
+              "id": 9002,
+              "status": "since"
+            },
+            {
+              "id": 9001,
+              "status": "since"
+            }
+          ],
+          "applied": [
+            9001,
+            9002
+          ],
+          "refused": [],
+          "latency_s": [
+            0.020327167003415525,
+            0.06965379207395017
+          ],
+          "all_applied": true
+        },
+        "run": "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/macday/bench_D/player_2",
+        "start": 472000,
+        "total": 4800,
+        "expected": "replay",
+        "digest_equal": true,
+        "gate": {
+          "applies": false
+        }
+      }
+    ],
+    "digests_equal": true,
+    "workdir": "/private/tmp/claude-501/-Users-jeromeverony-artificial-life--claude-worktrees-dazzling-noether-500875/79bca148-0e17-4727-a473-3cea7b988e81/scratchpad/g3b/macday/bench_D"
+  }
+}

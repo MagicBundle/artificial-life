@@ -123,6 +123,16 @@ import Testing
             #expect(sameJSON(try normalisedJSON(e.events), strippingNulls(f["json"]!)), "\(label) events")
         case .envs(let e):
             #expect(sameJSON(try normalisedJSON(e.environment), strippingNulls(f["json"]!)), "\(label) environment")
+        case .alrt(let b):
+            #expect(b.alerts.count == f["count"] as? Int && b.isBacklog == f["backlog"] as? Bool)
+            #expect(sameJSON(try normalisedJSON(b.alerts), strippingNulls(f["json"]!)), "\(label) alerts")
+        case .rprt(let r):
+            #expect(r.chapter == f["chapter"] as? Int && r.mode == f["mode"] as? Int, "\(label) head")
+            #expect(r.isBacklog == f["backlog"] as? Bool && r.isFinal == f["final"] as? Bool, "\(label) flags")
+            #expect(sameJSON(try normalisedJSON(r.report), strippingNulls(f["json"]!)), "\(label) report")
+        case .plan(let p):
+            #expect(p.isReply == f["reply"] as? Bool, "\(label) reply flag")
+            #expect(sameJSON(try normalisedJSON(p.plan), strippingNulls(f["json"]!)), "\(label) plan")
         case .clck(let c):
             #expect(Double(c.rate) == f["rate"] as? Double && Double(c.achieved) == f["achieved"] as? Double)
             #expect(Double(c.stepMs) == f["step_ms"] as? Double && Double(c.frameMs) == f["frame_ms"] as? Double)
@@ -344,13 +354,16 @@ import Testing
                 #expect(play.baseRate == 14.4 && play.rates == [0.25, 0.5, 1, 2] && play.tick == 25)
                 #expect(play.snapshotEvery == 250 && play.chapter == 6000 && play.frameHz == 30)
                 #expect(play.cast == PlayHeader.Cast(kin: 16, house: 16, colony: 16) && play.energyCap == 16384)
-                #expect(play.events["14"] == "focus_handoff" && play.events.count == 17)
+                #expect(play.events["14"] == "focus_handoff" && play.events["21"] == "power_ended" && play.events.count == 21)
                 #expect(play.labels.intentVersion == 3 && play.labels.intent[6] == "Tethering")
                 #expect(play.labels.arch.count == 11 && play.labels.arch[8...] == ["Drifter", "Floater", "Sinker"])
                 #expect(play.labels.arch[1] == (kind == "3d" ? "Grazer" : "Gatherer"), "the weather fixture has the storm names")
                 #expect(play.labels.gate?.keyFound == (kind == "3d_n70"), "only the made-up fixture has a verdict row")
                 #expect(play.weather.enabled == (kind == "3d"))
-                if kind == "3d" {
+                #expect((play.alerts != nil) == (kind == "3d_g3b"), "only the G3b fixture has the G3b header keys")
+                if kind == "3d_g3b" {
+                    #expect(play.planet == PlayHeader.Planet(source: "runs/example:500000", houses: "exact"))
+                } else if kind == "3d" {
                     #expect(play.weather.cells == 160 && play.weather.coarse == 40 && play.weather.nameZeta == 0.5)
                     #expect(play.weather.refs == PlayHeader.Weather.Refs(p: 0.004, dc: 0.5, u: 0.1, zeta: 0.025))
                     #expect(play.planet == PlayHeader.Planet(source: "runs/example:500000", houses: "exact"))
