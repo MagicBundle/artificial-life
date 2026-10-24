@@ -31,6 +31,14 @@ final class WorldLauncherModel: ObservableObject {
         if scanned != catalog { catalog = scanned }
         if planet.source.isEmpty || !catalog.sources.contains(where: { $0.name == planet.source }) {
             selectSource(catalog.sources.first?.name ?? "")
+        } else if let size = selectedSource?.worldSize, size != planet.sourceWorldSize {
+            // The selected source's config.json changed under a running launcher: follow its size (the overlay
+            // is chosen from it), and its default spin-up if the user had not changed that.
+            let oldDefault = PlanetSpec.defaultSpinup(forWorldSize: planet.sourceWorldSize)
+            planet.sourceWorldSize = size
+            if planet.storm, planet.weatherSpinup == oldDefault {
+                planet.weatherSpinup = PlanetSpec.defaultSpinup(forWorldSize: size)
+            }
         }
         if planet.name.trimmingCharacters(in: .whitespaces).isEmpty { suggestName() }
     }

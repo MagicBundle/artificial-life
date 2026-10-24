@@ -144,6 +144,33 @@ import Testing
         #expect(!PlayLaunch.arguments(planet: model.planet).contains("storm160"))
     }
 
+    @Test func aRefreshFollowsTheSizeOfTheSelectedSourceWhenItsConfigChanges() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let runs = scratch.url.appendingPathComponent("runs")
+        let dir = runs.appendingPathComponent("mini3d_s0")
+        let config = { (size: String) in
+            try self.write(#"{"world": {"dims": 3, "size": \#(size)}, "weather": {"enabled": false}}"#, "config.json", in: dir)
+        }
+        try config("160.0")
+        try write("x", "checkpoints/step_0000450000.safetensors", in: dir)
+        let model = make(runs, launches: Launches())
+        model.refresh()
+        #expect(model.planet.source == "mini3d_s0" && model.planet.sourceWorldSize == 160)
+        #expect(model.planet.weatherSpinup == 36_000)
+        try config("320.0")
+        model.refresh()
+        #expect(model.planet.sourceWorldSize == 320, "the size follows the config of the kept selection")
+        #expect(model.planet.weatherSpinup == PlanetSpec.defaultSpinup, "an untouched default follows the size")
+        model.planet.name = "planet_m"
+        #expect(PlayLaunch.arguments(planet: model.planet).contains("storm"))
+        #expect(!PlayLaunch.arguments(planet: model.planet).contains("storm160"))
+        model.planet.weatherSpinup = 5_000
+        try config("160.0")
+        model.refresh()
+        #expect(model.planet.sourceWorldSize == 160 && model.planet.weatherSpinup == 5_000, "a user's spin-up stays")
+    }
+
     @Test func aSourceWhoseWeatherIsOnIsForkedAsItIsWithoutASpinup() throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
