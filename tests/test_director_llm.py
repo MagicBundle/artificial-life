@@ -70,6 +70,7 @@ class Mock:
 
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
+        self.run_requests = 0  # the end-to-end run's own count, kept apart from what later tests add
         self.paths: list[str] = []
         self.queue: deque[Spec] = deque()
         self.last = Spec(b"{}", status=500)
@@ -1060,23 +1061,41 @@ SCRIPT = [  # the model's replies at steps 200, 400 and 600
 ]
 
 
-@pytest.fixture(scope="module")
-def e2e(e2e_cfg: Config, tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Path, Mock]]:
-    mp = pytest.MonkeyPatch()
-    # The scenario is the model's: the real safety rules, which a catastrophe can trigger, are off.
+def scenario(mp: pytest.MonkeyPatch) -> None:
+    """The end-to-end scenario is the model's: the real safety rules, which a catastrophe can trigger, are
+    off, and two actions may last few steps, so that they revert within a short test run."""
     mp.setattr(rules, "decide_safety", lambda ctx, params=None: Decision((), ()))
-    for name in ("regen_pulse", "habitat_loss"):  # reverts within a short test run
+    for name in ("regen_pulse", "habitat_loss"):
         mp.setitem(actions.MENU, name, dataclasses.replace(actions.MENU[name], duration=(100, 2000)))
+
+
+@pytest.fixture(scope="module")
+def e2e_run(e2e_cfg: Config, tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Path, Mock]]:
+    """The live run, made once. Its patches last for the run only: the tests that need them take ``e2e``,
+    which re-applies them for the test, so that no other test of the module sees them, whatever the order."""
     m = Mock()
-    m.say(*SCRIPT)
-    cfg = apply_overrides(e2e_cfg, [f"run.llm_url={m.url}"])
-    rd = RunDir.create(tmp_path_factory.mktemp("e2e") / "live", cfg)
-    rd.update_meta(start_step=0)
-    res = runner.run(rd, cfg, init_state(cfg), END, quiet=True, director=Director(rd, cfg, "live", 0))
-    assert res.status == "done"
-    yield rd.path, m
-    m.close()
-    mp.undo()
+    try:
+        m.say(*SCRIPT)
+        cfg = apply_overrides(e2e_cfg, [f"run.llm_url={m.url}"])
+        rd = RunDir.create(tmp_path_factory.mktemp("e2e") / "live", cfg)
+        rd.update_meta(start_step=0)
+        mp = pytest.MonkeyPatch()
+        scenario(mp)
+        try:
+            res = runner.run(rd, cfg, init_state(cfg), END, quiet=True, director=Director(rd, cfg, "live", 0))
+        finally:
+            mp.undo()
+        assert res.status == "done"
+        m.run_requests = len(m.requests)
+        yield rd.path, m
+    finally:
+        m.close()
+
+
+@pytest.fixture
+def e2e(e2e_run: tuple[Path, Mock], monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Mock]:
+    scenario(monkeypatch)
+    return e2e_run
 
 
 def digest(path: Path, step: int = END) -> str:
@@ -1092,7 +1111,7 @@ def test_a_live_run_with_the_mock_model_logs_llm_entries_and_a_call_per_boundary
     e2e: tuple[Path, Mock],
 ) -> None:
     live, mock = e2e
-    assert len(mock.requests) == 3
+    assert mock.run_requests == len(SCRIPT)
     entries = log.entries_of(read_jsonl(live / DIRECTOR_LOG_FILE))
     assert [(e["step_applied"], e["source"], e["action"]) for e in entries] == [
         (200, "llm", "set_seasons"),

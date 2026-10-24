@@ -452,22 +452,22 @@ def test_a_record_posted_by_a_worker_is_never_cut_by_the_loops_write(tmp_path: P
     pacer = play.PlayPacer(out, ScriptControl([]), options(), clock=FakeClock(), note=lambda m: None)
     pacer._t = 5
     report = _report(1, 0, True)
-    stop = threading.Event()
+    started = threading.Event()
     posted: list[int] = []
 
-    def worker() -> None:
-        i = 0
-        while not stop.is_set() and i < 60:
+    def worker() -> None:  # all 60 records, however the scheduler splits the time with the loop below
+        for i in range(60):
             pacer.post(
                 "RPRT",
                 lambda step, seq: streamrec.encode_rprt(step=step, seq=seq, obj=report),
                 step=1000 + i,
             )
             posted.append(i)
-            i += 1
+            started.set()
 
     thread = threading.Thread(target=worker)
     thread.start()
+    assert started.wait(30)  # the loop's writes start after the worker's first record: they overlap
     for k in range(60):  # the loop's own records, in several short writes each
         pacer._send(
             "CLCK",
@@ -476,10 +476,6 @@ def test_a_record_posted_by_a_worker_is_never_cut_by_the_loops_write(tmp_path: P
                 save_stall_steps=0, reason=0, saving=False, fe=1, chapter=1, in_chapter=k, chapter_len=L,
             ),
         )  # fmt: skip
-    # The worker posts all 60 however slow the machine (CI's runner lost the race and stopped it at 22 or 40);
-    # the stop event is only the safety net if it hangs.
-    thread.join(timeout=120)
-    stop.set()
     thread.join()
     assert len(posted) == 60
     tags = []

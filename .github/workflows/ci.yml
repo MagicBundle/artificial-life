@@ -15,8 +15,10 @@ jobs:
     # to ubuntu-26.04 on 2026-10-23 and both goldens changed with it (DESIGN §22.0); moving the image is a deliberate
     # golden re-pin.
     runs-on: ubuntu-24.04
-    # The fast suite takes 30-60 min on ubuntu-latest when a PR changes src (cold JIT cache; DESIGN §22.0). G3a's run took
-    # 58.5 of its 75 minutes with about 3 700 tests, and G3b adds about 550 more (4 234 in all), so the limit is 120.
+    # The fast suite took 30-60 min on ubuntu-latest in one process when a PR changes src (cold JIT cache; DESIGN §22.0):
+    # G3a's run took 58.5 of its 75 minutes with about 3 700 tests, and G3b adds about 550 more (4 234 in all). It now
+    # runs on the runner's four vCPUs with four pytest-xdist workers (I58); the limit stays 120 until a few runs show the
+    # new time.
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +42,9 @@ jobs:
       - name: Format
         run: uv run ruff format --check
       - name: Tests
-        run: uv run pytest -m "not slow" -q
+        # One private MLX kernel cache per worker, seeded from and merged back into the restored cache
+        # (tests/worker_cache.py, DESIGN §22.0). loadfile keeps a file's tests in order on one worker.
+        run: uv run pytest -m "not slow" -q -n 4 --dist loadfile
 
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -63,4 +67,6 @@ jobs:
       - name: Install
         run: uv sync --locked --group dev
       - name: Slow tests
-        run: uv run pytest -m slow -q
+        # Four workers (default distribution: loadfile would put the 16 invariant tests on one worker). Measured on
+        # the Mac CPU: 23.5 min instead of 31+, dominated by the 3D ecology test (19 min), 4.8 GB in all.
+        run: uv run pytest -m slow -q -n 4

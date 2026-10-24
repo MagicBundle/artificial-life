@@ -66,7 +66,18 @@ with a `LABEL_VERDICTS` row for the world and rule set (none for V2 or V3 yet) a
   every MLX bump, which is then added to `knn_metal.VERIFIED_MLX`), fall back to that path off Metal, and write no
   contested outputs. `ALIFE_KNN=auto|mlx|metal` selects the neighbour search (DESIGN §4, I48).
 - Checks before pushing: `uv run ruff check`, `uv run ruff format --check` (the whole repo, as CI runs them; scripts
-  under `docs/` count), `uv run pytest -m "not slow" -q`. A trajectory change needs a deliberate golden-digest re-pin.
+  under `docs/` count), `uv run pytest -m "not slow" -q -n 6 --dist loadfile` (the fast suite in parallel: about 7
+  minutes on the M5 Pro against 27 serial; with `-p cpu_device` and `PYTHONPATH` for the CPU device as before; plain
+  serial `uv run pytest -m "not slow" -q` still works). `-n 6` while LM Studio holds its model, `-n 8` only with more
+  than 15 GB free (`vm_stat`), never `-n auto` (18 workers: slower and 16 GB; DESIGN §22.0, I58). `--dist loadfile`
+  is the fast form, no longer needed for correctness. Every pytest process compiles MLX CPU kernels into a private cache
+  (`tests/worker_cache.py`), so parallel runs and concurrent sessions do not collide on `$TMPDIR/mlx`; keep one
+  `TMPDIR` per agent as the warm cache. Ambiguous kernels (F21 item 6) are never seeded from or handed back to it
+  (`tests/kernel_ambiguity.py`), and the two Linux golden tests run in a child on an empty cache
+  (`tests/golden_run.py`). A test that fails only in parallel is a defect of the test (relative bounds, injected
+  clocks, no shared paths). `tmp_path_retention_policy = "failed"` keeps only failed tests' directories: a passing
+  run leaves nothing in `pytest-of-*` under its `TMPDIR` and a run with a failure about 2.4 GB (it was 38 GB a run, and
+  the disk filled once); delete a failed run's directory after reading it. A trajectory change needs a deliberate golden-digest re-pin.
 - The world report (DESIGN §31) never calls an LM Studio management endpoint (no load, unload or switch) and sends `model`
   explicitly; its only network calls are the chat POST and the read-only `GET /api/v0/models` preflight. Run `--llm` and
   `probe` only when no GPU job or timing runs. A change to a template, the lexicon, the label table or the select prompt
