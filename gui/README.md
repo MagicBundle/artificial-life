@@ -33,26 +33,64 @@ folder that exists is never replaced.
 
 ## Install as an app
 
+Two apps are built from the one executable:
+
+- **Storm Worlds** (`Storm Worlds.app`): the game, for playing without the terminal. It opens straight into the World window
+  (on its launcher), and the research Lab is one menu item away, **Window > Lab** (Command-2; **Window > World** is Command-1).
+- **AlifeControl** (`AlifeControl.app`): the research Lab, the app this package always was.
+
 ```bash
-gui/scripts/make-app.sh --install     # builds, bundles, signs and copies to /Applications/AlifeControl.app
-gui/scripts/make-app.sh               # bundle only: gui/.build/AlifeControl.app
+gui/scripts/make-app.sh --app both --install   # both, signed, copied to /Applications (recommended)
+gui/scripts/make-app.sh --install              # the Lab only: the default for --app is lab, as before
+gui/scripts/make-app.sh --app storm --install  # the game only
+gui/scripts/make-app.sh --app both             # bundles only: gui/.build/AlifeControl.app and "gui/.build/Storm Worlds.app"
 gui/scripts/make-app.sh --help
 ```
 
-The script builds the release binary, generates the icon (`scripts/make-icon.swift`), writes `Info.plist`
-(bundle ID `io.github.magicbundle.alifecontrol`, overridable with `BUNDLE_ID`; version from `VERSION`, build
-number from the commit count) and signs the bundle with the hardened runtime. The signing identity is, in order:
-`--sign "<identity>"`, the first "Developer ID Application" identity, the first "Apple Development" identity,
-then ad-hoc. `--install-dir DIR` installs somewhere else (for example `~/Applications`). The script never uses
-sudo and refuses to install over a running copy, so quit the app first (a run may be active).
+The script builds the release binary once, generates one icon per app (`scripts/make-icon.swift`: the cells for the Lab, a
+storm cloud and a lightning bolt over a small world for Storm Worlds; both are drawn by the script, no image is checked in),
+writes each `Info.plist` and signs each bundle with the hardened runtime. The bundle IDs are `io.github.magicbundle.alifecontrol`
+(overridable with `BUNDLE_ID`) and `io.github.magicbundle.stormworlds` (`STORM_BUNDLE_ID`); the version comes from `VERSION`
+and the build number from the commit count, the same for both. The signing identity is, in order: `--sign "<identity>"`, the
+first "Developer ID Application" identity in the keychain, the first "Apple Development" identity, then ad-hoc, so with a Developer
+ID installed nothing needs to be named. `--sign -` is ad-hoc and never touches the keychain. `--out DIR` writes the bundles
+somewhere other than `gui/.build`, and `--install-dir DIR` installs somewhere else (not the `--out` directory: the script refuses) (for example `~/Applications`). The script
+never uses sudo and refuses, before building, to install over a copy that is running (a run or a world may be active), so quit
+the apps first. Re-run it after any GUI change to refresh the installed copies; the first run with a Developer ID can ask for
+keychain access to the signing key once ("Always Allow" stops the prompt).
 
-Ad-hoc and Apple Development signing are for this Mac only. Sharing the app with others needs a Developer ID
-certificate plus notarization (`notarytool` and `stapler`), which is not done yet. Re-run the script after any
-GUI change to refresh the installed copy.
+Signing with a Developer ID makes the apps run on this Mac and carry the hardened runtime. **Notarization is not done.** It
+is what lets an app downloaded from the web open on another Mac without Gatekeeper's warning: it needs `xcrun notarytool submit`
+for a zip of each bundle (a timestamped signature, `--timestamp` instead of `--timestamp=none`, and an app-specific password or
+API key kept in a keychain profile) and `xcrun stapler staple`; the commands are sketched at the end of `make-app.sh`. An
+in-app updater and a notarized standalone Storm Worlds (with the engine bundled, so that it needs no repository) are later steps.
+The App Store would also need the engine embedded and sandboxed.
 
-The installed app is only the front end: it still uses the repository's `.venv` at the configured repo path
-(default `~/artificial-life`). The setting is stored under the bundle's own preferences domain, so it is
-separate from the one used by `swift run`.
+Both apps are only front ends: they use the repository's `.venv` at the configured repo path (default `~/artificial-life`).
+**The two share that setting**, so it is chosen once, in either: the bundles keep it in the shared preferences domain
+`io.github.magicbundle.alife` (`RepoPathStore`). The first time an app starts it takes the folder it already had, from its own
+preferences and then from the Lab's (`io.github.magicbundle.alifecontrol`), and copies it into the shared domain, leaving the
+original where it was. A folder chosen afterwards is written to the shared domain and to the saving app's own preferences: in the Lab
+that keeps an older Lab build in agreement, but a folder chosen in Storm Worlds is not seen by an older Lab build (the current
+Lab reads the shared domain first). `ALIFE_PREFS_SUITE=name` makes an app read and write that domain instead (it only reads its
+own preferences), for trying a build without touching yours. `swift run` is not a bundle and keeps its own preferences, separate from the installed apps. Other
+preferences (the dock side, window sizes) belong to each app.
+
+Storm Worlds asks for the folder itself, without the Lab: while there is no usable one (no folder, or no `.venv/bin/alife` in
+it) and no world is open, its window shows the folder field with **Choose...** and **Re-check** instead of the launcher (and a
+button for the Lab's **Set up environment** when the folder exists but has no engine); **Settings** (Command-comma) has the
+same field. `--world RUN` works in both apps (`swift run AlifeControl --world RUN`, or `open -a "Storm Worlds" --args --world RUN`, which works only if the app is not already running).
+`swift run AlifeControl --launch-mode world` runs the game's window arrangement unbundled (a bundle's `AlifeLaunchMode` key,
+`world` or `lab`, says which app it is; no key is the Lab).
+
+Closing the World window of Storm Worlds ends the game and the app, as for any single-window game (the world saves its
+checkpoint first), unless the Lab is open: then the app stays, and **Window > World** reopens the game. Closing the Lab
+there takes only the 3D viewer with it, and does not stop a run started in it: that keeps going until you stop it in the Lab
+(**Window > Lab** shows it again) or quit. The Window menu lists the game and the Lab twice, once with the key equivalent. The Lab window is not reopened at the next launch.
+
+`scripts/check-apps.sh` is the smoke test of the bundles: it builds both ad-hoc into a new directory (`--out DIR`), and checks
+each `Info.plist` key, the executable, the icon and `codesign --verify`. It installs and launches nothing. It needs macOS and a
+Swift toolchain and takes minutes, so it is a manual step, also run by `tests/test_app_bundles.py` when `ALIFE_APP_SMOKE=1`.
 
 ## Using it
 
@@ -246,7 +284,10 @@ Testing), **`AlifeCoreTests`** for the library and **`AlifeControlTests`** for t
   `CastPolicy.swift`, `Inspector.swift` and `WorldChronicle.swift` (grouping, filters, toasts)
 
 `Sources/AlifeControl/`:
-- `AlifeControlApp.swift`: app entry point and app delegate (ignores SIGPIPE), the main window and the 3D Viewer window
+- `AlifeControlApp.swift`: the entry point (`AlifeEntry` picks the Lab or Storm Worlds from `LaunchMode`), the app delegate (ignores
+  SIGPIPE) and the Lab app's scenes: the main window, the 3D Viewer window and the World window
+- `StormWorldsApp.swift`: Storm Worlds' scenes (the World window first, the Lab, the viewer, Settings), its Window-menu items, the
+  repository-folder gate and the Settings view
 - `ContentView.swift`: the UI
 - `RunController.swift`: subprocess management (main-actor isolated; pipe output arrives through ordered
   AsyncStreams), log streaming, timer, keep-awake
@@ -267,7 +308,9 @@ Testing), **`AlifeCoreTests`** for the library and **`AlifeControlTests`** for t
   `WorldModel.swift` and `WorldModel+Interaction.swift` (camera, selection, follow, keys), `WorldMetalView.swift` and
   `WorldOverlayView.swift` (the view and its `Canvas` overlay), `WorldLauncherView.swift`, `AppTermination.swift`
 
-Also `scripts/make-app.sh` and `scripts/make-icon.swift` (app bundle, signing, install and the generated icon).
+Also `scripts/make-app.sh`, `scripts/make-icon.swift` and `scripts/check-apps.sh` (the app bundles, signing, install, the generated icons
+and the smoke test). `AlifeCore/LaunchMode.swift` (the mode and what each does with its windows) and `AlifeCore/RepoPathStore.swift` (the
+shared repository-folder setting) are the pure parts of the two-app arrangement.
 
 ## Tests
 

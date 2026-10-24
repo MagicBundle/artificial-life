@@ -70,12 +70,17 @@ enum RepoFolder {
     }
 }
 
+extension RepoPathStore {
+    /// The store of this process: shared between the Lab app and Storm Worlds when it runs from one of their bundles, its own
+    /// preferences otherwise (`swift run`, tests). The tests pass their own closures to `RunController` and never reach it.
+    static let app = RepoPathStore.forApp(info: Bundle.main.object(forInfoDictionaryKey: LaunchMode.infoKey))
+}
+
 /// Owns the engine subprocesses and all UI-visible run state.
 /// Main-actor isolated; pipe and termination handlers feed AsyncStreams that main-actor tasks consume.
 @MainActor
 final class RunController: ObservableObject {
     static let shared = RunController()
-    fileprivate static let repoKey = "repoPath"
     private static let maxLogLines = 5000
 
     /// What "Set up environment" runs (after `uv`). `--inexact` keeps every installed package that the lock does not
@@ -139,8 +144,8 @@ final class RunController: ObservableObject {
     private var appliedDirectorPoll = 0
 
     /// `isApp` false (tests): no link to the shared stream and play controllers and no ticker.
-    init(storedPath: String? = UserDefaults.standard.string(forKey: RunController.repoKey),
-         savePath: @escaping (String) -> Void = { UserDefaults.standard.set($0, forKey: RunController.repoKey) },
+    init(storedPath: String? = RepoPathStore.app.load(),
+         savePath: @escaping (String) -> Void = { RepoPathStore.app.save($0) },
          defaultPath: String = RepoFolder.defaultPath, isApp: Bool = true) {
         saveRepoPath = savePath
         let start = RepoFolder.initialPath(stored: storedPath, defaultPath: defaultPath)
