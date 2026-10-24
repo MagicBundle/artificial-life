@@ -319,16 +319,22 @@ import Testing
         let counter = Counter()
         let monitor = monitor(counter: counter)
         monitor.period = .milliseconds(20)
-        final class Live { var on = true }
-        let live = Live()
+        final class Flag { var on: Bool; init(_ on: Bool) { self.on = on } }
+        let live = Flag(true)
         monitor.isLive = { live.on }
         monitor.start(world: URL(fileURLWithPath: "/tmp/alife-no-such-world"))
         defer { monitor.stop() }
         #expect(await eventually { counter.count >= 3 })
+        let loop = try #require(monitor.loop)
+        let before = counter.count
         live.on = false  // the world ended
-        try await Task.sleep(for: .milliseconds(150))
+        // The loop is awaited, not timed: it awaits each of its scans, so one that a loaded scheduler delays lands before the end.
+        let ended = Flag(false)
+        Task { await loop.value; ended.on = true }
+        try #require(await eventually { ended.on }, "the loop ends of itself (`stop` is only in the defer)")
         let settled = counter.count
-        try await Task.sleep(for: .milliseconds(150))
+        #expect(settled - before <= 1, "at most the scan in flight or the one after the sleep: \(before) then \(settled)")
+        try await Task.sleep(for: monitor.period * 5)  // nothing is left to scan; this only catches a scan the loop did not await
         #expect(counter.count == settled, "no scan after the end: \(settled) then \(counter.count)")
         #expect(monitor.sample != nil, "the last size stays on show")
     }
