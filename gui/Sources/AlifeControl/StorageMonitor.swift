@@ -20,7 +20,8 @@ final class StorageMonitor: ObservableObject {
     private(set) var measurements = 0
     private var chapter: UInt32?
     private var wasSaving = false
-    private var loop: Task<Void, Never>?
+    /// The periodic loop of the world being watched. Readable so that the tests can await its end rather than time it.
+    private(set) var loop: Task<Void, Never>?
     private var generation = 0
     /// The numbers of the measurements asked for and of the newest one whose answer was published: a slow answer that was asked
     /// for before a newer one was published is stale and dropped.
