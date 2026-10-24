@@ -11,6 +11,9 @@ import SwiftUI
 @MainActor
 final class WorldMTKView: MTKView {
     weak var model: WorldModel?
+    /// The view owns its renderer: `MTKView.delegate` and `WorldModel.renderer` are both weak, so without this the
+    /// renderer was freed as soon as `makeNSView` returned and the world drew nothing (DESIGN §33.4.4, I61).
+    var renderer: Renderer?
     private var link: CADisplayLink?
     /// Where the left button went down (view points, origin at the top left), and whether the pointer has moved far enough
     /// since for the gesture to be a drag and not a click.
@@ -193,6 +196,7 @@ struct WorldMetalView: NSViewRepresentable {
             let renderer = try Renderer(device: device)
             renderer.failureHandler = { [weak model] message in model?.failDrawing(message) }
             view.delegate = renderer
+            view.renderer = renderer
             model.attach(renderer: renderer, view: view)
             Task { @MainActor in model.failDrawing(nil) }  // an earlier failure is over
         } catch {
