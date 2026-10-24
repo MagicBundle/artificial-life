@@ -15,8 +15,10 @@ package enum WorldLevel: Int, Comparable, CaseIterable, Sendable {
 }
 
 package enum WorldLevels {
-    /// The planet level begins when the visible half extent at the floor is at least this fraction of `L`.
-    package static let planetHalfExtent: Float = 0.5
+    /// The planet level begins when the visible half extent at the floor is at least this fraction of `L`. The view never shows more
+    /// than one world (`WorldPose.reach`, 0.49 L), so v1's half a world, reached by a window that shows the whole world and more, is
+    /// now the Home view and the last tenth of the zoom range below it. (PR B's globe replaces it by the morph parameter, `s >= 0.5`.)
+    package static let planetHalfExtent: Float = 0.45
     /// The organism level begins closer than this fraction of `L`.
     package static let organismDistance: Float = 0.12
     /// An impostor whose projected radius is below this many pixels is a flat disc (no ray test).
@@ -77,12 +79,11 @@ package enum WorldLevels {
         return layers
     }
 
-    /// The farthest the camera may be: the visible half extent at the floor stays within one world, so that the repeating
-    /// map (two and a half worlds each way from the target's cell) always covers the view. Never nearer than `home`, the
-    /// distance of the starting pose in a window of this shape (a wide window, a bottom dock, fits the world by its height
-    /// and sits farther out than the rule above; the first pan or zoom must not snap the view in).
-    package static func maxDistance(size: Float, fovY: Float, aspect: Float, home: Float = 0) -> Float {
-        max(size / (tan(fovY / 2) * max(1, aspect)), home)
+    /// The farthest the camera may be, looking straight down at `heading` and height `z`: the picture stays within one world of its
+    /// centre (`WorldPose.maxDistance`), for the one-world patch that replaced v1's tiled quad. It is also the distance of the
+    /// Home view.
+    package static func maxDistance(size: Float, fovY: Float, aspect: Float, heading: Float = 0, z: Float = 0) -> Float {
+        WorldPose.maxDistance(size: size, fovY: fovY, aspect: aspect, heading: heading, z: z)
     }
 
     /// The nearest: a few agent radii.

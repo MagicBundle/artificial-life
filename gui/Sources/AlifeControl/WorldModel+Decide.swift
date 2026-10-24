@@ -262,7 +262,7 @@ extension WorldModel {
 
     /// The floor point under `point` of the free rectangle.
     func floorPoint(at point: CGPoint) -> SIMD2<Float>? {
-        projector(size: freeRect.size).world(at: point, height: min(max(camera.target.z, 0), max(height, 0)))
+        projector(size: freeRect.size).world(at: point, height: min(max(pose.gripZ, 0), max(height, 0)))
     }
 
     /// A click while a power is being aimed names its target; true when it was taken.

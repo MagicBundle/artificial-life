@@ -202,6 +202,30 @@ def test_play_header_keeps_the_legacy_keys_and_adds_play() -> None:
         )
 
 
+def test_the_weather_block_takes_the_grid_from_the_layer_and_keeps_the_reference_scales() -> None:
+    """DESIGN §37.4: ``cells`` and ``dx`` are the weather layer's (160 for the 320 world, 80 for the mini
+    world); ``coarse`` and the reference scales are fixed. The 320 world's block is the old one."""
+    old = {
+        "enabled": True,
+        "cells": 160,
+        "dx": 2.0,
+        "f0": 0.025,
+        "coarse": 40,
+        "name_zeta": 0.5,
+        "refs": {"p": 0.004, "dc": 0.5, "u": 0.1, "zeta": 0.025},
+    }
+    new = sr.weather_block(enabled=True, dc_ref=0.5)
+    assert new == old and json.dumps(new, sort_keys=True) == json.dumps(old, sort_keys=True)
+    assert sr.weather_block(enabled=True, dc_ref=0.5, cells=160, dx=2.0) == old
+    mini = sr.weather_block(enabled=True, dc_ref=0.5, cells=80, dx=2.0)
+    assert (mini["cells"], mini["dx"], mini["coarse"]) == (80, 2.0, 40)
+    assert mini["cells"] % mini["coarse"] == 0
+    assert (mini["f0"], mini["refs"]["zeta"], mini["name_zeta"]) == (0.025, 0.025, 0.5)
+    assert {k: v for k, v in mini.items() if k != "cells"} == {k: v for k, v in old.items() if k != "cells"}
+    off = sr.weather_block(enabled=False, dc_ref=None)
+    assert off["enabled"] is False and off["cells"] == 160 and off["refs"]["dc"] == 0.0
+
+
 # --- FRMA -----------------------------------------------------------------------------------------------
 
 

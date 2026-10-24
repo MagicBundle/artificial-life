@@ -32,7 +32,7 @@ struct PlaneUniforms: Equatable {
     var info: SIMD4<Float>
 }
 
-/// The World window's constants (`WorldU` in Shaders.swift), buffer 7 of the world pass: 112 bytes.
+/// The World window's constants (`WorldU` in Shaders.swift), buffer 7 of the world pass: 160 bytes.
 struct WorldUniforms: Equatable {
     /// xy: the camera target (everything is drawn at its minimum image), z: L, w: 1 / L.
     var target: SIMD4<Float>
@@ -40,7 +40,7 @@ struct WorldUniforms: Equatable {
     var params: SIMD4<Float>
     /// x: p_ref, y: dc_ref, z: zeta_ref, w: cot(fovY / 2).
     var refs: SIMD4<Float>
-    /// x: pass (0 spheres, 1 flat discs), y: rows listed, z: bonds, w: bit 0 map, bit 1 territory, bit 2 equators.
+    /// x: pass (0 spheres, 1 flat discs), y: rows listed, z: bonds, w: bit 0 map, bit 1 territory, bit 2 equators, bit 3 height colour.
     var flags: SIMD4<UInt32>
     /// x: point alpha, y: point size in pixels, z: the smallest drawn radius in pixels, w: the outline's width in pixels.
     var style: SIMD4<Float>
@@ -49,6 +49,15 @@ struct WorldUniforms: Equatable {
     var size: SIMD4<Float>
     /// x: exposure, y: the territory borders' alpha, z: the depth cue's base, w: the hemisphere tint's weight.
     var look: SIMD4<Float>
+    /// The one-world patch of the map and its copies across the wrap in y (`SeamCopies`): x: the index `k` of the cell the view's
+    /// centre is in (the cell `y` in `[kL - L/2, kL + L/2]`), y, z, w: the alpha of the copies `k - 1`, `k`, `k + 1` (0: not drawn).
+    var patch: SIMD4<Float>
+    /// The horizon fade (`WorldFog`): rgb: the haze, the brightness and the map's opacity in it; w: 1 with a fog, 0 without (a 2D world,
+    /// a world with no floor to show, and the minimap).
+    var fog: SIMD4<Float>
+    /// x: the clear half extent in world units, y: 1 / the fade's width in world units, z: the map mesh's half width in x in `L`
+    /// (`WorldFog.meshHalfX` with a fog, 0.5 without), w: the sky's scale in radians.
+    var fogShape: SIMD4<Float>
 
     /// What the shader gets for "no cap" (a float that is larger than any radius).
     static let unbounded: Float = 1e9
@@ -56,6 +65,8 @@ struct WorldUniforms: Equatable {
     static let mapBit: UInt32 = 1
     static let territoryBit: UInt32 = 2
     static let equatorBit: UInt32 = 4
+    /// Organisms are coloured by their altitude (`HeightColour`), not by the stream's colours.
+    static let heightBit: UInt32 = 8
 }
 
 /// A translucent quad of the scene: the floor, the surface, or the field slice.
@@ -230,6 +241,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let worldBondPipeline: any MTLRenderPipelineState
     private let pointPipeline: any MTLRenderPipelineState
     private let mapPipeline: any MTLRenderPipelineState
+    // The minimap (DESIGN 36.5): the map's fragment shader over a quad of its own, and the organisms as points.
+    private let insetPipeline: any MTLRenderPipelineState
+    private let insetPointPipeline: any MTLRenderPipelineState
+    /// The sky of a tilted view: a full-screen pass at the far plane, drawn before the map.
+    private let skyPipeline: any MTLRenderPipelineState
+    private let worldBoxPipeline: any MTLRenderPipelineState
     /// One-texel stand-ins for the planes and the territory of a world without them.
     private let blankPlane: any MTLTexture
     private let blankTerritory: any MTLTexture
@@ -278,6 +295,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         var coverRadius: Float = .infinity
         /// The drawable's pixels per point of the free rectangle (4.5 pt is the absolute cap of a symbol): 2 on a Retina display.
         var pixelsPerPoint: Float = 2
+        /// The copies of the map's patch to draw (`SeamCopies.plan`): the cell of the view's centre, and its neighbours across the wrap
+        /// in y when the picture reaches them. Nil draws all three, which is right for any view and a little more than a flat one needs.
+        var copies: [SeamCopies.Copy]?
+        /// Where the minimap is drawn, as fractions of the drawable (origin at the top left); nil draws none.
+        var inset: CGRect?
+        /// The horizon fade and the sky (`WorldFog`). On; a test turns it off to see that its detector sees the edge of the world
+        /// without it.
+        var fog = true
+        /// The two thin equator lines of the map (y = 0 and y = L/2). On; the tests of the world's edge turn them off (a line is a step
+        /// to a detector of edges).
+        var equatorLines = true
     }
     var worldDraw = WorldDraw()
     /// Told when the drawable's size changes in the World (the free rectangle changed), in pixels.
@@ -390,6 +418,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         pointPipeline = try pipeline("world points", vertex: Shaders.pointVertexA, fragment: Shaders.pointFragment,
                                      blend: true)
         mapPipeline = try pipeline("world map", vertex: Shaders.mapVertex, fragment: Shaders.mapFragment, blend: false)
+        insetPipeline = try pipeline("minimap", vertex: Shaders.insetVertex, fragment: Shaders.mapFragment, blend: false)
+        insetPointPipeline = try pipeline("minimap points", vertex: Shaders.insetPointVertex, fragment: Shaders.pointFragment,
+                                          blend: true)
+        skyPipeline = try pipeline("sky", vertex: Shaders.skyVertex, fragment: Shaders.skyFragment, blend: false)
+        worldBoxPipeline = try pipeline("world frame", vertex: Shaders.worldBoxVertex, fragment: Shaders.worldBoxFragment, blend: true)
         func blank(_ format: MTLPixelFormat) throws -> any MTLTexture {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: 1, height: 1, mipmapped: false)
             d.usage = .shaderRead
@@ -763,25 +796,40 @@ final class Renderer: NSObject, MTKViewDelegate {
         let hasMap = mapNow != nil
         let display = worldDraw.display
         var bits: UInt32 = 0
-        if display.map, hasMap { bits |= WorldUniforms.mapBit | WorldUniforms.equatorBit }
+        if display.map, hasMap { bits |= WorldUniforms.mapBit | (worldDraw.equatorLines ? WorldUniforms.equatorBit : 0) }
         if display.territory != .off, playTerritory != nil { bits |= WorldUniforms.territoryBit }
+        if display.heightColour, header.dims == 3, header.height > 0 { bits |= WorldUniforms.heightBit }
         let territoryOn = bits & WorldUniforms.territoryBit != 0
         let tint = territoryOn && display.territory == .tint ? MapPalette.territoryTint : 0
+        // The horizon fade exists for a 3D world with a floor to show; its colour is the haze of the sea when the map is on, and the clear
+        // colour (the floor of a world with no map is nearly that) when it is not.
+        let opacity = WorldLevels.mapOpacity(distance: camera.distance, size: L)
+        let fogOn = worldDraw.fog && header.dims == 3 && bits & (WorldUniforms.mapBit | WorldUniforms.territoryBit) != 0
+        let haze = bits & WorldUniforms.mapBit != 0 ? WorldFog.colour(exposure: display.exposure, opacity: opacity) : MapPalette.background
         let limits = OrganismSizePolicy.limits(
             mode: display.sizeMode, cover: worldDraw.coverRadius, distance: camera.distance, size: L,
             agentRadius: Float(header.radius), viewHeight: Float(size.height), fovY: camera.fovY,
             pixelsPerPoint: worldDraw.pixelsPerPoint)
         return WorldUniforms(
             target: SIMD4(camera.target.x, camera.target.y, L, 1 / L),
-            params: SIMD4(worldDraw.mapBlend, WorldLevels.mapOpacity(distance: camera.distance, size: L), tint,
-                          WorldLevels.flatDiscPixels),
+            params: SIMD4(worldDraw.mapBlend, opacity, tint, WorldLevels.flatDiscPixels),
             refs: SIMD4(mapNow?.pRef ?? 0, mapNow?.dcRef ?? 0, mapNow?.zetaRef ?? 0, 1 / tan(camera.fovY / 2)),
             flags: SIMD4(pass, UInt32(playFrame?.n ?? 0), UInt32(playFrame?.nBonds ?? 0), bits),
             style: SIMD4(0.55, 1.5, limits.minimum, OutlineContrast.width),
             size: SIMD4(limits.cap.isFinite ? limits.cap : WorldUniforms.unbounded, OrganismSizePolicy.rampLow,
                         OrganismSizePolicy.rampHigh, OutlineContrast.depthCueSlope),
             look: SIMD4(display.exposure, MapPalette.territoryBorder, OutlineContrast.depthCueBase,
-                        MapPalette.hemisphereWeight(distance: camera.distance / L)))
+                        MapPalette.hemisphereWeight(distance: camera.distance / L)),
+            patch: Self.patchUniform(worldDraw.copies, y: camera.target.y, size: L),
+            fog: SIMD4(haze.x, haze.y, haze.z, fogOn ? 1 : 0),
+            fogShape: SIMD4(WorldFog.clear * L, 1 / (WorldFog.width * L), fogOn ? WorldFog.meshHalfX : 0.5, WorldFog.skyScale))
+    }
+
+    /// The `patch` uniform of a plan of copies: the cell of the view's centre and the alphas of the three cells around it.
+    nonisolated static func patchUniform(_ copies: [SeamCopies.Copy]?, y: Float, size: Float) -> SIMD4<Float> {
+        let k = SeamCopies.base(y: y, size: size)
+        func alpha(_ offset: Int) -> Float { copies.map { $0.first { $0.k == k + offset }?.alpha ?? 0 } ?? 1 }
+        return SIMD4(Float(k), alpha(-1), alpha(0), alpha(1))
     }
 
     private func encodeWorld(into encoder: any MTLRenderCommandEncoder, slot: Slot, header: StreamHeader, size: CGSize) {
@@ -805,13 +853,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setFragmentBytes(&u, length: MemoryLayout<WorldUniforms>.stride, index: 7)
         }
 
-        // The map first, with no depth write: everything after it is drawn over it, in 2D too (where the floor is the plane
-        // of the agents). A world with no weather and no territory to show has nothing to draw here.
-        var u = worldUniforms(header: header, pass: 0, size: size)
-        if u.flags.w & (WorldUniforms.mapBit | WorldUniforms.territoryBit) != 0 {
-            encoder.setDepthStencilState(overlayDepth)
-            encoder.setRenderPipelineState(mapPipeline)
-            setWorld(&u)
+        func bindMapTextures() {
             let hasMap = mapNow != nil && w.currentSerial >= 0
             for (set, base) in zip([w.current, w.previous], [0, 4]) {
                 encoder.setFragmentTexture(hasMap ? set.rain : blankPlane, index: base)
@@ -820,7 +862,25 @@ final class Renderer: NSObject, MTKViewDelegate {
                 encoder.setFragmentTexture(hasMap ? set.sea : blankPlane, index: base + 3)
             }
             encoder.setFragmentTexture(playTerritory != nil ? w.territory : blankTerritory, index: 8)
+        }
+
+        var u = worldUniforms(header: header, pass: 0, size: size)
+        // The sky first, where there is a fog: the haze at the horizon and below it, the clear colour overhead.
+        if u.fog.w > 0.5 {
+            encoder.setDepthStencilState(overlayDepth)
+            encoder.setRenderPipelineState(skyPipeline)
+            setWorld(&u)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
+        // The map next, with no depth write: everything after it is drawn over it, in 2D too (where the floor is the plane
+        // of the agents). A world with no weather and no territory to show has nothing to draw here.
+        if u.flags.w & (WorldUniforms.mapBit | WorldUniforms.territoryBit) != 0 {
+            encoder.setDepthStencilState(overlayDepth)
+            encoder.setRenderPipelineState(mapPipeline)
+            setWorld(&u)
+            bindMapTextures()
+            // The one-world patch and its copies across the wrap in y: three instances, those not wanted collapse in the vertex shader.
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 3)
         }
 
         // The agents of the newest frame.
@@ -854,10 +914,54 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
         }
         if display.frame {
-            encoder.setRenderPipelineState(boxPipeline)
+            encoder.setRenderPipelineState(worldBoxPipeline)
+            setWorld(&u)
             encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 24)
         }
+        encodeInset(into: encoder, slot: slot, size: size, uniforms: u, bindMapTextures: bindMapTextures, setWorld: setWorld)
     }
+
+    /// The minimap: the whole world in a rectangle of the drawable (a viewport and a scissor), drawn last over everything. It is the
+    /// map's fragment shader (the same palette, unlit, with the territory) over a quad of its own, then the organisms as translucent
+    /// points. The overlay draws its frame, its labels and the footprint of the view over it.
+    private func encodeInset(into encoder: any MTLRenderCommandEncoder, slot: Slot, size: CGSize, uniforms u: WorldUniforms,
+                             bindMapTextures: () -> Void, setWorld: (inout WorldUniforms) -> Void) {
+        guard let unit = worldDraw.inset, mapNow != nil, slot.world.currentSerial >= 0 else { return }
+        let x0 = Int((unit.minX * size.width).rounded()), y0 = Int((unit.minY * size.height).rounded())
+        let x1 = Int((unit.maxX * size.width).rounded()), y1 = Int((unit.maxY * size.height).rounded())
+        let (w, h) = (min(x1, Int(size.width)) - max(x0, 0), min(y1, Int(size.height)) - max(y0, 0))
+        guard w >= 8, h >= 8 else { return }
+        encoder.setViewport(MTLViewport(originX: Double(max(x0, 0)), originY: Double(max(y0, 0)), width: Double(w), height: Double(h),
+                                        znear: 0, zfar: 1))
+        encoder.setScissorRect(MTLScissorRect(x: max(x0, 0), y: max(y0, 0), width: w, height: h))
+        // The whole world is in view: full opacity and hemisphere tint; the equators are the overlay's (gold, with the seam).
+        var m = u
+        m.params.y = 1
+        m.look.w = 1
+        m.fog.w = 0  // (no haze in the box of the whole world)
+        m.flags.w &= ~WorldUniforms.equatorBit
+        encoder.setDepthStencilState(overlayDepth)
+        encoder.setRenderPipelineState(insetPipeline)
+        setWorld(&m)
+        bindMapTextures()
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        if worldDraw.display.agents, let frame = playFrame, frame.n > 0, slot.world.pos != nil {
+            encoder.setVertexBuffer(slot.world.pos, offset: 0, index: 2)
+            encoder.setVertexBuffer(slot.world.rgb, offset: 0, index: 4)
+            encoder.setRenderPipelineState(insetPointPipeline)
+            var points = m
+            points.style.x = Self.insetPointAlpha
+            points.style.y = Self.insetPointSize * max(worldDraw.pixelsPerPoint, 1) / 2
+            setWorld(&points)
+            encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: frame.n)
+        }
+        encoder.setViewport(MTLViewport(originX: 0, originY: 0, width: Double(size.width), height: Double(size.height), znear: 0, zfar: 1))
+        encoder.setScissorRect(MTLScissorRect(x: 0, y: 0, width: Int(size.width), height: Int(size.height)))
+    }
+
+    /// The minimap's organism points: this many points across at 2x (so 1.5 pt on a Retina display), and this opaque.
+    static let insetPointSize: Float = 3
+    static let insetPointAlpha: Float = 0.16
 
     /// Writes the newest frame, map and territory into `slot` unless it already holds them. Under the draw's ticket, before
     /// the encoder exists: the GPU has not been told about this draw yet, and no committed draw reads this set.

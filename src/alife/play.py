@@ -934,7 +934,11 @@ class PlayPacer:
         powers = self.desk.header()
         play = streamrec.header_play(
             records=records,
-            weather=streamrec.weather_block(enabled=self.layer is not None, dc_ref=dc_ref),
+            weather=(
+                streamrec.weather_block(enabled=True, dc_ref=dc_ref, cells=self.layer.p.n, dx=self.layer.p.dx)
+                if self.layer is not None
+                else streamrec.weather_block(enabled=False, dc_ref=None)
+            ),
             labels=self._labels_block(cfg, obs),
             energy_cap=cfg.energy.e_max,
             planet=self.opt.planet,

@@ -104,10 +104,12 @@ package enum WorldPicker {
     package static func storm(at point: CGPoint, projector: WorldProjector, storms: PlayStorms) -> Int? {
         var best: (id: Int, score: CGFloat)?
         for glyph in projector.glyphs(of: storms) {
+            // The ring is a circle on the floor, drawn as an ellipse flattened by the view: so is the target (at least a tolerance tall).
             let reach = max(glyph.radius, stormTolerance)
-            let d = hypot(glyph.center.x - point.x, glyph.center.y - point.y)
-            guard d <= reach else { continue }
-            let score = d / reach
+            let reachY = max(reach * glyph.flatten, min(reach, stormTolerance))
+            let dx = (glyph.center.x - point.x) / reach, dy = (glyph.center.y - point.y) / reachY
+            let score = hypot(dx, dy)
+            guard score <= 1 else { continue }
             if best == nil || score < best!.score { best = (glyph.id, score) }
         }
         return best?.id
@@ -128,7 +130,8 @@ package enum WorldPicker {
     // MARK: Territory
 
     /// The point of the floor (z = 0) under `point`, unwrapped as the ray meets it; nil when the ray does not meet the floor
-    /// in front of the eye.
+    /// in front of the eye, and where the floor is not read (farther than `WorldFog.readReach` of the point looked at: in the haze, a
+    /// cell of the territory is not under the pointer).
     package static func floorPoint(at point: CGPoint, projector: WorldProjector) -> SIMD2<Float>? {
         let camera = projector.camera
         let nx = Float(point.x / projector.view.width) * 2 - 1
@@ -140,6 +143,8 @@ package enum WorldPicker {
         let t = -eye.z / direction.z
         guard t > 0, t.isFinite else { return nil }
         let hit = eye + direction * t
+        if projector.size > 0,
+           !WorldFog.isReadable(offset: SIMD2(hit.x - camera.target.x, hit.y - camera.target.y), size: projector.size) { return nil }
         return SIMD2(hit.x, hit.y)
     }
 

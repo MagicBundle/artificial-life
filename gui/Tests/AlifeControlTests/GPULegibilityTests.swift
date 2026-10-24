@@ -44,7 +44,7 @@ struct GPULegibilityTests {
 
         func look(at target: SIMD3<Float>, distance: Float) -> Camera {
             var camera = Camera(target: target, distance: distance, yaw: .pi / 2, pitch: -.pi / 2)
-            camera.scene = Camera.tiledScene(size: size, height: Float(header.height))
+            camera.scene = Camera.patchScene(center: SIMD2(camera.target.x, camera.target.y), size: size, height: Float(header.height))
             return camera
         }
     }

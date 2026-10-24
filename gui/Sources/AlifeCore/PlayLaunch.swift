@@ -51,7 +51,10 @@ package struct PlanetSpec: Equatable, Sendable {
     package var sourceStep: Int?
     /// The name of the new world under `runs/`.
     package var name: String
-    /// `--overlay storm`: turn the weather on (a source whose weather is on is forked as it is, without the overlay).
+    /// `world.size` of the source (`PlaySource.worldSize`), nil if unknown: it picks the overlay (`overlay(forWorldSize:)`).
+    package var sourceWorldSize: Double?
+    /// `--overlay storm` (or `storm160`, by the source's size): turn the weather on (a source whose weather is on is
+    /// forked as it is, without the overlay).
     package var storm = true
     /// `--weather-spinup N`: needed, with N >= 1, when the overlay turns the weather on; refused for a weather-on source.
     package var weatherSpinup = PlanetSpec.defaultSpinup
@@ -64,13 +67,27 @@ package struct PlanetSpec: Equatable, Sendable {
     package var director = PlayDirector.off
 
     package static let defaultSpinup = 20_000
+    /// The `world.size` of the mini world (preset `mini3d`, DESIGN §37), whose weather has its own overlay.
+    package static let miniWorldSize = 160.0
+    /// The default spin-up of a mini world: its first storms die between weather time 24k and 60k, so a longer spin-up
+    /// gives the first minutes of play more storm events (DESIGN §37.2).
+    package static let miniSpinup = 36_000
+
+    /// The weather overlay of a source of this `world.size`: `storm160` for the 160 world, else `storm` (the 320 world).
+    /// Explicit, never an alias: the same name would mean two geometries (DESIGN §37.2).
+    package static func overlay(forWorldSize size: Double?) -> String { size == miniWorldSize ? "storm160" : "storm" }
+
+    package static func defaultSpinup(forWorldSize size: Double?) -> Int {
+        size == miniWorldSize ? miniSpinup : defaultSpinup
+    }
 
     package init(source: String, sourceStep: Int? = nil, name: String, storm: Bool = true,
                  weatherSpinup: Int = PlanetSpec.defaultSpinup, directorEnabled: Bool = true,
                  houses: PlayHouses = .auto, seed: Int? = nil, rate: PlayRate? = .multiplier(1),
-                 director: PlayDirector = .off) {
+                 director: PlayDirector = .off, sourceWorldSize: Double? = nil) {
         self.source = source
         self.sourceStep = sourceStep
+        self.sourceWorldSize = sourceWorldSize
         self.name = name
         self.storm = storm
         self.weatherSpinup = weatherSpinup
@@ -123,7 +140,7 @@ package enum PlayLaunch {
         var source = "runs/\(p.source)"
         if let step = p.sourceStep { source += ":\(step)" }
         var args = ["play", "--init-from", source]
-        if p.storm { args += ["--overlay", "storm"] }
+        if p.storm { args += ["--overlay", PlanetSpec.overlay(forWorldSize: p.sourceWorldSize)] }
         if p.directorEnabled { args += ["--set", "director.enabled=true"] }
         if p.storm { args += ["--weather-spinup", "\(p.weatherSpinup)"] }
         args += ["--houses", p.houses.rawValue]

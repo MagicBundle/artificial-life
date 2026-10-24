@@ -10,6 +10,8 @@ panel and `alife llm-check`, `DIRECTOR.md` §14) are implemented, and so is the 
 assesses research directions against prior work. `docs/3D.md` is the 3D world (gravity and a floor), built in PRs
 #15 to #20 (normative spec: `DESIGN.md` §27); its first long run is described in `docs/RESULTS_3D.md`, and a second
 seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`.
+`docs/DESIGN.md` §37 is the mini world (preset `mini3d`, overlay `storm160`, a 160-wide 3D world of about 10,500 organisms for quick
+play-tests; no simulation change); the launcher passes `storm160` for a 160-wide source and `storm` otherwise.
 `docs/GAMES.md` is the design of the gaming vertical (owner decisions in its §10); its build step G1, the observer
 layer (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`; normative spec `DESIGN.md` §28), is
 implemented, with `INTENT_VERSION` 2 (`RULES_V2`, the default until W2a made `RULES_V3` the default, calibrated offline on the G1 study windows; it
@@ -22,6 +24,7 @@ search (`src/alife/knn_metal.py`, `DESIGN.md` §4, row I48) is built: 75 steps/s
 same trajectory. It is the default on Metal in 2D and 3D (row I52); `ALIFE_KNN=mlx` forces the pure-MLX path.
 `docs/STORMS.md` is the storm world; W0 (the model, `weather.py`, `docs/STORMS_W0.md`) and W1 (`weather.*` config,
 `State.wx`, wind/rain/hazard in the step; `DESIGN.md` §30) are implemented and off by default.
+The World window's viewer v2 (legibility, the one-world flat map, the pose and input, the minimap, compass, scale bar and height colour; `gui/`, client only) is `docs/DESIGN.md` §36 and Review-log row I60 (A0 and A1; the globe is PR B); the keys and gestures are in `gui/README.md`.
 `docs/GAMES.md` §9 N1, the offline World Report (`python -m alife.analysis.world_report build | verify | probe`,
 `src/alife/game/report.py`, `templates.py`, `lexicon.py`; normative spec `DESIGN.md` §31), is implemented: code writes every
 sentence from templates and checks it, a local model (`--llm --model ID`) only selects and orders candidate ids, and no

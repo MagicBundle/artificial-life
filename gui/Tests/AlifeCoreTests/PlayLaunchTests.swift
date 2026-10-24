@@ -28,6 +28,22 @@ import Testing
         ])
     }
 
+    @Test func theOverlayIsChosenFromTheSizeOfTheSource() {
+        // The 160 world has its own weather overlay; the 320 world, and a source of unknown size, `storm`. Explicit, no alias.
+        for (size, overlay) in [(160.0, "storm160"), (320.0, "storm"), (64.0, "storm")] {
+            let planet = PlanetSpec(source: "s", sourceStep: 450_000, name: "m", sourceWorldSize: size)
+            #expect(PlayLaunch.arguments(planet: planet).starts(with: ["play", "--init-from", "runs/s:450000", "--overlay", overlay,
+                                                                       "--set"]), "\(size)")
+        }
+        #expect(PlayLaunch.arguments(planet: PlanetSpec(source: "s", name: "m"))[3...4] == ["--overlay", "storm"][...])
+        #expect(PlanetSpec.overlay(forWorldSize: 160) == "storm160" && PlanetSpec.overlay(forWorldSize: nil) == "storm")
+        #expect(PlanetSpec.defaultSpinup(forWorldSize: 160) == 36_000)
+        #expect(PlanetSpec.defaultSpinup(forWorldSize: 320) == 20_000 && PlanetSpec.defaultSpinup(forWorldSize: nil) == 20_000)
+        // A weather-on source is forked as it is, whatever its size.
+        let on = PlanetSpec(source: "p", name: "q", storm: false, weatherSpinup: 0, sourceWorldSize: 160)
+        #expect(!PlayLaunch.arguments(planet: on).contains("--overlay"))
+    }
+
     @Test func aWeatherOnSourceIsForkedWithoutTheOverlayAndTheSpinup() {
         let planet = PlanetSpec(source: "p", name: "q", storm: false, weatherSpinup: 0, directorEnabled: false,
                                 houses: .clade, seed: 5, rate: nil, director: .off)

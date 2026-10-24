@@ -15,7 +15,14 @@ package enum WorldAction: Equatable, Sendable {
     case followSelection
     /// One rung down or up the rate ladder.
     case slower, faster
-    case resetCamera
+    /// Fly to the Home view (`h`, `r`): the flat overview, north up, facing the populated side.
+    case home
+    /// Turn the map north up (`n`): the heading eases to 0.
+    case northUp
+    /// The minimap on or off (`i`).
+    case toggleMinimap
+    /// A standard view of a 3D world, animated: `t` Top, `o` Oblique, `l` Low, `s` Side (`ViewPreset`).
+    case viewPreset(ViewPreset)
     /// `Esc`, one level at a time and never resuming or acknowledging (DESIGN §34.7): cancel aiming a power, else drop its
     /// preview, else collapse the chapter card to the map, else clear the selection and the follow.
     case escape
@@ -37,7 +44,9 @@ package enum WorldAction: Equatable, Sendable {
 /// ```text
 /// space  pause / run        .  step                 c  next colour mode
 /// 1 2 3  agents / bonds / territory (off, borders, tint)   f  follow the selection
-/// [ ]    slower / faster along the rate rungs       r  reset the camera
+/// [ ]    slower / faster along the rate rungs       h r  home (the flat overview, a flight)
+/// n      north up                                   i  the minimap on or off
+/// t o l s  the standard views: Top, Oblique, Low, Side (animated; 3D worlds)
 /// g      continue (run)     p  the Powers tab       return  confirm the previewed power
 /// a      fly to the newest alert                    k  acknowledge the newest alert
 /// esc    one level back: aiming, the preview, the chapter card, the selection (never resumes, never acknowledges)
@@ -57,7 +66,13 @@ package enum WorldKeys {
         case "f": return .followSelection
         case "[": return .slower
         case "]": return .faster
-        case "r": return .resetCamera
+        case "r", "h": return .home
+        case "n": return .northUp
+        case "i": return .toggleMinimap
+        case "t": return .viewPreset(.top)
+        case "o": return .viewPreset(.oblique)
+        case "l": return .viewPreset(.low)
+        case "s": return .viewPreset(.side)
         case "\u{1B}": return .escape
         case "g": return .continueRun
         case "p": return .showPowers
@@ -70,7 +85,7 @@ package enum WorldKeys {
 
     /// Every character that does something, for the help text and for tests.
     package static let characters: [String] = [
-        " ", ".", "c", "1", "2", "3", "f", "[", "]", "r", "\u{1B}", "g", "p", "a", "k", "\r", "\u{3}",
+        " ", ".", "c", "1", "2", "3", "f", "[", "]", "r", "h", "n", "i", "t", "o", "l", "s", "\u{1B}", "g", "p", "a", "k", "\r", "\u{3}",
     ]
 
     /// The mode after `current` in the header's list (the first when `current` is not in it); nil for an empty list.
