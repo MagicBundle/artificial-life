@@ -155,6 +155,8 @@ final class WorldModel: ObservableObject {
     /// The scroll gesture in progress (DESIGN §36.5), and the floor point the left button grabbed.
     var scrollLaw = ScrollLaw()
     var grabAnchor: SIMD2<Float>?
+    /// The world opened and no frame has been seen: the Home view is still to face the populated side.
+    var homeAwaitsFrame = false
     /// A fly-to on the van Wijk path (not while following: a followed organism is not a path), and a north-up ease.
     var flight: Flight?
     var headingEase: HeadingEase?
@@ -266,6 +268,16 @@ final class WorldModel: ObservableObject {
             viewMenu.refresh()
         }
         if changes.contains(.header) || changes.contains(.frame) { refreshSizePolicy(force: changes.contains(.header)) }
+        // The Home view faces the side of the world the organisms are on, which the header does not say: the first frame of a world that
+        // has not been touched since it opened turns it that way (once).
+        if changes.contains(.header) {
+            homeAwaitsFrame = store.frame == nil
+            if store.header != nil { goHome() }  // (the renderer's turn below does it again when a view attaches later)
+        }
+        if homeAwaitsFrame, changes.contains(.frame), store.frame != nil {
+            homeAwaitsFrame = false
+            if cameraIsHome { goHome() }
+        }
         guard let renderer else { return }
         if changes.contains(.header) || configuredFor != store.header {
             configuredFor = store.header
@@ -510,7 +522,7 @@ final class WorldModel: ObservableObject {
 
     /// `n`: turn the map north up, the heading easing to 0 over 0.3 s.
     func northUp() {
-        guard pose.heading != 0 else { return }
+        guard pose.heading != 0, flight?.home != true else { return }  // (a flight to Home is turning the view north up already)
         headingEase = HeadingEase(from: pose.heading)
         startAnimating()
     }

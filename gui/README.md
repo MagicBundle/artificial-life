@@ -248,7 +248,7 @@ raw-Metal view with a control center docked to one side (left, right or bottom; 
   houses mode. The sheet scrolls its form; the Resume list and *Make planet and play* (the default action: Return) stay in view. Closing the window stops the process with `quit` (it saves a checkpoint), then SIGINT after 30 s.
 - **Clock strip** (always at the top of the dock): Pause, 0.25x, 0.5x, 1x, 2x, Max, `+1` and (paused) `+25`, the step, the achieved
   rate ("0.98x of 1x"), "late N" and "saving...".
-- **Map.** Drag pans, right or Option drag turns the view, the wheel and a pinch zoom. Organisms are drawn at every level as symbols
+- **Map.** Drag grabs the map (the point under the pointer stays under it), right or Option drag turns the heading and tilts the view, the mouse wheel and a pinch zoom about the pointer, and a trackpad's two-finger scroll pans (View > Scroll zooms restores zoom; a flick's momentum never zooms and one gesture zooms by at most a factor of 4). One world is ever drawn: the view may not reach past 0.49 L from its centre at any heading, so the farthest zoom shows the width of one world and a tilted view is eased back before it would show the map's edge. Fly-tos (the Cast, the Chronicle, a double click on an empty point) are arcs that zoom out and in; **Home** (`h`, `r`, the toolbar's house, View > Home view) flies to the flat overview facing the populated side, `n` turns north up. Organisms are drawn at every level as symbols
   whose size is capped so that single ones stay separable (View > Organism size > Physical draws them at their own size: a
   carpet at the region level); they fade in as they get big enough to see (the View menu's "Agent points" adds 1 px points at
   the planet level). View > Brightness (0.8 to 1.5) scales the map (disabled when no map is in view); View > Territory is off, borders or tint.
@@ -256,7 +256,7 @@ raw-Metal view with a control center docked to one side (left, right or bottom; 
   selects and flies there (double click follows); on a territory cell it selects the kin group; on nothing it clears. The pointer
   over something names it. (Organisms are drawn at the planet level but not picked there: zoom to the region level; DESIGN 36.9.) The inspector card is pinned under the Cast and Chronicle tabs.
 - **Keys** (the map has the focus): `space` pause/run, `.` step, `c` colour mode, `1 2 3` agents, bonds, territory (off, borders, tint), `f` follow the
-  selection, `[` `]` slower/faster, `r` reset the view, `esc` clear.
+  selection, `[` `]` slower/faster, `h` `r` Home, `n` north up, `i` the minimap setting, `esc` clear.
 
 ## Files
 
@@ -279,7 +279,7 @@ Testing), **`AlifeCoreTests`** for the library and **`AlifeControlTests`** for t
 - `Camera.swift`: the orbit and fly camera (view and projection matrices; the clip planes follow the pose)
 - The World window's pure types (DESIGN §33.4): `PlayRecords.swift` (the decoders of the play records), `PlayCommand.swift`,
   `PlayLaunch.swift`, `PlayWorlds.swift`, `WorldStore.swift` (the reducer of the records and the chronicle), `ClockStrip.swift`,
-  `DockLayout.swift`, `Torus.swift`, `WorldLevels.swift`, `MapFade.swift`, `WorldPalette.swift`, `WorldProjector.swift`, and for the
+  `DockLayout.swift`, `Torus.swift`, `WorldPose.swift` (the view's pose, the one-world patch, grab and zoom), `SeamCopies.swift`, `FlightPath.swift`, `WorldScroll.swift`, `WorldLevels.swift`, `MapFade.swift`, `WorldPalette.swift`, `WorldProjector.swift`, and for the
   interaction `WorldPicker.swift`, `WorldSelection.swift`, `WorldFollow.swift` (`FollowState`, `CameraGlide`), `WorldKeys.swift`,
   `CastPolicy.swift`, `Inspector.swift` and `WorldChronicle.swift` (grouping, filters, toasts)
 
@@ -343,6 +343,6 @@ cd gui
 ALIFE_GPU_TESTS=1 swift test --filter GPURenderTests
 ```
 
-`GPUWorldTests` (the World's shaders and pixels) and `WorldRenderBench` (the client's draw time, DESIGN §33.5.5, settings by
+`GPUWorldTests` (the World's shaders and pixels), `GPUPatchTests` (the one-world patch and its copies, drawn by the renderer of the hosted `WorldView`) and `WorldRenderBench` (the client's draw time, DESIGN §33.5.5, settings by
 `ALIFE_BENCH_*`) are opt in the same way. Without the variable they are reported as skipped. Run them when the GPU is free (a simulation on it slows both), and
 after any change to `Shaders.swift` or `Renderer.swift`.

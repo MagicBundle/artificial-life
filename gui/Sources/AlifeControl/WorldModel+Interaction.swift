@@ -55,9 +55,17 @@ extension WorldModel {
             selectPool(index)
         case .territory(_, let kin):
             selectKin(id: kin, fly: false, follow: false)
+            if clicks >= 2 { dive(at: point) }
         case .none:
-            if clicks == 1 { clearSelection() }
+            if clicks == 1 { clearSelection() } else { dive(at: point) }
         }
+    }
+
+    /// A double click on an empty point or a territory cell: fly there, and in to the region distance (DESIGN §36.5), unless the camera
+    /// is closer already. The point is the one of the plane through the view's centre under the pointer.
+    func dive(at point: CGPoint) {
+        guard let place = projector(size: freeRect.size).world(at: point, height: pose.z) else { return }
+        flyTo(SIMD3(place.x, place.y, 0), distance: min(camera.distance, flyDistance(.region)))
     }
 
     /// The pointer moved to `point`, or left the view (nil). No round trip to the world: the same hit test as a click.
@@ -342,7 +350,12 @@ extension WorldModel {
         glide.timeConstant = isFlying ? CameraGlide.flyConstant : CameraGlide.followConstant
         var moved = camera
         let moving = glide.advance(&moved, toward: goal, distance: distance, dt: dt, size: worldSize)
-        edit { $0 = moved }
+        editPose {
+            $0.x = moved.target.x
+            $0.y = moved.target.y
+            $0.z = moved.target.z
+            $0.distance = moved.distance
+        }
         if !moving, isFlying {
             isFlying = false
             flyDistance = nil
@@ -356,13 +369,17 @@ extension WorldModel {
         var f = current
         f.elapsed += min(max(dt, 0), 0.1)
         let at = f.path.pose(at: f.elapsed)
+        // Only the flight to Home turns the view (it goes north up and straight down): a flight to a place keeps the heading and the
+        // tilt it had, and so lets a turn the player asked for meanwhile (`n`, an Option drag) stand.
         editPose {
             $0.x = at.x
             $0.y = at.y
             $0.z = at.z
-            $0.heading = at.heading
-            $0.tilt = at.tilt
             $0.distance = at.distance
+            if f.home {
+                $0.heading = at.heading
+                $0.tilt = at.tilt
+            }
         }
         let done = f.elapsed >= f.path.duration
         flight = done ? nil : f

@@ -65,6 +65,7 @@ private final class Rig {
         #expect(await eventually { play.store.header != nil && play.store.clock != nil })
         #expect(await eventually { rig.settle(); return rig.metal != nil })
         rig.settle()
+        rig.model.reduceMotion = { false }  // (a flight is an arc whatever the machine's accessibility settings)
         return rig
     }
 

@@ -25,6 +25,7 @@ import simd
         let play = try await live(scratch)
         let model = WorldModel(play: play, defaults: try #require(UserDefaults(suiteName: "alife-worldmodel-\(UUID().uuidString)")))
         model.setFreeRect(free)
+        model.reduceMotion = { false }
         model.goHome()
         return (model, play)
     }
@@ -57,6 +58,22 @@ import simd
         #expect(model.cameraIsHome && model.level == .planet)
         #expect(abs(model.aspect - Float(900.0 / 700)) < 1e-6)
         #expect(model.worldSize == 48)
+    }
+
+    @Test func theFirstFrameOfAnUntouchedWorldTurnsTheHomeViewTowardsThePopulatedSide() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let script = try scratch.script("alife-live", "cat \"$1\"\nwhile IFS= read -r line; do :; done")
+        let play = PlayController()
+        defer { play.shutdown() }
+        let model = WorldModel(play: play, defaults: try #require(UserDefaults(suiteName: "alife-firstframe-\(UUID().uuidString)")))
+        model.setFreeRect(free)
+        play.start(.resume(PlayResume(run: "r")), executable: script, directory: scratch.url, arguments: [Repo.playFixtureURL("3d").path])
+        #expect(await eventually { play.store.header != nil && play.store.frame != nil })
+        let frame = try #require(play.store.frame)
+        let populated = try #require(WorldPose.populatedX(frame: frame, size: 48))
+        #expect(abs(Torus.wrapDelta(model.pose.x - populated, size: 48)) < 1e-3 && abs(model.pose.x - 24) > 0.01, "faces the organisms: \(model.pose.x) for \(populated)")
+        #expect(model.cameraIsHome && !model.homeAwaitsFrame)
     }
 
     @Test func aGrabKeepsThePointUnderThePointerWhereverItGoes() async throws {
@@ -280,6 +297,43 @@ import simd
         #expect(!model.isFlying, "a zoom stops the flight too")
     }
 
+    @Test func reduceMotionMakesAFlightAStraightQuarterSecondEase() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (model, play) = try await model(scratch)
+        defer { play.shutdown() }
+        model.zoom(by: 0.2)
+        model.editPose { $0.x = 5; $0.y = 33; $0.heading = 1.0 }
+        let from = model.pose.distance
+        model.reduceMotion = { true }
+        model.home()
+        #expect(model.flight?.path.duration == FlightPath.easeDuration)
+        var frames = 0
+        while model.advanceCamera(dt: 1.0 / 60) {
+            frames += 1
+            #expect(model.pose.distance <= model.homePose(header: model.play.store.header!).distance + 1e-3 && model.pose.distance >= from - 1e-3,
+                    "no zoom out and in: the distance goes one way")
+        }
+        #expect(frames <= 16 && model.cameraIsHome)
+    }
+
+    @Test func aTurnAskedForDuringAFlightToAPlaceStandsAndNorthUpDuringAFlightHomeIsLeftToIt() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (model, play) = try await model(scratch)
+        defer { play.shutdown() }
+        model.zoom(by: 0.3)
+        model.editPose { $0.heading = 1.0 }
+        model.flyTo(SIMD3(40, 30, 0), distance: nil)
+        model.northUp()
+        #expect(model.arriveForTests() && model.pose.heading == 0, "the flight did not turn it back to 1.0: \(model.pose.heading)")
+        model.editPose { $0.heading = 1.0 }
+        model.home()
+        model.northUp()
+        #expect(model.headingEase == nil, "Home turns it north up by itself")
+        #expect(model.arriveForTests() && model.pose.heading == 0 && model.cameraIsHome)
+    }
+
     @Test func northUpEasesTheHeadingToZeroInUnderAThirdOfASecondAndADragStopsIt() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
@@ -359,5 +413,13 @@ import simd
         defer { play.shutdown() }
         let p = model.projector(size: CGSize(width: 900, height: 700))
         #expect(p.camera == model.camera && p.size == 48 && p.level == model.level)
+    }
+}
+
+extension WorldModel {
+    /// Runs the camera's own motion for up to four seconds of sixtieths; true if it arrived.
+    func arriveForTests() -> Bool {
+        for _ in 0..<240 where !advanceCamera(dt: 1.0 / 60) { return true }
+        return false
     }
 }

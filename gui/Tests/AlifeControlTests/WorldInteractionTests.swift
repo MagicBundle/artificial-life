@@ -35,6 +35,7 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
     let clock = Clock()
     model.now = { clock.t }
     model.setFreeRect(CGRect(x: 0, y: 0, width: 900, height: 700))
+    model.reduceMotion = { false }
     model.goHome()
     model.edit {
         $0.distance = 30
