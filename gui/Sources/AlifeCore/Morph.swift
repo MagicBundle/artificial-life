@@ -27,6 +27,8 @@ package enum Morph {
     package static let mercatorFrom: Float = 0.4
     /// The height scale falls from `M` to `kz` over `s` in `[heightFrom, 1]`.
     package static let heightFrom: Float = 0.3
+    /// The farthest the view may be, as a fraction of `L` (the globe at 36% of the height).
+    package static let maxDistanceFraction: Float = 0.8
     /// The sphere's share of the smaller view dimension at Home.
     package static let homeFill: Float = 0.80
 
@@ -107,6 +109,31 @@ package enum Morph {
         package var up: SIMD3<Float>
         package var centre: SIMD3<Float>
 
+        /// The frame at a centre direction `c` (a unit vector, anywhere on the sphere, a pole cap included) with `heading`. `ybar` is the
+        /// Mercator row of its latitude, held at `+-L/2` inside a cap (the cap has no rows): the two agree wherever the centre is a place.
+        package init(centre c: SIMD3<Float>, heading: Float = 0, L: Float) {
+            let c = simd_normalize(c)
+            let lam = atan2(c.y, c.x)
+            x = Torus.wrap(L * lam / (2 * .pi), size: L)
+            latitude = asin(min(max(c.z, -1), 1))
+            ybar = abs(latitude) < GlobeMap.phiMax ? GlobeMap.ybar(latitude: latitude, L: L) : (latitude < 0 ? -L / 2 : L / 2)
+            self.heading = heading
+            centre = c
+            let east = SIMD3<Float>(-sin(lam), cos(lam), 0)
+            let north = simd_cross(c, east)
+            let ch = cos(heading), sh = sin(heading)
+            right = ch * east + sh * north
+            up = -sh * east + ch * north
+        }
+
+        /// The heading of a map whose screen-right axis is `right` at the centre `c`: the inverse of the frame's construction.
+        package static func heading(right: SIMD3<Float>, centre c: SIMD3<Float>) -> Float {
+            let lam = atan2(c.y, c.x)
+            let east = SIMD3<Float>(-sin(lam), cos(lam), 0)
+            let north = simd_cross(c, east)
+            return atan2(simd_dot(right, north), simd_dot(right, east))
+        }
+
         /// The frame at column `x` and signed row `ybar` of a world of size `L`.
         package init(x: Float, ybar: Float, heading: Float = 0, L: Float) {
             self.x = x
@@ -134,6 +161,26 @@ package enum Morph {
         return roll + (g - roll) * w
     }
 
+    /// The outward unit normal of the morphing surface (the shader's lighting normal, and the picker's front-facing test): the rolled
+    /// sphere's radial direction mixed with the Mercator sphere's by `w2` and renormalised; `(0, 0, 1)` at `s = 0`.
+    package static func normal(e: Float, n: Float, frame: Frame, s: Float, L: Float) -> SIMD3<Float> {
+        var roll = SIMD3<Float>(0, 0, 1)
+        if s > 1e-6 {
+            let a = M * lambda(s: s, latitude: frame.latitude)
+            let ch = cos(frame.heading), sh = sin(frame.heading)
+            let ux = a * (e * ch + n * sh), uy = a * (-e * sh + n * ch)
+            let rho = GlobeMap.radius(L: L) / s, r = hypot(ux, uy)
+            let theta = min(r / rho, 2 * .pi - 0.2)
+            let k = r > 1e-9 ? sin(theta) / r : 1 / rho
+            roll = SIMD3(k * ux, k * uy, cos(theta))
+        }
+        let w = w2(s: s)
+        if w <= 0 { return roll }
+        let q = GlobeMap.direction(longitude: GlobeMap.longitude(x: frame.x + e, L: L), latitude: GlobeMap.latitude(ybar: frame.ybar + n, L: L))
+        let g = SIMD3(simd_dot(q, frame.right), simd_dot(q, frame.up), simd_dot(q, frame.centre))
+        return simd_normalize(roll + (g - roll) * w)
+    }
+
     /// The scaled plane rolled onto a sphere of radius `R / s`, tangent at the centre (the plane itself at `s = 0`), the height carried
     /// along the rolled normal with `zeta`.
     package static func rollPosition(e: Float, n: Float, z: Float, frame: Frame, s: Float, L: Float, height: Float) -> SIMD3<Float> {
@@ -147,7 +194,9 @@ package enum Morph {
         let theta = min(r / rho, 2 * .pi - 0.2)
         let k = r > 1e-9 ? sin(theta) / r : 1 / rho
         let nhat = SIMD3(k * ux, k * uy, cos(theta))
-        return SIMD3(rho * k * ux, rho * k * uy, R - rho * (1 - cos(theta))) + lift * nhat
+        // `1 - cos` as `2 sin^2(theta/2)`: at a small `s` the radius `rho` is large and the cancellation would show.
+        let versine = 2 * sin(theta / 2) * sin(theta / 2)
+        return SIMD3(rho * k * ux, rho * k * uy, R - rho * versine) + lift * nhat
     }
 
     /// The flat layer of `.crossfade`: the plane at the morph's scale `a = M lambda(s)`, the height scaled by `zeta`.

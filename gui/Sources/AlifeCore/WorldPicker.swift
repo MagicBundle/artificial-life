@@ -61,6 +61,9 @@ package enum WorldPicker {
     package static func organism(at point: CGPoint, projector: WorldProjector, store: WorldStore,
                                  maxRadius: Float = .infinity) -> WorldPick? {
         guard let frame = store.frame, frame.n > 0 else { return nil }
+        if projector.isMorphing, let vantage = projector.vantage {
+            return morphOrganism(at: point, projector: projector, vantage: vantage, store: store, frame: frame, maxRadius: maxRadius)
+        }
         let camera = projector.camera
         let aspect = projector.aspect
         let matrix = camera.viewProjectionMatrix(aspect: aspect)
@@ -93,6 +96,39 @@ package enum WorldPicker {
             } else {
                 let d = d2.squareRoot()
                 if near == nil || d < near!.distance || (d == near!.distance && clip.w < near!.depth) { near = (i, d, clip.w) }
+            }
+        }
+        guard let index = disc?.index ?? near?.index else { return nil }
+        return .organism(uid: frame.uid[index], index: index)
+    }
+
+    /// The same rule on the globe or between: a row is placed by the morph (nil behind the limb), its radius is its physical radius
+    /// at the conformal scale of its place, over the depth along the view axis.
+    private static func morphOrganism(at point: CGPoint, projector: WorldProjector, vantage: WorldVantage, store: WorldStore,
+                                      frame: PlayFrame, maxRadius: Float) -> WorldPick? {
+        let radius = Float(store.header?.radius ?? 1)
+        let tol = Float(tolerance)
+        let perUnit = Float(0.5) * Float(projector.view.height) / tan(vantage.camera.fovY / 2)
+        let px = Float(point.x), py = Float(point.y)
+        var disc: (index: Int, depth: Float)?
+        var near: (index: Int, distance: Float, depth: Float)?
+        for i in 0..<frame.n {
+            let p = frame.position(i)
+            let o = vantage.offsets(x: p.x, y: p.y)
+            guard let at = vantage.screen(e: o.e, n: o.n, z: p.z, in: projector.view) else { continue }
+            let latitude = GlobeMap.latitude(ybar: vantage.frame.ybar + o.n, L: projector.size)
+            let w = Morph.w2(s: vantage.s)
+            let scale = Morph.M * ((1 - w) * Morph.lambda(s: vantage.s, latitude: vantage.frame.latitude) + w * cos(latitude))
+            let projected = min(radius * scale * perUnit / at.depth, maxRadius)
+            let dx = Float(at.point.x) - px, dy = Float(at.point.y) - py
+            let reach = max(tol, projected)
+            let d2 = dx * dx + dy * dy
+            if d2 > reach * reach { continue }
+            if projected >= tol {
+                if disc == nil || at.depth < disc!.depth { disc = (i, at.depth) }
+            } else {
+                let d = d2.squareRoot()
+                if near == nil || d < near!.distance || (d == near!.distance && at.depth < near!.depth) { near = (i, d, at.depth) }
             }
         }
         guard let index = disc?.index ?? near?.index else { return nil }
@@ -133,6 +169,7 @@ package enum WorldPicker {
     /// in front of the eye, and where the floor is not read (farther than `WorldFog.readReach` of the point looked at: in the haze, a
     /// cell of the territory is not under the pointer).
     package static func floorPoint(at point: CGPoint, projector: WorldProjector) -> SIMD2<Float>? {
+        if projector.isMorphing { return projector.world(at: point, height: 0) }
         let camera = projector.camera
         let nx = Float(point.x / projector.view.width) * 2 - 1
         let ny = 1 - Float(point.y / projector.view.height) * 2

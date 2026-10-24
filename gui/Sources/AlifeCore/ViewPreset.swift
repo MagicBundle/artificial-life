@@ -106,16 +106,22 @@ package struct ViewEase: Equatable, Sendable {
     ///   follows an organism, whose height it is).
     /// * The distance is `wish` (what the player asked for before a tilt held it nearer; the pose's own if there is none), held to the
     ///   limit of the angle it ends at: tilting to the Low view from the Home view comes in, and Top goes back out (`endWish`).
+    /// With `globe` (the globe exists for this world) the distance limit is the globe's, and the Side view keeps the distance it is
+    /// at once the view is morphing (`s > 0`): there the standard views are angles about the planet, the height fit is for the flat
+    /// close-up.
     package init(preset: ViewPreset, from pose: WorldPose, wish: Float?, aspect: Float, size: Float, height: Float, keepHeight: Bool,
-                 duration: Float = ViewEase.duration) {
+                 duration: Float = ViewEase.duration, globe: Bool = false) {
         let tilt = preset.tilt
         let heading = preset == .top ? 0 : pose.heading
         let z = keepHeight ? pose.z : 0
         var wanted = wish ?? pose.distance
-        if preset == .side, height > 0 {
+        let morphing = globe && !pose.faceDown
+            && Morph.s(distance: wish ?? pose.distance, L: size, fovY: pose.fovY, aspect: aspect) > 0
+        if preset == .side, height > 0, !morphing {
             wanted = height / (2 * tan(pose.fovY / 2)) / Self.sideFill
         }
-        let limit = WorldPose.maxDistance(size: size, fovY: pose.fovY, aspect: aspect, heading: heading, z: z, tilt: tilt)
+        let limit = WorldPose.maxDistance(size: size, fovY: pose.fovY, aspect: aspect, heading: heading, z: z, tilt: tilt,
+                                          globe: globe && !pose.faceDown)
         wanted = max(wanted, WorldLevels.minDistance)
         self.init(fromTilt: pose.tilt, toTilt: tilt, fromHeading: pose.heading, toHeading: heading, fromZ: pose.z, toZ: z,
                   fromDistance: pose.distance, toDistance: min(wanted, limit), duration: duration)
@@ -127,9 +133,10 @@ package struct ViewEase: Equatable, Sendable {
     /// the Top view unless `keepHeight` is set (the camera follows an organism): the Top view the Top preset has, not one
     /// of the plane an organism was on.
     package init(tiltTo tilt: Float, from pose: WorldPose, wish: Float?, aspect: Float, size: Float, keepHeight: Bool = true,
-                 duration: Float = ViewEase.duration) {
+                 duration: Float = ViewEase.duration, globe: Bool = false) {
         let z = tilt == 0 && !keepHeight ? 0 : pose.z
-        let limit = WorldPose.maxDistance(size: size, fovY: pose.fovY, aspect: aspect, heading: pose.heading, z: z, tilt: tilt)
+        let limit = WorldPose.maxDistance(size: size, fovY: pose.fovY, aspect: aspect, heading: pose.heading, z: z, tilt: tilt,
+                                          globe: globe && !pose.faceDown)
         let wanted = max(wish ?? pose.distance, WorldLevels.minDistance)
         self.init(fromTilt: pose.tilt, toTilt: tilt, fromHeading: pose.heading, toHeading: pose.heading, fromZ: pose.z, toZ: z,
                   fromDistance: pose.distance, toDistance: min(wanted, limit), duration: duration)
