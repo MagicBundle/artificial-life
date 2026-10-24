@@ -177,6 +177,91 @@ struct GPUCameraTests {
         #expect(lumas[0] < lumas[1] && lumas[1] < lumas[2], "the haze follows the Brightness setting like the sea does: \(lumas)")
     }
 
+    // MARK: The frame and the edge-on view
+
+    /// The frame of the world (View > Frame, on by default) is faded by the haze like the floor: in a tilted view its far edges are not a
+    /// thin bright rectangle across the haze and the sky. The detector takes no median (a median removes lines one or two pixels wide): the
+    /// pictures with the frame and without it are compared pixel by pixel, in the neighbourhood of the frame's own edges projected on the
+    /// picture, where the edge is more than 0.85 L from the point looked at (the fog is over 90% there), and where it is within the clear box
+    /// the frame is there (it is drawn: this is not a test of nothing).
+    @Test func theFrameOfTheWorldIsFadedByTheHazeAndNotAThinBrightLineAcrossTheSkyAndTheFarFloor() async throws {
+        let world = try await hosted(size: CGSize(width: 1100, height: 700))
+        defer { world.finish() }
+        let model = world.model
+        let L = model.worldSize, H = model.height
+        try world.show(map: uniform(from: try #require(world.play.store.map)))
+        let renderer = try world.renderer()
+        renderer.worldDraw.equatorLines = false
+        var near = 0, far = 0
+        for (tilt, heading) in [(Float(45), Float(0)), (70, 0), (70, 30), (85, 0), (90, 200)] {
+            // The point looked at on the equator (the Home view's): its far edge is a world away.
+            place(model, tilt: tilt, heading: heading, x: L / 2, y: 0)
+            model.display.frame = false
+            let without = try world.render("camera-frame-off-\(Int(tilt))-\(Int(heading))")
+            model.display.frame = true
+            let with = try world.render("camera-frame-on-\(Int(tilt))-\(Int(heading))")
+            let pose = model.pose
+            let projector = model.projector(size: model.freeRect.size)
+            /// The largest difference over the 5 x 5 pixels about the point of the picture where the frame's point `p` is drawn; nil off the picture.
+            func difference(at p: SIMD3<Float>) -> Int? {
+                guard let at = projector.screenOfImage(p) else { return nil }
+                let (cx, cy) = (Int(at.x.rounded()), Int(at.y.rounded()))
+                guard cx >= 3, cy >= 3, cx < with.width - 3, cy < with.height - 3 else { return nil }
+                var most = 0
+                for y in (cy - 2)...(cy + 2) {
+                    for x in (cx - 2)...(cx + 2) {
+                        let a = with.pixel(x, y), b = without.pixel(x, y)
+                        most = max(most, abs(Int(a.r) - Int(b.r)), abs(Int(a.g) - Int(b.g)), abs(Int(a.b) - Int(b.b)))
+                    }
+                }
+                return most
+            }
+            // The twelve edges of the box, a point every 1/400 of the way along each.
+            let corners: [SIMD3<Float>] = (0..<8).map { SIMD3(Float($0 & 1) * L, Float(($0 >> 1) & 1) * L, Float(($0 >> 2) & 1) * H) }
+            var worst = 0, worstAt = SIMD3<Float>.zero
+            for (i, a) in corners.enumerated() {
+                for (j, b) in corners.enumerated() where j > i && (i ^ j).nonzeroBitCount == 1 {
+                    for step in 0...400 {
+                        let p = a + (b - a) * (Float(step) / 400)
+                        let c = max(abs(p.x - pose.x), abs(p.y - pose.y))
+                        guard let d = difference(at: p) else { continue }
+                        if c > 0.85 * L {
+                            far += 1
+                            if d > worst { worst = d; worstAt = p }
+                        } else if c < 0.5 * L, d > 30 {
+                            near += 1
+                        }
+                    }
+                }
+            }
+            #expect(worst <= 8, "tilt \(tilt) heading \(heading): the frame is faded by the haze, a line of \(worst) levels remains at \(worstAt)")
+        }
+        #expect(far > 300, "the far edges were in the pictures: \(far) points")
+        #expect(near > 300, "and the frame is drawn in the clear part of the pictures: \(near) points")
+    }
+
+    /// Edge-on by the handle or an Option drag (from the floor) has the eye at the middle of the height: the floor is under it and rises to
+    /// the haze at the horizon, not a flat slab (at the eye's own level the floor is a line, and the lower half was the clear colour).
+    @Test func edgeOnFromTheFloorShowsTheFloorBelowTheHorizonNotAFlatSlab() async throws {
+        let world = try await hosted(size: CGSize(width: 1100, height: 700))
+        defer { world.finish() }
+        let model = world.model
+        try world.show(map: uniform(from: try #require(world.play.store.map)))
+        try world.renderer().worldDraw.equatorLines = false
+        model.goHome()
+        model.setTilt(.pi / 2)
+        #expect(model.pose.z == 0)
+        let image = try world.render("camera-edge-on-from-the-floor")
+        let x = image.width / 2
+        func luma(_ y: Int) -> Int { let p = image.pixel(x, y); return Int(p.r) + 2 * Int(p.g) + Int(p.b) }
+        let lower = (image.height / 2 + 4..<image.height - 2).map(luma)
+        #expect((lower.max() ?? 0) - (lower.min() ?? 0) > 25, "the floor emerges from the haze towards the viewer: \(lower.min() ?? 0)...\(lower.max() ?? 0)")
+        #expect(luma(image.height - 3) > luma(image.height / 2 + 4) + 25, "nearer is the sea, brighter than the haze")
+        // Not blank: at no row below the horizon is it the clear colour.
+        let clearLuma = 9 + 2 * 10 + 14
+        #expect(lower.allSatisfy { $0 > clearLuma + 10 }, "the floor, not the clear colour, is below the horizon")
+    }
+
     // MARK: The seam at grazing angles
 
     @Test func theWrapInYIsContinuousAtGrazingAnglesAndEachCopyHoldsTheMapWhereItBelongs() async throws {

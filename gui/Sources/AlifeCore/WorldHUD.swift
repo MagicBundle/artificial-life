@@ -19,6 +19,9 @@ package enum HUDTarget: Hashable, Sendable {
     case tilt
     /// A standard view (`ViewPreset`) of the strip over the controls.
     case preset(ViewPreset)
+    /// The plate of the angle's readout: it takes the press (a click there is not a click on the map: it must not clear the selection or
+    /// dive to the floor under it) and does nothing.
+    case readout
 }
 
 /// A button of the strip of standard views.
@@ -32,9 +35,9 @@ package struct PresetRect: Equatable, Sendable {
 /// the readout "Tilt 45° · heading 270°", the compass, the 3D button, the tilt handle, and the zoom buttons. Pure; the overlay draws
 /// them where it says and the model hit-tests them with `target(at:)`.
 ///
-/// The column is built from the bottom up and keeps what fits, in this order: the zoom buttons, the compass, the 3D button, the tilt
-/// handle (from 48 to 96 points tall, as room allows), the strip and the readout. A world with no north (2D) has none of the
-/// view controls but the zoom buttons.
+/// The column is built from the bottom up and keeps what fits, in this order: the zoom buttons, the compass, the 3D button, the strip
+/// of standard views (the most evident control, with words), the readout, and the tilt handle (from 48 to 96 points tall, as room
+/// allows). A world with no north (2D) has none of the view controls but the zoom buttons.
 package struct WorldHUD: Equatable, Sendable {
     package static let margin: CGFloat = 12
     /// The minimap's side is the least of this and `minimapFraction` of the free rectangle's shorter side.
@@ -98,25 +101,28 @@ package struct WorldHUD: Equatable, Sendable {
         zoomIn = CGRect(x: centreX - b / 2, y: y - 2 * b - gap, width: b, height: b)
         y -= 2 * b + 2 * gap
         guard wantsCompass else { return }
-        // What fits above them, in the order of priority: the compass, the 3D button, the shortest track, the strip and the readout.
-        // (`need` counts the heights and the gap above each.)
+        // What fits above them, in the order of priority: the compass, the 3D button, the strip of views, the readout over it, the
+        // shortest track. (`need` counts the heights and the gap above each.)
         let available = y - top
         var need: CGFloat = 0
         func fits(_ height: CGFloat) -> Bool { need + height <= available }
-        let strip = Self.stripHeight + 4 + Self.readoutHeight
-        var hasToggle = false, hasTrack = false, hasStrip = false
+        var hasToggle = false, hasTrack = false, hasStrip = false, hasReadout = false
         guard fits(Self.compassSide) else { return }
         need += Self.compassSide + gap
         if fits(b) {
             hasToggle = true
             need += b + gap
+            if fits(Self.stripHeight) {
+                hasStrip = true
+                need += Self.stripHeight
+                if fits(Self.readoutHeight + 4) {
+                    hasReadout = true
+                    need += Self.readoutHeight + 4
+                }
+            }
             if fits(Self.trackLength.lowerBound) {
                 hasTrack = true
                 need += Self.trackLength.lowerBound + gap
-                if fits(strip) {
-                    hasStrip = true
-                    need += strip + gap
-                }
             }
         }
         let track = hasTrack ? min(Self.trackLength.lowerBound + max(available - need, 0), Self.trackLength.upperBound) : 0
@@ -136,7 +142,10 @@ package struct WorldHUD: Equatable, Sendable {
                 presets.append(PresetRect(preset: preset, rect: CGRect(x: x, y: y - Self.stripHeight, width: width, height: Self.stripHeight)))
                 x += width
             }
-            readout = CGRect(x: right - Self.stripWidth, y: y - strip, width: Self.stripWidth, height: Self.readoutHeight)
+            if hasReadout {
+                readout = CGRect(x: right - Self.stripWidth, y: y - Self.stripHeight - 4 - Self.readoutHeight, width: Self.stripWidth,
+                                 height: Self.readoutHeight)
+            }
         }
     }
 
@@ -150,6 +159,7 @@ package struct WorldHUD: Equatable, Sendable {
         if let home, home.contains(point) { return .home }
         if let minimap, minimap.contains(point) { return .minimap }
         for entry in presets where entry.rect.contains(point) { return .preset(entry.preset) }
+        if let readout, readout.contains(point) { return .readout }
         if let compass, compass.contains(point) { return .compass }
         if let toggle3D, toggle3D.contains(point) { return .toggle3D }
         if let tiltTrack, tiltTrack.insetBy(dx: -4, dy: -4).contains(point) { return .tilt }

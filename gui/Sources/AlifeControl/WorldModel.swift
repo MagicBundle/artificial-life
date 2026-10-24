@@ -204,8 +204,11 @@ final class WorldModel: ObservableObject {
     var distanceWish: Float?
     /// The tilt the 3D button goes back to: the last angled view (Oblique at first).
     var lastTilt = ViewPreset.oblique.tilt
+    /// The distance the player had before the Side view put the view at a distance of its own (`before`), and the distance it put it at
+    /// (`at`): the next standard view takes `before` for its wish if the zoom is still at `at`.
+    var sideReturn: (before: Float, at: Float)?
     /// While the compass is turned like a dial: the angle of the pointer about its centre and the heading when it went down.
-    var compassTurn: (angle: Float, heading: Float)?
+    var compassTurn: (angle: Float?, heading: Float)?
     /// While the tilt handle is dragged: how far the pointer is from the thumb's centre (so that the thumb does not jump).
     var tiltGrab: CGFloat = 0
     /// The colour default is being applied (not the player's choice, so not kept).
@@ -292,6 +295,7 @@ final class WorldModel: ObservableObject {
     private func refitToShape(aspect: Float) {
         guard play.store.header != nil, aspect.isFinite, aspect > 0 else { return }
         distanceWish = nil
+        sideReturn = nil
         if cameraIsHome {
             pose.distance = pose.distanceLimit(size: worldSize, aspect: aspect)
         } else {
@@ -492,6 +496,7 @@ final class WorldModel: ObservableObject {
         guard let header = play.store.header else { return }
         pose = homePose(header: header)
         distanceWish = nil
+        sideReturn = nil
         viewEase = nil
         cameraIsHome = true
         pushCamera()
@@ -526,6 +531,7 @@ final class WorldModel: ObservableObject {
         let wish = distanceWish ?? before
         change(&pose)
         if pose.distance == before { pose.distance = wish }
+        pose.followsHeight = Self.followsHeight(followState.target)
         let requested = pose.distance
         pose.clamp(aspect: aspect, size: worldSize, height: height)
         distanceWish = pose.distance < requested * (1 - 1e-5) ? requested : nil
@@ -561,9 +567,10 @@ final class WorldModel: ObservableObject {
 
     /// The pointer is at `point` with the left button down: the point grabbed is under it, exactly (`WorldPose.grab`).
     func grab(to point: CGPoint) {
+        // (a press that took hold of nothing, in the sky or the haze of a tilted view, moves nothing and stops nothing: a follow goes on)
+        guard let anchor = grabAnchor else { return }
         cancelCameraMotion()
         headingEase = nil
-        guard let anchor = grabAnchor else { return }
         let ndc = WorldPose.ndc(of: point, in: viewSize)
         let (aspect, world) = (self.aspect, worldSize)
         editPose { $0.grab(anchor: anchor, at: ndc, aspect: aspect, size: world) }
@@ -609,9 +616,10 @@ final class WorldModel: ObservableObject {
         editPose { $0.zoom(by: factor, at: ndc, aspect: aspect, size: world, height: height) }
     }
 
-    /// `n`: turn the map north up, the heading easing to 0 over 0.3 s.
+    /// `n`, a click on the compass: turn the map north up, the heading easing to 0 over 0.3 s.
     func northUp() {
         guard pose.heading != 0, flight?.home != true else { return }  // (a flight to Home is turning the view north up already)
+        viewEase = nil  // (an ease to a view would turn the heading back to its own every frame: any other input ends it where it is)
         headingEase = HeadingEase(from: pose.heading)
         startAnimating()
     }

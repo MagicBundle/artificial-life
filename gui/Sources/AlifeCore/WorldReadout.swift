@@ -85,10 +85,36 @@ package enum Compass {
         Float(atan2(point.x - centre.x, -(point.y - centre.y)))
     }
 
-    /// The screen angle of north, clockwise from up, in radians in `(-pi, pi]`: 0 when the map is north up.
+    /// The dial's dead zone: a pointer this close to the centre of the compass (in points) has no angle worth turning by.
+    package static let deadZone: CGFloat = 6
+
+    /// `angle(of:around:)`, nil within the dead zone about the centre (the angle of a vector of a few points is the noise of the
+    /// pointer's position, and a drag that passes through the centre would jump the heading).
+    package static func dialAngle(of point: CGPoint, around centre: CGPoint) -> Float? {
+        hypot(point.x - centre.x, point.y - centre.y) < deadZone ? nil : angle(of: point, around: centre)
+    }
+
+    /// The screen angle of north, clockwise from up, in radians in `(-pi, pi]`: 0 when the map is north up. The exact projection of
+    /// the north vector on the screen; near edge-on it swings sideways whatever the heading and at edge-on it is the noise of
+    /// `north . right` (`needleAngle` is what the compass draws).
     package static func northAngle(camera: Camera) -> Float {
         let north = SIMD3<Float>(0, 1, 0)
         return atan2(simd_dot(north, camera.right), simd_dot(north, camera.up))
+    }
+
+    /// The tilts between which the needle goes from the projection to the heading alone.
+    package static let needleBlend: ClosedRange<Float> = (60 * Float.pi / 180)...(85 * Float.pi / 180)
+
+    /// The angle of the compass's needle, clockwise from up, in radians in `(-pi, pi]`: north's projection on the screen
+    /// (`atan2(sin h, cos h cos tilt)` for the heading `h`) for a view that looks down, going over smoothly to the heading alone (the
+    /// angle of the Top view) from 60 degrees to 85, so that a view looking along the floor shows north where the heading says it is
+    /// (up when the view faces north) and not a sideways arrow that is float noise at exactly edge-on.
+    package static func needleAngle(heading: Float, tilt: Float) -> Float {
+        let range = needleBlend
+        let t = min(max((tilt - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
+        let w = t * t * (3 - 2 * t)
+        let up = cos(heading) * (cos(tilt) * (1 - w) + w)
+        return atan2(sin(heading), up)
     }
 }
 

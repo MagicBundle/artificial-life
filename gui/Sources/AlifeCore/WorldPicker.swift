@@ -104,10 +104,12 @@ package enum WorldPicker {
     package static func storm(at point: CGPoint, projector: WorldProjector, storms: PlayStorms) -> Int? {
         var best: (id: Int, score: CGFloat)?
         for glyph in projector.glyphs(of: storms) {
+            // The ring is a circle on the floor, drawn as an ellipse flattened by the view: so is the target (at least a tolerance tall).
             let reach = max(glyph.radius, stormTolerance)
-            let d = hypot(glyph.center.x - point.x, glyph.center.y - point.y)
-            guard d <= reach else { continue }
-            let score = d / reach
+            let reachY = max(reach * glyph.flatten, min(reach, stormTolerance))
+            let dx = (glyph.center.x - point.x) / reach, dy = (glyph.center.y - point.y) / reachY
+            let score = hypot(dx, dy)
+            guard score <= 1 else { continue }
             if best == nil || score < best!.score { best = (glyph.id, score) }
         }
         return best?.id

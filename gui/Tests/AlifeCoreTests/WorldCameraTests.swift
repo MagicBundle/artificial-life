@@ -57,7 +57,7 @@ import simd
             ViewEase(preset: preset, from: from ?? pose, wish: wish, aspect: aspect, size: L, height: H, keepHeight: keep)
         }
         #expect(ease(.top).toHeading == 0 && ease(.oblique).toHeading == 1.0 && ease(.low).toHeading == 1.0 && ease(.side).toHeading == 1.0)
-        #expect(ease(.top).toZ == 0 && ease(.oblique).toZ == 0 && ease(.low).toZ == 0 && ease(.side).toZ == H / 2)
+        #expect(ease(.top).toZ == 0 && ease(.oblique).toZ == 0 && ease(.low).toZ == 0 && ease(.side).toZ == 0, "the Side view looks at the middle by the pose's lift, not by a stored height")
         var raised = pose
         raised.z = 30
         #expect(ease(.side, keep: true, from: raised).toZ == 30 && ease(.oblique, keep: true, from: raised).toZ == 30, "a followed organism's height stays")
@@ -80,7 +80,8 @@ import simd
             end.tilt = e.toTilt; end.heading = e.toHeading; end.z = e.toZ; end.distance = e.toDistance
             let before = end
             end.clamp(aspect: aspect, size: L, height: H)
-            #expect(end == before, "\(preset): the pose it ends at is already clamped")
+            #expect((end.tilt, end.heading, end.z, end.distance) == (before.tilt, before.heading, before.z, before.distance),
+                    "\(preset): the pose it ends at is already clamped")
         }
     }
 

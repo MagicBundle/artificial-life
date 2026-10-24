@@ -246,6 +246,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let insetPointPipeline: any MTLRenderPipelineState
     /// The sky of a tilted view: a full-screen pass at the far plane, drawn before the map.
     private let skyPipeline: any MTLRenderPipelineState
+    private let worldBoxPipeline: any MTLRenderPipelineState
     /// One-texel stand-ins for the planes and the territory of a world without them.
     private let blankPlane: any MTLTexture
     private let blankTerritory: any MTLTexture
@@ -421,6 +422,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         insetPointPipeline = try pipeline("minimap points", vertex: Shaders.insetPointVertex, fragment: Shaders.pointFragment,
                                           blend: true)
         skyPipeline = try pipeline("sky", vertex: Shaders.skyVertex, fragment: Shaders.skyFragment, blend: false)
+        worldBoxPipeline = try pipeline("world frame", vertex: Shaders.worldBoxVertex, fragment: Shaders.worldBoxFragment, blend: true)
         func blank(_ format: MTLPixelFormat) throws -> any MTLTexture {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: 1, height: 1, mipmapped: false)
             d.usage = .shaderRead
@@ -912,7 +914,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
         }
         if display.frame {
-            encoder.setRenderPipelineState(boxPipeline)
+            encoder.setRenderPipelineState(worldBoxPipeline)
+            setWorld(&u)
             encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 24)
         }
         encodeInset(into: encoder, slot: slot, size: size, uniforms: u, bindMapTextures: bindMapTextures, setWorld: setWorld)

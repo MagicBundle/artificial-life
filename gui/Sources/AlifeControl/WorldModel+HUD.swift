@@ -47,7 +47,8 @@ extension WorldModel {
         switch target {
         case .compass:
             if let point, let compass = hud.compass {
-                compassTurn = (Compass.angle(of: point, around: CGPoint(x: compass.midX, y: compass.midY)), pose.heading)
+                // (a press at the dial's centre has no angle: the reference is the first sample outside the dead zone)
+                compassTurn = (Compass.dialAngle(of: point, around: CGPoint(x: compass.midX, y: compass.midY)), pose.heading)
             }
         case .tilt:
             guard let point, let track = hud.tiltTrack else { return }
@@ -66,8 +67,14 @@ extension WorldModel {
         case .minimap: dragMinimap(to: point)
         case .compass:
             guard let turn = compassTurn, let compass = hud.compass else { return }
-            let now = Compass.angle(of: point, around: CGPoint(x: compass.midX, y: compass.midY))
-            setHeading(WorldPose.wrap(turn.heading + (now - turn.angle)))
+            // Within a few points of the centre the pointer's angle is noise, and a pass through it must not jump the heading: the
+            // heading stays, and the dial goes on from the first angle outside the dead zone.
+            guard let now = Compass.dialAngle(of: point, around: CGPoint(x: compass.midX, y: compass.midY)) else { return }
+            guard let from = turn.angle else {
+                compassTurn = (now, pose.heading)
+                return
+            }
+            setHeading(WorldPose.wrap(turn.heading + (now - from)))
         case .tilt:
             guard let track = hud.tiltTrack else { return }
             setTilt(WorldHUD.tilt(atY: point.y, track: track, grab: tiltGrab))
@@ -100,7 +107,7 @@ extension WorldModel {
         let rects = hud
         func inside(_ rect: CGRect?) -> Bool { rect?.contains(point) ?? false }
         switch target {
-        case .map: return
+        case .map, .readout: return
         case .minimap:
             guard !dragged, let inset, let place = inset.torus(atPoint: point) else { return }
             cancelCameraMotion()
@@ -159,12 +166,29 @@ extension WorldModel {
         return WorldReadout.floorText(x: place.x, y: place.y, size: worldSize)
     }
 
+    // MARK: The height guides of an edge-on view
+
+    /// The floor, the middle and the ceiling of the world (heights 0, H/2 and H) at the depth of the point looked at, as rows of the free
+    /// rectangle, for a view that looks nearly along the floor (from `WorldPose.gripTilt`: the Side view, the handle or an Option drag
+    /// at the bottom) in a world with a height, in the engine's colours (the height colour has a legend of its own). A perspective view
+    /// has no single scale for height: the rows are true at the depth of the point looked at, which is where the life of the
+    /// middle of the picture is. Empty when fewer than two are in the picture.
+    var heightGuides: [(height: Float, y: CGFloat)] {
+        guard hasTiltableView, height > 0, pose.tilt >= WorldPose.gripTilt, !display.heightColour, freeRect.width >= 1 else { return [] }
+        let projector = projector(size: freeRect.size)
+        let rows = [0, height / 2, height].compactMap { h -> (height: Float, y: CGFloat)? in
+            guard let at = projector.screenOfImage(SIMD3(pose.x, pose.y, h)), at.y >= 0, at.y <= freeRect.height else { return nil }
+            return (h, at.y)
+        }
+        return rows.count >= 2 ? rows : []
+    }
+
     // MARK: The scale bar and the organism reference
 
     /// Points of the free rectangle per world unit at the point looked at; nil when it is not on screen or has no scale.
     var pointsPerUnit: Float? {
         guard freeRect.width >= 1, freeRect.height >= 1 else { return nil }
-        let at = SIMD3<Float>(pose.x, pose.y, pose.z)
+        let at = SIMD3<Float>(pose.x, pose.y, pose.lookZ)
         return projector(size: freeRect.size).points(ofUnits: 1, at: at).map { Float($0) }
     }
 
@@ -173,7 +197,7 @@ extension WorldModel {
     var scaleBar: (bar: ScaleBar, organism: ScaleBar.OrganismReference?, plane: String?)? {
         guard let scale = pointsPerUnit, let bar = ScaleBar.choose(pointsPerUnit: scale) else { return nil }
         // (from a tilt of 0.3 radians the scale changes down the picture: the bar is true at the point looked at, and says so)
-        let plane = ScaleBar.planeText(z: pose.z, height: height).map { pose.tilt > 0.3 ? $0 + " at the centre" : $0 }
+        let plane = ScaleBar.planeText(z: pose.lookZ, height: height).map { pose.tilt > 0.3 ? $0 + " at the centre" : $0 }
         guard let header = play.store.header else { return (bar, nil, plane) }
         let radius = Float(header.radius)
         let physicalPixels = radius * scale * pixelsPerPoint

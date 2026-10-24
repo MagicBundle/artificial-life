@@ -34,10 +34,13 @@ enum Shaders {
     // The sky above the horizon of a tilted view (DESIGN 36.5, camera controls): a full-screen pass, drawn first.
     static let skyVertex = "skyVertex"
     static let skyFragment = "skyFragment"
+    // The world's frame in the World window, faded by the haze like the floor (DESIGN 36.5, camera controls).
+    static let worldBoxVertex = "worldBoxVertex"
+    static let worldBoxFragment = "worldBoxFragment"
     static let entryPoints = [
         sphereVertex, sphereFragment, bondVertex, boxVertex, lineFragment, planeVertex, planeFragment, sliceFragment,
         agentVertexA, agentFragmentA, agentFragmentFlat, bondVertexA, pointVertexA, pointFragment, mapVertex, mapFragment,
-        insetVertex, insetPointVertex, skyVertex, skyFragment,
+        insetVertex, insetPointVertex, skyVertex, skyFragment, worldBoxVertex, worldBoxFragment,
     ]
 
     static let source = """
@@ -301,6 +304,45 @@ enum Shaders {
     fragment float4 lineFragment(LineVarying in [[stage_in]])
     {
         return in.color;
+    }
+
+    // The frame of the world in the World window: the same twelve edges, faded by the haze as the floor is (the Chebyshev distance of
+    // the point of the edge from the point looked at, past the clear box), so that in a tilted view the far edges of the world are not a
+    // thin bright rectangle across the haze and the sky. Blended: the line goes, it is not mixed into a colour the sky is not.
+    struct WorldBoxVarying {
+        float4 position [[position]];
+        float2 xy;
+    };
+
+    vertex WorldBoxVarying worldBoxVertex(uint vid [[vertex_id]],
+                                          constant Scene& scene [[buffer(0)]])
+    {
+        uint edge = vid / 2u;
+        uint axis = edge / 4u;
+        uint combo = edge % 4u;
+        float u = float(combo & 1u);
+        float v = float((combo >> 1u) & 1u);
+        float w = ((vid & 1u) != 0u) ? 1.0 : 0.0;
+        float3 unit = float3(u, v, w);
+        if (axis == 0u) { unit = float3(w, u, v); }
+        if (axis == 1u) { unit = float3(u, w, v); }
+        float3 p = unit * float3(scene.world.x, scene.world.x, scene.world.y);
+        WorldBoxVarying out;
+        out.position = scene.viewProjection * float4(p, 1.0);
+        out.xy = p.xy;
+        return out;
+    }
+
+    fragment float4 worldBoxFragment(WorldBoxVarying in [[stage_in]],
+                                     constant WorldU& world [[buffer(7)]])
+    {
+        float visible = 1.0;
+        if (world.fog.a > 0.5) {
+            float2 off = abs(in.xy - world.target.xy);
+            float x = max(max(off.x, off.y) - world.fogShape.x, 0.0) * world.fogShape.y;
+            visible = exp(-x * x);
+        }
+        return float4(0.5, 0.58, 0.7, visible);
     }
 
     // ---- Planes: the floor, the surface and the field slice, each a quad of [0, L] x [0, L] at some z ----

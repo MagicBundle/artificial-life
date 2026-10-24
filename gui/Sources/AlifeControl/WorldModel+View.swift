@@ -15,30 +15,48 @@ extension WorldModel {
     /// Eases to a standard view (`t`, `o`, `l`, `s`, the strip, the View menu): the tilt, the heading, the height of the point looked at
     /// and the distance go there over half a second (a quarter under reduced motion). A follow goes on (the view is then of the
     /// organism, at its height), a flight under way stops where it is, and any other input ends the ease where it is.
+    ///
+    /// The Side view has a distance of its own, so the one the player had is kept (`sideReturn`) and is the wish of the next view
+    /// chosen from it, if the zoom has not been touched since: Top after Side goes back to the overview and not to a third of the world.
     func viewPreset(_ preset: ViewPreset) {
         guard hasTiltableView, play.store.header != nil else { return }
         dismissHint()
-        let following = !followState.target.isNone
+        let following = Self.followsHeight(followState.target)
         stopFlight()
         headingEase = nil
         if pose.tilt > 0.05 { lastTilt = pose.tilt }
-        viewEase = ViewEase(preset: preset, from: pose, wish: distanceWish, aspect: aspect, size: worldSize, height: height,
-                            keepHeight: following, duration: reduceMotion() ? ViewEase.reducedDuration : ViewEase.duration)
+        var wish = distanceWish
+        if preset != .side { wish = distanceToReturnTo() ?? wish }
+        let (before, tiltBefore) = (distanceWish ?? pose.distance, pose.tilt)
+        let ease = ViewEase(preset: preset, from: pose, wish: wish, aspect: aspect, size: worldSize, height: height, keepHeight: following,
+                            duration: reduceMotion() ? ViewEase.reducedDuration : ViewEase.duration)
+        if preset == .side, tiltBefore < WorldPose.gripTilt { sideReturn = (before: before, at: ease.toDistance) }
+        viewEase = ease
         startAnimating()
     }
 
-    /// The 3D button: from a view that is angled to straight down (the heading is kept), from the Top view to the angle last used
-    /// (Oblique at first), eased.
+    /// The distance the player had before the Side view, while the zoom is still where the Side view put it; nil otherwise. The memory
+    /// goes once it is used or found stale.
+    private func distanceToReturnTo() -> Float? {
+        guard let kept = sideReturn else { return nil }
+        sideReturn = nil
+        guard abs(pose.distance - kept.at) <= 0.02 * kept.at, pose.tilt >= WorldPose.gripTilt else { return nil }
+        return kept.before
+    }
+
+    /// The 3D button: from a view that is angled to straight down (the heading is kept), from the Top view to the angle last used (the
+    /// Oblique one at first, and never steeper than the Low view: the edge-on view is the Side button's and the handle's), eased.
     func toggle3D() {
         guard hasTiltableView, play.store.header != nil else { return }
         dismissHint()
+        let following = Self.followsHeight(followState.target)
         stopFlight()
         headingEase = nil
         let angled = pose.tilt > 0.05
         if angled { lastTilt = pose.tilt }
-        let goal = angled ? 0 : max(lastTilt, ViewPreset.oblique.tilt * 0.5)
-        viewEase = ViewEase(tiltTo: goal, from: pose, wish: distanceWish, aspect: aspect, size: worldSize,
-                            duration: reduceMotion() ? ViewEase.reducedDuration : ViewEase.duration)
+        let goal = angled ? 0 : min(max(lastTilt, ViewPreset.oblique.tilt * 0.5), ViewPreset.low.tilt)
+        viewEase = ViewEase(tiltTo: goal, from: pose, wish: distanceToReturnTo() ?? distanceWish, aspect: aspect, size: worldSize,
+                            keepHeight: following, duration: reduceMotion() ? ViewEase.reducedDuration : ViewEase.duration)
         startAnimating()
     }
 

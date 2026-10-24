@@ -64,7 +64,7 @@ extension WorldInputTests {
             if preset == .top { heading = 0 }
             #expect(abs(pose.heading - heading) < 1e-5, "Top turns north up and the others keep the heading: \(pose.heading)")
             if preset == .side {
-                #expect(abs(pose.z - H / 2) < 1e-4, "Side is at the middle of the height")
+                #expect(abs(pose.z) < 1e-4 && abs(pose.lookZ - H / 2) < 1e-4, "Side looks at the middle of the height (the pose lifts it there)")
                 let camera = pose.camera(size: L, height: H)
                 #expect(abs(camera.forward.z) < 1e-5 && abs(camera.position.z - H / 2) < 1e-3, "edge-on, the eye at the height of the target")
             } else {
@@ -242,6 +242,210 @@ extension WorldInputTests {
         #expect(simd_length(SIMD2(eye.x - target.x, eye.y - target.y)) <= WorldFog.eyeReach * L * 1.0001, "the eye is over the clear box")
         model.drag(dx: 0, dy: 300, orbit: true)
         #expect(model.pose.tilt == 0 && abs(model.pose.distance - home) < 1e-3, "and straight down again, the zoom is back: \(model.pose.distance) of \(home)")
+    }
+
+    // MARK: The review
+
+    @Test func edgeOnByTheHandleOrAnOptionDragHasTheEyeAtTheMiddleOfTheHeightAndRelaxingGivesTheFloorBack() async throws {
+        let world = try await cameraWorld()
+        defer { world.finish() }
+        let model = world.model
+        let H = model.height
+        model.display.heightColour = false
+        // The handle to the bottom of its track, from the flat overview (the floor is looked at).
+        model.goHome()
+        let track = try #require(model.hud.tiltTrack)
+        world.window.sendEvent(world.mouse(.leftMouseDown, CGPoint(x: track.midX, y: track.maxY - 2)))
+        world.window.sendEvent(world.mouse(.leftMouseUp, CGPoint(x: track.midX, y: track.maxY - 2)))
+        world.settle(2)
+        #expect(model.pose.tilt == WorldPose.maxTilt && model.pose.z == 0)
+        #expect(abs(model.camera.target.z - H / 2) < 1e-3 && abs(model.camera.position.z - H / 2) < 1e-2,
+                "edge-on, the eye is at the middle of the height, not on the floor: \(model.camera.position.z)")
+        #expect(abs(model.pose.eyeHeight(size: model.worldSize, height: H) - H / 2) < 1e-2)
+        // The scale bar says which plane it is true on: the middle of the height.
+        #expect(model.scaleBar?.plane?.contains("at height") == true, "\(String(describing: model.scaleBar?.plane))")
+        // The same for an Option drag (a drag of the heading and the tilt).
+        model.goHome()
+        model.drag(dx: 0, dy: -300, orbit: true)
+        #expect(model.pose.tilt == WorldPose.maxTilt && abs(model.camera.position.z - H / 2) < 1e-2, "\(model.camera.position.z)")
+        // The height guides of the edge-on view: the floor, the middle and the ceiling, in order down the picture and in the picture.
+        // (the fixture is a small world, whose eye is held to 0.45 L: at the usual field of view only the middle is in the picture, as at a
+        // distance of 21 over a height of 24; a wide one shows the three)
+        #expect(model.heightGuides.isEmpty, "one row is not a guide")
+        model.editPose { $0.fovY = 1.7 }
+        let guides = model.heightGuides
+        #expect(guides.map(\.height) == [0, H / 2, H], "\(guides)")
+        #expect(guides[0].y > guides[1].y && guides[1].y > guides[2].y, "the floor is the lowest")
+        let projector = model.projector(size: model.freeRect.size)
+        for guide in guides {
+            let at = try #require(projector.screenOfImage(SIMD3(model.pose.x, model.pose.y, guide.height)))
+            #expect(abs(at.y - guide.y) < 1e-6 && guide.y >= 0 && guide.y <= model.freeRect.height)
+        }
+        model.display.heightColour = true
+        #expect(model.heightGuides.isEmpty, "the height colour has its legend")
+        model.display.heightColour = false
+        // Relaxing the tilt gives the floor back: the lift is the tilt's.
+        model.drag(dx: 0, dy: 300, orbit: true)
+        #expect(model.pose.tilt == 0 && model.pose.lift == 0 && model.camera.target.z == 0 && model.heightGuides.isEmpty)
+    }
+
+    @Test func aFlightFromTheSideViewKeepsTheEyeAtTheMiddleOfTheHeight() async throws {
+        let world = try await cameraWorld()
+        defer { world.finish() }
+        let model = world.model
+        let (L, H) = (model.worldSize, model.height)
+        #expect(world.press("s"))
+        cameraArrive(model)
+        model.flyTo(SIMD3(L / 3, L / 4, 0), distance: nil)
+        cameraArrive(model)
+        #expect(!model.isFlying && model.pose.tilt == .pi / 2)
+        #expect(abs(model.pose.x - L / 3) < 0.01, "it arrived: \(model.pose.x)")
+        #expect(abs(model.camera.position.z - H / 2) < 1e-2, "the eye did not go down to the floor: \(model.camera.position.z)")
+        model.dive(at: CGPoint(x: model.freeRect.width / 2, y: model.freeRect.height - 30))
+        cameraArrive(model)
+        #expect(abs(model.camera.position.z - H / 2) < 1e-2 || model.pose.tilt < 1.4, "the dive from the Side view: \(model.camera.position.z)")
+    }
+
+    @Test func theViewGivesTheZoomBackAfterAPresetAndTheThreeDButtonAndAfterTheSideView() async throws {
+        let world = try await cameraWorld()
+        defer { world.finish() }
+        let model = world.model
+        let L = model.worldSize
+        model.goHome()
+        let home = model.pose.distance
+        // Low holds the eye nearer; Top goes back out.
+        #expect(world.press("l"))
+        cameraArrive(model)
+        #expect(model.pose.distance < home * 0.99, "Low holds the view nearer: \(model.pose.distance) of \(home)")
+        #expect(world.press("t"))
+        cameraArrive(model)
+        #expect(abs(model.pose.distance - home) < 1e-3 * home && model.pose.tilt == 0, "Top gives the zoom back: \(model.pose.distance) of \(home)")
+        // The 3D button twice.
+        model.toggle3D(); cameraArrive(model)
+        #expect(model.pose.tilt > 0.3)
+        model.toggle3D(); cameraArrive(model)
+        #expect(model.pose.tilt == 0 && abs(model.pose.distance - home) < 1e-3 * home, "3D and back: \(model.pose.distance) of \(home)")
+        // Side has a distance of its own; the view after it is the one before it.
+        #expect(world.press("s"))
+        cameraArrive(model)
+        let side = model.pose.distance
+        #expect(side <= WorldFog.eyeReach * L * 1.0001)
+        #expect(world.press("t"))
+        cameraArrive(model)
+        #expect(abs(model.pose.distance - home) < 1e-3 * home && model.pose.z == 0, "Top after Side: the overview again, \(model.pose.distance) of \(home) (the Side's was \(side))")
+        // Side then the 3D button: the same, and the floor is looked at.
+        #expect(world.press("s"))
+        cameraArrive(model)
+        model.toggle3D(); cameraArrive(model)
+        #expect(model.pose.tilt == 0 && model.pose.z == 0 && abs(model.pose.distance - home) < 1e-3 * home, "\(model.pose.distance) \(model.pose.z)")
+        // A zoom of the player's after the Side view is what they asked for: it is not undone.
+        #expect(world.press("s"))
+        cameraArrive(model)
+        model.zoom(by: 0.8)
+        let chosen = model.pose.distance
+        #expect(world.press("t"))
+        cameraArrive(model)
+        #expect(abs(model.pose.distance - chosen) < 1e-3 * chosen, "the zoom the player chose stays: \(model.pose.distance) of \(chosen)")
+        // The chosen view from the Side one is also taken by the 'Low' view: Side, then Low is the overview held by Low's limit.
+        model.goHome()
+        let overview = model.pose.distance
+        #expect(world.press("s")); cameraArrive(model)
+        #expect(world.press("l")); cameraArrive(model)
+        #expect(model.pose.distance <= overview && abs((model.distanceWish ?? overview) - overview) < 1e-3 * overview, "\(model.pose.distance) \(String(describing: model.distanceWish))")
+        #expect(world.press("t")); cameraArrive(model)
+        #expect(abs(model.pose.distance - overview) < 1e-3 * overview, "Top again: the overview")
+    }
+
+    @Test func theThreeDButtonNeverGoesFartherThanTheLowViewAfterAVisitToTheSideView() async throws {
+        let world = try await cameraWorld()
+        defer { world.finish() }
+        let model = world.model
+        #expect(world.press("s")); cameraArrive(model)
+        model.toggle3D(); cameraArrive(model)
+        #expect(model.pose.tilt == 0)
+        model.toggle3D(); cameraArrive(model)
+        #expect(model.pose.tilt > 0.3 && model.pose.tilt <= ViewPreset.low.tilt + 1e-5, "3D is an angle, not edge-on: \(model.pose.tiltDegrees)")
+    }
+
+    @Test func northUpEndsAnEaseToAViewWhereItIsAndTurnsNorthUpWhateverTheKeyOrTheCompassClick() async throws {
+        let world = try await cameraWorld()
+        defer { world.finish() }
+        let model = world.model
+        let compass = try #require(model.hud.compass)
+        // The key during an ease to the Oblique view.
+        model.editPose { $0.heading = 0.8 }
+        #expect(world.press("o"))
+        for _ in 0..<5 { _ = model.advanceCamera(dt: 1.0 / 60) }
+        #expect(world.press("n"))
+        #expect(model.viewEase == nil, "any other input ends an ease where it is")
+        cameraArrive(model)
+        #expect(abs(model.pose.heading) < 1e-5, "north up: \(model.pose.heading)")
+        // The compass click during an ease to the Low view.
+        model.editPose { $0.heading = 0.8; $0.tilt = 0 }
+        #expect(world.press("l"))
+        for _ in 0..<5 { _ = model.advanceCamera(dt: 1.0 / 60) }
+        world.click(CGPoint(x: compass.midX, y: compass.midY))
+        cameraArrive(model)
+        #expect(abs(model.pose.heading) < 1e-5 && model.pose.tilt < ViewPreset.low.tilt, "north up through the window: \(model.pose.heading), the ease stopped at \(model.pose.tilt)")
+    }
+
+    @Test func aPressThatTakesHoldOfNothingMovesNothingAndStopsNothing() async throws {
+        let world = try await cameraWorld()
+        defer { world.finish() }
+        let model = world.model
+        let frame = try #require(world.play.store.frame)
+        model.selectOrganism(frame.uid[0], follow: true, camera: true, fly: false)
+        #expect(world.press("s"))
+        cameraArrive(model, frames: 100)
+        #expect(!model.followState.target.isNone)
+        let before = model.pose
+        model.beginGrab(at: CGPoint(x: model.freeRect.width / 2, y: 3))  // the sky of the edge-on view
+        #expect(model.grabAnchor == nil)
+        model.grab(to: CGPoint(x: model.freeRect.width / 2 + 30, y: 60))
+        model.endGrab()
+        #expect(!model.followState.target.isNone, "the follow goes on")
+        #expect(model.pose.x == before.x && model.pose.y == before.y)
+    }
+
+    @Test func theCompassDialIgnoresThePointerAtItsCentreAndNeverJumps() async throws {
+        let world = try await cameraWorld()
+        defer { world.finish() }
+        let model = world.model
+        let compass = try #require(model.hud.compass)
+        let c = CGPoint(x: compass.midX, y: compass.midY)
+        func at(_ degrees: Double, _ r: Double) -> CGPoint {
+            CGPoint(x: c.x + r * sin(degrees * .pi / 180), y: c.y - r * cos(degrees * .pi / 180))
+        }
+        model.editPose { $0.heading = 0.3 }
+        // A press near the centre has no angle; the first sample outside the dead zone takes the reference and does not turn.
+        model.hudPress(.compass, at: CGPoint(x: c.x + 1, y: c.y + 1))
+        model.hudDrag(.compass, to: CGPoint(x: c.x + 2, y: c.y + 3))
+        #expect(model.pose.heading == 0.3, "within the dead zone nothing turns")
+        model.hudDrag(.compass, to: at(90, 15))
+        #expect(abs(model.pose.heading - 0.3) < 1e-5, "the reference is taken, no jump: \(model.pose.heading)")
+        model.hudDrag(.compass, to: at(120, 15))
+        #expect(abs(WorldPose.wrap(model.pose.heading - (0.3 + 30 * .pi / 180))) < 1e-4, "then a turn of 30 degrees: \(model.pose.heading)")
+        let turned = model.pose.heading
+        model.hudDrag(.compass, to: CGPoint(x: c.x - 1, y: c.y + 2))  // back through the middle
+        #expect(model.pose.heading == turned, "the pass through the dead zone moves nothing")
+        model.hudRelease(.compass, at: c, clicks: 1, dragged: true)
+    }
+
+    @Test func aClickOnThePlateOfTheAngleIsNotAClickOnTheMap() async throws {
+        let world = try await cameraWorld()
+        defer { world.finish() }
+        let model = world.model
+        let frame = try #require(world.play.store.frame)
+        model.selectOrganism(frame.uid[0], follow: false, camera: false, fly: false)
+        let selected = model.selection
+        let readout = try #require(model.hud.readout)
+        let c = CGPoint(x: readout.midX, y: readout.midY)
+        #expect(model.pressTarget(at: c) == .readout && world.hit(c) is WorldMTKView)
+        world.click(c)
+        #expect(model.selection == selected, "a click on the plate does not clear the selection")
+        world.click(c, clicks: 2)
+        #expect(!model.isFlying && model.selection == selected, "nor does a double click dive to the floor under it")
+        #expect(model.overlay.pressed == nil)
     }
 
     // MARK: Picking and the readouts at oblique and grazing angles

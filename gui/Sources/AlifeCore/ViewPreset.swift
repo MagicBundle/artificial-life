@@ -5,7 +5,8 @@ import Foundation
 /// and the distance (`ViewEase`).
 ///
 /// The tilt is measured from straight down (`WorldPose.tilt`): the Top view is 0, the Oblique 45 degrees, the Low 70, the Side 90 (the
-/// view axis along the floor, edge-on).
+/// view axis along the floor, edge-on). The Side view looks at the middle of the height because the pose lifts the point looked at
+/// there from a tilt of 70 degrees (`WorldPose.lift`), whatever way the tilt was reached (a preset, the handle, an Option drag).
 package enum ViewPreset: String, CaseIterable, Sendable {
     /// Straight down, north up: the map as on paper.
     case top
@@ -13,7 +14,7 @@ package enum ViewPreset: String, CaseIterable, Sendable {
     case oblique
     /// 70 degrees: the altitude layers stand out, the horizon is in the picture.
     case low
-    /// Edge-on from the floor's mid-height: the vertical distribution of the life, 0 to H, at a glance.
+    /// Edge-on, looking at the floor's mid-height: the vertical distribution of the life, 0 to H, at a glance.
     case side
 
     package var title: String {
@@ -76,6 +77,10 @@ package struct ViewEase: Equatable, Sendable {
     package var fromDistance: Float
     package var toDistance: Float
     package var length: Float
+    /// The distance the player's wish is once the ease is over, when the limit of the angle it ends at holds the view nearer than the
+    /// wish (the zoom is then given back as the tilt is relaxed again: Top after Low goes back out); nil when nothing holds it, and for
+    /// the Side view, which has a distance of its own.
+    package var endWish: Float?
     package private(set) var elapsed: Float = 0
 
     package init(fromTilt: Float, toTilt: Float, fromHeading: Float, toHeading: Float, fromZ: Float, toZ: Float,
@@ -94,33 +99,41 @@ package struct ViewEase: Equatable, Sendable {
     /// The ease from `pose` to the standard view `preset`.
     ///
     /// * **Top** goes straight down and turns north up; **Oblique** and **Low** tilt to their angle and keep the heading.
-    /// * **Side** is at the floor's mid-height, `H/2`, looking along the heading, at the distance at which the layer from 0 to `H`
-    ///   fills `sideFill` of the picture (`H / (2 tan(fov/2)) / sideFill`), held to the limit of that tilt (the eye over the clear box).
-    /// * The height of the point looked at is 0 for the others (the floor), and unchanged while `keepHeight` is set (the camera
+    /// * **Side** looks along the heading from the middle of the height (the pose lifts the point looked at there at edge-on), at the
+    ///   distance at which the layer from 0 to `H` fills `sideFill` of the picture (`H / (2 tan(fov/2)) / sideFill`), held to the limit of
+    ///   that tilt (the eye over the clear box).
+    /// * The height `z` of the point looked at is 0 (the floor) for every view, and unchanged while `keepHeight` is set (the camera
     ///   follows an organism, whose height it is).
     /// * The distance is `wish` (what the player asked for before a tilt held it nearer; the pose's own if there is none), held to the
-    ///   limit of the angle it ends at: tilting to the Low view from the Home view comes in, and Top goes back out.
+    ///   limit of the angle it ends at: tilting to the Low view from the Home view comes in, and Top goes back out (`endWish`).
     package init(preset: ViewPreset, from pose: WorldPose, wish: Float?, aspect: Float, size: Float, height: Float, keepHeight: Bool,
                  duration: Float = ViewEase.duration) {
         let tilt = preset.tilt
         let heading = preset == .top ? 0 : pose.heading
-        let z = keepHeight ? pose.z : (preset == .side ? height / 2 : 0)
+        let z = keepHeight ? pose.z : 0
         var wanted = wish ?? pose.distance
         if preset == .side, height > 0 {
             wanted = height / (2 * tan(pose.fovY / 2)) / Self.sideFill
         }
         let limit = WorldPose.maxDistance(size: size, fovY: pose.fovY, aspect: aspect, heading: heading, z: z, tilt: tilt)
+        wanted = max(wanted, WorldLevels.minDistance)
         self.init(fromTilt: pose.tilt, toTilt: tilt, fromHeading: pose.heading, toHeading: heading, fromZ: pose.z, toZ: z,
-                  fromDistance: pose.distance, toDistance: min(max(wanted, WorldLevels.minDistance), limit), duration: duration)
+                  fromDistance: pose.distance, toDistance: min(wanted, limit), duration: duration)
+        if preset != .side, wanted > limit * (1 + 1e-5) { endWish = wanted }
     }
 
-    /// The ease of the tilt alone (the 3D button): the heading, the height and the distance are what they were, the distance as
-    /// `wish` (held by the limit of the tilt it ends at).
-    package init(tiltTo tilt: Float, from pose: WorldPose, wish: Float?, aspect: Float, size: Float, duration: Float = ViewEase.duration) {
-        let limit = WorldPose.maxDistance(size: size, fovY: pose.fovY, aspect: aspect, heading: pose.heading, z: pose.z, tilt: tilt)
-        self.init(fromTilt: pose.tilt, toTilt: tilt, fromHeading: pose.heading, toHeading: pose.heading, fromZ: pose.z, toZ: pose.z,
-                  fromDistance: pose.distance, toDistance: min(max(wish ?? pose.distance, WorldLevels.minDistance), limit),
-                  duration: duration)
+    /// The ease of the tilt alone (the 3D button): the heading is what it was, the distance is `wish` (held by the limit of the tilt it
+    /// ends at, and given back by `endWish`), and the height of the point looked at is what it was, except that it goes to the floor at
+    /// the Top view unless `keepHeight` is set (the camera follows an organism): the Top view the Top preset has, not one
+    /// of the plane an organism was on.
+    package init(tiltTo tilt: Float, from pose: WorldPose, wish: Float?, aspect: Float, size: Float, keepHeight: Bool = true,
+                 duration: Float = ViewEase.duration) {
+        let z = tilt == 0 && !keepHeight ? 0 : pose.z
+        let limit = WorldPose.maxDistance(size: size, fovY: pose.fovY, aspect: aspect, heading: pose.heading, z: z, tilt: tilt)
+        let wanted = max(wish ?? pose.distance, WorldLevels.minDistance)
+        self.init(fromTilt: pose.tilt, toTilt: tilt, fromHeading: pose.heading, toHeading: pose.heading, fromZ: pose.z, toZ: z,
+                  fromDistance: pose.distance, toDistance: min(wanted, limit), duration: duration)
+        if wanted > limit * (1 + 1e-5) { endWish = wanted }
     }
 
     /// The values `dt` seconds on, and whether the ease is over (it then ends exactly at its end).

@@ -19,6 +19,7 @@ struct WorldHUDView: View {
             let L = Float(header.size)
             drawReadout(L, &context)
             if let box = hud.minimap { drawMinimap(WorldInset(rect: box, size: L), hud: hud, size: size, &context) }
+            drawHeightGuides(size, &context)
             drawControls(hud, &context)
             drawScale(size, &context)
             if model.display.heightColour, model.heightColourAvailable { drawLegend(height: Float(header.height), size, &context) }
@@ -62,6 +63,25 @@ struct WorldHUDView: View {
         var line = WorldReadout.line(pose: model.pose, size: L, height: model.height, mapShown: model.mapShown)
         if let pointer = overlay.pointerText { line += "    \(pointer)" }
         plated(line, at: CGPoint(x: WorldHUD.margin, y: 10), mono: true, &context)
+    }
+
+    // MARK: The height guides
+
+    /// The floor, the middle and the ceiling of an edge-on view as faint dashed rows with their heights at the left: "height 80", "40", "0".
+    private func drawHeightGuides(_ size: CGSize, _ context: inout GraphicsContext) {
+        let guides = model.heightGuides
+        for (index, guide) in guides.enumerated() {
+            var row = Path()
+            row.move(to: CGPoint(x: 0, y: guide.y))
+            row.addLine(to: CGPoint(x: size.width, y: guide.y))
+            context.stroke(row, with: .color(.white.opacity(0.22)), style: StrokeStyle(lineWidth: 0.7, dash: [3, 5]))
+            let words = String(format: "%.0f", guide.height)
+            let label = context.resolve(text(index == guides.count - 1 ? "height \(words)" : words, size: 10, mono: true, opacity: 0.8))
+            let measured = label.measure(in: CGSize(width: 200, height: 20))
+            let tag = CGRect(x: 6, y: guide.y - measured.height / 2 - 2, width: measured.width + 10, height: measured.height + 4)
+            plate(tag, radius: 4, &context)
+            context.draw(label, at: CGPoint(x: tag.minX + 5, y: tag.midY), anchor: .leading)
+        }
     }
 
     // MARK: The minimap
@@ -284,7 +304,7 @@ struct WorldHUDView: View {
         context.fill(disc, with: .color(Color.black.opacity(0.62)))
         if lit { context.fill(disc, with: .color(.white.opacity(overlay.pressed == .compass ? 0.28 : 0.14))) }
         context.stroke(disc, with: .color(.white.opacity(0.3)), lineWidth: 0.5)
-        let angle = CGFloat(Compass.northAngle(camera: model.camera))
+        let angle = CGFloat(Compass.needleAngle(heading: model.pose.heading, tilt: model.pose.tilt))
         let c = CGPoint(x: rect.midX, y: rect.midY)
         let direction = CGPoint(x: sin(angle), y: -cos(angle))  // north on the screen (y down)
         let across = CGPoint(x: -direction.y, y: direction.x)

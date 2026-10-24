@@ -30,6 +30,14 @@ package struct WorldPose: Equatable, Sendable {
     package var fovY: Float
     /// A 2D world is seen from below with y down (`Camera.topDown`): the same pose, the other way up.
     package var faceDown: Bool
+    /// Whether `z` is the height of what the camera follows (an organism): the point looked at is then that organism, and the edge-on
+    /// lift (`lift`) does not apply. The model sets it with the follow.
+    package var followsHeight = false
+    /// How far the point looked at is raised over `z` near edge-on (`edgeOnLift`): 0 up to a tilt of `liftFrom`, then rising smoothly
+    /// to the middle of the height at edge-on, so that the eye is not on the floor with the whole of the life crushed into a line (the
+    /// view from the Side preset, reached by the handle or an Option drag as well). It is a function of the tilt and `z`, kept in step
+    /// by `clamp`, so it goes as the tilt is relaxed. Nothing for a followed height, a 2D world or a world with no height.
+    package private(set) var lift: Float = 0
 
     package init(x: Float, y: Float, z: Float = 0, heading: Float = 0, tilt: Float = 0, distance: Float,
                  fovY: Float = Camera.defaultFovY, faceDown: Bool = false) {
@@ -51,6 +59,21 @@ package struct WorldPose: Equatable, Sendable {
     /// The most the view may be tilted: edge-on, the view axis along the floor. (A1 stopped at 85 degrees and at the footprint's limit,
     /// 52 to 57 degrees at 0.12 L; the horizon fade replaced that limit.)
     package static let maxTilt: Float = .pi / 2
+
+    /// The tilt from which the point looked at rises toward the middle of the height (`lift`): 70 degrees, the Low view's, which is
+    /// untouched.
+    package static let liftFrom: Float = 70 * .pi / 180
+
+    /// The share, 0...1, of the way from the point looked at to the middle of the height that the lift has gone at `tilt`:
+    /// a smoothstep from `liftFrom` to `maxTilt`.
+    package static func edgeOnLift(tilt: Float) -> Float {
+        let t = min(max((tilt - liftFrom) / (maxTilt - liftFrom), 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+
+    /// The height of the point the camera looks at: `z` and the lift. (`z` itself is the height the player asked for, or an
+    /// organism's.)
+    package var lookZ: Float { z + lift }
 
     // MARK: Readouts
 
@@ -91,7 +114,7 @@ package struct WorldPose: Equatable, Sendable {
     /// (or up, for a 2D world) turned by `heading` and tilted by `tilt`. Its clip planes hold the one-world patch.
     package func camera(size: Float, height: Float) -> Camera {
         let pitch = faceDown ? Float.pi / 2 - tilt : -Float.pi / 2 + tilt
-        return Camera(target: SIMD3(x, y, z), distance: distance, yaw: .pi / 2 + heading, pitch: pitch, fovY: fovY, near: 0.1,
+        return Camera(target: SIMD3(x, y, lookZ), distance: distance, yaw: .pi / 2 + heading, pitch: pitch, fovY: fovY, near: 0.1,
                       far: 8 * max(size, height, 1), scene: Camera.patchScene(center: SIMD2(x, y), size: size, height: height))
     }
 
@@ -99,7 +122,7 @@ package struct WorldPose: Equatable, Sendable {
     package mutating func apply(_ camera: Camera) {
         x = camera.target.x
         y = camera.target.y
-        z = camera.target.z
+        z = max(camera.target.z - lift, 0)
         distance = camera.distance
         fovY = camera.fovY
         heading = Self.wrap(camera.yaw - .pi / 2)
@@ -208,6 +231,7 @@ package struct WorldPose: Equatable, Sendable {
         z = min(max(z.isFinite ? z : 0, 0), max(height, 0))
         heading = Self.wrap(heading.isFinite ? heading : 0)
         tilt = min(max(tilt.isFinite ? tilt : 0, 0), Self.maxTilt)
+        lift = followsHeight || faceDown || height <= 0 ? 0 : Self.edgeOnLift(tilt: tilt) * max(height / 2 - z, 0)
         let limit = distanceLimit(size: size, aspect: aspect)
         distance = min(max(distance.isFinite ? distance : limit, WorldLevels.minDistance), max(limit, WorldLevels.minDistance))
     }

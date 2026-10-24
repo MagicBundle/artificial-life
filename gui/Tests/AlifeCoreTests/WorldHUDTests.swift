@@ -56,24 +56,30 @@ import Testing
 
     @Test func theColumnKeepsWhatFitsInTheOrderOfPriorityAndTheTrackTakesTheRoomThatIsLeft() throws {
         // Without the minimap the column reaches the bottom corner. The room above the zoom buttons decides what is kept, in this order:
-        // the compass, the 3D button, the handle (from 48 to 96 points), the strip with the readout.
+        // the compass, the 3D button, the strip of standard views, the readout over it, the handle (from 48 to 96 points): the strip, which
+        // says what it is in words, is kept before the handle.
         func column(_ height: CGFloat) -> WorldHUD { WorldHUD(free: CGSize(width: 900, height: height), minimap: false) }
-        var last: (compass: Bool, toggle: Bool, track: Bool, strip: Bool) = (false, false, false, false)
+        var last: (compass: Bool, toggle: Bool, strip: Bool, readout: Bool, track: Bool) = (false, false, false, false, false)
         var lengths: [CGFloat] = []
         for height in stride(from: CGFloat(150), through: 700, by: 2) {
             let hud = column(height)
-            let now = (hud.compass != nil, hud.toggle3D != nil, hud.tiltTrack != nil, !hud.presets.isEmpty)
+            let now = (hud.compass != nil, hud.toggle3D != nil, !hud.presets.isEmpty, hud.readout != nil, hud.tiltTrack != nil)
             // Nothing that was there goes away as the room grows, and a control is only there if the ones before it in the order are.
-            #expect(!last.compass || now.0); #expect(!last.toggle || now.1); #expect(!last.track || now.2); #expect(!last.strip || now.3)
-            #expect(!now.1 || now.0); #expect(!now.2 || now.1); #expect(!now.3 || now.2)
+            #expect(!last.compass || now.0); #expect(!last.toggle || now.1); #expect(!last.strip || now.2); #expect(!last.readout || now.3)
+            #expect(!last.track || now.4)
+            #expect(!now.1 || now.0); #expect(!now.2 || now.1); #expect(!now.3 || now.2); #expect(!now.4 || now.3)
             last = now
             if let track = hud.tiltTrack { lengths.append(track.height) }
             if let zoom = hud.zoomOut { #expect(zoom.maxY <= height - WorldHUD.margin + 0.001, "\(height)") }
         }
-        #expect(last == (true, true, true, true), "a tall window has all of it")
+        #expect(last == (true, true, true, true, true), "a tall window has all of it")
         #expect(lengths.min() == 48 && lengths.max() == 96 && lengths.allSatisfy { WorldHUD.trackLength.contains($0) },
                 "the handle is from 48 to 96 points, as the room allows (the strip takes room when it comes in): \(lengths.min() ?? 0)...\(lengths.max() ?? 0)")
         #expect(column(159).zoomIn != nil && column(159).compass == nil, "A1's least: the zoom buttons alone")
+        // The default window with a bottom dock leaves the free rectangle 430 points tall under a 120-point minimap: the strip of views, which
+        // is words, is there (a player who sees no Top, Oblique, Low or Side is not told that they exist), and the handle waits for room.
+        let docked = WorldHUD(free: CGSize(width: 1100, height: 430), minimap: true)
+        #expect(!docked.presets.isEmpty && docked.compass != nil && docked.toggle3D != nil, "the strip is kept before the handle")
     }
 
     @Test func theTiltHandleMapsThePointerToATiltFromStraightDownAtTheTopToEdgeOnAtTheBottomAndTheThumbIsWhereTheTiltIs() throws {
@@ -102,9 +108,9 @@ import Testing
         #expect(hud.target(at: CGPoint(x: track.midX, y: track.midY)) == .tilt)
         #expect(hud.target(at: CGPoint(x: track.minX - 3, y: track.midY)) == .tilt, "a few points off the track still take hold of it")
         #expect(hud.target(at: CGPoint(x: track.minX - 8, y: track.midY)) == .map)
-        // The readout is not pressed.
+        // The readout is not a control, but it takes the press (a click on it must not clear the selection or dive to the floor under it).
         let readout = try #require(hud.readout)
-        #expect(hud.target(at: CGPoint(x: readout.midX, y: readout.midY)) == .map)
+        #expect(hud.target(at: CGPoint(x: readout.midX, y: readout.midY)) == .readout)
         #expect(!hud.clearOfControls.contains(CGPoint(x: readout.midX, y: readout.midY)), "but the map's marks are kept off it")
     }
 

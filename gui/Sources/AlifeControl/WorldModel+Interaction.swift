@@ -236,9 +236,23 @@ extension WorldModel {
         isFlying || !followState.target.isNone || headingEase != nil || zoomEase != nil || viewEase != nil
     }
 
+    /// Whether what the camera follows has a height of its own that the point looked at takes (an organism, a lineage's centroid): a
+    /// storm is on the floor.
+    static func followsHeight(_ target: FollowTarget) -> Bool {
+        switch target {
+        case .organism, .lineage: return true
+        case .none, .storm: return false
+        }
+    }
+
     func setFollow(_ target: FollowTarget) {
         followState.set(target)
         if followTarget != target { followTarget = target }
+        if pose.followsHeight != Self.followsHeight(target) {  // (the lift of the point looked at at edge-on goes with the follow)
+            pose.followsHeight = Self.followsHeight(target)
+            pose.clamp(aspect: aspect, size: worldSize, height: height)
+            pushCamera()
+        }
         if target.isNone, !isFlying { glide.stop() }
     }
 
@@ -281,6 +295,7 @@ extension WorldModel {
         zoomEase = nil
         viewEase = nil
         distanceWish = nil
+        sideReturn = nil
         compassTurn = nil
         grabAnchor = nil
         scrollLaw = ScrollLaw()
@@ -318,6 +333,7 @@ extension WorldModel {
         guard let point = point ?? flyGoal else { return }  // nowhere to go
         viewEase = nil
         distanceWish = nil
+        sideReturn = nil
         flyGoal = point
         flyDistance = distance.map(clampedDistance)
         isFlying = true
@@ -337,6 +353,7 @@ extension WorldModel {
         cancelCameraMotion()
         headingEase = nil
         distanceWish = nil
+        sideReturn = nil
         guard let header = play.store.header else { return }
         let goal = homePose(header: header)
         isFlying = true
@@ -374,8 +391,9 @@ extension WorldModel {
         if var ease = viewEase {
             let step = ease.step(dt: min(dt, 0.1))
             viewEase = step.done ? nil : ease
-            // The distance is given as the player's wish: the limit of the tilt of this very step holds it, and lets it out again.
-            distanceWish = step.distance
+            // The distance is given as the player's wish: the limit of the tilt of this very step holds it, and lets it out again. The
+            // end of the ease gives back the wish the angle's limit held nearer (Top after Low goes back out).
+            distanceWish = step.done ? (ease.endWish ?? step.distance) : step.distance
             let following = !followState.target.isNone
             editPose {
                 $0.tilt = step.tilt
