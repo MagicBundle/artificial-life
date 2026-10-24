@@ -52,6 +52,7 @@ uv run python -m alife.analysis.labels RUN --from STEP --steps N --out FILE.json
 uv run python -m alife.analysis.social RUN --from STEP --steps N --out FILE.json   # social trackers: thresholds, churn, snapshot cost; docs/DESIGN.md §29.12
 uv run python -m alife.analysis.w2 [A@0=]RUN... --out FILE.json   # the W2 storm-experiment statistics (P1a to P6) from W2b-style runs; docs/DESIGN.md §32.9
 cd gui && swift run                           # the macOS control app (Lab) ; its "Open World" opens the World window (G3a)
+gui/scripts/make-app.sh --app both --install  # the Lab and Storm Worlds (the game, no terminal) in /Applications (row I59; quit them first)
 # stdout of `alife play` is the binary stream (the window reads it): redirect it when you run one by hand. The window's launcher makes planets.
 uv run alife play --init-from runs/64k3d_s0:500000 --overlay storm --set director.enabled=true --weather-spinup 20000 --out runs/planet_a --no-control --until 500100 > /dev/null   # make a planet (DESIGN §33.3.4)
 uv run alife play runs/planet_a --rate 1 --no-control --until 501000 > /dev/null       # play a world directory (to step 501000)
@@ -508,10 +509,15 @@ beside a real planet on the Mac (a person pressing the switch during a chapter e
   reaches the main actor through one ordered AsyncStream per stream. The exit status is reported only after
   the process has exited and both pipes have reached EOF. The 1 s ticker is a Task loop that skips missed
   ticks after sleep. No `DispatchQueue.main` hops remain.
-- **App bundle:** `gui/scripts/make-app.sh [--install]` builds, signs (hardened runtime; Developer ID, else Apple
-  Development, else ad-hoc) and installs `AlifeControl.app`, with a generated icon. It is for this Mac only: no
-  Developer ID certificate or notarization yet. The App Store would need the engine embedded and sandboxed,
-  which is a separate project and is not done.
+- **App bundles** (row I59, DESIGN §33.4.10): `gui/scripts/make-app.sh [--app lab|storm|both] [--install]` builds, signs
+  (hardened runtime; Developer ID, else Apple Development, else ad-hoc; `--sign -` is ad-hoc and never reaches the keychain) and
+  installs `AlifeControl.app` (the Lab, the default) and/or `Storm Worlds.app` (opens straight into the World window; the Lab
+  is Window > Lab, Command-2; quits with its last window), each with a generated icon. The two share the repository folder
+  (`RepoPathStore`, the preferences domain `io.github.magicbundle.alife`, migrated from the Lab's own on first start) and
+  Storm Worlds asks for it itself when it is missing. `gui/scripts/check-apps.sh` is the smoke test of the bundles (macOS,
+  ad-hoc, a release build; also `ALIFE_APP_SMOKE=1 pytest tests/test_app_bundles.py`). For this Mac only: **no
+  notarization and no in-app updater yet** (the owner's "later"; he has a Developer ID); the App Store would need the engine
+  embedded and sandboxed, which is a separate project. Not shared between the two apps: the dock side and sizes, window frames.
 - **Click-through checklist** (tiny preset), to repeat after any GUI change:
   1. startup;
   2. a new run with the fast overlay and a `--set` lever, then Stop once: exit 130 and a checkpoint;

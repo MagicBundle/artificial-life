@@ -7,6 +7,8 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
 
+    private let plan = LaunchMode.current().plan
+
     private var busy: Bool { controller.job != nil }
 
     var body: some View {
@@ -39,14 +41,16 @@ struct ContentView: View {
         .padding(16)
         // The main window is the app: when the last one closes the 3D viewer window goes with it, so that the app quits as
         // it did when this was the only window (`applicationShouldTerminateAfterLastWindowClosed`). Another main window
-        // (File > New Window) keeps the app and the viewer.
-        .background(WindowCloseObserver(group: "main") {
-            dismissWindow(id: "viewer3d")
-            dismissWindow(id: "world")
+        // (File > New Window) keeps the app and the viewer. In Storm Worlds the Lab is a tool window: it takes only the
+        // viewer with it and is not reopened at the next launch (`LaunchPlan`).
+        .background(WindowCloseObserver(restorable: plan.labIsMainWindow, group: "main") {
+            for window in plan.windowsClosedWithLab { dismissWindow(id: window.rawValue) }
         })
         .onAppear {
+            // Storm Worlds starts `--world RUN` in its own World window (`WorldWindowRoot`).
+            guard plan.labIsMainWindow else { return }
             if let run = WorldLaunchArgument.parse(CommandLine.arguments), controller.openWorldAtLaunch(run) {
-                openWindow(id: "world")
+                openWindow(id: AppWindow.world.rawValue)
             }
         }
     }
