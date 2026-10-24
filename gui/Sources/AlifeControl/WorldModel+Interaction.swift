@@ -64,7 +64,7 @@ extension WorldModel {
     /// A double click on an empty point or a territory cell: fly there, and in to the region distance (DESIGN §36.5), unless the camera
     /// is closer already. The point is the one of the plane through the view's centre under the pointer.
     func dive(at point: CGPoint) {
-        guard let place = projector(size: freeRect.size).world(at: point, height: pose.z) else { return }
+        guard let place = projector(size: freeRect.size).world(at: point, height: pose.gripZ) else { return }
         flyTo(SIMD3(place.x, place.y, 0), distance: min(camera.distance, flyDistance(.region)))
     }
 
@@ -232,7 +232,9 @@ extension WorldModel {
     // MARK: Camera motion
 
     /// Whether the camera is moving by itself (following or flying).
-    var cameraMotionPending: Bool { isFlying || !followState.target.isNone || headingEase != nil || zoomEase != nil }
+    var cameraMotionPending: Bool {
+        isFlying || !followState.target.isNone || headingEase != nil || zoomEase != nil || viewEase != nil
+    }
 
     func setFollow(_ target: FollowTarget) {
         followState.set(target)
@@ -243,6 +245,7 @@ extension WorldModel {
     /// A manual drag, `Esc`, a reset: whatever moved the camera by itself stops. The selection stays (except for `Esc`).
     func cancelCameraMotion() {
         zoomEase = nil
+        viewEase = nil
         setFollow(.none)
         isFlying = false
         flyGoal = nil
@@ -254,6 +257,7 @@ extension WorldModel {
     /// A zoom: a flight under way stops where it is (any input does, DESIGN §36.5); a follow goes on, at the user's distance.
     func stopFlight() {
         zoomEase = nil
+        viewEase = nil
         if followState.target.isNone {
             isFlying = false
             flyGoal = nil
@@ -275,6 +279,9 @@ extension WorldModel {
         flight = nil
         headingEase = nil
         zoomEase = nil
+        viewEase = nil
+        distanceWish = nil
+        compassTurn = nil
         grabAnchor = nil
         scrollLaw = ScrollLaw()
         toastQueue = ToastQueue()
@@ -309,6 +316,8 @@ extension WorldModel {
     /// zoom in, at an even speed on the screen.
     func flyTo(_ point: SIMD3<Float>?, distance: Float?) {
         guard let point = point ?? flyGoal else { return }  // nowhere to go
+        viewEase = nil
+        distanceWish = nil
         flyGoal = point
         flyDistance = distance.map(clampedDistance)
         isFlying = true
@@ -327,6 +336,7 @@ extension WorldModel {
     func home() {
         cancelCameraMotion()
         headingEase = nil
+        distanceWish = nil
         guard let header = play.store.header else { return }
         let goal = homePose(header: header)
         isFlying = true
@@ -342,7 +352,7 @@ extension WorldModel {
     }
 
     func clampedDistance(_ d: Float) -> Float {
-        let limit = WorldLevels.maxDistance(size: worldSize, fovY: pose.fovY, aspect: aspect, heading: pose.heading)
+        let limit = WorldPose.maxDistance(size: worldSize, fovY: pose.fovY, aspect: aspect, heading: pose.heading, tilt: pose.tilt)
         return min(max(d, WorldLevels.minDistance), max(limit, WorldLevels.minDistance))
     }
 
@@ -359,6 +369,19 @@ extension WorldModel {
             let step = ease.step(dt: min(dt, 0.1))
             zoomEase = step.done ? nil : ease
             editPose { $0.distance = step.distance }
+            easing = easing || !step.done
+        }
+        if var ease = viewEase {
+            let step = ease.step(dt: min(dt, 0.1))
+            viewEase = step.done ? nil : ease
+            // The distance is given as the player's wish: the limit of the tilt of this very step holds it, and lets it out again.
+            distanceWish = step.distance
+            let following = !followState.target.isNone
+            editPose {
+                $0.tilt = step.tilt
+                $0.heading = step.heading
+                if !following { $0.z = step.z }
+            }
             easing = easing || !step.done
         }
         if followState.target.isNone, isFlying, let flight { return advanceFlight(flight, dt: dt) || easing }
@@ -483,6 +506,7 @@ extension WorldModel {
         case .home: home()
         case .northUp: northUp()
         case .toggleMinimap: display.minimap.toggle()
+        case .viewPreset(let preset): viewPreset(preset)
         case .escape: escape()
         case .showPowers: tab = .powers
         case .flyToAlert: flyToNewestAlert()

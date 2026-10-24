@@ -2,7 +2,8 @@ import AlifeCore
 import SwiftUI
 
 /// The orientation aids over the map, drawn in a `Canvas` that takes no mouse (DESIGN §36.5, the spec's 4): the readout of where the
-/// view is, the compass and the zoom buttons at the top right, the minimap's frame, footprint, storms and labels over the box the
+/// view is, the column of view controls down the right edge (the strip of standard views and the readout of the angle, the compass, the
+/// 3D button, the tilt handle, the zoom buttons), the minimap's frame, footprint, storms and labels over the box the
 /// Metal pass drew, the scale bar with the size of an organism, and the legend of the height colour. The model hit-tests the
 /// controls (`WorldModel.pressTarget`) from the same `WorldHUD` rectangles.
 struct WorldHUDView: View {
@@ -168,15 +169,27 @@ struct WorldHUDView: View {
         context.draw(image, in: rect.insetBy(dx: rect.width * 0.2, dy: rect.height * 0.2))
     }
 
+    /// A rounded button's plate, lit while the pointer is on it and brighter while it is pressed.
+    private func buttonPlate(_ rect: CGRect, target: HUDTarget, radius: CGFloat = 7, _ context: inout GraphicsContext) {
+        let lit = overlay.pressed == target || overlay.hudHover == target
+        let path = Path(roundedRect: rect, cornerRadius: radius)
+        context.fill(path, with: .color(Color.black.opacity(0.62)))
+        if lit { context.fill(path, with: .color(.white.opacity(overlay.pressed == target ? 0.3 : 0.16))) }
+        context.stroke(path, with: .color(.white.opacity(0.3)), lineWidth: 0.5)
+    }
+
     private func drawControls(_ hud: WorldHUD, _ context: inout GraphicsContext) {
+        if let readout = hud.readout { drawAngle(readout, hud, &context) }
         if let compass = hud.compass { drawCompass(compass, &context) }
+        if let toggle = hud.toggle3D {
+            buttonPlate(toggle, target: .toggle3D, &context)
+            let flat = model.pose.tilt < 0.05
+            context.draw(context.resolve(text(flat ? "3D" : "2D", size: 12, weight: .bold)), at: CGPoint(x: toggle.midX, y: toggle.midY))
+        }
+        if let track = hud.tiltTrack { drawTilt(track, &context) }
         for (target, rect, plus) in [(HUDTarget.zoomIn, hud.zoomIn, true), (.zoomOut, hud.zoomOut, false)] {
             guard let rect else { continue }
-            let lit = overlay.pressed == target || overlay.hudHover == target
-            let path = Path(roundedRect: rect, cornerRadius: 7)
-            context.fill(path, with: .color(Color.black.opacity(0.62)))
-            if lit { context.fill(path, with: .color(.white.opacity(overlay.pressed == target ? 0.3 : 0.16))) }
-            context.stroke(path, with: .color(.white.opacity(0.3)), lineWidth: 0.5)
+            buttonPlate(rect, target: target, &context)
             var sign = Path()
             sign.move(to: CGPoint(x: rect.midX - 6, y: rect.midY))
             sign.addLine(to: CGPoint(x: rect.midX + 6, y: rect.midY))
@@ -186,15 +199,22 @@ struct WorldHUDView: View {
             }
             context.stroke(sign, with: .color(.white.opacity(0.95)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
         }
-        // The words of the control under the pointer, to its left.
+        // The words of the control under the pointer, to its left (for a view of the strip: to the left of the strip).
         let hovered = overlay.hudHover
-        let rect: CGRect?
+        var rect: CGRect?
         let words: String
         switch hovered {
-        case .compass: (rect, words) = (hud.compass, "North up (N)   double click: Home")
+        case .compass: (rect, words) = (hud.compass, "North up (N)   double click: Home   drag: turn the view")
         case .zoomIn: (rect, words) = (hud.zoomIn, "Zoom in (pinch, mouse wheel)")
         case .zoomOut: (rect, words) = (hud.zoomOut, "Zoom out")
         case .home: (rect, words) = (hud.home, "Home view (H)")
+        case .toggle3D: (rect, words) = (hud.toggle3D, model.pose.tilt < 0.05 ? "Tilt the view: 3D" : "Straight down: 2D")
+        case .tilt: (rect, words) = (hud.tiltTrack, "Tilt: drag. Straight down at the top, edge-on at the bottom")
+        case .preset(let preset):
+            if let entry = hud.presets.first(where: { $0.preset == preset }), let first = hud.presets.first {
+                rect = CGRect(x: first.rect.minX, y: entry.rect.minY, width: entry.rect.maxX - first.rect.minX, height: entry.rect.height)
+            }
+            words = "\(preset.title) (\(preset.key.uppercased())): \(preset.help)"
         default: (rect, words) = (nil, "")
         }
         if let rect {
@@ -206,6 +226,55 @@ struct WorldHUDView: View {
             plate(tag, radius: 5, &context)
             context.draw(resolved, at: CGPoint(x: tag.minX + 7, y: tag.midY), anchor: .leading)
         }
+    }
+
+    /// The readout of the angle over the strip of standard views, and the strip: the view whose angle the tilt is at is lit.
+    private func drawAngle(_ readout: CGRect, _ hud: WorldHUD, _ context: inout GraphicsContext) {
+        plate(readout, radius: 6, &context)
+        context.draw(context.resolve(text(WorldReadout.viewText(pose: model.pose), size: 11, mono: true)),
+                     at: CGPoint(x: readout.midX, y: readout.midY))
+        guard let first = hud.presets.first, let last = hud.presets.last else { return }
+        let strip = CGRect(x: first.rect.minX, y: first.rect.minY, width: last.rect.maxX - first.rect.minX, height: first.rect.height)
+        let outline = Path(roundedRect: strip, cornerRadius: 7)
+        context.fill(outline, with: .color(Color.black.opacity(0.62)))
+        let tilt = model.pose.tilt
+        for entry in hud.presets {
+            let target = HUDTarget.preset(entry.preset)
+            let lit = overlay.pressed == target || overlay.hudHover == target
+            let current = abs(entry.preset.tilt - tilt) < 1.5 * .pi / 180
+            let inner = entry.rect.insetBy(dx: 2, dy: 2)
+            if current { context.fill(Path(roundedRect: inner, cornerRadius: 5), with: .color(.white.opacity(0.3))) }
+            if lit { context.fill(Path(roundedRect: inner, cornerRadius: 5), with: .color(.white.opacity(overlay.pressed == target ? 0.3 : 0.16))) }
+            context.draw(context.resolve(text(entry.preset.title, size: 10.5, weight: current ? .bold : .medium)),
+                         at: CGPoint(x: entry.rect.midX, y: entry.rect.midY))
+        }
+        context.stroke(outline, with: .color(.white.opacity(0.3)), lineWidth: 0.5)
+    }
+
+    /// The tilt handle: a track from straight down (top) to edge-on (bottom), ticks at the Oblique and the Low views, and the thumb.
+    private func drawTilt(_ track: CGRect, _ context: inout GraphicsContext) {
+        let lit = overlay.pressed == .tilt || overlay.hudHover == .tilt
+        let plateRect = Path(roundedRect: track, cornerRadius: 15)
+        context.fill(plateRect, with: .color(Color.black.opacity(0.62)))
+        if lit { context.fill(plateRect, with: .color(.white.opacity(overlay.pressed == .tilt ? 0.2 : 0.1))) }
+        context.stroke(plateRect, with: .color(.white.opacity(0.3)), lineWidth: 0.5)
+        let top = WorldHUD.thumbCentre(tilt: 0, track: track), bottom = WorldHUD.thumbCentre(tilt: WorldPose.maxTilt, track: track)
+        var groove = Path()
+        groove.move(to: top)
+        groove.addLine(to: bottom)
+        context.stroke(groove, with: .color(.white.opacity(0.28)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+        for preset in [ViewPreset.oblique, .low] {
+            let at = WorldHUD.thumbCentre(tilt: preset.tilt, track: track)
+            var tick = Path()
+            tick.move(to: CGPoint(x: track.midX - 6, y: at.y))
+            tick.addLine(to: CGPoint(x: track.midX + 6, y: at.y))
+            context.stroke(tick, with: .color(.white.opacity(0.5)), lineWidth: 1)
+        }
+        let thumb = WorldHUD.thumbCentre(tilt: model.pose.tilt, track: track)
+        let r = WorldHUD.thumbDiameter / 2
+        let disc = Path(ellipseIn: CGRect(x: thumb.x - r, y: thumb.y - r, width: 2 * r, height: 2 * r))
+        context.fill(disc, with: .color(.white.opacity(overlay.pressed == .tilt ? 1 : 0.9)))
+        context.stroke(disc, with: .color(.black.opacity(0.5)), lineWidth: 0.8)
     }
 
     /// A disc with a needle that turns with the map: north in red, south pale, and an "N" on the north side.

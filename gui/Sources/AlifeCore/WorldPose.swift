@@ -11,8 +11,10 @@ import simd
 /// of the globe of PR B).
 ///
 /// Everything here is exact on the plane: `grab` puts the floor point that was under the pointer back under it for any pointer,
-/// heading and tilt, and `zoom(by:about:)` is a change of `distance` followed by the same grab. The clamps are the footprint's:
-/// one world is ever drawn (`Patch`), so the view may not reach past `reach * L` of its centre in either axis for any heading.
+/// heading and tilt, and `zoom(by:about:)` is a change of `distance` followed by the same grab. The clamps: looking straight down the
+/// view may not reach past `reach * L` of its centre in either axis for any heading (one world is ever drawn, `Patch`); a tilted
+/// view may be tilted to edge-on, and keeps its eye over the clear box instead (`maxDistance`): the far floor is hidden by the
+/// horizon fade (`WorldFog`), not by a limit of the tilt.
 package struct WorldPose: Equatable, Sendable {
     package var x: Float
     package var y: Float
@@ -20,7 +22,8 @@ package struct WorldPose: Equatable, Sendable {
     package var z: Float
     /// The map turned about the view axis, in `[-pi, pi)`; 0 has north (+y) up and east (+x) to the right.
     package var heading: Float
-    /// From looking straight down, in `[0, maxTilt]`.
+    /// From looking straight down, in `[0, maxTilt]`: 0 is the Top view (straight down), pi/4 the Oblique one, pi/2 looks along the
+    /// floor, edge-on (the camera's pitch is `tilt - pi/2`).
     package var tilt: Float
     /// From the point looked at back to the eye, in world units.
     package var distance: Float
@@ -45,8 +48,9 @@ package struct WorldPose: Equatable, Sendable {
     package static let reach: Float = 0.49
     /// The turn of a heading or a tilt drag, radians per point (the Lab's `radiansPerPixel`).
     package static let radiansPerPoint: Float = 0.008
-    /// The steepest the view may be tilted, before the footprint's limit.
-    package static let maxTilt: Float = 85 * .pi / 180
+    /// The most the view may be tilted: edge-on, the view axis along the floor. (A1 stopped at 85 degrees and at the footprint's limit,
+    /// 52 to 57 degrees at 0.12 L; the horizon fade replaced that limit.)
+    package static let maxTilt: Float = .pi / 2
 
     // MARK: Readouts
 
@@ -65,6 +69,20 @@ package struct WorldPose: Equatable, Sendable {
     /// by `distance` tilted; not the distance itself). For a world seen from below (2D) it is the distance to the plane.
     package func eyeHeight(size: Float, height: Float) -> Float {
         faceDown ? distance : camera(size: size, height: height).position.z
+    }
+
+    // MARK: Readouts of the angle
+
+    /// The tilt in whole degrees, 0 (straight down) to 90 (edge-on).
+    package var tiltDegrees: Int { Int((tilt * 180 / .pi).rounded()) }
+
+    /// The compass bearing the view looks towards, in whole degrees clockwise from north, 0 to 359: north up is 0, and a view turned so
+    /// that east is up looks east, 90. (The heading is the map's turn, 0 north up and positive towards the west; the bearing is its
+    /// opposite.)
+    package var bearingDegrees: Int {
+        var degrees = Int((-heading * 180 / .pi).rounded()) % 360
+        if degrees < 0 { degrees += 360 }
+        return degrees
     }
 
     // MARK: The camera
@@ -98,21 +116,27 @@ package struct WorldPose: Equatable, Sendable {
 
     // MARK: The footprint and the clamps
 
-    /// The farthest the eye may be from the point looked at, straight down (tilt 0), at `heading` and height `z`: the
-    /// footprint of the view on the floor, a rectangle turned by the heading, stays within `reach * L` of the centre along both
-    /// axes. The eye is `d + z` over the floor, so the floor spans `(d + z) tan(fov/2)` per half height. Never under
-    /// `WorldLevels.minDistance`.
-    package static func maxDistance(size: Float, fovY: Float, aspect: Float, heading: Float = 0, z: Float = 0) -> Float {
+    /// The farthest the eye may be from the point looked at at `heading`, height `z` and `tilt`. Looking straight down: the footprint of
+    /// the view on the floor, a rectangle turned by the heading, stays within `reach * L` of the centre along both axes. The eye is
+    /// `d + z` over the floor, so the floor spans `(d + z) tan(fov/2)` per half height. Tilted: also the eye's horizontal offset from
+    /// the point looked at, `d sin(tilt)`, stays within `WorldFog.eyeReach * L`, so the eye is over the clear box (the near edge of the
+    /// patch and the floor under the eye are never in the haze). The two limits meet without a step (the second is no limit at a
+    /// tilt of 0). Never under `WorldLevels.minDistance`.
+    package static func maxDistance(size: Float, fovY: Float, aspect: Float, heading: Float = 0, z: Float = 0, tilt: Float = 0) -> Float {
         let t = tan(fovY / 2)
         let a = max(aspect, 1e-3)
         let c = abs(cos(heading)), s = abs(sin(heading))
         let m = max(a * c + s, a * s + c)  // the larger half extent of the turned rectangle, in half heights
-        return max(Patch.reach(size: size) / (t * m) - max(z, 0), WorldLevels.minDistance)
+        // (the height of the point looked at takes a view down by `z` only as far as the view is straight down: edge-on it is the eye's)
+        var limit = Patch.reach(size: size) / (t * m) - max(z, 0) * cos(min(max(tilt, 0), Float.pi / 2))
+        let sine = sin(min(max(tilt, 0), Float.pi / 2))
+        if sine > 1e-4 { limit = min(limit, WorldFog.eyeReach * size / sine) }
+        return max(limit, WorldLevels.minDistance)
     }
 
     /// The most `distance` this view may have now.
     package func distanceLimit(size: Float, aspect: Float) -> Float {
-        Self.maxDistance(size: size, fovY: fovY, aspect: aspect, heading: heading, z: z)
+        Self.maxDistance(size: size, fovY: fovY, aspect: aspect, heading: heading, z: z, tilt: tilt)
     }
 
     /// The largest offset from the centre, along x and along y, of the floor points the four corners of the view see: how far
@@ -141,26 +165,41 @@ package struct WorldPose: Equatable, Sendable {
         return extent.x <= limit && extent.y <= limit
     }
 
-    /// Tilts the view back towards straight down until the picture stays within one world (the footprint's limit, which
-    /// replaces v1's tiled-quad reach): the largest tilt that fits, to a thousandth of a degree. The distance must already be
-    /// within `distanceLimit`, which every tilt-0 view meets. True if the tilt changed.
-    @discardableResult
-    package mutating func limitTilt(aspect: Float, size: Float, height: Float) -> Bool {
-        tilt = min(max(tilt, 0), Self.maxTilt)
-        guard tilt > 0, !fits(aspect: aspect, size: size, height: height) else { return false }
-        var low: Float = 0, high = tilt
-        var probe = self
-        for _ in 0..<28 {
-            let mid = 0.5 * (low + high)
-            probe.tilt = mid
-            if probe.fits(aspect: aspect, size: size, height: height) { low = mid } else { high = mid }
+    /// The floor point (as an offset from the centre) under the pointer at `ndc`, always: where the ray meets the plane `planeZ` in
+    /// front of the eye within `limit` of the centre (Chebyshev, in world units); where it misses it (the horizon is in the picture)
+    /// or meets it farther, the point of its own horizontal line from the eye where that line leaves the box of `limit`. It is the
+    /// footprint of a view that may be tilted to edge-on, clipped to the clear box: the part of the picture that is not haze. The eye
+    /// is over the box (`WorldFog.eyeReach`), so the line does leave it.
+    package func clippedOffset(at ndc: SIMD2<Float>, aspect: Float, planeZ: Float = 0, limit: Float) -> SIMD2<Float> {
+        var origin = self
+        origin.x = 0
+        origin.y = 0
+        let camera = origin.camera(size: 1, height: 0)
+        let half = tan(fovY / 2)
+        let ray = simd_normalize(camera.forward + camera.right * (ndc.x * half * aspect) + camera.up * (ndc.y * half))
+        let eye = SIMD2(camera.position.x, camera.position.y)
+        if abs(ray.z) > 1e-6 {
+            let t = (planeZ - camera.position.z) / ray.z
+            if t > 0, t.isFinite {
+                let hit = eye + SIMD2(ray.x, ray.y) * t
+                if WorldFog.chebyshev(hit) <= limit { return hit }
+            }
         }
-        tilt = low
-        return true
+        // The line leaves the box where one of its coordinates reaches the box's side (the eye is inside; a ray that goes straight
+        // up or down has no line: the eye's own place).
+        let line = SIMD2(ray.x, ray.y)
+        var exit = Float.infinity
+        for axis in 0..<2 where abs(line[axis]) > 1e-6 {
+            let s = ((line[axis] > 0 ? limit : -limit) - eye[axis]) / line[axis]
+            if s >= 0 { exit = min(exit, s) }
+        }
+        guard exit.isFinite else { return SIMD2(min(max(eye.x, -limit), limit), min(max(eye.y, -limit), limit)) }
+        return eye + line * exit
     }
 
-    /// The clamps of every edit: `x` and `y` into the world, `z` into `[0, H]`, the heading into `[-pi, pi)`, the distance
-    /// between a few agent radii and the footprint's limit, then the tilt.
+    /// The clamps of every edit: `x` and `y` into the world, `z` into `[0, H]`, the heading into `[-pi, pi)`, the tilt into
+    /// `[0, maxTilt]`, then the distance between a few agent radii and the limit of that tilt (`maxDistance`: a tilted view is held
+    /// nearer, not tilted back).
     package mutating func clamp(aspect: Float, size: Float, height: Float) {
         if size > 0 {
             x = Torus.wrap(x.isFinite ? x : 0, size: size)
@@ -168,9 +207,9 @@ package struct WorldPose: Equatable, Sendable {
         }
         z = min(max(z.isFinite ? z : 0, 0), max(height, 0))
         heading = Self.wrap(heading.isFinite ? heading : 0)
+        tilt = min(max(tilt.isFinite ? tilt : 0, 0), Self.maxTilt)
         let limit = distanceLimit(size: size, aspect: aspect)
         distance = min(max(distance.isFinite ? distance : limit, WorldLevels.minDistance), max(limit, WorldLevels.minDistance))
-        limitTilt(aspect: aspect, size: size, height: height)
     }
 
     // MARK: Grab, pan, zoom, turn
@@ -181,7 +220,15 @@ package struct WorldPose: Equatable, Sendable {
         return SIMD2(Float(point.x / view.width) * 2 - 1, 1 - Float(point.y / view.height) * 2)
     }
 
-    /// Where the ray through `ndc` meets the plane through the centre (height `z`; or the horizontal plane at `planeZ`, the floor
+    /// The tilt from which the plane a grab takes hold of is the floor, not the plane through the centre.
+    package static let gripTilt: Float = 80 * .pi / 180
+
+    /// The height of the plane the pointer takes hold of: the one through the centre (so that a followed organism's plane is
+    /// grabbed), except that from `gripTilt` (a view that looks nearly along the floor, where the plane through the centre is
+    /// the eye's own and is met by no ray) it is the floor.
+    package var gripZ: Float { tilt < Self.gripTilt ? z : 0 }
+
+    /// Where the ray through `ndc` meets the plane through the centre (`gripZ`; or the horizontal plane at `planeZ`, the floor
     /// for the minimap), as an offset from the centre. It does not depend on where the centre is, only on the orientation and the
     /// distance: the camera is translated rigidly. Nil when the ray does not reach the plane in front of the eye.
     package func offset(at ndc: SIMD2<Float>, aspect: Float, planeZ: Float? = nil) -> SIMD2<Float>? {
@@ -192,47 +239,58 @@ package struct WorldPose: Equatable, Sendable {
         let half = tan(fovY / 2)
         let ray = simd_normalize(camera.forward + camera.right * (ndc.x * half * aspect) + camera.up * (ndc.y * half))
         guard abs(ray.z) > 1e-6 else { return nil }
-        let t = ((planeZ ?? z) - camera.position.z) / ray.z
+        let t = ((planeZ ?? gripZ) - camera.position.z) / ray.z
         guard t > 0, t.isFinite else { return nil }
         let hit = camera.position + ray * t
         return SIMD2(hit.x, hit.y)
     }
 
-    /// The point of the plane through the centre that is under the pointer, wrapped into the world. Nil off the plane.
+    /// The point of the grip plane that is under the pointer, wrapped into the world. Nil off the plane, and nil where the floor is not
+    /// read (beyond `WorldFog.readReach`: in the haze, or toward the horizon, where a point of the screen is a world away).
     package func point(at ndc: SIMD2<Float>, aspect: Float, size: Float) -> SIMD2<Float>? {
-        offset(at: ndc, aspect: aspect).map { Torus.wrap(SIMD2(x, y) + $0, size: size) }
+        guard let hit = offset(at: ndc, aspect: aspect), WorldFog.isReadable(offset: hit, size: size) else { return nil }
+        return Torus.wrap(SIMD2(x, y) + hit, size: size)
     }
 
     /// Moves the centre so that `anchor` (a point of the plane, as `point(at:)` named it when the drag began) is under the
-    /// pointer at `ndc`. Exact for any pointer, heading and tilt. False when the pointer is off the plane.
+    /// pointer at `ndc`. Exact for any pointer, heading and tilt. False when the pointer is off the plane, or in the haze (the map then
+    /// stays where it is: a point of the screen that far is a world away).
     @discardableResult
     package mutating func grab(anchor: SIMD2<Float>, at ndc: SIMD2<Float>, aspect: Float, size: Float) -> Bool {
-        guard let offset = offset(at: ndc, aspect: aspect) else { return false }
+        guard let offset = offset(at: ndc, aspect: aspect), WorldFog.isReadable(offset: offset, size: size) else { return false }
         x = Torus.wrap(anchor.x - offset.x, size: size)
         y = Torus.wrap(anchor.y - offset.y, size: size)
         return true
     }
 
-    /// A pan by `dx`, `dy` points of a view `view` points across (+y down): the map follows the fingers, as a grab of the
-    /// centre carried to the pointer's displacement.
+    /// A pan by `dx`, `dy` points of a view `view` points across (+y down): the map follows the fingers, as a grab of the point of
+    /// the plane under the middle of the picture carried to the pointer's displacement. A view that looks nearly along the floor
+    /// (from `gripTilt`) has no such point to speak of (the middle of the picture is at the horizon): it moves along the floor by
+    /// the displacement at the distance of the point looked at, sideways for `dx` and along the heading for `dy`.
     package mutating func pan(dx: Float, dy: Float, view: CGSize, aspect: Float, size: Float) {
         guard view.width >= 1, view.height >= 1 else { return }
         let ndc = SIMD2(2 * dx / Float(view.width), -2 * dy / Float(view.height))
-        grab(anchor: SIMD2(x, y), at: ndc, aspect: aspect, size: size)
+        if tilt < Self.gripTilt, let middle = offset(at: .zero, aspect: aspect) {
+            grab(anchor: SIMD2(x, y) + middle, at: ndc, aspect: aspect, size: size)
+        } else {
+            let perPoint = 2 * distance * tan(fovY / 2) / Float(view.height)
+            let right = SIMD2(cos(heading), sin(heading)), ahead = SIMD2(-sin(heading), cos(heading))
+            let moved = (-dx * right + (faceDown ? -dy : dy) * ahead) * perPoint
+            x = Torus.wrap(x + moved.x, size: size)
+            y = Torus.wrap(y + moved.y, size: size)
+        }
     }
 
-    /// Multiplies the distance by `factor` (below 1 comes closer; the result is clamped to the footprint's limit) and moves the
+    /// Multiplies the distance by `factor` (below 1 comes closer; the result is clamped to the limit of the tilt) and moves the
     /// centre so that the point that was under the pointer at `ndc` is under it again. Without a pointer on the plane (nil, or
-    /// off it) the zoom is about the centre. Exact for any pointer when the pointer's ray meets the plane after the zoom: the tilt
-    /// is limited first (zooming out can ask for a steeper view, and the limit does not depend on where the centre is) and the
-    /// grab is made last, with the orientation the view ends with. The distance itself may be clamped (the point then moves with the
-    /// clamp, as a grab at the new distance puts it back under the pointer).
+    /// off it) the zoom is about the centre. Exact for any pointer when the pointer's ray meets the plane after the zoom: the grab is
+    /// made last, with the orientation the view ends with. The distance itself may be clamped (the point then moves with the clamp, as a
+    /// grab at the new distance puts it back under the pointer).
     package mutating func zoom(by factor: Float, at ndc: SIMD2<Float>?, aspect: Float, size: Float, height: Float) {
         guard factor > 0, factor.isFinite else { return }
         let anchor = ndc.flatMap { point(at: $0, aspect: aspect, size: size) }
         let limit = distanceLimit(size: size, aspect: aspect)
         distance = min(max(distance * factor, WorldLevels.minDistance), max(limit, WorldLevels.minDistance))
-        limitTilt(aspect: aspect, size: size, height: height)
         if let anchor, let ndc { grab(anchor: anchor, at: ndc, aspect: aspect, size: size) }
     }
 
@@ -281,10 +339,12 @@ package enum Patch {
 }
 
 extension Camera {
-    /// The scene a camera on the one-world patch is fitted to: the patch is `L` wide around the target, the view reaches no
-    /// further than `WorldPose.reach * L` from it along either axis, and the agents stand up to `height` over the floor.
+    /// The scene a camera on the one-world patch is fitted to: the map is drawn until the fog has taken it (`WorldFog`: 99.8% at `L`
+    /// from the point looked at along either axis, so a corner of that box is `L sqrt 2` away), the clear box is `L` wide around the
+    /// target, and the agents stand up to `height` over the floor. The far plane is behind everything the haze has not hidden, so
+    /// the plane never cuts the floor in view as a line.
     package static func patchScene(center: SIMD2<Float>, size: Float, height: Float) -> Scene {
         Scene(center: SIMD3(center.x, center.y, height / 2),
-              radius: (0.5 * size * Float(2).squareRoot() + 0.5 * height) * 1.05)
+              radius: (size * Float(2).squareRoot() + 0.5 * height) * 1.05)
     }
 }

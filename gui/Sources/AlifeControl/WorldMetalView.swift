@@ -122,7 +122,7 @@ final class WorldMTKView: MTKView {
         dragging = false
         pressed = event.modifierFlags.contains(.option) ? .map : (model?.pressTarget(at: here) ?? .map)
         if pressed != .map {
-            model?.hudPress(pressed)
+            model?.hudPress(pressed, at: here)
             return
         }
         model?.hover(at: nil)

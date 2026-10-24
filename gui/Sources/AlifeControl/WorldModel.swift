@@ -196,6 +196,18 @@ final class WorldModel: ObservableObject {
     var headingEase: HeadingEase?
     /// A press of a zoom button easing the distance (0.25 s).
     var zoomEase: ZoomEase?
+    /// An ease to a standard view, or of the tilt alone (the 3D button): the tilt, the heading, the height and the distance (`ViewEase`).
+    var viewEase: ViewEase?
+    /// The distance the player asked for, while the limit of the tilt holds the view nearer (`WorldPose.maxDistance`): the view goes
+    /// back out to it as the tilt is relaxed, so tilting to the horizon and back does not leave the view zoomed in. Nil while no
+    /// limit holds the view.
+    var distanceWish: Float?
+    /// The tilt the 3D button goes back to: the last angled view (Oblique at first).
+    var lastTilt = ViewPreset.oblique.tilt
+    /// While the compass is turned like a dial: the angle of the pointer about its centre and the heading when it went down.
+    var compassTurn: (angle: Float, heading: Float)?
+    /// While the tilt handle is dragged: how far the pointer is from the thumb's centre (so that the thumb does not jump).
+    var tiltGrab: CGFloat = 0
     /// The colour default is being applied (not the player's choice, so not kept).
     var applyingColourDefault = false
     /// Whether the system asks for less motion: a flight is then a straight 0.25 s ease. Tests inject theirs.
@@ -279,6 +291,7 @@ final class WorldModel: ObservableObject {
     /// one-world patch and the seam copies are planned for the shape that is drawn. Before the world's header there is no view.
     private func refitToShape(aspect: Float) {
         guard play.store.header != nil, aspect.isFinite, aspect > 0 else { return }
+        distanceWish = nil
         if cameraIsHome {
             pose.distance = pose.distanceLimit(size: worldSize, aspect: aspect)
         } else {
@@ -478,6 +491,8 @@ final class WorldModel: ObservableObject {
     func goHome() {
         guard let header = play.store.header else { return }
         pose = homePose(header: header)
+        distanceWish = nil
+        viewEase = nil
         cameraIsHome = true
         pushCamera()
     }
@@ -502,9 +517,18 @@ final class WorldModel: ObservableObject {
 
     /// Edits the view and applies the clamps of every edit: the world's `x` and `y`, the height, the distance between a few radii and
     /// the footprint's limit, the tilt (`WorldPose.clamp`).
+    ///
+    /// A change that leaves the distance alone gets the distance the player asked for (`distanceWish`) if the limit of the tilt had
+    /// held it nearer, and the limit holds it again if it still must: tilting the view to the horizon and back leaves the zoom where
+    /// it was.
     func editPose(_ change: (inout WorldPose) -> Void) {
+        let before = pose.distance
+        let wish = distanceWish ?? before
         change(&pose)
+        if pose.distance == before { pose.distance = wish }
+        let requested = pose.distance
         pose.clamp(aspect: aspect, size: worldSize, height: height)
+        distanceWish = pose.distance < requested * (1 - 1e-5) ? requested : nil
         cameraIsHome = false
         pushCamera()
     }
@@ -578,6 +602,8 @@ final class WorldModel: ObservableObject {
     /// flight that was under way stops where it is; a follow goes on (the user's zoom wins over the distance a fly was heading for).
     func zoom(by factor: Float, at point: CGPoint? = nil) {
         stopFlight()
+        viewEase = nil
+        distanceWish = nil
         let ndc = point.map { WorldPose.ndc(of: $0, in: viewSize) }
         let (aspect, world, height) = (self.aspect, worldSize, self.height)
         editPose { $0.zoom(by: factor, at: ndc, aspect: aspect, size: world, height: height) }

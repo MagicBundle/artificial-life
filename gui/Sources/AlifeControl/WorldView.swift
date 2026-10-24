@@ -167,9 +167,8 @@ struct WorldCanvasView: View {
                 FollowBadge(model: model, play: play)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 if dockCollapsed {
-                    // (left of the compass and the zoom buttons, which are stacked at the top right)
+                    // (the view controls are a column down the right edge, which starts under it: `WorldHUD.columnTop`)
                     ClockBadge(play: play, model: model)
-                        .padding(.trailing, WorldHUD.compassSide + WorldHUD.margin)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
             }

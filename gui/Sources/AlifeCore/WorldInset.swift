@@ -48,12 +48,15 @@ package struct WorldInset: Equatable, Sendable {
     }
 
     /// The border of the picture on the floor: `perSide` samples along each of the four sides, in order, as points of the box
-    /// unwrapped about the centre. Nil if a ray of the border does not meet the floor in front of the eye (the horizon is in
-    /// view: the tilt limit keeps this from happening, but the minimap does not rely on it).
+    /// unwrapped about the centre. **Clipped to the clear box** (`WorldFog.clear`, half a world about the centre): a view tilted
+    /// towards the horizon has a border whose floor is unbounded (a ray that misses the floor, or meets it a world away), and the
+    /// footprint is then the part of the picture that is not haze, its far side along the edge of the box. So the polygon is never
+    /// more than one box across and `pieces(of:)` shows it whole; nil only for no samples.
     package func footprint(of pose: WorldPose, aspect: Float, perSide: Int = 16) -> [CGPoint]? {
         guard perSide >= 1 else { return nil }
         var out: [CGPoint] = []
         let n = Float(perSide)
+        let limit = WorldFog.clear * size
         for side in 0..<4 {
             for i in 0..<perSide {
                 let t = -1 + 2 * Float(i) / n
@@ -64,8 +67,7 @@ package struct WorldInset: Equatable, Sendable {
                 case 2: ndc = SIMD2(-t, -1)  // the bottom, right to left
                 default: ndc = SIMD2(-1, t)  // the left side, bottom to top
                 }
-                guard let at = pose.offset(at: ndc, aspect: aspect, planeZ: 0) else { return nil }
-                out.append(unwrapped(pose, offset: at))
+                out.append(unwrapped(pose, offset: pose.clippedOffset(at: ndc, aspect: aspect, planeZ: 0, limit: limit)))
             }
         }
         return out

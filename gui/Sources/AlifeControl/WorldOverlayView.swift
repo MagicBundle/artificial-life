@@ -62,20 +62,21 @@ struct WorldOverlayView: View {
                 path.addLines(glyph.track)
                 context.stroke(path, with: .color(tint.opacity(0.35 * alpha)), lineWidth: 1.2)
             }
-            let ring = Path(ellipseIn: CGRect(x: glyph.center.x - glyph.radius, y: glyph.center.y - glyph.radius,
-                                              width: 2 * glyph.radius, height: 2 * glyph.radius))
+            // (a circle on the floor: flattened towards the horizon)
+            let ry = glyph.radius * glyph.flatten
+            let ring = Path(ellipseIn: CGRect(x: glyph.center.x - glyph.radius, y: glyph.center.y - ry, width: 2 * glyph.radius, height: 2 * ry))
             context.stroke(ring, with: .color(tint.opacity(alpha)),
                            style: StrokeStyle(lineWidth: glyph.named ? 2 : 1, dash: glyph.coasting ? [4, 3] : []))
             if marked.contains(glyph.id) {
                 let isSelected = selected == .storm(id: glyph.id)
-                let r = glyph.radius + 4
-                let outer = Path(ellipseIn: CGRect(x: glyph.center.x - r, y: glyph.center.y - r, width: 2 * r, height: 2 * r))
+                let r = glyph.radius + 4, rv = ry + 4
+                let outer = Path(ellipseIn: CGRect(x: glyph.center.x - r, y: glyph.center.y - rv, width: 2 * r, height: 2 * rv))
                 context.stroke(outer, with: .color(.white.opacity(isSelected ? 0.95 : 0.55)), lineWidth: isSelected ? 2 : 1)
             }
             if level != .organism {
                 let label = glyph.name ?? "disturbance \(glyph.id)"
                 let text = Text(label).font(.caption2).foregroundColor(tint.opacity(alpha))
-                context.draw(context.resolve(text), at: CGPoint(x: glyph.center.x, y: glyph.center.y - glyph.radius - 8))
+                context.draw(context.resolve(text), at: CGPoint(x: glyph.center.x, y: glyph.center.y - ry - 8))
             }
         }
     }

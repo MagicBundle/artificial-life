@@ -7,7 +7,7 @@ import AlifeCore
 // the viewer window (`Renderer.Failure.shaders`). Do not use a backslash or a triple quote in the source.
 //
 // The structs `Scene`, `Plane` and `WorldU` mirror `SceneUniforms`, `PlaneUniforms` and `WorldUniforms` in Renderer.swift
-// field by field (a test pins the Swift side: 160, 32 and 112 bytes).
+// field by field (a test pins the Swift side: 160, 32 and 160 bytes).
 enum Shaders {
     /// The entry points of `source` that `Renderer` builds pipelines from (a test compares them with the source).
     static let sphereVertex = "sphereVertex"
@@ -31,10 +31,13 @@ enum Shaders {
     // and the organisms as translucent points.
     static let insetVertex = "insetVertex"
     static let insetPointVertex = "insetPointVertex"
+    // The sky above the horizon of a tilted view (DESIGN 36.5, camera controls): a full-screen pass, drawn first.
+    static let skyVertex = "skyVertex"
+    static let skyFragment = "skyFragment"
     static let entryPoints = [
         sphereVertex, sphereFragment, bondVertex, boxVertex, lineFragment, planeVertex, planeFragment, sliceFragment,
         agentVertexA, agentFragmentA, agentFragmentFlat, bondVertexA, pointVertexA, pointFragment, mapVertex, mapFragment,
-        insetVertex, insetPointVertex,
+        insetVertex, insetPointVertex, skyVertex, skyFragment,
     ]
 
     static let source = """
@@ -66,6 +69,8 @@ enum Shaders {
         float4 size;       // x: the cap on the drawn radius in px (huge: physical size), y, z: the alpha ramp's low and high radius in px, w: depth cue slope
         float4 look;       // x: exposure (the map's brightness), y: territory border alpha, z: depth cue base, w: hemisphere tint weight
         float4 patch;      // x: the index k of the cell the view's centre is in, y, z, w: the alpha of the copies k - 1, k, k + 1 (0: not drawn)
+        float4 fog;        // rgb: the haze (the brightness and the map's opacity are in it), a: 1 with a fog, 0 without
+        float4 fogShape;   // x: the clear half extent in world units, y: 1 / the fade's width in world units, z: the mesh's half width in x in L, w: the sky's scale
     };
 
     // The nose of an agent: a small sphere on its forward axis, paler than the body, so the heading shows.
@@ -535,6 +540,7 @@ enum Shaders {
     struct MapVarying {
         float4 position [[position]];
         float2 uv;
+        float2 xy;         // the floor point in the world, unwrapped about the camera target (the fog)
     };
 
     vertex MapVarying mapVertex(uint vid [[vertex_id]],
@@ -545,14 +551,18 @@ enum Shaders {
         float L = world.target.z;
         MapVarying out;
         out.uv = float2(0.0);
+        out.xy = float2(0.0);
         out.position = float4(2.0, 2.0, 2.0, 1.0);
         float alpha = world.patch[1u + min(iid, 2u)];
         if (iid > 2u || alpha <= 0.0) { return out; }
         float k = world.patch.x - 1.0 + float(iid);
         float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
-        float2 xy = float2(world.target.x, k * L) + corner * (0.5 * L);
+        // The quad is L tall (a cell of the wrap in y) and, with a fog, 3 L wide about the target in x: the fog is 99.8% at L from the
+        // target, so no edge of the mesh shows. The texture repeats, so the wider mesh is seamless.
+        float2 xy = float2(world.target.x, k * L) + corner * float2(world.fogShape.z * L, 0.5 * L);
         out.position = scene.viewProjection * float4(xy, 0.0, 1.0);
         out.uv = xy * world.target.w;
+        out.xy = xy;
         return out;
     }
 
@@ -564,6 +574,7 @@ enum Shaders {
         MapVarying out;
         out.position = float4(corner, 0.0, 1.0);
         out.uv = float2(0.5 + 0.5 * corner.x, 0.5 * corner.y);
+        out.xy = float2(0.0);
         return out;
     }
 
@@ -635,7 +646,45 @@ enum Shaders {
             }
             color = mix(color, float3(1.0), world.look.y * border);
         }
-        return float4(mix(background, color, world.params.y), 1.0);
+        float3 shown = mix(background, color, world.params.y);
+        if (world.fog.a > 0.5) {
+            // The haze: the Chebyshev distance of the floor point from the point looked at, past the clear box, as 1 - exp(-x^2).
+            float2 off = abs(in.xy - world.target.xy);
+            float x = max(max(off.x, off.y) - world.fogShape.x, 0.0) * world.fogShape.y;
+            shown = mix(shown, world.fog.rgb, 1.0 - exp(-x * x));
+        }
+        return float4(shown, 1.0);
+    }
+
+    // The sky: a full-screen pass drawn first, at the far plane. The haze colour at and below the horizon, falling away above it with
+    // the elevation of the ray as exp(-elevation / scale) towards the clear colour, so that the fogged floor and the sky are one colour
+    // at the horizon.
+    struct SkyVarying {
+        float4 position [[position]];
+        float2 ndc;
+    };
+
+    vertex SkyVarying skyVertex(uint vid [[vertex_id]])
+    {
+        float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
+        SkyVarying out;
+        out.position = float4(corner, 1.0, 1.0);
+        out.ndc = corner;
+        return out;
+    }
+
+    fragment float4 skyFragment(SkyVarying in [[stage_in]],
+                                constant Scene& scene [[buffer(0)]],
+                                constant WorldU& world [[buffer(7)]])
+    {
+        const float3 background = float3(0.035, 0.04, 0.055);
+        float aspect = scene.viewport.x / max(scene.viewport.y, 1.0);
+        float tanHalf = 1.0 / world.refs.w;
+        float3 forward = cross(scene.up.xyz, scene.right.xyz);
+        float3 ray = normalize(forward + scene.right.xyz * (in.ndc.x * tanHalf * aspect) + scene.up.xyz * (in.ndc.y * tanHalf));
+        float elevation = asin(clamp(ray.z, -1.0, 1.0));
+        float haze = elevation <= 0.0 ? 1.0 : exp(-elevation / max(world.fogShape.w, 1e-3));
+        return float4(mix(background, world.fog.rgb, haze), 1.0);
     }
     """
 }

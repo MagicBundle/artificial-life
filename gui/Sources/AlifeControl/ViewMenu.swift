@@ -26,6 +26,8 @@ struct ViewMenuInputs: Equatable {
     var display: WorldDisplay
     /// A weather map is in view (`WorldModel.mapShown`): the brightness scales the map's colours, so it has nothing to do without one.
     var mapShown: Bool
+    /// The world has a height to tilt over (3D): the standard views are enabled. Constant for a world, so the camera does not change it.
+    var tiltable: Bool
     var chapterPause: Bool
     var pauses: [Pause]
     var skipConfirm: Bool
@@ -48,6 +50,7 @@ struct ViewMenuInputs: Equatable {
         labelsOn = play.labelsOn
         display = model.display
         mapShown = model.mapShown
+        tiltable = model.hasTiltableView
         chapterPause = store.clock?.chapterPauseArmed ?? true
         pauses = model.pausableClasses.map { Pause(name: $0.name, label: $0.label, on: model.alertPauseOn($0.name)) }
         skipConfirm = model.defaults.bool(forKey: WorldModel.skipConfirmKey)
@@ -103,6 +106,18 @@ struct ViewMenu: View {
             Toggle("Scroll zooms", isOn: layer(\.scrollZooms))
                 .help("The trackpad's two-finger scroll (and a Magic Mouse's) zooms instead of panning; a wheel mouse and a pinch always zoom")
             Divider()
+            // The standard views of a 3D world (the keys T O L S, the strip over the map): animated, and static items, so that the menu
+            // does not depend on where the camera is.
+            Menu("View angle") {
+                ForEach(ViewPreset.allCases, id: \.self) { preset in
+                    Button(Self.title(of: preset)) { model.viewPreset(preset) }
+                        .help(preset.help)
+                }
+                Divider()
+                Button(Self.toggle3DTitle) { model.toggle3D() }
+            }
+            .disabled(!inputs.tiltable)
+            Divider()
             // The pauses the world takes by itself. The player's choice is kept and sent to every world after its header.
             Menu("Pauses") {
                 Toggle("At the end of a chapter", isOn: Binding(get: { inputs.chapterPause }, set: { model.setChapterPause($0) }))
@@ -126,6 +141,12 @@ struct ViewMenu: View {
         .fixedSize()
         .disabled(!inputs.live)
     }
+
+    /// The titles of the View angle submenu: a view each, with its key, and the 3D button's. (Static: the menu does not depend on where
+    /// the camera is, so it is not rebuilt while it moves.)
+    nonisolated static func title(of preset: ViewPreset) -> String { "\(preset.title) (\(preset.key.uppercased()))" }
+    nonisolated static let toggle3DTitle = "Tilt on or off (3D button)"
+    nonisolated static var viewAngleTitles: [String] { ViewPreset.allCases.map(title(of:)) + [toggle3DTitle] }
 
     private func layer(_ keyPath: WritableKeyPath<WorldDisplay, Bool>) -> Binding<Bool> {
         Binding(get: { state.value.display[keyPath: keyPath] }, set: { model.display[keyPath: keyPath] = $0 })

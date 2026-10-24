@@ -37,17 +37,46 @@ extension WorldModel {
 
     // MARK: Pressing a control
 
-    /// The left button went down on a control.
-    func hudPress(_ target: HUDTarget) {
+    /// The left button went down on a control, at `point` (points of the free rectangle; nil in a test that has none). The compass
+    /// takes hold of the heading (a dial: the pointer's angle about its centre is what turns it) and the tilt handle goes to the
+    /// pointer at once, holding the thumb where it was grabbed if the press was on it.
+    func hudPress(_ target: HUDTarget, at point: CGPoint? = nil) {
         dismissHint()
         overlay.setHover(nil)
         overlay.setPressed(target)
+        switch target {
+        case .compass:
+            if let point, let compass = hud.compass {
+                compassTurn = (Compass.angle(of: point, around: CGPoint(x: compass.midX, y: compass.midY)), pose.heading)
+            }
+        case .tilt:
+            guard let point, let track = hud.tiltTrack else { return }
+            let thumb = WorldHUD.thumbCentre(tilt: pose.tilt, track: track)
+            tiltGrab = abs(point.y - thumb.y) <= WorldHUD.thumbDiameter / 2 ? point.y - thumb.y : 0
+            setTilt(WorldHUD.tilt(atY: point.y, track: track, grab: tiltGrab))
+        default: break
+        }
     }
 
-    /// The pointer moved with the button down on `target`. Only the minimap drags: the centre of the view follows the pointer live
-    /// (a grab on the minimap's own plane), the pointer held inside the box.
+    /// The pointer moved with the button down on `target`. The minimap drags: the centre of the view follows the pointer live (a grab on
+    /// the minimap's own plane), the pointer held inside the box. The compass turns the heading by the angle the pointer turned about
+    /// its centre; the tilt handle follows the pointer along its track.
     func hudDrag(_ target: HUDTarget, to point: CGPoint) {
-        guard target == .minimap, let inset else { return }
+        switch target {
+        case .minimap: dragMinimap(to: point)
+        case .compass:
+            guard let turn = compassTurn, let compass = hud.compass else { return }
+            let now = Compass.angle(of: point, around: CGPoint(x: compass.midX, y: compass.midY))
+            setHeading(WorldPose.wrap(turn.heading + (now - turn.angle)))
+        case .tilt:
+            guard let track = hud.tiltTrack else { return }
+            setTilt(WorldHUD.tilt(atY: point.y, track: track, grab: tiltGrab))
+        default: return
+        }
+    }
+
+    private func dragMinimap(to point: CGPoint) {
+        guard let inset else { return }
         cancelCameraMotion()
         headingEase = nil
         let inside = CGPoint(x: min(max(point.x, inset.rect.minX + 0.5), inset.rect.maxX - 0.5),
@@ -64,9 +93,10 @@ extension WorldModel {
     }
 
     /// The button came up at `point` after a press on `target`. `dragged` is whether the pointer moved far enough to be a drag
-    /// (the minimap has already followed it). `clicks` is the click count of the sequence.
+    /// (the minimap, the compass and the tilt handle have already followed it). `clicks` is the click count of the sequence.
     func hudRelease(_ target: HUDTarget, at point: CGPoint, clicks: Int, dragged: Bool) {
         overlay.setPressed(nil)
+        compassTurn = nil
         let rects = hud
         func inside(_ rect: CGRect?) -> Bool { rect?.contains(point) ?? false }
         switch target {
@@ -81,12 +111,18 @@ extension WorldModel {
         case .home:
             if inside(rects.home) { home() }
         case .compass:
-            guard inside(rects.compass) else { return }
+            guard !dragged, inside(rects.compass) else { return }
             if clicks >= 2 { home() } else { northUp() }
         case .zoomIn:
             if inside(rects.zoomIn) { zoomStep(closer: true) }
         case .zoomOut:
             if inside(rects.zoomOut) { zoomStep(closer: false) }
+        case .toggle3D:
+            if inside(rects.toggle3D) { toggle3D() }
+        case .tilt:
+            tiltGrab = 0
+        case .preset(let preset):
+            if inside(rects.presets.first { $0.preset == preset }?.rect) { viewPreset(preset) }
         }
     }
 
@@ -136,7 +172,8 @@ extension WorldModel {
     /// at: the floor unless an organism is followed) and what an organism is at this scale.
     var scaleBar: (bar: ScaleBar, organism: ScaleBar.OrganismReference?, plane: String?)? {
         guard let scale = pointsPerUnit, let bar = ScaleBar.choose(pointsPerUnit: scale) else { return nil }
-        let plane = ScaleBar.planeText(z: pose.z, height: height)
+        // (from a tilt of 0.3 radians the scale changes down the picture: the bar is true at the point looked at, and says so)
+        let plane = ScaleBar.planeText(z: pose.z, height: height).map { pose.tilt > 0.3 ? $0 + " at the centre" : $0 }
         guard let header = play.store.header else { return (bar, nil, plane) }
         let radius = Float(header.radius)
         let physicalPixels = radius * scale * pixelsPerPoint
@@ -154,7 +191,7 @@ extension WorldModel {
 
     /// The hint line of the controls, shown once on the first World window and again from View > Controls. A Magic Mouse reports
     /// precise deltas like a trackpad (so its scroll pans, and the system cannot tell the two apart): it zooms with the switch.
-    static let hintText = "Drag moves the map. Two-finger scroll pans; pinch or a mouse wheel zooms (Magic Mouse: View > Scroll zooms). H home, N north up, I minimap, C colour. Option-drag tilts."
+    static let hintText = "Drag moves the map. Two-finger scroll pans; pinch or a mouse wheel zooms (Magic Mouse: View > Scroll zooms). H home, N north up, I minimap, C colour. T O L S: top, oblique, low and side views; Option-drag tilts and turns."
     static let hintKey = "world.hintShown"
 
     /// The first time a world opens the hint is shown, until any input.

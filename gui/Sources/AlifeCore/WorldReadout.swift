@@ -60,6 +60,12 @@ package enum WorldReadout {
         return String(format: "x %.0f  y %.0f   ", pose.x, pose.y) + up
     }
 
+    /// The readout of the angle, over the view controls: "Tilt 45° · heading 270°". The tilt is from straight down (0) to edge-on
+    /// (90); the heading is the compass bearing the view looks towards (0 is north up, 90 east, 270 west).
+    package static func viewText(pose: WorldPose) -> String {
+        "Tilt \(pose.tiltDegrees)° · heading \(pose.bearingDegrees)°"
+    }
+
     /// What the readout of the pointer says about the floor under it: "floor 319 E  28 N". It is only the floor: in a 3D world an
     /// organism above it is somewhere else (`organismText`).
     package static func floorText(x: Float, y: Float, size: Float) -> String {
@@ -74,6 +80,11 @@ package enum WorldReadout {
 
 /// The compass's arrow (the spec's 4.2): where world north, `+y`, points on the screen.
 package enum Compass {
+    /// The angle of `point` about `centre` on the screen, clockwise from up, in `(-pi, pi]`: what a drag of the compass turns by.
+    package static func angle(of point: CGPoint, around centre: CGPoint) -> Float {
+        Float(atan2(point.x - centre.x, -(point.y - centre.y)))
+    }
+
     /// The screen angle of north, clockwise from up, in radians in `(-pi, pi]`: 0 when the map is north up.
     package static func northAngle(camera: Camera) -> Float {
         let north = SIMD3<Float>(0, 1, 0)

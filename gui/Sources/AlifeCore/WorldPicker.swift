@@ -128,7 +128,8 @@ package enum WorldPicker {
     // MARK: Territory
 
     /// The point of the floor (z = 0) under `point`, unwrapped as the ray meets it; nil when the ray does not meet the floor
-    /// in front of the eye.
+    /// in front of the eye, and where the floor is not read (farther than `WorldFog.readReach` of the point looked at: in the haze, a
+    /// cell of the territory is not under the pointer).
     package static func floorPoint(at point: CGPoint, projector: WorldProjector) -> SIMD2<Float>? {
         let camera = projector.camera
         let nx = Float(point.x / projector.view.width) * 2 - 1
@@ -140,6 +141,8 @@ package enum WorldPicker {
         let t = -eye.z / direction.z
         guard t > 0, t.isFinite else { return nil }
         let hit = eye + direction * t
+        if projector.size > 0,
+           !WorldFog.isReadable(offset: SIMD2(hit.x - camera.target.x, hit.y - camera.target.y), size: projector.size) { return nil }
         return SIMD2(hit.x, hit.y)
     }
 
