@@ -27,7 +27,7 @@ final class HostedWorld {
     static let keys = ["world.dockSide", "world.dockExtent", "world.dockExtentBottom", "world.dockCollapsed"]
     /// What a test may change in the process's defaults (the hosted window model reads and writes them): kept and put back, and cleared
     /// at the start so that a world opens as a first one does.
-    static let stateKeys = [WorldModel.minimapKey, WorldModel.hintKey, WorldModel.heightColourKey, WorldModel.scrollZoomsKey, WorldModel.exposureKey]
+    static let stateKeys = [WorldModel.minimapKey, WorldModel.hintKey, WorldModel.heightColourKey, WorldModel.scrollZoomsKey, WorldModel.exposureKey, WorldModel.globeKey]
     private var savedState: [String: Any?] = [:]
 
     /// Over the stream at `stream` (a recorded `PlayStream`), in a window of `size`; `dockCollapsed` hides the control center, so that

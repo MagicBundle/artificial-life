@@ -247,12 +247,24 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// The sky of a tilted view: a full-screen pass at the far plane, drawn before the map.
     private let skyPipeline: any MTLRenderPipelineState
     private let worldBoxPipeline: any MTLRenderPipelineState
+    // The globe (DESIGN 36.10): the space behind it, the map's mesh, the pole caps, and the pass that resets the depth for what stands on it.
+    private let globeSkyPipeline: any MTLRenderPipelineState
+    private let globeMapPipeline: any MTLRenderPipelineState
+    private let globeCapPipeline: any MTLRenderPipelineState
+    private let depthResetPipeline: any MTLRenderPipelineState
+    /// The mesh's triangles: `Shaders.meshCells`^2 cells of two, as 32-bit indices into the (cells + 1)^2 vertices the shader computes.
+    private let meshIndices: any MTLBuffer
+    private let meshIndexCount: Int
     /// One-texel stand-ins for the planes and the territory of a world without them.
     private let blankPlane: any MTLTexture
     private let blankTerritory: any MTLTexture
     /// Depth tested and written (agents, bonds, box) and depth tested only (translucent planes, the 2D background).
     private let opaqueDepth: any MTLDepthStencilState
     private let overlayDepth: any MTLDepthStencilState
+    /// The map's mesh: tested (`less`) and written. After it `resetDepth` writes 1 everywhere (`always`), so that what stands on the map is
+    /// tested against itself only.
+    private let meshDepth: any MTLDepthStencilState
+    private let resetDepth: any MTLDepthStencilState
 
     private var slots: [Slot]
     private let gate = DrawGate(slotCount: Renderer.slotCount, windowDraws: Renderer.drawablesInFlight)
@@ -306,6 +318,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         /// The two thin equator lines of the map (y = 0 and y = L/2). On; the tests of the world's edge turn them off (a line is a step
         /// to a detector of edges).
         var equatorLines = true
+        /// The view when the globe exists for this world (DESIGN §36.10): the map is a mesh morphed by the vantage's `s` from the flat
+        /// close-up to the sphere, and everything else is placed by the same morph. Nil: the flat quad and the flat camera.
+        var vantage: WorldVantage?
+        /// Whether the view reaches past the world it is centred on in x (the tiles beside the central one are drawn while `s` < 0.3).
+        var wideTiles = true
     }
     var worldDraw = WorldDraw()
     /// Told when the drawable's size changes in the World (the free rectangle changed), in pixels.
@@ -376,10 +393,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             guard let f = library.makeFunction(name: name) else { throw Failure.missingFunction(name) }
             return f
         }
-        func pipeline(_ name: String, vertex: String, fragment: String, blend: Bool) throws
+        func pipeline(_ name: String, vertex: String, fragment: String, blend: Bool, colour: Bool = true) throws
             -> any MTLRenderPipelineState {
             let d = MTLRenderPipelineDescriptor()
             d.label = name
+            if !colour { d.colorAttachments[0].writeMask = [] }
             d.vertexFunction = try function(vertex)
             d.fragmentFunction = try function(fragment)
             d.colorAttachments[0].pixelFormat = Renderer.colorFormat
@@ -423,6 +441,26 @@ final class Renderer: NSObject, MTKViewDelegate {
                                           blend: true)
         skyPipeline = try pipeline("sky", vertex: Shaders.skyVertex, fragment: Shaders.skyFragment, blend: false)
         worldBoxPipeline = try pipeline("world frame", vertex: Shaders.worldBoxVertex, fragment: Shaders.worldBoxFragment, blend: true)
+        globeSkyPipeline = try pipeline("globe sky", vertex: Shaders.skyVertex, fragment: Shaders.globeSkyFragment, blend: false)
+        globeMapPipeline = try pipeline("globe map", vertex: Shaders.globeMapVertex, fragment: Shaders.globeMapFragment, blend: true)
+        globeCapPipeline = try pipeline("globe caps", vertex: Shaders.globeCapVertex, fragment: Shaders.globeCapFragment, blend: true)
+        depthResetPipeline = try pipeline("depth reset", vertex: Shaders.skyVertex, fragment: Shaders.depthResetFragment, blend: false,
+                                          colour: false)
+        let cells = Shaders.meshCells
+        var indices: [UInt32] = []
+        indices.reserveCapacity(6 * cells * cells)
+        for j in 0..<cells {
+            for i in 0..<cells {
+                // East to the right, north up, seen from outside: counter-clockwise (v00, v10, v11) and (v00, v11, v01).
+                let v00 = UInt32(j * (cells + 1) + i), v10 = v00 + 1, v01 = v00 + UInt32(cells + 1), v11 = v01 + 1
+                indices.append(contentsOf: [v00, v10, v11, v00, v11, v01])
+            }
+        }
+        guard let indexBuffer = device.makeBuffer(bytes: indices, length: indices.count * MemoryLayout<UInt32>.stride,
+                                                  options: .storageModeShared) else { throw Failure.allocation("the map's mesh") }
+        indexBuffer.label = "map mesh indices"
+        meshIndices = indexBuffer
+        meshIndexCount = indices.count
         func blank(_ format: MTLPixelFormat) throws -> any MTLTexture {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: 1, height: 1, mipmapped: false)
             d.usage = .shaderRead
@@ -435,15 +473,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         blankPlane = try blank(.r8Unorm)
         blankTerritory = try blank(.rgba8Unorm)
 
-        func depthState(write: Bool) throws -> any MTLDepthStencilState {
+        func depthState(write: Bool, compare: MTLCompareFunction = .lessEqual) throws -> any MTLDepthStencilState {
             let d = MTLDepthStencilDescriptor()
-            d.depthCompareFunction = .lessEqual
+            d.depthCompareFunction = compare
             d.isDepthWriteEnabled = write
             guard let state = device.makeDepthStencilState(descriptor: d) else { throw Failure.allocation("a depth state") }
             return state
         }
         opaqueDepth = try depthState(write: true)
         overlayDepth = try depthState(write: false)
+        meshDepth = try depthState(write: true, compare: .less)
+        resetDepth = try depthState(write: true, compare: .always)
         slots = (0..<Renderer.slotCount).map { _ in Slot() }
         super.init()
     }
@@ -803,26 +843,33 @@ final class Renderer: NSObject, MTKViewDelegate {
         let tint = territoryOn && display.territory == .tint ? MapPalette.territoryTint : 0
         // The horizon fade exists for a 3D world with a floor to show; its colour is the haze of the sea when the map is on, and the clear
         // colour (the floor of a world with no map is nearly that) when it is not.
-        let opacity = WorldLevels.mapOpacity(distance: camera.distance, size: L)
+        // The distance of the pose (the flat-equivalent one) and the point it looks at: on the globe path the camera is in the centre's frame.
+        let distance = worldDraw.vantage?.pose.distance ?? camera.distance
+        let looked = worldDraw.vantage.map { SIMD2($0.pose.x, $0.pose.y) } ?? SIMD2(camera.target.x, camera.target.y)
+        let s = worldDraw.vantage?.s ?? 0
+        let opacity = WorldLevels.mapOpacity(distance: distance, size: L)
         let fogOn = worldDraw.fog && header.dims == 3 && bits & (WorldUniforms.mapBit | WorldUniforms.territoryBit) != 0
         let haze = bits & WorldUniforms.mapBit != 0 ? WorldFog.colour(exposure: display.exposure, opacity: opacity) : MapPalette.background
         let limits = OrganismSizePolicy.limits(
-            mode: display.sizeMode, cover: worldDraw.coverRadius, distance: camera.distance, size: L,
+            mode: display.sizeMode, cover: worldDraw.coverRadius, distance: distance, size: L,
             agentRadius: Float(header.radius), viewHeight: Float(size.height), fovY: camera.fovY,
             pixelsPerPoint: worldDraw.pixelsPerPoint)
+        // The haze of the flat close-up is a function of s on the globe path (GlobeLook): its clear box and width shrink, then it goes.
+        let clear = (worldDraw.vantage == nil ? WorldFog.clear : GlobeLook.fogClear(s: s)) * L
+        let width = (worldDraw.vantage == nil ? WorldFog.width : GlobeLook.fogWidth(s: s)) * L
         return WorldUniforms(
-            target: SIMD4(camera.target.x, camera.target.y, L, 1 / L),
+            target: SIMD4(looked.x, looked.y, L, 1 / L),
             params: SIMD4(worldDraw.mapBlend, opacity, tint, WorldLevels.flatDiscPixels),
             refs: SIMD4(mapNow?.pRef ?? 0, mapNow?.dcRef ?? 0, mapNow?.zetaRef ?? 0, 1 / tan(camera.fovY / 2)),
             flags: SIMD4(pass, UInt32(playFrame?.n ?? 0), UInt32(playFrame?.nBonds ?? 0), bits),
             style: SIMD4(0.55, 1.5, limits.minimum, OutlineContrast.width),
             size: SIMD4(limits.cap.isFinite ? limits.cap : WorldUniforms.unbounded, OrganismSizePolicy.rampLow,
                         OrganismSizePolicy.rampHigh, OutlineContrast.depthCueSlope),
-            look: SIMD4(display.exposure, MapPalette.territoryBorder, OutlineContrast.depthCueBase,
-                        MapPalette.hemisphereWeight(distance: camera.distance / L)),
+            look: SIMD4(display.exposure, worldDraw.vantage == nil ? MapPalette.territoryBorder : GlobeLook.territoryBorder(s: s),
+                        OutlineContrast.depthCueBase, MapPalette.hemisphereWeight(distance: distance / L)),
             patch: Self.patchUniform(worldDraw.copies, y: camera.target.y, size: L),
             fog: SIMD4(haze.x, haze.y, haze.z, fogOn ? 1 : 0),
-            fogShape: SIMD4(WorldFog.clear * L, 1 / (WorldFog.width * L), fogOn ? WorldFog.meshHalfX : 0.5, WorldFog.skyScale))
+            fogShape: SIMD4(clear, 1 / width, fogOn ? WorldFog.meshHalfX : 0.5, WorldFog.skyScale))
     }
 
     /// The `patch` uniform of a plan of copies: the cell of the view's centre and the alphas of the three cells around it.
@@ -834,17 +881,23 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     private func encodeWorld(into encoder: any MTLRenderCommandEncoder, slot: Slot, header: StreamHeader, size: CGSize) {
         let aspect = Float(size.width / size.height)
+        let globe = worldDraw.vantage
+        let eyeCamera = globe?.camera ?? camera
         var scene = SceneUniforms(
-            viewProjection: camera.viewProjectionMatrix(aspect: aspect),
-            eye: SIMD4(camera.position, 1),
-            right: SIMD4(camera.right, 0),
-            up: SIMD4(camera.up, 0),
+            viewProjection: eyeCamera.viewProjectionMatrix(aspect: aspect),
+            eye: SIMD4(eyeCamera.position, 1),
+            right: SIMD4(eyeCamera.right, 0),
+            up: SIMD4(eyeCamera.up, 0),
             world: SIMD4(Float(header.size), Float(header.height), Float(header.radius), 0),
             counts: SIMD4(UInt32(playFrame?.n ?? 0), UInt32(playFrame?.nBonds ?? 0), UInt32(header.dims), 0),
             viewport: SIMD4(Float(size.width), Float(size.height), 0, 0))
         encoder.setCullMode(.none)
         encoder.setVertexBytes(&scene, length: MemoryLayout<SceneUniforms>.stride, index: 0)
         encoder.setFragmentBytes(&scene, length: MemoryLayout<SceneUniforms>.stride, index: 0)
+        // The globe's constants: zero (the flag off) on the flat path, which no shader of it reads beyond the flag.
+        var globeConstants = globe.map { GlobeUniforms($0, copies: worldDraw.copies, fog: worldDraw.fog && header.dims == 3) } ?? GlobeUniforms()
+        encoder.setVertexBytes(&globeConstants, length: MemoryLayout<GlobeUniforms>.stride, index: 8)
+        encoder.setFragmentBytes(&globeConstants, length: MemoryLayout<GlobeUniforms>.stride, index: 8)
         let display = worldDraw.display
         let w = slot.world
 
@@ -865,8 +918,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         var u = worldUniforms(header: header, pass: 0, size: size)
-        // The sky first, where there is a fog: the haze at the horizon and below it, the clear colour overhead.
-        if u.fog.w > 0.5 {
+        if globe != nil {
+            encodeGlobeBackdrop(into: encoder, uniforms: &u, constants: globeConstants, setWorld: setWorld, bindMapTextures: bindMapTextures)
+        } else if u.fog.w > 0.5 {
+            // The sky first, where there is a fog: the haze at the horizon and below it, the clear colour overhead.
             encoder.setDepthStencilState(overlayDepth)
             encoder.setRenderPipelineState(skyPipeline)
             setWorld(&u)
@@ -874,7 +929,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         // The map next, with no depth write: everything after it is drawn over it, in 2D too (where the floor is the plane
         // of the agents). A world with no weather and no territory to show has nothing to draw here.
-        if u.flags.w & (WorldUniforms.mapBit | WorldUniforms.territoryBit) != 0 {
+        if globe == nil, u.flags.w & (WorldUniforms.mapBit | WorldUniforms.territoryBit) != 0 {
             encoder.setDepthStencilState(overlayDepth)
             encoder.setRenderPipelineState(mapPipeline)
             setWorld(&u)
@@ -913,12 +968,48 @@ final class Renderer: NSObject, MTKViewDelegate {
                 encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 4, instanceCount: frame.nBonds)
             }
         }
-        if display.frame {
+        if display.frame, globe == nil {
             encoder.setRenderPipelineState(worldBoxPipeline)
             setWorld(&u)
             encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 24)
         }
         encodeInset(into: encoder, slot: slot, size: size, uniforms: u, bindMapTextures: bindMapTextures, setWorld: setWorld)
+    }
+
+    /// The globe path's backdrop (DESIGN §36.10, the spec's 2.4a): the space (no depth), the map's mesh (tested with `less`, written, back faces
+    /// culled: the mesh has one outward winding at every s and the folded part of the roll lies behind the sphere), the two pole caps, and
+    /// then a depth reset, so that the organisms and the bonds, which stand on the map and are hidden by a facing test in their vertex shader,
+    /// are tested against each other only.
+    private func encodeGlobeBackdrop(into encoder: any MTLRenderCommandEncoder, uniforms u: inout WorldUniforms,
+                                     constants: GlobeUniforms, setWorld: (inout WorldUniforms) -> Void,
+                                     bindMapTextures: () -> Void) {
+        encoder.setDepthStencilState(overlayDepth)
+        encoder.setRenderPipelineState(globeSkyPipeline)
+        setWorld(&u)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        if u.flags.w & (WorldUniforms.mapBit | WorldUniforms.territoryBit) != 0 {
+            encoder.setDepthStencilState(meshDepth)
+            encoder.setFrontFacing(.counterClockwise)
+            encoder.setCullMode(.back)
+            encoder.setRenderPipelineState(globeMapPipeline)
+            setWorld(&u)
+            bindMapTextures()
+            var tiles = constants.tiles(wide: worldDraw.wideTiles)
+            if !tiles.isEmpty {
+                encoder.setVertexBytes(&tiles, length: tiles.count * MemoryLayout<SIMD4<Float>>.stride, index: 9)
+                encoder.drawIndexedPrimitives(type: .triangle, indexCount: meshIndexCount, indexType: .uint32, indexBuffer: meshIndices,
+                                              indexBufferOffset: 0, instanceCount: tiles.count)
+            }
+            if constants.shade.z > 0 {
+                encoder.setCullMode(.none)
+                encoder.setRenderPipelineState(globeCapPipeline)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 64 * 3, instanceCount: 2)
+            }
+            encoder.setCullMode(.none)
+        }
+        encoder.setDepthStencilState(resetDepth)
+        encoder.setRenderPipelineState(depthResetPipeline)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
     }
 
     /// The minimap: the whole world in a rectangle of the drawable (a viewport and a scissor), drawn last over everything. It is the

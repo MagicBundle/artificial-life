@@ -40,6 +40,9 @@ package struct WorldDisplay: Equatable, Sendable {
     /// Organisms coloured by their altitude on the viridis ramp (`HeightColour`), instead of the stream's colour mode: View > Colour >
     /// Height, and the first colour of a 3D world until the player picks another. The model sets it from the world and the player's choice.
     package var heightColour = false
+    /// The globe overview (DESIGN §36.10): the view leads on from the flat map, zooming out, to a planet; Home is the globe. Off until the owner
+    /// turns it on (View > Globe overview); a 2D world, or one with no weather map in view, keeps its flat view either way.
+    package var globe = false
     /// The trackpad's two-finger scroll zooms (v1's law) instead of panning (the Maps convention, the default): View > "Scroll zooms".
     package var scrollZooms = false
 

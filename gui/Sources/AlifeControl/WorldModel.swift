@@ -99,6 +99,10 @@ final class WorldModel: ObservableObject {
                 if display.exposure != oldValue.exposure { defaults.set(Double(display.exposure), forKey: Self.exposureKey) }
                 if display.scrollZooms != oldValue.scrollZooms { defaults.set(display.scrollZooms, forKey: Self.scrollZoomsKey) }
                 if display.minimap != oldValue.minimap { defaults.set(display.minimap, forKey: Self.minimapKey) }
+                if display.globe != oldValue.globe {
+                    defaults.set(display.globe, forKey: Self.globeKey)
+                    setGlobe(display.globe)
+                }
                 if display.heightColour != oldValue.heightColour, !applyingColourDefault {
                     defaults.set(display.heightColour, forKey: Self.heightColourKey)
                 }
@@ -181,6 +185,7 @@ final class WorldModel: ObservableObject {
     /// The trackpad's two-finger scroll zooms instead of panning (View > Scroll zooms), and the minimap is shown (`i`).
     static let scrollZoomsKey = "world.scrollZooms"
     static let minimapKey = "world.minimap"
+    static let globeKey = "world.globe"
     /// The player's colour choice: true is the height colour, false the world's own; absent is the default of a 3D world.
     static let heightColourKey = "world.heightColour"
 
@@ -267,6 +272,10 @@ final class WorldModel: ObservableObject {
         }
         if let stored = defaults.object(forKey: Self.scrollZoomsKey) as? Bool { display.scrollZooms = stored }
         if let stored = defaults.object(forKey: Self.minimapKey) as? Bool { display.minimap = stored }
+        if let stored = defaults.object(forKey: Self.globeKey) as? Bool {
+            display.globe = stored
+            globeEnabled = stored
+        }
         play.onDelivery = { [weak self] changes in self?.deliver(changes) }
         play.onEvents = { [weak self] events, backlog in self?.handle(events: events, backlog: backlog) }
         play.onAlerts = { [weak self] changes, backlog in self?.handle(alerts: changes, backlog: backlog) }
@@ -430,8 +439,11 @@ final class WorldModel: ObservableObject {
         var target = Float.infinity
         let area = Float(drawableSize.width * drawableSize.height)
         if display.sizeMode == .capped, display.agents, area >= 1, let frame = play.store.frame, frame.n > 0 {
-            let rows = OrganismSizePolicy.rowsInView(frame: frame, camera: camera, aspect: Float(drawableSize.width / drawableSize.height),
-                                                     size: worldSize)
+            let shape = Float(drawableSize.width / drawableSize.height)
+            let vantage = self.vantage()
+            let rows = vantage.isGlobe
+                ? OrganismSizePolicy.rowsInView(frame: frame, vantage: vantage)
+                : OrganismSizePolicy.rowsInView(frame: frame, camera: camera, aspect: shape, size: worldSize)
             target = OrganismSizePolicy.coverRadius(area: area, rows: rows)
         }
         coverTarget = target
@@ -640,8 +652,19 @@ final class WorldModel: ObservableObject {
         startAnimating()
     }
 
+    /// The globe overview switched on or off (View > Globe overview): the view is fitted to the new regime and flies Home.
+    private func setGlobe(_ on: Bool) {
+        guard globeEnabled != on else { return }
+        globeEnabled = on
+        guard play.store.header != nil else { return }
+        pose.clamp(aspect: aspect, size: worldSize, height: height, globe: on)
+        pushCamera()
+        home()
+    }
+
     func pushCamera() {
         let camera = self.camera
+        let vantage = self.vantage()
         // (with the globe the derived level: organism under 0.12 L, planet from s = 0.5, else region)
         let newLevel = globeEnabled
             ? projector(size: freeRect.size).level
@@ -652,8 +675,11 @@ final class WorldModel: ObservableObject {
         guard let renderer else { return }
         renderer.camera = camera
         renderer.worldDraw.level = newLevel
-        renderer.worldDraw.copies = SeamCopies.plan(
-            y: pose.y, extentY: pose.footprint(aspect: aspect, size: worldSize, height: height)?.y, size: worldSize)
+        // The globe path when the world has the globe (it draws the flat close-up too, as the same morph at s = 0).
+        let footprint = pose.footprint(aspect: aspect, size: worldSize, height: height)
+        renderer.worldDraw.vantage = vantage.isGlobe ? vantage : nil
+        renderer.worldDraw.wideTiles = footprint.map { $0.x > 0.4 * worldSize } ?? true
+        renderer.worldDraw.copies = SeamCopies.plan(y: pose.y, extentY: footprint?.y, size: worldSize, s: vantage.s)
         view?.needsDisplay = true
     }
 

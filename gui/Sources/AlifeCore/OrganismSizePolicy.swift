@@ -141,6 +141,21 @@ package enum OrganismSizePolicy {
         return count
     }
 
+    /// The same on the globe (DESIGN §36.10): the rows whose position under the morph is in view and faces the eye, each at its nearest image
+    /// (`WorldVantage.offsets`). A pass over the positions with the morph's trigonometry (about 1.7 ms for 42,000 rows in a release build).
+    package static func rowsInView(frame: PlayFrame, vantage v: WorldVantage) -> Int {
+        var count = 0
+        let unit = CGSize(width: 1, height: 1)
+        frame.pos.withUnsafeBufferPointer { pos in
+            for i in 0..<min(frame.n, pos.count / 3) {
+                let o = v.offsets(x: pos[3 * i], y: pos[3 * i + 1])
+                guard let p = v.screen(e: o.e, n: o.n, z: pos[3 * i + 2], in: unit)?.point else { continue }
+                if p.x >= 0, p.x <= 1, p.y >= 0, p.y <= 1 { count += 1 }
+            }
+        }
+        return count
+    }
+
     /// One step of the one-pole filter that takes the cover radius from `current` to `target` over `dt` seconds (time
     /// constant `smoothing`); the target itself when either is not finite (the first count, or an empty view).
     package static func smoothed(_ current: Float, toward target: Float, dt: Float) -> Float {
