@@ -476,8 +476,12 @@ def test_a_record_posted_by_a_worker_is_never_cut_by_the_loops_write(tmp_path: P
                 save_stall_steps=0, reason=0, saving=False, fe=1, chapter=1, in_chapter=k, chapter_len=L,
             ),
         )  # fmt: skip
+    # The worker posts all 60 however slow the machine (CI's runner lost the race and stopped it at 22 or 40);
+    # the stop event is only the safety net if it hangs.
+    thread.join(timeout=120)
     stop.set()
     thread.join()
+    assert len(posted) == 60
     tags = []
     data = out.getvalue()
     i = 0

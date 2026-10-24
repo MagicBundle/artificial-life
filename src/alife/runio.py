@@ -613,11 +613,20 @@ class RunDir:
                 raise FileExistsError(f"{path} is not empty (use overwrite to replace a run directory)")
 
     @classmethod
-    def create(cls, path: Path, cfg: Config, *, overwrite: bool = False, parent: str | None = None) -> RunDir:
+    def create(
+        cls,
+        path: Path,
+        cfg: Config,
+        *,
+        overwrite: bool = False,
+        parent: str | None = None,
+        extra_meta: Mapping[str, Any] | None = None,
+    ) -> RunDir:
         """Create a fresh run directory holding ``cfg`` and a ``running`` meta.
 
         An existing non-empty directory is an error unless ``overwrite`` is set and it is a run directory
-        (has ``meta.json``); anything else is never deleted.
+        (has ``meta.json``); anything else is never deleted. ``extra_meta`` keys are written into the first
+        ``meta.json`` (``alife play`` marks a world it builds, §33.3.3); it cannot replace a key of the meta.
         """
         path = Path(path)
         if not overwrite:
@@ -653,6 +662,11 @@ class RunDir:
             "parent": parent,
             "status": "running",
         }
+        if extra_meta:
+            clash = sorted(set(extra_meta) & set(meta))
+            if clash:
+                raise ValueError(f"extra_meta would replace the meta keys {clash}")
+            meta.update(extra_meta)
         rd._write_meta(meta)
         return rd
 
