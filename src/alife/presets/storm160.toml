@@ -1,0 +1,24 @@
+# storm160 overlay: the storm world's weather layer for the 160-wide mini world (docs/STORMS.md, DESIGN §37).
+# A WORLD overlay, like `storm`: it needs the geometry it is tuned for (`mini3d`, 160 x 160 x 80) and fails
+# validation on the others (on 64k3d: rule 7, dx = 4). Compose it as `--preset mini3d --overlay storm160`; the
+# launcher passes it for a source whose world.size is 160 and `storm` otherwise. There is no alias between them.
+#
+# The weather grid is 80 cells at dx 2 (the stream's 40-block wind map divides it). A hemisphere of the 160 world
+# is 160 wide, which holds two pools of 24 x 16 at the 64k3d spacing of 3.3 sigma (the 32 x 16 pools of `storm`
+# leave room for one; two of them overlap into a band that fragments). f = f0 sin(2 pi y / L) has twice the
+# gradient at L = 160, so f0 = 0.0165 gives the pool rows (36 from the equator, on the f-maximum line y = 40) the
+# Coriolis parameter 64k3d's pools have (0.0163 against 0.0162), hence the same deformation radius. seed_rate
+# scales with the area (0.02 x 0.25).
+#
+# The three coupling values are PROVISIONAL, those of `storm` (W2 calibrates them).
+[weather]
+enabled = true
+cells = 80
+f0 = 0.0165
+seed_rate = 0.005
+# 2 pools per hemisphere, 24 x 16, rows y = 36 and y = 124 (36 from the equators y = 0 and y = 160), spaced 80 in x.
+pools = [40.0, 36.0, 24.0, 16.0, 1.0, -0.009, 0.0, 120.0, 36.0, 24.0, 16.0, 1.0, -0.009, 0.0, 0.0, 124.0, 24.0, 16.0, 1.0, -0.009, 0.0, 80.0, 124.0, 24.0, 16.0, 1.0, -0.009, 0.0]
+rain_gain = 50000.0
+storm_p = 0.002
+storm_u0 = 0.06
+storm_span = 0.03

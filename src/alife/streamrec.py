@@ -94,7 +94,8 @@ P_REF: Final = 0.004
 U_REF: Final = 0.1
 ZETA_REF: Final = F0
 NAME_ZETA: Final = 0.5  # a storm is named when its peak lower-layer vorticity reaches 0.5 f0 (C11)
-MAP_CELLS: Final = 160
+MAP_CELLS: Final = 160  # the 320 world's weather grid; the default of ``weather_block``
+MAP_DX: Final = 2.0
 MAP_COARSE: Final = 40
 
 # Caps (bytes) a record may not exceed; the tests pin them.
@@ -313,14 +314,19 @@ def legacy_header(
     }
 
 
-def weather_block(*, enabled: bool, dc_ref: float | None) -> dict[str, Any]:
-    """The ``play.weather`` header object: the geometry and reference scales of ``MAP1`` and ``STRM``."""
+def weather_block(
+    *, enabled: bool, dc_ref: float | None, cells: int = MAP_CELLS, dx: float = MAP_DX
+) -> dict[str, Any]:
+    """The ``play.weather`` header object: the geometry and reference scales of ``MAP1`` and ``STRM``.
+
+    ``cells`` and ``dx`` are the weather layer's (``WeatherParams.n`` and ``.dx``: 160 and 2.0 for the 320
+    world, 80 and 2.0 for the mini world, DESIGN §37.4); ``coarse`` and the reference scales are fixed."""
     if enabled and not (dc_ref is not None and math.isfinite(dc_ref) and dc_ref > 0):
         raise RecordError("a weather world needs a positive dc_ref")
     return {
         "enabled": bool(enabled),
-        "cells": MAP_CELLS,
-        "dx": 2.0,
+        "cells": int(cells),
+        "dx": float(dx),
         "f0": F0,
         "coarse": MAP_COARSE,
         "name_zeta": NAME_ZETA,

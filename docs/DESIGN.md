@@ -119,6 +119,7 @@ regular lattice, which is the cellular-automaton substrate.
 | `256k` | 262 144 | 4 096 | 65 536 | 2 048 | 341 (6.01) | 512 |
 | `tiny3d` (3D tests/CI, §27.8) | 1 024 | 32 | 256 | 128 | 21 (6.10) × 4 layers | 32 × 6 layers |
 | `64k3d` (3D at 64k scale, §27.13; `regen_max` and `n_init` not yet tuned) | 65 536 | 1 024 | 16 384 | 320 (height 80) | 53 (6.04) × 13 layers (6.15) | 80 × 20 layers |
+| `mini3d` (the mini world, a quarter of 64k3d's area at its density, §37) | 16 384 | 256 | 4 096 | 160 (height 80) | 26 (6.15) × 13 layers (6.15) | 40 × 20 layers |
 
 The `fast` overlay sets `sensing.k_neighbors = 6`, `sensing.cell_capacity = 12` and `brain.hidden = 24`. It
 combines with any preset.
@@ -3185,7 +3186,7 @@ feel it. It needs `weather.enabled` (exit 2 otherwise, before anything is writte
 has the weather on. **`bench --weather`** times the step with the weather on against the same config with it off, in
 interleaved blocks (needs `weather.enabled`, exit 2 otherwise); `--weather-pairs N` sets the number of off/on pairs
 (default 2). **`bench --weather-org`** (W2, §32.6) times the step with `seed_gain` and `shade_gain` on against the same config
-with both 0 (the weather on in both; needs `weather.enabled` and one gain above 0, exit 2 otherwise). The `storm` overlay composes as `--preset 64k3d --overlay storm`.
+with both 0 (the weather on in both; needs `weather.enabled` and one gain above 0, exit 2 otherwise). The `storm` overlay composes as `--preset 64k3d --overlay storm`, and `storm160` (the mini world's weather, §37.2) as `--preset mini3d --overlay storm160`.
 
 **`play`** (games G3a, §33.2.8) plays a world under the fixed-timestep scheduler with the observers on and writes the play records
 on stdout; `resume` refuses a directory that a `play` process holds (`play.lock`, §33.3.3).
@@ -8543,7 +8544,7 @@ is 1024, so `dx` would be 6.4.
 `OVERLAYS` stays `("fast",)` ("composes with every preset"), because three consumers rely on that (the 2D-default test,
 the digest matrix's preset-by-overlay loop, and `OVERLAYS == ("fast",)` in the config tests). It composes as
 `--preset 64k3d --overlay storm` and fails validation on a world that cannot hold the confirmed weather (`tiny`, ...). No
-preset changes. The file sets `enabled = true`, `rain_gain = 50000` (**nominal**; about 7% of it is lost to the
+preset changes. A second world overlay, `storm160`, carries the weather of the 160-wide mini world (§37.2); it is chosen by name, never by an alias. The file sets `enabled = true`, `rain_gain = 50000` (**nominal**; about 7% of it is lost to the
 `floor_i32` of each used layer), `storm_p = 0.002`, `storm_u0 = 0.06` (above the jet and the core median) and
 `storm_span = 0.03`, all **provisional**; `storm_break_u` stays 0; `rain_floor` stays 0.
 
@@ -10043,7 +10044,7 @@ client shows nothing from a play stream and does not fail (the Swift tests renam
 ```text
 play = {"records": ["FRMA","IDNT",...], "versions": {"FRMA":1,...}, "base_rate":14.4, "rates":[0.25,0.5,1,2],
         "tick":25, "snapshot_every":250, "frame_hz":30, "chapter":6000,
-        "weather": {"enabled":bool, "cells":160, "dx":2.0, "f0":0.025, "coarse":40, "name_zeta":0.5,
+        "weather": {"enabled":bool, "cells":160, "dx":2.0, "f0":0.025, "coarse":40, "name_zeta":0.5,   # cells, dx: the layer's (80 in the mini world, §37.4)
                     "refs":{"p":0.004,"dc":D,"u":0.1,"zeta":0.025}},
         "labels": {"intent_version":3, "arch":["", "Gatherer"|"Grazer",...,"Drifter","Floater","Sinker"], "intent":["", "Budding",...],
                    "gate": {"rules_digest":str, "world_key":str, "key_found":bool, "archetypes":[byte...], "intents":[byte...]}},
@@ -10478,7 +10479,7 @@ last detection and `predict` the last four). The equality was checked on 300 ran
 `read_frame_extra`), detects, tracks and returns a `StormTick(step, strm, planes, events, line)`; `ingest(detection, maps)` is the same without the
 device. The tick is `WeatherParams.detect_every` (25, calibrated with `miss_grace` 2 and the four-detection predictor); the layer takes it as given.
 
-- **Names.** A storm is named when its peak lower-layer vorticity over its whole life reaches `NAME_ZETA` = 0.5 f0 (C11); lower tracks are
+- **Names.** A storm is named when its peak lower-layer vorticity over its whole life reaches `NAME_ZETA` = 0.5 f0 (C11; f0 is the reference 0.025 in every world, an absolute 0.0125, §37.4); lower tracks are
   disturbances. The name is the house-name generator on `splitmix64(id, STORM_NAME_SALT)` (`raw_house_names`), with ` <id>` appended if a live storm
   holds it, and it never changes while the storm lives.
 - **Events** (the chronicle's input, §33.2.3), in this order per tick, each group by id: `born`/`split` (a new track; `split` when the tracker gave it a
@@ -11910,6 +11911,134 @@ tried). (4) The cover radius follows the integer row count: with few rows in vie
 (5) The kin outline is under 3:1 on 0.1 to 0.7% of the rays of the recorded frame (the nose's silhouette, mid-luminance slots), inside the test's 1%. (6) Brightness is persisted; Territory and Organism size
 reset to "borders and tint" and "capped" at every launch (spec F7 asks for the brightness only; a player who tried the physical size returns to the legible default).
 
+## 37. The mini world (`mini3d`, `storm160`)
+
+The owner asked (2026-10-24) for a smaller test world, about 8 000 to 16 000 organisms, for quick play-tests and lighter streams, launchable from the World launcher. This
+section is normative for the preset, the overlay, the launcher's choice between the two storm overlays and the two host-side edits that make the stream header and the storm
+vorticity unit independent of the world. **There is no simulation change**: no step, state, checkpoint, RNG, default or `POST_V01_KEYS` entry moves, no existing config hash moves, and
+the goldens and the digest matrix are untouched (I62). The numbers below were measured on the M5 Pro (MLX 0.32.3, fused Metal kernel) on 2026-10-24 for the specification
+(`scratchpad/smallworld/spec.md`, probes under the same folder); the figures marked "estimate" are not. Owner direction recorded with the coordinator's choices C22 (§37.9).
+
+### 37.1 The preset `mini3d`
+
+`presets/mini3d.toml` is `64k3d.toml` with five values changed (`config.PRESETS` gains `mini3d`; `config_hash` `f3c53cb8…30aa8`, pinned in `tests/test_weather_config.py`):
+
+| key | `64k3d` | `mini3d` | why |
+|---|---|---|---|
+| `world.size` | 320 | **160** | the smallest size that holds `height = 80` (rule `height <= size / 2`) and a weather map the stream can carry (80 cells at dx 2, divisible by the 40 blocks of the wind map); the next size that passes both is 240 (23.6 k organisms), outside the range |
+| `population.n_max` | 65 536 | 16 384 | 1.56 x K, as 64k3d |
+| `population.n_init` | 16 384 | 4 096 | 0.39 of K, as 64k3d; also sets the clade id range (clade ids are founder rows) |
+| `population.max_births_per_step` | 1 024 | 256 | scales with `n_max` (`n_cap` = 16 128) |
+| `fields.n_patches` | 8 | 2 | the same patch area share (28 %) at `patch_sigma` 24 |
+
+Derived: hash grid 26 x 26 x 13 (cell 6.15), `C` = 48 kept (`Q` = 1 296), field lattice 40 x 40 x 20, state 0.16 GiB. Per-agent statistics are size free (same physics, same `regen_max`), so the
+population scales with the area: 0.409 per unit squared at 64k3d's steady state gives **about 10 500 alive** (9.6 k measured at step 80 000, the density 64k3d_s0 had at that age; the 500 000-step run `mini3d_s0`, seed 0, reads
+9.25 k at 100 to 200 k, 9.94 k at 200 to 300 k, 11.13 k at 300 to 400 k and **11.16 k at 400 to 500 k**, 0.436 per unit squared and cv 0.007: the density is the 64k3d one, slightly above; one seed). The first 80 000 steps (seed 0, no weather) against `64k3d_s0` at the same steps: alive per unit area 0.374 against 0.373;
+grounded and surface shares 0.124 and 0.071 against 0.096 and 0.057; height quartiles 5.0 / 18.6 / 68.9 against 5.2 / 15.7 / 66.4; predation ratio 0.21 against 0.33; the ledger exact, no hash
+overflow (peak occupancy 40 of 48 at the founder boom, 13 to 15 later; zero overflowing cells and a ledger error of 0 in all 5 000 rows of the 500 000 steps; the lowest alive count 3 051 = 74 % of `n_init`). What scales with N: the bodies (the largest 441 against 3 502), the clade count
+(8.4 averaged over 50 to 80 k, 5 at 80 k). What may not scale: the sheets of 157 x 110 units that 64k3d_s0 grows by 500 k are as wide as this world; whether they wrap the torus is not known until the
+long run. `patch_drift` stays 0.005, so a patch (and a warm pool) circles the torus in half the steps (patches 32 k, pools 17.8 k).
+
+### 37.2 The overlay `storm160`, and the choice between the two storm overlays
+
+`presets/storm160.toml` is a world overlay (`config.WORLD_OVERLAYS == ("storm", "storm160")`, `ALL_OVERLAYS == ("fast", "storm", "storm160")`; `OVERLAYS` stays `("fast",)`), composed as
+`--preset mini3d --overlay storm160` (`config_hash` `4422495a…8cba9`). It sets `enabled`, `cells = 80`, `f0 = 0.0165`, `seed_rate = 0.005`, four pools of 24 x 16 (two per hemisphere, rows
+`y = 36` and `y = 124`, 36 from the equators `y = 0` and `y = 160`, spaced 80 in x, amplitude 1, drift -0.009) and the three W2 couplings of `storm` (`rain_gain` 50 000, `storm_p` 0.002,
+`storm_u0` 0.06, `storm_span` 0.03; still **provisional**, §32). Why these values: the 320 world's pools (32 x 16, spaced 107 = 3.3 sigma) leave room for one pool per hemisphere in 160; two of
+them overlap into a zonal band that fragments (median lifetime 225 to 650 steps). A 24 x 16 pool restores 3.3 sigma at spacing 80. `f = f0 sin(2 pi y / L)` has twice the gradient at L = 160, and
+the pool rows then sit on the f-maximum line (`y = 40`), so `f0 = 0.0165` gives the pools 0.0163, the Coriolis parameter 64k3d's pools have (0.0162): the same deformation radius there.
+`seed_rate` scales with the area (0.02 x 0.25). `storm` fails validation on `mini3d` (rule 4: Courant 0.9 > 0.5 at dx 1; rule W-2: five pool centres outside [0, 160)) and `storm160` fails on
+`64k3d` (rule 7: dx 4 gives dx / c_bc 13.3 > tau_c 8).
+
+**The overlay is chosen by the launcher, never by an alias.** A name that meant two geometries would not say which one a log line refers to, and `load_config` merges defaults < preset <
+overlays < file < `--set`, so an overlay cannot read the final `world.size`. `PlaySource` (Swift) reads `world.size` of the source's `config.json`; `PlayLaunch.arguments(planet:)` passes
+`--overlay storm160` for a source of exactly 160 (`PlanetSpec.miniWorldSize`) and `--overlay storm` otherwise, and the spin-up default is **36 000** steps for the 160 world and 20 000 for the
+other (a source whose weather is on is forked as it is, without either). A user of the CLI types the overlay.
+
+What the weather does at 160 (the W0 study driver of main, unchanged, with `--set` overrides, 60 000 steps, window 15 000 to 60 000, keys 0 to 4 where marked): 1.95 storms per hemisphere (the criterion
+of STORMS_W0 wants 2 to 6 at every time; the mini is at or above 2 for 94 to 99 % of the detection times, so the study's verdict line reads FAIL: storm_count, by design at two pools per hemisphere), radius
+7.7 (7.5 at 320), core wind p50 / p90 / max 0.044 / 0.054 / 0.086 (0.052 / 0.061 / 0.081), rain p50 0.161 (0.187), forecast error at 1 000 steps 0.82 radii with skill +0.32 (0.63, +0.50). **Lifetime is stated in
+three readings, never as "15 to 22 k"**: (a) the criterion of STORMS_W0 (C11: left-truncated Kaplan-Meier over storms with peak vorticity >= 0.5 f0): 15 100, 5 075, 19 750, 5 400 and 5 425 steps on keys 0 to 4
+(320 reference 23 375 on key 1), all above the 3 000 threshold; the mini's "named" set is every qualifying track, so this equals the study's `criteria.lifetime` for the mini (for 320 the two differ); (b) a plain
+Kaplan-Meier over the named tracks (kept to compare tuning variants): 22.4 k (key 1), 15.1 k, 19.8 k; (c) at equal absolute strength (peak >= 0.0125, the bar the live tracker uses, §37.4): 23 575, 22 350, 19 750, 33 525 and
+27 800. In play, 5 k steps are 6 minutes at 1x and 20 k are 23. Differences from the 320 world, **recorded and not corrected**: two storms per hemisphere instead of three; a pool circuit every 20.6 minutes (35.6
+at 320); the Coriolis maximum 0.0165 instead of 0.025 and `beta` at the pools 3.7 times smaller (the one variant that kept `beta` failed; storms are anchored to their pools in any case, STORMS_W0 2.2); the layer-2 zonal jet has
+the same peak (0.050) but fills the hemisphere (rms 0.031 against 0.019; the share of latitudes above 0.03: 48 % against 11 %; domain-mean zonal kinetic energy 4.9e-4 against 1.9e-4, 2.6 times), and layer 2 is the wind the
+organisms feel (what it does to a dry-evolved population is measured by the dry-versus-weather fork comparison, §37.8); the storm hazard onset `storm_u0` 0.06 is exceeded on 2.6 to 3.6 % of the core detections (320: 11.4 %),
+so the hazard and toll alerts are quieter (the couplings are recalibrated with W2b); a Blight (`power blight`) halves the food on two patches (alive 9 726 to 6 667 in 500 steps, -32 %, about 1.7 times 64k3d's effect) and trips
+the 15 % auto-pause; `rules._free_patches` needs two free patches, so one patch can still be removed by `habitat_loss` (duration 10 000 to 200 000 steps, two actions per 100 000 steps from the director). **The first fifteen
+minutes**: the first cohort of storms is born 1.1 k to 1.9 k steps into the spin-up and dies between weather time 24 k and 60 k; a 20 k spin-up leaves 2 tracker events in the first 12 000 steps (keys 1 and 2), 14 (key 0),
+a 36 k one 4 to 8, so 36 k is the default for the 160 world (+20 s of wall).
+
+### 37.3 Cost
+
+Measured on the M5 Pro, `alife bench --stages` and `bench --play` (a fork of the 80 000-step source, 9 806 alive, weather on, spin-up 20 000, 2 500 steps per arm, the digest of every arm equal to the plain run's): the engine step
+**4.5 ms** at steady state with the weather on, against 14.9 ms for 64k3d (3.3 times), peak memory 0.25 GiB (1.0); the play loop at 1x runs at 14.4 steps/s (the design rate, `RATES` needs no new rung), `step_ms` p99 35 ms
+(limit 66), stream **4.6 MB/s** (64k3d 21.2), no late step, checkpoint 172 MB (686) with a 3-step save stall (54); at `max` 7 to 10 times 1x (two identical re-plays 7.2 and 9.4; 64k3d 3.7) at 9.2 to 9.5 MB/s (39.7). The dry
+stage benches (3.4 against 13.3 ms) start from founders at different alive counts and overstate the ratio (3.9 times). `FRMA` is 36 + 4 ceil(N/32) + 28 n + 8 bonds bytes: 340 KB at 10.5 k alive. A planet is 660 MB on disk
+(four 172 MB checkpoints); fork plus spin-up (20 000) takes about 55 to 61 s. The gate of §33.5.4 passes on all items for the planet made from a copy of the 80 000-step source; the 450 000-step fork of the long run and
+the five-minute arm at 1x are the Mac day (§37.8).
+
+### 37.4 The two host-side edits (output for 64k3d identical)
+
+(a) `streamrec.weather_block(enabled, dc_ref, cells=MAP_CELLS, dx=MAP_DX)` takes the weather layer's grid: `play.py` passes `layer.p.n` and `layer.p.dx`, so the `play.weather` header of the mini says
+`cells` 80 (it said 160, the 320 world's, for every world). `coarse` 40 (`MAP_COARSE`; `weather.cells % 40 == 0` is the compatibility rule: 80 satisfies it), `f0` 0.025, `refs.zeta` 0.025 and `name_zeta` 0.5 are
+fixed reference scales, because the `zeta` plane of `MAP1` is quantised against 0.025 and the Swift client only checks `cells % coarse == 0`.
+(b) `storms.detect` divides the lower-layer vorticity by the **reference** f0, `streamrec.F0` = 0.025, not by the world's `p.f0`: `Comp.zeta_max_f0` is in units of 0.025 in every world, so `NAME_ZETA` (0.5), `STRONG_ZETA` (0.70, §34.3)
+and `ZETA_REF` keep one meaning: a storm is named at an absolute 0.0125 and `storm_strong` fires at 0.0175, whatever the world's f0. Without it the mini (f0 0.0165) names every storm at birth (0.55 to 0.85 f0 from the first
+detection; 64k3d 0.40 to 0.50), `storm_named` never fires and `storm_strong` fires for every storm (four at step 80 025 of the planet probe). For a world whose f0 is 0.025 the expression is the old one, bit for bit
+(pinned by a test). **Consequence for the W0 study driver** (`analysis/w0.py` re-exports `storms.detect`): its `zeta_max_f0` columns (`tracks.csv`, `storms.csv`) are in units of 0.025 for a world with another f0, so
+the study's "named" reading of a mini run (peak >= 0.5 f0 = 0.0083 absolute, the one behind reading (a) of §37.2) is a column value of at least 0.33 (0.5 f0 / 0.025), not 0.5; the live tracker names at the equal-strength bar 0.0125 (column 0.5). The same driver's vorticity histogram and stored frames (`w0.py`, `w0_plots.py` axis "s zeta_c / f0") still divide by the world's own `p.f0`, so for an f0 other than 0.025 one study carries two units under the name f0 (CSV columns: 0.025; histogram, frames and plot axis: the world's); no result moves, since the lifetime criteria select tracks by detection count, and the histogram is not rebased because that needs a golden re-pin. **"f0" in the alert text** (`storm_strong`: "Storm X is at 0.70 f0") is the reference 0.025 in every world, an absolute 0.0175; in the mini world (f0 0.0165) it is not the world's f0, and the text is left as it is because it is pinned by the P0 digest of the alert texts (a re-pin is a deliberate act, and the 64k3d wording would change too); the template carries a comment.
+
+### 37.5 Launcher and GUI
+
+The launcher scans `runs/` and lists every run with a checkpoint as a source (`PlayCatalogScanner`), so a `mini3d` run appears by itself and the planet form works as it is. `Levers.swift` `Preset` gains `case mini3d` (required
+by `test_gui_sync`: the enum equals `config.PRESETS` and each name needs its TOML file), so the Lab can start the evolution run. A launcher entry that makes a small world from nothing is not built (owner choice D5): a mini
+source comes from `alife run --preset mini3d` or the Lab (31 minutes idle for 500 000 steps, up to about 45 shared), or from a `cp -c` copy of a checkpoint. The client scales with `L` from the header (`WorldLevels`, the 32 x 32
+`TERR` grid gives 5-unit cells, `MAP1` is 40 blocks of 2 cells); not exercised here: a rendered mini planet, picking at 10 k rows, the dock, `WorldRenderBench` and `GPUWorldTests` at L = 160. **Camera, to check before the
+owner's first play** (computed from code and state, not rendered): `WorldLevels.flyDistance(.region)` is `0.2 L / (tan 25 deg max(1, aspect))`, so at L = 160 the pose is 34 to 69 above the floor, inside the 0 to 80 organism
+slab (at 320: 86 to 137, above everything); on the unmerged `gui/viewer2-a1` branch (Home straight down) the share of organisms above the eye is 26 % at aspect 1.0 and 41 % at 2.0; on main's pitched overview it does not occur.
+If confirmed on the Mac day, floor the region distance at the world height plus a margin (a small `WorldLevels` change with a test).
+
+### 37.6 The evolved source
+
+A fresh source has almost no kin structure: the chronicle, the Cast tab, the territory film and the kin threads are built on kin groups (G2 rules: tag bins, `grid_clusters`, `SOCIAL_V1` thresholds `max(8, n_ref >> 9)` and
+`max(2, n_ref >> 12)`), not on clades. The 80 000-step probe run has 2 groups of sizes [9 593, 25], top share 0.990 (`analysis.social`; 6 / 4 / 2 groups at 60 / 70 / 80 k, 2 / 4 / 3 resumed to 100 / 110 / 120 k with top shares
+0.58 to 0.56); `64k3d_s0` at 450 000 has 9 groups with top share 0.43. **Acceptance of a fresh source, at 250 000 steps: at least 5 tracked kin groups, top share below 0.6 and at least 3 territory owners.** The run
+`runs/mini3d_s0` (seed 0, `alife run --preset mini3d --steps 500000`, started 2026-10-24) is judged by it. **Result at 250 000 steps: FAIL** (a single-snapshot reading of the checkpoint with the G2 rules, which is an upper
+envelope of what the tracker follows, for the kin counts and the owner counts alike; `scratchpad/mini/accept.py`, which reproduces the probe run's 2 groups, sizes [9 593, 25], top share 0.990, and 1 owner on `e0:80000`): 9 892 alive, kin groups of at least `enter` (19)
+**3** (sizes 5 284, 4 442, 38; need at least 5 tracked), top share **0.534** (below 0.6: met), territory owners **2** (718 and 296 of 1 014 owned cells, mean purity 0.71; need at least 3; the column is a re-implementation, a cell owned by the group with most members and at least 1, without the EMA and `terr_k` 2 of `game.society.Dominance`, so the owner counts at 300 k to 500 k include owners of 7 to 14 cells and are an upper envelope; the FAIL at 250 k rests on the kin count, not on this column). Along the run (the same reading): 100 k 2 groups, top share
+0.575, 2 owners; 150 k 2 groups ([9 131, 24], 0.992), 1 owner; 200 k 2 groups (4 811, 4 176; 0.532), 2 owners; 300 k 3 groups (4 923, 3 596, 2 235; 0.452), 3 owners; 350 k 3 (0.461), 3; 400 k 3 (0.545), 2; 450 k 4 (4 786, 2 931, 2 754, 512; 0.430), 4; 500 k 3 (6 028, 4 958, 184; 0.533), 3. At 250 k `analysis.social` (1 500 steps from the checkpoint, 6 snapshots) tracks 3 to 4 groups (3, 3, 4, 4, 3, 3; the 4s include groups of 17 and 9, below `enter`, kept by the leave bound): the top group is 0.53 of the population in five snapshots and 0.98 in one (250 500, the two factions merged into one cluster), so the top-share criterion is not stable from snapshot to snapshot; no snapshot reaches 5 groups, so the verdict stands. The
+population is two large factions with at most one or two small ones, at 250 k and at the end; clades alive 5 at 80 k, 3 at 250 k and 3 at 500 k; the largest body 359, 373 and 2 303 rows at 80 k, 250 k and 500 k. The
+alternative the specification names for a failure is a crop of an evolved 64k3d checkpoint to 160 x 160 (probe: 10 584 of 44 912 organisms kept, all four clades with the same shares, 6 to 10 kin groups, relaxed in about 800 steps;
+it needs a new tool and a fork-path change, about 560 lines with tests); it is **not built in this change** and is the next step for the cast. A first play before the long run ends is possible from `runs/mini3d_e0`, a `cp -c`
+copy of the 80 000-step probe run, with the one-kin-group caveat.
+
+### 37.7 Tests
+
+`tests/test_config.py` (`test_preset_table_mini3d`: the table row, the diff against `64k3d` is exactly the five keys, `fast` validates); `tests/test_weather_config.py` (`PRESET_HASHES` keeps its 12 entries and gains `mini3d` and
+`mini3d+fast`; the `storm160` hash, validity on `mini3d` (`dims.wn` 80, rule 6b), failure on `64k3d` and of `storm` on `mini3d`, no alias, every pool centre in [0, 160); `test_overlay_names` and the unknown-overlay regex now
+name `storm160`); `tests/test_dims_config.py` (`mini3d` is a 3D preset); `tests/test_gui_sync.py` (the enum case, the overlay choice by size); `tests/test_stream_records.py` (`weather_block` for the 320 world is the old block
+byte for byte, for the 80-cell layer says 80); `tests/test_play_storms.py` (the vorticity unit: the 0.025 world is the old expression bit for bit, a 0.0117 storm of f0 0.0165 is not named and a 0.0135 one is, `storm_strong`
+follows the reference unit); `tests/test_play_planet_mini.py` (in the fast suite; about 5 minutes with a cold MLX JIT cache, 4 s warm, like its 64k3d analogue; a 160-wide source that is not `mini3d` gets `storm160` and is refused by the engine with its own message: a 160-wide planet: header, `play.json`, `MAP1` decode, `FRMA` length, no `storm_strong`, `storm` refused on a 160 source); Swift: `PlayLaunchTests`
+(`storm160` for 160, `storm` for 320 and unknown), `PlayWorldsTests` (the scan reads `world.size`), `WorldLauncherTests` (a mini source gets the overlay and the 36 000 spin-up; `refresh()` follows a kept source's changed `world.size`), `PresetFileTests` (`mini3d` and `storm160` are covered).
+Not built (a Mac day): a slow test of the 3 000 steps of `mini3d` (ledger closed, no hash overflow, `n_alive` within 0.5 to 2 x the band) and the W0 golden for the mini weather (`n` 80, 60 000 steps, keys 0 to 4: count 1 to 3 and
+1 to 2; `criteria.lifetime` pinned at 15 100 / 5 075 / 19 750 / 5 400 / 5 425 with the equal-strength reading between 15 k and 40 k; 72 s a key).
+
+### 37.8 Not measured, and open
+
+A 500 000-step mini run (stationarity, K, whether the sheets wrap, clades at 250 k and 500 k, hash occupancy at peak); a dry-versus-weather fork pair (about 20 k steps, population, displacement and clade shares, before the owner's
+first play: the jet exposure differs); the chronicle rate of the first plays (about 1 event a minute on the 80 000-step planet against the G3b band of 2 to 5: kin 0.29 a minute, storm events 0, alerts of importance 2 or more 4
+against 7 on planet_a-2; re-measure with `world_report` and `KinThreads` on the source that is judged); the social thresholds (set on 42 k agents and 10-unit cells) at 10 k; the client at L = 160 (§37.5); the label-validity gate
+(N1/G3: no verdict row for this world; every label stays provisional); seeds 1 and 2 to 100 k before the density and the occupancy margin (8 of 48 at the founder boom) are treated as settled.
+
+### 37.9 Choices (owner "yes" of 2026-10-24; the coordinator took the specification's recommendations: C22)
+
+D1 accept the pool geometry (24 x 16, two per hemisphere, `f0` 0.0165, seed rate 0.005) with the vorticity-unit edit and a 36 000-step spin-up for 160 worlds; D2 start the fresh 500 000-step run now, judge it at 250 000 on
+kin groups (§37.6), build the crop tool only if it fails; D3 evolve dry (weather off, as 64k3d_s0) and spin the weather up at the fork; D5 the source is a run in `runs/` and a `cp -c` copy of the 80 000-step probe run is the first
+play, no launcher entry that makes a world from nothing; D6 the launcher passes the overlay explicitly. D4 (the equatorial band) is a design track outside this section (`scratchpad/smallworld/spec.md` section 7): no engine work.
+Recorded in the Review log (I62) rather than as a row of §24, which holds the v0 decisions D1 to D28.
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -12009,6 +12138,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I59 | feat: the Storm Worlds app (new §33.4.10; owner request 2026-10-23: "launch without the terminal"). **No engine change**; no config key, hash, stream or record changes. One executable, two bundles: `make-app.sh --app lab\|storm\|both` (default `lab`, flags unchanged; adds `--out`) builds `AlifeControl.app` and `Storm Worlds.app` (bundle ID `io.github.magicbundle.stormworlds`, executable `StormWorlds`, a generated storm icon, the same version and build number, hardened-runtime signing with the first Developer ID identity). The bundle's `AlifeLaunchMode` key (`world`/`lab`; none is the Lab) selects the scenes: Storm Worlds opens only the World window (the launcher), has the Lab at Window > Lab (Command-2), and quits when its last window closes (decision: single-window-game convention; the Lab open keeps the app). The repository folder is shared through the preferences domain `io.github.magicbundle.alife` (`RepoPathStore`, copied on first read from the app's own and the Lab's domain, nothing deleted, saves go to the shared domain and to the saving app's own; `swift run` keeps its own), and Storm Worlds asks for it itself (a gate in place of the World view while there is no usable folder, and Settings). `--install` now tests for a running copy with `lsappinfo`/`pgrep` instead of osascript. Tests: 28 `AlifeCoreTests`, 3 `AlifeControlTests`, `tests/test_app_bundles.py`, and the manual smoke `gui/scripts/check-apps.sh` (macOS, ad-hoc). **Open:** notarization and an in-app updater (the owner's "later"); sharing the dock preferences between the apps. |
 | I60 | feat: World viewer v2 (§36): legibility of the flat views now (PR A0: the raised map palette, the continuous map opacity, a weak territory tint with borders, coverage-capped organism sizes with an outline chosen from the shaded colour, instances at every level, View > Brightness / Territory / Organism size), then orientation and input on the flat map (A1: the pose `WorldPose`, one world patch with its copies across the wrap, a grab and a pointer zoom exact on the plane, the scroll law of D8, van Wijk flights, Home on `h` and `r`, north up on `n`, a minimap with the view's footprint, a compass, zoom buttons, a position readout, a scale bar with the size of an organism, a one-time hint, and a height colour mode (viridis, computed in the client, not the default); §36.5) and a globe overview with a continuous zoom (B), each PR amending this sentence; client only, no engine, stream or config change (no config key, `POST_V01_KEYS` untouched, no golden). The outline threshold is 0.17, not the spec's 0.22 (the GPU test measured 2.88:1 with 0.22). The review of the first A1 build is answered in §36.5 "Review fixes" (refit off Home, the minimap drag, the overlay kept off the controls, the zoom's tilt, the wheel's gesture, the readout's words, the scale bar's plane and segment, the dock's overflow). |
 | I61 | fix: the World window drew nothing of its own (owner's first plays, 2026-10-23/24: no organisms and no weather map, only the SwiftUI overlay over the clear colour). `WorldMetalView.makeNSView` created the `Renderer` in a local; `MTKView.delegate` and `WorldModel.renderer` are weak, so the renderer was freed when `makeNSView` returned, the view had no delegate, `WorldModel.deliver` skipped every hand-over and no failure banner appeared. In main since G3a (#35); every rendering test held its `Renderer` in a local, so none saw it (the Lab's `Viewer3DView` keeps its renderer in a coordinator and was not affected). Fix: `WorldMTKView` holds the renderer (`var renderer`). Diagnosed on a live 3D planet stream (1.36 GB in 70 s, every record decoded) fed into the hosted `WorldView`: unfixed `delegate = nil`, `model.renderer = nil`; fixed, 41,670 organisms, the map and the territory drawn into the window. Test: `WorldRendererOwnershipTests` (the hosted `WorldView` on the 3D fixture: the delegate is a `Renderer`, the model keeps it, and its picture is not the clear colour); it fails unfixed in debug and release. |
+| I62 | feat: the mini world (new §37; owner request 2026-10-24: a smaller test world of about 8 to 16 thousand organisms, launchable from the World launcher; owner "yes" to the go/no-go the same day, the coordinator's choices C22 taking the specification's recommendations D1 to D6, to revisit). **No simulation change**: no step, state, checkpoint, RNG, default or `POST_V01_KEYS` entry moves, no config key is added, and no existing preset or preset-plus-overlay hash moves (the 12 `PRESET_HASHES` entries and every pinned hash are unchanged; `tiny3d` and the goldens are not re-pinned). (1) **What.** The preset `mini3d` (`64k3d.toml` with five values changed: `world.size` 160, `population.n_max` 16 384, `n_init` 4 096, `max_births_per_step` 256, `fields.n_patches` 2; hash `f3c53cb8…30aa8`; about 10 500 alive expected at steady state and 11 160 measured over 400 to 500 k steps of `mini3d_s0`, 4.5 ms an engine step with the weather on against 14.9, stream 4.6 MB/s against 21.2); the world overlay `storm160` (`config.WORLD_OVERLAYS`: 80 cells, `f0` 0.0165, `seed_rate` 0.005, two 24 x 16 pools per hemisphere; hash of `mini3d` + `storm160` `4422495a…8cba9`; `storm` fails on `mini3d` and `storm160` on `64k3d`, no alias between them); the launcher passes the overlay from the source's `world.size` (`PlaySource.worldSize`, `PlanetSpec.overlay(forWorldSize:)`: `storm160` for exactly 160, else `storm`) and a 36 000-step spin-up default for 160 (20 000 otherwise); `Preset.mini3d` in the Lab. (2) **Two host-side edits, output for 64k3d identical.** `streamrec.weather_block` takes `cells` and `dx` from the weather layer (`play.py` passes them; the header said 160 for every world); `storms.detect` divides the vorticity by the reference f0 `streamrec.F0` = 0.025, not the config's, so `NAME_ZETA`, `STRONG_ZETA` and the `MAP1` zeta plane mean the same in every world (a storm is named at an absolute 0.0125 and `storm_strong` fires at 0.0175; without it every mini storm is named at birth and strong). The W0 study driver shares `detect`: its `zeta_max_f0` columns follow (§37.4). (3) **Tests.** `test_preset_table_mini3d`; `test_weather_config.py` (the `mini3d` and `mini3d+fast` hashes, the `storm160` hash, validity, the two failures, no alias, pool centres; `test_overlay_names` and the unknown-overlay regex updated); `test_dims_config.py` (the 2D-default parametrisation excludes `mini3d`); `test_gui_sync.py` (the enum case, the overlay by size); `weather_block` byte-for-byte for 320 and 80 cells in `test_stream_records.py`; the unit tests of the vorticity edit in `test_play_storms.py`; `test_play_planet_mini.py` (a 160-wide planet end to end: header, `play.json`, `MAP1`, `FRMA`, no `storm_strong`); Swift `PlayLaunchTests`, `PlayWorldsTests`, `WorldLauncherTests`, `PresetFileTests`. (4) **Decisions.** D1 accept the pool geometry (24 x 16, two per hemisphere, `f0` 0.0165) with the vorticity-unit edit and the 36 000-step spin-up; D2 evolve a fresh 500 000-step source now (`runs/mini3d_s0`, seed 0) and judge it at 250 000 on kin groups (at least 5 tracked, top share below 0.6, at least 3 territory owners), the crop tool only if it fails (not in this PR; **the 250,000-step reading failed**: 3 kin groups of at least `enter`, top share 0.534, 2 territory owners, §37.6, so the crop tool is the next step for the cast); D3 dry, spin the weather up at the fork; D5 a run in `runs/` is the source, and `runs/mini3d_e0` (a `cp -c` copy of the 80 000-step probe run) is for a first play; D6 an explicit overlay choice by the launcher. (5) **Recorded, not corrected** (§37.2): lifetime in three readings (the criterion 5.1 k to 19.8 k on five keys, plain Kaplan-Meier 15 to 22 k, equal absolute strength 20 k to 34 k), two storms per hemisphere, the layer-2 jet exposure (kinetic energy 2.6 times), a storm hazard onset 3 times rarer, a Blight halving the food on two patches. **Not done:** the Mac day (the gate on a 450 000-step fork, `GPUWorldTests` and `WorldRenderBench` at L = 160, the rendered camera poses, the dry-versus-weather fork pair), the slow tests and the W0 golden of the mini weather, `docs/RESULTS_MINI.md`, the crop tool, the equatorial band (a design track). **Review fixes** (`mini world: review fixes`): the 250 k wording and the territory column labelled as upper envelopes (§37.6), `PlayLaunch.arguments(planet:)` named correctly (§37.2), the two f0 units of the W0 study driver and the "reference f0" of the `storm_strong` text recorded (§37.4; the text itself unchanged), and the launcher's `refresh()` follows a kept source's changed `world.size`. |
 | I65 | feat: the camera controls of the 3D World window (owner's play of 2026-10-24: a tool for another angle, standard angles on a toggle, and "the maximum angle is pretty limited"): the tilt goes to edge-on (`maxTilt` 90 degrees; A1's footprint clamp is removed) with the eye held over the clear box instead (`maxDistance` with the tilt: `d sin tilt <= 0.45 L`; the zoom is given back when the tilt is relaxed), and the far floor is hidden by a **horizon haze** (a function of the floor point's Chebyshev distance from the point looked at past `0.5 L`, `1 - exp(-x^2)`, 99.8% at L; a 3 L wide map mesh behind it, so no edge of the mesh is ever visible; a sky pass above the horizon, in the sea's colour scaled by the Brightness) instead of the clamp; standard views Top, Oblique (45), Low (70) and Side (edge-on at `H/2`) on `t o l s`, a strip over the map and View > View angle, each an animated ease; a control column at the right edge (readout "Tilt 45 deg . heading 270 deg", the strip, the compass as a dial, the 3D button, the tilt handle, zoom); the floor is not read beyond 0.65 L or above the horizon (readout, territory pick, power aim, dive, grab); the minimap's footprint is clipped to the clear box; storm rings flatten; client only (`WorldU` 160 bytes), no engine, stream or config change. Review fixes: the point looked at is lifted to the middle of the height toward edge-on (`WorldPose.lift`), the zoom is given back at the end of an ease (`ViewEase.endWish`, `sideReturn`), `n` and the compass click end an ease, the frame is faded by the haze, the needle and the dial's dead zone, the readout plate takes the press, the strip before the handle in the column, height guides at edge-on, the storm pick is the ellipse. Number provisional: the coordinator assigns the final one. Details, tests and deviations: §36.5 "Camera controls". |
 
 **Open questions for the user.**

@@ -101,6 +101,23 @@ import Testing
         #expect(catalog.existingNames == ["planet_a", "planet_b", "64k3d_s0"])
     }
 
+    @Test func aSourceCarriesTheWorldSizeOfItsConfig() throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.cleanup() }
+        let runs = scratch.url.appendingPathComponent("runs")
+        for (name, size) in [("mini3d_s0", "160.0"), ("64k3d_s0", "320.0"), ("int", "160")] {
+            let dir = runs.appendingPathComponent(name)
+            try write(#"{"world": {"dims": 3, "size": \#(size)}, "weather": {"enabled": false}}"#, "config.json", in: dir)
+            try checkpoint(80_000, in: dir)
+        }
+        let noSize = runs.appendingPathComponent("nosize")
+        try write(#"{"world": {"dims": 3}}"#, "config.json", in: noSize)
+        try checkpoint(1, in: noSize)
+        let catalog = PlayCatalogScanner.scan(runsDirectory: runs)
+        let sizes = Dictionary(uniqueKeysWithValues: catalog.sources.map { ($0.name, $0.worldSize) })
+        #expect(sizes == ["mini3d_s0": 160.0, "64k3d_s0": 320.0, "int": 160.0, "nosize": nil])
+    }
+
     // MARK: Unfinished builds and research runs
 
     private func scan(_ build: (URL) throws -> Void, lockHeld: String? = nil) throws -> PlayCatalog {
