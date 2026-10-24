@@ -30,6 +30,7 @@ extension Shaders {
         float4 look;     // x: the weight of space against the haze sky, y: the fog's strength, z: the stars' and the atmosphere's weight, w: the graticule's
         float4 shade;    // x: the weight of the lighting, y: of the rim, z: of the pole caps, w: 1 on the globe path
         float4 light;    // xyz: the key light, towards the light, in the camera's world; w: the weight of the haze at the limb
+        float4 glow;     // x: the weight of the organism glow, y: of the crowd's floor
     };
 
     // The plane at the morph's scale rolled onto a sphere of radius R / s, tangent at the centre (the plane itself at s = 0); the height
@@ -197,7 +198,8 @@ extension Shaders {
                                      texture2d<float> cloudPrev [[texture(5)]],
                                      texture2d<float> zetaPrev [[texture(6)]],
                                      texture2d<float> seaPrev [[texture(7)]],
-                                     texture2d<float, access::read> territory [[texture(8)]])
+                                     texture2d<float, access::read> territory [[texture(8)]],
+                                     texture2d<float> glowTexture [[texture(9)]])
     {
         const float3 background = float3(0.035, 0.04, 0.055);
         float gs = g.look.w;
@@ -221,6 +223,13 @@ extension Shaders {
         float3 toEye = normalize(scene.eye.xyz - in.world);
         float nv = clamp(dot(nrm, toEye), 0.0, 1.0);
         color *= mix(1.0, 0.66 + 0.46 * max(dot(nrm, g.light.xyz), 0.0), g.shade.x);
+        // The organism glow: where the instances have faded out, their density as warm light (added after the lighting: it is a light).
+        if (g.glow.x > 0.0 || g.glow.y > 0.0) {
+            float cell = glowTexture.sample(planeSampler, in.uv).r;
+            // a cell of 4 rows or more (byte 0.568) keeps a floor of 0.25 whatever the instances' opacity: a crowd that overlaps reads as light
+            float weight = max(g.glow.x, 0.25 * g.glow.y * smoothstep(0.50, 0.60, cell));
+            color += weight * smoothstep(0.05, 0.9, cell) * float3(1.0, 0.86, 0.55);
+        }
         float3 shown = mix(background, color, world.params.y);
         float2 off = abs(in.off);
         float x = max(max(off.x, off.y) - world.fogShape.x, 0.0) * world.fogShape.y;

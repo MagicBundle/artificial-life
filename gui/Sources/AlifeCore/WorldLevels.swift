@@ -91,16 +91,21 @@ package enum WorldLevels {
 
     /// The visible half extent, as a fraction of `L`, a fly-to ends at on a storm, a lineage or a place (the region level).
     package static let flyRegionHalfExtent: Float = 0.2
+    /// With the globe overview a fly-to on a region ends at this distance, as a fraction of `L` (D7: the flat map's 0.339 L at the owner's
+    /// window is a third of the planet).
+    package static let flyRegionGlobe: Float = 0.15
     /// The distance a fly-to ends at on an organism, as a fraction of `L` (inside the organism level).
     package static let flyOrganismDistance: Float = 0.08
 
     /// The camera distance a fly-to ends at: `level` is `.region` (a storm, a kin group, a place) or `.organism`; the planet
     /// level is not a destination. Never nearer than `minDistance`.
-    package static func flyDistance(_ level: WorldLevel, size: Float, fovY: Float, aspect: Float) -> Float {
+    package static func flyDistance(_ level: WorldLevel, size: Float, fovY: Float, aspect: Float, globe: Bool = false) -> Float {
         switch level {
         case .organism:
             return max(flyOrganismDistance * size, minDistance)
         case .region, .planet:
+            // With the globe overview (the spec's D7): 0.15 L, the flat close-up just inside the morph (0.12 L), whatever the window.
+            if globe { return max(flyRegionGlobe * size, minDistance) }
             let d = flyRegionHalfExtent * size / (tan(fovY / 2) * max(1, aspect))
             return min(max(d, minDistance), max(maxDistance(size: size, fovY: fovY, aspect: aspect), minDistance))
         }

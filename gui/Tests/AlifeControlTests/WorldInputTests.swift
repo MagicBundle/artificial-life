@@ -29,7 +29,7 @@ private final class Rig {
     let window: NSWindow
     let scratch: Scratch
     private var saved: [String: Any?] = [:]
-    static let keys = ["world.dockSide", "world.dockExtent", "world.dockExtentBottom", "world.dockCollapsed"]
+    static let keys = ["world.dockSide", "world.dockExtent", "world.dockExtentBottom", "world.dockCollapsed", "world.globe"]
 
     /// The extent the dock has when nothing was dragged.
     static func defaultExtent(_ side: DockSide) -> CGFloat { DockLayout.defaultExtent(for: side) }
@@ -41,6 +41,7 @@ private final class Rig {
         for key in Self.keys { saved[key] = UserDefaults.standard.object(forKey: key) }
         UserDefaults.standard.set(side.rawValue, forKey: "world.dockSide")
         UserDefaults.standard.set(collapsed, forKey: "world.dockCollapsed")
+        UserDefaults.standard.set(false, forKey: "world.globe")  // (these are tests of the flat map; the app opens on the globe)
         UserDefaults.standard.removeObject(forKey: "world.dockExtent")
         UserDefaults.standard.removeObject(forKey: "world.dockExtentBottom")
         frames = DockLayout.frames(in: windowSize, side: side, extent: Self.defaultExtent(side), collapsed: collapsed)

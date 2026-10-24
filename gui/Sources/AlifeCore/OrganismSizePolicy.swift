@@ -102,6 +102,9 @@ package enum OrganismSizePolicy {
         return t * t * (3 - 2 * t)
     }
 
+    /// The glow's weight for the same drawn radius: what the instances leave (`1 - instanceAlpha`).
+    package static func glowAlpha(radius: Float) -> Float { 1 - instanceAlpha(radius: radius) }
+
     /// What the shaders and the picker are given for `mode`: the cap on the drawn radius (infinite at the physical size) and the
     /// least radius, in pixels. `cover` is the (smoothed) `coverRadius` of the footprint.
     package static func limits(mode: OrganismSizeMode, cover: Float, distance: Float, size: Float, agentRadius: Float,

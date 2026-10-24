@@ -43,6 +43,10 @@ package struct WorldDisplay: Equatable, Sendable {
     /// The globe overview (DESIGN §36.10): the view leads on from the flat map, zooming out, to a planet; Home is the globe. Off until the owner
     /// turns it on (View > Globe overview); a 2D world, or one with no weather map in view, keeps its flat view either way.
     package var globe = false
+    /// The globe turns by itself, slowly, while nothing is happening (View > Spin). Off until the player turns it on.
+    package var spin = false
+    /// After a drag of the globe the heading eases back to north up (View > Keep north up).
+    package var keepNorthUp = true
     /// The trackpad's two-finger scroll zooms (v1's law) instead of panning (the Maps convention, the default): View > "Scroll zooms".
     package var scrollZooms = false
 

@@ -16,7 +16,12 @@ import Testing
 @Suite(.serialized) struct WorldRendererOwnershipTests {
     @Test func theHostedWorldViewKeepsItsRendererAndDrawsTheOrganisms() async throws {
         let scratch = try Scratch()
-        defer { scratch.cleanup() }
+        let globe = UserDefaults.standard.object(forKey: WorldModel.globeKey)
+        UserDefaults.standard.set(false, forKey: WorldModel.globeKey)  // (a test of the flat map's draw; the app opens on the globe)
+        defer {
+            if let globe { UserDefaults.standard.set(globe, forKey: WorldModel.globeKey) } else { UserDefaults.standard.removeObject(forKey: WorldModel.globeKey) }
+            scratch.cleanup()
+        }
         let commands = scratch.url.appendingPathComponent("commands.txt")
         let script = try scratch.script("alife-live", "cat \"$1\"\nwhile IFS= read -r line; do echo \"$line\" >> \"$2\"; done")
         let play = PlayController()

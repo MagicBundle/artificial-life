@@ -152,6 +152,7 @@ extension WorldModel {
     func handleClock() {
         guard let clock = play.store.clock else { return }
         storage.note(clock: clock)
+        if display.spin, clock.rate != 0 { startAnimating() }  // (the spin stood still while paused)
         let chapter = Int(clock.chapter)
         if clock.reason == .chapter {
             if chapter != lastCardChapter {

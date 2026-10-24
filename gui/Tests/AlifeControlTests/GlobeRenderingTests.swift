@@ -9,16 +9,16 @@ import simd
 /// look's schedules, the tiles of the mesh, and what the shader source must say. The drawing is `GPUGlobeTests`.
 struct GlobeRenderingTests {
     @Test func theGlobeUniformsHaveTheLayoutOfTheShader() {
-        #expect(MemoryLayout<GlobeUniforms>.size == 160 && MemoryLayout<GlobeUniforms>.stride == 160)
+        #expect(MemoryLayout<GlobeUniforms>.size == 176 && MemoryLayout<GlobeUniforms>.stride == 176)
         let offsets = [MemoryLayout<GlobeUniforms>.offset(of: \.a), MemoryLayout<GlobeUniforms>.offset(of: \.b),
                        MemoryLayout<GlobeUniforms>.offset(of: \.c), MemoryLayout<GlobeUniforms>.offset(of: \.right),
                        MemoryLayout<GlobeUniforms>.offset(of: \.up), MemoryLayout<GlobeUniforms>.offset(of: \.centre),
                        MemoryLayout<GlobeUniforms>.offset(of: \.copies), MemoryLayout<GlobeUniforms>.offset(of: \.look),
-                       MemoryLayout<GlobeUniforms>.offset(of: \.shade), MemoryLayout<GlobeUniforms>.offset(of: \.light)]
-        #expect(offsets == (0..<10).map { 16 * $0 })
+                       MemoryLayout<GlobeUniforms>.offset(of: \.shade), MemoryLayout<GlobeUniforms>.offset(of: \.light), MemoryLayout<GlobeUniforms>.offset(of: \.glow)]
+        #expect(offsets == (0..<11).map { 16 * $0 })
         let block = Shaders.source.matches(of: #/struct GlobeU \{([^}]*)\};/#).first.map { String($0.1) } ?? ""
         let names = block.matches(of: #/float4\s+(\w+);/#).map { String($0.1) }
-        #expect(names == ["a", "b", "c", "right", "up", "centre", "copies", "look", "shade", "light"])
+        #expect(names == ["a", "b", "c", "right", "up", "centre", "copies", "look", "shade", "light", "glow"])
     }
 
     @Test func theGlobeEntryPointsAreDefinedAndListed() {

@@ -227,6 +227,8 @@ import Testing
             ("Territory", { model.display.territory = .borders }, { model.viewMenu.value.display.territory == .borders }),
             ("Organism size", { model.display.sizeMode = .physical }, { model.viewMenu.value.display.sizeMode == .physical }),
             ("Scroll zooms", { model.display.scrollZooms = true }, { model.viewMenu.value.display.scrollZooms }),
+            ("Spin", { model.display.spin = true }, { model.viewMenu.value.display.spin }),
+            ("Keep north up", { model.display.keepNorthUp = false }, { !model.viewMenu.value.display.keepNorthUp }),
             // The layer is a field of the inputs and so is whether a map is in view (it disables Brightness, A0 review finding 8).
             ("Weather map", { model.display.map = false },
              { !model.viewMenu.value.display.map && model.viewMenu.value.mapShown == model.mapShown }),

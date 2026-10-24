@@ -1,7 +1,7 @@
 import AlifeCore
 import simd
 
-/// The globe's constants (`GlobeU` in ShadersGlobe.swift), buffer 8 of the world pass: 160 bytes of ten 16-byte vectors. On the flat path it is
+/// The globe's constants (`GlobeU` in ShadersGlobe.swift), buffer 8 of the world pass: 176 bytes of eleven 16-byte vectors. On the flat path it is
 /// all zero (`shade.w` is the flag the shaders read).
 struct GlobeUniforms: Equatable {
     /// x: s, y: L, z: H, w: R.
@@ -22,6 +22,9 @@ struct GlobeUniforms: Equatable {
     var shade = SIMD4<Float>.zero
     /// xyz: the key light, towards the light, in the camera's world; w: the weight of the haze at the limb.
     var light = SIMD4<Float>.zero
+    /// x: the weight of the organism glow (`OrganismSizePolicy.glowAlpha` of the drawn radius at the centre of the view); y: the weight of
+    /// the crowd's floor (a cell of 4 rows or more keeps 0.25 of light whatever x says), which belongs to the planet level.
+    var glow = SIMD4<Float>.zero
 
     /// The key light in the camera's view space: above the upper left, in front (DESIGN §36.10; fixed in view space, so rotating the globe
     /// never darkens it and there is no night side).
@@ -47,6 +50,7 @@ struct GlobeUniforms: Equatable {
         }
         copies = SIMD4(alpha(-1), alpha(0), alpha(1), GlobeLook.tilesAlpha(s: s) > 0 ? 1 : 0)
         look = SIMD4(GlobeLook.space(s: s), fog ? GlobeLook.fogStrength(s: s) : 0, GlobeLook.stars(s: s), GlobeLook.graticule(s: s))
+        glow = SIMD4(0, Morph.smoothstep(0.3, 0.8, s), 0, 0)
         shade = SIMD4(GlobeLook.lit(s: s), GlobeLook.rim(s: s), GlobeLook.caps(s: s), 1)
         let key = Self.keyLight
         let towardEye = -camera.forward

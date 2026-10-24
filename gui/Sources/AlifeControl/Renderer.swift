@@ -323,6 +323,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         var vantage: WorldVantage?
         /// Whether the view reaches past the world it is centred on in x (the tiles beside the central one are drawn while `s` < 0.3).
         var wideTiles = true
+        /// The weight of the organism glow on the globe (`OrganismSizePolicy.glowAlpha` of the radius the instances are drawn at, counted
+        /// by the model); 0 draws none.
+        var glowAlpha: Float = 0
+        /// The organism glow on the globe. On; a test turns it off to see what it adds.
+        var glow = true
     }
     var worldDraw = WorldDraw()
     /// Told when the drawable's size changes in the World (the free rectangle changed), in pixels.
@@ -335,6 +340,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var mapPreviousSerial = -1
     private var playTerritory: PlayTerritory?
     private var playTerritorySerial = -1
+    private var glowGrid: [UInt8] = []
+    private var glowGridSerial = -1
 
     /// A set of the GPU buffers one draw reads.
     private final class Slot {
@@ -374,6 +381,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         var previousSerial = -1
         var territory: (any MTLTexture)?
         var territorySerial = -1
+        /// The organism glow's grid (r8, `GlowHistogram.cells` on a side) and the frame it was binned from.
+        var glow: (any MTLTexture)?
+        var glowSerial = -1
     }
 
     init(device: any MTLDevice) throws {
@@ -896,6 +906,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         encoder.setFragmentBytes(&scene, length: MemoryLayout<SceneUniforms>.stride, index: 0)
         // The globe's constants: zero (the flag off) on the flat path, which no shader of it reads beyond the flag.
         var globeConstants = globe.map { GlobeUniforms($0, copies: worldDraw.copies, fog: worldDraw.fog && header.dims == 3) } ?? GlobeUniforms()
+        if globe != nil, worldDraw.glow, slot.world.glowSerial == playFrameSerial {
+            globeConstants.glow.x = worldDraw.glowAlpha
+        } else {
+            globeConstants.glow = .zero
+        }
         encoder.setVertexBytes(&globeConstants, length: MemoryLayout<GlobeUniforms>.stride, index: 8)
         encoder.setFragmentBytes(&globeConstants, length: MemoryLayout<GlobeUniforms>.stride, index: 8)
         let display = worldDraw.display
@@ -915,6 +930,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 encoder.setFragmentTexture(hasMap ? set.sea : blankPlane, index: base + 3)
             }
             encoder.setFragmentTexture(playTerritory != nil ? w.territory : blankTerritory, index: 8)
+            encoder.setFragmentTexture(globe != nil && w.glowSerial == playFrameSerial ? w.glow : blankPlane, index: 9)
         }
 
         var u = worldUniforms(header: header, pass: 0, size: size)
@@ -1064,6 +1080,26 @@ final class Renderer: NSObject, MTKViewDelegate {
                 throw Failure.allocation("the agent buffers")
             }
             w.frameSerial = playFrameSerial
+        }
+        // The organism glow: the alive rows binned (0.1 ms), only while the globe path is in use.
+        if let frame = playFrame, worldDraw.vantage != nil, worldDraw.glow, w.glowSerial != playFrameSerial, let size = header?.size {
+            let side = GlowHistogram.cells
+            if w.glow == nil {
+                let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: side, height: side, mipmapped: false)
+                d.usage = .shaderRead
+                d.storageMode = .shared
+                w.glow = device.makeTexture(descriptor: d)
+            }
+            guard let texture = w.glow else { throw Failure.allocation("the glow texture") }
+            // (binned once per frame, whichever slot of the ring needs it)
+            if glowGridSerial != playFrameSerial {
+                glowGrid = GlowHistogram.bin(positions: frame.pos, n: frame.n, size: Float(size))
+                glowGridSerial = playFrameSerial
+            }
+            glowGrid.withUnsafeBytes {
+                texture.replace(region: MTLRegionMake2D(0, 0, side, side), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: side)
+            }
+            w.glowSerial = playFrameSerial
         }
         if let now = mapNow, let previous = mapPrevious {
             let plan = MapUploadPlan.make(have: (w.currentSerial, w.previousSerial),

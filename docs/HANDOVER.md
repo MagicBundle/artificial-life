@@ -663,6 +663,10 @@ unit (§37.4).
      --yoke-log=runs/NAME/director.jsonl`; switch back to Gardener and, for a Resume of a random run, check the command
      adds `--yoke-log=` to clear the key.
 
+## World viewer v2 PR B: the globe (DESIGN 36.10, row I66; branch `gui/viewer2-b`)
+
+The globe overview and the continuous morph between it and the flat close-up, with the camera controls on the globe, are built in steps 5 to 9 (pure `GlobeMap`, `Morph`, `FlightPath` on the great circle, `WorldVantage`; the mesh renderer and `GlobeUniforms`; the minimap's cap, the declutter labels, the pin; the glow, inertia, Keep north up, spin; the bench scenarios). Client only. It is on by default (View > Globe overview). GUI PR: merging needs the owner's go; step 10 of the spec's 7.4 (the Mac day: release build in a real window, the engine running, the owner's click-through, the trackpad flick) is still to do, and its findings go to `docs/RESULTS_VIEWER2.md`. Known limits are in 36.10 (a hole near a pole for `s` in [0.3, 0.6], a slit for [0.7, 0.95], organisms hanging above the limb).
+
 ## Suggested next steps
 
 1. **The §9 evaluation is done** (`docs/EVALUATION.md`). Follow-ups it found, in order:

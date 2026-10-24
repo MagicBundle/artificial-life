@@ -99,6 +99,12 @@ final class WorldModel: ObservableObject {
                 if display.exposure != oldValue.exposure { defaults.set(Double(display.exposure), forKey: Self.exposureKey) }
                 if display.scrollZooms != oldValue.scrollZooms { defaults.set(display.scrollZooms, forKey: Self.scrollZoomsKey) }
                 if display.minimap != oldValue.minimap { defaults.set(display.minimap, forKey: Self.minimapKey) }
+                if display.spin != oldValue.spin {
+                    defaults.set(display.spin, forKey: Self.spinKey)
+                    motion.lastInput = now()
+                    if display.spin { startAnimating() }
+                }
+                if display.keepNorthUp != oldValue.keepNorthUp { defaults.set(display.keepNorthUp, forKey: Self.keepNorthUpKey) }
                 if display.globe != oldValue.globe {
                     defaults.set(display.globe, forKey: Self.globeKey)
                     setGlobe(display.globe)
@@ -186,6 +192,8 @@ final class WorldModel: ObservableObject {
     static let scrollZoomsKey = "world.scrollZooms"
     static let minimapKey = "world.minimap"
     static let globeKey = "world.globe"
+    static let spinKey = "world.spin"
+    static let keepNorthUpKey = "world.keepNorthUp"
     /// The player's colour choice: true is the height colour, false the world's own; absent is the default of a 3D world.
     static let heightColourKey = "world.heightColour"
 
@@ -194,6 +202,10 @@ final class WorldModel: ObservableObject {
     /// The scroll gesture in progress (DESIGN §36.5), and the floor point the left button grabbed.
     var scrollLaw = ScrollLaw()
     var grabAnchor: WorldVantage.Anchor?
+    /// The motion that outlives the input on the globe: the inertia of a flick, the idle spin (DESIGN §36.10), and whether the drag in
+    /// progress moved the view.
+    var motion = GlobeMotion()
+    var grabMoved = false
     /// The world opened and no frame has been seen: the Home view is still to face the populated side.
     var homeAwaitsFrame = false
     /// A fly-to on the van Wijk path (not while following: a followed organism is not a path), and a north-up ease.
@@ -272,6 +284,8 @@ final class WorldModel: ObservableObject {
         }
         if let stored = defaults.object(forKey: Self.scrollZoomsKey) as? Bool { display.scrollZooms = stored }
         if let stored = defaults.object(forKey: Self.minimapKey) as? Bool { display.minimap = stored }
+        if let stored = defaults.object(forKey: Self.spinKey) as? Bool { display.spin = stored }
+        if let stored = defaults.object(forKey: Self.keepNorthUpKey) as? Bool { display.keepNorthUp = stored }
         if let stored = defaults.object(forKey: Self.globeKey) as? Bool {
             display.globe = stored
             globeEnabled = stored
@@ -283,6 +297,13 @@ final class WorldModel: ObservableObject {
         play.onPlans = { [weak self] plans in self?.handle(plans: plans) }
         play.onReset = { [weak self] in self?.resetInteraction() }
         storage.isLive = { [weak play] in play?.phase == .live }
+    }
+
+    /// The app's default of the globe overview: on, unless the player chose (the window opens on the planet). A model made by a test
+    /// stays flat until it asks; `WorldView` asks.
+    func adoptGlobeDefault() {
+        guard defaults.object(forKey: Self.globeKey) == nil else { return }
+        display.globe = true
     }
 
     // MARK: Free rectangle
@@ -465,8 +486,25 @@ final class WorldModel: ObservableObject {
         return coverRadius != coverTarget
     }
 
+    /// The glow's weight (DESIGN §36.10): the complement of the instances' opacity at the radius they are drawn at in the middle of the
+    /// view, so that the life is dots where they can be seen and light where they cannot, with no switch.
+    func refreshGlow() {
+        guard let renderer else { return }
+        var alpha: Float = 0
+        if display.agents, globeEnabled, let header = play.store.header, drawableSize.height >= 1, vantage().isGlobe {
+            let limits = OrganismSizePolicy.limits(
+                mode: display.sizeMode, cover: coverRadius, distance: camera.distance, size: worldSize, agentRadius: Float(header.radius),
+                viewHeight: Float(drawableSize.height), fovY: camera.fovY, pixelsPerPoint: pixelsPerPoint)
+            let points = projector(size: freeRect.size).points(ofUnits: Float(header.radius), at: SIMD3(pose.x, pose.y, 0)) ?? 0
+            let radius = OrganismSizePolicy.radius(physical: Float(points) * pixelsPerPoint, cap: limits.cap, minimum: limits.minimum)
+            alpha = OrganismSizePolicy.glowAlpha(radius: radius)
+        }
+        if renderer.worldDraw.glowAlpha != alpha { renderer.worldDraw.glowAlpha = alpha }
+    }
+
     private func pushCoverRadius() {
         renderer?.worldDraw.coverRadius = coverRadius
+        refreshGlow()
         view?.needsDisplay = true
     }
 
@@ -481,7 +519,7 @@ final class WorldModel: ObservableObject {
 
     // MARK: The map fade
 
-    var isAnimating: Bool { fade.isAnimating(at: now()) || cameraMotionPending || sizeCountPending || coverRadius != coverTarget }
+    var isAnimating: Bool { fade.isAnimating(at: now()) || cameraMotionPending || spinWanted || sizeCountPending || coverRadius != coverTarget }
 
     func startAnimating() { view?.startAnimating() }
 
@@ -581,6 +619,7 @@ final class WorldModel: ObservableObject {
     /// heading and the tilt about the target. The left button grabs instead (`beginGrab`, `grab(to:)`).
     func drag(dx: Float, dy: Float, orbit: Bool) {
         dismissHint()
+        motion.stop(time: now())
         cancelCameraMotion()  // a manual drag cancels the follow (the selection stays)
         headingEase = nil
         let size = viewSize
@@ -594,6 +633,8 @@ final class WorldModel: ObservableObject {
     func beginGrab(at point: CGPoint) {
         dismissHint()
         grabAnchor = vantage().anchor(at: WorldPose.ndc(of: point, in: viewSize))
+        motion.begin(at: point, time: now())
+        grabMoved = false
     }
 
     /// The pointer is at `point` with the left button down: the point grabbed is under it, exactly (`WorldPose.grab`).
@@ -602,11 +643,34 @@ final class WorldModel: ObservableObject {
         guard let anchor = grabAnchor else { return }
         cancelCameraMotion()
         headingEase = nil
+        motion.move(to: point, time: now())
+        grabMoved = true
         let ndc = WorldPose.ndc(of: point, in: viewSize)
         editPose(through: { $0.grab(anchor: anchor, at: ndc) })
     }
 
-    func endGrab() { grabAnchor = nil }
+    /// The left button went up. On the globe a flick keeps a short inertia (the pointer's last speed, decaying with 0.25 s; not after a
+    /// short drag, not with reduced motion), and View > Keep north up eases the heading back to 0 over 0.4 s (the grab carried it, which
+    /// drifts at high latitude).
+    func endGrab() {
+        defer {
+            grabAnchor = nil
+            grabMoved = false
+        }
+        guard grabAnchor != nil else { return }
+        let view = vantage()
+        let reduced = reduceMotion()
+        let flicked = motion.end(time: now(), allowed: view.isGlobe && view.s >= WorldVantage.capFrom && !reduced)
+        if grabMoved, display.keepNorthUp, view.s > 0, pose.heading != 0, flight?.home != true {
+            viewEase = nil
+            if reduced {
+                editPose { $0.heading = 0 }
+            } else {
+                headingEase = HeadingEase(from: pose.heading, length: GlobeMotion.northUpDuration)
+            }
+        }
+        if flicked || headingEase != nil { startAnimating() }
+    }
 
     // MARK: Zoom and scroll
 
@@ -662,6 +726,14 @@ final class WorldModel: ObservableObject {
         home()
     }
 
+    /// Whether the globe turns by itself now: View > Spin on, at the globe, and not reduced motion, not paused.
+    var spinWanted: Bool {
+        guard display.spin, globeEnabled, !reduceMotion() else { return false }
+        if let clock = play.store.clock, clock.rate == 0 { return false }
+        let view = vantage()
+        return view.isGlobe && view.s >= WorldVantage.capFrom
+    }
+
     func pushCamera() {
         let camera = self.camera
         let vantage = self.vantage()
@@ -681,6 +753,8 @@ final class WorldModel: ObservableObject {
         renderer.worldDraw.wideTiles = footprint.map { $0.x > 0.4 * worldSize } ?? true
         renderer.worldDraw.copies = SeamCopies.plan(y: pose.y, extentY: footprint?.y, size: worldSize, s: vantage.s)
         view?.needsDisplay = true
+        refreshGlow()
+        if display.spin, spinWanted { startAnimating() }
     }
 
     /// The projection the overlay and the picker use: the camera on the free rectangle (`size` in points).
