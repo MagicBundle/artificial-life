@@ -113,12 +113,12 @@ def test_engine_fixed_equals_the_weather_params_defaults_it_stands_for() -> None
     assert set(W.ENGINE_FIXED) <= {f.name for f in fields(W.WeatherParams)}
     for k, v in W.ENGINE_FIXED.items():
         assert getattr(wp, k) == v and type(getattr(wp, k)) is type(v), k
-    # every WeatherParams field is a config key, derived from the world, or fixed
+    # every WeatherParams field is a config key, derived from the world, fixed, or a channel study field
     derived = {"n", "dx", "height"}
     keys = {f.name for f in fields(WeatherConfig)}
     assert {f.name for f in fields(W.WeatherParams)} == (
         keys & {f.name for f in fields(W.WeatherParams)}
-    ) | derived | set(W.ENGINE_FIXED)
+    ) | derived | set(W.ENGINE_FIXED) | set(W.CHANNEL_FIELDS)
     assert len(W.ENGINE_FIXED) == 20  # 12 numerics + the seven host detection fields + seed_dmin (W2)
 
 

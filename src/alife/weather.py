@@ -13,6 +13,13 @@ branches only on ``WeatherParams`` fields, ``debug`` and the presence of the opt
 shapes, every random draw with ``key=``, no scatter outside ``ops`` (``shade_mult``'s one count), no matmul
 (F20), float32 throughout.
 
+**The channel** (``WeatherParams.channel``, the equatorial band, DESIGN §37): the same model
+on a ``(ny, n)`` grid that is periodic in x and bounded by walls in y, with ``f(y) = f0·sin((y - Ly/2)/a)``
+across the band (a = L/2π). The wall is one zero v-face: ``v[ny-1]`` is both the north wall face and, through
+the periodic rolls, the south wall face of row 0, so every roll of the torus code keeps working and what
+crosses the wrap is multiplied by a zero face. Every channel branch is static on ``p.channel`` (off by
+default), so the torus graph is the shipped graph, bit for bit.
+
 MLX 0.32.3's ``mx.compile`` crashes when the same roll of the same array is built twice and a later stage
 again builds duplicate rolls of a result that depends on them (spec §2.1). Every stage here takes the shifts
 of an array once and reuses them; never apply ``_east``, ``_west``, ``_north`` or ``_south`` twice to one
@@ -62,8 +69,14 @@ START_POOLS: tuple[tuple[float, ...], ...] = (
 MEAN_FLOW_LIMIT: dict[tuple[int, float], float] = {(1, 0.04): 0.352, (3, 0.10): 0.370}
 
 
+SPONGE_PROFILES: Final = ("exp", "quad")
+
 # ``WeatherParams`` fields added after the W0 study (omitted from ``to_dict`` at their default).
-_POST_W0: Final = ("seed_dmin",)
+# The channel (equatorial band) fields, DESIGN §37: study-only until the band reaches the engine, when they
+# become ``[weather]`` keys (in ``POST_V01_KEYS``) beside ``world.size_y``. They are not config keys, derived
+# from the world or ``ENGINE_FIXED``, so ``test_weather_config`` lists them as the fourth kind.
+CHANNEL_FIELDS: Final = ("cells_y", "channel", "wall_margin", "sponge_r", "sponge_w", "sponge_profile")
+_POST_W0: Final = ("seed_dmin", *CHANNEL_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -136,6 +149,13 @@ class WeatherParams:
     min_dets: int = 3
     # organisms -> weather (W2, DESIGN §32): the floor of the cloud depth that the seeding band uses
     seed_dmin: float = 8.0
+    # the channel (the equatorial band, DESIGN §37); all off at their defaults, so the torus is untouched
+    cells_y: int = 0  # rows of a channel; 0 = n (``ny`` is derived, never an independent default)
+    channel: bool = False  # static: y is bounded by two walls and f follows the latitude
+    wall_margin: float = 0.0  # seeded disturbances are not placed within this distance of a wall
+    sponge_r: float = 0.0  # peak extra linear friction rate per step at a wall, both layers; 0 = off
+    sponge_w: float = 4.0  # its width: the e-folding distance ("exp") or the full width ("quad")
+    sponge_profile: str = "exp"  # "exp": r·exp(-d/w); "quad": r·(1 - min(d/w, 1))²
 
     def __post_init__(self) -> None:
         pools = tuple(tuple(float(x) for x in row) for row in self.pools)
@@ -169,7 +189,40 @@ class WeatherParams:
 
     @property
     def L(self) -> float:
+        """The x period (``Lx``: the circumference of the equator in a channel)."""
         return self.n * self.dx
+
+    @property
+    def ny(self) -> int:
+        """Rows of the grid: ``cells_y`` in a channel, else ``n``."""
+        return self.cells_y or self.n
+
+    @property
+    def Ly(self) -> float:
+        """The y extent (``L`` on the torus, the band height in a channel)."""
+        return self.ny * self.dx
+
+    @property
+    def a_rad(self) -> float:
+        """The planet radius ``L/2π``: one world unit is ``1/a`` radian in x and y (plate carrée)."""
+        return self.L / (2.0 * math.pi)
+
+    @property
+    def pole_ys(self) -> tuple[float, float]:
+        """``y`` of the maximum of ``|f|`` in the (north, south) hemisphere: ``L/4`` and ``3L/4`` on the torus
+        (the rows the storms are called 'polar' about), the two walls in a channel."""
+        return (self.Ly, 0.0) if self.channel else (self.L / 4.0, 3.0 * self.L / 4.0)
+
+    @property
+    def equator_ys(self) -> tuple[float, ...]:
+        """``y`` of the rows where ``f = 0``: ``0`` and ``L/2`` on the torus, ``Ly/2`` in a channel."""
+        return (0.5 * self.Ly,) if self.channel else (0.0, 0.5 * self.L)
+
+    def f_of_y(self, y: float) -> float:
+        """The Coriolis parameter at ``y``: ``f0·sin((y - Ly/2)/a)`` in a channel, else ``f0·sin(2πy/L)``."""
+        if self.channel:
+            return self.f0 * math.sin((y - 0.5 * self.Ly) / self.a_rad)
+        return self.f0 * math.sin(2.0 * math.pi * y / self.L)
 
     @property
     def _T(self) -> float:
@@ -219,9 +272,7 @@ class WeatherParams:
         """Largest ``|f|`` over the pool centres (``f0`` if any pool drifts in y)."""
         if any(row[6] != 0.0 for row in self.pools):
             return self.f0
-        return max(
-            (abs(self.f0 * math.sin(2.0 * math.pi * row[1] / self.L)) for row in self.pools), default=0.0
-        )
+        return max((abs(self.f_of_y(row[1])) for row in self.pools), default=0.0)
 
     @property
     def ld_moist_pool(self) -> float:
@@ -237,7 +288,7 @@ class WeatherParams:
         dh = self.H1 * (1.0 - self.eps) - self.m_min
         r_core = 10.0
         potential = 0.5 * (-fp * r_core + math.sqrt((fp * r_core) ** 2 + 4.0 * self.g_prime * max(dh, 0.0)))
-        return {
+        out: dict[str, float | None] = {
             "L": self.L,
             "c_ext": self.c_ext,
             "c_bc": self.c_bc,
@@ -258,6 +309,9 @@ class WeatherParams:
             "alpha_max": self.alpha0 + self.alpha1,
             "mean_flow_limit": MEAN_FLOW_LIMIT.get((self.sl_order, self.kappa_d)),
         }
+        if self.channel:  # the keys of a torus record stay exactly as they were
+            out.update({"Ly": self.Ly, "phi_max_deg": math.degrees(0.5 * self.Ly / self.a_rad)})
+        return out
 
     # --- validation (spec §2.5 rules 1-14 and the parameter-only part of 16) ---------------------------
 
@@ -349,7 +403,76 @@ class WeatherParams:
             and self.p_th >= 0,
             "rule 18: detection parameters out of range",
         )
+        self._validate_channel(req)
         return bad
+
+    def _validate_channel(self, req: Any) -> None:
+        """The channel rules C0-C6 (DESIGN §37.2). Without a channel the channel keys must keep their
+        defaults (no parameter set can change its hash without changing its behaviour)."""
+        if not self.channel:
+            req(
+                self.cells_y in (0, self.n)
+                and self.wall_margin == 0.0
+                and self.sponge_r == 0.0
+                and self.sponge_w == 4.0
+                and self.sponge_profile == "exp",
+                "rule C0: cells_y, wall_margin, sponge_r, sponge_w and sponge_profile are inert without "
+                "channel: they must keep their defaults",
+            )
+            return
+        req(self.cells_y >= 8, "rule C1: a channel needs cells_y >= 8")
+        req(
+            2.0 * self.Ly <= self.L + 1e-9,
+            "rule C2: need 2 Ly <= Lx (the minimum image stays the identity on y)",
+        )
+        req(self.sl_order == 1, "rule C3: the channel advection is first order (sl_order = 1)")
+        req(
+            all(0.0 <= row[1] < self.Ly and row[6] == 0.0 for row in self.pools),
+            "rule C4: every pool centre needs 0 <= y < Ly and vy = 0 (a pool must not drift into a wall)",
+        )
+        req(0.0 <= self.wall_margin < 0.25 * self.Ly, "rule C5: need 0 <= wall_margin < Ly/4")
+        req(
+            0.0 <= self.sponge_r <= 0.1
+            and self.sponge_w >= self.dx
+            and self.sponge_profile in SPONGE_PROFILES,
+            "rule C6: need 0 <= sponge_r <= 0.1, sponge_w >= dx and sponge_profile in ('exp', 'quad')",
+        )
+
+
+# The pool rows of the band candidates (DESIGN §37.4): the offset of a pool from the equator and its ``sy``.
+BAND_LAYOUTS: Final[dict[float, tuple[float, float]]] = {
+    80.0: (20.0, 10.0),
+    96.0: (30.0, 14.0),
+    112.0: (36.0, 16.0),
+}
+
+
+def band_params(
+    ly: float = 96.0, *, offset: float | None = None, sy: float | None = None, **overrides: Any
+) -> WeatherParams:
+    """The channel (equatorial band) parameters of height ``ly`` on the W0 torus's ``Lx = 320`` (DESIGN
+    §37.4): three pools per hemisphere at the torus's x positions, ``offset`` from the equator with width
+    ``sy`` (``BAND_LAYOUTS`` for 80, 96 and 112), drifting west at 0.009, the seed margin 16 (12 fails the
+    wall gates: DESIGN §37.6) and the wall sponge ``0.05·exp(-d/4)``. ``overrides`` replace any
+    ``WeatherParams`` field (for example ``q_pool`` or ``sponge_w``)."""
+    d_off, d_sy = BAND_LAYOUTS.get(ly, (None, None))
+    offset = d_off if offset is None else offset
+    sy = d_sy if sy is None else sy
+    if offset is None or sy is None:
+        raise ValueError(f"no default pool layout for Ly = {ly:g}: pass offset= and sy=")
+    mid = 0.5 * ly
+    north = [(x, mid + offset, 32.0, sy, 1.0, -0.009, 0.0) for x in (53.333333, 160.0, 266.666667)]
+    south = [(x, mid - offset, 32.0, sy, 1.0, -0.009, 0.0) for x in (0.0, 106.666667, 213.333333)]
+    kw: dict[str, Any] = {
+        "cells_y": round(ly / overrides.get("dx", 2.0)),
+        "channel": True,
+        "wall_margin": 16.0,
+        "sponge_r": 0.05,
+        "sponge_w": 4.0,
+        "pools": tuple(north + south),
+    }
+    kw.update(overrides)
+    return WeatherParams(**kw)
 
 
 # The starting set of the W0 spec (§3.3), where the tuning began: the reference of the model tests, and the
@@ -362,6 +485,10 @@ def _coerce(base: WeatherParams, key: str, val: Any) -> Any:
     if key == "pools":
         return tuple(tuple(float(x) for x in row) for row in val)
     cur = getattr(base, key)
+    if isinstance(cur, bool):
+        if val not in (0, 1, True, False):
+            raise ValueError(f"weather parameter {key} must be a boolean, got {val!r}")
+        return bool(val)
     if isinstance(cur, int):
         if val != int(val):
             raise ValueError(f"weather parameter {key} must be an integer, got {val!r}")
@@ -375,6 +502,8 @@ def check_world(p: WeatherParams, cfg: Config) -> list[str]:
     w, ph = cfg.world, cfg.physics
     if w.dims != 3:
         bad.append("rule 15: the config must be a 3D world (world.dims = 3)")
+    if p.channel:
+        bad.append("rule 15: the channel geometry is a weather-only study; the engine runs the torus")
     if abs(p.L - w.size) > 1e-9:
         bad.append(f"rule 15: weather L = {p.L:g} must equal world.size = {w.size:g}")
     if abs(p.height - w.height) > 1e-9:
@@ -469,7 +598,7 @@ class AgentWind(NamedTuple):
 
 
 def warm_pools(p: WeatherParams, t: mx.array | None = None) -> mx.array:
-    """The warm-pool map ``T_s`` at the cell centres, (N, N) float32 in [0, 1] (spec §3.3).
+    """The warm-pool map ``T_s`` at the cell centres, (ny, N) float32 in [0, 1] (spec §3.3).
 
     ``T_s = clip(Σ amp·exp(−dx²/2σx² − dy²/2σy²), 0, 1)`` with minimum-image distances; ``sx <= 0`` makes a
     zonal band. With every drift ``(vx, vy) = (0, 0)`` the map ignores ``t`` (a static branch); with drift
@@ -478,14 +607,16 @@ def warm_pools(p: WeatherParams, t: mx.array | None = None) -> mx.array:
     """
     n, dx, length = p.n, p.dx, p.L
     xc = (mx.arange(n, dtype=_F32) + 0.5) * dx
+    yc = (mx.arange(p.ny, dtype=_F32) + 0.5) * dx
     drift = any(row[5] != 0.0 or row[6] != 0.0 for row in p.pools)
     tf = t.astype(_F32) if (drift and t is not None) else None
-    total = mx.zeros((n, n), dtype=_F32)
+    total = mx.zeros((p.ny, n), dtype=_F32)
     for x0, y0, sx, sy, amp, vx, vy in p.pools:
         cx, cy = x0, y0
         if tf is not None:
             cx, cy = x0 + vx * tf, y0 + vy * tf
-        dyv = ops.min_image(xc - cy, length)[:, None]
+        # a channel: the plain difference in y (the minimum image is the identity there, rule C2)
+        dyv = ((yc - cy) if p.channel else ops.min_image(yc - cy, length))[:, None]
         e = -(dyv * dyv) / (2.0 * sy * sy)
         if sx > 0:
             dxv = ops.min_image(xc - cx, length)[None, :]
@@ -496,13 +627,13 @@ def warm_pools(p: WeatherParams, t: mx.array | None = None) -> mx.array:
 
 def default_forcing(p: WeatherParams, t: mx.array | None = None) -> WeatherForcing:
     """``T_s`` from the pools and ``qs`` = 1, no momentum forcing."""
-    return WeatherForcing(warm_pools(p, t), mx.ones((p.n, p.n), dtype=_F32))
+    return WeatherForcing(warm_pools(p, t), mx.ones((p.ny, p.n), dtype=_F32))
 
 
 def init_state(p: WeatherParams, fo: WeatherForcing) -> WeatherState:
     """The rest state: ``h = (H1, H2)``, ``u = v = 0``, ``Q = Q_e(T_s)`` capped at ``Q_s``, ``P = Dc = 0``."""
     assert fo.T_s.dtype == _F32 and fo.qs.dtype == _F32, "weather forcing must be float32"
-    shape = (p.n, p.n)
+    shape = (p.ny, p.n)
     zero = mx.zeros(shape, dtype=_F32)
     qe = p.Qs * (p.q_bg + (p.q_pool - p.q_bg) * fo.T_s)
     return WeatherState(
@@ -540,9 +671,27 @@ def _south(a: mx.array) -> mx.array:
 
 
 @functools.cache
-def _rot_lists(n: int, dx: float, dt: float, f0: float, length: float) -> tuple[list[float], ...]:
+def _rot_lists(
+    n: int, dx: float, dt: float, f0: float, length: float, channel: bool = False
+) -> tuple[list[float], ...]:
     """Pair-rotation angle tables as Python lists (float64 math): cos and sin of ``φ_S[j]``, ``φ_N[j]`` per
-    u-row, with ``φ_N[N−1−j] = −φ_S[j]`` and the cosines equal, bitwise, by construction (spec §2.3 S3)."""
+    u-row, with ``φ_N[N−1−j] = −φ_S[j]`` and the cosines equal, bitwise, by construction (spec §2.3 S3).
+
+    ``n`` is the number of rows. A channel (``length`` is still the x period ``Lx``) uses
+    ``f(y) = f0·sin((y - Ly/2)/a)``, ``a = Lx/2π``, at the same quarter-cell placements, and the angle of the
+    two pairs that contain the wall face is 0 (``φ_S[0]`` and ``φ_N[n-1]``): the rotation of the other pairs
+    is exact and disjoint, so skipping a pair keeps the kinetic energy non-increasing. The torus's
+    north-equals-minus-south construction does not hold across a channel (nothing downstream relies on it)."""
+    if channel:
+        a, ly = length / (2.0 * math.pi), n * dx
+        chs = [0.0] + [0.25 * dt * f0 * math.sin(((j + 0.25) * dx - 0.5 * ly) / a) for j in range(1, n)]
+        chn = [0.25 * dt * f0 * math.sin(((j + 0.75) * dx - 0.5 * ly) / a) for j in range(n - 1)] + [0.0]
+        return (
+            [math.cos(x) for x in chs],
+            [math.sin(x) for x in chs],
+            [math.cos(x) for x in chn],
+            [math.sin(x) for x in chn],
+        )
     phi_s = [0.25 * dt * f0 * math.sin(2.0 * math.pi * (j + 0.25) * dx / length) for j in range(n)]
     cs = [math.cos(x) for x in phi_s]
     ss = [math.sin(x) for x in phi_s]
@@ -550,11 +699,39 @@ def _rot_lists(n: int, dx: float, dt: float, f0: float, length: float) -> tuple[
 
 
 def rotation_tables(p: WeatherParams) -> tuple[mx.array, mx.array, mx.array, mx.array]:
-    """``(cos φ_S, sin φ_S, cos φ_N, sin φ_N)``, each (1, N, 1) float32, built inside the traced function."""
+    """``(cos φ_S, sin φ_S, cos φ_N, sin φ_N)``, each (1, ny, 1) float32, built inside the traced function."""
     cs, ss, cn, sn = (
-        mx.array(x, dtype=_F32).reshape(1, p.n, 1) for x in _rot_lists(p.n, p.dx, p.dt, p.f0, p.L)
+        mx.array(x, dtype=_F32).reshape(1, p.ny, 1)
+        for x in _rot_lists(p.ny, p.dx, p.dt, p.f0, p.L, p.channel)
     )
     return cs, ss, cn, sn
+
+
+# --- the channel's walls ------------------------------------------------------------------------------------
+
+
+def _vmask(p: WeatherParams) -> mx.array:
+    """(ny, 1) float32: 0 on the v row that is both walls (``v[ny-1]``, whose roll-wrapped copy is the south
+    face of row 0), 1 elsewhere. A channel multiplies every new ``v`` by it."""
+    return mx.array([1.0] * (p.ny - 1) + [0.0], dtype=_F32).reshape(p.ny, 1)
+
+
+@functools.cache
+def sponge_rates(p: WeatherParams) -> tuple[list[float], list[float]]:
+    """The extra linear friction of the wall sponge on the u rows (centres, ``y = (j + ½)dx``) and on the v
+    rows (north faces, ``y = (j + 1)dx``), per step, by the distance ``d`` to the nearer wall:
+    ``r·exp(-d/w)`` (``"exp"``) or ``r·(1 - min(d/w, 1))²`` (``"quad"``). Python lists (float64)."""
+
+    def rate(y: float) -> float:
+        d = min(y, p.Ly - y)
+        if p.sponge_profile == "quad":
+            return p.sponge_r * (1.0 - min(d / p.sponge_w, 1.0)) ** 2
+        return p.sponge_r * math.exp(-d / p.sponge_w)
+
+    return (
+        [rate((j + 0.5) * p.dx) for j in range(p.ny)],
+        [rate((j + 1.0) * p.dx) for j in range(p.ny)],
+    )
 
 
 # --- S1 advection -------------------------------------------------------------------------------------------
@@ -570,28 +747,50 @@ def _cr_weights(a: mx.array) -> list[mx.array]:
     ]
 
 
-def semi_lagrangian(a: mx.array, ox: mx.array, oy: mx.array, order: int = 1) -> mx.array:
-    """``a`` (K, N, N) sampled at ``(j + oy, i + ox)`` (offsets in cells), periodic, one gather.
+def semi_lagrangian(
+    a: mx.array, ox: mx.array, oy: mx.array, order: int = 1, v_from: int | None = None
+) -> mx.array:
+    """``a`` (K, ny, N) sampled at ``(j + oy, i + ox)`` (offsets in cells), periodic, one gather.
 
     ``order`` 1 is bilinear; 3 is Catmull–Rom over the 4 × 4 points, clamped to the range of the four bilinear
     corners. Offsets, not absolute coordinates, so an x-roll of ``a`` and the offsets commutes bitwise. The
     int32 ``%`` maps −1 to N−1.
+
+    ``v_from`` (a channel, first order only) makes y bounded: the source row is clamped to ``[-1, ny-1]``
+    and the fields ``a[:v_from]`` (u-like, free slip) see a copy of row 0 below the south wall, the fields
+    ``a[v_from:]`` (v-like) an explicit zero row there (the south wall face ``v[-1]`` is not stored, and
+    without that row a backtrace into the south wall would return ``v[0]``, not 0: the discretisation would
+    not be mirror symmetric). The north wall face is the stored zero row ``v[ny-1]``.
     """
-    k, n = a.shape[0], a.shape[-1]
+    k, ny, n = a.shape[0], a.shape[-2], a.shape[-1]
     fx, fy = mx.floor(ox), mx.floor(oy)
     ax, ay = ox - fx, oy - fy
-    jj = mx.arange(n, dtype=_I32).reshape(1, n, 1)
+    jj = mx.arange(ny, dtype=_I32).reshape(1, ny, 1)
     ii = mx.arange(n, dtype=_I32).reshape(1, 1, n)
-    j0 = (jj + fy.astype(_I32)) % n
     i0 = (ii + fx.astype(_I32)) % n
-    koff = (mx.arange(k, dtype=_I32) * (n * n)).reshape(k, 1, 1)
+    if v_from is not None:  # static
+        assert order == 1, "the channel advection is first order"
+        row0 = a[:, :1]
+        below = mx.concatenate([row0[:v_from], mx.zeros_like(row0[v_from:])], axis=0)
+        flat_c = mx.concatenate([below, a], axis=1).reshape(-1)  # row r holds y index r - 1
+        koff_c = (mx.arange(k, dtype=_I32) * ((ny + 1) * n)).reshape(k, 1, 1)
+        ysrc = mx.clip(jj.astype(_F32) + oy, -1.0, ny - 1.0)
+        fyc = mx.floor(ysrc)
+        ayc = ysrc - fyc
+        jc = fyc.astype(_I32) + 1
+        r0, r1 = koff_c + jc * n, koff_c + mx.minimum(jc + 1, ny) * n
+        c0, c1 = i0, (i0 + 1) % n
+        g = mx.take(flat_c, mx.stack([r0 + c0, r0 + c1, r1 + c0, r1 + c1]))
+        return (1.0 - ayc) * ((1.0 - ax) * g[0] + ax * g[1]) + ayc * ((1.0 - ax) * g[2] + ax * g[3])
+    j0 = (jj + fy.astype(_I32)) % ny
+    koff = (mx.arange(k, dtype=_I32) * (ny * n)).reshape(k, 1, 1)
     flat = a.reshape(-1)
     if order == 1:
-        r0, r1 = koff + j0 * n, koff + ((j0 + 1) % n) * n
+        r0, r1 = koff + j0 * n, koff + ((j0 + 1) % ny) * n
         c0, c1 = i0, (i0 + 1) % n
         g = mx.take(flat, mx.stack([r0 + c0, r0 + c1, r1 + c0, r1 + c1]))
         return (1.0 - ay) * ((1.0 - ax) * g[0] + ax * g[1]) + ay * ((1.0 - ax) * g[2] + ax * g[3])
-    rows = [koff + ((j0 + (m - 1)) % n) * n for m in range(4)]
+    rows = [koff + ((j0 + (m - 1)) % ny) * n for m in range(4)]
     cols = [(i0 + (m - 1)) % n for m in range(4)]
     g = mx.take(flat, mx.stack([rows[my] + cols[mxi] for my in range(4) for mxi in range(4)]))
     wx, wy = _cr_weights(ax), _cr_weights(ay)
@@ -618,7 +817,9 @@ def _advect(u: mx.array, v: mx.array, p: WeatherParams) -> tuple[mx.array, mx.ar
     c = -p.dt / p.dx
     ox = mx.concatenate([c * u, c * u_at_v])
     oy = mx.concatenate([c * v_at_u, c * v])
-    out = semi_lagrangian(mx.concatenate([u, v]), ox, oy, p.sl_order)
+    out = semi_lagrangian(mx.concatenate([u, v]), ox, oy, p.sl_order, u.shape[0] if p.channel else None)
+    if p.channel:  # static: the wall face stays exactly 0
+        return out[:2], out[2:] * _vmask(p)
     return out[:2], out[2:]
 
 
@@ -693,6 +894,8 @@ def _pressure_kick(u: mx.array, v: mx.array, h: mx.array, p: WeatherParams) -> t
     m2 = p.g_top * (h[0] + h[1])
     m = mx.stack([m2 + p.g_prime * h[0], m2])
     c = p.dt / p.dx
+    if p.channel:  # static: no pressure force through a wall
+        return u - c * (_east(m) - m), (v - c * (_north(m) - m)) * _vmask(p)
     return u - c * (_east(m) - m), v - c * (_north(m) - m)
 
 
@@ -767,8 +970,13 @@ def _damp(
     # friction (implicit): layer 1 linear + quadratic, layer 2 linear
     lin = mx.array([p.r1, p.r2], dtype=_F32).reshape(2, 1, 1)
     quad = mx.array([p.c_d, 0.0], dtype=_F32).reshape(2, 1, 1)
-    fu = u / (1.0 + dt * (lin + quad * su))
-    fv = v / (1.0 + dt * (lin + quad * sp))
+    lin_u, lin_v = lin, lin
+    if p.channel and p.sponge_r > 0:  # static: the wall sponge, extra friction on both layers
+        ru, rv = sponge_rates(p)
+        lin_u = lin + mx.array(ru, dtype=_F32).reshape(1, p.ny, 1)
+        lin_v = lin + mx.array(rv, dtype=_F32).reshape(1, p.ny, 1)
+    fu = u / (1.0 + dt * (lin_u + quad * su))
+    fv = v / (1.0 + dt * (lin_v + quad * sp))
     if p.nu > 0:  # static: the Laplacian of all four components
         k = p.nu * dt / (dx * dx)
         e1, w1, n1, s1 = _east(fu), _west(fu), _north(fu), _south(fu)
@@ -782,6 +990,8 @@ def _damp(
     # tripwire: scale winds above u_safe back to it (a branch-free min(1, u_safe/s))
     fu = fu * (p.u_safe / mx.maximum(su, p.u_safe))
     fv = fv * (p.u_safe / mx.maximum(sp, p.u_safe))
+    if p.channel:  # static: the divergence damping would otherwise recreate a v on the wall row
+        fv = fv * _vmask(p)
     return fu, fv, n_safety, cour, speed, hyper
 
 
@@ -794,14 +1004,23 @@ def _seed_fields(key: mx.array, p: WeatherParams) -> tuple[mx.array, ...]:
     length = p.L
     on = (mx.random.uniform(key=k_on) < p.seed_rate).astype(_F32)
     xs = length * mx.random.uniform(key=k_x)
-    ys = length * mx.random.uniform(key=k_y)
+    if p.channel:  # static: not within wall_margin of a wall
+        ys = p.wall_margin + (p.Ly - 2.0 * p.wall_margin) * mx.random.uniform(key=k_y)
+    else:
+        ys = length * mx.random.uniform(key=k_y)
     a = 1.0 + p.seed_jitter * (2.0 * mx.random.uniform(key=k_a) - 1.0)
-    sgn = mx.where(mx.sin(2.0 * math.pi * ys / length) >= 0, 1.0, -1.0)  # cyclonic for the hemisphere
+    if p.channel:  # the hemisphere is the sign of f: north is y >= Ly/2
+        sgn = mx.where(ys >= 0.5 * p.Ly, 1.0, -1.0)
+    else:
+        sgn = mx.where(mx.sin(2.0 * math.pi * ys / length) >= 0, 1.0, -1.0)  # cyclonic for the hemisphere
     corner = (mx.arange(p.n, dtype=_F32) + 1.0) * p.dx
+    corner_y = (mx.arange(p.ny, dtype=_F32) + 1.0) * p.dx
     ddx = ops.min_image(corner - xs, length)[None, :]
-    ddy = ops.min_image(corner - ys, length)[:, None]
+    ddy = ((corner_y - ys) if p.channel else ops.min_image(corner_y - ys, length))[:, None]
     amp = -sgn * on * a * p.seed_v * p.seed_sigma * math.sqrt(math.e)
     psi = amp * mx.exp(-(ddx * ddx + ddy * ddy) / (2.0 * p.seed_sigma**2))
+    if p.channel:  # a streamfunction that is 0 on the wall corner row has no normal flow
+        psi = psi * _vmask(p)
     return psi, on, a, xs, ys
 
 
@@ -823,8 +1042,9 @@ def _seed(
     qseed = big_q * 0.0
     if p.seed_q > 0:  # static: a moisture seed, capped by the moist-thickness limiter
         centre = (mx.arange(p.n, dtype=_F32) + 0.5) * p.dx
+        centre_y = (mx.arange(p.ny, dtype=_F32) + 0.5) * p.dx
         cx = ops.min_image(centre - xs, p.L)[None, :]
-        cy = ops.min_image(centre - ys, p.L)[:, None]
+        cy = ((centre_y - ys) if p.channel else ops.min_image(centre_y - ys, p.L))[:, None]
         qseed = on * a * p.seed_q * p.Qs * mx.exp(-(cx * cx + cy * cy) / (2.0 * p.seed_qsigma**2))
         if p.gamma > 0:
             qseed = mx.minimum(qseed, mx.maximum(h1 - p.gamma * big_q - p.m_min, 0.0) / p.gamma)
@@ -944,8 +1164,10 @@ def make_step(p: WeatherParams, *, compile: bool = True, debug: bool = False):
 
 
 def vorticity(ws: WeatherState, p: WeatherParams) -> mx.array:
-    """Layer-1 relative vorticity at the corners ``((i+1)dx, (j+1)dx)``, (N, N)."""
-    return (_east(ws.v1) - ws.v1) / p.dx - (_north(ws.u1) - ws.u1) / p.dx
+    """Layer-1 relative vorticity at the corners ``((i+1)dx, (j+1)dx)``, (ny, N). In a channel the corner row
+    ``ny-1`` is both walls and is set to 0 (free slip)."""
+    z = (_east(ws.v1) - ws.v1) / p.dx - (_north(ws.u1) - ws.u1) / p.dx
+    return z * _vmask(p) if p.channel else z
 
 
 def divergence(ws: WeatherState, p: WeatherParams) -> mx.array:
@@ -991,6 +1213,13 @@ def _zbar(ws: WeatherState) -> mx.array:
     return mx.stack([ws.u1.mean(axis=-1), ws.v1.mean(axis=-1), ws.u2.mean(axis=-1), ws.v2.mean(axis=-1)])
 
 
+def _require_torus(p: WeatherParams, what: str) -> None:
+    """The wind the organisms feel is a torus gather (periodic indices in y); a channel has none until the
+    band reaches the engine (DESIGN §37.8)."""
+    if p.channel:
+        raise NotImplementedError(f"{what} is not implemented for a channel (the band weather is offline)")
+
+
 def wind_fields(ws: WeatherState, p: WeatherParams) -> WindFields:
     """Build the centre fields of the wind formula from a weather state.
 
@@ -998,6 +1227,7 @@ def wind_fields(ws: WeatherState, p: WeatherParams) -> WindFields:
     builds this once per engine step and hands it to ``sample_wind``/``wind_layers`` (``fields=``); it rolls
     the winds, so never build it twice from one state inside one compiled graph.
     """
+    _require_torus(p, "wind_fields")
     u = mx.stack([ws.u1, ws.u2])
     v = mx.stack([ws.v1, ws.v2])
     wu = _west(u)
@@ -1108,6 +1338,7 @@ def sample_wind(
     winds live on (u at ``(j + ½)·dx``, v at ``(j + 1)·dx``), selected by ``z < z_i`` and scaled by ``φ(z)``
     below the interface exactly as ``_wind_formula`` does for the wind itself.
     """
+    _require_torus(p, "sample_wind")
     n = p.n
     wf = wind_fields(ws, p) if fields is None else fields
     cen = mx.stack([ws.h1, ws.h2, wf.d1, wf.d2, wf.jump], axis=-1).reshape(n * n, 5)
@@ -1143,6 +1374,7 @@ def sample_wind_h(
     factor and no vertical wind, clipped to ``||u_h|| <= u_max``. ``u`` is (M, 2); ``n_clip_w`` is 0.
     ``valid`` as in ``sample_wind``. ``eddy=True`` adds ``u_eddy``: the clipped wind minus the zonal mean of
     layer 1 at the agent's latitude (``sample_wind``'s ``eddy``)."""
+    _require_torus(p, "sample_wind_h")
     n = p.n
     ugrid = ws.u1.reshape(n * n, 1)
     vgrid = ws.v1.reshape(n * n, 1)
