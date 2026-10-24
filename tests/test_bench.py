@@ -287,9 +287,10 @@ def test_observers_block_takes_the_records_after_every_eval_and_writes_nothing(
 def test_snapshot_steps_are_timed_apart_from_the_others(
     tiny_cfg: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A snapshot's settle falls on the snapshot step (``take_records`` is inside the timed span): with 50 ms
-    added to every ``take_records`` that settles one, the snapshot steps average over 50 ms and the others do
-    not."""
+    """A snapshot's settle falls on the snapshot step (``take_records`` is inside the timed span): with
+    200 ms added to every ``take_records`` that settles one, the snapshot steps average over 200 ms and at
+    least 150 ms more than the others. Relative, not an absolute bound on the other steps: under four xdist
+    workers on CI's runner a tiny step took 41 ms."""
     from alife.game.observer import Observer
 
     social_every(monkeypatch, 4)
@@ -298,12 +299,13 @@ def test_snapshot_steps_are_timed_apart_from_the_others(
     def slow(self: Observer):
         records = real(self)
         if records:
-            time.sleep(0.05)
+            time.sleep(0.2)
         return records
 
     monkeypatch.setattr(Observer, "take_records", slow)
     ob = bench._bench_observe(tiny_cfg, 4, 1)
-    assert ob["snapshot_step_ms_mean"] > 50 and ob["other_step_ms_mean"] < 40
+    snap, other = ob["snapshot_step_ms_mean"], ob["other_step_ms_mean"]
+    assert snap > 200 and snap - other > 150, (snap, other)
     assert ob["observed_ms_per_step"] > ob["control_ms_per_step"]
 
 
