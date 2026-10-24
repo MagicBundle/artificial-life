@@ -36,6 +36,9 @@ environments = ["sys_platform == 'darwin'", "sys_platform == 'linux'"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+# Only the tmp_path directories of failed tests survive a run: a fast-suite run writes about 38 GB (checkpoints
+# of the 3D and long-run tests), and the default keeps three runs per TMPDIR (DESIGN §22.0, I58).
+tmp_path_retention_policy = "failed"
 markers = [
   "slow: long-running (nightly)",
   "golden: MLX-version-pinned trajectory digest",
