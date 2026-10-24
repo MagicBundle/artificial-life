@@ -222,6 +222,7 @@ package enum Preset: String, CaseIterable, Identifiable {
     case k256 = "256k"
     case tiny3d
     case k64_3d = "64k3d"
+    case mini3d
     package var id: String { rawValue }
 }
 

@@ -20,14 +20,14 @@ struct ViewMenuInputs: Equatable {
     /// The colour mode of the frame in view ("" before there is one).
     var current: String
     var labelsOn: Bool
-    /// The level in view is the planet's (the 1 px points then have a toggle of their own). A step of the level, not a continuous
-    /// camera value: the menu is not rebuilt while the player zooms (DESIGN §36.9).
-    var planetLevel: Bool
-    /// The layers and the look: the agents, bonds, territory (off, borders, tint), the map, the frame, the brightness and the
-    /// organism size are all fields of `WorldDisplay`.
+    /// The layers and the look: the agents, bonds, territory (off, borders, tint), the map, the frame, the brightness, the
+    /// organism size and the trackpad's scroll law are all fields of `WorldDisplay`. No camera-driven value is a field of the inputs
+    /// (not even the level of the view): the menu is not rebuilt while the player zooms, drags or flies (DESIGN §36.9).
     var display: WorldDisplay
     /// A weather map is in view (`WorldModel.mapShown`): the brightness scales the map's colours, so it has nothing to do without one.
     var mapShown: Bool
+    /// The world has a height to tilt over (3D): the standard views are enabled. Constant for a world, so the camera does not change it.
+    var tiltable: Bool
     var chapterPause: Bool
     var pauses: [Pause]
     var skipConfirm: Bool
@@ -40,14 +40,17 @@ struct ViewMenuInputs: Equatable {
         // The archetype and intent modes paint labels: they are tagged like every other presentation of one (DESIGN §33.7).
         let labels = store.play?.labels
         let validity = LabelValidity(labels: labels, environment: store.environment?.environment)
-        colours = (store.header?.colorModes ?? []).map {
+        var modes = (store.header?.colorModes ?? []).map {
             Colour(mode: $0, title: validity.colorModeTitle($0, arch: labels?.arch ?? [], intent: labels?.intent ?? []))
         }
-        current = store.frame.flatMap { store.header?.colorMode(index: $0.colorIndex) } ?? ""
+        // The height colour is computed here from the positions, not a mode of the world; it is listed last in a 3D world.
+        if model.heightColourAvailable { modes.append(Colour(mode: HeightColour.modeName, title: HeightColour.title)) }
+        colours = modes
+        current = model.currentColourMode
         labelsOn = play.labelsOn
-        planetLevel = model.level == .planet
         display = model.display
         mapShown = model.mapShown
+        tiltable = model.hasTiltableView
         chapterPause = store.clock?.chapterPauseArmed ?? true
         pauses = model.pausableClasses.map { Pause(name: $0.name, label: $0.label, on: model.alertPauseOn($0.name)) }
         skipConfirm = model.defaults.bool(forKey: WorldModel.skipConfirmKey)
@@ -66,7 +69,7 @@ struct ViewMenu: View {
         let _ = ViewProbe.note("ViewMenu", for: play)
         let inputs = state.value
         Menu("View") {
-            Picker("Colour", selection: Binding(get: { inputs.current }, set: { play.setColor($0) })) {
+            Picker("Colour", selection: Binding(get: { inputs.current }, set: { model.setColourMode($0) })) {
                 ForEach(inputs.colours, id: \.mode) { Text($0.title).tag($0.mode) }
             }
             Divider()
@@ -75,8 +78,8 @@ struct ViewMenu: View {
             Toggle("Intent labels (stream)", isOn: Binding(get: { inputs.labelsOn }, set: { play.send(.labels($0)) }))
             Divider()
             Toggle("Agents", isOn: layer(\.agents))
-            // The 1 px translucent points exist at the planet level only.
-            if inputs.planetLevel { Toggle("Agent points", isOn: layer(\.agentPoints)) }
+            // The 1 px translucent points are drawn at the planet level (zoomed out) only.
+            Toggle("Agent points (zoomed out)", isOn: layer(\.agentPoints))
             Toggle("Bonds", isOn: layer(\.bonds))
             Picker("Territory", selection: Binding(get: { inputs.display.territory }, set: { model.display.territory = $0 })) {
                 Text("Off").tag(TerritoryMode.off)
@@ -95,6 +98,25 @@ struct ViewMenu: View {
             .disabled(!inputs.mapShown)
             .help(inputs.mapShown ? "How bright the weather map is" : "The brightness is the weather map's: there is none in view")
             Toggle("Frame", isOn: layer(\.frame))
+            // The square map of the whole world with the view's footprint (the `i` key); only a world with a weather map has one.
+            Toggle("Minimap (I)", isOn: layer(\.minimap))
+                .disabled(!inputs.mapShown)
+            // The trackpad's two-finger scroll pans (the Maps convention); on, it zooms as in v1. The mouse wheel and a pinch always zoom.
+            // A Magic Mouse reports precise deltas like a trackpad, so its scroll pans too: this is how it zooms.
+            Toggle("Scroll zooms", isOn: layer(\.scrollZooms))
+                .help("The trackpad's two-finger scroll (and a Magic Mouse's) zooms instead of panning; a wheel mouse and a pinch always zoom")
+            Divider()
+            // The standard views of a 3D world (the keys T O L S, the strip over the map): animated, and static items, so that the menu
+            // does not depend on where the camera is.
+            Menu("View angle") {
+                ForEach(ViewPreset.allCases, id: \.self) { preset in
+                    Button(Self.title(of: preset)) { model.viewPreset(preset) }
+                        .help(preset.help)
+                }
+                Divider()
+                Button(Self.toggle3DTitle) { model.toggle3D() }
+            }
+            .disabled(!inputs.tiltable)
             Divider()
             // The pauses the world takes by itself. The player's choice is kept and sent to every world after its header.
             Menu("Pauses") {
@@ -112,12 +134,19 @@ struct ViewMenu: View {
                 }))
             Toggle("Raw kin events (developer)", isOn: Binding(get: { inputs.debugFilters }, set: { model.debugFilters = $0 }))
             Divider()
-            Button("Reset view") { model.resetCamera() }
+            Button("Home view (H)") { model.home() }
+            Button("Controls…") { model.showHint() }
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
         .disabled(!inputs.live)
     }
+
+    /// The titles of the View angle submenu: a view each, with its key, and the 3D button's. (Static: the menu does not depend on where
+    /// the camera is, so it is not rebuilt while it moves.)
+    nonisolated static func title(of preset: ViewPreset) -> String { "\(preset.title) (\(preset.key.uppercased()))" }
+    nonisolated static let toggle3DTitle = "Tilt on or off (3D button)"
+    nonisolated static var viewAngleTitles: [String] { ViewPreset.allCases.map(title(of:)) + [toggle3DTitle] }
 
     private func layer(_ keyPath: WritableKeyPath<WorldDisplay, Bool>) -> Binding<Bool> {
         Binding(get: { state.value.display[keyPath: keyPath] }, set: { model.display[keyPath: keyPath] = $0 })

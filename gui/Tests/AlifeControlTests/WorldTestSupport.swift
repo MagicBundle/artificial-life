@@ -16,3 +16,22 @@ enum TestFrames {
             uid: uids ?? (0..<n).map { first + Int64($0) }, bonds: [])
     }
 }
+
+extension Camera {
+    /// The pose v1 started a world at, kept for the tests of the shaders that want the whole world centred in view: the 3D world seen
+    /// from above (x right, y up) and the 2D world face on (y down), the whole world in the smaller dimension of a window of `aspect`.
+    /// It is not the Home view (`WorldPose.home`, one world wide): the map's patch does not reach the corners of this one.
+    static func world(for header: StreamHeader, aspect: Float = 1) -> Camera {
+        let size = Float(header.size)
+        var camera = header.dims == 3
+            ? Camera.overview(size: size, height: Float(header.height), aspect: aspect)
+            : Camera.topDown(size: size, aspect: aspect)
+        if header.dims == 3 {
+            let halfY = atan(min(1, aspect) * tan(camera.fovY / 2))
+            camera = Camera(target: SIMD3(size / 2, size / 2, 0), distance: size / 2 * 1.04 / tan(halfY), yaw: .pi / 2, pitch: -Camera.maxPitch,
+                            fovY: camera.fovY, near: 0.1, far: 8 * max(size, Float(header.height)))
+        }
+        camera.scene = Camera.patchScene(center: SIMD2(size / 2, size / 2), size: size, height: Float(header.height))
+        return camera
+    }
+}

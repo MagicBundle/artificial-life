@@ -35,6 +35,7 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
     let clock = Clock()
     model.now = { clock.t }
     model.setFreeRect(CGRect(x: 0, y: 0, width: 900, height: 700))
+    model.reduceMotion = { false }
     model.goHome()
     model.edit {
         $0.distance = 30
@@ -395,7 +396,7 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         #expect(rig.model.display.agents && !rig.model.display.agentPoints, "the key does not change level: instances at the planet too")
     }
 
-    @Test func escapeClearsTheSelectionAndTheFollowAndResetPutsTheCameraHome() async throws {
+    @Test func escapeClearsTheSelectionAndTheFollowAndHomeFliesTheCameraHome() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let rig = try await makeRig(scratch)
@@ -405,9 +406,11 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         #expect(rig.model.selection.isNone && rig.model.followTarget == .none)
         #expect(await sent(rig, "focus off"))
         rig.model.selectStorm(7, fly: true, follow: true)
-        rig.model.perform(.resetCamera)
-        #expect(rig.model.cameraIsHome && rig.model.followTarget == .none && !rig.model.isFlying)
-        #expect(rig.model.selection == .storm(id: 7), "a reset moves the camera, not the selection")
+        rig.model.perform(.home)
+        #expect(rig.model.followTarget == .none && rig.model.isFlying && !rig.model.cameraIsHome, "Home is a flight")
+        settle(rig)
+        #expect(rig.model.cameraIsHome && !rig.model.isFlying)
+        #expect(rig.model.selection == .storm(id: 7), "Home moves the camera, not the selection")
     }
 
     @Test func fFollowsTheSelectionWhateverItIs() async throws {
@@ -587,7 +590,7 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         #expect(WorldLevels.agentLayers(at: dry.model.level, display: dry.model.display) == .instances)
     }
 
-    @Test func zoomingOutAtAnObliquePitchTiltsTheViewBackSoNoEdgeOfTheMapShows() async throws {
+    @Test func zoomingOutAtAnObliquePitchKeepsTheTiltAndHoldsTheEyeOverTheClearBox() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let rig = try await makeRig(scratch)
@@ -597,10 +600,13 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
             $0.pitch = -30 * .pi / 180
             $0.distance = 100 * size
         }
-        let camera = rig.model.camera
-        #expect(camera.pitch < -30 * .pi / 180, "steeper than asked")
-        let seen = try #require(camera.farthestFloorDistance(aspect: rig.model.aspect))
-        #expect(seen <= Camera.tiledReach(size: size))
+        let pose = rig.model.pose
+        #expect(abs(pose.tilt - 60 * .pi / 180) < 1e-4, "the tilt is the player's (A1 eased it back to keep the map's edge out of view)")
+        let eye = pose.distance * sin(pose.tilt)
+        #expect(abs(eye - WorldFog.eyeReach * size) < 1e-3, "the eye is over the clear box, at the edge of its reach: \(eye)")
+        let camera = pose.camera(size: size, height: rig.model.height)
+        let toTarget = SIMD2(camera.target.x - camera.position.x, camera.target.y - camera.position.y)
+        #expect(abs(simd_length(toTarget) - eye) < 1e-3)
     }
 
     @Test func aWorldThatIsStoppedOrReplacedForgetsWhatWasSelectedAtOnce() async throws {
@@ -659,17 +665,26 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         #expect(rig.play.labelsOn)
     }
 
-    @Test func aZoomCancelsTheDistanceOfAFlyButNotItsPlace() async throws {
+    @Test func aZoomStopsAFlightWhereItIsAndKeepsAFollowGoingAtTheNewDistance() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let rig = try await makeRig(scratch)
         defer { rig.play.shutdown() }
         rig.model.selectStorm(7, fly: true, follow: false)
-        #expect(rig.model.flyDistance != nil || rig.model.isFlying)
+        #expect(rig.model.flyDistance != nil && rig.model.isFlying && rig.model.flight != nil)
+        for _ in 0..<5 { rig.clock.t += 1.0 / 60; _ = rig.model.advance() }
+        let held = rig.model.camera.target
         rig.model.zoom(by: 0.5)
-        #expect(rig.model.flyDistance == nil)
+        #expect(rig.model.flyDistance == nil && !rig.model.isFlying && rig.model.flight == nil, "any input stops the flight")
         settle(rig)
-        #expect(abs(rig.model.camera.target.y - 20.25) < 0.2, "the fly still ends at the storm")
+        #expect(simd_length(rig.model.camera.target - held) < 1e-3, "and keeps the pose reached")
+        // A follow is not a path: the zoom changes only the distance the follow glides to.
+        rig.model.selectStorm(7, fly: true, follow: true)
+        #expect(rig.model.isFlying && rig.model.flight == nil)
+        rig.model.zoom(by: 0.5)
+        #expect(rig.model.flyDistance == nil && rig.model.followTarget == .storm(id: 7))
+        settle(rig, frames: 400)
+        #expect(abs(rig.model.camera.target.y - 20.25) < 0.2, "the follow still ends at the storm")
     }
 }
 

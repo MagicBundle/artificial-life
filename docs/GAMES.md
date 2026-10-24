@@ -1177,6 +1177,15 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
       confirmed (the tooltip says that older saves go at the next save); a research run played in place (`--adopt`) keeps Recording on
       from the window, since off would delete the research's checkpoints, and only `alife play RUN --saves newest` turns it off there,
       with a note of what it deletes.
+23. **The test world (the owner, 2026-10-24; DESIGN §37, row I62).** The request: a smaller test world of about 8 to 16 thousand organisms for
+    quick play-tests and lighter streams, launchable from the World launcher. The owner said yes to the go/no-go the same day.
+    - *Built:* the preset `mini3d` (a quarter of `64k3d`'s area at the same density, about 10,500 alive; 4.5 ms an engine step with the weather on
+      against 14.9, a 4.6 MB/s stream against 21.2) and its weather overlay `storm160`; no simulation change. It sits beside the 64k3d planets in the
+      build order as the world for play-tests, not as the game's world: the label-validity gate of N1 and G3 has no verdict row for it.
+    - *Decided by the coordinator under the owner's "yes" (C22, to revisit):* the pool geometry (24 x 16, two per hemisphere, `f0` 0.0165) with a
+      36,000-step spin-up for 160 worlds; a fresh dry 500,000-step source judged at 250,000 steps on kin groups (at least 5 tracked, top share below
+      0.6, at least 3 territory owners), the crop of a 64k3d checkpoint only if it fails; the launcher picks the overlay from the source's size;
+      no launcher entry that makes a world from nothing (a source is a run in `runs/`).
 
 23. **Light saves: a planet's state in about 230 MB, not 687 MB (the owner, 2026-10-24; DESIGN §34.11, row I64).**
     The request: "a lightweight option to resume a planet's achieved state for a later run, without having to record large files on disk."

@@ -95,6 +95,9 @@ package struct PlaySource: Equatable, Sendable, Identifiable {
     package var checkpoints: [Int]
     /// The `world.dims` of its config, nil if unreadable.
     package var dims: Int?
+    /// The `world.size` of its config, nil if unreadable: it picks the weather overlay and the default spin-up of a planet
+    /// (`PlanetSpec.overlay(forWorldSize:)`).
+    package var worldSize: Double? = nil
     /// `weather.enabled` of its config: a source whose weather is on is forked without the overlay and the spin-up.
     package var weatherOn: Bool
     /// Whether it has event chunks, which the exact houses of a planet are rebuilt from (`--houses auto` falls back to
@@ -157,6 +160,7 @@ package enum PlayCatalogScanner {
                 let weather = config?["weather"] as? [String: Any]
                 catalog.sources.append(PlaySource(
                     name: name, checkpoints: steps, dims: world?["dims"] as? Int,
+                    worldSize: (world?["size"] as? NSNumber)?.doubleValue,
                     weatherOn: weather?["enabled"] as? Bool ?? false,
                     hasEvents: hasEntries(url.appendingPathComponent("events"), fileManager: fm),
                     modified: modified))

@@ -14,12 +14,12 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
+import golden_run
 from alife.config import Config, apply_overrides
 from alife.state import (
     LedgerIdx,
     State3,
     init_state,
-    legacy_state_digest_3d,
     n_counters,
     state_digest,
     to_numpy,
@@ -106,12 +106,13 @@ def test_eager_step_matches_compiled(tiny3d_cfg: Config) -> None:
 
 
 @pytest.mark.golden
-def test_golden_3d(base_run) -> None:
+def test_golden_3d(tiny3d_cfg: Config, tmp_path) -> None:
+    """From a child process on an empty kernel cache, as ``test_determinism.test_golden`` (``golden_run``)."""
     if mx.__version__ != GOLDEN_3D["mlx"] or _platform() != GOLDEN_3D["platform"]:
         pytest.skip(f"3D golden digest pinned for MLX {GOLDEN_3D['mlx']} on {GOLDEN_3D['platform']}")
-    s = base_run[0]
-    assert int(to_numpy(s.ledger_cum)[LedgerIdx.HEAT_BUOYANCY]) > 0
-    digest = legacy_state_digest_3d(s)
+    got = golden_run.run_cold("3d", tiny3d_cfg, tmp_path / "cold")
+    assert got["libs_at_start"] == 0
+    assert got["buoyancy"] > 0  # the golden pin is not vacuous
     if not GOLDEN_3D["digest"]:
-        pytest.skip(f"3D golden digest not pinned yet: record {digest} in GOLDEN_3D (DESIGN §27.8)")
-    assert digest == GOLDEN_3D["digest"]
+        pytest.skip(f"3D golden digest not pinned yet: record {got['digest']} in GOLDEN_3D (DESIGN §27.8)")
+    assert got["digest"] == GOLDEN_3D["digest"]

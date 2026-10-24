@@ -122,7 +122,7 @@ import simd
 
     @Test func aStormBehindTheEyeIsLeftOut() {
         var camera = Camera(target: SIMD3(160, 160, 0), distance: 10, yaw: .pi / 2, pitch: 0)
-        camera.scene = Camera.tiledScene(size: L, height: 0)
+        camera.scene = Camera.patchScene(center: SIMD2(camera.target.x, camera.target.y), size: L, height: 0)
         let p = WorldProjector(camera: camera, size: L, view: view)
         // Looking along +y from the south: a storm directly south of the eye is behind it (nearest image of 100 is 100).
         let behind = PlayStorms(detectStep: 0, storms: [storm(id: 1, x: 160, y: 140)], ended: [])

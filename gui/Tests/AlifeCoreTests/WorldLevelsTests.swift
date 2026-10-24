@@ -12,13 +12,13 @@ import Testing
     }
 
     @Test(arguments: [Float(1), Float(16) / 9, Float(9) / 16, Float(2.4)])
-    func theHomePoseOfThePlanetIsAtThePlanetLevel(aspect: Float) {
-        let camera = Camera.planet(size: L, aspect: aspect)
-        #expect(level(camera.distance, aspect: aspect) == .planet)
+    func theHomeViewIsAtThePlanetLevel(aspect: Float) {
+        let home = WorldLevels.maxDistance(size: L, fovY: fov, aspect: aspect)
+        #expect(level(home, aspect: aspect) == .planet)
     }
 
     @Test func zoomingInPassesThroughTheRegionToTheOrganismLevel() {
-        let home = Camera.planet(size: L).distance
+        let home = WorldLevels.maxDistance(size: L, fovY: fov, aspect: 1)
         var seen: [WorldLevel] = []
         var d = home
         while d > WorldLevels.minDistance {
@@ -30,15 +30,17 @@ import Testing
     }
 
     @Test func theBoundariesAreThoseOfTheSpec() {
-        // planet: the visible half extent at the floor is at least half a world; organism: nearer than 0.12 L.
+        // planet: the visible half extent at the floor is at least 0.45 of a world (the Home view is 0.49); organism: nearer than 0.12 L.
         let tan = Float(tan(fov / 2))
-        #expect(level(0.5 * L / tan + 0.01) == .planet)
-        #expect(level(0.5 * L / tan - 0.01) == .region)
+        let half = WorldLevels.planetHalfExtent
+        #expect(half == 0.45)
+        #expect(level(half * L / tan + 0.01) == .planet)
+        #expect(level(half * L / tan - 0.01) == .region)
         #expect(level(0.12 * L + 0.01) == .region)
         #expect(level(0.12 * L - 0.01) == .organism)
-        // A wide window reaches half a world sooner: the half extent is d·tan(fov/2)·max(1, aspect).
-        #expect(level(0.5 * L / tan / 2 + 1, aspect: 2) == .planet)
-        #expect(level(0.5 * L / tan / 2 + 1, aspect: 1) == .region)
+        // A wide window reaches it sooner: the half extent is d·tan(fov/2)·max(1, aspect).
+        #expect(level(half * L / tan / 2 + 1, aspect: 2) == .planet)
+        #expect(level(half * L / tan / 2 + 1, aspect: 1) == .region)
     }
 
     @Test func theHalfExtentGrowsWithTheDistanceAndTheWidth() {
@@ -108,30 +110,24 @@ import Testing
         #expect(WorldDisplay.exposurePresets == [0.8, 1.0, 1.25, 1.5])
     }
 
-    @Test func theFarthestViewStaysWithinOneWorldOfTheTarget() {
-        for aspect: Float in [1, 16.0 / 9, 9.0 / 16] {
+    @Test func theFarthestViewStaysWithinOneWorldOfTheTargetForEveryWindowShape() {
+        for aspect: Float in [1, 16.0 / 9, 9.0 / 16, 2.4] {
             let d = WorldLevels.maxDistance(size: L, fovY: fov, aspect: aspect)
-            #expect(abs(WorldLevels.halfExtent(distance: d, fovY: fov, aspect: aspect) - L) < 1e-2 * L)
-            #expect(d > Camera.planet(size: L, aspect: aspect).distance, "the home pose can be zoomed out from")
+            // Straight down at heading 0 the larger half extent is 0.49 L (a hair under the patch's edge).
+            let wide = WorldLevels.halfExtent(distance: d, fovY: fov, aspect: aspect)
+            let tall = d * tan(fov / 2)
+            #expect(abs(max(wide, tall) - WorldPose.reach * L) < 1e-3 * L, "aspect \(aspect): \(wide) \(tall)")
         }
     }
 
     @Test func aWorldWithoutAMapHasNoPlanetLevel() {
         // The planet level protects the weather map from the organisms; a 2D or dry world has no map to protect.
-        let far = Camera.planet(size: L).distance
+        let far = WorldLevels.maxDistance(size: L, fovY: fov, aspect: 1)
         #expect(level(far) == .planet)
         #expect(WorldLevels.level(distance: far, fovY: fov, aspect: 1, size: L, mapShown: false) == .region)
         let near = 0.1 * L
         #expect(WorldLevels.level(distance: near, fovY: fov, aspect: 1, size: L, mapShown: false) == .organism)
         #expect(WorldLevels.agentLayers(at: WorldLevels.level(distance: far, fovY: fov, aspect: 1, size: L, mapShown: false),
                                         display: WorldDisplay()) == .instances)
-    }
-
-    @Test(arguments: [Float(2.4), Float(1.923), Float(0.4)])
-    func theLimitIsNeverNearerThanTheHomePoseOfTheWindow(aspect: Float) {
-        let home = Camera.planet(size: L, aspect: aspect).distance
-        let limit = WorldLevels.maxDistance(size: L, fovY: fov, aspect: aspect, home: home)
-        #expect(limit >= home, "a wide or tall window starts farther out than the one-world rule")
-        #expect(WorldLevels.maxDistance(size: L, fovY: fov, aspect: aspect) == WorldLevels.maxDistance(size: L, fovY: fov, aspect: aspect, home: 0))
     }
 }

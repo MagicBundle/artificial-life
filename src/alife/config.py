@@ -358,11 +358,11 @@ class Dims:
     wn: int  # weather grid side (weather.cells): the packed State.wx is (N_WX, wn, wn)
 
 
-PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d", "64k3d")
+PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mini3d")
 OVERLAYS: tuple[str, ...] = ("fast",)  # compose with every preset
 # Overlays that need a particular world (DESIGN §30): validated against whatever preset they land on, and not
 # part of ``OVERLAYS`` (which means "composes with every preset").
-WORLD_OVERLAYS: tuple[str, ...] = ("storm",)
+WORLD_OVERLAYS: tuple[str, ...] = ("storm", "storm160")
 ALL_OVERLAYS: tuple[str, ...] = OVERLAYS + WORLD_OVERLAYS  # what the loaders and the CLI accept
 DEFAULT_PRESET: Final = "64k"
 

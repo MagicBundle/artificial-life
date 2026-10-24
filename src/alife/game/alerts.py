@@ -218,6 +218,7 @@ TEXTS: Final = {
     ),
     "pop_surge": "The population rose from {low} to {alive} in {steps} steps.",
     "storm_named": "Storm {name} reached named strength at step {step}.",
+    # "f0" is the reference 0.025 in every world (zeta is in units of streamrec.F0, DESIGN §37.4).
     "storm_strong": "Storm {name} is at {zeta} f0 at step {step}.",
     "storm_ended": "{label} dissolved after {age} steps.",
     "storm_toll": "{n} organisms died in storms in the latest {row} steps, against a median of {median}.",

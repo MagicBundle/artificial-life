@@ -414,7 +414,14 @@ def test_the_world_keys_are_the_documented_ones() -> None:
         "f": "followSelection",
         "[": "slower",
         "]": "faster",
-        "r": "resetCamera",
+        "r": "home",
+        "h": "home",
+        "n": "northUp",
+        "i": "toggleMinimap",
+        "t": "viewPreset",
+        "o": "viewPreset",
+        "l": "viewPreset",
+        "s": "viewPreset",
         "\\u{1B}": "escape",
         "g": "continueRun",
         "p": "showPowers",
@@ -467,8 +474,14 @@ def test_the_play_launch_flags_are_flags_of_alife_play() -> None:
     choices = {s: a.choices for a in parser._actions for s in a.option_strings if a.choices}  # type: ignore[attr-defined]
     assert swift_enum_values(text, "PlayHouses") == set(choices["--houses"])
     assert swift_enum_values(text, "PlayDirector") == set(choices["--director"])
-    assert "storm" in choices["--overlay"]
-    assert re.search(r'"--overlay", "storm"', text)
+    assert {"storm", "storm160"} <= set(choices["--overlay"])
+    # The launcher passes the overlay of the source's size (DESIGN §37.2): both names are engine overlays, and
+    # `miniWorldSize` is the world.size of the preset that `storm160` is made for.
+    assert '"--overlay", PlanetSpec.overlay(forWorldSize: p.sourceWorldSize)' in text
+    assert re.search(r'size == miniWorldSize \? "storm160" : "storm"', text)
+    assert re.search(r"miniWorldSize = 160\.0", text)
+    assert config.load_config(preset="mini3d").world.size == 160.0
+    assert config.WORLD_OVERLAYS == ("storm", "storm160")
 
 
 def test_the_play_launch_set_keys_are_config_fields() -> None:
@@ -563,9 +576,10 @@ def test_the_world_palettes_are_the_engines() -> None:
 
 
 def test_the_world_levels_match_the_spec_constants() -> None:
-    """The thresholds of DESIGN §33.4.7 (half a world, 0.12 L, 3 px) are `WorldLevels.swift`'s."""
+    """The thresholds of DESIGN §33.4.7 (0.12 L, 3 px) and §36.5 (the planet level from 0.45 of a world:
+    the view never shows more than 0.49 L) are `WorldLevels.swift`'s."""
     levels = (CORE / "WorldLevels.swift").read_text(encoding="utf-8")
-    assert re.search(r"planetHalfExtent: Float = 0\.5\b", levels)
+    assert re.search(r"planetHalfExtent: Float = 0\.45\b", levels)
     assert re.search(r"organismDistance: Float = 0\.12\b", levels)
     assert re.search(r"flatDiscPixels: Float = 3\b", levels)
 

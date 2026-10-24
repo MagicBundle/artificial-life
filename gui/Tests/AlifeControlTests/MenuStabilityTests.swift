@@ -198,11 +198,35 @@ import Testing
         #expect(counts["ViewMenu"] == 0, "the menu was evaluated again \(counts["ViewMenu"]) times while the camera moved")
         #expect(model.viewMenu.changes == changes)
 
+        // Nor does anything else the camera does, the level of the view included (v2 makes it a function of the continuous distance, and
+        // the menu's "Agent points" no longer depends on it): a zoom across the levels, a grab, a scroll that pans, a turn, north up, a
+        // flight to Home and the clock of the animation.
+        counts.reset()
+        model.goHome()
+        var levels: [WorldLevel] = [model.level]
+        for _ in 0..<60 {
+            model.zoom(by: 0.93, at: CGPoint(x: 300, y: 200))
+            if levels.last != model.level { levels.append(model.level) }
+        }
+        #expect(levels.suffix(2) == [.region, .organism], "the zoom crossed the levels (this fixture has no weather map: no planet level): \(levels)")
+        model.beginGrab(at: CGPoint(x: 400, y: 300))
+        for i in 0..<20 { model.grab(to: CGPoint(x: 400 + 5 * Double(i), y: 300 - 3 * Double(i))) }
+        model.endGrab()
+        model.scroll(ScrollEvent(dx: 5, dy: 9, precise: true, phase: .changed, time: 1), at: CGPoint(x: 100, y: 100))
+        model.drag(dx: 30, dy: -10, orbit: true)
+        model.northUp()
+        model.home()
+        for _ in 0..<200 where !model.advanceCamera(dt: 1.0 / 60) { break }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(counts["ViewMenu"] == 0, "the menu was evaluated again \(counts["ViewMenu"]) times while the camera moved, flew and crossed levels")
+        #expect(model.viewMenu.changes == changes)
+
         // Brightness, Territory and Organism size are fields of the inputs (through the display): one evaluation each.
         let edits: [(String, () -> Void, () -> Bool)] = [
             ("Brightness", { model.display.exposure = 1.25 }, { model.viewMenu.value.display.exposure == 1.25 }),
             ("Territory", { model.display.territory = .borders }, { model.viewMenu.value.display.territory == .borders }),
             ("Organism size", { model.display.sizeMode = .physical }, { model.viewMenu.value.display.sizeMode == .physical }),
+            ("Scroll zooms", { model.display.scrollZooms = true }, { model.viewMenu.value.display.scrollZooms }),
             // The layer is a field of the inputs and so is whether a map is in view (it disables Brightness, A0 review finding 8).
             ("Weather map", { model.display.map = false },
              { !model.viewMenu.value.display.map && model.viewMenu.value.mapShown == model.mapShown }),
@@ -214,6 +238,113 @@ import Testing
             try await Task.sleep(for: .milliseconds(200))
             #expect(counts["ViewMenu"] == 1, "\(name): \(counts["ViewMenu"]) evaluations")
         }
+        withExtendedLifetime(view) {}
+    }
+
+    @Test func theControlsOverTheMapNeverRebuildTheMenuAndTheMinimapAndTheHeightColourAreFieldsOfIt() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (play, model) = try await rig(scratch)
+        defer { play.shutdown(); ViewProbe.onEvaluate = nil }
+        let counts = counting(play)
+        let view = dock(play, model)
+        try await Task.sleep(for: .milliseconds(200))
+        try await frames(play, 3)
+        model.setFreeRect(CGRect(x: 0, y: 0, width: 900, height: 700))
+        model.goHome()
+        model.drawableResized(CGSize(width: 1800, height: 1400))
+        try await Task.sleep(for: .milliseconds(200))
+
+        // The pointer over the map and over each control, a press of each, the zoom buttons easing, the hint shown and taken away, a wheel
+        // and a pinch over the minimap's place: the pointer, the controls and the hint are not inputs of the menu.
+        counts.reset()
+        let changes = model.viewMenu.changes
+        let hud = model.hud
+        for p in [CGPoint(x: 300, y: 300), CGPoint(x: 310, y: 305)] + hud.rects.map({ CGPoint(x: $0.rect.midX, y: $0.rect.midY) }) { model.hover(at: p) }
+        model.hover(at: nil)
+        model.showHint()
+        model.dismissHint()
+        for (target, rect) in hud.rects {
+            model.hudPress(target)
+            model.hudRelease(target, at: CGPoint(x: rect.midX, y: rect.midY), clicks: 1, dragged: false)
+        }
+        model.zoomStep(closer: true)
+        model.scroll(ScrollEvent(dy: 1, precise: false, time: 1), at: CGPoint(x: 800, y: 600))
+        model.magnify(0.1, at: CGPoint(x: 800, y: 600))
+        for _ in 0..<60 where !model.advanceCamera(dt: 1.0 / 60) { break }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(counts["ViewMenu"] == 0, "the menu was evaluated again \(counts["ViewMenu"]) times by the pointer, the controls and the hint")
+        #expect(model.viewMenu.changes == changes)
+
+        // The minimap and the height colour are fields of the inputs: one evaluation each.
+        let edits: [(String, () -> Void, () -> Bool)] = [
+            ("Minimap", { model.display.minimap = false }, { !model.viewMenu.value.display.minimap }),
+            ("Height colour", { model.setColourMode(HeightColour.modeName) },
+             { model.viewMenu.value.current == HeightColour.modeName && model.viewMenu.value.display.heightColour }),
+        ]
+        for (name, change, shown) in edits {
+            counts.reset()
+            change()
+            #expect(await eventually { shown() }, "\(name) reaches the menu's inputs")
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(counts["ViewMenu"] == 1, "\(name): \(counts["ViewMenu"]) evaluations")
+        }
+        #expect(model.viewMenu.value.colours.last?.mode == HeightColour.modeName)
+        withExtendedLifetime(view) {}
+    }
+
+    @Test func theCameraControlsNeverRebuildTheViewMenuAndItsViewAngleItemsAreTheStandardViews() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (play, model) = try await rig(scratch)
+        defer { play.shutdown(); ViewProbe.onEvaluate = nil }
+        let counts = counting(play)
+        let view = dock(play, model)
+        try await Task.sleep(for: .milliseconds(200))
+        try await frames(play, 3)
+        model.setFreeRect(CGRect(x: 0, y: 0, width: 900, height: 700))
+        model.reduceMotion = { false }
+        model.goHome()
+        model.drawableResized(CGSize(width: 1800, height: 1400))
+        try await Task.sleep(for: .milliseconds(200))
+        // The items are the four standard views, each with its key, and the 3D button; the submenu is on in a 3D world.
+        #expect(ViewMenu.viewAngleTitles == ["Top (T)", "Oblique (O)", "Low (L)", "Side (S)", "Tilt on or off (3D button)"])
+        #expect(model.viewMenu.value.tiltable)
+
+        // Every way of changing the angle: the keys' actions, the strip, the 3D button, the handle and the compass dial, the eases, and the
+        // readouts they change. The camera is not an input of the menu, and neither is its angle.
+        counts.reset()
+        let changes = model.viewMenu.changes
+        let hud = model.hud
+        for preset in ViewPreset.allCases + ViewPreset.allCases.reversed() {
+            model.perform(.viewPreset(preset))
+            for _ in 0..<40 where !model.advanceCamera(dt: 1.0 / 60) { break }
+        }
+        for entry in hud.presets {
+            model.hudPress(.preset(entry.preset), at: CGPoint(x: entry.rect.midX, y: entry.rect.midY))
+            model.hudRelease(.preset(entry.preset), at: CGPoint(x: entry.rect.midX, y: entry.rect.midY), clicks: 1, dragged: false)
+        }
+        for target in [HUDTarget.toggle3D, .toggle3D] {
+            let rect = try #require(hud.rects.first { $0.target == target }?.rect)
+            model.hudPress(target, at: CGPoint(x: rect.midX, y: rect.midY))
+            model.hudRelease(target, at: CGPoint(x: rect.midX, y: rect.midY), clicks: 1, dragged: false)
+            for _ in 0..<40 where !model.advanceCamera(dt: 1.0 / 60) { break }
+        }
+        let track = try #require(hud.tiltTrack), compass = try #require(hud.compass)
+        model.hudPress(.tilt, at: CGPoint(x: track.midX, y: track.maxY - 3))
+        for y in stride(from: track.maxY - 3, through: track.minY, by: -8) { model.hudDrag(.tilt, to: CGPoint(x: track.midX, y: y)) }
+        model.hudRelease(.tilt, at: CGPoint(x: track.midX, y: track.minY), clicks: 1, dragged: true)
+        model.hudPress(.compass, at: CGPoint(x: compass.midX, y: compass.minY + 2))
+        for x in stride(from: compass.midX, through: compass.maxX, by: 5) { model.hudDrag(.compass, to: CGPoint(x: x, y: compass.midY)) }
+        model.hudRelease(.compass, at: CGPoint(x: compass.maxX, y: compass.midY), clicks: 1, dragged: true)
+        for point in [CGPoint(x: track.midX, y: track.midY), CGPoint(x: compass.midX, y: compass.midY)] + hud.presets.map({ CGPoint(x: $0.rect.midX, y: $0.rect.midY) }) {
+            model.hover(at: point)
+        }
+        model.editPose { $0.tilt = .pi / 2 }
+        model.drag(dx: 0, dy: 30, orbit: true)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(counts["ViewMenu"] == 0, "the menu was evaluated again \(counts["ViewMenu"]) times by the camera controls")
+        #expect(model.viewMenu.changes == changes)
         withExtendedLifetime(view) {}
     }
 

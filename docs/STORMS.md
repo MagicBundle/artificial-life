@@ -461,6 +461,13 @@ owner's delegation (to revisit). Items 6 and 8 are open; they are needed by W2 (
    (coordinator's choice under the owner's delegation of 2026-10-19, to revisit). *Built in G3a:* 14.4 steps/s is the design rate (1x), with
    0.25x to 2x and `max` on top (DESIGN §33.5.1; the measured fast-forward is 3.68x, 53.0 steps/s, on the Mac day, `docs/RESULTS_G3A.md` §4).
 9. **Weather grid.** *Decided 2026-10-19:* 160 × 160 at 2 units. The alternative was the 80-cell field lattice.
+10. **The mini world's pools (the owner's "yes", 2026-10-24; coordinator's choice C22; DESIGN §37.2).** In a 160-wide world a hemisphere is 160 wide, so
+    the 32 × 16 pools of the 320 world (spaced 3.3 sigma) leave room for one per hemisphere; two overlap into a band that fragments (median lifetime
+    225 to 650 steps). The overlay `storm160` uses pools of 24 × 16, two per hemisphere spaced 80 (3.3 sigma), a weather grid of 80 cells (dx 2), `f0` 0.0165
+    (`f = f0 sin(2 pi y / L)` has twice the gradient at 160, so the pools get 0.0163, the Coriolis parameter of the 320 world's pools) and `seed_rate` 0.005
+    (the same disturbances per unit area). Lifetime is stated in three readings (the criterion 5.1 k to 19.8 k steps, plain Kaplan-Meier 15 to 22 k, at
+    equal absolute strength 20 k to 34 k); two storms per hemisphere instead of three; the layer-2 jet fills the hemisphere (2.6 times the zonal kinetic energy).
+    The live tracker's vorticity unit is the reference f0 0.025 in every world.
 
 ## 10. Sources
 
