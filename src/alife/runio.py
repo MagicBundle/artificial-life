@@ -93,6 +93,7 @@ DEATH_COLUMNS: Final[Mapping[str, Any]] = {
 }
 
 _CKPT_RE: Final = re.compile(r"^step_(\d{10})\.safetensors(?:\.zst)?$")
+SAVE_MODE_NAMES: Final = ("all", "newest", "single")  # DESIGN §34.10, §34.11 (streamrec.SAVE_MODES)
 _EVENT_RE: Final = re.compile(r"^(births|deaths)_(\d{10})_(\d{10})\.npz$")
 _OBSERVER_RE: Final = re.compile(r"^step_(\d{10})\.npz$")
 PLAY_STATE_NAMES: Final = (
@@ -737,6 +738,7 @@ class RunDir:
 
     path: Path
     keep_newest: bool
+    drop_origin: bool
     compress: bool
     """Whether a save is written compressed (DESIGN §34.11): play worlds, set by the play pacer. A runtime
     setting, not
@@ -750,9 +752,24 @@ class RunDir:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.keep_newest = False
+        self.drop_origin = False
+        self.origin_link: tuple[int, Path] | None = None
         self.compress = False
         self._save_worker: threading.Thread | None = None
         self._save_error: BaseException | None = None
+
+    def set_save_mode(self, mode: str) -> None:
+        """The save mode (DESIGN §34.10, §34.11): ``all`` keeps ``run.keep_checkpoints`` saves and the origin;
+        ``newest`` keeps the newest save and the origin; ``single`` keeps only the newest save (the origin and
+        step 0 go too). It takes effect at the next save: nothing is deleted here."""
+        if mode not in SAVE_MODE_NAMES:
+            raise ValueError(f"the save mode is one of {SAVE_MODE_NAMES}, got {mode!r}")
+        self.keep_newest = mode != "all"
+        self.drop_origin = mode == "single"
+
+    @property
+    def save_mode(self) -> str:
+        return "single" if self.drop_origin else ("newest" if self.keep_newest else "all")
 
     @property
     def adopted(self) -> bool:
@@ -922,12 +939,15 @@ class RunDir:
     def save_checkpoint(
         self, s: State, cfg: Config, *, observers: Mapping[str, np.ndarray] | None = None
     ) -> Path:
-        """sidecar + write_state_file + LATEST + prune (``keep_newest``: to the newest save and the origin).
+        """sidecar + the state file + LATEST + prune (the save mode decides what the prune keeps).
 
         ``observers`` (the arrays of ``Observer.sidecar()``) is written to ``observers/step_<t>.npz`` before
         the state file, so every complete checkpoint of an observing run has its sidecar (a crash in between
         leaves an orphan sidecar, which pruning removes). Without ``observers`` a sidecar of this step is
         removed, so a checkpoint and its sidecar always come from the same save (§28.6).
+
+        ``origin_link`` (DESIGN §34.11), when it names this step, makes the state file a link to the source
+        save instead of a write: the caller has checked that the state is the source's, byte for byte.
         """
         self.wait_saves()  # a compressed save in flight finishes first (its prune must not meet this one)
         step = int(to_numpy(s.step))
@@ -938,27 +958,57 @@ class RunDir:
             _write_npz(self.observer_path(step), observers)
         else:
             self.observer_path(step).unlink(missing_ok=True)
-        if self.compress:
+        link: Path | None = None
+        if self.origin_link is not None and self.origin_link[0] == step:
+            link = self.origin_link[1]
+            self.origin_link = None
+        if link is not None:
+            path = path.with_name(path.name + (ZST_SUFFIX if is_compressed(link) else ""))
+            self._link_state(path, link)
+        elif self.compress:
             self._save_compressed(path, s, cfg, step)
             return path.with_name(path.name + ZST_SUFFIX)
-        write_state_file(path, s, cfg)
+        else:
+            write_state_file(path, s, cfg)
         _atomic_write_text(self.checkpoint_dir / LATEST_FILE, path.name + "\n")
-        keep = cfg.run.keep_checkpoints
+        keep, origin = cfg.run.keep_checkpoints, True
         if self.keep_newest:
-            # The newest-only mode deletes the one older save, so the new one must be whole first: on the
-            # drive, not only in its cache, and readable back (its header names the step, the file reaches its
-            # last tensor). Failing the check, the prune is the ``all`` one, which keeps the older saves.
+            # The newest-only modes delete the older saves, so the new one must be whole first: on the drive,
+            # not only in its cache, and readable back (its header names the step, the file reaches its last
+            # tensor). Failing the check, the prune is the ``all`` one, which keeps the older saves.
             _full_sync(path)
             if state_file_is_complete(path, step):
                 keep = 1
+                origin = not self.drop_origin
             else:
                 print(
                     f"save: {path} does not read back whole; the older saves are kept",
                     file=sys.stderr,
                     flush=True,
                 )
-        self._prune(keep)
+        self._prune(keep, origin=origin)
         return path
+
+    def _link_state(self, dst: Path, src: Path) -> None:
+        """Makes ``dst``, a state file name of this run, the save ``src`` of another run (the same bytes): a
+        hard link when the volume allows it (``os.link``), else a copy. Both are made under a temporary name
+        and moved
+        with ``os.replace``, so nothing is written into ``src`` and a kill leaves no file under ``dst``'s name
+        (DESIGN §34.11)."""
+        tmp = _tmp_path(dst)
+        tmp.unlink(missing_ok=True)
+        try:
+            try:
+                os.link(src, tmp)
+            except OSError:
+                shutil.copyfile(src, tmp)
+                with open(tmp, "rb+") as f:
+                    os.fsync(f.fileno())
+            os.replace(tmp, dst)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        _fsync_dir(dst.parent)
 
     def _save_compressed(self, path: Path, s: State, cfg: Config, step: int) -> None:
         """A compressed save (DESIGN §34.11). The plain bytes go to ``<name>.tmp`` here, as a plain save's
@@ -973,6 +1023,7 @@ class RunDir:
         _write_plain_tmp(tmp, s, cfg)
         zst = path.with_name(path.name + ZST_SUFFIX)
         keep_newest = self.keep_newest
+        drop_origin = self.drop_origin
         keep = cfg.run.keep_checkpoints
 
         def work() -> None:
@@ -987,7 +1038,7 @@ class RunDir:
                     )
                 _atomic_write_text(self.checkpoint_dir / LATEST_FILE, zst.name + "\n")
                 tmp.unlink(missing_ok=True)
-                self._prune_saves(1 if newest_only else keep)
+                self._prune_saves(1 if newest_only else keep, origin=not (drop_origin and newest_only))
             except Exception as e:  # raised by wait_saves in the thread that saves
                 tmp.unlink(missing_ok=True)
                 self._save_error = e
@@ -1015,10 +1066,11 @@ class RunDir:
         except (OSError, ValueError, AttributeError):
             return 0
 
-    def _prune(self, keep: int) -> None:
+    def _prune(self, keep: int, *, origin: bool = True) -> None:
         """Keep the newest ``keep`` checkpoints, step 0, the fork's origin checkpoint (``meta.json``
         ``start_step``) and whatever ``LATEST`` names; an observer sidecar lives exactly as long as its
-        checkpoint.
+        checkpoint. ``origin`` False (the single save mode, DESIGN §34.11) keeps neither step 0 nor the
+        origin.
 
         The origin is what a fork's phylogeny, activity analysis and recap builders read for their founders
         (``checkpoint_at(start_step)``); without the protection the third save of a fork deletes it (§18).
@@ -1030,7 +1082,7 @@ class RunDir:
         now, so it is removed too. Other ``*.tmp`` files (a houses file an analysis may be writing) are not.
         """
         self._remove_debris()
-        self._prune_saves(keep)
+        self._prune_saves(keep, origin=origin)
 
     def _remove_debris(self) -> None:
         """Removes the temporary files of saves (see ``_prune``); only the one process that saves writes
@@ -1041,16 +1093,21 @@ class RunDir:
                     if _SAVE_TMP_RE.match(tmp.name):
                         tmp.unlink(missing_ok=True)
 
-    def _prune_saves(self, keep: int) -> None:
+    def _prune_saves(self, keep: int, *, origin: bool = True) -> None:
         """What ``_prune`` keeps and deletes, without the debris removal (the worker of a compressed save
-        calls it)."""
-        ckpts = self.checkpoints()
+        calls
+        it). Keeps the newest ``keep`` steps, ``LATEST`` and, with ``origin``, step 0 and the origin. Deletes
+        every other save file of either name (a step may have a plain and a compressed file while a save is
+        made), then the sidecars and play-state files of the steps that are gone."""
         latest = self.latest_checkpoint()
-        origin = self._start_step()
-        protected = {p for _, p in ckpts[-keep:]} | {p for st, p in ckpts if st in (0, origin)}
-        for _, p in ckpts:
-            if p not in protected and p != latest:
-                p.unlink(missing_ok=True)
+        ckpts = self.checkpoints()
+        starts = {0, self._start_step()} if origin else set()
+        kept = {st for st, _ in ckpts[-keep:]} | {st for st, _ in ckpts if st in starts}
+        if self.checkpoint_dir.is_dir():
+            for p in list(self.checkpoint_dir.iterdir()):
+                m = _CKPT_RE.match(p.name)
+                if m and p.is_file() and p != latest and int(m.group(1)) not in kept:
+                    p.unlink(missing_ok=True)
         remaining = {st for st, _ in self.checkpoints()}
         for st, p in self.observer_files():
             if st not in remaining:
@@ -1060,7 +1117,6 @@ class RunDir:
                 if st not in remaining:
                     p.unlink(missing_ok=True)
 
-    # observer sidecars (§28.6)
     def observer_path(self, step: int) -> Path:
         return self.observers_dir / f"step_{step:010d}.npz"
 
@@ -1272,7 +1328,8 @@ class RunDir:
             path = self.checkpoint_dir / name
             if path.is_file():
                 return path
-        raise FileNotFoundError(f"{self.path}: no checkpoint at step {step}")
+        kept = [st for st, _ in self.checkpoints()]
+        raise FileNotFoundError(f"{self.path}: no checkpoint at step {step} (kept: {kept})")
 
     # logs
     def append_metrics(self, rows: Iterable[Mapping[str, Any]]) -> None:

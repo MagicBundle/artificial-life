@@ -41,8 +41,9 @@ package enum AutopauseSetting: Equatable, Sendable {
 
 /// How many saves a world keeps (DESIGN §34.10): `all` the last few (3) and the origin, `newest` only the newest and the origin. The
 /// world's `saves` line sets it; it changes what stays on disk, never the trajectory.
+/// The save modes of `saves` (DESIGN §34.10, §34.11): `newest` keeps the newest save and the origin, `single` the newest save only.
 package enum SaveMode: String, CaseIterable, Equatable, Hashable, Sendable {
-    case all, newest
+    case all, newest, single
 }
 
 /// A `power` line (DESIGN §34.5): `power preview NAME id=N ...` dry-runs a power and answers one `PLAN`, `power NAME id=N

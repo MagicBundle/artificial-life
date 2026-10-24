@@ -264,7 +264,9 @@ def load_state(rd: RunDir, cfg: Config, states_dir: Path | None, step: int) -> S
     if states_dir is not None:
         cands.update({st: p for st, p in cached_states(states_dir) if st not in cands})
     if step not in cands:
-        raise FileNotFoundError(f"no checkpoint or cached state at step {step}")
+        raise FileNotFoundError(
+            f"{rd.path}: no checkpoint or cached state at step {step} (kept: {sorted(cands)})"
+        )
     return runio.load_checkpoint(cands[step], cfg)
 
 

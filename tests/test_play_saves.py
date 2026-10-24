@@ -73,10 +73,11 @@ def clock_flags(out: io.BytesIO) -> list[int]:
 def test_saves_takes_all_or_newest() -> None:
     assert play.parse_play_command("saves all") == play.PlayCommand("saves", "all")
     assert play.parse_play_command("saves newest") == play.PlayCommand("saves", "newest")
+    assert play.parse_play_command("saves single") == play.PlayCommand("saves", "single")
     assert play.parse_play_command("  saves   newest  ") == play.PlayCommand("saves", "newest")
-    assert "saves" in play.COMMANDS and play.SAVE_MODES == ("all", "newest") == streamrec.SAVE_MODES
+    assert "saves" in play.COMMANDS and play.SAVE_MODES == ("all", "newest", "single") == streamrec.SAVE_MODES
     for bad in ("saves", "saves maybe", "saves NEWEST", "saves all newest", "saves 1", "saves off"):
-        with pytest.raises(ControlError, match="saves takes one of all, newest"):
+        with pytest.raises(ControlError, match="saves takes one of all, newest, single"):
             play.parse_play_command(bad)
 
 
@@ -234,15 +235,18 @@ def random_toggles(seed: int, steps: int) -> dict[int, list[str]]:
     lines: dict[int, list[str]] = {}
     for _ in range(rng.randint(3, 9)):
         lines.setdefault(rng.randrange(steps), []).append(
-            rng.choice(["saves all", "saves newest", "saves x"])
+            rng.choice(["saves all", "saves newest", "saves single", "saves x"])
         )
+    lines.setdefault(rng.randrange(steps), []).append(
+        "saves single"
+    )  # every arm holds a single save at some step
     return lines
 
 
 @pytest.mark.parametrize(
     ("kind", "observe", "seed"),
-    [("2d", True, 1), ("2d", False, 2), ("3d", True, 3), ("3d", False, 4)],
-    ids=["2d-observed", "2d-plain", "3d-observed", "3d-plain"],
+    [("2d", True, 1), ("2d", False, 2), ("3d", True, 3), ("3d", False, 4), ("2d", False, 5)],
+    ids=["2d-observed", "2d-plain", "3d-observed", "3d-plain", "2d-plain-b"],
 )
 def test_a_toggled_run_equals_a_plain_run(
     kind: str, observe: bool, seed: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -260,7 +264,9 @@ def test_a_toggled_run_equals_a_plain_run(
     assert rows(plain) == rows(toggled) and same_events(plain, toggled)
     assert social_text(plain) == social_text(toggled) and director_log(plain) == director_log(toggled)
     kept, all_of_them = steps_of(toggled), steps_of(plain)
-    assert set(kept) <= set(all_of_them) and kept[-1] == END and 0 in kept
+    assert set(kept) <= set(all_of_them) and kept[-1] == END
+    single_once = any(m == "saves single" for line in toggles.values() for m in line)
+    assert 0 in kept or single_once, "the origin is kept, unless a single save dropped it"
     digests, plain_digests = checkpoint_digests(toggled), checkpoint_digests(plain)
     assert all(digests[st] == plain_digests[st] for st in kept)
     if observe:
@@ -268,7 +274,12 @@ def test_a_toggled_run_equals_a_plain_run(
             assert same_sidecar(plain, toggled, st)
         assert [st for st, _ in toggled.observer_files()] == kept
     # the toggles that changed the mode are the lines of commands.jsonl, in order
-    modes = [m for line in sorted(toggles) for m in toggles[line] if m in ("saves all", "saves newest")]
+    modes = [
+        m
+        for line in sorted(toggles)
+        for m in toggles[line]
+        if m in ("saves all", "saves newest", "saves single")
+    ]
     state = "saves all"
     changes = []
     for m in modes:

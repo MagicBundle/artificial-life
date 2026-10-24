@@ -375,7 +375,7 @@ final class PlayController: ObservableObject {
            Self.confirms(clock.rate, asked) || now() - requestedAt > Self.confirmWait { requestedRate = nil }
         // The same for the save mode: the clock shows the mode in force (a world that does not know the line never confirms it).
         if let asked = requestedSaves,
-           (clock.savesNewestOnly ? SaveMode.newest : .all) == asked || now() - requestedSavesAt > Self.confirmWait {
+           SaveModeView.current(clock: clock, header: nil, requested: nil) == asked || now() - requestedSavesAt > Self.confirmWait {
             requestedSaves = nil
         }
     }

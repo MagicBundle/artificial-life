@@ -15,6 +15,9 @@ enum StorageWords {
         case .newest:
             return "Recording is off: only the newest save and the origin are kept. " + pending
                 + " Switch it on to keep the last \(keep ?? 3) saves again. Your world stays resumable; logs are still written."
+        case .single:
+            return "Recording is off: only the newest save is kept, and the origin goes too. " + pending
+                + " Switch it on to keep the last \(keep ?? 3) saves again. Your world stays resumable; logs are still written."
         }
     }
     /// Said in the details when the disk is getting full and saves are what fills it.

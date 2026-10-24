@@ -165,7 +165,7 @@ package struct StorageTrend: Equatable, Sendable {
 package enum SaveModeView {
     package static func current(clock: PlayClock?, header: PlayHeader.Saves?, requested: SaveMode?) -> SaveMode {
         if let requested { return requested }
-        if let clock { return clock.savesNewestOnly ? .newest : .all }
+        if let clock { return clock.savesSingle ? .single : (clock.savesNewestOnly ? .newest : .all) }
         return header.flatMap { SaveMode(rawValue: $0.mode) } ?? .all
     }
 

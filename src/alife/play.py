@@ -233,7 +233,8 @@ class PlayCommand:
     """One control line, parsed. ``arg``: an int (``step``, ``every``, ``focus``, ``follow``, ``watch``,
     ``unwatch``, ``ack``), a float (``rate`` M, 0 pauses), a string (``rate`` ``max``, ``color`` MODE,
     ``every`` ``auto``, ``focus`` / ``follow`` / ``watch`` ``off``, ``labels`` ``on`` / ``off``, ``saves``
-    ``all`` / ``newest``, the text of ``intent``), an ``AutopauseLine`` (``autopause``), a ``PowerLine``
+    ``all`` / ``newest`` / ``single``, the text of ``intent``), an ``AutopauseLine`` (``autopause``), a
+    ``PowerLine``
     (``power``) or None."""
 
     name: str
@@ -255,7 +256,7 @@ def parse_play_command(line: str, *, modes: Sequence[str] = streamrec.COLOR_MODE
     ``autopause (on | off | chapter (on | off) | alert CLASS (on | off))`` | ``watch (KIN_ID | off)`` |
     ``unwatch KIN_ID`` | ``ack ALERT_ID`` | ``power preview NAME id=N [k=v ...]`` |
     ``power NAME id=N [k=v ...]`` | ``power cancel NAME id=N`` | ``intent TEXT``; and §34.10's ``saves (all |
-    newest)``; lower case (the text of
+    newest | single)``; lower case (the text of
     ``intent`` excepted), whitespace separated. ``N`` >= 1; ``M`` a decimal, 0 for a pause or in [0.05, 16];
     ``K`` in 1..64; ``UID``, ``KIN_ID`` and ``ALERT_ID`` non-negative int64. ``fields`` is the Lab's and
     refused here."""
@@ -872,7 +873,7 @@ class PlayPacer:
         stop_check: Callable[[], bool],
     ) -> None:
         self.rd, self.cfg, self.obs, self.director = rd, cfg, obs, director
-        rd.keep_newest = self.saves == "newest"
+        rd.set_save_mode(self.saves)
         self.alerts.cadence = (
             cfg.run.metrics_every
         )  # a row of fewer steps (a stop's, a resume's) is no sample
@@ -1302,14 +1303,15 @@ class PlayPacer:
         delete: a ``saves newest`` line that would change its mode is refused with a note (the header's
         ``play.saves.adopted`` tells the client, which does not offer it), and ``alife play RUN --saves
         newest`` is the explicit way, with a note that says what it deletes."""
-        if mode == "newest" and self.saves != "newest" and self.rd.adopted:
+        if mode != "all" and self.saves != mode and self.rd.adopted:
             self._note(
-                "saves: refused: this world is a research run played in place, and keeping only the newest "
-                "save would delete its checkpoints; `alife play RUN --saves newest` does that on purpose"
+                "saves: refused: this world is a research run played in place, and keeping only the "
+                f"{mode} save would delete its checkpoints; `alife play RUN --saves {mode}` does that on "
+                "purpose"
             )
             return
         was, self.saves = self.saves, mode
-        self.rd.keep_newest = mode == "newest"
+        self.rd.set_save_mode(mode)
         if mode == was:
             return
         try:
@@ -1580,7 +1582,8 @@ class PlayPacer:
                 in_chapter=in_chapter,
                 chapter_len=self.opt.chapter,
                 flags=self.autopause.flags
-                | (streamrec.CLCK_FLAG_SAVES_NEWEST if self.saves == "newest" else 0),
+                | (streamrec.CLCK_FLAG_SAVES_NEWEST if self.saves != "all" else 0)
+                | (streamrec.CLCK_FLAG_SAVES_SINGLE if self.saves == "single" else 0),
             ),
         )
 
@@ -2175,7 +2178,7 @@ def serve_play(
     (after the checkpoint); 3 for an invariant violation. ``control`` is closed on the way out.
     """
     pacer = PlayPacer(out, control, options, clock=clock)
-    rd.keep_newest = options.saves == "newest"  # (also for the starting checkpoint, which precedes bind)
+    rd.set_save_mode(options.saves)  # (also for the starting checkpoint, which precedes bind)
     rd.compress = options.compress
     try:
         res = runner.run(rd, cfg, box.pop(), steps, quiet=True, director=director, pacer=pacer)
