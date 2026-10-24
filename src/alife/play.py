@@ -634,6 +634,7 @@ class PlayOptions:
     origin_step: int = 0
     unattended: bool = False
     saves: str = "all"
+    compress: bool = True  # the saves are compressed (DESIGN §34.11); a runtime setting, not in play.json
 
 
 class _NullSink:
@@ -1138,6 +1139,7 @@ class PlayPacer:
 
     @_guard
     def before_checkpoint(self, state: State, t: int) -> None:
+        self.rd.wait_saves()  # before the sidecars and play-state files of this save are written (§34.11)
         self._t = t
         self._saving = True
         self.sched.begin_save()
@@ -2174,11 +2176,13 @@ def serve_play(
     """
     pacer = PlayPacer(out, control, options, clock=clock)
     rd.keep_newest = options.saves == "newest"  # (also for the starting checkpoint, which precedes bind)
+    rd.compress = options.compress
     try:
         res = runner.run(rd, cfg, box.pop(), steps, quiet=True, director=director, pacer=pacer)
     finally:
         control.close()
         pacer.close()
+        rd.wait_saves()  # the quit path waits for a compressed save in flight (DESIGN §34.11)
     if res.status == "extinct":
         print(
             f"play: the world is extinct at step {int(to_numpy(res.state.step))}", file=sys.stderr, flush=True

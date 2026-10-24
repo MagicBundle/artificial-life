@@ -104,6 +104,8 @@ private final class StopFlag: @unchecked Sendable {
     @Test func aSaveIsRecognisedByItsName() {
         #expect(StorageScan.saveStep(of: "step_0000504001.safetensors") == 504_001)
         #expect(StorageScan.saveStep(of: "step_0000504001.safetensors.tmp") == nil)
+        #expect(StorageScan.saveStep(of: "step_0000504001.safetensors.zst") == 504_001)
+        #expect(StorageScan.saveStep(of: "step_0000504001.safetensors.zst.tmp") == nil)
         #expect(StorageScan.saveStep(of: "LATEST") == nil && StorageScan.saveStep(of: "step_x.safetensors") == nil)
     }
 

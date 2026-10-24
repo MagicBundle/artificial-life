@@ -34,14 +34,17 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
+import threading
 import zipfile
 import zlib
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, Final
 
 import mlx.core as mx
 import numpy as np
+import zstandard
 
 from alife import layout, rng, spatial
 from alife.config import Config, config_from_dict, config_hash, config_to_dict, is_3d, save_config, validate
@@ -89,7 +92,7 @@ DEATH_COLUMNS: Final[Mapping[str, Any]] = {
     "clade": np.int32,
 }
 
-_CKPT_RE: Final = re.compile(r"^step_(\d{10})\.safetensors$")
+_CKPT_RE: Final = re.compile(r"^step_(\d{10})\.safetensors(?:\.zst)?$")
 _EVENT_RE: Final = re.compile(r"^(births|deaths)_(\d{10})_(\d{10})\.npz$")
 _OBSERVER_RE: Final = re.compile(r"^step_(\d{10})\.npz$")
 PLAY_STATE_NAMES: Final = (
@@ -101,9 +104,16 @@ _DUMP_RE: Final = re.compile(r"^(eco|wx)_(\d{10})\.(?:npz|npy)$")
 # The temporary names of what a save writes (``_tmp_path``): the state file and ``LATEST`` in
 # ``checkpoints/``, the observer sidecar and the play-state files in ``observers/``.
 _SAVE_TMP_RE: Final = re.compile(
-    rf"^(?:step_\d{{10}}\.(?:safetensors|npz)|{LATEST_FILE}|(?:{'|'.join(PLAY_STATE_NAMES)})_\d{{10}}\.json)\.tmp$"
+    rf"^(?:step_\d{{10}}\.(?:safetensors(?:\.zst)?|npz)|{LATEST_FILE}|(?:{'|'.join(PLAY_STATE_NAMES)})_\d{{10}}\.json)\.tmp$"
 )
 _MAX_HEADER: Final = 1 << 26  # sanity bound on a safetensors JSON header
+# Light saves (DESIGN 34.11): a compressed save is the zstd frame of the exact safetensors bytes, named
+# ``step_<t>.safetensors.zst``. Every reader goes through this module, which reads both names.
+ZST_SUFFIX: Final = ".zst"
+ZST_LEVEL: Final = 17  # measured on a full save (saves/levels.md): best ratio at a compress of about 11 s
+ZST_WINDOW_LOG: Final = 27  # long-distance matching window, as ``zstd --long=27``
+_ZST_MAX_WINDOW: Final = 1 << 28  # the largest window a compressed save may name
+_CHUNK: Final = 1 << 22
 
 
 class CheckpointError(Exception):
@@ -376,11 +386,8 @@ def _alife_version() -> str:
     return alife.__version__
 
 
-def write_state_file(path: Path, s: State, cfg: Config) -> None:
-    """Atomic safetensors write (``*.tmp`` + ``os.replace``) with checkpoint metadata (§18).
-
-    A 3D state also records ``dims`` (§27.1); a file without the key is 2D.
-    """
+def _state_arrays_and_meta(s: State, cfg: Config) -> tuple[dict[str, Any], dict[str, str]]:
+    """The arrays of a state file and its checkpoint metadata (§18)."""
     meta = {
         "format_version": str(FORMAT_VERSION),
         "rng_layout_version": str(rng.RNG_LAYOUT_VERSION),
@@ -393,14 +400,117 @@ def write_state_file(path: Path, s: State, cfg: Config) -> None:
         "weight_dtype": cfg.brain.weight_dtype,
         "config": json.dumps(config_to_dict(cfg), sort_keys=True, indent=2),
     }
-    arrays = state_to_arrays(s)
+    return state_to_arrays(s), meta
+
+
+def write_state_file(path: Path, s: State, cfg: Config) -> None:
+    """Atomic safetensors write (``*.tmp`` + ``os.replace``) with checkpoint metadata (§18).
+
+    A 3D state also records ``dims`` (§27.1); a file without the key is 2D.
+    """
+    arrays, meta = _state_arrays_and_meta(s, cfg)
     _atomic_write(Path(path), lambda f: mx.save_safetensors(f, arrays, meta))
 
 
+def _write_plain_tmp(path: Path, s: State, cfg: Config) -> None:
+    """The plain safetensors bytes of ``s`` written to ``path``, a temporary name the caller owns, and
+    fsynced.
+    No rename: the caller decides when the save counts (a compressed save, DESIGN §34.11)."""
+    arrays, meta = _state_arrays_and_meta(s, cfg)
+    with open(path, "wb") as f:
+        mx.save_safetensors(f, arrays, meta)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def compress_file(src: Path, dst: Path, *, level: int = ZST_LEVEL) -> None:
+    """Write the zstd frame of the bytes of ``src`` to ``dst`` (through ``dst.tmp``, fsynced, then renamed).
+
+    The frame names its size and carries a checksum, so a damaged copy fails to decode (DESIGN §34.11)."""
+    size = os.path.getsize(src)
+    params = zstandard.ZstdCompressionParameters.from_level(
+        level,
+        source_size=size,
+        enable_ldm=True,
+        window_log=ZST_WINDOW_LOG,
+        threads=-1,
+        write_checksum=True,
+        write_content_size=True,
+    )
+    cctx = zstandard.ZstdCompressor(compression_params=params)
+
+    def write(out: Any) -> None:
+        with open(src, "rb") as ifh:
+            cctx.copy_stream(ifh, out, size=size, read_size=1 << 24, write_size=1 << 22)
+
+    _atomic_write(Path(dst), write)
+
+
+class _ZstStream:
+    """The plain bytes of a compressed save, decoded as they are read. A save that does not end (truncated),
+    that
+    is followed by bytes, or whose frame fails its checksum raises ``CheckpointError``; nothing is taken for
+    whole
+    before its frame ends."""
+
+    def __init__(self, f: Any, path: Path) -> None:
+        self._f = f
+        self._path = path
+        self._d = zstandard.ZstdDecompressor(max_window_size=_ZST_MAX_WINDOW).decompressobj()
+        self._buf = b""
+        self._gen = self._pieces()
+
+    def _pieces(self) -> Iterator[bytes]:
+        try:
+            while not self._d.eof:
+                data = self._f.read(_CHUNK)
+                if not data:
+                    raise CheckpointError(
+                        f"{self._path}: truncated compressed save (its zstd frame does not end)"
+                    )
+                out = self._d.decompress(data)
+                if self._d.unused_data:
+                    raise CheckpointError(f"{self._path}: bytes after the end of the compressed save")
+                if out:
+                    yield out
+        except zstandard.ZstdError as e:
+            raise CheckpointError(f"{self._path}: corrupt compressed save: {e}") from e
+
+    def read(self, n: int) -> bytes:
+        """Up to ``n`` plain bytes (fewer only at the end of the file); decodes no more than they need."""
+        while len(self._buf) < n:
+            piece = next(self._gen, None)
+            if piece is None:
+                break
+            self._buf += piece
+        out, self._buf = self._buf[:n], self._buf[n:]
+        return out
+
+    def drain(self) -> Iterator[bytes]:
+        """The rest of the plain bytes, in pieces."""
+        if self._buf:
+            buf, self._buf = self._buf, b""
+            yield buf
+        yield from self._gen
+
+
+def is_compressed(path: Path) -> bool:
+    """True for a compressed save, ``step_<t>.safetensors.zst``."""
+    return Path(path).name.endswith(".safetensors" + ZST_SUFFIX)
+
+
+@contextlib.contextmanager
+def _plain_reader(path: Path) -> Iterator[Any]:
+    """A reader of the plain safetensors bytes of ``path`` (a compressed save is decoded as it is read)."""
+    with open(path, "rb") as f:
+        yield _ZstStream(f, Path(path)) if is_compressed(path) else f
+
+
 def checkpoint_metadata(path: Path) -> dict[str, str]:
-    """The string metadata of a state file, read from the safetensors header only."""
+    """The string metadata of a state file, read from the safetensors header only (for a compressed save, only
+    the first pieces of its frame are decoded)."""
     try:
-        with open(path, "rb") as f:
+        with _plain_reader(path) as f:
             raw = f.read(8)
             if len(raw) != 8:
                 raise CheckpointError(f"{path}: truncated safetensors header")
@@ -419,10 +529,39 @@ def checkpoint_metadata(path: Path) -> dict[str, str]:
     return {str(k): str(v) for k, v in meta.items()}
 
 
+def _compressed_is_whole(path: Path, step: int) -> bool:
+    """The whole-file check of a compressed save: its frame decodes to the end (the checksum is verified), its
+    header names ``step``, and the decoded bytes reach the end of the last tensor."""
+    try:
+        with open(path, "rb") as f:
+            src = _ZstStream(f, Path(path))
+            raw = src.read(8)
+            if len(raw) != 8:
+                return False
+            (size,) = struct.unpack("<Q", raw)
+            if size > _MAX_HEADER:
+                return False
+            header = json.loads(src.read(size))
+            meta = header.get("__metadata__", {})
+            ends = [
+                int(v["data_offsets"][1])
+                for k, v in header.items()
+                if k != "__metadata__" and isinstance(v, dict)
+            ]
+            total = 8 + size + sum(len(piece) for piece in src.drain())
+        return str(meta.get("step")) == str(step) and total >= 8 + size + max(ends, default=0)
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError, CheckpointError):
+        return False
+
+
 def state_file_is_complete(path: Path, step: int) -> bool:
     """True when ``path`` is a whole state file of ``step``: a readable header that names ``step`` and a file
     at least as long as its last tensor ends (a short or torn write fails; the bytes themselves are not
-    read). The check ``save_checkpoint`` makes before the newest-only mode deletes the older saves."""
+    read). A compressed save is decoded whole instead, which checks its checksum too (DESIGN §34.11). The
+    check
+    ``save_checkpoint`` makes before the newest-only mode deletes the older saves."""
+    if is_compressed(path):
+        return _compressed_is_whole(path, step)
     try:
         with open(path, "rb") as f:
             raw = f.read(8)
@@ -450,6 +589,48 @@ def _file_weather_off(meta: dict[str, str]) -> bool:
         return not bool(json.loads(meta["config"])["weather"]["enabled"])
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def _decode_to(path: Path, dst: Path) -> None:
+    with open(path, "rb") as f, open(dst, "wb") as out:
+        for piece in _ZstStream(f, Path(path)).drain():
+            out.write(piece)
+
+
+@contextlib.contextmanager
+def state_file(path: Path) -> Iterator[Path]:
+    """The path of a plain safetensors file with the bytes of the state file ``path``: the file itself, or for
+    a
+    compressed save a decoded temporary copy, removed on exit. ``CheckpointError`` if the save is unreadable,
+    corrupt or truncated (DESIGN §34.11)."""
+    path = Path(path)
+    if not is_compressed(path):
+        yield path
+        return
+    fd, name = tempfile.mkstemp(prefix="alife-state-", suffix=".safetensors")
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        try:
+            _decode_to(path, tmp)
+        except OSError as e:
+            raise CheckpointError(f"{path}: cannot read state file: {e}") from e
+        yield tmp
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def read_state_arrays(path: Path, keys: Iterable[str] | None = None) -> dict[str, Any]:
+    """The arrays of a state file, read (``keys``: only these, all by default); ``CheckpointError`` if
+    unreadable."""
+    try:
+        with state_file(path) as plain:
+            arrays = mx.load(str(plain), format="safetensors")
+            names = list(arrays) if keys is None else [k for k in keys if k in arrays]
+            mx.eval([arrays[k] for k in names])
+    except (ValueError, RuntimeError, OSError) as e:
+        raise CheckpointError(f"{path}: {e}") from e
+    return {k: arrays[k] for k in names}
 
 
 def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> State:
@@ -483,11 +664,12 @@ def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> Stat
     if bad:
         raise CheckpointError(f"{path}: incompatible checkpoint: {', '.join(bad)}")
     try:
-        arrays = mx.load(str(path), format="safetensors")
-        if cfg.weather.enabled and "wx" in arrays and _file_weather_off(meta):
-            arrays = {k: v for k, v in arrays.items() if k != "wx"}  # refilled from rest_array(cfg, step)
-        s = state_from_arrays(arrays, cfg)
-        mx.eval(s)  # loads are lazy; read now so a later replace of the file cannot affect this state
+        with state_file(path) as plain:
+            arrays = mx.load(str(plain), format="safetensors")
+            if cfg.weather.enabled and "wx" in arrays and _file_weather_off(meta):
+                arrays = {k: v for k, v in arrays.items() if k != "wx"}  # refilled from rest_array(cfg, step)
+            s = state_from_arrays(arrays, cfg)
+            mx.eval(s)  # loads are lazy; read now so a later replace of the file cannot affect this state
     except (ValueError, RuntimeError, OSError) as e:
         raise CheckpointError(f"{path}: {e}") from e
     spec = expected_layout(cfg)
@@ -555,6 +737,12 @@ class RunDir:
 
     path: Path
     keep_newest: bool
+    compress: bool
+    """Whether a save is written compressed (DESIGN §34.11): play worlds, set by the play pacer. A runtime
+    setting, not
+    a config key, like ``keep_newest``."""
+    _save_worker: threading.Thread | None
+    _save_error: BaseException | None
     """A played world's save mode (DESIGN §34.10): True keeps only the newest checkpoint and the origin at
     each save, whatever ``run.keep_checkpoints`` says. Set by the play pacer: a runtime setting of this
     object, not a config key, so it never reaches the config hash or a trajectory."""
@@ -562,6 +750,9 @@ class RunDir:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.keep_newest = False
+        self.compress = False
+        self._save_worker: threading.Thread | None = None
+        self._save_error: BaseException | None = None
 
     @property
     def adopted(self) -> bool:
@@ -738,6 +929,7 @@ class RunDir:
         leaves an orphan sidecar, which pruning removes). Without ``observers`` a sidecar of this step is
         removed, so a checkpoint and its sidecar always come from the same save (§28.6).
         """
+        self.wait_saves()  # a compressed save in flight finishes first (its prune must not meet this one)
         step = int(to_numpy(s.step))
         path = self.checkpoint_dir / f"step_{step:010d}.safetensors"
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -746,6 +938,9 @@ class RunDir:
             _write_npz(self.observer_path(step), observers)
         else:
             self.observer_path(step).unlink(missing_ok=True)
+        if self.compress:
+            self._save_compressed(path, s, cfg, step)
+            return path.with_name(path.name + ZST_SUFFIX)
         write_state_file(path, s, cfg)
         _atomic_write_text(self.checkpoint_dir / LATEST_FILE, path.name + "\n")
         keep = cfg.run.keep_checkpoints
@@ -764,6 +959,54 @@ class RunDir:
                 )
         self._prune(keep)
         return path
+
+    def _save_compressed(self, path: Path, s: State, cfg: Config, step: int) -> None:
+        """A compressed save (DESIGN §34.11). The plain bytes go to ``<name>.tmp`` here, as a plain save's
+        write does;
+        a worker thread then compresses them to ``<name>.zst``, moves ``LATEST`` over that complete file,
+        deletes the
+        plain copy and prunes. So ``LATEST`` moves only over a whole save, and before it moves the previous
+        save is
+        the newest one and every older save is in place: a kill at any point leaves a resumable world."""
+        self._remove_debris()  # no worker runs now: wait_saves() came first
+        tmp = path.with_name(path.name + ".tmp")
+        _write_plain_tmp(tmp, s, cfg)
+        zst = path.with_name(path.name + ZST_SUFFIX)
+        keep_newest = self.keep_newest
+        keep = cfg.run.keep_checkpoints
+
+        def work() -> None:
+            try:
+                compress_file(tmp, zst)
+                newest_only = keep_newest and state_file_is_complete(zst, step)
+                if keep_newest and not newest_only:
+                    print(
+                        f"save: {zst} does not decode whole; the older saves are kept",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                _atomic_write_text(self.checkpoint_dir / LATEST_FILE, zst.name + "\n")
+                tmp.unlink(missing_ok=True)
+                self._prune_saves(1 if newest_only else keep)
+            except Exception as e:  # raised by wait_saves in the thread that saves
+                tmp.unlink(missing_ok=True)
+                self._save_error = e
+
+        self._save_worker = threading.Thread(target=work, name="alife-save")
+        self._save_worker.start()
+
+    def wait_saves(self) -> None:
+        """Wait for the compressed save in flight, if there is one (DESIGN §34.11): the play loop calls this
+        before
+        each save and when it ends. An error of that save is raised here, once; the save before it stays the
+        newest."""
+        worker = self._save_worker
+        if worker is not None:
+            worker.join()
+            self._save_worker = None
+        err, self._save_error = self._save_error, None
+        if err is not None:
+            raise err
 
     def _start_step(self) -> int:
         """``meta.json`` ``start_step`` (0 for a run from step 0 and for a directory without the key)."""
@@ -786,11 +1029,21 @@ class RunDir:
         names only inside ``save_checkpoint`` and the play loop's ``before_checkpoint``, which are done by
         now, so it is removed too. Other ``*.tmp`` files (a houses file an analysis may be writing) are not.
         """
+        self._remove_debris()
+        self._prune_saves(keep)
+
+    def _remove_debris(self) -> None:
+        """Removes the temporary files of saves (see ``_prune``); only the one process that saves writes
+        them."""
         for d in (self.checkpoint_dir, self.observers_dir):
             if d.is_dir():
                 for tmp in d.iterdir():
                     if _SAVE_TMP_RE.match(tmp.name):
                         tmp.unlink(missing_ok=True)
+
+    def _prune_saves(self, keep: int) -> None:
+        """What ``_prune`` keeps and deletes, without the debris removal (the worker of a compressed save
+        calls it)."""
         ckpts = self.checkpoints()
         latest = self.latest_checkpoint()
         origin = self._start_step()
@@ -993,12 +1246,15 @@ class RunDir:
         """Complete checkpoints as ``(step, path)``, ascending by step."""
         if not self.checkpoint_dir.is_dir():
             return []
-        found = [
-            (int(m.group(1)), p)
-            for p in self.checkpoint_dir.iterdir()
-            if (m := _CKPT_RE.match(p.name)) and p.is_file()
-        ]
-        return sorted(found)
+        found: dict[int, Path] = {}
+        for p in self.checkpoint_dir.iterdir():
+            if (m := _CKPT_RE.match(p.name)) and p.is_file():
+                st = int(m.group(1))
+                if st not in found or is_compressed(
+                    p
+                ):  # both forms of a step: the compressed one is the later save
+                    found[st] = p
+        return sorted(found.items())
 
     def latest_checkpoint(self) -> Path | None:
         """The checkpoint named by ``LATEST``, else the newest complete one, else None."""
@@ -1012,10 +1268,11 @@ class RunDir:
 
     def checkpoint_at(self, step: int) -> Path:
         """The checkpoint of ``step``; ``FileNotFoundError`` if there is none."""
-        path = self.checkpoint_dir / f"step_{step:010d}.safetensors"
-        if not path.is_file():
-            raise FileNotFoundError(f"{self.path}: no checkpoint at step {step}")
-        return path
+        for name in (f"step_{step:010d}.safetensors{ZST_SUFFIX}", f"step_{step:010d}.safetensors"):
+            path = self.checkpoint_dir / name
+            if path.is_file():
+                return path
+        raise FileNotFoundError(f"{self.path}: no checkpoint at step {step}")
 
     # logs
     def append_metrics(self, rows: Iterable[Mapping[str, Any]]) -> None:

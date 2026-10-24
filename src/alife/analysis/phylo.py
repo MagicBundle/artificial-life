@@ -122,11 +122,10 @@ def _chunks(
 
 def _alive_uids(path: Path) -> np.ndarray:
     """The sorted uids (int64) of the agents alive in a checkpoint."""
-    import mlx.core as mx  # local: the analysis is numpy-only except for reading a checkpoint
-
+    from alife.runio import read_state_arrays
     from alife.state import to_numpy
 
-    arrs = mx.load(str(path), format="safetensors")
+    arrs = read_state_arrays(path, keys=("alive", "uid"))  # a compressed save is decoded (DESIGN §34.11)
     alive = to_numpy(arrs["alive"]).astype(bool)
     return np.sort(to_numpy(arrs["uid"]).astype(np.int64)[alive])
 

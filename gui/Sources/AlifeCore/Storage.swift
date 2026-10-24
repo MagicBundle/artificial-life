@@ -32,10 +32,13 @@ package struct StorageSample: Equatable, Sendable {
 /// Measures a world directory from file attributes only. A file that appears or disappears during the walk (a save written under a
 /// temporary name and renamed, an old save pruned) is counted or not, never an error.
 package enum StorageScan {
-    /// The checkpoint a world holds, `step_<ten digits>.safetensors`.
+    /// The checkpoint a world holds, `step_<ten digits>.safetensors`, or its compressed form `step_<ten digits>.safetensors.zst`
+    /// (DESIGN 34.11). A temporary name (`*.tmp`) is not a save.
     package static func saveStep(of name: String) -> Int? {
-        guard name.hasPrefix("step_"), name.hasSuffix(".safetensors") else { return nil }
-        return Int(name.dropFirst("step_".count).dropLast(".safetensors".count))
+        var stem = Substring(name)
+        if stem.hasSuffix(".zst") { stem = stem.dropLast(4) }
+        guard stem.hasPrefix("step_"), stem.hasSuffix(".safetensors") else { return nil }
+        return Int(stem.dropFirst("step_".count).dropLast(".safetensors".count))
     }
 
     /// The size of a regular file on disk (allocated blocks, which is what the volume loses), nil for anything else or a file that
