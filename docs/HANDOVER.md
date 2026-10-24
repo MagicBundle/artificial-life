@@ -30,6 +30,7 @@ harvest, share energy, fight, reproduce with mutation and die. There is no backp
 | `docs/RESULTS_G3B.md` | G3b's Mac day on the M5 Pro (2026-10-23): Metal purity (34 files, 1,393 passed), the bench gate with scripted powers at 1x, `max` and 2x (passed, except the report-time item the bench cannot read), an 18,001-step scripted play of a planet (records, pauses, powers, chronicle and alert rates against G3a), the rendered decide half, three defects found, and what is open; small data files and the reader in `docs/results_g3b/` |
 | `docs/GAMES.md` | the gaming vertical (design and owner decisions): G1, the observer layer, is built (`game.observe`, `src/alife/game/`, `python -m alife.analysis.labels`, normative spec `docs/DESIGN.md` §28, Review-log row I44) with `INTENT_VERSION` 2 label rules (`RULES_V2`, calibrated offline and validated on three held-out windows on the GPU, 2026-10-21, DESIGN §28.4, §28.8) and, since W2a, `INTENT_VERSION` 3 (`RULES_V3`, the default: wind-relative Nomad and Settler plus Drifter, Floater and Sinker, calibrated on one storm pilot window, DESIGN §32.7, §32.8, row I50); G2, social tracking (houses, kin groups, colonies, territory, relations; `src/alife/groups.py`, `tracking.py`, `game/social.py`, `game/society.py`, `python -m alife.analysis.social`; the reports are `observers/social.jsonl` in an observing run's directory; normative spec `docs/DESIGN.md` §29, Review-log row I45) is built, run on the GPU (2026-10-21) and has provisional thresholds (`SOCIAL_VERSION` 1, measured, none changed); N1, the offline World Report (`python -m alife.analysis.world_report`; code-written template sentences with a checker, and an optional local model that only selects and orders them; normative spec `docs/DESIGN.md` §31, Review-log row I49) is built with provisional thresholds (`REPORT_VERSION` 1); G3a, the play loop and the World window (`docs/DESIGN.md` §33, row I51, `docs/RESULTS_G3A.md`), is built; G3b, chapters, alerts, the live report and direct powers (`docs/DESIGN.md` §34, row I54), is built and its Mac day ran 2026-10-23 (`docs/RESULTS_G3B.md`); G3c to G5 are not built |
 | `docs/STORMS.md` | the storm world (an alien-planet weather game on the 3D world): the weather model, the coupling, the plan W0 to W5; W0 (the offline model, `weather.py`, `docs/STORMS_W0.md`), W1 (the engine weather layer, normative spec `docs/DESIGN.md` §30) and W2a (rain seeding, shade, the controls, the observers' version 3 and the instruments, `docs/DESIGN.md` §32, row I50) are built and off by default; W2b (calibration and the 14 runs) is not run |
+| `docs/DESIGN.md` §37 | the mini world: preset `mini3d` (a quarter of `64k3d`'s area, about 10,500 alive), overlay `storm160`, the launcher's overlay choice by source size, the two host-side edits (stream header `cells`/`dx` from the layer, storm vorticity in units of the reference f0 0.025); Review-log row I62 |
 | `docs/bench/` | `alife bench --stages` reports for `64k`, `64k3d` (`C` = 24, 32, 48) and `tiny3d` (`docs/DESIGN.md` §27.13), before (2026-10-16) and with (2026-10-20) the fused Metal neighbour kernel |
 | `gui/` | AlifeControl, a SwiftUI macOS app that drives the CLI (see `gui/README.md`) |
 | `runs/` | run directories (git-ignored, local to the Mac) |
@@ -57,6 +58,9 @@ gui/scripts/make-app.sh --app both --install  # the Lab and Storm Worlds (the ga
 uv run alife play --init-from runs/64k3d_s0:500000 --overlay storm --set director.enabled=true --weather-spinup 20000 --out runs/planet_a --no-control --until 500100 > /dev/null   # make a planet (DESIGN §33.3.4)
 uv run alife play runs/planet_a --rate 1 --no-control --until 501000 > /dev/null       # play a world directory (to step 501000)
 uv run alife bench --play --preset 64k3d --overlay storm --set director.enabled=true --steps 2000   # the play loop headless (DESIGN §33.5)
+uv run alife run --preset mini3d --steps 500000 --seed 0 --out runs/mini3d_s0   # the mini world's evolved source (31 min idle; DESIGN §37)
+uv run alife play --init-from runs/mini3d_s0:450000 --overlay storm160 --set director.enabled=true --weather-spinup 36000 --out runs/planet_m1 --no-control --until 450100 > /dev/null   # a mini planet
+uv run alife bench --play --play-from runs/mini3d_s0:450000 --overlay storm160 --set director.enabled=true --play-spinup 20000   # its play loop (the gate of DESIGN §33.5.4)
 ```
 
 Overnight runs: plug in, lid open, and either use the GUI's timer or
@@ -496,6 +500,31 @@ beside the inspector at 700 points, three need 760; the bottom dock's least heig
 quit and a resume in `newest` mode the first chapter report refolds the social log of the play (output identical). **Not run:** the strip
 beside a real planet on the Mac (a person pressing the switch during a chapter end), and the cost of the `F_FULLFSYNC` of a 686 MB save
 (one drive flush a chapter, in `newest` mode only).
+
+## The mini world (DESIGN §37, row I62, `docs/GAMES.md` §10 item 23)
+
+The owner asked (2026-10-24) for a smaller test world for quick play-tests and lighter streams, launchable from the World launcher, and said yes to the specification's go/no-go
+(`scratchpad/smallworld/spec.md`, the coordinator's choices C22, to revisit). **Built (branch `games/mini-world`, one PR "M1", no GPU needed to review):** the preset `mini3d` (`64k3d` with
+five values changed: a 160 x 160 x 80 column, `n_max` 16,384, about 10,500 alive, 4.5 ms an engine step with the weather on against 14.9, a 4.6 MB/s stream against 21.2), the world overlay
+`storm160` (80 weather cells, two 24 x 16 pools per hemisphere, `f0` 0.0165), the launcher choosing the overlay and the spin-up (36,000 for 160 worlds) from the source's `world.size`
+(`PlaySource.worldSize`, `PlanetSpec.overlay(forWorldSize:)`), `Preset.mini3d` in the Lab, and two host-side edits (the stream header's `weather.cells` and `dx` come from the layer;
+`storms.detect` measures vorticity in units of the reference f0 0.025 in every world, so a storm is named at an absolute 0.0125 and `storm_strong` fires at 0.0175). **No simulation change**: no
+hash, golden or digest moved (`tests/test_weather_config.py` pins the twelve old preset hashes and the new ones). The W0 study driver shares `storms.detect`, so its `zeta_max_f0` columns follow the reference
+unit (§37.4).
+
+- **Run it:** `uv run alife run --preset mini3d --steps 500000 --seed 0 --out runs/mini3d_s0` (31 minutes idle, up to about 45 shared), then make a planet from a checkpoint with
+  `--overlay storm160 --weather-spinup 36000` (or from the launcher, which passes both). `runs/mini3d_e0` is a `cp -c` copy of the 80,000-step probe run (9,688 alive, one dominant kin group) for a first play
+  before the evolved source exists.
+- **The evolved source** `runs/mini3d_s0` (seed 0, dry, started 2026-10-24 on the code of this branch; `config.json` reproduces it): **finished, 500,000 steps, `status` done** (about 1 h 10 of wall on a shared GPU, 150 steps/s on average, peak 0.45 GiB; checkpoints 480k, 490k and 500k kept; metrics rows every 100 steps).
+  Ledger error 0 in all 5,000 rows, no hash overflow (peak occupancy 40 of 48 at the founder boom, 13 later), no diag flag; alive 9.25k at 100 to 200k, 11.13k at 300 to 400k, **11.16k at 400 to 500k** (0.436 per unit squared; 64k3d 0.409
+  to 0.412), lowest 3,051 (the first crash); clades alive 5 at 80k, 3 at 250k and 500k; the largest body 359 / 373 / 2,303 rows at 80k / 250k / 500k. **Kin acceptance at 250k: FAIL** (a single-snapshot reading of
+  the checkpoint with the G2 rules, `scratchpad/mini/accept.py`, confirmed by `analysis.social` over 1,500 steps): 3 kin groups of at least `enter` (sizes 5,284 / 4,442 / 38; the criterion wants 5), top share 0.534
+  (wants below 0.6: met), 2 territory owners (wants 3). It is two large factions: 300k 3 groups (top share 0.452, 3 owners), 400k 3 (0.545, 2), 450k 4 (0.430, 4), 500k 3 (0.533, 3). The spec says to build the crop
+  tool (a 64k3d checkpoint cropped to 160 x 160: 6 to 10 kin groups in the probe) when this fails; it is not in this PR, and **its go is the coordinator's**. `runs/mini3d_s0` is usable now for a planet with two
+  large factions (a fork of the 450,000 or 500,000 checkpoint); seeds 1 and 2 are not run.
+- **Not done (a Mac day, `docs/RESULTS_MINI.md` to come):** the bench gate on a 450,000-step fork (the five-minute arm at 1x), `GPUWorldTests` and `WorldRenderBench` at L = 160, the rendered camera poses at
+  L = 160 (the region fly-to falls inside the 80-tall slab on the unmerged `gui/viewer2-a1` branch), the dry-versus-weather fork pair, the slow tests and the W0 golden of the mini weather (DESIGN §37.7), seeds 1 and 2 to
+  100,000 steps, the crop tool (only if the kin acceptance fails), a launcher entry that makes a world from nothing. The equatorial band stays a design track (`scratchpad/smallworld/spec.md` section 7).
 
 ## GUI follow-ups (PR #3, merged)
 
