@@ -507,9 +507,9 @@ def test_the_save_modes_the_window_sends_are_the_engines() -> None:
         assert sr.saves_block(mode=mode, keep=3)["mode"] == mode
     views = (ROOT / "gui" / "Sources" / "AlifeControl" / "StorageViews.swift").read_text(encoding="utf-8")
     assert (
-        "Recording off keeps only the newest save; your world stays resumable; logs are still written."
-        in views
-    )
+        "Your world stays resumable; logs are still written." in views
+    )  # the words every choice keeps (DESIGN 34.11)
+    assert '"Newest only"' in views and '"Newest + start"' in views and '"All saves"' in views
 
 
 def test_the_play_world_file_keys_match_playworldfile() -> None:

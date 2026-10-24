@@ -1,44 +1,71 @@
 import AlifeCore
 import SwiftUI
 
-/// The words of the Storage strip (DESIGN §34.10), in one place so that the tooltip, the details and the tests agree.
+/// The words of the Storage strip (DESIGN §34.10, §34.11), in one place so that the segments, the tooltip, the details and the tests
+/// agree. The choice names what each mode keeps: the newest save and the origin (the save the world began from), or the newest
+/// save alone.
 enum StorageWords {
-    /// The switch is named for what the player asked for: recording. On keeps the last saves, off keeps the newest one.
-    static let switchLabel = "Recording"
-    static let help = "Recording off keeps only the newest save; your world stays resumable; logs are still written."
+    /// The segment of each mode, in the order of `SaveMode.allCases`. Short, because the strip is one line in the narrowest dock (260
+    /// points beside the size): the full names are `name(_:)`, in the details and the tooltip.
+    static func segment(_ mode: SaveMode) -> String {
+        switch mode {
+        case .all: return "All"
+        case .newest: return "Start"
+        case .single: return "Newest"
+        }
+    }
+    /// The full name of a mode.
+    static func name(_ mode: SaveMode) -> String {
+        switch mode {
+        case .all: return "All saves"
+        case .newest: return "Newest + start"
+        case .single: return "Newest only"
+        }
+    }
+    /// The accessibility label of the choice (it is not printed: the segments are its text).
+    static let label = "Saves kept"
+    /// What every choice leaves true: the world can be resumed, and the logs are kept whatever the saves.
+    static let resumable = "Your world stays resumable; logs are still written."
+    /// Said where a choice deletes saves: they go at the next save, not now.
     static let pending = "Older saves are deleted at the next save, not now."
+    /// What a mode keeps, in one sentence (the details list the three, the tooltip the one in force).
+    static func keeps(_ mode: SaveMode, keep: Int?) -> String {
+        switch mode {
+        case .all: return name(.all) + ": the last \(keep ?? 3) saves and the origin, the save the world began from."
+        case .newest: return name(.newest) + ": the newest save and the origin."
+        case .single: return name(.single) + ": the newest save. The origin goes too."
+        }
+    }
     static func tooltip(_ mode: SaveMode, keep: Int?) -> String {
         switch mode {
         case .all:
-            return "Recording is on: the last \(keep ?? 3) saves and the origin are kept. Switching it off keeps only the newest save"
-                + " and the origin, and deletes the older ones at the next save. Your world stays resumable; logs are still written."
+            return keeps(.all, keep: keep) + " Choosing Newest + start or Newest only deletes the older saves at the next save. "
+                + resumable
         case .newest:
-            return "Recording is off: only the newest save and the origin are kept. " + pending
-                + " Switch it on to keep the last \(keep ?? 3) saves again. Your world stays resumable; logs are still written."
+            return keeps(.newest, keep: keep) + " " + pending + " All saves keeps the last \(keep ?? 3) again. " + resumable
         case .single:
-            return "Recording is off: only the newest save is kept, and the origin goes too. " + pending
-                + " Switch it on to keep the last \(keep ?? 3) saves again. Your world stays resumable; logs are still written."
+            return keeps(.single, keep: keep) + " " + pending + " All saves keeps the last \(keep ?? 3) again. " + resumable
         }
     }
     /// Said in the details when the disk is getting full and saves are what fills it.
-    static let advice = "Switching Recording off keeps only the newest save, about one save of disk instead of three."
-    /// Why the switch cannot be turned off in a research run played in place (the world refuses `saves newest` there).
-    static let adopted = "Recording stays on: this world is a research run played in place, and keeping only the newest save would"
-        + " delete the run's own checkpoints. To do that on purpose, start it with: alife play RUN --saves newest"
+    static let advice = "Choosing Newest only keeps one save of disk instead of three."
+    /// Why the choice is fixed in a research run played in place (the world refuses the other modes there, which would delete the
+    /// run's own checkpoints).
+    static let adopted = "Only All saves: this world is a research run played in place, and keeping fewer saves would delete the run's"
+        + " own checkpoints. To do that on purpose, start it with: alife play RUN --saves newest"
     static let unknown = "This world's server does not offer the choice: it keeps its last saves."
 
-    /// The tooltip of the switch: what the state in force keeps and does, or why it cannot be changed.
-    static func switchHelp(_ mode: SaveMode, header: PlayHeader.Saves?) -> String {
+    /// The tooltip of the choice: what the mode in force keeps and does, or why it cannot be changed.
+    static func choiceHelp(_ mode: SaveMode, header: PlayHeader.Saves?) -> String {
         guard header != nil else { return unknown }
-        let other: SaveMode = mode == .all ? .newest : .all
-        if !SaveModeView.offers(other, header: header) { return adopted }
+        if header?.adopted == true { return adopted }
         return tooltip(mode, keep: header?.keep)
     }
 }
 
-/// The Storage strip under the clock strip: the size of the world on disk and the recording switch that decides how many saves it
-/// keeps. One line (the details are in a popover), so the dock keeps its room; the number turns orange or red, and shows the room
-/// left, when the disk is getting full.
+/// The Storage strip under the clock strip: the size of the world on disk and the choice of the saves it keeps (all, newest and
+/// the origin, or the newest only). One line (the details are in a popover), so the dock keeps its room; the number turns orange or
+/// red when the disk is getting full (the room left is in the tooltip and the details).
 struct StorageStripView: View {
     @ObservedObject var play: PlayController
     @ObservedObject var model: WorldModel
@@ -57,13 +84,12 @@ struct StorageStripView: View {
         let readout = storage.readout(mode: mode)
         let live = play.phase == .live
         let saves = play.store.play?.saves  // nil: a server that predates the line cannot take it
-        let other: SaveMode = mode == .all ? .newest : .all
         HStack(spacing: 4) {
             Button { details.toggle() } label: {
                 HStack(spacing: 3) {
                     Image(systemName: readout.health == .ok ? "externaldrive" : "externaldrive.badge.exclamationmark")
-                    Text(readout.total).font(.callout.monospacedDigit()).lineLimit(1)
-                    if let room = readout.room { Text(room).font(.caption.monospacedDigit()).lineLimit(1) }
+                    // (the room left is not printed here: the choice takes the line. It is in the tooltip and the details)
+                    Text(storage.sample == nil ? "…" : readout.total).font(.callout.monospacedDigit()).lineLimit(1)
                 }
                 .foregroundStyle(Self.color(readout.health))
             }
@@ -74,18 +100,29 @@ struct StorageStripView: View {
                 StorageDetailsView(readout: readout, keep: saves?.keep, offersNewest: SaveModeView.offers(.newest, header: saves))
             }
             Spacer(minLength: 2)
-            Toggle(StorageWords.switchLabel, isOn: Binding(get: { mode == .all }, set: { choose($0 ? .all : .newest) }))
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .fixedSize()
-                .disabled(!live || !SaveModeView.offers(other, header: saves))
-                .help(StorageWords.switchHelp(mode, header: saves))
+            // (the choice is one line: the two modes that delete saves are offered together, so the picker is fixed as a whole in a
+            // research run played in place, where only All saves is kept)
+            Picker(StorageWords.label, selection: Binding(get: { mode }, set: { choose($0) })) {
+                ForEach(SaveMode.allCases, id: \.self) { Text(StorageWords.segment($0)).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .fixedSize()
+            .disabled(!live || !SaveModeView.offers(.newest, header: saves))
+            .help(StorageWords.choiceHelp(mode, header: saves))
         }
     }
 
     private func choose(_ mode: SaveMode) {
-        guard mode != play.savesMode else { return }
-        play.send(.saves(mode))
+        guard let command = Self.command(choosing: mode, current: play.savesMode, header: play.store.play?.saves) else { return }
+        _ = play.send(command)
+    }
+
+    /// The line a choice sends: nil when it is the mode in force, or one the world does not take (DESIGN 34.10).
+    static func command(choosing mode: SaveMode, current: SaveMode, header: PlayHeader.Saves?) -> PlayCommand? {
+        guard mode != current, SaveModeView.offers(mode, header: header) else { return nil }
+        return .saves(mode)
     }
 
     static func color(_ health: StorageHealth) -> Color {
@@ -97,11 +134,12 @@ struct StorageStripView: View {
     }
 }
 
-/// The popover of the strip: the split between saves and logs, the growth, the room left and what the switch does.
+/// The popover of the strip: the split between saves and logs, the growth, the room left, what each choice keeps and the
+/// shared saves.
 struct StorageDetailsView: View {
     let readout: StorageReadout
     let keep: Int?
-    /// Whether the world takes `saves newest` (not a research run played in place): only then is switching off suggested.
+    /// Whether the world takes `saves newest` (not a research run played in place): only then is a smaller choice suggested.
     var offersNewest = true
 
     var body: some View {
@@ -115,6 +153,9 @@ struct StorageDetailsView: View {
                 if let sinceStart = readout.sinceStart { row("This session", sinceStart) }
                 if let free = readout.free { row("Disk", free, tint: StorageStripView.color(readout.health)) }
             }
+            if let shared = readout.shared {
+                Text(shared).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if let warning = readout.warning {
                 Label(warning, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(StorageStripView.color(readout.health))
@@ -124,10 +165,16 @@ struct StorageDetailsView: View {
                 }
             }
             Divider()
-            Text(StorageWords.help).font(.caption).fixedSize(horizontal: false, vertical: true)
-            Text(readout.mode == .all ? "Recording is on: keeping the last \(keep ?? 3) saves and the origin."
-                 : "Recording is off: keeping the newest save and the origin." + (readout.pruningPending ? " " + StorageWords.pending : ""))
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            ForEach(SaveMode.allCases, id: \.self) { mode in
+                Text(StorageWords.keeps(mode, keep: keep))
+                    .font(.caption).fontWeight(mode == readout.mode ? .semibold : .regular)
+                    .foregroundStyle(mode == readout.mode ? .primary : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(StorageWords.resumable).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if readout.mode != .all, readout.pruningPending {
+                Text(StorageWords.pending).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(12)
         .frame(width: 300, alignment: .leading)

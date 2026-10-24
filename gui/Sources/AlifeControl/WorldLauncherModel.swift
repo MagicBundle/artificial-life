@@ -54,6 +54,13 @@ final class WorldLauncherModel: ObservableObject {
 
     var selectedSource: PlaySource? { catalog.sources.first { $0.name == planet.source } }
 
+    /// The line under the planet's source when that source is a played world (it has a `play.json`): continuing a world is what
+    /// Resume is for, and a planet is a new branch from one of its saves (DESIGN 34.11).
+    static let continueHint = "To continue this world, use Resume. Make planet starts a new branch from one of its saves."
+
+    /// Whether the planet's source is a played world, so that the hint is shown.
+    var sourceIsWorld: Bool { catalog.worlds.contains { $0.name == planet.source } }
+
     /// Picks the run a planet is made from: its newest checkpoint, and the weather overlay only if the source has none.
     func selectSource(_ name: String) {
         planet.source = name

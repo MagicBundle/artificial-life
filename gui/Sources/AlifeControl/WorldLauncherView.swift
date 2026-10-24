@@ -166,6 +166,10 @@ struct LauncherPlanetBox: View {
                 ) {
                     ForEach(model.catalog.sources) { Text($0.name).tag($0.name) }
                 }
+                if model.sourceIsWorld {
+                    Text(WorldLauncherModel.continueHint).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let source = model.selectedSource {
                     Picker("Checkpoint", selection: Binding(
                         get: { model.planet.sourceStep ?? source.checkpoints.last ?? 0 },

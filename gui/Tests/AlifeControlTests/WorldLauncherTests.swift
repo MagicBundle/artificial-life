@@ -55,6 +55,18 @@ import Testing
         #expect(Set(model.catalog.sources.map(\.name)) == ["planet_a", "64k3d_s0", "bare"])
     }
 
+    @Test func aPlayedWorldAsThePlanetsSourceSaysToContinueItWithResume() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let model = make(try runs(scratch), launches: Launches())
+        model.refresh()
+        model.selectSource("planet_a")
+        #expect(model.sourceIsWorld, "planet_a has a play.json: it is a world")
+        #expect(WorldLauncherModel.continueHint.hasPrefix("To continue this world, use Resume. Make planet starts a new branch"))
+        model.selectSource("64k3d_s0")
+        #expect(!model.sourceIsWorld, "a research run has no play.json: there is nothing to continue")
+    }
+
     @Test func noRepositoryIsAnEmptyList() {
         let launches = Launches()
         let model = make(nil, launches: launches)
