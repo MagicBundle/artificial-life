@@ -23,7 +23,8 @@ extension WorldModel {
             if clicks == 1 { _ = aimClick(at: point) }
             return
         }
-        let pick = WorldPicker.pick(at: point, projector: projector(size: freeRect.size), store: play.store, display: display)
+        let pick = WorldPicker.pick(at: point, projector: projector(size: freeRect.size), store: play.store, display: display,
+                                    maxRadius: drawnRadiusCap)
         switch pick {
         case .organism(let uid, _):
             selectOrganism(uid, follow: !shift, camera: !shift, fly: clicks >= 2)
@@ -53,7 +54,8 @@ extension WorldModel {
         if lastHoverPick >= 0, t - lastHoverPick < Self.hoverPeriod, t >= lastHoverPick { return }  // (42k projections a pick)
         lastHoverPick = t
         let store = play.store
-        let pick = WorldPicker.pick(at: point, projector: projector(size: freeRect.size), store: store, display: display)
+        let pick = WorldPicker.pick(at: point, projector: projector(size: freeRect.size), store: store, display: display,
+                                    maxRadius: drawnRadiusCap)
         if let text = WorldPicker.describe(pick, store: store) {
             overlay.setHover(HoverInfo(point: point, pick: pick, text: text))
         } else {
@@ -328,10 +330,9 @@ extension WorldModel {
             let store = play.store
             let current = store.frame.flatMap { store.header?.colorMode(index: $0.colorIndex) }
             if let next = WorldKeys.nextColorMode(after: current, in: store.header?.colorModes ?? []) { play.setColor(next) }
-        case .toggleAgents:
-            if level == .planet { display.agentPoints.toggle() } else { display.agents.toggle() }
+        case .toggleAgents: display.agents.toggle()
         case .toggleBonds: display.bonds.toggle()
-        case .toggleTerritory: display.territory.toggle()
+        case .cycleTerritory: display.territory = display.territory.next
         case .followSelection: followSelection()
         case .slower, .faster:
             // Along the rungs of a running world; a paused one has no rate to change (space resumes it).

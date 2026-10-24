@@ -377,14 +377,22 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         defer { rig.play.shutdown() }
         #expect(rig.model.level == .region)
         rig.model.perform(.toggleAgents)
-        #expect(!rig.model.display.agents && !rig.model.display.agentPoints, "at the region level the key is the instances")
+        #expect(!rig.model.display.agents && !rig.model.display.agentPoints)
         rig.model.perform(.toggleBonds)
-        rig.model.perform(.toggleTerritory)
-        #expect(!rig.model.display.bonds && !rig.model.display.territory)
+        #expect(!rig.model.display.bonds)
+        // `3` walks the territory through its states: tint (the default), off, borders, tint.
+        #expect(rig.model.display.territory == .tint)
+        rig.model.perform(.cycleTerritory)
+        #expect(rig.model.display.territory == .off)
+        rig.model.perform(.cycleTerritory)
+        #expect(rig.model.display.territory == .borders)
+        rig.model.perform(.cycleTerritory)
+        #expect(rig.model.display.territory == .tint)
+        // The agent key is the instances at every level; the points of the planet level have their menu item.
         rig.model.edit { $0.distance = 75 }
         #expect(rig.model.level == .planet)
         rig.model.perform(.toggleAgents)
-        #expect(rig.model.display.agentPoints, "at the planet level it is the 1 px points")
+        #expect(rig.model.display.agents && !rig.model.display.agentPoints, "the key does not change level: instances at the planet too")
     }
 
     @Test func escapeClearsTheSelectionAndTheFollowAndResetPutsTheCameraHome() async throws {
@@ -576,7 +584,7 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         dry.model.goHome()
         #expect(dry.play.store.map == nil)
         #expect(dry.model.level == .region, "the organisms of a 2D world are in view at home")
-        #expect(WorldLevels.agentLayer(at: dry.model.level, display: dry.model.display) == .instances)
+        #expect(WorldLevels.agentLayers(at: dry.model.level, display: dry.model.display) == .instances)
     }
 
     @Test func zoomingOutAtAnObliquePitchTiltsTheViewBackSoNoEdgeOfTheMapShows() async throws {
@@ -922,7 +930,7 @@ extension WorldInteractionTests {
         view.keyDown(with: try key("\u{1B}"))
         #expect(rig.model.selection.isNone)
         view.keyDown(with: try key("3"))
-        #expect(!rig.model.display.territory)
+        #expect(rig.model.display.territory == .off)
     }
 
     @Test func theWorldKeysWorkWhateverHasTheFocusButATextField() async throws {

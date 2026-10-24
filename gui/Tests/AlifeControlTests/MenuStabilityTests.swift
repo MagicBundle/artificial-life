@@ -168,6 +168,55 @@ import Testing
         withExtendedLifetime(view) {}
     }
 
+    @Test func theLookSettingsAreFieldsOfTheMenuAndZoomingNeverRebuildsIt() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (play, model) = try await rig(scratch)
+        defer { play.shutdown(); ViewProbe.onEvaluate = nil }
+        let counts = counting(play)
+        let view = dock(play, model)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(counts["ViewMenu"] >= 1)
+        try await frames(play, 3)  // a frame in the store, so that the camera has rows to count
+        model.setFreeRect(CGRect(x: 0, y: 0, width: 900, height: 700))
+        model.goHome()
+        model.drawableResized(CGSize(width: 1800, height: 1400))
+        try await Task.sleep(for: .milliseconds(200))
+
+        // The camera is not an input: a long zoom inside one level (a continuous distance, which v2 keys the map's opacity,
+        // the instances and the size rule on) rebuilds nothing, and neither does the count of the rows in view.
+        counts.reset()
+        let changes = model.viewMenu.changes
+        let level = model.level
+        for i in 0..<30 {
+            model.zoom(by: i % 2 == 0 ? 1.03 : 0.97)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        model.drag(dx: 40, dy: 10, orbit: false)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(model.level == level, "the zoom stayed inside one level")
+        #expect(counts["ViewMenu"] == 0, "the menu was evaluated again \(counts["ViewMenu"]) times while the camera moved")
+        #expect(model.viewMenu.changes == changes)
+
+        // Brightness, Territory and Organism size are fields of the inputs (through the display): one evaluation each.
+        let edits: [(String, () -> Void, () -> Bool)] = [
+            ("Brightness", { model.display.exposure = 1.25 }, { model.viewMenu.value.display.exposure == 1.25 }),
+            ("Territory", { model.display.territory = .borders }, { model.viewMenu.value.display.territory == .borders }),
+            ("Organism size", { model.display.sizeMode = .physical }, { model.viewMenu.value.display.sizeMode == .physical }),
+            // The layer is a field of the inputs and so is whether a map is in view (it disables Brightness, A0 review finding 8).
+            ("Weather map", { model.display.map = false },
+             { !model.viewMenu.value.display.map && model.viewMenu.value.mapShown == model.mapShown }),
+        ]
+        for (name, change, shown) in edits {
+            counts.reset()
+            change()
+            #expect(await eventually { shown() }, "\(name) reaches the menu's inputs")
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(counts["ViewMenu"] == 1, "\(name): \(counts["ViewMenu"]) evaluations")
+        }
+        withExtendedLifetime(view) {}
+    }
+
     @Test func aDefaultTheMenuReadsIsReReadWhenItIsSet() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }

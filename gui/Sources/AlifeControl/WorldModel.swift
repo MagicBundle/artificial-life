@@ -71,8 +71,11 @@ final class WorldModel: ObservableObject {
     @Published var display = WorldDisplay() {
         didSet {
             if display != oldValue {
+                if display.exposure != oldValue.exposure { defaults.set(Double(display.exposure), forKey: Self.exposureKey) }
                 pushDisplay()
                 if display.map != oldValue.map { pushCamera() }  // the planet level exists only while a map is shown
+                // The size rule counts rows only where it caps them, and not for an organism layer that is off.
+                if display.sizeMode != oldValue.sizeMode || display.agents != oldValue.agents { refreshSizePolicy(force: true) }
             }
         }
     }
@@ -136,6 +139,8 @@ final class WorldModel: ObservableObject {
     var requestAttention: () -> Void = {}
     var setBadge: (String?) -> Void = { _ in }
     static let autopauseKey = "world.autopause"
+    /// The map's brightness (the View menu's Brightness), kept between runs.
+    static let exposureKey = "world.exposure"
 
     var followState = FollowState()
     var glide = CameraGlide()
@@ -167,6 +172,18 @@ final class WorldModel: ObservableObject {
     private var lastMapSerial = -1
     private var configuredFor: StreamHeader?
     private var interactionFor: StreamHeader?
+    // The size policy (DESIGN 36.7): the rows in view are counted at most ten times a second, and the radius they give is
+    // smoothed with the display link.
+    /// The drawable's size in pixels (the free rectangle at the display's scale); zero before the first draw.
+    private(set) var drawableSize = CGSize.zero
+    /// The drawable's pixels per point of the free rectangle.
+    private(set) var pixelsPerPoint: Float = 2
+    /// The coverage radius the newest count gave, and the smoothed one the renderer is given (infinite where no cap applies).
+    private(set) var coverTarget = Float.infinity
+    private(set) var coverRadius = Float.infinity
+    private var lastSizeCount: Double = -1
+    /// A count was asked for inside the period: the display link makes it once the period is over.
+    private(set) var sizeCountPending = false
     /// Seconds from a monotonic origin; tests inject theirs.
     var now: () -> Double = { CACurrentMediaTime() }
 
@@ -174,6 +191,9 @@ final class WorldModel: ObservableObject {
         self.play = play
         self.defaults = defaults
         autopause = AutopausePrefs(json: defaults.string(forKey: Self.autopauseKey))
+        if let stored = defaults.object(forKey: Self.exposureKey) as? Double, stored.isFinite, stored > 0 {
+            display.exposure = Float(min(max(stored, 0.5), 2))
+        }
         play.onDelivery = { [weak self] changes in self?.deliver(changes) }
         play.onEvents = { [weak self] events, backlog in self?.handle(events: events, backlog: backlog) }
         play.onAlerts = { [weak self] changes, backlog in self?.handle(alerts: changes, backlog: backlog) }
@@ -230,6 +250,7 @@ final class WorldModel: ObservableObject {
             menuColourIndex = index
             viewMenu.refresh()
         }
+        if changes.contains(.header) || changes.contains(.frame) { refreshSizePolicy(force: changes.contains(.header)) }
         guard let renderer else { return }
         if changes.contains(.header) || configuredFor != store.header {
             configuredFor = store.header
@@ -272,6 +293,9 @@ final class WorldModel: ObservableObject {
         deliver(all)
         pushDisplay()
         pushCamera()
+        // The size policy as it stands (a view made later than the model has seen no change of it: A0 review, finding 3).
+        renderer.worldDraw.pixelsPerPoint = pixelsPerPoint
+        pushCoverRadius()
     }
 
     private func pushDisplay() {
@@ -279,9 +303,66 @@ final class WorldModel: ObservableObject {
         view?.needsDisplay = true
     }
 
+    // MARK: The size policy
+
+    /// The rows in view and the radius they give (DESIGN §36.7): `A` is the drawable's area, `N` the listed rows whose centre is
+    /// in view at their minimum image. Counted at most `OrganismSizePolicy.countPeriod` apart (a request inside the period is made
+    /// by the display link when it is over), unless `force`. The radius the renderer is given follows the count with a one-pole
+    /// filter (`settleCoverRadius`), except when it was or becomes unbounded.
+    func refreshSizePolicy(force: Bool = false) {
+        let t = now()
+        if !force, lastSizeCount >= 0, t >= lastSizeCount, t - lastSizeCount < OrganismSizePolicy.countPeriod {
+            if !sizeCountPending {
+                sizeCountPending = true
+                startAnimating()
+            }
+            return
+        }
+        lastSizeCount = t
+        sizeCountPending = false
+        var target = Float.infinity
+        let area = Float(drawableSize.width * drawableSize.height)
+        if display.sizeMode == .capped, display.agents, area >= 1, let frame = play.store.frame, frame.n > 0 {
+            let rows = OrganismSizePolicy.rowsInView(frame: frame, camera: camera, aspect: Float(drawableSize.width / drawableSize.height),
+                                                     size: worldSize)
+            target = OrganismSizePolicy.coverRadius(area: area, rows: rows)
+        }
+        coverTarget = target
+        if !coverRadius.isFinite || !target.isFinite {
+            coverRadius = target
+            pushCoverRadius()
+        } else if coverRadius != target {
+            startAnimating()
+        }
+    }
+
+    /// One step of the smoothing of the cover radius towards the last count. True while it has not arrived.
+    func settleCoverRadius(dt: Float) -> Bool {
+        guard coverRadius != coverTarget else { return false }
+        var next = OrganismSizePolicy.smoothed(coverRadius, toward: coverTarget, dt: dt)
+        if !next.isFinite || abs(next - coverTarget) < 0.01 * max(coverTarget, 1) { next = coverTarget }
+        coverRadius = next
+        pushCoverRadius()
+        return coverRadius != coverTarget
+    }
+
+    private func pushCoverRadius() {
+        renderer?.worldDraw.coverRadius = coverRadius
+        view?.needsDisplay = true
+    }
+
+    /// The most an organism is drawn with now, in points of the free rectangle (infinite at the physical size): the picker's radius.
+    var drawnRadiusCap: Float {
+        guard display.sizeMode == .capped, let header = play.store.header, drawableSize.height >= 1 else { return .infinity }
+        let limits = OrganismSizePolicy.limits(
+            mode: .capped, cover: coverRadius, distance: camera.distance, size: worldSize, agentRadius: Float(header.radius),
+            viewHeight: Float(drawableSize.height), fovY: camera.fovY, pixelsPerPoint: pixelsPerPoint)
+        return max(limits.cap, limits.minimum) / pixelsPerPoint
+    }
+
     // MARK: The map fade
 
-    var isAnimating: Bool { fade.isAnimating(at: now()) || cameraMotionPending }
+    var isAnimating: Bool { fade.isAnimating(at: now()) || cameraMotionPending || sizeCountPending || coverRadius != coverTarget }
 
     func startAnimating() { view?.startAnimating() }
 
@@ -292,9 +373,11 @@ final class WorldModel: ObservableObject {
         lastAdvance = t
         renderer?.worldDraw.mapBlend = fade.blend(at: t)
         let moving = advanceCamera(dt: dt)
-        if !moving { lastAdvance = nil }
+        if sizeCountPending { refreshSizePolicy() }
+        let settling = settleCoverRadius(dt: dt)
+        if !moving && !settling { lastAdvance = nil }
         view?.needsDisplay = true
-        return fade.isAnimating(at: t) || moving
+        return fade.isAnimating(at: t) || moving || settling || sizeCountPending
     }
 
     // MARK: Camera
@@ -314,9 +397,15 @@ final class WorldModel: ObservableObject {
 
     /// The drawable changed size (the free rectangle, or the window): while the camera is home, fit the world to the new shape.
     func drawableResized(_ size: CGSize) {
-        guard cameraIsHome, size.height >= 1, let header = play.store.header else { return }
-        camera = Camera.world(for: header, aspect: Float(size.width / size.height))
-        pushCamera()
+        guard size.height >= 1 else { return }
+        drawableSize = size
+        pixelsPerPoint = freeRect.height >= 1 ? Float(size.height / freeRect.height) : 2
+        renderer?.worldDraw.pixelsPerPoint = pixelsPerPoint
+        if cameraIsHome, let header = play.store.header {
+            camera = Camera.world(for: header, aspect: Float(size.width / size.height))
+            pushCamera()
+        }
+        refreshSizePolicy(force: true)  // (after the refit: the count is of the view that is drawn)
     }
 
     func edit(_ change: (inout Camera) -> Void) {
@@ -351,6 +440,7 @@ final class WorldModel: ObservableObject {
             distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: worldSize, mapShown: mapShown)
         if newLevel != level { level = newLevel }
         overlay.invalidate()
+        refreshSizePolicy()
         guard let renderer else { return }
         renderer.camera = camera
         renderer.worldDraw.level = newLevel
