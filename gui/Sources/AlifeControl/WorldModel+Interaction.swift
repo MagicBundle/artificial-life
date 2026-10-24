@@ -250,7 +250,7 @@ extension WorldModel {
         if followTarget != target { followTarget = target }
         if pose.followsHeight != Self.followsHeight(target) {  // (the lift of the point looked at at edge-on goes with the follow)
             pose.followsHeight = Self.followsHeight(target)
-            pose.clamp(aspect: aspect, size: worldSize, height: height)
+            pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeEnabled)
             pushCamera()
         }
         if target.isNone, !isFlying { glide.stop() }
@@ -365,11 +365,13 @@ extension WorldModel {
 
     private func makePath(to goal: FlightPath.Pose) -> FlightPath {
         let width = 2 * tan(pose.fovY / 2) * max(1, aspect)
-        return FlightPath(from: FlightPath.Pose(pose), to: goal, size: worldSize, widthPerDistance: width, straight: reduceMotion())
+        return FlightPath(from: FlightPath.Pose(pose), to: goal, size: worldSize, widthPerDistance: width, straight: reduceMotion(),
+                          greatCircle: globeEnabled && !pose.faceDown)
     }
 
     func clampedDistance(_ d: Float) -> Float {
-        let limit = WorldPose.maxDistance(size: worldSize, fovY: pose.fovY, aspect: aspect, heading: pose.heading, tilt: pose.tilt)
+        let limit = WorldPose.maxDistance(size: worldSize, fovY: pose.fovY, aspect: aspect, heading: pose.heading, tilt: pose.tilt,
+                                          globe: globeEnabled)
         return min(max(d, WorldLevels.minDistance), max(limit, WorldLevels.minDistance))
     }
 

@@ -188,7 +188,7 @@ final class WorldModel: ObservableObject {
     var glide = CameraGlide()
     /// The scroll gesture in progress (DESIGN §36.5), and the floor point the left button grabbed.
     var scrollLaw = ScrollLaw()
-    var grabAnchor: SIMD2<Float>?
+    var grabAnchor: WorldVantage.Anchor?
     /// The world opened and no frame has been seen: the Home view is still to face the populated side.
     var homeAwaitsFrame = false
     /// A fly-to on the van Wijk path (not while following: a followed organism is not a path), and a north-up ease.
@@ -297,9 +297,10 @@ final class WorldModel: ObservableObject {
         distanceWish = nil
         sideReturn = nil
         if cameraIsHome {
-            pose.distance = pose.distanceLimit(size: worldSize, aspect: aspect)
+            pose.distance = globeEnabled ? Morph.globeDistance(L: worldSize, fovY: pose.fovY, aspect: aspect)
+                : pose.distanceLimit(size: worldSize, aspect: aspect)
         } else {
-            pose.clamp(aspect: aspect, size: worldSize, height: height)
+            pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeEnabled)
         }
         pushCamera()
     }
@@ -307,6 +308,9 @@ final class WorldModel: ObservableObject {
     /// The view's width over its height (1 before there is one).
     var aspect: Float { DockLayout.aspect(of: freeRect) }
 
+    /// Whether the globe overview exists for this world (DESIGN §36.10): the distance leads on to the globe, Home is the globe, the
+    /// projector and the grab go through the morph. Off until the renderer draws it (PR B step 7); then the view is the flat map.
+    var globeEnabled = false
     var worldSize: Float { Float(play.store.header?.size ?? 1) }
 
     /// Whether a weather map is in view: the planet level (no organisms, the map is the picture) exists only then.
@@ -314,7 +318,7 @@ final class WorldModel: ObservableObject {
 
     /// The farthest the camera may be in the window as it is now, at its heading: the picture stays within one world of its centre
     /// (`WorldPose.maxDistance`; the Home view is at this distance).
-    var distanceLimit: Float { pose.distanceLimit(size: worldSize, aspect: aspect) }
+    var distanceLimit: Float { pose.distanceLimit(size: worldSize, aspect: aspect, globe: globeEnabled) }
     var height: Float { Float(play.store.header?.height ?? 0) }
 
     // MARK: What the world sent
@@ -488,7 +492,7 @@ final class WorldModel: ObservableObject {
     /// The Home view of this world in the window as it is now: the flat overview, north up, facing the populated side.
     func homePose(header: StreamHeader) -> WorldPose {
         WorldPose.home(for: header, aspect: aspect, populatedX: play.store.frame.flatMap { WorldPose.populatedX(frame: $0, size: Float(header.size)) },
-                       fovY: pose.fovY)
+                       fovY: pose.fovY, globe: globeEnabled)
     }
 
     /// The Home view at once (a new world; a test). The `h` and `r` keys and the toolbar fly there (`home()`).
@@ -526,6 +530,22 @@ final class WorldModel: ObservableObject {
     /// A change that leaves the distance alone gets the distance the player asked for (`distanceWish`) if the limit of the tilt had
     /// held it nearer, and the limit holds it again if it still must: tilting the view to the horizon and back leaves the zoom where
     /// it was.
+    /// The view of the pose as the globe's (or the flat map's, `globeEnabled` off): the type that grabs, zooms and pans through the morph.
+    func vantage() -> WorldVantage {
+        WorldVantage(pose: pose, size: worldSize, height: height, aspect: aspect, globe: globeEnabled && mapShown)
+    }
+
+    /// `editPose` for a gesture of the vantage (grab, zoom, pan): the regime solver of DESIGN §36.10 at the globe, the plane's exact one
+    /// on the flat map.
+    func editPose(through change: (inout WorldVantage) -> Void) {
+        editPose { pose in
+            var v = WorldVantage(pose: pose, size: self.worldSize, height: self.height, aspect: self.aspect,
+                                 globe: self.globeEnabled && self.mapShown)
+            change(&v)
+            pose = v.pose
+        }
+    }
+
     func editPose(_ change: (inout WorldPose) -> Void) {
         let before = pose.distance
         let wish = distanceWish ?? before
@@ -533,7 +553,7 @@ final class WorldModel: ObservableObject {
         if pose.distance == before { pose.distance = wish }
         pose.followsHeight = Self.followsHeight(followState.target)
         let requested = pose.distance
-        pose.clamp(aspect: aspect, size: worldSize, height: height)
+        pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeEnabled)
         distanceWish = pose.distance < requested * (1 - 1e-5) ? requested : nil
         cameraIsHome = false
         pushCamera()
@@ -552,8 +572,7 @@ final class WorldModel: ObservableObject {
         cancelCameraMotion()  // a manual drag cancels the follow (the selection stays)
         headingEase = nil
         let size = viewSize
-        let (aspect, world) = (self.aspect, worldSize)
-        editPose { orbit ? $0.turn(dx: dx, dy: dy) : $0.pan(dx: dx, dy: dy, view: size, aspect: aspect, size: world) }
+        if orbit { editPose { $0.turn(dx: dx, dy: dy) } } else { editPose(through: { $0.pan(dx: dx, dy: dy, view: size) }) }
     }
 
     // MARK: The grab
@@ -562,7 +581,7 @@ final class WorldModel: ObservableObject {
     /// the drag keeps under the pointer.
     func beginGrab(at point: CGPoint) {
         dismissHint()
-        grabAnchor = pose.point(at: WorldPose.ndc(of: point, in: viewSize), aspect: aspect, size: worldSize)
+        grabAnchor = vantage().anchor(at: WorldPose.ndc(of: point, in: viewSize))
     }
 
     /// The pointer is at `point` with the left button down: the point grabbed is under it, exactly (`WorldPose.grab`).
@@ -572,8 +591,7 @@ final class WorldModel: ObservableObject {
         cancelCameraMotion()
         headingEase = nil
         let ndc = WorldPose.ndc(of: point, in: viewSize)
-        let (aspect, world) = (self.aspect, worldSize)
-        editPose { $0.grab(anchor: anchor, at: ndc, aspect: aspect, size: world) }
+        editPose(through: { $0.grab(anchor: anchor, at: ndc) })
     }
 
     func endGrab() { grabAnchor = nil }
@@ -591,8 +609,7 @@ final class WorldModel: ObservableObject {
             cancelCameraMotion()
             headingEase = nil
             let size = viewSize
-            let (aspect, world) = (self.aspect, worldSize)
-            editPose { $0.pan(dx: dx, dy: dy, view: size, aspect: aspect, size: world) }
+            editPose(through: { $0.pan(dx: dx, dy: dy, view: size) })
         case .zoom(let factor):
             zoom(by: factor, at: onMap ? point : nil)
         }
@@ -612,8 +629,7 @@ final class WorldModel: ObservableObject {
         viewEase = nil
         distanceWish = nil
         let ndc = point.map { WorldPose.ndc(of: $0, in: viewSize) }
-        let (aspect, world, height) = (self.aspect, worldSize, self.height)
-        editPose { $0.zoom(by: factor, at: ndc, aspect: aspect, size: world, height: height) }
+        editPose(through: { $0.zoom(by: factor, at: ndc) })
     }
 
     /// `n`, a click on the compass: turn the map north up, the heading easing to 0 over 0.3 s.
@@ -626,8 +642,10 @@ final class WorldModel: ObservableObject {
 
     func pushCamera() {
         let camera = self.camera
-        let newLevel = WorldLevels.level(
-            distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: worldSize, mapShown: mapShown)
+        // (with the globe the derived level: organism under 0.12 L, planet from s = 0.5, else region)
+        let newLevel = globeEnabled
+            ? projector(size: freeRect.size).level
+            : WorldLevels.level(distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: worldSize, mapShown: mapShown)
         if newLevel != level { level = newLevel }
         overlay.invalidate()
         refreshSizePolicy()
@@ -641,7 +659,7 @@ final class WorldModel: ObservableObject {
 
     /// The projection the overlay and the picker use: the camera on the free rectangle (`size` in points).
     func projector(size: CGSize) -> WorldProjector {
-        WorldProjector(camera: camera, size: worldSize, view: size, mapShown: mapShown)
+        WorldProjector(pose: pose, size: worldSize, height: height, view: size, mapShown: mapShown, globe: globeEnabled)
     }
 
     // MARK: Selection
