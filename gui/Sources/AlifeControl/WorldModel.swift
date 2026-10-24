@@ -271,6 +271,20 @@ final class WorldModel: ObservableObject {
         guard rect != freeRect else { return }
         freeRect = rect
         pushInset()
+        refitToShape(aspect: aspect)  // (the drawable follows, and refits the same way; whichever comes second finds nothing to do)
+    }
+
+    /// The window changed shape: the view is fitted to the new aspect. At Home the world is shown whole in the new shape; elsewhere the
+    /// pose is clamped again (the distance to the new footprint's limit, then the tilt), so that the picture is never wider than the
+    /// one-world patch and the seam copies are planned for the shape that is drawn. Before the world's header there is no view.
+    private func refitToShape(aspect: Float) {
+        guard play.store.header != nil, aspect.isFinite, aspect > 0 else { return }
+        if cameraIsHome {
+            pose.distance = pose.distanceLimit(size: worldSize, aspect: aspect)
+        } else {
+            pose.clamp(aspect: aspect, size: worldSize, height: height)
+        }
+        pushCamera()
     }
 
     /// The view's width over its height (1 before there is one).
@@ -468,16 +482,13 @@ final class WorldModel: ObservableObject {
         pushCamera()
     }
 
-    /// The drawable changed size (the free rectangle, or the window): while the camera is home, fit the world to the new shape.
+    /// The drawable changed size (the free rectangle, or the window): fit the view to the new shape (`refitToShape`).
     func drawableResized(_ size: CGSize) {
         guard size.height >= 1 else { return }
         drawableSize = size
         pixelsPerPoint = freeRect.height >= 1 ? Float(size.height / freeRect.height) : 2
         renderer?.worldDraw.pixelsPerPoint = pixelsPerPoint
-        if cameraIsHome, play.store.header != nil {
-            pose.distance = pose.distanceLimit(size: worldSize, aspect: Float(size.width / size.height))
-            pushCamera()
-        }
+        refitToShape(aspect: Float(size.width / size.height))
         refreshSizePolicy(force: true)  // (after the refit: the count is of the view that is drawn)
     }
 

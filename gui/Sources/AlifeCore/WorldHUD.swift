@@ -92,6 +92,16 @@ package struct WorldHUD: Equatable, Sendable {
         return out
     }
 
+    /// The free rectangle with the controls cut out, as a path to clip with: what the map's overlay draws (storms, rings, names) is
+    /// kept off the minimap's box, the compass and the zoom buttons, which are drawn over the picture and are not part of it.
+    package var clearOfControls: CGPath {
+        var path = CGPath(rect: CGRect(origin: .zero, size: free), transform: nil)
+        for (target, rect) in rects where target != .home {  // (the Home glyph is inside the minimap's box)
+            path = path.subtracting(CGPath(rect: rect, transform: nil))
+        }
+        return path
+    }
+
     /// The factor on the distance of one press of a zoom button (`-` farther, `+` closer): `e^(-+0.35)`.
     package static let zoomStep: Float = 0.35
 }

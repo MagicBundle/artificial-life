@@ -33,26 +33,42 @@ package enum WorldReadout {
     }
 
     /// The name of the hemisphere of row `y`: the one with f > 0 ("northern": 0 < y < L/2) or the other; "Equator" within 0.5% of
-    /// `L` of the line `y = 0` between them.
+    /// `L` of the line `y = 0` between them. It follows the sign of the signed distance from the equator, the same number the latitude
+    /// is made from, so the two never disagree (at exactly `y = L/2` the name used to say Southern over a latitude of 85 N).
     package static func hemisphereName(y: Float, size: Float) -> String {
-        if abs(Torus.wrapDelta(y, size: size)) < 0.005 * size { return "Equator" }
-        return WorldPose.hemisphere(y: y, size: size) == 0 ? "Northern hemisphere" : "Southern hemisphere"
+        let ybar = Torus.wrapDelta(y, size: size)
+        if abs(ybar) < 0.005 * size { return "Equator" }
+        return ybar > 0 ? "Northern hemisphere" : "Southern hemisphere"
     }
 
-    /// The camera's distance as the readout says it: a fraction of `L`, "0.34 L up".
-    package static func distanceText(_ distance: Float, size: Float) -> String {
-        guard size > 0 else { return "" }
-        return String(format: "%.2f L up", distance / size)
+    /// How high the eye is, as the readout says it: its height over the floor in world units ("205 units up"), or, in a world seen
+    /// from below (2D), how far it is from the plane. Not `L`: no other word on the screen is in `L`.
+    package static func eyeText(_ eye: Float, awayFromPlane: Bool = false) -> String {
+        guard eye.isFinite else { return "" }
+        let number = abs(eye) < 10 ? String(format: "%.1f", eye) : String(format: "%.0f", eye)
+        return "\(number) units \(awayFromPlane ? "away" : "up")"
     }
 
-    /// The line at the top left of the map: "Northern hemisphere  39 N  235 E   0.34 L up" for a world with a weather map (it has
-    /// hemispheres), "x 120  y 80   0.34 L up" for one without. The point is the centre of the view.
-    package static func line(pose: WorldPose, size: Float, mapShown: Bool) -> String {
-        let up = distanceText(pose.distance, size: size)
+    /// The line at the top left of the map: "Northern hemisphere  39 N  235 E   205 units up" for a world with a weather map (it has
+    /// hemispheres), "x 120  y 80   205 units up" for one without. The point is the centre of the view, and the height is the eye's
+    /// over the floor (`WorldPose.eyeHeight`), not the distance from the point looked at.
+    package static func line(pose: WorldPose, size: Float, height: Float = 0, mapShown: Bool) -> String {
+        let up = eyeText(pose.eyeHeight(size: size, height: height), awayFromPlane: pose.faceDown)
         if mapShown {
             return "\(hemisphereName(y: pose.y, size: size))  \(coordinates(x: pose.x, y: pose.y, size: size))   \(up)"
         }
         return String(format: "x %.0f  y %.0f   ", pose.x, pose.y) + up
+    }
+
+    /// What the readout of the pointer says about the floor under it: "floor 319 E  28 N". It is only the floor: in a 3D world an
+    /// organism above it is somewhere else (`organismText`).
+    package static func floorText(x: Float, y: Float, size: Float) -> String {
+        "floor " + coordinates(x: x, y: y, size: size)
+    }
+
+    /// What it says with the pointer over an organism: where the organism is, not the floor behind it: "organism 300 E  28 N, height 80".
+    package static func organismText(_ position: SIMD3<Float>, size: Float) -> String {
+        "organism " + coordinates(x: position.x, y: position.y, size: size) + String(format: ", height %.0f", position.z)
     }
 }
 
@@ -98,6 +114,18 @@ package struct ScaleBar: Equatable, Sendable {
         return units == 1 ? "1 unit" : "\(text) units"
     }
 
+    /// The plane the bar is true on. A bar is the length of a horizontal segment at one height: in a 3D world a segment higher up is
+    /// nearer the eye and longer on the screen (an organism at the ceiling is up to 2.6 times larger than the floor's bar says at the
+    /// region view), so the bar says which plane it is: "on the floor" for a view of the floor (the height of the point looked at is
+    /// 0, as it is unless an organism is followed), "at height 40" for one at 40. Nil for a world with no height (2D).
+    package static func planeText(z: Float, height: Float) -> String? {
+        guard height > 0, z.isFinite else { return nil }
+        return z < 0.5 ? "on the floor" : String(format: "at height %.0f", z)
+    }
+
+    /// The bar's label with the plane it is true on: "20 units on the floor".
+    package func label(on plane: String?) -> String { plane.map { "\(label) \($0)" } ?? label }
+
     /// What an organism is, next to the bar: its diameter in world units and in points at this scale, and how many times larger than
     /// that it is drawn (a symbol, §36.7); the drawn size is the size policy's for an organism at the point looked at.
     package struct OrganismReference: Equatable, Sendable {
@@ -105,6 +133,15 @@ package struct ScaleBar: Equatable, Sendable {
         package var physicalPoints: CGFloat
         /// The drawn diameter over the physical one (1 at the physical size).
         package var drawnRatio: Float
+
+        /// The organism as a segment on the bar's own scale: as long as its diameter is at `pointsPerUnit` (never clamped to a size the
+        /// plate has no room for, as a ring's radius was), at least `minimum` points so that a distant organism is still a mark, and
+        /// at most `room`, with `clipped` set when it is longer (a view zoomed in so far that the organism is wider than the plate;
+        /// the plate draws a break in the segment).
+        package func segment(minimum: CGFloat = 2, room: CGFloat) -> (points: CGFloat, clipped: Bool) {
+            guard physicalPoints.isFinite, physicalPoints <= room else { return (room, true) }
+            return (max(physicalPoints, minimum), false)
+        }
 
         /// "organism 2 units", and ", drawn x3.2" where a symbol is drawn more than 25% larger than the organism, or ", drawn x0.6"
         /// where it is more than 20% smaller (the size policy caps it far from the organisms, §36.7).

@@ -40,6 +40,33 @@ import simd
         #expect(l.first! < 20 && l.last! > 85)
     }
 
+    /// CIELAB (D65) of an sRGB colour.
+    private func lab(_ c: SIMD3<Float>) -> SIMD3<Float> {
+        let (r, g, b) = (linear(c.x), linear(c.y), linear(c.z))
+        let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+        let y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        let z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+        func f(_ t: Float) -> Float { t > 216 / 24389 ? cbrt(t) : (24389 / 27 * t + 16) / 116 }
+        return SIMD3(116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z)))
+    }
+
+    @Test func theEndsOfTheRampWhereMostOrganismsAreStandApartFromBothSeasByColourNotJustLuminance() {
+        // (review finding: the dark end of the ramp is within 1.04 to 1.5 of the cold sea in WCAG luminance contrast, and half of the recorded
+        // planet's organisms are in the lowest fifth of the volume. Luminance is the wrong measure for a purple on a blue: in CIELAB the
+        // lowest stop is 36 from the cold sea and 67 from the warm one, and a render of the 740-point window shows purple interiors. A ramp
+        // started lighter was rendered too and was worse: its blue is the sea's. The confusable band is the middle, z 20 to 40, where few
+        // organisms are.)
+        let cold = lab(MapPalette.coldSea), warm = lab(MapPalette.warmSea)
+        for t in Array(stride(from: Float(0), through: 0.1, by: 0.025)) + Array(stride(from: Float(0.7), through: 1, by: 0.05)) {
+            let c = lab(HeightColour.color(t))
+            #expect(simd_distance(c, cold) > 25 && simd_distance(c, warm) > 25, "t = \(t): \(simd_distance(c, cold)) from cold, \(simd_distance(c, warm)) from warm")
+        }
+        let lowest = lab(HeightColour.color(0))
+        #expect(simd_distance(lowest, cold) > 30 && simd_distance(lowest, warm) > 50)
+        // The same stops, measured by luminance contrast, are the finding's numbers: that measure does not say they are alike.
+        #expect(OutlineContrast.contrast(HeightColour.color(0), MapPalette.coldSea) < 1.5)
+    }
+
     @Test func noStopIsNearTheEnginesHurtRedWhichEveryModeKeeps() {
         let red = SIMD3<Float>(1, 0, 0)
         for stop in HeightColour.stops { #expect(simd_distance(stop, red) > 0.7, "\(stop)") }

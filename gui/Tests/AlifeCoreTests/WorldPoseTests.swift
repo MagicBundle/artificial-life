@@ -190,13 +190,30 @@ import simd
             let tiltBefore = pose.tilt
             pose.zoom(by: factor, at: ndc, aspect: aspect, size: L, height: H)
             #expect(abs(pose.distance / wanted - 1) < 1e-5)
-            if pose.tilt == tiltBefore {  // (a zoom out that eased the tilt moved the picture)
-                let at = try #require(screen(pose, anchor, z: pose.z))
-                #expect(hypot(at.x - pointer.x, at.y - pointer.y) < 0.5, "\(at) for \(pointer)")
-                checked += 1
-            }
+            // (also when a zoom out eased the tilt: the grab is made last, with the orientation the view ends with)
+            let at = try #require(screen(pose, anchor, z: pose.z))
+            #expect(hypot(at.x - pointer.x, at.y - pointer.y) < 0.5, "\(at) for \(pointer), tilt \(tiltBefore) to \(pose.tilt)")
+            checked += 1
         }
         #expect(checked > 100)
+    }
+
+    @Test func aZoomOutThatEasesTheTiltStillKeepsThePointUnderThePointer() throws {
+        // (review finding: the grab was made before the tilt was limited, and a factor of 3 at the top left moved the point 5 units)
+        var eased = 0
+        for tilt: Float in [0.5, 0.7, 0.9, 1.1] {
+            var pose = WorldPose(x: 160, y: 40, heading: 0, tilt: tilt, distance: 40)
+            pose.clamp(aspect: aspect, size: L, height: H)
+            let before = pose.tilt
+            let ndc = SIMD2<Float>(-0.9, 0.9)
+            let anchor = try #require(pose.point(at: ndc, aspect: aspect, size: L))
+            pose.zoom(by: 3, at: ndc, aspect: aspect, size: L, height: H)
+            if pose.tilt < before { eased += 1 }
+            let again = try #require(pose.point(at: ndc, aspect: aspect, size: L))
+            let off = Torus.wrapDelta(again - anchor, size: L)
+            #expect(off.x.magnitude < 1e-3 && off.y.magnitude < 1e-3, "tilt \(before) to \(pose.tilt): \(anchor) against \(again)")
+        }
+        #expect(eased >= 2, "the case is reached: a wider view is not allowed the same tilt")
     }
 
     @Test func aZoomWithNoPointerIsAboutTheCentreAndTheClampsHold() {

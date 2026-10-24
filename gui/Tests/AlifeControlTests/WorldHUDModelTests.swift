@@ -355,7 +355,8 @@ import simd
         let model = rig.model
         let p = CGPoint(x: 300, y: 200)
         let place = try #require(model.projector(size: model.freeRect.size).world(at: p, height: 0))
-        #expect(model.pointerReadout(at: p) == WorldReadout.coordinates(x: place.x, y: place.y, size: model.worldSize))
+        #expect(model.pointerReadout(at: p) == WorldReadout.floorText(x: place.x, y: place.y, size: model.worldSize), "it says it is the floor")
+        #expect(WorldReadout.floorText(x: place.x, y: place.y, size: model.worldSize).hasSuffix(WorldReadout.coordinates(x: place.x, y: place.y, size: model.worldSize)))
         #expect(model.pointerReadout(at: nil) == nil)
     }
 

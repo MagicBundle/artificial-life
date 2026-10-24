@@ -43,8 +43,10 @@ package enum ScrollOutcome: Equatable, Sendable {
 ///   v1's was 0.01);
 /// * **momentum never zooms**: an event with a momentum phase is ignored for zoom, so a flick does not carry on across the range;
 /// * **a gesture cannot cross the range**: the summed `|ln factor|` of one gesture (from `began` to `ended`, and for an unphased
-///   wheel the events within one second) is capped at `ln 4`. v1 read the whole range, `ln(0.8 L / 4)` = 4.2, as 420 points of
-///   summed delta at 0.01: one hard flick with its tail.
+///   wheel the events with no pause of a quarter of a second between them) is capped at `ln 4`. v1 read the whole range, `ln(0.8 L / 4)` = 4.2, as 420 points of
+///   summed delta at 0.01: one hard flick with its tail. An unphased wheel's gesture ends at a quiet gap of a quarter of a second
+///   (not a second after its first event: a wheel spun without a pause is one gesture, however long, so it cannot zoom by `ln 4`
+///   every second).
 ///
 /// Pinch is not a scroll and is not capped: it is a direct manipulation of the scale.
 package struct ScrollLaw: Equatable, Sendable {
@@ -54,12 +56,15 @@ package struct ScrollLaw: Equatable, Sendable {
     package static let eventCap: Float = 1.5
     /// The most one gesture may zoom by, as `|ln factor|`: a factor of 4 either way.
     package static let gestureCap: Float = log(4)
-    /// The window of an unphased wheel's gesture, in seconds.
-    package static let wheelWindow: Double = 1
+    /// The pause that ends an unphased wheel's gesture, in seconds: the events of a wheel with less than this between them are one
+    /// gesture.
+    package static let wheelGap: Double = 0.25
 
     /// The summed `|ln factor|` of the gesture in progress, and when it began.
     package private(set) var zoomed: Float = 0
     package private(set) var began: Double = -.infinity
+    /// When the last unphased wheel event came.
+    package private(set) var lastWheel: Double = -.infinity
 
     package init() {}
 
@@ -68,11 +73,16 @@ package struct ScrollLaw: Equatable, Sendable {
         if event.phase == .began || event.phase == .mayBegin { reset(at: event.time) }
         defer { if event.phase == .ended || event.phase == .cancelled { zoomed = 0 } }
         if event.precise, !scrollZooms {
+            // (AppKit gives no NaN; a delta that is not a number must not reach the grab, which would put the view at the origin)
+            guard event.dx.isFinite, event.dy.isFinite else { return .none }
             return event.dx == 0 && event.dy == 0 ? .none : .pan(dx: event.dx, dy: event.dy)
         }
         // A zoom. Momentum never zooms.
         guard event.momentum == .none else { return .none }
-        if event.phase == .none, event.time - began > Self.wheelWindow { reset(at: event.time) }
+        if event.phase == .none {
+            if event.time - lastWheel > Self.wheelGap { reset(at: event.time) }
+            lastWheel = event.time
+        }
         let coefficient = event.precise ? Self.preciseCoefficient : Self.wheelCoefficient
         guard event.dy.isFinite else { return .none }
         var exponent = max(min(-event.dy * coefficient, Self.eventCap), -Self.eventCap)

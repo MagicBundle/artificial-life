@@ -14,6 +14,11 @@ struct WorldOverlayView: View {
         let _ = overlay.revision
         Canvas { context, size in
             let projector = model.projector(size: size)
+            // The minimap is drawn by the Metal pass under this canvas, and the compass and the buttons by the controls' canvas over it
+            // (a fill that lets what is under it through): none of the map's marks (storms, names, rings, territory) are drawn over
+            // them, as they would be where the box covers them.
+            var map = context
+            map.clip(to: Path(WorldHUD(free: size, minimap: model.display.minimap && model.mapShown, compass: !model.pose.faceDown).clearOfControls))
             let store = play.store
             let selection = model.selection
             let hover = overlay.hover
@@ -21,26 +26,26 @@ struct WorldOverlayView: View {
             // Territory first: what a kin group owns, under the rings.
             if let territory = store.territory {
                 for target in [castHover, selection] {
-                    if case .kin(let id)? = target { drawTerritory(of: id, territory, store, projector, &context) }
+                    if case .kin(let id)? = target { drawTerritory(of: id, territory, store, projector, &map) }
                 }
-                if case .territory(_, let kin)? = hover?.pick { drawTerritory(of: kin, territory, store, projector, &context, faint: true) }
+                if case .territory(_, let kin)? = hover?.pick { drawTerritory(of: kin, territory, store, projector, &map, faint: true) }
             }
             if let environment = store.environment {
-                drawPools(environment, projector, selected: selection, &context)
+                drawPools(environment, projector, selected: selection, &map)
             }
-            drawPowerAim(store, projector, &context)
+            drawPowerAim(store, projector, &map)
             if let storms = store.storms {
                 var marked: Set<Int> = []
                 if case .storm(let id) = selection { marked.insert(id) }
                 if case .storm(let id)? = castHover { marked.insert(id) }
                 if case .storm(let id)? = hover?.pick { marked.insert(id) }
-                drawStorms(projector.glyphs(of: storms.storms), projector.level, selected: selection, marked: marked, &context)
+                drawStorms(projector.glyphs(of: storms.storms), projector.level, selected: selection, marked: marked, &map)
             }
-            if let uid = selection.organismUID { drawSelection(uid, store, projector, &context) }
+            if let uid = selection.organismUID { drawSelection(uid, store, projector, &map) }
             if case .organism(let uid, let index)? = hover?.pick, uid != selection.organismUID {
-                drawHover(uid, hint: index, store, projector, &context)
+                drawHover(uid, hint: index, store, projector, &map)
             }
-            if let hover { drawTooltip(hover, in: size, &context) }
+            if let hover { drawTooltip(hover, in: size, &context) }  // (the tooltip is the pointer's, over everything)
         }
         .allowsHitTesting(false)
     }

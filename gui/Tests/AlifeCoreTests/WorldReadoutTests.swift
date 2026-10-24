@@ -43,10 +43,50 @@ import simd
         }
     }
 
-    @Test func theReadoutLineNamesTheHemisphereThePlaceAndTheHeight() {
+    @Test func theHemispheresNameAgreesWithTheLatitudeEvenAtTheWrap() {
+        // (review finding: at y = L/2 the name was by `wrap` (Southern) and the latitude by the tie-rounded `wrapDelta` (85 N))
+        for y in [Float(159.99), 160, 160.01, 0.7, 319.3, 36, 284] {
+            let ybar = Torus.wrapDelta(y, size: L)
+            let name = WorldReadout.hemisphereName(y: y, size: L)
+            let latitude = WorldReadout.latitude(ybar: ybar, size: L)
+            if name == "Northern hemisphere" { #expect(latitude > 0, "y = \(y): \(name), \(latitude)") }
+            if name == "Southern hemisphere" { #expect(latitude < 0, "y = \(y): \(name), \(latitude)") }
+            let line = WorldReadout.line(pose: WorldPose(x: 10, y: y, distance: 50), size: L, height: 80, mapShown: true)
+            #expect(line.contains(name) && (name == "Equator" || line.contains(latitude > 0 ? " N " : " S ")), "\(line)")
+        }
+    }
+
+    @Test func theReadoutLineNamesTheHemisphereThePlaceAndTheEyesHeightInWorldUnits() {
+        // Looking straight down at the floor from a distance of 108.8: the eye is 108.8 units up.
         let p = WorldPose(x: 208.9, y: 36, distance: 108.8)
-        #expect(WorldReadout.line(pose: p, size: L, mapShown: true) == "Northern hemisphere  235 E  37 N   0.34 L up")
-        #expect(WorldReadout.line(pose: p, size: L, mapShown: false) == "x 209  y 36   0.34 L up", "a world with no map has no hemispheres")
+        #expect(WorldReadout.line(pose: p, size: L, height: 80, mapShown: true) == "Northern hemisphere  235 E  37 N   109 units up")
+        #expect(WorldReadout.line(pose: p, size: L, height: 80, mapShown: false) == "x 209  y 36   109 units up", "a world with no map has no hemispheres")
+        #expect(!WorldReadout.line(pose: p, size: L, height: 80, mapShown: true).contains(" L "), "L is shown nowhere else")
+    }
+
+    @Test func theEyesHeightIsOverTheFloorNotTheDistanceFromThePointLookedAt() {
+        // (review finding: an organism at z = 79 seen from 0.08 L = 25.6 units: the eye is at 104.6, above the 80-unit ceiling,
+        // and the line said "0.08 L up"; tilted by 0.7 it said the same of an eye 101 over the floor)
+        let straight = WorldPose(x: 100, y: 40, z: 79, distance: 25.6)
+        #expect(abs(straight.eyeHeight(size: L, height: 80) - 104.6) < 1e-3)
+        #expect(WorldReadout.line(pose: straight, size: L, height: 80, mapShown: true).hasSuffix("105 units up"))
+        var tilted = straight
+        tilted.tilt = 0.7
+        #expect(abs(tilted.eyeHeight(size: L, height: 80) - (79 + 25.6 * cos(0.7))) < 1e-3)
+        #expect(tilted.eyeHeight(size: L, height: 80) < straight.eyeHeight(size: L, height: 80))
+        // At Home it is the distance, as z and the tilt are 0.
+        let home = WorldPose(x: 160, y: 0, distance: 220)
+        #expect(home.eyeHeight(size: L, height: 80) == 220)
+        // A world seen from below has no up: the distance from its plane.
+        let flat = WorldPose(x: 100, y: 100, tilt: 0.4, distance: 70, faceDown: true)
+        #expect(flat.eyeHeight(size: L, height: 0) == 70)
+        #expect(WorldReadout.line(pose: flat, size: L, height: 0, mapShown: false).hasSuffix("70 units away"))
+        #expect(WorldReadout.eyeText(4.04) == "4.0 units up" && WorldReadout.eyeText(.nan) == "")
+    }
+
+    @Test func thePointerReadoutSaysWhetherItIsTheFloorOrAnOrganism() {
+        #expect(WorldReadout.floorText(x: 208.9, y: 36, size: L) == "floor 235 E  37 N")
+        #expect(WorldReadout.organismText(SIMD3(208.9, 36, 79.6), size: L) == "organism 235 E  37 N, height 80")
     }
 
     @Test func aScaleBarIsARoundNumberOfUnitsBetween56And140PointsLong() {
@@ -81,6 +121,31 @@ import simd
         #expect(ScaleBar.organism(radius: 1, pointsPerUnit: 10, drawnRadiusPoints: .infinity)?.drawnRatio == 1)
         #expect(ScaleBar.organism(radius: 0, pointsPerUnit: 10, drawnRadiusPoints: 4) == nil)
         #expect(ScaleBar.organism(radius: 0.75, pointsPerUnit: 10, drawnRadiusPoints: 7.5)?.label == "organism 1.5 units")
+    }
+
+    @Test func aScaleBarSaysWhichPlaneItIsTrueOn() {
+        // (review finding: at the region view a bar true on the floor is 2.6 times too long for an organism at the ceiling)
+        #expect(ScaleBar.planeText(z: 0, height: 80) == "on the floor" && ScaleBar.planeText(z: 0.3, height: 80) == "on the floor")
+        #expect(ScaleBar.planeText(z: 40.4, height: 80) == "at height 40")
+        #expect(ScaleBar.planeText(z: 0, height: 0) == nil, "a 2D world has no planes")
+        #expect(ScaleBar.planeText(z: .nan, height: 80) == nil)
+        let bar = ScaleBar(units: 20, points: 100)
+        #expect(bar.label(on: "on the floor") == "20 units on the floor" && bar.label(on: nil) == "20 units")
+    }
+
+    @Test func theOrganismIsASegmentOnTheBarsOwnScaleNeverClampedToARing() {
+        // (review finding: the ring was clamped to a radius of 13 points, 0.44 of the bar the organism it names equalled)
+        let bar = try! #require(ScaleBar.choose(pointsPerUnit: 29.3))  // 2 units = 58.6 points, a bar of 2 units
+        #expect(abs(bar.units - 2) < 1e-6 && abs(bar.points - 58.6) < 0.1)
+        let organism = try! #require(ScaleBar.organism(radius: 1, pointsPerUnit: 29.3, drawnRadiusPoints: 29.3))
+        let segment = organism.segment(room: 200)
+        #expect(abs(segment.points - bar.points) < 0.1 && !segment.clipped, "as long as the bar that is its own length: \(segment)")
+        // Far away it is a mark of 2 points; very near it is wider than the plate and says so.
+        let far = try! #require(ScaleBar.organism(radius: 1, pointsPerUnit: 0.3, drawnRadiusPoints: 1))
+        #expect(far.segment(room: 200) == (2, false))
+        let near = try! #require(ScaleBar.organism(radius: 1, pointsPerUnit: 400, drawnRadiusPoints: 400))
+        #expect(near.segment(room: 200) == (200, true))
+        #expect(ScaleBar.OrganismReference(diameterUnits: 2, physicalPoints: .infinity, drawnRatio: 1).segment(room: 120) == (120, true))
     }
 
     @Test func theCompassPointsNorthUpWhenTheMapIsNorthUpAndTurnsWithTheHeading() {

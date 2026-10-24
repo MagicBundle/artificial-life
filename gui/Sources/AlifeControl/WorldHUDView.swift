@@ -56,10 +56,10 @@ struct WorldHUDView: View {
 
     // MARK: Where the view is
 
-    /// "Northern hemisphere  39 N  235 E   0.34 L up", and the place under the pointer.
+    /// "Northern hemisphere  39 N  235 E   205 units up", and what is under the pointer ("floor 270 E  28 N", or the organism's own place).
     private func drawReadout(_ L: Float, _ context: inout GraphicsContext) {
-        var line = WorldReadout.line(pose: model.pose, size: L, mapShown: model.mapShown)
-        if let pointer = overlay.pointerText { line += "    pointer \(pointer)" }
+        var line = WorldReadout.line(pose: model.pose, size: L, height: model.height, mapShown: model.mapShown)
+        if let pointer = overlay.pointerText { line += "    \(pointer)" }
         plated(line, at: CGPoint(x: WorldHUD.margin, y: 10), mono: true, &context)
     }
 
@@ -239,42 +239,61 @@ struct WorldHUDView: View {
 
     // MARK: Scale
 
-    /// A bar of a round number of world units, true at the point looked at, and the size of an organism beside it.
+    /// The scale plate's height, and its distance from the bottom of the free rectangle.
+    static let scalePlateHeight: CGFloat = 58
+    static let scalePlateBottomInset: CGFloat = 46
+    /// The longest an organism's segment is drawn, in points (it is wider only when the view is zoomed in past a few units).
+    private static let organismRoom: CGFloat = 220
+
+    /// A bar of a round number of world units, true on the plane it names (the floor, unless an organism is followed), and under it
+    /// the organism as a segment on the same scale: its diameter as long as it is at this scale, never clamped, with what the size
+    /// policy draws it as in words ("drawn x0.1").
     private func drawScale(_ size: CGSize, _ context: inout GraphicsContext) {
         guard let scale = model.scaleBar else { return }
         let bar = scale.bar
-        let label = context.resolve(text(bar.label, size: 11, mono: true))
-        let labelSize = label.measure(in: CGSize(width: 300, height: 30))
+        let label = context.resolve(text(bar.label(on: scale.plane), size: 11, mono: true))
+        let labelSize = label.measure(in: CGSize(width: 400, height: 30))
         var organismText: GraphicsContext.ResolvedText?
         var organismSize = CGSize.zero
+        var segment: (points: CGFloat, clipped: Bool) = (0, false)
         if let organism = scale.organism {
             organismText = context.resolve(text(organism.label, size: 10, opacity: 0.82))
             organismSize = organismText?.measure(in: CGSize(width: 400, height: 30)) ?? .zero
+            segment = organism.segment(room: Self.organismRoom)
         }
-        let barWidth = max(bar.points, labelSize.width)
-        let reserve: CGFloat = organismText == nil ? 0 : 36 + organismSize.width
-        let plateRect = CGRect(x: 8, y: size.height - 84, width: 16 + barWidth + reserve, height: 38)
+        let rowWidth = max(bar.points, segment.points + (organismText == nil ? 0 : 8 + organismSize.width))
+        let plateRect = CGRect(x: 8, y: size.height - Self.scalePlateBottomInset - Self.scalePlateHeight,
+                               width: 16 + max(rowWidth, labelSize.width), height: Self.scalePlateHeight)
         plate(plateRect, radius: 6, &context)
         let x0 = plateRect.minX + 8
         context.draw(label, at: CGPoint(x: x0, y: plateRect.minY + 4 + labelSize.height / 2), anchor: .leading)
-        let barY = plateRect.maxY - 9
-        var line = Path()
-        line.move(to: CGPoint(x: x0, y: barY))
-        line.addLine(to: CGPoint(x: x0 + bar.points, y: barY))
-        for x in [x0, x0 + bar.points] {
-            line.move(to: CGPoint(x: x, y: barY - 4))
-            line.addLine(to: CGPoint(x: x, y: barY + 4))
+        let barY = plateRect.minY + 4 + labelSize.height + 9
+        func ticked(from x: CGFloat, length: CGFloat, at y: CGFloat, half: CGFloat) -> Path {
+            var line = Path()
+            line.move(to: CGPoint(x: x, y: y))
+            line.addLine(to: CGPoint(x: x + length, y: y))
+            for end in [x, x + length] {
+                line.move(to: CGPoint(x: end, y: y - half))
+                line.addLine(to: CGPoint(x: end, y: y + half))
+            }
+            return line
         }
-        context.stroke(line, with: .color(.white.opacity(0.95)), lineWidth: 1.5)
-        if let organism = scale.organism, let organismText {
-            // The ring is the organism at this scale; one larger than the plate is drawn as far as the plate goes, dashed.
-            let cx = x0 + barWidth + 14
-            let full = max(organism.physicalPoints / 2, 1.5)
-            let radius = min(full, 13)
-            let ring = Path(ellipseIn: CGRect(x: cx - radius, y: barY - radius, width: 2 * radius, height: 2 * radius))
-            context.fill(ring, with: .color(.white.opacity(0.35)))
-            context.stroke(ring, with: .color(.white.opacity(0.95)), style: StrokeStyle(lineWidth: 1, dash: full > 13 ? [3, 2] : []))
-            context.draw(organismText, at: CGPoint(x: cx + radius + 6, y: barY), anchor: .leading)
+        context.stroke(ticked(from: x0, length: bar.points, at: barY, half: 4), with: .color(.white.opacity(0.95)), lineWidth: 1.5)
+        if let organismText {
+            // The organism: a segment of its diameter on the bar's own scale (a break in it where it is wider than there is room for).
+            let y = barY + 15
+            let tint = Color(red: 1, green: 0.88, blue: 0.2)
+            if segment.clipped {
+                var broken = ticked(from: x0, length: segment.points, at: y, half: 3)
+                for gap in [x0 + segment.points * 0.5, x0 + segment.points * 0.5 + 5] {
+                    broken.move(to: CGPoint(x: gap - 2, y: y + 4))
+                    broken.addLine(to: CGPoint(x: gap + 2, y: y - 4))
+                }
+                context.stroke(broken, with: .color(tint), lineWidth: 1.5)
+            } else {
+                context.stroke(ticked(from: x0, length: segment.points, at: y, half: 3), with: .color(tint), lineWidth: 2)
+            }
+            context.draw(organismText, at: CGPoint(x: x0 + segment.points + 8, y: y), anchor: .leading)
         }
     }
 
@@ -283,7 +302,7 @@ struct WorldHUDView: View {
     /// The height colour's ramp, low at the bottom, with the heights at its ticks.
     /// The legend's colour bar in a free rectangle of `size`: above the scale bar, at the left edge.
     static func legendBar(in size: CGSize) -> CGRect {
-        CGRect(x: 20, y: size.height - 84 - 14 - 104, width: 12, height: 104)
+        CGRect(x: 20, y: size.height - scalePlateBottomInset - scalePlateHeight - 14 - 104, width: 12, height: 104)
     }
 
     private func drawLegend(height: Float, _ size: CGSize, _ context: inout GraphicsContext) {
@@ -313,16 +332,19 @@ struct ControlsHintView: View {
 
     var body: some View {
         if model.hintVisible {
+            // At the top, under the readout and between it and the compass: the bottom corners have the scale bar and the minimap, which a
+            // line there lay over in a narrow window.
             Text(WorldModel.hintText)
                 .font(.callout)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-                .background(.regularMaterial, in: Capsule())
-                .overlay(Capsule().stroke(Color.primary.opacity(0.12)))
-                .frame(maxWidth: 620)
-                .padding(.bottom, 74)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.12)))
+                .frame(maxWidth: 560)
+                .padding(.horizontal, WorldHUD.compassSide + WorldHUD.margin + 20)
+                .padding(.top, 46)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .allowsHitTesting(false)
                 .transition(.opacity)
         }

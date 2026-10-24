@@ -99,8 +99,9 @@ struct ViewMenu: View {
             Toggle("Minimap (I)", isOn: layer(\.minimap))
                 .disabled(!inputs.mapShown)
             // The trackpad's two-finger scroll pans (the Maps convention); on, it zooms as in v1. The mouse wheel and a pinch always zoom.
+            // A Magic Mouse reports precise deltas like a trackpad, so its scroll pans too: this is how it zooms.
             Toggle("Scroll zooms", isOn: layer(\.scrollZooms))
-                .help("The trackpad's two-finger scroll zooms instead of panning (the mouse wheel and a pinch always zoom)")
+                .help("The trackpad's two-finger scroll (and a Magic Mouse's) zooms instead of panning; a wheel mouse and a pinch always zoom")
             Divider()
             // The pauses the world takes by itself. The player's choice is kept and sent to every world after its header.
             Menu("Pauses") {

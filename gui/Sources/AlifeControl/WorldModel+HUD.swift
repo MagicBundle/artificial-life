@@ -53,9 +53,13 @@ extension WorldModel {
         let inside = CGPoint(x: min(max(point.x, inset.rect.minX + 0.5), inset.rect.maxX - 0.5),
                              y: min(max(point.y, inset.rect.minY + 0.5), inset.rect.maxY - 0.5))
         guard let place = inset.torus(atPoint: inside) else { return }
+        // The marker in the box is the floor point under the centre of the picture, which is the pose's own `x`, `y` only when the view
+        // is straight down at height 0: the pose goes where the floor under its centre is the place under the pointer.
+        let aspect = self.aspect
         editPose {
-            $0.x = place.x
-            $0.y = place.y
+            let off = $0.offset(at: .zero, aspect: aspect, planeZ: 0) ?? .zero
+            $0.x = place.x - off.x
+            $0.y = place.y - off.y
         }
     }
 
@@ -105,11 +109,18 @@ extension WorldModel {
         overlay.setHUDHover(target, place: place)
     }
 
-    /// The readout of the world point under the pointer on the map: "270 E  28 N", nil off the map or with no weather map.
-    func pointerReadout(at point: CGPoint?) -> String? {
-        guard mapShown, let point, freeRect.width >= 1,
-              let place = projector(size: freeRect.size).world(at: point, height: 0) else { return nil }
-        return WorldReadout.coordinates(x: place.x, y: place.y, size: worldSize)
+    /// The readout of the pointer on the map, nil off the map or with no weather map: "floor 270 E  28 N" for the floor under the
+    /// pointer, or, with the pointer over an organism (`pick`), the organism's own place and height, "organism 300 E  28 N, height 80":
+    /// in a 3D world the floor under an organism is not where it is (30 units east of the centre at the ceiling, from a distance of 128
+    /// the floor under the pointer was 56 degrees of longitude away).
+    func pointerReadout(at point: CGPoint?, over pick: WorldPick? = nil) -> String? {
+        guard mapShown, let point, freeRect.width >= 1 else { return nil }
+        if case .organism(let uid, let hint)? = pick, let frame = play.store.frame,
+           let index = play.store.listedIndex(ofUID: uid, hint: hint) {
+            return WorldReadout.organismText(frame.position(index), size: worldSize)
+        }
+        guard let place = projector(size: freeRect.size).world(at: point, height: 0) else { return nil }
+        return WorldReadout.floorText(x: place.x, y: place.y, size: worldSize)
     }
 
     // MARK: The scale bar and the organism reference
@@ -121,10 +132,12 @@ extension WorldModel {
         return projector(size: freeRect.size).points(ofUnits: 1, at: at).map { Float($0) }
     }
 
-    /// The scale bar for the view as it is: a round number of world units, and what an organism is at this scale.
-    var scaleBar: (bar: ScaleBar, organism: ScaleBar.OrganismReference?)? {
+    /// The scale bar for the view as it is: a round number of world units, the plane it is true on (the height of the point looked
+    /// at: the floor unless an organism is followed) and what an organism is at this scale.
+    var scaleBar: (bar: ScaleBar, organism: ScaleBar.OrganismReference?, plane: String?)? {
         guard let scale = pointsPerUnit, let bar = ScaleBar.choose(pointsPerUnit: scale) else { return nil }
-        guard let header = play.store.header else { return (bar, nil) }
+        let plane = ScaleBar.planeText(z: pose.z, height: height)
+        guard let header = play.store.header else { return (bar, nil, plane) }
         let radius = Float(header.radius)
         let physicalPixels = radius * scale * pixelsPerPoint
         var drawn = physicalPixels
@@ -134,13 +147,14 @@ extension WorldModel {
                 viewHeight: Float(drawableSize.height), fovY: camera.fovY, pixelsPerPoint: pixelsPerPoint)
             drawn = min(max(physicalPixels, limits.minimum), max(limits.minimum, limits.cap))
         }
-        return (bar, ScaleBar.organism(radius: radius, pointsPerUnit: scale, drawnRadiusPoints: drawn / max(pixelsPerPoint, 0.1)))
+        return (bar, ScaleBar.organism(radius: radius, pointsPerUnit: scale, drawnRadiusPoints: drawn / max(pixelsPerPoint, 0.1)), plane)
     }
 
     // MARK: The hint
 
-    /// The hint line of the controls, shown once on the first World window and again from View > Controls.
-    static let hintText = "Drag moves the map. Two-finger scroll pans; pinch or the mouse wheel zooms. H home, N north up, I minimap, C colour (height included). Option-drag tilts."
+    /// The hint line of the controls, shown once on the first World window and again from View > Controls. A Magic Mouse reports
+    /// precise deltas like a trackpad (so its scroll pans, and the system cannot tell the two apart): it zooms with the switch.
+    static let hintText = "Drag moves the map. Two-finger scroll pans; pinch or a mouse wheel zooms (Magic Mouse: View > Scroll zooms). H home, N north up, I minimap, C colour. Option-drag tilts."
     static let hintKey = "world.hintShown"
 
     /// The first time a world opens the hint is shown, until any input.

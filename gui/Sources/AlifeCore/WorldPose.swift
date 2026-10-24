@@ -61,6 +61,12 @@ package struct WorldPose: Equatable, Sendable {
         return w > 0 && w < size / 2 ? 0 : 1
     }
 
+    /// The height of the eye over the floor, in world units: `camera.position.z` (the point looked at is at `z`, the eye is further up
+    /// by `distance` tilted; not the distance itself). For a world seen from below (2D) it is the distance to the plane.
+    package func eyeHeight(size: Float, height: Float) -> Float {
+        faceDown ? distance : camera(size: size, height: height).position.z
+    }
+
     // MARK: The camera
 
     /// The camera of this view on a world of `size` x `size` x `height`: the target at the centre, looking straight down
@@ -217,14 +223,17 @@ package struct WorldPose: Equatable, Sendable {
 
     /// Multiplies the distance by `factor` (below 1 comes closer; the result is clamped to the footprint's limit) and moves the
     /// centre so that the point that was under the pointer at `ndc` is under it again. Without a pointer on the plane (nil, or
-    /// off it) the zoom is about the centre. Exact whenever the distance is not clamped to nothing.
+    /// off it) the zoom is about the centre. Exact for any pointer when the pointer's ray meets the plane after the zoom: the tilt
+    /// is limited first (zooming out can ask for a steeper view, and the limit does not depend on where the centre is) and the
+    /// grab is made last, with the orientation the view ends with. The distance itself may be clamped (the point then moves with the
+    /// clamp, as a grab at the new distance puts it back under the pointer).
     package mutating func zoom(by factor: Float, at ndc: SIMD2<Float>?, aspect: Float, size: Float, height: Float) {
         guard factor > 0, factor.isFinite else { return }
         let anchor = ndc.flatMap { point(at: $0, aspect: aspect, size: size) }
         let limit = distanceLimit(size: size, aspect: aspect)
         distance = min(max(distance * factor, WorldLevels.minDistance), max(limit, WorldLevels.minDistance))
-        if let anchor, let ndc { grab(anchor: anchor, at: ndc, aspect: aspect, size: size) }
         limitTilt(aspect: aspect, size: size, height: height)
+        if let anchor, let ndc { grab(anchor: anchor, at: ndc, aspect: aspect, size: size) }
     }
 
     /// A heading and tilt drag of `dx`, `dy` points (+y down): dragging right turns the view towards the right, dragging up

@@ -57,6 +57,22 @@ import Testing
         }
     }
 
+    @Test func theMapsOverlayIsClippedToTheFreeRectangleWithTheControlsCutOut() {
+        for size in [CGSize(width: 780, height: 700), CGSize(width: 1472, height: 900)] {
+            let hud = WorldHUD(free: size, minimap: true)
+            let clear = hud.clearOfControls
+            #expect(clear.contains(CGPoint(x: size.width / 2, y: size.height / 2)) && clear.contains(CGPoint(x: 1, y: 1)))
+            for (target, rect) in hud.rects {  // (the Home glyph, inside the minimap, is cut out with it: it is not a hole in a hole)
+                #expect(!clear.contains(CGPoint(x: rect.midX, y: rect.midY)), "\(target) is not part of the map")
+                #expect(!clear.contains(CGPoint(x: rect.minX + 1, y: rect.minY + 1)) && !clear.contains(CGPoint(x: rect.maxX - 1, y: rect.maxY - 1)))
+            }
+            let box = try! #require(hud.minimap)
+            #expect(clear.contains(CGPoint(x: box.minX - 3, y: box.midY)) && clear.contains(CGPoint(x: box.midX, y: box.minY - 3)), "right next to it is the map")
+        }
+        let none = WorldHUD(free: CGSize(width: 200, height: 120), minimap: true)
+        #expect(none.clearOfControls.contains(CGPoint(x: 100, y: 60)), "no controls, the whole rectangle")
+    }
+
     @Test func aPressLandsOnTheControlUnderItAndTheHomeGlyphWinsInsideTheMinimap() {
         let hud = WorldHUD(free: free, minimap: true)
         for (target, rect) in hud.rects { #expect(hud.target(at: CGPoint(x: rect.midX, y: rect.midY)) == target) }

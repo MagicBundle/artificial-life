@@ -82,18 +82,22 @@ extension WorldModel {
         } else {
             hoverHUD(.map, at: .zero)
         }
-        overlay.setPointerText(pointerReadout(at: point))
         if powers.isAiming {
+            overlay.setPointerText(pointerReadout(at: point))
             aimHover(at: point)
             overlay.setHover(nil)
             return
         }
         guard let point else {
+            overlay.setPointerText(nil)
             overlay.setHover(nil)
             return
         }
         let t = now()
-        if lastHoverPick >= 0, t - lastHoverPick < Self.hoverPeriod, t >= lastHoverPick { return }  // (42k projections a pick)
+        if lastHoverPick >= 0, t - lastHoverPick < Self.hoverPeriod, t >= lastHoverPick {  // (42k projections a pick)
+            overlay.setPointerText(pointerReadout(at: point, over: overlay.hover?.pick))
+            return
+        }
         lastHoverPick = t
         let store = play.store
         let pick = WorldPicker.pick(at: point, projector: projector(size: freeRect.size), store: store, display: display,
@@ -103,6 +107,7 @@ extension WorldModel {
         } else {
             overlay.setHover(nil)
         }
+        overlay.setPointerText(pointerReadout(at: point, over: pick))
     }
 
     static let hoverPeriod = 1.0 / 60

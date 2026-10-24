@@ -79,12 +79,32 @@ import Testing
         #expect(law.handle(trackpad(0, -1000), scrollZooms: true) == .none, "and then nothing more")
     }
 
-    @Test func anUnphasedWheelsGestureIsTheEventsWithinOneSecond() {
+    @Test func anUnphasedWheelsGestureIsTheEventsWithNoPauseOfAQuarterOfASecondBetweenThem() {
         var law = ScrollLaw()
         var total: Float = 0
         for i in 0..<40 { if case .zoom(let f) = law.handle(wheel(1, t: Double(i) * 0.02), scrollZooms: false) { total += log(f) } }  // 40 notches in 0.8 s
-        #expect(abs(total + log(4)) < 1e-4, "the notches of one second sum to at most a factor of 4: \(exp(total))")
+        #expect(abs(total + log(4)) < 1e-4, "the notches of one spin sum to at most a factor of 4: \(exp(total))")
         if case .zoom(let f) = law.handle(wheel(1, t: 2.0), scrollZooms: false) { #expect(abs(f - exp(-0.1)) < 1e-6, "a second later it is a new gesture") } else { Issue.record("zoom") }
+    }
+
+    @Test func aWheelSpunForSecondsWithoutAPauseZoomsByAFactorOfFourInAllAndAPauseStartsANewGesture() {
+        // (review finding: the gesture was a second from its first event, so three seconds of spin summed to three times ln 4)
+        var law = ScrollLaw()
+        var total: Float = 0
+        for i in 0..<150 { if case .zoom(let f) = law.handle(wheel(1, t: Double(i) * 0.02), scrollZooms: false) { total += log(f) } }  // 3 s
+        #expect(abs(total + log(4)) < 1e-4, "three seconds of one spin: \(exp(total))")
+        // 0.2 s of quiet is still the same gesture; 0.3 s is a new one.
+        #expect(law.handle(wheel(1, t: 2.98 + 0.2), scrollZooms: false) == .none)
+        guard case .zoom(let f) = law.handle(wheel(1, t: 2.98 + 0.2 + 0.3), scrollZooms: false) else { Issue.record("a new gesture"); return }
+        #expect(abs(f - exp(-0.1)) < 1e-6)
+    }
+
+    @Test func aScrollDeltaThatIsNotANumberPansNothing() {
+        var law = ScrollLaw()
+        #expect(law.handle(trackpad(.nan, 4), scrollZooms: false) == .none)
+        #expect(law.handle(trackpad(4, .infinity), scrollZooms: false) == .none)
+        #expect(law.handle(trackpad(4, -.infinity), scrollZooms: false) == .none)
+        #expect(law.handle(trackpad(4, 3), scrollZooms: false) == .pan(dx: 4, dy: 3))
     }
 
     @Test func aTrackpadPanIsNotCappedAndEndingAGestureResetsTheAllowance() {
