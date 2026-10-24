@@ -52,3 +52,4 @@ power cancel food id=3
 intent make more food
 saves all
 saves newest
+saves single

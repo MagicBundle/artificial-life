@@ -25,7 +25,7 @@ import mlx.core as mx
 
 from alife import metrics, runio, spatial
 from alife.config import dims
-from alife.runio import RunDir
+from alife.runio import CheckpointError, RunDir
 from alife.state import to_numpy
 from alife.step import make_step
 
@@ -96,7 +96,11 @@ def resimulate(
         return [state_path(out_dir, t) for t in targets]
     start = sorted((st, p) for st, p in [*rd.checkpoints(), *cached_states(out_dir)] if st <= todo[0])
     if not start:
-        raise FileNotFoundError(f"{rd.path}: no checkpoint or cached state at or before step {todo[0]}")
+        kept = sorted({st for st, _ in rd.checkpoints()})
+        raise FileNotFoundError(
+            f"{rd.path}: no checkpoint or cached state at or before step {todo[0]} "
+            f"(checkpoints kept: {kept}; a world saved with saves single keeps only its newest save)"
+        )
     t, path = start[-1]
     state = runio.load_checkpoint(path, cfg)
     rows = {int(r["step"]): r for r in rd.metrics_rows()} if verify else {}
@@ -171,6 +175,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ResimMismatch as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+    except (
+        FileNotFoundError,
+        ValueError,
+        CheckpointError,
+    ) as e:  # no save to start from: a message, not a traceback
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     return 0
 
 

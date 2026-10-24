@@ -40,7 +40,7 @@ import Testing
          "power strike id=6 x=100.5 y=20 radius=12.5 kill=0.4"),
         (.power(PowerCommand(.cancel, .food, id: 3)), "power cancel food id=3"),
         (.intent("make more food"), "intent make more food"),
-        (.saves(.all), "saves all"), (.saves(.newest), "saves newest"),
+        (.saves(.all), "saves all"), (.saves(.newest), "saves newest"), (.saves(.single), "saves single"),
     ]
 
     @Test(arguments: cases)
@@ -104,8 +104,8 @@ import Testing
     }
 
     @Test func theSaveModesAreTheEnginesWords() {
-        #expect(SaveMode.allCases.map(\.rawValue) == ["all", "newest"])
-        #expect(SaveMode(rawValue: "newest") == .newest && SaveMode(rawValue: "some") == nil)
+        #expect(SaveMode.allCases.map(\.rawValue) == ["all", "newest", "single"])
+        #expect(SaveMode(rawValue: "newest") == .newest && SaveMode(rawValue: "single") == .single && SaveMode(rawValue: "some") == nil)
     }
 
     @Test func theNamesAndKeysOfAPowerAreTheEnginesGrammar() {

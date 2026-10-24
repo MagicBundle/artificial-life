@@ -1173,7 +1173,7 @@ def _one_envs(obj: dict) -> dict:
 
 def test_clck_flags_are_the_two_pause_bits_and_the_save_mode() -> None:
     assert (sr.CLCK_FLAG_CHAPTER_PAUSE, sr.CLCK_FLAG_ALERT_PAUSE, sr.CLCK_FLAG_SAVES_NEWEST) == (1, 2, 4)
-    assert sr.CLCK_FLAGS == 7
+    assert sr.CLCK_FLAG_SAVES_SINGLE == 8 and sr.CLCK_FLAGS == 15  # bit 3: single (DESIGN 34.11)
     kw = dict(
         step=12000,
         seq=0,
@@ -1190,13 +1190,13 @@ def test_clck_flags_are_the_two_pause_bits_and_the_save_mode() -> None:
         in_chapter=6000,
         chapter_len=6000,
     )
-    for flags in range(8):
+    for flags in range(16):
         r = _decode_one(sr.encode_clck(**kw, flags=flags))
         assert r.f["flags"] == flags and r.f["reason"] == 3 and r.f["chapter"] == 2
     with pytest.raises(sr.RecordError, match="flags"):
-        sr.encode_clck(**kw, flags=8)
+        sr.encode_clck(**kw, flags=16)
     raw = bytearray(sr.encode_clck(**kw, flags=3))
-    raw[8 + 16 + 26 : 8 + 16 + 28] = struct.pack("<H", 8)  # the flags field of the body
+    raw[8 + 16 + 26 : 8 + 16 + 28] = struct.pack("<H", 16)  # the flags field of the body
     with pytest.raises(AssertionError, match="flags"):
         decode(_g3b_header() + bytes(raw))
 
@@ -1208,7 +1208,8 @@ def test_the_save_mode_is_a_header_block_written_only_when_given() -> None:
         records=["FRMA"], weather={}, labels={}, energy_cap=1, saves=sr.saves_block(mode="newest", keep=3)
     )
     assert rich["saves"] == {"mode": "newest", "keep": 3}
-    assert sr.SAVE_MODES == ("all", "newest")
+    assert sr.SAVE_MODES == ("all", "newest", "single")
+    assert sr.saves_block(mode="single", keep=3) == {"mode": "single", "keep": 3}
     # a research run played in place says so, and only then (the block of every other world is unchanged)
     assert sr.saves_block(mode="all", keep=8, adopted=True) == {"mode": "all", "keep": 8, "adopted": True}
     assert sr.saves_block(mode="all", keep=3, adopted=False) == {"mode": "all", "keep": 3}

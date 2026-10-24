@@ -30,6 +30,20 @@ private final class StopFlag: @unchecked Sendable {
         measured >= Int64(written) && measured <= Int64(written) + Int64(files) * 2 * 65_536
     }
 
+    @Test func aStepKeptInBothFormsIsOneSaveAndAWriteInFlightIsSaving() throws {
+        let root = try world([
+            "checkpoints/step_0000000010.safetensors": 300_000,
+            "checkpoints/step_0000000010.safetensors.zst": 100_000,  // the same step, mid-save: one save
+            "checkpoints/step_0000000020.safetensors.zst.tmp": 40_000,  // a compressed save being written
+            "checkpoints/LATEST": 30,
+        ])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sample = StorageScan.measure(world: root)
+        #expect(sample.saveCount == 1, "one step in two forms is one save: \(sample.saveCount)")
+        #expect(near(sample.savingBytes, 40_000, files: 1), "the write in flight: \(sample.savingBytes)")
+        #expect(StorageReadout(sample: sample, mode: .all).saving)
+    }
+
     @Test func savesAreTheCheckpointsDirectoryAndLogsAreEverythingElse() throws {
         let root = try world([
             "checkpoints/step_0000000000.safetensors": 300_000,
@@ -104,6 +118,8 @@ private final class StopFlag: @unchecked Sendable {
     @Test func aSaveIsRecognisedByItsName() {
         #expect(StorageScan.saveStep(of: "step_0000504001.safetensors") == 504_001)
         #expect(StorageScan.saveStep(of: "step_0000504001.safetensors.tmp") == nil)
+        #expect(StorageScan.saveStep(of: "step_0000504001.safetensors.zst") == 504_001)
+        #expect(StorageScan.saveStep(of: "step_0000504001.safetensors.zst.tmp") == nil)
         #expect(StorageScan.saveStep(of: "LATEST") == nil && StorageScan.saveStep(of: "step_x.safetensors") == nil)
     }
 
@@ -164,6 +180,16 @@ private final class StopFlag: @unchecked Sendable {
                   inChapter: 1, chapterLen: 6000)
     }
 
+    @Test func theSingleModeIsDecodedAndAnUnknownModeIsAll() throws {
+        let header = try JSONDecoder().decode(PlayHeader.Saves.self, from: Data(#"{"mode": "single", "keep": 3}"#.utf8))
+        #expect(SaveModeView.current(clock: nil, header: header, requested: nil) == .single)
+        #expect(SaveModeView.current(clock: clock(12), header: nil, requested: nil) == .single, "bit 3, with bit 2 set too")
+        #expect(SaveModeView.current(clock: clock(4), header: nil, requested: nil) == .newest)
+        let unknown = try JSONDecoder().decode(PlayHeader.Saves.self, from: Data(#"{"mode": "some", "keep": 3}"#.utf8))
+        #expect(SaveModeView.current(clock: nil, header: unknown, requested: nil) == .all)
+        #expect(SaveMode(rawValue: "single") == .single && SaveMode(rawValue: "some") == nil)
+    }
+
     @Test func theModeIsWhatWasAskedThenTheClockThenTheHeader() {
         let header = PlayHeader.Saves(mode: "newest", keep: 3)
         #expect(SaveModeView.current(clock: nil, header: nil, requested: nil) == .all)
@@ -180,7 +206,8 @@ private final class StopFlag: @unchecked Sendable {
         let adopted = try decode(#"{"mode": "all", "keep": 8, "adopted": true}"#)
         let world = try decode(#"{"mode": "all", "keep": 3}"#)
         #expect(adopted.adopted == true && world.adopted == nil, "the key is written only for such a run")
-        #expect(!SaveModeView.offers(.newest, header: adopted) && SaveModeView.offers(.all, header: adopted))
+        #expect(!SaveModeView.offers(.newest, header: adopted) && !SaveModeView.offers(.single, header: adopted))
+        #expect(SaveModeView.offers(.all, header: adopted))
         #expect(SaveModeView.offers(.newest, header: world) && SaveModeView.offers(.all, header: world))
         #expect(!SaveModeView.offers(.newest, header: nil) && !SaveModeView.offers(.all, header: nil), "an older server")
     }
@@ -198,6 +225,44 @@ private final class StopFlag: @unchecked Sendable {
         #expect(readout.health == .ok && readout.warning == nil && readout.mode == .all)
         #expect(readout.pruningPending, "four saves on disk: a world that keeps the newest only would delete two")
         #expect(!StorageReadout(sample: StorageSample(saveCount: 2), mode: .newest).pruningPending, "the origin and the newest")
+    }
+
+    @Test func theSingleModeDeletesFromTwoSaves() {
+        #expect(StorageReadout(sample: StorageSample(saveCount: 2), mode: .single).pruningPending)
+        #expect(!StorageReadout(sample: StorageSample(saveCount: 1), mode: .single).pruningPending, "the newest only")
+        #expect(!StorageReadout(sample: StorageSample(saveCount: 2), mode: .newest).pruningPending)
+    }
+
+    @Test func aSaveLinkedFromAnotherWorldIsSaidAndCountedOnceHere() throws {
+        let source = try world(["checkpoints/step_0000000010.safetensors.zst": 100_000])
+        let played = try world(["checkpoints/step_0000000020.safetensors.zst": 50_000])
+        defer { for root in [source, played] { try? FileManager.default.removeItem(at: root) } }
+        let origin = played.appendingPathComponent("checkpoints/step_0000000000.safetensors.zst")
+        try FileManager.default.linkItem(at: source.appendingPathComponent("checkpoints/step_0000000010.safetensors.zst"), to: origin)
+        let mine = StorageScan.measure(world: played)
+        #expect(mine.saveCount == 2 && mine.sharedSaveCount == 1, "the origin is linked, the newest is not: \(mine)")
+        #expect(near(mine.savesBytes, 150_000, files: 2), "the linked origin is one file of this world: \(mine.savesBytes)")
+        #expect(StorageScan.measure(world: source).sharedSaveCount == 1, "the source counts its save too")
+        #expect(StorageReadout(sample: mine, mode: .single).shared == "1 save is linked from another world: on disk once, counted in both.")
+        // a save linked twice inside one world is one file there
+        try FileManager.default.linkItem(at: origin, to: played.appendingPathComponent("checkpoints/step_0000000030.safetensors.zst"))
+        let twice = StorageScan.measure(world: played)
+        #expect(twice.saveCount == 2 && near(twice.savesBytes, 150_000, files: 2), "counted once: \(twice)")
+        #expect(StorageReadout(sample: StorageSample(saveCount: 2), mode: .all).shared == nil, "nothing shared, nothing said")
+    }
+
+    @Test func aCompressedSaveIsASaveAndATemporaryFileIsNot() throws {
+        let root = try world([
+            "checkpoints/step_0000000010.safetensors": 3_000,
+            "checkpoints/step_0000000020.safetensors.zst": 2_000,
+            "checkpoints/step_0000000030.safetensors.zst.tmp": 9_000,
+            "checkpoints/LATEST": 20,
+        ])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sample = StorageScan.measure(world: root)
+        #expect(sample.saveCount == 2, "a plain and a compressed save: \(sample.saveCount)")
+        #expect(near(sample.newestSaveBytes, 2_000), "the newest is the compressed one of step 20: \(sample.newestSaveBytes)")
+        #expect(sample.sharedSaveCount == 0)
     }
 
     @Test func aFullDiskIsSaidInWords() throws {

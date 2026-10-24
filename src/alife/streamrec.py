@@ -84,9 +84,13 @@ EVENT_KEYS: Final = frozenset(["id", "step", "kind", "fam", "a", "b", "x", "y", 
 CLCK_REASONS: Final = {0: "running", 1: "user pause", 2: "end of steps", 3: "chapter", 4: "alert", 5: "error"}
 CLCK_FLAG_CHAPTER_PAUSE: Final = 1 << 0  # CLCK.flags: the pause at a chapter end is armed
 CLCK_FLAG_ALERT_PAUSE: Final = 1 << 1  # CLCK.flags: at least one alert class is armed to pause
-CLCK_FLAG_SAVES_NEWEST: Final = 1 << 2  # CLCK.flags: the world keeps only the newest save (``saves newest``)
-CLCK_FLAGS: Final = CLCK_FLAG_CHAPTER_PAUSE | CLCK_FLAG_ALERT_PAUSE | CLCK_FLAG_SAVES_NEWEST
-SAVE_MODES: Final = ("all", "newest")  # the save modes of ``saves`` lines and ``play.saves.mode``
+CLCK_FLAG_SAVES_NEWEST: Final = 1 << 2  # CLCK.flags: the world keeps only the newest save (``saves newest``
+# or ``single``)
+CLCK_FLAG_SAVES_SINGLE: Final = 1 << 3  # CLCK.flags: with bit 2, the origin goes too (``saves single``)
+CLCK_FLAGS: Final = (
+    CLCK_FLAG_CHAPTER_PAUSE | CLCK_FLAG_ALERT_PAUSE | CLCK_FLAG_SAVES_NEWEST | CLCK_FLAG_SAVES_SINGLE
+)
+SAVE_MODES: Final = ("all", "newest", "single")  # the save modes of ``saves`` lines and ``play.saves.mode``
 
 # The weather maps (MAP1): reference scales of the companded and linear quantisation (DESIGN §33.1).
 F0: Final = 0.025
@@ -409,11 +413,11 @@ def autopause_block(*, chapter: bool, alert: Mapping[str, bool]) -> dict[str, An
 
 
 def saves_block(*, mode: str, keep: int, adopted: bool = False) -> dict[str, Any]:
-    """The ``play.saves`` header object (DESIGN §34.10): the save mode the world starts in (``all`` keeps the
-    newest ``keep`` saves, ``newest`` only the newest; the origin is kept either way). The client reads the
-    mode back from ``CLCK.flags`` bit 2 afterwards. ``adopted`` (written only when true): the world is a
-    research run played in place, which refuses a ``saves newest`` line (its checkpoints are the
-    research's)."""
+    """The ``play.saves`` header object (DESIGN §34.10, §34.11): the save mode the world starts in (``all``
+    keeps the newest ``keep`` saves; ``newest`` only the newest, with the origin; ``single`` only the newest,
+    the origin included). The client reads the mode back from ``CLCK.flags`` bits 2 and 3 afterwards.
+    ``adopted`` (written only when true): the world is a research run played in place, which refuses a
+    ``saves newest`` or ``saves single`` line (its checkpoints are the research's)."""
     if mode not in SAVE_MODES:
         raise RecordError(f"the save mode is one of {SAVE_MODES}, got {mode!r}")
     if not _is_int(keep) or keep < 1:

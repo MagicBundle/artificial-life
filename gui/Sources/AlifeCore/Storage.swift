@@ -10,32 +10,44 @@ package struct StorageSample: Equatable, Sendable {
     package var savesBytes: Int64
     /// Everything else: the event chunks, the observers' files, the metrics, the director's and the player's logs, the reports.
     package var logsBytes: Int64
-    /// The complete saves (`step_<t>.safetensors`).
+    /// The steps that have a complete save, in either form (`step_<t>.safetensors` or `.safetensors.zst`); a step kept in both
+    /// forms for a moment during a compressed save is one save.
     package var saveCount: Int
     /// The size of the newest complete save, 0 when there is none.
     package var newestSaveBytes: Int64
+    /// The complete saves that are also linked from another file (a planet's origin, linked to its source's save on the same volume,
+    /// DESIGN 34.11): they take the disk once, but both worlds count them. Counted here, so the details can say so.
+    package var sharedSaveCount: Int
     /// What the volume of the world has free, if it said.
     package var freeBytes: Int64?
+    /// The bytes of a save being written (a `*.tmp` under `checkpoints/`), counted in `savesBytes` too: they take the disk until
+    /// the save is whole (DESIGN 34.11). Nonzero means a save is in flight.
+    package var savingBytes: Int64
 
     package var totalBytes: Int64 { savesBytes + logsBytes }
 
     package init(savesBytes: Int64 = 0, logsBytes: Int64 = 0, saveCount: Int = 0, newestSaveBytes: Int64 = 0,
-                 freeBytes: Int64? = nil) {
+                 sharedSaveCount: Int = 0, freeBytes: Int64? = nil, savingBytes: Int64 = 0) {
         self.savesBytes = savesBytes
         self.logsBytes = logsBytes
         self.saveCount = saveCount
         self.newestSaveBytes = newestSaveBytes
+        self.sharedSaveCount = sharedSaveCount
         self.freeBytes = freeBytes
+        self.savingBytes = savingBytes
     }
 }
 
 /// Measures a world directory from file attributes only. A file that appears or disappears during the walk (a save written under a
 /// temporary name and renamed, an old save pruned) is counted or not, never an error.
 package enum StorageScan {
-    /// The checkpoint a world holds, `step_<ten digits>.safetensors`.
+    /// The checkpoint a world holds, `step_<ten digits>.safetensors`, or its compressed form `step_<ten digits>.safetensors.zst`
+    /// (DESIGN 34.11). A temporary name (`*.tmp`) is not a save.
     package static func saveStep(of name: String) -> Int? {
-        guard name.hasPrefix("step_"), name.hasSuffix(".safetensors") else { return nil }
-        return Int(name.dropFirst("step_".count).dropLast(".safetensors".count))
+        var stem = Substring(name)
+        if stem.hasSuffix(".zst") { stem = stem.dropLast(4) }
+        guard stem.hasPrefix("step_"), stem.hasSuffix(".safetensors") else { return nil }
+        return Int(stem.dropFirst("step_".count).dropLast(".safetensors".count))
     }
 
     /// The size of a regular file on disk (allocated blocks, which is what the volume loses), nil for anything else or a file that
@@ -44,6 +56,21 @@ package enum StorageScan {
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey]
         guard let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true else { return nil }
         return Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+    }
+
+    /// What a file is on its volume: its device and inode, and how many names it has (its hard links). One stat.
+    private struct Identity: Hashable {
+        let device: UInt64
+        let inode: UInt64
+        let links: Int
+    }
+
+    private static func identity(of url: URL, fileManager fm: FileManager) -> Identity? {
+        guard let attributes = try? fm.attributesOfItem(atPath: url.path),
+              let device = (attributes[.systemNumber] as? NSNumber)?.uint64Value,
+              let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value,
+              let links = (attributes[.referenceCount] as? NSNumber)?.intValue else { return nil }
+        return Identity(device: device, inode: inode, links: links)
     }
 
     /// The free space of the volume `url` is on: what the system would let an important write use, else the plain figure.
@@ -71,17 +98,26 @@ package enum StorageScan {
         }
         let saves = root.appendingPathComponent("checkpoints", isDirectory: true).resolvingSymlinksInPath()
         var newest: (step: Int, bytes: Int64)?
+        var steps = Set<Int>()
+        var counted = Set<Identity>()  // a save linked twice inside this world is one file here: counted once
         if let walk = fm.enumerator(at: saves, includingPropertiesForKeys: [.isRegularFileKey],
                                     options: [], errorHandler: { _, _ in true }) {
             for case let url as URL in walk {
                 guard let bytes = size(of: url) else { continue }
-                sample.savesBytes += bytes
-                if let step = saveStep(of: url.lastPathComponent) {
-                    sample.saveCount += 1
-                    if newest.map({ step > $0.step }) ?? true { newest = (step, bytes) }
+                guard let step = saveStep(of: url.lastPathComponent) else {
+                    sample.savesBytes += bytes  // not a save (a save being written, LATEST)
+                    if url.lastPathComponent.hasSuffix(".tmp") { sample.savingBytes += bytes }
+                    continue
                 }
+                let identity = identity(of: url, fileManager: fm)
+                if let identity, !counted.insert(identity).inserted { continue }
+                sample.savesBytes += bytes
+                steps.insert(step)
+                if (identity?.links ?? 1) > 1 { sample.sharedSaveCount += 1 }
+                if newest.map({ step > $0.step }) ?? true { newest = (step, bytes) }
             }
         }
+        sample.saveCount = steps.count
         sample.newestSaveBytes = newest?.bytes ?? 0
         return sample
     }
@@ -162,16 +198,16 @@ package struct StorageTrend: Equatable, Sendable {
 package enum SaveModeView {
     package static func current(clock: PlayClock?, header: PlayHeader.Saves?, requested: SaveMode?) -> SaveMode {
         if let requested { return requested }
-        if let clock { return clock.savesNewestOnly ? .newest : .all }
+        if let clock { return clock.savesSingle ? .single : (clock.savesNewestOnly ? .newest : .all) }
         return header.flatMap { SaveMode(rawValue: $0.mode) } ?? .all
     }
 
     /// Whether the window offers switching to `target`: the world's server knows the line (it sent `play.saves`), and `target` is
-    /// not `newest` in a research run played in place (`adopted`), whose older checkpoints are the research's: the world refuses
-    /// that line, so the switch does not pretend to take it.
+    /// `all` in a research run played in place (`adopted`), whose older checkpoints are the research's: the world refuses the other
+    /// two lines there, so the choice does not pretend to take them.
     package static func offers(_ target: SaveMode, header: PlayHeader.Saves?) -> Bool {
         guard let header else { return false }
-        return !(target == .newest && header.adopted == true)
+        return target == .all || header.adopted != true
     }
 }
 
@@ -186,6 +222,8 @@ package struct StorageReadout: Equatable, Sendable {
     package var room: String?
     package var saves: String
     package var saveCount: Int
+    /// True while a save is being written (its temporary file is on disk): the saves line says so in the details.
+    package var saving: Bool
     package var logs: String
     package var free: String?
     package var sinceStart: String?
@@ -193,8 +231,12 @@ package struct StorageReadout: Equatable, Sendable {
     package var health: StorageHealth
     /// Why the player should look at the disk, if so.
     package var warning: String?
-    /// More saves are on disk than `newest` keeps (the newest and the origin): the next save deletes the others.
-    package var pruningPending: Bool { saveCount >= 3 }
+    /// More saves are on disk than the newest save and the origin (`newest`, `all`) or than the newest save alone (`single`) keep:
+    /// the next save deletes the others. (The details say it only where the mode deletes; `all` keeps its last few.)
+    package var pruningPending: Bool { mode == .single ? saveCount >= 2 : saveCount >= 3 }
+    /// The saves of this world that are linked from another (a planet's origin, DESIGN 34.11), said once in the details: they are on
+    /// disk once and counted in both worlds. Nil when there are none.
+    package var shared: String?
 
     package init(sample: StorageSample?, trend: StorageTrend = StorageTrend(), mode: SaveMode) {
         self.mode = mode
@@ -203,6 +245,7 @@ package struct StorageReadout: Equatable, Sendable {
             stripText = total
             saves = "-"
             saveCount = 0
+            saving = false
             logs = "-"
             health = .ok
             return
@@ -211,6 +254,11 @@ package struct StorageReadout: Equatable, Sendable {
         total = size
         saves = StorageFormat.bytes(sample.savesBytes)
         saveCount = sample.saveCount
+        saving = sample.savingBytes > 0
+        if sample.sharedSaveCount > 0 {
+            let n = sample.sharedSaveCount
+            shared = "\(n) save\(n == 1 ? " is" : "s are") linked from another world: on disk once, counted in both."
+        }
         logs = StorageFormat.bytes(sample.logsBytes)
         free = sample.freeBytes.map { StorageFormat.bytes($0) + " free" }
         sinceStart = trend.sinceStart(sample.totalBytes).map(StorageFormat.signed)

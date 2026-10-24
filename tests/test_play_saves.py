@@ -25,7 +25,7 @@ from alife import cli, play, runio, runner, streamrec
 from alife.config import Config, apply_overrides
 from alife.director import actions, make_director, pacing
 from alife.game import powers
-from alife.runio import COMMANDS_FILE, DIRECTOR_LOG_FILE, CheckpointError, RunDir, load_checkpoint
+from alife.runio import COMMANDS_FILE, DIRECTOR_LOG_FILE, RunDir, load_checkpoint
 from alife.state import init_state, state_digest
 from alife.stream import ControlError, NoControl
 from play_decode import Decoded, decode
@@ -73,10 +73,11 @@ def clock_flags(out: io.BytesIO) -> list[int]:
 def test_saves_takes_all_or_newest() -> None:
     assert play.parse_play_command("saves all") == play.PlayCommand("saves", "all")
     assert play.parse_play_command("saves newest") == play.PlayCommand("saves", "newest")
+    assert play.parse_play_command("saves single") == play.PlayCommand("saves", "single")
     assert play.parse_play_command("  saves   newest  ") == play.PlayCommand("saves", "newest")
-    assert "saves" in play.COMMANDS and play.SAVE_MODES == ("all", "newest") == streamrec.SAVE_MODES
+    assert "saves" in play.COMMANDS and play.SAVE_MODES == ("all", "newest", "single") == streamrec.SAVE_MODES
     for bad in ("saves", "saves maybe", "saves NEWEST", "saves all newest", "saves 1", "saves off"):
-        with pytest.raises(ControlError, match="saves takes one of all, newest"):
+        with pytest.raises(ControlError, match="saves takes one of all, newest, single"):
             play.parse_play_command(bad)
 
 
@@ -234,15 +235,18 @@ def random_toggles(seed: int, steps: int) -> dict[int, list[str]]:
     lines: dict[int, list[str]] = {}
     for _ in range(rng.randint(3, 9)):
         lines.setdefault(rng.randrange(steps), []).append(
-            rng.choice(["saves all", "saves newest", "saves x"])
+            rng.choice(["saves all", "saves newest", "saves single", "saves x"])
         )
+    lines.setdefault(rng.randrange(steps), []).append(
+        "saves single"
+    )  # every arm holds a single save at some step
     return lines
 
 
 @pytest.mark.parametrize(
     ("kind", "observe", "seed"),
-    [("2d", True, 1), ("2d", False, 2), ("3d", True, 3), ("3d", False, 4)],
-    ids=["2d-observed", "2d-plain", "3d-observed", "3d-plain"],
+    [("2d", True, 1), ("2d", False, 2), ("3d", True, 3), ("3d", False, 4), ("2d", False, 5)],
+    ids=["2d-observed", "2d-plain", "3d-observed", "3d-plain", "2d-plain-b"],
 )
 def test_a_toggled_run_equals_a_plain_run(
     kind: str, observe: bool, seed: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -260,7 +264,9 @@ def test_a_toggled_run_equals_a_plain_run(
     assert rows(plain) == rows(toggled) and same_events(plain, toggled)
     assert social_text(plain) == social_text(toggled) and director_log(plain) == director_log(toggled)
     kept, all_of_them = steps_of(toggled), steps_of(plain)
-    assert set(kept) <= set(all_of_them) and kept[-1] == END and 0 in kept
+    assert set(kept) <= set(all_of_them) and kept[-1] == END
+    single_once = any(m == "saves single" for line in toggles.values() for m in line)
+    assert 0 in kept or single_once, "the origin is kept, unless a single save dropped it"
     digests, plain_digests = checkpoint_digests(toggled), checkpoint_digests(plain)
     assert all(digests[st] == plain_digests[st] for st in kept)
     if observe:
@@ -268,7 +274,12 @@ def test_a_toggled_run_equals_a_plain_run(
             assert same_sidecar(plain, toggled, st)
         assert [st for st, _ in toggled.observer_files()] == kept
     # the toggles that changed the mode are the lines of commands.jsonl, in order
-    modes = [m for line in sorted(toggles) for m in toggles[line] if m in ("saves all", "saves newest")]
+    modes = [
+        m
+        for line in sorted(toggles)
+        for m in toggles[line]
+        if m in ("saves all", "saves newest", "saves single")
+    ]
     state = "saves all"
     changes = []
     for m in modes:
@@ -546,7 +557,8 @@ def test_a_new_save_that_is_not_whole_does_not_cost_the_last_good_one(
     micro_cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A write that returns normally and leaves a short file used to prune the last good save in newest
-    mode; the check of the new file makes the prune the ``all`` one instead, and says so on stderr."""
+    mode; the check of the new file runs before LATEST moves: the short file is removed, LATEST stays on the
+    last good save, nothing is pruned, and stderr says so."""
     rd = RunDir.create(tmp_path / "w", micro_cfg, parent="src:10")
     rd.update_meta(start_step=10)
     rd.keep_newest = True
@@ -568,14 +580,16 @@ def test_a_new_save_that_is_not_whole_does_not_cost_the_last_good_one(
     monkeypatch.setattr(runio, "write_state_file", short)
     save(30)
     monkeypatch.undo()
-    assert steps_of(rd) == [10, 20, 30], "the last good save is still there"
-    assert "does not read back whole; the older saves are kept" in capsys.readouterr().err
-    with pytest.raises(CheckpointError):
-        load_checkpoint(rd.latest_checkpoint(), micro_cfg)  # type: ignore[arg-type]
+    # the short file fails its check before LATEST can name it (DESIGN 34.11, review M2): it is removed,
+    # LATEST stays on 20 and nothing older is pruned
+    assert steps_of(rd) == [10, 20], "the failing save is gone; the last good save and the older ones stay"
+    assert (rd.checkpoint_dir / runio.LATEST_FILE).read_text().strip() == "step_0000000020.safetensors"
+    assert "does not read back whole; LATEST stays on the previous save" in capsys.readouterr().err
+    assert not list(rd.checkpoint_dir.glob("*.tmp"))
+    load_checkpoint(rd.latest_checkpoint(), micro_cfg)  # type: ignore[arg-type]
     load_checkpoint(rd.checkpoint_at(20), micro_cfg)  # type: ignore[arg-type]
     assert runio.state_file_is_complete(rd.checkpoint_at(20), 20)  # type: ignore[arg-type]
     assert not runio.state_file_is_complete(rd.checkpoint_at(20), 21), "another step"  # type: ignore[arg-type]
-    assert not runio.state_file_is_complete(rd.checkpoint_at(30), 30)  # type: ignore[arg-type]
     assert not runio.state_file_is_complete(tmp_path / "missing", 20)
     save(40)  # a whole save: back to the newest only
     assert steps_of(rd) == [10, 40]

@@ -1187,6 +1187,12 @@ recommendations stand until the owner decides. Items 11 and 12 came up in G1 (be
       0.6, at least 3 territory owners), the crop of a 64k3d checkpoint only if it fails; the launcher picks the overlay from the source's size;
       no launcher entry that makes a world from nothing (a source is a run in `runs/`).
 
+23. **Light saves: a planet's state in about 230 MB, not 687 MB (the owner, 2026-10-24; DESIGN §34.11, row I64).**
+    The request: "a lightweight option to resume a planet's achieved state for a later run, without having to record large files on disk."
+    - *Decided by the owner:* (1) lossless **zstd** saves with an exact resume (the dependency `zstandard`, over the stdlib `lzma`); old uncompressed saves keep loading everywhere; (2) a **one-save mode**: keep only the newest save and drop the origin, after auditing what reads the origin (each such reader degrades with a message, never a crash); (3) **a planet made from an own world links the source save** instead of copying it (`os.link` on the same volume, else a copy), and the launcher makes **Resume** the obvious way to continue a world. Data safety first: at every instant one complete, loadable save exists, and a crash or kill at any point leaves a resumable world.
+    - *Built:* zstd level 15 (0.365 of the bytes, about 4 s to compress on 18 threads, 0.41 s to decode; the review of stage B4 moved it from 17 for the quit budget); the save is written plain, compressed on a worker thread, and the older saves go only after the new one is whole; `saves single` as the third choice of the Storage strip (All, Start, Newest); the launcher's hint under a played world's source (Resume stays first); the planet's origin is a link only when the state is the source's byte for byte.
+    - *Decided by the owner (2026-10-24):* a planet made from a played world is not linked; it keeps its own compressed origin, and Resume (no copy) is the way to continue a world. The fork's transformation resets the diagnostics, the ledger and the levers, so its state is not the source's, and the planet_a chain's "Make planet" writes a new compressed origin (about 250 MB) instead of sharing the 687 MB save. The owner preferred that copy to linking them, which would need (a) the fork to keep the source's accounting (a change of the planet's energy accounting, §33), or (b) the transformation stored with the origin and applied on load (a larger file).
+
 
 ## 11. Prior-art sources
 

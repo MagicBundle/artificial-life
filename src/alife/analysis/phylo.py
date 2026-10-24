@@ -122,11 +122,10 @@ def _chunks(
 
 def _alive_uids(path: Path) -> np.ndarray:
     """The sorted uids (int64) of the agents alive in a checkpoint."""
-    import mlx.core as mx  # local: the analysis is numpy-only except for reading a checkpoint
-
+    from alife.runio import read_state_arrays
     from alife.state import to_numpy
 
-    arrs = mx.load(str(path), format="safetensors")
+    arrs = read_state_arrays(path, keys=("alive", "uid"))  # a compressed save is decoded (DESIGN §34.11)
     alive = to_numpy(arrs["alive"]).astype(bool)
     return np.sort(to_numpy(arrs["uid"]).astype(np.int64)[alive])
 
@@ -181,7 +180,13 @@ def load_tree(
     if origin == 0:
         founders = np.arange(cfg.population.n_init, dtype=np.int64)
     else:
-        founders = _alive_uids(rd.checkpoint_at(origin))
+        try:
+            founders = _alive_uids(rd.checkpoint_at(origin))
+        except FileNotFoundError as e:  # a world saved with `saves single` keeps only its newest save
+            raise ValueError(
+                f"{e}: the founders of a fork are the agents alive in its origin save, which this world "
+                "does not keep (saves single keeps only the newest save)"
+            ) from None
     n_init = int(founders.size)
     spans: dict[str, list[tuple[int, int]]] = {"births": [], "deaths": []}
 

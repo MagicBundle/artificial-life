@@ -155,6 +155,12 @@ import Testing
         echoed.flags &= ~4  // the world's answer
         play.settleRequest(after: echoed)
         #expect(play.requestedSaves == nil)
+        // the third choice: the world echoes it as bit 3 with bit 2 (DESIGN 34.11)
+        #expect(play.send(.saves(.single)))
+        #expect(play.requestedSaves == .single && play.savesMode == .single)
+        echoed.flags |= 4 | 8
+        play.settleRequest(after: echoed)
+        #expect(play.requestedSaves == nil && SaveModeView.current(clock: echoed, header: nil, requested: nil) == .single)
         // a world that never confirms (an older server): the request is dropped after a second and the switch goes back
         #expect(play.send(.saves(.newest)))
         #expect(play.savesMode == .newest)
@@ -197,11 +203,16 @@ import Testing
         let plain = height(StorageStripView(play: play, model: model).frame(width: 320), width: 320)
         print("measured: storage strip \(plain) (\(waiting) while older saves wait)")
         #expect(plain <= DockBudget.storage && waiting == plain, "the dock's budget is the same whichever mode and saves")
-        #expect(StorageWords.switchLabel == "Recording")
-        #expect(StorageWords.help == "Recording off keeps only the newest save; your world stays resumable; logs are still written.")
+        #expect(StorageWords.label == "Saves kept")
+        #expect(SaveMode.allCases.map(StorageWords.segment) == ["All", "Start", "Newest"])
+        #expect(SaveMode.allCases.map(StorageWords.name) == ["All saves", "Newest + start", "Newest only"])
+        #expect(StorageWords.resumable == "Your world stays resumable; logs are still written.")
         #expect(StorageWords.tooltip(.newest, keep: 3).contains(StorageWords.pending))
-        #expect(StorageWords.tooltip(.all, keep: 3).hasPrefix("Recording is on: the last 3 saves"))
-        #expect(StorageWords.tooltip(.all, keep: 3).contains("deletes the older ones at the next save"))
+        #expect(StorageWords.tooltip(.single, keep: 3).contains(StorageWords.pending))
+        #expect(StorageWords.tooltip(.all, keep: 3).hasPrefix("All saves: the last 3 saves and the origin"))
+        #expect(StorageWords.keeps(.newest, keep: 3).hasPrefix("Newest + start: the newest save and the origin."))
+        #expect(StorageWords.tooltip(.all, keep: 3).contains("deletes the older saves at the next save"))
+        #expect(StorageWords.tooltip(.single, keep: 3).contains(StorageWords.resumable), "the world stays resumable in every mode")
         model.storage.stop()
     }
 
@@ -305,13 +316,24 @@ import Testing
         #expect(monitor.trend.chapterStart == 2_686, "the chapter counts from its first sample after the save that closed the last")
     }
 
-    @Test func aResearchRunPlayedInPlaceIsNotOfferedRecordingOff() {
+    @Test func aChoiceSendsItsLineOnlyWhenItIsNewAndOffered() {
+        let world = PlayHeader.Saves(mode: "all", keep: 3)
+        let adopted = PlayHeader.Saves(mode: "all", keep: 8, adopted: true)
+        #expect(StorageStripView.command(choosing: .single, current: .all, header: world) == .saves(.single))
+        #expect(StorageStripView.command(choosing: .newest, current: .single, header: world) == .saves(.newest))
+        #expect(StorageStripView.command(choosing: .all, current: .all, header: world) == nil, "the mode in force sends nothing")
+        #expect(StorageStripView.command(choosing: .single, current: .all, header: adopted) == nil, "a research run keeps all saves")
+        #expect(StorageStripView.command(choosing: .all, current: .all, header: adopted) == nil)
+        #expect(StorageStripView.command(choosing: .newest, current: .all, header: nil) == nil, "an older server")
+    }
+
+    @Test func aResearchRunPlayedInPlaceOffersOnlyAllSaves() {
         let adopted = PlayHeader.Saves(mode: "all", keep: 8, adopted: true)
         let world = PlayHeader.Saves(mode: "all", keep: 3)
-        #expect(StorageWords.switchHelp(.all, header: adopted) == StorageWords.adopted)
-        #expect(StorageWords.switchHelp(.all, header: world) == StorageWords.tooltip(.all, keep: 3))
-        #expect(StorageWords.switchHelp(.newest, header: adopted) == StorageWords.tooltip(.newest, keep: 8), "back on is offered")
-        #expect(StorageWords.switchHelp(.all, header: nil) == StorageWords.unknown)
+        #expect(StorageWords.choiceHelp(.all, header: adopted) == StorageWords.adopted)
+        #expect(StorageWords.choiceHelp(.all, header: world) == StorageWords.tooltip(.all, keep: 3))
+        #expect(StorageWords.choiceHelp(.single, header: world) == StorageWords.tooltip(.single, keep: 3), "the smaller choices are offered")
+        #expect(StorageWords.choiceHelp(.all, header: nil) == StorageWords.unknown)
         #expect(StorageWords.adopted.contains("alife play RUN --saves newest"))
     }
 
@@ -349,5 +371,15 @@ import Testing
         let host = NSHostingView(rootView: view.frame(width: width))
         host.layoutSubtreeIfNeeded()
         return host.fittingSize.height
+    }
+}
+
+@Suite struct StorageChoiceTests {
+    @Test func onlyTheChoicesThatDeleteOlderSavesAreConfirmed() {
+        #expect(!StorageWords.deletesOlder(.all))
+        #expect(StorageWords.deletesOlder(.newest))
+        #expect(StorageWords.deletesOlder(.single))
+        #expect(StorageWords.confirmMessage(.single, keep: 3).contains("cannot be restored"))
+        #expect(StorageWords.confirmTitle(.newest) == "Keep newest + start?")
     }
 }

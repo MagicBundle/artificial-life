@@ -540,6 +540,14 @@ quit and a resume in `newest` mode the first chapter report refolds the social l
 beside a real planet on the Mac (a person pressing the switch during a chapter end), and the cost of the `F_FULLFSYNC` of a 686 MB save
 (one drive flush a chapter, in `newest` mode only).
 
+## Games light saves: compressed saves, one-save mode, the linked origin (DESIGN §34.11, row I64, `docs/GAMES.md` §10 item 23)
+
+Branch `games/light-saves` (from main c916615), stages B1 to B4, not pushed, no PR; a games PR, merging needs the owner's go. **Built:** `zstandard` saves (`step_<t>.safetensors.zst`, the exact safetensors bytes in a zstd frame at level 15 (after the review): 686.9 MB to 233 MB, 10.9 s to compress on a worker thread, 0.44 s to decode); old saves load unchanged; one loader in `runio`; `saves single` (the newest save only, the origin goes at the next save); the planet's origin as a link to its source save when the state is the source's byte for byte; the Storage strip's three-way choice (All, Start, Newest), the shared-save line, and the launcher hint under a played world's source. **Open, the owner's decision:** a planet made from a played world is not linked (the fork's transformation resets the diagnostics, ledger and levers), so it writes its own compressed origin (about 230 MB). Also open: `compress` is not in `play.json` and has no CLI flag; no app run or GPU run was made (the save, resume and mode paths are CPU tests).
+
+**Tests (B4, on the branch as committed):** `uv run pytest -p cpu_device -m "not slow" -q -x --deselect tests/test_lifecycle.py::test_lifecycle_compiles_and_matches_eager`: 4316 passed, 91 skipped, 38 deselected, 1 xfailed (26 min, exit 0). The deselected test fails on the base commit too (B1). `ruff check` and `ruff format --check`: clean (251 files). Swift: `swift build` and `--build-tests` with `-warnings-as-errors`, `swift test`: 559 tests in 53 suites and 319 tests in 35 suites passed. No app run, no GPU, no LM Studio.
+
+**Next, in order:** (1) the owner's decision on the planet link (above); (2) a click-through in the app: quit during a compressed save, switch to Newest and to Newest only, resume, make a planet from a played world; (3) the quit path measured in the window and on the external drive (the save is 11 s here, measured in the engine only).
+
 ## The mini world (DESIGN §37, row I62, `docs/GAMES.md` §10 item 23)
 
 The owner asked (2026-10-24) for a smaller test world for quick play-tests and lighter streams, launchable from the World launcher, and said yes to the specification's go/no-go

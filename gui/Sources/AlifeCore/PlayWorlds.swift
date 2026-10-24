@@ -195,13 +195,10 @@ package enum PlayCatalogScanner {
         Set((try? fm.contentsOfDirectory(atPath: directory.path)) ?? []).subtracting([".DS_Store"])
     }
 
-    /// The steps of `checkpoints/step_<t>.safetensors` under `directory`, ascending.
+    /// The steps of the saves `checkpoints/step_<t>.safetensors` and `step_<t>.safetensors.zst` under `directory`, ascending.
     package static func checkpointSteps(in directory: URL, fileManager fm: FileManager = .default) -> [Int] {
         let names = (try? fm.contentsOfDirectory(atPath: directory.appendingPathComponent("checkpoints").path)) ?? []
-        return names.compactMap { name -> Int? in
-            guard name.hasPrefix("step_"), name.hasSuffix(".safetensors") else { return nil }
-            return Int(name.dropFirst(5).dropLast(12))
-        }.sorted()
+        return Set(names.compactMap { StorageScan.saveStep(of: $0) }).sorted()
     }
 
     private static func hasEntries(_ url: URL, fileManager fm: FileManager) -> Bool {

@@ -722,6 +722,8 @@ package struct PlayClock: Equatable, Sendable {
     package var alertPauseArmed: Bool { flags & 2 != 0 }
     /// Bit 2: the world keeps only the newest save (`saves newest`, §34.10).
     package var savesNewestOnly: Bool { flags & 4 != 0 }
+    /// Bit 3 with bit 2: the world keeps only the newest save and the origin is gone too (`saves single`, §34.11).
+    package var savesSingle: Bool { flags & 8 != 0 }
 }
 
 /// `FOCS`: the focused organism's own row with the observer's current slots.

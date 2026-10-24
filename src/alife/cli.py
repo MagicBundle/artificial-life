@@ -72,7 +72,16 @@ from alife.runio import (
     write_state_file,
 )
 from alife.runner import ExitCode
-from alife.state import DeathCause, State, State3, agent_fields, default_env, init_state, to_numpy
+from alife.state import (
+    DeathCause,
+    State,
+    State3,
+    agent_fields,
+    default_env,
+    init_state,
+    state_digest,
+    to_numpy,
+)
 from alife.step import make_step
 
 # run.* keys that resume may change: observers, cadences and the director mode (§18). Everything else goes
@@ -202,8 +211,7 @@ def _select_checkpoint(rd: RunDir, step: int | None) -> Path:
     try:
         return rd.checkpoint_at(step)
     except FileNotFoundError as e:
-        have = [st for st, _ in rd.checkpoints()]
-        raise CheckpointError(f"{e} (available: {have})") from None
+        raise CheckpointError(str(e)) from None  # (the message lists the steps that are kept)
 
 
 def _embedded_config(path: Path) -> Config:
@@ -480,6 +488,7 @@ def _prepare_fork(
     before_create: BeforeCreate | None = None,
     require_spinup: bool = False,
     extra_meta: Mapping[str, Any] | None = None,
+    link_origin: bool = False,
 ) -> tuple[RunDir | None, Config, list[State], int | None]:
     """A new run directory from another run's state with a changed config (§18 Fork), up to ``_launch``:
     ``(rundir, cfg, [state], exit code or None)``: the code is set when the weather spin-up was interrupted
@@ -527,6 +536,15 @@ def _prepare_fork(
             f"population.n_init must equal the source's {src_cfg.population.n_init} (clade bins depend on it)"
         )
     s = load_checkpoint(src, cfg, check_hash=False)
+    # The planet's first save links the source save instead of writing the state again, when the state is
+    # the source's byte for byte (checked below) under the source's own config hash (DESIGN 34.11).
+    src_digest = (
+        state_digest(s)
+        if link_origin
+        and a.weather_spinup is None
+        and checkpoint_metadata(src)["config_hash"] == config_hash(cfg)
+        else None
+    )
     # Structure energy is not in any E, so the conserved TOTAL moves with S: rebase by (S_new − S_old)·n_alive
     # (a stored TOTAL that was already wrong stays wrong and is refused by the admission check below).
     n_alive = s.alive.astype(mx.int32).sum().astype(mx.int64)
@@ -548,12 +566,15 @@ def _prepare_fork(
             print(f"  {p}", file=sys.stderr)
         return None, cfg, [], int(ExitCode.CHECKPOINT)  # (nothing was written)
     step = int(to_numpy(s.step))
+    linked = src_digest is not None and state_digest(s) == src_digest
     _knn_guard(cfg)
     out = Path(a.out) if a.out else _default_out("fork", cfg.run.seed)
     if before_create is not None:
         before_create(out, cfg)
     rd = RunDir.create(out, cfg, overwrite=a.overwrite, parent=origin, extra_meta=extra_meta)
     rd.update_meta(start_step=step)
+    if linked:
+        rd.origin_link = (step, src)
     if replay:
         shutil.copyfile(a.replay_log, rd.path / DIRECTOR_LOG_FILE)
     _announce(rd, cfg, step, cfg.run.steps, a.quiet)
@@ -1095,7 +1116,12 @@ def _play_world(a: argparse.Namespace, sink: Any, control: stream.Control) -> in
         built = {"play_build": "planet" if a.init_from is not None else "preset"}
         if a.init_from is not None:
             rd, cfg, box, code = _prepare_fork(
-                ra, overrides, before_create=before_create, require_spinup=True, extra_meta=built
+                ra,
+                overrides,
+                before_create=before_create,
+                require_spinup=True,
+                extra_meta=built,
+                link_origin=True,
             )
         else:
             rd, cfg, box, code = _prepare_run(ra, overrides, before_create=before_create, extra_meta=built)
@@ -1170,22 +1196,26 @@ def _keep_checkpoints(rd: RunDir, saved: dict[str, Any] | None, play_keep: int, 
 
 
 def _newest_note(rd: RunDir, saved: dict[str, Any] | None, saves: str, step: int) -> None:
-    """When ``--saves newest`` turns this session to the ``newest`` save mode (DESIGN 34.10), say on stderr,
-    before anything is touched, which checkpoints its first save deletes: every one up to ``step`` but step 0
-    and the origin (the later ones are what ``--truncate`` deletes). Those of a research run played in place
-    (``--adopt``) are the research's: the flag is the explicit way to delete them (a control line is
-    refused)."""
-    if saves != "newest" or (saved or {}).get("saves") == "newest":
+    """When ``--saves newest`` or ``--saves single`` turns this session to that save mode (DESIGN 34.10,
+    34.11), say on stderr, before anything is touched, which checkpoints its first save deletes. ``newest``
+    deletes every one up to ``step`` but step 0 and the origin (the later ones are what ``--truncate``
+    deletes); ``single`` deletes every one up to ``step``, the origin and step 0 included. Those of a research
+    run played in place (``--adopt``) are the research's: the flag is the explicit way to delete them (a
+    control line is refused)."""
+    if saves not in ("newest", "single") or (saved or {}).get("saves") == saves:
         return
     origin = rd._start_step()
-    doomed = [st for st, _ in rd.checkpoints() if st <= step and st not in (0, origin)]
+    keep_origin = saves == "newest"
+    doomed = [st for st, _ in rd.checkpoints() if st <= step and not (keep_origin and st in (0, origin))]
     if not doomed:
         return
     whose = "of the research run " if saved is None or rd.adopted else ""
     steps = f"step {doomed[0]}" if len(doomed) == 1 else f"steps {doomed[0]} to {doomed[-1]}"
+    what = "the newest save and the origin" if keep_origin else "only the newest save (the origin goes too)"
     print(
-        f"play: --saves newest keeps only the newest save and the origin: {len(doomed)} checkpoint(s) "
-        f"{whose}({steps}) are DELETED at the first save",
+        f"play: --saves {saves} keeps {what}: {len(doomed)} checkpoint(s) {whose}({steps}) are DELETED "
+        "at the "
+        "first save",
         file=sys.stderr,
         flush=True,
     )
@@ -1232,6 +1262,7 @@ def _play_resume(a: argparse.Namespace, sink: Any, control: stream.Control) -> i
         _check_play_tick(cfg)
         _check_yoke(cfg)
         _knn_guard(cfg)
+        rd.adopt_newest_save()  # a complete newer save that LATEST does not name is the newest (DESIGN 34.11)
         newest = max((st for st, _ in rd.checkpoints()), default=None)
         path = _select_checkpoint(rd, a.checkpoint)
         step = int(checkpoint_metadata(path)["step"])
@@ -1810,7 +1841,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=play.SAVE_MODES,
         default=None,
         help="all (default): keep the last 3 saves and the origin; newest: only the newest save and the "
-        "origin (kept in play.json; the `saves` control line changes it while playing, DESIGN 34.10)",
+        "origin; single: only the newest save (kept in play.json; the `saves` control line changes it while "
+        "playing, DESIGN 34.10, 34.11)",
     )
     p.add_argument("--no-control", action="store_true", help="do not read stdin")
     p.set_defaults(func=_cmd_play)

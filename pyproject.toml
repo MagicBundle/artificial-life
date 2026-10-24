@@ -9,6 +9,7 @@ dependencies = [
   "mlx>=0.32.3,<0.33; sys_platform == 'darwin'",
   "mlx[cpu]>=0.32.3,<0.33; sys_platform == 'linux'",
   "numpy>=2.0",
+  "zstandard>=0.25.0",
 ]
 
 [project.optional-dependencies]

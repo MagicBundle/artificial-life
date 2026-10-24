@@ -67,6 +67,9 @@ def source_problem(rd: RunDir, step: int) -> str | None:
             f"{rd.path} is itself a fork (start_step {origin}): the births before step {origin} are not in "
             "its logs"
         )
+    kept = [st for st, _ in rd.checkpoints()]
+    if step not in kept:
+        return f"{rd.path} has no checkpoint at step {step} (it keeps {kept}; saves single keeps the newest)"
     for kind in ("births", "deaths"):
         spans = [(s0, s1) for s0, s1, _ in rd.event_files(kind)]
         if not spans:
