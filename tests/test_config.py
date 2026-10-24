@@ -138,6 +138,32 @@ def test_preset_table_3d() -> None:
     assert (fast.sensing.k_neighbors, dims(fast).q, dims(fast).h) == (6, 27 * 12, 24)
 
 
+def test_preset_table_mini3d() -> None:
+    """``mini3d`` is ``64k3d`` with exactly five values changed (a quarter of the area at the same density,
+    DESIGN §37.1); with the fast overlay it validates too."""
+    cfg, k64 = load_config(preset="mini3d"), load_config(preset="64k3d")
+    d = dims(cfg)
+    assert "mini3d" in PRESETS and cfg.world.dims == 3 and cfg.world.height == 80.0
+    assert (d.n, d.m, cfg.population.n_init, cfg.world.size) == (16384, 256, 4096, 160.0)
+    assert d.n_cap == 16128 and d.dl == 512
+    assert (d.g_hash, d.fg, d.fz, d.g_hash_z, d.q, d.c) == (26, 40, 20, 13, 1296, 48)
+    assert d.field_shape == (20, 40, 40) and d.cell_hash >= cfg.sensing.radius
+    a, b = config_to_dict(cfg), config_to_dict(k64)
+    changed = {(sec, k) for sec in a for k in a[sec] if a[sec][k] != b[sec][k]}
+    assert changed == {
+        ("world", "size"),
+        ("population", "n_max"),
+        ("population", "n_init"),
+        ("population", "max_births_per_step"),
+        ("fields", "n_patches"),
+    }
+    assert (cfg.fields.n_patches, cfg.fields.patch_sigma, cfg.fields.regen_max) == (2, 24.0, 1700)
+    # 160 is the smallest size that holds height 80 (rule height <= size / 2)
+    assert cfg.world.height == cfg.world.size / 2
+    fast = load_config(preset="mini3d", overlays=["fast"])
+    assert (fast.sensing.k_neighbors, dims(fast).q) == (6, 27 * 12)
+
+
 def test_tiny_and_fast_overrides() -> None:
     tiny = load_config(preset="tiny")
     assert (tiny.fields.n_patches, tiny.fields.patch_sigma) == (4, 12.0)

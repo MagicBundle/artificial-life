@@ -206,7 +206,9 @@ def detect(fr: Frame, p: WeatherParams) -> Detection:
     rx, ry = np.hypot(cxs, sxs) / sw, np.hypot(cys, sys_) / sw
     cols = np.bincount(np.unique(lb * n + ii) // n, minlength=k + 1)[1:] * dx
     rows = np.bincount(np.unique(lb * n + jj) // n, minlength=k + 1)[1:] * dx
-    zmax = np.maximum.reduceat(sz[jj, ii], head) / p.f0
+    # In units of the REFERENCE f0 (0.025, streamrec.F0), not the config's: NAME_ZETA, STRONG_ZETA and the
+    # zeta plane of MAP1 keep one meaning in every world (DESIGN §37.4). Identical where f0 is 0.025.
+    zmax = np.maximum.reduceat(sz[jj, ii], head) / streamrec.F0
     h1min = np.minimum.reduceat(fr.h1[jj, ii].astype(np.float64), head)
     prain = fr.P[jj, ii].astype(np.float64)
     n_rain = np.add.reduceat((prain >= p.p_th).astype(np.int64), head)

@@ -1,0 +1,78 @@
+# mini3d: the mini world, a quarter of 64k3d's area at the same density (N_max = 16 384, M = 256; DESIGN section 37).
+# A 160 x 160 x 80 water column: 64k3d with five values changed (world.size, population.n_max, n_init,
+# max_births_per_step, fields.n_patches), all others identical, so per-agent physics and ecology are the 64k3d ones.
+# Steady state is about 10 500 alive (0.409 per unit squared, the 64k3d density; 9.6k measured at 80k steps).
+# 160 is the smallest size that holds height 80 (rule height <= size / 2) and a weather map of 80 cells at dx 2
+# (the stream's 40-block wind map needs cells % 40 == 0). Hash grid 26 x 26 x 13, C = 48, field lattice 40 x 40 x 20.
+# The world weather for it is the `storm160` overlay (`--overlay storm160`). One key per line: the GUI reads the
+# scalars of this file. The run cadences are the 64k ones (the dataclass defaults).
+#
+# The hash capacity C = 48 and the rest of the 64k3d comments apply unchanged (see presets/64k3d.toml).
+[population]
+n_max = 16384  # 1.56 x K (about 10 500), as 64k3d (1.56 x 42 000)
+n_init = 4096  # 0.39 of K, as 64k3d; also sets the clade id range
+max_births_per_step = 256  # scales with n_max (n_cap = 16 128)
+
+[world]
+size = 160.0
+dims = 3
+height = 80.0
+
+[physics]
+# 0.015, between the cloud sweeps on tiny3d: clade-specific depth niches at 0.01 (about 40 % of the agents
+# grounded, clade-height information 0.70) and a mostly benthic population at 0.03 (76 to 83 %, 0.30 to 0.41).
+# Sinking is 0.015 per step and climbing at full pitch 0.0835. Hovering costs about 2 q/step either way:
+# thrust at a = 0.015 / (0.1 sin 80 deg) = 0.152 is floor(100 * 0.152^2) = 2, buoyancy at 0.375 of its
+# maximum is floor(16 * 0.375^2) = 2. A founder's cap (0.5) can lift 0.02 > gravity.
+gravity = 0.015
+floor_eps = 0.1
+# thrust_max + max(gravity, buoyancy_max - gravity) = 0.125 < 2 r k_repel = 0.16 (validate).
+buoyancy_max = 0.04
+
+[sensing]
+# K = 8: K = 12 cannot pass validation at the default physics (stability needs k_repel <= 0.058, non-penetration
+# needs more than 0.0625 at this gravity), and it barely changed the ecology where it could run.
+k_neighbors = 8
+# C = 48, confirmed 2026-10-16 (owner decision). It was 24 until the cloud run of the slow DEV3D test (cloud-7,
+# C = 24): one floor hash cell was first over capacity at step 2151 (5 steps) and then continuously from step 2207
+# to the end of the run, a floor pile still growing (peak occupancy 31, over C on 11.96 % of the steps against a
+# 1 % gate). At 48 no cell overflowed in 30 000 steps of this preset on the Mac (seed 0, maximum occupancy 37, a
+# margin of 11) nor in 20 000 steps of DEV3D on the cloud CPU (maximum 43, a margin of 5, near the population
+# peak), and the slow test passes; neither pile would fit 32 or 24. Earlier cloud evidence: a floor pile under
+# gravity reached 28 agents per hash cell in the crowd tests (a converging ball without gravity 36), no cell
+# overflowed at C = 16 on tiny3d and DEV3D at the default regen_max of 320 (peak occupancy 13), and the food at
+# regen_max 1 700 can feed about 20 agents in the hottest floor hash cell (p99 20, max 23; 2D 64k: max 5 against
+# C = 16). The price, measured on the M5 Pro (alife bench --stages): Q = 27 C = 1 296 candidates per agent (2D 144)
+# make the neighbour search 56 of the 71 ms of the staged step (79%; 69.2 ms fused), 14.4 steps/s against 24.9 at
+# C = 24 and 59.3 for 2D 64k, and the peak memory 3.3 GB (2.2 GB at C = 24). A long run that overflows should read
+# max_occupancy first; the alternatives are C = 64 (it held the crowd tests) or a lower regen_max with K_est
+# recalibrated.
+cell_capacity = 48
+
+[energy]
+# Keeps a founder's brain cost at the 2D value: its expected L1 is 10.5 % larger than in 2D (4 999 weights
+# against 4 387), so 0.1 / 1.105: founder_brain_cost is 37.63 q/step against 37.64.
+brain_cost_per_l1 = 0.0905
+# The cloud grid (use cost 4 to 16, upkeep 2 to 8) found no systematic effect of either. The upkeep sets the
+# energy share of the cap: 4 q/step at a founder's cap of 0.5, about 3 % of its basal and brain cost.
+buoyancy_cost = 16
+buoyancy_cap_cost = 8
+
+[mutation]
+buoy_init = 0.5
+buoy_sigma = 0.02
+
+[fields]
+n_patches = 2  # the same patch area share (28 %) at patch_sigma 24
+patch_sigma = 24.0
+# regen_max = 1 700 gives a K_est (occupancy-weighted, DESIGN §27.10) of about 33 000 at a mostly benthic
+# steady state, taken as 70 % of the agents in the floor layer and the rest spread evenly over the other 19.
+# 70 % is an upper-end assumption (tiny3d reaches it after thousands of steps, DEV3D read 48 % at 2 500 steps);
+# at 60 % K_est is 38 800, at 50 % 44 100.
+# Mean of 16 seeds, c_ref 191.63 (mean floor fertility 0.31): floor layer only 17 800, 90 % in it 23 100,
+# 80 % 28 300, 70 % 33 600, 60 % 38 800, 50 % 44 100; founders uniform in the volume (the step-0 value) 61 500.
+regen_max = 1700
+chem_diffusion = [0.16, 0.10, 0.16]  # <= 1/6: the explicit 7-point stencil
+benthic_lambda = 8.0
+photic_amp = 0.5
+photic_lambda = 8.0
