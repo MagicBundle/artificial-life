@@ -22,6 +22,7 @@ search (`src/alife/knn_metal.py`, `DESIGN.md` §4, row I48) is built: 75 steps/s
 same trajectory. It is the default on Metal in 2D and 3D (row I52); `ALIFE_KNN=mlx` forces the pure-MLX path.
 `docs/STORMS.md` is the storm world; W0 (the model, `weather.py`, `docs/STORMS_W0.md`) and W1 (`weather.*` config,
 `State.wx`, wind/rain/hazard in the step; `DESIGN.md` §30) are implemented and off by default.
+The World window's viewer v2 (legibility, the one-world flat map, the pose and input, the minimap, compass, scale bar and height colour; `gui/`, client only) is `docs/DESIGN.md` §36 and Review-log row I60 (A0 and A1; the globe is PR B); the keys and gestures are in `gui/README.md`.
 `docs/GAMES.md` §9 N1, the offline World Report (`python -m alife.analysis.world_report build | verify | probe`,
 `src/alife/game/report.py`, `templates.py`, `lexicon.py`; normative spec `DESIGN.md` §31), is implemented: code writes every
 sentence from templates and checks it, a local model (`--llm --model ID`) only selects and orders candidate ids, and no

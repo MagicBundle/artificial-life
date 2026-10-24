@@ -22,7 +22,9 @@ import Testing
         #expect(WorldHUD(free: free, minimap: false).home == nil, "no minimap, no Home glyph")
         let short = WorldHUD(free: CGSize(width: 900, height: 159), minimap: true)
         #expect(short.minimap == nil)
-        #expect(WorldHUD(free: CGSize(width: 900, height: 160), minimap: true).minimap != nil)
+        // Its labels need a side of 96 points: a quarter of the shorter side of a 343 point free rectangle.
+        #expect(WorldHUD(free: CGSize(width: 900, height: 340), minimap: true).minimap == nil)
+        #expect(WorldHUD(free: CGSize(width: 900, height: 343), minimap: true).minimap?.width == 96)
         #expect(short.zoomIn != nil, "the zoom buttons need only the room of the buttons")
         let tiny = WorldHUD(free: CGSize(width: 200, height: 120), minimap: true)
         #expect(tiny.rects.isEmpty && tiny.target(at: CGPoint(x: 100, y: 60)) == .map)

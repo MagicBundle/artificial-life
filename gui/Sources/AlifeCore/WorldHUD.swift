@@ -23,8 +23,9 @@ package struct WorldHUD: Equatable, Sendable {
     /// The minimap's side is the least of this and `minimapFraction` of the free rectangle's shorter side.
     package static let minimapMaxSide: CGFloat = 220
     package static let minimapFraction: CGFloat = 0.28
-    /// The minimap is hidden in a free rectangle shorter than this.
+    /// The minimap is hidden in a free rectangle shorter than this, and when its side would be under `minimapMinSide` (its labels do not fit).
     package static let minimapMinHeight: CGFloat = 160
+    package static let minimapMinSide: CGFloat = 96
     package static let compassSide: CGFloat = 44
     package static let buttonSide: CGFloat = 30
     package static let buttonGap: CGFloat = 6
@@ -46,8 +47,8 @@ package struct WorldHUD: Equatable, Sendable {
     package init(free: CGSize, minimap wantsMinimap: Bool, compass wantsCompass: Bool = true) {
         self.free = free
         let m = Self.margin
-        if wantsMinimap, free.height >= Self.minimapMinHeight, free.width >= Self.minimapMinHeight {
-            let side = Self.minimapSide(free: free)
+        let side = Self.minimapSide(free: free)
+        if wantsMinimap, free.height >= Self.minimapMinHeight, free.width >= Self.minimapMinHeight, side >= Self.minimapMinSide {
             let box = CGRect(x: free.width - m - side, y: free.height - m - side, width: side, height: side)
             minimap = box
             home = CGRect(x: box.minX + 3, y: box.minY + 3, width: Self.homeSide, height: Self.homeSide)
