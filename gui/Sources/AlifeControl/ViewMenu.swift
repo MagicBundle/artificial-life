@@ -38,10 +38,13 @@ struct ViewMenuInputs: Equatable {
         // The archetype and intent modes paint labels: they are tagged like every other presentation of one (DESIGN §33.7).
         let labels = store.play?.labels
         let validity = LabelValidity(labels: labels, environment: store.environment?.environment)
-        colours = (store.header?.colorModes ?? []).map {
+        var modes = (store.header?.colorModes ?? []).map {
             Colour(mode: $0, title: validity.colorModeTitle($0, arch: labels?.arch ?? [], intent: labels?.intent ?? []))
         }
-        current = store.frame.flatMap { store.header?.colorMode(index: $0.colorIndex) } ?? ""
+        // The height colour is computed here from the positions, not a mode of the world; it is listed last in a 3D world.
+        if model.heightColourAvailable { modes.append(Colour(mode: HeightColour.modeName, title: HeightColour.title)) }
+        colours = modes
+        current = model.currentColourMode
         labelsOn = play.labelsOn
         display = model.display
         mapShown = model.mapShown
@@ -63,7 +66,7 @@ struct ViewMenu: View {
         let _ = ViewProbe.note("ViewMenu", for: play)
         let inputs = state.value
         Menu("View") {
-            Picker("Colour", selection: Binding(get: { inputs.current }, set: { play.setColor($0) })) {
+            Picker("Colour", selection: Binding(get: { inputs.current }, set: { model.setColourMode($0) })) {
                 ForEach(inputs.colours, id: \.mode) { Text($0.title).tag($0.mode) }
             }
             Divider()
@@ -92,6 +95,9 @@ struct ViewMenu: View {
             .disabled(!inputs.mapShown)
             .help(inputs.mapShown ? "How bright the weather map is" : "The brightness is the weather map's: there is none in view")
             Toggle("Frame", isOn: layer(\.frame))
+            // The square map of the whole world with the view's footprint (the `i` key); only a world with a weather map has one.
+            Toggle("Minimap (I)", isOn: layer(\.minimap))
+                .disabled(!inputs.mapShown)
             // The trackpad's two-finger scroll pans (the Maps convention); on, it zooms as in v1. The mouse wheel and a pinch always zoom.
             Toggle("Scroll zooms", isOn: layer(\.scrollZooms))
                 .help("The trackpad's two-finger scroll zooms instead of panning (the mouse wheel and a pinch always zoom)")
@@ -113,6 +119,7 @@ struct ViewMenu: View {
             Toggle("Raw kin events (developer)", isOn: Binding(get: { inputs.debugFilters }, set: { model.debugFilters = $0 }))
             Divider()
             Button("Home view (H)") { model.home() }
+            Button("Controls…") { model.showHint() }
         }
         .menuStyle(.borderlessButton)
         .fixedSize()

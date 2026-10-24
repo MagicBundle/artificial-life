@@ -241,6 +241,58 @@ import Testing
         withExtendedLifetime(view) {}
     }
 
+    @Test func theControlsOverTheMapNeverRebuildTheMenuAndTheMinimapAndTheHeightColourAreFieldsOfIt() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (play, model) = try await rig(scratch)
+        defer { play.shutdown(); ViewProbe.onEvaluate = nil }
+        let counts = counting(play)
+        let view = dock(play, model)
+        try await Task.sleep(for: .milliseconds(200))
+        try await frames(play, 3)
+        model.setFreeRect(CGRect(x: 0, y: 0, width: 900, height: 700))
+        model.goHome()
+        model.drawableResized(CGSize(width: 1800, height: 1400))
+        try await Task.sleep(for: .milliseconds(200))
+
+        // The pointer over the map and over each control, a press of each, the zoom buttons easing, the hint shown and taken away, a wheel
+        // and a pinch over the minimap's place: the pointer, the controls and the hint are not inputs of the menu.
+        counts.reset()
+        let changes = model.viewMenu.changes
+        let hud = model.hud
+        for p in [CGPoint(x: 300, y: 300), CGPoint(x: 310, y: 305)] + hud.rects.map({ CGPoint(x: $0.rect.midX, y: $0.rect.midY) }) { model.hover(at: p) }
+        model.hover(at: nil)
+        model.showHint()
+        model.dismissHint()
+        for (target, rect) in hud.rects {
+            model.hudPress(target)
+            model.hudRelease(target, at: CGPoint(x: rect.midX, y: rect.midY), clicks: 1, dragged: false)
+        }
+        model.zoomStep(closer: true)
+        model.scroll(ScrollEvent(dy: 1, precise: false, time: 1), at: CGPoint(x: 800, y: 600))
+        model.magnify(0.1, at: CGPoint(x: 800, y: 600))
+        for _ in 0..<60 where !model.advanceCamera(dt: 1.0 / 60) { break }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(counts["ViewMenu"] == 0, "the menu was evaluated again \(counts["ViewMenu"]) times by the pointer, the controls and the hint")
+        #expect(model.viewMenu.changes == changes)
+
+        // The minimap and the height colour are fields of the inputs: one evaluation each.
+        let edits: [(String, () -> Void, () -> Bool)] = [
+            ("Minimap", { model.display.minimap = false }, { !model.viewMenu.value.display.minimap }),
+            ("Height colour", { model.setColourMode(HeightColour.modeName) },
+             { model.viewMenu.value.current == HeightColour.modeName && model.viewMenu.value.display.heightColour }),
+        ]
+        for (name, change, shown) in edits {
+            counts.reset()
+            change()
+            #expect(await eventually { shown() }, "\(name) reaches the menu's inputs")
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(counts["ViewMenu"] == 1, "\(name): \(counts["ViewMenu"]) evaluations")
+        }
+        #expect(model.viewMenu.value.colours.last?.mode == HeightColour.modeName)
+        withExtendedLifetime(view) {}
+    }
+
     @Test func aDefaultTheMenuReadsIsReReadWhenItIsSet() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }

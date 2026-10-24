@@ -17,6 +17,12 @@ final class OverlayState: ObservableObject {
     /// under it.
     private(set) var aimPoint: CGPoint?
     private(set) var aimWorld: SIMD2<Float>?
+    /// The control the pointer is over, and the one a pressed button went down on (the overlay lights them), the world point under the
+    /// pointer over the minimap, and the readout of the point under it on the map ("270 E  28 N").
+    private(set) var hudHover = HUDTarget.map
+    private(set) var pressed: HUDTarget?
+    private(set) var minimapPoint: SIMD2<Float>?
+    private(set) var pointerText: String?
 
     func invalidate() { revision &+= 1 }
 
@@ -30,6 +36,25 @@ final class OverlayState: ObservableObject {
     func setHover(_ info: HoverInfo?) {
         guard info != hover else { return }
         hover = info
+        invalidate()
+    }
+
+    func setHUDHover(_ target: HUDTarget, place: SIMD2<Float>?) {
+        guard target != hudHover || place != minimapPoint else { return }
+        hudHover = target
+        minimapPoint = place
+        invalidate()
+    }
+
+    func setPressed(_ target: HUDTarget?) {
+        guard target != pressed else { return }
+        pressed = target
+        invalidate()
+    }
+
+    func setPointerText(_ text: String?) {
+        guard text != pointerText else { return }
+        pointerText = text
         invalidate()
     }
 
@@ -74,7 +99,12 @@ final class WorldModel: ObservableObject {
                 if display.exposure != oldValue.exposure { defaults.set(Double(display.exposure), forKey: Self.exposureKey) }
                 if display.scrollZooms != oldValue.scrollZooms { defaults.set(display.scrollZooms, forKey: Self.scrollZoomsKey) }
                 if display.minimap != oldValue.minimap { defaults.set(display.minimap, forKey: Self.minimapKey) }
+                if display.heightColour != oldValue.heightColour, !applyingColourDefault {
+                    defaults.set(display.heightColour, forKey: Self.heightColourKey)
+                }
                 pushDisplay()
+                if display.minimap != oldValue.minimap || display.map != oldValue.map { pushInset() }
+                overlay.invalidate()  // (the legend, the minimap's points and the scale bar follow the layers)
                 if display.map != oldValue.map { pushCamera() }  // the planet level exists only while a map is shown
                 // The size rule counts rows only where it caps them, and not for an organism layer that is off.
                 if display.sizeMode != oldValue.sizeMode || display.agents != oldValue.agents { refreshSizePolicy(force: true) }
@@ -89,6 +119,8 @@ final class WorldModel: ObservableObject {
     @Published private(set) var drawingFailure: String?
     /// The level of the view (`WorldLevels`): what the View menu's agent toggle refers to.
     @Published private(set) var level = WorldLevel.planet
+    /// The one-line hint of the controls is on screen (the first World window, and View > Controls…); any input takes it away.
+    @Published var hintVisible = false
 
     /// The part of the window the map is drawn into (the window less the dock), in the window's coordinates: the camera's
     /// aspect and every pixel rule are its.
@@ -149,6 +181,8 @@ final class WorldModel: ObservableObject {
     /// The trackpad's two-finger scroll zooms instead of panning (View > Scroll zooms), and the minimap is shown (`i`).
     static let scrollZoomsKey = "world.scrollZooms"
     static let minimapKey = "world.minimap"
+    /// The player's colour choice: true is the height colour, false the world's own; absent is the default of a 3D world.
+    static let heightColourKey = "world.heightColour"
 
     var followState = FollowState()
     var glide = CameraGlide()
@@ -160,6 +194,10 @@ final class WorldModel: ObservableObject {
     /// A fly-to on the van Wijk path (not while following: a followed organism is not a path), and a north-up ease.
     var flight: Flight?
     var headingEase: HeadingEase?
+    /// A press of a zoom button easing the distance (0.25 s).
+    var zoomEase: ZoomEase?
+    /// The colour default is being applied (not the player's choice, so not kept).
+    var applyingColourDefault = false
     /// Whether the system asks for less motion: a flight is then a straight 0.25 s ease. Tests inject theirs.
     var reduceMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     /// A fly-to in progress: the place (when nothing is followed) and the distance to end at.
@@ -232,6 +270,7 @@ final class WorldModel: ObservableObject {
     func setFreeRect(_ rect: CGRect) {
         guard rect != freeRect else { return }
         freeRect = rect
+        pushInset()
     }
 
     /// The view's width over its height (1 before there is one).
@@ -261,6 +300,8 @@ final class WorldModel: ObservableObject {
         if changes.contains(.header) {
             resendAutopause()
             startStorage()
+            applyColourDefault()
+            if store.header != nil { showHintOnce() }
         }
         if changes.contains(.clock) { handleClock() }
         if changes.contains(.frame), let index = store.frame?.colorIndex, index != menuColourIndex {
@@ -290,7 +331,10 @@ final class WorldModel: ObservableObject {
         if changes.contains(.map), let map = store.map, store.mapSerial != lastMapSerial {
             let first = lastMapSerial < 0
             lastMapSerial = store.mapSerial
-            if first { pushCamera() }  // the first map makes the planet level possible
+            if first {  // the first map makes the planet level possible, and the minimap
+                pushCamera()
+                pushInset()
+            }
             let start = fade.deliver(at: now())
             renderer.deliverWorld(map: map, serial: store.mapSerial, start: start)
             renderer.worldDraw.mapBlend = fade.blend(at: now())
@@ -320,6 +364,7 @@ final class WorldModel: ObservableObject {
         deliver(all)
         pushDisplay()
         pushCamera()
+        pushInset()
         // The size policy as it stands (a view made later than the model has seen no change of it: A0 review, finding 3).
         renderer.worldDraw.pixelsPerPoint = pixelsPerPoint
         pushCoverRadius()
@@ -462,6 +507,7 @@ final class WorldModel: ObservableObject {
     /// A drag by `dx`, `dy` points with no anchor: a pan (the map follows the pointer: middle button) or, with `orbit`, a turn of the
     /// heading and the tilt about the target. The left button grabs instead (`beginGrab`, `grab(to:)`).
     func drag(dx: Float, dy: Float, orbit: Bool) {
+        dismissHint()
         cancelCameraMotion()  // a manual drag cancels the follow (the selection stays)
         headingEase = nil
         let size = viewSize
@@ -474,6 +520,7 @@ final class WorldModel: ObservableObject {
     /// The left button went down at `point` (points of the free rectangle, origin at the top left): the floor point under it is what
     /// the drag keeps under the pointer.
     func beginGrab(at point: CGPoint) {
+        dismissHint()
         grabAnchor = pose.point(at: WorldPose.ndc(of: point, in: viewSize), aspect: aspect, size: worldSize)
     }
 
@@ -493,6 +540,9 @@ final class WorldModel: ObservableObject {
 
     /// A scroll event at `point` (nil: the pointer is not known; the zoom is about the centre): the law of `ScrollLaw`.
     func scroll(_ event: ScrollEvent, at point: CGPoint?) {
+        dismissHint()
+        // Over the minimap the pointer is off the map's surface: a zoom is about the centre of the view.
+        let onMap = point.map { pressTarget(at: $0) == .map } ?? true
         switch scrollLaw.handle(event, scrollZooms: display.scrollZooms) {
         case .none: return
         case .pan(let dx, let dy):
@@ -502,13 +552,15 @@ final class WorldModel: ObservableObject {
             let (aspect, world) = (self.aspect, worldSize)
             editPose { $0.pan(dx: dx, dy: dy, view: size, aspect: aspect, size: world) }
         case .zoom(let factor):
-            zoom(by: factor, at: point)
+            zoom(by: factor, at: onMap ? point : nil)
         }
     }
 
     /// A pinch of `magnification` about `point`.
     func magnify(_ magnification: Float, at point: CGPoint? = nil) {
-        zoom(by: ViewerInput.dollyFactor(magnification: magnification), at: point)
+        dismissHint()
+        let onMap = point.map { pressTarget(at: $0) == .map } ?? true
+        zoom(by: ViewerInput.dollyFactor(magnification: magnification), at: onMap ? point : nil)
     }
 
     /// Multiplies the distance by `factor` about the pointer (the surface point under it stays under it): the view's own zoom. A

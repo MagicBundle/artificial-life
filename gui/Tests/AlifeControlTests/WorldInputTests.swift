@@ -66,6 +66,7 @@ private final class Rig {
         #expect(await eventually { rig.settle(); return rig.metal != nil })
         rig.settle()
         rig.model.reduceMotion = { false }  // (a flight is an arc whatever the machine's accessibility settings)
+        rig.model.display.minimap = false  // (the key `i` keeps its choice in the process's defaults; the tests of the minimap turn it on)
         return rig
     }
 
@@ -417,7 +418,7 @@ private final class Rig {
         rig.model.zoom(by: 1.4)  // room both ways
         let free = rig.frames.free
         let offset = CGPoint(x: free.minX, y: free.minY)  // (a left dock moves the map's origin)
-        for local in [CGPoint(x: free.width / 2, y: free.height / 2), CGPoint(x: 30, y: 30), CGPoint(x: free.width - 30, y: free.height - 30)] {
+        for local in [CGPoint(x: free.width / 2, y: free.height / 2), CGPoint(x: 30, y: 30), CGPoint(x: free.width - 260, y: free.height - 30)] {
             let p = CGPoint(x: local.x + offset.x, y: local.y + offset.y)
             let anchor = try #require(rig.under(local))
             let d0 = rig.model.camera.distance
@@ -530,5 +531,170 @@ private final class Rig {
         // dragged far to the right the dock is no narrower than its minimum
         rig.drag(from: CGPoint(x: strip.midX, y: 300), to: CGPoint(x: 1090, y: 300))
         #expect(freeWidth(rig) == windowSize.width - DockLayout.minExtent)
+    }
+}
+
+/// The controls over the map, through AppKit's own routing (DESIGN §36.5, the spec's 5.4): they are drawn by the Metal pass and a `Canvas`
+/// that takes no mouse, so the Metal view gets every press and its model decides what the press landed on; a press that began on the map
+/// never becomes a control's gesture, and the reverse.
+extension WorldInputTests {
+    // (the same suite as the tests above: they all hold the process's dock settings and one invisible window at a time)
+    /// The window's point for a point of the free rectangle.
+    private func window(_ rig: Rig, _ p: CGPoint) -> CGPoint {
+        CGPoint(x: p.x + rig.frames.free.minX, y: p.y + rig.frames.free.minY)
+    }
+
+    private func make() async throws -> Rig {
+        let rig = try await Rig.make()
+        rig.model.display.minimap = true
+        rig.model.dismissHint()
+        rig.settle()
+        return rig
+    }
+
+    private func centre(_ rect: CGRect?) -> CGPoint { CGPoint(x: rect!.midX, y: rect!.midY) }
+
+    @Test func theMinimapTheCompassAndTheButtonsAreDrawnOverTheMetalViewAndTakeNoHitOfTheirOwn() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let hud = rig.model.hud
+        #expect(hud.rects.count == 5)
+        for (target, rect) in hud.rects {
+            #expect(rig.isMap(window(rig, CGPoint(x: rect.midX, y: rect.midY))), "\(target) is the Metal view's, which asks the model")
+        }
+        rig.model.showHint()
+        rig.settle()
+        #expect(rig.isMap(window(rig, CGPoint(x: rig.model.freeRect.midX, y: rig.model.freeRect.height - 74))), "and the hint takes none")
+        rig.model.dismissHint()
+    }
+
+    @Test func aClickInTheMinimapFliesThereAndNeverPansTheMap() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        model.editPose { $0.distance = 14 }
+        let before = model.pose
+        let box = try #require(model.inset)
+        let at = CGPoint(x: box.rect.minX + 40, y: box.rect.minY + 150)
+        let place = try #require(box.torus(atPoint: at))
+        rig.click(window(rig, at))
+        #expect(model.isFlying && model.flight != nil, "the press flew")
+        rig.arrive()
+        let w = model.worldSize
+        #expect(abs(Torus.wrapDelta(model.pose.x - place.x, size: w)) < 1e-2 && abs(Torus.wrapDelta(model.pose.y - place.y, size: w)) < 1e-2)
+        #expect(model.pose.distance == before.distance && model.pose.heading == before.heading && model.pose.tilt == before.tilt)
+    }
+
+    @Test func aPressNextToTheMinimapPansTheMap() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        model.editPose { $0.distance = 14 }
+        let before = model.pose
+        let box = try #require(model.hud.minimap)
+        let start = CGPoint(x: box.minX - 30, y: box.midY)
+        rig.drag(from: window(rig, start), to: window(rig, CGPoint(x: start.x - 90, y: start.y - 40)))
+        #expect(model.pose.x != before.x || model.pose.y != before.y, "the map was grabbed")
+        #expect(!model.isFlying)
+    }
+
+    @Test func aDragThatBeganOnTheMapAndEndsOverTheMinimapStaysAMapDrag() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        model.editPose { $0.distance = 14 }
+        let box = try #require(model.hud.minimap)
+        let start = CGPoint(x: box.minX - 80, y: box.midY)
+        let anchor = try #require(rig.under(window(rig, start).applying(CGAffineTransform(translationX: -rig.frames.free.minX, y: -rig.frames.free.minY))))
+        let end = CGPoint(x: box.midX, y: box.midY)
+        rig.drag(from: window(rig, start), to: window(rig, end))
+        #expect(!model.isFlying && model.flight == nil, "no flight: it was never a minimap click")
+        let held = try #require(rig.under(end))
+        #expect(simd_distance(held, anchor) < 0.05, "the point grabbed is under the pointer, over the minimap too: \(held) against \(anchor)")
+    }
+
+    @Test func aDragThatBeganInTheMinimapAndEndsOnTheMapStaysAMinimapDrag() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        model.editPose { $0.distance = 14; $0.heading = 0.3 }
+        let box = try #require(model.inset)
+        let start = CGPoint(x: box.rect.midX, y: box.rect.midY)
+        rig.drag(from: window(rig, start), to: window(rig, CGPoint(x: box.rect.minX - 200, y: box.rect.midY)))
+        let edge = try #require(box.torus(atPoint: CGPoint(x: box.rect.minX + 0.5, y: box.rect.midY)))
+        #expect(abs(Torus.wrapDelta(model.pose.x - edge.x, size: model.worldSize)) < 0.05, "held at the left edge of the box: x \(model.pose.x), \(edge.x)")
+        #expect(model.pose.heading == 0.3, "the map was not turned or panned by the drag")
+        #expect(!model.isFlying)
+    }
+
+    @Test func theWheelOverTheMinimapZoomsTheMapAboutItsCentre() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        let limit = model.distanceLimit
+        model.editPose { $0.distance = 0.8 * limit }
+        let before = model.pose
+        let box = try #require(model.hud.minimap)
+        rig.notch(at: window(rig, CGPoint(x: box.midX, y: box.midY)), lines: 3)
+        #expect(model.pose.distance < before.distance, "the wheel zoomed the map")
+        #expect(model.pose.x == before.x && model.pose.y == before.y, "about its centre")
+    }
+
+    @Test func aClickOnTheCompassIsNorthUpAndADoubleClickIsHome() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        let compass = centre(model.hud.compass)
+        model.editPose { $0.distance = 14; $0.heading = 1.1; $0.x = 6; $0.y = 7 }
+        rig.click(window(rig, compass))
+        rig.arrive()
+        #expect(model.pose.heading == 0 && model.pose.x == 6 && model.pose.distance == 14, "north up")
+        model.editPose { $0.heading = 1.1 }
+        rig.click(window(rig, compass), clicks: 2)
+        #expect(model.isFlying && model.flight?.home == true, "Home")
+        rig.arrive()
+        let home = model.homePose(header: try #require(rig.play.store.header))
+        #expect(model.pose.heading == 0 && abs(model.pose.distance - home.distance) < 1e-2)
+    }
+
+    @Test func theZoomButtonsZoomAboutTheCentreAndNeverPan() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        let d0 = 0.7 * model.distanceLimit
+        model.editPose { $0.distance = d0 }
+        let (x, y) = (model.pose.x, model.pose.y)
+        rig.click(window(rig, centre(model.hud.zoomIn)))
+        rig.arrive()
+        #expect(abs(model.pose.distance - d0 * exp(-0.35)) < 1e-2 && model.pose.x == x && model.pose.y == y, "+")
+        rig.click(window(rig, centre(model.hud.zoomOut)))
+        rig.arrive()
+        #expect(abs(model.pose.distance - d0) < 1e-2 && model.pose.x == x && model.pose.y == y, "-")
+    }
+
+    @Test func theHomeGlyphOfTheMinimapFliesHome() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        model.editPose { $0.distance = 8; $0.x = 5; $0.y = 5 }
+        rig.click(window(rig, centre(model.hud.home)))
+        #expect(model.isFlying && model.flight?.home == true)
+    }
+
+    @Test func withTheMinimapOffItsPlaceIsTheMapsAgain() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        let at = centre(model.hud.minimap)
+        model.editPose { $0.distance = 14 }
+        let before = model.pose
+        rig.window.sendEvent(rig.key("i"))  // (the window's key reaches the world whatever has the focus)
+        rig.settle()
+        #expect(!model.display.minimap || model.hud.minimap == nil)
+        model.display.minimap = false
+        #expect(model.pressTarget(at: at) == .map)
+        rig.drag(from: window(rig, at), to: window(rig, CGPoint(x: at.x - 60, y: at.y)))
+        #expect(model.pose.x != before.x || model.pose.y != before.y, "the press grabbed the map")
+        model.display.minimap = true
     }
 }

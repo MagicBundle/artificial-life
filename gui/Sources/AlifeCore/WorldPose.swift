@@ -175,10 +175,10 @@ package struct WorldPose: Equatable, Sendable {
         return SIMD2(Float(point.x / view.width) * 2 - 1, 1 - Float(point.y / view.height) * 2)
     }
 
-    /// Where the ray through `ndc` meets the plane through the centre (height `z`), as an offset from the centre. It does not
-    /// depend on where the centre is, only on the orientation and the distance: the camera is translated rigidly. Nil when the
-    /// ray does not reach the plane in front of the eye.
-    package func offset(at ndc: SIMD2<Float>, aspect: Float) -> SIMD2<Float>? {
+    /// Where the ray through `ndc` meets the plane through the centre (height `z`; or the horizontal plane at `planeZ`, the floor
+    /// for the minimap), as an offset from the centre. It does not depend on where the centre is, only on the orientation and the
+    /// distance: the camera is translated rigidly. Nil when the ray does not reach the plane in front of the eye.
+    package func offset(at ndc: SIMD2<Float>, aspect: Float, planeZ: Float? = nil) -> SIMD2<Float>? {
         var origin = self
         origin.x = 0
         origin.y = 0
@@ -186,7 +186,7 @@ package struct WorldPose: Equatable, Sendable {
         let half = tan(fovY / 2)
         let ray = simd_normalize(camera.forward + camera.right * (ndc.x * half * aspect) + camera.up * (ndc.y * half))
         guard abs(ray.z) > 1e-6 else { return nil }
-        let t = (z - camera.position.z) / ray.z
+        let t = ((planeZ ?? z) - camera.position.z) / ray.z
         guard t > 0, t.isFinite else { return nil }
         let hit = camera.position + ray * t
         return SIMD2(hit.x, hit.y)

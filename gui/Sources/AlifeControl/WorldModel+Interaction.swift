@@ -70,6 +70,19 @@ extension WorldModel {
 
     /// The pointer moved to `point`, or left the view (nil). No round trip to the world: the same hit test as a click.
     func hover(at point: CGPoint?) {
+        // Over a control the map has no tooltip and no readout of its own.
+        if let point, freeRect.width >= 1 {
+            let target = pressTarget(at: point)
+            hoverHUD(target, at: point)
+            if target != .map {
+                overlay.setHover(nil)
+                overlay.setPointerText(nil)
+                return
+            }
+        } else {
+            hoverHUD(.map, at: .zero)
+        }
+        overlay.setPointerText(pointerReadout(at: point))
         if powers.isAiming {
             aimHover(at: point)
             overlay.setHover(nil)
@@ -214,7 +227,7 @@ extension WorldModel {
     // MARK: Camera motion
 
     /// Whether the camera is moving by itself (following or flying).
-    var cameraMotionPending: Bool { isFlying || !followState.target.isNone || headingEase != nil }
+    var cameraMotionPending: Bool { isFlying || !followState.target.isNone || headingEase != nil || zoomEase != nil }
 
     func setFollow(_ target: FollowTarget) {
         followState.set(target)
@@ -224,6 +237,7 @@ extension WorldModel {
 
     /// A manual drag, `Esc`, a reset: whatever moved the camera by itself stops. The selection stays (except for `Esc`).
     func cancelCameraMotion() {
+        zoomEase = nil
         setFollow(.none)
         isFlying = false
         flyGoal = nil
@@ -234,6 +248,7 @@ extension WorldModel {
 
     /// A zoom: a flight under way stops where it is (any input does, DESIGN §36.5); a follow goes on, at the user's distance.
     func stopFlight() {
+        zoomEase = nil
         if followState.target.isNone {
             isFlying = false
             flyGoal = nil
@@ -254,6 +269,7 @@ extension WorldModel {
         flyDistance = nil
         flight = nil
         headingEase = nil
+        zoomEase = nil
         grabAnchor = nil
         scrollLaw = ScrollLaw()
         toastQueue = ToastQueue()
@@ -333,6 +349,12 @@ extension WorldModel {
             headingEase = step.done ? nil : ease
             editPose { $0.heading = step.heading }
             easing = !step.done
+        }
+        if var ease = zoomEase {
+            let step = ease.step(dt: min(dt, 0.1))
+            zoomEase = step.done ? nil : ease
+            editPose { $0.distance = step.distance }
+            easing = easing || !step.done
         }
         if followState.target.isNone, isFlying, let flight { return advanceFlight(flight, dt: dt) || easing }
         var goal: SIMD3<Float>?
@@ -435,15 +457,13 @@ extension WorldModel {
     // MARK: Keys
 
     func perform(_ action: WorldAction) {
+        dismissHint()
         switch action {
         case .togglePause:
             if clockStrip.paused { play.resume() } else { play.pause() }
         case .step:
             play.step(1)
-        case .cycleColor:
-            let store = play.store
-            let current = store.frame.flatMap { store.header?.colorMode(index: $0.colorIndex) }
-            if let next = WorldKeys.nextColorMode(after: current, in: store.header?.colorModes ?? []) { play.setColor(next) }
+        case .cycleColor: cycleColour()
         case .toggleAgents: display.agents.toggle()
         case .toggleBonds: display.bonds.toggle()
         case .cycleTerritory: display.territory = display.territory.next

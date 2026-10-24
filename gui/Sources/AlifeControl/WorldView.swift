@@ -158,6 +158,8 @@ struct WorldCanvasView: View {
             if play.phase == .live || play.store.header != nil {
                 WorldMetalView(model: model)
                 WorldOverlayView(model: model, overlay: model.overlay, play: play)
+                WorldHUDView(model: model, overlay: model.overlay, play: play)
+                ControlsHintView(model: model)
                 if alertsOverMap { AlertStackOverlay(play: play, model: model) }
                 ChapterCardView(play: play, model: model)
                 ToastStackView(model: model)
@@ -165,7 +167,9 @@ struct WorldCanvasView: View {
                 FollowBadge(model: model, play: play)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 if dockCollapsed {
+                    // (left of the compass and the zoom buttons, which are stacked at the top right)
                     ClockBadge(play: play, model: model)
+                        .padding(.trailing, WorldHUD.compassSide + WorldHUD.margin)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
             }

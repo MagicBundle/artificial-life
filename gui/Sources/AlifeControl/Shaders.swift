@@ -1,3 +1,4 @@
+import AlifeCore
 // The viewer's Metal shaders as one string, compiled at run time with `MTLDevice.makeLibrary(source:options:)`.
 //
 // They are not a `.metal` file because the installed app is the release binary and nothing else (`make-app.sh` copies
@@ -26,9 +27,14 @@ enum Shaders {
     static let pointFragment = "pointFragment"
     static let mapVertex = "mapVertex"
     static let mapFragment = "mapFragment"
+    // The minimap's (DESIGN 36.5): the whole world in a viewport of the drawable, the map's fragment shader over a quad of its own,
+    // and the organisms as translucent points.
+    static let insetVertex = "insetVertex"
+    static let insetPointVertex = "insetPointVertex"
     static let entryPoints = [
         sphereVertex, sphereFragment, bondVertex, boxVertex, lineFragment, planeVertex, planeFragment, sliceFragment,
         agentVertexA, agentFragmentA, agentFragmentFlat, bondVertexA, pointVertexA, pointFragment, mapVertex, mapFragment,
+        insetVertex, insetPointVertex,
     ]
 
     static let source = """
@@ -55,7 +61,7 @@ enum Shaders {
         float4 target;     // xy: the camera target (everything is drawn at its minimum image), z: L, w: 1 / L
         float4 params;     // x: map blend (previous -> current), y: map opacity, z: territory tint alpha, w: flat-disc threshold in px
         float4 refs;       // x: p_ref, y: dc_ref, z: zeta_ref, w: cot(fovY / 2)
-        uint4 flags;       // x: pass (0 spheres, 1 flat discs), y: rows listed, z: bonds, w: bit 0 map, bit 1 territory, bit 2 equators
+        uint4 flags;       // x: pass (0 spheres, 1 flat discs), y: rows listed, z: bonds, w: bit 0 map, bit 1 territory, bit 2 equators, bit 3 height colour
         float4 style;      // x: point alpha, y: point size in px, z: smallest radius in px, w: outline width in px (0: none)
         float4 size;       // x: the cap on the drawn radius in px (huge: physical size), y, z: the alpha ramp's low and high radius in px, w: depth cue slope
         float4 look;       // x: exposure (the map's brightness), y: territory border alpha, z: depth cue base, w: hemisphere tint weight
@@ -71,6 +77,24 @@ enum Shaders {
 
     float3 unpackColor(uint c) {
         return float3(float((c >> 16) & 255u), float((c >> 8) & 255u), float(c & 255u)) * (1.0 / 255.0);
+    }
+
+    // The height colour mode (DESIGN 36.5): an organism is coloured by its altitude on the viridis ramp (HeightColour.swift writes this
+    // table), 17 stops of sRGB, linear between them. The engine's hurt red is kept. Bit 3 of the world flags turns it on.
+    constant float3 heightStops[17] = { \(HeightColour.shaderTable) };
+
+    float3 heightColor(float z, float height)
+    {
+        float t = clamp(z / max(height, 1e-6), 0.0, 1.0) * 16.0;
+        int i = min(int(t), 15);
+        return mix(heightStops[i], heightStops[i + 1], t - float(i));
+    }
+
+    // The colour of a row: the stream's, or in the height mode its altitude's, except the engine's hurt red (FF0000), which every mode keeps.
+    float3 organismColor(uint packed, float z, float height, constant WorldU& world)
+    {
+        if ((world.flags.w & 8u) != 0u && height > 0.0 && (packed & 0xFFFFFFu) != 0xFF0000u) { return heightColor(z, height); }
+        return unpackColor(packed);
     }
 
     // ---- Agents: one billboard per row, shaded as a ray-traced sphere (an impostor) ----
@@ -392,12 +416,14 @@ enum Shaders {
         out.position = scene.viewProjection * float4(worldPoint, 1.0);
         out.center = center;
         out.world = worldPoint;
-        out.color = unpackColor(rgb[iid]);
+        out.color = organismColor(rgb[iid], raw.z, scene.world.y, world);
         out.corner = corner;
         out.radius = radius;
         out.pxPerUnit = perPixel;
         out.alpha = alpha;
-        out.cue = scene.world.y > 0.0 ? world.look.z + world.size.w * clamp(raw.z / scene.world.y, 0.0, 1.0) : 1.0;
+        // (the height colour is the altitude: no second brightness cue on top of it)
+        bool byHeight = (world.flags.w & 8u) != 0u;
+        out.cue = (scene.world.y > 0.0 && !byHeight) ? world.look.z + world.size.w * clamp(raw.z / scene.world.y, 0.0, 1.0) : 1.0;
         return out;
     }
 
@@ -453,7 +479,7 @@ enum Shaders {
         float3 p = atMiddle ? 0.5 * (pa + pb) : (fromB ? pb : pa);
         LineVarying out;
         out.position = scene.viewProjection * float4(p, 1.0);
-        out.color = float4(mix(unpackColor(rgb[fromB ? ij.y : ij.x]), float3(1.0), 0.35), 1.0);
+        out.color = float4(mix(organismColor(rgb[fromB ? ij.y : ij.x], fromB ? pb.z : pa.z, scene.world.y, world), float3(1.0), 0.35), 1.0);
         return out;
     }
 
@@ -474,13 +500,32 @@ enum Shaders {
         float3 p = minimumImage(float3(pos[vid]), world.target.xy, world.target.z);
         out.position = scene.viewProjection * float4(p, 1.0);
         out.pointSize = world.style.y;
-        out.color = float4(unpackColor(rgb[vid]), world.style.x);
+        out.color = float4(organismColor(rgb[vid], p.z, scene.world.y, world), world.style.x);
         return out;
     }
 
     fragment float4 pointFragment(PointVarying in [[stage_in]])
     {
         return in.color;
+    }
+
+    // The minimap's organisms: the same points in the box of the whole world, east to the right and north up (x / L across, the signed
+    // distance from the equator over L up), pale and translucent, so that a crowd shows as a brighter haze (the average of 40,000
+    // colours is mud: the minimap says where the life is, the colour mode is the main view's).
+    vertex PointVarying insetPointVertex(uint vid [[vertex_id]],
+                                         constant Scene& scene [[buffer(0)]],
+                                         device const packed_float3* pos [[buffer(2)]],
+                                         device const uint* rgb [[buffer(4)]],
+                                         constant WorldU& world [[buffer(7)]])
+    {
+        PointVarying out;
+        float L = world.target.z;
+        float3 p = float3(pos[vid]);
+        float ybar = p.y - L * rint(p.y / L);
+        out.position = float4(2.0 * p.x / L - 1.0, 2.0 * ybar / L, 0.0, 1.0);
+        out.pointSize = world.style.y;
+        out.color = float4(float3(0.96, 0.97, 1.0), world.style.x);
+        return out;
     }
 
     // The map: one patch of one world, L wide around the camera target in x (where the texture repeats, so the wrap is seamless) and L
@@ -508,6 +553,17 @@ enum Shaders {
         float2 xy = float2(world.target.x, k * L) + corner * (0.5 * L);
         out.position = scene.viewProjection * float4(xy, 0.0, 1.0);
         out.uv = xy * world.target.w;
+        return out;
+    }
+
+    // The minimap: a quad over the viewport it is drawn into. u = x / L runs left to right; v = y / L is the signed distance from the
+    // equator over L, +1/2 at the top edge and -1/2 at the bottom (the sampler repeats, so the wrap in y is the box's top and bottom).
+    vertex MapVarying insetVertex(uint vid [[vertex_id]])
+    {
+        float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
+        MapVarying out;
+        out.position = float4(corner, 0.0, 1.0);
+        out.uv = float2(0.5 + 0.5 * corner.x, 0.5 * corner.y);
         return out;
     }
 

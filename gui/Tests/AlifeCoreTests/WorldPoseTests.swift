@@ -288,4 +288,23 @@ import simd
         #expect(WorldPose.populatedX(frame: WorldFixtures.frame([]), size: 320) == nil)
         #expect(abs(WorldPose.populatedX(frame: WorldFixtures.frame([SIMD3(100, 1, 1), SIMD3(120, 2, 2)]), size: 320)! - 110) < 0.5)
     }
+
+    @Test func theTiltReachIsTheFootprintsAndMatchesTheSpecsTable() {
+        // The most a view at distance d may be tilted, from the footprint staying inside 0.49 L of its centre at every heading (the worst
+        // one decides; spec 3.3: at 0.12 L 57 / 56 / 52 degrees for window aspects 1.3 / 2 / 3; at 0.08 L 60 / 59 / 57; at 0.2 L 52 / 48 / 39).
+        let table: [(Float, Float, Float, Float)] = [
+            (0.12, 57, 56, 52), (0.08, 60, 59, 57), (0.2, 52, 48, 39),
+        ]
+        for (fraction, a, b, c) in table {
+            for (aspect, expected) in zip([Float(1.3), 2, 3], [a, b, c]) {
+                var degrees = Float.infinity
+                for heading in stride(from: Float(0), through: .pi / 2, by: .pi / 72) {
+                    var pose = WorldPose(x: 160, y: 160, heading: heading, tilt: 1.4, distance: fraction * 320)
+                    pose.limitTilt(aspect: aspect, size: 320, height: 80)
+                    degrees = min(degrees, pose.tilt * 180 / .pi)
+                }
+                #expect(abs(degrees - expected) < 2.5, "\(fraction) L, aspect \(aspect): \(degrees) against \(expected)")
+            }
+        }
+    }
 }

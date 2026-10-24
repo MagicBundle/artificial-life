@@ -20,6 +20,9 @@ final class WorldMTKView: MTKView {
     /// since for the gesture to be a drag and not a click.
     private var downPoint: CGPoint?
     private var dragging = false
+    /// What the left button went down on: the map, or a control the model hit-tests (the minimap, Home, the compass, the zoom
+    /// buttons). A press that began on the map never becomes a control's gesture, and the reverse (DESIGN §36.5).
+    private var pressed = HUDTarget.map
     private var tracking: NSTrackingArea?
     private var keyMonitor: Any?
 
@@ -114,10 +117,16 @@ final class WorldMTKView: MTKView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        downPoint = point(of: event)
+        let here = point(of: event)
+        downPoint = here
         dragging = false
+        pressed = event.modifierFlags.contains(.option) ? .map : (model?.pressTarget(at: here) ?? .map)
+        if pressed != .map {
+            model?.hudPress(pressed)
+            return
+        }
         model?.hover(at: nil)
-        model?.beginGrab(at: point(of: event))
+        model?.beginGrab(at: here)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -127,6 +136,10 @@ final class WorldMTKView: MTKView {
             guard hypot(here.x - start.x, here.y - start.y) >= Self.clickSlop else { return }  // still a click
             dragging = true
         }
+        if pressed != .map {
+            model?.hudDrag(pressed, to: point(of: event))
+            return
+        }
         if event.modifierFlags.contains(.option) {
             model?.drag(dx: Float(event.deltaX), dy: Float(event.deltaY), orbit: true)
         } else {
@@ -135,7 +148,12 @@ final class WorldMTKView: MTKView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        defer { downPoint = nil; dragging = false; model?.endGrab() }
+        let target = pressed
+        defer { downPoint = nil; dragging = false; pressed = .map; model?.endGrab() }
+        if target != .map {
+            model?.hudRelease(target, at: point(of: event), clicks: max(event.clickCount, 1), dragged: dragging)
+            return
+        }
         guard !dragging, downPoint != nil, !event.modifierFlags.contains(.option) else { return }
         model?.click(at: point(of: event), shift: event.modifierFlags.contains(.shift), clicks: max(event.clickCount, 1))
     }

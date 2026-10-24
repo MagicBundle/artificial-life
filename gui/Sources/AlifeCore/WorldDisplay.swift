@@ -35,8 +35,11 @@ package struct WorldDisplay: Equatable, Sendable {
     /// Organisms as symbols whose size is capped (default), or at their physical size (DESIGN §36.7).
     package var sizeMode = OrganismSizeMode.capped
 
-    /// The minimap of the whole world with the view's footprint (the `i` key; drawn from PR A1's second stage).
+    /// The minimap of the whole world with the view's footprint (the `i` key).
     package var minimap = true
+    /// Organisms coloured by their altitude on the viridis ramp (`HeightColour`), instead of the stream's colour mode: View > Colour >
+    /// Height, and the first colour of a 3D world until the player picks another. The model sets it from the world and the player's choice.
+    package var heightColour = false
     /// The trackpad's two-finger scroll zooms (v1's law) instead of panning (the Maps convention, the default): View > "Scroll zooms".
     package var scrollZooms = false
 
