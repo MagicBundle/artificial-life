@@ -75,20 +75,25 @@ def lat_hist(out: Path, plt: Any, lat: dict[str, Any], length: float) -> str:
         edgecolor=SURFACE,
         linewidth=0.4,
     )
-    for y in (0.0, length / 2, length):
+    ymax = float(edges[-1])  # the y extent: L on the torus, Ly in a channel
+    equators, poles = lat["equators"], lat["poles"]
+    for y in (*equators, *(() if len(equators) == 1 else (ymax,))):
         a.axvline(y, color=INK2, ls="--", lw=0.9)
-    for y in (length / 4, 3 * length / 4):
+    for y in poles:
         a.axvline(y, color=ORANGE, ls=":", lw=1.2)
     a.set(
         xlabel="centroid y",
         ylabel="detections",
         title="storm latitudes (dashed: equators, dotted: poles)",
-        xlim=(0, length),
+        xlim=(0, ymax),
     )
     gy, gh = np.asarray(lat["genesis_y"]), np.asarray(lat["genesis_hemi"])
-    pd = np.abs(gy - np.where(gh == 0, length / 4, 3 * length / 4)) if gy.size else gy
+    pd = np.abs(gy - np.where(gh == 0, poles[0], poles[1])) if gy.size else gy
     if pd.size:
-        b.hist(pd, bins=np.arange(0, length / 4 + 8, 8), color=AQUA, edgecolor=SURFACE)
+        top = (
+            length / 4 if len(equators) == 2 else ymax / 2
+        )  # a torus pole is a quarter period from its equator
+        b.hist(pd, bins=np.arange(0, top + 8, 8), color=AQUA, edgecolor=SURFACE)
     b.set(
         xlabel="genesis distance from the pole of its hemisphere", ylabel="storms", title="where storms form"
     )
@@ -201,13 +206,25 @@ def occupancy_plot(
     return _save(fig, plt, out / "occupancy.png")
 
 
-def jets_plot(out: Path, plt: Any, y: np.ndarray, zonal: np.ndarray, length: float) -> str:
+def jets_plot(
+    out: Path,
+    plt: Any,
+    y: np.ndarray,
+    zonal: np.ndarray,
+    length: float,
+    equators: Sequence[float] | None = None,
+    poles: Sequence[float] | None = None,
+) -> str:
+    """The time-mean zonal-mean winds by y. ``length`` is the y extent; ``equators`` and ``poles`` default to
+    the torus's (``0, L/2, L`` and ``L/4, 3L/4``)."""
     fig, ax = plt.subplots(figsize=(4.8, 5.2))
     ax.plot(zonal[0], y, color=BLUE, label="u1")
     ax.plot(zonal[1], y, color=ORANGE, label="u2")
-    for yy in (0.0, length / 2, length):
+    eq = (0.0, length / 2, length) if equators is None else equators
+    pl = (length / 4, 3 * length / 4) if poles is None else poles
+    for yy in eq:
         ax.axhline(yy, color=INK2, ls="--", lw=0.8)
-    for yy in (length / 4, 3 * length / 4):
+    for yy in pl:
         ax.axhline(yy, color=ORANGE, ls=":", lw=1.0)
     ax.axvline(0, color=INK2, lw=0.8)
     ax.set(xlabel="time-mean zonal-mean wind", ylabel="y", title="jets", ylim=(0, length))
@@ -257,8 +274,11 @@ def snapshots(
         fr = frames.get(t)
         if fr is None:
             continue
-        fig, axes = plt.subplots(1, 3, figsize=(12, 4.1))
-        ext = (0, p.L, 0, p.L)
+        if p.channel:
+            fig, axes = plt.subplots(3, 1, figsize=(9, 3 * 9 * p.Ly / p.L + 2.4))
+        else:
+            fig, axes = plt.subplots(1, 3, figsize=(12, 4.1))
+        ext = (0, p.L, 0, p.Ly)
         specs = (
             ("h1 - H1", fr["h1"], "RdBu_r", 8.0),
             ("zeta_1 / f0 (cyclones: red north, blue south)", fr["zeta"], "RdBu_r", 1.0),
@@ -299,8 +319,9 @@ def _gif(
     from matplotlib.animation import PillowWriter
 
     path = out / name
+    aspect = (extent[3] - extent[2]) / (extent[1] - extent[0])
     for dpi in (80, 60, 45, 32):
-        fig, ax = plt.subplots(figsize=(4.4, 4.2))
+        fig, ax = plt.subplots(figsize=(4.4, 4.2) if aspect > 0.9 else (6.4, 6.4 * aspect + 1.0))
         im = ax.imshow(
             images[0], origin="lower", extent=extent, cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest"
         )
@@ -331,7 +352,7 @@ def write_movies(
     ts = [t for t in times if t in frames]
     if not ts:
         return names
-    ext = (0, p.L, 0, p.L)
+    ext = (0, p.L, 0, p.Ly)
     storms = [frames[t]["storms"] for t in ts]
     rain_hi = float(max(np.percentile(np.stack([frames[t]["P"] for t in ts]), 99.9), 1e-6))
     names.append(
@@ -426,7 +447,17 @@ def write_all(
     occ = occupancy_plot(out, plt, res.rec.rows, arrays["occupancy"], arrays.get("occupancy_floor_held"))
     if occ:
         names.append(occ)
-    names.append(jets_plot(out, plt, arrays["rows_y"], arrays["zonal_mean"], p.L))
+    names.append(
+        jets_plot(
+            out,
+            plt,
+            arrays["rows_y"],
+            arrays["zonal_mean"],
+            p.Ly,
+            arrays["lat"]["equators"],
+            arrays["lat"]["poles"],
+        )
+    )
     names.append(hist_plot(out, plt, metrics["diagnostics"]["histograms"], p))
     say("writing snapshots")
     names += snapshots(out, plt, res.rec.frames, st.snapshot_times(), p)

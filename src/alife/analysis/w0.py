@@ -550,19 +550,20 @@ def drift_stats(
     """Displacement between detections ``gap`` steps apart on a track, inside the window (spec §6).
 
     Magnitude (units and radii of the starting ``r_eq``), the zonal component (east positive) and the poleward
-    component (toward ``L/4`` in the north, ``3L/4`` in the south), median and 90th percentile by hemisphere.
+    component (toward the pole of the hemisphere, ``p.pole_ys``: ``L/4`` in the north and ``3L/4`` in the
+    south on the torus, the wall in a channel), median and 90th percentile by hemisphere.
     """
     rec: list[tuple[int, float, float, float, float]] = []  # hemi, units, radii, zonal, poleward
     for tr in qualifying(tracks, min_dets):
         t, ux, uy, r = tr.arrays()
         index = {int(tt): i for i, tt in enumerate(t)}
-        pole = p.L / 4 if tr.hemi == 0 else 3 * p.L / 4
+        pole = p.pole_ys[tr.hemi]
         for i, tt in enumerate(t):
             j = index.get(int(tt) + gap)
             if j is None or tt < t_lo or tt + gap > t_hi:
                 continue
             dx_, dy_ = ux[j] - ux[i], uy[j] - uy[i]
-            sgn = 1.0 if (pole - (uy[i] % p.L)) >= 0 else -1.0
+            sgn = 1.0 if (pole - (uy[i] if p.channel else uy[i] % p.L)) >= 0 else -1.0
             rec.append((tr.hemi, math.hypot(dx_, dy_), math.hypot(dx_, dy_) / r[i], dx_, sgn * dy_))
     out: dict[str, Any] = {
         "gap": gap,
@@ -581,9 +582,13 @@ def drift_stats(
     return out
 
 
-def pole_distance(y: np.ndarray, hemi: np.ndarray, length: float) -> np.ndarray:
-    """Distance of latitude ``y`` from the pole of its hemisphere (``L/4`` north, ``3L/4`` south)."""
-    pole = np.where(np.asarray(hemi) == 0, length / 4, 3 * length / 4)
+def pole_distance(
+    y: np.ndarray, hemi: np.ndarray, length: float, poles: tuple[float, float] | None = None
+) -> np.ndarray:
+    """Distance of latitude ``y`` from the pole of its hemisphere (``L/4`` north, ``3L/4`` south on the torus;
+    ``poles`` is ``(north, south)`` from ``WeatherParams.pole_ys`` when it is not the torus)."""
+    north, south = poles if poles is not None else (length / 4, 3 * length / 4)
+    pole = np.where(np.asarray(hemi) == 0, north, south)
     return np.abs(np.asarray(y) - pole)
 
 
@@ -603,24 +608,24 @@ def latitude_stats(
                 ys.append(d.y)
                 hs.append(d.hemi)
     ys_a, hs_a = np.array(ys), np.array(hs)
-    edges = np.arange(0.0, p.L + 8.0, 8.0)
+    edges = np.arange(0.0, p.Ly + 8.0, 8.0)
     out: dict[str, Any] = {
         "bin_edges": edges,
         "hist": np.histogram(ys_a, edges)[0] if ys_a.size else np.zeros(len(edges) - 1, dtype=int),
-        "equators": [0.0, p.L / 2],
-        "poles": [p.L / 4, 3 * p.L / 4],
+        "equators": list(p.equator_ys),
+        "poles": list(p.pole_ys),
         "n": int(ys_a.size),
         "genesis_y": np.array(gen_y),
         "genesis_hemi": np.array(gen_h),
     }
     for h, name in enumerate(("north", "south")):
-        d = pole_distance(ys_a[hs_a == h], hs_a[hs_a == h], p.L) if ys_a.size else np.zeros(0)
+        d = pole_distance(ys_a[hs_a == h], hs_a[hs_a == h], p.L, p.pole_ys) if ys_a.size else np.zeros(0)
         out[name] = {
             "n": int(d.size),
             "median_pole_distance": float(np.median(d)) if d.size else math.nan,
             "within_16_of_pole": float((d <= 16.0).mean()) if d.size else math.nan,
         }
-    d_all = pole_distance(ys_a, hs_a, p.L) if ys_a.size else np.zeros(0)
+    d_all = pole_distance(ys_a, hs_a, p.L, p.pole_ys) if ys_a.size else np.zeros(0)
     out["median_pole_distance"] = float(np.median(d_all)) if d_all.size else math.nan
     out["within_16_of_pole"] = float((d_all <= 16.0).mean()) if d_all.size else math.nan
     return out
@@ -944,7 +949,7 @@ class Sim:
         self.pools = p.pools
         self.fo = W.default_forcing(p)
         if momentum:
-            self._set_momentum(*([mx.zeros((p.n, p.n), dtype=mx.float32)] * 4))
+            self._set_momentum(*([mx.zeros((p.ny, p.n), dtype=mx.float32)] * 4))
         self.ws = W.init_state(p, self.fo)
         self.key = mx.random.key(key)
         self.acc = new_acc()
@@ -1169,6 +1174,72 @@ class ArmRecord:
         return np.concatenate(self.occ_tau), np.concatenate(self.occ_val)
 
 
+class ChannelRecord:
+    """What a channel run records beyond the torus study, inside the window (the gates G0.3 and G0.4 of
+    DESIGN §37.6): at every detection the maximum layer-1 centre speed over the **wall strip** (rows within
+    ``WALL_STRIP`` units of a wall) and over the interior, the largest ``|v|`` on the wall row (it is
+    exactly 0), the count of wall-strip cells above ``WALL_SPEED`` (and of those on the two wall rows
+    themselves), and the fraction of interior cells above each hazard speed for the raw wind and for the wind
+    relative to its zonal mean (the eddy wind of ``weather.storm_eddy``)."""
+
+    WALL_STRIP = 10.0
+    WALL_SPEED = 0.15
+    HAZARD_SPEEDS = (0.04, 0.06, 0.09)
+
+    def __init__(self, p: WeatherParams) -> None:
+        yc = (np.arange(p.ny) + 0.5) * p.dx
+        dist = np.minimum(yc, p.Ly - yc)
+        self.strip = dist < self.WALL_STRIP
+        self.wall_rows = np.zeros(p.ny, dtype=bool)
+        self.wall_rows[[0, p.ny - 1]] = True
+        self.strip_max: list[float] = []
+        self.interior_max: list[float] = []
+        self.v_wall_max = 0.0
+        self.over_wall_strip = 0
+        self.over_wall_rows = 0
+        self.samples = 0
+        self.raw_frac = np.zeros(len(self.HAZARD_SPEEDS))
+        self.eddy_frac = np.zeros(len(self.HAZARD_SPEEDS))
+        self.raw_frac_max = np.zeros(len(self.HAZARD_SPEEDS))
+
+    def add(self, fr: Frame, spd1: np.ndarray, uc1: np.ndarray, vc1: np.ndarray) -> None:
+        """One detection: ``spd1`` is the layer-1 centre speed, ``uc1, vc1`` its components."""
+        self.strip_max.append(float(spd1[self.strip].max()))
+        self.interior_max.append(float(spd1[~self.strip].max()))
+        self.v_wall_max = max(self.v_wall_max, float(np.abs(fr.v1[-1]).max()), float(np.abs(fr.v2[-1]).max()))
+        self.over_wall_strip += int((spd1[self.strip] > self.WALL_SPEED).sum())
+        self.over_wall_rows += int((spd1[self.wall_rows] > self.WALL_SPEED).sum())
+        interior = ~self.strip
+        eddy = np.hypot(uc1 - uc1.mean(axis=1, keepdims=True), vc1 - vc1.mean(axis=1, keepdims=True))
+        for k, u0 in enumerate(self.HAZARD_SPEEDS):
+            raw = float((spd1[interior] > u0).mean())
+            self.raw_frac[k] += raw
+            self.raw_frac_max[k] = max(self.raw_frac_max[k], raw)
+            self.eddy_frac[k] += float((eddy[interior] > u0).mean())
+        self.samples += 1
+
+    def summary(self) -> dict[str, Any]:
+        n = max(self.samples, 1)
+        sm = np.asarray(self.strip_max)
+        return {
+            "detections": self.samples,
+            "wall_strip_units": self.WALL_STRIP,
+            "wall_strip_speed": {
+                "median": float(np.median(sm)) if sm.size else math.nan,
+                "max": float(sm.max()) if sm.size else math.nan,
+            },
+            "interior_speed_max": float(max(self.interior_max, default=math.nan)),
+            "v_wall_max": self.v_wall_max,
+            "wall_speed_threshold": self.WALL_SPEED,
+            "cells_over_threshold_wall_strip": self.over_wall_strip,
+            "cells_over_threshold_wall_rows": self.over_wall_rows,
+            "hazard_speeds": list(self.HAZARD_SPEEDS),
+            "interior_fraction_over_raw": (self.raw_frac / n).tolist(),
+            "interior_fraction_over_raw_max": self.raw_frac_max.tolist(),
+            "interior_fraction_over_eddy": (self.eddy_frac / n).tolist(),
+        }
+
+
 class Recorder:
     """The per-detection recording of a study (a ``Sim`` callback).
 
@@ -1204,11 +1275,10 @@ class Recorder:
         self.rows: list[dict[str, Any]] = []
         self.frames: dict[int, dict[str, Any]] = {}
         self.snaps: dict[int, Snapshot] = {}
-        n = p.n
         self.zeta_hist = np.zeros(len(ZETA_BINS) - 1)
         self.p_hist = np.zeros(len(P_BINS) - 1)
         self.bg_hist = np.zeros((2, SPEED_BINS))
-        self.zonal_sum = np.zeros((2, n))
+        self.zonal_sum = np.zeros((2, p.ny))
         self.ke_sum = np.zeros((2, 2))  # layer × (zonal, eddy)
         self.n_win = 0
         self.band_log: list[tuple[int, int, int, float]] = []  # t, hemi, area, y
@@ -1219,10 +1289,10 @@ class Recorder:
         self.mass_dev = 0.0
         self.mass_last = self.q_last = 0.0
         self.winds: WindStats | None = None
-        if cfg is not None:
-            self.winds = WindStats(p, round(p.height / cfg.world.field_cell), cfg.world.field_cell)
-        else:
-            self.winds = WindStats(p, round(p.height / 4.0), 4.0)
+        self.chan: ChannelRecord | None = ChannelRecord(p) if p.channel else None
+        if not p.channel:  # the agent wind is a torus gather: a channel has none until it reaches the engine
+            fc = cfg.world.field_cell if cfg is not None else 4.0
+            self.winds = WindStats(p, round(p.height / fc), fc)
 
     def start(self, sim: Sim) -> None:
         """Record the initial mass and moisture (the budgets close against them)."""
@@ -1308,8 +1378,11 @@ class Recorder:
             pv = fr.P.ravel()
             self.p_hist[0] += float((pv < P_BINS[1]).sum())
             self.p_hist[1:] += np.histogram(pv[pv >= P_BINS[1]], P_BINS[1:])[0]
-            inside = np.zeros((p.n, p.n), dtype=bool)
+            inside = np.zeros((p.ny, p.n), dtype=bool)
             for c in det.storms:
+                if p.channel:
+                    inside |= storms.channel_distance(p, c.x, c.y) <= c.r_max + c.r_eq
+                    continue
                 rows_w, cols_w, d = _window(c.x, c.y, 2.0 * (c.r_max + c.r_eq), p.n, p.dx)
                 inside[np.ix_(rows_w, cols_w)] |= d <= c.r_max + c.r_eq
             for k in range(2):
@@ -1320,6 +1393,8 @@ class Recorder:
                 )
                 self.zonal_sum[k] += ubar[k]
             self.ke_sum += ke
+            if self.chan is not None:
+                self.chan.add(fr, spd[0], uc1, vc1)
             if self.winds is not None and (t - self.t_spin) % self.wind_every == 0:
                 self.winds.add(sim.ws)
 
@@ -2065,6 +2140,8 @@ class Settings:
             bad.append("--tracers and --uniform-tracers are exclusive")
         if self.floor_held and self.tracers_run is None and self.uniform_tracers is None:
             bad.append("--floor-held needs tracers")
+        if p.channel and (self.tracers_run is not None or self.uniform_tracers is not None):
+            bad.append("tracers move on the agent wind, which a channel does not have yet (torus only)")
         return bad
 
     def snapshot_times(self) -> list[int]:
@@ -2498,7 +2575,9 @@ def assemble_metrics(
             "north": lat["north"],
             "south": lat["south"],
         },
-        "threshold": "reported (clustering at L/4 and 3L/4)",
+        "threshold": "reported (clustering at "
+        + (" and ".join(f"{y:g}" for y in p.pole_ys) if not p.channel else "the walls")
+        + ")",
         "pass": bool(lat["n"] > 0),
         "detail": {"n_detections": lat["n"], "bin": 8.0},
     }
@@ -2519,7 +2598,7 @@ def assemble_metrics(
     froude = wmax / p.c_bc if wmax.size else wmax
     dh = np.array([d.dh1 / p.H1 for d in qd])
     n_win = max(rec.n_win, 1)
-    rows_y = (np.arange(p.n) + 0.5) * p.dx
+    rows_y = (np.arange(p.ny) + 0.5) * p.dx
     zonal = rec.zonal_sum / n_win
     jets = {}
     for k in range(2):
@@ -2590,6 +2669,7 @@ def assemble_metrics(
         "background_wind": bg,
         "jets": jets,
         "agent_wind": rec.winds.summary() if rec.winds is not None else None,
+        "channel": rec.chan.summary() if rec.chan is not None else None,
         "tracers": occ,
         "tracers_floor_held": occ_fh,
         "histograms": {
@@ -2728,6 +2808,7 @@ def assemble_metrics(
             "detect_every": every,
             "device": str(mx.default_device()),
             "n": p.n,
+            "ny": p.ny,
             "wall_s": res.wall_s,
             "steps_per_s": t_end / res.wall_s if res.wall_s > 0 else None,
             "tracers": res.tracer_count,
@@ -3000,7 +3081,8 @@ def _climate_lines(m: dict[str, Any], p: WeatherParams) -> list[str]:
     )
     lat = dg["latitudes"]
     out.append(
-        f"- Latitudes (centroid y, 8-unit bins in `lat_hist.png`; poles at {p.L / 4:g} and {3 * p.L / 4:g}): "
+        f"- Latitudes (centroid y, 8-unit bins in `lat_hist.png`; poles at "
+        f"{p.pole_ys[0]:g} and {p.pole_ys[1]:g}): "
         f"median pole distance N {_f(lat['north']['median_pole_distance'])}, "
         f"S {_f(lat['south']['median_pole_distance'])}; share within 16 units of a pole "
         f"N {_f(lat['north']['within_16_of_pole'])}, S {_f(lat['south']['within_16_of_pole'])}."
@@ -3501,11 +3583,13 @@ def finish_out(out: Path, written: Sequence[str]) -> None:
 # --- command line -------------------------------------------------------------------------------------------
 
 
-def _load_params(path: str | None, sets: Sequence[str]) -> WeatherParams:
+def _load_params(path: str | None, sets: Sequence[str], band: float | None = None) -> WeatherParams:
     """The parameters of a study. A ``--params`` file is a sparse override of ``weather.START_SET`` (the
     spec's starting set, which the tuning rounds' files were written against: ``{}`` is the start set).
-    Without one the base is the ``WeatherParams`` defaults (the W0 confirmed set). ``--set`` overrides go on
-    top of either."""
+    Without one the base is the ``WeatherParams`` defaults (the W0 confirmed set), or, with ``--band LY``, the
+    channel of that height (``weather.band_params``). ``--set`` overrides go on top of either."""
+    if band is not None and path:
+        raise ValueError("--band and --params are exclusive")
     d: dict[str, Any] = {}
     if path:
         d = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -3516,7 +3600,8 @@ def _load_params(path: str | None, sets: Sequence[str]) -> WeatherParams:
         if not _:
             raise ValueError(f"--set needs KEY=VALUE, got {s!r}")
         d[k.strip()] = json.loads(v)
-    return WeatherParams.from_dict(d, base=W.START_SET if path else None)
+    base = W.START_SET if path else (W.band_params(band) if band is not None else None)
+    return WeatherParams.from_dict(d, base=base)
 
 
 def _load_json(path: str | None, flag: str) -> dict[str, Any] | None:
@@ -3551,6 +3636,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="sparse JSON override of weather.START_SET, the spec's starting set ({} gives it; the tuning "
         "rounds' files are written against it). Without --params the base is the WeatherParams defaults "
         "(the W0 confirmed set)",
+    )
+    ap.add_argument(
+        "--band",
+        type=float,
+        metavar="LY",
+        help="the channel (equatorial band) of height LY (80, 96 or 112) in place of the W0 torus; "
+        "--set overrides go on top",
     )
     ap.add_argument(
         "--set", action="append", default=[], metavar="KEY=VALUE", help="one parameter override (JSON value)"
@@ -3626,7 +3718,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.device:
         mx.set_default_device(mx.gpu if args.device == "gpu" else mx.cpu)
     try:
-        p = _load_params(args.params, args.set)
+        p = _load_params(args.params, args.set, args.band)
     except (OSError, ValueError, json.JSONDecodeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -3648,6 +3740,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         gain_after = tuple(int(x) for x in args.gain_after.split(",") if x.strip())
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
+        return 2
+    if p.channel and (args.bench or args.vortex_decay or impulses or autos or shifts or gains):
+        print(
+            "error: --bench, --vortex-decay, --impulse*, --pool-shift and --pool-gain are torus experiments "
+            "(a channel has no agent wind, no tracers and square-grid experiment tools yet)",
+            file=sys.stderr,
+        )
         return 2
     snap_times = tuple(
         sorted({s.t0 for s in impulses} | {a[0] for a in autos} | {o.t0 for o in (*shifts, *gains)})

@@ -170,6 +170,14 @@ def _window(
     return rows % n, cols % n, np.hypot(ddx[None, :], ddy[:, None])
 
 
+def channel_distance(p: WeatherParams, cx: float, cy: float) -> np.ndarray:
+    """The distance of every cell centre of a channel from ``(cx, cy)``, (ny, n): the minimum image in x, the
+    plain difference in y (the walls do not wrap)."""
+    xc = (np.arange(p.n) + 0.5) * p.dx
+    yc = (np.arange(p.ny) + 0.5) * p.dx
+    return np.hypot(min_image_np(xc[None, :] - cx, p.L), yc[:, None] - cy)
+
+
 def detect(fr: Frame, p: WeatherParams) -> Detection:
     """Storm footprints, bands and per-detection quantities from a frame (spec §6).
 
@@ -179,13 +187,18 @@ def detect(fr: Frame, p: WeatherParams) -> Detection:
     storms. Otherwise a storm needs ``area >= a_min`` and ``r_min`` cells with ``P >= p_th``. Centroids are
     circular means with weight ``s·ζ - zeta_th``. ``wind_max`` is the maximum layer-1 centre speed within
     ``1.5 r_eq`` of the centroid (a balanced vortex peaks near the footprint edge, so the footprint alone
-    would miss it); ``dh1`` uses the annulus ``r_eq < d <= 2 r_eq``."""
+    would miss it); ``dh1`` uses the annulus ``r_eq < d <= 2 r_eq``.
+
+    A channel (``p.channel``, DESIGN §37) is periodic in x only: the mask is labelled with padded rows so a
+    region never joins across a wall, the y centroid is a plain weighted mean, only the zonal extent makes a
+    band, and the window is the whole grid with the plain difference in y."""
     n, dx, length = p.n, p.dx, p.L
     s = hemisphere_sign(p)
     zc = corners_to_centres(fr.zeta.astype(np.float64))
     sz = s * zc
     th = p.zeta_th
-    lab, k = label_periodic(sz >= th, group=np.broadcast_to(s, (n, n)))
+    label = weather_obs.label_channel if p.channel else label_periodic
+    lab, k = label(sz >= th, group=np.broadcast_to(s, (p.ny, n)))
     if k == 0:
         return Detection(fr.t, lab, [], [], 0, 0)
     jj, ii = np.nonzero(lab)
@@ -197,13 +210,18 @@ def detect(fr: Frame, p: WeatherParams) -> Detection:
     area = np.diff(starts)
     w = np.maximum(sz[jj, ii] - th, 0.0) + 1e-9 * th  # the tiny floor only guards an all-zero weight sum
     ax = TWO_PI * (ii + 0.5) * dx / length
-    ay = TWO_PI * (jj + 0.5) * dx / length
     sw = np.add.reduceat(w, head)
     cxs, sxs = np.add.reduceat(w * np.cos(ax), head), np.add.reduceat(w * np.sin(ax), head)
-    cys, sys_ = np.add.reduceat(w * np.cos(ay), head), np.add.reduceat(w * np.sin(ay), head)
     cx = (np.arctan2(sxs, cxs) * length / TWO_PI) % length
-    cy = (np.arctan2(sys_, cys) * length / TWO_PI) % length
-    rx, ry = np.hypot(cxs, sxs) / sw, np.hypot(cys, sys_) / sw
+    rx = np.hypot(cxs, sxs) / sw
+    if p.channel:  # y is bounded: a plain weighted mean, and a meridional extent is not a band
+        cy = np.add.reduceat(w * (jj + 0.5) * dx, head) / sw
+        ry = np.ones(k)
+    else:
+        ay = TWO_PI * (jj + 0.5) * dx / length
+        cys, sys_ = np.add.reduceat(w * np.cos(ay), head), np.add.reduceat(w * np.sin(ay), head)
+        cy = (np.arctan2(sys_, cys) * length / TWO_PI) % length
+        ry = np.hypot(cys, sys_) / sw
     cols = np.bincount(np.unique(lb * n + ii) // n, minlength=k + 1)[1:] * dx
     rows = np.bincount(np.unique(lb * n + jj) // n, minlength=k + 1)[1:] * dx
     zmax = np.maximum.reduceat(sz[jj, ii], head) / p.f0
@@ -220,7 +238,9 @@ def detect(fr: Frame, p: WeatherParams) -> Detection:
     for q in range(k):
         label = q + 1
         sl = slice(int(starts[q]), int(starts[q + 1]))
-        band = bool(rx[q] < 0.5 or ry[q] < 0.5 or cols[q] > length / 2 or rows[q] > length / 2)
+        band = bool(
+            rx[q] < 0.5 or ry[q] < 0.5 or cols[q] > length / 2 or (rows[q] > length / 2 and not p.channel)
+        )
         storm = (not band) and int(area[q]) >= p.a_min and int(n_rain[q]) >= p.r_min
         if not band and not storm:
             n_weak += 1
@@ -236,13 +256,20 @@ def detect(fr: Frame, p: WeatherParams) -> Detection:
             )  # fmt: skip
             continue
         ddx = min_image_np((ii[sl] + 0.5) * dx - cx[q], length)
-        ddy = min_image_np((jj[sl] + 0.5) * dx - cy[q], length)
+        ddy = (jj[sl] + 0.5) * dx - cy[q]
+        if not p.channel:
+            ddy = min_image_np(ddy, length)
         r_max = float(np.hypot(ddx, ddy).max())
-        rows_w, cols_w, d = _window(float(cx[q]), float(cy[q]), 2.0 * r_eq, n, dx)
-        win = np.ix_(rows_w, cols_w)
-        wind_max = float(spd1[win][d <= 1.5 * r_eq].max(initial=0.0))
+        if p.channel:  # the whole grid: a wrapped window would join the walls (and a grid is 7,680 cells)
+            d = channel_distance(p, float(cx[q]), float(cy[q]))
+            spd_win, h1_win = spd1, fr.h1
+        else:
+            rows_w, cols_w, d = _window(float(cx[q]), float(cy[q]), 2.0 * r_eq, n, dx)
+            win = np.ix_(rows_w, cols_w)
+            spd_win, h1_win = spd1[win], fr.h1[win]
+        wind_max = float(spd_win[d <= 1.5 * r_eq].max(initial=0.0))
         ring = (d > r_eq) & (d <= 2.0 * r_eq)
-        dh1 = float(fr.h1[win][ring].mean() - h1min[q]) if ring.any() else 0.0
+        dh1 = float(h1_win[ring].mean() - h1min[q]) if ring.any() else 0.0
         storms.append(
             Comp(label, hemi, float(cx[q]), float(cy[q]), int(area[q]), r_eq, r_max, float(zmax[q]), wind_max,
                  float(h1min[q]), dh1, float(rain[q]), int(n_rain[q]), float(rx[q]), float(ry[q]),

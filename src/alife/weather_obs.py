@@ -72,6 +72,17 @@ def label_periodic(mask: np.ndarray, group: np.ndarray | None = None) -> tuple[n
     return out, int(out.max())
 
 
+def label_channel(mask: np.ndarray, group: np.ndarray | None = None) -> tuple[np.ndarray, int]:
+    """``label_periodic`` for a channel: periodic in x only. The mask is padded with one empty row on each
+    side before labelling and the padding is dropped after, so a region never joins across a wall (the
+    labels are renumbered by the smallest flat index, whose order the padding keeps)."""
+    mask = np.asarray(mask, dtype=bool)
+    pad = ((1, 1), (0, 0))
+    grp = None if group is None else np.pad(np.broadcast_to(np.asarray(group), mask.shape), pad)
+    lab, k = label_periodic(np.pad(mask, pad), group=grp)
+    return np.ascontiguousarray(lab[1:-1]), k
+
+
 def centre_winds(u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """u and v averaged to the cell centres: ``½(u + u[i-1])`` and ``½(v + v[j-1])``."""
     return 0.5 * (u + np.roll(u, 1, 1)), 0.5 * (v + np.roll(v, 1, 0))
@@ -84,8 +95,11 @@ def corners_to_centres(z: np.ndarray) -> np.ndarray:
 
 
 def hemisphere_sign(p: WeatherParams) -> np.ndarray:
-    """``sign f(y_c)`` per centre row, (N, 1) int8; never zero (centre rows avoid y = 0 and L/2)."""
-    yc = (np.arange(p.n) + 0.5) * p.dx
+    """``sign f(y_c)`` per centre row, (ny, 1) int8; never zero (centre rows avoid y = 0 and L/2). In a
+    channel ``f`` is odd about the equator ``y = Ly/2``, so the north is ``y >= Ly/2``."""
+    yc = (np.arange(p.ny) + 0.5) * p.dx
+    if p.channel:
+        return np.where(yc >= 0.5 * p.Ly, 1, -1).astype(np.int8)[:, None]
     return np.where(np.sin(TWO_PI * yc / p.L) >= 0, 1, -1).astype(np.int8)[:, None]
 
 
