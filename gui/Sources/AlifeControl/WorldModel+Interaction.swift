@@ -3,6 +3,27 @@ import CoreGraphics
 import Foundation
 import simd
 
+/// A fly-to under way on the path of van Wijk and Nuij (`FlightPath`), `elapsed` seconds in; `home` when it is the flight of the Home view.
+struct Flight: Equatable {
+    var path: FlightPath
+    var elapsed: Float = 0
+    var home = false
+}
+
+/// The north-up ease: the heading goes from `from` to 0 over `duration` seconds, smoothly.
+struct HeadingEase: Equatable {
+    static let duration: Float = 0.3
+    let from: Float
+    var elapsed: Float = 0
+
+    /// The heading `dt` seconds on, and whether the ease is over.
+    mutating func step(dt: Float) -> (heading: Float, done: Bool) {
+        elapsed += dt
+        let t = min(max(elapsed / Self.duration, 0), 1)
+        return (from * (1 - t * t * (3 - 2 * t)), t >= 1)
+    }
+}
+
 /// Picking, selection, follow, fly-to, keys, hover and toasts of the World window (DESIGN §33.4.8). The decisions are the
 /// pure types of `AlifeCore` (`WorldPicker`, `FollowState`, `CameraGlide`, `WorldSelection`, `ToastQueue`, `WorldKeys`); this
 /// is the glue that applies them to the camera, the overlay and the world's control channel.
@@ -34,24 +55,49 @@ extension WorldModel {
             selectPool(index)
         case .territory(_, let kin):
             selectKin(id: kin, fly: false, follow: false)
+            if clicks >= 2 { dive(at: point) }
         case .none:
-            if clicks == 1 { clearSelection() }
+            if clicks == 1 { clearSelection() } else { dive(at: point) }
         }
+    }
+
+    /// A double click on an empty point or a territory cell: fly there, and in to the region distance (DESIGN §36.5), unless the camera
+    /// is closer already. The point is the one of the plane through the view's centre under the pointer.
+    func dive(at point: CGPoint) {
+        guard let place = projector(size: freeRect.size).world(at: point, height: pose.gripZ) else { return }
+        flyTo(SIMD3(place.x, place.y, 0), distance: min(camera.distance, flyDistance(.region)))
     }
 
     /// The pointer moved to `point`, or left the view (nil). No round trip to the world: the same hit test as a click.
     func hover(at point: CGPoint?) {
+        // Over a control the map has no tooltip and no readout of its own.
+        if let point, freeRect.width >= 1 {
+            let target = pressTarget(at: point)
+            hoverHUD(target, at: point)
+            if target != .map {
+                overlay.setHover(nil)
+                overlay.setPointerText(nil)
+                return
+            }
+        } else {
+            hoverHUD(.map, at: .zero)
+        }
         if powers.isAiming {
+            overlay.setPointerText(pointerReadout(at: point))
             aimHover(at: point)
             overlay.setHover(nil)
             return
         }
         guard let point else {
+            overlay.setPointerText(nil)
             overlay.setHover(nil)
             return
         }
         let t = now()
-        if lastHoverPick >= 0, t - lastHoverPick < Self.hoverPeriod, t >= lastHoverPick { return }  // (42k projections a pick)
+        if lastHoverPick >= 0, t - lastHoverPick < Self.hoverPeriod, t >= lastHoverPick {  // (42k projections a pick)
+            overlay.setPointerText(pointerReadout(at: point, over: overlay.hover?.pick))
+            return
+        }
         lastHoverPick = t
         let store = play.store
         let pick = WorldPicker.pick(at: point, projector: projector(size: freeRect.size), store: store, display: display,
@@ -61,6 +107,7 @@ extension WorldModel {
         } else {
             overlay.setHover(nil)
         }
+        overlay.setPointerText(pointerReadout(at: point, over: pick))
     }
 
     static let hoverPeriod = 1.0 / 60
@@ -185,21 +232,53 @@ extension WorldModel {
     // MARK: Camera motion
 
     /// Whether the camera is moving by itself (following or flying).
-    var cameraMotionPending: Bool { isFlying || !followState.target.isNone }
+    var cameraMotionPending: Bool {
+        isFlying || !followState.target.isNone || headingEase != nil || zoomEase != nil || viewEase != nil
+    }
+
+    /// Whether what the camera follows has a height of its own that the point looked at takes (an organism, a lineage's centroid): a
+    /// storm is on the floor.
+    static func followsHeight(_ target: FollowTarget) -> Bool {
+        switch target {
+        case .organism, .lineage: return true
+        case .none, .storm: return false
+        }
+    }
 
     func setFollow(_ target: FollowTarget) {
         followState.set(target)
         if followTarget != target { followTarget = target }
+        if pose.followsHeight != Self.followsHeight(target) {  // (the lift of the point looked at at edge-on goes with the follow)
+            pose.followsHeight = Self.followsHeight(target)
+            pose.clamp(aspect: aspect, size: worldSize, height: height)
+            pushCamera()
+        }
         if target.isNone, !isFlying { glide.stop() }
     }
 
     /// A manual drag, `Esc`, a reset: whatever moved the camera by itself stops. The selection stays (except for `Esc`).
     func cancelCameraMotion() {
+        zoomEase = nil
+        viewEase = nil
         setFollow(.none)
         isFlying = false
         flyGoal = nil
         flyDistance = nil
+        flight = nil
         glide.stop()
+    }
+
+    /// A zoom: a flight under way stops where it is (any input does, DESIGN §36.5); a follow goes on, at the user's distance.
+    func stopFlight() {
+        zoomEase = nil
+        viewEase = nil
+        if followState.target.isNone {
+            isFlying = false
+            flyGoal = nil
+            flight = nil
+            glide.stop()
+        }
+        flyDistance = nil
     }
 
     func resetInteraction() {
@@ -211,6 +290,15 @@ extension WorldModel {
         isFlying = false
         flyGoal = nil
         flyDistance = nil
+        flight = nil
+        headingEase = nil
+        zoomEase = nil
+        viewEase = nil
+        distanceWish = nil
+        sideReturn = nil
+        compassTurn = nil
+        grabAnchor = nil
+        scrollLaw = ScrollLaw()
         toastQueue = ToastQueue()
         toasts = []
         ticker = Ticker()
@@ -237,23 +325,84 @@ extension WorldModel {
         WorldLevels.flyDistance(level, size: worldSize, fovY: camera.fovY, aspect: aspect)
     }
 
-    /// Flies the camera to `point` (when there is one) and to `distance`, ending at rest. Whatever followed stops.
+    /// Flies the camera to `point` (when there is one) and to `distance`, ending at rest. Whatever followed stops. Not while
+    /// following: a followed organism moves, so the glide of the follow carries the camera (and the distance) there instead of a
+    /// path that would have to be planned again every frame. Otherwise the flight is the van Wijk arc (`FlightPath`): zoom out, pan,
+    /// zoom in, at an even speed on the screen.
     func flyTo(_ point: SIMD3<Float>?, distance: Float?) {
         guard let point = point ?? flyGoal else { return }  // nowhere to go
+        viewEase = nil
+        distanceWish = nil
+        sideReturn = nil
         flyGoal = point
         flyDistance = distance.map(clampedDistance)
         isFlying = true
         glide.stop()
+        flight = nil
+        if followState.target.isNone {
+            let goal = FlightPath.Pose(x: point.x, y: point.y, z: point.z, heading: pose.heading, tilt: pose.tilt,
+                                       distance: flyDistance ?? pose.distance)
+            flight = Flight(path: makePath(to: goal))
+        }
         startAnimating()
     }
 
+    /// `h`, `r`, the toolbar's Home: whatever follows or flies stops (the selection stays) and the camera flies to the Home view, the
+    /// flat overview north up and facing the populated side (DESIGN §36.5).
+    func home() {
+        cancelCameraMotion()
+        headingEase = nil
+        distanceWish = nil
+        sideReturn = nil
+        guard let header = play.store.header else { return }
+        let goal = homePose(header: header)
+        isFlying = true
+        flyGoal = SIMD3(goal.x, goal.y, goal.z)
+        flyDistance = goal.distance
+        flight = Flight(path: makePath(to: FlightPath.Pose(goal)), home: true)
+        startAnimating()
+    }
+
+    private func makePath(to goal: FlightPath.Pose) -> FlightPath {
+        let width = 2 * tan(pose.fovY / 2) * max(1, aspect)
+        return FlightPath(from: FlightPath.Pose(pose), to: goal, size: worldSize, widthPerDistance: width, straight: reduceMotion())
+    }
+
     func clampedDistance(_ d: Float) -> Float {
-        let limit = WorldLevels.maxDistance(size: worldSize, fovY: camera.fovY, aspect: aspect)
+        let limit = WorldPose.maxDistance(size: worldSize, fovY: pose.fovY, aspect: aspect, heading: pose.heading, tilt: pose.tilt)
         return min(max(d, WorldLevels.minDistance), max(limit, WorldLevels.minDistance))
     }
 
     /// One step of the camera's own motion, `dt` seconds. True while it has not arrived.
     func advanceCamera(dt: Float) -> Bool {
+        var easing = false
+        if var ease = headingEase {
+            let step = ease.step(dt: min(dt, 0.1))
+            headingEase = step.done ? nil : ease
+            editPose { $0.heading = step.heading }
+            easing = !step.done
+        }
+        if var ease = zoomEase {
+            let step = ease.step(dt: min(dt, 0.1))
+            zoomEase = step.done ? nil : ease
+            editPose { $0.distance = step.distance }
+            easing = easing || !step.done
+        }
+        if var ease = viewEase {
+            let step = ease.step(dt: min(dt, 0.1))
+            viewEase = step.done ? nil : ease
+            // The distance is given as the player's wish: the limit of the tilt of this very step holds it, and lets it out again. The
+            // end of the ease gives back the wish the angle's limit held nearer (Top after Low goes back out).
+            distanceWish = step.done ? (ease.endWish ?? step.distance) : step.distance
+            let following = !followState.target.isNone
+            editPose {
+                $0.tilt = step.tilt
+                $0.heading = step.heading
+                if !following { $0.z = step.z }
+            }
+            easing = easing || !step.done
+        }
+        if followState.target.isNone, isFlying, let flight { return advanceFlight(flight, dt: dt) || easing }
         var goal: SIMD3<Float>?
         var distance: Float?
         if !followState.target.isNone {
@@ -265,17 +414,50 @@ extension WorldModel {
             distance = flyDistance
         }
         if goal == nil, distance != nil, followState.target.isNone { goal = camera.target }  // a zoom only
-        guard let goal else { return false }
+        guard let goal else { return easing }
         glide.timeConstant = isFlying ? CameraGlide.flyConstant : CameraGlide.followConstant
         var moved = camera
         let moving = glide.advance(&moved, toward: goal, distance: distance, dt: dt, size: worldSize)
-        edit { $0 = moved }
+        editPose {
+            $0.x = moved.target.x
+            $0.y = moved.target.y
+            $0.z = moved.target.z
+            $0.distance = moved.distance
+        }
         if !moving, isFlying {
             isFlying = false
             flyDistance = nil
             if followState.target.isNone { flyGoal = nil }
         }
-        return moving
+        return moving || easing
+    }
+
+    /// One step of a flight: the pose `dt` seconds on its path (the end exactly when it is over).
+    private func advanceFlight(_ current: Flight, dt: Float) -> Bool {
+        var f = current
+        f.elapsed += min(max(dt, 0), 0.1)
+        let at = f.path.pose(at: f.elapsed)
+        // Only the flight to Home turns the view (it goes north up and straight down): a flight to a place keeps the heading and the
+        // tilt it had, and so lets a turn the player asked for meanwhile (`n`, an Option drag) stand.
+        editPose {
+            $0.x = at.x
+            $0.y = at.y
+            $0.z = at.z
+            $0.distance = at.distance
+            if f.home {
+                $0.heading = at.heading
+                $0.tilt = at.tilt
+            }
+        }
+        let done = f.elapsed >= f.path.duration
+        flight = done ? nil : f
+        if done {
+            isFlying = false
+            flyDistance = nil
+            flyGoal = nil
+            if f.home { cameraIsHome = true }
+        }
+        return !done
     }
 
     // MARK: Events
@@ -321,15 +503,13 @@ extension WorldModel {
     // MARK: Keys
 
     func perform(_ action: WorldAction) {
+        dismissHint()
         switch action {
         case .togglePause:
             if clockStrip.paused { play.resume() } else { play.pause() }
         case .step:
             play.step(1)
-        case .cycleColor:
-            let store = play.store
-            let current = store.frame.flatMap { store.header?.colorMode(index: $0.colorIndex) }
-            if let next = WorldKeys.nextColorMode(after: current, in: store.header?.colorModes ?? []) { play.setColor(next) }
+        case .cycleColor: cycleColour()
         case .toggleAgents: display.agents.toggle()
         case .toggleBonds: display.bonds.toggle()
         case .cycleTerritory: display.territory = display.territory.next
@@ -341,7 +521,10 @@ extension WorldModel {
             if let next = action == .slower ? RateLadder.slower(than: current) : RateLadder.faster(than: current) {
                 play.setRate(next)
             }
-        case .resetCamera: resetCamera()
+        case .home: home()
+        case .northUp: northUp()
+        case .toggleMinimap: display.minimap.toggle()
+        case .viewPreset(let preset): viewPreset(preset)
         case .escape: escape()
         case .showPowers: tab = .powers
         case .flyToAlert: flyToNewestAlert()

@@ -63,6 +63,9 @@ struct WorldView: View {
                 }
                 .pickerStyle(.segmented)
                 .help("Dock the control center on the left, the right or the bottom")
+                Button { model.home() } label: { Label("Home", systemImage: "house") }
+                    .help("Fly to the Home view: the whole width of the world, north up (H)")
+                    .disabled(!play.isActive)
                 Button("Worlds…") { model.launcherOpen = true }
                 Button("Close world") {
                     play.stop()
@@ -155,6 +158,8 @@ struct WorldCanvasView: View {
             if play.phase == .live || play.store.header != nil {
                 WorldMetalView(model: model)
                 WorldOverlayView(model: model, overlay: model.overlay, play: play)
+                WorldHUDView(model: model, overlay: model.overlay, play: play)
+                ControlsHintView(model: model)
                 if alertsOverMap { AlertStackOverlay(play: play, model: model) }
                 ChapterCardView(play: play, model: model)
                 ToastStackView(model: model)
@@ -162,6 +167,7 @@ struct WorldCanvasView: View {
                 FollowBadge(model: model, play: play)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 if dockCollapsed {
+                    // (the view controls are a column down the right edge, which starts under it: `WorldHUD.columnTop`)
                     ClockBadge(play: play, model: model)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }

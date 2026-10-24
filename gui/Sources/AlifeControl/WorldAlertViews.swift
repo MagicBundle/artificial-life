@@ -136,7 +136,7 @@ struct AlertStackOverlay: View {
     var body: some View {
         AlertStackView(play: play, model: model, maxRows: AlertStack.roomyRows)
             .frame(width: 320)
-            .padding(10)
+            .padding(EdgeInsets(top: 10 + 30, leading: 10, bottom: 10, trailing: 10))  // (under the readout line of the view's place)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

@@ -13,6 +13,9 @@ package struct StormGlyph: Equatable, Sendable {
     package var radius: CGFloat
     /// The track, continuous across the seam, ending at `center`.
     package var track: [CGPoint]
+    /// The ring is a circle on the floor: its height over its width on the screen, 1 looking straight down and towards 0 at the
+    /// horizon (never under 0.12).
+    package var flatten: CGFloat = 1
     package var zeta: Double
     package var coasting: Bool
 }
@@ -55,8 +58,9 @@ package struct WorldProjector: Equatable, Sendable {
 
     /// The point of the plane at height `z` that is under `point` of the view (origin at the top left), wrapped into the world
     /// `[0, L)^2`. Nil when the ray from the eye through the point does not reach the plane in front of it (a view at the horizon,
-    /// or a plane behind the eye). The inverse of `screen` on that plane, up to the wrap: it is how a click on the map names a
-    /// place for a power.
+    /// or a plane behind the eye), and nil where the plane is read no longer: farther than `WorldFog.readReach` of the point looked
+    /// at, in the haze (a point of the screen toward the horizon is a world away; it has no coordinates and takes no power). The
+    /// inverse of `screen` on that plane, up to the wrap: it is how a click on the map names a place for a power.
     package func world(at point: CGPoint, height z: Float = 0) -> SIMD2<Float>? {
         guard view.width >= 1, view.height >= 1 else { return nil }
         let nx = Float(point.x / view.width) * 2 - 1
@@ -68,6 +72,7 @@ package struct WorldProjector: Equatable, Sendable {
         guard t > 0 else { return nil }
         let hit = camera.position + ray * t
         guard size > 0 else { return SIMD2(hit.x, hit.y) }
+        guard WorldFog.isReadable(offset: SIMD2(hit.x - camera.target.x, hit.y - camera.target.y), size: size) else { return nil }
         func wrapped(_ v: Float) -> Float {
             let r = v - size * (v / size).rounded(.down)
             return r >= size ? 0 : r
@@ -89,10 +94,29 @@ package struct WorldProjector: Equatable, Sendable {
         storms.storms.compactMap { storm in
             let floor = SIMD3<Float>(Float(storm.x), Float(storm.y), 0)
             guard let center = screen(floor) else { return nil }
-            let radius = max(points(ofUnits: Float(storm.r), at: floor) ?? 0, 5)
+            let physical = points(ofUnits: Float(storm.r), at: floor) ?? 0
+            let radius = max(physical, 5)
             return StormGlyph(id: storm.id, name: storm.name, named: storm.named, hemisphere: storm.hemi, center: center,
-                              radius: radius, track: track(storm), zeta: storm.zeta, coasting: storm.state == "coasting")
+                              radius: radius, track: track(storm), flatten: physical > 5 ? flatten(at: floor) : 1,
+                              zeta: storm.zeta, coasting: storm.state == "coasting")
         }
+    }
+
+    /// The height over the width, on the screen, of a circle on the floor at `world`: the points between the centre and a point a unit
+    /// ahead (along the heading) over those between the centre and a point a unit to the right. 1 looking straight down, towards 0 at
+    /// the horizon; never under 0.12, and 1 where it cannot be told.
+    package func flatten(at world: SIMD3<Float>) -> CGFloat {
+        let forward = SIMD2(camera.forward.x, camera.forward.y)
+        let up = SIMD2(camera.up.x, camera.up.y)
+        let alongFloor = simd_length(forward) > 0.05 ? forward : up
+        guard simd_length(alongFloor) > 1e-4 else { return 1 }
+        let ahead = simd_normalize(alongFloor)
+        let at = image(of: world)
+        guard let c = screenOfImage(at), let a = screenOfImage(at + SIMD3(ahead.x, ahead.y, 0)),
+              let r = screenOfImage(at + camera.right) else { return 1 }
+        let across = hypot(r.x - c.x, r.y - c.y), along = hypot(a.x - c.x, a.y - c.y)
+        guard across > 1e-6, along.isFinite else { return 1 }
+        return min(max(along / across, 0.12), 1)
     }
 
     /// The storm's track as points: unwrapped, so continuous across the seam; it is shifted whole by the multiple of `L`

@@ -79,3 +79,14 @@ enum WorldFixtures {
         return WorldProjector(camera: camera, size: size, view: view)
     }
 }
+
+extension Camera {
+    /// The world seen from straight above, x to the right and y up, centred on the world, the whole world in view in the smaller dimension
+    /// of a window of `aspect`: the pose v1 started at, kept as a test pose (the Home view is `WorldPose.home`, one world wide).
+    static func planet(size: Float, height: Float = 0, aspect: Float = 1, fovY: Float = Camera.defaultFovY) -> Camera {
+        let halfY = atan(min(1, aspect) * tan(fovY / 2))
+        let distance = size / 2 * 1.04 / tan(halfY)
+        return Camera(target: SIMD3(size / 2, size / 2, 0), distance: distance, yaw: .pi / 2, pitch: -Camera.maxPitch, fovY: fovY, near: 0.1,
+                      far: 8 * max(size, height), scene: Camera.patchScene(center: SIMD2(size / 2, size / 2), size: size, height: height))
+    }
+}

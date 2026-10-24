@@ -414,7 +414,14 @@ def test_the_world_keys_are_the_documented_ones() -> None:
         "f": "followSelection",
         "[": "slower",
         "]": "faster",
-        "r": "resetCamera",
+        "r": "home",
+        "h": "home",
+        "n": "northUp",
+        "i": "toggleMinimap",
+        "t": "viewPreset",
+        "o": "viewPreset",
+        "l": "viewPreset",
+        "s": "viewPreset",
         "\\u{1B}": "escape",
         "g": "continueRun",
         "p": "showPowers",
@@ -569,9 +576,10 @@ def test_the_world_palettes_are_the_engines() -> None:
 
 
 def test_the_world_levels_match_the_spec_constants() -> None:
-    """The thresholds of DESIGN §33.4.7 (half a world, 0.12 L, 3 px) are `WorldLevels.swift`'s."""
+    """The thresholds of DESIGN §33.4.7 (0.12 L, 3 px) and §36.5 (the planet level from 0.45 of a world:
+    the view never shows more than 0.49 L) are `WorldLevels.swift`'s."""
     levels = (CORE / "WorldLevels.swift").read_text(encoding="utf-8")
-    assert re.search(r"planetHalfExtent: Float = 0\.5\b", levels)
+    assert re.search(r"planetHalfExtent: Float = 0\.45\b", levels)
     assert re.search(r"organismDistance: Float = 0\.12\b", levels)
     assert re.search(r"flatDiscPixels: Float = 3\b", levels)
 

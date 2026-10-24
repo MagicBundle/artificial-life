@@ -1,3 +1,4 @@
+import AlifeCore
 // The viewer's Metal shaders as one string, compiled at run time with `MTLDevice.makeLibrary(source:options:)`.
 //
 // They are not a `.metal` file because the installed app is the release binary and nothing else (`make-app.sh` copies
@@ -6,7 +7,7 @@
 // the viewer window (`Renderer.Failure.shaders`). Do not use a backslash or a triple quote in the source.
 //
 // The structs `Scene`, `Plane` and `WorldU` mirror `SceneUniforms`, `PlaneUniforms` and `WorldUniforms` in Renderer.swift
-// field by field (a test pins the Swift side: 160, 32 and 112 bytes).
+// field by field (a test pins the Swift side: 160, 32 and 160 bytes).
 enum Shaders {
     /// The entry points of `source` that `Renderer` builds pipelines from (a test compares them with the source).
     static let sphereVertex = "sphereVertex"
@@ -26,9 +27,20 @@ enum Shaders {
     static let pointFragment = "pointFragment"
     static let mapVertex = "mapVertex"
     static let mapFragment = "mapFragment"
+    // The minimap's (DESIGN 36.5): the whole world in a viewport of the drawable, the map's fragment shader over a quad of its own,
+    // and the organisms as translucent points.
+    static let insetVertex = "insetVertex"
+    static let insetPointVertex = "insetPointVertex"
+    // The sky above the horizon of a tilted view (DESIGN 36.5, camera controls): a full-screen pass, drawn first.
+    static let skyVertex = "skyVertex"
+    static let skyFragment = "skyFragment"
+    // The world's frame in the World window, faded by the haze like the floor (DESIGN 36.5, camera controls).
+    static let worldBoxVertex = "worldBoxVertex"
+    static let worldBoxFragment = "worldBoxFragment"
     static let entryPoints = [
         sphereVertex, sphereFragment, bondVertex, boxVertex, lineFragment, planeVertex, planeFragment, sliceFragment,
         agentVertexA, agentFragmentA, agentFragmentFlat, bondVertexA, pointVertexA, pointFragment, mapVertex, mapFragment,
+        insetVertex, insetPointVertex, skyVertex, skyFragment, worldBoxVertex, worldBoxFragment,
     ]
 
     static let source = """
@@ -55,10 +67,13 @@ enum Shaders {
         float4 target;     // xy: the camera target (everything is drawn at its minimum image), z: L, w: 1 / L
         float4 params;     // x: map blend (previous -> current), y: map opacity, z: territory tint alpha, w: flat-disc threshold in px
         float4 refs;       // x: p_ref, y: dc_ref, z: zeta_ref, w: cot(fovY / 2)
-        uint4 flags;       // x: pass (0 spheres, 1 flat discs), y: rows listed, z: bonds, w: bit 0 map, bit 1 territory, bit 2 equators
+        uint4 flags;       // x: pass (0 spheres, 1 flat discs), y: rows listed, z: bonds, w: bit 0 map, bit 1 territory, bit 2 equators, bit 3 height colour
         float4 style;      // x: point alpha, y: point size in px, z: smallest radius in px, w: outline width in px (0: none)
         float4 size;       // x: the cap on the drawn radius in px (huge: physical size), y, z: the alpha ramp's low and high radius in px, w: depth cue slope
         float4 look;       // x: exposure (the map's brightness), y: territory border alpha, z: depth cue base, w: hemisphere tint weight
+        float4 patch;      // x: the index k of the cell the view's centre is in, y, z, w: the alpha of the copies k - 1, k, k + 1 (0: not drawn)
+        float4 fog;        // rgb: the haze (the brightness and the map's opacity are in it), a: 1 with a fog, 0 without
+        float4 fogShape;   // x: the clear half extent in world units, y: 1 / the fade's width in world units, z: the mesh's half width in x in L, w: the sky's scale
     };
 
     // The nose of an agent: a small sphere on its forward axis, paler than the body, so the heading shows.
@@ -70,6 +85,24 @@ enum Shaders {
 
     float3 unpackColor(uint c) {
         return float3(float((c >> 16) & 255u), float((c >> 8) & 255u), float(c & 255u)) * (1.0 / 255.0);
+    }
+
+    // The height colour mode (DESIGN 36.5): an organism is coloured by its altitude on the viridis ramp (HeightColour.swift writes this
+    // table), 17 stops of sRGB, linear between them. The engine's hurt red is kept. Bit 3 of the world flags turns it on.
+    constant float3 heightStops[17] = { \(HeightColour.shaderTable) };
+
+    float3 heightColor(float z, float height)
+    {
+        float t = clamp(z / max(height, 1e-6), 0.0, 1.0) * 16.0;
+        int i = min(int(t), 15);
+        return mix(heightStops[i], heightStops[i + 1], t - float(i));
+    }
+
+    // The colour of a row: the stream's, or in the height mode its altitude's, except the engine's hurt red (FF0000), which every mode keeps.
+    float3 organismColor(uint packed, float z, float height, constant WorldU& world)
+    {
+        if ((world.flags.w & 8u) != 0u && height > 0.0 && (packed & 0xFFFFFFu) != 0xFF0000u) { return heightColor(z, height); }
+        return unpackColor(packed);
     }
 
     // ---- Agents: one billboard per row, shaded as a ray-traced sphere (an impostor) ----
@@ -273,6 +306,45 @@ enum Shaders {
         return in.color;
     }
 
+    // The frame of the world in the World window: the same twelve edges, faded by the haze as the floor is (the Chebyshev distance of
+    // the point of the edge from the point looked at, past the clear box), so that in a tilted view the far edges of the world are not a
+    // thin bright rectangle across the haze and the sky. Blended: the line goes, it is not mixed into a colour the sky is not.
+    struct WorldBoxVarying {
+        float4 position [[position]];
+        float2 xy;
+    };
+
+    vertex WorldBoxVarying worldBoxVertex(uint vid [[vertex_id]],
+                                          constant Scene& scene [[buffer(0)]])
+    {
+        uint edge = vid / 2u;
+        uint axis = edge / 4u;
+        uint combo = edge % 4u;
+        float u = float(combo & 1u);
+        float v = float((combo >> 1u) & 1u);
+        float w = ((vid & 1u) != 0u) ? 1.0 : 0.0;
+        float3 unit = float3(u, v, w);
+        if (axis == 0u) { unit = float3(w, u, v); }
+        if (axis == 1u) { unit = float3(u, w, v); }
+        float3 p = unit * float3(scene.world.x, scene.world.x, scene.world.y);
+        WorldBoxVarying out;
+        out.position = scene.viewProjection * float4(p, 1.0);
+        out.xy = p.xy;
+        return out;
+    }
+
+    fragment float4 worldBoxFragment(WorldBoxVarying in [[stage_in]],
+                                     constant WorldU& world [[buffer(7)]])
+    {
+        float visible = 1.0;
+        if (world.fog.a > 0.5) {
+            float2 off = abs(in.xy - world.target.xy);
+            float x = max(max(off.x, off.y) - world.fogShape.x, 0.0) * world.fogShape.y;
+            visible = exp(-x * x);
+        }
+        return float4(0.5, 0.58, 0.7, visible);
+    }
+
     // ---- Planes: the floor, the surface and the field slice, each a quad of [0, L] x [0, L] at some z ----
 
     struct PlaneVarying {
@@ -391,12 +463,14 @@ enum Shaders {
         out.position = scene.viewProjection * float4(worldPoint, 1.0);
         out.center = center;
         out.world = worldPoint;
-        out.color = unpackColor(rgb[iid]);
+        out.color = organismColor(rgb[iid], raw.z, scene.world.y, world);
         out.corner = corner;
         out.radius = radius;
         out.pxPerUnit = perPixel;
         out.alpha = alpha;
-        out.cue = scene.world.y > 0.0 ? world.look.z + world.size.w * clamp(raw.z / scene.world.y, 0.0, 1.0) : 1.0;
+        // (the height colour is the altitude: no second brightness cue on top of it)
+        bool byHeight = (world.flags.w & 8u) != 0u;
+        out.cue = (scene.world.y > 0.0 && !byHeight) ? world.look.z + world.size.w * clamp(raw.z / scene.world.y, 0.0, 1.0) : 1.0;
         return out;
     }
 
@@ -452,7 +526,7 @@ enum Shaders {
         float3 p = atMiddle ? 0.5 * (pa + pb) : (fromB ? pb : pa);
         LineVarying out;
         out.position = scene.viewProjection * float4(p, 1.0);
-        out.color = float4(mix(unpackColor(rgb[fromB ? ij.y : ij.x]), float3(1.0), 0.35), 1.0);
+        out.color = float4(mix(organismColor(rgb[fromB ? ij.y : ij.x], fromB ? pb.z : pa.z, scene.world.y, world), float3(1.0), 0.35), 1.0);
         return out;
     }
 
@@ -473,7 +547,7 @@ enum Shaders {
         float3 p = minimumImage(float3(pos[vid]), world.target.xy, world.target.z);
         out.position = scene.viewProjection * float4(p, 1.0);
         out.pointSize = world.style.y;
-        out.color = float4(unpackColor(rgb[vid]), world.style.x);
+        out.color = float4(organismColor(rgb[vid], p.z, scene.world.y, world), world.style.x);
         return out;
     }
 
@@ -482,24 +556,67 @@ enum Shaders {
         return in.color;
     }
 
-    // The map: one quad of 5 x 5 worlds centred on the cell of the target, sampled with a repeating sampler, so the torus is
-    // tiled wherever the camera looks. u = x / L and v = y / L; the planes are row-major [cy][cx], row 0 at v = 0.
+    // The minimap's organisms: the same points in the box of the whole world, east to the right and north up (x / L across, the signed
+    // distance from the equator over L up), pale and translucent, so that a crowd shows as a brighter haze (the average of 40,000
+    // colours is mud: the minimap says where the life is, the colour mode is the main view's).
+    vertex PointVarying insetPointVertex(uint vid [[vertex_id]],
+                                         constant Scene& scene [[buffer(0)]],
+                                         device const packed_float3* pos [[buffer(2)]],
+                                         device const uint* rgb [[buffer(4)]],
+                                         constant WorldU& world [[buffer(7)]])
+    {
+        PointVarying out;
+        float L = world.target.z;
+        float3 p = float3(pos[vid]);
+        float ybar = p.y - L * rint(p.y / L);
+        out.position = float4(2.0 * p.x / L - 1.0, 2.0 * ybar / L, 0.0, 1.0);
+        out.pointSize = world.style.y;
+        out.color = float4(float3(0.96, 0.97, 1.0), world.style.x);
+        return out;
+    }
+
+    // The map: one patch of one world, L wide around the camera target in x (where the texture repeats, so the wrap is seamless) and L
+    // tall in the cell of the wrap in y that the target is in, with its two neighbours across the wrap as copies (instance 0, 1, 2 are the
+    // cells k - 1, k, k + 1, `world.patch`); a copy with no alpha collapses. u = x / L and v = y / L; the planes are row-major [cy][cx],
+    // row 0 at v = 0. At most one world is ever in view, so no storm is drawn twice.
     struct MapVarying {
         float4 position [[position]];
         float2 uv;
+        float2 xy;         // the floor point in the world, unwrapped about the camera target (the fog)
     };
 
     vertex MapVarying mapVertex(uint vid [[vertex_id]],
+                                uint iid [[instance_id]],
                                 constant Scene& scene [[buffer(0)]],
                                 constant WorldU& world [[buffer(7)]])
     {
         float L = world.target.z;
-        float2 cell = (floor(world.target.xy * world.target.w) + 0.5) * L;
-        float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
-        float2 xy = cell + corner * (2.5 * L);
         MapVarying out;
+        out.uv = float2(0.0);
+        out.xy = float2(0.0);
+        out.position = float4(2.0, 2.0, 2.0, 1.0);
+        float alpha = world.patch[1u + min(iid, 2u)];
+        if (iid > 2u || alpha <= 0.0) { return out; }
+        float k = world.patch.x - 1.0 + float(iid);
+        float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
+        // The quad is L tall (a cell of the wrap in y) and, with a fog, 3 L wide about the target in x: the fog is 99.8% at L from the
+        // target, so no edge of the mesh shows. The texture repeats, so the wider mesh is seamless.
+        float2 xy = float2(world.target.x, k * L) + corner * float2(world.fogShape.z * L, 0.5 * L);
         out.position = scene.viewProjection * float4(xy, 0.0, 1.0);
         out.uv = xy * world.target.w;
+        out.xy = xy;
+        return out;
+    }
+
+    // The minimap: a quad over the viewport it is drawn into. u = x / L runs left to right; v = y / L is the signed distance from the
+    // equator over L, +1/2 at the top edge and -1/2 at the bottom (the sampler repeats, so the wrap in y is the box's top and bottom).
+    vertex MapVarying insetVertex(uint vid [[vertex_id]])
+    {
+        float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
+        MapVarying out;
+        out.position = float4(corner, 0.0, 1.0);
+        out.uv = float2(0.5 + 0.5 * corner.x, 0.5 * corner.y);
+        out.xy = float2(0.0);
         return out;
     }
 
@@ -571,7 +688,45 @@ enum Shaders {
             }
             color = mix(color, float3(1.0), world.look.y * border);
         }
-        return float4(mix(background, color, world.params.y), 1.0);
+        float3 shown = mix(background, color, world.params.y);
+        if (world.fog.a > 0.5) {
+            // The haze: the Chebyshev distance of the floor point from the point looked at, past the clear box, as 1 - exp(-x^2).
+            float2 off = abs(in.xy - world.target.xy);
+            float x = max(max(off.x, off.y) - world.fogShape.x, 0.0) * world.fogShape.y;
+            shown = mix(shown, world.fog.rgb, 1.0 - exp(-x * x));
+        }
+        return float4(shown, 1.0);
+    }
+
+    // The sky: a full-screen pass drawn first, at the far plane. The haze colour at and below the horizon, falling away above it with
+    // the elevation of the ray as exp(-elevation / scale) towards the clear colour, so that the fogged floor and the sky are one colour
+    // at the horizon.
+    struct SkyVarying {
+        float4 position [[position]];
+        float2 ndc;
+    };
+
+    vertex SkyVarying skyVertex(uint vid [[vertex_id]])
+    {
+        float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
+        SkyVarying out;
+        out.position = float4(corner, 1.0, 1.0);
+        out.ndc = corner;
+        return out;
+    }
+
+    fragment float4 skyFragment(SkyVarying in [[stage_in]],
+                                constant Scene& scene [[buffer(0)]],
+                                constant WorldU& world [[buffer(7)]])
+    {
+        const float3 background = float3(0.035, 0.04, 0.055);
+        float aspect = scene.viewport.x / max(scene.viewport.y, 1.0);
+        float tanHalf = 1.0 / world.refs.w;
+        float3 forward = cross(scene.up.xyz, scene.right.xyz);
+        float3 ray = normalize(forward + scene.right.xyz * (in.ndc.x * tanHalf * aspect) + scene.up.xyz * (in.ndc.y * tanHalf));
+        float elevation = asin(clamp(ray.z, -1.0, 1.0));
+        float haze = elevation <= 0.0 ? 1.0 : exp(-elevation / max(world.fogShape.w, 1e-3));
+        return float4(mix(background, world.fog.rgb, haze), 1.0);
     }
     """
 }

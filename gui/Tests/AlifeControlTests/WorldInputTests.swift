@@ -65,6 +65,8 @@ private final class Rig {
         #expect(await eventually { play.store.header != nil && play.store.clock != nil })
         #expect(await eventually { rig.settle(); return rig.metal != nil })
         rig.settle()
+        rig.model.reduceMotion = { false }  // (a flight is an arc whatever the machine's accessibility settings)
+        rig.model.display.minimap = false  // (the key `i` keeps its choice in the process's defaults; the tests of the minimap turn it on)
         return rig
     }
 
@@ -136,6 +138,44 @@ private final class Rig {
     func scroll(at p: CGPoint, delta: Int32) {
         let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0)!
         hit(p)?.scrollWheel(with: NSEvent(cgEvent: cg)!)
+    }
+
+    /// Where the pointer at the content's point `p` is on the screen, in the coordinates of a `CGEvent` (origin at the top left of the
+    /// main display): an event made from one has no window, so the view finds its place from that.
+    func screenLocation(_ p: CGPoint) -> CGPoint {
+        let cocoa = window.convertPoint(toScreen: windowPoint(p))
+        return CGPoint(x: cocoa.x, y: (NSScreen.screens.first?.frame.height ?? 0) - cocoa.y)
+    }
+
+    /// A trackpad scroll event (continuous: points, with the phases of a two-finger gesture and of its momentum) sent to the view under `p`.
+    func trackpad(at p: CGPoint, dx: Int32 = 0, dy: Int32, phase: CGScrollPhase? = nil, momentum: CGMomentumScrollPhase = .none) {
+        let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0)!
+        cg.location = screenLocation(p)
+        cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase?.rawValue ?? 0))
+        cg.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentum.rawValue))
+        hit(p)?.scrollWheel(with: NSEvent(cgEvent: cg)!)
+    }
+
+    /// A mouse wheel notch event (lines) sent to the view under `p`.
+    func notch(at p: CGPoint, lines: Int32) {
+        let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: lines, wheel2: 0, wheel3: 0)!
+        cg.location = screenLocation(p)
+        hit(p)?.scrollWheel(with: NSEvent(cgEvent: cg)!)
+    }
+
+    func key(_ characters: String) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                         characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: 0)!
+    }
+
+    /// The point of the plane through the view's centre (at its height: a grab keeps the point on that plane under the pointer) under a
+    /// point of the free rectangle, by the projector the picker uses.
+    func under(_ p: CGPoint) -> SIMD2<Float>? { model.projector(size: model.freeRect.size).world(at: p, height: model.pose.z) }
+
+    /// Runs the camera's own motion until it arrives (or `frames` pass).
+    func arrive(frames: Int = 400) {
+        for _ in 0..<frames where !model.advanceCamera(dt: 1.0 / 60) { return }
     }
 
     /// A move of a button held down by (`dx`, `dy`), sent to the view under `p`.
@@ -313,43 +353,108 @@ private final class Rig {
         #expect(rig.model.isFlying, "the second click of a double click reached the map")
     }
 
-    @Test func dragsOnTheMapPanAndOrbitAndReachNothingElse() async throws {
+    @Test func dragsOnTheMapGrabOrbitAndPanAndReachNothingElse() async throws {
         let rig = try await Rig.make()
         defer { rig.finish() }
         frameCamera(rig)
         let p = CGPoint(x: 300, y: 300)
         let before = rig.model.camera
-        // the left button pans: the press goes through the window, the moves to the view it found
-        rig.window.sendEvent(rig.mouse(.leftMouseDown, p))
-        #expect(rig.dragged(at: p, .leftMouseDragged, button: .left, dx: 30, dy: 10), "a left drag goes to the map")
-        rig.window.sendEvent(rig.mouse(.leftMouseUp, p))
+        // the left button grabs: the press and the moves go through the window to the Metal view, as AppKit sends them
+        let anchor = try #require(rig.under(p))
+        let to = CGPoint(x: 340, y: 310)
+        rig.drag(from: p, to: to)
         #expect(rig.model.camera.target != before.target, "a left drag pans")
+        #expect(simd_length(Torus.wrapDelta(try #require(rig.under(to)) - anchor, size: 48)) < 0.01, "the point grabbed is under the pointer")
         let panned = rig.model.camera
         #expect(rig.dragged(at: p, .rightMouseDragged, button: .right, dx: 20, dy: 8), "a right drag goes to the map")
-        #expect(rig.model.camera.yaw != panned.yaw || rig.model.camera.pitch != panned.pitch, "a right drag orbits")
+        #expect(rig.model.camera.yaw != panned.yaw || rig.model.camera.pitch != panned.pitch, "a right drag turns and tilts")
         let turned = rig.model.camera
         #expect(rig.dragged(at: p, .otherMouseDragged, button: .center, dx: 15, dy: 5), "a middle drag goes to the map")
         #expect(rig.model.camera.target != turned.target, "a middle drag pans")
         #expect(UserDefaults.standard.object(forKey: "world.dockExtent") == nil)
     }
 
+    @Test func aPressThatMovesLessThanTheSlopIsAClickAndMovesNothingAndADragThatStartsOnAnOrganismStillGrabsTheMap() async throws {
+        let rig = try await Rig.make()
+        defer { rig.finish() }
+        frameCamera(rig)
+        let before = rig.model.pose
+        let at = try loner(rig)
+        rig.window.sendEvent(rig.mouse(.leftMouseDown, at))
+        rig.window.sendEvent(rig.mouse(.leftMouseDragged, CGPoint(x: at.x + 2, y: at.y + 1)))  // inside the slop
+        rig.window.sendEvent(rig.mouse(.leftMouseUp, CGPoint(x: at.x + 2, y: at.y + 1)))
+        spin(0.05)
+        #expect(rig.model.pose == before || rig.model.pose.distance == before.distance, "a click, not a drag: the view stays")
+        #expect(rig.model.selection == .organism(uid: uid0 + 147), "and it picked")
+        rig.model.clearSelection()
+        let anchor = try #require(rig.under(at))
+        rig.drag(from: at, to: CGPoint(x: at.x + 60, y: at.y - 40))
+        #expect(rig.model.selection.isNone, "a drag selects nothing")
+        #expect(simd_length(Torus.wrapDelta(try #require(rig.under(CGPoint(x: at.x + 60, y: at.y - 40))) - anchor, size: 48)) < 0.01)
+    }
+
+    @Test func aDragCancelsAFollowAndAFlightAndKeepsThePoseReached() async throws {
+        let rig = try await Rig.make()
+        defer { rig.finish() }
+        frameCamera(rig)
+        rig.model.perform(.home)
+        for _ in 0..<12 { _ = rig.model.advanceCamera(dt: 1.0 / 60) }
+        #expect(rig.model.isFlying)
+        let p = CGPoint(x: 300, y: 300)
+        rig.drag(from: p, to: CGPoint(x: 330, y: 300))
+        #expect(!rig.model.isFlying && rig.model.flight == nil && !rig.model.cameraIsHome)
+        let held = rig.model.pose
+        rig.arrive()
+        #expect(rig.model.pose == held, "nothing moves it any more")
+    }
+
     // MARK: The wheel
 
     @Test(arguments: DockSide.allCases)
-    func theWheelAndTheTrackpadZoomTheMapAnywhereOverIt(side: DockSide) async throws {
+    func theWheelAndAScrollWithScrollZoomsOnZoomTheMapAnywhereOverItAboutThePointer(side: DockSide) async throws {
         let rig = try await Rig.make(side: side)
         defer { rig.finish() }
         frameCamera(rig)
+        rig.model.zoom(by: 1.4)  // room both ways
         let free = rig.frames.free
-        for p in [CGPoint(x: free.midX, y: free.midY), CGPoint(x: free.minX + 30, y: free.minY + 30),
-                  CGPoint(x: free.maxX - 30, y: free.maxY - 30)] {
+        let offset = CGPoint(x: free.minX, y: free.minY)  // (a left dock moves the map's origin)
+        for local in [CGPoint(x: free.width / 2, y: free.height / 2), CGPoint(x: 30, y: 30), CGPoint(x: free.width - 260, y: free.height - 30)] {
+            let p = CGPoint(x: local.x + offset.x, y: local.y + offset.y)
+            let anchor = try #require(rig.under(local))
             let d0 = rig.model.camera.distance
-            rig.scroll(at: p, delta: 30)
+            rig.notch(at: p, lines: 2)
             let near = rig.model.camera.distance
             #expect(near < d0, "scrolling one way zooms in at \(p): \(d0) to \(near)")
-            rig.scroll(at: p, delta: -30)
+            #expect(simd_length(Torus.wrapDelta(try #require(rig.under(local)) - anchor, size: 48)) < 0.01, "about the pointer")
+            rig.notch(at: p, lines: -2)
             #expect(rig.model.camera.distance > near, "and the other way zooms out at \(p)")
         }
+        // and the trackpad, once the switch is on (it pans otherwise)
+        rig.model.display.scrollZooms = true
+        let d0 = rig.model.camera.distance
+        let p = CGPoint(x: free.midX, y: free.midY)
+        rig.trackpad(at: p, dy: 0, phase: .began)
+        rig.trackpad(at: p, dy: 40, phase: .changed)
+        #expect(rig.model.camera.distance < d0, "Scroll zooms: the trackpad zooms")
+        rig.model.display.scrollZooms = false
+    }
+
+    @Test func aTrackpadsTwoFingerScrollPansTheMapAndItsMomentumToo() async throws {
+        let rig = try await Rig.make()
+        defer { rig.finish() }
+        frameCamera(rig)
+        rig.model.zoom(by: 1.4)
+        let p = CGPoint(x: 300, y: 300)
+        let d0 = rig.model.camera.distance
+        let centre = try #require(rig.under(CGPoint(x: rig.model.freeRect.midX, y: rig.model.freeRect.midY)))
+        let screen0 = try #require(rig.model.projector(size: rig.model.freeRect.size).screen(SIMD3(centre.x, centre.y, rig.model.pose.z)))
+        rig.trackpad(at: p, dy: 0, phase: .began)
+        for _ in 0..<10 { rig.trackpad(at: p, dx: 6, dy: 4, phase: .changed) }
+        rig.trackpad(at: p, dy: 0, phase: .ended)
+        for _ in 0..<10 { rig.trackpad(at: p, dx: 2, dy: 1, momentum: .continuous) }
+        #expect(rig.model.camera.distance == d0, "the default law pans: it does not zoom")
+        let screen1 = try #require(rig.model.projector(size: rig.model.freeRect.size).screen(SIMD3(centre.x, centre.y, rig.model.pose.z)))
+        #expect(screen1.x - screen0.x > 70 && screen1.y - screen0.y > 40, "the map followed the fingers and the glide: (\(screen1.x - screen0.x), \(screen1.y - screen0.y))")
     }
 
     @Test func theWheelOverTheDividerOrTheDockDoesNotZoomTheMap() async throws {
@@ -360,6 +465,29 @@ private final class Rig {
         rig.scroll(at: CGPoint(x: rig.frames.divider.midX, y: 300), delta: 30)
         rig.scroll(at: CGPoint(x: rig.frames.dock.midX, y: 14), delta: 30)
         #expect(rig.model.camera.distance == d0)
+    }
+
+    // MARK: Keys
+
+    @Test func hNAndIReachTheModelWhateverHasTheFocus() async throws {
+        let rig = try await Rig.make()
+        defer { rig.finish() }
+        frameCamera(rig)
+        let metal = try #require(rig.metal)
+        #expect(rig.window.makeFirstResponder(rig.host), "the focus is not on the map")
+        rig.model.editPose { $0.heading = 1.0 }
+        #expect(metal.handleKey(rig.key("n")) && rig.model.cameraMotionPending)
+        rig.arrive()
+        #expect(rig.model.pose.heading == 0)
+        #expect(metal.handleKey(rig.key("h")) && rig.model.isFlying && rig.model.flight?.home == true)
+        rig.arrive()
+        #expect(rig.model.cameraIsHome)
+        frameCamera(rig)
+        #expect(metal.handleKey(rig.key("r")) && rig.model.isFlying, "r is Home too")
+        rig.model.cancelCameraMotion()
+        let on = rig.model.display.minimap
+        #expect(metal.handleKey(rig.key("i")) && rig.model.display.minimap == !on)
+        #expect(!metal.handleKey(rig.key("x")))
     }
 
     // MARK: The divider
@@ -403,5 +531,170 @@ private final class Rig {
         // dragged far to the right the dock is no narrower than its minimum
         rig.drag(from: CGPoint(x: strip.midX, y: 300), to: CGPoint(x: 1090, y: 300))
         #expect(freeWidth(rig) == windowSize.width - DockLayout.minExtent)
+    }
+}
+
+/// The controls over the map, through AppKit's own routing (DESIGN §36.5, the spec's 5.4): they are drawn by the Metal pass and a `Canvas`
+/// that takes no mouse, so the Metal view gets every press and its model decides what the press landed on; a press that began on the map
+/// never becomes a control's gesture, and the reverse.
+extension WorldInputTests {
+    // (the same suite as the tests above: they all hold the process's dock settings and one invisible window at a time)
+    /// The window's point for a point of the free rectangle.
+    private func window(_ rig: Rig, _ p: CGPoint) -> CGPoint {
+        CGPoint(x: p.x + rig.frames.free.minX, y: p.y + rig.frames.free.minY)
+    }
+
+    private func make() async throws -> Rig {
+        let rig = try await Rig.make()
+        rig.model.display.minimap = true
+        rig.model.dismissHint()
+        rig.settle()
+        return rig
+    }
+
+    private func centre(_ rect: CGRect?) -> CGPoint { CGPoint(x: rect!.midX, y: rect!.midY) }
+
+    @Test func theMinimapTheCompassAndTheButtonsAreDrawnOverTheMetalViewAndTakeNoHitOfTheirOwn() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let hud = rig.model.hud
+        #expect(hud.rects.count == 11, "the minimap, the Home glyph, four views, the compass, the 3D button, the handle and the two zoom buttons")
+        for (target, rect) in hud.rects {
+            #expect(rig.isMap(window(rig, CGPoint(x: rect.midX, y: rect.midY))), "\(target) is the Metal view's, which asks the model")
+        }
+        rig.model.showHint()
+        rig.settle()
+        #expect(rig.isMap(window(rig, CGPoint(x: rig.model.freeRect.midX, y: rig.model.freeRect.height - 74))), "and the hint takes none")
+        rig.model.dismissHint()
+    }
+
+    @Test func aClickInTheMinimapFliesThereAndNeverPansTheMap() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        model.editPose { $0.distance = 14 }
+        let before = model.pose
+        let box = try #require(model.inset)
+        let at = CGPoint(x: box.rect.minX + 40, y: box.rect.minY + 150)
+        let place = try #require(box.torus(atPoint: at))
+        rig.click(window(rig, at))
+        #expect(model.isFlying && model.flight != nil, "the press flew")
+        rig.arrive()
+        let w = model.worldSize
+        #expect(abs(Torus.wrapDelta(model.pose.x - place.x, size: w)) < 1e-2 && abs(Torus.wrapDelta(model.pose.y - place.y, size: w)) < 1e-2)
+        #expect(model.pose.distance == before.distance && model.pose.heading == before.heading && model.pose.tilt == before.tilt)
+    }
+
+    @Test func aPressNextToTheMinimapPansTheMap() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        model.editPose { $0.distance = 14 }
+        let before = model.pose
+        let box = try #require(model.hud.minimap)
+        let start = CGPoint(x: box.minX - 30, y: box.midY)
+        rig.drag(from: window(rig, start), to: window(rig, CGPoint(x: start.x - 90, y: start.y - 40)))
+        #expect(model.pose.x != before.x || model.pose.y != before.y, "the map was grabbed")
+        #expect(!model.isFlying)
+    }
+
+    @Test func aDragThatBeganOnTheMapAndEndsOverTheMinimapStaysAMapDrag() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        model.editPose { $0.distance = 14 }
+        let box = try #require(model.hud.minimap)
+        let start = CGPoint(x: box.minX - 80, y: box.midY)
+        let anchor = try #require(rig.under(window(rig, start).applying(CGAffineTransform(translationX: -rig.frames.free.minX, y: -rig.frames.free.minY))))
+        let end = CGPoint(x: box.midX, y: box.midY)
+        rig.drag(from: window(rig, start), to: window(rig, end))
+        #expect(!model.isFlying && model.flight == nil, "no flight: it was never a minimap click")
+        let held = try #require(rig.under(end))
+        #expect(simd_distance(held, anchor) < 0.05, "the point grabbed is under the pointer, over the minimap too: \(held) against \(anchor)")
+    }
+
+    @Test func aDragThatBeganInTheMinimapAndEndsOnTheMapStaysAMinimapDrag() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        model.editPose { $0.distance = 14; $0.heading = 0.3 }
+        let box = try #require(model.inset)
+        let start = CGPoint(x: box.rect.midX, y: box.rect.midY)
+        rig.drag(from: window(rig, start), to: window(rig, CGPoint(x: box.rect.minX - 200, y: box.rect.midY)))
+        let edge = try #require(box.torus(atPoint: CGPoint(x: box.rect.minX + 0.5, y: box.rect.midY)))
+        #expect(abs(Torus.wrapDelta(model.pose.x - edge.x, size: model.worldSize)) < 0.05, "held at the left edge of the box: x \(model.pose.x), \(edge.x)")
+        #expect(model.pose.heading == 0.3, "the map was not turned or panned by the drag")
+        #expect(!model.isFlying)
+    }
+
+    @Test func theWheelOverTheMinimapZoomsTheMapAboutItsCentre() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        let limit = model.distanceLimit
+        model.editPose { $0.distance = 0.8 * limit }
+        let before = model.pose
+        let box = try #require(model.hud.minimap)
+        rig.notch(at: window(rig, CGPoint(x: box.midX, y: box.midY)), lines: 3)
+        #expect(model.pose.distance < before.distance, "the wheel zoomed the map")
+        #expect(model.pose.x == before.x && model.pose.y == before.y, "about its centre")
+    }
+
+    @Test func aClickOnTheCompassIsNorthUpAndADoubleClickIsHome() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        let compass = centre(model.hud.compass)
+        model.editPose { $0.distance = 14; $0.heading = 1.1; $0.x = 6; $0.y = 7 }
+        rig.click(window(rig, compass))
+        rig.arrive()
+        #expect(model.pose.heading == 0 && model.pose.x == 6 && model.pose.distance == 14, "north up")
+        model.editPose { $0.heading = 1.1 }
+        rig.click(window(rig, compass), clicks: 2)
+        #expect(model.isFlying && model.flight?.home == true, "Home")
+        rig.arrive()
+        let home = model.homePose(header: try #require(rig.play.store.header))
+        #expect(model.pose.heading == 0 && abs(model.pose.distance - home.distance) < 1e-2)
+    }
+
+    @Test func theZoomButtonsZoomAboutTheCentreAndNeverPan() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        let d0 = 0.7 * model.distanceLimit
+        model.editPose { $0.distance = d0 }
+        let (x, y) = (model.pose.x, model.pose.y)
+        rig.click(window(rig, centre(model.hud.zoomIn)))
+        rig.arrive()
+        #expect(abs(model.pose.distance - d0 * exp(-0.35)) < 1e-2 && model.pose.x == x && model.pose.y == y, "+")
+        rig.click(window(rig, centre(model.hud.zoomOut)))
+        rig.arrive()
+        #expect(abs(model.pose.distance - d0) < 1e-2 && model.pose.x == x && model.pose.y == y, "-")
+    }
+
+    @Test func theHomeGlyphOfTheMinimapFliesHome() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        model.editPose { $0.distance = 8; $0.x = 5; $0.y = 5 }
+        rig.click(window(rig, centre(model.hud.home)))
+        #expect(model.isFlying && model.flight?.home == true)
+    }
+
+    @Test func withTheMinimapOffItsPlaceIsTheMapsAgain() async throws {
+        let rig = try await make()
+        defer { rig.finish() }
+        let model = rig.model
+        let at = centre(model.hud.minimap)
+        model.editPose { $0.distance = 14 }
+        let before = model.pose
+        rig.window.sendEvent(rig.key("i"))  // (the window's key reaches the world whatever has the focus)
+        rig.settle()
+        #expect(!model.display.minimap || model.hud.minimap == nil)
+        model.display.minimap = false
+        #expect(model.pressTarget(at: at) == .map)
+        rig.drag(from: window(rig, at), to: window(rig, CGPoint(x: at.x - 60, y: at.y)))
+        #expect(model.pose.x != before.x || model.pose.y != before.y, "the press grabbed the map")
+        model.display.minimap = true
     }
 }

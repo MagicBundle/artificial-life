@@ -170,6 +170,10 @@ struct ClockStripView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            // (the regular size wants 366 points, six more than the dock's 340 of content: the dock's content then overflowed its frame
+            // by 13 points on both sides, over the map's edge, and cut the "Max" segment off at the window's)
+            .controlSize(.small)
+            .frame(maxWidth: .infinity)
             .disabled(!live)
             HStack(spacing: 8) {
                 if strip.paused {

@@ -130,7 +130,7 @@ struct GPUWorldTests {
         display.bonds = false  // a bond would reach the agent from its neighbour and light the pixel by itself
         renderer.worldDraw.display = display
         var camera = Camera(target: SIMD3(1.5, 24, 6), distance: 16, yaw: .pi / 2, pitch: 0)
-        camera.scene = Camera.tiledScene(size: L, height: Float(header.height))
+        camera.scene = Camera.patchScene(center: SIMD2(camera.target.x, camera.target.y), size: L, height: Float(header.height))
         renderer.camera = camera
         let image = try render(renderer, "world-seam-agent")
         let image3 = SIMD3<Float>(-0.5, 24, 6)  // L - 0.5 less one world
@@ -158,7 +158,7 @@ struct GPUWorldTests {
         display.agents = false
         renderer.worldDraw.display = display
         var camera = Camera(target: SIMD3(0, 24, 6), distance: 14, yaw: .pi / 2, pitch: 0)
-        camera.scene = Camera.tiledScene(size: L, height: Float(header.height))
+        camera.scene = Camera.patchScene(center: SIMD2(camera.target.x, camera.target.y), size: L, height: Float(header.height))
         renderer.camera = camera
         let image = try render(renderer, "world-seam-bond-\(reversed ? "reversed" : "forward")")
         var minX = image.width, maxX = 0, count = 0
@@ -296,27 +296,6 @@ struct GPUWorldTests {
         // (the raised cold sea has a blue of 107 to 111 of its own: rain is the wash that takes it to 180 and over)
         #expect(on > rainBlue, "the rain is where [cy][cx] puts it: blue \(on)")
         #expect(swapped < seaBlue && mirrored < seaBlue, "and not transposed (\(swapped)) or flipped (\(mirrored))")
-    }
-
-    @Test func theMapRepeatsAcrossTheSeamSoTheTorusIsTiled() throws {
-        let (renderer, header, base) = try mapScene()
-        let n = base.n
-        let (cx, cy) = (60, 100)
-        renderer.deliverWorld(map: mapWithRain(at: cx, cy, from: base), serial: 1, start: .current)
-        let L = Float(header.size)
-        var camera = renderer.camera
-        camera.distance = 130  // the view reaches 60 units from the middle: well past the edge of the world
-        renderer.camera = camera
-        let image = try render(renderer, "world-map-tiled")
-        let cell = L / Float(n)
-        let p = SIMD3((Float(cx) + 0.5) * cell, (Float(cy) + 0.5) * cell, 0)
-        for shift in [SIMD3<Float>(L, 0, 0), SIMD3(-L, 0, 0), SIMD3(0, L, 0), SIMD3(L, L, 0)] {
-            let at = try pixel(of: p + shift, camera: camera, image: image)
-            guard at.x >= 0, at.x < image.width, at.y >= 0, at.y < image.height else { continue }
-            #expect(image.pixel(at.x, at.y).b > rainBlue, "the rain is repeated at \(shift): \(at)")
-        }
-        let home = try pixel(of: p, camera: camera, image: image)
-        #expect(image.pixel(home.x, home.y).b > rainBlue)
     }
 
     @Test func theTwoEquatorsAreMarked() throws {
