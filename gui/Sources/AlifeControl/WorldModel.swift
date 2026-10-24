@@ -106,7 +106,7 @@ final class WorldModel: ObservableObject {
                 }
                 if display.keepNorthUp != oldValue.keepNorthUp { defaults.set(display.keepNorthUp, forKey: Self.keepNorthUpKey) }
                 if display.globe != oldValue.globe {
-                    defaults.set(display.globe, forKey: Self.globeKey)
+                    if !adoptingGlobeDefault { defaults.set(display.globe, forKey: Self.globeKey) }
                     setGlobe(display.globe)
                 }
                 if display.heightColour != oldValue.heightColour, !applyingColourDefault {
@@ -115,7 +115,7 @@ final class WorldModel: ObservableObject {
                 pushDisplay()
                 if display.minimap != oldValue.minimap || display.map != oldValue.map { pushInset() }
                 overlay.invalidate()  // (the legend, the minimap's points and the scale bar follow the layers)
-                if display.map != oldValue.map { pushCamera() }  // the planet level exists only while a map is shown
+                if display.map != oldValue.map { refitToShape(aspect: aspect) }  // the planet level and the globe exist only while a map is shown (Home and the limit follow)
                 // The size rule counts rows only where it caps them, and not for an organism layer that is off.
                 if display.sizeMode != oldValue.sizeMode || display.agents != oldValue.agents { refreshSizePolicy(force: true) }
             }
@@ -302,9 +302,12 @@ final class WorldModel: ObservableObject {
     /// The app's default of the globe overview: on, unless the player chose (the window opens on the planet). A model made by a test
     /// stays flat until it asks; `WorldView` asks.
     func adoptGlobeDefault() {
-        guard defaults.object(forKey: Self.globeKey) == nil else { return }
+        guard defaults.object(forKey: Self.globeKey) == nil, !display.globe else { return }
+        adoptingGlobeDefault = true  // (the default is not the player's choice: it is not stored)
+        defer { adoptingGlobeDefault = false }
         display.globe = true
     }
+    private var adoptingGlobeDefault = false
 
     // MARK: Free rectangle
 
@@ -322,15 +325,15 @@ final class WorldModel: ObservableObject {
     /// The window changed shape: the view is fitted to the new aspect. At Home the world is shown whole in the new shape; elsewhere the
     /// pose is clamped again (the distance to the new footprint's limit, then the tilt), so that the picture is never wider than the
     /// one-world patch and the seam copies are planned for the shape that is drawn. Before the world's header there is no view.
-    private func refitToShape(aspect: Float) {
+    func refitToShape(aspect: Float) {
         guard play.store.header != nil, aspect.isFinite, aspect > 0 else { return }
         distanceWish = nil
         sideReturn = nil
         if cameraIsHome {
-            pose.distance = globeEnabled ? Morph.globeDistance(L: worldSize, fovY: pose.fovY, aspect: aspect)
+            pose.distance = globeActive ? Morph.globeDistance(L: worldSize, fovY: pose.fovY, aspect: aspect)
                 : pose.distanceLimit(size: worldSize, aspect: aspect)
         } else {
-            pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeEnabled)
+            pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeActive)
         }
         pushCamera()
     }
@@ -341,6 +344,9 @@ final class WorldModel: ObservableObject {
     /// Whether the globe overview exists for this world (DESIGN §36.10): the distance leads on to the globe, Home is the globe, the
     /// projector and the grab go through the morph. Off until the renderer draws it (PR B step 7); then the view is the flat map.
     var globeEnabled = false
+    /// Whether the view is the globe's: the overview is on and a weather map is in view. A map-less (or 2D) world keeps the flat view and
+    /// the flat Home; every pose rule (Home, refit, clamp, limit, flights, level) and the projector go by this and not by the switch.
+    var globeActive: Bool { globeEnabled && mapShown }
     var worldSize: Float { Float(play.store.header?.size ?? 1) }
 
     /// Whether a weather map is in view: the planet level (no organisms, the map is the picture) exists only then.
@@ -348,7 +354,7 @@ final class WorldModel: ObservableObject {
 
     /// The farthest the camera may be in the window as it is now, at its heading: the picture stays within one world of its centre
     /// (`WorldPose.maxDistance`; the Home view is at this distance).
-    var distanceLimit: Float { pose.distanceLimit(size: worldSize, aspect: aspect, globe: globeEnabled) }
+    var distanceLimit: Float { pose.distanceLimit(size: worldSize, aspect: aspect, globe: globeActive) }
     var height: Float { Float(play.store.header?.height ?? 0) }
 
     // MARK: What the world sent
@@ -491,7 +497,7 @@ final class WorldModel: ObservableObject {
     func refreshGlow() {
         guard let renderer else { return }
         var alpha: Float = 0
-        if display.agents, globeEnabled, let header = play.store.header, drawableSize.height >= 1, vantage().isGlobe {
+        if display.agents, globeActive, let header = play.store.header, drawableSize.height >= 1, vantage().isGlobe {
             let limits = OrganismSizePolicy.limits(
                 mode: display.sizeMode, cover: coverRadius, distance: camera.distance, size: worldSize, agentRadius: Float(header.radius),
                 viewHeight: Float(drawableSize.height), fovY: camera.fovY, pixelsPerPoint: pixelsPerPoint)
@@ -542,7 +548,7 @@ final class WorldModel: ObservableObject {
     /// The Home view of this world in the window as it is now: the flat overview, north up, facing the populated side.
     func homePose(header: StreamHeader) -> WorldPose {
         WorldPose.home(for: header, aspect: aspect, populatedX: play.store.frame.flatMap { WorldPose.populatedX(frame: $0, size: Float(header.size)) },
-                       fovY: pose.fovY, globe: globeEnabled)
+                       fovY: pose.fovY, globe: globeActive)
     }
 
     /// The Home view at once (a new world; a test). The `h` and `r` keys and the toolbar fly there (`home()`).
@@ -582,7 +588,7 @@ final class WorldModel: ObservableObject {
     /// it was.
     /// The view of the pose as the globe's (or the flat map's, `globeEnabled` off): the type that grabs, zooms and pans through the morph.
     func vantage() -> WorldVantage {
-        WorldVantage(pose: pose, size: worldSize, height: height, aspect: aspect, globe: globeEnabled && mapShown)
+        WorldVantage(pose: pose, size: worldSize, height: height, aspect: aspect, globe: globeActive)
     }
 
     /// `editPose` for a gesture of the vantage (grab, zoom, pan): the regime solver of DESIGN §36.10 at the globe, the plane's exact one
@@ -590,7 +596,7 @@ final class WorldModel: ObservableObject {
     func editPose(through change: (inout WorldVantage) -> Void) {
         editPose { pose in
             var v = WorldVantage(pose: pose, size: self.worldSize, height: self.height, aspect: self.aspect,
-                                 globe: self.globeEnabled && self.mapShown)
+                                 globe: self.globeActive)
             change(&v)
             pose = v.pose
         }
@@ -603,7 +609,7 @@ final class WorldModel: ObservableObject {
         if pose.distance == before { pose.distance = wish }
         pose.followsHeight = Self.followsHeight(followState.target)
         let requested = pose.distance
-        pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeEnabled)
+        pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeActive)
         distanceWish = pose.distance < requested * (1 - 1e-5) ? requested : nil
         cameraIsHome = false
         pushCamera()
@@ -721,14 +727,14 @@ final class WorldModel: ObservableObject {
         guard globeEnabled != on else { return }
         globeEnabled = on
         guard play.store.header != nil else { return }
-        pose.clamp(aspect: aspect, size: worldSize, height: height, globe: on)
+        pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeActive)
         pushCamera()
         home()
     }
 
     /// Whether the globe turns by itself now: View > Spin on, at the globe, and not reduced motion, not paused.
     var spinWanted: Bool {
-        guard display.spin, globeEnabled, !reduceMotion() else { return false }
+        guard display.spin, globeActive, !reduceMotion() else { return false }
         if let clock = play.store.clock, clock.rate == 0 { return false }
         let view = vantage()
         return view.isGlobe && view.s >= WorldVantage.capFrom
@@ -738,7 +744,7 @@ final class WorldModel: ObservableObject {
         let camera = self.camera
         let vantage = self.vantage()
         // (with the globe the derived level: organism under 0.12 L, planet from s = 0.5, else region)
-        let newLevel = globeEnabled
+        let newLevel = globeActive
             ? projector(size: freeRect.size).level
             : WorldLevels.level(distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: worldSize, mapShown: mapShown)
         if newLevel != level { level = newLevel }
@@ -759,7 +765,7 @@ final class WorldModel: ObservableObject {
 
     /// The projection the overlay and the picker use: the camera on the free rectangle (`size` in points).
     func projector(size: CGSize) -> WorldProjector {
-        WorldProjector(pose: pose, size: worldSize, height: height, view: size, mapShown: mapShown, globe: globeEnabled)
+        WorldProjector(pose: pose, size: worldSize, height: height, view: size, mapShown: mapShown, globe: globeActive)
     }
 
     // MARK: Selection

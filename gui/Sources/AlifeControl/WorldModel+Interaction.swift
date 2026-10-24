@@ -252,7 +252,7 @@ extension WorldModel {
         if followTarget != target { followTarget = target }
         if pose.followsHeight != Self.followsHeight(target) {  // (the lift of the point looked at at edge-on goes with the follow)
             pose.followsHeight = Self.followsHeight(target)
-            pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeEnabled)
+            pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeActive)
             pushCamera()
         }
         if target.isNone, !isFlying { glide.stop() }
@@ -326,7 +326,7 @@ extension WorldModel {
 
     /// The distance a fly ends at on something of `level`.
     func flyDistance(_ level: WorldLevel) -> Float {
-        WorldLevels.flyDistance(level, size: worldSize, fovY: camera.fovY, aspect: aspect, globe: globeEnabled && vantage().isGlobe)
+        WorldLevels.flyDistance(level, size: worldSize, fovY: camera.fovY, aspect: aspect, globe: globeActive && vantage().isGlobe)
     }
 
     /// Flies the camera to `point` (when there is one) and to `distance`, ending at rest. Whatever followed stops. Not while
@@ -370,12 +370,12 @@ extension WorldModel {
     private func makePath(to goal: FlightPath.Pose) -> FlightPath {
         let width = 2 * tan(pose.fovY / 2) * max(1, aspect)
         return FlightPath(from: FlightPath.Pose(pose), to: goal, size: worldSize, widthPerDistance: width, straight: reduceMotion(),
-                          greatCircle: globeEnabled && !pose.faceDown)
+                          greatCircle: globeActive && !pose.faceDown)
     }
 
     func clampedDistance(_ d: Float) -> Float {
         let limit = WorldPose.maxDistance(size: worldSize, fovY: pose.fovY, aspect: aspect, heading: pose.heading, tilt: pose.tilt,
-                                          globe: globeEnabled)
+                                          globe: globeActive)
         return min(max(d, WorldLevels.minDistance), max(limit, WorldLevels.minDistance))
     }
 

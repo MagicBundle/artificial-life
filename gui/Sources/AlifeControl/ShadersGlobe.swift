@@ -14,7 +14,7 @@ extension Shaders {
     ]
 
     /// The mesh of the map: this many cells on a side over one world (`L` wide, `L` tall), so 321 x 321 vertices.
-    static let meshCells = 320
+    static let meshCells = 160
 
     static let globeCommon = """
     // The globe's constants (buffer 8 of the world pass; `GlobeUniforms` in GlobeUniforms.swift mirrors it, 160 bytes). Zero on the flat

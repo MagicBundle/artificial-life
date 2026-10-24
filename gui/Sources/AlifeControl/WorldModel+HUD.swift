@@ -215,7 +215,7 @@ extension WorldModel {
 
     /// The hint line of the controls, shown once on the first World window and again from View > Controls. A Magic Mouse reports
     /// precise deltas like a trackpad (so its scroll pans, and the system cannot tell the two apart): it zooms with the switch.
-    static let hintText = "Drag moves the map. Two-finger scroll pans; pinch or a mouse wheel zooms (Magic Mouse: View > Scroll zooms). H home, N north up, I minimap, C colour. T O L S: top, oblique, low and side views; Option-drag tilts and turns."
+    static let hintText = "Drag moves the map. Two-finger scroll pans; pinch or a mouse wheel zooms (Magic Mouse: View > Scroll zooms); zoom out for the planet, zoom in for the map. H home (the planet), N north up, I minimap, C colour. T O L S: top, oblique, low and side views; Option-drag tilts and turns."
     static let hintKey = "world.hintShown"
 
     /// The first time a world opens the hint is shown, until any input.

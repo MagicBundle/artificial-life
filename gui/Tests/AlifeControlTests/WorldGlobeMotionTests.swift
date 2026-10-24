@@ -46,10 +46,35 @@ extension WorldInputTests {
         #expect(!fresh.display.globe, "a model made by a test is flat until it asks")
         fresh.adoptGlobeDefault()
         #expect(fresh.display.globe && fresh.globeEnabled)
+        #expect(suite.object(forKey: WorldModel.globeKey) == nil, "the default is not stored as the player's choice")
+        fresh.display.globe = false
+        #expect(suite.object(forKey: WorldModel.globeKey) as? Bool == false, "the player's choice is stored")
         suite.set(false, forKey: WorldModel.globeKey)
         let chosen = WorldModel(play: play, defaults: suite)
         chosen.adoptGlobeDefault()
         #expect(!chosen.display.globe && !chosen.globeEnabled, "a stored No stays")
+    }
+
+    @Test func aWorldWithNoMapInViewKeepsTheFlatHomeAndTheFlatPoseRules() async throws {
+        let (world, _) = try await motionWorld()
+        defer { world.finish() }
+        let model = world.model
+        let globeDistance = model.pose.distance
+        #expect(model.globeActive && model.vantage().isGlobe)
+        // the map layer off: the view is flat, and so are Home, the limit and the level
+        model.display.map = false
+        world.settle()
+        #expect(!model.globeActive && !model.vantage().isGlobe)
+        let flatFit = model.pose.distanceLimit(size: model.worldSize, aspect: model.aspect)
+        #expect(model.pose.distance > globeDistance * 1.5, "Home refits to the flat one-world fit (\(model.pose.distance))")
+        #expect(abs(model.pose.distance - flatFit) < 1e-3 && abs(model.distanceLimit - flatFit) < 1e-3)
+        model.goHome()
+        #expect(abs(model.pose.distance - flatFit) < 1e-3 && !model.projector(size: model.freeRect.size).isMorphing)
+        #expect(model.level != .planet)
+        // and the map back on: Home is the globe again
+        model.display.map = true
+        world.settle()
+        #expect(model.globeEnabled && abs(model.pose.distance - globeDistance) < 1e-3)
     }
 
     @Test func aFlickOfTheGlobeKeepsAnInertiaThatDecaysAndAnyInputStops() async throws {
