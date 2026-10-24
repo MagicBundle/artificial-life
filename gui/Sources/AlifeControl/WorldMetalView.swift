@@ -79,9 +79,11 @@ final class WorldMTKView: MTKView {
         return true
     }
 
-    /// The event's location in the view's points with the origin at the top left (what the picker and the overlay use).
+    /// The event's location in the view's points with the origin at the top left (what the picker and the overlay use). An event with
+    /// no window (one made from a `CGEvent`) has its location in screen coordinates.
     private func point(of event: NSEvent) -> CGPoint {
-        let p = convert(event.locationInWindow, from: nil)
+        let inWindow = event.window == nil ? (window?.convertPoint(fromScreen: event.locationInWindow) ?? event.locationInWindow) : event.locationInWindow
+        let p = convert(inWindow, from: nil)
         return CGPoint(x: p.x, y: bounds.height - p.y)
     }
 

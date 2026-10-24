@@ -198,11 +198,35 @@ import Testing
         #expect(counts["ViewMenu"] == 0, "the menu was evaluated again \(counts["ViewMenu"]) times while the camera moved")
         #expect(model.viewMenu.changes == changes)
 
+        // Nor does anything else the camera does, the level of the view included (v2 makes it a function of the continuous distance, and
+        // the menu's "Agent points" no longer depends on it): a zoom across the levels, a grab, a scroll that pans, a turn, north up, a
+        // flight to Home and the clock of the animation.
+        counts.reset()
+        model.goHome()
+        var levels: [WorldLevel] = [model.level]
+        for _ in 0..<60 {
+            model.zoom(by: 0.93, at: CGPoint(x: 300, y: 200))
+            if levels.last != model.level { levels.append(model.level) }
+        }
+        #expect(levels.suffix(2) == [.region, .organism], "the zoom crossed the levels (this fixture has no weather map: no planet level): \(levels)")
+        model.beginGrab(at: CGPoint(x: 400, y: 300))
+        for i in 0..<20 { model.grab(to: CGPoint(x: 400 + 5 * Double(i), y: 300 - 3 * Double(i))) }
+        model.endGrab()
+        model.scroll(ScrollEvent(dx: 5, dy: 9, precise: true, phase: .changed, time: 1), at: CGPoint(x: 100, y: 100))
+        model.drag(dx: 30, dy: -10, orbit: true)
+        model.northUp()
+        model.home()
+        for _ in 0..<200 where !model.advanceCamera(dt: 1.0 / 60) { break }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(counts["ViewMenu"] == 0, "the menu was evaluated again \(counts["ViewMenu"]) times while the camera moved, flew and crossed levels")
+        #expect(model.viewMenu.changes == changes)
+
         // Brightness, Territory and Organism size are fields of the inputs (through the display): one evaluation each.
         let edits: [(String, () -> Void, () -> Bool)] = [
             ("Brightness", { model.display.exposure = 1.25 }, { model.viewMenu.value.display.exposure == 1.25 }),
             ("Territory", { model.display.territory = .borders }, { model.viewMenu.value.display.territory == .borders }),
             ("Organism size", { model.display.sizeMode = .physical }, { model.viewMenu.value.display.sizeMode == .physical }),
+            ("Scroll zooms", { model.display.scrollZooms = true }, { model.viewMenu.value.display.scrollZooms }),
             // The layer is a field of the inputs and so is whether a map is in view (it disables Brightness, A0 review finding 8).
             ("Weather map", { model.display.map = false },
              { !model.viewMenu.value.display.map && model.viewMenu.value.mapShown == model.mapShown }),
