@@ -59,6 +59,7 @@ final class WorldLauncherModel: ObservableObject {
         planet.source = name
         let source = catalog.sources.first { $0.name == name }
         planet.sourceStep = source?.checkpoints.last
+        planet.sourceWorldSize = source?.worldSize
         applySourceDefaults(source)
     }
 
@@ -68,13 +69,15 @@ final class WorldLauncherModel: ObservableObject {
         guard let source else { return }
         // A weather-on source is forked as it is: the engine refuses the spin-up for it (§33.2.1).
         planet.storm = !source.weatherOn
-        planet.weatherSpinup = source.weatherOn ? 0 : PlanetSpec.defaultSpinup
+        planet.weatherSpinup = source.weatherOn ? 0 : PlanetSpec.defaultSpinup(forWorldSize: source.worldSize)
     }
 
     /// Switching the weather overlay keeps the spin-up consistent with it: none without the overlay, at least 1 with it.
     func setStorm(_ on: Bool) {
         planet.storm = on
-        planet.weatherSpinup = on ? (planet.weatherSpinup > 0 ? planet.weatherSpinup : PlanetSpec.defaultSpinup) : 0
+        planet.weatherSpinup = on
+            ? (planet.weatherSpinup > 0 ? planet.weatherSpinup : PlanetSpec.defaultSpinup(forWorldSize: planet.sourceWorldSize))
+            : 0
     }
 
     func suggestName() {

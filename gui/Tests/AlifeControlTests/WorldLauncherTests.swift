@@ -115,6 +115,35 @@ import Testing
         #expect(model.planet.sourceStep == 250_000)
     }
 
+    @Test func aMiniWorldSourceGetsItsOverlayAndALongerSpinup() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let runs = scratch.url.appendingPathComponent("runs")
+        for (name, size) in [("mini3d_s0", "160.0"), ("64k3d_s0", "320.0")] {
+            let dir = runs.appendingPathComponent(name)
+            try write(#"{"world": {"dims": 3, "size": \#(size)}, "weather": {"enabled": false}}"#, "config.json", in: dir)
+            try write("x", "checkpoints/step_0000450000.safetensors", in: dir)
+        }
+        let launches = Launches()
+        let model = make(runs, launches: launches)
+        model.refresh()
+        model.selectSource("mini3d_s0")
+        model.planet.name = "planet_m"
+        #expect(model.planet.sourceWorldSize == 160 && model.planet.weatherSpinup == 36_000)
+        #expect(PlayLaunch.arguments(planet: model.planet).starts(with: [
+            "play", "--init-from", "runs/mini3d_s0:450000", "--overlay", "storm160", "--set", "director.enabled=true",
+            "--weather-spinup", "36000",
+        ]))
+        model.setStorm(false)
+        model.setStorm(true)
+        #expect(model.planet.weatherSpinup == 36_000, "switching the overlay off and on keeps the source's default")
+        model.selectSource("64k3d_s0")
+        model.planet.name = "planet_n"
+        #expect(model.planet.sourceWorldSize == 320 && model.planet.weatherSpinup == PlanetSpec.defaultSpinup)
+        #expect(PlayLaunch.arguments(planet: model.planet).contains("storm"))
+        #expect(!PlayLaunch.arguments(planet: model.planet).contains("storm160"))
+    }
+
     @Test func aSourceWhoseWeatherIsOnIsForkedAsItIsWithoutASpinup() throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }

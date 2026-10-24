@@ -467,8 +467,14 @@ def test_the_play_launch_flags_are_flags_of_alife_play() -> None:
     choices = {s: a.choices for a in parser._actions for s in a.option_strings if a.choices}  # type: ignore[attr-defined]
     assert swift_enum_values(text, "PlayHouses") == set(choices["--houses"])
     assert swift_enum_values(text, "PlayDirector") == set(choices["--director"])
-    assert "storm" in choices["--overlay"]
-    assert re.search(r'"--overlay", "storm"', text)
+    assert {"storm", "storm160"} <= set(choices["--overlay"])
+    # The launcher passes the overlay of the source's size (DESIGN §37.2): both names are engine overlays, and
+    # `miniWorldSize` is the world.size of the preset that `storm160` is made for.
+    assert '"--overlay", PlanetSpec.overlay(forWorldSize: p.sourceWorldSize)' in text
+    assert re.search(r'size == miniWorldSize \? "storm160" : "storm"', text)
+    assert re.search(r"miniWorldSize = 160\.0", text)
+    assert config.load_config(preset="mini3d").world.size == 160.0
+    assert config.WORLD_OVERLAYS == ("storm", "storm160")
 
 
 def test_the_play_launch_set_keys_are_config_fields() -> None:
