@@ -1,8 +1,10 @@
 import Foundation
 
-/// The semantic level of the view (DESIGN §33.4.7). Levels only change what is drawn; the camera is one `Camera`.
+/// The semantic level of the view (DESIGN §33.4.7). Levels no longer change how the picture looks (§36.1: the map's opacity, the
+/// territory and the instances are continuous functions of the distance); they classify the view for the View menu's agent toggle, the
+/// picker and the bonds. The camera is one `Camera`.
 package enum WorldLevel: Int, Comparable, CaseIterable, Sendable {
-    /// The whole world, or more of it than half: the weather map is the picture, organisms are not instanced.
+    /// The whole world, or more of it than half: the weather map is the picture, organisms are small symbols over it.
     case planet
     /// A region: the map under organisms, sphere impostors where large enough, flat discs where small.
     case region
@@ -36,34 +38,43 @@ package enum WorldLevels {
         return .region
     }
 
-    /// How opaque the weather map is: fully at the planet level, under the organisms at the region level, faint close up.
-    package static func mapOpacity(_ level: WorldLevel) -> Float {
-        switch level {
-        case .planet: return 1
-        case .region: return 0.6
-        case .organism: return 0.25
+    /// The camera distances (fractions of `L`) and the map opacities of DESIGN §36.1 (F2): 0.7 at the organism level's fly-to,
+    /// 0.9 at the region level's, 1.0 from the distance at which the globe would fill 80% of the window (0.296 L).
+    package static let mapOpacityNodes: [(distance: Float, opacity: Float)] = [(0.08, 0.7), (0.15, 0.9), (0.296, 1.0)]
+
+    /// How opaque the weather map is at camera `distance` in a world of `size`: a continuous function of `ln d` through the
+    /// nodes of `mapOpacityNodes` (linear in `ln d`, each piece eased by a smoothstep so the slope is zero at the nodes), constant
+    /// beyond the ends. It replaces v1's three steps (1.0 / 0.6 / 0.25 by level): the map is no longer faded to the clear colour.
+    package static func mapOpacity(distance: Float, size: Float) -> Float {
+        let nodes = mapOpacityNodes
+        guard size > 0, distance > 0 else { return 1 }
+        let d = distance / size
+        if d <= nodes[0].distance { return nodes[0].opacity }
+        for i in 1..<nodes.count where d <= nodes[i].distance {
+            let (a, b) = (nodes[i - 1], nodes[i])
+            let t = log(d / a.distance) / log(b.distance / a.distance)
+            return a.opacity + (b.opacity - a.opacity) * (t * t * (3 - 2 * t))
         }
+        return nodes[nodes.count - 1].opacity
     }
 
-    /// The alpha of the territory overlay (the density layer at the planet level, §33.1.5): 25%, less close up.
-    package static func territoryAlpha(_ level: WorldLevel) -> Float {
-        switch level {
-        case .planet, .region: return 0.25
-        case .organism: return 0.12
-        }
+    /// The layers agents are drawn with at `level` and the user's toggles.
+    package struct AgentLayers: OptionSet, Sendable {
+        package let rawValue: Int
+        package init(rawValue: Int) { self.rawValue = rawValue }
+        /// Impostors: spheres and flat discs, at every level, their opacity a ramp of the drawn radius (§36.7).
+        package static let instances = AgentLayers(rawValue: 1)
+        /// 1 px translucent points, at the planet level only, if asked for.
+        package static let points = AgentLayers(rawValue: 2)
     }
 
-    /// How agents are drawn at `level` with the user's toggles: nothing, 1 px translucent points (planet level, if asked
-    /// for), or instances.
-    package enum AgentLayer: Equatable, Sendable {
-        case none, points, instances
-    }
-
-    package static func agentLayer(at level: WorldLevel, display: WorldDisplay) -> AgentLayer {
-        switch level {
-        case .planet: return display.agentPoints ? .points : .none
-        case .region, .organism: return display.agents ? .instances : .none
-        }
+    /// There is no level switch for the instances (v1 hid them at the planet level, where 40,000 organisms covered half to most of
+    /// the map: the size policy keeps them to 35% of the view, and the ramp of their alpha has no edge).
+    package static func agentLayers(at level: WorldLevel, display: WorldDisplay) -> AgentLayers {
+        var layers: AgentLayers = []
+        if display.agents { layers.insert(.instances) }
+        if level == .planet, display.agentPoints { layers.insert(.points) }
+        return layers
     }
 
     /// The farthest the camera may be: the visible half extent at the floor stays within one world, so that the repeating

@@ -32,18 +32,26 @@ struct PlaneUniforms: Equatable {
     var info: SIMD4<Float>
 }
 
-/// The World window's constants (`WorldU` in Shaders.swift), buffer 7 of the world pass: 80 bytes.
+/// The World window's constants (`WorldU` in Shaders.swift), buffer 7 of the world pass: 112 bytes.
 struct WorldUniforms: Equatable {
     /// xy: the camera target (everything is drawn at its minimum image), z: L, w: 1 / L.
     var target: SIMD4<Float>
-    /// x: map blend (previous to current), y: map opacity, z: territory alpha, w: the flat-disc threshold in pixels.
+    /// x: map blend (previous to current), y: map opacity, z: territory tint alpha, w: the flat-disc threshold in pixels.
     var params: SIMD4<Float>
     /// x: p_ref, y: dc_ref, z: zeta_ref, w: cot(fovY / 2).
     var refs: SIMD4<Float>
     /// x: pass (0 spheres, 1 flat discs), y: rows listed, z: bonds, w: bit 0 map, bit 1 territory, bit 2 equators.
     var flags: SIMD4<UInt32>
-    /// x: point alpha, y: point size in pixels, z: the smallest disc radius in pixels.
+    /// x: point alpha, y: point size in pixels, z: the smallest drawn radius in pixels, w: the outline's width in pixels.
     var style: SIMD4<Float>
+    /// x: the cap on the drawn radius in pixels (`unbounded` at the physical size), y, z: the alpha ramp's low and high radius in
+    /// pixels, w: the depth cue's slope.
+    var size: SIMD4<Float>
+    /// x: exposure, y: the territory borders' alpha, z: the depth cue's base, w: the hemisphere tint's weight.
+    var look: SIMD4<Float>
+
+    /// What the shader gets for "no cap" (a float that is larger than any radius).
+    static let unbounded: Float = 1e9
 
     static let mapBit: UInt32 = 1
     static let territoryBit: UInt32 = 2
@@ -265,6 +273,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         var display = WorldDisplay()
         /// The weight of the current map against the previous one (`MapFade`).
         var mapBlend: Float = 1
+        /// The size policy's coverage radius for the rows in view, in drawable pixels (`OrganismSizePolicy.coverRadius`, counted
+        /// by the model and smoothed); infinite where it does not apply.
+        var coverRadius: Float = .infinity
+        /// The drawable's pixels per point of the free rectangle (4.5 pt is the absolute cap of a symbol): 2 on a Retina display.
+        var pixelsPerPoint: Float = 2
     }
     var worldDraw = WorldDraw()
     /// Told when the drawable's size changes in the World (the free rectangle changed), in pixels.
@@ -367,10 +380,11 @@ final class Renderer: NSObject, MTKViewDelegate {
                                      blend: true)
         slicePipeline = try pipeline("field slice", vertex: Shaders.planeVertex, fragment: Shaders.sliceFragment,
                                      blend: true)
+        // The impostors blend: their opacity is a ramp of their drawn radius (the colour is unchanged where it is 1).
         agentPipeline = try pipeline("world agents", vertex: Shaders.agentVertexA, fragment: Shaders.agentFragmentA,
-                                     blend: false)
+                                     blend: true)
         flatPipeline = try pipeline("world flat agents", vertex: Shaders.agentVertexA,
-                                    fragment: Shaders.agentFragmentFlat, blend: false)
+                                    fragment: Shaders.agentFragmentFlat, blend: true)
         worldBondPipeline = try pipeline("world bonds", vertex: Shaders.bondVertexA, fragment: Shaders.lineFragment,
                                          blend: false)
         pointPipeline = try pipeline("world points", vertex: Shaders.pointVertexA, fragment: Shaders.pointFragment,
@@ -744,21 +758,30 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // MARK: World pass
 
-    private func worldUniforms(header: StreamHeader, pass: UInt32) -> WorldUniforms {
+    private func worldUniforms(header: StreamHeader, pass: UInt32, size: CGSize) -> WorldUniforms {
         let L = Float(header.size)
         let hasMap = mapNow != nil
         let display = worldDraw.display
         var bits: UInt32 = 0
         if display.map, hasMap { bits |= WorldUniforms.mapBit | WorldUniforms.equatorBit }
-        if display.territory, playTerritory != nil { bits |= WorldUniforms.territoryBit }
-        let territoryAlpha = bits & WorldUniforms.territoryBit != 0 ? WorldLevels.territoryAlpha(worldDraw.level) : 0
+        if display.territory != .off, playTerritory != nil { bits |= WorldUniforms.territoryBit }
+        let territoryOn = bits & WorldUniforms.territoryBit != 0
+        let tint = territoryOn && display.territory == .tint ? MapPalette.territoryTint : 0
+        let limits = OrganismSizePolicy.limits(
+            mode: display.sizeMode, cover: worldDraw.coverRadius, distance: camera.distance, size: L,
+            agentRadius: Float(header.radius), viewHeight: Float(size.height), fovY: camera.fovY,
+            pixelsPerPoint: worldDraw.pixelsPerPoint)
         return WorldUniforms(
             target: SIMD4(camera.target.x, camera.target.y, L, 1 / L),
-            params: SIMD4(worldDraw.mapBlend, WorldLevels.mapOpacity(worldDraw.level), territoryAlpha,
+            params: SIMD4(worldDraw.mapBlend, WorldLevels.mapOpacity(distance: camera.distance, size: L), tint,
                           WorldLevels.flatDiscPixels),
             refs: SIMD4(mapNow?.pRef ?? 0, mapNow?.dcRef ?? 0, mapNow?.zetaRef ?? 0, 1 / tan(camera.fovY / 2)),
             flags: SIMD4(pass, UInt32(playFrame?.n ?? 0), UInt32(playFrame?.nBonds ?? 0), bits),
-            style: SIMD4(0.55, 1.5, WorldLevels.minDiscPixels, 0))
+            style: SIMD4(0.55, 1.5, limits.minimum, OutlineContrast.width),
+            size: SIMD4(limits.cap.isFinite ? limits.cap : WorldUniforms.unbounded, OrganismSizePolicy.rampLow,
+                        OrganismSizePolicy.rampHigh, OutlineContrast.depthCueSlope),
+            look: SIMD4(display.exposure, MapPalette.territoryBorder, OutlineContrast.depthCueBase,
+                        MapPalette.hemisphereWeight(distance: camera.distance / L)))
     }
 
     private func encodeWorld(into encoder: any MTLRenderCommandEncoder, slot: Slot, header: StreamHeader, size: CGSize) {
@@ -784,7 +807,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // The map first, with no depth write: everything after it is drawn over it, in 2D too (where the floor is the plane
         // of the agents). A world with no weather and no territory to show has nothing to draw here.
-        var u = worldUniforms(header: header, pass: 0)
+        var u = worldUniforms(header: header, pass: 0, size: size)
         if u.flags.w & (WorldUniforms.mapBit | WorldUniforms.territoryBit) != 0 {
             encoder.setDepthStencilState(overlayDepth)
             encoder.setRenderPipelineState(mapPipeline)
@@ -807,23 +830,22 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setVertexBuffer(w.orient, offset: 0, index: 3)
             encoder.setVertexBuffer(w.rgb, offset: 0, index: 4)
             encoder.setVertexBuffer(w.bonds, offset: 0, index: 5)
-            switch WorldLevels.agentLayer(at: worldDraw.level, display: display) {
-            case .instances:
-                encoder.setRenderPipelineState(agentPipeline)
-                setWorld(&u)
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: frame.n)
-                var flat = worldUniforms(header: header, pass: 1)
-                encoder.setRenderPipelineState(flatPipeline)
-                setWorld(&flat)
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: frame.n)
-            case .points:
+            let layers = WorldLevels.agentLayers(at: worldDraw.level, display: display)
+            if layers.contains(.points) {
                 encoder.setDepthStencilState(overlayDepth)
                 encoder.setRenderPipelineState(pointPipeline)
                 setWorld(&u)
                 encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: frame.n)
                 encoder.setDepthStencilState(opaqueDepth)
-            case .none:
-                break
+            }
+            if layers.contains(.instances) {
+                encoder.setRenderPipelineState(agentPipeline)
+                setWorld(&u)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: frame.n)
+                var flat = worldUniforms(header: header, pass: 1, size: size)
+                encoder.setRenderPipelineState(flatPipeline)
+                setWorld(&flat)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: frame.n)
             }
             if display.bonds, worldDraw.level != .planet, frame.nBonds > 0, w.bonds != nil {
                 encoder.setRenderPipelineState(worldBondPipeline)

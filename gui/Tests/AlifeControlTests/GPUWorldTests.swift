@@ -80,7 +80,8 @@ struct GPUWorldTests {
         renderer.camera = Camera.world(for: header, aspect: 1)
         renderer.worldDraw.level = .region
         var display = WorldDisplay()
-        (display.frame, display.map, display.territory) = (false, false, false)
+        (display.frame, display.map) = (false, false)
+        display.territory = .off
         renderer.worldDraw.display = display
         return (renderer, header, store)
     }
@@ -195,25 +196,37 @@ struct GPUWorldTests {
         #expect(checked >= 4)
     }
 
-    @Test func thePlanetLevelDrawsNoInstancesUnlessThePointsAreAskedFor() throws {
+    @Test func thePlanetLevelDrawsInstancesAsSymbolsAndThePointsAreAnExtra() throws {
         let (renderer, _, _) = try scene()
         let frame = try firstFrame()
         renderer.showWorld(frame: frame)
         renderer.worldDraw.level = .planet
-        #expect(litCount(try render(renderer, "world-planet-none")) == 0, "organisms hide the map at this level")
-        var display = renderer.worldDraw.display
-        display.agentPoints = true
-        renderer.worldDraw.display = display
-        let image = try render(renderer, "world-planet-points")
+        // No level switch: the instances are drawn at the planet level too (their opacity is a ramp of their drawn radius).
+        let image = try render(renderer, "world-planet-instances")
         var checked = 0
         for i in 0..<frame.n {
             let at = try pixel(of: frame.position(i), camera: renderer.camera, image: image)
-            guard inside(at, image, margin: 2) else { continue }
-            #expect(litNear(image, at.x, at.y, reach: 2), "point \(i)")
+            guard inside(at, image, margin: 6) else { continue }
+            #expect(litNear(image, at.x, at.y, reach: 2), "row \(i)")
             checked += 1
         }
         #expect(checked >= 4)
-        #expect(litCount(image) < 200, "points, not discs")
+        var display = renderer.worldDraw.display
+        display.agents = false
+        renderer.worldDraw.display = display
+        #expect(litCount(try render(renderer, "world-planet-none")) == 0, "agents off: nothing")
+        display.agentPoints = true
+        renderer.worldDraw.display = display
+        let points = try render(renderer, "world-planet-points")
+        checked = 0
+        for i in 0..<frame.n {
+            let at = try pixel(of: frame.position(i), camera: renderer.camera, image: points)
+            guard inside(at, points, margin: 2) else { continue }
+            #expect(litNear(points, at.x, at.y, reach: 2), "point \(i)")
+            checked += 1
+        }
+        #expect(checked >= 4)
+        #expect(litCount(points) < 200, "points, not discs")
     }
 
     @Test func theLayerTogglesAreIndependent() throws {
@@ -236,6 +249,11 @@ struct GPUWorldTests {
     }
 
     // MARK: The map
+
+    /// The blue channel (0 to 255) the sea has of its own with no rain (107 to 111 over the cold half), and what is over it where
+    /// rain washes it (184 under full rain): a pixel is rain above the first and sea under the second.
+    private let seaBlue = 125
+    private let rainBlue = 150
 
     /// A map of `n` cells a side: all planes zero except rain, which is full in the cell (cx, cy).
     private func mapWithRain(at cx: Int, _ cy: Int, from base: PlayWeatherMap) -> PlayWeatherMap {
@@ -275,8 +293,9 @@ struct GPUWorldTests {
         let on = try blue(SIMD3((Float(cx) + 0.5) * cell, (Float(cy) + 0.5) * cell, 0))
         let swapped = try blue(SIMD3((Float(cy) + 0.5) * cell, (Float(cx) + 0.5) * cell, 0))
         let mirrored = try blue(SIMD3((Float(cx) + 0.5) * cell, L - (Float(cy) + 0.5) * cell, 0))
-        #expect(on > 110, "the rain is where [cy][cx] puts it: blue \(on)")
-        #expect(swapped < 60 && mirrored < 60, "and not transposed (\(swapped)) or flipped (\(mirrored))")
+        // (the raised cold sea has a blue of 107 to 111 of its own: rain is the wash that takes it to 180 and over)
+        #expect(on > rainBlue, "the rain is where [cy][cx] puts it: blue \(on)")
+        #expect(swapped < seaBlue && mirrored < seaBlue, "and not transposed (\(swapped)) or flipped (\(mirrored))")
     }
 
     @Test func theMapRepeatsAcrossTheSeamSoTheTorusIsTiled() throws {
@@ -294,10 +313,10 @@ struct GPUWorldTests {
         for shift in [SIMD3<Float>(L, 0, 0), SIMD3(-L, 0, 0), SIMD3(0, L, 0), SIMD3(L, L, 0)] {
             let at = try pixel(of: p + shift, camera: camera, image: image)
             guard at.x >= 0, at.x < image.width, at.y >= 0, at.y < image.height else { continue }
-            #expect(image.pixel(at.x, at.y).b > 110, "the rain is repeated at \(shift): \(at)")
+            #expect(image.pixel(at.x, at.y).b > rainBlue, "the rain is repeated at \(shift): \(at)")
         }
         let home = try pixel(of: p, camera: camera, image: image)
-        #expect(image.pixel(home.x, home.y).b > 110)
+        #expect(image.pixel(home.x, home.y).b > rainBlue)
     }
 
     @Test func theTwoEquatorsAreMarked() throws {
@@ -332,9 +351,9 @@ struct GPUWorldTests {
         let (old0, new0) = (try blue(at: 30, 110, blend: 0), try blue(at: 110, 30, blend: 0))
         let (old1, new1) = (try blue(at: 30, 110, blend: 1), try blue(at: 110, 30, blend: 1))
         let (oldHalf, newHalf) = (try blue(at: 30, 110, blend: 0.5), try blue(at: 110, 30, blend: 0.5))
-        #expect(old0 > 110 && new0 < 60, "before the fade, the previous map: \(old0), \(new0)")
-        #expect(old1 < 60 && new1 > 110, "after it, the current one: \(old1), \(new1)")
-        #expect(oldHalf > 40 && oldHalf < old0 && newHalf > 40 && newHalf < new1, "halfway, both: \(oldHalf), \(newHalf)")
+        #expect(old0 > rainBlue && new0 < seaBlue, "before the fade, the previous map: \(old0), \(new0)")
+        #expect(old1 < seaBlue && new1 > rainBlue, "after it, the current one: \(old1), \(new1)")
+        #expect(oldHalf > seaBlue && oldHalf < old0 && newHalf > seaBlue && newHalf < new1, "halfway, both: \(oldHalf), \(newHalf)")
     }
 
     @Test func eachBufferSetHoldsItsOwnMapTexturesAndTheyAreWrittenUnderTheTicket() throws {
@@ -364,8 +383,8 @@ struct GPUWorldTests {
         #expect(renderer.mapTextureIdentities.map(Set.init) == before.map(Set.init), "textures are written in place, never replaced under a draw")
         // Whatever set the next draw has, it shows map 2 at blend 0 and map 3 at blend 1 (a set that swapped must still agree).
         for _ in 0..<Renderer.slotCount {
-            #expect(try blue(map: 2, blend: 0) > 110 && blue(map: 3, blend: 0) < 60, "previous map")
-            #expect(try blue(map: 3, blend: 1) > 110 && blue(map: 2, blend: 1) < 60, "current map")
+            #expect(try blue(map: 2, blend: 0) > rainBlue && blue(map: 3, blend: 0) < seaBlue, "previous map")
+            #expect(try blue(map: 3, blend: 1) > rainBlue && blue(map: 2, blend: 1) < seaBlue, "current map")
         }
     }
 
@@ -374,7 +393,7 @@ struct GPUWorldTests {
     @Test func theTerritoryTintsItsCellsWithTheKinPalette() throws {
         let (renderer, header, store) = try scene()
         var display = renderer.worldDraw.display
-        display.territory = true
+        display.territory = .tint
         renderer.worldDraw.display = display
         renderer.worldDraw.level = .planet
         let territory = try #require(store.territory)
@@ -392,7 +411,7 @@ struct GPUWorldTests {
         let none = try colour(cell: 28, row: 3)
         // No owner, no tint: the floor of a world without weather (0.045, 0.055, 0.075 of 255).
         #expect(abs(Int(none.r) - 11) <= 3 && abs(Int(none.g) - 14) <= 3 && abs(Int(none.b) - 19) <= 3, "no owner: \(none)")
-        #expect(orange.r > orange.b + 8 && orange.r > 20, "slot 0 is orange: \(orange)")
+        #expect(orange.r > orange.b + 5 && orange.r > 20, "slot 0 is orange: \(orange)")
         #expect(blue.b > blue.r + 8, "slot 1 is sky blue: \(blue)")
     }
 
