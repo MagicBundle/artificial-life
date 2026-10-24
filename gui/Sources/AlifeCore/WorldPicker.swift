@@ -21,10 +21,11 @@ package enum WorldPick: Equatable, Sendable {
 /// drawable's pixels do not come into it (a Retina drawable has twice the pixels of the same rectangle), so the tolerances are
 /// the same number of points at any backing scale.
 ///
-/// - **Organisms** (region and organism levels, and only while they are drawn, `display.agents`): where the projected radius is
-///   under the tolerance (6 pt), the winner is the row nearest the pointer on the screen, ties by depth; where it is above, the
-///   row nearest the eye among those whose disc holds the pointer. A hit on a disc beats a near miss on a small one. At the
-///   planet level organisms are not picked: they are not drawn as instances, and 40,000 of them are under every pointer.
+/// - **Organisms** (region and organism levels, and only while they are drawn, `display.agents`): where the projected radius (the
+///   drawn one: capped by the size policy) is under the tolerance (6 pt), the winner is the row nearest the pointer on the screen,
+///   ties by depth; where it is above, the row nearest the eye among those whose disc holds the pointer. A hit on a disc beats a
+///   near miss on a small one. At the planet level organisms are not picked: they are small symbols, and 40,000 of them are under
+///   every pointer.
 /// - Then **storms** (inside the ring, or 10 pt around a small one: the one the pointer is nearest to in ring radii), then
 ///   **warm pools**, then a **territory** cell with an owner, found by casting the pointer's ray onto the floor.
 package enum WorldPicker {
@@ -33,9 +34,11 @@ package enum WorldPicker {
     /// A storm ring smaller than this (in points) is picked within this radius.
     package static let stormTolerance: CGFloat = 10
 
-    package static func pick(at point: CGPoint, projector: WorldProjector, store: WorldStore, display: WorldDisplay = WorldDisplay()) -> WorldPick {
+    package static func pick(at point: CGPoint, projector: WorldProjector, store: WorldStore, display: WorldDisplay = WorldDisplay(),
+                             maxRadius: Float = .infinity) -> WorldPick {
         guard projector.view.width >= 1, projector.view.height >= 1 else { return .none }
-        if projector.level != .planet, display.agents, let hit = organism(at: point, projector: projector, store: store) {
+        if projector.level != .planet, display.agents,
+           let hit = organism(at: point, projector: projector, store: store, maxRadius: maxRadius) {
             return hit
         }
         if let storms = store.storms?.storms, let id = storm(at: point, projector: projector, storms: storms) {
@@ -44,7 +47,7 @@ package enum WorldPicker {
         if let environment = store.environment?.environment, let index = pool(at: point, projector: projector, environment: environment) {
             return .pool(index: index)
         }
-        if display.territory, let territory = store.territory, let hit = cell(at: point, projector: projector, territory: territory) {
+        if display.territory != .off, let territory = store.territory, let hit = cell(at: point, projector: projector, territory: territory) {
             return hit
         }
         return .none
@@ -52,8 +55,11 @@ package enum WorldPicker {
 
     // MARK: Organisms
 
-    /// The organism under `point` by the rule above; nil if there is none.
-    package static func organism(at point: CGPoint, projector: WorldProjector, store: WorldStore) -> WorldPick? {
+    /// The organism under `point` by the rule above; nil if there is none. `maxRadius` is the most, in points, an organism is
+    /// drawn with (the size policy's cap, §36.7): the projected radius is the drawn one, so a capped symbol is not picked by its
+    /// physical disc.
+    package static func organism(at point: CGPoint, projector: WorldProjector, store: WorldStore,
+                                 maxRadius: Float = .infinity) -> WorldPick? {
         guard let frame = store.frame, frame.n > 0 else { return nil }
         let camera = projector.camera
         let aspect = projector.aspect
@@ -77,7 +83,7 @@ package enum WorldPicker {
             let sx = (clip.x / clip.w * 0.5 + 0.5) * width
             let sy = (0.5 - clip.y / clip.w * 0.5) * height
             let dx = sx - px, dy = sy - py
-            let projected = radius * perUnit / clip.w
+            let projected = min(radius * perUnit / clip.w, maxRadius)
             let reach = max(tol, projected)
             let d2 = dx * dx + dy * dy
             if d2 > reach * reach { continue }

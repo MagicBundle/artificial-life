@@ -10635,7 +10635,7 @@ The **clock strip** is at the top of the dock whichever tab is open: the segment
 
 #### 33.4.7 Levels and overlays (commit 9)
 
-`WorldLevels.level(distance:fovY:aspect:size:)` from the visible half extent at the floor `h = d·tan(fov/2)·max(1, aspect)`: **organism** when `d < 0.12 L`, else **planet** when `h >= 0.5 L` **and a weather map is in view** (`mapShown`: `display.map` and a `MAP1` held; a 2D or dry world has no planet level, and its home pose shows its organisms), else **region**. The map's opacity is 1, 0.6 and 0.25; the territory's alpha 25%, 25% and 12%. Agents are instances at the region and organism levels (`WorldDisplay.agents`), nothing at the planet level unless the point layer is on (`agentPoints`, default off: 40,413 organisms cover 45% to 82% of the map's pixels at 1.1 to 2.2 px/unit); the View menu's toggle refers to the layer of the level in view. Bonds are drawn at the region and organism levels. The level is published by `WorldModel.level` and is a function of the camera, the free rectangle's aspect and `mapShown`. **The camera's limits** (review fixes): the farthest distance is `WorldLevels.maxDistance(..., home:)`, never nearer than the home pose of the window's shape (a wide window or a bottom dock; otherwise the first drag snapped the view in), and `Camera.keepFloorInReach` tilts a view that would show past the finite tiled map (a long distance at an oblique pitch: `farthestFloorDistance` beyond `tiledReach` = 2 L) to a steeper pitch, never a shallower; an eye under 5% of the reach above the floor is left alone (the edge is a hair under its horizon).
+`WorldLevels.level(distance:fovY:aspect:size:)` from the visible half extent at the floor `h = d·tan(fov/2)·max(1, aspect)`: **organism** when `d < 0.12 L`, else **planet** when `h >= 0.5 L` **and a weather map is in view** (`mapShown`: `display.map` and a `MAP1` held; a 2D or dry world has no planet level, and its home pose shows its organisms), else **region**. The map's opacity is 1, 0.6 and 0.25; the territory's alpha 25%, 25% and 12% (**superseded by §36.6**: the opacity and the territory are continuous and weaker; the instances have no level switch, §36.7). Agents are instances at the region and organism levels (`WorldDisplay.agents`), nothing at the planet level unless the point layer is on (`agentPoints`, default off: 40,413 organisms cover 45% to 82% of the map's pixels at 1.1 to 2.2 px/unit); the View menu's toggle refers to the layer of the level in view (**superseded by §36.7**: instances exist at every level, capped in size and faded in by a ramp). Bonds are drawn at the region and organism levels. The level is published by `WorldModel.level` and is a function of the camera, the free rectangle's aspect and `mapShown`. **The camera's limits** (review fixes): the farthest distance is `WorldLevels.maxDistance(..., home:)`, never nearer than the home pose of the window's shape (a wide window or a bottom dock; otherwise the first drag snapped the view in), and `Camera.keepFloorInReach` tilts a view that would show past the finite tiled map (a long distance at an oblique pitch: `farthestFloorDistance` beyond `tiledReach` = 2 L) to a steeper pitch, never a shallower; an eye under 5% of the reach above the floor is left alone (the edge is a hair under its horizon).
 
 The **overlay** is a SwiftUI `Canvas` over the Metal view (`WorldOverlayView`, `allowsHitTesting(false)`) that watches `OverlayState.revision`, which changes on a tick (`STRM`, `ENVS`), on a camera edit and on every frame while an organism is selected: storm rings (radius `r` in points, at least 5; named storms bright, disturbances dim, coasting dashed, hemispheres in two tints), names (not at the organism level), tracks (unwrapped in `STRM`, so one polyline across the seam: the whole track is shifted by the multiple of `L` that brings the storm to its minimum image), warm pools from `ENVS` as dashed rings, and the selection ring. `WorldProjector` (pure, `AlifeCore`) projects with the camera on the free rectangle at the minimum image of the target; the picker of §33.4.8 uses it too.
 
@@ -11656,6 +11656,144 @@ The owner, on his first play of the World window: the window should monitor live
 
 **Tests.** Python: `tests/test_play_saves.py` (18: the grammar; the pruning in both modes on a fork with sidecars and play-state files, the origin, the quit save, the way back; the switch deleting nothing and the next save applying it; the header, the clock flag, the log, `play.json` (and a `play.json` that cannot be written, which does not stop the world), the replay; the trajectory equality in four arms; the power at a chapter end and a resume; three chapters with their reports, which are the same in either mode and verify from the files of the world that kept the newest save only; the CLI chain of five sessions, the flag, the refusal of a bad `play.json`), `test_stream_records` (the flag range, `saves_block`, the g3b fixture with the header block and the flag), `test_gui_sync` (the `Saves` keys, the bit-2 accessor, the command lines). Review fixes (storage monitor): `test_play_saves` adds the notes of `--saves newest` at the adoption and on a later session, the refusal of the line in a research run played in place (also one with the play value of `keep_checkpoints`, and the way back to `all`), a play world still taking the line, the check of a short new save, the flush before the prune, and the removal of a killed save's temporary files but not of another `*.tmp` (27 in all); `test_stream_records` the `adopted` key. Swift: `StorageTests` (the measurement on a temporary directory with checkpoints and logs, a link, a missing directory, a churning directory; the formatting; the thresholds; the growth; the mode; the readout), `StorageMonitorTests` (when it measures, the late answer, the stale answer, the scan asked during a save, the switch in a research run played in place, the loop ending with the world, the switch sending its line and following the echo and the timeout, the strip's height and width, the bottom dock's column), `PlayCommandTests`, `PlayRecordsG3bTests`, `DockBudgetTests`.
 
+## 36. The World viewer v2 (legibility; the globe overview is PRs A1 and B)
+
+The v2 of the World window changes what the owner sees at the planet, region and organism levels, in three PRs (A0 legibility, A1
+orientation and input on the flat map, B the globe). **PR A0** is client only: no engine, stream or config change (no config key,
+`POST_V01_KEYS` untouched, no golden). Sections 36.2 to 36.5 and 36.8 to 36.9 (the globe, the morph, the flight, the input, the
+whole test list, the as-built notes of A1 and B) arrive with those PRs; this change writes 36.1, 36.6 and 36.7 as built in A0, and 36.9 with what A0's review found
+and left (the limits of A0).
+
+### 36.1 The diagnosis (measured) and the fixes F1 to F8
+
+Method: a recorded play stream of the first planet (`g3a/macday/play20k/run1.json.mid.bin`: the 64k3d world forked at 450,000,
+`L` = 320, height 80, 44,162 alive, 20,742 bonds, weather 160 x 160, territory 32 x 32) is fed through `PlayController`, the
+production `Renderer` draws it offscreen at 2280 x 1800 px (a 1140 x 900 pt free rectangle at 2x) and the pixels are measured
+(`DiagProbe`, skipped without `ALIFE_V2_STREAM`). Luminance is Y' = 0.2126 R + 0.7152 G + 0.0722 B of the 8-bit values; contrast is
+WCAG on linearised values. The clear colour is (9, 10, 14), Y' 0.040.
+
+What v1 got wrong: **R1** the cold sea (5, 17, 35) sat 1.05:1 from the clear colour and was 0 over half of the rows; **R2** the map
+was mixed back to the clear colour at 0.6 (region) and 0.25 (organism); **R3** the territory film (0.25 of the owner's colour over 94%
+of the cells) carried no weather and made the home pose brown; **R4** the vorticity tint was additive and tiny; **R5** no organism
+had an edge, and at the region level they were drawn at their physical size and overlapped into a carpet (83.6% of the pixels belong to
+an organism, 22.5% of the organisms keep half of their disc visible), while at the planet level none were drawn (a step to about 35,000
+instances at the planet-to-region edge).
+
+| fix | what A0 does |
+|---|---|
+| F1 | the map palette has its own luminance range (36.6): cold sea (20, 59, 107), Y' 0.212 |
+| F2 | the map's opacity is a continuous function of the camera distance: 1.0 from 0.296 L, 0.9 at 0.15 L, 0.7 at and under 0.08 L (v1: 1.0 / 0.6 / 0.25 by level) |
+| F3 | territory is borders (white at 0.55) and a 10% tint; the View menu's Territory has three states (off, borders, tint) and `3` cycles them |
+| F4 | signed vorticity (30% amber / indigo) and a 3% hemisphere tint of the sea, fading out under 0.12 L |
+| F5 | (the light) belongs to PR B: the flat map is unlit |
+| F6 | the coverage-limited size and the outline chosen from the shaded colour (36.7) |
+| F7 | View menu Brightness (0.8, 1.0, 1.25, 1.5; persisted as `world.exposure`) multiplies the map's colours (not organisms: there is no light in the flat view) |
+| F8 | the depth cue is `0.85 + 0.15 z / height` (v1: 0.62 + 0.38 z / height, which dimmed 58% of the recorded population by over 25%) |
+
+Measured on the recorded frame at 2280 x 1800 (before is the commit before A0, 2bea1a0; the same probe file ran on both):
+
+| pose | frame Y' mean | under Y' 0.10 | map-only Y' mean | sea vs clear, WCAG p50 | organism pixels | organisms keeping half their disc |
+|---|---|---|---|---|---|---|
+| planet home | 0.191 -> 0.326 | 3.6% -> 12.7% (outlines) | 0.191 -> 0.298 | 1.05 -> 1.85 | none drawn -> 30.1% | n/a -> 81.1% (48.7% at physical size) |
+| region at the storm (0.339 L) | 0.481 -> 0.356 | 3.4% -> 4.0% (outlines) | 0.155 -> 0.325 | 1.04 -> 1.95 | 83.6% -> 23.3% | 22.5% -> 89.7% |
+| region, wider (0.35 L) | 0.472 -> 0.357 | 3.8% -> 4.2% | 0.154 -> 0.323 | 1.04 -> 1.95 | 83.1% -> 24.8% | 23.0% -> 88.8% |
+| region at 0.15 L | 0.489 -> 0.452 | 0.2% -> 0.5% | 0.206 -> 0.431 | 1.22 -> 2.98 | 80.4% -> 16.7% | 44.0% -> 94.4% |
+| organism fly-to (0.08 L) | 0.246 -> 0.375 | 41.9% -> 0.1% | 0.088 -> 0.314 | 1.05 -> 2.00 | 41.0% -> 33.2% | 77.5% -> 88.7% |
+| organism close (0.04 L) | 0.233 -> 0.356 | 51.0% -> 0.0% | 0.085 -> 0.298 | 1.05 -> 2.02 | 36.6% -> 29.5% | 81.8% -> 86.4% |
+
+The frame mean at the region poses falls because the bright carpet of balls is gone; the map under it more than doubles. The
+share of organisms that keep half their disc is the acceptance metric (at least 80% at the region and organism poses, measured by
+the occlusion raster `OcclusionRaster` with the drawn radii of the rule; the GPU's covered pixels agree with the raster within 4
+points). The edge contrast of the kin colours with their outline (palette slots on the recorded rows, unoccluded and isolated discs,
+the pixel on the ring against the one inside it): p1 3.6 to 3.9 at the region poses and 3.95 at the planet pose, 0.4% to 0.5% of the
+discs under 3:1 (a neighbour's or the organism's own nose at the ring), none at the organism poses. The organism-against-map contrast
+(the 1.3 table of the spec) is lower than v1's (mean 5.2 -> 3.2 at the region): the organisms are smaller and the map brighter; the
+legibility guarantee is the outline, not the palette (36.7).
+
+### 36.6 The map palette, opacity, territory and hemisphere tint
+
+`MapPalette.swift` is the Swift mirror of the constants of `mapFragment` (`Shaders.source`); a test parses the shader and compares.
+
+```
+sea     = mix((0.08,0.23,0.42), (0.10,0.46,0.55), smoothstep(0.1, 0.9, T_s))
+sea     = mix(sea, hemisphere tint, 0.03 * w(d))             // blue-violet (0.42,0.36,0.92) where 0 < y < L/2, teal (0.10,0.72,0.66) elsewhere,
+                                                             // smoothed over the equators; w = smoothstep(0.12 L, 0.20 L, d)
+sea     = mix(sea, (0.92,0.62,0.30), 0.30 * smoothstep(0, 0.8,  zeta))     // cyclonic
+sea     = mix(sea, (0.32,0.38,0.92), 0.30 * smoothstep(0, 0.8, -zeta))     // anticyclonic
+colour  = mix(sea,    (0.40,0.55,0.82), clamp(1.4 * rain, 0, 0.75))
+colour  = mix(colour, (0.95,0.97,1.00), 0.88 * smoothstep(0.03, 0.75, cloud))
+colour  = clamp(colour * exposure, 0, 1);  shown = mix(clear, colour, mapOpacity(d))
+```
+
+Cold sea against the clear colour at the three opacities (1.0 / 0.9 / 0.7): 1.75 / 1.63 / 1.41 (v1: 1.05); the GPU test renders a uniform
+cold sea at those distances, compares the pixel with the mirror (2 levels) and asserts at least 1.4:1 and a map-only luma of at least 0.14 at
+the organism level. `WorldLevels.mapOpacity(distance:size:)` is linear in `ln d` between the nodes (0.08 L, 0.7), (0.15 L, 0.9), (0.296 L, 1.0),
+each piece eased by a smoothstep, constant beyond. The territory layer draws the borders between cells of different owners as white at 0.55
+(`look.y`) and, in the "tint" state (the default), each owned cell at 0.10 in its owner's colour; "off" draws neither. Levels no longer change
+how the picture looks (the opacity, the territory and the instances are continuous); they classify the view for the picker, the bonds and the
+menu. Superseded by this section: the 1.0 / 0.6 / 0.25 opacities and the 25% / 12% territory alphas of §33.4.7.
+
+### 36.7 The organism size policy and the outline
+
+`OrganismSizePolicy` (pure, `AlifeCore`) with `OrganismSizeMode` (`capped`, the default, and `physical`: the View menu's "Organism size").
+For a view of `A` pixels with `N` rows inside it:
+
+```
+r_phys   = header.radius * pixelsPerUnit(depth)
+r_cover  = sqrt(c A / (pi N)),  c = 0.35
+r_abs(d) = 4.5 pt (9 px at 2x)   for d >= 0.20 L;  log-linear in d between, up to r_phys(floor) at 0.08 L;
+           r_phys(floor)(d) * (0.08 L / d)^2  for d <= 0.08 L   (continuous; grows faster than r_phys, so it never binds on the floor)
+r_draw   = clamp(r_phys, r_min, max(r_min, min(r_cover, r_abs))),  r_min = min(2.5 px, max(r_cover, 1.5 px))  (physical mode: 1.2 px, no cap)
+alpha    = smoothstep(1.5, 3.5, r_draw)           // the instance's opacity: no level switch
+```
+
+`N` is the count of listed rows whose centre is in view at their minimum image, made by `WorldModel` at most 10 times a second from the newest
+frame (0.1 ms for 42,000 rows); `r_cover` follows it with a one-pole filter (0.25 s) and is infinite while the agents are off or the mode is
+physical. The shaders take the cap, the least radius, the ramp and the depth cue as uniforms (`WorldU.size`, `WorldU.look`; 112 bytes). Above the
+organism level the sizes are symbols (decision D3); the picker uses the drawn radius (in points) as its radius.
+
+The **outline** is one drawable pixel on both impostor kinds (sphere: from the ray's miss distance; flat disc: from the corner's length). Its colour
+is chosen per pixel from the relative luminance `L` of the shaded colour of the pixel next to the ring (`base * depthCue * (0.3 + 0.7 n.v)`, n.v
+taken 1.5 px inside the edge): dark (0.06) if `L` > **0.17**, else light (0.92). The spec's threshold was 0.22 (4.9:1 against the dark outline, 3.3 against the
+light one at `L` = 0.22); the GPU pixel test measured **2.88:1** with it, because the pixel next to the ring is 1 to 2 px inside the edge wherever the grid falls on
+the silhouette and the rule is evaluated at 1.5. 0.17 is the luminance at which the two outlines have the same contrast (4.0), and it absorbs a 1.4 times error of
+the pixel's luminance either way (pure test over 1 to 2 px inside the edge for 1,000 random colours, the tables, 3.4 to 53 px and the depth cues; GPU test: worst
+3.46 over 242 colours, four backdrops, 7 and 9 px, four depths, four directions). Where the pixel grid and the silhouette agree the ring is 1 px, and off the
+axis of a perspective view sometimes 2 px; the contrast is taken against the first pixel that is not the ring. Not covered by the rule: the nose of an organism
+(a paler sphere on its forward axis) or of a neighbour next to the body's ring, which is another sphere's pixel (0.4% of the isolated discs of the recorded
+frame measure under 3:1).
+
+The ring is the outline of the organism, not of its parts: a ray that hits the nose in front of the body (the nose's edge lies inside the organism) gets none, so a nose
+facing the camera is not an "eye" inside a ring; the body's edge and a nose that sticks out past the body (a ray that misses the body) are outlined (GPU test
+`theOutlineIsThatOfTheWholeOrganismNotOfItsNose`).
+
+`OutlineContrast` also holds the arithmetic the tests use (WCAG luminance and contrast, the depth cue, the shading of a sphere and a disc). The Lab's sphere
+path is unchanged (scene radius, cue 1, no ring, alpha 1; `ReferenceShadingTests`).
+
+### 36.9 As built in A0: review fixes and the limits that remain
+
+Review of A0 (11 findings; the disposition is in the PR's discussion). **Fixed:** the absolute cap was unbounded below 0.08 L, which in a sparse view (about 40 to 60 rows,
+r_cover above the floor organism's physical radius) released every row above the floor from `near` in one frame (20,638 rows changed radius by up to 1.64 times between
+0.0799 L and 0.0801 L); it now continues as `r_phys(floor) (0.08 L / d)^2` (sweep: no step; largest second difference 0.0013 against 0.057). A renderer attached after the model has a
+count (a second `WorldMetalView` on the same `WorldModel`) is given the cover radius and the pixel scale (`attach`). `WorldRenderBench` sets the cover radius as `WorldModel` does (it measured
+the 9 px cap, 350% coverage, before; `ALIFE_BENCH_NO_COVER=1` restores that, `ALIFE_BENCH_PHYSICAL=1` draws v1's carpet). The outline is not drawn on a nose in front of the body.
+The least radius gives way to `r_cover` (not below 1.5 px, where the alpha ramp has taken the organism to nothing): in a small window the carpet no longer returns (700 x 500 pt
+Home: half visible 69.9% to 78.2%; 520 x 400: 57.0% to 82.0%, with the organisms nearly invisible, 0.2% of the pixels: they are too many for the pixels). The Brightness item is
+disabled when no weather map is in view (`ViewMenuInputs.mapShown`), as it scales the map's colours and a world with no map keeps its dark floor (Y' 0.07 to 0.13).
+
+**Draw cost.** Instances are drawn at every level, so the planet's draw rose (2280 x 1800, 42,000 rows, offscreen, GPU p50, `WorldRenderBench` at the shipped state): capped mode planet 2.50 ms
+(0.64 before A0 at 2200 x 1400), planet with points 3.01, region 2.59, organism 1.43; physical mode planet 4.01, with points 4.47, region 3.87, organism 1.71 (all under the 16.7 ms of a 60 Hz
+frame; the 3.5 ms budget holds for the default mode and not for physical). Physical mode keeps drawing at the planet level: it is a player's choice of v1's picture, and the cost is v1's
+carpet at its overlap. PR B's globe budget (1.5 ms) is below the flat planet's draw: the globe's cap cull and glow are what bring it there.
+
+**Limits left, by design or for a later PR.** (1) The bonds still switch on the derived planet level (a step of 0.005 in the frame's mean luma at that distance); they fade by length in PR B. (2) Organisms
+are not picked at the planet level though they are drawn there as dots of 1.7 pt: a 6 pt tolerance over 40,000 rows would take the pointer from the storms, pools and territory, so picking there is
+the input work of A1/B. (3) Home in a wide short window (1000 x 600, 1280 x 540 pt) keeps 76% and 66% of the organisms half visible: the least radius is not what binds (r_cover is 2.6 to 2.8 px);
+the pitched pose compresses the far rows, so the mean density behind `r_cover` is not the local one. The 80% acceptance is that of the region and organism poses (85.4 to 89.7% at every window size
+tried). (4) The cover radius follows the integer row count: with few rows in view each row entering or leaving moves every size by about 1/(2 sqrt N) (6% at N about 70), smoothed over 0.25 s.
+(5) The kin outline is under 3:1 on 0.1 to 0.7% of the rays of the recorded frame (the nose's silhouette, mid-luminance slots), inside the test's 1%. (6) Brightness is persisted; Territory and Organism size
+reset to "borders and tint" and "capped" at every launch (spec F7 asks for the brightness only; a player who tried the physical size returns to the legible default).
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -11753,6 +11891,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I56 | feat: storage, the size monitor and the save mode (**the owner's request of 2026-10-23, new §34.10; GAMES §10 item 22**; G3c keeps §35 and I55). A `saves all|newest` control line (§33.2.6, §34.6.1), `RunDir.keep_newest`, `play.json` `saves`, `--saves`, the `play.saves` header block, `CLCK.flags` bit 2, a `commands.jsonl` line; the Storage strip (size on disk split into saves and logs, growth, free space, a warning under three saves of room) and the recording switch in the control center, with `DockBudget` re-measured. Decision (owner): recording off keeps the newest save and the origin, saves still happen, the logs are still written. The switch deletes nothing; the next save prunes. A storage setting only: a toggled world equals the plain run on every digest, row, event chunk and log (`test_play_saves`). No config key, no trajectory change, no golden-digest re-pin; `INTENT_VERSION` and the stream protocol are unchanged (an optional header key and a flag bit an older client ignores). Cost: a 700-point dock keeps its two alert rows beside the inspector but three now need 760 points (740 before). Review fixes (client and engine lenses): a research run played in place (`config.pre_play.json`) refuses a `saves newest` line, the header says `play.saves.adopted` and the window does not offer the switch there, and `--saves newest` says which checkpoints its first save deletes; `newest` flushes the new save past the drive cache (`F_FULLFSYNC`) and checks its header and length before it prunes; `_prune` removes a killed save's temporary files; the switch is a **Recording** toggle with accurate tooltips, the note line left the dock (the budget is the same in both modes), the bottom dock's least height is 192, the strip shows the room left when the disk is low, the chapter growth has a defensible baseline (asked after the save that closed the last chapter), a stale scan cannot overwrite a newer one, the scan stops with the world, a linked `checkpoints/` is measured. Not done (and why): the kin-thread sidecar refold after a resume in `newest` mode (cost only, output identical), a confirmation before switching (the owner asked for an easy switch), the clock strip's own width at the 280-point dock (pre-existing). |
 | I57 | gui: the World launcher scrolls and lists only unfinished planet builds (`docs/DESIGN.md` §33.3.3, §33.4.5; I55 is reserved for G3c and I56 for the storage monitor). Two defects of the first look at the launcher on a laptop: the sheet was taller than the window, so *Make planet and play* was off-screen, and its *Unfinished* list held every directory with a config and no checkpoint, which are the research runs whose checkpoints are archived (14 of them: `64k3d_s0_dir`, `eval_s0_*`, `run-20261011-*`). Fix: a planet build is recognised by a mark, not by what it lacks. `alife play` writes `play_build` (`planet` or `preset`) into the first `meta.json` (`RunDir.create(extra_meta=)`, `cli._play_world`; the mark changes no state, config or digest), and the scanner lists as unfinished only a directory with the mark and no valid `play.json` and no held `play.lock`, or one holding only a stale `play.lock`. Builds begun before the mark are not recognised (they are no longer listed; nothing was ever deleted). The sheet is a pinned header, Resume list and footer around a scrolling form, at most 640 points tall, with the unfinished builds in a collapsed disclosure; Return is the footer button's default action. `PlayCatalog.other` keeps the names of the directories that are listed nowhere taken. Tests: `tests/test_play_planet.py` and `tests/test_runio.py` (the mark), `PlayWorldsTests`, `LauncherLayoutTests`, `WorldLauncherTests` (the hosted sheet). Also from the owner's first play (2026-10-23), `gui/world-input`: the dock divider's hover and drag now cover only its 6-point strip (attached before it is placed, with `.offset`), the drag keeps its grab point and applies its last step, `DividerCursor` pushes and pops the resize cursor once, and the dock's hit shape is its frame (it took up to 13 points of the map). The owner's symptoms (a click in the map resizing the dock; no scroll zoom; no clicks or scrolls in the dock) were not reproduced offscreen; the parent showed the resize cursor over the whole window, which the fix confines to the strip; to be confirmed by the owner in the real window before the merge. Also from the owner's test of the build: the View menu flashed in and out of existence while a world played. Cause: the menu observed `PlayController`, which publishes with every non-frame record (the clock at 4 Hz), so it was rebuilt each time (a count of 10 body evaluations for 10 clocks, 0 for 20 frames); fixed by `DistinctState` and the menu reading only its inputs (the viewer's colour pop-up and the launcher's planet form had the same dependency and got the same fix; `MenuStabilityTests`). |
 | I59 | feat: the Storm Worlds app (new §33.4.10; owner request 2026-10-23: "launch without the terminal"). **No engine change**; no config key, hash, stream or record changes. One executable, two bundles: `make-app.sh --app lab\|storm\|both` (default `lab`, flags unchanged; adds `--out`) builds `AlifeControl.app` and `Storm Worlds.app` (bundle ID `io.github.magicbundle.stormworlds`, executable `StormWorlds`, a generated storm icon, the same version and build number, hardened-runtime signing with the first Developer ID identity). The bundle's `AlifeLaunchMode` key (`world`/`lab`; none is the Lab) selects the scenes: Storm Worlds opens only the World window (the launcher), has the Lab at Window > Lab (Command-2), and quits when its last window closes (decision: single-window-game convention; the Lab open keeps the app). The repository folder is shared through the preferences domain `io.github.magicbundle.alife` (`RepoPathStore`, copied on first read from the app's own and the Lab's domain, nothing deleted, saves go to the shared domain and to the saving app's own; `swift run` keeps its own), and Storm Worlds asks for it itself (a gate in place of the World view while there is no usable folder, and Settings). `--install` now tests for a running copy with `lsappinfo`/`pgrep` instead of osascript. Tests: 28 `AlifeCoreTests`, 3 `AlifeControlTests`, `tests/test_app_bundles.py`, and the manual smoke `gui/scripts/check-apps.sh` (macOS, ad-hoc). **Open:** notarization and an in-app updater (the owner's "later"); sharing the dock preferences between the apps. |
+| I60 | feat: World viewer v2 (§36): legibility of the flat views now (PR A0: the raised map palette, the continuous map opacity, a weak territory tint with borders, coverage-capped organism sizes with an outline chosen from the shaded colour, instances at every level, View > Brightness / Territory / Organism size), then orientation and input on the flat map (A1) and a globe overview with a continuous zoom (B), each PR amending this sentence; client only, no engine, stream or config change (no config key, `POST_V01_KEYS` untouched, no golden). The outline threshold is 0.17, not the spec's 0.22 (the GPU test measured 2.88:1 with 0.22). |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

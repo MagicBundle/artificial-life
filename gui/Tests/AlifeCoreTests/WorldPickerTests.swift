@@ -83,6 +83,22 @@ import simd
         #expect(pick(out, p, store) == .none)
     }
 
+    @Test func aCappedOrganismIsPickedByItsDrawnRadiusNotItsPhysicalOne() throws {
+        // Radius 1 is 25 points here; the size policy draws it with 4.5 pt. 20 points from its centre is inside the physical disc and
+        // outside what is drawn (and outside the 6 pt tolerance): a click there is on nothing.
+        let store = try WorldFixtures.store(positions: [SIMD3(24, 24, 1)])
+        let p = region()
+        let at = try screen(p, SIMD3(24, 24, 1))
+        let beside = CGPoint(x: at.x + 20, y: at.y)
+        #expect(pick(beside, p, store) == .organism(uid: 1000, index: 0), "physical sizes: inside the disc")
+        let capped = WorldPicker.pick(at: beside, projector: p, store: store, display: WorldDisplay(), maxRadius: 4.5)
+        #expect(capped == .none)
+        #expect(WorldPicker.pick(at: at, projector: p, store: store, display: WorldDisplay(), maxRadius: 4.5) == .organism(uid: 1000, index: 0))
+        // Within the 6 pt tolerance of a capped symbol: hit (the larger of 6 pt and the drawn radius).
+        let near = CGPoint(x: at.x + 5.5, y: at.y)
+        #expect(WorldPicker.pick(at: near, projector: p, store: store, display: WorldDisplay(), maxRadius: 4.5) == .organism(uid: 1000, index: 0))
+    }
+
     @Test func equalDistancesAreBrokenByDepth() throws {
         let store = try WorldFixtures.store(radius: 0.1, positions: [SIMD3(24, 24, 1), SIMD3(24, 24, 6), SIMD3(24, 24, 3)])
         let p = region()
@@ -206,7 +222,7 @@ import simd
         let store = try WorldFixtures.store()
         let p = WorldFixtures.projector(target: SIMD3(24, 24, 0), distance: 70)
         var display = WorldDisplay()
-        display.territory = false
+        display.territory = .off
         #expect(pick(try screen(p, SIMD3(3.1, 3.1, 0)), p, store, display: display) == .none)
     }
 

@@ -155,9 +155,17 @@ struct WorldRenderBench {
         renderer.worldDraw.level = level
         var display = WorldDisplay()
         display.agentPoints = points
+        if environment("ALIFE_BENCH_PHYSICAL") == "1" { display.sizeMode = .physical }  // v1's carpet: the dearest the viewer can draw
         renderer.worldDraw.display = display
         let frames = [0, 1].map { BenchScene.frame(rows: rows, size: 320, height: 80, seed: UInt64($0 + 1), step: UInt64($0)) }
         renderer.showWorld(frame: frames[0])
+        // The state the shipped World draws in (DESIGN §36.7): the coverage radius of the rows in view, as `WorldModel` counts it.
+        // Without it the organisms would be drawn at the 9 px absolute cap, which is not what anyone sees.
+        if display.sizeMode == .capped, environment("ALIFE_BENCH_NO_COVER") != "1" {  // (that variable draws as the A0 bench of the review did)
+            let inView = OrganismSizePolicy.rowsInView(frame: frames[0], camera: camera, aspect: aspect, size: 320)
+            renderer.worldDraw.coverRadius = OrganismSizePolicy.coverRadius(area: Float(size.0 * size.1), rows: inView)
+            renderer.worldDraw.pixelsPerPoint = 2
+        }
         let map = try #require(fixture.map)
         renderer.deliverWorld(map: map, serial: 0, start: .current)
         renderer.showWorld(territory: fixture.territory, serial: 0)

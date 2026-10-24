@@ -7,7 +7,7 @@ import Testing
     @Test func theTableIsTheDocumentedOne() {
         let expected: [(String, WorldAction)] = [
             (" ", .togglePause), (".", .step), ("c", .cycleColor), ("1", .toggleAgents), ("2", .toggleBonds),
-            ("3", .toggleTerritory), ("f", .followSelection), ("[", .slower), ("]", .faster), ("r", .resetCamera),
+            ("3", .cycleTerritory), ("f", .followSelection), ("[", .slower), ("]", .faster), ("r", .resetCamera),
             ("\u{1B}", .escape), ("g", .continueRun), ("p", .showPowers), ("a", .flyToAlert), ("k", .acknowledgeAlert),
             ("\r", .confirmPower), ("\u{3}", .confirmPower),
         ]
