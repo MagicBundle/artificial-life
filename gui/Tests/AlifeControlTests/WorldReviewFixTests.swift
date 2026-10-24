@@ -59,18 +59,17 @@ extension WorldInputTests {
         let world = try await HostedWorld(kind: "3d")
         defer { world.finish() }
         let model = world.model
-        let (L, H) = (model.worldSize, model.height)
         model.reduceMotion = { true }
         // Off Home: a pan, and a tilt, at the farthest the narrow window allows.
         model.editPose { $0.x += 20; $0.y += 6; $0.tilt = 0.3 }
-        #expect(!model.cameraIsHome && model.pose.fits(aspect: model.aspect, size: L, height: H))
+        #expect(!model.cameraIsHome && model.pose.distance <= model.distanceLimit * 1.0001 && model.pose.tilt == 0.3)
         let narrowAspect = model.aspect
         resize(world, to: CGSize(width: 1700, height: 700))
         #expect(model.aspect > narrowAspect * 1.5, "the window did get wider: \(narrowAspect) to \(model.aspect)")
         #expect(model.pose.distance <= model.distanceLimit * 1.0001, "the distance is within the new limit \(model.distanceLimit): \(model.pose.distance)")
-        #expect(model.pose.fits(aspect: model.aspect, size: L, height: H), "the picture is within the one-world patch in the wider window")
+        #expect(model.pose.tilt == 0.3, "a refit keeps the player's tilt (the distance is what the new shape limits)")
         resize(world, to: CGSize(width: 1100, height: 700))
-        #expect(model.pose.fits(aspect: model.aspect, size: L, height: H), "and back")
+        #expect(model.pose.distance <= model.distanceLimit * 1.0001 && model.pose.tilt == 0.3, "and back")
         #expect(!model.cameraIsHome, "a refit is not Home: the player's view stays where it is")
     }
 

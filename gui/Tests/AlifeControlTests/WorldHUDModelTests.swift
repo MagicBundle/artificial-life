@@ -54,6 +54,22 @@ import simd
 
     private var inMinimap: CGPoint { CGPoint(x: 900 - 12 - 98, y: 700 - 12 - 98) }
 
+    // MARK: A world with no height
+
+    @Test func aTwoDWorldHasNoViewControlsAndTheStandardViewsDoNothing() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let rig = try await rig(scratch, kind: "2d")
+        defer { rig.play.shutdown() }
+        let model = rig.model
+        let hud = model.hud
+        #expect(hud.compass == nil && hud.toggle3D == nil && hud.tiltTrack == nil && hud.presets.isEmpty && hud.readout == nil && hud.zoomIn != nil)
+        let before = model.pose
+        for preset in ViewPreset.allCases { model.perform(.viewPreset(preset)) }
+        model.toggle3D()
+        #expect(model.viewEase == nil && model.pose == before && !model.hasTiltableView)
+    }
+
     // MARK: Where a press lands
 
     @Test func aPressLandsOnTheMinimapTheCompassTheZoomButtonsAndOtherwiseOnTheMap() async throws {

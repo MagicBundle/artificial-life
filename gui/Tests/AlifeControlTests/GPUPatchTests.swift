@@ -71,7 +71,7 @@ struct GPUPatchTests {
         }
     }
 
-    @Test func theMapFillsTheHostedViewTiltedAsFarAsTheViewMayBeTiltedAndNeverShowsTheHorizon() async throws {
+    @Test func theMapFillsTheHostedViewTiltedToTheHorizonWhichIsTheHazeAndTheSkyNotTheClearColour() async throws {
         let world = try await Hosted()
         defer { world.finish() }
         let model = world.model
@@ -82,10 +82,14 @@ struct GPUPatchTests {
             model.editPose { $0.x = 20; $0.y = y; $0.heading = heading; $0.tilt = 0; $0.distance = 1e6 }
             let limit = model.distanceLimit
             model.editPose { $0.distance = fraction * limit }
-            model.editPose { $0.tilt = 1.3 }  // as tilted as the drag can ask: eased back until the picture is within one world
-            #expect(model.pose.tilt > 0 && model.pose.tilt < 1.3, "tilt \(model.pose.tilt)")
-            let image = try world.render("patch-tilted-\(Int(y))-\(Int(heading * 10))")
-            #expect(backgroundCount(image) == 0, "the horizon or an edge shows at y \(y): \(backgroundCount(image)) pixels")
+            // (A1 eased the tilt back until the picture was within one world; now it is the player's, to edge-on, and the far floor is
+            // the haze and the sky above it: no pixel is the clear colour, which is what an edge of the map would show)
+            for tilt in [Float(1.3), .pi / 2] {
+                model.editPose { $0.tilt = tilt }
+                #expect(model.pose.tilt == tilt, "tilt \(model.pose.tilt)")
+                let image = try world.render("patch-tilted-\(Int(y))-\(Int(heading * 10))-\(Int(tilt * 10))")
+                #expect(backgroundCount(image) == 0, "the horizon or an edge shows at y \(y), tilt \(tilt): \(backgroundCount(image)) pixels")
+            }
         }
     }
 

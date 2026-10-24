@@ -97,28 +97,71 @@ import simd
         #expect(WorldPose.maxDistance(size: 1, fovY: Camera.defaultFovY, aspect: 10, z: 500) == WorldLevels.minDistance)
     }
 
-    @Test func theHorizonInViewHasNoFootprintAndTheTiltIsEasedBackUntilThePictureFits() throws {
+    @Test func theHorizonInViewHasNoFootprintAndTheTiltIsNotEasedBackButTheDistanceIsHeldByTheEyeLimit() throws {
         var pose = WorldPose(x: 160, y: 160, heading: 0.4, tilt: 1.4, distance: 100)
         #expect(pose.footprint(aspect: aspect, size: L, height: H) == nil, "the horizon is in view")
-        let eased = pose.limitTilt(aspect: aspect, size: L, height: H)
-        #expect(eased)
-        #expect(pose.fits(aspect: aspect, size: L, height: H) && pose.tilt < 1.4)
-        // The largest tilt that fits, to a thousandth of a degree.
-        var more = pose
-        more.tilt += 0.002 * .pi / 180
-        #expect(!more.fits(aspect: aspect, size: L, height: H), "tilt \(pose.tilt) is the limit")
-        // A view that fits keeps its tilt.
-        var near = WorldPose(x: 160, y: 160, tilt: 0.7, distance: 20)
-        let fitted = near.fits(aspect: aspect, size: L, height: H)
-        let changed = near.limitTilt(aspect: aspect, size: L, height: H)
-        #expect(fitted && !changed && near.tilt == 0.7)
-        // The tilt is never negative or past the steepest.
-        near.tilt = 3
-        near.limitTilt(aspect: aspect, size: L, height: H)
-        #expect(near.tilt <= WorldPose.maxTilt)
+        // (A1 eased the tilt back until the picture fitted one world; the haze replaced that: the tilt is the player's.)
+        pose.clamp(aspect: aspect, size: L, height: H)
+        #expect(pose.tilt == 1.4, "the tilt stays")
+        let limit = WorldFog.eyeReach * L / sin(1.4)
+        #expect(pose.distance == min(100, limit), "the eye is held over the clear box: \(pose.distance)")
+        // The tilt is never negative or past edge-on, and edge-on is allowed.
+        var near = WorldPose(x: 160, y: 160, tilt: 3, distance: 20)
+        near.clamp(aspect: aspect, size: L, height: H)
+        #expect(near.tilt == WorldPose.maxTilt && WorldPose.maxTilt == .pi / 2)
         near.tilt = -1
-        near.limitTilt(aspect: aspect, size: L, height: H)
+        near.clamp(aspect: aspect, size: L, height: H)
         #expect(near.tilt == 0)
+    }
+
+    @Test func theEyeStaysOverTheClearBoxAtEveryTiltAndHeadingAndTheTwoLimitsMeetWithoutAStep() {
+        for aspectRatio: Float in [0.8, 1.38, 3] {
+            for heading: Float in [0, 0.4, .pi / 4, 1.2, 2.5] {
+                var previous = Float.infinity
+                for degrees in stride(from: Float(0), through: 90, by: 1) {
+                    let tilt = degrees * .pi / 180
+                    let limit = WorldPose.maxDistance(size: L, fovY: Camera.defaultFovY, aspect: aspectRatio, heading: heading, tilt: tilt)
+                    // The eye's horizontal offset from the point looked at is within the clear box's eye reach.
+                    #expect(limit * sin(tilt) <= WorldFog.eyeReach * L * 1.0001 || limit == WorldLevels.minDistance, "\(degrees) degrees: \(limit)")
+                    // Never farther than the straight-down limit, and never nearer as the tilt falls.
+                    #expect(limit <= WorldPose.maxDistance(size: L, fovY: Camera.defaultFovY, aspect: aspectRatio, heading: heading) + 1e-3)
+                    #expect(limit <= previous + 1e-3, "monotone in the tilt: \(degrees) degrees \(limit) after \(previous)")
+                    #expect(previous == .infinity || previous - limit < 0.25 * L, "no step: \(degrees) degrees \(limit) after \(previous)")
+                    previous = limit
+                }
+            }
+        }
+    }
+
+    @Test func theCameraIsWellDefinedAtEveryTiltIncludingEdgeOn() {
+        for degrees in stride(from: Float(0), through: 90, by: 5) {
+            let pose = WorldPose(x: 100, y: 50, z: 40, heading: 0.3, tilt: degrees * .pi / 180, distance: 100)
+            let camera = pose.camera(size: L, height: H)
+            let matrix = camera.viewProjectionMatrix(aspect: aspect)
+            for column in 0..<4 { for row in 0..<4 { #expect(matrix[column][row].isFinite, "\(degrees) degrees") } }
+            #expect(simd_length(camera.forward) > 0.999 && simd_length(camera.up) > 0.999 && abs(simd_dot(camera.forward, camera.up)) < 1e-4)
+            // The eye is `distance` from the target, `distance * cos(tilt)` higher (the height of the point looked at under it).
+            #expect(abs(camera.position.z - (pose.z + pose.distance * cos(pose.tilt))) < 1e-3)
+            #expect(pose.tiltDegrees == Int(degrees))
+        }
+        let side = WorldPose(x: 0, y: 0, z: 40, tilt: .pi / 2, distance: 100).camera(size: L, height: H)
+        #expect(abs(side.forward.z) < 1e-6 && abs(side.position.z - 40) < 1e-4, "edge-on: the view axis is along the floor, the eye at the target's height")
+    }
+
+    @Test func theBearingIsTheCompassDirectionTheViewLooksTowards() {
+        func bearing(_ degrees: Float) -> Int { WorldPose(x: 0, y: 0, heading: degrees * .pi / 180, distance: 10).bearingDegrees }
+        #expect(bearing(0) == 0, "north up looks north")
+        #expect(bearing(90) == 270 && bearing(-90) == 90, "turned a quarter towards the west it looks west, 270")
+        #expect(bearing(180) == 180 && bearing(-180) == 180)
+        #expect(bearing(10) == 350 && bearing(-45) == 45)
+        // The camera really looks that way: forward's horizontal part is (sin b, cos b) for the bearing b.
+        for degrees: Float in [0, 30, 90, 135, -80, 179] {
+            let pose = WorldPose(x: 0, y: 0, heading: degrees * .pi / 180, tilt: 1, distance: 10)
+            let forward = pose.camera(size: L, height: H).forward
+            let b = Float(pose.bearingDegrees) * .pi / 180
+            let h = simd_normalize(SIMD2(forward.x, forward.y))
+            #expect(abs(h.x - sin(b)) < 0.02 && abs(h.y - cos(b)) < 0.02, "heading \(degrees): \(h) for bearing \(pose.bearingDegrees)")
+        }
     }
 
     @Test func theClampsWrapTheCentreBoundTheHeightAndTheDistanceAndSurviveNaN() {
@@ -139,6 +182,8 @@ import simd
 
     @Test func aGrabPutsThePointThatWasUnderThePointerBackUnderItAnywhere() throws {
         var g = SeededGenerator(seed: 5)
+        var checked = 0
+        defer { #expect(checked > 150, "the cases are reached: \(checked)") }
         for trial in 0..<400 {
             var pose = random(&g, tilted: trial % 4 != 0)
             if trial % 5 == 0 { pose.x = Float.random(in: -3...3, using: &g); pose.x = Torus.wrap(pose.x, size: L) }  // across the x seam
@@ -148,6 +193,11 @@ import simd
             guard let anchor = pose.point(at: WorldPose.ndc(of: start, in: view), aspect: aspect, size: L) else { continue }  // the horizon
             var moved = pose
             guard moved.grab(anchor: anchor, at: WorldPose.ndc(of: end, in: view), aspect: aspect, size: L) else { continue }
+            // (the projector places a point at its minimum image about the centre: inside the clear box, half a world, that is the point)
+            guard let atEnd = moved.offset(at: WorldPose.ndc(of: end, in: view), aspect: aspect), WorldFog.chebyshev(atEnd) < 0.5 * L,
+                  let atStart = pose.offset(at: WorldPose.ndc(of: start, in: view), aspect: aspect), WorldFog.chebyshev(atStart) < 0.5 * L
+            else { continue }
+            checked += 1
             let at = try #require(screen(moved, anchor, z: moved.z))
             #expect(hypot(at.x - end.x, at.y - end.y) < 0.5, "trial \(trial): \(at) for the pointer at \(end)")
             #expect(moved.distance == pose.distance && moved.heading == pose.heading && moved.tilt == pose.tilt && moved.z == pose.z)
@@ -198,22 +248,22 @@ import simd
         #expect(checked > 100)
     }
 
-    @Test func aZoomOutThatEasesTheTiltStillKeepsThePointUnderThePointer() throws {
-        // (review finding: the grab was made before the tilt was limited, and a factor of 3 at the top left moved the point 5 units)
-        var eased = 0
-        for tilt: Float in [0.5, 0.7, 0.9, 1.1] {
-            var pose = WorldPose(x: 160, y: 40, heading: 0, tilt: tilt, distance: 40)
+    @Test func aZoomOutThatTheEyeLimitHoldsStillKeepsThePointUnderThePointer() throws {
+        // (review finding of A1: the grab was made before the tilt was limited; the tilt is not limited now, the distance is)
+        var held = 0
+        for tilt: Float in [0.5, 0.7, 0.9, 1.1, 1.4] {
+            var pose = WorldPose(x: 160, y: 40, heading: 0, tilt: tilt, distance: 100)
             pose.clamp(aspect: aspect, size: L, height: H)
-            let before = pose.tilt
-            let ndc = SIMD2<Float>(-0.9, 0.9)
+            let ndc = SIMD2<Float>(-0.4, -0.6)  // below the middle: on the floor at every tilt
             let anchor = try #require(pose.point(at: ndc, aspect: aspect, size: L))
             pose.zoom(by: 3, at: ndc, aspect: aspect, size: L, height: H)
-            if pose.tilt < before { eased += 1 }
+            if pose.distance < 300 * 0.999 { held += 1 }
+            #expect(pose.tilt == tilt, "the tilt stays")
             let again = try #require(pose.point(at: ndc, aspect: aspect, size: L))
             let off = Torus.wrapDelta(again - anchor, size: L)
-            #expect(off.x.magnitude < 1e-3 && off.y.magnitude < 1e-3, "tilt \(before) to \(pose.tilt): \(anchor) against \(again)")
+            #expect(off.x.magnitude < 1e-3 && off.y.magnitude < 1e-3, "tilt \(tilt): \(anchor) against \(again)")
         }
-        #expect(eased >= 2, "the case is reached: a wider view is not allowed the same tilt")
+        #expect(held >= 3, "the case is reached: a tilted view is not allowed the whole zoom")
     }
 
     @Test func aZoomWithNoPointerIsAboutTheCentreAndTheClampsHold() {
@@ -306,22 +356,12 @@ import simd
         #expect(abs(WorldPose.populatedX(frame: WorldFixtures.frame([SIMD3(100, 1, 1), SIMD3(120, 2, 2)]), size: 320)! - 110) < 0.5)
     }
 
-    @Test func theTiltReachIsTheFootprintsAndMatchesTheSpecsTable() {
-        // The most a view at distance d may be tilted, from the footprint staying inside 0.49 L of its centre at every heading (the worst
-        // one decides; spec 3.3: at 0.12 L 57 / 56 / 52 degrees for window aspects 1.3 / 2 / 3; at 0.08 L 60 / 59 / 57; at 0.2 L 52 / 48 / 39).
-        let table: [(Float, Float, Float, Float)] = [
-            (0.12, 57, 56, 52), (0.08, 60, 59, 57), (0.2, 52, 48, 39),
-        ]
-        for (fraction, a, b, c) in table {
-            for (aspect, expected) in zip([Float(1.3), 2, 3], [a, b, c]) {
-                var degrees = Float.infinity
-                for heading in stride(from: Float(0), through: .pi / 2, by: .pi / 72) {
-                    var pose = WorldPose(x: 160, y: 160, heading: heading, tilt: 1.4, distance: fraction * 320)
-                    pose.limitTilt(aspect: aspect, size: 320, height: 80)
-                    degrees = min(degrees, pose.tilt * 180 / .pi)
-                }
-                #expect(abs(degrees - expected) < 2.5, "\(fraction) L, aspect \(aspect): \(degrees) against \(expected)")
-            }
-        }
+    @Test func theDistanceTheTiltAsksForIsGivenBackWhenTheTiltIsRelaxed() {
+        // (the model keeps the wish: `WorldModel.distanceWish`; here the pure limit it uses)
+        let far = WorldPose.maxDistance(size: L, fovY: Camera.defaultFovY, aspect: aspect, tilt: 0)
+        let low = WorldPose.maxDistance(size: L, fovY: Camera.defaultFovY, aspect: aspect, tilt: 70 * .pi / 180)
+        let side = WorldPose.maxDistance(size: L, fovY: Camera.defaultFovY, aspect: aspect, tilt: .pi / 2)
+        #expect(far > low && low > side, "\(far) \(low) \(side)")
+        #expect(abs(side - WorldFog.eyeReach * L) < 1e-3, "edge-on, the eye is at most eyeReach L from the point looked at: \(side)")
     }
 }

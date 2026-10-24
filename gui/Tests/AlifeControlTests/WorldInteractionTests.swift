@@ -590,7 +590,7 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         #expect(WorldLevels.agentLayers(at: dry.model.level, display: dry.model.display) == .instances)
     }
 
-    @Test func zoomingOutAtAnObliquePitchTiltsTheViewBackSoNoEdgeOfTheMapShows() async throws {
+    @Test func zoomingOutAtAnObliquePitchKeepsTheTiltAndHoldsTheEyeOverTheClearBox() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let rig = try await makeRig(scratch)
@@ -601,10 +601,12 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
             $0.distance = 100 * size
         }
         let pose = rig.model.pose
-        #expect(pose.tilt < 60 * .pi / 180, "steeper than asked")
-        #expect(pose.fits(aspect: rig.model.aspect, size: size, height: rig.model.height), "no edge of the one-world patch in view")
-        let seen = try #require(pose.footprint(aspect: rig.model.aspect, size: size, height: rig.model.height))
-        #expect(max(seen.x, seen.y) <= WorldPose.reach * size * 1.001)
+        #expect(abs(pose.tilt - 60 * .pi / 180) < 1e-4, "the tilt is the player's (A1 eased it back to keep the map's edge out of view)")
+        let eye = pose.distance * sin(pose.tilt)
+        #expect(abs(eye - WorldFog.eyeReach * size) < 1e-3, "the eye is over the clear box, at the edge of its reach: \(eye)")
+        let camera = pose.camera(size: size, height: rig.model.height)
+        let toTarget = SIMD2(camera.target.x - camera.position.x, camera.target.y - camera.position.y)
+        #expect(abs(simd_length(toTarget) - eye) < 1e-3)
     }
 
     @Test func aWorldThatIsStoppedOrReplacedForgetsWhatWasSelectedAtOnce() async throws {

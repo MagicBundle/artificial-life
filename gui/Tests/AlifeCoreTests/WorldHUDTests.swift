@@ -30,15 +30,82 @@ import Testing
         #expect(tiny.rects.isEmpty && tiny.target(at: CGPoint(x: 100, y: 60)) == .map)
     }
 
-    @Test func theCompassAndTheZoomButtonsAreStackedAtTheTopRightAndATwoDWorldHasNoCompass() {
+    @Test func theViewControlsAreAColumnDownTheRightEdgeAboveTheMinimapAndATwoDWorldHasOnlyTheZoomButtons() throws {
         let hud = WorldHUD(free: free, minimap: true)
-        let compass = try! #require(hud.compass), zoomIn = try! #require(hud.zoomIn), zoomOut = try! #require(hud.zoomOut)
-        #expect(compass.maxX == free.width - WorldHUD.margin && compass.minY == WorldHUD.margin)
-        #expect(zoomIn.midX == compass.midX && zoomOut.midX == compass.midX)
-        #expect(compass.maxY < zoomIn.minY && zoomIn.maxY < zoomOut.minY)
+        let box = try #require(hud.minimap)
+        let compass = try #require(hud.compass), toggle = try #require(hud.toggle3D), track = try #require(hud.tiltTrack)
+        let zoomIn = try #require(hud.zoomIn), zoomOut = try #require(hud.zoomOut), readout = try #require(hud.readout)
+        #expect(hud.presets.map(\.preset) == ViewPreset.allCases)
+        #expect(compass.maxX == free.width - WorldHUD.margin, "the compass is at the right edge")
+        for rect in [toggle, track, zoomIn, zoomOut] { #expect(rect.midX == compass.midX, "the buttons are centred under the compass") }
+        // From the top: the readout, the strip, the compass, the 3D button, the tilt handle, the zoom buttons; all above the minimap.
+        let strip = try #require(hud.presets.first).rect
+        #expect(readout.maxY < strip.minY && strip.maxY <= compass.minY && compass.maxY < toggle.minY)
+        #expect(toggle.maxY < track.minY && track.maxY < zoomIn.minY && zoomIn.maxY < zoomOut.minY)
+        #expect(zoomOut.maxY <= box.minY - 30, "above the minimap's coordinates tag")
+        #expect(readout.minY >= WorldHUD.columnTop - 0.5, "under the clock badge")
+        #expect(WorldHUD.trackLength.contains(track.height))
+        // The strip is one row of four, right-aligned with the column, and the readout is as wide.
+        #expect(abs(hud.presets.last!.rect.maxX - (free.width - WorldHUD.margin)) < 1e-6 && readout.width == WorldHUD.stripWidth)
+        for (a, b) in zip(hud.presets, hud.presets.dropFirst()) { #expect(a.rect.maxX == b.rect.minX && a.rect.minY == b.rect.minY) }
+        // A 2D world has no north and no tilt: the zoom buttons take the column.
         let flat = WorldHUD(free: free, minimap: true, compass: false)
-        #expect(flat.compass == nil)
-        #expect(flat.zoomIn?.minY == WorldHUD.margin, "the buttons take the compass's place")
+        #expect(flat.compass == nil && flat.toggle3D == nil && flat.tiltTrack == nil && flat.presets.isEmpty && flat.readout == nil)
+        #expect(flat.zoomIn != nil && flat.zoomOut != nil)
+    }
+
+    @Test func theColumnKeepsWhatFitsInTheOrderOfPriorityAndTheTrackTakesTheRoomThatIsLeft() throws {
+        // Without the minimap the column reaches the bottom corner. The room above the zoom buttons decides what is kept, in this order:
+        // the compass, the 3D button, the handle (from 48 to 96 points), the strip with the readout.
+        func column(_ height: CGFloat) -> WorldHUD { WorldHUD(free: CGSize(width: 900, height: height), minimap: false) }
+        var last: (compass: Bool, toggle: Bool, track: Bool, strip: Bool) = (false, false, false, false)
+        var lengths: [CGFloat] = []
+        for height in stride(from: CGFloat(150), through: 700, by: 2) {
+            let hud = column(height)
+            let now = (hud.compass != nil, hud.toggle3D != nil, hud.tiltTrack != nil, !hud.presets.isEmpty)
+            // Nothing that was there goes away as the room grows, and a control is only there if the ones before it in the order are.
+            #expect(!last.compass || now.0); #expect(!last.toggle || now.1); #expect(!last.track || now.2); #expect(!last.strip || now.3)
+            #expect(!now.1 || now.0); #expect(!now.2 || now.1); #expect(!now.3 || now.2)
+            last = now
+            if let track = hud.tiltTrack { lengths.append(track.height) }
+            if let zoom = hud.zoomOut { #expect(zoom.maxY <= height - WorldHUD.margin + 0.001, "\(height)") }
+        }
+        #expect(last == (true, true, true, true), "a tall window has all of it")
+        #expect(lengths.min() == 48 && lengths.max() == 96 && lengths.allSatisfy { WorldHUD.trackLength.contains($0) },
+                "the handle is from 48 to 96 points, as the room allows (the strip takes room when it comes in): \(lengths.min() ?? 0)...\(lengths.max() ?? 0)")
+        #expect(column(159).zoomIn != nil && column(159).compass == nil, "A1's least: the zoom buttons alone")
+    }
+
+    @Test func theTiltHandleMapsThePointerToATiltFromStraightDownAtTheTopToEdgeOnAtTheBottomAndTheThumbIsWhereTheTiltIs() throws {
+        let track = CGRect(x: 800, y: 200, width: 30, height: 96)
+        let top = WorldHUD.thumbCentre(tilt: 0, track: track), bottom = WorldHUD.thumbCentre(tilt: WorldPose.maxTilt, track: track)
+        #expect(top.y == track.minY + 10 && bottom.y == track.maxY - 10 && top.x == track.midX)
+        #expect(WorldHUD.tilt(atY: top.y, track: track) == 0 && abs(WorldHUD.tilt(atY: bottom.y, track: track) - .pi / 2) < 1e-6)
+        #expect(WorldHUD.tilt(atY: -1000, track: track) == 0 && WorldHUD.tilt(atY: 1e6, track: track) == WorldPose.maxTilt)
+        for tilt in stride(from: Float(0), through: .pi / 2, by: 0.1) {
+            let at = WorldHUD.thumbCentre(tilt: tilt, track: track)
+            #expect(abs(WorldHUD.tilt(atY: at.y, track: track) - tilt) < 1e-5, "the pointer on the thumb gives its tilt")
+        }
+        // Held off the thumb's centre by 5 points, the first move does not jump.
+        let thumb = WorldHUD.thumbCentre(tilt: 0.6, track: track)
+        #expect(abs(WorldHUD.tilt(atY: thumb.y + 5, track: track, grab: 5) - 0.6) < 1e-5)
+        // The ticks of the Oblique and the Low views are between the two ends.
+        let oblique = WorldHUD.thumbCentre(tilt: ViewPreset.oblique.tilt, track: track), low = WorldHUD.thumbCentre(tilt: ViewPreset.low.tilt, track: track)
+        #expect(top.y < oblique.y && oblique.y < low.y && low.y < bottom.y)
+    }
+
+    @Test func aPressLandsOnTheNewControlsAndTheHandleIsEasyToGrab() throws {
+        let hud = WorldHUD(free: free, minimap: true)
+        for entry in hud.presets { #expect(hud.target(at: CGPoint(x: entry.rect.midX, y: entry.rect.midY)) == .preset(entry.preset)) }
+        let toggle = try #require(hud.toggle3D), track = try #require(hud.tiltTrack)
+        #expect(hud.target(at: CGPoint(x: toggle.midX, y: toggle.midY)) == .toggle3D)
+        #expect(hud.target(at: CGPoint(x: track.midX, y: track.midY)) == .tilt)
+        #expect(hud.target(at: CGPoint(x: track.minX - 3, y: track.midY)) == .tilt, "a few points off the track still take hold of it")
+        #expect(hud.target(at: CGPoint(x: track.minX - 8, y: track.midY)) == .map)
+        // The readout is not pressed.
+        let readout = try #require(hud.readout)
+        #expect(hud.target(at: CGPoint(x: readout.midX, y: readout.midY)) == .map)
+        #expect(!hud.clearOfControls.contains(CGPoint(x: readout.midX, y: readout.midY)), "but the map's marks are kept off it")
     }
 
     @Test func everyControlIsInsideTheFreeRectangleAndNoTwoOverlapExceptTheHomeGlyphInTheMinimap() {

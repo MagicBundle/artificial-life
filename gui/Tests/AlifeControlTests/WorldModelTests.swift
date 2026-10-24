@@ -360,20 +360,40 @@ import simd
         #expect(!model.advanceCamera(dt: 1.0 / 60) && model.pose.heading == held, "the drag keeps the heading it gave")
     }
 
-    @Test func theTiltIsEasedOutWhereTheMapWouldShowItsEdge() async throws {
+    @Test func theTiltIsNotEasedOutTheDistanceIsHeldAndGivenBackWhenTheTiltIsRelaxed() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let (model, play) = try await model(scratch)
         defer { play.shutdown() }
-        model.zoom(by: 0.3)
-        model.drag(dx: 0, dy: -400, orbit: true)  // tilt from straight down towards the horizon
-        #expect(model.pose.tilt > 0.3, "the view is tilted: \(model.pose.tilt)")
-        let tilted = model.pose.tilt
+        let (L, aspect) = (model.worldSize, model.aspect)
+        model.zoom(by: 5)  // the farthest
+        let far = model.pose.distance
+        model.drag(dx: 0, dy: -400, orbit: true)  // tilt from straight down towards the horizon: 3.2 radians asked, edge-on allowed
+        #expect(model.pose.tilt == WorldPose.maxTilt, "the tilt goes to edge-on: \(model.pose.tilt)")
+        let held = model.pose.distance
+        #expect(held < far && abs(held - WorldFog.eyeReach * L) < 1e-3, "the distance is held by the eye's limit: \(held) of \(far)")
+        #expect(model.distanceWish == far, "and the wish is what the player had")
         for _ in 0..<30 {
             model.zoom(by: 1.15)
-            #expect(model.pose.fits(aspect: model.aspect, size: 48, height: 24), "the picture stays within one world")
+            #expect(model.pose.distance <= model.distanceLimit * 1.0001 && model.pose.tilt == WorldPose.maxTilt, "zooming out is held by the limit")
         }
-        #expect(model.pose.tilt < tilted, "zooming out tilted the view back")
+        #expect(model.pose.distance == model.distanceLimit && model.distanceWish == nil, "(a zoom is the player's own distance: no wish)")
+        // Relaxing the tilt gives the distance back, up to the farthest the new tilt allows; straight down it is the whole of it.
+        model.zoom(by: 0.2)
+        let asked = model.pose.distance
+        model.setTilt(1.3)
+        model.setTilt(0)
+        #expect(model.pose.distance == asked, "no wish was there: a distance below the limit of every tilt stays")
+        model.zoom(by: 100)
+        let top = model.pose.distance
+        model.setTilt(WorldPose.maxTilt)
+        #expect(model.pose.distance < top && model.distanceWish == top)
+        model.setTilt(0.4)
+        model.drag(dx: 5, dy: 0, orbit: false)  // a pan leaves the distance alone: the wish is given back
+        #expect(model.pose.distance == min(top, WorldPose.maxDistance(size: L, fovY: model.pose.fovY, aspect: aspect, heading: model.pose.heading, tilt: 0.4)))
+        model.setTilt(0)
+        model.drag(dx: 5, dy: 0, orbit: false)
+        #expect(abs(model.pose.distance - top) < 1e-3 && model.distanceWish == nil, "straight down again: all of it, \(model.pose.distance) of \(top)")
     }
 
     @Test func aPanOfATiltedViewStaysOnThePlaneThroughTheTarget() async throws {

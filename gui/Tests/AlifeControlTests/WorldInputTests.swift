@@ -558,7 +558,7 @@ extension WorldInputTests {
         let rig = try await make()
         defer { rig.finish() }
         let hud = rig.model.hud
-        #expect(hud.rects.count == 5)
+        #expect(hud.rects.count == 11, "the minimap, the Home glyph, four views, the compass, the 3D button, the handle and the two zoom buttons")
         for (target, rect) in hud.rects {
             #expect(rig.isMap(window(rig, CGPoint(x: rect.midX, y: rect.midY))), "\(target) is the Metal view's, which asks the model")
         }

@@ -53,15 +53,21 @@ import simd
         for p in [pose(x: 160, y: 20), pose(x: 100, y: 300, distance: 80, heading: 0.9), pose(x: 40, y: 60, distance: 60, heading: -2, tilt: 0.7),
                   pose(x: 250, y: 5, distance: 100, tilt: 1.0)] {
             var p = p
-            p.limitTilt(aspect: 1.5, size: L, height: 80)
+            p.clamp(aspect: 1.5, size: L, height: 80)
             let polygon = try! #require(inset.footprint(of: p, aspect: 1.5))
             #expect(polygon.count == 64)
             #expect(contains(polygon, inset.centre(of: p, aspect: 1.5)), "the footprint contains the centre of the picture")
-            // The corners of the view are the first samples of the four sides.
+            // The corners of the view are the first samples of the four sides: where the ray meets the floor, or, where that is beyond the
+            // clear box (or no floor), the clip of its line to the box.
+            let scale = Float(inset.rect.width) / L
             for (index, ndc) in [(0, SIMD2<Float>(-1, 1)), (16, SIMD2(1, 1)), (32, SIMD2(1, -1)), (48, SIMD2(-1, -1))] {
-                let at = try! #require(p.offset(at: ndc, aspect: 1.5, planeZ: 0))
+                let at = p.clippedOffset(at: ndc, aspect: 1.5, planeZ: 0, limit: 0.5 * L)
                 let expected = inset.point(x: p.x + at.x, ybar: p.ybar(size: L) + at.y)
                 #expect(abs(polygon[index].x - expected.x) < 1e-3 && abs(polygon[index].y - expected.y) < 1e-3)
+                if let hit = p.offset(at: ndc, aspect: 1.5, planeZ: 0), WorldFog.chebyshev(hit) <= 0.5 * L {
+                    #expect(simd_length(hit - at) < 1e-3, "inside the box it is the floor point: \(hit) against \(at)")
+                }
+                #expect(WorldFog.chebyshev(at) <= 0.5 * L * 1.0001 && scale > 0)
             }
         }
     }
@@ -96,10 +102,41 @@ import simd
         }
     }
 
-    @Test func aHorizonInViewGivesNoFootprint() {
-        var p = pose(x: 160, y: 0, distance: 100, tilt: 1.5)
-        p.fovY = 1.0
-        #expect(inset.footprint(of: p, aspect: 1.5) == nil)
+    @Test func aHorizonInViewGivesAFootprintClippedToTheClearBoxAndItIsNeverMoreThanOneBoxAcross() throws {
+        for (tilt, heading, distance) in [(Float(1.5), Float(0), Float(100)), (1.2, 0.7, 120), (.pi / 2, -2, 128), (1.0, 3, 150)] as [(Float, Float, Float)] {
+            var p = pose(x: 160, y: 0, distance: distance, heading: heading, tilt: tilt)
+            p.fovY = 1.0
+            p.clamp(aspect: 1.5, size: L, height: 80)
+            let polygon = try #require(inset.footprint(of: p, aspect: 1.5))
+            #expect(polygon.count == 64 && polygon.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+            // Within the clear box about the centre, in the box's points; and it reaches the box's boundary (the far side is clipped).
+            let half = CGFloat(0.5 * inset.rect.width)
+            let centre = inset.point(x: p.x, ybar: p.ybar(size: L))
+            #expect(polygon.allSatisfy { abs($0.x - centre.x) <= half * 1.0001 && abs($0.y - centre.y) <= half * 1.0001 }, "tilt \(tilt)")
+            #expect(polygon.contains { abs(abs($0.x - centre.x) - half) < 1e-3 || abs(abs($0.y - centre.y) - half) < 1e-3 }, "it reaches the clip")
+            // So its pieces are whole and few (at most the four of a corner).
+            #expect(inset.pieces(of: polygon).count <= 4)
+        }
+    }
+
+    @Test func aRayThatMissesTheFloorOrMeetsItFarAwayIsClippedAlongItsOwnLineToTheBoxOfTheClearView() throws {
+        // Straight down every ray meets the floor in the box.
+        let down = pose(x: 160, y: 0, distance: 60)
+        let near = down.clippedOffset(at: SIMD2(0.5, 0.5), aspect: 1.5, planeZ: 0, limit: 0.5 * L)
+        #expect(near == down.offset(at: SIMD2(0.5, 0.5), aspect: 1.5, planeZ: 0))
+        // Edge-on at 40 units up: the ray above the horizon has no floor; below it, far down the line, there is a floor beyond the box.
+        var side = pose(x: 160, y: 0, distance: 100, tilt: .pi / 2)
+        side.z = 40
+        let sky = side.clippedOffset(at: SIMD2(0, 0.6), aspect: 1.5, planeZ: 0, limit: 0.5 * L)
+        #expect(abs(WorldFog.chebyshev(sky) - 0.5 * L) < 1e-3, "on the box: \(sky)")
+        #expect(abs(sky.x) < 1e-3 && sky.y > 0, "straight ahead of a view that looks along +y (heading 0): the same line")
+        let faraway = side.clippedOffset(at: SIMD2(0.9, -0.01), aspect: 1.5, planeZ: 0, limit: 0.5 * L)
+        #expect(WorldFog.chebyshev(faraway) <= 0.5 * L * 1.0001)
+        // A ray straight up has no line: the eye's own place.
+        var up = pose(x: 0, y: 0, distance: 40, tilt: .pi / 2)
+        up.fovY = 3.0
+        let zenith = up.clippedOffset(at: SIMD2(0, 1), aspect: 1, planeZ: 0, limit: 0.5 * L)
+        #expect(zenith.x.isFinite && zenith.y.isFinite && WorldFog.chebyshev(zenith) <= 0.5 * L * 1.0001)
     }
 
     @Test func theFloorFootprintOfAnElevatedViewIsWiderThanThePlaneThroughItsCentre() {

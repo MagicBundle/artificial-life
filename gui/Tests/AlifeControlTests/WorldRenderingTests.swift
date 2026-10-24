@@ -8,9 +8,9 @@ import simd
 /// The parts of the World's renderer that need no GPU: the uniform block and the shader source.
 @Suite struct WorldRenderingTests {
     @Test func theWorldUniformsHaveTheLayoutOfTheShaders() {
-        // `WorldU` in Shaders.swift: eight 16-byte vectors.
-        #expect(MemoryLayout<WorldUniforms>.size == 128)
-        #expect(MemoryLayout<WorldUniforms>.stride == 128)
+        // `WorldU` in Shaders.swift: ten 16-byte vectors.
+        #expect(MemoryLayout<WorldUniforms>.size == 160)
+        #expect(MemoryLayout<WorldUniforms>.stride == 160)
         #expect(MemoryLayout<WorldUniforms>.offset(of: \.target) == 0)
         #expect(MemoryLayout<WorldUniforms>.offset(of: \.params) == 16)
         #expect(MemoryLayout<WorldUniforms>.offset(of: \.refs) == 32)
@@ -19,14 +19,17 @@ import simd
         #expect(MemoryLayout<WorldUniforms>.offset(of: \.size) == 80)
         #expect(MemoryLayout<WorldUniforms>.offset(of: \.look) == 96)
         #expect(MemoryLayout<WorldUniforms>.offset(of: \.patch) == 112)
+        #expect(MemoryLayout<WorldUniforms>.offset(of: \.fog) == 128)
+        #expect(MemoryLayout<WorldUniforms>.offset(of: \.fogShape) == 144)
     }
 
     @Test func theShaderStructMirrorsTheSwiftOne() {
         let block = Shaders.source.matches(of: #/struct WorldU \{([^}]*)\};/#).first.map { String($0.1) } ?? ""
         let names = block.matches(of: #/(?:float4|uint4)\s+(\w+);/#).map { String($0.1) }
-        #expect(names == ["target", "params", "refs", "flags", "style", "size", "look", "patch"])
+        #expect(names == ["target", "params", "refs", "flags", "style", "size", "look", "patch", "fog", "fogShape"])
         let types = block.matches(of: #/(float4|uint4)\s+\w+;/#).map { String($0.1) }
-        #expect(types == ["float4", "float4", "float4", "uint4", "float4", "float4", "float4", "float4"], "flags is the one integer vector")
+        #expect(types == ["float4", "float4", "float4", "uint4", "float4", "float4", "float4", "float4", "float4", "float4"],
+                "flags is the one integer vector")
     }
 
     @Test func theWorldEntryPointsAreTheOnesTheRendererBuilds() {
@@ -68,7 +71,8 @@ import simd
         let end = source.range(of: "constexpr sampler planeSampler")!
         let body = String(source[start.lowerBound..<end.lowerBound])
         #expect(body.contains("[[instance_id]]") && body.contains("world.patch"), "three instances: the cell k - 1, k and k + 1")
-        #expect(body.contains("corner * (0.5 * L)"), "one world wide, not five (the quad of v1 was 2.5 L on a side)")
+        #expect(body.contains("corner * float2(world.fogShape.z * L, 0.5 * L)"),
+                "one world tall, and as wide as the fog allows (3 L with a fog, L without): not five (the quad of v1 was 2.5 L on a side)")
         #expect(!body.contains("2.5 * L") && !body.contains("floor(world.target.xy"), "the 5 x 5 quad is gone")
         #expect(body.contains("float2(world.target.x, k * L)"), "centred on the camera in x, in the cell of the wrap in y")
         #expect(body.contains("alpha <= 0.0"), "a copy that is not wanted collapses")

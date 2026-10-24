@@ -49,31 +49,35 @@ import simd
 
     // MARK: The patch covers the picture, whatever the view
 
-    @Test func theCopiesAndThePatchCoverEveryPointOfThePictureAtAnyHeadingTiltAndShape() {
+    @Test func theCopiesAndTheMeshCoverEveryPointOfThePictureTheHazeHasNotTakenAtAnyHeadingTiltAndShape() {
+        // (A1: "the clamps leave no horizon in view" and the patch is L wide. Now the view tilts to edge-on and the mesh is 3 L wide with
+        // the fog, `WorldFog.meshHalfX`; what must be covered is every floor point the haze has not taken: its fog under 98%, which is
+        // within 0.9 L of the point looked at, and so is within a cell of the plan and the mesh.)
         var g = SeededGenerator(seed: 21)
+        var seen = 0, horizons = 0
         for trial in 0..<300 {
             let aspect = Float([0.5, 1, 1.38, 2.4, 4].randomElement(using: &g)!)
-            let size = CGSize(width: 1000 * Double(aspect).squareRoot(), height: 1000 / Double(aspect).squareRoot())
             var pose = WorldPose(x: .random(in: 0..<L, using: &g), y: trial % 3 == 0 ? L / 2 + .random(in: -20...20, using: &g) : .random(in: 0..<L, using: &g),
                                  z: .random(in: 0...H, using: &g), heading: .random(in: -.pi..<(.pi), using: &g),
-                                 tilt: .random(in: 0..<1.3, using: &g), distance: .random(in: 5...400, using: &g))
+                                 tilt: .random(in: 0...(.pi / 2), using: &g), distance: .random(in: 5...400, using: &g))
             pose.clamp(aspect: aspect, size: L, height: H)
             let extent = pose.footprint(aspect: aspect, size: L, height: H)
-            #expect(extent != nil, "the clamps leave no horizon in view")
+            if extent == nil { horizons += 1 }
             let plan = SeamCopies.plan(y: pose.y, extentY: extent?.y, size: L)
             let cells = plan.map { SeamCopies.range(of: $0, size: L) }
-            // Every point of the floor the view sees, as an unwrapped position about the view's centre.
             for i in 0...10 {
                 for j in 0...10 {
                     let ndc = SIMD2(Float(i) / 5 - 1, Float(j) / 5 - 1)
-                    guard let offset = pose.offset(at: ndc, aspect: aspect) else { continue }
-                    let at = SIMD2(pose.x, pose.y) + offset  // the floor point drawn there: in a cell of the plan, and within the patch in x
-                    #expect(abs(offset.x) <= WorldPose.reach * L * 1.001, "x: the patch is L wide about the centre")
+                    guard let offset = pose.offset(at: ndc, aspect: aspect, planeZ: 0), WorldFog.amount(c: WorldFog.chebyshev(offset), size: L) < 0.98
+                    else { continue }
+                    let at = SIMD2(pose.x, pose.y) + offset  // the floor point drawn there
+                    seen += 1
+                    #expect(abs(offset.x) <= WorldFog.meshHalfX * L, "x: the mesh is 3 L wide about the centre")
                     #expect(cells.contains { $0.contains(at.y) }, "trial \(trial): y = \(at.y) is in none of \(cells) (centre \(pose.y), reach \(extent?.y ?? -1))")
                 }
             }
-            _ = size
         }
+        #expect(seen > 10000 && horizons > 20, "the cases are reached: \(seen) points, \(horizons) horizons")
     }
 
     // MARK: One seam rule for every layer

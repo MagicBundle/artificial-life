@@ -293,6 +293,61 @@ import Testing
         withExtendedLifetime(view) {}
     }
 
+    @Test func theCameraControlsNeverRebuildTheViewMenuAndItsViewAngleItemsAreTheStandardViews() async throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let (play, model) = try await rig(scratch)
+        defer { play.shutdown(); ViewProbe.onEvaluate = nil }
+        let counts = counting(play)
+        let view = dock(play, model)
+        try await Task.sleep(for: .milliseconds(200))
+        try await frames(play, 3)
+        model.setFreeRect(CGRect(x: 0, y: 0, width: 900, height: 700))
+        model.reduceMotion = { false }
+        model.goHome()
+        model.drawableResized(CGSize(width: 1800, height: 1400))
+        try await Task.sleep(for: .milliseconds(200))
+        // The items are the four standard views, each with its key, and the 3D button; the submenu is on in a 3D world.
+        #expect(ViewMenu.viewAngleTitles == ["Top (T)", "Oblique (O)", "Low (L)", "Side (S)", "Tilt on or off (3D button)"])
+        #expect(model.viewMenu.value.tiltable)
+
+        // Every way of changing the angle: the keys' actions, the strip, the 3D button, the handle and the compass dial, the eases, and the
+        // readouts they change. The camera is not an input of the menu, and neither is its angle.
+        counts.reset()
+        let changes = model.viewMenu.changes
+        let hud = model.hud
+        for preset in ViewPreset.allCases + ViewPreset.allCases.reversed() {
+            model.perform(.viewPreset(preset))
+            for _ in 0..<40 where !model.advanceCamera(dt: 1.0 / 60) { break }
+        }
+        for entry in hud.presets {
+            model.hudPress(.preset(entry.preset), at: CGPoint(x: entry.rect.midX, y: entry.rect.midY))
+            model.hudRelease(.preset(entry.preset), at: CGPoint(x: entry.rect.midX, y: entry.rect.midY), clicks: 1, dragged: false)
+        }
+        for target in [HUDTarget.toggle3D, .toggle3D] {
+            let rect = try #require(hud.rects.first { $0.target == target }?.rect)
+            model.hudPress(target, at: CGPoint(x: rect.midX, y: rect.midY))
+            model.hudRelease(target, at: CGPoint(x: rect.midX, y: rect.midY), clicks: 1, dragged: false)
+            for _ in 0..<40 where !model.advanceCamera(dt: 1.0 / 60) { break }
+        }
+        let track = try #require(hud.tiltTrack), compass = try #require(hud.compass)
+        model.hudPress(.tilt, at: CGPoint(x: track.midX, y: track.maxY - 3))
+        for y in stride(from: track.maxY - 3, through: track.minY, by: -8) { model.hudDrag(.tilt, to: CGPoint(x: track.midX, y: y)) }
+        model.hudRelease(.tilt, at: CGPoint(x: track.midX, y: track.minY), clicks: 1, dragged: true)
+        model.hudPress(.compass, at: CGPoint(x: compass.midX, y: compass.minY + 2))
+        for x in stride(from: compass.midX, through: compass.maxX, by: 5) { model.hudDrag(.compass, to: CGPoint(x: x, y: compass.midY)) }
+        model.hudRelease(.compass, at: CGPoint(x: compass.maxX, y: compass.midY), clicks: 1, dragged: true)
+        for point in [CGPoint(x: track.midX, y: track.midY), CGPoint(x: compass.midX, y: compass.midY)] + hud.presets.map({ CGPoint(x: $0.rect.midX, y: $0.rect.midY) }) {
+            model.hover(at: point)
+        }
+        model.editPose { $0.tilt = .pi / 2 }
+        model.drag(dx: 0, dy: 30, orbit: true)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(counts["ViewMenu"] == 0, "the menu was evaluated again \(counts["ViewMenu"]) times by the camera controls")
+        #expect(model.viewMenu.changes == changes)
+        withExtendedLifetime(view) {}
+    }
+
     @Test func aDefaultTheMenuReadsIsReReadWhenItIsSet() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
