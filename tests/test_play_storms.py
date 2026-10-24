@@ -581,6 +581,69 @@ def test_the_map_planes_are_the_weather_quantised(vortex) -> None:
     assert rec.tag == "MAP1" and np.array_equal(rec.a["zeta"], planes["zeta"])
 
 
+# --- the vorticity unit is the reference f0, not the world's (DESIGN §37.4) --------------------------------
+
+PM = replace(PV, f0=0.0165)  # the mini world's f0 (storm160); everything else as PV
+
+
+def vortex_detection(
+    p: W.WeatherParams, peak_abs: float
+) -> tuple[StormLayer, storms.StormTick, Detection, float]:
+    """A balanced vortex whose peak vorticity is ``peak_abs`` (absolute), read by a layer at its first tick.
+    Returns the layer, the tick, the detection and the footprint's peak ``s·ζ_c`` as the detector sees it."""
+    ws = w0.balanced_vortex(p, zeta0=peak_abs / p.f0)
+    fr = w0.read_frame(ws, p, 25)
+    d = w0.detect(fr, p)
+    zc = w0.corners_to_centres(fr.zeta.astype(np.float64))
+    layer = StormLayer(p, DC_REF, 25)
+    tick = layer.tick_at(ws, 25)
+    (c,) = d.storms
+    seen = float((w0.hemisphere_sign(p) * zc)[d.lab == c.label].max())
+    return layer, tick, d, seen
+
+
+@pytest.mark.parametrize("f0", [0.025, 0.0165])
+def test_zeta_max_f0_is_in_units_of_the_reference_f0_in_every_world(f0: float) -> None:
+    p = replace(PV, f0=f0)
+    _, _, d, seen = vortex_detection(p, 0.0135)
+    (c,) = d.storms
+    assert c.zeta_max_f0 == pytest.approx(seen / streamrec.F0, rel=1e-12)
+    assert streamrec.F0 == streamrec.ZETA_REF == 0.025  # the unit the MAP1 zeta plane is quantised against
+
+
+def test_the_64k3d_tracker_reading_is_the_old_one() -> None:
+    """A world whose f0 is the reference (64k3d): the unit change is the identity, bit for bit."""
+    assert PV.f0 == streamrec.F0
+    _, _, d, seen = vortex_detection(PV, 0.0135)
+    (c,) = d.storms
+    assert c.zeta_max_f0 == seen / PV.f0  # the old expression, exactly
+
+
+def test_a_mini_world_storm_is_named_at_an_absolute_0_0125_not_at_birth() -> None:
+    """f0 = 0.0165: 0.0117 absolute is 0.47 in reference units (not named); 0.0135 is 0.54 (named)."""
+    _, tick, _, seen = vortex_detection(PM, 0.0117)
+    assert seen / streamrec.F0 < streamrec.NAME_ZETA, "the peak 0.0117 sits under the bar 0.0125"
+    assert [e["kind"] for e in tick.events] == ["born"]
+    (s,) = tick.strm["storms"]
+    assert not s["named"] and s["zeta"] == pytest.approx(seen / streamrec.F0, abs=1e-4) and s["zeta"] < 0.5
+    _, tick2, _, seen2 = vortex_detection(PM, 0.0135)
+    assert seen2 / streamrec.F0 >= streamrec.NAME_ZETA
+    assert sorted(e["kind"] for e in tick2.events) == ["born", "named"]
+    # the same absolute storm in a world with the reference f0 gets the same reading
+    _, tick3, _, _ = vortex_detection(replace(PV, f0=0.025), 0.0117)
+    assert [e["kind"] for e in tick3.events] == ["born"]
+
+
+def test_storm_strong_follows_the_reference_unit() -> None:
+    """STRONG_ZETA (0.70 f0, calibrated on 0.025) fires at an absolute 0.0175 in every world, not at 0.0115 as
+    the mini's f0 = 0.0165 would make it."""
+    from alife.game.alerts import STRONG_ZETA
+
+    _, weak, _, _ = vortex_detection(PM, 0.0117)
+    _, strong, _, _ = vortex_detection(PM, 0.0200)
+    assert weak.strm["storms"][0]["zeta"] < STRONG_ZETA <= strong.strm["storms"][0]["zeta"]
+
+
 def test_the_real_weather_resumes_the_same_play(tmp_path: Path) -> None:
     """The same stop-and-resume equality on the output of the weather model: the layer's state file at tick 2,
     a new layer, ticks 3 and 4 equal the uninterrupted layer's, STRM bytes included."""

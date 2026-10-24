@@ -43,6 +43,9 @@ PRESET_HASHES = {
     "64k+fast": "8ea373cf9a6c0ca8d6029d8d96a6d37157e2962b37792da9cc25812e3511e132",
     "64k3d": "df54434fe947dea8f36e5e23223f9676df1ee784959806c31eafb235012ee242",
     "64k3d+fast": "d7ab917652afe79b01515487ef3a7138c188877ace91a1a8ace210ad485fbf6e",
+    # mini3d did not exist then: its hashes when it was added (I62), so that it cannot drift either.
+    "mini3d": "f3c53cb87069bda5b43061d2d137992e2a780135733e6ca2ea3e01db69b30aa8",
+    "mini3d+fast": "bdf7f89254b57caa2697dd33acecdc829e3c3393000c3c2037458f6545a0c2f9",
     "dev": "3151fd847b14f7fa067ebee30a22af546dffbf2c75622eb6cd8f4a1798269a0d",
     "dev+fast": "08878178da3e0e42051f9d05a0206b03116d30e5f2e875b6b2d1981be010d85f",
     "tiny": "d25e0eaee7349ae366e3e4e60ebab107cf7a89fcf49be88a12d81099ff2561d5",
@@ -242,7 +245,8 @@ def test_set_parses_pools(storm3d: Config) -> None:
 
 
 def test_overlay_names() -> None:
-    assert OVERLAYS == ("fast",) and WORLD_OVERLAYS == ("storm",) and ALL_OVERLAYS == ("fast", "storm")
+    assert OVERLAYS == ("fast",) and WORLD_OVERLAYS == ("storm", "storm160")
+    assert ALL_OVERLAYS == ("fast", "storm", "storm160")
 
 
 def test_the_storm_overlay_composes_with_64k3d(storm3d: Config) -> None:
@@ -272,10 +276,92 @@ def test_the_storm_overlay_fails_on_a_world_that_cannot_hold_it() -> None:
 
 
 def test_unknown_overlays_name_all_of_them() -> None:
-    with pytest.raises(ConfigError, match=r"\('fast', 'storm'\)"):
+    with pytest.raises(ConfigError, match=r"\('fast', 'storm', 'storm160'\)"):
         load_config(overlays=["nope"])
     with pytest.raises(ConfigError, match="storm"):
         cli._layer(load_config(preset="tiny"), overlays=["nope"], path=None, overrides=())
+
+
+# --- the storm160 overlay: the weather of the mini world (DESIGN §37) --------------------------------
+
+STORM160_HASH = "4422495ae244899eb1acdc96f927e10dd6a67eb508472ff5bc4c63ce3bb8cba9"
+
+
+@pytest.fixture(scope="module")
+def storm160() -> Config:
+    return load_config(preset="mini3d", overlays=["storm160"])
+
+
+def test_storm160_composes_with_mini3d(storm160: Config) -> None:
+    assert config_hash(storm160) == STORM160_HASH
+    assert (storm160.world.size, storm160.world.height, storm160.world.dims) == (160.0, 80.0, 3)
+    wc = storm160.weather
+    assert wc.enabled and (wc.cells, wc.f0, wc.seed_rate) == (80, 0.0165, 0.005)
+    # the three W2 couplings are those of the `storm` overlay (provisional)
+    storm = load_config(preset="64k3d", overlays=["storm"]).weather
+    assert (wc.rain_gain, wc.storm_p, wc.storm_u0, wc.storm_span) == (
+        storm.rain_gain,
+        storm.storm_p,
+        storm.storm_u0,
+        storm.storm_span,
+    )
+    # nothing else of the weather section moves, and the rest of the config is mini3d
+    keep = ("enabled", "cells", "f0", "seed_rate", "pools")
+    assert dataclasses.replace(wc, **{k: getattr(WeatherConfig(), k) for k in keep}) == dataclasses.replace(
+        storm,
+        enabled=False,
+        pools=WeatherConfig().pools,
+    )
+    assert replace(storm160, weather=WeatherConfig()) == load_config(preset="mini3d")
+
+
+def test_storm160_validates_on_mini3d(storm160: Config) -> None:
+    assert W.validate_config(storm160) == []
+    p = W.params_from_config(storm160)
+    assert (dims(storm160).wn, p.n, p.dx) == (80, 80, 2.0)
+    assert p.n % 40 == 0  # the stream's wind map has 40 blocks (streamrec.MAP_COARSE)
+    assert p.ld_moist_pool >= 3 * p.dx  # rule 6b
+    # two pools per hemisphere, rows 36 from the equators y = 0 and y = 160, spaced 80 in x
+    assert [(q[0], q[1], q[2], q[3]) for q in p.pools] == [
+        (40.0, 36.0, 24.0, 16.0),
+        (120.0, 36.0, 24.0, 16.0),
+        (0.0, 124.0, 24.0, 16.0),
+        (80.0, 124.0, 24.0, 16.0),
+    ]
+
+
+def test_every_storm160_pool_centre_lies_in_the_world(storm160: Config) -> None:
+    pools = storm160.weather.pools
+    assert len(pools) % 7 == 0
+    for i in range(0, len(pools), 7):
+        assert 0.0 <= pools[i] < storm160.world.size and 0.0 <= pools[i + 1] < storm160.world.size
+
+
+def test_the_two_storm_overlays_each_fail_on_the_other_world() -> None:
+    with pytest.raises(ConfigError, match="rule 7"):  # dx = 4 on 64k3d: dx / c_bc = 13.3 > tau_c = 8
+        load_config(preset="64k3d", overlays=["storm160"])
+    with pytest.raises(ConfigError) as ei:  # dx = 1 on mini3d, and five pool centres outside [0, 160)
+        load_config(preset="mini3d", overlays=["storm"])
+    assert "rule 4" in str(ei.value) and "rule W-2" in str(ei.value)
+
+
+def test_there_is_no_alias_between_the_storm_overlays() -> None:
+    """The launcher names the overlay from the source's size; `--set world.size` is read after the overlays,
+    so an overlay cannot choose by size (DESIGN §37.2)."""
+    with pytest.raises(ConfigError):
+        load_config(preset="64k3d", overlays=["storm"], overrides=["world.size=160"])
+    with pytest.raises(ConfigError, match="rule 4"):
+        load_config(preset="mini3d", overlays=["storm"])
+    base = load_config(preset="mini3d")
+    assert cli._layer(base, overlays=["storm160"], path=None, overrides=()) == load_config(
+        preset="mini3d", overlays=["storm160"]
+    )
+
+
+def test_cli_lists_the_mini_world(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["run", "--help"]) == 0
+    out = capsys.readouterr().out
+    assert "mini3d" in out and "storm160" in out
 
 
 def test_a_world_overlay_is_not_a_preset() -> None:

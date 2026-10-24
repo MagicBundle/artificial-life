@@ -1304,6 +1304,8 @@ class Recorder:
 
         if in_window:
             self.n_win += 1
+            # The world's own f0 here and in the stored frames; the zeta_max_f0 columns of the track and storm
+            # CSVs are in units of the reference 0.025 (storms.detect, DESIGN §37.4): equal for f0 = 0.025.
             self.zeta_hist += np.histogram(s * zc / p.f0, ZETA_BINS)[0]
             pv = fr.P.ravel()
             self.p_hist[0] += float((pv < P_BINS[1]).sum())
