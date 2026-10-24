@@ -39,9 +39,9 @@ import Testing
         try checkpoint(250_000, in: research)
         try checkpoint(500_000, in: research)
         try write("{}", "events/chunk_0.json", in: research)
-        // A planet whose build was cancelled: config and meta, no checkpoint, no play.json.
+        // A planet whose build was cancelled: config and meta with the mark, no checkpoint, no play.json.
         let cancelled = runs.appendingPathComponent("planet_b")
-        try write(#"{"status": "interrupted", "start_step": 500000}"#, "meta.json", in: cancelled)
+        try write(#"{"status": "interrupted", "start_step": 500000, "play_build": "planet"}"#, "meta.json", in: cancelled)
         try write(#"{"world": {"dims": 3}}"#, "config.json", in: cancelled)
         // A directory that is nothing of ours, and a file.
         try FileManager.default.createDirectory(at: runs.appendingPathComponent("empty"), withIntermediateDirectories: true)
@@ -91,7 +91,7 @@ import Testing
         let world = try #require(catalog.worlds.first)
         #expect(world.newestStep == 506_000 && world.status == "interrupted" && !world.locked)
         #expect(world.file.planet?.houses == "exact")
-        #expect(catalog.unfinished == ["planet_b"], "no play.json and no checkpoint: a build that did not finish")
+        #expect(catalog.unfinished == ["planet_b"], "the build mark and no play.json: a build that did not finish")
         #expect(Set(catalog.sources.map(\.name)) == ["planet_a", "64k3d_s0"])
         let research = try #require(catalog.sources.first { $0.name == "64k3d_s0" })
         #expect(research.checkpoints == [250_000, 500_000] && research.dims == 3)
@@ -99,6 +99,130 @@ import Testing
         let planet = try #require(catalog.sources.first { $0.name == "planet_a" })
         #expect(planet.weatherOn && !planet.hasEvents && planet.checkpoints == [500_000, 506_000])
         #expect(catalog.existingNames == ["planet_a", "planet_b", "64k3d_s0"])
+    }
+
+    // MARK: Unfinished builds and research runs
+
+    private func scan(_ build: (URL) throws -> Void, lockHeld: String? = nil) throws -> PlayCatalog {
+        let scratch = try ScratchDirectory()
+        defer { scratch.cleanup() }
+        let runs = scratch.url.appendingPathComponent("runs")
+        try FileManager.default.createDirectory(at: runs, withIntermediateDirectories: true)
+        try build(runs)
+        guard let lockHeld else { return PlayCatalogScanner.scan(runsDirectory: runs) }
+        let fd = open(runs.appendingPathComponent(lockHeld).appendingPathComponent("play.lock").path, O_RDWR | O_CREAT, 0o644)
+        defer { close(fd) }
+        #expect(flock(fd, LOCK_EX | LOCK_NB) == 0)
+        return PlayCatalogScanner.scan(runsDirectory: runs)
+    }
+
+    private static let config = #"{"world": {"dims": 3}, "weather": {"enabled": false}}"#
+
+    /// What `alife play --init-from` leaves at each point where it can stop (`cli._play_world`): after the lock (a killed
+    /// process), after the directory is created (the weather spin-up interrupted, failed or killed), and after the first
+    /// checkpoint, before `play.json`.
+    @Test(arguments: [
+        ("killed after the lock", "lock"),
+        ("created, spin-up interrupted", "interrupted"),
+        ("created, spin-up running or killed", "running"),
+        ("spun up, first checkpoint saved, no play.json", "checkpoint"),
+    ])
+    func aPlanetBuildCancelledAtAnyStageIsUnfinished(stage: String, kind: String) throws {
+        let catalog = try scan { runs in
+            let dir = runs.appendingPathComponent("planet_c")
+            if kind == "lock" {
+                try write("123\n", "play.lock", in: dir)
+                return
+            }
+            let status = kind == "interrupted" ? "interrupted" : "running"
+            try write(#"{"status": "\#(status)", "parent": "src:500000", "start_step": 500000, "play_build": "planet"}"#,
+                      "meta.json", in: dir)
+            try write(Self.config, "config.json", in: dir)
+            try FileManager.default.createDirectory(at: dir.appendingPathComponent("checkpoints"), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: dir.appendingPathComponent("events"), withIntermediateDirectories: true)
+            if kind == "checkpoint" { try checkpoint(500_000, in: dir) }
+        }
+        #expect(catalog.unfinished == ["planet_c"], "\(stage)")
+        #expect(catalog.worlds.isEmpty && catalog.other.isEmpty)
+        #expect(catalog.existingNames == ["planet_c"])
+    }
+
+    @Test func aPresetBuildIsMarkedLikeAPlanetBuild() throws {
+        let catalog = try scan { runs in
+            let dir = runs.appendingPathComponent("storm")
+            try write(#"{"status": "interrupted", "parent": null, "start_step": 0, "play_build": "preset"}"#, "meta.json", in: dir)
+            try write(Self.config, "config.json", in: dir)
+        }
+        #expect(catalog.unfinished == ["storm"])
+    }
+
+    @Test func aResearchRunIsNeverUnfinishedWhateverItLacks() throws {
+        let catalog = try scan { runs in
+            // Its checkpoints are archived off this disk: config and meta, no checkpoint, no play.json.
+            let archived = runs.appendingPathComponent("eval_s0_B")
+            try write(#"{"status": "done", "start_step": 0}"#, "meta.json", in: archived)
+            try write(Self.config, "config.json", in: archived)
+            try write("{}", "metrics.jsonl", in: archived)
+            // A fork (`run --init-from`), cancelled during its spin-up: a parent and a start step, no mark.
+            let fork = runs.appendingPathComponent("fork_s0")
+            try write(#"{"status": "interrupted", "parent": "64k3d_s0:500000", "start_step": 500000}"#, "meta.json", in: fork)
+            try write(Self.config, "config.json", in: fork)
+            // A run that failed at once: config only.
+            let bare = runs.appendingPathComponent("run-20261011-1137")
+            try write(Self.config, "config.json", in: bare)
+            // A research run that was adopted and killed: a lock beside its content.
+            let adopted = runs.appendingPathComponent("adopted")
+            try write(#"{"status": "interrupted", "start_step": 0}"#, "meta.json", in: adopted)
+            try write(Self.config, "config.json", in: adopted)
+            try write("123\n", "play.lock", in: adopted)
+            // A research run with its checkpoints is a source, and only that.
+            let full = runs.appendingPathComponent("64k3d_s0")
+            try write(#"{"status": "done", "start_step": 0}"#, "meta.json", in: full)
+            try write(Self.config, "config.json", in: full)
+            try checkpoint(500_000, in: full)
+        }
+        #expect(catalog.unfinished.isEmpty && catalog.worlds.isEmpty)
+        #expect(catalog.sources.map(\.name) == ["64k3d_s0"])
+        #expect(catalog.other == ["adopted", "eval_s0_B", "fork_s0", "run-20261011-1137"], "their names are taken, nothing more")
+        #expect(catalog.existingNames.isSuperset(of: ["eval_s0_B", "fork_s0", "run-20261011-1137", "adopted"]))
+    }
+
+    @Test func aFinishedWorldIsAWorldWhetherOrNotItCarriesTheMark() throws {
+        let catalog = try scan { runs in
+            for (name, meta) in [("marked", #"{"status": "done", "play_build": "planet"}"#), ("older", #"{"status": "done"}"#)] {
+                let dir = runs.appendingPathComponent(name)
+                try write(Self.playJSON, "play.json", in: dir)
+                try write(meta, "meta.json", in: dir)
+                try write(Self.config, "config.json", in: dir)
+                try checkpoint(500_000, in: dir)
+            }
+        }
+        #expect(Set(catalog.worlds.map(\.name)) == ["marked", "older"] && catalog.unfinished.isEmpty)
+    }
+
+    @Test func aBuildThatIsRunningNowIsNotUnfinished() throws {
+        let catalog = try scan({ runs in
+            let dir = runs.appendingPathComponent("planet_d")
+            try write(#"{"status": "running", "play_build": "planet"}"#, "meta.json", in: dir)
+            try write(Self.config, "config.json", in: dir)
+            let lone = runs.appendingPathComponent("planet_e")
+            try write("123\n", "play.lock", in: lone)
+        }, lockHeld: "planet_d")
+        #expect(catalog.unfinished == ["planet_e"], "the lock of planet_d is held by a live process; planet_e's is a stale file")
+        #expect(catalog.other == ["planet_d"] && catalog.existingNames == ["planet_d", "planet_e"])
+    }
+
+    @Test func aMarkOfAnotherKindOrAMarkedWorldWithAnUnreadablePlayJSONIsHandledPlainly() throws {
+        let catalog = try scan { runs in
+            let odd = runs.appendingPathComponent("odd")
+            try write(#"{"play_build": "something"}"#, "meta.json", in: odd)
+            try write(Self.config, "config.json", in: odd)
+            let torn = runs.appendingPathComponent("torn")
+            try write(#"{"play_build": "planet"}"#, "meta.json", in: torn)
+            try write(Self.config, "config.json", in: torn)
+            try write(#"{"play_version": 2}"#, "play.json", in: torn)
+        }
+        #expect(catalog.unfinished == ["torn"] && catalog.other == ["odd"])
     }
 
     @Test func aMissingRunsDirectoryIsAnEmptyCatalog() throws {

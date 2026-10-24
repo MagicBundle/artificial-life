@@ -242,9 +242,10 @@ The game's window (DESIGN §33.4, `docs/GAMES.md` §9 G3a). **Open World** in th
 it; it plays a world with `alife play` over the stream records of DESIGN §33.1 and shows the planet map and the organisms in a
 raw-Metal view with a control center docked to one side (left, right or bottom; the toolbar and the divider change it).
 
-- **Worlds.** The launcher lists the worlds under `runs/` (a directory with `play.json`; unfinished planet builds are listed as
-  such), resumes one at 1x, or makes a planet from a checkpoint: the storm overlay with a weather spin-up, `director.enabled`, the
-  houses mode. Closing the window stops the process with `quit` (it saves a checkpoint), then SIGINT after 30 s.
+- **Worlds.** The launcher lists the worlds under `runs/` (a directory with `play.json`; a planet build that was cancelled or
+  failed is listed, collapsed, as an unfinished build: it carries the `play_build` mark `alife play` writes, a research run never
+  does), resumes one at 1x, or makes a planet from a checkpoint: the storm overlay with a weather spin-up, `director.enabled`, the
+  houses mode. The sheet scrolls its form; the Resume list and *Make planet and play* (the default action: Return) stay in view. Closing the window stops the process with `quit` (it saves a checkpoint), then SIGINT after 30 s.
 - **Clock strip** (always at the top of the dock): Pause, 0.25x, 0.5x, 1x, 2x, Max, `+1` and (paused) `+25`, the step, the achieved
   rate ("0.98x of 1x"), "late N" and "saving...".
 - **Map.** Drag pans, right or Option drag turns the view, the wheel and a pinch zoom. Organisms are drawn from the region level

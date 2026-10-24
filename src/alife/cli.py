@@ -411,11 +411,16 @@ BeforeCreate = Callable[[Path, Config], None]
 
 
 def _prepare_run(
-    a: argparse.Namespace, overrides: list[str], *, before_create: BeforeCreate | None = None
+    a: argparse.Namespace,
+    overrides: list[str],
+    *,
+    before_create: BeforeCreate | None = None,
+    extra_meta: Mapping[str, Any] | None = None,
 ) -> tuple[RunDir, Config, list[State], int | None]:
     """The new-run path of ``run``, up to ``_launch``: ``(rundir, cfg, [state], exit code or None)``. The exit
     code is set when the weather spin-up was interrupted. ``before_create(out, cfg)`` runs after every check
-    and before the run directory is created (``play`` takes its lock there)."""
+    and before the run directory is created (``play`` takes its lock there); ``extra_meta`` goes into the
+    first ``meta.json`` (``play`` marks the world it builds)."""
     cfg = load_config(a.config, preset=a.preset, overlays=a.overlay, overrides=overrides)
     _check_llm_flags(a, cfg)
     _check_yoke(cfg)
@@ -429,7 +434,7 @@ def _prepare_run(
     out = Path(a.out) if a.out else _default_out(a.preset or DEFAULT_PRESET, cfg.run.seed)
     if before_create is not None:
         before_create(out, cfg)
-    rd = RunDir.create(out, cfg, overwrite=a.overwrite)
+    rd = RunDir.create(out, cfg, overwrite=a.overwrite, extra_meta=extra_meta)
     rd.update_meta(start_step=0)
     _announce(rd, cfg, 0, cfg.run.steps, a.quiet)
     box = [init_state(cfg)]
@@ -474,6 +479,7 @@ def _prepare_fork(
     *,
     before_create: BeforeCreate | None = None,
     require_spinup: bool = False,
+    extra_meta: Mapping[str, Any] | None = None,
 ) -> tuple[RunDir | None, Config, list[State], int | None]:
     """A new run directory from another run's state with a changed config (§18 Fork), up to ``_launch``:
     ``(rundir, cfg, [state], exit code or None)``: the code is set when the weather spin-up was interrupted
@@ -481,7 +487,8 @@ def _prepare_fork(
 
     ``before_create(out, cfg)`` runs after every check and before the directory is created (``play`` takes its
     lock there). ``require_spinup`` refuses a fork that turns the weather on without ``--weather-spinup N`` of
-    at least 1 (the rest state has no storms for about 15,000 steps; ``alife play``'s rule)."""
+    at least 1 (the rest state has no storms for about 15,000 steps; ``alife play``'s rule). ``extra_meta``
+    goes into the first ``meta.json``."""
     if a.preset is not None:
         raise ConfigError(
             "--preset cannot be combined with --init-from (the source state's config is the base)"
@@ -545,7 +552,7 @@ def _prepare_fork(
     out = Path(a.out) if a.out else _default_out("fork", cfg.run.seed)
     if before_create is not None:
         before_create(out, cfg)
-    rd = RunDir.create(out, cfg, overwrite=a.overwrite, parent=origin)
+    rd = RunDir.create(out, cfg, overwrite=a.overwrite, parent=origin, extra_meta=extra_meta)
     rd.update_meta(start_step=step)
     if replay:
         shutil.copyfile(a.replay_log, rd.path / DIRECTOR_LOG_FILE)
@@ -1083,12 +1090,15 @@ def _play_world(a: argparse.Namespace, sink: Any, control: stream.Control) -> in
             seed = _rebuild_houses(mode, src_run, src_step, cfg)
 
     try:
+        # The mark of a world under construction (DESIGN §33.3.3): written with the first meta.json, so that a
+        # build cancelled or failed at any later point can be told from a research run.
+        built = {"play_build": "planet" if a.init_from is not None else "preset"}
         if a.init_from is not None:
             rd, cfg, box, code = _prepare_fork(
-                ra, overrides, before_create=before_create, require_spinup=True
+                ra, overrides, before_create=before_create, require_spinup=True, extra_meta=built
             )
         else:
-            rd, cfg, box, code = _prepare_run(ra, overrides, before_create=before_create)
+            rd, cfg, box, code = _prepare_run(ra, overrides, before_create=before_create, extra_meta=built)
         if code is not None:
             return code
         assert rd is not None

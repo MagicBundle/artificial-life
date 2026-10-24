@@ -90,6 +90,50 @@ import Testing
         #expect(DockLayout.defaultExtent(for: .right) == 360 && DockLayout.defaultExtent(for: .left) == 360)
         #expect(DockLayout.defaultExtent(for: .bottom) == 240)
     }
+
+    @Test(arguments: DockSide.allCases, [CGFloat(330), 360, 400])
+    func aDividerGrabbedAtItsEdgeStaysWhereItIsUntilTheDragMoves(side: DockSide, extent: CGFloat) {
+        let f = DockLayout.frames(in: window, side: side, extent: extent, collapsed: false)
+        // grabbed at either edge of the 6-point strip, and at its centre
+        for offset in [-DockLayout.dividerThickness / 2, 0, DockLayout.dividerThickness / 2 - 0.5] {
+            let start = side == .bottom ? CGPoint(x: 400, y: f.divider.midY + offset) : CGPoint(x: f.divider.midX + offset, y: 300)
+            let grab = DockLayout.grab(at: start, divider: f.divider, side: side)
+            #expect(grab == offset)
+            #expect(DockLayout.extent(draggingTo: start, side: side, in: window, grab: grab) == extent, "no jump: \(side) \(offset)")
+            // 40 points toward the dock makes it 40 smaller, toward the map 40 larger, wherever it was grabbed
+            let toward: CGFloat = side == .right || side == .bottom ? 40 : -40
+            let moved = side == .bottom ? CGPoint(x: start.x, y: start.y + toward) : CGPoint(x: start.x + toward, y: start.y)
+            #expect(DockLayout.extent(draggingTo: moved, side: side, in: window, grab: grab) == extent - 40)
+        }
+    }
+
+    @Test func aDragWithoutAGrabIsTheOldPointToExtentRule() {
+        #expect(DockLayout.extent(draggingTo: CGPoint(x: 900, y: 10), side: .right, in: window) == 380)
+        #expect(DockLayout.extent(draggingTo: CGPoint(x: 400, y: 10), side: .left, in: window) == 400)
+        #expect(DockLayout.extent(draggingTo: CGPoint(x: 10, y: 500), side: .bottom, in: window) == 300)
+    }
+
+    @Test func theResizeCursorIsPushedOnceAndPoppedOnceWhateverTheOrderOfEvents() {
+        var c = DividerCursor()
+        #expect(c.hover(false) == .none, "a pop without a push would take another view's cursor")
+        #expect(c.hover(true) == .push)
+        #expect(c.hover(true) == .none, "entered twice")
+        #expect(c.hover(false) == .pop)
+        #expect(c.hover(false) == .none)
+        // a drag keeps the cursor when the strip lags the pointer, and gives it back at the end
+        #expect(c.hover(true) == .push)
+        #expect(c.drag(true) == .none)
+        #expect(c.hover(false) == .none)
+        #expect(c.drag(false) == .pop)
+        // a drag that never saw the pointer enter
+        #expect(c.drag(true) == .push)
+        #expect(c.drag(false) == .pop)
+        // the strip goes away under the pointer (the dock is collapsed)
+        #expect(c.hover(true) == .push)
+        #expect(c.disappear() == .pop)
+        #expect(c.disappear() == .none)
+        #expect(!c.pushed)
+    }
 }
 
 @Suite struct DockBudgetTests {

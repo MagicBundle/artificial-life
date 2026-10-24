@@ -11,7 +11,10 @@ on:
 jobs:
   test:
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    # Pinned: the Linux golden digests depend on the image's g++, which compiles MLX's CPU kernels. ubuntu-latest moved
+    # to ubuntu-26.04 on 2026-10-23 and both goldens changed with it (DESIGN §22.0); moving the image is a deliberate
+    # golden re-pin.
+    runs-on: ubuntu-24.04
     # The fast suite takes 30-60 min on ubuntu-latest when a PR changes src (cold JIT cache; DESIGN §22.0). G3a's run took
     # 58.5 of its 75 minutes with about 3 700 tests, and G3b adds about 550 more (4 234 in all), so the limit is 120.
     timeout-minutes: 120
@@ -27,8 +30,8 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/mlx
-          key: ${{ runner.os }}-mlx-${{ hashFiles('uv.lock') }}-${{ hashFiles('src/alife/**/*.py') }}
-          restore-keys: ${{ runner.os }}-mlx-${{ hashFiles('uv.lock') }}-
+          key: ${{ runner.os }}-${{ env.ImageOS }}-mlx-${{ hashFiles('uv.lock') }}-${{ hashFiles('src/alife/**/*.py') }}
+          restore-keys: ${{ runner.os }}-${{ env.ImageOS }}-mlx-${{ hashFiles('uv.lock') }}-
       - name: Install
         # The extras let the pygame viewer loop test and the ffmpeg video test run instead of skipping.
         run: uv sync --locked --group dev --extra viewer --extra video
@@ -41,7 +44,7 @@ jobs:
 
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned with the test job: the goldens depend on the image's g++
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -55,8 +58,8 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/mlx
-          key: ${{ runner.os }}-mlx-${{ hashFiles('uv.lock') }}-${{ hashFiles('src/alife/**/*.py') }}
-          restore-keys: ${{ runner.os }}-mlx-${{ hashFiles('uv.lock') }}-
+          key: ${{ runner.os }}-${{ env.ImageOS }}-mlx-${{ hashFiles('uv.lock') }}-${{ hashFiles('src/alife/**/*.py') }}
+          restore-keys: ${{ runner.os }}-${{ env.ImageOS }}-mlx-${{ hashFiles('uv.lock') }}-
       - name: Install
         run: uv sync --locked --group dev
       - name: Slow tests

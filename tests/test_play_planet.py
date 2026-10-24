@@ -223,6 +223,7 @@ def test_an_interrupted_spinup_leaves_no_play_json(
     assert cap.out == b"" and b"interrupted during the weather spin-up" in cap.err
     assert out.is_dir() and not (out / "play.json").exists() and not (out / "play.lock").exists()
     assert RunDir.open(out).meta()["status"] == "interrupted"
+    assert RunDir.open(out).meta()["play_build"] == "planet", "the marker the launcher lists it by"
     # such a directory is refused as a world
     assert cli.main(["play", str(out), "--no-control"]) == 2
     assert b"play.json" in capfdbinary.readouterr().err
@@ -242,6 +243,7 @@ def test_a_preset_world_with_the_weather_on(
     d = decode(capfdbinary.readouterr().out)
     assert d.header["source"] == "preset" and d.header["play"]["planet"] == {"source": None, "houses": "none"}
     assert RunDir.open(out).read_play_json()["planet"] is None
+    assert RunDir.open(out).meta()["play_build"] == "preset"
 
 
 def test_a_planet_into_a_real_pipe_decodes_strictly_from_byte_0(source: Path, tmp_path: Path) -> None:

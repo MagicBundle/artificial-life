@@ -3,6 +3,38 @@ import AppKit
 import MetalKit
 import SwiftUI
 
+/// What the viewer's colour pop-up shows.
+struct ViewerColourInputs: Equatable {
+    var modes: [String]
+    var current: String
+    var live: Bool
+
+    @MainActor
+    init(stream: StreamController) {
+        modes = stream.header?.colorModes ?? [stream.control.color]
+        current = stream.control.color
+        live = stream.phase == .live
+    }
+}
+
+/// The colour pop-up of the viewer. It reads `state`, not the stream: the stream publishes with every frame, and a pop-up that is
+/// evaluated again while its menu is open is rebuilt under the pointer.
+struct ViewerColourPicker: View {
+    @ObservedObject var state: DistinctState<ViewerColourInputs>
+    let stream: StreamController
+
+    var body: some View {
+        let _ = ViewProbe.note("ViewerColourPicker", for: stream)
+        let inputs = state.value
+        Picker("Colour", selection: Binding(get: { inputs.current }, set: { stream.setColor($0) })) {
+            ForEach(inputs.modes, id: \.self) { Text($0) }
+        }
+        .frame(width: 150)
+        .disabled(!inputs.live)
+        .help("Colour mode (c)")
+    }
+}
+
 /// The content of the "3D Viewer" window: the controls, the Metal view, and a status line.
 struct Viewer3DView: View {
     @ObservedObject var stream: StreamController
@@ -78,15 +110,7 @@ struct Viewer3DView: View {
 
             Spacer()
 
-            Picker("Colour", selection: Binding(
-                get: { stream.control.color },
-                set: { stream.setColor($0) })
-            ) {
-                ForEach(stream.header?.colorModes ?? [stream.control.color], id: \.self) { Text($0) }
-            }
-            .frame(width: 150)
-            .disabled(!live)
-            .help("Colour mode (c)")
+            ViewerColourPicker(state: model.colour, stream: stream)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

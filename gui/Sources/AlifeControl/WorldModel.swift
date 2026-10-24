@@ -154,6 +154,15 @@ final class WorldModel: ObservableObject {
 
     weak var renderer: Renderer?
     weak var view: WorldMTKView?
+    /// What the View menu shows, apart from the objects that change with every clock (see `DistinctState`).
+    private(set) lazy var viewMenu = DistinctState<ViewMenuInputs>(
+        initial: ViewMenuInputs(play: play, model: self), sources: [play.objectWillChange, objectWillChange]
+    ) { [weak self] in
+        guard let self else { return nil }
+        return ViewMenuInputs(play: play, model: self)
+    }
+    /// The colour mode of the frame the View menu last read (a frame does not publish, so a change of mode is looked for in each).
+    private var menuColourIndex = -1
     private var fade = MapFade()
     private var lastMapSerial = -1
     private var configuredFor: StreamHeader?
@@ -217,6 +226,10 @@ final class WorldModel: ObservableObject {
             startStorage()
         }
         if changes.contains(.clock) { handleClock() }
+        if changes.contains(.frame), let index = store.frame?.colorIndex, index != menuColourIndex {
+            menuColourIndex = index
+            viewMenu.refresh()
+        }
         guard let renderer else { return }
         if changes.contains(.header) || configuredFor != store.header {
             configuredFor = store.header
