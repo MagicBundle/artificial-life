@@ -11825,7 +11825,7 @@ omits each at its default and the W0 parameter hashes and files are the old ones
 | field | default | meaning |
 |---|---|---|
 | `channel` | false | static: y is bounded and `f` follows the latitude |
-| `cells_y` | 0 | rows of a channel; 0 means `n`. **`ny` is derived** (`p.ny = cells_y or n`, never an independent default: the probe's `ny = 160` built `(160, 64)` arrays for `n = 64`), `Ly = ny dx` |
+| `cells_y` | 0 | rows of a channel; 0 means `n` (`cells_y == n` is stored as 0 by `__post_init__`: one spelling, one record, one hash). **`ny` is derived** (`p.ny = cells_y or n`, never an independent default: the probe's `ny = 160` built `(160, 64)` arrays for `n = 64`), `Ly = ny dx` |
 | `wall_margin` | 0 | seeded disturbances are not placed within this distance of a wall |
 | `sponge_r`, `sponge_w` | 0, 4 | the wall sponge: extra linear friction `r exp(-d/w)` per step on both layers, `d` the distance to the nearer wall |
 | `sponge_profile` | `"exp"` | `"exp"`, or `"quad"`: `r (1 - min(d/w, 1))^2` (`w` is then the full width) |
@@ -11835,10 +11835,9 @@ keys in `POST_V01_KEYS` beside a `world.size_y`. `check_world` rejects a channel
 `sample_wind_h` raise `NotImplementedError` for one, and `tests/test_weather_config.py` lists `CHANNEL_FIELDS` as the
 fourth kind of `WeatherParams` field (a config key, derived from the world, fixed, or a channel field).
 
-`WeatherParams.validate` gains the rules **C0** (without `channel`, the five other fields keep their defaults, `cells_y`
-may equal `n`), **C1** `cells_y >= 8`, **C2** `2 Ly <= Lx` (the minimum image stays the identity on y, so the tracker,
+`WeatherParams.validate` gains the rules **C0** (without `channel`, the five other fields keep their defaults and `cells_y` is 0), **C1** `ny >= 8`, **C2** `2 Ly <= Lx` (the minimum image stays the identity on y, so the tracker,
 `warm_pools` and the distances need no wrap), **C3** `sl_order = 1`, **C4** every pool has `0 <= y < Ly` and `vy = 0`,
-**C5** `0 <= wall_margin < Ly/4`, **C6** `0 <= sponge_r <= 0.1`, `sponge_w >= dx` and a known profile. `f_pool`, the
+**C5** `0 <= wall_margin < Ly/4`, **C6** `0 <= sponge_r <= 0.1`, `sponge_w >= dx` and a known profile, **C7** `nu = 0` (the Laplacian's rolls are periodic in y, so with `nu > 0` the north wall row would diffuse into the south wall row across the wall: a wall `u` of 0.1 on the north row gave 0.0012 on the south row in one `_damp` call; the other y-rolls were traced and are masked or correct). `f_pool`, the
 moist deformation radius at the pools (rule 6b) and `derived()` (which gains `Ly` and `phi_max_deg` for a channel
 only) read the latitude table `f_of_y`. `weather.band_params(ly)` builds the recommended layout of
 a given height (`BAND_LAYOUTS`): three pools per hemisphere at the torus's x positions, `offset` from the equator
@@ -11891,11 +11890,11 @@ eddy wind of `weather.storm_eddy`).
 
 The torus is pinned two ways: `params_hash` and `to_dict` (the channel fields are absent at their defaults), and a
 platform-bound digest of 200 steps at `n` = 64 and 96 recorded from the shipped step (`c916615`; skipped unless on
-the recording platform, as `test_weather_w2_wiring.PINS`); `cells_y = n` changes nothing. The channel is tested for the
-validation rules, the latitude table (odd, monotone, the walls as poles), the rotation tables and the energy of a
+the recording platform, as `test_weather_w2_wiring.PINS`); `cells_y = n` changes nothing (it is stored as 0: the same record and the same hash as the default, and the same trajectory). The channel is tested for the
+validation rules (C0 to C7), the latitude table (odd, monotone, the walls as poles), the rotation tables and the energy of a
 wall-pair rotation, the wall `v` exactly 0 after the advection, the pressure kick, the damping, the seeds and every
 step of 150 under a disturbance each step, mass conservation, the mirror symmetry (with and without the sponge, 50
-and 400 steps, a negative control: a stored south face fails it at 5e-3), the gather never reading across a wall, the
+and 400 steps: 2.5e-5 and 2.1e-5, tolerance 1e-4; a negative control, `test_mirror_symmetry_needs_the_zero_south_face`: a gather that stores a south face for `v` (a copy of `v[0]`) gives 2.3e-2), the gather never reading across a wall, the
 seed margin and the sign of the seeded vortex, the sponge profiles, the hemisphere sign, the padded labelling, the
 detector on a channel (plain latitudes, band against storm), the tracker along a wall, the driver's latitude
 statistics and `--band`, and a 600-step channel study end to end with its figures.
@@ -11905,7 +11904,7 @@ statistics and `--band`, and a 600-step channel study end to end with its figure
 Seventy-nine 60,000-step studies through the driver (`python -m alife.analysis.w0 --band 96 --key K`), spin-up 15,000,
 detection every 25 steps, window 15,000 to 60,000: 52 on the CPU and 27 on the M5 Pro GPU (3.96 h of run time;
 the two devices agree: the CPU run of `Ly = 96` key 0 reproduces the earlier GPU probe's wall-strip maximum 0.1658
-to four digits and its `speed_max` 0.293). Three keys (0, 1, 2) per layout. **Definitions** (the spec's gates had
+to four digits and its `speed_max` 0.293). Three keys (0, 1, 2) per layout: every G0.7 point reuses the same three key schedules, so its `speed_max` is 0.206, 0.144, 0.147 on keys 0, 1, 2 in all of them: three seed realisations, not independent samples. The review of 2026-10-24 added fresh keys (below). **Definitions** (the spec's gates had
 words that the data forced into numbers): a *named* track has at least 3 detections and a peak `zeta >= 0.5 f0`;
 *short* = it ended (it is not alive at step 60,000) with a life under 10,000 steps; both are counted over the tracks
 that exist after the spin-up (`t_last > 15,000`; counted over every track the figures are higher: key 0 has 4
@@ -11931,9 +11930,11 @@ it adds to the ambient wall-strip wind (0.1 to 0.17) and the sum is 0.29. The ke
 every key-0 run meets the same seed at the same step (`speed_max` is 0.29 in every margin-12 key-0 run); a longer run or
 another key would meet a stronger one. The seed-only maximum at the margin falls to 0.15 at 16 and 0.10 at 20.
 
-**The retune: `wall_margin` 16** (`band_params` default; the sponge is not the problem, so it is not retuned). Margin 14
-fails (key 0 `speed_max` 0.249), margins 16 and 20 pass, 22 fails G0.2 on key 0 (5 short named tracks against 3). At
-the retuned point, three keys:
+**The retune: `wall_margin` 16** (`band_params` default; the sponge is not the problem, so it is not retuned). It was chosen
+because 12 failed on keys 0 and 2 and then tested on keys 0, 1, 2: on those keys margin 14 fails (key 0 `speed_max` 0.249) and
+margins 16 and 20 pass G0.2 to G0.5, 22 fails G0.2 on key 0 (5 short named tracks against 3; margins 14 and 22 first ran on the GPU, on
+one key that decides each, and are marginal: re-run on the CPU with the final code, all three keys agree with the GPU runs to four digits, `speed_max` 0.2489 and 5 short tracks again, so the verdicts are device-insensitive but still decided by one key). **That the margin interval 16 to 20 passes is unresolved: it holds on keys 0 to 2 only (see
+"Fresh keys")**. At the retuned point, keys 0 to 2:
 
 | | G0.2 storms in 2..6, short named | G0.3 `speed_max`, `hyper_max`, counters | G0.4 wall `v`, mass drift, wall-strip median / max | G0.5 named |
 |---|---|---|---|---|
@@ -11942,34 +11943,52 @@ the retuned point, three keys:
 | key 2 | 100%, 3.00 / 2.99, 0 | 0.147, 0.052, 0 | 0.0, 2.3e-7, 0.038 / 0.143 | 7 |
 | gate | 100% and at most 3 | at most 0.24, under 0.8, 0 | 0.0, at most 1e-6, at most 0.06 / 0.2 (max over keys 0.143) | at most 28 |
 
-G0.2 to G0.5 pass. Reported (G0.3): wall-strip cells above 0.15: 0 (margin 12: 18, 27, 36); the fraction of interior
+G0.2 to G0.5 pass **on keys 0 to 2**. Reported (G0.3): wall-strip cells above 0.15: 0 (margin 12: 18, 27, 36); the fraction of interior
 layer-1 cells above `storm_u0` = 0.06 is **5.4%, 6.7%, 7.2% for the raw wind and 0.032%, 0.027%, 0.050% for the wind
 relative to its zonal mean** (the study's torus measurement: 0.017% and 0.020%, so `weather.storm_eddy = true` is
-required in a Band preset); the zonal-mean layer-1 `u` at the equator is **+0.043 to +0.046** (the study's torus value: -0.016): the equatorial
-jet is eastward and 2.7 times the torus's, not a feature the band was asked for (owner decision D7 of the study).
+required in a Band preset); the zonal-mean layer-1 `u` at the equator is **+0.043 to +0.046** (reproduced by the review on keys 3 to 8: +0.043 to +0.046); the torus has two equators, row 80 at -0.015 to -0.017 (the value the study quoted) and row 0 at +0.009 to +0.012: the band's equatorial
+jet is eastward, 2.7 times the torus's westward equator and 4 times its weak eastward one, not a feature the band was asked for (owner decision D7 of the study).
+
+**Fresh keys (the review, 2026-10-24).** The review ran the retuned point (`Ly` = 96, margin 16) on keys 3 to 8 and the margin 20 point on keys 3 to 6, all on the CPU, driver defaults, 60,000 steps, spin-up 15,000, and the torus on keys 3 and 4 (the scripts and runs are in the review's scratch; the numbers are re-derived from `metrics.json` and `storms.csv` with this document's definitions):
+
+| run | G0.2 | G0.3 | G0.4 | G0.5 | `speed_max` | `n_evap_limited` (cell-steps) | wall-strip max | `eps_local_max` |
+|---|---|---|---|---|---|---|---|---|
+| margin 16, key 3 | pass | **fail** | pass | pass | 0.153 | 14,876 | 0.114 | 0.957 |
+| margin 16, key 4 | pass | **fail** | pass | pass | 0.149 | 484 | 0.122 | 0.956 |
+| margin 16, key 5 | pass | **fail** | pass | pass | 0.152 | 386 | 0.124 | 0.956 |
+| margin 16, key 6 | pass | pass | pass | pass | 0.145 | 0 | 0.123 | 0.953 |
+| margin 16, key 7 | pass | **fail** | pass | pass | 0.134 | 1,516 | 0.119 | 0.957 |
+| margin 16, key 8 | pass | **fail** | pass | pass | 0.141 | 384 | 0.114 | 0.957 |
+| margin 20, keys 3, 4, 5, 6 | pass | **fail** on all four | pass | pass | 0.121, 0.124, 0.118, 0.126 | 18,823; 462; 2,228; 1,098 | 0.077 to 0.079 | |
+| torus, key 3 | **fail** (6 short named tracks) | pass | | | 0.087 | 0 | | 0.913 |
+| torus, key 4 | **fail** (in 2..6 at 99.3%) | pass | | | 0.086 | 0 | | 0.929 |
+
+G0.2, G0.4 and G0.5 pass on every band run, and `speed_max` stays at or below 0.153 and the wall-strip maximum at or below 0.124: **the fresh keys do not move the wall findings. What fails is the zero-limiter rule of G0.3**, by 384 to 18,823 cell-steps (at most 4e-5 of the 4.6e8 cell-steps of a run) on the evaporation limiter alone, with the local evaporation factor at its cap (0.957; 0.913 to 0.929 on the torus). The hits do not depend on the margin (16 and 20 behave alike): they come from the warm-pool forcing, with a key-dependent timing, so the working point sits at the limiter's edge. Counting all keys, **the retuned point passes G0.3 on 4 of 9 keys (0, 1, 2, 6) and margin 20 on 3 of 7**; the statements above and below that "the retune passes" mean keys 0 to 2. The torus passes G0.3 on every key (0 to 4) but fails G0.2 as defined on keys 3 and 4 (the gate's numbers were calibrated on torus keys 0 to 2, short tracks 1, 2, 2; keys 3 and 4 give 6 and 2 with 99.3%), so G0.2 itself is knife-edge on the torus.
+
+**The `q_pool` window is under 1% wide.** Margin 16 on keys 3, 4, 5, 7: `q_pool` 1.10 (-0.9%) gives 0 limiter counters but the storms die (in 2..6 at 81% to 90% of the times, 7 to 21 short named tracks: G0.2 fails on all four), 1.09 (-1.8%) leaves 17% to 29%, and at 1.11 the limiter fires on 5 of 9 keys. The torus's window is wider but still a knife edge: `q_pool` 1.08 (-2.7%) gives no storms (in 2..6 at 0.0%, keys 3, 4) and 1.14 (+2.7%) 18.9 and 19.5 million limiter cell-steps. A retune of the working point would have to search `q_pool` at the 0.1% scale between 1.10 and 1.11.
 
 **G0.6, `Ly` = 112: out.** With margin 12 and with 16 the three keys fail G0.3 on the moisture limiter (`n_evap_limited`
 6.1 to 6.9 million cell-steps; every other gate passes with margin 16): the strongest storms reach `h1 - gamma Q = m_min`.
 `Ly = 96` is the only height that passes, and only after the margin retune.
 
-**G0.7, the sensitivity of the retuned point, 3 keys each, pass = G0.2 to G0.5 on every key:**
+**G0.7, the sensitivity of the retuned point, 3 keys each (keys 0 to 2 for every row, so they are not independent samples), pass = G0.2 to G0.5 on every key. Rows marked (m) are marginal: the verdict rests on one key at the noise of a chaotic run and would flip with other keys; 27 of the 79 studies ran on the GPU (margins 14 and 22 entirely, key 2 of the `r` and quadratic rows):**
 
 | perturbation | verdict | what fails |
 |---|---|---|
 | none (the point) | pass | |
 | pool latitude 27 (-3) | fail | limiter 0.5 to 0.9 million cell-steps |
 | pool latitude 33 (+3) | fail | storms die: 1.6 to 2.0 per hemisphere, in 2..6 at 31 to 49% of the times, 27 to 31 short named tracks |
-| sponge `w` 3 (-25%) | fail | limiter 3.0 to 3.4 million; wall-strip median 0.061 |
+| sponge `w` 3 (-25%) | fail | limiter 3.0 to 3.4 million; wall-strip median 0.061 (m: against 0.06) |
 | sponge `w` 5 (+25%) | fail | storms die: 1.5 to 1.9 per hemisphere, 22 to 44% of the times |
 | `q_pool` -5% (1.0545) | fail | almost no storms (0.1 to 0.3 per hemisphere) |
 | `q_pool` +5% (1.1655) | fail | limiter 38 million cell-steps |
 | sponge `r` 0.03, 0.04 (w 4) | fail | limiter 1.1 to 1.5 million, 0.1 to 0.2 million |
-| sponge `r` 0.06 | fail (marginally) | key 0: one storm in the north at 2 of 1,801 detection times (99.89% in range) |
+| sponge `r` 0.06 | fail (m) | key 0: one storm in the north at 2 of 1,801 detection times (99.89% in range) |
 | sponge `r` 0.07 | fail | in 2..6 at 96.2% and 98.3% (keys 0, 1); 4 short on key 0 |
 | quadratic sponge, `w` 10, 12, 14 (r 0.05) | fail | limiter 5.6, 4.3, 2.2 million; `w` 10 also wall-strip median 0.072 |
-| seed margin 14 / 20 / 22 | fail / pass / fail | 14: `speed_max` 0.249 on key 0; 22: 5 short named tracks on key 0 |
+| seed margin 14 / 20 / 22 | fail (m) / pass / fail (m) | 14: `speed_max` 0.249 on key 0 against 0.24; 22: 5 short named tracks on key 0 against 3; 20 fails G0.3 on all four fresh keys |
 
-**0 of the 6 specified neighbours pass** (pool latitude, sponge `w`, `q_pool`), and of the extra points (the `r` sweep, the
+**0 of the 6 specified neighbours pass** (pool latitude, sponge `w`, `q_pool`; the torus on the same neighbourhood passes 1 of the 4 comparable points, pool latitude 39 (+3), and fails `q_pool` on both sides and pool latitude 33 narrowly), and of the extra points (the `r` sweep, the
 quadratic profile, the margin) only margin 20 does: the passing region of `(pool latitude, w, q_pool, r, profile)` is
 **one point**, and an interval of the seed margin (16 to 20). **Stop rule S2 triggers.** What the torus does under the
 same perturbations (3 keys each; G0.2 and G0.3 only): `q_pool` -5% gives no storms (0.0 to 0.04 per hemisphere), `q_pool`
@@ -11980,15 +11999,22 @@ pool-latitude cliff (the torus has only the low side) and the `r` window are the
 friction that is large enough at the wall (limiter, wall-strip speed) and small enough 18 units away (storms), and the
 two meet in a window about one grid cell wide.
 
+**Baseline for S2.** The shipped torus does not pass the specified neighbourhood either (1 of the 4 comparable points, above) and fails G0.2 as defined on two of its five keys, so the stop is not a verdict on the wall alone: the thresholds (G0.2's 100% at all times with at most 3 short tracks, and the zero-counter rule, both calibrated on torus keys 0 to 2) and the `q_pool` placement are levers beside the boundary treatment. The wall-specific cliffs are the sponge `w` and `r` and pool latitude +3; pool latitude -3 and `q_pool` are shared with the torus. The stop itself stands (the literal rule, the numbers reproduce); what to relax is the owner's decision.
+
 ### 37.7 What W-band-0 settles
 
 The weather survives a wall: storms form, three per hemisphere, at the torus's life and strength, with the wall `v`
 exactly 0 (at every detection of all 64 channel studies) and the mass conserved to 3e-7. The walls bring a free-slip coastal jet and the seed's own wall wind, both
-of which a margin of 16 and a sponge of `0.05 exp(-d/4)` remove, and a reversed, eastward equatorial mean flow that a
-margin and a sponge do not touch. But the working point is **one point of a knife edge** (S2): by the study's own stop
+of which a margin of 16 and a sponge of `0.05 exp(-d/4)` remove (wall-strip maximum at most 0.143 on all nine keys run at
+margin 16), and an eastward equatorial mean flow (the torus's equators are weakly westward and weakly eastward) that a
+margin and a sponge do not touch. But the working point is **one point of a knife edge** (S2), and not a robust pass: on
+fresh keys the zero-limiter rule of G0.3 fails on 5 of 6 (4 of 9 keys pass), the `q_pool` window is under 1% wide, and the
+margin interval 16 to 20 is unresolved. By the study's own stop
 rule the band design pauses here, before any engine phase, until the boundary treatment is more robust than a sponge
 tuned to a friction window one cell wide (candidates the study names: a no-slip wall with a viscosity, a relaxation of
-`h` at the wall, a damping of only the zonal-mean `u` was tried and fails). The belt on the torus (an organism-only
+`h` at the wall; a damping of only the zonal-mean `u` was tried and fails). The boundary is not the only lever: the
+shipped torus also fails the specified neighbourhood and G0.2 as defined on fresh keys, so the gates' calibration
+(torus keys 0 to 2) and the `q_pool` placement are others; what to relax is the owner's decision. The belt on the torus (an organism-only
 wall on the existing weather) stays the world of the owner's item 1.
 
 ### 37.8 What is not built
@@ -12100,7 +12126,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I59 | feat: the Storm Worlds app (new §33.4.10; owner request 2026-10-23: "launch without the terminal"). **No engine change**; no config key, hash, stream or record changes. One executable, two bundles: `make-app.sh --app lab\|storm\|both` (default `lab`, flags unchanged; adds `--out`) builds `AlifeControl.app` and `Storm Worlds.app` (bundle ID `io.github.magicbundle.stormworlds`, executable `StormWorlds`, a generated storm icon, the same version and build number, hardened-runtime signing with the first Developer ID identity). The bundle's `AlifeLaunchMode` key (`world`/`lab`; none is the Lab) selects the scenes: Storm Worlds opens only the World window (the launcher), has the Lab at Window > Lab (Command-2), and quits when its last window closes (decision: single-window-game convention; the Lab open keeps the app). The repository folder is shared through the preferences domain `io.github.magicbundle.alife` (`RepoPathStore`, copied on first read from the app's own and the Lab's domain, nothing deleted, saves go to the shared domain and to the saving app's own; `swift run` keeps its own), and Storm Worlds asks for it itself (a gate in place of the World view while there is no usable folder, and Settings). `--install` now tests for a running copy with `lsappinfo`/`pgrep` instead of osascript. Tests: 28 `AlifeCoreTests`, 3 `AlifeControlTests`, `tests/test_app_bundles.py`, and the manual smoke `gui/scripts/check-apps.sh` (macOS, ad-hoc). **Open:** notarization and an in-app updater (the owner's "later"); sharing the dock preferences between the apps. |
 | I60 | feat: World viewer v2 (§36): legibility of the flat views now (PR A0: the raised map palette, the continuous map opacity, a weak territory tint with borders, coverage-capped organism sizes with an outline chosen from the shaded colour, instances at every level, View > Brightness / Territory / Organism size), then orientation and input on the flat map (A1) and a globe overview with a continuous zoom (B), each PR amending this sentence; client only, no engine, stream or config change (no config key, `POST_V01_KEYS` untouched, no golden). The outline threshold is 0.17, not the spec's 0.22 (the GPU test measured 2.88:1 with 0.22). |
 | I61 | fix: the World window drew nothing of its own (owner's first plays, 2026-10-23/24: no organisms and no weather map, only the SwiftUI overlay over the clear colour). `WorldMetalView.makeNSView` created the `Renderer` in a local; `MTKView.delegate` and `WorldModel.renderer` are weak, so the renderer was freed when `makeNSView` returned, the view had no delegate, `WorldModel.deliver` skipped every hand-over and no failure banner appeared. In main since G3a (#35); every rendering test held its `Renderer` in a local, so none saw it (the Lab's `Viewer3DView` keeps its renderer in a coordinator and was not affected). Fix: `WorldMTKView` holds the renderer (`var renderer`). Diagnosed on a live 3D planet stream (1.36 GB in 70 s, every record decoded) fed into the hosted `WorldView`: unfixed `delegate = nil`, `model.renderer = nil`; fixed, 41,670 organisms, the map and the territory drawn into the window. Test: `WorldRendererOwnershipTests` (the hosted `WorldView` on the 3D fixture: the delegate is a `Renderer`, the model keeps it, and its picture is not the clear colour); it fails unfixed in debug and release. |
-| I63 | feat: the equatorial band, weather only (new §37; owner direction 2026-10-24 item 2, coordinator choice C22; W-band-0 of the band study). **Weather layer and study driver only: no engine change, no organisms, no `Config` key, `POST_V01_KEYS` untouched, no golden re-pin.** `WeatherParams` gains six channel fields (`CHANNEL_FIELDS`: `channel`, `cells_y`, `wall_margin`, `sponge_r`, `sponge_w`, `sponge_profile`), all in `_POST_W0` (`analysis/w0.params_hash(WeatherParams())` is still `7832e060`, `START_SET` `bf468155`) with `ny` derived (`cells_y or n`, `Ly`, `f_of_y`, `pole_ys`) and the rules C0 to C6; the step is W0's model B on a `(ny, n)` grid with the wall as one zero v-face (the roll-wrapped `v[ny-1]`), `f = f0 sin((y - Ly/2)/a)` with the wall rotation pairs skipped, a mirror-symmetric semi-Lagrangian gather (a zero south row for `v`), masks after the advection, the pressure kick and the damping, the seed margin and a wall sponge (`exp` or `quad`); every branch is static on `channel`, so the torus step is the shipped step bit for bit (1,200 steps at n = 64, 96, 160, states and diagnostics; two platform-bound digests in `tests/test_weather_channel.py`); `check_world` rejects a channel and the wind sampler raises for one; `tests/test_weather_config.py` lists `CHANNEL_FIELDS` as a fourth kind of field (the one existing test line changed). Host side: `hemisphere_sign` is the sign of `f`, `label_channel` pads the walls, `storms.detect` reads a channel (plain y centroid, full-grid window), `analysis/w0.py` and `w0_plots.py` take the poles from the latitude table, non-square grids, `--band LY`, and record the wall strip. **Gates (79 studies of 60,000 steps, 3 keys): the study's candidate (`Ly = 96`, margin 12) fails G0.3 and G0.4** (key 0 `speed_max` 0.293 against 0.24, a seed 13.9 units from the wall whose own wall-row wind 0.14 adds to the ambient 0.15; key 2 wall-strip maximum 0.2002 against 0.2); **the retune `wall_margin` 16 passes G0.2 to G0.5** (`speed_max` at most 0.206, wall-strip maximum 0.143, mass 2e-7, wall `v` 0.0, 3 storms per hemisphere at 100% of times); `Ly = 112` is out (evaporation limiter, 6 to 7 million cell-steps); **G0.7: 0 of the 6 specified neighbours pass and the passing region is one point (a margin interval 16 to 20 apart), so stop rule S2 triggers**: the design pauses before any engine phase (the `q_pool` cliffs are the torus's own, measured; the sponge `w`, pool-latitude and `r` cliffs are the wall's). The equatorial mean flow is +0.043 to +0.046 (torus -0.016): `storm_eddy` is required in a Band preset. |
+| I63 | feat: the equatorial band, weather only (new §37; owner direction 2026-10-24 item 2, coordinator choice C22; W-band-0 of the band study). **Weather layer and study driver only: no engine change, no organisms, no `Config` key, `POST_V01_KEYS` untouched, no golden re-pin.** `WeatherParams` gains six channel fields (`CHANNEL_FIELDS`: `channel`, `cells_y`, `wall_margin`, `sponge_r`, `sponge_w`, `sponge_profile`), all in `_POST_W0` (`analysis/w0.params_hash(WeatherParams())` is still `7832e060`, `START_SET` `bf468155`) with `ny` derived (`cells_y or n`, `Ly`, `f_of_y`, `pole_ys`) and the rules C0 to C6; the step is W0's model B on a `(ny, n)` grid with the wall as one zero v-face (the roll-wrapped `v[ny-1]`), `f = f0 sin((y - Ly/2)/a)` with the wall rotation pairs skipped, a mirror-symmetric semi-Lagrangian gather (a zero south row for `v`), masks after the advection, the pressure kick and the damping, the seed margin and a wall sponge (`exp` or `quad`); every branch is static on `channel`, so the torus step is the shipped step bit for bit (1,200 steps at n = 64, 96, 160, states and diagnostics; two platform-bound digests in `tests/test_weather_channel.py`); `check_world` rejects a channel and the wind sampler raises for one; `tests/test_weather_config.py` lists `CHANNEL_FIELDS` as a fourth kind of field (the one existing test line changed). Host side: `hemisphere_sign` is the sign of `f`, `label_channel` pads the walls, `storms.detect` reads a channel (plain y centroid, full-grid window), `analysis/w0.py` and `w0_plots.py` take the poles from the latitude table, non-square grids, `--band LY`, and record the wall strip. **Gates (79 studies of 60,000 steps, 3 keys): the study's candidate (`Ly = 96`, margin 12) fails G0.3 and G0.4** (key 0 `speed_max` 0.293 against 0.24, a seed 13.9 units from the wall whose own wall-row wind 0.14 adds to the ambient 0.15; key 2 wall-strip maximum 0.2002 against 0.2); **the retune `wall_margin` 16 passes G0.2 to G0.5 on keys 0 to 2, the keys it was chosen and tested on** (`speed_max` at most 0.206, wall-strip maximum 0.143, mass 2e-7, wall `v` 0.0, 3 storms per hemisphere at 100% of times); **on six fresh keys (3 to 8, the review) G0.2, G0.4 and G0.5 pass but the zero-limiter rule of G0.3 fails on five (384 to 14,876 evaporation-limiter cell-steps; 4 of 9 keys pass, margin 20 passes on 3 of 7), so the margin interval 16 to 20 is unresolved**; `Ly = 112` is out (evaporation limiter, 6 to 7 million cell-steps); **G0.7 (keys 0 to 2 for every point, not independent samples): 0 of the 6 specified neighbours pass and the passing region is one point (a margin interval 16 to 20 apart, unresolved), so stop rule S2 triggers**: the design pauses before any engine phase (the `q_pool` window is under 1% wide on the band and about +-3% on the torus; pool latitude -3 and `q_pool` cliffs are shared with the torus, the sponge `w`, `r` and pool latitude +3 cliffs are the wall's; the torus itself passes 1 of the 4 comparable neighbours and fails G0.2 as defined on 2 of 5 keys, so the gates' calibration and the `q_pool` placement are levers too, an owner decision). The equatorial mean flow is +0.043 to +0.046 (the torus's equators: -0.015 to -0.017 and +0.009 to +0.012): `storm_eddy` is required in a Band preset. **Review fixes (commit `band W-band-0: review fixes`):** rule C7 (`nu = 0` in a channel: the periodic Laplacian rolls coupled the two wall rows), `cells_y == n` stored as 0 (one spelling, one hash), the mirror-symmetry negative control, the qualified statements above, the fresh-key and `q_pool` rows of §37.6. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense

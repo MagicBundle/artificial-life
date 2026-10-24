@@ -150,7 +150,7 @@ class WeatherParams:
     # organisms -> weather (W2, DESIGN §32): the floor of the cloud depth that the seeding band uses
     seed_dmin: float = 8.0
     # the channel (the equatorial band, DESIGN §37); all off at their defaults, so the torus is untouched
-    cells_y: int = 0  # rows of a channel; 0 = n (``ny`` is derived, never an independent default)
+    cells_y: int = 0  # rows of a channel; 0 = n (``ny`` is derived; ``cells_y == n`` is stored as 0)
     channel: bool = False  # static: y is bounded by two walls and f follows the latitude
     wall_margin: float = 0.0  # seeded disturbances are not placed within this distance of a wall
     sponge_r: float = 0.0  # peak extra linear friction rate per step at a wall, both layers; 0 = off
@@ -160,6 +160,8 @@ class WeatherParams:
     def __post_init__(self) -> None:
         pools = tuple(tuple(float(x) for x in row) for row in self.pools)
         object.__setattr__(self, "pools", pools)
+        if self.cells_y == self.n:  # cells_y == n is the torus: one spelling, one hash (§37.2)
+            object.__setattr__(self, "cells_y", 0)
 
     # --- JSON ---------------------------------------------------------------------------------------------
 
@@ -407,11 +409,12 @@ class WeatherParams:
         return bad
 
     def _validate_channel(self, req: Any) -> None:
-        """The channel rules C0-C6 (DESIGN §37.2). Without a channel the channel keys must keep their
-        defaults (no parameter set can change its hash without changing its behaviour)."""
+        """The channel rules C0-C7 (DESIGN §37.2). Without a channel the channel keys must keep their
+        defaults (no parameter set can change its hash without changing its behaviour: ``cells_y == n`` is
+        normalised to 0 in ``__post_init__``)."""
         if not self.channel:
             req(
-                self.cells_y in (0, self.n)
+                self.cells_y == 0
                 and self.wall_margin == 0.0
                 and self.sponge_r == 0.0
                 and self.sponge_w == 4.0
@@ -420,7 +423,7 @@ class WeatherParams:
                 "channel: they must keep their defaults",
             )
             return
-        req(self.cells_y >= 8, "rule C1: a channel needs cells_y >= 8")
+        req(self.ny >= 8, "rule C1: a channel needs cells_y >= 8")
         req(
             2.0 * self.Ly <= self.L + 1e-9,
             "rule C2: need 2 Ly <= Lx (the minimum image stays the identity on y)",
@@ -436,6 +439,11 @@ class WeatherParams:
             and self.sponge_w >= self.dx
             and self.sponge_profile in SPONGE_PROFILES,
             "rule C6: need 0 <= sponge_r <= 0.1, sponge_w >= dx and sponge_profile in ('exp', 'quad')",
+        )
+        req(
+            self.nu == 0.0,
+            "rule C7: nu must be 0 in a channel (the Laplacian rolls are periodic in y and would couple the "
+            "two wall rows across the wall)",
         )
 
 

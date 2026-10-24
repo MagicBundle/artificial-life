@@ -107,6 +107,11 @@ def test_explicit_square_rows_change_nothing() -> None:
     a, b = WeatherParams(n=48, dx=320.0 / 48), WeatherParams(n=48, dx=320.0 / 48, cells_y=48)
     assert a.ny == b.ny == 48
     assert _digest(a, 40) == _digest(b, 40)
+    # one spelling, one record: ``cells_y == n`` is stored as 0, so the hash does not change either
+    assert b.cells_y == 0 and b == a
+    assert w0.params_hash(b) == w0.params_hash(a)
+    assert w0.params_hash(WeatherParams(cells_y=160)) == w0.params_hash(WeatherParams())
+    assert "cells_y" not in b.to_dict()
 
 
 # --- validation ---------------------------------------------------------------------------------------------
@@ -132,6 +137,7 @@ def test_channel_rules_reject_what_breaks_the_wall() -> None:
         return " | ".join(msgs)
 
     assert "C2" in bad(cells_y=90)  # 2 Ly > Lx
+    assert "C2" in bad(cells_y=BAND.n)  # a square channel is stored as cells_y 0 and still fails C2
     assert "C3" in bad(sl_order=3, kappa_d=0.10)
     assert "C4" in bad(pools=((10.0, 120.0, 32.0, 14.0, 1.0, 0.0, 0.0),))  # y outside [0, Ly)
     assert "C4" in bad(pools=((10.0, 60.0, 32.0, 14.0, 1.0, 0.0, 0.01),))  # drifts in y
@@ -140,6 +146,8 @@ def test_channel_rules_reject_what_breaks_the_wall() -> None:
     assert "C6" in bad(sponge_w=1.0)
     assert "C6" in bad(sponge_profile="gauss")
     assert "C1" in bad(cells_y=4)
+    # nu > 0: the periodic Laplacian rolls would couple the north wall row to the south one
+    assert "C7" in bad(nu=0.02)
     # the channel keys are inert without a channel: no parameter set changes its hash without its behaviour
     assert "C0" in replace(WeatherParams(), wall_margin=12.0).validate()[0]
     assert "C0" in replace(WeatherParams(), sponge_r=0.05).validate()[0]
@@ -275,11 +283,9 @@ def _mirror(ws: WeatherState, ny: int) -> WeatherState:
     return WeatherState(*out)
 
 
-@pytest.mark.parametrize("sponge", [0.0, 0.05], ids=["no_sponge", "sponge"])
-def test_mirror_symmetry(sponge: float) -> None:
-    """The channel step is symmetric under ``y -> Ly - y, v -> -v`` (``f`` odd): the semi-Lagrangian gather
-    sees a zero south face (a stored copy of ``v[0]`` there would break it by 1e-1). Tolerance 1e-4
-    relative to the field's range, 50 and 400 steps, no seeds."""
+def _mirror_asymmetry(sponge: float) -> float:
+    """The largest relative asymmetry of h1, u1, v1, Q between the channel run and its mirror image, at 50
+    and 400 steps, no seeds (smooth random initial state)."""
     p = replace(BAND, seed_rate=0.0, sponge_r=sponge)
     pm = replace(p, pools=tuple((x, p.Ly - y, sx, sy, a, vx, -vy) for (x, y, sx, sy, a, vx, vy) in p.pools))
     r = np.random.default_rng(1)
@@ -302,6 +308,7 @@ def test_mirror_symmetry(sponge: float) -> None:
     fb = W.make_step(pm)
     key = mx.random.key(0)
     t = 0
+    worst = 0.0
     for stop in (50, 400):
         while t < stop:
             a, _ = fa(a, W.default_forcing(p, mx.array(t, dtype=mx.int32)), key)
@@ -312,7 +319,45 @@ def test_mirror_symmetry(sponge: float) -> None:
         for name in ("h1", "u1", "v1", "Q"):
             x, y = _np(getattr(ma, name)), _np(getattr(b, name))
             scale = np.abs(x - x.mean()).max() if name in ("h1", "Q") else np.abs(x).max()
-            assert np.abs(x - y).max() / scale < 1e-4, (name, stop, np.abs(x - y).max() / scale)
+            worst = max(worst, float(np.abs(x - y).max() / scale))
+    return worst
+
+
+@pytest.mark.parametrize("sponge", [0.0, 0.05], ids=["no_sponge", "sponge"])
+def test_mirror_symmetry(sponge: float) -> None:
+    """The channel step is symmetric under ``y -> Ly - y, v -> -v`` (``f`` odd): the semi-Lagrangian gather
+    sees a zero south face. Tolerance 1e-4 relative to the field's range, 50 and 400 steps, no seeds."""
+    assert _mirror_asymmetry(sponge) < 1e-4
+
+
+def test_mirror_symmetry_needs_the_zero_south_face(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The negative control: a gather that stores a south face for the v-like fields (a copy of ``v[0]``
+    below the wall, as it does for u) fails the symmetry test by orders of magnitude."""
+    good = W.semi_lagrangian
+
+    def stored_south_face(a, ox, oy, order=1, v_from=None):
+        if v_from is None:
+            return good(a, ox, oy, order, v_from)
+        # the same bounded gather, but every field sees a copy of row 0 below the south wall
+        k, ny, n = a.shape[0], a.shape[-2], a.shape[-1]
+        ii = mx.arange(n, dtype=mx.int32).reshape(1, 1, n)
+        jj = mx.arange(ny, dtype=mx.int32).reshape(1, ny, 1)
+        fx = mx.floor(ox)
+        ax = ox - fx
+        i0 = (ii + fx.astype(mx.int32)) % n
+        flat = mx.concatenate([a[:, :1], a], axis=1).reshape(-1)
+        koff = (mx.arange(k, dtype=mx.int32) * ((ny + 1) * n)).reshape(k, 1, 1)
+        ysrc = mx.clip(jj.astype(mx.float32) + oy, -1.0, ny - 1.0)
+        fy = mx.floor(ysrc)
+        ay = ysrc - fy
+        jc = fy.astype(mx.int32) + 1
+        r0, r1 = koff + jc * n, koff + mx.minimum(jc + 1, ny) * n
+        c1 = (i0 + 1) % n
+        g = mx.take(flat, mx.stack([r0 + i0, r0 + c1, r1 + i0, r1 + c1]))
+        return (1.0 - ay) * ((1.0 - ax) * g[0] + ax * g[1]) + ay * ((1.0 - ax) * g[2] + ax * g[3])
+
+    monkeypatch.setattr(W, "semi_lagrangian", stored_south_face)
+    assert _mirror_asymmetry(0.05) > 5e-3
 
 
 def test_the_gather_never_reads_across_a_wall() -> None:
