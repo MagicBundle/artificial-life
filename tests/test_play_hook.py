@@ -394,8 +394,10 @@ def test_a_pacer_run_stays_within_one_states_weights_of_a_plain_run(tmp_path: Pa
     plain = mx.get_peak_memory()
     paced, weights = _peak(play.PlayPacer, tmp_path, "paced")
     hoard, _ = _peak(Hoarder, tmp_path, "hoard")
-    assert paced - plain < weights / 2
-    assert hoard - plain > weights / 2  # the check is not vacuous
+    # A kept copy shows in the peak as about half of `weights` (10.2 to 10.8 MB of 20.5 measured, allocator-
+    # and platform-dependent), a pacer that keeps nothing as a few KB: the line between them is a quarter.
+    assert paced - plain < weights / 4
+    assert hoard - plain > weights / 4  # the check is not vacuous
 
 
 def test_a_pause_is_not_run_time(tmp_path: Path) -> None:
