@@ -20,11 +20,9 @@ struct ViewMenuInputs: Equatable {
     /// The colour mode of the frame in view ("" before there is one).
     var current: String
     var labelsOn: Bool
-    /// The level in view is the planet's (the 1 px points then have a toggle of their own). A step of the level, not a continuous
-    /// camera value: the menu is not rebuilt while the player zooms (DESIGN §36.9).
-    var planetLevel: Bool
-    /// The layers and the look: the agents, bonds, territory (off, borders, tint), the map, the frame, the brightness and the
-    /// organism size are all fields of `WorldDisplay`.
+    /// The layers and the look: the agents, bonds, territory (off, borders, tint), the map, the frame, the brightness, the
+    /// organism size and the trackpad's scroll law are all fields of `WorldDisplay`. No camera-driven value is a field of the inputs
+    /// (not even the level of the view): the menu is not rebuilt while the player zooms, drags or flies (DESIGN §36.9).
     var display: WorldDisplay
     /// A weather map is in view (`WorldModel.mapShown`): the brightness scales the map's colours, so it has nothing to do without one.
     var mapShown: Bool
@@ -45,7 +43,6 @@ struct ViewMenuInputs: Equatable {
         }
         current = store.frame.flatMap { store.header?.colorMode(index: $0.colorIndex) } ?? ""
         labelsOn = play.labelsOn
-        planetLevel = model.level == .planet
         display = model.display
         mapShown = model.mapShown
         chapterPause = store.clock?.chapterPauseArmed ?? true
@@ -75,8 +72,8 @@ struct ViewMenu: View {
             Toggle("Intent labels (stream)", isOn: Binding(get: { inputs.labelsOn }, set: { play.send(.labels($0)) }))
             Divider()
             Toggle("Agents", isOn: layer(\.agents))
-            // The 1 px translucent points exist at the planet level only.
-            if inputs.planetLevel { Toggle("Agent points", isOn: layer(\.agentPoints)) }
+            // The 1 px translucent points are drawn at the planet level (zoomed out) only.
+            Toggle("Agent points (zoomed out)", isOn: layer(\.agentPoints))
             Toggle("Bonds", isOn: layer(\.bonds))
             Picker("Territory", selection: Binding(get: { inputs.display.territory }, set: { model.display.territory = $0 })) {
                 Text("Off").tag(TerritoryMode.off)
@@ -95,6 +92,9 @@ struct ViewMenu: View {
             .disabled(!inputs.mapShown)
             .help(inputs.mapShown ? "How bright the weather map is" : "The brightness is the weather map's: there is none in view")
             Toggle("Frame", isOn: layer(\.frame))
+            // The trackpad's two-finger scroll pans (the Maps convention); on, it zooms as in v1. The mouse wheel and a pinch always zoom.
+            Toggle("Scroll zooms", isOn: layer(\.scrollZooms))
+                .help("The trackpad's two-finger scroll zooms instead of panning (the mouse wheel and a pinch always zoom)")
             Divider()
             // The pauses the world takes by itself. The player's choice is kept and sent to every world after its header.
             Menu("Pauses") {
@@ -112,7 +112,7 @@ struct ViewMenu: View {
                 }))
             Toggle("Raw kin events (developer)", isOn: Binding(get: { inputs.debugFilters }, set: { model.debugFilters = $0 }))
             Divider()
-            Button("Reset view") { model.resetCamera() }
+            Button("Home view (H)") { model.home() }
         }
         .menuStyle(.borderlessButton)
         .fixedSize()

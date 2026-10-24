@@ -59,6 +59,7 @@ enum Shaders {
         float4 style;      // x: point alpha, y: point size in px, z: smallest radius in px, w: outline width in px (0: none)
         float4 size;       // x: the cap on the drawn radius in px (huge: physical size), y, z: the alpha ramp's low and high radius in px, w: depth cue slope
         float4 look;       // x: exposure (the map's brightness), y: territory border alpha, z: depth cue base, w: hemisphere tint weight
+        float4 patch;      // x: the index k of the cell the view's centre is in, y, z, w: the alpha of the copies k - 1, k, k + 1 (0: not drawn)
     };
 
     // The nose of an agent: a small sphere on its forward axis, paler than the body, so the heading shows.
@@ -482,22 +483,29 @@ enum Shaders {
         return in.color;
     }
 
-    // The map: one quad of 5 x 5 worlds centred on the cell of the target, sampled with a repeating sampler, so the torus is
-    // tiled wherever the camera looks. u = x / L and v = y / L; the planes are row-major [cy][cx], row 0 at v = 0.
+    // The map: one patch of one world, L wide around the camera target in x (where the texture repeats, so the wrap is seamless) and L
+    // tall in the cell of the wrap in y that the target is in, with its two neighbours across the wrap as copies (instance 0, 1, 2 are the
+    // cells k - 1, k, k + 1, `world.patch`); a copy with no alpha collapses. u = x / L and v = y / L; the planes are row-major [cy][cx],
+    // row 0 at v = 0. At most one world is ever in view, so no storm is drawn twice.
     struct MapVarying {
         float4 position [[position]];
         float2 uv;
     };
 
     vertex MapVarying mapVertex(uint vid [[vertex_id]],
+                                uint iid [[instance_id]],
                                 constant Scene& scene [[buffer(0)]],
                                 constant WorldU& world [[buffer(7)]])
     {
         float L = world.target.z;
-        float2 cell = (floor(world.target.xy * world.target.w) + 0.5) * L;
-        float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
-        float2 xy = cell + corner * (2.5 * L);
         MapVarying out;
+        out.uv = float2(0.0);
+        out.position = float4(2.0, 2.0, 2.0, 1.0);
+        float alpha = world.patch[1u + min(iid, 2u)];
+        if (iid > 2u || alpha <= 0.0) { return out; }
+        float k = world.patch.x - 1.0 + float(iid);
+        float2 corner = float2(((vid & 1u) != 0u) ? 1.0 : -1.0, ((vid & 2u) != 0u) ? 1.0 : -1.0);
+        float2 xy = float2(world.target.x, k * L) + corner * (0.5 * L);
         out.position = scene.viewProjection * float4(xy, 0.0, 1.0);
         out.uv = xy * world.target.w;
         return out;

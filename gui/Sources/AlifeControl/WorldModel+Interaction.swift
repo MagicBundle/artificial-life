@@ -3,6 +3,27 @@ import CoreGraphics
 import Foundation
 import simd
 
+/// A fly-to under way on the path of van Wijk and Nuij (`FlightPath`), `elapsed` seconds in; `home` when it is the flight of the Home view.
+struct Flight: Equatable {
+    var path: FlightPath
+    var elapsed: Float = 0
+    var home = false
+}
+
+/// The north-up ease: the heading goes from `from` to 0 over `duration` seconds, smoothly.
+struct HeadingEase: Equatable {
+    static let duration: Float = 0.3
+    let from: Float
+    var elapsed: Float = 0
+
+    /// The heading `dt` seconds on, and whether the ease is over.
+    mutating func step(dt: Float) -> (heading: Float, done: Bool) {
+        elapsed += dt
+        let t = min(max(elapsed / Self.duration, 0), 1)
+        return (from * (1 - t * t * (3 - 2 * t)), t >= 1)
+    }
+}
+
 /// Picking, selection, follow, fly-to, keys, hover and toasts of the World window (DESIGN §33.4.8). The decisions are the
 /// pure types of `AlifeCore` (`WorldPicker`, `FollowState`, `CameraGlide`, `WorldSelection`, `ToastQueue`, `WorldKeys`); this
 /// is the glue that applies them to the camera, the overlay and the world's control channel.
@@ -185,7 +206,7 @@ extension WorldModel {
     // MARK: Camera motion
 
     /// Whether the camera is moving by itself (following or flying).
-    var cameraMotionPending: Bool { isFlying || !followState.target.isNone }
+    var cameraMotionPending: Bool { isFlying || !followState.target.isNone || headingEase != nil }
 
     func setFollow(_ target: FollowTarget) {
         followState.set(target)
@@ -199,7 +220,19 @@ extension WorldModel {
         isFlying = false
         flyGoal = nil
         flyDistance = nil
+        flight = nil
         glide.stop()
+    }
+
+    /// A zoom: a flight under way stops where it is (any input does, DESIGN §36.5); a follow goes on, at the user's distance.
+    func stopFlight() {
+        if followState.target.isNone {
+            isFlying = false
+            flyGoal = nil
+            flight = nil
+            glide.stop()
+        }
+        flyDistance = nil
     }
 
     func resetInteraction() {
@@ -211,6 +244,10 @@ extension WorldModel {
         isFlying = false
         flyGoal = nil
         flyDistance = nil
+        flight = nil
+        headingEase = nil
+        grabAnchor = nil
+        scrollLaw = ScrollLaw()
         toastQueue = ToastQueue()
         toasts = []
         ticker = Ticker()
@@ -237,23 +274,59 @@ extension WorldModel {
         WorldLevels.flyDistance(level, size: worldSize, fovY: camera.fovY, aspect: aspect)
     }
 
-    /// Flies the camera to `point` (when there is one) and to `distance`, ending at rest. Whatever followed stops.
+    /// Flies the camera to `point` (when there is one) and to `distance`, ending at rest. Whatever followed stops. Not while
+    /// following: a followed organism moves, so the glide of the follow carries the camera (and the distance) there instead of a
+    /// path that would have to be planned again every frame. Otherwise the flight is the van Wijk arc (`FlightPath`): zoom out, pan,
+    /// zoom in, at an even speed on the screen.
     func flyTo(_ point: SIMD3<Float>?, distance: Float?) {
         guard let point = point ?? flyGoal else { return }  // nowhere to go
         flyGoal = point
         flyDistance = distance.map(clampedDistance)
         isFlying = true
         glide.stop()
+        flight = nil
+        if followState.target.isNone {
+            let goal = FlightPath.Pose(x: point.x, y: point.y, z: point.z, heading: pose.heading, tilt: pose.tilt,
+                                       distance: flyDistance ?? pose.distance)
+            flight = Flight(path: makePath(to: goal))
+        }
         startAnimating()
     }
 
+    /// `h`, `r`, the toolbar's Home: whatever follows or flies stops (the selection stays) and the camera flies to the Home view, the
+    /// flat overview north up and facing the populated side (DESIGN §36.5).
+    func home() {
+        cancelCameraMotion()
+        headingEase = nil
+        guard let header = play.store.header else { return }
+        let goal = homePose(header: header)
+        isFlying = true
+        flyGoal = SIMD3(goal.x, goal.y, goal.z)
+        flyDistance = goal.distance
+        flight = Flight(path: makePath(to: FlightPath.Pose(goal)), home: true)
+        startAnimating()
+    }
+
+    private func makePath(to goal: FlightPath.Pose) -> FlightPath {
+        let width = 2 * tan(pose.fovY / 2) * max(1, aspect)
+        return FlightPath(from: FlightPath.Pose(pose), to: goal, size: worldSize, widthPerDistance: width, straight: reduceMotion())
+    }
+
     func clampedDistance(_ d: Float) -> Float {
-        let limit = WorldLevels.maxDistance(size: worldSize, fovY: camera.fovY, aspect: aspect)
+        let limit = WorldLevels.maxDistance(size: worldSize, fovY: pose.fovY, aspect: aspect, heading: pose.heading)
         return min(max(d, WorldLevels.minDistance), max(limit, WorldLevels.minDistance))
     }
 
     /// One step of the camera's own motion, `dt` seconds. True while it has not arrived.
     func advanceCamera(dt: Float) -> Bool {
+        var easing = false
+        if var ease = headingEase {
+            let step = ease.step(dt: min(dt, 0.1))
+            headingEase = step.done ? nil : ease
+            editPose { $0.heading = step.heading }
+            easing = !step.done
+        }
+        if followState.target.isNone, isFlying, let flight { return advanceFlight(flight, dt: dt) || easing }
         var goal: SIMD3<Float>?
         var distance: Float?
         if !followState.target.isNone {
@@ -265,7 +338,7 @@ extension WorldModel {
             distance = flyDistance
         }
         if goal == nil, distance != nil, followState.target.isNone { goal = camera.target }  // a zoom only
-        guard let goal else { return false }
+        guard let goal else { return easing }
         glide.timeConstant = isFlying ? CameraGlide.flyConstant : CameraGlide.followConstant
         var moved = camera
         let moving = glide.advance(&moved, toward: goal, distance: distance, dt: dt, size: worldSize)
@@ -275,7 +348,31 @@ extension WorldModel {
             flyDistance = nil
             if followState.target.isNone { flyGoal = nil }
         }
-        return moving
+        return moving || easing
+    }
+
+    /// One step of a flight: the pose `dt` seconds on its path (the end exactly when it is over).
+    private func advanceFlight(_ current: Flight, dt: Float) -> Bool {
+        var f = current
+        f.elapsed += min(max(dt, 0), 0.1)
+        let at = f.path.pose(at: f.elapsed)
+        editPose {
+            $0.x = at.x
+            $0.y = at.y
+            $0.z = at.z
+            $0.heading = at.heading
+            $0.tilt = at.tilt
+            $0.distance = at.distance
+        }
+        let done = f.elapsed >= f.path.duration
+        flight = done ? nil : f
+        if done {
+            isFlying = false
+            flyDistance = nil
+            flyGoal = nil
+            if f.home { cameraIsHome = true }
+        }
+        return !done
     }
 
     // MARK: Events
@@ -341,7 +438,9 @@ extension WorldModel {
             if let next = action == .slower ? RateLadder.slower(than: current) : RateLadder.faster(than: current) {
                 play.setRate(next)
             }
-        case .resetCamera: resetCamera()
+        case .home: home()
+        case .northUp: northUp()
+        case .toggleMinimap: display.minimap.toggle()
         case .escape: escape()
         case .showPowers: tab = .powers
         case .flyToAlert: flyToNewestAlert()

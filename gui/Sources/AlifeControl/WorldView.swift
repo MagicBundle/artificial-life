@@ -63,6 +63,9 @@ struct WorldView: View {
                 }
                 .pickerStyle(.segmented)
                 .help("Dock the control center on the left, the right or the bottom")
+                Button { model.home() } label: { Label("Home", systemImage: "house") }
+                    .help("Fly to the Home view: the whole width of the world, north up (H)")
+                    .disabled(!play.isActive)
                 Button("Worlds…") { model.launcherOpen = true }
                 Button("Close world") {
                     play.stop()

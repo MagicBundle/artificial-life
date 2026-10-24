@@ -32,7 +32,7 @@ struct PlaneUniforms: Equatable {
     var info: SIMD4<Float>
 }
 
-/// The World window's constants (`WorldU` in Shaders.swift), buffer 7 of the world pass: 112 bytes.
+/// The World window's constants (`WorldU` in Shaders.swift), buffer 7 of the world pass: 128 bytes.
 struct WorldUniforms: Equatable {
     /// xy: the camera target (everything is drawn at its minimum image), z: L, w: 1 / L.
     var target: SIMD4<Float>
@@ -49,6 +49,9 @@ struct WorldUniforms: Equatable {
     var size: SIMD4<Float>
     /// x: exposure, y: the territory borders' alpha, z: the depth cue's base, w: the hemisphere tint's weight.
     var look: SIMD4<Float>
+    /// The one-world patch of the map and its copies across the wrap in y (`SeamCopies`): x: the index `k` of the cell the view's
+    /// centre is in (the cell `y` in `[kL - L/2, kL + L/2]`), y, z, w: the alpha of the copies `k - 1`, `k`, `k + 1` (0: not drawn).
+    var patch: SIMD4<Float>
 
     /// What the shader gets for "no cap" (a float that is larger than any radius).
     static let unbounded: Float = 1e9
@@ -278,6 +281,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         var coverRadius: Float = .infinity
         /// The drawable's pixels per point of the free rectangle (4.5 pt is the absolute cap of a symbol): 2 on a Retina display.
         var pixelsPerPoint: Float = 2
+        /// The copies of the map's patch to draw (`SeamCopies.plan`): the cell of the view's centre, and its neighbours across the wrap
+        /// in y when the picture reaches them. Nil draws all three, which is right for any view and a little more than a flat one needs.
+        var copies: [SeamCopies.Copy]?
     }
     var worldDraw = WorldDraw()
     /// Told when the drawable's size changes in the World (the free rectangle changed), in pixels.
@@ -781,7 +787,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             size: SIMD4(limits.cap.isFinite ? limits.cap : WorldUniforms.unbounded, OrganismSizePolicy.rampLow,
                         OrganismSizePolicy.rampHigh, OutlineContrast.depthCueSlope),
             look: SIMD4(display.exposure, MapPalette.territoryBorder, OutlineContrast.depthCueBase,
-                        MapPalette.hemisphereWeight(distance: camera.distance / L)))
+                        MapPalette.hemisphereWeight(distance: camera.distance / L)),
+            patch: Self.patchUniform(worldDraw.copies, y: camera.target.y, size: L))
+    }
+
+    /// The `patch` uniform of a plan of copies: the cell of the view's centre and the alphas of the three cells around it.
+    nonisolated static func patchUniform(_ copies: [SeamCopies.Copy]?, y: Float, size: Float) -> SIMD4<Float> {
+        let k = SeamCopies.base(y: y, size: size)
+        func alpha(_ offset: Int) -> Float { copies.map { $0.first { $0.k == k + offset }?.alpha ?? 0 } ?? 1 }
+        return SIMD4(Float(k), alpha(-1), alpha(0), alpha(1))
     }
 
     private func encodeWorld(into encoder: any MTLRenderCommandEncoder, slot: Slot, header: StreamHeader, size: CGSize) {
@@ -820,7 +834,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                 encoder.setFragmentTexture(hasMap ? set.sea : blankPlane, index: base + 3)
             }
             encoder.setFragmentTexture(playTerritory != nil ? w.territory : blankTerritory, index: 8)
-            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            // The one-world patch and its copies across the wrap in y: three instances, those not wanted collapse in the vertex shader.
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 3)
         }
 
         // The agents of the newest frame.

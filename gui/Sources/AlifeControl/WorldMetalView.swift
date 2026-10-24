@@ -4,10 +4,11 @@ import MetalKit
 import QuartzCore
 import SwiftUI
 
-/// The World's drawing surface: an `MTKView` that takes the pointer and the keys. Left drag pans (the map follows the pointer),
-/// a right or Option drag turns the view about its target, the wheel, the trackpad and a pinch zoom; a click picks (a double click
+/// The World's drawing surface: an `MTKView` that takes the pointer and the keys. Left drag grabs the map (the point under the pointer
+/// stays under it), a right or Option drag turns the heading and tilts the view, a middle drag pans, a pinch and the mouse wheel zoom
+/// about the pointer and the trackpad's two-finger scroll pans (View > Scroll zooms restores zoom); a click picks (a double click
 /// flies in), the pointer over something names it, and the keys are `WorldKeys`'s. All go through the `WorldModel` (DESIGN
-/// §33.4.8).
+/// §33.4.8, §36.5).
 @MainActor
 final class WorldMTKView: MTKView {
     weak var model: WorldModel?
@@ -114,6 +115,7 @@ final class WorldMTKView: MTKView {
         downPoint = point(of: event)
         dragging = false
         model?.hover(at: nil)
+        model?.beginGrab(at: point(of: event))
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -123,11 +125,15 @@ final class WorldMTKView: MTKView {
             guard hypot(here.x - start.x, here.y - start.y) >= Self.clickSlop else { return }  // still a click
             dragging = true
         }
-        model?.drag(dx: Float(event.deltaX), dy: Float(event.deltaY), orbit: event.modifierFlags.contains(.option))
+        if event.modifierFlags.contains(.option) {
+            model?.drag(dx: Float(event.deltaX), dy: Float(event.deltaY), orbit: true)
+        } else {
+            model?.grab(to: point(of: event))
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
-        defer { downPoint = nil; dragging = false }
+        defer { downPoint = nil; dragging = false; model?.endGrab() }
         guard !dragging, downPoint != nil, !event.modifierFlags.contains(.option) else { return }
         model?.click(at: point(of: event), shift: event.modifierFlags.contains(.shift), clicks: max(event.clickCount, 1))
     }
@@ -141,11 +147,24 @@ final class WorldMTKView: MTKView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        model?.scroll(delta: Float(event.scrollingDeltaY), precise: event.hasPreciseScrollingDeltas)
+        let law = ScrollEvent(dx: Float(event.scrollingDeltaX), dy: Float(event.scrollingDeltaY), precise: event.hasPreciseScrollingDeltas,
+                              phase: Self.phase(event.phase), momentum: Self.phase(event.momentumPhase), time: event.timestamp)
+        model?.scroll(law, at: point(of: event))
     }
 
     override func magnify(with event: NSEvent) {
-        model?.magnify(Float(event.magnification))
+        model?.magnify(Float(event.magnification), at: point(of: event))
+    }
+
+    /// `NSEvent.Phase` as the pure law sees it.
+    static func phase(_ phase: NSEvent.Phase) -> ScrollGesturePhase {
+        if phase.contains(.began) { return .began }
+        if phase.contains(.changed) { return .changed }
+        if phase.contains(.ended) { return .ended }
+        if phase.contains(.cancelled) { return .cancelled }
+        if phase.contains(.mayBegin) { return .mayBegin }
+        if phase.contains(.stationary) { return .stationary }
+        return .none
     }
 
     // MARK: Animation

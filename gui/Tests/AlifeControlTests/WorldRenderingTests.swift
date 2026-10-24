@@ -8,9 +8,9 @@ import simd
 /// The parts of the World's renderer that need no GPU: the uniform block and the shader source.
 @Suite struct WorldRenderingTests {
     @Test func theWorldUniformsHaveTheLayoutOfTheShaders() {
-        // `WorldU` in Shaders.swift: seven 16-byte vectors.
-        #expect(MemoryLayout<WorldUniforms>.size == 112)
-        #expect(MemoryLayout<WorldUniforms>.stride == 112)
+        // `WorldU` in Shaders.swift: eight 16-byte vectors.
+        #expect(MemoryLayout<WorldUniforms>.size == 128)
+        #expect(MemoryLayout<WorldUniforms>.stride == 128)
         #expect(MemoryLayout<WorldUniforms>.offset(of: \.target) == 0)
         #expect(MemoryLayout<WorldUniforms>.offset(of: \.params) == 16)
         #expect(MemoryLayout<WorldUniforms>.offset(of: \.refs) == 32)
@@ -18,14 +18,15 @@ import simd
         #expect(MemoryLayout<WorldUniforms>.offset(of: \.style) == 64)
         #expect(MemoryLayout<WorldUniforms>.offset(of: \.size) == 80)
         #expect(MemoryLayout<WorldUniforms>.offset(of: \.look) == 96)
+        #expect(MemoryLayout<WorldUniforms>.offset(of: \.patch) == 112)
     }
 
     @Test func theShaderStructMirrorsTheSwiftOne() {
         let block = Shaders.source.matches(of: #/struct WorldU \{([^}]*)\};/#).first.map { String($0.1) } ?? ""
         let names = block.matches(of: #/(?:float4|uint4)\s+(\w+);/#).map { String($0.1) }
-        #expect(names == ["target", "params", "refs", "flags", "style", "size", "look"])
+        #expect(names == ["target", "params", "refs", "flags", "style", "size", "look", "patch"])
         let types = block.matches(of: #/(float4|uint4)\s+\w+;/#).map { String($0.1) }
-        #expect(types == ["float4", "float4", "float4", "uint4", "float4", "float4", "float4"], "flags is the one integer vector")
+        #expect(types == ["float4", "float4", "float4", "uint4", "float4", "float4", "float4", "float4"], "flags is the one integer vector")
     }
 
     @Test func theWorldEntryPointsAreTheOnesTheRendererBuilds() {
@@ -58,7 +59,24 @@ import simd
             }
             #expect(source[at.lowerBound..<end.upperBound].contains("minimumImage("), "\(name) draws at the minimum image")
         }
-        #expect(source.contains("address::repeat"), "the map is one quad with a repeating sampler")
+        #expect(source.contains("address::repeat"), "the map's texture repeats, so the wrap in x is seamless")
+    }
+
+    @Test func theMapIsOnePatchOfOneWorldAndItsCopiesAcrossTheWrapInY() {
+        let source = Shaders.source
+        let start = source.range(of: "vertex MapVarying mapVertex(")!
+        let end = source.range(of: "constexpr sampler planeSampler")!
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        #expect(body.contains("[[instance_id]]") && body.contains("world.patch"), "three instances: the cell k - 1, k and k + 1")
+        #expect(body.contains("corner * (0.5 * L)"), "one world wide, not five (the quad of v1 was 2.5 L on a side)")
+        #expect(!body.contains("2.5 * L") && !body.contains("floor(world.target.xy"), "the 5 x 5 quad is gone")
+        #expect(body.contains("float2(world.target.x, k * L)"), "centred on the camera in x, in the cell of the wrap in y")
+        #expect(body.contains("alpha <= 0.0"), "a copy that is not wanted collapses")
+        // The Swift side hands the shader the cell of the view's centre and the alphas of the three cells around it.
+        let copies = [SeamCopies.Copy(k: 1, alpha: 1), SeamCopies.Copy(k: 2, alpha: 0.5)]
+        #expect(Renderer.patchUniform(copies, y: 0.9 * 48, size: 48) == SIMD4(1, 0, 1, 0.5))
+        #expect(Renderer.patchUniform([SeamCopies.Copy(k: 0, alpha: 1)], y: 10, size: 48) == SIMD4(0, 0, 1, 0))
+        #expect(Renderer.patchUniform(nil, y: 10, size: 48) == SIMD4(0, 1, 1, 1), "no plan: all three")
     }
 
     @Test func theSphereShadingIsOneFunctionForTheLabAndTheWorld() {

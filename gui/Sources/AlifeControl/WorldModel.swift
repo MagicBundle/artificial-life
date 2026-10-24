@@ -60,7 +60,7 @@ struct HoverInfo: Equatable {
 /// fade between maps, the selection, the free rectangle the map is drawn into, and the hand-over of what the world sends to
 /// the renderer (DESIGN §33.4.1). The world's own commands go to the `PlayController`.
 ///
-/// The camera lives here, not in the renderer: the renderer is given it before each draw. Everything is placed at the minimum
+/// The view lives here, not in the renderer: the renderer is given its camera before each draw. Everything is placed at the minimum
 /// image of the camera target, which is kept in `[0, L)^2`.
 @MainActor
 final class WorldModel: ObservableObject {
@@ -72,6 +72,8 @@ final class WorldModel: ObservableObject {
         didSet {
             if display != oldValue {
                 if display.exposure != oldValue.exposure { defaults.set(Double(display.exposure), forKey: Self.exposureKey) }
+                if display.scrollZooms != oldValue.scrollZooms { defaults.set(display.scrollZooms, forKey: Self.scrollZoomsKey) }
+                if display.minimap != oldValue.minimap { defaults.set(display.minimap, forKey: Self.minimapKey) }
                 pushDisplay()
                 if display.map != oldValue.map { pushCamera() }  // the planet level exists only while a map is shown
                 // The size rule counts rows only where it caps them, and not for an organism layer that is off.
@@ -91,9 +93,12 @@ final class WorldModel: ObservableObject {
     /// The part of the window the map is drawn into (the window less the dock), in the window's coordinates: the camera's
     /// aspect and every pixel rule are its.
     private(set) var freeRect = CGRect.zero
-    private(set) var camera = Camera.planet(size: 1)
+    /// Where the window looks (DESIGN §36.5): the centre, the heading, the tilt and the distance. The camera is derived from it.
+    var pose = WorldPose(x: 0.5, y: 0.5, distance: 1)
+    /// The camera of `pose` on this world, for the renderer, the projector and the picker.
+    var camera: Camera { pose.camera(size: worldSize, height: height) }
     /// While the camera is where the window put it, a resize of the free rectangle fits the world to it again.
-    private(set) var cameraIsHome = true
+    var cameraIsHome = true
     /// What the player picked: the inspector shows it, the overlay marks it (§33.4.8).
     @Published var selection = WorldSelection.none
     /// What the camera follows (a manual drag cancels it).
@@ -141,9 +146,20 @@ final class WorldModel: ObservableObject {
     static let autopauseKey = "world.autopause"
     /// The map's brightness (the View menu's Brightness), kept between runs.
     static let exposureKey = "world.exposure"
+    /// The trackpad's two-finger scroll zooms instead of panning (View > Scroll zooms), and the minimap is shown (`i`).
+    static let scrollZoomsKey = "world.scrollZooms"
+    static let minimapKey = "world.minimap"
 
     var followState = FollowState()
     var glide = CameraGlide()
+    /// The scroll gesture in progress (DESIGN §36.5), and the floor point the left button grabbed.
+    var scrollLaw = ScrollLaw()
+    var grabAnchor: SIMD2<Float>?
+    /// A fly-to on the van Wijk path (not while following: a followed organism is not a path), and a north-up ease.
+    var flight: Flight?
+    var headingEase: HeadingEase?
+    /// Whether the system asks for less motion: a flight is then a straight 0.25 s ease. Tests inject theirs.
+    var reduceMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     /// A fly-to in progress: the place (when nothing is followed) and the distance to end at.
     var flyGoal: SIMD3<Float>?
     var flyDistance: Float?
@@ -194,6 +210,8 @@ final class WorldModel: ObservableObject {
         if let stored = defaults.object(forKey: Self.exposureKey) as? Double, stored.isFinite, stored > 0 {
             display.exposure = Float(min(max(stored, 0.5), 2))
         }
+        if let stored = defaults.object(forKey: Self.scrollZoomsKey) as? Bool { display.scrollZooms = stored }
+        if let stored = defaults.object(forKey: Self.minimapKey) as? Bool { display.minimap = stored }
         play.onDelivery = { [weak self] changes in self?.deliver(changes) }
         play.onEvents = { [weak self] events, backlog in self?.handle(events: events, backlog: backlog) }
         play.onAlerts = { [weak self] changes, backlog in self?.handle(alerts: changes, backlog: backlog) }
@@ -222,12 +240,9 @@ final class WorldModel: ObservableObject {
     /// Whether a weather map is in view: the planet level (no organisms, the map is the picture) exists only then.
     var mapShown: Bool { display.map && play.store.map != nil }
 
-    /// The farthest the camera may be in the window as it is now: the rule of `WorldLevels.maxDistance`, and never nearer
-    /// than the starting pose (which a wide or tall free rectangle puts farther out).
-    var distanceLimit: Float {
-        let home = play.store.header.map { Camera.world(for: $0, aspect: aspect).distance } ?? 0
-        return WorldLevels.maxDistance(size: worldSize, fovY: camera.fovY, aspect: aspect, home: home)
-    }
+    /// The farthest the camera may be in the window as it is now, at its heading: the picture stays within one world of its centre
+    /// (`WorldPose.maxDistance`; the Home view is at this distance).
+    var distanceLimit: Float { pose.distanceLimit(size: worldSize, aspect: aspect) }
     var height: Float { Float(play.store.header?.height ?? 0) }
 
     // MARK: What the world sent
@@ -382,17 +397,18 @@ final class WorldModel: ObservableObject {
 
     // MARK: Camera
 
-    func goHome() {
-        guard let header = play.store.header else { return }
-        camera = Camera.world(for: header, aspect: aspect)
-        cameraIsHome = true
-        pushCamera()
+    /// The Home view of this world in the window as it is now: the flat overview, north up, facing the populated side.
+    func homePose(header: StreamHeader) -> WorldPose {
+        WorldPose.home(for: header, aspect: aspect, populatedX: play.store.frame.flatMap { WorldPose.populatedX(frame: $0, size: Float(header.size)) },
+                       fovY: pose.fovY)
     }
 
-    /// `R`, the View menu: the starting pose; nothing follows any more (the selection stays).
-    func resetCamera() {
-        cancelCameraMotion()
-        goHome()
+    /// The Home view at once (a new world; a test). The `h` and `r` keys and the toolbar fly there (`home()`).
+    func goHome() {
+        guard let header = play.store.header else { return }
+        pose = homePose(header: header)
+        cameraIsHome = true
+        pushCamera()
     }
 
     /// The drawable changed size (the free rectangle, or the window): while the camera is home, fit the world to the new shape.
@@ -401,41 +417,106 @@ final class WorldModel: ObservableObject {
         drawableSize = size
         pixelsPerPoint = freeRect.height >= 1 ? Float(size.height / freeRect.height) : 2
         renderer?.worldDraw.pixelsPerPoint = pixelsPerPoint
-        if cameraIsHome, let header = play.store.header {
-            camera = Camera.world(for: header, aspect: Float(size.width / size.height))
+        if cameraIsHome, play.store.header != nil {
+            pose.distance = pose.distanceLimit(size: worldSize, aspect: Float(size.width / size.height))
             pushCamera()
         }
         refreshSizePolicy(force: true)  // (after the refit: the count is of the view that is drawn)
     }
 
+    /// Edits the pose as a `Camera` (the camera's own vocabulary: the target, the distance, the yaw and the pitch) and applies the
+    /// clamps. The gestures edit the `WorldPose` (`editPose`); this is for the glide and the tests.
     func edit(_ change: (inout Camera) -> Void) {
-        change(&camera)
-        let size = worldSize
-        camera.wrapTarget(size: size)
-        camera.target.z = min(max(camera.target.z, 0), max(height, 0))
-        camera.distance = min(max(camera.distance, WorldLevels.minDistance), max(distanceLimit, WorldLevels.minDistance))
-        camera.keepFloorInReach(size: size, aspect: aspect)  // no edge of the finite tiled map in view
+        var edited = camera
+        change(&edited)
+        editPose { $0.apply(edited) }
+    }
+
+    /// Edits the view and applies the clamps of every edit: the world's `x` and `y`, the height, the distance between a few radii and
+    /// the footprint's limit, the tilt (`WorldPose.clamp`).
+    func editPose(_ change: (inout WorldPose) -> Void) {
+        change(&pose)
+        pose.clamp(aspect: aspect, size: worldSize, height: height)
         cameraIsHome = false
         pushCamera()
     }
 
-    /// A drag of `dx`, `dy` points: a pan (the map follows the pointer) or, with `orbit`, a turn about the target.
-    func drag(dx: Float, dy: Float, orbit: Bool) {
-        cancelCameraMotion()  // a manual drag cancels the follow (the selection stays)
-        let viewportHeight = Float(freeRect.height >= 1 ? freeRect.height : (view?.bounds.height ?? 1))
-        edit { $0.drag(dx: dx, dy: dy, mode: .orbit, pan: !orbit, viewportHeight: viewportHeight) }
+    /// The size of the free rectangle in points (the view's, before the first layout).
+    var viewSize: CGSize {
+        if freeRect.width >= 1, freeRect.height >= 1 { return freeRect.size }
+        return view?.bounds.size ?? CGSize(width: 1, height: 1)
     }
 
-    func scroll(delta: Float, precise: Bool) { zoom(by: ViewerInput.dollyFactor(scroll: delta, precise: precise)) }
+    /// A drag by `dx`, `dy` points with no anchor: a pan (the map follows the pointer: middle button) or, with `orbit`, a turn of the
+    /// heading and the tilt about the target. The left button grabs instead (`beginGrab`, `grab(to:)`).
+    func drag(dx: Float, dy: Float, orbit: Bool) {
+        cancelCameraMotion()  // a manual drag cancels the follow (the selection stays)
+        headingEase = nil
+        let size = viewSize
+        let (aspect, world) = (self.aspect, worldSize)
+        editPose { orbit ? $0.turn(dx: dx, dy: dy) : $0.pan(dx: dx, dy: dy, view: size, aspect: aspect, size: world) }
+    }
 
-    func magnify(_ magnification: Float) { zoom(by: ViewerInput.dollyFactor(magnification: magnification)) }
+    // MARK: The grab
 
-    func zoom(by factor: Float) {
-        flyDistance = nil  // the user's zoom wins over the distance a fly was heading for
-        edit { $0.dolly(by: factor) }
+    /// The left button went down at `point` (points of the free rectangle, origin at the top left): the floor point under it is what
+    /// the drag keeps under the pointer.
+    func beginGrab(at point: CGPoint) {
+        grabAnchor = pose.point(at: WorldPose.ndc(of: point, in: viewSize), aspect: aspect, size: worldSize)
+    }
+
+    /// The pointer is at `point` with the left button down: the point grabbed is under it, exactly (`WorldPose.grab`).
+    func grab(to point: CGPoint) {
+        cancelCameraMotion()
+        headingEase = nil
+        guard let anchor = grabAnchor else { return }
+        let ndc = WorldPose.ndc(of: point, in: viewSize)
+        let (aspect, world) = (self.aspect, worldSize)
+        editPose { $0.grab(anchor: anchor, at: ndc, aspect: aspect, size: world) }
+    }
+
+    func endGrab() { grabAnchor = nil }
+
+    // MARK: Zoom and scroll
+
+    /// A scroll event at `point` (nil: the pointer is not known; the zoom is about the centre): the law of `ScrollLaw`.
+    func scroll(_ event: ScrollEvent, at point: CGPoint?) {
+        switch scrollLaw.handle(event, scrollZooms: display.scrollZooms) {
+        case .none: return
+        case .pan(let dx, let dy):
+            cancelCameraMotion()
+            headingEase = nil
+            let size = viewSize
+            let (aspect, world) = (self.aspect, worldSize)
+            editPose { $0.pan(dx: dx, dy: dy, view: size, aspect: aspect, size: world) }
+        case .zoom(let factor):
+            zoom(by: factor, at: point)
+        }
+    }
+
+    /// A pinch of `magnification` about `point`.
+    func magnify(_ magnification: Float, at point: CGPoint? = nil) {
+        zoom(by: ViewerInput.dollyFactor(magnification: magnification), at: point)
+    }
+
+    /// Multiplies the distance by `factor` about the pointer (the surface point under it stays under it): the view's own zoom. A
+    /// flight that was under way stops where it is; a follow goes on (the user's zoom wins over the distance a fly was heading for).
+    func zoom(by factor: Float, at point: CGPoint? = nil) {
+        stopFlight()
+        let ndc = point.map { WorldPose.ndc(of: $0, in: viewSize) }
+        let (aspect, world, height) = (self.aspect, worldSize, self.height)
+        editPose { $0.zoom(by: factor, at: ndc, aspect: aspect, size: world, height: height) }
+    }
+
+    /// `n`: turn the map north up, the heading easing to 0 over 0.3 s.
+    func northUp() {
+        guard pose.heading != 0 else { return }
+        headingEase = HeadingEase(from: pose.heading)
+        startAnimating()
     }
 
     func pushCamera() {
+        let camera = self.camera
         let newLevel = WorldLevels.level(
             distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: worldSize, mapShown: mapShown)
         if newLevel != level { level = newLevel }
@@ -444,6 +525,8 @@ final class WorldModel: ObservableObject {
         guard let renderer else { return }
         renderer.camera = camera
         renderer.worldDraw.level = newLevel
+        renderer.worldDraw.copies = SeamCopies.plan(
+            y: pose.y, extentY: pose.footprint(aspect: aspect, size: worldSize, height: height)?.y, size: worldSize)
         view?.needsDisplay = true
     }
 

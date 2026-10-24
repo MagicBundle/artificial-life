@@ -7,7 +7,8 @@ import Testing
     @Test func theTableIsTheDocumentedOne() {
         let expected: [(String, WorldAction)] = [
             (" ", .togglePause), (".", .step), ("c", .cycleColor), ("1", .toggleAgents), ("2", .toggleBonds),
-            ("3", .cycleTerritory), ("f", .followSelection), ("[", .slower), ("]", .faster), ("r", .resetCamera),
+            ("3", .cycleTerritory), ("f", .followSelection), ("[", .slower), ("]", .faster), ("r", .home),
+            ("h", .home), ("n", .northUp), ("i", .toggleMinimap),
             ("\u{1B}", .escape), ("g", .continueRun), ("p", .showPowers), ("a", .flyToAlert), ("k", .acknowledgeAlert),
             ("\r", .confirmPower), ("\u{3}", .confirmPower),
         ]
@@ -18,7 +19,8 @@ import Testing
 
     @Test func aCapitalLetterIsTheSameKey() {
         #expect(WorldKeys.action(for: "F") == .followSelection && WorldKeys.action(for: "C") == .cycleColor)
-        #expect(WorldKeys.action(for: "R") == .resetCamera)
+        #expect(WorldKeys.action(for: "R") == .home && WorldKeys.action(for: "H") == .home)
+        #expect(WorldKeys.action(for: "N") == .northUp && WorldKeys.action(for: "I") == .toggleMinimap)
     }
 
     @Test func theLabsFieldKeysAreNotTheWorldsKeys() {

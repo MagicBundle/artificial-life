@@ -395,7 +395,7 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         #expect(rig.model.display.agents && !rig.model.display.agentPoints, "the key does not change level: instances at the planet too")
     }
 
-    @Test func escapeClearsTheSelectionAndTheFollowAndResetPutsTheCameraHome() async throws {
+    @Test func escapeClearsTheSelectionAndTheFollowAndHomeFliesTheCameraHome() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let rig = try await makeRig(scratch)
@@ -405,9 +405,11 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         #expect(rig.model.selection.isNone && rig.model.followTarget == .none)
         #expect(await sent(rig, "focus off"))
         rig.model.selectStorm(7, fly: true, follow: true)
-        rig.model.perform(.resetCamera)
-        #expect(rig.model.cameraIsHome && rig.model.followTarget == .none && !rig.model.isFlying)
-        #expect(rig.model.selection == .storm(id: 7), "a reset moves the camera, not the selection")
+        rig.model.perform(.home)
+        #expect(rig.model.followTarget == .none && rig.model.isFlying && !rig.model.cameraIsHome, "Home is a flight")
+        settle(rig)
+        #expect(rig.model.cameraIsHome && !rig.model.isFlying)
+        #expect(rig.model.selection == .storm(id: 7), "Home moves the camera, not the selection")
     }
 
     @Test func fFollowsTheSelectionWhateverItIs() async throws {
@@ -597,10 +599,11 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
             $0.pitch = -30 * .pi / 180
             $0.distance = 100 * size
         }
-        let camera = rig.model.camera
-        #expect(camera.pitch < -30 * .pi / 180, "steeper than asked")
-        let seen = try #require(camera.farthestFloorDistance(aspect: rig.model.aspect))
-        #expect(seen <= Camera.tiledReach(size: size))
+        let pose = rig.model.pose
+        #expect(pose.tilt < 60 * .pi / 180, "steeper than asked")
+        #expect(pose.fits(aspect: rig.model.aspect, size: size, height: rig.model.height), "no edge of the one-world patch in view")
+        let seen = try #require(pose.footprint(aspect: rig.model.aspect, size: size, height: rig.model.height))
+        #expect(max(seen.x, seen.y) <= WorldPose.reach * size * 1.001)
     }
 
     @Test func aWorldThatIsStoppedOrReplacedForgetsWhatWasSelectedAtOnce() async throws {
@@ -659,17 +662,26 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         #expect(rig.play.labelsOn)
     }
 
-    @Test func aZoomCancelsTheDistanceOfAFlyButNotItsPlace() async throws {
+    @Test func aZoomStopsAFlightWhereItIsAndKeepsAFollowGoingAtTheNewDistance() async throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }
         let rig = try await makeRig(scratch)
         defer { rig.play.shutdown() }
         rig.model.selectStorm(7, fly: true, follow: false)
-        #expect(rig.model.flyDistance != nil || rig.model.isFlying)
+        #expect(rig.model.flyDistance != nil && rig.model.isFlying && rig.model.flight != nil)
+        for _ in 0..<5 { rig.clock.t += 1.0 / 60; _ = rig.model.advance() }
+        let held = rig.model.camera.target
         rig.model.zoom(by: 0.5)
-        #expect(rig.model.flyDistance == nil)
+        #expect(rig.model.flyDistance == nil && !rig.model.isFlying && rig.model.flight == nil, "any input stops the flight")
         settle(rig)
-        #expect(abs(rig.model.camera.target.y - 20.25) < 0.2, "the fly still ends at the storm")
+        #expect(simd_length(rig.model.camera.target - held) < 1e-3, "and keeps the pose reached")
+        // A follow is not a path: the zoom changes only the distance the follow glides to.
+        rig.model.selectStorm(7, fly: true, follow: true)
+        #expect(rig.model.isFlying && rig.model.flight == nil)
+        rig.model.zoom(by: 0.5)
+        #expect(rig.model.flyDistance == nil && rig.model.followTarget == .storm(id: 7))
+        settle(rig, frames: 400)
+        #expect(abs(rig.model.camera.target.y - 20.25) < 0.2, "the follow still ends at the storm")
     }
 }
 

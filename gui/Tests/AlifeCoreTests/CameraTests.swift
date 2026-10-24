@@ -323,77 +323,76 @@ import simd
     }
 }
 
-// MARK: - The planet pose and the torus (the World window)
+// MARK: - The Home pose and the one-world patch (the World window)
 
-@Suite struct PlanetCameraTests {
+@Suite struct PatchCameraTests {
     private let L: Float = 320
 
+    private func header(_ kind: String) throws -> StreamHeader {
+        let found = try PlayFixture(kind: kind).events().compactMap { event -> StreamHeader? in
+            if case .header(let h) = event { h } else { nil }
+        }.first
+        return try #require(found)
+    }
+
     @Test(arguments: [Float(1), Float(16) / 9, Float(9) / 16])
-    func theWholeWorldIsInViewFromAboveWithXRightAndYUp(aspect: Float) throws {
-        let camera = Camera.planet(size: L, aspect: aspect)
-        #expect(camera.pitch == -Camera.maxPitch && camera.yaw == .pi / 2)
+    func theHomeViewShowsTheWholeWidthOfOneWorldFromAboveWithXRightAndYUp(aspect: Float) throws {
+        let h = try header("3d")
+        let size = Float(h.size)
+        let home = WorldPose.home(for: h, aspect: aspect)
+        let camera = home.camera(size: size, height: Float(h.height))
+        #expect(camera.pitch == -Camera.maxPitch && camera.yaw == .pi / 2, "straight down, north up")
         func ndc(_ p: SIMD3<Float>) throws -> SIMD3<Float> { try #require(camera.ndc(of: p, aspect: aspect)) }
-        for corner in [SIMD3<Float>(0, 0, 0), SIMD3(L, 0, 0), SIMD3(0, L, 0), SIMD3(L, L, 0)] {
-            let n = try ndc(corner)
-            #expect(abs(n.x) <= 1 + 1e-4 && abs(n.y) <= 1 + 1e-4, "\(corner) -> \(n) at aspect \(aspect)")
-            #expect(n.z > 0 && n.z < 1, "inside the clip volume")
-        }
-        let (west, east) = (try ndc(SIMD3(0, L / 2, 0)), try ndc(SIMD3(L, L / 2, 0)))
-        let (south, north) = (try ndc(SIMD3(L / 2, 0, 0)), try ndc(SIMD3(L / 2, L, 0)))
-        #expect(west.x < east.x && south.y < north.y)
-        let centre = try ndc(SIMD3(L / 2, L / 2, 0))
+        // The larger dimension of the picture spans one world less a hair, so no edge of the one-world patch shows.
+        let east = try ndc(SIMD3(home.x + 0.49 * size, home.y, 0)), north = try ndc(SIMD3(home.x, home.y + 0.49 * size, 0))
+        if aspect >= 1 { #expect(abs(east.x - 1) < 1e-3, "the width fits: \(east)") } else { #expect(abs(north.y - 1) < 1e-3, "the height fits: \(north)") }
+        let (west, e) = (try ndc(SIMD3(home.x - 5, home.y, 0)), try ndc(SIMD3(home.x + 5, home.y, 0)))
+        let (south, n) = (try ndc(SIMD3(home.x, home.y - 5, 0)), try ndc(SIMD3(home.x, home.y + 5, 0)))
+        #expect(west.x < e.x && south.y < n.y)
+        let centre = try ndc(SIMD3(home.x, home.y, 0))
         #expect(abs(centre.x) < 1e-4 && abs(centre.y) < 1e-4, "centred")
     }
 
-    @Test func theSmallerDimensionHoldsTheWorld() throws {
-        // A wide window fits the world to its height, a tall one to its width.
-        let wide = Camera.planet(size: L, aspect: 2)
-        let tall = Camera.planet(size: L, aspect: 0.5)
-        let w = try #require(wide.ndc(of: SIMD3(L / 2, L, 0), aspect: 2))
-        let t = try #require(tall.ndc(of: SIMD3(L, L / 2, 0), aspect: 0.5))
-        #expect(abs(w.y - 1 / 1.04) < 0.01 && abs(t.x - 1 / 1.04) < 0.01)
-    }
-
-    @Test func theClipPlanesHoldTheWholeTiledMapFromAnywhereInTheZoomRange() throws {
-        for aspect: Float in [1, 16.0 / 9] {
-            var camera = Camera.planet(size: L, aspect: aspect)
-            let farthest = WorldLevels.maxDistance(size: L, fovY: camera.fovY, aspect: aspect)
-            for pitch in [-Camera.maxPitch, -1.0, -0.5, -0.15] {
-                camera.pitch = pitch
-                for distance in [WorldLevels.minDistance, 40, camera.distance, farthest] {
-                    camera.distance = distance
-                    for target in [SIMD3<Float>(0, 0, 0), SIMD3(L - 1, L - 1, 0), SIMD3(160, 160, 0)] {
-                        camera.target = target
-                        let (near, far) = camera.clipPlanes
-                        // The corners of the repeating quad (two and a half worlds from the cell of the target).
-                        let cell = SIMD2((target.x / L).rounded(.down) + 0.5, (target.y / L).rounded(.down) + 0.5) * L
-                        for sx in [Float(-1), 1] {
-                            for sy in [Float(-1), 1] {
-                                let corner = SIMD3(cell.x + sx * 2.5 * L, cell.y + sy * 2.5 * L, 0)
-                                let depth = simd_dot(corner - camera.position, camera.forward)
-                                #expect(depth <= far + 1e-2, "a corner of the quad is behind the far plane: \(depth) > \(far) at pitch \(pitch)")
-                            }
+    @Test func theClipPlanesHoldTheWholePictureFromAnywhereInTheZoomRange() throws {
+        let h = try header("3d")
+        let size = Float(h.size), height = Float(h.height)
+        for aspect: Float in [1, 16.0 / 9, 2.4] {
+            for heading: Float in [0, 0.6, 1.57] {
+                var pose = WorldPose.home(for: h, aspect: aspect)
+                pose.heading = heading
+                let limit = pose.distanceLimit(size: size, aspect: aspect)
+                for tilt: Float in [0, 0.3, 0.6, 1.0] {
+                    for distance in [WorldLevels.minDistance, 0.1 * size, 0.5 * limit, limit] {
+                        for centre in [SIMD2<Float>(0, 0), SIMD2(size - 1, size / 2 + 1), SIMD2(size / 2, 3)] {
+                            pose.tilt = tilt
+                            pose.distance = distance
+                            pose.x = centre.x
+                            pose.y = centre.y
+                            pose.clamp(aspect: aspect, size: size, height: height)
+                            let camera = pose.camera(size: size, height: height)
+                            let (near, far) = camera.clipPlanes
+                            let extent = try #require(pose.footprint(aspect: aspect, size: size, height: height))
+                            // The farthest visible floor point: the corner of the footprint at the camera's centre.
+                            let farthest = SIMD3(pose.x + extent.x, pose.y + extent.y, 0)
+                            let depth = simd_dot(farthest - camera.position, camera.forward)
+                            #expect(depth <= far + 1e-2, "the footprint is behind the far plane: \(depth) > \(far)")
+                            #expect(near > 0 && near < far)
                         }
-                        #expect(near > 0 && near < far)
-                        #expect(abs(simd_dot(camera.target - camera.position, camera.forward) - distance) < 1e-2)
                     }
                 }
             }
         }
     }
 
-    @Test func aTwoDWorldKeepsItsFaceOnViewWithTheTiledClipScene() throws {
-        let header = try PlayFixture(kind: "2d").events().compactMap { event -> StreamHeader? in
-            if case .header(let h) = event { h } else { nil }
-        }.first
-        let h = try #require(header)
-        let camera = Camera.world(for: h, aspect: 1)
+    @Test func aTwoDWorldKeepsItsFaceOnViewFromBelowWithYDown() throws {
+        let h = try header("2d")
+        let home = WorldPose.home(for: h, aspect: 1)
+        #expect(home.faceDown)
+        let camera = home.camera(size: Float(h.size), height: 0)
         #expect(camera.pitch == Camera.maxPitch, "from the -z side, y down, as the 2D renderer shows it")
-        #expect(camera.scene == Camera.tiledScene(size: Float(h.size), height: 0))
-        let three = try PlayFixture(kind: "3d").events().compactMap { event -> StreamHeader? in
-            if case .header(let h) = event { h } else { nil }
-        }.first
-        #expect(Camera.world(for: try #require(three), aspect: 1).pitch == -Camera.maxPitch)
+        #expect(camera.scene == Camera.patchScene(center: SIMD2(home.x, home.y), size: Float(h.size), height: 0))
+        let a = try #require(camera.ndc(of: SIMD3(home.x, home.y + 3, 0), aspect: 1)), b = try #require(camera.ndc(of: SIMD3(home.x, home.y - 3, 0), aspect: 1))
+        #expect(a.y < b.y, "y grows downwards on the screen")
+        #expect(WorldPose.home(for: try header("3d"), aspect: 1).camera(size: 48, height: 24).pitch == -Camera.maxPitch)
     }
 }
-

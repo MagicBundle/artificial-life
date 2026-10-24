@@ -35,6 +35,11 @@ package struct WorldDisplay: Equatable, Sendable {
     /// Organisms as symbols whose size is capped (default), or at their physical size (DESIGN §36.7).
     package var sizeMode = OrganismSizeMode.capped
 
+    /// The minimap of the whole world with the view's footprint (the `i` key; drawn from PR A1's second stage).
+    package var minimap = true
+    /// The trackpad's two-finger scroll zooms (v1's law) instead of panning (the Maps convention, the default): View > "Scroll zooms".
+    package var scrollZooms = false
+
     /// The brightness presets of the View menu.
     package static let exposurePresets: [Float] = [0.8, 1.0, 1.25, 1.5]
 
