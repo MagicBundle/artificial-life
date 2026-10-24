@@ -19,8 +19,14 @@ final class ViewerModel: ObservableObject {
     weak var renderer: Renderer?
     weak var view: MTKView?
 
+    /// What the colour pop-up shows, apart from the stream, which publishes with every frame (see `DistinctState`).
+    let colour: DistinctState<ViewerColourInputs>
+
     init(stream: StreamController) {
         self.stream = stream
+        colour = DistinctState(initial: ViewerColourInputs(stream: stream), sources: [stream.objectWillChange]) { [weak stream] in
+            stream.map { ViewerColourInputs(stream: $0) }
+        }
     }
 
     /// The view's width over its height (1 before there is a view).

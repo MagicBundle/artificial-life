@@ -945,9 +945,10 @@ def test_alife_bench_play_sends_scripted_powers_from_the_command_line(
     assert [a["name"] for a in play["arms"]] == ["player_max"] and play["powers"] and play["digests_equal"]
     assert play["arms"][0]["powers"]["applied"] == [9001, 9002]
     assert cli.main([*argv, "--play-directors", "off"]) == 2, "scripted powers need the player director mode"
-    assert cli.main([*argv[: argv.index("--play-chapter")], "--play-chapter", "7"]) == 2, (
-        "no chapter end in the arm"
-    )
+    # keep the arguments after --play-chapter: without --play-out and the small world the call
+    # built a full 64k3d template in TMPDIR (655 MB a run)
+    i = argv.index("--play-chapter")
+    assert cli.main([*argv[:i], "--play-chapter", "7", *argv[i + 2 :]]) == 2, "no chapter end in the arm"
 
 
 def test_alife_bench_play_resumes_a_played_worlds_checkpoint(

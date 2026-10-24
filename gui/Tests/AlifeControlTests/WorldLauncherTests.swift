@@ -1,5 +1,7 @@
 import AlifeCore
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 
 @testable import AlifeControl
@@ -194,5 +196,135 @@ import Testing
         model.planet.source = "gone"
         model.refresh()
         #expect(model.catalog.sources.contains { $0.name == model.planet.source })
+    }
+
+    // MARK: What the sheet lists
+
+    @Test func researchRunsAreNotListedAsUnfinishedBuildsButTheirNamesAreTaken() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let runsDirectory = try runs(scratch)
+        // The runs of an archive whose checkpoints are elsewhere, and a planet build that was cancelled.
+        for name in ["eval_s0_B", "run-20261011-1137"] {
+            try write(#"{"world": {"dims": 3}}"#, "config.json", in: runsDirectory.appendingPathComponent(name))
+            try write(#"{"status": "done"}"#, "meta.json", in: runsDirectory.appendingPathComponent(name))
+        }
+        let cancelled = runsDirectory.appendingPathComponent("planet_x")
+        try write(#"{"status": "interrupted", "play_build": "planet"}"#, "meta.json", in: cancelled)
+        try write(#"{"world": {"dims": 3}}"#, "config.json", in: cancelled)
+        let model = make(runsDirectory, launches: Launches())
+        model.refresh()
+        #expect(model.catalog.unfinished == ["planet_x"])
+        model.selectSource("64k3d_s0")
+        model.planet.name = "eval_s0_B"
+        #expect(model.planetErrors == ["'runs/eval_s0_B' exists."], "a name the engine would refuse is refused here")
+    }
+
+    // MARK: The sheet fits
+
+    /// The launcher in a hosting view of `height`, laid out by AppKit (the buttons are AppKit controls there).
+    private func host(_ model: WorldLauncherModel, play: PlayController, height: CGFloat) -> NSHostingView<some View> {
+        let view = WorldLauncherView(model: model, play: play, close: {})
+        let host = NSHostingView(rootView: view.frame(width: LauncherLayout.minWidth, height: height))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: LauncherLayout.minWidth, height: height),
+                              styleMask: [.titled], backing: .buffered, defer: true)
+        window.contentView = host
+        host.frame = NSRect(x: 0, y: 0, width: LauncherLayout.minWidth, height: height)
+        host.layoutSubtreeIfNeeded()
+        return host
+    }
+
+    /// The focus rings of the sheet's controls (AppKit draws a SwiftUI `Button` as a `_FocusRingView` of its frame in a hosting
+    /// view that is not on screen), in the host's coordinates, with whether the control scrolls.
+    private func controls(in host: NSView, below view: NSView? = nil) -> [(frame: CGRect, scrolls: Bool)] {
+        let view = view ?? host
+        var found: [(CGRect, Bool)] = []
+        if String(describing: type(of: view)).contains("FocusRingView") {
+            found.append((host.convert(view.bounds, from: view), view.enclosingScrollView != nil))
+        }
+        for sub in view.subviews { found += controls(in: host, below: sub) }
+        return found
+    }
+
+    /// The scroll views of the sheet and their frames in the host's coordinates.
+    private func scrollViews(in host: NSView, below view: NSView? = nil) -> [CGRect] {
+        let view = view ?? host
+        var found: [CGRect] = []
+        if let scroll = view as? NSScrollView { found.append(host.convert(scroll.bounds, from: scroll)) }
+        for sub in view.subviews { found += scrollViews(in: host, below: sub) }
+        return found
+    }
+
+    /// A catalog as long as an archive: 12 worlds, 14 unfinished builds, 30 sources.
+    private func longCatalog(_ scratch: Scratch) throws -> URL {
+        let runsDirectory = scratch.url.appendingPathComponent("runs")
+        for i in 0..<12 {
+            let world = runsDirectory.appendingPathComponent("world_\(i)")
+            try write(Self.playJSON, "play.json", in: world)
+            try write("x", "checkpoints/step_0000506000.safetensors", in: world)
+        }
+        for i in 0..<14 {
+            let dir = runsDirectory.appendingPathComponent("cancelled_\(i)")
+            try write(#"{"status": "interrupted", "play_build": "planet"}"#, "meta.json", in: dir)
+            try write(#"{"world": {"dims": 3}}"#, "config.json", in: dir)
+        }
+        for i in 0..<30 {
+            let dir = runsDirectory.appendingPathComponent("run_\(i)")
+            try write(#"{"world": {"dims": 3}}"#, "config.json", in: dir)
+            try write("x", "checkpoints/step_0000250000.safetensors", in: dir)
+        }
+        return runsDirectory
+    }
+
+    @Test func theMakePlanetButtonIsInTheSheetAtTheLargestHeightWhateverTheCatalogHolds() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let model = make(try longCatalog(scratch), launches: Launches())
+        model.refresh()
+        #expect(model.catalog.worlds.count == 12 && model.catalog.unfinished.count == 14)
+        let play = PlayController()
+        let sheet = host(model, play: play, height: LauncherLayout.maxHeight)
+        // Outside every scroll view: Done at the top and the planet's action at the bottom, both inside the sheet.
+        let pinned = controls(in: sheet).filter { !$0.scrolls }.map(\.frame).sorted { $0.minY < $1.minY }
+        #expect(pinned.count == 2, "Done and Make planet and play; the 12 Resume buttons are in a list of three rows")
+        #expect(pinned.allSatisfy { sheet.bounds.contains($0) }, "\(pinned) in \(sheet.bounds)")
+        #expect((pinned.last?.maxY ?? 0) > sheet.bounds.maxY - 40, "the action sits at the foot of the sheet")
+        // The Resume list is a window of three rows, the form a scroll view of its own.
+        let scrolls = scrollViews(in: sheet)
+        #expect(scrolls.count == 2 && scrolls.allSatisfy { sheet.bounds.contains($0) })
+        let list = try #require(scrolls.first)
+        #expect(abs(list.height - LauncherLayout.resumeListHeight(count: 12)) < 24)
+        #expect(controls(in: sheet).filter(\.scrolls).contains { list.contains($0.frame.origin) }, "the first Resume button is in view")
+        // The content asks for no more than the largest height: it scrolls instead.
+        let fits = NSHostingView(rootView: WorldLauncherView(model: model, play: play, close: {}))
+        fits.layoutSubtreeIfNeeded()
+        #expect(fits.fittingSize.height <= LauncherLayout.maxHeight, "the sheet asks for \(fits.fittingSize.height)")
+        #expect(fits.fittingSize.height >= LauncherLayout.minHeight)
+    }
+
+    @Test func theFormScrollsAndTheActionKeepsItsPlaceAtTheSmallestHeight() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let model = make(try longCatalog(scratch), launches: Launches())
+        model.refresh()
+        model.planet.name = "bad name"
+        #expect(!model.planetErrors.isEmpty)
+        let sheet = host(model, play: PlayController(), height: LauncherLayout.minHeight)
+        let pinned = controls(in: sheet).filter { !$0.scrolls }.map(\.frame)
+        #expect(pinned.count == 2 && pinned.allSatisfy { sheet.bounds.contains($0) })
+        let form = try #require(scrollViews(in: sheet).last)
+        #expect(form.height > 0 && sheet.bounds.contains(form), "a form of \(form.height) points, scrolling")
+    }
+
+    @Test func aShortCatalogListsItsResumeButtonsWithoutAScrollList() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let model = make(try runs(scratch), launches: Launches())
+        model.refresh()
+        let sheet = host(model, play: PlayController(), height: LauncherLayout.idealHeight)
+        let pinned = controls(in: sheet).filter { !$0.scrolls }.map(\.frame)
+        #expect(pinned.count == 3, "Done, Resume for the one world, and Make planet and play")
+        #expect(pinned.allSatisfy { sheet.bounds.contains($0) })
+        #expect(scrollViews(in: sheet).count == 1, "only the form scrolls")
     }
 }

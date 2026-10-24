@@ -271,6 +271,12 @@ final class PlayController: ObservableObject {
 
     private func apply(_ delivery: StreamDelivery, from session: EngineSession) {
         guard self.session === session, !session.stopRequested else { return }
+        reduce(delivery, session: session)
+    }
+
+    /// Reduces a delivery into the store and tells the window what it changed. `session` is the process it came from (nil in the
+    /// tests, which feed deliveries without one: nothing is then ended on a stream's end).
+    func reduce(_ delivery: StreamDelivery, session: EngineSession? = nil) {
         guard !delivery.isEmpty else { return }
         var changes: WorldStore.Changes = []
         if let header = delivery.header {
@@ -314,11 +320,11 @@ final class PlayController: ObservableObject {
             changes.insert(.plans)
         }
         if let end = delivery.end {
-            session.end = end
+            session?.end = end
             switch end {
             case .complete: break
             case .failed(.truncated): break  // the process died; its exit status and stderr say why
-            case .failed, .unreadable: session.terminate()  // the stream is corrupt: nothing more to read
+            case .failed, .unreadable: session?.terminate()  // the stream is corrupt: nothing more to read
             }
         }
         if !changes.subtracting(.frame).isEmpty { revision += 1 }

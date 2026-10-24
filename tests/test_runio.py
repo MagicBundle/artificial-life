@@ -256,6 +256,11 @@ def test_create_open_and_meta(micro_cfg: Config, tmp_path: Path) -> None:
         "status", "knn_impl",
     }  # fmt: skip
     assert meta["status"] == "running" and meta["parent"] == "other:100"
+    # extra_meta lands in the first meta.json and never replaces a key of it
+    marked = RunDir.create(tmp_path / "marked", micro_cfg, extra_meta={"play_build": "planet"})
+    assert marked.meta()["play_build"] == "planet" and "play_build" not in meta
+    with pytest.raises(ValueError, match="status"):
+        RunDir.create(tmp_path / "clash", micro_cfg, extra_meta={"status": "done"})
     assert meta["config_hash"] == config_hash(micro_cfg) and meta["seed"] == micro_cfg.run.seed
     assert meta["rng_layout_version"] == rng.RNG_LAYOUT_VERSION
     text = (path / "config.json").read_text()

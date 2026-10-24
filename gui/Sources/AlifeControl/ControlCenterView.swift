@@ -125,7 +125,7 @@ struct ControlCenterView: View {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
-                ViewMenu(play: play, model: model)
+                ViewMenu(state: model.viewMenu, play: play, model: model)
             } else {
                 Spacer()
             }
@@ -147,66 +147,6 @@ struct ControlCenterView: View {
         case (.left, false), (.right, true): return "sidebar.left"
         case (.bottom, _): return "rectangle.bottomhalf.inset.filled"
         }
-    }
-}
-
-/// The View menu: the colour mode, labels, and the layers.
-struct ViewMenu: View {
-    @ObservedObject var play: PlayController
-    @ObservedObject var model: WorldModel
-
-    var body: some View {
-        Menu("View") {
-            let modes = play.store.header?.colorModes ?? []
-            let current = play.store.frame.flatMap { play.store.header?.colorMode(index: $0.colorIndex) }
-            // The archetype and intent modes paint labels: they are tagged like every other presentation of one (DESIGN §33.7).
-            let labels = play.store.play?.labels
-            let validity = LabelValidity(labels: labels, environment: play.store.environment?.environment)
-            Picker("Colour", selection: Binding(
-                get: { current ?? "" }, set: { play.setColor($0) })
-            ) {
-                ForEach(modes, id: \.self) {
-                    Text(validity.colorModeTitle($0, arch: labels?.arch ?? [], intent: labels?.intent ?? [])).tag($0)
-                }
-            }
-            Divider()
-            // The world's `labels on|off`: whether it sends the intent labels (INTN) at all. The record itself paints nothing; the
-            // archetype and intent colour modes do (from the host's colours), and the picker above tags them.
-            Toggle("Intent labels (stream)", isOn: Binding(
-                get: { play.labelsOn }, set: { play.send(.labels($0)) }))
-            Divider()
-            // The agent toggle refers to the layer of the level in view: instances close up, the 1 px points at the planet level.
-            if model.level == .planet {
-                Toggle("Agent points", isOn: $model.display.agentPoints)
-            } else {
-                Toggle("Agents", isOn: $model.display.agents)
-            }
-            Toggle("Bonds", isOn: $model.display.bonds)
-            Toggle("Territory", isOn: $model.display.territory)
-            Toggle("Weather map", isOn: $model.display.map)
-            Toggle("Frame", isOn: $model.display.frame)
-            Divider()
-            // The pauses the world takes by itself. The player's choice is kept and sent to every world after its header.
-            Menu("Pauses") {
-                Toggle("At the end of a chapter", isOn: Binding(
-                    get: { play.store.clock?.chapterPauseArmed ?? true }, set: { model.setChapterPause($0) }))
-                let classes = model.pausableClasses
-                if !classes.isEmpty { Divider() }
-                ForEach(classes, id: \.name) { entry in
-                    Toggle(entry.label, isOn: Binding(
-                        get: { model.alertPauseOn(entry.name) }, set: { model.setAlertPause(entry.name, $0) }))
-                }
-            }
-            Toggle("Skip the second click for a cost-1 power", isOn: Binding(
-                get: { model.defaults.bool(forKey: WorldModel.skipConfirmKey) },
-                set: { model.defaults.set($0, forKey: WorldModel.skipConfirmKey) }))
-            Toggle("Raw kin events (developer)", isOn: $model.debugFilters)
-            Divider()
-            Button("Reset view") { model.resetCamera() }
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .disabled(play.phase != .live)
     }
 }
 

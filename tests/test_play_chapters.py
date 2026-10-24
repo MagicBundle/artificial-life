@@ -477,6 +477,7 @@ def test_a_record_posted_by_a_worker_is_never_cut_by_the_loops_write(tmp_path: P
             ),
         )  # fmt: skip
     thread.join()
+    assert len(posted) == 60
     tags = []
     data = out.getvalue()
     i = 0
