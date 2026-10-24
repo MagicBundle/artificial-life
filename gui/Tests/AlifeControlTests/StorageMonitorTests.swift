@@ -367,3 +367,13 @@ import Testing
         return host.fittingSize.height
     }
 }
+
+@Suite struct StorageChoiceTests {
+    @Test func onlyTheChoicesThatDeleteOlderSavesAreConfirmed() {
+        #expect(!StorageWords.deletesOlder(.all))
+        #expect(StorageWords.deletesOlder(.newest))
+        #expect(StorageWords.deletesOlder(.single))
+        #expect(StorageWords.confirmMessage(.single, keep: 3).contains("cannot be restored"))
+        #expect(StorageWords.confirmTitle(.newest) == "Keep newest + start?")
+    }
+}

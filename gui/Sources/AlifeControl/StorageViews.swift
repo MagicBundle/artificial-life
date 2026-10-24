@@ -28,6 +28,12 @@ enum StorageWords {
     static let resumable = "Your world stays resumable; logs are still written."
     /// Said where a choice deletes saves: they go at the next save, not now.
     static let pending = "Older saves are deleted at the next save, not now."
+    /// Whether a choice deletes the older saves at the next save: every choice but All saves. Those are confirmed first.
+    static func deletesOlder(_ mode: SaveMode) -> Bool { mode != .all }
+    static func confirmTitle(_ mode: SaveMode) -> String { "Keep \(name(mode).lowercased())?" }
+    static func confirmMessage(_ mode: SaveMode, keep: Int?) -> String {
+        keeps(mode, keep: keep) + " The older saves are deleted at the next save, and they cannot be restored."
+    }
     /// What a mode keeps, in one sentence (the details list the three, the tooltip the one in force).
     static func keeps(_ mode: SaveMode, keep: Int?) -> String {
         switch mode {
@@ -71,6 +77,7 @@ struct StorageStripView: View {
     @ObservedObject var model: WorldModel
     @ObservedObject var storage: StorageMonitor
     @State private var details = false
+    @State private var confirming: SaveMode?  // a choice that deletes saves, waiting for the player's yes
 
     init(play: PlayController, model: WorldModel) {
         self.play = play
@@ -112,9 +119,33 @@ struct StorageStripView: View {
             .disabled(!live || !SaveModeView.offers(.newest, header: saves))
             .help(StorageWords.choiceHelp(mode, header: saves))
         }
+        .confirmationDialog(
+            confirming.map(StorageWords.confirmTitle) ?? "Keep these saves?",
+            isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete the older saves", role: .destructive) {
+                if let mode = confirming {
+                    confirming = nil
+                    confirmed(mode)
+                }
+            }
+            Button("Cancel", role: .cancel) { confirming = nil }
+        } message: {
+            if let mode = confirming { Text(StorageWords.confirmMessage(mode, keep: saves?.keep)) }
+        }
     }
 
     private func choose(_ mode: SaveMode) {
+        guard Self.command(choosing: mode, current: play.savesMode, header: play.store.play?.saves) != nil else { return }
+        if StorageWords.deletesOlder(mode) {
+            confirming = mode  // one click on a segment is not a yes to deleting saves
+            return
+        }
+        confirmed(mode)
+    }
+
+    private func confirmed(_ mode: SaveMode) {
         guard let command = Self.command(choosing: mode, current: play.savesMode, header: play.store.play?.saves) else { return }
         _ = play.send(command)
     }
@@ -147,6 +178,7 @@ struct StorageDetailsView: View {
             Text("Storage on disk").font(.headline)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
                 row("Saves", "\(readout.saves) in \(readout.saveCount) save\(readout.saveCount == 1 ? "" : "s")")
+                if readout.saving { row("Saving", "a save is being written; its file counts until it is whole") }
                 row("Logs", readout.logs)
                 row("Total", readout.total)
                 if let sinceChapter = readout.sinceChapter { row("This chapter (approx.)", sinceChapter) }

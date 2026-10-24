@@ -1262,6 +1262,7 @@ def _play_resume(a: argparse.Namespace, sink: Any, control: stream.Control) -> i
         _check_play_tick(cfg)
         _check_yoke(cfg)
         _knn_guard(cfg)
+        rd.adopt_newest_save()  # a complete newer save that LATEST does not name is the newest (DESIGN 34.11)
         newest = max((st for st, _ in rd.checkpoints()), default=None)
         path = _select_checkpoint(rd, a.checkpoint)
         step = int(checkpoint_metadata(path)["step"])

@@ -25,7 +25,7 @@ from alife import cli, play, runio, runner, streamrec
 from alife.config import Config, apply_overrides
 from alife.director import actions, make_director, pacing
 from alife.game import powers
-from alife.runio import COMMANDS_FILE, DIRECTOR_LOG_FILE, CheckpointError, RunDir, load_checkpoint
+from alife.runio import COMMANDS_FILE, DIRECTOR_LOG_FILE, RunDir, load_checkpoint
 from alife.state import init_state, state_digest
 from alife.stream import ControlError, NoControl
 from play_decode import Decoded, decode
@@ -557,7 +557,8 @@ def test_a_new_save_that_is_not_whole_does_not_cost_the_last_good_one(
     micro_cfg: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A write that returns normally and leaves a short file used to prune the last good save in newest
-    mode; the check of the new file makes the prune the ``all`` one instead, and says so on stderr."""
+    mode; the check of the new file runs before LATEST moves: the short file is removed, LATEST stays on the
+    last good save, nothing is pruned, and stderr says so."""
     rd = RunDir.create(tmp_path / "w", micro_cfg, parent="src:10")
     rd.update_meta(start_step=10)
     rd.keep_newest = True
@@ -579,14 +580,16 @@ def test_a_new_save_that_is_not_whole_does_not_cost_the_last_good_one(
     monkeypatch.setattr(runio, "write_state_file", short)
     save(30)
     monkeypatch.undo()
-    assert steps_of(rd) == [10, 20, 30], "the last good save is still there"
-    assert "does not read back whole; the older saves are kept" in capsys.readouterr().err
-    with pytest.raises(CheckpointError):
-        load_checkpoint(rd.latest_checkpoint(), micro_cfg)  # type: ignore[arg-type]
+    # the short file fails its check before LATEST can name it (DESIGN 34.11, review M2): it is removed,
+    # LATEST stays on 20 and nothing older is pruned
+    assert steps_of(rd) == [10, 20], "the failing save is gone; the last good save and the older ones stay"
+    assert (rd.checkpoint_dir / runio.LATEST_FILE).read_text().strip() == "step_0000000020.safetensors"
+    assert "does not read back whole; LATEST stays on the previous save" in capsys.readouterr().err
+    assert not list(rd.checkpoint_dir.glob("*.tmp"))
+    load_checkpoint(rd.latest_checkpoint(), micro_cfg)  # type: ignore[arg-type]
     load_checkpoint(rd.checkpoint_at(20), micro_cfg)  # type: ignore[arg-type]
     assert runio.state_file_is_complete(rd.checkpoint_at(20), 20)  # type: ignore[arg-type]
     assert not runio.state_file_is_complete(rd.checkpoint_at(20), 21), "another step"  # type: ignore[arg-type]
-    assert not runio.state_file_is_complete(rd.checkpoint_at(30), 30)  # type: ignore[arg-type]
     assert not runio.state_file_is_complete(tmp_path / "missing", 20)
     save(40)  # a whole save: back to the newest only
     assert steps_of(rd) == [10, 40]

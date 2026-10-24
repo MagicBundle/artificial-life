@@ -1140,7 +1140,15 @@ class PlayPacer:
 
     @_guard
     def before_checkpoint(self, state: State, t: int) -> None:
-        self.rd.wait_saves()  # before the sidecars and play-state files of this save are written (§34.11)
+        # The error of the save in flight is raised at the end of this callback, after this checkpoint's
+        # sidecars and play-state files are written: the checkpoint the runner saves after the stop then has
+        # them, so a resume there is exact (§34.11). The raise stops the play through _guard.
+        try:
+            self.rd.wait_saves()  # before the sidecars and play-state files of this save are written (§34.11)
+        except Exception as e:
+            pending = e
+        else:
+            pending = None
         self._t = t
         self._saving = True
         self.sched.begin_save()
@@ -1160,6 +1168,8 @@ class PlayPacer:
             # the report job starts here, off the loop thread and overlapped with the save; the announcement
             # comes first, so the card is there for the report to fill (a worker's record follows the clock)
             self.on_chapter_end(t)
+        if pending is not None:
+            raise pending  # the body above is complete; the play stops here through _guard
 
     @_guard
     def after_checkpoint(self, t: int) -> None:

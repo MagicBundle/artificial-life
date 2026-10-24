@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -759,6 +760,16 @@ def markdown_table(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """The script entry point: a ``ValueError`` (the phylogeny of a fork whose world keeps no origin save,
+    DESIGN §34.11) is a message and exit code 2, not a traceback."""
+    try:
+        return _main(argv)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+
+def _main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="python -m alife.analysis.evaluation", description=__doc__.split("\n")[0]
     )

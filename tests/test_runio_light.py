@@ -165,10 +165,14 @@ def test_a_killed_save_leaves_the_previous_one_resumable(cfg: Config, tmp_path: 
     s = load_checkpoint(before, cfg)
     with pytest.raises(
         OSError
-    ):  # the save of step 12 is killed in its thread; the next save raises its error
+    ):  # the save of step 10 is killed in its thread; the next save raises its error
         runner.run(rd, cfg, s, 6, quiet=True)
     monkeypatch.undo()
-    assert rd.latest_checkpoint() == before  # LATEST never moved onto a save that was not whole
-    assert state_digest(load_checkpoint(rd.latest_checkpoint(), cfg)) == state_digest(s)
-    assert [st for st, _ in rd.checkpoints()] == [0, 6]  # the older saves stay in place
-    assert RunDir.open(tmp_path / "run").latest_checkpoint() == before
+    # the plain save of step 10 is whole and LATEST names it before its compression starts: it is the newest
+    # save (a resume takes it); the older saves stay in place
+    assert rd.latest_checkpoint().name == "step_0000000010.safetensors"
+    assert [st for st, _ in rd.checkpoints()] == [0, 6, 10]
+    assert int(checkpoint_metadata(rd.latest_checkpoint())["step"]) == 10
+    load_checkpoint(rd.latest_checkpoint(), cfg)
+    assert RunDir.open(tmp_path / "run").latest_checkpoint().name == "step_0000000010.safetensors"
+    assert before is not None

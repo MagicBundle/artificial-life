@@ -30,6 +30,20 @@ private final class StopFlag: @unchecked Sendable {
         measured >= Int64(written) && measured <= Int64(written) + Int64(files) * 2 * 65_536
     }
 
+    @Test func aStepKeptInBothFormsIsOneSaveAndAWriteInFlightIsSaving() throws {
+        let root = try world([
+            "checkpoints/step_0000000010.safetensors": 300_000,
+            "checkpoints/step_0000000010.safetensors.zst": 100_000,  // the same step, mid-save: one save
+            "checkpoints/step_0000000020.safetensors.zst.tmp": 40_000,  // a compressed save being written
+            "checkpoints/LATEST": 30,
+        ])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sample = StorageScan.measure(world: root)
+        #expect(sample.saveCount == 1, "one step in two forms is one save: \(sample.saveCount)")
+        #expect(near(sample.savingBytes, 40_000, files: 1), "the write in flight: \(sample.savingBytes)")
+        #expect(StorageReadout(sample: sample, mode: .all).saving)
+    }
+
     @Test func savesAreTheCheckpointsDirectoryAndLogsAreEverythingElse() throws {
         let root = try world([
             "checkpoints/step_0000000000.safetensors": 300_000,
