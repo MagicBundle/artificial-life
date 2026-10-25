@@ -20,7 +20,11 @@ struct WorldView: View {
 
     init(play: PlayController) {
         self.play = play
-        _model = StateObject(wrappedValue: WorldModel(play: play))
+        _model = StateObject(wrappedValue: {
+            let model = WorldModel(play: play)
+            model.adoptGlobeDefault()  // (Home is the globe overview until the player turns it off)
+            return model
+        }())
     }
 
     private var side: DockSide { DockSide(rawValue: sideRaw) ?? .right }

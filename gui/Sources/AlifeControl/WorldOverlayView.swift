@@ -39,7 +39,11 @@ struct WorldOverlayView: View {
                 if case .storm(let id) = selection { marked.insert(id) }
                 if case .storm(let id)? = castHover { marked.insert(id) }
                 if case .storm(let id)? = hover?.pick { marked.insert(id) }
-                drawStorms(projector.glyphs(of: storms.storms), projector.level, selected: selection, marked: marked, &map)
+                let glyphs = projector.glyphs(of: storms.storms)
+                drawStorms(glyphs, projector.level, selected: selection, marked: marked, names: !projector.isMorphing, &map)
+                if projector.isMorphing { drawGlobeLabels(glyphs, projector, size: size, &map) }
+            } else if projector.isMorphing {
+                drawGlobeLabels([], projector, size: size, &map)
             }
             if let uid = selection.organismUID { drawSelection(uid, store, projector, &map) }
             if case .organism(let uid, let index)? = hover?.pick, uid != selection.organismUID {
@@ -53,7 +57,7 @@ struct WorldOverlayView: View {
     // MARK: Pieces
 
     private func drawStorms(_ glyphs: [StormGlyph], _ level: WorldLevel, selected: WorldSelection, marked: Set<Int>,
-                            _ context: inout GraphicsContext) {
+                            names: Bool = true, _ context: inout GraphicsContext) {
         for glyph in glyphs {
             let tint: Color = glyph.hemisphere == 0 ? Color(red: 1, green: 0.85, blue: 0.4) : Color(red: 0.5, green: 0.85, blue: 1)
             let alpha = glyph.named ? 1.0 : 0.55
@@ -73,11 +77,50 @@ struct WorldOverlayView: View {
                 let outer = Path(ellipseIn: CGRect(x: glyph.center.x - r, y: glyph.center.y - rv, width: 2 * r, height: 2 * rv))
                 context.stroke(outer, with: .color(.white.opacity(isSelected ? 0.95 : 0.55)), lineWidth: isSelected ? 2 : 1)
             }
-            if level != .organism {
+            if names, level != .organism {
                 let label = glyph.name ?? "disturbance \(glyph.id)"
                 let text = Text(label).font(.caption2).foregroundColor(tint.opacity(alpha))
                 context.draw(context.resolve(text), at: CGPoint(x: glyph.center.x, y: glyph.center.y - ry - 8))
             }
+        }
+    }
+
+    /// The storms' names (at most 8, named first then by height, 90 points apart, a leader line when one is moved) and the
+    /// geography (the centre's hemisphere, EQUATOR, the seam) at the globe and in the morph: placed together so that the geography
+    /// never lands on a name (DESIGN §36.10, the spec's 2.4 layer 8).
+    private func drawGlobeLabels(_ glyphs: [StormGlyph], _ projector: WorldProjector, size: CGSize, _ context: inout GraphicsContext) {
+        var texts: [String: GraphicsContext.ResolvedText] = [:]
+        var tints: [String: Color] = [:]
+        var candidates: [LabelCandidate] = []
+        for glyph in glyphs {
+            let tint: Color = glyph.hemisphere == 0 ? Color(red: 1, green: 0.85, blue: 0.4) : Color(red: 0.5, green: 0.85, blue: 1)
+            let id = "storm \(glyph.id)"
+            let resolved = context.resolve(Text(glyph.name ?? "disturbance \(glyph.id)").font(.caption2).foregroundColor(tint))
+            texts[id] = resolved
+            tints[id] = tint
+            let measured = resolved.measure(in: CGSize(width: 300, height: 30))
+            let ry = glyph.radius * glyph.flatten
+            candidates.append(LabelCandidate(id: id, kind: .storm, rank: (glyph.named ? 1000 : 0) + glyph.zeta,
+                                             anchor: CGPoint(x: glyph.center.x, y: glyph.center.y - ry - 8), size: measured))
+        }
+        for place in GlobeLabels.places(projector: projector) {
+            let resolved = context.resolve(Text(place.text).font(.system(size: 10, weight: .semibold)).foregroundColor(.white.opacity(0.85)))
+            texts[place.id] = resolved
+            let measured = resolved.measure(in: CGSize(width: 300, height: 30))
+            candidates.append(LabelCandidate(id: place.id, kind: .geography, rank: 0, anchor: place.anchor, size: measured))
+        }
+        let placed = LabelDeclutter.place(candidates, in: CGRect(origin: .zero, size: size))
+        for label in placed {
+            guard let text = texts[label.id] else { continue }
+            if let from = label.leader {
+                var leader = Path()
+                leader.move(to: from)
+                leader.addLine(to: label.centre)
+                context.stroke(leader, with: .color((tints[label.id] ?? .white).opacity(0.5)), lineWidth: 0.7)
+            }
+            var layer = context
+            layer.addFilter(.shadow(color: .black.opacity(0.9), radius: 1.5, x: 0, y: 0))
+            layer.draw(text, at: label.centre)
         }
     }
 
@@ -164,7 +207,32 @@ struct WorldOverlayView: View {
         guard let center = projector.screen(frame.position(index)) else { return }
         let radius = max(projector.points(ofUnits: Float(store.header?.radius ?? 1) * 1.8, at: frame.position(index)) ?? 0, 9)
         let ring = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
+        context.stroke(ring, with: .color(.black.opacity(0.7)), lineWidth: 4)  // (the keyline)
         context.stroke(ring, with: .color(.white), lineWidth: 2)
+        drawPin(uid, index: index, frame.position(index), projector, store, &context)
+    }
+
+    /// The pin of the selected or followed organism at the globe: a line from the surface to its height with a ring at the top (white,
+    /// a 2 point dark keyline) and a line of words, so that its height over the planet reads (the spec's 2.3). Only in the morph
+    /// and where the stalk is long enough to see.
+    private func drawPin(_ uid: Int64, index: Int, _ position: SIMD3<Float>, _ projector: WorldProjector, _ store: WorldStore,
+                         _ context: inout GraphicsContext) {
+        guard projector.isMorphing, position.z > 0.5,
+              let foot = projector.screen(SIMD3(position.x, position.y, 0)), let top = projector.screen(position) else { return }
+        let length = hypot(top.x - foot.x, top.y - foot.y)
+        guard length >= 3 else { return }
+        var stalk = Path()
+        stalk.move(to: foot)
+        stalk.addLine(to: top)
+        context.stroke(stalk, with: .color(.black.opacity(0.7)), lineWidth: 3.5)
+        context.stroke(stalk, with: .color(.white.opacity(0.9)), lineWidth: 1.4)
+        let words = (WorldPicker.describe(.organism(uid: uid, index: index), store: store) ?? "organism \(uid)")
+            .replacingOccurrences(of: "organism \(uid) · ", with: "") + String(format: " · z %.0f", position.z)
+        let text = context.resolve(Text(words).font(.caption2).foregroundColor(.white))
+        let measured = text.measure(in: CGSize(width: 360, height: 30))
+        let tag = CGRect(x: top.x + 12, y: top.y - 26 - measured.height / 2, width: measured.width + 10, height: measured.height + 4)
+        context.fill(Path(roundedRect: tag, cornerRadius: 4), with: .color(.black.opacity(0.6)))
+        context.draw(text, at: CGPoint(x: tag.midX, y: tag.midY))
     }
 
     private func drawHover(_ uid: Int64, hint: Int, _ store: WorldStore, _ projector: WorldProjector, _ context: inout GraphicsContext) {

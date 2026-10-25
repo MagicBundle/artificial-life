@@ -93,8 +93,10 @@ struct WorldHUDView: View {
         context.drawLayer { layer in
             layer.clip(to: Path(box))
             // The outside of the footprint is dimmed, so the part of the world in view is the bright one.
-            if let polygon = inset.footprint(of: pose, aspect: aspect) {
-                let pieces = inset.pieces(of: polygon)
+            // (at the globe the visible cap, or the border marched onto the planet in the morph: DESIGN §36.10)
+            let vantage = model.vantage()
+            let globePieces = inset.footprintPieces(of: vantage)
+            if let pieces = globePieces ?? inset.footprint(of: pose, aspect: aspect).map({ inset.pieces(of: $0) }) {
                 var dim = Path(box)
                 for piece in pieces {
                     dim.move(to: piece[0])
@@ -141,7 +143,7 @@ struct WorldHUDView: View {
                 layer.stroke(Path(ellipseIn: CGRect(x: at.x - 3.5, y: at.y - 3.5, width: 7, height: 7)), with: .color(.white), lineWidth: 1.5)
             }
             // The centre of the picture.
-            let centre = inset.centre(of: pose, aspect: aspect)
+            let centre = globePieces != nil ? inset.centre(of: vantage) : inset.centre(of: pose, aspect: aspect)
             let side = box.width
             let cx = box.minX + (centre.x - box.minX).truncatingRemainder(dividingBy: side), cy = box.minY + (centre.y - box.minY).truncatingRemainder(dividingBy: side)
             let wrapped = CGPoint(x: cx < box.minX ? cx + side : cx, y: cy < box.minY ? cy + side : cy)

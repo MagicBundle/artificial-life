@@ -99,13 +99,23 @@ final class WorldModel: ObservableObject {
                 if display.exposure != oldValue.exposure { defaults.set(Double(display.exposure), forKey: Self.exposureKey) }
                 if display.scrollZooms != oldValue.scrollZooms { defaults.set(display.scrollZooms, forKey: Self.scrollZoomsKey) }
                 if display.minimap != oldValue.minimap { defaults.set(display.minimap, forKey: Self.minimapKey) }
+                if display.spin != oldValue.spin {
+                    defaults.set(display.spin, forKey: Self.spinKey)
+                    motion.lastInput = now()
+                    if display.spin { startAnimating() }
+                }
+                if display.keepNorthUp != oldValue.keepNorthUp { defaults.set(display.keepNorthUp, forKey: Self.keepNorthUpKey) }
+                if display.globe != oldValue.globe {
+                    if !adoptingGlobeDefault { defaults.set(display.globe, forKey: Self.globeKey) }
+                    setGlobe(display.globe)
+                }
                 if display.heightColour != oldValue.heightColour, !applyingColourDefault {
                     defaults.set(display.heightColour, forKey: Self.heightColourKey)
                 }
                 pushDisplay()
                 if display.minimap != oldValue.minimap || display.map != oldValue.map { pushInset() }
                 overlay.invalidate()  // (the legend, the minimap's points and the scale bar follow the layers)
-                if display.map != oldValue.map { pushCamera() }  // the planet level exists only while a map is shown
+                if display.map != oldValue.map { refitToShape(aspect: aspect) }  // the planet level and the globe exist only while a map is shown (Home and the limit follow)
                 // The size rule counts rows only where it caps them, and not for an organism layer that is off.
                 if display.sizeMode != oldValue.sizeMode || display.agents != oldValue.agents { refreshSizePolicy(force: true) }
             }
@@ -181,6 +191,9 @@ final class WorldModel: ObservableObject {
     /// The trackpad's two-finger scroll zooms instead of panning (View > Scroll zooms), and the minimap is shown (`i`).
     static let scrollZoomsKey = "world.scrollZooms"
     static let minimapKey = "world.minimap"
+    static let globeKey = "world.globe"
+    static let spinKey = "world.spin"
+    static let keepNorthUpKey = "world.keepNorthUp"
     /// The player's colour choice: true is the height colour, false the world's own; absent is the default of a 3D world.
     static let heightColourKey = "world.heightColour"
 
@@ -188,7 +201,11 @@ final class WorldModel: ObservableObject {
     var glide = CameraGlide()
     /// The scroll gesture in progress (DESIGN §36.5), and the floor point the left button grabbed.
     var scrollLaw = ScrollLaw()
-    var grabAnchor: SIMD2<Float>?
+    var grabAnchor: WorldVantage.Anchor?
+    /// The motion that outlives the input on the globe: the inertia of a flick, the idle spin (DESIGN §36.10), and whether the drag in
+    /// progress moved the view.
+    var motion = GlobeMotion()
+    var grabMoved = false
     /// The world opened and no frame has been seen: the Home view is still to face the populated side.
     var homeAwaitsFrame = false
     /// A fly-to on the van Wijk path (not while following: a followed organism is not a path), and a north-up ease.
@@ -267,6 +284,12 @@ final class WorldModel: ObservableObject {
         }
         if let stored = defaults.object(forKey: Self.scrollZoomsKey) as? Bool { display.scrollZooms = stored }
         if let stored = defaults.object(forKey: Self.minimapKey) as? Bool { display.minimap = stored }
+        if let stored = defaults.object(forKey: Self.spinKey) as? Bool { display.spin = stored }
+        if let stored = defaults.object(forKey: Self.keepNorthUpKey) as? Bool { display.keepNorthUp = stored }
+        if let stored = defaults.object(forKey: Self.globeKey) as? Bool {
+            display.globe = stored
+            globeEnabled = stored
+        }
         play.onDelivery = { [weak self] changes in self?.deliver(changes) }
         play.onEvents = { [weak self] events, backlog in self?.handle(events: events, backlog: backlog) }
         play.onAlerts = { [weak self] changes, backlog in self?.handle(alerts: changes, backlog: backlog) }
@@ -275,6 +298,16 @@ final class WorldModel: ObservableObject {
         play.onReset = { [weak self] in self?.resetInteraction() }
         storage.isLive = { [weak play] in play?.phase == .live }
     }
+
+    /// The app's default of the globe overview: on, unless the player chose (the window opens on the planet). A model made by a test
+    /// stays flat until it asks; `WorldView` asks.
+    func adoptGlobeDefault() {
+        guard defaults.object(forKey: Self.globeKey) == nil, !display.globe else { return }
+        adoptingGlobeDefault = true  // (the default is not the player's choice: it is not stored)
+        defer { adoptingGlobeDefault = false }
+        display.globe = true
+    }
+    private var adoptingGlobeDefault = false
 
     // MARK: Free rectangle
 
@@ -292,14 +325,15 @@ final class WorldModel: ObservableObject {
     /// The window changed shape: the view is fitted to the new aspect. At Home the world is shown whole in the new shape; elsewhere the
     /// pose is clamped again (the distance to the new footprint's limit, then the tilt), so that the picture is never wider than the
     /// one-world patch and the seam copies are planned for the shape that is drawn. Before the world's header there is no view.
-    private func refitToShape(aspect: Float) {
+    func refitToShape(aspect: Float) {
         guard play.store.header != nil, aspect.isFinite, aspect > 0 else { return }
         distanceWish = nil
         sideReturn = nil
         if cameraIsHome {
-            pose.distance = pose.distanceLimit(size: worldSize, aspect: aspect)
+            pose.distance = globeActive ? Morph.globeDistance(L: worldSize, fovY: pose.fovY, aspect: aspect)
+                : pose.distanceLimit(size: worldSize, aspect: aspect)
         } else {
-            pose.clamp(aspect: aspect, size: worldSize, height: height)
+            pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeActive)
         }
         pushCamera()
     }
@@ -307,6 +341,12 @@ final class WorldModel: ObservableObject {
     /// The view's width over its height (1 before there is one).
     var aspect: Float { DockLayout.aspect(of: freeRect) }
 
+    /// Whether the globe overview exists for this world (DESIGN §36.10): the distance leads on to the globe, Home is the globe, the
+    /// projector and the grab go through the morph. Off until the renderer draws it (PR B step 7); then the view is the flat map.
+    var globeEnabled = false
+    /// Whether the view is the globe's: the overview is on and a weather map is in view. A map-less (or 2D) world keeps the flat view and
+    /// the flat Home; every pose rule (Home, refit, clamp, limit, flights, level) and the projector go by this and not by the switch.
+    var globeActive: Bool { globeEnabled && mapShown }
     var worldSize: Float { Float(play.store.header?.size ?? 1) }
 
     /// Whether a weather map is in view: the planet level (no organisms, the map is the picture) exists only then.
@@ -314,7 +354,7 @@ final class WorldModel: ObservableObject {
 
     /// The farthest the camera may be in the window as it is now, at its heading: the picture stays within one world of its centre
     /// (`WorldPose.maxDistance`; the Home view is at this distance).
-    var distanceLimit: Float { pose.distanceLimit(size: worldSize, aspect: aspect) }
+    var distanceLimit: Float { pose.distanceLimit(size: worldSize, aspect: aspect, globe: globeActive) }
     var height: Float { Float(play.store.header?.height ?? 0) }
 
     // MARK: What the world sent
@@ -426,8 +466,11 @@ final class WorldModel: ObservableObject {
         var target = Float.infinity
         let area = Float(drawableSize.width * drawableSize.height)
         if display.sizeMode == .capped, display.agents, area >= 1, let frame = play.store.frame, frame.n > 0 {
-            let rows = OrganismSizePolicy.rowsInView(frame: frame, camera: camera, aspect: Float(drawableSize.width / drawableSize.height),
-                                                     size: worldSize)
+            let shape = Float(drawableSize.width / drawableSize.height)
+            let vantage = self.vantage()
+            let rows = vantage.isGlobe
+                ? OrganismSizePolicy.rowsInView(frame: frame, vantage: vantage)
+                : OrganismSizePolicy.rowsInView(frame: frame, camera: camera, aspect: shape, size: worldSize)
             target = OrganismSizePolicy.coverRadius(area: area, rows: rows)
         }
         coverTarget = target
@@ -449,8 +492,25 @@ final class WorldModel: ObservableObject {
         return coverRadius != coverTarget
     }
 
+    /// The glow's weight (DESIGN §36.10): the complement of the instances' opacity at the radius they are drawn at in the middle of the
+    /// view, so that the life is dots where they can be seen and light where they cannot, with no switch.
+    func refreshGlow() {
+        guard let renderer else { return }
+        var alpha: Float = 0
+        if display.agents, globeActive, let header = play.store.header, drawableSize.height >= 1, vantage().isGlobe {
+            let limits = OrganismSizePolicy.limits(
+                mode: display.sizeMode, cover: coverRadius, distance: camera.distance, size: worldSize, agentRadius: Float(header.radius),
+                viewHeight: Float(drawableSize.height), fovY: camera.fovY, pixelsPerPoint: pixelsPerPoint)
+            let points = projector(size: freeRect.size).points(ofUnits: Float(header.radius), at: SIMD3(pose.x, pose.y, 0)) ?? 0
+            let radius = OrganismSizePolicy.radius(physical: Float(points) * pixelsPerPoint, cap: limits.cap, minimum: limits.minimum)
+            alpha = OrganismSizePolicy.glowAlpha(radius: radius)
+        }
+        if renderer.worldDraw.glowAlpha != alpha { renderer.worldDraw.glowAlpha = alpha }
+    }
+
     private func pushCoverRadius() {
         renderer?.worldDraw.coverRadius = coverRadius
+        refreshGlow()
         view?.needsDisplay = true
     }
 
@@ -465,7 +525,7 @@ final class WorldModel: ObservableObject {
 
     // MARK: The map fade
 
-    var isAnimating: Bool { fade.isAnimating(at: now()) || cameraMotionPending || sizeCountPending || coverRadius != coverTarget }
+    var isAnimating: Bool { fade.isAnimating(at: now()) || cameraMotionPending || spinWanted || sizeCountPending || coverRadius != coverTarget }
 
     func startAnimating() { view?.startAnimating() }
 
@@ -488,7 +548,7 @@ final class WorldModel: ObservableObject {
     /// The Home view of this world in the window as it is now: the flat overview, north up, facing the populated side.
     func homePose(header: StreamHeader) -> WorldPose {
         WorldPose.home(for: header, aspect: aspect, populatedX: play.store.frame.flatMap { WorldPose.populatedX(frame: $0, size: Float(header.size)) },
-                       fovY: pose.fovY)
+                       fovY: pose.fovY, globe: globeActive)
     }
 
     /// The Home view at once (a new world; a test). The `h` and `r` keys and the toolbar fly there (`home()`).
@@ -526,6 +586,22 @@ final class WorldModel: ObservableObject {
     /// A change that leaves the distance alone gets the distance the player asked for (`distanceWish`) if the limit of the tilt had
     /// held it nearer, and the limit holds it again if it still must: tilting the view to the horizon and back leaves the zoom where
     /// it was.
+    /// The view of the pose as the globe's (or the flat map's, `globeEnabled` off): the type that grabs, zooms and pans through the morph.
+    func vantage() -> WorldVantage {
+        WorldVantage(pose: pose, size: worldSize, height: height, aspect: aspect, globe: globeActive)
+    }
+
+    /// `editPose` for a gesture of the vantage (grab, zoom, pan): the regime solver of DESIGN §36.10 at the globe, the plane's exact one
+    /// on the flat map.
+    func editPose(through change: (inout WorldVantage) -> Void) {
+        editPose { pose in
+            var v = WorldVantage(pose: pose, size: self.worldSize, height: self.height, aspect: self.aspect,
+                                 globe: self.globeActive)
+            change(&v)
+            pose = v.pose
+        }
+    }
+
     func editPose(_ change: (inout WorldPose) -> Void) {
         let before = pose.distance
         let wish = distanceWish ?? before
@@ -533,7 +609,7 @@ final class WorldModel: ObservableObject {
         if pose.distance == before { pose.distance = wish }
         pose.followsHeight = Self.followsHeight(followState.target)
         let requested = pose.distance
-        pose.clamp(aspect: aspect, size: worldSize, height: height)
+        pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeActive)
         distanceWish = pose.distance < requested * (1 - 1e-5) ? requested : nil
         cameraIsHome = false
         pushCamera()
@@ -549,11 +625,11 @@ final class WorldModel: ObservableObject {
     /// heading and the tilt about the target. The left button grabs instead (`beginGrab`, `grab(to:)`).
     func drag(dx: Float, dy: Float, orbit: Bool) {
         dismissHint()
+        motion.stop(time: now())
         cancelCameraMotion()  // a manual drag cancels the follow (the selection stays)
         headingEase = nil
         let size = viewSize
-        let (aspect, world) = (self.aspect, worldSize)
-        editPose { orbit ? $0.turn(dx: dx, dy: dy) : $0.pan(dx: dx, dy: dy, view: size, aspect: aspect, size: world) }
+        if orbit { editPose { $0.turn(dx: dx, dy: dy) } } else { editPose(through: { $0.pan(dx: dx, dy: dy, view: size) }) }
     }
 
     // MARK: The grab
@@ -562,7 +638,9 @@ final class WorldModel: ObservableObject {
     /// the drag keeps under the pointer.
     func beginGrab(at point: CGPoint) {
         dismissHint()
-        grabAnchor = pose.point(at: WorldPose.ndc(of: point, in: viewSize), aspect: aspect, size: worldSize)
+        grabAnchor = vantage().anchor(at: WorldPose.ndc(of: point, in: viewSize))
+        motion.begin(at: point, time: now())
+        grabMoved = false
     }
 
     /// The pointer is at `point` with the left button down: the point grabbed is under it, exactly (`WorldPose.grab`).
@@ -571,12 +649,34 @@ final class WorldModel: ObservableObject {
         guard let anchor = grabAnchor else { return }
         cancelCameraMotion()
         headingEase = nil
+        motion.move(to: point, time: now())
+        grabMoved = true
         let ndc = WorldPose.ndc(of: point, in: viewSize)
-        let (aspect, world) = (self.aspect, worldSize)
-        editPose { $0.grab(anchor: anchor, at: ndc, aspect: aspect, size: world) }
+        editPose(through: { $0.grab(anchor: anchor, at: ndc) })
     }
 
-    func endGrab() { grabAnchor = nil }
+    /// The left button went up. On the globe a flick keeps a short inertia (the pointer's last speed, decaying with 0.25 s; not after a
+    /// short drag, not with reduced motion), and View > Keep north up eases the heading back to 0 over 0.4 s (the grab carried it, which
+    /// drifts at high latitude).
+    func endGrab() {
+        defer {
+            grabAnchor = nil
+            grabMoved = false
+        }
+        guard grabAnchor != nil else { return }
+        let view = vantage()
+        let reduced = reduceMotion()
+        let flicked = motion.end(time: now(), allowed: view.isGlobe && view.s >= WorldVantage.capFrom && !reduced)
+        if grabMoved, display.keepNorthUp, view.s > 0, pose.heading != 0, flight?.home != true {
+            viewEase = nil
+            if reduced {
+                editPose { $0.heading = 0 }
+            } else {
+                headingEase = HeadingEase(from: pose.heading, length: GlobeMotion.northUpDuration)
+            }
+        }
+        if flicked || headingEase != nil { startAnimating() }
+    }
 
     // MARK: Zoom and scroll
 
@@ -591,8 +691,7 @@ final class WorldModel: ObservableObject {
             cancelCameraMotion()
             headingEase = nil
             let size = viewSize
-            let (aspect, world) = (self.aspect, worldSize)
-            editPose { $0.pan(dx: dx, dy: dy, view: size, aspect: aspect, size: world) }
+            editPose(through: { $0.pan(dx: dx, dy: dy, view: size) })
         case .zoom(let factor):
             zoom(by: factor, at: onMap ? point : nil)
         }
@@ -612,8 +711,7 @@ final class WorldModel: ObservableObject {
         viewEase = nil
         distanceWish = nil
         let ndc = point.map { WorldPose.ndc(of: $0, in: viewSize) }
-        let (aspect, world, height) = (self.aspect, worldSize, self.height)
-        editPose { $0.zoom(by: factor, at: ndc, aspect: aspect, size: world, height: height) }
+        editPose(through: { $0.zoom(by: factor, at: ndc) })
     }
 
     /// `n`, a click on the compass: turn the map north up, the heading easing to 0 over 0.3 s.
@@ -624,24 +722,50 @@ final class WorldModel: ObservableObject {
         startAnimating()
     }
 
+    /// The globe overview switched on or off (View > Globe overview): the view is fitted to the new regime and flies Home.
+    private func setGlobe(_ on: Bool) {
+        guard globeEnabled != on else { return }
+        globeEnabled = on
+        guard play.store.header != nil else { return }
+        pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeActive)
+        pushCamera()
+        home()
+    }
+
+    /// Whether the globe turns by itself now: View > Spin on, at the globe, and not reduced motion, not paused.
+    var spinWanted: Bool {
+        guard display.spin, globeActive, !reduceMotion() else { return false }
+        if let clock = play.store.clock, clock.rate == 0 { return false }
+        let view = vantage()
+        return view.isGlobe && view.s >= WorldVantage.capFrom
+    }
+
     func pushCamera() {
         let camera = self.camera
-        let newLevel = WorldLevels.level(
-            distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: worldSize, mapShown: mapShown)
+        let vantage = self.vantage()
+        // (with the globe the derived level: organism under 0.12 L, planet from s = 0.5, else region)
+        let newLevel = globeActive
+            ? projector(size: freeRect.size).level
+            : WorldLevels.level(distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: worldSize, mapShown: mapShown)
         if newLevel != level { level = newLevel }
         overlay.invalidate()
         refreshSizePolicy()
         guard let renderer else { return }
         renderer.camera = camera
         renderer.worldDraw.level = newLevel
-        renderer.worldDraw.copies = SeamCopies.plan(
-            y: pose.y, extentY: pose.footprint(aspect: aspect, size: worldSize, height: height)?.y, size: worldSize)
+        // The globe path when the world has the globe (it draws the flat close-up too, as the same morph at s = 0).
+        let footprint = pose.footprint(aspect: aspect, size: worldSize, height: height)
+        renderer.worldDraw.vantage = vantage.isGlobe ? vantage : nil
+        renderer.worldDraw.wideTiles = footprint.map { $0.x > 0.4 * worldSize } ?? true
+        renderer.worldDraw.copies = SeamCopies.plan(y: pose.y, extentY: footprint?.y, size: worldSize, s: vantage.s)
         view?.needsDisplay = true
+        refreshGlow()
+        if display.spin, spinWanted { startAnimating() }
     }
 
     /// The projection the overlay and the picker use: the camera on the free rectangle (`size` in points).
     func projector(size: CGSize) -> WorldProjector {
-        WorldProjector(camera: camera, size: worldSize, view: size, mapShown: mapShown)
+        WorldProjector(pose: pose, size: worldSize, height: height, view: size, mapShown: mapShown, globe: globeActive)
     }
 
     // MARK: Selection

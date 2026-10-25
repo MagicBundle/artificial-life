@@ -27,17 +27,22 @@ final class HostedWorld {
     static let keys = ["world.dockSide", "world.dockExtent", "world.dockExtentBottom", "world.dockCollapsed"]
     /// What a test may change in the process's defaults (the hosted window model reads and writes them): kept and put back, and cleared
     /// at the start so that a world opens as a first one does.
-    static let stateKeys = [WorldModel.minimapKey, WorldModel.hintKey, WorldModel.heightColourKey, WorldModel.scrollZoomsKey, WorldModel.exposureKey]
+    static let stateKeys = [WorldModel.spinKey, WorldModel.keepNorthUpKey, WorldModel.minimapKey, WorldModel.hintKey, WorldModel.heightColourKey, WorldModel.scrollZoomsKey, WorldModel.exposureKey, WorldModel.globeKey]
     private var savedState: [String: Any?] = [:]
 
     /// Over the stream at `stream` (a recorded `PlayStream`), in a window of `size`; `dockCollapsed` hides the control center, so that
     /// the map has the whole window. The dock is on the right, open, unless said otherwise (nil keeps the player's setting).
-    init(stream: URL, size: CGSize = CGSize(width: 1100, height: 700), dockCollapsed: Bool? = false, timeout: Duration = .seconds(20)) async throws {
+    ///
+    /// `globe` is the stored choice of View > Globe overview: false (the default here: the older tests are of the flat map), true, or nil for
+    /// none, which is a first world as the app opens it (the globe on).
+    init(stream: URL, size: CGSize = CGSize(width: 1100, height: 700), dockCollapsed: Bool? = false, timeout: Duration = .seconds(20),
+         globe: Bool? = false) async throws {
         scratch = try Scratch()
         for key in Self.stateKeys {
             savedState[key] = UserDefaults.standard.object(forKey: key)
             UserDefaults.standard.removeObject(forKey: key)
         }
+        if let globe { UserDefaults.standard.set(globe, forKey: WorldModel.globeKey) }
         if let dockCollapsed {
             for key in Self.keys { saved[key] = UserDefaults.standard.object(forKey: key) }
             UserDefaults.standard.set(DockSide.right.rawValue, forKey: "world.dockSide")

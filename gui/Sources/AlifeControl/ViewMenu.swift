@@ -101,6 +101,17 @@ struct ViewMenu: View {
             // The square map of the whole world with the view's footprint (the `i` key); only a world with a weather map has one.
             Toggle("Minimap (I)", isOn: layer(\.minimap))
                 .disabled(!inputs.mapShown)
+            // The planet: zooming out leads on from the flat map to a globe, Home is the globe (a world with a weather map and a height).
+            Toggle("Globe overview", isOn: layer(\.globe))
+                .disabled(!inputs.mapShown || !inputs.tiltable)
+                .help("Zoom out past the whole map to a planet, and back; Home is the globe. Off: the flat map at every distance")
+            // The globe turns by itself while nothing happens (0.5 degree a second; off), and after a drag its heading eases back to north up.
+            Toggle("Spin", isOn: layer(\.spin))
+                .disabled(!inputs.mapShown || !inputs.tiltable || !inputs.display.globe)
+                .help("The globe turns slowly by itself when nothing is happening; any input stops it for a few seconds")
+            Toggle("Keep north up", isOn: layer(\.keepNorthUp))
+                .disabled(!inputs.mapShown || !inputs.tiltable || !inputs.display.globe)
+                .help("After a drag of the globe, turn it back so that north is up")
             // The trackpad's two-finger scroll pans (the Maps convention); on, it zooms as in v1. The mouse wheel and a pinch always zoom.
             // A Magic Mouse reports precise deltas like a trackpad, so its scroll pans too: this is how it zooms.
             Toggle("Scroll zooms", isOn: layer(\.scrollZooms))

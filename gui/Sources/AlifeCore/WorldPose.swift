@@ -38,6 +38,10 @@ package struct WorldPose: Equatable, Sendable {
     /// view from the Side preset, reached by the handle or an Option drag as well). It is a function of the tilt and `z`, kept in step
     /// by `clamp`, so it goes as the tilt is relaxed. Nothing for a followed height, a 2D world or a world with no height.
     package private(set) var lift: Float = 0
+    /// The unit direction of the centre while it is inside a pole cap of the globe (`|latitude| >= phi_max`, 85.05 degrees), where
+    /// `(x, y)` can only read the seam row: a grab that turns the globe over a pole needs a centre that the torus has no row for
+    /// (DESIGN §36.10). Nil everywhere else, and always nil on the flat map (`clamp` drops it at `s = 0`).
+    package var cap: SIMD3<Float>?
 
     package init(x: Float, y: Float, z: Float = 0, heading: Float = 0, tilt: Float = 0, distance: Float,
                  fovY: Float = Camera.defaultFovY, faceDown: Bool = false) {
@@ -145,7 +149,11 @@ package struct WorldPose: Equatable, Sendable {
     /// the point looked at, `d sin(tilt)`, stays within `WorldFog.eyeReach * L`, so the eye is over the clear box (the near edge of the
     /// patch and the floor under the eye are never in the haze). The two limits meet without a step (the second is no limit at a
     /// tilt of 0). Never under `WorldLevels.minDistance`.
-    package static func maxDistance(size: Float, fovY: Float, aspect: Float, heading: Float = 0, z: Float = 0, tilt: Float = 0) -> Float {
+    package static func maxDistance(size: Float, fovY: Float, aspect: Float, heading: Float = 0, z: Float = 0, tilt: Float = 0,
+                                    globe: Bool = false) -> Float {
+        // With the globe the farthest view is the globe at 36% of the height, whatever the tilt: no patch edge to keep out of the
+        // picture, and the haze is the limb's (the camera orbits the planet).
+        if globe { return max(Morph.maxDistanceFraction * size, WorldLevels.minDistance) }
         let t = tan(fovY / 2)
         let a = max(aspect, 1e-3)
         let c = abs(cos(heading)), s = abs(sin(heading))
@@ -158,8 +166,8 @@ package struct WorldPose: Equatable, Sendable {
     }
 
     /// The most `distance` this view may have now.
-    package func distanceLimit(size: Float, aspect: Float) -> Float {
-        Self.maxDistance(size: size, fovY: fovY, aspect: aspect, heading: heading, z: z, tilt: tilt)
+    package func distanceLimit(size: Float, aspect: Float, globe: Bool = false) -> Float {
+        Self.maxDistance(size: size, fovY: fovY, aspect: aspect, heading: heading, z: z, tilt: tilt, globe: globe)
     }
 
     /// The largest offset from the centre, along x and along y, of the floor points the four corners of the view see: how far
@@ -223,16 +231,18 @@ package struct WorldPose: Equatable, Sendable {
     /// The clamps of every edit: `x` and `y` into the world, `z` into `[0, H]`, the heading into `[-pi, pi)`, the tilt into
     /// `[0, maxTilt]`, then the distance between a few agent radii and the limit of that tilt (`maxDistance`: a tilted view is held
     /// nearer, not tilted back).
-    package mutating func clamp(aspect: Float, size: Float, height: Float) {
+    package mutating func clamp(aspect: Float, size: Float, height: Float, globe: Bool = false) {
         if size > 0 {
             x = Torus.wrap(x.isFinite ? x : 0, size: size)
             y = Torus.wrap(y.isFinite ? y : 0, size: size)
         }
+        if !globe || faceDown { cap = nil }
+        if let c = cap, !(c.x.isFinite && c.y.isFinite && c.z.isFinite) || simd_length(c) < 0.5 { cap = nil }
         z = min(max(z.isFinite ? z : 0, 0), max(height, 0))
         heading = Self.wrap(heading.isFinite ? heading : 0)
         tilt = min(max(tilt.isFinite ? tilt : 0, 0), Self.maxTilt)
         lift = followsHeight || faceDown || height <= 0 ? 0 : Self.edgeOnLift(tilt: tilt) * max(height / 2 - z, 0)
-        let limit = distanceLimit(size: size, aspect: aspect)
+        let limit = distanceLimit(size: size, aspect: aspect, globe: globe && !faceDown)
         distance = min(max(distance.isFinite ? distance : limit, WorldLevels.minDistance), max(limit, WorldLevels.minDistance))
     }
 
@@ -331,12 +341,14 @@ package struct WorldPose: Equatable, Sendable {
     /// The flat overview: the whole width of one world, north up, straight down, at the equator (`y = 0`, where the weather is; the
     /// middle of a 2D world), facing `populatedX` when the caller knows where the organisms are. It is the farthest the view may be.
     package static func home(for header: StreamHeader, aspect: Float, populatedX: Float? = nil,
-                             fovY: Float = Camera.defaultFovY) -> WorldPose {
+                             fovY: Float = Camera.defaultFovY, globe: Bool = false) -> WorldPose {
         let size = Float(header.size)
         let faceDown = header.dims != 3
         var view = WorldPose(x: Torus.wrap(populatedX ?? size / 2, size: size), y: faceDown ? size / 2 : 0, distance: 1,
                              fovY: fovY, faceDown: faceDown)
-        view.distance = view.distanceLimit(size: size, aspect: aspect)
+        // With the globe, Home is the globe overview: the sphere at 80% of the smaller dimension (`Morph.globeDistance`, 0.296 L).
+        view.distance = globe && !faceDown ? Morph.globeDistance(L: size, fovY: fovY, aspect: aspect)
+                                           : view.distanceLimit(size: size, aspect: aspect)
         return view
     }
 

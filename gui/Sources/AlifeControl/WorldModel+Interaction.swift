@@ -14,12 +14,14 @@ struct Flight: Equatable {
 struct HeadingEase: Equatable {
     static let duration: Float = 0.3
     let from: Float
+    /// Seconds the ease takes: 0.3 for `n` and the compass, 0.4 for Keep north up after a drag of the globe.
+    var length: Float = HeadingEase.duration
     var elapsed: Float = 0
 
     /// The heading `dt` seconds on, and whether the ease is over.
     mutating func step(dt: Float) -> (heading: Float, done: Bool) {
         elapsed += dt
-        let t = min(max(elapsed / Self.duration, 0), 1)
+        let t = min(max(elapsed / length, 0), 1)
         return (from * (1 - t * t * (3 - 2 * t)), t >= 1)
     }
 }
@@ -233,7 +235,7 @@ extension WorldModel {
 
     /// Whether the camera is moving by itself (following or flying).
     var cameraMotionPending: Bool {
-        isFlying || !followState.target.isNone || headingEase != nil || zoomEase != nil || viewEase != nil
+        isFlying || !followState.target.isNone || headingEase != nil || zoomEase != nil || viewEase != nil || motion.isCoasting
     }
 
     /// Whether what the camera follows has a height of its own that the point looked at takes (an organism, a lineage's centroid): a
@@ -250,7 +252,7 @@ extension WorldModel {
         if followTarget != target { followTarget = target }
         if pose.followsHeight != Self.followsHeight(target) {  // (the lift of the point looked at at edge-on goes with the follow)
             pose.followsHeight = Self.followsHeight(target)
-            pose.clamp(aspect: aspect, size: worldSize, height: height)
+            pose.clamp(aspect: aspect, size: worldSize, height: height, globe: globeActive)
             pushCamera()
         }
         if target.isNone, !isFlying { glide.stop() }
@@ -258,6 +260,7 @@ extension WorldModel {
 
     /// A manual drag, `Esc`, a reset: whatever moved the camera by itself stops. The selection stays (except for `Esc`).
     func cancelCameraMotion() {
+        motion.stopCoasting(time: now())  // (the samples of a drag in progress stay: `grab` feeds them)
         zoomEase = nil
         viewEase = nil
         setFollow(.none)
@@ -270,6 +273,7 @@ extension WorldModel {
 
     /// A zoom: a flight under way stops where it is (any input does, DESIGN §36.5); a follow goes on, at the user's distance.
     func stopFlight() {
+        motion.stopCoasting(time: now())
         zoomEase = nil
         viewEase = nil
         if followState.target.isNone {
@@ -322,7 +326,7 @@ extension WorldModel {
 
     /// The distance a fly ends at on something of `level`.
     func flyDistance(_ level: WorldLevel) -> Float {
-        WorldLevels.flyDistance(level, size: worldSize, fovY: camera.fovY, aspect: aspect)
+        WorldLevels.flyDistance(level, size: worldSize, fovY: camera.fovY, aspect: aspect, globe: globeActive && vantage().isGlobe)
     }
 
     /// Flies the camera to `point` (when there is one) and to `distance`, ending at rest. Whatever followed stops. Not while
@@ -365,11 +369,13 @@ extension WorldModel {
 
     private func makePath(to goal: FlightPath.Pose) -> FlightPath {
         let width = 2 * tan(pose.fovY / 2) * max(1, aspect)
-        return FlightPath(from: FlightPath.Pose(pose), to: goal, size: worldSize, widthPerDistance: width, straight: reduceMotion())
+        return FlightPath(from: FlightPath.Pose(pose), to: goal, size: worldSize, widthPerDistance: width, straight: reduceMotion(),
+                          greatCircle: globeActive && !pose.faceDown)
     }
 
     func clampedDistance(_ d: Float) -> Float {
-        let limit = WorldPose.maxDistance(size: worldSize, fovY: pose.fovY, aspect: aspect, heading: pose.heading, tilt: pose.tilt)
+        let limit = WorldPose.maxDistance(size: worldSize, fovY: pose.fovY, aspect: aspect, heading: pose.heading, tilt: pose.tilt,
+                                          globe: globeActive)
         return min(max(d, WorldLevels.minDistance), max(limit, WorldLevels.minDistance))
     }
 
@@ -401,6 +407,20 @@ extension WorldModel {
                 if !following { $0.z = step.z }
             }
             easing = easing || !step.done
+        }
+        if motion.isCoasting, let d = motion.coast(dt: min(dt, 0.1)) {
+            let size = viewSize
+            editPose(through: { $0.pan(dx: d.x, dy: d.y, view: size) })
+            easing = true
+        }
+        // The idle spin: the globe turns west to east by itself, 0.5 degree of longitude a second, once it has rested for a few seconds,
+        // and not while it follows, flies, eases, is grabbed, is aimed at or the world is paused (`spinWanted`).
+        if spinWanted {
+            let busy = !followState.target.isNone || isFlying || easing || grabAnchor != nil || powers.isAiming
+            if motion.spins(enabled: true, time: now(), busy: busy) {
+                editPose { $0.x = Torus.wrap($0.x + GlobeMotion.spinStep(dt: min(dt, 0.1), size: self.worldSize), size: self.worldSize) }
+            }
+            easing = true
         }
         if followState.target.isNone, isFlying, let flight { return advanceFlight(flight, dt: dt) || easing }
         var goal: SIMD3<Float>?

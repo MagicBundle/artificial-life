@@ -41,7 +41,7 @@ enum Shaders {
         sphereVertex, sphereFragment, bondVertex, boxVertex, lineFragment, planeVertex, planeFragment, sliceFragment,
         agentVertexA, agentFragmentA, agentFragmentFlat, bondVertexA, pointVertexA, pointFragment, mapVertex, mapFragment,
         insetVertex, insetPointVertex, skyVertex, skyFragment, worldBoxVertex, worldBoxFragment,
-    ]
+    ] + globeEntryPoints
 
     static let source = """
     #include <metal_stdlib>
@@ -388,6 +388,8 @@ enum Shaders {
         return float3(target + d, p.z);
     }
 
+    \(globeCommon)
+
     struct AgentVaryingA {
         float4 position [[position]];
         float3 center;
@@ -412,7 +414,8 @@ enum Shaders {
                                       device const packed_float3* pos [[buffer(2)]],
                                       device const half2* orient [[buffer(3)]],
                                       device const uint* rgb [[buffer(4)]],
-                                      constant WorldU& world [[buffer(7)]])
+                                      constant WorldU& world [[buffer(7)]],
+                                      constant GlobeU& globe [[buffer(8)]])
     {
         AgentVaryingA out;
         out.position = float4(2.0, 2.0, 2.0, 1.0);
@@ -427,7 +430,25 @@ enum Shaders {
         out.cue = 1.0;
 
         float3 raw = float3(pos[iid]);
-        float3 center = minimumImage(raw, world.target.xy, world.target.z);
+        // On the globe path the row is placed by the morph (the foot must face the eye: the horizon test, valid at every s); its body is
+        // scaled by the sphere units per torus unit there, and its forward axis turned into the surface's tangent frame.
+        bool onGlobe = globe.shade.w > 0.5;
+        float3 center;
+        float radiusScale = 1.0;
+        float3 forwardAxis = float3(0.0);
+        float placeAlpha = 1.0;
+        if (onGlobe) {
+            GlobePlace place = globePlace(raw, globe);
+            if (!(dot(place.nrm, scene.eye.xyz - place.foot) > 0.0) || !(place.alpha > 0.0)) { return out; }
+            center = place.p;
+            radiusScale = place.scale;
+            placeAlpha = place.alpha;
+            float2 angles = float2(orient[iid]);
+            float cp = cos(angles.y);
+            forwardAxis = cp * cos(angles.x) * place.east + cp * sin(angles.x) * place.north + sin(angles.y) * place.nrm;
+        } else {
+            center = minimumImage(raw, world.target.xy, world.target.z);
+        }
         float3 toCenter = center - scene.eye.xyz;
         float dist = length(toCenter);
         float3 viewAxis = cross(scene.up.xyz, scene.right.xyz);
@@ -437,10 +458,10 @@ enum Shaders {
         // Pixels per world unit at the centre, the body's physical radius in pixels, and the radius it is drawn with.
         float perPixel = 0.5 * scene.viewport.y * world.refs.w / depth;
         float smallest = world.style.z;
-        float drawnPx = clamp(scene.world.z * perPixel, smallest, max(smallest, world.size.x));
+        float drawnPx = clamp(scene.world.z * radiusScale * perPixel, smallest, max(smallest, world.size.x));
         float radius = drawnPx / perPixel;
         if (!(dist > 1.5 * radius)) { return out; }
-        float alpha = smoothstep(world.size.y, world.size.z, drawnPx);
+        float alpha = smoothstep(world.size.y, world.size.z, drawnPx) * placeAlpha;
         if (!(alpha > 0.0)) { return out; }
         bool isFlat = drawnPx < world.params.w;
         if (isFlat != (world.flags.x == 1u)) { return out; }
@@ -459,7 +480,7 @@ enum Shaders {
         }
         float2 angles = float2(orient[iid]);
         float cp = cos(angles.y);
-        out.forward = float3(cp * cos(angles.x), cp * sin(angles.x), sin(angles.y));
+        out.forward = onGlobe ? forwardAxis : float3(cp * cos(angles.x), cp * sin(angles.x), sin(angles.y));
         out.position = scene.viewProjection * float4(worldPoint, 1.0);
         out.center = center;
         out.world = worldPoint;
@@ -515,7 +536,8 @@ enum Shaders {
                                    device const packed_float3* pos [[buffer(2)]],
                                    device const uint* rgb [[buffer(4)]],
                                    device const uint2* bonds [[buffer(5)]],
-                                   constant WorldU& world [[buffer(7)]])
+                                   constant WorldU& world [[buffer(7)]],
+                                   constant GlobeU& globe [[buffer(8)]])
     {
         uint2 ij = bonds[iid];
         float L = world.target.z;
@@ -525,6 +547,21 @@ enum Shaders {
         bool atMiddle = (vid & 1u) != 0u;
         float3 p = atMiddle ? 0.5 * (pa + pb) : (fromB ? pb : pa);
         LineVarying out;
+        if (globe.shade.w > 0.5) {
+            // The second end is the image nearest the first (the offsets add), both placed by the morph; the bond is hidden with its first end.
+            float3 oa = globeOffsets(float3(pos[ij.x]), globe);
+            float3 rb = float3(pos[ij.y]) - float3(pos[ij.x]);
+            float2 d = rb.xy - L * rint(rb.xy / L);
+            float3 ga = globePosition(oa.x, oa.y, pa.z, globe);
+            float3 gb = globePosition(oa.x + d.x, oa.y + d.y, pb.z, globe);
+            float3 foot = globePosition(oa.x, oa.y, 0.0, globe);
+            if (!(dot(globeNormal(oa.x, oa.y, globe), scene.eye.xyz - foot) > 0.0) || !(oa.z > 0.0)) {
+                out.position = float4(2.0, 2.0, 2.0, 1.0);
+                out.color = float4(0.0);
+                return out;
+            }
+            p = atMiddle ? 0.5 * (ga + gb) : (fromB ? gb : ga);
+        }
         out.position = scene.viewProjection * float4(p, 1.0);
         out.color = float4(mix(organismColor(rgb[fromB ? ij.y : ij.x], fromB ? pb.z : pa.z, scene.world.y, world), float3(1.0), 0.35), 1.0);
         return out;
@@ -541,11 +578,17 @@ enum Shaders {
                                      constant Scene& scene [[buffer(0)]],
                                      device const packed_float3* pos [[buffer(2)]],
                                      device const uint* rgb [[buffer(4)]],
-                                     constant WorldU& world [[buffer(7)]])
+                                     constant WorldU& world [[buffer(7)]],
+                                     constant GlobeU& globe [[buffer(8)]])
     {
         PointVarying out;
         float3 p = minimumImage(float3(pos[vid]), world.target.xy, world.target.z);
         out.position = scene.viewProjection * float4(p, 1.0);
+        if (globe.shade.w > 0.5) {
+            GlobePlace place = globePlace(float3(pos[vid]), globe);
+            bool shown = dot(place.nrm, scene.eye.xyz - place.foot) > 0.0 && place.alpha > 0.0;
+            out.position = shown ? scene.viewProjection * float4(place.p, 1.0) : float4(2.0, 2.0, 2.0, 1.0);
+        }
         out.pointSize = world.style.y;
         out.color = float4(organismColor(rgb[vid], p.z, scene.world.y, world), world.style.x);
         return out;
@@ -626,20 +669,15 @@ enum Shaders {
     // vorticity has a sign (cyclonic warm, anticyclonic cool), a faint tint of the sea by hemisphere, the two equators, and the
     // territory of the kin groups: borders, and a weak tint of each cell in its owner's colour. Every plane is the mix of the
     // previous and the current delivery by the wall-clock fade. The palette is MapPalette.swift's (a test compares the numbers).
-    fragment float4 mapFragment(MapVarying in [[stage_in]],
-                                constant WorldU& world [[buffer(7)]],
-                                texture2d<float> rainCur [[texture(0)]],
-                                texture2d<float> cloudCur [[texture(1)]],
-                                texture2d<float> zetaCur [[texture(2)]],
-                                texture2d<float> seaCur [[texture(3)]],
-                                texture2d<float> rainPrev [[texture(4)]],
-                                texture2d<float> cloudPrev [[texture(5)]],
-                                texture2d<float> zetaPrev [[texture(6)]],
-                                texture2d<float> seaPrev [[texture(7)]],
-                                texture2d<float, access::read> territory [[texture(8)]])
+    // The map's colour at `uv` before the opacity and the haze: `gridFade` scales the territory and `lineFade` the two equator lines (the
+    // globe fades them into the pole caps and draws its own graticule).
+    float3 mapColorAt(float2 uv,
+                      constant WorldU& world,
+                      texture2d<float> rainCur, texture2d<float> cloudCur, texture2d<float> zetaCur, texture2d<float> seaCur,
+                      texture2d<float> rainPrev, texture2d<float> cloudPrev, texture2d<float> zetaPrev, texture2d<float> seaPrev,
+                      texture2d<float, access::read> territory,
+                      float gridFade, float lineFade)
     {
-        const float3 background = float3(0.035, 0.04, 0.055);
-        float2 uv = in.uv;
         float3 color = float3(0.045, 0.055, 0.075);
         if ((world.flags.w & 1u) != 0u) {
             float k = world.params.x;
@@ -661,7 +699,7 @@ enum Shaders {
             float g = uv.y * 2.0;
             float f = fract(g);
             float line = 1.0 - smoothstep(0.5, 1.5, min(f, 1.0 - f) / max(fwidth(g), 1e-6));
-            color = mix(color, float3(0.75, 0.80, 0.90), 0.35 * line);
+            color = mix(color, float3(0.75, 0.80, 0.90), 0.35 * line * lineFade);
         }
         if ((world.flags.w & 2u) != 0u) {
             float2 size = float2(territory.get_width(), territory.get_height());
@@ -669,7 +707,7 @@ enum Shaders {
             g -= size * floor(g / size);
             float2 cellF = floor(g);
             float4 here = territory.read(uint2(min(cellF, size - 1.0)));
-            color = mix(color, here.rgb, world.params.z * here.a);
+            color = mix(color, here.rgb, world.params.z * here.a * gridFade);
             // A border where the owners of neighbouring cells differ, a pixel wide, on the side the pixel is on.
             float2 f = g - cellF;
             float2 w = fwidth(g);
@@ -686,8 +724,26 @@ enum Shaders {
                     if (!same && (there.a > 0.0 || here.a > 0.0)) { border = 1.0; }
                 }
             }
-            color = mix(color, float3(1.0), world.look.y * border);
+            color = mix(color, float3(1.0), world.look.y * border * gridFade);
         }
+        return color;
+    }
+
+    fragment float4 mapFragment(MapVarying in [[stage_in]],
+                                constant WorldU& world [[buffer(7)]],
+                                texture2d<float> rainCur [[texture(0)]],
+                                texture2d<float> cloudCur [[texture(1)]],
+                                texture2d<float> zetaCur [[texture(2)]],
+                                texture2d<float> seaCur [[texture(3)]],
+                                texture2d<float> rainPrev [[texture(4)]],
+                                texture2d<float> cloudPrev [[texture(5)]],
+                                texture2d<float> zetaPrev [[texture(6)]],
+                                texture2d<float> seaPrev [[texture(7)]],
+                                texture2d<float, access::read> territory [[texture(8)]])
+    {
+        const float3 background = float3(0.035, 0.04, 0.055);
+        float3 color = mapColorAt(in.uv, world, rainCur, cloudCur, zetaCur, seaCur, rainPrev, cloudPrev, zetaPrev, seaPrev,
+                                  territory, 1.0, 1.0);
         float3 shown = mix(background, color, world.params.y);
         if (world.fog.a > 0.5) {
             // The haze: the Chebyshev distance of the floor point from the point looked at, past the clear box, as 1 - exp(-x^2).
@@ -728,5 +784,7 @@ enum Shaders {
         float haze = elevation <= 0.0 ? 1.0 : exp(-elevation / max(world.fogShape.w, 1e-3));
         return float4(mix(background, world.fog.rgb, haze), 1.0);
     }
+
+    \(globeEntries)
     """
 }

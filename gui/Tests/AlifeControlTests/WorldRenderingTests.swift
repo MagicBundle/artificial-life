@@ -147,7 +147,7 @@ import simd
         let source = Shaders.source
         for expression in ["world.look.z + world.size.w * clamp(raw.z / scene.world.y, 0.0, 1.0)",
                            "smoothstep(world.size.y, world.size.z, drawnPx)",
-                           "clamp(scene.world.z * perPixel, smallest, max(smallest, world.size.x))",
+                           "clamp(scene.world.z * radiusScale * perPixel, smallest, max(smallest, world.size.x))",
                            "world.params.z * here.a", "world.look.y * border", "color * world.look.x"] {
             #expect(source.contains(expression), "\(expression)")
         }

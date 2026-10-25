@@ -136,7 +136,8 @@ struct WorldRenderBench {
     }
 
     /// Draws `scenario` for `draws` ticks of 60 Hz and returns what it cost.
-    private func measure(rows: Int, scenario: String, level: WorldLevel, points: Bool, draws: Int, size: (Int, Int), hz: Int) async throws -> Result {
+    private func measure(rows: Int, scenario: String, level: WorldLevel, points: Bool, draws: Int, size: (Int, Int), hz: Int,
+                         globeS: Float? = nil, minimap: Bool = false) async throws -> Result {
         let device = try #require(MTLCreateSystemDefaultDevice(), "no Metal device")
         let renderer = try Renderer(device: device)
         let fixture = try PlayFixtureStore.store("3d")
@@ -157,12 +158,28 @@ struct WorldRenderBench {
         display.agentPoints = points
         if environment("ALIFE_BENCH_PHYSICAL") == "1" { display.sizeMode = .physical }  // v1's carpet: the dearest the viewer can draw
         renderer.worldDraw.display = display
+        // The globe path (DESIGN §36.10): the view at the morph's scalar `globeS` (1: the globe, 0.5: mid-morph, 0: the flat close-up drawn
+        // by the same mesh), centred on the equator at the populated side; the minimap in the corner when asked.
+        var vantage: WorldVantage?
+        if let globeS {
+            let fov = camera.fovY
+            let d = globeS >= 1 ? Morph.globeDistance(L: 320, fovY: fov, aspect: aspect)
+                : (globeS <= 0 ? WorldLevels.flyDistance(.region, size: 320, fovY: fov, aspect: aspect, globe: true)
+                   : Morph.distance(forS: globeS, L: 320, fovY: fov, aspect: aspect))
+            let pose = WorldPose(x: 160, y: 40, z: 0, heading: 0, tilt: 0, distance: d, fovY: fov)
+            vantage = WorldVantage(pose: pose, size: 320, height: 80, aspect: aspect, globe: true)
+            renderer.worldDraw.vantage = vantage
+            renderer.worldDraw.wideTiles = globeS < 0.3
+        }
+        if environment("ALIFE_BENCH_NO_GLOW") == "1" { renderer.worldDraw.glow = false }
+        if minimap { renderer.worldDraw.inset = CGRect(x: 0.74, y: 0.62, width: 0.24, height: 0.34) }
         let frames = [0, 1].map { BenchScene.frame(rows: rows, size: 320, height: 80, seed: UInt64($0 + 1), step: UInt64($0)) }
         renderer.showWorld(frame: frames[0])
         // The state the shipped World draws in (DESIGN §36.7): the coverage radius of the rows in view, as `WorldModel` counts it.
         // Without it the organisms would be drawn at the 9 px absolute cap, which is not what anyone sees.
         if display.sizeMode == .capped, environment("ALIFE_BENCH_NO_COVER") != "1" {  // (that variable draws as the A0 bench of the review did)
-            let inView = OrganismSizePolicy.rowsInView(frame: frames[0], camera: camera, aspect: aspect, size: 320)
+            let inView = vantage.map { OrganismSizePolicy.rowsInView(frame: frames[0], vantage: $0) }
+                ?? OrganismSizePolicy.rowsInView(frame: frames[0], camera: camera, aspect: aspect, size: 320)
             renderer.worldDraw.coverRadius = OrganismSizePolicy.coverRadius(area: Float(size.0 * size.1), rows: inView)
             renderer.worldDraw.pixelsPerPoint = 2
         }
@@ -220,10 +237,18 @@ struct WorldRenderBench {
         let scenarios: [(String, WorldLevel, Bool)] = [
             ("planet", .planet, false), ("planet with points", .planet, true), ("region", .region, false), ("organism", .organism, false),
         ]
+        // The scenarios of the globe (the spec's 7.5): the globe with the minimap, mid-morph, the flat region and the organism drawn by the
+        // globe path (the outlines), and the minimap alone over the planet level of the flat quad.
+        typealias Scenario = (String, WorldLevel, Bool, Float?, Bool)
+        let all: [Scenario] = scenarios.map { ($0.0, $0.1, $0.2, nil, false) } + [
+            ("globe (s 1) with minimap", .planet, false, 1, true), ("morph (s 0.5)", .planet, false, 0.5, false),
+            ("flat region with outlines (globe path)", .region, false, 0, false), ("minimap over the planet", .planet, false, nil, true),
+        ]
         var results: [Result] = []
         for n in rows {
-            for (name, level, points) in scenarios {
-                let r = try await measure(rows: n, scenario: name, level: level, points: points, draws: draws, size: (width, height), hz: hz)
+            for (name, level, points, globeS, minimap) in all {
+                let r = try await measure(rows: n, scenario: name, level: level, points: points, draws: draws, size: (width, height), hz: hz,
+                                          globeS: globeS, minimap: minimap)
                 results.append(r)
                 let gpu = r.gpuMs.map { String(format: "p50 %.2f p95 %.2f max %.2f", $0.p50, $0.p95, $0.max) } ?? "-"
                 let cpu = r.cpuMs.map { String(format: "p50 %.2f p95 %.2f max %.2f", $0.p50, $0.p95, $0.max) } ?? "-"

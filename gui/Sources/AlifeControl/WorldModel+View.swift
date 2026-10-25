@@ -29,7 +29,7 @@ extension WorldModel {
         if preset != .side { wish = distanceToReturnTo() ?? wish }
         let (before, tiltBefore) = (distanceWish ?? pose.distance, pose.tilt)
         let ease = ViewEase(preset: preset, from: pose, wish: wish, aspect: aspect, size: worldSize, height: height, keepHeight: following,
-                            duration: reduceMotion() ? ViewEase.reducedDuration : ViewEase.duration)
+                            duration: reduceMotion() ? ViewEase.reducedDuration : ViewEase.duration, globe: globeActive)
         if preset == .side, tiltBefore < WorldPose.gripTilt { sideReturn = (before: before, at: ease.toDistance) }
         viewEase = ease
         startAnimating()
@@ -56,7 +56,8 @@ extension WorldModel {
         if angled { lastTilt = pose.tilt }
         let goal = angled ? 0 : min(max(lastTilt, ViewPreset.oblique.tilt * 0.5), ViewPreset.low.tilt)
         viewEase = ViewEase(tiltTo: goal, from: pose, wish: distanceToReturnTo() ?? distanceWish, aspect: aspect, size: worldSize,
-                            keepHeight: following, duration: reduceMotion() ? ViewEase.reducedDuration : ViewEase.duration)
+                            keepHeight: following, duration: reduceMotion() ? ViewEase.reducedDuration : ViewEase.duration,
+                            globe: globeActive)
         startAnimating()
     }
 

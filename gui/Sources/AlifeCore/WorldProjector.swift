@@ -31,6 +31,9 @@ package struct WorldProjector: Equatable, Sendable {
     package var view: CGSize
     /// Whether a weather map is in view (the planet level exists only then, `WorldLevels.level`).
     package var mapShown: Bool
+    /// The view as the globe's (nil: a camera only, the flat map at every distance). With it, a projector at `s > 0` projects and picks
+    /// through the morph (`WorldVantage`); at `s = 0` it is the flat camera's, byte for byte.
+    package var vantage: WorldVantage?
 
     package init(camera: Camera, size: Float, view: CGSize, mapShown: Bool = true) {
         self.camera = camera
@@ -39,10 +42,33 @@ package struct WorldProjector: Equatable, Sendable {
         self.mapShown = mapShown
     }
 
+    /// The projector of a pose on a world of `size` x `size` x `height`; `globe` is whether the globe exists (`s` then follows the
+    /// distance), else the view is the flat map.
+    package init(pose: WorldPose, size: Float, height: Float, view: CGSize, mapShown: Bool = true, globe: Bool = false) {
+        self.camera = pose.camera(size: size, height: height)
+        self.size = size
+        self.view = view
+        self.mapShown = mapShown
+        let aspect = view.height >= 1 ? Float(view.width / view.height) : 1
+        let vantage = WorldVantage(pose: pose, size: size, height: height, aspect: aspect, globe: globe && mapShown)
+        self.vantage = vantage.isGlobe ? vantage : nil
+    }
+
+    /// The morph scalar: 0 for the flat map.
+    package var s: Float { vantage?.s ?? 0 }
+
+    /// The view is on the globe or between (the camera's flat projection no longer applies).
+    package var isMorphing: Bool { s > 0 }
+
     package var aspect: Float { view.height >= 1 ? Float(view.width / view.height) : 1 }
 
     package var level: WorldLevel {
-        WorldLevels.level(distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: size, mapShown: mapShown)
+        if let vantage {
+            // With the globe the derived level: organism under 0.12 L, planet from s = 0.5, else region.
+            if camera.distance < WorldLevels.organismDistance * size { return .organism }
+            return vantage.s >= 0.5 ? .planet : .region
+        }
+        return WorldLevels.level(distance: camera.distance, fovY: camera.fovY, aspect: aspect, size: size, mapShown: mapShown)
     }
 
     /// The image of a world point nearest the camera target.
@@ -52,6 +78,7 @@ package struct WorldProjector: Equatable, Sendable {
 
     /// The point in the view where `world` (at its minimum image) is drawn; nil behind the eye.
     package func screen(_ world: SIMD3<Float>) -> CGPoint? {
+        if isMorphing, let vantage { return vantage.screen(world, in: view) }
         guard let ndc = camera.ndc(of: image(of: world), aspect: aspect) else { return nil }
         return CGPoint(x: CGFloat(ndc.x * 0.5 + 0.5) * view.width, y: CGFloat(0.5 - ndc.y * 0.5) * view.height)
     }
@@ -63,6 +90,10 @@ package struct WorldProjector: Equatable, Sendable {
     /// inverse of `screen` on that plane, up to the wrap: it is how a click on the map names a place for a power.
     package func world(at point: CGPoint, height z: Float = 0) -> SIMD2<Float>? {
         guard view.width >= 1, view.height >= 1 else { return nil }
+        if isMorphing, let vantage {
+            guard let hit = vantage.pick(at: WorldPose.ndc(of: point, in: view), height: z) else { return nil }
+            return SIMD2(hit.x, hit.y)
+        }
         let nx = Float(point.x / view.width) * 2 - 1
         let ny = 1 - Float(point.y / view.height) * 2
         let half = tan(camera.fovY / 2)
@@ -82,6 +113,11 @@ package struct WorldProjector: Equatable, Sendable {
 
     /// The length in points of `units` world units across the view at `world`.
     package func points(ofUnits units: Float, at world: SIMD3<Float>) -> CGFloat? {
+        if isMorphing, let vantage {
+            // The circle of one unit on the surface is an ellipse; the screen-right length is its major axis.
+            let o = vantage.offsets(x: world.x, y: world.y)
+            return vantage.ellipse(e: o.e, n: o.n, z: world.z, in: view).map { CGFloat($0.major * units) }
+        }
         let at = image(of: world)
         // Both ends are placed as they are: `screen` would wrap the far end again, a world away when `at` is near the
         // half-world from the target.
@@ -106,6 +142,11 @@ package struct WorldProjector: Equatable, Sendable {
     /// ahead (along the heading) over those between the centre and a point a unit to the right. 1 looking straight down, towards 0 at
     /// the horizon; never under 0.12, and 1 where it cannot be told.
     package func flatten(at world: SIMD3<Float>) -> CGFloat {
+        if isMorphing, let vantage {
+            let o = vantage.offsets(x: world.x, y: world.y)
+            guard let axes = vantage.ellipse(e: o.e, n: o.n, z: world.z, in: view), axes.major > 1e-6 else { return 1 }
+            return CGFloat(min(max(axes.minor / axes.major, 0.12), 1))
+        }
         let forward = SIMD2(camera.forward.x, camera.forward.y)
         let up = SIMD2(camera.up.x, camera.up.y)
         let alongFloor = simd_length(forward) > 0.05 ? forward : up
@@ -134,6 +175,7 @@ package struct WorldProjector: Equatable, Sendable {
 
     /// Like `screen`, for a point that is already at the image to draw (no further wrapping).
     package func screenOfImage(_ world: SIMD3<Float>) -> CGPoint? {
+        if isMorphing, let vantage { return vantage.screenOfImage(world, in: view) }
         guard let ndc = camera.ndc(of: world, aspect: aspect) else { return nil }
         return CGPoint(x: CGFloat(ndc.x * 0.5 + 0.5) * view.width, y: CGFloat(0.5 - ndc.y * 0.5) * view.height)
     }

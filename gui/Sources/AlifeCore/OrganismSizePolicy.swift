@@ -102,6 +102,9 @@ package enum OrganismSizePolicy {
         return t * t * (3 - 2 * t)
     }
 
+    /// The glow's weight for the same drawn radius: what the instances leave (`1 - instanceAlpha`).
+    package static func glowAlpha(radius: Float) -> Float { 1 - instanceAlpha(radius: radius) }
+
     /// What the shaders and the picker are given for `mode`: the cap on the drawn radius (infinite at the physical size) and the
     /// least radius, in pixels. `cover` is the (smoothed) `coverRadius` of the footprint.
     package static func limits(mode: OrganismSizeMode, cover: Float, distance: Float, size: Float, agentRadius: Float,
@@ -136,6 +139,21 @@ package enum OrganismSizePolicy {
                 let w = simd_dot(rw, p)
                 guard w > 0 else { continue }
                 if abs(simd_dot(rx, p)) <= w, abs(simd_dot(ry, p)) <= w { count += 1 }
+            }
+        }
+        return count
+    }
+
+    /// The same on the globe (DESIGN §36.10): the rows whose position under the morph is in view and faces the eye, each at its nearest image
+    /// (`WorldVantage.offsets`). A pass over the positions with the morph's trigonometry (about 1.7 ms for 42,000 rows in a release build).
+    package static func rowsInView(frame: PlayFrame, vantage v: WorldVantage) -> Int {
+        var count = 0
+        let unit = CGSize(width: 1, height: 1)
+        frame.pos.withUnsafeBufferPointer { pos in
+            for i in 0..<min(frame.n, pos.count / 3) {
+                let o = v.offsets(x: pos[3 * i], y: pos[3 * i + 1])
+                guard let p = v.screen(e: o.e, n: o.n, z: pos[3 * i + 2], in: unit)?.point else { continue }
+                if p.x >= 0, p.x <= 1, p.y >= 0, p.y <= 1 { count += 1 }
             }
         }
         return count
