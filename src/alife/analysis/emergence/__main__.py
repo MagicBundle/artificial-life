@@ -2,7 +2,7 @@
 
 Rules: the run directory is read only, every output goes under ``--out`` (default
 ``analysis_cache/emergence/<run>/``), writes are atomic, and a command that needs a block that has not landed
-says so and exits 2. ``record`` (E2) will be the only command that simulates (it imports MLX lazily).
+says so and exits 2. ``record`` is the only command that simulates (it imports MLX lazily).
 """
 
 from __future__ import annotations
@@ -16,10 +16,9 @@ from pathlib import Path
 
 import numpy as np
 
-from alife.analysis.emergence import compare, panel, prereg, scorecards, synth
+from alife.analysis.emergence import compare, frames, panel, prereg, scorecards, synth
 
 LATER = {
-    "record": "the window recorder (E2)",
     "epr": "block B (E3)",
     "braid": "block C (E4)",
     "winding": "block C (E4)",
@@ -49,9 +48,38 @@ def _git_rev() -> str | None:
         return None
 
 
+def cmd_record(a: argparse.Namespace) -> int:
+    from alife.analysis.emergence import record  # lazy: the only MLX import of the package
+
+    t0, t1 = a.window
+    try:
+        record.record_window(
+            a.run,
+            t0,
+            t1,
+            _out(a, a.run),
+            tau=a.tau,
+            fine_tau=a.fine_tau,
+            fine_groups=a.fine_groups,
+            fine_max=a.fine_max,
+            verify=not a.no_verify,
+            max_lead=a.max_lead,
+            log=lambda m: print(m, flush=True),
+        )
+    except record.RecordMismatch as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except (record.RecordError, FileNotFoundError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_panel(a: argparse.Namespace) -> int:
     wins = a.windows or []
-    fmeta: list[dict] = []
+    fmeta = []
+    for f in a.frames or []:
+        fmeta.append(frames.read_frames(f).meta)
     h = prereg.load_prereg(a.prereg)["sha256"] if a.prereg else None
     cards = []
     feats = [x for x in (a.scorecards or "").split(",") if x]
@@ -133,9 +161,25 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m alife.analysis.emergence", description=__doc__.split("\n")[0]
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser(
+        "record", help="record a window of dense frames (re-simulates, certified against the run)"
+    )
+    p.add_argument("run", type=Path)
+    p.add_argument("--window", type=_window, required=True, metavar="T0:T1")
+    p.add_argument("--out", type=Path)
+    p.add_argument("--tau", type=int, default=100)
+    p.add_argument("--fine-tau", type=int, default=5)
+    p.add_argument("--fine-groups", type=int, default=8)
+    p.add_argument("--fine-max", type=int, default=250)
+    p.add_argument("--max-lead", type=int, default=50_000)
+    p.add_argument(
+        "--no-verify", action="store_true", help="skip the certification against the run (uncertified frames)"
+    )
+    p.set_defaults(fn=cmd_record)
     p = sub.add_parser("panel", help="write the panel of a run")
     p.add_argument("run", type=Path)
     p.add_argument("--windows", type=_window, nargs="*")
+    p.add_argument("--frames", type=Path, nargs="*")
     p.add_argument("--arm", default="unlabelled")
     p.add_argument("--prereg", type=Path)
     p.add_argument("--scorecards", default="")

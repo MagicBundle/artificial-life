@@ -19,11 +19,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
+from alife.analysis.emergence.frames import FRAMES_VERSION
 from alife.analysis.emergence.prereg import ENDPOINTS
 from alife.analysis.emergence.scorecards import FEATURES, SCORECARD_VERSION, ScorecardResult, not_evaluated
 
 PANEL_VERSION: Final = 1
-FRAMES_VERSION: Final = 1  # the frame schema (frames.py, E2); recorded in the header versions
 SECTIONS: Final = ("header", "A", "B", "C", "D", "endpoints", "not_claimed")
 HEADER_KEYS: Final = (
     "panel_version",
