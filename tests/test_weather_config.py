@@ -89,7 +89,11 @@ def test_the_section_has_the_41_keys_and_all_are_hashed() -> None:
     assert not [
         1 for sk in POST_V01_KEYS if sk[0] == "weather" and (sk in UNHASHED_KEYS or sk in OBSERVER_KEYS)
     ]
-    assert [f.name for f in fields(Config)][-2:] == ["weather", "run"]
+    assert [f.name for f in fields(Config)][-3:] == [
+        "weather",
+        "arms",
+        "run",
+    ]  # the feature sections follow weather (DESIGN §43)
 
 
 def test_defaults_agree_with_weather_params_by_field_name() -> None:

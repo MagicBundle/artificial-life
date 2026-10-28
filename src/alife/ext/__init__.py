@@ -53,7 +53,9 @@ __all__ = [
     "validate_all",
 ]
 
-REGISTRY: tuple[ExtSpec, ...] = ()  # a feature PR adds ONE row (ordered by ExtSpec.index)
+from alife.ext.arms import SPEC as _ARMS
+
+REGISTRY: tuple[ExtSpec, ...] = (_ARMS,)  # a feature PR adds ONE row (ordered by ExtSpec.index)
 
 # (owner, ((in_name, width, silent), ...), ((out_name, width, silent), ...), nbr_features): hashable, so that
 # ``layout.for_dims`` stays cached on it.

@@ -26,20 +26,27 @@ NUM_STREAMS: Final = 16
 # 2: Stream.CATASTROPHE took reserved index 8; 3: Stream.WEATHER took reserved index 9. The key layout
 # is unchanged by both.
 RNG_LAYOUT_VERSION: Final = 3
-RNG_COMPATIBLE_VERSIONS: Final = frozenset({1, 2, 3})  # layout versions whose checkpoints this code resumes
+RNG_COMPATIBLE_VERSIONS: Final = frozenset(
+    {1, 2, 3, 4}
+)  # layout versions whose checkpoints this code resumes
 HASH_SALT_BASE: Final = 10  # ``ops.hash32`` salt of extension i is HASH_SALT_BASE + i (comm 13, niche 14)
+
+
+ARMS_LAYOUT_VERSION: Final = 4  # arms takes ``Stream.ARMS`` = 10 and ``InitStream.ARMS`` = 8 (DESIGN §42.4)
 
 
 def layout_version(cfg: object) -> int:
     """The RNG layout version a run of ``cfg`` writes into its meta and checkpoints: ``RNG_LAYOUT_VERSION``
     (3)
-    while no feature that takes a stream is on, so a feature-off run is byte-identical to main. A feature PR
-    that takes a stream (arms: 4) returns its version when enabled and adds it to the compatible set."""
-    return RNG_LAYOUT_VERSION
+    while no feature that takes a stream is on, so a feature-off run is byte-identical to main; 4 with
+    ``arms.enabled`` (the arms stream, a reserved index, leaves every other stream's key unchanged, so version
+    3 stays compatible)."""
+    arms = getattr(cfg, "arms", None)
+    return ARMS_LAYOUT_VERSION if arms is not None and arms.enabled else RNG_LAYOUT_VERSION
 
 
 class Stream(IntEnum):
-    """Per-step streams ``ks[Stream.X]``; indices 10–15 are reserved."""
+    """Per-step streams ``ks[Stream.X]``; indices 11–15 are reserved."""
 
     NOISE = 0
     BOND_PRIO = 1
@@ -51,10 +58,11 @@ class Stream(IntEnum):
     IMMIGRANT = 7
     CATASTROPHE = 8
     WEATHER = 9  # W1: split in two statically, the weather disturbance key and the storm hazard key
+    ARMS = 10  # arms (§42): the child-trait mutation and the immigrants' key and lock, in lifecycle.reproduce
 
 
 class InitStream(IntEnum):
-    """Initialisation streams from ``init_keys(seed)``; indices 8–15 are reserved."""
+    """Initialisation streams from ``init_keys(seed)``; indices 9–15 are reserved."""
 
     POS = 0
     HEADING = 1
@@ -64,6 +72,7 @@ class InitStream(IntEnum):
     PATCH_POS = 5
     PATCH_VEL = 6
     STATE_KEY = 7
+    ARMS = 8  # arms (§42): the founders' keys and locks
 
 
 def step_keys(key: mx.array) -> tuple[mx.array, mx.array]:

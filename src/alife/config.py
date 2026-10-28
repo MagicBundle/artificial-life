@@ -310,6 +310,26 @@ class RunConfig:  # excluded from config_hash; on resume only observer/cadence k
 
 
 @dataclass(frozen=True)
+class ArmsConfig:  # the arms-race layer: heritable attack, armour, key and lock (DESIGN §42); post v0.1
+    """Every key changes the compiled step, so every key is hashed (``POST_V01_KEYS`` through
+    ``ext.arms.SPEC.lever_keys``) and is inert at its default while ``enabled`` is false (``validate``). All
+    defaults are zeros or "off": ``enabled`` alone is an arms layer with inert traits (the null-equivalence
+    configuration, DESIGN §42.2). The recommended working set lives in a preset overlay (A3), not here."""
+
+    enabled: bool = False  # static: the contest, the upkeep, the speed cost and the heritable traits exist
+    kappa: float = 2.0  # armour weight in the Tullock repulsion r = κA / (κA + a0 + ATK); 0 disables armour
+    a0: float = 1.0  # baseline attacker strength in the denominator (> 0)
+    key_floor: float = 1.0  # key/lock match floor; 1.0 disables the axis, lower makes a mismatch costlier
+    speed_slow: float = 0.0  # thrust factor 1 - speed_slow * ARM in the physics (the cost of armour)
+    upkeep_atk: float = 0.0  # q/step at ATK = 1, quadratic, dithered (HEAT_BASAL)
+    upkeep_arm: float = 0.0  # q/step at ARM = 1, quadratic, dithered (HEAT_BASAL)
+    init_atk: float = 0.0  # founders' and immigrants' attack
+    init_arm: float = 0.0  # founders' and immigrants' armour
+    sigma: float = 0.0  # fixed mutation sigma of the magnitudes (attack, armour)
+    sigma_phase: float = 0.0  # fixed mutation sigma of the key and lock phases (turns)
+
+
+@dataclass(frozen=True)
 class Config:
     world: WorldConfig = field(default_factory=WorldConfig)
     population: PopulationConfig = field(default_factory=PopulationConfig)
@@ -325,6 +345,7 @@ class Config:
     director: DirectorConfig = field(default_factory=DirectorConfig)
     game: GameConfig = field(default_factory=GameConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
+    arms: ArmsConfig = field(default_factory=ArmsConfig)
     run: RunConfig = field(default_factory=RunConfig)
 
 

@@ -46,6 +46,15 @@ identity matrix against a `git archive` of the base: `uv run python tests/identi
 two minutes). No behaviour change. The next PR is 0b (the layout migration, §43.8), then the engine PRs in the order
 arms A1, A2, structures S1, bonds B1 and B2, comm C1, farming F1 (merged serially, each on the owner's go).
 
+## Arms races (DESIGN §42, I71)
+
+PR A1 (stacked on 0a, not merged; engine only) is stages 1 and 2 of the arms spec: the heritable `arms (N, 6)` traits
+(`ATK`, `ARM`, and the key and lock phases; `TOX`, `SIG` held at 0), the Tullock contest with the key/lock match inside
+`energy.combat`, the dithered upkeep through `brain_cost` (`HEAT_BASAL`, no 17th ledger term), the armour speed cost, fixed-sigma
+mutation at birth, `Stream.ARMS` 10 and `rng.layout_version` 4 with arms on. Enable with `--set arms.enabled=true` plus the
+keys of `[arms]`; no preset or overlay enables it (the overlay comes with A3). Absent: toxin and display (A3), observers and the
+classifier (A2), pierce and the duels (A4), perception (A5), colour modes and GUI levers. `alife bench --arms` times it.
+
 ## How to run
 
 ```bash

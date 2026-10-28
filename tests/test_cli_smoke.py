@@ -294,6 +294,7 @@ def test_view_and_bench_delegate(run_dir: Path, tmp_path: Path, monkeypatch: pyt
         "weather": False,
         "weather_pairs": 2,
         "weather_org": False,
+        "arms": False,
         "n": 1024,
         "hidden": 24,
     }

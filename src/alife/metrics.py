@@ -13,7 +13,7 @@ from typing import Any, Final
 import mlx.core as mx
 import numpy as np
 
-from alife import ext, fields, layout, ops, rng, spatial, weather, weather_obs
+from alife import arms, ext, fields, layout, ops, rng, spatial, weather, weather_obs
 from alife.config import Config, config_hash, dims, is_3d
 from alife.state import (
     ENV_FIELDS,
@@ -592,7 +592,7 @@ def _layer_regen(s: State | State3, cfg: Config, step: mx.array | None, env: Env
 
 def _c_ref(cfg: Config) -> float:
     """``c_ref = basal_cost + E[founder brain_cost] + C_REF_MARGIN`` (and the founder's cap upkeep in 3D)."""
-    c_ref = cfg.energy.basal_cost + founder_brain_cost(cfg) + layout.C_REF_MARGIN
+    c_ref = cfg.energy.basal_cost + founder_brain_cost(cfg) + layout.C_REF_MARGIN + arms.founder_upkeep(cfg)
     if is_3d(cfg):  # float32, as pay_costs3 computes it
         c_ref += int(np.floor(np.float32(cfg.energy.buoyancy_cap_cost) * np.float32(cfg.mutation.buoy_init)))
     return c_ref

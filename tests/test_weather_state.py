@@ -402,8 +402,8 @@ def test_the_weather_off_metrics_key_sets_are_unchanged(
 
 def test_the_weather_stream_takes_reserved_index_9() -> None:
     assert rng.Stream.WEATHER == 9 and rng.NUM_STREAMS == 16 and rng.RNG_LAYOUT_VERSION == 3
-    assert set(rng.RNG_COMPATIBLE_VERSIONS) == {1, 2, 3}
-    assert max(s.value for s in rng.Stream) == 9  # 10-15 stay reserved
+    assert set(rng.RNG_COMPATIBLE_VERSIONS) == {1, 2, 3, 4}  # 4: arms.enabled (DESIGN §42.4)
+    assert max(s.value for s in rng.Stream if s.name != "ARMS") == 9  # 10 is arms (DESIGN §42.4)
     k = mx.random.key(7)
     nxt, ks = rng.step_keys(k)
     nxt2, ks2 = rng.step_keys(k)
@@ -415,7 +415,7 @@ def test_the_weather_stream_takes_reserved_index_9() -> None:
 
 
 @pytest.mark.parametrize(
-    ("version", "ok"), [("1", True), ("2", True), ("3", True), ("4", False), ("0", False)]
+    ("version", "ok"), [("1", True), ("2", True), ("3", True), ("4", True), ("5", False), ("0", False)]
 )
 def test_3d_checkpoints_follow_the_compatible_versions(
     micro3d_cfg: Config, tmp_path: Path, version: str, ok: bool
