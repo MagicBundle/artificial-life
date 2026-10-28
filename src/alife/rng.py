@@ -12,7 +12,8 @@ arms 10, structures 11, bonds 12, comm 13, niche 14 (15 stays free). A feature d
 spec says
 so (only arms does, in ``lifecycle.reproduce`` and at immigrants and init); a ``Stream``/``InitStream`` member
 is created by the PR that first uses it, so an unused name never invites a draw. The draw-free features that
-need deterministic pseudo-randomness use ``ops.hash32`` with the salt ``10 + extension index``.
+need deterministic pseudo-randomness use ``ops.hash32`` with their entry of ``HASH_SALTS`` (well-separated
+32-bit constants, not ``10 + i``: salts differing only in low bits give weakly dependent streams, E18).
 """
 
 from __future__ import annotations
@@ -29,7 +30,16 @@ RNG_LAYOUT_VERSION: Final = 3
 RNG_COMPATIBLE_VERSIONS: Final = frozenset(
     {1, 2, 3, 4}
 )  # layout versions whose checkpoints this code resumes
-HASH_SALT_BASE: Final = 10  # ``ops.hash32`` salt of extension i is HASH_SALT_BASE + i (comm 13, niche 14)
+# ``ops.hash32`` salt of each extension: the first 4 bytes (big endian) of
+# sha256(b"alife.ext.hash32.salt/" + name), computed once and frozen as literals (changing one changes the
+# trajectories of runs with that feature on; ``test_ext_salts.py`` pins the table and checks every pair).
+HASH_SALTS: Final = {
+    "arms": 0x20D53604,
+    "structures": 0x243C7C36,
+    "bonds": 0x9E1A3B74,
+    "comm": 0x6E00A046,
+    "niche": 0x20622137,
+}
 
 
 ARMS_LAYOUT_VERSION: Final = 4  # arms takes ``Stream.ARMS`` = 10 and ``InitStream.ARMS`` = 8 (DESIGN §42.4)

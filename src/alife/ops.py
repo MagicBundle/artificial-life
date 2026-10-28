@@ -275,8 +275,8 @@ _H_FIN1, _H_FIN2 = 0x2C1B3C6D, 0x297A2D39
 
 
 def hash32(a: mx.array, b: mx.array | int, salt: int) -> mx.array:
-    """A deterministic uint32 mix of two integer arrays and a static ``salt`` (the extension's stream index,
-    ``rng.HASH_SALT_BASE + i``): elementwise, integer ops only (no scatter, no float), so it is bit-exact on
+    """A deterministic uint32 mix of two integer arrays and a static ``salt`` (the extension's entry of
+    ``rng.HASH_SALTS``): elementwise, integer ops only (no scatter, no float), so it is bit-exact on
     CPU and GPU. For the draw-free features (comm's decoy permutation, farming's dithered decay), which take
     no RNG stream (DESIGN §43.3)."""
     u = mx.uint32

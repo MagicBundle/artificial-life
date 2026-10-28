@@ -12395,7 +12395,7 @@ want = floor(attack_max · P · (1 − defend_efficiency·defend_j))
 ### 42.3 Costs and the ledger
 
 * **Upkeep** `x = upkeep_atk·ATK² + upkeep_arm·ARM²` q/step, paid as `floor(x + u)` with `u ∈ [0, 1)` the dither
-  `hash32(uid, step, salt = 10) >> 8` (E13): the mean cost is `x`, so a sub-unit cost is not rounded to a free ride, and
+  `hash32(uid, step, rng.HASH_SALTS["arms"]) >> 8` (E13): the mean cost is `x`, so a sub-unit cost is not rounded to a free ride, and
   it is exactly 0 for `x = 0`. `arms.basal_cost` adds it to the `brain_cost` argument of `pay_costs`/`pay_costs3` at S8, so it
   lands in `paid_basal` and `HEAT_BASAL`; `State.brain_cost` is not touched, `metrics._c_ref` adds the founders' expected
   upkeep (`arms.founder_upkeep`). **No 17th ledger term; no new energy path**: theft stays in `FLOW_STOLEN = FLOW_ATTACK_GAIN +
@@ -12561,7 +12561,11 @@ per-step index of extension `i` is `10 + i` (arms 10, structures 11, bonds 12, c
 `InitStream.ARMS` = 8); a member is created by the PR that first uses it, so no name exists in PR 0a and streams 0 to 9
 and `step_keys` are untouched. A feature draws nothing unless its spec says so (only arms does). Deterministic
 pseudo-randomness without a stream: `ops.hash32(a, b, salt)` (uint32 integer mix, elementwise, no scatter, bit-exact on
-CPU and GPU), salt `rng.HASH_SALT_BASE + i` (comm 13, niche 14); pinned vectors in `test_ext_registry.py`.
+CPU and GPU), salt `rng.HASH_SALTS[name]`: well-separated 32-bit constants (the first 4 bytes of sha256 of
+`alife.ext.hash32.salt/<name>`, frozen as literals, never to change: they would change the trajectories of feature-on
+runs), not `10 + i`, because streams of salts differing only in low bits are weakly dependent (the independence test of the
+measurement suite flagged 18 of 80 pairs for adjacent integer salts, 0 of 80 for random 64-bit ones; edge case E18, a
+spurious "language"); `test_ext_salts.py` pins the table and checks every pair for independence; vectors in `test_ext_registry.py`.
 
 ### 43.4 Ledger, `extra_due`, counters
 

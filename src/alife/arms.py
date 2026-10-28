@@ -45,7 +45,7 @@ N_TRAITS: Final = 6
 NAMES: Final = ("ATK", "ARM", "TOX", "SIG", "KEY", "LOCK")
 PHASES: Final = (KEY, LOCK)
 EPS: Final = 1e-6  # keeps the Tullock denominator positive when a0, ATK and the armour are all 0 (E11)
-SALT: Final = rng.HASH_SALT_BASE + 0  # ops.hash32 salt of the arms feature (extension index 0)
+SALT: Final = rng.HASH_SALTS["arms"]  # ops.hash32 salt of the arms feature (DESIGN §43.3)
 _TWO_PI: Final = 2.0 * math.pi
 
 

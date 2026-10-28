@@ -90,7 +90,7 @@ def _hash32_ref(a, b, salt):
 def test_hash32_pinned_vectors_and_reference() -> None:
     a = mx.arange(8, dtype=mx.int32)
     b = mx.array([0, 1, 2, 3, 100, 2**20, 5, 7], dtype=mx.int32)
-    got = np.array(ops.hash32(a, b, rng.HASH_SALT_BASE + 3))
+    got = np.array(ops.hash32(a, b, 13))
     assert got.dtype == np.uint32
     assert got.tolist() == [
         3618484190,
@@ -123,7 +123,7 @@ def test_rng_layout_version_is_unchanged_for_every_config() -> None:
         rng.layout_version(cfg) == rng.RNG_LAYOUT_VERSION == 3 and {1, 2, 3, 4} == rng.RNG_COMPATIBLE_VERSIONS
     )
     assert rng.layout_version(apply_overrides(cfg, ["arms.enabled=true"])) == 4  # only arms takes a stream
-    assert rng.NUM_STREAMS == 16 and rng.HASH_SALT_BASE + 3 == 13  # comm 13, niche 14
+    assert rng.NUM_STREAMS == 16
 
 
 def test_streams_zero_to_nine_keep_their_keys() -> None:
