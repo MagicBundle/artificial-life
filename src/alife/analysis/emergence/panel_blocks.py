@@ -12,7 +12,9 @@ from typing import Any
 
 import numpy as np
 
+from alife.analysis.emergence import activity_adapter as aa
 from alife.analysis.emergence import braid as braid_mod
+from alife.analysis.emergence import modes as modes_mod
 from alife.analysis.emergence.epr import CAVEATS, EPR_VERSION
 from alife.analysis.emergence.panel import endpoint_entry, needs_block
 
@@ -86,6 +88,56 @@ def fill_c(
         needs=[] if vals else ["no group of 8 or more survived a sub-window"],
     )
     panel["header"]["versions"]["braid"] = braid_mod.BRAID_VERSION
+    panel["header"]["flags"]["needs_missing"] = sorted(
+        {n for k in ("A", "B", "C") for n in panel[k].get("needs_missing", [])}
+    )
+
+
+def fill_a(
+    panel: dict[str, Any],
+    modes: Sequence[dict[str, Any]] = (),
+    activity: dict[str, Any] | None = None,
+) -> None:
+    """Block A: the activity adapter's result (P1, run-level blocks) and the MODES results of the windows
+    (P2 novelty per block, P3 p90 channel count per block; both exploratory, outside Holm)."""
+    if not modes and activity is None:
+        return
+    blk: dict[str, Any] = {"status": "ok", "needs_missing": []}
+    miss: list[str] = []
+    if activity is not None:
+        ep = activity["endpoint"]
+        blk["activity"] = {k: v for k, v in activity.items() if k != "caveats"}
+        vals = [b for b in ep["blocks"] if b is not None]
+        panel["endpoints"]["P1"] = endpoint_entry(
+            "P1",
+            value=float(np.mean(vals)) if vals else None,
+            blocks=ep["blocks"] if vals else None,
+            needs=[] if vals else ["no valid activity window"],
+        )
+        panel["header"]["versions"]["activity"] = aa.ACTIVITY_VERSION
+        blk["caveats"] = list(aa.CAVEATS)
+    else:
+        miss.append("activity (run events)")
+    if modes:
+        blk["modes"] = {"windows": [{k: v for k, v in m.items() if k != "caveats"} for m in modes]}
+        blk["modes_caveats"] = list(modes_mod.CAVEATS)
+        for name, getter in (
+            ("P2", lambda m: m["novelty"]["per_block"]),
+            ("P3", lambda m: m["complexity"]["p90"]),
+        ):
+            blocks = [b for m in modes for b in getter(m)]
+            vals = [b for b in blocks if b is not None]
+            panel["endpoints"][name] = endpoint_entry(
+                name,
+                value=float(np.mean(vals)) if vals else None,
+                blocks=blocks if vals else None,
+                needs=[] if vals else ["no block"],
+            )
+        panel["header"]["versions"]["modes"] = modes_mod.MODES_VERSION
+    else:
+        miss.append("MODES (frames and a reference)")
+    blk["needs_missing"] = miss
+    panel["A"] = blk
     panel["header"]["flags"]["needs_missing"] = sorted(
         {n for k in ("A", "B", "C") for n in panel[k].get("needs_missing", [])}
     )

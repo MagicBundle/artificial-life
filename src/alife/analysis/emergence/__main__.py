@@ -1,8 +1,8 @@
 """``python -m alife.analysis.emergence <command>``: the CLI shell of the emergence suite (DESIGN §44.9).
 
 Rules: the run directory is read only, every output goes under ``--out`` (default
-``analysis_cache/emergence/<run>/``), writes are atomic, and a command that needs a block that has not landed
-says so and exits 2. ``record`` is the only command that simulates (it imports MLX lazily).
+``analysis_cache/emergence/<run>/``) and writes are atomic. ``record`` is the only command that simulates
+(it imports MLX lazily).
 """
 
 from __future__ import annotations
@@ -17,11 +17,13 @@ from pathlib import Path
 import numpy as np
 
 from alife.analysis.emergence import (
+    activity_adapter,
     braid,
     cli_blocks,
     compare,
     epr,
     frames,
+    modes,
     panel,
     panel_blocks,
     prereg,
@@ -29,14 +31,6 @@ from alife.analysis.emergence import (
     synth,
     winding,
 )
-
-LATER = {
-    "epr": "block B (E3)",
-    "braid": "block C (E4)",
-    "winding": "block C (E4)",
-    "modes": "block A (E5)",
-    "activity": "block A (E5)",
-}
 
 
 def _window(text: str) -> tuple[int, int]:
@@ -115,6 +109,26 @@ def cmd_panel(a: argparse.Namespace) -> int:
         wind = None
         if a.storms:
             wind = winding.analyse(winding.read_storms_jsonl(a.storms), frames_list[0].size)
+        if a.reference:
+            ref = [frames.read_frames(r) for r in a.reference]
+            cb = modes.build_codebook(ref)
+            seen = np.zeros(cb.n_codes, bool)
+            for r in ref:
+                seen |= modes.persistent_classes(r, cb)
+            births = None
+            mres = []
+            for fr in frames_list:
+                win = fr.meta.get("window")
+                births = (
+                    modes.load_births(a.run, win[0], win[1]) if win and (a.run / "events").is_dir() else None
+                )
+                m = modes.analyse(fr, cb, seen=seen, births=births)
+                seen = seen | modes.persistent_classes(fr, cb)
+                mres.append(m)
+            act = None
+            if a.activity_start is not None:
+                act = activity_adapter.analyse_arm(a.run, start=a.activity_start)
+            panel_blocks.fill_a(p, mres, act)
         panel_blocks.fill_c(p, [braid.analyse_blocks(fr) for fr in frames_list], wind)
     pj, pm = panel.write_panel(_out(a, a.run), p)
     print(f"wrote {pj} and {pm}")
@@ -201,6 +215,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prereg", type=Path)
     p.add_argument("--scorecards", default="")
     p.add_argument("--population-ref", type=float)
+    p.add_argument("--reference", type=Path, nargs="*", help="frames files that define the MODES codebook")
+    p.add_argument("--activity-start", type=int, help="fork step: also run the activity adapter")
     p.add_argument("--storms", type=Path, help="observers/storms.jsonl for the (exploratory) winding table")
     p.add_argument("--out", type=Path)
     p.set_defaults(fn=cmd_panel)
@@ -228,14 +244,6 @@ def build_parser() -> argparse.ArgumentParser:
         q = sub.add_parser(name, help=f"block command {name} (DESIGN §44)")
         add(q)
         q.set_defaults(fn=fn)
-    for name, where in LATER.items():
-        if name in cli_blocks.COMMANDS:
-            continue
-        q = sub.add_parser(name, help=f"not yet implemented: {where}")
-        q.add_argument("args", nargs="*")
-        q.set_defaults(
-            fn=lambda a, w=where, n=name: (print(f"error: {n} lands with {w}", file=sys.stderr), 2)[1]
-        )
     return ap
 
 

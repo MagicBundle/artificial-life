@@ -12,7 +12,9 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from alife.analysis.emergence import braid, epr, epr_io, frames, winding
+import numpy as np
+
+from alife.analysis.emergence import activity_adapter, braid, epr, epr_io, frames, modes, winding
 from alife.analysis.emergence.epr_io import _atomic
 
 
@@ -106,8 +108,88 @@ def cmd_winding(a: argparse.Namespace) -> int:
     return 0
 
 
+def add_modes(p: argparse.ArgumentParser) -> None:
+    p.add_argument("frames", type=Path, nargs="+")
+    p.add_argument("--reference", type=Path, nargs="*", default=[], help="frames files defining the codebook")
+    p.add_argument("--codebook", type=Path, help="reuse (or write, with --reference) this codebook.json")
+    p.add_argument("--births", type=Path, help="run directory with events/births_*.npz for the edge change")
+    p.add_argument("--out", type=Path)
+
+
+def cmd_modes(a: argparse.Namespace) -> int:
+    try:
+        out = _out_dir(a, a.frames[0])
+        cb_path = a.codebook or out / "codebook.json"
+        if a.reference:
+            refs = [frames.read_frames(r) for r in a.reference]
+            cb = modes.build_codebook(refs)
+            modes.write_codebook(cb_path, cb)
+            seen = np.zeros(cb.n_codes, bool)
+            for r in refs:
+                seen |= modes.novelty(
+                    modes.persistent(modes.class_counts(r, modes.skeletons(r, cb), cb.n_codes)), seen, 1
+                )[1]
+        elif cb_path.is_file():
+            cb = modes.read_codebook(cb_path)
+            seen = np.zeros(cb.n_codes, bool)
+        else:
+            print("error: give --reference frames or an existing --codebook", file=sys.stderr)
+            return 2
+        res = []
+        for path in a.frames:
+            fr = frames.read_frames(path)
+            win = fr.meta.get("window") or [int(fr.step[0]), int(fr.step[-1])]
+            births = modes.load_births(a.births, win[0], win[1]) if a.births else None
+            r = modes.analyse(fr, cb, seen=seen, births=births)
+            r["window"] = win
+            seen = seen | modes.persistent_classes(fr, cb)
+            res.append(r)
+    except (frames.FramesError, FileNotFoundError, OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    p = out / "modes.json"
+    _atomic(p, json.dumps({"version": modes.MODES_VERSION, "windows": res}, indent=1, sort_keys=True) + "\n")
+    print(
+        f"wrote {p} and {cb_path}: {len(res)} windows, {cb.n_codes} possible classes (adapted, exploratory)"
+    )
+    return 0
+
+
+def add_activity(p: argparse.ArgumentParser) -> None:
+    p.add_argument("run", type=Path)
+    p.add_argument("--start", type=int, help="fork step (default: the run's first step)")
+    p.add_argument("--space", help="activity space (default: cohort_h200k for long arms, else marker_0.01)")
+    p.add_argument("--shadows", type=int, default=2)
+    p.add_argument("--no-reuse", action="store_true")
+    p.add_argument("--out", type=Path)
+
+
+def cmd_activity(a: argparse.Namespace) -> int:
+    out = Path(a.out) if a.out else Path("analysis_cache/emergence") / a.run.name
+    try:
+        res = activity_adapter.analyse_arm(
+            a.run,
+            start=a.start,
+            st=activity_adapter.settings_for(shadows=a.shadows),
+            space=a.space,
+            out=out,
+            reuse=not a.no_reuse,
+            log=lambda m: print(m, flush=True),
+        )
+    except (FileNotFoundError, OSError, ValueError, KeyError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    p = out / "activity.json"
+    _atomic(p, json.dumps(res, indent=1, sort_keys=True, default=str) + "\n")
+    ep = res["endpoint"]
+    print(f"wrote {p}: class {ep['channon_class']}, space {ep['space']}, {res['timing_s']['total']:.1f} s")
+    return 0
+
+
 COMMANDS: dict[str, tuple[Callable[[argparse.ArgumentParser], None], Callable[[argparse.Namespace], int]]] = {
     "epr": (add_epr, cmd_epr),
     "braid": (add_braid, cmd_braid),
     "winding": (add_winding, cmd_winding),
+    "modes": (add_modes, cmd_modes),
+    "activity": (add_activity, cmd_activity),
 }
