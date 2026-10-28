@@ -5,6 +5,14 @@ reserved index, and changing the layout bumps ``RNG_LAYOUT_VERSION``. Taking a r
 existing stream's key unchanged, so the older version stays in ``RNG_COMPATIBLE_VERSIONS`` and its
 checkpoints still load and resume. A change that moves an existing key would bump the version without
 adding the old one to the set.
+
+Feature extensions (DESIGN §43). The reserved per-step indices are assigned by extension index: ``10 + i``
+with
+arms 10, structures 11, bonds 12, comm 13, niche 14 (15 stays free). A feature draws nothing unless its
+spec says
+so (only arms does, in ``lifecycle.reproduce`` and at immigrants and init); a ``Stream``/``InitStream`` member
+is created by the PR that first uses it, so an unused name never invites a draw. The draw-free features that
+need deterministic pseudo-randomness use ``ops.hash32`` with the salt ``10 + extension index``.
 """
 
 from __future__ import annotations
@@ -19,6 +27,15 @@ NUM_STREAMS: Final = 16
 # is unchanged by both.
 RNG_LAYOUT_VERSION: Final = 3
 RNG_COMPATIBLE_VERSIONS: Final = frozenset({1, 2, 3})  # layout versions whose checkpoints this code resumes
+HASH_SALT_BASE: Final = 10  # ``ops.hash32`` salt of extension i is HASH_SALT_BASE + i (comm 13, niche 14)
+
+
+def layout_version(cfg: object) -> int:
+    """The RNG layout version a run of ``cfg`` writes into its meta and checkpoints: ``RNG_LAYOUT_VERSION``
+    (3)
+    while no feature that takes a stream is on, so a feature-off run is byte-identical to main. A feature PR
+    that takes a stream (arms: 4) returns its version when enabled and adds it to the compatible set."""
+    return RNG_LAYOUT_VERSION
 
 
 class Stream(IntEnum):

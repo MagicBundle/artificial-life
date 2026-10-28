@@ -46,7 +46,7 @@ import mlx.core as mx
 import numpy as np
 import zstandard
 
-from alife import layout, rng, spatial
+from alife import ext, layout, rng, spatial
 from alife.config import Config, config_from_dict, config_hash, config_to_dict, is_3d, save_config, validate
 from alife.state import State, expected_layout, state_from_arrays, state_to_arrays, to_numpy
 
@@ -72,7 +72,9 @@ PLAY_FILE: Final = (
 PLAY_LOCK_FILE: Final = "play.lock"  # the advisory lock of the one process that plays a directory (§33.3.3)
 PRE_PLAY_CONFIG_FILE: Final = "config.pre_play.json"  # a research run played in place: its config (§33.3.3)
 PLAY_VERSION: Final = 1
-DUMP_KINDS: Final = ("eco", "wx")  # observers/eco_<step>.npz and observers/wx_<step>.npy (DESIGN §32)
+# observers/eco_<step>.npz and observers/wx_<step>.npy (DESIGN §32), plus the dumps the registered features
+# add
+DUMP_KINDS: Final = ("eco", "wx", *(k for spec in ext.REGISTRY for k in spec.dump_kinds))
 STATUSES: Final = ("running", "done", "extinct", "violation", "interrupted")
 
 BIRTH_COLUMNS: Final[Mapping[str, Any]] = {
@@ -101,7 +103,7 @@ PLAY_STATE_NAMES: Final = (
     "kinthreads",
 )  # observers/<name>_<step>.json: a played world's host state
 _PLAY_STATE_RE: Final = re.compile(r"^(storms|kinthreads)_(\d{10})\.json$")
-_DUMP_RE: Final = re.compile(r"^(eco|wx)_(\d{10})\.(?:npz|npy)$")
+_DUMP_RE: Final = re.compile(rf"^({'|'.join(map(re.escape, DUMP_KINDS))})_(\d{{10}})\.(?:npz|npy)$")
 # The temporary names of what a save writes (``_tmp_path``): the state file and ``LATEST`` in
 # ``checkpoints/``, the observer sidecar and the play-state files in ``observers/``.
 _SAVE_TMP_RE: Final = re.compile(
@@ -399,15 +401,18 @@ def _state_arrays_and_meta(s: State, cfg: Config) -> tuple[dict[str, Any], dict[
     """The arrays of a state file and its checkpoint metadata (§18)."""
     meta = {
         "format_version": str(FORMAT_VERSION),
-        "rng_layout_version": str(rng.RNG_LAYOUT_VERSION),
-        "genome_layout_version": str(layout.genome_layout_version(cfg.world.dims)),
+        "rng_layout_version": str(rng.layout_version(cfg)),
+        "genome_layout_version": str(layout.genome_layout_version(cfg.world.dims, ext.mask(cfg))),
+        **(
+            {"layout_features": ext.layout_features(cfg)} if ext.layout_features(cfg) else {}
+        ),  # absent = none
         **({"dims": str(cfg.world.dims)} if is_3d(cfg) else {}),
         "step": str(int(to_numpy(s.step))),
         "config_hash": config_hash(cfg),
         "alife_version": _alife_version(),
         "mlx_version": mx.__version__,
         "weight_dtype": cfg.brain.weight_dtype,
-        "config": json.dumps(config_to_dict(cfg), sort_keys=True, indent=2),
+        "config": json.dumps(config_to_dict(cfg, omit_defaults=True), sort_keys=True, indent=2),
     }
     return state_to_arrays(s), meta
 
@@ -670,11 +675,16 @@ def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> Stat
         )
     want = {
         "format_version": str(FORMAT_VERSION),
-        "genome_layout_version": str(layout.genome_layout_version(cfg.world.dims)),
+        "genome_layout_version": str(layout.genome_layout_version(cfg.world.dims, ext.mask(cfg))),
+        "layout_features": ext.layout_features(cfg),  # a file without the key has none (today's layout)
     }
     if check_hash:
         want["config_hash"] = config_hash(cfg)
-    bad += [f"{k}={meta.get(k)!r} (expected {v!r})" for k, v in want.items() if meta.get(k) != v]
+    bad += [
+        f"{k}={meta.get(k, '' if k == 'layout_features' else None)!r} (expected {v!r})"
+        for k, v in want.items()
+        if meta.get(k, "" if k == "layout_features" else None) != v
+    ]
     if meta.get("rng_layout_version") not in {str(v) for v in rng.RNG_COMPATIBLE_VERSIONS}:
         compatible = sorted(rng.RNG_COMPATIBLE_VERSIONS)
         bad.append(f"rng_layout_version={meta.get('rng_layout_version')!r} (expected one of {compatible})")
@@ -882,8 +892,11 @@ class RunDir:
             "created_utc": _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "seed": cfg.run.seed,
             "config_hash": config_hash(cfg),
-            "rng_layout_version": rng.RNG_LAYOUT_VERSION,
-            "genome_layout_version": layout.genome_layout_version(cfg.world.dims),
+            "rng_layout_version": rng.layout_version(cfg),
+            "genome_layout_version": layout.genome_layout_version(cfg.world.dims, ext.mask(cfg)),
+            **(
+                {"layout_features": ext.layout_features(cfg)} if ext.layout_features(cfg) else {}
+            ),  # absent = none
             **({"dims": cfg.world.dims} if is_3d(cfg) else {}),  # absent = 2D (§27.1)
             "parent": parent,
             "status": "running",

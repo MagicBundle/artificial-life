@@ -46,7 +46,7 @@ def test_for_dims_2_equals_module_constants() -> None:
     assert lay.nd == 2 and lay is L.for_dims(2)
     for f in dataclasses.fields(lay):
         value = getattr(lay, f.name)
-        if f.name != "nd" and value is not None:
+        if f.name != "nd" and not f.name.startswith("EXT_") and value is not None:  # EXT_*: DESIGN §43
             assert value == getattr(L, f.name), f.name
 
 

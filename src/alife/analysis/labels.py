@@ -98,7 +98,7 @@ from alife.game.rules import (
     arch_layout,
 )
 from alife.runio import RunDir
-from alife.state import State, to_numpy
+from alife.state import State, counter_blocks, to_numpy
 from alife.step import ActFlag, Acts, make_step
 
 __all__ = [
@@ -951,6 +951,7 @@ def study(
                     int(to_numpy(state.total)),
                     nd=nd,
                     weather=cfg.weather.enabled,
+                    blocks=counter_blocks(cfg),
                 )
                 if bad:
                     raise ResimMismatch(

@@ -24,7 +24,7 @@ from typing import IO, Any
 import mlx.core as mx
 import numpy as np
 
-from alife import layout, ops
+from alife import ext, layout, ops
 from alife.config import Config, dims, require_2d
 from alife.state import State, State3, to_numpy
 
@@ -37,7 +37,12 @@ class Viewport:
 
 
 DEFAULT_LAYERS: frozenset[str] = frozenset({"resource", "chem", "bonds", "agents"})
-COLOR_MODES: tuple[str, ...] = ("tag", "energy", "clade")
+COLOR_MODES: tuple[str, ...] = (
+    "tag",
+    "energy",
+    "clade",
+    *(m for spec in ext.REGISTRY for m in spec.color_modes),
+)
 
 # Render colours and priorities (§20.1; local constants by design, see R25).
 _PRIO_BOND = 1

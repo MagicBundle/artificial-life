@@ -13,11 +13,12 @@ from typing import Any, Final
 import mlx.core as mx
 import numpy as np
 
-from alife import fields, layout, ops, rng, spatial, weather, weather_obs
+from alife import ext, fields, layout, ops, rng, spatial, weather, weather_obs
 from alife.config import Config, config_hash, dims, is_3d
 from alife.state import (
     ENV_FIELDS,
     Counter3D,
+    CounterBlocks,
     CounterIdx,
     Env,
     LedgerIdx,
@@ -29,6 +30,11 @@ from alife.state import (
     storm_counter_index,
     to_numpy,
 )
+
+# The key prefixes the registered features own in a snapshot or interval row (DESIGN §43.5): ``arms_``,
+# ``build_``,
+# ``bond_``, ``comm_``, ``farm_``; ``ext.check_registry`` rejects a prefix claimed twice.
+METRIC_PREFIXES: Final = tuple(spec.metric_prefix for spec in ext.REGISTRY if spec.metric_prefix)
 
 # Upper bounds of the body-size histogram bins 1, 2, 3–4, 5–8, 9–16, 17–32, 33–64, 65+ (§19.2).
 BODY_BIN_EDGES: Final = (1, 2, 4, 8, 16, 32, 64)
@@ -444,6 +450,7 @@ def interval_row(
     *,
     nd: int = 2,
     weather: bool = False,
+    blocks: CounterBlocks = (),
 ) -> dict[str, Any]:
     """One ``metrics.jsonl`` row from stacked counters (T,27), ledgers (T,16) and a snapshot (§19.2).
 
@@ -460,7 +467,7 @@ def interval_row(
     the last counter, ``DEATHS_STORM``, to the expected width and ``deaths_storm`` (interval sum) to the row
     after ``child_bonds``; a weather-off row has neither (§30).
     """
-    width = n_counters(nd, weather)
+    width = n_counters(nd, weather, blocks)
     c = np.asarray(counters, dtype=np.int64)
     if c.ndim == 2 and c.shape[1] != width:
         raise ValueError(f"counters have {c.shape[1]} columns, a {nd}D world has {width}")
@@ -485,6 +492,8 @@ def interval_row(
     row.update({name: int(cs[idx]) for name, idx in _SUMMED})
     if weather:  # DEATHS_STORM is the last counter (storm_counter_index), right after child_bonds in the row
         row["deaths_storm"] = int(cs[storm_counter_index(nd)])
+    if blocks and blocks[0][0] == "protect":  # PROT_CAPPED, the first extension counter (DESIGN §43.4, §43.6)
+        row["prot_capped_frac"] = _ratio(int(cs[n_counters(nd, weather)]), int(cs[CounterIdx.ATTACKS]))
     row.update(
         {
             "bonds_total": _ratio(int(cs[CounterIdx.BONDS_TOTAL]), t),

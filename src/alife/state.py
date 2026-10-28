@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import math
+import typing
 from collections.abc import Mapping
 from enum import IntEnum, IntFlag
 from typing import Final, NamedTuple
@@ -11,7 +13,7 @@ from typing import Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import brain, config, fields, layout, ops, rng, weather
+from alife import brain, config, ext, fields, layout, ops, rng, weather
 from alife.config import Config, dims, is_3d
 
 R_HARD: Final = config.R_HARD  # (1 << 24) − 1: hard per-cell resource cap (§10.9)
@@ -106,10 +108,46 @@ class Counter3D(IntEnum):
     GROUNDED = 29  # alive agents grounded at the start of the step (physics.grounded)
 
 
-def n_counters(nd: int, weather: bool = False) -> int:
+CounterBlocks = tuple[tuple[str, tuple[str, ...]], ...]  # (block, counter names), in step order
+
+
+def n_counters(nd: int, weather: bool = False, blocks: CounterBlocks = ()) -> int:
     """The length of ``StepOut.counters`` in an ``nd``-dimensional world: 27 in 2D, 30 in 3D, one more with
-    the weather layer on (``DEATHS_STORM``, the last entry, §30)."""
-    return N_COUNTERS + (len(Counter3D) if nd == 3 else 0) + (1 if weather else 0)
+    the weather layer on (``DEATHS_STORM``, the last base entry, §30), then the extension ``blocks`` of the
+    config (``counter_blocks(cfg)``, DESIGN §43.4; none for a feature-off config)."""
+    return (
+        N_COUNTERS
+        + (len(Counter3D) if nd == 3 else 0)
+        + (1 if weather else 0)
+        + sum(len(names) for _, names in blocks)
+    )
+
+
+def counter_blocks(cfg: Config) -> CounterBlocks:
+    """The extension counter blocks of ``cfg`` after ``DEATHS_STORM``, in order: ``protect`` (when
+    ``combat.protect_floor > 0``: ``PROT_CAPPED``), then each enabled feature's block in ``EXTENSIONS`` order.
+    Every base index stays fixed whatever is on (``storm_counter_index`` does not move)."""
+    prot: CounterBlocks = (("protect", ("PROT_CAPPED",)),) if cfg.combat.protect_floor > 0 else ()
+    return prot + tuple((spec.name, names) for spec in ext.active(cfg) if (names := spec.counters(cfg)))
+
+
+def counter_index(cfg: Config, name: str) -> int:
+    """The index of the counter ``name`` in ``StepOut.counters`` of ``cfg``: a ``CounterIdx``, ``Counter3D``
+    or ``DEATHS_STORM`` name, or an extension counter (names are globally unique). Consumers use this, never
+    offsets."""
+    nd = dims(cfg).nd
+    if name in CounterIdx.__members__:
+        return int(CounterIdx[name])
+    if nd == 3 and name in Counter3D.__members__:
+        return int(Counter3D[name])
+    if name == "DEATHS_STORM" and cfg.weather.enabled:
+        return storm_counter_index(nd)
+    at = n_counters(nd, cfg.weather.enabled)
+    for _, names in counter_blocks(cfg):
+        if name in names:
+            return at + names.index(name)
+        at += len(names)
+    raise KeyError(f"no counter {name!r} in a {nd}D world with this config")
 
 
 def storm_counter_index(nd: int) -> int:
@@ -369,14 +407,39 @@ V0_FIELDS_3D: Final = (
 )
 
 
+def is_3d_state(s: object) -> bool:
+    """True for a 3D state of any extension set (``"pitch" in type(s)._fields``): the type test that replaces
+    ``isinstance(s, State3)``, since a state with extension fields is a generated class (DESIGN §43.2)."""
+    return "pitch" in type(s)._fields
+
+
+@functools.cache
+def _ext_cls(nd: int, names: tuple[str, ...]) -> type:
+    """The state type with the extension fields ``names`` after the whole base type (``State``/``State3``),
+    built once and cached; ``env`` is attached (the read-only view)."""
+    base = State3 if nd == 3 else State
+    cls = typing.NamedTuple(base.__name__, [*base.__annotations__.items(), *((n, mx.array) for n in names)])
+    cls.__module__ = __name__
+    cls.env = State.env  # type: ignore[attr-defined]
+    return cls
+
+
 def state_cls(cfg: Config) -> type[State] | type[State3]:
-    """The state type of a config: ``State3`` for a 3D world, else ``State``."""
-    return State3 if is_3d(cfg) else State
+    """The state type of a config: ``State3`` for a 3D world, else ``State``; with an enabled feature that
+    has state fields, a generated class with those fields appended after the base fields (the exact class when
+    no extension field is on, so feature-off states, digests and checkpoints are today's)."""
+    nd = 3 if is_3d(cfg) else 2
+    names = tuple(f.name for f in ext.state_fields(cfg, nd))
+    if not names:
+        return State3 if nd == 3 else State
+    return _ext_cls(nd, names)  # type: ignore[return-value]
 
 
 def agent_fields(cfg: Config) -> tuple[str, ...]:
     """The per-agent (leading dim N) fields of a config's state type, in canonical order."""
-    return AGENT_FIELDS_3D if is_3d(cfg) else AGENT_FIELDS
+    nd = 3 if is_3d(cfg) else 2
+    extra = tuple(f.name for f in ext.state_fields(cfg, nd) if f.per_agent)
+    return (AGENT_FIELDS_3D if nd == 3 else AGENT_FIELDS) + extra
 
 
 def _pad_rows(a: mx.array, n: int) -> mx.array:
@@ -441,7 +504,7 @@ def _initial_state(cfg: Config) -> State | State3:
         vel=full((n, d.nd), 0.0, mx.float32),
         heading=_pad_rows(heading, n),
         h=full((n, d.h), 0.0, mx.float32),
-        msg=full((n, layout.MSG), 0.0, mx.float32),
+        msg=full((n, d.msg_w), 0.0, mx.float32),
         last_loss=full((n,), 0, mx.int32),
         last_harvest=full((n,), 0, mx.int32),
         last_inflow=full((n,), 0, mx.int32),
@@ -477,6 +540,8 @@ def _initial_state(cfg: Config) -> State | State3:
             pitch=_pad_rows(pitch, n),
             buoy_cap=full((n,), mu.buoy_init, mx.float32),
         )
+    if ext_fields := ext.state_fields(cfg, d.nd):  # static: the conditional fields of the enabled features
+        s = state_cls(cfg)(*s, *(f.rest(cfg) for f in ext_fields))
     total = total_energy(s.energy, s.alive, s.resource, cfg)
     return s._replace(total=total, total0=total)
 
@@ -508,7 +573,7 @@ def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]:
         "vel": ((n, d.nd), f32),
         "heading": ((n,), f32),
         "h": ((n, d.h), f32),
-        "msg": ((n, layout.MSG), f32),
+        "msg": ((n, d.msg_w), f32),
         "last_loss": ((n,), i32),
         "last_harvest": ((n,), i32),
         "last_inflow": ((n,), i32),
@@ -546,6 +611,7 @@ def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]:
         "env_cat_kill_p": ((), f32),
         "wx": ((weather.N_WX, d.wn, d.wn), f32),
         **({"pitch": ((n,), f32), "buoy_cap": ((n,), f32)} if d.d3 else {}),  # State3 (§27.4)
+        **{f.name: (f.shape(d), f.dtype) for f in ext.state_fields(cfg, d.nd)},  # extension fields (§43.2)
     }
 
 
@@ -579,11 +645,13 @@ def state_from_arrays(d: Mapping[str, mx.array], cfg: Config | None = None) -> S
     cls = state_cls(cfg) if cfg is not None else State3 if set(EXTRA_3D_FIELDS) <= keys else State
     want = set(cls._fields)
     if cfg is not None and keys < want and "step" in keys:
-        fillable = (set(ENV_FIELDS) | {"wx"}) if cls is State else {"wx"}
+        ext_names = {f.name for f in ext.state_fields(cfg, dims(cfg).nd)}
+        fillable = ((set(ENV_FIELDS) | {"wx"}) if not is_3d(cfg) else {"wx"}) | ext_names
         if (want - keys) <= fillable:
             wx = {"wx": weather.rest_array(cfg, d["step"])} if "wx" in want - keys else {}
             env = default_env(cfg) if (want - keys) & set(ENV_FIELDS) else {}
-            d = {**env, **wx, **d}
+            rest = {f.name: f.rest(cfg) for f in ext.state_fields(cfg, dims(cfg).nd) if f.name in want - keys}
+            d = {**env, **wx, **rest, **d}
             keys = set(d)
     if keys != want:
         missing, extra = sorted(want - keys), sorted(keys - want)
@@ -620,7 +688,7 @@ def legacy_state_digest(s: State) -> str:
     bit-identity checks against old trajectories stay comparable. ``state_digest`` also covers ``env_*``.
     A 3D state has its own frozen digest (``legacy_state_digest_3d``; ``TypeError`` here).
     """
-    if isinstance(s, State3):
+    if is_3d_state(s):
         raise TypeError("legacy_state_digest is defined for 2D states only (the v0 layout)")
     return _digest(s, V0_FIELDS)
 
@@ -631,7 +699,7 @@ def legacy_state_digest_3d(s: State3) -> str:
     For an unchanged trajectory it equals the ``state_digest`` the 3D engine produced before the weather layer
     existed, so ``GOLDEN_3D`` and the bit-identity checks against old trajectories stay comparable.
     """
-    if not isinstance(s, State3):
+    if not is_3d_state(s):
         raise TypeError("legacy_state_digest_3d is defined for 3D states only")
     return _digest(s, V0_FIELDS_3D)
 
@@ -639,4 +707,4 @@ def legacy_state_digest_3d(s: State3) -> str:
 def legacy_digest(s: State | State3) -> str:
     """The frozen digest of a state's own dimension: ``legacy_state_digest`` for ``State``,
     ``legacy_state_digest_3d`` for ``State3``."""
-    return legacy_state_digest_3d(s) if isinstance(s, State3) else legacy_state_digest(s)
+    return legacy_state_digest_3d(s) if is_3d_state(s) else legacy_state_digest(s)
