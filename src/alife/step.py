@@ -214,7 +214,8 @@ def step(
     else:
         fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg)
     desc = sensing.neighbor_descriptors(s, nbr, cfg)  # S5
-    ext_in = ext.step_inputs(s, cfg)  # the enabled features' brain-tail blocks, in TAIL_ORDER (() while off)
+    ectx = ext.ExtCtx(nbr, desc, geom, fcell)
+    ext_in = ext.step_inputs(s, cfg, ectx)  # the enabled features' brain-tail blocks, in TAIL_ORDER
     if d3:  # static
         x = sensing.build_inputs(
             s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, grounded=gr, ext_in=ext_in
@@ -223,11 +224,14 @@ def step(
         x = sensing.build_inputs(s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, ext_in=ext_in)
     h_new, y = brain.forward(s.W1, s.W2, x, s.h, cfg)  # S6
     act = actions.decode(y, desc, nbr, s.partner, s.alive, cfg)  # S7
+    xdec = ext.decode_all(
+        s, y, ectx, cfg
+    )  # the enabled features' own decodes ({} while every feature is off)
     if d3:  # static: the pitch change and the buoyancy fraction (§27.2)
         mo = actions.decode_motion3(y, s.alive, cfg)
 
     nb0 = bonds.n_bonds(s.partner)  # S8
-    extra_due = ext.sum_due(spec.due(s, act, cfg) for spec in ext.active(cfg) if spec.due is not None)
+    extra_due = ext.sum_due(spec.due(s, act, y, cfg) for spec in ext.active(cfg) if spec.due is not None)
     due_kw = (
         {} if extra_due is None else {"extra_due": extra_due}
     )  # static: the call is today's while it is None
@@ -238,6 +242,7 @@ def step(
     else:
         c = en.pay_costs(s.energy, act, nb0, s.brain_cost, s.alive, cfg, **due_kw)
         buoy0 = None
+    xdec = ext.mask_all(xdec, c.solvent, cfg)  # solvency, as ``actions.mask`` does for the base actions
     thrust0 = act.thrust if observe else None  # static: the decode output, which S8 also reads (§28.2)
     y0 = y if observe else None  # static: the brain output the kin queries are quantised from (§29.2)
     act = actions.mask(act, c.solvent)
@@ -361,6 +366,8 @@ def step(
         broken=broken,
         slots_s9=slots_s9,
     )
+    if xdec:  # static: the masked feature decodes reach S18 (counters) and the observer channel
+        flows = flows._replace(ext=ExtFlows(**xdec))
     if d3:  # static
         flows = flows._replace(z_floor=it.z_floor, z_surface=it.z_surface, grounded=gr)
     if wthr:  # static

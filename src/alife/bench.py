@@ -659,6 +659,7 @@ class _Sense(NamedTuple):
     desc: mx.array
     x: mx.array
     grounded: mx.array | None = None  # 3D only: physics.grounded of the start-of-step pos
+    ctx: ext.ExtCtx | None = None  # the extension hooks' view (§43)
 
 
 class _Interact(NamedTuple):
@@ -676,6 +677,7 @@ class _Interact(NamedTuple):
     e_over: mx.array
     dt: lifecycle.Deaths
     mo: actions.Motion3 | None = None  # 3D only, masked by solvency
+    xdec: dict[str, Any] | None = None  # the feature decodes, masked by solvency (§43)
 
 
 def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
@@ -702,6 +704,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             gr = physics.grounded(s.pos, cfg)
             fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch)
             desc = sensing.neighbor_descriptors(s, nbr, cfg)
+            ectx = ext.ExtCtx(nbr, desc, geom, fcell)
             x = sensing.build_inputs(
                 s,
                 a,
@@ -712,15 +715,16 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
                 ks[Stream.NOISE],
                 cfg,
                 grounded=gr,
-                ext_in=ext.step_inputs(s, cfg),
+                ext_in=ext.step_inputs(s, cfg, ectx),
             )
-            return _Sense(a, geom, fcell, desc, x, gr)
+            return _Sense(a, geom, fcell, desc, x, gr, ectx)
         fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg)
         desc = sensing.neighbor_descriptors(s, nbr, cfg)
+        ectx = ext.ExtCtx(nbr, desc, geom, fcell)
         x = sensing.build_inputs(
-            s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, ext_in=ext.step_inputs(s, cfg)
+            s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, ext_in=ext.step_inputs(s, cfg, ectx)
         )
-        return _Sense(a, geom, fcell, desc, x)
+        return _Sense(a, geom, fcell, desc, x, None, ectx)
 
     def think(W1: mx.array, W2: mx.array, x: mx.array, h: mx.array) -> tuple[mx.array, mx.array]:
         return brain.forward(W1, W2, x, h, cfg)
@@ -748,9 +752,10 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         ks: mx.array,
         mo: actions.Motion3 | None,
         wind: wthr.AgentForce | None,
+        y: mx.array,
     ) -> _Interact:
         # the mirror of ``step.step``: the feature dues, passed only when a feature has one (DESIGN §43.4)
-        extra_due = ext.sum_due(spec.due(s, act, cfg) for spec in ext.active(cfg) if spec.due is not None)
+        extra_due = ext.sum_due(spec.due(s, act, y, cfg) for spec in ext.active(cfg) if spec.due is not None)
         due_kw = {} if extra_due is None else {"extra_due": extra_due}
         if d3:  # static
             nb0 = bonds.n_bonds(s.partner)
@@ -758,6 +763,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             mo = actions.mask(mo, c.solvent)
         else:
             c = en.pay_costs(s.energy, act, bonds.n_bonds(s.partner), s.brain_cost, s.alive, cfg, **due_kw)
+        xdec = ext.mask_all(ext.decode_all(s, y, se.ctx, cfg), c.solvent, cfg)
         act = actions.mask(act, c.solvent)
         flag = act.release | (se.geom.length > cfg.bonds.break_length)
         if wind is not None and wind.breaks is not None:  # static: storm_break_u > 0
@@ -795,7 +801,9 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             cat_mask=cat_mask,
             storm_mask=storm,
         )
-        return _Interact(c, act, partner, rev, formed, as_prop, broken, slots_s9, got, cb, sh, e_over, dt, mo)
+        return _Interact(
+            c, act, partner, rev, formed, as_prop, broken, slots_s9, got, cb, sh, e_over, dt, mo, xdec
+        )
 
     def move(
         s: State,
@@ -927,7 +935,7 @@ class _StagedStep:
         act, mo = dec if d3 else (dec, None)
         wthr_on = self.cfg.weather.enabled
         wind = self._run("wind", s) if wthr_on else None
-        it = self._run("interact", s, act, se, ks, mo, wind)
+        it = self._run("interact", s, act, se, ks, mo, wind, y)
         moved = self._run("physics", s, it.act, nbr, it.dt, it.mo, se.grounded, wind)
         (parent, slot, kind, counts), rp = self._run("reproduce", s, it, h_new, moved, se.age, ks)
         lanes = lifecycle.Lanes(parent, slot, kind, counts[0], counts[1], counts[2])
@@ -962,6 +970,8 @@ class _StagedStep:
             slots_s9=it.slots_s9,
             weather_bad=weather_bad,
         )
+        if it.xdec:  # static
+            flows = flows._replace(ext=step_mod.ExtFlows(**it.xdec))
         if d3:  # static: the Counter3D inputs
             flows = flows._replace(z_floor=moved.z_floor, z_surface=moved.z_surface, grounded=se.grounded)
         s_new, out = self._run("finish", s2, s, flows)

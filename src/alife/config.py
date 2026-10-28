@@ -17,6 +17,7 @@ import typing
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Final
 from urllib.parse import urlsplit
 
@@ -366,7 +367,16 @@ class Dims:
     voice_w: int = 0  # comm: voice channel width W (0 = off)
     msg_w: int = layout.MSG  # State.msg width: MSG + voice_w
     features: tuple[str, ...] = ()  # names of the enabled features, in registry order
-    ext_dims: tuple[tuple[str, int], ...] = ()  # the other Dims fields the enabled features declare
+    # per enabled feature, the sizes its ``dims(cfg)`` hook declares (voice_w, hear_range, ...): read them
+    # with ``d.ext("comm").hear_range``
+    ext_dims: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = ()
+
+    def ext(self, name: str) -> SimpleNamespace:
+        """The derived sizes of the enabled feature ``name`` as attributes; ``KeyError`` if it is off."""
+        for feature, items in self.ext_dims:
+            if feature == name:
+                return SimpleNamespace(**dict(items))
+        raise KeyError(f"feature {name!r} is not enabled")
 
 
 PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mini3d")
@@ -422,10 +432,8 @@ def dims(cfg: Config) -> Dims:
     g_hash = math.floor(cfg.world.size / cfg.sensing.radius)
     nd = cfg.world.dims
     lay = layout.for_dims(nd, ext.layout_blocks(cfg, nd))
-    ext_d: dict[str, int] = {}
-    for spec in ext.active(cfg):
-        ext_d.update(spec.dims(cfg))
-    voice_w = ext_d.pop("voice_w", 0)
+    ext_d = {spec.name: dict(spec.dims(cfg)) for spec in ext.active(cfg)}
+    voice_w = max((dd.get("voice_w", 0) for dd in ext_d.values()), default=0)
     w1_rows, w2_rows = lay.D_IN + h, h + 1
     e_max, s = cfg.energy.e_max, cfg.energy.structure
     fg = _field_fg(cfg)
@@ -472,7 +480,7 @@ def dims(cfg: Config) -> Dims:
         voice_w=voice_w,
         msg_w=layout.MSG + voice_w,
         features=tuple(spec.name for spec in ext.active(cfg)),
-        ext_dims=tuple(sorted(ext_d.items())),
+        ext_dims=tuple((n, tuple(sorted(dd.items()))) for n, dd in ext_d.items()),
     )
 
 

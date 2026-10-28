@@ -77,8 +77,10 @@ def test_a_compiled_step_emits_the_blocks(nd: int) -> None:
         n_alive > 0 and c[counter_index(cfg, "PROT_CAPPED")] == 0
     )  # no protection factor is supplied in PR 0a
     for name in ("structures", "bonds", "comm", "niche"):
-        for j, cname in enumerate(stub.COUNTERS[name]):
+        for j, cname in enumerate(stub.COUNTERS[name][1:], start=1):
             assert c[counter_index(cfg, cname)] == n_alive * (j + 1), cname
+        first = c[counter_index(cfg, stub.COUNTERS[name][0])]  # the masked decode's flagged rows
+        assert 0 < first <= n_alive, name
     # the metrics row takes the blocks as an argument and reports prot_capped_frac
     ledgers = np.zeros((1, 16), np.int64)
     row = metrics.interval_row(10, c[None], ledgers, {}, {}, nd=nd, blocks=counter_blocks(cfg))

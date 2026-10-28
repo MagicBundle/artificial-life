@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
 # The canonical order of the features. It orders state fields, counter blocks, ActFlag bits, mask bits, config
 # sections and the ``layout_features`` string. ``niche`` is farming (marks would join the same feature).
@@ -34,15 +34,47 @@ class Block:
     silent: bool = False  # zero-initialise the W1 rows / W2 columns of founders and immigrants
 
 
+class ExtCtx(NamedTuple):
+    """What the step has computed when the extension hooks run (S2 to S6): the neighbour search, the sensed
+    descriptors, the bond geometry and the field cell of each row. Passed to ``inputs`` and ``decode``."""
+
+    nbr: Any  # spatial.Neighbors
+    desc: Any  # (N, K, NF) neighbour descriptors
+    geom: Any  # bonds.BondGeom
+    fcell: Any  # (N,) int32 start-of-step field cell
+
+
+class BirthCtx(NamedTuple):
+    """The lanes of ``lifecycle.reproduce`` for an ``on_birth`` hook: ``parent``/``slot`` per lane (M,), the
+    ``birth``/``imm`` lane masks (M,), ``newborn`` (N,) and ``born_lane`` (N,), ``ks`` the step keys."""
+
+    parent: Any
+    slot: Any
+    birth: Any
+    imm: Any
+    newborn: Any
+    born_lane: Any
+    ks: Any
+
+
 @dataclass(frozen=True)
 class FieldSpec:
-    """One extension field of the state (conditional: it exists only while its feature is on)."""
+    """One extension field of the state (conditional: it exists only while its feature is on).
+
+    ``on_birth`` (per-agent fields only) is what ``lifecycle.reproduce`` writes into the row of a newborn, for
+    birth lanes and immigrant lanes alike: ``"rest"`` (the field's ``rest`` value: role, dwell and flow
+    memories start fresh), ``"inherit"`` (a birth copies its parent's row, an immigrant takes ``rest``: a
+    heritable trait that mutates elsewhere), or a hook ``(old, rest, BirthCtx) -> new`` returning the whole
+    (N, ...) array (arms draws its mutated traits here). A dying row is left as it is: ``alive`` guards every
+    reader and a birth overwrites the whole row.
+    """
 
     name: str
     per_agent: bool  # leading dim N: joins ``agent_fields(cfg)`` (reproduce, inspect)
     shape: Callable[[Any], tuple[int, ...]]  # (dims) -> shape
     dtype: Any  # an mx.Dtype (typed Any: this module imports no mlx)
     rest: Callable[[Any], Any]  # (cfg) -> array: the initial value and the fill of an older checkpoint
+    on_birth: str | Callable[[Any, Any, BirthCtx], Any] = "rest"
 
 
 def _never(cfg: Any) -> bool:
@@ -103,10 +135,13 @@ class ExtSpec:
     overlay: str | None = None  # world overlay name (presets/<overlay>.toml)
     validate: Callable[[Any], None] = _ok
     # Step hooks (static: called only for an enabled feature, inside the traced step):
-    inputs: Callable[[Any, Any], Sequence[Any]] | None = (
-        None  # (s, cfg) -> arrays (N, w) per in-block, in order
+    inputs: Callable[[Any, Any, ExtCtx], Sequence[Any]] | None = None  # (s, cfg, ctx) -> (N, w) per in-block
+    # (s, y, ctx, cfg) -> the feature's decoded brain outputs (a pytree of arrays), kept in ``_Flows.ext``
+    decode: Callable[[Any, Any, ExtCtx, Any], Any] | None = None
+    due: Callable[[Any, Any, Any, Any], Any] | None = None  # (s, act, y, cfg) -> (N,) int32 due, or None
+    mask: Callable[[Any, Any, Any], Any] | None = (
+        None  # (decoded, solvent, cfg) -> decoded masked by solvency
     )
-    due: Callable[[Any, Any, Any], Any] | None = None  # (s, act, cfg) -> (N,) int32 action-cost due, or None
     count: Callable[[Any, Any, Any, Any], Mapping[str, Any]] | None = None  # (s_new, alive0, flows, cfg)
     check: Callable[[Mapping[str, Any], Any], Sequence[str]] | None = None  # host check: (numpy fields, cfg)
 

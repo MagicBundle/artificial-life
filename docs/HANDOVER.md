@@ -43,8 +43,8 @@ PR 0a of the five-feature series (arms, built structures, bonds that pay, commun
 meta key, conditional state fields, counter blocks, `extra_due`, `ActFlag` bits and `Acts.ext`, `rng.layout_version`,
 `ops.hash32`, the single `combat` signature with `combat.protect_floor`, and `tests/identity_matrix.py` (the CPU
 identity matrix against a `git archive` of the base: `uv run python tests/identity_matrix.py --base <commit>`, about
-two minutes). No behaviour change. The next PR is 0b (the layout migration, §43.8), then the engine PRs in the order of
-`scratchpad/emergence/integration.md` section 8.2.
+two minutes). No behaviour change. The next PR is 0b (the layout migration, §43.8), then the engine PRs in the order
+arms A1, A2, structures S1, bonds B1 and B2, comm C1, farming F1 (merged serially, each on the owner's go).
 
 ## How to run
 

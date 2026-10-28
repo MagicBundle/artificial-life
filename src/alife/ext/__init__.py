@@ -17,7 +17,9 @@ from alife.ext.base import (
     EXTENSIONS,
     MAX_EXTENSIONS,
     TAIL_ORDER,
+    BirthCtx,
     Block,
+    ExtCtx,
     ExtSpec,
     FieldSpec,
 )
@@ -28,18 +30,22 @@ __all__ = [
     "MAX_EXTENSIONS",
     "REGISTRY",
     "TAIL_ORDER",
+    "BirthCtx",
     "Block",
     "ExtBlocks",
+    "ExtCtx",
     "ExtSpec",
     "FieldSpec",
     "active",
     "check_registry",
+    "decode_all",
     "flag_values",
     "layout_active",
     "layout_blocks",
     "layout_features",
     "lever_keys",
     "mask",
+    "mask_all",
     "registered_block_names",
     "state_fields",
     "step_inputs",
@@ -106,14 +112,25 @@ def state_fields(cfg: Any, nd: int) -> tuple[FieldSpec, ...]:
     return tuple(f for spec in active(cfg) for f in spec.state_fields(cfg, nd))
 
 
-def step_inputs(s: Any, cfg: Any) -> tuple[Any, ...]:
+def decode_all(s: Any, y: Any, ctx: Any, cfg: Any) -> dict[str, Any]:
+    """feature name -> its decoded brain outputs (the ``decode`` hooks of the enabled features; S7)."""
+    return {spec.name: spec.decode(s, y, ctx, cfg) for spec in active(cfg) if spec.decode is not None}
+
+
+def mask_all(dec: dict[str, Any], solvent: Any, cfg: Any) -> dict[str, Any]:
+    """The decoded outputs masked by solvency (after S8); features without a ``mask`` hook keep theirs."""
+    by = {spec.name: spec for spec in active(cfg)}
+    return {n: (by[n].mask(d, solvent, cfg) if by[n].mask is not None else d) for n, d in dec.items()}
+
+
+def step_inputs(s: Any, cfg: Any, ctx: Any = None) -> tuple[Any, ...]:
     """The extension input blocks of one step, (N, width) each, in ``TAIL_ORDER`` then block order: what
     ``sensing.build_inputs(ext_in=)`` concatenates after the base vector. Empty while no footprint feature is
     on. A feature without an ``inputs`` hook contributes zero columns' worth only if it declares no blocks."""
     out: list[Any] = []
     for spec in sorted(layout_active(cfg), key=lambda sp: sp.tail_rank):
         if spec.inputs is not None:
-            out.extend(spec.inputs(s, cfg))
+            out.extend(spec.inputs(s, cfg, ctx))
     return tuple(out)
 
 

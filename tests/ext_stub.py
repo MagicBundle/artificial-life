@@ -11,11 +11,12 @@ never reads outside the LLM tier) is ``"stub:<name>,<name>"``; ``stub_cfg(cfg, "
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import NamedTuple
 
 import mlx.core as mx
 import pytest
 
-from alife import ext
+from alife import ext, layout
 from alife.config import Config, dims
 from alife.ext.base import Block, ExtSpec, FieldSpec
 
@@ -41,18 +42,18 @@ def _blocks(spec: list[tuple[str, int, bool]]):
     return lambda cfg, nd: tuple(Block(n, w, s) for n, w, s in spec)
 
 
-def _field(name, per_agent, shape, dtype) -> FieldSpec:
+def _field(name, per_agent, shape, dtype, on_birth="rest") -> FieldSpec:
     def rest(cfg: Config) -> mx.array:
         return mx.zeros(shape(dims(cfg)), dtype)
 
-    return FieldSpec(name, per_agent, shape, dtype, rest)
+    return FieldSpec(name, per_agent, shape, dtype, rest, on_birth)
 
 
 def _fields(name: str):
     n = lambda d: (d.n,)  # noqa: E731
     cells = lambda d: d.field_shape  # noqa: E731
     return {
-        "arms": (_field("arms", True, lambda d: (d.n, 6), mx.float32),),
+        "arms": (_field("arms", True, lambda d: (d.n, 6), mx.float32, "inherit"),),
         "structures": (_field("mat", False, cells, mx.int32),),
         "bonds": (
             _field("role", True, n, mx.int8),
@@ -127,27 +128,66 @@ def _in(name: str):
 
 
 def _inputs(name: str):
-    def f(s, cfg: Config):
+    """Each feature's FIRST input column is the crowd input recomputed from ``ctx.desc`` (the way comm's
+    ``hear`` reads the sensed neighbours): a test compares it with the base ``IN_CROWD`` column of ``x``."""
+
+    def f(s, cfg: Config, ctx):
         nd = dims(cfg).nd
         n = s.alive.shape[0]
-        return tuple(mx.zeros((n, b.width), mx.float32) for b in _in(name)(cfg, nd))
+        crowd = (ctx.desc[..., layout.NBR_PRESENT] > 0.5).sum(1).astype(mx.float32) / ctx.desc.shape[1]
+        out = []
+        for i, b in enumerate(_in(name)(cfg, nd)):
+            z = mx.zeros((n, b.width), mx.float32)
+            out.append(mx.concatenate([crowd[:, None], z[:, 1:]], axis=1) if i == 0 else z)
+        return tuple(out)
 
     return f
+
+
+class StubDec(NamedTuple):
+    """A feature's decoded brain outputs: rows whose first brain output is positive, and the field cell."""
+
+    flag: mx.array
+    cell: mx.array
+
+
+def _decode(s, y, ctx, cfg):
+    return StubDec(s.alive & (y[:, 0] > 0), ctx.fcell)
+
+
+def _mask(dec: StubDec, solvent, cfg):
+    return dec._replace(flag=dec.flag & solvent)
 
 
 def _count(name: str):
     def f(s_new, alive0, flows, cfg):
         n_alive = s_new.alive.astype(mx.int32).sum()
-        return {c: n_alive * (j + 1) for j, c in enumerate(COUNTERS[name])}
+        vals = {c: n_alive * (j + 1) for j, c in enumerate(COUNTERS[name])}
+        vals[COUNTERS[name][0]] = getattr(flows.ext, name).flag.astype(mx.int32).sum()  # the masked decode
+        return vals
 
     return f
 
 
-def _due(s, act, cfg):  # comm-style: 2 quanta per living agent, folded into HEAT_ACTION by pay_costs
-    return 2 * s.alive.astype(mx.int32)
+def _check(name: str, fail: bool):
+    return lambda arrays, cfg: [f"stub {name}: broken on purpose"] if fail else []
 
 
-def spec(name: str, *, due: bool | None = None, voice_w: int = 0) -> ExtSpec:
+def _due_fn(spy):
+    def due(s, act, y, cfg):
+        """comm-style: 2 quanta per living agent, plus floor(3·|y0|) and 1 per attacker (reads y and act)."""
+        d = 2 * s.alive.astype(mx.int32) + mx.floor(3.0 * mx.abs(y[:, 0])).astype(mx.int32)
+        d = d + act.attack.astype(mx.int32)
+        if spy is not None:
+            spy.setdefault("due", []).append(d)
+        return d
+
+    return due
+
+
+def spec(
+    name: str, *, due: bool | None = None, voice_w: int = 0, spy: dict | None = None, check_fail: bool = False
+) -> ExtSpec:
     return ExtSpec(
         name=name,
         enabled=_on(name),
@@ -163,8 +203,11 @@ def spec(name: str, *, due: bool | None = None, voice_w: int = 0) -> ExtSpec:
         act_flag=FLAGS[name],
         metric_prefix=PREFIXES[name],
         inputs=_inputs(name),
-        due=_due if (name == "comm" if due is None else due) else None,
+        decode=_decode,
+        mask=_mask,
+        due=_due_fn(spy) if (name == "comm" if due is None else due) else None,
         count=_count(name),
+        check=_check(name, check_fail),
     )
 
 
