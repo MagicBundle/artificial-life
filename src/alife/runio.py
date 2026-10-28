@@ -694,7 +694,7 @@ def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> Stat
             hint = (
                 "; the config and the checkpoint disagree on the feature layout (which extension "
                 "features are on): a checkpoint never crosses layout_features and nothing is guessed. "
-                "Fix the config, or migrate the checkpoint (DESIGN §43.8)"
+                "Fix the config, or migrate the checkpoint with `alife migrate` (DESIGN §43.8)"
             )
         raise CheckpointError(f"{path}: incompatible checkpoint: {', '.join(bad)}{hint}")
     try:
