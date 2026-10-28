@@ -379,3 +379,59 @@ def test_cli_modes_and_panel(tmp_path: Path) -> None:
 
 def test_cli_activity_error_on_a_missing_run(tmp_path: Path) -> None:
     assert main(["activity", str(tmp_path / "nope"), "--out", str(tmp_path / "o")]) == 2
+
+
+# --- review fixes ---
+
+
+def test_extended_codebook_sees_a_feature_the_reference_lacks() -> None:
+    rng = np.random.default_rng(40)
+    cb = codebook()
+    narrow = modes.replace(cb, columns=FEATS[:4], edges=cb.edges[:4])
+    c = rng.integers(0, 81, 3000)  # classes over the first four columns
+    ref = history(rng, [c] * 6, n=3000)
+    arm_cls = c + 81 * rng.choice([0, 2], 3000) * 3  # f2 digit 0 or 2, f3 digit 0: two feature levels
+    arm = history(rng, [arm_cls] * 6, n=3000)
+    seen = modes.persistent_classes(ref, narrow)
+    plain = modes.analyse(arm, narrow, seen=seen, n_blocks=2)
+    cbx = modes.extend_codebook(narrow, arm)
+    assert cbx.columns == [*FEATS[:4], "f2", "f3"] and cbx.meta["extended"]
+    ext = modes.analyse(arm, cbx, seen=modes.pad_seen(seen, cbx), n_blocks=2)
+    assert plain["classes_present"] < ext["classes_present"]
+    assert sum(ext["novelty"]["per_block"]) > sum(plain["novelty"]["per_block"])
+    assert modes.extend_codebook(cbx, arm) is cbx  # nothing left to add
+    assert (
+        len(modes.pad_seen(seen, cbx)) == cbx.n_codes
+        and modes.pad_seen(seen, cbx)[: len(seen)].tolist() == seen.tolist()
+    )
+
+
+def test_activity_cache_is_keyed_by_a_fingerprint(monkeypatch, tmp_path: Path) -> None:
+    tree = population(300, 1500, 2, np.random.default_rng(41), 8.0)
+    cov = {"t0": 0, "t_end": 1500, "min_parent_child_gap": 5}
+    monkeypatch.setattr(phylo, "load_tree", lambda run, start=None: (tree, cov))
+    blk = w2mod.Blocking(0, 300, 150, 8)
+    one = report.Settings(grid_every=100, marker_rates=(0.02,), cohort_horizons=(500,), shadows=1, windows=())
+    two = report.Settings(grid_every=100, marker_rates=(0.02,), cohort_horizons=(500,), shadows=2, windows=())
+    out = tmp_path / "o"
+    aa.analyse_arm(tmp_path, st=one, space="marker_0.02", out=out, blocking=blk)
+    assert "neutral2/grid" not in np.load(out / "activity.npz").files
+    aa.analyse_arm(tmp_path, st=two, space="marker_0.02", out=out, blocking=blk)  # other shadows: recomputed
+    assert "neutral2/grid" in np.load(out / "activity.npz").files
+    cov["t_end"] = 1400  # other end of the events: recomputed again
+    r = aa.analyse_arm(tmp_path, st=two, space="marker_0.02", out=out, blocking=blk)
+    assert "real" in r["timing_s"]
+
+
+def test_compare_refuses_p1_in_different_spaces() -> None:
+    from alife.analysis.emergence import panel_blocks
+
+    def panel_with(space: str) -> dict:
+        return {"endpoints": {"P1": {"status": "ok", "space": space}}}
+
+    panel_blocks.check_p1_spaces([panel_with("cohort_h200k"), panel_with("cohort_h200k")])
+    with pytest.raises(panel_blocks.SpaceMismatch):
+        panel_blocks.check_p1_spaces([panel_with("cohort_h200k"), panel_with("marker_0.01")])
+    panel_blocks.check_p1_spaces(
+        [panel_with("cohort_h200k"), {"endpoints": {"P1": {"status": "needs_missing"}}}]
+    )

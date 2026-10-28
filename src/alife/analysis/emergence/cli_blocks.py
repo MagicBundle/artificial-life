@@ -140,9 +140,11 @@ def cmd_modes(a: argparse.Namespace) -> int:
             fr = frames.read_frames(path)
             win = fr.meta.get("window") or [int(fr.step[0]), int(fr.step[-1])]
             births = modes.load_births(a.births, win[0], win[1]) if a.births else None
-            r = modes.analyse(fr, cb, seen=seen, births=births)
+            cbx = modes.extend_codebook(cb, fr)
+            seen = modes.pad_seen(seen, cbx)
+            r = modes.analyse(fr, cbx, seen=seen, births=births)
             r["window"] = win
-            seen = seen | modes.persistent_classes(fr, cb)
+            seen = seen | modes.persistent_classes(fr, cbx)
             res.append(r)
     except (frames.FramesError, FileNotFoundError, OSError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)

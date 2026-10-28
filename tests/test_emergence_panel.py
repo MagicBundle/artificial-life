@@ -169,7 +169,16 @@ def test_mlx_only_in_record_and_no_scipy_or_network() -> None:
         assert "lmstudio" not in text.lower() and "ALIFE_LLM" not in text
 
 
-WRITERS = ("panel.py", "compare.py", "prereg.py", "frames.py", "__main__.py", "epr_io.py", "modes.py")
+WRITERS = (
+    "panel.py",
+    "compare.py",
+    "prereg.py",
+    "frames.py",
+    "__main__.py",
+    "epr_io.py",
+    "modes.py",
+    "activity_adapter.py",
+)
 
 
 def test_no_write_into_a_run_directory(tmp_path: Path) -> None:

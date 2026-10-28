@@ -18,11 +18,24 @@ from alife.analysis.emergence import modes as modes_mod
 from alife.analysis.emergence.epr import CAVEATS, EPR_VERSION
 from alife.analysis.emergence.panel import endpoint_entry, needs_block
 
+B_KEYS = (
+    "cell",
+    "tau",
+    "own",
+    "raw",
+    "ambient",
+    "gradient_null",
+    "drift_removal",
+    "activity",
+    "stationarity",
+    "vertical",
+)
+
 
 def fill_b(panel: dict[str, Any], results: Sequence[dict[str, Any]]) -> None:
     """Block B from the ``epr.analyse_window`` results of the recorded windows (in window order).
 
-    The P4 endpoint is the own-motion rate; its block values are the 8 time-block rates of every window, in
+    The P4 endpoint is the own-motion rate; its block values are the 16 time-block rates of every window, in
     order, with a nonstationary window's blocks set to ``None`` (not used in an inference, DESIGN §44.3)."""
     if not results:
         return
@@ -37,10 +50,7 @@ def fill_b(panel: dict[str, Any], results: Sequence[dict[str, Any]]) -> None:
         "status": "ok",
         "version": EPR_VERSION,
         "windows": [
-            {
-                k: r[k]
-                for k in ("cell", "tau", "own", "raw", "ambient", "activity", "stationarity", "vertical")
-            }
+            {k: r[k] for k in B_KEYS}
             | {"scale_curve": r["scale_curve"], "clades": r["clades"], "bodies": r["bodies"]}
             for r in results
         ],
@@ -64,7 +74,7 @@ def fill_c(
     panel: dict[str, Any], results: Sequence[dict[str, Any]], winding: dict[str, Any] | None = None
 ) -> None:
     """Block C from the ``braid.analyse_blocks`` results of the windows (in window order) and, optionally, the
-    winding table (descriptive). The P5 block values are the braid contrast per crossing of every window's
+    winding table (descriptive). The P5 block values are the per-step braid contrast of every window's
     blocks, in order (``None`` where a block had no usable group)."""
     if not results:
         return
@@ -114,6 +124,7 @@ def fill_a(
             blocks=ep["blocks"] if vals else None,
             needs=[] if vals else ["no valid activity window"],
         )
+        panel["endpoints"]["P1"]["space"] = ep["space"]
         panel["header"]["versions"]["activity"] = aa.ACTIVITY_VERSION
         blk["caveats"] = list(aa.CAVEATS)
     else:
@@ -141,3 +152,19 @@ def fill_a(
     panel["header"]["flags"]["needs_missing"] = sorted(
         {n for k in ("A", "B", "C") for n in panel[k].get("needs_missing", [])}
     )
+
+
+class SpaceMismatch(ValueError):
+    """P1 values of panels computed in different activity spaces."""
+
+
+def check_p1_spaces(panels: Sequence[dict[str, Any]]) -> None:
+    """Refuse to compare P1 across activity spaces (the cohort and marker spaces are different quantities):
+    every panel with a P1 value must carry the same ``space``."""
+    spaces = {
+        p["endpoints"]["P1"].get("space")
+        for p in panels
+        if p["endpoints"].get("P1", {}).get("status") == "ok"
+    }
+    if len(spaces) > 1:
+        raise SpaceMismatch(f"P1 computed in different activity spaces: {sorted(map(str, spaces))}")

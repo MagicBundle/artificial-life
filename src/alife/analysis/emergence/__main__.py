@@ -123,8 +123,10 @@ def cmd_panel(a: argparse.Namespace) -> int:
                 births = (
                     modes.load_births(a.run, win[0], win[1]) if win and (a.run / "events").is_dir() else None
                 )
-                m = modes.analyse(fr, cb, seen=seen, births=births)
-                seen = seen | modes.persistent_classes(fr, cb)
+                cbx = modes.extend_codebook(cb, fr)
+                seen = modes.pad_seen(seen, cbx)
+                m = modes.analyse(fr, cbx, seen=seen, births=births)
+                seen = seen | modes.persistent_classes(fr, cbx)
                 mres.append(m)
             act = None
             if a.activity_start is not None:
@@ -143,8 +145,9 @@ def cmd_compare(a: argparse.Namespace) -> int:
     pr = prereg.load_prereg(a.prereg)
     panels = [panel.read_panel(p) for p in a.panels]
     try:
+        panel_blocks.check_p1_spaces(panels)
         cmp = compare.compare_panels(panels, pr, exploratory=a.exploratory)
-    except (prereg.PreregError, compare.CompareError, panel.PanelError) as e:
+    except (prereg.PreregError, compare.CompareError, panel.PanelError, panel_blocks.SpaceMismatch) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     cj, cm = compare.write_compare(Path(a.out or "analysis_cache/emergence/compare"), cmp)

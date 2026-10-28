@@ -21,6 +21,7 @@ import numpy as np
 from alife.analysis.emergence.frames import Frames, dequantise
 
 LATTICE_VERSION: Final = 1
+ORIGIN_GRID: Final = 8  # coarse cells per side of the origin grid that defines the organism blocks
 HORIZONTAL: Final = "xy"
 VERTICAL: Final = "z"
 
@@ -134,6 +135,9 @@ class Transitions:
     clade: np.ndarray
     body_size: np.ndarray
     move: np.ndarray
+    origin: np.ndarray | None = (
+        None  # coarse cell (ORIGIN_GRID^2) where the organism first appears: the block unit
+    )
 
     def __len__(self) -> int:
         return len(self.ci)
@@ -151,6 +155,7 @@ class Transitions:
             self.clade[mask],
             self.body_size[mask],
             self.move[mask],
+            None if self.origin is None else self.origin[mask],
         )
 
     def reversed(self) -> Transitions:
@@ -201,8 +206,13 @@ def extract_transitions(
         bands = n_bands(fr.height, band)
         codes = band_index(u[:, 2], fr.height, bands)
         n_cells = bands
+    first_uid, first_row = np.unique(fr.uid, return_index=True)
+    og = Lattice(fr.size, ORIGIN_GRID)
+    origin = og.index(dequantise(fr.pos[first_row], fr.size, fr.height))
     bs = np.concatenate([_body_sizes(fr.body[fr.span(i)]) for i in range(fr.n_frames)])
-    parts: dict[str, list[np.ndarray]] = {k: [] for k in ("ci", "cj", "frame", "uid", "clade", "bs", "move")}
+    parts: dict[str, list[np.ndarray]] = {
+        k: [] for k in ("ci", "cj", "frame", "uid", "clade", "bs", "move", "origin")
+    }
     used = skipped = 0
     for i in range(fr.n_frames - stride):
         j = i + stride
@@ -221,6 +231,7 @@ def extract_transitions(
         parts["uid"].append(fr.uid[ra])
         parts["clade"].append(fr.clade[ra])
         parts["bs"].append(bs[ra])
+        parts["origin"].append(origin[np.searchsorted(first_uid, fr.uid[ra])])
         parts["move"].append(np.linalg.norm(u[rb, :2] - u[ra, :2], axis=1).astype(np.float32))
 
     def cat(k: str, dt: type) -> np.ndarray:
@@ -238,6 +249,7 @@ def extract_transitions(
         cat("clade", np.int32),
         cat("bs", np.int32),
         cat("move", np.float32),
+        cat("origin", np.int32),
     )
 
 
@@ -252,3 +264,31 @@ def coarsen(t: Transitions, factor: int, ncell: int) -> Transitions:
     out = t.select(np.ones(len(t), bool))
     out.ci, out.cj, out.n_cells = f(t.ci), f(t.cj), m * m
     return out
+
+
+def advection_slope(fr: Frames) -> float | None:
+    """Slope of the horizontal displacement of organisms between frames on the integrated recorded drift
+    (``dt x`` the mean of the two frames' drift): about 1 for a population the wind advects, about 0 when the
+    drift is recorded but not applied to the motion (subtracting it would then create a spurious own-motion
+    current). None without drift, or when the drift is zero."""
+    if fr.drift is None:
+        return None
+    num = den = 0.0
+    for i in range(fr.n_frames - 1):
+        a, b = fr.span(i), fr.span(i + 1)
+        ia, ib = _match(fr.uid[a], fr.uid[b])
+        if not ia.size:
+            continue
+        d = (
+            dequantise(fr.pos[b], fr.size, fr.height)[ib, :2]
+            - dequantise(fr.pos[a], fr.size, fr.height)[ia, :2]
+        )
+        d = min_image(d, fr.size)
+        dr = (
+            0.5
+            * float(fr.step[i + 1] - fr.step[i])
+            * (fr.drift[a][ia, :2].astype(np.float64) + fr.drift[b][ib, :2].astype(np.float64))
+        )
+        num += float((d * dr).sum())
+        den += float((dr * dr).sum())
+    return num / den if den > 0 else None

@@ -16,8 +16,10 @@ inside a lineage is seen by MODES, not here.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Final
 
@@ -122,6 +124,24 @@ def endpoint(
     }
 
 
+def fingerprint(run: Path, origin: int, cov: dict[str, Any], st: report.Settings) -> dict[str, Any]:
+    """What the cached arrays depend on: the run (path and config hash), the fork step, the end of the events,
+    and every setting of ``report.compute`` (shadows, grid, spaces, seed). A cache with another fingerprint is
+    recomputed, never reused."""
+    meta_p = Path(run) / "meta.json"
+    ch = None
+    if meta_p.is_file():
+        ch = json.loads(meta_p.read_text(encoding="utf-8")).get("config_hash")
+    return {
+        "run": str(Path(run).resolve()),
+        "config_hash": ch,
+        "start": int(origin),
+        "t_end": cov.get("t_end"),
+        "settings": json.loads(json.dumps(asdict(st), default=list)),
+        "version": ACTIVITY_VERSION,
+    }
+
+
 def analyse_arm(
     run: Path,
     *,
@@ -144,14 +164,25 @@ def analyse_arm(
     origin = int(cov["t0"])
     npz = Path(out) / "activity.npz" if out else None
     timing: dict[str, float] = {"load": t_load}
-    if reuse and npz is not None and npz.is_file():
-        flat = report.load_flat(npz)
+    fp = fingerprint(Path(run), origin, cov, st)
+    fp_path = Path(out) / "activity.fp.json" if out else None
+    cached = (
+        reuse
+        and npz is not None
+        and npz.is_file()
+        and fp_path is not None
+        and fp_path.is_file()
+        and json.loads(fp_path.read_text(encoding="utf-8")) == fp
+    )
+    if cached:
+        flat = report.load_flat(npz)  # type: ignore[arg-type]
     else:
         flat, tm = report.compute(tree, st, log, step0=origin, gap=cov["min_parent_child_gap"])
         timing.update(tm)
-        if npz is not None:
+        if npz is not None and fp_path is not None:
             Path(out).mkdir(parents=True, exist_ok=True)  # type: ignore[arg-type]
             report.save_flat(npz, flat)
+            fp_path.write_text(json.dumps(fp, sort_keys=True), encoding="utf-8")
     n_agents = len(tree.birth) if hasattr(tree, "birth") else None
     del tree
     t1 = time.perf_counter()

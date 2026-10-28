@@ -33,7 +33,7 @@ import itertools
 import json
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -163,6 +163,37 @@ def build_codebook(refs: Sequence[Frames], *, max_rows: int = 200_000, max_cols:
             "windows": [r.meta.get("window") for r in refs],
         },
     )
+
+
+def extend_codebook(cb: Codebook, fr: Frames, max_cols: int = MAX_COLS) -> Codebook:
+    """The codebook plus the feature columns ``fr`` carries that the reference did not (up to ``max_cols``).
+
+    A reference without the feature (the baseline) cannot hold its cut points, so the new columns take tercile
+    cuts from the arm under test and are listed in ``meta["extended"]``; without them P2 and P3 would be blind
+    to the feature. Existing columns keep their codes (new columns are the high digits), so an earlier
+    ``seen`` set stays valid after ``pad_seen``."""
+    extra = [c for c in fr.trait_names if c not in NOT_FEATURE and c not in cb.columns]
+    add = extra[: max(max_cols - len(cb.columns), 0)]
+    if not add:
+        return cb
+    cuts = []
+    for c in add:
+        x = fr.trait(c).astype(np.float64)
+        x = x[np.isfinite(x)]
+        cuts.append([float(q) for q in np.quantile(x, [1 / 3, 2 / 3])] if x.size else [0.0, 0.0])
+    return replace(
+        cb,
+        columns=[*cb.columns, *add],
+        edges=[*cb.edges, *cuts],
+        meta={**cb.meta, "extended": {c: "cut points of this arm" for c in add}},
+    )
+
+
+def pad_seen(seen: np.ndarray, cb: Codebook) -> np.ndarray:
+    """``seen`` (bool over the classes of an earlier, narrower codebook) padded to ``cb.n_codes``."""
+    if len(seen) >= cb.n_codes:
+        return seen
+    return np.concatenate([seen, np.zeros(cb.n_codes - len(seen), bool)])
 
 
 def write_codebook(path: Path, cb: Codebook) -> Path:
@@ -466,6 +497,7 @@ def analyse(
         "status": "exploratory",
         "adapted": True,
         "n_blocks": n_blocks,
+        "codebook": {"columns": list(cb.columns), "extended": cb.meta.get("extended")},
         "classes_present": int(win_pers.sum()),
         "novelty": {
             "per_block": nov,

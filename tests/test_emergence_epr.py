@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import emergence_sim as sim
 from alife.analysis.emergence import epr, lattice
 from alife.analysis.emergence import frames as fm
 from alife.analysis.emergence.__main__ import main
@@ -382,3 +383,130 @@ def test_panel_command_fills_block_b_and_the_p4_endpoint(tmp_path: Path) -> None
         p["header"]["flags"]["nonstationary"] is False and p["header"]["versions"]["epr"] == epr.EPR_VERSION
     )
     assert p["A"]["status"] == "needs_missing"
+
+
+# --- review fixes: source-sink currents, comoving groups, advection, block bias ---
+
+
+def _reversible_window(seed: int, births: np.ndarray | None, n: int = 1200, burn: int = 50):
+    rng = np.random.default_rng(seed)
+    cum, pi = sim.chain(rng)
+    law = pi if births is None else births
+    us, cells = sim.simulate(rng, cum, law, law, n=n, nf=101 + burn)
+    return rng, sim.to_frames(us[burn:], cells[burn:], rng)
+
+
+def test_hot_spot_births_are_source_sink_current_not_circulation() -> None:
+    """Reversible movement with births at a hot spot: the total current is large (a source-sink current),
+    the circulating part, the headline, is about 0. The closed-chain cross-fit read it as EP (0.28, z 24)."""
+    zs, circ, tot = [], [], []
+    for seed in (100, 101):
+        _, fr = _reversible_window(seed, sim.hot_spot())
+        o = epr.analyse_window(fr, scales=(8.0,), n_boot=30)
+        zs.append(o["own"]["z"])
+        circ.append(o["own"]["rate"])
+        tot.append(o["own"]["rate_total"])
+        assert (
+            o["gradient_null"]["rate_total"] > 0.5 * o["own"]["rate_total"]
+        )  # the null reproduces the current
+        assert abs(o["gradient_null"]["rate"]) < 0.03  # and reads no circulation on it
+    assert min(tot) > 0.15 and max(abs(np.array(zs))) < 3.0
+    assert max(circ) < 0.1 * min(tot)
+
+
+def test_closed_reversible_population_has_no_source_sink_current() -> None:
+    _, fr = _reversible_window(7, None)
+    o = epr.analyse_window(fr, scales=(8.0,), n_boot=30)["own"]
+    assert abs(o["z"]) < 3
+    # the pooled total carries a small-sample bias (sparse pairs); it stays far below the hot-spot current
+    assert o["rate_total"] < 0.5 * 0.28
+
+
+def test_circulation_survives_the_source_sink_split() -> None:
+    """A circulating population keeps (most of) its rate in the circulating part."""
+    fr = make_frames(np.random.default_rng(20), n=2500, nf=60, swirl=1.2)
+    o = epr.analyse_window(fr, scales=(8.0,), n_boot=30)["own"]
+    assert o["z"] > 3 and o["rate"] > 0.6 * o["rate_total"]
+
+
+def test_comoving_groups_have_an_honest_error() -> None:
+    """Groups of 10 organisms with identical trajectories and EP 0: hashed-uid blocks put each group in both
+    halves (se 3x too small, every run a false positive); blocks by the cell where organisms first appear
+    keep a group in one block."""
+    zs = []
+    for seed in range(6):
+        rng = np.random.default_rng(1000 + seed)
+        cum, pi = sim.chain(rng)
+        us, cells = sim.simulate(rng, cum, pi, pi, n=150, nf=101)
+        us10 = [np.concatenate([u * 10 + g for g in range(10)]) for u in us]
+        fr = sim.to_frames(us10, [np.tile(c, 10) for c in cells], rng)
+        o = epr.analyse_window(fr, scales=(8.0,), n_boot=30)["own"]
+        zs.append(o["z"])
+    assert (np.abs(zs) > 1.96).mean() <= 0.2 and abs(np.mean(zs)) < 1.5
+
+
+def test_recorded_drift_that_does_not_advect_is_not_subtracted() -> None:
+    rng = np.random.default_rng(21)
+    fr = make_frames(rng, n=2500, nf=40)  # diffusion, no wind
+    fr.drift = np.zeros((len(fr.uid), 2), np.float16)
+    fr.drift[:, 0] = 0.02  # a wind that was recorded but never applied to the motion
+    r = epr.analyse_window(fr, scales=(8.0,), n_boot=20)
+    assert r["drift_removal"]["applied"] is False and abs(r["drift_removal"]["slope"]) < 0.1
+    assert abs(r["own"]["z"]) < 3 and r["ambient"] == 0.0  # not a spurious own-motion current
+    adv = epr.analyse_window(make_frames(rng, n=2500, nf=40, drift=0.02), scales=(8.0,), n_boot=20)
+    assert adv["drift_removal"]["applied"] is True and 0.8 < adv["drift_removal"]["slope"] < 1.2
+
+
+def test_block_values_do_not_depend_on_the_block_sample_size() -> None:
+    """The 16 block values of a circulating population average to the window value, with a half-size
+    population too (fitting each block's own sparse table would bias them by its size)."""
+    rates = {}
+    for n in (1500, 3000):
+        fr = make_frames(np.random.default_rng(22), n=n, nf=65, swirl=1.2)
+        r = epr.analyse_window(fr, scales=(8.0,), n_boot=10)
+        rates[n] = (np.mean(r["blocks"]), r["own"]["rate"])
+        assert abs(rates[n][0] - rates[n][1]) < 0.35 * rates[n][1]
+    assert abs(rates[1500][0] - rates[3000][0]) < 0.35 * rates[3000][0]
+
+
+def test_gradient_null_keeps_starts_and_redraws_destinations() -> None:
+    fr = make_frames(np.random.default_rng(23), n=1500, nf=20, swirl=1.2)
+    t = lattice.extract_transitions(fr)
+    n = epr.gradient_null(t, np.random.default_rng(0))
+    assert len(n) == len(t) and np.array_equal(n.ci, t.ci) and not np.array_equal(n.cj, t.cj)
+    assert epr.stationarity(n)["js"] == epr.stationarity(t)["js"]
+
+
+def test_affinity_residual_removes_a_potential_and_keeps_a_cycle() -> None:
+    # a 4-cycle 0-1-2-3-0: affinity along the cycle is circulation; add a potential to the same edges
+    edges = np.array([[0, 1], [1, 2], [2, 3], [0, 3]])
+    p = np.array([0.0, 1.0, -0.5, 0.3])
+    grad = p[edges[:, 0]] - p[edges[:, 1]]
+    n = 4000.0
+    for aff, expect_cycle in ((grad, False), (grad + np.array([1.0, 1.0, 1.0, -1.0]), True)):
+        f = n / (1 + np.exp(-aff))
+        res = epr.affinity_residual(f[None], (n - f)[None], edges)[0]
+        assert (np.abs(res).max() > 0.5) == expect_cycle
+
+
+def test_independence_detects_a_rotated_copy_and_has_a_small_false_failure_rate() -> None:
+    from alife.analysis.emergence import independence as ind
+
+    keys = np.arange(6000, dtype=np.uint64)
+    a = ind.hash_stream(keys, 11)
+    rotl32 = (a << np.uint64(32)) | (a >> np.uint64(32))
+    res = ind.independence(a, rotl32, n_perm=50)
+    assert not res["independent"] and res["bit_rotation_pairs_off_half"] > 0
+    rotl7 = (a << np.uint64(7)) | (a >> np.uint64(57))
+    assert not ind.independence(a, rotl7, n_perm=50)["independent"]
+    rng = np.random.default_rng(5)
+    salts = rng.integers(0, 2**62, (60, 2))
+
+    def failed(s: int, t: int) -> bool:
+        res = ind.independence(ind.hash_stream(keys, s), ind.hash_stream(keys, t), n_perm=50)
+        return not res["independent"]
+
+    # well-separated 64-bit salts: about 1% false failures per pair is expected, a few of 60 at most
+    assert sum(failed(int(s), int(t)) for s, t in salts) <= 3
+    # a finding: salts that differ only in low bits give weakly dependent streams (single-bit agreement)
+    assert sum(failed(i, i + 1) for i in range(40)) >= 3

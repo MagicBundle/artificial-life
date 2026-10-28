@@ -18,6 +18,7 @@ import numpy as np
 from alife.analysis.phylo import splitmix64
 
 INDEPENDENCE_VERSION: Final = 1
+Z_ROT: Final = 5.5  # per bit-pair z for the 4096 rotation pairs (family false rate about 1e-3)
 BITS: Final = np.uint64(1) << np.arange(64, dtype=np.uint64)
 
 
@@ -58,11 +59,18 @@ def independence(
     rng = np.random.default_rng(seed)
     null = np.array([mutual_information(af, rng.permutation(bf), bins) for _ in range(n_perm)])
     p_mi = float((1 + (null >= mi).sum()) / (n_perm + 1))
-    bit_dev = None
+    bit_dev = bit_rot = None
     if a.dtype == np.uint64 and b.dtype == np.uint64:
         agree = np.array([((a & m) == (b & m)).mean() for m in BITS])
         bit_dev = int((np.abs(agree - 0.5) * 2 * math.sqrt(n) > z_max).sum())
-    ok = abs(z) <= z_max and p_mi > 0.005 and not bit_dev
+        # bit k of one stream against bit (k + r) of the other, for every rotation r: a rotated copy (or a
+        # stream sharing words with a shift) agrees perfectly at one offset. 4096 pairs, so a stricter z.
+        bit_rot = 0
+        for rot in range(64):
+            x = a ^ (b if rot == 0 else ((b << np.uint64(rot)) | (b >> np.uint64(64 - rot))))
+            frac = np.array([((x >> np.uint64(k)) & np.uint64(1)).mean() for k in range(64)])
+            bit_rot += int((np.abs(frac - 0.5) * 2 * math.sqrt(n) > Z_ROT).sum())
+    ok = abs(z) <= z_max and p_mi > 0.005 and not bit_dev and not bit_rot
     return {
         "version": INDEPENDENCE_VERSION,
         "n": n,
@@ -72,6 +80,7 @@ def independence(
         "mi_null_mean": float(null.mean()),
         "mi_p": p_mi,
         "bit_positions_off_half": bit_dev,
+        "bit_rotation_pairs_off_half": bit_rot,
         "independent": bool(ok),
     }
 

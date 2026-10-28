@@ -1,13 +1,13 @@
-"""Braids of organism groups: words, the Burau (t = -1) entropy lower bound, surrogates (DESIGN §44.4). Numpy
-only.
+"""Braids of organism groups: words, the Burau (t = -1) growth index, surrogates (DESIGN §44.4). Numpy only.
 
 A group of ``n`` strands with horizontal tracks ``(x, y)`` is ordered by ``x``; between consecutive frames
 the old order is sorted into the new one by adjacent swaps, each the generator ``sigma_j^{+-1}`` (``+`` when
 the strand that was on the left, moving right, passes at larger ``y``; the entropy does not depend on the
 convention, only on its being consistent). The finite-time exponent ``h_T = (1/T) log ||B(w_m) ...
-B(w_1)||_2`` of the Burau matrices at ``t = -1`` (real; Fried-Kolev, Band-Boyland) is a lower bound of the
-topological entropy of long words (not the Dynnikov-coordinate growth, which can only be larger). It is
-reported per step and per crossing.
+B(w_1)||_2`` of the Burau matrices at ``t = -1`` (real; Fried-Kolev, Band-Boyland) is a **growth index**:
+for long periodic words it approaches a lower bound of the topological entropy, but for a finite word it is
+not a bound (a reducible word such as ``sigma_1^100``, of entropy 0, has ``log||B|| = 5.3``). It is reported
+per step and per crossing, and only ever compared with the same index of surrogates.
 
 The statistic is a **coordination index**: independent strands braid chaotically, so the real value is set
 against surrogates that keep each strand's path statistics and break the coordination between strands. Either
@@ -49,7 +49,8 @@ EXTENT_FRAC: Final = 1.0 / 3.0
 SEED: Final = 0xB8A1D
 
 CAVEATS: Final = (
-    "Braid entropy is a lower-bound estimate (Burau at t = -1), not the Dynnikov growth.",
+    "The Burau (t = -1) growth index of a finite word is not an entropy bound (a reducible word has a\n    "
+    "positive index); it is compared with surrogates only.",
     "It is a coordination index (real against surrogate, either sign), not a score of more braiding.",
     "Groups are bodies of one frame followed over a short sub-window (organisms turn over fast).",
 )
@@ -125,7 +126,7 @@ def log_growth(word: list[tuple[int, int]], n: int) -> float:
 
 
 def braid_stats(x: np.ndarray, y: np.ndarray, steps: float) -> dict[str, Any]:
-    """Word, crossings and entropy lower bound of one set of tracks over ``steps`` steps."""
+    """Word, crossings and Burau growth index of one set of tracks over ``steps`` steps."""
     word, under = word_from_tracks(x, y)
     n = x.shape[1]
     lg = log_growth(word, n) if word else 0.0
@@ -211,7 +212,7 @@ def groups_at(
     body, uid = fr.body[s], fr.uid[s]
     ok = body >= 0
     out: list[np.ndarray] = []
-    skipped = {"small": 0, "large": 0}
+    skipped = {"small": 0, "large": 0, "small_members": 0, "large_members": 0}
     if ok.any():
         lab, inv, cnt = np.unique(body[ok], return_inverse=True, return_counts=True)
         order = np.argsort(inv, kind="stable")
@@ -220,8 +221,10 @@ def groups_at(
         for j in range(len(lab)):
             if cnt[j] < min_size:
                 skipped["small"] += 1
+                skipped["small_members"] += int(cnt[j])
             elif cnt[j] > max_size:
                 skipped["large"] += 1
+                skipped["large_members"] += int(cnt[j])
             else:
                 out.append(np.sort(u[bounds[j] : bounds[j + 1]]))
     return out, skipped
@@ -265,12 +268,17 @@ def analyse_blocks(
     n_surr: int = N_SURR,
     kind: str = "increment",
     max_groups: int = MAX_GROUPS,
+    max_size: int = MAX_STRANDS,
     seed: int = SEED,
+    sensitivity: bool = True,
 ) -> dict[str, Any]:
     """Block C of one frames file. The window is cut into ``n_blocks`` sub-windows of consecutive frames; at
-    the first frame of each, the bodies of 8 to 250 members form the groups, followed over the sub-window on
-    the members that survive it. ``blocks`` are the P5 block values: the mean over groups of the per-crossing
-    contrast ``h_real - h_surr`` (``None`` for a block with no usable group)."""
+    the first frame of each, the bodies of 8 to ``max_size`` (250) members form the groups, followed over the
+    sub-window on the members that survive it. ``blocks`` are the P5 block values: the mean over all groups of
+    the per-step contrast ``h_real - h_surr`` (a group with no crossing counts, as 0 minus its surrogate; the
+    per-crossing form is reported beside it but its length confound makes it unsuitable as the endpoint).
+    ``member_shares`` gives the share of the organisms at the block starts that sit in bodies too small, too
+    large, or used; ``sensitivity`` adds the same analysis with ``max_size`` 500."""
     f = fr.n_frames
     w = (f - 1) // n_blocks
     if w < 2:
@@ -279,11 +287,15 @@ def analyse_blocks(
     blocks: list[float | None] = []
     per_block = []
     skipped = {"small": 0, "large": 0, "survivors": 0, "extent": 0}
+    members = {"alive": 0, "small": 0, "large": 0, "used": 0}
     for b in range(n_blocks):
         i0, i1 = b * w, b * w + w
-        groups, sk = groups_at(fr, i0)
+        groups, sk = groups_at(fr, i0, max_size=max_size)
         skipped["small"] += sk["small"]
         skipped["large"] += sk["large"]
+        members["alive"] += int(fr.off[i0 + 1] - fr.off[i0])
+        members["small"] += sk["small_members"]
+        members["large"] += sk["large_members"]
         # a deterministic subset: the groups with the lowest hash of their smallest uid
         groups.sort(key=lambda g: (int(g[0]) * 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF)
         done = []
@@ -296,14 +308,16 @@ def analyse_blocks(
             r = coordination(tr[0], tr[1], steps, rng, n_surr=n_surr, kind=kind)
             r["size0"] = len(g)
             done.append(r)
-        cc = [r["contrast_cross"] for r in done if r["contrast_cross"] is not None]
-        blocks.append(float(np.mean(cc)) if cc else None)
+            members["used"] += len(g)
+        cs = [r["contrast_step"] for r in done if r["contrast_step"] is not None]
+        blocks.append(float(np.mean(cs)) if cs else None)
         per_block.append(
             {
                 "block": b,
                 "groups": len(done),
-                "contrast_cross": blocks[-1],
-                "contrast_step": _mean([r["contrast_step"] for r in done]),
+                "contrast_step": blocks[-1],
+                "contrast_cross": _mean([r["contrast_cross"] for r in done]),
+                "zero_crossing_groups": sum(r["n_cross"] == 0 for r in done),
                 "h_real": _mean([r["h_step"] for r in done]),
                 "h_surr": _mean([r["h_surr"] for r in done]),
                 "coord": _mean([r["coord"] for r in done]),
@@ -312,8 +326,27 @@ def analyse_blocks(
                 "strands": _mean([r["n_strands"] for r in done]),
             }
         )
+    shares = {
+        k: (v / members["alive"] if members["alive"] else None) for k, v in members.items() if k != "alive"
+    }
+    sens = None
+    if sensitivity and max_size < 500:
+        s5 = analyse_blocks(
+            fr, n_blocks=n_blocks, n_surr=n_surr, kind=kind, max_groups=max_groups, max_size=500,
+            seed=seed, sensitivity=False,
+        )  # fmt: skip
+        sens = {
+            "max_size": 500,
+            "blocks": s5["blocks"],
+            "groups_total": s5["groups_total"],
+            "member_shares": s5["member_shares"],
+            "mean": _mean(s5["blocks"]),
+        }
     return {
         "version": BRAID_VERSION,
+        "max_size": max_size,
+        "member_shares": shares,
+        "sensitivity_max500": sens,
         "sub_window_frames": w,
         "sub_window_steps": steps,
         "surrogate": kind,

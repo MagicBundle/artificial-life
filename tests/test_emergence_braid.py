@@ -152,6 +152,7 @@ def swarm_frames(
     size: int = 10,
     life: int = 20,
     bs: int = 160.0,
+    lockstep: bool = False,
 ) -> fm.Frames:
     """Bodies of ``size`` organisms jittering about fixed centres; every organism dies after ``life`` frames
     and is replaced by a newcomer (a fresh uid), so no group survives a window but a block start can form
@@ -171,7 +172,10 @@ def swarm_frames(
             uid[i] = nxt
             nxt += 1
             birth[i] = f
-        pos = pos + rng.normal(0, 0.15, pos.shape)
+        if lockstep:  # every body moves rigidly: one common step per body, no individual jitter
+            pos = pos + rng.normal(0, 0.6, (n_bodies, 2)).repeat(size, 0)
+        else:
+            pos = pos + rng.normal(0, 0.15, pos.shape)
         ps.append(np.column_stack([pos, np.zeros(n)]).copy())
         us.append(uid.copy())
         bd.append(body.copy())
@@ -386,3 +390,33 @@ def test_panel_fills_block_c_and_p5(tmp_path: Path) -> None:
     e = p["endpoints"]["P5"]
     assert e["status"] == "ok" and len(e["blocks"]) == 16 and e["confirmatory"] is True
     assert p["C"]["winding"]["status"] == "needs_missing"
+
+
+# --- review fixes ---
+
+
+def test_fully_ordered_groups_count_as_values_and_the_endpoint_is_per_step() -> None:
+    """Rigid bodies cross nothing; the old per-crossing block value dropped them (None) and kept only the
+    groups that crossed. The block value is now the mean per-step contrast over all groups."""
+    fr = swarm_frames(np.random.default_rng(30), nf=49, n_bodies=12, size=10, life=10_000, lockstep=True)
+    r = braid.analyse_blocks(fr, n_blocks=8, n_surr=8, sensitivity=False)
+    assert all(b is not None for b in r["blocks"])
+    assert sum(p["zero_crossing_groups"] for p in r["per_block"]) > 0
+    assert all(b < 0 for b in r["blocks"])  # ordered flow: below the surrogate, per step
+    assert all(
+        p["contrast_cross"] is None for p in r["per_block"] if p["zero_crossing_groups"] == p["groups"]
+    )
+
+
+def test_member_shares_and_the_500_sensitivity() -> None:
+    fr = swarm_frames(np.random.default_rng(31), nf=25, n_bodies=2, size=300, life=10_000)
+    r = braid.analyse_blocks(fr, n_blocks=4, n_surr=3)
+    sh = r["member_shares"]
+    assert sh["large"] == pytest.approx(1.0) and sh["used"] == 0.0 and r["groups_total"] == 0
+    s5 = r["sensitivity_max500"]
+    assert s5["max_size"] == 500 and s5["member_shares"]["used"] > 0.5 and s5["groups_total"] > 0
+
+
+def test_growth_index_is_not_an_entropy_bound() -> None:
+    assert braid.log_growth([(0, 1)] * 100, 3) > 3.0  # sigma_1^100 has entropy 0 but a large index
+    assert any("not an entropy bound" in c for c in braid.CAVEATS)
