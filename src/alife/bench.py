@@ -51,7 +51,19 @@ from typing import Any, Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import actions, bonds, brain, fields, invariants, lifecycle, metrics, physics, sensing, spatial
+from alife import (
+    actions,
+    bonds,
+    brain,
+    ext,
+    fields,
+    invariants,
+    lifecycle,
+    metrics,
+    physics,
+    sensing,
+    spatial,
+)
 from alife import energy as en
 from alife import step as step_mod
 from alife import weather as wthr
@@ -690,11 +702,24 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             gr = physics.grounded(s.pos, cfg)
             fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch)
             desc = sensing.neighbor_descriptors(s, nbr, cfg)
-            x = sensing.build_inputs(s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, grounded=gr)
+            x = sensing.build_inputs(
+                s,
+                a,
+                nbr,
+                desc,
+                geom,
+                fobs,
+                ks[Stream.NOISE],
+                cfg,
+                grounded=gr,
+                ext_in=ext.step_inputs(s, cfg),
+            )
             return _Sense(a, geom, fcell, desc, x, gr)
         fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg)
         desc = sensing.neighbor_descriptors(s, nbr, cfg)
-        x = sensing.build_inputs(s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg)
+        x = sensing.build_inputs(
+            s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, ext_in=ext.step_inputs(s, cfg)
+        )
         return _Sense(a, geom, fcell, desc, x)
 
     def think(W1: mx.array, W2: mx.array, x: mx.array, h: mx.array) -> tuple[mx.array, mx.array]:
@@ -724,12 +749,15 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         mo: actions.Motion3 | None,
         wind: wthr.AgentForce | None,
     ) -> _Interact:
+        # the mirror of ``step.step``: the feature dues, passed only when a feature has one (DESIGN §43.4)
+        extra_due = ext.sum_due(spec.due(s, act, cfg) for spec in ext.active(cfg) if spec.due is not None)
+        due_kw = {} if extra_due is None else {"extra_due": extra_due}
         if d3:  # static
             nb0 = bonds.n_bonds(s.partner)
-            c = en.pay_costs3(s.energy, act, mo, nb0, s.brain_cost, s.buoy_cap, s.alive, cfg)
+            c = en.pay_costs3(s.energy, act, mo, nb0, s.brain_cost, s.buoy_cap, s.alive, cfg, **due_kw)
             mo = actions.mask(mo, c.solvent)
         else:
-            c = en.pay_costs(s.energy, act, bonds.n_bonds(s.partner), s.brain_cost, s.alive, cfg)
+            c = en.pay_costs(s.energy, act, bonds.n_bonds(s.partner), s.brain_cost, s.alive, cfg, **due_kw)
         act = actions.mask(act, c.solvent)
         flag = act.release | (se.geom.length > cfg.bonds.break_length)
         if wind is not None and wind.breaks is not None:  # static: storm_break_u > 0

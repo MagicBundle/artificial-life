@@ -23,7 +23,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import config as config_mod
-from alife import metrics, physics, play, runner, spatial, stream, weather_spinup
+from alife import ext, metrics, physics, play, runner, spatial, stream, weather_spinup
 from alife.analysis import houses as house_rebuild
 from alife.config import (
     ALL_OVERLAYS,
@@ -320,6 +320,17 @@ def _summary(cfg: Config) -> dict[str, Any]:
         "field_grid": d.fg,
         **({"dims": d.nd, "world_height": cfg.world.height, "field_grid_z": d.fz} if d.d3 else {}),
         "hidden": d.h,
+        # the feature extensions (DESIGN §43): absent, as before, while none is enabled
+        **(
+            {
+                "features": list(d.features),
+                "layout_features": ext.layout_features(cfg),
+                "d_in": d.lay.D_IN,
+                "d_out": d.lay.D_OUT,
+            }
+            if d.features
+            else {}
+        ),
         "k_neighbors": d.k,
         "weight_dtype": cfg.brain.weight_dtype,
         "immigration_floor": cfg.population.immigration_floor,
