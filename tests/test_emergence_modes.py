@@ -329,13 +329,13 @@ def test_adapter_picks_a_space_and_runs_end_to_end(activity_flats, monkeypatch, 
 
 def test_cli_modes_and_panel(tmp_path: Path) -> None:
     rng = np.random.default_rng(8)
-    fr_a = history(rng, [rng.integers(0, 9, 1500) for _ in range(17)], n=1500)
+    fr_a = history(rng, [rng.integers(0, 9, 1500) for _ in range(33)], n=1500)
     fr_a.traits[:, :4] = rng.normal(size=(len(fr_a.uid), 4))
-    fr_a.meta.update({"run": "toy", "window": [0, 1600], "frames_version": 1})
+    fr_a.meta.update({"run": "toy", "window": [0, 3200], "frames_version": 1})
     ref = fm.write_frames(tmp_path / "ref.npz", fr_a)
-    fr_b = history(rng, [rng.integers(0, 9, 1500) for _ in range(17)], n=1500)
+    fr_b = history(rng, [rng.integers(0, 9, 1500) for _ in range(33)], n=1500)
     fr_b.traits[:, :4] = rng.normal(size=(len(fr_b.uid), 4))
-    fr_b.meta.update({"run": "toy", "window": [2000, 3600], "frames_version": 1})
+    fr_b.meta.update({"run": "toy", "window": [4000, 7200], "frames_version": 1})
     win = fm.write_frames(tmp_path / "win.npz", fr_b)
     out = tmp_path / "m"
     assert main(["modes", str(win), "--reference", str(ref), "--out", str(out)]) == 0
@@ -359,7 +359,7 @@ def test_cli_modes_and_panel(tmp_path: Path) -> None:
                 "--frames",
                 str(win),
                 "--windows",
-                "2000:3600",
+                "4000:7200",
                 "--reference",
                 str(ref),
                 "--out",
@@ -371,7 +371,7 @@ def test_cli_modes_and_panel(tmp_path: Path) -> None:
     p = json.loads((pout / "panel.json").read_text())
     assert p["A"]["status"] == "ok" and p["A"]["modes"]["windows"]
     for k in ("P2", "P3"):
-        assert p["endpoints"][k]["status"] == "ok" and len(p["endpoints"][k]["blocks"]) == 8
+        assert p["endpoints"][k]["status"] == "ok" and len(p["endpoints"][k]["blocks"]) == 16
         assert p["endpoints"][k]["confirmatory"] is False
     assert p["endpoints"]["P1"]["status"] == "needs_missing"  # no activity requested
     assert p["A"]["needs_missing"] == ["activity (run events)"]

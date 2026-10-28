@@ -72,8 +72,12 @@ def default_prereg(order: tuple[str, ...] = BUILDUP_ORDER, code_git: str | None 
             "supported": "a confirmatory endpoint supported in buildup, loo and control (same sign, Holm), "
             "and the scorecard not worse than the inert twin",
             "seed_rule": "w2.classify over seeds, Stouffer p across seeds",
-            "blocks": 8,
-            "widen_at_abs_r1": 0.5,
+            "blocks": {
+                "window": 16,
+                "run": 8,
+            },  # 16 x 625 for a 10 000-step window (8 gives ~0.56 power at d = 1.5)
+            "min_seeds": 3,
+            "widen_at_abs_r1": 0.3,
         },
         "analysis": {  # provisional until the calibration run (E7)
             "ep_tau": 100,

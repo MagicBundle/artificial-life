@@ -42,15 +42,15 @@ def test_distribution_functions_against_tables() -> None:
 
 
 def test_paired_test_reports_a_known_contrast() -> None:
-    a = np.array([2.1, 2.3, 1.9, 1.8, 2.4, 2.0, 2.2, 2.1])  # |lag-1| < 0.5: not widened
+    a = np.array([2.1, 2.3, 1.9, 1.8, 2.4, 2.0, 2.2, 2.1])  # widening off: known-value check
     b = np.zeros(8)
-    r = stats.paired_test(a, b)
+    r = stats.paired_test(a, b, widen=False)
     d = a - b
     assert r["mean"] == pytest.approx(d.mean())
     assert r["d_z"] == pytest.approx(d.mean() / d.std(ddof=1))
     assert r["t"] == pytest.approx(d.mean() / (d.std(ddof=1) / math.sqrt(8)))
     assert r["p"] < 1e-6 and r["lo"] > 0 and not r["widened"]
-    flip = stats.paired_test(a, b, direction=-1)
+    flip = stats.paired_test(a, b, direction=-1, widen=False)
     assert flip["mean"] == pytest.approx(-d.mean()) and flip["p"] > 0.999999
 
 
@@ -175,18 +175,26 @@ def test_exploratory_endpoints_take_no_part_in_the_call() -> None:
     assert calls["niche"] != "supported"
 
 
+def _hits(rng: np.random.Generator, reps: int, d: float, h: str, pr: dict, **kw) -> float:
+    eff = {("comm", e): d for e in ("P1", "P4", "P5")}  # planted on the confirmatory family
+    ok = 0
+    for _ in range(reps):
+        c = compare.compare_panels(synth.synth_panels(rng, effects=eff, prereg_hash=h, **kw), pr)
+        ok += c["features"]["comm"]["call"] == "supported"
+    return ok / reps
+
+
 def test_null_family_wise_rate_and_power() -> None:
+    """Size 0 of 250 (0 of 2000 slow); power at d = 1.5 with 16 blocks (the prereg) >= 0.80. The honest
+    8-block number: widening at |r1| > 0.3 halves the blocks and power falls to about 0.56."""
     pr, h = _frozen()
     rng = np.random.default_rng(11)
     reps, fw = 250, 0
     for _ in range(reps):
         fw += any(v == "supported" for v in _calls(rng, {}, pr, h).values())
     assert fw / reps <= 0.05
-    eff = {
-        ("comm", e): 1.5 for e in ("P1", "P4", "P5")
-    }  # a planted standardised effect on the confirmatory family
-    hits = sum(_calls(rng, eff, pr, h)["comm"] == "supported" for _ in range(reps))
-    assert hits / reps >= 0.75  # measured 0.80 to 0.82: the spec's 80% is met only marginally
+    assert _hits(rng, 200, 1.5, h, pr, n_blocks=16) >= 0.80  # measured 0.998
+    assert 0.40 <= _hits(rng, 200, 1.5, h, pr, n_blocks=8) < 0.80  # measured 0.556: 8 blocks are not enough
 
 
 @pytest.mark.slow
@@ -244,3 +252,65 @@ def test_missing_arms_are_reported_not_filled() -> None:
     assert any("I_bonds" in m for m in c["missing"])
     cell = c["features"]["bonds"]["endpoints"]["P1"]["series"]["control"]
     assert cell["label"] == "not evaluated"
+
+
+def test_widening_at_0_3_and_nan_blocks_are_explicit() -> None:
+    rng = np.random.default_rng(4)
+    e = rng.standard_normal(40)
+    x = np.zeros(40)
+    for i in range(1, 40):  # AR(1) 0.5: r1 of an 8-block draw is usually above 0.3
+        x[i] = 0.5 * x[i - 1] + e[i]
+    d = x[:8] + 0.6
+    r1 = stats.lag1(d)
+    assert stats.WIDEN_AT == 0.3
+    assert (abs(r1) > 0.3) == stats.paired_test(d, np.zeros(8))["widened"]
+    nan = d.copy()
+    nan[3] = np.nan
+    r = stats.paired_test(nan, np.zeros(8))
+    assert r["nan_blocks"] == 1 and r["r1"] is not None
+    ramp = np.linspace(0, 1, 8)
+    ramp[2] = np.nan
+    w = stats.paired_test(ramp, np.zeros(8))
+    assert (
+        w["widened"] and w["n"] == 4 and w["nan_blocks"] == 1
+    )  # a NaN block no longer disables the widening
+    assert list(np.isnan(stats.merge_pairs(np.array([np.nan, np.nan, 1.0, 3.0])))) == [True, False]
+    assert stats.merge_pairs(np.array([np.nan, 2.0, 1.0, 3.0])).tolist() == [2.0, 2.0]
+
+
+def test_noise_floor_is_the_median_not_the_mean() -> None:
+    twins = [np.array([0.4]), np.array([0.5]), np.array([0.3]), np.array([10.0])]
+    assert stats.noise_floor(twins) == pytest.approx(0.45)  # the mean would be 2.8
+
+
+def test_a_call_needs_three_seeds_and_a_finite_floor() -> None:
+    pr, h = _frozen()
+    eff = {("bonds", e): 3.0 for e in ("P1", "P4", "P5")}
+    rng = np.random.default_rng(13)
+    two = synth.synth_panels(rng, effects=eff, seeds=(0, 1), prereg_hash=h)
+    c = compare.compare_panels(two, pr)["features"]["bonds"]
+    assert c["call"] == "mixed" and "at least 3 seeds" in c["reason"]
+    three = synth.synth_panels(rng, effects=eff, prereg_hash=h)
+    no_twins = [p for p in three if p["header"]["arm"] not in ("T0", "T5")]
+    c = compare.compare_panels(no_twins, pr)["features"]["bonds"]
+    assert c["call"] == "mixed" and "noise floor" in c["reason"]
+    assert compare.compare_panels(three, pr)["features"]["bonds"]["call"] == "supported"
+
+
+def test_unevaluated_endpoint_counts_as_p_one_in_holm() -> None:
+    pr, h = _frozen()
+    eff = {("bonds", "P1"): 3.0, ("bonds", "P4"): 3.0, ("bonds", "P5"): 3.0}
+    ps = synth.synth_panels(np.random.default_rng(14), effects=eff, prereg_hash=h)
+    for p in ps:
+        p["endpoints"]["P5"] = {**p["endpoints"]["P5"], "status": "needs_missing", "blocks": None}
+    t = compare.compare_panels(ps, pr)["features"]["bonds"]["endpoints"]
+    p1, p4 = (t[e]["series"]["control"]["p"] for e in ("P1", "P4"))
+    assert t["P1"]["series"]["control"]["p_holm"] == pytest.approx(stats.holm([p1, p4, 1.0])[0])
+    assert t["P1"]["series"]["control"]["p_holm"] > stats.holm([p1, p4])[0] or p1 == 0.0
+
+
+def test_a_significantly_negative_feature_is_reversed() -> None:
+    pr, h = _frozen()
+    eff = {("comm", e): -3.0 for e in ("P1", "P4", "P5")}
+    c = compare.compare_panels(synth.synth_panels(np.random.default_rng(15), effects=eff, prereg_hash=h), pr)
+    assert c["features"]["comm"]["call"] == "reversed" and "lower" in c["features"]["comm"]["reason"]

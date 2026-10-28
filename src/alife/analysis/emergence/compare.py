@@ -2,20 +2,27 @@
 
 Panels are indexed by ``(arm, seed)``. Arm names: ``U0``..``U5`` (the build-up in the pre-registered order),
 ``L_<feature>`` (leave-one-out: U5 minus the feature), ``I_<feature>`` (inert twin in the full stack), ``T0``
-and
-``T5`` (seed twins of U0 and U5). Per feature ``k`` at build-up position ``i`` and per endpoint:
+and ``T5`` (seed twins of U0 and U5). Per feature ``k`` at build-up position ``i`` and per endpoint:
 
 * ``buildup`` = ``U_i - U_(i-1)``, ``loo`` = ``U5 - L_k``, ``control`` = ``U5 - I_k`` (the control contrast
-separates the feature's function from its cost and layout);
-* each contrast is a paired test on the endpoint's block values per seed (``stats.paired_test``), decided
-over the seeds by ``stats.seed_call`` with the seed-twin noise floor and Stouffer's p;
+  separates the feature's function from its cost and layout);
+* each contrast is a paired test on the endpoint's block values per seed (``stats.paired_test``), decided over
+  the seeds by ``stats.seed_call``: the label comes from the **two-sided** 95% t-intervals of
+  ``w2.classify`` (every seed's interval excludes 0 with one sign, the mean beyond the seed-twin noise floor;
+  the sign must be the pre-registered one, else ``reversed``); the **one-sided** p-values of the seeds feed
+  only
+  Stouffer's combination and Holm;
 * Holm over the **confirmatory** endpoints within the feature, per series (exploratory endpoints, P2 and P3
-under O8, are reported with their raw calls and take no part);
-* the feature is ``supported`` iff some confirmatory endpoint is supported (``supported`` and Holm p <= 0.05)
-in all three series with the same sign, and its scorecard is not worse than its inert twin's; else ``mixed``
-if any confirmatory contrast is supported over the seeds, else ``not supported``. A scorecard that was not
-evaluated cannot confirm:
-the call then stops at ``mixed`` with the reason.
+  under O8, are reported and take no part; an endpoint that could not be evaluated counts as p = 1, so the
+  family does not shrink). Holm is per feature: the five features are not one family, so the family-wise rate
+  over all five is not controlled by construction. The null still holds in the simulations (0 of 2000)
+  because a call needs three series and three seeds to agree; BH over the features is context;
+* the feature is ``supported`` iff some confirmatory endpoint is supported (seed rule and Holm p <= 0.05) in
+  all three series, there are at least ``MIN_SEEDS`` seeds with a finite seed-twin noise floor, and its
+  scorecard is not worse than its inert twin's. A scorecard that was not evaluated, too few seeds or no
+  twins stop the call at ``mixed`` with the reason. ``reversed``: an endpoint significantly lower with the
+  feature in all three series. ``mixed`` otherwise when a confirmatory contrast is supported or reversed over
+  the seeds; else ``not supported``.
 
 Cumulative ``U5 - U0`` and the interaction ``(U5 - L_k) - (U_k - U_(k-1))`` are reported with intervals, not
 tested. Benjamini-Hochberg at 0.10 over the features' smallest Holm-adjusted p is context only.
@@ -36,6 +43,7 @@ from alife.analysis.emergence.panel import check_same_version
 from alife.analysis.emergence.prereg import PreregError
 
 SERIES: Final = ("buildup", "loo", "control")
+MIN_SEEDS: Final = 3  # fewer seeds, or no finite seed-twin noise floor, cannot support a call
 CAVEATS: Final = (
     "Three seeds forked from one evolved population test post-fork stochasticity, not independent "
     "evolutionary histories: a claim is 'consistent across these seeds from this source'.",
@@ -190,7 +198,7 @@ def compare_panels(
             }
         for s in SERIES:
             ps = [table[e]["series"][s]["p"] for e in conf]
-            ha = stats.holm([np.nan if p is None else p for p in ps]) if ps else []
+            ha = stats.holm([1.0 if p is None else p for p in ps]) if ps else []
             for e, a in zip(conf, ha, strict=True):
                 table[e]["series"][s]["p_holm"] = None if not np.isfinite(a) else a
         for e in conf:
@@ -201,14 +209,31 @@ def compare_panels(
             hp = [c.get("p_holm") for c in ok]
             table[e]["p_holm_max"] = None if any(h is None for h in hp) else max(hp)  # type: ignore[type-var]
         a_ok = [e for e in conf if table[e]["supported"]]
+        n_seeds = len(ix.seeds)
+        blocked = [e for e in a_ok if n_seeds < MIN_SEEDS or table[e]["floor"] is None]
+        a_ok = [e for e in a_ok if e not in blocked]
+        rev = [e for e in conf if all(table[e]["series"][s]["label"] == "reversed" for s in SERIES)]
         sc_ok, sc_note = _scorecard_ok(ix, f, an["top"], an["inert"])
-        evidence = any(table[e]["series"][s]["label"] == "supported" for e in conf for s in SERIES)
+        evidence = any(
+            table[e]["series"][s]["label"] in ("supported", "reversed") for e in conf for s in SERIES
+        )
         if a_ok and sc_ok:
             call, why = "supported", f"supported on {', '.join(a_ok)} in all three series; {sc_note}"
         elif a_ok:
             call, why = (
                 "mixed",
                 f"endpoints {', '.join(a_ok)} supported in all series, but scorecard: {sc_note}",
+            )
+        elif blocked:
+            call = "mixed"
+            why = (
+                f"{', '.join(blocked)} would be supported, but a call needs at least {MIN_SEEDS} seeds "
+                f"(have {n_seeds}) and a finite seed-twin noise floor (T0/T5 panels)"
+            )
+        elif rev:
+            call, why = (
+                "reversed",
+                f"{', '.join(rev)} significantly lower with the feature in all three series",
             )
         elif evidence:
             call, why = (

@@ -39,7 +39,7 @@ from typing import Any, Final
 
 import numpy as np
 
-from alife.analysis.emergence.epr import js_divergence
+from alife.analysis.emergence.epr import WINDOW_BLOCKS, js_divergence
 from alife.analysis.emergence.frames import Frames, dequantise
 
 MODES_VERSION: Final = 1
@@ -420,7 +420,7 @@ def analyse(
     *,
     seen: np.ndarray | None = None,
     births: dict[str, np.ndarray] | None = None,
-    n_blocks: int = 8,
+    n_blocks: int = WINDOW_BLOCKS,
     seed: int = SEED,
     n_shuffle: int = 20,
 ) -> dict[str, Any]:

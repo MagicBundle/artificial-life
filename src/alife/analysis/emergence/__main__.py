@@ -68,6 +68,7 @@ def cmd_record(a: argparse.Namespace) -> int:
             fine_tau=a.fine_tau,
             fine_groups=a.fine_groups,
             fine_max=a.fine_max,
+            fine_restart=a.fine_restart,
             verify=not a.no_verify,
             max_lead=a.max_lead,
             log=lambda m: print(m, flush=True),
@@ -129,7 +130,10 @@ def cmd_panel(a: argparse.Namespace) -> int:
             if a.activity_start is not None:
                 act = activity_adapter.analyse_arm(a.run, start=a.activity_start)
             panel_blocks.fill_a(p, mres, act)
-        panel_blocks.fill_c(p, [braid.analyse_blocks(fr) for fr in frames_list], wind)
+        try:
+            panel_blocks.fill_c(p, [braid.analyse_blocks(fr) for fr in frames_list], wind)
+        except ValueError as e:  # too few frames for the braid blocks: block C stays not evaluated
+            p["C"] = panel.needs_block(str(e), "frames")
     pj, pm = panel.write_panel(_out(a, a.run), p)
     print(f"wrote {pj} and {pm}")
     return 0
@@ -202,6 +206,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fine-tau", type=int, default=5)
     p.add_argument("--fine-groups", type=int, default=8)
     p.add_argument("--fine-max", type=int, default=250)
+    p.add_argument(
+        "--fine-restart", type=int, help="steps between re-picks of the fine groups (default: a block)"
+    )
     p.add_argument("--max-lead", type=int, default=50_000)
     p.add_argument(
         "--no-verify", action="store_true", help="skip the certification against the run (uncertified frames)"

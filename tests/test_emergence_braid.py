@@ -384,5 +384,5 @@ def test_panel_fills_block_c_and_p5(tmp_path: Path) -> None:
     p = json.loads((out / "panel.json").read_text())
     assert p["C"]["status"] == "ok" and p["C"]["braid"]["groups_total"] > 0
     e = p["endpoints"]["P5"]
-    assert e["status"] == "ok" and len(e["blocks"]) == 8 and e["confirmatory"] is True
+    assert e["status"] == "ok" and len(e["blocks"]) == 16 and e["confirmatory"] is True
     assert p["C"]["winding"]["status"] == "needs_missing"

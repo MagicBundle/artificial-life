@@ -62,7 +62,7 @@ def cmd_epr(a: argparse.Namespace) -> int:
 
 def add_braid(p: argparse.ArgumentParser) -> None:
     p.add_argument("frames", type=Path)
-    p.add_argument("--blocks", type=int, default=8)
+    p.add_argument("--blocks", type=int, default=epr.WINDOW_BLOCKS)
     p.add_argument("--n-surr", type=int, default=braid.N_SURR)
     p.add_argument("--surrogate", choices=("increment", "position"), default="increment")
     p.add_argument("--seed", type=int, default=braid.SEED)

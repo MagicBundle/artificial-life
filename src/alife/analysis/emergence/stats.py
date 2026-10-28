@@ -43,11 +43,8 @@ __all__ = [
 ALPHA = 0.05  # family-wise level of the confirmatory calls (§44.8)
 BH_Q = 0.10  # false discovery rate of the across-feature context line
 WIDEN_AT = (
-    0.5  # |lag-1 autocorrelation| of the paired differences above which the blocks are doubled in width
+    0.3  # |lag-1 autocorrelation| of the paired differences above which the blocks are doubled in width
 )
-
-
-# --- distributions (no scipy) ---
 
 
 def norm_sf(z: float) -> float:
@@ -56,7 +53,8 @@ def norm_sf(z: float) -> float:
 
 
 def norm_isf(p: float) -> float:
-    """The ``z`` with ``P(Z > z) = p`` (Acklam's rational start, two Halley steps; relative error < 1e-12)."""
+    """The ``z`` with ``P(Z > z) = p`` (Acklam's rational start, two Halley steps; absolute error below"
+    "1e-9 for p >= 1e-6 and about 5e-8 at p = 1e-12)."""
     if not 0.0 < p < 1.0:
         return math.inf if p <= 0.0 else -math.inf
     q = 1.0 - p  # work with the lower-tail quantile of q
@@ -209,40 +207,59 @@ def run_blocking(start: int, *, transient: int = 20_000, width: int = 10_000, n:
 
 
 def lag1(d: np.ndarray) -> float | None:
-    """Lag-1 autocorrelation of the finite values of ``d`` (None under 4 values or zero variance)."""
+    """Lag-1 autocorrelation of ``d`` over adjacent pairs of finite blocks (a NaN block breaks adjacency"
+    "instead
+    of joining its neighbours); None under 4 finite values or zero variance."""
     v = np.asarray(d, dtype=np.float64)
-    v = v[np.isfinite(v)]
-    if v.size < 4:
+    ok = np.isfinite(v)
+    if ok.sum() < 4:
         return None
-    x = v - v.mean()
-    den = float((x * x).sum())
+    x = v - v[ok].mean()
+    den = float((x[ok] ** 2).sum())
     if den <= 0.0:
         return None
-    return float((x[:-1] * x[1:]).sum() / den)
+    pair = ok[:-1] & ok[1:]
+    return float((x[:-1][pair] * x[1:][pair]).sum() / den) if pair.any() else None
 
 
 def merge_pairs(d: np.ndarray) -> np.ndarray:
-    """Adjacent blocks merged in pairs (an odd last block is dropped): doubles the width."""
+    """Adjacent blocks merged in pairs (the mean of the finite blocks of a pair, NaN if both are NaN; an"
+    "odd last
+    block is dropped): doubles the width."""
     v = np.asarray(d, dtype=np.float64)
     k = v.size // 2
-    return v[: 2 * k].reshape(k, 2).mean(axis=1) if k else v[:0]
+    if not k:
+        return v[:0]
+    w = v[: 2 * k].reshape(k, 2)
+    ok = np.isfinite(w)
+    n = ok.sum(axis=1)
+    return np.where(n > 0, np.where(ok, w, 0.0).sum(axis=1) / np.maximum(n, 1), np.nan)
 
 
 def paired_test(a: np.ndarray, b: np.ndarray, *, direction: int = 1, widen: bool = True) -> dict[str, Any]:
     """The paired block contrast ``direction * (a - b)`` of one seed (§44.8.1).
 
     Returns the ``t_interval`` of the differences plus ``d_z`` (mean / sd), ``r1`` (lag-1 autocorrelation of
-    the differences), ``widened`` (|r1| > 0.5 doubled the block width and the interval was recomputed; the
-    flag is reported, never silent), ``t`` and the one-sided ``p`` for "the mean is positive". The interval
+    the differences), ``widened`` (|r1| > 0.3 doubled the block width and the interval was recomputed; the
+    flag is reported, never silent), ``nan_blocks`` (blocks missing from the contrast), ``t`` and the
+    one-sided ``p`` for "the mean is positive". The interval
     and p are None below two finite blocks.
     """
     d = direction * paired(a, b)
     r1 = lag1(d)
     widened = False
-    if widen and r1 is not None and abs(r1) > WIDEN_AT and np.isfinite(d).all() and d.size >= 4:
+    if widen and r1 is not None and abs(r1) > WIDEN_AT and d.size >= 4:
         d, widened = merge_pairs(d), True
     iv = t_interval(d)
-    out: dict[str, Any] = {**iv, "d_z": None, "r1": r1, "widened": widened, "t": None, "p": None}
+    out: dict[str, Any] = {
+        **iv,
+        "d_z": None,
+        "r1": r1,
+        "widened": widened,
+        "nan_blocks": int((~np.isfinite(paired(a, b))).sum()),
+        "t": None,
+        "p": None,
+    }
     if iv["sd"] is not None and iv["n"] >= 2:
         if iv["sd"] > 0:
             out["d_z"] = iv["mean"] / iv["sd"]
@@ -254,15 +271,18 @@ def paired_test(a: np.ndarray, b: np.ndarray, *, direction: int = 1, widen: bool
 
 
 def noise_floor(twin_diffs: Sequence[np.ndarray]) -> float | None:
-    """The seed-twin noise floor of an endpoint: the mean magnitude of the twins' mean paired differences
-    (``U0`` vs ``T0``, ``U5`` vs ``T5``, per seed; the W2 convention). None without a finite twin contrast."""
+    """The seed-twin noise floor of an endpoint: the **median** magnitude of the twins' mean paired"
+    "differences
+    (``U0`` vs ``T0``, ``U5`` vs ``T5``, per seed; the W2 convention; the median so that one outlying twin
+    does
+    not lift the floor of every contrast). None without a finite twin contrast."""
     mags = []
     for d in twin_diffs:
         v = np.asarray(d, dtype=np.float64)
         v = v[np.isfinite(v)]
         if v.size:
             mags.append(abs(float(v.mean())))
-    return float(np.mean(mags)) if mags else None
+    return float(np.median(mags)) if mags else None
 
 
 def seed_call(per_seed: Sequence[Mapping[str, Any]], floor: float | None = None) -> dict[str, Any]:

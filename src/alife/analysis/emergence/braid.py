@@ -32,6 +32,7 @@ from typing import Any, Final
 
 import numpy as np
 
+from alife.analysis.emergence.epr import WINDOW_BLOCKS
 from alife.analysis.emergence.frames import Frames, dequantise
 from alife.analysis.emergence.lattice import min_image
 
@@ -260,7 +261,7 @@ def tracks_of(fr: Frames, uids: np.ndarray, i0: int, i1: int) -> tuple[np.ndarra
 def analyse_blocks(
     fr: Frames,
     *,
-    n_blocks: int = 8,
+    n_blocks: int = WINDOW_BLOCKS,
     n_surr: int = N_SURR,
     kind: str = "increment",
     max_groups: int = MAX_GROUPS,

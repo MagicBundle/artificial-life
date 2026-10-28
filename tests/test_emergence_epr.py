@@ -222,7 +222,7 @@ def test_diffusion_on_the_lattice_has_zero_ep() -> None:
     r = epr.analyse_window(make_frames(rng), n_boot=50, scales=(8.0, 16.0))
     assert abs(r["own"]["z"]) < 3 and r["stationarity"]["nonstationary"] is False
     assert 0.1 < r["displacement"]["median_cells"] < 0.5 and r["ambient"] == 0.0
-    assert r["vertical"] is None and len(r["blocks"]) == 8
+    assert r["vertical"] is None and len(r["blocks"]) == 16
 
 
 def test_circulation_has_positive_ep_and_drift_is_removed_in_own_coordinates() -> None:
@@ -367,17 +367,17 @@ def test_panel_command_fills_block_b_and_the_p4_endpoint(tmp_path: Path) -> None
     rng = np.random.default_rng(17)
     paths = []
     for k, sw in enumerate((0.0, 1.2)):
-        fr = make_frames(rng, n=3000, nf=17, swirl=sw)
-        fr.meta.update({"run": "run", "window": [0, 1600], "frames_version": 1})
+        fr = make_frames(rng, n=2000, nf=33, swirl=sw)
+        fr.meta.update({"run": "run", "window": [0, 3200], "frames_version": 1})
         paths.append(str(fm.write_frames(tmp_path / f"frames_{k}.npz", fr)))
     out = tmp_path / "panel"
     assert (
-        main(["panel", str(run), "--frames", *paths, "--windows", "0:1600", "0:1600", "--out", str(out)]) == 0
+        main(["panel", str(run), "--frames", *paths, "--windows", "0:3200", "0:3200", "--out", str(out)]) == 0
     )
     p = json.loads((out / "panel.json").read_text())
     assert p["B"]["status"] == "ok" and len(p["B"]["windows"]) == 2
     e = p["endpoints"]["P4"]
-    assert e["status"] == "ok" and len(e["blocks"]) == 16 and e["direction"] == 1
+    assert e["status"] == "ok" and len(e["blocks"]) == 32 and e["direction"] == 1
     assert (
         p["header"]["flags"]["nonstationary"] is False and p["header"]["versions"]["epr"] == epr.EPR_VERSION
     )

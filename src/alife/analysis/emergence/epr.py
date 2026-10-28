@@ -44,6 +44,7 @@ from alife.analysis.phylo import splitmix64
 
 EPR_VERSION: Final = 1
 PSEUDO: Final = 0.5  # Jeffreys pseudocount
+WINDOW_BLOCKS: Final = 16  # time blocks of a window endpoint (prereg decision.blocks.window): 16 x 625 steps
 K_BLOCKS: Final = 20
 R_SPLITS: Final = 8
 N_BOOT: Final = 100
@@ -290,7 +291,7 @@ def subset(
     return estimate(tab, dt, seed=seed, salt=salt, n_boot=n_boot)
 
 
-def time_blocks(t: Transitions, n_blocks: int = 8, *, seed: int = SEED) -> list[float | None]:
+def time_blocks(t: Transitions, n_blocks: int = WINDOW_BLOCKS, *, seed: int = SEED) -> list[float | None]:
     """The own-motion rate in ``n_blocks`` equal time blocks of the window (the paired units of the
     comparison, DESIGN §44.8.1): each is the cross-fitted estimate on the transitions of its frame pairs."""
     out: list[float | None] = []
@@ -349,7 +350,7 @@ def analyse_window(
     n_boot: int = N_BOOT,
     seed: int = SEED,
     js_threshold: float = JS_THRESHOLD,
-    blocks: int = 8,
+    blocks: int = WINDOW_BLOCKS,
 ) -> dict[str, Any]:
     """Block B of one frames file: headline own-motion and raw rates, the ambient part, scale curve,
     vertical bands, subsets (top clades; bodied against free), stationarity, and the 8 time-block values."""
