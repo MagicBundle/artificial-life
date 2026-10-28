@@ -7,11 +7,13 @@ the "lands with" stub for the names not yet here.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from alife.analysis.emergence import epr, epr_io, frames
+from alife.analysis.emergence import braid, epr, epr_io, frames, winding
+from alife.analysis.emergence.epr_io import _atomic
 
 
 def _out_dir(a: argparse.Namespace, src: Path) -> Path:
@@ -56,6 +58,56 @@ def cmd_epr(a: argparse.Namespace) -> int:
     return 0
 
 
+def add_braid(p: argparse.ArgumentParser) -> None:
+    p.add_argument("frames", type=Path)
+    p.add_argument("--blocks", type=int, default=8)
+    p.add_argument("--n-surr", type=int, default=braid.N_SURR)
+    p.add_argument("--surrogate", choices=("increment", "position"), default="increment")
+    p.add_argument("--seed", type=int, default=braid.SEED)
+    p.add_argument("--out", type=Path)
+
+
+def cmd_braid(a: argparse.Namespace) -> int:
+    try:
+        fr = frames.read_frames(a.frames)
+        res = braid.analyse_blocks(fr, n_blocks=a.blocks, n_surr=a.n_surr, kind=a.surrogate, seed=a.seed)
+    except (frames.FramesError, FileNotFoundError, OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    res["run"], res["window"] = fr.meta.get("run"), fr.meta.get("window")
+    p = _out_dir(a, a.frames) / "braid.json"
+    _atomic(p, json.dumps(res, indent=1, sort_keys=True) + "\n")
+    print(
+        f"wrote {p}: {res['groups_total']} groups, skipped {res['skipped']}; a lower-bound coordination index"
+    )
+    return 0
+
+
+def add_winding(p: argparse.ArgumentParser) -> None:
+    p.add_argument("storms", type=Path, help="observers/storms.jsonl (or a copy)")
+    p.add_argument("--size", type=float, required=True, help="world side L")
+    p.add_argument("--frames", type=Path, help="frames file for the organism winding")
+    p.add_argument("--out", type=Path)
+
+
+def cmd_winding(a: argparse.Namespace) -> int:
+    try:
+        tracks = winding.read_storms_jsonl(a.storms)
+        fr = frames.read_frames(a.frames) if a.frames else None
+    except (frames.FramesError, FileNotFoundError, OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    res = winding.analyse(tracks, a.size, fr)
+    p = (
+        Path(a.out) if a.out else Path("analysis_cache/emergence") / a.storms.parent.parent.name
+    ) / "winding.json"
+    _atomic(p, json.dumps(res, indent=1, sort_keys=True) + "\n")
+    print(f"wrote {p}: {res['storms']} storms, {res['co_rotating_pairs']} co-rotating pairs (exploratory)")
+    return 0
+
+
 COMMANDS: dict[str, tuple[Callable[[argparse.ArgumentParser], None], Callable[[argparse.Namespace], int]]] = {
     "epr": (add_epr, cmd_epr),
+    "braid": (add_braid, cmd_braid),
+    "winding": (add_winding, cmd_winding),
 }

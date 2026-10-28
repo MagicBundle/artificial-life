@@ -146,7 +146,7 @@ def test_cli_panel_scorecards_and_stubs(tmp_path: Path, capsys: pytest.CaptureFi
     out = tmp_path / "o"
     assert cli.main(["panel", str(run), "--windows", "0:500", "--arm", "U0", "--out", str(out)]) == 0
     assert (out / "panel.json").is_file()
-    assert cli.main(["braid", "x"]) == 2 and "E4" in capsys.readouterr().err
+    assert cli.main(["modes", "x"]) == 2 and "E5" in capsys.readouterr().err
     assert cli.main(["modes"]) == 2
     with pytest.raises(SystemExit):
         cli.main(["record", str(run), "--window", "5:1"])  # not A < B

@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 
 from alife.analysis.emergence import (
+    braid,
     cli_blocks,
     compare,
     epr,
@@ -26,6 +27,7 @@ from alife.analysis.emergence import (
     prereg,
     scorecards,
     synth,
+    winding,
 )
 
 LATER = {
@@ -110,6 +112,10 @@ def cmd_panel(a: argparse.Namespace) -> int:
     )
     if frames_list:
         panel_blocks.fill_b(p, [epr.analyse_window(fr) for fr in frames_list])
+        wind = None
+        if a.storms:
+            wind = winding.analyse(winding.read_storms_jsonl(a.storms), frames_list[0].size)
+        panel_blocks.fill_c(p, [braid.analyse_blocks(fr) for fr in frames_list], wind)
     pj, pm = panel.write_panel(_out(a, a.run), p)
     print(f"wrote {pj} and {pm}")
     return 0
@@ -195,6 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prereg", type=Path)
     p.add_argument("--scorecards", default="")
     p.add_argument("--population-ref", type=float)
+    p.add_argument("--storms", type=Path, help="observers/storms.jsonl for the (exploratory) winding table")
     p.add_argument("--out", type=Path)
     p.set_defaults(fn=cmd_panel)
     p = sub.add_parser("compare", help="compare arms from panels under a pre-registration")

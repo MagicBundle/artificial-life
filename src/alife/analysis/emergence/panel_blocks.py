@@ -12,8 +12,9 @@ from typing import Any
 
 import numpy as np
 
+from alife.analysis.emergence import braid as braid_mod
 from alife.analysis.emergence.epr import CAVEATS, EPR_VERSION
-from alife.analysis.emergence.panel import endpoint_entry
+from alife.analysis.emergence.panel import endpoint_entry, needs_block
 
 
 def fill_b(panel: dict[str, Any], results: Sequence[dict[str, Any]]) -> None:
@@ -52,6 +53,39 @@ def fill_b(panel: dict[str, Any], results: Sequence[dict[str, Any]]) -> None:
     )
     panel["header"]["flags"]["nonstationary"] = any(flags)
     panel["header"]["versions"]["epr"] = EPR_VERSION
+    panel["header"]["flags"]["needs_missing"] = sorted(
+        {n for k in ("A", "B", "C") for n in panel[k].get("needs_missing", [])}
+    )
+
+
+def fill_c(
+    panel: dict[str, Any], results: Sequence[dict[str, Any]], winding: dict[str, Any] | None = None
+) -> None:
+    """Block C from the ``braid.analyse_blocks`` results of the windows (in window order) and, optionally, the
+    winding table (descriptive). The P5 block values are the braid contrast per crossing of every window's
+    blocks, in order (``None`` where a block had no usable group)."""
+    if not results:
+        return
+    blocks = [b for r in results for b in r["blocks"]]
+    vals = [b for b in blocks if b is not None]
+    panel["C"] = {
+        "status": "ok",
+        "version": braid_mod.BRAID_VERSION,
+        "braid": {
+            "windows": [{k: v for k, v in r.items() if k != "caveats"} for r in results],
+            "groups_total": int(sum(r["groups_total"] for r in results)),
+        },
+        "winding": winding if winding is not None else needs_block("no storm tracks given", "storms.jsonl"),
+        "caveats": list(braid_mod.CAVEATS),
+        "needs_missing": [],
+    }
+    panel["endpoints"]["P5"] = endpoint_entry(
+        "P5",
+        value=float(np.mean(vals)) if vals else None,
+        blocks=blocks if vals else None,
+        needs=[] if vals else ["no group of 8 or more survived a sub-window"],
+    )
+    panel["header"]["versions"]["braid"] = braid_mod.BRAID_VERSION
     panel["header"]["flags"]["needs_missing"] = sorted(
         {n for k in ("A", "B", "C") for n in panel[k].get("needs_missing", [])}
     )
