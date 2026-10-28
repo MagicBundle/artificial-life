@@ -4,7 +4,8 @@
 frame ``i`` is the row range ``off[i]:off[i+1]`` of every per-organism array. Positions are quantised to
 ``uint16`` (``quantise``): x, y over ``[0, L)`` and z over ``[0, H]``, so the error is at most half a
 quantum, ``L/131070``, and always below ``L/65535`` (0.0024 units in the mini world). The optional **fine
-set** follows the members of the ``fine_groups`` largest bodies at ``T0`` every ``fine_tau`` steps (positions
+set** follows the members of the ``fine_groups`` largest bodies (re-picked each epoch) every ``fine_tau``
+steps (positions
 and body label only). Two readers produce a ``Frames``: ``read_frames`` (the recorder's file) and
 ``read_frma`` (a play stream's ``FRMA`` records, without clade, traits or drift: an alternative source, not
 the primary path).
@@ -139,13 +140,22 @@ class Frames:
     def n_fine_frames(self) -> int:
         return 0 if self.fine is None else len(self.fine["fine_step"])
 
+    def fine_epoch(self, i: int) -> int:
+        """The restart epoch of fine frame ``i``: group indices and uid sets are valid within an epoch"
+        "only."""
+        if self.fine is None:
+            raise FramesError("no fine set in this file")
+        return int(self.fine["fine_epoch"][i])
+
     def fine_frame(self, i: int) -> dict[str, np.ndarray]:
         if self.fine is None:
             raise FramesError("no fine set in this file")
         o = self.fine["fine_off"]
         s = slice(int(o[i]), int(o[i + 1]))
         return {
-            k.removeprefix("fine_"): v[s] for k, v in self.fine.items() if k not in ("fine_step", "fine_off")
+            k.removeprefix("fine_"): v[s]
+            for k, v in self.fine.items()
+            if k not in ("fine_step", "fine_off", "fine_epoch")
         }
 
 
@@ -203,7 +213,7 @@ def read_frames(path: Path) -> Frames:
         need = {"step", "off", "uid", "row", "pos", "clade", "body", "traits"}
         if need - names:
             raise FramesError(f"{path}: missing arrays {sorted(need - names)}")
-        fine_keys = [k for k in ("fine_step", "fine_off", "fine_uid", "fine_group", "fine_pos", "fine_body")]
+        fine_keys = ["fine_step", "fine_off", "fine_epoch", "fine_uid", "fine_group", "fine_pos", "fine_body"]
         fine = {k: z[k] for k in fine_keys} if all(k in names for k in fine_keys) else None
         return Frames(
             meta=meta,

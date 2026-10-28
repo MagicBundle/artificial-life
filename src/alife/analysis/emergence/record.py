@@ -21,6 +21,8 @@ This is the only module of the package that touches MLX.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -148,6 +150,13 @@ class _Reader:
         out[ok] = (np.sqrt((d * d).sum(axis=1)) / (t - pt)).astype(np.float32)
         return out
 
+    def bodies(self, s: Any) -> tuple[np.ndarray, np.ndarray]:
+        """``(uid, body label)`` of the alive rows now (labels are valid within this frame only)."""
+        alive = to_numpy(s.alive).astype(bool)
+        idx = np.flatnonzero(alive)
+        _, body_all = self._bonds(s)
+        return to_numpy(s.uid)[idx].astype(np.int64), body_all[idx]
+
     def fine(self, s: Any, members: np.ndarray, group: np.ndarray) -> tuple[np.ndarray, ...]:
         """``(uid, group, pos q, body)`` of the fine members alive now (``members`` sorted)."""
         alive = to_numpy(s.alive).astype(bool)
@@ -161,9 +170,12 @@ class _Reader:
         return uid[hit], group[j[hit]], quantise(pos, self.size, self.height), body_all[rows]
 
 
-def _pick_fine(first: dict[str, Any], groups: int, per_group: int) -> tuple[np.ndarray, np.ndarray]:
-    """``(sorted uids, group index)`` of the members of the ``groups`` largest bodies of a full frame."""
-    body, uid = first["body"], first["uid"]
+def _pick_fine(
+    uid: np.ndarray, body: np.ndarray, groups: int, per_group: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(sorted uids, group index)`` of the members of the ``groups`` largest bodies of one frame (body"
+    "labels
+    are per frame; only the uid sets are carried forward)."""
     labs, counts = np.unique(body[body >= 0], return_counts=True)
     order = np.lexsort((labs, -counts))[:groups]
     uids, grp = [], []
@@ -179,10 +191,20 @@ def _pick_fine(first: dict[str, Any], groups: int, per_group: int) -> tuple[np.n
 
 
 def _params(
-    rd: RunDir, t0: int, t1: int, tau: int, fine_tau: int, fine_groups: int, fine_max: int
+    rd: RunDir, t0: int, t1: int, tau: int, fine_tau: int, fine_groups: int, fine_max: int, restart: int
 ) -> dict[str, Any]:
+    meta = rd.meta()
+    sha = hashlib.sha256()
+    for r in rd.metrics_rows():  # the run's own rows in the window: a different run or edit changes the key
+        if t0 <= int(r["step"]) <= t1:
+            sha.update(json.dumps(r, sort_keys=True).encode())
     return {
-        "config_hash": rd.meta().get("config_hash"),
+        "config_hash": meta.get("config_hash"),
+        "run": rd.path.name,
+        "seed": meta.get("seed"),
+        "created_utc": meta.get("created_utc"),
+        "rows_sha": sha.hexdigest(),
+        "fine_restart": restart,
         "t0": t0,
         "t1": t1,
         "tau": tau,
@@ -202,15 +224,22 @@ def record_window(
     fine_tau: int = 5,
     fine_groups: int = 8,
     fine_max: int = 250,
+    fine_restart: int | None = None,
     verify: bool = True,
     max_lead: int = MAX_LEAD,
     log: Callable[[str], None] = print,
 ) -> Path:
     """Record steps ``t0..t1`` of ``run`` into ``out_dir/frames_<t0>_<t1>.npz`` and return the path.
 
-    Frames are at ``t0, t0+tau, ...`` (up to ``t1``); the fine set (``fine_groups`` largest bodies at ``t0``,
-    at most ``fine_max`` members each, every ``fine_tau`` steps) is skipped when ``fine_groups`` is 0.
-    ``verify=False`` skips the certification (recorded in the meta as unverified).
+    Frames are at ``t0, t0+tau, ...`` (up to ``t1``). The fine set picks the ``fine_groups`` largest bodies
+    (at
+    most ``fine_max`` members each, as uid sets) and **restarts every ``fine_restart`` steps** (default: a
+    block, ``(t1 - t0) / 8`` rounded to a multiple of ``fine_tau``), because organisms turn over with a
+    half-life of about 1 000 steps; it is read every ``fine_tau`` steps, per epoch (``fine_epoch``), and
+    skipped
+    when ``fine_groups`` is 0. ``T1`` must be a save of the run (the end is certified by the state digest;
+    otherwise only aggregate metrics rows would certify it) and not beyond the run's last step.
+    ``verify=False`` skips the certification (recorded as unverified) but not the range check.
     """
     if not 0 <= t0 < t1:
         raise RecordError(f"the window must satisfy 0 <= T0 < T1, got {t0}:{t1}")
@@ -219,7 +248,27 @@ def record_window(
     rd = RunDir.open(Path(run))
     cfg = rd.config()
     out = frames_path(out_dir, t0, t1)
-    want = _params(rd, t0, t1, tau, fine_tau, fine_groups, fine_max)
+    restart = fine_restart or max(fine_tau, ((t1 - t0) // 8 // fine_tau) * fine_tau)
+    if fine_groups and restart % fine_tau:
+        raise RecordError("fine_restart must be a multiple of fine_tau")
+    t, ckpt = start_checkpoint(rd, t0, max_lead)  # E22 first: its message names the saves found
+    saves = dict(rd.checkpoints())
+    last = max([*saves, *(int(r["step"]) for r in rd.metrics_rows())], default=0)
+    if t1 > last:
+        raise RecordError(f"{rd.path}: the window ends at step {t1}, beyond the run's last step {last}")
+    if verify and t1 not in saves:
+        raise RecordError(
+            f"{rd.path}: T1 = {t1} is not a save (saves at {sorted(saves)}); the end of a certified "
+            f"window must "
+            f"be a save so that its state digest can be compared. Choose a save step or pass verify=False"
+        )
+    ran = rd.meta().get("device")
+    if verify and ran and ran != str(mx.default_device()):
+        raise RecordError(
+            f"{rd.path}: the run was made on {ran} but this process uses {mx.default_device()}; the replay "
+            f"would not reproduce it (§14.2). Use the run's device or pass verify=False"
+        )
+    want = _params(rd, t0, t1, tau, fine_tau, fine_groups, fine_max, restart)
     if out.is_file():
         try:
             old = read_frames(out).meta
@@ -228,7 +277,6 @@ def record_window(
                 return out
         except FramesError:
             pass
-    t, ckpt = start_checkpoint(rd, t0, max_lead)
     state = runio.load_checkpoint(ckpt, cfg)
     rows = {int(r["step"]): r for r in rd.metrics_rows()} if verify else {}
     kept = {st: p for st, p in rd.checkpoints() if t < st <= t1} if verify else {}
@@ -242,19 +290,25 @@ def record_window(
     frames: list[dict[str, Any]] = []
     fine_rows: list[tuple[int, tuple[np.ndarray, ...]]] = []
     members = group = np.zeros(0, np.int64)
+    epoch_of: list[int] = []
+    cur = -1
     counters: list[mx.array] = []
     ledgers: list[mx.array] = []
     checked_rows, fingerprints = 0, []
     wall = time.perf_counter()
 
     def take(s: Any, step: int) -> None:
-        nonlocal members, group
+        nonlocal members, group, cur
         if step in full_steps:
             frames.append(reader.full(s, step) | {"step": step})
-            if fine_groups and step == t0:
-                members, group = _pick_fine(frames[0], fine_groups, fine_max)
-        if fine_groups and step in fine_steps and len(members):
-            fine_rows.append((step, reader.fine(s, members, group)))
+        if fine_groups and step in fine_steps:
+            ep = min((step - t0) // restart, -(-(t1 - t0) // restart) - 1)
+            if ep != cur:  # a new epoch: re-pick the groups from the bodies of this very frame
+                cur = ep
+                members, group = _pick_fine(*reader.bodies(s), fine_groups, fine_max)
+            if len(members):
+                fine_rows.append((step, reader.fine(s, members, group)))
+                epoch_of.append(ep)
 
     if t >= t0:
         take(state, t)
@@ -290,11 +344,8 @@ def record_window(
             fingerprints.append(t)
         if t >= t0:
             take(state, t)
-    if verify and not checked_rows and not fingerprints:
-        raise RecordError(
-            f"{rd.path}: nothing to verify the replay against between steps {t0} and {t1} (no metrics row "
-            f"or save in range); pass verify=False to record uncertified frames"
-        )
+    if verify and (t1 not in fingerprints):  # unreachable while T1 is a save; kept as the invariant
+        raise RecordError(f"{rd.path}: no end fingerprint at {t1}")
     end_digest = state_digest(state)
 
     meta = _meta(
@@ -312,7 +363,7 @@ def record_window(
         ckpt,
         wall,
     )
-    fr = _assemble(frames, fine_rows, reader, meta)
+    fr = _assemble(frames, fine_rows, reader, meta, epoch_of)
     write_frames(out, fr)
     log(f"record: wrote {out} ({fr.n_frames} frames, {len(fr.uid)} rows, {time.perf_counter() - wall:.0f} s)")
     return out
@@ -348,7 +399,11 @@ def _meta(
 
 
 def _assemble(
-    frames: list[dict[str, Any]], fine_rows: list[Any], reader: _Reader, meta: dict[str, Any]
+    frames: list[dict[str, Any]],
+    fine_rows: list[Any],
+    reader: _Reader,
+    meta: dict[str, Any],
+    epochs: list[int] | None = None,
 ) -> Frames:
     nd = meta["nd"]
     cat = np.concatenate
@@ -360,6 +415,7 @@ def _assemble(
             "fine_step": np.asarray([r[0] for r in fine_rows], np.int64),
             "fine_off": np.concatenate([[0], np.cumsum([len(x[0]) for x in fs])]).astype(np.int64),
             "fine_uid": cat([x[0] for x in fs]).astype(np.int64),
+            "fine_epoch": np.asarray(epochs or [0] * len(fine_rows), np.int32),
             "fine_group": cat([x[1] for x in fs]).astype(np.int32),
             "fine_pos": cat([x[2] for x in fs]).astype(np.uint16),
             "fine_body": cat([x[3] for x in fs]).astype(np.int32),

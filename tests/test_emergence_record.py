@@ -35,6 +35,7 @@ def _toy(rng: np.random.Generator, nd: int = 3, drift: bool = True, fine: bool =
         fine_d = {
             "fine_step": np.array([0, 5, 10], np.int64),
             "fine_off": np.array([0, 2, 3, 5], np.int64),
+            "fine_epoch": np.array([0, 0, 1], np.int32),
             "fine_uid": np.array([1, 2, 1, 1, 2], np.int64),
             "fine_group": np.array([0, 1, 0, 0, 1], np.int32),
             "fine_pos": fm.quantise(pos[:5], size, height),
@@ -299,23 +300,82 @@ def test_recording_is_idempotent(run_dir: Path, recorded: tuple[Path, dict[str, 
     assert fm.read_frames(path).meta["params"]["tau"] == 20
 
 
-def test_fine_set_follows_the_chosen_group(
+def test_fine_set_restarts_from_uid_sets_each_epoch(
     run_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def pick(first: dict, groups: int, per_group: int) -> tuple[np.ndarray, np.ndarray]:
-        u = np.sort(first["uid"])[:6]
+    picks: list[int] = []
+
+    def pick(uid: np.ndarray, body: np.ndarray, groups: int, per_group: int) -> tuple[np.ndarray, np.ndarray]:
+        picks.append(len(uid))
+        u = np.sort(uid)[:6]
         return u, np.zeros(6, np.int32)
 
     monkeypatch.setattr(record, "_pick_fine", pick)
-    p = record.record_window(run_dir, 20, 40, tmp_path, tau=10, fine_tau=5, fine_groups=1, log=lambda _: None)
+    p = record.record_window(
+        run_dir, 20, 40, tmp_path, tau=10, fine_tau=5, fine_groups=1, fine_restart=10, log=lambda _: None
+    )
     fr = fm.read_frames(p)
     assert list(fr.fine["fine_step"]) == [20, 25, 30, 35, 40] and fr.n_fine_frames == 5
+    assert [fr.fine_epoch(i) for i in range(5)] == [0, 0, 1, 1, 1]  # the boundary step opens the next epoch
+    assert len(picks) == 2  # groups re-picked at 20 and at 30 from those frames' own bodies
     f0 = fr.fine_frame(0)
     assert len(f0["uid"]) <= 6 and set(f0["uid"]) <= set(fr.frame(0)["uid"])
     both = fr.fine_frame(2)  # step 30 is also a full frame: same positions
     full = fr.frame(1)
     for u, q in zip(both["uid"], both["pos"], strict=True):
         assert np.array_equal(full["pos"][full["uid"] == u][0], q)
+    assert "epoch" not in fr.fine_frame(0)
+
+
+def test_the_window_end_must_be_a_save_inside_the_run(run_dir: Path, tmp_path: Path) -> None:
+    """T1 not a save is refused (only aggregate rows would certify it), and a
+    T1 beyond the run's last step is extrapolation, refused with or without verification."""
+    with pytest.raises(record.RecordError, match="not a save"):
+        record.record_window(run_dir, 20, 50, tmp_path, tau=10, fine_groups=0, log=lambda _: None)
+    p = record.record_window(
+        run_dir, 20, 50, tmp_path, tau=10, fine_groups=0, verify=False, log=lambda _: None
+    )
+    assert fm.read_frames(p).meta["verification"]["verified"] is False
+    for verify in (True, False):
+        with pytest.raises(record.RecordError, match="beyond the run's last step 80"):
+            record.record_window(run_dir, 60, 100, tmp_path, tau=10, fine_groups=0, verify=verify, log=print)
+    v = fm.read_frames(record.record_window(run_dir, 20, 40, tmp_path, tau=10, fine_groups=0, log=print)).meta
+    assert v["verification"]["verified"] and v["verification"]["end_is_save"]
+
+
+def test_a_run_on_another_device_is_refused(run_dir: Path, tmp_path: Path) -> None:
+    other = tmp_path / "run"
+    shutil.copytree(run_dir, other)
+    m = json.loads((other / "meta.json").read_text())
+    m["device"] = "Device(gpu, 0)" if "gpu" not in str(mx.default_device()) else "Device(cpu, 0)"
+    (other / "meta.json").write_text(json.dumps(m))
+    with pytest.raises(record.RecordError, match="would not reproduce"):
+        record.record_window(other, 20, 40, tmp_path / "o", tau=10, fine_groups=0, log=lambda _: None)
+
+
+def test_idempotence_is_keyed_on_the_run_not_only_the_config(run_dir: Path, tmp_path: Path) -> None:
+    """A shared --out must not hand one run's frames to another (same config hash, other rows or seed)."""
+    out = tmp_path / "shared"
+    first = record.record_window(run_dir, 20, 40, out, tau=10, fine_groups=0, log=lambda _: None)
+    meta = fm.read_frames(first).meta["params"]
+    assert {"run", "seed", "created_utc", "rows_sha"} <= set(meta)
+    bad = tmp_path / "run"
+    shutil.copytree(run_dir, bad)
+    rows = [json.loads(line) for line in (bad / "metrics.jsonl").read_text().splitlines()]
+    for r in rows:
+        if r["step"] == 35:
+            r["births"] += 1
+    (bad / "metrics.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    with pytest.raises(record.RecordMismatch):  # not "exists, not rewritten"
+        record.record_window(bad, 20, 40, out, tau=10, fine_groups=0, log=lambda _: None)
+    forked = tmp_path / "fork"
+    shutil.copytree(run_dir, forked)
+    mm = json.loads((forked / "meta.json").read_text())
+    mm["seed"] = 99
+    (forked / "meta.json").write_text(json.dumps(mm))
+    logs: list[str] = []
+    record.record_window(forked, 20, 40, out, tau=10, fine_groups=0, log=logs.append)
+    assert not any("not rewritten" in x for x in logs)
 
 
 def test_replay_mismatch_refuses_and_writes_nothing(run_dir: Path, tmp_path: Path) -> None:
