@@ -12399,6 +12399,10 @@ tool, 43.8) follows.
   non-empty (absent = `""` = today's layout, in `meta.json` and in the checkpoint metadata) and `load_checkpoint`
   compares it (`meta.get("layout_features", "")`) with the version integer; a mismatch is a `CheckpointError` naming
   both strings. A checkpoint never crosses `layout_features`; the only route is the migration (43.8).
+  The guard is `load_checkpoint`, the one reader of states (a test scans `src`): resume (also with `--set run.*`),
+  `--init-from`, `play`, `inspect` and the stream all refuse a config whose feature layout disagrees with the
+  checkpoint's, with a message that says so (`tests/test_ext_guards.py`, stub features). The order-of-enable
+  equivalence (A then B = B then A = both at once) is a test of PR 0b.
 * **Dims.** `config.Dims` gains `voice_w` (0), `msg_w = MSG + voice_w` (2), `features` and `ext_dims`, filled from the
   `dims(cfg)` hooks of the enabled features; `d.ext("comm").hear_range` reads a feature's sizes (`KeyError` when it
   is off); `State.msg` and `expected_layout` use `msg_w`.
@@ -12515,6 +12519,10 @@ raised to the floor.
   so a run that does not use a feature writes exactly the files it wrote before the feature existed (earlier key
   additions, e.g. `game.house_rate`, showed as INFO lines in the matrix; this series does not). `config_from_dict`
   completes missing keys from the defaults; `apply_overrides`, `load_config` and forks use the full dict.
+  **Rule: the defaults of omitted keys never change.** A key that is left out reads back as the CURRENT default, so
+  changing one would silently change every resumed world with an unchanged hash; a behaviour change needs a NEW key.
+  `tests/test_ext_guards.py::test_the_defaults_of_omitted_keys_are_frozen` pins a table of them (adding a key to
+  `SERIAL_OMIT_KEYS` must add its row).
 * `config.validate` checks `protect_floor` and then `ext.validate_all(cfg)` in registry order (cross rules such as
   "perception needs arms.enabled" or "a feature's keys stay at default while it is off" belong to the feature PRs).
   `config.FEATURE_KEYS` / `CLI_ONLY_FEATURE_KEYS` come from `ExtSpec.lever_keys/cli_only_keys`; `WORLD_OVERLAYS` is
@@ -12577,10 +12585,10 @@ The staged mirror of `bench.py` passes the same `ext_in` and `extra_due` as `ste
 **Evidence (PR 0a, 2026-10-28, CPU unless noted).** The identity matrix against a fresh `git archive` of e64be03:
 "OK: bit-identical, 0 DIFF, 0 INFO" (15 trajectory cases = 422 steps x 4 digests, 3 runner cases, 30 config and layout
 entries, tiny3d `1fe07a9f`/`556de6c6`); the matrix detects a one-constant change in `combat` (checked with `--base-src`). Fast suite
-(`-n 4 --dist loadfile`, `-p cpu_device`): 4,582 passed, 91 skipped, 1 xfailed, 1 failed:
+(`-n 4 --dist loadfile`, `-p cpu_device`): 4,588 passed, 91 skipped, 1 xfailed, 1 failed:
 `test_lifecycle_compiles_and_matches_eager`, which fails on e64be03 itself under the CPU device (HANDOVER B1). `ruff
 check` and `ruff format --check` clean on the whole repo. On Metal, one run at a time: `test_game_purity` and
-`test_game_acts` (70 passed), the eight `test_ext_*` files (194 passed, the generated state class compiles on the GPU),
+`test_game_acts` (70 passed), the nine `test_ext_*` files (200 passed, the generated state class compiles on the GPU),
 `test_bench`, `test_determinism(_3d)` and `test_step_3d` (63 passed; the timing test
 `test_the_device_part_of_a_snapshot_is_evaluated_when_timed` failed once at 1.95 ms against 2.0 and passed twice on rerun).
 

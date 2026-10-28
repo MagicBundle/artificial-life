@@ -689,7 +689,14 @@ def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> Stat
         compatible = sorted(rng.RNG_COMPATIBLE_VERSIONS)
         bad.append(f"rng_layout_version={meta.get('rng_layout_version')!r} (expected one of {compatible})")
     if bad:
-        raise CheckpointError(f"{path}: incompatible checkpoint: {', '.join(bad)}")
+        hint = ""
+        if any(b.startswith(("layout_features", "genome_layout_version")) for b in bad):
+            hint = (
+                "; the config and the checkpoint disagree on the feature layout (which extension "
+                "features are on): a checkpoint never crosses layout_features and nothing is guessed. "
+                "Fix the config, or migrate the checkpoint (DESIGN §43.8)"
+            )
+        raise CheckpointError(f"{path}: incompatible checkpoint: {', '.join(bad)}{hint}")
     try:
         with state_file(path) as plain:
             arrays = mx.load(str(plain), format="safetensors")

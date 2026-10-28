@@ -137,8 +137,8 @@ def test_decode_mask_and_flows_ext(starve: bool, monkeypatch: pytest.MonkeyPatch
 
 def test_a_failing_stub_check_is_caught_by_full_check(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = stub.stub_cfg(_base(2), "bonds")
+    monkeypatch.setattr(ext, "REGISTRY", tuple(stub.spec(n) for n in stub.ALL))  # before dims() caches cfg
     s = init_state(cfg)
-    monkeypatch.setattr(ext, "REGISTRY", tuple(stub.spec(n) for n in stub.ALL))
     assert invariants.full_check(s, cfg) == []
     monkeypatch.setattr(ext, "REGISTRY", tuple(stub.spec(n, check_fail=True) for n in stub.ALL))
     problems = invariants.full_check(s, cfg)
