@@ -146,7 +146,7 @@ def test_cli_panel_scorecards_and_stubs(tmp_path: Path, capsys: pytest.CaptureFi
     out = tmp_path / "o"
     assert cli.main(["panel", str(run), "--windows", "0:500", "--arm", "U0", "--out", str(out)]) == 0
     assert (out / "panel.json").is_file()
-    assert cli.main(["epr", "x"]) == 2 and "E3" in capsys.readouterr().err
+    assert cli.main(["braid", "x"]) == 2 and "E4" in capsys.readouterr().err
     assert cli.main(["modes"]) == 2
     with pytest.raises(SystemExit):
         cli.main(["record", str(run), "--window", "5:1"])  # not A < B
@@ -175,7 +175,10 @@ def test_no_write_into_a_run_directory(tmp_path: Path) -> None:
     for name, text in _sources().items():
         for m in re.finditer(r"(write_text|write_bytes|open\([^)]*[\"'][wax])", text):
             line = text[: m.start()].count("\n") + 1
-            assert name in ("panel.py", "compare.py", "prereg.py", "frames.py", "__main__.py"), (name, line)
+            assert name in ("panel.py", "compare.py", "prereg.py", "frames.py", "__main__.py", "epr_io.py"), (
+                name,
+                line,
+            )
     run = _run_dir(tmp_path)
     before = _listing(run)
     out = tmp_path / "o"

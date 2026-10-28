@@ -16,7 +16,17 @@ from pathlib import Path
 
 import numpy as np
 
-from alife.analysis.emergence import compare, frames, panel, prereg, scorecards, synth
+from alife.analysis.emergence import (
+    cli_blocks,
+    compare,
+    epr,
+    frames,
+    panel,
+    panel_blocks,
+    prereg,
+    scorecards,
+    synth,
+)
 
 LATER = {
     "epr": "block B (E3)",
@@ -77,9 +87,8 @@ def cmd_record(a: argparse.Namespace) -> int:
 
 def cmd_panel(a: argparse.Namespace) -> int:
     wins = a.windows or []
-    fmeta = []
-    for f in a.frames or []:
-        fmeta.append(frames.read_frames(f).meta)
+    frames_list = [frames.read_frames(f) for f in a.frames or []]
+    fmeta = [fr.meta for fr in frames_list]
     h = prereg.load_prereg(a.prereg)["sha256"] if a.prereg else None
     cards = []
     feats = [x for x in (a.scorecards or "").split(",") if x]
@@ -99,6 +108,8 @@ def cmd_panel(a: argparse.Namespace) -> int:
         frames_meta=fmeta,
         scorecards=cards,
     )
+    if frames_list:
+        panel_blocks.fill_b(p, [epr.analyse_window(fr) for fr in frames_list])
     pj, pm = panel.write_panel(_out(a, a.run), p)
     print(f"wrote {pj} and {pm}")
     return 0
@@ -206,7 +217,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--effect", action="append", metavar="FEATURE:ENDPOINT=D")
     p.add_argument("--prereg-hash")
     p.set_defaults(fn=cmd_synth)
+    for name, (add, fn) in cli_blocks.COMMANDS.items():
+        q = sub.add_parser(name, help=f"block command {name} (DESIGN §44)")
+        add(q)
+        q.set_defaults(fn=fn)
     for name, where in LATER.items():
+        if name in cli_blocks.COMMANDS:
+            continue
         q = sub.add_parser(name, help=f"not yet implemented: {where}")
         q.add_argument("args", nargs="*")
         q.set_defaults(
