@@ -75,6 +75,9 @@ class FieldSpec:
     dtype: Any  # an mx.Dtype (typed Any: this module imports no mlx)
     rest: Callable[[Any], Any]  # (cfg) -> array: the initial value and the fill of an older checkpoint
     on_birth: str | Callable[[Any, Any, BirthCtx], Any] = "rest"
+    # True for a field that holds conserved energy quanta: ``alife migrate --force-removal`` can drop it only
+    # while it is at its ``rest`` value (anything else would leak TOTAL), never silently otherwise.
+    conserved: bool = False
 
 
 def _never(cfg: Any) -> bool:

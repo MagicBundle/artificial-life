@@ -679,7 +679,8 @@ def _cmd_migrate(a: argparse.Namespace) -> int:
     """Write a new run directory holding a checkpoint on a new feature layout (DESIGN §43.8)."""
     if not a.enable and not a.set:
         raise ConfigError("migrate needs --enable FEATURE (or --set of a feature key)")
-    src, origin, _, _ = _fork_lookup(a.run)
+    src, origin, src_rd, at = _fork_lookup(a.run)
+    origin = f"{src_rd.path.resolve()}:{at}" if src_rd is not None else str(src.resolve())
     out = Path(a.out)
     rep = migrate.migrate_checkpoint(
         src,
@@ -1662,7 +1663,8 @@ def _llm_args(p: argparse.ArgumentParser) -> None:
 
 
 _MIGRATE_HELP = """Move a checkpoint onto a new feature layout (DESIGN 43.8): zero rows and columns for the
-new brain inputs and outputs (so the population behaves as before until evolution uses them), new state
+new brain inputs and outputs (so the population behaves as before up to floating-point
+reduction order until evolution uses them), new state
 fields from each feature's rest value, the new layout_features and genome_layout_version, provenance in
 meta.json (migrated_from). The source is never modified; NEWRUN is a new run directory at the source's
 step, and a compressed source gives a compressed save. A save never crosses layout_features any other way
@@ -1670,6 +1672,10 @@ step, and a compressed source gives a compressed save. A save never crosses layo
 
 Enabling several features in one call, or one after another, gives the same layout, offsets and weights.
 Mutation draws of the new shapes mean the trajectory parts from the unmigrated world at the first birth.
+The extra zero terms change the GEMV accumulation order: about 1% of the agents of a float16 world round a
+hidden state differently at the first step (CPU sums in groups of 4: a pad of a multiple of 4 is exact;
+Metal differs anyway). The output is built beside NEWRUN and renamed at the end; NEWRUN may not be, contain or
+lie inside the source, and a run being played is never replaced. game.observe sidecars start empty.
 
 Removal (turning a feature off) is refused unless --force-removal: it drops the evolved weights.
 LEAVE-ONE-OUT ARMS ARE FRESH RUNS from the shared evolved source (migrate it with the other features and

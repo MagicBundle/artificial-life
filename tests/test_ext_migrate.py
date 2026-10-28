@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 import ext_stub as stub
-from alife import brain, cli, ext, runio
+from alife import brain, cli, ext, migrate, runio
 from alife.config import dims, load_config
 from alife.runio import CheckpointError, RunDir, checkpoint_metadata, load_checkpoint, write_state_file
 from alife.state import (
@@ -43,8 +43,8 @@ def _registry(monkeypatch: pytest.MonkeyPatch):
     dims.cache_clear()
 
 
-def _cfg(nd: int, names=()):
-    cfg = load_config(preset="tiny" if nd == 2 else "tiny3d", overrides=F32)
+def _cfg(nd: int, names=(), dtype: str = "float32"):
+    cfg = load_config(preset="tiny" if nd == 2 else "tiny3d", overrides=[f"brain.weight_dtype={dtype}"])
     return stub.stub_cfg(cfg, *names) if names else cfg
 
 
@@ -253,11 +253,15 @@ def test_a_different_base_layout_is_refused() -> None:
 
 
 @pytest.mark.parametrize("nd", [2, 3])
-def test_the_brain_of_a_migrated_world_is_the_old_brain_plus_silent_outputs(nd: int) -> None:
+@pytest.mark.parametrize(("dtype", "atol"), [("float32", 1e-6), ("float16", 5e-3)])
+def test_the_brain_of_a_migrated_world_is_the_old_brain_plus_silent_outputs(
+    nd: int, dtype: str, atol: float
+) -> None:
     """With zero rows/columns: the same hidden state and legacy outputs, and the new outputs are exactly 0,
     whatever the new inputs are."""
-    c_old, c_new = _cfg(nd, ("bonds",)), _cfg(nd, ALL)
+    c_old, c_new = _cfg(nd, ("bonds",), dtype), _cfg(nd, ALL, dtype)
     arr = _arrays(c_old)
+    assert arr["W1"].dtype == getattr(mx, dtype)
     new = _migrate(arr, c_old, c_new)
     lo, ln = dims(c_old).lay, dims(c_new).lay
     n = dims(c_old).n
@@ -275,10 +279,10 @@ def test_the_brain_of_a_migrated_world_is_the_old_brain_plus_silent_outputs(nd: 
     h = arr["h"]
     h_old, y_old = brain.forward(arr["W1"], arr["W2"], x_old, h, c_old)
     h_new, y_new = brain.forward(new["W1"], new["W2"], x_new, h, c_new)
-    np.testing.assert_allclose(np.array(h_new), np.array(h_old), atol=1e-6, rtol=0)
+    np.testing.assert_allclose(np.array(h_new), np.array(h_old), atol=atol, rtol=0)
     base_out = lo.D_OUT - sum(w for *_, w, _ in lo.EXT_OUT)
     np.testing.assert_allclose(
-        np.array(y_new[:, :base_out]), np.array(y_old[:, :base_out]), atol=1e-6, rtol=0
+        np.array(y_new[:, :base_out]), np.array(y_old[:, :base_out]), atol=atol, rtol=atol
     )
     old_out = {(o, nm) for o, nm, *_ in lo.EXT_OUT}
     for owner, name, start, width, _ in ln.EXT_OUT:
@@ -305,6 +309,9 @@ def test_one_step_of_the_migrated_world_equals_the_source(
     out_new = make_step(c_new, compile=False)(s_new)
     (t_old, so), (t_new, sn) = out_old, out_new
     mx.eval(t_old, t_new)
+    # the window is birth-free (a birth draws its mutation noise with the new shapes, §43.8): asserted
+    assert int(to_numpy(t_old.next_uid)) == int(to_numpy(s_old.next_uid))
+    assert int(to_numpy(t_new.next_uid)) == int(to_numpy(s_old.next_uid))
     weights = {"W1", "W2", "pend_W1", "pend_W2"}
     for name in type(t_old)._fields:
         if name in weights:
@@ -498,3 +505,133 @@ def test_e3_a_migrated_world_resumes_and_a_mismatched_config_is_refused(tmp_path
     # the unmigrated source cannot be loaded into the migrated config either (nothing is guessed)
     with pytest.raises(CheckpointError, match="layout_features"):
         load_checkpoint(_source_run(tmp_path / "s2")[1], cfg, check_hash=False)
+
+
+# --- review fixes: the output may not endanger the source, locks, conserved fields, atomicity ------------
+
+
+def _migrate_cli(*args: str) -> int:
+    return cli.main(["migrate", *args, "--quiet"])
+
+
+def _snap(root: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_h1_overwrite_never_replaces_the_source(tmp_path: Path, capsys) -> None:
+    run, ck = _source_run(tmp_path / "A")
+    before = _snap(run)
+    # out == source run
+    assert _migrate_cli(str(run), "--enable", "bonds", "--out", str(run), "--overwrite") == 2
+    assert "migration refused" in capsys.readouterr().err and _snap(run) == before
+    # out is an ancestor of the source (a directory with a meta.json)
+    par = tmp_path / "C"
+    par.mkdir()
+    (par / "meta.json").write_text("{}")
+    run2, _ = _source_run(par)
+    before2 = _snap(run2)
+    assert _migrate_cli(str(run2), "--enable", "bonds", "--out", str(par), "--overwrite") == 2
+    assert run2.exists() and _snap(run2) == before2
+    # out inside the source
+    inner = run / "checkpoints" / "x"
+    assert _migrate_cli(str(run), "--enable", "bonds", "--out", str(inner)) == 2
+    assert not inner.exists() and _snap(run) == before
+    # a bare state file inside a run, out = its run directory
+    assert _migrate_cli(str(ck), "--enable", "bonds", "--out", str(run), "--overwrite") == 2
+    assert ck.exists() and _snap(run) == before
+    # a symbolic link out
+    link = tmp_path / "link"
+    link.symlink_to(run)
+    assert _migrate_cli(str(run), "--enable", "bonds", "--out", str(link), "--overwrite") == 2
+    assert run.exists() and _snap(run) == before
+
+
+def test_m1_a_run_being_played_is_not_replaced(tmp_path: Path, capsys) -> None:
+    import fcntl
+
+    run, _ = _source_run(tmp_path / "s")
+    victim, _ = _source_run(tmp_path / "v", ("niche",))
+    before = _snap(victim)
+    fd = open(victim / "play.lock", "w")  # noqa: SIM115
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        assert _migrate_cli(str(run), "--enable", "bonds", "--out", str(victim), "--overwrite") == 2
+        assert "play.lock" in capsys.readouterr().err
+        # the pre-existing hole of RunDir.create(overwrite=True) (alife run --overwrite)
+        with pytest.raises(FileExistsError, match=r"play\.lock"):
+            RunDir.create(victim, _cfg(2), overwrite=True)
+        assert {k: v for k, v in _snap(victim).items() if k != "play.lock"} == {
+            k: v for k, v in before.items() if k != "play.lock"
+        }
+    finally:
+        fd.close()
+
+
+def test_a_failed_migration_leaves_no_output_and_overwrite_is_swapped_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, _ = _source_run(tmp_path / "s")
+    out = tmp_path / "out"
+    monkeypatch.setattr(
+        RunDir, "save_checkpoint", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    with pytest.raises(RuntimeError):
+        migrate.migrate_checkpoint(runio_latest(run), out, enable=["bonds"])
+    assert not out.exists() and not [p for p in tmp_path.iterdir() if p.name.startswith(".out")]
+    monkeypatch.undo()
+    stub.install(monkeypatch)
+    assert _migrate_cli(str(run), "--enable", "bonds", "--out", str(out)) == 0
+    assert _migrate_cli(str(run), "--enable", "comm", "--out", str(out), "--overwrite") == 0
+    assert RunDir.open(out).meta()["layout_features"] == "comm4@1"
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".out")]
+
+
+def runio_latest(run: Path) -> Path:
+    return RunDir.open(run).latest_checkpoint()
+
+
+def test_noop_and_pointless_force_are_refused(tmp_path: Path, capsys) -> None:
+    run, _ = _source_run(tmp_path / "s", ("bonds",))
+    out = tmp_path / "out"
+    assert _migrate_cli(str(run), "--enable", "bonds", "--out", str(out)) == 2
+    assert "nothing to migrate" in capsys.readouterr().err and not out.exists()
+    run0, _ = _source_run(tmp_path / "s0")
+    assert _migrate_cli(str(run0), "--enable", "comm", "--force-removal", "--out", str(out)) == 2
+    assert "no feature is removed" in capsys.readouterr().err and not out.exists()
+
+
+def test_provenance_stores_absolute_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, ck = _source_run(tmp_path / "s")
+    monkeypatch.chdir(tmp_path)
+    assert _migrate_cli(str(ck.relative_to(tmp_path)), "--enable", "bonds", "--out", "out") == 0
+    meta = RunDir.open(tmp_path / "out").meta()
+    assert Path(meta["migrated_from"]["source"]).is_absolute() and Path(meta["parent"]).is_absolute()
+
+
+def test_m3_a_removed_field_with_conserved_quanta_must_be_at_rest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A field that holds energy quanta can be dropped by a forced removal only while it is at rest."""
+    reg = tuple(
+        dataclasses.replace(
+            sp,
+            state_fields=lambda cfg, nd: tuple(
+                dataclasses.replace(f, conserved=True) for f in stub.spec("niche").state_fields(cfg, nd)
+            ),
+        )
+        if sp.name == "niche"
+        else sp
+        for sp in ext.REGISTRY
+    )
+    monkeypatch.setattr(ext, "REGISTRY", reg)
+    dims.cache_clear()
+    c_on, c_off = _cfg(2, ("niche",)), _cfg(2)
+    arrays = _arrays(c_on)
+    out = _migrate(arrays, c_on, c_off, allow_removal=True)  # at rest: dropped
+    assert "soil" not in out
+    arrays = {**arrays, "soil": arrays["soil"] + 3}
+    with pytest.raises(MigrationError, match="conserved quanta"):
+        _migrate(arrays, c_on, c_off, allow_removal=True)
+    # a field that is not marked is dropped under --force-removal whatever it holds (the flag is the consent)
+    plain_on = _cfg(2, ("structures",))
+    arr = {**_arrays(plain_on)}
+    arr["mat"] = arr["mat"] + 5
+    assert "mat" not in _migrate(arr, plain_on, _cfg(2), allow_removal=True)

@@ -790,6 +790,12 @@ def migrate_layout(
     nd = dims(cfg_new).nd
     new_fields = ext.state_fields(cfg_new, nd)
     gone = {f.name for f in ext.state_fields(cfg_old, nd)} - {f.name for f in new_fields}
+    for f in ext.state_fields(cfg_old, nd):
+        if f.name in gone and f.conserved and not bool(mx.array_equal(arrays[f.name], f.rest(cfg_old))):
+            raise MigrationError(
+                f"{f.name} holds conserved quanta that are not at rest: dropping it would leak energy "
+                "(settle it first); a removal never drops it silently"
+            )
     out = {k: v for k, v in {**arrays, **moved}.items() if k not in gone}
     out = {**{f.name: f.rest(cfg_new) for f in new_fields if f.name not in out}, **out}
     if change.removed:  # the L1 upkeep of the weights that are left

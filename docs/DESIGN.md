@@ -12553,14 +12553,24 @@ cfg_old, cfg_new, allow_removal=False)`.
   the migrated population behaves as before until mutation wakes the new channels: the gate test steps the source and
   the migrated world once with every stub effect disabled and compares the whole shared state (integer and bool fields
   exactly, float fields to a few ulp: the GEMV sums extra zero terms and float32 reduction order may differ, F20),
-  and checks that the new outputs are exactly 0 whatever the new inputs are. Measured on the evolved `mini3d_s0` step 500000 (float16 weights, stub features, CPU, one step): with the weights cast to float32 every shared field agrees to a few ulp (the only larger difference is `brain_cost` of the births, whose mutation draws differ); with the float16 weights about 1% of the agents (127 of 11,310) round a hidden state differently, because the extra zero terms change the accumulation order before the cast: the migrated brain is the old brain up to reduction order, not bit for bit, in reduced-precision weight dtypes (F20). **The trajectory parts from the unmigrated
+  and checks that the new outputs are exactly 0 whatever the new inputs are. Measured on the evolved `mini3d_s0` step 500000 (float16 weights, stub features, CPU, one step): with the weights cast to float32 every shared field agrees to a few ulp (the only larger difference is `brain_cost` of the births, whose mutation draws differ); with the float16 weights about 1% of the agents (127 of 11,310) round a hidden state differently, because the extra zero terms change the accumulation order before the cast: the migrated brain is the old brain up to reduction order, not bit for bit, in reduced-precision weight dtypes (F20). The cause (review of PR 0b): the CPU GEMV accumulates in groups of 4, so a pad that is a multiple of 4 is bit-exact, other widths (the real 84 -> 113) are not, zeros appended at the end would always be exact but the recurrent rows must follow the inputs, and Metal differs anyway; so the claim is "as before up to floating-point reduction order", and the gate tests float32 (a few ulp) and float16 (about one fp16 ulp). **The trajectory parts from the unmigrated
   one at the first birth**: mutation noise is drawn with the new weight shapes. That is documented, not tested for
   equality; the equivalence test uses a birth-free window. `brain_cost` (an L1 sum) is unchanged by added zeros.
+* **Safety of the output.** `--out` may not be, contain or lie inside the source (the run directory of a save, or
+  the file itself; resolved with `realpath`), may not be a symbolic link, and a run that holds a live `play.lock`
+  is never replaced; all are refusals (exit 2) before anything is written. The run is built in a temporary
+  directory beside `--out` and renamed at the end (with `--overwrite` the old run is moved aside and deleted only
+  after the swap); a failure removes the temporary directory and leaves `--out` as it was. `RunDir.create(...,
+  overwrite=True)` (also `alife run --overwrite`) now refuses a directory with a live `play.lock` (a pre-existing
+  hole). A migration that adds and removes nothing, and `--force-removal` without a removal, are refused. The origin
+  in `parent` and `migrated_from.source` is an absolute path. `game.observe` sidecars are not carried: an observing
+  world's observer restarts empty at resume.
 * **Refusals.** A different base layout (dims, N, M, H, any non-extension field shape), and a feature that is on in both
   configs with a different `layout_features` token or field shape (a width or block-version change), are always
   refused. A removal (a feature on in the source and off in the target) is refused unless `--force-removal`
   (`allow_removal`), which drops the feature's rows, columns and fields and recomputes `brain_cost` from the weights
-  that are left. **Leave-one-out arms are fresh runs** from the shared evolved source (edge case E23): migrate the
+  that are left; a removed field flagged `FieldSpec.conserved` (it holds energy quanta) is dropped only while it is
+  at its `rest` value, never silently otherwise (it would leak TOTAL), whatever `--force-removal` says. **Leave-one-out arms are fresh runs** from the shared evolved source (edge case E23): migrate the
   source with the other features and leave the feature out; removal is not how an arm is made (the CLI help says so).
 * **Config.** The target is the source's embedded config with each `--enable` feature switched on by its
   `ExtSpec.enable(cfg)` hook (a feature without a hook is enabled with `--set`), then `--set` items. `--set` may name
