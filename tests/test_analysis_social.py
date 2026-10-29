@@ -443,11 +443,13 @@ def test_the_study_runs_the_observers_of_the_world_with_game_observe_on(
 def test_the_snapshot_step_is_timed_against_the_eight_steps_before_it(
     run_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The five steps before the snapshot at 60 take 0.2 s more, the last four do not: the median of the
-    eight steps 52..59 (four slow, four fast) lies between the two; a median over fewer steps would be fast,
-    over more would be slow. The snapshot step itself is not part of its own reference."""
+    """The five steps before the snapshot at 60 take 1 s more, the last four do not: the median of the
+    eight steps 52..59 (four slow, four fast) lies about halfway between the two; a median over fewer steps
+    would be fast, over more would be slow. The snapshot step itself is not part of its own reference.
+    The bounds are relative to the snapshot step's own time, so a loaded CI runner does not break them."""
     calls = 0
     real = social.make_step
+    extra_ms = 1000.0
 
     def make(cfg, **kw):
         fn = real(cfg, **kw)
@@ -456,7 +458,7 @@ def test_the_snapshot_step_is_timed_against_the_eight_steps_before_it(
             nonlocal calls
             calls += 1
             if calls <= 5:  # the steps 51..55
-                time.sleep(0.2)
+                time.sleep(extra_ms / 1000)
             return fn(s)
 
         return slow
@@ -464,8 +466,9 @@ def test_the_snapshot_step_is_timed_against_the_eight_steps_before_it(
     monkeypatch.setattr(social, "make_step", make)
     rep = social.study(run_dir, start=50, steps=10, every=10, verify=False, log=lambda _: None)
     (t,) = rep["timing"]["snapshots"]
-    assert t["step"] == 60 and 60 < t["before_median_ms"] < 170, t
-    assert t["eval_ms"] < 100  # the snapshot step is fast, and not slow because of its neighbours
+    lift = t["before_median_ms"] - t["eval_ms"]
+    assert t["step"] == 60 and 0.3 * extra_ms < lift < 0.7 * extra_ms, t
+    assert t["eval_ms"] < 0.5 * extra_ms, t  # the snapshot step is fast, not slow because of its neighbours
 
 
 def test_the_study_prepares_the_fused_search_before_it_builds_the_step(
