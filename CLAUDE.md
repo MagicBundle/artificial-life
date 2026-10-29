@@ -10,6 +10,8 @@ panel and `alife llm-check`, `DIRECTOR.md` §14) are implemented, and so is the 
 assesses research directions against prior work. `docs/3D.md` is the 3D world (gravity and a floor), built in PRs
 #15 to #20 (normative spec: `DESIGN.md` §27); its first long run is described in `docs/RESULTS_3D.md`, and a second
 seed, a half-food control and a director run in `docs/RESULTS_3D_RUNS.md`.
+`docs/DESIGN.md` §46 is the true-sphere series (`world.geometry = "sphere"`, HEALPix cells on a planet; PRs S0 to S7): S0, the geometry and guards (`src/alife/geom.py`, `sphere.py`, the geometry lint
+with `tests/geometry_allowlist.py`, the sphere config keys), is built; the sphere itself is refused by `validate` until S2.
 `docs/DESIGN.md` §37 is the mini world (preset `mini3d`, overlay `storm160`, a 160-wide 3D world of about 10,500 organisms for quick
 play-tests; no simulation change); the launcher passes `storm160` for a 160-wide source and `storm` otherwise.
 `docs/GAMES.md` is the design of the gaming vertical (owner decisions in its §10); its build step G1, the observer
