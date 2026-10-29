@@ -173,10 +173,10 @@ import Testing
         let (found, error, _) = records(try stream(strc(indices: [], levels: [])))
         #expect(error == nil)
         guard case .strc(let cells)? = found.first else { Issue.record("not an STRC"); return }
-        #expect(cells.count == 0 && cells.columnMaximum() == [UInt8](repeating: 0, count: 144))
+        #expect(cells.count == 0 && cells.indices.isEmpty && cells.levels.isEmpty)
     }
 
-    @Test func a3DRecordIndexesZMajorAndTheColumnMaximumFlattensIt() throws {
+    @Test func a3DRecordIndexesZMajor() throws {
         // FZ 6 layers of 12 x 12: idx = (z * 12 + y) * 12 + x
         let a = (0 * 12 + 4) * 12 + 5, b = (3 * 12 + 4) * 12 + 5, c = (5 * 12 + 11) * 12 + 0
         let bytes = try stream(kind: "3d", edit: { allOn(&$0, fz: 6) }, strc(nz: 6, indices: [a, b, c], levels: [40, 90, 12]))
@@ -184,11 +184,35 @@ import Testing
         #expect(error == nil)
         guard case .strc(let cells)? = found.first else { Issue.record("not an STRC"); return }
         #expect(cells.cell(1) == (5, 4, 3) && cells.cell(2) == (0, 11, 5))
-        let image = cells.columnMaximum()
-        #expect(image.count == 144 && image[4 * 12 + 5] == 90 && image[11 * 12 + 0] == 12 && image.filter { $0 > 0 }.count == 2)
+        #expect(cells.level(x: 5, y: 4, z: 3) == 90 && cells.level(x: 5, y: 4, z: 0) == 40 && cells.level(x: 0, y: 11, z: 5) == 12)
     }
 
-    @Test func aMalformedCellRecordIsRefusedWithItsReason() throws {
+    /// A stream of `bad` and then a good cell record: the bad one is skipped whole and counted (with its reason), the good one decodes.
+    private func skipsAndGoesOn(_ bad: [UInt8], tag: String, reason: String, chunk: Int? = 17,
+                                edit: (inout [String: Any]) -> Void = { _ in }) throws -> Bool {
+        let good = strc(indices: [4], levels: [9])
+        var decoder = FrameDecoder()
+        var events: [StreamEvent] = []
+        let bytes = try stream(edit: edit, bad, good)
+        var at = 0
+        let size = chunk ?? bytes.count
+        while at < bytes.count {
+            let end = min(at + size, bytes.count)
+            events += try decoder.feed(Data(bytes[at..<end]))
+            at = end
+        }
+        try decoder.finish()
+        let tags = events.compactMap { event -> String? in
+            switch event {
+            case .record(let r): "record " + r.tag
+            case .unknownRecord(let t, _): "skip " + t
+            default: nil
+            }
+        }
+        return tags == ["skip \(tag)", "record STRC"] && decoder.skippedBodies == 1 && decoder.lastSkippedBody?.contains(reason) == true
+    }
+
+    @Test func aMalformedCellRecordIsSkippedAndCountedWithItsReason() throws {
         let cases: [(String, [UInt8], String)] = [
             ("a grid that is not the header's", strc(nx: 13, indices: [1], levels: [1]), "grid"),
             ("indices that do not ascend", strc(indices: [5, 5], levels: [1, 1]), "ascending"),
@@ -200,9 +224,40 @@ import Testing
             ("a padding byte that is not zero", strc(indices: [1], levels: [1], padding: [0, 0, 7]), "padding"),
         ]
         for (name, bytes, reason) in cases {
-            let error = decode(try stream(bytes), chunk: 17).error
-            #expect(isMalformed(error, "STRC", containing: reason), Comment(rawValue: "\(name): \(String(describing: error))"))
+            #expect(try skipsAndGoesOn(bytes, tag: "STRC", reason: reason), Comment(rawValue: name))
         }
+    }
+
+    /// The stream's header for a 3D world of 64 x 64 x 16 cells (65 536 of them): the largest record the writer sends lists them all.
+    private func bigStream(_ records: [UInt8]...) throws -> [UInt8] {
+        let fixture = try PlayFixture(kind: "3d")
+        var header = fixture.header
+        header["L"] = 256.0
+        header["height"] = 64.0
+        header["field_cell"] = 4.0
+        header["FG"] = 64
+        header["FZ"] = 16
+        var play = header["play"] as! [String: Any]
+        play["records"] = (play["records"] as! [String]) + ["STRC"]
+        play["structures"] = ["enabled": true, "cap": 4096, "cells": [16, 64, 64], "cell": 4.0]
+        header["play"] = play
+        let json = try JSONSerialization.data(withJSONObject: header, options: [.sortedKeys])
+        var text = [UInt8](json)
+        while text.count % 4 != 0 { text.append(0x20) }
+        return Array("ALSTRM".utf8) + [0, 1] + le32(text.count) + text + records.flatMap { $0 }
+    }
+
+    @Test(arguments: [false, true], [nil, 4093]) func theLargestRecordIsAcceptedWithOrWithoutTheTruncationFlag(truncated: Bool, chunk: Int?) throws {
+        // 65 536 cells (every cell of the grid): 12 + 5 x 65 536 = 327 692 bytes in the body, a multiple of 4
+        let all = Array(0..<65536)
+        let levels = all.map { 1 + $0 % 255 }
+        let record = strc(nx: 64, ny: 64, nz: 16, flags: truncated ? 1 : 0, indices: all, levels: levels)
+        #expect(record.count == 8 + 16 + 327_692)
+        let (found, error, _) = records(try bigStream(record), chunk: chunk)
+        #expect(error == nil && found.count == 1)
+        guard case .strc(let cells)? = found.first else { Issue.record("not an STRC"); return }
+        #expect(cells.count == 65536 && cells.isTruncated == truncated && cells.levels == levels.map { UInt8($0) })
+        #expect(cells.indices.last == 65535 && cells.cell(65535) == (63, 63, 15))
     }
 
     @Test func aCountOverTheCapIsRefusedBeforeItsPayloadIsWaitedFor() throws {
@@ -266,18 +321,31 @@ import Testing
         #expect(Int(word(record, at: 4)) == 16 + (12 + 2 * w + 3) / 4 * 4)
     }
 
-    @Test func aMalformedVoiceRecordIsRefused() throws {
+    @Test func aWidthThatBreaksItsOwnLengthStaysFatal() throws {
+        // the length of the record comes from W: a W that cannot be, so no length to skip by
         let cases: [(String, [UInt8], String)] = [
             ("no channels", record("FSIG", body: u64(5) + [0, 1] + u16(0) + [0, 0, 0, 0]), "W 0"),
             ("nine channels", record("FSIG", body: u64(5) + [9, 1] + u16(0) + [UInt8](repeating: 0, count: 20)), "W 9"),
+        ]
+        for (name, bytes, reason) in cases {
+            #expect(isMalformed(decode(try stream(edit: { allOn(&$0) }, bytes), chunk: 13).error, "FSIG", containing: reason), Comment(rawValue: name))
+        }
+        // and so does a count over the cap, and a length that is not the one the count says
+        var wrongLength = strc(indices: [1, 2], levels: [1, 2])
+        wrongLength.replaceSubrange(4..<8, with: le32(Int(word(wrongLength, at: 4)) + 4))
+        wrongLength += [0, 0, 0, 0]
+        if case .lengthMismatch? = decode(try stream(wrongLength)).error {} else { Issue.record("a wrong length was skipped") }
+    }
+
+    @Test func aMalformedVoiceRecordIsSkippedAndCounted() throws {
+        let cases: [(String, [UInt8], String)] = [
             ("a width unlike the header's", fsig(flags: 1, says: [1, 2], hears: [1, 2]), "comm.w"),
             ("hears without the flag", fsig(flags: 0, says: [1, 2, 3], hears: [0, 4, 0]), "heard half"),
             ("audible without the flag", fsig(flags: 0, audible: 2, says: [1, 2, 3], hears: [0, 0, 0]), "heard half"),
             ("a padding byte that is not zero", fsig(says: [1, 2, 3], hears: [1, 2, 3], padding: [0, 0, 3]), "padding"),
         ]
         for (name, bytes, reason) in cases {
-            let error = decode(try stream(edit: { allOn(&$0) }, bytes), chunk: 13).error
-            #expect(isMalformed(error, "FSIG", containing: reason), Comment(rawValue: "\(name): \(String(describing: error))"))
+            #expect(try skipsAndGoesOn(bytes, tag: "FSIG", reason: reason, chunk: 13, edit: { allOn(&$0) }), Comment(rawValue: name))
         }
     }
 

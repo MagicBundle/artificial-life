@@ -178,6 +178,101 @@ def test_the_feature_stream_fixture_is_what_the_writer_makes() -> None:
     assert module.build() == (ROOT / "tests" / "data" / "play_features.bin").read_bytes()
 
 
+# The switches that make a feature's other keys live (a key of a feature that is off is rejected).
+FEATURE_BASE = {
+    "arms": ["arms.enabled=true", "combat.protect_floor=0.1"],  # (key_floor = 0 needs a protection floor)
+    "structures": ["structures.enabled=true", "combat.protect_floor=0.1"],  # (shield_gain = 1 too)
+    "bonds": ["bonds.share_mode=1", "roles.enabled=true"],
+    "comm": ["comm.enabled=true"],
+    "niche": ["niche.farm=true"],
+}
+# Boundaries where the engine's refusal depends on something the lever cannot know (the world or another key):
+# the table states the key's own range and the engine may refuse a value inside it.
+
+_X = "a rule across keys the Swift table checks separately"
+_W = "needs the world or the population, which a lever cannot see"
+RANGE_EXCEPTIONS = {
+    ("structures.cap", "32767"): _W,
+    ("niche.farm_cap", "32767"): _W,
+    ("structures.build_cost", "32768"): _X,
+    ("niche.farm_cost", "32768"): _X,
+    ("niche.farm_cost", "32767"): _W,
+    ("niche.farm_decay_q16", "65535"): _X,
+    ("arms.a0", "1e-06"): _X,
+    ("roles.forage_gain", "65535"): _W,
+}
+
+
+def swift_rows(feature: str) -> list[dict]:
+    """The decimal and integer rows of a lever table: key, kind and the bounds the constructors state."""
+    text = (CORE / f"{feature.capitalize()}Levers.swift").read_text(encoding="utf-8")
+    body = text.split("specs: [", 1)[1].split("crossErrors", 1)[0]
+    rows = []
+    for part in re.split(r"\n\s*(?=\.(?:flag|decimal|integer|options)\()", body):
+        m = re.match(r'\.(decimal|integer)\("([a-z_]+\.[a-z_0-9]+)",\s*"([^"]*)"', part)
+        if not m:
+            continue
+        kind, key, _ = m.groups()
+        low = re.search(r"\blow: (-?[0-9.]+)", part)
+        high = re.search(r"\bhigh: ([0-9.]+)", part)
+        rows.append(
+            {
+                "kind": kind,
+                "key": key,
+                "low": float(low.group(1)) if low else 0.0,
+                "high": float(high.group(1)) if high else None,
+                "low_open": "lowOpen: true" in part,
+                "high_open": "highOpen: true" in part,
+            }
+        )
+    return rows
+
+
+@pytest.mark.parametrize("feature", sorted(GUI_LANDED))
+def test_feature_lever_ranges_are_the_engines(feature: str) -> None:
+    """Every bound a lever table states is where `load_config` draws the line.
+
+    The bound is accepted or refused as the table says, and a value just outside it is refused; a value in the
+    range that the engine refuses for a reason the lever cannot see is listed in `RANGE_EXCEPTIONS`.
+    """
+    base = FEATURE_BASE[feature]
+
+    def accepts(sets: list[str]) -> bool:
+        try:
+            config.load_config(preset="64k", overrides=sets)
+        except config.ConfigError:
+            return False
+        return True
+
+    assert accepts(base), f"the base switches of {feature} are not a valid config"
+    rows = swift_rows(feature)
+    assert rows
+    for r in rows:
+        isint = r["kind"] == "integer"
+        eps = 1 if isint else 1e-6
+
+        def text(v: float, isint: bool = isint) -> str:
+            return str(int(v)) if isint else repr(float(v))
+
+        cases = [
+            ("low", r["low"], not r["low_open"]),
+            ("below low", r["low"] - eps, False),
+            ("above low", r["low"] + eps, True),
+        ]
+        if r["high"] is not None:
+            cases += [
+                ("high", r["high"], not r["high_open"]),
+                ("above high", r["high"] + eps, False),
+                ("below high", r["high"] - eps, True),
+            ]
+        for name, v, swift_accepts in cases:
+            if v < 0:
+                continue  # a lever is a non-negative plain decimal (`Parse`)
+            if (r["key"], text(v)) in RANGE_EXCEPTIONS:
+                continue
+            assert accepts([*base, f"{r['key']}={text(v)}"]) == swift_accepts, (r["key"], name, text(v))
+
+
 def test_the_feature_key_tables_are_consistent() -> None:
     assert set(config.FEATURE_KEYS) == {s.name for s in ext.REGISTRY}  # empty until a feature registers
     for feature, keys in config.FEATURE_KEYS.items():

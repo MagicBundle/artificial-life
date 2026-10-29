@@ -584,8 +584,8 @@ enum Shaders {
     }
 
     // ---- The feature layers' cells (DESIGN 45) ----
-    // One instance per listed cell of a sparse grid (`STRC`, `FSOL`): a flat tile of the cell in 2D (six vertices, the z = 0 face), a cube of
-    // the cell's side in 3D (36 vertices). The cell is placed at its minimum image against the camera target, as the agents are, and its
+    // One instance per exposed face of a listed cell of a sparse grid (`STRC`, `FSOL`; `PlayCells.exposedFaces`): a flat tile of the cell in 2D
+    // (its z = 0 face), the faces of a cube of the cell's side that touch an empty cell in 3D; six vertices each. The cell is placed at its minimum image against the camera target, as the agents are, and its
     // opacity is a function of its level (`CellLook`), so a decaying wall thins.
     struct CellU {
         float4 grid;       // x: nx, y: ny, z: nz, w: the cell's length
@@ -593,21 +593,20 @@ enum Shaders {
         float4 opacity;    // x: opacity at level 0, y: its slope in level / 255
     };
 
-    // The corners of the unit cube (bit 0 x, bit 1 y, bit 2 z) as twelve triangles; the first two are the z = 0 face.
-    constant uint cubeCorner[36] = {
-        0, 1, 3,  0, 3, 2,   4, 5, 7,  4, 7, 6,   0, 1, 5,  0, 5, 4,
-        2, 3, 7,  2, 7, 6,   0, 2, 6,  0, 6, 4,   1, 3, 7,  1, 7, 5
-    };
+    // The two triangles of a face's quad, as corners (bit 0 u, bit 1 v) of the unit square.
+    constant uint quadCorner[6] = { 0, 1, 3, 0, 3, 2 };
 
     vertex LineVarying cellVertex(uint vid [[vertex_id]],
                                   uint iid [[instance_id]],
                                   constant Scene& scene [[buffer(0)]],
-                                  device const uint* cells [[buffer(2)]],
+                                  device const uint* faces [[buffer(2)]],
                                   device const uchar* levels [[buffer(3)]],
                                   constant CellU& cell [[buffer(6)]],
                                   constant WorldU& world [[buffer(7)]])
     {
-        uint idx = cells[iid];
+        uint code = faces[iid];
+        uint idx = code >> 3u;
+        uint face = code & 7u;                 // 2 * axis + side: the faces of the cell that touch an empty one
         uint nx = uint(cell.grid.x), ny = uint(cell.grid.y);
         uint x = idx % nx, y = (idx / nx) % ny, z = idx / (nx * ny);
         float size = cell.grid.w;
@@ -615,8 +614,10 @@ enum Shaders {
         float2 d = (float2(float(x), float(y)) + 0.5) * size - world.target.xy;
         d -= L * rint(d / L);
         float2 origin = world.target.xy + d - 0.5 * size;
-        uint corner = cubeCorner[vid];
-        float3 c = float3(float(corner & 1u), float((corner >> 1u) & 1u), float((corner >> 2u) & 1u));
+        uint corner = quadCorner[vid];
+        float u = float(corner & 1u), v = float((corner >> 1u) & 1u), s = float(face & 1u);
+        uint axis = face >> 1u;
+        float3 c = axis == 0u ? float3(s, u, v) : (axis == 1u ? float3(u, s, v) : float3(u, v, s));
         float3 p = float3(origin, float(z) * size) + c * size;
         LineVarying out;
         out.position = scene.viewProjection * float4(p, 1.0);

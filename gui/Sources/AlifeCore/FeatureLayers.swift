@@ -78,16 +78,72 @@ extension PlayCells {
         return low < indices.count && indices[low] == target ? levels[low] : 0
     }
 
+    /// The same for a grid too large to hold as a bitmap: a binary search per neighbour.
+    private func exposedFacesSparse() -> (codes: [UInt32], levels: [UInt8]) {
+        var codes: [UInt32] = [], levels: [UInt8] = []
+        let steps = [(-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1)]
+        for k in 0..<count {
+            let c = cell(k)
+            for (face, d) in steps.enumerated() {
+                let z = c.z + d.2
+                let filled = (0..<nz).contains(z) && level(x: (c.x + d.0 + nx) % nx, y: (c.y + d.1 + ny) % ny, z: z) != 0
+                if !filled {
+                    codes.append(indices[k] << 3 | UInt32(face))
+                    levels.append(self.levels[k])
+                }
+            }
+        }
+        return (codes, levels)
+    }
+
     /// The level of the cell a point of the world is in: `x` and `y` wrap with the world (`field_cell` is the cell's length), `z` is bounded.
     package func level(atX x: Float, y: Float, z: Float, cell: Double) -> UInt8 {
         guard cell > 0, x.isFinite, y.isFinite, z.isFinite else { return 0 }
-        func wrap(_ v: Float, _ n: Int) -> Int {
-            let i = Int((Double(v) / cell).rounded(.down))
-            return ((i % n) + n) % n
-        }
-        let zi = min(max(Int((Double(z) / cell).rounded(.down)), 0), nz - 1)
+        // A position is not range-checked by the frame decoder: clamp the cell number before it becomes an Int.
+        func index(_ v: Float) -> Int { Int(min(max((Double(v) / cell).rounded(.down), -1e12), 1e12)) }
+        func wrap(_ v: Float, _ n: Int) -> Int { ((index(v) % n) + n) % n }
+        let zi = min(max(index(z), 0), nz - 1)
         return level(x: wrap(x, nx), y: wrap(y, ny), z: zi)
     }
+
+    /// One entry per face of a listed cell whose neighbour across it is empty, for the renderer: the code `cell << 3 | face` (face = 2 axis +
+    /// side, axes x y z, side 0 the low face) and the level of the cell. The interior faces of a wall are never drawn, so the work scales
+    /// with the surface and not with the cells. x and y wrap with the world, z is bounded (the floor and ceiling faces are exposed). With
+    /// `flat` (a 2D world) every cell is one tile: its low-z face.
+    package func exposedFaces(flat: Bool, bitmapLimit: Int = 1 << 24) -> (codes: [UInt32], levels: [UInt8]) {
+        var codes: [UInt32] = [], levels: [UInt8] = []
+        if flat {
+            codes.reserveCapacity(count)
+            levels = self.levels
+            for k in 0..<count { codes.append(indices[k] << 3 | 4) }
+            return (codes, levels)
+        }
+        let total = nx * ny * nz
+        guard total <= bitmapLimit else { return exposedFacesSparse() }
+        var occupied = [Bool](repeating: false, count: total)
+        for i in indices { occupied[Int(i)] = true }
+        codes.reserveCapacity(3 * count)
+        levels.reserveCapacity(3 * count)
+        let (nx, ny, nz, plane) = (self.nx, self.ny, self.nz, self.nx * self.ny)
+        occupied.withUnsafeBufferPointer { grid in
+            for k in 0..<count {
+                let i = Int(indices[k])
+                let x = i % nx, y = (i / nx) % ny, z = i / plane
+                let row = i - x  // the first cell of the row, for the x wrap
+                let layer = i - y * nx - x  // the first cell of the layer, for the y wrap
+                let code = indices[k] << 3
+                let level = self.levels[k]
+                if !grid[row + (x + nx - 1) % nx] { codes.append(code); levels.append(level) }
+                if !grid[row + (x + 1) % nx] { codes.append(code | 1); levels.append(level) }
+                if !grid[layer + ((y + ny - 1) % ny) * nx + x] { codes.append(code | 2); levels.append(level) }
+                if !grid[layer + ((y + 1) % ny) * nx + x] { codes.append(code | 3); levels.append(level) }
+                if z == 0 || !grid[i - plane] { codes.append(code | 4); levels.append(level) }
+                if z == nz - 1 || !grid[i + plane] { codes.append(code | 5); levels.append(level) }
+            }
+        }
+        return (codes, levels)
+    }
+
 }
 
 extension WorldStore {
@@ -98,9 +154,10 @@ extension WorldStore {
 package enum FeatureWords {
     /// "62% of the cap (about 2540 units)".
     package static func cellText(level: UInt8, cap: Int) -> String {
-        let percent = Int((100 * Double(level) / 255).rounded())
+        let share = 100 * Double(level) / 255
         let units = Int(PlayCells.units(level, cap: cap).rounded())
-        return "\(percent)% of the cap (about \(units) units)"
+        // (a listed cell is never empty: level 1 is "under 1%", not 0%)
+        return (share < 1 ? "under 1%" : "\(Int(share.rounded()))%") + " of the cap (about \(units) units)"
     }
 
     /// The role whose colour is `rgb` in the role colour mode, nil for another colour (an agent hurt in the last step is red).
@@ -120,7 +177,7 @@ package enum FeatureLegend {
         package var colour: SIMD3<Float>
     }
 
-    package static func entries(layers: FeatureLayers, display: WorldDisplay, colourMode: String?) -> [Entry] {
+    package static func entries(layers: FeatureLayers, display: WorldDisplay, colourMode: String?, globe: Bool = false) -> [Entry] {
         func colour(_ rgb: UInt32) -> SIMD3<Float> {
             SIMD3(Float((rgb >> 16) & 255), Float((rgb >> 8) & 255), Float(rgb & 255)) / 255
         }
@@ -128,8 +185,9 @@ package enum FeatureLegend {
         if layers.roles, RoleColours.isRoleMode(colourMode) {
             entries += RoleColours.entries.map { Entry(title: $0.name, colour: colour($0.rgb)) }
         }
-        if layers.structures, display.structures { entries.append(Entry(title: "Built material", colour: CellLook.structures)) }
-        if layers.soil, display.soil { entries.append(Entry(title: "Farmed soil", colour: CellLook.soil)) }
+        // (the cells are not drawn on the globe path, so they are not listed there)
+        if layers.structures, display.structures, !globe { entries.append(Entry(title: "Built material", colour: CellLook.structures)) }
+        if layers.soil, display.soil, !globe { entries.append(Entry(title: "Farmed soil", colour: CellLook.soil)) }
         if layers.bondFlow, display.bondFlow, display.bonds {
             entries.append(Entry(title: "Bond: gives", colour: BondFlowLook.donor))
             entries.append(Entry(title: "Bond: receives", colour: BondFlowLook.receiver))

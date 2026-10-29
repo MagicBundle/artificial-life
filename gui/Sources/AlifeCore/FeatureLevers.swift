@@ -143,6 +143,10 @@ package struct FeatureLeverSpec: Equatable, Sendable, Identifiable {
 /// The texts of every feature lever, by `section.key`; a key not set holds its default.
 package struct FeatureValues: Equatable, Sendable {
     private var texts: [String: String] = [:]
+    /// `combat.protect_floor` of the config the levers were read from (a fork's source; 0 for a new run). Not a lever, but two of the engine's
+    /// rules depend on it (`arms.key_floor = 0` and `structures.shield_gain = 1` are allowed only above 0), so the GUI must not refuse
+    /// what the engine accepts.
+    package var protectFloor = 0.0
 
     package init() {}
 
@@ -271,6 +275,17 @@ package struct FeatureLevers: Equatable, Sendable {
             errors.append("bonds.share_mode and roles.enabled fix the brain layout; a fork cannot turn the bond block on or off.")
         }
         return errors
+    }
+
+    /// Advice that is not an error: what the engine only warns about. Farming's cost is the 2D design point by default, and a 3D world's
+    /// regrowth is about five times larger, so a cost far below it makes farming nearly free (`ROI_WARN` of `ext/niche.py`).
+    package func notes(worldDims dims: Int) -> [String] {
+        var notes: [String] = []
+        if dims == 3, values.isOn("niche.farm"), let cost = Parse.integer(values["niche.farm_cost"]), cost > 0, cost < 100 {
+            notes.append("niche.farm_cost \(cost) is the 2D design point; a 3D world's regrowth is larger and about 150 gives the same return "
+                         + "(the overlay niche3d sets it). The engine will warn that farming is nearly free.")
+        }
+        return notes
     }
 
     // MARK: Arguments

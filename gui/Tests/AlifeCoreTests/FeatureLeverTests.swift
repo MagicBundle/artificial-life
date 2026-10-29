@@ -196,6 +196,16 @@ import Testing
         #expect(comm.validate().contains { $0.contains("32768") })
     }
 
+    @Test func farmingAtTheTwoDCostInA3DWorldGetsANote() {
+        var f = FeatureLevers()
+        f["niche.farm"] = "true"
+        #expect(f.notes(worldDims: 2).isEmpty)
+        #expect(f.notes(worldDims: 3).count == 1 && f.notes(worldDims: 3)[0].contains("150"))
+        f["niche.farm_cost"] = "150"
+        #expect(f.notes(worldDims: 3).isEmpty)
+        #expect(FeatureLevers().notes(worldDims: 3).isEmpty, "nothing while farming is off")
+    }
+
     @Test func aClosedFeaturesBadValueIsNotAnError() {
         var f = FeatureLevers()
         f["arms.kappa"] = "abc"
@@ -267,6 +277,14 @@ import Testing
         #expect(args(s) == ["run", "--preset", "tiny3d", "--overlay", "comm", "--overlay", "niche3d", "--seed", "1", "--out", "runs/t"])
         let flat = newRun { $0.selectFeatureOverlays(["niche"], baseline: fromOverlays(["niche"])) }
         #expect(flat.overlayArguments == ["--overlay", "niche"])
+    }
+
+    @Test func oneFeaturesOverlayLeavesTheOthersEditsAlone() {
+        var s = newRun { $0.levers.features["comm.enabled"] = "true"; $0.levers.features["comm.cost"] = "16" }
+        s.toggleFeatureOverlay("structures", on: true, baseline: fromOverlays(["structures"]))
+        #expect(s.levers.features.values.isOn("structures.enabled") && s.levers.features["comm.cost"] == "16" && s.levers.features.values.isOn("comm.enabled"))
+        s.toggleFeatureOverlay("structures", on: false, baseline: FeatureLevers())
+        #expect(!s.levers.features.values.isOn("structures.enabled") && s.levers.features["comm.cost"] == "16" && s.overlayArguments.isEmpty)
     }
 
     @Test func choosingOverlaysResetsTheFeatureLevers() {
@@ -367,6 +385,28 @@ import Testing
         plain.sourceRun = "src"
         plain.levers.features["arms.enabled"] = "true"
         #expect(plain.validate(existingRuns: ["src"]).contains { $0.contains("arms.enabled") })
+    }
+
+    @Test func aForkOfAConfigThatUsesTheProtectionFloorIsNotRefused() throws {
+        // the engine allows key_floor 0 and shield_gain 1 with combat.protect_floor above 0 (arms.py, structures.py)
+        let json = #"{"combat": {"protect_floor": 0.1}, "arms": {"enabled": true, "key_floor": 0.0}, "structures": {"enabled": true, "shield_gain": 1.0}}"#
+        let levers = try Levers(configJSON: Data(json.utf8))
+        #expect(levers.features.values.protectFloor == 0.1 && levers.features.validate().isEmpty)
+        var s = RunSettings()
+        s.mode = .fork
+        s.name = "c"
+        s.sourceRun = "src"
+        s.seed = ""
+        s.levers = levers
+        s.leverBaseline = levers
+        #expect(s.validate(existingRuns: ["src"]).isEmpty && s.arguments(existingRuns: ["src"]) == ["run", "--init-from", "runs/src", "--out", "runs/c"])
+        // the same keys without the floor are still refused, here and in a new run (the floor is 0 there)
+        let bare = try Levers(configJSON: Data(#"{"arms": {"enabled": true, "key_floor": 0.0}}"#.utf8))
+        #expect(bare.features.validate().contains { $0.contains("protect_floor") })
+        var fresh = FeatureLevers()
+        fresh["structures.enabled"] = "true"
+        fresh["structures.shield_gain"] = "1"
+        #expect(fresh.validate().contains { $0.contains("protect_floor") })
     }
 
     @Test func aResumeHasNoLevers() {

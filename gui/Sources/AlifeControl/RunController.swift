@@ -124,6 +124,9 @@ final class RunController: ObservableObject {
 
     // Live status
     @Published private(set) var metrics: MetricsSnapshot?
+    /// The feature metrics last seen for `trackedFeaturesRun` (see `pollMetrics`).
+    private var featureMemory: [String: Double] = [:]
+    private var trackedFeaturesRun = ""
     @Published private(set) var director: DirectorSnapshot?
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var remaining: TimeInterval?
@@ -326,7 +329,7 @@ final class RunController: ObservableObject {
     func setFeatureOverlay(_ feature: String, on: Bool) {
         var chosen = settings.featureOverlays
         if on { chosen.insert(feature) } else { chosen.remove(feature) }
-        settings.selectFeatureOverlays(chosen, baseline: FeatureLevers.baseline(overlays: chosen, dims: settings.worldDims, repo: repoURL))
+        settings.toggleFeatureOverlay(feature, on: on, baseline: FeatureLevers.baseline(overlays: chosen, dims: settings.worldDims, repo: repoURL))
     }
 
     /// New run: reads the chosen preset's 3D values (the baseline of the 3D levers; a 2D preset has none) and, if they
@@ -715,7 +718,16 @@ final class RunController: ObservableObject {
             // Polls can overlap; never let an older read overwrite a newer one.
             guard poll > appliedPoll else { return }
             appliedPoll = poll
-            if metrics != snapshot { metrics = snapshot }
+            // The feature keys that only some rows carry (the heavy ones, or a mean that is null in an interval without attacks) keep their
+            // last value instead of vanishing from the readout.
+            var shown = snapshot
+            if var merged = shown, trackedFeaturesRun == run {
+                merged.features = featureMemory.merging(merged.features) { _, new in new }
+                shown = merged
+            }
+            trackedFeaturesRun = run
+            featureMemory = shown?.features ?? [:]
+            if metrics != shown { metrics = shown }
         }
     }
 

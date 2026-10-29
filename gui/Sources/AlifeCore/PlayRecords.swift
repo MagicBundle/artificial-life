@@ -1107,18 +1107,6 @@ package struct PlayCells: Equatable, Sendable {
 
     /// The approximate units `m` of a level for a cap: `(level - 1) · cap / 254`.
     package static func units(_ level: UInt8, cap: Int) -> Double { Double(max(Int(level) - 1, 0)) * Double(cap) / 254 }
-
-    /// The level of every cell of a column `(x, y)`, the largest over z, as an `nx × ny` image (row-major `[y][x]`, 0 where empty): the
-    /// column maximum the flat map draws.
-    package func columnMaximum() -> [UInt8] {
-        var image = [UInt8](repeating: 0, count: nx * ny)
-        for k in 0..<count {
-            let i = Int(indices[k])
-            let column = i % (nx * ny)
-            if levels[k] > image[column] { image[column] = levels[k] }
-        }
-        return image
-    }
 }
 
 // MARK: - FSIG
@@ -1284,6 +1272,9 @@ enum RecordDecoder {
     }
 
     private static func pad4(_ n: Int) -> Int { (n + 3) & ~3 }
+
+    /// The tags of the feature layers: cosmetic, so an inconsistent body is skipped and counted (`FrameDecoder.skippedBodies`).
+    static func isFeatureRecord(_ tag: String) -> Bool { tag == "STRC" || tag == "FSOL" || tag == "FSIG" }
 
     private static func malformed(_ tag: String, _ why: String) -> StreamError { .malformedRecord(tag: tag, why) }
 

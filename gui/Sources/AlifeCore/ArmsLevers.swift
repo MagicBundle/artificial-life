@@ -28,8 +28,8 @@ package enum ArmsLevers {
                      high: 1, gate: on),
             .decimal("arms.speed_slow", "0", "Armour slows", "Thrust factor 1 - speed_slow * ARM: the cost of armour in speed, 0 to 0.9.",
                      high: 0.9, gate: on),
-            .decimal("arms.upkeep_atk", "0", "Attack upkeep", "Quanta per step at attack 1, quadratic, below 32768.", high: 32767, gate: on),
-            .decimal("arms.upkeep_arm", "0", "Armour upkeep", "Quanta per step at armour 1, quadratic, below 32768.", high: 32767, gate: on),
+            .decimal("arms.upkeep_atk", "0", "Attack upkeep", "Quanta per step at attack 1, quadratic, below 32768.", high: 32768, highOpen: true, gate: on),
+            .decimal("arms.upkeep_arm", "0", "Armour upkeep", "Quanta per step at armour 1, quadratic, below 32768.", high: 32768, highOpen: true, gate: on),
             .decimal("arms.init_atk", "0", "Founders' attack", "Starting attack of founders and immigrants, 0 to 1.", high: 1, gate: on),
             .decimal("arms.init_arm", "0", "Founders' armour", "Starting armour of founders and immigrants, 0 to 1.", high: 1, gate: on),
             .decimal("arms.sigma", "0", "Trait mutation", "Fixed mutation step of the attack and armour magnitudes, 0 to 0.5.", high: 0.5, gate: on),
@@ -41,7 +41,7 @@ package enum ArmsLevers {
                kappa / (kappa + a0) > 0.9 {
                 errors.append("arms: kappa / (kappa + a0) must be at most 0.9 (no immunity).")
             }
-            if Parse.decimal(values["arms.key_floor"]) == 0 {
+            if Parse.decimal(values["arms.key_floor"]) == 0, !(values.protectFloor > 0) {
                 errors.append("arms.key_floor = 0 needs combat.protect_floor > 0, which is not a lever here (use the command line).")
             }
             return errors

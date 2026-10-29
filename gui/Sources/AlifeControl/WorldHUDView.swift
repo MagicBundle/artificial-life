@@ -401,7 +401,8 @@ struct WorldHUDView: View {
     /// The legend of the feature layers in view (`FeatureLegend`): a swatch and a name per row, stacked up from the left edge above the scale bar
     /// (above the height legend when that is shown too).
     private func drawFeatureLegend(above heightLegend: Bool, _ size: CGSize, _ context: inout GraphicsContext) {
-        let entries = FeatureLegend.entries(layers: play.store.layers, display: model.display, colourMode: model.currentColourMode)
+        let entries = FeatureLegend.entries(layers: play.store.layers, display: model.display, colourMode: model.currentColourMode,
+                                          globe: model.globeActive)
         guard !entries.isEmpty else { return }
         let bar = Self.legendBar(in: size)
         let rowHeight: CGFloat = 16

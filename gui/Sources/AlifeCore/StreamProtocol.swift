@@ -324,6 +324,12 @@ package struct FrameDecoder: Sendable {
     package private(set) var header: StreamHeader?
     /// Records of a known tag whose version this decoder does not know, skipped by length (§33.1).
     package private(set) var skippedVersions = 0
+    /// Records of the feature layers (`STRC`, `FSOL`, `FSIG`) whose body contradicted itself or the header, skipped by their (checked) length and
+    /// counted, with the newest reason: their data is cosmetic, so a writer's mistake there does not end the session as it does for the
+    /// records the game stands on (DESIGN §45.2). A length that disagrees with the counts stays fatal.
+    package private(set) var skippedBodies = 0
+    package private(set) var lastSkippedBody: String?
+    private var bodySkipped = false
 
     package init() {}
 
@@ -390,6 +396,12 @@ package struct FrameDecoder: Sendable {
             if let prefix = RecordDecoder.prefixBytes(tag) {
                 guard let record = try parsePlayRecord(tag, length: length, prefix: prefix, header: header) else {
                     if skipping != nil { continue }  // a version this decoder does not know: skipped by length
+                    if bodySkipped {  // a feature record whose body is inconsistent: its length was checked, so it is skipped whole
+                        bodySkipped = false
+                        events.append(.unknownRecord(tag: tag, length: length))
+                        head += 8 + length
+                        continue
+                    }
                     return
                 }
                 events.append(.record(record))
@@ -443,8 +455,15 @@ package struct FrameDecoder: Sendable {
         }
         guard length == expected else { throw StreamError.lengthMismatch(tag: tag, declared: length, expected: expected) }
         guard available >= 8 + length else { return nil }
-        return try buffer.withUnsafeBytes {
-            try RecordDecoder.decode(tag, ByteReader(raw: $0, start: head + 8), header: header)
+        do {
+            return try buffer.withUnsafeBytes {
+                try RecordDecoder.decode(tag, ByteReader(raw: $0, start: head + 8), header: header)
+            }
+        } catch StreamError.malformedRecord(let tag, let why) where RecordDecoder.isFeatureRecord(tag) {
+            skippedBodies += 1
+            lastSkippedBody = "\(tag): \(why)"
+            bodySkipped = true
+            return nil
         }
     }
 

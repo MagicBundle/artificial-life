@@ -393,6 +393,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         var winds: (any MTLTexture)?
     }
 
+    /// The faces of one layer of cells as a buffer set holds them.
+    private struct CellFaces {
+        var codes: (any MTLBuffer)?
+        var levels: (any MTLBuffer)?
+        var count = 0
+        var serial = -1
+    }
+
     /// What a buffer set holds for the world pass: the alive-only arrays of the frame, the current and previous weather map
     /// (the serials of the deliveries they hold), and the territory.
     private final class WorldSlot {
@@ -407,14 +415,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         var previousSerial = -1
         var territory: (any MTLTexture)?
         var territorySerial = -1
-        /// The bond flow, one int8 per bond (frame serial as `bonds`), and the cells of the material and the soil: indices and levels.
+        /// The bond flow, one int8 per bond (frame serial as `bonds`), and the exposed faces of the cells of the material and the soil
+        /// (`PlayCells.exposedFaces`: a code and a level per face) with the delivery they were made from.
         var flow: (any MTLBuffer)?
-        var materialIndex: (any MTLBuffer)?
-        var materialLevel: (any MTLBuffer)?
-        var materialSerial = -1
-        var soilIndex: (any MTLBuffer)?
-        var soilLevel: (any MTLBuffer)?
-        var soilSerial = -1
+        var material = CellFaces()
+        var soil = CellFaces()
         /// The organism glow's grid (r8, `GlowHistogram.cells` on a side) and the frame it was binned from.
         var glow: (any MTLTexture)?
         var glowSerial = -1
@@ -573,6 +578,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         playMaterialSerial = -1
         playSoil = nil
         playSoilSerial = -1
+        // (a new stream numbers its deliveries from 1 again: a slot that holds an old world's cells must not mistake them for the new ones)
+        for slot in slots {
+            slot.world.material.serial = -1
+            slot.world.soil.serial = -1
+            slot.world.material.count = 0
+            slot.world.soil.count = 0
+        }
         frameStep = nil
     }
 
@@ -1051,22 +1063,19 @@ final class Renderer: NSObject, MTKViewDelegate {
         encodeInset(into: encoder, slot: slot, size: size, uniforms: u, bindMapTextures: bindMapTextures, setWorld: setWorld)
     }
 
-    /// The cells of the material and the soil, one instance per listed cell: a tile in 2D (six vertices), a cube in 3D (36), blended, tested
-    /// against the depth of what is drawn and not written.
+    /// The cells of the material and the soil, one instance per exposed face (`PlayCells.exposedFaces`): a tile in 2D, the faces of a cube
+    /// that touch an empty cell in 3D, six vertices each, blended, tested against the depth of what is drawn and not written.
     private func encodeCells(into encoder: any MTLRenderCommandEncoder, slot: Slot, header: StreamHeader, uniforms u: inout WorldUniforms,
                              setWorld: (inout WorldUniforms) -> Void) {
         let cube = header.dims == 3
-        let layers: [(cells: PlayCells?, on: Bool, index: (any MTLBuffer)?, level: (any MTLBuffer)?, serial: Int, grid: PlayHeader.CellGrid?,
-                      colour: SIMD3<Float>)] = [
-            (playMaterial, worldDraw.display.structures, slot.world.materialIndex, slot.world.materialLevel, slot.world.materialSerial,
-             header.play?.structures, CellLook.structures),
-            (playSoil, worldDraw.display.soil, slot.world.soilIndex, slot.world.soilLevel, slot.world.soilSerial, header.play?.niche,
-             CellLook.soil),
+        let layers: [(cells: PlayCells?, on: Bool, faces: CellFaces, grid: PlayHeader.CellGrid?, colour: SIMD3<Float>)] = [
+            (playMaterial, worldDraw.display.structures, slot.world.material, header.play?.structures, CellLook.structures),
+            (playSoil, worldDraw.display.soil, slot.world.soil, header.play?.niche, CellLook.soil),
         ]
         var bound = false
         for layer in layers {
-            guard layer.on, let cells = layer.cells, cells.count > 0, let grid = layer.grid, let index = layer.index,
-                  let level = layer.level else { continue }
+            guard layer.on, let cells = layer.cells, layer.faces.count > 0, let grid = layer.grid, let index = layer.faces.codes,
+                  let level = layer.faces.levels else { continue }
             if !bound {
                 encoder.setDepthStencilState(overlayDepth)
                 encoder.setRenderPipelineState(cellPipeline)
@@ -1077,7 +1086,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setVertexBytes(&constants, length: MemoryLayout<CellUniforms>.stride, index: 6)
             encoder.setVertexBuffer(index, offset: 0, index: 2)
             encoder.setVertexBuffer(level, offset: 0, index: 3)
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: cube ? 36 : 6, instanceCount: cells.count)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: layer.faces.count)
         }
     }
 
@@ -1171,17 +1180,12 @@ final class Renderer: NSObject, MTKViewDelegate {
             if let flow = frame.flow, !copy(flow, into: &w.flow, slack: true) { throw Failure.allocation("the bond flow buffer") }
             w.frameSerial = playFrameSerial
         }
-        if let cells = playMaterial, w.materialSerial != playMaterialSerial {
-            guard copy(cells.indices, into: &w.materialIndex, slack: true), copy(cells.levels, into: &w.materialLevel, slack: true) else {
-                throw Failure.allocation("the material buffers")
-            }
-            w.materialSerial = playMaterialSerial
+        let flat = header?.dims != 3
+        if let cells = playMaterial, w.material.serial != playMaterialSerial {
+            try upload(cells, serial: playMaterialSerial, flat: flat, into: &w.material)
         }
-        if let cells = playSoil, w.soilSerial != playSoilSerial {
-            guard copy(cells.indices, into: &w.soilIndex, slack: true), copy(cells.levels, into: &w.soilLevel, slack: true) else {
-                throw Failure.allocation("the soil buffers")
-            }
-            w.soilSerial = playSoilSerial
+        if let cells = playSoil, w.soil.serial != playSoilSerial {
+            try upload(cells, serial: playSoilSerial, flat: flat, into: &w.soil)
         }
         // The organism glow: the alive rows binned (0.1 ms), only while the globe path is in use.
         if let frame = playFrame, worldDraw.vantage != nil, worldDraw.glow, w.glowSerial != playFrameSerial, let size = header?.size {
@@ -1234,6 +1238,17 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
             w.territorySerial = playTerritorySerial
         }
+    }
+
+    /// Makes the exposed faces of one delivery of a layer of cells and writes them into `faces`. The shared cells of a wall are not drawn,
+    /// so the vertex count scales with the surface of the material, not with its cells (DESIGN §45.3).
+    private func upload(_ cells: PlayCells, serial: Int, flat: Bool, into faces: inout CellFaces) throws {
+        let made = cells.exposedFaces(flat: flat)
+        guard copy(made.codes, into: &faces.codes, slack: true), copy(made.levels, into: &faces.levels, slack: true) else {
+            throw Failure.allocation("the cell buffers")
+        }
+        faces.count = made.codes.count
+        faces.serial = serial
     }
 
     /// Writes one delivery of the weather map into `textures`, creating them for its size on first use.

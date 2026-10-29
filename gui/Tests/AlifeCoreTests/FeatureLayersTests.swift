@@ -99,10 +99,62 @@ import Testing
         #expect(material.level(atX: .nan, y: 0, z: 0, cell: 4) == 0 && material.level(atX: 1, y: 1, z: 1, cell: 0) == 0)
     }
 
-    @Test func theColumnMaximumIsWhatTheFlatMapDraws() throws {
-        let store = try featureStore(material: [(2, 3, 1, 90), (2, 3, 4, 200), (7, 0, 0, 5)])
-        let image = try #require(store.material).columnMaximum()
-        #expect(image[3 * 12 + 2] == 200 && image[0 * 12 + 7] == 5 && image.filter { $0 > 0 }.count == 2)
+    @Test func onlyTheFacesThatTouchAnEmptyCellAreListed() {
+        func cells(_ list: [(Int, Int, Int)], nx: Int = 8, ny: Int = 8, nz: Int = 4) -> PlayCells {
+            let sorted = list.sorted { ($0.2 * ny + $0.1) * nx + $0.0 < ($1.2 * ny + $1.1) * nx + $1.0 }
+            return PlayCells(head: head, nx: nx, ny: ny, nz: nz, indices: sorted.map { UInt32(($0.2 * ny + $0.1) * nx + $0.0) },
+                             levels: sorted.indices.map { UInt8($0 + 1) })
+        }
+        func faces(_ c: PlayCells) -> [Int] { c.exposedFaces(flat: false).codes.map { Int($0 & 7) }.sorted() }
+        #expect(faces(cells([(3, 3, 1)])) == [0, 1, 2, 3, 4, 5], "a lone cube shows all six faces")
+        let cellIndex = UInt32((1 * 8 + 3) * 8 + 3)
+        #expect(cells([(3, 3, 1)]).exposedFaces(flat: false).codes.allSatisfy { $0 >> 3 == cellIndex }, "a code carries its cell")
+        #expect(faces(cells([(3, 3, 1), (4, 3, 1)])).count == 10, "two neighbours share a face that neither draws")
+        #expect(faces(cells([(0, 2, 1), (7, 2, 1)])).count == 10, "x wraps: the first and last cell of a row are neighbours")
+        #expect(faces(cells([(2, 0, 1), (2, 7, 1)])).count == 10, "y wraps")
+        #expect(faces(cells([(2, 2, 0), (2, 2, 3)])).count == 12, "z does not: the floor and the ceiling stay exposed, far cells are not neighbours")
+        #expect(faces(cells([(2, 2, 0)])).contains(4), "the face on the floor is listed")
+        // a solid 2 x 2 x 2 block has 24 faces on its surface and 24 shared inside it
+        let corners: [(Int, Int, Int)] = (0..<8).map { (3 + ($0 & 1), 3 + (($0 >> 1) & 1), 1 + (($0 >> 2) & 1)) }
+        let block = cells(corners)
+        #expect(block.count == 8 && block.exposedFaces(flat: false).codes.count == 24)
+        // each face carries the level of its cell
+        let two = cells([(3, 3, 1), (6, 6, 2)]).exposedFaces(flat: false)
+        #expect(Set(two.levels) == [1, 2] && two.levels.filter { $0 == 1 }.count == 6)
+        // a flat (2D) layer is one tile per cell
+        let flat = cells([(3, 3, 0), (4, 3, 0)], nz: 1).exposedFaces(flat: true)
+        #expect(flat.codes.map { $0 & 7 } == [4, 4] && flat.levels == [1, 2])
+    }
+
+    @Test func theSparseWayAgreesWithTheBitmap() {
+        var indices: Set<UInt32> = []
+        var state: UInt64 = 12345
+        while indices.count < 100 {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            indices.insert(UInt32((state >> 33) % (6 * 6 * 5)))
+        }
+        let sorted = indices.sorted()
+        let cells = PlayCells(head: head, nx: 6, ny: 6, nz: 5, indices: sorted, levels: sorted.map { UInt8(truncatingIfNeeded: $0 % 255 + 1) })
+        let dense = cells.exposedFaces(flat: false), sparse = cells.exposedFaces(flat: false, bitmapLimit: 0)
+        #expect(dense.codes == sparse.codes && dense.levels == sparse.levels && !dense.codes.isEmpty)
+    }
+
+    @Test func aWallsSurfaceNotItsCellsSetsTheVertexCount() {
+        // 40 x 40 x 10 solid slab in an 80 x 80 x 20 grid: 16 000 cells, 3 200 + 3 200 faces on the two big sides and the edges
+        let n = 80
+        var indices: [UInt32] = []
+        for z in 0..<10 { for y in 0..<40 { for x in 0..<40 { indices.append(UInt32((z * n + y) * n + x)) } } }
+        let slab = PlayCells(head: head, nx: n, ny: n, nz: 20, indices: indices, levels: [UInt8](repeating: 200, count: indices.count))
+        let faces = slab.exposedFaces(flat: false).codes.count
+        #expect(faces == 2 * 40 * 40 + 4 * 40 * 10, "top, floor and four sides: \(faces) faces for \(indices.count) cells")
+        #expect(faces * 6 < indices.count * 36 / 4, "a fraction of the 36 vertices a cell used to cost")
+    }
+
+    @Test func aHugeFinitePositionDoesNotTrap() throws {
+        let store = try featureStore(material: [(1, 1, 1, 9)])
+        let material = try #require(store.material)
+        #expect(material.level(atX: 1e30, y: -1e30, z: 3e38, cell: 4) <= 255)
+        #expect(material.level(atX: Float.greatestFiniteMagnitude, y: 0, z: 0, cell: 1e-30) <= 255)
     }
 
     // MARK: The inspector
@@ -183,7 +235,7 @@ import Testing
 
     @Test func theWordsOfACell() {
         #expect(FeatureWords.cellText(level: 255, cap: 4096) == "100% of the cap (about 4096 units)")
-        #expect(FeatureWords.cellText(level: 1, cap: 4096) == "0% of the cap (about 0 units)")
+        #expect(FeatureWords.cellText(level: 1, cap: 4096) == "under 1% of the cap (about 0 units)")
         #expect(FeatureWords.role(forColour: 0x0072B2) == "Guard" && FeatureWords.role(forColour: 0xCC79A7) == "Germ")
         #expect(FeatureWords.role(forColour: 0xFF0000) == nil && FeatureWords.role(forColour: 0xFF0072B2) == "Guard")
     }
@@ -197,6 +249,8 @@ import Testing
         #expect(all == ["Generalist", "Forager", "Guard", "Germ", "Built material", "Farmed soil", "Bond: gives", "Bond: receives"])
         #expect(FeatureLegend.entries(layers: layers, display: display, colourMode: "tag").map(\.title)
             == ["Built material", "Farmed soil", "Bond: gives", "Bond: receives"], "the roles only in the role mode")
+        #expect(FeatureLegend.entries(layers: layers, display: display, colourMode: "tag", globe: true).map(\.title)
+            == ["Bond: gives", "Bond: receives"], "no swatch for what the globe does not draw")
         display.structures = false
         display.soil = false
         display.bonds = false

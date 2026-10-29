@@ -49,6 +49,10 @@ private struct FeatureLeverBox: View {
                     Text("Pre-filled from the source run. The switches and the layout keys are fixed in a fork (`alife migrate` changes a layout).")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                ForEach(features.notes(worldDims: settings.worldDims).filter { $0.hasPrefix("niche.") == (group.feature == "niche") },
+                        id: \.self) { note in
+                    Label(note, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                }
                 ForEach(group.specs) { spec in
                     row(spec)
                 }

@@ -40,7 +40,7 @@ package enum StructuresLevers {
                cost * rate >= 1 << 20 {
                 errors.append("structures.build_cost x structures.build_max must be below 1048576.")
             }
-            if Parse.decimal(values["structures.shield_gain"]) == 1 {
+            if Parse.decimal(values["structures.shield_gain"]) == 1, !(values.protectFloor > 0) {
                 errors.append("structures.shield_gain = 1 needs combat.protect_floor > 0, which is not a lever here (use the command line).")
             }
             return errors

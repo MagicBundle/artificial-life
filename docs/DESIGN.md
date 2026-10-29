@@ -13705,8 +13705,7 @@ otherwise, and `setArguments(baseline:)` passes `--set key=value` for the effect
 passed for a feature that is off, and a baseline that had a feature on is taken back to the defaults when the new run switches it off. A `decimal` value is passed as the
 engine's float (`2.0`), an `integer` as an integer, a `flag` as `true` or `false`. **Validation** (`FeatureLevers.validate`) checks each live row against the engine's range
 and the rules across keys the engine states and the GUI can know: `kappa / (kappa + a0) <= 0.9`, `build_cost x build_max < 2^20`, `comm.cost x comm.width < 2^15`,
-`niche.farm_cost x farm_rate < 2^20`, `farm_cap x farm_decay_q16 <= 2^30`, and `key_floor = 0` and `shield_gain = 1` refused because they need `combat.protect_floor`, which
-is not a lever. Rules that need the world (the int32 headroom of `cap` over the lattice, `comm.range` against the sensing radius, `harvest_max` against `forage_gain`) are the
+`niche.farm_cost x farm_rate < 2^20`, `farm_cap x farm_decay_q16 <= 2^30`, and `key_floor = 0` and `shield_gain = 1` refused unless `combat.protect_floor` is above 0, which is not a lever and is read from a fork's source config (`FeatureValues.protectFloor`; 0 for a new run), so a fork of such a run is not refused. Rules that need the world (the int32 headroom of `cap` over the lattice, `comm.range` against the sensing radius, `harvest_max` against `forage_gain`) are the
 engine's, and its refusal (exit 2) is in the log.
 
 *Layout.* `enabled`, `comm.width`, `niche.farm`, `roles.enabled` and the bond block (`bonds.share_mode` 0 against not 0, with the roles) fix the brain layout and the state
@@ -13716,10 +13715,10 @@ migrate`; `bonds.share_mode` may move between 1 and 2. A **resume** has no lever
 *Overlays.* A **new run** may start from the overlay files `build` (structures), `bonds`, `comm`, `niche` (`niche3d` when the preset is 3D; farming's cost scales with the
 regrowth): `RunSettings.featureOverlays` adds `--overlay NAME` (after `fast`, in the order of the table), and `FeatureLevers.baseline(overlays:dims:repo:)` reads the overlay
 files with `PresetFile` (which now reads booleans) over the defaults, so the levers are pre-filled with the overlay's values and only the difference from them is passed.
-Choosing an overlay resets the feature levers (as choosing a preset resets the 3D levers). The arms layer has no overlay file: its levers are the way in.
+Choosing a feature's overlay resets that feature's levers to the overlay's values and keeps the other features' edits (a change of preset, hence of dimensions, re-reads every overlay). An advisory note (not an error) warns when farming is on in a 3D world at a cost under 100 (`FeatureLevers.notes`). The arms layer has no overlay file: its levers are the way in.
 
 *Fork pre-fill.* `Levers(configJSON:)` reads the feature keys from a run's `config.json` (the engine omits a default from it, so an old run reads as all defaults); a value of
-the wrong type is a `LeverConfigError`, as for the other keys. The status readout lists the numeric keys of the newest metrics row with the feature prefixes
+the wrong type is a `LeverConfigError`, as for the other keys. The status readout lists the numeric keys of the newest metrics rows with the feature prefixes (a key that only some rows carry keeps its last value)
 (`MetricsSnapshot.features`, `FeatureMetrics`): `arms_`, `build_`, `bond_`, `comm_`, `farm_`, one disclosure per feature. There is no chart: the app has no history of
 metrics rows (deferred).
 
@@ -13728,10 +13727,12 @@ metrics rows (deferred).
 `FrameDecoder` decodes three more tags (version 1, latest-wins like `FOCS`), and a record of any other tag, or of another version of these, is still skipped by its length (the
 version skip is counted):
 
-| tag | body after the 16-byte head | refused when |
+| tag | body after the 16-byte head | skipped and counted when (the record's length is checked first) |
 |---|---|---|
-| `STRC`, `FSOL` | `u16 nx, ny, nz, flags; u32 count; count x u32 idx; count x u8 level`, padded to 4 | `count` over 65 536 (refused from the prefix, before the payload is waited for); the grid is not the header's `FG` and `FZ`; the body flags differ from the head's; `FLAG_TRUNC` with fewer than 65 536 cells; an index that does not ascend or is outside the grid; a level of 0; a padding byte that is not 0 |
-| `FSIG` | `i64 uid; u8 W; u8 flags; u16 audible; W x u8 says; W x u8 hears`, padded to 4 | `W` outside 1 to 8 or unlike `play.comm.w`; `hears` or `audible` not 0 with bit 0 clear; padding not 0 |
+| `STRC`, `FSOL` | `u16 nx, ny, nz, flags; u32 count; count x u32 idx; count x u8 level`, padded to 4 | the grid is not the header's `FG` and `FZ`; the body flags differ from the head's; `FLAG_TRUNC` with fewer than 65 536 cells; an index that does not ascend or is outside the grid; a level of 0; a padding byte that is not 0 |
+| `FSIG` | `i64 uid; u8 W; u8 flags; u16 audible; W x u8 says; W x u8 hears`, padded to 4 | `W` unlike `play.comm.w`; `hears` or `audible` not 0 with bit 0 clear; padding not 0 |
+
+The three tags are cosmetic, so a record whose body contradicts itself or the header is **skipped by its length and counted** (`FrameDecoder.skippedBodies`, `lastSkippedBody`; an `unknownRecord` event) and the session goes on, where every other tag ends it on an inconsistency. What stays fatal is what the length depends on: a `count` over 65 536 or a `W` outside 1 to 8 (refused from the prefix, before the payload is waited for) and a length that is not the one the count says.
 
 `level = 1 + (254 m) // cap`, so `m = (level - 1) cap / 254` to within a step (`PlayCells.units`) and the opacity is `level / 255`; the record is the whole layer, an empty one
 clears it. **`FRMA` and the bond flow:** the length of an `FRMA` is read from its head flag, not fixed: with `FLAG_BONDFLOW` (bit 1) `4 ceil(k / 4)` bytes follow the bond pairs, one
@@ -13744,14 +13745,14 @@ int8 per bond (`PlayFrame.flow`, from the lower listed row to the higher, `round
 ### 45.3 What the World shows
 
 *The cells* (`STRC`, `FSOL`): one new pipeline (`cellVertex`, blended, depth tested and not written, no new texture) draws one instance per listed cell, placed at its minimum image
-against the camera target as the agents are: a **tile** of the cell on the floor in 2D (six vertices, under the agents, after the weather map) and a **cube** of side `field_cell` in
-3D (36 vertices, after the opaque agents, before the frame). The opacity is affine in the level (`CellLook`: tile `0.18 + 0.60 l/255`, cube `0.06 + 0.34 l/255`, so a decaying wall
-visibly thins and piled cubes do not saturate), the colours warm grey for the material and green for the soil, at most 65 536 instances. They are not drawn on the globe path
+against the camera target as the agents are: an instance is one **exposed face** (`PlayCells.exposedFaces`, made once per delivery: the faces of a listed cell whose neighbour across it is empty, x and y wrapping, the floor and ceiling exposed), six vertices: a **tile** on the floor in 2D (under the agents, after the weather map) and the faces of a **cube** of side `field_cell` in
+3D (after the opaque agents, before the frame), so the vertex count scales with the surface of the material and not with its cells. The opacity is affine in the level (`CellLook`: tile `0.18 + 0.60 l/255`, cube `0.06 + 0.34 l/255`, so a decaying wall
+visibly thins and piled cubes do not saturate), the colours warm grey for the material and green for the soil, at most 65 536 cells a layer. Cost, measured (`GPUFeatureLayerTests.aFullSizeRecordCostsLittle`, M5 Pro, 64k3d lattice 80 x 80 x 20, 1600 x 1000 offscreen with readback, 6.1 ms empty): two 65 536-cell layers as a solid slab each add 0.6 ms (25 924 faces), a slab and a checkerboard 5.3 ms (397 000 faces), and two checkerboards, the worst case for the surface (768 000 faces, 4.6 M vertices), 5.8 ms; building the faces takes 19 to 32 ms in a debug build, once per delivery. They are not drawn on the globe path
 (deferred; the globe is off by default) or on the minimap. *The bond flow:* with the flag the world pass binds the int8 buffer and the bond vertex shader (bit 4 of the world flags)
 tints the half that gives (the lower row's half when the flow is positive) towards orange and the half that receives towards cyan by `0.25 + 0.75 |f|` (`BondFlowLook`); a bond
 with no flow keeps the colours of its agents. *Display:* `WorldDisplay.structures`, `.soil` and `.bondFlow` (on; not persisted), the View menu items "Structures (5)", "Soil (6)" and
 "Bond flow" (listed only for a world that carries the layer: `FeatureLayers(header:)`), keys `5` and `6` (`4` stays the Lab's field key, which the World leaves unbound), and a legend over the map (`FeatureLegend`: the four roles in the `role`
-mode, a swatch for each drawn layer, and the two halves of a bond). *The inspector* (`Inspector.addFeatureRows`) adds, for the focused organism, "Role" (read from the colour the
+mode, a swatch for each layer that is drawn, none for the cells on the globe path, and the two halves of a bond). *The inspector* (`Inspector.addFeatureRows`) adds, for the focused organism, "Role" (read from the colour the
 world painted, in the `role` mode; a note says to switch to it otherwise), "Bond flow" (the net quanta per step over its bonds, from the stored flows and `play.bonds.scale`),
 "Built here" and "Soil here" (the cell under it, as a share of the cap and approximate units), and a **voice panel** (`VoicePanel`, `VoiceBarsView`): W bars of what it says, W of
 what it hears and the number of neighbours in earshot, only for the organism the newest `FOCS` follows, and the spoken half alone when bit 0 of the record is clear.

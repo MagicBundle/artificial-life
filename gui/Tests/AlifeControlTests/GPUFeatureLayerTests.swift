@@ -149,4 +149,101 @@ struct GPUFeatureLayerTests {
         let left = plain.pixel(try pixel(of: SIMD3(19, 24, 6), camera: camera, image: plain).x, try pixel(of: SIMD3(19, 24, 6), camera: camera, image: plain).y)
         #expect(!(left.r > 200 && left.b < 80), "no orange without a flow: \(left)")
     }
+
+    // MARK: Wrap, restart and cost
+
+    @Test func aCellAcrossTheSeamIsDrawnAtItsMinimumImage() throws {
+        let (renderer, header) = try scene("2d")
+        // the last cell of a row (x 44 to 48) with the camera target just past the seam: the cell is drawn left of the target, at x 44 - 48
+        renderer.showWorld(material: cells(header, [(11, 5, 0)], level: 255), serial: 1)
+        var camera = Camera.world(for: header, aspect: 1)
+        camera.target = SIMD3(1, 22, 0)
+        renderer.camera = camera
+        let image = try render(renderer, "feature-2d-seam")
+        let near = try pixel(of: SIMD3(-2, 22, 0), camera: camera, image: image)
+        #expect(!isBackground(image.pixel(near.x, near.y)), "drawn at its minimum image")
+        let far = try pixel(of: SIMD3(46, 22, 0), camera: camera, image: image)
+        #expect(far.x >= image.width || far.x < 0 || isBackground(image.pixel(far.x, far.y)), "and not at the other image")
+    }
+
+    @Test func aNewWorldDoesNotShowTheOldOnesCells() throws {
+        let (renderer, header) = try scene("2d")
+        renderer.showWorld(material: cells(header, [(5, 5, 0)], level: 255), serial: 1)
+        let first = try render(renderer, "feature-restart-old")
+        let at = try pixel(of: centre(header, (5, 5, 0)), camera: renderer.camera, image: first)
+        #expect(!isBackground(first.pixel(at.x, at.y)))
+        // the next world numbers its deliveries from 1 again, and has not sent a layer yet
+        renderer.configureWorld(header: header)
+        renderer.camera = Camera.world(for: header, aspect: 1)
+        var display = renderer.worldDraw.display
+        display.agents = false
+        renderer.worldDraw.display = display
+        let second = try render(renderer, "feature-restart-new")
+        #expect(isBackground(second.pixel(at.x, at.y)), "nothing is drawn until the new world sends its own")
+        // and its own first delivery (serial 1 again) is drawn
+        renderer.showWorld(material: cells(header, [(9, 9, 0)], level: 255), serial: 1)
+        let third = try render(renderer, "feature-restart-third")
+        let there = try pixel(of: centre(header, (9, 9, 0)), camera: renderer.camera, image: third)
+        #expect(!isBackground(third.pixel(there.x, there.y)) && isBackground(third.pixel(at.x, at.y)))
+    }
+
+    /// The `64k3d` lattice (80 x 80 x 20 cells of 4, the world 320 x 320 x 80) and 65 536 cells in each of the two layers: a solid slab, and
+    /// a checkerboard, which is the worst case for the surface (every cell shows all six faces). Prints the cost of a frame.
+    @Test func aFullSizeRecordCostsLittle() throws {
+        let (renderer, base) = try scene("3d")
+        var header = base
+        header.size = 320
+        header.height = 80
+        header.fieldGrid = 80
+        header.fieldLayers = 20
+        header.fieldCell = 4
+        header.play?.structures = PlayHeader.CellGrid(enabled: true, cap: 4096, cells: [20, 80, 80], cell: 4)
+        header.play?.niche = PlayHeader.CellGrid(enabled: true, farm: true, cap: 4095, cells: [20, 80, 80], cell: 4)
+        renderer.configureWorld(header: header)
+        var camera = Camera(target: SIMD3(160, 160, 20), distance: 330, yaw: .pi / 4, pitch: 0.7)
+        camera.scene = Camera.patchScene(center: SIMD2(160, 160), size: 320, height: 80)
+        renderer.camera = camera
+        renderer.worldDraw.level = .region
+        var display = WorldDisplay()
+        (display.frame, display.map, display.agents, display.bonds, display.territory) = (false, false, false, false, .off)
+        renderer.worldDraw.display = display
+
+        func record(_ keep: (Int, Int, Int) -> Bool, limit: Int = 65536) -> PlayCells {
+            var indices: [UInt32] = []
+            outer: for z in 0..<20 { for y in 0..<80 { for x in 0..<80 where keep(x, y, z) {
+                if indices.count == limit { break outer }
+                indices.append(UInt32((z * 80 + y) * 80 + x))
+            } } }
+            return PlayCells(head: RecordHead(step: 1, seq: 0, version: 1, flags: 0), nx: 80, ny: 80, nz: 20, indices: indices,
+                             levels: [UInt8](repeating: 200, count: indices.count))
+        }
+        let slab = record { _, _, z in z < 11 }
+        let checker = record { x, y, z in (x + y + z) % 2 == 0 }
+        #expect(slab.count == 65536 && checker.count == 64000)
+
+        func frameMilliseconds(_ frames: Int = 60) throws -> Double {
+            _ = try renderer.renderOffscreen(width: 1600, height: 1000)  // warm up
+            let start = DispatchTime.now().uptimeNanoseconds
+            for _ in 0..<frames { _ = try renderer.renderOffscreen(width: 1600, height: 1000) }
+            return Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6 / Double(frames)
+        }
+        let empty = min(try frameMilliseconds(), try frameMilliseconds())
+        var report = ["empty \(String(format: "%.2f", empty)) ms"]
+        var worst = 0.0
+        var serial = 0
+        let one = record({ x, y, z in x == 5 && y == 5 && z == 5 }, limit: 1)
+        for (name, material, soil) in [("one cell + one cell", one, one), ("slab + checker", slab, checker), ("checker + checker", checker, checker), ("slab + slab", slab, slab)] {
+            serial += 1  // (a delivery is told by its serial: it must change)
+            renderer.showWorld(material: material, serial: serial)
+            renderer.showWorld(soil: soil, serial: serial)
+            let built = DispatchTime.now().uptimeNanoseconds
+            let faces = material.exposedFaces(flat: false).codes.count + soil.exposedFaces(flat: false).codes.count
+            let buildMs = Double(DispatchTime.now().uptimeNanoseconds - built) / 1e6
+            let ms = min(try frameMilliseconds(), try frameMilliseconds())
+            report.append("\(name): \(faces) faces (\(6 * faces) vertices), faces built in \(String(format: "%.1f", buildMs)) ms, frame \(String(format: "%.2f", ms)) ms")
+            worst = max(worst, ms - empty)
+        }
+        print("GPUFeatureLayerTests cost (1600 x 1000, offscreen with readback, M-series): " + report.joined(separator: "; "))
+        #expect(worst < 8, "the marginal cost of two full layers is a fraction of a 60 Hz frame: \(worst) ms")
+    }
 }

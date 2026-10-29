@@ -206,6 +206,9 @@ extension Levers {
         if let t = try decimalText("mutation", "buoy_init") { world3D.buoyInit = t }
         if let t = try decimalText("mutation", "buoy_sigma") { world3D.buoySigma = t }
 
+        // `combat.protect_floor` is not a lever, but the engine allows `arms.key_floor = 0` and `structures.shield_gain = 1` only above 0.
+        if let t = try decimalText("combat", "protect_floor"), let v = Double(t) { features.values.protectFloor = v }
+
         // The feature layers (DESIGN §45): a run from before them, or with them off, lacks these keys (the engine omits a default
         // from config.json) and gets the defaults.
         try feature("arms", "enabled")
@@ -359,6 +362,15 @@ package struct RunSettings: Equatable {
         featureOverlays = features
         featureBaseline = baseline
         levers.features = baseline
+    }
+
+    /// Switches one feature's overlay on or off: only that feature's levers go to the new baseline's values; the edits of the other features
+    /// are kept (their overlays' values are not changed by this one).
+    package mutating func toggleFeatureOverlay(_ feature: String, on: Bool, baseline: FeatureLevers) {
+        if on { featureOverlays.insert(feature) } else { featureOverlays.remove(feature) }
+        featureBaseline = baseline
+        guard let group = FeatureLevers.group(feature) else { return }
+        for spec in group.specs { levers.features[spec.key] = baseline[spec.key] }
     }
 
     /// The world's dimensions: the preset's for a new run, the source's for a fork. Never a lever. Whatever
