@@ -496,6 +496,8 @@ def test_the_world_keys_are_the_documented_ones() -> None:
         "1": "toggleAgents",
         "2": "toggleBonds",
         "3": "cycleTerritory",
+        "4": "toggleStructures",
+        "5": "toggleSoil",
         "f": "followSelection",
         "[": "slower",
         "]": "faster",

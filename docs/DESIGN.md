@@ -13514,6 +13514,88 @@ The suite asks, for each of five engine features (arms races, built structures, 
 
 `FRAMES_VERSION` 1, `PANEL_VERSION` 1, `PREREG_VERSION` 1; `tau` 100, `fine_tau` 5, `fine_groups` 8, `fine_max` 250, `MAX_LEAD` 50 000; EP `cell` 8 and `tau` 100 (calibrated); 16 blocks (window endpoints; 8 x 10 000 for run-level ones); alpha 0.05, BH q 0.10, widening at |r1| 0.3; stationarity threshold, MODES codebook and thresholds, braid window and the noise floors (all None in `default_prereg` until E7). Every threshold is provisional until the calibration run.
 
+## 45. The five feature layers in the GUI (arms, structures, bonds and roles, comm, farming)
+
+The GUI's share of the feature series (§38 to §43; the observer PR that writes the records is `docs/DESIGN.md` §38.9, §39.8, §40.6, §41.6, §42.6 and the wire contract it
+kept in step with the code). Swift only: nothing under `src/alife/` changes, and a world with none of the five features has the argument lists, the stream bytes and the
+pictures it had.
+
+### 45.1 Levers (`gui/Sources/AlifeCore/FeatureLevers.swift` and `<Feature>Levers.swift`)
+
+One table per feature, one row per key of `ext/<feature>.py`'s `lever_keys` less its `cli_only_keys`: `ArmsLevers` (11 keys: `enabled`, `kappa`, `a0`, `key_floor`,
+`speed_slow`, `upkeep_atk`, `upkeep_arm`, `init_atk`, `init_arm`, `sigma`, `sigma_phase`), `StructuresLevers` (12; `silent_build` is command-line only), `BondsLevers` (13:
+`bonds.share_mode`, `share_kappa`, `share_kin_floor` and the ten `roles.*`), `CommLevers` (6; `control` is command-line only) and `NicheLevers` (6; `silent_init` and
+`control` are command-line only). A row (`FeatureLeverSpec`) states the key, the default as text, the title and help, the kind (`flag`, `decimal` with its closed or open
+bounds, `integer`, `options`), its **gate** and whether it is a **layout** key. `tests/test_gui_sync.py` reads the keys of each file from the row constructors
+(`.decimal("arms.kappa", "2", ...)`), compares them with `config.FEATURE_KEYS[feature] - CLI_ONLY`, compares each stated default with the `Config` default, and requires
+`Levers.swift` to read every key from a fork's `config.json` (`feature("arms", "kappa")`, 42 + 6 lines); `GUI_LANDED` holds all five.
+
+*Gates.* The engine requires a closed feature's keys at their defaults (it would hash a config that changes nothing otherwise), so `FeatureLevers.effective` is a row's own
+text only while its gate is open (`arms.enabled`, `bonds.share_mode != 0` for the two conductive keys, `roles.enabled` for the ten role keys, and so on) and its default
+otherwise, and `setArguments(baseline:)` passes `--set key=value` for the effective values that differ from the baseline's, compared as numbers, in table order. Nothing is
+passed for a feature that is off, and a baseline that had a feature on is taken back to the defaults when the new run switches it off. A `decimal` value is passed as the
+engine's float (`2.0`), an `integer` as an integer, a `flag` as `true` or `false`. **Validation** (`FeatureLevers.validate`) checks each live row against the engine's range
+and the rules across keys the engine states and the GUI can know: `kappa / (kappa + a0) <= 0.9`, `build_cost x build_max < 2^20`, `comm.cost x comm.width < 2^15`,
+`niche.farm_cost x farm_rate < 2^20`, `farm_cap x farm_decay_q16 <= 2^30`, and `key_floor = 0` and `shield_gain = 1` refused because they need `combat.protect_floor`, which
+is not a lever. Rules that need the world (the int32 headroom of `cap` over the lattice, `comm.range` against the sensing radius, `harvest_max` against `forage_gain`) are the
+engine's, and its refusal (exit 2) is in the log.
+
+*Layout.* `enabled`, `comm.width`, `niche.farm`, `roles.enabled` and the bond block (`bonds.share_mode` 0 against not 0, with the roles) fix the brain layout and the state
+shapes, and a checkpoint never crosses them (§43.8). In a **fork** `layoutErrors(baseline:)` refuses a change, the View disables the controls, and the message names `alife
+migrate`; `bonds.share_mode` may move between 1 and 2. A **resume** has no levers.
+
+*Overlays.* A **new run** may start from the overlay files `build` (structures), `bonds`, `comm`, `niche` (`niche3d` when the preset is 3D; farming's cost scales with the
+regrowth): `RunSettings.featureOverlays` adds `--overlay NAME` (after `fast`, in the order of the table), and `FeatureLevers.baseline(overlays:dims:repo:)` reads the overlay
+files with `PresetFile` (which now reads booleans) over the defaults, so the levers are pre-filled with the overlay's values and only the difference from them is passed.
+Choosing an overlay resets the feature levers (as choosing a preset resets the 3D levers). The arms layer has no overlay file: its levers are the way in.
+
+*Fork pre-fill.* `Levers(configJSON:)` reads the feature keys from a run's `config.json` (the engine omits a default from it, so an old run reads as all defaults); a value of
+the wrong type is a `LeverConfigError`, as for the other keys. The status readout lists the numeric keys of the newest metrics row with the feature prefixes
+(`MetricsSnapshot.features`, `FeatureMetrics`): `arms_`, `build_`, `bond_`, `comm_`, `farm_`, one disclosure per feature. There is no chart: the app has no history of
+metrics rows (deferred).
+
+### 45.2 The stream (`PlayRecords.swift`, `StreamProtocol.swift`)
+
+`FrameDecoder` decodes three more tags (version 1, latest-wins like `FOCS`), and a record of any other tag, or of another version of these, is still skipped by its length (the
+version skip is counted):
+
+| tag | body after the 16-byte head | refused when |
+|---|---|---|
+| `STRC`, `FSOL` | `u16 nx, ny, nz, flags; u32 count; count x u32 idx; count x u8 level`, padded to 4 | `count` over 65 536 (refused from the prefix, before the payload is waited for); the grid is not the header's `FG` and `FZ`; the body flags differ from the head's; `FLAG_TRUNC` with fewer than 65 536 cells; an index that does not ascend or is outside the grid; a level of 0; a padding byte that is not 0 |
+| `FSIG` | `i64 uid; u8 W; u8 flags; u16 audible; W x u8 says; W x u8 hears`, padded to 4 | `W` outside 1 to 8 or unlike `play.comm.w`; `hears` or `audible` not 0 with bit 0 clear; padding not 0 |
+
+`level = 1 + (254 m) // cap`, so `m = (level - 1) cap / 254` to within a step (`PlayCells.units`) and the opacity is `level / 255`; the record is the whole layer, an empty one
+clears it. **`FRMA` and the bond flow:** the length of an `FRMA` is read from its head flag, not fixed: with `FLAG_BONDFLOW` (bit 1) `4 ceil(k / 4)` bytes follow the bond pairs, one
+int8 per bond (`PlayFrame.flow`, from the lower listed row to the higher, `round(127 clip(f / scale, -1, 1))`, -128 refused), and without it the length is what it was.
+**Header:** `play.structures` and `play.niche` (`CellGrid`: `cap`, `cells` = `[FZ, FG, FG]`, `cell`, niche's `farm`), `play.comm` (`w`, `range`, `control`), `play.bonds` (`flow`,
+`scale`) are optional, validated when present (the grids must equal the field lattice) and nil from an older writer. **The `role` colour mode** is found by name in the header's
+`color_modes` (the contract puts it last, index 7, and a writer that lists it only with the feature on is equally right); the server paints it, and the client names the four colours
+(`RoleColours`: generalist grey `BEBEBE`, forager `F0E442`, guard `0072B2`, germ `CC79A7`; hurt agents are red in every mode).
+
+### 45.3 What the World shows
+
+*The cells* (`STRC`, `FSOL`): one new pipeline (`cellVertex`, blended, depth tested and not written, no new texture) draws one instance per listed cell, placed at its minimum image
+against the camera target as the agents are: a **tile** of the cell on the floor in 2D (six vertices, under the agents, after the weather map) and a **cube** of side `field_cell` in
+3D (36 vertices, after the opaque agents, before the frame). The opacity is affine in the level (`CellLook`: tile `0.18 + 0.60 l/255`, cube `0.06 + 0.34 l/255`, so a decaying wall
+visibly thins and piled cubes do not saturate), the colours warm grey for the material and green for the soil, at most 65 536 instances. They are not drawn on the globe path
+(deferred; the globe is off by default) or on the minimap. *The bond flow:* with the flag the world pass binds the int8 buffer and the bond vertex shader (bit 4 of the world flags)
+tints the half that gives (the lower row's half when the flow is positive) towards orange and the half that receives towards cyan by `0.25 + 0.75 |f|` (`BondFlowLook`); a bond
+with no flow keeps the colours of its agents. *Display:* `WorldDisplay.structures`, `.soil` and `.bondFlow` (on; not persisted), the View menu items "Structures (4)", "Soil (5)" and
+"Bond flow" (listed only for a world that carries the layer: `FeatureLayers(header:)`), keys `4` and `5`, and a legend over the map (`FeatureLegend`: the four roles in the `role`
+mode, a swatch for each drawn layer, and the two halves of a bond). *The inspector* (`Inspector.addFeatureRows`) adds, for the focused organism, "Role" (read from the colour the
+world painted, in the `role` mode; a note says to switch to it otherwise), "Bond flow" (the net quanta per step over its bonds, from the stored flows and `play.bonds.scale`),
+"Built here" and "Soil here" (the cell under it, as a share of the cap and approximate units), and a **voice panel** (`VoicePanel`, `VoiceBarsView`): W bars of what it says, W of
+what it hears and the number of neighbours in earshot, only for the organism the newest `FOCS` follows, and the spoken half alone when bit 0 of the record is clear.
+
+### 45.4 Tests, checks and deferrals
+
+`FeatureRecordsTests` (the byte layouts, pinned against the hex the Python encoders write for the same inputs, every refusal, the flag-not-length rule, unknown tags and versions
+in every chunking, the store), `FeatureLeverTests` (tables, gates, arguments, overlays, fork pre-fill and layout lock), `FeatureLayersTests` (layers, look, lookups, inspector,
+legend, metrics), `PresetFileTests` (booleans), `StreamReaderTests` (latest-wins by tag), the opt-in `GPUFeatureLayerTests` (tiles, cubes, soil, the flow colours), and the Python
+`tests/test_gui_sync.py` (key and default sync, the `play` header keys of the new records once the writer has them). Deferred: the arms record (`FARS`, stage 7: arms is
+levers and metrics only), the material on the globe and the minimap, metric charts over time, persisting the three new toggles, a `voice` colour mode, and a launcher
+entry for the overlays in the World launcher (only the Lab's run form has them).
+
 ## Review log
 
 Each critic issue was verified against the text and, where it made a numeric claim, re-run in
@@ -13624,6 +13706,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I71 | feat: arms races, PR A1 of the five-feature series (stages 1 and 2 of the arms spec; owner approval of 2026-10-28; new §42): the heritable traits `ATK`, `ARM`, `KEY`, `LOCK` (and the held-at-0 `TOX`, `SIG` columns) as the conditional state field `arms (N, 6)`, the Tullock contest with the key/lock match as the first factor of the protection product of `energy.combat` (`arms.contest_factor`; `kappa`, `a0`, `key_floor`), the quadratic upkeep added to `brain_cost` at S8 with **dithered** rounding (E13: the cost is exact on average, a sub-unit trait is not free; `HEAT_BASAL`, no 17th ledger term), the armour speed cost (`arms.physics_act`), fixed-sigma mutation at birth with phases wrapped every time (E12, the 1.0-rounding of `c - floor(c)` mapped to 0), `Stream.ARMS` = 10 / `InitStream.ARMS` = 8 and `rng.layout_version` 4 with arms on (an off run still writes 3), the epsilon in the Tullock denominator (E11), invariants (`arms` finite and in [0, 1] on device, phases below 1 on the host), `bench --arms`, `_c_ref` with the founders' upkeep; the registry row `ext/arms.py` (the first real row) and `combat(arms=)` no longer raises; **absent**: toxin and display factors and keys (A3), observers (A2), pierce and duels (A4), perception (A5), colour modes and GUI levers; off by default, no shipped preset enables it, feature-off runs bit-identical to main (identity matrix) and the config hash unchanged | Departures: column order is the integration plan's (ATK, ARM, TOX, SIG, KEY, LOCK), not the spec's; founders' keys and locks come from the init stream by row (`FieldSpec.rest` has no `uid`); the whole step is not bit-equal compiled and eager with or without arms (the brain's reductions, as on e64be03), so compiled equals eager is asserted for the arms functions only. Tests: `test_arms`, `test_arms_state`, `test_arms_step` (incl. the broken-path mutation tests), `test_arms_compile` (E4), `test_arms_director` (E24); `test_ext_*` updated for the first registered row. |
 | I72 | feat: the feature extension mechanism, PR 0a of the five-feature series (arms, structures, bonds, communication, farming; owner approval of 2026-10-28; new §43, which holds the plan's normative content), **no behaviour change** and the registry empty: `src/alife/ext/` (`ExtSpec`, `REGISTRY`, the layout composition `layout.for_dims(nd, blocks)` with `Layout.__getattr__` for `IN_*`/`OUT_*`, `genome_layout_version(nd, mask) = base + 4*mask`, the `layout_features` meta key absent when empty); conditional state fields (`state_cls`, `is_3d_state`, fill-on-load, refusal of an extra field); counter blocks (`n_counters(nd, weather, blocks)`, `counter_blocks`, `counter_index`, `PROT_CAPPED`); `Acts.flags` uint16 and the `ActFlag` bits `128 << i`, `Acts.ext`/`_Flows.ext`; `extra_due` in `pay_costs(3)`; `rng.layout_version(cfg)` and `ops.hash32`; the single `combat` signature with `energy.protection` and `combat.protect_floor` (default 0, `[0, 0.5]`, `POST_V01_KEYS`, left out of `config.json` and the checkpoint metadata at its default: `config_to_dict(omit_defaults=True)`, `SERIAL_OMIT_KEYS`); silent tail blocks in `brain.init_weights`; observer registries; `tests/ext_stub.py` and seven `test_ext_*` files; `tests/identity_matrix.py` (15 trajectory cases, 3 runner cases, config and layout, tiny3d `1fe07a9f`/`556de6c6`, against a fresh `git archive` of e64be03: bit-identical, no INFO line). Departures from the specs are in §43.10.  Review fixes: the hooks `inputs(s, cfg, ctx)`, `decode`, `mask`, `due(s, act, y, cfg)` and `_Flows.ext`, `FieldSpec.on_birth`, `Dims.ext(name)`, the wiring tests (`test_ext_hooks.py`). PR 0b (the layout migration) follows. **PR 0b (stacked on PR 0a):** the layout migration tool of §43.8: `alife migrate RUN[:STEP] --enable F --out NEWRUN`, `migrate.migrate_checkpoint`, `state.migrate_layout`/`layout_change`/`MigrationError`, `ExtSpec.enable` (a hook, default None); zero rows/columns for new blocks, order-independent (E2), removal and width change refused (removal only with `--force-removal`; leave-one-out arms are fresh runs, E23), compressed sources give compressed outputs, provenance `migrated_from` in `meta.json`; `tests/test_ext_migrate.py`. No behaviour change for existing runs (the identity matrix is unchanged) |
 | I73 | feat: the emergence measurement suite (new §44; E1 statistics, panel skeleton, scorecard interface, trait registry, CLI shell, prereg hash; E2 window recorder and frame format). Host-side, observer-only, numpy; **no simulation change** (no step, state, checkpoint, RNG, config key, default or `POST_V01_KEYS` entry, no golden re-pin; the engine files are untouched). Recorder: replay from a save with the engine's step, certified against the run (every metrics row and the state digest at every save passed; T1 must be a save, E21), refuses a run without the start save (E22; measurement runs use saves `all`), frames outside the run; traits stored as float32 (age and energy exceed float16). Comparison: paired block intervals, `w2.classify` over seeds with the seed-twin floor, Stouffer, Holm per feature and series, BH context, prereg hash that `compare` enforces; leave-one-out arms are fresh runs from the shared evolved sources (E23). Blocks A, B, C (open-endedness, irreversibility, braids) and the scorecard adapters land in E3 to E6. Tests: `tests/test_emergence_*.py`. Pending the owner's go to merge. |
+| I75 | feat: the five feature layers in the GUI (new §45; GUI only, nothing under `src/alife/` changes; built on `engine/observers` for the wire contract, in `gui/features`). (1) **What.** Levers for arms, structures, bonds and roles, comm and farming (`FeatureLevers`, five `<Feature>Levers.swift` tables, 48 keys, gates, layout lock in a fork, overlay start for a new run, fork pre-fill, `test_feature_levers_cover_feature_keys` with all five in `GUI_LANDED`); decoders for `STRC`, `FSOL`, `FSIG`, the `FRMA` bond-flow section by its flag and the optional `play.structures/comm/niche/bonds` keys; the world pass draws the material and soil (tiles in 2D, cubes in 3D) and colours bond halves by flow; inspector rows and the voice panel; legend, View items and keys 4 and 5; the `build_/arms_/bond_/comm_/farm_` metrics in the status readout. (2) **Wire check.** The Swift fixtures are built from the contract byte by byte and equal the hex of the Python encoders (`encode_strc`, `encode_fsig`, `encode_frma` with and without a flow). One contract inconsistency, harmless to the decoder: the contract says the `role` mode is "offered in the header list always", the writer (`play.py`) lists it only while the bonds feature is on; the decoder finds it by name. (3) **Tests.** Swift: 4 new suites, `PresetFileTests` extended and its list of preset files brought up to date (`build`, `bonds`, `comm`, `niche`, `niche3d` were missing: a failure that was already on main), `WorldKeysTests`, `StreamReaderTests`, `WorldInteractionTests`; the GPU tests render the layers offscreen. Python: `tests/test_gui_sync.py` (row forms, defaults, header and tag sync, the new keys). (4) **Choices to revisit.** The levers are table rows read generically (the pre-fill still names every key, so the sync test keeps its meaning); the cell layers are not drawn on the globe path or the minimap; no persistence of the new toggles; the roles are read from the colour the world paints because `FOCS` carries no role. |
 
 **Open questions for the user.**
 1. Contact-attenuated thrust makes a contracted body's interior agents (those with contacts) push less, so dense
