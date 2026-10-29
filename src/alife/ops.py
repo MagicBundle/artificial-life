@@ -289,3 +289,17 @@ def hash32(a: mx.array, b: mx.array | int, salt: int) -> mx.array:
     x = mx.bitwise_xor(x, mx.right_shift(x, c(15))) * c(_H_FIN1)
     x = mx.bitwise_xor(x, mx.right_shift(x, c(12))) * c(_H_FIN2)
     return mx.bitwise_xor(x, mx.right_shift(x, c(15)))
+
+
+def dithered_decay(x: mx.array, q16: int, cell_ids: mx.array, step: mx.array, salt: int) -> mx.array:
+    """The integer loss ``(x·q16 + dith) >> 16`` of a level ``x`` decaying by ``q16/65536`` per step, with
+    ``dith`` the top 16 bits of ``hash32(cell_ids, step, salt)`` (uniform in ``[0, 65536)``).
+
+    A plain floor loss never decays a level below ``65536/q16`` and a ceil loss kills a small level at once;
+    the dither makes the loss unbiased (``E[loss] = x·q16/65536``), so a level has the mean life
+    ``65536/q16`` steps whatever its size. Pure integer elementwise arithmetic, no scatter and no RNG stream,
+    so it is bit-exact on every backend. ``loss <= x`` for ``q16 <= 65535``; the caller guarantees
+    ``x·q16 + 65535 < 2^31`` (``niche`` validates ``farm_cap·farm_decay_q16 <= 2^30``)."""
+    _require_i32(x, "x")
+    dith = mx.right_shift(hash32(cell_ids, step, salt), mx.array(16, dtype=mx.uint32)).astype(_I32)
+    return (x * q16 + dith) >> 16

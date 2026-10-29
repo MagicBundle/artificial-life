@@ -1607,6 +1607,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         structures=a.structures,
         bonds_arm=a.bonds,
         comm_arm=a.comm,
+        niche_arm=a.niche,
     )
     text = _dumps(report)
     if a.json is not None:
@@ -2020,6 +2021,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also time the step with the voice channel on against the same config with it off (interleaved "
         "blocks; needs comm.enabled, for example --overlay comm)",
+    )
+    p.add_argument(
+        "--niche",
+        action="store_true",
+        help="also time the step with farming on against the same config with it off (interleaved "
+        "blocks; needs niche.farm, for example --overlay niche)",
     )
     p.add_argument(
         "--weather-pairs",

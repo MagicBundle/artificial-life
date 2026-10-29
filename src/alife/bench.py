@@ -39,6 +39,9 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
 - **Comm** (``comm_arm``, C1, DESIGN §39): the step with the voice channel on (the hear pass, the wider brain,
   the voice due) against the same config with it off, the same (off, on, on, off) blocks; the trajectories
   differ by construction. The gate of the comm spec (§5): within 8 % of the fused step on 64k3d.
+- **Niche** (``niche_arm``, F1, DESIGN §41): the step with farming on (the soil bonus inside the regrowth
+  clip, the dithered soil update, the farm sensor and output) against the same config with it off, the same
+  (off, on, on, off) blocks; the trajectories differ by construction.
 - **Weather-org** (``weather_org``, W2): the same blocks with the weather on in both arms, the "off" arm
   having ``seed_gain = shade_gain = 0``: the marginal cost of the organism couplings (the seeding signal and
   the shade count, DESIGN §32).
@@ -74,6 +77,7 @@ from alife import (
     invariants,
     lifecycle,
     metrics,
+    niche,
     physics,
     roles,
     sensing,
@@ -91,6 +95,7 @@ from alife.config import (
     CommConfig,
     Config,
     ConfigError,
+    NicheConfig,
     RolesConfig,
     StructuresConfig,
     WeatherConfig,
@@ -174,6 +179,7 @@ def run_bench(
     structures: bool = False,
     bonds_arm: bool = False,
     comm_arm: bool = False,
+    niche_arm: bool = False,
 ) -> dict[str, Any]:
     """Run the benchmark suite and return a JSON-compatible report.
 
@@ -203,6 +209,8 @@ def run_bench(
         raise ConfigError("bench --bonds needs the bonds feature (for example --overlay bonds)")
     if comm_arm and not cfg.comm.enabled:
         raise ConfigError("bench --comm needs comm.enabled = true (for example --overlay comm)")
+    if niche_arm and not cfg.niche.farm:
+        raise ConfigError("bench --niche needs niche.farm = true (for example --overlay niche)")
     if structures and not cfg.structures.enabled:
         raise ConfigError("bench --structures needs structures.enabled = true (for example --overlay build)")
     if weather_pairs < 1:
@@ -239,6 +247,11 @@ def run_bench(
         report["bonds"] = {
             **_bench_weather(cfg, steps, warmup, weather_pairs, off=off),
             "bonds_config": {**dataclasses.asdict(cfg.bonds), **dataclasses.asdict(cfg.roles)},
+        }
+    if niche_arm:
+        report["niche"] = {
+            **_bench_weather(cfg, steps, warmup, weather_pairs, off=replace(cfg, niche=NicheConfig())),
+            "niche_config": dataclasses.asdict(cfg.niche),
         }
     if comm_arm:
         report["comm"] = {
@@ -329,7 +342,7 @@ def _throughput(fn: Callable[[State], Any], cfg: Config, steps: int, warmup: int
     del held
     donation = _donation(peak - baseline, peak_ref - baseline_ref, weights)
 
-    acc = mx.zeros_like(out.counters)
+    acc = mx.zeros(out.counters.shape, dtype=mx.int64)
     n_alive_start = int(to_numpy(s.alive.sum()))  # the counters below cover the timed steps only
     times = []
     mx.reset_peak_memory()  # steady-state peak: excludes compile and the calibration step's copy
@@ -337,7 +350,7 @@ def _throughput(fn: Callable[[State], Any], cfg: Config, steps: int, warmup: int
     for _ in range(steps):
         t0 = time.perf_counter()
         s, out = fn(s)
-        acc = acc + out.counters
+        acc = acc + out.counters.astype(mx.int64)  # E10: cross-step sums in int64
         mx.eval(s, acc)
         times.append(time.perf_counter() - t0)
     wall = time.perf_counter() - t_all
@@ -997,11 +1010,18 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         dep = fields.deposit_chem(it.act.emit, fcell, it.costs.solvent, cfg)
         chem = fields.update_chem(s2.chem, dep, cfg)
         env = s2.env if cfg.director.enabled else None  # static
-        resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env, rain)
+        if cfg.niche.farm:  # static: the soil bonus inside the regrowth clip (S17, DESIGN §41)
+            resource, regen_inc, soil, nf = niche.update(
+                s2.resource, s2.patch_pos, s2.soil, it.xdec["niche"], fcell, cfg, s2.step, env, rain
+            )
+        else:
+            resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env, rain)
         out = (chem, resource, regen_inc, fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env))
         if cfg.structures.enabled:  # static: the material (S17, DESIGN §38)
             mat, sf = structures.update(s2.mat, it.xdec["structures"], fcell, alive0, dm, s2.step, cfg)
             out = (*out, mat, sf)
+        if cfg.niche.farm:  # static
+            out = (*out, soil, nf)
         return out
 
     def finish(s2: State, s: State, flows: Any) -> tuple[State, Any]:
@@ -1079,6 +1099,9 @@ class _StagedStep:
         if st_on:  # static: the new material, and the structures flows for the counters
             s2 = s2._replace(mat=mat_out[0])
             xdec = {**xdec, "structures": mat_out[1]}
+        if self.cfg.niche.farm:  # static: the new soil, and the farming flows for the counters
+            s2 = s2._replace(soil=mat_out[-2])
+            xdec = {**xdec, "niche": mat_out[-1]}
         if wthr_on:  # static
             s2 = s2._replace(wx=wx2)
         if self.cfg.director.enabled:  # static
