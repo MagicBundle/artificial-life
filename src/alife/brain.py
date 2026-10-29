@@ -26,7 +26,21 @@ def init_weights(key_w1: mx.array, key_w2: mx.array, n_rows: int, cfg: Config) -
         bc.init_scale / math.sqrt(d.w2_rows)
     )
     clip = bc.weight_clip
-    return mx.clip(w1, -clip, clip).astype(d.wdtype), mx.clip(w2, -clip, clip).astype(d.wdtype)
+    w1, w2 = mx.clip(w1, -clip, clip), mx.clip(w2, -clip, clip)
+    # Silent extension blocks (DESIGN §43.2) start with zero W1 rows / W2 columns, so the new inputs are
+    # inert and
+    # ``brain_cost`` (an L1 sum) is unchanged until mutation wakes them. Static: none while the features
+    # are off.
+    for start, width in d.lay.silent_in_rows():
+        w1 = mx.concatenate(
+            [w1[:, :start], mx.zeros_like(w1[:, start : start + width]), w1[:, start + width :]], axis=1
+        )
+    for start, width in d.lay.silent_out_cols():
+        w2 = mx.concatenate(
+            [w2[:, :, :start], mx.zeros_like(w2[:, :, start : start + width]), w2[:, :, start + width :]],
+            axis=2,
+        )
+    return w1.astype(d.wdtype), w2.astype(d.wdtype)
 
 
 def forward(W1: mx.array, W2: mx.array, x: mx.array, h: mx.array, cfg: Config) -> tuple[mx.array, mx.array]:

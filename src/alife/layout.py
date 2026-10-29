@@ -8,10 +8,13 @@ the totals ``D_IN``/``D_OUT`` outside this module. Changing any value here chang
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import math
 from dataclasses import dataclass
 from typing import Final
+
+from alife import ext
 
 GENOME_LAYOUT_VERSION: Final = 1
 GENOME_LAYOUT_VERSION_3D: Final = 2  # one version sequence: a future 2D bump takes 3 (§27.1)
@@ -197,6 +200,12 @@ class Layout:
     meaning in both dims, so only the totals, the descriptor width ``NF``, the query width ``F`` and the
     version depend on dims. Indices that exist only in 3D are None in 2D (never −1, which would read the last
     column).
+
+    The feature extensions (DESIGN §43) append blocks after the base total, in ``ext.TAIL_ORDER``, cumulative
+    over the enabled features: ``EXT_IN``/``EXT_OUT`` (empty without any) list ``(owner, name, start,
+    width, silent)`` and
+    ``lay.IN_<NAME>``/``lay.OUT_<NAME>`` (``__getattr__``) give the offset of a registered block, None while
+    its feature is off. Without extension blocks this is today's layout object, field for field.
     """
 
     nd: int
@@ -223,6 +232,27 @@ class Layout:
     OUT_BUOYANCY: int | None = None
     OUT_Q_BOND_DZ: int | None = None  # the query's 7th component, after the 2D block OUT_Q_BOND
     OUT_Q_ATTACK_DZ: int | None = None
+    # Feature extension blocks (empty without an enabled feature with a brain footprint).
+    EXT_IN: tuple[tuple[str, str, int, int, bool], ...] = ()
+    EXT_OUT: tuple[tuple[str, str, int, int, bool], ...] = ()
+
+    def __getattr__(self, name: str) -> int | None:
+        """``IN_<BLOCK>``/``OUT_<BLOCK>`` of a registered extension block: its offset, or None when the
+        feature is off; any other unknown name is an ``AttributeError``."""
+        if name.startswith(("IN_", "OUT_")):
+            key = name.split("_", 1)[1]
+            if key in ext.registered_block_names():
+                table = self.EXT_IN if name.startswith("IN_") else self.EXT_OUT
+                return next((start for _, bname, start, _, _ in table if bname.upper() == key), None)
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
+    def silent_in_rows(self) -> tuple[tuple[int, int], ...]:
+        """``(start, width)`` of the input blocks whose W1 rows start at zero for founders and immigrants."""
+        return tuple((start, width) for _, _, start, width, silent in self.EXT_IN if silent)
+
+    def silent_out_cols(self) -> tuple[tuple[int, int], ...]:
+        """``(start, width)`` of the output blocks whose W2 columns start at zero."""
+        return tuple((start, width) for _, _, start, width, silent in self.EXT_OUT if silent)
 
 
 def _layout_2d() -> Layout:
@@ -298,20 +328,73 @@ def _layout_3d() -> Layout:
     )
 
 
+def _with_ext(lay: Layout, blocks: ext.ExtBlocks) -> Layout:
+    """``lay`` with the extension blocks appended after its base totals, in the order given
+    (``TAIL_ORDER``)."""
+    d_in, d_out = lay.D_IN, lay.D_OUT
+    ext_in: list[tuple[str, str, int, int, bool]] = []
+    ext_out: list[tuple[str, str, int, int, bool]] = []
+    in_blocks, out_blocks = list(lay.INPUT_BLOCKS), list(lay.OUTPUT_BLOCKS)
+    in_names, out_names = list(lay.INPUT_NAMES), list(lay.OUTPUT_NAMES)
+    nbr_names = list(lay.NBR_FEATURE_NAMES)
+    for owner, ins, outs, nbr in blocks:
+        for bname, width, silent in ins:
+            ext_in.append((owner, bname, d_in, width, silent))
+            in_blocks.append((bname, d_in, width))
+            in_names += [bname] if width == 1 else [f"{bname}{i}" for i in range(width)]
+            d_in += width
+        for bname, width, silent in outs:
+            ext_out.append((owner, bname, d_out, width, silent))
+            out_blocks.append((bname, d_out, width))
+            out_names += [bname] if width == 1 else [f"{bname}{i}" for i in range(width)]
+            d_out += width
+        nbr_names += nbr
+    extra = len(nbr_names) - len(lay.NBR_FEATURE_NAMES)  # descriptor columns (arms perception) widen NF and F
+    return dataclasses.replace(
+        lay,
+        D_IN=d_in,
+        D_OUT=d_out,
+        NF=lay.NF + extra,
+        F=lay.F + extra,
+        INPUT_BLOCKS=tuple(in_blocks),
+        OUTPUT_BLOCKS=tuple(out_blocks),
+        INPUT_NAMES=tuple(in_names),
+        OUTPUT_NAMES=tuple(out_names),
+        NBR_FEATURE_NAMES=tuple(nbr_names),
+        EXT_IN=tuple(ext_in),
+        EXT_OUT=tuple(ext_out),
+    )
+
+
 @functools.cache
-def for_dims(nd: int) -> Layout:
-    """The layout of an ``nd``-dimensional world (2 or 3); ``config.dims(cfg).lay`` holds the config's one."""
+def _for_dims(nd: int, blocks: ext.ExtBlocks) -> Layout:
     if nd == 2:
-        return _layout_2d()
-    if nd == 3:
-        return _layout_3d()
-    raise ValueError(f"no genome layout for dims = {nd} (2 or 3)")
+        lay = _layout_2d()
+    elif nd == 3:
+        lay = _layout_3d()
+    else:
+        raise ValueError(f"no genome layout for dims = {nd} (2 or 3)")
+    return _with_ext(lay, blocks) if blocks else lay
 
 
-def genome_layout_version(nd: int) -> int:
-    """The genome layout version of an ``nd``-dimensional world, read at call time (tests monkeypatch it)."""
+def for_dims(nd: int, blocks: ext.ExtBlocks = ()) -> Layout:
+    """The layout of an ``nd``-dimensional world (2 or 3) with the extension ``blocks`` of the enabled
+    features
+    (``ext.layout_blocks(cfg, nd)``, cumulative in ``TAIL_ORDER``); ``config.dims(cfg).lay`` holds the
+    config's
+    one. Cached on both arguments; without blocks it is today's layout."""
+    return _for_dims(nd, tuple(blocks))
+
+
+def genome_layout_version(nd: int, mask: int = 0) -> int:
+    """The genome layout version of an ``nd``-dimensional world, read at call time (tests monkeypatch it):
+    ``base(nd) + 4·mask``, where bit ``i`` of ``mask`` is set when extension ``i`` has a brain footprint
+    (``ext.mask(cfg)``). It decodes uniquely (``base = v % 4``, ``mask = v // 4``); the ``layout_features``
+    meta string says which widths and block versions (DESIGN §43.2)."""
     if nd == 2:
-        return GENOME_LAYOUT_VERSION
-    if nd == 3:
-        return GENOME_LAYOUT_VERSION_3D
-    raise ValueError(f"no genome layout for dims = {nd} (2 or 3)")
+        base = GENOME_LAYOUT_VERSION
+    elif nd == 3:
+        base = GENOME_LAYOUT_VERSION_3D
+    else:
+        raise ValueError(f"no genome layout for dims = {nd} (2 or 3)")
+    return base + 4 * mask

@@ -62,7 +62,7 @@ from alife.game.observer import Observer
 from alife.game.social import SOCIAL_V1, SOCIAL_VERSION, SocialRules
 from alife.game.society import SnapInfo
 from alife.runio import RunDir, _dumps
-from alife.state import to_numpy
+from alife.state import counter_blocks, to_numpy
 from alife.step import make_step
 from alife.tracking import TRACK_VERSION, Diagnostics, Event, EventKind
 
@@ -310,6 +310,7 @@ def study(
                     int(to_numpy(state.total)),
                     nd=nd,
                     weather=cfg.weather.enabled,
+                    blocks=counter_blocks(cfg),
                 )
                 if bad:
                     raise ResimMismatch(

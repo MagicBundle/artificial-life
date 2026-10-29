@@ -32,7 +32,17 @@ from alife import bonds, ops
 from alife.config import Config, dims, require_2d
 from alife.render import COLOR_MODES, DEFAULT_LAYERS, Viewport, render_frame, write_png
 from alife.runio import write_state_file
-from alife.state import ERROR_MASK, CounterIdx, Diag, State, age, n_counters, storm_counter_index, to_numpy
+from alife.state import (
+    ERROR_MASK,
+    CounterIdx,
+    Diag,
+    State,
+    age,
+    counter_blocks,
+    n_counters,
+    storm_counter_index,
+    to_numpy,
+)
 from alife.step import make_step
 
 if TYPE_CHECKING:
@@ -121,7 +131,7 @@ class ViewerSession:
         self.steps_per_s = 0.0
         nd = dims(cfg).nd
         self._acc = mx.zeros(
-            (n_counters(nd, cfg.weather.enabled),), dtype=mx.int32
+            (n_counters(nd, cfg.weather.enabled, counter_blocks(cfg)),), dtype=mx.int32
         )  # counters, interval sums
         self._deaths_idx: tuple[int, ...] = _DEATH_COUNTERS + (
             (storm_counter_index(nd),) if cfg.weather.enabled else ()

@@ -18,6 +18,7 @@ from alife import (
     actions,
     bonds,
     brain,
+    ext,
     fields,
     invariants,
     layout,
@@ -82,6 +83,36 @@ class ActFlag(IntFlag):
     EMITTED = 16  # some channel's deposit quanta floor(256·emit_c) > 0 (EMITTERS)
     PROPOSED = 32  # bonds.form_bonds as_prop: a proposal that formed a bond with bond_target (BOND_PROPOSERS)
     KILLED = 64  # died KILLED at S14 this step (DEATHS_KILLED)
+    # The bits of the feature extensions, fixed by the extension index (``ext.ACT_FLAG_BASE << i``, DESIGN
+    # §43.5) so that no feature PR edits this class; a feature's PR only sets its bit. 4096..32768 are free.
+    CONTESTED = 128  # arms (index 0)
+    BUILDING = 256  # structures (1)
+    ROLE_SWITCHED = 512  # bonds (2)
+    SPOKE = 1024  # comm (3)
+    FARMING = 2048  # niche (4)
+
+
+class ExtActs(NamedTuple):
+    """The per-feature observer sub-tuples of ``Acts.ext`` (DESIGN §43.5): ``None`` while the feature is off,
+    else a NamedTuple the feature defines in its own module. Replaces flat trailing ``Acts`` fields, so no two
+    feature PRs edit the same lines of ``Acts`` and ``_acts``."""
+
+    arms: NamedTuple | None = None
+    structures: NamedTuple | None = None
+    bonds: NamedTuple | None = None
+    comm: NamedTuple | None = None
+    niche: NamedTuple | None = None
+
+
+class ExtFlows(NamedTuple):
+    """The per-feature intermediates of S0–S17 that S18 turns into counters (``_Flows.ext``); like
+    ``ExtActs``."""
+
+    arms: NamedTuple | None = None
+    structures: NamedTuple | None = None
+    bonds: NamedTuple | None = None
+    comm: NamedTuple | None = None
+    niche: NamedTuple | None = None
 
 
 class Acts(NamedTuple):
@@ -90,7 +121,7 @@ class Acts(NamedTuple):
     attack_gain: mx.array  # (N,) int32: energy gained by attacking (Σ = FLOW_ATTACK_GAIN)
     share_out: mx.array  # (N,B) int32: sent per bond slot (Σ = FLOW_SHARED)
     share_got: mx.array  # (N,B) int32: net received per bond slot (Σ out − Σ got = HEAT_SHARE)
-    flags: mx.array  # (N,) uint8: ActFlag bits
+    flags: mx.array  # (N,) uint16: ActFlag bits (widened from uint8 for the extension bits, §43.5)
     thrust: mx.array  # (N,) int16: round(256·act.thrust) of the post-S8 actions
     defend: mx.array  # (N,) int16: round(256·act.defend) of the post-S8 actions
     emit: mx.array  # (N,) int16: Σ_c floor(256·act.emit_c), the S17 deposit quanta, in [0, 768]
@@ -106,6 +137,9 @@ class Acts(NamedTuple):
     death_cause: mx.array  # (N,) int8: DeathCause of a row that died at S14 this step, −1 elsewhere
     # Storm world (§32), 3D only (None in 2D): the buoyancy use, appended after the roster field.
     buoy: mx.array | None = None  # (N,) int16: round(256·mo.buoy) of the pre-mask motion, 0 where not solvent
+    # Feature extensions (§43.5): None while every feature is off, else an ``ExtActs`` with one sub-tuple per
+    # enabled feature (None for a feature that is off).
+    ext: ExtActs | None = None
 
 
 class StepOutG(NamedTuple):
@@ -150,6 +184,8 @@ class _Flows(NamedTuple):
     grounded: mx.array | None = None  # (N,) bool, physics.grounded of the start-of-step pos (not masked)
     # Weather only (None when weather.enabled is false): the advisory WEATHER_WARN input (§30).
     weather_bad: mx.array | None = None  # () bool, weather.health
+    # Feature extensions (§43.5): None while every feature is off, else an ``ExtFlows``.
+    ext: ExtFlows | None = None
 
 
 def step(
@@ -178,23 +214,35 @@ def step(
     else:
         fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg)
     desc = sensing.neighbor_descriptors(s, nbr, cfg)  # S5
+    ectx = ext.ExtCtx(nbr, desc, geom, fcell)
+    ext_in = ext.step_inputs(s, cfg, ectx)  # the enabled features' brain-tail blocks, in TAIL_ORDER
     if d3:  # static
-        x = sensing.build_inputs(s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, grounded=gr)
+        x = sensing.build_inputs(
+            s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, grounded=gr, ext_in=ext_in
+        )
     else:
-        x = sensing.build_inputs(s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg)
+        x = sensing.build_inputs(s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, ext_in=ext_in)
     h_new, y = brain.forward(s.W1, s.W2, x, s.h, cfg)  # S6
     act = actions.decode(y, desc, nbr, s.partner, s.alive, cfg)  # S7
+    xdec = ext.decode_all(
+        s, y, ectx, cfg
+    )  # the enabled features' own decodes ({} while every feature is off)
     if d3:  # static: the pitch change and the buoyancy fraction (§27.2)
         mo = actions.decode_motion3(y, s.alive, cfg)
 
     nb0 = bonds.n_bonds(s.partner)  # S8
+    extra_due = ext.sum_due(spec.due(s, act, y, cfg) for spec in ext.active(cfg) if spec.due is not None)
+    due_kw = (
+        {} if extra_due is None else {"extra_due": extra_due}
+    )  # static: the call is today's while it is None
     if d3:  # static: the pitch turn cost and the buoyancy due (§27.7)
-        c = en.pay_costs3(s.energy, act, mo, nb0, s.brain_cost, s.buoy_cap, s.alive, cfg)
+        c = en.pay_costs3(s.energy, act, mo, nb0, s.brain_cost, s.buoy_cap, s.alive, cfg, **due_kw)
         buoy0 = mo.buoy if observe else None  # static: the pre-mask buoyancy, as thrust0 below (§32)
         mo = actions.mask(mo, c.solvent)
     else:
-        c = en.pay_costs(s.energy, act, nb0, s.brain_cost, s.alive, cfg)
+        c = en.pay_costs(s.energy, act, nb0, s.brain_cost, s.alive, cfg, **due_kw)
         buoy0 = None
+    xdec = ext.mask_all(xdec, c.solvent, cfg)  # solvency, as ``actions.mask`` does for the base actions
     thrust0 = act.thrust if observe else None  # static: the decode output, which S8 also reads (§28.2)
     y0 = y if observe else None  # static: the brain output the kin queries are quantised from (§29.2)
     act = actions.mask(act, c.solvent)
@@ -318,6 +366,8 @@ def step(
         broken=broken,
         slots_s9=slots_s9,
     )
+    if xdec:  # static: the masked feature decodes reach S18 (counters) and the observer channel
+        flows = flows._replace(ext=ExtFlows(**xdec))
     if d3:  # static
         flows = flows._replace(z_floor=it.z_floor, z_surface=it.z_surface, grounded=gr)
     if wthr:  # static
@@ -350,15 +400,15 @@ def _acts(
     emit_q = ops.floor_i32(f.act.emit * 256.0)  # the expression of _counters and fields.deposit_chem
     emitted = (emit_q > 0).any(axis=1)  # the expression of the EMITTERS counter
     killed = f.dt.cause == DeathCause.KILLED.value  # the expression of the DEATHS_KILLED counter
-    u8, i16 = mx.uint8, mx.int16
+    u16, i16 = mx.uint16, mx.int16
     flags = (
-        f.cb.attack.astype(u8) * ActFlag.ATTACKED.value
-        | f.cb.hit.astype(u8) * ActFlag.HIT.value
-        | f.formed.astype(u8) * ActFlag.FORMED.value
-        | budded.astype(u8) * ActFlag.BUDDED.value
-        | emitted.astype(u8) * ActFlag.EMITTED.value
-        | f.as_prop.astype(u8) * ActFlag.PROPOSED.value
-        | killed.astype(u8) * ActFlag.KILLED.value
+        f.cb.attack.astype(u16) * ActFlag.ATTACKED.value
+        | f.cb.hit.astype(u16) * ActFlag.HIT.value
+        | f.formed.astype(u16) * ActFlag.FORMED.value
+        | budded.astype(u16) * ActFlag.BUDDED.value
+        | emitted.astype(u16) * ActFlag.EMITTED.value
+        | f.as_prop.astype(u16) * ActFlag.PROPOSED.value
+        | killed.astype(u16) * ActFlag.KILLED.value
     )
     thrust = mx.where(f.costs.solvent, mx.round(256.0 * thrust0).astype(i16), 0)  # = round(256·masked thrust)
     defend = mx.round(256.0 * f.act.defend).astype(i16)
@@ -512,6 +562,13 @@ def _counters(s_new: State, alive0: mx.array, f: _Flows, cfg: Config) -> mx.arra
         counters = mx.concatenate(
             [counters, count(dt.cause == DeathCause.STORM.value).astype(_I32).reshape(1)]
         )
+    if cfg.combat.protect_floor > 0:  # static: the ``protect`` block, first of the extension blocks (§43.4)
+        capped = cb.capped if cb.capped is not None else mx.zeros_like(cb.attack)
+        counters = mx.concatenate([counters, count(capped).astype(_I32).reshape(1)])
+    for spec in ext.active(cfg):  # static: each enabled feature's block, in EXTENSIONS order
+        if names := spec.counters(cfg):
+            vals = spec.count(s_new, alive0, f, cfg)
+            counters = mx.concatenate([counters, mx.stack([vals[n].astype(_I32) for n in names])])
     return counters
 
 

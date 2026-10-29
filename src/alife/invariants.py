@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import mlx.core as mx
 import numpy as np
 
-from alife import bonds, layout, weather
+from alife import bonds, ext, layout, weather
 from alife.config import Config, dims
 from alife.state import R_HARD, Diag, LedgerIdx, State, expected_layout, sinks, to_numpy, total_energy
 
@@ -407,6 +407,8 @@ def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | 
         _check_rows_3d(r, a, cfg)
     if cfg.weather.enabled:
         _check_weather(r, a, cfg)
+    for spec in ext.active(cfg):  # the enabled features' own host checks (DESIGN §43)
+        r.problems.extend(spec.check(a, cfg) if spec.check is not None else ())
     if prev is not None:
         p = {
             name: to_numpy(getattr(prev, name))

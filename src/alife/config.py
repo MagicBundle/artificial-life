@@ -10,20 +10,24 @@ import functools
 import hashlib
 import importlib.resources
 import json
+import logging
 import math
 import tomllib
 import typing
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Final
 from urllib.parse import urlsplit
 
 import mlx.core as mx
 import numpy as np
 
-from alife import layout, weather
+from alife import ext, layout, weather
 from alife.weather import DEFAULT_POOLS as _WEATHER_POOLS
+
+log = logging.getLogger(__name__)
 
 R_HARD: Final = (1 << 24) - 1  # hard resource cap per field cell (§10.9); re-exported as state.R_HARD
 
@@ -129,6 +133,9 @@ class CombatConfig:
     efficiency: float = 0.7
     defend_efficiency: float = 0.75
     attack_bonded: bool = False
+    # Lower bound of the product of the protections (armour, shelter, guard) on an attack's demand, as a
+    # fraction of ``attack_max`` before ``defend`` (DESIGN §43.6). 0 = off: no op traced. Added after v0.1.
+    protect_floor: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -356,13 +363,27 @@ class Dims:
     z_hi: float  # the largest float32 ≤ height − physics.radius
     z_ground: float  # max(z_lo, the largest float32 ≤ radius + floor_eps): grounded iff z ≤ z_ground
     wn: int  # weather grid side (weather.cells): the packed State.wx is (N_WX, wn, wn)
+    # Feature extensions (DESIGN §43). The neutral values are today's: no voice channel, msg width MSG.
+    voice_w: int = 0  # comm: voice channel width W (0 = off)
+    msg_w: int = layout.MSG  # State.msg width: MSG + voice_w
+    features: tuple[str, ...] = ()  # names of the enabled features, in registry order
+    # per enabled feature, the sizes its ``dims(cfg)`` hook declares (voice_w, hear_range, ...): read them
+    # with ``d.ext("comm").hear_range``
+    ext_dims: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = ()
+
+    def ext(self, name: str) -> SimpleNamespace:
+        """The derived sizes of the enabled feature ``name`` as attributes; ``KeyError`` if it is off."""
+        for feature, items in self.ext_dims:
+            if feature == name:
+                return SimpleNamespace(**dict(items))
+        raise KeyError(f"feature {name!r} is not enabled")
 
 
 PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mini3d")
 OVERLAYS: tuple[str, ...] = ("fast",)  # compose with every preset
 # Overlays that need a particular world (DESIGN §30): validated against whatever preset they land on, and not
 # part of ``OVERLAYS`` (which means "composes with every preset").
-WORLD_OVERLAYS: tuple[str, ...] = ("storm", "storm160")
+WORLD_OVERLAYS: tuple[str, ...] = ("storm", "storm160", *(s.overlay for s in ext.REGISTRY if s.overlay))
 ALL_OVERLAYS: tuple[str, ...] = OVERLAYS + WORLD_OVERLAYS  # what the loaders and the CLI accept
 DEFAULT_PRESET: Final = "64k"
 
@@ -409,7 +430,10 @@ def dims(cfg: Config) -> Dims:
     n, m = cfg.population.n_max, cfg.population.max_births_per_step
     h = cfg.brain.hidden
     g_hash = math.floor(cfg.world.size / cfg.sensing.radius)
-    nd, lay = cfg.world.dims, layout.for_dims(cfg.world.dims)
+    nd = cfg.world.dims
+    lay = layout.for_dims(nd, ext.layout_blocks(cfg, nd))
+    ext_d = {spec.name: dict(spec.dims(cfg)) for spec in ext.active(cfg)}
+    voice_w = max((dd.get("voice_w", 0) for dd in ext_d.values()), default=0)
     w1_rows, w2_rows = lay.D_IN + h, h + 1
     e_max, s = cfg.energy.e_max, cfg.energy.structure
     fg = _field_fg(cfg)
@@ -453,6 +477,10 @@ def dims(cfg: Config) -> Dims:
         z_hi=z_hi,
         z_ground=z_ground,
         wn=cfg.weather.cells,
+        voice_w=voice_w,
+        msg_w=layout.MSG + voice_w,
+        features=tuple(spec.name for spec in ext.active(cfg)),
+        ext_dims=tuple((n, tuple(sorted(dd.items()))) for n, dd in ext_d.items()),
     )
 
 
@@ -468,8 +496,16 @@ def stability_number(cfg: Config) -> float:
 # --- dict conversion ------------------------------------------------------------------------------------
 
 
-def config_to_dict(cfg: Config) -> dict[str, dict[str, Any]]:
-    """Plain JSON-compatible dict (tuples become lists)."""
+def config_to_dict(cfg: Config, *, omit_defaults: bool = False) -> dict[str, dict[str, Any]]:
+    """Plain JSON-compatible dict (tuples become lists).
+
+    With ``omit_defaults`` the keys of ``SERIAL_OMIT_KEYS`` (the feature series, DESIGN §43) are left out
+    while
+    they equal their default, and a section emptied by that is left out too: the form written to
+    ``config.json``
+    and to a checkpoint's metadata, so a run that does not use a feature serialises exactly as before the
+    feature existed. ``config_from_dict`` completes the missing keys from the defaults.
+    """
     out: dict[str, dict[str, Any]] = {}
     for sec in dataclasses.fields(Config):
         sub = getattr(cfg, sec.name)
@@ -477,6 +513,14 @@ def config_to_dict(cfg: Config) -> dict[str, dict[str, Any]]:
             f.name: list(v) if isinstance(v := getattr(sub, f.name), tuple) else v
             for f in dataclasses.fields(sub)
         }
+    if omit_defaults:
+        defaults = config_to_dict(Config())
+        for sec, key in SERIAL_OMIT_KEYS:
+            if out[sec][key] == defaults[sec][key]:
+                del out[sec][key]
+        for sec in {sec for sec, _ in SERIAL_OMIT_KEYS}:
+            if not out[sec]:
+                del out[sec]
     return out
 
 
@@ -666,12 +710,12 @@ def _canonical_json(d: Mapping[str, Any]) -> str:
 
 def save_config(cfg: Config, path: Path) -> None:
     """Write canonical JSON (sorted keys, indent 2, tuples as lists)."""
-    Path(path).write_text(_canonical_json(config_to_dict(cfg)), encoding="utf-8")
+    Path(path).write_text(_canonical_json(config_to_dict(cfg, omit_defaults=True)), encoding="utf-8")
 
 
 # Keys added after v0.1 (section, key). They are omitted from ``config_hash`` while they equal their defaults,
 # so runs created before they existed keep their hash and stay resumable (§18).
-POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
+_POST_V01_BASE: Final[tuple[tuple[str, str], ...]] = (
     ("population", "immigration_every"),
     ("population", "immigration_count"),
     ("fields", "season_period"),
@@ -744,7 +788,25 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("weather", "rain_zonal"),
     ("weather", "storm_eddy"),
     ("weather", "wind_eddy_force"),
+    ("combat", "protect_floor"),
 )
+# The keys the registered features add (``ext.ExtSpec.lever_keys``; none while the registry is empty).
+POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    *_POST_V01_BASE,
+    *(key for spec in ext.REGISTRY for key in spec.lever_keys),
+)
+# The feature-series keys (DESIGN §43): omitted from ``config.json`` and the checkpoint metadata at their
+# defaults, so an off run's files are byte-identical to the engine before the feature existed.
+SERIAL_OMIT_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    ("combat", "protect_floor"),
+    *(key for spec in ext.REGISTRY for key in spec.lever_keys),
+)
+# feature -> every (section, key) it adds to Config, and the subset the GUI does not carry (``*.control``,
+# observer dumps): ``tests/test_gui_sync.py`` compares the Swift lever files against the difference.
+FEATURE_KEYS: Final[dict[str, tuple[tuple[str, str], ...]]] = dict(ext.lever_keys())
+CLI_ONLY_FEATURE_KEYS: Final[dict[str, tuple[tuple[str, str], ...]]] = {
+    spec.name: spec.cli_only_keys for spec in ext.REGISTRY
+}
 
 # The POST_V01 keys of the 3D world (docs/3D.md, §27.1). In a 2D world every one but ``world.dims`` must keep
 # its default (``validate``), so no 2D config can change its hash without changing its behaviour.
@@ -1236,6 +1298,23 @@ def validate(cfg: Config) -> None:
         req(w.dims == 3, "run.eco_every > 0 needs a 3D world (the dump holds height and vertical wind)")
     if ru.wx_every > 0:
         req(cfg.weather.enabled, "run.wx_every > 0 needs weather.enabled")
+
+    # Feature extensions (DESIGN §43): the protection floor, then each registered feature's own rules.
+    req(0.0 <= co.protect_floor <= 0.5, f"combat.protect_floor {co.protect_floor} must be in [0, 0.5]")
+    if co.protect_floor > 0:
+        worst = co.efficiency * co.attack_max * (1.0 - co.defend_efficiency) * co.protect_floor
+        if worst < en.attack_cost:
+            log.warning(
+                "combat.protect_floor %s: the worst-case attack gains %.0f < attack_cost %d, so predation "
+                "against a fully defended, fully protected victim is unprofitable",
+                co.protect_floor,
+                worst,
+                en.attack_cost,
+            )
+    try:
+        ext.validate_all(cfg)
+    except ConfigError as e:
+        errs.append(str(e))
 
     if errs:
         raise ConfigError(f"{len(errs)} config problem(s): " + "; ".join(errs))

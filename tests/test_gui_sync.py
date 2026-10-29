@@ -13,7 +13,9 @@ import json
 import re
 from pathlib import Path
 
-from alife import config
+import pytest
+
+from alife import config, ext
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "gui" / "Sources" / "AlifeCore"
@@ -105,6 +107,32 @@ def test_the_3d_levers_cover_the_3d_keys() -> None:
     assert set(config.THREE_D_KEYS) - CLI_ONLY_3D <= read
 
 
+# The features whose GUI lever file (`<Feature>Levers.swift`) has landed; a feature's GUI PR adds itself here
+# (DESIGN §43.7). A feature not listed must have no such file, which catches a forgotten registration.
+GUI_LANDED: set[str] = set()
+
+
+@pytest.mark.parametrize("feature", ext.EXTENSIONS)
+def test_feature_levers_cover_feature_keys(feature: str) -> None:
+    path = CORE / f"{feature.capitalize()}Levers.swift"
+    if feature not in GUI_LANDED:
+        assert not path.exists(), f"{path.name} exists but {feature!r} is not in GUI_LANDED"
+        return
+    want = set(config.FEATURE_KEYS[feature]) - set(config.CLI_ONLY_FEATURE_KEYS.get(feature, ()))
+    found = swift_keys(path.read_text(encoding="utf-8"))
+    assert found == want, f"only in Swift {sorted(found - want)}, only in the engine {sorted(want - found)}"
+    # the pre-fill of a fork reads the same keys from config.json (Levers.swift)
+    read = {(m.group(1), m.group(2)) for m in READ_KEY.finditer(sources()["Levers.swift"])}
+    assert want <= read
+
+
+def test_the_feature_key_tables_are_consistent() -> None:
+    assert set(config.FEATURE_KEYS) == {s.name for s in ext.REGISTRY}  # empty until a feature registers
+    for feature, keys in config.FEATURE_KEYS.items():
+        assert set(keys) <= set(config.POST_V01_KEYS), feature
+        assert set(config.CLI_ONLY_FEATURE_KEYS.get(feature, ())) <= set(keys), feature
+
+
 def test_the_preset_picker_lists_the_engine_presets() -> None:
     values = swift_enum_values(sources()["Levers.swift"], "Preset")
     assert values == set(config.PRESETS)
@@ -149,7 +177,7 @@ def test_the_gui_argument_fixtures_are_what_the_engine_writes() -> None:
     """
     for name, kwargs in GUI_CONFIGS.items():
         path = ROOT / "tests" / "data" / f"gui_config_{name}.json"
-        written = config.config_to_dict(config.load_config(**kwargs))
+        written = config.config_to_dict(config.load_config(**kwargs), omit_defaults=True)  # as save_config
         assert json.loads(path.read_text(encoding="utf-8")) == json.loads(json.dumps(written)), path.name
 
 

@@ -268,3 +268,24 @@ def mul_q8(x: mx.array, q: int) -> mx.array:
     """``(x·q) >> 8`` in int32 (the caller guarantees ``x·q < 2^31``)."""
     _require_i32(x, "x")
     return (x * q) >> 8
+
+
+_H_MUL1, _H_MUL2, _H_MUL3, _H_ADD = 0x9E3779B1, 0x85EBCA77, 0xC2B2AE3D, 0x27D4EB2F
+_H_FIN1, _H_FIN2 = 0x2C1B3C6D, 0x297A2D39
+
+
+def hash32(a: mx.array, b: mx.array | int, salt: int) -> mx.array:
+    """A deterministic uint32 mix of two integer arrays and a static ``salt`` (the extension's entry of
+    ``rng.HASH_SALTS``): elementwise, integer ops only (no scatter, no float), so it is bit-exact on
+    CPU and GPU. For the draw-free features (comm's decoy permutation, farming's dithered decay), which take
+    no RNG stream (DESIGN §43.3)."""
+    u = mx.uint32
+
+    def c(v: int) -> mx.array:
+        return mx.array(v, dtype=u)
+
+    bb = b if isinstance(b, mx.array) else mx.array(b, dtype=u)
+    x = a.astype(u) * c(_H_MUL1) + bb.astype(u) * c(_H_MUL2) + c((salt * _H_MUL3 + _H_ADD) & 0xFFFFFFFF)
+    x = mx.bitwise_xor(x, mx.right_shift(x, c(15))) * c(_H_FIN1)
+    x = mx.bitwise_xor(x, mx.right_shift(x, c(12))) * c(_H_FIN2)
+    return mx.bitwise_xor(x, mx.right_shift(x, c(15)))

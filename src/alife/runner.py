@@ -46,7 +46,7 @@ from alife.config import Config, dims, immigration_on
 from alife.game import tracers
 from alife.game.observer import Observer
 from alife.runio import RunDir
-from alife.state import ERROR_MASK, CounterIdx, Diag, State, to_numpy
+from alife.state import ERROR_MASK, CounterIdx, Diag, State, counter_blocks, to_numpy
 from alife.step import StepOut, make_step
 
 if TYPE_CHECKING:  # the director imports metrics and runio; the runner only calls its hooks
@@ -419,6 +419,7 @@ def run(
                 perf,
                 nd=dims(cfg).nd,
                 weather=cfg.weather.enabled,
+                blocks=counter_blocks(cfg),
             )
             if first_row:
                 row["carrying_capacity_est"] = metrics.carrying_capacity(state, cfg)
