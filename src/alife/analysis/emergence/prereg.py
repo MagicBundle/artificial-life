@@ -30,9 +30,9 @@ ENDPOINTS: Final[dict[str, dict[str, Any]]] = {
     "P3": {"block": "A", "name": "MODES complexity", "direction": 1, "confirmatory": False,
            "definition": "p90 channel count of the phenotype skeletons (adapted MODES; exploratory, O8)"},
     "P4": {"block": "B", "name": "own-motion EP", "direction": 1, "confirmatory": True,
-           "definition": "entropy production of own motion, nats per organism per 1000 steps (lower bound)"},
+           "definition": "circulating part of own-motion EP, nats per organism per 1000 steps"},
     "P5": {"block": "C", "name": "braid coordination contrast", "direction": 1, "confirmatory": True,
-           "definition": "h_real - h_surr over bodies >= 8, per crossing (coordination index, not a score)"},
+           "definition": "h_real - h_surr over bodies >= 8, per step (coordination index, not a score)"},
 }  # fmt: skip
 
 SCORECARD_PRIMARY: Final = {

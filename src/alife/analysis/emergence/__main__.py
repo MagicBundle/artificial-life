@@ -1,8 +1,8 @@
 """``python -m alife.analysis.emergence <command>``: the CLI shell of the emergence suite (DESIGN §44.9).
 
 Rules: the run directory is read only, every output goes under ``--out`` (default
-``analysis_cache/emergence/<run>/``), writes are atomic, and a command that needs a block that has not landed
-says so and exits 2. ``record`` is the only command that simulates (it imports MLX lazily).
+``analysis_cache/emergence/<run>/``) and writes are atomic. ``record`` is the only command that simulates
+(it imports MLX lazily).
 """
 
 from __future__ import annotations
@@ -16,15 +16,21 @@ from pathlib import Path
 
 import numpy as np
 
-from alife.analysis.emergence import compare, frames, panel, prereg, scorecards, synth
-
-LATER = {
-    "epr": "block B (E3)",
-    "braid": "block C (E4)",
-    "winding": "block C (E4)",
-    "modes": "block A (E5)",
-    "activity": "block A (E5)",
-}
+from alife.analysis.emergence import (
+    activity_adapter,
+    braid,
+    cli_blocks,
+    compare,
+    epr,
+    frames,
+    modes,
+    panel,
+    panel_blocks,
+    prereg,
+    scorecards,
+    synth,
+    winding,
+)
 
 
 def _window(text: str) -> tuple[int, int]:
@@ -78,9 +84,8 @@ def cmd_record(a: argparse.Namespace) -> int:
 
 def cmd_panel(a: argparse.Namespace) -> int:
     wins = a.windows or []
-    fmeta = []
-    for f in a.frames or []:
-        fmeta.append(frames.read_frames(f).meta)
+    frames_list = [frames.read_frames(f) for f in a.frames or []]
+    fmeta = [fr.meta for fr in frames_list]
     h = prereg.load_prereg(a.prereg)["sha256"] if a.prereg else None
     cards = []
     feats = [x for x in (a.scorecards or "").split(",") if x]
@@ -100,6 +105,37 @@ def cmd_panel(a: argparse.Namespace) -> int:
         frames_meta=fmeta,
         scorecards=cards,
     )
+    if frames_list:
+        panel_blocks.fill_b(p, [epr.analyse_window(fr) for fr in frames_list])
+        wind = None
+        if a.storms:
+            wind = winding.analyse(winding.read_storms_jsonl(a.storms), frames_list[0].size)
+        if a.reference:
+            ref = [frames.read_frames(r) for r in a.reference]
+            cb = modes.build_codebook(ref)
+            seen = np.zeros(cb.n_codes, bool)
+            for r in ref:
+                seen |= modes.persistent_classes(r, cb)
+            births = None
+            mres = []
+            for fr in frames_list:
+                win = fr.meta.get("window")
+                births = (
+                    modes.load_births(a.run, win[0], win[1]) if win and (a.run / "events").is_dir() else None
+                )
+                cbx = modes.extend_codebook(cb, fr)
+                seen = modes.pad_seen(seen, cbx)
+                m = modes.analyse(fr, cbx, seen=seen, births=births)
+                seen = seen | modes.persistent_classes(fr, cbx)
+                mres.append(m)
+            act = None
+            if a.activity_start is not None:
+                act = activity_adapter.analyse_arm(a.run, start=a.activity_start)
+            panel_blocks.fill_a(p, mres, act)
+        try:
+            panel_blocks.fill_c(p, [braid.analyse_blocks(fr) for fr in frames_list], wind)
+        except ValueError as e:  # too few frames for the braid blocks: block C stays not evaluated
+            p["C"] = panel.needs_block(str(e), "frames")
     pj, pm = panel.write_panel(_out(a, a.run), p)
     print(f"wrote {pj} and {pm}")
     return 0
@@ -109,8 +145,9 @@ def cmd_compare(a: argparse.Namespace) -> int:
     pr = prereg.load_prereg(a.prereg)
     panels = [panel.read_panel(p) for p in a.panels]
     try:
+        panel_blocks.check_p1_spaces(panels)
         cmp = compare.compare_panels(panels, pr, exploratory=a.exploratory)
-    except (prereg.PreregError, compare.CompareError, panel.PanelError) as e:
+    except (prereg.PreregError, compare.CompareError, panel.PanelError, panel_blocks.SpaceMismatch) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     cj, cm = compare.write_compare(Path(a.out or "analysis_cache/emergence/compare"), cmp)
@@ -188,6 +225,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prereg", type=Path)
     p.add_argument("--scorecards", default="")
     p.add_argument("--population-ref", type=float)
+    p.add_argument("--reference", type=Path, nargs="*", help="frames files that define the MODES codebook")
+    p.add_argument("--activity-start", type=int, help="fork step: also run the activity adapter")
+    p.add_argument("--storms", type=Path, help="observers/storms.jsonl for the (exploratory) winding table")
     p.add_argument("--out", type=Path)
     p.set_defaults(fn=cmd_panel)
     p = sub.add_parser("compare", help="compare arms from panels under a pre-registration")
@@ -210,12 +250,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--effect", action="append", metavar="FEATURE:ENDPOINT=D")
     p.add_argument("--prereg-hash")
     p.set_defaults(fn=cmd_synth)
-    for name, where in LATER.items():
-        q = sub.add_parser(name, help=f"not yet implemented: {where}")
-        q.add_argument("args", nargs="*")
-        q.set_defaults(
-            fn=lambda a, w=where, n=name: (print(f"error: {n} lands with {w}", file=sys.stderr), 2)[1]
-        )
+    for name, (add, fn) in cli_blocks.COMMANDS.items():
+        q = sub.add_parser(name, help=f"block command {name} (DESIGN §44)")
+        add(q)
+        q.set_defaults(fn=fn)
     return ap
 
 
