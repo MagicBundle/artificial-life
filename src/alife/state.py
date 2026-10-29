@@ -13,7 +13,7 @@ from typing import Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import brain, config, ext, fields, layout, ops, rng, weather
+from alife import brain, config, ext, fields, fields_sph, layout, ops, rng, weather
 from alife.config import Config, dims, is_3d
 
 R_HARD: Final = config.R_HARD  # (1 << 24) − 1: hard per-cell resource cap (§10.9)
@@ -407,6 +407,29 @@ V0_FIELDS_3D: Final = (
 )
 
 
+# The sphere world (DESIGN §46.2): StateS is State3's fields in the same order, then ``hdg``, the tangent
+# heading vector (the scalar ``heading`` stays, derived and output only). Built by the same NamedTuple call
+# as ``_ext_cls`` so State3 and its 49-field digest are untouched. On a sphere ``pos`` and ``vel``
+# are Cartesian planet-frame (N,3), ``resource`` is (FZ,Npix), ``chem`` (NCH,FZ,Npix), ``patch_pos`` and
+# ``patch_vel`` are (PP,3) (unit vectors and angular velocities), ``env_cat_center`` is (lon, lat) and ``wx``
+# is (N_WX_SPHERE, 12·Nw²).
+StateS = typing.NamedTuple("StateS", [*State3.__annotations__.items(), ("hdg", mx.array)])
+StateS.__module__ = __name__
+StateS.__doc__ = (
+    "The state of a sphere world (§46.2): ``State3``'s 50 fields in the same order, then ``hdg``."
+)
+StateS.env = State.env  # type: ignore[attr-defined]  # the same read-only view
+
+EXTRA_SPHERE_FIELDS: Final = ("hdg",)  # appended after State3's fields (per-agent, leading dim N)
+AGENT_FIELDS_S: Final = AGENT_FIELDS_3D + EXTRA_SPHERE_FIELDS
+N_WX_SPHERE: Final = 11  # h1, h2, the two layers' tangent velocities (6 planes), Q, P, Dc (DESIGN §46.6)
+
+
+def is_sphere_state(s: object) -> bool:
+    """True for a sphere state of any extension set (``"hdg" in type(s)._fields``)."""
+    return "hdg" in type(s)._fields
+
+
 def is_3d_state(s: object) -> bool:
     """True for a 3D state of any extension set (``"pitch" in type(s)._fields``): the type test that replaces
     ``isinstance(s, State3)``, since a state with extension fields is a generated class (DESIGN §43.2)."""
@@ -414,32 +437,34 @@ def is_3d_state(s: object) -> bool:
 
 
 @functools.cache
-def _ext_cls(nd: int, names: tuple[str, ...]) -> type:
-    """The state type with the extension fields ``names`` after the whole base type (``State``/``State3``),
-    built once and cached; ``env`` is attached (the read-only view)."""
-    base = State3 if nd == 3 else State
+def _ext_cls(nd: int, names: tuple[str, ...], sph: bool = False) -> type:
+    """The state type with the extension fields ``names`` after the whole base type (``State``/``State3``, or
+    ``StateS`` on a sphere), built once and cached; ``env`` is attached (the read-only view)."""
+    base = StateS if sph else State3 if nd == 3 else State
     cls = typing.NamedTuple(base.__name__, [*base.__annotations__.items(), *((n, mx.array) for n in names)])
     cls.__module__ = __name__
     cls.env = State.env  # type: ignore[attr-defined]
     return cls
 
 
-def state_cls(cfg: Config) -> type[State] | type[State3]:
-    """The state type of a config: ``State3`` for a 3D world, else ``State``; with an enabled feature that
-    has state fields, a generated class with those fields appended after the base fields (the exact class when
-    no extension field is on, so feature-off states, digests and checkpoints are today's)."""
+def state_cls(cfg: Config) -> type[State] | type[State3] | type[StateS]:
+    """The state type of a config: ``StateS`` for a sphere world, ``State3`` for a 3D world, else ``State``;
+    with an enabled feature that has state fields, a generated class with those fields appended after the base
+    fields (the exact class when no extension field is on, so feature-off states, digests and checkpoints are
+    today's)."""
     nd = 3 if is_3d(cfg) else 2
+    sph = dims(cfg).sph
     names = tuple(f.name for f in ext.state_fields(cfg, nd))
     if not names:
-        return State3 if nd == 3 else State
-    return _ext_cls(nd, names)  # type: ignore[return-value]
+        return StateS if sph else State3 if nd == 3 else State
+    return _ext_cls(nd, names, sph)  # type: ignore[return-value]
 
 
 def agent_fields(cfg: Config) -> tuple[str, ...]:
     """The per-agent (leading dim N) fields of a config's state type, in canonical order."""
     nd = 3 if is_3d(cfg) else 2
     extra = tuple(f.name for f in ext.state_fields(cfg, nd) if f.per_agent)
-    return (AGENT_FIELDS_3D if nd == 3 else AGENT_FIELDS) + extra
+    return (AGENT_FIELDS_S if dims(cfg).sph else AGENT_FIELDS_3D if nd == 3 else AGENT_FIELDS) + extra
 
 
 def _pad_rows(a: mx.array, n: int) -> mx.array:
@@ -466,8 +491,39 @@ def volume_kinematics(
     return ops.wrap_xy_clamp_z(pos, L, d.z_lo, d.z_hi), heading, pitch
 
 
-def _initial_state(cfg: Config) -> State | State3:
-    """The (unevaluated) initial state of §2.2 (``State3`` in 3D, §27.4); ``init_state`` evaluates it."""
+def sphere_kinematics(
+    k_pos: mx.array, k_head: mx.array, n: int, cfg: Config
+) -> tuple[mx.array, mx.array, mx.array, mx.array]:
+    """``(pos (n,3), hdg (n,3), heading (n,), pitch (n,))`` uniform in the shell by volume (DESIGN §46.5):
+    founders and immigrants. One ``(n, 3)`` uniform draw ``(a, b, c)`` of ``k_pos`` gives the direction
+    (``cos θ = 2a − 1``, ``λ = 2πb``, equal area) and the distance ``r³ = r_lo³ + c·(r_hi³ − r_lo³)`` (equal
+    volume), with the float32 bounds ``Dims.r_lo``/``r_hi``; one ``(n, 2)`` draw of ``k_head`` gives the yaw
+    and the pitch exactly as in the box. The yaw is the bearing from local north: ``hdg = cos(yaw)·north +
+    sin(yaw)·east``, so ``sphere.bearing(hdg, pos) = yaw``. The keys are the 2D ones with sphere shapes: no
+    new stream and no RNG layout bump."""
+    d, pm = dims(cfg), layout.PITCH_MAX
+    u = mx.random.uniform(0.0, 1.0, (n, 3), key=k_pos)
+    lo3, hi3 = d.r_lo**3, d.r_hi**3
+    rho = mx.clip(mx.power(lo3 + u[:, 2] * (hi3 - lo3), 1.0 / 3.0), d.r_lo, d.r_hi)
+    up = fields_sph.sphere_point(u[:, 0], u[:, 1])
+    angles = mx.random.uniform(mx.array([-math.pi, -pm]), mx.array([math.pi, pm]), (n, 2), key=k_head)
+    yaw, pitch = ops.wrap_angle(angles[:, 0]), mx.clip(angles[:, 1], -pm, pm)
+    east, north = ops.local_frame_s(up)
+    hdg = mx.cos(yaw)[:, None] * north + mx.sin(yaw)[:, None] * east
+    return up * rho[:, None], hdg, yaw, pitch
+
+
+def rest_wx(cfg: Config, step: mx.array | int = 0) -> mx.array:
+    """The rest ``State.wx`` of a config: ``weather.rest_array`` in a box; on a sphere an all-zero
+    ``(N_WX_SPHERE, 12·Nw²)`` placeholder (the weather of the sphere, and its rest state, are S4's)."""
+    if dims(cfg).sph:
+        return mx.zeros((N_WX_SPHERE, 12 * dims(cfg).wn ** 2), dtype=mx.float32)
+    return weather.rest_array(cfg, step)
+
+
+def _initial_state(cfg: Config) -> State | State3 | StateS:
+    """The (unevaluated) initial state of §2.2 (``State3`` in 3D, §27.4; ``StateS`` on a sphere, §46.2);
+    ``init_state`` evaluates it."""
     d = dims(cfg)
     n, m, n0, L = d.n, d.m, cfg.population.n_init, cfg.world.size
     mu = cfg.mutation
@@ -475,7 +531,11 @@ def _initial_state(cfg: Config) -> State | State3:
     rows = mx.arange(n, dtype=mx.int32)
     alive = rows < n0
 
-    if d.d3:  # static: uniform in the volume, from the 2D keys with 3D-only shapes (§27.4)
+    if d.sph:  # static: uniform in the shell by volume, from the 2D keys with sphere shapes (§46.5)
+        pos, hdg, heading, pitch = sphere_kinematics(
+            ik[rng.InitStream.POS], ik[rng.InitStream.HEADING], n0, cfg
+        )
+    elif d.d3:  # static: uniform in the volume, from the 2D keys with 3D-only shapes (§27.4)
         pos, heading, pitch = volume_kinematics(ik[rng.InitStream.POS], ik[rng.InitStream.HEADING], n0, cfg)
     else:
         pos = ops.wrap(mx.random.uniform(0.0, L, (n0, 2), key=ik[rng.InitStream.POS]), L)
@@ -532,9 +592,16 @@ def _initial_state(cfg: Config) -> State | State3:
         ledger_cum=full((N_LEDGER,), 0, mx.int64),
         diag=mx.array(0, dtype=mx.int32),
         **default_env(cfg),
-        wx=weather.rest_array(cfg),
+        wx=rest_wx(cfg),
     )
-    if d.d3:  # static: dead rows rest on the floor at (0, 0, z_lo); every row's cap starts at buoy_init
+    if d.sph:  # static: dead rows rest at (0, 0, r_lo) heading along x; every row's cap starts at buoy_init
+        s = StateS(
+            *s._replace(pos=mx.where(alive[:, None], s.pos, mx.array([0.0, 0.0, d.r_lo]))),
+            pitch=_pad_rows(pitch, n),
+            buoy_cap=full((n,), mu.buoy_init, mx.float32),
+            hdg=mx.where(alive[:, None], _pad_rows(hdg, n), mx.array([1.0, 0.0, 0.0])),
+        )
+    elif d.d3:  # static: dead rows rest on the floor at (0, 0, z_lo); every row's cap starts at buoy_init
         s = State3(
             *s._replace(pos=mx.where(alive[:, None], s.pos, mx.array([0.0, 0.0, d.z_lo]))),
             pitch=_pad_rows(pitch, n),
@@ -546,7 +613,7 @@ def _initial_state(cfg: Config) -> State | State3:
     return s._replace(total=total, total0=total)
 
 
-def init_state(cfg: Config) -> State | State3:
+def init_state(cfg: Config) -> State | State3 | StateS:
     """Founders in rows ``[0, n_init)``, canonical dead rows elsewhere, seeded by ``run.seed``; evaluated."""
     s = _initial_state(cfg)
     mx.eval(s)
@@ -591,8 +658,8 @@ def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]:
         "pend_W2": ((m, d.w2_rows, d.lay.D_OUT), wd),
         "resource": (d.field_shape, i32),
         "chem": ((layout.NCH, *d.field_shape), f32),
-        "patch_pos": ((d.pp, 2), f32),
-        "patch_vel": ((d.pp, 2), f32),
+        "patch_pos": ((d.pp, 3 if d.sph else 2), f32),  # a sphere: unit vectors
+        "patch_vel": ((d.pp, 3 if d.sph else 2), f32),  # a sphere: angular velocities
         "key": ((2,), mx.uint32),
         "step": ((), i32),
         "next_uid": ((), i64),
@@ -609,8 +676,9 @@ def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]:
         "env_cat_center": ((2,), f32),
         "env_cat_radius": ((), f32),
         "env_cat_kill_p": ((), f32),
-        "wx": ((weather.N_WX, d.wn, d.wn), f32),
+        "wx": ((N_WX_SPHERE, 12 * d.wn * d.wn) if d.sph else (weather.N_WX, d.wn, d.wn), f32),
         **({"pitch": ((n,), f32), "buoy_cap": ((n,), f32)} if d.d3 else {}),  # State3 (§27.4)
+        **({"hdg": ((n, 3), f32)} if d.sph else {}),  # StateS (§46.2): after the State3 fields
         **{f.name: (f.shape(d), f.dtype) for f in ext.state_fields(cfg, d.nd)},  # extension fields (§43.2)
     }
 
@@ -642,13 +710,21 @@ def state_from_arrays(d: Mapping[str, mx.array], cfg: Config | None = None) -> S
     pools of the step it resumes at (a calm start: the storms need their spin-up, DESIGN §30).
     """
     keys = set(d)
-    cls = state_cls(cfg) if cfg is not None else State3 if set(EXTRA_3D_FIELDS) <= keys else State
+    cls = (
+        state_cls(cfg)
+        if cfg is not None
+        else StateS
+        if set(EXTRA_SPHERE_FIELDS) <= keys
+        else State3
+        if set(EXTRA_3D_FIELDS) <= keys
+        else State
+    )
     want = set(cls._fields)
     if cfg is not None and keys < want and "step" in keys:
         ext_names = {f.name for f in ext.state_fields(cfg, dims(cfg).nd)}
         fillable = ((set(ENV_FIELDS) | {"wx"}) if not is_3d(cfg) else {"wx"}) | ext_names
         if (want - keys) <= fillable:
-            wx = {"wx": weather.rest_array(cfg, d["step"])} if "wx" in want - keys else {}
+            wx = {"wx": rest_wx(cfg, d["step"])} if "wx" in want - keys else {}
             env = default_env(cfg) if (want - keys) & set(ENV_FIELDS) else {}
             rest = {f.name: f.rest(cfg) for f in ext.state_fields(cfg, dims(cfg).nd) if f.name in want - keys}
             d = {**env, **wx, **rest, **d}

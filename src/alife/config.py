@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 import mlx.core as mx
 import numpy as np
 
-from alife import ext, geom, layout, weather
+from alife import ext, fieldtab, geom, layout, ops, weather
 from alife.weather import DEFAULT_POOLS as _WEATHER_POOLS
 
 log = logging.getLogger(__name__)
@@ -1219,6 +1219,41 @@ def _validate_sphere(cfg: Config) -> list[str]:
     return errs
 
 
+def _validate_sphere_fields(cfg: Config) -> list[str]:
+    """The rules of the sphere's fields (DESIGN §46.5, sphere series S1), from the conductance tables. Called
+    only when the geometry rules of ``_validate_sphere`` passed (the tables need a sane shell).
+
+    The integer resource diffusion needs ``Σ_j α_ij <= 0.9`` in every cell (``α_ij = d_q8·w_ij / 2^16``), i.e.
+    ``d_q8 <= floor(0.9·2^16 / rowsum_max)`` (11, 11, 14 for the three presets), and then the cap bound
+    ``R <= R_HARD`` is verified exhaustively on the actual tables (``ops.check_diffusion_tables``). The patch
+    drift is a rotation by a series that is exact to 1e-14 for ``|ω| <= 0.05`` (``fields_sph.rotate``), also
+    at the director's largest ``drift_mult`` (10). The chemical sub-step count is derived, not a rule."""
+    w, fi = cfg.world, cfg.fields
+    errs: list[str] = []
+    cond = fieldtab.conductance(*fieldtab.shell(cfg))
+    bound = cond.d_q8_max()
+    if fi.resource_diffusion_q8 > bound:
+        errs.append(
+            f"fields.resource_diffusion_q8 {fi.resource_diffusion_q8} must be <= {bound} on this shell "
+            f"(the largest row of pair weights sums to {cond.rowsum_max}/256; the content a cell sends away "
+            "per step must stay below 0.9 of it)"
+        )
+    else:
+        try:
+            ops.check_diffusion_tables(
+                cond.wt * fi.resource_diffusion_q8, cond.wz * fi.resource_diffusion_q8, R_HARD
+            )
+        except ValueError as e:
+            errs.append(f"fields.resource_diffusion_q8 {fi.resource_diffusion_q8}: {e}")
+    if fi.patch_drift * 10.0 > 0.05 * w.radius:
+        errs.append(
+            f"fields.patch_drift {fi.patch_drift} must be <= 0.005·world.radius = {0.005 * w.radius} "
+            "(a patch rotates by |ω| = drift/radius per step, which the series needs below 0.05 at the "
+            "director's largest drift_mult)"
+        )
+    return errs
+
+
 def validate(cfg: Config) -> None:
     """Check every rule of §17 (plus basic sanity); raise one ConfigError listing all problems."""
     w, pop, sen, br = cfg.world, cfg.population, cfg.sensing, cfg.brain
@@ -1321,7 +1356,10 @@ def validate(cfg: Config) -> None:
                     f"{sec}.{key} is inert while world.geometry is box: it must keep its default",
                 )
     else:
-        errs.extend(_validate_sphere(cfg))
+        sphere_errs = _validate_sphere(cfg)
+        errs.extend(sphere_errs)
+        if not sphere_errs:  # the field tables need a sane shell
+            errs.extend(_validate_sphere_fields(cfg))
     if d3:
         h = w.height
         req(

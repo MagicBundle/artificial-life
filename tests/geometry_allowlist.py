@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CURRENT_PR = 0  # the sphere series' PR this tree is: S0. Bump it in each PR (S1 sets 1, ...)
+CURRENT_PR = 1  # the sphere series' PR this tree is: S1. Bump it in each PR (S2 sets 2, ...)
 REASONS = ("pair", "box-only tool", "definition", "box branch", "converted")
 
 
@@ -101,13 +101,19 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("ext/structures.py", "world.height", 1, "converted", 3),
     Allow("ext/structures.py", "world.field_cell", 2, "converted", 3),
     Allow("ext/structures.py", "lattice", 2, "converted", 3),
-    # fields.py: resource, chemicals, cell index, patches (S1)
-    Allow("fields.py", "z_index", 1, "converted", 1),
-    Allow("fields.py", "xy_slice", 1, "converted", 1),
-    Allow("fields.py", "wrap", 4, "converted", 1),
-    Allow("fields.py", "world.size", 3, "converted", 1),
-    Allow("fields.py", "world.field_cell", 4, "converted", 1),
-    Allow("fields.py", "lattice", 21, "converted", 1),
+    # fields.py: resource, chemicals, cell index, patches. S1 converted it: every function the sphere replaces
+    # dispatches on `dims(cfg).sph` to `fields_sph` and keeps its box half (the counts below are the box
+    # halves). The 21 lattice reads include 3 in `mat_colour` / `update_mat` (the material, converted in S3)
+    Allow("fields.py", "z_index", 1, "box branch"),
+    Allow("fields.py", "xy_slice", 1, "box branch"),
+    Allow("fields.py", "wrap", 4, "box branch"),
+    Allow("fields.py", "world.size", 3, "box branch"),
+    Allow("fields.py", "world.field_cell", 4, "box branch"),
+    Allow("fields.py", "lattice", 21, "converted", 3),
+    # fields_sph.py (S1): the sphere's fields; the shell thickness and the nominal cell side are sphere
+    # quantities here (the gradient scale `field_cell` keeps the box's input magnitudes)
+    Allow("fieldtab.py", "world.height", 1, "definition"),
+    Allow("fields_sph.py", "world.field_cell", 1, "definition"),
     # game/observe.py: the G1 observer's quantised z (S5)
     Allow("game/observe.py", "z_index", 1, "converted", 5),
     Allow("game/observe.py", "world.height", 1, "converted", 5),
@@ -185,10 +191,12 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("sphere.py", "world.size", 1, "definition"),
     Allow("sphere.py", "world.height", 3, "definition"),
     Allow("sphere.py", "lattice", 5, "definition"),
-    # state.py: init, cell layout (S1)
-    Allow("state.py", "wrap", 2, "converted", 1),
-    Allow("state.py", "world.size", 2, "converted", 1),
-    Allow("state.py", "lattice", 3, "converted", 1),
+    # state.py: S1 converted it: the sphere branches of `_initial_state` and `expected_layout` use the
+    # geometry-aware `Dims` (`field_shape` is (FZ, Npix) on a sphere); the wrap and size
+    # reads are the box halves
+    Allow("state.py", "wrap", 2, "box branch"),
+    Allow("state.py", "world.size", 2, "box branch"),
+    Allow("state.py", "lattice", 3, "definition"),
     # step.py: step wiring (S2)
     Allow("step.py", "lattice", 6, "converted", 2),
     # stream.py: stream v2 (S5)
