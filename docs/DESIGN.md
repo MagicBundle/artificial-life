@@ -13402,7 +13402,8 @@ spurious "language"); `test_ext_salts.py` pins the table and checks every pair f
   `state.counter_index(cfg, name)` (consumers use names, never offsets; names are globally unique);
   `metrics.interval_row(..., blocks=)` and the viewer take the blocks, and a row adds `prot_capped_frac` when the protect
   block exists. The `protect` block (`PROT_CAPPED`) exists when `combat.protect_floor > 0`; the feature blocks are
-  `arms` 5, `structures` 10, `bonds` 5, `comm` 2, `niche` 5 counters (names in the plan; declared by each feature).
+  `arms` 5, `structures` 11, `bonds` 5, `comm` 2, `niche` 7 counters (names in the plan; declared by each feature; the
+  farm block is `FARMERS FARM_YIELD SOIL_PUT SOIL_WASTED SOIL_DECAYED SOIL_TOTAL SLOTS_FULL`, §41.8).
 
 ### 43.5 Flags, `Acts.ext`, observer registries
 
