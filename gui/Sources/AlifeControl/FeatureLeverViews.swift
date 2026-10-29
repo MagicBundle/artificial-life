@@ -7,12 +7,8 @@ import SwiftUI
 struct FeatureLeverSections: View {
     @ObservedObject var controller: RunController
 
-    private var settings: RunSettings { controller.settings }
-    private var isFork: Bool { settings.mode == .fork }
-    private var isNew: Bool { settings.mode == .new }
-
     var body: some View {
-        ForEach(Array(FeatureLevers.groups.enumerated()), id: \.element.feature) { _, group in
+        ForEach(FeatureLevers.groups, id: \.feature) { group in
             FeatureLeverBox(controller: controller, group: group)
         }
     }
