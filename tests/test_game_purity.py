@@ -178,19 +178,57 @@ def test_observing_does_not_change_the_trajectory(
     )
 
 
+# The worlds of the feature extensions (DESIGN §43.5): observing one changes no state value and no ``StepOut``
+# field, with the feature's own channel (``Acts.ext``) and counters in play. Value tests: the structural
+# probes
+# above are written for the base channel (the feature sub-tuples read more trajectory arrays by design, all
+# integers after the quantisation, DESIGN §38.9 to §42.6), so Metal's answer is this comparison.
+FEATURE_WORLDS = [
+    pytest.param("tiny3d", ["structures.enabled=true"], id="structures-3d"),
+    pytest.param("storm3d", ["structures.enabled=true"], id="structures-storm3d"),
+    pytest.param(
+        "tiny",
+        ["arms.enabled=true", "arms.kappa=2", "arms.key_floor=0.2", "arms.init_atk=0.3", "arms.init_arm=0.4"],
+        id="arms-2d",
+    ),
+    pytest.param("tiny3d", ["comm.enabled=true"], id="comm-3d"),
+    pytest.param("tiny3d", ["roles.enabled=true", "bonds.share_mode=1"], id="bonds-3d"),
+    pytest.param(
+        "tiny3d",
+        ["structures.enabled=true", "comm.enabled=true", "roles.enabled=true", "bonds.share_mode=1"],
+        id="structures-comm-bonds-3d",
+    ),
+]
+
+
+@pytest.mark.parametrize(("preset", "overrides"), FEATURE_WORLDS)
+def test_observing_a_feature_world_does_not_change_the_trajectory(preset: str, overrides: list[str]) -> None:
+    cfg = _channel_config(preset, ["brain.weight_dtype=float32", *overrides])
+    off, on = make_step(cfg), make_step(cfg, observe=True)
+    s_off = s_on = init_state(cfg)
+    for t in range(40):
+        s_off, o_off = off(s_off)
+        mx.eval(s_off, o_off)
+        s_on, o_on = on(s_on)
+        mx.eval(s_on, *o_on)
+        assert state_digest(s_off) == state_digest(s_on), f"step {t}"
+        assert _same(o_off, o_on.base()), f"step {t}"
+    assert o_on.acts.ext is not None  # the feature's channel ran
+
+
 def test_observer_inputs_exclude_the_key() -> None:
     """The observer reads a handful of State fields and never the RNG key or the weights (§28.1). Version 3
     adds the position, the buoyancy capacity and the weather (§32), set only for a wind-relative rule set."""
     assert set(ObsIn._fields) == {
         "alive", "uid", "parent_uid", "partner", "vel", "last_harvest", "last_inflow", "last_loss",
-        "energy", "brain_cost", "pos", "buoy_cap", "wx",
+        "energy", "brain_cost", "pos", "buoy_cap", "wx", "mat",
     }  # fmt: skip
     assert "key" not in ObsIn._fields
     assert not {"W1", "W2", "pend_W1", "pend_W2", "h", "msg", "tag"} & set(ObsIn._fields)
     s = init_state(load_config(preset="tiny", overrides=["brain.weight_dtype=float32"]))
     oi = obs_in(s)
     assert all(a is getattr(s, f) for f, a in zip(ObsIn._fields[:10], oi[:10], strict=True))
-    assert oi.pos is None and oi.buoy_cap is None and oi.wx is None  # the version-2 view
+    assert oi.pos is None and oi.buoy_cap is None and oi.wx is None and oi.mat is None  # the version-2 view
     s3 = init_state(load_config(preset="tiny3d", overrides=["brain.weight_dtype=float32"]))
     oi3 = obs_in(s3, RULES_V3)
     assert oi3.pos is s3.pos and oi3.buoy_cap is s3.buoy_cap and oi3.wx is s3.wx
@@ -245,6 +283,22 @@ def _parse_dot(path: Path) -> tuple[dict[str, str], dict[str, str], dict[str, li
         elif m := _DOT_OUT.match(line):
             producer[m.group(2)] = m.group(1)
     return labels, producer, inputs
+
+
+def _flat_channel(acts) -> list[tuple[str, mx.array]]:
+    """The arrays of an ``Acts`` by field name; the feature sub-tuples of ``Acts.ext`` (DESIGN §43.5) as
+    ``ext_<feature>_<field>``. None leaves are left out."""
+    out: list[tuple[str, mx.array]] = []
+    for name, a in zip(acts._fields, acts, strict=True):
+        if name == "ext" and a is not None:
+            for feat, sub in zip(a._fields, a, strict=True):
+                if sub is not None:
+                    out += [
+                        (f"ext_{feat}_{k}", v) for k, v in zip(sub._fields, sub, strict=True) if v is not None
+                    ]
+        elif a is not None:
+            out.append((name, a))
+    return out
 
 
 def _channel_taps(
@@ -343,9 +397,10 @@ def _channel_taps(
     # that, if it is a trajectory array, its producer is found (a field with no op is nobody's input)
     seen = {id(a) for a in allowed.values()}
     fields: dict[str, mx.array] = {}
-    present = [a for a in out.acts if a is not None]  # Acts.buoy is None in 2D
-    for name, a in zip(out.acts._fields, out.acts, strict=True):
-        if a is not None and id(a) not in seen:
+    channel = _flat_channel(out.acts)  # Acts.buoy is None in 2D; Acts.ext holds the features' sub-tuples
+    present = [a for _, a in channel]
+    for name, a in channel:
+        if id(a) not in seen:
             seen.add(id(a))
             fields[f"acts_{name}"] = a
     mx.export_to_dot(str(f_acts), *present, **allowed, **fields)

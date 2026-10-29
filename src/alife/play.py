@@ -51,6 +51,7 @@ from alife.config import Config, config_hash, dims, immigration_on
 from alife.director import actions as director_actions
 from alife.director import log as director_log
 from alife.director import pacing, rules
+from alife.ext.bonds import bonds_ext
 from alife.game import alerts as alerts_mod
 from alife.game import observer as observer_mod
 from alife.game import powers as powers_mod
@@ -160,6 +161,47 @@ _CLASS = re.compile(r"[a-z][a-z0-9_]*")
 _UINT = re.compile(r"[0-9]+")
 _DECIMAL = re.compile(r"[0-9]+(\.[0-9]+)?")
 INT64_MAX: Final = 2**63 - 1
+
+
+def ext_cells(cfg: Config) -> tuple[tuple[str, str, int], ...]:
+    """``(tag, State field, cap)`` of the sparse cell records the world sends (DESIGN §38.9, §41.14): ``STRC``
+    for
+    the built material while structures are on, ``FSOL`` for the soil while farming is."""
+    cells: list[tuple[str, str, int]] = []
+    if cfg.structures.enabled:
+        cells.append(("STRC", "mat", cfg.structures.cap))
+    if cfg.niche.farm:
+        cells.append(("FSOL", "soil", cfg.niche.farm_cap))
+    return tuple(cells)
+
+
+def ext_header(cfg: Config, d: Any) -> dict[str, Mapping[str, Any]]:
+    """The optional ``play`` header blocks of the features that are on (``structures``, ``comm``,
+    ``bonds``)."""
+    cells = [d.fz, d.fg, d.fg]
+    blocks = (
+        (
+            "structures",
+            cfg.structures.enabled,
+            lambda: streamrec.cells_block(cap=cfg.structures.cap, cells=cells, cell=cfg.world.field_cell),
+        ),
+        (
+            "comm",
+            cfg.comm.enabled,
+            lambda: streamrec.comm_block(
+                w=d.voice_w, hear_range=float(d.ext("comm").hear_range), control=cfg.comm.control
+            ),
+        ),
+        ("bonds", bonds_ext(cfg), lambda: streamrec.bonds_block(scale=cfg.bonds.share_rate)),
+        (
+            "niche",
+            cfg.niche.farm,
+            lambda: streamrec.cells_block(
+                cap=cfg.niche.farm_cap, cells=cells, cell=cfg.world.field_cell, farm=True
+            ),
+        ),
+    )
+    return {name: make() for name, on, make in blocks if on}
 
 
 def check_tick(tick: int) -> None:
@@ -770,6 +812,13 @@ class PlayPacer:
         self._stop_check: Callable[[], bool] = lambda: False
         self._tick = PLAY_TICK
         self._t = 0
+        # the stream the features that are on add (DESIGN §43.5), set in bind
+        self._modes: tuple[str, ...] = streamrec.COLOR_MODES  # + ``role`` while the bonds feature is on
+        self._cells: tuple[
+            tuple[str, str, int], ...
+        ] = ()  # (tag, State field, cap) of the sparse cell records
+        self._bond_flow = False  # FRMA carries the flow of each bond (bonds feature)
+        self._voice_w = 0  # the voice channels of the FSIG record (0: comm is off)
         # presentation state
         self.color = "tag"
         self.labels_on = True
@@ -917,6 +966,12 @@ class PlayPacer:
             or (t == "RPRT" and self._reports_wanted())
             or (t in ("MAP1", "STRM") and self.layer is not None)
         ]
+        self._modes = (*streamrec.COLOR_MODES, *(streamrec.EXT_COLOR_MODES if bonds_ext(cfg) else ()))
+        self._bond_flow = bonds_ext(cfg)
+        self._voice_w = d.voice_w if cfg.comm.enabled else 0
+        self._cells = ext_cells(cfg)
+        sent = {c[0] for c in self._cells} | ({"FSIG"} if self._voice_w else set())
+        records += [t for t in streamrec.EXT_TAGS if t in sent]  # the feature tags, in extension order
         legacy = streamrec.legacy_header(
             dims=d.nd,
             size=cfg.world.size,
@@ -932,6 +987,7 @@ class PlayPacer:
             run=self.opt.run,
             config_hash=config_hash(cfg),
             source=self.opt.source,
+            color_modes=self._modes,
         )
         powers = self.desk.header()
         play = streamrec.header_play(
@@ -955,6 +1011,7 @@ class PlayPacer:
             powers=powers,
             game_specs=director_actions.GAME_SPEC_VERSION if powers is not None else None,
             saves=streamrec.saves_block(mode=self.saves, keep=cfg.run.keep_checkpoints, adopted=rd.adopted),
+            **ext_header(cfg, d),
         )
         self._write("HEAD", streamrec.play_header_bytes(legacy, play))
         self._backlog(rd, state)
@@ -962,6 +1019,7 @@ class PlayPacer:
         self._send_tables(state)
         self._send_environment(state)
         self._send_weather(state)
+        self._send_cells(state)
         self._flush_events(backlog=True)
         self._send_alert_backlog()
         self._open_reports()
@@ -1126,6 +1184,7 @@ class PlayPacer:
         if t % self._tick == 0:
             if self.layer is not None:
                 self._tick_storms(state, t)
+            self._send_cells(state)
             if self.obs is not None and self.labels_on:
                 self._send_labels(state)
         self._follow_step(state, out, t)
@@ -1216,7 +1275,7 @@ class PlayPacer:
         """Apply control lines one at a time, in order, writing what each asks for before the next is looked
         at (so the output does not depend on how the pipe chunked the lines). True after ``quit``, which drops
         the rest."""
-        modes = streamrec.COLOR_MODES
+        modes = self._modes
         for line in lines:
             try:
                 cmd = parse_play_command(line, modes=modes)
@@ -1617,6 +1676,7 @@ class PlayPacer:
             "diag": state.diag,
             "rgb": colors,
             **({"pitch": pitch} if pitch is not None else {}),
+            **({"bond_flow": state.bond_flow} if self._bond_flow else {}),
         }
         mx.eval(*dev.values())
         h = {k: to_numpy(v) for k, v in dev.items()}
@@ -1629,6 +1689,11 @@ class PlayPacer:
         drawn = (partner > rows) & alive[:, None] & alive[np.maximum(partner, 0)]
         ii, bb = np.nonzero(drawn)  # row-major: ascending row, then slot
         pairs = np.stack([ii, partner[ii, bb]], axis=1)
+        flow = None
+        if self._bond_flow:  # bonds feature: the flow along each drawn bond, lower row to higher row (§40.7)
+            share = self.cfg.bonds.share_rate
+            net = h["bond_flow"][ii, bb].astype(np.float64)  # received minus sent at the lower end
+            flow = np.rint(127.0 * np.clip(-net / share, -1.0, 1.0)).astype(np.int8)
         span = 0 if self._last_frame_step < 0 else self._t - self._last_frame_step
         self._send(
             "FRMA",
@@ -1641,9 +1706,10 @@ class PlayPacer:
                 rgb=h["rgb"],
                 uid=h["uid"],
                 bonds=pairs,
-                color_index=streamrec.COLOR_MODES.index(mode),
+                color_index=self._modes.index(mode),
                 span=span,
                 diag_error=bool(int(h["diag"]) & ERROR_MASK),
+                flow=flow,
             ),
         )
         self._last_frame_step = self._t
@@ -1784,6 +1850,20 @@ class PlayPacer:
             return
         self._write_weather(self.layer.current(W.unpack(state.wx), self._t, **self._shade(state)))
 
+    def _send_cells(self, state: State) -> None:
+        """The sparse cell records of the features that are on (``STRC`` the built material, ``FSOL`` the
+        soil):
+        the whole layer, at start and at every tick (DESIGN §38.9)."""
+        d = dims(self.cfg)
+        for tag, field_name, cap in self._cells:
+            grid = to_numpy(getattr(state, field_name))
+            self._send(
+                tag,
+                lambda step, seq, tag=tag, grid=grid, cap=cap: streamrec.encode_cells(
+                    tag, step=step, seq=seq, shape=(d.fz, d.fg, d.fg), grid=grid, cap=cap
+                ),
+            )
+
     def _send_environment(self, state: State) -> None:
         obj = environment_object(
             state, self.cfg, self.director, self._t, self.layer.p if self.layer else None, desk=self.desk
@@ -1854,6 +1934,12 @@ class PlayPacer:
             "generation": state.generation[row],
             "parent": state.parent_uid[row],
             "bonds": (state.partner[row] >= 0).sum(),
+            **({"says": state.msg[row, layout.MSG : layout.MSG + self._voice_w]} if self._voice_w else {}),
+            **(
+                {"heard": obs.comm_last[0][row], "audible": obs.comm_last[1][row]}
+                if self._voice_w and obs is not None and obs.comm_last is not None
+                else {}
+            ),
             **(
                 {
                     "house": obs.so.house[row],
@@ -1920,6 +2006,17 @@ class PlayPacer:
                     | (int(r["intent"] != r["held"]) << 1),
                 }
         self._send("FOCS", lambda step, seq: streamrec.encode_focs(step=step, seq=seq, uid=uid, row=row, **f))
+        if r is not None and "says" in r:  # the voice features: what the organism says and hears (§39.8)
+            says = np.minimum(np.floor(256.0 * r["says"].astype(np.float64)), 255).astype(np.uint8)
+            # the observer channel's heard half is already the wire value, round(255·heard) as uint8
+            hears = r["heard"].astype(np.uint8) if "heard" in r else None
+            audible = int(r["audible"]) if "audible" in r else 0
+            self._send(
+                "FSIG",
+                lambda step, seq: streamrec.encode_fsig(
+                    step=step, seq=seq, uid=uid, says=says, hears=hears, audible=audible
+                ),
+            )
 
     def _follow_step(self, state: State, out: StepOut, t: int) -> None:
         """After a step: report the focused organism (about 4 per second; every step while followed). While

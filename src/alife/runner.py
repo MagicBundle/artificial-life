@@ -213,10 +213,33 @@ def _dump_arrays(state: State, out: Any, obs: Observer | None, cfg: Config, t: i
     wx = ru.wx_every > 0 and t % ru.wx_every == 0
     cols = tracers.eco_arrays(state, out.acts, obs.tr, cfg) if eco and obs is not None else {}
     planes = {"wx": tracers.wx_planes(state, cfg)} if wx else {}
+    if ru.mat_every > 0 and t % ru.mat_every == 0:  # structures: the built material (DESIGN §38.9)
+        planes["mat"] = state.mat
+    if ru.niche_every > 0 and t % ru.niche_every == 0:  # farming: the soil (DESIGN §41.14)
+        planes["niche"] = state.soil
+    if ru.arms_every > 0 and t % ru.arms_every == 0:  # arms: the columns of a trait sample (DESIGN §42.6)
+        n_bonds = (state.partner >= 0).sum(axis=1).astype(mx.int8)
+        arms_cols = {
+            "alive": state.alive, "uid": state.uid, "generation": state.generation, "clade": state.clade,
+            "birth_step": state.birth_step, "energy": state.energy, "n_bonds": n_bonds, "traits": state.arms,
+        }  # fmt: skip
+        planes.update({f"arms.{k}": v for k, v in arms_cols.items()})
     return {**{f"eco.{k}": v for k, v in cols.items()}, **planes}
 
 
-def _write_dumps(rd: RunDir, dump: dict[str, mx.array], t: int) -> None:
+def arms_sample(host: dict[str, np.ndarray], t: int, dump_n: int) -> dict[str, np.ndarray]:
+    """The columns of ``observers/arms_<step>.npz`` from the whole-array dump (``arms.<column>``): at most
+    ``dump_n`` alive rows, a fixed stride over the alive rows in row order (all of them when there are fewer),
+    ``step`` and the six traits as ``traits`` (ATK, ARM, TOX, SIG, KEY, LOCK)."""
+    alive = host["arms.alive"].astype(bool)
+    rows = np.flatnonzero(alive)
+    if rows.size > dump_n:
+        rows = rows[(np.arange(dump_n, dtype=np.int64) * rows.size) // dump_n]
+    cols = {k[5:]: v[rows] for k, v in host.items() if k.startswith("arms.") and k != "arms.alive"}
+    return {"step": np.array(t, np.int64), **cols}
+
+
+def _write_dumps(rd: RunDir, dump: dict[str, mx.array], t: int, cfg: Config | None = None) -> None:
     """Write the evaluated dumps of step ``t``: the live rows of the ecology columns (sizes in the dump file
     format of DESIGN §32), the weather planes whole."""
     if not dump:
@@ -224,6 +247,13 @@ def _write_dumps(rd: RunDir, dump: dict[str, mx.array], t: int) -> None:
     host = {k: to_numpy(v) for k, v in dump.items()}
     if "wx" in host:
         rd.write_wx(t, host["wx"])
+    if "mat" in host:
+        rd.write_grid("mat", t, host["mat"])
+    if "niche" in host:
+        rd.write_grid("niche", t, host["niche"])
+    if "arms.alive" in host:
+        assert cfg is not None, "the arms sample needs the config (arms.dump_n)"
+        rd.write_arms(t, arms_sample(host, t, cfg.arms.dump_n))
     if "eco.alive" in host:
         live = host["eco.alive"].astype(bool)
         cols = {k[4:]: v for k, v in host.items() if k.startswith("eco.") and k != "eco.alive"}
@@ -386,7 +416,7 @@ def run(
             else:
                 dump = _dump_arrays(state, out, obs, cfg, t + 1)
                 mx.eval(state, out, *dump.values())
-            _write_dumps(rd, dump, t + 1)
+            _write_dumps(rd, dump, t + 1, cfg)
             outs.append(out)
             out_steps.append(t)
             t += 1

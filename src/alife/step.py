@@ -224,7 +224,10 @@ def step(
         fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg)
     desc = sensing.neighbor_descriptors(s, nbr, cfg)  # S5
     ectx = ext.ExtCtx(nbr, desc, geom, fcell)
-    ext_in = ext.step_inputs(s, cfg, ectx)  # the enabled features' brain-tail blocks, in TAIL_ORDER
+    ext_by: dict[str, tuple[mx.array, ...]] | None = (
+        {} if observe else None
+    )  # static: the observer keeps them
+    ext_in = ext.step_inputs(s, cfg, ectx, ext_by)  # the enabled features' brain-tail blocks, in TAIL_ORDER
     if d3:  # static
         x = sensing.build_inputs(
             s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, grounded=gr, ext_in=ext_in
@@ -253,6 +256,12 @@ def step(
         c = en.pay_costs(s.energy, act, nb0, bcost, s.alive, cfg, **due_kw)
         buoy0 = None
     xdec = ext.mask_all(xdec, c.solvent, cfg)  # solvency, as ``actions.mask`` does for the base actions
+    if observe and cfg.comm.enabled:  # static: what the rows heard joins the voice for the observer channel
+        assert ext_by is not None
+        xdec = {
+            **xdec,
+            "comm": comm.with_heard(xdec["comm"], ext_by["comm"][0], comm.audible_count(nbr, desc, cfg)),
+        }
     thrust0 = act.thrust if observe else None  # static: the decode output, which S8 also reads (§28.2)
     y0 = y if observe else None  # static: the brain output the kin queries are quantised from (§29.2)
     act = actions.mask(act, c.solvent)
@@ -276,6 +285,8 @@ def step(
         shield_kw = {**shield_kw, "guard": ef.guard}
     act_c = act if ef is None else roles.combat_act(act, ef.defend_mult)  # the forager's exposed defence
     cb = en.combat(E, resource, fcell, act_c, partner, cfg, **arms.combat_kw(s, cfg), **shield_kw)  # S11
+    if cfg.arms.enabled:  # static: the realised contests, from the start-of-step traits (DESIGN §42.6)
+        xdec = {**xdec, "arms": arms.flows_of(s, mx.maximum(act_c.attack_target, 0), cb, partner, cfg)}
     if observe or bx:  # static: the per-slot flows are kept (channel, bond_flow); the graph equals en.share's
         kin = bonds.slot_kin(s.tag, partner, cfg) if bx and cfg.bonds.share_kin_floor < 1.0 else None
         sl = en.share_slots(cb.energy, partner, rev, s.partner, act, c.solvent, cfg, kin)  # S12
@@ -390,7 +401,7 @@ def step(
     if st_on:  # static: deposit, cap, aperture gate and decay of the material (§38.2, §38.3)
         mat, sflows = structures.update(s.mat, xdec["structures"], fcell, s.alive, dm, t, cfg)
         s2 = s2._replace(mat=mat)
-        xdec = {**xdec, "structures": sflows}
+        xdec = {**xdec, "structures": sflows._replace(cover=sn.cover if sn.cover is not None else sn.here)}
     if wthr:  # static
         s2 = s2._replace(wx=weather.pack(ws2))
     if env is not None:  # static: director enabled
@@ -465,6 +476,12 @@ def _acts(
         flags = flags | f.ext.bonds.switched.astype(u16) * ActFlag.ROLE_SWITCHED.value
     if f.ext is not None and isinstance(f.ext.comm, comm.Voice):  # static: the row said something (§39)
         flags = flags | comm.spoke(f.ext.comm).astype(u16) * ActFlag.SPOKE.value
+    if f.ext is not None and isinstance(f.ext.structures, structures.StructFlows):  # static: built (§38.9)
+        flags = flags | structures.building(f.ext.structures).astype(u16) * ActFlag.BUILDING.value
+    if f.ext is not None and isinstance(
+        f.ext.arms, arms.ArmsFlows
+    ):  # static: a contest reduced the bite (§42.6)
+        flags = flags | arms.contested(f.ext.arms).astype(u16) * ActFlag.CONTESTED.value
     if f.ext is not None and isinstance(f.ext.niche, niche.Flows):  # static: the row put into the soil (§41)
         flags = flags | niche.farming(f.ext.niche).astype(u16) * ActFlag.FARMING.value
     thrust = mx.where(f.costs.solvent, mx.round(256.0 * thrust0).astype(i16), 0)  # = round(256·masked thrust)
@@ -481,8 +498,29 @@ def _acts(
     born_parent = mx.where(birth, f.lanes.parent, -1)
     buoy = mx.where(f.costs.solvent, mx.round(256.0 * buoy0).astype(i16), 0) if buoy0 is not None else None
     xa = None
-    if f.ext is not None and isinstance(f.ext.bonds, bonds.BondFlows):  # static: observer sub-tuples (§43.5)
-        xa = ExtActs(bonds=bonds.acts_of(f.ext.bonds))
+    if f.ext is not None:  # static: the observer sub-tuples of the enabled features (§43.5)
+        parts = {
+            name: sub
+            for name, sub in (
+                ("bonds", bonds.acts_of(f.ext.bonds) if isinstance(f.ext.bonds, bonds.BondFlows) else None),
+                (
+                    "structures",
+                    structures.acts_of(f.ext.structures)
+                    if isinstance(f.ext.structures, structures.StructFlows)
+                    else None,
+                ),
+                ("arms", arms.acts_of(f.ext.arms) if isinstance(f.ext.arms, arms.ArmsFlows) else None),
+                ("niche", niche.acts_of(f.ext.niche) if isinstance(f.ext.niche, niche.Flows) else None),
+                (
+                    "comm",
+                    comm.acts_of(f.ext.comm)
+                    if isinstance(f.ext.comm, comm.Voice) and f.ext.comm.heard is not None
+                    else None,
+                ),
+            )
+            if sub is not None
+        }
+        xa = ExtActs(**parts) if parts else None
     return Acts(
         f.cb.gain, sl.out, sl.got, flags, thrust, defend, emit_q.sum(axis=1).astype(i16),
         f.act.attack_target, f.act.bond_target, q_kin, nbr,

@@ -2636,6 +2636,9 @@ class RunConfig:                       # excluded from config_hash; on resume on
     llm_model: str = "gemma-4-26b-a4b-it-mlx@8bit"               # the model named in each request; resume may change both
     eco_every: int = 0                 # W2 (§32.9): write observers/eco_<step>.npz every N steps (0 = off); needs game.observe, weather, 3D
     wx_every: int = 0                  # write observers/wx_<step>.npy every N steps (0 = off); needs weather; both are resume keys
+    mat_every: int = 0                 # observer PR (§38.9): observers/mat_<step>.npy every N steps (0 = off); needs structures.enabled
+    arms_every: int = 0                # observers/arms_<step>.npz, a trait sample (§42.6); needs arms.enabled
+    niche_every: int = 0               # observers/niche_<step>.npy, the soil (§41.14); needs niche.farm; all three resume keys, absent from config.json at 0
 
 @dataclass(frozen=True)
 class Config:
@@ -10444,6 +10447,23 @@ required numbers where the record has `null` (`sim_self`, `births`, `x`, `y`, `c
 which would have failed the decode of a real record; they are optional now. `TERR.ids` keeps its index meaning: a list of the kin id of each
 slot with -1 for an empty one, so that an owner byte is an index into it. The fixtures are unchanged (their slots are dense).
 
+#### 33.1.15 The records of the feature extensions (PRs S2, C2, B3, F2; observer-only)
+
+Three tags are appended in extension order, `streamrec.EXT_TAGS = (STRC, FSIG, FSOL)`, all version 1, latest-wins, sent only while
+their feature is on and listed in `play.records` only then; a world without the features has the stream and header it always had.
+`FRMA` gains an optional section. Byte layouts (the normative copy is `stream_contract.md` of the observer PR; the independent
+decoder is `tests/play_decode.py`):
+
+* `STRC` (structures) and `FSOL` (farming soil): body `<HHHHI` `nx ny nz flags count`, then `count` `u32` ascending z-major cell
+  indices `(z·ny + y)·nx + x`, then `count` `u8` levels `1 + (254·m)//cap`, zero padded to 4; at most 65 536 cells (`flags` bit 0
+  `FLAG_TRUNC`: the highest levels kept; the head `flags` equal the body `flags`); a record is the complete layer, not a delta.
+  Sent at start and at every `play.tick`. Headers `play.structures` and `play.niche`: `{enabled, cap, cells: [FZ, FG, FG], cell}`.
+* `FSIG` (comm): body `<qBBH` `uid W flags audible`, `W` `u8` says, `W` `u8` hears, padded to 4; after each `FOCS` of a living
+  organism. Header `play.comm = {enabled, w, range, control}`.
+* `FRMA` bond flow (bonds): head flag bit 1 `FLAG_BONDFLOW`; after the bond pairs one `i8` per drawn bond, zero padded to 4;
+  header `play.bonds = {flow, scale}`. A decoder that checks the exact payload length of an `FRMA` must read the flag.
+* An older reader skips the three new tags by length (the forward rule above); `tests/test_observer_stream.py` pins it.
+
 ### 33.2 The play loop
 
 The host pieces the loop is built from (§33.2.1 to §33.2.3), the runner hook, the scheduler,
@@ -12515,12 +12535,44 @@ unchanged, the section is absent from `config.json` while default, and each key 
 false (`validate`). The Director never reaches the structures keys (E24: no menu parameter, env field or policy key carries one,
 no director module names the section; `tests/test_structures_step.py`).
 
-### 38.9 What S1 leaves to S2 and S3
+### 38.9 Observers and stream (PR S2: observer-only, no trajectory change)
 
-Stream record `STRC`, `play.structures`, the `mat` dump kind and its cadence key, `Acts.ext.structures` and the `BUILDING` flag,
-the observers' drift (`labels`, `tracers`, `game.observe`), the inspector, the GUI (map layer, instanced cubes, levers,
-`GUI_LANDED`) and the world `mini3d + build` runs. The registry row declares `metric_prefix = build_`, `act_flag = BUILDING` and
-the overlay `build` but no dump kind, colour mode or stream tag yet (the registry test checks those against `streamrec`).
+* **Observer channel.** `Acts.ext.structures = StructActs(build (N,) int16, cover (N,) int16)`: the deposited units after the
+  solvency mask and `round(256·cover)` of the start-of-step cell (the `cover` the step used; `here` when `reach > 0` but nothing
+  needed the cover column). Both are quantised from values the step already holds; `StructFlows` gained one trailing field,
+  `cover`, set by `step.py` after `structures.update`. `ActFlag.BUILDING` (256) is set on the rows with `units > 0`.
+  `test_game_purity`-style: observing a structures world changes no state value.
+* **Drift audit.** The game observers (`observe.quantise_inputs`, `ObsIn.mat`), the labels re-simulation (`labels.study`), the tracer
+  rig (`tracers.coupling_inputs`, `eco_arrays`) and the emergence recorder (`record.py`) subtract the wind drift from a velocity but
+  did not pass the effects of the material, so a labelled run with weather and structures read a drift far too large inside
+  material (by `1/(1 - shelter_gain)` from the shelter alone, and by `1 + barrier_gain·here` more from the barrier at the default
+  `barrier_gain` 3). They now all call `structures.drift_at(wx, pos, buoy_cap, alive, mat, cfg)`: `agent_drift` with the engine's
+  shelter factor (`shelter_k`, the same gather of the same per-cell table as `apply_shelter`) divided by the engine's barrier factor
+  (`drag_mult`, evaluated with the wind force as the push) while `structures.enabled`, and `agent_drift` itself otherwise. The
+  barrier factor is exact for a lone drifting agent and whenever `exit_ease` is 0 or the cell is a plateau; with R3 on and a
+  gradient the engine's factor depends on the whole force (thrust, repulsion, gravity), which an observer does not have, so
+  `drift_at` is then between the sheltered drift and the sheltered drift over the plain barrier. Like `wx` and `pos`, `mat` is the
+  post-step state's: the observer drift remains the documented one-step approximation of the engine's start-of-step wind. The
+  metrics site: `snapshot_metrics` multiplies the air speed that feeds `weather.storm_exposure`, `air_speed_p99` and `air_speed_max`
+  by the same shelter factor (`structures.sheltered_speed_at`; the hazard the engine draws reads the sheltered speed), while
+  `total_speed` and `eddy_speed` stay the raw air. `tests/test_observers_structures.py` pins the ratio of the engine's velocity in
+  empty, partial and full cells to `(1 - shelter_gain·here)/(1 + barrier_gain·here)` at the default barrier, with and without R3,
+  in 2D and 3D, against `drift_at`, and that the bare `agent_drift` (the audited bug) does not match.
+* **Stream.** Record `STRC` (tag in `streamrec.EXT_TAGS`, version 1; contract in `stream_contract.md` of the PR, spelled out in
+  33.1.15): the whole material layer, sparse: `nx ny nz flags count` (`<HHHHI`), `count` ascending `u32` z-major cell indices,
+  `count` `u8` levels `1 + (254·m)//cap`, padded to 4; at most 65 536 cells (`FLAG_TRUNC`: the highest levels are kept). Sent by
+  `alife play` at start and at every tick, only while `structures.enabled`; `play.records` lists it only then and
+  `play.structures = {enabled, cap, cells: [FZ, FG, FG], cell}` is written only then, so every other world's header is
+  byte-identical. `alife stream` (the v1 viewer) is untouched.
+* **Dump.** `runio.DUMP_KINDS` gained `mat` (registry `dump_kinds`): `observers/mat_<step>.npy`, int32 of the field shape, every
+  `run.mat_every` steps (0 = off; needs `structures.enabled`; a resume key; omitted from `config.json` at 0 like the other
+  feature keys, `SERIAL_OMIT_KEYS`). `RunDir.write_grid/read_grid`; `truncate_after` cuts it with the other dumps.
+* **Metrics.** The interval keys of S1 stand. Snapshot keys (host, from `featobs.structures_row`, once per row): `build_here_mean`
+  (mean of m/cap at the alive agents' cells), `build_in_frac` (share of alive agents in a cell with material),
+  `build_cover_mean` (None when `reach > 0` and no effect reads the cover column, so the step never builds it), `build_mat_max`. The `ext.ExtSpec` row gained the hooks `snap_dev(s, cfg, heavy)` and `snap_row(h, cfg)`
+  (43.5): the device arrays join the one transfer of `metrics.snapshot_metrics`, the keys must carry the feature's prefix.
+* Still open for S3 and S4: the inspector, the GUI (map layer, instanced cubes, levers, `GUI_LANDED`) and the `mini3d + build`
+  runs.
 
 ### 38.10 Config
 
@@ -12691,12 +12743,25 @@ provisional and the first parameter the experiments sweep ({0, 4, 16, 64}); the 
 `cost` 4, which is no pressure). The brain's listening cost is already in the L1
 upkeep of the wider weights.
 
-### 39.8 Observers, stream, GUI (C2, not in C1)
+### 39.8 Observers and stream (PR C2: observer-only, no trajectory change)
 
-C1 sets only `ActFlag.SPOKE` (1024 = 128 << 3) in `Acts.flags` (the per-row form of `COMM_SPEAKERS`) and publishes the
-metrics `comm_speaker_frac`, `comm_due`, `comm_due_share`. `Acts.ext.comm` (voice, heard, audible), the `FSIG` stream
-record, the `voice` colour mode, the organism-panel bars and the GUI levers (`GUI_LANDED`) are C2/C3. The Director gets no
-comm lever (E24: `comm.*` are config keys outside the Director's env levers; a test pins it).
+* **Observer channel.** `Acts.ext.comm = CommActs(voice (N, W) uint8, heard (N, W) uint8, audible (N,) uint8)`: what was said this
+  step (`min(255, floor(256·sig))` of the post-mask voice), what the row heard, as the inputs that drove this step's decision
+  (`round(255·heard)`), and the number of neighbours with a hearing weight above zero (`comm.audible_count`; 0 under `deaf`). The
+  heard half comes from the same `ext.step_inputs` call that feeds the brain (`by_feature`, filled only when `observe`), so it
+  is the value the brain saw, not a recomputation; `Voice` gained two trailing optional fields (`heard`, `audible`), set only in
+  the observed step after the solvency mask. `ActFlag.SPOKE` was set in C1. The purity gate covers all of it
+  (`tests/test_observers_comm.py`).
+* **Stream.** Record `FSIG` (version 1, 33.1.15): after each `FOCS` whose organism is alive, `i64 uid`, `u8 W`, `u8 flags`
+  (bit 0: the heard half is valid), `u16 audible`, `W` bytes of what it says (`floor(256·v)` of `msg[row, MSG:]` after the step,
+  clipped to 255) and `W` bytes of what it hears (`round(255·heard)`), padded to 4. The heard half exists when the world is
+  played with `game.observe`: the `Observer` keeps the latest step's `(heard, audible)` (`Observer.comm_last`, never in a sidecar)
+  and the play loop reads the focused row from it; otherwise `FSIG` carries the spoken half and flag bit 0 is clear. The header
+  gains `play.comm = {enabled, w, range, control}` and `play.records` lists `FSIG` only while comm is on.
+* **Metrics.** C1's keys stand (`comm_speaker_frac`, `comm_due`, `comm_due_share`). No new key: the audible count is a per-row
+  observer value, not a population statistic of C2.
+* Not built: the `voice` colour mode (optional in the spec, skipped), the Swift panel and the levers (the GUI agent's), the
+  analysis module (C3).
 
 ### 39.9 What the analysis needs (for C3 and the measurement suite, §44)
 
@@ -12855,11 +12920,29 @@ already in `Acts.share_out/share_got`; `BondActs` also carries `shield` (`round(
 With the feature on, the step computes the S12 slots in both the observed and the plain graph
 (`share_from_slots(share_slots(...))` is `en.share`); `bench.py`'s staged mirror does the same.
 
-### 40.6 What is left
+### 40.6 Observers and stream (PR B3: observer-only, no trajectory change)
 
-B3: observers and scorecard (`body_role_entropy`, `role_diff_z`, assortativity, `analysis/bonds.py`), the bond-flow
-overlay, the role colour mode, GUI levers (`roles.*` and the `bonds.*` keys into `AlifeCore/Levers.swift`). R4 (movement
-couplings) and R5 (germ) are not scheduled; the runs (spec section 14) wait for B3.
+* **Snapshot keys** (host, `featobs.bonds_row`, prefix `bond_`; the heavy ones every `heavy_metrics_every`): `bond_role_frac_gen`,
+  `_forager`, `_guard` (shares of the alive rows; sum 1); `bond_role_assort_r` (Newman's categorical assortativity over the drawn
+  bonds, -1 for a perfectly alternating path, None when one category holds every bond end); `bond_fg_edge_frac` and
+  `bond_fg_edge_expect` (forager-guard bonds against random mixing of the bond ends); `bond_flow_by_role` (3 x 3, quanta moved last
+  step from a sender of role r to a receiver of role c: every slot with a positive net `bond_flow` counts once at the receiver);
+  `bond_net_giver_frac` (bonded rows with a negative net flow) and `bond_flow_gini` (Gini of the absolute net flow of the bonded
+  rows; the spec says "Gini of net flow", which is not defined for a signed variable, so the magnitude is used);
+  `bond_cheat_idx` (within-role flow whose receiver harvested less last step than the sender, as a share of all inflow);
+  `bond_nonkin_flow_share` (flow on bonds with `slot_kin < 0.5`); `bond_shield_cover` (share of alive rows that are guards or
+  have a guard partner); and, with the bodies of a heavy snapshot, `bond_body_role_entropy` (size-weighted mean Shannon entropy in
+  bits of the role mix over bodies of 4 or more) and `bond_role_diff_z` (`(null mean - observed)/null sd`, the null being 20
+  permutations of the roles among the members of those bodies, seed = the snapshot step; positive means the roles are clustered
+  inside bodies more than chance). The interval row gained `bond_shielded_frac` (`SHIELDED_BY_GUARD / ATTACKS`).
+* **Stream.** `FRMA` gained the optional bond-flow section (33.1.15): head flag `FLAG_BONDFLOW` (bit 1) and one `int8` per drawn
+  bond after the pairs, `round(127·clip(f/share_rate, -1, 1))` with `f` the net quanta that moved along the bond from the lower
+  row to the higher one (`-bond_flow[i, slot]` of the lower end); set on every frame of a world with `bonds_ext(cfg)`, and
+  `play.bonds = {flow, scale}` in the header only then. The colour mode `role` is appended to the play header's `color_modes`
+  while the bonds feature is on (generalist grey, forager yellow, guard blue, a fourth colour held for the germ role): the
+  header of every other world keeps its seven modes. `alife stream` (the v1 viewer) is untouched.
+* Not built: `analysis/bonds.py` (the scorecard C1 to C5 and the resim counterfactuals), the inspector rows, the GUI (levers,
+  flow overlay) and R4/R5. Not scheduled; the runs wait for the scorecard.
 
 ### 40.7 Tests (B1)
 
@@ -13157,9 +13240,28 @@ with structures, bonds, roles, comm and arms), `tests/test_niche_compile.py` (E4
 ### 41.13 Deferrals
 
 Lasting marks (only if signals prove used: `comm` first), food stores (a 17th ledger term), farm provenance and kin-share
-observers (F2), the `soil` dump, colour mode and stream tag `FSOL`, the GUI levers (F3), the experiment `docs/RESULTS_NICHE.md` (F4),
+observers (the stamps are not built, 41.14), the colour mode, the GUI levers (F3), the experiment `docs/RESULTS_NICHE.md` (F4),
 a `random` control, a Director "wipe" power. Unmodelled pairs (§43): soil under a built barrier is farmed like any other cell;
-hearing and shelter do not interact with the soil.
+hearing and shelter do not interact with the soil. (The `soil` dump, the stream tag `FSOL`, `Acts.ext.niche` and the snapshot keys
+are 41.14.)
+
+### 41.14 Observers and stream (PR F2: observer-only, no trajectory change)
+
+* **Observer channel.** `Acts.ext.niche = FarmActs(farm_put (N,) int16)`: the units each row put into the soil this step (paid for,
+  after the solvency mask; the `FARMERS` rows are those above 0, and the `ActFlag.FARMING` bit F1 already set marks the same rows).
+  Quantised from the units the step holds. Purity: `tests/test_observers_niche.py`, `tests/test_game_purity.py` (feature worlds).
+* **Stream.** Record `FSOL` (version 1, 33.1.15): the soil layer in the sparse layout of `STRC` (`level = 1 + (254·soil)//farm_cap`,
+  z-major cell indices, at most 65 536 cells, `FLAG_TRUNC`), at start and at every `play.tick`, only while `niche.farm`; header
+  `play.niche = {enabled, farm, cap, cells: [FZ, FG, FG], cell}`. The independent decoder is `tests/play_decode.py`.
+* **Dump.** `observers/niche_<step>.npy` (kind `niche`, int32 of the field shape, the exact soil) every `run.niche_every` steps
+  (0 = off; needs `niche.farm`; a resume key; absent from `config.json` at 0); `RunDir.write_grid/read_grid`.
+* **Metrics.** The interval keys of F1 stand (41.8). Snapshot keys (`featobs.niche_row`): `farm_cells` (cells with soil),
+  `farm_soil_mean` (mean level over all cells, units) and `farm_soil_max`.
+* **Not built.** The provenance stamps of the spec (6.1: a per-cell `stamp_gen` and clade plane, with the heir counters
+  `STORE_GET_HEIR` and `MARK_STAND_HEIR`, and the persistence index `persist`): they are a new state field and a hashed config
+  key (`niche.provenance`), so they change the state schema and the config hash and are not observer-only; they belong to a
+  feature PR with their own migration, if the F4 evidence asks for the ecological-inheritance index. The age composition,
+  the lineage homophily and the controlled forks (6.3, 6.4) are offline analysis (`analysis/niche.py`, `alife niche`), not part of F2.
 
 ## 42. Arms races (PR A1: heritable traits and the contest)
 
@@ -13270,6 +13372,24 @@ on 64k3d (the spec's §7).
 **Notes for later PRs.** (1) The observer channel `Acts.thrust` records the brain's thrust, not the armour-slowed thrust the physics sees (consistent with the cost, paid on the brain's thrust); A2 consumers should know. (2) The dither salt changed with the merge of the hash-salt table (`4b32729`): arms-on checkpoints from before that commit exist only in the scratchpad, and nothing was merged, so no version bump is needed. (3) `bench --arms` stores `cfg.arms` in its report (`arms.arms_config`).
 
 (4) **Migration (§43.8).** The row has an `enable` hook, so `alife migrate RUN --enable arms --set arms.<key>=...` turns arms on in an evolved world: no layout change (`layout_features` stays empty), the `arms` field is filled by `rest` (init values, keys and locks from the init stream), the new run records `rng_layout_version` 4; `tests/test_arms_migrate.py` (2D and 3D) steps the migrated world with the ledger closing.
+
+**A2 observers (observer-only, no trajectory change).** `arms.dump_n` (4096, `OBSERVER_KEYS`: not hashed, a resume key) and
+`run.arms_every` (0 = off, a resume key, needs `arms.enabled`). (1) **Counters** (block `arms`, five int32): the sums of
+`round(256·x)` over the attackers that survive the S11 gate, from the start-of-step traits (a victim's row can be taken by a
+newborn in the same step): `ARMS_ATK_SUM`, `ARMS_VIC_ARM_SUM`, `ARMS_YIELD_SUM` (the protection product `Combat.prot`, 1 when
+nothing protects), `ARMS_MATCH_SUM` (`K_ij`, 1 with the key axis off), `ARMS_VIC_TOX_SUM` (0 until the toxin stage). The interval
+row divides by `ATTACKS` and 256: `arms_att_atk`, `arms_vic_arm`, `arms_yield`, `arms_match`, `arms_vic_tox` (None when no attack).
+(2) **Observer channel**: `Acts.ext.arms = ArmsActs(contest (N, 4) int16)` = `round(256·[ATK_i, ARM_target, m_ij, K_ij])` for
+attackers, 0 elsewhere; `ActFlag.CONTESTED` (128) marks the realised attacks whose bite the protection product reduced
+(`0 < m < 1`: armour, a mismatched lock, a shelter or a guard; `m` and `arms_yield` are the whole `Combat.prot`, not the arms factor alone, so in a world that also has structures or roles they include those shields). (3) **Snapshot keys** (`featobs.arms_row`): `arms_{atk,arm,tox,sig}_mean`
+and `_q10/_q50/_q90`, `arms_key_R`, `arms_lock_R`, `arms_key_mean`, `arms_lock_mean` (circular statistics of the phases, mean in
+turns), `arms_arm_bonds_corr` (Pearson of armour with the number of bonds), `arms_atk_edge_frac` and `arms_arm_edge_frac` (traits
+within 0.02 of 0 or 1). Not built from the spec's list: `arms_sig_tox_corr` (both traits are held at 0 until their stages) and
+`arms_arm_defend_corr` (`defend` is an action, not state). (4) **Dump**: `observers/arms_<step>.npz` (`DUMP_KINDS` `arms`) every
+`run.arms_every` steps: `step`, and for up to `arms.dump_n` alive rows taken by a fixed stride over the alive rows in row order,
+`uid`, `generation`, `clade`, `birth_step`, `energy`, `n_bonds`, `traits` (n, 6) in the order ATK, ARM, TOX, SIG, KEY, LOCK;
+`RunDir.write_arms/read_arms`. `bench.py`'s staged mirror builds the same flows. The counters and `flows_of` run in every arms-on step, observed or not (they are the counter block), so `StepOut.counters` of an arms-on world is five columns wider than before; state, ledger and the base counters are unchanged (checked against a `git archive` of d4139ed on CPU and Metal). Not built: `analysis/arms.py` (the trajectory
+classification and the time-shift matrix), the colour modes `arms`/`lock`, the `FARS` record and the inspector rows (A6).
 
 ### 42.7 Tests
 
@@ -13430,6 +13550,14 @@ spurious "language"); `test_ext_salts.py` pins the table and checks every pair f
   `metrics.METRIC_PREFIXES`; `streamrec` is numpy-only by test (`test_streamrec_is_numpy_only_and_free_of_subscript_assignment`), so its `COLOR_MODES` and `TAGS` stay literal and
   `test_registered_modes_and_tags_are_in_streamrec` checks every registered mode and tag against them. Tags: structures `STRC`, comm `FSIG`, niche `FSOL`, arms
   `FARS` (renamed from `FARM`); prefixes `arms_`, `build_`, `bond_`, `comm_`, `farm_`.
+* **Observer-PR additions (S2/A2/B3/C2/F2).** `streamrec.EXT_TAGS = ("STRC", "FSIG", "FSOL")` (with `EXT_VERSIONS`, `ALL_TAGS`;
+  `TAGS` is unchanged, so a world without the features lists the tags it always did), `streamrec.EXT_COLOR_MODES = ("role",)`
+  (appended to the play header's modes by `play.py` while `bonds_ext(cfg)`, not a registry colour mode: `render.COLOR_MODES` and
+  the `alife stream` header are unchanged); the registry row fields `dump_kinds`, `stream_tags`, `observer_keys` (appended to
+  `config.OBSERVER_KEYS`: unhashed at every value, a resume key through `cli.RESUME_EXT_KEYS`) and the two snapshot hooks
+  `snap_dev(s, cfg, heavy)`, `snap_row(h, cfg)` (`featobs.py`); `run.mat_every`, `run.arms_every` (and `run.niche_every`) are
+  in `SERIAL_OMIT_KEYS`, so a run that does not use them has the `config.json` it always had; `ext.step_inputs(..., by_feature)`
+  keeps the blocks a feature's tail was fed for the observer channel; `runio.DUMP_NPZ` names the kinds stored as `.npz`.
 * `sensing.build_inputs(..., ext_in=)` concatenates the feature blocks (`ext.step_inputs`: (N, width) f32 each, in
   `TAIL_ORDER`) after the base and 3D tail; the existing shape assert covers the new total. `invariants.full_check` runs
   each enabled feature's `check`.
@@ -13877,6 +14005,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I71 | feat: arms races, PR A1 of the five-feature series (stages 1 and 2 of the arms spec; owner approval of 2026-10-28; new §42): the heritable traits `ATK`, `ARM`, `KEY`, `LOCK` (and the held-at-0 `TOX`, `SIG` columns) as the conditional state field `arms (N, 6)`, the Tullock contest with the key/lock match as the first factor of the protection product of `energy.combat` (`arms.contest_factor`; `kappa`, `a0`, `key_floor`), the quadratic upkeep added to `brain_cost` at S8 with **dithered** rounding (E13: the cost is exact on average, a sub-unit trait is not free; `HEAT_BASAL`, no 17th ledger term), the armour speed cost (`arms.physics_act`), fixed-sigma mutation at birth with phases wrapped every time (E12, the 1.0-rounding of `c - floor(c)` mapped to 0), `Stream.ARMS` = 10 / `InitStream.ARMS` = 8 and `rng.layout_version` 4 with arms on (an off run still writes 3), the epsilon in the Tullock denominator (E11), invariants (`arms` finite and in [0, 1] on device, phases below 1 on the host), `bench --arms`, `_c_ref` with the founders' upkeep; the registry row `ext/arms.py` (the first real row) and `combat(arms=)` no longer raises; **absent**: toxin and display factors and keys (A3), observers (A2), pierce and duels (A4), perception (A5), colour modes and GUI levers; off by default, no shipped preset enables it, feature-off runs bit-identical to main (identity matrix) and the config hash unchanged | Departures: column order is the integration plan's (ATK, ARM, TOX, SIG, KEY, LOCK), not the spec's; founders' keys and locks come from the init stream by row (`FieldSpec.rest` has no `uid`); the whole step is not bit-equal compiled and eager with or without arms (the brain's reductions, as on e64be03), so compiled equals eager is asserted for the arms functions only. Tests: `test_arms`, `test_arms_state`, `test_arms_step` (incl. the broken-path mutation tests), `test_arms_compile` (E4), `test_arms_director` (E24); `test_ext_*` updated for the first registered row. |
 | I72 | feat: the feature extension mechanism, PR 0a of the five-feature series (arms, structures, bonds, communication, farming; owner approval of 2026-10-28; new §43, which holds the plan's normative content), **no behaviour change** and the registry empty: `src/alife/ext/` (`ExtSpec`, `REGISTRY`, the layout composition `layout.for_dims(nd, blocks)` with `Layout.__getattr__` for `IN_*`/`OUT_*`, `genome_layout_version(nd, mask) = base + 4*mask`, the `layout_features` meta key absent when empty); conditional state fields (`state_cls`, `is_3d_state`, fill-on-load, refusal of an extra field); counter blocks (`n_counters(nd, weather, blocks)`, `counter_blocks`, `counter_index`, `PROT_CAPPED`); `Acts.flags` uint16 and the `ActFlag` bits `128 << i`, `Acts.ext`/`_Flows.ext`; `extra_due` in `pay_costs(3)`; `rng.layout_version(cfg)` and `ops.hash32`; the single `combat` signature with `energy.protection` and `combat.protect_floor` (default 0, `[0, 0.5]`, `POST_V01_KEYS`, left out of `config.json` and the checkpoint metadata at its default: `config_to_dict(omit_defaults=True)`, `SERIAL_OMIT_KEYS`); silent tail blocks in `brain.init_weights`; observer registries; `tests/ext_stub.py` and seven `test_ext_*` files; `tests/identity_matrix.py` (15 trajectory cases, 3 runner cases, config and layout, tiny3d `1fe07a9f`/`556de6c6`, against a fresh `git archive` of e64be03: bit-identical, no INFO line). Departures from the specs are in §43.10.  Review fixes: the hooks `inputs(s, cfg, ctx)`, `decode`, `mask`, `due(s, act, y, cfg)` and `_Flows.ext`, `FieldSpec.on_birth`, `Dims.ext(name)`, the wiring tests (`test_ext_hooks.py`). PR 0b (the layout migration) follows. **PR 0b (stacked on PR 0a):** the layout migration tool of §43.8: `alife migrate RUN[:STEP] --enable F --out NEWRUN`, `migrate.migrate_checkpoint`, `state.migrate_layout`/`layout_change`/`MigrationError`, `ExtSpec.enable` (a hook, default None); zero rows/columns for new blocks, order-independent (E2), removal and width change refused (removal only with `--force-removal`; leave-one-out arms are fresh runs, E23), compressed sources give compressed outputs, provenance `migrated_from` in `meta.json`; `tests/test_ext_migrate.py`. No behaviour change for existing runs (the identity matrix is unchanged) |
 | I73 | feat: the emergence measurement suite (new §44; E1 statistics, panel skeleton, scorecard interface, trait registry, CLI shell, prereg hash; E2 window recorder and frame format). Host-side, observer-only, numpy; **no simulation change** (no step, state, checkpoint, RNG, config key, default or `POST_V01_KEYS` entry, no golden re-pin; the engine files are untouched). Recorder: replay from a save with the engine's step, certified against the run (every metrics row and the state digest at every save passed; T1 must be a save, E21), refuses a run without the start save (E22; measurement runs use saves `all`), frames outside the run; traits stored as float32 (age and energy exceed float16). Comparison: paired block intervals, `w2.classify` over seeds with the seed-twin floor, Stouffer, Holm per feature and series, BH context, prereg hash that `compare` enforces; leave-one-out arms are fresh runs from the shared evolved sources (E23). Blocks A, B, C (open-endedness, irreversibility, braids) and the scorecard adapters land in E3 to E6. Tests: `tests/test_emergence_*.py`. Pending the owner's go to merge. |
+| I74 | feat: the observer PR of the five-feature series (S2 built structures, A2 arms races, B3 bonds, C2 communication, F2 farming; owner request 2026-10-29; new text in §38.9, §39.8, §40.6, §41.14, §42.6, §33.1.15 and §43.5): the observer channel, the stream records, the dumps and the metrics of the five engine PRs (#54 to #57), **no trajectory change** (the identity matrix against `e64be03` is bit-identical; observing a feature world changes no state value, CPU and Metal). (1) **Structures (S2).** `Acts.ext.structures = (build, cover)` and `ActFlag.BUILDING`; the **label/tracer drift audit**: `game.observe`, `analysis.labels`, `game.tracers` (both uses) and `analysis.emergence.record` called `weather.agent_drift` without the shelter, so a labelled run with weather and structures read a wind drift 1/(1 - shelter_gain) too large inside material; they now call `structures.drift_at` (the engine's shelter factor and barrier factor; `ObsIn.mat`), and the metrics' storm-exposure speed is sheltered (`sheltered_speed_at`), pinned by the ratio of the engine's velocity in empty, partial and full cells (default barrier, R3 on and off, 2D and 3D) to `(1 - shelter_gain·here)/(1 + barrier_gain·here)`; the record `STRC` (sparse z-major cells, `1 + 254·m//cap` levels, at most 65 536 cells), `play.structures`, the `mat` dump (`run.mat_every`) and the `build_here_mean`, `build_in_frac`, `build_cover_mean`, `build_mat_max` snapshot keys. (2) **Arms (A2).** The counter block `ARMS_ATK_SUM`, `ARMS_VIC_ARM_SUM`, `ARMS_YIELD_SUM`, `ARMS_MATCH_SUM`, `ARMS_VIC_TOX_SUM` (sums of round(256x) over the realised attackers, from the START-of-step traits), `Acts.ext.arms.contest` (N, 4), `ActFlag.CONTESTED`, the `arms_` interval and snapshot keys (circular key and lock statistics, quantiles), the `arms_<step>.npz` sample (`run.arms_every`, `arms.dump_n` an observer key); the numpy mirror `contest_np` reproduces the realised product. (3) **Bonds (B3).** The `bond_` snapshot statistics in `featobs.py` (role shares, assortativity, forager-guard edges, flow by role, Gini of the net flow, within-role cheating index, non-kin flow share, shield cover, body role entropy and its permutation null), `FLAG_BONDFLOW` and the int8 flow per drawn bond in `FRMA`, `play.bonds`, the `role` colour mode (header only with the feature). (4) **Comm (C2).** `Acts.ext.comm = (voice, heard, audible)` with the heard half taken from the same `ext.step_inputs` call that feeds the brain; `Observer.comm_last`; the record `FSIG` after each `FOCS`; `play.comm`. (5) **Farming (F2).** `Acts.ext.niche.farm_put`, the record `FSOL`, the `niche` dump (`run.niche_every`), `farm_cells`, `farm_soil_mean`, `farm_soil_max`; the provenance stamps are **not built** (a state field and a hashed key, so not observer-only). (6) **Shared.** `ExtSpec` gained `observer_keys`, `snap_dev` and `snap_row`; `streamrec.EXT_TAGS` (`STRC`, `FSIG`, `FSOL`; `TAGS` and every old header unchanged), the encoders and the independent decoder cases of `tests/play_decode.py`; `run.mat_every`, `run.arms_every`, `run.niche_every` are in `SERIAL_OMIT_KEYS` (a run that does not use them has the `config.json` it always had); `Voice` gained two optional trailing fields. (7) **Checks.** 85 new tests in seven files (`test_observers_structures.py` 18, `test_observer_stream.py` 20, `test_observer_play.py` 6, `test_observers_arms.py` 13, `test_observers_bonds.py` 8, `test_observers_comm.py` 7, `test_observers_niche.py` 7) plus six feature-world arms in `test_game_purity.py` (observing changes no state value, 40 compiled steps each; run on the CPU and on Metal), one slow test (the labels study of a storm + structures world passes the grid to its drift); edits to the pins that name the new keys (`ObsIn`, `OBSERVER_KEYS`, `SERIAL_OMIT_KEYS`, `EXT_TAGS`). The fast suite (`-m "not slow"`, CPU plugin, `-n 4`, final tree after the review fixes): 5302 passed, 92 skipped, 1 xfailed and 1 failed, the known base failure `test_lifecycle_compiles_and_matches_eager` (I26). Feature-ON trajectories are unchanged too: the state digest, ledger and base counters of 60 steps of five feature worlds are identical under a `git archive` of d4139ed and the tree, on the CPU and on Metal. An independent review (1 high, 3 medium, 8 low) is applied: the `FSIG` heard half was quantised twice, the drift lacked the barrier, the metrics' air speed was unsheltered. `uv run python tests/identity_matrix.py --base e64be03`: `OK: bit-identical, 0 DIFF, 0 INFO`. `tests/test_game_purity.py` on Metal (M5 Pro): 61 passed (re-run after the review fixes). `ruff check` and `ruff format --check` clean. No Swift, no GUI, no app run, no LM Studio. The structural channel probe (`_channel_taps`) now flattens `Acts.ext`; the feature channels read more trajectory arrays than the base channel by design (all quantised to integers), and the value comparison of the feature worlds is the gate. (8) **Deviations from the specs.** The structures spec's optional `build_units` channel name became `build`; the arms `arms_sig_tox_corr` and `arms_arm_defend_corr` are not built (the traits are held at 0 / `defend` is an action); the bonds Gini is of the absolute net flow; `FARS`, the colour modes `arms`, `lock`, `voice`, `soil`, `analysis/{arms,bonds,comm,niche}.py`, the inspector rows and the GUI are not in this PR. |
 | I75 | feat: the five feature layers in the GUI (new §45; GUI only, nothing under `src/alife/` changes; built on `engine/observers` for the wire contract, in `gui/features`). (1) **What.** Levers for arms, structures, bonds and roles, comm and farming (`FeatureLevers`, five `<Feature>Levers.swift` tables, 48 keys, gates, layout lock in a fork, overlay start for a new run, fork pre-fill, `test_feature_levers_cover_feature_keys` with all five in `GUI_LANDED`); decoders for `STRC`, `FSOL`, `FSIG`, the `FRMA` bond-flow section by its flag and the optional `play.structures/comm/niche/bonds` keys; the world pass draws the material and soil (tiles in 2D, cubes in 3D) and colours bond halves by flow; inspector rows and the voice panel; legend, View items and keys 5 and 6; the `build_/arms_/bond_/comm_/farm_` metrics in the status readout. (2) **Wire check.** The Swift fixtures are built from the contract byte by byte and equal the hex of the Python encoders (`encode_strc`, `encode_fsig`, `encode_frma` with and without a flow). One contract inconsistency, harmless to the decoder: the contract says the `role` mode is "offered in the header list always", the writer (`play.py`) lists it only while the bonds feature is on; the decoder finds it by name. (3) **Tests.** Swift: 4 new suites, `PresetFileTests` extended and its list of preset files brought up to date (`build`, `bonds`, `comm`, `niche`, `niche3d` were missing: a failure that was already on main), `WorldKeysTests`, `StreamReaderTests`, `WorldInteractionTests`; the GPU tests render the layers offscreen. Python: `tests/test_gui_sync.py` (row forms, defaults, header and tag sync, the new keys). (4) **Choices to revisit.** The levers are table rows read generically (the pre-fill still names every key, so the sync test keeps its meaning); the cell layers are not drawn on the globe path or the minimap; no persistence of the new toggles; the roles are read from the colour the world paints because `FOCS` carries no role. |
 
 **Open questions for the user.**

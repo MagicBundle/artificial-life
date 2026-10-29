@@ -208,7 +208,9 @@ def test_registered_modes_and_tags_are_in_streamrec(monkeypatch: pytest.MonkeyPa
     from alife import streamrec
 
     assert all(m in streamrec.COLOR_MODES for s in ext.REGISTRY for m in s.color_modes)
-    assert all(t in streamrec.TAGS for s in ext.REGISTRY for t in s.stream_tags)
+    assert all(t in streamrec.EXT_TAGS for s in ext.REGISTRY for t in s.stream_tags)
+    registered = tuple(t for s in ext.REGISTRY for t in s.stream_tags)
+    assert tuple(t for t in streamrec.EXT_TAGS if t in registered) == registered  # the same order
     spec = dataclasses.replace(stub.spec("arms"), color_modes=("arms",), stream_tags=("FARS",))
     monkeypatch.setattr(ext, "REGISTRY", (spec,))
     assert not all(m in streamrec.COLOR_MODES for s in ext.REGISTRY for m in s.color_modes)  # the check bites

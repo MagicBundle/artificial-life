@@ -47,10 +47,18 @@ __all__ = [
     "kin_slot_bytes",
     "observer_colors",
     "play_colors",
+    "role_colors",
 ]
 
 OBSERVER_MODES: Final = ("house", "kin", "archetype", "intent")
 PLAY_MODES: Final = (*RENDER_MODES, *OBSERVER_MODES)  # the play header's ``color_modes``
+ROLE_MODE: Final = "role"  # bonds feature (DESIGN §40.7): offered in the header while ``bonds_ext(cfg)``
+ROLE_RGB: Final = (
+    (190, 190, 190),
+    (240, 228, 66),
+    (0, 114, 178),
+    (204, 121, 167),
+)  # generalist, forager, guard, germ
 TABLE: Final = 16  # rows of a house or kin table (``SocialRules.slots``)
 
 HURT_RGB: Final = (255, 0, 0)
@@ -183,11 +191,28 @@ def observer_colors(mode: str, inputs: ColorInputs, hurt: mx.array) -> mx.array:
     return mx.where(hurt, mx.array(_rgb(HURT_RGB), dtype=mx.uint32), rgb)
 
 
+def role_colors(state: State) -> mx.array:
+    """``(N,) uint32`` colours of the ``role`` mode: the neutral grey of "Unspecialised" for a generalist,
+    yellow
+    for a forager, blue for a guard (a fourth colour is held for the deferred germ role); agents hurt last
+    step
+    are red as in every mode. A state without roles is all grey."""
+    n = state.alive.shape[0]
+    role = getattr(state, "role", None)
+    code = mx.zeros((n,), dtype=mx.int32) if role is None else mx.clip(role.astype(mx.int32), 0, 3)
+    table = mx.array([(r << 16) | (g << 8) | b for r, g, b in ROLE_RGB], dtype=mx.uint32)
+    rgb = table[code]
+    hurt = (HURT_RGB[0] << 16) | (HURT_RGB[1] << 8) | HURT_RGB[2]
+    return mx.where(state.last_loss > 0, mx.array(hurt, dtype=mx.uint32), rgb)
+
+
 def play_colors(state: State, cfg: Config, mode: str, inputs: ColorInputs | None = None) -> mx.array:
     """``(N,) uint32`` ``0x00RRGGBB`` agent colours in a mode of ``PLAY_MODES``. ``tag``, ``energy`` and
     ``clade`` are ``render.agent_colors``; the observer modes need ``inputs``."""
     if mode in RENDER_MODES:
         return agent_colors(state, cfg, mode)
+    if mode == ROLE_MODE:
+        return role_colors(state)
     if mode not in OBSERVER_MODES:
         raise ValueError(f"unknown colour mode {mode!r}; expected one of {PLAY_MODES}")
     if inputs is None:

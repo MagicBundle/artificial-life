@@ -232,6 +232,8 @@ class Observer:
         self.society = society
         self.step = step
         self.tr = tr  # the tracer rig (``game.tracers``), None when off
+        # the latest step's (heard (N, W) uint8, audible (N,) uint8) of the voice channel, for the play loop
+        self.comm_last: tuple[mx.array, mx.array] | None = None
         self._snap: soc.Snap | None = None  # the pending snapshot (arrays, lazy until the caller's eval)
         self._snap_step = -1
         self._last_record: dict[str, Any] | None = None  # the newest record taken (identity tables, §33.1.3)
@@ -544,6 +546,10 @@ class Observer:
             self._snap = self._snap_fn(kin0, self.so, si, acts, self.o.label_arch[:, 0])
             self._snap_step = t
         self.step = t
+        xc = None if acts.ext is None else acts.ext.comm
+        # the voice features keep the step's heard half for the play loop's FSIG (DESIGN §39.8); never in a
+        # sidecar, never folded into a label
+        self.comm_last = None if xc is None else (xc.heard, xc.audible)
 
     def arrays(self) -> tuple[mx.array, ...]:
         """The observer's arrays (``ObsState``, ``SocState`` and a pending snapshot), for the caller's
@@ -553,6 +559,7 @@ class Observer:
             *self.so,
             *(self.tr if self.tr is not None else ()),
             *(self._snap if self._snap is not None else ()),
+            *(self.comm_last if self.comm_last is not None else ()),
         )
 
     def _settle(self) -> None:

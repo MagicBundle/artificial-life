@@ -54,8 +54,11 @@ def test_game_keys_are_post_v01_and_observer_keys() -> None:
         ("game", "house_rate"),
         ("game", "tracers"),
         ("game", "tracer_period"),
+        ("arms", "dump_n"),  # the observer keys of the features (ext.ExtSpec.observer_keys, DESIGN §43.5)
     )
-    assert game_keys == set(OBSERVER_KEYS)  # every game key is an observer key: none can move a hash
+    assert game_keys == {
+        k for k in OBSERVER_KEYS if k[0] == "game"
+    }  # every game key is an observer key: none can move a hash
     assert not set(OBSERVER_KEYS) & set(UNHASHED_KEYS)
     assert tuple(key for _, key in UNHASHED_KEYS) == DIRECTOR_POLICY_KEYS  # unchanged: observe is not in it
     assert "observe" not in DIRECTOR_POLICY_KEYS and "house_rate" not in DIRECTOR_POLICY_KEYS

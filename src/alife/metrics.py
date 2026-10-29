@@ -13,8 +13,9 @@ from typing import Any, Final
 import mlx.core as mx
 import numpy as np
 
-from alife import arms, ext, fields, layout, niche, ops, rng, spatial, weather, weather_obs
+from alife import arms, ext, fields, layout, niche, ops, rng, spatial, structures, weather, weather_obs
 from alife.config import Config, config_hash, dims, is_3d
+from alife.ext.bonds import bonds_ext
 from alife.state import (
     ENV_FIELDS,
     Counter3D,
@@ -319,7 +320,9 @@ def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str
         ws = weather.unpack(s.wx)
         buoy = s.buoy_cap if d3 else None
         wind = weather.agent_wind(ws, s.pos, buoy, s.alive, cfg)
-        dev.update(wx=s.wx, air_speed=wind.speed, overlap_deep=_overlap_deep_fn(cfg)(s.pos, s.alive))
+        # the speed the engine's storm hazard reads: sheltered by the built material (DESIGN §38.4.1, §38.9)
+        speed = structures.sheltered_speed_at(wind.speed, getattr(s, "mat", None), s.pos, cfg)
+        dev.update(wx=s.wx, air_speed=speed, overlap_deep=_overlap_deep_fn(cfg)(s.pos, s.alive))
         dev["total_speed"], dev["eddy_speed"] = weather.air_speeds(ws, s.pos, buoy, s.alive, cfg)  # §32
         if cfg.weather.seed_gain > 0:  # static: the organism couplings' strengths (§32)
             dev["seed_r"] = weather.seeding_response(s.chem, ws, cfg)
@@ -329,15 +332,19 @@ def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str
             dev["rain_audit"] = rain_audit(s, ws, cfg)
         if d3:
             dev["occupancy"] = spatial.band_peaks(spatial.hash_occupancy(s.pos, s.alive, cfg))[0]
+    for spec in ext.active(cfg):  # static: the feature snapshots join the one transfer (DESIGN §43.5)
+        if spec.snap_dev is not None:
+            dev.update(spec.snap_dev(s, cfg, heavy))
     if heavy:
         labels, converged = components(s.partner, s.alive, cfg.run.components_iters)
         dev["body_sizes"] = ops.scatter_add_i32(s.alive.shape[0], labels, 1, s.alive)
         dev["bodies_converged"] = converged
-        if d3:
+        if d3 or bonds_ext(cfg):  # the bond-role statistics of the snapshot read the bodies too (featobs)
             dev["labels"] = labels
         dev["div_sum"], dev["div_pairs"] = _diversity_arrays(s, step, cfg)
     mx.eval(*dev.values())
     h = {name: to_numpy(a) for name, a in dev.items()}
+    h["step"] = np.array(step)
 
     alive = h["alive"]
     n_alive = int(alive.sum())
@@ -394,6 +401,15 @@ def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str
         out.update(_snapshot_3d(h, cfg))
     if cfg.director.enabled:
         out["env"] = _env_summary(h)
+    for spec in ext.active(cfg):  # the feature snapshot keys (prefix = spec.metric_prefix), after ``env``
+        if spec.snap_row is not None:
+            rows = spec.snap_row(h, cfg)
+            wrong = [k for k in rows if not k.startswith(spec.metric_prefix)]
+            if wrong:
+                raise ValueError(
+                    f"{spec.name} snapshot keys {wrong} do not start with {spec.metric_prefix!r}"
+                )
+            out.update(rows)
     if cfg.weather.enabled:
         out["weather"] = weather_obs.weather_block(
             h["wx"],
@@ -514,6 +530,19 @@ def interval_row(
                     "build_hash_hidden": int(col("HASH_HIDDEN")),  # agent-steps hidden by a full hash cell
                 }
             )
+        elif bname == "arms":  # the realised contests (DESIGN §42.6): means over the realised attacks
+            by = {n: i for i, n in enumerate(names)}
+            col = lambda n, at=at, by=by: cs[at + by[n]]  # noqa: E731
+            att = int(cs[CounterIdx.ATTACKS])
+            row.update(
+                {
+                    "arms_att_atk": _ratio(int(col("ARMS_ATK_SUM")), att, 256.0),
+                    "arms_vic_arm": _ratio(int(col("ARMS_VIC_ARM_SUM")), att, 256.0),
+                    "arms_yield": _ratio(int(col("ARMS_YIELD_SUM")), att, 256.0),
+                    "arms_match": _ratio(int(col("ARMS_MATCH_SUM")), att, 256.0),
+                    "arms_vic_tox": _ratio(int(col("ARMS_VIC_TOX_SUM")), att, 256.0),
+                }
+            )
         elif bname == "bonds":  # bonds that pay (DESIGN §40.6): sums for the flows, means for the levels
             by = {n: i for i, n in enumerate(names)}
             col = lambda n, at=at, by=by: cs[at + by[n]]  # noqa: E731
@@ -524,6 +553,7 @@ def interval_row(
                     "bond_role_switches": int(col("ROLE_SWITCHES")),
                     "bond_forager_frac": _ratio(int(col("N_FORAGERS")), alive_steps),
                     "bond_guard_frac": _ratio(int(col("N_GUARDS")), alive_steps),
+                    "bond_shielded_frac": _ratio(int(col("SHIELDED_BY_GUARD")), int(cs[CounterIdx.ATTACKS])),
                 }
             )
         elif bname == "comm":  # the voice channel (§39.7): the share of the alive rows that spoke, the price

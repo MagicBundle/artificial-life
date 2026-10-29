@@ -200,6 +200,18 @@ def _validate(cfg: Any) -> None:
         raise ConfigError("; ".join(bad))
 
 
+def _snap_dev(s: Any, cfg: Any, heavy: bool) -> Any:
+    from alife import featobs
+
+    return featobs.bonds_dev(s, cfg, heavy)
+
+
+def _snap_row(h: Any, cfg: Any) -> Any:
+    from alife import featobs
+
+    return featobs.bonds_row(h, cfg)
+
+
 SPEC = ExtSpec(
     name="bonds",
     enabled=bonds_ext,
@@ -222,4 +234,6 @@ SPEC = ExtSpec(
     due=_due,
     count=_count,
     check=_check,
+    snap_dev=_snap_dev,
+    snap_row=_snap_row,
 )
