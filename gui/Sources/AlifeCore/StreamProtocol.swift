@@ -149,6 +149,12 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
             throw bad("source \"\(source)\" is not run, file or preset")
         }
         try play?.validate()
+        // The cell grids of the feature layers are the field lattice (`[FZ, FG, FG]`, DESIGN §45).
+        for (name, grid) in [("structures", play?.structures), ("niche", play?.niche)] {
+            if let grid, grid.cells != [fieldLayers, fieldGrid, fieldGrid] {
+                throw bad("play.\(name).cells \(grid.cells) is not [FZ, FG, FG] = [\(fieldLayers), \(fieldGrid), \(fieldGrid)]")
+            }
+        }
     }
 
     /// Whether two sizes written by the engine as binary64 agree, allowing for the rounding of a product.

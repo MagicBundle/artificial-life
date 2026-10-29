@@ -38,10 +38,16 @@ package struct Levers: Equatable {
     /// The 3D world's levers; inert unless `world3D.dims` is 3. Their baseline is the preset's, not the engine
     /// defaults (see `World3DLevers`), which is why a `Levers` value carries them and `RunSettings` picks the baseline.
     package var world3D = World3DLevers()
+    /// The levers of the five feature layers (arms, structures, bonds and roles, comm, niche); every one is off by default. Their
+    /// baseline is the engine defaults plus the chosen overlays for a new run (`RunSettings.featureBaseline`), the source's for a fork.
+    package var features = FeatureLevers()
 
     package init() {}
 
-    package init(world3D: World3DLevers) { self.world3D = world3D }
+    package init(world3D: World3DLevers, features: FeatureLevers = FeatureLevers()) {
+        self.world3D = world3D
+        self.features = features
+    }
 
     /// Human-readable problems; ranges mirror `validate()` in src/alife/config.py.
     package func validate() -> [String] {
@@ -83,7 +89,7 @@ package struct Levers: Equatable {
         } else {
             errors.append("fields.season_amplitude must be a plain decimal number in [0, 1].")
         }
-        return errors + world3D.validate()
+        return errors + world3D.validate() + features.validate()
     }
 
     /// `--set` arguments for the levers whose value differs from `baseline` (compared as numbers, so 5e-05 equals
@@ -109,12 +115,15 @@ package struct Levers: Equatable {
         integer("fields.season_period", seasonPeriod, baseline.seasonPeriod)
         decimal("fields.season_amplitude", seasonAmplitude, baseline.seasonAmplitude)
         if seasonMode != baseline.seasonMode { args += ["--set", "fields.season_mode=\(seasonMode)"] }
-        return args + world3D.setArguments(baseline: baseline.world3D)
+        return args + world3D.setArguments(baseline: baseline.world3D) + features.setArguments(baseline: baseline.features)
     }
 
     /// Back to the engine defaults, except for the 3D levers, which go to `world3D` (a 3D world has no valid all-zero
-    /// defaults: the preset's or the source's values are its defaults).
-    package mutating func reset(world3D: World3DLevers = World3DLevers()) { self = Levers(world3D: world3D) }
+    /// defaults: the preset's or the source's values are its defaults) and the feature levers, which go to `features` (the chosen
+    /// overlays' values, or the source's).
+    package mutating func reset(world3D: World3DLevers = World3DLevers(), features: FeatureLevers = FeatureLevers()) {
+        self = Levers(world3D: world3D, features: features)
+    }
 }
 
 // MARK: - Lever values of an existing run
@@ -149,6 +158,13 @@ extension Levers {
                 throw LeverConfigError(message: "\(section).\(key) is not a number")
             }
             return n
+        }
+        // A feature lever (`FeatureLevers`): a boolean, a number or an integer, as the lever's kind says.
+        func feature(_ section: String, _ key: String) throws {
+            guard let raw = try value(section, key) else { return }
+            guard features.set("\(section).\(key)", fromJSON: raw) else {
+                throw LeverConfigError(message: "\(section).\(key) has the wrong type")
+            }
         }
         func decimalText(_ section: String, _ key: String) throws -> String? {
             guard let n = try number(section, key) else { return nil }
@@ -189,6 +205,51 @@ extension Levers {
         if let t = try decimalText("fields", "photic_lambda") { world3D.photicLambda = t }
         if let t = try decimalText("mutation", "buoy_init") { world3D.buoyInit = t }
         if let t = try decimalText("mutation", "buoy_sigma") { world3D.buoySigma = t }
+
+        // The feature layers (DESIGN §45): a run from before them, or with them off, lacks these keys (the engine omits a default
+        // from config.json) and gets the defaults.
+        try feature("arms", "enabled")
+        try feature("arms", "kappa")
+        try feature("arms", "a0")
+        try feature("arms", "key_floor")
+        try feature("arms", "speed_slow")
+        try feature("arms", "upkeep_atk")
+        try feature("arms", "upkeep_arm")
+        try feature("arms", "init_atk")
+        try feature("arms", "init_arm")
+        try feature("arms", "sigma")
+        try feature("arms", "sigma_phase")
+        try feature("structures", "enabled")
+        try feature("structures", "cap")
+        try feature("structures", "build_max")
+        try feature("structures", "build_cost")
+        try feature("structures", "decay_q12")
+        try feature("structures", "shelter_gain")
+        try feature("structures", "barrier_gain")
+        try feature("structures", "shield_gain")
+        try feature("structures", "reach")
+        try feature("structures", "open_frac")
+        try feature("structures", "aperture")
+        try feature("structures", "exit_ease")
+        try feature("roles", "enabled")
+        try feature("bonds", "share_mode")
+        try feature("bonds", "share_kappa")
+        try feature("bonds", "share_kin_floor")
+        try feature("roles", "forage_gain")
+        try feature("roles", "forage_defend_pen")
+        try feature("roles", "guard_harvest_pen")
+        try feature("roles", "guard_shield")
+        try feature("roles", "synergy")
+        try feature("roles", "ramp_steps")
+        try feature("roles", "threshold")
+        try feature("roles", "switch_cost")
+        try feature("roles", "inherit_role")
+        try feature("comm", "enabled")
+        try feature("comm", "width")
+        try feature("comm", "range")
+        try feature("comm", "atten_pow")
+        try feature("comm", "kin_exp")
+        try feature("comm", "cost")
     }
 
     /// The levers of the run directory `runDirectory`, or the engine defaults plus a short warning if its
@@ -246,6 +307,11 @@ package struct RunSettings: Equatable {
     /// New run only: the 3D values of the chosen preset (a 2D preset gives `dims` 2), the baseline of the 3D levers.
     /// The caller keeps it in step with `preset` and pre-fills `levers.world3D` from it (`selectPreset`).
     package var presetWorld3D = World3DLevers()
+    /// New run only: the features (`ext.EXTENSIONS` names) whose overlay (`--overlay build`, ...) the run starts from, and the feature
+    /// levers that gives: the engine defaults with the overlays' values over them, the baseline the feature levers are diffed against.
+    /// The caller keeps `featureBaseline` in step (`selectFeatureOverlays`).
+    package var featureOverlays: Set<String> = []
+    package var featureBaseline = FeatureLevers()
     /// The ecosystem director (docs/DIRECTOR.md). The context holds what it is diffed against (the engine
     /// defaults for a new run, the source's values for a fork or resume) and what the run allows.
     package var director = DirectorSettings()
@@ -266,6 +332,28 @@ package struct RunSettings: Equatable {
     /// only: a resume has no levers, so the app leaves `leverBaseline` at the engine defaults there, and a resume's
     /// dimensions are `RunController.targetRunDims`).
     package var world3DBaseline: World3DLevers { mode == .new ? presetWorld3D : leverBaseline.world3D }
+
+    /// What the feature levers are diffed against: the chosen overlays' values for a new run, the source's for a fork.
+    package var featureLeverBaseline: FeatureLevers { mode == .new ? featureBaseline : leverBaseline.features }
+
+    /// The overlays `--overlay` passes for a new run, in the order of the feature table: a feature's overlay, or its 3D variant when
+    /// the world is 3D.
+    package var overlayArguments: [String] {
+        guard mode == .new else { return [] }
+        var args: [String] = []
+        for group in FeatureLevers.groups where featureOverlays.contains(group.feature) {
+            if let name = group.overlayName(dims: worldDims) { args += ["--overlay", name] }
+        }
+        return args
+    }
+
+    /// Chooses the overlays and their values: the feature levers go back to `baseline` (the overlays' values), like a preset change
+    /// does for the 3D levers.
+    package mutating func selectFeatureOverlays(_ features: Set<String>, baseline: FeatureLevers) {
+        featureOverlays = features
+        featureBaseline = baseline
+        levers.features = baseline
+    }
 
     /// The world's dimensions: the preset's for a new run, the source's for a fork. Never a lever. Whatever
     /// `leverBaseline` holds in a resume (the app does not load it there; see `world3DBaseline`).
@@ -328,6 +416,7 @@ package struct RunSettings: Equatable {
         if mode != .resume {
             errors += effectiveLevers.validate()
             errors += effectiveLevers.world3D.actuatorErrors(baseline: world3DBaseline)
+            if mode == .fork { errors += effectiveLevers.features.layoutErrors(baseline: leverBaseline.features) }
         }
         errors += director.validate(context: directorContext)
         if timerEnabled && timerDuration <= 0 { errors.append("Timer duration must be greater than zero.") }
@@ -344,10 +433,11 @@ package struct RunSettings: Equatable {
         case .new:
             args = ["run", "--preset", preset.rawValue]
             if fast { args += ["--overlay", "fast"] }
+            args += overlayArguments
             if let s = Parse.integer(trimmedSeed) { args += ["--seed", "\(s)"] }
             if let n = Parse.integer(trimmedSteps) { args += ["--steps", "\(n)"] }
             args += ["--out", "runs/\(trimmedName)"]
-            args += effectiveLevers.setArguments(baseline: Levers(world3D: presetWorld3D))
+            args += effectiveLevers.setArguments(baseline: Levers(world3D: presetWorld3D, features: featureBaseline))
             args += director.arguments(context: directorContext)
         case .fork:
             args = ["run", "--init-from", "runs/\(sourceRun)"]

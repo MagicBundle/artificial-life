@@ -29,7 +29,7 @@ import Testing
         return cadence
     }
 
-    static let presetNames = ["tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mini3d", "fast", "storm", "storm160"]
+    static let presetNames = ["tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mini3d", "fast", "storm", "storm160", "build", "bonds", "comm"]
 
     @Test(arguments: presetNames)
     func cadenceOfEveryPresetFileIsUnchanged(name: String) throws {
@@ -88,7 +88,7 @@ import Testing
 
     // MARK: Scalars
 
-    @Test func scalarsAreIntegersAndNumbers() {
+    @Test func scalarsAreIntegersNumbersAndBooleans() {
         let file = PresetFile(text: """
         top = 3
         [world]
@@ -101,6 +101,8 @@ import Testing
         grouped = 1_000_000
         name = "tiny3d"
         flag = true
+        off = false
+        quoted = "true"
         list = [0.16, 0.10, 0.16]
         inline = { a = 1 }
         inf_value = inf
@@ -118,7 +120,10 @@ import Testing
         #expect(file.double("world", "negative") == -0.25)
         #expect(file.int("world", "plus") == 2)
         #expect(file.int("world", "grouped") == 1_000_000)
-        for key in ["name", "flag", "list", "inline", "inf_value", "not_a_number", "hex", "missing_value", "absent"] {
+        #expect(file.bool("world", "flag") == true && file.bool("world", "off") == false)
+        #expect(file.bool("world", "quoted") == nil && file.bool("world", "dims") == nil && file.bool("world", "absent") == nil)
+        #expect(file.int("world", "flag") == nil && file.double("world", "flag") == nil, "a boolean is not a number")
+        for key in ["name", "quoted", "list", "inline", "inf_value", "not_a_number", "hex", "missing_value", "absent"] {
             #expect(file.value("world", key) == nil, "\(key) is not a scalar")
         }
         #expect(file.double("physics", "size") == 7, "a key is scoped to its table")

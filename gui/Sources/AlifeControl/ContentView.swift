@@ -21,6 +21,7 @@ struct ContentView: View {
                     if controller.settings.mode != .resume, controller.settings.worldDims == 3 {
                         world3DSection
                     }
+                    FeatureLeverSections(controller: controller)
                     DirectorSettingsBox(controller: controller)
                     timerSection
                 }
@@ -235,7 +236,8 @@ struct ContentView: View {
                 Text("Per patch: each resource patch peaks at a different time, so good seasons move across the map.")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Reset levers to defaults") {
-                    controller.settings.levers.reset(world3D: controller.settings.world3DBaseline)
+                    controller.settings.levers.reset(world3D: controller.settings.world3DBaseline,
+                                                     features: controller.settings.featureLeverBaseline)
                 }
                     .font(.caption)
             }

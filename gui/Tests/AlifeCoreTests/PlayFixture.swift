@@ -119,6 +119,10 @@ func playSectionBytes(_ record: StreamRecord) -> [String: Data] {
         b += le(UInt32(bitPattern: f.energy)) + le(f.age) + le(f.generation) + le(f.parentUid)
         b += [f.nBonds, f.house, f.kin, f.colony, f.archPrimary, f.archSecondary, f.intent, f.labelFlags]
         return ["body": Data(b)]
+    case .strc(let c), .fsol(let c):
+        return ["idx": raw(c.indices), "level": Data(c.levels)]
+    case .fsig(let v):
+        return ["says": Data(v.says), "hears": Data(v.hears)]
     case .strm, .evnt, .envs, .alrt, .rprt, .plan:
         return [:]
     }

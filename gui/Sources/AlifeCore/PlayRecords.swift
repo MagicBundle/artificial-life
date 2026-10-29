@@ -133,6 +133,32 @@ package struct PlayHeader: Equatable, Sendable, Codable {
         package var params: [String: JSONValue]?
     }
 
+    /// `play.structures` and `play.niche` (DESIGN §45): the grid the sparse cell records `STRC` and `FSOL` index. `cells` is `[FZ, FG, FG]`
+    /// (array shape order), `cell` the world length of one cell and `cap` the material or soil cap the levels are scaled by.
+    package struct CellGrid: Equatable, Sendable, Codable {
+        package var enabled: Bool
+        /// `play.niche` only: farming is on (the key is absent for structures).
+        package var farm: Bool?
+        package var cap: Int
+        package var cells: [Int]
+        package var cell: Double
+    }
+
+    /// `play.comm`: the voice channels, the hearing range and the engine control (`none`, `deaf` or `decoy`).
+    package struct Comm: Equatable, Sendable, Codable {
+        package var enabled: Bool
+        package var w: Int
+        package var range: Double
+        package var control: String
+    }
+
+    /// `play.bonds`, written exactly when `FRMA` carries the bond flow (`FLAG_BONDFLOW`): `scale` is the quanta per step an int8 flow of
+    /// 127 stands for (`bonds.share_rate`).
+    package struct BondFlow: Equatable, Sendable, Codable {
+        package var flow: Bool
+        package var scale: Double
+    }
+
     /// The tags the writer actually sends (a 2D or dry world has no `MAP1` and `STRM`).
     package var records: [String]
     package var versions: [String: Int]
@@ -160,10 +186,15 @@ package struct PlayHeader: Equatable, Sendable, Codable {
     package var gameSpecs: String?
     /// §34.10: the save mode the world started in; nil for a world of an older server (which keeps its last saves).
     package var saves: Saves?
+    /// The feature layers (DESIGN §45), each written only when its feature is on: nil from an older server and for a world without it.
+    package var structures: CellGrid?
+    package var comm: Comm?
+    package var niche: CellGrid?
+    package var bonds: BondFlow?
 
     private enum CodingKeys: String, CodingKey {
         case records, versions, rates, tick, chapter, weather, labels, cast, events, planet
-        case alerts, autopause, powers, saves
+        case alerts, autopause, powers, saves, structures, comm, niche, bonds
         case baseRate = "base_rate"
         case snapshotEvery = "snapshot_every"
         case frameHz = "frame_hz"
@@ -193,6 +224,18 @@ package struct PlayHeader: Equatable, Sendable, Codable {
         if let powers, powers.values.contains(where: { $0.cost < 0 || $0.cooldown < 0 }) {
             throw bad("a power has a negative cost or cooldown")
         }
+        for (name, grid) in [("structures", structures), ("niche", niche)] {
+            guard let grid else { continue }
+            guard grid.cap >= 1, grid.cell.isFinite, grid.cell > 0 else { throw bad("\(name) has a cap or a cell that is not positive") }
+            guard grid.cells.count == 3, grid.cells.allSatisfy({ (1...0xFFFF).contains($0) }) else {
+                throw bad("\(name).cells is not [FZ, FG, FG] with each in 1 to 65535")
+            }
+        }
+        if let comm {
+            guard (1...PlayVoice.maxChannels).contains(comm.w) else { throw bad("comm.w \(comm.w) is outside 1 to \(PlayVoice.maxChannels)") }
+            guard comm.range.isFinite, comm.range >= 0 else { throw bad("comm.range is not a distance") }
+        }
+        if let bonds, !(bonds.scale.isFinite && bonds.scale > 0) { throw bad("bonds.scale is not positive") }
     }
 }
 
@@ -306,9 +349,12 @@ package struct PlayFrame: Equatable, Sendable {
     package var uid: [Int64]
     /// `2·nBonds` listed indices: pairs `(i, j)` with `i < j < n`.
     package var bonds: [UInt32]
+    /// One value per bond when the head carries `FLAG_BONDFLOW` (bonds feature, DESIGN §45): `round(127 · clip(f / scale, -1, 1))` with `f`
+    /// the net quanta that moved along the bond in the last step from the lower listed row to the higher; nil without the flag.
+    package var flow: [Int8]?
 
     package init(head: RecordHead, n: Int, capacity: Int, colorIndex: Int, span: Int, bitmap: [UInt32], rows: [UInt32], pos: [Float],
-                 orient: [UInt16], rgb: [UInt32], uid: [Int64], bonds: [UInt32]) {
+                 orient: [UInt16], rgb: [UInt32], uid: [Int64], bonds: [UInt32], flow: [Int8]? = nil) {
         self.head = head
         self.n = n
         self.capacity = capacity
@@ -321,11 +367,15 @@ package struct PlayFrame: Equatable, Sendable {
         self.rgb = rgb
         self.uid = uid
         self.bonds = bonds
+        self.flow = flow
     }
 
     package var nBonds: Int { bonds.count / 2 }
     /// Bit 0: the state has an invariant (error) diag bit set.
     package var hasDiagError: Bool { head.flags & 1 != 0 }
+    /// Bit 1: an int8 flow per bond follows the bond pairs (`flow` is not nil).
+    package static let bondFlowFlag: UInt16 = 1 << 1
+    package var hasBondFlow: Bool { head.flags & Self.bondFlowFlag != 0 }
     package var step: UInt64 { head.step }
 
     package func position(_ i: Int) -> SIMD3<Float> { SIMD3(pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]) }
@@ -996,6 +1046,89 @@ package struct PlayPlan: Equatable, Sendable {
     package var isReply: Bool { head.flags & 1 != 0 }
 }
 
+// MARK: - STRC and FSOL
+
+/// `STRC` (the built material) and `FSOL` (the farmed soil): the cells of a grid that are not empty, sparse. The record is the complete state
+/// of the layer (it replaces the one before; an empty list clears it). A cell index is z-major, `idx = (z · ny + y) · nx + x`.
+package struct PlayCells: Equatable, Sendable {
+    package var head: RecordHead
+    package var nx: Int
+    package var ny: Int
+    package var nz: Int
+    /// Strictly ascending flat indices of the non-empty cells.
+    package var indices: [UInt32]
+    /// `1 + (254 · m) // cap` for each listed cell: 1 to 255, a full cell is 255.
+    package var levels: [UInt8]
+
+    package init(head: RecordHead, nx: Int, ny: Int, nz: Int, indices: [UInt32], levels: [UInt8]) {
+        self.head = head
+        self.nx = nx
+        self.ny = ny
+        self.nz = nz
+        self.indices = indices
+        self.levels = levels
+    }
+
+    /// The most cells one record lists (`STRC_MAX_CELLS`).
+    package static let maxCells = 65536
+    /// Bit 0 of the head's flags: more cells were non-empty than fit, and only the highest levels are listed.
+    package static let truncatedFlag: UInt16 = 1
+    package var count: Int { indices.count }
+    package var isTruncated: Bool { head.flags & Self.truncatedFlag != 0 }
+
+    /// The cell `k` of the list as grid coordinates.
+    package func cell(_ k: Int) -> (x: Int, y: Int, z: Int) {
+        let i = Int(indices[k])
+        return (i % nx, (i / nx) % ny, i / (nx * ny))
+    }
+
+    /// The fraction of the cap a level stands for, `level / 255` (the opacity of a cell).
+    package static func alpha(_ level: UInt8) -> Float { Float(level) / 255 }
+
+    /// The approximate units `m` of a level for a cap: `(level - 1) · cap / 254`.
+    package static func units(_ level: UInt8, cap: Int) -> Double { Double(max(Int(level) - 1, 0)) * Double(cap) / 254 }
+
+    /// The level of every cell of a column `(x, y)`, the largest over z, as an `nx × ny` image (row-major `[y][x]`, 0 where empty): the
+    /// column maximum the flat map draws.
+    package func columnMaximum() -> [UInt8] {
+        var image = [UInt8](repeating: 0, count: nx * ny)
+        for k in 0..<count {
+            let i = Int(indices[k])
+            let column = i % (nx * ny)
+            if levels[k] > image[column] { image[column] = levels[k] }
+        }
+        return image
+    }
+}
+
+// MARK: - FSIG
+
+/// `FSIG`: the voice of the focused organism, right after its `FOCS`. `says` is what it called after the step (`floor(256 v)`, at most 255),
+/// `hears` what drove the step (`round(255 h)`), valid only when the observer channel ran.
+package struct PlayVoice: Equatable, Sendable {
+    package var head: RecordHead
+    package var uid: Int64
+    package var w: Int
+    /// Bit 0 of the body's flags: the heard half is valid. Otherwise `hears` and `audible` are zero and a panel shows the spoken half only.
+    package var heardValid: Bool
+    /// The neighbours with a hearing weight above 0 (0 when the heard half is not valid).
+    package var audible: Int
+    package var says: [UInt8]
+    package var hears: [UInt8]
+
+    package static let maxChannels = 8
+
+    package init(head: RecordHead, uid: Int64, w: Int, heardValid: Bool, audible: Int, says: [UInt8], hears: [UInt8]) {
+        self.head = head
+        self.uid = uid
+        self.w = w
+        self.heardValid = heardValid
+        self.audible = audible
+        self.says = says
+        self.hears = hears
+    }
+}
+
 // MARK: - The record enum
 
 /// A decoded play record.
@@ -1014,6 +1147,10 @@ package enum StreamRecord: Equatable, Sendable {
     case alrt(PlayAlertBatch)
     case rprt(PlayReport)
     case plan(PlayPlan)
+    /// The feature layers (DESIGN §45): the built material, the focused organism's voice, the farmed soil.
+    case strc(PlayCells)
+    case fsig(PlayVoice)
+    case fsol(PlayCells)
 
     /// The record's tag as on the wire.
     package var tag: String {
@@ -1031,6 +1168,9 @@ package enum StreamRecord: Equatable, Sendable {
         case .alrt: "ALRT"
         case .rprt: "RPRT"
         case .plan: "PLAN"
+        case .strc: "STRC"
+        case .fsig: "FSIG"
+        case .fsol: "FSOL"
         }
     }
 
@@ -1049,6 +1189,9 @@ package enum StreamRecord: Equatable, Sendable {
         case .alrt(let r): r.head
         case .rprt(let r): r.head
         case .plan(let r): r.head
+        case .strc(let r): r.head
+        case .fsig(let r): r.head
+        case .fsol(let r): r.head
         }
     }
 }
@@ -1114,6 +1257,7 @@ enum RecordDecoder {
         case "ALRT": 8
         case "RPRT": 16
         case "PLAN": 4
+        case "STRC", "FSOL", "FSIG": 12
         case "CLCK", "FOCS": 0
         default: nil
         }
@@ -1137,7 +1281,17 @@ enum RecordDecoder {
             guard nBonds <= n * header.bondSlots else {
                 throw malformed(tag, "n_bonds \(nBonds) exceeds the \(header.bondSlots) bond slots of \(n) rows")
             }
-            return 36 + 4 * ((cap + 31) / 32) + 28 * n + 8 * nBonds
+            // The bond flow (bonds feature) is an int8 per bond after the pairs, padded to 4, exactly when the head flag says so.
+            let flow = r.u16(14) & PlayFrame.bondFlowFlag != 0 ? 4 * ((nBonds + 3) / 4) : 0
+            return 36 + 4 * ((cap + 31) / 32) + 28 * n + 8 * nBonds + flow
+        case "STRC", "FSOL":
+            let count = Int(r.u32(head + 8))
+            guard count <= PlayCells.maxCells else { throw malformed(tag, "\(count) cells exceed the cap of \(PlayCells.maxCells)") }
+            return head + pad4(12 + 5 * count)
+        case "FSIG":
+            let w = Int(r.u8(head + 8))
+            guard (1...PlayVoice.maxChannels).contains(w) else { throw malformed(tag, "W \(w) is outside 1 to \(PlayVoice.maxChannels)") }
+            return head + pad4(12 + 2 * w)
         case "IDNT":
             let rows = Int(r.u32(head)), jsonLength = Int(r.u32(head + 8))
             try checkRows(tag, rows, header)
@@ -1218,6 +1372,9 @@ enum RecordDecoder {
         case "ALRT": return .alrt(try alrt(head, r))
         case "RPRT": return .rprt(try rprt(head, r))
         case "PLAN": return .plan(try plan(head, r))
+        case "STRC": return .strc(try cells(tag, head, r, header))
+        case "FSOL": return .fsol(try cells(tag, head, r, header))
+        case "FSIG": return .fsig(try fsig(head, r, header))
         default: throw malformed(tag, "not a play record")
         }
     }
@@ -1257,8 +1414,16 @@ enum RecordDecoder {
         for k in 0..<nBonds where !(bonds[2 * k] < bonds[2 * k + 1] && Int(bonds[2 * k + 1]) < n) {
             throw malformed(tag, "bond \(k) is (\(bonds[2 * k]), \(bonds[2 * k + 1])), not i < j < n")
         }
+        offset += 8 * nBonds
+        var flow: [Int8]?
+        if head.flags & PlayFrame.bondFlowFlag != 0 {
+            let values: [Int8] = r.copy(count: nBonds, at: offset)
+            guard !values.contains(-128) else { throw malformed(tag, "a bond flow is -128, outside -127 to 127") }
+            try checkZero(tag, r, from: offset + nBonds, to: pad4(offset + nBonds))
+            flow = values
+        }
         return PlayFrame(head: head, n: n, capacity: cap, colorIndex: colorIndex, span: span, bitmap: bitmap,
-                         rows: rows, pos: pos, orient: orient, rgb: rgb, uid: uid, bonds: bonds)
+                         rows: rows, pos: pos, orient: orient, rgb: rgb, uid: uid, bonds: bonds, flow: flow)
     }
 
     private static func idnt(_ head: RecordHead, _ r: ByteReader, _ header: StreamHeader) throws -> PlayIdentities {
@@ -1456,6 +1621,46 @@ enum RecordDecoder {
         guard plan.status != .preview || head.flags & 1 != 0 else { throw malformed(tag, "a preview is the reply to a request") }
         guard plan.id >= 0, plan.cost >= 0 else { throw malformed(tag, "id and cost are not negative") }
         return PlayPlan(head: head, plan: plan)
+    }
+
+    /// `STRC` and `FSOL`: `u16 nx, ny, nz, flags; u32 count; count x u32 idx; count x u8 level`, padded to 4.
+    private static func cells(_ tag: String, _ head: RecordHead, _ r: ByteReader, _ header: StreamHeader) throws -> PlayCells {
+        let nx = Int(r.u16(16)), ny = Int(r.u16(18)), nz = Int(r.u16(20)), bodyFlags = r.u16(22), count = Int(r.u32(24))
+        guard nx == header.fieldGrid, ny == header.fieldGrid, nz == header.fieldLayers else {
+            throw malformed(tag, "grid \(nz) x \(ny) x \(nx) differs from the header's \(header.fieldLayers) x \(header.fieldGrid) x \(header.fieldGrid)")
+        }
+        guard bodyFlags == head.flags else { throw malformed(tag, "the body flags \(bodyFlags) differ from the head's \(head.flags)") }
+        guard head.flags & PlayCells.truncatedFlag == 0 || count == PlayCells.maxCells else {
+            throw malformed(tag, "the truncated flag is set for \(count) cells, not \(PlayCells.maxCells)")
+        }
+        let indices: [UInt32] = r.copy(count: count, at: 28)
+        let levels: [UInt8] = r.copy(count: count, at: 28 + 4 * count)
+        let total = nx * ny * nz
+        var previous: Int64 = -1
+        for i in indices {
+            guard Int64(i) > previous, Int(i) < total else {
+                throw malformed(tag, "cell index \(i) is not ascending inside the \(total) cells")
+            }
+            previous = Int64(i)
+        }
+        guard !levels.contains(0) else { throw malformed(tag, "a listed cell has level 0") }
+        try checkZero(tag, r, from: 28 + 5 * count, to: pad4(28 + 5 * count))
+        return PlayCells(head: head, nx: nx, ny: ny, nz: nz, indices: indices, levels: levels)
+    }
+
+    /// `FSIG`: `i64 uid; u8 W; u8 flags; u16 audible; W x u8 says; W x u8 hears`, padded to 4.
+    private static func fsig(_ head: RecordHead, _ r: ByteReader, _ header: StreamHeader) throws -> PlayVoice {
+        let tag = "FSIG"
+        let uid = r.i64(16), w = Int(r.u8(24)), flags = r.u8(25), audible = Int(r.u16(26))
+        if let comm = header.play?.comm, comm.w != w { throw malformed(tag, "W \(w) differs from the header's comm.w \(comm.w)") }
+        let says: [UInt8] = r.copy(count: w, at: 28)
+        let hears: [UInt8] = r.copy(count: w, at: 28 + w)
+        let heard = flags & 1 != 0
+        if !heard, audible != 0 || hears.contains(where: { $0 != 0 }) {
+            throw malformed(tag, "the heard half is not valid but audible or hears is not zero")
+        }
+        try checkZero(tag, r, from: 28 + 2 * w, to: pad4(28 + 2 * w))
+        return PlayVoice(head: head, uid: uid, w: w, heardValid: heard, audible: audible, says: says, hears: hears)
     }
 
     // MARK: JSON

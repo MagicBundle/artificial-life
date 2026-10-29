@@ -9,6 +9,7 @@ engine does not have would be rejected at Start (exit 2) or never matched, so ea
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import json
 import re
 from pathlib import Path
@@ -20,12 +21,14 @@ from alife import config, ext
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "gui" / "Sources" / "AlifeCore"
 
-# A `--set` key the GUI passes, as a helper call (`decimal("mutation.rate_min", ...)`) or an interpolated
+# A `--set` key the GUI passes, as a helper call (`decimal("mutation.rate_min", ...)`; a feature lever row is
+# `.decimal("arms.kappa", "2", ...)`, `.flag(...)`, `.integer(...)` or `.options(...)`) or an interpolated
 # argument (`"fields.season_mode=\(mode)"`); and a key it reads from a run's config.json
-# (`decimalText("fields", "x")`).
-SET_KEY = re.compile(r'(?:decimal|integer)\("([a-z_]+\.[a-z_0-9]+)"|"([a-z_]+\.[a-z_0-9]+)=')
+# (`decimalText("fields", "x")`, and `feature("arms", "kappa")` for a feature lever).
+SET_KEY = re.compile(r'(?:decimal|integer|flag|options)\("([a-z_]+\.[a-z_0-9]+)"|"([a-z_]+\.[a-z_0-9]+)=')
 READ_KEY = re.compile(
-    r'(?:decimalText|integerText|value|string|integer|bool|number|int|double)\("([a-z_]+)", "([a-z_0-9]+)"'
+    r"(?:decimalText|integerText|value|string|integer|bool|number|int|double|feature)"
+    r'\("([a-z_]+)", "([a-z_0-9]+)"'
 )
 
 # The 3D keys that are command-line only: the grounding tolerance is a numerical detail of the lattice
@@ -109,7 +112,7 @@ def test_the_3d_levers_cover_the_3d_keys() -> None:
 
 # The features whose GUI lever file (`<Feature>Levers.swift`) has landed; a feature's GUI PR adds itself here
 # (DESIGN §43.7). A feature not listed must have no such file, which catches a forgotten registration.
-GUI_LANDED: set[str] = set()
+GUI_LANDED: set[str] = {"arms", "structures", "bonds", "comm"}
 
 
 @pytest.mark.parametrize("feature", ext.EXTENSIONS)
@@ -124,6 +127,40 @@ def test_feature_levers_cover_feature_keys(feature: str) -> None:
     # the pre-fill of a fork reads the same keys from config.json (Levers.swift)
     read = {(m.group(1), m.group(2)) for m in READ_KEY.finditer(sources()["Levers.swift"])}
     assert want <= read
+
+
+LEVER_ROW = re.compile(r'\.(?:flag|decimal|integer|options)\("([a-z_]+)\.([a-z_0-9]+)",\s*"([^"]*)"')
+
+
+@pytest.mark.parametrize("feature", sorted(GUI_LANDED))
+def test_feature_lever_defaults_are_the_engines(feature: str) -> None:
+    """Each row of a `<Feature>Levers.swift` table states its default as text: it must be the config's."""
+    text = (CORE / f"{feature.capitalize()}Levers.swift").read_text(encoding="utf-8")
+    rows = LEVER_ROW.findall(text)
+    assert rows, f"no lever rows found in {feature}"
+    cfg = config.Config()
+    for section, key, default in rows:
+        value = getattr(getattr(cfg, section), key)
+        if isinstance(value, bool):
+            assert default == str(value).lower(), (section, key)
+        else:
+            assert float(default) == float(value), (section, key, default, value)
+
+
+def test_the_stream_records_the_decoder_knows_are_the_writers() -> None:
+    """The feature layers' record tags and colour mode, once the writer (`streamrec`) has them."""
+    from alife import streamrec as sr
+
+    text = (CORE / "PlayRecords.swift").read_text(encoding="utf-8")
+    prefix = swift_body(text, "static func prefixBytes")
+    swift_tags = set(re.findall(r'"([A-Z0-9]{4})"', prefix))
+    assert {"STRC", "FSOL", "FSIG"} <= swift_tags
+    for tag in getattr(sr, "EXT_TAGS", ()):
+        assert tag in swift_tags, tag
+    assert set(getattr(sr, "ALL_TAGS", sr.TAGS)) <= swift_tags | {"FARS"}
+    role = (CORE / "RoleColours.swift").read_text(encoding="utf-8")
+    assert re.search(r'static let mode = "role"', role)
+    assert tuple(getattr(sr, "EXT_COLOR_MODES", ("role",))) == ("role",)
 
 
 def test_the_feature_key_tables_are_consistent() -> None:
@@ -252,9 +289,29 @@ def test_the_play_header_keys_match_playheader() -> None:
         game_specs="game-v0",
         saves=sr.saves_block(mode="all", keep=3, adopted=True),
     )
-    assert swift_struct_keys(text, "PlayHeader") == set(g3b) and set(g3b) - set(play) == {
+    # the feature layers' header keys (DESIGN §45): the Swift header reads them always; the writer adds them
+    # with its feature (the observer series), so once it has the parameters their nested keys are compared too
+    ext_keys = {"structures", "comm", "niche", "bonds"}
+    writer_keys = ext_keys & set(inspect.signature(sr.header_play).parameters)
+    assert swift_struct_keys(text, "PlayHeader") == set(g3b) | ext_keys and set(g3b) - set(play) == {
         "alerts", "autopause", "powers", "game_specs", "saves",
     }  # fmt: skip
+    if writer_keys == ext_keys:
+        full = sr.header_play(
+            records=["FRMA", "STRC", "FSIG", "FSOL"],
+            weather=sr.weather_block(enabled=False, dc_ref=None),
+            labels=play["labels"],
+            energy_cap=1,
+            structures=sr.cells_block(cap=4096, cells=[1, 12, 12], cell=4.0),
+            comm=sr.comm_block(w=4, hear_range=8.0, control="none"),
+            niche=sr.cells_block(cap=4095, cells=[1, 12, 12], cell=4.0, farm=True),
+            bonds=sr.bonds_block(scale=1000.0),
+        )
+        assert ext_keys <= set(full)
+        assert swift_struct_keys(text, "CellGrid") == set(full["niche"])
+        assert set(full["structures"]) < set(full["niche"])  # `farm` is niche's alone
+        assert swift_struct_keys(text, "Comm") == set(full["comm"])
+        assert swift_struct_keys(text, "BondFlow") == set(full["bonds"])
     assert swift_struct_keys(text, "Weather") == set(play["weather"])
     assert swift_struct_keys(text, "Refs") == set(play["weather"]["refs"])
     assert swift_struct_keys(text, "Labels") == set(play["labels"])

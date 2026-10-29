@@ -256,6 +256,9 @@ package struct WorldStore: Sendable {
         package static let alerts = Changes(rawValue: 1 << 11)
         package static let reports = Changes(rawValue: 1 << 12)
         package static let plans = Changes(rawValue: 1 << 13)
+        package static let material = Changes(rawValue: 1 << 14)
+        package static let soil = Changes(rawValue: 1 << 15)
+        package static let voice = Changes(rawValue: 1 << 16)
     }
 
     package private(set) var header: StreamHeader?
@@ -268,6 +271,10 @@ package struct WorldStore: Sendable {
     package private(set) var environment: PlayEnvironmentRecord?
     package private(set) var clock: PlayClock?
     package private(set) var focus: PlayFocus?
+    /// The feature layers (DESIGN §45): the built material, the farmed soil, the focused organism's voice. Nil without the feature.
+    package private(set) var material: PlayCells?
+    package private(set) var soil: PlayCells?
+    package private(set) var voice: PlayVoice?
     package private(set) var chronicle = Chronicle()
     package private(set) var alerts = AlertBoard()
     package private(set) var reports = ReportShelf()
@@ -276,6 +283,8 @@ package struct WorldStore: Sendable {
     package private(set) var frameSerial = 0
     package private(set) var mapSerial = 0
     package private(set) var territorySerial = 0
+    package private(set) var materialSerial = 0
+    package private(set) var soilSerial = 0
     /// Increases with every change other than a frame.
     package private(set) var revision = 0
     /// Records that were replaced by a newer one before anyone looked, by tag (informational).
@@ -310,6 +319,9 @@ package struct WorldStore: Sendable {
         case .envs(let r): environment = r; changes = .environment
         case .clck(let r): clock = r; changes = .clock
         case .focs(let r): focus = r; changes = .focus
+        case .strc(let r): material = r; materialSerial += 1; changes = .material
+        case .fsol(let r): soil = r; soilSerial += 1; changes = .soil
+        case .fsig(let r): voice = r; changes = .voice
         case .evnt(let batch):
             return apply(events: batch).isEmpty ? [] : .events  // (the revision is bumped by `apply(events:)`)
         case .alrt(let batch):
@@ -362,6 +374,16 @@ package struct WorldStore: Sendable {
     }
 
     // MARK: Lookups
+
+    /// The voice of the focused organism: the newest `FSIG` when it is the one the newest `FOCS` follows (a voice of another organism, or
+    /// of an organism that has gone, is not shown).
+    package var focusVoice: PlayVoice? {
+        guard let voice, let focus, focus.isAlive, voice.uid == focus.uid else { return nil }
+        return voice
+    }
+
+    /// The header says the stream carries the layer (the tag is in `play.records`).
+    package func carries(_ tag: String) -> Bool { play?.records.contains(tag) ?? false }
 
     /// The influence the player has, from the newest `ENVS` (nil in a world with no player channel).
     package var influence: PlayEnvironment.Influence? { environment?.environment.influence }
