@@ -9,6 +9,7 @@ engine does not have would be rejected at Start (exit 2) or never matched, so ea
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import inspect
 import json
 import re
@@ -161,6 +162,20 @@ def test_the_stream_records_the_decoder_knows_are_the_writers() -> None:
     role = (CORE / "RoleColours.swift").read_text(encoding="utf-8")
     assert re.search(r'static let mode = "role"', role)
     assert tuple(getattr(sr, "EXT_COLOR_MODES", ("role",))) == ("role",)
+
+
+def test_the_feature_stream_fixture_is_what_the_writer_makes() -> None:
+    """`tests/data/play_features.bin` (read by `FeatureStreamFixtureTests`) is what the writer makes."""
+    from alife import streamrec as sr
+
+    if not hasattr(sr, "encode_strc"):
+        pytest.skip("the observer series' writer (STRC, FSIG, FSOL) is not on this branch yet")
+    path = ROOT / "tests" / "make_play_features.py"
+    spec = importlib.util.spec_from_file_location("make_play_features", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.build() == (ROOT / "tests" / "data" / "play_features.bin").read_bytes()
 
 
 def test_the_feature_key_tables_are_consistent() -> None:
