@@ -10444,6 +10444,24 @@ required numbers where the record has `null` (`sim_self`, `births`, `x`, `y`, `c
 which would have failed the decode of a real record; they are optional now. `TERR.ids` keeps its index meaning: a list of the kin id of each
 slot with -1 for an empty one, so that an owner byte is an index into it. The fixtures are unchanged (their slots are dense).
 
+
+#### 33.1.15 The records of the feature extensions (PRs S2, C2, B3, F2; observer-only)
+
+Three tags are appended in extension order, `streamrec.EXT_TAGS = (STRC, FSIG, FSOL)`, all version 1, latest-wins, sent only while
+their feature is on and listed in `play.records` only then; a world without the features has the stream and header it always had.
+`FRMA` gains an optional section. Byte layouts (the normative copy is `stream_contract.md` of the observer PR; the independent
+decoder is `tests/play_decode.py`):
+
+* `STRC` (structures) and `FSOL` (farming soil): body `<HHHHI` `nx ny nz flags count`, then `count` `u32` ascending z-major cell
+  indices `(z·ny + y)·nx + x`, then `count` `u8` levels `1 + (254·m)//cap`, zero padded to 4; at most 65 536 cells (`flags` bit 0
+  `FLAG_TRUNC`: the highest levels kept; the head `flags` equal the body `flags`); a record is the complete layer, not a delta.
+  Sent at start and at every `play.tick`. Headers `play.structures` and `play.niche`: `{enabled, cap, cells: [FZ, FG, FG], cell}`.
+* `FSIG` (comm): body `<qBBH` `uid W flags audible`, `W` `u8` says, `W` `u8` hears, padded to 4; after each `FOCS` of a living
+  organism. Header `play.comm = {enabled, w, range, control}`.
+* `FRMA` bond flow (bonds): head flag bit 1 `FLAG_BONDFLOW`; after the bond pairs one `i8` per drawn bond, zero padded to 4;
+  header `play.bonds = {flow, scale}`. A decoder that checks the exact payload length of an `FRMA` must read the flag.
+* An older reader skips the three new tags by length (the forward rule above); `tests/test_observer_stream.py` pins it.
+
 ### 33.2 The play loop
 
 The host pieces the loop is built from (§33.2.1 to §33.2.3), the runner hook, the scheduler,
@@ -12515,12 +12533,37 @@ unchanged, the section is absent from `config.json` while default, and each key 
 false (`validate`). The Director never reaches the structures keys (E24: no menu parameter, env field or policy key carries one,
 no director module names the section; `tests/test_structures_step.py`).
 
-### 38.9 What S1 leaves to S2 and S3
+### 38.9 Observers and stream (PR S2: observer-only, no trajectory change)
 
-Stream record `STRC`, `play.structures`, the `mat` dump kind and its cadence key, `Acts.ext.structures` and the `BUILDING` flag,
-the observers' drift (`labels`, `tracers`, `game.observe`), the inspector, the GUI (map layer, instanced cubes, levers,
-`GUI_LANDED`) and the world `mini3d + build` runs. The registry row declares `metric_prefix = build_`, `act_flag = BUILDING` and
-the overlay `build` but no dump kind, colour mode or stream tag yet (the registry test checks those against `streamrec`).
+* **Observer channel.** `Acts.ext.structures = StructActs(build (N,) int16, cover (N,) int16)`: the deposited units after the
+  solvency mask and `round(256·cover)` of the start-of-step cell (the `cover` the step used; `here` when `reach > 0` but nothing
+  needed the cover column). Both are quantised from values the step already holds; `StructFlows` gained one trailing field,
+  `cover`, set by `step.py` after `structures.update`. `ActFlag.BUILDING` (256) is set on the rows with `units > 0`.
+  `test_game_purity`-style: observing a structures world changes no state value.
+* **Drift audit.** The game observers (`observe.quantise_inputs`, `ObsIn.mat`), the labels re-simulation (`labels.study`), the
+  tracer rig (`tracers.coupling_inputs`, `eco_arrays`) and the emergence recorder (`record.py`) subtract the wind drift from a
+  velocity but did not pass `shelter=` to `weather.agent_drift`, so a labelled run with weather and structures read a drift
+  `1/(1 - shelter_gain)` too large inside the material. They now all call `structures.drift_at(wx, pos, buoy_cap, alive, mat,
+  cfg)`, which is `agent_drift` with `shelter = shelter_k_at(mat, pos)` (the engine's `apply_shelter` factor, the same gather
+  of the same per-cell table) while `structures.enabled`, and `agent_drift` itself otherwise. Like `wx` and `pos`, `mat` is the
+  post-step state's: the observer drift remains the documented one-step approximation of the engine's start-of-step wind, with
+  the shelter now included. `tests/test_observers_structures.py` pins the ratio of the engine's velocity in a full cell to an
+  empty one (`1 - shelter_gain`) against `drift_at`, and that the bare `agent_drift` over-states it.
+* **Stream.** Record `STRC` (tag in `streamrec.EXT_TAGS`, version 1; contract in `stream_contract.md` of the PR, spelled out in
+  33.1.15): the whole material layer, sparse: `nx ny nz flags count` (`<HHHHI`), `count` ascending `u32` z-major cell indices,
+  `count` `u8` levels `1 + (254·m)//cap`, padded to 4; at most 65 536 cells (`FLAG_TRUNC`: the highest levels are kept). Sent by
+  `alife play` at start and at every tick, only while `structures.enabled`; `play.records` lists it only then and
+  `play.structures = {enabled, cap, cells: [FZ, FG, FG], cell}` is written only then, so every other world's header is
+  byte-identical. `alife stream` (the v1 viewer) is untouched.
+* **Dump.** `runio.DUMP_KINDS` gained `mat` (registry `dump_kinds`): `observers/mat_<step>.npy`, int32 of the field shape, every
+  `run.mat_every` steps (0 = off; needs `structures.enabled`; a resume key; omitted from `config.json` at 0 like the other
+  feature keys, `SERIAL_OMIT_KEYS`). `RunDir.write_grid/read_grid`; `truncate_after` cuts it with the other dumps.
+* **Metrics.** The interval keys of S1 stand. Snapshot keys (host, from `featobs.structures_row`, once per row): `build_here_mean`
+  (mean of m/cap at the alive agents' cells), `build_in_frac` (share of alive agents in a cell with material),
+  `build_cover_mean`, `build_mat_max`. The `ext.ExtSpec` row gained the hooks `snap_dev(s, cfg, heavy)` and `snap_row(h, cfg)`
+  (43.5): the device arrays join the one transfer of `metrics.snapshot_metrics`, the keys must carry the feature's prefix.
+* Still open for S3 and S4: the inspector, the GUI (map layer, instanced cubes, levers, `GUI_LANDED`) and the `mini3d + build`
+  runs.
 
 ### 38.10 Config
 
@@ -12691,12 +12734,25 @@ provisional and the first parameter the experiments sweep ({0, 4, 16, 64}); the 
 `cost` 4, which is no pressure). The brain's listening cost is already in the L1
 upkeep of the wider weights.
 
-### 39.8 Observers, stream, GUI (C2, not in C1)
+### 39.8 Observers and stream (PR C2: observer-only, no trajectory change)
 
-C1 sets only `ActFlag.SPOKE` (1024 = 128 << 3) in `Acts.flags` (the per-row form of `COMM_SPEAKERS`) and publishes the
-metrics `comm_speaker_frac`, `comm_due`, `comm_due_share`. `Acts.ext.comm` (voice, heard, audible), the `FSIG` stream
-record, the `voice` colour mode, the organism-panel bars and the GUI levers (`GUI_LANDED`) are C2/C3. The Director gets no
-comm lever (E24: `comm.*` are config keys outside the Director's env levers; a test pins it).
+* **Observer channel.** `Acts.ext.comm = CommActs(voice (N, W) uint8, heard (N, W) uint8, audible (N,) uint8)`: what was said this
+  step (`min(255, floor(256·sig))` of the post-mask voice), what the row heard, as the inputs that drove this step's decision
+  (`round(255·heard)`), and the number of neighbours with a hearing weight above zero (`comm.audible_count`; 0 under `deaf`). The
+  heard half comes from the same `ext.step_inputs` call that feeds the brain (`by_feature`, filled only when `observe`), so it
+  is the value the brain saw, not a recomputation; `Voice` gained two trailing optional fields (`heard`, `audible`), set only in
+  the observed step after the solvency mask. `ActFlag.SPOKE` was set in C1. The purity gate covers all of it
+  (`tests/test_observers_comm.py`).
+* **Stream.** Record `FSIG` (version 1, 33.1.15): after each `FOCS` whose organism is alive, `i64 uid`, `u8 W`, `u8 flags`
+  (bit 0: the heard half is valid), `u16 audible`, `W` bytes of what it says (`floor(256·v)` of `msg[row, MSG:]` after the step,
+  clipped to 255) and `W` bytes of what it hears (`round(255·heard)`), padded to 4. The heard half exists when the world is
+  played with `game.observe`: the `Observer` keeps the latest step's `(heard, audible)` (`Observer.comm_last`, never in a sidecar)
+  and the play loop reads the focused row from it; otherwise `FSIG` carries the spoken half and flag bit 0 is clear. The header
+  gains `play.comm = {enabled, w, range, control}` and `play.records` lists `FSIG` only while comm is on.
+* **Metrics.** C1's keys stand (`comm_speaker_frac`, `comm_due`, `comm_due_share`). No new key: the audible count is a per-row
+  observer value, not a population statistic of C2.
+* Not built: the `voice` colour mode (optional in the spec, skipped), the Swift panel and the levers (the GUI agent's), the
+  analysis module (C3).
 
 ### 39.9 What the analysis needs (for C3 and the measurement suite, §44)
 
@@ -12855,11 +12911,29 @@ already in `Acts.share_out/share_got`; `BondActs` also carries `shield` (`round(
 With the feature on, the step computes the S12 slots in both the observed and the plain graph
 (`share_from_slots(share_slots(...))` is `en.share`); `bench.py`'s staged mirror does the same.
 
-### 40.6 What is left
+### 40.6 Observers and stream (PR B3: observer-only, no trajectory change)
 
-B3: observers and scorecard (`body_role_entropy`, `role_diff_z`, assortativity, `analysis/bonds.py`), the bond-flow
-overlay, the role colour mode, GUI levers (`roles.*` and the `bonds.*` keys into `AlifeCore/Levers.swift`). R4 (movement
-couplings) and R5 (germ) are not scheduled; the runs (spec section 14) wait for B3.
+* **Snapshot keys** (host, `featobs.bonds_row`, prefix `bond_`; the heavy ones every `heavy_metrics_every`): `bond_role_frac_gen`,
+  `_forager`, `_guard` (shares of the alive rows; sum 1); `bond_role_assort_r` (Newman's categorical assortativity over the drawn
+  bonds, -1 for a perfectly alternating path, None when one category holds every bond end); `bond_fg_edge_frac` and
+  `bond_fg_edge_expect` (forager-guard bonds against random mixing of the bond ends); `bond_flow_by_role` (3 x 3, quanta moved last
+  step from a sender of role r to a receiver of role c: every slot with a positive net `bond_flow` counts once at the receiver);
+  `bond_net_giver_frac` (bonded rows with a negative net flow) and `bond_flow_gini` (Gini of the absolute net flow of the bonded
+  rows; the spec says "Gini of net flow", which is not defined for a signed variable, so the magnitude is used);
+  `bond_cheat_idx` (within-role flow whose receiver harvested less last step than the sender, as a share of all inflow);
+  `bond_nonkin_flow_share` (flow on bonds with `slot_kin < 0.5`); `bond_shield_cover` (share of alive rows that are guards or
+  have a guard partner); and, with the bodies of a heavy snapshot, `bond_body_role_entropy` (size-weighted mean Shannon entropy in
+  bits of the role mix over bodies of 4 or more) and `bond_role_diff_z` (`(null mean - observed)/null sd`, the null being 20
+  permutations of the roles among the members of those bodies, seed = the snapshot step; positive means the roles are clustered
+  inside bodies more than chance). The interval row gained `bond_shielded_frac` (`SHIELDED_BY_GUARD / ATTACKS`).
+* **Stream.** `FRMA` gained the optional bond-flow section (33.1.15): head flag `FLAG_BONDFLOW` (bit 1) and one `int8` per drawn
+  bond after the pairs, `round(127·clip(f/share_rate, -1, 1))` with `f` the net quanta that moved along the bond from the lower
+  row to the higher one (`-bond_flow[i, slot]` of the lower end); set on every frame of a world with `bonds_ext(cfg)`, and
+  `play.bonds = {flow, scale}` in the header only then. The colour mode `role` is appended to the play header's `color_modes`
+  while the bonds feature is on (generalist grey, forager yellow, guard blue, a fourth colour held for the germ role): the
+  header of every other world keeps its seven modes. `alife stream` (the v1 viewer) is untouched.
+* Not built: `analysis/bonds.py` (the scorecard C1 to C5 and the resim counterfactuals), the inspector rows, the GUI (levers,
+  flow overlay) and R4/R5. Not scheduled; the runs wait for the scorecard.
 
 ### 40.7 Tests (B1)
 
@@ -13103,6 +13177,24 @@ on 64k3d (the spec's §7).
 
 (4) **Migration (§43.8).** The row has an `enable` hook, so `alife migrate RUN --enable arms --set arms.<key>=...` turns arms on in an evolved world: no layout change (`layout_features` stays empty), the `arms` field is filled by `rest` (init values, keys and locks from the init stream), the new run records `rng_layout_version` 4; `tests/test_arms_migrate.py` (2D and 3D) steps the migrated world with the ledger closing.
 
+**A2 observers (observer-only, no trajectory change).** `arms.dump_n` (4096, `OBSERVER_KEYS`: not hashed, a resume key) and
+`run.arms_every` (0 = off, a resume key, needs `arms.enabled`). (1) **Counters** (block `arms`, five int32): the sums of
+`round(256·x)` over the attackers that survive the S11 gate, from the start-of-step traits (a victim's row can be taken by a
+newborn in the same step): `ARMS_ATK_SUM`, `ARMS_VIC_ARM_SUM`, `ARMS_YIELD_SUM` (the protection product `Combat.prot`, 1 when
+nothing protects), `ARMS_MATCH_SUM` (`K_ij`, 1 with the key axis off), `ARMS_VIC_TOX_SUM` (0 until the toxin stage). The interval
+row divides by `ATTACKS` and 256: `arms_att_atk`, `arms_vic_arm`, `arms_yield`, `arms_match`, `arms_vic_tox` (None when no attack).
+(2) **Observer channel**: `Acts.ext.arms = ArmsActs(contest (N, 4) int16)` = `round(256·[ATK_i, ARM_target, m_ij, K_ij])` for
+attackers, 0 elsewhere; `ActFlag.CONTESTED` (128) marks the realised attacks whose bite the protection product reduced
+(`0 < m < 1`: armour, a mismatched lock or a shelter). (3) **Snapshot keys** (`featobs.arms_row`): `arms_{atk,arm,tox,sig}_mean`
+and `_q10/_q50/_q90`, `arms_key_R`, `arms_lock_R`, `arms_key_mean`, `arms_lock_mean` (circular statistics of the phases, mean in
+turns), `arms_arm_bonds_corr` (Pearson of armour with the number of bonds), `arms_atk_edge_frac` and `arms_arm_edge_frac` (traits
+within 0.02 of 0 or 1). Not built from the spec's list: `arms_sig_tox_corr` (both traits are held at 0 until their stages) and
+`arms_arm_defend_corr` (`defend` is an action, not state). (4) **Dump**: `observers/arms_<step>.npz` (`DUMP_KINDS` `arms`) every
+`run.arms_every` steps: `step`, and for up to `arms.dump_n` alive rows taken by a fixed stride over the alive rows in row order,
+`uid`, `generation`, `clade`, `birth_step`, `energy`, `n_bonds`, `traits` (n, 6) in the order ATK, ARM, TOX, SIG, KEY, LOCK;
+`RunDir.write_arms/read_arms`. `bench.py`'s staged mirror builds the same flows. Not built: `analysis/arms.py` (the trajectory
+classification and the time-shift matrix), the colour modes `arms`/`lock`, the `FARS` record and the inspector rows (A6).
+
 ### 42.7 Tests
 
 `tests/test_arms.py` (T1, T2, T3 of the combat, E11, E12, E13, the costs), `tests/test_arms_state.py` (config hashes, state,
@@ -13261,6 +13353,14 @@ spurious "language"); `test_ext_salts.py` pins the table and checks every pair f
   `metrics.METRIC_PREFIXES`; `streamrec` is numpy-only by test (`test_streamrec_is_numpy_only_and_free_of_subscript_assignment`), so its `COLOR_MODES` and `TAGS` stay literal and
   `test_registered_modes_and_tags_are_in_streamrec` checks every registered mode and tag against them. Tags: structures `STRC`, comm `FSIG`, niche `FSOL`, arms
   `FARS` (renamed from `FARM`); prefixes `arms_`, `build_`, `bond_`, `comm_`, `farm_`.
+* **Observer-PR additions (S2/A2/B3/C2/F2).** `streamrec.EXT_TAGS = ("STRC", "FSIG", "FSOL")` (with `EXT_VERSIONS`, `ALL_TAGS`;
+  `TAGS` is unchanged, so a world without the features lists the tags it always did), `streamrec.EXT_COLOR_MODES = ("role",)`
+  (appended to the play header's modes by `play.py` while `bonds_ext(cfg)`, not a registry colour mode: `render.COLOR_MODES` and
+  the `alife stream` header are unchanged); the registry row fields `dump_kinds`, `stream_tags`, `observer_keys` (appended to
+  `config.OBSERVER_KEYS`: unhashed at every value, a resume key through `cli.RESUME_EXT_KEYS`) and the two snapshot hooks
+  `snap_dev(s, cfg, heavy)`, `snap_row(h, cfg)` (`featobs.py`); `run.mat_every`, `run.arms_every` (and `run.niche_every`) are
+  in `SERIAL_OMIT_KEYS`, so a run that does not use them has the `config.json` it always had; `ext.step_inputs(..., by_feature)`
+  keeps the blocks a feature's tail was fed for the observer channel; `runio.DUMP_NPZ` names the kinds stored as `.npz`.
 * `sensing.build_inputs(..., ext_in=)` concatenates the feature blocks (`ext.step_inputs`: (N, width) f32 each, in
   `TAIL_ORDER`) after the base and 3D tail; the existing shape assert covers the new total. `invariants.full_check` runs
   each enabled feature's `check`.
