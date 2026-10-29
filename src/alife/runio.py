@@ -75,6 +75,8 @@ PLAY_VERSION: Final = 1
 # observers/eco_<step>.npz and observers/wx_<step>.npy (DESIGN §32), plus the dumps the registered features
 # add
 DUMP_KINDS: Final = ("eco", "wx", *(k for spec in ext.REGISTRY for k in spec.dump_kinds))
+# the file extension of each kind: ``npz`` holds named columns, ``npy`` one array
+DUMP_NPZ: Final = frozenset({"eco", "arms"})
 STATUSES: Final = ("running", "done", "extinct", "violation", "interrupted")
 
 BIRTH_COLUMNS: Final[Mapping[str, Any]] = {
@@ -1345,7 +1347,7 @@ class RunDir:
         """``observers/eco_<step>.npz`` or ``observers/wx_<step>.npy``."""
         if kind not in DUMP_KINDS:
             raise ValueError(f"unknown dump kind {kind!r}")
-        return self.observers_dir / f"{kind}_{step:010d}.{'npz' if kind == 'eco' else 'npy'}"
+        return self.observers_dir / f"{kind}_{step:010d}.{'npz' if kind in DUMP_NPZ else 'npy'}"
 
     def write_eco(self, step: int, cols: Mapping[str, np.ndarray]) -> Path:
         """Atomically write the ecology dump of ``step`` (the live rows' columns)."""
@@ -1360,6 +1362,34 @@ class RunDir:
         path = self.dump_path("wx", step)
         _atomic_write(path, lambda f: np.save(f, np.ascontiguousarray(planes, dtype=np.float32)))
         return path
+
+    def write_grid(self, kind: str, step: int, grid: np.ndarray) -> Path:
+        """Atomically write the grid dump of ``step``: ``observers/mat_<step>.npy`` (the built material,
+        DESIGN §38.9) or ``observers/niche_<step>.npy`` (the soil, §41.14), int32 of the field shape."""
+        if kind not in ("mat", "niche"):
+            raise ValueError(f"{kind!r} is not a grid dump")
+        self.observers_dir.mkdir(exist_ok=True)
+        path = self.dump_path(kind, step)
+        _atomic_write(path, lambda f: np.save(f, np.ascontiguousarray(grid, dtype=np.int32)))
+        return path
+
+    def read_grid(self, kind: str, step: int) -> np.ndarray:
+        """The int32 grid of the ``mat`` or ``niche`` dump of ``step``."""
+        if kind not in ("mat", "niche"):
+            raise ValueError(f"{kind!r} is not a grid dump")
+        return np.load(self.dump_path(kind, step), allow_pickle=False)
+
+    def write_arms(self, step: int, cols: Mapping[str, np.ndarray]) -> Path:
+        """Atomically write the arms trait sample of ``step`` (DESIGN §42.6): the alive rows' columns."""
+        self.observers_dir.mkdir(exist_ok=True)
+        path = self.dump_path("arms", step)
+        _write_npz(path, cols)
+        return path
+
+    def read_arms(self, step: int) -> dict[str, np.ndarray]:
+        """The columns of the arms sample of ``step``."""
+        with np.load(self.dump_path("arms", step), allow_pickle=False) as z:
+            return {k: z[k] for k in z.files}
 
     def dump_files(self, kind: str) -> list[tuple[int, Path]]:
         """``(step, path)`` of every ``kind`` dump, ascending by step."""

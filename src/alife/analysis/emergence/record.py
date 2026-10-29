@@ -31,7 +31,7 @@ from typing import Any
 import mlx.core as mx
 import numpy as np
 
-from alife import metrics, runio, spatial, weather
+from alife import metrics, runio, spatial, structures
 from alife.analysis import resim
 from alife.analysis.emergence import traits as traits_mod
 from alife.analysis.emergence.frames import (
@@ -119,7 +119,7 @@ class _Reader:
         ctx.update(step=t, n_bonds=nb_all[idx], speed=self._speed(t, uid, pos))
         drift = None
         if self.cfg.weather.enabled:
-            dr = weather.agent_drift(s.wx, s.pos, buoy, s.alive, self.cfg)
+            dr = structures.drift_at(s.wx, s.pos, buoy, s.alive, getattr(s, "mat", None), self.cfg)
             drift = to_numpy(dr)[idx].astype(np.float16)
         if self.names is None:
             self.names, tr = traits_mod.columns(ctx, n)

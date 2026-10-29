@@ -114,6 +114,48 @@ def shelter_k_at(mat: mx.array, pos: mx.array, cfg: Config) -> mx.array:
     return shelter_k(sense(mat, fields.cell_index(pos, cfg), cfg), cfg)
 
 
+def drift_at(
+    wx: mx.array,
+    pos: mx.array,
+    buoy_cap: mx.array | None,
+    alive: mx.array,
+    mat: mx.array | None,
+    cfg: Config,
+) -> mx.array:
+    """``weather.agent_drift`` of the observers with the effects of the built material on a free agent
+    (DESIGN §38.9): the shelter (the wind force times ``1 - shelter_gain·cover``, as ``apply_shelter``) and
+    the
+    barrier (the drag times ``barrier_drag``, as ``drag_mult``).
+
+    Every observer that subtracts the wind drift from a velocity (the game observers, the labels
+    re-simulation, the tracer rig, the emergence recorder) calls this one function with the state it already
+    reads (``wx``, ``pos`` and ``mat`` of the same post-step state), so a structures world no longer has an
+    observer drift that the engine's own velocity disagrees with. The barrier factor is evaluated with the
+    wind force alone as the push: exact for a lone drifting agent and whenever ``exit_ease`` is 0 (R3 off) or
+    the material is a plateau (no gradient); with R3 on and a gradient the engine's factor depends on the
+    whole
+    force (thrust, repulsion, gravity), which the observer does not have, and lies between 1 and the plain
+    ``1 + barrier_gain·here``. ``mat`` is None only for a state without the field (structures off), where this
+    is ``agent_drift``."""
+    if not cfg.structures.enabled:  # static
+        return weather.agent_drift(wx, pos, buoy_cap, alive, cfg)
+    assert mat is not None, "structures are on: the observer needs the state's mat"
+    sn = sense(mat, fields.cell_index(pos, cfg), cfg)
+    k = shelter_k(sn, cfg) if cfg.structures.shelter_gain > 0 else None
+    drift = weather.agent_drift(wx, pos, buoy_cap, alive, cfg, shelter=k)
+    dm = drag_mult(drift, sn, cfg)  # the direction of the push is all barrier_drag reads of it
+    return drift if dm is None else drift / dm[:, None]
+
+
+def sheltered_speed_at(speed: mx.array, mat: mx.array | None, pos: mx.array, cfg: Config) -> mx.array:
+    """The air speed the engine's storm hazard and bond break read: ``speed·(1 - shelter_gain·cover)``
+    (``apply_shelter``), for the metrics (``weather_block``). ``speed`` itself with structures off."""
+    if not cfg.structures.enabled:  # static
+        return speed
+    assert mat is not None, "structures are on: the metrics need the state's mat"
+    return speed * shelter_k_at(mat, pos, cfg)
+
+
 # --- the hooks of the registry row (ext/structures.py) ---------------------------------------------------
 
 
@@ -153,6 +195,25 @@ class StructFlows(NamedTuple):
     violations: mx.array  # () int32: cells with nopen < k in the START-of-step material
     trapped: mx.array  # () int32: alive rows (start of step) in a cell with no open neighbour
     slowed: mx.array  # () int32: alive rows (start of step) with drag_mult > 2
+    cover: mx.array | None = None  # (N,) f32: the cover the step used (``here`` when it did not gather it)
+
+
+class StructActs(NamedTuple):
+    """``Acts.ext.structures`` (observer channel, DESIGN §38.9): what each row built and stood in."""
+
+    build: mx.array  # (N,) int16: deposited units (after the solvency mask)
+    cover: mx.array  # (N,) int16: round(256·cover) of the start-of-step cell
+
+
+def acts_of(f: StructFlows) -> StructActs:
+    """The observer sub-tuple of a step's flows. Quantised from values the step already holds."""
+    assert f.cover is not None, "the step stores the cover next to the flows"
+    return StructActs(f.units.astype(mx.int16), mx.round(256.0 * f.cover).astype(mx.int16))
+
+
+def building(f: StructFlows) -> mx.array:
+    """(N,) bool: the row deposited material this step (the ``ActFlag.BUILDING`` bit)."""
+    return f.units > 0
 
 
 def update(

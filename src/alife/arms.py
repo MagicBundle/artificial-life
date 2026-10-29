@@ -27,7 +27,7 @@ No RNG in the step except the births (``child_traits``); no host sync; no scatte
 from __future__ import annotations
 
 import math
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
 import mlx.core as mx
 import numpy as np
@@ -164,6 +164,93 @@ def contest_np(
         c = (f(1) + np.cos(f(_TWO_PI) * (np.asarray(key, f) - np.asarray(lock, f)))) * f(0.5)
         p = p * (f(a.key_floor) + f(1.0 - a.key_floor) * (c * c))
     return p
+
+
+# --- observers (DESIGN §42.6) ---------------------------------------------------------------------------
+
+COUNTERS: Final = (
+    "ARMS_ATK_SUM",
+    "ARMS_VIC_ARM_SUM",
+    "ARMS_YIELD_SUM",
+    "ARMS_MATCH_SUM",
+    "ARMS_VIC_TOX_SUM",
+)
+
+
+class ArmsFlows(NamedTuple):
+    """The realised contests of a step (``ExtFlows.arms``): per attacker that passed the S9-partner gate, the
+    start-of-step traits and the factors the contest used, ``0`` for every other row. Gathered at S11 from the
+    start-of-step ``State.arms``, because a victim's row can be taken by a newborn in the same step."""
+
+    atk: mx.array  # (N,) f32: ATK of the attacker
+    arm_v: mx.array  # (N,) f32: the victim's effective armour
+    tox_v: mx.array  # (N,) f32: the victim's TOX
+    m: mx.array  # (N,) f32: the protection product the demand was multiplied by (``Combat.prot``; 1 if none)
+    k: mx.array  # (N,) f32: the key and lock match factor K_ij (1 when the axis is off)
+
+
+class ArmsActs(NamedTuple):
+    """``Acts.ext.arms`` (observer channel): ``round(256·[ATK_i, ARM_target, m_ij, K_ij])`` per attacker."""
+
+    contest: mx.array  # (N, 4) int16
+
+
+def key_factor(arms: mx.array, t0: mx.array, cfg: Config) -> mx.array | None:
+    """``K_ij`` of every attacker on its target ``t0`` with the expression of ``contest_factor`` (so that
+    ``(1 − r)·K`` reproduces the engine's product bitwise); None when the key axis is off (static)."""
+    a = cfg.arms
+    if a.key_floor >= 1.0:  # static
+        return None
+    delta = arms[:, KEY] - arms[:, LOCK][t0]
+    c = (1.0 + mx.cos(_TWO_PI * delta)) * 0.5
+    return a.key_floor + (1.0 - a.key_floor) * (c * c)
+
+
+def flows_of(s: Any, t0: mx.array, cb: Any, partner: mx.array, cfg: Config) -> ArmsFlows:
+    """The realised-contest record of a step: ``s.arms`` is the start-of-step array, ``t0`` the clipped attack
+    targets, ``cb`` the ``Combat`` (its ``attack`` mask and ``prot``), ``partner`` the post-S9 partner."""
+    arms = s.arms
+    ok = cb.attack
+    one = mx.ones(ok.shape, dtype=mx.float32)
+    k = key_factor(arms, t0, cfg)
+    m = cb.prot if cb.prot is not None else one
+    z = mx.zeros(ok.shape, dtype=mx.float32)
+    return ArmsFlows(
+        atk=mx.where(ok, mx.clip(arms[:, ATK], 0.0, 1.0), z),
+        arm_v=mx.where(ok, effective_armour(arms, partner, cfg)[t0], z),
+        tox_v=mx.where(ok, mx.clip(arms[:, TOX], 0.0, 1.0)[t0], z),
+        m=mx.where(ok, m, z),
+        k=mx.where(ok, one if k is None else k, z),
+    )
+
+
+def acts_of(f: ArmsFlows) -> ArmsActs:
+    """The observer sub-tuple: quantised from the values the contest already holds."""
+    return ArmsActs(mx.round(256.0 * mx.stack([f.atk, f.arm_v, f.m, f.k], axis=1)).astype(mx.int16))
+
+
+def contested(f: ArmsFlows) -> mx.array:
+    """(N,) bool: the row made a realised attack whose bite the protection product reduced (``0 < m < 1``:
+    armour, a mismatched lock or a shelter; ``m`` is 0 for a row that did not attack). The
+    ``ActFlag.CONTESTED`` bit."""
+    return (f.m > 0.0) & (f.m < 1.0)
+
+
+def count(s_new: Any, alive0: mx.array, flows: Any, cfg: Config) -> dict[str, mx.array]:
+    """The counter block (``COUNTERS``): the Σ round(256·x) over the realised attackers of the step, which
+    ``interval_row`` divides by ``ATTACKS`` (the number of realised attackers) and by 256."""
+    f = flows.ext.arms
+
+    def q(x: mx.array) -> mx.array:
+        return mx.round(256.0 * x).astype(mx.int32).sum()
+
+    return {
+        "ARMS_ATK_SUM": q(f.atk),
+        "ARMS_VIC_ARM_SUM": q(f.arm_v),
+        "ARMS_YIELD_SUM": q(f.m),
+        "ARMS_MATCH_SUM": q(f.k),
+        "ARMS_VIC_TOX_SUM": q(f.tox_v),
+    }
 
 
 # --- costs ----------------------------------------------------------------------------------------------

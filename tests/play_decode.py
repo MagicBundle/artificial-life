@@ -33,6 +33,9 @@ KNOWN = (
     "ALRT",
     "RPRT",
     "PLAN",
+    "STRC",  # the feature extensions (stream_contract.md section 1): structures, comm, farming
+    "FSIG",
+    "FSOL",
 )
 VERSION = 1
 RESERVED_SLOTS = (253, 254, 255)
@@ -241,11 +244,19 @@ def _frma(r: Rec, p: bytes, n_cap: int) -> None:
         ("bonds", 8 * n_bonds),
     ):
         r.sections[name], off = _take(p, off, size, name)
+    flow = None
+    if r.flags & 2:  # bonds feature: one int8 per drawn bond follows the pairs, zero padded to 4 bytes
+        raw, off = _take(p, off, 4 * ((n_bonds + 3) // 4), "bond flow")
+        assert raw[n_bonds:] == b"\x00" * (len(raw) - n_bonds), "bond flow padding is not zero"
+        flow = np.frombuffer(raw[:n_bonds], np.int8).copy()
+        r.sections["flow"] = raw
     assert off == len(p), f"{len(p) - off} unexplained bytes in an FRMA"
-    assert len(p) == 36 + 4 * words + 28 * n + 8 * n_bonds
+    assert len(p) == 36 + 4 * words + 28 * n + 8 * n_bonds + (
+        4 * ((n_bonds + 3) // 4) if flow is not None else 0
+    )
     bonds = np.frombuffer(r.sections["bonds"], "<u4").reshape(n_bonds, 2).copy()
     assert (bonds[:, 0] < bonds[:, 1]).all() and (bonds < n).all(), "a bond is not i < j < n"
-    assert r.flags & ~1 == 0, "FRMA flags bits other than 0 are set"
+    assert r.flags & ~3 == 0, "FRMA flags bits other than 0 and 1 are set"
     r.f = {"n": n, "n_bonds": n_bonds, "color_index": color_index, "span": span, "N": cap}
     r.a = {
         "alive": alive,
@@ -255,7 +266,42 @@ def _frma(r: Rec, p: bytes, n_cap: int) -> None:
         "rgb": np.frombuffer(r.sections["rgb"], "<u4").copy(),
         "uid": np.frombuffer(r.sections["uid"], "<i8").copy(),
         "bonds": bonds,
+        **({"flow": flow} if flow is not None else {}),
     }
+
+
+def _cells(r: Rec, p: bytes, n_cap: int) -> None:
+    """STRC and FSOL (contract section 1.1): nx ny nz flags count, ascending u32 indices, u8 levels,
+    padding."""
+    nx, ny, nz, flags, count = struct.unpack_from("<HHHHI", p, 16)
+    assert flags == r.flags and flags & ~1 == 0, "cell record body flags differ from the head flags"
+    assert count <= 65536 and (flags & 1 == 0 or count == 65536)
+    off = 28
+    raw_i, off = _take(p, off, 4 * count, "indices")
+    raw_l, off = _take(p, off, count, "levels")
+    pad = (-count) % 4
+    pd, off = _take(p, off, pad, "padding")
+    assert pd == b"\x00" * pad and off == len(p), "cell record padding or length"
+    idx = np.frombuffer(raw_i, "<u4").copy()
+    lev = np.frombuffer(raw_l, np.uint8).copy()
+    assert (np.diff(idx.astype(np.int64)) > 0).all() and (idx < nx * ny * nz).all(), "indices"
+    assert (lev >= 1).all(), "a listed cell has level 0"
+    r.f = {"nx": nx, "ny": ny, "nz": nz, "flags": flags, "count": count}
+    r.a = {"idx": idx, "level": lev}
+
+
+def _fsig(r: Rec, p: bytes, n_cap: int) -> None:
+    uid, w, flags, audible = struct.unpack_from("<qBBH", p, 16)
+    assert 1 <= w <= 8 and flags & ~1 == 0 and r.flags == 0
+    off = 28
+    says, off = _take(p, off, w, "says")
+    hears, off = _take(p, off, w, "hears")
+    pad = (-2 * w) % 4
+    pd, off = _take(p, off, pad, "padding")
+    assert pd == b"\x00" * pad and off == len(p)
+    assert flags & 1 or (audible == 0 and not any(hears)), "no heard half: hears and audible are zero"
+    r.f = {"uid": uid, "w": w, "flags": flags, "audible": audible}
+    r.a = {"says": np.frombuffer(says, np.uint8).copy(), "hears": np.frombuffer(hears, np.uint8).copy()}
 
 
 def _slots_ok(values: np.ndarray, size: int, what: str) -> None:
@@ -520,4 +566,7 @@ _DECODERS = {
     "ALRT": _alrt,
     "RPRT": _rprt,
     "PLAN": _plan,
+    "STRC": _cells,
+    "FSIG": _fsig,
+    "FSOL": _cells,
 }

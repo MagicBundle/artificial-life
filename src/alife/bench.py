@@ -874,6 +874,8 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             shield_kw = {**shield_kw, "guard": ef.guard}
         act_c = act if ef is None else roles.combat_act(act, ef.defend_mult)
         cb = en.combat(E, resource, se.fcell, act_c, partner, cfg, **arms.combat_kw(s, cfg), **shield_kw)
+        if cfg.arms.enabled:  # static: the realised contests (mirror of step.step, DESIGN §42.6)
+            xdec = {**xdec, "arms": arms.flows_of(s, mx.maximum(act_c.attack_target, 0), cb, partner, cfg)}
         if bx:  # static: the per-slot flows feed the bond_flow memory (mirror of step.step)
             kin = bonds.slot_kin(s.tag, partner, cfg) if cfg.bonds.share_kin_floor < 1.0 else None
             sl = en.share_slots(cb.energy, partner, rev, s.partner, act, c.solvent, cfg, kin)

@@ -183,6 +183,18 @@ def _validate(cfg: Any) -> None:
         raise ConfigError("; ".join(bad))
 
 
+def _snap_dev(s: Any, cfg: Any, heavy: bool) -> Any:
+    from alife import featobs
+
+    return featobs.structures_dev(s, cfg, heavy)
+
+
+def _snap_row(h: Any, cfg: Any) -> Any:
+    from alife import featobs
+
+    return featobs.structures_row(h, cfg)
+
+
 SPEC = ExtSpec(
     name="structures",
     enabled=_enabled,
@@ -194,6 +206,8 @@ SPEC = ExtSpec(
     state_fields=_state_fields,
     counters=lambda cfg: _COUNTERS,
     act_flag="BUILDING",
+    dump_kinds=("mat",),
+    stream_tags=("STRC",),
     metric_prefix="build_",
     lever_keys=tuple(("structures", k) for k in _KEYS),
     cli_only_keys=(("structures", "silent_build"),),
@@ -206,4 +220,6 @@ SPEC = ExtSpec(
     mask=_mask,
     count=_count,
     check=_check,
+    snap_dev=_snap_dev,
+    snap_row=_snap_row,
 )

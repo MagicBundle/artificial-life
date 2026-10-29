@@ -100,6 +100,9 @@ RESUME_KEYS: frozenset[str] = frozenset(
         "diversity_sample",
         "eco_every",
         "wx_every",
+        "mat_every",
+        "arms_every",
+        "niche_every",
         "director",
         "llm_url",
         "llm_model",
@@ -108,7 +111,9 @@ RESUME_KEYS: frozenset[str] = frozenset(
 RESUME_DIRECTOR_KEYS: frozenset[str] = frozenset(DIRECTOR_POLICY_KEYS)
 # The observer keys (game.observe, house_rate, tracers, tracer_period) are read by host-side observers only
 # and are not hashed, so resume may change them too (§28.6, §29).
-RESUME_GAME_KEYS: frozenset[str] = frozenset(key for _, key in OBSERVER_KEYS)
+RESUME_GAME_KEYS: frozenset[str] = frozenset(key for sec, key in OBSERVER_KEYS if sec == "game")
+# ... and so do the observer keys of the features (arms.dump_n, DESIGN §43.5)
+RESUME_EXT_KEYS: frozenset[tuple[str, str]] = frozenset(k for k in OBSERVER_KEYS if k[0] != "game")
 
 LLM_DEFAULT_EVERY = 25_000  # steps between LLM calls with a bare --llm
 
@@ -614,6 +619,7 @@ def _resume_allowed(item: str) -> bool:
         (section == "run" and key in RESUME_KEYS)
         or (section == "director" and key in RESUME_DIRECTOR_KEYS)
         or (section == "game" and key in RESUME_GAME_KEYS)
+        or (section, key) in RESUME_EXT_KEYS
     )
 
 

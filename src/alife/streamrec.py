@@ -30,15 +30,33 @@ TAGS: Final = (
     "FRMA", "IDNT", "INTN", "TERR", "EVNT", "STRM", "MAP1", "ENVS", "CLCK", "FOCS", "ALRT", "RPRT", "PLAN",
 )  # fmt: skip
 VERSIONS: Final = dict.fromkeys(TAGS, VERSION)
+# The tags of the feature extensions (DESIGN §43.5), in ``ext.EXTENSIONS`` order: sent only while their
+# feature
+# is on. ``tests/test_ext_registry.py`` pins them to ``ext.REGISTRY[...].stream_tags`` (this module imports no
+# ``mlx``, so it cannot read the registry).
+EXT_TAGS: Final = ("STRC", "FSIG", "FSOL")  # structures, comm, farming
+EXT_VERSIONS: Final = dict.fromkeys(EXT_TAGS, VERSION)
+ALL_TAGS: Final = (*TAGS, *EXT_TAGS)
 HEAD: Final = struct.Struct("<QIHH")  # step, seq, version, flags
 HEAD_SIZE: Final = 16
 FRMA_PREFIX: Final = struct.Struct("<IIIII")  # n, n_bonds, color_index, span, N
 CLCK_BODY: Final = struct.Struct("<ffffIIBBHIIII")  # 44 bytes
 FOCS_BODY: Final = struct.Struct("<qIIffffffiIIqBBBBBBBB")  # 68 bytes
 MAP1_PREFIX: Final = struct.Struct("<HHfffff8x")  # n, nw, f0, p_ref, dc_ref, u_ref, zeta_ref, 8 reserved
+CELLS_PREFIX: Final = struct.Struct("<HHHHI")  # STRC, FSOL: nx, ny, nz, flags, count
+FSIG_PREFIX: Final = struct.Struct("<qBBH")  # FSIG: uid, W, flags, audible
 assert HEAD.size == HEAD_SIZE and CLCK_BODY.size == 44 and FOCS_BODY.size == 68 and MAP1_PREFIX.size == 32
+assert CELLS_PREFIX.size == 12 and FSIG_PREFIX.size == 12
 
 COLOR_MODES: Final = ("tag", "energy", "clade", "house", "kin", "archetype", "intent")  # play's header list
+EXT_COLOR_MODES: Final = ("role",)  # appended to the header list while the bonds feature is on (DESIGN §40.7)
+FLAG_BONDFLOW: Final = 1 << 1  # FRMA: an int8 flow per drawn bond follows the bond pairs (bonds feature)
+FLAG_TRUNC: Final = (
+    1 << 0
+)  # STRC, FSOL: more cells were non-empty than ``CELLS_MAX``; the highest levels are kept
+FLAG_HEARD: Final = 1 << 0  # FSIG body flags: the "hears" half is valid (the observer channel ran)
+CELLS_MAX: Final = 65536  # cells in one STRC or FSOL
+FSIG_MAX_W: Final = 8
 FLAG_DIAG: Final = 1 << 0  # FRMA: the state has an invariant (error) diag bit set
 FLAG_BACKLOG: Final = 1 << 0  # EVNT, ALRT, RPRT: the records rebuilt at start
 FLAG_FINAL: Final = 1 << 1  # RPRT: no later report of this chapter and mode will replace it
@@ -252,7 +270,7 @@ class Sequencer:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._next = dict.fromkeys(TAGS, 0)
+        self._next = dict.fromkeys(ALL_TAGS, 0)
 
     def take(self, tag: str) -> int:
         with self._lock:
@@ -287,10 +305,11 @@ def legacy_header(
     run: str | None,
     config_hash: str,
     source: str,
+    color_modes: Sequence[str] = COLOR_MODES,
 ) -> dict[str, Any]:
     """The keys of an ``alife stream`` header with the values a play stream pins: ``mode`` simulate,
     ``every`` 1, ``fields`` off, ``color`` tag and the play colour modes (so ``StreamHeader.validate``
-    accepts it)."""
+    accepts it). ``color_modes`` is ``COLOR_MODES`` plus ``EXT_COLOR_MODES`` of the features that are on."""
     if source not in ("run", "preset"):
         raise RecordError(f"a play header's source is run or preset, not {source!r}")
     return {
@@ -305,7 +324,7 @@ def legacy_header(
         "FG": fg,
         "FZ": fz,
         "NCH": nch,
-        "color_modes": list(COLOR_MODES),
+        "color_modes": list(color_modes),
         "color": "tag",
         "fields": False,
         "field_z": 0,
@@ -439,6 +458,40 @@ def powers_block(powers: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     return {name: dict(p) for name, p in powers.items()}
 
 
+def cells_block(*, cap: int, cells: Sequence[int], cell: float, **extra: Any) -> dict[str, Any]:
+    """The ``play.structures`` and ``play.niche`` header objects (DESIGN §38.9, §41.14): the grid the sparse
+    cell records (``STRC``, ``FSOL``) index, ``cells`` = ``[FZ, FG, FG]`` (``[1, FG, FG]`` in 2D), ``cell``
+    the
+    world length of one cell and ``cap`` the material or soil cap the levels are scaled by."""
+    if not (_is_int(cap) and cap >= 1):
+        raise RecordError("cells.cap is a positive integer")
+    c = [int(v) for v in cells]
+    if len(c) != 3 or any(v < 1 or v > 0xFFFF for v in c):
+        raise RecordError(f"cells is [FZ, FG, FG] with each in [1, 65535], got {list(cells)}")
+    if not (_is_num(cell) and cell > 0):
+        raise RecordError("cells.cell is a positive length")
+    return {"enabled": True, **extra, "cap": int(cap), "cells": c, "cell": float(cell)}
+
+
+def comm_block(*, w: int, hear_range: float, control: str) -> dict[str, Any]:
+    """The ``play.comm`` header object (DESIGN §39.8): the number of voice channels, the hearing range and the
+    engine control (``none``, ``deaf`` or ``decoy``)."""
+    if not (_is_int(w) and 1 <= w <= FSIG_MAX_W):
+        raise RecordError(f"comm.w is in [1, {FSIG_MAX_W}]")
+    if control not in ("none", "deaf", "decoy"):
+        raise RecordError(f"comm.control is none, deaf or decoy, got {control!r}")
+    return {"enabled": True, "w": int(w), "range": float(hear_range), "control": control}
+
+
+def bonds_block(*, scale: float) -> dict[str, Any]:
+    """The ``play.bonds`` header object (DESIGN §40.7): written exactly when ``FRMA`` carries the bond flow
+    (``FLAG_BONDFLOW``); ``scale`` is ``bonds.share_rate`` (an int8 flow of 127 is that many quanta a
+    step)."""
+    if not (_is_num(scale) and scale > 0):
+        raise RecordError("bonds.scale is a positive number")
+    return {"flow": True, "scale": float(scale)}
+
+
 def header_play(
     *,
     records: Sequence[str],
@@ -458,13 +511,17 @@ def header_play(
     powers: Mapping[str, Any] | None = None,
     game_specs: str | None = None,
     saves: Mapping[str, Any] | None = None,
+    structures: Mapping[str, Any] | None = None,
+    comm: Mapping[str, Any] | None = None,
+    niche: Mapping[str, Any] | None = None,
+    bonds: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The ``play`` header key: the tags actually sent (a 2D or dry world has no ``MAP1``/``STRM``), their
     versions and the constants the client needs. G3b's keys (``alerts_block``, ``autopause_block``,
     ``powers_block`` and the name of the game table) are written only when given, like the other optional
     keys of the headers, so a world that does not use them has the header it always had. ``saves``
     (``saves_block``, §34.10) is optional in the same way."""
-    bad = [t for t in records if t not in TAGS]
+    bad = [t for t in records if t not in ALL_TAGS]
     if bad or len(set(records)) != len(records):
         raise RecordError(f"records must be distinct known tags, got {list(records)}")
     extra: dict[str, Any] = {}
@@ -480,9 +537,12 @@ def header_play(
         extra = {**extra, "game_specs": game_specs}
     if saves is not None:
         extra = {**extra, "saves": dict(saves)}
+    for key, block in (("structures", structures), ("comm", comm), ("niche", niche), ("bonds", bonds)):
+        if block is not None:  # the feature extensions (DESIGN §43.5): written only while their feature is on
+            extra = {**extra, key: dict(block)}
     return {
         "records": list(records),
-        "versions": {t: VERSIONS[t] for t in records},
+        "versions": {t: {**VERSIONS, **EXT_VERSIONS}[t] for t in records},
         "base_rate": base_rate,
         "rates": list(rates),
         "tick": tick,
@@ -534,8 +594,11 @@ def encode_frma(
     color_index: int,
     span: int = 0,
     diag_error: bool = False,
+    flow: np.ndarray | None = None,
 ) -> bytes:
-    """One ``FRMA``: the alive rows of an ``N``-row state.
+    """One ``FRMA``: the alive rows of an ``N``-row state. ``flow`` ((k,) int8, one per bond, DESIGN §40.7)
+    sets
+    ``FLAG_BONDFLOW`` and follows the bond pairs, padded to 4 bytes.
 
     ``alive`` (N,) bool; ``pos`` (N,2|3) float (z = 0 when 2 columns); ``orient`` (N,2) (yaw, pitch); ``rgb``
     (N,) ``0x00RRGGBB``; ``uid`` (N,) int64; ``bonds`` (k,2) **row** pairs ``i < j``, both alive, in the order
@@ -563,12 +626,22 @@ def encode_frma(
         + _le(np.asarray(uid, np.int64)[alive], "<i8")
         + _le(listed, "<u4")
     )
-    return record("FRMA", step, seq, FLAG_DIAG if diag_error else 0, body)
+    flags = FLAG_DIAG if diag_error else 0
+    if flow is not None:
+        fl = np.asarray(flow)
+        if fl.dtype != np.int8 or fl.shape != (len(bonds),):
+            raise RecordError(
+                f"FRMA flow is (k,) int8 with k = {len(bonds)} bonds, got {fl.dtype} {fl.shape}"
+            )
+        body = body + pad4(_le(fl, "i1"))
+        flags |= FLAG_BONDFLOW
+    return record("FRMA", step, seq, flags, body)
 
 
-def frma_length(n_cap: int, n: int, n_bonds: int) -> int:
-    """The payload length of an ``FRMA`` (§33.1)."""
-    return HEAD_SIZE + FRMA_PREFIX.size + 4 * math.ceil(n_cap / 32) + 28 * n + 8 * n_bonds
+def frma_length(n_cap: int, n: int, n_bonds: int, *, flow: bool = False) -> int:
+    """The payload length of an ``FRMA`` (§33.1); ``flow`` adds the bond-flow section (§40.7)."""
+    base = HEAD_SIZE + FRMA_PREFIX.size + 4 * math.ceil(n_cap / 32) + 28 * n + 8 * n_bonds
+    return base + (4 * math.ceil(n_bonds / 4) if flow else 0)
 
 
 # --- tables: IDNT, INTN, TERR ---------------------------------------------------------------------------
@@ -1177,6 +1250,86 @@ def encode_focs(
         label_flags,
     )
     return record("FOCS", step, seq, 0, body)
+
+
+# --- STRC, FSOL: sparse cell levels (DESIGN §38.9, §41.14) -------------------------------------------------
+
+
+def quantise_cells(grid: np.ndarray, cap: int) -> tuple[np.ndarray, np.ndarray, bool]:
+    """``(idx u32, level u8, truncated)`` of a material or soil grid: the flat z-major indices of the
+    non-empty
+    cells, ascending, and ``level = 1 + (254·m) // cap`` (a non-empty cell is at least 1, a full one 255).
+    More than ``CELLS_MAX`` non-empty cells keep the highest levels (ties: the lowest index first) and set
+    ``truncated``."""
+    if not (_is_int(cap) and cap >= 1):
+        raise RecordError("cap is a positive integer")
+    # the engine keeps 0 <= m <= cap; a value outside (an edit of the grid, a changed cap on resume) is
+    # clamped
+    # on the wire rather than ending a play session from the stream hook
+    m = np.clip(np.asarray(grid).reshape(-1).astype(np.int64), 0, cap)
+    idx = np.flatnonzero(m > 0)
+    level = 1 + (254 * m[idx]) // cap
+    truncated = idx.size > CELLS_MAX
+    if truncated:
+        keep = np.sort(np.lexsort((idx, -level))[:CELLS_MAX])  # highest level, then lowest index
+        idx, level = idx[keep], level[keep]
+    return idx.astype("<u4"), level.astype("u1"), bool(truncated)
+
+
+def encode_cells(tag: str, *, step: int, seq: int, shape: Sequence[int], grid: np.ndarray, cap: int) -> bytes:
+    """One ``STRC`` or ``FSOL`` of ``grid`` (``(FG, FG)`` or ``(FZ, FG, FG)`` integer units, 0..``cap``)."""
+    if tag not in ("STRC", "FSOL"):
+        raise RecordError(f"{tag!r} is not a sparse cell record")
+    nz, ny, nx = (int(v) for v in shape)
+    g = np.asarray(grid)
+    if g.size != nz * ny * nx:
+        raise RecordError(f"{tag} grid has {g.size} cells, the header says {nz}x{ny}x{nx}")
+    idx, level, trunc = quantise_cells(g, cap)
+    flags = FLAG_TRUNC if trunc else 0
+    body = CELLS_PREFIX.pack(nx, ny, nz, flags, idx.size) + idx.tobytes() + level.tobytes()
+    return record(tag, step, seq, flags, pad4(body))
+
+
+def encode_strc(*, step: int, seq: int, shape: Sequence[int], mat: np.ndarray, cap: int) -> bytes:
+    """One ``STRC``: the built material of the world (``structures.cap`` is ``cap``)."""
+    return encode_cells("STRC", step=step, seq=seq, shape=shape, grid=mat, cap=cap)
+
+
+def encode_fsol(*, step: int, seq: int, shape: Sequence[int], soil: np.ndarray, cap: int) -> bytes:
+    """One ``FSOL``: the farmed soil of the world (``niche.farm_cap`` is ``cap``)."""
+    return encode_cells("FSOL", step=step, seq=seq, shape=shape, grid=soil, cap=cap)
+
+
+# --- FSIG: the focused organism's voice (DESIGN §39.8) ------------------------------------------------------
+
+
+def encode_fsig(
+    *,
+    step: int,
+    seq: int,
+    uid: int,
+    says: np.ndarray,
+    hears: np.ndarray | None,
+    audible: int = 0,
+) -> bytes:
+    """One ``FSIG``: ``says`` and ``hears`` are ``(W,)`` uint8 (what the organism said after the step and what
+    it heard before it); ``hears`` None clears ``FLAG_HEARD`` and writes zeros."""
+    say = np.asarray(says)
+    w = say.shape[0]
+    if say.ndim != 1 or not 1 <= w <= FSIG_MAX_W:
+        raise RecordError(f"FSIG says is a vector of 1 to {FSIG_MAX_W} channels, got shape {say.shape}")
+    if say.dtype != np.uint8:
+        raise RecordError("FSIG says is uint8")
+    if hears is not None and (hears.shape != say.shape or hears.dtype != np.uint8):
+        raise RecordError("FSIG hears is a uint8 vector like says")
+    if not (_is_int(audible) and 0 <= audible <= 0xFFFF):
+        raise RecordError("FSIG audible is a u16")
+    flags = FLAG_HEARD if hears is not None else 0
+    heard = hears if hears is not None else np.zeros(w, np.uint8)
+    body = (
+        FSIG_PREFIX.pack(uid, w, flags, audible if hears is not None else 0) + say.tobytes() + heard.tobytes()
+    )
+    return record("FSIG", step, seq, 0, pad4(body))
 
 
 def encode_unknown(tag: str, step: int, seq: int, body: bytes, *, version: int = VERSION) -> bytes:

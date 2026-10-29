@@ -116,6 +116,20 @@ something per step at step 6 000 (1.3 % at step 500), the soil total is still ri
 bench on 64k3d shows no measurable cost. Numbers in DESIGN §41.12. Absent: observers, provenance, the `soil` dump and colour mode,
 stream tag `FSOL` (F2), the GUI (F3), the experiment (F4); `E20`: `farm_blocked_alarm` in the metrics row.
 
+## Observers and stream of the five features (DESIGN §38.9, §39.8, §40.6, §41.14, §42.6, §33.1.15; I74)
+
+The observer PR of the series (S2, A2, B3, C2, F2) adds no trajectory change (identity matrix against `e64be03` bit-identical, observing a
+feature world changes no state value on CPU and Metal). Per feature: structures: `Acts.ext.structures`, `BUILDING`, the record `STRC`
+(sparse material layer), the `mat` dump (`run.mat_every`) and the `build_` snapshot keys, plus the drift audit (the game observers, the
+labels re-simulation, the tracers and the emergence recorder subtract the sheltered wind through `structures.drift_at`); arms: the counter
+block, `Acts.ext.arms`, `CONTESTED`, the `arms_` keys and the `arms_<step>.npz` sample (`run.arms_every`, `arms.dump_n`); bonds: the
+`bond_` statistics (`featobs.py`), the bond-flow section of `FRMA` and the `role` colour mode; comm: `Acts.ext.comm`, `FSIG`; farming:
+`Acts.ext.niche`, the record `FSOL`, the `niche` dump (`run.niche_every`) and the `farm_` snapshot keys. The wire formats are in
+DESIGN §33.1.15 (and the GUI contract of the PR); the registry rows carry `dump_kinds`, `stream_tags`, `observer_keys`, `snap_dev` and
+`snap_row`. Not built: `analysis/arms.py`, `analysis/bonds.py` (scorecard), `analysis/comm.py`, `analysis/niche.py` and the provenance
+stamps of farming (a state field and a hashed key, so not observer-only), the colour modes `arms`, `lock`, `voice`, `soil`, the inspector
+rows, the GUI, the `FARS` record. Next: the GUI PRs (S3, B3 overlay, C2 panel, A6, F3), then the analysis modules and the runs.
+
 ## How to run
 
 ```bash

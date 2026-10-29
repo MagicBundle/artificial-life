@@ -134,6 +134,9 @@ class ExtSpec:
     stream_tags: tuple[str, ...] = ()
     metric_prefix: str = ""
     lever_keys: tuple[tuple[str, str], ...] = ()  # every (section, key) the feature adds to Config
+    # the lever keys that only a host-side observer reads: omitted from ``config_hash`` at every value
+    # (``config.OBSERVER_KEYS``) and allowed on a resume
+    observer_keys: tuple[tuple[str, str], ...] = ()
     cli_only_keys: tuple[tuple[str, str], ...] = ()  # lever keys the GUI does not carry (``*.control``)
     overlay: str | None = None  # world overlay name (presets/<overlay>.toml)
     # (cfg) -> cfg with the feature switched on (its ``enabled`` key; the start-of-run lever keys stay at the
@@ -150,6 +153,13 @@ class ExtSpec:
         None  # (decoded, solvent, cfg) -> decoded masked by solvency
     )
     count: Callable[[Any, Any, Any, Any], Mapping[str, Any]] | None = None  # (s_new, alive0, flows, cfg)
+    # Snapshot metrics (host side, once per metrics row; DESIGN §43.5): ``snap_dev(s, cfg, heavy)`` names the
+    # device
+    # arrays that join the one transfer of ``metrics.snapshot_metrics``; ``snap_row(host, cfg)`` turns the
+    # host arrays (``host`` = the whole transfer, those of every feature included) into the keys of the row,
+    # which must start with the feature's ``metric_prefix``.
+    snap_dev: Callable[[Any, Any, bool], Mapping[str, Any]] | None = None
+    snap_row: Callable[[Mapping[str, Any], Any], Mapping[str, Any]] | None = None
     check: Callable[[Mapping[str, Any], Any], Sequence[str]] | None = None  # host check: (numpy fields, cfg)
 
     @property
