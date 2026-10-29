@@ -48,6 +48,7 @@ from alife.director import llm as director_llm
 from alife.director import log as director_log
 from alife.director import make_director, yoked
 from alife.game import housefile
+from alife.geom import geometry as host_geometry
 from alife.invariants import full_check
 from alife.render import (
     COLOR_MODES,
@@ -322,9 +323,21 @@ def _summary(cfg: Config) -> dict[str, Any]:
         "n_init": cfg.population.n_init,
         "max_births_per_step": d.m,
         "n_cap": d.n_cap,
-        "world_size": cfg.world.size,
-        "field_grid": d.fg,
-        **({"dims": d.nd, "world_height": cfg.world.height, "field_grid_z": d.fz} if d.d3 else {}),
+        # a sphere: the planet (radius, shell, Nside, layers) in place of the image length and lattice side
+        **(
+            {
+                "geometry": "sphere",
+                "planet_radius": d.radius,
+                "world_height": cfg.world.height,
+                "field_nside": d.nside,
+                "field_grid_z": d.fz,
+                "hash_nside": d.nside_h,
+            }
+            if d.sph
+            else {"world_size": cfg.world.size, "field_grid": d.fg}
+        ),
+        **({"dims": d.nd} if d.d3 else {}),
+        **({"world_height": cfg.world.height, "field_grid_z": d.fz} if d.d3 and not d.sph else {}),
         "hidden": d.h,
         # the feature extensions (DESIGN §43): absent, as before, while none is enabled
         **(
@@ -779,8 +792,9 @@ def _agent_info(uid: int, s: State | State3, cfg: Config, rd: RunDir | None) -> 
         info["age"] = step - 1 - int(a["birth_step"])
         info["fields"] = {k: v.tolist() for k, v in a.items()}
         if dims(cfg).d3:
-            info["height"] = float(a["pos"][2])
-            info["grounded"] = float(a["pos"][2]) <= dims(cfg).z_ground
+            height = float(host_geometry(cfg).height(a["pos"]))  # |pos| − Rp on a sphere, pos[2] in a box
+            info["height"] = height
+            info["grounded"] = height <= dims(cfg).z_ground
         info["bonds"] = [
             {"slot": b, "row": p, "uid": int(host["uid"][p])}
             for b, p in enumerate(a["partner"].tolist())
@@ -1475,6 +1489,7 @@ def _cmd_activity(a: argparse.Namespace) -> int:
     from alife.analysis import report  # local: host-only numpy analysis, kept off the simulation import path
 
     rd = RunDir.open(Path(a.run))
+    config_mod.require_box(rd.config(), "alife activity")  # the analysis reads torus positions (PR S5)
     out = Path(a.out) if a.out else rd.path / "activity"
     st = report.Settings(
         grid_every=a.grid,
