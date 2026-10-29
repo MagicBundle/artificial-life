@@ -30,6 +30,7 @@ class Neighbors(NamedTuple):
     dist: mx.array  # (N,K) f32; R where invalid
     overflow_cells: mx.array  # () int32: hash cells with count > C
     max_occupancy: mx.array  # () int32: largest hash-cell count
+    hidden_agents: mx.array | None = None  # () int32: agents beyond C in their cell, sum of max(count - C, 0)
 
 
 def _on_gpu() -> bool:
@@ -147,6 +148,7 @@ def find_neighbors(pos: mx.array, alive: mx.array, cfg: Config, *, impl: str | N
         dist=dist,
         overflow_cells=(count > c).sum().astype(_I32),
         max_occupancy=count.max().astype(_I32),
+        hidden_agents=mx.maximum(count - c, 0).sum().astype(_I32),
     )
 
 
@@ -186,6 +188,7 @@ def _metal_tail(
         dist=dist,
         overflow_cells=(count > d.c).sum().astype(_I32),
         max_occupancy=count.max().astype(_I32),
+        hidden_agents=mx.maximum(count - d.c, 0).sum().astype(_I32),
     )
 
 
@@ -252,6 +255,7 @@ def _find_neighbors_3d(pos: mx.array, alive: mx.array, cfg: Config, *, metal: bo
         dist=dist,
         overflow_cells=(count > c).sum().astype(_I32),
         max_occupancy=count.max().astype(_I32),
+        hidden_agents=mx.maximum(count - c, 0).sum().astype(_I32),
     )
 
 

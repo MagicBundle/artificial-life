@@ -46,6 +46,7 @@ COUNTERS: tuple[str, ...] = (
     "APERTURE_VIOLATIONS",
     "SLOWED",
     "MAT_CLOSED",
+    "HASH_HIDDEN",
 )
 
 _I32 = mx.int32
@@ -203,6 +204,7 @@ def count(s_new: Any, alive0: mx.array, flows: Any, cfg: Config) -> dict[str, mx
         "APERTURE_VIOLATIONS": f.violations,
         "SLOWED": f.slowed,
         "MAT_CLOSED": f.closed,
+        "HASH_HIDDEN": flows.nbr.hidden_agents,
     }
 
 

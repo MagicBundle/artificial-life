@@ -15,7 +15,6 @@ from alife.config import dims, load_config
 from alife.state import (
     N_COUNTERS,
     CounterIdx,
-    Diag,
     State,
     State3,
     counter_blocks,
@@ -42,7 +41,6 @@ def test_an_off_world_has_no_structures_footprint(preset: str) -> None:
     mx.eval(s1, out)
     nd = d.nd
     assert out.counters.shape == (n_counters(nd, cfg.weather.enabled),) and counter_blocks(cfg) == ()
-    assert not int(s1.diag.item()) & Diag.HASH_OVERFLOW
     assert len(CounterIdx) == N_COUNTERS
 
 

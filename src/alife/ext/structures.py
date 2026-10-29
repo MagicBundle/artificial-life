@@ -1,18 +1,21 @@
 """The declaration of the built-structures feature (DESIGN §38, §43): a row of ``ext.REGISTRY``.
 
 Footprint: one brain input ``material`` and one output ``build`` (2D 70/36, 3D 85/40 with only this
-feature), the conditional state field ``mat`` on the food lattice, ten counters and the config section
+feature), the conditional state field ``mat`` on the food lattice, eleven counters and the config section
 ``[structures]``. The implementation lives in ``alife.structures`` (hooks) and ``alife.fields``
 (``update_mat``); imports of them are made at call time because ``config`` imports ``ext``.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import mlx.core as mx
 
 from alife.ext.base import Block, ExtCtx, ExtSpec, FieldSpec
+
+log = logging.getLogger(__name__)
 
 _KEYS = (
     "enabled",
@@ -40,6 +43,7 @@ _COUNTERS = (
     "APERTURE_VIOLATIONS",
     "SLOWED",
     "MAT_CLOSED",
+    "HASH_HIDDEN",
 )
 
 
@@ -62,7 +66,17 @@ def _rest(cfg: Any) -> mx.array:
 
 
 def _state_fields(cfg: Any, nd: int) -> tuple[FieldSpec, ...]:
-    return (FieldSpec("mat", False, lambda d: d.field_shape, mx.int32, _rest),)
+    # conserved=False: the material holds no energy (DESIGN 38.7), so a forced removal by `alife migrate`
+    # cannot leak TOTAL
+    return (FieldSpec("mat", False, lambda d: d.field_shape, mx.int32, _rest, conserved=False),)
+
+
+def _enable(cfg: Any) -> Any:
+    """``alife migrate --enable structures``: the config with ``structures.enabled`` on (``--set`` moves the
+    rest)."""
+    import dataclasses
+
+    return dataclasses.replace(cfg, structures=dataclasses.replace(cfg.structures, enabled=True))
 
 
 def _inputs(s: Any, cfg: Any, ctx: ExtCtx) -> Any:
@@ -134,6 +148,11 @@ def _validate(cfg: Any) -> None:
         for k in ("shelter_gain", "shield_gain", "reach", "exit_ease"):
             if not 0.0 <= getattr(sc, k) <= 1.0:
                 bad.append(f"structures.{k} {getattr(sc, k)} must be in [0, 1]")
+        if sc.shield_gain >= 1.0 and cfg.combat.protect_floor == 0.0:
+            bad.append(
+                "structures.shield_gain = 1 needs combat.protect_floor > 0: a victim in a full cell would be "
+                "immune (demand 0), as arms.key_floor = 0 is refused for the same reason"
+            )
         if not 0.0 <= sc.barrier_gain <= 3.0:
             bad.append(
                 f"structures.barrier_gain {sc.barrier_gain} must be in [0, 3] (R1: at most a 4x slowdown)"
@@ -153,6 +172,13 @@ def _validate(cfg: Any) -> None:
                 fields.mat_phases(fg, nd)
             except ValueError as e:
                 bad.append(f"structures.aperture > 0: {e}")
+    if sc.enabled and sc.aperture == 0.0 and sc.barrier_gain > 0.0:
+        log.warning(
+            "structures.aperture = 0 switches the aperture rule R2 off while barrier_gain = %s > 0: walls "
+            "can enclose organisms (TRAPPED can be > 0; R1 still bounds the drag at %sx); a control only",
+            sc.barrier_gain,
+            1.0 + sc.barrier_gain,
+        )
     if bad:
         raise ConfigError("; ".join(bad))
 
@@ -172,6 +198,7 @@ SPEC = ExtSpec(
     lever_keys=tuple(("structures", k) for k in _KEYS),
     cli_only_keys=(("structures", "silent_build"),),
     overlay="build",
+    enable=_enable,
     validate=_validate,
     inputs=_inputs,
     decode=_decode,

@@ -453,6 +453,13 @@ def run(
                 checkpoint()
             if not quiet:
                 print(_status_line(row), flush=True)
+                if row.get("build_hash_hidden"):  # structures: crowding hid agents from the neighbour search
+                    print(
+                        f"alert: hash cell overflow at step {t}: {row['cell_overflow']} cell-steps over "
+                        f"capacity, {row['build_hash_hidden']} agent-steps hidden (DESIGN 38.7)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 for line in director.status_lines() if director is not None else ():
                     print(line, flush=True)
             if on_interval is not None:

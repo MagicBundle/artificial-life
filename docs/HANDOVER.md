@@ -43,7 +43,7 @@ PR 0a of the five-feature series (arms, built structures, bonds that pay, commun
 meta key, conditional state fields, counter blocks, `extra_due`, `ActFlag` bits and `Acts.ext`, `rng.layout_version`,
 `ops.hash32`, the single `combat` signature with `combat.protect_floor`, and `tests/identity_matrix.py` (the CPU
 identity matrix against a `git archive` of the base: `uv run python tests/identity_matrix.py --base <commit>`, about
-two minutes). No behaviour change. The next PR is 0b (the layout migration, §43.8), then the engine PRs in the order
+two minutes). No behaviour change. PR 0b (stacked on 0a) adds the layout migration (§43.8): `alife migrate RUN[:STEP] --enable F --out NEWRUN` (zero rows/columns, order-independent, removal refused, source untouched, compressed in = compressed out; `tests/test_ext_migrate.py`). Then the engine PRs in the order
 arms A1, A2, structures S1, bonds B1 and B2, comm C1, farming F1 (merged serially, each on the owner's go).
 
 ## Arms races (DESIGN §42, I71)
@@ -66,8 +66,8 @@ R1 bounded drag, R2 the aperture invariant (every cell keeps `k` open neighbours
 easy exit; `TRAPPED` and `APERTURE_VIOLATIONS` are counters that must stay 0. Enable with `--overlay build` (any preset whose
 field lattice side is composite; `mini3d + storm160 + build` is the storm world) or `--set structures.enabled=true`;
 `alife bench --structures` times it; `structures.silent_build=true` is the zero-column control. Absent: the stream record, the
-dump, the observers' drift and the GUI (S2, S3), the first runs and the fork (S4; `alife migrate` is PR 0b). A hash cell
-overflow is an error with structures on (`Diag.HASH_OVERFLOW`).
+dump, the observers' drift and the GUI (S2, S3), the first runs and the fork (S4; `alife migrate` is PR 0b). Hash-cell overflow is advisory
+(`HASH_HIDDEN`, `build_hash_hidden`, an `alert:` line); runs with persistent overflow are excluded from experiments.
 
 ## How to run
 

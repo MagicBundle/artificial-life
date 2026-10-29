@@ -50,7 +50,7 @@ def test_blocks_follow_the_documented_order_and_names_are_unique() -> None:
     names = [n for _, ns in counter_blocks(cfg_p) for n in ns]
     assert (
         next(b for b, _ in counter_blocks(cfg_p)) == "protect"
-        and len(names) == len(set(names)) == 1 + 5 + 10 + 5 + 2 + 5
+        and len(names) == len(set(names)) == 1 + 5 + 11 + 5 + 2 + 5
     )
     base = n_counters(2, True)  # 28: 27 + DEATHS_STORM
     assert counter_index(cfg_p, "DEATHS_STORM") == 27 and counter_index(cfg_p, "PROT_CAPPED") == base

@@ -196,5 +196,10 @@ def test_bench_structures_needs_the_feature_and_reports_the_marginal_cost() -> N
         bench.run_bench(off, steps=2, warmup=1, structures=True)
     r = bench.run_bench(cfg_for(2), steps=4, warmup=1, structures=True, weather_pairs=1)
     st = r["structures"]
-    assert st["block_pairs"] == 1 and st["on_ms_median"] > 0 and "marginal_ms_median" in st
+    assert (
+        st["structures_config"]["enabled"]
+        and st["block_pairs"] == 1
+        and st["on_ms_median"] > 0
+        and "marginal_ms_median" in st
+    )
     assert "structures (1 block pairs" in bench.format_report(r)

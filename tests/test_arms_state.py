@@ -81,6 +81,14 @@ def test_validate_refuses_out_of_range_keys(bad: list[str]) -> None:
         apply_overrides(load_config(preset="tiny"), ["arms.enabled=true", *bad])
 
 
+def test_key_floor_zero_needs_a_protection_floor() -> None:
+    base = load_config(preset="tiny")
+    with pytest.raises(ConfigError, match=r"key_floor = 0 needs combat\.protect_floor"):
+        apply_overrides(base, ["arms.enabled=true", "arms.key_floor=0"])
+    apply_overrides(base, ["arms.enabled=true", "arms.key_floor=0", "combat.protect_floor=0.1"])
+    apply_overrides(base, ["arms.enabled=true", "arms.key_floor=0.01"])
+
+
 def test_a_key_is_inert_while_arms_is_off() -> None:
     with pytest.raises(ConfigError, match=r"inert while arms\.enabled is false"):
         apply_overrides(load_config(preset="tiny"), ["arms.sigma=0.03"])

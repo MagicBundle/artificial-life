@@ -280,7 +280,7 @@ def _checkpoint_meta(root: Path) -> dict[str, Any]:
     return out
 
 
-def _config_and_layout() -> dict[str, Any]:
+def _config_and_layout(overlays: list[str] | None = None) -> dict[str, Any]:
     from alife import config, layout, state
     from alife.config import ConfigError, dims, load_config
 
@@ -288,9 +288,10 @@ def _config_and_layout() -> dict[str, Any]:
     combos: list[tuple[str, tuple[str, ...]]] = []
     for preset in config.PRESETS:
         combos.append((preset, ()))
-        # The base commit's overlays. A feature overlay (``build``) switches its feature ON, so it has
-        # no counterpart in the base and is not an off-identity case; the feature's own tests cover it.
-        for ov in ("fast", "storm", "storm160"):
+        # The overlay list is the BASE tree's ``ALL_OVERLAYS`` (dumped by the driver): a feature overlay
+        # (``build``) switches its feature ON, so it has no counterpart in the base and is not an off-identity
+        # case; the feature's own tests cover it.
+        for ov in overlays if overlays is not None else config.ALL_OVERLAYS:
             combos.append((preset, (ov,)))
     combos.append(("tiny", ("fast", "storm")))
     for preset, overlays in combos:
@@ -327,7 +328,7 @@ def _config_and_layout() -> dict[str, Any]:
     return out
 
 
-def dump(out_json: Path, work: Path, only: str | None = None) -> None:
+def dump(out_json: Path, work: Path, only: str | None = None, overlays: list[str] | None = None) -> None:
     """Run every case in this process (CPU device) and write the record to ``out_json``."""
     import mlx.core as mx
 
@@ -359,7 +360,7 @@ def dump(out_json: Path, work: Path, only: str | None = None) -> None:
         snap["checkpoints_meta"] = _checkpoint_meta(d)
         result["runner"][kind] = snap
         print(f"  runner {kind}", file=sys.stderr, flush=True)
-    result["config"] = _config_and_layout()
+    result["config"] = _config_and_layout(overlays)
     # the pinned tiny3d digests, recomputed apart from the trajectory cases
     cfg3 = load_config(preset="tiny3d", overrides=["brain.weight_dtype=float32"])
     s = init_state(cfg3)
@@ -403,7 +404,17 @@ def _diff(a: Any, b: Any, path: str, out: list[str]) -> None:
         out.append(f"DIFF {path}: base {str(a)[:100]!r} != head {str(b)[:100]!r}")
 
 
-def _run_side(label: str, src: Path, work: Path, only: str | None) -> dict[str, Any]:
+def _base_overlays(src: Path) -> list[str]:
+    """The base tree's ``config.ALL_OVERLAYS`` (a child process under the base's ``PYTHONPATH``)."""
+    env = {**os.environ, "PYTHONPATH": str(src)}
+    code = "import json; from alife import config; print(json.dumps(list(config.ALL_OVERLAYS)))"
+    r = subprocess.run([sys.executable, "-c", code], env=env, check=True, capture_output=True, text=True)
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def _run_side(
+    label: str, src: Path, work: Path, only: str | None, overlays: list[str] | None = None
+) -> dict[str, Any]:
     side = work / label
     side.mkdir(parents=True, exist_ok=False)
     env = {**os.environ, "PYTHONPATH": str(src), "PYTHONHASHSEED": "0"}
@@ -422,6 +433,8 @@ def _run_side(label: str, src: Path, work: Path, only: str | None) -> dict[str, 
     ]
     if only:
         cmd += ["--only", only]
+    if overlays is not None:
+        cmd += ["--overlays", json.dumps(overlays)]
     print(f"[{label}] {src}", file=sys.stderr, flush=True)
     r = subprocess.run(cmd, env=env, check=False)
     if r.returncode != 0:
@@ -440,12 +453,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", default=None, help="run only the cases whose name contains this")
     ap.add_argument("--dump", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--src", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--overlays", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     if args.dump:  # the child: one side of the comparison
         if args.src:
             sys.path.insert(0, args.src)
-        dump(Path(args.dump), Path(args.work), args.only)
+        dump(
+            Path(args.dump), Path(args.work), args.only, json.loads(args.overlays) if args.overlays else None
+        )
         return 0
 
     repo = Path(args.repo).resolve()
@@ -467,8 +483,9 @@ def main(argv: list[str] | None = None) -> int:
     ).stdout.strip()
     print(f"base {args.base} (git archive), head {head_rev}+tree, work {work}", file=sys.stderr)
 
-    base = _run_side("base", base_src, work, args.only)
-    head = _run_side("head", repo / "src", work, args.only)
+    overlays = _base_overlays(base_src)
+    base = _run_side("base", base_src, work, args.only, overlays)
+    head = _run_side("head", repo / "src", work, args.only, overlays)
 
     diffs: list[str] = []
     _diff(base, head, "", diffs)

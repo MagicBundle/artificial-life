@@ -168,7 +168,6 @@ class Diag(IntFlag):
     INT_HEADROOM = 64
     CAPACITY = 128
     POS_RANGE = 256
-    HASH_OVERFLOW = 512  # a hash cell overflowed with structures on (crowding in material, §38.7)
     CELL_OVERFLOW_WARN = 1 << 16
     VCLIP_WARN = 1 << 17
     WEATHER_WARN = (
@@ -658,6 +657,161 @@ def state_from_arrays(d: Mapping[str, mx.array], cfg: Config | None = None) -> S
         missing, extra = sorted(want - keys), sorted(keys - want)
         raise ValueError(f"state arrays do not match {cls.__name__} fields: missing={missing}, extra={extra}")
     return cls(*(d[name] for name in cls._fields))
+
+
+# --- layout migration (DESIGN §43.8) ------------------------------------------------------------------------
+
+
+class MigrationError(ValueError):
+    """A layout migration that is refused (a removal, a width change, a different base layout)."""
+
+
+class LayoutChange(NamedTuple):
+    """Which features a migration adds, removes and keeps (by ``ext.active``: footprint or fields)."""
+
+    added: tuple[str, ...]
+    removed: tuple[str, ...]
+    kept: tuple[str, ...]
+
+
+_WEIGHT_FIELDS: Final = ("W1", "W2", "pend_W1", "pend_W2", "msg")
+
+
+def layout_change(cfg_old: Config, cfg_new: Config, *, allow_removal: bool = False) -> LayoutChange:
+    """The feature sets of two configs, after the checks every migration needs: the base layout (dims, N, M,
+    H, every non-extension field's shape) is the same, a feature kept on has the same ``layout_features``
+    token (a width or block-version change is never a migration), and a removal needs ``allow_removal``."""
+    old = {sp.name for sp in ext.active(cfg_old)}
+    new = {sp.name for sp in ext.active(cfg_new)}
+    order = [sp.name for sp in ext.REGISTRY]
+    pick = lambda names: tuple(n for n in order if n in names)  # noqa: E731
+    change = LayoutChange(pick(new - old), pick(old - new), pick(old & new))
+    d_old, d_new = dims(cfg_old), dims(cfg_new)
+    for key in ("nd", "n", "m", "h"):
+        if getattr(d_old, key) != getattr(d_new, key):
+            raise MigrationError(
+                f"the base layout differs: {key} {getattr(d_old, key)} -> {getattr(d_new, key)} "
+                "(a migration changes features only)"
+            )
+    ext_old = {f.name for f in ext.state_fields(cfg_old, d_old.nd)}
+    ext_new = {f.name for f in ext.state_fields(cfg_new, d_new.nd)}
+    want_old, want_new = expected_layout(cfg_old), expected_layout(cfg_new)
+    for name, spec_old in want_old.items():
+        if name in _WEIGHT_FIELDS or name in ext_old or name in ext_new:
+            continue
+        if name not in want_new or want_new[name] != spec_old:
+            raise MigrationError(f"the base layout differs at {name}: {spec_old} -> {want_new.get(name)}")
+    by = {sp.name: sp for sp in ext.REGISTRY}
+    for name in change.kept:
+        if by[name].token(cfg_old) != by[name].token(cfg_new):
+            raise MigrationError(
+                f"{name}: layout {by[name].token(cfg_old)!r} -> {by[name].token(cfg_new)!r}: a width or "
+                "block-version change is never a migration (start a new run)"
+            )
+        for fn in by[name].state_fields(cfg_new, d_new.nd):
+            if want_old.get(fn.name) != want_new.get(fn.name):
+                raise MigrationError(f"{name}: the shape of {fn.name} changes: a restart, not a migration")
+    if change.removed and not allow_removal:
+        raise MigrationError(
+            f"this would turn {', '.join(change.removed)} off, which drops its evolved weights; a removal "
+            "is refused unless forced (leave-one-out arms are fresh runs, not removals)"
+        )
+    return change
+
+
+def _remap_blocks(
+    a: mx.array,
+    axis: int,
+    base: int,
+    old_ext: tuple[tuple[str, str, int, int, bool], ...],
+    new_ext: tuple[tuple[str, str, int, int, bool], ...],
+    tail_from: int | None,
+) -> mx.array:
+    """``a`` with its extension blocks moved to the new layout along ``axis``: the base columns, then each new
+    block (the old slice, or zeros when the block is new; a block that is gone is dropped), then the columns
+    from ``tail_from`` on (the recurrent rows of W1)."""
+    old = {(owner, name): (start, width) for owner, name, start, width, _ in old_ext}
+    take = lambda lo, hi: a[(slice(None),) * (axis % a.ndim) + (slice(lo, hi),)]  # noqa: E731
+    parts = [take(0, base)]
+    for owner, name, _, width, _ in new_ext:
+        if (owner, name) in old:
+            start, w_old = old[(owner, name)]
+            if w_old != width:
+                raise MigrationError(f"block {owner}.{name}: width {w_old} -> {width}")
+            parts.append(take(start, start + width))
+        else:
+            ax = axis % a.ndim
+            parts.append(mx.zeros((*a.shape[:ax], width, *a.shape[ax + 1 :]), a.dtype))
+    if tail_from is not None:
+        parts.append(take(tail_from, a.shape[axis % a.ndim]))
+    return mx.concatenate(parts, axis=axis)
+
+
+def migrate_layout(
+    arrays: Mapping[str, mx.array], cfg_old: Config, cfg_new: Config, *, allow_removal: bool = False
+) -> dict[str, mx.array]:
+    """The arrays of a state of ``cfg_old`` as the arrays of a state of ``cfg_new`` (DESIGN §43.8): the same
+    world on a new feature layout.
+
+    For every extension block of ``cfg_new`` that ``cfg_old`` lacks, in ``TAIL_ORDER``: ``width`` zero rows
+    in ``W1`` / ``pend_W1`` between the old inputs and the recurrent rows (which shift), ``width`` zero
+    columns in ``W2`` / ``pend_W2``, and zero columns appended to ``msg`` (comm's voice). Blocks present in
+    both stay (at their new offsets: enabling a feature whose tail ranks earlier moves the later ones), so the
+    order of enabling does not matter. New state fields come from ``FieldSpec.rest(cfg_new)``. A zero row
+    feeds nothing into the hidden state and a zero column outputs ``0``, so the migrated population behaves as
+    before until mutation wakes the new channels. Refused: a width change, a different base layout, and
+    (unless ``allow_removal``) a removal, which drops the weights of the feature and recomputes
+    ``brain_cost``. Every other field is carried unchanged."""
+    change = layout_change(cfg_old, cfg_new, allow_removal=allow_removal)
+    lay_old, lay_new = dims(cfg_old).lay, dims(cfg_new).lay
+    base_in = lay_old.D_IN - sum(w for *_, w, _ in lay_old.EXT_IN)
+    base_out = lay_old.D_OUT - sum(w for *_, w, _ in lay_old.EXT_OUT)
+    if (base_in, base_out) != (
+        lay_new.D_IN - sum(w for *_, w, _ in lay_new.EXT_IN),
+        lay_new.D_OUT - sum(w for *_, w, _ in lay_new.EXT_OUT),
+    ):
+        raise MigrationError("the base brain layout differs")
+    moved = {
+        **{
+            name: _remap_blocks(arrays[name], -2, base_in, lay_old.EXT_IN, lay_new.EXT_IN, lay_old.D_IN)
+            for name in ("W1", "pend_W1")
+        },
+        **{
+            name: _remap_blocks(arrays[name], -1, base_out, lay_old.EXT_OUT, lay_new.EXT_OUT, None)
+            for name in ("W2", "pend_W2")
+        },
+    }
+    msg = arrays["msg"]
+    w_old, w_new = msg.shape[1], dims(cfg_new).msg_w
+    if w_new > w_old:
+        moved = {**moved, "msg": mx.concatenate([msg, mx.zeros((msg.shape[0], w_new - w_old), msg.dtype)], 1)}
+    elif w_new < w_old:
+        moved = {**moved, "msg": msg[:, :w_new]}
+    nd = dims(cfg_new).nd
+    new_fields = ext.state_fields(cfg_new, nd)
+    gone = {f.name for f in ext.state_fields(cfg_old, nd)} - {f.name for f in new_fields}
+    for f in ext.state_fields(cfg_old, nd):
+        if f.name in gone and f.conserved and not bool(mx.array_equal(arrays[f.name], f.rest(cfg_old))):
+            raise MigrationError(
+                f"{f.name} holds conserved quanta that are not at rest: dropping it would leak energy "
+                "(settle it first); a removal never drops it silently"
+            )
+    out = {k: v for k, v in {**arrays, **moved}.items() if k not in gone}
+    out = {**{f.name: f.rest(cfg_new) for f in new_fields if f.name not in out}, **out}
+    if change.removed:  # the L1 upkeep of the weights that are left
+        out = {**out, "brain_cost": brain.l1_cost(out["W1"], out["W2"], cfg_new)}
+    mx.eval(list(out.values()))
+    cls = state_cls(cfg_new)
+    return {name: out[name] for name in cls._fields}
+
+
+def migrate_state(
+    s: State | State3, cfg_old: Config, cfg_new: Config, *, allow_removal: bool = False
+) -> State | State3:
+    """``s`` (a state of ``cfg_old``) as a state of ``cfg_new`` (``migrate_layout`` over the arrays)."""
+    return state_from_arrays(
+        migrate_layout(state_to_arrays(s), cfg_old, cfg_new, allow_removal=allow_removal), cfg_new
+    )
 
 
 def to_numpy(a: mx.array) -> np.ndarray:

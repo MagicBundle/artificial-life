@@ -137,8 +137,6 @@ def device_check(
     )
     if weather_bad is not None:  # static: weather on
         checks = (*checks, (weather_bad, Diag.WEATHER_WARN))
-    if cfg.structures.enabled:  # static: crowding in the material must not hide neighbours (E7, §38.7)
-        checks = (*checks, (overflow_cells > 0, Diag.HASH_OVERFLOW))
     bits = mx.array(0, dtype=_I32)
     for cond, bit in checks:
         bits = bits | mx.where(cond, bit.value, 0).astype(_I32)

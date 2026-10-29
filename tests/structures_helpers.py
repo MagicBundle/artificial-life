@@ -24,6 +24,7 @@ NAMES = (
     "APERTURE_VIOLATIONS",
     "SLOWED",
     "MAT_CLOSED",
+    "HASH_HIDDEN",
 )
 
 

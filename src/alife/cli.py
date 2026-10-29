@@ -23,7 +23,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import config as config_mod
-from alife import ext, metrics, physics, play, runner, spatial, stream, weather_spinup
+from alife import ext, metrics, migrate, physics, play, runner, spatial, stream, weather_spinup
 from alife.analysis import houses as house_rebuild
 from alife.config import (
     ALL_OVERLAYS,
@@ -74,6 +74,7 @@ from alife.runio import (
 from alife.runner import ExitCode
 from alife.state import (
     DeathCause,
+    MigrationError,
     State,
     State3,
     agent_fields,
@@ -672,6 +673,35 @@ def _cmd_resume(a: argparse.Namespace) -> int:
     box = [state]
     del state  # the runner must hold the only reference to the state (donation rule, F1)
     return _launch(rd, cfg, box, steps, a.quiet)
+
+
+def _cmd_migrate(a: argparse.Namespace) -> int:
+    """Write a new run directory holding a checkpoint on a new feature layout (DESIGN §43.8)."""
+    if not a.enable and not a.set:
+        raise ConfigError("migrate needs --enable FEATURE (or --set of a feature key)")
+    src, origin, src_rd, at = _fork_lookup(a.run)
+    origin = f"{src_rd.path.resolve()}:{at}" if src_rd is not None else str(src.resolve())
+    out = Path(a.out)
+    rep = migrate.migrate_checkpoint(
+        src,
+        out,
+        enable=a.enable,
+        sets=a.set,
+        force_removal=a.force_removal,
+        overwrite=a.overwrite,
+        origin=origin,
+    )
+    if not a.quiet:
+        ch = rep.change
+        print(
+            f"migrated {origin} -> {rep.out} at step {rep.step}: added {list(ch.added) or '-'}, "
+            f"removed {list(ch.removed) or '-'}; layout_features {rep.layout_features_old!r} -> "
+            f"{rep.layout_features_new!r}, genome_layout_version {rep.genome_layout_version_old} -> "
+            f"{rep.genome_layout_version_new}" + (" (compressed save)" if rep.compressed else ""),
+            flush=True,
+        )
+        print(f"resume it with: alife resume {rep.out} --until STEP", flush=True)
+    return int(ExitCode.OK)
 
 
 # --- render ---------------------------------------------------------------------------------------------
@@ -1634,6 +1664,27 @@ def _llm_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+_MIGRATE_HELP = """Move a checkpoint onto a new feature layout (DESIGN 43.8): zero rows and columns for the
+new brain inputs and outputs (so the population behaves as before up to floating-point
+reduction order until evolution uses them), new state
+fields from each feature's rest value, the new layout_features and genome_layout_version, provenance in
+meta.json (migrated_from). The source is never modified; NEWRUN is a new run directory at the source's
+step, and a compressed source gives a compressed save. A save never crosses layout_features any other way
+(resume and --init-from refuse it).
+
+Enabling several features in one call, or one after another, gives the same layout, offsets and weights.
+Mutation draws of the new shapes mean the trajectory parts from the unmigrated world at the first birth.
+The extra zero terms change the GEMV accumulation order: about 1% of the agents of a float16 world round a
+hidden state differently at the first step (CPU sums in groups of 4: a pad of a multiple of 4 is exact;
+Metal differs anyway). The output is built beside NEWRUN and renamed at the end; NEWRUN may not be, contain or
+lie inside the source, and a run being played is never replaced. game.observe sidecars start empty.
+
+Removal (turning a feature off) is refused unless --force-removal: it drops the evolved weights.
+LEAVE-ONE-OUT ARMS ARE FRESH RUNS from the shared evolved source (migrate it with the other features and
+leave the feature out), not removals from an evolved world (edge case E23). A width change of a feature
+that is on is never a migration."""
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="alife", description="Neural artificial life on Apple MLX.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1709,6 +1760,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--color", choices=COLOR_MODES, default="tag")
     p.add_argument("--view", default=None, metavar="CX,CY,ZOOM")
     p.set_defaults(func=_cmd_render)
+
+    p = sub.add_parser(
+        "migrate",
+        help="move a checkpoint onto a new feature layout (new run directory; the source is untouched)",
+        description=_MIGRATE_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("run", metavar="RUN[:STEP]|FILE.safetensors[.zst]")
+    p.add_argument("--enable", action="append", default=[], metavar="FEATURE", help="switch a feature on")
+    p.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="SECTION.KEY=VALUE",
+        help="a key of a feature being enabled (widths, silent_* keys); any other key is refused",
+    )
+    p.add_argument("--out", required=True, metavar="NEWRUN")
+    p.add_argument("--overwrite", action="store_true", help="replace NEWRUN if it is a run directory")
+    p.add_argument(
+        "--force-removal",
+        action="store_true",
+        help="allow turning a feature OFF (drops its evolved weights; leave-one-out arms are fresh runs)",
+    )
+    p.add_argument("--quiet", action="store_true")
+    p.set_defaults(func=_cmd_migrate)
 
     p = sub.add_parser("inspect", help="summarise a checkpoint")
     p.add_argument("run", metavar="RUN")
@@ -2045,6 +2121,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except CheckpointError as e:
         print(f"checkpoint error: {e}", file=sys.stderr)
         return int(ExitCode.CHECKPOINT)
+    except MigrationError as e:
+        print(f"migration refused: {e}", file=sys.stderr)
+        return int(ExitCode.CONFIG)
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         return int(ExitCode.INTERRUPTED)

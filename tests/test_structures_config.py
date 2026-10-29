@@ -158,12 +158,12 @@ def test_the_state_schema_with_the_field_on_and_off(nd: int) -> None:
     assert type(s)._fields[-1] == "mat" and s.mat.shape == d.field_shape and s.mat.dtype == mx.int32
     assert not np.asarray(s.mat).any()
     assert state_cls(off).__name__ in ("State", "State3") and "mat" not in state_cls(off)._fields
-    # the counter block sits after the base counters and lists the ten names in order
+    # the counter block sits after the base counters and lists the eleven names in order
     ((name, names),) = counter_blocks(cfg)
     assert name == "structures" and names == structures.COUNTERS
     assert counter_index(cfg, "BUILD_UNITS") == n_counters(nd, False) and n_counters(
         nd, False, counter_blocks(cfg)
-    ) == (n_counters(nd) + 10)
+    ) == (n_counters(nd) + 11)
 
 
 @pytest.mark.parametrize("nd", [2, 3])
@@ -212,3 +212,27 @@ def test_the_build_overlay_validates_against_the_presets_that_can_be_coloured() 
 def test_validate_message_names_the_open_neighbour_limit_in_3d() -> None:
     with pytest.raises(ConfigError, match="17"):
         _cfg(3, "structures.aperture=0.8")
+
+
+def test_shield_gain_one_needs_a_protection_floor() -> None:
+    """cf289b4's policy: an immunity (demand 0 in a full cell) is refused unless ``combat.protect_floor``
+    bounds it, as ``arms.key_floor = 0`` is."""
+    with pytest.raises(ConfigError, match="protect_floor"):
+        _cfg(2, "structures.shield_gain=1")
+    cfg = _cfg(2, "structures.shield_gain=1", "combat.protect_floor=0.1")
+    assert cfg.structures.shield_gain == 1.0
+    _cfg(2, "structures.shield_gain=0.9")
+
+
+def test_aperture_zero_with_a_barrier_is_allowed_as_a_control_and_says_so(caplog) -> None:
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        cfg = _cfg(2, "structures.aperture=0")
+    assert cfg.structures.aperture == 0.0
+    assert any("control only" in r.message or "a control only" in r.message for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        _cfg(2)
+        _cfg(2, "structures.aperture=0", "structures.barrier_gain=0")  # no barrier: nothing to enclose with
+    assert not [r for r in caplog.records if "aperture" in r.message]

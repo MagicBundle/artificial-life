@@ -52,7 +52,8 @@ rules R1 to R3): the engine (S1) is implemented behind `structures.enabled` (`--
 
 - Change DESIGN.md in the same change as any behaviour, signature or default it pins, and add a Review-log row.
 - A feature that changes the layout, the state, the counters or the step registers one `ExtSpec` row in `src/alife/ext/` (`DESIGN.md` §43): no literal offsets (`lay.IN_<NAME>`), conditional
-  state fields, energy through the existing 16 ledger terms (`extra_due`), and `uv run python tests/identity_matrix.py --base <main>` bit-identical with the feature off.
+  state fields, energy through the existing 16 ledger terms (`extra_due`), and `uv run python tests/identity_matrix.py --base <main>` bit-identical with the feature off. A world moves onto a new layout only through `alife migrate` (§43.8; the row's
+  `enable` hook and a case in `tests/test_ext_migrate.py`); leave-one-out arms are fresh runs.
 - Pure-MLX simulation code: no host syncs, no Python branching on array values, and fixed shapes inside the
   compiled step. Branch only on config constants.
 - Scatters and setitem live only in `src/alife/ops.py` (plus uint32 compositing in `render.py`). `test_lint`

@@ -511,6 +511,7 @@ def interval_row(
                     "build_trapped": int(col("TRAPPED")),
                     "build_aperture_violations": int(col("APERTURE_VIOLATIONS")),
                     "build_slowed_frac": _ratio(int(col("SLOWED")), alive_steps),
+                    "build_hash_hidden": int(col("HASH_HIDDEN")),  # agent-steps hidden by a full hash cell
                 }
             )
         at += len(names)
