@@ -78,6 +78,7 @@ COUNTERS = {
         "APERTURE_VIOLATIONS",
         "SLOWED",
         "MAT_CLOSED",
+        "HASH_HIDDEN",
     ),
     "bonds": ("ROLE_SWITCHES", "N_FORAGERS", "N_GUARDS", "SHIELDED_BY_GUARD", "SHARE_SLOTS_ACTIVE"),
     "comm": ("COMM_SPEAKERS", "COMM_DUE"),

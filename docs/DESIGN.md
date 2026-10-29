@@ -12341,6 +12341,248 @@ kin groups (§37.6), build the crop tool only if it fails; D3 evolve dry (weathe
 play, no launcher entry that makes a world from nothing; D6 the launcher passes the overlay explicitly. D4 (the equatorial band) is a design track outside this section (`scratchpad/smallworld/spec.md` section 7): no engine work.
 Recorded in the Review log (I62) rather than as a row of §24, which holds the v0 decisions D1 to D28.
 
+## 38. Built structures (PR S1: the engine)
+
+Normative text for the built-structures layer of the five-feature series (spec `structures/spec.md`, owner decision "B" of
+2026-10-28, all nine decisions O1 to O9 accepted, the first effects the coordinator's choice C23 (revisitable), protection
+from predators a third first-class effect by the owner's scope change of the same day). **S1 is the engine**: the grid, the
+build action and the material sensor, decay, the three effects, the anti-trapping geometry R1 to R3, the counters, the
+invariants, the tests and the bench. Absent from S1 and arriving in their own PRs: the observer and stream half (the `STRC`
+record, `play.structures`, the `mat` dump, the observers' drift, `Acts.ext.structures`, the `BUILDING` flag: S2), the GUI
+(map overlay, 3D cubes, levers: S3), the first world, the runs and the fork tool (S4; the fork is PR 0b's `alife migrate`).
+Off by default and bit-identical when off (`tests/identity_matrix.py`, 43.9). Not enabled by any shipped preset; the overlay
+`build` (`presets/build.toml`) switches it on.
+
+### 38.1 The grid
+
+`State.mat` / `State3.mat`: int32, shape `dims.field_shape` (`(FG, FG)` in 2D, `(FZ, FG, FG)` in 3D, z-major, the flat index
+of `fields.cell_index`), a conditional extension field (43.2) that exists only with `structures.enabled`. 64k3d: 20 x 80 x 80 =
+128 000 cells; mini3d 20 x 40 x 40. A cell is `world.field_cell` = 4 units (an agent has radius 1 and crosses a cell in at
+least 8 steps): structures are coarse walls and clouds. The unit is the material unit, an integer in `[0, cap]` (default
+4096). There is no float state, so decay is exact and bit-reproducible on any backend. Material does not move, diffuse,
+settle or sink (v1); in 3D a builder deposits in its own layer, so structures can float (O3). A pre-structures checkpoint
+loads with `mat` zeros when the feature is on (fill-on-load, 43.2) but cannot resume with it on (the weights differ): `alife migrate --enable structures` (PR 0b, 43.8) moves an evolved world onto the layout with zero new rows and columns, `mat` starting empty.
+
+### 38.2 Deposit, cost, cap
+
+Brain input `material` (`m/cap` at the agent's start-of-step cell, in [0, 1]) and output `build`; the blocks come from the
+registry row (38.5). `actions.decode_build`: `b = max(tanh(y[OUT_BUILD]), 0)` (an exact zero is reachable, as `emit` and
+`share`), `units = floor_i32(b·build_max)` in `[0, build_max]` (default 16 per step), 0 on a dead row. The cost is
+`units·build_cost` quanta (default 2 q per unit), an int32 product (exact, no float floor), returned by the registry row's
+`due` hook and added to the action due by `energy.pay_costs(3)` through `extra_due` (43.4): it counts in the solvency test and
+is booked in `HEAT_ACTION` (`paid_action`). At full output an agent pays 32 q per step against a basal and brain cost of
+about 137. An insolvent row (`structures.mask`) deposits nothing; its cost was due and is paid as far as it holds, as
+`emit`'s. The deposit is `dep = ops.scatter_add_i32(n_cells, fcell, units)` at the START-of-step cell (order independent;
+the one scatter of the feature, in `ops`), then `m1 = min(m + dep, cap)`; the excess is wasted (`MAT_WASTED`), the cost was
+paid on the requested units: overbuilding a full cell wastes energy, a deliberate pressure not to stack builders. A row that
+dies at S14 of the same step still deposits what it paid for at S8. A dead builder's structure persists and decays by itself.
+Validation: `build_max <= 1024` and `cap <= 32767` keep `dep < 2^25` and `m1·decay_q12 < 2^27`.
+
+### 38.3 Decay and the material identity
+
+`loss = (m1·decay_q12 + 4095) >> 12` and `m' = m1 - loss`, applied after the deposit, the cap and the aperture gate in
+`fields.update_mat` (S17): `ceil(m1·decay_q12/4096)`, an exponential decay of `decay_q12/4096` per step (default 16: 0.39 %)
+with a floor of one unit per step on every non-empty cell, so material always disappears in finite time (`decay_q12 >= 1`,
+O8). A full cell with no builder lasts exactly 864 steps and halves in 170; one builder at full output (16 units per step)
+holds a cell at 3825 of 4096, 8 hold 1785, 4 hold 765, 2 hold 255 and 1 holds nothing (all pinned by `test_structures_effects`).
+A structure needs sustained building of at least about 2 units per step per cell to exist and more than 4 to be effective.
+**The second conserved quantity** (the material holds no energy, 38.7): per step, exactly,
+`Σmat' = Σmat + BUILD_UNITS - MAT_WASTED - MAT_DECAYED`, with `BUILD_UNITS = Σ units` of the solvent builders, `MAT_WASTED =
+Σ(pre - m1)` (the cap and the refused closings of 38.4b; per cell at most the cell's deposit) and `MAT_DECAYED = Σ loss`.
+`MAT_TOTAL` is the end-of-step `Σmat`; `validate` bounds `cap·n_cells < 2^31` so the int32 counter cannot wrap. Checked every
+step by the tests and by the smoke, not by a device bit (the range reuses `Diag.FIELD_RANGE`).
+
+### 38.4 The effects
+
+Per step, once, from the START-of-step `s.mat` at the start-of-step cell `fcell` (the field the organism senses is the field
+that acts on it; `fcell`, a pure function of `s.pos`, is computed above S3w, which moves no trajectory): `structures.sense`
+builds the per-cell table `fields.mat_table` (`here = m/cap`; `cover = max(m, reach·max over the face neighbours)/cap`; the
+central-difference gradient of `m/cap`, divisor 2 as `sample_fields`, z mirrored) as lattice operations and gathers it ONCE,
+`(n_cells, C)[fcell]`. A column exists only when used (static): `cover` needs `reach > 0` and a positive `shield_gain` or a
+positive `shelter_gain` with the weather on (with `reach = 0` it is `here`), `grad` needs `barrier_gain > 0` and `exit_ease >
+0`. "Around an organism" is the four (3D: six) face neighbours at weight `reach` (default 0.5): a wall protects what stands
+beside it at half strength. No directional lee in v1 (O4).
+
+1. **Shelter** (S3w). `weather.shelter_wind(wind, k, cfg)` with `k = 1 - shelter_gain·cover` multiplies `wind.force` and
+   `wind.speed`, recomputes `breaks = speed·k > storm_break_u` (None stays None) and leaves `clip_bad`. It feeds, with no further
+   edit, the bond break (`wind.breaks`), the storm hazard (`lifecycle.storm_mask(wind.speed)`: `p_i = storm_p·clip((speed -
+   u0)/span, 0, 1)`, so a sheltered row dies less with no change in the number of draws) and the wind force of `physics.forces`.
+   The weather itself is untouched: organisms do not change the storm, only what they feel. In a dry world shelter is inert
+   (the branch needs the weather); barrier and shield still work. `weather.agent_drift(..., shelter=)` takes the factor for the
+   observers; S1 does not yet pass it from the labels, the tracers or `game.observe` (S2), so the "velocity minus drift" labels
+   are biased inside structures until then.
+2. **Barrier** (S15). `physics.integrate(3)(..., drag_mult=)` divides by `gamma·drag_mult`; in 3D the z divisor gets the same
+   factor (a dense medium also slows sinking; grip stays floor-only). `v = F/gamma` is overdamped, so thrust, wind drift and
+   gravity are slowed alike; the clip to `v_max` follows. `drag_mult = physics.barrier_drag(F, here, grad, cfg)` is computed
+   from the same total push `F` the integrator divides (38.4b R3). The slow-down uses the start cell (an agent entering a
+   wall is slowed from its next step; a step moves at most 0.5 of a 4-unit cell, so the lag is at most one step).
+3. **Shield** (S11). `energy.combat(..., shelter=shield_gain·cover)`: the victim's protection fraction enters the protection
+   product of 43.6 (armour, then shelter, then guard, under `combat.protect_floor`), before the behavioural `defend`. The
+   reduction acts on the integer demand before `proportional_take`; every later line (grant, gain, spill, residue, the drain
+   rule) is unchanged and integer-exact, so `FLOW_STOLEN = FLOW_ATTACK_GAIN + FLOW_SPILL` closes with no new ledger term. It
+   is a damage reduction, not a chance (O9): no RNG, deterministic, multiplicative with `defend`. The attacker's `attack_cost`
+   is still paid, so shielded attacks are less profitable: predators keep the decision, prey gain from standing next to
+   material. `SHIELDED_ATTACKS` counts the attacks on a victim with a positive fraction (`Combat.shielded`).
+   `shield_gain = 1` (a full cell would make the victim immune, demand 0) is refused unless `combat.protect_floor > 0`,
+   as `arms.key_floor = 0` is (cf289b4).
+
+### 38.4b Anti-trapping geometry (R1 to R3; no R4)
+
+Goal: builders can never trap themselves or others. All rules are fixed-shape lattice operations with no Python branching on
+array values. A cell is OPEN when `m < thr`, `thr = ceil(open_frac·cap)` (default 2048), else CLOSED. `nopen[c]` is the number of
+OPEN cells among the full neighbourhood of `c` (centre excluded): 8 in 2D, 26 in 3D, **17 on a floor or surface cell** (x and y
+wrap, z does not; a missing cell counts as not open). `k = ceil(aperture·n_nbr)` (a 1e-9 guard keeps 0.25·8 at 2); default
+`aperture` 0.25 gives k = 2 in 2D and 7 in 3D; `aperture = 0` switches R2 off statically.
+
+* **R1 porosity.** The barrier is a drag, never a block: `here` is in [0, 1] and `validate` requires `0 <= barrier_gain <= 3`, so
+  `drag_mult <= 1 + barrier_gain <= 4`. At `thrust_max` 0.1 a full cell (4 units) is crossed in about 160 steps, about the
+  material's half-life (170), so an organism never needs a decay event to get out (`test_structures_trapping`: any single closed
+  cell is crossed in at most 200 steps).
+* **R2 aperture.** In `fields.update_mat`, from the start-of-step `m`: a deposit may not CLOSE a cell (`m < thr <= min(m + dep,
+  cap)`) unless the cell is active in this step's colour phase and `box_min(nopen) >= k + 1` over its 3x3(x3) box; a refused
+  closing leaves the cell at `thr - 1` (still open; the cost was paid and the clamped excess is `MAT_WASTED`). The colouring
+  `cx mod px + px·(cy mod px) + px²·(cz mod 3)` with `px` the smallest divisor of `FG` that is at least 3, active when equal to
+  `step mod n_phase` (`n_phase = px²`, 3D `3px²`: 16 / 48 on mini3d), keeps closing cells at least 3 apart, so the boxes are
+  disjoint and each loses at most one open cell: **if every cell has `nopen >= k` at the start of a step it has at least `k` at
+  the end** (decay only opens cells), and the all-open start has 8, 26 or 17. Hence `k >= 1` implies no cell is ever without a
+  passable neighbour. Closing latency: one chance per `n_phase` steps. The invariant is a state property: the counter
+  `APERTURE_VIOLATIONS` (cells with `nopen < k` in the start-of-step material), the device error `Diag.FIELD_RANGE` and the host
+  `check` of `invariants.full_check`. Probe: the closed share stayed at most 0.59 to 0.67 under adversarial loads; the rule
+  restricts shape, not quantity. **E8**: `validate` refuses `aperture > 0` on a lattice side `FG` below 4 or prime (no colouring
+  with a short cycle), a sweep test checks every side from 1 to 130 and that cells of one colour are at least 3 apart.
+  **E9**: `k <= 8` (2D) or `<= 17` (3D), the true count of boundary rows is used, and at k = 17 no boundary-layer cell can ever
+  close (tested at both boundaries).
+* **R3 easy exit** (variant A1, owner-approved, default). `drag_mult = 1 + barrier_gain·here·(1 - exit_ease·out)` with `out =
+  max(0, -c·g)·s` in [0, 1], `c = F/|F|` the direction of the ACTUAL push (thrust, wind, repulsion, gravity: the `F` the
+  integrator divides, so displacement counts, not intended motion: edge case **E6**), `g` the unit gradient of `m/cap`, `s =
+  |grad|/(|grad| + 0.05)` the confidence that a surface is there. Moving down the gradient (out of dense material) is eased to
+  `1 + 0.25·barrier_gain·here` at the default `exit_ease` 0.75; entering pays the full price; a plateau (zero gradient) pays the
+  plain drag; a one-cell membrane has no central-difference gradient at its own cell, so R3 needs walls at least two cells thick
+  to act. This deviates from the literal "drag only for motion up the gradient", which would make the interior of a plateau free of
+  drag. `exit_ease = 0` is the plain barrier. No `where`, only `maximum`.
+* **R4 accretionary growth** is not built (named in the spec; revisit if scattered single-cell piles never combine into shelter).
+
+### 38.5 The sensor and the brain layout
+
+The registry row (`ext/structures.py`, `alife.structures`) declares the blocks input `material` (1) and output `build` (1),
+appended after the base and 3D tails and before any later feature's: 2D `IN_MATERIAL` 69, `D_IN` 70, `OUT_BUILD` 35, `D_OUT` 36;
+3D 84, 85, 39, 40 (with structures alone; consumers read `lay.IN_MATERIAL` and `lay.OUT_BUILD`, None when off). `W1` has one
+more row and `W2` one more column; the brain cost grows by about 1.3 % automatically. `layout_features` is `structures@1`, the
+mask bit is 1 (extension index), so `genome_layout_version` is `base + 8` (2D 9, 3D 10; the spec's 5 and 6 predate the arms row
+at index 0). Founders and immigrants have random weights (O6: about half build a little from step 0); `structures.silent_build`
+zeroes the `build` column of founders (the control run: nobody builds until mutation finds it; the `material` row stays random).
+Reproduction copies and mutates the parent's weights; material is environment, not genome.
+
+### 38.6 Birth, death, bonds
+
+Birth and death paths are untouched (a dead builder deposits nothing; its structure persists). A director catastrophe kills
+agents only. Shelter lowers `breaks`, so a sheltered colony keeps its bonds; there is no other bond interaction (the guard
+shield of the bonds series joins the same protection product).
+
+### 38.7 Energy ledger, counters, crowding
+
+* **Ledger.** Material holds no energy (O1): the build cost leaves the agent through `paid_action` into `HEAT_ACTION`, decay
+  moves no energy, `total_energy` does not include `mat`. `N_LEDGER = 16`, `LedgerIdx`, `ledger_cum` and every consumer are
+  unchanged; no new term. The rejected alternative (material as an energy bank with `FLOW_BUILD` and `FLOW_DECAY` terms) needs a 17th
+  slot, makes a structure a recyclable energy store and has a large blast radius.
+* **Counters** (block `structures`, 11 int32, after `DEATHS_STORM` and the `protect` block; `state.counter_index(cfg, name)`):
+  `BUILD_UNITS`, `MAT_WASTED`, `MAT_DECAYED`, `MAT_TOTAL`, `MAT_CELLS` (cells with material), `SHIELDED_ATTACKS`, `TRAPPED` (alive
+  rows in a cell with `nopen < 1`; 0 by construction with R2 on, the experiment metric with it off), `APERTURE_VIOLATIONS`,
+  `SLOWED` (alive rows with `drag_mult > 2`), `MAT_CLOSED` (cells at or above `thr`), `HASH_HIDDEN` (agents beyond the hash
+  capacity `C` in their cell, `Σ max(count - C, 0)`: the neighbours the search cannot see). The metrics row gains `build_units`,
+  `build_wasted`, `build_decayed`, `build_mat_total` and `build_mat_cells` and `build_mat_closed` (interval means),
+  `build_shielded`, `build_trapped`, `build_aperture_violations`, `build_slowed_frac` (over agent-steps) and `build_hash_hidden`
+  (interval sum, int64), only with the feature on.
+  **E10**: a per-step counter is int32 (bounded: `BUILD_UNITS <= N·build_max`), the interval sums are int64 on the host
+  (`interval_row`), a long-count test sums 5.2e9 units in one row.
+* **E7, crowding (advisory).** The barrier slows agents inside walls, so they can crowd into one hash cell, and the
+  neighbour search then hides the agents beyond its capacity `C`. This is reported, never fatal (the coordinator's decision):
+  `Diag.CELL_OVERFLOW_WARN` as in every world, the per-step counter `CELL_OVERFLOW` (cells over capacity, in every world) and the
+  structures counter `HASH_HIDDEN` (agents hidden), summed per interval in int64 in the metrics row (`cell_overflow`,
+  `build_hash_hidden`), and an `alert:` line on stderr from the runner at each interval that hid anyone. Structures-off runs
+  behave as before. **Runs with persistent overflow are excluded from experiments** (the measurement suite gates on
+  `build_hash_hidden`); evolved structures-off worlds peak at a hash occupancy of 31 to 40 against `C` = 48 (`fast`: 12), and
+  the barrier adds clumping, so a long build run should be watched for the alert (raise `sensing.cell_capacity` if it fires).
+* **Hash salts / RNG.** No stream, no draw, no hash: everything is integer or elementwise float32.
+
+### 38.8 State, checkpoint, digests, config
+
+`mat` is the last field of the generated state class (after `arms` when both are on, 43.2). `legacy_state_digest(_3d)` hash
+frozen name lists, so the goldens and the legacy digests do not see it; the full `state_digest` of a structures-on state includes
+it. `state_from_arrays` fills a file lacking `mat` with zeros when the feature is on and refuses a file that has `mat` when it
+is off (43.2). All 13 keys are in `POST_V01_KEYS` and `SERIAL_OMIT_KEYS` through the registry row, so every existing hash is
+unchanged, the section is absent from `config.json` while default, and each key is inert at its default while `enabled` is
+false (`validate`). The Director never reaches the structures keys (E24: no menu parameter, env field or policy key carries one,
+no director module names the section; `tests/test_structures_step.py`).
+
+### 38.9 What S1 leaves to S2 and S3
+
+Stream record `STRC`, `play.structures`, the `mat` dump kind and its cadence key, `Acts.ext.structures` and the `BUILDING` flag,
+the observers' drift (`labels`, `tracers`, `game.observe`), the inspector, the GUI (map layer, instanced cubes, levers,
+`GUI_LANDED`) and the world `mini3d + build` runs. The registry row declares `metric_prefix = build_`, `act_flag = BUILDING` and
+the overlay `build` but no dump kind, colour mode or stream tag yet (the registry test checks those against `streamrec`).
+
+### 38.10 Config
+
+`[structures]` (`StructuresConfig`): `enabled` false; `cap` 4096; `build_max` 16; `build_cost` 2; `decay_q12` 16; `shelter_gain`
+0.8; `barrier_gain` 3.0; `shield_gain` 0.5; `reach` 0.5; `open_frac` 0.5; `aperture` 0.25; `exit_ease` 0.75; `silent_build` false.
+All values are provisional until the first runs; the sweep axes are `build_cost` (1, 2, 4) and `decay_q12`. Reasons: `cap` 4096
+(12-bit headroom, levels fit a byte on the wire); `build_max` 16 and `decay_q12` 16 (one builder at full output holds a cell at
+93 %); `build_cost` 2 (32 q per step at full output, about 23 % of the basal and brain cost; a full cell from empty costs 8 192
+q, 16 % of `e_init`); `shelter_gain` 0.8 (a full cell cuts the felt air speed to 20 %, peak core wind 0.054 to 0.086 against
+`storm_u0` 0.06, never total); `barrier_gain` 3 (the R1 maximum); `shield_gain` 0.5 (halves theft damage); `open_frac` 0.5 and
+`aperture` 0.25 (the probe holds the invariant with the closed share up to about 0.65). Validation (with `enabled`): `cap` in
+[256, 32767] and `cap·n_cells < 2^31`; `build_max` in [1, 1024]; `build_cost` in [0, 2^15] with `build_cost·build_max < 2^20`;
+`decay_q12` in [1, 4096]; `shelter_gain`, `shield_gain`, `reach`, `exit_ease` in [0, 1]; `barrier_gain` in [0, 3]; `open_frac` in
+(0, 1]; `aperture` in [0, 1] with `k <= 8` (2D) or `17` (3D) and, when positive, a colourable `FG` (38.4b); `shield_gain = 1` needs
+`combat.protect_floor > 0`. `aperture = 0` with `barrier_gain > 0` validates but logs a warning: R2 is off, walls can enclose
+organisms (`TRAPPED` can be above 0; R1 still bounds the drag at 4x), so it is a control only. `alife bench
+--structures` times the step with the feature on against the same config with it off (blocks off, on, on, off).
+
+### 38.11 Tests
+
+`test_structures_ledger` (the ledger and the material identity every step for 1 500 steps in 2D and 3D, the cost in
+`HEAT_ACTION`, an insolvent builder), `test_structures_effects` (decay in 864 steps, steady-state levels, `decode_build`, the
+sensor, a deposit, shelter in the step in 2D and 3D, the barrier, the shield with `defend`), `test_structures_trapping` (the
+spec's six tests: by construction in 2D, 3D and in a storm, the adversarial property test over lattice sizes, `k`, `open_frac`
+and four deposit patterns, the numpy reference equal to the engine bit for bit, escape time from a sealed pocket within 10 % of
+the analytic bound and shortened by decay, the R1 bound, the R3 direction; E6, E8, E9), `test_structures_config` (ranges,
+hashes, layout 70/36 and 85/40, schema, fill and refusal, `silent_build`, the overlay), `test_structures_determinism` (twice,
+resume from a checkpoint, row-order independence, the functions compiled equal eager, the device range check),
+`test_structures_off`, `test_structures_crowding` (E7), `test_structures_compile` (E4: every constant, pairs that print alike),
+`test_structures_step` (the bench mirror in 2D, 3D and a storm, observer purity, the pair with arms, E24, the metrics row and
+E10, a CLI run). The whole step is not bit-equal compiled and eager from step 0 (the brain's reductions, 42.7), so compiled equals
+eager is asserted for the structures functions only. MLX 0.32 cannot compile a graph that builds one roll of one array twice, so
+`update_mat` and `sense` are each called once per step.
+
+### 38.12 Departures from the spec, and non-goals
+
+Counter and block placement, the `mask` and layout version (9 / 10), the `silent_build` key and the registry hooks follow the
+integration plan and 43; the lattice gather is one table instead of 4 to 6 gathers of N (cheaper); the cover and gradient are
+lattice operations, not per-agent gathers; crowding is an advisory counter and alert, not an error (E7, 38.7); the identity matrix
+takes the overlay list from the base tree (a feature overlay switches its feature on, so it has no counterpart in the base);
+`shield_gain = 1` needs `protect_floor > 0` (cf289b4); the registry row carries `enable=` (`alife migrate --enable structures`) and
+declares `mat` with `conserved=False` (the material holds no energy, so a forced removal cannot leak `TOTAL`); the observers'
+drift (`agent_drift(shelter=)`) is not wired from the labels, tracers and `game.observe` (38.9, S2: it must land before any
+labelled run with weather and structures both on). Non-goals: the Director does not act on structures; material
+does not move or hold energy; no directional lee; no gradient or lee sensor (one `material` input in v1, O5).
+
+### 38.13 Evidence (PR S1 and its review fixes, 2026-10-29)
+
+Identity matrix against a fresh `git archive` of e64be03, structures off, after merging the current `engine/arms` (PR 0a, 0b, the A1
+review fixes, cf289b4): "OK: bit-identical, 0 DIFF, 0 INFO" (the matrix takes the overlay list from the base tree). Fast suite
+(`-n 4 --dist loadfile`, `-p cpu_device`): 4,857 passed, 91 skipped, 1 xfailed, 3 failed: the baseline
+`test_lifecycle_compiles_and_matches_eager` (HANDOVER B1) and two stub-counter tests that this change's eleventh counter broke and the
+same change fixed (they pass: `test_ext_counters`, `test_ext_ledger`, `test_ext_registry`, 25 passed). Metal (one job): `test_game_purity`, the
+structures files, `test_ext_migrate` (with the structures case), `test_ext_counters`, `test_bench`: 286 passed and the known timing test
+`test_the_device_part_of_a_snapshot_is_evaluated_when_timed` once over its bound (passes on rerun, as in 43.10). Smoke on the GPU, `mini3d`,
+random founders, per-step identity and `full_check`: with `storm160 + build` 6,000 steps, population 4,096 to a minimum near 2,900 and back
+to 5,164, material total up to 1.20e6 units on 3,800 cells with up to 89 closed, 7.9 % of agent-steps slowed, 94,110 shielded attacks,
+`TRAPPED` and `APERTURE_VIOLATIONS` 0 at every step, `diag` 0; dry `mini3d + build` 5,000 steps alike (peak 1.14e6 units, 81 closed cells).
+The independent review's 4,000-step storm run had `cell_overflow` 0. `bench --structures` on 64k3d (GPU, another session's CPU job running
+in the first run): steady **+0.24 to +0.31 ms** on about 15.4 ms (1.6 to 2.3 %); the first block pair can be an outlier up to 1.0 ms. The
+spec's estimate was 0.15 to 0.4 ms (under 3 %).
+
 ## 42. Arms races (PR A1: heritable traits and the contest)
 
 Normative text for the arms layer of the five-feature series (spec `emergence/arms/spec.md`, owner decisions of
@@ -12966,6 +13208,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I64 | feat: light saves (the owner's request of 2026-10-24, new §34.11; review fixes (§34.11 *Review fixes*: the plain save is named before its compress, the check before the rename, the wait for a quit save, `adopt_newest_save`, level 15, the storage's count and confirmation, the analysis scripts' messages); Stage B2: `saves single`, the origin audit, the planet's exact link (§34.11); Stage B1: the compressed format, the one loader and the save path). `zstandard` dependency; `step_<t>.safetensors.zst` is the zstd frame of the exact safetensors bytes (level 15 after the review, `ZST_LEVEL`; long-distance matching; measured in `saves/levels.md`); old saves load unchanged; every reader goes through `runio` (`load_checkpoint`, `checkpoint_metadata`, `read_state_arrays`, `state_file_is_complete`); a play world saves compressed by default (`RunDir.compress`, not persisted), with a worker thread that never moves `LATEST` over an incomplete file; `tests/test_runio_light.py`. Trajectories unchanged (digest and metrics tests). The one-save mode, linking and the launcher are the later stages of the plan. Stage B3 (the Swift side): the three-way save choice in the Storage strip (short segments, the full names in the details), the shared-save line, the launcher hint under a played world's source (§34.11). Pending the owner's go to merge (games PR). Stage B2 (the owner's decisions: `saves single`, linked origin when exact): the save mode `single` (`CLCK.flags` bit 3, `play.json`, `--saves single`), the one-save prune over a whole save, the audit of the origin readers (every one refuses or degrades with a message), the planet's first save as a link to its source save only when the state is the source's byte for byte (`RunDir.origin_link`, `os.link` or copy); the fork's own transformation (ledger, diagnostics, levers) means a planet from a played world is written as before, which is an open owner decision. Tests: `tests/test_play_single.py`, the toggled-run arms of `tests/test_play_saves.py` (five arms, with `saves single`), `tests/test_runio_light.py`. Stage B4: §34.11 restated as the whole design (the owner's decisions, the data-safety rules, the measured levels, the open planet-link decision); GAMES §10 item 23; HANDOVER "Games light saves". Pending the owner's go to merge (games PR).
 | I65 | feat: the camera controls of the 3D World window (owner's play of 2026-10-24: a tool for another angle, standard angles on a toggle, and "the maximum angle is pretty limited"): the tilt goes to edge-on (`maxTilt` 90 degrees; A1's footprint clamp is removed) with the eye held over the clear box instead (`maxDistance` with the tilt: `d sin tilt <= 0.45 L`; the zoom is given back when the tilt is relaxed), and the far floor is hidden by a **horizon haze** (a function of the floor point's Chebyshev distance from the point looked at past `0.5 L`, `1 - exp(-x^2)`, 99.8% at L; a 3 L wide map mesh behind it, so no edge of the mesh is ever visible; a sky pass above the horizon, in the sea's colour scaled by the Brightness) instead of the clamp; standard views Top, Oblique (45), Low (70) and Side (edge-on at `H/2`) on `t o l s`, a strip over the map and View > View angle, each an animated ease; a control column at the right edge (readout "Tilt 45 deg . heading 270 deg", the strip, the compass as a dial, the 3D button, the tilt handle, zoom); the floor is not read beyond 0.65 L or above the horizon (readout, territory pick, power aim, dive, grab); the minimap's footprint is clipped to the clear box; storm rings flatten; client only (`WorldU` 160 bytes), no engine, stream or config change. Review fixes: the point looked at is lifted to the middle of the height toward edge-on (`WorldPose.lift`), the zoom is given back at the end of an ease (`ViewEase.endWish`, `sideReturn`), `n` and the compass click end an ease, the frame is faded by the haze, the needle and the dial's dead zone, the readout plate takes the press, the strip before the handle in the column, height guides at edge-on, the storm pick is the ellipse. Number provisional: the coordinator assigns the final one. Details, tests and deviations: §36.5 "Camera controls". |
 | I66 | feat: the globe overview and the morph (PR B of World viewer v2, §36.10; owner 2026-10-23 "Globe overview, flat close-up", 2026-10-24 "is there a toggle I am missing to get a spherical view?"): step 5, the pure parts (`GlobeMap`, `Morph` with the roll and its schedule and the crossfade fallback, `FlightPath` on the great circle) and the morph gate (a pure rasterisation of the mesh through the vertex shader's mirror: the roll meets the three criteria of the spec's 7.1 except the 98%-to-60% length at 67 degrees, 1.10 wheel lines against 1.2; mode stays `.roll`); step 6, `WorldVantage` (the view at every zoom: projection, the two-start Newton pick, the regime-solved grab and zoom, the camera controls on the globe; the model's `globeEnabled` switch) with the gate of the blended band measured (exact to 39 degrees, p95 9.5 px at 79 to 84 degrees); step 7, the renderer (the mesh pipeline and `GlobeUniforms`, the depth, cull and depth-reset state, the sky, the caps, the morph in the agent shaders, the continuous layers, the haze as a function of `s`) behind View > Globe overview (`world.globe`); steps 8 and 9: the minimap's footprint at the globe (the visible cap, dimmed outside), the hemisphere, EQUATOR and seam labels with the declutter rule, the pin, the organism glow (`GlowHistogram`), the inertia of a flick, Keep north up, the idle spin and reduced motion (`GlobeMotion`), Home is the globe overview (`world.globe` on until the player chooses), the 0.15 L region fly-to (D7), the bench scenarios and the sheet of renders (`docs/DESIGN.md` 36.10). Client only: no engine, stream or config change |
+| I67 | feat: built structures, PR S1 of the five-feature series (the engine; owner decision "B" of 2026-10-28, O1 to O9 accepted, A1 `exit_ease` accepted, no R4; new §38): the int32 grid `State.mat` on the food lattice (a conditional field), the brain output `build` and input `material` (registry row `ext/structures.py`, `alife.structures`), a deposit costing `build_cost` q per unit in `HEAT_ACTION` through `extra_due` (**no 17th ledger term**; the material holds no energy), exact integer decay `ceil(m·decay_q12/4096)` with a floor of 1 and its own exact identity `Σmat' = Σmat + BUILD_UNITS - MAT_WASTED - MAT_DECAYED`, the three effects read from the start-of-step material through one table gather (`fields.mat_table`): shelter (`weather.shelter_wind`, `agent_drift(shelter=)`), barrier (`physics.barrier_drag`, `drag_mult=`) and the predator shield (`combat(shelter=shield_gain·cover)`, inside the 43.6 protection product), the anti-trapping rules R1 (drag at most 4x), R2 (aperture invariant by construction with colour phases) and R3 (easy exit by the actual push, E6), eleven counters, advisory hash-overflow reporting (`HASH_HIDDEN`, `build_hash_hidden`, an `alert:` line; E7, not an error), E4 to E10 tests, `bench --structures`, the metrics keys `build_*`, the overlay `build`; **absent**: the stream record, dump, observers' drift, `BUILDING` flag, GUI (S2, S3), the first runs and the fork (S4, PR 0b); off by default, feature-off runs bit-identical (identity matrix), no hash changes | Departures: one table gather instead of 4 to 6 gathers of N; `genome_layout_version` is 9 / 10 (arms occupies mask bit 0); `silent_build` added (the O6 control); review fixes (the independent review of S1): merged the current `engine/arms` (PR 0a and 0b, cf289b4); `enable=` and `conserved=False` on the row with a migration case in `tests/test_ext_migrate.py`; hash overflow is advisory, not fatal; `shield_gain = 1` needs `protect_floor > 0`; the identity matrix takes the overlay list from the base tree; `aperture = 0` with a barrier warns (control only); the observers' drift is not wired (S2). Tests: `test_structures_{ledger,effects,trapping,config,determinism,off,crowding,compile,step}`; `test_ext_*`, `test_weather_config`, `test_state`, `test_cli_smoke` updated for the new row, overlay, error bit and bench flag. |
 | I71 | feat: arms races, PR A1 of the five-feature series (stages 1 and 2 of the arms spec; owner approval of 2026-10-28; new §42): the heritable traits `ATK`, `ARM`, `KEY`, `LOCK` (and the held-at-0 `TOX`, `SIG` columns) as the conditional state field `arms (N, 6)`, the Tullock contest with the key/lock match as the first factor of the protection product of `energy.combat` (`arms.contest_factor`; `kappa`, `a0`, `key_floor`), the quadratic upkeep added to `brain_cost` at S8 with **dithered** rounding (E13: the cost is exact on average, a sub-unit trait is not free; `HEAT_BASAL`, no 17th ledger term), the armour speed cost (`arms.physics_act`), fixed-sigma mutation at birth with phases wrapped every time (E12, the 1.0-rounding of `c - floor(c)` mapped to 0), `Stream.ARMS` = 10 / `InitStream.ARMS` = 8 and `rng.layout_version` 4 with arms on (an off run still writes 3), the epsilon in the Tullock denominator (E11), invariants (`arms` finite and in [0, 1] on device, phases below 1 on the host), `bench --arms`, `_c_ref` with the founders' upkeep; the registry row `ext/arms.py` (the first real row) and `combat(arms=)` no longer raises; **absent**: toxin and display factors and keys (A3), observers (A2), pierce and duels (A4), perception (A5), colour modes and GUI levers; off by default, no shipped preset enables it, feature-off runs bit-identical to main (identity matrix) and the config hash unchanged | Departures: column order is the integration plan's (ATK, ARM, TOX, SIG, KEY, LOCK), not the spec's; founders' keys and locks come from the init stream by row (`FieldSpec.rest` has no `uid`); the whole step is not bit-equal compiled and eager with or without arms (the brain's reductions, as on e64be03), so compiled equals eager is asserted for the arms functions only. Tests: `test_arms`, `test_arms_state`, `test_arms_step` (incl. the broken-path mutation tests), `test_arms_compile` (E4), `test_arms_director` (E24); `test_ext_*` updated for the first registered row. |
 | I72 | feat: the feature extension mechanism, PR 0a of the five-feature series (arms, structures, bonds, communication, farming; owner approval of 2026-10-28; new §43, which holds the plan's normative content), **no behaviour change** and the registry empty: `src/alife/ext/` (`ExtSpec`, `REGISTRY`, the layout composition `layout.for_dims(nd, blocks)` with `Layout.__getattr__` for `IN_*`/`OUT_*`, `genome_layout_version(nd, mask) = base + 4*mask`, the `layout_features` meta key absent when empty); conditional state fields (`state_cls`, `is_3d_state`, fill-on-load, refusal of an extra field); counter blocks (`n_counters(nd, weather, blocks)`, `counter_blocks`, `counter_index`, `PROT_CAPPED`); `Acts.flags` uint16 and the `ActFlag` bits `128 << i`, `Acts.ext`/`_Flows.ext`; `extra_due` in `pay_costs(3)`; `rng.layout_version(cfg)` and `ops.hash32`; the single `combat` signature with `energy.protection` and `combat.protect_floor` (default 0, `[0, 0.5]`, `POST_V01_KEYS`, left out of `config.json` and the checkpoint metadata at its default: `config_to_dict(omit_defaults=True)`, `SERIAL_OMIT_KEYS`); silent tail blocks in `brain.init_weights`; observer registries; `tests/ext_stub.py` and seven `test_ext_*` files; `tests/identity_matrix.py` (15 trajectory cases, 3 runner cases, config and layout, tiny3d `1fe07a9f`/`556de6c6`, against a fresh `git archive` of e64be03: bit-identical, no INFO line). Departures from the specs are in §43.10.  Review fixes: the hooks `inputs(s, cfg, ctx)`, `decode`, `mask`, `due(s, act, y, cfg)` and `_Flows.ext`, `FieldSpec.on_birth`, `Dims.ext(name)`, the wiring tests (`test_ext_hooks.py`). PR 0b (the layout migration) follows. **PR 0b (stacked on PR 0a):** the layout migration tool of §43.8: `alife migrate RUN[:STEP] --enable F --out NEWRUN`, `migrate.migrate_checkpoint`, `state.migrate_layout`/`layout_change`/`MigrationError`, `ExtSpec.enable` (a hook, default None); zero rows/columns for new blocks, order-independent (E2), removal and width change refused (removal only with `--force-removal`; leave-one-out arms are fresh runs, E23), compressed sources give compressed outputs, provenance `migrated_from` in `meta.json`; `tests/test_ext_migrate.py`. No behaviour change for existing runs (the identity matrix is unchanged) |
 | I73 | feat: the emergence measurement suite (new §44; E1 statistics, panel skeleton, scorecard interface, trait registry, CLI shell, prereg hash; E2 window recorder and frame format). Host-side, observer-only, numpy; **no simulation change** (no step, state, checkpoint, RNG, config key, default or `POST_V01_KEYS` entry, no golden re-pin; the engine files are untouched). Recorder: replay from a save with the engine's step, certified against the run (every metrics row and the state digest at every save passed; T1 must be a save, E21), refuses a run without the start save (E22; measurement runs use saves `all`), frames outside the run; traits stored as float32 (age and energy exceed float16). Comparison: paired block intervals, `w2.classify` over seeds with the seed-twin floor, Stouffer, Holm per feature and series, BH context, prereg hash that `compare` enforces; leave-one-out arms are fresh runs from the shared evolved sources (E23). Blocks A, B, C (open-endedness, irreversibility, braids) and the scorecard adapters land in E3 to E6. Tests: `tests/test_emergence_*.py`. Pending the owner's go to merge. |

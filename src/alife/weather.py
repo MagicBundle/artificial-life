@@ -1427,15 +1427,38 @@ def agent_wind(
     return AgentForce(force, speed, breaks, (aw.n_clip_h + aw.n_clip_w) > 0)
 
 
+def shelter_wind(wind: AgentForce, k: mx.array, cfg: Config) -> AgentForce:
+    """The wind the built material lets through (DESIGN §38.4.1): force, speed and break scaled by ``k``.
+
+    ``k = 1 - shelter_gain·cover`` ((N,) f32 in ``[1 - shelter_gain, 1]``) multiplies the force and the
+    hazard speed; ``breaks`` is recomputed from the scaled speed (None stays None) and ``clip_bad`` is
+    unchanged. The hazard probability is a function of that speed (``lifecycle.storm_mask``), so a
+    sheltered row dies less with no change in the number of draws. The weather itself is untouched.
+    """
+    speed = wind.speed * k
+    breaks = None if wind.breaks is None else speed > cfg.weather.storm_break_u
+    return AgentForce(wind.force * k[:, None], speed, breaks, wind.clip_bad)
+
+
 def agent_drift(
-    wx: mx.array, pos: mx.array, buoy_cap: mx.array | None, alive: mx.array, cfg: Config
+    wx: mx.array,
+    pos: mx.array,
+    buoy_cap: mx.array | None,
+    alive: mx.array,
+    cfg: Config,
+    shelter: mx.array | None = None,
 ) -> mx.array:
     """The velocity the wind alone would give a free agent, ``(N, nd)`` float32: ``agent_wind(...).force /
     drag`` (``alpha·u_air``; under ``wind_eddy_force`` the eddy wind, under ``wind_scale`` scaled, as the
     engine applies it). For the observers (DESIGN §32): the labels' velocity is ``vel - drift``. ``wx`` is
     the stored (packed) weather and ``pos`` the positions it is sampled at; the observer calls it on the
-    post-step state in its own compiled fold, so the step graph is untouched."""
-    return agent_wind(unpack(wx), pos, buoy_cap, alive, cfg).force / cfg.physics.drag
+    post-step state in its own compiled fold, so the step graph is untouched. ``shelter`` ((N,) f32, the
+    ``k`` of ``shelter_wind``, ``structures.shelter_k`` of the built material at ``pos``) scales the drift
+    as the engine scales the force; None is the structures-off graph."""
+    force = agent_wind(unpack(wx), pos, buoy_cap, alive, cfg).force
+    if shelter is not None:  # static: structures on
+        force = force * shelter[:, None]
+    return force / cfg.physics.drag
 
 
 def air_speeds(

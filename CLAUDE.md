@@ -45,6 +45,9 @@ presentation and must leave a plain run's digest unchanged (`tests/test_play_pur
 The stream's labels are `INTENT_VERSION` 3's (ten archetypes, the storm names) and carry N1's held-out verdict gate: a label is shown as valid only
 with a `LABEL_VERDICTS` row for the world and rule set (none for V2 or V3 yet) and the environment at its defaults (`DESIGN.md` §33.7).
 
+Built structures (`DESIGN.md` §38, I67; `State.mat`, the `build` output, shelter, barrier, predator shield and the anti-trapping
+rules R1 to R3): the engine (S1) is implemented behind `structures.enabled` (`--overlay build`); observers, stream and GUI are S2 and S3.
+
 ## Conventions
 
 - Change DESIGN.md in the same change as any behaviour, signature or default it pins, and add a Review-log row.

@@ -330,6 +330,28 @@ class ArmsConfig:  # the arms-race layer: heritable attack, armour, key and lock
 
 
 @dataclass(frozen=True)
+class StructuresConfig:  # built structures: material, shelter, barrier, predator shield (DESIGN §38)
+    """Every key changes the compiled step, so every key is hashed (``POST_V01_KEYS`` through
+    ``ext.structures.SPEC.lever_keys``) and is inert at its default while ``enabled`` is false (``validate``).
+    The defaults are the working set of the spec (all provisional until the first runs); ``enabled`` is the
+    one switch that adds the grid ``State.mat``, the brain input ``material`` and the output ``build``."""
+
+    enabled: bool = False  # static: the grid, the sensor, the build action and the three effects exist
+    cap: int = 4096  # material units a cell can hold, [256, 32767] (levels fit a byte on the wire)
+    build_max: int = 16  # units deposited per step at build output 1, [1, 1024]
+    build_cost: int = 2  # quanta per unit built (HEAT_ACTION); 0 = free building
+    decay_q12: int = 16  # exponential decay per step in 1/4096 (ceil, so a floor of 1 unit/step), [1, 4096]
+    shelter_gain: float = 0.8  # wind force and air speed multiplied by 1 - gain*cover, [0, 1]
+    barrier_gain: float = 3.0  # drag multiplied by 1 + gain*here, [0, 3] (R1: at most a 4x slowdown)
+    shield_gain: float = 0.5  # the victim's predation demand multiplied by 1 - gain*cover, [0, 1]
+    reach: float = 0.5  # face neighbours count at this weight in cover, [0, 1]
+    open_frac: float = 0.5  # a cell is OPEN below open_frac*cap (the threshold of R2), (0, 1]
+    aperture: float = 0.25  # R2: every cell keeps ceil(aperture*n_nbr) open neighbours; 0 switches R2 off
+    exit_ease: float = 0.75  # R3: leaving a wall costs (1 - exit_ease) of the entering drag, [0, 1]
+    silent_build: bool = False  # start-of-run: zero the W2 column of build (no founder builds; the control)
+
+
+@dataclass(frozen=True)
 class Config:
     world: WorldConfig = field(default_factory=WorldConfig)
     population: PopulationConfig = field(default_factory=PopulationConfig)
@@ -346,6 +368,7 @@ class Config:
     game: GameConfig = field(default_factory=GameConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     arms: ArmsConfig = field(default_factory=ArmsConfig)
+    structures: StructuresConfig = field(default_factory=StructuresConfig)
     run: RunConfig = field(default_factory=RunConfig)
 
 

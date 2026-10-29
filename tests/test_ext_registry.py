@@ -17,9 +17,9 @@ from alife.step import ActFlag
 
 
 def test_with_every_feature_off_every_function_is_the_identity() -> None:
-    """PR 0a shipped the machinery with an empty registry; A1 registers the arms row. With every feature off
-    (the default), nothing a feature-off run sees can change."""
-    assert [s.name for s in ext.REGISTRY] == ["arms"]
+    """PR 0a shipped the machinery with an empty registry; A1 registers the arms row and S1 the structures
+    row. With every feature off (the default), nothing a feature-off run sees can change."""
+    assert [s.name for s in ext.REGISTRY] == ["arms", "structures"]
     cfg = load_config(preset="tiny")
     assert ext.active(cfg) == () and ext.layout_features(cfg) == "" and ext.mask(cfg) == 0
     assert (
@@ -27,10 +27,13 @@ def test_with_every_feature_off_every_function_is_the_identity() -> None:
         and ext.state_fields(cfg, 2) == ()
         and ext.step_inputs(None, cfg) == ()
     )
-    assert ext.sum_due([None, None]) is None and ext.registered_block_names() == frozenset()
-    assert config.POST_V01_KEYS[-len(config.FEATURE_KEYS["arms"]) - 1] == ("combat", "protect_floor")
-    assert set(config.FEATURE_KEYS) == {"arms"} and config.POST_V01_KEYS[-1] == ("arms", "sigma_phase")
-    assert config.WORLD_OVERLAYS == ("storm", "storm160")
+    assert ext.sum_due([None, None]) is None
+    assert ext.registered_block_names() == frozenset({"MATERIAL", "BUILD"})
+    n_feature_keys = sum(len(v) for v in config.FEATURE_KEYS.values())
+    assert config.POST_V01_KEYS[-n_feature_keys - 1] == ("combat", "protect_floor")
+    assert set(config.FEATURE_KEYS) == {"arms", "structures"}
+    assert config.POST_V01_KEYS[-1] == ("structures", "silent_build")
+    assert config.WORLD_OVERLAYS == ("storm", "storm160", "build")
     assert ext.check_registry() == []
 
 

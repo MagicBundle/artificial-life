@@ -18,6 +18,7 @@ from alife import brain, cli, ext, migrate, runio
 from alife.config import dims, load_config
 from alife.runio import CheckpointError, RunDir, checkpoint_metadata, load_checkpoint, write_state_file
 from alife.state import (
+    LedgerIdx,
     MigrationError,
     init_state,
     layout_change,
@@ -635,3 +636,55 @@ def test_m3_a_removed_field_with_conserved_quanta_must_be_at_rest(monkeypatch: p
     arr = {**_arrays(plain_on)}
     arr["mat"] = arr["mat"] + 5
     assert "mat" not in _migrate(arr, plain_on, _cfg(2), allow_removal=True)
+
+
+# --- built structures on an evolved world (DESIGN §38, §43.8) ---------------------------------------------
+
+
+@pytest.mark.parametrize("preset", ["tiny", "tiny3d"])
+def test_migrating_an_evolved_world_onto_structures(preset: str, tmp_path: Path, capsys, monkeypatch) -> None:
+    """The real registry (not the stub): an evolved world gets zero ``material`` rows and a zero ``build``
+    column, ``mat`` starts at 0, nobody builds until mutation finds it, and the energy ledger and the material
+    identity close after the migration."""
+    monkeypatch.undo()  # drop the autouse stub registry
+    dims.cache_clear()
+    from alife.state import counter_index
+
+    cfg = load_config(preset=preset, overrides=F32)
+    fn, s = make_step(cfg), init_state(cfg)
+    for _ in range(40):  # births, deaths and attacks have happened
+        s, _ = fn(s)
+    mx.eval(s)
+    rd = RunDir.create(tmp_path / "src", cfg)
+    rd.save_checkpoint(s, cfg)
+    rd.wait_saves()
+    out = tmp_path / "out"
+    code = cli.main(["migrate", str(rd.path), "--enable", "structures", "--out", str(out), "--quiet"])
+    assert code == 0, capsys.readouterr().err
+    run = RunDir.open(out)
+    cfg2, meta = run.config(), run.meta()
+    d = dims(cfg2)
+    assert cfg2.structures.enabled and meta["layout_features"] == "structures@1"
+    assert meta["migrated_from"]["added"] == ["structures"]
+    s2 = load_checkpoint(run.checkpoints()[-1][1], cfg2)
+    alive = np.array(s2.alive)
+    assert not np.array(s2.mat).any()  # the material starts empty
+    assert not np.array(s2.W1)[alive][:, d.lay.IN_MATERIAL].any()  # zero new row
+    assert not np.array(s2.W2)[alive][:, :, d.lay.OUT_BUILD].any()  # zero new column
+    fn2, first, prev_total = make_step(cfg2), None, 0
+    names = ("BUILD_UNITS", "MAT_WASTED", "MAT_DECAYED", "MAT_TOTAL")
+    for _ in range(40):
+        s2, o2 = fn2(s2)
+        mx.eval(s2, o2)
+        c = to_numpy(o2.counters)
+        b, w, dcy, tot = (int(c[counter_index(cfg2, n)]) for n in names)
+        assert tot == prev_total + b - w - dcy
+        prev_total, first = tot, b if first is None else first
+        led = to_numpy(o2.ledger)
+        assert led[LedgerIdx.FLOW_STOLEN] == led[LedgerIdx.FLOW_ATTACK_GAIN] + led[LedgerIdx.FLOW_SPILL]
+    assert int(to_numpy(s2.diag)) & 0xFFFF == 0
+    assert first == 0  # zero build weights: nobody builds at the first step (mutation at births may wake it)
+    from alife.ext import REGISTRY
+
+    spec = next(sp for sp in REGISTRY if sp.name == "structures")
+    assert all(not f.conserved for f in spec.state_fields(cfg2, d.nd))  # the material holds no energy

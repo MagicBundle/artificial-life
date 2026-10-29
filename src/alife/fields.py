@@ -9,6 +9,7 @@ import math
 from typing import TYPE_CHECKING, NamedTuple
 
 import mlx.core as mx
+import numpy as np
 
 from alife import layout, ops, weather
 from alife.config import Config, dims, seasons_on
@@ -340,3 +341,182 @@ def drift_patches(patch_pos: mx.array, patch_vel: mx.array, cfg: Config, env: En
     if env is not None:  # static: director enabled
         patch_vel = patch_vel * env.drift_mult
     return ops.wrap(patch_pos + patch_vel, cfg.world.size)
+
+
+# --- built material (DESIGN section 38): the grid State.mat on the food lattice ------------------------
+
+_BIG: int = 1 << 30  # the "missing neighbour" value of a min pass (never the minimum)
+
+
+def mat_phases(fg: int, nd: int) -> tuple[int, int]:
+    """``(px, n_phase)`` of the R2 colouring (§38.4b).
+
+    ``px`` is the smallest divisor of ``FG`` that is at least 3, so the colour ``cx mod px`` is
+    consistent across the periodic wrap; ``n_phase`` is ``px²`` in 2D and ``3·px²`` in 3D (z is never
+    wrapped and cycles through 3). Raises ``ValueError`` when ``FG`` is below 4 or prime (no short
+    colouring cycle); ``validate`` reports it as a config error.
+    """
+    if fg < 4 or all(fg % q for q in range(2, math.isqrt(fg) + 1)):
+        raise ValueError(f"the field lattice side FG = {fg} is below 4 or prime: no R2 colouring")
+    px = next(p for p in range(3, fg + 1) if fg % p == 0)
+    return px, px * px * (3 if nd == 3 else 1)
+
+
+def mat_colour(cfg: Config) -> mx.array:
+    """The R2 colour of every cell, ``field_shape`` int32.
+
+    ``cx mod px + px·(cy mod px) + px²·(cz mod 3)`` (no z term in 2D); a constant of the trace, built on
+    the host from the config.
+    """
+    d = dims(cfg)
+    px, _ = mat_phases(d.fg, d.nd)
+    c = np.indices(d.field_shape)
+    code = c[-1] % px + px * (c[-2] % px)
+    if d.d3:
+        code = code + px * px * (c[0] % 3)
+    return mx.array(code.astype(np.int32))
+
+
+def mat_thr(cfg: Config) -> int:
+    """The closed threshold in units: a cell is OPEN iff ``m < ceil(open_frac·cap)`` (exact for ints)."""
+    return math.ceil(cfg.structures.open_frac * cfg.structures.cap)
+
+
+def mat_k(cfg: Config) -> int:
+    """R2's required open neighbours ``ceil(aperture·n_nbr)`` (8 or 26); 0 when ``aperture`` is 0.
+
+    A 1e-9 guard keeps a product that is exact in decimal (0.25 · 8) from rounding up.
+    """
+    sc = cfg.structures
+    if sc.aperture <= 0:
+        return 0
+    return math.ceil(sc.aperture * (26 if dims(cfg).d3 else 8) - 1e-9)
+
+
+def _face_neighbours(a: mx.array, d3: bool) -> tuple[mx.array, ...]:
+    """``(x+1, x-1, y+1, y-1[, z+1, z-1])`` of a lattice, each built exactly once per array.
+
+    MLX 0.32 fails to compile a graph that builds one roll of one array twice (``weather``). x and y
+    are periodic; z is mirrored (the boundary layer is its own outer neighbour, as ``_nbr_cells_3d``).
+    """
+    ax_y, ax_x = (1, 2) if d3 else (0, 1)
+    out = [
+        mx.roll(a, -1, axis=ax_x),
+        mx.roll(a, 1, axis=ax_x),
+        mx.roll(a, -1, axis=ax_y),
+        mx.roll(a, 1, axis=ax_y),
+    ]
+    if d3:
+        out += [mx.concatenate([a[1:], a[-1:]], axis=0), mx.concatenate([a[:1], a[:-1]], axis=0)]
+    return tuple(out)
+
+
+def mat_columns(cfg: Config) -> tuple[str, ...]:
+    """The static column set of ``mat_table``: ``here`` always; ``cover`` and ``grad`` when used."""
+    sc = cfg.structures
+    cols = ["here"]
+    if sc.reach > 0 and (sc.shield_gain > 0 or (sc.shelter_gain > 0 and cfg.weather.enabled)):
+        cols.append("cover")
+    if sc.barrier_gain > 0 and sc.exit_ease > 0:
+        cols.append("grad")
+    return tuple(cols)
+
+
+def mat_table(m: mx.array, cfg: Config) -> mx.array:
+    """The per-cell table the agents gather once, ``(n_cells, C)`` f32 (§38.4).
+
+    Columns (``mat_columns``): ``here = m/cap``; ``cover = max(m, reach·max over the face
+    neighbours)/cap`` (with ``reach = 0`` it is ``here`` and is not built); the central-difference
+    gradient of ``m/cap``, ``nd`` columns with divisor 2 as ``sample_fields`` (only with a positive
+    ``barrier_gain`` and ``exit_ease``).
+    """
+    sc, d = cfg.structures, dims(cfg)
+    cols = mat_columns(cfg)
+    inv = 1.0 / sc.cap
+
+    def flat(a: mx.array) -> mx.array:
+        return a.astype(mx.float32).reshape(-1)
+
+    out = [flat(m) * inv]
+    if "cover" in cols or "grad" in cols:
+        xp, xm, yp, ym, *z = _face_neighbours(m, d.d3)
+    if "cover" in cols:
+        nmax = mx.maximum(mx.maximum(xp, xm), mx.maximum(yp, ym))
+        for a in z:
+            nmax = mx.maximum(nmax, a)
+        out.append(mx.maximum(flat(m), sc.reach * flat(nmax)) * inv)
+    if "grad" in cols:
+        half = 0.5 * inv
+        out += [flat(xp - xm) * half, flat(yp - ym) * half]
+        if d.d3:
+            out.append(flat(z[0] - z[1]) * half)
+    return mx.stack(out, axis=1)
+
+
+def _box_sum(a: mx.array, d3: bool) -> mx.array:
+    """Sum over the 3x3(x3) box including the centre of an int32 lattice (missing z layer counts 0).
+
+    Separable: one pass per axis, each on a fresh array.
+    """
+    ax_y, ax_x = (1, 2) if d3 else (0, 1)
+    for ax in (ax_x, ax_y):
+        a = a + mx.roll(a, 1, axis=ax) + mx.roll(a, -1, axis=ax)
+    if d3:
+        zero = mx.zeros_like(a[:1])
+        a = a + mx.concatenate([zero, a[:-1]], axis=0) + mx.concatenate([a[1:], zero], axis=0)
+    return a
+
+
+def _box_min(a: mx.array, d3: bool) -> mx.array:
+    """Minimum over the 3x3(x3) box including the centre; a missing z layer counts as ``_BIG``."""
+    ax_y, ax_x = (1, 2) if d3 else (0, 1)
+    for ax in (ax_x, ax_y):
+        a = mx.minimum(a, mx.minimum(mx.roll(a, 1, axis=ax), mx.roll(a, -1, axis=ax)))
+    if d3:
+        big = mx.full(a[:1].shape, _BIG, dtype=a.dtype)
+        above = mx.concatenate([a[1:], big], axis=0)
+        below = mx.concatenate([big, a[:-1]], axis=0)
+        a = mx.minimum(a, mx.minimum(below, above))
+    return a
+
+
+def mat_nopen(m: mx.array, cfg: Config) -> mx.array:
+    """``nopen[c]``: the OPEN cells (``m < thr``) among the neighbours of ``c`` (centre excluded), int32.
+
+    The full neighbourhood has 8 cells (26 in 3D; a floor or surface cell has 17); only cells that
+    exist are counted.
+    """
+    op = (m < mat_thr(cfg)).astype(mx.int32)
+    return _box_sum(op, dims(cfg).d3) - op
+
+
+class MatUpdate(NamedTuple):
+    mat: mx.array  # field_shape int32: the new material
+    wasted: mx.array  # () int32: units lost to the cap and to refused closings (sum of pre - m1)
+    decayed: mx.array  # () int32: units lost to decay (sum of loss)
+    nopen: mx.array  # field_shape int32: the open-neighbour counts of the START-of-step material
+
+
+def update_mat(m: mx.array, dep: mx.array, step: mx.array, cfg: Config) -> MatUpdate:
+    """Deposit, cap, gate (R2), decay: the material of the next step (§38.2 to §38.4b).
+
+    ``pre = m + dep`` and ``m1 = min(pre, cap)``. With ``aperture > 0`` a cell that would turn from
+    OPEN to CLOSED (``m < thr <= m1``) may do so only when it is active in this step's colour phase
+    and every cell of its box has at least ``k + 1`` open neighbours (``box_min(nopen) >= k + 1``);
+    otherwise it stays at ``thr - 1``. Then ``loss = (m1·decay_q12 + 4095) >> 12`` and
+    ``m' = m1 - loss``, all exact integers. ``wasted = Σ(pre - m1)`` and ``decayed = Σ loss`` give
+    the identity ``Σm' = Σm + Σdep - wasted - decayed``.
+    """
+    sc, d = cfg.structures, dims(cfg)
+    thr, k = mat_thr(cfg), mat_k(cfg)
+    nopen = mat_nopen(m, cfg)
+    pre = m + dep
+    m1 = mx.minimum(pre, sc.cap)
+    if k > 0:  # static: R2 (§38.4b)
+        _, n_phase = mat_phases(d.fg, d.nd)
+        slack = _box_min(nopen, d.d3) >= k + 1
+        active = mat_colour(cfg) == (step % n_phase)
+        want_close = (m < thr) & (m1 >= thr)
+        m1 = mx.where(want_close & ~(active & slack), thr - 1, m1)
+    loss = (m1 * sc.decay_q12 + 4095) >> 12
+    return MatUpdate(m1 - loss, (pre - m1).sum(), loss.sum(), nopen)

@@ -6,7 +6,7 @@ from typing import NamedTuple
 
 import mlx.core as mx
 
-from alife import layout
+from alife import layout, ops
 from alife.config import Config, dims
 from alife.spatial import Neighbors
 
@@ -124,6 +124,26 @@ def decode_motion3(y: mx.array, alive: mx.array, cfg: Config) -> Motion3:
         buoy=mx.maximum(mx.tanh(y[:, d.lay.OUT_BUOYANCY]), 0.0),
     )
     return mask(mo, alive)
+
+
+class Build(NamedTuple):
+    """The decoded build output of a structures world (DESIGN §38.2)."""
+
+    units: mx.array  # (N,) int32 in [0, build_max]: material units to deposit this step
+
+
+def decode_build(y: mx.array, alive: mx.array, cfg: Config) -> Build:
+    """``units = floor(build_max·max(tanh(y[OUT_BUILD]), 0))``, 0 on dead rows (§38.2).
+
+    Like EMIT and SHARE the ``max`` makes an exact zero reachable. ``tanh`` reaches 1.0 in float32, so the
+    units never exceed ``build_max``. The solvency mask (``structures.mask``) zeroes the units of an
+    insolvent row; its cost is still due (it pays what it holds and dies at S14).
+    """
+    col = dims(cfg).lay.OUT_BUILD
+    assert col is not None, "decode_build needs structures.enabled"  # static
+    b = mx.maximum(mx.tanh(y[:, col].astype(_F32)), 0.0)
+    units = ops.floor_i32(b * cfg.structures.build_max)
+    return Build(mx.where(alive, units, 0))
 
 
 def _select(

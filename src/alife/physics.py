@@ -55,16 +55,20 @@ def integrate(
     turn: mx.array,
     survivor: mx.array,
     cfg: Config,
+    drag_mult: mx.array | None = None,
 ) -> tuple[mx.array, mx.array, mx.array, mx.array]:
     """Explicit overdamped step for survivors: ``(pos, vel, heading, n_clipped () int32)`` (§9).
 
     ``v = F/γ`` with ``γ = drag·(1 + grip_gain·grip)``, clipped to ``‖v‖ ≤ v_max`` (each clip counted);
     ``pos ← wrap(pos + v)``, ``heading ← wrap_angle(heading + turn)``. Non-survivors keep ``pos`` and
-    ``heading`` and get ``vel = 0``.
+    ``heading`` and get ``vel = 0``. ``drag_mult`` ((N,) f32 ≥ 1, the built material's barrier, §38.4.2)
+    multiplies ``γ``; None (structures off, static) traces today's graph.
     """
     assert pos.shape[-1] == 2, "integrate got 3D positions (integrate3)"  # static: z would be wrapped
     ph = cfg.physics
     gamma = ph.drag * (1.0 + ph.grip_gain * grip)
+    if drag_mult is not None:  # static: structures on
+        gamma = gamma * drag_mult
     v = force / gamma[:, None]
     speed = mx.sqrt((v * v).sum(axis=-1))
     clip = survivor & (speed > ph.v_max)
@@ -147,6 +151,7 @@ def integrate3(
     on_floor: mx.array,
     survivor: mx.array,
     cfg: Config,
+    drag_mult: mx.array | None = None,
 ) -> Integrated3:
     """Explicit overdamped 3D step for survivors (§27.3).
 
@@ -155,11 +160,17 @@ def integrate3(
     ``v_max`` as in 2D. ``pos ← wrap_xy_clamp_z(pos + v)``: an agent that would cross the floor or the
     surface moves to it, and its stored ``v_z`` is zeroed (only on those rows; each clamp counted). Yaw as in
     2D; ``pitch ← clip(pitch + dpitch, ±PITCH_MAX)``. Non-survivors keep ``pos``, ``heading`` and ``pitch``
-    and get ``vel = 0``.
+    and get ``vel = 0``. ``drag_mult`` ((N,) f32 ≥ 1, the built material's barrier, §38.4.2) multiplies
+    both ``γ_xy`` and ``γ_z`` (a dense medium also slows sinking; grip stays floor-only); None traces
+    today's graph.
     """
     ph, d = cfg.physics, dims(cfg)
     gamma_xy = ph.drag * (1.0 + ph.grip_gain * mx.where(on_floor, grip, 0.0))
-    v = mx.concatenate([force[:, :2] / gamma_xy[:, None], force[:, 2:] / ph.drag], axis=1)
+    gamma_z = ph.drag
+    if drag_mult is not None:  # static: structures on
+        gamma_xy = gamma_xy * drag_mult
+        gamma_z = (ph.drag * drag_mult)[:, None]
+    v = mx.concatenate([force[:, :2] / gamma_xy[:, None], force[:, 2:] / gamma_z], axis=1)
     speed = mx.sqrt((v * v).sum(axis=-1))
     clip = survivor & (speed > ph.v_max)
     v = mx.where(clip[:, None], v * (ph.v_max / mx.maximum(speed, ph.v_max))[:, None], v)
@@ -181,3 +192,34 @@ def integrate3(
         z_floor=at_floor.sum().astype(mx.int32),
         z_surface=at_surface.sum().astype(mx.int32),
     )
+
+
+# --- the barrier of built material (DESIGN §38.4.2, R1 and R3 of §38.4b) -----------------------------------
+
+BARRIER_EPS: float = 1e-9  # the floor of a norm in the direction unit vectors
+BARRIER_G0: float = 0.05  # R3: the gradient norm at which the confidence that there is a surface is 1/2
+
+
+def barrier_drag(force: mx.array, here: mx.array, grad: mx.array | None, cfg: Config) -> mx.array:
+    """The drag multiplier of the material at each agent's cell, ``(N,)`` f32 in ``[1, 1 + barrier_gain]``.
+
+    ``1 + barrier_gain·here`` (R1: ``here`` is in [0, 1] and ``validate`` bounds ``barrier_gain`` by 3, so
+    the slowdown is at most 4 and a closed cell is always crossable). With ``exit_ease > 0`` (R3, the
+    ``grad`` argument is then required) the factor is ``1 + barrier_gain·here·(1 - exit_ease·out)`` where
+    ``out = max(0, -c·g)·s`` is the share of the ACTUAL push ``force`` (thrust, wind, repulsion and gravity
+    together: the same ``F`` the integrator divides, so displacement is what counts, not intended motion)
+    that points down the gradient of the material, i.e. out of dense material, with ``s = |g|/(|g| + g0)``
+    the confidence that a surface is there (a plateau has ``s = 0`` and pays the plain drag). No ``where``.
+    """
+    sc = cfg.structures
+    if sc.barrier_gain <= 0:  # static: no barrier
+        return mx.ones_like(here)
+    plain = sc.barrier_gain * here
+    if sc.exit_ease <= 0:  # static: R3 off
+        return 1.0 + plain
+    assert grad is not None, "barrier_drag with exit_ease > 0 needs the material gradient"  # static
+    fn = mx.sqrt((force * force).sum(axis=-1))
+    gn = mx.sqrt((grad * grad).sum(axis=-1))
+    cos = (force * grad).sum(axis=-1) / (mx.maximum(fn, BARRIER_EPS) * mx.maximum(gn, BARRIER_EPS))
+    out = mx.maximum(-cos, 0.0) * (gn / (gn + BARRIER_G0))
+    return 1.0 + plain * (1.0 - sc.exit_ease * out)
