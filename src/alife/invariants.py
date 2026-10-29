@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import mlx.core as mx
 import numpy as np
 
-from alife import bonds, ext, layout, weather
+from alife import bonds, ext, layout, sphere, weather
 from alife.config import Config, dims
 from alife.state import R_HARD, Diag, LedgerIdx, State, expected_layout, sinks, to_numpy, total_energy
 
@@ -27,6 +27,11 @@ if TYPE_CHECKING:  # step imports this module; the annotation alone must not cre
 
 _I32 = mx.int32
 _VEL_TOL = 1e-6  # §2.2: ‖vel‖ ≤ v_max·(1 + 1e-6) for fp32 rescaling
+# The sphere (DESIGN §46.2): the heading vector is a unit tangent to 4e-7 (a few float32 ulp; the probe holds
+# 1e-7 over 3·10^5 steps), a row's distance from the centre is within ``radius_tol(cfg)`` of [r_lo, r_hi].
+_HDG_TOL = 4e-7
+_HEADING_TOL = 1e-4  # the derived scalar heading against the bearing of hdg, compared circularly
+_POLE_SKIP = 1e-3  # rows within this sine of a pole are not compared for the bearing (the frame is singular)
 _SHOW = 5  # offending indices quoted per message
 
 
@@ -43,14 +48,25 @@ def _ledger_net(ledger: mx.array, nd: int) -> mx.array:
     return net
 
 
+def radius_tol(cfg: Config) -> float:
+    """ε of the sphere's radial invariants: 4 ulp of the lid radius ``Rp + H`` in float32 (§46.2)."""
+    sp = sphere.geometry(cfg)
+    exponent = math.frexp(sp.radius + sp.height_max)[
+        1
+    ]  # x = m·2^e with 0.5 <= m < 1: a float32 ulp is 2^(e−24)
+    return 4.0 * math.ldexp(1.0, exponent - 24)
+
+
 def _env_ranges(cfg: Config) -> dict[str, tuple[float, float]]:
-    """Inclusive range of each float env field (the integer ones are checked separately)."""
+    """Inclusive range of each float env field (the integer ones are checked separately). The catastrophe
+    radius is an arc length: at most half the image length in a box, half a great circle on a sphere."""
+    sph = cfg.world.geometry == "sphere"
     return {
         "env_regen_mult": ENV_REGEN_MULT,
         "env_season_amp": ENV_SEASON_AMP,
         "env_drift_mult": ENV_DRIFT_MULT,
         "env_patch_gain": ENV_PATCH_GAIN,
-        "env_cat_radius": (0.0, cfg.world.size / 2),
+        "env_cat_radius": (0.0, math.pi * cfg.world.radius if sph else cfg.world.size / 2),
         "env_cat_kill_p": (0.0, 1.0),
     }
 
@@ -83,7 +99,9 @@ def device_check(
     start-of-step ``TOTAL``. ``TOTAL`` is recomputed from ``s`` (not read from ``s.total``), so a leak
     anywhere in the state sets ``LEDGER``. In 3D (§27.8) ``HEAT_BUOYANCY`` is a sink, ``NONFINITE`` also
     covers ``pitch`` and ``buoy_cap``, and ``POS_RANGE`` also z outside ``[z_lo, z_hi]`` and
-    ``|pitch| > PITCH_MAX`` (float32 bounds), on every row.
+    ``|pitch| > PITCH_MAX`` (float32 bounds), on every row. On a sphere (§46.2) ``POS_RANGE`` is the radius
+    outside ``[r_lo − ε, r_hi + ε]``, ``hdg`` not a unit vector (4e-7) or not tangent (4e-7), or ``|pitch| >
+    PITCH_MAX``, on every row.
     """
     d = dims(cfg)
     alive, dead = s.alive, ~s.alive
@@ -104,6 +122,8 @@ def device_check(
     )
     if d.d3:  # static: the 3D-only fields
         nonfinite = nonfinite | ~(mx.all(mx.isfinite(s.pitch)) & mx.all(mx.isfinite(s.buoy_cap)))
+    if d.sph:  # static: the heading vector
+        nonfinite = nonfinite | ~mx.all(mx.isfinite(s.hdg))
     if cfg.weather.enabled:  # static: the stored weather state
         nonfinite = nonfinite | ~mx.all(mx.isfinite(s.wx))
     field_bad = mx.any((s.resource < 0) | (s.resource > R_HARD))
@@ -120,8 +140,23 @@ def device_check(
         field_bad = field_bad | env_out_of_range(s, cfg)
     headroom = (max_cell_occ >= d.occ_limit) | (max_attackers >= (1 << 15))
     capacity = alive.astype(_I32).sum() > d.n_cap
-    pos_bad = mx.any((s.pos < 0) | (s.pos >= cfg.world.size))
-    if d.d3:  # static: the z bounds and the pitch clip, as float32 (MLX casts the Python bounds, §27.2)
+    if d.sph:  # static: the radius within ε of [r_lo, r_hi], hdg a unit tangent, the pitch clip (§46.2)
+        eps = radius_tol(cfg)
+        r = sphere.radius_of(s.pos)
+        up = s.pos / r[:, None]
+        hn = sphere.radius_of(s.hdg)
+        pos_bad = mx.any(
+            (r < d.r_lo - eps)
+            | (r > d.r_hi + eps)
+            | (mx.abs(hn - 1.0) > _HDG_TOL)
+            | (mx.abs((s.hdg * up).sum(axis=-1)) > _HDG_TOL)
+            | (mx.abs(s.pitch) > layout.PITCH_MAX)
+        )
+    else:
+        pos_bad = mx.any((s.pos < 0) | (s.pos >= cfg.world.size))
+    if (
+        d.d3 and not d.sph
+    ):  # static: the z bounds and the pitch clip, as float32 (MLX casts the Python bounds, §27.2)
         z = s.pos[:, 2]
         pos_bad = pos_bad | mx.any((z < d.z_lo) | (z > d.z_hi) | (mx.abs(s.pitch) > layout.PITCH_MAX))
     checks = (
@@ -254,7 +289,8 @@ def _check_rows(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     # Ranges, every row (dead rows keep in-range values, §2.2).
     mu, f32 = cfg.mutation, np.float32
     L = cfg.world.size
-    r.rows(_bad_range(a["pos"], 0.0, L, hi_open=True), "pos: outside [0, L) or non-finite")
+    if not d.sph:
+        r.rows(_bad_range(a["pos"], 0.0, L, hi_open=True), "pos: outside [0, L) or non-finite")
     vel = a["vel"].astype(np.float64)
     speed = np.sqrt((vel * vel).sum(axis=1))
     r.rows(~np.isfinite(speed) | (speed > cfg.physics.v_max * (1 + _VEL_TOL)), "vel: speed > v_max")
@@ -284,7 +320,8 @@ def _check_rows(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     # Fields and globals.
     r.rows(_bad_range(a["resource"], 0, R_HARD), "resource: outside [0, R_HARD]")
     r.rows(_bad_range(a["chem"], 0.0, f32(cfg.fields.chem_max)), "chem: outside [0, chem_max] or non-finite")
-    r.rows(_bad_range(a["patch_pos"], 0.0, L, hi_open=True), "patch_pos: outside [0, L)")
+    if not d.sph:
+        r.rows(_bad_range(a["patch_pos"], 0.0, L, hi_open=True), "patch_pos: outside [0, L)")
     r.rows(_bad_range(a["patch_vel"], None, None), "patch_vel: non-finite")
     r.check(step >= 0, f"step: negative ({step})")
     _check_env(r, a, cfg)
@@ -313,6 +350,50 @@ def _check_rows_3d(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     r.rows(_bad_range(a["buoy_cap"], 0.0, 1.0), "buoy_cap: outside [0, 1] or non-finite")
     r.rows(alive & (z == d.z_lo) & (vz < 0), "vel: alive row on the floor moving down")
     r.rows(alive & (z == d.z_hi) & (vz > 0), "vel: alive row at the surface moving up")
+
+
+def _check_rows_sph(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
+    """The sphere-only ranges (DESIGN §46.2), every row unless said: ``|pos|`` in ``[r_lo − ε, r_hi + ε]``
+    (float32 bounds, ε = 4 ulp of the lid radius), ``|pitch| ≤ PITCH_MAX``, ``buoy_cap`` in ``[0, 1]``,
+    ``hdg`` a unit vector (4e-7) tangent to the sphere (4e-7), the patch centres unit vectors (4e-7); on alive
+    rows the
+    derived scalar ``heading`` equals the bearing of ``hdg`` from local north to 1e-4 (compared circularly;
+    rows within 1e-3 of a pole are skipped: the frame is singular there) and no stored velocity presses into
+    the floor or the lid (the radial component at the new point may be negative by the curvature term
+    ``|vel|²/r`` that the move itself produces)."""
+    d, pm = dims(cfg), np.float32(layout.PITCH_MAX)
+    alive = a["alive"]
+    pos, hdg, vel = (a[k].astype(np.float64) for k in ("pos", "hdg", "vel"))
+    rad = np.linalg.norm(pos, axis=1)
+    eps = radius_tol(cfg)
+    r.rows(
+        ~np.isfinite(rad) | (rad < d.r_lo - eps) | (rad > d.r_hi + eps),
+        "pos: |pos| outside [r_lo, r_hi] (radius tolerance) or non-finite",
+    )
+    r.rows(_bad_range(a["pitch"], -pm, pm), "pitch: outside [−PITCH_MAX, PITCH_MAX] or non-finite")
+    r.rows(_bad_range(a["buoy_cap"], 0.0, 1.0), "buoy_cap: outside [0, 1] or non-finite")
+    up = pos / np.where(rad > 0, rad, 1.0)[:, None]
+    hn = np.linalg.norm(hdg, axis=1)
+    r.rows(~np.isfinite(hn) | (np.abs(hn - 1.0) > _HDG_TOL), "hdg: not a unit vector (4e-7)")
+    r.rows(np.abs((hdg * up).sum(axis=1)) > _HDG_TOL, "hdg: not tangent to the sphere (4e-7)")
+    pn = np.linalg.norm(a["patch_pos"].astype(np.float64), axis=1)
+    r.rows(~np.isfinite(pn) | (np.abs(pn - 1.0) > _HDG_TOL), "patch_pos: not a unit vector (4e-7)")
+    # the derived heading: the bearing of hdg from local north (east = normalise(z × up), x̂ at the poles)
+    zc = np.cross(np.array([0.0, 0.0, 1.0]), up)
+    zn = np.linalg.norm(zc, axis=1)
+    east = np.where(
+        (zn < 1e-6)[:, None], np.array([1.0, 0.0, 0.0]), zc / np.where(zn < 1e-6, 1.0, zn)[:, None]
+    )
+    north = np.cross(up, east)
+    bearing = np.arctan2((hdg * east).sum(axis=1), (hdg * north).sum(axis=1))
+    diff = np.abs(np.mod(a["heading"].astype(np.float64) - bearing + math.pi, 2.0 * math.pi) - math.pi)
+    r.rows(alive & (zn > _POLE_SKIP) & ~(diff <= _HEADING_TOL), "heading: not the bearing of hdg (1e-4)")
+    # speed along the radius at the new point: bounded below by the curvature term of the move
+    vr = (vel * up).sum(axis=1)
+    # (a row within ε of the bound that was not clamped can still carry a radial speed below ε)
+    curv = (vel * vel).sum(axis=1) / np.maximum(rad, 1.0) + 1e-5 + eps
+    r.rows(alive & (rad <= d.r_lo + eps) & (vr < -curv), "vel: alive row on the floor moving down")
+    r.rows(alive & (rad >= d.r_hi - eps) & (vr > curv), "vel: alive row at the lid moving up")
 
 
 def _check_env(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
@@ -415,7 +496,9 @@ def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | 
     _check_ledger(r, a, cfg)
     _check_bonds(r, a)
     _check_rows(r, a, cfg)
-    if dims(cfg).d3:  # its own meta-test (tests/test_invariants_3d.py)
+    if dims(cfg).sph:  # its own meta-test (tests/test_invariants_sphere.py)
+        _check_rows_sph(r, a, cfg)
+    elif dims(cfg).d3:  # its own meta-test (tests/test_invariants_3d.py)
         _check_rows_3d(r, a, cfg)
     if cfg.weather.enabled:
         _check_weather(r, a, cfg)
