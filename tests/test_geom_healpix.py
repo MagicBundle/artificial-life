@@ -232,11 +232,11 @@ def test_refinement_by_any_integer_ratio_is_exact(fine: int, ratio: int) -> None
         assert np.array_equal(geom.ang2pix(pts, coarse), par)
 
 
-@pytest.mark.parametrize("nside,max_colours", [(8, 15), (11, 16), (21, 18)])
-def test_greedy_colouring_separates_cells_within_two_steps(nside: int, max_colours: int) -> None:
+@pytest.mark.parametrize("nside,n_colours", [(8, 15), (11, 16), (21, 15)])
+def test_greedy_colouring_separates_cells_within_two_steps(nside: int, n_colours: int) -> None:
     colour, k = geom.greedy_colouring(nside)
     tb = geom.tables(nside)
-    assert colour.min() == 0 and colour.max() == k - 1 and 9 <= k <= max_colours
+    assert colour.min() == 0 and colour.max() == k - 1 and k == n_colours and k >= 9
     near = tb.stencil2[:, 1:]
     assert (colour[:, None] != colour[near.clip(0)])[near >= 0].all()
     # the oracle's two-step sets agree with the table, so the check above is against an independent graph

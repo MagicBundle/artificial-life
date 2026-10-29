@@ -164,14 +164,15 @@ def move(
 
     ``pos`` (N,3) positions, ``hdg`` (N,3) tangent unit headings, ``v`` (N,3) the commanded displacement
     (already clipped to ``v_max``), ``turn`` (N,) the yaw increment. The tangent part of ``v`` moves the
-    direction along the great circle by the exponential map (series in ``σ² = |vt|²/r²``, valid for
-    ``|σ| <= 0.011``: no trig and no division by ``|vt|``, so ``vt = 0`` is exact); the radial part
-    changes the
-    distance, clamped to ``[r_lo, r_hi]``. The heading is transported by the minimal rotation taking the
-    old up
-    to the new one (exact parallel transport along the great circle), turned about the new up, and
-    renormalised
-    (mandatory: without it ``|hdg|`` drifts by 0.11 over 3·10^5 steps).
+    direction along the great circle by the exponential map, as a series in ``σ² = |vt|²/r²`` (truncation
+    error σ⁶/720, far below float32 rounding for any step the engine takes; the result is renormalised): no
+    trig and no division by ``|vt|``, so ``vt = 0`` is exact. The radial part changes the distance, clamped to
+    ``[r_lo, r_hi]``. The heading is transported by the minimal rotation taking the old up to the new one
+    (exact parallel transport along the great circle), turned about the new up, and renormalised (mandatory:
+    without it ``|hdg|`` drifts by 0.11 over 3·10^5 steps).
+
+    A row with ``pos = 0`` gives ``0/0``: the caller keeps dead rows at ``(0, 0, r_lo)`` (the engine's
+    convention) or masks the result with ``where``.
 
     Returns ``(pos', hdg', vel', at_floor, at_lid)``: ``vel'`` is ``v`` with its radial part set to 0 on a
     clamped row (the box's surface rule made radial).
@@ -206,7 +207,8 @@ def move(
 
 def bearing(hdg: mx.array, pos: mx.array) -> mx.array:
     """Compass bearing of the heading from local north, ``atan2(hdg·east, hdg·north)`` in [−π, π)
-    (``east = normalise(ẑ × û)``, x̂ within 1e-6 of a pole; ``north = û × east``)."""
+    (``east = normalise(ẑ × û)``, x̂ within 1e-6 of a pole; ``north = û × east``). A bearing within 1e-6 of +π
+    is returned as −π (float32 rounding of the south), whereas the host maps ``>= π``: compare circularly."""
     up = pos / radius_of(pos)[..., None]
     ex, ey = -up[..., 1], up[..., 0]
     ne = mx.sqrt(ex * ex + ey * ey)

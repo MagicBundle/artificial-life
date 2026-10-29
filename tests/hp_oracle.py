@@ -2,9 +2,9 @@
 
 Credit: the independent implementation written by the reviewer of the true-sphere series (``hp.py`` and
 ``t2_cov.py`` of the sphere review, 2026-10-29), ported with two changes. (1) ``xyf2loc`` wraps the longitude
-AFTER the division by the ring width; the original wrapped ``tmp`` by 8 before it, which puts a polar-cap
-point on a facet boundary (``tmp`` is 0 up to rounding there) on another meridian. (2) The sampled coverage
-of ``t2_cov.py`` is exposed as ``sampled_coverage``.
+AFTER the division by the ring width (a defensive form: the original wrapped ``tmp`` by 8 before it, wrong in
+principle inside a polar cap when ``tmp`` is negative at rounding level; the two orders agree on every point
+the review tested). (2) The sampled coverage of ``t2_cov.py`` is exposed as ``sampled_coverage``.
 
 It shares no code with ``alife.geom``: the neighbour sets come from rounded corner coordinates (``geom``
 identifies corners in integer arithmetic) and ``ang2pix`` is a separate float64 closed form. astropy-healpix

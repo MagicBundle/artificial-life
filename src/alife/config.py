@@ -1127,35 +1127,51 @@ def frac_q8(frac: float) -> int:
     return int(mx.floor(mx.array(frac, mx.float32) * 256.0 + 0.5).astype(mx.int32).item())
 
 
-NH_MAX: Final = (
-    64  # the largest hash Nside validate will derive (its exact table has 12·Nh² cells; ~40 s at 64)
-)
+# The largest hash Nside validate will derive. The shipped table of exact coverage angles
+# (geom.min_coverage_angle)
+# covers Nside 2..72, so a derivation up to 64 (it probes Nh + 1) costs nothing; beyond the table one
+# exact table of
+# 12·Nside² cells is computed per probe (about 40 s at Nside 64) and cached on disk.
+NH_MAX: Final = 64
 SPHERE_CELL_VOLUME_BAND: Final = (0.4, 2.5)  # an (angular cell, layer) volume in units of field_cell³
+
+
+SPHERE_RADIUS_MAX: Final = 1e6  # keeps radius³ and every derived float finite; far beyond any feasible planet
 
 
 def _validate_sphere(cfg: Config) -> list[str]:
     """The rules of a sphere world (DESIGN §46.9), as messages. The rules that need tables of later PRs are
     absent by design: the diffusion tables and bounds (S1), the feature set a sphere run may enable
-    (``SPHERE_READY``, S2) and the weather (S4)."""
+    (``SPHERE_READY``, S2) and the weather (S4).
+
+    Ordered by cost, and total: the refusal comes first and alone (nothing else is computed for a config the
+    engine cannot run); the cheap arithmetic rules come next and every quantity they derive is bounded
+    before it
+    is used (no allocation or overflow from a typo such as ``layers = 10**11`` or ``radius = 1e200``);
+    the exact
+    hash derivation (``geom.derive_nh``, seconds without the shipped table) only runs for a config that passed
+    all of them."""
     w, ph, sen = cfg.world, cfg.physics, cfg.sensing
+    if "sphere" not in GEOMETRY_SUPPORTED:
+        return ["world.geometry = 'sphere' is not enabled yet (the true-sphere series, PR S2)"]
     errs: list[str] = []
 
-    def req(ok: bool, msg: str) -> None:
+    def req(ok: bool, msg: str) -> bool:
         if not ok:
             errs.append(msg)
+        return ok
 
-    req(
-        "sphere" in GEOMETRY_SUPPORTED,
-        "world.geometry = 'sphere' is not enabled yet (the true-sphere series, PR S2)",
-    )
     req(w.dims == 3, f"world.geometry = 'sphere' needs world.dims = 3 (the shell is 3D), got {w.dims}")
     rad, h, r = w.radius, w.height, ph.radius
-    sane = math.isfinite(rad) and math.isfinite(h) and math.isfinite(w.size) and rad > 0 and h > 0
-    req(math.isfinite(rad) and rad >= 20.0, f"world.radius must be finite and ≥ 20, got {rad}")
-    req(
+    rad_ok = req(
+        math.isfinite(rad) and 20.0 <= rad <= SPHERE_RADIUS_MAX,
+        f"world.radius must be finite and in [20, {SPHERE_RADIUS_MAX:g}], got {rad}",
+    )
+    h_ok = req(
         math.isfinite(h) and h > 2 * r,
         f"world.height must be finite and > 2·physics.radius = {2 * r}, got {h}",
     )
+    sane = rad_ok and h_ok and math.isfinite(w.size)
     req(
         not sane or h <= rad,
         f"world.height {h} must be ≤ world.radius {rad} (a thin shell bounds the area ratio by 4)",
@@ -1165,8 +1181,8 @@ def _validate_sphere(cfg: Config) -> list[str]:
         f"world.size {w.size} must be > 4·(radius + height) = {4.0 * (rad + h)}: it is the image length of "
         "min_image, which must be the identity on pair offsets",
     )
-    req(w.nside >= 2, f"world.nside must be ≥ 2, got {w.nside}")
-    req(w.layers >= 2, f"world.layers must be ≥ 2, got {w.layers}")
+    nside_ok = req(w.nside >= 2, f"world.nside must be ≥ 2, got {w.nside}")
+    layers_ok = req(w.layers >= 2, f"world.layers must be ≥ 2, got {w.layers}")
     req(
         math.isfinite(ph.ceiling_band)
         and ph.ceiling_band >= 0.0
@@ -1177,27 +1193,32 @@ def _validate_sphere(cfg: Config) -> list[str]:
         ph.floor_eps >= 0.01,
         f"physics.floor_eps must be ≥ 0.01 on a sphere (float32 radius), got {ph.floor_eps}",
     )
-    cells_ok = sane and w.nside >= 2 and w.layers >= 2 and w.field_cell > 0
-    if cells_ok:
-        req(
-            w.layers * geom.npix(w.nside) <= 1 << 20,
-            f"field cells FZ·12·Nf² = {w.layers * geom.npix(w.nside)} must be ≤ 2^20 (exact_sum)",
-        )
-        z1 = float(geom.layer_edges(rad, h, w.layers)[1])
-        req(
-            r + ph.floor_eps < z1,
-            f"physics.radius + floor_eps = {r + ph.floor_eps} must be < z_1 = {z1:.4g} "
-            "(a grounded agent is in the floor layer)",
-        )
-        lo, hi = SPHERE_CELL_VOLUME_BAND
-        vol = geom.layer_volume(rad, h, w.layers, w.nside)
-        req(
-            lo * w.field_cell**3 <= vol <= hi * w.field_cell**3,
-            f"the cell volume {vol:.4g} must be in [{lo}, {hi}]·world.field_cell³ = "
-            f"[{lo * w.field_cell**3:.4g}, {hi * w.field_cell**3:.4g}]",
-        )
-    # the hash: Nh from the exact reach-2 coverage table, then C from the lid cell
-    if sane and sen.radius > 0 and r > 0 and rad + r > sen.radius / 2.0:
+    if sane and nside_ok and layers_ok and w.field_cell > 0:
+        n_cells = w.layers * geom.npix(w.nside)
+        if req(n_cells <= 1 << 20, f"field cells FZ·12·Nf² = {n_cells} must be ≤ 2^20 (exact_sum)"):
+            z1 = float(geom.layer_edges(rad, h, w.layers)[1])  # layers·npix <= 2^20: a small allocation
+            req(
+                r + ph.floor_eps < z1,
+                f"physics.radius + floor_eps = {r + ph.floor_eps} must be < z_1 = {z1:.4g} "
+                "(a grounded agent is in the floor layer)",
+            )
+            lo, hi = SPHERE_CELL_VOLUME_BAND
+            vol = geom.layer_volume(rad, h, w.layers, w.nside)
+            req(
+                lo * w.field_cell**3 <= vol <= hi * w.field_cell**3,
+                f"the cell volume {vol:.4g} must be in [{lo}, {hi}]·world.field_cell³ = "
+                f"[{lo * w.field_cell**3:.4g}, {hi * w.field_cell**3:.4g}]",
+            )
+    # the hash: Nh from the exact reach-2 coverage, then C from the lid cell. Only for a config that passed
+    # everything above (the derivation is the expensive part), and only for inputs it is defined for.
+    hash_ok = sane and not errs and sen.radius > 0 and math.isfinite(sen.radius) and r > 0
+    if hash_ok:
+        if not req(
+            sen.radius < 2.0 * (rad + r),
+            f"sensing.radius {sen.radius} must be < 2·(world.radius + physics.radius) = {2.0 * (rad + r)}: "
+            "a hash cannot cover a planet smaller than the sensing ball",
+        ):
+            return errs
         angle = geom.rigorous_angle(rad, r, sen.radius)
         if geom.estimate_nh(angle) > NH_MAX:
             errs.append(
