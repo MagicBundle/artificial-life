@@ -69,6 +69,21 @@ field lattice side is composite; `mini3d + storm160 + build` is the storm world)
 dump, the observers' drift and the GUI (S2, S3), the first runs and the fork (S4; `alife migrate` is PR 0b). Hash-cell overflow is advisory
 (`HASH_HIDDEN`, `build_hash_hidden`, an `alert:` line); runs with persistent overflow are excluded from experiments.
 
+
+## Bonds that pay (DESIGN §40, I69)
+
+PR B1 (stacked on S1, not merged) is the sharing half of the bonds feature: `bonds.share_mode` 1 (mutual consent) or 2 (obligate)
+replaces the lossy gift by an equalising, antisymmetric flow along each bond (the richer end sends a fraction `share_kappa` of the
+gap), booked in `FLOW_SHARED`/`HEAT_SHARE` (no 17th ledger term; mode 0 is the legacy gift bit for bit); `share_kin_floor < 1` makes
+non-kin transfers lossier. `bonds_ext(cfg)` (`roles.enabled` or `share_mode != 0`) allocates the 13-input, 2-output bond block and the
+fields `role`, `role_dwell`, `bond_flow`. Enable with `--overlay bonds`, `--set bonds.share_mode=2`, or `alife migrate --enable bonds`.
+The inert twin of the measures is `roles.enabled = false` with `share_mode != 0`.
+
+PR B2 (stacked on B1) adds the roles: two brain outputs choose generalist, forager or guard through a dead zone (the role is kept inside
+it), `role_dwell` ramps the effects over `roles.ramp_steps`, a switch costs `roles.switch_cost`. A forager raises its harvest cap (and
+more beside a guard, `synergy`) and lowers its own defence; a guard lowers its cap and shields itself and its bonded partners through
+`combat(guard=)`. Every effect key is 0 by default (`--overlay bonds` turns the machine on with the spec's starting values, DESIGN §40.9). No new ledger term. Absent: observers, scorecard, GUI and the role colour mode (B3), the runs.
+
 ## How to run
 
 ```bash

@@ -6,12 +6,15 @@ Every bond operation is a gather through the stored back-pointer ``rev`` (flat i
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import mlx.core as mx
 
 from alife import layout, ops
 from alife.config import Config
+from alife.ext.bonds import bonds_ext
+
+__all__ = ["bonds_ext"]
 
 
 class BondGeom(NamedTuple):
@@ -163,3 +166,115 @@ def symmetric_ok(partner: mx.array, rev: mx.array, alive: mx.array) -> mx.array:
     slot_ok = mx.where(occ, good, rev < 0)
     same = (partner[:, :, None] == partner[:, None, :]) & occ[:, :, None] & ~mx.eye(b, dtype=mx.bool_)[None]
     return mx.all(slot_ok) & ~mx.any(same)
+
+
+# --- bonds that pay (DESIGN §40): the hooks of the registry row (ext/bonds.py) --------------------------
+
+_I32, _F32 = mx.int32, mx.float32
+ROLE_FORAGER, ROLE_GUARD = 1, 2  # State.role codes: 0 generalist (the founder state), 1 forager, 2 guard
+I16_MAX = 32767
+
+
+def role_code(role: mx.array) -> mx.array:
+    """The brain-facing code of a role, (N,) f32: forager +1, guard −1, generalist 0."""
+    return mx.where(role == ROLE_FORAGER, 1.0, mx.where(role == ROLE_GUARD, -1.0, 0.0)).astype(_F32)
+
+
+def slot_kin(tag: mx.array, partner: mx.array, cfg: Config) -> mx.array:
+    """The tag similarity of the two ends of every bond slot, (N, B) f32 in (0, 1], 0 on empty slots: the
+    expression of ``sensing.neighbor_descriptors`` (``exp(−|Δtag|²/tag_scale²)``) gathered per slot."""
+    dtag = tag[:, None, :] - tag[mx.maximum(partner, 0)]
+    kin = mx.exp(-(dtag * dtag).sum(-1) / (cfg.sensing.tag_scale**2))
+    return mx.where(partner >= 0, kin, 0.0)
+
+
+def ext_inputs(s: Any, cfg: Config, ctx: Any) -> tuple[mx.array, mx.array, mx.array, mx.array]:
+    """The thirteen brain inputs: own role code (N, 1), then per slot the partner's role code, the kin
+    similarity and the last net flow (``bond_flow / share_rate``, clipped), each (N, B); 0 on empty slots."""
+    valid = ctx.geom.valid
+    pj = mx.maximum(s.partner, 0)
+    code = role_code(s.role)
+    role_in = mx.where(valid, code[pj], 0.0)
+    kin_in = slot_kin(s.tag, s.partner, cfg)
+    flow_in = mx.where(valid, mx.clip(s.bond_flow.astype(_F32) / cfg.bonds.share_rate, -1.0, 1.0), 0.0)
+    return code[:, None], role_in, kin_in, flow_in
+
+
+class BondFlows(NamedTuple):
+    """The step's bonds intermediates for the counters and the observer channel (``_Flows.ext.bonds``)."""
+
+    role0: mx.array  # (N,) int8: the start-of-step role (what the effects of the step read)
+    role: mx.array  # (N,) int8: the role at the end of the step (S8 of the next step reads it)
+    bond_flow: mx.array  # (N, B) int16: net received − sent per slot at S12, 0 where the slot is gone
+    slots_active: mx.array  # () int32: slots with out > 0
+    switched: mx.array  # (N,) bool: rows whose role changed this step
+    shield: mx.array  # (N,) int16: round(256·guard), the protection fraction of the row as a victim
+    shielded: mx.array  # () int32: attacks on a victim with guard > 0 (SHIELDED_BY_GUARD)
+
+
+def state_after(
+    s: Any,
+    sv: mx.array,
+    partner: mx.array,
+    sl: Any,
+    cfg: Config,
+    dec: Any = None,
+    guard: mx.array | None = None,
+    shielded: mx.array | None = None,
+) -> tuple[dict[str, mx.array], BondFlows]:
+    """The new bonds fields of the survivors ``sv`` (S14), and the flows for the counters: dead rows are
+    cleared to 0 and ``bond_flow`` is the net transfer of the slot, 0 where the bond is gone after S14 (a dead
+    or released partner), so a reused row never inherits a memory (E15). ``partner`` is the post-S14 partner
+    (``dt.partner``); ``sl`` the S12 slots. With the role machine (``dec``, the solvency-masked
+    ``roles.RoleDec``) a survivor takes its requested role: ``switched`` resets ``role_dwell`` to 0, else it
+    counts up to ``ramp_steps``; without it (``dec`` None) the roles stay as they are (all generalists)."""
+    zero = (s.role * 0).astype(mx.int8)
+    if dec is None:  # static: no role machine
+        role = mx.where(sv, s.role, 0).astype(mx.int8)
+        dwell = mx.where(sv, s.role_dwell, 0).astype(mx.int16)
+        switched = sv & ~sv
+    else:
+        switched = sv & (dec.req != s.role)
+        role = mx.where(sv, dec.req, 0).astype(mx.int8)
+        grown = mx.minimum(s.role_dwell.astype(_I32) + 1, cfg.roles.ramp_steps)
+        dwell = mx.where(sv & ~switched, grown, 0).astype(mx.int16)
+    net = mx.clip(sl.got - sl.out, -I16_MAX, I16_MAX)
+    flow = mx.where((partner >= 0) & sv[:, None], net, 0).astype(mx.int16)
+    shield = mx.round(256.0 * guard).astype(mx.int16) if guard is not None else zero.astype(mx.int16)
+    flows = BondFlows(
+        s.role,
+        role,
+        flow,
+        (sl.out > 0).astype(_I32).sum(),
+        switched,
+        shield,
+        shielded if shielded is not None else zero.astype(_I32).sum(),
+    )
+    return {"role": role, "role_dwell": dwell, "bond_flow": flow}, flows
+
+
+class BondActs(NamedTuple):
+    """``Acts.ext.bonds`` (observer channel, DESIGN §40.5): the start-of-step role per row, the net flow per
+    slot and the guard shield of the row as a victim."""
+
+    role: mx.array  # (N,) int8
+    bond_flow: mx.array  # (N, B) int16: net received − sent per slot
+    shield: mx.array  # (N,) int16: round(256·guard)
+
+
+def acts_of(f: BondFlows) -> BondActs:
+    return BondActs(f.role0, f.bond_flow, f.shield)
+
+
+def ext_count(s_new: Any, alive0: mx.array, flows: Any, cfg: Config) -> dict[str, mx.array]:
+    """The counter block (names in ``ext.bonds._COUNTERS``). The population counts are of the rows alive at
+    the end of the step."""
+    f = flows.ext.bonds
+    alive = s_new.alive
+    return {
+        "ROLE_SWITCHES": f.switched.astype(_I32).sum(),
+        "N_FORAGERS": (alive & (s_new.role == ROLE_FORAGER)).astype(_I32).sum(),
+        "N_GUARDS": (alive & (s_new.role == ROLE_GUARD)).astype(_I32).sum(),
+        "SHIELDED_BY_GUARD": f.shielded,
+        "SHARE_SLOTS_ACTIVE": f.slots_active,
+    }

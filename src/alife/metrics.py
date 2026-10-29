@@ -514,6 +514,18 @@ def interval_row(
                     "build_hash_hidden": int(col("HASH_HIDDEN")),  # agent-steps hidden by a full hash cell
                 }
             )
+        elif bname == "bonds":  # bonds that pay (DESIGN §40.6): sums for the flows, means for the levels
+            by = {n: i for i, n in enumerate(names)}
+            col = lambda n, at=at, by=by: cs[at + by[n]]  # noqa: E731
+            row.update(
+                {
+                    "bond_flux": int(ls[LedgerIdx.FLOW_SHARED]),  # q sent along bonds in the interval
+                    "bond_share_slots": _ratio(int(col("SHARE_SLOTS_ACTIVE")), t),
+                    "bond_role_switches": int(col("ROLE_SWITCHES")),
+                    "bond_forager_frac": _ratio(int(col("N_FORAGERS")), alive_steps),
+                    "bond_guard_frac": _ratio(int(col("N_GUARDS")), alive_steps),
+                }
+            )
         at += len(names)
     row.update(
         {

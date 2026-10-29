@@ -152,17 +152,26 @@ def pay_costs3(
 
 
 def harvest(
-    energy: mx.array, resource: mx.array, fcell: mx.array, act: Actions, solvent: mx.array, cfg: Config
+    energy: mx.array,
+    resource: mx.array,
+    fcell: mx.array,
+    act: Actions,
+    solvent: mx.array,
+    cfg: Config,
+    harvest_cap: mx.array | None = None,
 ) -> tuple[mx.array, mx.array, mx.array]:
     """Proportional harvest from the agent's field cell: ``(E, resource, got)`` (§10.4).
 
     ``demand = clip(min(floor(harvest·harvest_max), e_max − E), 0, harvest_max)`` for solvent agents;
     contested cells are shared by ``ops.proportional_take``. Ledger: ``Σ got`` moves from ``resource`` to
-    ``E`` (``FLOW_HARVEST``).
+    ``E`` (``FLOW_HARVEST``). ``harvest_cap`` ((N,) int32, the roles of DESIGN §40.3) replaces the constant
+    ``harvest_max`` per row in ``want`` and the final clip; it must stay below 2^16 (validated). None is
+    today's graph (static).
     """
     ec = cfg.energy
-    want = mx.minimum(ops.floor_i32(act.harvest * ec.harvest_max), ec.e_max - energy)
-    demand = mx.where(solvent, mx.clip(want, 0, ec.harvest_max), 0)
+    hm = ec.harvest_max if harvest_cap is None else harvest_cap
+    want = mx.minimum(ops.floor_i32(act.harvest * hm), ec.e_max - energy)
+    demand = mx.where(solvent, mx.clip(want, 0, hm), 0)
     take, taken = ops.proportional_take(demand, fcell, solvent, resource.reshape(-1))
     return energy + take, resource - taken.reshape(resource.shape), take
 
@@ -300,21 +309,56 @@ def share_slots(
     act: Actions,
     solvent: mx.array,
     cfg: Config,
+    kin: mx.array | None = None,
 ) -> ShareSlots:
-    """Per-slot gated transfers along bonds with 90% efficiency (§10.6), before the slot sums.
+    """Per-slot gated transfers along bonds (§10.6; the conductive modes are DESIGN §40.2), before the slot
+    sums.
 
-    A slot sends ``min(floor(share·share_rate), E // B)`` only if the sender is solvent and the slot's partner
-    is unchanged since the start of the step (``partner == partner0``). The receiver gathers the sender's
-    gated ``out`` through ``rev`` and keeps ``mul_q8(in, q8(share_efficiency))``.
+    ``bonds.share_mode`` 0 (the legacy gift): a slot sends ``min(floor(share·share_rate), E // B)`` only if
+    the sender is solvent and the slot's partner is unchanged since the start of the step (``partner ==
+    partner0``). The receiver gathers the sender's gated ``out`` through ``rev`` and keeps
+    ``mul_q8(in, q8(share_efficiency))``.
+
+    Modes 1 and 2 (static) replace the amount by an equalising, antisymmetric flow: with the energies at the
+    start of S12 (both ends read the same two values), only the richer end of a bond sends,
+    ``min((gap·q8(share_kappa)) >> 8, cap, E // B)`` with ``gap = E_i − E_j > 0``. Mode 1 needs the consent of
+    both ends (``s = floor(256·share) > 0`` at both, ``cap = (min(s_i, s_j)·share_rate) >> 8``); mode 2 is
+    obligate (``cap = share_rate``, the share outputs are ignored). ``E // B`` per slot bounds a row's total
+    send by ``E``: nobody goes below 0 on any bond graph (a ring or a star at full gap included), and
+    ``share_kappa ≤ 1/(2B)`` bounds the receipts so that no row ends above its richest neighbour. The
+    receiving end needs no solvency (a poor partner can be rescued). ``kin`` ((N, B) f32 in [0, 1], the
+    tag similarity of the two ends) scales the efficiency when ``share_kin_floor < 1``:
+    ``floor(256·share_efficiency·(floor + (1 − floor)·kin))``; the heat stays ``Σ(in − got)``.
     """
     bc = cfg.bonds
     valid = partner >= 0
-    gate = valid & (partner == partner0) & solvent[:, None]
-    amount = mx.minimum(ops.floor_i32(act.share * bc.share_rate), (energy // layout.B)[:, None])
-    out = mx.where(gate, amount, 0)
+    pj = mx.maximum(partner, 0)
     b = partner.shape[1]
-    inc = mx.where(valid, out.reshape(-1)[mx.maximum(partner, 0) * b + mx.maximum(rev, 0)], 0)
-    g = ops.mul_q8(inc, ops.q8(bc.share_efficiency))
+    cap_e = (energy // layout.B)[:, None]
+    if bc.share_mode == 0:  # static: the legacy gift
+        gate = valid & (partner == partner0) & solvent[:, None]
+        amount = mx.minimum(ops.floor_i32(act.share * bc.share_rate), cap_e)
+        out = mx.where(gate, amount, 0)
+    else:
+        gate = valid & (partner == partner0) & solvent[:, None]
+        gap = energy[:, None] - energy[pj]
+        amount = mx.minimum((gap * ops.q8(bc.share_kappa)) >> 8, cap_e)
+        if bc.share_mode == 1:  # static: mutual consent, the weaker of the two share outputs
+            sq = mx.clip(ops.floor_i32(act.share * 256.0), 0, 255)
+            sj = sq.reshape(-1)[pj * b + mx.maximum(rev, 0)]
+            amount = mx.minimum(amount, (mx.minimum(sq, sj) * bc.share_rate) >> 8)
+            gate = gate & (sq > 0) & (sj > 0)
+        else:  # mode 2: obligate
+            amount = mx.minimum(amount, bc.share_rate)
+        out = mx.where(gate & (gap > 0), amount, 0)
+    inc = mx.where(valid, out.reshape(-1)[pj * b + mx.maximum(rev, 0)], 0)
+    if bc.share_mode != 0 and bc.share_kin_floor < 1.0:  # static: non-kin transfers lose more
+        assert kin is not None, "share_kin_floor < 1 needs the per-slot kin similarity"
+        f = bc.share_kin_floor
+        eff = ops.floor_i32(256.0 * bc.share_efficiency * (f + (1.0 - f) * kin))
+        g = ops.mul_q8(inc, eff)
+    else:
+        g = ops.mul_q8(inc, ops.q8(bc.share_efficiency))
     return ShareSlots(out, inc, g)
 
 
@@ -333,10 +377,11 @@ def share(
     act: Actions,
     solvent: mx.array,
     cfg: Config,
+    kin: mx.array | None = None,
 ) -> Share:
     """Per-slot gated transfers along bonds with 90% efficiency (§10.6): ``share_from_slots`` of
     ``share_slots``. Ledger: ``Σ out`` is ``FLOW_SHARED`` and ``Σ (in − g)`` is ``HEAT_SHARE``."""
-    return share_from_slots(energy, share_slots(energy, partner, rev, partner0, act, solvent, cfg))
+    return share_from_slots(energy, share_slots(energy, partner, rev, partner0, act, solvent, cfg, kin))
 
 
 def cap_energy(energy: mx.array, cfg: Config) -> tuple[mx.array, mx.array]:

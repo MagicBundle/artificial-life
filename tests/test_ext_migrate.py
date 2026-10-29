@@ -75,7 +75,7 @@ def _canon(names) -> tuple[str, ...]:
     return tuple(n for n in ALL if n in names)
 
 
-# --- E2: the order of enabling does not matter -----------------------------------------------------------
+# --- E2: the order of enabling does not matter ------------------------------------------------------------
 
 
 @pytest.mark.parametrize("nd", [2, 3])
@@ -121,7 +121,7 @@ def test_e2_all_permutations_of_the_rest_agree(have: tuple[str, ...]) -> None:
         _same(arrays, direct)
 
 
-# --- the structure of the migrated weights ---------------------------------------------------------------
+# --- the structure of the migrated weights ----------------------------------------------------------------
 
 
 @pytest.mark.parametrize("nd", [2, 3])
@@ -194,7 +194,7 @@ def test_new_state_fields_take_their_rest_value(monkeypatch: pytest.MonkeyPatch)
     assert list(out) == list(state_cls(c1)._fields)  # canonical order of the new type
 
 
-# --- refusals --------------------------------------------------------------------------------------------
+# --- refusals ---------------------------------------------------------------------------------------------
 
 
 def test_removal_is_refused_unless_forced() -> None:
@@ -250,7 +250,7 @@ def test_a_different_base_layout_is_refused() -> None:
         layout_change(c0, c3)
 
 
-# --- the equivalence gate: zero rows reproduce the old behaviour -----------------------------------------
+# --- the equivalence gate: zero rows reproduce the old behaviour ------------------------------------------
 
 
 @pytest.mark.parametrize("nd", [2, 3])
@@ -327,7 +327,7 @@ def test_one_step_of_the_migrated_world_equals_the_source(
     np.testing.assert_array_equal(to_numpy(so.ledger), to_numpy(sn.ledger))
 
 
-# --- the run-directory tool ------------------------------------------------------------------------------
+# --- the run-directory tool -------------------------------------------------------------------------------
 
 
 def _source_run(tmp_path: Path, names=(), nd: int = 2, *, compressed: bool = False) -> tuple[Path, Path]:
@@ -476,7 +476,7 @@ def test_the_help_says_leave_one_out_arms_are_fresh_runs(capsys) -> None:
     assert "FRESH RUNS" in out and "E23" in out and "--force-removal" in out
 
 
-# --- E3, the test side: a migrated world resumes, a mismatched config is refused -------------------------
+# --- E3, the test side: a migrated world resumes, a mismatched config is refused --------------------------
 
 
 def test_e3_a_migrated_world_resumes_and_a_mismatched_config_is_refused(tmp_path: Path, capsys) -> None:
@@ -508,7 +508,7 @@ def test_e3_a_migrated_world_resumes_and_a_mismatched_config_is_refused(tmp_path
         load_checkpoint(_source_run(tmp_path / "s2")[1], cfg, check_hash=False)
 
 
-# --- review fixes: the output may not endanger the source, locks, conserved fields, atomicity ------------
+# --- review fixes: the output may not endanger the source, locks, conserved fields, atomicity -------------
 
 
 def _migrate_cli(*args: str) -> int:
@@ -688,3 +688,70 @@ def test_migrating_an_evolved_world_onto_structures(preset: str, tmp_path: Path,
 
     spec = next(sp for sp in REGISTRY if sp.name == "structures")
     assert all(not f.conserved for f in spec.state_fields(cfg2, d.nd))  # the material holds no energy
+
+
+# --- bonds that pay on an evolved world (DESIGN §40, §43.8) -----------------------------------------------
+
+
+@pytest.mark.parametrize("preset", ["tiny", "tiny3d"])
+def test_migrating_an_evolved_world_onto_bonds(preset: str, tmp_path: Path, capsys, monkeypatch) -> None:
+    """The real registry: ``--enable bonds`` (``roles.enabled``) plus ``--set bonds.share_mode=2`` gives the
+    evolved population 13 zero input rows and 2 zero output columns, empty role state, and a conductive world
+    whose ledger closes; the new fields hold no energy (``conserved`` False)."""
+    monkeypatch.undo()  # drop the autouse stub registry
+    dims.cache_clear()
+    from alife.state import counter_index
+
+    cfg = load_config(preset=preset, overrides=F32)
+    fn, s = make_step(cfg), init_state(cfg)
+    for _ in range(40):
+        s, _ = fn(s)
+    mx.eval(s)
+    rd = RunDir.create(tmp_path / "src", cfg)
+    rd.save_checkpoint(s, cfg)
+    rd.wait_saves()
+    out = tmp_path / "out"
+    code = cli.main(
+        [
+            "migrate",
+            str(rd.path),
+            "--enable",
+            "bonds",
+            "--set",
+            "bonds.share_mode=2",
+            "--out",
+            str(out),
+            "--quiet",
+        ]
+    )
+    assert code == 0, capsys.readouterr().err
+    run = RunDir.open(out)
+    cfg2, meta = run.config(), run.meta()
+    d = dims(cfg2)
+    assert cfg2.roles.enabled and cfg2.bonds.share_mode == 2 and meta["layout_features"] == "bonds@1"
+    assert meta["migrated_from"]["added"] == ["bonds"]
+    s2 = load_checkpoint(run.checkpoints()[-1][1], cfg2)
+    alive = np.array(s2.alive)
+    assert (
+        not np.array(s2.role).any() and not np.array(s2.role_dwell).any() and not np.array(s2.bond_flow).any()
+    )
+    w1, w2 = np.array(s2.W1)[alive], np.array(s2.W2)[alive]
+    for name in ("IN_ROLE", "IN_BOND_ROLE", "IN_BOND_KIN", "IN_BOND_FLOW"):
+        lo = getattr(d.lay, name)
+        assert not w1[:, lo : lo + (1 if name == "IN_ROLE" else 4)].any(), name  # zero new rows
+    assert not w2[:, :, d.lay.OUT_ROLE_A : d.lay.OUT_ROLE_B + 1].any()  # zero new columns
+    fn2, active = make_step(cfg2), 0
+    for _ in range(40):
+        s2, o2 = fn2(s2)
+        mx.eval(s2, o2)
+        led = to_numpy(o2.ledger)
+        assert led[LedgerIdx.FLOW_STOLEN] == led[LedgerIdx.FLOW_ATTACK_GAIN] + led[LedgerIdx.FLOW_SPILL]
+        active += int(to_numpy(o2.counters)[counter_index(cfg2, "SHARE_SLOTS_ACTIVE")])
+    assert int(to_numpy(s2.diag)) & 0xFFFF == 0
+    assert active > 0  # the obligate share runs on the migrated world at once
+    from alife.ext import REGISTRY
+
+    spec = next(sp for sp in REGISTRY if sp.name == "bonds")
+    assert all(not f.conserved for f in spec.state_fields(cfg2, d.nd))
+    # the enable hook alone allocates the layout and leaves the sharing at the legacy gift
+    assert spec.enable(cfg).roles.enabled and spec.enable(cfg).bonds.share_mode == 0

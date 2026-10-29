@@ -22,8 +22,8 @@ from typing import Any
 import mlx.core as mx
 import numpy as np
 
+from alife import bonds, ext, metrics, migrate, physics, play, runner, spatial, stream, weather_spinup
 from alife import config as config_mod
-from alife import ext, metrics, migrate, physics, play, runner, spatial, stream, weather_spinup
 from alife.analysis import houses as house_rebuild
 from alife.config import (
     ALL_OVERLAYS,
@@ -780,6 +780,10 @@ def _agent_info(uid: int, s: State | State3, cfg: Config, rd: RunDir | None) -> 
             if p >= 0
         ]
         parent = int(a["parent_uid"])
+        if bonds.bonds_ext(
+            cfg
+        ):  # bonds that pay (DESIGN §40.5): the role, its ramp, and per-slot kin and flow
+            info.update(_bonds_info(s, r, a, info["bonds"], cfg))
     parents: dict[int, int] = {}
     if rd is not None:
         births, deaths = rd.read_events("births"), rd.read_events("deaths")
@@ -801,6 +805,28 @@ def _agent_info(uid: int, s: State | State3, cfg: Config, rd: RunDir | None) -> 
     info["ancestors"] = chain
     info["ancestors_complete"] = parent == -1
     return info
+
+
+def _bonds_info(
+    s: State | State3, r: int, a: dict[str, np.ndarray], slots: list[dict[str, Any]], cfg: Config
+) -> dict[str, Any]:
+    """The inspector lines of the bonds feature for row ``r`` (host numpy; DESIGN §40.5): ``role`` (name and
+    the share of its effect built up, ``role_dwell / ramp_steps``), ``shield_max`` (the guard fraction at full
+    defend) and, on each bond slot of ``slots``, the partner's ``role``, the ``kin`` similarity of the two
+    tags and the last net ``flow`` (received minus sent)."""
+    names = {0: "generalist", 1: "forager", 2: "guard", 3: "germ"}
+    role, tag = to_numpy(s.role), to_numpy(s.tag)
+    ramp = min(1.0, int(a["role_dwell"]) / cfg.roles.ramp_steps)
+    for slot in slots:
+        p, b = slot["row"], slot["slot"]
+        d = tag[r] - tag[p]
+        slot["role"] = names.get(int(role[p]), "?")
+        slot["kin"] = float(np.exp(-float((d * d).sum()) / cfg.sensing.tag_scale**2))
+        slot["flow"] = int(a["bond_flow"][b])
+    return {
+        "role": {"code": int(a["role"]), "name": names.get(int(a["role"]), "?"), "ramp": ramp},
+        "shield_max": cfg.roles.guard_shield * ramp if int(a["role"]) == 2 else 0.0,
+    }
 
 
 def _grounded_frac(state: State | State3, cfg: Config) -> float | None:
@@ -1574,6 +1600,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         weather_org=a.weather_org,
         arms=a.arms,
         structures=a.structures,
+        bonds_arm=a.bonds,
     )
     text = _dumps(report)
     if a.json is not None:
@@ -1975,6 +2002,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also time the step with built structures on against the same config with them off (interleaved "
         "blocks; needs structures.enabled, for example --overlay build)",
+    )
+    p.add_argument(
+        "--bonds",
+        action="store_true",
+        help="also time the step with the bonds feature on against the same config with it off (interleaved "
+        "blocks; needs bonds.share_mode or roles.enabled, for example --overlay bonds)",
     )
     p.add_argument(
         "--weather-pairs",

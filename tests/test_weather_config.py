@@ -89,10 +89,11 @@ def test_the_section_has_the_41_keys_and_all_are_hashed() -> None:
     assert not [
         1 for sk in POST_V01_KEYS if sk[0] == "weather" and (sk in UNHASHED_KEYS or sk in OBSERVER_KEYS)
     ]
-    assert [f.name for f in fields(Config)][-4:] == [
+    assert [f.name for f in fields(Config)][-5:] == [
         "weather",
         "arms",
         "structures",
+        "roles",
         "run",
     ]  # the feature sections follow weather (DESIGN §43)
 
@@ -250,8 +251,13 @@ def test_set_parses_pools(storm3d: Config) -> None:
 
 
 def test_overlay_names() -> None:
-    assert OVERLAYS == ("fast",) and WORLD_OVERLAYS == ("storm", "storm160", "build")  # build: structures
-    assert ALL_OVERLAYS == ("fast", "storm", "storm160", "build")
+    assert OVERLAYS == ("fast",) and WORLD_OVERLAYS == (
+        "storm",
+        "storm160",
+        "build",
+        "bonds",
+    )  # build, bonds: features
+    assert ALL_OVERLAYS == ("fast", "storm", "storm160", "build", "bonds")
 
 
 def test_the_storm_overlay_composes_with_64k3d(storm3d: Config) -> None:
@@ -281,7 +287,7 @@ def test_the_storm_overlay_fails_on_a_world_that_cannot_hold_it() -> None:
 
 
 def test_unknown_overlays_name_all_of_them() -> None:
-    with pytest.raises(ConfigError, match=r"\('fast', 'storm', 'storm160', 'build'\)"):
+    with pytest.raises(ConfigError, match=r"\('fast', 'storm', 'storm160', 'build', 'bonds'\)"):
         load_config(overlays=["nope"])
     with pytest.raises(ConfigError, match="storm"):
         cli._layer(load_config(preset="tiny"), overlays=["nope"], path=None, overrides=())

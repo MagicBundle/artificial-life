@@ -26,6 +26,7 @@ from alife import (
     lifecycle,
     ops,
     physics,
+    roles,
     sensing,
     spatial,
     structures,
@@ -263,11 +264,19 @@ def step(
     )
     slots_s9 = (partner >= 0).astype(_I32).sum()
 
-    E, resource, got = en.harvest(c.energy, s.resource, fcell, act, c.solvent, cfg)  # S10
+    bx = bonds.bonds_ext(cfg)  # static: bonds that pay (DESIGN §40)
+    ef = roles.effects(s, act, partner, cfg) if cfg.roles.enabled else None  # static: the role effects
+    E, resource, got = en.harvest(
+        c.energy, s.resource, fcell, act, c.solvent, cfg, harvest_cap=None if ef is None else ef.harvest_cap
+    )  # S10
     shield_kw = structures.combat_kw(sn, cfg) if st_on else {}  # static: the predator shield (§38.4.3)
-    cb = en.combat(E, resource, fcell, act, partner, cfg, **arms.combat_kw(s, cfg), **shield_kw)  # S11
-    if observe:  # static: the per-slot flows are kept for the channel; the traced graph equals en.share's
-        sl = en.share_slots(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)  # S12
+    if ef is not None and ef.guard is not None:  # static: the guard shield joins the protection product
+        shield_kw = {**shield_kw, "guard": ef.guard}
+    act_c = act if ef is None else roles.combat_act(act, ef.defend_mult)  # the forager's exposed defence
+    cb = en.combat(E, resource, fcell, act_c, partner, cfg, **arms.combat_kw(s, cfg), **shield_kw)  # S11
+    if observe or bx:  # static: the per-slot flows are kept (channel, bond_flow); the graph equals en.share's
+        kin = bonds.slot_kin(s.tag, partner, cfg) if bx and cfg.bonds.share_kin_floor < 1.0 else None
+        sl = en.share_slots(cb.energy, partner, rev, s.partner, act, c.solvent, cfg, kin)  # S12
         sh = en.share_from_slots(cb.energy, sl)
     else:
         sh = en.share(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)  # S12
@@ -335,6 +344,19 @@ def step(
     )
     if d3:  # static
         s1 = s1._replace(pitch=it.pitch)
+    if bx:  # static: role, dwell and the slot memory of the survivors; dead rows cleared (E15)
+        upd, bflows = bonds.state_after(
+            s,
+            sv,
+            dt.partner,
+            sl,
+            cfg,
+            dec=xdec["bonds"] if cfg.roles.enabled else None,
+            guard=None if ef is None else ef.guard,
+            shielded=roles.shielded_by_guard(None if ef is None else ef.guard, cb.attack, act.attack_target),
+        )
+        s1 = s1._replace(**upd)
+        xdec = {**xdec, "bonds": bflows}
 
     req = sv & act.reproduce & (dt.energy >= cfg.repro.min_energy) & (a >= cfg.repro.min_age)  # S16
     imm_request = env.imm_request if env is not None else None
@@ -429,6 +451,8 @@ def _acts(
         | f.as_prop.astype(u16) * ActFlag.PROPOSED.value
         | killed.astype(u16) * ActFlag.KILLED.value
     )
+    if f.ext is not None and isinstance(f.ext.bonds, bonds.BondFlows):  # static: a role switched (§40.5)
+        flags = flags | f.ext.bonds.switched.astype(u16) * ActFlag.ROLE_SWITCHED.value
     thrust = mx.where(f.costs.solvent, mx.round(256.0 * thrust0).astype(i16), 0)  # = round(256·masked thrust)
     defend = mx.round(256.0 * f.act.defend).astype(i16)
     # The kin columns of the attack and bond queries (the _select score is φ·q, with φ = desc[..., 1:], so the
@@ -442,10 +466,13 @@ def _acts(
     nbr = mx.where(f.nbr.idx != rows, f.nbr.idx, -1)  # invalid entries hold the row's own index (spatial.py)
     born_parent = mx.where(birth, f.lanes.parent, -1)
     buoy = mx.where(f.costs.solvent, mx.round(256.0 * buoy0).astype(i16), 0) if buoy0 is not None else None
+    xa = None
+    if f.ext is not None and isinstance(f.ext.bonds, bonds.BondFlows):  # static: observer sub-tuples (§43.5)
+        xa = ExtActs(bonds=bonds.acts_of(f.ext.bonds))
     return Acts(
         f.cb.gain, sl.out, sl.got, flags, thrust, defend, emit_q.sum(axis=1).astype(i16),
         f.act.attack_target, f.act.bond_target, q_kin, nbr,
-        f.rp.records.slot, born_parent, f.rp.records.uid, f.dt.cause.astype(mx.int8), buoy,
+        f.rp.records.slot, born_parent, f.rp.records.uid, f.dt.cause.astype(mx.int8), buoy, xa,
     )  # fmt: skip
 
 
