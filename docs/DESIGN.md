@@ -12983,6 +12983,175 @@ partner's role, the tag similarity and the last net flow.
   roles off) has no roles. Guards are rare in both arms: consistent with the payoff table (a guard pays only as
   half of a pair under predation), and the question the runs are for.
 
+## 41. Niche construction: farming (PR F1: the soil layer)
+
+Normative text of the farming feature (Review-log I70; the specification is `stigmergy/spec.md` §3.4 and §3.5, owner decision
+of 2026-10-28: **farming only now**). This section follows §43 for its registry row (`ext/niche.py`), counter block,
+`ActFlag` bit and layout version. **No new energy source and no 17th ledger term**: the cost of putting into the soil is an
+addend of the action due (booked in `HEAT_ACTION`) and the yield is an increase of the regrowth inside its existing clip (booked
+in `INJECT_REGEN`). F1 is the engine; observers (provenance stamps, `analysis/niche.py`, the `soil` dump and colour mode), the GUI and
+the experiment are F2 to F4.
+
+### 41.1 Scope and what is deferred
+
+An optional, evolvable **niche-construction** action: an organism may put units into the *soil* of the food cell it stands in; the
+soil raises that cell's regrowth, decays slowly, and is worth the same to whoever eats there. Of the stigmergy spec only farming
+is built. **Lasting marks** are deferred until signals are shown to be used (comm, §39, is the test); **food stores** are deferred
+because they hold energy and would need a 17th ledger term (the integer ledger is exact at 16). The feature key is `niche`
+(`EXTENSIONS[4]`), so marks join the same feature later without a new extension index. With `niche.farm = false` (the default)
+nothing is allocated, hashed or serialised and the engine is bit-identical to the one without the feature (the identity matrix
+gates it).
+
+### 41.2 The soil and the bonus
+
+`State.soil` is an int32 array on the food lattice (`dims.field_shape`; `(FG, FG)` in 2D, `(FZ, FG, FG)` in 3D), `0 <= soil <=
+farm_cap` (`farm_cap < 2^15`, default 4095), zero at the start. It is a conditional `FieldSpec` with `conserved = False`: it holds
+no energy, so `alife migrate --force-removal` can never leak `TOTAL` through it.
+
+```text
+units_i = clip(floor(farm_rate * put_i + u_i), 0, farm_rate)     put = max(tanh(y_farm_put), 0), u = dither(uid, step)   (S7)
+due_i   = farm_cost * units_i                                      HEAT_ACTION through extra_due                            (S8)
+units_i = 0 for an insolvent row (it still pays what it holds)                                                              (after S8)
+bonus   = (soil_start * bonus_q16) >> 16        bonus_q16 = round(farm_bonus_frac * regen_max / farm_cap * 65536)           (S17)
+inc     = clip(min(regen_rate + bonus, resource_cap - R), 0, inf)       inside fields.update_resource_farm                  (S17)
+dep     = scatter_add(units at the START-of-step cell);  f1 = min(soil + dep, farm_cap);  f2 = f1 - dithered_decay(f1)
+```
+
+The bonus is read from the START-of-step soil (one step of lag, as the material of §38 acts one step after it is built) and is
+added to the integer regrowth *inside* the clip, so `INJECT_REGEN = sum(inc)` already books it and `resource_cap` still binds: a
+farm cannot push a cell above the cap, and the director's `regen_mult` does not scale the bonus (like the rain, §30). `inc0`, the
+same clip without the bonus, is one more elementwise pair of ops; `FARM_YIELD = sum(inc - inc0)` is what the soil actually
+produced after the cap. `fields.update_resource` is untouched (the off path is the same code); farming calls
+`fields.update_resource_farm`, which returns `(resource', inc, inc0)`. The bonus per cell is at most `farm_bonus_frac * regen_max`
+(and `<= resource_cap - R`), so the extra income is bounded per cell and per step.
+
+### 41.3 The two identities
+
+* **Energy**: the 16-term ledger closes with farming on (`tests/test_niche_farm.py`, every step, 2D and 3D). The put is `HEAT_ACTION`
+  (`farm_cost * units`, exact; a test pins `HEAT_ACTION(cost 30) - HEAT_ACTION(cost 0) = 30 * (SOIL_PUT + SOIL_WASTED)`), the
+  yield is part of `INJECT_REGEN`, and the soil itself is not in `TOTAL`.
+* **Soil** (a counter identity, like the material of §38.7): `sum soil' = sum soil + SOIL_PUT - SOIL_DECAYED`, exactly, every step.
+  `SOIL_PUT` counts the units the cap accepted; the units a full cell refused are `SOIL_WASTED` (paid for, not accepted), so the
+  units paid are `SOIL_PUT + SOIL_WASTED`. `SOIL_TOTAL` is the level after the step.
+
+### 41.4 The put and the dither (E17)
+
+`units = floor(farm_rate * put + u)` with `u` the top 24 bits of `hash32(uid, step, SALT)` over 2^24 (`SALT =
+rng.HASH_SALTS["niche"] = 0x20622137`): `u < 1`, so silence (`put = 0`) is exactly 0 units; `tanh` reaches 1.0 in float32, so full
+output is exactly `farm_rate`; in between the units are unbiased (`E[units] = farm_rate * put`). Without the dither `floor` makes
+every output below `1/farm_rate` buy nothing and the whole low end of the output cost-free noise. The cost is on the *integer*
+units, so what is paid is exactly what is deposited and the cost is exact on average (the E17 test samples a sub-unit put and checks
+the mean and the booked heat).
+
+### 41.5 The dithered decay (E17 spirit, E18)
+
+`ops.dithered_decay(x, q16, cell_ids, step, salt) = (x * q16 + dith) >> 16`, `dith` the top 16 bits of `hash32(cell, step,
+DECAY_SALT)`. A plain floor decay `(x * q16) >> 16` never touches any `x < 65536 / q16` (4095 at `q16 = 16` stays forever) and a ceil decay
+kills a small deposit in one step; the dither makes the loss unbiased, so a level has the mean life `65536 / q16` steps (4096 at the
+default, 3.8 generations) whatever its size. `loss <= x` for `q16 <= 65535`; `validate` requires `farm_cap * farm_decay_q16 <= 2^30`
+so `x * q16 + 65535 < 2^31`. Integer elementwise arithmetic only: no scatter, no RNG stream, bit-exact on every backend; farming
+therefore leaves `rng.layout_version` untouched (a test pins it). The two dithers use two salts of the one feature,
+`SALT` (the put, keyed by the row) and `DECAY_SALT = SALT ^ 0x5BD1E995` (the decay, keyed by the cell), so the two streams are
+independent although both are keyed by a small integer and the step (E18: the independence report of `test_ext_salts` on the two
+streams, plus the pairwise table of §43.3 for the other features).
+
+### 41.6 Brain layout, the silent start and migration
+
+One input `farm` (`soil / farm_cap` at the agent's cell, in [0, 1]) and one output `farm_put`, appended after the comm tail and
+before the arms perception tail (`TAIL_ORDER`): alone, 2D `D_IN/D_OUT` 70/36 and 3D 85/40; token `niche.farm@1`. With
+`niche.silent_init` (default true, start-of-run, CLI-only) the `farm_put` column of every founder and immigrant is zero, so nobody
+farms until mutation finds it: `max(tanh(0), 0) = 0`. `alife migrate --enable niche` (the `ExtSpec.enable` hook) adds the row
+and the column at zero and the soil at zero; the migrated world is a silent start and its first step makes the same legacy actions
+(`tests/test_ext_migrate.py`). In a 3D world the cost must be raised with `--set niche.farm_cost=150` (41.7).
+
+### 41.7 Public goods and the cost level
+
+The soil raises the regrowth of the cell for whoever eats there, so the putter pays and the harvest is shared. Gross lifetime
+return per unit: `farm_bonus_frac * regen_max * 65536 / (farm_cap * farm_decay_q16)` quanta, which is 160 at `regen_max` 320 and 850 at 1700 with the
+defaults; the costs 30 and 150 give a gross return of about 5.3 to 5.7 times the cost, i.e. farming pays a lineage that takes more than
+about 18 % of the extra harvest (the break-even kin share), and below that it is a public good that invites free riding. The cost
+must scale with `regen_max`; `validate` warns (not an error) when the gross return exceeds 12 times the cost. The effect is
+concave in practice: where the cell is already at `resource_cap` the bonus is clipped away (`FARM_YIELD` counts only what was
+produced). The kin share of the harvest, the lasting-farm lineage statistics and the provenance stamps are F2 (offline).
+
+### 41.8 Counters, flags, metrics and the blocked-births alarm (E10, E20)
+
+Counter block `niche`: `FARMERS` (rows with `units > 0`, the `ActFlag.FARMING` = 2048 form), `FARM_YIELD`, `SOIL_PUT`, `SOIL_WASTED`,
+`SOIL_DECAYED`, `SOIL_TOTAL` (a level), `SLOTS_FULL` (1 on a step that ends with the alive count at `N_CAP = n_max - max_births`, the
+bound the lane allocator never lets the population exceed). The per-step counters are int32; the interval sums in
+`metrics.interval_row` are int64 on the host, and `validate` bounds `farm_cap * cells < 2^31` and `farm_cost * farm_rate * n_max
+< 2^31`. Metrics: `farm_farmer_frac`, `farm_put`, `farm_wasted`, `farm_decayed`, `farm_soil_total` (interval mean),
+`farm_yield`, `farm_yield_share` (`FARM_YIELD / INJECT_REGEN`), `farm_full_frac`, `farm_blocked_frac` (`BIRTHS_BLOCKED /
+BIRTH_REQUESTS`) and `farm_blocked_alarm` (true when more than half of the interval's steps ended at `N_CAP` and some birth was
+refused). E20: soil that makes the colony immortal-ish and fills every slot would silently make the run a study of crowding; the
+alarm and `full_frac` make it visible in `metrics.jsonl`, and a stress test packs a world to `N_CAP` and checks the alarm and the
+invariants. (`BIRTHS_BLOCKED` alone is not the alarm: it also counts requests refused by the per-step lane limit.)
+
+### 41.9 Controls, the Director, the invariants
+
+`niche.control` (CLI-only, fork-only): `none`; `ablate` (the soil is put and paid for and decays, but `bonus_of` is zero: the
+control for "does the yield pay"); `mute` (no puts: the no-farming twin with the same layout). Both are static branches. E24: the
+`niche.*` keys are start-of-run config choices outside the Director's env levers (the same three tests as comm). The device check
+flags `FIELD_RANGE` when the soil leaves `[0, farm_cap]`; the host check (`full_check` through `ExtSpec.check`) reports it.
+
+### 41.10 Config
+
+`[niche]`: `farm` false, `farm_rate` 8 (1..256), `farm_cap` 4095 (1..32767), `farm_cost` 30 (0..2^15, `farm_cost * farm_rate < 2^20`),
+`farm_decay_q16` 16 (1..65535), `farm_bonus_frac` 0.5 (0..1), `silent_init` true, `control` "none". All are in `POST_V01_KEYS`
+(hashed, omitted at the default); every key but `farm` must keep its default while `farm` is false. Overlay `niche`
+(`presets/niche.toml`, the 2D values; add `--set niche.farm_cost=150` in 3D), `alife bench --niche`, `alife migrate --enable
+niche`. Constants in code: the two salts, `BLOCKED_ALARM_FRAC` 0.5. The keys `run.niche_every` and the marks and store keys do
+not exist yet (F2 and later).
+
+### 41.11 Tests
+
+`tests/test_niche_farm.py` (ledger and soil identity every step in 2D and 3D; a full cell and `SOIL_WASTED`; the cost in
+`HEAT_ACTION`; insolvent farmer; no 17th term; bonus monotone, bounded, zero without soil; `update_resource_farm` with zero bonus
+equals `update_resource`; the resource cap binds under a huge bonus; the bonus equals `FARM_YIELD` and is booked in `INJECT_REGEN`
+(against the `ablate` control); the one-step lag; the controls; E17 mean units and exact mean cost; dithered decay unbiased against
+`exp(-lambda t)` where floor stalls; E18 independence of the two streams and no RNG stream used; soil non-conserved; invariants),
+`tests/test_niche_config.py` (footprint, silent init, off world, validation table, ROI warning, hash of every key, overlay,
+enable hook, counters and metrics, E20 alarm thresholds and the packed-world stress test), `tests/test_niche_step.py` (determinism,
+resume equals uninterrupted, observer purity and the `FARMING` flag, compiled vs eager, the staged mirror of `bench.py`, coexistence
+with structures, bonds, roles, comm and arms), `tests/test_niche_compile.py` (E4: every constant), `tests/test_niche_director.py`
+(E24), the farming case of `tests/test_ext_migrate.py`, and the updated registry, guard and overlay tests.
+
+### 41.12 Evidence (PR F1, 2026-10-29)
+
+* **Layout**: alone, 2D `D_IN/D_OUT` 70/36 and 3D 85/40 (the plan's numbers); one extra weight row and column per brain. Off: the identity
+  matrix against `e64be03` is bit-identical (`OK: bit-identical, 0 DIFF, 0 INFO`; 15 trajectory cases, 3 runner cases, 30 config/layout entries).
+* **Calibration smoke** (`emergence/farm_build/calib.py`; mini3d, 16 384 slots, `farm_cost` 150, Metal, 6 000 steps per run, the ledger
+  compared with `TOTAL` at every step, the soil identity at every 50th step and at the end, `full_check` every 1 000 steps; **not a result**, one
+  seed unless noted). All 11 runs: 0 steps off the ledger, soil identity exact, `diag` 0, `full_check` clean, `SOIL_WASTED` 0 (no cell reached the
+  cap), `SLOTS_FULL` 0 (the population stayed far below `N_CAP`; `BIRTHS_BLOCKED` is the lane limit of the first steps, 0 afterwards).
+  *Loud founders* (`silent_init = false`: random `farm_put` columns, 22 % of the rows put something at step 0, up to 1 200 q a step against an
+  upkeep of about 140 q): the population is halved against the `mute` twin (1 600 to 1 700 alive at step 500 against 3 326) and farming is
+  selected against (rows that put: 22.5 % at step 500, 7 % at 1 000, 3.3 to 3.5 % at 6 000); the soil built in the first 500 steps (about 450 000
+  units in total) outlives its builders (mean life 4 096 steps) and pays 3.5 / 7.0 / 10.2 % of the regrowth income at step 500 (bonus fraction
+  0.25 / 0.5 / 0.75) and 2.5 / 4.5 / 6.1 % at 6 000. *Silent founders*: farming appears slowly: rows that put rise from 1.2 to 1.3 % (step 500)
+  to 4.2 to 4.4 % (step 6 000) for all three bonus fractions, the soil total rises steadily (14 000 to about 390 000 units, not yet at its
+  equilibrium of roughly `put x 4 096`), the farm bonus is 2.3 / 4.1 / 6.2 % of the regrowth income at 6 000 steps, and the population is as large
+  as the no-farming twin (4 777 / 5 016 / 4 865 alive against 5 230 for `mute`). **But the `ablate` control (the soil is put, paid for and
+  useless) rises just as much** (4.0 % and 4.3 % of rows that put at 6 000 steps, seeds 0 and 1, against 4.2 % and 4.3 % with the bonus; 4 579 and
+  4 395 alive): in 6 000 steps the growth of the farming rows is mutational drift out of the zero column, not selection for the yield. The
+  calibration therefore only fixes the scale (the bonus raises the income by single-digit percents at the working set; `farm_bonus_frac` 0.5
+  is neither negligible nor dominant) and a cost that founders with a random brain cannot afford; whether farming is ever selected is the
+  question of F4 (longer runs, several seeds, `ablate` and `mute` twins, the kin share of the harvest). The honest reading of this
+  smoke is "the machinery runs, the ledger closes, and nothing has been selected yet".
+* **Cost** (`alife bench --preset 64k3d --overlay niche --set niche.farm_cost=150 --niche`, M5 Pro, Metal, interleaved off/on blocks): the step is
+  15.05 ms off and 14.98 ms on (median marginal -0.07 ms over two block pairs) and, in a second run of five pairs, 15.09 and 15.05 ms (median marginal
+  -0.05 ms, pairs between -0.13 and +0.07 ms): **no measurable cost** (under 1 %, below the run-to-run noise; the other agents' CPU suites were
+  running at the time). The stigmergy spec's estimate for the farm part was about +1 ms; the soil update is one scatter into a 65 000-cell lattice
+  and a handful of elementwise integer ops, and the brain grows by one input and one output. Peak memory 1.01 GB.
+* **Tests**: FASTSUITE_PLACEHOLDER
+
+### 41.13 Deferrals
+
+Lasting marks (only if signals prove used: `comm` first), food stores (a 17th ledger term), farm provenance and kin-share
+observers (F2), the `soil` dump, colour mode and stream tag `FSOL`, the GUI levers (F3), the experiment `docs/RESULTS_NICHE.md` (F4),
+a `random` control, a Director "wipe" power. Unmodelled pairs (§43): soil under a built barrier is farmed like any other cell;
+hearing and shelter do not interact with the soil.
+
 ## 42. Arms races (PR A1: heritable traits and the contest)
 
 Normative text for the arms layer of the five-feature series (spec `emergence/arms/spec.md`, owner decisions of
@@ -13522,6 +13691,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I67 | feat: built structures, PR S1 of the five-feature series (the engine; owner decision "B" of 2026-10-28, O1 to O9 accepted, A1 `exit_ease` accepted, no R4; new §38): the int32 grid `State.mat` on the food lattice (a conditional field), the brain output `build` and input `material` (registry row `ext/structures.py`, `alife.structures`), a deposit costing `build_cost` q per unit in `HEAT_ACTION` through `extra_due` (**no 17th ledger term**; the material holds no energy), exact integer decay `ceil(m·decay_q12/4096)` with a floor of 1 and its own exact identity `Σmat' = Σmat + BUILD_UNITS - MAT_WASTED - MAT_DECAYED`, the three effects read from the start-of-step material through one table gather (`fields.mat_table`): shelter (`weather.shelter_wind`, `agent_drift(shelter=)`), barrier (`physics.barrier_drag`, `drag_mult=`) and the predator shield (`combat(shelter=shield_gain·cover)`, inside the 43.6 protection product), the anti-trapping rules R1 (drag at most 4x), R2 (aperture invariant by construction with colour phases) and R3 (easy exit by the actual push, E6), eleven counters, advisory hash-overflow reporting (`HASH_HIDDEN`, `build_hash_hidden`, an `alert:` line; E7, not an error), E4 to E10 tests, `bench --structures`, the metrics keys `build_*`, the overlay `build`; **absent**: the stream record, dump, observers' drift, `BUILDING` flag, GUI (S2, S3), the first runs and the fork (S4, PR 0b); off by default, feature-off runs bit-identical (identity matrix), no hash changes | Departures: one table gather instead of 4 to 6 gathers of N; `genome_layout_version` is 9 / 10 (arms occupies mask bit 0); `silent_build` added (the O6 control); review fixes (the independent review of S1): merged the current `engine/arms` (PR 0a and 0b, cf289b4); `enable=` and `conserved=False` on the row with a migration case in `tests/test_ext_migrate.py`; hash overflow is advisory, not fatal; `shield_gain = 1` needs `protect_floor > 0`; the identity matrix takes the overlay list from the base tree; `aperture = 0` with a barrier warns (control only); the observers' drift is not wired (S2). Tests: `test_structures_{ledger,effects,trapping,config,determinism,off,crowding,compile,step}`; `test_ext_*`, `test_weather_config`, `test_state`, `test_cli_smoke` updated for the new row, overlay, error bit and bench flag. |
 | I68 | feat: communication, the voice channel, PR C1 of the five-feature series (the engine; owner request 2026-10-28, decisions D1 to D15 of the comm spec accepted: a separate channel beside the legacy `msg`, W = 4 fixed per run, cost 4 q per unit provisional with a sweep {0, 4, 16, 64}, everyone hears by default, `kin_exp` an experiment arm, non-negative intensities, `deaf` and `decoy` controls kept, range capped at the sensing radius; a `volume` output, a heritable voice gene and a loudest-speaker block deferred; new §39): `State.msg` widens to `(N, MSG + W)` (no new field; the off shape and digests are untouched; the one legacy reader that mixed columns, `msg_mean`, slices the first two); the registry row `ext/comm.py` (W + nd brain inputs: the heard intensity per channel and the body-frame bearing of the sound, W outputs, 2D 75/39 and 3D 91/43, token `comm{W}@1`, `Dims.voice_w/msg_w/hear_range`); `comm.hear` over the K sensed neighbours with a linear falloff inside `comm.range <= sensing.radius`, optional `atten_pow` and `kin_exp`, saturating superposition, no scatter; the speaking cost `floor(cost·Σ sig + u)` with a dither `u` from `hash32` and the comm salt (E17: a sub-unit call costs its value on average, silence is free), an addend of the action due through `extra_due` and so booked in `HEAT_ACTION` (**no 17th ledger term**); counters `COMM_SPEAKERS` and `COMM_DUE` (int32 per step, int64 interval sums, validated bounds, E10); `ActFlag.SPOKE`; the controls `comm.control = deaf | decoy` (integer-only, the decoy shift a hash of the step so it cannot overflow, a bijection that never maps a row to itself, no RNG stream and no layout bump; E19: the three arms run bit-identical steps when the brain ignores the heard inputs); hash salt use pinned to `HASH_SALTS["comm"]` (E18); E4 compile tests for `range`, `atten_pow`, `kin_exp`, `cost`; E24 (no Director lever); the overlay `comm`, `alife migrate --enable comm` (the silent start: W + nd zero rows before the recurrent rows, W zero output columns), `alife bench --comm`, the metrics `comm_speaker_frac`, `comm_due`, `comm_due_share`; the `voice_w` meta key of the spec is superseded by `layout_features`; the observer channel (`Acts.ext.comm`), `FSIG`, the GUI and `analysis/comm.py` are C2 and C3. Off by default, feature-off runs bit-identical (identity matrix against `e64be03`). Evidence: §39.12 (mini3d smoke with the three controls; `bench --comm` on 64k3d +0.735 ms, +5.3 %, inside the spec's 8 %) |
 | I69 | feat: bonds that pay, PR B1 of the five-feature series (conductive sharing and the bond block; owner decisions O1 to O11 of the bonds spec accepted 2026-10-28, germ role deferred, R4 movement not built; new §40): `bonds.share_mode` 1 (mutual consent) and 2 (obligate): an equalising, antisymmetric flow along every bond, the richer end sends `min((gap·q8(share_kappa)) >> 8, cap, E // B)`, received once through `rev` at the (optionally kin-scaled) efficiency, booked in `FLOW_SHARED` and `HEAT_SHARE` (**no 17th ledger term**; mode 0 is the legacy gift bit for bit); solvency by the per-slot `E // B` cap so no row goes below zero on any bond graph (E14), `share_kappa <= 1/(2B)` so no overshoot; the registry row `ext/bonds.py` (`bonds_ext = roles.enabled or share_mode != 0`) allocating the whole 13-input, 2-output bond block (`role`, `bond_role`, `bond_kin`, `bond_flow`; `role_a`, `role_b`), the conditional fields `role` (int8), `role_dwell` (int16) and `bond_flow` (int16, (N, B)) with `on_birth = rest` and cleared on death so a reused row inherits nothing (E15), five counters (`ROLE_SWITCHES`, `N_FORAGERS`, `N_GUARDS`, `SHIELDED_BY_GUARD`, `SHARE_SLOTS_ACTIVE`), `Acts.ext.bonds`, the metrics keys `bond_flux`, `bond_share_slots`, `bond_role_switches`, `bond_forager_frac`, `bond_guard_frac`, the overlay `bonds`, `alife migrate --enable bonds`, E4 and E10 tests; the role machine and its effects are PR B2 (second paragraph of this row); off by default, feature-off runs bit-identical (identity matrix against e64be03), no hash changes | Departures: `roles.enabled` in B1 only allocates the layout and the state (the inert twin of the measures is `roles.enabled = false` with `share_mode != 0`); the brain-cost compensation of O11 is not applied by the overlay (no `config.brain_cost_scale` exists); `ext_check` lives in `ext/bonds.py` (numpy host reads are not allowed in the simulation modules, `test_lint` rule 5). Tests: `test_bonds_share`, `test_bonds_step`, `test_bonds_compile`, `test_ext_migrate` (bonds case); `test_ext_*`, `test_weather_config`, `test_arms_state` updated for the new row and overlay. Known failure in this CPU-plugin environment on the base too: `test_lifecycle_compiles_and_matches_eager`. **PR B2 (stacked on B1):** the committed roles generalist/forager/guard, chosen by the brain through `OUT_ROLE_A`/`OUT_ROLE_B` with a dead zone (keep-by-default hysteresis), `role_dwell` and a ramp, `switch_cost` through `extra_due` (`HEAT_ACTION`), the harvest cap (`en.harvest(harvest_cap=)`: forager up, guard down, `synergy` beside a guard), the forager's reduced own defence and the guard shield through `combat(guard=)` inside the §43.6 protection product (itself and bonded partners; E16: an attacking row contributes no shield), `inherit_role`, `ROLE_SWITCHED`, the live role counters, the inspector lines, E4 tests of the roles constants, the payoff-matrix test fixing the starting parameters (forager+guard beats two generalists under moderate predation; no lone specialist beats a lone generalist), `[roles]` effect keys all off by default; **no 17th ledger term** (every effect multiplies a flow that closes already); the observers, scorecard and GUI are B3; the spec's role upkeep `UP` is not built (no new energy path). |
+| I70 | feat: niche construction, farming only, PR F1 of the five-feature series (the engine; owner decisions of 2026-10-28: from the stigmergy spec build farming only now, lasting marks later and only if signals prove used, food stores deferred because they would need a 17th ledger term; new §41): the conditional state field `soil` (int32 on the food lattice, `FieldSpec` with `conserved=False`: it holds no energy), the registry row `ext/niche.py` (one brain input `farm`, one output `farm_put`, 2D 70/36 and 3D 85/40, token `niche.farm@1`, `silent_init` zero column, `ExtSpec.enable` for `alife migrate --enable niche`, overlay `niche`, `Dims` unchanged), the put `floor(farm_rate·put + u)` with a dither `u` from `hash32` and the niche salt (E17: sub-unit puts cost exactly on average, silence is free) paid `farm_cost` per unit through `extra_due` and so in `HEAT_ACTION` (**no 17th ledger term**), the bonus `(soil·bonus_q16) >> 16` added to the regrowth inside the existing clip by the new `fields.update_resource_farm` (`inc = clip(min(regen_rate + bonus, resource_cap − R), 0, ∞)`, so `INJECT_REGEN` books it and the resource cap still binds; `update_resource` itself is unchanged), the dithered integer decay `ops.dithered_decay` (a hash of cell and step with a second salt of the same feature, E18: no RNG stream, `rng.layout_version` unchanged), the soil identity `Σsoil'=Σsoil+SOIL_PUT−SOIL_DECAYED` (`SOIL_PUT` counts the cap-accepted units, `SOIL_WASTED` the refused ones), counters `FARMERS FARM_YIELD SOIL_PUT SOIL_WASTED SOIL_DECAYED SOIL_TOTAL SLOTS_FULL` (int32 per step, int64 interval sums, validated bounds, E10), `ActFlag.FARMING`, metrics `farm_*` including `farm_blocked_alarm` (E20: more than half of the steps ended at `N_CAP` with births refused) and a packed-world stress test, controls `niche.control = ablate | mute`, the E24 tests (no niche key is a Director lever), the E4 compile tests for every constant, `alife bench --niche`, a `validate` warning when `farm_cost` is far below the design point for `regen_max` (the cost scales with the regrowth: 30 at 320, 150 at 1 700). Off is bit-identical (identity matrix against `e64be03`). The calibration smoke (mini3d, 6 000 steps, bonus fraction 0.25 / 0.5 / 0.75, silent and loud founders, `ablate` and `mute` twins) closes the ledger and the soil identity at every step and shows farming appearing at a few percent of the rows without any difference from the `ablate` control, i.e. not selected yet; the bench on 64k3d shows no measurable cost. Observers, provenance, the `soil` dump and colour mode, `FSOL`, GUI and the experiment are F2 to F4; marks and stores are not built | §41 (new), evidence §41.12; code in `src/alife/niche.py`, `ext/niche.py`, `fields.py` (`update_resource_farm`), `ops.py` (`dithered_decay`), `step.py`, `bench.py`, `config.py`, `metrics.py`, `invariants.py`, `presets/niche.toml`; tests: `test_niche_farm`, `test_niche_config`, `test_niche_step`, `test_niche_compile` (E4), `test_niche_director` (E24), the farming case of `test_ext_migrate`, `test_ext_*` updated for the second-to-last registered row. |
 | I71 | feat: arms races, PR A1 of the five-feature series (stages 1 and 2 of the arms spec; owner approval of 2026-10-28; new §42): the heritable traits `ATK`, `ARM`, `KEY`, `LOCK` (and the held-at-0 `TOX`, `SIG` columns) as the conditional state field `arms (N, 6)`, the Tullock contest with the key/lock match as the first factor of the protection product of `energy.combat` (`arms.contest_factor`; `kappa`, `a0`, `key_floor`), the quadratic upkeep added to `brain_cost` at S8 with **dithered** rounding (E13: the cost is exact on average, a sub-unit trait is not free; `HEAT_BASAL`, no 17th ledger term), the armour speed cost (`arms.physics_act`), fixed-sigma mutation at birth with phases wrapped every time (E12, the 1.0-rounding of `c - floor(c)` mapped to 0), `Stream.ARMS` = 10 / `InitStream.ARMS` = 8 and `rng.layout_version` 4 with arms on (an off run still writes 3), the epsilon in the Tullock denominator (E11), invariants (`arms` finite and in [0, 1] on device, phases below 1 on the host), `bench --arms`, `_c_ref` with the founders' upkeep; the registry row `ext/arms.py` (the first real row) and `combat(arms=)` no longer raises; **absent**: toxin and display factors and keys (A3), observers (A2), pierce and duels (A4), perception (A5), colour modes and GUI levers; off by default, no shipped preset enables it, feature-off runs bit-identical to main (identity matrix) and the config hash unchanged | Departures: column order is the integration plan's (ATK, ARM, TOX, SIG, KEY, LOCK), not the spec's; founders' keys and locks come from the init stream by row (`FieldSpec.rest` has no `uid`); the whole step is not bit-equal compiled and eager with or without arms (the brain's reductions, as on e64be03), so compiled equals eager is asserted for the arms functions only. Tests: `test_arms`, `test_arms_state`, `test_arms_step` (incl. the broken-path mutation tests), `test_arms_compile` (E4), `test_arms_director` (E24); `test_ext_*` updated for the first registered row. |
 | I72 | feat: the feature extension mechanism, PR 0a of the five-feature series (arms, structures, bonds, communication, farming; owner approval of 2026-10-28; new §43, which holds the plan's normative content), **no behaviour change** and the registry empty: `src/alife/ext/` (`ExtSpec`, `REGISTRY`, the layout composition `layout.for_dims(nd, blocks)` with `Layout.__getattr__` for `IN_*`/`OUT_*`, `genome_layout_version(nd, mask) = base + 4*mask`, the `layout_features` meta key absent when empty); conditional state fields (`state_cls`, `is_3d_state`, fill-on-load, refusal of an extra field); counter blocks (`n_counters(nd, weather, blocks)`, `counter_blocks`, `counter_index`, `PROT_CAPPED`); `Acts.flags` uint16 and the `ActFlag` bits `128 << i`, `Acts.ext`/`_Flows.ext`; `extra_due` in `pay_costs(3)`; `rng.layout_version(cfg)` and `ops.hash32`; the single `combat` signature with `energy.protection` and `combat.protect_floor` (default 0, `[0, 0.5]`, `POST_V01_KEYS`, left out of `config.json` and the checkpoint metadata at its default: `config_to_dict(omit_defaults=True)`, `SERIAL_OMIT_KEYS`); silent tail blocks in `brain.init_weights`; observer registries; `tests/ext_stub.py` and seven `test_ext_*` files; `tests/identity_matrix.py` (15 trajectory cases, 3 runner cases, config and layout, tiny3d `1fe07a9f`/`556de6c6`, against a fresh `git archive` of e64be03: bit-identical, no INFO line). Departures from the specs are in §43.10.  Review fixes: the hooks `inputs(s, cfg, ctx)`, `decode`, `mask`, `due(s, act, y, cfg)` and `_Flows.ext`, `FieldSpec.on_birth`, `Dims.ext(name)`, the wiring tests (`test_ext_hooks.py`). PR 0b (the layout migration) follows. **PR 0b (stacked on PR 0a):** the layout migration tool of §43.8: `alife migrate RUN[:STEP] --enable F --out NEWRUN`, `migrate.migrate_checkpoint`, `state.migrate_layout`/`layout_change`/`MigrationError`, `ExtSpec.enable` (a hook, default None); zero rows/columns for new blocks, order-independent (E2), removal and width change refused (removal only with `--force-removal`; leave-one-out arms are fresh runs, E23), compressed sources give compressed outputs, provenance `migrated_from` in `meta.json`; `tests/test_ext_migrate.py`. No behaviour change for existing runs (the identity matrix is unchanged) |
 

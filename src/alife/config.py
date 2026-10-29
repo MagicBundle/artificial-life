@@ -395,6 +395,26 @@ class CommConfig:  # the voice channel (DESIGN §39); post v0.1
 
 
 @dataclass(frozen=True)
+class NicheConfig:  # niche construction, farming only (DESIGN §41); marks and stores are deferred
+    """Every key changes the compiled step, so every key is hashed (``POST_V01_KEYS`` through
+    ``ext.niche.SPEC.lever_keys``) and is inert at its default while ``farm`` is false (``validate``).
+    ``farm`` allocates the soil (``State.soil``, an int32 level per food cell), the brain input ``farm`` and
+    the output ``farm_put``. The defaults are the 2D 64k working set (``regen_max`` 320); the 3D worlds
+    (``regen_max`` 1700) need ``farm_cost`` about 150 (the gross return scales with ``regen_max``)."""
+
+    farm: bool = False  # static: the soil, its sensor and the put action exist
+    farm_rate: int = 8  # units put per step at output 1, [1, 256] (dithered rounding, E17)
+    farm_cap: int = 4095  # soil level a cell can hold, [1, 32767]
+    farm_cost: int = 30  # quanta per unit put (HEAT_ACTION); 0 = free farming
+    farm_decay_q16: int = 16  # dithered exponential decay per step in 1/65536, [1, 65535]: mean life 4096
+    farm_bonus_frac: float = 0.5  # bonus at full soil = frac * regen_max quanta/step on top of the regrowth
+    silent_init: bool = True  # start-of-run: zero the W2 column of farm_put (no founder farms; the migration)
+    control: str = (
+        "none"  # fork-only: none | ablate (soil is put and paid but gives no bonus) | mute (no puts)
+    )
+
+
+@dataclass(frozen=True)
 class Config:
     world: WorldConfig = field(default_factory=WorldConfig)
     population: PopulationConfig = field(default_factory=PopulationConfig)
@@ -414,6 +434,7 @@ class Config:
     structures: StructuresConfig = field(default_factory=StructuresConfig)
     roles: RolesConfig = field(default_factory=RolesConfig)
     comm: CommConfig = field(default_factory=CommConfig)
+    niche: NicheConfig = field(default_factory=NicheConfig)
     run: RunConfig = field(default_factory=RunConfig)
 
 

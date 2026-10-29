@@ -1,0 +1,15 @@
+# niche overlay: farming (DESIGN section 41). A WORLD overlay like `build`, `bonds` and `comm`: it composes with any
+# preset, 2D or 3D, but the cost of a unit scales with the regrowth: the defaults below are the 2D 64k working set
+# (`fields.regen_max` 320); in a 3D world (`regen_max` 1700) add `--set niche.farm_cost=150` (validate warns when the
+# cost is far below the design point).
+#
+# An organism may put up to 8 units a step into the soil of its food cell (cost 30 q per unit); a unit decays with a
+# mean life of 4096 steps (`farm_decay_q16` 16) and adds, at full soil (`farm_cap` 4095), half of `regen_max` to the
+# cell's regrowth, inside the resource cap. The gross return of a unit is about 5.5 times its cost, so farming pays
+# a lineage that stays put and is a public good for its neighbours (break-even kin share about 0.18). Every value is
+# PROVISIONAL until the calibration sweep (`farm_bonus_frac` 0.25 / 0.5 / 0.75, then `farm_cost`).
+#
+# Founders have a zero `farm_put` column (`silent_init`): nobody farms until mutation finds it. The controls are
+# `niche.control = ablate` (the soil is put and paid for but gives no bonus) and `mute` (nobody can put).
+[niche]
+farm = true

@@ -18,9 +18,9 @@ from alife.step import ActFlag
 
 def test_with_every_feature_off_every_function_is_the_identity() -> None:
     """PR 0a shipped the machinery with an empty registry; A1 registers the arms row and S1 the structures
-    row, B1 the bonds row and C1 the comm row. With every feature off (the default), nothing a feature-off
-    run sees can change."""
-    assert [s.name for s in ext.REGISTRY] == ["arms", "structures", "bonds", "comm"]
+    row, B1 the bonds row, C1 the comm row and F1 the niche (farming) row. With every feature off (the
+    default), nothing a feature-off run sees can change."""
+    assert [s.name for s in ext.REGISTRY] == ["arms", "structures", "bonds", "comm", "niche"]
     cfg = load_config(preset="tiny")
     assert ext.active(cfg) == () and ext.layout_features(cfg) == "" and ext.mask(cfg) == 0
     assert (
@@ -41,13 +41,15 @@ def test_with_every_feature_off_every_function_is_the_identity() -> None:
             "ROLE_B",
             "VOICE",
             "VOICE_BEARING",
+            "FARM",
+            "FARM_PUT",
         }
     )
     n_feature_keys = sum(len(v) for v in config.FEATURE_KEYS.values())
     assert config.POST_V01_KEYS[-n_feature_keys - 1] == ("combat", "protect_floor")
-    assert set(config.FEATURE_KEYS) == {"arms", "structures", "bonds", "comm"}
-    assert config.POST_V01_KEYS[-1] == ("comm", "control")
-    assert config.WORLD_OVERLAYS == ("storm", "storm160", "build", "bonds", "comm")
+    assert set(config.FEATURE_KEYS) == {"arms", "structures", "bonds", "comm", "niche"}
+    assert config.POST_V01_KEYS[-1] == ("niche", "control")
+    assert config.WORLD_OVERLAYS == ("storm", "storm160", "build", "bonds", "comm", "niche")
     assert ext.check_registry() == []
 
 

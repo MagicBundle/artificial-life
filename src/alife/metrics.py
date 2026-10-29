@@ -13,7 +13,7 @@ from typing import Any, Final
 import mlx.core as mx
 import numpy as np
 
-from alife import arms, ext, fields, layout, ops, rng, spatial, weather, weather_obs
+from alife import arms, ext, fields, layout, niche, ops, rng, spatial, weather, weather_obs
 from alife.config import Config, config_hash, dims, is_3d
 from alife.state import (
     ENV_FIELDS,
@@ -534,6 +534,34 @@ def interval_row(
                     "comm_speaker_frac": _ratio(int(col("COMM_SPEAKERS")), alive_steps),
                     "comm_due": int(col("COMM_DUE")),  # voice quanta paid in the interval (in heat_action)
                     "comm_due_share": _ratio(int(col("COMM_DUE")), int(ls[LedgerIdx.HEAT_ACTION])),
+                }
+            )
+        elif (
+            bname == "niche"
+        ):  # farming (§41.8): the work, the soil, the yield, and the E20 blocked-births alarm
+            by = {n: i for i, n in enumerate(names)}
+            col = lambda n, at=at, by=by: cs[at + by[n]]  # noqa: E731
+            blocked = _ratio(int(cs[CounterIdx.BIRTHS_BLOCKED]), int(cs[CounterIdx.BIRTH_REQUESTS]))
+            full = _ratio(int(col("SLOTS_FULL")), t)
+            row.update(
+                {
+                    "farm_farmer_frac": _ratio(int(col("FARMERS")), alive_steps),
+                    "farm_put": int(col("SOIL_PUT")),
+                    "farm_wasted": int(col("SOIL_WASTED")),
+                    "farm_decayed": int(col("SOIL_DECAYED")),
+                    "farm_soil_total": _ratio(int(col("SOIL_TOTAL")), t),
+                    "farm_yield": int(col("FARM_YIELD")),
+                    "farm_yield_share": _ratio(int(col("FARM_YIELD")), int(ls[LedgerIdx.INJECT_REGEN])),
+                    # E20: immortal colonies filling every slot: the share of steps with the rows full, the
+                    # share of birth requests not served, and the alarm when the world sat full for most of
+                    # the interval while births were turned away
+                    "farm_full_frac": full,
+                    "farm_blocked_frac": blocked,
+                    "farm_blocked_alarm": bool(
+                        full is not None
+                        and full > niche.BLOCKED_ALARM_FRAC
+                        and int(cs[CounterIdx.BIRTHS_BLOCKED]) > 0
+                    ),
                 }
             )
         at += len(names)

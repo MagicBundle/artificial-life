@@ -98,6 +98,25 @@ heard, with costs and speaking unchanged (the causal arms). Enable with `--overl
 Absent: the observer channel `Acts.ext.comm`, `FSIG`, the GUI and the colour mode (C2), `analysis/comm.py` and the language score (C3),
 the runs (C4).
 
+## Farming (DESIGN §41, I70)
+
+PR F1 (stacked on C1, not merged) is the engine of the farming half of niche construction (the stigmergy spec's marks and food stores
+are deferred by the owner's decision of 2026-10-28: marks only if signals prove used, stores because they need a 17th ledger term).
+`niche.farm` gives the food lattice an int32 `soil` level (0 to `farm_cap`, 4095) and every organism one input `farm` (the soil at its
+cell) and one output `farm_put`. A put of `u` units (`floor(farm_rate · put + dither)`, up to 8 a step) costs `farm_cost` q per unit in
+`HEAT_ACTION` (30 in the 2D overlay, **150 in a 3D world**: pass `--set niche.farm_cost=150`; `validate` warns when it is far too low),
+raises the soil, and the soil decays by a dithered integer rule (mean life 4096 steps). The bonus `(soil · q) >> 16`, at most
+`farm_bonus_frac · regen_max` (0.5) per cell and step, is added to the regrowth inside its clip, so `INJECT_REGEN` books it and
+`resource_cap` still binds; the regrowth is for whoever eats there, so farming is a public-goods game (gross return about 5.5 times the
+cost; break-even kin share about 0.18). The soil has its own exact identity `Σsoil' = Σsoil + SOIL_PUT − SOIL_DECAYED`; no new ledger
+term. Founders are silent (`niche.silent_init`); `alife migrate --enable niche` is a silent start from an evolved world; controls
+`niche.control = ablate | mute`. First smoke (mini3d, 6 000 steps, one seed, bonus fraction 0.25 / 0.5 / 0.75; not a result): with random-brain founders (22 % put at
+step 0, up to 1 200 q a step) the population is halved and farming is selected against; with silent founders about 4 % of the rows put
+something per step at step 6 000 (1.3 % at step 500), the soil total is still rising and the bonus is 2 to 6 % of the regrowth income,
+**but the `ablate` control (soil put, paid for, useless) rises just as much**: no selection for the yield is visible in 6 000 steps. The
+bench on 64k3d shows no measurable cost. Numbers in DESIGN §41.12. Absent: observers, provenance, the `soil` dump and colour mode,
+stream tag `FSOL` (F2), the GUI (F3), the experiment (F4); `E20`: `farm_blocked_alarm` in the metrics row.
+
 ## How to run
 
 ```bash
