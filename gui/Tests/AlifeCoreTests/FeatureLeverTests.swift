@@ -24,13 +24,13 @@ import Testing
 
     @Test func everyKeyIsUniqueAndItsDefaultIsValid() {
         let keys = FeatureLevers.allSpecs.map(\.key)
-        #expect(Set(keys).count == keys.count && keys.count == 42)
+        #expect(Set(keys).count == keys.count && keys.count == 48)
         for spec in FeatureLevers.allSpecs {
             #expect(spec.problem(spec.defaultText) == nil, "\(spec.key) default \(spec.defaultText)")
             if case .flag(let gate)? = spec.gate { #expect(FeatureLevers.spec(gate) != nil, "\(spec.key) gate") }
             if case .nonzero(let gate)? = spec.gate { #expect(FeatureLevers.spec(gate) != nil, "\(spec.key) gate") }
         }
-        #expect(FeatureLevers.groups.map(\.feature) == ["arms", "structures", "bonds", "comm"])
+        #expect(FeatureLevers.groups.map(\.feature) == ["arms", "structures", "bonds", "comm", "niche"])
         for group in FeatureLevers.groups {
             #expect(FeatureLevers.spec(group.switchKey) != nil && group.specs.first?.key == group.switchKey)
             #expect(group.specs.allSatisfy { $0.section == group.specs[0].section || group.feature == "bonds" })
@@ -177,6 +177,18 @@ import Testing
         structures["structures.shield_gain"] = "1"
         #expect(structures.validate().contains { $0.contains("protect_floor") })
 
+        var niche = FeatureLevers()
+        niche["niche.farm"] = "true"
+        niche["niche.farm_cost"] = "32768"
+        niche["niche.farm_rate"] = "64"
+        #expect(niche.validate().contains { $0.contains("1048576") })
+        niche["niche.farm_cost"] = "150"
+        niche["niche.farm_cap"] = "32767"
+        niche["niche.farm_decay_q16"] = "40000"
+        #expect(niche.validate().contains { $0.contains("2^30") })
+        niche["niche.farm_decay_q16"] = "16"
+        #expect(niche.validate().isEmpty)
+
         var comm = FeatureLevers()
         comm["comm.enabled"] = "true"
         comm["comm.cost"] = "8192"
@@ -205,6 +217,11 @@ import Testing
         let comm = fromOverlays(["comm"])
         #expect(comm.values.isOn("comm.enabled") && comm["comm.width"] == "4" && comm["comm.cost"] == "4")
         for f in [build, bonds, comm] { #expect(f.validate().isEmpty) }
+        let niche = fromOverlays(["niche"])
+        #expect(niche.values.isOn("niche.farm") && niche["niche.farm_cost"] == "30" && niche["niche.farm_rate"] == "8" && niche.validate().isEmpty)
+        let niche3D = fromOverlays(["niche"], dims: 3)
+        #expect(niche3D.values.isOn("niche.farm") && niche3D["niche.farm_cost"] == "150" && niche3D.validate().isEmpty,
+                "a 3D world takes the overlay niche3d, whose cost fits the larger regrowth")
         #expect(fromOverlays(["arms"]) == FeatureLevers(), "the arms layer has no overlay file")
         #expect(fromOverlays([]) == FeatureLevers())
     }
@@ -242,6 +259,16 @@ import Testing
         #expect(fork.overlayArguments.isEmpty)
     }
 
+    @Test func aThreeDWorldPassesTheThreeDFarmingOverlay() {
+        var s = newRun { $0.preset = .tiny3d }
+        s.selectPreset(.tiny3d, world3D: World3DLevers(preset: PresetFile(text: "[world]\ndims = 3\nheight = 24\n")))
+        s.selectFeatureOverlays(["niche", "comm"], baseline: fromOverlays(["niche", "comm"], dims: 3))
+        #expect(s.worldDims == 3 && s.overlayArguments == ["--overlay", "comm", "--overlay", "niche3d"])
+        #expect(args(s) == ["run", "--preset", "tiny3d", "--overlay", "comm", "--overlay", "niche3d", "--seed", "1", "--out", "runs/t"])
+        let flat = newRun { $0.selectFeatureOverlays(["niche"], baseline: fromOverlays(["niche"])) }
+        #expect(flat.overlayArguments == ["--overlay", "niche"])
+    }
+
     @Test func choosingOverlaysResetsTheFeatureLevers() {
         var s = newRun { $0.levers.features["arms.enabled"] = "true" }
         s.selectFeatureOverlays(["structures"], baseline: fromOverlays(["structures"]))
@@ -258,7 +285,8 @@ import Testing
      "structures": {"enabled": true, "cap": 2048, "decay_q12": 32, "shelter_gain": 0.4},
      "bonds": {"share_mode": 1, "share_kappa": 0.1},
      "roles": {"enabled": true, "forage_gain": 0.5, "inherit_role": true, "ramp_steps": 32},
-     "comm": {"enabled": true, "width": 2, "cost": 8.0, "control": "deaf"}}
+     "comm": {"enabled": true, "width": 2, "cost": 8.0, "control": "deaf"},
+     "niche": {"farm": true, "farm_rate": 4, "farm_cost": 60, "farm_bonus_frac": 0.25, "control": "mute"}}
     """
 
     private func forkSettings(_ edit: (inout RunSettings) -> Void = { _ in }) throws -> RunSettings {
@@ -281,6 +309,8 @@ import Testing
         #expect(f["bonds.share_mode"] == "1" && f["bonds.share_kappa"] == "0.1" && f["roles.ramp_steps"] == "32")
         #expect(f.values.isOn("roles.inherit_role") && f["roles.forage_gain"] == "0.5")
         #expect(f["comm.width"] == "2" && f["comm.cost"] == "8")
+        #expect(f.values.isOn("niche.farm") && f["niche.farm_rate"] == "4" && f["niche.farm_cost"] == "60" && f["niche.farm_cap"] == "4095")
+        #expect(f["niche.farm_bonus_frac"] == "0.25")
         #expect(f.validate().isEmpty)
     }
 
@@ -303,10 +333,12 @@ import Testing
             $0.levers.features["arms.kappa"] = "2"
             $0.levers.features["comm.cost"] = "16"
             $0.levers.features["roles.forage_gain"] = "0.75"
+            $0.levers.features["niche.farm_cost"] = "90"
         }
         #expect(tuned.validate(existingRuns: ["src"]).isEmpty)
         #expect(args(tuned) == ["run", "--init-from", "runs/src", "--out", "runs/child",
-                                "--set", "arms.kappa=2.0", "--set", "roles.forage_gain=0.75", "--set", "comm.cost=16.0"])
+                                "--set", "arms.kappa=2.0", "--set", "roles.forage_gain=0.75", "--set", "comm.cost=16.0",
+                                "--set", "niche.farm_cost=90"])
         // 1 and 2 are both the bond block: the mode can move between them
         let obligate = try forkSettings { $0.levers.features["bonds.share_mode"] = "2" }
         #expect(obligate.validate(existingRuns: ["src"]).isEmpty && args(obligate).suffix(2) == ["--set", "bonds.share_mode=2"])
@@ -314,7 +346,7 @@ import Testing
 
     @Test func aForkCannotChangeTheLayout() throws {
         for (key, value) in [("arms.enabled", "false"), ("structures.enabled", "false"), ("roles.enabled", "false"),
-                             ("comm.enabled", "false"), ("comm.width", "3")] {
+                             ("comm.enabled", "false"), ("comm.width", "3"), ("niche.farm", "false")] {
             let s = try forkSettings { $0.levers.features[key] = value }
             let errors = s.validate(existingRuns: ["src"])
             #expect(errors.contains { $0.contains("fixes the brain layout") || $0.contains("brain layout") }, Comment(rawValue: key))

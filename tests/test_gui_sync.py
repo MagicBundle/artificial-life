@@ -112,7 +112,7 @@ def test_the_3d_levers_cover_the_3d_keys() -> None:
 
 # The features whose GUI lever file (`<Feature>Levers.swift`) has landed; a feature's GUI PR adds itself here
 # (DESIGN §43.7). A feature not listed must have no such file, which catches a forgotten registration.
-GUI_LANDED: set[str] = {"arms", "structures", "bonds", "comm"}
+GUI_LANDED: set[str] = {"arms", "structures", "bonds", "comm", "niche"}
 
 
 @pytest.mark.parametrize("feature", ext.EXTENSIONS)

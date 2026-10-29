@@ -201,9 +201,9 @@ package struct FeatureLevers: Equatable, Sendable {
 
     package init() {}
 
-    /// Every group, in `ext.EXTENSIONS` order. `niche` joins in `NicheLevers.swift`.
+    /// Every group, in `ext.EXTENSIONS` order.
     package static let groups: [FeatureLeverGroup] = [
-        ArmsLevers.group, StructuresLevers.group, BondsLevers.group, CommLevers.group,
+        ArmsLevers.group, StructuresLevers.group, BondsLevers.group, CommLevers.group, NicheLevers.group,
     ]
 
     package static let allSpecs: [FeatureLeverSpec] = groups.flatMap(\.specs)

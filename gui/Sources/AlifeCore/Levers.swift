@@ -250,6 +250,12 @@ extension Levers {
         try feature("comm", "atten_pow")
         try feature("comm", "kin_exp")
         try feature("comm", "cost")
+        try feature("niche", "farm")
+        try feature("niche", "farm_rate")
+        try feature("niche", "farm_cap")
+        try feature("niche", "farm_cost")
+        try feature("niche", "farm_decay_q16")
+        try feature("niche", "farm_bonus_frac")
     }
 
     /// The levers of the run directory `runDirectory`, or the engine defaults plus a short warning if its
