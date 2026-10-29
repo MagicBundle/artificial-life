@@ -40,6 +40,11 @@ class Combat(NamedTuple):
     attack: mx.array  # (N,) bool: attackers after the S9-partner gate
     hit: mx.array  # (N,) bool: grant > 0
     max_attackers: mx.array  # () int32
+    # Protection (DESIGN §43.6), None while no protection factor is passed; observer and counter inputs.
+    prot: mx.array | None = None  # (N,) f32 per attacker: the protection product after the floor
+    q: mx.array | None = None  # (N,) int32 per attacker: Q8 efficiency (arms only; else the scalar ``q8``)
+    capped: mx.array | None = None  # (N,) bool: attackers whose product was raised to ``protect_floor``
+    shielded: mx.array | None = None  # (N,) bool: attackers against a victim with shelter or guard > 0
 
 
 class Share(NamedTuple):
@@ -50,13 +55,23 @@ class Share(NamedTuple):
 
 
 def pay_costs(
-    energy: mx.array, act: Actions, n_bonds: mx.array, brain_cost: mx.array, alive: mx.array, cfg: Config
+    energy: mx.array,
+    act: Actions,
+    n_bonds: mx.array,
+    brain_cost: mx.array,
+    alive: mx.array,
+    cfg: Config,
+    extra_due: mx.array | None = None,
 ) -> Costs:
     """Basal and action costs with solvency (§10.3).
 
     ``n_bonds`` counts start-of-step bonds. Each float term is floored in f32. Insolvent agents
     (``alive & E < basal_due + action_due``) pay everything they hold and end at ``E = 0``; dead rows pay 0.
     Ledger: ``E_in − E_out = paid_basal + paid_action`` (``HEAT_BASAL``, ``HEAT_ACTION``).
+
+    ``extra_due`` (DESIGN §43.4) is the sum of the feature dues, an (N,) int32 each already floored by its own
+    module (``ext.sum_due``); it joins the action due after the legacy terms, so solvency, payment order and
+    ``HEAT_ACTION`` stay the one path. None (every feature off) traces nothing.
     """
     ec, ph = cfg.energy, cfg.physics
     f = ops.floor_i32
@@ -72,6 +87,8 @@ def pay_costs(
         + f(ec.defend_cost * act.defend)
         + ec.attack_cost * act.attack.astype(_I32)
     )
+    if extra_due is not None:  # static
+        action_due = action_due + extra_due
     basal_due = mx.where(alive, basal_due, 0).astype(_I32)
     action_due = mx.where(alive, action_due, 0).astype(_I32)
     solvent = alive & (energy >= basal_due + action_due)
@@ -89,6 +106,7 @@ def pay_costs3(
     buoy_cap: mx.array,
     alive: mx.array,
     cfg: Config,
+    extra_due: mx.array | None = None,
 ) -> Costs3:
     """3D basal, action and buoyancy costs with solvency (§27.7); ``pay_costs`` is the 2D form.
 
@@ -115,6 +133,8 @@ def pay_costs3(
         + f(ec.defend_cost * act.defend)
         + ec.attack_cost * act.attack.astype(_I32)
     )
+    if extra_due is not None:  # static: the feature dues (``pay_costs``)
+        action_due = action_due + extra_due
     if ph.buoyancy_max > 0:  # static: the actuator exists
         lift = buoy_cap * mo.buoy  # the fraction of buoyancy_max used
         buoy_due = f(ec.buoyancy_cost * (lift * lift)) + f(ec.buoyancy_cap_cost * buoy_cap)
@@ -146,8 +166,50 @@ def harvest(
     return energy + take, resource - taken.reshape(resource.shape), take
 
 
+def protection(
+    t0: mx.array,
+    floor: float,
+    *,
+    arms_p: mx.array | None = None,
+    shelter: mx.array | None = None,
+    guard: mx.array | None = None,
+    pierce: mx.array | None = None,
+) -> tuple[mx.array | None, mx.array | None]:
+    """The protection product ``P`` of each attacker's demand and the rows the floor raised (DESIGN §43.6).
+
+    ``P`` is evaluated left to right in f32 in a fixed order: ``arms_p`` (the per-attacker armour, key/lock
+    and
+    toxin factor ``(1 − r)·K·T`` of the arms contest, already gathered), then ``shelter`` and ``guard`` (the
+    victim's protection FRACTIONS in ``[0, 1)``, gathered at ``t0``), each as ``1 − fraction·(1 − pierce)``.
+    ``pierce`` (per attacker, ``[0, 1)``) lifts the environmental protections only. The floor then bounds the
+    product from below: ``P = max(P, floor)``, ``capped = P < floor``. A factor is traced only when passed
+    (static), so with none the result is ``(None, None)`` and ``combat`` traces today's expression; a factor
+    equal to exactly 1.0 multiplies exactly. ``floor == 0`` traces no cap (``capped`` is None).
+    """
+    p: mx.array | None = arms_p
+    for frac in (shelter, guard):
+        if frac is None:
+            continue
+        keep = 1.0 - frac[t0] if pierce is None else 1.0 - frac[t0] * (1.0 - pierce)
+        p = keep if p is None else p * keep
+    if p is None:
+        return None, None
+    if floor > 0:  # static
+        return mx.maximum(p, floor), p < floor
+    return p, None
+
+
 def combat(
-    energy: mx.array, resource: mx.array, fcell: mx.array, act: Actions, partner: mx.array, cfg: Config
+    energy: mx.array,
+    resource: mx.array,
+    fcell: mx.array,
+    act: Actions,
+    partner: mx.array,
+    cfg: Config,
+    *,
+    arms: mx.array | None = None,
+    shelter: mx.array | None = None,
+    guard: mx.array | None = None,
 ) -> Combat:
     """Simultaneous theft with spill into the victim's cell; ``partner`` is post-S9 (§11).
 
@@ -159,7 +221,16 @@ def combat(
     ``residue``, spilled into its own cell, so it dies ``KILLED`` at S14 unless bond inflow rescues it.
     Ledger: ``Σ lost = Σ gain + Σ spill + Σ residue`` (``FLOW_STOLEN``, ``FLOW_ATTACK_GAIN``, ``FLOW_SPILL``
     = spill + residue); ``spill`` and ``gain`` are per attacker, ``lost`` and ``residue`` per victim.
+
+    The one signature of the protection series (DESIGN §43.6). ``shelter`` and ``guard`` are (N,) f32 victim
+    protection fractions (already scaled by their gains by the supplying module); the demand is multiplied by
+    their product (``protection``), floored at ``combat.protect_floor``, before the behavioural ``defend``.
+    With
+    all three None (every feature off) the traced graph is the legacy one. ``arms`` (``State.arms``, the arms
+    contest) is evaluated inside once the arms PR lands; until then passing it raises.
     """
+    if arms is not None:
+        raise NotImplementedError("the arms contest lands with the arms engine PR (DESIGN §42)")
     cc = cfg.combat
     n = energy.shape[0]
     tgt = act.attack_target
@@ -167,7 +238,11 @@ def combat(
     if not cc.attack_bonded:
         attack = attack & ~((partner == tgt[:, None]) & (partner >= 0)).any(axis=1)
     t0 = mx.maximum(tgt, 0)
-    want = ops.floor_i32(cc.attack_max * (1.0 - cc.defend_efficiency * act.defend[t0]))
+    prot, capped = protection(t0, cc.protect_floor, shelter=shelter, guard=guard)
+    if prot is None:  # static: nothing protects (every feature off)
+        want = ops.floor_i32(cc.attack_max * (1.0 - cc.defend_efficiency * act.defend[t0]))
+    else:
+        want = ops.floor_i32(cc.attack_max * prot * (1.0 - cc.defend_efficiency * act.defend[t0]))
     want = mx.where(attack, mx.clip(want, 0, cc.attack_max), 0)
     grant, taken = ops.proportional_take(want, t0, attack, energy)
     demand = ops.scatter_add_i32(n, t0, want, attack)  # total demand per victim
@@ -189,7 +264,23 @@ def combat(
         attack=attack,
         hit=attack & (grant > 0),
         max_attackers=max_attackers,
+        prot=prot,
+        capped=None if capped is None else attack & capped,
+        shielded=_shielded(t0, attack, shelter, guard),
     )
+
+
+def _shielded(
+    t0: mx.array, attack: mx.array, shelter: mx.array | None, guard: mx.array | None
+) -> mx.array | None:
+    """Attackers whose victim has a shelter or guard fraction > 0 (None when neither is passed)."""
+    if shelter is None and guard is None:
+        return None
+    on = mx.zeros(attack.shape, dtype=mx.bool_)
+    for frac in (shelter, guard):
+        if frac is not None:
+            on = on | (frac[t0] > 0.0)
+    return attack & on
 
 
 class ShareSlots(NamedTuple):

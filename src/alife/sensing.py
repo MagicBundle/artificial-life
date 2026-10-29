@@ -7,6 +7,7 @@ blocks with ``present = 0``. Every input is finite with ``|x| ≤ 1``.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 import mlx.core as mx
 
@@ -94,8 +95,12 @@ def build_inputs(
     cfg: Config,
     *,
     grounded: mx.array | None = None,
+    ext_in: Sequence[mx.array] = (),
 ) -> mx.array:
     """Brain inputs ``x (N,D_IN)`` f32 with ``|x| ≤ 1`` (§5).
+
+    ``ext_in`` (DESIGN §43.2) are the feature extension blocks, (N, width) f32 each, in ``TAIL_ORDER``
+    (``ext.step_inputs``): concatenated after the base (and 3D) vector, where ``lay.EXT_IN`` puts their rows.
 
     ``desc`` comes from ``neighbor_descriptors``; ``geom`` holds start-of-step bond offsets for ``s.partner``;
     ``fobs`` holds rows 12–23 as computed by ``fields.sample_fields`` (§16.2), copied unchanged; ``key`` is
@@ -208,5 +213,7 @@ def build_inputs(
             _col(grounded),  # IN_GROUNDED
         ]
         x = mx.concatenate([x, *tail], axis=1)
+    if ext_in:  # static: the extension tails
+        x = mx.concatenate([x, *(e.astype(_F32) for e in ext_in)], axis=1)
     assert x.shape == (n, d.lay.D_IN), x.shape  # static shape check, free under compile
     return x

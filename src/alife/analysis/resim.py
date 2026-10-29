@@ -26,7 +26,7 @@ import mlx.core as mx
 from alife import metrics, runio, spatial
 from alife.config import dims
 from alife.runio import CheckpointError, RunDir
-from alife.state import to_numpy
+from alife.state import CounterBlocks, counter_blocks, to_numpy
 from alife.step import make_step
 
 # Interval-row keys that depend on wall-clock time, not on the trajectory.
@@ -60,12 +60,13 @@ def compare_row(
     *,
     nd: int = 2,
     weather: bool = False,
+    blocks: CounterBlocks = (),
 ) -> list[str]:
     """Keys whose recomputed value differs from ``stored`` (interval keys plus ``E_total``); ``nd`` and
     ``weather`` are the run's dims and ``weather.enabled`` (``metrics.interval_row``)."""
     c = to_numpy(mx.stack(counters))
     lg = to_numpy(mx.stack(ledgers))
-    row = metrics.interval_row(int(stored["step"]), c, lg, {}, {}, nd=nd, weather=weather)
+    row = metrics.interval_row(int(stored["step"]), c, lg, {}, {}, nd=nd, weather=weather, blocks=blocks)
     bad = [k for k, v in row.items() if k not in _PERF_KEYS and k in stored and stored[k] != v]
     if "E_total" in stored and stored["E_total"] != total:
         bad.append("E_total")
@@ -131,6 +132,7 @@ def resimulate(
                     int(to_numpy(state.total)),
                     nd=dims(cfg).nd,
                     weather=cfg.weather.enabled,
+                    blocks=counter_blocks(cfg),
                 )
                 if bad:
                     raise ResimMismatch(f"step {t}: re-simulated values differ from metrics.jsonl in {bad}")

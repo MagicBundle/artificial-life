@@ -72,14 +72,17 @@ def test_step_returns_stepout_unless_observing(tiny_cfg: Config) -> None:
 
 
 def test_act_flag_bits_and_dtypes(tiny_cfg: Config) -> None:
-    assert [f.value for f in ActFlag] == [1, 2, 4, 8, 16, 32, 64]
+    # the seven base bits, then the five extension bits fixed by the extension index, 128 << i (DESIGN §43.5)
+    assert [f.value for f in ActFlag] == [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
     names = ["ATTACKED", "HIT", "FORMED", "BUDDED", "EMITTED", "PROPOSED", "KILLED"]
+    names += ["CONTESTED", "BUILDING", "ROLE_SWITCHED", "SPOKE", "FARMING"]
     assert [f.name for f in ActFlag] == names
     assert Acts._fields == (
         *("attack_gain", "share_out", "share_got", "flags", "thrust", "defend", "emit"),  # G1
         *("attack_target", "bond_target", "q_kin", "nbr", "born_row", "born_parent", "born_uid"),  # G2
         "death_cause",  # G2 stage 7 (the roster)
         "buoy",  # the storm world (DESIGN §32): 3D only, None in 2D
+        "ext",  # the feature extensions (DESIGN §43.5): None while every feature is off
     )
     d = dims(tiny_cfg)
     n, m, k, b = d.n, d.m, d.k, layout.B
@@ -89,7 +92,7 @@ def test_act_flag_bits_and_dtypes(tiny_cfg: Config) -> None:
     assert (a.attack_gain.shape, a.share_out.shape, a.share_got.shape) == ((n,), (n, b), (n, b))
     assert (a.flags.shape, a.thrust.shape, a.defend.shape, a.emit.shape) == ((n,),) * 4
     assert (a.attack_gain.dtype, a.share_out.dtype, a.share_got.dtype) == (mx.int32,) * 3
-    assert (a.flags.dtype, a.thrust.dtype, a.defend.dtype, a.emit.dtype) == (mx.uint8, *(mx.int16,) * 3)
+    assert (a.flags.dtype, a.thrust.dtype, a.defend.dtype, a.emit.dtype) == (mx.uint16, *(mx.int16,) * 3)
     shapes = (a.attack_target.shape, a.bond_target.shape, a.q_kin.shape, a.nbr.shape)
     assert shapes == ((n,), (n,), (n, 2), (n, k))
     assert (a.born_row.shape, a.born_parent.shape, a.born_uid.shape) == ((m,),) * 3
@@ -99,6 +102,7 @@ def test_act_flag_bits_and_dtypes(tiny_cfg: Config) -> None:
     assert (a.born_row.dtype, a.born_parent.dtype, a.born_uid.dtype) == (mx.int32, mx.int32, mx.int64)
     assert a.death_cause.shape == (n,) and a.death_cause.dtype == mx.int8
     assert a.buoy is None  # no buoyancy in 2D
+    assert a.ext is None  # no feature on
     assert KIN_Q_CLIP == 127.0 and round(256 * KIN_Q_CLIP) <= np.iinfo(np.int16).max
 
 

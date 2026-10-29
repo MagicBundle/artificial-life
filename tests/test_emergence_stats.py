@@ -203,10 +203,8 @@ def test_null_and_power_with_2000_replications() -> None:
     rng = np.random.default_rng(12)
     fw = sum(any(v == "supported" for v in _calls(rng, {}, pr, h).values()) for _ in range(2000))
     assert fw / 2000 <= 0.05
-    eff = {("comm", e): 1.5 for e in ("P1", "P4", "P5")}
-    assert (
-        sum(_calls(rng, eff, pr, h)["comm"] == "supported" for _ in range(2000)) / 2000 >= 0.75
-    )  # measured 0.80
+    # 16 blocks, as the prereg uses after the review fixes (the 8-block default measures about 0.56)
+    assert _hits(rng, 2000, 1.5, h, pr, n_blocks=16) >= 0.80
 
 
 def test_prereg_hash_mismatch_refuses_supported() -> None:
