@@ -56,7 +56,13 @@ def test_expected_layout_is_the_schema_of_the_initial_state(which: str) -> None:
     assert lay["resource"][0] == (cfg.world.layers, 12 * cfg.world.nside**2)
     assert lay["chem"][0] == (layout.NCH, *lay["resource"][0])
     assert lay["patch_pos"][0] == lay["patch_vel"][0] == (cfg.fields.n_patches, 3)
-    assert lay["wx"][0] == (state.N_WX_SPHERE, 12 * d.wn * d.wn)
+    # the placeholder is sized by the spec's Nw = 2·Nf, not by the box's weather.cells (160): 0.13 to 0.93 MB
+    assert (
+        lay["wx"][0]
+        == (state.N_WX_SPHERE, 12 * (2 * cfg.world.nside) ** 2)
+        == state.wx_shape_sphere(cfg.world.nside)
+    )
+    assert 12 * (2 * cfg.world.nside) ** 2 * state.N_WX_SPHERE * 4 < 1_000_000 and d.wn == 160
     assert lay["env_cat_center"][0] == (2,)
     assert state.agent_fields(cfg) == state.AGENT_FIELDS_S
 
@@ -186,7 +192,7 @@ def test_arrays_round_trip_and_the_digest_is_deterministic() -> None:
         state.state_from_arrays(short, cfg)
     no_wx = {k: v for k, v in d.items() if k != "wx"}
     filled = state.state_from_arrays(no_wx, cfg)  # a file without wx gets the rest array of the sphere
-    assert filled.wx.shape == (state.N_WX_SPHERE, 12 * dims(cfg).wn ** 2) and not np.array(filled.wx).any()
+    assert filled.wx.shape == state.wx_shape_sphere(cfg.world.nside) and not np.array(filled.wx).any()
 
 
 def test_a_sphere_state_is_refused_by_the_box_schema_and_vice_versa() -> None:

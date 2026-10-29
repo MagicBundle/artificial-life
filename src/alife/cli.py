@@ -537,7 +537,8 @@ def _prepare_fork(
         raise ConfigError("--director replay and --replay-log LOG go together")
     if replay:  # the whole log is checked before anything is written (exit 2)
         director_log.validate_log(director_log.read_log(Path(a.replay_log)), cfg)
-    for key in ("dims", "height"):  # a state never crosses dimensions or world heights (§27.1)
+    # a state never crosses dimensions, world heights (§27.1) or the shape of a sphere world (§46.9)
+    for key in ("dims", "height", "geometry", "radius", "nside", "layers"):
         if getattr(cfg.world, key) != getattr(src_cfg.world, key):
             raise CheckpointError(
                 f"world.{key} must equal the source's {getattr(src_cfg.world, key)} "

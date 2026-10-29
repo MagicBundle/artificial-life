@@ -419,14 +419,85 @@ def test_the_gradient_of_a_linear_field_is_that_field_in_the_body_frame(which: s
     got = np.array(obs.res_grad, np.float64)
     assert np.abs(want).max() < 1.0  # inside the clip, so the comparison is linear
     err = np.linalg.norm(got - want, axis=1) / np.linalg.norm(want, axis=1)
-    assert (
-        np.median(err) < 0.01 and np.quantile(err, 0.95) < 0.06 and err.max() < 0.12
-    )  # seam cells are worst
+    # seam cells are the worst (measured median 0.2 %, q95 3.4 %, max 8 % on tiny3s)
+    assert np.median(err) < 0.005 and np.quantile(err, 0.95) < 0.045 and err.max() < 0.10
     # the value channel is the cell value, normalised like the box
     cap = cfg.fields.resource_cap
     assert (
         np.abs(np.array(obs.res) - np.minimum(ri.reshape(-1)[np.array(fcell)] / cap, 2.0) / 2.0).max() < 1e-6
     )
+
+
+@pytest.mark.parametrize(
+    "which,med,q95", [("tiny3s", 0.025, 0.035), ("mini3s", 0.02, 0.035), ("64k3s", 0.008, 0.025)]
+)
+def test_the_gradient_near_the_poles_is_accurate_and_the_frame_has_no_pole_singularity(
+    which: str, med: float, q95: float
+) -> None:
+    """The polar-facet cells (|z| > 0.93) are the anisotropic ones. Agents at their centres, in interior
+    layers:
+    the body-frame gradient of a linear field stays within the pole-cap limits (measured median 1.5 / 1.1 /
+    0.4 %, q95 2.2 / 2.3 / 1.4 %; the body frame is built from the stored heading and up, not from east and
+    north, so nothing special happens at the pole)."""
+    cfg = _cfg(which, "fields.resource_cap=16000000")
+    a = np.array([0.36, -0.48, 0.8])
+    a /= np.linalg.norm(a)
+    amp = 8.0e4
+    ri = np.rint(_linear_field(cfg, a, 8.0e6, amp)).astype(np.int32)
+    w = cfg.world
+    npix = geom.npix(w.nside)
+    cen = geom.pixel_centres(w.nside)
+    rg = np.random.default_rng(1)
+    pix = rg.choice(np.flatnonzero(np.abs(cen[:, 2]) > 0.93), size=400)
+    k = rg.integers(1, w.layers - 1, size=400)
+    r = geom.layer_radii(w.radius, w.height, w.layers)
+    rc = np.cbrt(0.5 * (r[:-1] ** 3 + r[1:] ** 3))
+    pos = mx.array((cen[pix] * rc[k][:, None]).astype(np.float32))
+    up = np.array(pos) / np.linalg.norm(np.array(pos), axis=1)[:, None]
+    t = np.cross(up, _random_patches(400, 3))
+    hdg = mx.array((t / np.linalg.norm(t, axis=1)[:, None]).astype(np.float32))
+    pitch = mx.zeros(400)
+    fcell = mx.array((k * npix + pix).astype(np.int32))
+    obs = fields.sample_fields(
+        mx.array(ri),
+        mx.zeros((layout.NCH, *ri.shape)),
+        fcell,
+        mx.zeros(400),
+        cfg,
+        pitch=pitch,
+        pos=pos,
+        hdg=hdg,
+    )
+    want = layout.RES_GRAD_GAIN * _body(
+        _sampled_gradient(cfg, a, pos, fcell) * amp * w.field_cell / 16_000_000, pos, hdg, pitch
+    )
+    err = np.linalg.norm(np.array(obs.res_grad, np.float64) - want, axis=1) / np.linalg.norm(want, axis=1)
+    assert np.median(err) < med and np.quantile(err, 0.95) < q95 and err.max() < 0.05
+
+
+@pytest.mark.parametrize("which", ["tiny3s", "64k3s"])
+def test_the_boundary_layers_see_exactly_half_the_radial_slope(which: str) -> None:
+    cfg = _cfg(which, "fields.resource_cap=16000000")
+    w = cfg.world
+    npix = geom.npix(w.nside)
+    cen = geom.pixel_centres(w.nside)
+    r = geom.layer_radii(w.radius, w.height, w.layers)
+    rc = np.cbrt(0.5 * (r[:-1] ** 3 + r[1:] ** 3))
+    ri = (np.rint(8.0e6 + 1.0e5 * (rc - w.radius))[:, None] * np.ones((1, npix))).astype(np.int32)
+    pix = np.random.default_rng(2).integers(0, npix, 300)
+    exact = layout.RES_GRAD_GAIN * 1.0e5 * w.field_cell / 16_000_000
+    for kk, want in ((0, 0.5), (w.layers - 1, 0.5), (w.layers // 2, 1.0)):
+        pos = mx.array((cen[pix] * rc[kk]).astype(np.float32))
+        up = np.array(pos) / np.linalg.norm(np.array(pos), axis=1)[:, None]
+        t = np.cross(up, _random_patches(300, 3))
+        hdg = mx.array((t / np.linalg.norm(t, axis=1)[:, None]).astype(np.float32))
+        fcell = mx.array((kk * npix + pix).astype(np.int32))
+        obs = fields.sample_fields(
+            mx.array(ri), mx.zeros((layout.NCH, *ri.shape)), fcell, mx.zeros(300), cfg,
+            pitch=mx.zeros(300), pos=pos, hdg=hdg,
+        )  # fmt: skip
+        ratio = np.array(obs.res_grad, np.float64)[:, 2] / exact  # pitch 0: component 2 is the up axis
+        assert np.all(np.abs(ratio / want - 1.0) < 0.01), (kk, ratio.min(), ratio.max())
 
 
 def test_a_sampled_agent_sees_the_gradient_of_its_cell() -> None:
@@ -452,7 +523,7 @@ def test_a_sampled_agent_sees_the_gradient_of_its_cell() -> None:
         _sampled_gradient(cfg, a, pos, fcell) * amp * 4.0 / 16_000_000, pos, hdg, pitch
     )
     err = np.linalg.norm(np.array(obs.res_grad, np.float64) - want, axis=1) / np.linalg.norm(want, axis=1)
-    assert np.median(err) < 0.02 and np.quantile(err, 0.95) < 0.07 and err.max() < 0.15
+    assert np.median(err) < 0.01 and np.quantile(err, 0.95) < 0.05 and err.max() < 0.10
 
 
 def test_radial_difference_uses_the_true_layer_spacing_and_halves_at_the_boundaries() -> None:

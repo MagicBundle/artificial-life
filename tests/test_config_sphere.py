@@ -4,12 +4,14 @@ invisible in a box world, and the validation rules, which refuse a sphere until 
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import math
 from pathlib import Path
 
 import pytest
 
-from alife import cli, config
+from alife import cli, config, geom
 from alife.config import (
     Config,
     ConfigError,
@@ -130,7 +132,7 @@ def test_a_sphere_config_round_trips_through_json_and_overrides(tmp_path: Path) 
     [
         (["world.geometry=torus"], "world.geometry must be one of"),
         (["world.dims=2"], "needs world.dims = 3"),
-        (["world.radius=15"], "world.radius must be finite and ≥ 20"),
+        (["world.radius=15"], "world.radius must be finite and in [20, "),
         (["world.height=2"], "world.height must be finite and > 2·physics.radius"),
         (["world.height=40"], "must be ≤ world.radius"),
         (["world.size=200"], "world.size 200.0 must be > 4·(radius + height) = 208"),
@@ -151,11 +153,13 @@ def test_every_sphere_rule_has_a_message(overrides: list[str], expect: str) -> N
 
 
 @pytest.mark.usefixtures("sphere_enabled")
-def test_the_hash_rules_need_a_planet_the_sensing_radius_can_cover() -> None:
-    assert "no hash Nside >= 2 covers" in problems(
-        "tiny3s", "world.radius=20", "world.height=12", "sensing.radius=40"
-    )
-    assert "would exceed 64" in problems("tiny3s", "world.radius=800", "world.height=100", "world.size=8000")
+def test_the_hash_rules_need_a_planet_the_sensing_radius_can_cover(monkeypatch: pytest.MonkeyPatch) -> None:
+    # a ball almost as wide as the planet: allowed by the planet-size rule, but no Nside >= 2 covers it
+    assert "no hash Nside >= 2 covers" in problems("tiny3s", "sensing.radius=71")
+    # a hash Nside beyond the cap is refused with the remedy
+    with monkeypatch.context() as m:
+        m.setattr(config.geom, "estimate_nh", lambda angle: config.NH_MAX + 1)
+        assert "would exceed 64" in problems("tiny3s")
     # the lid cell holds more as the shell gets thick: the capacity rule follows V_lid
     assert "must be ≥ ceil(0.167·V_lid) + 4 = 27" in problems("mini3s", "sensing.cell_capacity=20")
 
@@ -170,3 +174,65 @@ def test_the_sphere_keys_are_inert_in_a_box_world() -> None:
         with pytest.raises(ConfigError, match=f"{key} is inert while world.geometry is box"):
             load_config(preset="tiny3d", overrides=sets)
     validate(load_config(preset="tiny3d"))  # and the box itself is valid
+
+
+@pytest.mark.usefixtures("sphere_enabled")
+@pytest.mark.parametrize(
+    "overrides,expect",
+    [
+        (["world.layers=100000000000"], "must be ≤ 2^20"),  # a typo of a count must not allocate 800 GB
+        (["world.layers=1000000000000"], "must be ≤ 2^20"),
+        (["world.nside=100000000", "world.layers=2"], "must be ≤ 2^20"),
+        (["world.radius=1e200", "world.height=1", "world.size=1e201"], "world.radius must be finite and in"),
+        (["world.radius=1e308", "world.height=1", "world.size=1e308"], "world.radius must be finite and in"),
+        (["world.radius=1e7", "world.height=10", "world.size=1e8"], "world.radius must be finite and in"),
+        (["world.size=1e308"], ""),  # a huge image length is fine: it only has to exceed 4(Rp + H)
+    ],
+)
+def test_absurd_sizes_raise_a_config_error_before_anything_is_allocated(
+    overrides: list[str], expect: str
+) -> None:
+    msg = problems("tiny3s", *overrides)
+    assert (expect in msg) if expect else msg == ""
+
+
+@pytest.mark.usefixtures("sphere_enabled")
+def test_nothing_is_computed_for_a_config_that_fails_a_cheap_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ordering (M5): the exact hash derivation only runs when every cheap rule passed."""
+
+    def boom(*a, **k):
+        raise AssertionError("the hash derivation ran for a refused config")
+
+    monkeypatch.setattr(config.geom, "derive_nh", boom)
+    monkeypatch.setattr(config.geom, "estimate_nh", boom)
+    assert "world.layers must be ≥ 2" in problems("tiny3s", "world.layers=1")
+    assert "world.height 40.0 must be ≤ world.radius" in problems("tiny3s", "world.height=40")
+    monkeypatch.setattr(config, "GEOMETRY_SUPPORTED", ("box",))  # the refusal is alone and immediate
+    assert problems("64k3s").startswith("1 config problem(s): world.geometry = 'sphere' is not enabled yet")
+
+
+@pytest.mark.usefixtures("sphere_enabled")
+def test_a_planet_the_sensing_radius_cannot_cover_is_refused_and_dims_survives_it() -> None:
+    over = ["world.radius=20", "world.height=16", "world.nside=4", "world.layers=6", "sensing.radius=45"]
+    msg = problems("tiny3s", *over)
+    assert "sensing.radius 45.0 must be < 2·(world.radius + physics.radius) = 42.0" in msg
+    assert "math domain" not in msg
+    # dims() is defined even for the config validate refused (no math domain error): no hash Nside, nh = 0
+    cfg = dataclasses.replace(
+        load_config(preset="tiny3d"),
+        world=dataclasses.replace(
+            Config().world,
+            geometry="sphere",
+            dims=3,
+            size=1024.0,
+            radius=20.0,
+            height=16.0,
+            nside=4,
+            layers=6,
+        ),
+        sensing=dataclasses.replace(Config().sensing, radius=45.0, cell_capacity=32),
+    )
+    d = dims(cfg)
+    assert d.sph and d.nside_h == 0 and d.npix_h == 0
+    assert geom.rigorous_angle(20.0, 1.0, 45.0) == pytest.approx(math.pi)
+    assert geom.derive_nh(20.0, 1.0, 45.0) == 0 and geom.derive_nh(1.0, 1.0, 1e9) == 0

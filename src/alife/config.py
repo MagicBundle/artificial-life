@@ -1127,35 +1127,51 @@ def frac_q8(frac: float) -> int:
     return int(mx.floor(mx.array(frac, mx.float32) * 256.0 + 0.5).astype(mx.int32).item())
 
 
-NH_MAX: Final = (
-    64  # the largest hash Nside validate will derive (its exact table has 12·Nh² cells; ~40 s at 64)
-)
+# The largest hash Nside validate will derive. The shipped table of exact coverage angles
+# (geom.min_coverage_angle)
+# covers Nside 2..72, so a derivation up to 64 (it probes Nh + 1) costs nothing; beyond the table one
+# exact table of
+# 12·Nside² cells is computed per probe (about 40 s at Nside 64) and cached on disk.
+NH_MAX: Final = 64
 SPHERE_CELL_VOLUME_BAND: Final = (0.4, 2.5)  # an (angular cell, layer) volume in units of field_cell³
+
+
+SPHERE_RADIUS_MAX: Final = 1e6  # keeps radius³ and every derived float finite; far beyond any feasible planet
 
 
 def _validate_sphere(cfg: Config) -> list[str]:
     """The rules of a sphere world (DESIGN §46.9), as messages. The rules that need tables of later PRs are
-    absent by design: the diffusion tables and bounds (S1), the feature set a sphere run may enable
-    (``SPHERE_READY``, S2) and the weather (S4)."""
+    absent by design: the feature set a sphere run may enable (``SPHERE_READY``, S2) and the weather (S4).
+    The fields' rules (S1) are ``_sphere_field_rules``.
+
+    Ordered by cost, and total: the refusal comes first and alone (nothing else is computed for a config the
+    engine cannot run); the cheap arithmetic rules come next and every quantity they derive is bounded
+    before it
+    is used (no allocation or overflow from a typo such as ``layers = 10**11`` or ``radius = 1e200``);
+    the exact
+    hash derivation (``geom.derive_nh``, seconds without the shipped table) only runs for a config that passed
+    all of them."""
     w, ph, sen = cfg.world, cfg.physics, cfg.sensing
+    if "sphere" not in GEOMETRY_SUPPORTED:
+        return ["world.geometry = 'sphere' is not enabled yet (the true-sphere series, PR S2)"]
     errs: list[str] = []
 
-    def req(ok: bool, msg: str) -> None:
+    def req(ok: bool, msg: str) -> bool:
         if not ok:
             errs.append(msg)
+        return ok
 
-    req(
-        "sphere" in GEOMETRY_SUPPORTED,
-        "world.geometry = 'sphere' is not enabled yet (the true-sphere series, PR S2)",
-    )
     req(w.dims == 3, f"world.geometry = 'sphere' needs world.dims = 3 (the shell is 3D), got {w.dims}")
     rad, h, r = w.radius, w.height, ph.radius
-    sane = math.isfinite(rad) and math.isfinite(h) and math.isfinite(w.size) and rad > 0 and h > 0
-    req(math.isfinite(rad) and rad >= 20.0, f"world.radius must be finite and ≥ 20, got {rad}")
-    req(
+    rad_ok = req(
+        math.isfinite(rad) and 20.0 <= rad <= SPHERE_RADIUS_MAX,
+        f"world.radius must be finite and in [20, {SPHERE_RADIUS_MAX:g}], got {rad}",
+    )
+    h_ok = req(
         math.isfinite(h) and h > 2 * r,
         f"world.height must be finite and > 2·physics.radius = {2 * r}, got {h}",
     )
+    sane = rad_ok and h_ok and math.isfinite(w.size)
     req(
         not sane or h <= rad,
         f"world.height {h} must be ≤ world.radius {rad} (a thin shell bounds the area ratio by 4)",
@@ -1165,8 +1181,8 @@ def _validate_sphere(cfg: Config) -> list[str]:
         f"world.size {w.size} must be > 4·(radius + height) = {4.0 * (rad + h)}: it is the image length of "
         "min_image, which must be the identity on pair offsets",
     )
-    req(w.nside >= 2, f"world.nside must be ≥ 2, got {w.nside}")
-    req(w.layers >= 2, f"world.layers must be ≥ 2, got {w.layers}")
+    nside_ok = req(w.nside >= 2, f"world.nside must be ≥ 2, got {w.nside}")
+    layers_ok = req(w.layers >= 2, f"world.layers must be ≥ 2, got {w.layers}")
     req(
         math.isfinite(ph.ceiling_band)
         and ph.ceiling_band >= 0.0
@@ -1177,27 +1193,36 @@ def _validate_sphere(cfg: Config) -> list[str]:
         ph.floor_eps >= 0.01,
         f"physics.floor_eps must be ≥ 0.01 on a sphere (float32 radius), got {ph.floor_eps}",
     )
-    cells_ok = sane and w.nside >= 2 and w.layers >= 2 and w.field_cell > 0
-    if cells_ok:
-        req(
-            w.layers * geom.npix(w.nside) <= 1 << 20,
-            f"field cells FZ·12·Nf² = {w.layers * geom.npix(w.nside)} must be ≤ 2^20 (exact_sum)",
-        )
-        z1 = float(geom.layer_edges(rad, h, w.layers)[1])
-        req(
-            r + ph.floor_eps < z1,
-            f"physics.radius + floor_eps = {r + ph.floor_eps} must be < z_1 = {z1:.4g} "
-            "(a grounded agent is in the floor layer)",
-        )
-        lo, hi = SPHERE_CELL_VOLUME_BAND
-        vol = geom.layer_volume(rad, h, w.layers, w.nside)
-        req(
-            lo * w.field_cell**3 <= vol <= hi * w.field_cell**3,
-            f"the cell volume {vol:.4g} must be in [{lo}, {hi}]·world.field_cell³ = "
-            f"[{lo * w.field_cell**3:.4g}, {hi * w.field_cell**3:.4g}]",
-        )
-    # the hash: Nh from the exact reach-2 coverage table, then C from the lid cell
-    if sane and sen.radius > 0 and r > 0 and rad + r > sen.radius / 2.0:
+    if sane and nside_ok and layers_ok and w.field_cell > 0:
+        n_cells = w.layers * geom.npix(w.nside)
+        if req(n_cells <= 1 << 20, f"field cells FZ·12·Nf² = {n_cells} must be ≤ 2^20 (exact_sum)"):
+            z1 = float(geom.layer_edges(rad, h, w.layers)[1])  # layers·npix <= 2^20: a small allocation
+            req(
+                r + ph.floor_eps < z1,
+                f"physics.radius + floor_eps = {r + ph.floor_eps} must be < z_1 = {z1:.4g} "
+                "(a grounded agent is in the floor layer)",
+            )
+            lo, hi = SPHERE_CELL_VOLUME_BAND
+            vol = geom.layer_volume(rad, h, w.layers, w.nside)
+            req(
+                lo * w.field_cell**3 <= vol <= hi * w.field_cell**3,
+                f"the cell volume {vol:.4g} must be in [{lo}, {hi}]·world.field_cell³ = "
+                f"[{lo * w.field_cell**3:.4g}, {hi * w.field_cell**3:.4g}]",
+            )
+    # the fields (S1): the conductance tables need the shell that passed the rules above; before the hash
+    # block so that a bad diffusion constant is reported without the expensive derivation
+    if sane and nside_ok and layers_ok and w.field_cell > 0 and not errs:
+        errs.extend(_sphere_field_rules(cfg))
+    # the hash: Nh from the exact reach-2 coverage, then C from the lid cell. Only for a config that passed
+    # everything above (the derivation is the expensive part), and only for inputs it is defined for.
+    hash_ok = sane and not errs and sen.radius > 0 and math.isfinite(sen.radius) and r > 0
+    if hash_ok:
+        if not req(
+            sen.radius < 2.0 * (rad + r),
+            f"sensing.radius {sen.radius} must be < 2·(world.radius + physics.radius) = {2.0 * (rad + r)}: "
+            "a hash cannot cover a planet smaller than the sensing ball",
+        ):
+            return errs
         angle = geom.rigorous_angle(rad, r, sen.radius)
         if geom.estimate_nh(angle) > NH_MAX:
             errs.append(
@@ -1219,15 +1244,21 @@ def _validate_sphere(cfg: Config) -> list[str]:
     return errs
 
 
-def _validate_sphere_fields(cfg: Config) -> list[str]:
+SPHERE_CHEM_SUBSTEPS_MAX: Final = 16  # the unrolled sub-steps of the chemical update (3 to 6 for the presets)
+
+
+def _sphere_field_rules(cfg: Config) -> list[str]:
     """The rules of the sphere's fields (DESIGN §46.5, sphere series S1), from the conductance tables. Called
-    only when the geometry rules of ``_validate_sphere`` passed (the tables need a sane shell).
+    by ``_validate_sphere`` before the hash block, only for a shell that passed its geometry rules (the tables
+    need a sane shell).
 
     The integer resource diffusion needs ``Σ_j α_ij <= 0.9`` in every cell (``α_ij = d_q8·w_ij / 2^16``), i.e.
     ``d_q8 <= floor(0.9·2^16 / rowsum_max)`` (11, 11, 14 for the three presets), and then the cap bound
     ``R <= R_HARD`` is verified exhaustively on the actual tables (``ops.check_diffusion_tables``). The patch
-    drift is a rotation by a series that is exact to 1e-14 for ``|ω| <= 0.05`` (``fields_sph.rotate``), also
-    at the director's largest ``drift_mult`` (10). The chemical sub-step count is derived, not a rule."""
+    drift is a rotation by a series whose truncation is below 3e-11 for ``|ω| <= 0.05`` and 2e-9 for
+    ``|ω| <= 0.1`` (``fields_sph.rotate``), under the float32 rounding; ``patch_drift <= 0.005·radius`` keeps
+    ``|ω| <= 0.1`` at the largest device-valid ``drift_mult`` (20). The chemical update unrolls
+    ``ceil(D·rowsum_max/256)`` sub-steps, at most ``SPHERE_CHEM_SUBSTEPS_MAX``."""
     w, fi = cfg.world, cfg.fields
     errs: list[str] = []
     cond = fieldtab.conductance(*fieldtab.shell(cfg))
@@ -1245,11 +1276,19 @@ def _validate_sphere_fields(cfg: Config) -> list[str]:
             )
         except ValueError as e:
             errs.append(f"fields.resource_diffusion_q8 {fi.resource_diffusion_q8}: {e}")
-    if fi.patch_drift * 10.0 > 0.05 * w.radius:
+    d_max = max((v for v in fi.chem_diffusion if math.isfinite(v)), default=0.0)
+    n_sub = cond.chem_substeps(d_max)
+    if n_sub > SPHERE_CHEM_SUBSTEPS_MAX:
+        errs.append(
+            f"the chemical update of this shell needs {n_sub} sub-steps (fields.chem_diffusion {d_max} times "
+            f"the largest row sum {cond.rowsum_max}/256); the limit is {SPHERE_CHEM_SUBSTEPS_MAX}: lower "
+            "fields.chem_diffusion or use a thicker layer spacing"
+        )
+    if fi.patch_drift * 20.0 > 0.1 * w.radius:
         errs.append(
             f"fields.patch_drift {fi.patch_drift} must be <= 0.005·world.radius = {0.005 * w.radius} "
-            "(a patch rotates by |ω| = drift/radius per step, which the series needs below 0.05 at the "
-            "director's largest drift_mult)"
+            "(a patch rotates by |ω| = drift/radius per step; the rotation series must stay accurate, "
+            "|ω| <= 0.1, at the largest device-valid drift_mult 20)"
         )
     return errs
 
@@ -1356,10 +1395,7 @@ def validate(cfg: Config) -> None:
                     f"{sec}.{key} is inert while world.geometry is box: it must keep its default",
                 )
     else:
-        sphere_errs = _validate_sphere(cfg)
-        errs.extend(sphere_errs)
-        if not sphere_errs:  # the field tables need a sane shell
-            errs.extend(_validate_sphere_fields(cfg))
+        errs.extend(_validate_sphere(cfg))
     if d3:
         h = w.height
         req(

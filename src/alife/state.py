@@ -423,6 +423,17 @@ StateS.env = State.env  # type: ignore[attr-defined]  # the same read-only view
 EXTRA_SPHERE_FIELDS: Final = ("hdg",)  # appended after State3's fields (per-agent, leading dim N)
 AGENT_FIELDS_S: Final = AGENT_FIELDS_3D + EXTRA_SPHERE_FIELDS
 N_WX_SPHERE: Final = 11  # h1, h2, the two layers' tangent velocities (6 planes), Q, P, Dc (DESIGN §46.6)
+WX_RATIO_SPHERE: Final = (
+    2  # the placeholder's weather Nside is Nw = 2·Nf, as the presets (spec 7.3: 16, 22, 42)
+)
+
+
+def wx_shape_sphere(nside: int) -> tuple[int, int]:
+    """The shape of ``wx`` on a sphere: ``(N_WX_SPHERE, 12·Nw²)`` with ``Nw = WX_RATIO_SPHERE·Nf``, from the
+    field Nside and not from the box's ``weather.cells`` (0.13 to 0.93 MB for the three presets). A
+    placeholder until
+    the weather (S4) fixes ``Nw``; if S4 changes the ratio it is a planned re-pin of the sphere digests."""
+    return N_WX_SPHERE, 12 * (WX_RATIO_SPHERE * nside) ** 2
 
 
 def is_sphere_state(s: object) -> bool:
@@ -504,8 +515,9 @@ def sphere_kinematics(
     d, pm = dims(cfg), layout.PITCH_MAX
     u = mx.random.uniform(0.0, 1.0, (n, 3), key=k_pos)
     lo3, hi3 = d.r_lo**3, d.r_hi**3
-    rho = mx.clip(mx.power(lo3 + u[:, 2] * (hi3 - lo3), 1.0 / 3.0), d.r_lo, d.r_hi)
-    up = fields_sph.sphere_point(u[:, 0], u[:, 1])
+    ua, ub, uc = mx.split(u, 3, axis=1)
+    rho = mx.clip(mx.power(lo3 + uc[:, 0] * (hi3 - lo3), 1.0 / 3.0), d.r_lo, d.r_hi)
+    up = fields_sph.sphere_point(ua[:, 0], ub[:, 0])
     angles = mx.random.uniform(mx.array([-math.pi, -pm]), mx.array([math.pi, pm]), (n, 2), key=k_head)
     yaw, pitch = ops.wrap_angle(angles[:, 0]), mx.clip(angles[:, 1], -pm, pm)
     east, north = ops.local_frame_s(up)
@@ -515,9 +527,9 @@ def sphere_kinematics(
 
 def rest_wx(cfg: Config, step: mx.array | int = 0) -> mx.array:
     """The rest ``State.wx`` of a config: ``weather.rest_array`` in a box; on a sphere an all-zero
-    ``(N_WX_SPHERE, 12·Nw²)`` placeholder (the weather of the sphere, and its rest state, are S4's)."""
+    ``wx_shape_sphere`` placeholder (the weather of the sphere, and its rest state, are S4's)."""
     if dims(cfg).sph:
-        return mx.zeros((N_WX_SPHERE, 12 * dims(cfg).wn ** 2), dtype=mx.float32)
+        return mx.zeros(wx_shape_sphere(dims(cfg).nside), dtype=mx.float32)
     return weather.rest_array(cfg, step)
 
 
@@ -676,7 +688,7 @@ def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]:
         "env_cat_center": ((2,), f32),
         "env_cat_radius": ((), f32),
         "env_cat_kill_p": ((), f32),
-        "wx": ((N_WX_SPHERE, 12 * d.wn * d.wn) if d.sph else (weather.N_WX, d.wn, d.wn), f32),
+        "wx": (wx_shape_sphere(d.nside) if d.sph else (weather.N_WX, d.wn, d.wn), f32),
         **({"pitch": ((n,), f32), "buoy_cap": ((n,), f32)} if d.d3 else {}),  # State3 (§27.4)
         **({"hdg": ((n, 3), f32)} if d.sph else {}),  # StateS (§46.2): after the State3 fields
         **{f.name: (f.shape(d), f.dtype) for f in ext.state_fields(cfg, d.nd)},  # extension fields (§43.2)

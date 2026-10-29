@@ -211,3 +211,56 @@ def test_cell_capacity_rule_follows_the_lid_cell() -> None:
     v = geom.lid_cell_volume(36.0, 16.0, R_SENSE, nh)
     assert v == pytest.approx(geom.pixel_solid_angle(nh) * 52.0**2 * (16.0 / 5), rel=1e-12)
     assert geom.min_cell_capacity(36.0, 16.0, R_SENSE, nh) == math.ceil(0.167 * v) + 4
+
+
+def test_the_shipped_coverage_table_matches_a_fresh_computation() -> None:
+    """``src/alife/data/healpix_coverage_reach2.json`` (Nside 2..72) is what ``derive_nh`` reads: it must
+    cover the
+    range and agree with the exact algorithm on a sample (regenerate it when ``geom.coverage`` changes its
+    definition, and bump ``COVERAGE_ALGORITHM``)."""
+    table = geom._shipped_coverage()
+    assert sorted(table) == list(range(2, 73))
+    assert all(0 < v < 3 for v in table.values()) and table[2] > table[8] > table[21] > table[72]
+    for n in (2, 3, 7, 13, 21):
+        assert table[n] == pytest.approx(geom.coverage(n, 2).min_angle, abs=1e-12)
+    assert geom.min_coverage_angle(21, 2) == table[21]
+
+
+def test_a_disk_cache_serves_what_the_table_does_not(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[int, int]] = []
+
+    class Fake:
+        min_angle = 0.123
+
+    def fake_coverage(n: int, reach: int):
+        calls.append((n, reach))
+        return Fake()
+
+    monkeypatch.setenv("ALIFE_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(geom, "coverage", fake_coverage)
+    monkeypatch.setattr(geom, "_min_angle_memo", {})
+    assert geom.min_coverage_angle(90, 2) == 0.123 and calls == [(90, 2)]  # beyond the table: computed once
+    assert geom.min_coverage_angle(90, 2) == 0.123 and calls == [(90, 2)]  # the memo
+    monkeypatch.setattr(geom, "_min_angle_memo", {})  # a new process: read back from the disk
+    assert geom.min_coverage_angle(90, 2) == 0.123 and calls == [(90, 2)]
+    assert len(list((tmp_path / "geom").glob("cov_a*_r2_n90.json"))) == 1
+    assert geom.min_coverage_angle(5, 1) == 0.123 and calls[-1] == (5, 1)  # reach 1 is not in the table
+    # an unwritable cache directory is not an error
+    monkeypatch.setenv("ALIFE_CACHE_DIR", str(tmp_path / "file" / "sub"))
+    (tmp_path / "file").write_text("not a directory")
+    monkeypatch.setattr(geom, "_min_angle_memo", {})
+    assert geom.min_coverage_angle(91, 2) == 0.123
+
+
+def test_derive_nh_of_the_presets_is_instant_with_the_table() -> None:
+    import time
+
+    t = time.perf_counter()
+    assert [geom.derive_nh(rp, 1.0, 6.0) for rp in (36.0, 48.0, 90.0, 255.0)] == [8, 11, 21, 59]
+    assert time.perf_counter() - t < 0.5  # seconds before the table (6 s for 64k3s, 77 s for Rp 255)
+
+
+def test_coverage_arrays_are_read_only() -> None:
+    cov = geom.coverage(5, 2)
+    with pytest.raises(ValueError, match="read-only"):
+        cov.angle[0] = 0.0

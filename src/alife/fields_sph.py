@@ -122,17 +122,6 @@ def profile(cfg: Config) -> mx.array:
 # --- patches ---------------------------------------------------------------------------------------
 
 
-def _cross(a: mx.array, b: mx.array) -> mx.array:
-    return mx.stack(
-        [
-            a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1],
-            a[..., 2] * b[..., 0] - a[..., 0] * b[..., 2],
-            a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0],
-        ],
-        axis=-1,
-    )
-
-
 def sphere_point(a: mx.array, b: mx.array) -> mx.array:
     """The point of the unit sphere of two uniform draws in [0, 1): ``cos θ = 2a − 1``, ``λ = 2π b`` (equal
     area by Archimedes), (..., 3) float32. The map of the founders and the patches (DESIGN §46.5)."""
@@ -153,13 +142,14 @@ def init_patches(key_pos: mx.array, key_vel: mx.array, cfg: Config) -> tuple[mx.
     psi = mx.random.uniform(0.0, 2.0 * math.pi, (pp,), key=key_vel)
     east, north = ops.local_frame_s(pos)
     t = mx.cos(psi)[:, None] * east + mx.sin(psi)[:, None] * north
-    om = _cross(pos, t)
+    om = ops.cross3(pos, t)
     return pos, om * (cfg.fields.patch_drift / cfg.world.radius)
 
 
 def rotate(p: mx.array, om: mx.array) -> mx.array:
     """The rigid rotation of unit vectors ``p`` (..., 3) about the angular velocity ``om`` (..., 3) by
-    ``|om|`` radians (Rodrigues with series coefficients, ``|om| <= 0.05``: the truncation is below 1e-14):
+    ``|om|`` radians (Rodrigues with series coefficients: the truncation is below 3e-11 for ``|om| <= 0.05``
+    and 2e-9 for ``|om| <= 0.1``, under the float32 rounding):
     ``c·p + s·(ω × p) + g·(ω·p)·ω`` with ``c = 1 − σ²/2 + σ⁴/24``, ``s = 1 − σ²/6 + σ⁴/120``,
     ``g = 1/2 − σ²/24 + σ⁴/720``, then renormalised. For ``ω ⟂ p`` (always, here) the third term is rounding
     noise that keeps the rotation axis exact."""
@@ -167,7 +157,7 @@ def rotate(p: mx.array, om: mx.array) -> mx.array:
     c = 1.0 - s2 * (0.5 - s2 / 24.0)
     s = 1.0 - s2 * (1.0 / 6.0 - s2 / 120.0)
     g = 0.5 - s2 * (1.0 / 24.0 - s2 / 720.0)
-    cross = _cross(om, p)
+    cross = ops.cross3(om, p)
     along = (om * p).sum(axis=-1, keepdims=True)
     q = c * p + s * cross + g * along * om
     return q / mx.sqrt((q * q).sum(axis=-1, keepdims=True))
@@ -198,7 +188,7 @@ def fertility_cells(
     no cancellation of ``2 − 2 cos``. ``weights`` is the per-patch factor (seasons, the director's gain) or
     None for all 1."""
     d = centres[None, :, :] - patch_pos[:, None, :]
-    d2 = (d[..., 0] * d[..., 0] + d[..., 1] * d[..., 1] + d[..., 2] * d[..., 2]) * (radius * radius)
+    d2 = (d * d).sum(axis=-1) * (radius * radius)
     terms = mx.exp(d2 * (-1.0 / (2.0 * sigma * sigma)))
     if weights is not None:
         terms = weights[:, None] * terms
@@ -232,7 +222,7 @@ def chem_laplacian(c: mx.array, nbr: mx.array, c_t: mx.array, c_z: mx.array) -> 
     and bottom layers have no outer neighbour (no flux through the floor or the lid)."""
     lap = (c_t[None] * (mx.take(c, nbr, axis=2) - c[..., None])).sum(axis=3)
     flux = c_z[None] * (c[:, 1:] - c[:, :-1])  # from layer k+1 into k (and minus into k+1)
-    zero = mx.zeros((c.shape[0], 1, c.shape[2]), dtype=c.dtype)
+    zero = mx.zeros((c.shape[0], 1, c.shape[-1]), dtype=c.dtype)
     return lap + mx.concatenate([flux, zero], axis=1) - mx.concatenate([zero, flux], axis=1)
 
 

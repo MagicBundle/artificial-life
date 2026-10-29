@@ -276,6 +276,37 @@ def test_the_exhaustive_check_agrees_with_an_independent_enumeration(name: str) 
             assert 0 <= new <= R_HARD, (row, delta, new)
 
 
+@pytest.mark.parametrize("r_hard", [(1 << 24) - 1, 1 << 24, 1000, 4096, 77777, 123457])
+def test_the_check_never_accepts_a_row_that_overshoots_the_cap(r_hard: int) -> None:
+    """Property test (the independent review of S1): random synthetic rows, with 1 to 6 non-zero terms and
+    sums from 0.3 to 0.99, built as a three-layer table whose middle row carries both radial terms. Whenever
+    ``check_diffusion_tables`` accepts the table, a brute force over ``R_HARD - 600 .. R_HARD`` and over
+    random cell values (every neighbour at ``R_HARD``, the worst case) never exceeds the cap or goes below
+    zero. Rows that it rejects are not judged (the rule is allowed to be conservative)."""
+    rg = np.random.default_rng(r_hard % 1000)
+    window = np.arange(max(0, r_hard - 600), r_hard + 1, dtype=np.int64)
+    accepted = 0
+    for _ in range(500):
+        n = int(rg.integers(1, 7))
+        w = np.zeros(6)
+        w[rg.permutation(6)[:n]] = rg.random(n) + 0.05
+        a = np.floor(w / w.sum() * rg.uniform(0.3, 0.99) * 65536).astype(np.int64)
+        t = np.tile(a[:4].reshape(1, 1, 4), (3, 1, 1))
+        z = np.array([a[5], a[4]])  # layer 0 <-> 1 is the middle row's down term, 1 <-> 2 its up term
+        try:
+            ops.check_diffusion_tables(t, z, r_hard=r_hard, max_sum=0.995)
+        except ValueError:
+            continue
+        accepted += 1
+        rows = [a, np.concatenate([a[:4], [z[0], 0]]), np.concatenate([a[:4], [0, z[1]]])]
+        cells = np.concatenate([window, rg.integers(0, r_hard + 1, 2000)])
+        for row in rows:
+            inflow = ((r_hard * row) >> 16).sum()
+            new = cells - ((cells[:, None] * row[None, :]) >> 16).sum(axis=1) + inflow
+            assert new.max() <= r_hard and new.min() >= 0, (row.tolist(), r_hard)
+    assert accepted > 20  # the check is not so strict that nothing is judged
+
+
 def test_a_row_sum_above_the_limit_is_refused_and_would_go_negative() -> None:
     c = _cond("tiny3s")
     d_q8 = c.d_q8_max() + 1  # one past the bound: sum(alpha) = 0.958

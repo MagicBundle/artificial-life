@@ -255,6 +255,18 @@ def int_diffuse_3d(r: mx.array, d_q8: int) -> mx.array:
     )
 
 
+def cross3(a: mx.array, b: mx.array) -> mx.array:
+    """The cross product of 3-vectors ``(..., 3)``, elementwise."""
+    return mx.stack(
+        [
+            a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1],
+            a[..., 2] * b[..., 0] - a[..., 0] * b[..., 2],
+            a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0],
+        ],
+        axis=-1,
+    )
+
+
 def local_frame_s(up: mx.array) -> tuple[mx.array, mx.array]:
     """East and north unit vectors ``(..., 3)`` at unit vectors ``up``: ``east = normalise(ẑ × û)`` (x̂ within
     1e-6 of a pole, where ẑ × û vanishes), ``north = û × east`` (DESIGN §46.2; the frame of the bearing)."""
