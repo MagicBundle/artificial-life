@@ -1572,6 +1572,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         weather=a.weather,
         weather_pairs=a.weather_pairs,
         weather_org=a.weather_org,
+        arms=a.arms,
     )
     text = _dumps(report)
     if a.json is not None:
@@ -1961,6 +1962,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="also time the step with the organism couplings (weather.seed_gain, weather.shade_gain) on "
         "against the same config with them 0 (interleaved blocks; needs weather.enabled and one of them "
         "above 0)",
+    )
+    p.add_argument(
+        "--arms",
+        action="store_true",
+        help="also time the step with the arms layer on against the same config with it off (interleaved "
+        "blocks; needs arms.enabled, for example --set arms.enabled=true)",
     )
     p.add_argument(
         "--weather-pairs",

@@ -12341,6 +12341,133 @@ kin groups (§37.6), build the crop tool only if it fails; D3 evolve dry (weathe
 play, no launcher entry that makes a world from nothing; D6 the launcher passes the overlay explicitly. D4 (the equatorial band) is a design track outside this section (`scratchpad/smallworld/spec.md` section 7): no engine work.
 Recorded in the Review log (I62) rather than as a row of §24, which holds the v0 decisions D1 to D28.
 
+## 42. Arms races (PR A1: heritable traits and the contest)
+
+Normative text for the arms layer of the five-feature series (spec `emergence/arms/spec.md`, owner decisions of
+2026-10-28). **A1 is stages 1 and 2 of the arms spec**: the heritable traits `ATK`, `ARM`, `KEY`, `LOCK`, the
+Tullock contest with the key/lock match, the upkeep and the speed cost, inheritance, the invariants and the bench
+block. Absent from A1 and arriving in their own PRs: the toxin and display factors and their keys (A3), the
+observers (`ArmsCounter`, `Acts.ext.arms`, metrics, dumps, the classifier; A2), `arms.pierce` and the ecological
+duels (A4), perception and the layout tail (A5), the colour modes, inspector rows and GUI levers. Off by default
+and bit-identical when off (`tests/identity_matrix.py`, 43.9). Not enabled by any shipped preset.
+
+### 42.1 Traits and the state field
+
+`State.arms` / `State3.arms`: `(N, 6)` float32 in `[0, 1]`, a conditional extension field (43.2) that exists only
+with `arms.enabled`. Columns (`alife.arms`): `ATK` 0 attack strength, `ARM` 1 armour, `TOX` 2 toxin and `SIG` 3
+display (both held at 0 until their stages: their sigma is 0, `check` flags a non-zero value), `KEY` 4 the attacker's
+key and `LOCK` 5 the victim's lock (phases on a circle, in turns, `[0, 1)`). The order is the integration plan's
+(43.2); the arms spec listed the phases before the toxin. The traits are genes, not brain outputs (no change to
+`D_IN`/`D_OUT`, no layout change, no new brain cost). `rest` = `init_atk`, `init_arm` on every row and keys and
+locks uniform from `InitStream.ARMS` (by row and seed): it is the founders' value and the fill of a pre-arms
+checkpoint forked onto arms, so a fork starts with diverse keys and locks. (The arms spec filled from a hash of the
+`uid`; `FieldSpec.rest` takes the config only, so the row index is the unit; documented departure.) Founders start
+with zero magnitudes by default (owner D7); keys and locks start uniformly random, not aligned.
+
+### 42.2 The contest
+
+For an attack by `i` on `j` (after the S9-partner gate), evaluated inside `energy.combat` as the first factor of
+the protection product (43.6):
+
+```text
+r_ij = κ·A_j / (κ·A_j + a0 + ε + ATK_i)      Tullock repulsion; A_j = effective_armour(j) = clip(ARM_j, 0, 1)
+c_ij = (1 + cos 2π(KEY_i − LOCK_j)) / 2      the match, 1 when aligned
+K_ij = key_floor + (1 − key_floor)·c_ij²
+P_ij = (1 − r_ij)·K_ij                        = `arms_p` of `energy.protection`; then shelter, guard, the floor
+want = floor(attack_max · P · (1 − defend_efficiency·defend_j))
+```
+
+* **Static branches.** `kappa == 0` traces no Tullock term, `key_floor == 1` no cosine; with both off
+  `contest_factor` returns None and `combat` traces the legacy expression.
+* **Null equivalence (T1).** With zero traits `r = 0/den = 0` exactly, `K = 1.0 + 0.0·c² = 1.0`, `P = 1.0` exactly and
+  `want` is bit-identical to the legacy expression (every `Combat` field, `tests/test_arms.py`); the whole step with
+  arms on and null parameters has the legacy digest of the off run (2D and 3D, `tests/test_arms_step.py`).
+* **Bounds.** `P ∈ [0, 1]`; `r < κ/(κ + a0)` (validate: at most 0.9), so the armour alone never gives immunity and `P ≥ (1 − r_max)·key_floor`. The key/lock factor can: with `key_floor = 0` a mismatched pair has `P ≈ 0` and the demand floors to 0, so `validate` requires `combat.protect_floor > 0` whenever `key_floor = 0`;
+  `want ≤ attack_max < 2^16`, `proportional_take` unchanged. The efficiency stays the scalar `q8(efficiency)` (the
+  per-attacker `q` is a toxin matter, A3). Attack pays only against armour (`r` does not depend on `ATK` at `A = 0`;
+  owner decision, D6).
+* **E11, 0/0.** ε = 1e-6 sits in the denominator and the inputs are clipped to `[0, 1]`, so `ATK = ARM = a0 = 0`
+  gives `0/ε = 0`, never NaN. `tests/test_arms.py::test_e11_*` runs the contest at `ATK`, `ARM` ∈ {-1e-7, 0, 1e-30, 1,
+  1+1e-6}, `κ` ∈ {0, 2, 9}, `a0` ∈ {1, 1e-3, 0} and `key_floor` ∈ {1, 0}: finite, in `[0, 1]`, and exactly 1.0 for
+  both traits at 0.
+* `contest_np` is the float32 numpy mirror (used by the analysis in A2); the test compares it with the MLX function.
+
+### 42.3 Costs and the ledger
+
+* **Upkeep** `x = upkeep_atk·ATK² + upkeep_arm·ARM²` q/step, paid as `floor(x + u)` with `u ∈ [0, 1)` the dither
+  `hash32(uid, step, rng.HASH_SALTS["arms"]) >> 8` (E13): the mean cost is `x`, so a sub-unit cost is not rounded to a free ride, and
+  it is exactly 0 for `x = 0`. `arms.basal_cost` adds it to the `brain_cost` argument of `pay_costs`/`pay_costs3` at S8, so it
+  lands in `paid_basal` and `HEAT_BASAL`; `State.brain_cost` is not touched, `metrics._c_ref` adds the founders' expected
+  upkeep (`arms.founder_upkeep`). **No 17th ledger term; no new energy path**: theft stays in `FLOW_STOLEN = FLOW_ATTACK_GAIN +
+  FLOW_SPILL`, whose per-step identity is algebraic and checked on device every step.
+* **Speed.** The physics call sees `act.thrust·(1 − speed_slow·ARM)` (`arms.physics_act`); the thrust cost was paid on the
+  brain's thrust at S8 (armour costs range, not energy). The factor is at most 1, so the stability inequality of `validate` holds.
+* `tests/test_arms_step.py`: 200 steps of `tiny` and `tiny3d` with real traits and costs (`Diag` clear, per-step
+  identity, `invariants.full_check`, traits in `[0, 1]`, phases below 1, mutation acted, births and attacks happened);
+  the mutation test of the closure test: a combat that mints one quantum per attacker, and a `pay_costs` that loses one
+  per agent, both set `Diag.LEDGER` (the test fails if they do not).
+
+### 42.4 Inheritance, RNG, checkpoints
+
+* `Stream.ARMS = 10`, `InitStream.ARMS = 8` (reserved indices; every other stream's key is unchanged).
+  `rng.layout_version(cfg)` is 4 when `arms.enabled` and 3 otherwise, `RNG_COMPATIBLE_VERSIONS = {1, 2, 3, 4}`: an off run
+  still writes `rng_layout_version = 3`.
+* **Births**: the `on_birth` hook of the field (`arms.make_on_birth`) draws `normal(ks[ARMS], (M, 6))` and writes
+  `child = parent + σ_vec·z` with `σ_vec = (σ, σ, 0, 0, σ_phase, σ_phase)` (fixed sigma, owner D5), the magnitudes clipped to
+  `[0, 1]`, the phases wrapped into `[0, 1)`. **E12**: `c − floor(c)` rounds to 1.0 for a tiny negative `c` in float32, which
+  is mapped to 0, so a phase is never 1.0 and the angle never accumulates beyond one turn; `test_e12_*` chains 4.1M child
+  draws and asserts the phases stay in `[0, 1)`, finite. Immigrant lanes (`immigration_possible`, static) take `init_atk`,
+  `init_arm` and fresh uniform keys and locks (a second split of the same key). Newborn writes use `ops.place`.
+* **Invariants.** `invariants.device_check` ORs a non-finite `arms` into `Diag.NONFINITE` and a value outside `[0, 1]` into
+  `Diag.FIELD_RANGE` (static, all rows); the host `check` hook of the registry row also flags a phase at or above 1 and a
+  non-zero `TOX`/`SIG`.
+* **Checkpoints.** A pre-arms file loads into an arms-on config with `arms` filled by `rest` (`state_from_arrays`); an
+  arms file into an arms-off config is refused ("extra"). The legacy digests are unchanged; the full `state_digest` changes
+  only for arms-on states.
+
+### 42.5 Seams and edge cases owned by other PRs
+
+`arms.effective_armour(arms, partner, cfg)` is the one place where bond defenders (`arms.pool`, bonds series) will add to
+the victim's armour; `combat(shelter=, guard=)` multiply further factors into the product and `combat.protect_floor` bounds
+it (it replaces the spec's `min_yield`). **E10** (cumulative counters) belongs to A2, which adds the arms counter block: those
+counters are per-interval sums and are reviewed there. **E24**: the arms keys are start-of-run config choices; the Director's menu acts on `State.env` only, and
+`tests/test_arms_director.py` pins that no menu parameter, env field or policy key is an arms key and no director module touches the
+section. **E4** (compile cache): `tests/test_arms_compile.py` compiles configurations differing only in one arms
+constant (`kappa`, `a0`, `key_floor`, `speed_slow`, `upkeep_*`, the sigmas), including values that print alike
+(12 and 1 next to 21), one after the other in one CPU process with a private kernel cache, and requires compiled equal to eager.
+
+### 42.6 Config
+
+`[arms]` (`ArmsConfig`): `enabled` false, `kappa` 2.0, `a0` 1.0, `key_floor` 1.0, `speed_slow` 0.0, `upkeep_atk`,
+`upkeep_arm` 0.0, `init_atk`, `init_arm` 0.0, `sigma`, `sigma_phase` 0.0. Every key is in `POST_V01_KEYS` and
+`SERIAL_OMIT_KEYS` (through the registry row's `lever_keys`), so existing runs keep their hash (checked against the
+literal hashes of e64be03) and the section is absent from `config.json` while default; every key is inert while `enabled` is
+false (`validate` refuses a non-default value). With `enabled` the rules: `kappa ≥ 0`, `a0 > 0`, `kappa/(kappa + a0) ≤ 0.9`,
+`key_floor ∈ [0, 1]` (0 only with `combat.protect_floor > 0`), `speed_slow ∈ [0, 0.9]`, `upkeep_* ∈ [0, 2^15)`, `init_* ∈ [0, 1]`, `sigma, sigma_phase ∈ [0, 0.5]`.
+`alife bench --arms` times the step with arms on against the same config with it off (blocks off, on, on, off); gate: below 3 %
+on 64k3d (the spec's §7).
+
+**Notes for later PRs.** (1) The observer channel `Acts.thrust` records the brain's thrust, not the armour-slowed thrust the physics sees (consistent with the cost, paid on the brain's thrust); A2 consumers should know. (2) The dither salt changed with the merge of the hash-salt table (`4b32729`): arms-on checkpoints from before that commit exist only in the scratchpad, and nothing was merged, so no version bump is needed. (3) `bench --arms` stores `cfg.arms` in its report (`arms.arms_config`).
+
+(4) **Migration (§43.8).** The row has an `enable` hook, so `alife migrate RUN --enable arms --set arms.<key>=...` turns arms on in an evolved world: no layout change (`layout_features` stays empty), the `arms` field is filled by `rest` (init values, keys and locks from the init stream), the new run records `rng_layout_version` 4; `tests/test_arms_migrate.py` (2D and 3D) steps the migrated world with the ledger closing.
+
+### 42.7 Tests
+
+`tests/test_arms.py` (T1, T2, T3 of the combat, E11, E12, E13, the costs), `tests/test_arms_state.py` (config hashes, state,
+fill, refusal, RNG version), `tests/test_arms_step.py` (whole step: null equivalence, ledger, determinism, a non-vacuous
+flag, the bench mirror, the broken-path mutation tests), `tests/test_arms_compile.py` (E4), `tests/test_arms_director.py`
+(E24). Compiled equals eager is asserted for the arms functions only (contest, upkeep, child traits); the whole step is
+not bit-equal compiled and eager with or without arms from step 0 (the brain's reductions), as on e64be03.
+
+**Evidence (PR A1, 2026-10-28).** Identity matrix against a fresh `git archive` of e64be03: "OK: bit-identical, 0 DIFF, 0 INFO" (arms off,
+the config hashes literal-equal). Fast suite (`-n 4 --dist loadfile`, `-p cpu_device`): 4,672 passed, 91 skipped, 1 xfailed, 1 failed
+(`test_lifecycle_compiles_and_matches_eager`, which fails on e64be03 under the CPU device, HANDOVER B1). `ruff check` and `ruff format
+--check` clean. On Metal: `test_game_purity`, `test_game_acts`, `test_determinism` and the new arms files (149 passed, 1 skipped). Smoke (rerun on the head after the salt merge),
+`mini3d` on the GPU, 10,000 steps, `kappa` 2, `key_floor` 0.2, `speed_slow` 0.3, upkeep 20/20, `init_atk = init_arm` 0.1, sigma 0.03/0.05,
+seed 0: ledger error 0 and `diag` 0 at all 20 metrics rows; ATK quantiles (q10/q50/q90) 0.100 at step 0 (all founders), 0.026/0.100/0.172 at 5,000, 0.004/0.094/0.208 at 10,000 (mean 0.103), ARM 0.014/0.111/0.241 (mean 0.123), mean generation 11.8, the key and lock phase
+concentration R rising from 0.01 to 0.16 and 0.20 (selection or drift: A1 has no null arm, that is A2/A3 work). `bench --arms` on
+64k3d (GPU, fresh blocks, not the steady-state population): off 13.63 ms, on 13.83 ms median, +0.19 ms (1.4 %), under the 3 % gate.
+
 ## 43. Feature extension mechanism (PR 0a of the five-feature series)
 
 Normative text for the mechanism that §38 (built structures), §39 (communication), §40 (bonds that pay), §41 (farming)
@@ -12630,7 +12757,7 @@ yet (a feature PR creates its own); the mechanism is exercised by `tests/ext_stu
 comm-style due; the "ledger closes for every landed feature, pairs and all-on" test of the plan is parametrised over
 `ext.LANDED`, which each feature PR creates. A deliberately broken energy path (the mutation test of the closure test)
 needs a state-update hook that exists only with a real feature and is left to the first feature PR. `combat(arms=)` raises
-until A1. The arms descriptor column (`nbr_features`) widens `NF`/`F` in the layout, but `sensing` does not fill it yet
+until A1 (A1 landed: it evaluates the arms contest, 42.2; the mutation test of the closure test is `tests/test_arms_step.py`). The arms descriptor column (`nbr_features`) widens `NF`/`F` in the layout, but `sensing` does not fill it yet
 (A5).
 The staged mirror of `bench.py` passes the same `ext_in` and `extra_due` as `step` (the bench digest test is unchanged).
 `alife check`, named in the plan, does not exist; `cli._summary` (the run announcement and `inspect`) adds `features`,
@@ -12839,6 +12966,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I64 | feat: light saves (the owner's request of 2026-10-24, new §34.11; review fixes (§34.11 *Review fixes*: the plain save is named before its compress, the check before the rename, the wait for a quit save, `adopt_newest_save`, level 15, the storage's count and confirmation, the analysis scripts' messages); Stage B2: `saves single`, the origin audit, the planet's exact link (§34.11); Stage B1: the compressed format, the one loader and the save path). `zstandard` dependency; `step_<t>.safetensors.zst` is the zstd frame of the exact safetensors bytes (level 15 after the review, `ZST_LEVEL`; long-distance matching; measured in `saves/levels.md`); old saves load unchanged; every reader goes through `runio` (`load_checkpoint`, `checkpoint_metadata`, `read_state_arrays`, `state_file_is_complete`); a play world saves compressed by default (`RunDir.compress`, not persisted), with a worker thread that never moves `LATEST` over an incomplete file; `tests/test_runio_light.py`. Trajectories unchanged (digest and metrics tests). The one-save mode, linking and the launcher are the later stages of the plan. Stage B3 (the Swift side): the three-way save choice in the Storage strip (short segments, the full names in the details), the shared-save line, the launcher hint under a played world's source (§34.11). Pending the owner's go to merge (games PR). Stage B2 (the owner's decisions: `saves single`, linked origin when exact): the save mode `single` (`CLCK.flags` bit 3, `play.json`, `--saves single`), the one-save prune over a whole save, the audit of the origin readers (every one refuses or degrades with a message), the planet's first save as a link to its source save only when the state is the source's byte for byte (`RunDir.origin_link`, `os.link` or copy); the fork's own transformation (ledger, diagnostics, levers) means a planet from a played world is written as before, which is an open owner decision. Tests: `tests/test_play_single.py`, the toggled-run arms of `tests/test_play_saves.py` (five arms, with `saves single`), `tests/test_runio_light.py`. Stage B4: §34.11 restated as the whole design (the owner's decisions, the data-safety rules, the measured levels, the open planet-link decision); GAMES §10 item 23; HANDOVER "Games light saves". Pending the owner's go to merge (games PR).
 | I65 | feat: the camera controls of the 3D World window (owner's play of 2026-10-24: a tool for another angle, standard angles on a toggle, and "the maximum angle is pretty limited"): the tilt goes to edge-on (`maxTilt` 90 degrees; A1's footprint clamp is removed) with the eye held over the clear box instead (`maxDistance` with the tilt: `d sin tilt <= 0.45 L`; the zoom is given back when the tilt is relaxed), and the far floor is hidden by a **horizon haze** (a function of the floor point's Chebyshev distance from the point looked at past `0.5 L`, `1 - exp(-x^2)`, 99.8% at L; a 3 L wide map mesh behind it, so no edge of the mesh is ever visible; a sky pass above the horizon, in the sea's colour scaled by the Brightness) instead of the clamp; standard views Top, Oblique (45), Low (70) and Side (edge-on at `H/2`) on `t o l s`, a strip over the map and View > View angle, each an animated ease; a control column at the right edge (readout "Tilt 45 deg . heading 270 deg", the strip, the compass as a dial, the 3D button, the tilt handle, zoom); the floor is not read beyond 0.65 L or above the horizon (readout, territory pick, power aim, dive, grab); the minimap's footprint is clipped to the clear box; storm rings flatten; client only (`WorldU` 160 bytes), no engine, stream or config change. Review fixes: the point looked at is lifted to the middle of the height toward edge-on (`WorldPose.lift`), the zoom is given back at the end of an ease (`ViewEase.endWish`, `sideReturn`), `n` and the compass click end an ease, the frame is faded by the haze, the needle and the dial's dead zone, the readout plate takes the press, the strip before the handle in the column, height guides at edge-on, the storm pick is the ellipse. Number provisional: the coordinator assigns the final one. Details, tests and deviations: §36.5 "Camera controls". |
 | I66 | feat: the globe overview and the morph (PR B of World viewer v2, §36.10; owner 2026-10-23 "Globe overview, flat close-up", 2026-10-24 "is there a toggle I am missing to get a spherical view?"): step 5, the pure parts (`GlobeMap`, `Morph` with the roll and its schedule and the crossfade fallback, `FlightPath` on the great circle) and the morph gate (a pure rasterisation of the mesh through the vertex shader's mirror: the roll meets the three criteria of the spec's 7.1 except the 98%-to-60% length at 67 degrees, 1.10 wheel lines against 1.2; mode stays `.roll`); step 6, `WorldVantage` (the view at every zoom: projection, the two-start Newton pick, the regime-solved grab and zoom, the camera controls on the globe; the model's `globeEnabled` switch) with the gate of the blended band measured (exact to 39 degrees, p95 9.5 px at 79 to 84 degrees); step 7, the renderer (the mesh pipeline and `GlobeUniforms`, the depth, cull and depth-reset state, the sky, the caps, the morph in the agent shaders, the continuous layers, the haze as a function of `s`) behind View > Globe overview (`world.globe`); steps 8 and 9: the minimap's footprint at the globe (the visible cap, dimmed outside), the hemisphere, EQUATOR and seam labels with the declutter rule, the pin, the organism glow (`GlowHistogram`), the inertia of a flick, Keep north up, the idle spin and reduced motion (`GlobeMotion`), Home is the globe overview (`world.globe` on until the player chooses), the 0.15 L region fly-to (D7), the bench scenarios and the sheet of renders (`docs/DESIGN.md` 36.10). Client only: no engine, stream or config change |
+| I71 | feat: arms races, PR A1 of the five-feature series (stages 1 and 2 of the arms spec; owner approval of 2026-10-28; new §42): the heritable traits `ATK`, `ARM`, `KEY`, `LOCK` (and the held-at-0 `TOX`, `SIG` columns) as the conditional state field `arms (N, 6)`, the Tullock contest with the key/lock match as the first factor of the protection product of `energy.combat` (`arms.contest_factor`; `kappa`, `a0`, `key_floor`), the quadratic upkeep added to `brain_cost` at S8 with **dithered** rounding (E13: the cost is exact on average, a sub-unit trait is not free; `HEAT_BASAL`, no 17th ledger term), the armour speed cost (`arms.physics_act`), fixed-sigma mutation at birth with phases wrapped every time (E12, the 1.0-rounding of `c - floor(c)` mapped to 0), `Stream.ARMS` = 10 / `InitStream.ARMS` = 8 and `rng.layout_version` 4 with arms on (an off run still writes 3), the epsilon in the Tullock denominator (E11), invariants (`arms` finite and in [0, 1] on device, phases below 1 on the host), `bench --arms`, `_c_ref` with the founders' upkeep; the registry row `ext/arms.py` (the first real row) and `combat(arms=)` no longer raises; **absent**: toxin and display factors and keys (A3), observers (A2), pierce and duels (A4), perception (A5), colour modes and GUI levers; off by default, no shipped preset enables it, feature-off runs bit-identical to main (identity matrix) and the config hash unchanged | Departures: column order is the integration plan's (ATK, ARM, TOX, SIG, KEY, LOCK), not the spec's; founders' keys and locks come from the init stream by row (`FieldSpec.rest` has no `uid`); the whole step is not bit-equal compiled and eager with or without arms (the brain's reductions, as on e64be03), so compiled equals eager is asserted for the arms functions only. Tests: `test_arms`, `test_arms_state`, `test_arms_step` (incl. the broken-path mutation tests), `test_arms_compile` (E4), `test_arms_director` (E24); `test_ext_*` updated for the first registered row. |
 | I72 | feat: the feature extension mechanism, PR 0a of the five-feature series (arms, structures, bonds, communication, farming; owner approval of 2026-10-28; new §43, which holds the plan's normative content), **no behaviour change** and the registry empty: `src/alife/ext/` (`ExtSpec`, `REGISTRY`, the layout composition `layout.for_dims(nd, blocks)` with `Layout.__getattr__` for `IN_*`/`OUT_*`, `genome_layout_version(nd, mask) = base + 4*mask`, the `layout_features` meta key absent when empty); conditional state fields (`state_cls`, `is_3d_state`, fill-on-load, refusal of an extra field); counter blocks (`n_counters(nd, weather, blocks)`, `counter_blocks`, `counter_index`, `PROT_CAPPED`); `Acts.flags` uint16 and the `ActFlag` bits `128 << i`, `Acts.ext`/`_Flows.ext`; `extra_due` in `pay_costs(3)`; `rng.layout_version(cfg)` and `ops.hash32`; the single `combat` signature with `energy.protection` and `combat.protect_floor` (default 0, `[0, 0.5]`, `POST_V01_KEYS`, left out of `config.json` and the checkpoint metadata at its default: `config_to_dict(omit_defaults=True)`, `SERIAL_OMIT_KEYS`); silent tail blocks in `brain.init_weights`; observer registries; `tests/ext_stub.py` and seven `test_ext_*` files; `tests/identity_matrix.py` (15 trajectory cases, 3 runner cases, config and layout, tiny3d `1fe07a9f`/`556de6c6`, against a fresh `git archive` of e64be03: bit-identical, no INFO line). Departures from the specs are in §43.10.  Review fixes: the hooks `inputs(s, cfg, ctx)`, `decode`, `mask`, `due(s, act, y, cfg)` and `_Flows.ext`, `FieldSpec.on_birth`, `Dims.ext(name)`, the wiring tests (`test_ext_hooks.py`). PR 0b (the layout migration) follows. **PR 0b (stacked on PR 0a):** the layout migration tool of §43.8: `alife migrate RUN[:STEP] --enable F --out NEWRUN`, `migrate.migrate_checkpoint`, `state.migrate_layout`/`layout_change`/`MigrationError`, `ExtSpec.enable` (a hook, default None); zero rows/columns for new blocks, order-independent (E2), removal and width change refused (removal only with `--force-removal`; leave-one-out arms are fresh runs, E23), compressed sources give compressed outputs, provenance `migrated_from` in `meta.json`; `tests/test_ext_migrate.py`. No behaviour change for existing runs (the identity matrix is unchanged) |
 | I73 | feat: the emergence measurement suite (new §44; E1 statistics, panel skeleton, scorecard interface, trait registry, CLI shell, prereg hash; E2 window recorder and frame format). Host-side, observer-only, numpy; **no simulation change** (no step, state, checkpoint, RNG, config key, default or `POST_V01_KEYS` entry, no golden re-pin; the engine files are untouched). Recorder: replay from a save with the engine's step, certified against the run (every metrics row and the state digest at every save passed; T1 must be a save, E21), refuses a run without the start save (E22; measurement runs use saves `all`), frames outside the run; traits stored as float32 (age and energy exceed float16). Comparison: paired block intervals, `w2.classify` over seeds with the seed-twin floor, Stouffer, Holm per feature and series, BH context, prereg hash that `compare` enforces; leave-one-out arms are fresh runs from the shared evolved sources (E23). Blocks A, B, C (open-endedness, irreversibility, braids) and the scorecard adapters land in E3 to E6. Tests: `tests/test_emergence_*.py`. Pending the owner's go to merge. |
 

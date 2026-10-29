@@ -22,6 +22,17 @@ from alife.state import init_state
 # lever_keys) adds a row here.
 FROZEN_OMITTED_DEFAULTS = {
     ("combat", "protect_floor"): 0.0,
+    ("arms", "enabled"): False,
+    ("arms", "kappa"): 2.0,
+    ("arms", "a0"): 1.0,
+    ("arms", "key_floor"): 1.0,
+    ("arms", "speed_slow"): 0.0,
+    ("arms", "upkeep_atk"): 0.0,
+    ("arms", "upkeep_arm"): 0.0,
+    ("arms", "init_atk"): 0.0,
+    ("arms", "init_arm"): 0.0,
+    ("arms", "sigma"): 0.0,
+    ("arms", "sigma_phase"): 0.0,
 }
 
 

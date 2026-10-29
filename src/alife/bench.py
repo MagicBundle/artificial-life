@@ -27,6 +27,9 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
   the ``player`` director mode, scripted powers (``--play-powers``: a click and the chapter-end step itself,
   with the click-to-applied latency and a digest checked against ``resume --director replay``), and a line
   for the chapter, report and alert work (DESIGN §34.8).
+- **Arms** (``arms``, A1, DESIGN §42): the step with the arms layer on against the same config with it off,
+  the same (off, on, on, off) blocks; the trajectories differ by construction. The gate of the arms spec
+  (§7): below 3 % overhead on 64k3d before the first long run.
 - **Weather-org** (``weather_org``, W2): the same blocks with the weather on in both arms, the "off" arm
   having ``seed_gain = shade_gain = 0``: the marginal cost of the organism couplings (the seeding signal and
   the shade count, DESIGN §32).
@@ -34,6 +37,7 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
 
 from __future__ import annotations
 
+import dataclasses
 import gc
 import json
 import math
@@ -53,6 +57,7 @@ import numpy as np
 
 from alife import (
     actions,
+    arms,
     bonds,
     brain,
     ext,
@@ -71,6 +76,7 @@ from alife.actions import Actions
 from alife.config import (
     BRAIN_IMPLS,
     WEIGHT_DTYPES,
+    ArmsConfig,
     Config,
     ConfigError,
     WeatherConfig,
@@ -146,6 +152,7 @@ def run_bench(
     weather: bool = False,
     weather_pairs: int = WEATHER_PAIRS,
     weather_org: bool = False,
+    arms: bool = False,
 ) -> dict[str, Any]:
     """Run the benchmark suite and return a JSON-compatible report.
 
@@ -169,6 +176,8 @@ def run_bench(
             "weather.shade_gain above 0 (for example --overlay storm --set weather.seed_gain=0.03 "
             "--set weather.shade_gain=0.02)"
         )
+    if arms and not cfg.arms.enabled:
+        raise ConfigError("bench --arms needs arms.enabled = true (for example --set arms.enabled=true)")
     if weather_pairs < 1:
         raise ValueError(f"weather_pairs must be >= 1, got {weather_pairs}")
     report: dict[str, Any] = {**_environment(cfg), "steps": steps, "warmup": max(warmup, 1)}
@@ -186,6 +195,11 @@ def run_bench(
         report["weather"] = _bench_weather(cfg, steps, warmup, weather_pairs)
     if weather_org:
         report["weather_org"] = _bench_weather(cfg, steps, warmup, weather_pairs, org=True)
+    if arms:
+        report["arms"] = {
+            **_bench_weather(cfg, steps, warmup, weather_pairs, off=replace(cfg, arms=ArmsConfig())),
+            "arms_config": dataclasses.asdict(cfg.arms),  # the settings the marginal cost belongs to
+        }
     return report
 
 
@@ -530,7 +544,13 @@ def _bench_social(cfg: Config, observed_fn: Callable[[State], Any], warm: int) -
 
 
 def _bench_weather(
-    cfg: Config, steps: int, warmup: int, pairs: int = WEATHER_PAIRS, *, org: bool = False
+    cfg: Config,
+    steps: int,
+    warmup: int,
+    pairs: int = WEATHER_PAIRS,
+    *,
+    org: bool = False,
+    off: Config | None = None,
 ) -> dict[str, Any]:
     """The marginal cost of the engine weather layer: the compiled step with ``cfg`` (weather on) against the
     same config with the layer off (``replace(cfg, weather=WeatherConfig())``), STORMS §8 W1. With ``org``
@@ -545,7 +565,9 @@ def _bench_weather(
     ``marginal_ms_median`` is the difference of the median step times over all blocks of each arm,
     ``marginal_ms_mean`` of the means; ``pair_marginal_ms`` the same median difference within each pair.
     """
-    if org:
+    if off is not None:  # the reference of another layer (arms): ``off`` is the config with it off
+        cfg_off = off
+    elif org:
         cfg_off = replace(cfg, weather=replace(cfg.weather, seed_gain=0.0, shade_gain=0.0))
     else:
         cfg_off = replace(cfg, weather=WeatherConfig())
@@ -757,12 +779,13 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         # the mirror of ``step.step``: the feature dues, passed only when a feature has one (DESIGN §43.4)
         extra_due = ext.sum_due(spec.due(s, act, y, cfg) for spec in ext.active(cfg) if spec.due is not None)
         due_kw = {} if extra_due is None else {"extra_due": extra_due}
+        bcost = arms.basal_cost(s, cfg)  # the arms upkeep joins the brain cost (DESIGN §42.3)
         if d3:  # static
             nb0 = bonds.n_bonds(s.partner)
-            c = en.pay_costs3(s.energy, act, mo, nb0, s.brain_cost, s.buoy_cap, s.alive, cfg, **due_kw)
+            c = en.pay_costs3(s.energy, act, mo, nb0, bcost, s.buoy_cap, s.alive, cfg, **due_kw)
             mo = actions.mask(mo, c.solvent)
         else:
-            c = en.pay_costs(s.energy, act, bonds.n_bonds(s.partner), s.brain_cost, s.alive, cfg, **due_kw)
+            c = en.pay_costs(s.energy, act, bonds.n_bonds(s.partner), bcost, s.alive, cfg, **due_kw)
         xdec = ext.mask_all(ext.decode_all(s, y, se.ctx, cfg), c.solvent, cfg)
         act = actions.mask(act, c.solvent)
         flag = act.release | (se.geom.length > cfg.bonds.break_length)
@@ -774,7 +797,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         )
         slots_s9 = (partner >= 0).astype(mx.int32).sum()
         E, resource, got = en.harvest(c.energy, s.resource, se.fcell, act, c.solvent, cfg)
-        cb = en.combat(E, resource, se.fcell, act, partner, cfg)
+        cb = en.combat(E, resource, se.fcell, act, partner, cfg, **arms.combat_kw(s, cfg))
         sh = en.share(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)
         E, e_over = en.cap_energy(sh.energy, cfg)
         env = s.env if cfg.director.enabled else None  # static
@@ -815,13 +838,14 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         wind: wthr.AgentForce | None,
     ) -> tuple[mx.array, ...]:
         wind_f = wind.force if wind is not None else None  # static
+        act_p = arms.physics_act(act, s, cfg)  # the armour slows the thrust (DESIGN §42.3)
         if d3:  # static: Integrated3 (a NamedTuple; its first three are pos, vel, heading as in 2D)
             sv = dt.survivor
             F = physics.forces3(
-                s.pos, s.heading, s.pitch, act, mo, s.buoy_cap, nbr, sv, dt.partner, cfg, wind=wind_f
+                s.pos, s.heading, s.pitch, act_p, mo, s.buoy_cap, nbr, sv, dt.partner, cfg, wind=wind_f
             )
             return physics.integrate3(s.pos, s.heading, s.pitch, F, act.grip, act.turn, mo.pitch, gr, sv, cfg)
-        F = physics.forces(s.pos, s.heading, act, nbr, dt.survivor, dt.partner, cfg, wind=wind_f)
+        F = physics.forces(s.pos, s.heading, act_p, nbr, dt.survivor, dt.partner, cfg, wind=wind_f)
         return physics.integrate(s.pos, s.heading, F, act.grip, act.turn, dt.survivor, cfg)
 
     def reproduce(

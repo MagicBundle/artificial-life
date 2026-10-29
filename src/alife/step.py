@@ -16,6 +16,7 @@ import mlx.core as mx
 
 from alife import (
     actions,
+    arms,
     bonds,
     brain,
     ext,
@@ -235,12 +236,13 @@ def step(
     due_kw = (
         {} if extra_due is None else {"extra_due": extra_due}
     )  # static: the call is today's while it is None
+    bcost = arms.basal_cost(s, cfg)  # the brain cost, plus the arms upkeep while it is on (§42.3)
     if d3:  # static: the pitch turn cost and the buoyancy due (§27.7)
-        c = en.pay_costs3(s.energy, act, mo, nb0, s.brain_cost, s.buoy_cap, s.alive, cfg, **due_kw)
+        c = en.pay_costs3(s.energy, act, mo, nb0, bcost, s.buoy_cap, s.alive, cfg, **due_kw)
         buoy0 = mo.buoy if observe else None  # static: the pre-mask buoyancy, as thrust0 below (§32)
         mo = actions.mask(mo, c.solvent)
     else:
-        c = en.pay_costs(s.energy, act, nb0, s.brain_cost, s.alive, cfg, **due_kw)
+        c = en.pay_costs(s.energy, act, nb0, bcost, s.alive, cfg, **due_kw)
         buoy0 = None
     xdec = ext.mask_all(xdec, c.solvent, cfg)  # solvency, as ``actions.mask`` does for the base actions
     thrust0 = act.thrust if observe else None  # static: the decode output, which S8 also reads (§28.2)
@@ -257,7 +259,7 @@ def step(
     slots_s9 = (partner >= 0).astype(_I32).sum()
 
     E, resource, got = en.harvest(c.energy, s.resource, fcell, act, c.solvent, cfg)  # S10
-    cb = en.combat(E, resource, fcell, act, partner, cfg)  # S11
+    cb = en.combat(E, resource, fcell, act, partner, cfg, **arms.combat_kw(s, cfg))  # S11
     if observe:  # static: the per-slot flows are kept for the channel; the traced graph equals en.share's
         sl = en.share_slots(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)  # S12
         sh = en.share_from_slots(cb.energy, sl)
@@ -293,14 +295,15 @@ def step(
 
     sv = dt.survivor  # S15
     wind_f = wind.force if wthr else None
+    act_p = arms.physics_act(act, s, cfg)  # the armour slows the thrust (§42.3); ``act`` itself when off
     if d3:  # static: gravity, buoyancy, the floor and the surface (§27.3)
         F = physics.forces3(
-            s.pos, s.heading, s.pitch, act, mo, s.buoy_cap, nbr, sv, dt.partner, cfg, wind=wind_f
+            s.pos, s.heading, s.pitch, act_p, mo, s.buoy_cap, nbr, sv, dt.partner, cfg, wind=wind_f
         )
         it = physics.integrate3(s.pos, s.heading, s.pitch, F, act.grip, act.turn, mo.pitch, gr, sv, cfg)
         pos, vel, heading, v_clips = it.pos, it.vel, it.heading, it.v_clips
     else:
-        F = physics.forces(s.pos, s.heading, act, nbr, sv, dt.partner, cfg, wind=wind_f)
+        F = physics.forces(s.pos, s.heading, act_p, nbr, sv, dt.partner, cfg, wind=wind_f)
         pos, vel, heading, v_clips = physics.integrate(s.pos, s.heading, F, act.grip, act.turn, sv, cfg)
     s1 = s._replace(
         alive=sv,

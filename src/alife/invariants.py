@@ -106,6 +106,9 @@ def device_check(
     if cfg.weather.enabled:  # static: the stored weather state
         nonfinite = nonfinite | ~mx.all(mx.isfinite(s.wx))
     field_bad = mx.any((s.resource < 0) | (s.resource > R_HARD))
+    if cfg.arms.enabled:  # static: the heritable traits are finite and in [0, 1] on every row (§42.4)
+        nonfinite = nonfinite | ~mx.all(mx.isfinite(s.arms))
+        field_bad = field_bad | mx.any((s.arms < 0.0) | (s.arms > 1.0))
     if cfg.director.enabled:  # static: the director's env levers are live
         field_bad = field_bad | env_out_of_range(s, cfg)
     headroom = (max_cell_occ >= d.occ_limit) | (max_attackers >= (1 << 15))

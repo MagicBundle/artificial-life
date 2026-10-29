@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import mlx.core as mx
 import numpy as np
-import pytest
 
 from alife import energy as en
 from alife import ops
@@ -176,10 +175,13 @@ def test_pierce_lifts_only_the_environmental_protections(micro_cfg: Config) -> N
     assert (np.array(en.protection(t0, 0.3, arms_p=armour * 0.1, pierce=one)[0]) >= 0.3).all()
 
 
-def test_the_arms_contest_is_not_built_yet(micro_cfg: Config) -> None:
-    e, res, fcell, act, partner, _ = _batch(micro_cfg, 0)
-    with pytest.raises(NotImplementedError, match="arms"):
-        en.combat(e, res, fcell, act, partner, micro_cfg, arms=mx.zeros((dims(micro_cfg).n, 6), mx.float32))
+def test_the_arms_argument_evaluates_the_contest(micro_cfg: Config) -> None:
+    """A1: ``arms=`` is the arms contest factor (the contest itself is tested in ``test_arms``)."""
+    cfg = apply_overrides(micro_cfg, ["arms.enabled=true"])
+    e, res, fcell, act, partner, _ = _batch(cfg, 0)
+    z = mx.zeros((dims(cfg).n, 6), mx.float32)
+    got = en.combat(e, res, fcell, act, partner, cfg, arms=z)
+    _same(_fields(got), _fields(en.combat(e, res, fcell, act, partner, cfg)))
 
 
 def test_protection_floor_keeps_attack_profitable_at_the_recommended_value() -> None:

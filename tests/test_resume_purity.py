@@ -153,7 +153,8 @@ def test_version_guards(
     rd = RunDir.open(copy)
     current = getattr(rng if name.startswith("RNG") else layout, name)
     ckpt = rd.checkpoint_at(30)
-    _with_versions(ckpt, ckpt, tiny_cfg, monkeypatch, **{name: current + 1})
+    bad = max(rng.RNG_COMPATIBLE_VERSIONS) + 1 if name.startswith("RNG") else current + 1  # not compatible
+    _with_versions(ckpt, ckpt, tiny_cfg, monkeypatch, **{name: bad})
     with pytest.raises(CheckpointError, match=name.lower()):
         load_checkpoint(ckpt, tiny_cfg)
     assert cli.main(["resume", str(copy), "--steps", "1"]) == 4

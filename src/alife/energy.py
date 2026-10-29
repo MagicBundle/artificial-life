@@ -6,6 +6,7 @@ from typing import NamedTuple
 
 import mlx.core as mx
 
+from alife import arms as arms_mod
 from alife import layout, ops
 from alife.actions import Actions, Motion3
 from alife.config import Config
@@ -226,11 +227,10 @@ def combat(
     protection fractions (already scaled by their gains by the supplying module); the demand is multiplied by
     their product (``protection``), floored at ``combat.protect_floor``, before the behavioural ``defend``.
     With
-    all three None (every feature off) the traced graph is the legacy one. ``arms`` (``State.arms``, the arms
-    contest) is evaluated inside once the arms PR lands; until then passing it raises.
+    all three None (every feature off) the traced graph is the legacy one. ``arms`` (``State.arms``) adds the
+    arms contest factor ``(1 − r)·K`` of the attacker against its target (``arms.contest_factor``, DESIGN
+    §42.2) as the first factor of the product; it is the float 1.0 for zero traits and ``key_floor = 1``.
     """
-    if arms is not None:
-        raise NotImplementedError("the arms contest lands with the arms engine PR (DESIGN §42)")
     cc = cfg.combat
     n = energy.shape[0]
     tgt = act.attack_target
@@ -238,7 +238,8 @@ def combat(
     if not cc.attack_bonded:
         attack = attack & ~((partner == tgt[:, None]) & (partner >= 0)).any(axis=1)
     t0 = mx.maximum(tgt, 0)
-    prot, capped = protection(t0, cc.protect_floor, shelter=shelter, guard=guard)
+    arms_p = None if arms is None else arms_mod.contest_factor(arms, t0, partner, cfg)  # static
+    prot, capped = protection(t0, cc.protect_floor, arms_p=arms_p, shelter=shelter, guard=guard)
     if prot is None:  # static: nothing protects (every feature off)
         want = ops.floor_i32(cc.attack_max * (1.0 - cc.defend_efficiency * act.defend[t0]))
     else:

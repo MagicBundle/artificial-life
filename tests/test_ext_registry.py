@@ -16,9 +16,10 @@ from alife.config import ConfigError, apply_overrides, config_hash, load_config
 from alife.step import ActFlag
 
 
-def test_the_registry_is_empty_and_every_function_is_the_identity() -> None:
-    """PR 0a ships the machinery only: with no row registered, nothing a feature-off run sees can change."""
-    assert ext.REGISTRY == ()
+def test_with_every_feature_off_every_function_is_the_identity() -> None:
+    """PR 0a shipped the machinery with an empty registry; A1 registers the arms row. With every feature off
+    (the default), nothing a feature-off run sees can change."""
+    assert [s.name for s in ext.REGISTRY] == ["arms"]
     cfg = load_config(preset="tiny")
     assert ext.active(cfg) == () and ext.layout_features(cfg) == "" and ext.mask(cfg) == 0
     assert (
@@ -27,7 +28,8 @@ def test_the_registry_is_empty_and_every_function_is_the_identity() -> None:
         and ext.step_inputs(None, cfg) == ()
     )
     assert ext.sum_due([None, None]) is None and ext.registered_block_names() == frozenset()
-    assert config.POST_V01_KEYS[-1] == ("combat", "protect_floor") and config.FEATURE_KEYS == {}
+    assert config.POST_V01_KEYS[-len(config.FEATURE_KEYS["arms"]) - 1] == ("combat", "protect_floor")
+    assert set(config.FEATURE_KEYS) == {"arms"} and config.POST_V01_KEYS[-1] == ("arms", "sigma_phase")
     assert config.WORLD_OVERLAYS == ("storm", "storm160")
     assert ext.check_registry() == []
 
@@ -117,7 +119,10 @@ def test_hash32_is_roughly_uniform() -> None:
 
 def test_rng_layout_version_is_unchanged_for_every_config() -> None:
     cfg = load_config(preset="tiny")
-    assert rng.layout_version(cfg) == rng.RNG_LAYOUT_VERSION == 3 and {1, 2, 3} == rng.RNG_COMPATIBLE_VERSIONS
+    assert (
+        rng.layout_version(cfg) == rng.RNG_LAYOUT_VERSION == 3 and {1, 2, 3, 4} == rng.RNG_COMPATIBLE_VERSIONS
+    )
+    assert rng.layout_version(apply_overrides(cfg, ["arms.enabled=true"])) == 4  # only arms takes a stream
     assert rng.NUM_STREAMS == 16
 
 
@@ -127,9 +132,9 @@ def test_streams_zero_to_nine_keep_their_keys() -> None:
     assert ks.shape == (16, 2)
     assert [s.name for s in rng.Stream] == [
         "NOISE", "BOND_PRIO", "BIRTH_PRIO", "PLACEMENT", "MUT_W1", "MUT_W2", "MUT_GENES", "IMMIGRANT",
-        "CATASTROPHE", "WEATHER",
+        "CATASTROPHE", "WEATHER", "ARMS",
     ]  # fmt: skip
-    assert max(s.value for s in rng.Stream) == 9 and max(s.value for s in rng.InitStream) == 7
+    assert max(s.value for s in rng.Stream) == 10 and max(s.value for s in rng.InitStream) == 8
 
 
 # --- config ------------------------------------------------------------------------------------------------
