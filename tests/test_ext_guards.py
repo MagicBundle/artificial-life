@@ -33,6 +33,19 @@ FROZEN_OMITTED_DEFAULTS = {
     ("arms", "init_arm"): 0.0,
     ("arms", "sigma"): 0.0,
     ("arms", "sigma_phase"): 0.0,
+    ("structures", "enabled"): False,
+    ("structures", "cap"): 4096,
+    ("structures", "build_max"): 16,
+    ("structures", "build_cost"): 2,
+    ("structures", "decay_q12"): 16,
+    ("structures", "shelter_gain"): 0.8,
+    ("structures", "barrier_gain"): 3.0,
+    ("structures", "shield_gain"): 0.5,
+    ("structures", "reach"): 0.5,
+    ("structures", "open_frac"): 0.5,
+    ("structures", "aperture"): 0.25,
+    ("structures", "exit_ease"): 0.75,
+    ("structures", "silent_build"): False,
 }
 
 

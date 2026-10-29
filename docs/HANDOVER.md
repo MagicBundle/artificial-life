@@ -55,6 +55,20 @@ mutation at birth, `Stream.ARMS` 10 and `rng.layout_version` 4 with arms on. Ena
 keys of `[arms]`; no preset or overlay enables it (the overlay comes with A3). Absent: toxin and display (A3), observers and the
 classifier (A2), pierce and the duels (A4), perception (A5), colour modes and GUI levers. `alife bench --arms` times it.
 
+## Built structures (DESIGN §38, I67)
+
+PR S1 (stacked on A1, not merged; engine only) is the engine of the built-structures layer: `State.mat`, an int32 grid on the food
+lattice that agents fill through the brain output `build` (the input `material` senses it), at 2 q per unit in `HEAT_ACTION` (no
+17th ledger term; the material has its own exact identity `Σmat' = Σmat + BUILD_UNITS - MAT_WASTED - MAT_DECAYED`), decaying by
+an exact integer rule (a full cell lasts 864 steps). Three effects read the start-of-step material: shelter (wind, storm hazard
+and bond break), barrier (drag up to 4x, R1) and the predator shield (inside the protection product of `combat`). Anti-trapping:
+R1 bounded drag, R2 the aperture invariant (every cell keeps `k` open neighbours, by construction, with colour phases), R3 the
+easy exit; `TRAPPED` and `APERTURE_VIOLATIONS` are counters that must stay 0. Enable with `--overlay build` (any preset whose
+field lattice side is composite; `mini3d + storm160 + build` is the storm world) or `--set structures.enabled=true`;
+`alife bench --structures` times it; `structures.silent_build=true` is the zero-column control. Absent: the stream record, the
+dump, the observers' drift and the GUI (S2, S3), the first runs and the fork (S4; `alife migrate` is PR 0b). A hash cell
+overflow is an error with structures on (`Diag.HASH_OVERFLOW`).
+
 ## How to run
 
 ```bash

@@ -288,7 +288,9 @@ def _config_and_layout() -> dict[str, Any]:
     combos: list[tuple[str, tuple[str, ...]]] = []
     for preset in config.PRESETS:
         combos.append((preset, ()))
-        for ov in config.ALL_OVERLAYS:
+        # The base commit's overlays. A feature overlay (``build``) switches its feature ON, so it has
+        # no counterpart in the base and is not an off-identity case; the feature's own tests cover it.
+        for ov in ("fast", "storm", "storm160"):
             combos.append((preset, (ov,)))
     combos.append(("tiny", ("fast", "storm")))
     for preset, overlays in combos:

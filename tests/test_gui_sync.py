@@ -509,7 +509,7 @@ def test_the_play_launch_flags_are_flags_of_alife_play() -> None:
     assert re.search(r'size == miniWorldSize \? "storm160" : "storm"', text)
     assert re.search(r"miniWorldSize = 160\.0", text)
     assert config.load_config(preset="mini3d").world.size == 160.0
-    assert config.WORLD_OVERLAYS == ("storm", "storm160")
+    assert config.WORLD_OVERLAYS[:2] == ("storm", "storm160")
 
 
 def test_the_play_launch_set_keys_are_config_fields() -> None:

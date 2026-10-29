@@ -191,6 +191,9 @@ def make_scene(
     for name in ("patch_pos", "patch_vel", "key", "step", "ledger_cum", "diag", *ENV_FIELDS, "wx"):
         out[name] = mx.array(base[name]).astype(dtypes[name])
     out["next_uid"] = mx.array(int(arr["uid"].max(initial=-1)) + 1, dtype=mx.int64)
+    for name in state_cls(cfg)._fields:  # the conditional fields of the enabled features (DESIGN §43.2)
+        if name not in out and name not in fields and name != "total" and name != "total0":
+            out[name] = getattr(s0, name)
     for name, value in fields.items():
         if name not in state_cls(cfg)._fields:
             raise KeyError(f"unknown State field {name!r}")

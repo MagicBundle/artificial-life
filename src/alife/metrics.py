@@ -494,6 +494,26 @@ def interval_row(
         row["deaths_storm"] = int(cs[storm_counter_index(nd)])
     if blocks and blocks[0][0] == "protect":  # PROT_CAPPED, the first extension counter (DESIGN §43.4, §43.6)
         row["prot_capped_frac"] = _ratio(int(cs[n_counters(nd, weather)]), int(cs[CounterIdx.ATTACKS]))
+    at = n_counters(nd, weather)
+    for bname, names in blocks:  # the extension counter blocks, in step order (DESIGN §43.4)
+        if bname == "structures":  # built structures (§38.9): sums for the flows, means for the levels
+            by = {n: i for i, n in enumerate(names)}
+            col = lambda n, at=at, by=by: cs[at + by[n]]  # noqa: E731
+            row.update(
+                {
+                    "build_units": int(col("BUILD_UNITS")),
+                    "build_wasted": int(col("MAT_WASTED")),
+                    "build_decayed": int(col("MAT_DECAYED")),
+                    "build_mat_total": _ratio(int(col("MAT_TOTAL")), t),
+                    "build_mat_cells": _ratio(int(col("MAT_CELLS")), t),
+                    "build_mat_closed": _ratio(int(col("MAT_CLOSED")), t),
+                    "build_shielded": int(col("SHIELDED_ATTACKS")),
+                    "build_trapped": int(col("TRAPPED")),
+                    "build_aperture_violations": int(col("APERTURE_VIOLATIONS")),
+                    "build_slowed_frac": _ratio(int(col("SLOWED")), alive_steps),
+                }
+            )
+        at += len(names)
     row.update(
         {
             "bonds_total": _ratio(int(cs[CounterIdx.BONDS_TOTAL]), t),

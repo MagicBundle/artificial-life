@@ -168,6 +168,7 @@ class Diag(IntFlag):
     INT_HEADROOM = 64
     CAPACITY = 128
     POS_RANGE = 256
+    HASH_OVERFLOW = 512  # a hash cell overflowed with structures on (crowding in material, §38.7)
     CELL_OVERFLOW_WARN = 1 << 16
     VCLIP_WARN = 1 << 17
     WEATHER_WARN = (

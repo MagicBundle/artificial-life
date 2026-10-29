@@ -1,0 +1,12 @@
+# build overlay: built structures on (DESIGN section 38). A WORLD overlay like `storm`: it composes with a preset
+# whose lattice can be coloured (the field lattice side FG = world.size / world.field_cell must not be prime or
+# below 4; R2 of 38.4b) and is validated against whatever preset it lands on. Compose it as
+# `--preset mini3d --overlay build` (shelter needs `--overlay storm160` as well; barrier and shield work in dry
+# worlds).
+#
+# Every value is the default of `[structures]` (the working set of the spec, PROVISIONAL until the first runs);
+# the sweep axes are build_cost (1, 2, 4) and decay_q12. Founders have random `build` weights (about half build a
+# little from step 0); `silent_build = true` is the zero-column control (nobody builds until mutation finds it).
+# Brain cost grows by the two new weight rows (about 1.3 %); no compensation is applied.
+[structures]
+enabled = true

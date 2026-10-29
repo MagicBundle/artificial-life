@@ -46,7 +46,7 @@ def _cfg(nd: int, *extra: str) -> Config:
 
 
 def test_the_registry_row_and_the_hash_of_every_off_config() -> None:
-    assert [s.name for s in ext.REGISTRY] == ["arms"] and ext.check_registry() == []
+    assert [s.name for s in ext.REGISTRY] == ["arms", "structures"] and ext.check_registry() == []
     assert config_hash(Config()) == PRE_ARMS_HASH["default"]
     assert config_hash(load_config(preset="tiny")) == PRE_ARMS_HASH["tiny"]
     assert config_hash(load_config(preset="tiny3d")) == PRE_ARMS_HASH["tiny3d"]

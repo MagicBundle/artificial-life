@@ -75,6 +75,7 @@ def device_check(
     cfg: Config,
     *,
     weather_bad: mx.array | None = None,
+    struct_viol: mx.array | None = None,
 ) -> mx.array:
     """int32 ``Diag`` bits for this step, OR-ed into ``s.diag`` by the step.
 
@@ -109,6 +110,10 @@ def device_check(
     if cfg.arms.enabled:  # static: the heritable traits are finite and in [0, 1] on every row (§42.4)
         nonfinite = nonfinite | ~mx.all(mx.isfinite(s.arms))
         field_bad = field_bad | mx.any((s.arms < 0.0) | (s.arms > 1.0))
+    if cfg.structures.enabled:  # static: the material is in [0, cap]; no cell lost its aperture (§38.4b)
+        field_bad = field_bad | mx.any((s.mat < 0) | (s.mat > cfg.structures.cap))
+        if struct_viol is not None:
+            field_bad = field_bad | (struct_viol > 0)
     if cfg.director.enabled:  # static: the director's env levers are live
         field_bad = field_bad | env_out_of_range(s, cfg)
     headroom = (max_cell_occ >= d.occ_limit) | (max_attackers >= (1 << 15))
@@ -132,6 +137,8 @@ def device_check(
     )
     if weather_bad is not None:  # static: weather on
         checks = (*checks, (weather_bad, Diag.WEATHER_WARN))
+    if cfg.structures.enabled:  # static: crowding in the material must not hide neighbours (E7, §38.7)
+        checks = (*checks, (overflow_cells > 0, Diag.HASH_OVERFLOW))
     bits = mx.array(0, dtype=_I32)
     for cond, bit in checks:
         bits = bits | mx.where(cond, bit.value, 0).astype(_I32)

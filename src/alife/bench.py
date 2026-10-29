@@ -30,6 +30,9 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
 - **Arms** (``arms``, A1, DESIGN §42): the step with the arms layer on against the same config with it off,
   the same (off, on, on, off) blocks; the trajectories differ by construction. The gate of the arms spec
   (§7): below 3 % overhead on 64k3d before the first long run.
+- **Structures** (``structures``, S1, DESIGN §38): the step with built structures on against the same config
+  with them off, the same (off, on, on, off) blocks; the trajectories differ by construction (the brain has
+  one more input and output). The spec's estimate: under 3 % of the step on 64k3d.
 - **Weather-org** (``weather_org``, W2): the same blocks with the weather on in both arms, the "off" arm
   having ``seed_gain = shade_gain = 0``: the marginal cost of the organism couplings (the seeding signal and
   the shade count, DESIGN §32).
@@ -67,6 +70,7 @@ from alife import (
     physics,
     sensing,
     spatial,
+    structures,
 )
 from alife import energy as en
 from alife import step as step_mod
@@ -78,6 +82,7 @@ from alife.config import (
     ArmsConfig,
     Config,
     ConfigError,
+    StructuresConfig,
     WeatherConfig,
     apply_overrides,
     config_hash,
@@ -152,6 +157,7 @@ def run_bench(
     weather_pairs: int = WEATHER_PAIRS,
     weather_org: bool = False,
     arms: bool = False,
+    structures: bool = False,
 ) -> dict[str, Any]:
     """Run the benchmark suite and return a JSON-compatible report.
 
@@ -177,6 +183,8 @@ def run_bench(
         )
     if arms and not cfg.arms.enabled:
         raise ConfigError("bench --arms needs arms.enabled = true (for example --set arms.enabled=true)")
+    if structures and not cfg.structures.enabled:
+        raise ConfigError("bench --structures needs structures.enabled = true (for example --overlay build)")
     if weather_pairs < 1:
         raise ValueError(f"weather_pairs must be >= 1, got {weather_pairs}")
     report: dict[str, Any] = {**_environment(cfg), "steps": steps, "warmup": max(warmup, 1)}
@@ -197,6 +205,10 @@ def run_bench(
     if arms:
         report["arms"] = _bench_weather(
             cfg, steps, warmup, weather_pairs, off=replace(cfg, arms=ArmsConfig())
+        )
+    if structures:
+        report["structures"] = _bench_weather(
+            cfg, steps, warmup, weather_pairs, off=replace(cfg, structures=StructuresConfig())
         )
     return report
 
@@ -680,6 +692,7 @@ class _Sense(NamedTuple):
     x: mx.array
     grounded: mx.array | None = None  # 3D only: physics.grounded of the start-of-step pos
     ctx: ext.ExtCtx | None = None  # the extension hooks' view (§43)
+    sn: structures.Sense | None = None  # the material at the cell (structures on, §38)
 
 
 class _Interact(NamedTuple):
@@ -720,6 +733,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         a = age(s.step, s.birth_step)
         geom = bonds.bond_geometry(s.pos, s.partner, cfg)
         fcell = fields.cell_index(s.pos, cfg)
+        sn = structures.sense(s.mat, fcell, cfg) if cfg.structures.enabled else None  # static
         if d3:  # static
             gr = physics.grounded(s.pos, cfg)
             fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch)
@@ -737,14 +751,14 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
                 grounded=gr,
                 ext_in=ext.step_inputs(s, cfg, ectx),
             )
-            return _Sense(a, geom, fcell, desc, x, gr, ectx)
+            return _Sense(a, geom, fcell, desc, x, gr, ectx, sn)
         fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg)
         desc = sensing.neighbor_descriptors(s, nbr, cfg)
         ectx = ext.ExtCtx(nbr, desc, geom, fcell)
         x = sensing.build_inputs(
             s, a, nbr, desc, geom, fobs, ks[Stream.NOISE], cfg, ext_in=ext.step_inputs(s, cfg, ectx)
         )
-        return _Sense(a, geom, fcell, desc, x, None, ectx)
+        return _Sense(a, geom, fcell, desc, x, None, ectx, sn)
 
     def think(W1: mx.array, W2: mx.array, x: mx.array, h: mx.array) -> tuple[mx.array, mx.array]:
         return brain.forward(W1, W2, x, h, cfg)
@@ -761,9 +775,10 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         """The hazard key of the step's weather stream split (``step.step``'s ``kw[1]``)."""
         return mx.random.split(ks[Stream.WEATHER], 2)[1]
 
-    def wind_force(s: State) -> wthr.AgentForce:
-        """S3w: the stored weather sampled at the start-of-step positions."""
-        return wthr.agent_wind(wthr.unpack(s.wx), s.pos, s.buoy_cap if d3 else None, s.alive, cfg)
+    def wind_force(s: State, sn: structures.Sense | None) -> wthr.AgentForce:
+        """S3w: the stored weather sampled at the start-of-step positions (sheltered by the material)."""
+        wind = wthr.agent_wind(wthr.unpack(s.wx), s.pos, s.buoy_cap if d3 else None, s.alive, cfg)
+        return wind if sn is None else structures.apply_shelter(wind, sn, cfg)
 
     def interact(
         s: State,
@@ -795,7 +810,8 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         )
         slots_s9 = (partner >= 0).astype(mx.int32).sum()
         E, resource, got = en.harvest(c.energy, s.resource, se.fcell, act, c.solvent, cfg)
-        cb = en.combat(E, resource, se.fcell, act, partner, cfg, **arms.combat_kw(s, cfg))
+        shield_kw = structures.combat_kw(se.sn, cfg) if se.sn is not None else {}
+        cb = en.combat(E, resource, se.fcell, act, partner, cfg, **arms.combat_kw(s, cfg), **shield_kw)
         sh = en.share(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)
         E, e_over = en.cap_energy(sh.energy, cfg)
         env = s.env if cfg.director.enabled else None  # static
@@ -834,6 +850,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         mo: actions.Motion3 | None,
         gr: mx.array | None,
         wind: wthr.AgentForce | None,
+        sn: structures.Sense | None,
     ) -> tuple[mx.array, ...]:
         wind_f = wind.force if wind is not None else None  # static
         act_p = arms.physics_act(act, s, cfg)  # the armour slows the thrust (DESIGN §42.3)
@@ -842,9 +859,15 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             F = physics.forces3(
                 s.pos, s.heading, s.pitch, act_p, mo, s.buoy_cap, nbr, sv, dt.partner, cfg, wind=wind_f
             )
-            return physics.integrate3(s.pos, s.heading, s.pitch, F, act.grip, act.turn, mo.pitch, gr, sv, cfg)
+            dm = structures.drag_mult(F, sn, cfg) if sn is not None else None
+            it = physics.integrate3(
+                s.pos, s.heading, s.pitch, F, act.grip, act.turn, mo.pitch, gr, sv, cfg, drag_mult=dm
+            )
+            return it if dm is None else (it, dm)
         F = physics.forces(s.pos, s.heading, act_p, nbr, dt.survivor, dt.partner, cfg, wind=wind_f)
-        return physics.integrate(s.pos, s.heading, F, act.grip, act.turn, dt.survivor, cfg)
+        dm = structures.drag_mult(F, sn, cfg) if sn is not None else None
+        out = physics.integrate(s.pos, s.heading, F, act.grip, act.turn, dt.survivor, cfg, drag_mult=dm)
+        return out if dm is None else (out, dm)
 
     def reproduce(
         s: State, it: _Interact, h_new: mx.array, moved: tuple[mx.array, ...], a: mx.array, ks: mx.array
@@ -891,13 +914,22 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         return wthr.pack(ws2), wthr.rain_for(ws2, cfg), wthr.health(wd, wind)
 
     def field_update(
-        s2: State, it: _Interact, fcell: mx.array, rain: wthr.RainIn | None = None
+        s2: State,
+        it: _Interact,
+        fcell: mx.array,
+        alive0: mx.array,
+        dm: mx.array | None,
+        rain: wthr.RainIn | None = None,
     ) -> tuple[mx.array, ...]:
         dep = fields.deposit_chem(it.act.emit, fcell, it.costs.solvent, cfg)
         chem = fields.update_chem(s2.chem, dep, cfg)
         env = s2.env if cfg.director.enabled else None  # static
         resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env, rain)
-        return chem, resource, regen_inc, fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env)
+        out = (chem, resource, regen_inc, fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env))
+        if cfg.structures.enabled:  # static: the material (S17, DESIGN §38)
+            mat, sf = structures.update(s2.mat, it.xdec["structures"], fcell, alive0, dm, s2.step, cfg)
+            out = (*out, mat, sf)
+        return out
 
     def finish(s2: State, s: State, flows: Any) -> tuple[State, Any]:
         return step_mod._finish(s2, s, cfg, flows)
@@ -956,16 +988,24 @@ class _StagedStep:
         dec = self._run("decode", y, se.desc, nbr, s)
         act, mo = dec if d3 else (dec, None)
         wthr_on = self.cfg.weather.enabled
-        wind = self._run("wind", s) if wthr_on else None
+        wind = self._run("wind", s, se.sn) if wthr_on else None
         it = self._run("interact", s, act, se, ks, mo, wind, y)
-        moved = self._run("physics", s, it.act, nbr, it.dt, it.mo, se.grounded, wind)
+        st_on = self.cfg.structures.enabled  # static
+        moved = self._run("physics", s, it.act, nbr, it.dt, it.mo, se.grounded, wind, se.sn)
+        moved, dm = moved if st_on else (moved, None)
         (parent, slot, kind, counts), rp = self._run("reproduce", s, it, h_new, moved, se.age, ks)
         lanes = lifecycle.Lanes(parent, slot, kind, counts[0], counts[1], counts[2])
         wx2, rain, weather_bad = self._run("weather", s, ks, wind) if wthr_on else (None, None, None)
-        chem, resource, regen_inc, patch_pos = self._run("fields", rp.state, it, se.fcell, rain)
+        chem, resource, regen_inc, patch_pos, *mat_out = self._run(
+            "fields", rp.state, it, se.fcell, s.alive, dm, rain
+        )
         s2 = rp.state._replace(
             chem=chem, resource=resource, patch_pos=patch_pos, key=key_next, step=s.step + 1
         )
+        xdec = it.xdec
+        if st_on:  # static: the new material, and the structures flows for the counters
+            s2 = s2._replace(mat=mat_out[0])
+            xdec = {**xdec, "structures": mat_out[1]}
         if wthr_on:  # static
             s2 = s2._replace(wx=wx2)
         if self.cfg.director.enabled:  # static
@@ -992,8 +1032,8 @@ class _StagedStep:
             slots_s9=it.slots_s9,
             weather_bad=weather_bad,
         )
-        if it.xdec:  # static
-            flows = flows._replace(ext=step_mod.ExtFlows(**it.xdec))
+        if xdec:  # static
+            flows = flows._replace(ext=step_mod.ExtFlows(**xdec))
         if d3:  # static: the Counter3D inputs
             flows = flows._replace(z_floor=moved.z_floor, z_surface=moved.z_surface, grounded=se.grounded)
         s_new, out = self._run("finish", s2, s, flows)
@@ -1744,6 +1784,7 @@ def format_report(report: dict[str, Any]) -> str:
     for key, label, unit in (
         ("weather", "weather", "weather"),
         ("weather_org", "weather-org (seeding and shade)", "the couplings"),
+        ("structures", "structures", "built structures"),
     ):
         if key in r:
             wt = r[key]

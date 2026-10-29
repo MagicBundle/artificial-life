@@ -28,6 +28,7 @@ from alife import (
     physics,
     sensing,
     spatial,
+    structures,
     weather,
 )
 from alife import energy as en
@@ -204,11 +205,15 @@ def step(
     nbr = spatial.find_neighbors(s.pos, s.alive, cfg)  # S2
     geom = bonds.bond_geometry(s.pos, s.partner, cfg)  # S3
     wthr = cfg.weather.enabled  # static: the weather layer (§30)
+    fcell = fields.cell_index(s.pos, cfg)  # S4 (above S3w: a pure function of s.pos, read by structures)
+    st_on = cfg.structures.enabled  # static: built structures (§38)
+    sn = structures.sense(s.mat, fcell, cfg) if st_on else None  # the material at the start-of-step cell
     if wthr:
         ws = weather.unpack(s.wx)  # S3w: the weather stored at the end of the previous step, unpacked once
         wind = weather.agent_wind(ws, s.pos, s.buoy_cap if d3 else None, s.alive, cfg)
+        if st_on:  # static: shelter lowers the felt wind, the hazard speed and the bond break (§38.4.1)
+            wind = structures.apply_shelter(wind, sn, cfg)
         kw = mx.random.split(ks[Stream.WEATHER], 2)  # kw[0]: the disturbance key (S17); kw[1]: the hazard
-    fcell = fields.cell_index(s.pos, cfg)  # S4
     if d3:  # static: the yaw-and-pitch frame and the start-of-step grounding (§27.6)
         gr = physics.grounded(s.pos, cfg)
         fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch)
@@ -259,7 +264,8 @@ def step(
     slots_s9 = (partner >= 0).astype(_I32).sum()
 
     E, resource, got = en.harvest(c.energy, s.resource, fcell, act, c.solvent, cfg)  # S10
-    cb = en.combat(E, resource, fcell, act, partner, cfg, **arms.combat_kw(s, cfg))  # S11
+    shield_kw = structures.combat_kw(sn, cfg) if st_on else {}  # static: the predator shield (§38.4.3)
+    cb = en.combat(E, resource, fcell, act, partner, cfg, **arms.combat_kw(s, cfg), **shield_kw)  # S11
     if observe:  # static: the per-slot flows are kept for the channel; the traced graph equals en.share's
         sl = en.share_slots(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)  # S12
         sh = en.share_from_slots(cb.energy, sl)
@@ -300,11 +306,17 @@ def step(
         F = physics.forces3(
             s.pos, s.heading, s.pitch, act_p, mo, s.buoy_cap, nbr, sv, dt.partner, cfg, wind=wind_f
         )
-        it = physics.integrate3(s.pos, s.heading, s.pitch, F, act.grip, act.turn, mo.pitch, gr, sv, cfg)
+        dm = structures.drag_mult(F, sn, cfg) if st_on else None  # static: the barrier (§38.4.2)
+        it = physics.integrate3(
+            s.pos, s.heading, s.pitch, F, act.grip, act.turn, mo.pitch, gr, sv, cfg, drag_mult=dm
+        )
         pos, vel, heading, v_clips = it.pos, it.vel, it.heading, it.v_clips
     else:
         F = physics.forces(s.pos, s.heading, act_p, nbr, sv, dt.partner, cfg, wind=wind_f)
-        pos, vel, heading, v_clips = physics.integrate(s.pos, s.heading, F, act.grip, act.turn, sv, cfg)
+        dm = structures.drag_mult(F, sn, cfg) if st_on else None  # static
+        pos, vel, heading, v_clips = physics.integrate(
+            s.pos, s.heading, F, act.grip, act.turn, sv, cfg, drag_mult=dm
+        )
     s1 = s._replace(
         alive=sv,
         energy=dt.energy,
@@ -343,6 +355,10 @@ def step(
     resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env, rain)
     patch_pos = fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env)
     s2 = s2._replace(chem=chem, resource=resource, patch_pos=patch_pos, key=key_next, step=t + 1)
+    if st_on:  # static: deposit, cap, aperture gate and decay of the material (§38.2, §38.3)
+        mat, sflows = structures.update(s.mat, xdec["structures"], fcell, s.alive, dm, t, cfg)
+        s2 = s2._replace(mat=mat)
+        xdec = {**xdec, "structures": sflows}
     if wthr:  # static
         s2 = s2._replace(wx=weather.pack(ws2))
     if env is not None:  # static: director enabled
@@ -592,6 +608,8 @@ def _finish(s_new: State, s: State, cfg: Config, f: _Flows) -> tuple[State, Step
         else:
             max_cell_occ = ops.scatter_add_i32(d.fg * d.fg, f.fcell, 1, s.alive).max()
         extra = {} if f.weather_bad is None else {"weather_bad": f.weather_bad}  # static: weather on
+        if cfg.structures.enabled:  # static: the start-of-step aperture audit (§38.4b)
+            extra = {**extra, "struct_viol": f.ext.structures.violations}
         bits = invariants.device_check(
             s_new,
             ledger,

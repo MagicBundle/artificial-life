@@ -1543,6 +1543,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         weather_pairs=a.weather_pairs,
         weather_org=a.weather_org,
         arms=a.arms,
+        structures=a.structures,
     )
     text = _dumps(report)
     if a.json is not None:
@@ -1892,6 +1893,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also time the step with the arms layer on against the same config with it off (interleaved "
         "blocks; needs arms.enabled, for example --set arms.enabled=true)",
+    )
+    p.add_argument(
+        "--structures",
+        action="store_true",
+        help="also time the step with built structures on against the same config with them off (interleaved "
+        "blocks; needs structures.enabled, for example --overlay build)",
     )
     p.add_argument(
         "--weather-pairs",
