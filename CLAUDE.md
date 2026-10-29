@@ -52,6 +52,10 @@ Bonds that pay (`DESIGN.md` §40, I69; conductive sharing `bonds.share_mode` 1 a
 `bond_flow`, the whole 13+2 block, counters) and B2 (roles: forager and guard, switch cost, ramp, harvest cap, guard shield through
 `combat(guard=)`) are implemented behind `bonds.share_mode`/`roles.enabled` (`--overlay bonds`); observers and scorecard are B3.
 
+Communication (`DESIGN.md` §39, I68; the voice channel: W call intensities, hearing over the sensed neighbours, the heard-intensity and bearing brain
+tail, a dithered cost in `HEAT_ACTION`, controls `comm.control = deaf | decoy`): C1 (the engine) is implemented behind `comm.enabled`
+(`--overlay comm`, `alife migrate --enable comm`, `alife bench --comm`); observers, stream, GUI and the analysis are C2 and C3.
+
 ## Conventions
 
 - Change DESIGN.md in the same change as any behaviour, signature or default it pins, and add a Review-log row.

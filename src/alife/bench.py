@@ -36,6 +36,9 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
 - **Bonds** (``bonds_arm``, B1, DESIGN §40): the step with the bonds feature on (the conductive share, the
   bond block of the brain, the role state) against the same config with it off, the same (off, on, on, off)
   blocks; the trajectories differ by construction. The spec's estimate: about 5 % of the fused step on 64k3d.
+- **Comm** (``comm_arm``, C1, DESIGN §39): the step with the voice channel on (the hear pass, the wider brain,
+  the voice due) against the same config with it off, the same (off, on, on, off) blocks; the trajectories
+  differ by construction. The gate of the comm spec (§5): within 8 % of the fused step on 64k3d.
 - **Weather-org** (``weather_org``, W2): the same blocks with the weather on in both arms, the "off" arm
   having ``seed_gain = shade_gain = 0``: the marginal cost of the organism couplings (the seeding signal and
   the shade count, DESIGN §32).
@@ -85,6 +88,7 @@ from alife.config import (
     BRAIN_IMPLS,
     WEIGHT_DTYPES,
     ArmsConfig,
+    CommConfig,
     Config,
     ConfigError,
     RolesConfig,
@@ -169,6 +173,7 @@ def run_bench(
     arms: bool = False,
     structures: bool = False,
     bonds_arm: bool = False,
+    comm_arm: bool = False,
 ) -> dict[str, Any]:
     """Run the benchmark suite and return a JSON-compatible report.
 
@@ -196,6 +201,8 @@ def run_bench(
         raise ConfigError("bench --arms needs arms.enabled = true (for example --set arms.enabled=true)")
     if bonds_arm and not bonds.bonds_ext(cfg):
         raise ConfigError("bench --bonds needs the bonds feature (for example --overlay bonds)")
+    if comm_arm and not cfg.comm.enabled:
+        raise ConfigError("bench --comm needs comm.enabled = true (for example --overlay comm)")
     if structures and not cfg.structures.enabled:
         raise ConfigError("bench --structures needs structures.enabled = true (for example --overlay build)")
     if weather_pairs < 1:
@@ -232,6 +239,11 @@ def run_bench(
         report["bonds"] = {
             **_bench_weather(cfg, steps, warmup, weather_pairs, off=off),
             "bonds_config": {**dataclasses.asdict(cfg.bonds), **dataclasses.asdict(cfg.roles)},
+        }
+    if comm_arm:
+        report["comm"] = {
+            **_bench_weather(cfg, steps, warmup, weather_pairs, off=replace(cfg, comm=CommConfig())),
+            "comm_config": dataclasses.asdict(cfg.comm),
         }
     return report
 
@@ -942,7 +954,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             vel=vel,
             heading=heading,
             h=mx.where(sv[:, None], h_new, 0.0),
-            msg=mx.where(sv[:, None], act.msg, 0.0),
+            msg=mx.where(sv[:, None], step_mod._msg_columns(act, it.xdec or {}), 0.0),
             last_loss=mx.where(sv, it.cb.lost, 0),
             last_harvest=mx.where(sv, it.got, 0),
             last_inflow=mx.where(sv, it.sh.inflow, 0),

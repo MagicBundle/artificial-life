@@ -85,6 +85,19 @@ more beside a guard, `synergy`) and lowers its own defence; a guard lowers its c
 `combat(guard=)`. Every effect key is 0 by default (`--overlay bonds` turns the machine on with all effects off; the starting values the
 payoff test uses are in DESIGN §40.9). No new ledger term. Absent: observers, scorecard, GUI and the role colour mode (B3), the runs.
 
+## Communication (DESIGN §39, I68)
+
+PR C1 (stacked on B1/B2, not merged) is the engine of the voice channel. `comm.enabled` gives every organism W (default 4) call
+intensities in [0, 1) stored in widened `msg` columns, and a brain tail of W + nd inputs (the superposed heard intensity per channel
+and the body-frame bearing of the sound, over the K sensed neighbours with a linear falloff to `comm.range <= sensing.radius`,
+optionally weighted by kin similarity) and W outputs. Speaking costs `floor(comm.cost · Σ sig + u)` with a hash dither `u` (a whisper
+costs its value on average), booked in `HEAT_ACTION`: no 17th ledger term. `comm.control = deaf | decoy` removes or scrambles what is
+heard, with costs and speaking unchanged (the causal arms). Enable with `--overlay comm`, `--set comm.enabled=true`, or
+`alife migrate --enable comm` (a silent start from an evolved world). Founders with random brains: about 94 % speak at the start
+(arithmetic of the random outputs, not selection) at about 2 q per agent-step, so `comm.cost` 4 is no pressure yet; the sweep is C4.
+Absent: the observer channel `Acts.ext.comm`, `FSIG`, the GUI and the colour mode (C2), `analysis/comm.py` and the language score (C3),
+the runs (C4).
+
 ## How to run
 
 ```bash

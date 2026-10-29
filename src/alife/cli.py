@@ -1601,6 +1601,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         arms=a.arms,
         structures=a.structures,
         bonds_arm=a.bonds,
+        comm_arm=a.comm,
     )
     text = _dumps(report)
     if a.json is not None:
@@ -2008,6 +2009,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also time the step with the bonds feature on against the same config with it off (interleaved "
         "blocks; needs bonds.share_mode or roles.enabled, for example --overlay bonds)",
+    )
+    p.add_argument(
+        "--comm",
+        action="store_true",
+        help="also time the step with the voice channel on against the same config with it off (interleaved "
+        "blocks; needs comm.enabled, for example --overlay comm)",
     )
     p.add_argument(
         "--weather-pairs",

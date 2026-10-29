@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from enum import IntFlag
-from typing import Final, NamedTuple
+from typing import Any, Final, NamedTuple
 
 import mlx.core as mx
 
@@ -19,6 +19,7 @@ from alife import (
     arms,
     bonds,
     brain,
+    comm,
     ext,
     fields,
     invariants,
@@ -337,7 +338,7 @@ def step(
         vel=vel,
         heading=heading,
         h=mx.where(sv[:, None], h_new, 0.0),
-        msg=mx.where(sv[:, None], act.msg, 0.0),
+        msg=mx.where(sv[:, None], _msg_columns(act, xdec), 0.0),
         last_loss=mx.where(sv, cb.lost, 0),
         last_harvest=mx.where(sv, got, 0),
         last_inflow=mx.where(sv, sh.inflow, 0),
@@ -453,6 +454,8 @@ def _acts(
     )
     if f.ext is not None and isinstance(f.ext.bonds, bonds.BondFlows):  # static: a role switched (§40.5)
         flags = flags | f.ext.bonds.switched.astype(u16) * ActFlag.ROLE_SWITCHED.value
+    if f.ext is not None and isinstance(f.ext.comm, comm.Voice):  # static: the row said something (§39)
+        flags = flags | comm.spoke(f.ext.comm).astype(u16) * ActFlag.SPOKE.value
     thrust = mx.where(f.costs.solvent, mx.round(256.0 * thrust0).astype(i16), 0)  # = round(256·masked thrust)
     defend = mx.round(256.0 * f.act.defend).astype(i16)
     # The kin columns of the attack and bond queries (the _select score is φ·q, with φ = desc[..., 1:], so the
@@ -474,6 +477,13 @@ def _acts(
         f.act.attack_target, f.act.bond_target, q_kin, nbr,
         f.rp.records.slot, born_parent, f.rp.records.uid, f.dt.cause.astype(mx.int8), buoy, xa,
     )  # fmt: skip
+
+
+def _msg_columns(act: Actions, xdec: dict[str, Any]) -> mx.array:
+    """The ``msg`` columns a step stores: the legacy channels, then the voice while comm is on (§39.3)."""
+    if isinstance(xdec.get("comm"), comm.Voice):  # static
+        return mx.concatenate([act.msg, xdec["comm"].sig], axis=1)
+    return act.msg
 
 
 def consume_env(s: State, env: Env, lanes: lifecycle.Lanes) -> State:

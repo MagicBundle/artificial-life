@@ -261,7 +261,9 @@ def _check_rows(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
         "heading: not in [−π, π)",
     )
     r.rows(_bad_range(a["h"], -1.0, 1.0), "h: outside [−1, 1]")
-    r.rows(_bad_range(a["msg"], -1.0, 1.0), "msg: outside [−1, 1]")
+    r.rows(_bad_range(a["msg"][:, : layout.MSG], -1.0, 1.0), "msg: outside [−1, 1]")
+    if a["msg"].shape[1] > layout.MSG:  # static: the voice columns of comm (§39.3), calls in [0, 1)
+        r.rows(_bad_range(a["msg"][:, layout.MSG :], 0.0, 1.0, hi_open=True), "msg: voice outside [0, 1)")
     r.rows(_bad_range(a["tag"], -1.0, 1.0), "tag: outside [−1, 1]")
     # Genes are stored in f32 and clipped to f32-rounded bounds, so compare in f32.
     r.rows(_bad_range(a["mut_sigma"], f32(mu.sigma_min), f32(mu.sigma_max)), "mut_sigma: outside bounds")

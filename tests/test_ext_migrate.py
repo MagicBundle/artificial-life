@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 import ext_stub as stub
-from alife import brain, cli, ext, migrate, runio
+from alife import brain, cli, ext, layout, migrate, runio
 from alife.config import dims, load_config
 from alife.runio import CheckpointError, RunDir, checkpoint_metadata, load_checkpoint, write_state_file
 from alife.state import (
@@ -755,3 +755,96 @@ def test_migrating_an_evolved_world_onto_bonds(preset: str, tmp_path: Path, caps
     assert all(not f.conserved for f in spec.state_fields(cfg2, d.nd))
     # the enable hook alone allocates the layout and leaves the sharing at the legacy gift
     assert spec.enable(cfg).roles.enabled and spec.enable(cfg).bonds.share_mode == 0
+
+
+# --- communication on an evolved world: the silent start (DESIGN §39.6, §43.8) ----------------------------
+
+
+@pytest.mark.parametrize("preset", ["tiny", "tiny3d"])
+def test_migrating_an_evolved_world_onto_comm_is_a_silent_start(
+    preset: str, tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """The real registry: ``--enable comm`` gives the evolved population W + nd zero input rows (before the
+    recurrent rows), W zero output columns and W zero ``msg`` columns; nobody speaks at the first step
+    (``max(tanh(0), 0) = 0``), the ledger closes, and a one-step equivalence holds: the migrated brain makes
+    the same legacy actions (the same positions, energies and ledger) as the unmigrated one."""
+    monkeypatch.undo()  # drop the autouse stub registry
+    dims.cache_clear()
+    from alife.state import counter_index, migrate_state
+
+    cfg = load_config(preset=preset, overrides=F32)
+    fn, s = make_step(cfg), init_state(cfg)
+    for _ in range(40):
+        s, _ = fn(s)
+    mx.eval(s)
+    rd = RunDir.create(tmp_path / "src", cfg)
+    rd.save_checkpoint(s, cfg)
+    rd.wait_saves()
+    out = tmp_path / "out"
+    assert cli.main(["migrate", str(rd.path), "--enable", "comm", "--out", str(out), "--quiet"]) == 0, (
+        capsys.readouterr().err
+    )
+    run = RunDir.open(out)
+    cfg2, meta = run.config(), run.meta()
+    d = dims(cfg2)
+    assert (
+        cfg2.comm.enabled
+        and meta["layout_features"] == "comm4@1"
+        and meta["migrated_from"]["added"] == ["comm"]
+    )
+    s2 = load_checkpoint(run.checkpoints()[-1][1], cfg2)
+    alive = np.array(s2.alive)
+    assert s2.msg.shape == (d.n, layout.MSG + 4) and not np.array(s2.msg)[:, layout.MSG :].any()
+    w1, w2 = np.array(s2.W1)[alive], np.array(s2.W2)[alive]
+    lo = d.lay.IN_VOICE
+    assert not w1[:, lo : lo + 4 + d.nd].any() and not w2[:, :, d.lay.OUT_VOICE : d.lay.OUT_VOICE + 4].any()
+    # the legacy weights moved only by the inserted rows: the recurrent rows start after the new tail
+    old = np.array(s.W1)[alive]
+    assert np.array_equal(w1[:, : d.lay.D_IN - 4 - d.nd], old[:, : d.lay.D_IN - 4 - d.nd])
+    assert np.array_equal(w1[:, d.lay.D_IN :], old[:, d.lay.D_IN - 4 - d.nd :])
+    fn2 = make_step(cfg2)
+    s2, o2 = fn2(s2)
+    mx.eval(s2, o2)
+    assert int(to_numpy(o2.counters)[counter_index(cfg2, "COMM_SPEAKERS")]) == 0  # silent at the first step
+    for _ in range(40):
+        s2, o2 = fn2(s2)
+        mx.eval(s2, o2)
+        led = to_numpy(o2.ledger)
+        assert led[LedgerIdx.FLOW_STOLEN] == led[LedgerIdx.FLOW_ATTACK_GAIN] + led[LedgerIdx.FLOW_SPILL]
+    assert int(to_numpy(s2.diag)) & 0xFFFF == 0
+    # the enable hook alone switches comm on and leaves every other key where it was
+    spec = next(sp for sp in ext.REGISTRY if sp.name == "comm")
+    assert (
+        spec.enable(cfg).comm.enabled
+        and spec.enable(cfg).comm.cost == 4.0
+        and spec.enable(cfg).comm.control == "none"
+    )
+    assert all(not f.conserved for f in spec.state_fields(cfg2, d.nd))
+
+    # one-step equivalence, with reproduction unrequested (mutation noise is drawn with the new shape)
+    quiet = load_config(preset=preset, overrides=[*F32, "repro.min_age=100000"])
+    q_new = spec.enable(quiet)
+    sq = init_state(quiet)
+    f0 = make_step(quiet)
+    for _ in range(10):
+        sq, _ = f0(sq)
+    mx.eval(sq)
+    sm = migrate_state(sq, quiet, q_new)
+    a, oa = make_step(quiet)(sq)
+    b, ob = make_step(q_new)(sm)
+    mx.eval(a, b, oa, ob)
+    for name in (
+        "energy",
+        "alive",
+        "resource",
+        "partner",
+    ):  # exact; the floats to rounding (Metal GEMV order)
+        assert np.array_equal(to_numpy(getattr(a, name)), to_numpy(getattr(b, name))), name
+    for name in ("pos", "vel", "heading"):
+        np.testing.assert_allclose(
+            to_numpy(getattr(a, name)), to_numpy(getattr(b, name)), atol=1e-5, err_msg=name
+        )
+    assert np.array_equal(to_numpy(oa.ledger), to_numpy(ob.ledger))
+    assert np.allclose(to_numpy(a.h), to_numpy(b.h), atol=1e-6)
+    assert not to_numpy(b.msg)[:, layout.MSG :].any()
+    np.testing.assert_allclose(to_numpy(a.msg), to_numpy(b.msg)[:, : layout.MSG], atol=1e-5)

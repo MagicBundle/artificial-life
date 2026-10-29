@@ -12583,6 +12583,172 @@ The independent review's 4,000-step storm run had `cell_overflow` 0. `bench --st
 in the first run): steady **+0.24 to +0.31 ms** on about 15.4 ms (1.6 to 2.3 %); the first block pair can be an outlier up to 1.0 ms. The
 spec's estimate was 0.15 to 0.4 ms (under 3 %).
 
+## 39. Communication: the voice channel (PR C1: the engine)
+
+Normative text of the voice channel (Review-log I68; the specification is the owner-accepted `comm/spec.md`, all
+recommendations D1 to D15 accepted). This section follows §43 for its registry row (`ext/comm.py`), counter block,
+`ActFlag` bit and layout version. **No new energy source and no 17th ledger term**: the cost of speaking is an
+addend of the action due and is booked in `HEAT_ACTION`. C1 is the engine; the observer channel for the analysis
+(`Acts.ext.comm`), the stream record, the GUI and `analysis/comm.py` are C2 and C3 (39.8, 39.9).
+
+### 39.1 Scope and principles
+
+An optional, evolvable **voice channel** beside the legacy 2-number `msg`: W call channels per organism (default 4),
+each an intensity in `[0, 1)`, zero exactly reachable. Listeners hear the K sensed neighbours they already have (no
+new search). Speaking costs energy, so honest signalling is a consequence of the ledger, not an assumption. Two
+engine controls make the receivers' side measurable. With `comm.enabled = false` (the default) nothing is allocated,
+hashed or serialised and the engine is bit-identical to the one without the feature (the identity matrix gates it).
+The other channels are left alone: the legacy `msg` (2 numbers, `IN_MSG_MEAN`, `NBR_MSG0`, `BOND_MSG0`, cost
+`energy.msg_cost`) and the three chemical `emit` channels.
+
+### 39.2 The legacy channel (for the record)
+
+`msg = tanh(y[OUT_MSG:+2])`, bipolar, masked by alive and solvency, stored for one step in `State.msg (N, MSG)`,
+cleared at birth (`lifecycle.clear`), read as the unweighted mean over the K neighbours (2 inputs), as channel 0 of
+each of the NS nearest (`NBR_MSG0`) and of each bond partner (`BOND_MSG0`); cost `floor(msg_cost · Σ|msg|)` inside
+`action_due`. Receivers cannot tell one loud neighbour from eight faint ones, cannot locate the sound, and there was
+no control that removes the receivers' side (`docs/SIGNALS.md` §5, §6). The voice channel adds those, as a parallel
+type; the legacy channel is untouched.
+
+### 39.3 State
+
+No new `State` field. `State.msg` widens to `(N, MSG + W)`: columns `0..1` are the legacy channels, columns `MSG:` the
+voice (f32 in `[0, 1)`, dead rows 0, a newborn row 0 by the existing `clear`). `Dims.voice_w = W` (0 off),
+`Dims.msg_w = MSG + voice_w` (`state.expected_layout` and `init_state` use it), `d.ext("comm").hear_range`. The one
+legacy reader that mixed columns, `sensing.build_inputs`' `msg_mean`, slices `s.msg[:, :MSG]` (static: no slice while
+off, so the off graph is unchanged). `invariants` checks the legacy range on the first two columns and
+`msg: voice outside [0, 1)` on the rest; the dead-row rule already covers the whole array. The offline readers
+(`analysis/signals.py`) use `act.msg`, which stays `(N, MSG)`.
+
+### 39.4 Speaking (S7, S8, S15)
+
+`comm.decode` (the registry `decode` hook) returns `Voice(sig, due)`: `sig = clip(tanh(y[OUT_VOICE:+W]), 0, 1 - 2⁻²⁴)`
+(non-negative on purpose: silence is exactly reachable and free, a channel is a call type and not a sign, and
+superposition at the receiver cannot cancel; the clip keeps `sig < 1` where f32 `tanh` saturates), masked by alive.
+`comm.mask` (after S8) zeroes `sig` and `due` of an insolvent row: it pays everything it holds and does not speak.
+S15 stores `concatenate([act.msg, sig])` in `msg` (`step._msg_columns`, mirrored in `bench._StagedStep`). One step of
+latency: the voice heard at step t was spoken at t-1.
+
+### 39.5 Hearing and the controls (S5)
+
+`comm.hear(voice, nbr, desc, cfg) -> (N, W + nd)` is a pure function of the stored voice (so offline counterfactuals
+call it with a modified array). Neighbour `j` of `i` weighs `a = clip(1 - dist/range, 0, 1) ** atten_pow`, 0 where
+`desc[..., NBR_PRESENT]` is 0 (invalid or dead), times `desc[..., NBR_KIN] ** kin_exp` when `kin_exp > 0`. The first
+`W` outputs are `min(Σ_j a_j · voice_j, 1)` (saturating superposition); the last `nd` are the bearing, the
+loudness-weighted mean of the body-frame offsets `desc[..., NBR_DX/DY(/DZ)]` (`/R`): `Σ w_j rel_j / max(Σ w_j, 1e-3)`
+with `w_j = a_j Σ_c voice_jc`, so `|bearing| <= 1` and it is exactly 0 with no sound. A neighbour at `dist >= range` or
+invalid contributes exactly 0; the result is equivariant under row relabelling; the K = 8 sum is a fixed-order
+reduction (no matmul, so DESIGN F20 does not apply). `comm.range = 0` means the sensing radius (`hear_range`); a larger
+range would need a larger `sensing.radius` (the hash cell is at least R), so the cap is deliberate (D7): relaying gives a
+wave at one body range per step. `kin_exp = 0` (default) hears everyone (eavesdropping and deception possible); `kin_exp
+= 1` weights by the kin similarity of §5 (Mitri et al.'s relatedness lever, an experiment arm). Bonded partners are
+ordinary neighbours.
+
+`comm.control` selects what the listeners receive; costs and the speaking path are identical in every arm:
+
+* `none`: the stored voice.
+* `deaf`: both input blocks are exactly 0.
+* `decoy`: each row's voice is taken from another row, `voice[(row + shift) % N]` with `shift = 1 + hash32(step, 0, SALT)
+  % (N - 1)` (`comm.decoy_index`): integer arithmetic and the comm hash salt only, no RNG stream, no layout bump. A
+  cyclic shift is a bijection, never the identity, so the marginal statistics of what is heard are the population's
+  while the sender-receiver coupling is cut (E19; the spec's `step · 40503` stride overflows int32 after 53 k steps,
+  a hash of the step does not). Dead rows contribute silence.
+
+### 39.6 Layout, version, checkpoints and the migration
+
+Registry row `comm` (index 3, `ext/comm.py`): inputs `voice` (W) then `voice_bearing` (nd), output `voice` (W), appended
+in `TAIL_ORDER` after the bonds tail (alone: 2D `D_IN/D_OUT` 75/39, 3D 91/43 at W = 4), token `comm{W}@1`, mask bit 3.
+`Layout.IN_VOICE`, `IN_VOICE_BEARING`, `OUT_VOICE` are None when off. The `layout_features` meta (§43) carries the width,
+so there is no separate `voice_w` key (the spec's, superseded by §43.2). Founders and immigrants get random weights
+(D13). Existing checkpoints load into an off config unchanged; they do not auto-load into a comm-on config. The migration
+is `alife migrate --enable comm` (`ExtSpec.enable` sets `comm.enabled`): W + nd zero rows in `W1`/`pend_W1` between the
+old inputs and the recurrent rows, W zero columns in `W2`/`pend_W2`, W zero columns in `msg`, so the migrated brain
+computes the same hidden state and legacy outputs and its voice is `max(tanh(0), 0) = 0`: a silent start from an evolved
+population (the "language from nothing" experiment). Mutation noise is drawn with the new shape, so the trajectories part
+at the first mutated child; the equivalence test compares one step with reproduction unrequested.
+
+### 39.7 Cost and ledger (E17)
+
+`due_of(uid, step, sig) = floor(cost · Σ_c sig_c + u)`, `u = dither(uid, step)` the top 24 bits of `hash32(uid, step,
+SALT)` over 2²⁴: an integer per row and step, exactly 0 for silence (`u < 1`) and exact on average for a call below one
+quantum (E17: without the dither `floor` makes every whisper under 1/cost free, and a population could signal for
+nothing). It joins the action due through the registry `due` hook (`extra_due`), so it is booked in `HEAT_ACTION`, solvency
+and payment order are the existing ones and the 16-term ledger closes. `cost = 0` has no hook (None, nothing traced).
+Counters `COMM_SPEAKERS` (rows with some call quantum `floor(256 · sig) > 0` after the solvency mask, the `ActFlag.SPOKE` form)
+and `COMM_DUE` (the dues of the solvent rows; `COMM_DUE <= HEAT_ACTION` every step, equal when voice is the only action term).
+The per-step counters are int32; the interval sums in `metrics.interval_row` are int64 on the host (E10), and `validate`
+bounds `cost · width < 2¹⁵` and `cost · width · n_max < 2³¹` so neither the row due nor the counter can overflow.
+Founder arithmetic (64k3d, basal 100 + brain 37.6 q): a full chorus at `cost` 4 is 16 q (11.6 % of upkeep); the cost is
+provisional and the first parameter the experiments sweep ({0, 4, 16, 64}). The brain's listening cost is already in the L1
+upkeep of the wider weights.
+
+### 39.8 Observers, stream, GUI (C2, not in C1)
+
+C1 sets only `ActFlag.SPOKE` (1024 = 128 << 3) in `Acts.flags` (the per-row form of `COMM_SPEAKERS`) and publishes the
+metrics `comm_speaker_frac`, `comm_due`, `comm_due_share`. `Acts.ext.comm` (voice, heard, audible), the `FSIG` stream
+record, the `voice` colour mode, the organism-panel bars and the GUI levers (`GUI_LANDED`) are C2/C3. The Director gets no
+comm lever (E24: `comm.*` are config keys outside the Director's env levers; a test pins it).
+
+### 39.9 What the analysis needs (for C3 and the measurement suite, §44)
+
+The language-score adapter of the measurement suite (E6) and `analysis/comm.py` need, per sampled pair of consecutive
+observed steps: the voice spoken (`msg[:, MSG:]`, quantised), the voice heard (the `hear` result of the start-of-step state,
+which `comm.hear` reproduces from `(voice, nbr, desc)`), the neighbour list, the sender context (hurt, food, crowd, energy,
+bonds, height) and the receiver's next-step behaviour. Everything but the heard vector is already in `State`/`Acts`; the
+heard vector is the C2 observer field, or an offline `hear` call on `resim.cached_states`. The causal controls are runs from
+one checkpoint with `--set comm.control=deaf|decoy` (a start-of-run key: `comm.control` is not layout-affecting, so a fork
+may change it). The operational definition of a language in the spec (transfer information above its shuffle null, absent in
+`deaf`, at the `decoy` level or below, and `none` beating both on fitness at the same cost) is C3's verdict, not C1's.
+
+### 39.10 Config
+
+`[comm]`: `enabled` false, `width` 4 (1..8; every channel adds a W1 row and a W2 column to every brain), `range` 0.0
+(0 or in (0, `sensing.radius`]), `atten_pow` 1.0 (> 0), `kin_exp` 0.0 (>= 0), `cost` 4.0 (>= 0), `control` "none"
+(`none|deaf|decoy`, CLI-only). All are in `POST_V01_KEYS` (hashed, omitted at the default); every key but `enabled` must
+keep its default while `enabled` is false. Overlay `comm` (`presets/comm.toml`), `alife bench --comm`, `alife migrate --enable
+comm`. Constants in code, not keys: the saturating min at 1, the bearing floor 1e-3, the `1 - 2⁻²⁴` clip. 2D and 3D both.
+
+### 39.11 Tests
+
+`tests/test_comm.py` (layout for W in {1, 4, 8} x nd in {2, 3}; config validation and hash; `hear`: range, validity, kin
+exponent, `atten_pow`, bearing sign ahead/left/above, saturation, `|x| <= 1`, silence, row equivariance; decode and mask;
+E17 dither mean and the one-term `COMM_DUE == HEAT_ACTION` scene; insolvent speaker; ledger closure over 200 steps for cost in
+{0, 4, 64} in 2D and 3D; newborns silent; invariants; determinism, resume and observer purity for each control; compiled vs
+eager; E19 decoy bijection and the identical-step test; E18 salt use; E10 counters and metrics; the staged mirror of
+`bench.py`), `tests/test_comm_compile.py` (E4: `range`, `atten_pow`, `kin_exp`, `cost`), the comm case of
+`tests/test_ext_migrate.py` (silent start, zero rows before the recurrent rows, one-step equivalence), and the updated
+registry, guard (frozen defaults) and overlay tests.
+
+### 39.12 Evidence (PR C1, 2026-10-29)
+
+* **Layout**: alone, 2D `D_IN/D_OUT` 75/39 and 3D 91/43 at W = 4 (the spec's numbers); the brain grows by 7 inputs and 4 outputs in
+  3D (about 7 % of the parameters). Off: the identity matrix against `e64be03` is bit-identical (0 DIFF, 0 INFO).
+* **Smoke** (mini3d, N = 16 384 slots, Metal, founders with random brains, one seed, 6 000 steps each; not a result): for
+  `control` none, deaf and decoy the ledger closes at every step (0 bad steps), `COMM_DUE <= HEAT_ACTION` every step, `diag` 0,
+  the host `full_check` is clean every 1 000 steps, the population goes from about 2 900 to 4 700 to 4 900. The calls are neither
+  dead nor saturated by the counter (`COMM_SPEAKERS`), but **nearly everyone speaks**: 93.8 to 93.9 % of the alive rows say
+  something each step, which is the founders' arithmetic (a random output is positive in half the draws, so 1 - 2⁻⁴ = 93.75 % have
+  some channel up) and not selection; the mean call is 0.14 per channel and the voice costs 2.1 to 2.2 q per agent-step, 4.3 to
+  4.5 % of `HEAT_ACTION` (about 1.6 % of upkeep). At `cost` 4 the founders feel no pressure to be quiet; the first sweep ({0, 4,
+  16, 64}) is where honest signalling or silence has to appear.
+* **Cost** (`alife bench --preset 64k3d --overlay comm --comm --stages`, M5 Pro, Metal, interleaved off/on blocks): the step is
+  13.83 ms off and 14.56 ms with the voice channel (**+0.735 ms, +5.3 %**, the two block pairs +0.69 and +0.71 ms; the spec's gate
+  is +8 %, its estimate under 0.5 ms for `hear` plus 3 to 4 % for the wider GEMVs). Fused step 14.45 ms, peak memory 1.07 GB.
+  No fused kernel was needed.
+* **Tests**: ruff check and format clean on the whole repo; fast suite (CPU plugin, `-n 4 --dist loadfile`) 5 018 passed, 91 skipped,
+  1 xfailed and one failure that is the base's (`test_lifecycle_compiles_and_matches_eager`); the two slow smoke tests (3 000 steps of
+  `tiny3d`, controls none and decoy) pass. Metal: `test_game_purity`, `test_comm`, `test_comm_compile` (133 passed), `test_ext_*`,
+  `test_invariants`, `test_bench`, `test_game_acts` (the known timing test `test_the_device_part_of_a_snapshot_is_evaluated_when_timed`
+  once over its bound, passes on rerun, as in 43.10). On the GPU the migrated brain differs from the source in the last float bits (the
+  GEMV order changes with the inserted zero rows), so the one-step equivalence is exact on integers and the ledger and 1e-5 on floats.
+
+### 39.13 Deferrals
+
+A `volume` output and a heritable voice gene (range/cost evolvable), a loudest-speaker input block, long range, the
+observer channel and analysis (C2, C3), the GUI, the experiments (C4: arms `none/deaf/decoy` x cost {0, 4, 16, 64} x
+`kin_exp` {0, 1}, from founders and from the silent migration, two seeds). Hearing ignores barriers (a built structure does
+not block sound; §43 lists the unmodelled pair).
+
 ## 40. Bonds that pay (PR B1: conductive sharing and the bond block; PR B2: the roles)
 
 Normative text of the bonds feature (Review-log I69; the specification is the owner-accepted `bonds/spec.md`,
@@ -13354,6 +13520,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I65 | feat: the camera controls of the 3D World window (owner's play of 2026-10-24: a tool for another angle, standard angles on a toggle, and "the maximum angle is pretty limited"): the tilt goes to edge-on (`maxTilt` 90 degrees; A1's footprint clamp is removed) with the eye held over the clear box instead (`maxDistance` with the tilt: `d sin tilt <= 0.45 L`; the zoom is given back when the tilt is relaxed), and the far floor is hidden by a **horizon haze** (a function of the floor point's Chebyshev distance from the point looked at past `0.5 L`, `1 - exp(-x^2)`, 99.8% at L; a 3 L wide map mesh behind it, so no edge of the mesh is ever visible; a sky pass above the horizon, in the sea's colour scaled by the Brightness) instead of the clamp; standard views Top, Oblique (45), Low (70) and Side (edge-on at `H/2`) on `t o l s`, a strip over the map and View > View angle, each an animated ease; a control column at the right edge (readout "Tilt 45 deg . heading 270 deg", the strip, the compass as a dial, the 3D button, the tilt handle, zoom); the floor is not read beyond 0.65 L or above the horizon (readout, territory pick, power aim, dive, grab); the minimap's footprint is clipped to the clear box; storm rings flatten; client only (`WorldU` 160 bytes), no engine, stream or config change. Review fixes: the point looked at is lifted to the middle of the height toward edge-on (`WorldPose.lift`), the zoom is given back at the end of an ease (`ViewEase.endWish`, `sideReturn`), `n` and the compass click end an ease, the frame is faded by the haze, the needle and the dial's dead zone, the readout plate takes the press, the strip before the handle in the column, height guides at edge-on, the storm pick is the ellipse. Number provisional: the coordinator assigns the final one. Details, tests and deviations: §36.5 "Camera controls". |
 | I66 | feat: the globe overview and the morph (PR B of World viewer v2, §36.10; owner 2026-10-23 "Globe overview, flat close-up", 2026-10-24 "is there a toggle I am missing to get a spherical view?"): step 5, the pure parts (`GlobeMap`, `Morph` with the roll and its schedule and the crossfade fallback, `FlightPath` on the great circle) and the morph gate (a pure rasterisation of the mesh through the vertex shader's mirror: the roll meets the three criteria of the spec's 7.1 except the 98%-to-60% length at 67 degrees, 1.10 wheel lines against 1.2; mode stays `.roll`); step 6, `WorldVantage` (the view at every zoom: projection, the two-start Newton pick, the regime-solved grab and zoom, the camera controls on the globe; the model's `globeEnabled` switch) with the gate of the blended band measured (exact to 39 degrees, p95 9.5 px at 79 to 84 degrees); step 7, the renderer (the mesh pipeline and `GlobeUniforms`, the depth, cull and depth-reset state, the sky, the caps, the morph in the agent shaders, the continuous layers, the haze as a function of `s`) behind View > Globe overview (`world.globe`); steps 8 and 9: the minimap's footprint at the globe (the visible cap, dimmed outside), the hemisphere, EQUATOR and seam labels with the declutter rule, the pin, the organism glow (`GlowHistogram`), the inertia of a flick, Keep north up, the idle spin and reduced motion (`GlobeMotion`), Home is the globe overview (`world.globe` on until the player chooses), the 0.15 L region fly-to (D7), the bench scenarios and the sheet of renders (`docs/DESIGN.md` 36.10). Client only: no engine, stream or config change |
 | I67 | feat: built structures, PR S1 of the five-feature series (the engine; owner decision "B" of 2026-10-28, O1 to O9 accepted, A1 `exit_ease` accepted, no R4; new §38): the int32 grid `State.mat` on the food lattice (a conditional field), the brain output `build` and input `material` (registry row `ext/structures.py`, `alife.structures`), a deposit costing `build_cost` q per unit in `HEAT_ACTION` through `extra_due` (**no 17th ledger term**; the material holds no energy), exact integer decay `ceil(m·decay_q12/4096)` with a floor of 1 and its own exact identity `Σmat' = Σmat + BUILD_UNITS - MAT_WASTED - MAT_DECAYED`, the three effects read from the start-of-step material through one table gather (`fields.mat_table`): shelter (`weather.shelter_wind`, `agent_drift(shelter=)`), barrier (`physics.barrier_drag`, `drag_mult=`) and the predator shield (`combat(shelter=shield_gain·cover)`, inside the 43.6 protection product), the anti-trapping rules R1 (drag at most 4x), R2 (aperture invariant by construction with colour phases) and R3 (easy exit by the actual push, E6), eleven counters, advisory hash-overflow reporting (`HASH_HIDDEN`, `build_hash_hidden`, an `alert:` line; E7, not an error), E4 to E10 tests, `bench --structures`, the metrics keys `build_*`, the overlay `build`; **absent**: the stream record, dump, observers' drift, `BUILDING` flag, GUI (S2, S3), the first runs and the fork (S4, PR 0b); off by default, feature-off runs bit-identical (identity matrix), no hash changes | Departures: one table gather instead of 4 to 6 gathers of N; `genome_layout_version` is 9 / 10 (arms occupies mask bit 0); `silent_build` added (the O6 control); review fixes (the independent review of S1): merged the current `engine/arms` (PR 0a and 0b, cf289b4); `enable=` and `conserved=False` on the row with a migration case in `tests/test_ext_migrate.py`; hash overflow is advisory, not fatal; `shield_gain = 1` needs `protect_floor > 0`; the identity matrix takes the overlay list from the base tree; `aperture = 0` with a barrier warns (control only); the observers' drift is not wired (S2). Tests: `test_structures_{ledger,effects,trapping,config,determinism,off,crowding,compile,step}`; `test_ext_*`, `test_weather_config`, `test_state`, `test_cli_smoke` updated for the new row, overlay, error bit and bench flag. |
+| I68 | feat: communication, the voice channel, PR C1 of the five-feature series (the engine; owner request 2026-10-28, decisions D1 to D15 of the comm spec accepted: a separate channel beside the legacy `msg`, W = 4 fixed per run, cost 4 q per unit provisional with a sweep {0, 4, 16, 64}, everyone hears by default, `kin_exp` an experiment arm, non-negative intensities, `deaf` and `decoy` controls kept, range capped at the sensing radius; a `volume` output, a heritable voice gene and a loudest-speaker block deferred; new §39): `State.msg` widens to `(N, MSG + W)` (no new field; the off shape and digests are untouched; the one legacy reader that mixed columns, `msg_mean`, slices the first two); the registry row `ext/comm.py` (W + nd brain inputs: the heard intensity per channel and the body-frame bearing of the sound, W outputs, 2D 75/39 and 3D 91/43, token `comm{W}@1`, `Dims.voice_w/msg_w/hear_range`); `comm.hear` over the K sensed neighbours with a linear falloff inside `comm.range <= sensing.radius`, optional `atten_pow` and `kin_exp`, saturating superposition, no scatter; the speaking cost `floor(cost·Σ sig + u)` with a dither `u` from `hash32` and the comm salt (E17: a sub-unit call costs its value on average, silence is free), an addend of the action due through `extra_due` and so booked in `HEAT_ACTION` (**no 17th ledger term**); counters `COMM_SPEAKERS` and `COMM_DUE` (int32 per step, int64 interval sums, validated bounds, E10); `ActFlag.SPOKE`; the controls `comm.control = deaf | decoy` (integer-only, the decoy shift a hash of the step so it cannot overflow, a bijection that never maps a row to itself, no RNG stream and no layout bump; E19: the three arms run bit-identical steps when the brain ignores the heard inputs); hash salt use pinned to `HASH_SALTS["comm"]` (E18); E4 compile tests for `range`, `atten_pow`, `kin_exp`, `cost`; E24 (no Director lever); the overlay `comm`, `alife migrate --enable comm` (the silent start: W + nd zero rows before the recurrent rows, W zero output columns), `alife bench --comm`, the metrics `comm_speaker_frac`, `comm_due`, `comm_due_share`; the `voice_w` meta key of the spec is superseded by `layout_features`; the observer channel (`Acts.ext.comm`), `FSIG`, the GUI and `analysis/comm.py` are C2 and C3. Off by default, feature-off runs bit-identical (identity matrix against `e64be03`). Evidence: §39.12 (mini3d smoke with the three controls; `bench --comm` on 64k3d +0.735 ms, +5.3 %, inside the spec's 8 %) |
 | I69 | feat: bonds that pay, PR B1 of the five-feature series (conductive sharing and the bond block; owner decisions O1 to O11 of the bonds spec accepted 2026-10-28, germ role deferred, R4 movement not built; new §40): `bonds.share_mode` 1 (mutual consent) and 2 (obligate): an equalising, antisymmetric flow along every bond, the richer end sends `min((gap·q8(share_kappa)) >> 8, cap, E // B)`, received once through `rev` at the (optionally kin-scaled) efficiency, booked in `FLOW_SHARED` and `HEAT_SHARE` (**no 17th ledger term**; mode 0 is the legacy gift bit for bit); solvency by the per-slot `E // B` cap so no row goes below zero on any bond graph (E14), `share_kappa <= 1/(2B)` so no overshoot; the registry row `ext/bonds.py` (`bonds_ext = roles.enabled or share_mode != 0`) allocating the whole 13-input, 2-output bond block (`role`, `bond_role`, `bond_kin`, `bond_flow`; `role_a`, `role_b`), the conditional fields `role` (int8), `role_dwell` (int16) and `bond_flow` (int16, (N, B)) with `on_birth = rest` and cleared on death so a reused row inherits nothing (E15), five counters (`ROLE_SWITCHES`, `N_FORAGERS`, `N_GUARDS`, `SHIELDED_BY_GUARD`, `SHARE_SLOTS_ACTIVE`), `Acts.ext.bonds`, the metrics keys `bond_flux`, `bond_share_slots`, `bond_role_switches`, `bond_forager_frac`, `bond_guard_frac`, the overlay `bonds`, `alife migrate --enable bonds`, E4 and E10 tests; the role machine and its effects are PR B2 (second paragraph of this row); off by default, feature-off runs bit-identical (identity matrix against e64be03), no hash changes | Departures: `roles.enabled` in B1 only allocates the layout and the state (the inert twin of the measures is `roles.enabled = false` with `share_mode != 0`); the brain-cost compensation of O11 is not applied by the overlay (no `config.brain_cost_scale` exists); `ext_check` lives in `ext/bonds.py` (numpy host reads are not allowed in the simulation modules, `test_lint` rule 5). Tests: `test_bonds_share`, `test_bonds_step`, `test_bonds_compile`, `test_ext_migrate` (bonds case); `test_ext_*`, `test_weather_config`, `test_arms_state` updated for the new row and overlay. Known failure in this CPU-plugin environment on the base too: `test_lifecycle_compiles_and_matches_eager`. **PR B2 (stacked on B1):** the committed roles generalist/forager/guard, chosen by the brain through `OUT_ROLE_A`/`OUT_ROLE_B` with a dead zone (keep-by-default hysteresis), `role_dwell` and a ramp, `switch_cost` through `extra_due` (`HEAT_ACTION`), the harvest cap (`en.harvest(harvest_cap=)`: forager up, guard down, `synergy` beside a guard), the forager's reduced own defence and the guard shield through `combat(guard=)` inside the §43.6 protection product (itself and bonded partners; E16: an attacking row contributes no shield), `inherit_role`, `ROLE_SWITCHED`, the live role counters, the inspector lines, E4 tests of the roles constants, the payoff-matrix test fixing the starting parameters (forager+guard beats two generalists under moderate predation; no lone specialist beats a lone generalist), `[roles]` effect keys all off by default; **no 17th ledger term** (every effect multiplies a flow that closes already); the observers, scorecard and GUI are B3; the spec's role upkeep `UP` is not built (no new energy path). |
 | I71 | feat: arms races, PR A1 of the five-feature series (stages 1 and 2 of the arms spec; owner approval of 2026-10-28; new §42): the heritable traits `ATK`, `ARM`, `KEY`, `LOCK` (and the held-at-0 `TOX`, `SIG` columns) as the conditional state field `arms (N, 6)`, the Tullock contest with the key/lock match as the first factor of the protection product of `energy.combat` (`arms.contest_factor`; `kappa`, `a0`, `key_floor`), the quadratic upkeep added to `brain_cost` at S8 with **dithered** rounding (E13: the cost is exact on average, a sub-unit trait is not free; `HEAT_BASAL`, no 17th ledger term), the armour speed cost (`arms.physics_act`), fixed-sigma mutation at birth with phases wrapped every time (E12, the 1.0-rounding of `c - floor(c)` mapped to 0), `Stream.ARMS` = 10 / `InitStream.ARMS` = 8 and `rng.layout_version` 4 with arms on (an off run still writes 3), the epsilon in the Tullock denominator (E11), invariants (`arms` finite and in [0, 1] on device, phases below 1 on the host), `bench --arms`, `_c_ref` with the founders' upkeep; the registry row `ext/arms.py` (the first real row) and `combat(arms=)` no longer raises; **absent**: toxin and display factors and keys (A3), observers (A2), pierce and duels (A4), perception (A5), colour modes and GUI levers; off by default, no shipped preset enables it, feature-off runs bit-identical to main (identity matrix) and the config hash unchanged | Departures: column order is the integration plan's (ATK, ARM, TOX, SIG, KEY, LOCK), not the spec's; founders' keys and locks come from the init stream by row (`FieldSpec.rest` has no `uid`); the whole step is not bit-equal compiled and eager with or without arms (the brain's reductions, as on e64be03), so compiled equals eager is asserted for the arms functions only. Tests: `test_arms`, `test_arms_state`, `test_arms_step` (incl. the broken-path mutation tests), `test_arms_compile` (E4), `test_arms_director` (E24); `test_ext_*` updated for the first registered row. |
 | I72 | feat: the feature extension mechanism, PR 0a of the five-feature series (arms, structures, bonds, communication, farming; owner approval of 2026-10-28; new §43, which holds the plan's normative content), **no behaviour change** and the registry empty: `src/alife/ext/` (`ExtSpec`, `REGISTRY`, the layout composition `layout.for_dims(nd, blocks)` with `Layout.__getattr__` for `IN_*`/`OUT_*`, `genome_layout_version(nd, mask) = base + 4*mask`, the `layout_features` meta key absent when empty); conditional state fields (`state_cls`, `is_3d_state`, fill-on-load, refusal of an extra field); counter blocks (`n_counters(nd, weather, blocks)`, `counter_blocks`, `counter_index`, `PROT_CAPPED`); `Acts.flags` uint16 and the `ActFlag` bits `128 << i`, `Acts.ext`/`_Flows.ext`; `extra_due` in `pay_costs(3)`; `rng.layout_version(cfg)` and `ops.hash32`; the single `combat` signature with `energy.protection` and `combat.protect_floor` (default 0, `[0, 0.5]`, `POST_V01_KEYS`, left out of `config.json` and the checkpoint metadata at its default: `config_to_dict(omit_defaults=True)`, `SERIAL_OMIT_KEYS`); silent tail blocks in `brain.init_weights`; observer registries; `tests/ext_stub.py` and seven `test_ext_*` files; `tests/identity_matrix.py` (15 trajectory cases, 3 runner cases, config and layout, tiny3d `1fe07a9f`/`556de6c6`, against a fresh `git archive` of e64be03: bit-identical, no INFO line). Departures from the specs are in §43.10.  Review fixes: the hooks `inputs(s, cfg, ctx)`, `decode`, `mask`, `due(s, act, y, cfg)` and `_Flows.ext`, `FieldSpec.on_birth`, `Dims.ext(name)`, the wiring tests (`test_ext_hooks.py`). PR 0b (the layout migration) follows. **PR 0b (stacked on PR 0a):** the layout migration tool of §43.8: `alife migrate RUN[:STEP] --enable F --out NEWRUN`, `migrate.migrate_checkpoint`, `state.migrate_layout`/`layout_change`/`MigrationError`, `ExtSpec.enable` (a hook, default None); zero rows/columns for new blocks, order-independent (E2), removal and width change refused (removal only with `--force-removal`; leave-one-out arms are fresh runs, E23), compressed sources give compressed outputs, provenance `migrated_from` in `meta.json`; `tests/test_ext_migrate.py`. No behaviour change for existing runs (the identity matrix is unchanged) |

@@ -145,7 +145,8 @@ def build_inputs(
     inv = 1.0 / mx.maximum(cnt, 1.0)
     crowd = cnt / d.k
     kin_mean = desc[..., layout.NBR_KIN].sum(1) * inv
-    msg_mean = mx.where(valid[..., None], s.msg[nbr.idx], 0.0).sum(1) * inv[:, None]
+    msg = s.msg if d.msg_w == layout.MSG else s.msg[:, : layout.MSG]  # static: the voice columns are not msg
+    msg_mean = mx.where(valid[..., None], msg[nbr.idx], 0.0).sum(1) * inv[:, None]
 
     # --- nearest NS neighbours (28..48) ---
     if d.d3:  # static: the first NF = 7 features; NBR_DZ goes to the tail

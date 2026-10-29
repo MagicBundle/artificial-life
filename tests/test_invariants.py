@@ -18,7 +18,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from alife import invariants, lifecycle
+from alife import invariants, layout, lifecycle
 from alife.config import Config, apply_overrides, dims
 from alife.rng import Stream, step_keys
 from alife.state import N_COUNTERS, R_HARD, Diag, LedgerIdx, State, age, init_state, to_numpy, total_energy
@@ -560,6 +560,16 @@ def test_every_full_check_rule_has_a_corruption_case(
     for case, corrupt, msg in STEPWISE:
         bad_s, bad_out = corrupt(s, out)
         run(case, msg, bad_s, micro_cfg, prev, bad_out)
+    # the voice columns of comm (DESIGN §39.3) exist only in a comm-on world: one case on its own config
+    from dataclasses import replace
+
+    from alife.state import init_state
+
+    comm_cfg = replace(micro_cfg, comm=replace(micro_cfg.comm, enabled=True))
+    sc = init_state(comm_cfg)
+    msg = np.array(sc.msg)
+    msg[0, layout.MSG + 1] = 1.0  # a call of exactly 1: outside [0, 1)
+    run("voice_range", "voice outside [0, 1)", sc._replace(msg=mx.array(msg)), comm_cfg)
     assert not ambiguous, ambiguous
     sites = _rule_sites()
     assert len(sites) > 50 and covered <= sites  # the site scan itself is not vacuous

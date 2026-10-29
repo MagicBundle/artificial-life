@@ -115,7 +115,7 @@ def make_scene(
         "vel": np.zeros(base["vel"].shape, np.float32),
         "heading": np.zeros(n, np.float32),
         "h": np.zeros((n, d.h), np.float32),
-        "msg": np.zeros((n, layout.MSG), np.float32),
+        "msg": np.zeros((n, d.msg_w), np.float32),
         "last_loss": np.zeros(n, np.int32),
         "last_harvest": np.zeros(n, np.int32),
         "last_inflow": np.zeros(n, np.int32),

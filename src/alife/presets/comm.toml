@@ -1,0 +1,13 @@
+# comm overlay: the voice channel (DESIGN section 39). A WORLD overlay like `build` and `bonds`: it composes with
+# any preset, 2D or 3D.
+#
+# Four call channels (W = 4), heard by the K sensed neighbours inside the sensing radius with a linear falloff,
+# everyone heard (kin_exp 0). The brain grows by W + nd inputs and W outputs (2D 6/4, 3D 7/4: about 7 % of the
+# parameters at 64k3d); no brain-cost compensation is applied (scale `energy.brain_cost_per_l1` by
+# params_off / params_on with --set for a clean A/B on founder cost). Every value is PROVISIONAL until the
+# first runs: the cost (4 q per unit of intensity) is the first parameter the experiments sweep
+# ({0, 4, 16, 64}); the arms are `comm.control = none | deaf | decoy` and `comm.kin_exp = 0 | 1`.
+[comm]
+enabled = true
+width = 4
+cost = 4.0
