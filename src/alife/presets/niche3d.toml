@@ -1,0 +1,6 @@
+# niche3d overlay: farming at the 3D design point (DESIGN section 41.7). The same as `niche` with farm_cost 150, the
+# cost that gives the design gross return (about 5.7x) at `fields.regen_max` 1700 (64k3d, mini3d). Use it instead of
+# `--overlay niche` in a 3D world; `validate` still warns when an explicit farm_cost is far too cheap for the regrowth.
+[niche]
+farm = true
+farm_cost = 150

@@ -25,6 +25,7 @@ from alife import (
     invariants,
     layout,
     lifecycle,
+    niche,
     ops,
     physics,
     roles,
@@ -375,9 +376,17 @@ def step(
         qs, t_mult = weather.organism_forcing(s.chem, s.pos, s.alive, ws, cfg)
         ws2, wd = weather.advance(ws, t, kw[0], cfg, qs=qs, t_mult=t_mult)
         rain = weather.rain_for(ws2, cfg)  # None when rain_gain == 0
-    resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env, rain)
+    if cfg.niche.farm:  # static: the soil bonus inside the regrowth clip, then the soil (§41)
+        resource, regen_inc, soil, nflows = niche.update(
+            s2.resource, s2.patch_pos, s.soil, xdec["niche"], fcell, cfg, s2.step, env, rain
+        )
+        xdec = {**xdec, "niche": nflows}
+    else:
+        resource, regen_inc = fields.update_resource(s2.resource, s2.patch_pos, cfg, s2.step, env, rain)
     patch_pos = fields.drift_patches(s2.patch_pos, s2.patch_vel, cfg, env)
     s2 = s2._replace(chem=chem, resource=resource, patch_pos=patch_pos, key=key_next, step=t + 1)
+    if cfg.niche.farm:  # static
+        s2 = s2._replace(soil=soil)
     if st_on:  # static: deposit, cap, aperture gate and decay of the material (§38.2, §38.3)
         mat, sflows = structures.update(s.mat, xdec["structures"], fcell, s.alive, dm, t, cfg)
         s2 = s2._replace(mat=mat)
@@ -456,6 +465,8 @@ def _acts(
         flags = flags | f.ext.bonds.switched.astype(u16) * ActFlag.ROLE_SWITCHED.value
     if f.ext is not None and isinstance(f.ext.comm, comm.Voice):  # static: the row said something (§39)
         flags = flags | comm.spoke(f.ext.comm).astype(u16) * ActFlag.SPOKE.value
+    if f.ext is not None and isinstance(f.ext.niche, niche.Flows):  # static: the row put into the soil (§41)
+        flags = flags | niche.farming(f.ext.niche).astype(u16) * ActFlag.FARMING.value
     thrust = mx.where(f.costs.solvent, mx.round(256.0 * thrust0).astype(i16), 0)  # = round(256·masked thrust)
     defend = mx.round(256.0 * f.act.defend).astype(i16)
     # The kin columns of the attack and bond queries (the _select score is φ·q, with φ = desc[..., 1:], so the

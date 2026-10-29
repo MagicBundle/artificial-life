@@ -50,14 +50,14 @@ def test_blocks_follow_the_documented_order_and_names_are_unique() -> None:
     names = [n for _, ns in counter_blocks(cfg_p) for n in ns]
     assert (
         next(b for b, _ in counter_blocks(cfg_p)) == "protect"
-        and len(names) == len(set(names)) == 1 + 5 + 11 + 5 + 2 + 5
+        and len(names) == len(set(names)) == 1 + 5 + 11 + 5 + 2 + 7
     )
     base = n_counters(2, True)  # 28: 27 + DEATHS_STORM
     assert counter_index(cfg_p, "DEATHS_STORM") == 27 and counter_index(cfg_p, "PROT_CAPPED") == base
     assert (
         counter_index(cfg_p, "ARMS_ATK_SUM") == base + 1 and counter_index(cfg_p, "BUILD_UNITS") == base + 6
     )
-    assert counter_index(cfg_p, "SOIL_TOTAL") == n_counters(2, True, counter_blocks(cfg_p)) - 1
+    assert counter_index(cfg_p, "SLOTS_FULL") == n_counters(2, True, counter_blocks(cfg_p)) - 1
     with pytest.raises(KeyError):
         counter_index(_cfg(2), "ARMS_ATK_SUM")  # a feature that is off has no counters
     assert not set(names) & set(CounterIdx.__members__)  # globally unique

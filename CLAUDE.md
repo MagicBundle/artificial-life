@@ -56,6 +56,11 @@ Communication (`DESIGN.md` §39, I68; the voice channel: W call intensities, hea
 tail, a dithered cost in `HEAT_ACTION`, controls `comm.control = deaf | decoy`): C1 (the engine) is implemented behind `comm.enabled`
 (`--overlay comm`, `alife migrate --enable comm`, `alife bench --comm`); observers, stream, GUI and the analysis are C2 and C3.
 
+Niche construction, farming only (`DESIGN.md` §41, I70; an int32 soil level per food cell that adds integer regrowth inside the existing
+clip, booked in `INJECT_REGEN`; the put is `HEAT_ACTION`; its own exact soil identity; marks and food stores are deferred): F1 (the
+engine) is implemented behind `niche.farm` (`--overlay niche`, or `niche3d` in a 3D world, `alife migrate --enable
+niche`, `alife bench --niche`); observers, GUI and the experiment are F2 to F4.
+
 ## Conventions
 
 - Change DESIGN.md in the same change as any behaviour, signature or default it pins, and add a Review-log row.

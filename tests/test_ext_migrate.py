@@ -848,3 +848,90 @@ def test_migrating_an_evolved_world_onto_comm_is_a_silent_start(
     assert np.allclose(to_numpy(a.h), to_numpy(b.h), atol=1e-6)
     assert not to_numpy(b.msg)[:, layout.MSG :].any()
     np.testing.assert_allclose(to_numpy(a.msg), to_numpy(b.msg)[:, : layout.MSG], atol=1e-5)
+
+
+# --- farming on an evolved world: the silent start (DESIGN §41, §43.8) --------------------------------------
+
+
+@pytest.mark.parametrize("preset", ["tiny", "tiny3d"])
+def test_migrating_an_evolved_world_onto_farming_is_a_silent_start(
+    preset: str, tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """The real registry: ``--enable niche`` gives the evolved population one zero ``farm`` input row and one
+    zero ``farm_put`` output column, ``soil`` starts at 0, nobody farms at the first step (``max(tanh(0), 0) =
+    0``), the ledger and the soil identity close, and a one-step equivalence holds: the migrated brain makes
+    the same legacy actions (the same positions, energies, resource and ledger) as the unmigrated one."""
+    monkeypatch.undo()  # drop the autouse stub registry
+    dims.cache_clear()
+    from alife.state import counter_index, migrate_state
+
+    cfg = load_config(preset=preset, overrides=F32)
+    fn, s = make_step(cfg), init_state(cfg)
+    for _ in range(40):
+        s, _ = fn(s)
+    mx.eval(s)
+    rd = RunDir.create(tmp_path / "src", cfg)
+    rd.save_checkpoint(s, cfg)
+    rd.wait_saves()
+    out = tmp_path / "out"
+    assert cli.main(["migrate", str(rd.path), "--enable", "niche", "--out", str(out), "--quiet"]) == 0, (
+        capsys.readouterr().err
+    )
+    run = RunDir.open(out)
+    cfg2, meta = run.config(), run.meta()
+    d = dims(cfg2)
+    assert (
+        cfg2.niche.farm
+        and meta["layout_features"] == "niche.farm@1"
+        and meta["migrated_from"]["added"] == ["niche"]
+    )
+    s2 = load_checkpoint(run.checkpoints()[-1][1], cfg2)
+    alive = np.array(s2.alive)
+    assert not np.array(s2.soil).any()  # the soil starts empty
+    w1, w2 = np.array(s2.W1)[alive], np.array(s2.W2)[alive]
+    assert not w1[:, d.lay.IN_FARM].any() and not w2[:, :, d.lay.OUT_FARM_PUT].any()  # zero row, zero column
+    old = np.array(s.W1)[
+        alive
+    ]  # the legacy rows moved only by the inserted one (recurrent rows after the tail)
+    assert np.array_equal(w1[:, : d.lay.D_IN - 1], old[:, : d.lay.D_IN - 1])
+    assert np.array_equal(w1[:, d.lay.D_IN :], old[:, d.lay.D_IN - 1 :])
+    fn2 = make_step(cfg2)
+    s2, o2 = fn2(s2)
+    mx.eval(s2, o2)
+    assert int(to_numpy(o2.counters)[counter_index(cfg2, "FARMERS")]) == 0  # silent at the first step
+    tot = int(np.array(s2.soil).sum())
+    for _ in range(40):
+        s2, o2 = fn2(s2)
+        mx.eval(s2, o2)
+        c, led = to_numpy(o2.counters), to_numpy(o2.ledger)
+        tot += int(c[counter_index(cfg2, "SOIL_PUT")]) - int(c[counter_index(cfg2, "SOIL_DECAYED")])
+        assert tot == int(np.array(s2.soil).sum())
+        assert led[LedgerIdx.FLOW_STOLEN] == led[LedgerIdx.FLOW_ATTACK_GAIN] + led[LedgerIdx.FLOW_SPILL]
+    assert int(to_numpy(s2.diag)) & 0xFFFF == 0
+    # the enable hook alone switches farming on and leaves every other key where it was
+    spec = next(sp for sp in ext.REGISTRY if sp.name == "niche")
+    assert spec.enable(cfg).niche.farm and spec.enable(cfg).niche.farm_cost == 30
+    assert spec.enable(cfg).niche.silent_init and spec.enable(cfg).niche.control == "none"
+    assert all(not f.conserved for f in spec.state_fields(cfg2, d.nd))
+
+    # one-step equivalence, with reproduction unrequested (mutation noise is drawn with the new shape)
+    quiet = load_config(preset=preset, overrides=[*F32, "repro.min_age=100000"])
+    q_new = spec.enable(quiet)
+    sq = init_state(quiet)
+    f0 = make_step(quiet)
+    for _ in range(10):
+        sq, _ = f0(sq)
+    mx.eval(sq)
+    sm = migrate_state(sq, quiet, q_new)
+    a, oa = make_step(quiet)(sq)
+    b, ob = make_step(q_new)(sm)
+    mx.eval(a, b, oa, ob)
+    for name in ("energy", "alive", "resource", "partner"):
+        assert np.array_equal(to_numpy(getattr(a, name)), to_numpy(getattr(b, name))), name
+    for name in ("pos", "vel", "heading"):
+        np.testing.assert_allclose(
+            to_numpy(getattr(a, name)), to_numpy(getattr(b, name)), atol=1e-5, err_msg=name
+        )
+    assert np.array_equal(to_numpy(oa.ledger), to_numpy(ob.ledger))
+    assert np.allclose(to_numpy(a.h), to_numpy(b.h), atol=1e-6)
+    assert not to_numpy(b.soil).any()

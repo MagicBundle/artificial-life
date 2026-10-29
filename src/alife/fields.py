@@ -336,6 +336,31 @@ def update_resource(
     return ops.int_diffuse(resource + inc, fi.resource_diffusion_q8), inc
 
 
+def update_resource_farm(
+    resource: mx.array,
+    patch_pos: mx.array,
+    bonus: mx.array,
+    cfg: Config,
+    step: mx.array | None = None,
+    env: Env | None = None,
+    rain: weather.RainIn | None = None,
+) -> tuple[mx.array, mx.array, mx.array]:
+    """``update_resource`` with the farm bonus inside the clip: ``(resource', inc, inc0)`` (DESIGN §41).
+
+    ``inc = clip(min(regen_rate + bonus, resource_cap − R), 0, ∞)``, so ``INJECT_REGEN = Σ inc`` books the
+    bonus and the resource cap still binds; ``inc0`` is the same clip without the bonus, so that
+    ``Σ(inc − inc0)`` is the yield of the soil after the cap (``FARM_YIELD``). ``bonus`` is an int32 array of
+    the shape of the resource, >= 0; the director's ``regen_mult`` does not scale it (as the rain)."""
+    fi = cfg.fields
+    base = regen_rate(patch_pos, cfg, step, env, rain)
+    room = fi.resource_cap - resource
+    inc0 = mx.maximum(mx.minimum(base, room), 0)
+    inc = mx.maximum(mx.minimum(base + bonus, room), 0)
+    if dims(cfg).d3:
+        return ops.int_diffuse_3d(resource + inc, fi.resource_diffusion_q8), inc, inc0
+    return ops.int_diffuse(resource + inc, fi.resource_diffusion_q8), inc, inc0
+
+
 def drift_patches(patch_pos: mx.array, patch_vel: mx.array, cfg: Config, env: Env | None = None) -> mx.array:
     """``wrap(patch_pos + patch_vel)`` into ``[0, L)`` (§13.1); ``env`` scales the drift."""
     if env is not None:  # static: director enabled
