@@ -114,6 +114,28 @@ def shelter_k_at(mat: mx.array, pos: mx.array, cfg: Config) -> mx.array:
     return shelter_k(sense(mat, fields.cell_index(pos, cfg), cfg), cfg)
 
 
+def drift_at(
+    wx: mx.array,
+    pos: mx.array,
+    buoy_cap: mx.array | None,
+    alive: mx.array,
+    mat: mx.array | None,
+    cfg: Config,
+) -> mx.array:
+    """``weather.agent_drift`` of the observers with the shelter of the built material (DESIGN §38.9).
+
+    Every observer that subtracts the wind drift from a velocity (the game observers, the labels
+    re-simulation,
+    the tracer rig, the emergence recorder) calls this one function with the state it already reads (``wx``,
+    ``pos`` and ``mat`` of the same post-step state), so a world with ``structures.enabled`` and weather no
+    longer has an observer drift that the engine's own sheltered wind (``apply_shelter``) disagrees with.
+    ``mat`` is None only for a state without the field (structures off), where this is ``agent_drift``."""
+    if not cfg.structures.enabled:  # static
+        return weather.agent_drift(wx, pos, buoy_cap, alive, cfg)
+    assert mat is not None, "structures are on: the observer needs the state's mat"
+    return weather.agent_drift(wx, pos, buoy_cap, alive, cfg, shelter=shelter_k_at(mat, pos, cfg))
+
+
 # --- the hooks of the registry row (ext/structures.py) ---------------------------------------------------
 
 
@@ -153,6 +175,25 @@ class StructFlows(NamedTuple):
     violations: mx.array  # () int32: cells with nopen < k in the START-of-step material
     trapped: mx.array  # () int32: alive rows (start of step) in a cell with no open neighbour
     slowed: mx.array  # () int32: alive rows (start of step) with drag_mult > 2
+    cover: mx.array | None = None  # (N,) f32: the cover the step used (``here`` when it did not gather it)
+
+
+class StructActs(NamedTuple):
+    """``Acts.ext.structures`` (observer channel, DESIGN §38.9): what each row built and stood in."""
+
+    build: mx.array  # (N,) int16: deposited units (after the solvency mask)
+    cover: mx.array  # (N,) int16: round(256·cover) of the start-of-step cell
+
+
+def acts_of(f: StructFlows) -> StructActs:
+    """The observer sub-tuple of a step's flows. Quantised from values the step already holds."""
+    assert f.cover is not None, "the step stores the cover next to the flows"
+    return StructActs(f.units.astype(mx.int16), mx.round(256.0 * f.cover).astype(mx.int16))
+
+
+def building(f: StructFlows) -> mx.array:
+    """(N,) bool: the row deposited material this step (the ``ActFlag.BUILDING`` bit)."""
+    return f.units > 0
 
 
 def update(

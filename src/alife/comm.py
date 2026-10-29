@@ -36,6 +36,17 @@ class Voice(NamedTuple):
 
     sig: mx.array  # (N, W) f32 in [0, 1): what each row says this step (0 for dead or, after mask, insolvent)
     due: mx.array  # (N,) int32: the dithered voice due in quanta (0 for dead or, after mask, insolvent)
+    # observer channel only (None in the unobserved step): what the row heard, the inputs of this step
+    heard: mx.array | None = None  # (N, W) f32 in [0, 1]
+    audible: mx.array | None = None  # (N,) int32: neighbours with a hearing weight > 0
+
+
+class CommActs(NamedTuple):
+    """``Acts.ext.comm`` (observer channel, DESIGN §39.7)."""
+
+    voice: mx.array  # (N, W) uint8: min(255, floor(256·sig)), what was said this step
+    heard: mx.array  # (N, W) uint8: round(255·heard) of the inputs that drove this step's decision
+    audible: mx.array  # (N,) uint8: neighbours with a hearing weight > 0 (saturating at 255)
 
 
 def dither(uid: mx.array, step: mx.array) -> mx.array:
@@ -68,7 +79,9 @@ def decode(s: Any, y: mx.array, ctx: Any, cfg: Config) -> Voice:
 
 def mask(dec: Voice, solvent: mx.array, cfg: Config) -> Voice:
     """The registry ``mask`` hook (after S8): an insolvent row pays everything it holds and does not speak."""
-    return Voice(mx.where(solvent[:, None], dec.sig, 0.0), mx.where(solvent, dec.due, 0).astype(_I32))
+    return dec._replace(
+        sig=mx.where(solvent[:, None], dec.sig, 0.0), due=mx.where(solvent, dec.due, 0).astype(_I32)
+    )
 
 
 def due(s: Any, act: Any, y: mx.array, cfg: Config) -> mx.array | None:
@@ -139,6 +152,39 @@ def ext_inputs(s: Any, cfg: Config, ctx: Any) -> tuple[mx.array, mx.array]:
         voice = voice[decoy_index(s.step, s.alive)]
     h = hear(voice, ctx.nbr, ctx.desc, cfg)
     return h[:, :w], h[:, w:]
+
+
+def audible_count(nbr: Any, desc: mx.array, cfg: Config) -> mx.array:
+    """(N,) int32: the neighbours each row can hear, those with a hearing weight ``a > 0`` (the weight of
+    ``hear``: valid, inside the range, and with ``kin_exp > 0`` a positive kin similarity). 0 under the
+    ``deaf``
+    control. Observer channel only."""
+    c, d = cfg.comm, dims(cfg)
+    if c.control == "deaf":  # static
+        return mx.zeros((d.n,), dtype=_I32)
+    valid = desc[..., layout.NBR_PRESENT] > 0.5
+    a = mx.clip(1.0 - nbr.dist / d.ext("comm").hear_range, 0.0, 1.0)
+    if c.atten_pow != 1.0:  # static
+        a = a**c.atten_pow
+    a = mx.where(valid, a, 0.0)
+    if c.kin_exp > 0.0:  # static
+        kin = desc[..., layout.NBR_KIN]
+        a = a * (kin if c.kin_exp == 1.0 else kin**c.kin_exp)
+    return (a > 0.0).astype(_I32).sum(axis=1)
+
+
+def with_heard(v: Voice, heard: mx.array, audible: mx.array) -> Voice:
+    """``v`` with the observer channel's inputs of the step (``heard (N, W)``, ``audible (N,)``)."""
+    return v._replace(heard=heard, audible=audible)
+
+
+def acts_of(v: Voice) -> CommActs:
+    """The observer sub-tuple: quantised from the values the step already holds (``v.heard``/``v.audible`` are
+    set by ``with_heard`` in the observed step only)."""
+    assert v.heard is not None and v.audible is not None, "the observed step attaches heard and audible"
+    voice = mx.minimum(ops.floor_i32(v.sig * 256.0), 255).astype(mx.uint8)
+    heard = mx.clip(mx.round(v.heard * 255.0), 0, 255).astype(mx.uint8)
+    return CommActs(voice, heard, mx.minimum(v.audible, 255).astype(mx.uint8))
 
 
 def ext_count(s_new: Any, alive0: mx.array, flows: Any, cfg: Config) -> dict[str, mx.array]:

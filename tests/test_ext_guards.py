@@ -66,6 +66,12 @@ FROZEN_OMITTED_DEFAULTS = {
     ("comm", "kin_exp"): 0.0,
     ("comm", "cost"): 4.0,
     ("comm", "control"): "none",
+    (
+        "arms",
+        "dump_n",
+    ): 4096,  # the observer PR (S2/A2): an observer key and the dump cadences of the run section
+    ("run", "mat_every"): 0,
+    ("run", "arms_every"): 0,
 }
 
 
@@ -76,7 +82,8 @@ def test_the_defaults_of_omitted_keys_are_frozen() -> None:
     cfg = Config()
     for (sec, key), value in FROZEN_OMITTED_DEFAULTS.items():
         assert getattr(getattr(cfg, sec), key) == value, f"{sec}.{key}: the default of an omitted key changed"
-    assert set(config.SERIAL_OMIT_KEYS) <= set(config.POST_V01_KEYS)
+    # every omitted key moves no hash at its default: the run section is outside the hash altogether
+    assert {k for k in config.SERIAL_OMIT_KEYS if k[0] != "run"} <= set(config.POST_V01_KEYS)
 
 
 # E3. Config versus save.

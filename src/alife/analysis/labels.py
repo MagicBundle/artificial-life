@@ -81,7 +81,7 @@ from typing import Any, Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import layout, ops, spatial, weather
+from alife import layout, ops, spatial, structures
 from alife.analysis import mi
 from alife.analysis.resim import ResimMismatch, compare_row
 from alife.analysis.signals import load_state
@@ -880,8 +880,10 @@ def study(
     ) -> TrackState:
         return track_step(cuid, tr, alive, uid, pos, oc, size, drift)
 
-    def drift_fn(wx: mx.array, pos: mx.array, buoy_cap: mx.array | None, alive: mx.array) -> mx.array:
-        return weather.agent_drift(wx, pos, buoy_cap, alive, cfg)
+    def drift_fn(
+        wx: mx.array, pos: mx.array, buoy_cap: mx.array | None, alive: mx.array, mat: mx.array | None
+    ) -> mx.array:
+        return structures.drift_at(wx, pos, buoy_cap, alive, mat, cfg)
 
     def feat_fn(
         vel: mx.array, drift: mx.array | None, pos: mx.array, buoy_cap: mx.array | None, buoy: mx.array | None
@@ -925,7 +927,9 @@ def study(
         trackers: list[mx.array] = []
         buoy_cap = getattr(state, "buoy_cap", None)
         drift = (
-            drift_step(state.wx, state.pos, buoy_cap, state.alive) if (wthr and (active or dump)) else None
+            drift_step(state.wx, state.pos, buoy_cap, state.alive, getattr(state, "mat", None))
+            if (wthr and (active or dump))
+            else None
         )
         feat = feat_step(state.vel, drift, state.pos, buoy_cap, out.acts.buoy) if dump is not None else None
         if active:

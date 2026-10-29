@@ -13,6 +13,8 @@ import mlx.core as mx
 
 from alife.ext.base import ExtSpec, FieldSpec
 
+_COUNTERS = ("ARMS_ATK_SUM", "ARMS_VIC_ARM_SUM", "ARMS_YIELD_SUM", "ARMS_MATCH_SUM", "ARMS_VIC_TOX_SUM")
+
 _KEYS = (
     "enabled",
     "kappa",
@@ -25,6 +27,7 @@ _KEYS = (
     "init_arm",
     "sigma",
     "sigma_phase",
+    "dump_n",
 )
 
 
@@ -45,6 +48,12 @@ def _state_fields(cfg: Any, nd: int) -> tuple[FieldSpec, ...]:
             arms.make_on_birth(cfg),
         ),
     )
+
+
+def _count(s_new: Any, alive0: Any, flows: Any, cfg: Any) -> Any:
+    from alife import arms
+
+    return arms.count(s_new, alive0, flows, cfg)
 
 
 def _check(arrays: Any, cfg: Any) -> list[str]:
@@ -93,6 +102,8 @@ def _validate(cfg: Any) -> None:
         for k in ("sigma", "sigma_phase"):
             if not 0.0 <= getattr(a, k) <= 0.5:
                 bad.append(f"arms.{k} {getattr(a, k)} must be in [0, 0.5]")
+        if a.dump_n < 1:
+            bad.append(f"arms.dump_n {a.dump_n} must be >= 1")
     if bad:
         raise ConfigError("; ".join(bad))
 
@@ -104,12 +115,33 @@ def _enable(cfg: Any) -> Any:
     return dataclasses.replace(cfg, arms=dataclasses.replace(cfg.arms, enabled=True))
 
 
+def _snap_dev(s: Any, cfg: Any, heavy: bool) -> Any:
+    from alife import featobs
+
+    return featobs.arms_dev(s, cfg, heavy)
+
+
+def _snap_row(h: Any, cfg: Any) -> Any:
+    from alife import featobs
+
+    return featobs.arms_row(h, cfg)
+
+
 SPEC = ExtSpec(
     name="arms",
     enable=_enable,
     enabled=_enabled,
     state_fields=_state_fields,
+    counters=lambda cfg: _COUNTERS,
+    act_flag="CONTESTED",
+    dump_kinds=("arms",),
+    metric_prefix="arms_",
     lever_keys=tuple(("arms", k) for k in _KEYS),
+    observer_keys=(("arms", "dump_n"),),
+    cli_only_keys=(("arms", "dump_n"),),
     validate=_validate,
+    count=_count,
     check=_check,
+    snap_dev=_snap_dev,
+    snap_row=_snap_row,
 )

@@ -29,7 +29,7 @@ from typing import Final, NamedTuple
 
 import mlx.core as mx
 
-from alife import layout, weather
+from alife import layout, structures
 from alife.config import Config, dims
 from alife.game import rules
 from alife.game.rules import (
@@ -92,6 +92,9 @@ class ObsIn(NamedTuple):
     pos: mx.array | None = None  # (N,nd) float32: post-step position (the wind drift's sample point, z)
     buoy_cap: mx.array | None = None  # (N,) float32 (3D): the drift's coupling and the lift capacity
     wx: mx.array | None = None  # (N_WX,wn,wn) float32: the post-step weather (the drift)
+    mat: mx.array | None = (
+        None  # (field_shape) int32: the post-step built material (the drift's shelter, §38.9)
+    )
 
 
 def obs_in(s: State | State3, rs: RuleSet | None = None) -> ObsIn:
@@ -101,7 +104,13 @@ def obs_in(s: State | State3, rs: RuleSet | None = None) -> ObsIn:
     base = tuple(getattr(s, f) for f in ObsIn._fields[:10])
     if rs is None or not rs.wind_rel:
         return ObsIn(*base)
-    return ObsIn(*base, pos=s.pos, buoy_cap=getattr(s, "buoy_cap", None), wx=s.wx)
+    return ObsIn(
+        *base,
+        pos=s.pos,
+        buoy_cap=getattr(s, "buoy_cap", None),
+        wx=s.wx,
+        mat=getattr(s, "mat", None),
+    )
 
 
 class ObsState(NamedTuple):
@@ -181,7 +190,7 @@ def quantise_inputs(
     vel = oi.vel
     drift = None
     if wind_rel and cfg.weather.enabled:  # static: a world without weather has no drift
-        drift = weather.agent_drift(oi.wx, oi.pos, oi.buoy_cap, oi.alive, cfg)
+        drift = structures.drift_at(oi.wx, oi.pos, oi.buoy_cap, oi.alive, oi.mat, cfg)
         vel = vel - drift
     vq = mx.clip(mx.round(vel * scale), -VQ_MAX, VQ_MAX).astype(_I32)
     sp = mx.clip(mx.round(mx.sqrt((vel * vel).sum(axis=1)) * scale), 0, VQ_MAX).astype(_I32)

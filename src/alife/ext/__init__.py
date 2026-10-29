@@ -133,14 +133,19 @@ def mask_all(dec: dict[str, Any], solvent: Any, cfg: Any) -> dict[str, Any]:
     return {n: (by[n].mask(d, solvent, cfg) if by[n].mask is not None else d) for n, d in dec.items()}
 
 
-def step_inputs(s: Any, cfg: Any, ctx: Any = None) -> tuple[Any, ...]:
+def step_inputs(
+    s: Any, cfg: Any, ctx: Any = None, by_feature: dict[str, tuple[Any, ...]] | None = None
+) -> tuple[Any, ...]:
     """The extension input blocks of one step, (N, width) each, in ``TAIL_ORDER`` then block order: what
     ``sensing.build_inputs(ext_in=)`` concatenates after the base vector. Empty while no footprint feature is
     on. A feature without an ``inputs`` hook contributes zero columns' worth only if it declares no blocks."""
     out: list[Any] = []
     for spec in sorted(layout_active(cfg), key=lambda sp: sp.tail_rank):
         if spec.inputs is not None:
-            out.extend(spec.inputs(s, cfg, ctx))
+            blocks = tuple(spec.inputs(s, cfg, ctx))
+            out.extend(blocks)
+            if by_feature is not None:  # the observer channel keeps what a feature's brain tail was fed
+                by_feature[spec.name] = blocks
     return tuple(out)
 
 

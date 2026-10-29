@@ -31,7 +31,7 @@ from typing import Final, NamedTuple
 
 import mlx.core as mx
 
-from alife import ops, rng, weather
+from alife import ops, rng, structures, weather
 from alife.config import Config, dims
 from alife.state import State, State3
 from alife.step import Acts
@@ -180,7 +180,7 @@ def coupling_inputs(s: State | State3, tr: TracerState, cfg: Config) -> Coupling
     fc = cfg.world.field_cell
     w_a = weather.sample_wind(ws, s.pos, p, field_cell=fc, valid=s.alive).u[:, 2]
     w_t = weather.sample_wind(ws, tr.pos, p, field_cell=fc).u[:, 2]
-    drift = weather.agent_drift(s.wx, s.pos, s.buoy_cap, s.alive, cfg)
+    drift = structures.drift_at(s.wx, s.pos, s.buoy_cap, s.alive, getattr(s, "mat", None), cfg)
     return CouplingIn(
         s.alive,
         s.pos[:, 2],
@@ -204,7 +204,7 @@ def eco_arrays(s: State | State3, acts: Acts, tr: TracerState | None, cfg: Confi
     ``tracer_z`` and ``tracer_age`` (the tracers' null of the 250-step height persistence)."""
     p = weather.params_from_config(cfg)
     aw = weather.sample_wind(weather.unpack(s.wx), s.pos, p, field_cell=cfg.world.field_cell, valid=s.alive)
-    drift = weather.agent_drift(s.wx, s.pos, s.buoy_cap, s.alive, cfg)
+    drift = structures.drift_at(s.wx, s.pos, s.buoy_cap, s.alive, getattr(s, "mat", None), cfg)
     base = {
         "alive": s.alive,
         "uid": s.uid,
