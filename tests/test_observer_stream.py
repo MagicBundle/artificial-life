@@ -83,10 +83,10 @@ def test_more_than_the_cap_keeps_the_highest_levels_and_sets_the_flag() -> None:
 
 
 def test_cells_outside_the_cap_and_a_wrong_shape_are_writer_errors() -> None:
-    with pytest.raises(sr.RecordError):
-        sr.quantise_cells(np.array([[5000]]), 4096)
-    with pytest.raises(sr.RecordError):
-        sr.quantise_cells(np.array([[-1]]), 4096)
+    idx, lev, _ = sr.quantise_cells(
+        np.array([[5000, -1, 7]]), 4096
+    )  # clamped to [0, cap], never a session-ending error
+    assert idx.tolist() == [0, 2] and lev.tolist() == [255, 1 + 254 * 7 // 4096]
     with pytest.raises(sr.RecordError):
         sr.encode_strc(step=0, seq=0, shape=(1, 3, 3), mat=np.zeros((4, 4)), cap=4096)
     with pytest.raises(sr.RecordError):

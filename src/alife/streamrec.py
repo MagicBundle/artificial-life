@@ -1263,9 +1263,10 @@ def quantise_cells(grid: np.ndarray, cap: int) -> tuple[np.ndarray, np.ndarray, 
     ``truncated``."""
     if not (_is_int(cap) and cap >= 1):
         raise RecordError("cap is a positive integer")
-    m = np.asarray(grid).reshape(-1).astype(np.int64)
-    if m.size and (m.min() < 0 or m.max() > cap):
-        raise RecordError(f"cells outside [0, {cap}]: min {int(m.min())}, max {int(m.max())}")
+    # the engine keeps 0 <= m <= cap; a value outside (an edit of the grid, a changed cap on resume) is
+    # clamped
+    # on the wire rather than ending a play session from the stream hook
+    m = np.clip(np.asarray(grid).reshape(-1).astype(np.int64), 0, cap)
     idx = np.flatnonzero(m > 0)
     level = 1 + (254 * m[idx]) // cap
     truncated = idx.size > CELLS_MAX

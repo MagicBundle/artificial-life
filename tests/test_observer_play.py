@@ -135,3 +135,32 @@ def test_a_bonds_world_accepts_the_role_colour_mode(tmp_path: Path, monkeypatch)
     dec = decoded(out)
     idx = dec.header["color_modes"].index("role")
     assert idx == 7 and idx in {r.f["color_index"] for r in dec.records if r.tag == "FRMA"}
+
+
+def test_fsig_hears_is_the_observer_channels_heard_byte(tmp_path: Path, monkeypatch) -> None:
+    """With ``game.observe`` the FSIG heard half is ``Acts.ext.comm.heard`` of the step, byte for byte (it was
+    quantised twice and saturated to 0 or 255), and ``audible`` is the channel's count."""
+    snapshots(monkeypatch, 25)
+    cfg = world("3d", "comm.enabled=true", "game.observe=true")
+    seen: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+
+    class Capture(play.PlayPacer):
+        def after_step(self, state, out, t, social) -> None:
+            super().after_step(state, out, t, social)
+            if self.obs is not None and self.obs.comm_last is not None:
+                heard, aud = (to_numpy(a) for a in self.obs.comm_last)
+                seen[t] = (to_numpy(state.uid), heard, aud)
+
+    us = uids(cfg)
+    script = [[], ["every 1"], *[[f"focus {u}"] for u in us[:60]], [], []]
+    _, _, _, out = run_paced(cfg, tmp_path / "run", 50, script, pacer_class=Capture)
+    fsig = [r for r in decoded(out).records if r.tag == "FSIG" and r.f["flags"] & 1]
+    assert fsig
+    values: set[int] = set()
+    for r in fsig:
+        uid_row, heard, aud = seen[r.step]
+        row = int(np.flatnonzero(uid_row == r.f["uid"])[0])
+        assert np.array_equal(r.a["hears"], heard[row]), r.step
+        assert r.f["audible"] == int(aud[row])
+        values |= {int(v) for v in r.a["hears"]}
+    assert values - {0, 255}, f"only saturated values {sorted(values)}: the quantisation is applied twice"

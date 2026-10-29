@@ -970,13 +970,17 @@ DIRECTOR_POLICY_KEYS: Final = tuple(key for _, key in UNHASHED_KEYS)
 # POST_V01 keys read only by host-side observers (§28, §29): omitted from ``config_hash`` at every value and
 # inert while ``game.observe`` is off, so they may default to a working value. Separate from
 # ``UNHASHED_KEYS``, from which ``DIRECTOR_POLICY_KEYS`` (the director's resume keys) is derived.
-OBSERVER_KEYS: Final[tuple[tuple[str, str], ...]] = (
+_GAME_OBSERVER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("game", "observe"),
     ("game", "house_rate"),
     ("game", "tracers"),
     ("game", "tracer_period"),
 )
-OBSERVER_KEYS = (*OBSERVER_KEYS, *(key for spec in ext.REGISTRY for key in spec.observer_keys))
+# ... and the observer keys of the registered features (``ExtSpec.observer_keys``, DESIGN §43.5)
+OBSERVER_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    *_GAME_OBSERVER_KEYS,
+    *(key for spec in ext.REGISTRY for key in spec.observer_keys),
+)
 TRACERS_MAX: Final = 1 << 20  # the largest ``game.tracers``
 DIRECTOR_MODES: Final = ("off", "live", "replay")  # the research modes (``--director`` of run and resume)
 PLAYER_MODE: Final = "player"  # ``alife play``: applies the player's powers, decides nothing (DESIGN §26.8)

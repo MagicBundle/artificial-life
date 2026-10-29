@@ -30,43 +30,60 @@ def _spots(nd: int) -> list[tuple[float, ...]]:
     return [(20.0 + 40.0 * i, 30.0 + 25.0 * i, *z) for i in range(6)]  # far apart: no contacts
 
 
-def _scene(nd: int):
+def _scene(nd: int, *extra: str):
+    """Six isolated zero-weight agents in a prescribed wind; the barrier is off unless ``extra`` sets it."""
     mk = storm2d_config if nd == 2 else storm3d_config
-    cfg = mk("structures.enabled=true", "structures.aperture=0.0", "structures.barrier_gain=0.0")
+    cfg = mk("structures.enabled=true", "structures.aperture=0.0", "structures.barrier_gain=0.0", *extra)
     cfg = apply_overrides(cfg, ["weather.storm_p=0.0"])
     d = dims(cfg)
     s = make_scene(cfg, [{"pos": p} for p in _spots(nd)], wx=fixed_wx(cfg, u1=0.05, v1=0.03))
     return cfg, d, s
 
 
+def _levels_grid(cfg, s, levels):
+    """A grid with ``levels[i]`` units in the cell of agent i and nothing around it (a peak: the gradient at
+    the agent's cell is zero, so R3 pays the plain drag), and the cover of that agent equal to ``here``."""
+    from alife import fields
+
+    cells = to_numpy(fields.cell_index(s.pos, cfg))[: len(levels)]
+    m = np.zeros(dims(cfg).n_cells, np.int32)
+    m[cells] = levels
+    return mx.array(m.reshape(dims(cfg).field_shape))
+
+
 @pytest.mark.parametrize("nd", [2, 3])
-def test_the_observer_drift_follows_the_engines_shelter(nd: int) -> None:
-    """Zero weights, no barrier, isolated agents: the engine's velocity in a full cell over the one in an
-    empty
-    cell is the shelter factor ``1 - shelter_gain`` (the grip factor of the zero brain cancels), and the
-    observer's ``drift_at`` of the same two states has the same ratio, while the bare ``agent_drift`` (the
-    audited bug) has ratio 1."""
+@pytest.mark.parametrize(
+    "extra", [["structures.barrier_gain=3.0"], ["structures.barrier_gain=3.0", "structures.exit_ease=0.0"]]
+)
+def test_the_observer_drift_follows_the_engines_shelter_and_barrier(nd: int, extra: list[str]) -> None:
+    """Zero weights, isolated agents, the default barrier (``barrier_gain`` 3, with and without R3) and the
+    default shelter, in full, partial and empty cells: the engine's velocity over the one in an empty cell is
+    ``(1 - shelter_gain·here)/(1 + barrier_gain·here)`` (the grip factor of the zero brain cancels), and the
+    observer's ``drift_at`` has the same ratio; the bare ``agent_drift`` (the audited bug) has ratio 1."""
     from alife import weather
 
-    cfg, d, s = _scene(nd)
+    cfg, d, s = _scene(nd, *extra)
     n = len(_spots(nd))
-    full = mx.full(d.field_shape, cfg.structures.cap, dtype=mx.int32)
-    empty = mx.zeros(d.field_shape, dtype=mx.int32)
     cap = getattr(s, "buoy_cap", None)
+    cs = cfg.structures
+    levels = np.array([0, 512, 1024, 2048, 3072, cs.cap])
+    mat = _levels_grid(cfg, s, levels)
+    empty = mx.zeros(d.field_shape, dtype=mx.int32)
     vel, drift = {}, {}
-    for name, mat in (("full", full), ("empty", empty)):
-        st = s._replace(mat=mat)
+    for name, m in (("mat", mat), ("empty", empty)):
+        st = s._replace(mat=m)
         s1, _ = make_step(cfg)(st)
         mx.eval(s1)
         vel[name] = to_numpy(s1.vel)[:n, :2]
-        drift[name] = to_numpy(structures.drift_at(st.wx, st.pos, cap, st.alive, mat, cfg))[:n, :2]
+        drift[name] = to_numpy(structures.drift_at(st.wx, st.pos, cap, st.alive, m, cfg))[:n, :2]
     raw = to_numpy(weather.agent_drift(s.wx, s.pos, cap, s.alive, cfg))[:n, :2]
-    sg = cfg.structures.shelter_gain
+    here = levels / cs.cap
+    want = ((1.0 - cs.shelter_gain * here) / (1.0 + cs.barrier_gain * here))[:, None]
     assert np.abs(vel["empty"]).max() > 1e-4
-    assert np.allclose(vel["full"], (1 - sg) * vel["empty"], rtol=1e-4, atol=1e-8)
-    assert np.allclose(drift["full"], (1 - sg) * drift["empty"], rtol=1e-4, atol=1e-8)
+    assert np.allclose(vel["mat"], want * vel["empty"], rtol=1e-4, atol=1e-8)  # the engine
+    assert np.allclose(drift["mat"], want * drift["empty"], rtol=1e-4, atol=1e-8)  # the observer, exactly
     assert np.allclose(drift["empty"], raw)  # the empty grid is the old drift
-    assert not np.allclose(raw, drift["full"], rtol=0.1)  # and the old drift over-states a sheltered one
+    assert not np.allclose(raw[-1], drift["mat"][-1], rtol=0.1)  # and the old drift over-states a full cell
 
 
 @pytest.mark.parametrize("nd", [2, 3])
@@ -263,3 +280,41 @@ def test_the_snapshot_keys_of_a_structures_world(tmp_path) -> None:
     assert 0 < last["build_mat_max"] <= cfg.structures.cap
     off = cfg_for(2, "structures.enabled=false")
     assert not [k for k in snapshot_metrics(init_state(off), off, heavy=False) if k.startswith("build_")]
+
+
+def test_r3_leaves_the_drift_between_the_shelter_alone_and_the_plain_barrier() -> None:
+    """With R3 on and a real gradient the engine's factor depends on the whole force; ``drift_at`` uses the
+    wind
+    alone as the push, so it lies between the sheltered drift and the sheltered drift over the plain
+    barrier."""
+    from alife import fields, weather
+
+    cfg, d, s = _scene(2, "structures.barrier_gain=3.0", "structures.exit_ease=0.75")
+    n = len(_spots(2))
+    cells = to_numpy(fields.cell_index(s.pos, cfg))[:n]
+    m = np.zeros(d.n_cells, np.int32)
+    m[cells] = cfg.structures.cap
+    m[(cells + 1) % d.n_cells] = cfg.structures.cap // 2  # a slope beside each agent
+    mat = mx.array(m.reshape(d.field_shape))
+    out = to_numpy(structures.drift_at(s.wx, s.pos, None, s.alive, mat, cfg))[:n]
+    shel = to_numpy(
+        weather.agent_drift(s.wx, s.pos, None, s.alive, cfg, shelter=structures.shelter_k_at(mat, s.pos, cfg))
+    )[:n]
+    lo, hi = shel / (1.0 + cfg.structures.barrier_gain), shel
+    assert (np.abs(out) <= np.abs(hi) + 1e-9).all() and (np.abs(out) >= np.abs(lo) - 1e-9).all()
+
+
+def test_the_metrics_air_speed_is_the_sheltered_speed_of_the_hazard(tmp_path) -> None:
+    """``snapshot_metrics``' ``weather.air_speed_*`` and ``storm_exposure`` read the speed the engine's storm
+    hazard reads (``apply_shelter``), not the raw one: a full grid lowers it by ``1 - shelter_gain``."""
+    cfg, d, s = _scene(3)
+    s = s._replace(wx=fixed_wx(cfg, u1=0.08, v1=0.05))
+    empty = snapshot_metrics(s._replace(mat=mx.zeros(d.field_shape, mx.int32)), cfg, heavy=False)["weather"]
+    full_s = s._replace(mat=mx.full(d.field_shape, cfg.structures.cap, dtype=mx.int32))
+    full = snapshot_metrics(full_s, cfg, heavy=False)["weather"]
+    sg = cfg.structures.shelter_gain
+    assert empty["air_speed_max"] > 0
+    assert full["air_speed_max"] == pytest.approx((1 - sg) * empty["air_speed_max"], rel=1e-5)
+    assert full["storm_exposure"] <= empty["storm_exposure"]
+    # total_speed (raw |u_air|) is a different quantity and stays raw
+    assert full["total_speed_p99"] == pytest.approx(empty["total_speed_p99"])

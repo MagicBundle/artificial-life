@@ -13,8 +13,9 @@ from typing import Any, Final
 import mlx.core as mx
 import numpy as np
 
-from alife import arms, ext, fields, layout, niche, ops, rng, spatial, weather, weather_obs
+from alife import arms, ext, fields, layout, niche, ops, rng, spatial, structures, weather, weather_obs
 from alife.config import Config, config_hash, dims, is_3d
+from alife.ext.bonds import bonds_ext
 from alife.state import (
     ENV_FIELDS,
     Counter3D,
@@ -319,7 +320,9 @@ def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str
         ws = weather.unpack(s.wx)
         buoy = s.buoy_cap if d3 else None
         wind = weather.agent_wind(ws, s.pos, buoy, s.alive, cfg)
-        dev.update(wx=s.wx, air_speed=wind.speed, overlap_deep=_overlap_deep_fn(cfg)(s.pos, s.alive))
+        # the speed the engine's storm hazard reads: sheltered by the built material (DESIGN §38.4.1, §38.9)
+        speed = structures.sheltered_speed_at(wind.speed, getattr(s, "mat", None), s.pos, cfg)
+        dev.update(wx=s.wx, air_speed=speed, overlap_deep=_overlap_deep_fn(cfg)(s.pos, s.alive))
         dev["total_speed"], dev["eddy_speed"] = weather.air_speeds(ws, s.pos, buoy, s.alive, cfg)  # §32
         if cfg.weather.seed_gain > 0:  # static: the organism couplings' strengths (§32)
             dev["seed_r"] = weather.seeding_response(s.chem, ws, cfg)
@@ -336,7 +339,7 @@ def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str
         labels, converged = components(s.partner, s.alive, cfg.run.components_iters)
         dev["body_sizes"] = ops.scatter_add_i32(s.alive.shape[0], labels, 1, s.alive)
         dev["bodies_converged"] = converged
-        if d3:
+        if d3 or bonds_ext(cfg):  # the bond-role statistics of the snapshot read the bodies too (featobs)
             dev["labels"] = labels
         dev["div_sum"], dev["div_pairs"] = _diversity_arrays(s, step, cfg)
     mx.eval(*dev.values())

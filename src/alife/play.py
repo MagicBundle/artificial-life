@@ -166,7 +166,7 @@ INT64_MAX: Final = 2**63 - 1
 def ext_cells(cfg: Config) -> tuple[tuple[str, str, int], ...]:
     """``(tag, State field, cap)`` of the sparse cell records the world sends (DESIGN §38.9, §41.14): ``STRC``
     for
-    the built material while structures are on. Farming joins with its own row."""
+    the built material while structures are on, ``FSOL`` for the soil while farming is."""
     cells: list[tuple[str, str, int]] = []
     if cfg.structures.enabled:
         cells.append(("STRC", "mat", cfg.structures.cap))
@@ -2008,11 +2008,8 @@ class PlayPacer:
         self._send("FOCS", lambda step, seq: streamrec.encode_focs(step=step, seq=seq, uid=uid, row=row, **f))
         if r is not None and "says" in r:  # the voice features: what the organism says and hears (§39.8)
             says = np.minimum(np.floor(256.0 * r["says"].astype(np.float64)), 255).astype(np.uint8)
-            hears = (
-                np.clip(np.rint(255.0 * r["heard"].astype(np.float64)), 0, 255).astype(np.uint8)
-                if "heard" in r
-                else None
-            )
+            # the observer channel's heard half is already the wire value, round(255·heard) as uint8
+            hears = r["heard"].astype(np.uint8) if "heard" in r else None
             audible = int(r["audible"]) if "audible" in r else 0
             self._send(
                 "FSIG",

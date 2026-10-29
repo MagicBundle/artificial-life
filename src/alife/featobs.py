@@ -52,10 +52,12 @@ def structures_dev(s: Any, cfg: Config, heavy: bool) -> dict[str, mx.array]:
 def structures_row(h: Mapping[str, np.ndarray], cfg: Config) -> dict[str, Any]:
     alive = h["alive"].astype(bool)
     here, cover = h["structures.here"][alive], h["structures.cover"][alive]
+    # with reach > 0 but no effect reading the cover column the step never builds it: no value, not ``here``
+    has_cover = cfg.structures.reach == 0 or "cover" in fields.mat_columns(cfg)
     return {
         "build_here_mean": _mean(here),
         "build_in_frac": _mean((here > 0).astype(np.float64)),
-        "build_cover_mean": _mean(cover),
+        "build_cover_mean": _mean(cover) if has_cover else None,
         "build_mat_max": int(h["structures.mat_max"]),
     }
 
@@ -116,8 +118,6 @@ N_ROLES: Final = 3  # generalist, forager, guard (germ is deferred)
 
 
 def bonds_dev(s: Any, cfg: Config, heavy: bool) -> dict[str, mx.array]:
-    from alife import metrics
-
     out = {
         "bonds.role": s.role,
         "bonds.partner": s.partner,
@@ -125,9 +125,7 @@ def bonds_dev(s: Any, cfg: Config, heavy: bool) -> dict[str, mx.array]:
         "bonds.kin": bonds.slot_kin(s.tag, s.partner, cfg),
         "bonds.harvest": s.last_harvest,
     }
-    if heavy:
-        out["bonds.labels"] = metrics.components(s.partner, s.alive, cfg.run.components_iters)[0]
-    return out
+    return out  # the bodies of a heavy snapshot are ``labels``, which ``snapshot_metrics`` computes once
 
 
 def gini(x: np.ndarray) -> float | None:
@@ -259,8 +257,8 @@ def bonds_row(h: Mapping[str, np.ndarray], cfg: Config) -> dict[str, Any]:
         ((partner >= 0) & alive[np.maximum(partner, 0)] & guard[np.maximum(partner, 0)]).any(axis=1) & alive
     )
     out["bond_shield_cover"] = _mean(near[alive].astype(np.float64))
-    if "bonds.labels" in h:  # heavy snapshots: the role mix of the bodies
-        ent, rows, body = role_entropy(role, h["bonds.labels"], alive)
+    if "labels" in h:  # heavy snapshots: the role mix of the bodies
+        ent, rows, body = role_entropy(role, h["labels"], alive)
         out["bond_body_role_entropy"] = ent
         step = int(h["step"]) if "step" in h else 0
         out["bond_role_diff_z"] = None if ent is None else role_diff_z(role[rows], body, ent, seed=step)
