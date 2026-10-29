@@ -37,7 +37,7 @@ from alife import layout
 from alife.config import Config, ConfigError, config_hash, dims
 from alife.render import COLOR_MODES, agent_colors, field_colors
 from alife.runio import CheckpointError, RunDir, load_checkpoint
-from alife.state import ERROR_MASK, State, State3, to_numpy
+from alife.state import ERROR_MASK, State, State3, is_3d_state, to_numpy
 from alife.step import make_step
 
 MAGIC: Final = b"ALSTRM\x00\x01"  # "ALSTRM", a zero byte, the major protocol version
@@ -236,7 +236,7 @@ class Streamer:
             "step": state.step,
             "diag": state.diag,
             "rgb": colors,
-            **({"pitch": state.pitch} if isinstance(state, State3) else {}),
+            **({"pitch": state.pitch} if is_3d_state(state) else {}),
             **({"field": field_colors(state, cfg, view.field_z)} if view.fields else {}),
         }
         mx.eval(*dev.values())

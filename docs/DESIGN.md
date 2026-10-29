@@ -130,6 +130,8 @@ combines with any preset.
 
 ### 2.1 Symbols
 
+*Feature extensions (§43.2): the I/O totals `D_IN`/`D_OUT`, `msg` width and the state type depend on the enabled features; with none enabled they are the values below.*
+
 Structural constants are fixed in `layout.py` for v0. Changing any of them changes the genome layout and requires a
 code change plus a bump of `GENOME_LAYOUT_VERSION`. The values below are the 2D layout; a 3D world appends a tail to
 the input and output vectors, and `layout.for_dims(nd)` (held as `Dims.lay`) gives the per-dims totals (§27.1).
@@ -1097,6 +1099,8 @@ flows to the observer channel (§28.2); the traced graph of `share` is unchanged
 
 ### 10.8 The ledger
 
+*Ledger policy of the feature series (§43.4): no 17th term; the extension energy paths use the existing terms, `extra_due` joins `HEAT_ACTION`.*
+
 `LedgerIdx` (`state.py`) has 16 entries, int64. The per-step vector is `StepOut.ledger`, and the cumulative vector
 is `state.ledger_cum`.
 
@@ -1523,6 +1527,8 @@ chem_c ← (1 − λ_c) · (chem_c + D_c · (roll₄(chem_c) − 4·chem_c))
 ## 14. RNG and determinism
 
 ### 14.1 Key threading (`rng.py`)
+
+*Feature extensions (§43.3): reserved stream indices are assigned `10 + extension index`; `rng.layout_version(cfg)`; `ops.hash32` for draw-free pseudo-randomness.*
 
 - `state.key` (uint32[2]) is the only simulation RNG state.
 - Every step: `k = split(state.key, 2)`, `key_next = k[0]`, `ks = split(k[1], NUM_STREAMS)`.
@@ -2433,6 +2439,8 @@ taken before `actions.mask`) and the S6 output (`y0 = y`, a Python reference); S
 
 ## 17. Config
 
+*Feature extensions (§43.7): `combat.protect_floor`; the feature series' keys are left out of `config.json` and the checkpoint metadata at their defaults.*
+
 The config is a set of frozen dataclasses, one per section. **Defaults are the `64k` preset.** Every tunable numeric
 constant of the simulation step lives here; fixed normalisation constants that shape the genome's inputs, and
 numeric guards, are named constants in `layout.py` (§16.2). Derived limits (`occ_limit`) are computed in `Dims`.
@@ -2880,6 +2888,8 @@ runs/<name>/                                   default name: <preset>-<YYYYmmdd-
 ## 19. Metrics for emergence
 
 ### 19.1 Per-step counters (`CounterIdx`, `StepOut.counters`, int32 (27,); 2D, 3D (30,): §27.8; weather +1: §30.7)
+
+*Extension counter blocks follow `DEATHS_STORM` (§43.4): `protect` (`PROT_CAPPED`), then each enabled feature's block; every index below is fixed.*
 
 | idx | name | idx | name |
 |---|---|---|---|
@@ -4688,6 +4698,8 @@ one step pipeline with static `if d3:` branches; grip only on the floor, never s
 height) rather than "depth"; a `tiny3d` preset (PR 3); a 3D golden digest recorded in CI.
 
 ### 27.1 Scope and the dims constant (PR 1)
+
+*`genome_layout_version(nd, mask)` is `base + 4*mask` and the `layout_features` meta key names the extension blocks (§43.2); the 3D base is 2.*
 
 **Keys.** `world.dims` (int, 2 or 3, default 2) and `world.height` (float, default 0). Both are static: they change
 the compiled step and the state shapes. Both are in `config.POST_V01_KEYS` (omitted from `config_hash` at their
@@ -6691,6 +6703,8 @@ adds `house_rate: float = 1/2048` (§29.1, §29.4).
   Metal purity run had passed before merge for G1 (row I44).
 
 ### 28.2 The observer channel (`step.py`, `energy.py`)
+
+*Feature extensions (§43.5): `Acts.flags` is uint16 (bits `128 << i` for the five features) and `Acts.ext` carries one sub-tuple per feature.*
 
 `step(s, cfg, *, observe=False)` and `make_step(cfg, *, compile=None, observe=False)` take a **static** `observe`. With it
 the step returns `StepOutG`: `StepOut`'s four fields plus `acts: Acts`, the per-row actions and flows of this step. The
@@ -12327,6 +12341,260 @@ kin groups (§37.6), build the crop tool only if it fails; D3 evolve dry (weathe
 play, no launcher entry that makes a world from nothing; D6 the launcher passes the overlay explicitly. D4 (the equatorial band) is a design track outside this section (`scratchpad/smallworld/spec.md` section 7): no engine work.
 Recorded in the Review log (I62) rather than as a row of §24, which holds the v0 decisions D1 to D28.
 
+## 43. Feature extension mechanism (PR 0a of the five-feature series)
+
+Normative text for the mechanism that §38 (built structures), §39 (communication), §40 (bonds that pay), §41 (farming)
+and §42 (arms races) build on; each of them follows this section for its registry row, layout blocks, state fields,
+counters, flag, stream and config. Planned in the integration plan of the five features (its content is folded into this section) and accepted by the
+owner on 2026-10-28. **PR 0a adds the mechanism only and changes no behaviour**: with every feature off (the only state
+possible in it) trajectories, state digests (full and legacy), checkpoint bytes, `meta.json`, `config.json`, config
+hashes and the goldens are identical to main e64be03 (`tests/identity_matrix.py`, 43.9). PR 0b (the layout migration
+tool, 43.8) follows.
+
+### 43.1 The registry (`src/alife/ext/`)
+
+* `ext/base.py` (a leaf: `dataclasses` and `typing` only, so `config.dims` -> `layout` -> `ext` has no cycle):
+  `Block(name, width, silent)`, `FieldSpec(name, per_agent, shape(dims), dtype, rest(cfg))`, and `ExtSpec`, whose every
+  hook defaults to "nothing": `enabled(cfg)`, `layout_on(cfg)` (has a brain footprint; arms: perception only),
+  `token(cfg)`, `in_blocks/out_blocks(cfg, nd)`, `block_names`, `nbr_features`, `dims(cfg)`, `state_fields(cfg, nd)`,
+  `counters(cfg)`, `act_flag`, the observer registries `dump_kinds/color_modes/stream_tags/metric_prefix`,
+  `lever_keys/cli_only_keys`, `overlay`, `validate(cfg)`, and the step hooks, all static and called only for an
+  enabled feature: `inputs(s, cfg, ctx)` (the brain-tail blocks; `ctx = ExtCtx(nbr, desc, geom, fcell)`, what comm's
+  `hear` and farming's put need), `decode(s, y, ctx, cfg)` (the feature's own decode of the brain outputs, S7),
+  `mask(dec, solvent, cfg)` (solvency, after S8), `due(s, act, y, cfg)` (the action due, from the actions and the
+  brain outputs), `count(s_new, alive0, flows, cfg)` (reads `flows.ext.<name>`, the masked decode) and
+  `check(arrays, cfg)` (a host invariant, run by `invariants.full_check`). `step` stores the masked decodes in
+  `_Flows.ext` (`ExtFlows`). A declaration duck-types `cfg`; the implementation of a
+  feature stays in `alife/<feature>.py`.
+* `ext/__init__.py`: `REGISTRY` (a tuple of `ExtSpec` in `EXTENSIONS` order; **empty in PR 0a**: a feature PR adds ONE
+  row and its `ext/<name>.py`), `active(cfg)`, `layout_active(cfg)`, `layout_features(cfg)`, `mask(cfg)`,
+  `layout_blocks(cfg, nd)`, `state_fields(cfg, nd)`, `step_inputs(s, cfg)`, `sum_due(parts)`, `validate_all(cfg)`,
+  `check_registry()`. Every function reads `REGISTRY` at call time and depends on the config only, so a loop over
+  `active(cfg)` inside the traced step is a static Python branch (CLAUDE.md). A test installs a stub registry with
+  `monkeypatch` (`tests/ext_stub.py`: the five features with the real block widths, conditional fields, counter blocks,
+  a comm-style due and zero inputs; switched on by `run.llm_model = "stub:<names>"`, no new key).
+* Canonical order `EXTENSIONS = (arms, structures, bonds, comm, niche)` (`niche` is farming): it orders state fields,
+  counter blocks, ActFlag bits, mask bits, config sections and the `layout_features` string.
+  `TAIL_ORDER = (structures, bonds, comm, niche, arms)` orders the brain tails (arms' perception last).
+
+### 43.2 Layout, version, state fields
+
+* **Blocks.** `layout.for_dims(nd, blocks=())` appends the blocks of the enabled footprint features after the base
+  totals (2D `D_IN` 69, `D_OUT` 35; 3D 84 and 39), cumulative in `TAIL_ORDER`, inputs and outputs separately, inside a
+  feature in declaration order. `Layout.EXT_IN/EXT_OUT` list `(owner, name, start, width, silent)`;
+  `lay.IN_<NAME>`/`lay.OUT_<NAME>` (`Layout.__getattr__`) return the offset of a REGISTERED block name and None when its
+  feature is off; any other name is an `AttributeError`; literals are forbidden. Descriptor columns (`NF`, `F`, the
+  neighbour feature names) widen only with a feature that declares `nbr_features` (arms perception). Without blocks
+  `for_dims` returns today's object. The widths of the five features (worked totals, tested over all 32 subsets in 2D and
+  3D): structures 1/1, bonds 13/2, comm `W + nd` / `W` (W = 4), farm 1/1, arms perception 7/1 plus the column `sig`;
+  all-on 2D 97/44, 3D 113/48.
+* **Silent blocks.** `brain.init_weights` zeroes the W1 rows / W2 columns of every `silent` block for founders and
+  immigrants (static; no op while the features are off), so the new inputs are inert and `brain_cost` (an L1 sum) is
+  unchanged until mutation wakes them.
+* **Version.** `layout.genome_layout_version(nd, mask=0) = base(nd) + 4*mask` (base 1 in 2D, 2 in 3D, 3 reserved for a
+  2D bump; mask bit `i` = extension `i` has a footprint); it decodes uniquely (`base = v % 4`, `mask = v // 4`). The
+  string meta key `layout_features` (`ext.layout_features(cfg)`: the tokens of the footprint features in registry
+  order, e.g. `structures@1,comm4@1`) says which widths and block versions; a width or block-table change that keeps the
+  mask changes the string, a redefinition bumps the feature's `block_version`. `runio` writes the key only when it is
+  non-empty (absent = `""` = today's layout, in `meta.json` and in the checkpoint metadata) and `load_checkpoint`
+  compares it (`meta.get("layout_features", "")`) with the version integer; a mismatch is a `CheckpointError` naming
+  both strings. A checkpoint never crosses `layout_features`; the only route is the migration (43.8).
+  The guard is `load_checkpoint`, the one reader of states (a test scans `src`): resume (also with `--set run.*`),
+  `--init-from`, `play`, `inspect` and the stream all refuse a config whose feature layout disagrees with the
+  checkpoint's, with a message that says so (`tests/test_ext_guards.py`, stub features). The order-of-enable
+  equivalence (A then B = B then A = both at once) is a test of PR 0b.
+* **Dims.** `config.Dims` gains `voice_w` (0), `msg_w = MSG + voice_w` (2), `features` and `ext_dims`, filled from the
+  `dims(cfg)` hooks of the enabled features; `d.ext("comm").hear_range` reads a feature's sizes (`KeyError` when it
+  is off); `State.msg` and `expected_layout` use `msg_w`.
+* **Conditional state fields.** An extension field exists in the state type only while its feature is on (no
+  placeholder). `state.state_cls(cfg)` returns the exact `State`/`State3` when no extension field is on, else a class
+  generated once with `typing.NamedTuple` (base fields, 3D extras, then the extension fields in `EXTENSIONS` order; `env`
+  attached), cached on `(nd, names)`; `mx.compile` accepts and returns it (tested, compiled and eager). So with every
+  feature off the full `state_digest`, `legacy_state_digest(_3d)`, the checkpoint keys and bytes and `expected_layout`
+  are today's. `state.is_3d_state(s)` (`"pitch" in type(s)._fields`) replaces `isinstance(s, State3)` in `src`
+  (`stream.py`, `state.py`). `agent_fields(cfg)` appends the per-agent extension names; `expected_layout`,
+  `_initial_state`, `state_to_arrays` and `state_from_arrays` iterate the same field list. Appended order: `arms` (N, 6)
+  f32, `mat` (field shape) int32, `role` int8, `role_dwell` int16, `bond_flow` (N, B) int16, `soil` (field shape) int32.
+  Comm adds no field (`msg` widens through `msg_w`).
+* **Checkpoint load.** `state_from_arrays(d, cfg)` completes a file that lacks only fillable fields (`env_*`/`wx` as
+  before, plus every extension field of `cfg`, from `FieldSpec.rest`): a pre-feature checkpoint resumed with the feature
+  off loads byte for byte, and a fork onto a feature whose layout does not change (arms stages 1 to 5) is completed. A
+  file with an extension field the config lacks (a fork turning a feature off) is refused with the existing "extra"
+  message: turning a feature off is a restart.
+* **Birth policy of per-agent fields.** `FieldSpec.on_birth` says what `lifecycle.reproduce` writes into the row of a
+  newborn (births and immigrants): `"rest"` (the `rest` value: roles, dwell and flow memories start fresh),
+  `"inherit"` (a birth copies its parent's row, an immigrant takes `rest`: a heritable trait) or a hook
+  `(old, rest, BirthCtx) -> new` (arms mutates its traits there, with the step keys in `BirthCtx.ks`). A dying row is
+  left as it is: `alive` guards every reader and a birth overwrites the whole row. Non-agent fields (`mat`, `soil`)
+  are never touched by reproduction.
+
+### 43.3 RNG
+
+`rng.layout_version(cfg)` replaces the constant in `runio` (writes and reads) and returns `RNG_LAYOUT_VERSION` (3)
+until a feature that takes a stream says otherwise (arms: 4 when enabled, added to `RNG_COMPATIBLE_VERSIONS`), so a
+feature-off run writes exactly today's `rng_layout_version`. Index assignment (comment in `rng.py`): the reserved
+per-step index of extension `i` is `10 + i` (arms 10, structures 11, bonds 12, comm 13, niche 14, 15 free;
+`InitStream.ARMS` = 8); a member is created by the PR that first uses it, so no name exists in PR 0a and streams 0 to 9
+and `step_keys` are untouched. A feature draws nothing unless its spec says so (only arms does). Deterministic
+pseudo-randomness without a stream: `ops.hash32(a, b, salt)` (uint32 integer mix, elementwise, no scatter, bit-exact on
+CPU and GPU), salt `rng.HASH_SALTS[name]`: well-separated 32-bit constants (the first 4 bytes of sha256 of
+`alife.ext.hash32.salt/<name>`, frozen as literals, never to change: they would change the trajectories of feature-on
+runs), not `10 + i`, because streams of salts differing only in low bits are weakly dependent (the independence test of the
+measurement suite flagged 18 of 80 pairs for adjacent integer salts, 0 of 80 for random 64-bit ones; edge case E18, a
+spurious "language"); `test_ext_salts.py` pins the table and checks every pair for independence; vectors in `test_ext_registry.py`.
+
+### 43.4 Ledger, `extra_due`, counters
+
+* **No 17th term.** `N_LEDGER = 16`, `LedgerIdx` (slot 15 stays `RESERVED`/`HEAT_BUOYANCY`), `ledger_cum`,
+  `total_energy` and `Diag.LEDGER` are unchanged by all five features; `test_ext_ledger.py::test_no_17th_term` makes a
+  later addition a reviewed change. Material and soil are not energy: their identities (`MAT_TOTAL`, `SOIL_TOTAL`) are
+  counter identities of their features. The energy path of each feature and the existing term it uses: arms upkeep
+  (ATK, ARM, TOX quadratic, SIG linear) `HEAT_BASAL` through `brain_cost`; the arms contest (lower `want`, per-attacker
+  Q8 efficiency) `FLOW_STOLEN = FLOW_ATTACK_GAIN + FLOW_SPILL`; structures build cost, bonds role-switch cost, comm
+  voice due `floor(cost·Σ sig)` and farming `farm_cost` `HEAT_ACTION` through `extra_due`; conductive sharing
+  `FLOW_SHARED` and `HEAT_SHARE`; forager harvest cap and guard penalty `FLOW_HARVEST`; guard and shelter shields fewer
+  `FLOW_STOLEN`; the farm bonus on regrowth `INJECT_REGEN` (a source: `inc <= resource_cap - R`). Every feature PR
+  restates its rows and adds a closure test.
+* **`extra_due`.** `energy.pay_costs`/`pay_costs3` take `extra_due: mx.array | None = None`, an (N,) int32 sum of the
+  feature dues (each floored by its own module, `ext.sum_due` of the `due` hooks), added after the legacy `action_due`
+  expression and before the alive mask. Solvency, payment order and `HEAT_ACTION` stay the one path. None traces nothing.
+* **Counter blocks.** `StepOut.counters` is `[CounterIdx (27)] [Counter3D (3, 3D)] [DEATHS_STORM (weather)] [extension
+  blocks: protect, then the enabled features in EXTENSIONS order]`; every base index is fixed whatever is on
+  (`storm_counter_index` does not move). `state.n_counters(nd, weather, blocks)`, `state.counter_blocks(cfg)` and
+  `state.counter_index(cfg, name)` (consumers use names, never offsets; names are globally unique);
+  `metrics.interval_row(..., blocks=)` and the viewer take the blocks, and a row adds `prot_capped_frac` when the protect
+  block exists. The `protect` block (`PROT_CAPPED`) exists when `combat.protect_floor > 0`; the feature blocks are
+  `arms` 5, `structures` 10, `bonds` 5, `comm` 2, `niche` 5 counters (names in the plan; declared by each feature).
+
+### 43.5 Flags, `Acts.ext`, observer registries
+
+* `Acts.flags` is **uint16** (observer channel only; it never enters `State`, `StepOut.counters/ledger` or a digest; the
+  consumers cast to int32 and read bits through `ActFlag`). The extension bits are fixed in `step.ActFlag` by the
+  extension index, `128 << i`: `CONTESTED` 128 (arms), `BUILDING` 256, `ROLE_SWITCHED` 512, `SPOKE` 1024, `FARMING`
+  2048; a feature PR only sets its bit. 4096 to 32768 are free. **External readers** of observer dumps and sidecars
+  (`observers/*.npz`, tools outside this repository) must read `flags` as uint16 (it was uint8; the values of the
+  seven base bits are unchanged, and in-tree consumers cast to int32).
+* `Acts` and `_Flows` each gain ONE trailing field `ext` (None while every feature is off, else `ExtActs`, `ExtFlows`: NamedTuples `(arms, structures, bonds,
+  comm, niche)` of `None | NamedTuple`, each feature defining its own sub-tuple), so no two feature PRs edit the same
+  lines of `Acts`, `_Flows` and `_acts`. None while every feature is off (a None leaf compiles, as `Acts.buoy`; no test that walks the fields sees a new object).
+* Registries built from `REGISTRY` and checked by `ext.check_registry` (no two features claim the same dump kind, colour
+  mode, stream tag, metric prefix or flag): `runio.DUMP_KINDS` and `_DUMP_RE`, `render.COLOR_MODES`,
+  `metrics.METRIC_PREFIXES`; `streamrec` is numpy-only by test (`test_streamrec_is_numpy_only_and_free_of_subscript_assignment`), so its `COLOR_MODES` and `TAGS` stay literal and
+  `test_registered_modes_and_tags_are_in_streamrec` checks every registered mode and tag against them. Tags: structures `STRC`, comm `FSIG`, niche `FSOL`, arms
+  `FARS` (renamed from `FARM`); prefixes `arms_`, `build_`, `bond_`, `comm_`, `farm_`.
+* `sensing.build_inputs(..., ext_in=)` concatenates the feature blocks (`ext.step_inputs`: (N, width) f32 each, in
+  `TAIL_ORDER`) after the base and 3D tail; the existing shape assert covers the new total. `invariants.full_check` runs
+  each enabled feature's `check`.
+
+### 43.6 One combat signature and the protection floor
+
+`energy.combat(energy, resource, fcell, act, partner, cfg, *, arms=None, shelter=None, guard=None)`; the call in `step`
+passes none of them. `Combat` gains trailing fields with default None: `prot`, `q`, `capped`, `shielded`. `shelter` and
+`guard` are (N,) f32 victim protection FRACTIONS in `[0, 1)` (already scaled by their gains by the supplying module;
+combat gathers `[t0]`); `arms` is the arms state, evaluated inside once the arms PR lands (until then passing it raises
+`NotImplementedError`). `energy.protection(t0, floor, *, arms_p, shelter, guard, pierce)` returns the product in fixed
+order, left to right in f32:
+
+```
+P = arms_p                                             # (1 - r)·K·T per attacker (arms PR)
+P = P · (1 - shelter[j]·(1 - pierce))                  # then guard, same form
+capped = P < f;  P = max(P, f)   (f = combat.protect_floor > 0; no cap traced at f = 0)
+want = floor_i32(attack_max · P · (1 - defend_efficiency·defend[j]))     # defend applied AFTER the cap
+```
+
+A factor is traced only when passed, so with none the graph is today's `floor_i32(attack_max·(1 − de·defend[t0]))`; a
+factor equal to exactly 1.0 multiplies exactly (null equivalence for any subset). `combat.protect_floor` (default 0.0,
+`[0, 0.5]`, in `POST_V01_KEYS`; recommended 0.10 in every overlay that enables a protection) bounds the product of the
+protections from below; it replaces `arms.min_yield` (dropped). Why 0.10: with the defaults a victim at full `defend` and
+the maximal stack still demands `0.10·4000·0.25 = 100` and yields `0.7·100 = 70 > 50 = attack_cost`; `validate` logs a
+warning when `efficiency·attack_max·(1 − de)·f < attack_cost` with `f > 0` (not an error). `pierce` (a per-attacker
+fraction, v1 `arms.pierce·ATK`, arms PR A4) lifts shelter and guard only, never the armour, key/lock, toxin or `defend`.
+`arms.guard` is renamed `arms.pool` (it would collide with the roles' guard shield). `PROT_CAPPED` counts the attacks
+raised to the floor.
+
+### 43.7 Config
+
+* All new keys are in `POST_V01_KEYS` and default to "off"; `POST_V01_KEYS` is `_POST_V01_BASE` plus the `lever_keys` of
+  the registered features, so a feature PR touches no list. `config_hash` already deletes default-valued post-v01 keys
+  and then a section left empty, so every existing hash is unchanged. PR 0a adds `[combat] protect_floor`.
+* **Serialisation of the feature series.** `config.SERIAL_OMIT_KEYS` (`combat.protect_floor` and the registered
+  features' keys) are left out of `config.json` and of the checkpoint metadata while they equal their defaults
+  (`config_to_dict(cfg, omit_defaults=True)`, used by `save_config` and `runio`; a section emptied by that is left out),
+  so a run that does not use a feature writes exactly the files it wrote before the feature existed (earlier key
+  additions, e.g. `game.house_rate`, showed as INFO lines in the matrix; this series does not). `config_from_dict`
+  completes missing keys from the defaults; `apply_overrides`, `load_config` and forks use the full dict.
+  **Rule: the defaults of omitted keys never change.** A key that is left out reads back as the CURRENT default, so
+  changing one would silently change every resumed world with an unchanged hash; a behaviour change needs a NEW key.
+  `tests/test_ext_guards.py::test_the_defaults_of_omitted_keys_are_frozen` pins a table of them (adding a key to
+  `SERIAL_OMIT_KEYS` must add its row).
+* `config.validate` checks `protect_floor` and then `ext.validate_all(cfg)` in registry order (cross rules such as
+  "perception needs arms.enabled" or "a feature's keys stay at default while it is off" belong to the feature PRs).
+  `config.FEATURE_KEYS` / `CLI_ONLY_FEATURE_KEYS` come from `ExtSpec.lever_keys/cli_only_keys`; `WORLD_OVERLAYS` is
+  `("storm", "storm160")` plus the registered overlays. `tests/test_gui_sync.py::test_feature_levers_cover_feature_keys`
+  checks, per feature in `GUI_LANDED`, that `gui/Sources/AlifeCore/<Feature>Levers.swift` names exactly
+  `FEATURE_KEYS - CLI_ONLY` and that a feature not in `GUI_LANDED` has no such file.
+* Layout-affecting keys of the features are start-of-run; a fork may change them only through the migration.
+
+### 43.8 Migration (PR 0b, planned)
+
+`state.migrate_layout(arrays, cfg_old, cfg_new)` and its fork / `--init-from` integration: for each block present in
+`cfg_new` and absent in `cfg_old`, in `TAIL_ORDER`, insert `width` zero rows into `W1` at the block's offset (the
+recurrent rows shift), zero columns into `W2`, likewise `pend_W1/pend_W2`, zero `msg` columns for comm, and fill the new
+fields from `FieldSpec.rest`; removal or a width change is refused. It replaces the three per-feature tools. Gate: with
+zeros one step of the migrated population reproduces the old hidden state and legacy outputs, the new outputs are 0.
+
+### 43.9 The identity matrix and the gates of every PR of the series
+
+`tests/identity_matrix.py` (a script; the "2D digest matrix" of earlier PRs lived in a scratch folder and is rebuilt
+here from §22.2 and §28.8) runs one case list under a fresh `git archive` of the base commit and under the tree, each
+in its own CPU process, and compares everything it records: 15 trajectory cases (2D tiny compiled/eager/default dtype/
+`observe=True`, dev, seasons + immigration, director inert, director with a catastrophe and with an immigration request,
+weather on, bonds + combat, `runtime_checks=off`, and tiny3d compiled/`observe=True`/eager), the full `state_digest`,
+the legacy digest, the counters and the ledger of EVERY step (and the observer channel, `flags` as int64), 3 runner cases
+(`alife run`: file listing, `config.json`, `meta.json` without its volatile keys, checkpoint bytes and metadata, metrics
+rows without wall-clock keys, observer files), the config hash and layout of every preset by overlay combination, the
+static field lists, and the tiny3d state digest after 50 compiled float32 steps (`1fe07a9f299526c0...`) with its legacy
+digest (`556de6c6216dd530...`), pinned as literals. There is no INFO class: any difference exits 1. Usage:
+`uv run python tests/identity_matrix.py --base <commit>`; `--base-src DIR` and `--only NAME` serve the mutation test of
+the matrix itself. Gates of every PR of the series: `ruff check`, `ruff format --check`, `pytest -m "not slow"`
+(`test_lint`: scatters only in `ops.py`), the matrix bit-identical with the feature at its defaults, the ledger-closure
+and purity tests with the feature on, goldens unmoved, DESIGN section and Review-log row in the same change.
+
+### 43.10 Departures from the five specs and non-goals
+
+**Series order** (serial merges, each on the owner's go, each rebased on the previous with the gates of 43.9): PR 0a (this), 0b
+(migration), arms A1 (engine: heritable traits, Tullock contest, key/lock) and A2 (observers), structures S1, bonds B1
+(sharing modes) and B2 (roles), comm C1, farming F1; observer, analysis and GUI PRs follow their engine PR in any
+order; arms perception (A5) comes after every other layout change because its offsets move whenever an earlier tail
+appears.
+
+Accepted by the coordinator and the owner: extension state fields are conditional (the specs assumed placeholders);
+`Acts`/`_Flows` extension fields are one trailing `ext` sub-tuple (the specs appended flat fields); `combat.protect_floor`
+replaces `arms.min_yield`; `arms.guard` is `arms.pool`; the arms stream tag is `FARS`; `Acts.flags` is uint16;
+`rng_layout_version` is a function of the config. Unmodelled interactions (shelter blocks wind but not sound, guard inside
+a shelter, soil under barriers) are non-goals of the mechanism; the pairwise tests of each later PR own them.
+
+**As built in PR 0a, and what it does not do.** The registry is empty and the five `ext/<name>.py` modules do not exist
+yet (a feature PR creates its own); the mechanism is exercised by `tests/ext_stub.py` (`test_ext_registry`, `_layout`,
+`_state`, `_counters`, `_ledger`, `_protection`, `_runio`). The ledger-closure test runs the four non-arms stubs with a
+comm-style due; the "ledger closes for every landed feature, pairs and all-on" test of the plan is parametrised over
+`ext.LANDED`, which each feature PR creates. A deliberately broken energy path (the mutation test of the closure test)
+needs a state-update hook that exists only with a real feature and is left to the first feature PR. `combat(arms=)` raises
+until A1. The arms descriptor column (`nbr_features`) widens `NF`/`F` in the layout, but `sensing` does not fill it yet
+(A5).
+The staged mirror of `bench.py` passes the same `ext_in` and `extra_due` as `step` (the bench digest test is unchanged).
+`alife check`, named in the plan, does not exist; `cli._summary` (the run announcement and `inspect`) adds `features`,
+`layout_features`, `d_in` and `d_out` when a feature is enabled and is unchanged otherwise.
+
+**Evidence (PR 0a, 2026-10-28, CPU unless noted).** The identity matrix against a fresh `git archive` of e64be03:
+"OK: bit-identical, 0 DIFF, 0 INFO" (15 trajectory cases = 422 steps x 4 digests, 3 runner cases, 30 config and layout
+entries, tiny3d `1fe07a9f`/`556de6c6`); the matrix detects a one-constant change in `combat` (checked with `--base-src`). Fast suite
+(`-n 4 --dist loadfile`, `-p cpu_device`): 4,588 passed, 91 skipped, 1 xfailed, 1 failed:
+`test_lifecycle_compiles_and_matches_eager`, which fails on e64be03 itself under the CPU device (HANDOVER B1). `ruff
+check` and `ruff format --check` clean on the whole repo. On Metal, one run at a time: `test_game_purity` and
+`test_game_acts` (70 passed), the nine `test_ext_*` files (200 passed, the generated state class compiles on the GPU),
+`test_bench`, `test_determinism(_3d)` and `test_step_3d` (63 passed; the timing test
+`test_the_device_part_of_a_snapshot_is_evaluated_when_timed` failed once at 1.95 ms against 2.0 and passed twice on rerun).
 ## 44. Emergence measures (the measurement suite; builds E1 and E2 here, E3 to E7 pending)
 
 Host-side, observer-only, numpy; `src/alife/analysis/emergence/`, run with `python -m alife.analysis.emergence <command>`. **No simulation change**: no step, state, checkpoint, RNG stream, config key, default or `POST_V01_KEYS` entry, no golden re-pin (the diff outside `analysis/` and `tests/` is this section and its Review-log row). The specification is the emergence-suite spec of the coordinator's scratchpad (`emergence/measures/spec.md`, probes `probe_epr.py`, `probe_epr_cv.py`, `probe_braid.py`); the owner's decisions O1 to O8 are in 44.1. Built here: 44.2 (recorder and frame format), 44.6 (scorecard interface), 44.7 (panel), 44.8 (statistics and the pre-registration hash); the other subsections are the plan for E3 to E7 and say so.
@@ -12491,6 +12759,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I64 | feat: light saves (the owner's request of 2026-10-24, new §34.11; review fixes (§34.11 *Review fixes*: the plain save is named before its compress, the check before the rename, the wait for a quit save, `adopt_newest_save`, level 15, the storage's count and confirmation, the analysis scripts' messages); Stage B2: `saves single`, the origin audit, the planet's exact link (§34.11); Stage B1: the compressed format, the one loader and the save path). `zstandard` dependency; `step_<t>.safetensors.zst` is the zstd frame of the exact safetensors bytes (level 15 after the review, `ZST_LEVEL`; long-distance matching; measured in `saves/levels.md`); old saves load unchanged; every reader goes through `runio` (`load_checkpoint`, `checkpoint_metadata`, `read_state_arrays`, `state_file_is_complete`); a play world saves compressed by default (`RunDir.compress`, not persisted), with a worker thread that never moves `LATEST` over an incomplete file; `tests/test_runio_light.py`. Trajectories unchanged (digest and metrics tests). The one-save mode, linking and the launcher are the later stages of the plan. Stage B3 (the Swift side): the three-way save choice in the Storage strip (short segments, the full names in the details), the shared-save line, the launcher hint under a played world's source (§34.11). Pending the owner's go to merge (games PR). Stage B2 (the owner's decisions: `saves single`, linked origin when exact): the save mode `single` (`CLCK.flags` bit 3, `play.json`, `--saves single`), the one-save prune over a whole save, the audit of the origin readers (every one refuses or degrades with a message), the planet's first save as a link to its source save only when the state is the source's byte for byte (`RunDir.origin_link`, `os.link` or copy); the fork's own transformation (ledger, diagnostics, levers) means a planet from a played world is written as before, which is an open owner decision. Tests: `tests/test_play_single.py`, the toggled-run arms of `tests/test_play_saves.py` (five arms, with `saves single`), `tests/test_runio_light.py`. Stage B4: §34.11 restated as the whole design (the owner's decisions, the data-safety rules, the measured levels, the open planet-link decision); GAMES §10 item 23; HANDOVER "Games light saves". Pending the owner's go to merge (games PR).
 | I65 | feat: the camera controls of the 3D World window (owner's play of 2026-10-24: a tool for another angle, standard angles on a toggle, and "the maximum angle is pretty limited"): the tilt goes to edge-on (`maxTilt` 90 degrees; A1's footprint clamp is removed) with the eye held over the clear box instead (`maxDistance` with the tilt: `d sin tilt <= 0.45 L`; the zoom is given back when the tilt is relaxed), and the far floor is hidden by a **horizon haze** (a function of the floor point's Chebyshev distance from the point looked at past `0.5 L`, `1 - exp(-x^2)`, 99.8% at L; a 3 L wide map mesh behind it, so no edge of the mesh is ever visible; a sky pass above the horizon, in the sea's colour scaled by the Brightness) instead of the clamp; standard views Top, Oblique (45), Low (70) and Side (edge-on at `H/2`) on `t o l s`, a strip over the map and View > View angle, each an animated ease; a control column at the right edge (readout "Tilt 45 deg . heading 270 deg", the strip, the compass as a dial, the 3D button, the tilt handle, zoom); the floor is not read beyond 0.65 L or above the horizon (readout, territory pick, power aim, dive, grab); the minimap's footprint is clipped to the clear box; storm rings flatten; client only (`WorldU` 160 bytes), no engine, stream or config change. Review fixes: the point looked at is lifted to the middle of the height toward edge-on (`WorldPose.lift`), the zoom is given back at the end of an ease (`ViewEase.endWish`, `sideReturn`), `n` and the compass click end an ease, the frame is faded by the haze, the needle and the dial's dead zone, the readout plate takes the press, the strip before the handle in the column, height guides at edge-on, the storm pick is the ellipse. Number provisional: the coordinator assigns the final one. Details, tests and deviations: §36.5 "Camera controls". |
 | I66 | feat: the globe overview and the morph (PR B of World viewer v2, §36.10; owner 2026-10-23 "Globe overview, flat close-up", 2026-10-24 "is there a toggle I am missing to get a spherical view?"): step 5, the pure parts (`GlobeMap`, `Morph` with the roll and its schedule and the crossfade fallback, `FlightPath` on the great circle) and the morph gate (a pure rasterisation of the mesh through the vertex shader's mirror: the roll meets the three criteria of the spec's 7.1 except the 98%-to-60% length at 67 degrees, 1.10 wheel lines against 1.2; mode stays `.roll`); step 6, `WorldVantage` (the view at every zoom: projection, the two-start Newton pick, the regime-solved grab and zoom, the camera controls on the globe; the model's `globeEnabled` switch) with the gate of the blended band measured (exact to 39 degrees, p95 9.5 px at 79 to 84 degrees); step 7, the renderer (the mesh pipeline and `GlobeUniforms`, the depth, cull and depth-reset state, the sky, the caps, the morph in the agent shaders, the continuous layers, the haze as a function of `s`) behind View > Globe overview (`world.globe`); steps 8 and 9: the minimap's footprint at the globe (the visible cap, dimmed outside), the hemisphere, EQUATOR and seam labels with the declutter rule, the pin, the organism glow (`GlowHistogram`), the inertia of a flick, Keep north up, the idle spin and reduced motion (`GlobeMotion`), Home is the globe overview (`world.globe` on until the player chooses), the 0.15 L region fly-to (D7), the bench scenarios and the sheet of renders (`docs/DESIGN.md` 36.10). Client only: no engine, stream or config change |
+| I72 | feat: the feature extension mechanism, PR 0a of the five-feature series (arms, structures, bonds, communication, farming; owner approval of 2026-10-28; new §43, which holds the plan's normative content), **no behaviour change** and the registry empty: `src/alife/ext/` (`ExtSpec`, `REGISTRY`, the layout composition `layout.for_dims(nd, blocks)` with `Layout.__getattr__` for `IN_*`/`OUT_*`, `genome_layout_version(nd, mask) = base + 4*mask`, the `layout_features` meta key absent when empty); conditional state fields (`state_cls`, `is_3d_state`, fill-on-load, refusal of an extra field); counter blocks (`n_counters(nd, weather, blocks)`, `counter_blocks`, `counter_index`, `PROT_CAPPED`); `Acts.flags` uint16 and the `ActFlag` bits `128 << i`, `Acts.ext`/`_Flows.ext`; `extra_due` in `pay_costs(3)`; `rng.layout_version(cfg)` and `ops.hash32`; the single `combat` signature with `energy.protection` and `combat.protect_floor` (default 0, `[0, 0.5]`, `POST_V01_KEYS`, left out of `config.json` and the checkpoint metadata at its default: `config_to_dict(omit_defaults=True)`, `SERIAL_OMIT_KEYS`); silent tail blocks in `brain.init_weights`; observer registries; `tests/ext_stub.py` and seven `test_ext_*` files; `tests/identity_matrix.py` (15 trajectory cases, 3 runner cases, config and layout, tiny3d `1fe07a9f`/`556de6c6`, against a fresh `git archive` of e64be03: bit-identical, no INFO line). Departures from the specs are in §43.10.  Review fixes: the hooks `inputs(s, cfg, ctx)`, `decode`, `mask`, `due(s, act, y, cfg)` and `_Flows.ext`, `FieldSpec.on_birth`, `Dims.ext(name)`, the wiring tests (`test_ext_hooks.py`). PR 0b (the layout migration) follows |
 | I73 | feat: the emergence measurement suite (new §44; E1 statistics, panel skeleton, scorecard interface, trait registry, CLI shell, prereg hash; E2 window recorder and frame format). Host-side, observer-only, numpy; **no simulation change** (no step, state, checkpoint, RNG, config key, default or `POST_V01_KEYS` entry, no golden re-pin; the engine files are untouched). Recorder: replay from a save with the engine's step, certified against the run (every metrics row and the state digest at every save passed; T1 must be a save, E21), refuses a run without the start save (E22; measurement runs use saves `all`), frames outside the run; traits stored as float32 (age and energy exceed float16). Comparison: paired block intervals, `w2.classify` over seeds with the seed-twin floor, Stouffer, Holm per feature and series, BH context, prereg hash that `compare` enforces; leave-one-out arms are fresh runs from the shared evolved sources (E23). Blocks A, B, C (open-endedness, irreversibility, braids) and the scorecard adapters land in E3 to E6. Tests: `tests/test_emergence_*.py`. Pending the owner's go to merge. |
 
 **Open questions for the user.**

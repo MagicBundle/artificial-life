@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import math
 from enum import IntEnum
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import mlx.core as mx
 
-from alife import bonds, brain, layout, ops
+from alife import bonds, brain, ext, layout, ops
 from alife.config import Config, dims, immigration_possible
 from alife.rng import Stream
 from alife.state import R_HARD, DeathCause, Env, State, State3, volume_kinematics
@@ -325,6 +325,24 @@ def _offspring_kinematics_3d(
     return pos, ops.wrap_angle(yaw), pitch
 
 
+def _on_birth(f: ext.FieldSpec, old: mx.array, cfg: Config, bctx: ext.BirthCtx, put: Any) -> mx.array:
+    """The new value of a per-agent extension field after the births of this step (``FieldSpec.on_birth``)."""
+    rest = f.rest(cfg)
+    nb = bctx.newborn.reshape(bctx.newborn.shape + (1,) * (old.ndim - 1))
+    if f.on_birth == "rest":  # newborn rows (births and immigrants) start fresh
+        return mx.where(nb, rest.astype(old.dtype), old)
+    if (
+        f.on_birth == "inherit"
+    ):  # a birth copies its parent's row (pre-birth values), an immigrant starts fresh
+        lane = bctx.imm.reshape(bctx.imm.shape + (1,) * (old.ndim - 1))
+        return put(old, mx.where(lane, rest[bctx.slot], old[bctx.parent]))
+    if callable(f.on_birth):
+        return f.on_birth(old, rest, bctx)
+    raise ValueError(
+        f"FieldSpec {f.name!r}: on_birth must be 'rest', 'inherit' or a hook, got {f.on_birth!r}"
+    )
+
+
 def reproduce(s: State | State3, lanes: Lanes, child_bond: mx.array, ks: mx.array, cfg: Config) -> Repro:
     """S16: write newborn rows via ``ops.place``, debit parents, add child bonds, set ``pend_*`` (§12).
 
@@ -440,6 +458,10 @@ def reproduce(s: State | State3, lanes: Lanes, child_bond: mx.array, ks: mx.arra
     )
     if d.d3:  # static: the 3D-only rows (§27.4)
         state = state._replace(pitch=put(s.pitch, pitch), buoy_cap=put(s.buoy_cap, cap))
+    for f in ext.state_fields(cfg, d.nd):  # static: the per-agent extension fields' birth policy (§43.2)
+        if f.per_agent:
+            bctx = ext.BirthCtx(p, slot, birth, imm, newborn, born_lane, ks)
+            state = state._replace(**{f.name: _on_birth(f, getattr(s, f.name), cfg, bctx, put)})
     records = BirthRecords(
         uid=mx.where(used, uid, -1),
         parent_uid=mx.where(used, parent_uid, -1),
