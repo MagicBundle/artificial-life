@@ -110,3 +110,28 @@ def test_the_role_colour_mode() -> None:
     assert (hurt == (255 << 16)).all()  # agents hurt last step are red in every mode
     plain = init_state(load_config(preset="tiny3d"))  # a state without roles is all grey
     assert (to_numpy(role_colors(plain)) == (190 << 16) | (190 << 8) | 190).all()
+
+
+def test_a_world_without_bonds_refuses_the_role_colour_mode(tmp_path: Path, monkeypatch) -> None:
+    """E5: the engine refuses an unknown control line (the mode is not in this world's header list) and the
+    frames stay in the colour mode they were in."""
+    snapshots(monkeypatch, 25)
+    notes: list[str] = []
+
+    class Noted(play.PlayPacer):
+        def __init__(self, *a, **k) -> None:
+            super().__init__(*a, **{**k, "note": notes.append})
+
+    cfg = world("3d")
+    _, _, _, out = run_paced(cfg, tmp_path / "run", 25, [["color role"]], pacer_class=Noted)
+    assert any("unknown colour mode" in m and "role" in m for m in notes)
+    assert {r.f["color_index"] for r in decoded(out).records if r.tag == "FRMA"} == {0}
+
+
+def test_a_bonds_world_accepts_the_role_colour_mode(tmp_path: Path, monkeypatch) -> None:
+    snapshots(monkeypatch, 25)
+    cfg = world("3d", "bonds.share_mode=1")
+    _, _, _, out = run_paced(cfg, tmp_path / "run", 25, [["color role"]])
+    dec = decoded(out)
+    idx = dec.header["color_modes"].index("role")
+    assert idx == 7 and idx in {r.f["color_index"] for r in dec.records if r.tag == "FRMA"}

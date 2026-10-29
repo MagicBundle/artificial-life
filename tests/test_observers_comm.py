@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 import helpers
-from alife import comm
+from alife import comm, layout
 from alife.config import dims, load_config
 from alife.game.observer import Observer
 from alife.state import counter_index, to_numpy
@@ -58,10 +58,15 @@ def test_the_channel_carries_what_was_said_what_was_heard_and_who_was_audible(nd
     mx.eval(s2, *o2)
     x2 = o2.acts.ext.comm
     heard, aud = to_numpy(x2.heard), to_numpy(x2.audible)
-    # the pair hears each other: weight 1 - 1/range of a full call; the far agent hears nobody
+    # the pair hears each other with the weight 1 - dist/range of the start-of-step positions (the contact
+    # repulsion of the first step has pushed them apart), the stored call as the loudness; the far one nobody
     rng_ = float(dims(cfg).ext("comm").hear_range)
-    expect = int(np.rint(255.0 * (1.0 - 1.0 / rng_) * 0.99999994))
-    assert (np.abs(heard[:2].astype(int) - expect) <= 1).all() and not heard[2:].any()
+    pos = to_numpy(s1.pos).astype(np.float64)
+    dist = np.linalg.norm(pos[0] - pos[1])
+    sig = to_numpy(s1.msg)[:2, layout.MSG :].astype(np.float64)
+    expect = np.rint(255.0 * np.clip(1.0 - dist / rng_, 0.0, 1.0) * sig[::-1])  # row 0 hears row 1 and back
+    assert np.abs(heard[:2].astype(int) - expect).max() <= 1 and not heard[2:].any()
+    assert expect.min() > 100  # the comparison is not vacuous
     assert aud[:2].tolist() == [1, 1] and not aud[2:].any()
     flags = to_numpy(o2.acts.flags).astype(np.int64)
     spoke = (flags & ActFlag.SPOKE.value) != 0
