@@ -186,6 +186,17 @@ def count(s_new: Any, alive0: mx.array, flows: Any, cfg: Config) -> dict[str, mx
     }
 
 
+class FarmActs(NamedTuple):
+    """``Acts.ext.niche`` (observer channel, DESIGN §41.14): what each row put into the soil this step."""
+
+    farm_put: mx.array  # (N,) int16: units put (paid for), after the solvency mask; in [0, farm_rate]
+
+
+def acts_of(f: Flows) -> FarmActs:
+    """The observer sub-tuple; quantised from the units the step already holds."""
+    return FarmActs(f.units.astype(mx.int16))
+
+
 def farming(f: Flows) -> mx.array:
     """(N,) bool: the row put something this step (the ``ActFlag.FARMING`` bit, the ``FARMERS`` rows)."""
     return f.units > 0

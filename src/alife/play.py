@@ -164,12 +164,14 @@ INT64_MAX: Final = 2**63 - 1
 
 
 def ext_cells(cfg: Config) -> tuple[tuple[str, str, int], ...]:
-    """``(tag, State field, cap)`` of the sparse cell records the world sends (DESIGN §38.9, §41.6): ``STRC``
+    """``(tag, State field, cap)`` of the sparse cell records the world sends (DESIGN §38.9, §41.14): ``STRC``
     for
     the built material while structures are on. Farming joins with its own row."""
     cells: list[tuple[str, str, int]] = []
     if cfg.structures.enabled:
         cells.append(("STRC", "mat", cfg.structures.cap))
+    if cfg.niche.farm:
+        cells.append(("FSOL", "soil", cfg.niche.farm_cap))
     return tuple(cells)
 
 
@@ -191,6 +193,13 @@ def ext_header(cfg: Config, d: Any) -> dict[str, Mapping[str, Any]]:
             ),
         ),
         ("bonds", bonds_ext(cfg), lambda: streamrec.bonds_block(scale=cfg.bonds.share_rate)),
+        (
+            "niche",
+            cfg.niche.farm,
+            lambda: streamrec.cells_block(
+                cap=cfg.niche.farm_cap, cells=cells, cell=cfg.world.field_cell, farm=True
+            ),
+        ),
     )
     return {name: make() for name, on, make in blocks if on}
 

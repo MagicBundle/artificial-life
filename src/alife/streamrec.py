@@ -459,7 +459,7 @@ def powers_block(powers: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def cells_block(*, cap: int, cells: Sequence[int], cell: float, **extra: Any) -> dict[str, Any]:
-    """The ``play.structures`` and ``play.niche`` header objects (DESIGN §38.9, §41.6): the grid the sparse
+    """The ``play.structures`` and ``play.niche`` header objects (DESIGN §38.9, §41.14): the grid the sparse
     cell records (``STRC``, ``FSOL``) index, ``cells`` = ``[FZ, FG, FG]`` (``[1, FG, FG]`` in 2D), ``cell``
     the
     world length of one cell and ``cap`` the material or soil cap the levels are scaled by."""
@@ -1252,7 +1252,7 @@ def encode_focs(
     return record("FOCS", step, seq, 0, body)
 
 
-# --- STRC, FSOL: sparse cell levels (DESIGN §38.9, §41.6) -------------------------------------------------
+# --- STRC, FSOL: sparse cell levels (DESIGN §38.9, §41.14) -------------------------------------------------
 
 
 def quantise_cells(grid: np.ndarray, cap: int) -> tuple[np.ndarray, np.ndarray, bool]:

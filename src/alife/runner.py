@@ -215,6 +215,8 @@ def _dump_arrays(state: State, out: Any, obs: Observer | None, cfg: Config, t: i
     planes = {"wx": tracers.wx_planes(state, cfg)} if wx else {}
     if ru.mat_every > 0 and t % ru.mat_every == 0:  # structures: the built material (DESIGN §38.9)
         planes["mat"] = state.mat
+    if ru.niche_every > 0 and t % ru.niche_every == 0:  # farming: the soil (DESIGN §41.14)
+        planes["niche"] = state.soil
     if ru.arms_every > 0 and t % ru.arms_every == 0:  # arms: the columns of a trait sample (DESIGN §42.6)
         n_bonds = (state.partner >= 0).sum(axis=1).astype(mx.int8)
         arms_cols = {
@@ -247,6 +249,8 @@ def _write_dumps(rd: RunDir, dump: dict[str, mx.array], t: int, cfg: Config | No
         rd.write_wx(t, host["wx"])
     if "mat" in host:
         rd.write_grid("mat", t, host["mat"])
+    if "niche" in host:
+        rd.write_grid("niche", t, host["niche"])
     if "arms.alive" in host:
         assert cfg is not None, "the arms sample needs the config (arms.dump_n)"
         rd.write_arms(t, arms_sample(host, t, cfg.arms.dump_n))

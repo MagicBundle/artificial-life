@@ -1,4 +1,4 @@
-"""Snapshot metrics of the feature extensions (DESIGN §38.9, §40.6, §42.6, §41.6): the host-side observers.
+"""Snapshot metrics of the feature extensions (DESIGN §38.9, §40.6, §42.6, §41.14): the host-side observers.
 
 Each feature registers a ``snap_dev(s, cfg, heavy)`` (the device arrays that join the one transfer of
 ``metrics.snapshot_metrics``, keyed ``<feature>.<name>``) and a ``snap_row(h, cfg)`` (the keys of the row,
@@ -267,6 +267,29 @@ def bonds_row(h: Mapping[str, np.ndarray], cfg: Config) -> dict[str, Any]:
     return out
 
 
+# --- farming ------------------------------------------------------------------------------------------------
+
+
+def niche_dev(s: Any, cfg: Config, heavy: bool) -> dict[str, mx.array]:
+    """The soil's reductions (it holds no agent data: the per-cell level is the state)."""
+    return {
+        "niche.cells": (s.soil > 0).astype(mx.int32).sum(),
+        "niche.total": s.soil.astype(mx.int64).sum(),
+        "niche.max": s.soil.max(),
+    }
+
+
+def niche_row(h: Mapping[str, np.ndarray], cfg: Config) -> dict[str, Any]:
+    """``farm_cells`` (cells with soil), ``farm_soil_mean`` (mean level over all cells, in units) and
+    ``farm_soil_max`` (the largest level); the interval keys of the soil are the counters' (``metrics``)."""
+    n_cells = h["resource"].size
+    return {
+        "farm_cells": int(h["niche.cells"]),
+        "farm_soil_mean": float(h["niche.total"]) / n_cells,
+        "farm_soil_max": int(h["niche.max"]),
+    }
+
+
 # --- the registry rows --------------------------------------------------------------------------------------
 
 __all__ = [
@@ -277,6 +300,8 @@ __all__ = [
     "bonds_row",
     "circular",
     "gini",
+    "niche_dev",
+    "niche_row",
     "pearson",
     "structures_dev",
     "structures_row",

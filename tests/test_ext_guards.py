@@ -72,6 +72,7 @@ FROZEN_OMITTED_DEFAULTS = {
     ): 4096,  # the observer PR (S2/A2): an observer key and the dump cadences of the run section
     ("run", "mat_every"): 0,
     ("run", "arms_every"): 0,
+    ("run", "niche_every"): 0,
     ("niche", "farm"): False,
     ("niche", "farm_rate"): 8,
     ("niche", "farm_cap"): 4095,

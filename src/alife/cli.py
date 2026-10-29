@@ -102,6 +102,7 @@ RESUME_KEYS: frozenset[str] = frozenset(
         "wx_every",
         "mat_every",
         "arms_every",
+        "niche_every",
         "director",
         "llm_url",
         "llm_model",

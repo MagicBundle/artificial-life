@@ -1365,7 +1365,7 @@ class RunDir:
 
     def write_grid(self, kind: str, step: int, grid: np.ndarray) -> Path:
         """Atomically write the grid dump of ``step``: ``observers/mat_<step>.npy`` (the built material,
-        DESIGN §38.9) or ``observers/niche_<step>.npy`` (the soil, §41.6), int32 of the field shape."""
+        DESIGN §38.9) or ``observers/niche_<step>.npy`` (the soil, §41.14), int32 of the field shape."""
         if kind not in ("mat", "niche"):
             raise ValueError(f"{kind!r} is not a grid dump")
         self.observers_dir.mkdir(exist_ok=True)

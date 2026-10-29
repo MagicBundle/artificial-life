@@ -312,11 +312,12 @@ class RunConfig:  # excluded from config_hash; on resume only observer/cadence k
     # (the ten weather planes; needs ``weather.enabled``). 0 = off.
     eco_every: int = 0
     wx_every: int = 0
-    # The feature dumps (DESIGN §38.9, §42.6, §41.6), the same kind of key: ``mat_every`` writes
+    # The feature dumps (DESIGN §38.9, §42.6, §41.14), the same kind of key: ``mat_every`` writes
     # ``observers/mat_<step>.npy`` (the built material; needs ``structures.enabled``), ``arms_every`` writes
     # ``observers/arms_<step>.npz`` (a sample of the arms traits; needs ``arms.enabled``). 0 = off.
     mat_every: int = 0
     arms_every: int = 0
+    niche_every: int = 0  # ``observers/niche_<step>.npy`` (the soil; needs ``niche.farm``), DESIGN §41.14
 
 
 @dataclass(frozen=True)
@@ -922,6 +923,7 @@ SERIAL_OMIT_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("combat", "protect_floor"),
     ("run", "mat_every"),  # the feature dumps (DESIGN §38.9, §42.6): unhashed run cadences
     ("run", "arms_every"),
+    ("run", "niche_every"),
     *(key for spec in ext.REGISTRY for key in spec.lever_keys),
 )
 # feature -> every (section, key) it adds to Config, and the subset the GUI does not carry (``*.control``,
@@ -1416,6 +1418,9 @@ def validate(cfg: Config) -> None:
         req(cfg.structures.enabled, "run.mat_every > 0 needs structures.enabled")
     if ru.arms_every > 0:
         req(cfg.arms.enabled, "run.arms_every > 0 needs arms.enabled")
+    req(ru.niche_every >= 0, f"run.niche_every must be ≥ 0, got {ru.niche_every}")
+    if ru.niche_every > 0:
+        req(cfg.niche.farm, "run.niche_every > 0 needs niche.farm")
     if ru.eco_every > 0:
         req(
             gm.observe,

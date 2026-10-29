@@ -510,6 +510,7 @@ def _acts(
                     else None,
                 ),
                 ("arms", arms.acts_of(f.ext.arms) if isinstance(f.ext.arms, arms.ArmsFlows) else None),
+                ("niche", niche.acts_of(f.ext.niche) if isinstance(f.ext.niche, niche.Flows) else None),
                 (
                     "comm",
                     comm.acts_of(f.ext.comm)
