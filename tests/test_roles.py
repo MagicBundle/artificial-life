@@ -81,8 +81,10 @@ def test_r1_decode_role_corners_and_the_dead_zone() -> None:
         assert got(-0.9, 0.9) == 2  # guard
         assert got(-0.9, -0.9) == 0  # generalist
         assert got(0.9, 0.9) == role  # the germ corner is reserved: keep
-        for a, b in ((0.3, -0.9), (0.9, -0.3), (0.0, 0.0), (-0.3, 0.3), (0.5, -0.5)):
-            assert got(a, b) == role, (a, b)  # the dead zone keeps the role (|x| <= tau = 0.5)
+        # The dead zone keeps the role (|x| <= tau = 0.5). Not tested at exactly tau: tanh(arctanh(0.5))
+        # rounds to either side of 0.5 in float32 depending on the platform's libm (Linux CI: 0.50000006).
+        for a, b in ((0.3, -0.9), (0.9, -0.3), (0.0, 0.0), (-0.3, 0.3), (0.49, -0.49)):
+            assert got(a, b) == role, (a, b)
         assert got(0.51, -0.51) == 1
 
 
