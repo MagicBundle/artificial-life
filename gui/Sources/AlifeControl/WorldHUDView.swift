@@ -22,7 +22,9 @@ struct WorldHUDView: View {
             drawHeightGuides(size, &context)
             drawControls(hud, &context)
             drawScale(size, &context)
-            if model.display.heightColour, model.heightColourAvailable { drawLegend(height: Float(header.height), size, &context) }
+            let heightLegend = model.display.heightColour && model.heightColourAvailable
+            if heightLegend { drawLegend(height: Float(header.height), size, &context) }
+            drawFeatureLegend(above: heightLegend, size, &context)
         }
         .allowsHitTesting(false)
     }
@@ -394,6 +396,28 @@ struct WorldHUDView: View {
     /// The legend's colour bar in a free rectangle of `size`: above the scale bar, at the left edge.
     static func legendBar(in size: CGSize) -> CGRect {
         CGRect(x: 20, y: size.height - scalePlateBottomInset - scalePlateHeight - 14 - 104, width: 12, height: 104)
+    }
+
+    /// The legend of the feature layers in view (`FeatureLegend`): a swatch and a name per row, stacked up from the left edge above the scale bar
+    /// (above the height legend when that is shown too).
+    private func drawFeatureLegend(above heightLegend: Bool, _ size: CGSize, _ context: inout GraphicsContext) {
+        let entries = FeatureLegend.entries(layers: play.store.layers, display: model.display, colourMode: model.currentColourMode,
+                                          globe: model.globeActive)
+        guard !entries.isEmpty else { return }
+        let bar = Self.legendBar(in: size)
+        let rowHeight: CGFloat = 16
+        let height = CGFloat(entries.count) * rowHeight + 12
+        let bottom = (heightLegend ? bar.minY - 22 - 8 : bar.maxY + 8)
+        let plateRect = CGRect(x: 8, y: bottom - height, width: 132, height: height)
+        plate(plateRect, radius: 6, &context)
+        for (row, entry) in entries.enumerated() {
+            let y = plateRect.minY + 6 + CGFloat(row) * rowHeight + rowHeight / 2
+            let swatch = CGRect(x: plateRect.minX + 8, y: y - 5, width: 10, height: 10)
+            context.fill(Path(roundedRect: swatch, cornerRadius: 2),
+                         with: .color(Color(red: Double(entry.colour.x), green: Double(entry.colour.y), blue: Double(entry.colour.z))))
+            context.stroke(Path(roundedRect: swatch, cornerRadius: 2), with: .color(.white.opacity(0.5)), lineWidth: 0.5)
+            context.draw(context.resolve(text(entry.title, size: 10)), at: CGPoint(x: swatch.maxX + 6, y: y), anchor: .leading)
+        }
     }
 
     private func drawLegend(height: Float, _ size: CGSize, _ context: inout GraphicsContext) {

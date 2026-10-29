@@ -412,6 +412,8 @@ final class WorldModel: ObservableObject {
             startAnimating()
         }
         if changes.contains(.territory) { renderer.showWorld(territory: store.territory, serial: store.territorySerial) }
+        if changes.contains(.material) { renderer.showWorld(material: store.material, serial: store.materialSerial) }
+        if changes.contains(.soil) { renderer.showWorld(soil: store.soil, serial: store.soilSerial) }
         if changes.contains(.storms) || changes.contains(.environment) || changes.contains(.header)
             || changes.contains(.territory) || (changes.contains(.frame) && !selection.isNone) {
             overlay.invalidate()
@@ -429,6 +431,8 @@ final class WorldModel: ObservableObject {
         let store = play.store
         var all: WorldStore.Changes = [.frame, .territory]
         if store.header != nil { all.formUnion(.header) }
+        if store.material != nil { all.formUnion(.material) }
+        if store.soil != nil { all.formUnion(.soil) }
         if store.map != nil { all.formUnion(.map) }
         lastMapSerial = -1
         fade.reset()

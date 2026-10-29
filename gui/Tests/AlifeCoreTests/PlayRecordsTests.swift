@@ -150,6 +150,8 @@ import Testing
             #expect([c.archPrimary, c.archSecondary, c.intent, c.labelFlags].map(Int.init)
                 == ["arch_primary", "arch_secondary", "intent", "label_flags"].map { f[$0] as! Int })
             #expect(c.isAlive && c.handedOff && c.isFollowed)
+        case .strc, .fsig, .fsol:
+            Issue.record("\(label): the committed fixtures predate the feature layers; FeatureRecordsTests builds those records")
         }
 
         // Every array section byte for byte, padding included; the JSON sections by value above.

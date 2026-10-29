@@ -160,6 +160,17 @@ source's `world.height`; a resume has no levers.
 the last two to be 0 when `physics.buoyancy_max` is 0, setting that lever to 0 passes them as 0 as well. The status box
 shows the mean height and the grounded and surface shares of a 3D run.
 
+### The feature layers (arms, structures, bonds and roles, comm, farming)
+
+Five **feature boxes** (Arms race, Structures, Bonds and roles, Communication, Farming; DESIGN §45) follow the 3D box. Each has a switch
+(`arms.enabled`, `structures.enabled`, `bonds.share_mode` and `roles.enabled`, `comm.enabled`, `niche.farm`), a field per key of the
+feature's table (`gui/Sources/AlifeCore/<Feature>Levers.swift`: key, default, range, help) and, in a new run, **Start from the overlay**
+(`--overlay build`, `bonds`, `comm`, `niche` or `niche3d`), which pre-fills the box with the overlay's values; only the difference from
+the overlay is passed. A feature that is off passes nothing: the engine requires its other keys at their defaults, so those fields are
+greyed. In a fork the boxes are pre-filled from the source run, and the switches, `comm.width` and the bond block are fixed (they change
+the brain layout; `alife migrate` is the way to a new one). `*.control`, `structures.silent_build`, `niche.silent_init` and `arms`' later
+keys stay command-line only. The status box lists the `arms_`, `build_`, `bond_`, `comm_` and `farm_` metrics of the newest row.
+
 ## The Director panel
 
 The **Director** box (settings column) runs the ecosystem director (`docs/DIRECTOR.md`, DESIGN §26) from the app; the
@@ -257,6 +268,11 @@ raw-Metal view with a control center docked to one side (left, right or bottom; 
   over something names it. (Organisms are drawn at the planet level but not picked there: zoom to the region level; DESIGN 36.9.) The inspector card is pinned under the Cast and Chronicle tabs.
 - **Keys** (the map has the focus): `space` pause/run, `.` step, `c` colour mode, `1 2 3` agents, bonds, territory (off, borders, tint), `f` follow the
   selection, `[` `]` slower/faster, `h` `r` Home, `n` north up, `t` `o` `l` `s` Top, Oblique, Low and Side views, `i` the minimap, `esc` clear.
+- **Feature layers** (DESIGN §45; a world shows only the layers it carries). **Structures** (`5`) and **Soil** (`6`) are the built
+  material and the farmed soil as translucent tiles on the floor (2D) or cubes (3D), thinner as the material decays; **Bond flow**
+  colours the half of a bond that gives orange and the half that receives cyan; **View > Colour > role** paints generalists grey,
+  foragers yellow, guards blue; a legend names what is drawn. The organism card adds its role, the net flow over its bonds, the
+  material and soil under it and, with the voice channel on, bars for what it says and hears.
 
 ## Files
 
@@ -267,6 +283,9 @@ Testing), **`AlifeCoreTests`** for the library and **`AlifeControlTests`** for t
 
 `Sources/AlifeCore/`:
 - `Levers.swift`: run settings, levers, validation and command-line construction
+- `FeatureLevers.swift` and `ArmsLevers.swift`, `StructuresLevers.swift`, `BondsLevers.swift`, `CommLevers.swift`, `NicheLevers.swift`:
+  the levers of the five feature layers (a table row per key, gates, the layout lock of a fork, overlays); `FeatureLayers.swift`,
+  `RoleColours.swift`: what the World shows of them.
 - `World3DLevers.swift`: the 3D world's levers (height, gravity, buoyancy, the vertical food profile); a new run diffs them
   against the preset's values, a fork against its source's, so the 2D command lines do not change; switching the buoyancy
   actuator on from a baseline without one is refused (its cap keys are command-line only, and both 0 there)

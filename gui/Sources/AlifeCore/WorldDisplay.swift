@@ -26,6 +26,11 @@ package struct WorldDisplay: Equatable, Sendable {
     package var bonds = true
     /// The territory of the kin groups: borders and a 10% tint by default (DESIGN §36.1, F3).
     package var territory = TerritoryMode.tint
+    /// The built material and the farmed soil, where the world has them (`FeatureLayers`): tiles in 2D, translucent cubes in 3D (DESIGN §45).
+    package var structures = true
+    package var soil = true
+    /// The flow along the bond lines (donor and receiver halves), where the world sends it.
+    package var bondFlow = true
     /// The weather map (and, without one, the floor).
     package var map = true
     /// The edges of the box.

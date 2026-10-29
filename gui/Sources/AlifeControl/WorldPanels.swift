@@ -295,6 +295,7 @@ struct InspectorCardView: View {
                     Spacer(minLength: 0)
                 }
             }
+            if let voice = card.voice { VoiceBarsView(panel: voice) }
             ForEach(card.notes, id: \.self) { note in
                 Text(note).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -314,6 +315,41 @@ struct InspectorCardView: View {
         }
         .padding(10)
         .background(.thinMaterial)
+    }
+}
+
+/// The voice of the focused organism (comm feature, DESIGN §45): one bar per channel for what it says and, when the world was played with
+/// the observer channel, for what it hears, and how many neighbours are in earshot.
+struct VoiceBarsView: View {
+    let panel: VoicePanel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Voice").font(.caption).foregroundStyle(.secondary)
+            bars("Says", panel.says, tint: .orange)
+            if let hears = panel.hears {
+                bars("Hears", hears, tint: .cyan)
+                if let audible = panel.audible {
+                    Text("\(audible) neighbour\(audible == 1 ? "" : "s") in earshot").font(.caption2).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("what it hears is not sent (the world is not played with the observer channel)")
+                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func bars(_ title: String, _ values: [Double], tint: Color) -> some View {
+        HStack(alignment: .bottom, spacing: 6) {
+            Text(title).font(.caption).foregroundStyle(.secondary).frame(width: 78, alignment: .leading)
+            ForEach(values.indices, id: \.self) { channel in
+                VStack(spacing: 1) {
+                    Bar(fraction: values[channel], tint: tint).frame(height: 6)
+                    Text(String(channel + 1)).font(.system(size: 8)).foregroundStyle(.secondary)
+                }
+                .help(String(format: "channel %d: %.2f", channel + 1, values[channel]))
+            }
+        }
     }
 }
 

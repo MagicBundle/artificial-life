@@ -533,6 +533,8 @@ extension WorldModel {
         case .toggleAgents: display.agents.toggle()
         case .toggleBonds: display.bonds.toggle()
         case .cycleTerritory: display.territory = display.territory.next
+        case .toggleStructures: if play.store.layers.structures { display.structures.toggle() }
+        case .toggleSoil: if play.store.layers.soil { display.soil.toggle() }
         case .followSelection: followSelection()
         case .slower, .faster:
             // Along the rungs of a running world; a paused one has no rate to change (space resumes it).

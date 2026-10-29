@@ -181,6 +181,28 @@ import os
         #expect(first.received == fixture.frameCount)
         #expect(mailbox.take().isEmpty)
     }
+
+    @Test func theFeatureRecordsAreLatestWinsByTag() {
+        // STRC, FSOL and FSIG are complete by themselves (DESIGN §45): the newest of each tag is kept, an older one is counted as dropped
+        let head = RecordHead(step: 1, seq: 0, version: 1, flags: 0)
+        let mailbox = StreamMailbox()
+        func cells(_ step: UInt64, _ level: UInt8) -> PlayCells {
+            PlayCells(head: RecordHead(step: step, seq: 0, version: 1, flags: 0), nx: 4, ny: 4, nz: 1, indices: [3], levels: [level])
+        }
+        mailbox.publish(record: .strc(cells(25, 10)))
+        mailbox.publish(record: .strc(cells(50, 20)))
+        mailbox.publish(record: .fsol(cells(50, 30)))
+        mailbox.publish(record: .fsig(PlayVoice(head: head, uid: 5, w: 1, heardValid: false, audible: 0, says: [1], hears: [0])))
+        mailbox.publish(record: .fsig(PlayVoice(head: head, uid: 5, w: 1, heardValid: false, audible: 0, says: [2], hears: [0])))
+        let delivery = mailbox.take()
+        #expect(Set(delivery.records.keys) == ["STRC", "FSOL", "FSIG"])
+        guard case .strc(let material)? = delivery.records["STRC"] else { Issue.record("no STRC"); return }
+        #expect(material.head.step == 50 && material.levels == [20])
+        guard case .fsig(let voice)? = delivery.records["FSIG"] else { Issue.record("no FSIG"); return }
+        #expect(voice.says == [2])
+        #expect(delivery.droppedRecords == ["STRC": 1, "FSIG": 1])
+        #expect(mailbox.take().isEmpty)
+    }
 }
 
 /// The frames of a committed fixture, decoded in one piece.

@@ -124,6 +124,9 @@ final class RunController: ObservableObject {
 
     // Live status
     @Published private(set) var metrics: MetricsSnapshot?
+    /// The feature metrics last seen for `trackedFeaturesRun` (see `pollMetrics`).
+    private var featureMemory: [String: Double] = [:]
+    private var trackedFeaturesRun = ""
     @Published private(set) var director: DirectorSnapshot?
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var remaining: TimeInterval?
@@ -306,11 +309,27 @@ final class RunController: ObservableObject {
         forkLeverWarning = loaded.warning
     }
 
-    /// Back to the engine defaults (used when leaving Fork mode); the 3D levers go to the chosen preset's values.
+    /// Back to the engine defaults (used when leaving Fork mode); the 3D levers go to the chosen preset's values, the feature levers
+    /// to the chosen overlays'.
     func resetLevers() {
-        settings.levers = Levers(world3D: settings.presetWorld3D)
+        settings.levers = Levers(world3D: settings.presetWorld3D, features: settings.featureBaseline)
         settings.leverBaseline = Levers()
         forkLeverWarning = nil
+    }
+
+    /// New run: reads the overlay files of the chosen features (`FeatureLevers.baseline`) and, if the values differ from the ones
+    /// loaded, pre-fills the feature levers with them. Call when the overlays, the preset (its dimensions) or the repository change.
+    func refreshFeatureBaseline() {
+        guard settings.mode == .new else { return }
+        let loaded = FeatureLevers.baseline(overlays: settings.featureOverlays, dims: settings.worldDims, repo: repoURL)
+        if loaded != settings.featureBaseline { settings.selectFeatureOverlays(settings.featureOverlays, baseline: loaded) }
+    }
+
+    /// Switches the overlay of `feature` on or off and re-reads the baseline (the feature levers go to the overlays' values).
+    func setFeatureOverlay(_ feature: String, on: Bool) {
+        var chosen = settings.featureOverlays
+        if on { chosen.insert(feature) } else { chosen.remove(feature) }
+        settings.toggleFeatureOverlay(feature, on: on, baseline: FeatureLevers.baseline(overlays: chosen, dims: settings.worldDims, repo: repoURL))
     }
 
     /// New run: reads the chosen preset's 3D values (the baseline of the 3D levers; a 2D preset has none) and, if they
@@ -320,6 +339,7 @@ final class RunController: ObservableObject {
         guard settings.mode == .new else { return }
         let loaded = World3DLevers.preset(settings.preset.rawValue, repo: repoURL) ?? World3DLevers()
         if loaded != settings.presetWorld3D { settings.selectPreset(settings.preset, world3D: loaded) }
+        refreshFeatureBaseline()
     }
 
     // MARK: Director settings
@@ -698,7 +718,16 @@ final class RunController: ObservableObject {
             // Polls can overlap; never let an older read overwrite a newer one.
             guard poll > appliedPoll else { return }
             appliedPoll = poll
-            if metrics != snapshot { metrics = snapshot }
+            // The feature keys that only some rows carry (the heavy ones, or a mean that is null in an interval without attacks) keep their
+            // last value instead of vanishing from the readout.
+            var shown = snapshot
+            if var merged = shown, trackedFeaturesRun == run {
+                merged.features = featureMemory.merging(merged.features) { _, new in new }
+                shown = merged
+            }
+            trackedFeaturesRun = run
+            featureMemory = shown?.features ?? [:]
+            if metrics != shown { metrics = shown }
         }
     }
 

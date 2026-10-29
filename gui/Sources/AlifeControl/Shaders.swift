@@ -37,10 +37,12 @@ enum Shaders {
     // The world's frame in the World window, faded by the haze like the floor (DESIGN 36.5, camera controls).
     static let worldBoxVertex = "worldBoxVertex"
     static let worldBoxFragment = "worldBoxFragment"
+    // The feature layers' cells (DESIGN 45): the built material and the farmed soil, one tile (2D) or cube (3D) per listed cell.
+    static let cellVertex = "cellVertex"
     static let entryPoints = [
         sphereVertex, sphereFragment, bondVertex, boxVertex, lineFragment, planeVertex, planeFragment, sliceFragment,
         agentVertexA, agentFragmentA, agentFragmentFlat, bondVertexA, pointVertexA, pointFragment, mapVertex, mapFragment,
-        insetVertex, insetPointVertex, skyVertex, skyFragment, worldBoxVertex, worldBoxFragment,
+        insetVertex, insetPointVertex, skyVertex, skyFragment, worldBoxVertex, worldBoxFragment, cellVertex,
     ] + globeEntryPoints
 
     static let source = """
@@ -536,6 +538,7 @@ enum Shaders {
                                    device const packed_float3* pos [[buffer(2)]],
                                    device const uint* rgb [[buffer(4)]],
                                    device const uint2* bonds [[buffer(5)]],
+                                   device const char* flow [[buffer(6)]],
                                    constant WorldU& world [[buffer(7)]],
                                    constant GlobeU& globe [[buffer(8)]])
     {
@@ -564,6 +567,61 @@ enum Shaders {
         }
         out.position = scene.viewProjection * float4(p, 1.0);
         out.color = float4(mix(organismColor(rgb[fromB ? ij.y : ij.x], fromB ? pb.z : pa.z, scene.world.y, world), float3(1.0), 0.35), 1.0);
+        // The bond flow (bonds feature, bit 4 of the world flags): a stored int8 per bond, positive from the lower row (the first end, `a`) to the
+        // higher. The giving half goes towards the donor colour and the receiving half towards the receiver colour, by the strength of the flow;
+        // a bond with no flow keeps the colours of its agents.
+        if ((world.flags.w & 16u) != 0u) {
+            float f = float(flow[iid]) / 127.0;
+            float strength = min(abs(f), 1.0);
+            if (strength > 0.0) {
+                bool gives = (f > 0.0) != fromB;
+                float3 tint = gives ? float3(\(BondFlowLook.donor.x), \(BondFlowLook.donor.y), \(BondFlowLook.donor.z))
+                                    : float3(\(BondFlowLook.receiver.x), \(BondFlowLook.receiver.y), \(BondFlowLook.receiver.z));
+                out.color = float4(mix(out.color.rgb, tint, 0.25 + 0.75 * strength), 1.0);
+            }
+        }
+        return out;
+    }
+
+    // ---- The feature layers' cells (DESIGN 45) ----
+    // One instance per exposed face of a listed cell of a sparse grid (`STRC`, `FSOL`; `PlayCells.exposedFaces`): a flat tile of the cell in 2D
+    // (its z = 0 face), the faces of a cube of the cell's side that touch an empty cell in 3D; six vertices each. The cell is placed at its minimum image against the camera target, as the agents are, and its
+    // opacity is a function of its level (`CellLook`), so a decaying wall thins.
+    struct CellU {
+        float4 grid;       // x: nx, y: ny, z: nz, w: the cell's length
+        float4 colour;     // rgb: the layer's colour
+        float4 opacity;    // x: opacity at level 0, y: its slope in level / 255
+    };
+
+    // The two triangles of a face's quad, as corners (bit 0 u, bit 1 v) of the unit square.
+    constant uint quadCorner[6] = { 0, 1, 3, 0, 3, 2 };
+
+    vertex LineVarying cellVertex(uint vid [[vertex_id]],
+                                  uint iid [[instance_id]],
+                                  constant Scene& scene [[buffer(0)]],
+                                  device const uint* faces [[buffer(2)]],
+                                  device const uchar* levels [[buffer(3)]],
+                                  constant CellU& cell [[buffer(6)]],
+                                  constant WorldU& world [[buffer(7)]])
+    {
+        uint code = faces[iid];
+        uint idx = code >> 3u;
+        uint face = code & 7u;                 // 2 * axis + side: the faces of the cell that touch an empty one
+        uint nx = uint(cell.grid.x), ny = uint(cell.grid.y);
+        uint x = idx % nx, y = (idx / nx) % ny, z = idx / (nx * ny);
+        float size = cell.grid.w;
+        float L = world.target.z;
+        float2 d = (float2(float(x), float(y)) + 0.5) * size - world.target.xy;
+        d -= L * rint(d / L);
+        float2 origin = world.target.xy + d - 0.5 * size;
+        uint corner = quadCorner[vid];
+        float u = float(corner & 1u), v = float((corner >> 1u) & 1u), s = float(face & 1u);
+        uint axis = face >> 1u;
+        float3 c = axis == 0u ? float3(s, u, v) : (axis == 1u ? float3(u, s, v) : float3(u, v, s));
+        float3 p = float3(origin, float(z) * size) + c * size;
+        LineVarying out;
+        out.position = scene.viewProjection * float4(p, 1.0);
+        out.color = float4(cell.colour.rgb, cell.opacity.x + cell.opacity.y * float(levels[iid]) * (1.0 / 255.0));
         return out;
     }
 

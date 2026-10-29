@@ -21,6 +21,7 @@ struct ContentView: View {
                     if controller.settings.mode != .resume, controller.settings.worldDims == 3 {
                         world3DSection
                     }
+                    FeatureLeverSections(controller: controller)
                     DirectorSettingsBox(controller: controller)
                     timerSection
                 }
@@ -235,7 +236,8 @@ struct ContentView: View {
                 Text("Per patch: each resource patch peaks at a different time, so good seasons move across the map.")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Reset levers to defaults") {
-                    controller.settings.levers.reset(world3D: controller.settings.world3DBaseline)
+                    controller.settings.levers.reset(world3D: controller.settings.world3DBaseline,
+                                                     features: controller.settings.featureLeverBaseline)
                 }
                     .font(.caption)
             }
@@ -418,12 +420,31 @@ struct ContentView: View {
                             }
                         }
                     }
+                    featureMetrics(m)
                 } else {
                     Text("No metrics yet for the selected run.").foregroundStyle(.secondary)
                 }
             }
             .padding(6)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The metrics keys of the feature layers of the newest row (arms, structures, bonds and roles, comm, farming), one disclosure each.
+    @ViewBuilder private func featureMetrics(_ m: MetricsSnapshot) -> some View {
+        ForEach(FeatureMetrics.groups(m.features), id: \.title) { group in
+            DisclosureGroup(group.title) {
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 2) {
+                    ForEach(group.rows, id: \.key) { row in
+                        GridRow {
+                            Text(row.label).font(.caption).foregroundStyle(.secondary)
+                            Text(FeatureMetrics.text(row.value)).font(.caption.monospacedDigit())
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .font(.callout)
         }
     }
 

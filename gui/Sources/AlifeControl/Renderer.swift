@@ -67,6 +67,25 @@ struct WorldUniforms: Equatable {
     static let equatorBit: UInt32 = 4
     /// Organisms are coloured by their altitude (`HeightColour`), not by the stream's colours.
     static let heightBit: UInt32 = 8
+    /// The bond lines are coloured by the flow along them (the bonds feature; `BondFlowLook`).
+    static let flowBit: UInt32 = 16
+}
+
+/// The constants of one layer of cells (`CellU` in Shaders.swift), buffer 6 of the cell pass: 48 bytes.
+struct CellUniforms: Equatable {
+    /// x: nx, y: ny, z: nz, w: the cell's length in world units.
+    var grid: SIMD4<Float>
+    /// rgb: the layer's colour.
+    var colour: SIMD4<Float>
+    /// x: the opacity at level 0, y: its slope in level / 255 (`CellLook`).
+    var opacity: SIMD4<Float>
+
+    init(cells: PlayCells, cellLength: Double, colour: SIMD3<Float>, cube: Bool) {
+        grid = SIMD4(Float(cells.nx), Float(cells.ny), Float(cells.nz), Float(cellLength))
+        self.colour = SIMD4(colour, 1)
+        let law = cube ? CellLook.cube : CellLook.tile
+        opacity = SIMD4(law.base, law.slope, 0, 0)
+    }
 }
 
 /// A translucent quad of the scene: the floor, the surface, or the field slice.
@@ -247,6 +266,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// The sky of a tilted view: a full-screen pass at the far plane, drawn before the map.
     private let skyPipeline: any MTLRenderPipelineState
     private let worldBoxPipeline: any MTLRenderPipelineState
+    /// The feature layers' cells: tiles in 2D, cubes in 3D (blended).
+    private let cellPipeline: any MTLRenderPipelineState
     // The globe (DESIGN 36.10): the space behind it, the map's mesh, the pole caps, and the pass that resets the depth for what stands on it.
     private let globeSkyPipeline: any MTLRenderPipelineState
     private let globeMapPipeline: any MTLRenderPipelineState
@@ -340,6 +361,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var mapPreviousSerial = -1
     private var playTerritory: PlayTerritory?
     private var playTerritorySerial = -1
+    /// The feature layers' cells: the built material and the farmed soil (the serials of the deliveries they hold).
+    private var playMaterial: PlayCells?
+    private var playMaterialSerial = -1
+    private var playSoil: PlayCells?
+    private var playSoilSerial = -1
     private var glowGrid: [UInt8] = []
     private var glowGridSerial = -1
 
@@ -367,6 +393,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         var winds: (any MTLTexture)?
     }
 
+    /// The faces of one layer of cells as a buffer set holds them.
+    private struct CellFaces {
+        var codes: (any MTLBuffer)?
+        var levels: (any MTLBuffer)?
+        var count = 0
+        var serial = -1
+    }
+
     /// What a buffer set holds for the world pass: the alive-only arrays of the frame, the current and previous weather map
     /// (the serials of the deliveries they hold), and the territory.
     private final class WorldSlot {
@@ -381,6 +415,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         var previousSerial = -1
         var territory: (any MTLTexture)?
         var territorySerial = -1
+        /// The bond flow, one int8 per bond (frame serial as `bonds`), and the exposed faces of the cells of the material and the soil
+        /// (`PlayCells.exposedFaces`: a code and a level per face) with the delivery they were made from.
+        var flow: (any MTLBuffer)?
+        var material = CellFaces()
+        var soil = CellFaces()
         /// The organism glow's grid (r8, `GlowHistogram.cells` on a side) and the frame it was binned from.
         var glow: (any MTLTexture)?
         var glowSerial = -1
@@ -451,6 +490,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                                           blend: true)
         skyPipeline = try pipeline("sky", vertex: Shaders.skyVertex, fragment: Shaders.skyFragment, blend: false)
         worldBoxPipeline = try pipeline("world frame", vertex: Shaders.worldBoxVertex, fragment: Shaders.worldBoxFragment, blend: true)
+        cellPipeline = try pipeline("world cells", vertex: Shaders.cellVertex, fragment: Shaders.lineFragment, blend: true)
         globeSkyPipeline = try pipeline("globe sky", vertex: Shaders.skyVertex, fragment: Shaders.globeSkyFragment, blend: false)
         globeMapPipeline = try pipeline("globe map", vertex: Shaders.globeMapVertex, fragment: Shaders.globeMapFragment, blend: true)
         globeCapPipeline = try pipeline("globe caps", vertex: Shaders.globeCapVertex, fragment: Shaders.globeCapFragment, blend: true)
@@ -534,6 +574,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         mapPreviousSerial = -1
         playTerritory = nil
         playTerritorySerial = -1
+        playMaterial = nil
+        playMaterialSerial = -1
+        playSoil = nil
+        playSoilSerial = -1
+        // (a new stream numbers its deliveries from 1 again: a slot that holds an old world's cells must not mistake them for the new ones)
+        for slot in slots {
+            slot.world.material.serial = -1
+            slot.world.soil.serial = -1
+            slot.world.material.count = 0
+            slot.world.soil.count = 0
+        }
         frameStep = nil
     }
 
@@ -561,6 +612,17 @@ final class Renderer: NSObject, MTKViewDelegate {
     func showWorld(territory: PlayTerritory?, serial: Int) {
         playTerritory = territory
         playTerritorySerial = serial
+    }
+
+    /// The built material (`STRC`) and the farmed soil (`FSOL`) to draw from now on (nil: none).
+    func showWorld(material: PlayCells?, serial: Int) {
+        playMaterial = material
+        playMaterialSerial = serial
+    }
+
+    func showWorld(soil: PlayCells?, serial: Int) {
+        playSoil = soil
+        playSoilSerial = serial
     }
 
     /// The textures of the map held by each buffer set, by identity (a test pins that no two sets share one).
@@ -849,6 +911,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         if display.map, hasMap { bits |= WorldUniforms.mapBit | (worldDraw.equatorLines ? WorldUniforms.equatorBit : 0) }
         if display.territory != .off, playTerritory != nil { bits |= WorldUniforms.territoryBit }
         if display.heightColour, header.dims == 3, header.height > 0 { bits |= WorldUniforms.heightBit }
+        if display.bondFlow, playFrame?.flow != nil { bits |= WorldUniforms.flowBit }
         let territoryOn = bits & WorldUniforms.territoryBit != 0
         let tint = territoryOn && display.territory == .tint ? MapPalette.territoryTint : 0
         // The horizon fade exists for a 3D world with a floor to show; its colour is the haze of the sea when the map is on, and the clear
@@ -954,6 +1017,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 3)
         }
 
+        // The feature layers' cells. In 2D they are tiles on the floor, under the agents; in 3D translucent cubes, over the opaque agents
+        // (below), tested against them. Not on the globe path.
+        let cube = header.dims == 3
+        if globe == nil, !cube { encodeCells(into: encoder, slot: slot, header: header, uniforms: &u, setWorld: setWorld) }
+
         // The agents of the newest frame.
         encoder.setDepthStencilState(opaqueDepth)
         if let frame = playFrame, frame.n > 0, w.pos != nil {
@@ -961,6 +1029,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setVertexBuffer(w.orient, offset: 0, index: 3)
             encoder.setVertexBuffer(w.rgb, offset: 0, index: 4)
             encoder.setVertexBuffer(w.bonds, offset: 0, index: 5)
+            // (a flow buffer is always bound: the bond shader declares it, and reads it only with the flow bit)
+            encoder.setVertexBuffer(w.flow ?? w.bonds, offset: 0, index: 6)
             let layers = WorldLevels.agentLayers(at: worldDraw.level, display: display)
             if layers.contains(.points) {
                 encoder.setDepthStencilState(overlayDepth)
@@ -984,12 +1054,40 @@ final class Renderer: NSObject, MTKViewDelegate {
                 encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 4, instanceCount: frame.nBonds)
             }
         }
+        if globe == nil, cube { encodeCells(into: encoder, slot: slot, header: header, uniforms: &u, setWorld: setWorld) }
         if display.frame, globe == nil {
             encoder.setRenderPipelineState(worldBoxPipeline)
             setWorld(&u)
             encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 24)
         }
         encodeInset(into: encoder, slot: slot, size: size, uniforms: u, bindMapTextures: bindMapTextures, setWorld: setWorld)
+    }
+
+    /// The cells of the material and the soil, one instance per exposed face (`PlayCells.exposedFaces`): a tile in 2D, the faces of a cube
+    /// that touch an empty cell in 3D, six vertices each, blended, tested against the depth of what is drawn and not written.
+    private func encodeCells(into encoder: any MTLRenderCommandEncoder, slot: Slot, header: StreamHeader, uniforms u: inout WorldUniforms,
+                             setWorld: (inout WorldUniforms) -> Void) {
+        let cube = header.dims == 3
+        let layers: [(cells: PlayCells?, on: Bool, faces: CellFaces, grid: PlayHeader.CellGrid?, colour: SIMD3<Float>)] = [
+            (playMaterial, worldDraw.display.structures, slot.world.material, header.play?.structures, CellLook.structures),
+            (playSoil, worldDraw.display.soil, slot.world.soil, header.play?.niche, CellLook.soil),
+        ]
+        var bound = false
+        for layer in layers {
+            guard layer.on, let cells = layer.cells, layer.faces.count > 0, let grid = layer.grid, let index = layer.faces.codes,
+                  let level = layer.faces.levels else { continue }
+            if !bound {
+                encoder.setDepthStencilState(overlayDepth)
+                encoder.setRenderPipelineState(cellPipeline)
+                setWorld(&u)
+                bound = true
+            }
+            var constants = CellUniforms(cells: cells, cellLength: grid.cell, colour: layer.colour, cube: cube)
+            encoder.setVertexBytes(&constants, length: MemoryLayout<CellUniforms>.stride, index: 6)
+            encoder.setVertexBuffer(index, offset: 0, index: 2)
+            encoder.setVertexBuffer(level, offset: 0, index: 3)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: layer.faces.count)
+        }
     }
 
     /// The globe path's backdrop (DESIGN §36.10, the spec's 2.4a): the space (no depth), the map's mesh (tested with `less`, written, back faces
@@ -1079,7 +1177,15 @@ final class Renderer: NSObject, MTKViewDelegate {
                   copy(frame.bonds, into: &w.bonds, slack: true) else {
                 throw Failure.allocation("the agent buffers")
             }
+            if let flow = frame.flow, !copy(flow, into: &w.flow, slack: true) { throw Failure.allocation("the bond flow buffer") }
             w.frameSerial = playFrameSerial
+        }
+        let flat = header?.dims != 3
+        if let cells = playMaterial, w.material.serial != playMaterialSerial {
+            try upload(cells, serial: playMaterialSerial, flat: flat, into: &w.material)
+        }
+        if let cells = playSoil, w.soil.serial != playSoilSerial {
+            try upload(cells, serial: playSoilSerial, flat: flat, into: &w.soil)
         }
         // The organism glow: the alive rows binned (0.1 ms), only while the globe path is in use.
         if let frame = playFrame, worldDraw.vantage != nil, worldDraw.glow, w.glowSerial != playFrameSerial, let size = header?.size {
@@ -1132,6 +1238,17 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
             w.territorySerial = playTerritorySerial
         }
+    }
+
+    /// Makes the exposed faces of one delivery of a layer of cells and writes them into `faces`. The shared cells of a wall are not drawn,
+    /// so the vertex count scales with the surface of the material, not with its cells (DESIGN §45.3).
+    private func upload(_ cells: PlayCells, serial: Int, flat: Bool, into faces: inout CellFaces) throws {
+        let made = cells.exposedFaces(flat: flat)
+        guard copy(made.codes, into: &faces.codes, slack: true), copy(made.levels, into: &faces.levels, slack: true) else {
+            throw Failure.allocation("the cell buffers")
+        }
+        faces.count = made.codes.count
+        faces.serial = serial
     }
 
     /// Writes one delivery of the weather map into `textures`, creating them for its size on first use.

@@ -1,8 +1,8 @@
 import Foundation
 
-/// The scalar settings of a preset file (`src/alife/presets/NAME.toml`): the integer and floating-point values
+/// The scalar settings of a preset file (`src/alife/presets/NAME.toml`): the integer, floating-point and boolean values
 /// of its tables. Presets are sparse TOML overrides of the engine defaults written one `key = value` per line,
-/// so this reads exactly that and nothing more: strings, booleans and arrays are skipped, as are inline tables
+/// so this reads exactly that and nothing more: strings and arrays are skipped, as are inline tables
 /// and multi-line values. A key the file does not set is nil, and the caller applies the engine default.
 ///
 /// It is not a TOML parser, and agrees with one on the files `tomllib` accepts. A key set twice is the last value (a
@@ -12,6 +12,8 @@ package struct PresetFile: Equatable, Sendable {
     package enum Value: Equatable, Sendable {
         case int(Int)
         case double(Double)
+        /// `true` or `false` (the overlays of the feature layers set their switches this way).
+        case bool(Bool)
     }
 
     /// Table name (`run`, `world`, ...; "" before the first table) to its scalar keys.
@@ -44,6 +46,8 @@ package struct PresetFile: Equatable, Sendable {
     /// An integer (`Int(value)`), else a finite decimal or exponent number; nil for anything else (`inf`, `nan`
     /// and hexadecimal are not presets' business).
     private static func scalar(_ text: String) -> Value? {
+        if text == "true" { return .bool(true) }
+        if text == "false" { return .bool(false) }
         if let n = Int(text) { return .int(n) }
         guard text.range(of: #"^[+-]?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$"#, options: .regularExpression) != nil,
               let v = Double(text), v.isFinite else { return nil }
@@ -63,8 +67,14 @@ package struct PresetFile: Equatable, Sendable {
         switch value(table, key) {
         case .int(let n): return Double(n)
         case .double(let v): return v
-        case nil: return nil
+        case .bool, nil: return nil
         }
+    }
+
+    /// The boolean at `table.key`; nil if absent or not `true` or `false`.
+    package func bool(_ table: String, _ key: String) -> Bool? {
+        if case .bool(let b) = value(table, key) { return b }
+        return nil
     }
 
     /// The preset `name` in the repository, or nil if its file cannot be read.

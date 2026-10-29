@@ -381,6 +381,10 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         #expect(!rig.model.display.agents && !rig.model.display.agentPoints)
         rig.model.perform(.toggleBonds)
         #expect(!rig.model.display.bonds)
+        // `5` and `6` are the material and the soil of a world that has them; this one has neither, so they change nothing
+        rig.model.perform(.toggleStructures)
+        rig.model.perform(.toggleSoil)
+        #expect(rig.model.display.structures && rig.model.display.soil)
         // `3` walks the territory through its states: tint (the default), off, borders, tint.
         #expect(rig.model.display.territory == .tint)
         rig.model.perform(.cycleTerritory)

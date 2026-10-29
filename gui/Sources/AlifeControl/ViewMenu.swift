@@ -16,6 +16,8 @@ struct ViewMenuInputs: Equatable {
     }
 
     var live: Bool
+    /// The feature layers the world carries (DESIGN §45): the menu offers a toggle for each.
+    var layers: FeatureLayers
     var colours: [Colour]
     /// The colour mode of the frame in view ("" before there is one).
     var current: String
@@ -37,6 +39,7 @@ struct ViewMenuInputs: Equatable {
     init(play: PlayController, model: WorldModel) {
         let store = play.store
         live = play.phase == .live
+        layers = store.layers
         // The archetype and intent modes paint labels: they are tagged like every other presentation of one (DESIGN §33.7).
         let labels = store.play?.labels
         let validity = LabelValidity(labels: labels, environment: store.environment?.environment)
@@ -81,6 +84,10 @@ struct ViewMenu: View {
             // The 1 px translucent points are drawn at the planet level (zoomed out) only.
             Toggle("Agent points (zoomed out)", isOn: layer(\.agentPoints))
             Toggle("Bonds", isOn: layer(\.bonds))
+            // The feature layers, for a world that carries them: the material and soil as tiles (2D) or cubes (3D), and the flow on the bonds.
+            if inputs.layers.bondFlow { Toggle("Bond flow", isOn: layer(\.bondFlow)).help("Colour the halves of a bond by who gives and who receives") }
+            if inputs.layers.structures { Toggle("Structures (5)", isOn: layer(\.structures)).help("The material organisms have built") }
+            if inputs.layers.soil { Toggle("Soil (6)", isOn: layer(\.soil)).help("The soil organisms have farmed") }
             Picker("Territory", selection: Binding(get: { inputs.display.territory }, set: { model.display.territory = $0 })) {
                 Text("Off").tag(TerritoryMode.off)
                 Text("Borders").tag(TerritoryMode.borders)
