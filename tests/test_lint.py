@@ -40,6 +40,7 @@ SIM_MODULES = {
     "game.tracers",  # the tracer rig and the dumps' device arrays (§32): observer-only, pure MLX
     "weather",  # the W0 weather model (STORMS §3.2): pure MLX, wired into the step in W1
     "sphere",  # the device geometry of the sphere world (§46): pure MLX (its host twin, geom, is numpy)
+    "fields_sph",  # the fields of the sphere world (§46.5): pure MLX (its host tables, fieldtab, are numpy)
 }  # rule 5
 DIRECTOR_MODULES = {f"director.{p.stem}" for p in (SRC / "director").glob("*.py")}  # host-side, scanned too
 GAME_MODULES = {
@@ -264,7 +265,7 @@ def test_source_tree(rule) -> None:
     # the generic modules of §29, a device half and a host half, and the game layer built on them
     assert {"groups", "tracking", "game.social", "game.society"} <= {m for m, _ in mods}
     assert {"spatial", "knn_metal"} <= {m for m, _ in mods}
-    assert {"geom", "sphere"} <= {m for m, _ in mods}  # the sphere world's host and device geometry (§46)
+    assert {"geom", "sphere", "fieldtab", "fields_sph"} <= {m for m, _ in mods}  # the sphere world (§46)
     assert {"storms", "streamrec", "play"} <= {m for m, _ in mods}
     assert {"analysis.resim", "analysis.labels"} <= {
         m for m, _ in mods

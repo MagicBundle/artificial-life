@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import layout, ops, weather
+from alife import fields_sph, layout, ops, sphere, weather
 from alife.config import Config, dims, seasons_on
 
 if TYPE_CHECKING:  # state imports this module; the annotation alone must not create an import cycle
@@ -26,7 +26,12 @@ class FieldObs(NamedTuple):
 
 
 def init_patches(key_pos: mx.array, key_vel: mx.array, cfg: Config) -> tuple[mx.array, mx.array]:
-    """Patch centres ``U[0, L)²`` and constant drifts ``patch_drift·(cos ψ, sin ψ)``, ψ ~ U[0, 2π)."""
+    """Patch centres ``U[0, L)²`` and constant drifts ``patch_drift·(cos ψ, sin ψ)``, ψ ~ U[0, 2π).
+
+    On a sphere (§46.5, ``fields_sph.init_patches``): unit-vector centres (PP,3), angular velocities (PP,3).
+    """
+    if dims(cfg).sph:  # static: the sphere world
+        return fields_sph.init_patches(key_pos, key_vel, cfg)
     pp, L = dims(cfg).pp, cfg.world.size
     pos = ops.wrap(mx.random.uniform(0.0, L, (pp, 2), key=key_pos), L)
     psi = mx.random.uniform(0.0, 2.0 * math.pi, (pp,), key=key_vel)
@@ -69,8 +74,17 @@ def fertility(
     (≈ 8e-4 relative on M5), which would perturb the integer regeneration map well beyond rounding.
 
     In 3D (§27.5) the result is (FZ,FG,FG) indexed [z, y, x]: this 2D fertility times ``vertical_profile``,
-    whose floor entry is exactly 1, so layer 0 equals the 2D fertility bit for bit.
+    whose floor entry is exactly 1, so layer 0 equals the 2D fertility bit for bit. On a sphere (§46.5) it is
+    (FZ,Npix): the chord-Gaussian of the unit-vector patches times the profile (``fields_sph.fertility``),
+    with the same seasonal and director weights.
     """
+    if dims(cfg).sph:  # static: the sphere world
+        w = None
+        if step is not None and env is not None:  # static: director enabled
+            w = env.patch_gain * season_weights(step, cfg, env)
+        elif step is not None and seasons_on(cfg.fields):  # static: seasons enabled
+            w = season_weights(step, cfg)
+        return fields_sph.fertility(patch_pos, w, cfg)
     fg, L, fc = dims(cfg).fg, cfg.world.size, cfg.world.field_cell
     centres = (mx.arange(fg, dtype=mx.float32) + 0.5) * fc
     inv = -1.0 / (2.0 * cfg.fields.patch_sigma**2)
@@ -94,7 +108,10 @@ def vertical_profile(cfg: Config) -> mx.array:
     ``V[k] = min(1, exp(−k·fc/benthic_lambda) + photic_amp·exp(−(FZ−1−k)·fc/photic_lambda))`` with
     ``fc = field_cell``: a benthic band at the floor plus an optional photic band under the surface (its term
     exists only when ``photic_amp > 0``). ``V[0] = 1`` exactly. Built on the host from config constants.
+    On a sphere it is (FZ,1), evaluated at the layers' lower interface heights ``z_k`` (§46.5).
     """
+    if dims(cfg).sph:  # static: the sphere world
+        return fields_sph.profile(cfg)
     d, fi, fc = dims(cfg), cfg.fields, cfg.world.field_cell
     v = [math.exp(-k * fc / fi.benthic_lambda) for k in range(d.fz)]
     if fi.photic_amp > 0:  # static: the photic band is on
@@ -121,6 +138,7 @@ def regen_rate(
         rate = rate * env.regen_mult
     base = ops.floor_i32(rate)
     if rain is not None:  # static: rain feeds the resource
+        assert not dims(cfg).sph, "the weather's rain is not defined on the sphere before S4"
         return base + weather.rain_regen(rain, cfg)
     return base
 
@@ -131,6 +149,8 @@ def cell_index(pos: mx.array, cfg: Config) -> mx.array:
     ``% FG`` is a second seam guard: a position that rounds to ``L`` maps to cell 0. In 3D the index is
     z-major, ``(cz·FG + cy)·FG + cx`` (``_cell_index_3d``, §27.5).
     """
+    if dims(cfg).sph:  # static: the sphere world, layer·Npix + pixel (§46.1)
+        return sphere.geometry(cfg).cell_of(pos)
     if dims(cfg).d3:
         return _cell_index_3d(pos, cfg)
     assert pos.shape[-1] == 2, "the 2D cell index got 3D positions"  # static: z would be dropped silently
@@ -190,6 +210,8 @@ def sample_fields(
     cfg: Config,
     *,
     pitch: mx.array | None = None,
+    pos: mx.array | None = None,
+    hdg: mx.array | None = None,
 ) -> FieldObs:
     """Field inputs at each agent's start-of-step cell, already normalised as in §5.
 
@@ -201,8 +223,14 @@ def sample_fields(
 
     Dead rows get stale values (from their stale ``pos``); consumers mask by ``alive``. In 3D the gradients
     gain a z difference and are rotated by yaw and ``pitch`` (required) into (fwd, lat, up)
-    (``_sample_fields_3d``, §27.6).
+    (``_sample_fields_3d``, §27.6). On a sphere (§46.5) ``pos`` (N,3) and the heading vector ``hdg`` (N,3)
+    are required (the frame is built from them; ``heading`` is not read) and the gradients are (fwd, lat, up).
     """
+    if dims(cfg).sph:  # static: the sphere world
+        assert pos is not None and hdg is not None and pitch is not None, (
+            "sphere sampling needs pos, hdg, pitch"
+        )
+        return fields_sph.sample_fields(resource, chem, fcell, pos, hdg, pitch, cfg)
     if dims(cfg).d3:
         return _sample_fields_3d(resource, chem, fcell, heading, pitch, cfg)
     assert resource.ndim == 2, "2D field sampling got a 3D lattice"  # static: _nbr_cells would fold z into y
@@ -271,6 +299,8 @@ def update_chem(chem: mx.array, dep_q: mx.array, cfg: Config) -> mx.array:
     ``chem_c ← clip((1 − λ_c)·(chem_c + D_c·(roll₄(chem_c) − 4·chem_c)), 0, chem_max)`` after
     ``chem += dep_q·chem_deposit_scale``. 3D: ``_update_chem_3d`` (§27.6).
     """
+    if dims(cfg).sph:  # static: the sphere world, sub-stepped (§46.5)
+        return fields_sph.update_chem(chem, dep_q, cfg)
     if dims(cfg).d3:
         return _update_chem_3d(chem, dep_q, cfg)
     fi, fg = cfg.fields, dims(cfg).fg
@@ -331,6 +361,8 @@ def update_resource(
     """
     fi = cfg.fields
     inc = mx.maximum(mx.minimum(regen_rate(patch_pos, cfg, step, env, rain), fi.resource_cap - resource), 0)
+    if dims(cfg).sph:  # static: the sphere world, int64 flux with geometric weights (§46.5)
+        return fields_sph.diffuse(resource + inc, cfg), inc
     if dims(cfg).d3:
         return ops.int_diffuse_3d(resource + inc, fi.resource_diffusion_q8), inc
     return ops.int_diffuse(resource + inc, fi.resource_diffusion_q8), inc
@@ -356,13 +388,18 @@ def update_resource_farm(
     room = fi.resource_cap - resource
     inc0 = mx.maximum(mx.minimum(base, room), 0)
     inc = mx.maximum(mx.minimum(base + bonus, room), 0)
+    if dims(cfg).sph:  # static: the sphere world (§46.5)
+        return fields_sph.diffuse(resource + inc, cfg), inc, inc0
     if dims(cfg).d3:
         return ops.int_diffuse_3d(resource + inc, fi.resource_diffusion_q8), inc, inc0
     return ops.int_diffuse(resource + inc, fi.resource_diffusion_q8), inc, inc0
 
 
 def drift_patches(patch_pos: mx.array, patch_vel: mx.array, cfg: Config, env: Env | None = None) -> mx.array:
-    """``wrap(patch_pos + patch_vel)`` into ``[0, L)`` (§13.1); ``env`` scales the drift."""
+    """``wrap(patch_pos + patch_vel)`` into ``[0, L)`` (§13.1); ``env`` scales the drift. On a sphere the
+    centre rotates rigidly about its angular velocity (§46.5)."""
+    if dims(cfg).sph:  # static: the sphere world
+        return fields_sph.drift_patches(patch_pos, patch_vel, cfg, env)
     if env is not None:  # static: director enabled
         patch_vel = patch_vel * env.drift_mult
     return ops.wrap(patch_pos + patch_vel, cfg.world.size)
