@@ -526,6 +526,16 @@ def interval_row(
                     "bond_guard_frac": _ratio(int(col("N_GUARDS")), alive_steps),
                 }
             )
+        elif bname == "comm":  # the voice channel (§39.7): the share of the alive rows that spoke, the price
+            by = {n: i for i, n in enumerate(names)}
+            col = lambda n, at=at, by=by: cs[at + by[n]]  # noqa: E731
+            row.update(
+                {
+                    "comm_speaker_frac": _ratio(int(col("COMM_SPEAKERS")), alive_steps),
+                    "comm_due": int(col("COMM_DUE")),  # voice quanta paid in the interval (in heat_action)
+                    "comm_due_share": _ratio(int(col("COMM_DUE")), int(ls[LedgerIdx.HEAT_ACTION])),
+                }
+            )
         at += len(names)
     row.update(
         {

@@ -59,6 +59,13 @@ FROZEN_OMITTED_DEFAULTS = {
     ("roles", "threshold"): 0.5,
     ("roles", "switch_cost"): 0,
     ("roles", "inherit_role"): False,
+    ("comm", "enabled"): False,
+    ("comm", "width"): 4,
+    ("comm", "range"): 0.0,
+    ("comm", "atten_pow"): 1.0,
+    ("comm", "kin_exp"): 0.0,
+    ("comm", "cost"): 4.0,
+    ("comm", "control"): "none",
 }
 
 

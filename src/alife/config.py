@@ -378,6 +378,23 @@ class RolesConfig:  # committed roles on bonds (DESIGN §40); post v0.1
 
 
 @dataclass(frozen=True)
+class CommConfig:  # the voice channel (DESIGN §39); post v0.1
+    """Every key changes the compiled step, so every key is hashed (``POST_V01_KEYS`` through
+    ``ext.comm.SPEC.lever_keys``) and is inert at its default while ``enabled`` is false (``validate``).
+    ``enabled`` allocates the voice (W call intensities, a brain tail of W + nd inputs and W outputs)."""
+
+    enabled: bool = False  # static: the voice channel, its brain tail and the widened ``msg`` exist
+    width: int = 4  # W: call channels per organism, [1, 8]; a run constant
+    range: float = 0.0  # hearing range; 0 = sensing.radius, else (0, sensing.radius] (the neighbour list)
+    atten_pow: float = 1.0  # falloff exponent of the linear-to-zero distance weight
+    kin_exp: float = 0.0  # listen to kin: weight x kin similarity ** kin_exp (0 = everyone is heard)
+    cost: float = (
+        4.0  # q per unit of call intensity (HEAT_ACTION), dithered so sub-unit calls cost on average
+    )
+    control: str = "none"  # receiver-side ablation: none | deaf (hear nothing) | decoy (hear a stranger)
+
+
+@dataclass(frozen=True)
 class Config:
     world: WorldConfig = field(default_factory=WorldConfig)
     population: PopulationConfig = field(default_factory=PopulationConfig)
@@ -396,6 +413,7 @@ class Config:
     arms: ArmsConfig = field(default_factory=ArmsConfig)
     structures: StructuresConfig = field(default_factory=StructuresConfig)
     roles: RolesConfig = field(default_factory=RolesConfig)
+    comm: CommConfig = field(default_factory=CommConfig)
     run: RunConfig = field(default_factory=RunConfig)
 
 
