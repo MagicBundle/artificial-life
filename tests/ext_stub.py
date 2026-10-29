@@ -202,6 +202,8 @@ def spec(
         counters=lambda cfg, name=name: COUNTERS[name],
         act_flag=FLAGS[name],
         metric_prefix=PREFIXES[name],
+        lever_keys=((("run", "llm_model"),)),  # the stub switch
+        enable=lambda cfg, name=name: stub_cfg(cfg, *(n for n in ALL if n == name or n in stub_names(cfg))),
         inputs=_inputs(name),
         decode=_decode,
         mask=_mask,
