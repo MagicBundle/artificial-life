@@ -180,7 +180,11 @@ struct LauncherPlanetBox: View {
                 }
                 Toggle("Turn the weather on (storm overlay)", isOn: Binding(
                     get: { model.planet.storm }, set: { model.setStorm($0) }))
-                    .disabled(model.selectedSource?.weatherOn == true)
+                    .disabled(model.selectedSource?.weatherOn == true || model.weatherObstacle != nil)
+                if let obstacle = model.weatherObstacle {
+                    Text(obstacle).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if model.planet.storm {
                     Stepper("Weather spin-up: \(model.planet.weatherSpinup) steps",
                             value: $model.planet.weatherSpinup, in: 1...200_000, step: 1000)

@@ -198,6 +198,27 @@ import Testing
         #expect(model.planet.weatherSpinup == 0)
     }
 
+    @Test func aTwoDimensionalSourceIsForkedWithoutTheWeatherAndSaysWhy() throws {
+        let scratch = try Scratch()
+        defer { scratch.cleanup() }
+        let runs = try runs(scratch)
+        let flat = runs.appendingPathComponent("flat2d")
+        try write(#"{"world": {"dims": 2, "size": 512.0}, "weather": {"enabled": false}}"#, "config.json", in: flat)
+        try write("x", "checkpoints/step_0000001000.safetensors", in: flat)
+        let launches = Launches()
+        let model = make(runs, launches: launches)
+        model.refresh()
+        model.selectSource("flat2d")
+        model.planet.name = "planet_f"
+        #expect(!model.planet.storm && model.planet.weatherSpinup == 0, "a 2D source starts with the weather off")
+        #expect(model.weatherObstacle != nil && model.planetErrors.isEmpty)
+        #expect(!PlayLaunch.arguments(planet: model.planet).contains("--overlay"))
+        model.setStorm(true)
+        #expect(model.planetErrors.contains(PlanetSpec.weatherObstacle(dims: 2)!), "forcing it on is refused before launch")
+        model.selectSource("64k3d_s0")
+        #expect(model.planet.storm && model.weatherObstacle == nil, "a 3D source gets the weather again")
+    }
+
     @Test func theSuggestedNameIsFree() throws {
         let scratch = try Scratch()
         defer { scratch.cleanup() }

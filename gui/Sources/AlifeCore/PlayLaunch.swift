@@ -53,6 +53,9 @@ package struct PlanetSpec: Equatable, Sendable {
     package var name: String
     /// `world.size` of the source (`PlaySource.worldSize`), nil if unknown: it picks the overlay (`overlay(forWorldSize:)`).
     package var sourceWorldSize: Double?
+    /// `world.dims` of the source (`PlaySource.dims`), nil if unknown: the weather runs only in a 3D world, so a 2D source
+    /// cannot take the storm overlay (the engine refuses it with its weather rules 7, W-1 and R4).
+    package var sourceDims: Int?
     /// `--overlay storm` (or `storm160`, by the source's size): turn the weather on (a source whose weather is on is
     /// forked as it is, without the overlay).
     package var storm = true
@@ -77,6 +80,12 @@ package struct PlanetSpec: Equatable, Sendable {
     /// Explicit, never an alias: the same name would mean two geometries (DESIGN §37.2).
     package static func overlay(forWorldSize size: Double?) -> String { size == miniWorldSize ? "storm160" : "storm" }
 
+    /// Why the weather cannot be turned on for a source of `dims` dimensions; nil when it can (or the dims are unknown: the
+    /// engine then decides).
+    package static func weatherObstacle(dims: Int?) -> String? {
+        dims == 2 ? "The weather runs only in a 3D world: this source is 2D. Turn the weather off, or choose a 3D source." : nil
+    }
+
     package static func defaultSpinup(forWorldSize size: Double?) -> Int {
         size == miniWorldSize ? miniSpinup : defaultSpinup
     }
@@ -84,8 +93,9 @@ package struct PlanetSpec: Equatable, Sendable {
     package init(source: String, sourceStep: Int? = nil, name: String, storm: Bool = true,
                  weatherSpinup: Int = PlanetSpec.defaultSpinup, directorEnabled: Bool = true,
                  houses: PlayHouses = .auto, seed: Int? = nil, rate: PlayRate? = .multiplier(1),
-                 director: PlayDirector = .off, sourceWorldSize: Double? = nil) {
+                 director: PlayDirector = .off, sourceWorldSize: Double? = nil, sourceDims: Int? = nil) {
         self.source = source
+        self.sourceDims = sourceDims
         self.sourceStep = sourceStep
         self.sourceWorldSize = sourceWorldSize
         self.name = name
@@ -112,6 +122,7 @@ package struct PlanetSpec: Equatable, Sendable {
         }
         if let sourceStep, sourceStep < 0 { errors.append("The checkpoint step is not negative.") }
         if storm {
+            if let obstacle = PlanetSpec.weatherObstacle(dims: sourceDims) { errors.append(obstacle) }
             if weatherSpinup < 1 { errors.append("Turning the weather on needs a spin-up of at least 1 step.") }
         } else if weatherSpinup != 0 {
             errors.append("A source whose weather is on is forked as it is: no spin-up.")

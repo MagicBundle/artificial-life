@@ -70,6 +70,11 @@ import Testing
         #expect(PlanetSpec(source: "s", name: "n", storm: false, weatherSpinup: 100).validate(existing: []).count == 1)
         #expect(PlanetSpec(source: "s", name: "n", directorEnabled: false, director: .rules).validate(existing: []).count == 1)
         #expect(PlanetSpec(source: "s", name: "n", seed: -1).validate(existing: []).count == 1)
+        #expect(PlanetSpec(source: "s", name: "n", sourceDims: 2).validate(existing: [])
+            == [PlanetSpec.weatherObstacle(dims: 2)!], "the weather is refused for a 2D source before the engine sees it")
+        #expect(PlanetSpec(source: "s", name: "n", storm: false, weatherSpinup: 0, sourceDims: 2).validate(existing: []).isEmpty)
+        #expect(PlanetSpec(source: "s", name: "n", sourceDims: 3).validate(existing: []).isEmpty)
+        #expect(PlanetSpec.weatherObstacle(dims: nil) == nil, "unknown dims: the engine decides")
     }
 
     @Test func everyFlagIsAFlagOfTheEngine() {
