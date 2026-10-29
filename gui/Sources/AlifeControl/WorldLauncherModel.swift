@@ -31,6 +31,9 @@ final class WorldLauncherModel: ObservableObject {
         if scanned != catalog { catalog = scanned }
         if planet.source.isEmpty || !catalog.sources.contains(where: { $0.name == planet.source }) {
             selectSource(catalog.sources.first?.name ?? "")
+        } else if let dims = selectedSource?.dims, dims != planet.sourceDims {
+            // The selected source's config.json changed its dims under a running launcher: start again from its defaults.
+            selectSource(planet.source)
         } else if let size = selectedSource?.worldSize, size != planet.sourceWorldSize {
             // The selected source's config.json changed under a running launcher: follow its size (the overlay
             // is chosen from it), and its default spin-up if the user had not changed that.
@@ -75,6 +78,7 @@ final class WorldLauncherModel: ObservableObject {
         let source = catalog.sources.first { $0.name == name }
         planet.sourceStep = source?.checkpoints.last
         planet.sourceWorldSize = source?.worldSize
+        planet.sourceDims = source?.dims
         applySourceDefaults(source)
     }
 
@@ -82,9 +86,10 @@ final class WorldLauncherModel: ObservableObject {
 
     private func applySourceDefaults(_ source: PlaySource?) {
         guard let source else { return }
-        // A weather-on source is forked as it is: the engine refuses the spin-up for it (§33.2.1).
-        planet.storm = !source.weatherOn
-        planet.weatherSpinup = source.weatherOn ? 0 : PlanetSpec.defaultSpinup(forWorldSize: source.worldSize)
+        // A weather-on source is forked as it is: the engine refuses the spin-up for it (§33.2.1). A 2D source cannot take
+        // the weather at all.
+        planet.storm = !source.weatherOn && PlanetSpec.weatherObstacle(dims: source.dims) == nil
+        planet.weatherSpinup = planet.storm ? PlanetSpec.defaultSpinup(forWorldSize: source.worldSize) : 0
     }
 
     /// Switching the weather overlay keeps the spin-up consistent with it: none without the overlay, at least 1 with it.
@@ -99,6 +104,9 @@ final class WorldLauncherModel: ObservableObject {
         let taken = catalog.existingNames
         planet.name = taken.contains("planet_a") ? RunName.nextFree(after: "planet_a", taken: taken) : "planet_a"
     }
+
+    /// Why the weather toggle is off and disabled for the selected source; nil when the weather can be turned on.
+    var weatherObstacle: String? { PlanetSpec.weatherObstacle(dims: selectedSource?.dims) }
 
     var planetErrors: [String] { planet.validate(existing: catalog.existingNames) }
 
