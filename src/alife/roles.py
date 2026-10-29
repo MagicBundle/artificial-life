@@ -100,7 +100,8 @@ def effects(s: Any, act: Any, partner: mx.array, cfg: Config) -> Effects:
       the ``defend`` that ``combat`` sees, not the one that is paid for or observed.
     * Guard shield: a guard's potential is ``gp_i = ramp_i/256 · defend_i`` (it pays ``defend_cost`` for it),
       zero while the row makes a (gated) attack this step (E16: an attacker's own shield never covers its
-      target, so attacking one's bonded partner is not softened by that partner's guard); the victim's fraction is
+      target, so attacking one's bonded partner is not softened by that partner's guard); the victim's
+      fraction is
       ``guard_shield · max(gp_t, max over its valid partners of gp)``: a guard shields itself and each bonded
       partner. ``partner`` is the post-S9 partner.
     """
