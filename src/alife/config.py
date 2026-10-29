@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 import mlx.core as mx
 import numpy as np
 
-from alife import ext, layout, weather
+from alife import ext, geom, layout, weather
 from alife.weather import DEFAULT_POOLS as _WEATHER_POOLS
 
 log = logging.getLogger(__name__)
@@ -42,6 +42,11 @@ class WorldConfig:
     field_cell: float = 4.0  # FG = size / field_cell (must be an integer ≤ 1024)
     dims: int = 2  # 2 | 3, static (docs/3D.md, §27.1); added after v0.1
     height: float = 0.0  # 3D world height (floor z = 0, surface z = height); 0 in 2D
+    # The sphere world (DESIGN §46); added after v0.1 (``SPHERE_KEYS``): all inert while ``geometry = "box"``.
+    geometry: str = "box"  # "box" | "sphere", static (changes the compiled step and the state)
+    radius: float = 0.0  # planet radius Rp (sphere)
+    nside: int = 0  # HEALPix Nside Nf of the field grid (sphere)
+    layers: int = 0  # FZ equal-volume shell layers (sphere)
 
 
 @dataclass(frozen=True)
@@ -89,6 +94,7 @@ class PhysicsConfig:
     gravity: float = 0.0  # 3D (§27.3): downward body force on every survivor; added after v0.1
     floor_eps: float = 0.0  # 3D: grounded iff z ≤ radius + floor_eps (the floor only)
     buoyancy_max: float = 0.0  # 3D: upward force at buoy_cap = 1 and full OUT_BUOYANCY; 0 = no actuator
+    ceiling_band: float = 0.0  # sphere (§46): width of the soft band under the lid; 0 = off; inert in a box
 
 
 @dataclass(frozen=True)
@@ -487,6 +493,17 @@ class Dims:
     # per enabled feature, the sizes its ``dims(cfg)`` hook declares (voice_w, hear_range, ...): read them
     # with ``d.ext("comm").hear_range``
     ext_dims: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = ()
+    # The sphere world (DESIGN §46). The neutral values are the box's. On a sphere ``fg``, ``g_hash`` and
+    # ``cell_hash`` (the box lattice) are 0/0/inf, ``fz`` is ``world.layers``, ``n_cells = FZ·Npix``,
+    # ``field_shape = (FZ, Npix)``, ``q = 125·C``, ``g_hash_z``/``cell_hash_z`` the radial hash layers.
+    sph: bool = False
+    radius: float = 0.0  # Rp
+    nside: int = 0  # field Nside Nf
+    npix: int = 0  # 12·Nf² angular field cells
+    nside_h: int = 0  # hash Nside Nh (derived from the exact reach-2 coverage)
+    npix_h: int = 0
+    r_lo: float = 0.0  # Rp + z_lo, the f32 floor radius
+    r_hi: float = 0.0  # Rp + z_hi, the f32 lid radius
 
     def ext(self, name: str) -> SimpleNamespace:
         """The derived sizes of the enabled feature ``name`` as attributes; ``KeyError`` if it is off."""
@@ -569,6 +586,24 @@ def dims(cfg: Config) -> Dims:
     else:
         fz, g_hash_z, cell_hash_z = 1, 1, float("inf")
         z_lo = z_hi = z_ground = 0.0
+    sph = cfg.world.geometry == "sphere"
+    sph_kw: dict[str, Any] = {}
+    if sph:  # DESIGN §46: every sphere quantity from the exact host tables; the box lattice is zeroed
+        wd = cfg.world
+        nside = wd.nside
+        nh = geom.derive_nh(wd.radius, r, cfg.sensing.radius)
+        g_hash_z, cell_hash_z = geom.hash_layers(wd.height, cfg.sensing.radius)
+        fz, fg, g_hash = wd.layers, 0, 0
+        sph_kw = {
+            "sph": True,
+            "radius": wd.radius,
+            "nside": nside,
+            "npix": geom.npix(nside),
+            "nside_h": nh,
+            "npix_h": geom.npix(nh) if nh > 0 else 0,
+            "r_lo": _f32_at_least(wd.radius + z_lo),
+            "r_hi": _f32_at_most(wd.radius + z_hi),
+        }
     return Dims(
         n=n,
         m=m,
@@ -576,7 +611,7 @@ def dims(cfg: Config) -> Dims:
         dl=2 * m,
         k=cfg.sensing.k_neighbors,
         c=cfg.sensing.cell_capacity,
-        q=3**nd * cfg.sensing.cell_capacity,  # 9C in 2D, 27C in 3D
+        q=(125 if sph else 3**nd) * cfg.sensing.cell_capacity,  # 9C in 2D, 27C in 3D, 125C on a sphere
         g_hash=g_hash,
         cell_hash=cfg.world.size / g_hash if g_hash > 0 else float("inf"),
         fg=fg,
@@ -591,8 +626,8 @@ def dims(cfg: Config) -> Dims:
         d3=nd == 3,
         lay=lay,
         fz=fz,
-        n_cells=fz * fg * fg,
-        field_shape=(fz, fg, fg) if nd == 3 else (fg, fg),
+        n_cells=fz * sph_kw["npix"] if sph else fz * fg * fg,
+        field_shape=(fz, sph_kw["npix"]) if sph else (fz, fg, fg) if nd == 3 else (fg, fg),
         g_hash_z=g_hash_z,
         cell_hash_z=cell_hash_z,
         z_lo=z_lo,
@@ -603,6 +638,7 @@ def dims(cfg: Config) -> Dims:
         msg_w=layout.MSG + voice_w,
         features=tuple(spec.name for spec in ext.active(cfg)),
         ext_dims=tuple((n, tuple(sorted(dd.items()))) for n, dd in ext_d.items()),
+        **sph_kw,
     )
 
 
@@ -865,6 +901,11 @@ _POST_V01_BASE: Final[tuple[tuple[str, str], ...]] = (
     ("fields", "photic_lambda"),
     ("energy", "buoyancy_cost"),
     ("energy", "buoyancy_cap_cost"),
+    ("world", "geometry"),  # the sphere world (DESIGN §46): SPHERE_KEYS, defined below
+    ("world", "radius"),
+    ("world", "nside"),
+    ("world", "layers"),
+    ("physics", "ceiling_band"),
     ("game", "observe"),
     ("game", "house_rate"),
     ("game", "tracers"),
@@ -921,6 +962,14 @@ POST_V01_KEYS: Final[tuple[tuple[str, str], ...]] = (
 # defaults, so an off run's files are byte-identical to the engine before the feature existed.
 SERIAL_OMIT_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("combat", "protect_floor"),
+    (
+        "world",
+        "geometry",
+    ),  # the sphere world (DESIGN §46.9): a box run serialises as before the sphere existed
+    ("world", "radius"),
+    ("world", "nside"),
+    ("world", "layers"),
+    ("physics", "ceiling_band"),
     ("run", "mat_every"),  # the feature dumps (DESIGN §38.9, §42.6): unhashed run cadences
     ("run", "arms_every"),
     ("run", "niche_every"),
@@ -949,6 +998,27 @@ THREE_D_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("energy", "buoyancy_cost"),
     ("energy", "buoyancy_cap_cost"),
 )
+# The POST_V01 keys of the sphere world (DESIGN §46.9). ``world.height`` and ``weather.cells``
+# (reinterpreted on a
+# sphere: the weather Nside) are existing keys and belong to THREE_D_KEYS and the weather. In a box world
+# every
+# one but ``world.geometry`` must keep its default (``validate``), so no box config changes hash without
+# changing
+# behaviour. All five are omitted from ``config.json`` and the checkpoint metadata at their defaults
+# (``SERIAL_OMIT_KEYS``), so a box run serialises byte for byte as before the sphere existed.
+SPHERE_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    ("world", "geometry"),
+    ("world", "radius"),
+    ("world", "nside"),
+    ("world", "layers"),
+    ("physics", "ceiling_band"),
+)
+# The world.geometry values validate accepts. Read at call time: ``"sphere"`` is added by S2 of the
+# sphere series
+# (a sphere config is refused until the step can run it); a test can widen it to exercise the sphere rules.
+GEOMETRY_SUPPORTED: tuple[str, ...] = ("box",)
+GEOMETRIES: Final = ("box", "sphere")
+
 # The world.dims values validate accepts. Read at call time, so a test can narrow it (docs/3D.md §10: PR 3
 # enabled 3).
 DIMS_SUPPORTED: tuple[int, ...] = (2, 3)
@@ -1057,6 +1127,98 @@ def frac_q8(frac: float) -> int:
     return int(mx.floor(mx.array(frac, mx.float32) * 256.0 + 0.5).astype(mx.int32).item())
 
 
+NH_MAX: Final = (
+    64  # the largest hash Nside validate will derive (its exact table has 12·Nh² cells; ~40 s at 64)
+)
+SPHERE_CELL_VOLUME_BAND: Final = (0.4, 2.5)  # an (angular cell, layer) volume in units of field_cell³
+
+
+def _validate_sphere(cfg: Config) -> list[str]:
+    """The rules of a sphere world (DESIGN §46.9), as messages. The rules that need tables of later PRs are
+    absent by design: the diffusion tables and bounds (S1), the feature set a sphere run may enable
+    (``SPHERE_READY``, S2) and the weather (S4)."""
+    w, ph, sen = cfg.world, cfg.physics, cfg.sensing
+    errs: list[str] = []
+
+    def req(ok: bool, msg: str) -> None:
+        if not ok:
+            errs.append(msg)
+
+    req(
+        "sphere" in GEOMETRY_SUPPORTED,
+        "world.geometry = 'sphere' is not enabled yet (the true-sphere series, PR S2)",
+    )
+    req(w.dims == 3, f"world.geometry = 'sphere' needs world.dims = 3 (the shell is 3D), got {w.dims}")
+    rad, h, r = w.radius, w.height, ph.radius
+    sane = math.isfinite(rad) and math.isfinite(h) and math.isfinite(w.size) and rad > 0 and h > 0
+    req(math.isfinite(rad) and rad >= 20.0, f"world.radius must be finite and ≥ 20, got {rad}")
+    req(
+        math.isfinite(h) and h > 2 * r,
+        f"world.height must be finite and > 2·physics.radius = {2 * r}, got {h}",
+    )
+    req(
+        not sane or h <= rad,
+        f"world.height {h} must be ≤ world.radius {rad} (a thin shell bounds the area ratio by 4)",
+    )
+    req(
+        not sane or w.size > 4.0 * (rad + h),
+        f"world.size {w.size} must be > 4·(radius + height) = {4.0 * (rad + h)}: it is the image length of "
+        "min_image, which must be the identity on pair offsets",
+    )
+    req(w.nside >= 2, f"world.nside must be ≥ 2, got {w.nside}")
+    req(w.layers >= 2, f"world.layers must be ≥ 2, got {w.layers}")
+    req(
+        math.isfinite(ph.ceiling_band)
+        and ph.ceiling_band >= 0.0
+        and (not sane or ph.ceiling_band < h - 2 * r),
+        f"physics.ceiling_band must be in [0, height − 2·radius), got {ph.ceiling_band}",
+    )
+    req(
+        ph.floor_eps >= 0.01,
+        f"physics.floor_eps must be ≥ 0.01 on a sphere (float32 radius), got {ph.floor_eps}",
+    )
+    cells_ok = sane and w.nside >= 2 and w.layers >= 2 and w.field_cell > 0
+    if cells_ok:
+        req(
+            w.layers * geom.npix(w.nside) <= 1 << 20,
+            f"field cells FZ·12·Nf² = {w.layers * geom.npix(w.nside)} must be ≤ 2^20 (exact_sum)",
+        )
+        z1 = float(geom.layer_edges(rad, h, w.layers)[1])
+        req(
+            r + ph.floor_eps < z1,
+            f"physics.radius + floor_eps = {r + ph.floor_eps} must be < z_1 = {z1:.4g} "
+            "(a grounded agent is in the floor layer)",
+        )
+        lo, hi = SPHERE_CELL_VOLUME_BAND
+        vol = geom.layer_volume(rad, h, w.layers, w.nside)
+        req(
+            lo * w.field_cell**3 <= vol <= hi * w.field_cell**3,
+            f"the cell volume {vol:.4g} must be in [{lo}, {hi}]·world.field_cell³ = "
+            f"[{lo * w.field_cell**3:.4g}, {hi * w.field_cell**3:.4g}]",
+        )
+    # the hash: Nh from the exact reach-2 coverage table, then C from the lid cell
+    if sane and sen.radius > 0 and r > 0 and rad + r > sen.radius / 2.0:
+        angle = geom.rigorous_angle(rad, r, sen.radius)
+        if geom.estimate_nh(angle) > NH_MAX:
+            errs.append(
+                f"the hash Nside for sensing.radius {sen.radius} on world.radius {rad} would exceed "
+                f"{NH_MAX}: raise sensing.radius or lower world.radius"
+            )
+        else:
+            nh = geom.derive_nh(rad, r, sen.radius)
+            req(nh >= 2, f"no hash Nside >= 2 covers sensing.radius {sen.radius} on world.radius {rad}")
+            gz, _ = geom.hash_layers(h, sen.radius)
+            req(gz >= 1, f"hash layers G_z = floor(2·height / radius) = {gz} must be ≥ 1")
+            if nh >= 2 and gz >= 1:
+                c_min = geom.min_cell_capacity(rad, h, sen.radius, nh)
+                req(
+                    sen.cell_capacity >= c_min,
+                    f"sensing.cell_capacity {sen.cell_capacity} must be ≥ ceil(0.167·V_lid) + 4 = {c_min} "
+                    f"(the lid hash cell holds {geom.lid_cell_volume(rad, h, sen.radius, nh):.4g} units³)",
+                )
+    return errs
+
+
 def validate(cfg: Config) -> None:
     """Check every rule of §17 (plus basic sanity); raise one ConfigError listing all problems."""
     w, pop, sen, br = cfg.world, cfg.population, cfg.sensing, cfg.brain
@@ -1119,8 +1281,11 @@ def validate(cfg: Config) -> None:
     req(en.brain_cost_per_l1 >= 0, f"energy.brain_cost_per_l1 must be ≥ 0, got {en.brain_cost_per_l1}")
     req(rp.birth_cost >= 0 and rp.min_age >= 0, "repro.birth_cost and repro.min_age must be ≥ 0")
 
-    # World geometry.
-    if w.size > 0 and w.field_cell > 0 and sen.radius > 0 and math.isfinite(w.size):
+    # World geometry. A sphere skips the box lattice rules (G_hash, FG, FZ = height/field_cell, 2·height
+    # <= size):
+    # its cells come from the HEALPix tables, and ``world.size`` is only an image length (§46.9).
+    sph = w.geometry == "sphere"
+    if not sph and w.size > 0 and w.field_cell > 0 and sen.radius > 0 and math.isfinite(w.size):
         ratio = w.size / w.field_cell
         req(ratio == round(ratio), f"world.size / world.field_cell must be an integer, got {ratio}")
         req(3 <= round(ratio) <= 1024, f"field grid FG = {round(ratio)} must be in [3, 1024]")
@@ -1144,6 +1309,19 @@ def validate(cfg: Config) -> None:
                 f"{sec}.{key} is a 3D key: it must keep its default {default!r} when world.dims = 2, "
                 f"got {val!r}",
             )
+    # The sphere world (DESIGN §46.9): its keys are inert in a box, and the sphere rules apply to a sphere.
+    req(w.geometry in GEOMETRIES, f"world.geometry must be one of {list(GEOMETRIES)}, got {w.geometry!r}")
+    if not sph:
+        wdef, pdef = WorldConfig(), PhysicsConfig()
+        for sec, key in SPHERE_KEYS:
+            val, default = getattr(getattr(cfg, sec), key), getattr(wdef if sec == "world" else pdef, key)
+            if (sec, key) != ("world", "geometry"):
+                req(
+                    val == default,
+                    f"{sec}.{key} is inert while world.geometry is box: it must keep its default",
+                )
+    else:
+        errs.extend(_validate_sphere(cfg))
     if d3:
         h = w.height
         req(
@@ -1153,7 +1331,7 @@ def validate(cfg: Config) -> None:
         # Only finite ratios reach round() and floor(); the sanity rules above report the inputs that are not.
         sane = h > 0 and w.size > 0 and w.field_cell > 0 and sen.radius > 0
         fz, fg, hz = (h / w.field_cell, w.size / w.field_cell, h / sen.radius) if sane else (0.0, 0.0, 0.0)
-        if sane and math.isfinite(fz) and math.isfinite(fg) and math.isfinite(hz):
+        if not sph and sane and math.isfinite(fz) and math.isfinite(fg) and math.isfinite(hz):
             req(fz == round(fz), f"world.height / world.field_cell must be an integer, got {fz}")
             req(round(fz) >= 2, f"field layers FZ = {round(fz)} must be ≥ 2")
             cells = round(fz) * round(fg) ** 2
@@ -1175,7 +1353,13 @@ def validate(cfg: Config) -> None:
         sen.radius >= need,
         f"sensing.radius {sen.radius} must be ≥ max(form_range, combat.range, 2·r) = {need}",
     )
-    if d3:  # the 3×3×3 cell stencil scans 27·C candidates
+    if sph:  # the reach-2 stencil: 25 angular cells × 5 radial layers = 125·C candidates (§46.3)
+        req(
+            layout.NS <= sen.k_neighbors <= 125 * sen.cell_capacity,
+            f"sensing.k_neighbors {sen.k_neighbors} must be in "
+            f"[NS={layout.NS}, 125·C={125 * sen.cell_capacity}]",
+        )
+    elif d3:  # the 3×3×3 cell stencil scans 27·C candidates
         req(
             layout.NS <= sen.k_neighbors <= 27 * sen.cell_capacity,
             f"sensing.k_neighbors {sen.k_neighbors} must be in "
@@ -1218,11 +1402,14 @@ def validate(cfg: Config) -> None:
         g, bmax = ph.gravity, ph.buoyancy_max
         climb = ph.thrust_max * math.sin(layout.PITCH_MAX)
         req(0 <= g < climb, f"physics.gravity {g} must be in [0, thrust_max·sin(PITCH_MAX) = {climb:.4g})")
-        req(
-            ph.floor_eps >= 0 and ph.radius + ph.floor_eps < w.field_cell,
-            f"physics.floor_eps {ph.floor_eps} must be ≥ 0 with radius + floor_eps < world.field_cell "
-            "(a grounded agent is in the floor layer)",
-        )
+        if (
+            not sph
+        ):  # a sphere's floor-layer rule (radius + floor_eps < z_1, floor_eps >= 0.01) is in _validate_sphere
+            req(
+                ph.floor_eps >= 0 and ph.radius + ph.floor_eps < w.field_cell,
+                f"physics.floor_eps {ph.floor_eps} must be ≥ 0 with radius + floor_eps < world.field_cell "
+                "(a grounded agent is in the floor layer)",
+            )
         req(0 <= bmax < math.inf, f"physics.buoyancy_max must be ≥ 0 and finite, got {bmax}")
         # The 3D form of thrust_max < 2·radius·k_repel: full thrust plus the net vertical load must not push a
         # resting agent through the one below it (or above it, when buoyant).
@@ -1277,7 +1464,7 @@ def validate(cfg: Config) -> None:
     req(0 < fi.resource_cap < R_HARD, f"fields.resource_cap {fi.resource_cap} must be in (0, 2^24 − 1)")
     req(0 <= fi.regen_max <= fi.resource_cap, "fields.regen_max must be in [0, resource_cap]")
     req(0 <= fi.resource_diffusion_q8 <= 64, "fields.resource_diffusion_q8 must be in [0, 64]")
-    if d3:  # six neighbours: 6·((R·d) >> 8) ≤ R keeps every cell ≥ 0
+    if d3 and not sph:  # six neighbours: 6·((R·d) >> 8) ≤ R keeps every cell ≥ 0 (a sphere: S1's table rules)
         req(fi.resource_diffusion_q8 <= 42, "fields.resource_diffusion_q8 must be ≤ 42 in 3D")
     req(fi.season_period >= 0, f"fields.season_period must be ≥ 0, got {fi.season_period}")
     req(
@@ -1298,7 +1485,7 @@ def validate(cfg: Config) -> None:
     req(len(fi.chem_decay) == layout.NCH, f"fields.chem_decay must have {layout.NCH} entries")
     req(all(0 <= v <= 0.25 for v in fi.chem_diffusion), "every fields.chem_diffusion must be in [0, 0.25]")
     req(all(0 <= v < 1 for v in fi.chem_decay), "every fields.chem_decay must be in [0, 1)")
-    if d3:  # the explicit 7-point stencil is stable for diffusion ≤ 1/6
+    if d3 and not sph:  # the explicit 7-point stencil is stable for diffusion ≤ 1/6 (a sphere sub-steps: S1)
         req(all(v <= 1 / 6 for v in fi.chem_diffusion), "every fields.chem_diffusion must be ≤ 1/6 in 3D")
 
     # Vertical food profile (3D, §27.5).
