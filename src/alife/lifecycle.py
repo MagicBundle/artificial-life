@@ -13,10 +13,10 @@ from typing import Any, NamedTuple
 
 import mlx.core as mx
 
-from alife import bonds, brain, ext, layout, ops
+from alife import bonds, brain, ext, layout, ops, sphere
 from alife.config import Config, dims, immigration_possible
 from alife.rng import Stream
-from alife.state import R_HARD, DeathCause, Env, State, State3, volume_kinematics
+from alife.state import R_HARD, DeathCause, Env, State, State3, sphere_kinematics, volume_kinematics
 
 _I32 = mx.int32
 
@@ -88,8 +88,18 @@ def catastrophe_mask(pos: mx.array, alive: mx.array, env: Env, key: mx.array, cf
     Distance is the torus minimum image from ``env.cat_center`` to the start-of-step position. One uniform
     per row is drawn from ``key`` (``Stream.CATASTROPHE``) every step the director is enabled, whether or not
     a catastrophe is active, so the stream use is independent of the levers. ``cat_radius = 0`` or
-    ``cat_kill_p = 0`` kills nobody. In 3D the disc is a vertical column: only x and y count (§27.4).
+    ``cat_kill_p = 0`` kills nobody. In 3D the disc is a vertical column: only x and y count (§27.4). On a
+    sphere (§46.4) it is a cap: the agents whose direction ``û`` is within the angle ``cat_radius/Rp`` of the
+    centre ``env_cat_center = (lon, lat)``, at any height (the radial column of the cap), the same semantics.
     """
+    if dims(cfg).sph:  # static: the cap, ``û·c >= cos(radius/Rp)`` (the radius is an arc length at the floor)
+        lon, lat = env.cat_center[0], env.cat_center[1]
+        c = mx.stack([mx.cos(lat) * mx.cos(lon), mx.cos(lat) * mx.sin(lon), mx.sin(lat)])
+        up = pos / sphere.radius_of(pos)[:, None]
+        cos_r = mx.cos(mx.minimum(env.cat_radius / cfg.world.radius, math.pi))
+        inside = ((up * c).sum(axis=1) >= cos_r) & (env.cat_radius > 0.0)
+        u = mx.random.uniform(shape=(pos.shape[0],), key=key)
+        return alive & inside & (u < env.cat_kill_p)
     if dims(cfg).d3:  # static: the (2,) centre and the x/y distance, at any height
         pos = pos[:, :2]
     off = ops.min_image(pos - env.cat_center, cfg.world.size)
@@ -140,7 +150,7 @@ def deaths(
     ``CATASTROPHE``. Corpses (``E + S``) are scatter-added into the
     dead agent's field cell, then the field is hard-capped at ``R_HARD``. Death records hold the first ``DL``
     dead rows by index. In 3D corpses sink: they land in the floor cell ``(0, cy, cx)`` below the dead agent,
-    ``fcell % FG²`` (§27.6).
+    ``fcell % FG²`` (§27.6); on a sphere the floor cell of the column is ``fcell % Npix`` (§46.4).
     """
     d = dims(cfg)
     zero = energy == 0
@@ -177,7 +187,7 @@ def deaths(
     cause = mx.where(dead, cause, -1).astype(_I32)
 
     corpse = mx.where(dead, energy + cfg.energy.structure, 0).astype(_I32)
-    fg2 = d.fg * d.fg
+    fg2 = d.npix if d.sph else d.fg * d.fg  # the cells of one layer (a sphere: Npix angular cells)
     if d.d3:  # static: corpses sink to the floor cell below
         r = resource.reshape(-1) + ops.scatter_add_i32(d.n_cells, fcell % fg2, corpse, dead)
     else:
@@ -325,6 +335,37 @@ def _offspring_kinematics_3d(
     return pos, ops.wrap_angle(yaw), pitch
 
 
+def _offspring_kinematics_sph(
+    pos_p: mx.array, hdg_p: mx.array, pitch_p: mx.array, u: mx.array, cfg: Config
+) -> tuple[mx.array, mx.array, mx.array, mx.array]:
+    """Sphere child placement (§46.4): ``(pos (M,3), hdg (M,3), heading (M,), pitch (M,))`` from the parents.
+
+    The 3D rule on the sphere, with the same ``(M,2)`` ``PLACEMENT`` draws: the child sits at distance
+    ``offspring_distance = D`` behind the parent in a cone. ``t̂`` is the direction ``−hdg`` of the parent
+    turned about its up by the yaw jitter ``u₀``; the pitch is ``χ = clip(u₁ − φ_p, ±PITCH_MAX)``, negated
+    when the child's height would leave ``[z_lo, z_hi]`` (a reflection at the floor and the lid, as in 3D).
+    The child is at height ``z_p + D·sin χ`` and at the end of a great-circle arc along ``t̂`` whose length
+    is chosen so that the chord to the parent is exactly ``D`` (``2 r asin(D cos χ / (2 sqrt(r r')))`` with
+    ``r' = r + D sin χ``: the bond rest length is a chord, §46.4): the movement is ``sphere.move`` with the
+    radial part ``D sin χ``. Its heading is ``t̂`` transported to the child's point (the child faces away from
+    its parent) and its pitch ``χ``.
+    """
+    d, D, pm = dims(cfg), cfg.repro.offspring_distance, layout.PITCH_MAX
+    r = sphere.radius_of(pos_p)
+    up = pos_p / r[:, None]
+    back = -hdg_p
+    cu, su = mx.cos(u[:, 0])[:, None], mx.sin(u[:, 0])[:, None]
+    that = cu * back + su * ops.cross3(up, back)  # tangent: a rotation of a tangent vector about up
+    chi = mx.clip(u[:, 1] - pitch_p, -pm, pm)
+    z1 = r - cfg.world.radius + D * mx.sin(chi)
+    chi = mx.where((z1 < d.z_lo) | (z1 > d.z_hi), -chi, chi)
+    dr = D * mx.sin(chi)
+    arc = 2.0 * r * mx.arcsin(D * mx.cos(chi) / (2.0 * mx.sqrt(r * (r + dr))))
+    v = arc[:, None] * that + dr[:, None] * up
+    pos, hdg, _, _, _ = sphere.move(pos_p, that, v, mx.zeros_like(chi), d.r_lo, d.r_hi)
+    return pos, hdg, sphere.bearing(hdg, pos), chi
+
+
 def _on_birth(f: ext.FieldSpec, old: mx.array, cfg: Config, bctx: ext.BirthCtx, put: Any) -> mx.array:
     """The new value of a per-agent extension field after the births of this step (``FieldSpec.on_birth``)."""
     rest = f.rest(cfg)
@@ -351,7 +392,8 @@ def reproduce(s: State | State3, lanes: Lanes, child_bond: mx.array, ks: mx.arra
     Returns the state with newborn rows, debited parents, child bonds, ``pend_*`` and ``next_uid`` advanced;
     the lane records; the per-lane endowment (0 off birth lanes, FLOW_ENDOWMENT); and the child-bond count.
     In 3D (§27.4) children go in a cone behind the parent, immigrants are uniform in the volume, and the
-    ``pitch`` and ``buoy_cap`` rows are written too.
+    ``pitch`` and ``buoy_cap`` rows are written too. On a sphere (§46.4) the same cone is built on the shell
+    (``_offspring_kinematics_sph``), immigrants are uniform in the shell by volume and ``hdg`` is written too.
     """
     d = dims(cfg)
     n, m = d.n, d.m
@@ -379,7 +421,10 @@ def reproduce(s: State | State3, lanes: Lanes, child_bond: mx.array, ks: mx.arra
 
     # Genes, placement and weights per lane. Padding lanes compute mutated copies of row 0 (§12.6).
     sigma, rate, tag, frac, cap = _child_genes(s, p, ks[Stream.MUT_GENES], cfg)
-    if d.d3:  # static: a cone behind the parent, reflected at the floor and the surface (§27.4)
+    if d.sph:  # static: the same cone on the sphere, a chord D behind the parent (§46.4)
+        u = mx.random.uniform(-0.5, 0.5, (m, 2), key=ks[Stream.PLACEMENT])
+        pos, hdg, heading, pitch = _offspring_kinematics_sph(s.pos[p], s.hdg[p], s.pitch[p], u, cfg)
+    elif d.d3:  # static: a cone behind the parent, reflected at the floor and the surface (§27.4)
         u = mx.random.uniform(-0.5, 0.5, (m, 2), key=ks[Stream.PLACEMENT])
         pos, heading, pitch = _offspring_kinematics_3d(s.pos[p], s.heading[p], s.pitch[p], u, cfg)
     else:
@@ -390,7 +435,9 @@ def reproduce(s: State | State3, lanes: Lanes, child_bond: mx.array, ks: mx.arra
     w1, w2 = brain.mutate_rows(s.W1[p], s.W2[p], sigma, rate, ks[Stream.MUT_W1], ks[Stream.MUT_W2], cfg)
     if immigration_possible(cfg):  # static: immigrant lanes draw fresh founders (§12.7)
         k_pos, k_head, k_tag, k_w1, k_w2 = mx.random.split(ks[Stream.IMMIGRANT], 5)
-        if d.d3:  # static: uniform in the volume, like the founders (§27.4)
+        if d.sph:  # static: uniform in the shell by volume, like the founders (§46.5)
+            i_pos, i_hdg, i_head, i_pitch = sphere_kinematics(k_pos, k_head, m, cfg)
+        elif d.d3:  # static: uniform in the volume, like the founders (§27.4)
             i_pos, i_head, i_pitch = volume_kinematics(k_pos, k_head, m, cfg)
         else:
             i_pos = ops.wrap(mx.random.uniform(0.0, L, (m, 2), key=k_pos), L)
@@ -399,6 +446,8 @@ def reproduce(s: State | State3, lanes: Lanes, child_bond: mx.array, ks: mx.arra
         i_w1, i_w2 = brain.init_weights(k_w1, k_w2, m, cfg)
         pos = mx.where(imm[:, None], i_pos, pos)
         heading = mx.where(imm, i_head, heading)
+        if d.sph:  # static
+            hdg = mx.where(imm[:, None], i_hdg, hdg)
         tag = mx.where(imm[:, None], i_tag, tag)
         sigma = mx.where(imm, mu.sigma_init, sigma)
         rate = mx.where(imm, mu.rate_init, rate)
@@ -458,6 +507,8 @@ def reproduce(s: State | State3, lanes: Lanes, child_bond: mx.array, ks: mx.arra
     )
     if d.d3:  # static: the 3D-only rows (§27.4)
         state = state._replace(pitch=put(s.pitch, pitch), buoy_cap=put(s.buoy_cap, cap))
+    if d.sph:  # static: the heading vector of the newborn rows (§46.4)
+        state = state._replace(hdg=put(s.hdg, hdg))
     for f in ext.state_fields(cfg, d.nd):  # static: the per-agent extension fields' birth policy (§43.2)
         if f.per_agent:
             bctx = ext.BirthCtx(p, slot, birth, imm, newborn, born_lane, ks)
