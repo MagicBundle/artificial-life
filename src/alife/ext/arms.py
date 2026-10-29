@@ -79,6 +79,11 @@ def _validate(cfg: Any) -> None:
             bad.append(f"arms.key_floor {a.key_floor} must be in [0, 1]")
         if not 0.0 <= a.speed_slow <= 0.9:
             bad.append(f"arms.speed_slow {a.speed_slow} must be in [0, 0.9]")
+        if a.key_floor == 0.0 and cfg.combat.protect_floor == 0.0:
+            bad.append(
+                "arms.key_floor = 0 needs combat.protect_floor > 0: a mismatched key and lock would give "
+                "immunity (the demand floors to 0)"
+            )
         for k in ("upkeep_atk", "upkeep_arm"):
             if not 0.0 <= getattr(a, k) < 2**15:
                 bad.append(f"arms.{k} {getattr(a, k)} must be in [0, 2^15)")

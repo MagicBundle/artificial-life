@@ -208,3 +208,10 @@ def test_an_unbooked_upkeep_is_caught(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_apply_overrides_roundtrip(tiny_cfg: Config) -> None:
     assert apply_overrides(tiny_cfg, REAL).arms.upkeep_atk == 20.0
+
+
+def test_bench_arms_records_the_settings() -> None:
+    cfg = _cfg(2, REAL)
+    r = bench.run_bench(cfg, steps=4, warmup=1, arms=True, weather_pairs=1)
+    assert r["arms"]["arms_config"]["upkeep_atk"] == 20.0 and r["arms"]["arms_config"]["enabled"]
+    assert r["arms"]["marginal_ms_median"] == r["arms"]["marginal_ms_median"]  # a number, not NaN

@@ -37,6 +37,7 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
 
 from __future__ import annotations
 
+import dataclasses
 import gc
 import json
 import math
@@ -195,9 +196,10 @@ def run_bench(
     if weather_org:
         report["weather_org"] = _bench_weather(cfg, steps, warmup, weather_pairs, org=True)
     if arms:
-        report["arms"] = _bench_weather(
-            cfg, steps, warmup, weather_pairs, off=replace(cfg, arms=ArmsConfig())
-        )
+        report["arms"] = {
+            **_bench_weather(cfg, steps, warmup, weather_pairs, off=replace(cfg, arms=ArmsConfig())),
+            "arms_config": dataclasses.asdict(cfg.arms),  # the settings the marginal cost belongs to
+        }
     return report
 
 

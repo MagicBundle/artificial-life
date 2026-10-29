@@ -12382,7 +12382,7 @@ want = floor(attack_max · P · (1 − defend_efficiency·defend_j))
 * **Null equivalence (T1).** With zero traits `r = 0/den = 0` exactly, `K = 1.0 + 0.0·c² = 1.0`, `P = 1.0` exactly and
   `want` is bit-identical to the legacy expression (every `Combat` field, `tests/test_arms.py`); the whole step with
   arms on and null parameters has the legacy digest of the off run (2D and 3D, `tests/test_arms_step.py`).
-* **Bounds.** `P ∈ [0, 1]`; `r < κ/(κ + a0)` (validate: at most 0.9, no immunity), so `P ≥ (1 − r_max)·key_floor`;
+* **Bounds.** `P ∈ [0, 1]`; `r < κ/(κ + a0)` (validate: at most 0.9), so the armour alone never gives immunity and `P ≥ (1 − r_max)·key_floor`. The key/lock factor can: with `key_floor = 0` a mismatched pair has `P ≈ 0` and the demand floors to 0, so `validate` requires `combat.protect_floor > 0` whenever `key_floor = 0`;
   `want ≤ attack_max < 2^16`, `proportional_take` unchanged. The efficiency stays the scalar `q8(efficiency)` (the
   per-attacker `q` is a toxin matter, A3). Attack pays only against armour (`r` does not depend on `ATK` at `A = 0`;
   owner decision, D6).
@@ -12443,9 +12443,11 @@ constant (`kappa`, `a0`, `key_floor`, `speed_slow`, `upkeep_*`, the sigmas), inc
 `SERIAL_OMIT_KEYS` (through the registry row's `lever_keys`), so existing runs keep their hash (checked against the
 literal hashes of e64be03) and the section is absent from `config.json` while default; every key is inert while `enabled` is
 false (`validate` refuses a non-default value). With `enabled` the rules: `kappa ≥ 0`, `a0 > 0`, `kappa/(kappa + a0) ≤ 0.9`,
-`key_floor ∈ [0, 1]`, `speed_slow ∈ [0, 0.9]`, `upkeep_* ∈ [0, 2^15)`, `init_* ∈ [0, 1]`, `sigma, sigma_phase ∈ [0, 0.5]`.
+`key_floor ∈ [0, 1]` (0 only with `combat.protect_floor > 0`), `speed_slow ∈ [0, 0.9]`, `upkeep_* ∈ [0, 2^15)`, `init_* ∈ [0, 1]`, `sigma, sigma_phase ∈ [0, 0.5]`.
 `alife bench --arms` times the step with arms on against the same config with it off (blocks off, on, on, off); gate: below 3 %
 on 64k3d (the spec's §7).
+
+**Notes for later PRs.** (1) The observer channel `Acts.thrust` records the brain's thrust, not the armour-slowed thrust the physics sees (consistent with the cost, paid on the brain's thrust); A2 consumers should know. (2) The dither salt changed with the merge of the hash-salt table (`4b32729`): arms-on checkpoints from before that commit exist only in the scratchpad, and nothing was merged, so no version bump is needed. (3) `bench --arms` stores `cfg.arms` in its report (`arms.arms_config`).
 
 ### 42.7 Tests
 
@@ -12458,11 +12460,10 @@ not bit-equal compiled and eager with or without arms from step 0 (the brain's r
 **Evidence (PR A1, 2026-10-28).** Identity matrix against a fresh `git archive` of e64be03: "OK: bit-identical, 0 DIFF, 0 INFO" (arms off,
 the config hashes literal-equal). Fast suite (`-n 4 --dist loadfile`, `-p cpu_device`): 4,672 passed, 91 skipped, 1 xfailed, 1 failed
 (`test_lifecycle_compiles_and_matches_eager`, which fails on e64be03 under the CPU device, HANDOVER B1). `ruff check` and `ruff format
---check` clean. On Metal: `test_game_purity`, `test_game_acts`, `test_determinism` and the new arms files (149 passed, 1 skipped). Smoke,
+--check` clean. On Metal: `test_game_purity`, `test_game_acts`, `test_determinism` and the new arms files (149 passed, 1 skipped). Smoke (rerun on the head after the salt merge),
 `mini3d` on the GPU, 10,000 steps, `kappa` 2, `key_floor` 0.2, `speed_slow` 0.3, upkeep 20/20, `init_atk = init_arm` 0.1, sigma 0.03/0.05,
-seed 0: ledger error 0 and `diag` 0 at all 20 metrics rows; ATK quantiles (q10/q50/q90) 0.100 at step 0 (all founders), 0.025/0.100/0.176
-at 5,000, 0.013/0.107/0.237 at 10,000 (mean 0.119), ARM 0.013/0.112/0.240 (mean 0.124), mean generation 13.5, the key and lock phase
-concentration R rising from 0.01 to 0.17 and 0.11 (selection or drift: A1 has no null arm, that is A2/A3 work). `bench --arms` on
+seed 0: ledger error 0 and `diag` 0 at all 20 metrics rows; ATK quantiles (q10/q50/q90) 0.100 at step 0 (all founders), 0.026/0.100/0.172 at 5,000, 0.004/0.094/0.208 at 10,000 (mean 0.103), ARM 0.014/0.111/0.241 (mean 0.123), mean generation 11.8, the key and lock phase
+concentration R rising from 0.01 to 0.16 and 0.20 (selection or drift: A1 has no null arm, that is A2/A3 work). `bench --arms` on
 64k3d (GPU, fresh blocks, not the steady-state population): off 13.63 ms, on 13.83 ms median, +0.19 ms (1.4 %), under the 3 % gate.
 
 ## 43. Feature extension mechanism (PR 0a of the five-feature series)

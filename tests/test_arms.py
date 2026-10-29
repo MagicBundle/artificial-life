@@ -161,7 +161,7 @@ def test_e11_attack_and_armour_at_every_bound(
 
 
 def test_e11_combat_with_extreme_traits_conserves(micro_cfg: Config) -> None:
-    cfg = _cfg(micro_cfg, "arms.key_floor=0.0")
+    cfg = _cfg(micro_cfg, "arms.key_floor=0.0", "combat.protect_floor=0.1")
     n = dims(cfg).n
     for vals in itertools.product((0.0, 1.0), repeat=2):
         x = np.zeros((n, arms.N_TRAITS), np.float32)
