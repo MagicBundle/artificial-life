@@ -694,7 +694,7 @@ def load_checkpoint(path: Path, cfg: Config, *, check_hash: bool = True) -> Stat
             hint = (
                 "; the config and the checkpoint disagree on the feature layout (which extension "
                 "features are on): a checkpoint never crosses layout_features and nothing is guessed. "
-                "Fix the config, or migrate the checkpoint (DESIGN §43.8)"
+                "Fix the config, or migrate the checkpoint with `alife migrate` (DESIGN §43.8)"
             )
         raise CheckpointError(f"{path}: incompatible checkpoint: {', '.join(bad)}{hint}")
     try:
@@ -878,6 +878,11 @@ class RunDir:
             if not path.is_dir():
                 raise FileExistsError(f"{path} exists and is not a directory")
             if any(p.name != PLAY_LOCK_FILE for p in path.iterdir()):  # a lock file is not content
+                holder = play_lock_holder(path)
+                if holder is not None:
+                    raise FileExistsError(
+                        f"{path} is being played by process {holder} (play.lock): refusing to overwrite it"
+                    )
                 if not (path / META_FILE).is_file():
                     raise FileExistsError(f"{path} is not a run directory; refusing to overwrite it")
                 shutil.rmtree(path)
