@@ -75,6 +75,9 @@ class FieldSpec:
     dtype: Any  # an mx.Dtype (typed Any: this module imports no mlx)
     rest: Callable[[Any], Any]  # (cfg) -> array: the initial value and the fill of an older checkpoint
     on_birth: str | Callable[[Any, Any, BirthCtx], Any] = "rest"
+    # True for a field that holds conserved energy quanta: ``alife migrate --force-removal`` can drop it only
+    # while it is at its ``rest`` value (anything else would leak TOTAL), never silently otherwise.
+    conserved: bool = False
 
 
 def _never(cfg: Any) -> bool:
@@ -133,6 +136,10 @@ class ExtSpec:
     lever_keys: tuple[tuple[str, str], ...] = ()  # every (section, key) the feature adds to Config
     cli_only_keys: tuple[tuple[str, str], ...] = ()  # lever keys the GUI does not carry (``*.control``)
     overlay: str | None = None  # world overlay name (presets/<overlay>.toml)
+    # (cfg) -> cfg with the feature switched on (its ``enabled`` key; the start-of-run lever keys stay at the
+    # config's value, ``--set`` moves them): what ``alife migrate --enable`` applies (DESIGN §43.8). None =
+    # the feature has no switch of its own and is enabled with ``--set``.
+    enable: Callable[[Any], Any] | None = None
     validate: Callable[[Any], None] = _ok
     # Step hooks (static: called only for an enabled feature, inside the traced step):
     inputs: Callable[[Any, Any, ExtCtx], Sequence[Any]] | None = None  # (s, cfg, ctx) -> (N, w) per in-block
