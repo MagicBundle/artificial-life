@@ -342,7 +342,7 @@ def _throughput(fn: Callable[[State], Any], cfg: Config, steps: int, warmup: int
     del held
     donation = _donation(peak - baseline, peak_ref - baseline_ref, weights)
 
-    acc = mx.zeros_like(out.counters)
+    acc = mx.zeros(out.counters.shape, dtype=mx.int64)
     n_alive_start = int(to_numpy(s.alive.sum()))  # the counters below cover the timed steps only
     times = []
     mx.reset_peak_memory()  # steady-state peak: excludes compile and the calibration step's copy
@@ -350,7 +350,7 @@ def _throughput(fn: Callable[[State], Any], cfg: Config, steps: int, warmup: int
     for _ in range(steps):
         t0 = time.perf_counter()
         s, out = fn(s)
-        acc = acc + out.counters
+        acc = acc + out.counters.astype(mx.int64)  # E10: cross-step sums in int64
         mx.eval(s, acc)
         times.append(time.perf_counter() - t0)
     wall = time.perf_counter() - t_all

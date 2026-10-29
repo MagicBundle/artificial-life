@@ -62,7 +62,8 @@ def _state_fields(cfg: Any, nd: int) -> tuple[FieldSpec, ...]:
 
 def _enable(cfg: Any) -> Any:
     """``alife migrate --enable niche``: the config with ``niche.farm`` on (``--set`` moves the rest, for
-    example ``niche.farm_cost=150`` in a 3D world); ``silent_init`` stays True, so nobody farms at first."""
+    example ``niche.farm_cost=150``; the overlay ``niche3d`` does it); ``silent_init`` stays True, so nobody
+    farms at first."""
     import dataclasses
 
     return dataclasses.replace(cfg, niche=dataclasses.replace(cfg.niche, farm=True))
@@ -138,6 +139,10 @@ def _validate(cfg: Any) -> None:
             )
         elif nc.farm_cost * nc.farm_rate * cfg.population.n_max >= 2**31:
             bad.append("niche.farm_cost x farm_rate x population.n_max must be < 2^31 (the per-step due)")
+        if nc.farm_rate * cfg.population.n_max >= 2**31:
+            bad.append(
+                "niche.farm_rate x population.n_max must be < 2^31 (the SOIL_PUT / SOIL_WASTED counters)"
+            )
         if not 0.0 <= nc.farm_bonus_frac <= 1.0:
             bad.append(f"niche.farm_bonus_frac {nc.farm_bonus_frac} must be in [0, 1]")
         elif (
@@ -145,6 +150,8 @@ def _validate(cfg: Any) -> None:
             and nc.farm_cap * round(nc.farm_bonus_frac * cfg.fields.regen_max / nc.farm_cap * 65536) >= 2**31
         ):
             bad.append("niche.farm_cap x bonus_q16 must be < 2^31 (the integer bonus)")
+        elif n_cells * (round(nc.farm_bonus_frac * cfg.fields.regen_max) + 1) >= 2**31:
+            bad.append("niche: cells x farm_bonus_frac x regen_max must be < 2^31 (the FARM_YIELD counter)")
         if nc.control not in CONTROLS:
             bad.append(f"niche.control {nc.control!r} must be one of {CONTROLS}")
         if not bad and nc.farm_cost > 0 and nc.control != "mute":

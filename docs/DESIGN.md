@@ -13029,7 +13029,7 @@ dep     = scatter_add(units at the START-of-step cell);  f1 = min(soil + dep, fa
 
 The bonus is read from the START-of-step soil (one step of lag, as the material of §38 acts one step after it is built) and is
 added to the integer regrowth *inside* the clip, so `INJECT_REGEN = sum(inc)` already books it and `resource_cap` still binds: a
-farm cannot push a cell above the cap, and the director's `regen_mult` does not scale the bonus (like the rain, §30). `inc0`, the
+farm cannot push a cell above the cap before diffusion (the integer diffusion that follows can leave a cell a few units above `resource_cap` by rounding: cap + 1 was seen without farming and cap + 3 with it; the ledger stays exact, since `INJECT_REGEN` books `inc` and the stencil conserves the total). The director's `regen_mult` does not scale the bonus (like the rain, §30): in a Director famine (`regen_mult` < 1) the farms keep paying in full, so the soil is relatively more valuable then. `inc0`, the
 same clip without the bonus, is one more elementwise pair of ops; `FARM_YIELD = sum(inc - inc0)` is what the soil actually
 produced after the cap. `fields.update_resource` is untouched (the off path is the same code); farming calls
 `fields.update_resource_farm`, which returns `(resource', inc, inc0)`. The bonus per cell is at most `farm_bonus_frac * regen_max`
@@ -13072,7 +13072,7 @@ before the arms perception tail (`TAIL_ORDER`): alone, 2D `D_IN/D_OUT` 70/36 and
 `niche.silent_init` (default true, start-of-run, CLI-only) the `farm_put` column of every founder and immigrant is zero, so nobody
 farms until mutation finds it: `max(tanh(0), 0) = 0`. `alife migrate --enable niche` (the `ExtSpec.enable` hook) adds the row
 and the column at zero and the soil at zero; the migrated world is a silent start and its first step makes the same legacy actions
-(`tests/test_ext_migrate.py`). In a 3D world the cost must be raised with `--set niche.farm_cost=150` (41.7).
+(`tests/test_ext_migrate.py`). In a 3D world use the overlay `niche3d` (cost 150, 41.7).
 
 ### 41.7 Public goods and the cost level
 
@@ -13080,7 +13080,7 @@ The soil raises the regrowth of the cell for whoever eats there, so the putter p
 return per unit: `farm_bonus_frac * regen_max * 65536 / (farm_cap * farm_decay_q16)` quanta, which is 160 at `regen_max` 320 and 850 at 1700 with the
 defaults; the costs 30 and 150 give a gross return of about 5.3 to 5.7 times the cost, i.e. farming pays a lineage that takes more than
 about 18 % of the extra harvest (the break-even kin share), and below that it is a public good that invites free riding. The cost
-must scale with `regen_max`; `validate` warns (not an error) when the gross return exceeds 12 times the cost. The effect is
+must scale with `regen_max`: the overlay `niche` carries the 2D value (30) and the overlay `niche3d` (`presets/niche3d.toml`, a second entry of `config.WORLD_OVERLAYS`) the 3D one (150), so a 3D world is at the design point without a `--set`; a second file was chosen over a dims-dependent overlay because overlays are sparse TOML merged before validation and know nothing of the world they land on (coordinator decision C25). `validate` still warns (not an error) when an explicit cost makes the gross return exceed 12 times the cost. The calibration smoke (41.12) reads far below the design figure: at cost 150 the realised return is small and farming was not shown to be selected (power low: one seed per arm, 6 000 steps). The effect is
 concave in practice: where the cell is already at `resource_cap` the bonus is clipped away (`FARM_YIELD` counts only what was
 produced). The kin share of the harvest, the lasting-farm lineage statistics and the provenance stamps are F2 (offline).
 
@@ -13089,13 +13089,12 @@ produced). The kin share of the harvest, the lasting-farm lineage statistics and
 Counter block `niche`: `FARMERS` (rows with `units > 0`, the `ActFlag.FARMING` = 2048 form), `FARM_YIELD`, `SOIL_PUT`, `SOIL_WASTED`,
 `SOIL_DECAYED`, `SOIL_TOTAL` (a level), `SLOTS_FULL` (1 on a step that ends with the alive count at `N_CAP = n_max - max_births`, the
 bound the lane allocator never lets the population exceed). The per-step counters are int32; the interval sums in
-`metrics.interval_row` are int64 on the host, and `validate` bounds `farm_cap * cells < 2^31` and `farm_cost * farm_rate * n_max
-< 2^31`. Metrics: `farm_farmer_frac`, `farm_put`, `farm_wasted`, `farm_decayed`, `farm_soil_total` (interval mean),
+`metrics.interval_row` are int64 on the host, and `validate` bounds `farm_cap * cells < 2^31`, `farm_rate * n_max < 2^31` (also at cost 0), `farm_cost * farm_rate * n_max < 2^31` and `cells * (farm_bonus_frac * regen_max + 1) < 2^31` (`FARM_YIELD`); `bench.py` sums counters across steps in int64. Metrics: `farm_farmer_frac`, `farm_put`, `farm_wasted`, `farm_decayed`, `farm_soil_total` (interval mean),
 `farm_yield`, `farm_yield_share` (`FARM_YIELD / INJECT_REGEN`), `farm_full_frac`, `farm_blocked_frac` (`BIRTHS_BLOCKED /
 BIRTH_REQUESTS`) and `farm_blocked_alarm` (true when more than half of the interval's steps ended at `N_CAP` and some birth was
 refused). E20: soil that makes the colony immortal-ish and fills every slot would silently make the run a study of crowding; the
 alarm and `full_frac` make it visible in `metrics.jsonl`, and a stress test packs a world to `N_CAP` and checks the alarm and the
-invariants. (`BIRTHS_BLOCKED` alone is not the alarm: it also counts requests refused by the per-step lane limit.)
+invariants. (`BIRTHS_BLOCKED` alone is not the alarm: it also counts requests refused by the per-step lane limit.) The alarm fires on any capacity-bound interval, farming or not (it reads `N_CAP`, not the soil), and has no hysteresis: it is evaluated per interval row.
 
 ### 41.9 Controls, the Director, the invariants
 
@@ -13108,8 +13107,8 @@ flags `FIELD_RANGE` when the soil leaves `[0, farm_cap]`; the host check (`full_
 
 `[niche]`: `farm` false, `farm_rate` 8 (1..256), `farm_cap` 4095 (1..32767), `farm_cost` 30 (0..2^15, `farm_cost * farm_rate < 2^20`),
 `farm_decay_q16` 16 (1..65535), `farm_bonus_frac` 0.5 (0..1), `silent_init` true, `control` "none". All are in `POST_V01_KEYS`
-(hashed, omitted at the default); every key but `farm` must keep its default while `farm` is false. Overlay `niche`
-(`presets/niche.toml`, the 2D values; add `--set niche.farm_cost=150` in 3D), `alife bench --niche`, `alife migrate --enable
+(hashed, omitted at the default); every key but `farm` must keep its default while `farm` is false. Overlays `niche`
+(`presets/niche.toml`, the 2D values) and `niche3d` (cost 150), `alife bench --niche`, `alife migrate --enable
 niche`. Constants in code: the two salts, `BLOCKED_ALARM_FRAC` 0.5. The keys `run.niche_every` and the marks and store keys do
 not exist yet (F2 and later).
 
@@ -13412,7 +13411,7 @@ spurious "language"); `test_ext_salts.py` pins the table and checks every pair f
   `state.counter_index(cfg, name)` (consumers use names, never offsets; names are globally unique);
   `metrics.interval_row(..., blocks=)` and the viewer take the blocks, and a row adds `prot_capped_frac` when the protect
   block exists. The `protect` block (`PROT_CAPPED`) exists when `combat.protect_floor > 0`; the feature blocks are
-  `arms` 5, `structures` 11, `bonds` 5, `comm` 2, `niche` 7 counters (names in the plan; declared by each feature; the
+  `arms` 0 (until A2), `structures` 11, `bonds` 5, `comm` 2, `niche` 7 counters (names in the plan; declared by each feature; the
   farm block is `FARMERS FARM_YIELD SOIL_PUT SOIL_WASTED SOIL_DECAYED SOIL_TOTAL SLOTS_FULL`, §41.8).
 
 ### 43.5 Flags, `Acts.ext`, observer registries

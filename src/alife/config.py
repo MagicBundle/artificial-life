@@ -493,7 +493,12 @@ PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mi
 OVERLAYS: tuple[str, ...] = ("fast",)  # compose with every preset
 # Overlays that need a particular world (DESIGN §30): validated against whatever preset they land on, and not
 # part of ``OVERLAYS`` (which means "composes with every preset").
-WORLD_OVERLAYS: tuple[str, ...] = ("storm", "storm160", *(s.overlay for s in ext.REGISTRY if s.overlay))
+WORLD_OVERLAYS: tuple[str, ...] = (
+    "storm",
+    "storm160",
+    *(s.overlay for s in ext.REGISTRY if s.overlay),
+    "niche3d",  # farming at the 3D design point (farm_cost 150): a variant of the niche overlay
+)
 ALL_OVERLAYS: tuple[str, ...] = OVERLAYS + WORLD_OVERLAYS  # what the loaders and the CLI accept
 DEFAULT_PRESET: Final = "64k"
 

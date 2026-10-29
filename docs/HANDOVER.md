@@ -104,7 +104,7 @@ PR F1 (stacked on C1, not merged) is the engine of the farming half of niche con
 are deferred by the owner's decision of 2026-10-28: marks only if signals prove used, stores because they need a 17th ledger term).
 `niche.farm` gives the food lattice an int32 `soil` level (0 to `farm_cap`, 4095) and every organism one input `farm` (the soil at its
 cell) and one output `farm_put`. A put of `u` units (`floor(farm_rate · put + dither)`, up to 8 a step) costs `farm_cost` q per unit in
-`HEAT_ACTION` (30 in the 2D overlay, **150 in a 3D world**: pass `--set niche.farm_cost=150`; `validate` warns when it is far too low),
+`HEAT_ACTION` (30 in the 2D overlay, **150 in a 3D world**: use `--overlay niche3d`; `validate` warns when it is far too low),
 raises the soil, and the soil decays by a dithered integer rule (mean life 4096 steps). The bonus `(soil · q) >> 16`, at most
 `farm_bonus_frac · regen_max` (0.5) per cell and step, is added to the regrowth inside its clip, so `INJECT_REGEN` books it and
 `resource_cap` still binds; the regrowth is for whoever eats there, so farming is a public-goods game (gross return about 5.5 times the

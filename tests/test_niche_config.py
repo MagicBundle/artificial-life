@@ -261,3 +261,41 @@ def test_e20_stress_a_packed_farming_world_raises_the_alarm() -> None:
     assert row["births_blocked"] > 0 and row["farm_full_frac"] > 0.5, row
     assert row["farm_blocked_alarm"] is True
     assert int(to_numpy(s.diag)) & 0xFFFF == 0 and invariants.full_check(s, cfg) == []
+
+
+# --- review fixes: the 3D overlay and the E10 bounds ------------------------------------------------------
+
+
+def test_the_niche3d_overlay_is_the_3d_design_point_without_a_set(caplog: pytest.LogCaptureFixture) -> None:
+    assert "niche3d" in config.WORLD_OVERLAYS
+    with caplog.at_level(logging.WARNING, logger="alife.ext.niche"):
+        c3 = load_config(preset="mini3d", overlays=["niche3d"])
+    assert c3.niche.farm and c3.niche.farm_cost == 150 and c3.fields.regen_max == 1700
+    assert not caplog.records  # at the design point: no "nearly free" warning
+    assert load_config(preset="mini3d", overlays=["niche"]).niche.farm_cost == 30  # the 2D value, still warns
+    with caplog.at_level(logging.WARNING, logger="alife.ext.niche"):
+        load_config(preset="mini3d", overlays=["niche3d"], overrides=["niche.farm_cost=10"])
+    assert any("farm_cost" in r.message for r in caplog.records)  # an explicit cheap cost still warns
+
+
+@pytest.mark.parametrize(
+    ("over", "msg"),
+    [
+        (["niche.farm_cost=0", "niche.farm_rate=256", "population.n_max=16777216"], "SOIL_PUT"),
+        (
+            ["niche.farm_bonus_frac=1.0", "fields.regen_max=8000", "world.size=4096", "world.field_cell=1"],
+            "FARM_YIELD",
+        ),
+    ],
+)
+def test_e10_the_counters_cannot_overflow_even_at_zero_cost(over: list[str], msg: str) -> None:
+    with pytest.raises(ConfigError, match=msg):
+        load_config(preset="tiny", overrides=["niche.farm=true", *over])
+
+
+def test_the_bench_sums_counters_in_int64() -> None:
+    import inspect
+
+    from alife import bench
+
+    assert "astype(mx.int64)" in inspect.getsource(bench)

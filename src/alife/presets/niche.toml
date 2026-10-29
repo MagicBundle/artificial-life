@@ -1,6 +1,6 @@
 # niche overlay: farming (DESIGN section 41). A WORLD overlay like `build`, `bonds` and `comm`: it composes with any
 # preset, 2D or 3D, but the cost of a unit scales with the regrowth: the defaults below are the 2D 64k working set
-# (`fields.regen_max` 320); in a 3D world (`regen_max` 1700) add `--set niche.farm_cost=150` (validate warns when the
+# (`fields.regen_max` 320); in a 3D world (`regen_max` 1700) use the overlay `niche3d` instead (farm_cost 150; validate warns when the
 # cost is far below the design point).
 #
 # An organism may put up to 8 units a step into the soil of its food cell (cost 30 q per unit); a unit decays with a
