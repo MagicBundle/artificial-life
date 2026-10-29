@@ -12449,6 +12449,8 @@ on 64k3d (the spec's §7).
 
 **Notes for later PRs.** (1) The observer channel `Acts.thrust` records the brain's thrust, not the armour-slowed thrust the physics sees (consistent with the cost, paid on the brain's thrust); A2 consumers should know. (2) The dither salt changed with the merge of the hash-salt table (`4b32729`): arms-on checkpoints from before that commit exist only in the scratchpad, and nothing was merged, so no version bump is needed. (3) `bench --arms` stores `cfg.arms` in its report (`arms.arms_config`).
 
+(4) **Migration (§43.8).** The row has an `enable` hook, so `alife migrate RUN --enable arms --set arms.<key>=...` turns arms on in an evolved world: no layout change (`layout_features` stays empty), the `arms` field is filled by `rest` (init values, keys and locks from the init stream), the new run records `rng_layout_version` 4; `tests/test_arms_migrate.py` (2D and 3D) steps the migrated world with the ledger closing.
+
 ### 42.7 Tests
 
 `tests/test_arms.py` (T1, T2, T3 of the combat, E11, E12, E13, the costs), `tests/test_arms_state.py` (config hashes, state,

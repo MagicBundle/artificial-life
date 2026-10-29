@@ -97,8 +97,16 @@ def _validate(cfg: Any) -> None:
         raise ConfigError("; ".join(bad))
 
 
+def _enable(cfg: Any) -> Any:
+    """``alife migrate --enable arms``: the config with ``arms.enabled`` on (``--set`` moves the rest)."""
+    import dataclasses
+
+    return dataclasses.replace(cfg, arms=dataclasses.replace(cfg.arms, enabled=True))
+
+
 SPEC = ExtSpec(
     name="arms",
+    enable=_enable,
     enabled=_enabled,
     state_fields=_state_fields,
     lever_keys=tuple(("arms", k) for k in _KEYS),
