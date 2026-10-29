@@ -48,6 +48,10 @@ with a `LABEL_VERDICTS` row for the world and rule set (none for V2 or V3 yet) a
 Built structures (`DESIGN.md` §38, I67; `State.mat`, the `build` output, shelter, barrier, predator shield and the anti-trapping
 rules R1 to R3): the engine (S1) is implemented behind `structures.enabled` (`--overlay build`); observers, stream and GUI are S2 and S3.
 
+Bonds that pay (`DESIGN.md` §40, I69; conductive sharing `bonds.share_mode` 1 and 2, the bond brain block, committed roles): B1 (sharing,
+`bond_flow`, the whole 13+2 block, counters) is implemented behind `bonds.share_mode`/`roles.enabled` (`--overlay bonds`); roles are B2,
+observers and scorecard B3.
+
 ## Conventions
 
 - Change DESIGN.md in the same change as any behaviour, signature or default it pins, and add a Review-log row.

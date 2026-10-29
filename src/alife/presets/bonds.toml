@@ -1,0 +1,18 @@
+# bonds overlay: bonds that pay (DESIGN section 40). A WORLD overlay like `build`: it composes with any preset.
+#
+# B1 (conductive sharing): mode 2 is the obligate equalising flow along every bond (the richer end sends a
+# fraction `share_kappa` of the gap, a non-kin bond loses more as heat), and `roles.enabled` allocates the
+# bond block of the brain (13 inputs, 2 outputs) and the role state. The role effects (forager, guard) arrive
+# with B2. Every value is PROVISIONAL until the first runs; the arms are the legacy gift (share_mode = 0),
+# mode 1 (mutual consent) and mode 2 (obligate).
+#
+# The brain grows by 15 weight rows/columns (about 9.6 % of the parameters at h = 32); no brain-cost
+# compensation is applied (scale `energy.brain_cost_per_l1` by params_off / params_on with --set for a clean
+# A/B on founder cost).
+[bonds]
+share_mode = 2
+share_kappa = 0.125
+share_kin_floor = 0.5
+
+[roles]
+enabled = true

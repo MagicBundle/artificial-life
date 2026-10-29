@@ -33,6 +33,9 @@ bool, None, lists and dicts only); ``format_report`` renders it for a terminal.
 - **Structures** (``structures``, S1, DESIGN §38): the step with built structures on against the same config
   with them off, the same (off, on, on, off) blocks; the trajectories differ by construction (the brain has
   one more input and output). The spec's estimate: under 3 % of the step on 64k3d.
+- **Bonds** (``bonds_arm``, B1, DESIGN §40): the step with the bonds feature on (the conductive share, the
+  bond block of the brain, the role state) against the same config with it off, the same (off, on, on, off)
+  blocks; the trajectories differ by construction. The spec's estimate: about 5 % of the fused step on 64k3d.
 - **Weather-org** (``weather_org``, W2): the same blocks with the weather on in both arms, the "off" arm
   having ``seed_gain = shade_gain = 0``: the marginal cost of the organism couplings (the seeding signal and
   the shade count, DESIGN §32).
@@ -83,6 +86,7 @@ from alife.config import (
     ArmsConfig,
     Config,
     ConfigError,
+    RolesConfig,
     StructuresConfig,
     WeatherConfig,
     apply_overrides,
@@ -145,6 +149,10 @@ _GB: Final = float(1 << 30)
 WEATHER_PAIRS: Final = 2  # off/on block pairs, in the order off on on off (the leading arm alternates)
 
 
+# The keys of ``[bonds]`` that the bonds feature adds, at their defaults (the "off" arm of ``bench --bonds``).
+_BONDS_OFF = {"share_mode": 0, "share_kappa": 0.125, "share_kin_floor": 1.0}
+
+
 def run_bench(
     cfg: Config,
     *,
@@ -159,6 +167,7 @@ def run_bench(
     weather_org: bool = False,
     arms: bool = False,
     structures: bool = False,
+    bonds_arm: bool = False,
 ) -> dict[str, Any]:
     """Run the benchmark suite and return a JSON-compatible report.
 
@@ -184,6 +193,8 @@ def run_bench(
         )
     if arms and not cfg.arms.enabled:
         raise ConfigError("bench --arms needs arms.enabled = true (for example --set arms.enabled=true)")
+    if bonds_arm and not bonds.bonds_ext(cfg):
+        raise ConfigError("bench --bonds needs the bonds feature (for example --overlay bonds)")
     if structures and not cfg.structures.enabled:
         raise ConfigError("bench --structures needs structures.enabled = true (for example --overlay build)")
     if weather_pairs < 1:
@@ -214,6 +225,12 @@ def run_bench(
                 cfg, steps, warmup, weather_pairs, off=replace(cfg, structures=StructuresConfig())
             ),
             "structures_config": dataclasses.asdict(cfg.structures),
+        }
+    if bonds_arm:
+        off = replace(cfg, bonds=replace(cfg.bonds, **_BONDS_OFF), roles=RolesConfig())
+        report["bonds"] = {
+            **_bench_weather(cfg, steps, warmup, weather_pairs, off=off),
+            "bonds_config": {**dataclasses.asdict(cfg.bonds), **dataclasses.asdict(cfg.roles)},
         }
     return report
 
@@ -716,6 +733,7 @@ class _Interact(NamedTuple):
     dt: lifecycle.Deaths
     mo: actions.Motion3 | None = None  # 3D only, masked by solvency
     xdec: dict[str, Any] | None = None  # the feature decodes, masked by solvency (§43)
+    bupd: dict[str, mx.array] | None = None  # the bonds fields of the survivors (bonds on, DESIGN §40)
 
 
 def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
@@ -817,7 +835,13 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         E, resource, got = en.harvest(c.energy, s.resource, se.fcell, act, c.solvent, cfg)
         shield_kw = structures.combat_kw(se.sn, cfg) if se.sn is not None else {}
         cb = en.combat(E, resource, se.fcell, act, partner, cfg, **arms.combat_kw(s, cfg), **shield_kw)
-        sh = en.share(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)
+        bx = bonds.bonds_ext(cfg)  # static
+        if bx:  # static: the per-slot flows feed the bond_flow memory (mirror of step.step)
+            kin = bonds.slot_kin(s.tag, partner, cfg) if cfg.bonds.share_kin_floor < 1.0 else None
+            sl = en.share_slots(cb.energy, partner, rev, s.partner, act, c.solvent, cfg, kin)
+            sh = en.share_from_slots(cb.energy, sl)
+        else:
+            sh = en.share(cb.energy, partner, rev, s.partner, act, c.solvent, cfg)
         E, e_over = en.cap_energy(sh.energy, cfg)
         env = s.env if cfg.director.enabled else None  # static
         cat_mask = (
@@ -843,8 +867,12 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             cat_mask=cat_mask,
             storm_mask=storm,
         )
+        bupd = None
+        if bx:  # static
+            bupd, bflows = bonds.state_after(s, dt.survivor, dt.partner, sl, cfg)
+            xdec = {**xdec, "bonds": bflows}
         return _Interact(
-            c, act, partner, rev, formed, as_prop, broken, slots_s9, got, cb, sh, e_over, dt, mo, xdec
+            c, act, partner, rev, formed, as_prop, broken, slots_s9, got, cb, sh, e_over, dt, mo, xdec, bupd
         )
 
     def move(
@@ -897,6 +925,8 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         )
         if d3:  # static
             s1 = s1._replace(pitch=moved.pitch)
+        if it.bupd is not None:  # static: bonds on
+            s1 = s1._replace(**it.bupd)
         req = sv & act.reproduce & (dt.energy >= cfg.repro.min_energy) & (a >= cfg.repro.min_age)
         imm_request = s.env_imm_request if cfg.director.enabled else None  # static
         lanes = lifecycle.allocate_lanes(req, sv, ks[Stream.BIRTH_PRIO], cfg, s.step, imm_request=imm_request)
@@ -1790,6 +1820,7 @@ def format_report(report: dict[str, Any]) -> str:
         ("weather", "weather", "weather"),
         ("weather_org", "weather-org (seeding and shade)", "the couplings"),
         ("structures", "structures", "built structures"),
+        ("bonds", "bonds", "bonds that pay"),
     ):
         if key in r:
             wt = r[key]

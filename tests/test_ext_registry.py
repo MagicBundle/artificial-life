@@ -18,8 +18,9 @@ from alife.step import ActFlag
 
 def test_with_every_feature_off_every_function_is_the_identity() -> None:
     """PR 0a shipped the machinery with an empty registry; A1 registers the arms row and S1 the structures
-    row. With every feature off (the default), nothing a feature-off run sees can change."""
-    assert [s.name for s in ext.REGISTRY] == ["arms", "structures"]
+    row and B1 the bonds row. With every feature off (the default), nothing a feature-off run sees can
+    change."""
+    assert [s.name for s in ext.REGISTRY] == ["arms", "structures", "bonds"]
     cfg = load_config(preset="tiny")
     assert ext.active(cfg) == () and ext.layout_features(cfg) == "" and ext.mask(cfg) == 0
     assert (
@@ -28,12 +29,14 @@ def test_with_every_feature_off_every_function_is_the_identity() -> None:
         and ext.step_inputs(None, cfg) == ()
     )
     assert ext.sum_due([None, None]) is None
-    assert ext.registered_block_names() == frozenset({"MATERIAL", "BUILD"})
+    assert ext.registered_block_names() == frozenset(
+        {"MATERIAL", "BUILD", "ROLE", "BOND_ROLE", "BOND_KIN", "BOND_FLOW", "ROLE_A", "ROLE_B"}
+    )
     n_feature_keys = sum(len(v) for v in config.FEATURE_KEYS.values())
     assert config.POST_V01_KEYS[-n_feature_keys - 1] == ("combat", "protect_floor")
-    assert set(config.FEATURE_KEYS) == {"arms", "structures"}
-    assert config.POST_V01_KEYS[-1] == ("structures", "silent_build")
-    assert config.WORLD_OVERLAYS == ("storm", "storm160", "build")
+    assert set(config.FEATURE_KEYS) == {"arms", "structures", "bonds"}
+    assert config.POST_V01_KEYS[-1] == ("roles", "enabled")
+    assert config.WORLD_OVERLAYS == ("storm", "storm160", "build", "bonds")
     assert ext.check_registry() == []
 
 

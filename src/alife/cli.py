@@ -1574,6 +1574,7 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         weather_org=a.weather_org,
         arms=a.arms,
         structures=a.structures,
+        bonds_arm=a.bonds,
     )
     text = _dumps(report)
     if a.json is not None:
@@ -1975,6 +1976,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also time the step with built structures on against the same config with them off (interleaved "
         "blocks; needs structures.enabled, for example --overlay build)",
+    )
+    p.add_argument(
+        "--bonds",
+        action="store_true",
+        help="also time the step with the bonds feature on against the same config with it off (interleaved "
+        "blocks; needs bonds.share_mode or roles.enabled, for example --overlay bonds)",
     )
     p.add_argument(
         "--weather-pairs",

@@ -101,6 +101,11 @@ class BondConfig:
     release_threshold: float = 1.0
     share_rate: int = 1000  # q per slot per step at share = 1
     share_efficiency: float = 0.9
+    # Bonds that pay (DESIGN §40), post v0.1 (``POST_V01_KEYS`` through ``ext.bonds.SPEC.lever_keys``): inert
+    # at their defaults, and ``share_kappa`` / ``share_kin_floor`` only while ``share_mode`` is not 0.
+    share_mode: int = 0  # 0 the legacy gift; 1 conductive, mutual consent; 2 conductive, obligate
+    share_kappa: float = 0.125  # conductive: fraction of the energy gap sent per step, (0, 1/(2B)]
+    share_kin_floor: float = 1.0  # conductive: efficiency scale of a non-kin bond, [0, 1]; 1 = kin-blind
 
 
 @dataclass(frozen=True)
@@ -352,6 +357,16 @@ class StructuresConfig:  # built structures: material, shelter, barrier, predato
 
 
 @dataclass(frozen=True)
+class RolesConfig:  # committed roles on bonds (DESIGN §40); post v0.1
+    """Every key changes the compiled step, so every key is hashed (``POST_V01_KEYS`` through
+    ``ext.bonds.SPEC.lever_keys``) and is inert at its default while ``enabled`` is false (``validate``).
+    ``enabled`` allocates the bond brain block and the role state; the role effects arrive with the keys of
+    B2."""
+
+    enabled: bool = False  # static: the role state and the brain block exist (with bonds.share_mode != 0 too)
+
+
+@dataclass(frozen=True)
 class Config:
     world: WorldConfig = field(default_factory=WorldConfig)
     population: PopulationConfig = field(default_factory=PopulationConfig)
@@ -369,6 +384,7 @@ class Config:
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     arms: ArmsConfig = field(default_factory=ArmsConfig)
     structures: StructuresConfig = field(default_factory=StructuresConfig)
+    roles: RolesConfig = field(default_factory=RolesConfig)
     run: RunConfig = field(default_factory=RunConfig)
 
 

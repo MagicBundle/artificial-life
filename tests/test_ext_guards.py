@@ -46,6 +46,10 @@ FROZEN_OMITTED_DEFAULTS = {
     ("structures", "aperture"): 0.25,
     ("structures", "exit_ease"): 0.75,
     ("structures", "silent_build"): False,
+    ("bonds", "share_mode"): 0,
+    ("bonds", "share_kappa"): 0.125,
+    ("bonds", "share_kin_floor"): 1.0,
+    ("roles", "enabled"): False,
 }
 
 
