@@ -22,6 +22,11 @@ from alife.state import init_state
 # lever_keys) adds a row here.
 FROZEN_OMITTED_DEFAULTS = {
     ("combat", "protect_floor"): 0.0,
+    ("world", "geometry"): "box",  # the sphere series (DESIGN §46.9, PR S0): SPHERE_KEYS, all off by default
+    ("world", "radius"): 0.0,
+    ("world", "nside"): 0,
+    ("world", "layers"): 0,
+    ("physics", "ceiling_band"): 0.0,
     ("arms", "enabled"): False,
     ("arms", "kappa"): 2.0,
     ("arms", "a0"): 1.0,

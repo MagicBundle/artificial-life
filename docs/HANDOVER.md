@@ -130,6 +130,15 @@ DESIGN §33.1.15 (and the GUI contract of the PR); the registry rows carry `dump
 stamps of farming (a state field and a hashed key, so not observer-only), the colour modes `arms`, `lock`, `voice`, `soil`, the inspector
 rows, the GUI, the `FARS` record. Next: the GUI PRs (S3, B3 overlay, C2 panel, A6, F3), then the analysis modules and the runs.
 
+## The true sphere: S0, geometry and guards (DESIGN §46, row I77)
+
+The owner asked for a true sphere (`world.geometry = "sphere"`: HEALPix cells on a planet, radial gravity, Cartesian agents), built in PRs S0 to S7. S0 is merged-ready and runs nothing:
+`src/alife/geom.py` (host: the HEALPix scheme, the exact neighbour tables, the exact coverage of the hash stencils and the `Nh`/`C` derivations, the equal-volume layers, the host accessors),
+`src/alife/sphere.py` (device: the float32 lookup, `move`, the device accessors), the five config keys (`config.SPHERE_KEYS`, omitted from `config.json` at their defaults), the geometry lint with
+`tests/geometry_allowlist.py` (the audit of the box-geometry consumers, a ratchet; each PR of the series bumps `CURRENT_PR` and deletes the entries it converts), and the oracle `tests/hp_oracle.py`
+(the review's independent HEALPix), plus `docs/SPHERE.md` (the series specification, revision 1). `validate` refuses a sphere (`config.GEOMETRY_SUPPORTED = ("box",)`) until S2. Next: S1, the sphere fields (int64 diffusion flux, `StateS`), then S2 (agents, search,
+`tiny3s`; needs the compile-collision guard `fix/mlx-compile-collision` merged, or the subprocess fallback of DESIGN §46.11).
+
 ## How to run
 
 ```bash
