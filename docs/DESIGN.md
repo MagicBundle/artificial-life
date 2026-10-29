@@ -13153,7 +13153,7 @@ with structures, bonds, roles, comm and arms), `tests/test_niche_compile.py` (E4
   -0.05 ms, pairs between -0.13 and +0.07 ms): **no measurable cost** (under 1 %, below the run-to-run noise; the other agents' CPU suites were
   running at the time). The stigmergy spec's estimate for the farm part was about +1 ms; the soil update is one scatter into a 65 000-cell lattice
   and a handful of elementwise integer ops, and the brain grows by one input and one output. Peak memory 1.01 GB.
-* **Tests**: FASTSUITE_PLACEHOLDER
+* **Tests**: ruff check and format clean on the whole repo; fast suite (CPU plugin, `-n 4 --dist loadfile`) 5 095 passed, 91 skipped, 1 xfailed and one failure that is the base's (`test_lifecycle_compiles_and_matches_eager`); after merging the C1 review fixes (`a908502`) the touched suites (comm, niche, ext_*) pass again (235) and the identity matrix is bit-identical. Metal: `test_game_purity` (the purity gate), `test_niche_farm`, `test_niche_config`, `test_niche_step`, `test_niche_compile`, `test_niche_director` (127 passed), `test_ext_*`, `test_invariants`, `test_bench` pass.
 
 ### 41.13 Deferrals
 
