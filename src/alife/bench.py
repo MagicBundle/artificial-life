@@ -72,6 +72,7 @@ from alife import (
     lifecycle,
     metrics,
     physics,
+    roles,
     sensing,
     spatial,
     structures,
@@ -832,10 +833,22 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
             partner, rev, s.alive & c.solvent & act.bond_want, act.bond_target, ks[Stream.BOND_PRIO]
         )
         slots_s9 = (partner >= 0).astype(mx.int32).sum()
-        E, resource, got = en.harvest(c.energy, s.resource, se.fcell, act, c.solvent, cfg)
-        shield_kw = structures.combat_kw(se.sn, cfg) if se.sn is not None else {}
-        cb = en.combat(E, resource, se.fcell, act, partner, cfg, **arms.combat_kw(s, cfg), **shield_kw)
         bx = bonds.bonds_ext(cfg)  # static
+        ef = roles.effects(s, act, partner, cfg) if cfg.roles.enabled else None  # static
+        E, resource, got = en.harvest(
+            c.energy,
+            s.resource,
+            se.fcell,
+            act,
+            c.solvent,
+            cfg,
+            harvest_cap=None if ef is None else ef.harvest_cap,
+        )
+        shield_kw = structures.combat_kw(se.sn, cfg) if se.sn is not None else {}
+        if ef is not None and ef.guard is not None:  # static
+            shield_kw = {**shield_kw, "guard": ef.guard}
+        act_c = act if ef is None else roles.combat_act(act, ef.defend_mult)
+        cb = en.combat(E, resource, se.fcell, act_c, partner, cfg, **arms.combat_kw(s, cfg), **shield_kw)
         if bx:  # static: the per-slot flows feed the bond_flow memory (mirror of step.step)
             kin = bonds.slot_kin(s.tag, partner, cfg) if cfg.bonds.share_kin_floor < 1.0 else None
             sl = en.share_slots(cb.energy, partner, rev, s.partner, act, c.solvent, cfg, kin)
@@ -869,7 +882,18 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         )
         bupd = None
         if bx:  # static
-            bupd, bflows = bonds.state_after(s, dt.survivor, dt.partner, sl, cfg)
+            bupd, bflows = bonds.state_after(
+                s,
+                dt.survivor,
+                dt.partner,
+                sl,
+                cfg,
+                dec=xdec["bonds"] if cfg.roles.enabled else None,
+                guard=None if ef is None else ef.guard,
+                shielded=roles.shielded_by_guard(
+                    None if ef is None else ef.guard, cb.attack, act.attack_target
+                ),
+            )
             xdec = {**xdec, "bonds": bflows}
         return _Interact(
             c, act, partner, rev, formed, as_prop, broken, slots_s9, got, cb, sh, e_over, dt, mo, xdec, bupd

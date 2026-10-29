@@ -4,6 +4,7 @@ counters and metrics (E10)."""
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -100,12 +101,8 @@ def test_defaults_keep_every_hash_and_the_keys_are_post_v01() -> None:
         cfg = load_config(preset=preset)
         d = config.config_to_dict(cfg, omit_defaults=True)
         assert "roles" not in d and not {"share_mode", "share_kappa", "share_kin_floor"} & set(d["bonds"])
-    keys = {
-        ("bonds", "share_mode"),
-        ("bonds", "share_kappa"),
-        ("bonds", "share_kin_floor"),
-        ("roles", "enabled"),
-    }
+    keys = {("bonds", k) for k in ("share_mode", "share_kappa", "share_kin_floor")}
+    keys |= {("roles", f.name) for f in dataclasses.fields(config.RolesConfig)}
     assert keys <= set(config.POST_V01_KEYS) and keys <= set(config.SERIAL_OMIT_KEYS)
     assert keys == set(config.FEATURE_KEYS["bonds"])
     on = load_config(preset="tiny", overrides=["bonds.share_mode=2"])
@@ -215,36 +212,64 @@ def test_off_has_no_bonds_state_and_the_counter_block_is_absent() -> None:
 # --- E15: a partner dies and its row is reused in the same step -------------------------------------------
 
 
-def test_e15_a_reused_row_carries_no_bond_or_memory_of_its_predecessor() -> None:
-    """Rows that die at S14 are free for the births of the same step. The bond cleanup (S14, before reuse)
-    and the ``on_birth = rest`` policy of the bonds fields must leave the newborn with no partner but its
-    parent, role 0, dwell 0 and bond_flow 0, and leave no survivor pointing at the reused row nor holding a
-    flow memory for a bond that is gone."""
+def test_e15_the_scripted_reuse_of_a_dead_partners_row() -> None:
+    """Row 0 (energy 0, consent closed, so nothing rescues it) starves at S14 while bonded to row 1, which
+    holds a flow memory of that bond; in the same step row 2 buds into the first free row, which is row 0, and
+    bonds to its child. The survivor must lose the bond and the memory; the newborn must carry neither the
+    bond, the role, the dwell nor the flow of its predecessor."""
+    cfg = cfg_for(2, 1)
+    n = dims(cfg).n
+    bf, role, dwell = np.zeros((n, 4), np.int16), np.zeros(n, np.int8), np.zeros(n, np.int16)
+    bf[1, 0], bf[0, 0], role[0], role[1], dwell[0], dwell[1] = 777, -777, 1, 2, 5, 9
+    agents = [
+        dict(pos=(10.0, 10.0), energy=0, birth_step=-100),
+        dict(pos=(11.5, 10.0), energy=300_000, birth_step=-100),
+        dict(pos=(30.0, 30.0), energy=400_000, birth_step=-100),
+    ]
+    s = helpers.make_scene(
+        cfg, agents, bonds=[(0, 1)], role=mx.array(role), role_dwell=mx.array(dwell), bond_flow=mx.array(bf)
+    )
+    s = helpers.set_output_bias(s, cfg, {layout.OUT_REPRODUCE: 4.0, layout.OUT_CHILD_BOND: 4.0})
+    w2 = np.array(s.W2)
+    w2[:2, dims(cfg).h, layout.OUT_REPRODUCE] = -4.0  # only row 2 buds
+    s = s._replace(W2=mx.array(w2))
+    uid0 = int(to_numpy(s.uid)[0])
+    s1, out = make_step(cfg)(s)
+    mx.eval(s1, out)
+    alive, uid = to_numpy(s1.alive), to_numpy(s1.uid)
+    assert alive[:3].all() and uid[0] != uid0  # row 0 died and was reused in the same step
+    assert np.asarray(out.births.slot)[np.asarray(out.births.valid)].tolist() == [0]
+    partner, flow = to_numpy(s1.partner), to_numpy(s1.bond_flow)
+    assert (partner[1] == -1).all() and not flow[1].any()  # the survivor lost the bond and its memory
+    assert partner[0].tolist() == [2, -1, -1, -1] and partner[2, 0] == 0  # the newborn has only its parent
+    assert not flow[0].any() and to_numpy(s1.role)[0] == 0 and to_numpy(s1.role_dwell)[0] == 0
+    assert to_numpy(s1.role)[1] == 2 and to_numpy(s1.role_dwell)[1] == 10  # the survivor keeps its own role
+    assert invariants.full_check(s1, cfg, s, out) == []
+
+
+def test_e15_random_runs_keep_the_bond_invariants_across_deaths_and_births() -> None:
+    """Over 400 steps of a tiny world (mode 2, kin floor 0.5) every row reused in a step has no partner but
+    its parent and fresh fields, no survivor points at a reused row but its parent, and the host invariants
+    hold."""
     cfg = cfg_for(2, 2, "bonds.share_kin_floor=0.5")
-    reused = reused_bonded = 0
-    for prev, s, out in _run(cfg, 700):
+    reused = 0
+    for prev, s, out in _run(cfg, 400):
         pa, na = to_numpy(prev.alive), to_numpy(s.alive)
-        puid, nuid = to_numpy(prev.uid), to_numpy(s.uid)
-        new = na & ((~pa) | (puid != nuid))
-        old_bonded = (to_numpy(prev.partner) >= 0).any(1)
+        new = na & ((~pa) | (to_numpy(prev.uid) != to_numpy(s.uid)))
         reused += int((new & pa).sum())
-        reused_bonded += int((new & pa & old_bonded).sum())
-        partner, rev = to_numpy(s.partner), to_numpy(s.rev)
-        flow = to_numpy(s.bond_flow)
-        parent_uid = to_numpy(s.parent_uid)
-        uid = to_numpy(s.uid)
+        partner, rev, flow = to_numpy(s.partner), to_numpy(s.rev), to_numpy(s.bond_flow)
+        uid, parent_uid = to_numpy(s.uid), to_numpy(s.parent_uid)
         for row in np.flatnonzero(new):
-            assert to_numpy(s.role)[row] == 0 and to_numpy(s.role_dwell)[row] == 0
-            assert not flow[row].any()
-            for p in partner[row][partner[row] >= 0]:  # only the parent (a child bond), if anything
+            assert to_numpy(s.role)[row] == 0 and to_numpy(s.role_dwell)[row] == 0 and not flow[row].any()
+            for p in partner[row][partner[row] >= 0]:
                 assert uid[p] == parent_uid[row]
         for i, b in zip(*np.nonzero(partner >= 0), strict=True):
             j = partner[i, b]
             assert na[j] and partner[j, rev[i, b]] == i and rev[j, rev[i, b]] == b
             if new[j] and not new[i]:
-                assert uid[i] == parent_uid[j]  # a survivor bonded to a reused row is its parent
+                assert uid[i] == parent_uid[j]
         assert invariants.full_check(s, cfg, prev, out) == []
-    assert reused_bonded > 0, "the run must exercise a reused row that had bonds"
+    assert reused > 0
 
 
 def test_state_after_clears_dead_rows_and_gone_slots() -> None:
@@ -272,7 +297,7 @@ def test_state_after_clears_dead_rows_and_gone_slots() -> None:
         0,
         8,
     ]
-    assert int(f.switches) == 0  # clearing a dying row is not a switch
+    assert int(f.switched.sum()) == 0  # clearing a dying row is not a switch
     big = SimpleNamespace(out=mx.zeros((n, b), dtype=mx.int32), got=mx.full((n, b), 10**6, dtype=mx.int32))
     upd, _ = bonds.state_after(s, sv, partner, big, None)
     assert np.asarray(upd["bond_flow"]).max() == 32767  # clipped to int16
@@ -282,7 +307,7 @@ def test_state_after_clears_dead_rows_and_gone_slots() -> None:
 
 
 def test_counters_and_metrics_row() -> None:
-    cfg = cfg_for(2, 2)
+    cfg = cfg_for(2, 2, roles=False)  # sharing only: the role counters read 0
     fn, s = make_step(cfg), init_state(cfg)
     cs, ls = [], []
     for _ in range(30):

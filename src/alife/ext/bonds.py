@@ -24,6 +24,15 @@ _KEYS = (
     ("bonds", "share_kappa"),
     ("bonds", "share_kin_floor"),
     ("roles", "enabled"),
+    ("roles", "forage_gain"),
+    ("roles", "forage_defend_pen"),
+    ("roles", "guard_harvest_pen"),
+    ("roles", "guard_shield"),
+    ("roles", "synergy"),
+    ("roles", "ramp_steps"),
+    ("roles", "threshold"),
+    ("roles", "switch_cost"),
+    ("roles", "inherit_role"),
 )
 _COUNTERS = ("ROLE_SWITCHES", "N_FORAGERS", "N_GUARDS", "SHIELDED_BY_GUARD", "SHARE_SLOTS_ACTIVE")
 
@@ -56,11 +65,21 @@ def _state_fields(cfg: Any, nd: int) -> tuple[FieldSpec, ...]:
     nb = lambda d: (d.n, B)  # noqa: E731
     # conserved=False: the role and its dwell are labels and the bond flow a memory of the last net transfer;
     # none holds energy quanta, so a forced removal by `alife migrate` cannot leak TOTAL.
+    role_birth = _inherit_role if cfg.roles.inherit_role else "rest"  # static
     return (
-        FieldSpec("role", True, n, mx.int8, zeros(n, mx.int8), "rest", conserved=False),
+        FieldSpec("role", True, n, mx.int8, zeros(n, mx.int8), role_birth, conserved=False),
         FieldSpec("role_dwell", True, n, mx.int16, zeros(n, mx.int16), "rest", conserved=False),
         FieldSpec("bond_flow", True, nb, mx.int16, zeros(nb, mx.int16), "rest", conserved=False),
     )
+
+
+def _inherit_role(old: Any, rest: Any, b: Any) -> Any:
+    """``roles.inherit_role``: a bud takes its parent's role (pre-birth value), an immigrant starts as a
+    generalist; the dwell starts at 0 either way."""
+    from alife import ops
+
+    child = mx.where(b.imm, rest[b.slot], old[b.parent])
+    return ops.place(old, b.newborn, b.born_lane, child.astype(old.dtype))
 
 
 def _enable(cfg: Any) -> Any:
@@ -75,6 +94,24 @@ def _inputs(s: Any, cfg: Any, ctx: ExtCtx) -> Any:
     from alife import bonds
 
     return bonds.ext_inputs(s, cfg, ctx)
+
+
+def _decode(s: Any, y: Any, ctx: ExtCtx, cfg: Any) -> Any:
+    from alife import roles
+
+    return roles.decode(s, y, ctx, cfg)
+
+
+def _mask(dec: Any, solvent: Any, cfg: Any) -> Any:
+    from alife import roles
+
+    return roles.mask(dec, solvent, cfg)
+
+
+def _due(s: Any, act: Any, y: Any, cfg: Any) -> Any:
+    from alife import roles
+
+    return roles.due(s, act, y, cfg)
 
 
 def _count(s_new: Any, alive0: Any, flows: Any, cfg: Any) -> Any:
@@ -135,6 +172,30 @@ def _validate(cfg: Any) -> None:
             for f in dataclasses.fields(RolesConfig)
             if f.name != "enabled" and getattr(rc, f.name) != getattr(r, f.name)
         ]
+    else:
+        hmax = cfg.energy.harvest_max
+        if rc.forage_gain < 0 or rc.synergy < 0:
+            bad.append(f"roles.forage_gain {rc.forage_gain} and roles.synergy {rc.synergy} must be >= 0")
+        elif hmax * (1.0 + rc.forage_gain + rc.synergy) >= 65536:
+            bad.append(
+                f"energy.harvest_max {hmax} x (1 + forage_gain + synergy) must be < 65 536 "
+                "(proportional_take needs a demand below 2^16)"
+            )
+        elif hmax * max(round(rc.forage_gain * 256), round(rc.synergy * 256), 1) * 256 >= 1 << 31:
+            bad.append("roles.forage_gain / roles.synergy overflow the int32 harvest-cap product")
+        for k in ("forage_defend_pen", "guard_harvest_pen"):
+            if not 0.0 <= getattr(rc, k) < 1.0:
+                bad.append(f"roles.{k} {getattr(rc, k)} must be in [0, 1)")
+        if not 0.0 <= rc.guard_shield <= 0.9:
+            bad.append(
+                f"roles.guard_shield {rc.guard_shield} must be in [0, 0.9] (the demand stays positive)"
+            )
+        if not 1 <= rc.ramp_steps <= 32767:
+            bad.append(f"roles.ramp_steps {rc.ramp_steps} must be in [1, 32767] (role_dwell is int16)")
+        if not 0.0 < rc.threshold < 1.0:
+            bad.append(f"roles.threshold {rc.threshold} must be in (0, 1)")
+        if not 0 <= rc.switch_cost < 1 << 15:
+            bad.append(f"roles.switch_cost {rc.switch_cost} must be in [0, 2^15)")
     if bad:
         raise ConfigError("; ".join(bad))
 
@@ -156,6 +217,9 @@ SPEC = ExtSpec(
     enable=_enable,
     validate=_validate,
     inputs=_inputs,
+    decode=_decode,
+    mask=_mask,
+    due=_due,
     count=_count,
     check=_check,
 )

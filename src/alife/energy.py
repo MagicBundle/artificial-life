@@ -152,17 +152,26 @@ def pay_costs3(
 
 
 def harvest(
-    energy: mx.array, resource: mx.array, fcell: mx.array, act: Actions, solvent: mx.array, cfg: Config
+    energy: mx.array,
+    resource: mx.array,
+    fcell: mx.array,
+    act: Actions,
+    solvent: mx.array,
+    cfg: Config,
+    harvest_cap: mx.array | None = None,
 ) -> tuple[mx.array, mx.array, mx.array]:
     """Proportional harvest from the agent's field cell: ``(E, resource, got)`` (§10.4).
 
     ``demand = clip(min(floor(harvest·harvest_max), e_max − E), 0, harvest_max)`` for solvent agents;
     contested cells are shared by ``ops.proportional_take``. Ledger: ``Σ got`` moves from ``resource`` to
-    ``E`` (``FLOW_HARVEST``).
+    ``E`` (``FLOW_HARVEST``). ``harvest_cap`` ((N,) int32, the roles of DESIGN §40.3) replaces the constant
+    ``harvest_max`` per row in ``want`` and the final clip; it must stay below 2^16 (validated). None is
+    today's graph (static).
     """
     ec = cfg.energy
-    want = mx.minimum(ops.floor_i32(act.harvest * ec.harvest_max), ec.e_max - energy)
-    demand = mx.where(solvent, mx.clip(want, 0, ec.harvest_max), 0)
+    hm = ec.harvest_max if harvest_cap is None else harvest_cap
+    want = mx.minimum(ops.floor_i32(act.harvest * hm), ec.e_max - energy)
+    demand = mx.where(solvent, mx.clip(want, 0, hm), 0)
     take, taken = ops.proportional_take(demand, fcell, solvent, resource.reshape(-1))
     return energy + take, resource - taken.reshape(resource.shape), take
 

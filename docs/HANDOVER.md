@@ -77,7 +77,13 @@ replaces the lossy gift by an equalising, antisymmetric flow along each bond (th
 gap), booked in `FLOW_SHARED`/`HEAT_SHARE` (no 17th ledger term; mode 0 is the legacy gift bit for bit); `share_kin_floor < 1` makes
 non-kin transfers lossier. `bonds_ext(cfg)` (`roles.enabled` or `share_mode != 0`) allocates the 13-input, 2-output bond block and the
 fields `role`, `role_dwell`, `bond_flow`. Enable with `--overlay bonds`, `--set bonds.share_mode=2`, or `alife migrate --enable bonds`.
-The inert twin of the measures is `roles.enabled = false` with `share_mode != 0`. Absent until B2: the role machine and its effects.
+The inert twin of the measures is `roles.enabled = false` with `share_mode != 0`.
+
+PR B2 (stacked on B1) adds the roles: two brain outputs choose generalist, forager or guard through a dead zone (the role is kept inside
+it), `role_dwell` ramps the effects over `roles.ramp_steps`, a switch costs `roles.switch_cost`. A forager raises its harvest cap (and
+more beside a guard, `synergy`) and lowers its own defence; a guard lowers its cap and shields itself and its bonded partners through
+`combat(guard=)`. Every effect key is 0 by default (`--overlay bonds` turns the machine on with all effects off; the starting values the
+payoff test uses are in DESIGN §40.9). No new ledger term. Absent: observers, scorecard, GUI and the role colour mode (B3), the runs.
 
 ## How to run
 

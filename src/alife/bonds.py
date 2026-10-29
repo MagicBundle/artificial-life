@@ -207,39 +207,63 @@ class BondFlows(NamedTuple):
     role: mx.array  # (N,) int8: the role at the end of the step (S8 of the next step reads it)
     bond_flow: mx.array  # (N, B) int16: net received − sent per slot at S12, 0 where the slot is gone
     slots_active: mx.array  # () int32: slots with out > 0
-    switches: mx.array  # () int32: rows whose role changed this step
+    switched: mx.array  # (N,) bool: rows whose role changed this step
+    shield: mx.array  # (N,) int16: round(256·guard), the protection fraction of the row as a victim
+    shielded: mx.array  # () int32: attacks on a victim with guard > 0 (SHIELDED_BY_GUARD)
 
 
 def state_after(
-    s: Any, sv: mx.array, partner: mx.array, sl: Any, cfg: Config
+    s: Any,
+    sv: mx.array,
+    partner: mx.array,
+    sl: Any,
+    cfg: Config,
+    dec: Any = None,
+    guard: mx.array | None = None,
+    shielded: mx.array | None = None,
 ) -> tuple[dict[str, mx.array], BondFlows]:
     """The new bonds fields of the survivors ``sv`` (S14), and the flows for the counters: dead rows are
     cleared to 0 and ``bond_flow`` is the net transfer of the slot, 0 where the bond is gone after S14 (a dead
     or released partner), so a reused row never inherits a memory (E15). ``partner`` is the post-S14 partner
-    (``dt.partner``); ``sl`` the S12 slots."""
-    role = mx.where(sv, s.role, 0).astype(mx.int8)
-    dwell = mx.where(sv, s.role_dwell, 0).astype(mx.int16)
+    (``dt.partner``); ``sl`` the S12 slots. With the role machine (``dec``, the solvency-masked
+    ``roles.RoleDec``) a survivor takes its requested role: ``switched`` resets ``role_dwell`` to 0, else it
+    counts up to ``ramp_steps``; without it (``dec`` None) the roles stay as they are (all generalists)."""
+    zero = (s.role * 0).astype(mx.int8)
+    if dec is None:  # static: no role machine
+        role = mx.where(sv, s.role, 0).astype(mx.int8)
+        dwell = mx.where(sv, s.role_dwell, 0).astype(mx.int16)
+        switched = sv & ~sv
+    else:
+        switched = sv & (dec.req != s.role)
+        role = mx.where(sv, dec.req, 0).astype(mx.int8)
+        grown = mx.minimum(s.role_dwell.astype(_I32) + 1, cfg.roles.ramp_steps)
+        dwell = mx.where(sv & ~switched, grown, 0).astype(mx.int16)
     net = mx.clip(sl.got - sl.out, -I16_MAX, I16_MAX)
     flow = mx.where((partner >= 0) & sv[:, None], net, 0).astype(mx.int16)
+    shield = mx.round(256.0 * guard).astype(mx.int16) if guard is not None else zero.astype(mx.int16)
     flows = BondFlows(
         s.role,
         role,
         flow,
         (sl.out > 0).astype(_I32).sum(),
-        ((role != s.role) & sv).astype(_I32).sum(),
+        switched,
+        shield,
+        shielded if shielded is not None else zero.astype(_I32).sum(),
     )
     return {"role": role, "role_dwell": dwell, "bond_flow": flow}, flows
 
 
 class BondActs(NamedTuple):
-    """``Acts.ext.bonds`` (observer channel, DESIGN §40.6): the start-of-step role per row."""
+    """``Acts.ext.bonds`` (observer channel, DESIGN §40.5): the start-of-step role per row, the net flow per
+    slot and the guard shield of the row as a victim."""
 
     role: mx.array  # (N,) int8
     bond_flow: mx.array  # (N, B) int16: net received − sent per slot
+    shield: mx.array  # (N,) int16: round(256·guard)
 
 
 def acts_of(f: BondFlows) -> BondActs:
-    return BondActs(f.role0, f.bond_flow)
+    return BondActs(f.role0, f.bond_flow, f.shield)
 
 
 def ext_count(s_new: Any, alive0: mx.array, flows: Any, cfg: Config) -> dict[str, mx.array]:
@@ -247,11 +271,10 @@ def ext_count(s_new: Any, alive0: mx.array, flows: Any, cfg: Config) -> dict[str
     the end of the step."""
     f = flows.ext.bonds
     alive = s_new.alive
-    zero = mx.array(0, dtype=_I32)
     return {
-        "ROLE_SWITCHES": f.switches,
+        "ROLE_SWITCHES": f.switched.astype(_I32).sum(),
         "N_FORAGERS": (alive & (s_new.role == ROLE_FORAGER)).astype(_I32).sum(),
         "N_GUARDS": (alive & (s_new.role == ROLE_GUARD)).astype(_I32).sum(),
-        "SHIELDED_BY_GUARD": zero,
+        "SHIELDED_BY_GUARD": f.shielded,
         "SHARE_SLOTS_ACTIVE": f.slots_active,
     }

@@ -50,6 +50,15 @@ FROZEN_OMITTED_DEFAULTS = {
     ("bonds", "share_kappa"): 0.125,
     ("bonds", "share_kin_floor"): 1.0,
     ("roles", "enabled"): False,
+    ("roles", "forage_gain"): 0.0,
+    ("roles", "forage_defend_pen"): 0.0,
+    ("roles", "guard_harvest_pen"): 0.0,
+    ("roles", "guard_shield"): 0.0,
+    ("roles", "synergy"): 0.0,
+    ("roles", "ramp_steps"): 64,
+    ("roles", "threshold"): 0.5,
+    ("roles", "switch_cost"): 0,
+    ("roles", "inherit_role"): False,
 }
 
 

@@ -12583,7 +12583,7 @@ The independent review's 4,000-step storm run had `cell_overflow` 0. `bench --st
 in the first run): steady **+0.24 to +0.31 ms** on about 15.4 ms (1.6 to 2.3 %); the first block pair can be an outlier up to 1.0 ms. The
 spec's estimate was 0.15 to 0.4 ms (under 3 %).
 
-## 40. Bonds that pay (PR B1: conductive sharing and the bond block; B2 adds the roles)
+## 40. Bonds that pay (PR B1: conductive sharing and the bond block; PR B2: the roles)
 
 Normative text of the bonds feature (Review-log I69; the specification is the owner-accepted `bonds/spec.md`,
 recommendations O1 to O11, germ role deferred, R4 movement not built). This section follows §43 for its
@@ -12599,8 +12599,8 @@ and a counter block; when false nothing of it exists and the engine is bit-ident
 
 | field | dtype / shape | meaning |
 |---|---|---|
-| `role` | int8 `(N,)` | 0 generalist, 1 forager, 2 guard (3 reserved for the deferred germ); always 0 in B1 |
-| `role_dwell` | int16 `(N,)` | steps since the last switch (B2 saturates it at `ramp_steps`); 0 in B1 |
+| `role` | int8 `(N,)` | 0 generalist, 1 forager, 2 guard (3 reserved for the deferred germ); changes only with `roles.enabled` (B2) |
+| `role_dwell` | int16 `(N,)` | steps since the last switch, saturating at `ramp_steps`; 0 unless `roles.enabled` |
 | `bond_flow` | int16 `(N, B)` | net received minus sent at the slot at the last S12, clipped to ±32767; 0 on an empty slot and on a dead row |
 
 All three are `conserved=False` (labels and a flow memory, no energy quanta), `on_birth = "rest"` (a newborn or
@@ -12679,13 +12679,11 @@ already in `Acts.share_out/share_got`; the `ActFlag.ROLE_SWITCHED` bit (512) is 
 With the feature on, the step computes the S12 slots in both the observed and the plain graph
 (`share_from_slots(share_slots(...))` is `en.share`); `bench.py`'s staged mirror does the same.
 
-### 40.6 What B1 leaves to B2 and B3
+### 40.6 What is left
 
-B2: `roles.py`, `decode_role` (the two outputs, dead zone, keep-by-default), role switch with `switch_cost`,
-ramp, the harvest cap, the guard shield through `combat(guard=)`, the forager's own-defence penalty, `synergy`,
-the `[roles]` effect keys, `ActFlag.ROLE_SWITCHED`, inspector fields. B3: observers and scorecard
-(`body_role_entropy`, `role_diff_z`, assortativity, `analysis/bonds.py`), the bond-flow overlay, GUI. R4 (movement)
-and R5 (germ) are not scheduled.
+B3: observers and scorecard (`body_role_entropy`, `role_diff_z`, assortativity, `analysis/bonds.py`), the bond-flow
+overlay, the role colour mode, GUI levers (`roles.*` and the `bonds.*` keys into `AlifeCore/Levers.swift`). R4 (movement
+couplings) and R5 (germ) are not scheduled; the runs (spec section 14) wait for B3.
 
 ### 40.7 Tests (B1)
 
@@ -12696,6 +12694,128 @@ twin, ledger closure and sharing active in 2D and 3D, `bond_flow` as the net slo
 resume, observer purity and `Acts.ext.bonds`, E15, E10), `test_bonds_compile.py` (E4: kappa, kin floor, rate,
 efficiency and mode compiled in one process equal their eager results and differ from each other),
 `tests/test_ext_migrate.py::test_migrating_an_evolved_world_onto_bonds` (the migration case).
+
+### 40.8 The role machine (PR B2)
+
+`roles.enabled` switches the machine on (static); without it `roles.decode`/`mask`/`due` are the identity and the
+roles never change (sharing only, or the inert twin of the measures). Two brain outputs `OUT_ROLE_A`, `OUT_ROLE_B`
+(the block allocated in B1) give `a = tanh(y_a)`, `b = tanh(y_b)` and, with the dead zone `τ = roles.threshold`
+(0.5, in `(0, 1)`):
+
+```text
+a > τ, b < -τ  -> forager (1)       a < -τ, b > τ  -> guard (2)       a < -τ, b < -τ -> generalist (0)
+anything else (the dead zone; the a > τ, b > τ corner is reserved for the deferred germ) -> keep the role
+```
+
+Keep-by-default is the hysteresis: a role persists without a sustained output. `roles.decode_role(y, role, cfg)`
+is a function parallel to `actions.decode_motion3` (`Actions` keeps its fields); the registry hooks are
+`roles.decode` (S7, a `RoleDec(req, role0)`), `roles.mask` (after S8: an insolvent row keeps its role, its
+switch cost was due and is paid as far as it holds) and `roles.due` (`switch_cost·(req != role)` quanta in the
+`extra_due` of `pay_costs`, so booked in `HEAT_ACTION`, and counted in the solvency total). At S14
+`bonds.state_after` commits: `role' = req` for a survivor, `role_dwell' = 0` on a switch else
+`min(dwell + 1, ramp_steps)`, dead rows cleared. A newborn or immigrant starts with role 0 and dwell 0
+(`on_birth = "rest"`); with `roles.inherit_role` a bud takes its parent's committed role (the value in the
+step's survivors, i.e. including a switch made in the very step it is born), dwell still 0.
+`ramp_q8 = min(256, dwell·256 // ramp_steps)` (integer): the ramp is the cost of specialising, a switching row is
+useless as a specialist for `ramp_steps` steps (default 64), which also makes the benefit convex in time. The
+effects read the START-of-step `role` and `role_dwell` (a step input: no ordering hazard); a switch shows from
+the next step. `ActFlag.ROLE_SWITCHED` (512) marks the rows that switched; `ROLE_SWITCHES`, `N_FORAGERS`,
+`N_GUARDS` are live counters; `Acts.ext.bonds` gains `shield` (`round(256·guard)`, int16).
+
+### 40.9 The effects (all multipliers on flows the ledger books)
+
+`roles.effects(s, act, partner, cfg)` returns the three per-row quantities; each is a static branch on its key,
+so an effect key at 0 traces nothing. `partner` is the post-S9 partner.
+
+1. **Harvest cap** (S10). `hm = H + (H·q8(forage_gain)·ramp·F >> 16) + (H·q8(synergy)·ramp·F·has_guard >> 16) -
+   (H·q8(guard_harvest_pen)·ramp·G >> 16)` with `H = energy.harvest_max`, `F`/`G` the role indicators and
+   `has_guard` = some valid partner is a guard with ramp at least 128: a forager harvests more, more again
+   beside a guard (`synergy`), a guard less. `en.harvest(..., harvest_cap=hm)` uses `hm` in `want` and the
+   final clip (None traces today's graph). `energy.harvest_max·(1 + forage_gain + synergy) < 65 536` is
+   validated (`proportional_take` needs a demand below 2^16). Field removal is still booked by `taken`:
+   `FLOW_HARVEST`; a larger cap wins a larger share of a contested cell, which pays only where food is contested.
+2. **Own defence** (S11). `defend_mult = 1 - forage_defend_pen·ramp/256` for a forager, 1 otherwise;
+   `roles.combat_act` passes `act._replace(defend=act.defend·defend_mult)` to `combat` only (the cost paid and
+   the observer channel keep the raw output).
+3. **Guard shield** (S11). A guard's potential is `gp_i = ramp_i/256 · act.defend_i` (it pays `defend_cost` for it)
+   and 0 while the row attacks this step; the victim's protection fraction is `guard_shield · max(gp_t, max over
+   its valid partners of gp)`, so a guard shields itself and each bonded partner, never a third party. It is
+   passed as `combat(guard=)`: the second environmental factor of the §43.6 protection product (with the arms
+   factor and structures' `shelter`, floored by `combat.protect_floor`, liftable by `pierce`), acting on the
+   integer demand BEFORE `proportional_take`, so grant, gain, spill, residue and the drain rule are untouched
+   and `FLOW_STOLEN = FLOW_ATTACK_GAIN + FLOW_SPILL` closes. `guard_shield <= 0.9` keeps the demand positive.
+   `SHIELDED_BY_GUARD` counts the attacks whose victim has a guard fraction above 0.
+4. Sharing feeds the specialist: with mode 1 or 2 the richer end pays the poorer across the bond (40.2).
+
+**E16 (guarding one's own attacker; a bonded predator).** Combat is simultaneous and the guard fractions are
+computed from the START-of-S11 actions, so the order is defined: a row that attacks this step (`attack` and a
+target) contributes no guard potential. With `combat.attack_bonded` a guard that steals from its bonded partner
+therefore gets the full demand (its own shield never covers its target); a third guard bonded to the victim does
+reduce it (`test_e16_*`: demand `attack_max` without the third guard, `floor(attack_max·(1 - guard_shield))`
+with it). Attacking and guarding are thus exclusive within a step, which costs an attacking guard its own cover.
+
+**Calibration (R-2).** The payoff matrix, measured on the engine's own flows (`test_r2_*`: a cell of supply `S`
+shared with `outsiders` generalist rivals through `en.harvest(harvest_cap=)`, one attack per member through
+`en.combat(guard=)` scaled by the attack rate, `defend_cost` per member), at `forage_gain 0.75`,
+`forage_defend_pen 0.5`, `guard_harvest_pen 0.5`, `guard_shield 0.5`, `synergy 0.25`, `ramp_steps 64` (q per step
+per group):
+
+| case | GG | FF | DD | FD | FG | GD | lone G / F / D |
+|---|---|---|---|---|---|---|---|
+| S 1500, 2 rivals, attack 0.25 | 208 | -336 | 110 | **354** | -48 | 310 | 130 / 55 / 55 |
+| S 900, 4 rivals, attack 0.10 | 58 | -122 | 38 | **130** | -24 | 104 | 59 / 3 / 29 |
+| S 900, 4 rivals, no predation | 258 | **378** | 138 | 305 | 326 | 204 | 159 / 253 / 79 |
+
+Under moderate predation the forager+guard pair beats two generalists (by 70 % and 124 %) and a generalist beside
+a guard, and no lone specialist beats a lone generalist; with no predation foragers win and the guard is a waste
+(the negative control of owner decision O4). The margin over GD is thin (14 % and 25 %); `synergy` widens it
+(tested). All values are starting values; none ships on in any base preset (the overlay `bonds` leaves the
+effect keys at 0 in this PR; the calibrated set is for the runs). The upkeep per specialised member of the
+spec's probe (`UP`) is not built: no new energy path.
+
+### 40.10 Config, layout, compile cache
+
+`[roles]` adds `forage_gain`, `forage_defend_pen`, `guard_harvest_pen`, `guard_shield`, `synergy` (0.0),
+`ramp_steps` (64), `threshold` (0.5), `switch_cost` (0), `inherit_role` (false); all inert while
+`roles.enabled` is false and in `POST_V01_KEYS` (frozen defaults pinned in `tests/test_ext_guards.py`).
+Validation: gains and `synergy >= 0`, `forage_defend_pen`, `guard_harvest_pen` in `[0, 1)`, `guard_shield` in
+`[0, 0.9]`, `ramp_steps` in `[1, 32767]`, `threshold` in `(0, 1)`, `switch_cost` in `[0, 2^15)`. The layout is
+B1's (the whole block was allocated there). E4: `test_bonds_compile.py` compiles `roles.effects`, `decode_role`,
+the switch due and `ramp_q8` for configurations differing only in one key, in one process, and each equals its
+eager result and differs from the others. The bench mirror (`bench._StagedStep`) takes the same helpers and
+equals `step()` (`test_staged_pipeline_*`, roles on).
+
+### 40.11 Tests (B2)
+
+`test_roles.py`: R-1 (the corners and the dead zone, a switch commits, resets the dwell and costs, the dwell
+saturates, the dead zone keeps a role, an insolvent row cannot switch, the newborn role and `inherit_role`),
+R-3 (the ramp and the integer harvest cap including synergy, effects absent at default, the capped harvest and
+its ledger, a guard shields itself and its partner and not a third party, the `FLOW_STOLEN` identity with guard
+and shelter stacked), E16, R-2 (the payoff matrix above), the step with every role effect on in 2D and 3D (ledger
+closes every step, roles appear, `ROLE_SWITCHED` marks exactly the switched rows, determinism, observing
+changes nothing), the inspector. `test_bonds_compile.py` (roles constants), `test_bonds_step.py` (config
+sets). The inspector (`alife inspect`) lists the role, its ramp, `shield_max` and, per bond slot, the
+partner's role, the tag similarity and the last net flow.
+
+### 40.12 Evidence (PR B1 and B2, 2026-10-29)
+
+* **Gates.** `ruff check` and `ruff format --check` clean; the fast suite on the CPU plugin passes but for
+  `test_lifecycle_compiles_and_matches_eager`, which also fails on the base in that environment (it passes on
+  Metal); the identity matrix against e64be03 with bonds off: bit-identical, 0 DIFF, 0 INFO; Metal (default
+  device): `test_bonds_*`, `test_roles`, `test_game_purity` (55), `test_bench`, `test_resume_purity`,
+  `test_play_purity`, the `test_ext_*` files and the touched engine suites pass.
+* **Cost** (`alife bench --preset 64k3d --overlay bonds --bonds`, M5 Pro, Metal, interleaved off/on blocks): the
+  step is 13.99 ms off and 14.69 ms with the conductive share and the bond block (+0.70 ms, +5.0 %; the spec
+  estimated +0.6 to +0.8 ms); with every role effect on as well 14.59 ms (+0.61 ms). Stage times, effects on
+  against off: sense 4.40 against 3.95 ms, brain 3.66 against 3.39, interact 1.23 against 1.04, reproduce 1.97
+  against 1.87. Peak memory 1.08 GB either way.
+* **Smoke** (mini3d + storm160, 4 000 steps, Metal, founders with random brains, one seed; not a result): with
+  predation (arms: `init_atk` 0.5, `upkeep_atk` 20) and every role effect on, the ledger closes at every step
+  (0 bad steps), the host invariants hold at the end, about 2 400 slots carry a share per step, and the
+  specialists appear (foragers rise from 3 % to 37 % of the population, guards stay near 1 %; 3 463 switches);
+  the no-predation control (`combat.attack_max` 1) behaves alike (foragers 3 % to 35 %); the twin (sharing on,
+  roles off) has no roles. Guards are rare in both arms: consistent with the payoff table (a guard pays only as
+  half of a pair under predation), and the question the runs are for.
 
 ## 42. Arms races (PR A1: heritable traits and the contest)
 
@@ -13234,7 +13354,7 @@ Totals: 27 issues, 27 fixed (R2 and R7 are the same defect), 0 rejected.
 | I65 | feat: the camera controls of the 3D World window (owner's play of 2026-10-24: a tool for another angle, standard angles on a toggle, and "the maximum angle is pretty limited"): the tilt goes to edge-on (`maxTilt` 90 degrees; A1's footprint clamp is removed) with the eye held over the clear box instead (`maxDistance` with the tilt: `d sin tilt <= 0.45 L`; the zoom is given back when the tilt is relaxed), and the far floor is hidden by a **horizon haze** (a function of the floor point's Chebyshev distance from the point looked at past `0.5 L`, `1 - exp(-x^2)`, 99.8% at L; a 3 L wide map mesh behind it, so no edge of the mesh is ever visible; a sky pass above the horizon, in the sea's colour scaled by the Brightness) instead of the clamp; standard views Top, Oblique (45), Low (70) and Side (edge-on at `H/2`) on `t o l s`, a strip over the map and View > View angle, each an animated ease; a control column at the right edge (readout "Tilt 45 deg . heading 270 deg", the strip, the compass as a dial, the 3D button, the tilt handle, zoom); the floor is not read beyond 0.65 L or above the horizon (readout, territory pick, power aim, dive, grab); the minimap's footprint is clipped to the clear box; storm rings flatten; client only (`WorldU` 160 bytes), no engine, stream or config change. Review fixes: the point looked at is lifted to the middle of the height toward edge-on (`WorldPose.lift`), the zoom is given back at the end of an ease (`ViewEase.endWish`, `sideReturn`), `n` and the compass click end an ease, the frame is faded by the haze, the needle and the dial's dead zone, the readout plate takes the press, the strip before the handle in the column, height guides at edge-on, the storm pick is the ellipse. Number provisional: the coordinator assigns the final one. Details, tests and deviations: §36.5 "Camera controls". |
 | I66 | feat: the globe overview and the morph (PR B of World viewer v2, §36.10; owner 2026-10-23 "Globe overview, flat close-up", 2026-10-24 "is there a toggle I am missing to get a spherical view?"): step 5, the pure parts (`GlobeMap`, `Morph` with the roll and its schedule and the crossfade fallback, `FlightPath` on the great circle) and the morph gate (a pure rasterisation of the mesh through the vertex shader's mirror: the roll meets the three criteria of the spec's 7.1 except the 98%-to-60% length at 67 degrees, 1.10 wheel lines against 1.2; mode stays `.roll`); step 6, `WorldVantage` (the view at every zoom: projection, the two-start Newton pick, the regime-solved grab and zoom, the camera controls on the globe; the model's `globeEnabled` switch) with the gate of the blended band measured (exact to 39 degrees, p95 9.5 px at 79 to 84 degrees); step 7, the renderer (the mesh pipeline and `GlobeUniforms`, the depth, cull and depth-reset state, the sky, the caps, the morph in the agent shaders, the continuous layers, the haze as a function of `s`) behind View > Globe overview (`world.globe`); steps 8 and 9: the minimap's footprint at the globe (the visible cap, dimmed outside), the hemisphere, EQUATOR and seam labels with the declutter rule, the pin, the organism glow (`GlowHistogram`), the inertia of a flick, Keep north up, the idle spin and reduced motion (`GlobeMotion`), Home is the globe overview (`world.globe` on until the player chooses), the 0.15 L region fly-to (D7), the bench scenarios and the sheet of renders (`docs/DESIGN.md` 36.10). Client only: no engine, stream or config change |
 | I67 | feat: built structures, PR S1 of the five-feature series (the engine; owner decision "B" of 2026-10-28, O1 to O9 accepted, A1 `exit_ease` accepted, no R4; new §38): the int32 grid `State.mat` on the food lattice (a conditional field), the brain output `build` and input `material` (registry row `ext/structures.py`, `alife.structures`), a deposit costing `build_cost` q per unit in `HEAT_ACTION` through `extra_due` (**no 17th ledger term**; the material holds no energy), exact integer decay `ceil(m·decay_q12/4096)` with a floor of 1 and its own exact identity `Σmat' = Σmat + BUILD_UNITS - MAT_WASTED - MAT_DECAYED`, the three effects read from the start-of-step material through one table gather (`fields.mat_table`): shelter (`weather.shelter_wind`, `agent_drift(shelter=)`), barrier (`physics.barrier_drag`, `drag_mult=`) and the predator shield (`combat(shelter=shield_gain·cover)`, inside the 43.6 protection product), the anti-trapping rules R1 (drag at most 4x), R2 (aperture invariant by construction with colour phases) and R3 (easy exit by the actual push, E6), eleven counters, advisory hash-overflow reporting (`HASH_HIDDEN`, `build_hash_hidden`, an `alert:` line; E7, not an error), E4 to E10 tests, `bench --structures`, the metrics keys `build_*`, the overlay `build`; **absent**: the stream record, dump, observers' drift, `BUILDING` flag, GUI (S2, S3), the first runs and the fork (S4, PR 0b); off by default, feature-off runs bit-identical (identity matrix), no hash changes | Departures: one table gather instead of 4 to 6 gathers of N; `genome_layout_version` is 9 / 10 (arms occupies mask bit 0); `silent_build` added (the O6 control); review fixes (the independent review of S1): merged the current `engine/arms` (PR 0a and 0b, cf289b4); `enable=` and `conserved=False` on the row with a migration case in `tests/test_ext_migrate.py`; hash overflow is advisory, not fatal; `shield_gain = 1` needs `protect_floor > 0`; the identity matrix takes the overlay list from the base tree; `aperture = 0` with a barrier warns (control only); the observers' drift is not wired (S2). Tests: `test_structures_{ledger,effects,trapping,config,determinism,off,crowding,compile,step}`; `test_ext_*`, `test_weather_config`, `test_state`, `test_cli_smoke` updated for the new row, overlay, error bit and bench flag. |
-| I69 | feat: bonds that pay, PR B1 of the five-feature series (conductive sharing and the bond block; owner decisions O1 to O11 of the bonds spec accepted 2026-10-28, germ role deferred, R4 movement not built; new §40): `bonds.share_mode` 1 (mutual consent) and 2 (obligate): an equalising, antisymmetric flow along every bond, the richer end sends `min((gap·q8(share_kappa)) >> 8, cap, E // B)`, received once through `rev` at the (optionally kin-scaled) efficiency, booked in `FLOW_SHARED` and `HEAT_SHARE` (**no 17th ledger term**; mode 0 is the legacy gift bit for bit); solvency by the per-slot `E // B` cap so no row goes below zero on any bond graph (E14), `share_kappa <= 1/(2B)` so no overshoot; the registry row `ext/bonds.py` (`bonds_ext = roles.enabled or share_mode != 0`) allocating the whole 13-input, 2-output bond block (`role`, `bond_role`, `bond_kin`, `bond_flow`; `role_a`, `role_b`), the conditional fields `role` (int8), `role_dwell` (int16) and `bond_flow` (int16, (N, B)) with `on_birth = rest` and cleared on death so a reused row inherits nothing (E15), five counters (`ROLE_SWITCHES`, `N_FORAGERS`, `N_GUARDS`, `SHIELDED_BY_GUARD`, `SHARE_SLOTS_ACTIVE`), `Acts.ext.bonds`, the metrics keys `bond_flux`, `bond_share_slots`, `bond_role_switches`, `bond_forager_frac`, `bond_guard_frac`, the overlay `bonds`, `alife migrate --enable bonds`, E4 and E10 tests; the role machine and its effects are B2 (below); off by default, feature-off runs bit-identical (identity matrix against e64be03), no hash changes | Departures: `roles.enabled` in B1 only allocates the layout and the state (the inert twin of the measures is `roles.enabled = false` with `share_mode != 0`); the brain-cost compensation of O11 is not applied by the overlay (no `config.brain_cost_scale` exists); `ext_check` lives in `ext/bonds.py` (numpy host reads are not allowed in the simulation modules, `test_lint` rule 5). Tests: `test_bonds_share`, `test_bonds_step`, `test_bonds_compile`, `test_ext_migrate` (bonds case); `test_ext_*`, `test_weather_config`, `test_arms_state` updated for the new row and overlay. Known failure in this CPU-plugin environment on the base too: `test_lifecycle_compiles_and_matches_eager`. |
+| I69 | feat: bonds that pay, PR B1 of the five-feature series (conductive sharing and the bond block; owner decisions O1 to O11 of the bonds spec accepted 2026-10-28, germ role deferred, R4 movement not built; new §40): `bonds.share_mode` 1 (mutual consent) and 2 (obligate): an equalising, antisymmetric flow along every bond, the richer end sends `min((gap·q8(share_kappa)) >> 8, cap, E // B)`, received once through `rev` at the (optionally kin-scaled) efficiency, booked in `FLOW_SHARED` and `HEAT_SHARE` (**no 17th ledger term**; mode 0 is the legacy gift bit for bit); solvency by the per-slot `E // B` cap so no row goes below zero on any bond graph (E14), `share_kappa <= 1/(2B)` so no overshoot; the registry row `ext/bonds.py` (`bonds_ext = roles.enabled or share_mode != 0`) allocating the whole 13-input, 2-output bond block (`role`, `bond_role`, `bond_kin`, `bond_flow`; `role_a`, `role_b`), the conditional fields `role` (int8), `role_dwell` (int16) and `bond_flow` (int16, (N, B)) with `on_birth = rest` and cleared on death so a reused row inherits nothing (E15), five counters (`ROLE_SWITCHES`, `N_FORAGERS`, `N_GUARDS`, `SHIELDED_BY_GUARD`, `SHARE_SLOTS_ACTIVE`), `Acts.ext.bonds`, the metrics keys `bond_flux`, `bond_share_slots`, `bond_role_switches`, `bond_forager_frac`, `bond_guard_frac`, the overlay `bonds`, `alife migrate --enable bonds`, E4 and E10 tests; the role machine and its effects are PR B2 (second paragraph of this row); off by default, feature-off runs bit-identical (identity matrix against e64be03), no hash changes | Departures: `roles.enabled` in B1 only allocates the layout and the state (the inert twin of the measures is `roles.enabled = false` with `share_mode != 0`); the brain-cost compensation of O11 is not applied by the overlay (no `config.brain_cost_scale` exists); `ext_check` lives in `ext/bonds.py` (numpy host reads are not allowed in the simulation modules, `test_lint` rule 5). Tests: `test_bonds_share`, `test_bonds_step`, `test_bonds_compile`, `test_ext_migrate` (bonds case); `test_ext_*`, `test_weather_config`, `test_arms_state` updated for the new row and overlay. Known failure in this CPU-plugin environment on the base too: `test_lifecycle_compiles_and_matches_eager`. **PR B2 (stacked on B1):** the committed roles generalist/forager/guard, chosen by the brain through `OUT_ROLE_A`/`OUT_ROLE_B` with a dead zone (keep-by-default hysteresis), `role_dwell` and a ramp, `switch_cost` through `extra_due` (`HEAT_ACTION`), the harvest cap (`en.harvest(harvest_cap=)`: forager up, guard down, `synergy` beside a guard), the forager's reduced own defence and the guard shield through `combat(guard=)` inside the §43.6 protection product (itself and bonded partners; E16: an attacking row contributes no shield), `inherit_role`, `ROLE_SWITCHED`, the live role counters, the inspector lines, E4 tests of the roles constants, the payoff-matrix test fixing the starting parameters (forager+guard beats two generalists under moderate predation; no lone specialist beats a lone generalist), `[roles]` effect keys all off by default; **no 17th ledger term** (every effect multiplies a flow that closes already); the observers, scorecard and GUI are B3; the spec's role upkeep `UP` is not built (no new energy path). |
 | I71 | feat: arms races, PR A1 of the five-feature series (stages 1 and 2 of the arms spec; owner approval of 2026-10-28; new §42): the heritable traits `ATK`, `ARM`, `KEY`, `LOCK` (and the held-at-0 `TOX`, `SIG` columns) as the conditional state field `arms (N, 6)`, the Tullock contest with the key/lock match as the first factor of the protection product of `energy.combat` (`arms.contest_factor`; `kappa`, `a0`, `key_floor`), the quadratic upkeep added to `brain_cost` at S8 with **dithered** rounding (E13: the cost is exact on average, a sub-unit trait is not free; `HEAT_BASAL`, no 17th ledger term), the armour speed cost (`arms.physics_act`), fixed-sigma mutation at birth with phases wrapped every time (E12, the 1.0-rounding of `c - floor(c)` mapped to 0), `Stream.ARMS` = 10 / `InitStream.ARMS` = 8 and `rng.layout_version` 4 with arms on (an off run still writes 3), the epsilon in the Tullock denominator (E11), invariants (`arms` finite and in [0, 1] on device, phases below 1 on the host), `bench --arms`, `_c_ref` with the founders' upkeep; the registry row `ext/arms.py` (the first real row) and `combat(arms=)` no longer raises; **absent**: toxin and display factors and keys (A3), observers (A2), pierce and duels (A4), perception (A5), colour modes and GUI levers; off by default, no shipped preset enables it, feature-off runs bit-identical to main (identity matrix) and the config hash unchanged | Departures: column order is the integration plan's (ATK, ARM, TOX, SIG, KEY, LOCK), not the spec's; founders' keys and locks come from the init stream by row (`FieldSpec.rest` has no `uid`); the whole step is not bit-equal compiled and eager with or without arms (the brain's reductions, as on e64be03), so compiled equals eager is asserted for the arms functions only. Tests: `test_arms`, `test_arms_state`, `test_arms_step` (incl. the broken-path mutation tests), `test_arms_compile` (E4), `test_arms_director` (E24); `test_ext_*` updated for the first registered row. |
 | I72 | feat: the feature extension mechanism, PR 0a of the five-feature series (arms, structures, bonds, communication, farming; owner approval of 2026-10-28; new §43, which holds the plan's normative content), **no behaviour change** and the registry empty: `src/alife/ext/` (`ExtSpec`, `REGISTRY`, the layout composition `layout.for_dims(nd, blocks)` with `Layout.__getattr__` for `IN_*`/`OUT_*`, `genome_layout_version(nd, mask) = base + 4*mask`, the `layout_features` meta key absent when empty); conditional state fields (`state_cls`, `is_3d_state`, fill-on-load, refusal of an extra field); counter blocks (`n_counters(nd, weather, blocks)`, `counter_blocks`, `counter_index`, `PROT_CAPPED`); `Acts.flags` uint16 and the `ActFlag` bits `128 << i`, `Acts.ext`/`_Flows.ext`; `extra_due` in `pay_costs(3)`; `rng.layout_version(cfg)` and `ops.hash32`; the single `combat` signature with `energy.protection` and `combat.protect_floor` (default 0, `[0, 0.5]`, `POST_V01_KEYS`, left out of `config.json` and the checkpoint metadata at its default: `config_to_dict(omit_defaults=True)`, `SERIAL_OMIT_KEYS`); silent tail blocks in `brain.init_weights`; observer registries; `tests/ext_stub.py` and seven `test_ext_*` files; `tests/identity_matrix.py` (15 trajectory cases, 3 runner cases, config and layout, tiny3d `1fe07a9f`/`556de6c6`, against a fresh `git archive` of e64be03: bit-identical, no INFO line). Departures from the specs are in §43.10.  Review fixes: the hooks `inputs(s, cfg, ctx)`, `decode`, `mask`, `due(s, act, y, cfg)` and `_Flows.ext`, `FieldSpec.on_birth`, `Dims.ext(name)`, the wiring tests (`test_ext_hooks.py`). PR 0b (the layout migration) follows. **PR 0b (stacked on PR 0a):** the layout migration tool of §43.8: `alife migrate RUN[:STEP] --enable F --out NEWRUN`, `migrate.migrate_checkpoint`, `state.migrate_layout`/`layout_change`/`MigrationError`, `ExtSpec.enable` (a hook, default None); zero rows/columns for new blocks, order-independent (E2), removal and width change refused (removal only with `--force-removal`; leave-one-out arms are fresh runs, E23), compressed sources give compressed outputs, provenance `migrated_from` in `meta.json`; `tests/test_ext_migrate.py`. No behaviour change for existing runs (the identity matrix is unchanged) |
 
