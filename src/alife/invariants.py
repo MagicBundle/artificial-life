@@ -114,6 +114,8 @@ def device_check(
         field_bad = field_bad | mx.any((s.mat < 0) | (s.mat > cfg.structures.cap))
         if struct_viol is not None:
             field_bad = field_bad | (struct_viol > 0)
+    if cfg.niche.farm:  # static: the soil is in [0, farm_cap] (§41)
+        field_bad = field_bad | mx.any((s.soil < 0) | (s.soil > cfg.niche.farm_cap))
     if cfg.director.enabled:  # static: the director's env levers are live
         field_bad = field_bad | env_out_of_range(s, cfg)
     headroom = (max_cell_occ >= d.occ_limit) | (max_attackers >= (1 << 15))

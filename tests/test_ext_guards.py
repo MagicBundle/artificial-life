@@ -66,6 +66,14 @@ FROZEN_OMITTED_DEFAULTS = {
     ("comm", "kin_exp"): 0.0,
     ("comm", "cost"): 4.0,
     ("comm", "control"): "none",
+    ("niche", "farm"): False,
+    ("niche", "farm_rate"): 8,
+    ("niche", "farm_cap"): 4095,
+    ("niche", "farm_cost"): 30,
+    ("niche", "farm_decay_q16"): 16,
+    ("niche", "farm_bonus_frac"): 0.5,
+    ("niche", "silent_init"): True,
+    ("niche", "control"): "none",
 }
 
 
