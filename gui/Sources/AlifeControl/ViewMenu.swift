@@ -86,8 +86,8 @@ struct ViewMenu: View {
             Toggle("Bonds", isOn: layer(\.bonds))
             // The feature layers, for a world that carries them: the material and soil as tiles (2D) or cubes (3D), and the flow on the bonds.
             if inputs.layers.bondFlow { Toggle("Bond flow", isOn: layer(\.bondFlow)).help("Colour the halves of a bond by who gives and who receives") }
-            if inputs.layers.structures { Toggle("Structures (4)", isOn: layer(\.structures)).help("The material organisms have built") }
-            if inputs.layers.soil { Toggle("Soil (5)", isOn: layer(\.soil)).help("The soil organisms have farmed") }
+            if inputs.layers.structures { Toggle("Structures (5)", isOn: layer(\.structures)).help("The material organisms have built") }
+            if inputs.layers.soil { Toggle("Soil (6)", isOn: layer(\.soil)).help("The soil organisms have farmed") }
             Picker("Territory", selection: Binding(get: { inputs.display.territory }, set: { model.display.territory = $0 })) {
                 Text("Off").tag(TerritoryMode.off)
                 Text("Borders").tag(TerritoryMode.borders)

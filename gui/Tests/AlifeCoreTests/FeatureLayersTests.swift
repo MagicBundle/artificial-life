@@ -209,7 +209,7 @@ import Testing
     @Test func theNewLayersAreOnByDefaultAndTheKeysToggleThem() {
         let display = WorldDisplay()
         #expect(display.structures && display.soil && display.bondFlow)
-        #expect(WorldKeys.action(for: "4") == .toggleStructures && WorldKeys.action(for: "5") == .toggleSoil)
+        #expect(WorldKeys.action(for: "5") == .toggleStructures && WorldKeys.action(for: "6") == .toggleSoil)
     }
 
     // MARK: Metrics

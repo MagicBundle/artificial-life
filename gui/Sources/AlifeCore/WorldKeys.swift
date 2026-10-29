@@ -46,7 +46,7 @@ package enum WorldAction: Equatable, Sendable {
 /// ```text
 /// space  pause / run        .  step                 c  next colour mode
 /// 1 2 3  agents / bonds / territory (off, borders, tint)   f  follow the selection
-/// 4 5    the built material / the farmed soil (a world that has them)
+/// 5 6    the built material / the farmed soil (a world that has them; `4` is the Lab's field key, which the World leaves unbound)
 /// [ ]    slower / faster along the rate rungs       h r  home (the flat overview, a flight)
 /// n      north up                                   i  the minimap on or off
 /// t o l s  the standard views: Top, Oblique, Low, Side (animated; 3D worlds)
@@ -66,8 +66,8 @@ package enum WorldKeys {
         case "1": return .toggleAgents
         case "2": return .toggleBonds
         case "3": return .cycleTerritory
-        case "4": return .toggleStructures
-        case "5": return .toggleSoil
+        case "5": return .toggleStructures
+        case "6": return .toggleSoil
         case "f": return .followSelection
         case "[": return .slower
         case "]": return .faster
@@ -90,7 +90,7 @@ package enum WorldKeys {
 
     /// Every character that does something, for the help text and for tests.
     package static let characters: [String] = [
-        " ", ".", "c", "1", "2", "3", "4", "5", "f", "[", "]", "r", "h", "n", "i", "t", "o", "l", "s", "\u{1B}", "g", "p", "a", "k", "\r", "\u{3}",
+        " ", ".", "c", "1", "2", "3", "5", "6", "f", "[", "]", "r", "h", "n", "i", "t", "o", "l", "s", "\u{1B}", "g", "p", "a", "k", "\r", "\u{3}",
     ]
 
     /// The mode after `current` in the header's list (the first when `current` is not in it); nil for an empty list.

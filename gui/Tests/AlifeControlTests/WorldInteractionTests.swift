@@ -381,7 +381,7 @@ fileprivate func makeRig(_ scratch: Scratch, kind: String = "3d") async throws -
         #expect(!rig.model.display.agents && !rig.model.display.agentPoints)
         rig.model.perform(.toggleBonds)
         #expect(!rig.model.display.bonds)
-        // `4` and `5` are the material and the soil of a world that has them; this one has neither, so they change nothing
+        // `5` and `6` are the material and the soil of a world that has them; this one has neither, so they change nothing
         rig.model.perform(.toggleStructures)
         rig.model.perform(.toggleSoil)
         #expect(rig.model.display.structures && rig.model.display.soil)

@@ -268,7 +268,7 @@ raw-Metal view with a control center docked to one side (left, right or bottom; 
   over something names it. (Organisms are drawn at the planet level but not picked there: zoom to the region level; DESIGN 36.9.) The inspector card is pinned under the Cast and Chronicle tabs.
 - **Keys** (the map has the focus): `space` pause/run, `.` step, `c` colour mode, `1 2 3` agents, bonds, territory (off, borders, tint), `f` follow the
   selection, `[` `]` slower/faster, `h` `r` Home, `n` north up, `t` `o` `l` `s` Top, Oblique, Low and Side views, `i` the minimap, `esc` clear.
-- **Feature layers** (DESIGN §45; a world shows only the layers it carries). **Structures** (`4`) and **Soil** (`5`) are the built
+- **Feature layers** (DESIGN §45; a world shows only the layers it carries). **Structures** (`5`) and **Soil** (`6`) are the built
   material and the farmed soil as translucent tiles on the floor (2D) or cubes (3D), thinner as the material decays; **Bond flow**
   colours the half of a bond that gives orange and the half that receives cyan; **View > Colour > role** paints generalists grey,
   foragers yellow, guards blue; a legend names what is drawn. The organism card adds its role, the net flow over its bonds, the
