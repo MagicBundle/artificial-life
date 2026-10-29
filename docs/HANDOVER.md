@@ -82,8 +82,7 @@ The inert twin of the measures is `roles.enabled = false` with `share_mode != 0`
 PR B2 (stacked on B1) adds the roles: two brain outputs choose generalist, forager or guard through a dead zone (the role is kept inside
 it), `role_dwell` ramps the effects over `roles.ramp_steps`, a switch costs `roles.switch_cost`. A forager raises its harvest cap (and
 more beside a guard, `synergy`) and lowers its own defence; a guard lowers its cap and shields itself and its bonded partners through
-`combat(guard=)`. Every effect key is 0 by default (`--overlay bonds` turns the machine on with all effects off; the starting values the
-payoff test uses are in DESIGN §40.9). No new ledger term. Absent: observers, scorecard, GUI and the role colour mode (B3), the runs.
+`combat(guard=)`. Every effect key is 0 by default (`--overlay bonds` turns the machine on with the spec's starting values, DESIGN §40.9). No new ledger term. Absent: observers, scorecard, GUI and the role colour mode (B3), the runs.
 
 ## How to run
 

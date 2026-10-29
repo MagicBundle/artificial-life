@@ -163,8 +163,8 @@ def _validate(cfg: Any) -> None:
             )
         if not 0.0 <= bc.share_kin_floor <= 1.0:
             bad.append(f"bonds.share_kin_floor {bc.share_kin_floor} must be in [0, 1]")
-        if not 1 <= bc.share_rate < 1 << 22:
-            bad.append(f"bonds.share_rate {bc.share_rate} must be in [1, 2^22) with bonds.share_mode != 0")
+        if not 1 <= bc.share_rate < 1 << 16:
+            bad.append(f"bonds.share_rate {bc.share_rate} must be in [1, 2^16) with bonds.share_mode != 0")
     if not rc.enabled:  # inert: every key must keep its default
         r = RolesConfig()
         bad += [

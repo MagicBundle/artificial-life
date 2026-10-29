@@ -512,3 +512,25 @@ def test_the_inspector_shows_the_role_and_the_bond_slots() -> None:
     (slot,) = info["bonds"]
     assert slot["role"] == "guard" and slot["flow"] == 0 and 0.0 < slot["kin"] <= 1.0
     assert cli._agent_info(1, s, cfg, None)["shield_max"] == cfg.roles.guard_shield
+
+
+def test_e16_a_dropped_attack_on_a_bonded_partner_does_not_cost_the_guard_its_shield() -> None:
+    """Without ``attack_bonded`` combat drops an attack on a partner, so the guard that "attacks" its partner
+    is not attacking and keeps shielding."""
+    cfg = rcfg()
+    n = dims(cfg).n
+    role, dwell = np.zeros(n, np.int8), np.full(n, 64, np.int16)
+    role[0] = 2
+    partner = np.full((n, B), -1, np.int32)
+    partner[0, 0], partner[1, 0] = 1, 0
+    attack, tgt = np.zeros(n, bool), np.full(n, -1, np.int32)
+    attack[0], tgt[0] = True, 1
+    defend = np.zeros(n, np.float32)
+    defend[0] = 1.0
+    act = _actions(n, attack=attack, attack_target=tgt, defend=defend)
+    s = SimpleNamespace(role=mx.array(role), role_dwell=mx.array(dwell))
+    g = np.asarray(roles.effects(s, act, mx.array(partner), cfg).guard)
+    assert g[0] == pytest.approx(cfg.roles.guard_shield) and g[1] == pytest.approx(cfg.roles.guard_shield)
+    bonded = rcfg(2, "combat.attack_bonded=true")
+    g = np.asarray(roles.effects(s, act, mx.array(partner), bonded).guard)
+    assert g[0] == 0.0

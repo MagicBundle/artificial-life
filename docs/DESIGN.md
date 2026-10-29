@@ -12609,7 +12609,7 @@ conductive with mutual consent, 2 conductive and obligate), `share_kappa` (0.125
 `[roles] enabled`. All four are in `POST_V01_KEYS`/`SERIAL_OMIT_KEYS` and so leave the hash and `config.json` of
 every existing run unchanged (frozen defaults pinned in `tests/test_ext_guards.py`). Validation: `share_mode in
 {0, 1, 2}`; with `share_mode == 0` the other two keys must keep their default; with a conductive mode
-`share_kappa in (0, 1/(2B)] = (0, 0.125]`, `share_kin_floor in [0, 1]`, `share_rate in [1, 2^22)`. `alife migrate
+`share_kappa in (0, 1/(2B)] = (0, 0.125]`, `share_kin_floor in [0, 1]`, `share_rate in [1, 2^16)`. `alife migrate
 --enable bonds` sets `roles.enabled` (allocates the block and the state; `--set bonds.share_mode=2` moves the
 sharing). The world overlay `bonds` (`presets/bonds.toml`) sets `share_mode = 2`, `share_kin_floor = 0.5`,
 `roles.enabled`; the brain-cost compensation of spec O11 is NOT applied (scale `energy.brain_cost_per_l1` by
@@ -12654,7 +12654,7 @@ At S14, after `drop_dead`, `bonds.state_after(s, sv, dt.partner, sl)` returns th
 occupied after S14 and the row survived, else 0. **E15 (a partner dies and its row is reused in the same
 step):** `drop_dead` clears every bond with a dead end before S16 allocates the free rows, `state_after` zeroes
 the flow memory of the gone slot, and `FieldSpec.on_birth = "rest"` resets the newborn's role, dwell and flow;
-the test runs 700 steps of a tiny world (mode 2, kin floor 0.5), asserts at every step that a row reused in
+the random-run test runs 400 steps of a tiny world (mode 2, kin floor 0.5), asserts at every step that a row reused in
 the step has no partner but its parent, fresh fields, and that no survivor points at a reused row but its
 parent, and requires at least one reused row that had bonds. `tests/test_bonds_step.py::test_state_after_*`
 is the unit form.
@@ -12663,19 +12663,19 @@ is the unit form.
 
 Thirteen inputs after the structures tail (`TAIL_ORDER`): `IN_ROLE` 1 (own role code: forager +1, guard -1,
 generalist 0), `IN_BOND_ROLE` B (the partner's code per slot), `IN_BOND_KIN` B (`kin_ij`), `IN_BOND_FLOW` B
-(`clip(bond_flow / share_rate, -1, 1)`), 0 on empty slots; two outputs `OUT_ROLE_A`, `OUT_ROLE_B` (read in B2).
+(`clip(bond_flow / share_rate, -1, 1)`), 0 on empty slots; two outputs `OUT_ROLE_A`, `OUT_ROLE_B` (read by the role machine, §40.8).
 2D `D_IN` 69 to 82, `D_OUT` 35 to 37; 3D 84 to 97, 39 to 41; `genome_layout_version = base + 4*mask` with bonds
 mask bit 2; `layout_features` token `bonds@1`. The whole block is allocated in B1, so the layout changes once;
-the role inputs read 0 and the outputs do nothing until B2. Founder weights are random (not silent).
+the role inputs and outputs are live with `roles.enabled` (§40.8) and inert without it. Founder weights are random (not silent).
 
 ### 40.5 Counters, observer channel, metrics
 
 Counter block `bonds` (five int32 per-step counters, summed in int64 on the host, E10): `ROLE_SWITCHES`,
-`N_FORAGERS`, `N_GUARDS`, `SHIELDED_BY_GUARD` (the role counters read 0 until B2), `SHARE_SLOTS_ACTIVE` (slots with
+`N_FORAGERS`, `N_GUARDS`, `SHIELDED_BY_GUARD` (the role counters read 0 without `roles.enabled`), `SHARE_SLOTS_ACTIVE` (slots with
 `out > 0`). Interval-row keys (prefix `bond_`): `bond_flux` (interval sum of `FLOW_SHARED`), `bond_share_slots`
 (mean per step), `bond_role_switches`, `bond_forager_frac`, `bond_guard_frac`. Observer channel:
 `Acts.ext.bonds = BondActs(role (N,) int8 start-of-step, bond_flow (N, B) int16)`; the per-slot flows are
-already in `Acts.share_out/share_got`; the `ActFlag.ROLE_SWITCHED` bit (512) is reserved by §43.5 and set in B2.
+already in `Acts.share_out/share_got`; `BondActs` also carries `shield` (`round(256·guard)`, int16); the `ActFlag.ROLE_SWITCHED` bit (512, §43.5) marks the rows that switched.
 With the feature on, the step computes the S12 slots in both the observed and the plain graph
 (`share_from_slots(share_slots(...))` is `en.share`); `bench.py`'s staged mirror does the same.
 
@@ -12711,7 +12711,7 @@ Keep-by-default is the hysteresis: a role persists without a sustained output. `
 is a function parallel to `actions.decode_motion3` (`Actions` keeps its fields); the registry hooks are
 `roles.decode` (S7, a `RoleDec(req, role0)`), `roles.mask` (after S8: an insolvent row keeps its role, its
 switch cost was due and is paid as far as it holds) and `roles.due` (`switch_cost·(req != role)` quanta in the
-`extra_due` of `pay_costs`, so booked in `HEAT_ACTION`, and counted in the solvency total). At S14
+`extra_due` of `pay_costs`: the switch cost joins the action due like `build_cost`, so it is booked in `HEAT_ACTION`, counts in the solvency total, and an insolvent row that asks to switch pays what it holds and does not switch). At S14
 `bonds.state_after` commits: `role' = req` for a survivor, `role_dwell' = 0` on a switch else
 `min(dwell + 1, ramp_steps)`, dead rows cleared. A newborn or immigrant starts with role 0 and dwell 0
 (`on_birth = "rest"`); with `roles.inherit_role` a bud takes its parent's committed role (the value in the
@@ -12748,8 +12748,8 @@ so an effect key at 0 traces nothing. `partner` is the post-S9 partner.
 4. Sharing feeds the specialist: with mode 1 or 2 the richer end pays the poorer across the bond (40.2).
 
 **E16 (guarding one's own attacker; a bonded predator).** Combat is simultaneous and the guard fractions are
-computed from the START-of-S11 actions, so the order is defined: a row that attacks this step (`attack` and a
-target) contributes no guard potential. With `combat.attack_bonded` a guard that steals from its bonded partner
+computed from the START-of-S11 actions, so the order is defined: a row that makes a gated attack this step (`attack`, a target, and
+not a bonded partner unless `attack_bonded`, i.e. the attack `combat` keeps) contributes no guard potential. With `combat.attack_bonded` a guard that steals from its bonded partner
 therefore gets the full demand (its own shield never covers its target); a third guard bonded to the victim does
 reduce it (`test_e16_*`: demand `attack_max` without the third guard, `floor(attack_max·(1 - guard_shield))`
 with it). Attacking and guarding are thus exclusive within a step, which costs an attacking guard its own cover.
@@ -12769,8 +12769,8 @@ per group):
 Under moderate predation the forager+guard pair beats two generalists (by 70 % and 124 %) and a generalist beside
 a guard, and no lone specialist beats a lone generalist; with no predation foragers win and the guard is a waste
 (the negative control of owner decision O4). The margin over GD is thin (14 % and 25 %); `synergy` widens it
-(tested). All values are starting values; none ships on in any base preset (the overlay `bonds` leaves the
-effect keys at 0 in this PR; the calibrated set is for the runs). The upkeep per specialised member of the
+(tested). All values are starting values; none ships on in any base preset (the overlay `bonds` carries exactly these values; they are for
+the runs to calibrate). The upkeep per specialised member of the
 spec's probe (`UP`) is not built: no new energy path.
 
 ### 40.10 Config, layout, compile cache

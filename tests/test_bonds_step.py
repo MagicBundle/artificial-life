@@ -91,6 +91,8 @@ def test_validation() -> None:
             load_config(preset="tiny", overrides=["bonds.share_mode=1", f"bonds.share_kappa={bad}"])
     with pytest.raises(ConfigError, match="share_kin_floor"):
         load_config(preset="tiny", overrides=["bonds.share_mode=2", "bonds.share_kin_floor=1.5"])
+    with pytest.raises(ConfigError, match="share_rate"):
+        load_config(preset="tiny", overrides=["bonds.share_mode=2", "bonds.share_rate=70000"])
     ok = load_config(preset="tiny", overrides=["bonds.share_mode=2", "bonds.share_kappa=0.125"])
     assert ok.bonds.share_mode == 2
     assert load_config(preset="tiny", overrides=["roles.enabled=true"]).roles.enabled

@@ -99,8 +99,8 @@ def effects(s: Any, act: Any, partner: mx.array, cfg: Config) -> Effects:
     * ``defend_mult = 1 − forage_defend_pen·ramp/256`` for a forager (it is exposed), 1 otherwise; it scales
       the ``defend`` that ``combat`` sees, not the one that is paid for or observed.
     * Guard shield: a guard's potential is ``gp_i = ramp_i/256 · defend_i`` (it pays ``defend_cost`` for it),
-      zero while the row attacks this step (E16: an attacker's own shield never covers its target, so
-      attacking one's bonded partner is not softened by that partner's guard); the victim's fraction is
+      zero while the row makes a (gated) attack this step (E16: an attacker's own shield never covers its
+      target, so attacking one's bonded partner is not softened by that partner's guard); the victim's fraction is
       ``guard_shield · max(gp_t, max over its valid partners of gp)``: a guard shields itself and each bonded
       partner. ``partner`` is the post-S9 partner.
     """
@@ -127,6 +127,8 @@ def effects(s: Any, act: Any, partner: mx.array, cfg: Config) -> Effects:
     guard = None
     if rc.guard_shield > 0:  # static
         attacking = act.attack & (act.attack_target >= 0)
+        if not cfg.combat.attack_bonded:  # the gated attack: one on a bonded partner is dropped by combat
+            attacking = attacking & ~((partner == act.attack_target[:, None]) & (partner >= 0)).any(axis=1)
         gp = mx.where((s.role == GUARD) & ~attacking, ramp.astype(_F32) * (1.0 / 256.0) * act.defend, 0.0)
         pot = mx.maximum(gp, mx.where(partner >= 0, gp[mx.maximum(partner, 0)], 0.0).max(axis=1))
         guard = rc.guard_shield * pot
