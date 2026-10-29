@@ -3,12 +3,13 @@ the scan and selection on a Metal GPU (``knn_metal``, §4 "Fused Metal path"). O
 
 from __future__ import annotations
 
+import functools
 import os
 from typing import NamedTuple
 
 import mlx.core as mx
 
-from alife import knn_metal, ops
+from alife import geom, knn_metal, ops, sphere
 from alife.config import Config, dims
 
 _I32 = mx.int32
@@ -83,7 +84,7 @@ def prepare_knn(cfg: Config) -> str:
     """
     d = dims(cfg)
     if knn_impl(cfg) == "metal":
-        knn_metal.self_check(d.nd)
+        knn_metal.self_check(d.nd, sphere=d.sph)
     elif d.k <= knn_metal.K_MAX and _on_gpu() and os.environ.get("ALIFE_KNN", "auto") == "auto":
         knn_metal.note_unverified()  # the kernel is what auto would have taken
     return knn_impl(cfg)
@@ -96,11 +97,14 @@ def find_neighbors(pos: mx.array, alive: mx.array, cfg: Config, *, impl: str | N
     surrounding cells (Q = 9C candidates, gathered from the cell-sorted position copy) and keeps the K
     nearest strictly inside R. Equals brute-force kNN whenever no cell holds more than C agents (F13);
     otherwise only the first C agents of an overfull cell are visible, which ``overflow_cells`` reports.
-    A 3D world (``pos`` (N,3)) uses the 3×3×3 search of ``_find_neighbors_3d`` (§27.2). ``impl`` overrides
+    A 3D world (``pos`` (N,3)) uses the 3×3×3 search of ``_find_neighbors_3d`` (§27.2); a sphere world the
+    table-driven reach-2 search of ``_find_neighbors_sph`` (§46.3). ``impl`` overrides
     ``ALIFE_KNN`` (``knn_impl``); both searches return identical arrays on Metal, the kernel only runs faster.
     """
     d = dims(cfg)
     metal = knn_impl(cfg, impl) == "metal"  # static: a Python bool, fixed when the step is traced
+    if d.sph:  # static: the sphere world
+        return _find_neighbors_sph(pos, alive, cfg, metal=metal)
     if d.d3:
         return _find_neighbors_3d(pos, alive, cfg, metal=metal)
     assert pos.shape[-1] == 2, "the 2D neighbour search got 3D positions"  # static: it would ignore z
@@ -259,14 +263,139 @@ def _find_neighbors_3d(pos: mx.array, alive: mx.array, cfg: Config, *, metal: bo
     )
 
 
-# --- occupancy of the 3D hash grid (W1, DESIGN §30) ---------------------------------------------------------
+@functools.cache
+def hash_stencil(nside_h: int) -> mx.array:
+    """The reach-2 stencil table of the hash grid, ``(Npix_h, 25)`` int32: each pixel first, then the pixels
+    within two touching steps in ascending order, −1 padded (``geom.tables(nside_h).stencil2``; the 8
+    trivalent-vertex neighbourhoods have fewer than 25)."""
+    return mx.array(geom.tables(nside_h).stencil2, dtype=_I32)
+
+
+def _find_neighbors_sph(pos: mx.array, alive: mx.array, cfg: Config, *, metal: bool = False) -> Neighbors:
+    """The §4 search on the sphere (DESIGN §46.3): ``pos`` (N,3) in the planet frame.
+
+    The hash cell is ``(radial layer, HEALPix pixel of Nside Nh)`` with equal-thickness layers ``T_h ≥ R/2``;
+    ``alive`` rows are sorted by cell id and each row scans the first C entries of each cell of a 5 × 25
+    stencil (the layers ``−2 … +2`` and the reach-2 pixel table, Q = 125·C candidates), keeping the K nearest
+    strictly inside R. ``Nh`` is derived from the exact coverage table so that the stencil contains every
+    sensing ball (``geom.derive_nh``), so the result equals brute-force kNN whenever no cell holds more than C
+    agents (F13), at every pole, trivalent vertex and layer edge. Offsets are plain differences: ``min_image``
+    is the identity on a sphere's pair offsets (``world.size > 4(Rp + H)``), so they are bitwise
+    antisymmetric.
+    Selection, ties, ``overflow_cells``, ``max_occupancy`` and ``hidden_agents`` are the 3D search's, over
+    ``Npix_h·G_z`` cells; ``metal`` (static) hands the sorted data to the fused kernel after ``spos``.
+    """
+    d, sp = dims(cfg), sphere.geometry(cfg)
+    n, gz, c, k, q = d.n, sp.gz, d.c, d.k, d.q
+    nph, R = sp.npix_h, cfg.sensing.radius
+    n_hash = nph * gz
+
+    lay = sphere.hash_layer(pos, sp.radius, sp.th, gz)  # (N,) radial layer, clamped
+    pix = sphere.ang2pix(pos, sp.nside_h)  # (N,)
+    cid = mx.where(alive, lay * nph + pix, n_hash)  # layer-major; dead → sentinel
+    order = mx.argsort(cid).astype(_I32)  # (N,)
+    start = mx.searchsorted(cid[order], mx.arange(n_hash + 1, dtype=_I32), side="left").astype(_I32)
+    count = start[1:] - start[:-1]  # (Npix_h·G_z,) occupancy of real cells
+    spos = pos[order]  # cell-sorted copy: each cell's run is contiguous
+    nbr_tab = hash_stencil(sp.nside_h)
+    if metal:  # static: one kernel for the scan, mask, top-K and gather
+        return _metal_tail_sph(alive, cfg, pix, lay, order, start, count, spos, nbr_tab)
+    inv = ops.scatter_add_i32(n, order, mx.arange(n, dtype=_I32))  # inv[i] = sorted rank of row i
+
+    na = nbr_tab.shape[1]
+    nb = nbr_tab[pix]  # (N,25) stencil pixels, −1 padded
+    ncz = lay[:, None, None] + mx.arange(-2, 3, dtype=_I32)[None, :, None]  # (N,5,1)
+    inside = (ncz >= 0) & (ncz < gz) & (nb[:, None, :] >= 0)  # (N,5,25): no layer below the floor or above
+    ncid = (mx.clip(ncz, 0, gz - 1) * nph + mx.maximum(nb, 0)[:, None, :]).reshape(n, 5 * na)
+    inside = inside.reshape(n, 5 * na)
+    s = start[ncid]
+    e = mx.where(inside, start[ncid + 1], s)  # (N,125) run [s, e); empty outside
+    slot3 = s[..., None] + mx.arange(c, dtype=_I32)  # (N,125,C) sorted positions
+    ok = (slot3 < e[..., None]).reshape(n, q)
+    slot = slot3.reshape(n, q)
+    ok = ok & (slot != inv[:, None]) & alive[:, None]
+    sl = mx.minimum(slot, n - 1)
+
+    dx, dy, dz = ((spos[:, i][sl] - pos[:, None, i]) for i in range(3))  # (N,Q) neighbour − self
+    d2 = dx * dx + dy * dy + dz * dz
+    d2 = mx.where(ok & (d2 < R * R), d2, mx.inf)
+    part = mx.argpartition(d2, kth=k - 1, axis=1)[:, :k].astype(_I32)  # K smallest, unordered
+    pd2 = mx.take_along_axis(d2, part, 1)
+    o = mx.argsort(pd2, axis=1).astype(_I32)  # nearest first
+    part = mx.take_along_axis(part, o, 1)
+    pd2 = mx.take_along_axis(pd2, o, 1)
+    valid = pd2 < mx.inf
+
+    self_ = mx.arange(n, dtype=_I32)[:, None]
+    idx = mx.where(valid, order[mx.take_along_axis(sl, part, 1)], self_)  # ids resolved only for K winners
+    offk = mx.stack([mx.take_along_axis(a, part, 1) for a in (dx, dy, dz)], axis=-1)  # (N,K,3)
+    offk = mx.where(valid[..., None], offk, 0.0)
+    dist = mx.where(valid, mx.sqrt(pd2), R)
+    return Neighbors(
+        idx=idx,
+        valid=valid,
+        off=offk,
+        dist=dist,
+        overflow_cells=(count > c).sum().astype(_I32),
+        max_occupancy=count.max().astype(_I32),
+        hidden_agents=mx.maximum(count - c, 0).sum().astype(_I32),
+    )
+
+
+def _metal_tail_sph(
+    alive: mx.array,
+    cfg: Config,
+    pix: mx.array,
+    lay: mx.array,
+    order: mx.array,
+    start: mx.array,
+    count: mx.array,
+    spos: mx.array,
+    nbr_tab: mx.array,
+) -> Neighbors:
+    """The sphere search's scan and selection by ``knn_metal.scan_select_sph``, on the arrays of the shared
+    MLX preamble (the hash, the sort, ``start`` and ``count`` are the same graph nodes in both searches)."""
+    d, sp = dims(cfg), sphere.geometry(cfg)
+    idx, valid, off, dist = knn_metal.scan_select_sph(
+        spos,
+        start,
+        order,
+        pix,
+        lay,
+        nbr_tab,
+        alive,
+        npix_h=sp.npix_h,
+        gz=sp.gz,
+        c=d.c,
+        k=d.k,
+        n=d.n,
+        R=cfg.sensing.radius,
+    )
+    return Neighbors(
+        idx=idx,
+        valid=valid,
+        off=off,
+        dist=dist,
+        overflow_cells=(count > d.c).sum().astype(_I32),
+        max_occupancy=count.max().astype(_I32),
+        hidden_agents=mx.maximum(count - d.c, 0).sum().astype(_I32),
+    )
+
+
+# --- occupancy of the 3D hash grid (W1, DESIGN §30) -------------------------------------------------------
 
 
 def hash_occupancy(pos: mx.array, alive: mx.array | None, cfg: Config) -> mx.array:
-    """Agents per hash cell, binned exactly as ``_find_neighbors_3d`` does: ``(G_z, G, G)`` int32. ``alive``
+    """Agents per hash cell, binned exactly as ``_find_neighbors_3d`` does: ``(G_z, G, G)`` int32 (a sphere:
+    ``(G_z, Npix_h)``, as ``_find_neighbors_sph`` bins). ``alive``
     keeps dead rows (their stale positions) out of the count; ``None`` counts every row. The two binning lines
     are the search's own, so the maximum equals ``Neighbors.max_occupancy``."""
     d = dims(cfg)
+    if d.sph:  # static: (G_z, Npix_h), binned as _find_neighbors_sph does
+        sp = sphere.geometry(cfg)
+        lay = sphere.hash_layer(pos, sp.radius, sp.th, sp.gz)
+        cid = lay * sp.npix_h + sphere.ang2pix(pos, sp.nside_h)
+        return ops.scatter_add_i32(sp.npix_h * sp.gz, cid, 1, alive).reshape(sp.gz, sp.npix_h)
     g, gz = d.g_hash, d.g_hash_z
     cxy = mx.floor(pos[:, :2] / d.cell_hash).astype(_I32) % g
     cz = mx.clip(mx.floor(pos[:, 2] / d.cell_hash_z).astype(_I32), 0, gz - 1)
