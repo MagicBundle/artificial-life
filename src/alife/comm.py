@@ -80,12 +80,22 @@ def due(s: Any, act: Any, y: mx.array, cfg: Config) -> mx.array | None:
     return mx.where(s.alive, due_of(s.uid, s.step, sig, cfg), 0).astype(_I32)
 
 
-def decoy_index(step: mx.array, n: int) -> mx.array:
-    """The row each row's voice is taken from under ``comm.control = decoy``: ``(row + shift) % n`` with
-    ``shift = 1 + hash(step) % (n - 1)``, so a cyclic shift (a bijection, never the identity for ``n >= 2``)
-    that changes every step. Integer arithmetic and the comm salt only: no RNG stream."""
-    shift = 1 + (ops.hash32(step, 0, SALT) % mx.array(max(n - 1, 1), dtype=mx.uint32)).astype(_I32)
-    return (mx.arange(n, dtype=_I32) + shift) % n
+def decoy_index(step: mx.array, alive: mx.array) -> mx.array:
+    """The row each row's voice is taken from under ``comm.control = decoy``, a cyclic shift in alive-rank
+    space: the alive rows in row order are ranked, and the row of rank ``r`` hears the row of rank
+    ``(r + shift) % n_alive`` with ``shift = 1 + hash(step) % (n_alive - 1)``. A bijection on the alive rows,
+    never the identity for ``n_alive >= 2``, changing every step; a dead row maps to itself (it is silent and
+    nobody hears it). Shifting over all N rows would deliver mostly silence when alive << N (a partial deaf).
+    Integer arithmetic and the comm salt only: no RNG stream."""
+    n = alive.shape[0]
+    rows = mx.arange(n, dtype=_I32)
+    a = alive.astype(_I32)
+    n_alive = mx.maximum(a.sum(), 1)
+    order = mx.argsort((1 - a) * n + rows)  # alive rows first, in row order
+    rank = mx.cumsum(a) - 1
+    shift = 1 + (ops.hash32(step, 0, SALT) % mx.maximum(n_alive - 1, 1).astype(mx.uint32)).astype(_I32)
+    src = order[(rank + shift) % n_alive]
+    return mx.where(alive, src, rows)
 
 
 def hear(voice: mx.array, nbr: Any, desc: mx.array, cfg: Config) -> mx.array:
@@ -126,7 +136,7 @@ def ext_inputs(s: Any, cfg: Config, ctx: Any) -> tuple[mx.array, mx.array]:
         return z[:, :w], z[:, w:]
     voice = s.msg[:, layout.MSG :]
     if cfg.comm.control == "decoy":  # static
-        voice = voice[decoy_index(s.step, d.n)]
+        voice = voice[decoy_index(s.step, s.alive)]
     h = hear(voice, ctx.nbr, ctx.desc, cfg)
     return h[:, :w], h[:, w:]
 

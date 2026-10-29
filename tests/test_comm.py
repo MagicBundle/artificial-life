@@ -550,17 +550,48 @@ def test_compiled_and_eager_steps_agree(nd: int) -> None:
 # --- E19: the controls leak nothing -----------------------------------------------------------------------
 
 
-def test_e19_decoy_is_a_bijection_that_never_hears_itself_and_keeps_the_statistics() -> None:
+def test_e19_decoy_is_a_bijection_on_the_alive_rows_and_keeps_the_statistics() -> None:
     n = 64
-    seen = set()
-    for step in [*range(300), 10**6, 2**31 - 5]:
-        idx = to_numpy(comm.decoy_index(mx.array(step, dtype=mx.int32), n))
-        assert sorted(idx.tolist()) == list(range(n))  # a bijection: the marginal voice statistics are kept
-        assert (idx != np.arange(n)).all()  # nobody is its own decoy
-        seen.add(int(idx[0]))
-    assert len(seen) > 20  # the shift moves from step to step
-    v = np.random.default_rng(0).random((n, 4)).astype(np.float32)
+    rs = np.random.default_rng(2)
+    for n_alive in (2, 5, 20, 64):
+        alive = np.zeros(n, bool)
+        alive[rs.choice(n, n_alive, replace=False)] = True
+        al = np.flatnonzero(alive)
+        seen = set()
+        for step in [*range(200), 10**6, 2**31 - 5]:
+            idx = to_numpy(comm.decoy_index(mx.array(step, dtype=mx.int32), mx.array(alive)))
+            assert sorted(idx[al].tolist()) == al.tolist()  # a bijection on the alive rows
+            assert (idx[al] != al).all()  # nobody is its own decoy
+            assert (idx[~alive] == np.flatnonzero(~alive)).all()
+            seen.add(int(idx[al[0]]))
+        assert len(seen) >= min(n_alive - 1, 10)  # the shift moves from step to step
+    v = np.random.default_rng(0).random((n, 4)).astype(np.float32) * alive[:, None]
     assert sorted(v[idx].ravel().tolist()) == sorted(v.ravel().tolist())
+    one = np.zeros(n, bool)
+    one[3] = True  # a lone survivor hears itself (nobody else exists); no crash
+    assert to_numpy(comm.decoy_index(mx.array(1, dtype=mx.int32), mx.array(one)))[3] == 3
+
+
+def test_e19_decoy_hears_as_loud_as_none_when_alive_is_much_less_than_n() -> None:
+    cfg = cfg_for(2, "population.n_init=100")
+    d = dims(cfg)
+    s = init_state(cfg)
+    assert int(to_numpy(s.alive).sum()) * 8 < d.n
+    fn = make_step(cfg, compile=False)
+    for _ in range(30):
+        s, _o = fn(s)
+    mx.eval(s)
+    nbr = spatial.find_neighbors(s.pos, s.alive, cfg)
+    from alife import sensing
+
+    desc = sensing.neighbor_descriptors(s, nbr, cfg)
+    ctx = ext.ExtCtx(nbr, desc, None, None)
+    means = {}
+    for control in ("none", "decoy"):
+        c = cfg_for(2, "population.n_init=100", f"comm.control={control}")
+        heard, _b = comm.ext_inputs(s, c, ctx)
+        means[control] = float(to_numpy(heard)[to_numpy(s.alive)].mean())
+    assert means["none"] > 0 and abs(means["decoy"] - means["none"]) < 0.35 * means["none"], means
 
 
 @pytest.mark.parametrize("nd", [2, 3])
@@ -623,7 +654,10 @@ def test_e18_comm_uses_only_its_own_salt() -> None:
     b = to_numpy(arms.dither(uid, mx.array(11, dtype=mx.int32))).astype(np.float64)
     assert abs(np.corrcoef(a, b)[0, 1]) * np.sqrt(n) < 4.5 and abs(a.mean() - 0.5) < 0.01
     # the decoy shift is a hash of the comm salt, not of the neighbours' salts
-    shifts = {int(to_numpy(comm.decoy_index(mx.array(t, dtype=mx.int32), 1000))[0]) for t in range(200)}
+    shifts = {
+        int(to_numpy(comm.decoy_index(mx.array(t, dtype=mx.int32), mx.ones(1000, mx.bool_)))[0])
+        for t in range(200)
+    }
     assert len(shifts) > 150
 
 
