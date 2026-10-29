@@ -142,6 +142,14 @@ package struct PlayHeader: Equatable, Sendable, Codable {
         package var cap: Int
         package var cells: [Int]
         package var cell: Double
+
+        package init(enabled: Bool, farm: Bool? = nil, cap: Int, cells: [Int], cell: Double) {
+            self.enabled = enabled
+            self.farm = farm
+            self.cap = cap
+            self.cells = cells
+            self.cell = cell
+        }
     }
 
     /// `play.comm`: the voice channels, the hearing range and the engine control (`none`, `deaf` or `decoy`).
@@ -150,6 +158,13 @@ package struct PlayHeader: Equatable, Sendable, Codable {
         package var w: Int
         package var range: Double
         package var control: String
+
+        package init(enabled: Bool, w: Int, range: Double, control: String) {
+            self.enabled = enabled
+            self.w = w
+            self.range = range
+            self.control = control
+        }
     }
 
     /// `play.bonds`, written exactly when `FRMA` carries the bond flow (`FLAG_BONDFLOW`): `scale` is the quanta per step an int8 flow of
@@ -157,6 +172,11 @@ package struct PlayHeader: Equatable, Sendable, Codable {
     package struct BondFlow: Equatable, Sendable, Codable {
         package var flow: Bool
         package var scale: Double
+
+        package init(flow: Bool, scale: Double) {
+            self.flow = flow
+            self.scale = scale
+        }
     }
 
     /// The tags the writer actually sends (a 2D or dry world has no `MAP1` and `STRM`).

@@ -28,12 +28,32 @@ package struct InspectorCard: Equatable, Sendable {
     /// The organism the follow passed to when this one died, once known.
     package var successor: Int64?
     package var alive = true
+    /// The voice of the organism (comm feature): what it says and hears, per channel.
+    package var voice: VoicePanel?
 
     package static func == (a: InspectorCard, b: InspectorCard) -> Bool {
         a.title == b.title && a.subtitle == b.subtitle && a.rows == b.rows && a.notes == b.notes
             && a.selectableParent == b.selectableParent && a.successor == b.successor && a.alive == b.alive
-            && a.energy?.fraction == b.energy?.fraction && a.energy?.text == b.energy?.text
+            && a.energy?.fraction == b.energy?.fraction && a.energy?.text == b.energy?.text && a.voice == b.voice
     }
+}
+
+/// The bars of an organism's voice (DESIGN §39.8, §45): W channels of what it says (after the step) and of what it hears (what drove the
+/// step), and how many neighbours can hear it. The heard half is there only when the world is played with the observer channel.
+package struct VoicePanel: Equatable, Sendable {
+    package var says: [Double]
+    /// Nil when the heard half is not valid: a panel then shows the spoken half only.
+    package var hears: [Double]?
+    package var audible: Int?
+
+    package init(_ voice: PlayVoice) {
+        says = voice.says.map(FeatureWords.fraction)
+        hears = voice.heardValid ? voice.hears.map(FeatureWords.fraction) : nil
+        audible = voice.heardValid ? voice.audible : nil
+    }
+
+    package var channels: Int { says.count }
+    package var isSilent: Bool { says.allSatisfy { $0 == 0 } }
 }
 
 package enum Inspector {
@@ -115,6 +135,7 @@ package enum Inspector {
                 card.rows.append(.init("Parent", "none (a founder or an immigrant)"))
             }
             if focus.isFollowed { card.rows.append(.init("Follow", "passes to a child at its death")) }
+            addFeatureRows(&card, uid: uid, frameIndex: frameIndex, store: store)
         } else if let index = frameIndex, let frame = store.frame {
             let p = frame.position(index)
             card.subtitle = "waiting for its report"
@@ -123,6 +144,49 @@ package enum Inspector {
         card.successor = successor
         if let successor { card.rows.append(.init("Follow passed to", "organism \(successor)")) }
         return card
+    }
+
+    /// The rows and the voice of the feature layers the world carries (DESIGN §45): the role (read from the colour the world paints in the
+    /// role mode), the net flow along its bonds, the material and the soil under it, and its voice.
+    package static func addFeatureRows(_ card: inout InspectorCard, uid: Int64, frameIndex: Int?, store: WorldStore) {
+        let layers = store.layers
+        guard layers.any, let header = store.header else { return }
+        if let index = frameIndex, let frame = store.frame {
+            if layers.roles {
+                if header.colorMode(index: frame.colorIndex) == RoleColours.mode {
+                    if let role = FeatureWords.role(forColour: frame.rgb[index]) {
+                        card.rows.append(.init("Role", role))
+                    } else {
+                        card.rows.append(.init("Role", "hurt in the last step (red)"))
+                    }
+                } else {
+                    card.notes.append("colour by role (C) to see its role")
+                }
+            }
+            if let flow = frame.flow, let scale = store.play?.bonds?.scale {
+                var net = 0.0, count = 0
+                for k in 0..<frame.nBonds {
+                    let (i, j) = frame.bond(k)
+                    guard i == index || j == index else { continue }
+                    count += 1
+                    let q = BondFlowLook.quanta(flow[k], scale: scale)
+                    net += j == index ? q : -q  // positive flow runs from the lower row to the higher
+                }
+                if count > 0 {
+                    card.rows.append(.init("Bond flow", String(format: "%+.0f q/step net over %d bond%@", net, count, count == 1 ? "" : "s")))
+                }
+            }
+            let p = frame.position(index)
+            if let grid = store.play?.structures, let material = store.material {
+                let level = material.level(atX: p.x, y: p.y, z: p.z, cell: grid.cell)
+                card.rows.append(.init("Built here", level == 0 ? "nothing" : FeatureWords.cellText(level: level, cap: grid.cap)))
+            }
+            if let grid = store.play?.niche, let soil = store.soil {
+                let level = soil.level(atX: p.x, y: p.y, z: p.z, cell: grid.cell)
+                card.rows.append(.init("Soil here", level == 0 ? "none" : FeatureWords.cellText(level: level, cap: grid.cap)))
+            }
+        }
+        if let voice = store.focusVoice, voice.uid == uid { card.voice = VoicePanel(voice) }
     }
 
     /// `"Gatherer"` or `"Gatherer / Hunter"`; "warming up" before the labels are evaluated. Flag bit 0 is the *intent*

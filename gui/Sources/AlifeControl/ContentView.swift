@@ -420,12 +420,31 @@ struct ContentView: View {
                             }
                         }
                     }
+                    featureMetrics(m)
                 } else {
                     Text("No metrics yet for the selected run.").foregroundStyle(.secondary)
                 }
             }
             .padding(6)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The metrics keys of the feature layers of the newest row (arms, structures, bonds and roles, comm, farming), one disclosure each.
+    @ViewBuilder private func featureMetrics(_ m: MetricsSnapshot) -> some View {
+        ForEach(FeatureMetrics.groups(m.features), id: \.title) { group in
+            DisclosureGroup(group.title) {
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 2) {
+                    ForEach(group.rows, id: \.key) { row in
+                        GridRow {
+                            Text(row.label).font(.caption).foregroundStyle(.secondary)
+                            Text(FeatureMetrics.text(row.value)).font(.caption.monospacedDigit())
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .font(.callout)
         }
     }
 
