@@ -55,7 +55,7 @@ def _arc(a_lonlat, b_lonlat, radius):
     )
 
 
-# --- the menu's lengths ------------------------------------------------------------------------------------
+# --- the menu's lengths -----------------------------------------------------------------------------------
 
 
 def test_the_width_of_a_sphere_is_its_equator(cfg) -> None:
@@ -66,7 +66,7 @@ def test_the_width_of_a_sphere_is_its_equator(cfg) -> None:
     assert hi <= math.pi * cfg.world.radius  # the cap never exceeds the planet (invariants.env range)
 
 
-# --- a patch move ------------------------------------------------------------------------------------------
+# --- a patch move -----------------------------------------------------------------------------------------
 
 
 def test_a_patch_move_walks_a_great_circle_and_is_stored_as_lon_lat(cfg, s0) -> None:
@@ -109,7 +109,7 @@ def test_the_replay_check_refuses_a_move_that_is_too_long_or_off_the_planet(cfg,
         validate_entry({**e, "prev": {}}, cfg, 100)
 
 
-# --- the catastrophe ---------------------------------------------------------------------------------------
+# --- the catastrophe --------------------------------------------------------------------------------------
 
 
 def test_a_catastrophe_centre_wraps_in_longitude_and_clips_in_latitude(cfg, s0) -> None:
@@ -117,7 +117,7 @@ def test_a_catastrophe_centre_wraps_in_longitude_and_clips_in_latitude(cfg, s0) 
     assert c.params["center"] == [-170.0, 90.0]
     assert clamp("catastrophe", {"x": 180.0, "y": 0.0, "radius": 15.0, "kill_p": 0.5}, None, env_view(s0), cfg
                  ).params["center"][0] == -180.0  # fmt: skip
-    lo, hi = actions.radius_bounds(cfg)
+    _lo, hi = actions.radius_bounds(cfg)
     big = clamp("catastrophe", {"x": 0.0, "y": 0.0, "radius": 1e6, "kill_p": 0.5}, None, env_view(s0), cfg)
     assert big.params["radius"] == pytest.approx(hi, rel=1e-6)
 
@@ -155,7 +155,7 @@ def test_replay_validation_of_a_catastrophe_on_a_sphere(cfg, s0) -> None:
             validate_entry({**e, "params": {**e["params"], "center": center}}, cfg, 100)
 
 
-# --- the rule tier, the random persona, the model ----------------------------------------------------------
+# --- the rule tier, the random persona, the model ---------------------------------------------------------
 
 
 def test_the_rule_tier_draws_a_catastrophe_uniform_by_area(cfg, s0) -> None:
@@ -172,7 +172,9 @@ def test_the_rule_tier_draws_a_catastrophe_uniform_by_area(cfg, s0) -> None:
     assert abs(z.mean()) < 0.04 and abs(z.var() - 1 / 3) < 0.02 and abs(lon.mean()) < 6
     # the clamp takes every draw
     lo, hi = actions.radius_bounds(cfg)
-    assert all(lo <= clamp("catastrophe", d, None, env_view(s0), cfg).params["radius"] <= hi for d in draws[:50])
+    assert all(
+        lo <= clamp("catastrophe", d, None, env_view(s0), cfg).params["radius"] <= hi for d in draws[:50]
+    )
 
 
 def test_the_random_persona_draws_places_in_degrees(cfg, s0) -> None:
@@ -182,7 +184,9 @@ def test_the_random_persona_draws_places_in_degrees(cfg, s0) -> None:
     assert abs(z.mean()) < 0.1 and max(abs(g["x"]) for g in got) <= 180.0
     mv = [yoked.sample_params("fertility_shift", rng, cfg)[0] for _ in range(200)]
     moves = [m for m in mv if "dx" in m]
-    assert moves and max(math.hypot(m["dx"], m["dy"]) for m in moves) <= actions.MOVE_MAX_FRAC * actions.span(cfg)
+    assert moves and max(math.hypot(m["dx"], m["dy"]) for m in moves) <= actions.MOVE_MAX_FRAC * actions.span(
+        cfg
+    )
 
 
 def test_the_models_schema_and_prompts_state_a_sphere(cfg, s0) -> None:
@@ -195,7 +199,7 @@ def test_the_models_schema_and_prompts_state_a_sphere(cfg, s0) -> None:
     assert schema  # builds
 
 
-# --- the player's powers -----------------------------------------------------------------------------------
+# --- the player's powers ----------------------------------------------------------------------------------
 
 
 def test_the_nearest_patch_is_by_arc(cfg, s0) -> None:
@@ -214,7 +218,7 @@ def test_the_patches_block_has_directions_and_degrees(cfg, s0) -> None:
     pp = to_numpy(s0.patch_pos)
     blk = powers.patches_block(pp, np.ones(len(pp), np.float32), cfg.fields.patch_sigma)
     assert len(blk) == len(pp) and {"i", "x", "y", "z", "lon", "lat", "gain", "sigma"} == set(blk[0])
-    lat, lon = geom.to_latlon(pp.astype(np.float64))
+    _lat, lon = geom.to_latlon(pp.astype(np.float64))
     assert [b["lon"] for b in blk] == [round(float(v), 2) for v in lon]
     assert abs(math.hypot(blk[0]["x"], blk[0]["y"], blk[0]["z"]) - 1) < 1e-3
 
@@ -224,8 +228,10 @@ def test_a_player_bloom_by_place_and_a_strike_resolve_on_a_sphere(cfg, s0) -> No
 
     pp = to_numpy(s0.patch_pos)
     lat, lon = geom.to_latlon(pp[3].astype(np.float64))
-    line = SimpleNamespace(power="bloom", verb="use", id=1, params={"x": float(lon), "y": float(lat), "gain": 1.8})
-    req, raw = powers.request_of(line, cfg, pp)
+    line = SimpleNamespace(
+        power="bloom", verb="use", id=1, params={"x": float(lon), "y": float(lat), "gain": 1.8}
+    )
+    _req, raw = powers.request_of(line, cfg, pp)
     assert raw["patch"] == 3 and "x" not in raw
     strike = SimpleNamespace(power="strike", verb="use", id=2, params={"x": 10.0, "y": -20.0})
     _req, raw = powers.request_of(strike, cfg, pp)

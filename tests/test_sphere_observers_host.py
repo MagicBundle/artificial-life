@@ -1,4 +1,4 @@
-"""The host half of the sphere's observers (DESIGN §46.7; sphere series S5): directions, the coarse cell graph,
+"""The host half of the sphere's observers (DESIGN §46.7; sphere S5): directions, the coarse cell graph,
 the territory map against a brute-force reference, and the rule set of version 4.
 
 Pure numpy and eager MLX on small inputs; the full observer run is ``test_sphere_observers_run.py``.
@@ -23,7 +23,7 @@ def _unit(rng: np.random.Generator, n: int) -> np.ndarray:
     return v / np.linalg.norm(v, axis=1, keepdims=True)
 
 
-# --- directions --------------------------------------------------------------------------------------------
+# --- directions -------------------------------------------------------------------------------------------
 
 
 def test_latlon_round_trip_and_the_poles() -> None:
@@ -69,7 +69,7 @@ def test_great_circle_distance_small_antipodal_and_text() -> None:
     assert geom.place_text(np.array([-1.0, -1.0, 0.0])) == "0.0N 135.0W"
 
 
-# --- the cell graph ------------------------------------------------------------------------------------------
+# --- the cell graph ---------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("nside", [2, 3, 5, 9])
@@ -101,7 +101,7 @@ def test_components_on_the_coarse_graph_agree_with_a_breadth_first_search(nside:
         geom.label_components(nside, np.ones(n + 1, bool))
 
 
-# --- the territory map on the cell graph ---------------------------------------------------------------------
+# --- the territory map on the cell graph ------------------------------------------------------------------
 
 
 def _reference_dominance(counts: np.ndarray, ids: np.ndarray, nb: np.ndarray, k: int, min_count: int):
@@ -167,7 +167,7 @@ def test_sphere_cell_agrees_with_the_float64_pixel_except_next_to_a_boundary() -
         groups.sphere_cell(mx.zeros((2, 3)), 14000)
 
 
-# --- where things are, for the game layer ---------------------------------------------------------------------
+# --- where things are, for the game layer -----------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -213,7 +213,7 @@ def test_place_in_a_box_world_is_the_old_expressions() -> None:
     assert place.text(np.array([12.4, 3.6]), cfg) == "(12, 4)"
 
 
-# --- the rule set of version 4 --------------------------------------------------------------------------------
+# --- the rule set of version 4 ----------------------------------------------------------------------------
 
 
 def test_rules_v4_is_v3_on_the_sphere_columns() -> None:

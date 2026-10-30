@@ -19,7 +19,16 @@ from alife import config
 
 
 def test_the_five_features_and_the_roles_are_ready_on_a_sphere() -> None:
-    assert {"structures", "niche", "comm", "bonds", "roles", "arms", "observers", "director"} == config.SPHERE_READY
+    assert {
+        "structures",
+        "niche",
+        "comm",
+        "bonds",
+        "roles",
+        "arms",
+        "observers",
+        "director",
+    } == config.SPHERE_READY
     assert set(config.SPHERE_FEATURE_PR) - config.SPHERE_READY == {"weather"}
 
 

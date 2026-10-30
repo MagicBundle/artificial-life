@@ -36,7 +36,8 @@ def world():
     config.SPHERE_READY = saved | {"observers"}
     try:
         cfg = load_config(
-            preset="tiny3s", overrides=["game.observe=true", "run.compile=false", "brain.weight_dtype=float32"]
+            preset="tiny3s",
+            overrides=["game.observe=true", "run.compile=false", "brain.weight_dtype=float32"],
         )
     finally:
         config.SPHERE_READY = saved
@@ -58,7 +59,10 @@ def world():
 def test_the_observer_uses_the_sphere_rule_set_and_the_coarse_maps(world) -> None:
     cfg, _s, obs, records, _a, _p = world
     assert obs.rules.sphere and obs.rules == dataclasses.replace(rules.RULES_V3, sphere=True)
-    assert (obs.social.terr_cells, obs.social.foot_cells) == (social.SPHERE_TERR_NSIDE, social.SPHERE_FOOT_NSIDE)
+    assert (obs.social.terr_cells, obs.social.foot_cells) == (
+        social.SPHERE_TERR_NSIDE,
+        social.SPHERE_FOOT_NSIDE,
+    )
     assert [r["step"] for r in records] == [50, 100, 150, 200]
     assert all(r["intent_version"] == 4 for r in records)
     assert obs.row_block()["intent_version"] == 4
@@ -77,7 +81,9 @@ def test_the_records_state_planet_frame_centroids(world) -> None:
     for tab in (kin, col):
         c = np.stack([tab["x"], tab["y"], tab["z"]], axis=1)
         r = np.linalg.norm(c, axis=1)
-        assert (r > rp - 1.0).all() and (r < rp + h + 1.0).all()  # a point of the shell (a mean of directions)
+        assert (r > rp - 1.0).all() and (
+            r < rp + h + 1.0
+        ).all()  # a point of the shell (a mean of directions)
     assert all(0.0 <= v <= h for v in kin["z_mean"])
     # the centroid is the mean direction of the members, at their mean radius (place.centroid)
     pos = to_numpy(s.pos).astype(np.float64)
@@ -92,8 +98,8 @@ def test_the_records_state_planet_frame_centroids(world) -> None:
 
 
 def test_the_row_derived_tables_equal_the_record_tables(world) -> None:
-    """Without a record the identity tables come from the rows (`_kin_from_rows`); at a snapshot step they must
-    agree with the record's (`_kin_from_record`): the sphere's x, y, z, height are the same numbers."""
+    """Without a record the identity tables come from the rows (`_kin_from_rows`); at a snapshot step they
+    must agree with the record's (`_kin_from_record`): the sphere's x, y, z, height are the same numbers."""
     cfg, s, obs, records, _a, _p = world
     sl = obs.social_labels()
     kin, col = to_numpy(sl.kin_slot), to_numpy(sl.colony_slot)
@@ -124,7 +130,9 @@ def test_territory_counts_equal_a_brute_force_bincount(world) -> None:
     kin = to_numpy(obs.so.kin)
     cell = to_numpy(snap.cell)
     pix = geom.ang2pix(to_numpy(s.pos).astype(np.float64), sr.terr_cells)
-    near = np.array([p in geom.tables(sr.terr_cells).touch[c] or p == c for p, c in zip(pix, cell, strict=True)])
+    near = np.array(
+        [p in geom.tables(sr.terr_cells).touch[c] or p == c for p, c in zip(pix, cell, strict=True)]
+    )
     assert near[alive].all()  # float32 vs float64 differ only by an adjacent pixel
     want = np.bincount((cell * g + kin)[alive & (kin >= 0)], minlength=sr.n_terr(True) * g)
     np.testing.assert_array_equal(to_numpy(snap.terr), want)
@@ -140,7 +148,7 @@ def test_territory_counts_equal_a_brute_force_bincount(world) -> None:
 
 
 def test_the_sidecar_round_trips_on_a_sphere(world, tmp_path) -> None:
-    cfg, s, obs, _r, _a, _p = world
+    cfg, _s, obs, _r, _a, _p = world
     arrays = obs.sidecar()
     assert arrays["host.terr.ema"].shape[1] == 972
     from alife.game.society import Society
@@ -154,7 +162,7 @@ def test_the_sidecar_round_trips_on_a_sphere(world, tmp_path) -> None:
 def test_the_observer_inputs_are_rotation_invariant(world) -> None:
     """The accumulator inputs of a step: speed, the height, the lift and the radial velocity are the same for
     the rotated world; the Cartesian velocity halves carry a vector whose length is."""
-    cfg, s, obs, _r, acts, prev = world
+    cfg, s, obs, _r, acts, _prev = world
     rs = obs.rules
     rot = random_rotation(21)
     ra = rotate_state(s, rot)
@@ -165,7 +173,9 @@ def test_the_observer_inputs_are_rotation_invariant(world) -> None:
     lay = rules.arch_layout(3, rs)
     alive = to_numpy(s.alive)
     for col in (rules.ArchCol.SPEED, lay.wind, lay.zpos, lay.lift):
-        assert np.abs(xa[alive, int(col)] - xb[alive, int(col)]).max() <= 1  # the 1/256 quantum of a float round
+        assert (
+            np.abs(xa[alive, int(col)] - xb[alive, int(col)]).max() <= 1
+        )  # the 1/256 quantum of a float round
     vr_a = xa[alive, lay.vrad] - xa[alive, lay.vrad + 1]
     vr_b = xb[alive, lay.vrad] - xb[alive, lay.vrad + 1]
     assert np.abs(vr_a - vr_b).max() <= 2

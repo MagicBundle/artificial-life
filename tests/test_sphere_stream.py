@@ -11,7 +11,6 @@ import json
 import struct
 from pathlib import Path
 
-import mlx.core as mx
 import numpy as np
 import pytest
 
@@ -34,8 +33,13 @@ def played(tmp_path_factory: pytest.TempPathFactory):
         mp.setattr(observer, "DEFAULT_SOCIAL", SOC)
         cfg = load_config(
             preset="tiny3s",
-            overrides=[*CADENCE, "game.observe=true", "run.compile=false", "structures.enabled=true",
-                       "structures.build_max=64"],  # fmt: skip
+            overrides=[
+                *CADENCE,
+                "game.observe=true",
+                "run.compile=false",
+                "structures.enabled=true",
+                "structures.build_max=64",
+            ],
         )
         opts = play.PlayOptions(rate=float("inf"), paused=False, fresh=True, unattended=True, tick=10)
         rd, res, _pacer, out = run_paced(cfg, tmp_path_factory.mktemp("sp") / "w", END, [], options=opts)
@@ -51,7 +55,7 @@ def by_tag(dec: sd.Decoded, tag: str) -> list[sd.Rec]:
     return [r for r in dec.records if r.tag == tag]
 
 
-# --- the header --------------------------------------------------------------------------------------------
+# --- the header -------------------------------------------------------------------------------------------
 
 
 def test_the_header_is_protocol_2_and_names_the_planet(played, decoded) -> None:
@@ -60,7 +64,9 @@ def test_the_header_is_protocol_2_and_names_the_planet(played, decoded) -> None:
     assert h["protocol"] == 2 and "L" not in h and h["FG"] == 0 and h["FZ"] == cfg.world.layers
     assert h["geometry"] == "sphere" and h["dims"] == 3 and h["height"] == cfg.world.height
     assert h["planet_radius"] == cfg.world.radius and h["radius"] == cfg.physics.radius
-    np.testing.assert_allclose(h["shell_edges"], geom.layer_radii(cfg.world.radius, cfg.world.height, cfg.world.layers))
+    np.testing.assert_allclose(
+        h["shell_edges"], geom.layer_radii(cfg.world.radius, cfg.world.height, cfg.world.layers)
+    )
     assert (h["nside_field"], h["nside_weather"], h["nside_territory"]) == (cfg.world.nside, 0, 9)
     assert h["ring_order"] == "ring" and h["f0"] == 0.025 and h["weather_depth"] == 0.0
     play = h["play"]
@@ -73,7 +79,13 @@ def test_the_header_is_protocol_2_and_names_the_planet(played, decoded) -> None:
 def test_the_sphere_decoder_refuses_a_protocol_1_header(played) -> None:
     """The magic keeps its last byte (1) and the header says 2: a reader that ties the two (the app's
     ``StreamHeader.validate``: ``protocol == magic version``) refuses a sphere stream until it is updated."""
-    assert played[3][:8] == b"ALSTRM\x00\x01" and json.loads(played[3][12:].split(b"\x00")[0][: struct.unpack("<I", played[3][8:12])[0]])["protocol"] == 2
+    assert (
+        played[3][:8] == b"ALSTRM\x00\x01"
+        and json.loads(played[3][12:].split(b"\x00")[0][: struct.unpack("<I", played[3][8:12])[0]])[
+            "protocol"
+        ]
+        == 2
+    )
     box = load_config(preset="tiny3d", overrides=["brain.weight_dtype=float32", "game.observe=false"])
     head = streamrec.header_bytes(
         streamrec.legacy_header(
@@ -85,7 +97,7 @@ def test_the_sphere_decoder_refuses_a_protocol_1_header(played) -> None:
         sd.decode_header(head)
 
 
-# --- the records --------------------------------------------------------------------------------------------
+# --- the records ------------------------------------------------------------------------------------------
 
 
 def test_every_frame_is_in_the_shell_and_its_orientation_rebuilds_the_heading(played, decoded) -> None:
@@ -168,7 +180,7 @@ def test_the_run_is_pure_a_played_world_equals_a_plain_run(played, tmp_path: Pat
     assert checkpoint_digests(plain) == checkpoint_digests(rd)
 
 
-# --- MAPH, from synthetic fields ------------------------------------------------------------------------------
+# --- MAPH, from synthetic fields --------------------------------------------------------------------------
 
 
 def _head(stream_body: bytes, nside_field: int = 2, nside_weather: int = 4) -> bytes:
@@ -204,8 +216,9 @@ def test_maph_round_trips_through_the_independent_decoder() -> None:
         "shell_edges": geom.layer_radii(36.0, 16.0, 2).tolist(),
         "nside_field": nc, "nside_weather": nw, "nside_territory": 9, "ring_order": "ring", "f0": 0.025,
         "weather_depth": 80.0,
-        "play": {"records": ["MAPH"], "versions": {"MAPH": 1}, "weather": {"enabled": True, "nside": nw, "coarse": nc, "f0": 0.025,
-                                                   "name_zeta": 0.5, "refs": {}}},
+        "play": {"records": ["MAPH"], "versions": {"MAPH": 1},
+                 "weather": {"enabled": True, "nside": nw, "coarse": nc, "f0": 0.025, "name_zeta": 0.5,
+                             "refs": {}}},
     }  # fmt: skip
     dec = sd.decode(streamrec.header_bytes(h) + rec)
     [m] = dec.records
@@ -259,7 +272,7 @@ def test_the_sphere_block_validates() -> None:
             streamrec.sphere_block(**{**ok, **bad})
 
 
-# --- the legacy stream --------------------------------------------------------------------------------------
+# --- the legacy stream ------------------------------------------------------------------------------------
 
 
 def test_alife_stream_writes_the_same_header_and_a_frame(played) -> None:
@@ -283,8 +296,8 @@ def test_alife_stream_writes_the_same_header_and_a_frame(played) -> None:
     npix = 12 * cfg.world.nside**2
     n_alive = struct.unpack("<QIIIIQ", frame[8:40])[1]
     assert n_alive == int(to_numpy(s.alive).sum())
-    assert len(frame) == 8 + 32 + ((s.alive.shape[0] + 3) // 4) * 4 + 12 * s.alive.shape[0] + 4 * s.alive.shape[0] \
-        + 4 * s.alive.shape[0] + 0 + 4 * npix  # fmt: skip
+    n_rows = s.alive.shape[0]  # head, alive bytes, pos 12, orient 4, rgb 4, no bonds, the field layer
+    assert len(frame) == 8 + 32 + ((n_rows + 3) // 4) * 4 + 12 * n_rows + 4 * n_rows + 4 * n_rows + 4 * npix
 
 
 def test_a_box_header_is_unchanged_by_the_sphere_keys() -> None:

@@ -31,7 +31,10 @@ def prop(action: str, raw: dict, duration: int | None = None) -> Proposal:
 
 PLAN = {
     60: [prop("regen_pulse", {"mult": 1.4}, 120), prop("fertility_shift", {"patch": 1, "gain": 1.5})],
-    120: [prop("fertility_shift", {"patch": 0, "dx": 9.0, "dy": -6.0}), prop("immigration_pulse", {"count": 40})],
+    120: [
+        prop("fertility_shift", {"patch": 0, "dx": 9.0, "dy": -6.0}),
+        prop("immigration_pulse", {"count": 40}),
+    ],
     180: [prop("catastrophe", {"x": 100.0, "y": 50.0, "radius": 15.0, "kill_p": 0.6})],
 }
 
@@ -45,7 +48,8 @@ def cfg():
             preset="tiny3s",
             overrides=[
                 "brain.weight_dtype=float32", "director.enabled=true", f"director.rule_every={EVERY}",
-                "run.director=live", "run.compile=false", "run.metrics_every=20", "run.heavy_metrics_every=60",
+                "run.director=live", "run.compile=false", "run.metrics_every=20",
+                "run.heavy_metrics_every=60",
                 "run.checkpoint_every=120", "run.keep_checkpoints=20", "run.diversity_sample=64",
             ],
         )  # fmt: skip
@@ -57,7 +61,9 @@ def cfg():
 def live(cfg, tmp_path_factory: pytest.TempPathFactory):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("alife.director.rules.decide", scripted_decide(PLAN))
-        mp.setitem(actions.MENU, "regen_pulse", dataclasses.replace(actions.MENU["regen_pulse"], duration=(60, 2000)))
+        mp.setitem(
+            actions.MENU, "regen_pulse", dataclasses.replace(actions.MENU["regen_pulse"], duration=(60, 2000))
+        )
         rd = RunDir.create(tmp_path_factory.mktemp("sd") / "live", cfg)
         rd.update_meta(start_step=0)
         res = runner.run(rd, cfg, init_state(cfg), END, quiet=True, director=Director(rd, cfg, "live", 0))
