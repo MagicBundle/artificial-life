@@ -210,10 +210,11 @@ class Context(NamedTuple):
     seed: int
     persona: str
     budget: int  # cost units per rolling 100k steps (already resolved from the config and the persona)
-    world_size: float
+    world_size: float  # the width of the world in the bounds: ``actions.span(cfg)`` (a sphere's equator)
     vitals: Vitals
     pacing: Pacing
     env: EnvView
+    sphere: bool = False  # a place is (longitude, latitude) in degrees, drawn uniform by area (DESIGN §46.7)
 
 
 class Proposal(NamedTuple):
@@ -351,9 +352,14 @@ def _request(
     if action == "immigration_pulse":
         return {"count": _lerp(u(), p.imm_frac) * (v.n_alive or 0.0)}, None
     if action == "catastrophe":
-        x, y = (float(c) for c in rng.uniform(0.0, size, 2))
-        radius, kill_p = _lerp(u(), p.cat_radius_frac) * size, _lerp(u(), p.cat_kill_p)
-        return {"x": x, "y": y, "radius": radius, "kill_p": kill_p}, None
+        if ctx.sphere:  # uniform by area: the longitude, and the latitude from the sine
+            lon_u, sin_lat = (float(c) for c in rng.uniform(-1.0, 1.0, 2))
+            x, y = 180.0 * lon_u, math.degrees(math.asin(sin_lat))
+            radius = _lerp(u(), p.cat_radius_frac) * size / 2  # half the equator stands for the width
+        else:
+            x, y = (float(c) for c in rng.uniform(0.0, size, 2))
+            radius = _lerp(u(), p.cat_radius_frac) * size
+        return {"x": x, "y": y, "radius": radius, "kill_p": _lerp(u(), p.cat_kill_p)}, None
     if action == "drift_change":
         return {"mult": _lerp(u(), p.drift_mult)}, None
     return None

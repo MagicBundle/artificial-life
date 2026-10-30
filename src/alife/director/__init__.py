@@ -620,10 +620,11 @@ class Director:
             self.cfg.run.seed,
             self.persona.name,
             self.budget,
-            self.cfg.world.size,
+            actions.span(self.cfg),
             v,
             pacing.fold([*self.entries, *new], t, "rule"),
             actions.env_view(work),
+            actions.is_sphere(self.cfg),
         )
 
     def _decide(self, state: State, t: int) -> State:

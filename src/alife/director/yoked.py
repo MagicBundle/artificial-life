@@ -30,7 +30,7 @@ import numpy as np
 
 from alife.config import RANDOM_PERSONA, Config
 from alife.director import log, rules
-from alife.director.actions import MENU, MOVE_MAX_FRAC, radius_bounds
+from alife.director.actions import MENU, MOVE_MAX_FRAC, is_sphere, radius_bounds, span
 
 RULE: Final = "random"  # the ``rule`` field of an entry R takes at a yoked step
 RANDOM_TAG: Final = 100  # the decision stream of a draw; the Trickster's streams are tags 0 to 9
@@ -234,7 +234,7 @@ def sample_params(
     """
     if action not in MENU:
         raise ValueError(f"unknown action {action!r}")
-    spec, size = MENU[action], cfg.world.size
+    spec, size = MENU[action], span(cfg)
     pools = patches if patches is not None else Patches.every(cfg)
     b = spec.bounds
     if action == "set_seasons":
@@ -254,7 +254,11 @@ def sample_params(
     if action == "immigration_pulse":
         return {"count": round(_log_uniform(rng, *b["count"]))}, None
     if action == "catastrophe":
-        x, y = (float(c) for c in rng.uniform(0.0, size, 2))
+        if is_sphere(cfg):  # a place drawn uniform by area, in degrees (DESIGN §46.7)
+            lon_u, sin_lat = (float(c) for c in rng.uniform(-1.0, 1.0, 2))
+            x, y = 180.0 * lon_u, math.degrees(math.asin(sin_lat))
+        else:
+            x, y = (float(c) for c in rng.uniform(0.0, size, 2))
         return {
             "x": x,
             "y": y,

@@ -33,6 +33,7 @@ from typing import Any, Final, Protocol
 
 import numpy as np
 
+from alife import geom
 from alife.config import Config, dims
 from alife.director import PlayerRequest, actions, pacing
 from alife.game import lexicon
@@ -173,7 +174,12 @@ def header_block(cfg: Config) -> dict[str, Any]:
 
 
 def nearest_patch(patch_pos: np.ndarray, x: float, y: float, size: float) -> int:
-    """The index of the food patch nearest to ``(x, y)`` on the torus (the lowest index on a tie)."""
+    """The index of the food patch nearest to ``(x, y)`` on the torus (the lowest index on a tie). On a sphere
+    (``patch_pos`` are (PP, 3) unit vectors; ``size`` unused) ``(x, y)`` is (longitude, latitude) in degrees
+    and the nearest is by great-circle arc."""
+    if patch_pos.shape[1] == 3:
+        near = geom.from_latlon(y, x) @ patch_pos.astype(np.float64).T  # the cosine of the arc: largest wins
+        return int(np.argmax(near))
     off = patch_pos[:, :2].astype(np.float64) - np.array([x, y])
     off = off - size * np.round(off / size)
     return int(np.argmin((off * off).sum(axis=1)))
@@ -318,7 +324,23 @@ def power_states(entries: Sequence[Mapping[str, Any]], t: int) -> dict[str, dict
 
 
 def patches_block(patch_pos: np.ndarray, gains: np.ndarray, sigma: float) -> list[dict[str, Any]]:
-    """``ENVS.patches``: the food patches the powers target, with their current gain."""
+    """``ENVS.patches``: the food patches the powers target, with their current gain. A sphere's (unit
+    vectors) have ``x, y, z`` of the direction (four decimals) and ``lon``, ``lat`` in degrees."""
+    if patch_pos.shape[1] == 3:
+        lat, lon = geom.to_latlon(patch_pos.astype(np.float64))
+        return [
+            {
+                "i": i,
+                "x": round(float(patch_pos[i, 0]), 4),
+                "y": round(float(patch_pos[i, 1]), 4),
+                "z": round(float(patch_pos[i, 2]), 4),
+                "lon": round(float(lon[i]), 2),
+                "lat": round(float(lat[i]), 2),
+                "gain": round(float(gains[i]), 4),
+                "sigma": round(float(sigma), 4),
+            }
+            for i in range(len(patch_pos))
+        ]
     return [
         {
             "i": i,
@@ -385,10 +407,24 @@ def since_rows(
 
 
 def column_count(
-    pos: np.ndarray, alive: np.ndarray, centre: Sequence[float], radius: float, size: float
+    pos: np.ndarray,
+    alive: np.ndarray,
+    centre: Sequence[float],
+    radius: float,
+    size: float,
+    planet: float | None = None,
 ) -> int:
     """The living organisms inside a column of ``radius`` around ``centre`` (the torus minimum image in x and
-    y, at any height): the catastrophe's own test, on the host."""
+    y, at any height): the catastrophe's own test, on the host. With ``planet`` (the radius of a sphere)
+    ``centre`` is (longitude, latitude) in degrees and the column is the cap whose direction is within
+    ``radius / planet`` radians of it, at any height (``lifecycle.catastrophe_mask``)."""
+    if planet is not None:
+        c = np.radians(np.asarray(centre, np.float64))
+        axis = np.array([np.cos(c[1]) * np.cos(c[0]), np.cos(c[1]) * np.sin(c[0]), np.sin(c[1])], np.float32)
+        p = np.asarray(pos, np.float32)
+        up = p / np.maximum(np.linalg.norm(p, axis=1, keepdims=True), np.float32(1e-9))
+        cos_r = np.float32(np.cos(min(radius / planet, np.pi)))
+        return int((alive.astype(bool) & ((up * axis).sum(axis=1) >= cos_r)).sum())
     off = pos[:, :2].astype(np.float32) - np.asarray(centre, np.float32)
     off = off - np.float32(size) * np.round(off / np.float32(size))
     inside = (off * off).sum(axis=1) <= np.float32(radius) * np.float32(radius)
@@ -725,7 +761,7 @@ class PowerDesk:
         if line.power == "strike":
             pos, alive = positions()
             p = entry["params"]
-            count = column_count(pos, alive, p["center"], p["radius"], self.cfg.world.size)
+            count = column_count(pos, alive, p["center"], p["radius"], self.cfg.world.size, self._planet())
         after = [*entries, entry]
         preview = line.verb == "preview"
         plan = self.plan(
@@ -873,12 +909,16 @@ class PowerDesk:
         """Whether a strike's after-count is wanted (one step after it was applied)."""
         return any(c.disc is not None and "after" not in c.disc for c in self.cards.values())
 
+    def _planet(self) -> float | None:
+        """The planet's radius on a sphere (the catastrophe is a cap), else None (a column)."""
+        return self.cfg.world.radius if self.cfg.world.geometry == "sphere" else None
+
     def set_disc(self, pos: np.ndarray, alive: np.ndarray) -> None:
         """The organisms in each open strike's column now, one step after it (host arrays the pacer read)."""
         for card in self.cards.values():
             if card.disc is not None and "after" not in card.disc:
                 p = card.entry["params"]
-                n = column_count(pos, alive, p["center"], p["radius"], self.cfg.world.size)
+                n = column_count(pos, alive, p["center"], p["radius"], self.cfg.world.size, self._planet())
                 card.disc = {**card.disc, "after": n}
 
     def _since_plan(self, command: int, card: Card, rows: Sequence[Mapping[str, int]], t: int) -> Out:
