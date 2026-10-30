@@ -277,6 +277,14 @@ def alphabet(width: int) -> int:
     return 1 + 2 * width
 
 
+def nanmean(a: np.ndarray, axis: int = 0) -> np.ndarray:
+    """``np.nanmean`` that is NaN, without a warning, where nothing is finite."""
+    a = np.asarray(a, dtype=np.float64)
+    ok = np.isfinite(a)
+    n = ok.sum(axis=axis)
+    return np.where(n > 0, np.where(ok, a, 0.0).sum(axis=axis) / np.maximum(n, 1), np.nan)
+
+
 def jensen_shannon(p: np.ndarray, q: np.ndarray) -> float:
     """Jensen-Shannon divergence in bits of two count or probability vectors (0 for two empty ones)."""
     p, q = np.asarray(p, dtype=np.float64), np.asarray(q, dtype=np.float64)

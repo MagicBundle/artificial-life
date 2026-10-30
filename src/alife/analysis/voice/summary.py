@@ -230,8 +230,10 @@ def counterfactual(tab: Tables) -> dict[str, Any] | None:
     for i, mode in enumerate(tab.meta["cf_modes"]):
         grp = {}
         for g, gname in enumerate(("audible", "silent")):
-            mean = np.nanmean(st[:, i, g, :], axis=0)
-            sd = np.nanstd(st[:, i, g, :], axis=0, ddof=1) if st.shape[0] > 1 else np.full(len(names), np.nan)
+            mean = ms.nanmean(st[:, i, g, :], axis=0)
+            n_ok = np.isfinite(st[:, i, g, :]).sum(axis=0)
+            var = ms.nanmean((st[:, i, g, :] - mean) ** 2, axis=0) * n_ok / np.maximum(n_ok - 1, 1)
+            sd = np.where(n_ok > 1, np.sqrt(var), np.nan)
             grp[gname] = {n: {"mean": _f(mean[j]), "sd": _f(sd[j])} for j, n in enumerate(names)}
         out["modes"][mode] = grp
     return out

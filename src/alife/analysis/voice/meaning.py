@@ -348,7 +348,7 @@ def _cf_summary(arms: Mapping[str, Mapping[int, ArmRun]]) -> dict[str, Any]:
             names = a.tab.meta["cf_metrics"]
             for i, mode in enumerate(a.tab.meta["cf_modes"]):
                 st = a.tab.cf["stats"][:, i, 0, :].astype(np.float64)  # audible rows
-                agg.setdefault(mode, []).append(np.nanmean(st, axis=0).tolist())
+                agg.setdefault(mode, []).append(ms.nanmean(st, axis=0).tolist())
         out[name] = {
             mode: {n: _nm(np.array([v[j] for v in vs])) for j, n in enumerate(names)}
             for mode, vs in agg.items()

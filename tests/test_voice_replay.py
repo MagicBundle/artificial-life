@@ -67,10 +67,7 @@ def test_the_replay_changes_no_trajectory(box_run: Path, tmp_path: Path) -> None
     assert tab.meta["samples"] == 9 and tab.cf["stats"].shape[0] == 5
 
 
-@pytest.mark.parametrize("compile", [False, True])
-def test_the_replay_is_deterministic_and_leaves_the_run_alone(
-    box_run: Path, tmp_path: Path, compile: bool
-) -> None:
+def test_the_replay_is_deterministic_and_leaves_the_run_alone(box_run: Path, tmp_path: Path) -> None:
     before = sorted(p.name for p in box_run.rglob("*"))
     a = _record(box_run, tmp_path / "a", cf_every=0)
     b = _record(box_run, tmp_path / "b", cf_every=0)
