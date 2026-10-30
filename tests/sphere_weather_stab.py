@@ -3,10 +3,12 @@ S4c calibration): linear noise about the rest state, the growth of its rms over 
 dominant growth rate of the tangent map by power iteration (renormalised every 100 steps).
 
 Why both. The dry, frictionless scheme at ``Nw`` 42 with rotation has a slowly growing mode (about +1e-4 per
-step at ``C_used`` after 8 000 steps; the S4a gates and the 4 000-step tests stop before it sets in). In the
-production step the implicit friction and the radiative return remove it almost exactly: the dominant rate of
-the production map is 0 +- 2e-5 per step at ``C_used``. ``r1``, ``r2`` and ``tau_rad`` are therefore stability
-parameters of the ``Nw`` 42 weather, and the power iteration is what bounds the margin.
+step at the first draft's C = 0.507 after 8 000 steps, +5e-5 at the C = 0.40 the engine runs at since C29; the
+S4a gates and the 4 000-step tests stop before it sets in). In the production step the implicit friction and
+the radiative return remove it: the dominant rate of the production map was 0 +- 2e-5 per step at C = 0.507
+(no margin) and is -0.3e-5 at C = 0.40, still negative with ``r1`` and ``r2`` halved. ``r1``, ``r2`` and
+``tau_rad`` are therefore stability parameters of the ``Nw`` 42 weather, and the power iteration is what
+bounds the margin.
 """
 
 from __future__ import annotations

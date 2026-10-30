@@ -2218,15 +2218,19 @@ def origin_row(state: State, cfg: Config) -> dict[str, Any] | None:
 # --- ENVS -----------------------------------------------------------------------------------------------
 
 
-def sphere_pools(pools: Sequence[Sequence[float]], radius: float, t: int) -> list[dict[str, Any]]:
+def sphere_pools(
+    pools: Sequence[Sequence[float]], radius: float, t: int, dt: float = 1.0
+) -> list[dict[str, Any]]:
     """The ``ENVS`` pools of a sphere at step ``t``: each pool ``(x, y, sx, sy, amp, vx, vy)`` of the weather
     parameters (``x`` and ``y`` arc lengths from longitude 0 and the equator, ``vx`` the drift in arc length
-    per step at the pool's latitude, as ``weather_sph.warm_pools``) as its centre ``x, y, z`` at the floor,
-    ``lon`` and ``lat`` in degrees, and the widths and drift."""
+    per unit of weather time at the pool's latitude, so ``vx·dt`` per engine step: ``dt`` is
+    ``weather_sph.weather_dt``, owner decision C29, DESIGN §46.6; as ``weather_sph.warm_pools``) as its centre
+    ``x, y, z`` at the floor, ``lon`` and ``lat`` in degrees, and the widths and drift (``vx``, ``vy`` as
+    configured, per unit of weather time)."""
     out = []
     for x0, y0, sx, sy, amp, vx, vy in pools:
         lat = y0 / radius
-        lon = x0 / radius + vx * t / (radius * math.cos(lat))
+        lon = x0 / radius + vx * dt * t / (radius * math.cos(lat))
         cx, cy, cz = (radius * geom.from_latlon(math.degrees(lat), math.degrees(lon))).tolist()
         wrapped = (math.degrees(lon) + 180.0) % 360.0 - 180.0
         out.append(
@@ -2253,7 +2257,7 @@ def environment_object(
     patches and the state of each power (DESIGN §34.6)."""
     pools = []
     if params is not None and cfg.world.geometry == "sphere":  # a pool is a place on the planet (§46.7)
-        pools = sphere_pools(params.weather.pools, cfg.world.radius, t)
+        pools = sphere_pools(params.weather.pools, cfg.world.radius, t, params.weather.dt)
     elif params is not None:
         length = params.L
         pools = [

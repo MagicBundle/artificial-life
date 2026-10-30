@@ -151,7 +151,7 @@ floor, and no other positional keys; `ENVS.patches` entries are `{i, x, y, z, lo
 `x, y, z` the unit vector of the patch centre and `lon, lat` in degrees; `ENVS.pools` is `[]` on a sphere
 without weather (the key stays, as in a box) and, with weather, a list of `{x, y, z, lon, lat, amp, sx, sy, vx, vy}`
 (the pool centre at step `t` as the planet-frame point at the floor radius and in degrees; `sx, sy` widths and
-`vx` the drift, arc lengths). A `STRM` storm's `track` entries are `[t, x, y, z]` and its `pred` entries
+`vx` the drift, arc lengths per unit of weather time: the centre moves `vx·dt` per engine step, `dt` = 0.79 to 0.83, DESIGN §46.6). A `STRM` storm's `track` entries are `[t, x, y, z]` and its `pred` entries
 `[lead, x, y, z]`; the tracker events (`EVNT` and `storms.jsonl`) carry `x, y, z`. The JSON tables of `IDNT` (`kin`, `colonies`) have `x, y, z` the planet-frame
 centroid and, for a kin group, `height` (mean height); nothing in them is a longitude.
 

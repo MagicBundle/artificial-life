@@ -2,9 +2,10 @@
 --weather-spinup N`` on a ``tiny3s`` source, as the Storm Worlds launcher builds it (``PlanetSpec``).
 
 The launcher used to pass ``stormsph`` for every sphere, and that overlay is tuned for the ``64k3s`` planet
-only: on a ``tiny3s`` source ``alife play`` refused it with 11 config problems. These tests run ``cli.main``
-in the process (the pytest fd capture stands for the pipe) on a 12-step ``tiny3s`` source with a short
-cadence, and decode the stream with the independent sphere decoder."""
+only: on a ``tiny3s`` source ``alife play`` refused it with 11 config problems (10 since C29: the Courant
+number is 0.40 on every planet). These tests run ``cli.main`` in the process (the pytest fd capture stands
+for the pipe) on a 12-step ``tiny3s`` source with a short cadence, and decode the stream with the
+independent sphere decoder."""
 
 from __future__ import annotations
 
@@ -81,4 +82,5 @@ def test_stormsph_is_refused_on_a_tiny3s_source_and_nothing_is_streamed(
     cap = capfdbinary.readouterr()
     assert code == 2 and cap.out == b""
     err = cap.err.decode(errors="replace")
-    assert "config problem" in err and "Nf times a power of two" in err and "Courant" in err
+    # (the Courant problem of the first build is gone: the weather runs at Courant 0.40 on every planet, C29)
+    assert "config problem" in err and "Nf times a power of two" in err and "latitude" in err
