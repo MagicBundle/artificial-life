@@ -206,6 +206,9 @@ extension Levers {
         if let t = try decimalText("mutation", "buoy_init") { world3D.buoyInit = t }
         if let t = try decimalText("mutation", "buoy_sigma") { world3D.buoySigma = t }
 
+        // The planet (DESIGN §46.9): a run from before it lacks these keys and is a box world.
+        world3D.sphere = try SphereLevers(config: config)
+
         // `combat.protect_floor` is not a lever, but the engine allows `arms.key_floor = 0` and `structures.shield_gain = 1` only above 0.
         if let t = try decimalText("combat", "protect_floor"), let v = Double(t) { features.values.protectFloor = v }
 
@@ -293,6 +296,8 @@ package enum Preset: String, CaseIterable, Identifiable {
     case tiny3d
     case k64_3d = "64k3d"
     case mini3d
+    /// The sphere world's first preset (DESIGN §46.9: `mini3s` and `64k3s` follow with PR S7, and join this list when the engine lists them).
+    case tiny3s
     package var id: String { rawValue }
 }
 
@@ -391,7 +396,14 @@ package struct RunSettings: Equatable {
         var effective = levers
         let base = world3DBaseline
         effective.world3D.dims = base.dims
-        if mode == .fork { effective.world3D.height = base.height }
+        if mode == .fork {
+            effective.world3D.height = base.height
+            // the planet's shape is the state's: a fork cannot change its geometry, radius, Nside or layers (DESIGN §46.9)
+            effective.world3D.sphere.geometry = base.sphere.geometry
+            effective.world3D.sphere.radius = base.sphere.radius
+            effective.world3D.sphere.nside = base.sphere.nside
+            effective.world3D.sphere.layers = base.sphere.layers
+        }
         return effective
     }
 

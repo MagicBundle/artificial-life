@@ -11,11 +11,11 @@ import Foundation
 /// The header object of a stream: the JSON after the 12-byte preamble. A key a later compatible version adds is
 /// ignored; a missing key is an error (every key is always present).
 package struct StreamHeader: Equatable, Sendable, Decodable {
-    /// `protocol`: the major version, equal to the last magic byte.
+    /// `protocol`: 1 for a box world, 2 for a sphere world (the last byte of the magic stays 1: the preamble is the same).
     package var protocolVersion: Int
     /// 2 or 3. A 2D stream carries z = 0 and pitch = 0.
     package var dims: Int
-    /// `L`: `world.size`; x and y are periodic on `[0, L)`.
+    /// `L`: `world.size`; x and y are periodic on `[0, L)`. A sphere world (protocol 2) has no image length: 0.
     package var size: Double
     /// `height`: z is bounded on `[0, height]` (0.0 when `dims` is 2).
     package var height: Double
@@ -26,7 +26,8 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
     /// `radius`: the agent radius.
     package var radius: Double
     package var fieldCell: Double
-    /// `FG`: field cells per side, and `FZ`: field layers (1 when `dims` is 2).
+    /// `FG`: field cells per side, and `FZ`: field layers (1 when `dims` is 2). A sphere has no lattice side: `FG` is 0 and `FZ`
+    /// is the number of radial layers.
     package var fieldGrid: Int
     package var fieldLayers: Int
     /// `NCH`: chemical channels.
@@ -51,6 +52,12 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
     /// The `alife play` key: the records the stream carries and the constants of the world. Nil for a plain
     /// `alife stream`. It is the only key beyond the 21 above that a reader acts on (§33.1).
     package var play: PlayHeader?
+    /// The planet of a protocol 2 header (`geometry`, `planet_radius`, `shell_edges`, the Nsides, `f0`, `weather_depth`); nil for a
+    /// box world.
+    package var sphere: SphereHeader?
+
+    /// Whether this is a sphere world (protocol 2): the box paths of the app do not apply to it.
+    package var isSphere: Bool { sphere != nil }
 
     /// Decodes every key explicitly. The synthesized decoder reads an optional property with `decodeIfPresent`, which
     /// would let the `run` key be absent; the protocol says it is a string or null and always present.
@@ -58,7 +65,16 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         protocolVersion = try c.decode(Int.self, forKey: .protocolVersion)
         dims = try c.decode(Int.self, forKey: .dims)
-        size = try c.decode(Double.self, forKey: .size)
+        // A protocol 2 header (the sphere) has no `L`; its planet keys are read below. A box header must have `L`.
+        let geometry = try c.decodeIfPresent(String.self, forKey: .geometry)
+        if let geometry {
+            guard geometry == "sphere" else {
+                throw DecodingError.dataCorruptedError(forKey: .geometry, in: c, debugDescription: "geometry \(geometry)")
+            }
+            size = 0
+        } else {
+            size = try c.decode(Double.self, forKey: .size)
+        }
         height = try c.decode(Double.self, forKey: .height)
         capacity = try c.decode(Int.self, forKey: .capacity)
         bondSlots = try c.decode(Int.self, forKey: .bondSlots)
@@ -78,6 +94,20 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
         every = try c.decode(Int.self, forKey: .every)
         source = try c.decode(String.self, forKey: .source)
         play = try c.decodeIfPresent(PlayHeader.self, forKey: .play)
+        if geometry != nil {
+            sphere = SphereHeader(
+                planetRadius: try c.decode(Double.self, forKey: .planetRadius),
+                shellHeight: height,
+                shellEdges: try c.decode([Double].self, forKey: .shellEdges),
+                nsideField: try c.decode(Int.self, forKey: .nsideField),
+                nsideWeather: try c.decode(Int.self, forKey: .nsideWeather),
+                nsideTerritory: try c.decode(Int.self, forKey: .nsideTerritory),
+                f0: try c.decode(Double.self, forKey: .f0),
+                weatherDepth: try c.decode(Double.self, forKey: .weatherDepth))
+            guard try c.decode(String.self, forKey: .ringOrder) == "ring" else {
+                throw DecodingError.dataCorruptedError(forKey: .ringOrder, in: c, debugDescription: "ring_order is not ring")
+            }
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -103,6 +133,16 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
         case every
         case source
         case play
+        // protocol 2 (the sphere)
+        case geometry
+        case planetRadius = "planet_radius"
+        case shellEdges = "shell_edges"
+        case nsideField = "nside_field"
+        case nsideWeather = "nside_weather"
+        case nsideTerritory = "nside_territory"
+        case ringOrder = "ring_order"
+        case f0
+        case weatherDepth = "weather_depth"
     }
 
     /// Limits that keep a corrupt header from asking for absurd memory; the engine's own are tighter
@@ -116,8 +156,17 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
     /// among the values of version 1). The viewer copies the initial view into its state, so it must be one it can show.
     func validate(magicVersion: Int) throws {
         func bad(_ why: String) -> StreamError { .malformedHeader(why) }
-        guard protocolVersion == magicVersion else {
+        // The preamble's last byte is the major version of the framing (1); a sphere world writes protocol 2 inside it.
+        guard magicVersion == 1, protocolVersion == 1 || protocolVersion == 2 else {
             throw bad("protocol \(protocolVersion) does not match the version \(magicVersion) of the magic")
+        }
+        guard (protocolVersion == 2) == (sphere != nil) else {
+            throw bad(protocolVersion == 2 ? "protocol 2 is the sphere's and has no planet keys"
+                                           : "a box world (protocol 1) has no planet keys")
+        }
+        if let sphere {
+            try validate(sphere: sphere)
+            return
         }
         guard dims == 2 || dims == 3 else { throw bad("dims \(dims) is not 2 or 3") }
         guard size.isFinite, size > 0, height.isFinite, height >= 0 else { throw bad("L or height is not a size") }
@@ -157,8 +206,59 @@ package struct StreamHeader: Equatable, Sendable, Decodable {
         }
     }
 
+    /// The checks of a protocol 2 (sphere) header: `L` absent, `FG` 0, `dims` 3, the shell edges ascending from the planet's radius
+    /// to the lid, equal-volume layers, the Nsides in range, and the keys the box checks that still apply (colour modes, view).
+    private func validate(sphere: SphereHeader) throws {
+        func bad(_ why: String) -> StreamError { .malformedHeader(why) }
+        guard dims == 3 else { throw bad("dims \(dims) is not 3 (a sphere is a 3D shell)") }
+        guard fieldGrid == 0 else { throw bad("FG \(fieldGrid) is not 0 (a sphere has no lattice side)") }
+        guard height.isFinite, height > 0 else { throw bad("height \(height) is not a thickness") }
+        guard radius.isFinite, radius > 0 else { throw bad("radius \(radius) is not a positive number") }
+        guard fieldCell.isFinite, fieldCell > 0 else { throw bad("field_cell \(fieldCell) is not a positive number") }
+        guard (1...Self.maxCapacity).contains(capacity) else { throw bad("N \(capacity) is outside [1, 2^22]") }
+        guard (1...64).contains(bondSlots) else { throw bad("B \(bondSlots) is outside [1, 64]") }
+        guard (1...Self.maxFieldGrid).contains(fieldLayers) else { throw bad("FZ \(fieldLayers) is outside [1, 1024]") }
+        guard sphere.planetRadius.isFinite, sphere.planetRadius > 0 else { throw bad("planet_radius is not positive") }
+        let edges = sphere.shellEdges
+        guard edges.count == fieldLayers + 1, edges.allSatisfy(\.isFinite) else {
+            throw bad("shell_edges has \(edges.count) values, not FZ + 1 = \(fieldLayers + 1)")
+        }
+        guard zip(edges, edges.dropFirst()).allSatisfy({ $0 < $1 }) else { throw bad("shell_edges are not ascending") }
+        guard Self.agrees(edges[0], sphere.planetRadius), Self.agrees(edges[edges.count - 1], sphere.planetRadius + height) else {
+            throw bad("shell_edges do not run from planet_radius to planet_radius + height")
+        }
+        guard (2...Self.maxNside).contains(sphere.nsideField), (2...Self.maxNside).contains(sphere.nsideTerritory),
+              (0...Self.maxNside * 64).contains(sphere.nsideWeather) else {
+            throw bad("an Nside is out of range (field \(sphere.nsideField), weather \(sphere.nsideWeather), territory \(sphere.nsideTerritory))")
+        }
+        guard sphere.f0.isFinite, sphere.weatherDepth.isFinite, sphere.weatherDepth >= 0,
+              sphere.hasWeather || sphere.weatherDepth == 0 else { throw bad("f0 or weather_depth is not valid") }
+        guard !colorModes.isEmpty else { throw bad("color_modes is empty") }
+        guard colorModes.contains(color) else { throw bad("color \"\(color)\" is not one of color_modes") }
+        guard (0..<fieldLayers).contains(fieldZ) else { throw bad("field_z \(fieldZ) is outside [0, \(fieldLayers))") }
+        guard every >= 0 else { throw bad("every \(every) is negative") }
+        guard mode == "simulate" || mode == "follow" else { throw bad("mode \"\(mode)\" is not simulate or follow") }
+        guard ["run", "file", "preset"].contains(source) else { throw bad("source \"\(source)\" is not run, file or preset") }
+        try play?.validate()
+        let npix = sphere.fieldCells
+        for (name, grid) in [("structures", play?.structures), ("niche", play?.niche)] {
+            if let grid, grid.cells != [fieldLayers, 1, npix] {
+                throw bad("play.\(name).cells \(grid.cells) is not [FZ, 1, Npix] = [\(fieldLayers), 1, \(npix)]")
+            }
+        }
+        if let wx = play?.weather, let nside = wx.nside, nside != sphere.nsideWeather || wx.coarse != sphere.nsideField {
+            throw bad("play.weather.nside/coarse differ from nside_weather/nside_field")
+        }
+    }
+
+    /// The largest Nside a header may name: `12 Nside^2` cells must stay an addressable array (Nside 4096 is 200 M).
+    static let maxNside = 1 << 11
+
     /// Whether two sizes written by the engine as binary64 agree, allowing for the rounding of a product.
     private static func agrees(_ a: Double, _ b: Double) -> Bool { abs(a - b) <= 1e-6 * max(abs(b), 1) }
+
+    /// The cells of one field layer: `FG²` in a box world, `12 Nside²` (ring order) on a sphere.
+    package var fieldCellsPerLayer: Int { sphere?.fieldCells ?? fieldGrid * fieldGrid }
 
     /// The name of the colour mode `frame` carries, or nil for an index outside `colorModes`.
     package func colorMode(of frame: StreamFrame) -> String? { colorMode(index: frame.colorIndex) }
@@ -194,7 +294,8 @@ package struct StreamFrame: Equatable, Sendable {
     package var rgb: [UInt32]
     /// `2·nBonds` row indices: the pairs `(i, j)` with `i < j`, both alive, each bond once.
     package var bonds: [UInt32]
-    /// `FG²` colours `0x00RRGGBB` of one field layer, row-major `[cy][cx]`; nil without a field section.
+    /// `FG²` colours `0x00RRGGBB` of one field layer, row-major `[cy][cx]`; nil without a field section. On a sphere: `12 Nside²`
+    /// colours of one layer in ring order.
     package var field: [UInt32]?
 
     package init(step: UInt64, nAlive: Int, flags: UInt32, nBonds: Int, colorIndex: Int, alive: [UInt8], pos: [Float],
@@ -503,7 +604,7 @@ package struct FrameDecoder: Sendable {
                 "n_bonds \(nBonds) exceeds the \(header.bondSlots) bond slots of \(header.capacity) rows")
         }
         var length = Self.frameHeadBytes + 4 * ((header.capacity + 3) / 4) + 20 * header.capacity + 8 * nBonds
-        if flags & 1 != 0 { length += 4 * header.fieldGrid * header.fieldGrid }
+        if flags & 1 != 0 { length += 4 * header.fieldCellsPerLayer }
         return length
     }
 
@@ -548,7 +649,7 @@ package struct FrameDecoder: Sendable {
                 throw StreamError.malformedFrame(
                     "field layer \(flags >> 16) is outside the \(header.fieldLayers) layers")
             }
-            field = copy(count: header.fieldGrid * header.fieldGrid, at: offset)
+            field = copy(count: header.fieldCellsPerLayer, at: offset)
         }
         return StreamFrame(step: step, nAlive: nAlive, flags: flags, nBonds: nBonds, colorIndex: colorIndex,
                            alive: alive, pos: pos, orient: orient, rgb: rgb, bonds: bonds, field: field)

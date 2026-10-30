@@ -55,6 +55,8 @@ struct Viewer3DView: View {
                 // No Metal device is created until a stream is open.
                 if stream.phase == .idle {
                     Color(red: 0.035, green: 0.04, blue: 0.055)
+                } else if stream.header?.isSphere == true {
+                    SphereLabMetalView(stream: stream, model: model)
                 } else {
                     ViewerMetalView(stream: stream, model: model)
                 }

@@ -124,6 +124,7 @@ extension WorldModel {
     }
 
     func selectOrganism(_ uid: Int64, follow serverFollow: Bool = true, camera cameraFollow: Bool = true, fly: Bool = false) {
+        if sphereActive { return selectOrganismOnPlanet(uid, follow: serverFollow, camera: cameraFollow, fly: fly) }
         choose(.organism(uid: uid))
         play.send(serverFollow ? .follow(uid) : .focus(uid))
         if cameraFollow {
@@ -139,6 +140,7 @@ extension WorldModel {
     }
 
     func selectStorm(_ id: Int, fly: Bool = true, follow: Bool = false) {
+        if sphereActive { return selectStormOnPlanet(id, fly: fly, follow: follow) }
         choose(.storm(id: id))
         let position = play.store.storms?.storms.storms.first { $0.id == id }.map { SIMD3<Float>(Float($0.x), Float($0.y), 0) }
         if follow {
@@ -155,6 +157,7 @@ extension WorldModel {
 
     /// Selects a kin group: its territory is highlighted. `fly` goes to the centroid of its rows, `follow` keeps the camera on it.
     func selectKin(id: Int, fly: Bool = true, follow: Bool = false) {
+        if sphereActive { return selectKinOnPlanet(id, fly: fly, follow: follow) }
         choose(.kin(id: id))
         if follow { setFollow(.lineage(kinID: id)) } else { setFollow(.none) }
         if fly {
@@ -166,6 +169,7 @@ extension WorldModel {
     }
 
     func selectPool(_ index: Int) {
+        if sphereActive { return selectPoolOnPlanet(index) }
         choose(.pool(index: index))
         setFollow(.none)
         if let pool = play.store.environment?.environment.pools, pool.indices.contains(index) {
@@ -176,6 +180,11 @@ extension WorldModel {
     /// `Esc` or a click on nothing: nothing is selected or followed.
     func clearSelection() {
         choose(.none)
+        if sphereActive {
+            sphere.clearCell()
+            sphere.cancelMotion(keepSelection: false)
+            return
+        }
         cancelCameraMotion()
     }
 
@@ -197,6 +206,7 @@ extension WorldModel {
     /// A click on a place and an entity: an alert's arrow, a toast, a sentence of a report, a chronicle row.
     func activate(_ action: ChronicleAction?) {
         guard let action else { return }
+        if sphereActive { return activateOnPlanet(action) }
         let place = action.at.map { SIMD3<Float>($0.x, $0.y, 0) }
         /// Where it happened; an action with no place goes nowhere.
         func fly(to point: SIMD3<Float>?) {
@@ -354,6 +364,7 @@ extension WorldModel {
     /// `h`, `r`, the toolbar's Home: whatever follows or flies stops (the selection stays) and the camera flies to the Home view, the
     /// flat overview north up and facing the populated side (DESIGN §36.5).
     func home() {
+        if sphereActive { return sphere.home() }
         cancelCameraMotion()
         headingEase = nil
         distanceWish = nil

@@ -29,7 +29,7 @@ import Testing
         return cadence
     }
 
-    static let presetNames = ["tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mini3d", "fast", "storm", "storm160", "build", "bonds", "comm", "niche", "niche3d"]
+    static let presetNames = ["tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mini3d", "fast", "storm", "storm160", "build", "bonds", "comm", "niche", "niche3d", "tiny3s", "stormsph"]
 
     @Test(arguments: presetNames)
     func cadenceOfEveryPresetFileIsUnchanged(name: String) throws {
@@ -155,6 +155,32 @@ import Testing
         #expect(file.double("fields", "benthic_lambda") == 8 && file.double("fields", "photic_amp") == 0.5)
         #expect(file.value("fields", "chem_diffusion") == nil, "an array is not a scalar")
         #expect(file.int("run", "metrics_every") == 10)
+    }
+
+    @Test func theRealTiny3SPresetIsAPlanet() throws {
+        let file = PresetFile(text: try Repo.preset("tiny3s"))
+        #expect(file.string("world", "geometry") == "sphere" && file.value("world", "geometry") == nil, "a string is no scalar, but it is a string")
+        #expect(file.double("world", "radius") == 36 && file.double("world", "height") == 16)
+        #expect(file.int("world", "nside") == 8 && file.int("world", "layers") == 8 && file.int("world", "dims") == 3)
+        #expect(file.double("physics", "ceiling_band") == nil, "the band is off: the preset does not set it")
+        let levers = World3DLevers(preset: file)
+        #expect(levers.dims == 3 && levers.height == "16" && levers.sphere.isSphere)
+        #expect(levers.sphere.radius == "36" && levers.sphere.nside == "8" && levers.sphere.layers == "8" && levers.sphere.ceilingBand == "0")
+        #expect(levers.sphere.summary == "sphere, radius 36, Nside 8, 8 layers")
+    }
+
+    @Test func aStringMustBeASimpleQuotedOne() {
+        let file = PresetFile(text: """
+        [world]
+        a = "sphere"
+        b = 'literal'
+        c = "with \\"escape"
+        d = "unterminated
+        e = ["x"]
+        f = sphere
+        """)
+        #expect(file.string("world", "a") == "sphere")
+        for key in ["b", "c", "d", "e", "f", "absent"] { #expect(file.string("world", key) == nil, "\(key)") }
     }
 
     @Test func aMissingPresetFileIsNil() {

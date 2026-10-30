@@ -18,6 +18,8 @@ package struct PresetFile: Equatable, Sendable {
 
     /// Table name (`run`, `world`, ...; "" before the first table) to its scalar keys.
     private var tables: [String: [String: Value]] = [:]
+    /// The same for the plain strings (`geometry = "sphere"`): kept apart, so that `value` still says a string is no scalar.
+    private var strings: [String: [String: String]] = [:]
 
     package init() {}
 
@@ -40,6 +42,7 @@ package struct PresetFile: Equatable, Sendable {
                                                               omittingEmptySubsequences: false)[0]
                 .trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "_", with: "")
             if let scalar = Self.scalar(value) { tables[table, default: [:]][key] = scalar }
+            if let text = Self.plainString(value) { strings[table, default: [:]][key] = text }
         }
     }
 
@@ -54,7 +57,17 @@ package struct PresetFile: Equatable, Sendable {
         return .double(v)
     }
 
+    /// A string in double quotes with no escape in it (`"sphere"`); nil for anything else (a literal string, an array, a number).
+    private static func plainString(_ text: String) -> String? {
+        guard text.count >= 2, text.hasPrefix("\""), text.hasSuffix("\"") else { return nil }
+        let inner = text.dropFirst().dropLast()
+        return inner.contains("\"") || inner.contains("\\") ? nil : String(inner)
+    }
+
     package func value(_ table: String, _ key: String) -> Value? { tables[table]?[key] }
+
+    /// The plain string at `table.key` (`geometry = "sphere"`); nil if absent or not a simple quoted string.
+    package func string(_ table: String, _ key: String) -> String? { strings[table]?[key] }
 
     /// The integer at `table.key`; nil if absent or not an integer (`1.0` is a float in TOML).
     package func int(_ table: String, _ key: String) -> Int? {

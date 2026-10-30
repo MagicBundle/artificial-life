@@ -141,6 +141,9 @@ struct WorldLauncherView: View {
 
     private func describe(_ world: PlayWorld) -> String {
         var parts: [String] = []
+        if world.geometry == "sphere" {
+            parts.append("sphere" + (world.planetRadius.map { ", radius " + World3DLevers.text($0) } ?? ""))
+        }
         if let step = world.newestStep { parts.append("step \(step)") }
         if let planet = world.file.planet {
             parts.append("planet of \(planet.source ?? "a preset")")
@@ -157,6 +160,16 @@ struct WorldLauncherView: View {
 struct LauncherPlanetBox: View {
     @ObservedObject var model: WorldLauncherModel
 
+    /// The source's name, with "sphere" and its radius for a planet (DESIGN §46.9: the launcher shows a world's geometry).
+    static func title(of source: PlaySource) -> String {
+        source.geometry == "sphere" ? "\(source.name)  (sphere\(source.planetRadius.map { ", radius " + World3DLevers.text($0) } ?? ""))" : source.name
+    }
+
+    /// What a sphere source means for the planet: its weather overlay is its own, and it stays a sphere.
+    static func sphereNote(_ source: PlaySource) -> String {
+        "A sphere world: the new planet is a sphere of the same shape (a fork cannot change its geometry), and the weather overlay is stormsph."
+    }
+
     var body: some View {
         let _ = ViewProbe.note("LauncherPlanetBox", for: model)
         GroupBox("New planet") {
@@ -164,7 +177,11 @@ struct LauncherPlanetBox: View {
                 Picker("Source", selection: Binding(
                     get: { model.planet.source }, set: { model.selectSource($0) })
                 ) {
-                    ForEach(model.catalog.sources) { Text($0.name).tag($0.name) }
+                    ForEach(model.catalog.sources) { Text(Self.title(of: $0)).tag($0.name) }
+                }
+                if let source = model.selectedSource, source.geometry == "sphere" {
+                    Text(Self.sphereNote(source)).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if model.sourceIsWorld {
                     Text(WorldLauncherModel.continueHint).font(.caption).foregroundStyle(.secondary)

@@ -114,7 +114,7 @@ extension ChronicleAction {
             }
         }
         if at == nil, select == .none { return nil }
-        return ChronicleAction(at: at, select: select)
+        return ChronicleAction(at: at, select: select, z: alert.z.map { Float($0) })
     }
 
     /// What a click on a sentence of a report does: the first of its `refs` that names an entity the report knows.

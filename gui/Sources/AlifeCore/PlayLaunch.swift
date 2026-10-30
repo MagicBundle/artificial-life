@@ -53,6 +53,9 @@ package struct PlanetSpec: Equatable, Sendable {
     package var name: String
     /// `world.size` of the source (`PlaySource.worldSize`), nil if unknown: it picks the overlay (`overlay(forWorldSize:)`).
     package var sourceWorldSize: Double?
+    /// `world.geometry` of the source (`PlaySource.geometry`), nil if unknown: it picks the weather overlay, `stormsph` for a planet
+    /// (`overlay(forGeometry:worldSize:)`), never by an alias.
+    package var sourceGeometry: String?
     /// `world.dims` of the source (`PlaySource.dims`), nil if unknown: the weather runs only in a 3D world, so a 2D source
     /// cannot take the storm overlay (the engine refuses it with its weather rules 7, W-1 and R4).
     package var sourceDims: Int?
@@ -80,6 +83,12 @@ package struct PlanetSpec: Equatable, Sendable {
     /// Explicit, never an alias: the same name would mean two geometries (DESIGN §37.2).
     package static func overlay(forWorldSize size: Double?) -> String { size == miniWorldSize ? "storm160" : "storm" }
 
+    /// The weather overlay of a source of this geometry and `world.size`: `stormsph` for a planet (its own overlay, validated against the
+    /// planet it lands on), else the box's by size. Chosen by the source's `world.geometry`, never by an alias (DESIGN §46.9).
+    package static func overlay(forGeometry geometry: String?, worldSize size: Double?) -> String {
+        geometry == "sphere" ? "stormsph" : overlay(forWorldSize: size)
+    }
+
     /// Why the weather cannot be turned on for a source of `dims` dimensions; nil when it can (or the dims are unknown: the
     /// engine then decides).
     package static func weatherObstacle(dims: Int?) -> String? {
@@ -93,8 +102,10 @@ package struct PlanetSpec: Equatable, Sendable {
     package init(source: String, sourceStep: Int? = nil, name: String, storm: Bool = true,
                  weatherSpinup: Int = PlanetSpec.defaultSpinup, directorEnabled: Bool = true,
                  houses: PlayHouses = .auto, seed: Int? = nil, rate: PlayRate? = .multiplier(1),
-                 director: PlayDirector = .off, sourceWorldSize: Double? = nil, sourceDims: Int? = nil) {
+                 director: PlayDirector = .off, sourceWorldSize: Double? = nil, sourceDims: Int? = nil,
+                 sourceGeometry: String? = nil) {
         self.source = source
+        self.sourceGeometry = sourceGeometry
         self.sourceDims = sourceDims
         self.sourceStep = sourceStep
         self.sourceWorldSize = sourceWorldSize
@@ -151,7 +162,7 @@ package enum PlayLaunch {
         var source = "runs/\(p.source)"
         if let step = p.sourceStep { source += ":\(step)" }
         var args = ["play", "--init-from", source]
-        if p.storm { args += ["--overlay", PlanetSpec.overlay(forWorldSize: p.sourceWorldSize)] }
+        if p.storm { args += ["--overlay", PlanetSpec.overlay(forGeometry: p.sourceGeometry, worldSize: p.sourceWorldSize)] }
         if p.directorEnabled { args += ["--set", "director.enabled=true"] }
         if p.storm { args += ["--weather-spinup", "\(p.weatherSpinup)"] }
         args += ["--houses", p.houses.rawValue]

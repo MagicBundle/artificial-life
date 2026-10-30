@@ -34,6 +34,9 @@ final class WorldLauncherModel: ObservableObject {
         } else if let dims = selectedSource?.dims, dims != planet.sourceDims {
             // The selected source's config.json changed its dims under a running launcher: start again from its defaults.
             selectSource(planet.source)
+        } else if let geometry = selectedSource?.geometry, geometry != planet.sourceGeometry {
+            // the selected source's config.json changed its geometry under a running launcher: start again from its defaults
+            selectSource(planet.source)
         } else if let size = selectedSource?.worldSize, size != planet.sourceWorldSize {
             // The selected source's config.json changed under a running launcher: follow its size (the overlay
             // is chosen from it), and its default spin-up if the user had not changed that.
@@ -78,6 +81,7 @@ final class WorldLauncherModel: ObservableObject {
         let source = catalog.sources.first { $0.name == name }
         planet.sourceStep = source?.checkpoints.last
         planet.sourceWorldSize = source?.worldSize
+        planet.sourceGeometry = source?.geometry
         planet.sourceDims = source?.dims
         applySourceDefaults(source)
     }
