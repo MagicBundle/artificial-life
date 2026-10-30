@@ -38,10 +38,16 @@ def test_make_pools_places_equal_pools_at_the_latitude_and_the_angular_drift() -
         ws.make_pools(90.0, 0, 32.0, 16.0)
 
 
-def test_the_pools_of_stormsph_are_the_builder_with_its_defaults() -> None:
-    cfg = ws.build_config("64k3s", ["stormsph"])
-    built = ws.make_pools(90.0, 3, 32.0, 16.0)
-    assert np.allclose(built, cfg.weather.pools, atol=1e-5)
+def test_the_pools_of_every_overlay_are_the_builders_at_their_calibrated_sizes() -> None:
+    for preset, overlay, radius, sx, sy in (
+        ("64k3s", "stormsph", 90.0, 40.0, 20.0),
+        ("mini3s", "stormsph22", 48.0, 24.0, 16.0),
+        ("tiny3s", "stormsph16", 36.0, 18.0, 12.0),
+    ):
+        cfg = ws.build_config(preset, [overlay])
+        assert np.allclose(ws.make_pools(radius, 3, sx, sy), cfg.weather.pools, atol=1e-5), overlay
+    # the box's 32 x 16 of S4b and S7a is the same builder with the draft's size
+    assert np.allclose(ws.make_pools(90.0, 3, 32.0, 16.0)[2:5], [32.0, 16.0, 1.0])
 
 
 def test_build_config_takes_pool_keywords_or_a_flat_list_and_validates() -> None:
