@@ -165,9 +165,12 @@ struct LauncherPlanetBox: View {
         source.geometry == "sphere" ? "\(source.name)  (sphere\(source.planetRadius.map { ", radius " + World3DLevers.text($0) } ?? ""))" : source.name
     }
 
-    /// What a sphere source means for the planet: its weather overlay is its own, and it stays a sphere.
+    /// What a sphere source means for the planet: it stays a sphere, and its weather overlay is its own, chosen by its shape (none for a
+    /// shape without a calibrated weather: the toggle then says so).
     static func sphereNote(_ source: PlaySource) -> String {
-        "A sphere world: the new planet is a sphere of the same shape (a fork cannot change its geometry), and the weather overlay is stormsph."
+        let shape = "A sphere world: the new planet is a sphere of the same shape (a fork cannot change its geometry)"
+        guard !source.weatherOn, let overlay = PlanetSpec.overlay(forShape: source.planetShape) else { return shape + "." }
+        return shape + ", and the weather overlay is \(overlay)."
     }
 
     var body: some View {

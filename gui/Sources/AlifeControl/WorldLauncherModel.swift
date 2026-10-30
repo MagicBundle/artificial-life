@@ -37,6 +37,9 @@ final class WorldLauncherModel: ObservableObject {
         } else if let geometry = selectedSource?.geometry, geometry != planet.sourceGeometry {
             // the selected source's config.json changed its geometry under a running launcher: start again from its defaults
             selectSource(planet.source)
+        } else if selectedSource?.planetShape != planet.sourceShape {
+            // ... or its planet's shape, which picks the weather overlay (or leaves none)
+            selectSource(planet.source)
         } else if let size = selectedSource?.worldSize, size != planet.sourceWorldSize {
             // The selected source's config.json changed under a running launcher: follow its size (the overlay
             // is chosen from it), and its default spin-up if the user had not changed that.
@@ -82,6 +85,7 @@ final class WorldLauncherModel: ObservableObject {
         planet.sourceStep = source?.checkpoints.last
         planet.sourceWorldSize = source?.worldSize
         planet.sourceGeometry = source?.geometry
+        planet.sourceShape = source?.planetShape
         planet.sourceDims = source?.dims
         applySourceDefaults(source)
     }
@@ -91,8 +95,8 @@ final class WorldLauncherModel: ObservableObject {
     private func applySourceDefaults(_ source: PlaySource?) {
         guard let source else { return }
         // A weather-on source is forked as it is: the engine refuses the spin-up for it (§33.2.1). A 2D source cannot take
-        // the weather at all.
-        planet.storm = !source.weatherOn && PlanetSpec.weatherObstacle(dims: source.dims) == nil
+        // the weather at all, nor a planet of a shape that has no calibrated overlay (§46.8).
+        planet.storm = !source.weatherOn && weatherObstacle == nil
         planet.weatherSpinup = planet.storm ? PlanetSpec.defaultSpinup(forGeometry: source.geometry, worldSize: source.worldSize) : 0
     }
 
@@ -110,7 +114,10 @@ final class WorldLauncherModel: ObservableObject {
     }
 
     /// Why the weather toggle is off and disabled for the selected source; nil when the weather can be turned on.
-    var weatherObstacle: String? { PlanetSpec.weatherObstacle(dims: selectedSource?.dims) }
+    var weatherObstacle: String? {
+        guard let source = selectedSource else { return nil }
+        return PlanetSpec.weatherObstacle(dims: source.dims, geometry: source.geometry, shape: source.planetShape, weatherOn: source.weatherOn)
+    }
 
     var planetErrors: [String] { planet.validate(existing: catalog.existingNames) }
 
