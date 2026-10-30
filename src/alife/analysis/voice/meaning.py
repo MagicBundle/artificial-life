@@ -212,19 +212,34 @@ def decide(res: dict[str, Any], rules: Rules) -> dict[str, Any]:
     }
     info = clauses["code"]["passed"] or clauses["transfer"]["passed"] or clauses["reception"]["passed"]
     used = clauses["reception"]["passed"] or clauses["transfer_contrast"]["passed"]
+    miss = [k for k, v in clauses.items() if not v["passed"]]
+    beats = {c: [r for r in rules.readouts if passing[r][c]] for c in ("deaf", "decoy")}
+
+    def fit_facts() -> str:
+        part = [f"none beats {c} on {', '.join(v) if v else 'no readout'}" for c, v in beats.items()]
+        return "; ".join(part)
+
     if all(c["passed"] for c in clauses.values()):
         verdict, detail = "language", "every clause of the operational definition holds"
     elif info or used:
-        miss = [k for k, v in clauses.items() if not v["passed"]]
+        verdict = "signalling without meaning"
         if not used:
             detail = (
                 "information without use: the calls carry information, but hearers' behaviour does not use it"
             )
         elif not clauses["fitness"]["passed"]:
-            detail = "use without benefit: hearers use the calls, but the arms do not differ in fitness"
+            if beats["deaf"] and not beats["decoy"]:
+                kind = "use with a benefit of hearing but none specific to the calls"
+            elif beats["deaf"] or beats["decoy"]:
+                kind = "use with a partial benefit"
+            else:
+                kind = "use without benefit"
+            detail = f"{kind}: hearers use the calls; {fit_facts()}"
         else:
             detail = "partial: " + ", ".join(miss) + " did not hold"
-        verdict = "signalling without meaning"
+        if "fitness" not in detail and not clauses["fitness"]["passed"]:
+            detail += f" ({fit_facts()})"
+        detail += "; clauses that failed: " + ", ".join(miss)
         if not cost_ok:
             detail += "; the voice cost is not matched across arms, so the fitness clause cannot be read"
     else:

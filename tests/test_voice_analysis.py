@@ -303,6 +303,17 @@ def test_use_without_benefit_is_not_a_language() -> None:
     assert d["clauses"]["transfer_contrast"]["passed"] and not d["clauses"]["fitness"]["passed"]
 
 
+def test_a_benefit_of_hearing_that_the_decoy_shares_is_not_a_benefit_of_the_calls() -> None:
+    rules, arms = _arms("planted", "random", benefit=15.0)
+    for s, a in arms["decoy"].items():  # the decoy world is as fit as the real one
+        a.fit = _fit(np.random.default_rng(90 + s), 1015)
+    d = meaning.run_meaning(arms, rules, log=lambda m: None)["decision"]
+    assert (
+        d["verdict"] == "signalling without meaning" and "benefit of hearing but none specific" in d["detail"]
+    )
+    assert "none beats deaf on population" in d["detail"] and "none beats decoy on no readout" in d["detail"]
+
+
 def test_unmatched_cost_withholds_the_language() -> None:
     rules, arms = _arms("planted", "random", benefit=15.0, due={"deaf": 60.0})
     res = meaning.run_meaning(arms, rules, log=lambda m: None)
