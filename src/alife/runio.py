@@ -1376,7 +1376,8 @@ class RunDir:
         return path
 
     def write_wx(self, step: int, planes: np.ndarray) -> Path:
-        """Atomically write the weather dump of ``step``: ``(10, n, n)`` float32 (9 planes and ``1 - qs``)."""
+        """Atomically write the weather dump of ``step``: ``(10, n, n)`` float32 (9 planes and ``1 - qs``); on
+        a sphere ``(12, 12·Nw²)`` (the 11 stored planes in ``weather_sph.pack`` order, then ``1 - qs``)."""
         self.observers_dir.mkdir(exist_ok=True)
         path = self.dump_path("wx", step)
         _atomic_write(path, lambda f: np.save(f, np.ascontiguousarray(planes, dtype=np.float32)))

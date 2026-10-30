@@ -29,13 +29,30 @@ synthetic vortices crossing the poles and the vertices of the grid). Host code, 
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
+import mlx.core as mx
 import numpy as np
 
 from alife import geom, streamrec
-from alife.storms import Comp, Det, Detection, Track, Tracker
+from alife.storms import (
+    _DET_FIELDS,
+    _DET_TYPES,
+    STRM_LEADS,
+    Comp,
+    Det,
+    Detection,
+    StormLayer,
+    StormTick,
+    Track,
+    Tracker,
+    _round,
+)
+
+if TYPE_CHECKING:
+    from alife.config import Config
 
 __all__ = [
     "SphereComp",
@@ -43,7 +60,9 @@ __all__ = [
     "SphereFrame",
     "SphereParams",
     "SphereTracker",
+    "StormLayerS",
     "detect",
+    "proxy",
 ]
 
 BAND_RESULTANT = 0.5  # a footprint whose mean resultant length is below this is a band
@@ -65,6 +84,30 @@ class SphereParams:
     a_min: int = 25
     r_min: int = 4
     miss_grace: int = 2
+    detect_every: int = 25
+    coarse: int = 0  # the Nside of the MAPH planes (the field Nside); 0: not set
+    weather: Any = None  # the sphere's ``WeatherParams`` (the vorticity, the pools), for the layer
+
+    @classmethod
+    def from_config(cls, cfg: Config) -> SphereParams:
+        """The parameters of a sphere config with the weather on."""
+        from alife import weather_sph
+
+        wp = weather_sph.params_from_config(cfg)
+        return cls(
+            nside=wp.n, radius=cfg.world.radius, zeta_th=wp.zeta_th, p_th=wp.p_th, a_min=wp.a_min,
+            r_min=wp.r_min, miss_grace=wp.miss_grace, detect_every=wp.detect_every,
+            coarse=cfg.world.nside, weather=wp,
+        )  # fmt: skip
+
+    def to_dict(self) -> dict[str, Any]:
+        """The identity of the parameters (a saved tracker state is only used under the same ones)."""
+        return {
+            "radius": self.radius,
+            "nside": self.nside,
+            "coarse": self.coarse,
+            "weather": self.weather.to_dict(),
+        }
 
     @property
     def n_cells(self) -> int:
@@ -256,6 +299,103 @@ class SphereTracker(Tracker):
         )  # fmt: skip
         tr.last_flat = c.flat
         tr.missed = 0
+
+
+def proxy(zeta: np.ndarray, rain: np.ndarray, p: SphereParams) -> tuple[int, float]:
+    """``(storm_proxy, vort_cells)`` of the metrics weather block (the box's ``weather_obs.weather_block``):
+    the number of components of the cyclonic-vorticity mask over the cell graph (per hemisphere) of ``a_min``
+    cells or more with at least ``r_min`` raining cells, and the share of cells in the mask."""
+    centres = geom.pixel_centres(p.nside)
+    s = _side(centres)
+    vort = s * np.asarray(zeta, np.float64) >= p.zeta_th
+    root = geom.label_components(p.nside, vort, group=s)
+    raining = np.asarray(rain) >= p.p_th
+    ids, area = np.unique(root[vort], return_counts=True)
+    if not ids.size:
+        return 0, float(vort.mean())
+    wet = np.bincount(root[vort & raining], minlength=p.n_cells)[ids] if (vort & raining).any() else 0 * ids
+    return int(((area >= p.a_min) & (wet >= p.r_min)).sum()), float(vort.mean())
+
+
+_DET_FIELDS_S = (*_DET_FIELDS, "z")
+_DET_TYPES_S = (*_DET_TYPES, float)
+
+
+@dataclass
+class StormLayerS(StormLayer):
+    """The storm layer of a sphere world (DESIGN §46.7): ``StormLayer`` with the sphere's detector and
+    tracker and records. ``p`` is a ``SphereParams``; a tick reads the weather state ``weather_sph.
+    WeatherStateS``, builds the ``MAPH`` planes instead of ``MAP1``'s, and states every place as the
+    planet-frame ``x, y, z`` (``STRM`` storms, tracks and predictions, the events and the line of
+    ``storms.jsonl``)."""
+
+    det_fields = _DET_FIELDS_S
+    det_types = _DET_TYPES_S
+    det_cls = SphereDet
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.tracker = SphereTracker(self.p)
+
+    def _read(self, ws: Any, t: int) -> tuple[SphereFrame, dict[str, np.ndarray]]:
+        from alife import weather_sph
+
+        p, wp = self.p, self.p.weather
+        zeta = weather_sph.vorticity(ws, wp, p.radius)
+        tab = weather_sph.dev_for(wp, p.radius)
+        ts = weather_sph.warm_pools(wp, p.radius, tab.x, mx.array(t, dtype=mx.int32))
+        spd = mx.sqrt((ws.u1 * ws.u1).sum(axis=-1))
+        arrs = (zeta, ws.P, ws.h1, spd, ws.Dc, ts, ws.u1, ws.u2)
+        mx.eval(*arrs)
+        z, rain, h1, speed, dc, tsn, u1, u2 = (np.array(a, dtype=np.float64) for a in arrs)
+        maps = {"p": rain, "dc": dc, "zeta": z, "ts": tsn, "winds": np.stack([u1, u2])}
+        return SphereFrame(t, z, rain, h1, speed), maps
+
+    def tick_at(self, ws: Any, t: int, t_mult: mx.array | None = None) -> StormTick:  # type: ignore[override]
+        fr, maps = self._read(ws, t)
+        return self.ingest(detect(fr, self.p), maps)
+
+    def current(self, ws: Any, t: int, t_mult: mx.array | None = None) -> StormTick:  # type: ignore[override]
+        _, maps = self._read(ws, t)
+        return StormTick(t, {**self._strm(t, []), "detect_step": self.step}, self._planes(maps), [], None)
+
+    def _planes(self, maps: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+        from alife.stream import quantise_maph
+
+        return quantise_maph(
+            p=maps["p"], dc=maps["dc"], zeta=maps["zeta"], ts=maps["ts"], winds=maps["winds"],
+            nside_weather=self.p.nside, nside=self.p.coarse, dc_ref=self.dc_ref,
+        )  # fmt: skip
+
+    @staticmethod
+    def _at(c: Any) -> dict[str, float]:
+        return {"x": _round(c.x, 2), "y": _round(c.y, 2), "z": _round(c.z, 2)}
+
+    def _storm(self, x: Track, t: int, points: int, pred: bool) -> dict[str, Any]:
+        n, last = self.notes[x.id], x.dets[-1]
+        ahead = (
+            [[lead, *(_round(v, 2) for v in self.tracker.predict(x, t + lead))] for lead in STRM_LEADS]
+            if pred and len(x.dets) >= 2
+            else []
+        )
+        return {
+            "id": x.id,
+            "name": n.name,
+            "named": n.name is not None,
+            "hemi": x.hemi,
+            **self._at(last),
+            "r": _round(last.r_eq, 2),
+            "ext": [_round(n.ext[0], 2), _round(n.ext[1], 2)],
+            "zeta": _round(n.peak, 4),
+            "zeta_now": _round(last.zeta_max_f0, 4),
+            "wind": _round(last.wind_max, 4),
+            "rain": _round(last.rain, 6),
+            "age": t - n.t_first,
+            "parent": x.parent,
+            "state": "active" if last.t == t else "coasting",
+            "track": [[d.t, _round(d.x, 2), _round(d.y, 2), _round(d.z, 2)] for d in x.dets[-points:]],
+            "pred": ahead,
+        }
 
 
 def vortex_field(

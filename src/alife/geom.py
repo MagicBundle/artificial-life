@@ -1031,6 +1031,9 @@ class Box:
 
     def __init__(self, size: float, field_cell: float, dims: int, height: float):
         self.size, self.field_cell, self.dims, self.height_max = size, field_cell, dims, height
+        self.layer_margin = (
+            field_cell  # the thickness of the floor and lid layers (the coupling block's margin)
+        )
         self.fg = round(size / field_cell)
         self.fz = round(height / field_cell) if dims == 3 else 1
 
@@ -1101,6 +1104,8 @@ class Sphere:
 
     def __init__(self, radius: float, height: float, nside: int, layers: int):
         self.radius, self.height_max, self.nside, self.layers = radius, height, nside, layers
+        # the thickness of the floor layer, the margin the coupling block keeps from the floor and the lid
+        self.layer_margin = float(layer_edges(radius, height, layers)[1])
 
     def _norm(self, pos):
         return np.linalg.norm(np.asarray(pos, dtype=np.float64), axis=-1, keepdims=True)

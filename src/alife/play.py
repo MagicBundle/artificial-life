@@ -45,7 +45,7 @@ from typing import Any, BinaryIO, Final, Protocol
 import mlx.core as mx
 import numpy as np
 
-from alife import layout, metrics, runner, streamrec
+from alife import geom, layout, metrics, runner, streamrec
 from alife import stream as stream_mod
 from alife import weather as W
 from alife.config import Config, config_hash, dims, immigration_on
@@ -68,6 +68,7 @@ from alife.runio import ALERTS_FILE, ALERTS_REPLAY_FILE, COMMANDS_FILE, DIRECTOR
 from alife.state import ERROR_MASK, CounterIdx, DeathCause, State, default_env, to_numpy
 from alife.step import StepOut
 from alife.storms import StormLayer, dc_reference
+from alife.storms_sph import SphereParams, StormLayerS
 from alife.stream import Control, ControlError, reader_closed
 from alife.stream import _write_all as write_all  # the stream module's short-write handling, shared
 from alife.weather import WeatherParams
@@ -963,7 +964,12 @@ class PlayPacer:
             ws = W.unpack(state.wx)
             mx.eval(ws.Dc)
             dc_ref = self.opt.dc_ref if self.opt.dc_ref is not None else dc_reference(to_numpy(ws.Dc))
-            layer, reason = StormLayer.open(rd, p, dc_ref, self._t, self._tick)
+            if d.sph:  # the sphere's detector, tracker and records (DESIGN §46.7)
+                layer, reason = StormLayerS.open(
+                    rd, SphereParams.from_config(cfg), dc_ref, self._t, self._tick
+                )
+            else:
+                layer, reason = StormLayer.open(rd, p, dc_ref, self._t, self._tick)
             self.layer = layer
             if self.opt.fresh:
                 layer.initial_pending = True  # the storms its first tick finds were there before (not told)
@@ -982,13 +988,16 @@ class PlayPacer:
             base_rate=self.opt.base_rate,
             append=lambda lines: rd.append_jsonl(COMMANDS_FILE, lines),
         )
+        weather_tags = (
+            ("MAPH", "STRM") if d.sph else ("MAP1", "STRM")
+        )  # the sphere's wind map is MAPH (§46.7)
         records = [
             t
-            for t in streamrec.TAGS
+            for t in (*streamrec.TAGS, *streamrec.SPHERE_TAGS)
             if t in ("FRMA", "EVNT", "ENVS", "CLCK", "FOCS", "ALRT", "PLAN")
             or (t in ("IDNT", "INTN", "TERR") and obs is not None)
             or (t == "RPRT" and self._reports_wanted())
-            or (t in ("MAP1", "STRM") and self.layer is not None)
+            or (t in weather_tags and self.layer is not None)
         ]
         self._modes = (*streamrec.COLOR_MODES, *(streamrec.EXT_COLOR_MODES if bonds_ext(cfg) else ()))
         self._bond_flow = bonds_ext(cfg)
@@ -1873,7 +1882,20 @@ class PlayPacer:
 
     def _write_weather(self, tick: Any) -> None:
         dc_ref = self.layer.dc_ref  # type: ignore[union-attr]
-        if tick.planes is not None:
+        if tick.planes is not None and dims(self.cfg).sph:
+            nw, nc = self.cfg.weather.cells, self.cfg.world.nside
+            self._send(
+                "MAPH",
+                lambda step, seq: streamrec.encode_maph(
+                    step=step,
+                    seq=seq,
+                    planes=tick.planes,
+                    nside=nc,
+                    k=(nw // nc).bit_length() - 1,
+                    dc_ref=dc_ref,
+                ),
+            )
+        elif tick.planes is not None:
             self._send(
                 "MAP1",
                 lambda step, seq: streamrec.encode_map1(
@@ -2190,6 +2212,27 @@ def origin_row(state: State, cfg: Config) -> dict[str, Any] | None:
 # --- ENVS -----------------------------------------------------------------------------------------------
 
 
+def sphere_pools(pools: Sequence[Sequence[float]], radius: float, t: int) -> list[dict[str, Any]]:
+    """The ``ENVS`` pools of a sphere at step ``t``: each pool ``(x, y, sx, sy, amp, vx, vy)`` of the weather
+    parameters (``x`` and ``y`` arc lengths from longitude 0 and the equator, ``vx`` the drift in arc length
+    per step at the pool's latitude, as ``weather_sph.warm_pools``) as its centre ``x, y, z`` at the floor,
+    ``lon`` and ``lat`` in degrees, and the widths and drift."""
+    out = []
+    for x0, y0, sx, sy, amp, vx, vy in pools:
+        lat = y0 / radius
+        lon = x0 / radius + vx * t / (radius * math.cos(lat))
+        cx, cy, cz = (radius * geom.from_latlon(math.degrees(lat), math.degrees(lon))).tolist()
+        wrapped = (math.degrees(lon) + 180.0) % 360.0 - 180.0
+        out.append(
+            {
+                "x": round(cx, 2), "y": round(cy, 2), "z": round(cz, 2),
+                "lon": round(wrapped, 2), "lat": round(math.degrees(lat), 2),
+                "amp": amp, "sx": sx, "sy": sy, "vx": vx, "vy": vy,
+            }
+        )  # fmt: skip
+    return out
+
+
 def environment_object(
     state: State,
     cfg: Config,
@@ -2203,7 +2246,9 @@ def environment_object(
     (empty without a director). A world that takes the player's powers (``desk``) adds the influence, the food
     patches and the state of each power (DESIGN §34.6)."""
     pools = []
-    if params is not None:
+    if params is not None and cfg.world.geometry == "sphere":  # a pool is a place on the planet (§46.7)
+        pools = sphere_pools(params.weather.pools, cfg.world.radius, t)
+    elif params is not None:
         length = params.L
         pools = [
             {

@@ -110,17 +110,18 @@ def _share(num: float, den: float) -> float:
     return float(num) / float(den) if den else 0.0
 
 
-def rain_shares(audit: np.ndarray) -> dict[str, float]:
+def rain_shares(audit: np.ndarray, band: tuple[int, int] | None = None) -> dict[str, float]:
     """The nominal and realised rain shares of DESIGN §32 from the per-layer sums of ``metrics.rain_audit``.
 
     ``audit`` is ``(4, layers)``: the regeneration ``base`` without rain, the nominal ``rain`` term, the
     realised increment ``inc_total = clip(min(base + rain, cap - R), 0)`` and the realised rain
     ``rain_real = inc_total - inc_base``, each summed over a layer. The band is ``RAIN_BAND`` (all of a 2D
     world's single layer). Nominal: ``rain / (rain + base)``, a statement about the forcing; realised:
-    ``rain_real / inc_total``; ``rain_clipped_frac = 1 - Σ rain_real / Σ rain`` (0 without rain)."""
+    ``rain_real / inc_total``; ``rain_clipped_frac = 1 - Σ rain_real / Σ rain`` (0 without rain). ``band``
+    replaces ``RAIN_BAND`` on a sphere, whose layers are not the box's (``WeatherGeometry.rain_band``)."""
     a = np.asarray(audit, dtype=np.int64)
     base, rain, inc, real = a[0], a[1], a[2], a[3]
-    lo, hi = RAIN_BAND if base.size > 1 else (0, 1)
+    lo, hi = (RAIN_BAND if band is None else band) if base.size > 1 else (0, 1)
     b = slice(lo, hi)
     return {
         "rain_band_share": _share(rain[b].sum(), rain[b].sum() + base[b].sum()),

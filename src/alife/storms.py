@@ -36,7 +36,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Final, NamedTuple
+from typing import Any, ClassVar, Final, NamedTuple
 
 import mlx.core as mx
 import numpy as np
@@ -578,6 +578,10 @@ class StormLayer:
     step: int = 0  # the step of the last tick (the checkpoint step for a restored layer)
     restarted: bool = False  # opened at a step > 0 with no tracker state: ids begin again at 1
     initial_pending: bool = False  # the next tick finds storms that already existed (module docstring)
+    # the detection record of the layer (a sphere's adds ``z``): persisted fields, their types, the class
+    det_fields: ClassVar[tuple[str, ...]] = ()
+    det_types: ClassVar[tuple[Callable[[Any], Any], ...]] = ()
+    det_cls: ClassVar[type[Det]] = Det
 
     def __post_init__(self) -> None:
         if not (self.dc_ref > 0 and math.isfinite(self.dc_ref)):
@@ -620,13 +624,14 @@ class StormLayer:
         p = self.p
         warm = self._sea(t, t_mult)
         fr, (dc, ts) = read_frame_extra(ws, p, t, (ws.Dc, warm))
-        planes = streamrec.quantise_map1(
-            p=fr.P,
-            dc=dc,
-            zeta=corners_to_centres(fr.zeta.astype(np.float64)),
-            ts=ts,
-            winds=np.stack([fr.u1, fr.v1, fr.u2, fr.v2]),
-            dc_ref=self.dc_ref,
+        planes = self._planes(
+            {
+                "p": fr.P,
+                "dc": dc,
+                "zeta": corners_to_centres(fr.zeta.astype(np.float64)),
+                "ts": ts,
+                "winds": np.stack([fr.u1, fr.v1, fr.u2, fr.v2]),
+            }
         )
         strm = self._strm(t, [])
         return StormTick(t, {**strm, "detect_step": self.step}, planes, [], None)
@@ -669,17 +674,24 @@ class StormLayer:
         tr.compact(KEEP_DETS)
         self.notes = {i: n for i, n in notes.items() if i in {x.id for x in tr.tracks}}
         self.step = t
-        planes = None
-        if maps is not None:
-            planes = streamrec.quantise_map1(
-                p=maps["p"],
-                dc=maps["dc"],
-                zeta=maps["zeta"],
-                ts=maps["ts"],
-                winds=maps["winds"],
-                dc_ref=self.dc_ref,
-            )
+        planes = None if maps is None else self._planes(maps)
         return StormTick(t, self._strm(t, events), planes, events, self._line(t, ids, det, events))
+
+    def _planes(self, maps: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """The quantised weather map planes of ``maps`` (``MAP1``; a sphere's layer makes ``MAPH``'s)."""
+        return streamrec.quantise_map1(
+            p=maps["p"],
+            dc=maps["dc"],
+            zeta=maps["zeta"],
+            ts=maps["ts"],
+            winds=maps["winds"],
+            dc_ref=self.dc_ref,
+        )
+
+    @staticmethod
+    def _at(c: Any) -> dict[str, float]:
+        """The place of a detection or component in a record: ``x`` and ``y`` (a sphere's adds ``z``)."""
+        return {"x": _round(c.x, 2), "y": _round(c.y, 2)}
 
     def _name(self, ident: int, taken: set[str | None]) -> str:
         """The name of a storm: the house-name generator on ``splitmix64(id, STORM_NAME_SALT)``, with the id
@@ -702,8 +714,7 @@ class StormLayer:
                 "name": name,
                 "other": other,
                 "other_name": notes[other].name if other in notes else None,
-                "x": _round(last.x, 2),
-                "y": _round(last.y, 2),
+                **self._at(last),
                 "hemi": x.hemi,
                 "age": age,
             }
@@ -788,8 +799,7 @@ class StormLayer:
         storms = [
             {
                 "id": tid,
-                "x": _round(c.x, 2),
-                "y": _round(c.y, 2),
+                **self._at(c),
                 "r": _round(c.r_eq, 2),
                 "zeta": _round(c.zeta_max_f0, 4),
                 "wind": _round(c.wind_max, 4),
@@ -818,7 +828,7 @@ class StormLayer:
                 "name": self.notes[x.id].name,
                 "ext": list(self.notes[x.id].ext),
                 "last_flat": [] if x.last_flat is None else [int(v) for v in x.last_flat],
-                "dets": [[getattr(d, f) for f in _DET_FIELDS] for d in x.dets[-KEEP_DETS:]],
+                "dets": [[getattr(d, f) for f in self.det_fields] for d in x.dets[-KEEP_DETS:]],
             }
             for x in sorted(self.tracker.active(), key=lambda x: x.id)
         ]
@@ -844,7 +854,9 @@ class StormLayer:
         layer = cls(p, dc_ref, int(state["tick"]))
         tracks, notes = [], {}
         for d in state["tracks"]:
-            dets = [Det(*(f(v) for f, v in zip(_DET_TYPES, row, strict=True))) for row in d["dets"]]
+            dets = [
+                cls.det_cls(*(f(v) for f, v in zip(cls.det_types, row, strict=True))) for row in d["dets"]
+            ]
             tracks.append(
                 Track(
                     d["id"], d["hemi"], dets, parent=d["parent"], missed=d["missed"],
@@ -899,3 +911,6 @@ class StormLayer:
 _DET_TYPES: Final[tuple[Callable[[Any], Any], ...]] = (
     int, float, float, float, float, float, int, int, float, float, float, float, float,
 )  # fmt: skip
+
+
+StormLayer.det_fields, StormLayer.det_types = _DET_FIELDS, _DET_TYPES

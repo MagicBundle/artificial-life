@@ -50,7 +50,7 @@ def _points(cfg: Config) -> np.ndarray:
 def constants(cfg: Config) -> tuple[float, ...]:
     """The scalar constants the position-to-cell functions bake into a compiled step."""
     sp = sphere.geometry(cfg)
-    return (
+    base = (
         float(sp.radius),
         float(sp.height_max),
         float(sp.nside),
@@ -59,14 +59,16 @@ def constants(cfg: Config) -> tuple[float, ...]:
         float(sp.gz),
         float(sp.th),
     )
+    return (*base, float(cfg.weather.cells)) if cfg.weather.enabled else base  # the weather's Nside (S4b)
 
 
 def _lookups(cfg: Config):  # -> Callable[[mx.array], tuple[mx.array, ...]]
     sp = sphere.geometry(cfg)
+    nw = cfg.weather.cells if cfg.weather.enabled else 0
 
     def f(pos: mx.array) -> tuple[mx.array, ...]:
         alive = mx.ones((pos.shape[0],), dtype=mx.bool_)
-        return (
+        out = (
             sphere.ang2pix(pos, sp.nside),
             sphere.ang2pix(pos, sp.nside_h),
             sphere.layer_index(pos, sp.rp3, sp.dv, sp.layers),
@@ -74,6 +76,8 @@ def _lookups(cfg: Config):  # -> Callable[[mx.array], tuple[mx.array, ...]]
             sphere.field_cell(pos, sp.rp3, sp.dv, sp.layers, sp.nside),
             sphere.hash_cell(pos, alive, sp.radius, sp.th, sp.gz, sp.nside_h),
         )
+        # the weather's cell lookup (the wind at the agents and the fan's departure points, S4b)
+        return (*out, sphere.ang2pix(pos, nw)) if nw else out
 
     return f
 
@@ -98,7 +102,15 @@ def require_compile_safe(cfg: Config) -> None:
         if not np.array_equal(np.array(a), np.array(b))
     ]
     if bad:
-        names = ("ang2pix(Nf)", "ang2pix(Nh)", "layer_index", "hash_layer", "field_cell", "hash_cell")
+        names = (
+            "ang2pix(Nf)",
+            "ang2pix(Nh)",
+            "layer_index",
+            "hash_layer",
+            "field_cell",
+            "hash_cell",
+            "ang2pix(Nw)",
+        )
         raise RuntimeError(
             "the compiled sphere lookups differ from the eager ones for this configuration "
             f"({', '.join(names[i] for i in bad)}): MLX's compile cache returned another configuration's "

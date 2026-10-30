@@ -62,9 +62,12 @@ AUDIT: dict[str, tuple[str, int | None]] = {
     "state.py": (_BB, None),  # S1 converted it: the sphere branches use Dims; the box half stays
     "energy.py": (_P, None),
     "bonds.py": (_P, None),
-    "weather.py": (_C, 4),
-    "weather_obs.py": (_C, 4),
-    "weather_spinup.py": (_C, 4),
+    "weather.py": (_BB, None),  # S4b converted it: the sphere half is weather_sph.py; the box half stays
+    "weather_obs.py": (
+        _BB,
+        None,
+    ),  # S4b: the sphere has its own block (weather_sph.weather_block); the box half stays
+    "weather_spinup.py": (_BB, None),  # S4b: dispatches through weather.advance/rest_array, no raw use
     "bench.py": (_BB, None),
     "ext/structures.py": (_C, 3),
     "ext/niche.py": (_C, 3),
@@ -80,8 +83,8 @@ AUDIT: dict[str, tuple[str, int | None]] = {
     "cli.py": (_BB, None),
     "runio.py": (_C, 5),
     "game/observe.py": (_C, 5),
-    "game/observer.py": (_C, 6),
-    "game/tracers.py": (_C, 6),
+    "game/observer.py": (_C, 5),
+    "game/tracers.py": (_BB, None),
     "game/society.py": (_C, 5),
     "game/powers.py": (_BB, None),
     "game/social.py": (_BB, None),
@@ -91,9 +94,18 @@ AUDIT: dict[str, tuple[str, int | None]] = {
     "game/housefile.py": (_C, 5),
     "analysis/labels.py": (_BB, None),
     "storms.py": (_BB, None),
-    "analysis/w0.py": (_C, 4),
-    "analysis/w0_plots.py": (_C, 4),
-    "analysis/w2.py": (_C, 4),
+    "analysis/w0.py": (
+        _B,
+        None,
+    ),  # the box storm study drivers; the sphere\'s calibration driver (S4c) is a new tool
+    "analysis/w0_plots.py": (
+        _B,
+        None,
+    ),  # the box storm study drivers; the sphere\'s calibration driver (S4c) is a new tool
+    "analysis/w2.py": (
+        _B,
+        None,
+    ),  # the box storm study drivers; the sphere\'s calibration driver (S4c) is a new tool
     "director/actions.py": (_BB, None),
     "director/yoked.py": (_C, 5),
     "director/llm.py": (_C, 5),
@@ -125,6 +137,7 @@ NO_RAW_USE_TODAY = frozenset(
         "niche.py",
         "runio.py",  # S5 converted it: no raw use of the seven patterns remains
         "game/observe.py",  # S5 converted it: no raw use of the seven patterns remains
+        "game/observer.py",  # S5 converted it: no raw use of the seven patterns remains
         "game/society.py",  # S5 converted it: no raw use of the seven patterns remains
         "game/alerts.py",  # S5 converted it: no raw use of the seven patterns remains
         "game/report.py",  # S5 converted it: no raw use of the seven patterns remains
@@ -181,18 +194,18 @@ ALLOWLIST: tuple[Allow, ...] = (
     # analysis/signals.py: 2D only: `require_2d` already refuses dims 3, which covers the sphere
     Allow("analysis/signals.py", "wrap", 1, "box-only tool"),
     Allow("analysis/signals.py", "world.size", 1, "box-only tool"),
-    # analysis/w0.py: the W0 storm study driver (S4)
-    Allow("analysis/w0.py", "z_index", 29, "converted", 4),
-    Allow("analysis/w0.py", "xy_slice", 1, "converted", 4),
-    Allow("analysis/w0.py", "wrap", 35, "converted", 4),
-    Allow("analysis/w0.py", "world.size", 3, "converted", 4),
-    Allow("analysis/w0.py", "world.height", 4, "converted", 4),
-    Allow("analysis/w0.py", "world.field_cell", 3, "converted", 4),
-    Allow("analysis/w0.py", "lattice", 15, "converted", 4),
+    # analysis/w0.py: the W0 storm study driver (box-only; S4c writes the sphere's)
+    Allow("analysis/w0.py", "z_index", 29, "box-only tool"),
+    Allow("analysis/w0.py", "xy_slice", 1, "box-only tool"),
+    Allow("analysis/w0.py", "wrap", 35, "box-only tool"),
+    Allow("analysis/w0.py", "world.size", 3, "box-only tool"),
+    Allow("analysis/w0.py", "world.height", 4, "box-only tool"),
+    Allow("analysis/w0.py", "world.field_cell", 3, "box-only tool"),
+    Allow("analysis/w0.py", "lattice", 15, "box-only tool"),
     # analysis/w0_plots.py: W0 plots (S4)
-    Allow("analysis/w0_plots.py", "z_index", 1, "converted", 4),
+    Allow("analysis/w0_plots.py", "z_index", 1, "box-only tool"),
     # analysis/w2.py: the W2 study driver (S4)
-    Allow("analysis/w2.py", "world.height", 3, "converted", 4),
+    Allow("analysis/w2.py", "world.height", 3, "box-only tool"),
     # bench.py: the environment block, the play-bench centre and list indexing; the staged step has its
     # sphere branches (S2: `--stages` works on a sphere)
     Allow("bench.py", "z_index", 4, "box branch"),
@@ -226,8 +239,6 @@ ALLOWLIST: tuple[Allow, ...] = (
     # game/alerts.py: alerts (S5)
     # game/observe.py: the G1 observer's quantised z (S5)
     # game/observer.py: host observer (S5)
-    Allow("game/observer.py", "world.height", 1, "converted", 6),
-    Allow("game/observer.py", "world.field_cell", 1, "converted", 6),
     # game/powers.py: the player's powers (S5)
     Allow("game/powers.py", "xy_slice", 2, "box branch"),
     Allow("game/powers.py", "wrap", 2, "box branch"),
@@ -237,11 +248,11 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("game/social.py", "world.size", 2, "box branch"),
     # game/society.py: houses and territory (S5)
     # game/tracers.py: tracer rig: vz_own, w_air, tracer_z (S5)
-    Allow("game/tracers.py", "z_index", 14, "converted", 6),
-    Allow("game/tracers.py", "wrap", 2, "converted", 6),
-    Allow("game/tracers.py", "world.size", 2, "converted", 6),
-    Allow("game/tracers.py", "world.height", 1, "converted", 6),
-    Allow("game/tracers.py", "world.field_cell", 6, "converted", 6),
+    Allow("game/tracers.py", "z_index", 2, "box branch"),
+    Allow("game/tracers.py", "wrap", 2, "box branch"),
+    Allow("game/tracers.py", "world.size", 2, "box branch"),
+    Allow("game/tracers.py", "world.height", 1, "box branch"),
+    Allow("game/tracers.py", "world.field_cell", 4, "box branch"),
     # invariants.py: the box ranges; the sphere half is `_check_rows_sph` and device_check's own branch (S2)
     Allow("invariants.py", "z_index", 3, "box branch"),
     Allow("invariants.py", "world.size", 3, "box branch"),
@@ -308,11 +319,11 @@ ALLOWLIST: tuple[Allow, ...] = (
     # viewer.py: 2D viewer: box-only tool
     Allow("viewer.py", "wrap", 8, "box-only tool"),
     Allow("viewer.py", "world.size", 7, "box-only tool"),
-    # weather.py: wind sampling, vertical profile, remap (S4)
-    Allow("weather.py", "z_index", 11, "converted", 4),
-    Allow("weather.py", "xy_slice", 2, "converted", 4),
-    Allow("weather.py", "wrap", 6, "converted", 4),
-    Allow("weather.py", "world.size", 12, "converted", 4),
-    Allow("weather.py", "world.height", 5, "converted", 4),
-    Allow("weather.py", "world.field_cell", 14, "converted", 4),
+    # weather.py: wind sampling, vertical profile, remap (S4b converted it: the sphere half is weather_sph.py)
+    Allow("weather.py", "z_index", 11, "box branch"),
+    Allow("weather.py", "xy_slice", 2, "box branch"),
+    Allow("weather.py", "wrap", 6, "box branch"),
+    Allow("weather.py", "world.size", 12, "box branch"),
+    Allow("weather.py", "world.height", 5, "box branch"),
+    Allow("weather.py", "world.field_cell", 14, "box branch"),
 )

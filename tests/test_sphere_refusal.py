@@ -102,11 +102,15 @@ def test_run_inspect_resume_and_bench_run_a_sphere(tmp_path: Path, capsys: pytes
     ("argv", "pr"),
     [
         (["run", "--preset", "tiny3s", "--set", "weather.enabled=true"], "S4"),
+        (["run", "--preset", "tiny3s", "--set", "game.observe=true"], "S5"),
+        (["run", "--preset", "tiny3s", "--set", "director.enabled=true"], "S5"),
     ],
 )
-def test_layers_that_are_not_converted_are_refused_with_their_pr(
-    argv: list[str], pr: str, capsys: pytest.CaptureFixture
+def test_layers_outside_the_readiness_set_are_refused_with_their_pr(
+    argv: list[str], pr: str, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Every layer of the series is ready (S5); the gate is still the readiness set, read at call time."""
+    monkeypatch.setattr(config, "SPHERE_READY", frozenset())
     assert cli.main(argv if argv[0] == "play" else [*argv, "--quiet"]) == 2
     err = capsys.readouterr().err
     assert "is not available on a sphere yet" in err and f"(PR {pr})" in err

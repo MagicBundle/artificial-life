@@ -137,8 +137,7 @@ def regen_rate(
     if env is not None:  # static: director enabled
         rate = rate * env.regen_mult
     base = ops.floor_i32(rate)
-    if rain is not None:  # static: rain feeds the resource
-        assert not dims(cfg).sph, "the weather's rain is not defined on the sphere before S4"
+    if rain is not None:  # static: rain feeds the resource (on a sphere (FZ, Npix_f), DESIGN §46.6)
         return base + weather.rain_regen(rain, cfg)
     return base
 

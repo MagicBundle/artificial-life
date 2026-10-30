@@ -39,7 +39,7 @@ from typing import Any, Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import weather_obs
+from alife import geom, weather_obs
 from alife.config import Config, config_hash, dims
 from alife.game import housefile, observe, place
 from alife.game import social as soc
@@ -744,8 +744,8 @@ class Observer:
         live = h["alive"]
         agents = {k: h[k][live] for k in ("z", "g", "w", "vz_own")}
         tracers = {"z": h["tz"], "g": h["tg"], "w": h["tw"]}
-        w = self.cfg.world
-        return weather_obs.coupling_block(agents, tracers, w.height, w.field_cell)
+        g = geom.geometry(self.cfg)
+        return weather_obs.coupling_block(agents, tracers, g.height_max, g.layer_margin)
 
 
 # --- the identity tables (IDNT, DESIGN §33.1.3) -------------------------------------------------------------

@@ -408,14 +408,16 @@ def hash_occupancy(pos: mx.array, alive: mx.array | None, cfg: Config) -> mx.arr
 
 def band_peaks(counts: mx.array) -> tuple[mx.array, mx.array]:
     """Per band (floor = hash layer 0, mid = layers 1 to G_z - 2, surface = layer G_z - 1) the largest cell
-    count and the flat id of the argmax cell in the ``(G_z, G, G)`` volume. Both ``(3,)`` int32. A band that
-    does not exist (``G_z`` below 3 has no mid band) reads 0 and -1."""
-    gz, g = counts.shape[0], counts.shape[1]
-    zero = counts[0, 0, 0] * 0
+    count and the flat id of the argmax cell in the ``(G_z, G, G)`` volume (a sphere's ``(G_z, Npix_h)``: the
+    cells of a layer are ``counts[0].size`` in both). Both ``(3,)`` int32. A band that does not exist (``G_z``
+    below 3 has no mid band) reads 0 and -1."""
+    gz = counts.shape[0]
+    g2 = counts[0].size  # the cells of one layer (G·G in a box)
+    zero = counts.reshape(-1)[0] * 0
     bands: list[tuple[mx.array | None, int]] = [
         (counts[0:1], 0),
-        (counts[1 : gz - 1] if gz > 2 else None, g * g),
-        (counts[gz - 1 : gz], (gz - 1) * g * g),
+        (counts[1 : gz - 1] if gz > 2 else None, g2),
+        (counts[gz - 1 : gz], (gz - 1) * g2),
     ]
     mxs, cells = [], []
     for sub, off in bands:

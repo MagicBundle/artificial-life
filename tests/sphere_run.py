@@ -18,6 +18,9 @@ between processes. As a script: ``sphere_run.py KIND CONFIG_JSON DEVICE ARGS...`
 * ``compare STEPS ORDER [INIT]``: from one state (``INIT`` as above), each step is run by the eager and the
   compiled step in the order ``ORDER`` (``eager-first`` or ``compiled-first``), compared field by field
   (integers exactly, floats to 1e-5), and the walk continues from the eager result.
+* ``wx_compare STEPS ORDER``: the weather alone (``weather.advance``, the pools of step t, the engine's key
+  chain) from the rest state, eager and compiled in the order ``ORDER``, compared bit for bit (the walk
+  continues from the eager result); the result also reports the largest wind.
 * ``lookups``: ``sphere_check.require_compile_safe`` for the configuration (a compiled position-to-cell
   lookup equals the eager one).
 """
@@ -152,6 +155,37 @@ def _compare(cfg, steps: int, order: str, init: dict | None = None) -> dict:
     return {"mismatch": bad, "steps": steps}
 
 
+def _wx_compare(cfg, steps: int, order: str) -> dict:
+    from alife import weather
+    from alife.rng import Stream, step_keys
+
+    def one(wx, t, key):
+        key_next, ks = step_keys(key)
+        ws, _ = weather.advance(weather.unpack(wx), t, mx.random.split(ks[Stream.WEATHER], 2)[0], cfg)
+        return weather.pack(ws), key_next
+
+    eager, compiled = one, mx.compile(one)
+    wx, key = weather.rest_array(cfg, 0), mx.random.key(7)
+    bad: list[str] = []
+    peak = 0.0
+    for i in range(steps):
+        t = mx.array(i, dtype=mx.int32)
+        if order == "eager-first":
+            a, ka = eager(wx, t, key)
+            mx.eval(a, ka)
+            b, kb = compiled(wx, t, key)
+        else:
+            b, kb = compiled(wx, t, key)
+            mx.eval(b, kb)
+            a, ka = eager(wx, t, key)
+        mx.eval(a, ka, b, kb)
+        if not np.array_equal(np.array(a), np.array(b)):
+            bad.append(f"step {i}: max {np.abs(np.array(a) - np.array(b)).max():.3g}")
+        peak = max(peak, float(np.abs(np.array(a)[2:8]).max()))
+        wx, key = a, ka
+    return {"mismatch": bad, "steps": steps, "peak_wind": peak}
+
+
 def _lookups(cfg) -> dict:
     from alife import sphere_check
 
@@ -169,6 +203,8 @@ def main(argv: list[str]) -> int:
         out = _trajectory(cfg, int(rest[0]), int(rest[1]), {int(x) for x in rest[2].split(",") if x}, init)
     elif kind == "compare":
         out = _compare(cfg, int(rest[0]), rest[1], json.loads(rest[2]) if len(rest) > 2 else None)
+    elif kind == "wx_compare":
+        out = _wx_compare(cfg, int(rest[0]), rest[1])
     elif kind == "lookups":
         out = _lookups(cfg)
     else:
