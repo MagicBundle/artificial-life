@@ -58,7 +58,8 @@ _I32 = mx.int32
 
 N_WX: Final = 11  # h1, h2, u1 (3), u2 (3), Q, P, Dc
 A4: Final = 3e-3  # the biharmonic filter strength on h and u (ENGINE_FIXED: the Courant limit needs it, S4a)
-C_LIMIT: Final = 0.650  # the float32 limit of the S4a noise test at a4 = 3e-3: the least over Nw 16, 22, 42 (0.6547, 0.650, 0.650)
+C_LIMIT: Final = 0.650  # the float32 limit of the S4a noise test at a4 = 3e-3: the least over Nw 16, 22,
+42(0.6547, 0.650, 0.650)
 E_SQRT: Final = math.sqrt(math.e)
 PLANET_AXIS: Final = np.array(
     [0.0, 0.0, 1.0]
@@ -141,7 +142,7 @@ def courant(p: WeatherParams, radius: float, dt: float | None = None) -> float:
     return p.c_ext * (p.dt if dt is None else dt) / (0.81 * cell_side(radius, p.n))
 
 
-# --- the device tables ----------------------------------------------------------------------------------------
+# --- the device tables --------------------------------------------------------------------------------------
 
 
 class Dev(NamedTuple):
@@ -204,7 +205,7 @@ def dev_for(p: WeatherParams, radius: float) -> Dev:
     return device_tables(p.n, float(radius), float(p.f0), float(p.dt))
 
 
-# --- small vector helpers -------------------------------------------------------------------------------------
+# --- small vector helpers -----------------------------------------------------------------------------------
 
 
 def _dot(a: mx.array, b: mx.array) -> mx.array:
@@ -220,7 +221,7 @@ def _unit(v: mx.array) -> mx.array:
     return v / mx.maximum(mx.sqrt(_dot(v, v)), 1e-30)[..., None]
 
 
-# --- operators --------------------------------------------------------------------------------------------------
+# --- operators ----------------------------------------------------------------------------------------------
 
 
 def _grad(f: mx.array, tab: Dev, per_length: bool) -> mx.array:
@@ -296,7 +297,7 @@ def _apply_fan(u: mx.array, fw: tuple[mx.array, ...]) -> mx.array:
     return w0[..., None] * at(c) + l1[..., None] * at(j1) + l2[..., None] * at(j2)
 
 
-# --- the warm pools and the seeds ------------------------------------------------------------------------------
+# --- the warm pools and the seeds ---------------------------------------------------------------------------
 
 
 def warm_pools(p: WeatherParams, radius: float, x: mx.array, t: mx.array | None = None) -> mx.array:
@@ -318,16 +319,13 @@ def warm_pools(p: WeatherParams, radius: float, x: mx.array, t: mx.array | None 
         lat = py / radius
         lon = px / radius
         clat, slat = math.cos(lat), math.sin(lat)
-        if tf is not None and vx != 0.0:
-            lon_t = lon + (vx / (radius * clat)) * tf
-        else:
-            lon_t = None
-        if lon_t is None:
+        if tf is None or vx == 0.0:  # static: a fixed pool
             cl, sl = math.cos(lon), math.sin(lon)
             cen = mx.array([clat * cl, clat * sl, slat], dtype=_F32)
             east = mx.array([-sl, cl, 0.0], dtype=_F32)
             north = mx.array([-slat * cl, -slat * sl, clat], dtype=_F32)
         else:
+            lon_t = lon + (vx / (radius * clat)) * tf
             cl, sl = mx.cos(lon_t), mx.sin(lon_t)
             zero = lon_t * 0.0
             cen = mx.stack([clat * cl, clat * sl, zero + slat])
@@ -366,7 +364,8 @@ def init_state(p: WeatherParams, fo: WeatherForcing) -> WeatherStateS:
 
 
 def rest_array(cfg: Config, step: mx.array | int = 0) -> mx.array:
-    """The rest ``State.wx`` of a sphere config under the pools of step ``step`` (see ``weather.rest_array``)."""
+    """The rest ``State.wx`` of a sphere config under the pools of step ``step`` (see
+    ``weather.rest_array``)."""
     p = params_from_config(cfg)
     t = (step if isinstance(step, mx.array) else mx.array(step)).astype(_I32)
     return pack(init_state(p, default_forcing(p, cfg.world.radius, t)))
@@ -390,7 +389,7 @@ def _seed_vortex(x: mx.array, key: mx.array, p: WeatherParams, radius: float) ->
     return ops.cross3(x, gradpsi), on
 
 
-# --- the step -----------------------------------------------------------------------------------------------------
+# --- the step -----------------------------------------------------------------------------------------------
 
 
 def step(
@@ -612,7 +611,7 @@ def advance(
     return step(ws, WeatherForcing(t_s, qs_), key, p, radius)
 
 
-# --- diagnostics of a state -------------------------------------------------------------------------------------
+# --- diagnostics of a state ---------------------------------------------------------------------------------
 
 
 def divergence(ws: WeatherStateS, p: WeatherParams, radius: float) -> mx.array:
@@ -636,7 +635,7 @@ def interface_height(ws: WeatherStateS, p: WeatherParams) -> mx.array:
     return p.height * ws.h1 / (ws.h1 + ws.h2)
 
 
-# --- the vertical map: the shell onto the atmosphere (docs/SPHERE.md 4.2) ------------------------------------------
+# --- the vertical map: the shell onto the atmosphere (docs/SPHERE.md 4.2) -----------------------------------
 
 
 class GeoDev(NamedTuple):
@@ -656,7 +655,8 @@ class WeatherGeometry:
     vertical wind is ``w_shell = w_w/s``. The cloud ``[zi, zi + dc]`` (weather units) occupies
     ``[zi/s, (zi + dc)/s]`` of the shell and is overlapped with the **actual** layer intervals
     ``[z_k, z_{k+1}]`` (non-uniform: equal volume), so every preset has rain food and a seeding band
-    (docs/SPHERE.md 4.2; the first-draft rule gave tiny3s and mini3s none). The field pixels are the parents of
+    (docs/SPHERE.md 4.2; the first-draft rule gave tiny3s and mini3s none). The field pixels are the
+    parents of
     the weather cells (``geom.parent_table``): the rain and the seeding act on the means over the ``r²``
     children of a pixel.
     """
@@ -703,7 +703,8 @@ class WeatherGeometry:
         return frac / mx.maximum(frac.sum(axis=0), 1e-6)
 
     def rain_band(self) -> tuple[int, int]:
-        """``(lo, hi)``: the field layers whose middle lies in the box's cloud band ``[32, 56]`` of the weather
+        """``(lo, hi)``: the field layers whose middle lies in the box's cloud band ``[32, 56]`` of the
+        weather
         heights (``RAIN_BAND``: layers 8-13 at ``field_cell`` 4), mapped to the shell by ``/s``; at least one
         layer."""
         mid = 0.5 * (self.z_edges[:-1] + self.z_edges[1:])
@@ -732,7 +733,7 @@ def _geometry(
     return WeatherGeometry(radius, height, layers, nside_f, nw, h_w)
 
 
-# --- the wind the organisms feel ----------------------------------------------------------------------------------
+# --- the wind the organisms feel ----------------------------------------------------------------------------
 
 
 class WindFieldsS(NamedTuple):
@@ -775,10 +776,12 @@ def sample_wind(
     fields: WindFieldsS | None = None,
     valid: mx.array | None = None,
 ) -> AgentWind:
-    """The wind at agent positions ``pos`` (M, 3), planet frame: pure gathers, any M (docs/SPHERE.md 4.1, 4.2).
+    """The wind at agent positions ``pos`` (M, 3), planet frame: pure gathers, any M (docs/SPHERE.md 4.1,
+    4.2).
 
     The cell of the position (``sphere.ang2pix`` at the weather Nside) gives the layer fields; the agent's
-    height ``z`` is mapped to the weather's ``z_w = s·z``; the formula of the box then gives the horizontal wind
+    height ``z`` is mapped to the weather's ``z_w = s·z``; the formula of the box then gives the horizontal
+    wind
     (``φ(z_w)·u1`` below the interface ``zi``, ``u2`` above; a tangent vector, **re-projected onto the agent's
     tangent plane**) and the vertical wind ``w_w = −[D1·Φ(min(z_w, zi)) + 1[z_w > zi]·(D2·(z_w − zi) + J) −
     D̄·z_w]`` with ``D̄ = [D1·Φ(zi) + D2·(H_w − zi) + J]/H_w`` (``w(0) = w(H) = 0``), clipped to ``|w_w| <=
@@ -865,13 +868,14 @@ def agent_drift(
     return force / cfg.physics.drag
 
 
-# --- rain-fed regrowth and rain seeding (the field pixels are the parents of the weather cells) --------------------
+# --- rain-fed regrowth and rain seeding (the field pixels are the parents of the weather cells) -------------
 
 
 def rain_regen(rain: RainIn, cfg: Config) -> mx.array:
     """The rain as integer regeneration quanta per field cell, ``(FZ, Npix_f)`` int32 (the sphere's
     ``weather.rain_regen``): ``q = rain_gain·mean(P)`` over the ``r²`` weather children of a pixel; the cloud
-    ``[zi, zi + dc]`` (rain-weighted means over the children, weather units) is mapped onto the shell layers by
+    ``[zi, zi + dc]`` (rain-weighted means over the children, weather units) is mapped onto the shell
+    layers by
     ``WeatherGeometry.cloud_weights``; layer ``k`` takes ``floor(q·share_k)``, so a column's food is
     ``rain_gain·P`` whatever the cloud depth (less the floors: about half a quantum per used layer);
     ``rain_floor·q`` more goes to layer 0."""
@@ -889,13 +893,15 @@ def rain_regen(rain: RainIn, cfg: Config) -> mx.array:
     return out
 
 
-# The relative dead band of the seeding excess (``weather._SEED_DEADBAND``): above the float32 rounding of a mean.
+# The relative dead band of the seeding excess (``weather._SEED_DEADBAND``): above the float32 rounding of
+# a mean.
 _SEED_DEADBAND: Final = 1e-4
 
 
 def seeding_response(chem: mx.array, ws: WeatherStateS, cfg: Config) -> mx.array:
     """The saturating seeding response ``r`` on the field pixels, ``(Npix_f,)`` float32 in ``[0, 1)``: the
-    signal is the c2 averaged over the cloud layers, ``b = Σ_k w_k·chem[2, k]``, at the interface height ``zi``
+    signal is the c2 averaged over the cloud layers, ``b = Σ_k w_k·chem[2, k]``, at the interface height
+    ``zi``
     (mean over the pixel's weather children) and the cloud depth ``max(mean Dc, seed_dmin)``; the excess over
     the mean (equal-area pixels) goes through ``e⁺/(e⁺ + seed_c0)`` with the dead band of the box."""
     wc = cfg.weather
@@ -914,7 +920,7 @@ def seeding_qs(chem: mx.array, ws: WeatherStateS, cfg: Config) -> mx.array:
     return geo.spread(1.0 - cfg.weather.seed_gain * seeding_response(chem, ws, cfg))
 
 
-# --- validation and the host block ------------------------------------------------------------------------------
+# --- validation and the host block --------------------------------------------------------------------------
 
 
 def validate_config(cfg: Config) -> list[str]:
@@ -946,19 +952,20 @@ def validate_config(cfg: Config) -> list[str]:
         return [f"weather.cells {nw} is not a plausible weather Nside (<= 256)"]
     if len(wc.pools) % 7 != 0:
         return [
-            f"weather.pools must hold 7 numbers per pool (x, y, sx, sy, amp, vx, vy), got {len(wc.pools)} values"
+            "weather.pools must hold 7 numbers per pool (x, y, sx, sy, amp, vx, vy), "
+            f"got {len(wc.pools)} values"
         ]
     if not all(math.isfinite(x) for x in wc.pools):
         return ["weather.pools must be finite numbers"]
     if nw % nf or (nw // nf) & (nw // nf - 1):
         bad.append(
-            f"weather.cells {nw} must be Nf times a power of two (Nf = world.nside = {nf}): the rain is a mean "
-            "over the children of a field pixel"
+            f"weather.cells {nw} must be Nf times a power of two (Nf = world.nside = {nf}): the rain is a "
+            "mean over the children of a field pixel"
         )
     p = params_from_config(cfg)
     bad += _params_rules(p, w.radius)
     for i in range(0, len(wc.pools), 7):
-        x, y, sx, sy, amp, vx, vy = wc.pools[i : i + 7]
+        x, y, vy = wc.pools[i], wc.pools[i + 1], wc.pools[i + 6]
         lat = y / w.radius
         if not abs(lat) <= POOL_LAT_MAX + 1e-9:
             bad.append(f"rule S-2: pool {i // 7} latitude {math.degrees(lat):.1f} deg must lie within 60 deg")
@@ -993,8 +1000,8 @@ def validate_config(cfg: Config) -> list[str]:
     z_floor = float(geom.layer_edges(gm.radius, gm.height_max, gm.layers)[1])
     if not 0 < p.z_sl <= s_ratio * z_floor:
         bad.append(
-            f"rule 15: need 0 < z_sl <= s·z_1 = {s_ratio * z_floor:.4g} (the shear layer lies within the floor "
-            f"field layer, in weather units), got {p.z_sl:g}"
+            f"rule 15: need 0 < z_sl <= s·z_1 = {s_ratio * z_floor:.4g} (the shear layer lies within the "
+            f"floor field layer, in weather units), got {p.z_sl:g}"
         )
     # the coupling keys (the box's rules, minus what a sphere does not have)
     if not 0.0 <= wc.storm_p <= 1.0:
@@ -1015,7 +1022,8 @@ def validate_config(cfg: Config) -> list[str]:
         bad.append(f"weather.rain_gain must be >= 0, got {wc.rain_gain}")
     elif wc.gamma > 0 and not wc.rain_gain * (wc.H1 + wc.H2 - 2.0 * p.h_min) / wc.gamma <= weather._INT_BOUND:
         bad.append(
-            f"weather.rain_gain {wc.rain_gain:g} too large: rain_gain*(H1 + H2 - 2*h_min)/gamma must be <= 2^30"
+            f"weather.rain_gain {wc.rain_gain:g} too large: "
+            "rain_gain*(H1 + H2 - 2*h_min)/gamma must be <= 2^30"
         )
     if not 0.0 <= wc.seed_gain <= 0.1:
         bad.append(f"weather.seed_gain must be in [0, 0.1], got {wc.seed_gain}")
@@ -1026,8 +1034,8 @@ def validate_config(cfg: Config) -> list[str]:
     for name in ("shade_gain", "rain_zonal", "storm_eddy", "wind_eddy_force"):
         if getattr(wc, name):
             bad.append(
-                f"weather.{name} is not available on a sphere yet (the shade, the zonal mean and the eddy wind "
-                "are calibration controls of the box: PR S4c)"
+                f"weather.{name} is not available on a sphere yet (the shade, the zonal mean and the "
+                "eddy wind are calibration controls of the box: PR S4c)"
             )
     return bad
 

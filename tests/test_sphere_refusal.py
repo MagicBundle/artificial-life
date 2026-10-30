@@ -100,7 +100,18 @@ def test_run_inspect_resume_and_bench_run_a_sphere(tmp_path: Path, capsys: pytes
         (["play", "--preset", "tiny3s"], "S5"),
         (["run", "--preset", "tiny3s", "--set", "game.observe=true"], "S5"),
         (["run", "--preset", "tiny3s", "--set", "director.enabled=true"], "S5"),
-        (["run", "--preset", "tiny3s", "--set", "weather.enabled=true"], "S4"),
+        (
+            [
+                "run",
+                "--preset",
+                "tiny3s",
+                "--set",
+                "weather.enabled=true",
+                "--set",
+                "structures.enabled=true",
+            ],
+            "S3",
+        ),  # weather is S4b's
         (["run", "--preset", "tiny3s", "--set", "structures.enabled=true"], "S3"),
         (["run", "--preset", "tiny3s", "--set", "arms.enabled=true"], "S3"),
         (["run", "--preset", "tiny3s", "--set", "comm.enabled=true"], "S3"),

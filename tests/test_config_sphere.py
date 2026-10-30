@@ -57,7 +57,7 @@ def test_keys_default_to_a_box_and_are_post_v01_keys() -> None:
     )
     assert not set(config.SPHERE_KEYS) & (set(config.UNHASHED_KEYS) | set(config.OBSERVER_KEYS))
     assert config.GEOMETRY_SUPPORTED == ("box", "sphere")  # S2 enabled it
-    assert frozenset() == config.SPHERE_READY  # and gated the layers that are not converted
+    assert frozenset({"weather"}) == config.SPHERE_READY  # S4b converted the weather; the rest is gated
 
 
 @pytest.mark.parametrize("preset", sorted(BASE_HASHES))

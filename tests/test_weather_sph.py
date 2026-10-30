@@ -95,7 +95,8 @@ def test_the_dry_step_equals_the_float64_reference_and_so_does_the_unadvected_on
 
 
 def test_the_reference_conserves_what_the_port_conserves_with_the_filter_off() -> None:
-    """a4 = 0 on both: the unfiltered step still equals the reference (the filter is an addition, not a crutch)."""
+    """a4 = 0 on both: the unfiltered step still equals the reference (the filter is an addition, not a
+    crutch)."""
     p = params(8)
     model = RefModel(p, R, a4=0.0)
     ts = np.zeros(model.n)
@@ -108,7 +109,7 @@ def test_the_reference_conserves_what_the_port_conserves_with_the_filter_off() -
     assert err["h"] < 1e-4 and err["u"] < 1e-5, err
 
 
-# --- invariants -------------------------------------------------------------------------------------------------
+# --- invariants ---------------------------------------------------------------------------------------------
 
 
 def test_the_calm_rest_state_is_a_fixed_point_without_pools_or_seeds() -> None:
@@ -141,7 +142,8 @@ def thin_front() -> tuple[WeatherParams, Ref, np.ndarray]:
 def test_mass_and_moisture_close_with_the_clamp_terms() -> None:
     """Σ(h1+h2) changes only by ``clamp_mass`` (the positivity clamp adds mass) and ΣQ by evaporation minus
     condensation plus ``q_clamp``; every other term is a flux or an exchange (conservative to rounding). The
-    limiter does not guarantee ``h >= h_min`` with the filter and the corrected faces (S4a G6): the clamp acts."""
+    limiter does not guarantee ``h >= h_min`` with the filter and the corrected faces (S4a G6): the clamp
+    acts."""
     p, ref, ts = thin_front()
     fo = forcing(p, ts)
     s = to_mlx(ref)
@@ -205,7 +207,8 @@ def _rot_z90(v: np.ndarray) -> np.ndarray:
 
 
 def test_the_step_commutes_with_the_quarter_turn_about_the_axis() -> None:
-    """The HEALPix grid maps onto itself under a rotation of 90 degrees about z, and f = f0·z is invariant: the
+    """The HEALPix grid maps onto itself under a rotation of 90 degrees about z, and f = f0·z is invariant:
+    the
     step on the rotated state is the rotated step (T_s = 0 and no seeds). It tests the tables and the kernels
     against each other and not against the reference."""
     nw = 8
@@ -243,7 +246,7 @@ def test_the_step_commutes_with_the_quarter_turn_about_the_axis() -> None:
     assert np.abs(ra.u - np.stack([np.array(b.u1), np.array(b.u2)])).max() < 3e-5
 
 
-# --- the pools and the seeded vortex ----------------------------------------------------------------------------------
+# --- the pools and the seeded vortex ------------------------------------------------------------------------
 
 
 def _pool_ref(x: np.ndarray, radius: float, pools, t: int) -> np.ndarray:
@@ -304,7 +307,7 @@ def test_the_seeded_vortex_is_the_closed_form_and_cyclonic_for_its_hemisphere() 
         u, on = weather_sph._seed_vortex(xm, key, p, radius)
         mx.eval(u, on)
         assert float(on) == 1.0
-        k_on, k_x, k_y, k_a = mx.random.split(key, 4)
+        _, k_x, k_y, k_a = mx.random.split(key, 4)
         xs = np.array(
             weather_sph.fields_sph.sphere_point(mx.random.uniform(key=k_x), mx.random.uniform(key=k_y)),
             dtype=np.float64,
@@ -323,7 +326,7 @@ def test_the_seeded_vortex_is_the_closed_form_and_cyclonic_for_its_hemisphere() 
     assert float(o) == 0.0 and not np.array(off).any()
 
 
-# --- stability in float32 (S4b first task; the table is in docs and the build notes) -----------------------------------
+# --- stability in float32 (S4b first task; the table is in docs and the build notes) ------------------------
 
 
 def _dt_for(nw: int, radius: float, c: float) -> float:
@@ -382,12 +385,13 @@ def test_linear_noise_grows_past_the_limit() -> None:
 def test_the_float32_courant_limit_is_at_least_1_25_times_the_courant_number_of_use(
     nw: int, radius: float
 ) -> None:
-    """The stability rule C_used <= 0.8·C_limit with ``C_limit`` re-measured in float32 on the MLX step (the S4a
+    """The stability rule C_used <= 0.8·C_limit with ``C_limit`` re-measured in float32 on the MLX step
+    (the S4a
     decay criterion: the largest |h - h0| after 1500 steps of linear noise is below its start). Measured at
     S4b: 0.6547 / 0.650 / 0.650 for Nw 16 / 22 / 42 (bisection to 0.005 from [0.50, 0.80]); the stop rule
     ``C_limit < 1.25·C_used`` would have fired at 0.633 for Nw 42."""
     cu = c_used(nw, radius)
-    assert weather_sph.C_LIMIT >= 1.25 * cu * 0.99  # the constant used by `validate`
+    assert 1.25 * cu * 0.99 <= weather_sph.C_LIMIT  # the constant used by `validate`
     stable = noise_ratio(nw, radius, weather_sph.C_LIMIT, 1500)
     assert stable < 1.0, stable  # the decay criterion at the constant itself
     for c in (1.0, 1.2):
@@ -398,7 +402,8 @@ def test_the_float32_courant_limit_is_at_least_1_25_times_the_courant_number_of_
 @pytest.mark.slow
 @pytest.mark.parametrize("nw,radius", [(16, 36.0), (42, 90.0)])
 def test_rotating_noise_does_not_grow(nw: int, radius: float) -> None:
-    """f0 = 0.025, 4000 steps, at C_used and 1.2·C_used: the log-slope of the rms |h - h0| over the second half
+    """f0 = 0.025, 4000 steps, at C_used and 1.2·C_used: the log-slope of the rms |h - h0| over the second
+    half
     is negative (S4a found a rotation-coupled mode at a4 = 1e-3; (3e-3, 3e-3) on (h, u) cures it)."""
     for mult in (1.0, 1.2):
         c = mult * c_used(nw, radius)
@@ -458,7 +463,8 @@ def _dense_rho(nw: int, c: float, f0: float, radius: float = 90.0) -> float:
 @pytest.mark.parametrize("f0", [0.0, 0.025])
 def test_the_dense_one_step_map_has_no_growing_mode_at_nside_3(f0: float) -> None:
     """ρ of the linearised one-step map at the rest state (dry, no advection) at Nside 3 (dimension 8·108): no
-    mode grows beyond the finite-difference noise of float32 (the S4a float64 value of ρ - 1 is 1e-11; with eps
+    mode grows beyond the finite-difference noise of float32 (the S4a float64 value of ρ - 1 is 1e-11; with
+    eps
     = 0.05 the float32 evaluation resolves ρ - 1 to about 1e-3)."""
     assert _dense_rho(3, 0.5, f0) < 1.0 + 2e-3
 

@@ -1,6 +1,9 @@
-"""A float64 numpy reference of the sphere weather step (S4b tests): the scheme of ``docs/SPHERE.md`` 4.1 written
-the way the S4a prototype writes it (Jacobian first, then ``n·J·dx``; ``einsum`` over the tables), on the tables
-of ``alife.weather_tab``. The MLX step contracts the same operators differently (the ``bm`` table, gathers) and
+"""A float64 numpy reference of the sphere weather step (S4b tests): the scheme of ``docs/SPHERE.md`` 4.1
+written
+the way the S4a prototype writes it (Jacobian first, then ``n·J·dx``; ``einsum`` over the tables), on the
+tables
+of ``alife.weather_tab``. The MLX step contracts the same operators differently (the ``bm`` table, gathers)
+and
 in float32, so agreement to float32 rounding tests the port and not a copy of it. The geometry itself is
 tested against the independent HEALPix oracle in ``tests/test_weather_tab.py``, and against the S4a prototype
 by the scripts logged in the S4b build notes (``xcheck_step.py``).

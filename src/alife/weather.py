@@ -1264,8 +1264,8 @@ def params_from_config(cfg: Config) -> WeatherParams:
     """The ``WeatherParams`` of a config: a name-keyed copy of ``cfg.weather`` plus ``n = cells``, ``dx =
     world.size / cells``, ``height`` (``world.height`` in 3D, ``H1 + H2`` in 2D) and ``ENGINE_FIXED``.
     Cached on the weather section and the three world values it reads. ``validate_config`` guards the inputs
-    (``cells`` and ``pools``) before this is built. On a sphere ``weather_sph.params_from_config`` (``n = Nw``,
-    ``dx`` the mean cell side, ``height = H1 + H2``)."""
+    (``cells`` and ``pools``) before this is built. On a sphere ``weather_sph.params_from_config`` (``n =
+    Nw``, ``dx`` the mean cell side, ``height = H1 + H2``)."""
     if _sph(cfg):  # static
         from alife import weather_sph
 
@@ -1426,7 +1426,8 @@ def agent_wind(
     ``alpha·u_air``. ``alive`` keeps dead rows out of the clip counts; their force is zeroed by the physics
     (``survivor``).
 
-    On a sphere (DESIGN §46.6) the wind is ``weather_sph.agent_wind`` (the cell's tangent vector re-projected, the
+    On a sphere (DESIGN §46.6) the wind is ``weather_sph.agent_wind`` (the cell's tangent vector
+    re-projected, the
     vertical map of ``WeatherGeometry``, the force a Cartesian 3-vector).
 
     W2 (DESIGN §32), each a static branch on a config constant: ``wind_eddy_force`` drives the agents with

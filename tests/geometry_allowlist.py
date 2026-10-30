@@ -62,7 +62,7 @@ AUDIT: dict[str, tuple[str, int | None]] = {
     "state.py": (_BB, None),  # S1 converted it: the sphere branches use Dims; the box half stays
     "energy.py": (_P, None),
     "bonds.py": (_P, None),
-    "weather.py": (_C, 4),
+    "weather.py": (_BB, None),  # S4b converted it: the sphere half is weather_sph.py; the box half stays
     "weather_obs.py": (_C, 4),
     "weather_spinup.py": (_C, 4),
     "bench.py": (_BB, None),
@@ -334,11 +334,11 @@ ALLOWLIST: tuple[Allow, ...] = (
     # viewer.py: 2D viewer: box-only tool
     Allow("viewer.py", "wrap", 8, "box-only tool"),
     Allow("viewer.py", "world.size", 7, "box-only tool"),
-    # weather.py: wind sampling, vertical profile, remap (S4)
-    Allow("weather.py", "z_index", 11, "converted", 4),
-    Allow("weather.py", "xy_slice", 2, "converted", 4),
-    Allow("weather.py", "wrap", 6, "converted", 4),
-    Allow("weather.py", "world.size", 12, "converted", 4),
-    Allow("weather.py", "world.height", 5, "converted", 4),
-    Allow("weather.py", "world.field_cell", 14, "converted", 4),
+    # weather.py: wind sampling, vertical profile, remap (S4b converted it: the sphere half is weather_sph.py)
+    Allow("weather.py", "z_index", 11, "box branch"),
+    Allow("weather.py", "xy_slice", 2, "box branch"),
+    Allow("weather.py", "wrap", 6, "box branch"),
+    Allow("weather.py", "world.size", 12, "box branch"),
+    Allow("weather.py", "world.height", 5, "box branch"),
+    Allow("weather.py", "world.field_cell", 14, "box branch"),
 )
