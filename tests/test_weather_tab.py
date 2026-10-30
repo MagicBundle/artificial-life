@@ -144,3 +144,34 @@ def test_the_tables_are_read_only_and_cached() -> None:
     assert t.area == pytest.approx(geom.pixel_solid_angle(4))
     with pytest.raises(ValueError):
         weather_tab.weather_tab(1)
+
+
+@pytest.mark.parametrize("ns", (4, 8, 16))
+def test_the_face_offset_the_laplacian_weights_and_the_lsq_weights_are_what_the_scheme_says(ns: int) -> None:
+    """Pins three table definitions that the dynamics would not notice if they changed together with the
+    reference (review M5): ``δ = x_f - x_mid`` (its sign makes the faces second order: flipped, the
+    divergence of
+    a solid rotation goes from 0.5 % to 60 %), the Laplacian weights ``ell/d`` (not ``ell``), and the
+    ``1/d²``-weighted normal equations of the least-squares gradient."""
+    t = weather_tab.weather_tab(ns)
+    corn = hp_oracle.corners(ns)
+    mid = corn + np.roll(corn, -1, axis=1)
+    mid /= np.linalg.norm(mid, axis=-1, keepdims=True)  # the edge midpoint x_f, from the oracle
+    xq = t.x[t.nb]
+    cm = t.x[:, None, :] + xq
+    cm /= np.linalg.norm(cm, axis=-1, keepdims=True)  # the normalised midpoint of the two centres
+    assert np.abs(t.dx - (mid - cm)).max() < 1e-12
+    assert np.abs(t.dx).max() > 0.1 * np.sqrt(t.area)  # not all zero: the seams have an offset
+    wl = t.ell / t.d
+    assert np.allclose(t.wl, wl / wl.mean(), atol=1e-12) and not np.allclose(t.wl, t.ell / t.ell.mean())
+    # the normal equations: W8 = M^+ Σ_k w_k dv_k with w_k = 1/|dv_k|² over the valid neighbours
+    dv = t.x[t.nb8] - t.x[:, None, :]
+    dv = dv - (dv * t.x[:, None, :]).sum(-1, keepdims=True) * t.x[:, None, :]
+    valid = np.arange(8)[None, :] < t.cnt[:, None]
+    w = np.where(valid, 1.0 / (dv * dv).sum(-1), 0.0)
+    m = np.einsum("pk,pki,pkj->pij", w, dv, dv)
+    want = np.einsum("pij,pkj->pki", np.linalg.pinv(m, rcond=1e-10), dv * w[..., None])
+    assert np.abs(np.where(valid[..., None], want, 0.0) - t.w8).max() < 1e-10
+    unweighted = np.einsum("pk,pki,pkj->pij", valid.astype(float), dv, dv)
+    other = np.einsum("pij,pkj->pki", np.linalg.pinv(unweighted, rcond=1e-10), dv * valid[..., None])
+    assert np.abs(other - t.w8).max() > 1e-3  # the weighting matters, so the test can tell

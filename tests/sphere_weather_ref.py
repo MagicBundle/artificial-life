@@ -138,7 +138,11 @@ class RefModel:
             v = _proj(x, v + self.a4 * self.bih(v, True))
         ua = v
         if dry:
-            return Ref(h, ua, bq, s.p, s.dc), {"clamp_mass": clamp, "q_clamp": qclamp}
+            return Ref(h, ua, bq, s.p, s.dc), {
+                "clamp_mass": clamp,
+                "q_clamp": qclamp,
+                "n_limited": int(over.sum()),
+            }
         sp1 = np.sqrt((ua[0] * ua[0]).sum(-1))
         qe = p.Qs * (p.q_bg + (p.q_pool - p.q_bg) * ts)
         evap = p.k_E * (sp1 + p.u_gust) * np.maximum(qe - bq, 0)
@@ -173,6 +177,7 @@ class RefModel:
         return Ref(h, ua, bq, cond, cloud), {
             "clamp_mass": clamp,
             "q_clamp": qclamp,
+            "n_limited": int(over.sum()),
             "evap": evap,
             "cond": cond,
         }

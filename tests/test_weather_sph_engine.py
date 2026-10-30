@@ -422,3 +422,36 @@ def test_the_engine_step_shelters_the_agents_in_the_material() -> None:
     dp_a = np.linalg.norm(np.array(a.pos) - np.array(s.pos), axis=1)
     assert dp_a[covered].mean() < dp_b[covered].mean()
     assert np.allclose(dp_a[free], dp_b[free], atol=1e-6)
+
+
+# --- thresholds of the validation rules, on both sides (review M7) ------------------------------------------
+
+
+def _msgs(*overrides: str) -> str:
+    try:
+        weather_cfg("tiny3s", *overrides)
+    except ConfigError as e:
+        return str(e)
+    return ""
+
+
+def test_the_courant_rule_is_c_used_at_most_point_eight_c_limit() -> None:
+    """``C_used = 0.4826·36/R`` for tiny3s: the rule bites at ``0.8·0.650 = 0.520``, i.e. a radius of 33.4."""
+    assert "Courant" not in _msgs("world.radius=33.6")  # C_used 0.5171
+    assert "Courant" in _msgs("world.radius=33.2")  # 0.5233
+    assert "Courant" in _msgs("world.radius=32.0")  # 0.543: a factor 1.2 instead of 0.8 would let it pass
+    assert abs(0.8 * weather_sph.C_LIMIT - 0.52) < 1e-12
+
+
+def test_the_shear_layer_must_lie_within_the_floor_layer_in_weather_units() -> None:
+    """``z_sl <= s·z_1`` with ``s = 5`` and ``z_1 = 2.7975`` for tiny3s: 13.99."""
+    assert "z_sl" not in _msgs("weather.z_sl=13.5")
+    assert "z_sl <= s·z_1" in _msgs("weather.z_sl=14.2")
+
+
+def test_the_load_rule_uses_the_vertical_wind_of_the_shell() -> None:
+    """Rule 16: ``thrust_max + max(g + a·drag·w_edge/s, ...) < 2·radius·k_repel``: with ``s = 5`` the largest
+    accepted ``w_edge`` is 0.15 (thrust 0.1, gravity 0.03, limit 0.16); without the division by ``s`` it would
+    be 0.03."""
+    assert "rule 16" not in _msgs("weather.w_edge=0.14")
+    assert "rule 16" in _msgs("weather.w_edge=0.16")

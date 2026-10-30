@@ -286,10 +286,10 @@ def rain_audit(s: State | State3, ws: weather.WeatherState, cfg: Config) -> mx.a
     room = cfg.fields.resource_cap - s.resource
     inc_total = mx.maximum(mx.minimum(base + rain, room), 0)
     real = inc_total - mx.maximum(mx.minimum(base, room), 0)
-    if dims(cfg).sph:  # static
-        rows = [a.reshape(a.shape[0], -1).sum(axis=1) for a in (base, rain, inc_total, real)]
-    else:
-        rows = [a.reshape(-1, fg, fg).sum(axis=(1, 2)) for a in (base, rain, inc_total, real)]
+    if dims(cfg).sph:  # static: int64 sums, a layer holds Npix_f columns of up to 2^30 (review L5)
+        rows = [a.astype(mx.int64).reshape(a.shape[0], -1).sum(axis=1) for a in (base, rain, inc_total, real)]
+        return mx.stack(rows)
+    rows = [a.reshape(-1, fg, fg).sum(axis=(1, 2)) for a in (base, rain, inc_total, real)]
     return mx.stack(rows).astype(mx.int32)
 
 

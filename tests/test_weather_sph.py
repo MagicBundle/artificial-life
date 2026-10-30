@@ -181,6 +181,51 @@ def test_the_limited_scene_still_equals_the_reference() -> None:
     assert err["h"] < 5e-3 and err["u"] < 5e-4, err  # a thin layer amplifies rounding; still the same flow
 
 
+def test_the_limiter_alone_keeps_the_layers_positive() -> None:
+    """With the filter off (a4 = 0) the limiter is the only thing between an outflow beyond availability and
+    ``h < h_min``: after a step of the thin-front scene ``h >= h_min`` to rounding, nothing is clamped, and
+    the
+    count of limited cells equals the float64 reference's (review M2: swapping the donor's and the receiver's
+    factors lost positivity, with a clamp mass of 20, and no closure test noticed)."""
+    p, ref, ts = thin_front()
+    model = RefModel(p, R, a4=0.0)
+    fo = forcing(p, ts)
+    s1 = to_mlx(ref)
+    n_ref = n_mlx = 0
+    hmin = 1e9
+    for i in range(120):
+        ref, aux = model.step(ref, ts, np.ones(len(ts)))
+        s1, d = weather_sph.step(s1, fo, mx.random.key(0), p, R, seeds=False, a4=0.0)
+        mx.eval(*s1, d.clamp_mass)
+        n_ref, n_mlx = n_ref + aux["n_limited"], n_mlx + int(d.n_limited)
+        hmin = min(hmin, float(mx.minimum(s1.h1.min(), s1.h2.min())))
+        assert float(d.clamp_mass) == 0.0 and int(d.n_clamp) == 0 and aux["clamp_mass"] == 0.0, i
+    assert n_ref > 3000 and abs(n_mlx - n_ref) <= 0.01 * n_ref  # the limiter acts, and acts alike
+    assert hmin >= p.h_min - 1e-5
+    assert np.abs(np.array(s1.h1) - ref.h[0]).max() < 5e-4 and np.abs(np.array(s1.u1) - ref.u[0]).max() < 5e-5
+
+
+def test_the_moisture_clamp_closes_the_water_identity() -> None:
+    """A scene with ``q_clamp > 0``: the upwind flux never drives ``Q`` negative by itself (the limiter bounds
+    the outflow by the cell's own water), so some cells start with a slightly negative ``Q`` (a corrupted
+    state); the clamp adds it back and ``Δ ΣQ = Σ(sum_E - sum_C + q_clamp)`` with the term, not without."""
+    p, ref, ts = thin_front()
+    q = ref.q.copy()
+    q[::17] = -0.02
+    s = to_mlx(ref._replace(q=q))
+    fo = forcing(p, ts)
+    _, q0 = _tot(s)
+    s2, d = weather_sph.step(s, fo, mx.random.key(0), p, R, seeds=False)
+    mx.eval(*s2, d.q_clamp)
+    _, q1 = _tot(s2)
+    assert float(d.q_clamp) > 0.0 and int(d.n_clamp) > 0
+    want = float(d.sum_E) - float(d.sum_C) + float(d.q_clamp)
+    assert abs((q1 - q0) - want) < 3e-5 * q0
+    assert abs((q1 - q0) - (want - float(d.q_clamp))) > 0.5 * float(
+        d.q_clamp
+    )  # without the term it would not close
+
+
 def _tot(s: weather_sph.WeatherStateS) -> tuple[float, float]:
     h = np.array(s.h1, dtype=np.float64) + np.array(s.h2, dtype=np.float64)
     return float(h.sum()), float(np.array(s.Q, dtype=np.float64).sum())
@@ -474,3 +519,135 @@ def test_the_dense_one_step_map_has_no_growing_mode_at_nside_3(f0: float) -> Non
 def test_the_dense_one_step_map_has_no_growing_mode_up_to_nside_6(nw: int, f0: float) -> None:
     for c in (0.3, 0.5, 0.6):
         assert _dense_rho(nw, c, f0) < 1.0 + 2e-3, (nw, c, f0)
+
+
+# --- S4a gate G1 on the MLX step, the dense map in float64, pack/unpack (review M5, M8) ---------------------
+
+
+@pytest.mark.parametrize("nw,radius", [(16, 36.0), (22, 48.0)])
+def test_a_solid_rotation_through_the_production_faces_is_divergence_free(nw: int, radius: float) -> None:
+    """S4a gate G1 on the shipped step: with the filter and the rotation off, uniform thickness and a
+    solid-body
+    rotation, one step changes ``h`` by ``-dt·h·div u``; the divergence the gradient-corrected faces see is
+    below
+    3 % of ``|ω|`` at its maximum (S4a: 3 %) and 1.5 % rms. With δ flipped it is 60 %, with the plain faces
+    30 %."""
+    p = params(nw, radius, dt=0.5, f0=0.0)
+    t = weather_tab.weather_tab(nw)
+    omega = 1e-3
+    u = np.cross([0.0, 0.0, omega], t.x) * radius
+    n = t.npix
+    f = lambda a: mx.array(np.asarray(a), dtype=mx.float32)  # noqa: E731
+    ws = weather_sph.WeatherStateS(
+        f(np.full(n, 32.0)),
+        f(np.full(n, 48.0)),
+        f(u),
+        f(u),
+        f(np.full(n, 0.7)),
+        f(np.zeros(n)),
+        f(np.zeros(n)),
+    )
+    fo = forcing(p, np.zeros(n))
+    o, _ = weather_sph.step(ws, fo, mx.random.key(0), p, radius, dry=True, advect=False, seeds=False, a4=0.0)
+    mx.eval(*o)
+    div = (np.array(ws.h1, dtype=np.float64) - np.array(o.h1, dtype=np.float64)) / (p.dt * 32.0)
+    assert np.abs(div).max() / omega < 0.03 and np.sqrt((div**2).mean()) / omega < 0.015
+    # the control: the same step with the wrong sign of the correction is far worse (the test can fail)
+    tab = weather_sph.dev_for(p, radius)
+    flipped = tab._replace(dx=-tab.dx, bm=-tab.bm)
+    orig = weather_sph.dev_for
+    weather_sph.dev_for = lambda p_, r_: flipped
+    try:
+        o2, _ = weather_sph.step(
+            ws, fo, mx.random.key(0), p, radius, dry=True, advect=False, seeds=False, a4=0.0
+        )
+        mx.eval(*o2)
+    finally:
+        weather_sph.dev_for = orig
+    bad = (np.array(ws.h1, dtype=np.float64) - np.array(o2.h1, dtype=np.float64)) / (p.dt * 32.0)
+    assert np.abs(bad).max() / omega > 0.3
+
+
+def test_pack_and_unpack_round_trip_a_random_state_plane_by_plane() -> None:
+    rng = np.random.default_rng(5)
+    n = 12 * 6 * 6
+    f = lambda *shape: mx.array(rng.normal(size=shape), dtype=mx.float32)  # noqa: E731
+    ws = weather_sph.WeatherStateS(f(n), f(n), f(n, 3), f(n, 3), f(n), f(n), f(n))
+    wx = weather_sph.pack(ws)
+    assert wx.shape == (weather_sph.N_WX, n)
+    back = weather_sph.unpack(wx)
+    for a, b in zip(ws, back, strict=True):
+        assert np.array_equal(np.array(a), np.array(b))
+    w = np.array(wx)  # the documented plane order: h1, h2, u1 xyz, u2 xyz, Q, P, Dc
+    assert np.array_equal(w[2:5].T, np.array(ws.u1)) and np.array_equal(w[5:8].T, np.array(ws.u2))
+    assert (
+        np.array_equal(w[0], np.array(ws.h1))
+        and np.array_equal(w[8], np.array(ws.Q))
+        and np.array_equal(w[10], np.array(ws.Dc))
+    )
+
+
+@pytest.fixture
+def float64_step(monkeypatch: pytest.MonkeyPatch):
+    """The step in float64 on the CPU (MLX computes float64 on the CPU only): the module's float type, its
+    cached tables and the default device are switched for one test."""
+    old = mx.default_device()
+    mx.set_default_device(mx.cpu)
+    monkeypatch.setattr(weather_sph, "_F32", mx.float64)
+    weather_sph.device_tables.cache_clear()
+    yield
+    weather_sph.device_tables.cache_clear()
+    mx.set_default_device(old)
+
+
+def _dense_rho64(nw: int, c: float, f0: float, radius: float = 90.0) -> tuple[float, int]:
+    """ρ of the linearised dry one-step map at the rest state in float64 (ε = 1e-6), and the count of
+    eigenvalues beyond ``1 + 1e-9`` (the conserved mass modes sit at 1 to rounding)."""
+    p = params(nw, radius, dt=_dt_for(nw, radius, c), f0=f0)
+    n = 12 * nw * nw
+    fo = WeatherForcing(mx.zeros((n,), dtype=mx.float64), mx.ones((n,), dtype=mx.float64))
+    key = mx.random.key(0)
+    base = {"h1": np.full(n, p.H1), "h2": np.full(n, p.H2), "u1": np.zeros((n, 3)), "u2": np.zeros((n, 3))}
+
+    def one(**ov: np.ndarray) -> np.ndarray:
+        d = {**base, **ov}
+        s = weather_sph.WeatherStateS(
+            *(mx.array(d[k], dtype=mx.float64) for k in ("h1", "h2", "u1", "u2")),
+            mx.ones((n,), dtype=mx.float64),
+            mx.zeros((n,), dtype=mx.float64),
+            mx.zeros((n,), dtype=mx.float64),
+        )
+        o, _ = weather_sph.step(s, fo, key, p, radius, dry=True, advect=False, seeds=False)
+        mx.eval(*o)
+        return np.concatenate(
+            [np.array(o.h1), np.array(o.h2), np.array(o.u1).ravel(), np.array(o.u2).ravel()]
+        )
+
+    eps, cols = 1e-6, []
+    for name, arr in base.items():
+        for idx in np.ndindex(arr.shape):
+            pair = []
+            for sg in (1.0, -1.0):
+                a2 = arr.copy()
+                a2[idx] += sg * eps
+                pair.append(one(**{name: a2}))
+            cols.append((pair[0] - pair[1]) / (2 * eps))
+    r = np.abs(np.linalg.eigvals(np.array(cols).T))
+    return float(r.max()) - 1.0, int((r > 1 + 1e-9).sum())
+
+
+@pytest.mark.parametrize("f0", [0.0, 0.025])
+def test_the_dense_one_step_map_in_float64_has_no_growing_mode(float64_step, f0: float) -> None:
+    """The float32 dense test cannot tell a mode growing at 1.001 from rounding (review M8); in float64 the
+    spectral radius of the linearised map exceeds 1 by less than 1e-6 (measured 1e-9: the conserved modes)."""
+    for c in (0.5, 0.64):
+        excess, _ = _dense_rho64(3, c, f0)
+        assert excess < 1e-6, (c, f0, excess)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("nw,f0", [(4, 0.025), (6, 0.0), (6, 0.025)])
+def test_the_dense_one_step_map_in_float64_up_to_nside_6(float64_step, nw: int, f0: float) -> None:
+    for c in (0.3, 0.5, 0.6, 0.64):
+        excess, _ = _dense_rho64(nw, c, f0)
+        assert excess < 1e-6, (nw, c, f0, excess)

@@ -20,8 +20,11 @@ One step (single formulas, ``R = Rp``, unit-sphere tables times ``R``)::
         friction, the safety tripwire, seeded vortices (pointwise, as the box)
 
 Differences from the box: no divergence damping (``kappa_d`` is not carried; not needed by the S4a gates), the
-biharmonic filter, the Courant number ``C = c_ext·dt/(0.81·√A)`` of the **mean cell side** ``√A`` (limit 0.652
-at ``a4 = 3e-3``, measured in float32 by ``tests/test_weather_sph_stability.py``), and the warm pools on the
+biharmonic filter, the Courant number ``C = c_ext·dt/(0.81·√A)`` of the **mean cell side** ``√A`` (limit
+0.655 ±
+0.005 at ``a4 = 3e-3``, float64 and float32 alike; ``C_LIMIT`` = 0.650 is the last neutral value, measured
+by the
+slow tests of ``tests/test_weather_sph.py``), and the warm pools on the
 sphere (arc-length widths at the pool latitude, masked to the hemisphere facing the centre). Pure MLX like the
 simulation modules: no host syncs, no branching on array values, fixed shapes; gathers only (no scatter, no
 matmul: F20).
@@ -405,12 +408,16 @@ def step(
     seeds: bool = True,
     a4: float = A4,
     dry: bool = False,
+    kappa_d: float = 0.0,
 ) -> tuple[WeatherStateS, WeatherDiag]:
     """One weather step (S1 to S8 of the module docstring). ``key`` is a (2,) MLX key used only by the seeds;
     the step returns no key. The keywords are static test hooks (the engine passes none): ``advect=False``
     switches the momentum advection off (the linear stability test), ``seeds=False`` the disturbances, ``a4``
     sets the filter strength (the engine uses ``A4``), ``dry=True`` stops after the dynamics (S1 to S3 and the
-    filter: no moisture, relaxation, friction or seeds), which is what the S4a noise and balance tests ran."""
+    filter: no moisture, relaxation, friction or seeds), which is what the S4a noise and balance tests ran.
+    ``kappa_d`` > 0 is an experiment, not adopted (docs: ``s4b_build/m1_options.md``): the box's divergence
+    damping ``u += kappa_d·dx²·∇D`` (``D`` the divergence per length, ``dx`` the mean cell side) after the
+    filter."""
     tab = dev_for(p, radius)
     nw = p.n
     dt = p.dt
@@ -481,6 +488,9 @@ def step(
     if a4:
         v = _proj(x, v + a4 * _bih(v, tab))
     ua = v
+    if kappa_d:  # static, off in the engine: the box's divergence damping (the S4b stability options)
+        div = (mx.take(ua, tab.nb8, axis=1) - ua[:, :, None, :]) * tab.w8r[None]
+        ua = _proj(x, ua + (kappa_d * p.dx**2) * _grad(div.sum(axis=(2, 3)), tab, True))
     if dry:  # static: the dynamics alone
         zero_d = zero.astype(_I32)
         return WeatherStateS(h[0], h[1], ua[0], ua[1], big_q, ws.P, ws.Dc), WeatherDiag(
@@ -738,9 +748,9 @@ def _geometry(
 
 
 class WindFieldsS(NamedTuple):
-    """The per-cell fields of the wind formula, packed as the rows an agent gathers: ``rows (N, 11)`` =
-    ``[zi, d1, d2, jump, u1 (3), u2 (3)]`` is 10 wide plus the cell's ``h``-free interface; kept as one table
-    so a sample is one gather."""
+    """The per-cell fields of the wind formula, packed as the rows an agent gathers: ``rows (N, 10)`` =
+    ``[zi, d1, d2, jump, u1 (3), u2 (3)]`` (the interface height in weather units, the layer divergences, the
+    interface term, the two centre winds); one table, so a sample is one gather."""
 
     rows: mx.array  # (N, 10)
 

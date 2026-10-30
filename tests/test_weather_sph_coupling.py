@@ -350,3 +350,205 @@ def test_the_vorticity_and_divergence_diagnostics_of_a_solid_rotation() -> None:
     assert np.abs(z - zeta)[non_pole].max() < 0.03 * np.abs(zeta).max()
     d = np.array(weather_sph.divergence(ws, p, 36.0))
     assert np.abs(d[:, non_pole]).max() < 0.03 * np.abs(zeta).max()
+
+
+# --- review M4, M6, M7, L2, L3, L5 --------------------------------------------------------------------------
+
+
+def _tilted_interface(nw: int, radius: float):
+    """h1 = 32 + 3 x0 + 2 x2 x1, h2 = 80 - h1 (so zi = h1), two different solid rotations in the layers: the
+    interface term ``J = (φ(zi)·u1 - u2)·∇zi`` is nonzero and known in closed form."""
+    x = weather_tab.weather_tab(nw).x
+    h1 = 32.0 + 3.0 * x[:, 0] + 2.0 * x[:, 2] * x[:, 1]
+    u1 = 0.05 * np.cross([0.1, 0.2, 0.9], x)
+    u2 = 0.03 * np.cross([-0.3, 0.1, 0.5], x)
+    ws = rest_ws(nw, h1=h1, h2=80.0 - h1, u1=u1, u2=u2)
+    ge = np.array([3.0, 0, 0])[None, :] + 2.0 * (
+        x[:, 2:3] * np.array([0, 1.0, 0])[None, :] + x[:, 1:2] * np.array([0, 0, 1.0])[None, :]
+    )
+    gz = (ge - (ge * x).sum(1, keepdims=True) * x) / radius  # the tangent gradient of zi per unit length
+    return ws, x, h1, u1, u2, gz
+
+
+def test_the_interface_term_of_the_wind_is_the_analytic_one_and_enters_w() -> None:
+    which = "mini3s"
+    cfg = weather_cfg(which)
+    p = weather_sph.params_from_config(cfg)
+    geo = weather_sph.WeatherGeometry.from_config(cfg)
+    ws, x, h1, u1, u2, gz = _tilted_interface(NW[which], geo.radius)
+    wf = weather_sph.wind_fields(ws, p, geo.radius)
+    rows = np.array(wf.rows)
+    jump = ((np.minimum(h1 / p.z_sl, 1.0)[:, None] * u1 - u2) * gz).sum(1)
+    ok = np.abs(x[:, 2]) < 0.9
+    assert np.abs(rows[:, 3] - jump)[ok].max() < 0.03 * np.abs(jump).max() and np.abs(jump).max() > 1e-5
+    # the vertical wind above the interface carries it: the sampled w equals the box formula with that J, and
+    # differs from the formula with J = 0 by more than the tolerance
+    pos = positions(cfg, which, 0.8 * geo.height, 300)
+    pos = pos[np.abs(pos[:, 2]) < 0.8 * RADIUS[which]]
+    aw = weather_sph.sample_wind(ws, mx.array(pos, dtype=mx.float32), p, geo, fields=wf)
+    up = pos / np.linalg.norm(pos, axis=1)[:, None]
+    w_sh = (np.array(aw.u) * up).sum(1)
+    cell = np.array(weather_sph.sphere.ang2pix(mx.array(pos, dtype=mx.float32), NW[which]))
+    r = rows[cell]
+    z = mx.full((len(cell),), geo.s * 0.8 * geo.height)
+    args = (mx.array(r[:, 0]), (mx.zeros(1),) * 4, mx.array(r[:, 1]), mx.array(r[:, 2]))
+    with_j = np.array(weather._wind_formula(z, *args, mx.array(r[:, 3]), p)[2])
+    no_j = np.array(weather._wind_formula(z, *args, mx.zeros(len(cell)), p)[2])
+    assert np.abs(w_sh * geo.s - with_j).max() < 1e-5 + 1e-4 * np.abs(with_j).max()
+    assert (
+        np.abs(with_j - no_j).max() > 10 * np.abs(w_sh * geo.s - with_j).max()
+    )  # J matters, so a wrong sign shows
+
+
+def test_the_lid_half_of_the_edge_clip_acts_between_z_last_and_the_lid() -> None:
+    which = "tiny3s"
+    cfg = weather_cfg(which)
+    p = weather_sph.params_from_config(cfg)
+    geo = weather_sph.WeatherGeometry.from_config(cfg)
+    ws = _divergent(NW[which], 0.8, -0.8)  # strong enough that |w| exceeds w_edge near both boundaries
+    limit = p.w_edge / geo.s
+    seen = {}
+    for name, z in (
+        ("below", geo.z_last - 1e-3),
+        ("at", geo.z_last + 1e-3),
+        ("mid_lid_layer", 0.5 * (geo.z_last + geo.height)),
+        ("floor", 0.5 * geo.z_first),
+        ("above_floor", geo.z_first + 1e-3),
+    ):
+        pos = positions(cfg, which, z, 300)
+        pos = pos[np.abs(pos[:, 2]) < 0.8 * RADIUS[which]]
+        aw = weather_sph.sample_wind(ws, mx.array(pos, dtype=mx.float32), p, geo)
+        up = pos / np.linalg.norm(pos, axis=1)[:, None]
+        seen[name] = (np.abs((np.array(aw.u) * up).sum(1)).max(), int(aw.n_clip_w))
+    assert (
+        seen["floor"][1] > 0 and seen["at"][1] > 0 and seen["mid_lid_layer"][1] > 0
+    )  # clipped in both edge layers
+    assert seen["at"][0] <= limit * (1 + 1e-5) and seen["mid_lid_layer"][0] <= limit * (1 + 1e-5)
+    assert seen["below"][1] == 0 and seen["below"][0] > limit  # the layer under the lid layer is not clipped
+    assert seen["above_floor"][1] == 0 and seen["above_floor"][0] > limit  # nor the second one from the floor
+
+
+@pytest.mark.parametrize("which", PRESETS)
+def test_the_food_goes_to_the_layers_of_the_cloud_and_the_floor_share_to_layer_0(which: str) -> None:
+    """Per-layer food against an independent numpy of the rule (rain-weighted level and depth over the
+    children,
+    the overlap with the layer table, ``floor(q·share)``), with children that differ (one child rains hard at
+    another level than its neighbours, so an unweighted mean gives other layers), and ``rain_floor`` (layer 0
+    gets ``floor(rain_floor·q)`` more)."""
+    cfg = weather_cfg(which, "weather.rain_gain=40000", "weather.rain_floor=0.2")
+    geo = weather_sph.WeatherGeometry.from_config(cfg)
+    nw, nf = NW[which], cfg.world.nside
+    n = 12 * nw * nw
+    rng = np.random.default_rng(7)
+    children = np.array(geo.dev.children).reshape(-1, geo.ratio**2)
+    p_rate = rng.uniform(0.0, 1e-3, n)
+    p_rate[children[:, 0]] = 8e-3  # one hard-raining child per pixel...
+    zi = rng.uniform(26.0, 38.0, n)
+    dc = rng.uniform(4.0, 30.0, n)
+    zi[children[:, 0]], dc[children[:, 0]] = 44.0, 12.0  # ...at another level and depth
+    got = np.array(
+        weather_sph.rain_regen(RainIn(*(mx.array(a, dtype=mx.float32) for a in (p_rate, zi, dc))), cfg)
+    )
+    pc, pz, pd = p_rate[children], (p_rate * zi)[children], (p_rate * dc)[children]
+    q = 40000.0 * pc.mean(1)
+    den = np.maximum(pc.sum(1), 1e-30)
+    zq, dq = pz.sum(1) / den, pd.sum(1) / den
+    edges = geo.z_edges
+    lo, hi = (zq / geo.s)[None, :], ((zq + dq) / geo.s)[None, :]
+    frac = np.clip(
+        (np.minimum(hi, edges[1:, None]) - np.maximum(lo, edges[:-1, None])) / np.diff(edges)[:, None], 0, 1
+    )
+    share = frac / np.maximum(frac.sum(0), 1e-6)
+    want = np.floor(q[None, :] * share)
+    want[0] += np.floor(0.2 * q)
+    assert (
+        got.shape == want.shape and np.abs(got - want).max() <= 1
+    )  # a float32 floor may differ by one quantum
+    assert (got != want).mean() < 0.005
+    # an unweighted mean would put the food elsewhere: the check has teeth
+    zu, du = zi[children].mean(1), dc[children].mean(1)
+    lo_u, hi_u = (zu / geo.s)[None, :], ((zu + du) / geo.s)[None, :]
+    fu = np.clip(
+        (np.minimum(hi_u, edges[1:, None]) - np.maximum(lo_u, edges[:-1, None])) / np.diff(edges)[:, None],
+        0,
+        1,
+    )
+    assert (
+        np.abs(np.floor(q[None, :] * fu / np.maximum(fu.sum(0), 1e-6)) - np.floor(q[None, :] * share)).max()
+        > 0.3 * q.mean()
+    )
+    assert nf == int(np.sqrt(want.shape[1] / 12))
+
+
+def test_the_force_carries_the_drag_factor() -> None:
+    """Every other test has ``physics.drag = 1``: with 1.7 the force is ``α·1.7·u`` and the drift (force
+    over drag)
+    stays ``α·u`` (review L2)."""
+    which = "tiny3s"
+    cfg = weather_cfg(which, "physics.drag=1.7")
+    assert cfg.physics.drag == 1.7
+    p = weather_sph.params_from_config(cfg)
+    geo = weather_sph.WeatherGeometry.from_config(cfg)
+    x = weather_tab.weather_tab(NW[which]).x
+    ws = rest_ws(NW[which], u1=0.05 * np.cross([0, 0, 1.0], x), u2=0.05 * np.cross([0, 0, 1.0], x))
+    pos = mx.array(positions(cfg, which, 0.6 * geo.height, 40), dtype=mx.float32)
+    buoy = mx.array(np.linspace(0, 1, 40), dtype=mx.float32)
+    alive = mx.ones((40,), dtype=mx.bool_)
+    wind = weather.agent_wind(ws, pos, buoy, alive, cfg)
+    aw = weather_sph.sample_wind(ws, pos, p, geo, valid=alive)
+    alpha = p.alpha0 + p.alpha1 * np.array(buoy)
+    assert np.allclose(np.array(wind.force), alpha[:, None] * 1.7 * np.array(aw.u), rtol=1e-5, atol=1e-8)
+    drift = weather_sph.agent_drift(weather_sph.pack(ws), pos, buoy, alive, cfg)
+    assert np.allclose(np.array(drift), alpha[:, None] * np.array(aw.u), rtol=1e-5, atol=1e-8)
+
+
+def test_the_engine_gives_the_pools_their_time_and_the_seeding_its_factor() -> None:
+    """The wiring of ``advance`` (review L3), eager: the warm-pool map handed to the step depends on the
+    step ``t``
+    (the pools drift), and ``qs`` lowers the condensation threshold of the stored state's next step."""
+    cfg = weather_cfg("tiny3s", "weather.seed_rate=0.0")
+    p = weather_sph.params_from_config(cfg)
+    wx = weather.rest_array(cfg, 0)
+    ws = weather.unpack(wx)
+    key = mx.random.key(0)
+    out0, _ = weather.advance(ws, mx.array(0, dtype=mx.int32), key, cfg)
+    out1, _ = weather.advance(ws, mx.array(20000, dtype=mx.int32), key, cfg)
+    t0 = weather_sph.warm_pools(
+        p, cfg.world.radius, weather_sph.dev_for(p, cfg.world.radius).x, mx.array(0, dtype=mx.int32)
+    )
+    t1 = weather_sph.warm_pools(
+        p, cfg.world.radius, weather_sph.dev_for(p, cfg.world.radius).x, mx.array(20000, dtype=mx.int32)
+    )
+    assert float(mx.abs(t0 - t1).max()) > 0.1  # the pools have drifted by then
+    assert float(mx.abs(out0.Q - out1.Q).max()) > 0  # and the step used the pools of its t
+    # seeding: a supersaturated column condenses at the lowered threshold
+    n = ws.Q.shape[0]
+    wet = ws._replace(Q=mx.full((n,), 0.97))
+    base, _ = weather.advance(wet, mx.array(0, dtype=mx.int32), key, cfg)
+    seeded, _ = weather.advance(wet, mx.array(0, dtype=mx.int32), key, cfg, qs=mx.full((n,), 0.9))
+    assert float(base.P.max()) == 0.0 and float(seeded.P.min()) > 0.0  # rain only where the threshold fell
+    # and through the organism forcing: a high-c2 column lowers qs
+    cfg2 = weather_cfg("tiny3s", "weather.seed_rate=0.0", "weather.seed_gain=0.05")
+    nf, nl = cfg2.world.nside, cfg2.world.layers
+    chem = np.zeros((3, nl, 12 * nf * nf), np.float32)
+    chem[2, :, 5] = 50.0
+    qs, t_mult = weather.organism_forcing(
+        mx.array(chem), mx.zeros((4, 3)), mx.ones((4,), dtype=mx.bool_), ws, cfg2
+    )
+    assert t_mult is None and float(qs.min()) < 1.0 and float(qs.max()) == 1.0
+
+
+def test_the_rain_audit_sums_do_not_overflow_at_a_large_rain_gain() -> None:
+    """``metrics.rain_audit`` sums the layers over the pixels: a layer of 768 pixels at a rain of 9·10^6
+    per column
+    is 7·10^9, beyond int32 (review L5); the sums are int64 on a sphere."""
+    from alife import metrics
+    from alife.state import init_state
+
+    cfg = weather_cfg("tiny3s", "weather.rain_gain=9000000")
+    s = init_state(cfg)
+    ws = weather_sph.unpack(s.wx)._replace(P=mx.full((12 * 16 * 16,), 1.0), Dc=mx.full((12 * 16 * 16,), 20.0))
+    audit = metrics.rain_audit(s, ws, cfg)
+    assert audit.dtype == mx.int64
+    nominal = np.array(weather_sph.rain_regen(weather.rain_in(ws, cfg), cfg), dtype=np.int64).sum(axis=1)
+    assert nominal.max() > 2**31 and np.array_equal(np.array(audit)[1], nominal)
