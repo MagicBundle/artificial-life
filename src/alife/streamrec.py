@@ -913,9 +913,13 @@ def check_envs(obj: Mapping[str, Any]) -> None:
         if not ok:
             raise RecordError(f"ENVS influence {influence!r} is not {{have, cap, window, free_at}}")
     for i, p in enumerate(obj.get("patches", ())):
-        if not (isinstance(p, Mapping) and set(p) == {"i", "x", "y", "gain", "sigma"} and _is_int(p["i"])):
-            raise RecordError(f"ENVS patch {i} is not {{i, x, y, gain, sigma}}")
-        if not all(_is_num(p[k]) for k in ("x", "y", "gain", "sigma")):
+        # a box: {i, x, y, gain, sigma}; a sphere (§46.7): the unit vector x, y, z, then lon, lat in degrees
+        keys = {"i", "x", "y", "gain", "sigma"}
+        if isinstance(p, Mapping) and "z" in p:
+            keys |= {"z", "lon", "lat"}
+        if not (isinstance(p, Mapping) and set(p) == keys and _is_int(p["i"])):
+            raise RecordError(f"ENVS patch {i} is not {{{', '.join(sorted(keys))}}}")
+        if not all(_is_num(p[k]) for k in keys - {"i"}):
             raise RecordError(f"ENVS patch {i} has a value that is not a finite number")
     for name, p in (obj.get("powers") or {}).items():
         ok = isinstance(p, Mapping) and set(p) == {"ready", "busy"}

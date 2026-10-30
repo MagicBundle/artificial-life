@@ -162,6 +162,8 @@ POWER_INT_KEYS: Final = frozenset({"steps", "patch"})  # the others are decimals
 _CLASS = re.compile(r"[a-z][a-z0-9_]*")
 _UINT = re.compile(r"[0-9]+")
 _DECIMAL = re.compile(r"[0-9]+(\.[0-9]+)?")
+# A place of a power (`x`, `y`) on a sphere is a longitude and a latitude in degrees: signed (§46.7)
+_SIGNED_DECIMAL = re.compile(r"-?[0-9]+(\.[0-9]+)?")
 INT64_MAX: Final = 2**63 - 1
 
 
@@ -456,7 +458,7 @@ def _parse_power(args: list[str]) -> PowerLine:
             if number > INT64_MAX:
                 raise ControlError(f"{key} does not fit an int64")
         else:
-            if not _DECIMAL.fullmatch(value):
+            if not (_SIGNED_DECIMAL if key in ("x", "y") else _DECIMAL).fullmatch(value):
                 raise ControlError(f"{key} must be a decimal, got {value!r}")
             number = float(value)
             if not math.isfinite(number):
