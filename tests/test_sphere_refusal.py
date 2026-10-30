@@ -3,8 +3,8 @@
 Every entry point funnels into ``config.validate`` (``load_config``, ``apply_overrides``, the config embedded
 in a run directory or in a checkpoint's metadata). S2 widened ``GEOMETRY_SUPPORTED``: the refusal text and its
 funnel are checked with the tuple narrowed again; a sphere ``run``, ``resume`` and ``bench`` work; the tools
-that read the box geometry (``stream``, ``play``, ``activity``) and the layers that are not converted
-(``SPHERE_READY``: weather, the five features, observers, the director) refuse with the PR that converts them.
+that read the box geometry and the layers that are not converted (``SPHERE_READY``) refuse with the PR that
+converts them. S5 converted the observers, the director, ``stream`` and ``play``; the weather (S4) is left.
 """
 
 from __future__ import annotations
@@ -101,14 +101,16 @@ def test_run_inspect_resume_and_bench_run_a_sphere(tmp_path: Path, capsys: pytes
 @pytest.mark.parametrize(
     ("argv", "pr"),
     [
-        (["play", "--preset", "tiny3s"], "S5"),
+        (["run", "--preset", "tiny3s", "--set", "weather.enabled=true"], "S4"),
         (["run", "--preset", "tiny3s", "--set", "game.observe=true"], "S5"),
         (["run", "--preset", "tiny3s", "--set", "director.enabled=true"], "S5"),
     ],
 )
-def test_layers_that_are_not_converted_are_refused_with_their_pr(
-    argv: list[str], pr: str, capsys: pytest.CaptureFixture
+def test_layers_outside_the_readiness_set_are_refused_with_their_pr(
+    argv: list[str], pr: str, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Every layer of the series is ready (S5); the gate is still the readiness set, read at call time."""
+    monkeypatch.setattr(config, "SPHERE_READY", frozenset())
     assert cli.main(argv if argv[0] == "play" else [*argv, "--quiet"]) == 2
     err = capsys.readouterr().err
     assert "is not available on a sphere yet" in err and f"(PR {pr})" in err
@@ -140,18 +142,6 @@ def test_a_layer_is_refused_with_its_pr_until_it_is_in_the_readiness_set(
     monkeypatch.setattr(config, "SPHERE_READY", config.SPHERE_READY | {"bonds", "roles", name})
     cfg = load_config(preset="tiny3s", overrides=[*sets, "brain.weight_dtype=float32"])
     assert name in config.sphere_wanted(cfg)
-
-
-@pytest.mark.parametrize("cmd", ["stream", "activity"])
-def test_tools_that_read_the_box_geometry_refuse_a_sphere(
-    cmd: str, tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
-    out = tmp_path / "run"
-    assert cli.main(["run", "--preset", "tiny3s", "--steps", "10", "--out", str(out), "--quiet"]) == 0
-    argv = ["stream", "--steps", "1", str(out)] if cmd == "stream" else ["activity", str(out)]
-    assert cli.main(argv) == 2
-    err = capsys.readouterr().err
-    assert "does not support world.geometry = 'sphere' yet" in err and "PR S5" in err
 
 
 def test_a_sphere_has_no_migration(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:

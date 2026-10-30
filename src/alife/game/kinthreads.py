@@ -234,7 +234,8 @@ class KinThreads:
         ids = [int(i) for i in kin["id"]]
         listed: dict[int, dict[str, Any]] = {}
         for j, gid in enumerate(ids):
-            z = kin["z_mean"][j] if "z_mean" in kin else None
+            # a sphere's table has the planet-frame z beside z_mean (the mean height); a box has z_mean alone
+            z = kin["z"][j] if "z" in kin else (kin["z_mean"][j] if "z_mean" in kin else None)
             listed.update(
                 {
                     gid: {

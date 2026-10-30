@@ -33,8 +33,9 @@ from typing import Any, BinaryIO, Final, Protocol
 import mlx.core as mx
 import numpy as np
 
-from alife import layout
-from alife.config import Config, ConfigError, config_hash, dims, require_box
+from alife import geom, layout, streamrec
+from alife.config import Config, ConfigError, config_hash, dims
+from alife.geom import layer_radii
 from alife.render import COLOR_MODES, agent_colors, field_colors
 from alife.runio import CheckpointError, RunDir, load_checkpoint
 from alife.state import ERROR_MASK, State, State3, is_3d_state, to_numpy
@@ -152,6 +153,73 @@ def reader_closed(out: object) -> bool:
 # --- the view and the frame builder ---------------------------------------------------------------------
 
 
+def sphere_block(cfg: Config, territory: int | None = None) -> dict[str, Any]:
+    """The planet keys of the protocol 2 header of a sphere config (``streamrec.sphere_block``): the layer
+    radii, the three Nsides (the weather's is ``weather.cells`` while the weather is on, else 0; the
+    territory's is ``territory``, the observer's ``terr_cells`` (the Nside of its ``TERR`` record), or
+    ``geom.TERRITORY_NSIDE`` without an observer) and the depth ``H1 + H2`` the shell is mapped onto."""
+    w, d = cfg.world, dims(cfg)
+    wx = cfg.weather
+    return streamrec.sphere_block(
+        planet_radius=w.radius,
+        shell_edges=layer_radii(w.radius, geom.geometry(cfg).height_max, d.fz),
+        nside_field=w.nside,
+        nside_weather=wx.cells if wx.enabled else 0,
+        nside_territory=geom.TERRITORY_NSIDE if territory is None else territory,
+        weather_depth=(wx.H1 + wx.H2) if wx.enabled else 0.0,
+    )
+
+
+def quantise_maph(
+    *,
+    p: np.ndarray,
+    dc: np.ndarray,
+    zeta: np.ndarray,
+    ts: np.ndarray,
+    winds: np.ndarray,
+    nside_weather: int,
+    nside: int,
+    dc_ref: float,
+    p_ref: float = streamrec.P_REF,
+    u_ref: float = streamrec.U_REF,
+    zeta_ref: float = streamrec.ZETA_REF,
+) -> dict[str, np.ndarray]:
+    """The planes of a ``MAPH`` from the weather fields on the weather cells (RING pixels of
+    ``nside_weather``; ``p``, ``dc``, ``zeta``, ``ts`` of ``(12·Nw²,)`` and ``winds`` of ``(2, 12·Nw², 3)``,
+    the Cartesian wind of the two layers) pooled to the ``12·nside²`` coarse cells, ``nside_weather / nside``
+    a power of two: every plane is the mean of the cell's children (the wind as a vector), computed in
+    float64, then
+
+    - ``P`` u8 ``round(255·sqrt(clip(P/p_ref, 0, 1)))``; ``Dc`` u8 ``round(255·clip(Dc/dc_ref, 0, 1))``;
+      ``zeta`` i8 ``round(127·clip(zeta/zeta_ref, -1, 1))``; ``Ts`` u8 ``round(255·clip(Ts, 0, 1))``;
+    - ``winds`` i8 ``(4, 12·nside²)``: ``u1, v1, u2, v2``, the eastward and northward components at the coarse
+      cell's centre (the local frame ``geom.local_frame``), ``round(127·clip(w/u_ref, -1, 1))``.
+    """
+    if nside_weather % nside or (nside_weather // nside) & ((nside_weather // nside) - 1):
+        raise streamrec.RecordError(
+            f"nside_weather {nside_weather} is not nside {nside} times a power of two"
+        )
+    kids = geom.children_table(
+        nside, nside_weather // nside
+    )  # (12·nside², ratio²) fine pixels per coarse one
+    npw = geom.npix(nside_weather)
+    planes = [np.asarray(a, np.float64) for a in (p, dc, zeta, ts)]
+    w = np.asarray(winds, np.float64)
+    if not (all(a.shape == (npw,) for a in planes) and w.shape == (2, npw, 3)):
+        raise streamrec.RecordError(f"MAPH inputs must be ({npw},) planes and (2, {npw}, 3) winds")
+    p, dc, zeta, ts = (a[kids].mean(axis=1) for a in planes)
+    cw = w[:, kids, :].mean(axis=2)  # (2, Npix_c, 3)
+    east, north = geom.local_frame(geom.pixel_centres(nside))
+    uv = np.stack([(cw * east).sum(-1), (cw * north).sum(-1)], axis=1).reshape(4, -1)  # u1 v1 u2 v2
+    return {
+        "P": np.rint(255.0 * np.sqrt(np.clip(p / p_ref, 0.0, 1.0))).astype(np.uint8),
+        "Dc": np.rint(255.0 * np.clip(dc / dc_ref, 0.0, 1.0)).astype(np.uint8),
+        "zeta": np.rint(127.0 * np.clip(zeta / zeta_ref, -1.0, 1.0)).astype(np.int8),
+        "Ts": np.rint(255.0 * np.clip(ts, 0.0, 1.0)).astype(np.uint8),
+        "winds": np.rint(127.0 * np.clip(uv / u_ref, -1.0, 1.0)).astype(np.int8),
+    }
+
+
 @dataclass
 class View:
     """What a frame shows: the colour mode and the optional field slice."""
@@ -161,7 +229,6 @@ class View:
     field_z: int = 0
 
     def check(self, cfg: Config) -> None:
-        require_box(cfg, "alife stream")  # the stream protocol v2 of the sphere world is PR S5
         if self.color not in COLOR_MODES:
             raise ConfigError(f"unknown colour mode {self.color!r}; expected one of {COLOR_MODES}")
         fz = dims(cfg).fz
@@ -195,13 +262,14 @@ class Streamer:
         self.frames = 0
 
     def header_info(self, state: State | State3) -> dict[str, Any]:
-        """The header JSON object, in the documented key order."""
+        """The header JSON object, in the documented key order. A sphere world's is protocol 2 (DESIGN §46.7):
+        no ``L``, ``FG`` 0, ``FZ`` the layers, and the planet's keys after ``FZ``."""
         cfg, d = self.cfg, dims(self.cfg)
-        return {
+        head = {
             "protocol": PROTOCOL,
             "dims": d.nd,
             "L": float(cfg.world.size),
-            "height": float(cfg.world.height) if d.d3 else 0.0,
+            "height": float(geom.geometry(cfg).height_max) if d.d3 else 0.0,
             "N": int(state.alive.shape[0]),
             "B": layout.B,
             "radius": float(cfg.physics.radius),
@@ -220,6 +288,7 @@ class Streamer:
             "every": self.every,
             "source": self.source,
         }
+        return head if not d.sph else streamrec.sphere_header(head, sphere_block(cfg))
 
     def begin(self, state: State | State3) -> None:
         """Write the header (once, before the first frame)."""

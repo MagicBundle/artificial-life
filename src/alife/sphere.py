@@ -257,6 +257,7 @@ class Box(_Cells):
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.size = cfg.world.size
+        self.height_max = cfg.world.height  # the world's height (3D); a 2D world has none and does not ask
 
     def height(self, pos: mx.array) -> mx.array:
         return pos[..., 2]

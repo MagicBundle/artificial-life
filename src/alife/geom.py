@@ -896,6 +896,127 @@ def layer_of(rho: np.ndarray, radius: float, height: float, fz: int) -> np.ndarr
     )
 
 
+# --- directions on the sphere, for the observers (DESIGN §46.7) ---------------------------------------------
+
+
+# The Nsides of the observers' maps on a sphere (DESIGN §46.7): the territory map of the game (``TERR``, 972
+# cells) and the footprint map of the colony matching. Code constants, not config keys.
+TERRITORY_NSIDE = 9
+FOOTPRINT_NSIDE = 32
+
+
+def sidecar(cfg: Config) -> dict[str, object]:
+    """The ``geometry.json`` of a sphere run directory (DESIGN §46.7): what an offline tool needs to read the
+    ``(FZ, Npix)`` dumps and the logs without importing the engine. ``cell_index`` of the field dumps
+    (``mat``, ``niche``) and of ``STRC``/``FSOL`` is ``layer·npix + pixel``, the pixel in RING order; the
+    layers are equal-volume shells with the radii ``shell_edges``; every position in a log or a dump is
+    planet-frame Cartesian."""
+    w = cfg.world
+    fz = w.layers
+    return {
+        "format": "alife-geometry",
+        "geometry": "sphere",
+        "planet_radius": float(w.radius),
+        "height": float(w.height),
+        "nside": int(w.nside),
+        "layers": int(fz),
+        "npix": npix(w.nside),
+        "shell_edges": [float(r) for r in layer_radii(w.radius, w.height, fz)],
+        "layer_volume": layer_volume(w.radius, w.height, fz, w.nside),
+        "ring_order": "ring",
+        "cell_index": "layer*npix + pixel",
+        "dump_shape": ["layers", "npix"],
+        "nside_weather": int(cfg.weather.cells) if cfg.weather.enabled else 0,
+        "nside_territory": TERRITORY_NSIDE,
+        "nside_footprint": FOOTPRINT_NSIDE,
+        "position_frame": "planet-frame Cartesian (x, y, z); height = |p| - planet_radius",
+    }
+
+
+def unit(vec: np.ndarray) -> np.ndarray:
+    """``vec`` normalised along the last axis (float64); a zero vector stays zero."""
+    v = np.asarray(vec, dtype=np.float64)
+    return v / np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), 1e-300)
+
+
+def to_latlon(vec: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """``(lat, lon)`` in degrees of the directions of ``vec`` (..., 3): latitude in [−90, 90], longitude in
+    [−180, 180) with ``atan2(y, x)`` (x towards longitude 0)."""
+    u = unit(vec)
+    lat = np.degrees(np.arcsin(np.clip(u[..., 2], -1.0, 1.0)))
+    lon = np.degrees(np.arctan2(u[..., 1], u[..., 0]))
+    return lat, np.where(lon >= 180.0, lon - 360.0, lon)
+
+
+def from_latlon(lat: np.ndarray | float, lon: np.ndarray | float) -> np.ndarray:
+    """The unit vectors at latitude ``lat`` and longitude ``lon`` (degrees): the inverse of ``to_latlon``."""
+    la, lo = np.radians(np.asarray(lat, dtype=np.float64)), np.radians(np.asarray(lon, dtype=np.float64))
+    return np.stack([np.cos(la) * np.cos(lo), np.cos(la) * np.sin(lo), np.sin(la)], axis=-1)
+
+
+def mean_direction(vecs: np.ndarray, weights: np.ndarray | None = None) -> tuple[np.ndarray, float]:
+    """``(direction, R)``: the unit vector of the weighted sum of the unit vectors of ``vecs`` (n, 3), and the
+    resultant length ``R`` in [0, 1] (1: all the same direction). The first point's direction when the sum
+    cancels (``R`` below 1e-12). Rotation equivariant: it uses vectors, never an angle."""
+    v = np.asarray(vecs, dtype=np.float64)
+    if v.shape[0] == 0:
+        raise ValueError("mean_direction of no points")
+    u = unit(v)
+    w = np.ones(len(u)) if weights is None else np.asarray(weights, dtype=np.float64)
+    s = (w[:, None] * u).sum(axis=0)
+    r = float(np.linalg.norm(s) / w.sum())
+    return (s / np.linalg.norm(s) if r > 1e-12 else u[0]), min(r, 1.0)
+
+
+def great_circle_distance(a: np.ndarray, b: np.ndarray, radius: float = 1.0) -> np.ndarray:
+    """The great-circle arc between the directions of ``a`` and ``b`` (..., 3) on a sphere of ``radius``
+    (``atan2(|a × b|, a · b)``, accurate at small and antipodal angles)."""
+    ua, ub = unit(a), unit(b)
+    ang = np.arctan2(np.linalg.norm(np.cross(ua, ub), axis=-1), (ua * ub).sum(-1))
+    return ang * radius
+
+
+def place_text(vec: np.ndarray, radius: float | None = None) -> str:
+    """A position as text: ``"12.3N 45.6E"`` (degrees, one decimal), plus ``" h4.2"`` (the height above the
+    planet of radius ``radius``) when given. The convention of every sentence of the sphere game layer."""
+    v = np.asarray(vec, dtype=np.float64).reshape(3)
+    lat, lon = to_latlon(v)
+    txt = f"{abs(float(lat)):.1f}{'N' if lat >= 0 else 'S'} {abs(float(lon)):.1f}{'E' if lon >= 0 else 'W'}"
+    return txt if radius is None else f"{txt} h{float(np.linalg.norm(v)) - radius:.1f}"
+
+
+@functools.cache
+def coarse_graph(nside: int) -> np.ndarray:
+    """``(Npix, 4)`` int32: the four edge neighbours of every pixel (the cell graph of the territory map and
+    of the cluster search; every pixel of any Nside >= 2 has exactly four). Read-only."""
+    return tables(int(nside)).edge
+
+
+def label_components(nside: int, member: np.ndarray, group: np.ndarray | None = None) -> np.ndarray:
+    """Connected components over the edge graph of ``nside``: ``out[p]`` is the smallest pixel id of the
+    component of ``p``, −1 where ``member[p]`` is False. With ``group`` ((Npix,) integers) two member pixels
+    join only if their groups are equal (the storm tracker keeps the hemispheres apart). Iterative
+    minimum-label propagation (pointer jumping), exact, O(diameter) passes."""
+    m = np.asarray(member, dtype=bool).reshape(-1)
+    n = npix(nside)
+    if m.size != n:
+        raise ValueError(f"member has {m.size} entries, Nside {nside} has {n} pixels")
+    nb = coarse_graph(nside).astype(np.int64)
+    join = m[nb]
+    if group is not None:
+        g = np.asarray(group).reshape(-1)
+        join = join & (g[nb] == g[:, None])
+    lab = np.where(m, np.arange(n), n)
+    while True:
+        cand = np.where(join, lab[nb], n).min(axis=1)  # the smallest label among the joined neighbours
+        new = np.where(m, np.minimum(lab, cand), n)
+        new = np.where(m, np.minimum(new, new[np.minimum(new, n - 1)]), n)  # one pointer jump
+        if np.array_equal(new, lab):
+            break
+        lab = new
+    return np.where(m, lab, -1)
+
+
 # --- the geometry accessors of the host (DESIGN §46.12) ----------------------------------------------------
 
 
@@ -910,6 +1031,9 @@ class Box:
 
     def __init__(self, size: float, field_cell: float, dims: int, height: float):
         self.size, self.field_cell, self.dims, self.height_max = size, field_cell, dims, height
+        self.layer_margin = (
+            field_cell  # the thickness of the floor and lid layers (the coupling block's margin)
+        )
         self.fg = round(size / field_cell)
         self.fz = round(height / field_cell) if dims == 3 else 1
 
@@ -980,6 +1104,8 @@ class Sphere:
 
     def __init__(self, radius: float, height: float, nside: int, layers: int):
         self.radius, self.height_max, self.nside, self.layers = radius, height, nside, layers
+        # the thickness of the floor layer, the margin the coupling block keeps from the floor and the lid
+        self.layer_margin = float(layer_edges(radius, height, layers)[1])
 
     def _norm(self, pos):
         return np.linalg.norm(np.asarray(pos, dtype=np.float64), axis=-1, keepdims=True)

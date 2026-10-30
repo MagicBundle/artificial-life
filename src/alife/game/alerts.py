@@ -47,7 +47,7 @@ from typing import Any, Final, NamedTuple
 
 import numpy as np
 
-from alife import streamrec
+from alife import geom, streamrec
 
 __all__ = [
     "ALERT_VERSION",
@@ -328,10 +328,11 @@ class Alert:
 
     def record(self) -> dict[str, Any]:
         """The alert as an ``ALRT`` object (``streamrec.check_alert``): a log alert is importance 0."""
+        ax, ay, az = self.pos
         return {
             "id": self.id, "version": self.version, "step": self.step, "class": self.cls, "key": self.key,
             "state": self.state, "surface": self.surface, "imp": 0 if self.surface == "log" else self.imp,
-            "title": self.title, "text": self.text, "x": self.pos[0], "y": self.pos[1], "z": self.pos[2],
+            "title": self.title, "text": self.text, "x": ax, "y": ay, "z": az,
             "ref": self.ref, "pause": self.pause, "expires": self.expires, "watched": self.watched,
             "calibrated": self.calibrated,
         }  # fmt: skip
@@ -889,14 +890,16 @@ class AlertEngine:
                 text = TEXTS["storm_named"].format(name=name, step=_n(t))
                 self._fire(
                     "storm_named", str(ident), t, title=self._title("storm_named", name=name), text=text,
-                    pos=_pos(e.get("x"), e.get("y")), ref={"kind": "storm", "id": ident}, pause_ok=pause_ok,
+                    pos=_pos(e.get("x"), e.get("y"), e.get("z")), ref={"kind": "storm", "id": ident},
+                    pause_ok=pause_ok,
                 )  # fmt: skip
             elif e["kind"] == "dissolved":
                 label = f"Storm {e['name']}" if e.get("name") else f"Disturbance {ident}"
                 text = TEXTS["storm_ended"].format(label=label, age=_n(e.get("age", 0)))
                 self._fire(
                     "storm_ended", str(ident), t, title=self._title("storm_ended", label=label), text=text,
-                    pos=_pos(e.get("x"), e.get("y")), ref={"kind": "storm", "id": ident}, pause_ok=pause_ok,
+                    pos=_pos(e.get("x"), e.get("y"), e.get("z")), ref={"kind": "storm", "id": ident},
+                    pause_ok=pause_ok,
                 )  # fmt: skip
         for s in sorted(storms, key=lambda s: int(s["id"])):
             ident = int(s["id"])
@@ -908,7 +911,8 @@ class AlertEngine:
             text = TEXTS["storm_strong"].format(name=name, zeta=f"{float(s['zeta']):.2f}", step=_n(t))
             self._fire(
                 "storm_strong", str(ident), t, title=self._title("storm_strong", name=name), text=text,
-                pos=_pos(s.get("x"), s.get("y")), ref={"kind": "storm", "id": ident}, pause_ok=pause_ok,
+                pos=_pos(s.get("x"), s.get("y"), s.get("z")), ref={"kind": "storm", "id": ident},
+                pause_ok=pause_ok,
             )  # fmt: skip
         ended = {int(e["id"]) for e in events if e["kind"] in ("dissolved", "merged")}
         self.named = self.named - ended
@@ -1086,17 +1090,24 @@ class AlertEngine:
         size: float,
         *,
         pause_ok: bool = True,
+        planet: float | None = None,
+        nside: int | None = None,
     ) -> None:
         """``storm_over_lineage`` (experimental, ``calibrated`` false): at least ``OVERLAP_CELLS`` cells and
         ``OVERLAP_SHARE`` of a watched thread's territory cells inside ``OVERLAP_RADIUS`` radii of a named
         storm's centre. A current co-location, not an impact claim. ``owner`` is the ``(ny, nx)`` grid of kin
-        ids (-1: none) over a square world of side ``size``."""
+        ids (-1: none) over a square world of side ``size``. On a sphere (``planet``, its radius, and the
+        territory ``nside``; DESIGN §46.7) ``owner`` is the ring-ordered pixel vector, a storm's ``x, y, z``
+        is its centre on the planet, and the distance is the great-circle arc to the pixel centre."""
         if not self.experimental or not self.named:
             return
-        ny, nx = owner.shape
-        cx = (np.arange(nx) + 0.5) * size / nx
-        cy = (np.arange(ny) + 0.5) * size / ny
-        gx, gy = np.meshgrid(cx, cy)
+        if planet is None:
+            ny, nx = owner.shape
+            cx = (np.arange(nx) + 0.5) * size / nx
+            cy = (np.arange(ny) + 0.5) * size / ny
+            gx, gy = np.meshgrid(cx, cy)
+        else:
+            centres = geom.pixel_centres(int(nside))  # type: ignore[arg-type]
         for tid in sorted(self.watched(threads)):
             th = threads.threads.get(tid)
             if th is None or th.ended or not th.ids:
@@ -1108,11 +1119,17 @@ class AlertEngine:
             for s in sorted(storms, key=lambda s: int(s["id"])):
                 if int(s["id"]) not in self.named:
                     continue
-                dx = np.abs(gx - float(s["x"]))
-                dy = np.abs(gy - float(s["y"]))
-                dx, dy = np.minimum(dx, size - dx), np.minimum(dy, size - dy)
+                if planet is None:
+                    dx = np.abs(gx - float(s["x"]))
+                    dy = np.abs(gy - float(s["y"]))
+                    dx, dy = np.minimum(dx, size - dx), np.minimum(dy, size - dy)
+                    dist = np.hypot(dx, dy)
+                else:
+                    dist = geom.great_circle_distance(
+                        centres, np.array([s["x"], s["y"], s["z"]], float), planet
+                    )
                 reach = OVERLAP_RADIUS * float(s["r"])
-                cells = int((mine & (np.hypot(dx, dy) <= reach)).sum())
+                cells = int((mine & (dist <= reach)).sum())
                 key = f"{tid}:{int(s['id'])}"
                 if cells >= OVERLAP_CELLS and cells >= OVERLAP_SHARE * total:
                     if self._since("storm_over_lineage", key, t, OVERLAP_DEDUPE):
@@ -1123,7 +1140,8 @@ class AlertEngine:
                     )
                     self._fire(
                         "storm_over_lineage", key, t, title=self._title("storm_over_lineage", name=th.shown),
-                        text=text, pos=_pos(s["x"], s["y"]), ref={"kind": "storm", "id": int(s["id"])},
+                        text=text, pos=_pos(s["x"], s["y"], s.get("z") if planet is not None else None),
+                        ref={"kind": "storm", "id": int(s["id"])},
                         watched=True, pause_ok=pause_ok,
                     )  # fmt: skip
 

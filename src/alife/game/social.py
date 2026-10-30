@@ -33,7 +33,7 @@ from typing import Final, NamedTuple
 
 import mlx.core as mx
 
-from alife import groups, layout, metrics
+from alife import geom, groups, layout, metrics
 from alife.config import Config, dims
 from alife.state import State, State3
 from alife.step import ActFlag, Acts
@@ -103,8 +103,8 @@ class SocialRules:
     colony_iters: int = 32  # metrics.components rounds (the run key run.components_iters is not used)
     theta: tuple[int, int] = (3, 10)  # match iff Jaccard >= 0.3
     uid_spacing: int = 300  # uid matching iff snapshot_every <= 300, else footprint matching
-    foot_cells: int = 128  # footprint grid per axis (floor plane)
-    terr_cells: int = 32  # territory grid per axis (floor plane)
+    foot_cells: int = 128  # footprint grid per axis (floor plane); the Nside of the footprint map on a sphere
+    terr_cells: int = 32  # territory grid per axis (floor plane); the Nside of the territory map on a sphere
     terr_k: int = 2  # territory EMA shift (about 3·4 snapshots to 95%)
     terr_min: int = 1  # a cell is owned only if its smoothed total is >= 1 agent
     sim_sample: int = 64  # members per kin group in the mean tag similarity
@@ -143,6 +143,25 @@ class SocialRules:
         )
         req(self.events_max >= 0 and self.relations_max >= 0, "events_max and relations_max must be >= 0")
 
+    def n_terr(self, sph: bool) -> int:
+        """Territory cells: ``terr_cells²`` on a box, ``12·terr_cells²`` HEALPix pixels on a sphere."""
+        return (12 if sph else 1) * self.terr_cells**2
+
+    def n_foot(self, sph: bool) -> int:
+        """Footprint cells: ``foot_cells²`` on a box, ``12·foot_cells²`` HEALPix pixels on a sphere."""
+        return (12 if sph else 1) * self.foot_cells**2
+
+    def for_world(self, cfg: Config) -> SocialRules:
+        """These rules for the world of ``cfg``: unchanged for a box; on a sphere the two cell counts are
+        Nsides, so a rule set still at the box's grid sides (32, 128) gets the sphere's
+        (``SPHERE_TERR_NSIDE``, ``SPHERE_FOOT_NSIDE``); one the caller chose is kept."""
+        if not dims(cfg).sph or (self.terr_cells, self.foot_cells) != (
+            SOCIAL_V1.terr_cells,
+            SOCIAL_V1.foot_cells,
+        ):
+            return self
+        return dataclasses.replace(self, terr_cells=SPHERE_TERR_NSIDE, foot_cells=SPHERE_FOOT_NSIDE)
+
     def digest(self) -> str:
         """sha256 of the canonical JSON of every field (tuples as lists): the identity of these rules."""
         text = json.dumps(dataclasses.asdict(self), sort_keys=True, separators=(",", ":"))
@@ -169,8 +188,8 @@ class SocialRules:
             ("relation bins", 5 * g * g),
             ("exposure bins", 2 * g * g * k),
             ("death bins", len(death_causes(cfg)) * g),
-            ("territory bins", self.terr_cells**2 * g),
-            ("footprint cells", self.foot_cells**2),
+            ("territory bins", self.n_terr(d.sph) * g),
+            ("footprint cells", self.n_foot(d.sph)),
         )
         for name, size in bins:
             if size + groups.DUMP > _I32_MAX:
@@ -178,6 +197,10 @@ class SocialRules:
 
 
 SOCIAL_V1: Final = SocialRules()
+# The sphere world's territory and footprint maps (DESIGN §46.7): HEALPix Nsides. 12·9² = 972 territory cells
+# (the box's 32 × 32 TERR grid, within the 1 024 JSON cap) and 12·32² = 12 288 footprint cells.
+SPHERE_TERR_NSIDE: Final = geom.TERRITORY_NSIDE
+SPHERE_FOOT_NSIDE: Final = geom.FOOTPRINT_NSIDE
 
 
 class SocIn(NamedTuple):
@@ -252,9 +275,9 @@ class Snap(NamedTuple):
     converged: mx.array  # () bool
     bins: mx.array  # (N,) int32 grid_code(tag)
     bin_counts: mx.array  # (kin_bins^T,) int32 alive rows per bin
-    cell: mx.array  # (N,) int32 plane_cell at terr_cells
-    foot: mx.array  # (N,) int32 plane_cell at foot_cells
-    terr: mx.array  # (terr_cells^2 * G,) int32 counts [cell, slot] with the window's slots
+    cell: mx.array  # (N,) int32 plane_cell at terr_cells (the HEALPix pixel at Nside terr_cells on a sphere)
+    foot: mx.array  # (N,) int32 plane_cell at foot_cells (likewise)
+    terr: mx.array  # (n_terr * G,) int32 counts [cell, slot] with the window's slots, n_terr = terr_cells^2
     house: mx.array  # (N,) int64 so.house
     house_from: mx.array  # (N,) int64 so.house_from
     q_sums: mx.array  # (4,G) int64 temperament sums: attack+, attack-, bond+, bond- (units of 1/256)
@@ -450,9 +473,13 @@ def snapshot(
     arch = mx.where(alive, si.clade * 0 if arch is None else arch, 0).astype(_I32)  # derived from an input
     bins = groups.grid_code(tag, -1.0, 1.0, sr.kin_bins)
     bin_counts = groups.masked_bincount(sr.kin_bins**layout.T, bins, alive)
-    cell = groups.plane_cell(pos, cfg.world.size, sr.terr_cells, axes=(0, 1))
-    foot = groups.plane_cell(pos, cfg.world.size, sr.foot_cells, axes=(0, 1))
-    terr = groups.masked_bincount(sr.terr_cells**2 * g, cell * g + so.kin, alive & (so.kin >= 0))
+    if d.sph:  # static: the HEALPix territory and footprint maps (the dead rows' zeroed positions are masked)
+        cell = groups.sphere_cell(pos, sr.terr_cells)
+        foot = groups.sphere_cell(pos, sr.foot_cells)
+    else:
+        cell = groups.plane_cell(pos, cfg.world.size, sr.terr_cells, axes=(0, 1))
+        foot = groups.plane_cell(pos, cfg.world.size, sr.foot_cells, axes=(0, 1))
+    terr = groups.masked_bincount(sr.n_terr(d.sph) * g, cell * g + so.kin, alive & (so.kin >= 0))
 
     if a is None:  # no step to read: zeros derived from the window matrices (never a constant output)
         q_sums = so.rel[:4, :, 0] * 0

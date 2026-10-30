@@ -31,7 +31,7 @@ from typing import Final, NamedTuple
 
 import mlx.core as mx
 
-from alife import ops, rng, structures, weather
+from alife import geom, ops, rng, sphere, structures, weather, weather_sph
 from alife.config import Config, dims
 from alife.state import State, State3
 from alife.step import Acts
@@ -108,6 +108,20 @@ def tracer_init(pos: mx.array, buoy_cap: mx.array | None, alive: mx.array, cfg: 
     return tracer_reseed(blank, pos, buoy_cap, alive, cfg)
 
 
+def _wind(
+    ws: weather.WeatherState | weather_sph.WeatherStateS,
+    pos: mx.array,
+    p: weather.WeatherParams,
+    cfg: Config,
+    valid: mx.array | None = None,
+) -> weather.AgentWind:
+    """The air velocity at 3D positions: the box's sampler, or the sphere's (planet-frame vectors, DESIGN
+    §46.6) through the vertical map of the shell."""
+    if dims(cfg).sph:  # static
+        return weather_sph.sample_wind(ws, pos, p, weather_sph.WeatherGeometry.from_config(cfg), valid=valid)
+    return weather.sample_wind(ws, pos, p, field_cell=cfg.world.field_cell, valid=valid)
+
+
 def tracer_step(tr: TracerState, wx: mx.array, cfg: Config) -> TracerState:
     """One step of the tracers on the end-of-step weather ``wx``: ``pos ← wrap_xy_clamp_z(pos + v)`` with
     ``v = α_t·u_air(pos)`` limited to ``physics.v_max`` by its norm, as ``physics.integrate3`` (2D: the
@@ -117,15 +131,16 @@ def tracer_step(tr: TracerState, wx: mx.array, cfg: Config) -> TracerState:
     ph, w = cfg.physics, cfg.world
     ws = weather.unpack(wx)
     d = dims(cfg)
-    if d.d3:  # static
-        u = weather.sample_wind(ws, tr.pos, p, field_cell=w.field_cell).u
-    else:
-        u = weather.sample_wind_h(ws, tr.pos, p).u
+    u = _wind(ws, tr.pos, p, cfg).u if d.d3 else weather.sample_wind_h(ws, tr.pos, p).u  # static
     v = tr.alpha[:, None] * u
     speed = mx.sqrt((v * v).sum(axis=-1))
     v = mx.where((speed > ph.v_max)[:, None], v * (ph.v_max / mx.maximum(speed, ph.v_max))[:, None], v)
     moved = tr.pos + v
-    pos = ops.wrap_xy_clamp_z(moved, w.size, d.z_lo, d.z_hi) if d.d3 else ops.wrap(moved, w.size)
+    if d.sph:  # static: back into the shell along the radius (the floor and the lid, as a clamp of z)
+        rho = mx.sqrt((moved * moved).sum(axis=-1, keepdims=True))
+        pos = moved * (mx.clip(rho, d.r_lo, d.r_hi) / mx.maximum(rho, 1e-30))
+    else:
+        pos = ops.wrap_xy_clamp_z(moved, w.size, d.z_lo, d.z_hi) if d.d3 else ops.wrap(moved, w.size)
     return TracerState(pos, tr.alpha * 1.0, tr.age + 1, tr.key + mx.zeros_like(tr.key))
 
 
@@ -137,6 +152,19 @@ def updraft_gradient(wx: mx.array, cfg: Config) -> mx.array:
     float32: ``weather.wind_layers`` (the 20-layer diagnostic) and central differences with periodic
     neighbours, ``(w[i+1] - w[i-1])/(2·dx)`` along each axis. 3D only."""
     p = weather.params_from_config(cfg)
+    if dims(
+        cfg
+    ).sph:  # static: (FZ, N) on the weather cells; the gradient is the tangent one of the cell graph
+        ws = weather.unpack(wx)
+        tab = weather_sph.dev_for(p, cfg.world.radius)
+        gm = geom.geometry(cfg)
+        mid = geom.layer_radii(gm.radius, gm.height_max, gm.layers)
+        mid = mx.array(0.5 * (mid[:-1] + mid[1:]), dtype=_F32)
+        pos = (mid[:, None, None] * tab.x[None]).reshape(-1, 3)
+        geo = sphere.geometry(cfg)
+        w = geo.radial(_wind(ws, pos, p, cfg).u, pos).reshape(mid.shape[0], -1)
+        grad = weather_sph._grad(w, tab, True)  # (FZ, N, 3)
+        return mx.sqrt((grad * grad).sum(axis=-1))
     fz = round(cfg.world.height / cfg.world.field_cell)
     w = weather.wind_layers(weather.unpack(wx), p, fz, cfg.world.field_cell)[:, 2]
     gx = (mx.roll(w, -1, axis=-1) - mx.roll(w, 1, axis=-1)) / (2.0 * p.dx)
@@ -147,6 +175,10 @@ def updraft_gradient(wx: mx.array, cfg: Config) -> mx.array:
 def _g_at(g: mx.array, pos: mx.array, cfg: Config) -> mx.array:
     """``g`` of the nearest layer and weather cell of each position, (M,) float32 (a gather)."""
     p = weather.params_from_config(cfg)
+    if dims(cfg).sph:  # static: the layer of the position and the weather cell of its direction
+        geo = sphere.geometry(cfg)
+        k = sphere.layer_index(pos, geo.rp3, geo.dv, geo.layers)
+        return mx.take(g.reshape(-1), k * g.shape[-1] + sphere.ang2pix(pos, p.n))
     fz, n = g.shape[0], g.shape[-1]
     k = mx.clip(ops.floor_i32(pos[:, 2] / cfg.world.field_cell), 0, fz - 1)
     i = ops.floor_i32(pos[:, 0] / p.dx) % n
@@ -177,17 +209,17 @@ def coupling_inputs(s: State | State3, tr: TracerState, cfg: Config) -> Coupling
     p = weather.params_from_config(cfg)
     ws = weather.unpack(s.wx)
     g = updraft_gradient(s.wx, cfg)
-    fc = cfg.world.field_cell
-    w_a = weather.sample_wind(ws, s.pos, p, field_cell=fc, valid=s.alive).u[:, 2]
-    w_t = weather.sample_wind(ws, tr.pos, p, field_cell=fc).u[:, 2]
+    geo = sphere.geometry(cfg)  # the vertical: z in a box, the radial component on a sphere
+    w_a = geo.radial(_wind(ws, s.pos, p, cfg, valid=s.alive).u, s.pos)
+    w_t = geo.radial(_wind(ws, tr.pos, p, cfg).u, tr.pos)
     drift = structures.drift_at(s.wx, s.pos, s.buoy_cap, s.alive, getattr(s, "mat", None), cfg)
     return CouplingIn(
         s.alive,
-        s.pos[:, 2],
+        geo.height(s.pos),
         _g_at(g, s.pos, cfg),
         w_a,
-        s.vel[:, 2] - drift[:, 2],
-        tr.pos[:, 2],
+        geo.radial(s.vel - drift, s.pos),
+        geo.height(tr.pos),
         _g_at(g, tr.pos, cfg),
         w_t,
     )
@@ -203,19 +235,20 @@ def eco_arrays(s: State | State3, acts: Acts, tr: TracerState | None, cfg: Confi
     step: ``Σ_c floor(256·emit_c)``, the deposit in quanta of 1/256, 12 at the free limit). With tracers also
     ``tracer_z`` and ``tracer_age`` (the tracers' null of the 250-step height persistence)."""
     p = weather.params_from_config(cfg)
-    aw = weather.sample_wind(weather.unpack(s.wx), s.pos, p, field_cell=cfg.world.field_cell, valid=s.alive)
+    aw = _wind(weather.unpack(s.wx), s.pos, p, cfg, valid=s.alive)
     drift = structures.drift_at(s.wx, s.pos, s.buoy_cap, s.alive, getattr(s, "mat", None), cfg)
+    geo = sphere.geometry(cfg)
     base = {
         "alive": s.alive,
         "uid": s.uid,
         "clade": s.clade,
         "cap": s.buoy_cap,
-        "z": s.pos[:, 2],
-        "vz_own": s.vel[:, 2] - drift[:, 2],
-        "w_air": aw.u[:, 2],
+        "z": geo.height(s.pos),
+        "vz_own": geo.radial(s.vel - drift, s.pos),
+        "w_air": geo.radial(aw.u, s.pos),
         "emit": acts.emit,
     }
-    return {**base, "tracer_z": tr.pos[:, 2], "tracer_age": tr.age} if tr is not None else base
+    return {**base, "tracer_z": geo.height(tr.pos), "tracer_age": tr.age} if tr is not None else base
 
 
 def wx_planes(s: State | State3, cfg: Config) -> mx.array:
@@ -226,6 +259,6 @@ def wx_planes(s: State | State3, cfg: Config) -> mx.array:
     n = weather.params_from_config(cfg).n
     if cfg.weather.seed_gain > 0:  # static
         plane = 1.0 - weather.seeding_qs(s.chem, weather.unpack(s.wx), cfg)
-    else:
-        plane = mx.zeros((n, n), _F32)
+    else:  # a sphere's planes are (N_WX, 12·Nw²): one plane of cells, not of a square
+        plane = mx.zeros((12 * n * n,) if dims(cfg).sph else (n, n), _F32)
     return mx.concatenate([s.wx, plane[None]], axis=0)

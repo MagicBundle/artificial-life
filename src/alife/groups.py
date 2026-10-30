@@ -17,7 +17,7 @@ from typing import Final
 import mlx.core as mx
 import numpy as np
 
-from alife import ops
+from alife import ops, sphere
 
 DUMP: Final = 1024  # spread region for masked lanes (avoids one hot atomic address)
 
@@ -195,3 +195,17 @@ def plane_cell(pos: mx.array, size: float, cells: int, axes: tuple[int, int] = (
     c0 = mx.clip(mx.floor(p[:, axes[0]] * scale), 0, cells - 1).astype(mx.int32)
     c1 = mx.clip(mx.floor(p[:, axes[1]] * scale), 0, cells - 1).astype(mx.int32)
     return c1 * cells + c0
+
+
+def sphere_cell(pos: mx.array, nside: int) -> mx.array:
+    """(N,) int32 RING pixel of the direction of each position on a sphere of any radius, at ``nside``.
+
+    The territory and footprint cells of a sphere world (DESIGN §46.7): the coarse HEALPix map ``Nt`` and
+    ``Nfoot``. Rows at the origin (dead rows are zeroed by the callers) land in pixel 0 or 2 harmlessly: the
+    callers mask them. Float32; a point within rounding of a pixel boundary may land in the adjacent pixel,
+    which a count over thousands of agents does not see.
+    """
+    n = int(nside)
+    if 12 * n * n > _I32_MAX:
+        raise ValueError(f"{12 * n * n} sphere cells exceed int32")
+    return sphere.ang2pix(pos.astype(mx.float32), n)

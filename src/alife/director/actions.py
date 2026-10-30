@@ -8,20 +8,26 @@ consults the rules or an RNG. ``clamp`` (live mode) turns a rule's raw request i
 keeping every array's shape and dtype so the compiled step is not retraced.
 
 Host-only: nothing here is traced, and it only reads the few ``env_*`` scalars and two small patch arrays.
+
+On a sphere (DESIGN §46.7) a place is ``(x, y) = (longitude, latitude)`` in degrees, longitude in [-180, 180)
+and latitude in [-90, 90]: the catastrophe's ``center`` and a patch move's absolute ``x``, ``y``. The engine's
+state holds the catastrophe centre in radians and the patches as unit vectors; ``apply`` converts. Lengths
+(the catastrophe's radius, a move's distance) are arc lengths at the floor, and the world's "width" in the
+bounds below is the equator's circumference ``2·π·Rp``.
 """
 
 from __future__ import annotations
 
 import math
 import numbers
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, NamedTuple
 
 import mlx.core as mx
 import numpy as np
 
-from alife import ops
+from alife import geom, ops
 from alife.config import Config, ConfigError, is_3d
 from alife.invariants import (
     ENV_DRIFT_MULT,
@@ -130,7 +136,7 @@ class EnvView(NamedTuple):
     drift_mult: float
     imm_request: int
     patch_gain: np.ndarray  # (PP,) f32
-    patch_pos: np.ndarray  # (PP, 2) f32
+    patch_pos: np.ndarray  # (PP, 2) f32; (PP, 3) unit vectors on a sphere
 
 
 class Clamped(NamedTuple):
@@ -191,6 +197,68 @@ def _patch(raw: Mapping[str, Any], view: EnvView) -> int:
     return int(p)
 
 
+def span(cfg: Config) -> float:
+    """The world's width in the menu's length bounds: ``world.size`` in a box, the equator ``2·π·Rp`` on a
+    sphere."""
+    g = geom.geometry(cfg)
+    return 2.0 * math.pi * g.radius if g.name == "sphere" else g.size
+
+
+def area_width(cfg: Config) -> float:
+    """The width of the square whose area is the planet's, ``sqrt(4π)·Rp``: the unit of the catastrophe's
+    radius on a sphere (``radius_bounds``, the rule tier). A box column of radius ``f·L`` covers ``π f²`` of
+    the floor whatever ``L``; a cap of arc radius ``f·sqrt(4π)·Rp`` covers ``(1 − cos(f·sqrt(4π)))/2``, which
+    is ``π f²`` to the second order, so the menu's largest strike (``f = 200/1024``) is 11.5 % of the planet
+    against the box's 12.0 % at any size (the equator ``2π·Rp`` would give 33 %)."""
+    g = geom.geometry(cfg)
+    return math.sqrt(4.0 * math.pi) * g.radius if g.name == "sphere" else g.size
+
+
+def is_sphere(cfg: Config) -> bool:
+    return cfg.world.geometry == "sphere"
+
+
+LON_MAX: Final = 180.0
+LAT_MAX: Final = 90.0
+
+
+def wrap_lon(lon: float) -> float:
+    """A longitude in degrees brought into [-180, 180) in float32 (strictly below 180 after the rounding)."""
+    v = _f32(((lon + LON_MAX) % (2 * LON_MAX)) - LON_MAX)
+    return -LON_MAX if v >= LON_MAX else v
+
+
+def lonlat_of(unit: np.ndarray) -> list[float]:
+    """``[lon, lat]`` in float32 degrees of a unit vector (the stored form of a sphere's place)."""
+    lat, lon = geom.to_latlon(np.asarray(unit, dtype=np.float64))
+    return [wrap_lon(float(lon)), _clip(float(lat), -LAT_MAX, LAT_MAX)]
+
+
+def unit_of(lon: float, lat: float) -> np.ndarray:
+    """The unit vector (float32) at longitude ``lon`` and latitude ``lat`` in degrees."""
+    return geom.from_latlon(lat, lon).astype(np.float32)
+
+
+def arc_between(a: Sequence[float], b: Sequence[float], radius: float) -> float:
+    """The great-circle arc between two ``[lon, lat]`` places on a sphere of ``radius`` (degrees in)."""
+    return float(
+        geom.great_circle_distance(geom.from_latlon(a[1], a[0]), geom.from_latlon(b[1], b[0]), radius)
+    )
+
+
+def move_on_sphere(unit: np.ndarray, dx: float, dy: float, radius: float) -> np.ndarray:
+    """The unit vector reached from ``unit`` by walking ``dx`` east and ``dy`` north (arc lengths at
+    ``radius``) along the great circle of that direction."""
+    u = np.asarray(unit, dtype=np.float64)
+    e, n = geom.local_frame(u)
+    step = math.hypot(dx, dy)
+    if step == 0.0:
+        return u
+    direction = (dx * e + dy * n) / step
+    ang = step / radius
+    return math.cos(ang) * u + math.sin(ang) * direction
+
+
 def _wrap(x: list[float], size: float) -> list[float]:
     """Wrap a coordinate pair into ``[0, size)`` with ``ops.wrap``'s float32 guard (strictly below)."""
     return [float(v) for v in to_numpy(ops.wrap(mx.array(x, dtype=mx.float32), size))]
@@ -207,6 +275,10 @@ def radius_bounds(cfg: Config, specs: Mapping[str, Spec] | None = None) -> tuple
     2D disc of a 1024-wide world, rather than most of a small 3D world. A table that lists a ``radius`` bound
     for ``catastrophe`` (the player's) gives the range, in the same 1024-world units, scaled the same way."""
     ref = (specs if specs is not None else MENU)["catastrophe"].bounds.get("radius", CATASTROPHE_RADIUS)
+    if is_sphere(cfg):  # the area-equivalent width: the largest cap is the box column's 12 % of the surface
+        width = area_width(cfg)
+        k = width / CATASTROPHE_REF_SIZE
+        return ref[0] * k, min(ref[1] * k, width / 2)
     if is_3d(cfg):
         k = cfg.world.size / CATASTROPHE_REF_SIZE
         return ref[0] * k, min(ref[1] * k, cfg.world.size / 2)
@@ -261,11 +333,15 @@ def _clamp_fertility_shift(
                 _bounds_of("fertility_shift", specs), duration, _quantum("fertility_shift", specs, cfg)
             )
         return Clamped({"patch": p, "gain": gain}, {"patch": p, "gain": float(view.patch_gain[p])}, d)
-    size = cfg.world.size
+    size = span(cfg)
     dx, dy = _number(raw, "dx"), _number(raw, "dy")
     cap = MOVE_MAX_FRAC * size
     norm = math.hypot(dx, dy)
     scale = cap / norm if norm > cap else 1.0
+    if is_sphere(cfg):  # walk along the great circle; the places are stored as [lon, lat] degrees
+        moved = move_on_sphere(view.patch_pos[p], dx * scale, dy * scale, cfg.world.radius)
+        new, old = lonlat_of(moved), lonlat_of(view.patch_pos[p])
+        return Clamped({"patch": p, "x": new[0], "y": new[1]}, {"patch": p, "x": old[0], "y": old[1]}, None)
     old = [float(v) for v in view.patch_pos[p]]
     new = _wrap([old[0] + dx * scale, old[1] + dy * scale], size)
     return Clamped({"patch": p, "x": new[0], "y": new[1]}, {"patch": p, "x": old[0], "y": old[1]}, None)
@@ -333,7 +409,10 @@ def _clamp_catastrophe(
     duration: int | float | None,
     specs: Mapping[str, Spec],
 ) -> Clamped:
-    centre = _wrap([_number(raw, "x"), _number(raw, "y")], cfg.world.size)
+    if is_sphere(cfg):
+        centre = [wrap_lon(_number(raw, "x")), _clip(_number(raw, "y"), -LAT_MAX, LAT_MAX)]
+    else:
+        centre = _wrap([_number(raw, "x"), _number(raw, "y")], cfg.world.size)
     radius = _clip(_number(raw, "radius"), *radius_bounds(cfg, specs))
     kill_p = _clip(_number(raw, "kill_p"), *specs["catastrophe"].bounds["kill_p"])
     return Clamped({"center": centre, "radius": radius, "kill_p": kill_p}, {}, None)
@@ -411,7 +490,24 @@ def _check_patch(where: str, params: Mapping[str, Any], cfg: Config) -> int:
     return int(_in_range(where, "patch", params["patch"], 0, cfg.fields.n_patches - 1, integer=True))
 
 
+def _check_lonlat(where: str, name: str, lon: Any, lat: Any) -> list[float]:
+    """A sphere place [lon, lat] in degrees: lon in [-180, 180), lat in [-90, 90]."""
+    x = _in_range(where, f"{name} x (longitude)", lon, -LON_MAX, LON_MAX)
+    if x >= LON_MAX:
+        raise ActionError(f"{where}: {name} x (longitude) {x!r} is not strictly below {LON_MAX:g}")
+    return [x, _in_range(where, f"{name} y (latitude)", lat, -LAT_MAX, LAT_MAX)]
+
+
 def _check_move(where: str, params: Mapping[str, Any], prev: Any, cfg: Config) -> None:
+    if is_sphere(cfg):
+        new = _check_lonlat(where, "", params["x"], params["y"])
+        if not isinstance(prev, Mapping) or not {"x", "y"} <= set(prev):
+            raise ActionError(f"{where}: a patch move must carry prev coordinates (x, y)")
+        old = _check_lonlat(where, "prev", prev["x"], prev["y"])
+        cap = MOVE_MAX_FRAC * span(cfg)
+        if arc_between(old, new, cfg.world.radius) > cap * (1 + _MOVE_SLACK) + 1e-3:
+            raise ActionError(f"{where}: the move exceeds a quarter of the equator = {cap:g}")
+        return
     size = cfg.world.size
     for axis in ("x", "y"):
         v = _in_range(where, axis, params[axis], 0, size)
@@ -463,6 +559,9 @@ def _check_forward(
         c = params["center"]
         if not isinstance(c, list | tuple) or len(c) != 2:
             raise ActionError(f"{where}: center must be [x, y], got {c!r}")
+        if is_sphere(cfg):
+            _check_lonlat(where, "center", c[0], c[1])
+            c = ()
         for v in c:
             if _in_range(where, "center", v, 0, cfg.world.size) >= cfg.world.size:
                 raise ActionError(f"{where}: center {c!r} is not strictly inside the world")
@@ -591,9 +690,11 @@ def _with_gain(s: State, p: int, gain: float) -> State:
     return _put(s, env_patch_gain=np.where(np.arange(cur.size) == p, np.float32(gain), cur))
 
 
-def _apply_move(s: State, params: Mapping[str, Any], size: float) -> State:
+def _apply_move(s: State, params: Mapping[str, Any], size: float, sph: bool = False) -> State:
     cur = to_numpy(s.patch_pos)
     row = np.arange(len(cur)) == params["patch"]
+    if sph:  # the place is [lon, lat] degrees; the state holds the unit vector
+        return _put(s, patch_pos=np.where(row[:, None], unit_of(params["x"], params["y"]), cur))
     new = np.where(row[:, None], np.asarray([params["x"], params["y"]], np.float32), cur)
     if not (new >= 0).all() or not (new < size).all():
         raise ActionError(f"patch coordinates {[params['x'], params['y']]} are outside [0, {size})")
@@ -617,7 +718,7 @@ def apply(s: State, entry: Mapping[str, Any], cfg: Config) -> State:
     if action == "set_seasons":
         out = _put(s, env_season_amp=p["amp"], env_season_period=p["period"])
     elif action == "fertility_shift" and "gain" not in p:
-        out = _apply_move(s, p, cfg.world.size)
+        out = _apply_move(s, p, cfg.world.size, is_sphere(cfg))
     elif action in ("fertility_shift", "habitat_loss"):
         out = _with_gain(s, int(p["patch"]), p["gain"])
     elif action == "regen_pulse":
@@ -625,7 +726,8 @@ def apply(s: State, entry: Mapping[str, Any], cfg: Config) -> State:
     elif action == "immigration_pulse":
         out = _apply_immigration(s, p)
     elif action == "catastrophe":
-        out = _put(s, env_cat_center=p["center"], env_cat_radius=p["radius"], env_cat_kill_p=p["kill_p"])
+        centre = np.radians(np.asarray(p["center"], np.float64)) if is_sphere(cfg) else p["center"]
+        out = _put(s, env_cat_center=centre, env_cat_radius=p["radius"], env_cat_kill_p=p["kill_p"])
     elif action == "drift_change":
         out = _put(s, env_drift_mult=p["mult"])
     else:

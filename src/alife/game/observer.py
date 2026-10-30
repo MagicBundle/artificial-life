@@ -31,6 +31,7 @@ The block and meta dicts are built as literals and comprehensions.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections.abc import Mapping
 from typing import Any, Final, NamedTuple
@@ -38,21 +39,28 @@ from typing import Any, Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import weather_obs
+from alife import geom, weather_obs
 from alife.config import Config, config_hash, dims
-from alife.game import housefile, observe
+from alife.game import housefile, observe, place
 from alife.game import social as soc
 from alife.game import tracers as trc
 from alife.game.colors import ColorInputs, house_slot_bytes, kin_slot_bytes
 from alife.game.housefile import HouseFileError, HouseSeed
 from alife.game.observe import EVAL_BIT, ObsState
-from alife.game.rules import ARCHETYPE_NAMES, INTENT_NAMES, INTENT_VERSION, RULES_V3, RuleSet, for_2d
+from alife.game.rules import (
+    ARCHETYPE_NAMES,
+    INTENT_NAMES,
+    RULES_V3,
+    RuleSet,
+    for_2d,
+    intent_version,
+)
 from alife.game.social import HOUSE_UNKNOWN, SOCIAL_V1, SOCIAL_VERSION, SocialRules, SocState
 from alife.game.society import HOST_KEYS, TOP_HOUSES, Society, host_snap, house_names
 from alife.runio import CheckpointError, RunDir
 from alife.state import State, to_numpy
 from alife.step import Acts
-from alife.tracking import TRACK_VERSION, DominanceMap, circular_mean
+from alife.tracking import TRACK_VERSION, DominanceMap
 
 __all__ = [
     "DEFAULT_RULES",
@@ -122,6 +130,8 @@ def default_rules(cfg: Config) -> RuleSet:
     """The rules of a run's observer when none is given: ``DEFAULT_RULES`` (read now, so a test may replace
     it), without the vertical labels in a 2D world."""
     rs = DEFAULT_RULES
+    if dims(cfg).sph:  # the sphere's rule set (version 4): the same thresholds on its velocity columns
+        return rs if rs.sphere else dataclasses.replace(rs, sphere=True)
     return rs if dims(cfg).d3 or not rs.vertical else for_2d(rs)
 
 
@@ -224,6 +234,10 @@ class Observer:
     ) -> None:
         rules.check(cfg)  # a window that would overflow int32 for this world fails here, loudly
         social.check(cfg)
+        if dims(cfg).sph:  # the compiled folds bake the territory and footprint Nsides (F21 item 6)
+            from alife import sphere_check
+
+            sphere_check.require_cells_compile_safe((social.terr_cells, social.foot_cells))
         self.cfg = cfg
         self.rules = rules
         self.social = social
@@ -312,7 +326,7 @@ class Observer:
         only if it lists every alive row. ``tracers=False`` leaves the tracer rig off whatever
         ``game.tracers`` says (the analysis tools)."""
         rules = default_rules(cfg) if rules is None else rules
-        sr = DEFAULT_SOCIAL if social is None else social
+        sr = (DEFAULT_SOCIAL if social is None else social).for_world(cfg)
         obs = cls._blank(state, cfg, rules, sr, tracers)
         exact = False
         if houses is not None:
@@ -348,7 +362,7 @@ class Observer:
         ``rules`` and ``social`` default to ``DEFAULT_RULES`` and ``DEFAULT_SOCIAL`` as of this call.
         ``tracers=False`` leaves the tracer rig off (see ``fresh``)."""
         rules = default_rules(cfg) if rules is None else rules
-        sr = DEFAULT_SOCIAL if social is None else social
+        sr = (DEFAULT_SOCIAL if social is None else social).for_world(cfg)
         t = int(to_numpy(state.step))
         blank = cls._blank(state, cfg, rules, sr, tracers)
         try:
@@ -397,7 +411,7 @@ class Observer:
         return {
             "format": SIDECAR_FORMAT,
             "observer_format": OBSERVER_FORMAT,
-            "intent_version": INTENT_VERSION,
+            "intent_version": intent_version(self.rules),
             "rules_digest": self.rules.digest(),
             "wind_rel": self.rules.wind_rel,
             "vertical": self.rules.vertical,
@@ -621,11 +635,12 @@ class Observer:
         rec = self._latest_record()
         if rec is None:
             top, houses = _houses_from_rows(house, clade, self.social.name_salt)
-            kin_tab = _kin_from_rows(self.society, kin, clade, pos, self.cfg.world.size, d.d3)
-            col_tab = _colonies_from_rows(self.society, kin, col, pos, self.cfg.world.size)
+            kin_tab = _kin_from_rows(self.society, kin, clade, pos, self.cfg, d.d3)
+            col_tab = _colonies_from_rows(self.society, kin, col, pos, self.cfg)
         else:
             top, houses = _houses_from_record(rec["houses"])
-            kin_tab, col_tab = _kin_from_record(rec["kin_groups"]), _colonies_from_record(rec["colonies"])
+            kin_tab = _kin_from_record(rec["kin_groups"], d.sph)
+            col_tab = _colonies_from_record(rec["colonies"], d.sph)
         born = uid >= self.society.prev_next_uid
         tables = {
             "houses": houses,
@@ -704,7 +719,7 @@ class Observer:
         by_arch, match_arch = c[4 : 4 + n_a], c[4 + n_a : 4 + 2 * n_a]
         by_intent, match_intent = c[4 + 2 * n_a : 4 + 2 * n_a + n_i], c[4 + 2 * n_a + n_i :]
         return {
-            "intent_version": INTENT_VERSION,
+            "intent_version": intent_version(rs),
             "labels_step": self.step - self.step % rs.every,
             "alive": alive,
             "arch_labelled": arch_n,
@@ -729,8 +744,8 @@ class Observer:
         live = h["alive"]
         agents = {k: h[k][live] for k in ("z", "g", "w", "vz_own")}
         tracers = {"z": h["tz"], "g": h["tg"], "w": h["tw"]}
-        w = self.cfg.world
-        return weather_obs.coupling_block(agents, tracers, w.height, w.field_cell)
+        g = geom.geometry(self.cfg)
+        return weather_obs.coupling_block(agents, tracers, g.height_max, g.layer_margin)
 
 
 # --- the identity tables (IDNT, DESIGN §33.1.3) -------------------------------------------------------------
@@ -789,7 +804,9 @@ def _houses_from_rows(
     return ids[top].astype(np.int64), entries
 
 
-def _kin_from_record(table: Mapping[str, list[Any]]) -> list[dict[str, Any]]:
+def _kin_from_record(table: Mapping[str, list[Any]], sph: bool = False) -> list[dict[str, Any]]:
+    """The kin entries of a record's table. A sphere's table has the planet-frame centroid ``x, y, z`` beside
+    the mean height ``z_mean`` (entry key ``height``)."""
     three = "z_mean" in table
     return [
         {
@@ -803,7 +820,8 @@ def _kin_from_record(table: Mapping[str, list[Any]]) -> list[dict[str, Any]]:
             "sim_self": table["sim_self"][i],
             "x": table["x"][i],
             "y": table["y"][i],
-            **({"z": table["z_mean"][i]} if three else {}),
+            **({"z": table["z"][i], "height": table["z_mean"][i]} if sph else {}),
+            **({"z": table["z_mean"][i]} if three and not sph else {}),
             "arch": table["arch"][i],
             "births": table["births"][i],
             "deaths": table["deaths"][i],
@@ -812,7 +830,7 @@ def _kin_from_record(table: Mapping[str, list[Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _colonies_from_record(table: Mapping[str, list[Any]]) -> list[dict[str, Any]]:
+def _colonies_from_record(table: Mapping[str, list[Any]], sph: bool = False) -> list[dict[str, Any]]:
     return [
         {
             "slot": table["slot"][i],
@@ -821,17 +839,19 @@ def _colonies_from_record(table: Mapping[str, list[Any]]) -> list[dict[str, Any]
             "kin": table["kin_group"][i],
             "x": table["x"][i],
             "y": table["y"][i],
+            **({"z": table["z"][i]} if sph else {}),
         }
         for i in range(len(table["id"]))
     ]
 
 
-def _centre(pos: np.ndarray, size: float) -> tuple[float, float]:
-    return round(circular_mean(pos[:, 0], size), 2), round(circular_mean(pos[:, 1], size), 2)
+def _centre(pos: np.ndarray, cfg: Config) -> tuple[float, ...]:
+    """The rounded centre of the rows: ``(x, y)`` in a box, ``(x, y, z)`` on a sphere (``place.centroid``)."""
+    return tuple(round(v, 2) for v in place.centroid(pos, cfg))
 
 
 def _kin_from_rows(
-    society: Society, kin: np.ndarray, clade: np.ndarray, pos: np.ndarray, size: float, three: bool
+    society: Society, kin: np.ndarray, clade: np.ndarray, pos: np.ndarray, cfg: Config, three: bool
 ) -> list[dict[str, Any]]:
     """The kin table without a record: one entry per slot that holds a group, from the rows of that slot."""
     out = []
@@ -841,7 +861,9 @@ def _kin_from_rows(
         m = kin == s
         n = int(m.sum())
         clades, counts = np.unique(clade[m], return_counts=True)
-        x, y = _centre(pos[m], size) if n else (None, None)
+        sph = place.is_sphere(cfg)
+        c = _centre(pos[m], cfg) if n else (None,) * (3 if sph else 2)
+        cx, cy, *cz = c
         out.append(
             {
                 "slot": s,
@@ -852,10 +874,11 @@ def _kin_from_rows(
                 "clade": int(clades[np.argmax(counts)]) if n else -1,
                 "clade_share": round(int(counts.max()) / n, 4) if n else None,
                 "sim_self": None,
-                "x": x,
-                "y": y,
+                "x": cx,
+                "y": cy,
+                **({"z": cz[0]} if sph else {}),
                 **(
-                    {"z": round(float(pos[m][:, 2].astype(np.float64).mean()), 2) if n else None}
+                    {("height" if sph else "z"): round(place.mean_height(pos[m], cfg), 2) if n else None}
                     if three
                     else {}
                 ),
@@ -868,7 +891,7 @@ def _kin_from_rows(
 
 
 def _colonies_from_rows(
-    society: Society, kin: np.ndarray, col: np.ndarray, pos: np.ndarray, size: float
+    society: Society, kin: np.ndarray, col: np.ndarray, pos: np.ndarray, cfg: Config
 ) -> list[dict[str, Any]]:
     """The colony table without a record: one entry per slot that holds a colony, with the plurality kin group
     of its rows (ties to the smaller id; -1 if none)."""
@@ -881,15 +904,18 @@ def _colonies_from_rows(
             society.kin_slots[held[(held >= 0) & (held < society.kin_slots.size)]], return_counts=True
         )
         ids, counts = ids[ids >= 0], counts[ids >= 0]
-        x, y = _centre(pos[m], size) if n else (None, None)
+        sph = place.is_sphere(cfg)
+        c = _centre(pos[m], cfg) if n else (None,) * (3 if sph else 2)
+        cx, cy, *cz = c
         out.append(
             {
                 "slot": s,
                 "id": int(society.col_slots[s]),
                 "size": n,
                 "kin": int(ids[np.argmax(counts)]) if ids.size else -1,
-                "x": x,
-                "y": y,
+                "x": cx,
+                "y": cy,
+                **({"z": cz[0]} if sph else {}),
             }
         )
     return out

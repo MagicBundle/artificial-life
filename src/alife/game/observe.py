@@ -29,7 +29,7 @@ from typing import Final, NamedTuple
 
 import mlx.core as mx
 
-from alife import layout, structures
+from alife import layout, sphere, structures
 from alife.config import Config, dims
 from alife.game import rules
 from alife.game.rules import (
@@ -208,10 +208,14 @@ def quantise_inputs(
             wind = mx.clip(mx.round(mx.sqrt((drift * drift).sum(axis=1)) * scale), 0, VQ_MAX).astype(_I32)
         cols.append(wind[:, None])
         if rs.vertical:  # static: 3D
-            zpos = mx.clip(mx.round(oi.pos[:, 2] * (256.0 / cfg.world.height)), 0, 256).astype(_I32)
+            geo = sphere.geometry(cfg)  # the box's expressions written once, or the sphere's height
+            zpos = mx.clip(mx.round(geo.height(oi.pos) * (256.0 / geo.height_max)), 0, 256).astype(_I32)
             cap = mx.round(oi.buoy_cap * 256.0).astype(_I32)
             lift = cap if a.buoy is None else (a.buoy.astype(_I32) * cap) >> 8
             cols.append(mx.stack([zpos, lift], axis=1))
+            if rs.sphere:  # static: the radial velocity (relative to the wind) as its own signed pair
+                vr = mx.clip(mx.round(geo.radial(vel, oi.pos) * scale), -VQ_MAX, VQ_MAX).astype(_I32)
+                cols.append(mx.stack([mx.maximum(vr, 0), mx.maximum(-vr, 0)], axis=1))
     x6 = mx.concatenate(cols, axis=1)
     xs = mx.stack([a.share_out, a.share_got], axis=2)
     f = a.flags.astype(_I32)

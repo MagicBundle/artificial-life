@@ -13,6 +13,13 @@ above that of the unlabelled rows: the Mann–Whitney AUC against a matched rand
   ``min(out, got)`` rate (Trader), the radius of gyration squared of the unwrapped track (Nomad) or its
   negative (Settler). Generalist is reported as prevalence only.
 
+  **The sphere** (DESIGN §46.7). A torus track unwraps without bound; on a sphere ``Σ Δpos`` telescopes to
+  ``pos_k − pos_0`` and saturates at the planet size, so the track is *developed* onto the tangent plane: each
+  step adds its great-circle arc, in the direction it makes with a reference tangent that is parallel-
+  transported along the path (rolling the planet along the track), so that a persistent mover's track grows
+  linearly and a random walker's diffusively, as on the torus; the third component is the summed height
+  change. ``Rg²`` is invariant under a rotation of the planet. Version 4 labels (``RULES_V4``).
+
   **The storm world** (DESIGN §32). Where the world has weather, the tracker also integrates the track
   with the wind drift subtracted, ``u_k = u_{k-1} + min_image(Δpos) − drift_k`` (``drift_k`` is
   ``weather.agent_drift`` of the post-step state of step ``k``), and the primary score of Nomad and Settler
@@ -81,7 +88,7 @@ from typing import Any, Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import layout, ops, spatial, structures
+from alife import layout, ops, spatial, sphere, structures
 from alife.analysis import mi
 from alife.analysis.resim import ResimMismatch, compare_row
 from alife.analysis.signals import load_state
@@ -91,12 +98,13 @@ from alife.game.observer import Observer, default_rules
 from alife.game.rules import (
     ARCHETYPE_NAMES,
     INTENT_NAMES,
-    INTENT_VERSION,
     RULES_V2,
     Archetype,
     RuleSet,
     arch_layout,
+    intent_version,
 )
+from alife.geom import geometry as host_geometry
 from alife.runio import RunDir
 from alife.state import State, counter_blocks, to_numpy
 from alife.step import ActFlag, Acts, make_step
@@ -142,6 +150,7 @@ ARCH_OUTCOMES: Final = {
 ARCH_OUTCOMES_REL: Final = {"nomad": "rg2_rel", "settler": "neg_rg2_rel"}
 # The z bands of the version-3 strata, as fractions of the world height (0-4, 4-32, 32-56, 56-80 of H = 80).
 Z_BAND_EDGES: Final = (0.05, 0.4, 0.7)
+HORIZONTAL: Final = (0, 1)  # the horizontal columns of a track ``u`` (x, y on the torus; the developed plane)
 ALOFT: Final = (
     0.1  # "aloft" is z >= 0.1·H (8 of 80): the Floater's pool at T and the steps its outcome counts
 )
@@ -542,12 +551,68 @@ class TrackState(NamedTuple):
     m2_r: mx.array  # (N,) float32
     z0: mx.array  # (N,) float32: height at the cohort step (0 in 2D)
     zk: mx.array  # (N,) float32: the last observed height
+    # The sphere (DESIGN §46.7): the reference tangent of the developed track, parallel-transported along it;
+    # (N, 3) unit vectors, and (N, 0) in a box.
+    fr: mx.array
 
 
-def track_start(member: mx.array, pos: mx.array) -> TrackState:
-    """The tracker of a cohort whose members are the rows where ``member``, at positions ``pos``."""
+def _east(up: mx.array) -> mx.array:
+    """East at the unit vectors ``up`` (N, 3): ``normalise(ẑ × û)``, x̂ at the poles (``sphere.bearing``)."""
+    ex, ey = -up[:, 1], up[:, 0]
+    ne = mx.sqrt(ex * ex + ey * ey)
+    polar = ne < 1e-6
+    safe = mx.where(polar, 1.0, ne)
+    zero = mx.zeros_like(ne)
+    return mx.stack([mx.where(polar, 1.0, ex / safe), mx.where(polar, 0.0, ey / safe), zero], axis=1)
+
+
+def _unit(v: mx.array) -> mx.array:
+    return v / mx.maximum(mx.sqrt((v * v).sum(axis=1, keepdims=True)), 1e-12)
+
+
+def _cross(a: mx.array, b: mx.array) -> mx.array:
+    """The cross product of (N, 3) vectors, by cyclic rolls of the components."""
+    return mx.roll(a, -1, axis=1) * mx.roll(b, -2, axis=1) - mx.roll(a, -2, axis=1) * mx.roll(b, -1, axis=1)
+
+
+def develop_step(prev: mx.array, pos: mx.array, fr: mx.array) -> tuple[mx.array, mx.array, mx.array]:
+    """One step of the development of a path on a sphere onto the tangent plane (DESIGN §46.7): the plane
+    displacement ``(N, 2)`` of the great-circle arc from ``prev`` to ``pos`` (length: the arc at the mean
+    radius; direction: its bearing against the reference tangent ``fr`` at ``prev``), the height change
+    ``(N,)``, and the reference tangent transported to ``pos`` (minimal rotation of ``û_prev`` onto ``û_pos``,
+    then projected on the tangent plane and normalised). All rows are computed; the caller masks."""
+    ra = mx.maximum(mx.sqrt((prev * prev).sum(axis=1)), 1e-6)
+    rb = mx.maximum(mx.sqrt((pos * pos).sum(axis=1)), 1e-6)
+    ua, ub = prev / ra[:, None], pos / rb[:, None]
+    c = mx.clip((ua * ub).sum(axis=1), -1.0, 1.0)
+    axis = _cross(ua, ub)
+    s = mx.sqrt((axis * axis).sum(axis=1))
+    theta = mx.arctan2(s, c)
+    tau = _unit(ub - c[:, None] * ua)  # the direction of the arc at prev (zero when ub == ua)
+    f2 = _cross(ua, fr)
+    arc = theta * 0.5 * (ra + rb)
+    du = arc[:, None] * mx.stack([(tau * fr).sum(axis=1), (tau * f2).sum(axis=1)], axis=1)
+    # The Rodrigues rotation of ``fr`` about ``k`` by ``theta`` is the minimal rotation taking ``ua`` to
+    # ``ub``. The projection onto the tangent plane at ``ub`` that follows gives the same vector to first
+    # order in ``theta`` (review S5: replacing the rotation by the identity leaves every label test green),
+    # so the rotation is redundant in principle. It is kept because it is exact for any ``theta`` (a large
+    # step, a fast cohort), and the projection then only removes the rounding residue.
+    k = axis / mx.maximum(s, 1e-12)[:, None]  # the rotation axis (zero for a null step)
+    fr2 = fr * c[:, None] + _cross(k, fr) * s[:, None] + k * ((k * fr).sum(axis=1) * (1.0 - c))[:, None]
+    fr2 = _unit(fr2 - (fr2 * ub).sum(axis=1, keepdims=True) * ub)
+    return du, rb - ra, fr2
+
+
+def track_start(member: mx.array, pos: mx.array, radius: float | None = None) -> TrackState:
+    """The tracker of a cohort whose members are the rows where ``member``, at positions ``pos``. ``radius``
+    (the planet's) selects the sphere's developed track, whose reference tangent starts as east."""
     n, nd = pos.shape
-    z = pos[:, 2] if nd == 3 else mx.zeros((n,), dtype=_F32)
+    if radius is None:
+        z = pos[:, 2] if nd == 3 else mx.zeros((n,), dtype=_F32)
+        fr = mx.zeros((n, 0), dtype=_F32)
+    else:
+        z = mx.sqrt((pos * pos).sum(axis=1)) - radius
+        fr = _east(_unit(pos))
     return TrackState(
         ok=member,
         n_ok=mx.zeros((n,), dtype=_I32),
@@ -561,6 +626,7 @@ def track_start(member: mx.array, pos: mx.array) -> TrackState:
         m2_r=mx.zeros((n,), dtype=_F32),
         z0=z,
         zk=z,
+        fr=fr,
     )
 
 
@@ -573,6 +639,7 @@ def track_step(
     oc: mx.array,
     size: float,
     drift: mx.array | None = None,
+    radius: float | None = None,
 ) -> TrackState:
     """One step: a row is observed while ``alive`` with its cohort uid; its outcomes ``oc`` (N, 10) are added,
     and its position extends the unwrapped track (``u_k = u_{k-1} + min_image(pos_k − pos_{k-1})``, every
@@ -582,12 +649,22 @@ def track_step(
     ``drift`` (N, nd), the wind drift of the post-step state (``weather.agent_drift``; None: no wind), extends
     the second track, ``ur_k = ur_{k-1} + min_image(pos_k − pos_{k-1}) − drift_k`` (the index convention of
     DESIGN §32: the drift of step ``k`` against the displacement from ``k − 1`` to ``k``); without drift it is
-    the first one."""
+    the first one.
+
+    ``radius`` (the planet's; ``size`` is then unused) selects the sphere's *developed* track: the step is
+    the great-circle arc in the frame transported along the path (``develop_step``), ``(du_1, du_2,
+    Δheight)``, and the drift is read in the same frame."""
     ok = tr.ok & alive & (uid == cuid)
     k = ok[:, None]
     n = tr.n_ok + ok.astype(_I32)
     nf = mx.maximum(n, 1).astype(_F32)[:, None]
-    step_d = ops.min_image(pos - tr.pos, size)
+    fr = tr.fr
+    if radius is None:  # static: the torus
+        step_d = ops.min_image(pos - tr.pos, size)
+    else:  # static: the sphere
+        du, dh, fr2 = develop_step(tr.pos, pos, tr.fr)
+        step_d = mx.concatenate([du, dh[:, None]], axis=1)
+        fr = mx.where(k, fr2, tr.fr)
     u = tr.u + mx.where(k, step_d, 0.0)
     delta = u - tr.mean
     mean = tr.mean + delta / nf
@@ -595,11 +672,22 @@ def track_step(
     if drift is None:
         ur, mean_r, m2_r = u, mean, m2
     else:
-        ur = tr.ur + mx.where(k, step_d - drift, 0.0)
+        if radius is None:
+            own = drift
+        else:  # the drift in the developed frame at the new position: (·f1, ·f2, ·up)
+            ub = _unit(pos)
+            own = mx.stack(
+                [(drift * fr).sum(axis=1), (drift * _cross(ub, fr)).sum(axis=1), (drift * ub).sum(axis=1)],
+                axis=1,
+            )
+        ur = tr.ur + mx.where(k, step_d - own, 0.0)
         delta_r = ur - tr.mean_r
         mean_r = tr.mean_r + delta_r / nf
         m2_r = tr.m2_r + (delta_r * (ur - mean_r)).sum(axis=1)
-    z = pos[:, 2] if pos.shape[1] == 3 else mx.zeros_like(tr.zk)
+    if radius is not None:  # static: the height above the planet
+        z = mx.sqrt((pos * pos).sum(axis=1)) - radius
+    else:
+        z = pos[:, 2] if pos.shape[1] == 3 else mx.zeros_like(tr.zk)
     return TrackState(
         ok=ok,
         n_ok=n,
@@ -613,6 +701,7 @@ def track_step(
         m2_r=mx.where(ok, m2_r, tr.m2_r),
         z0=tr.z0,
         zk=mx.where(ok, z, tr.zk),
+        fr=fr + 0.0,
     )
 
 
@@ -655,8 +744,8 @@ def _host_track(tr: TrackState) -> dict[str, np.ndarray]:
         "rg2_rel": m2_r / np.maximum(n, 1),
         "z0": to_numpy(tr.z0).astype(np.float64),
         "zk": to_numpy(tr.zk).astype(np.float64),
-        "u_h": to_numpy(tr.u)[:, :2].astype(np.float64),
-        "ur_h": to_numpy(tr.ur)[:, :2].astype(np.float64),
+        "u_h": np.take(to_numpy(tr.u), HORIZONTAL, axis=1).astype(np.float64),
+        "ur_h": np.take(to_numpy(tr.ur), HORIZONTAL, axis=1).astype(np.float64),
         **{name: tot[:, i].astype(np.int64) for name, i in _OC.items()},
     }
 
@@ -843,7 +932,9 @@ def study(
             f"but the study ends at step {end}"
         )
     nd = dims(cfg).nd
-    size = cfg.world.size
+    geo = host_geometry(cfg)
+    size = cfg.world.size  # the torus' (unused on a sphere)
+    radius = cfg.world.radius if dims(cfg).sph else None  # the planet's: selects the developed track
 
     state = load_state(rd, cfg, states_dir, start)
     obs, note = Observer.open(rd, state, cfg, rules=rules, tracers=False)
@@ -863,7 +954,7 @@ def study(
     wthr = cfg.weather.enabled
     # the altitude the Floater's outcome counts and the Sinker's largest descent: fixed by the world, not by
     # the rule under study, so a dump scores candidate thresholds against one outcome
-    z_floor = ALOFT * cfg.world.height
+    z_floor = ALOFT * geo.height_max
     room = arch_min_obs * cfg.physics.gravity if d3 else 0.0
     z_pin = (
         dims(cfg).z_hi - LID_MARGIN if d3 else None
@@ -878,7 +969,7 @@ def study(
         oc: mx.array,
         drift: mx.array | None,
     ) -> TrackState:
-        return track_step(cuid, tr, alive, uid, pos, oc, size, drift)
+        return track_step(cuid, tr, alive, uid, pos, oc, size, drift, radius)
 
     def drift_fn(
         wx: mx.array, pos: mx.array, buoy_cap: mx.array | None, alive: mx.array, mat: mx.array | None
@@ -890,13 +981,14 @@ def study(
     ) -> mx.array:
         """The dump's per-step input history row: velocity, drift, height and lift fraction (1/256)."""
         n = vel.shape[0]
-        z = pos[:, 2:3] if d3 else mx.zeros((n, 1), dtype=_F32)
+        z = sph_geo.height(pos)[:, None] if d3 else mx.zeros((n, 1), dtype=_F32)
         if d3 and buoy is not None:
             lift = ((buoy.astype(_I32) * mx.round(buoy_cap * 256.0).astype(_I32)) >> 8).astype(_F32)[:, None]
         else:
             lift = mx.zeros((n, 1), dtype=_F32)
         return mx.concatenate([vel, vel * 0.0 if drift is None else drift, z, lift], axis=1)
 
+    sph_geo = sphere.geometry(cfg)  # the device accessors: the box's expressions or the sphere's height
     oc_step = mx.compile(outcomes_fn) if cfg.run.compile else outcomes_fn
     tr_step = mx.compile(track_fn) if cfg.run.compile else track_fn
     drift_step = mx.compile(drift_fn) if cfg.run.compile else drift_fn
@@ -982,7 +1074,7 @@ def study(
             _collect(c, arch_parts, intent_parts, intent_horizon, arch_min_obs, wthr, d3)
 
         if t in cohort_steps:
-            active.append(_snapshot(len(cohort_info), t, state, obs, list(history) if dump else None))
+            active.append(_snapshot(len(cohort_info), t, state, obs, list(history) if dump else None, radius))
             cohort_info.append({"step": t})
         if t % every == 0 and t >= t0:
             coverage.add(obs.row_block())
@@ -1024,7 +1116,7 @@ def study(
         seed=seed,
         cohort_steps=steps_of,
         wind_rel=rules.wind_rel,
-        height=cfg.world.height,
+        height=geo.height_max,
         z_floor=z_floor,
         room=room,
         z_pin=z_pin,
@@ -1066,7 +1158,7 @@ def study(
             "z_pin": z_pin,
             "sink_room": room,
         },
-        "intent_version": INTENT_VERSION,
+        "intent_version": intent_version(rules),
         "rules_digest": rules.digest(),
         "device": str(mx.default_device()),
         "mlx_version": mx.__version__,
@@ -1081,7 +1173,12 @@ def study(
 
 
 def _snapshot(
-    index: int, t: int, state: State, obs: Observer, hist: list[np.ndarray] | None = None
+    index: int,
+    t: int,
+    state: State,
+    obs: Observer,
+    hist: list[np.ndarray] | None = None,
+    radius: float | None = None,
 ) -> _Cohort:
     """The cohort at step ``t``: the archetype pool (rows with a primary label), the intent pool (rows
     evaluated, ``EVAL_BIT``), the rows' uid, age (``t − 1 − birth_step``) and labels, and a tracker. With
@@ -1112,7 +1209,7 @@ def _snapshot(
         snap["hist"] = h
     cuid = mx.array(np.where(member, uid, -1).astype(np.int64))
     pos = mx.array(to_numpy(state.pos))
-    trk = track_start(mx.array(member), pos)
+    trk = track_start(mx.array(member), pos, radius)
     mx.eval(cuid, *trk)
     return _Cohort(index, t, cuid, trk, snap)
 
