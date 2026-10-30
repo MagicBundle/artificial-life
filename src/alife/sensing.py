@@ -11,7 +11,7 @@ from collections.abc import Sequence
 
 import mlx.core as mx
 
-from alife import layout, ops
+from alife import layout, ops, sphere
 from alife.bonds import BondGeom
 from alife.config import Config, dims
 from alife.fields import FieldObs
@@ -41,6 +41,11 @@ def _col(v: mx.array) -> mx.array:
     return v.astype(_F32)[:, None]
 
 
+def _up(pos: mx.array) -> mx.array:
+    """The local up ``pos/|pos|`` of planet-frame positions (N,3): the sphere's vertical (DESIGN §46.2)."""
+    return pos / sphere.radius_of(pos)[:, None]
+
+
 def _neighbor_mask(s: State, nbr: Neighbors) -> mx.array:
     """``nbr.valid`` ANDed with both ends' ``alive`` (a no-op under the §4 contract, kept as a guard)."""
     return nbr.valid & s.alive[:, None] & s.alive[nbr.idx]
@@ -51,17 +56,25 @@ def neighbor_descriptors(s: State, nbr: Neighbors, cfg: Config) -> mx.array:
 
     Features: present, body-frame offset / R (dx, dy), kin similarity, ``lr(E_j, E_i)``, ``msg_j[0]`` and
     whether ``j`` is a current bond partner. In 3D (``State3``, §27.2) the offset is rotated by yaw and pitch
-    (``ops.to_body3``) and its up component / R is appended as ``NBR_DZ``, so ``NF`` is 8.
+    (``ops.to_body3``) and its up component / R is appended as ``NBR_DZ``, so ``NF`` is 8. On a sphere
+    (``StateS``, §46.4) the offset is projected on the body frame of the heading vector and the local up
+    (``ops.to_body_s``); the descriptor is the same 8-wide one.
     """
-    d3 = dims(cfg).d3
+    d = dims(cfg)
+    d3 = d.d3
     valid = _neighbor_mask(s, nbr)
     j = nbr.idx
-    cos_h, sin_h = mx.cos(s.heading), mx.sin(s.heading)
-    if d3:  # static: (fwd, lat, up); every component of an offset inside the sphere is ≤ R
+    if d.sph:  # static: the frame (fwd, lat, up) of the heading vector and the local up
+        up, cos_p, sin_p = _up(s.pos), mx.cos(s.pitch)[:, None], mx.sin(s.pitch)[:, None]
+        rel3 = ops.to_body_s(nbr.off, s.hdg[:, None], up[:, None], cos_p, sin_p)
+        rel = mx.clip(rel3 / cfg.sensing.radius, -1.0, 1.0)
+    elif d3:  # static: (fwd, lat, up); every component of an offset inside the sphere is ≤ R
+        cos_h, sin_h = mx.cos(s.heading), mx.sin(s.heading)
         cos_p, sin_p = mx.cos(s.pitch)[:, None], mx.sin(s.pitch)[:, None]
         rel3 = ops.to_body3(nbr.off, cos_h[:, None], sin_h[:, None], cos_p, sin_p)
         rel = mx.clip(rel3 / cfg.sensing.radius, -1.0, 1.0)
     else:
+        cos_h, sin_h = mx.cos(s.heading), mx.sin(s.heading)
         rel = mx.clip(ops.to_body(nbr.off, cos_h[:, None], sin_h[:, None]) / cfg.sensing.radius, -1.0, 1.0)
     dtag = s.tag[:, None, :] - s.tag[j]  # (N,K,T)
     kin = mx.exp(-(dtag * dtag).sum(-1) / (cfg.sensing.tag_scale**2))
@@ -109,17 +122,29 @@ def build_inputs(
     3D (§27.6): every vector is taken in the yaw-and-pitch frame (``ops.to_body3``); its (fwd, lat) components
     fill the 2D blocks and its up component the tail 69–83, which ends with ``z / height``, ``sin(pitch)`` and
     ``grounded`` ((N,) bool, ``physics.grounded``; required in 3D).
+
+    Sphere (§46.4): the same vectors are projected on the body frame of the heading vector and the local up
+    (``ops.to_body_s``), and ``IN_HEIGHT`` is ``(|pos| − Rp)/height``; nothing else changes (``D_IN = 84``).
     """
     d, n = dims(cfg), s.alive.shape[0]
     q0, sc, en = _q0(cfg), cfg.sensing, cfg.energy
-    cos_h, sin_h = mx.cos(s.heading), mx.sin(s.heading)
+    if not d.sph:  # static: the box's yaw (the derived scalar heading of a sphere is never read here)
+        cos_h, sin_h = mx.cos(s.heading), mx.sin(s.heading)
     if d.d3:  # static: the pitch half of the 3D body frame
         cos_p, sin_p = mx.cos(s.pitch), mx.sin(s.pitch)
+    if d.sph:  # static: the local up and the heading vector replace the yaw angle
+
+        def to_body(v: mx.array) -> mx.array:  # v (N,3) or (N,B,3), planet axes -> (fwd, lat, up)
+            ex = (slice(None),) + (None,) * (v.ndim - 2)
+            return ops.to_body_s(v, s.hdg[ex], _up(s.pos)[ex], cos_p[ex], sin_p[ex])
 
     # --- self (0..11) ---
     energy = mx.clip(mx.log1p(s.energy.astype(_F32) / q0) / math.log1p(en.e_max / q0), 0.0, 1.0)
     age_in = mx.tanh(age.astype(_F32) / layout.AGE_SCALE)
-    if d.d3:  # static: (fwd, lat) here, up in the tail
+    if d.sph:  # static: (fwd, lat) here, up in the tail
+        vel3 = mx.clip(to_body(s.vel) / cfg.physics.v_max, -1.0, 1.0)
+        vel = vel3[:, :2]
+    elif d.d3:  # static: (fwd, lat) here, up in the tail
         vel3 = mx.clip(ops.to_body3(s.vel, cos_h, sin_h, cos_p, sin_p) / cfg.physics.v_max, -1.0, 1.0)
         vel = vel3[:, :2]
     else:
@@ -156,7 +181,10 @@ def build_inputs(
 
     # --- bond slots (49..68) ---
     pj = mx.maximum(s.partner, 0)
-    if d.d3:  # static: (fwd, lat) here, up in the tail
+    if d.sph:  # static: (fwd, lat) here, up in the tail
+        brel3 = mx.clip(to_body(geom.off) / cfg.bonds.break_length, -1.0, 1.0)
+        brel = brel3[..., :2]
+    elif d.d3:  # static: (fwd, lat) here, up in the tail
         rot = ops.to_body3(geom.off, cos_h[:, None], sin_h[:, None], cos_p[:, None], sin_p[:, None])
         brel3 = mx.clip(rot / cfg.bonds.break_length, -1.0, 1.0)
         brel = brel3[..., :2]
@@ -203,13 +231,14 @@ def build_inputs(
     )
     if d.d3:  # static: the 3D tail (69..83)
         assert grounded is not None, "3D sensing needs the grounded mask"  # static
+        z = sphere.geometry(cfg).height(s.pos) if d.sph else s.pos[:, 2]  # the height above the floor plane
         tail = [
             vel3[:, 2:],  # IN_VEL_UP
             fobs3.res_grad[:, 2:].astype(_F32),  # IN_RES_GRAD_UP
             fobs3.chem_grad[..., 2].astype(_F32),  # IN_CHEM_GRAD_UP (N,NCH)
             desc[:, : layout.NS, d.lay.NBR_DZ],  # IN_NBR_DZ (N,NS), zero where invalid
             mx.where(geom.valid, brel3[..., 2], 0.0),  # IN_BOND_DZ (N,B)
-            _col(s.pos[:, 2] / cfg.world.height),  # IN_HEIGHT
+            _col(z / cfg.world.height),  # IN_HEIGHT
             _col(sin_p),  # IN_PITCH
             _col(grounded),  # IN_GROUNDED
         ]

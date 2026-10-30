@@ -513,7 +513,7 @@ class Dims:
         raise KeyError(f"feature {name!r} is not enabled")
 
 
-PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mini3d")
+PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mini3d", "tiny3s")
 OVERLAYS: tuple[str, ...] = ("fast",)  # compose with every preset
 # Overlays that need a particular world (DESIGN §30): validated against whatever preset they land on, and not
 # part of ``OVERLAYS`` (which means "composes with every preset").
@@ -1013,11 +1013,43 @@ SPHERE_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("world", "layers"),
     ("physics", "ceiling_band"),
 )
-# The world.geometry values validate accepts. Read at call time: ``"sphere"`` is added by S2 of the
-# sphere series
-# (a sphere config is refused until the step can run it); a test can widen it to exercise the sphere rules.
-GEOMETRY_SUPPORTED: tuple[str, ...] = ("box",)
+# The world.geometry values validate accepts. Read at call time: S2 of the sphere series enabled "sphere"
+# (a test can narrow it to check the refusal text).
+GEOMETRY_SUPPORTED: tuple[str, ...] = ("box", "sphere")
 GEOMETRIES: Final = ("box", "sphere")
+
+# What a sphere run may enable beyond the dry core (DESIGN §46.12, rule 4 of the consumer guard). The
+# consumers of these layers read the box geometry (lattice cells, torus distances, ``pos[:, 2]``), so a sphere
+# run must not reach them before the PR that converts them: ``SPHERE_FEATURE_PR`` names each layer and the PR
+# that will enable it, ``SPHERE_READY`` (read at call time, like ``DIMS_SUPPORTED``) the ones that are. Every
+# PR of the series that converts a layer adds its name here.
+SPHERE_FEATURE_PR: Final[Mapping[str, str]] = {
+    "arms": "S3",
+    "structures": "S3",
+    "bonds": "S3",
+    "comm": "S3",
+    "niche": "S3",
+    "roles": "S3",
+    "weather": "S4",
+    "director": "S5",
+    "observers": "S5",
+}
+SPHERE_READY: frozenset[str] = frozenset()
+
+
+def sphere_wanted(cfg: Config) -> list[str]:
+    """The not-dry layers a config enables, by the names of ``SPHERE_FEATURE_PR`` (registry order first)."""
+    names = [spec.name for spec in ext.active(cfg)]
+    if cfg.roles.enabled and "roles" not in names:
+        names.append("roles")
+    if cfg.weather.enabled:
+        names.append("weather")
+    if cfg.director.enabled or cfg.run.director != "off":
+        names.append("director")
+    if cfg.game.observe or cfg.game.tracers > 0:
+        names.append("observers")
+    return names
+
 
 # The world.dims values validate accepts. Read at call time, so a test can narrow it (docs/3D.md §10: PR 3
 # enabled 3).
@@ -1091,6 +1123,17 @@ def require_2d(cfg: Config, what: str) -> None:
         )
 
 
+def require_box(cfg: Config, what: str, pr: str = "S5") -> None:
+    """Refuse a sphere config in a tool that reads the box geometry: ``ConfigError`` (exit 2) naming ``what``
+    and the PR of the sphere series that converts it (DESIGN §46.12: nothing runs through an unconverted
+    consumer)."""
+    if cfg.world.geometry == "sphere":
+        raise ConfigError(
+            f"{what} does not support world.geometry = 'sphere' yet (the true-sphere series, PR {pr}); "
+            "`alife run`, `resume` and `bench` run a sphere world"
+        )
+
+
 def config_hash(cfg: Config) -> str:
     """SHA-256 hex of the canonical JSON of every section except ``run``.
 
@@ -1140,9 +1183,8 @@ SPHERE_RADIUS_MAX: Final = 1e6  # keeps radius³ and every derived float finite;
 
 
 def _validate_sphere(cfg: Config) -> list[str]:
-    """The rules of a sphere world (DESIGN §46.9), as messages. The rules that need tables of later PRs are
-    absent by design: the feature set a sphere run may enable (``SPHERE_READY``, S2) and the weather (S4).
-    The fields' rules (S1) are ``_sphere_field_rules``.
+    """The rules of a sphere world (DESIGN §46.9), as messages. The layers a sphere run may enable are
+    ``SPHERE_READY`` (S2: none; the weather is S4's); the fields' rules (S1) are ``_sphere_field_rules``.
 
     Ordered by cost, and total: the refusal comes first and alone (nothing else is computed for a config the
     engine cannot run); the cheap arithmetic rules come next and every quantity they derive is bounded
@@ -1162,6 +1204,15 @@ def _validate_sphere(cfg: Config) -> list[str]:
         return ok
 
     req(w.dims == 3, f"world.geometry = 'sphere' needs world.dims = 3 (the shell is 3D), got {w.dims}")
+    for name in sphere_wanted(
+        cfg
+    ):  # the readiness gates (DESIGN §46.12): nothing runs through an unconverted consumer
+        if name not in SPHERE_READY:
+            pr = SPHERE_FEATURE_PR.get(name, "S3")
+            req(
+                False,
+                f"{name} is not available on a sphere yet (PR {pr}): a sphere runs the dry world",
+            )
     rad, h, r = w.radius, w.height, ph.radius
     rad_ok = req(
         math.isfinite(rad) and 20.0 <= rad <= SPHERE_RADIUS_MAX,
@@ -1621,6 +1672,8 @@ def validate(cfg: Config) -> None:
                 errs.append(
                     f"weather.{f.name} is inert while weather.enabled is false: it must keep its default"
                 )
+    elif sph and "weather" not in SPHERE_READY:
+        pass  # refused above by the readiness gate; the weather rules are the box lattice's
     else:
         errs.extend(weather.validate_config(cfg))
 

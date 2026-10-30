@@ -51,7 +51,9 @@ def _problems(overrides: list[str], preset: str = "tiny") -> str:
 
 @pytest.mark.parametrize(
     "preset",
-    [p for p in PRESETS if p not in ("tiny3d", "64k3d", "mini3d")],  # the 3D presets: test_config.py
+    [
+        p for p in PRESETS if p not in ("tiny3d", "64k3d", "mini3d", "tiny3s")
+    ],  # the 3D presets: test_config.py
 )
 @pytest.mark.parametrize("overlays", [(), OVERLAYS])
 def test_defaults_are_2d(preset: str, overlays: tuple[str, ...]) -> None:

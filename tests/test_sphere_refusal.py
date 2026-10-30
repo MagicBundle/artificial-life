@@ -1,11 +1,10 @@
-"""A sphere config is refused at every place a config enters the engine, until S2 (DESIGN §46.9, review
-L3, L4).
+"""Where a sphere config enters the engine, and what S2 enables (DESIGN §46.9, §46.12; sphere series S2).
 
-Every entry point funnels into ``config.validate`` (``load_config``, ``apply_overrides``, the config
-embedded in a
-run directory or in a checkpoint's metadata); these tests drive one of each, and the fork guard of the
-geometry
-keys with the sphere enabled.
+Every entry point funnels into ``config.validate`` (``load_config``, ``apply_overrides``, the config embedded
+in a run directory or in a checkpoint's metadata). S2 widened ``GEOMETRY_SUPPORTED``: the refusal text and its
+funnel are checked with the tuple narrowed again; a sphere ``run``, ``resume`` and ``bench`` work; the tools
+that read the box geometry (``stream``, ``play``, ``activity``) and the layers that are not converted
+(``SPHERE_READY``: weather, the five features, observers, the director) refuse with the PR that converts them.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from alife import cli, config
+from alife import cli, config, migrate
 from alife.config import ConfigError, apply_overrides, config_to_dict, load_config
 from alife.runio import RunDir
 from sphere_helpers import sphere_cfg, sphere_enabled  # noqa: F401  (a fixture)
@@ -24,6 +23,13 @@ SPHERE_SET = ["--set", "world.geometry=sphere"]
 MSG = "not enabled yet"
 
 
+@pytest.fixture
+def narrowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The state before S2: the funnel refuses a sphere with the text of ``_validate_sphere``."""
+    monkeypatch.setattr(config, "GEOMETRY_SUPPORTED", ("box",))
+
+
+@pytest.mark.usefixtures("narrowed")
 @pytest.mark.parametrize(
     "argv",
     [
@@ -33,14 +39,15 @@ MSG = "not enabled yet"
     ],
     ids=["run", "bench", "play"],
 )
-def test_the_commands_that_take_a_preset_refuse_a_sphere(
+def test_the_funnel_refuses_a_sphere_when_geometry_is_narrowed(
     argv: list[str], capsys: pytest.CaptureFixture
 ) -> None:
     assert cli.main(argv) == 2
     assert MSG in capsys.readouterr().err
 
 
-def test_overrides_and_files_refuse_a_sphere(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("narrowed")
+def test_overrides_and_files_refuse_a_narrowed_sphere(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=MSG):
         apply_overrides(load_config(preset="tiny3d"), ["world.geometry=sphere"])
     toml = tmp_path / "c.toml"
@@ -49,13 +56,12 @@ def test_overrides_and_files_refuse_a_sphere(tmp_path: Path) -> None:
         load_config(path=toml, preset="tiny3d")
 
 
-def test_a_run_directory_or_a_checkpoint_naming_a_sphere_is_refused(
+def test_a_run_directory_or_a_checkpoint_naming_a_sphere_is_refused_when_narrowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with monkeypatch.context() as m:
-        m.setattr(config, "GEOMETRY_SUPPORTED", ("box", "sphere"))
-        blob = json.dumps(config_to_dict(sphere_cfg("tiny3s"), omit_defaults=True))
-    # a config.json written by an engine that ran spheres, read by this one
+    blob = json.dumps(config_to_dict(sphere_cfg("tiny3s"), omit_defaults=True))
+    monkeypatch.setattr(config, "GEOMETRY_SUPPORTED", ("box",))
+    # a config.json written by an engine that ran spheres, read by one that does not
     (tmp_path / "config.json").write_text(blob)
     (tmp_path / "meta.json").write_text(json.dumps({"format_version": 1}))
     with pytest.raises(ConfigError, match=MSG):
@@ -64,11 +70,86 @@ def test_a_run_directory_or_a_checkpoint_naming_a_sphere_is_refused(
     monkeypatch.setattr(cli, "checkpoint_metadata", lambda path: {"config": blob})
     with pytest.raises(ConfigError, match=MSG):
         cli._embedded_config(tmp_path / "x.safetensors")
-    from alife import migrate
-
     monkeypatch.setattr(migrate, "checkpoint_metadata", lambda path: {"config": blob})
     with pytest.raises(ConfigError, match=MSG):
         migrate.embedded_config(tmp_path / "x.safetensors")
+
+
+def test_run_inspect_resume_and_bench_run_a_sphere(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    """S2 enables the sphere: `run` writes a run directory with ``geometry`` in its meta and its checkpoints,
+    `inspect` labels the planet, `resume` continues bitwise, `bench` times it."""
+    out = tmp_path / "run"
+    base = ["--preset", "tiny3s", "--set", "brain.weight_dtype=float32"]
+    # not quiet: the announce line of `run` and `resume` names the planet, not a world size (S3 review H1)
+    assert cli.main(["run", *base, "--steps", "20", "--out", str(out)]) == 0
+    first = capsys.readouterr().out
+    assert "R=36 Nside=8 height=16" in first and "steps 0 → 20" in first and "L=" not in first
+    rd = RunDir.open(out)
+    assert rd.meta()["geometry"] == "sphere" and "dims" in rd.meta()
+    assert cli.main(["inspect", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "geometry=sphere" in text and "planet_radius=36" in text and "ledger OK" in text
+    assert cli.main(["resume", str(out), "--until", "30"]) == 0
+    assert "R=36 Nside=8" in capsys.readouterr().out
+    assert RunDir.open(out).meta()["status"] == "done"
+    assert cli.main(["bench", *base, "--steps", "3", "--warmup", "2"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["config"]["geometry"] == "sphere" and report["config"]["planet_radius"] == 36.0
+    assert report["invariants_ok"] and "world_size" not in report["config"]
+
+
+@pytest.mark.parametrize(
+    ("argv", "pr"),
+    [
+        (["play", "--preset", "tiny3s"], "S5"),
+        (["run", "--preset", "tiny3s", "--set", "game.observe=true"], "S5"),
+        (["run", "--preset", "tiny3s", "--set", "director.enabled=true"], "S5"),
+        (["run", "--preset", "tiny3s", "--set", "weather.enabled=true"], "S4"),
+        (["run", "--preset", "tiny3s", "--set", "structures.enabled=true"], "S3"),
+        (["run", "--preset", "tiny3s", "--set", "arms.enabled=true"], "S3"),
+        (["run", "--preset", "tiny3s", "--set", "comm.enabled=true"], "S3"),
+        (["run", "--preset", "tiny3s", "--set", "niche.farm=true"], "S3"),
+        (["run", "--preset", "tiny3s", "--set", "roles.enabled=true"], "S3"),
+    ],
+)
+def test_layers_that_are_not_converted_are_refused_with_their_pr(
+    argv: list[str], pr: str, capsys: pytest.CaptureFixture
+) -> None:
+    assert cli.main(argv if argv[0] == "play" else [*argv, "--quiet"]) == 2
+    err = capsys.readouterr().err
+    assert "is not available on a sphere yet" in err and f"(PR {pr})" in err
+
+
+def test_the_readiness_set_is_read_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``SPHERE_READY`` is what a later PR widens: a name in it passes the gate (the layer's rules apply)."""
+    sets = ["structures.enabled=true"]
+    with pytest.raises(ConfigError, match=r"structures is not available on a sphere yet \(PR S3\)"):
+        load_config(preset="tiny3s", overrides=sets)
+    monkeypatch.setattr(config, "SPHERE_READY", frozenset({"structures"}))
+    assert "structures" not in config.sphere_wanted(load_config(preset="tiny3s"))
+    try:
+        load_config(preset="tiny3s", overrides=sets)
+    except ConfigError as e:  # the layer's own rules may still refuse; the gate does not
+        assert "not available on a sphere yet" not in str(e)
+
+
+@pytest.mark.parametrize("cmd", ["stream", "activity"])
+def test_tools_that_read_the_box_geometry_refuse_a_sphere(
+    cmd: str, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    out = tmp_path / "run"
+    assert cli.main(["run", "--preset", "tiny3s", "--steps", "10", "--out", str(out), "--quiet"]) == 0
+    argv = ["stream", "--steps", "1", str(out)] if cmd == "stream" else ["activity", str(out)]
+    assert cli.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "does not support world.geometry = 'sphere' yet" in err and "PR S5" in err
+
+
+def test_a_sphere_has_no_migration(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    out = tmp_path / "run"
+    assert cli.main(["run", "--preset", "tiny3s", "--steps", "10", "--out", str(out), "--quiet"]) == 0
+    assert cli.main(["migrate", str(out), "--enable", "niche", "--out", str(tmp_path / "m")]) != 0
+    assert "a sphere world has no migration" in capsys.readouterr().err
 
 
 @pytest.mark.usefixtures("sphere_enabled")
@@ -88,3 +169,20 @@ def test_a_fork_cannot_change_the_geometry_of_its_source(tmp_path: Path) -> None
     for s in sets:
         argv += ["--set", s]
     assert cli.main(argv) == 4
+
+
+def test_a_sphere_checkpoint_never_loads_into_a_box_config_and_back(tmp_path: Path) -> None:
+    """``load_checkpoint`` compares the file's ``geometry`` (absent = box) with ``world.geometry``: the shapes
+    differ, so a state never crosses geometries (``CheckpointError`` in the library, exit 4 in the CLI)."""
+    from alife.runio import CheckpointError, load_checkpoint, write_state_file
+    from alife.state import init_state
+
+    sph, box = load_config(preset="tiny3s"), load_config(preset="tiny3d")
+    f_sph, f_box = tmp_path / "sph.safetensors", tmp_path / "box.safetensors"
+    write_state_file(f_sph, init_state(sph), sph)
+    write_state_file(f_box, init_state(box), box)
+    with pytest.raises(CheckpointError, match="cross-geometry resume/fork is not supported"):
+        load_checkpoint(f_sph, box, check_hash=False)
+    with pytest.raises(CheckpointError, match="cross-geometry resume/fork is not supported"):
+        load_checkpoint(f_box, sph, check_hash=False)
+    assert load_checkpoint(f_sph, sph).pos.shape == (1024, 3)

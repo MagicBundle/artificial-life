@@ -22,7 +22,7 @@ R_SENSE, R_BODY = 6.0, 1.0
 # (name, Rp, H, FZ, Nf, margin of the exact reach-2 coverage over the rigorous angle, G_z, min C)
 PRESETS = [
     ("tiny3s", 36.0, 16.0, 8, 8, 0.120, 5, 28),
-    ("mini3s", 48.0, 24.0, 12, 11, 0.068, 8, 27),
+    ("mini3s", 48.0, 24.0, 12, 11, 0.068, 7, 30),  # 2H/R = 8 exactly: G_z 7, T_h 3.43 > R/2 (review M1)
     ("64k3s", 90.0, 40.0, 18, 21, 0.023, 13, 25),
 ]
 

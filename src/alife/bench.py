@@ -117,6 +117,8 @@ from alife.state import (
 )
 
 DONATION_STEPS: Final = 10
+STEADY_RATIO: Final = 1.5625  # n_max / alive of the presets (mini3d 16384 / 10500), the row count of a scene
+STEADY_MIN: Final = 256  # below this M = 32 births per step and the cap leave no room for a steady scene
 DONATION_LIMIT: Final = 0.25  # healthy when a copying step peaks > 0.25 × bytes(W1 + W2) higher (§15.4)
 _SHOW_PROBLEMS: Final = 5  # full_check messages quoted in the report
 
@@ -264,6 +266,40 @@ def run_bench(
 # --- environment ----------------------------------------------------------------------------------------
 
 
+def steady_overrides(n_alive: int) -> list[str]:
+    """``--set`` items that make a steady scene of ``n_alive`` agents: ``n_init = n_alive`` founders
+    uniform in the volume, ``n_max`` the presets' 1.5625 times that (to a multiple of 64), and births off
+    (``repro.min_energy`` above anything an agent holds in a few hundred steps), so that the alive count
+    stays near ``n_alive`` while ``bench`` times the step: the instrument of the per-alive-agent comparison
+    between a sphere and a box (DESIGN §46.10). The founders' brains are random, so some starve over a long
+    run; the report gives ``n_alive_start`` and ``n_alive_end``."""
+    if n_alive < STEADY_MIN:
+        raise ValueError(f"a steady scene needs at least {STEADY_MIN} alive agents, got {n_alive}")
+    n_max = -(-int(STEADY_RATIO * n_alive) // 64) * 64
+    return [
+        f"population.n_init={n_alive}",
+        f"population.n_max={n_max}",
+        "repro.min_energy=999000",
+    ]
+
+
+def steady_summary(report: dict[str, Any], n_alive: int) -> dict[str, Any]:
+    """The ``steady`` block of a ``bench --alive`` report: the requested count, the alive counts at the start
+    and the end of the timed steps (the founders' random brains starve some during a long run, and two worlds
+    decay at different rates, so the per-agent figure is given on the mean), the fraction lost and the
+    microseconds per step per alive agent on that mean."""
+    start, end = report["n_alive_start"], report["n_alive_end"]
+    mean = 0.5 * (start + end)
+    return {
+        "requested": n_alive,
+        "n_alive_start": start,
+        "n_alive_end": end,
+        "decay_frac": (start - end) / start if start else None,
+        "n_alive_mean": mean,
+        "us_per_step_per_alive": 1e3 * report["ms_per_step"] / mean if mean else None,
+    }
+
+
 def _environment(cfg: Config) -> dict[str, Any]:
     import alife
 
@@ -280,8 +316,16 @@ def _environment(cfg: Config) -> dict[str, Any]:
             "n_max": d.n,
             "n_init": cfg.population.n_init,
             "max_births_per_step": d.m,
-            "world_size": cfg.world.size,
-            "field_grid": d.fg,
+            **(
+                {
+                    "geometry": "sphere",
+                    "planet_radius": d.radius,
+                    "field_nside": d.nside,
+                    "hash_nside": d.nside_h,
+                }
+                if d.sph
+                else {"world_size": cfg.world.size, "field_grid": d.fg}
+            ),
             **({"dims": d.nd, "world_height": cfg.world.height, "field_grid_z": d.fz} if d.d3 else {}),
             "k_neighbors": d.k,
             "cell_capacity": d.c,
@@ -766,7 +810,7 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
     """One function per sub-step group of ``stages_for(cfg)``; together they are exactly ``step.step``,
     including its static 3D branches (§27.8) and, with ``weather.enabled``, the wind (S3w) and the weather
     update (S17w), which call the same ``weather`` functions as the step (§30)."""
-    d3 = dims(cfg).d3
+    d3, sph = dims(cfg).d3, dims(cfg).sph
     wthr_on = cfg.weather.enabled  # static
 
     def flush(
@@ -785,7 +829,12 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         sn = structures.sense(s.mat, fcell, cfg) if cfg.structures.enabled else None  # static
         if d3:  # static
             gr = physics.grounded(s.pos, cfg)
-            fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch)
+            if sph:  # static: the frame of the heading vector (DESIGN §46.5)
+                fobs = fields.sample_fields(
+                    s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch, pos=s.pos, hdg=s.hdg
+                )
+            else:
+                fobs = fields.sample_fields(s.resource, s.chem, fcell, s.heading, cfg, pitch=s.pitch)
             desc = sensing.neighbor_descriptors(s, nbr, cfg)
             ectx = ext.ExtCtx(nbr, desc, geom, fcell)
             x = sensing.build_inputs(
@@ -938,6 +987,16 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
     ) -> tuple[mx.array, ...]:
         wind_f = wind.force if wind is not None else None  # static
         act_p = arms.physics_act(act, s, cfg)  # the armour slows the thrust (DESIGN §42.3)
+        if sph:  # static: IntegratedS (pos, vel, hdg, heading, ...), DESIGN §46.3
+            sv = dt.survivor
+            F = physics.forces_s(
+                s.pos, s.hdg, s.pitch, act_p, mo, s.buoy_cap, nbr, sv, dt.partner, cfg, wind=wind_f
+            )
+            dm = structures.drag_mult(F, sn, cfg) if sn is not None else None
+            its = physics.integrate_s(
+                s.pos, s.hdg, s.heading, s.pitch, F, act.grip, act.turn, mo.pitch, gr, sv, cfg, drag_mult=dm
+            )
+            return its if dm is None else (its, dm)
         if d3:  # static: Integrated3 (a NamedTuple; its first three are pos, vel, heading as in 2D)
             sv = dt.survivor
             F = physics.forces3(
@@ -957,7 +1016,8 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         s: State, it: _Interact, h_new: mx.array, moved: tuple[mx.array, ...], a: mx.array, ks: mx.array
     ) -> tuple[tuple[mx.array, ...], lifecycle.Repro]:
         dt, sv, act = it.dt, it.dt.survivor, it.act
-        pos, vel, heading = moved[:3]
+        pos, vel, h3 = moved[:3]  # IntegratedS has hdg third and heading fourth
+        heading = moved.heading if sph else h3
         s1 = s._replace(
             alive=sv,
             energy=dt.energy,
@@ -976,6 +1036,8 @@ def _stage_fns(cfg: Config) -> dict[str, Callable[..., Any]]:
         )
         if d3:  # static
             s1 = s1._replace(pitch=moved.pitch)
+        if sph:  # static
+            s1 = s1._replace(hdg=moved.hdg)
         if it.bupd is not None:  # static: bonds on
             s1 = s1._replace(**it.bupd)
         req = sv & act.reproduce & (dt.energy >= cfg.repro.min_energy) & (a >= cfg.repro.min_age)
@@ -1051,6 +1113,12 @@ class _StagedStep:
     def __init__(self, cfg: Config, *, compile: bool | None = None) -> None:
         use = cfg.run.compile if compile is None else compile
         self.cfg = cfg
+        if (
+            use and cfg.world.geometry == "sphere"
+        ):  # the compile-collision self-check, as make_step (DESIGN §46.11)
+            from alife import sphere_check
+
+            sphere_check.require_compile_safe(cfg)
         self.fns = {k: (mx.compile(f) if use else f) for k, f in _stage_fns(cfg).items()}
         self.stages = stages_for(cfg)
         self.times: dict[str, list[float]] = {name: [] for name, _ in self.stages}
@@ -1815,9 +1883,14 @@ def format_report(report: dict[str, Any]) -> str:
     r = report
     c = r["config"]
     height = f"height={c['world_height']:g} " if "world_height" in c else ""  # 3D only; H is the hidden size
+    size = (
+        f"R={c['planet_radius']:g} Nside={c['field_nside']}"
+        if "planet_radius" in c
+        else f"L={c['world_size']:g}"
+    )
     lines = [
         f"alife {r['alife_version']}  mlx {r['mlx_version']}  {r['platform']}  {r['device']}",
-        f"N={c['n_max']} M={c['max_births_per_step']} n_init={c['n_init']} L={c['world_size']:g} {height}"
+        f"N={c['n_max']} M={c['max_births_per_step']} n_init={c['n_init']} {size} {height}"
         f"K={c['k_neighbors']} C={c['cell_capacity']} H={c['hidden']} {c['weight_dtype']}/{c['brain_impl']} "
         f"compile={c['compile']} checks={c['runtime_checks']}",
         f"compile {r['compile_s']:.2f} s   {r['ms_per_step']:.2f} ms/step (median "
