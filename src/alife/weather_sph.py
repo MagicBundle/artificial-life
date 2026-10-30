@@ -29,12 +29,20 @@ sphere (arc-length widths at the pool latitude, masked to the hemisphere facing 
 simulation modules: no host syncs, no branching on array values, fixed shapes; gathers only (no scatter, no
 matmul: F20).
 
+Time (owner decision C29). One engine step advances the weather once, by ``dt`` = ``weather_dt(p)`` =
+``SPHERE_COURANT·0.81·√A/c_ext`` units of weather time (``SPHERE_COURANT`` = 0.40: ``dt`` = 0.829 / 0.804 /
+0.789 at the presets), derived and not configured. All rates of the model are per unit of weather time: the
+step takes them as ``rate·dt``; the pools drift ``vx·dt`` per engine step, a seed fires with probability
+``seed_rate·dt``, the rain handed to the resource field is ``rain_gain·P·dt``. The wind that moves agents is
+the weather's velocity applied once per engine step, unscaled (a calibration of S4c).
+
 The coupling to the engine (wind at the agents through the vertical map of ``WeatherGeometry``, rain,
 seeding, the validation) is in the second half of this module.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import math
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
@@ -64,6 +72,11 @@ A4: Final = 3e-3  # the biharmonic filter strength on h and u (ENGINE_FIXED: the
 C_LIMIT: Final = (
     0.650  # float32 limit of the S4a noise test at a4 = 3e-3: least over Nw 16, 22, 42 (0.6547, 0.650)
 )
+# The Courant number the sphere weather runs at, at every Nw (owner decision C29, DESIGN §46.6): the weather
+# time step per engine step is derived from it, ``dt_w = SPHERE_COURANT·0.81·√A/c_ext`` (0.829 / 0.804 / 0.789
+# for Nw 16 / 22 / 42 at the presets' radii), so one engine step advances the weather by ``dt_w`` < 1 units of
+# weather time. Not a config key (the box's ``ENGINE_FIXED["dt"]`` stays 1); a later change makes it one.
+SPHERE_COURANT: Final = 0.40
 E_SQRT: Final = math.sqrt(math.e)
 PLANET_AXIS: Final = np.array(
     [0.0, 0.0, 1.0]
@@ -116,6 +129,15 @@ def cell_side(radius: float, nw: int) -> float:
     return radius * math.sqrt(4.0 * math.pi / n_cells(nw))
 
 
+def weather_dt(p: WeatherParams) -> float:
+    """The weather time step of one engine step, ``SPHERE_COURANT·0.81·√A/c_ext`` (``p.dx`` is ``√A``):
+    ``C_used = SPHERE_COURANT`` at every ``Nw``. Derived from the geometry and the layer constants, not
+    configured. Every per-step quantity of the weather is a rate times this ``dt``: the dynamics, friction,
+    relaxation and moisture take ``p.dt``; the pools drift ``vx·dt`` and the seeds fire with probability
+    ``seed_rate·dt`` per engine step; the rain handed to the resource field is ``rain_gain·P·dt``."""
+    return SPHERE_COURANT * 0.81 * p.dx / p.c_ext
+
+
 @functools.cache
 def _params(wc: Any, radius: float) -> WeatherParams:
     nw = wc.cells
@@ -124,7 +146,7 @@ def _params(wc: Any, radius: float) -> WeatherParams:
 
     own = {f.name for f in dc_fields(WeatherParams)}
     kw = {f.name: getattr(wc, f.name) for f in dc_fields(wc) if f.name in own and f.name != "pools"}
-    return WeatherParams(
+    base = WeatherParams(
         n=nw,
         dx=cell_side(radius, nw),
         height=wc.H1 + wc.H2,
@@ -132,6 +154,7 @@ def _params(wc: Any, radius: float) -> WeatherParams:
         **ENGINE_FIXED,
         **kw,
     )
+    return dataclasses.replace(base, dt=weather_dt(base))
 
 
 def params_from_config(cfg: Config) -> WeatherParams:
@@ -309,10 +332,11 @@ def warm_pools(p: WeatherParams, radius: float, x: mx.array, t: mx.array | None 
 
     A pool ``(x, y, sx, sy, amp, vx, vy)`` has its centre at the arc lengths ``x`` east of longitude 0 and
     ``y`` north of the equator (``lon = x/R``, ``lat = y/R``), drifts in longitude at its own latitude
-    (``vx`` arc length per step, ``vy = 0`` required), and is Gaussian in the east and north components of
-    the chord vector to the cell centre (widths ``sx``, ``sy`` in length; ``sx <= 0``: a zonal band). The
-    Gaussian is masked to the hemisphere facing the centre (``x·c > 0``): the chord's tangent components are
-    not monotone in the angle and would light the antipode (S4a). ``t`` is an int32 () array (a Python int
+    (``vx`` arc length per unit of weather time, so ``vx·dt`` per engine step; ``vy = 0`` required), and is
+    Gaussian in the east and north components of the chord vector to the cell centre (widths ``sx``, ``sy`` in
+    length; ``sx <= 0``: a zonal band). The Gaussian is masked to the hemisphere facing the centre (``x·c >
+    0``): the chord's tangent components are not monotone in the angle and would light the antipode (S4a).
+    ``t`` is an int32 () array (a Python int
     would be a compile constant); with every drift 0 the map ignores it."""
     total = mx.zeros((x.shape[0],), dtype=_F32)
     drift = any(row[5] != 0.0 for row in p.pools)
@@ -329,7 +353,7 @@ def warm_pools(p: WeatherParams, radius: float, x: mx.array, t: mx.array | None 
             east = mx.array([-sl, cl, 0.0], dtype=_F32)
             north = mx.array([-slat * cl, -slat * sl, clat], dtype=_F32)
         else:
-            lon_t = lon + (vx / (radius * clat)) * tf
+            lon_t = lon + (vx * p.dt / (radius * clat)) * tf
             cl, sl = mx.cos(lon_t), mx.sin(lon_t)
             zero = lon_t * 0.0
             cen = mx.stack([clat * cl, clat * sl, zero + slat])
@@ -381,7 +405,7 @@ def _seed_vortex(x: mx.array, key: mx.array, p: WeatherParams, radius: float) ->
     ``ψ = amp·exp(-|R(x - x_s)|²/2σ²)`` about a random point ``x_s`` (equal-area draw), cyclonic for the
     hemisphere of the point (``amp = -sign(z_s)·on·a·seed_v·σ·√e``); zero when not ``on``."""
     k_on, k_x, k_y, k_a = mx.random.split(key, 4)
-    on = (mx.random.uniform(key=k_on) < p.seed_rate).astype(_F32)
+    on = (mx.random.uniform(key=k_on) < p.seed_rate * p.dt).astype(_F32)  # a rate per unit of weather time
     xs = fields_sph.sphere_point(mx.random.uniform(key=k_x), mx.random.uniform(key=k_y))  # (3,)
     a = 1.0 + p.seed_jitter * (2.0 * mx.random.uniform(key=k_a) - 1.0)
     sgn = mx.where(xs[2] >= 0, 1.0, -1.0)
@@ -884,16 +908,18 @@ def agent_drift(
 
 def rain_regen(rain: RainIn, cfg: Config) -> mx.array:
     """The rain as integer regeneration quanta per field cell, ``(FZ, Npix_f)`` int32 (the sphere's
-    ``weather.rain_regen``): ``q = rain_gain·mean(P)`` over the ``r²`` weather children of a pixel; the cloud
+    ``weather.rain_regen``): ``q = rain_gain·dt·mean(P)`` over the ``r²`` weather children of a pixel (``P``
+    is a rate per unit of weather time, one engine step is ``dt`` of it); the cloud
     ``[zi, zi + dc]`` (rain-weighted means over the children, weather units) is mapped onto the shell
     layers by
     ``WeatherGeometry.cloud_weights``; layer ``k`` takes ``floor(q·share_k)``, so a column's food is
-    ``rain_gain·P`` whatever the cloud depth (less the floors: about half a quantum per used layer);
+    ``rain_gain·dt·P`` whatever the cloud depth (less the floors: about half a quantum per used layer);
     ``rain_floor·q`` more goes to layer 0."""
     wc = cfg.weather
+    p = params_from_config(cfg)
     geo = WeatherGeometry.from_config(cfg)
     ps = geo.block_sum(rain.P)
-    q = wc.rain_gain * geo.block_mean(rain.P)
+    q = wc.rain_gain * p.dt * geo.block_mean(rain.P)  # P is a rate per unit of weather time
     den = mx.maximum(ps, 1e-30)
     zi = geo.block_sum(rain.P * rain.zi) / den
     dc = geo.block_sum(rain.P * rain.dc) / den

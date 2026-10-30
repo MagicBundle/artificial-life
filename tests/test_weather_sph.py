@@ -295,7 +295,7 @@ def test_the_step_commutes_with_the_quarter_turn_about_the_axis() -> None:
 # --- the pools and the seeded vortex ------------------------------------------------------------------------
 
 
-def _pool_ref(x: np.ndarray, radius: float, pools, t: int) -> np.ndarray:
+def _pool_ref(x: np.ndarray, radius: float, pools, t: float) -> np.ndarray:
     out = np.zeros(len(x))
     for px, py, sx, sy, amp, vx, _vy in pools:
         lat = py / radius
@@ -341,6 +341,41 @@ def test_the_warm_pools_equal_their_closed_form_and_drift_in_longitude() -> None
             radius,
             mx.array(x, dtype=mx.float32),
         )
+
+
+def test_the_pools_drift_vx_per_unit_of_weather_time_and_vx_dt_per_engine_step() -> None:
+    """The weather runs ``dt`` units of weather time per engine step (C29): a pool at engine step ``t`` is
+    where the closed form puts it at weather time ``t·dt``."""
+    radius, dt = 90.0, 0.789
+    pools = ((94.2, 62.8, 32.0, 16.0, 1.0, -0.009, 0.0), (0.0, -62.8, 32.0, 16.0, 0.8, -0.02, 0.0))
+    p = params(16, radius, pools=pools, dt=dt)
+    x = weather_tab.weather_tab(16).x
+    for t in (0, 777, 50000):
+        got = np.array(
+            weather_sph.warm_pools(p, radius, mx.array(x, dtype=mx.float32), mx.array(t, dtype=mx.int32))
+        )
+        assert np.abs(got - _pool_ref(x, radius, pools, t * dt)).max() < 5e-5, t
+    far = np.array(
+        weather_sph.warm_pools(p, radius, mx.array(x, dtype=mx.float32), mx.array(50000, dtype=mx.int32))
+    )
+    assert np.abs(far - _pool_ref(x, radius, pools, 50000.0)).max() > 0.05  # not the dt = 1 position
+
+
+def test_the_seeds_fire_at_a_rate_per_unit_of_weather_time() -> None:
+    """``seed_rate`` is per unit of weather time: a step of ``dt`` fires with probability ``seed_rate·dt``
+    (the draw compared with the closed form on 60 keys, with draws between ``seed_rate·dt`` and
+    ``seed_rate``)."""
+    radius = 90.0
+    p = params(16, radius, seed_rate=0.5, dt=0.5)
+    xm = mx.array(weather_tab.weather_tab(16).x, dtype=mx.float32)
+    between = 0
+    for k in range(60):
+        key = mx.random.key(k)
+        u0 = float(mx.random.uniform(key=mx.random.split(key, 4)[0]))
+        _, on = weather_sph._seed_vortex(xm, key, p, radius)
+        assert float(on) == float(u0 < 0.25), (k, u0)
+        between += int(0.25 <= u0 < 0.5)
+    assert between >= 3  # the check has teeth: those draws fired at dt = 1
 
 
 def test_the_seeded_vortex_is_the_closed_form_and_cyclonic_for_its_hemisphere() -> None:
@@ -403,15 +438,44 @@ def noise_ratio(nw: int, radius: float, c: float, nit: int, f0: float = 0.0, see
     return e / a0
 
 
-def c_used(nw: int, radius: float) -> float:
+def c_at_dt1(nw: int, radius: float) -> float:
+    """The Courant number of a weather step of ``dt = 1`` (the S4b first draft, before C29)."""
     return WeatherParams().c_ext / (0.81 * weather_sph.cell_side(radius, nw))
 
 
+def c_used(nw: int, radius: float) -> float:
+    """The Courant number the engine runs the sphere weather at (C29): 0.40 at every ``Nw``."""
+    return weather_sph.SPHERE_COURANT
+
+
 def test_the_courant_numbers_of_the_presets() -> None:
-    """The table of docs/SPHERE.md 7.3 with the corrected ``c_ext`` of the two-layer model (0.900)."""
-    got = [round(c_used(nw, r), 3) for nw, r in ((16, 36.0), (22, 48.0), (42, 90.0))]
+    """The table of docs/SPHERE.md 7.3 with the corrected ``c_ext`` of the two-layer model (0.900): the
+    Courant numbers at ``dt = 1`` (what the weather would run at without C29)."""
+    got = [round(c_at_dt1(nw, r), 3) for nw, r in ((16, 36.0), (22, 48.0), (42, 90.0))]
     assert got == [0.483, 0.498, 0.507]
     assert max(got) <= 0.8 * weather_sph.C_LIMIT
+
+
+def test_the_weather_time_step_gives_c_used_0_40_at_every_preset_and_every_nw() -> None:
+    """Owner decision C29: ``dt_w = 0.40·0.81·√A/c_ext``, derived (no key), so ``C_used`` is 0.40 at each
+    preset and at any other ``Nw``/``Rp`` (the table of dt: 0.829 / 0.804 / 0.789)."""
+    from sphere_weather_helpers import weather_cfg
+
+    assert weather_sph.SPHERE_COURANT == 0.40
+    want = {"tiny3s": 0.829, "mini3s": 0.804, "64k3s": 0.789}
+    for which, dt in want.items():
+        cfg = weather_cfg(which)
+        p = weather_sph.params_from_config(cfg)
+        assert weather_sph.courant(p, cfg.world.radius) == pytest.approx(0.40, abs=1e-12), which
+        assert p.dt == pytest.approx(dt, abs=5e-4), which
+        assert weather_sph._params_rules(p, cfg.world.radius) == []
+    for nw, radius in ((16, 36.0), (22, 48.0), (42, 90.0), (32, 36.0), (8, 90.0), (64, 20.0)):
+        base = params(nw, radius)
+        dt = weather_sph.weather_dt(base)
+        assert weather_sph.courant(base, radius, dt) == pytest.approx(0.40, abs=1e-12)
+    # a finer weather grid at the same radius keeps C_used (dt follows the cell side)
+    fine = weather_cfg("tiny3s", "weather.cells=32")
+    assert weather_sph.courant(weather_sph.params_from_config(fine), 36.0) == pytest.approx(0.40, abs=1e-12)
 
 
 def test_linear_noise_decays_at_the_courant_number_of_use_and_at_1_2_times_it() -> None:
@@ -448,40 +512,43 @@ def test_the_float32_courant_limit_is_at_least_1_25_times_the_courant_number_of_
 @pytest.mark.slow
 @pytest.mark.parametrize(
     ("nw", "radius", "bound"),
-    [(16, 36.0, 2e-5), (22, 48.0, 2e-5), (42, 90.0, 1.5e-4)],
+    [(16, 36.0, 1e-5), (22, 48.0, 1e-5), (42, 90.0, 2e-5)],
 )
 def test_the_dry_rotating_noise_grows_at_most_at_the_known_rate(nw: int, radius: float, bound: float) -> None:
     """f0 = 0.025, **40 000** steps (S4a and the 4 000-step version of this test stop before the onset),
-    dry and
-    frictionless, at C_used: the slope of ``log rms(h - h0)`` over the last 5 blocks of 4 000 steps. Nw 16
-    and 22
-    decay or are neutral (measured -0.8 and -0.7e-5 per step); **Nw 42 grows at +8.6e-5 per step** (the
-    scheme's
-    own rotation-coupled mode, review M1, float32 CPU/Metal and float64 agree): the bound 1.5e-4 only stops it
-    from getting worse. In the production step friction cancels it (next test)."""
-    c = S.WeatherParams().c_ext / (0.81 * weather_sph.cell_side(radius, nw))
-    blocks = S.rms_blocks(nw, radius, c, 40000)
+    dry and frictionless, at C_used = 0.40 (C29): the slope of ``log rms(h - h0)`` over the last 5 blocks of
+    4 000 steps. Measured on Metal: -1.35, -1.06 and +0.13e-5 per step for Nw 16, 22 and 42, with block
+    scatter of about 2e-5 (a 5-block mean is good to about 1e-5). At the first draft's C = 0.507 Nw 42 grew at
+    **+8.6e-5 per step** (the scheme's own rotation-coupled mode, review M1; float32 CPU/Metal and float64
+    agree) and the bound was 1.5e-4. The bounds 1e-5 / 1e-5 / 2e-5 sit above the measurements by more than the
+    scatter and fail on a return of that mode (4 times the Nw 42 bound). The rms is a short-horizon gauge: the
+    dry power iteration still grows at C = 0.40 (+4.9e-5, see ``s4b_build/m1_options.md``), which is why the
+    production test below is the one that bounds the margin."""
+    blocks = S.rms_blocks(nw, radius, c_used(nw, radius), 40000)
     tail = float(np.mean(blocks[-5:]))
     assert tail < bound, (nw, tail, blocks)
 
 
 @pytest.mark.slow
-def test_the_production_weather_at_nw_42_is_neutral_and_the_friction_is_what_makes_it_so() -> None:
+def test_the_production_weather_at_nw_42_is_stable_with_a_margin_in_the_friction() -> None:
     """The dominant growth rate of the production map (r1 2e-4, r2 1e-4, tau_rad 2000, tripwire) about the
-    rest
-    state at Nw 42, C_used, by power iteration (24 blocks of 4 000 steps; the mean of the last 12). Measured:
-    +0.8e-5 per step (blocks wander between -1.1 and +3.1e-5; 16 blocks gave -0.7e-5, the reviewer's 20 gave
-    -0.3e-5, so the estimate is neutral within about +-2e-5), against +6.7e-5 with r1 and r2 halved
-    (e-folding in
-    15 000 steps). The bound +3e-5 (e-folding in 33 000 steps) fails if the margin that friction buys is
-    eaten;
-    the control asserts that the instrument sees it. **r1, r2 and tau_rad are stability parameters of this
-    weather**; S4c's calibration re-runs this test after changing them, Nw, Rp or dt."""
-    c = S.WeatherParams().c_ext / (0.81 * weather_sph.cell_side(90.0, 42))
+    rest state at Nw 42 and C_used = 0.40 (C29), by power iteration (24 blocks of 4 000 steps; the mean of
+    the last 12). Measured on Metal (``s4b_build/c29_*.log``): **-0.27e-5 per step** (converged: the blocks
+    fall from -1.1 to -0.01e-5), **-0.25e-5 with r1 and r2 halved**, **+2.2e-5 with them quartered**, and
+    +5.5e-5 with friction, drag and relaxation all off (the dry scheme's mode, +4.9e-5). At the first draft's
+    C = 0.507 the same map gave +0.8e-5 (blocks between -1 and +3) and +6.7e-5 halved: C = 0.40 turned a
+    neutral map with no margin into one that is stable at half the friction. The bound +1e-5 (e-folding in
+    100 000 steps) is above both measurements by 1.3e-5, more than the scatter of the late blocks (0.5e-5),
+    and below the quartered friction, which is the control that the instrument sees growth.
+    **r1, r2 and tau_rad remain stability parameters of this weather** (the margin is a factor of about 3 in
+    r1 and r2); S4c's calibration re-runs this test after changing them, Nw, Rp or the Courant number."""
+    c = c_used(42, 90.0)
     nominal = S.dominant_rate(42, 90.0, c, 96000, dry=False)
-    assert float(np.mean(nominal[12:])) < 3e-5, nominal
+    assert float(np.mean(nominal[12:])) < 1e-5, nominal
     halved = S.dominant_rate(42, 90.0, c, 96000, dry=False, r1=1e-4, r2=5e-5)
-    assert float(np.mean(halved[12:])) > 3e-5, halved
+    assert float(np.mean(halved[12:])) < 1e-5, halved  # the margin C29 bought (+6.7e-5 at C = 0.507)
+    quartered = S.dominant_rate(42, 90.0, c, 96000, dry=False, r1=5e-5, r2=2.5e-5)
+    assert float(np.mean(quartered[12:])) > 1e-5, quartered  # the control: the instrument sees growth
 
 
 def _dense_rho(nw: int, c: float, f0: float, radius: float = 90.0) -> float:

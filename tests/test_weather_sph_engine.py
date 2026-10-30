@@ -65,7 +65,6 @@ def test_the_three_preset_geometries_validate_with_the_weather(which: str) -> No
         ("weather.cells=17", "Nf times a power of two"),
         ("weather.cells=24", "Nf times a power of two"),
         ("weather.cells=8", "L_d"),  # a coarse grid: the deformation radius is under three cells
-        ("weather.cells=32", "Courant"),  # a finer grid at the same dt: C_used 0.97
         ("weather.pools=0,0,8,8,1,0,0.01", "vy"),
         ("weather.pools=0,0,8,8,1,0,0,0", "7 numbers per pool"),
         ("weather.pools=0,40,8,8,1,0,0", "latitude"),  # y/R = 1.1 rad = 63.7 degrees
@@ -111,7 +110,8 @@ def test_the_stormsph_overlay_is_made_for_the_64k3s_world() -> None:
     )
     p = weather_sph.params_from_config(cfg)
     assert (cfg.weather.cells, len(cfg.weather.pools) // 7) == (42, 6)
-    assert weather_sph.courant(p, 90.0) == pytest.approx(0.5067, abs=1e-3)
+    assert weather_sph.courant(p, 90.0) == pytest.approx(0.40, abs=1e-9)
+    assert p.dt == pytest.approx(0.789, abs=5e-4)
     # f at the pools: f0·sin(lat) = 0.025·sin(40 deg) = 0.0161, as 64k3d's
     assert p.f0 * np.sin(np.radians(40.0)) == pytest.approx(0.0161, abs=1e-4)
 
@@ -187,7 +187,7 @@ def test_the_energy_ledger_closes_with_rain_feeding_the_resource() -> None:
     with_rain = fields.regen_rate(s.patch_pos, cfg, mx.array(0, dtype=mx.int32), None, rain)
     extra = np.array(with_rain - base)
     assert extra.shape == base.shape and extra.min() >= 0 and extra.sum() > 0
-    q = 500000 * 2e-3
+    q = 500000 * p.dt * 2e-3  # the rain is per unit of weather time, one engine step is p.dt of it
     assert extra.sum(axis=0).max() <= q and extra.sum(axis=0).min() >= q - 2 * extra.shape[0]
     assert p.height == 80.0
     # and the engine books it: 60 steps with the rain on the sphere, the ledger of every step closes
@@ -436,11 +436,20 @@ def _msgs(*overrides: str) -> str:
 
 
 def test_the_courant_rule_is_c_used_at_most_point_eight_c_limit() -> None:
-    """``C_used = 0.4826·36/R`` for tiny3s: the rule bites at ``0.8·0.650 = 0.520``, i.e. a radius of 33.4."""
-    assert "Courant" not in _msgs("world.radius=33.6")  # C_used 0.5171
-    assert "Courant" in _msgs("world.radius=33.2")  # 0.5233
-    assert "Courant" in _msgs("world.radius=32.0")  # 0.543: a factor 1.2 instead of 0.8 would let it pass
+    """Since C29 the config cannot reach rule S-1 (``dt`` is derived, ``C_used`` = 0.40 whatever ``Nw`` and
+    ``Rp``), so the rule is tested on the parameters: it bites at ``0.8·0.650 = 0.520``, and a derived ``dt``
+    is far inside it."""
+    p = weather_sph.params_from_config(weather_cfg("tiny3s"))
+    radius = 36.0
+
+    def msgs(c: float) -> str:
+        return " ".join(weather_sph._params_rules(replace(p, dt=c * 0.81 * p.dx / p.c_ext), radius))
+
+    assert "Courant" not in msgs(0.40) and "Courant" not in msgs(0.519)
+    assert "Courant" in msgs(0.521) and "Courant" in msgs(0.65)  # 1.2 instead of 0.8 would let 0.65 pass
     assert abs(0.8 * weather_sph.C_LIMIT - 0.52) < 1e-12
+    for ov in ("world.radius=33.2", "world.radius=32.0", "weather.cells=32"):
+        assert "Courant" not in _msgs(ov)  # dt follows the cell side: C_used stays 0.40
 
 
 def test_the_shear_layer_must_lie_within_the_floor_layer_in_weather_units() -> None:
