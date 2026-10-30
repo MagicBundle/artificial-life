@@ -164,3 +164,57 @@ def test_layout_and_the_state_round_trip() -> None:
     back = state_from_arrays({k: mx.array(to_numpy(v)) for k, v in state_to_arrays(s).items()}, cfg)
     assert isinstance(back, StateS) and invariants.full_check(back, cfg) == []
     assert layout.PITCH_MAX > 1.0
+
+
+# --- the radial bookkeeping of a step, from the previous positions (review M2) ----------------------------
+
+
+def radial_problems(prev: StateS, s: StateS, cfg: Config) -> list[str]:
+    r = invariants._Report()
+    a = {k: to_numpy(getattr(s, k)) for k in ("alive", "uid", "pos", "vel")}
+    p = {k: to_numpy(getattr(prev, k)) for k in ("alive", "uid", "pos")}
+    invariants._check_radial_sph(r, a, p, cfg)
+    return r.problems
+
+
+def test_the_radial_check_accepts_every_step_of_a_live_run_and_names_a_clamp_that_keeps_vr() -> None:
+    from alife.step import step
+
+    cfg = cfg_of()
+    d = dims(cfg)
+    s = init_state(cfg)
+    clamped = 0
+    for _ in range(120):
+        prev = s
+        s, out = step(s, cfg)
+        mx.eval(s)
+        assert radial_problems(prev, s, cfg) == []
+        assert not [p for p in invariants.full_check(s, cfg, prev, out) if p.startswith(("radius", "clamp"))]
+        clamped += int(to_numpy(out.counters)[-3] + to_numpy(out.counters)[-2])
+    assert clamped > 0  # the floor was met: the clamp branch of the check ran on real rows
+
+    # a synthetic step: row 0 rests on the floor and is pushed down; the engine zeroes the radial velocity
+    prev = init_state(cfg)
+    up = to_numpy(prev.pos)[0] / np.linalg.norm(to_numpy(prev.pos)[0])
+    pos = to_numpy(prev.pos).copy()
+    pos[0] = (up * float(d.r_lo)).astype(np.float32)
+    prev = prev._replace(pos=mx.array(pos))
+    ok = prev._replace(vel=mx.array(np.zeros_like(pos)))  # clamped: v_r zeroed, the radius stays on the floor
+    assert radial_problems(prev, ok, cfg) == []
+    vel = np.zeros_like(pos)
+    vel[0] = (-0.01 * up).astype(
+        np.float32
+    )  # the clamp kept v_r = -0.01 while the radius stayed on the floor
+    bad = radial_problems(prev, prev._replace(vel=mx.array(vel)), cfg)
+    assert any("clamp: a row on a bound kept its radial velocity" in m for m in bad), bad
+    # an unclamped landing: it came down 0.01 and stopped within 1e-6 of the floor: v_r kept, accepted
+    high = pos.copy()
+    high[0] = (up * (float(d.r_lo) + 0.01)).astype(np.float32)
+    landed = prev._replace(pos=mx.array(pos))  # now on the floor
+    came_from = prev._replace(pos=mx.array(high))
+    assert radial_problems(came_from, landed._replace(vel=mx.array(vel)), cfg) == []
+    # a radius that is not the integrated one (a free row teleported 0.5 outward)
+    moved = pos.copy()
+    moved[1] = (to_numpy(prev.pos)[1] * (1 + 0.5 / np.linalg.norm(to_numpy(prev.pos)[1]))).astype(np.float32)
+    bad = radial_problems(prev, prev._replace(pos=mx.array(moved), vel=mx.array(np.zeros_like(pos))), cfg)
+    assert any("radius: not the integrated one" in m for m in bad), bad

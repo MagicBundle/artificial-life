@@ -128,7 +128,8 @@ def build_inputs(
     """
     d, n = dims(cfg), s.alive.shape[0]
     q0, sc, en = _q0(cfg), cfg.sensing, cfg.energy
-    cos_h, sin_h = mx.cos(s.heading), mx.sin(s.heading)
+    if not d.sph:  # static: the box's yaw (the derived scalar heading of a sphere is never read here)
+        cos_h, sin_h = mx.cos(s.heading), mx.sin(s.heading)
     if d.d3:  # static: the pitch half of the 3D body frame
         cos_p, sin_p = mx.cos(s.pitch), mx.sin(s.pitch)
     if d.sph:  # static: the local up and the heading vector replace the yaw angle

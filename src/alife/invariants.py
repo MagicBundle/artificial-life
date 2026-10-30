@@ -390,6 +390,38 @@ def _check_rows_sph(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     r.rows(alive & (zn > _POLE_SKIP) & ~(diff <= _HEADING_TOL), "heading: not the bearing of hdg (1e-4)")
 
 
+def _check_radial_sph(r: _Report, a: dict[str, np.ndarray], p: dict[str, np.ndarray], cfg: Config) -> None:
+    """The radial bookkeeping of a step on the sphere, from the previous positions (S2 review M2).
+
+    For a row alive in both states with the same uid, the stored ``vel`` is the commanded step at the OLD
+    point, so the radius it commands is ``rr = r_prev + vel·û_prev``. A row away from both bounds (further
+    than ``tol = 4ε``) must have ``|r − rr| <= tol``. A row on a bound must have ``|rr − bound| <= tol`` (it
+    landed there without a clamp) or ``|vel·û_prev| <= tol`` (it was clamped and the clamp zeroed the radial
+    part). This names a clamp that keeps ``v_r`` and a radius that is not the integrated one. A state-only
+    form of the box's "no velocity into the bound" is unsound: a clamped row that also moves tangentially has
+    the chord term ``−|vt|²/r`` at the new point (up to 0.007 at ``v_max``), and an unclamped landing within
+    ε keeps its ``v_r``."""
+    d = dims(cfg)
+    tol = 4.0 * radius_tol(cfg)
+    row = a["alive"] & p["alive"] & (a["uid"] == p["uid"])
+    pos, pp = a["pos"].astype(np.float64), p["pos"].astype(np.float64)
+    vel = a["vel"].astype(np.float64)
+    r_new, r_old = np.linalg.norm(pos, axis=1), np.linalg.norm(pp, axis=1)
+    vr = (vel * pp).sum(axis=1) / np.where(r_old > 0, r_old, 1.0)  # v · û_prev
+    rr = r_old + vr
+    lo, hi = float(d.r_lo), float(d.r_hi)
+    on = (np.abs(r_new - lo) <= tol) | (np.abs(r_new - hi) <= tol)
+    bound = np.where(np.abs(r_new - lo) <= np.abs(r_new - hi), lo, hi)
+    r.rows(
+        row & ~on & ~(np.abs(r_new - rr) <= tol),
+        "radius: not the integrated one (|pos| ≠ r_prev + vel·û_prev)",
+    )
+    r.rows(
+        row & on & ~((np.abs(rr - bound) <= tol) | (np.abs(vr) <= tol)),
+        "clamp: a row on a bound kept its radial velocity (the clamp must zero v_r)",
+    )
+
+
 def _check_env(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     """Director env levers: finite and in range. Inert values pass, so this is checked for every run."""
     for name, (lo, hi) in _env_ranges(cfg).items():
@@ -408,6 +440,8 @@ def _check_step(
 ) -> None:
     """Checks against the previous state (and the step's records, when given)."""
     d = dims(cfg)
+    if d.sph:  # static: the radial bookkeeping of the move, from the previous positions
+        _check_radial_sph(r, a, p, cfg)
     r.check(a["step"] == p["step"] + 1, f"step: {a['step']} does not follow {p['step']}")
     dl = a["ledger_cum"] - p["ledger_cum"]
     dt = a["total"] - p["total"]
@@ -528,7 +562,15 @@ def full_check(s: State, cfg: Config, prev: State | None = None, out: StepOut | 
     if prev is not None:
         p = {
             name: to_numpy(getattr(prev, name))
-            for name in ("alive", "uid", "step", "next_uid", "total", "ledger_cum")
+            for name in (
+                "alive",
+                "uid",
+                "step",
+                "next_uid",
+                "total",
+                "ledger_cum",
+                *(("pos",) if dims(cfg).sph else ()),
+            )
         }
         o = None
         if out is not None:

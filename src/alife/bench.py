@@ -283,6 +283,23 @@ def steady_overrides(n_alive: int) -> list[str]:
     ]
 
 
+def steady_summary(report: dict[str, Any], n_alive: int) -> dict[str, Any]:
+    """The ``steady`` block of a ``bench --alive`` report: the requested count, the alive counts at the start
+    and the end of the timed steps (the founders' random brains starve some during a long run, and two worlds
+    decay at different rates, so the per-agent figure is given on the mean), the fraction lost and the
+    microseconds per step per alive agent on that mean."""
+    start, end = report["n_alive_start"], report["n_alive_end"]
+    mean = 0.5 * (start + end)
+    return {
+        "requested": n_alive,
+        "n_alive_start": start,
+        "n_alive_end": end,
+        "decay_frac": (start - end) / start if start else None,
+        "n_alive_mean": mean,
+        "us_per_step_per_alive": 1e3 * report["ms_per_step"] / mean if mean else None,
+    }
+
+
 def _environment(cfg: Config) -> dict[str, Any]:
     import alife
 
@@ -1096,6 +1113,12 @@ class _StagedStep:
     def __init__(self, cfg: Config, *, compile: bool | None = None) -> None:
         use = cfg.run.compile if compile is None else compile
         self.cfg = cfg
+        if (
+            use and cfg.world.geometry == "sphere"
+        ):  # the compile-collision self-check, as make_step (DESIGN §46.11)
+            from alife import sphere_check
+
+            sphere_check.require_compile_safe(cfg)
         self.fns = {k: (mx.compile(f) if use else f) for k, f in _stage_fns(cfg).items()}
         self.stages = stages_for(cfg)
         self.times: dict[str, list[float]] = {name: [] for name, _ in self.stages}
