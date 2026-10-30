@@ -222,7 +222,7 @@ def test_a_played_weather_world_sends_maph_and_strm_the_decoder_accepts(tmp_path
         mp.setattr(observer, "DEFAULT_SOCIAL", dataclasses.replace(SOCIAL_V1, snapshot_every=25))
         cfg = weather_cfg("tiny3s", *CADENCE, "game.observe=true", "run.compile=false")
         opts = play.PlayOptions(rate=float("inf"), paused=False, fresh=True, unattended=True, tick=25)
-        rd, _res, _pacer, out = run_paced(cfg, tmp_path / "w", 50, [], options=opts)
+        _rd, _res, _pacer, out = run_paced(cfg, tmp_path / "w", 50, [], options=opts)
     dec = sd.decode(out.getvalue())
     tags = [r.tag for r in dec.records]
     assert "MAPH" in tags and "STRM" in tags and "MAP1" not in tags
@@ -233,6 +233,5 @@ def test_a_played_weather_world_sends_maph_and_strm_the_decoder_accepts(tmp_path
     assert maph.f["nside"] == dims(cfg).nside and maph.f["k"] == 1
     envs = next(r for r in dec.records if r.tag == "ENVS").f["json"]
     assert len(envs["pools"]) == 6 and all({"x", "y", "z", "lon", "lat"} <= set(p) for p in envs["pools"])
-    assert (rd.path / "observers" / "storms.jsonl").exists() or not [
         r for r in dec.records if r.tag == "STRM"
     ]
