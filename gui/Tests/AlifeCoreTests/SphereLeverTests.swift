@@ -31,6 +31,29 @@ import Testing
         #expect(Preset(rawValue: "tiny3s") == .tiny3s && Preset.allCases.contains(.tiny3s))
     }
 
+    /// The three planets of the engine's `config.PRESETS` (DESIGN §46.9): each is a sphere preset of its own shape, in the picker and on the command line.
+    @Test(arguments: [
+        ("tiny3s", Preset.tiny3s, "36", "16", "8", "8"),
+        ("mini3s", Preset.mini3s, "48", "24", "11", "12"),
+        ("64k3s", Preset.k64_3s, "90", "40", "21", "18"),
+    ])
+    func everySpherePresetIsAPlanetOfItsShape(name: String, preset: Preset, radius: String, height: String, nside: String, layers: String) throws {
+        let w = World3DLevers(preset: PresetFile(text: try Repo.preset(name)))
+        #expect(w.sphere.isSphere && w.dims == 3 && w.height == height)
+        #expect(w.sphere.radius == radius && w.sphere.nside == nside && w.sphere.layers == layers && w.sphere.ceilingBand == "0")
+        #expect(w.validate().isEmpty)
+        #expect(World3DLevers.preset(name, repo: Repo.root) == w)
+        #expect(preset.rawValue == name && Preset(rawValue: name) == preset)
+        var s = RunSettings()
+        s.mode = .new
+        s.name = "t"
+        s.seed = "1"
+        s.selectPreset(preset, world3D: w)
+        #expect(s.validate(existingRuns: []).isEmpty)
+        #expect(s.arguments(existingRuns: []) == ["run", "--preset", name, "--seed", "1", "--out", "runs/t"])
+        #expect(s.worldDims == 3)
+    }
+
     @Test(arguments: ["tiny3d", "64k3d", "mini3d", "tiny", "dev"])
     func aBoxPresetIsNotASphere(name: String) throws {
         let w = World3DLevers(preset: PresetFile(text: try Repo.preset(name)))

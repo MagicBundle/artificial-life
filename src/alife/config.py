@@ -513,7 +513,20 @@ class Dims:
         raise KeyError(f"feature {name!r} is not enabled")
 
 
-PRESETS: tuple[str, ...] = ("tiny", "dev", "64k", "256k", "tiny3d", "64k3d", "mini3d", "tiny3s")
+PRESETS: tuple[str, ...] = (
+    "tiny",
+    "dev",
+    "64k",
+    "256k",
+    "tiny3d",
+    "64k3d",
+    "mini3d",
+    "tiny3s",
+    "mini3s",
+    "64k3s",
+)
+# The planets (DESIGN §46.9), the sphere analogues of tiny3d, mini3d and 64k3d: a subset of ``PRESETS``.
+SPHERE_PRESETS: tuple[str, ...] = ("tiny3s", "mini3s", "64k3s")
 OVERLAYS: tuple[str, ...] = ("fast",)  # compose with every preset
 # Overlays that need a particular world (DESIGN §30): validated against whatever preset they land on, and not
 # part of ``OVERLAYS`` (which means "composes with every preset").
@@ -523,6 +536,7 @@ WORLD_OVERLAYS: tuple[str, ...] = (
     *(s.overlay for s in ext.REGISTRY if s.overlay),
     "niche3d",  # farming at the 3D design point (farm_cost 150): a variant of the niche overlay
     "stormsph",  # the weather layer of a sphere world (DESIGN §46.6), made for the 64k3s planet
+    "stormsph22",  # the same for the mini3s planet (Nw 22; DESIGN §46.9), provisional
 )
 ALL_OVERLAYS: tuple[str, ...] = OVERLAYS + WORLD_OVERLAYS  # what the loaders and the CLI accept
 DEFAULT_PRESET: Final = "64k"

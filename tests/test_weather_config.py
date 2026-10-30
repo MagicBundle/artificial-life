@@ -21,6 +21,7 @@ from alife.config import (
     OVERLAYS,
     POST_V01_KEYS,
     PRESETS,
+    SPHERE_PRESETS,
     UNHASHED_KEYS,
     WORLD_OVERLAYS,
     Config,
@@ -262,7 +263,8 @@ def test_overlay_names() -> None:
         "niche",
         "niche3d",
         "stormsph",
-    )  # build, bonds, comm, niche: features; niche3d: farming at the 3D cost; stormsph: a sphere's weather
+        "stormsph22",
+    )  # build..niche: features; niche3d: farming at the 3D cost; stormsph, stormsph22: a sphere's weather
     assert ALL_OVERLAYS == (
         "fast",
         "storm",
@@ -273,6 +275,7 @@ def test_overlay_names() -> None:
         "niche",
         "niche3d",
         "stormsph",
+        "stormsph22",
     )
 
 
@@ -305,7 +308,7 @@ def test_the_storm_overlay_fails_on_a_world_that_cannot_hold_it() -> None:
 def test_unknown_overlays_name_all_of_them() -> None:
     with pytest.raises(
         ConfigError,
-        match=r"\('fast', 'storm', 'storm160', 'build', 'bonds', 'comm', 'niche', 'niche3d', 'stormsph'\)",
+        match=r"'niche3d', 'stormsph', 'stormsph22'\)",
     ):
         load_config(overlays=["nope"])
     with pytest.raises(ConfigError, match="storm"):
@@ -412,7 +415,7 @@ def test_cli_lists_and_accepts_the_storm_overlay(capsys: pytest.CaptureFixture[s
 @pytest.mark.parametrize("overlays", [(), OVERLAYS])
 def test_presets_with_weather_off_validate(preset: str, overlays: tuple[str, ...]) -> None:
     if (
-        preset == "tiny3s" and overlays
+        preset in SPHERE_PRESETS and overlays
     ):  # the fast overlay's cell_capacity 12 cannot cover a sphere's lid cell
         pytest.skip("a sphere refuses the fast overlay (tests/test_config.py)")
     cfg = load_config(preset=preset, overlays=overlays)

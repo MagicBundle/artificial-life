@@ -712,7 +712,7 @@ def test_the_play_launch_flags_are_flags_of_alife_play() -> None:
     choices = {s: a.choices for a in parser._actions for s in a.option_strings if a.choices}  # type: ignore[attr-defined]
     assert swift_enum_values(text, "PlayHouses") == set(choices["--houses"])
     assert swift_enum_values(text, "PlayDirector") == set(choices["--director"])
-    assert {"storm", "storm160", "stormsph"} <= set(choices["--overlay"])
+    assert {"storm", "storm160", "stormsph", "stormsph22"} <= set(choices["--overlay"])
     # The launcher passes the overlay of the source's geometry and size (DESIGN §37.2, §46.9): all three names
     # are engine overlays, `stormsph` is chosen by the source's `world.geometry` (never by an alias), and
     # `miniWorldSize` is the world.size of the preset that `storm160` is made for.

@@ -1,0 +1,41 @@
+# mini3s: the mini sphere world (DRAFT)
+[population]
+n_max = 16384
+n_init = 4096
+max_births_per_step = 256
+
+[world]
+geometry = "sphere"
+size = 1024.0
+dims = 3
+height = 24.0
+radius = 48.0
+nside = 11
+layers = 12
+
+[physics]
+gravity = 0.015
+floor_eps = 0.1
+buoyancy_max = 0.04
+
+[sensing]
+k_neighbors = 8
+cell_capacity = 32
+
+[energy]
+brain_cost_per_l1 = 0.0905
+buoyancy_cost = 16
+buoyancy_cap_cost = 8
+
+[mutation]
+buoy_init = 0.5
+buoy_sigma = 0.02
+
+[fields]
+n_patches = 3
+patch_sigma = 18.0
+regen_max = 1700
+chem_diffusion = [0.16, 0.10, 0.16]
+benthic_lambda = 8.0
+photic_amp = 0.5
+photic_lambda = 8.0

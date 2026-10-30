@@ -12,6 +12,7 @@ from alife.config import (
     OVERLAYS,
     POST_V01_KEYS,
     PRESETS,
+    SPHERE_PRESETS,
     THREE_D_KEYS,
     UNHASHED_KEYS,
     Config,
@@ -52,7 +53,7 @@ def _problems(overrides: list[str], preset: str = "tiny") -> str:
 @pytest.mark.parametrize(
     "preset",
     [
-        p for p in PRESETS if p not in ("tiny3d", "64k3d", "mini3d", "tiny3s")
+        p for p in PRESETS if p not in ("tiny3d", "64k3d", "mini3d", *SPHERE_PRESETS)
     ],  # the 3D presets: test_config.py
 )
 @pytest.mark.parametrize("overlays", [(), OVERLAYS])
