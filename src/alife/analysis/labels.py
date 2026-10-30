@@ -592,11 +592,11 @@ def develop_step(prev: mx.array, pos: mx.array, fr: mx.array) -> tuple[mx.array,
     f2 = _cross(ua, fr)
     arc = theta * 0.5 * (ra + rb)
     du = arc[:, None] * mx.stack([(tau * fr).sum(axis=1), (tau * f2).sum(axis=1)], axis=1)
-    # The Rodrigues rotation of ``fr`` about ``k`` by ``theta`` is the minimal rotation taking ``ua`` to ``ub``.
-    # The projection onto the tangent plane at ``ub`` that follows would give the same vector to first order in
-    # ``theta`` (review S5: replacing the rotation by the identity leaves every label test green), so the
-    # rotation is redundant in principle; it is kept because it is exact for any ``theta`` (a large step, a
-    # cohort moving fast), and the projection then only removes the rounding residue.
+    # The Rodrigues rotation of ``fr`` about ``k`` by ``theta`` is the minimal rotation taking ``ua`` to
+    # ``ub``. The projection onto the tangent plane at ``ub`` that follows gives the same vector to first
+    # order in ``theta`` (review S5: replacing the rotation by the identity leaves every label test green),
+    # so the rotation is redundant in principle. It is kept because it is exact for any ``theta`` (a large
+    # step, a fast cohort), and the projection then only removes the rounding residue.
     k = axis / mx.maximum(s, 1e-12)[:, None]  # the rotation axis (zero for a null step)
     fr2 = fr * c[:, None] + _cross(k, fr) * s[:, None] + k * ((k * fr).sum(axis=1) * (1.0 - c))[:, None]
     fr2 = _unit(fr2 - (fr2 * ub).sum(axis=1, keepdims=True) * ub)
