@@ -2,8 +2,8 @@
 ``mini3s`` and of ``64k3s`` from their founders close the ledger on every host check (the 16 terms and every
 invariant, every 250 steps), never overflow a hash cell, keep the diag word at 0 and keep the population
 inside its band. The band is the founders' boom and the crash after it, measured in the calibration of S7a
-(a boom to 1.5 times ``n_init`` within 100 steps, a trough at 0.8 to 0.93 of it, 0.83 to 0.95 at step 3 000):
-from 0.6 to 1.75 times ``n_init`` all the way, and 0.6 to 1.3 times at the end. A third case runs
+(a boom to 1.5 to 1.7 times ``n_init`` within 100 steps, a trough at 0.8 to 0.93 of it, 0.83 to 1.1 at step
+3 000): from 0.6 to 2 times ``n_init`` all the way, and 0.6 to 1.3 times at the end. A third case runs
 ``mini3s`` with the five features and the weather on (the source run of a planet).
 
 Each runs in a cold child process (``tests/sphere_run.py``, the compile-collision fallback of
@@ -60,7 +60,7 @@ def test_three_thousand_steps_of_a_preset_close_the_ledger_overflow_nothing_and_
     assert (
         sources > 0 and sinks > 0 and ledger[LedgerIdx.HEAT_BUOYANCY] > 0
     )  # the 16-term ledger is exercised
-    assert 0.6 * n_init <= r["alive_min"] and r["alive_max"] <= 1.75 * n_init, (
+    assert 0.6 * n_init <= r["alive_min"] and r["alive_max"] <= 2.0 * n_init, (
         r["alive_min"],
         r["alive_max"],
     )

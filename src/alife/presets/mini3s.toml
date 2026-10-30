@@ -1,6 +1,24 @@
-# mini3s: the mini sphere world (DRAFT)
+# mini3s: the mini sphere world, the sphere analogue of mini3d (DESIGN section 46.9, sphere series PR S7a). A planet of
+# radius 48 with a shell of thickness 24 (floor area 28 953 against mini3d's 25 600, shell volume 1.10 M against 2.05 M):
+# HEALPix Nside 11 (1 452 angular cells) and 12 equal-volume layers (17 424 field cells of about 63 units^3), a hash of
+# Nside 11 with 7 radial layers, gravity pulling towards the centre, a floor at radius 48 + r and a hard lid at 72 - r.
+# The per-agent physics and economy are mini3d's (gravity 0.015, K = 8, brain cost 0.0905 per L1, the buoyancy keys,
+# the benthic and photic profile); the sizes, the patches and the population keys below are the sphere's. The weather
+# is the `stormsph22` overlay. `world.size` is only the image length of min_image and must exceed
+# 4 (radius + height) = 288. One key per line: the GUI reads the scalars of this file.
+#
+# CALIBRATION (S7a, Metal, seed 0; DESIGN 46.9). regen_max 2 400 against mini3d's 1 700: the thin shell has 12 layers
+# against mini3d's 20 and the same benthic profile, so a column holds less food, and at 1 700 the population settles
+# at 6 500 (steps 30 000 to 44 000: 5 900 to 7 500; the spec's range for the volume density is 5 600). Runs of 80 000
+# steps at 2 000 and 2 400 (3 patches): the founders' boom peaks at 13 400 (step 22 000) and 14 400 (step 10 800),
+# and from step 30 000 the population is 8 700 (5 800 to 10 800) and 9 800 (8 700 to 11 000), mini3d's 9 600 to
+# 10 500; 2 400 is the steadier. n_max 20 480 keeps the peak at 0.71 of n_max (16 384 let it reach 0.89); n_init 4 096
+# is 0.4 of the level, as in mini3d. Four patches (the box's patch area share of 14 %) were tried at 1 700: the
+# population reached n_max and stayed there, so the spec's 3 patches of sigma 18 (an area share of 10.5 %) stay.
+# The hash capacity C = 32 (the lid hash cell needs at least 30): the maximum occupancy of all runs was 21, no cell
+# overflowed in 6 runs of 44 000 to 80 000 steps and the 3 000-step slow test.
 [population]
-n_max = 16384
+n_max = 20480
 n_init = 4096
 max_births_per_step = 256
 
@@ -34,7 +52,7 @@ buoy_sigma = 0.02
 [fields]
 n_patches = 3
 patch_sigma = 18.0
-regen_max = 1700
+regen_max = 2400
 chem_diffusion = [0.16, 0.10, 0.16]
 benthic_lambda = 8.0
 photic_amp = 0.5

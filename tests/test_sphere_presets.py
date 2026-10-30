@@ -21,8 +21,8 @@ PRESET_DIR = Path(config.__file__).parent / "presets"
 # preset: (radius, height, field nside, layers, hash layers, n_max, n_init, regen_max, C, patches, sigma)
 TABLE = {
     "tiny3s": (36.0, 16.0, 8, 8, 5, 1024, 256, 320, 32, 4, 12.0),
-    "mini3s": (48.0, 24.0, 11, 12, 7, 16384, 4096, 1700, 32, 3, 18.0),
-    "64k3s": (90.0, 40.0, 21, 18, 13, 65536, 16384, 1700, 32, 8, 24.0),
+    "mini3s": (48.0, 24.0, 11, 12, 7, 20480, 4096, 2400, 32, 3, 18.0),
+    "64k3s": (90.0, 40.0, 21, 18, 13, 65536, 16384, 1340, 32, 8, 24.0),
 }
 BOX_ANALOGUE = {"tiny3s": "tiny3d", "mini3s": "mini3d", "64k3s": "64k3d"}
 FLOOR_AREA = {name: 4.0 * 3.141592653589793 * v[0] ** 2 for name, v in TABLE.items()}
