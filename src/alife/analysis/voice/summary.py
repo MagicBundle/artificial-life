@@ -446,7 +446,7 @@ def compare_windows(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     """Dialect drift between two windows of one world (summaries from ``build``): the Jensen-Shannon distance
     of the population's call-type distributions, the shift of its mean call, and the stability of the code
     (the correlation of the call-type to context enrichment tables). The kin groups are re-clustered at the
-    start of each window, so their labels do not name the same lines of descent in two windows: not compared."""
+    start of each window, so their labels do not name the same lines of descent: not compared."""
     sa, sb = a["population"]["symbols"], b["population"]["symbols"]
     names = list(sa)
     pa, pb = np.array([sa[n] for n in names]), np.array([sb[n] for n in names])
