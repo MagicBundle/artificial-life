@@ -129,6 +129,7 @@ def test_all_five_features_validate_on_every_planet(name: str) -> None:
 # --- the weather overlays ---------------------------------------------------------------------------------
 
 OVERLAY_OF = {"64k3s": "stormsph", "mini3s": "stormsph22"}
+POOL_SIZE = {"stormsph": (32.0, 16.0), "stormsph22": (24.0, 16.0)}  # sx, sy
 
 
 @pytest.mark.parametrize(("name", "overlay"), list(OVERLAY_OF.items()))
@@ -141,10 +142,10 @@ def test_the_overlay_validates_on_its_planet_with_the_courant_rule(name: str, ov
     assert len(cfg.weather.pools) == 6 * 7  # six pools: three per hemisphere
     r = cfg.world.radius
     assert weather_sph.courant(p, r) <= 0.8 * weather_sph.C_LIMIT
-    # before and after S4b's derived weather time step: dt = 1 (C_used 0.50) and the dt that gives C_used 0.40
+    # before and after the derived weather time step (C29): dt = 1 (C_used 0.50) and weather_dt (C_used 0.40)
     assert weather_sph.courant(p, r, dt=1.0) <= 0.8 * weather_sph.C_LIMIT
-    dt_040 = 0.40 * 0.81 * weather_sph.cell_side(r, p.n) / p.c_ext
-    assert 0.75 < dt_040 < 0.85 and weather_sph.courant(p, r, dt=dt_040) == pytest.approx(0.40)
+    dt = weather_sph.weather_dt(p)
+    assert 0.75 < dt < 0.85 and p.dt == dt and weather_sph.courant(p, r, dt=dt) == pytest.approx(0.40)
     # f at the pools is 0.0162 in every planet (latitude +-40 degrees, f0 0.025), as 64k3d's
     assert cfg.weather.f0 == 0.025
     # the overlay is a function of the planet alone: it fixes no weather time step, so the Courant number is
@@ -152,6 +153,14 @@ def test_the_overlay_validates_on_its_planet_with_the_courant_rule(name: str, ov
     text = tomllib.loads((PRESET_DIR / f"{overlay}.toml").read_text(encoding="utf-8"))
     assert set(text) == {"weather"} and "dt" not in text["weather"]
     assert text["weather"]["pools"] == list(cfg.weather.pools)
+    # the calibrated pool size (DESIGN 46.6: 16 x 10 and 20 x 12 hold too few storms) and the couplings
+    pools = [cfg.weather.pools[i : i + 7] for i in range(0, len(cfg.weather.pools), 7)]
+    assert {(p[2], p[3]) for p in pools} == {POOL_SIZE[overlay]}
+    ref = load_config(preset="64k3s", overlays=["stormsph"]).weather
+    for key in ("f0", "seed_rate", "rain_gain", "storm_p", "storm_u0", "storm_span"):
+        assert getattr(cfg.weather, key) == getattr(ref, key), (
+            key
+        )  # the box's provisional values on every planet
 
 
 @pytest.mark.parametrize(("name", "overlay"), list(OVERLAY_OF.items()))

@@ -11,8 +11,8 @@
 # unit of weather time, vy = 0. The six pools sit where `stormsph`'s do (latitude +-40 degrees, f at the pool 0.0162,
 # three per hemisphere 120 degrees apart, the southern offset by 60) and are 24 x 16, the size of the spec (7.3).
 # Measured on the engine's own weather (weather alone, 30 000 steps, seed 1, the storm layer of `alife play`; the
-# measurement is recorded in DESIGN §46.9): 24 x 16 holds 2 to 3 named storms in each hemisphere at every detection
-# after the first third (a lifetime of 28 600 steps), 20 x 12 holds 0 to 2 (mean 1.0 north, 0.6 south) and 16 x 10
+# measurement is recorded in DESIGN §46.9): 24 x 16 holds a mean of 2.8 / 2.9 named storms per hemisphere (seed 1;
+# 2 to 3 at every detection after the first third, a lifetime of 28 600 steps), 20 x 12 holds 0 to 2 (mean 1.0 north, 0.6 south) and 16 x 10
 # holds almost none (0.15 and 0.04). The drift is `stormsph`'s angular rate, -0.009·48/90 = -0.0048 (a lap in the same number of
 # steps). The overlay does not set the weather time step, so it validates before and after the Courant change of S4b.
 #

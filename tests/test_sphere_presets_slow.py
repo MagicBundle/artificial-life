@@ -18,6 +18,7 @@ import pytest
 import sphere_run
 from alife.config import dims, load_config
 from alife.state import LedgerIdx
+from sphere_storms import count_storms
 
 FEATURES = ["build", "bonds", "comm", "niche3d"]
 CASES = {
@@ -65,3 +66,14 @@ def test_three_thousand_steps_of_a_preset_close_the_ledger_overflow_nothing_and_
         r["alive_max"],
     )
     assert 0.6 * n_init <= r["alive"] <= 1.3 * n_init and r["alive_max"] < 0.75 * cfg.population.n_max
+
+
+@pytest.mark.slow
+def test_stormsph22_holds_two_to_three_storms_per_hemisphere_on_mini3s() -> None:
+    """The measurement that chose the 24 x 16 pools (DESIGN §46.6): 30 000 steps of the weather alone, seed 1,
+    at the derived dt: a mean of at least 2 named storms per hemisphere (3.0 and 2.8 measured; 20 x 12 pools
+    give 1.0 and 0.6, 16 x 10 give 0.15 and 0.04)."""
+    cfg = load_config(preset="mini3s", overlays=["stormsph22"])
+    r = count_storms(cfg, 30_000, 1)
+    assert r["north_mean"] >= 2.0 and r["south_mean"] >= 2.0, r
+    assert r["north_max"] <= 6 and r["south_max"] <= 6 and r["tracks"] >= 4, r

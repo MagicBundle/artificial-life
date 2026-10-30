@@ -48,7 +48,9 @@ def _ledger_net(ledger: mx.array, nd: int) -> mx.array:
     return net
 
 
-_BEARING_SLACK = 2e-6  # the device wraps a bearing >= π − 1e-6 to b − 2π: down to −π − 1e-6 and a float32 ulp
+# The device wraps a bearing b >= pi - 1e-6 to b - 2pi (sphere.bearing): at worst 1.28e-6 below -pi (the
+# constant rounded up to float32, minus float32(2pi)). The slack is that plus 17 %; the tests derive it.
+_BEARING_SLACK = 1.5e-6
 
 
 def radius_tol(cfg: Config) -> float:
