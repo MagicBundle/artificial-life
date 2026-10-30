@@ -21,15 +21,22 @@ will make from the state's own key. The spun-up weather is thus a function of (c
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from collections.abc import Callable
+from pathlib import Path
 
 import mlx.core as mx
+import numpy as np
 
 from alife import weather
-from alife.config import Config
+from alife.config import Config, config_to_dict
 from alife.rng import Stream, step_keys
 
 CHUNK = 16  # weather steps per evaluation: enough to hide dispatch latency, small enough to bound the graph
+CACHE_VERSION = 1  # the format of a cache entry and of its key (bump it when either changes)
+CACHE_OFF_ENV = "ALIFE_SPINUP_CACHE"  # set to "0" to switch the cache of the command line off
 
 
 def spinup_key(key: mx.array) -> mx.array:
@@ -77,6 +84,90 @@ def advance_chain(
     return wx, key
 
 
+# --- the cache of spun-up states (S4c) ---------------------------------------------------------------------
+#
+# A spin-up is a pure function of its inputs: the configuration (the weather and the world it runs on), the
+# state key, the step the agents start at (the pools' phase), the length and the compiled or eager chain, on
+# one device and one build of the weather code. The result of a long one (20 000 steps of a 64k3s planet are a
+# minute on a quiet GPU, many on a busy one) is kept in a file keyed by all of those, so that launching the
+# same world again (the same source checkpoint, overlay and length) costs a file read. The entry carries its
+# key in clear and a load checks it, the shape, the dtype and finiteness; any failure is a miss, and a failed
+# write is ignored (the cache is an optimisation, never a dependency).
+
+
+def cache_enabled() -> bool:
+    """The command line uses the cache unless ``ALIFE_SPINUP_CACHE=0``."""
+    return os.environ.get(CACHE_OFF_ENV, "1") != "0"
+
+
+def cache_dir() -> Path:
+    """``$ALIFE_CACHE_DIR/weather_spinup`` or ``~/.cache/alife/weather_spinup`` (the convention of
+    ``geom._disk_cache_dir``)."""
+    base = os.environ.get("ALIFE_CACHE_DIR") or os.path.join(os.path.expanduser("~"), ".cache", "alife")
+    return Path(base) / "weather_spinup"
+
+
+def _code_digest() -> str:
+    """The digest of the sources a spin-up depends on, so that an edit of the weather code never reads an
+    entry the old code wrote."""
+    here = Path(__file__).resolve().parent
+    h = hashlib.sha256()
+    for name in ("weather.py", "weather_sph.py", "weather_tab.py", "weather_spinup.py", "geom.py", "rng.py"):
+        h.update(name.encode())
+        h.update((here / name).read_bytes())
+    return h.hexdigest()
+
+
+def cache_key(cfg: Config, n_steps: int, *, step: int, key: mx.array, compile: bool) -> str:
+    """The key of a spin-up, as the canonical text hashed into the file name: the whole configuration but
+    ``run`` (which no step of the chain reads), ``n_steps``, ``step``, the bytes of the state ``key``, the
+    compile flag, the MLX version and device, the digest of the weather sources and the cache version."""
+    conf = config_to_dict(cfg)
+    conf.pop("run", None)
+    blob = {
+        "cache": CACHE_VERSION,
+        "config": conf,
+        "n": int(n_steps),
+        "step": int(step),
+        "key": [int(v) for v in np.array(key).reshape(-1)],
+        "compile": bool(compile),
+        "mlx": mx.__version__,
+        "device": str(mx.default_device()),
+        "code": _code_digest(),
+    }
+    return json.dumps(blob, sort_keys=True, separators=(",", ":"))
+
+
+def _entry(text: str) -> Path:
+    return cache_dir() / f"spinup_{hashlib.sha256(text.encode()).hexdigest()[:40]}.npz"
+
+
+def cache_load(text: str, like: mx.array) -> mx.array | None:
+    """The cached spin-up for the key ``text`` (shaped and typed like ``like``), or None on any mismatch."""
+    try:
+        with np.load(_entry(text), allow_pickle=False) as z:
+            if str(z["key"]) != text:
+                return None
+            wx = z["wx"]
+    except (OSError, ValueError, KeyError):
+        return None
+    if wx.shape != tuple(like.shape) or wx.dtype != np.float32 or not np.isfinite(wx).all():
+        return None
+    return mx.array(wx)
+
+
+def cache_store(text: str, wx: mx.array) -> None:
+    """Write the entry atomically (a temporary file, then a rename); a failure is silent."""
+    path = _entry(text)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")
+        np.savez(tmp, wx=np.array(wx, dtype=np.float32), key=np.array(text))
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def spinup(
     cfg: Config,
     n_steps: int,
@@ -85,12 +176,25 @@ def spinup(
     key: mx.array,
     compile: bool = True,
     progress: Callable[[int, int], None] | None = None,
+    cache: bool = False,
 ) -> mx.array:
     """The packed weather after ``n_steps`` weather-only steps, for agents that start at engine step
     ``step`` with state key ``key``: the rest state of the pools of step ``step - n_steps``, advanced
     through the steps ``step - n_steps .. step - 1`` on the chain ``spinup_key(key)``. ``n_steps = 0`` is
-    the rest state of the pools of ``step``, which is what the state already carries."""
+    the rest state of the pools of ``step``, which is what the state already carries. With ``cache`` the
+    result is read from, and written to, the cache of spun-up states (``cache_key``); ``progress`` then sees
+    one call ``(n_steps, n_steps)`` on a hit."""
     start = step - n_steps
     wx = weather.rest_array(cfg, start)
+    text = None
+    if cache and n_steps > 0:
+        text = cache_key(cfg, n_steps, step=step, key=key, compile=compile)
+        hit = cache_load(text, wx)
+        if hit is not None:
+            if progress is not None:
+                progress(n_steps, n_steps)
+            return hit
     wx, _ = advance_chain(cfg, wx, start, spinup_key(key), n_steps, compile=compile, progress=progress)
+    if text is not None:
+        cache_store(text, wx)
     return wx

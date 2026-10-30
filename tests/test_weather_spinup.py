@@ -259,3 +259,130 @@ def test_a_fork_spins_up_under_the_pools_of_its_own_step(tmp_path, capsys) -> No
     assert "already has an evolving weather state" in capsys.readouterr().err
     meta = json.loads((out / "meta.json").read_text())
     assert meta["weather_spinup"] == 20
+
+
+# --- the cache of spun-up states (S4c) ---
+
+
+@pytest.fixture
+def cache_in(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ALIFE_CACHE_DIR", str(tmp_path))
+    return tmp_path / "weather_spinup"
+
+
+def _files(d) -> list:
+    return sorted(d.glob("spinup_*.npz")) if d.exists() else []
+
+
+def test_a_cached_spinup_is_read_back_bitwise_and_skips_the_chain(
+    cfg: Config, cache_in, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key = _state_key(cfg)
+    calls: list[tuple[int, int]] = []
+    first = to_numpy(
+        weather_spinup.spinup(
+            cfg, 40, step=100, key=key, cache=True, progress=lambda d, t: calls.append((d, t))
+        )
+    )
+    assert len(_files(cache_in)) == 1 and calls[-1] == (40, 40)
+    plain = to_numpy(weather_spinup.spinup(cfg, 40, step=100, key=key))
+    assert np.array_equal(first, plain)  # what is stored is what the chain makes
+
+    def boom(*a, **k):
+        raise AssertionError("the chain ran on a cache hit")
+
+    monkeypatch.setattr(weather_spinup, "advance_chain", boom)
+    calls.clear()
+    again = to_numpy(
+        weather_spinup.spinup(
+            cfg, 40, step=100, key=key, cache=True, progress=lambda d, t: calls.append((d, t))
+        )
+    )
+    assert np.array_equal(again, first) and again.dtype == np.float32 and calls == [(40, 40)]
+
+
+def test_every_input_of_the_chain_is_in_the_key(cfg: Config, cache_in) -> None:
+    import dataclasses
+
+    key = _state_key(cfg)
+    base = dict(step=100, key=key, cache=True)
+    weather_spinup.spinup(cfg, 20, **base)
+    variants = [
+        (cfg, 20, {**base, "step": 101}),  # the pools' phase
+        (cfg, 21, base),  # the length
+        (cfg, 20, {**base, "key": init_keys(9)[InitStream.STATE_KEY]}),  # the state key
+        (cfg, 20, {**base, "compile": False}),  # compiled and eager chains
+        (dataclasses.replace(cfg, weather=dataclasses.replace(cfg.weather, seed_rate=0.031)), 20, base),
+    ]
+    for i, (c, n, kw) in enumerate(variants, start=2):
+        weather_spinup.spinup(c, n, **kw)
+        assert len(_files(cache_in)) == i, i
+    # the run section is not an input: a different seed or step count of the run reuses the entry
+    other = dataclasses.replace(cfg, run=dataclasses.replace(cfg.run, steps=7, seed=3))
+    weather_spinup.spinup(other, 20, **base)
+    assert len(_files(cache_in)) == len(variants) + 1
+
+
+def test_a_damaged_or_foreign_entry_is_a_miss_and_is_replaced(cfg: Config, cache_in) -> None:
+    key = _state_key(cfg)
+    good = to_numpy(weather_spinup.spinup(cfg, 30, step=50, key=key, cache=True))
+    (path,) = _files(cache_in)
+    path.write_bytes(b"not an npz")
+    assert np.array_equal(to_numpy(weather_spinup.spinup(cfg, 30, step=50, key=key, cache=True)), good)
+    with np.load(path) as z:  # rewritten by the miss
+        assert z["wx"].shape == good.shape
+    text = weather_spinup.cache_key(cfg, 30, step=50, key=key, compile=True)
+    np.savez(path, wx=np.zeros_like(good), key=np.array("another key"))  # a key that does not match
+    assert weather_spinup.cache_load(text, mx.array(good)) is None
+    np.savez(path, wx=np.full(good.shape, np.nan, np.float32), key=np.array(text))  # not finite
+    assert weather_spinup.cache_load(text, mx.array(good)) is None
+    np.savez(path, wx=good[:, :3], key=np.array(text))  # wrong shape
+    assert weather_spinup.cache_load(text, mx.array(good)) is None
+    assert np.array_equal(to_numpy(weather_spinup.spinup(cfg, 30, step=50, key=key, cache=True)), good)
+
+
+def test_the_cache_is_off_by_default_ignores_a_failed_write_and_zero_steps(
+    cfg: Config, cache_in, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    key = _state_key(cfg)
+    weather_spinup.spinup(cfg, 20, step=10, key=key)
+    weather_spinup.spinup(cfg, 0, step=10, key=key, cache=True)
+    assert _files(cache_in) == []  # no flag: nothing written; zero steps: nothing to keep
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    monkeypatch.setenv("ALIFE_CACHE_DIR", str(blocker / "sub"))  # not a directory: the write fails quietly
+    wx = to_numpy(weather_spinup.spinup(cfg, 20, step=10, key=key, cache=True))
+    assert np.array_equal(wx, to_numpy(weather_spinup.spinup(cfg, 20, step=10, key=key)))
+    monkeypatch.setenv("ALIFE_SPINUP_CACHE", "0")
+    assert not weather_spinup.cache_enabled()
+    monkeypatch.delenv("ALIFE_SPINUP_CACHE")
+    assert weather_spinup.cache_enabled()
+
+
+def test_an_edit_of_the_weather_sources_changes_the_key(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    key = _state_key(cfg)
+    a = weather_spinup.cache_key(cfg, 10, step=0, key=key, compile=True)
+    monkeypatch.setattr(weather_spinup, "_code_digest", lambda: "edited")
+    assert weather_spinup.cache_key(cfg, 10, step=0, key=key, compile=True) != a
+
+
+def test_the_command_line_caches_a_spinup_unless_switched_off(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``alife run --weather-spinup N`` writes the spin-up to the cache and a second launch of the same world
+    starts from the entry, with the same start checkpoint; ``ALIFE_SPINUP_CACHE=0`` writes nothing."""
+    monkeypatch.setenv("ALIFE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("ALIFE_SPINUP_CACHE")  # the suite switches it off; this test is of the default
+    a, b = tmp_path / "a", tmp_path / "b"
+    assert cli.main(_args(a, "--weather-spinup", "30")) == 0
+    assert len(_files(tmp_path / "cache" / "weather_spinup")) == 1
+    monkeypatch.setattr(weather_spinup, "advance_chain", lambda *x, **k: pytest.fail("the chain ran"))
+    assert cli.main(_args(b, "--weather-spinup", "30")) == 0
+    sa = load_checkpoint(a / "checkpoints" / "step_0000000000.safetensors", _config_of(a))
+    sb = load_checkpoint(b / "checkpoints" / "step_0000000000.safetensors", _config_of(b))
+    assert np.array_equal(to_numpy(sa.wx), to_numpy(sb.wx))
+    monkeypatch.undo()
+    monkeypatch.setenv("ALIFE_CACHE_DIR", str(tmp_path / "off"))
+    monkeypatch.setenv("ALIFE_SPINUP_CACHE", "0")
+    assert cli.main(_args(tmp_path / "c", "--weather-spinup", "30")) == 0
+    assert _files(tmp_path / "off" / "weather_spinup") == []
