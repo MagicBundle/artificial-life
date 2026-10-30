@@ -18,9 +18,9 @@ between processes. As a script: ``sphere_run.py KIND CONFIG_JSON DEVICE ARGS...`
 * ``compare STEPS ORDER [INIT]``: from one state (``INIT`` as above), each step is run by the eager and the
   compiled step in the order ``ORDER`` (``eager-first`` or ``compiled-first``), compared field by field
   (integers exactly, floats to 1e-5), and the walk continues from the eager result.
-* ``wx_compare STEPS ORDER``: the weather alone (``weather.advance``, the pools of step t, the engine's key chain)
-  from the rest state, eager and compiled in the order ``ORDER``, compared bit for bit (the walk continues from
-  the eager result); the result also reports the largest wind.
+* ``wx_compare STEPS ORDER``: the weather alone (``weather.advance``, the pools of step t, the engine's key
+  chain) from the rest state, eager and compiled in the order ``ORDER``, compared bit for bit (the walk
+  continues from the eager result); the result also reports the largest wind.
 * ``lookups``: ``sphere_check.require_compile_safe`` for the configuration (a compiled position-to-cell
   lookup equals the eager one).
 """

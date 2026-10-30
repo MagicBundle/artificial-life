@@ -34,18 +34,16 @@ def refused(*overrides: str, which: str = "tiny3s") -> str:
 
 
 def test_the_weather_layer_is_ready_on_a_sphere_and_the_rest_is_still_gated() -> None:
-    assert frozenset({"weather"}) == config.SPHERE_READY
+    assert {"weather", "structures"} <= config.SPHERE_READY
     assert "weather" in config.sphere_wanted(weather_cfg("tiny3s"))
     for ov, name, pr in (
-        ("structures.enabled=true", "structures", "S3"),
         ("game.observe=true", "observers", "S5"),
         ("director.enabled=true", "director", "S5"),
     ):
-        msg = refused(ov)
-        assert (
-            f"{name} is not available on a sphere yet (PR {pr})" in msg
-            and "weather" not in msg.split("PR")[0].split(":")[-1][-12:]
-        )
+        assert f"{name} is not available on a sphere yet (PR {pr})" in refused(ov)
+    # weather with the built material is a valid combination since S3 converted the structures
+    cfg = weather_cfg("tiny3s", "structures.enabled=true")
+    assert cfg.weather.enabled and cfg.structures.enabled
 
 
 def test_the_gate_still_refuses_the_weather_when_it_is_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -320,9 +318,11 @@ def test_run_resume_and_inspect_work_with_the_weather_and_a_spinup(
         "weather.rain_gain=50000",
     ]
     argv = ["--preset", "tiny3s", *(a for s in sets for a in ("--set", s))]
-    assert (
-        cli.main(["run", *argv, "--steps", "20", "--weather-spinup", "12", "--out", str(out), "--quiet"]) == 0
-    )
+    # not quiet: the announcement prints the planet (H1 of the S4b review: `_announce` read the box's
+    # world_size)
+    assert cli.main(["run", *argv, "--steps", "20", "--weather-spinup", "12", "--out", str(out)]) == 0
+    announced = capsys.readouterr().out
+    assert "R=36" in announced and "Nside=8" in announced
     rd = RunDir.open(out)
     assert rd.meta()["geometry"] == "sphere" and rd.meta()["weather_spinup"] == 12
     rows = [json.loads(line) for line in (out / "metrics.jsonl").read_text().splitlines() if line.strip()]
@@ -330,7 +330,8 @@ def test_run_resume_and_inspect_work_with_the_weather_and_a_spinup(
         "weather" in r and r["ledger_error"] == 0 for r in rows if "weather" in r or "ledger_error" in r
     )
     assert cli.main(["inspect", str(out)]) == 0 and "ledger OK" in capsys.readouterr().out
-    assert cli.main(["resume", str(out), "--until", "30", "--quiet"]) == 0
+    assert cli.main(["resume", str(out), "--until", "30"]) == 0
+    assert "R=36" in capsys.readouterr().out
     assert RunDir.open(out).meta()["status"] == "done"
 
 
@@ -344,3 +345,80 @@ def test_the_compile_self_check_covers_the_weather_nside() -> None:
     assert sphere_check.constants(wet) == (*sphere_check.constants(dry), 16.0)
     assert len(sphere_check._lookups(wet)(mx.zeros((3, 3)) + 40.0)) == 7
     assert len(sphere_check._lookups(dry)(mx.zeros((3, 3)) + 40.0)) == 6
+
+
+# --- shelter: the built material lowers the wind on a sphere (DESIGN 38.4.1, 46.6) ---------------------
+
+
+def _sheltered_world():
+    """tiny3s with the weather and the structures, a stored solid-rotation wind and a prescribed material: the
+    cap in every layer of the pixels of the hemisphere x > 0, nothing elsewhere."""
+    cfg = weather_cfg(
+        "tiny3s",
+        "structures.enabled=true",
+        "structures.shelter_gain=0.6",
+        "weather.seed_rate=0.0",
+        "weather.storm_p=0.0",
+    )
+    s = init_state(cfg)
+    nw = NW["tiny3s"]
+    x = weather_sph.weather_tab.weather_tab(nw).x
+    u = 0.1 * np.cross([0.0, 0.0, 1.0], x)
+    ws = weather_sph.unpack(s.wx)
+    wx = weather_sph.pack(ws._replace(u1=mx.array(u, dtype=mx.float32), u2=mx.array(u, dtype=mx.float32)))
+    from alife import geom
+
+    inside = geom.pixel_centres(dims(cfg).nside)[:, 0] > 0
+    mat = np.where(inside[None, :], cfg.structures.cap, 0).astype(np.int32)
+    mat = np.broadcast_to(mat, tuple(s.mat.shape)).copy()
+    return cfg, s._replace(wx=wx, mat=mx.array(mat)), inside
+
+
+def test_the_shelter_factor_and_the_sheltered_speed_take_the_spheres_material() -> None:
+    from alife import structures
+
+    cfg, s, _inside = _sheltered_world()
+    pos = np.array(s.pos)
+    k = np.array(structures.shelter_k_at(s.mat, s.pos, cfg))
+    assert k.min() >= 1.0 - cfg.structures.shelter_gain - 1e-6 and k.max() <= 1.0
+    # the cover is a local mean: deep inside the material the factor is 1 - gain, far from it 1
+    deep = np.array(s.pos)[:, 0] / np.linalg.norm(pos, axis=1) > 0.4
+    far = np.array(s.pos)[:, 0] / np.linalg.norm(pos, axis=1) < -0.4
+    assert deep.sum() > 5 and far.sum() > 5
+    assert np.allclose(k[deep], 1.0 - cfg.structures.shelter_gain, atol=1e-6) and np.allclose(k[far], 1.0)
+    wind = weather.agent_wind(weather_sph.unpack(s.wx), s.pos, s.buoy_cap, s.alive, cfg)
+    sp = np.array(structures.sheltered_speed_at(wind.speed, s.mat, s.pos, cfg))
+    assert np.allclose(sp, np.array(wind.speed) * k, atol=1e-8) and pos.shape == (len(k), 3)
+    # the observers' drift: the force of the shelter, over the drag, with the barrier of the material
+    d0 = np.array(weather.agent_drift(s.wx, s.pos, s.buoy_cap, s.alive, cfg))
+    d1 = np.array(structures.drift_at(s.wx, s.pos, s.buoy_cap, s.alive, s.mat, cfg))
+    d_sh = np.array(weather.agent_drift(s.wx, s.pos, s.buoy_cap, s.alive, cfg, shelter=mx.array(k)))
+    assert np.allclose(d_sh, d0 * k[:, None], atol=1e-8)
+    alive = np.array(s.alive)
+    assert (
+        np.linalg.norm(d1[alive & deep], axis=1).mean()
+        < 0.7 * np.linalg.norm(d0[alive & deep], axis=1).mean()
+    )
+    assert np.allclose(d1[far], d0[far], rtol=1e-4, atol=1e-6)
+
+
+def test_the_engine_step_shelters_the_agents_in_the_material() -> None:
+    """Two steps from the same state, the material or not: the agents in the covered hemisphere are blown less
+    far, the others the same (the hazard and the bond break read the sheltered speed too)."""
+    cfg, s, _inside = _sheltered_world()
+    fn = make_step(cfg, compile=False)
+    a, _ = fn(s)
+    b, _ = fn(s._replace(mat=mx.zeros_like(s.mat)))
+    mx.eval(a, b)
+    alive = np.array(s.alive)
+    wind = weather.agent_wind(weather_sph.unpack(s.wx), s.pos, s.buoy_cap, s.alive, cfg)
+    drift = np.linalg.norm(np.array(wind.force), axis=1)
+    xs = np.array(s.pos)[:, 0] / np.linalg.norm(np.array(s.pos), axis=1)
+    covered = alive & (xs > 0.4) & (drift > 0.02)
+    free = alive & (xs < -0.4) & (drift > 0.02)
+    assert covered.sum() > 5 and free.sum() > 5
+    # the material also builds/decays during the step, but the difference of the two runs is the wind
+    dp_b = np.linalg.norm(np.array(b.pos) - np.array(s.pos), axis=1)
+    dp_a = np.linalg.norm(np.array(a.pos) - np.array(s.pos), axis=1)
+    assert dp_a[covered].mean() < dp_b[covered].mean()
+    assert np.allclose(dp_a[free], dp_b[free], atol=1e-6)
