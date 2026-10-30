@@ -46,6 +46,7 @@ import mlx.core as mx
 import numpy as np
 
 from alife import layout, metrics, runner, streamrec
+from alife import stream as stream_mod
 from alife import weather as W
 from alife.config import Config, config_hash, dims, immigration_on
 from alife.director import actions as director_actions
@@ -62,7 +63,7 @@ from alife.game.colors import OBSERVER_MODES, play_colors
 from alife.game.observe import EVAL_BIT
 from alife.game.observer import Observer, default_rules, house_bytes, slot_bytes
 from alife.game.report import label_gate, label_names
-from alife.game.rules import INTENT_VERSION
+from alife.game.rules import intent_version
 from alife.runio import ALERTS_FILE, ALERTS_REPLAY_FILE, COMMANDS_FILE, DIRECTOR_LOG_FILE, RunDir
 from alife.state import ERROR_MASK, CounterIdx, DeathCause, State, default_env, to_numpy
 from alife.step import StepOut
@@ -175,10 +176,33 @@ def ext_cells(cfg: Config) -> tuple[tuple[str, str, int], ...]:
     return tuple(cells)
 
 
+CELL_INDEX_MAX: Final = 0xFFFF  # the u16 width of the nx of STRC and FSOL (and of TERR)
+
+
+def check_cell_records(cfg: Config) -> None:
+    """``ValueError`` if a sphere world sends a sparse cell record (``STRC``, ``FSOL``) whose
+    ``nx = 12·Nside²`` does not fit the record's 16-bit width (Nside above 73); the others have no such
+    bound."""
+    d = dims(cfg)
+    if d.sph and ext_cells(cfg) and d.npix > CELL_INDEX_MAX:
+        raise ValueError(
+            f"a sphere of Nside {cfg.world.nside} has {d.npix} cells per layer: STRC and FSOL index them "
+            f"with 16 bits (at most {CELL_INDEX_MAX}, Nside 73); play it without structures and farming, or "
+            "with a coarser field"
+        )
+
+
+def cell_shape(d: Any) -> list[int]:
+    """The ``[nz, ny, nx]`` of the sparse cell records (``STRC``, ``FSOL``, DESIGN §46.7): ``[FZ, FG, FG]`` of
+    a box; ``[FZ, 1, Npix]`` on a sphere, where the cell index ``layer·Npix + pixel`` is the z-major index
+    with ``ny = 1``."""
+    return [d.fz, 1, d.npix] if d.sph else [d.fz, d.fg, d.fg]
+
+
 def ext_header(cfg: Config, d: Any) -> dict[str, Mapping[str, Any]]:
     """The optional ``play`` header blocks of the features that are on (``structures``, ``comm``,
     ``bonds``)."""
-    cells = [d.fz, d.fg, d.fg]
+    cells = cell_shape(d)
     blocks = (
         (
             "structures",
@@ -930,7 +954,7 @@ class PlayPacer:
         self._stop_check = stop_check
         self._t = int(to_numpy(state.step))
         salt = obs.social.name_salt if obs is not None else 0
-        self.chron = Chronicler(salt)
+        self.chron = Chronicler(salt, cfg.world.radius if cfg.world.geometry == "sphere" else None)
         d = dims(cfg)
         dc_ref = None
         if cfg.weather.enabled:
@@ -988,15 +1012,12 @@ class PlayPacer:
             config_hash=config_hash(cfg),
             source=self.opt.source,
             color_modes=self._modes,
+            sphere=stream_mod.sphere_block(cfg) if d.sph else None,
         )
         powers = self.desk.header()
         play = streamrec.header_play(
             records=records,
-            weather=(
-                streamrec.weather_block(enabled=True, dc_ref=dc_ref, cells=self.layer.p.n, dx=self.layer.p.dx)
-                if self.layer is not None
-                else streamrec.weather_block(enabled=False, dc_ref=None)
-            ),
+            weather=self._weather_block(cfg, dc_ref),
             labels=self._labels_block(cfg, obs),
             energy_cap=cfg.energy.e_max,
             planet=self.opt.planet,
@@ -1028,15 +1049,29 @@ class PlayPacer:
         self.sched.restart()
         self._t_step = self.clock.monotonic()
 
+    def _weather_block(self, cfg: Config, dc_ref: float | None) -> dict[str, Any]:
+        """The header's ``weather`` object: the box layer's grid, or on a sphere (DESIGN §46.7) the weather
+        Nside and the Nside of the ``MAPH`` planes (the field's)."""
+        if dims(cfg).sph:
+            return streamrec.weather_block_sphere(
+                enabled=self.layer is not None, dc_ref=dc_ref, nside=cfg.weather.cells, coarse=cfg.world.nside
+            )
+        if self.layer is not None:
+            return streamrec.weather_block(
+                enabled=True, dc_ref=dc_ref, cells=self.layer.p.n, dx=self.layer.p.dx
+            )
+        return streamrec.weather_block(enabled=False, dc_ref=None)
+
     @staticmethod
     def _labels_block(cfg: Config, obs: Observer | None) -> dict[str, Any]:
         """The header's ``labels`` object (DESIGN §33.1.1): the names of the rule set in force (a weather
         world's are the storm names, as N1's reports print them) and the held-out verdict gate of N1 for this
         world and rule set (``report.label_gate``)."""
         rules = obs.rules if obs is not None else default_rules(cfg)
-        arch, intent = label_names(INTENT_VERSION, cfg.weather.enabled)
-        gate = label_gate(cfg, INTENT_VERSION, rules.digest())
-        return streamrec.labels_block(intent_version=INTENT_VERSION, arch=arch, intent=intent, gate=gate)
+        version = intent_version(rules)
+        arch, intent = label_names(version, cfg.weather.enabled)
+        gate = label_gate(cfg, version, rules.digest())
+        return streamrec.labels_block(intent_version=version, arch=arch, intent=intent, gate=gate)
 
     def _backlog(self, rd: RunDir, state: State) -> None:
         """The newest 64 events of the world's logs, which also warm the chronicler's names (the events are
@@ -1543,6 +1578,7 @@ class PlayPacer:
         storms. Only evaluated with ``--alerts experimental``."""
         if not self.opt.alerts_experimental or self._terr is None or self.layer is None:
             return
+        sph = dims(self.cfg).sph
         self.alerts.on_territory(
             t,
             self._terr,
@@ -1550,6 +1586,8 @@ class PlayPacer:
             self.chron.threads,
             self.cfg.world.size,
             pause_ok=self._pause_ok(),
+            planet=self.cfg.world.radius if sph else None,
+            nside=self.obs.social.terr_cells if sph else None,  # type: ignore[union-attr]
         )
 
     def _enter_pause(self, state: State) -> None:
@@ -1760,6 +1798,8 @@ class PlayPacer:
 
     def _send_territory(self, dom: Any, ids: np.ndarray, snapshot_step: int) -> None:
         nx = ny = self.obs.social.terr_cells  # type: ignore[union-attr]
+        if dims(self.cfg).sph:  # the territory map is the ring-ordered HEALPix pixels at Nside terr_cells
+            nx, ny = self.obs.social.n_terr(True), 1  # type: ignore[union-attr]
         listed = [int(i) for i in ids]
         slot_of = {k: s for s, k in enumerate(listed) if k >= 0}
         self._terr = np.asarray(dom.owner, np.int64).reshape(ny, nx)
@@ -1796,7 +1836,7 @@ class PlayPacer:
                 step=step,
                 seq=seq,
                 labels_step=self._t - self._t % every,
-                intent_version=INTENT_VERSION,
+                intent_version=intent_version(self.obs.rules),
                 uid=uid[rows],
                 arch_primary=a1[rows],
                 arch_secondary=a2[rows],
@@ -1854,13 +1894,13 @@ class PlayPacer:
         """The sparse cell records of the features that are on (``STRC`` the built material, ``FSOL`` the
         soil):
         the whole layer, at start and at every tick (DESIGN §38.9)."""
-        d = dims(self.cfg)
+        shape = tuple(cell_shape(dims(self.cfg)))
         for tag, field_name, cap in self._cells:
             grid = to_numpy(getattr(state, field_name))
             self._send(
                 tag,
                 lambda step, seq, tag=tag, grid=grid, cap=cap: streamrec.encode_cells(
-                    tag, step=step, seq=seq, shape=(d.fz, d.fg, d.fg), grid=grid, cap=cap
+                    tag, step=step, seq=seq, shape=shape, grid=grid, cap=cap
                 ),
             )
 
@@ -2082,10 +2122,13 @@ class PlayPacer:
                 row = self._find_row(state, uid)
                 if row is not None:
                     return uid, row, 1
-        length = self.cfg.world.size
         delta = state.pos - mx.array(np.asarray(dead.pos, np.float32))
-        xy = delta[:, :2] - length * mx.round(delta[:, :2] / length)
-        dist2 = (xy * xy).sum(axis=1) + ((delta[:, 2] * delta[:, 2]) if delta.shape[1] > 2 else 0.0)
+        if dims(self.cfg).sph:  # the chord to the death point, a pair offset (min_image is the identity)
+            dist2 = (delta * delta).sum(axis=1)
+        else:
+            length = self.cfg.world.size
+            xy = delta[:, :2] - length * mx.round(delta[:, :2] / length)
+            dist2 = (xy * xy).sum(axis=1) + ((delta[:, 2] * delta[:, 2]) if delta.shape[1] > 2 else 0.0)
         living = state.uid >= 0
         same = living & (self.obs.so.kin == dead.kin) if self.obs is not None and dead.kin >= 0 else None
         big = mx.array(3.0e38, dtype=mx.float32)

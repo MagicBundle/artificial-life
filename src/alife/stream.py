@@ -33,8 +33,9 @@ from typing import Any, BinaryIO, Final, Protocol
 import mlx.core as mx
 import numpy as np
 
-from alife import layout
-from alife.config import Config, ConfigError, config_hash, dims, require_box
+from alife import layout, streamrec
+from alife.config import Config, ConfigError, config_hash, dims
+from alife.geom import layer_radii
 from alife.render import COLOR_MODES, agent_colors, field_colors
 from alife.runio import CheckpointError, RunDir, load_checkpoint
 from alife.state import ERROR_MASK, State, State3, is_3d_state, to_numpy
@@ -152,6 +153,24 @@ def reader_closed(out: object) -> bool:
 # --- the view and the frame builder ---------------------------------------------------------------------
 
 
+def sphere_block(cfg: Config) -> dict[str, Any]:
+    """The planet keys of the protocol 2 header of a sphere config (``streamrec.sphere_block``): the layer
+    radii, the three Nsides (the weather's is ``weather.cells`` while the weather is on, else 0; the
+    territory's is the social rules' for the sphere) and the depth ``H1 + H2`` the shell is mapped onto."""
+    from alife.game.social import SPHERE_TERR_NSIDE  # light: the constants of the social layer
+
+    w, d = cfg.world, dims(cfg)
+    wx = cfg.weather
+    return streamrec.sphere_block(
+        planet_radius=w.radius,
+        shell_edges=layer_radii(w.radius, w.height, d.fz),
+        nside_field=w.nside,
+        nside_weather=wx.cells if wx.enabled else 0,
+        nside_territory=SPHERE_TERR_NSIDE,
+        weather_depth=(wx.H1 + wx.H2) if wx.enabled else 0.0,
+    )
+
+
 @dataclass
 class View:
     """What a frame shows: the colour mode and the optional field slice."""
@@ -161,7 +180,6 @@ class View:
     field_z: int = 0
 
     def check(self, cfg: Config) -> None:
-        require_box(cfg, "alife stream")  # the stream protocol v2 of the sphere world is PR S5
         if self.color not in COLOR_MODES:
             raise ConfigError(f"unknown colour mode {self.color!r}; expected one of {COLOR_MODES}")
         fz = dims(cfg).fz
@@ -195,9 +213,10 @@ class Streamer:
         self.frames = 0
 
     def header_info(self, state: State | State3) -> dict[str, Any]:
-        """The header JSON object, in the documented key order."""
+        """The header JSON object, in the documented key order. A sphere world's is protocol 2 (DESIGN §46.7):
+        no ``L``, ``FG`` 0, ``FZ`` the layers, and the planet's keys after ``FZ``."""
         cfg, d = self.cfg, dims(self.cfg)
-        return {
+        head = {
             "protocol": PROTOCOL,
             "dims": d.nd,
             "L": float(cfg.world.size),
@@ -220,6 +239,7 @@ class Streamer:
             "every": self.every,
             "source": self.source,
         }
+        return head if not d.sph else streamrec.sphere_header(head, sphere_block(cfg))
 
     def begin(self, state: State | State3) -> None:
         """Write the header (once, before the first frame)."""

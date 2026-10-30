@@ -10,10 +10,17 @@ the payload, which starts with the common head ``u64 step, u32 seq, u16 version,
 every section starts at a multiple of 4 bytes; JSON is UTF-8 from ``json_bytes`` with ``json_len`` the
 unpadded length followed by 0 to 3 zero bytes; unknown tags are skipped by length, unknown versions are
 skipped and counted.
+
+The sphere world (DESIGN §46.7) writes protocol 2: the header names the planet
+(``legacy_header(sphere=...)``), the weather map is ``MAPH`` (``encode_maph``) over the ring-ordered HEALPix
+cells of the coarse weather grid, ``TERR`` is indexed by the territory pixels, and ``STRC``/``FSOL`` by
+``layer·Npix + pixel``. Every other
+record is as in a box world; a box stream is byte for byte what it was.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import struct
@@ -25,6 +32,9 @@ import numpy as np
 
 MAGIC: Final = b"ALSTRM\x00\x01"
 PROTOCOL: Final = 1
+PROTOCOL_SPHERE: Final = (
+    2  # the header of a sphere world (DESIGN §46.7); old clients refuse it by this number
+)
 VERSION: Final = 1  # the layout version of every tag below
 TAGS: Final = (
     "FRMA", "IDNT", "INTN", "TERR", "EVNT", "STRM", "MAP1", "ENVS", "CLCK", "FOCS", "ALRT", "RPRT", "PLAN",
@@ -36,16 +46,20 @@ VERSIONS: Final = dict.fromkeys(TAGS, VERSION)
 # ``mlx``, so it cannot read the registry).
 EXT_TAGS: Final = ("STRC", "FSIG", "FSOL")  # structures, comm, farming
 EXT_VERSIONS: Final = dict.fromkeys(EXT_TAGS, VERSION)
-ALL_TAGS: Final = (*TAGS, *EXT_TAGS)
+SPHERE_TAGS: Final = ("MAPH",)  # the sphere's weather map (DESIGN §46.7): sent only in a protocol 2 stream
+SPHERE_VERSIONS: Final = dict.fromkeys(SPHERE_TAGS, VERSION)
+ALL_TAGS: Final = (*TAGS, *EXT_TAGS, *SPHERE_TAGS)
 HEAD: Final = struct.Struct("<QIHH")  # step, seq, version, flags
 HEAD_SIZE: Final = 16
 FRMA_PREFIX: Final = struct.Struct("<IIIII")  # n, n_bonds, color_index, span, N
 CLCK_BODY: Final = struct.Struct("<ffffIIBBHIIII")  # 44 bytes
 FOCS_BODY: Final = struct.Struct("<qIIffffffiIIqBBBBBBBB")  # 68 bytes
 MAP1_PREFIX: Final = struct.Struct("<HHfffff8x")  # n, nw, f0, p_ref, dc_ref, u_ref, zeta_ref, 8 reserved
+MAPH_PREFIX: Final = struct.Struct("<HHfffff8x")  # nside, k, f0, p_ref, dc_ref, u_ref, zeta_ref, 8 reserved
 CELLS_PREFIX: Final = struct.Struct("<HHHHI")  # STRC, FSOL: nx, ny, nz, flags, count
 FSIG_PREFIX: Final = struct.Struct("<qBBH")  # FSIG: uid, W, flags, audible
 assert HEAD.size == HEAD_SIZE and CLCK_BODY.size == 44 and FOCS_BODY.size == 68 and MAP1_PREFIX.size == 32
+assert MAPH_PREFIX.size == 32
 assert CELLS_PREFIX.size == 12 and FSIG_PREFIX.size == 12
 
 COLOR_MODES: Final = ("tag", "energy", "clade", "house", "kin", "archetype", "intent")  # play's header list
@@ -306,13 +320,18 @@ def legacy_header(
     config_hash: str,
     source: str,
     color_modes: Sequence[str] = COLOR_MODES,
+    sphere: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The keys of an ``alife stream`` header with the values a play stream pins: ``mode`` simulate,
     ``every`` 1, ``fields`` off, ``color`` tag and the play colour modes (so ``StreamHeader.validate``
-    accepts it). ``color_modes`` is ``COLOR_MODES`` plus ``EXT_COLOR_MODES`` of the features that are on."""
+    accepts it). ``color_modes`` is ``COLOR_MODES`` plus ``EXT_COLOR_MODES`` of the features that are on.
+
+    ``sphere`` (``sphere_block``) makes it a protocol 2 header of a planet: ``protocol`` is 2, ``L`` is
+    absent, ``FG`` is 0 (a sphere has no lattice side; ``FZ`` is the layer count) and the planet's keys follow
+    ``FZ``. ``radius`` stays the body radius of the agents."""
     if source not in ("run", "preset"):
         raise RecordError(f"a play header's source is run or preset, not {source!r}")
-    return {
+    head = {
         "protocol": PROTOCOL,
         "dims": dims,
         "L": float(size),
@@ -334,6 +353,70 @@ def legacy_header(
         "mode": "simulate",
         "every": 1,
         "source": source,
+    }
+    return head if sphere is None else sphere_header(head, sphere)
+
+
+def sphere_block(
+    *,
+    planet_radius: float,
+    shell_edges: Sequence[float],
+    nside_field: int,
+    nside_weather: int,
+    nside_territory: int,
+    weather_depth: float,
+) -> dict[str, Any]:
+    """The planet keys of a protocol 2 header (DESIGN §46.7): ``geometry`` "sphere", ``planet_radius`` (the
+    planet's ``Rp``; the header's ``radius`` is the agents' body radius), ``shell_edges`` (the ``FZ + 1``
+    layer boundary radii, ascending, from ``Rp`` to ``Rp + H``), the three Nsides (``nside_weather`` is 0
+    without weather), ``ring_order`` "ring" (every cell index is the RING pixel), ``f0`` and
+    ``weather_depth`` (``H1 + H2``, 0 without weather)."""
+    edges = [float(e) for e in shell_edges]
+    if not (planet_radius > 0 and len(edges) >= 3 and all(a < b for a, b in itertools.pairwise(edges))):
+        raise RecordError("a sphere needs a positive planet_radius and ascending shell_edges (FZ + 1 >= 3)")
+    if not (_is_int(nside_field) and nside_field >= 2 and _is_int(nside_territory) and nside_territory >= 2):
+        raise RecordError("nside_field and nside_territory are integers >= 2")
+    if not (_is_int(nside_weather) and nside_weather >= 0 and weather_depth >= 0):
+        raise RecordError("nside_weather is an integer >= 0 and weather_depth >= 0")
+    return {
+        "geometry": "sphere",
+        "planet_radius": float(planet_radius),
+        "shell_edges": edges,
+        "nside_field": int(nside_field),
+        "nside_weather": int(nside_weather),
+        "nside_territory": int(nside_territory),
+        "ring_order": "ring",
+        "f0": F0,
+        "weather_depth": float(weather_depth),
+    }
+
+
+def sphere_header(head: Mapping[str, Any], sphere: Mapping[str, Any]) -> dict[str, Any]:
+    """``head`` (a ``legacy_header`` dict) as a protocol 2 header: ``protocol`` 2, no ``L``, ``FG`` 0, and the
+    ``sphere_block`` keys after ``FZ`` (JSON key order is not significant; this one is documented)."""
+    out: dict[str, Any] = {}
+    for key, value in head.items():
+        if key == "L":
+            continue
+        out[key] = PROTOCOL_SPHERE if key == "protocol" else (0 if key == "FG" else value)
+        if key == "FZ":
+            out.update(sphere)
+    return out
+
+
+def weather_block_sphere(*, enabled: bool, dc_ref: float | None, nside: int, coarse: int) -> dict[str, Any]:
+    """The ``play.weather`` header object of a sphere (DESIGN §46.7): the weather Nside ``nside`` (0 when the
+    weather is off), the Nside ``coarse`` of the ``MAPH`` planes (the field Nside; ``nside / coarse`` is a
+    power of two) and the reference scales of ``MAPH`` and ``STRM``."""
+    if enabled and not (dc_ref is not None and math.isfinite(dc_ref) and dc_ref > 0):
+        raise RecordError("a weather world needs a positive dc_ref")
+    return {
+        "enabled": bool(enabled),
+        "nside": int(nside) if enabled else 0,
+        "coarse": int(coarse),
+        "f0": F0,
+        "name_zeta": NAME_ZETA,
+        "refs": {"p": P_REF, "dc": dc_ref if enabled else 0.0, "u": U_REF, "zeta": ZETA_REF},
     }
 
 
@@ -542,7 +625,7 @@ def header_play(
             extra = {**extra, key: dict(block)}
     return {
         "records": list(records),
-        "versions": {t: {**VERSIONS, **EXT_VERSIONS}[t] for t in records},
+        "versions": {t: {**VERSIONS, **EXT_VERSIONS, **SPHERE_VERSIONS}[t] for t in records},
         "base_rate": base_rate,
         "rates": list(rates),
         "tick": tick,
@@ -1146,6 +1229,92 @@ def encode_map1(
         + _le(planes["winds"], "i1")
     )
     return record("MAP1", step, seq, FLAG_TS | FLAG_WINDS, pad4(body))
+
+
+def quantise_maph(
+    *,
+    p: np.ndarray,
+    dc: np.ndarray,
+    zeta: np.ndarray,
+    ts: np.ndarray,
+    winds: np.ndarray,
+    nside_weather: int,
+    nside: int,
+    dc_ref: float,
+    p_ref: float = P_REF,
+    u_ref: float = U_REF,
+    zeta_ref: float = ZETA_REF,
+) -> dict[str, np.ndarray]:
+    """The planes of a ``MAPH`` from the weather fields on the weather cells (RING pixels of
+    ``nside_weather``; ``p``, ``dc``, ``zeta``, ``ts`` of ``(12·Nw²,)`` and ``winds`` of ``(2, 12·Nw², 3)``,
+    the Cartesian wind of the two layers) pooled to the ``12·nside²`` coarse cells, ``nside_weather / nside``
+    a power of two: every plane is the mean of the cell's children (the wind as a vector), computed in
+    float64, then
+
+    - ``P`` u8 ``round(255·sqrt(clip(P/p_ref, 0, 1)))``; ``Dc`` u8 ``round(255·clip(Dc/dc_ref, 0, 1))``;
+      ``zeta`` i8 ``round(127·clip(zeta/zeta_ref, -1, 1))``; ``Ts`` u8 ``round(255·clip(Ts, 0, 1))``;
+    - ``winds`` i8 ``(4, 12·nside²)``: ``u1, v1, u2, v2``, the eastward and northward components at the coarse
+      cell's centre (the local frame ``geom.local_frame``), ``round(127·clip(w/u_ref, -1, 1))``.
+    """
+    from alife import geom  # local: streamrec stays importable without the geometry module's tables
+
+    if nside_weather % nside or (nside_weather // nside) & ((nside_weather // nside) - 1):
+        raise RecordError(f"nside_weather {nside_weather} is not nside {nside} times a power of two")
+    kids = geom.children_table(
+        nside, nside_weather // nside
+    )  # (12·nside², ratio²) fine pixels per coarse one
+    npw = geom.npix(nside_weather)
+    planes = [np.asarray(a, np.float64) for a in (p, dc, zeta, ts)]
+    w = np.asarray(winds, np.float64)
+    if not (all(a.shape == (npw,) for a in planes) and w.shape == (2, npw, 3)):
+        raise RecordError(f"MAPH inputs must be ({npw},) planes and (2, {npw}, 3) winds")
+    p, dc, zeta, ts = (a[kids].mean(axis=1) for a in planes)
+    cw = w[:, kids, :].mean(axis=2)  # (2, Npix_c, 3)
+    east, north = geom.local_frame(geom.pixel_centres(nside))
+    uv = np.stack([(cw * east).sum(-1), (cw * north).sum(-1)], axis=1).reshape(4, -1)  # u1 v1 u2 v2
+    return {
+        "P": np.rint(255.0 * np.sqrt(np.clip(p / p_ref, 0.0, 1.0))).astype(np.uint8),
+        "Dc": np.rint(255.0 * np.clip(dc / dc_ref, 0.0, 1.0)).astype(np.uint8),
+        "zeta": np.rint(127.0 * np.clip(zeta / zeta_ref, -1.0, 1.0)).astype(np.int8),
+        "Ts": np.rint(255.0 * np.clip(ts, 0.0, 1.0)).astype(np.uint8),
+        "winds": np.rint(127.0 * np.clip(uv / u_ref, -1.0, 1.0)).astype(np.int8),
+    }
+
+
+def encode_maph(
+    *,
+    step: int,
+    seq: int,
+    planes: Mapping[str, np.ndarray],
+    nside: int,
+    k: int,
+    dc_ref: float,
+    p_ref: float = P_REF,
+    u_ref: float = U_REF,
+    zeta_ref: float = ZETA_REF,
+    f0: float = F0,
+) -> bytes:
+    """One ``MAPH`` from quantised ``planes`` (``quantise_maph``) of ``12·nside²`` ring-ordered cells: ``P``,
+    ``Dc``, ``zeta``, ``Ts`` of ``(npix,)`` and ``winds`` of ``(4, npix)``. ``k`` is the log2 of the ratio of
+    the weather Nside to ``nside`` (informational: the weather resolution the planes were pooled from). Like
+    ``MAP1`` every record carries ``T_s`` and the winds (flags bits 0 and 1)."""
+    npix = 12 * nside * nside
+    for key in ("P", "Dc", "zeta", "Ts"):
+        if planes[key].shape != (npix,):
+            raise RecordError(f"MAPH plane {key} has shape {planes[key].shape}, not ({npix},)")
+    if planes["winds"].shape != (4, npix):
+        raise RecordError(f"MAPH winds must be (4, {npix})")
+    if not (_is_int(nside) and 2 <= nside < 0x10000 and _is_int(k) and 0 <= k < 0x10000):
+        raise RecordError("MAPH nside and k are 16-bit unsigned integers, nside >= 2")
+    body = (
+        MAPH_PREFIX.pack(nside, k, f0, p_ref, dc_ref, u_ref, zeta_ref)
+        + _le(planes["P"], "u1")
+        + _le(planes["Dc"], "u1")
+        + _le(planes["zeta"], "i1")
+        + _le(planes["Ts"], "u1")
+        + _le(planes["winds"], "i1")
+    )
+    return record("MAPH", step, seq, FLAG_TS | FLAG_WINDS, pad4(body), version=SPHERE_VERSIONS["MAPH"])
 
 
 def dequantise_p(b: np.ndarray, p_ref: float = P_REF) -> np.ndarray:
