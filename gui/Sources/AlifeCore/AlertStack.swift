@@ -123,6 +123,7 @@ extension ChronicleAction {
             guard let entity = entities[key], entity.id >= 0, entity.id <= Int64(Int.max) else { continue }
             var at: SIMD2<Float>?
             if let x = entity.x, let y = entity.y { at = SIMD2(Float(x), Float(y)) }
+            let z = entity.z.map { Float($0) }
             var select = WorldSelection.none
             switch entity.kind {
             case "storm": select = .storm(id: Int(entity.id))
@@ -130,7 +131,7 @@ extension ChronicleAction {
             case "organism": select = .organism(uid: entity.id)
             default: break
             }
-            if at != nil || select != .none { return ChronicleAction(at: at, select: select) }
+            if at != nil || select != .none { return ChronicleAction(at: at, select: select, z: z) }
         }
         return nil
     }

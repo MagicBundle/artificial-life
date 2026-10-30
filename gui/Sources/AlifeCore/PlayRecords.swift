@@ -1023,6 +1023,8 @@ package struct ReportBody: Equatable, Sendable, Codable {
         package var name: String?
         package var x: Double?
         package var y: Double?
+        /// On a planet the place is `(x, y, z)`, the planet-frame point (stream protocol 2): `z` is nil in a box world.
+        package var z: Double?
     }
 
     package struct Since: Equatable, Sendable, Codable {

@@ -528,7 +528,10 @@ def test_the_g3b_records_have_the_keys_the_swift_types_decode() -> None:
     assert swift_struct_keys(body, "Sentence") == keys_of([r["headline"] for r in reports])
     assert swift_struct_keys(body, "Line") == keys_of([b for r in reports for b in r["body"]])  # type: ignore[index]
     assert swift_struct_keys(body, "Tick") == keys_of([t for r in reports for t in r["ticker"]])  # type: ignore[index]
-    assert swift_struct_keys(body, "Entity") == keys_of([e for r in reports for e in r["entities"].values()])  # type: ignore[index]
+    entity_keys = keys_of([e for r in reports for e in r["entities"].values()])  # type: ignore[index]
+    assert (
+        swift_struct_keys(body, "Entity") - {"z"} == entity_keys
+    )  # z: a sphere place, absent in a box report
     assert swift_struct_keys(body, "Since") == keys_of([r["since"] for r in reports])
     assert swift_struct_keys(body, "Ending") == keys_of([e for r in reports for e in r["since"]["ending"]])  # type: ignore[index]
     assert swift_struct_keys(body, "Versions") == keys_of([r["versions"] for r in reports])
