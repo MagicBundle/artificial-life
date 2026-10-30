@@ -16,7 +16,7 @@
 > from the parent (the arc is solved, the spec's arc `D·cosχ` is not a chord); the compile-collision guard was not merged, so the 10.1 fallback is in force (child processes with their own `TMPDIR`, both orders, `sphere_check` in `make_step`); CPU and
 > Metal digests are never equal (as for the box) but every integer field, counter and ledger entry is; the box's "velocity into the bound" invariant has no sound sphere form and is dropped; `run`/`resume` work on a sphere
 > with two metrics lines converted early, `stream`/`activity`/`migrate` refuse it and `play` is refused through the observers gate; the `fast` overlay is invalid on a sphere. **The stop rule of 2.4 is exceeded by the literal per-alive-agent
-> metric at the volume-matched `mini3s` (search 2.09x, step 2.2x of `mini3d`) and not at equal count, higher density or 64k (1.1 to 1.5x); see DESIGN §46.10. Reported, not optimised.**
+> metric at the volume-matched `mini3s` (search 2.09x, step 2.0 to 2.2x of `mini3d`) and not at equal count, higher density or 64k (1.1 to 1.5x); see DESIGN §46.10. Reported, not optimised.**
 
 Status: proposal for owner review, 2026-10-29; **Revision 1** (same day) applies the independent review `review.md` (changelog at the end). Planned identifiers: DESIGN §46, Review-log row I77 (I76 is taken by a GUI fix).
 Owner request (2026-10-29): "a true sphere and not a wrapped sheet". This document is a specification only: no engine code

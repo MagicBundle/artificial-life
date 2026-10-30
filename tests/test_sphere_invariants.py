@@ -130,7 +130,7 @@ def test_the_derived_heading_is_compared_circularly_and_not_near_a_pole() -> Non
     pos = to_numpy(s.pos).astype(np.float64)
     up = pos / np.linalg.norm(pos, axis=1, keepdims=True)
     east = np.cross([0.0, 0.0, 1.0], up)
-    east /= np.linalg.norm(east, axis=1, keepdims=True)
+    east /= np.linalg.norm(east, axis=1, keepdims=True) + 1e-300
     north = np.cross(up, east)
     south_facing = (-north).astype(np.float32)  # the bearing of due south is ±π
     s2 = s._replace(hdg=mx.array(south_facing), heading=mx.full((dims(cfg).n,), -math.pi, dtype=mx.float32))

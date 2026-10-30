@@ -117,6 +117,8 @@ from alife.state import (
 )
 
 DONATION_STEPS: Final = 10
+STEADY_RATIO: Final = 1.5625  # n_max / alive of the presets (mini3d 16384 / 10500), the row count of a scene
+STEADY_MIN: Final = 256  # below this M = 32 births per step and the cap leave no room for a steady scene
 DONATION_LIMIT: Final = 0.25  # healthy when a copying step peaks > 0.25 × bytes(W1 + W2) higher (§15.4)
 _SHOW_PROBLEMS: Final = 5  # full_check messages quoted in the report
 
@@ -262,6 +264,23 @@ def run_bench(
 
 
 # --- environment ----------------------------------------------------------------------------------------
+
+
+def steady_overrides(n_alive: int) -> list[str]:
+    """``--set`` items that make a steady scene of ``n_alive`` agents: ``n_init = n_alive`` founders
+    uniform in the volume, ``n_max`` the presets' 1.5625 times that (to a multiple of 64), and births off
+    (``repro.min_energy`` above anything an agent holds in a few hundred steps), so that the alive count
+    stays near ``n_alive`` while ``bench`` times the step: the instrument of the per-alive-agent comparison
+    between a sphere and a box (DESIGN §46.10). The founders' brains are random, so some starve over a long
+    run; the report gives ``n_alive_start`` and ``n_alive_end``."""
+    if n_alive < STEADY_MIN:
+        raise ValueError(f"a steady scene needs at least {STEADY_MIN} alive agents, got {n_alive}")
+    n_max = -(-int(STEADY_RATIO * n_alive) // 64) * 64
+    return [
+        f"population.n_init={n_alive}",
+        f"population.n_max={n_max}",
+        "repro.min_energy=999000",
+    ]
 
 
 def _environment(cfg: Config) -> dict[str, Any]:

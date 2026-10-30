@@ -1593,7 +1593,7 @@ def _bench_play(a: argparse.Namespace) -> dict[str, Any]:
 
 
 def _cmd_bench(a: argparse.Namespace) -> int:
-    from alife.bench import run_bench
+    from alife.bench import run_bench, steady_overrides
 
     if a.play:
         report = _bench_play(a)
@@ -1607,7 +1607,8 @@ def _cmd_bench(a: argparse.Namespace) -> int:
             print("play bench: a played world's final state differs from the plain run's", file=sys.stderr)
             return int(ExitCode.ERROR)
         return int(ExitCode.OK)
-    cfg = load_config(preset=a.preset, overlays=a.overlay, overrides=a.set)
+    steady = steady_overrides(a.alive) if a.alive else []
+    cfg = load_config(preset=a.preset, overlays=a.overlay, overrides=[*(a.set or ()), *steady])
     _knn_guard(cfg)
     report = run_bench(
         cfg,
@@ -1993,6 +1994,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--steps", type=_positive, default=None, help="timed steps (default 200; 2000 with --play)"
     )
     p.add_argument("--warmup", type=_non_negative, default=20)
+    p.add_argument(
+        "--alive",
+        type=_positive,
+        default=None,
+        metavar="N",
+        help="a steady scene of N alive agents (n_init = N, n_max = 1.5625 N, births off): the instrument of "
+        "the per-alive-agent comparison of a sphere and a box world (DESIGN 46.10)",
+    )
     p.add_argument("--stages", action="store_true")
     p.add_argument("--determinism", action="store_true")
     p.add_argument("--brain-variants", action="store_true")

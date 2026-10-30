@@ -40,6 +40,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+# The sphere presets have no counterpart in the base (it has no sphere, docs/SPHERE.md 7.4): their digests are
+# pinned as literals in tests/test_sphere_trajectory.py, not compared here.
+SPHERE_PRESETS = frozenset({"tiny3s"})
+
 TINY3D_STATE = "1fe07a9f299526c0"
 TINY3D_LEGACY = "556de6c6216dd530"
 
@@ -287,6 +291,8 @@ def _config_and_layout(overlays: list[str] | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {}
     combos: list[tuple[str, tuple[str, ...]]] = []
     for preset in config.PRESETS:
+        if preset in SPHERE_PRESETS:
+            continue
         combos.append((preset, ()))
         # The overlay list is the BASE tree's ``ALL_OVERLAYS`` (dumped by the driver): a feature overlay
         # (``build``) switches its feature ON, so it has no counterpart in the base and is not an off-identity
