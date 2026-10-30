@@ -15,8 +15,8 @@
 # (0.409 per unit of floor area), and the boom, trough and recovery are the shape of 64k3d's (42 700, 25 100, then a
 # plateau). n_max 65 536 (the spec's 49 152 is below the peak) keeps the peak at 0.77; n_init 16 384 is 0.4 of the
 # level, as in 64k3d. The hash capacity C = 32 (the lid hash cell needs at least 25): the maximum occupancy of the
-# runs was 16 (15 at 1 340), no hash cell overflowed in 5 runs of 12 000 to 100 000 steps, the energy ledger was
-# exact on every row, and the 3 000-step slow test passes.
+# dry runs was 16 (15 at 1 340; 19 with the five features and the weather), no hash cell overflowed in any of 8 runs of
+# 12 000 to 100 000 steps, the energy ledger was exact on every row, and the 3 000-step slow test passes.
 [population]
 n_max = 65536
 n_init = 16384

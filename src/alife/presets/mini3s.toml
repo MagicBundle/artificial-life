@@ -16,7 +16,7 @@
 # is 0.4 of the level, as in mini3d. Four patches (the box's patch area share of 14 %) were tried at 1 700: the
 # population reached n_max and stayed there, so the spec's 3 patches of sigma 18 (an area share of 10.5 %) stay.
 # The hash capacity C = 32 (the lid hash cell needs at least 30): the maximum occupancy of all runs was 21, no cell
-# overflowed in 6 runs of 44 000 to 80 000 steps and the 3 000-step slow test.
+# overflowed in any of 7 runs of 20 000 to 80 000 steps nor in the 3 000-step slow tests.
 [population]
 n_max = 20480
 n_init = 4096
