@@ -80,13 +80,17 @@ def test_run_inspect_resume_and_bench_run_a_sphere(tmp_path: Path, capsys: pytes
     `inspect` labels the planet, `resume` continues bitwise, `bench` times it."""
     out = tmp_path / "run"
     base = ["--preset", "tiny3s", "--set", "brain.weight_dtype=float32"]
-    assert cli.main(["run", *base, "--steps", "20", "--out", str(out), "--quiet"]) == 0
+    # not quiet: the announce line of `run` and `resume` names the planet, not a world size (S3 review H1)
+    assert cli.main(["run", *base, "--steps", "20", "--out", str(out)]) == 0
+    first = capsys.readouterr().out
+    assert "R=36 Nside=8 height=16" in first and "steps 0 → 20" in first and "L=" not in first
     rd = RunDir.open(out)
     assert rd.meta()["geometry"] == "sphere" and "dims" in rd.meta()
     assert cli.main(["inspect", str(out)]) == 0
     text = capsys.readouterr().out
     assert "geometry=sphere" in text and "planet_radius=36" in text and "ledger OK" in text
-    assert cli.main(["resume", str(out), "--until", "30", "--quiet"]) == 0
+    assert cli.main(["resume", str(out), "--until", "30"]) == 0
+    assert "R=36 Nside=8" in capsys.readouterr().out
     assert RunDir.open(out).meta()["status"] == "done"
     assert cli.main(["bench", *base, "--steps", "3", "--warmup", "2"]) == 0
     report = json.loads(capsys.readouterr().out)
