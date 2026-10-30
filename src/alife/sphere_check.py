@@ -106,3 +106,33 @@ def require_compile_safe(cfg: Config) -> None:
             "with its own TMPDIR, or merge the guard of fix/mlx-compile-collision"
         )
     _DONE.add(key)
+
+
+_DONE_CELLS: set[int] = set()
+
+
+def require_cells_compile_safe(nsides: tuple[int, ...]) -> None:
+    """The observer's version of ``require_compile_safe`` (DESIGN §46.7): the territory and footprint maps
+    (``groups.sphere_cell`` at the social rules' Nsides) are compiled inside the observer's folds with their
+    Nside as a constant, the same pattern as the step's position-to-cell lookups. Raise ``RuntimeError`` if
+    the compiled lookup of any of ``nsides`` differs from the eager one on a fixed set of directions
+    (memoised per Nside and process)."""
+    todo = [n for n in sorted(set(nsides)) if n not in _DONE_CELLS]
+    if not todo:
+        return
+    rng = np.random.default_rng(20261030)
+    v = rng.normal(size=(512, 3))
+    v = np.concatenate([v, [[1e-4, 0.0, 1.0], [0.0, 1e-4, -1.0], [1.0, 0.0, 0.0]]])
+    pos = mx.array((v / np.linalg.norm(v, axis=1, keepdims=True) * 60.0).astype(np.float32))
+    for n in todo:
+        want = sphere.ang2pix(pos, n)
+        got = mx.compile(lambda p, n=n: sphere.ang2pix(p, n))(pos)
+        mx.eval(want, got)
+        if not np.array_equal(np.array(want), np.array(got)):
+            raise RuntimeError(
+                f"the compiled territory lookup ang2pix(Nside {n}) differs from the eager one: MLX's compile "
+                "cache returned another configuration's kernel (F21 item 6, the compile collision). Run one "
+                "sphere configuration per process, each with its own TMPDIR, or merge the guard of "
+                "fix/mlx-compile-collision"
+            )
+        _DONE_CELLS.add(n)

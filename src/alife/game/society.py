@@ -31,11 +31,11 @@ from typing import Any, Final, NamedTuple
 
 import numpy as np
 
-from alife import layout, metrics
+from alife import geom, layout, metrics
 from alife.analysis import phylo
 from alife.config import Config, dims
-from alife.game import social
-from alife.game.rules import ARCHETYPE_NAMES, INTENT_VERSION
+from alife.game import place, social
+from alife.game.rules import ARCHETYPE_NAMES, INTENT_VERSION, INTENT_VERSION_SPHERE
 from alife.game.social import SOCIAL_VERSION, Expo, Rel, SocialRules
 from alife.runio import _dumps
 from alife.state import to_numpy
@@ -49,7 +49,6 @@ from alife.tracking import (
     Members,
     SystemTracker,
     TrackerState,
-    circular_mean,
     deadband,
     grid_clusters,
     lookup_table,
@@ -220,16 +219,17 @@ class Society:
         self.cfg, self.sr = cfg, sr
         self.d = dims(cfg)
         self._digest = sr.digest()
-        self._cells = sr.terr_cells**2
+        self._cells = sr.n_terr(self.d.sph)
         self.records: list[dict[str, Any]] = []  # settled snapshots whose record is not taken yet
         self.kin = SystemTracker(sr.theta, None if state is None else state.kin)
         self.col = SystemTracker(sr.theta, None if state is None else state.col)
         self.dom = Dominance(
-            (sr.terr_cells, sr.terr_cells),
+            (self._cells, 1) if self.d.sph else (sr.terr_cells, sr.terr_cells),
             sr.terr_k,
             sr.terr_min,
             periodic=(True, True),
             state=None if state is None else state.terr,
+            graph=geom.coarse_graph(sr.terr_cells) if self.d.sph else None,  # the cell graph of a sphere
         )
         empty = np.full(sr.slots, -1, dtype=np.int64)
         self.kin_slots = empty.copy() if state is None else state.kin_slots.copy()
@@ -550,12 +550,12 @@ class Society:
         """The ``kin_groups`` table: one row per slotted group, by slot.
 
         ``name`` and ``named_after`` are the group's roster entry. ``x`` and ``y`` are the centroid of its
-        members (``circular_mean`` over the torus; ``z_mean`` is the height), ``arch`` the shares of the
-        primary archetypes (``rules.ARCHETYPE_NAMES`` order) among its members that have a label (None if
-        none has). ``births`` and the ``deaths`` by cause (``social.death_causes(cfg)`` order) are the
-        window's, counted for the slot the group had in the window, so they are None for a group that held
-        none then.
-        """
+        members (``circular_mean`` over the torus; ``z_mean`` is the height; on a sphere the planet-
+        frame point ``x, y, z`` of the mean direction at the mean radius, and ``z_mean`` the mean
+        height), ``arch`` the shares of the primary archetypes (``rules.ARCHETYPE_NAMES`` order)
+        among its members that have a label (None if none has). ``births`` and the ``deaths`` by
+        cause (``social.death_causes(cfg)`` order) are the window's, counted for the slot the group
+        had in the window, so they are None for a group that held none then."""
         sr, d = self.sr, self.d
         f = sr.slots
         slots, named, row_slot = kin["slots"], kin["named"], kin["row_slot"]
@@ -583,10 +583,10 @@ class Society:
         dom_n = lookup_table(f, su[top], c[top], 0)
         columns = [
             "id", "name", "named_after", "slot", "size", "tag", "clade", "clade_share", "sim_self",
-            "x", "y", "arch", "births", "deaths",
+            "x", "y", *(("z",) if d.sph else ()), "arch", "births", "deaths",
         ]  # fmt: skip
         if d.d3:
-            z = h["pos"][sel][:, 2].astype(np.float64)
+            z = place.heights(h["pos"][sel], self.cfg)
             z_mean = np.bincount(rs, weights=z, minlength=f)[:f] / denom
             band = metrics.z_band(z, self.cfg.world.height)
             frac = np.bincount(rs * metrics.N_BANDS + band, minlength=f * metrics.N_BANDS)
@@ -598,9 +598,9 @@ class Society:
             name, after = names[gid]
             at = pos[start[s] : start[s + 1]]
             centre = (
-                [_r(circular_mean(at[:, j], self.cfg.world.size), 2) for j in (0, 1)]
+                [_r(v, 2) for v in place.centroid(at, self.cfg)]
                 if at.shape[0]
-                else [None, None]
+                else [None] * (3 if d.sph else 2)
             )
             labelled = int(arch[s].sum())
             w = win.get(gid)
@@ -699,11 +699,10 @@ class Society:
                 s,
                 int(mem.sum()),
                 kin_id,
-                _r(circular_mean(pos[:, 0], self.cfg.world.size), 2),
-                _r(circular_mean(pos[:, 1], self.cfg.world.size), 2),
+                *(_r(v, 2) for v in place.centroid(pos, self.cfg)),
             )
-            if self.d.d3:
-                row += (_r(pos[:, 2].astype(np.float64).mean(), 2),)
+            if self.d.d3 and not self.d.sph:  # a sphere's centroid already has its z
+                row += (_r(place.mean_height(pos, self.cfg), 2),)
             table_rows.append(row)
         return {
             "events": events,
@@ -740,7 +739,9 @@ class Society:
     ) -> dict[str, Any]:
         sr = self.sr
         n_ref, rescaled, th = thresholds
-        col_columns = ("id", "slot", "size", "kin_group", "x", "y") + (("z",) if self.d.d3 else ())
+        col_columns = ("id", "slot", "size", "kin_group", "x", "y") + (
+            ("z",) if self.d.d3 else ()
+        )  # a sphere's z is the centroid's
         events = [("kin_group", e) for e in kin["events"]] + [("colony", e) for e in col["events"]]
         events.sort(key=lambda fe: (-fe[1].size, fe[1].kind.value, fe[1].system, fe[0]))
         listed = events[: sr.events_max]
@@ -757,7 +758,8 @@ class Society:
             "step": step,
             "social_version": SOCIAL_VERSION,
             "social_digest": self._digest,
-            "intent_version": INTENT_VERSION,  # the width of ``kin_groups.arch`` (len(ARCHETYPE_NAMES) then)
+            # the width of ``kin_groups.arch`` (len(ARCHETYPE_NAMES) then); 4 on a sphere (rules.RULES_V4)
+            "intent_version": INTENT_VERSION_SPHERE if self.d.sph else INTENT_VERSION,
             "origin": self.house_origin,
             "window_start": self.window_start,
             "summary": summary,
@@ -925,7 +927,7 @@ class Society:
         """``(society, "")`` from a sidecar's ``host.*`` members if they are valid for ``cfg`` and ``sr``,
         else ``(None, reason)``; never raises. ``step`` (the sidecar's step), when given, bounds
         ``prev_step``, ``window_start`` and ``house_origin``."""
-        parsed = _parse_host(arrays, sr, sr.terr_cells**2, step)
+        parsed = _parse_host(arrays, sr, sr.n_terr(dims(cfg).sph), step)
         if isinstance(parsed, str):
             return None, parsed
         try:

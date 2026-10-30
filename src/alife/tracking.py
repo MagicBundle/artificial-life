@@ -415,7 +415,8 @@ def grid_clusters(
 
 class DominanceMap(NamedTuple):
     """Per cell (code ``y * nx + x``): the owner id (-1 none), the owner's share of the smoothed total in Q16
-    (0 if unowned) and the borders to the east (``[:, 0]``) and north (``[:, 1]``) neighbours."""
+    (0 if unowned) and the borders to the east (``[:, 0]``) and north (``[:, 1]``) neighbours. On a cell graph
+    (a sphere, ``Dominance(graph=...)``) the borders are ``(C, 4)``, one per edge neighbour of the table."""
 
     owner: np.ndarray
     purity_q16: np.ndarray
@@ -440,6 +441,10 @@ class Dominance:
     A cell is owned by the id of the largest column of ``E`` (ties to the lower column) unless that is
     "other" or the smoothed total is below ``min_count << 8 << k`` (or zero). ``periodic = (px, py)`` says
     which axes wrap; on a non-periodic axis the last column (row) has no east (north) border.
+
+    ``graph`` ((C, 4) int, the edge neighbours of each cell) replaces the lattice by a cell graph, for the
+    sphere's HEALPix territory map (DESIGN §46.7): ``shape`` is then ``(C, 1)`` and the borders are one per
+    table column. Nothing else changes: the smoothing, the owner and the purity read the cells only.
     """
 
     def __init__(
@@ -449,8 +454,12 @@ class Dominance:
         min_count: int,
         periodic: tuple[bool, bool] = (True, True),
         state: DominanceState | None = None,
+        graph: np.ndarray | None = None,
     ) -> None:
         nx, ny = int(shape[0]), int(shape[1])
+        self._graph = None if graph is None else np.asarray(graph, dtype=np.int64)
+        if self._graph is not None and (self._graph.ndim != 2 or self._graph.shape[0] != nx * ny):
+            raise ValueError(f"graph must be (C, w) with C = {nx * ny}, got {self._graph.shape}")
         if nx < 1 or ny < 1:
             raise ValueError(f"shape {shape} must be positive")
         if not 0 <= int(k) <= 20:
@@ -511,6 +520,10 @@ class Dominance:
         owner = np.where(owned, np.append(ids, -1)[arg], -1).astype(np.int64)
         top = e[np.arange(e.shape[0]), arg]
         purity = np.where(owned, top * _Q16 // np.maximum(total, 1), 0).astype(np.int64)
+        if self._graph is not None:
+            nxt = owner[self._graph]  # (C, w): the owners across each edge
+            diff = (owner[:, None] != nxt) & ((owner[:, None] >= 0) | (nxt >= 0))
+            return DominanceMap(owner, purity, diff)
         grid = owner.reshape(self._ny, self._nx)
         border = np.zeros((self._ny, self._nx, 2), dtype=bool)
         for axis, wrap in ((1, self._periodic[0]), (0, self._periodic[1])):

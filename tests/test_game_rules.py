@@ -59,6 +59,7 @@ V3_FIELDS = frozenset(
         "floater_vz",
         "sinker_lift",
         "sinker_vz",
+        "sphere",  # version 4 (the sphere world, DESIGN §46.7): inert at False
     }
 )
 
