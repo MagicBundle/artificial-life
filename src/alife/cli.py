@@ -1593,7 +1593,7 @@ def _bench_play(a: argparse.Namespace) -> dict[str, Any]:
 
 
 def _cmd_bench(a: argparse.Namespace) -> int:
-    from alife.bench import run_bench, steady_overrides
+    from alife.bench import run_bench, steady_overrides, steady_summary
 
     if a.play:
         report = _bench_play(a)
@@ -1627,6 +1627,8 @@ def _cmd_bench(a: argparse.Namespace) -> int:
         comm_arm=a.comm,
         niche_arm=a.niche,
     )
+    if a.alive:
+        report["steady"] = steady_summary(report, a.alive)
     text = _dumps(report)
     if a.json is not None:
         out = Path(a.json)

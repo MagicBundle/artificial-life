@@ -119,7 +119,7 @@ def test_the_presets_of_the_spec_validate(which: str) -> None:
     layers = int(SPHERE_SETS[which][3].split("=")[1])
     assert (d.nside, d.nside_h, d.fz) == (nside, nside, layers)  # Nh = Nf in every preset
     assert d.npix == 12 * nside**2 and d.n_cells == layers * d.npix and d.field_shape == (layers, d.npix)
-    assert d.q == 125 * 32 and d.g_hash_z == {"tiny3s": 5, "mini3s": 8, "64k3s": 13}[which]
+    assert d.q == 125 * 32 and d.g_hash_z == {"tiny3s": 5, "mini3s": 7, "64k3s": 13}[which]
     assert (
         d.r_lo == pytest.approx(cfg.world.radius + 1.0, abs=1e-4)
         and d.r_hi < cfg.world.radius + cfg.world.height
@@ -178,7 +178,7 @@ def test_the_hash_rules_need_a_planet_the_sensing_radius_can_cover(monkeypatch: 
         m.setattr(config.geom, "estimate_nh", lambda angle: config.NH_MAX + 1)
         assert "would exceed 64" in problems("tiny3s")
     # the lid cell holds more as the shell gets thick: the capacity rule follows V_lid
-    assert "must be ≥ ceil(0.167·V_lid) + 4 = 27" in problems("mini3s", "sensing.cell_capacity=20")
+    assert "must be ≥ ceil(0.167·V_lid) + 4 = 30" in problems("mini3s", "sensing.cell_capacity=20")
 
 
 def test_the_sphere_keys_are_inert_in_a_box_world() -> None:

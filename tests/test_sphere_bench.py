@@ -78,3 +78,23 @@ def test_the_bench_command_takes_alive(capsys: pytest.CaptureFixture) -> None:
     assert cli.main(["bench", "--preset", "tiny3s", "--alive", "512", "--steps", "3", "--warmup", "2"]) == 0
     r = json.loads(capsys.readouterr().out)
     assert r["config"]["n_init"] == 512 and r["n_alive_start"] <= 512
+    st = r["steady"]  # the decay is visible (review L7)
+    assert (
+        st["requested"] == 512
+        and st["n_alive_start"] == r["n_alive_start"]
+        and st["n_alive_end"] == r["n_alive_end"]
+    )
+    assert 0.0 <= st["decay_frac"] < 0.2 and st["us_per_step_per_alive"] > 0
+
+
+def test_the_staged_step_runs_the_collision_self_check_for_a_compiled_sphere(monkeypatch) -> None:
+    """Review L2: ``bench --stages`` compiles stage functions too, so it calls ``require_compile_safe``."""
+    from alife import sphere_check
+
+    calls: list[str] = []
+    monkeypatch.setattr(sphere_check, "require_compile_safe", lambda cfg: calls.append(cfg.world.geometry))
+    bench._StagedStep(tiny3s(), compile=False)
+    bench._StagedStep(load_config(preset="tiny3d"), compile=True)
+    assert calls == []
+    bench._StagedStep(tiny3s(), compile=True)
+    assert calls == ["sphere"]

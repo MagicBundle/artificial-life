@@ -20,7 +20,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from alife import geom, knn_metal, spatial
+from alife import geom, knn_metal, spatial, sphere
 from alife.config import Config, dims, load_config
 from sphere_fields_helpers import dev  # noqa: F401  (a fixture)
 from sphere_helpers import sphere_enabled  # noqa: F401  (a fixture)
@@ -314,3 +314,152 @@ def test_the_kernel_validates_its_inputs() -> None:
         knn_metal.scan_select_sph(spos, start, order, pix, pix, nbr[:5], alive, **kw)
     with pytest.raises(ValueError, match="alive must be bool"):
         knn_metal.scan_select_sph(spos, start, order, pix, pix, nbr, pix, **kw)
+
+
+def _interface_pairs(cfg: Config, rng: np.random.Generator, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """``n`` isolated pairs A, B on one radius line: A within 3e-5 of a hash layer interface, B at the radial
+    gap ``R(1 − g)`` above it with ``g`` in {1e-7, 1e-6, 1e-5, 1e-4}; returns ``(pos, alive)`` padded."""
+    d = dims(cfg)
+    sp = sphere.geometry(cfg)
+    rp, R = cfg.world.radius, cfg.sensing.radius
+    u = rng.normal(size=(n, 3))
+    u /= np.linalg.norm(u, axis=1, keepdims=True)
+    k = rng.integers(0, sp.gz - 2, n)
+    za = (k + 1) * sp.th + rng.uniform(-3e-5, 3e-5, n)
+    zb = za + R * (1 - rng.choice([1e-7, 1e-6, 1e-5, 1e-4], n))
+    ok = (zb < float(d.r_hi) - rp) & (za > float(d.r_lo) - rp)
+    pos = np.zeros((d.n, 3), np.float32)
+    pos[:, 2] = float(d.r_lo)
+    a, b = (
+        (u[ok] * (rp + za[ok])[:, None]).astype(np.float32),
+        (u[ok] * (rp + zb[ok])[:, None]).astype(np.float32),
+    )
+    m = len(a)
+    pos[:m], pos[m : 2 * m] = a, b
+    alive = np.zeros(d.n, bool)
+    alive[: 2 * m] = True
+    return pos, alive
+
+
+@pytest.mark.usefixtures("dev")
+@pytest.mark.parametrize("which", ["tiny3s", "mini3s"])
+def test_a_pair_a_few_ulp_under_r_across_a_layer_interface_is_found(which: str) -> None:
+    """Review M1: when ``2H/R`` is an integer (``mini3s``: 24 and 6) a layer thickness of exactly ``R/2``
+    lets two agents ``R(1 − 1e-7)`` apart differ by three computed layers and drop out of the five-layer
+    stencil. ``geom.hash_layers`` keeps ``T_h`` strictly above ``R/2``; every pair inside ``R`` is found
+    (unless the row's list is already full of K nearer agents)."""
+    cfg = cfg_for(which, 1024)
+    sp = sphere.geometry(cfg)
+    assert sp.th > cfg.sensing.radius / 2  # strictly
+    if which == "mini3s":
+        assert (
+            2 * cfg.world.height / cfg.sensing.radius == 8.0 and sp.gz == 7
+        )  # the integer case, one layer fewer
+    rng = np.random.default_rng(21)
+    r2 = np.float32(cfg.sensing.radius) ** 2
+    inside = misses = 0
+    for _ in range(40):
+        pos, alive = _interface_pairs(cfg, rng, 250)
+        m = int(alive.sum()) // 2
+        nb = spatial.find_neighbors(mx.array(pos), mx.array(alive), cfg, impl="mlx")
+        idx, valid = np.array(nb.idx), np.array(nb.valid)
+        for i in range(m):
+            dd = pos[i + m] - pos[i]
+            if (dd[0] * dd[0] + dd[1] * dd[1]) + dd[2] * dd[2] < r2:
+                inside += 1
+                for x, y in ((i, i + m), (i + m, i)):  # a list already full of K nearer agents may omit it
+                    seen = (valid[x] & (idx[x] == y)).any()
+                    misses += int(not seen and valid[x].sum() < K)
+    assert inside > 5000 and misses == 0
+
+
+def test_hash_layers_are_strictly_thicker_than_half_the_sensing_radius() -> None:
+    for h, want in ((16.0, 5), (24.0, 7), (40.0, 13), (6.0, 1), (12.0, 3)):
+        gz, th = geom.hash_layers(h, 6.0)
+        assert gz == want and th > 3.0, (h, gz, th)
+    assert geom.hash_layers(23.9999, 6.0)[0] == 7
+
+
+# --- the witness-pair oracle (review L1) -----------------------------------------------------------------
+
+
+def _witness_pairs(
+    cfg: Config, pix: np.ndarray, scale: float, eta: float = 1e-4
+) -> tuple[np.ndarray, np.ndarray]:
+    """For each pixel ``p``: A just inside ``p`` at the S0 coverage witness, B at the chord ``scale·R`` from A
+    along the great circle towards the witness of the stencil boundary, both at the floor radius (the worst
+    case)."""
+    d = dims(cfg)
+    nh = d.nside_h
+    cov = geom.coverage(nh, 2)
+    cen = geom.pixel_centres(nh)
+    rlo, R = float(d.r_lo), cfg.sensing.radius
+
+    def unit(v: np.ndarray) -> np.ndarray:
+        return v / np.linalg.norm(v, axis=-1, keepdims=True)
+
+    a = unit((1 - eta) * cov.witness_a[pix] + eta * cen[pix])
+    t = unit(cov.witness_b[pix] - (cov.witness_b[pix] * a).sum(1, keepdims=True) * a)
+    th = 2 * math.asin(min(1.0, R * scale / (2 * rlo)))
+    b = math.cos(th) * a + math.sin(th) * t
+    return (a * rlo).astype(np.float32), (b * rlo).astype(np.float32)
+
+
+@pytest.mark.parametrize("which", ["tiny3s", "mini3s", "64k3s"])
+def test_the_witness_pairs_are_found_inside_and_leave_the_stencil_just_outside_the_margin(which: str) -> None:
+    """The property the whole hash rests on, with the engine's float32 ``ang2pix`` and the stencil table: at
+    the S0 coverage witness of every pixel, a pair at ``0.999 R`` lies in the stencil (and the engine finds
+    it, on a sample of isolated pairs), and so does the pair at ``(1 + margin − 1e-3) R`` (``margin`` the
+    derived coverage margin over the rigorous angle); at ``(1 + margin + 1e-3) R`` the tightest pixels
+    leave it. The last step keeps the others from being vacuous and catches a regression of the coverage
+    table or of ``ang2pix``."""
+    sets = {
+        "tiny3s": WORLDS["tiny3s"],
+        "mini3s": WORLDS["mini3s"],
+        "64k3s": ["world.radius=90", "world.height=40", "world.nside=21", "world.layers=18"],
+    }[which]
+    cfg = load_config(
+        preset="tiny3s",
+        overrides=[*sets, "population.n_max=1024", "population.n_init=8", "population.max_births_per_step=32",
+                   "sensing.k_neighbors=8", "brain.weight_dtype=float32"],
+    )  # fmt: skip
+    d = dims(cfg)
+    nh, npix = d.nside_h, d.npix_h
+    st = geom.tables(nh).stencil2
+    margin = geom.hash_margin(
+        nh, geom.rigorous_angle(cfg.world.radius, cfg.physics.radius, cfg.sensing.radius)
+    )
+    allp = np.arange(npix)
+    for scale, want in ((0.999, "all"), (1.0 + margin - 1e-3, "all"), (1.0 + margin + 1e-3, "some")):
+        a, b = _witness_pairs(cfg, allp, scale)
+        pa = np.array(sphere.ang2pix(mx.array(a), nh))
+        pb = np.array(sphere.ang2pix(mx.array(b), nh))
+        in_stencil = (st[pa] == pb[:, None]).any(axis=1)
+        assert (
+            pa == allp
+        ).mean() > 0.999  # A is in its own pixel (a tie on the boundary is adjacent at worst)
+        if want == "all":  # inside the guaranteed reach: every pixel's pair is in the stencil
+            assert in_stencil.all(), (which, scale, in_stencil.mean())
+        else:  # just past the margin the tight pixels leave it: the margin is not slack, the test not vacuous
+            assert (~in_stencil).any(), (which, scale)
+    # the engine finds the isolated pairs at 0.999 R, both directions
+    rng = np.random.default_rng(3)
+    m = 60
+    sub = rng.choice(npix, m, replace=False)
+    a, b = _witness_pairs(cfg, sub, 0.999)
+    pos = np.zeros((d.n, 3), np.float32)
+    pos[:, 2] = float(d.r_lo)
+    pos[:m], pos[m : 2 * m] = a, b
+    alive = np.zeros(d.n, bool)
+    alive[: 2 * m] = True
+    nb = spatial.find_neighbors(mx.array(pos), mx.array(alive), cfg, impl="mlx")
+    idx, valid = np.array(nb.idx), np.array(nb.valid)
+    r2 = np.float32(cfg.sensing.radius) ** 2
+    checked = 0
+    for i in range(m):
+        dd = pos[i + m] - pos[i]
+        if (dd[0] * dd[0] + dd[1] * dd[1]) + dd[2] * dd[2] < r2:
+            for x, y in ((i, i + m), (i + m, i)):  # unless the list is already full of K nearer agents
+                assert (valid[x] & (idx[x] == y)).any() or valid[x].sum() == K, (which, i)
+                checked += 1
+    assert checked > 100
