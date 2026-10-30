@@ -6,11 +6,14 @@ legacy ``alife stream`` header, and the box streams' unchanged bytes (DESIGN §4
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import io
 import json
+import platform
 import struct
 from pathlib import Path
 
+import mlx.core as mx
 import numpy as np
 import pytest
 
@@ -331,3 +334,30 @@ def test_alife_play_as_a_process_writes_a_decodable_protocol_2_stream(tmp_path: 
     assert tags[0] == "FRMA" and "IDNT" in tags and "ENVS" in tags and dec.skipped == []
     last = by_tag(dec, "FRMA")[-1]
     assert last.step >= 1 and last.a["height"].min() > -1e-3
+
+
+# Box play streams, pinned from the base 5984583 (before the sphere series) and from this tree: same bytes.
+# Eager CPU, a fake clock, 60 steps; the digests are per platform like the golden trajectories (Darwin CPU).
+BOX_STREAM_PINS = {"2d": (756400, "5905d0a06805f88d"), "3d": (759744, "8653aa91b8a859bf")}
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="the pins were recorded on Darwin (CPU)")
+@pytest.mark.parametrize(("name", "preset", "extra"), [
+    ("2d", "tiny", []),
+    ("3d", "tiny3d", ["structures.enabled=true", "comm.enabled=true", "bonds.share_mode=2"]),
+])  # fmt: skip
+def test_a_box_play_stream_is_byte_identical_to_the_base(
+    name: str, preset: str, extra: list[str], tmp_path: Path
+) -> None:
+    if mx.default_device() != mx.cpu:
+        pytest.skip("the pins are CPU digests")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(observer, "DEFAULT_SOCIAL", SOC)
+        cfg = load_config(
+            preset=preset, overrides=[*CADENCE, "game.observe=true", "run.compile=false", *extra]
+        )
+        opts = play.PlayOptions(rate=float("inf"), paused=False, fresh=True, unattended=True, tick=10)
+        _rd, _res, _pacer, out = run_paced(cfg, tmp_path / "w", 60, [], options=opts)
+    data = out.getvalue()
+    assert (len(data), hashlib.sha256(data).hexdigest()[:16]) == BOX_STREAM_PINS[name]
+    assert json.loads(data[12 : 12 + struct.unpack("<I", data[8:12])[0]])["protocol"] == 1

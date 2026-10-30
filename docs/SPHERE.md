@@ -23,6 +23,8 @@
 > per cell, `ceil(aperture·n_nbr)` (26, 23, 17, 15 neighbours), under the box's domain `ceil(aperture·26) <= 17`; the material gradient is a world-frame vector at the cell centre; niche, comm, bonds with roles and arms
 > needed no change of code; "the existing per-feature suites run on a sphere fixture" is the parameter `"s"` of their helpers in the eager step (spec 10.1 fallback), the compiled step being in cold children.
 
+> **S5 (2026-10-30).** Built section 5 (observers, stream v2, dumps, metrics, groups/tracking/society, `game.observe`, labels, the game layer, alerts, the director) and the S5 row of section 10; see DESIGN §46.7. Deviations: the planet radius of the header is `planet_radius` (the existing `radius` is the agents' body radius); `MAPH` pools every plane to the field Nside `Nc`, with the winds as east/north components; `STRC`/`FSOL` need Nside <= 73; `grid_clusters` over the coarse graph is `geom.label_components` (the tag-space clustering never touched the planet); the territory is 972 cells and the footprint 12 288; levers use (lon, lat) degrees; the World Report carries no `z`. Not built: the weather consumers (tracers, the played storm layer, `MAPH` sending, `run.wx_every`, the storm proxy), see DESIGN §46.13.
+
 Status: proposal for owner review, 2026-10-29; **Revision 1** (same day) applies the independent review `review.md` (changelog at the end). Planned identifiers: DESIGN §46, Review-log row I77 (I76 is taken by a GUI fix).
 Owner request (2026-10-29): "a true sphere and not a wrapped sheet". This document is a specification only: no engine code
 was written or changed. Read-only inputs: main at 7ab28cf (DESIGN §27, §30, §32, §37 to §43, §45, F20; `src/alife/*`; the

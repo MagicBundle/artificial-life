@@ -130,7 +130,7 @@ DESIGN §33.1.15 (and the GUI contract of the PR); the registry rows carry `dump
 stamps of farming (a state field and a hashed key, so not observer-only), the colour modes `arms`, `lock`, `voice`, `soil`, the inspector
 rows, the GUI, the `FARS` record. Next: the GUI PRs (S3, B3 overlay, C2 panel, A6, F3), then the analysis modules and the runs.
 
-## The true sphere: S0 geometry and guards, S1 fields, S2 agents, S3 features (DESIGN §46, row I77)
+## The true sphere: S0 geometry and guards, S1 fields, S2 agents, S3 features, S5 observers (DESIGN §46, row I77)
 
 The owner asked for a true sphere (`world.geometry = "sphere"`: HEALPix cells on a planet, radial gravity, Cartesian agents), built in PRs S0 to S7. S0 is merged-ready and runs nothing:
 `src/alife/geom.py` (host: the HEALPix scheme, the exact neighbour tables, the exact coverage of the hash stencils and the `Nh`/`C` derivations, the equal-volume layers, the host accessors),
@@ -147,6 +147,8 @@ harness (`tests/sphere_rotation.py`) and `sphere_check` (the compile-collision s
 **S3 (the five features on the shell, DESIGN §46.5 "The five features on the shell") widens `SPHERE_READY` to structures, niche, comm, bonds, roles and arms**: only the structures needed sphere code (`fields_sph.MatTables`, `mat_nopen`,
 `update_mat` with a per-cell aperture requirement, `mat_table`; `geom.min_colouring`, 11 colours at the presets so the closing cycle is 33 phases); niche, comm, bonds and arms run unchanged. The box suites of every feature run on `tiny3s` through the parameter `"s"` of
 their helpers (eager; the compiled step is in `tests/test_sphere_features_compiled.py`, cold children). Next: S4 (weather), S5 (observers; the sphere's grid dumps are `(FZ, Npix)` int32 arrays whose decoders and the `STRC`/`FSOL` records are S5).
+
+**S5 (observers, stream protocol 2, dumps, the game layer and the director on the shell, DESIGN §46.7) makes a sphere playable on the host side**: `SPHERE_READY` gains `observers` and `director`; `alife play`, `alife stream`, `alife activity`, `alife labels` (`analysis.labels`) and the director run on `tiny3s`. A place is `(x, y, z)` planet-frame in data, latitude/longitude/height in text and `(lon, lat)` degrees in a lever (`game/place.py` is the one host dispatch); the rules are `RULES_V4` (`INTENT_VERSION` 4: version 3's thresholds on radial-velocity and height columns, provisional); the territory is the 972-cell HEALPix map `Nt = 9` on the cell graph; the header is protocol 2 (`planet_radius`, `shell_edges`, the Nsides, no `L`), `STRC`/`FSOL`/`TERR` are indexed by `layer·Npix + pixel` and the ring pixel, `MAPH` replaces `MAP1` (encoder and quantiser built, not yet sent: the weather consumers are open); `tests/sphere_decode.py` is the independent decoder, written from `docs/SPHERE.md`'s stream text; a sphere run directory has `geometry.json`; the Nomad track of the labels tool is developed onto the tangent plane; `storms_sph.py` is the storm detector and tracker on the cell graph (tested on synthetic cyclones over the poles and vertices). Open: the weather consumers (`game/tracers.py`, the played storm layer and `MAPH`, `run.wx_every`, the storm proxy), the World Report's `z`, the Swift side (S6), the version-4 calibration (S7).
 
 ## How to run
 
