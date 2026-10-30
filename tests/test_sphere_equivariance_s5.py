@@ -60,3 +60,14 @@ def test_place_distance_height_and_centroid_are_rotation_equivariant(cfg) -> Non
         place.distance(pts[:-1], pts[1:], cfg), place.distance(q[:-1], q[1:], cfg), atol=1e-9
     )
     np.testing.assert_allclose(rot @ np.array(place.centroid(pts, cfg)), place.centroid(q, cfg), atol=1e-9)
+
+
+def test_a_raw_z_would_break_these_tests(cfg) -> None:
+    """The negative control: the planet-frame z of a point (what ``pos[:, 2]`` returns on a sphere) is not a
+    height, and a rotated world gives other numbers, so the comparisons above are not vacuous."""
+    rng = np.random.default_rng(7)
+    v = rng.normal(size=(40, 3))
+    pts = v / np.linalg.norm(v, axis=1, keepdims=True) * rng.uniform(36, 50, (40, 1))
+    q = pts @ random_rotation(8).T
+    assert np.abs(pts[:, 2] - q[:, 2]).max() > 5.0
+    assert np.abs(place.heights(pts, cfg) - place.heights(q, cfg)).max() < 1e-12
