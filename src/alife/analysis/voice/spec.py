@@ -16,7 +16,7 @@ from alife.analysis.voice import VOICE_ANALYSIS_VERSION
 SAMPLE_EVERY: Final = 50  # a sample is taken every SAMPLE_EVERY steps (three consecutive observed steps)
 SAMPLE_ROWS: Final = 2048  # rows drawn per sample, for senders and for hearers
 WINDOW: Final = 10_000  # the default recorded window, in steps
-N_BLOCKS: Final = 8  # equal blocks of the window (the suite's window blocking)
+N_BLOCKS: Final = 16  # equal blocks of the window (the suite's window blocking, §44.8)
 SEED: Final = 0  # of the row draws and the permutations
 
 # --- the variables --------------------------------------------------------------------------------------
@@ -96,8 +96,10 @@ def default_prereg(code_git: str | None = None) -> dict[str, Any]:
             "n_perm": N_PERM,
             "n_perm_block": N_PERM_BLOCK,
             "min_stratum": MIN_STRATUM,
-            "family": "max over the (context, response) pairs of the permutation z; one permutation is "
-            "applied to all pairs, so the p-value is for the family",
+            "family": "max over the (context, response) pairs of the permutation z; the pairs share the "
+            "random keys of each permutation, so the p-value is for the family",
+            "split": "the transfer pair is chosen on the even blocks of the none arm, estimated on the "
+            "odd blocks of every arm (no winner's curse in the arm contrast)",
         },
         "thresholds": {k: dict(v) for k, v in THRESH.items()},
         "arms": {
