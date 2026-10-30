@@ -36,6 +36,12 @@ if TYPE_CHECKING:
 _F32 = mx.float32
 _I32 = mx.int32
 
+
+def _sph(cfg: Config) -> bool:
+    """True for a sphere world: the static switch of the dispatch to ``weather_sph`` (DESIGN §46.6)."""
+    return cfg.world.geometry == "sphere"
+
+
 # (x, y, sx, sy, amp, vx, vy): centre, Gaussian widths (sx <= 0: a zonal band), amplitude, drift per step.
 # The W0 result (docs/STORMS_W0.md, set r4_3p36_q111_v009): 3 pools per hemisphere, 32 x 16, 36 units from
 # each equator, drifting west at 0.009 units per step (D8). The centres keep the 6 decimals of the confirmed
@@ -1220,12 +1226,21 @@ _INT_BOUND: Final = 2.0**30
 
 
 def pack(ws: WeatherState) -> mx.array:
-    """``State.wx``: the nine arrays of ``ws`` stacked in field order, (N_WX, n, n) float32."""
+    """``State.wx``: the nine arrays of ``ws`` stacked in field order, (N_WX, n, n) float32. A sphere state
+    (``weather_sph.WeatherStateS``) packs to (11, 12·Nw²) by ``weather_sph.pack``."""
+    if len(ws) != N_WX:  # static: the sphere's seven fields
+        from alife import weather_sph
+
+        return weather_sph.pack(ws)
     return mx.stack(list(ws))
 
 
 def unpack(wx: mx.array) -> WeatherState:
-    """The inverse of ``pack`` (nine slices)."""
+    """The inverse of ``pack`` (nine slices); a sphere's ``wx`` has 11 planes (``weather_sph.unpack``)."""
+    if wx.shape[0] != N_WX:  # static: a shape
+        from alife import weather_sph
+
+        return weather_sph.unpack(wx)
     return WeatherState(*(wx[i] for i in range(N_WX)))
 
 
@@ -1249,7 +1264,12 @@ def params_from_config(cfg: Config) -> WeatherParams:
     """The ``WeatherParams`` of a config: a name-keyed copy of ``cfg.weather`` plus ``n = cells``, ``dx =
     world.size / cells``, ``height`` (``world.height`` in 3D, ``H1 + H2`` in 2D) and ``ENGINE_FIXED``.
     Cached on the weather section and the three world values it reads. ``validate_config`` guards the inputs
-    (``cells`` and ``pools``) before this is built."""
+    (``cells`` and ``pools``) before this is built. On a sphere ``weather_sph.params_from_config`` (``n = Nw``,
+    ``dx`` the mean cell side, ``height = H1 + H2``)."""
+    if _sph(cfg):  # static
+        from alife import weather_sph
+
+        return weather_sph.params_from_config(cfg)
     return _params(cfg.weather, cfg.world.size, cfg.world.height, cfg.world.dims)
 
 
@@ -1267,6 +1287,10 @@ def rest_array(cfg: Config, step: mx.array | int = 0) -> mx.array:
     """
     if not cfg.weather.enabled:
         return _rest_off()
+    if _sph(cfg):  # static
+        from alife import weather_sph
+
+        return weather_sph.rest_array(cfg, step)
     p = params_from_config(cfg)
     t = (step if isinstance(step, mx.array) else mx.array(step)).astype(_I32)
     return pack(init_state(p, default_forcing(p, t)))
@@ -1280,6 +1304,10 @@ def validate_config(cfg: Config) -> list[str]:
     cells are a multiple of the field lattice, W-2 the pool centres lie in the domain, the 3D geometry and
     load rules via ``check_world``, the 2D load rules R3 and R4); the coupling keys.
     """
+    if _sph(cfg):  # static: the sphere's own rules (the lattice rules below name the box)
+        from alife import weather_sph
+
+        return weather_sph.validate_config(cfg)
     wc, w, ph = cfg.weather, cfg.world, cfg.physics
     bad: list[str] = []
     # 0. Guards, before ``params_from_config`` computes ``dx = world.size / cells``.
@@ -1398,12 +1426,20 @@ def agent_wind(
     ``alpha·u_air``. ``alive`` keeps dead rows out of the clip counts; their force is zeroed by the physics
     (``survivor``).
 
+    On a sphere (DESIGN §46.6) the wind is ``weather_sph.agent_wind`` (the cell's tangent vector re-projected, the
+    vertical map of ``WeatherGeometry``, the force a Cartesian 3-vector).
+
     W2 (DESIGN §32), each a static branch on a config constant: ``wind_eddy_force`` drives the agents with
     the eddy wind ``(u_h - ū_h, w)`` instead of ``u_air`` (the weather is untouched); ``wind_scale``
     multiplies the force (0: still air for the agents); ``storm_eddy`` makes ``speed`` the eddy speed
     ``sqrt(|u_h - ū_h|² + w²)``, which the hazard and the bond break read. The defaults take exactly the
     W1 expressions.
     """
+    if _sph(cfg):  # static
+        from alife import weather_sph
+
+        assert buoy_cap is not None, "a sphere is a 3D world"
+        return weather_sph.agent_wind(ws, pos, buoy_cap, alive, cfg)
     p = params_from_config(cfg)
     wc = cfg.weather
     drag = cfg.physics.drag
@@ -1455,7 +1491,7 @@ def agent_drift(
     post-step state in its own compiled fold, so the step graph is untouched. ``shelter`` ((N,) f32, the
     ``k`` of ``shelter_wind``, ``structures.shelter_k`` of the built material at ``pos``) scales the drift
     as the engine scales the force; None is the structures-off graph."""
-    force = agent_wind(unpack(wx), pos, buoy_cap, alive, cfg).force
+    force = agent_wind(unpack(wx), pos, buoy_cap, alive, cfg).force  # (a sphere: the Cartesian force)
     if shelter is not None:  # static: structures on
         force = force * shelter[:, None]
     return force / cfg.physics.drag
@@ -1467,6 +1503,11 @@ def air_speeds(
     """``(total, eddy)`` air speeds of every row, ``(N,)`` float32 each: ``|u_air|`` (the clipped wind, jet
     and ``w`` included) and ``sqrt(|u_h - ū_h|² + w²)`` (the eddy speed of ``storm_eddy``), whatever the
     config keys. For the metrics rows (eager, once per snapshot); ``agent_wind`` is what the step uses."""
+    if _sph(cfg):  # static
+        from alife import weather_sph
+
+        assert buoy_cap is not None
+        return weather_sph.air_speeds(ws, pos, buoy_cap, alive, cfg)
     p = params_from_config(cfg)
     if buoy_cap is not None:  # static: 3D
         aw = sample_wind(ws, pos, p, field_cell=cfg.world.field_cell, valid=alive, eddy=True)
@@ -1492,6 +1533,10 @@ def advance(
     ``qs`` and ``t_mult`` are the (n, n) organism forcings of ``organism_forcing`` (DESIGN §32); None (the
     default, and what the step passes with ``seed_gain = 0`` / ``shade_gain = 0``) takes exactly the W1
     expressions: ``qs = 1`` and ``T_s`` unscaled, so without them the result depends on no agent array."""
+    if _sph(cfg):  # static
+        from alife import weather_sph
+
+        return weather_sph.advance(ws, t, key, cfg, qs, t_mult)
     p = params_from_config(cfg)
     t_s = warm_pools(p, t)
     if t_mult is not None:  # static: shade (W2)
@@ -1588,6 +1633,10 @@ def rain_regen(rain: RainIn, cfg: Config) -> mx.array:
     ``weather.rain_zonal`` (W2, a control) replaces ``P``, ``P·zi`` and ``P·dc`` by their x-means before the
     reduction: the same layer weights, but the food depends on latitude only.
     """
+    if _sph(cfg):  # static: the shell's layers, the pixels' children (weather_sph.rain_regen)
+        from alife import weather_sph
+
+        return weather_sph.rain_regen(rain, cfg)
     wc, w = cfg.weather, cfg.world
     fg = round(w.size / w.field_cell)
     rp, pz, pd = rain.P, rain.P * rain.zi, rain.P * rain.dc
@@ -1637,7 +1686,13 @@ def seeding_response(chem: mx.array, ws: WeatherState, cfg: Config) -> mx.array:
     The excess over the lattice mean, ``e = b - mean(b)·(1 + 1e-4)``, goes through ``r = e⁺/(e⁺ + seed_c0)``
     (zero for ``e <= 0``: no anti-seeding). The 1e-4 dead band is far above the float32 rounding of the mean
     over the lattice and of the layer weights (they sum to 1 to 6e-8), so a uniform c2 gives ``r == 0``
-    exactly. 2D: the band is the single layer. Reshapes, reductions and arithmetic only; no random draw."""
+    exactly. 2D: the band is the single layer. Reshapes, reductions and arithmetic only; no random draw.
+
+    On a sphere (``weather_sph.seeding_response``) ``(Npix_f,)`` over the field pixels."""
+    if _sph(cfg):  # static
+        from alife import weather_sph
+
+        return weather_sph.seeding_response(chem, ws, cfg)
     wc, w = cfg.weather, cfg.world
     p = params_from_config(cfg)
     fg = round(w.size / w.field_cell)
@@ -1655,7 +1710,12 @@ def seeding_response(chem: mx.array, ws: WeatherState, cfg: Config) -> mx.array:
 def seeding_qs(chem: mx.array, ws: WeatherState, cfg: Config) -> mx.array:
     """The rain-seeding factor on the threshold ``Q_s``, (n, n) float32 in ``[1 - seed_gain, 1]``:
     ``qs = 1 - seed_gain·r`` with ``r`` of ``seeding_response``, repeated over the 2x2 weather cells of each
-    field column. The caller evaluates it on the start-of-step state (``organism_forcing``)."""
+    field column. The caller evaluates it on the start-of-step state (``organism_forcing``). On a sphere (Nw
+    cells) the pixel value is spread over its children (``weather_sph.seeding_qs``)."""
+    if _sph(cfg):  # static
+        from alife import weather_sph
+
+        return weather_sph.seeding_qs(chem, ws, cfg)
     return _repeat_blocks(
         1.0 - cfg.weather.seed_gain * seeding_response(chem, ws, cfg), params_from_config(cfg).n
     )

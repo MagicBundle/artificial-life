@@ -1,0 +1,24 @@
+# stormsph overlay: the storm world's weather layer on a sphere (docs/SPHERE.md 4 and 7.3, DESIGN §46.6). A WORLD
+# overlay, like `storm`: it needs the planet it is tuned for and fails validation on the others. It is made for the
+# `64k3s` world of the sphere series (Rp 90, H 40, field Nside 21, so the weather Nside Nw = 2 Nf = 42, 21 168
+# cells of side 2.19, Courant 0.507); the preset itself is S7's, so until then compose it over a world with those
+# numbers. `tiny3s` (Nw 16) and `mini3s` (Nw 22) need narrower pools and a smaller `cells`: S4c's calibration.
+#
+# `weather.cells` is the weather Nside Nw (not a grid side) and must be Nf times a power of two. A pool is
+# (x, y, sx, sy, amp, vx, vy) with x the arc length east of longitude 0 and y the arc length north of the
+# equator (lon = x/Rp, lat = y/Rp), sx and sy Gaussian widths in length, vx the drift along the pool's own
+# latitude circle per step, vy = 0. Six pools of the box's 32 x 16, at latitude +-40 degrees (f at the pool
+# 0.0162, as 64k3d), three per hemisphere, 120 degrees apart; the southern ones are offset by 60 degrees.
+#
+# The coupling values are PROVISIONAL (those of `storm`; S4c calibrates them). The vertical map of the shell onto
+# the atmosphere is s = (H1 + H2)/H = 2 here.
+[weather]
+enabled = true
+cells = 42
+f0 = 0.025
+seed_rate = 0.02
+pools = [94.24778, 62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 282.743339, 62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 471.238898, 62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 0.0, -62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 188.495559, -62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 376.991118, -62.831853, 32.0, 16.0, 1.0, -0.009, 0.0]
+rain_gain = 50000.0
+storm_p = 0.002
+storm_u0 = 0.06
+storm_span = 0.03

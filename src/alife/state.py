@@ -428,12 +428,17 @@ WX_RATIO_SPHERE: Final = (
 )
 
 
-def wx_shape_sphere(nside: int) -> tuple[int, int]:
-    """The shape of ``wx`` on a sphere: ``(N_WX_SPHERE, 12·Nw²)`` with ``Nw = WX_RATIO_SPHERE·Nf``, from the
-    field Nside and not from the box's ``weather.cells`` (0.13 to 0.93 MB for the three presets). A
-    placeholder until
-    the weather (S4) fixes ``Nw``; if S4 changes the ratio it is a planned re-pin of the sphere digests."""
-    return N_WX_SPHERE, 12 * (WX_RATIO_SPHERE * nside) ** 2
+def wx_shape_sphere(nside: int, nw: int | None = None) -> tuple[int, int]:
+    """The shape of ``wx`` on a sphere: ``(N_WX_SPHERE, 12·Nw²)`` (0.13 to 0.93 MB for the three presets).
+    ``nw`` is the weather Nside of a weather-on config (``weather.cells`` is ``Nw`` itself on a sphere, DESIGN
+    §46.6); without it, and for every weather-off config, ``Nw = WX_RATIO_SPHERE·Nf`` from the field Nside,
+    the zero placeholder of S1 and S2 (so the weather-off sphere digests are unchanged)."""
+    return N_WX_SPHERE, 12 * (WX_RATIO_SPHERE * nside if nw is None else nw) ** 2
+
+
+def sphere_wx_shape(cfg: Config) -> tuple[int, int]:
+    """``wx_shape_sphere`` of a sphere config: the weather Nside ``weather.cells`` when the weather is on."""
+    return wx_shape_sphere(cfg.world.nside, cfg.weather.cells if cfg.weather.enabled else None)
 
 
 def is_sphere_state(s: object) -> bool:
@@ -526,10 +531,11 @@ def sphere_kinematics(
 
 
 def rest_wx(cfg: Config, step: mx.array | int = 0) -> mx.array:
-    """The rest ``State.wx`` of a config: ``weather.rest_array`` in a box; on a sphere an all-zero
-    ``wx_shape_sphere`` placeholder (the weather of the sphere, and its rest state, are S4's)."""
-    if dims(cfg).sph:
-        return mx.zeros(wx_shape_sphere(dims(cfg).nside), dtype=mx.float32)
+    """The rest ``State.wx`` of a config: ``weather.rest_array`` in a box and for a weather-on sphere (the
+    calm state under the pools of ``step``, DESIGN §46.6); for a weather-off sphere an all-zero placeholder
+    of ``wx_shape_sphere``."""
+    if dims(cfg).sph and not cfg.weather.enabled:
+        return mx.zeros(sphere_wx_shape(cfg), dtype=mx.float32)
     return weather.rest_array(cfg, step)
 
 
@@ -688,7 +694,7 @@ def expected_layout(cfg: Config) -> dict[str, tuple[tuple[int, ...], mx.Dtype]]:
         "env_cat_center": ((2,), f32),
         "env_cat_radius": ((), f32),
         "env_cat_kill_p": ((), f32),
-        "wx": (wx_shape_sphere(d.nside) if d.sph else (weather.N_WX, d.wn, d.wn), f32),
+        "wx": (sphere_wx_shape(cfg) if d.sph else (weather.N_WX, d.wn, d.wn), f32),
         **({"pitch": ((n,), f32), "buoy_cap": ((n,), f32)} if d.d3 else {}),  # State3 (§27.4)
         **({"hdg": ((n, 3), f32)} if d.sph else {}),  # StateS (§46.2): after the State3 fields
         **{f.name: (f.shape(d), f.dtype) for f in ext.state_fields(cfg, d.nd)},  # extension fields (§43.2)

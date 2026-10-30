@@ -26,6 +26,7 @@ from alife import (
     structures,
     weather,
     weather_obs,
+    weather_sph,
 )
 from alife.config import Config, config_hash, dims, is_3d
 from alife.ext.bonds import bonds_ext
@@ -275,7 +276,8 @@ def rain_audit(s: State | State3, ws: weather.WeatherState, cfg: Config) -> mx.a
     books) and ``rain_real = inc_total - inc_base``. ``R`` is the end-of-step resource where the engine used
     the start-of-step one, the season is that of the last step and the patches are one drift later: exact for
     cells far from saturation or saturated, off by the one-step change otherwise (an approximation, stated).
-    A layer sum is below ``2³¹`` (6,400 cells of at most 8,000 quanta each); the host adds them in int64."""
+    A layer sum is below ``2³¹`` (6,400 cells of at most 8,000 quanta each); the host adds them in int64.
+    On a sphere the arrays are ``(FZ, Npix)`` and a layer sum is over the pixels."""
     fg = dims(cfg).fg
     env = s.env if cfg.director.enabled else None  # static
     step = s.step - 1
@@ -284,7 +286,10 @@ def rain_audit(s: State | State3, ws: weather.WeatherState, cfg: Config) -> mx.a
     room = cfg.fields.resource_cap - s.resource
     inc_total = mx.maximum(mx.minimum(base + rain, room), 0)
     real = inc_total - mx.maximum(mx.minimum(base, room), 0)
-    rows = [a.reshape(-1, fg, fg).sum(axis=(1, 2)) for a in (base, rain, inc_total, real)]
+    if dims(cfg).sph:  # static
+        rows = [a.reshape(a.shape[0], -1).sum(axis=1) for a in (base, rain, inc_total, real)]
+    else:
+        rows = [a.reshape(-1, fg, fg).sum(axis=(1, 2)) for a in (base, rain, inc_total, real)]
     return mx.stack(rows).astype(mx.int32)
 
 
@@ -425,7 +430,8 @@ def snapshot_metrics(s: State | State3, cfg: Config, *, heavy: bool) -> dict[str
                 )
             out.update(rows)
     if cfg.weather.enabled:
-        out["weather"] = weather_obs.weather_block(
+        block = weather_sph.weather_block if dims(cfg).sph else weather_obs.weather_block  # static: §46.6
+        out["weather"] = block(
             h["wx"],
             h["air_speed"][alive],
             cfg,
