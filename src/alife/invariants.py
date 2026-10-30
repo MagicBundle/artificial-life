@@ -48,6 +48,9 @@ def _ledger_net(ledger: mx.array, nd: int) -> mx.array:
     return net
 
 
+_BEARING_SLACK = 2e-6  # the device wraps a bearing >= π − 1e-6 to b − 2π: down to −π − 1e-6 and a float32 ulp
+
+
 def radius_tol(cfg: Config) -> float:
     """ε of the sphere's radial invariants: 4 ulp of the lid radius ``Rp + H`` in float32 (§46.2)."""
     sp = sphere.geometry(cfg)
@@ -294,8 +297,11 @@ def _check_rows(r: _Report, a: dict[str, np.ndarray], cfg: Config) -> None:
     vel = a["vel"].astype(np.float64)
     speed = np.sqrt((vel * vel).sum(axis=1))
     r.rows(~np.isfinite(speed) | (speed > cfg.physics.v_max * (1 + _VEL_TOL)), "vel: speed > v_max")
+    # A sphere's derived heading is wrapped on the device to ``b - 2π`` for ``b >= π - 1e-6``
+    # (``sphere.bearing``): up to 1e-6 (plus a float32 ulp) below −π. S7a found it on 1 row of 65 536.
+    h_lo = -math.pi - (_BEARING_SLACK if d.sph else 0.0)
     r.rows(
-        _bad_range(a["heading"].astype(np.float64), -math.pi, math.pi, hi_open=True),
+        _bad_range(a["heading"].astype(np.float64), h_lo, math.pi, hi_open=True),
         "heading: not in [−π, π)",
     )
     r.rows(_bad_range(a["h"], -1.0, 1.0), "h: outside [−1, 1]")
@@ -416,8 +422,9 @@ def _check_radial_sph(r: _Report, a: dict[str, np.ndarray], p: dict[str, np.ndar
         row & ~on & ~(np.abs(r_new - rr) <= tol),
         "radius: not the integrated one (|pos| ≠ r_prev + vel·û_prev)",
     )
+    # an unclamped landing within tol of a bound is the integrated radius too (|r − rr| <= tol)
     r.rows(
-        row & on & ~((np.abs(rr - bound) <= tol) | (np.abs(vr) <= tol)),
+        row & on & ~((np.abs(rr - bound) <= tol) | (np.abs(vr) <= tol) | (np.abs(r_new - rr) <= tol)),
         "clamp: a row on a bound kept its radial velocity (the clamp must zero v_r)",
     )
 

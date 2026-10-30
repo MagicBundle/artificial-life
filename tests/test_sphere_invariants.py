@@ -218,3 +218,50 @@ def test_the_radial_check_accepts_every_step_of_a_live_run_and_names_a_clamp_tha
     moved[1] = (to_numpy(prev.pos)[1] * (1 + 0.5 / np.linalg.norm(to_numpy(prev.pos)[1]))).astype(np.float32)
     bad = radial_problems(prev, prev._replace(pos=mx.array(moved), vel=mx.array(np.zeros_like(pos))), cfg)
     assert any("radius: not the integrated one" in m for m in bad), bad
+
+
+def test_the_heading_range_allows_the_device_wrap_and_nothing_more() -> None:
+    """S7a, from a 3 000-step run of 64k3s (1 row in 65 536): ``sphere.bearing`` wraps ``b >= π − 1e-6`` to
+    ``b − 2π``, which is down to 1e-6 (and a float32 ulp) below −π. That is not a violation; 1e-3 below is."""
+    cfg = cfg_of()
+    s = init_state(cfg)
+    n = dims(cfg).n
+
+    def range_problems(value: float) -> list[str]:
+        h = np.zeros(n, np.float32)
+        h[0] = value
+        return [p for p in invariants.full_check(s._replace(heading=mx.array(h)), cfg) if "[−π, π)" in p]
+
+    assert range_problems(float(np.float32(-math.pi - 1e-6))) == []
+    assert range_problems(float(np.float32(-3.1415935))) == []  # the value seen: 8.6e-7 below −π
+    assert range_problems(-math.pi - 1e-3) != [] and range_problems(math.pi) != []
+
+
+def test_an_unclamped_landing_just_inside_the_tolerance_of_a_bound_is_not_a_clamp_that_kept_vr() -> None:
+    """S7a, from the same run: a row lands 0.95·tol above the floor having commanded 1.05·tol above it
+    (|r − rr| = 0.1·tol): it was not clamped, so keeping its radial velocity is right."""
+    cfg = cfg_of()
+    d = dims(cfg)
+    tol = 4.0 * invariants.radius_tol(cfg)
+    s = init_state(cfg)
+    pos = to_numpy(s.pos).copy()
+    up = pos[0] / np.linalg.norm(pos[0])
+    r_old = float(d.r_lo) + 0.01
+    r_new = float(d.r_lo) + 0.95 * tol
+    rr = float(d.r_lo) + 1.05 * tol
+    prev_pos = pos.copy()
+    prev_pos[0] = (up * r_old).astype(np.float32)
+    new_pos = pos.copy()
+    new_pos[0] = (up * r_new).astype(np.float32)
+    vel = np.zeros_like(pos)
+    vel[0] = (up * (rr - r_old)).astype(np.float32)
+    prev = s._replace(pos=mx.array(prev_pos))
+    cur = s._replace(pos=mx.array(new_pos), vel=mx.array(vel))
+    assert radial_problems(prev, cur, cfg) == []
+    # a row pressed 0.01 into the floor, clamped to 0.5 tol above it but keeping v_r = -0.02, is the bug named
+    far = new_pos.copy()
+    far[0] = (up * (float(d.r_lo) + 0.5 * tol)).astype(np.float32)
+    vel2 = vel.copy()
+    vel2[0] = (up * (-0.02)).astype(np.float32)
+    bad = radial_problems(prev, s._replace(pos=mx.array(far), vel=mx.array(vel2)), cfg)
+    assert any("clamp: a row on a bound kept its radial velocity" in m for m in bad), bad
