@@ -10,27 +10,29 @@
 # unit of weather time, vy = 0. The six pools sit where `stormsph`'s do (latitude +-40 degrees, f at the pool 0.0162,
 # three per hemisphere 120 degrees apart, the southern offset by 60) and are 24 x 16. Measured by the study driver
 # (weather alone, 100 000 steps, a detection every 25, seeds 0, 1 and 2, the window after 20 000 steps): a mean of
-# 2.7 / 2.7, 2.9 / 2.6 and 2.4 / 2.5 named storms per hemisphere, 2 to 6 of them in both hemispheres at 98, 93 and 81 % of
-# the ticks, a lifetime above 3 000 (the median 10 000 to 17 500 steps). The window is narrow, and the reason is the spacing: three pools on the 40-degree
+# 2.9 / 3.0 on five seeds (0 to 4), 2 to 6 of them in both hemispheres at every tick of the window (the 0.02 of S7a gave
+# 2.7 / 2.7, 2.9 / 2.6 and 2.4 / 2.5 at 98, 93 and 81 % of the ticks), a lifetime above 3 000 (the median 19 000 to 61 000
+# steps, 13 to 21 named tracks in 80 000 steps). The window is narrow, and the reason is the spacing: three pools on the 40-degree
 # circle of 231 length are 77 apart, 3.2 widths, and a pool of 26 x 16 or more (2.96 widths) joins its neighbours into a
-# warm band that fragments: 26 x 16 holds 0.3 to 0.7, 26 x 17 0.6, 28 x 18 none; 20 x 14 holds 1.4 / 1.8; a `seed_rate`
-# scaled to the planet's area (0.0057), which helps `tiny3s`, lowers the count here (1.7 to 1.9 / 1.6 to 2.1), so the
-# box's 0.02 per planet stays. The drift is `stormsph`'s angular rate, -0.009·48/90 = -0.0048 (a lap in the same
+# warm band that fragments: 26 x 16 holds 0.3 to 0.7, 26 x 17 0.6, 28 x 18 none; 20 x 14 holds 1.4 / 1.8. The seeds are
+# what these storms need: `seed_rate` 0.04 (twice the box's 0.02 per planet, 7 times its density) is what makes the five seeds
+# hold; scaled to the planet's area (0.0057), which helps `tiny3s`, it holds 1.7 to 1.9 / 1.6 to 2.1. The seeds raise the
+# winds (the largest wind of the weather 0.107 against 0.083 at 0.02 and the box's 0.058), which `storm_u0` follows. The drift is `stormsph`'s angular rate, -0.009·48/90 = -0.0048 (a lap in the same
 # number of steps). The overlay does not set the weather time step, so it validates before and after the Courant change.
 #
-# The couplings are `stormsph`'s way (3 000 steps from the founders, spun up 8 000): `rain_gain` 26 000 (the box's 50 000 gave
-# 1.7e-3 of the regeneration here, twice the box's 8.0e-4: a thin shell of 12 layers and a planet a seventh covered by rain;
-# 26 000 gives 8.0e-4) and `storm_u0` 0.075 (the largest air speed an agent meets is 0.079 against the box's 0.062, so the
-# hazard onset moves from 0.06 to 0.075; the exposure falls from 3.0e-3 to 1.7e-4, the box's being 1e-5 to 3.5e-5);
+# The couplings are `stormsph`'s way (3 000 steps from the founders, spun up 8 000): `rain_gain` 26 000 (the box's 50 000
+# gave 1.7e-3 of the regeneration here, twice the box's 8.0e-4: a thin shell of 12 layers and a planet a seventh covered by
+# rain; 26 000 gives 8.0e-4) and `storm_u0` 0.095 (the largest air speed an agent meets is 0.100 against the box's 0.062,
+# so the hazard onset moves from 0.06 to 0.095; at 0.075 the exposure was 4.4e-3, the box's being 1e-5 to 3.5e-5);
 # `storm_span`, `storm_p` and `f0` are the box's.
 # The vertical map of the shell onto the atmosphere is s = (H1 + H2)/H = 3.33 here (2 on 64k3s).
 [weather]
 enabled = true
 cells = 22
 f0 = 0.025
-seed_rate = 0.02
+seed_rate = 0.04
 pools = [50.265482, 33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 150.796447, 33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 251.327412, 33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 0.0, -33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 100.530965, -33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0, 201.06193, -33.510322, 24.0, 16.0, 1.0, -0.0048, 0.0]
 rain_gain = 26000.0
 storm_p = 0.002
-storm_u0 = 0.075
+storm_u0 = 0.095
 storm_span = 0.03

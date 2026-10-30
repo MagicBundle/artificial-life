@@ -22,7 +22,7 @@ PIN_STEPS = 50
 # force on an agent is alpha·drag·dt·u).
 GOLDEN_WEATHER = {
     "Darwin-arm64-cpu": "1a19dd587b33dac770ce207a9d37df8b5c649f8fd10bc5845482052062181032",
-    "Darwin-arm64-gpu": "630cfb0e7c1f3f882bd392e33920418e38909c6269fc14441b6b9f20788a4605",
+    "Darwin-arm64-gpu": "080ef02dad9b14aa6461d958a5e15371406dd2b9ddaa23488ab6408f52ec4fde",
     "Linux-x86_64-cpu": "",
 }
 

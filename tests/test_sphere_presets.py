@@ -135,19 +135,19 @@ OVERLAY_OF = {"64k3s": "stormsph", "mini3s": "stormsph22", "tiny3s": "stormsph16
 # storm statistics they give are the slow gates of `test_sphere_presets_slow.py`.
 CALIBRATED = {
     "stormsph": dict(
-        pools=(3, 38.0, 19.0, 1.0),
+        pools=(3, 40.0, 20.0, 1.0),
         seed_rate=0.02,
-        rain_gain=60000.0,
+        rain_gain=52000.0,
         storm_p=0.002,
-        storm_u0=0.075,
+        storm_u0=0.08,
         storm_span=0.03,
     ),
     "stormsph22": dict(
         pools=(3, 24.0, 16.0, 1.0),
-        seed_rate=0.02,
+        seed_rate=0.04,
         rain_gain=26000.0,
         storm_p=0.002,
-        storm_u0=0.075,
+        storm_u0=0.095,
         storm_span=0.03,
     ),
     "stormsph16": dict(
