@@ -141,6 +141,15 @@ def _stub(name: str) -> Callable[[], Scorecard]:
 SCORECARDS: dict[str, Callable[[], Scorecard]] = {f: _stub(f) for f in FEATURES}
 
 
+def _comm() -> Scorecard:
+    from alife.analysis.comm import CommScorecard  # the voice log's adapter (DESIGN 39.14)
+
+    return CommScorecard()
+
+
+SCORECARDS["comm"] = _comm
+
+
 def evaluate(
     feature: str,
     run: RunDir,

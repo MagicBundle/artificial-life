@@ -36,7 +36,7 @@ RESPONSES: Final[dict[str, tuple[int, str]]] = {
     "move": (3, "|thrust|, terciles of the pooled sample"),
     "attack": (2, "attacked (ActFlag.ATTACKED)"),
     "bond": (2, "formed a bond (ActFlag.FORMED)"),
-    "eat": (2, "harvested food in the step (last_harvest > 0 at the next state)"),
+    "eat": (3, "energy harvested in the step (last_harvest of the next state), terciles"),
     "speak": (2, "spoke (ActFlag.SPOKE)"),
     "loud": (3, "total call intensity, terciles of the pooled sample (silent is the lowest level)"),
     "approach": (3, "toward (+) or away from (-) the loudest audible source; 0 also without a source"),
@@ -48,6 +48,7 @@ N_PERM: Final = 200  # permutations of a pooled test (the smallest p is 1/201)
 N_PERM_BLOCK: Final = 20  # permutations of a block (for the null mean only)
 MIN_STRATUM: Final = 30  # a stratum with fewer rows takes no part in a conditional measure
 TOP_LINEAGES: Final = 8  # lineages reported one by one (the rest are pooled as "other")
+LINEAGE_GROUPS: Final = 8  # kin groups (k-means of the tags at the window start) that descent carries along
 LINEAGE_STRATA: Final = 16  # lineages kept as strata of the within-lineage code test
 
 # Thresholds (provisional until the calibration of the suite, DESIGN §44.8; recorded in every report).
