@@ -237,8 +237,6 @@ def decide(res: dict[str, Any], rules: Rules) -> dict[str, Any]:
             detail = f"{kind}: hearers use the calls; {fit_facts()}"
         else:
             detail = "partial: " + ", ".join(miss) + " did not hold"
-        if "fitness" not in detail and not clauses["fitness"]["passed"]:
-            detail += f" ({fit_facts()})"
         detail += "; clauses that failed: " + ", ".join(miss)
         if not cost_ok:
             detail += "; the voice cost is not matched across arms, so the fitness clause cannot be read"
