@@ -29,12 +29,12 @@ REAL = [
     "arms.sigma=0.05",
     "arms.sigma_phase=0.05",
 ]
-PRESET = {2: "tiny", 3: "tiny3d"}
+PRESET = {2: "tiny", 3: "tiny3d", "s": "tiny3s"}  # "s": the sphere world, run eager (spec 10.1 fallback)
 
 
-def _cfg(nd: int, extra: list[str], *, compile: bool = True) -> Config:
+def _cfg(nd: int | str, extra: list[str], *, compile: bool = True) -> Config:
     cfg = load_config(preset=PRESET[nd], overrides=["brain.weight_dtype=float32", *extra])
-    return cfg if compile else replace(cfg, run=replace(cfg.run, compile=False))
+    return cfg if compile and nd != "s" else replace(cfg, run=replace(cfg.run, compile=False))
 
 
 def _start(cfg: Config):
@@ -63,8 +63,8 @@ def _run(cfg: Config, steps: int, check_every: int = 0):
     return s, bits, births, attacks, problems
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_t1_null_arms_leave_the_trajectory_unchanged(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_t1_null_arms_leave_the_trajectory_unchanged(nd: int | str) -> None:
     """Arms on with zero traits, zero upkeep and key_floor 1: the legacy digest equals the arms-off run's."""
     on, off = _cfg(nd, NULL), _cfg(nd, [])
     s_on, s_off = _start(on), _start(off)
@@ -82,10 +82,11 @@ def test_t1_null_arms_leave_the_trajectory_unchanged(nd: int) -> None:
     assert not np.array(s_on.arms)[:, : arms.KEY].any()  # the magnitudes stayed zero
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_t3_the_ledger_closes_with_real_traits(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_t3_the_ledger_closes_with_real_traits(nd: int | str) -> None:
     cfg = _cfg(nd, REAL)
-    s, bits, births, attacks, problems = _run(cfg, 200, check_every=40)
+    steps = 80 if nd == "s" else 200  # an eager sphere step costs about 0.1 s
+    s, bits, births, attacks, problems = _run(cfg, steps, check_every=20)
     assert bits == 0 and problems == []
     assert births > 0 and attacks > 0  # reproduction (trait mutation) and the contest both ran
     x = np.array(s.arms)
@@ -97,13 +98,13 @@ def test_t3_the_ledger_closes_with_real_traits(nd: int) -> None:
     assert np.std(x[alive, arms.ATK]) > 0 and np.std(x[alive, arms.ARM]) > 0
     # the upkeep reached HEAT_BASAL: more basal heat than the same run without it
     base = _cfg(nd, [o for o in REAL if "upkeep" not in o])
-    s2, *_ = _run(base, 200)
+    s2, *_ = _run(base, steps)
     heat = lambda st: int(to_numpy(st.ledger_cum)[LedgerIdx.HEAT_BASAL])  # noqa: E731
     assert heat(s) / max(int(alive.sum()), 1) > 0 and heat(s) != heat(s2)
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_a_real_arms_run_is_deterministic_and_not_vacuous(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_a_real_arms_run_is_deterministic_and_not_vacuous(nd: int | str) -> None:
     cfg = _cfg(nd, REAL)
     a, *_ = _run(cfg, 60)
     b, *_ = _run(cfg, 60)
@@ -134,8 +135,8 @@ def test_the_arms_functions_compiled_equal_eager() -> None:
         np.testing.assert_array_equal(np.array(got), np.array(want), err_msg=name)
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_the_bench_mirror_equals_the_step_with_arms_on(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_the_bench_mirror_equals_the_step_with_arms_on(nd: int | str) -> None:
     cfg = _cfg(nd, REAL, compile=False)
     fused, staged = make_step(cfg), bench._StagedStep(cfg)
     s0 = _start(cfg)
@@ -149,11 +150,12 @@ def test_the_bench_mirror_equals_the_step_with_arms_on(nd: int) -> None:
             np.testing.assert_array_equal(to_numpy(a[1]), to_numpy(b[1]), err_msg=a[0])
 
 
-def test_armour_slows_the_population() -> None:
+@pytest.mark.parametrize("nd", [2, "s"])
+def test_armour_slows_the_population(nd: int | str) -> None:
     """With ARM = 1 and speed_slow = 0.9 the physics sees a tenth of the thrust: the mean speed falls."""
     mean_speed = []
     for slow in ("0.0", "0.9"):
-        cfg = _cfg(2, ["arms.enabled=true", "arms.init_arm=1.0", f"arms.speed_slow={slow}"])
+        cfg = _cfg(nd, ["arms.enabled=true", "arms.init_arm=1.0", f"arms.speed_slow={slow}"])
         s, *_ = _run(cfg, 30)
         v = np.linalg.norm(np.array(s.vel), axis=1)[np.array(s.alive)]
         mean_speed.append(float(v.mean()))

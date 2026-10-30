@@ -32,7 +32,7 @@ ROLE_KEYS = [
 ]
 
 
-def rcfg(nd: int = 2, *extra: str):
+def rcfg(nd: int | str = 2, *extra: str):
     return cfg_for(nd, 2, *ROLE_KEYS, *extra)
 
 
@@ -437,14 +437,14 @@ def _run(cfg, steps, s=None, *, observe=False):
     yield from run(cfg, steps, s, observe=observe)
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_the_ledger_closes_with_roles_and_roles_appear(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_the_ledger_closes_with_roles_and_roles_appear(nd: int | str) -> None:
     """No 17th term with every role effect on: the harvest cap, the guard shield, the switch cost and the
     conductive share all book into existing terms, and the specialists appear from the founders' random
     brains."""
     cfg = rcfg(nd)
     foragers = guards = switches = shielded = 0
-    for t, (prev, s, out) in enumerate(_run(cfg, 250)):
+    for t, (prev, s, out) in enumerate(_run(cfg, 120 if nd == "s" else 250)):
         led = to_numpy(out.ledger)
         assert helpers.ledger_net(led, cfg) == int(to_numpy(s.total) - to_numpy(prev.total)), t
         assert led[LedgerIdx.FLOW_STOLEN] == led[LedgerIdx.FLOW_ATTACK_GAIN] + led[LedgerIdx.FLOW_SPILL], t
@@ -456,14 +456,14 @@ def test_the_ledger_closes_with_roles_and_roles_appear(nd: int) -> None:
         shielded += int(c[counter_index(cfg, "SHIELDED_BY_GUARD")])
         dwell, role = to_numpy(s.role_dwell), to_numpy(s.role)
         assert dwell.max() <= cfg.roles.ramp_steps and set(np.unique(role)) <= {0, 1, 2}
-        if t % 50 == 0:
+        if t % 30 == 0:
             assert invariants.full_check(s, cfg, prev, out) == [], t
     assert foragers > 0 and guards > 0 and switches > 0
     assert shielded >= 0
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_determinism_and_observer_purity_with_roles(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_determinism_and_observer_purity_with_roles(nd: int | str) -> None:
     from alife.state import state_digest
 
     cfg = rcfg(nd)

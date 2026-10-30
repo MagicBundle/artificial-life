@@ -432,7 +432,7 @@ def greedy_colouring(nside: int) -> tuple[np.ndarray, int]:
     """A proper colouring of the graph whose edges join pixels within two touching steps (the cells of one
     colour are pairwise at least three apart). Greedy in two orders (ring order, and largest conflict degree
     first); the one with fewer colours wins (ties: ring order). Returns ``(colour (N,) int32, n_colours)``.
-    The lower bound is 9; the greedy gives 15, 16, 15 at Nside 8, 11, 21 (S3 may minimise)."""
+    The lower bound is 9; the greedy gives 15, 16, 15 at Nside 8, 11, 21 (``min_colouring``, S3, gives 11)."""
     tb = tables(nside)
     conflict = tb.stencil2[:, 1:]
     deg = (conflict >= 0).sum(axis=1)
@@ -450,6 +450,132 @@ def greedy_colouring(nside: int) -> tuple[np.ndarray, int]:
             best = (col.astype(np.int32), k)
     assert best is not None
     return best
+
+
+COLOURING_TABU_ITERS = 20000  # tabu-search iterations tried at each colour count below the iterated greedy
+
+
+def _greedy_order(order: np.ndarray, conflict: np.ndarray) -> np.ndarray:
+    col = np.full(len(conflict), -1, dtype=np.int64)
+    for p in order.tolist():
+        c = conflict[p][conflict[p] >= 0]
+        used = col[c]
+        used = used[used >= 0]
+        mark = np.zeros(int(used.max()) + 2 if used.size else 1, dtype=bool)
+        mark[used] = True
+        col[p] = int(np.argmin(mark))
+    return col
+
+
+def _dsatur(conflict: np.ndarray) -> np.ndarray:
+    """DSATUR (largest saturation first, ties by degree then by index): a proper colouring."""
+    import heapq
+
+    n = len(conflict)
+    deg = (conflict >= 0).sum(axis=1)
+    col = np.full(n, -1, dtype=np.int64)
+    sat: list[set[int]] = [set() for _ in range(n)]
+    heap = [(0, -int(deg[p]), p) for p in range(n)]
+    heapq.heapify(heap)
+    while heap:
+        s, _, p = heapq.heappop(heap)
+        if col[p] >= 0:
+            continue
+        if -s != len(sat[p]):  # a stale entry: the saturation grew since it was pushed
+            heapq.heappush(heap, (-len(sat[p]), -int(deg[p]), p))
+            continue
+        c = 0
+        while c in sat[p]:
+            c += 1
+        col[p] = c
+        for q in conflict[p].tolist():
+            if q >= 0 and col[q] < 0 and c not in sat[q]:
+                sat[q].add(c)
+                heapq.heappush(heap, (-len(sat[q]), -int(deg[q]), q))
+    return col
+
+
+def _tabucol(conflict: np.ndarray, k: int, init: np.ndarray, iters: int) -> np.ndarray | None:
+    """Tabu search (Hertz and de Werra) for a proper ``k``-colouring from ``init`` (colours ``>= k`` folded
+    onto ``k - 1``); the colouring if one is found within ``iters`` moves, else None. Deterministic: the
+    legacy ``RandomState`` stream is frozen by NumPy's compatibility guarantee."""
+    n = len(conflict)
+    rs = np.random.RandomState(12345 + k)
+    nb = [c[c >= 0] for c in conflict]
+    col = np.minimum(init, k - 1).astype(np.int64)
+    gamma = np.zeros((n, k), dtype=np.int32)  # gamma[p, c]: neighbours of p with colour c
+    for p in range(n):
+        np.add.at(gamma[p], col[nb[p]], 1)
+    tabu = np.zeros((n, k), dtype=np.int64)
+    rows = np.arange(n)
+    f = int(gamma[rows, col].sum() // 2)  # conflicting pairs
+    best, big = f, 1 << 20
+    for it in range(iters):
+        if f == 0:
+            return col
+        bad = np.flatnonzero(gamma[rows, col] > 0)
+        delta = gamma[bad] - gamma[bad, col[bad]][:, None]  # (m, k): change of f for each move
+        delta[np.arange(len(bad)), col[bad]] = big
+        ok = (tabu[bad] <= it) | (f + delta < best)  # tabu unless it beats the best (aspiration)
+        d2 = np.where(ok, delta, big)
+        m = int(d2.min())
+        if m >= big:
+            continue
+        cand = np.argwhere(d2 == m)
+        i, c2 = cand[rs.randint(len(cand))]
+        p, old = int(bad[i]), int(col[bad[i]])
+        col[p] = c2
+        np.subtract.at(gamma[:, old], nb[p], 1)
+        np.add.at(gamma[:, c2], nb[p], 1)
+        f += m
+        tabu[p, old] = it + int(0.6 * len(bad)) + rs.randint(10)
+        best = min(best, f)
+    return col if f == 0 else None
+
+
+@functools.cache
+def min_colouring(nside: int) -> tuple[np.ndarray, int]:
+    """A proper colouring of the distance-2 touching graph with few colours (read-only):
+    ``(colour (N,) int32, n_colours)``.
+
+    DSATUR, improved by iterated greedy (Culberson: the classes in reverse, by size, rotated), then a tabu
+    search for one colour less while it succeeds within ``COLOURING_TABU_ITERS`` moves. Fully deterministic.
+    ``greedy_colouring`` (S0) gives 15, 16 and 15 colours at Nside 8, 11 and 21 (the ring order alone 15, 16,
+    18); this gives 11 at the three. The lower bound is 9: a pixel and its 8 neighbours are mutually within
+    two steps. The box's closing cycle is ``px² (·3)`` phases, 27 to 48; a sphere's is
+    ``min(FZ, 3)·n_colours``.
+    """
+    tb = tables(nside)
+    conflict = tb.stencil2[:, 1:]
+    best = _dsatur(conflict)
+    for r in range(30):  # iterated greedy never uses more colours than its input
+        classes = [np.flatnonzero(best == c) for c in range(int(best.max()) + 1)]
+        if r % 3 == 0:
+            classes = classes[::-1]
+        elif r % 3 == 1:
+            classes = sorted(classes, key=lambda a: -len(a))
+        else:
+            classes = classes[r // 3 % len(classes) :] + classes[: r // 3 % len(classes)]
+        new = _greedy_order(np.concatenate(classes), conflict)
+        if new.max() <= best.max():
+            best = new
+    k = int(best.max()) + 1
+    while k > 9:  # the clique of a pixel and its 8 neighbours
+        found = _tabucol(conflict, k - 1, best, COLOURING_TABU_ITERS)
+        if found is None:
+            break
+        best, k = found, k - 1
+    col = _frozen(best.astype(np.int32))
+    assert check_colouring(nside, col), "min_colouring produced an improper colouring"  # one gather, N x 24
+    return col, int(col.max()) + 1
+
+
+def check_colouring(nside: int, colour: np.ndarray) -> bool:
+    """True iff cells of one colour are pairwise at least three touching steps apart (a proper colouring of
+    the distance-2 graph)."""
+    conflict = tables(nside).stencil2[:, 1:]
+    ok = conflict >= 0
+    return bool((colour[:, None] != colour[np.where(ok, conflict, 0)])[ok].all())
 
 
 # --- the exact coverage of the hash stencils ---------------------------------------------------------------

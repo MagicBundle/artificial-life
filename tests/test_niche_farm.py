@@ -17,14 +17,15 @@ from alife.step import make_step
 from niche_helpers import cfg_for, farmers, np_soil, run
 
 STEPS = 400
+STEPS_SPHERE = 80  # an eager sphere step costs about 0.1 s
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_the_ledger_and_the_soil_identity_close_every_step(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_the_ledger_and_the_soil_identity_close_every_step(nd: int | str) -> None:
     cfg = cfg_for(nd)
     cap = cfg.niche.farm_cap
     peak = yielded = 0
-    for t, (prev, s, out, row) in enumerate(run(cfg, farmers(cfg), STEPS)):
+    for t, (prev, s, out, row) in enumerate(run(cfg, farmers(cfg), STEPS_SPHERE if nd == "s" else STEPS)):
         led = to_numpy(out.ledger)
         assert helpers.ledger_net(led, cfg) == int(to_numpy(s.total) - to_numpy(prev.total)), t
         assert led[LedgerIdx.FLOW_STOLEN] == led[LedgerIdx.FLOW_ATTACK_GAIN] + led[LedgerIdx.FLOW_SPILL]
@@ -34,7 +35,7 @@ def test_the_ledger_and_the_soil_identity_close_every_step(nd: int) -> None:
         assert f1.min() >= 0 and f1.max() <= cap, t
         assert row["FARM_YIELD"] >= 0 and row["SOIL_WASTED"] >= 0, t
         assert int(to_numpy(s.diag)) & 0xFFFF == 0, (t, Diag(int(to_numpy(s.diag))))
-        if t % 50 == 0:
+        if t % 20 == 0:
             assert invariants.full_check(s, cfg, prev, out) == [], t
         peak, yielded = max(peak, row["SOIL_TOTAL"]), yielded + row["FARM_YIELD"]
     assert peak > 0 and yielded > 0  # soil appeared and it paid
@@ -55,8 +56,8 @@ def test_a_full_cell_refuses_units_and_the_identity_still_closes() -> None:
     assert wasted > 0
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_the_put_cost_is_booked_in_heat_action(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_the_put_cost_is_booked_in_heat_action(nd: int | str) -> None:
     """The same state, one step, ``farm_cost`` 30 against 0: the actions are the same (the brain does not see
     the cost), so ``HEAT_ACTION`` differs by exactly ``30·(SOIL_PUT + SOIL_WASTED)`` when all are solvent."""
     on, off = cfg_for(nd), cfg_for(nd, "niche.farm_cost=0")
@@ -112,8 +113,8 @@ def test_the_bonus_is_monotone_bounded_and_zero_without_soil() -> None:
     assert not np.asarray(niche.bonus_of(soil, ab)).any()
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_update_resource_farm_with_no_bonus_is_update_resource(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_update_resource_farm_with_no_bonus_is_update_resource(nd: int | str) -> None:
     cfg = cfg_for(nd)
     s = init_state(cfg)
     zero = mx.zeros_like(s.resource)
@@ -127,8 +128,8 @@ def test_update_resource_farm_with_no_bonus_is_update_resource(nd: int) -> None:
         )
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_the_resource_cap_binds_whatever_the_bonus(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_the_resource_cap_binds_whatever_the_bonus(nd: int | str) -> None:
     cfg = cfg_for(nd)
     cap = cfg.fields.resource_cap
     rs = np.random.default_rng(2)
@@ -142,10 +143,11 @@ def test_the_resource_cap_binds_whatever_the_bonus(nd: int) -> None:
     assert int(np.asarray(r1).sum()) == int(res_np.sum()) + int(inc.sum())  # diffusion conserves the total
 
 
-def test_the_bonus_is_booked_in_inject_regen_and_equals_the_yield() -> None:
+@pytest.mark.parametrize("nd", [2, "s"])
+def test_the_bonus_is_booked_in_inject_regen_and_equals_the_yield(nd: int | str) -> None:
     """A state with soil, one step with the bonus against the ``ablate`` control (same actions, same costs,
     same harvest: the bonus acts only at S17): INJECT_REGEN differs by exactly FARM_YIELD."""
-    cfg, ab = cfg_for(2), cfg_for(2, "niche.control=ablate")
+    cfg, ab = cfg_for(nd), cfg_for(nd, "niche.control=ablate")
     s = farmers(cfg)
     soil = np.zeros(tuple(s.soil.shape), np.int32)
     soil[::2, ::3] = 3000
@@ -157,9 +159,10 @@ def test_the_bonus_is_booked_in_inject_regen_and_equals_the_yield() -> None:
     assert r_on["SOIL_PUT"] == r_ab["SOIL_PUT"]  # the control builds the same soil
 
 
-def test_the_bonus_acts_from_the_next_step() -> None:
+@pytest.mark.parametrize("nd", [2, "s"])
+def test_the_bonus_acts_from_the_next_step(nd: int | str) -> None:
     """The soil written at a step is read for the bonus of the next one (the start-of-step soil)."""
-    cfg = cfg_for(2)
+    cfg = cfg_for(nd)
     s = init_state(cfg)  # nobody farms (silent) and the soil is empty
     assert not np_soil(s).any()
     soil = np.zeros(tuple(s.soil.shape), np.int32)
@@ -172,8 +175,9 @@ def test_the_bonus_acts_from_the_next_step() -> None:
 # --- controls -----------------------------------------------------------------------------------------------
 
 
-def test_mute_puts_nothing_and_ablate_pays_for_a_useless_soil() -> None:
-    mute, ab = cfg_for(2, "niche.control=mute"), cfg_for(2, "niche.control=ablate")
+@pytest.mark.parametrize("nd", [2, "s"])
+def test_mute_puts_nothing_and_ablate_pays_for_a_useless_soil(nd: int | str) -> None:
+    mute, ab = cfg_for(nd, "niche.control=mute"), cfg_for(nd, "niche.control=ablate")
     r = next(run(mute, farmers(mute), 3))[3]
     assert r["FARMERS"] == 0 and r["SOIL_PUT"] == 0 and r["FARM_YIELD"] == 0
     runs = list(run(ab, farmers(ab), 30))

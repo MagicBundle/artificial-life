@@ -7,18 +7,20 @@ compiled sphere configuration runs in its own process whose ``TMPDIR`` is a fres
 (``golden_run.cold_env``), and a test that compares the compiled step with the eager one permutes their order
 between processes. As a script: ``sphere_run.py KIND CONFIG_JSON DEVICE ARGS...``; prints one JSON line.
 
-* ``trajectory STEPS CHECK_EVERY DIGEST_AT``: ``STEPS`` compiled steps; every ``CHECK_EVERY`` steps the full
-  host check against the previous step's state and records (``invariants.full_check``) and the diag word;
-  the ledger, the counters and the peak hash occupancy are accumulated; ``state_digest`` at the steps of the
-  comma list ``DIGEST_AT``.
-* ``compare STEPS ORDER``: from one state, each step is run by the eager and the compiled step in the order
-  ``ORDER`` (``eager-first`` or ``compiled-first``), compared field by field (integers exactly, floats to
-  1e-5), and the walk continues from the eager result.
-* ``wx_compare STEPS ORDER``: the weather alone (``weather.advance``, the pools of step t, the engine's key
-chain)
-  from the rest state, eager and compiled in the order ``ORDER``, compared bit for bit (the walk continues
-  from
-  the eager result); the last line also reports the largest field value.
+* ``trajectory STEPS CHECK_EVERY DIGEST_AT [INIT]``: ``STEPS`` compiled steps; every ``CHECK_EVERY`` steps the
+  full host check against the previous step's state and records (``invariants.full_check``) and the diag
+  word; the ledger, the counters and the peak hash occupancy are accumulated; ``state_digest`` at the steps
+  of the comma list ``DIGEST_AT``. ``INIT`` is an optional JSON object editing the initial state (S3):
+  ``bias`` maps a ``layout`` output name (``OUT_BUILD``) to a bias given to every alive row (the feature
+  tests force an action), ``zero_weights`` zeroes the brains first. The result also holds
+  ``counters_sum``, ``counters_max`` and ``counters_last`` (the whole counter vector; index it with
+  ``state.counter_index``).
+* ``compare STEPS ORDER [INIT]``: from one state (``INIT`` as above), each step is run by the eager and the
+  compiled step in the order ``ORDER`` (``eager-first`` or ``compiled-first``), compared field by field
+  (integers exactly, floats to 1e-5), and the walk continues from the eager result.
+* ``wx_compare STEPS ORDER``: the weather alone (``weather.advance``, the pools of step t, the engine's key chain)
+  from the rest state, eager and compiled in the order ``ORDER``, compared bit for bit (the walk continues from
+  the eager result); the result also reports the largest wind.
 * ``lookups``: ``sphere_check.require_compile_safe`` for the configuration (a compiled position-to-cell
   lookup equals the eager one).
 """
@@ -58,14 +60,38 @@ def spawn(
     return json.loads(done.stdout.strip().splitlines()[-1])
 
 
-def _trajectory(cfg, steps: int, every: int, digest_at: set[int]) -> dict:
+def _initial(cfg, init: dict):
+    from alife.config import dims
+    from alife.state import init_state
+
+    s = init_state(cfg)
+    if init.get("zero_weights"):
+        s = s._replace(W1=mx.zeros_like(s.W1), W2=mx.zeros_like(s.W2))
+    if init.get("bias"):
+        from alife import layout
+        from helpers import set_output_bias  # tests/ is sys.path[0] when this file runs as a script
+
+        lay = dims(cfg).lay  # a feature's column lives on the layout instance, a base one in the module
+        s = set_output_bias(
+            s,
+            cfg,
+            {
+                (getattr(lay, name, None) or getattr(layout, name)): float(v)
+                for name, v in init["bias"].items()
+            },
+        )
+    return s
+
+
+def _trajectory(cfg, steps: int, every: int, digest_at: set[int], init: dict | None = None) -> dict:
     from alife.invariants import full_check
-    from alife.state import CounterIdx, init_state, state_digest, to_numpy
+    from alife.state import CounterIdx, state_digest, to_numpy
     from alife.step import make_step
 
     fn = make_step(cfg, compile=True)
-    s = init_state(cfg)
+    s = _initial(cfg, init or {})
     prev = s
+    c_sum = c_max = None
     problems: list[str] = []
     digests: dict[str, str] = {}
     ledger = np.zeros(16, np.int64)
@@ -75,6 +101,8 @@ def _trajectory(cfg, steps: int, every: int, digest_at: set[int]) -> dict:
         mx.eval(s, out)
         ledger += to_numpy(out.ledger).astype(np.int64)
         c = to_numpy(out.counters)
+        c_sum = c.astype(np.int64) if c_sum is None else c_sum + c
+        c_max = c.astype(np.int64) if c_max is None else np.maximum(c_max, c)
         max_occ = max(max_occ, int(c[CounterIdx.MAX_OCCUPANCY]))
         overflow += int(c[CounterIdx.CELL_OVERFLOW])
         if i % every == 0 or i == steps:
@@ -90,15 +118,18 @@ def _trajectory(cfg, steps: int, every: int, digest_at: set[int]) -> dict:
         "max_occupancy": max_occ,
         "overflow": overflow,
         "alive": int(to_numpy(s.alive.sum())),
+        "counters_sum": c_sum.tolist(),
+        "counters_max": c_max.tolist(),
+        "counters_last": c.tolist(),
     }
 
 
-def _compare(cfg, steps: int, order: str) -> dict:
-    from alife.state import init_state, to_numpy
+def _compare(cfg, steps: int, order: str, init: dict | None = None) -> dict:
+    from alife.state import to_numpy
     from alife.step import make_step
 
     eager, compiled = make_step(cfg, compile=False), make_step(cfg, compile=True)
-    s = init_state(cfg)
+    s = _initial(cfg, init or {})
     bad: list[str] = []
     for i in range(steps):
         if order == "eager-first":
@@ -168,9 +199,10 @@ def main(argv: list[str]) -> int:
         mx.set_default_device(mx.cpu)
     cfg = config_from_dict(json.loads(cfg_json))
     if kind == "trajectory":
-        out = _trajectory(cfg, int(rest[0]), int(rest[1]), {int(x) for x in rest[2].split(",") if x})
+        init = json.loads(rest[3]) if len(rest) > 3 else None
+        out = _trajectory(cfg, int(rest[0]), int(rest[1]), {int(x) for x in rest[2].split(",") if x}, init)
     elif kind == "compare":
-        out = _compare(cfg, int(rest[0]), rest[1])
+        out = _compare(cfg, int(rest[0]), rest[1], json.loads(rest[2]) if len(rest) > 2 else None)
     elif kind == "wx_compare":
         out = _wx_compare(cfg, int(rest[0]), rest[1])
     elif kind == "lookups":

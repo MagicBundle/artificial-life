@@ -371,7 +371,11 @@ def _announce(rd: RunDir, cfg: Config, step: int, steps: int, quiet: bool) -> No
             mode += f" + llm every {cfg.director.llm_every} ({cfg.run.llm_model})"
         if cfg.run.director == "live" and cfg.director.persona == RANDOM_PERSONA:
             mode += f" + random, yoked to {cfg.director.yoke_log}"
-        world = f"L={s['world_size']:g}" + (f" height={s['world_height']:g}" if "world_height" in s else "")
+        if s.get("geometry") == "sphere":  # a planet has no world size (DESIGN §46.9)
+            world = f"R={s['planet_radius']:g} Nside={s['field_nside']} height={s['world_height']:g}"
+        else:
+            height = f" height={s['world_height']:g}" if "world_height" in s else ""
+            world = f"L={s['world_size']:g}{height}"
         print(
             f"run {rd.path}: N={s['n_max']} n_init={s['n_init']} {world} "
             f"weights={s['weight_dtype']} seed={s['seed']} | steps {step} → {step + steps}{mode}",

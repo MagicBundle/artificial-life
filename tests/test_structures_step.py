@@ -24,13 +24,13 @@ from weather_helpers import STRONG, spun_ws, storm2d_config
 # --- the staged mirror of bench.py equals step() --------------------------------------------------
 
 
-@pytest.mark.parametrize("which", ["2d", "3d", "storm2d"])
+@pytest.mark.parametrize("which", ["2d", "3d", "sphere", "storm2d"])
 def test_the_staged_pipeline_equals_the_step_with_structures_on(which: str) -> None:
     if which == "storm2d":
         cfg = storm2d_config("structures.enabled=true", *STRONG, "weather.storm_p=0.001")
         s0 = builders(cfg)._replace(wx=W.pack(spun_ws(cfg)))
     else:
-        cfg = cfg_for(2 if which == "2d" else 3)
+        cfg = cfg_for({"2d": 2, "3d": 3, "sphere": "s"}[which])
         s0 = builders(cfg)
     cfg = replace(cfg, run=replace(cfg.run, compile=False))
     fused, staged = make_step(cfg), bench._StagedStep(cfg)
@@ -49,8 +49,8 @@ def test_the_staged_pipeline_equals_the_step_with_structures_on(which: str) -> N
 # --- observing changes nothing --------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_observing_does_not_change_the_trajectory_with_structures_on(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_observing_does_not_change_the_trajectory_with_structures_on(nd: int | str) -> None:
     cfg = cfg_for(nd)
     s0 = builders(cfg)
     f_off, f_on = make_step(cfg), make_step(cfg, observe=True)
@@ -67,8 +67,8 @@ def test_observing_does_not_change_the_trajectory_with_structures_on(nd: int) ->
 # --- the pair with arms: shelter inside the protection product (DESIGN §43.6) ---------------------
 
 
-@pytest.mark.parametrize("nd", [2, 3])
-def test_structures_and_arms_together_close_the_ledger_and_keep_the_material_identity(nd: int) -> None:
+@pytest.mark.parametrize("nd", [2, 3, "s"])
+def test_structures_and_arms_together_close_the_ledger_and_keep_the_material_identity(nd: int | str) -> None:
     arms = [
         "arms.enabled=true",
         "arms.key_floor=0.2",
@@ -82,7 +82,7 @@ def test_structures_and_arms_together_close_the_ledger_and_keep_the_material_ide
     s0 = builders(cfg)
     s0 = s0._replace(birth_step=mx.where(s0.alive, -50, s0.birth_step))
     shielded = attacks = 0
-    for t, (prev, s, out, row) in enumerate(run(cfg, s0, 250)):
+    for t, (prev, s, out, row) in enumerate(run(cfg, s0, 100 if nd == "s" else 250)):
         led = to_numpy(out.ledger)
         assert led[LedgerIdx.FLOW_STOLEN] == led[LedgerIdx.FLOW_ATTACK_GAIN] + led[LedgerIdx.FLOW_SPILL]
         assert (
@@ -91,7 +91,7 @@ def test_structures_and_arms_together_close_the_ledger_and_keep_the_material_ide
         )
         shielded += row["SHIELDED_ATTACKS"]
         attacks += int(to_numpy(out.counters)[CounterIdx.ATTACKS])
-        if t % 50 == 0:
+        if t % 25 == 0:
             assert invariants.full_check(s, cfg, prev, out) == [], t
     assert attacks > 0 and shielded > 0  # attacks happened, some on victims standing in material
 
