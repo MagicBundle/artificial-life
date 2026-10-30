@@ -237,17 +237,20 @@ def test_a_played_weather_world_sends_maph_and_strm_the_decoder_accepts(tmp_path
 
 def test_the_pools_of_envs_are_where_the_warm_pool_map_has_them_at_a_later_step(cfg) -> None:
     """Review L5: ``play.sphere_pools`` at ``t > 0`` is the centre of ``weather_sph.warm_pools`` (the drift in
-    longitude is ``vx·t/(R cos lat)``): the argmax cell of the map is within one cell of the stated place."""
+    longitude is ``vx·dt·t/(R cos lat)``, ``dt`` the weather time of one engine step, C29): the argmax cell of
+    the map is within one cell of the stated place. With ``dt`` left at 1 the place is 5 000·(1 - dt)·|vx|
+    away, many cells (the S5 x S4b merge fix)."""
 
     one = weather_cfg(
         "tiny3s",
         f"weather.pools={RADIUS * math.radians(60):.6f},{RADIUS * math.radians(40):.6f},10,6,1,-0.009,0",
     )
     wp = weather_sph.params_from_config(one)
+    assert wp.dt < 0.9  # the sphere weather runs at Courant 0.40, not at dt = 1
     x = np.array(weather_sph.dev_for(wp, RADIUS).x, dtype=np.float64)
     cell = math.sqrt(4 * math.pi * RADIUS**2 / (12 * NW * NW))
     for t in (0, 5000):
-        [pool] = play.sphere_pools(wp.pools, RADIUS, t)
+        [pool] = play.sphere_pools(wp.pools, RADIUS, t, wp.dt)
         ts = np.array(
             weather_sph.warm_pools(wp, RADIUS, mx.array(x, dtype=mx.float32), mx.array(t, dtype=mx.int32))
         )
@@ -256,13 +259,13 @@ def test_the_pools_of_envs_are_where_the_warm_pool_map_has_them_at_a_later_step(
         arc = RADIUS * math.acos(min(1.0, float(peak @ centre)))
         assert arc < 1.2 * cell, (t, arc, cell)
         assert math.isclose(math.hypot(pool["x"], pool["y"], pool["z"]), RADIUS, rel_tol=1e-3)
-    lon0 = play.sphere_pools(wp.pools, RADIUS, 0)[0]["lon"]
-    lon1 = play.sphere_pools(wp.pools, RADIUS, 5000)[0]["lon"]
+    lon0 = play.sphere_pools(wp.pools, RADIUS, 0, wp.dt)[0]["lon"]
+    lon1 = play.sphere_pools(wp.pools, RADIUS, 5000, wp.dt)[0]["lon"]
     assert (
         abs(
             ((lon1 - lon0 + 180) % 360)
             - 180
-            - math.degrees(-0.009 * 5000 / (RADIUS * math.cos(math.radians(40))))
+            - math.degrees(-0.009 * wp.dt * 5000 / (RADIUS * math.cos(math.radians(40))))
         )
         < 0.1
     )

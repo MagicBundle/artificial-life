@@ -8,8 +8,8 @@
 # `weather.cells` is the weather Nside Nw (not a grid side) and must be Nf times a power of two. A pool is
 # (x, y, sx, sy, amp, vx, vy) with x the arc length east of longitude 0 and y the arc length north of the equator
 # (lon = x/Rp, lat = y/Rp), sx and sy Gaussian widths in length, vx the drift along the pool's own latitude circle
-# per unit of weather time (one step before the derived weather time step of owner decision C29, `vx·dt` per step
-# after it; the overlay does not set dt), vy = 0. The six pools sit where `stormsph`'s do (latitude +-40 degrees, f
+# per unit of weather time (so `vx·dt` per engine step: dt = 0.829 here, derived from the geometry at Courant 0.40 by
+# owner decision C29, `weather_sph.weather_dt`; the overlay does not set dt), vy = 0. The six pools sit where `stormsph`'s do (latitude +-40 degrees, f
 # at the pool 0.0162, three per hemisphere 120 degrees apart, the southern offset by 60) and are the narrower pools
 # of `tests/sphere_weather_helpers.pools("tiny3s")`: 10 x 6 (S4a: tiny3s needs pools 2 to 3 times narrower than
 # the box's 32 x 16). The drift is `stormsph`'s angular rate, -0.009·36/90 = -0.0036 (a lap in the same number of

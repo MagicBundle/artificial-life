@@ -97,11 +97,21 @@ def test_the_column_food_is_rain_gain_times_the_rain_less_the_floors(which: str)
     dc = rng.uniform(5.0, 30.0, n).astype(np.float32)
     out = np.array(weather_sph.rain_regen(RainIn(mx.array(p_rate), mx.array(zi), mx.array(dc)), cfg))
     assert out.dtype == np.int32 and out.shape == (geo.layers, 12 * cfg.world.nside**2)
-    q = 40000.0 * np.array(geo.block_mean(mx.array(p_rate)), dtype=np.float64)
+    dt = weather_sph.params_from_config(cfg).dt  # P is per unit of weather time, one engine step is dt of it
+    q = 40000.0 * dt * np.array(geo.block_mean(mx.array(p_rate)), dtype=np.float64)
     col = out.sum(axis=0)
-    used = (out > 0).sum(axis=0)
+    # the layers the cloud touches (rain-weighted level and depth over the children, as the rule): each loses
+    # less than one quantum to its floor, also those whose share is under one quantum (food 0 there)
+    ch = np.array(geo.dev.children).reshape(-1, geo.ratio**2)
+    pc = p_rate.astype(np.float64)[ch]
+    den = np.maximum(pc.sum(1), 1e-30)
+    zq, dq = (pc * zi[ch]).sum(1) / den, (pc * dc[ch]).sum(1) / den
+    e = geo.z_edges
+    lo, hi = (zq / geo.s)[None], ((zq + dq) / geo.s)[None]
+    frac = np.clip((np.minimum(hi, e[1:, None]) - np.maximum(lo, e[:-1, None])) / np.diff(e)[:, None], 0, 1)
+    touched = (frac > 1e-6).sum(axis=0)
     assert (col <= q + 1e-3).all()
-    assert (col >= q - 1.0 * np.maximum(used, 1) - 1).all()  # each used layer loses less than one quantum
+    assert (col >= q - 1.0 * np.maximum(touched, 1) - 1).all()
     assert (col > 0.5 * q[q > 100].min()).any() and col.sum() > 0.9 * q.sum() - out.shape[0] * out.shape[1]
 
 
@@ -450,7 +460,7 @@ def test_the_food_goes_to_the_layers_of_the_cloud_and_the_floor_share_to_layer_0
         weather_sph.rain_regen(RainIn(*(mx.array(a, dtype=mx.float32) for a in (p_rate, zi, dc))), cfg)
     )
     pc, pz, pd = p_rate[children], (p_rate * zi)[children], (p_rate * dc)[children]
-    q = 40000.0 * pc.mean(1)
+    q = 40000.0 * weather_sph.params_from_config(cfg).dt * pc.mean(1)
     den = np.maximum(pc.sum(1), 1e-30)
     zq, dq = pz.sum(1) / den, pd.sum(1) / den
     edges = geo.z_edges

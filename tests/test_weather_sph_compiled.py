@@ -17,10 +17,11 @@ from test_sphere_trajectory import platform_key
 PIN_STEPS = 50
 # The digest of ``tiny3s`` with the weather on (float32 weights, seed_rate 0.2, seed_gain 0.03) after 50
 # compiled
-# steps, per platform (as ``test_sphere_trajectory``: only checked where recorded).
+# steps, per platform (as ``test_sphere_trajectory``: only checked where recorded). Re-pinned for C29 (the
+# weather time step 0.829 per engine step: the pools, seeds and rain are rates times dt).
 GOLDEN_WEATHER = {
-    "Darwin-arm64-cpu": "149953e3e5205e53b4533f69b3a5c5046370a235df08e3e61dd58c3defd5ed90",
-    "Darwin-arm64-gpu": "25a58e78af41171084370a18e9f622c35ebbcfcf22e4d4c8cb94b7e03db629a8",
+    "Darwin-arm64-cpu": "fc50adcaf1aa74fe67b77ac7468a22d8b1b8b3a5834ca9b4f96631d845412470",
+    "Darwin-arm64-gpu": "630cfb0e7c1f3f882bd392e33920418e38909c6269fc14441b6b9f20788a4605",
     "Linux-x86_64-cpu": "",
 }
 
