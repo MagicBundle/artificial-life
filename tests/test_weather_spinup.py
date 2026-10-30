@@ -386,3 +386,17 @@ def test_the_command_line_caches_a_spinup_unless_switched_off(
     monkeypatch.setenv("ALIFE_SPINUP_CACHE", "0")
     assert cli.main(_args(tmp_path / "c", "--weather-spinup", "30")) == 0
     assert _files(tmp_path / "off" / "weather_spinup") == []
+
+
+def test_a_prebuilt_step_makes_the_same_chain_in_many_short_calls(cfg: Config) -> None:
+    """``chain_step`` is the step ``advance_chain`` builds per call: built once and passed in, five calls of
+    seven steps are the one call of thirty-five, bitwise (the study drivers tick every 25 steps)."""
+    key = _state_key(cfg)
+    one, ko = weather_spinup.advance_chain(cfg, W.rest_array(cfg), 0, key, 35)
+    fn = weather_spinup.chain_step(cfg)
+    wx, k = W.rest_array(cfg), key
+    for i in range(5):
+        wx, k = weather_spinup.advance_chain(cfg, wx, 7 * i, k, 7, step_fn=fn)
+    assert np.array_equal(to_numpy(wx), to_numpy(one)) and np.array_equal(to_numpy(k), to_numpy(ko))
+    with pytest.raises(ValueError, match=r"weather\.enabled"):
+        weather_spinup.chain_step(storm3d_config("weather.enabled=false"))

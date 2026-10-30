@@ -148,9 +148,10 @@ def test_the_plateau_time_is_where_a_relaxation_stays_within_the_tolerance() -> 
     n = 800
     counts = np.column_stack([25 * np.arange(1, n + 1), np.minimum(np.arange(n) // 100, 3), np.full(n, 2)])
     sp = ws.spinup_stats(series, counts, 20000)
-    assert sp["p_mean"] == 0.0 and 4000.0 < sp["ke"] < 8000.0
-    assert sp["named_south"] == 500.0  # constant: settled from the first block (20 ticks of 25 steps)
-    assert 6000.0 < sp["named_north"] < 9000.0  # the count steps up to 3 at tick 300
+    assert sp["p_mean"] == 0.0 and 3000.0 < sp["ke"] < 8000.0 and 9000.0 < sp["q_mean"] < 10500.0
+    assert sp["settled"] == max(sp["ke"], sp["q_mean"], sp["named_north"], sp["named_south"])
+    assert sp["named_south"] == 500.0  # constant: there from the first block (20 ticks of 25 steps)
+    assert 5000.0 < sp["named_north"] < 8000.0  # the count steps up to 3 at tick 300: within 1 of 3 at 2
 
 
 def _synthetic_frames(nside: int, radius: float, n: int):

@@ -57,7 +57,7 @@ from alife.config import Config, load_config, validate
 from alife.rng import InitStream, init_keys
 from alife.storms import NAME_ZETA, Track
 from alife.storms_sph import SphereFrame, SphereParams, SphereTracker, detect
-from alife.weather_spinup import advance_chain, spinup_key
+from alife.weather_spinup import advance_chain, chain_step, spinup_key
 
 __all__ = [
     "POOL_LATITUDE",
@@ -263,7 +263,11 @@ def exposure_stats(
     ``|lat|``; the share within one cell side of the ring seam ``|z| = 2/3``. The shares are per detection
     and per track (each track weighted equally, which is what a bootstrap over tracks resamples; the 95 %
     interval of the ratio is that bootstrap). Detections of one track are strongly correlated, so the number
-    of independent samples is the number of tracks: a ratio is not to be read without its interval."""
+    of independent samples is the number of tracks: a ratio is not to be read without its interval. Storms
+    ride their pools, which keep one latitude and sweep every longitude at a fixed rate whatever the seed, so
+    the draws of different seeds are not independent either, and the ring statistic has no null (it is the
+    latitude of the pools against ``|z| = 2/3``): the controlled test of a seam is a pool placed on it and one
+    placed off it (``w0_sphere run --pools`` with ``omega`` 0)."""
     m = centres.shape[0]
     if m == 0:
         return {"detections": 0, "tracks": 0}
@@ -478,6 +482,7 @@ def run_study(cfg: Config, st: StudySettings, progress: Any = None) -> dict[str,
     radius = cfg.world.radius
     sp = SphereParams.from_config(cfg)
     book = StormBook(sp)
+    step_fn = chain_step(cfg)
     key = spinup_key(init_keys(st.seed)[InitStream.STATE_KEY])
     wx = weather_sph.rest_array(cfg, 0)
     ex = Exposure.of(sp.nside, radius)
@@ -490,7 +495,7 @@ def run_study(cfg: Config, st: StudySettings, progress: Any = None) -> dict[str,
     t = 0
     t0 = time.time()
     for k in range(n_ticks):
-        wx, key = advance_chain(cfg, wx, t, key, st.tick)
+        wx, key = advance_chain(cfg, wx, t, key, st.tick, step_fn=step_fn)
         t += st.tick
         ws = weather_sph.unpack(wx)
         zeta = np.array(weather_sph.vorticity(ws, wp, radius), dtype=np.float64)
@@ -649,7 +654,7 @@ def plateau_time(
     if not late.any() or t.size < smooth:
         return None
     k = np.ones(smooth) / smooth
-    ys = np.convolve(np.pad(y, smooth // 2, mode="edge"), k, mode="valid")
+    ys = np.convolve(np.pad(y, (smooth // 2, (smooth - 1) // 2), mode="edge"), k, mode="valid")
     ref = float(ys[late].mean())
     if ref == 0.0:
         return None
@@ -661,14 +666,24 @@ def plateau_time(
 
 
 def spinup_stats(series: list[dict[str, float]], counts: np.ndarray, steps: int) -> dict[str, Any]:
-    """The spin-up length of the weather in engine steps: the time at which each of the kinetic energy, the
-    mean humidity and the mean rain settles within 5 % of its late mean (``plateau_time``, late = the last
-    40 % of the run), and the time at which the number of named storms per hemisphere (block means of 20
-    ticks) settles within 0.5 of its late mean. ``counts`` are the rows ``(t, n_north, n_south, ...)``."""
+    """The spin-up length of the weather in engine steps. A quantity settles at the time from which its
+    smoothed series stays within a tolerance of its late mean (the last 40 % of the run, ``plateau_time``):
+    the kinetic energy within 15 % (a moving average of 10 samples, 5 000 steps: storms come and go), the
+    mean humidity within 1 % (3 samples), the mean rain within 25 % (10 samples). The storms have formed when
+    the number of named storms per hemisphere (block means of 20 ticks) first reaches 1 of its late mean
+    (``_first_reach``). ``counts`` are the rows ``(t, n_north, n_south, ...)``. ``settled`` is the latest of
+    the kinetic energy, the humidity and the two counts: the spin-up after which the weather is the weather
+    of the study."""
     ref = 0.6 * steps
     t = np.array([r["t"] for r in series])
+
+    def col(k: str) -> np.ndarray:
+        return np.array([r[k] for r in series])
+
     out: dict[str, Any] = {
-        k: plateau_time(t, np.array([r[k] for r in series]), ref_from=ref) for k in ("ke", "q_mean", "p_mean")
+        "ke": plateau_time(t, col("ke"), tol=0.15, ref_from=ref, smooth=10),
+        "q_mean": plateau_time(t, col("q_mean"), tol=0.01, ref_from=ref, smooth=3),
+        "p_mean": plateau_time(t, col("p_mean"), tol=0.25, ref_from=ref, smooth=10),
     }
     block = 20
     n = (counts.shape[0] // block) * block
@@ -676,20 +691,21 @@ def spinup_stats(series: list[dict[str, float]], counts: np.ndarray, steps: int)
         tb = counts[:n, 0].reshape(-1, block)[:, -1]
         for h, name in enumerate(("north", "south")):
             yb = counts[:n, 1 + h].reshape(-1, block).mean(axis=1)
-            out[f"named_{name}"] = _settle(tb, yb, ref)
+            out[f"named_{name}"] = _first_reach(tb, yb, ref)
+    parts = [out[k] for k in ("ke", "q_mean", "named_north", "named_south") if out.get(k) is not None]
+    out["settled"] = max(parts) if parts else None
     return out
 
 
-def _settle(t: np.ndarray, y: np.ndarray, ref_from: float, band: float = 0.5) -> float | None:
-    """The first time from which the block means ``y`` stay within ``band`` of their late mean for good."""
+def _first_reach(t: np.ndarray, y: np.ndarray, ref_from: float, band: float = 1.0) -> float | None:
+    """The first time a block mean ``y`` reaches ``band`` of its late mean (the mean over ``t >= ref_from``)
+    from below: the storms have formed. (The count of a world whose storms come and go wanders around its mean
+    for tens of thousands of steps, so "stays within" would only ever measure the length of the run.)"""
     late = t >= ref_from
     if not late.any():
         return None
-    out = np.abs(y - y[late].mean()) > band
-    if not out.any():
-        return float(t[0])
-    last = int(np.flatnonzero(out).max())
-    return float(t[last + 1]) if last + 1 < t.size else None
+    hit = np.flatnonzero(y >= y[late].mean() - band)
+    return float(t[hit[0]]) if hit.size else None
 
 
 def _window_climate(series: list[dict[str, float]], t_spin: int) -> dict[str, float]:
