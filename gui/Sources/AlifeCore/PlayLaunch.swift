@@ -102,7 +102,7 @@ package struct PlanetSpec: Equatable, Sendable {
     /// Explicit, never an alias: the same name would mean two geometries (DESIGN §37.2).
     package static func overlay(forWorldSize size: Double?) -> String { size == miniWorldSize ? "storm160" : "storm" }
 
-    /// The weather overlay of each planet shape that has one, `(shape, overlay)`. PROVISIONAL, as the overlays are (S4c calibrates them):
+    /// The weather overlay of each planet shape that has one, `(shape, overlay)`. Calibrated in S4c (DESIGN §46.6, one study per planet):
     /// `stormsph` is made for the `64k3s` planet (radius 90, height 40, field Nside 21, 18 layers), `stormsph16` for `tiny3s` (36, 16, 8, 8)
     /// and `stormsph22` for `mini3s` (48, 24, 11, 12). `tests/test_gui_sync.py` checks the shapes against the engine's presets.
     package static let weatherOverlays: [(shape: PlanetShape, overlay: String)] = [
@@ -136,14 +136,24 @@ package struct PlanetSpec: Equatable, Sendable {
         return nil
     }
 
-    /// The spin-up of a planet. The engine has no sphere-specific value (the storm calibration, S4c, is open: the S4b tests spin up 40 000 steps for
-    /// stability, the rest state needs only N >= 1), so this is the box's 320 world's, keyed on the geometry so that S4c changes one constant and
-    /// the size of a sphere (`world.size` is only its image length there) never picks the mini world's. It is valid for the three calibrated planets
-    /// (the weather time of a step is at most 1, so 20 000 steps are at most 20 000 units of it; the spin-up of a tiny3s planet takes seconds).
+    /// The spin-up of each planet shape, in engine steps: 1.3 times the length at which the kinetic energy, the humidity and the storm
+    /// count of the weather of that planet settle (DESIGN §46.6, measured in S4c with `python -m alife.analysis.w0_sphere`; one
+    /// engine step is `dt` = 0.79 to 0.83 of weather time on a sphere, so N steps cover 0.8 N of it).
+    /// `weather_spinup.SPHERE_SPINUP` is the engine's copy; `tests/test_gui_sync.py` keeps the two equal.
+    package static let sphereSpinups: [(shape: PlanetShape, steps: Int)] = [
+        (PlanetShape(radius: 90, height: 40, nside: 21, layers: 18), 15_000),
+        (PlanetShape(radius: 36, height: 16, nside: 8, layers: 8), 10_000),
+        (PlanetShape(radius: 48, height: 24, nside: 11, layers: 12), 8_000),
+    ]
+
+    /// The spin-up of a sphere whose shape has no row (it has no calibrated overlay either, so it cannot be launched): the long one.
     package static let sphereSpinup = 20_000
 
-    package static func defaultSpinup(forGeometry geometry: String?, worldSize size: Double?) -> Int {
-        geometry == "sphere" ? sphereSpinup : defaultSpinup(forWorldSize: size)
+    /// The default spin-up of a source of this geometry, planet shape and `world.size`: a planet's own by its shape, else the box's by
+    /// size. `shape` is nil for a box or an unreadable shape (the long sphere value then).
+    package static func defaultSpinup(forGeometry geometry: String?, shape: PlanetShape? = nil, worldSize size: Double?) -> Int {
+        guard geometry == "sphere" else { return defaultSpinup(forWorldSize: size) }
+        return sphereSpinups.first { $0.shape == shape }?.steps ?? sphereSpinup
     }
 
     package static func defaultSpinup(forWorldSize size: Double?) -> Int {

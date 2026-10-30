@@ -113,26 +113,24 @@ def test_the_stormsph_overlay_is_made_for_the_64k3s_world() -> None:
 
 
 def test_the_stormsph16_overlay_is_made_for_the_tiny3s_world() -> None:
-    """The overlay of the `tiny3s` planet (DESIGN §46.6, §46.8): the weather Nside 16, the pools of
-    `sphere_weather_helpers.pools("tiny3s")` at the angular drift of `stormsph`, the coupling of `stormsph`;
-    it sets no weather time step (it runs at the derived one)."""
+    """The overlay of the `tiny3s` planet (DESIGN §46.6, §46.8): the weather Nside 16, the 18 x 12 pools of
+    the S4c calibration (`w0_sphere.make_pools`) at the angular drift of `stormsph`; it sets no weather time
+    step (it runs at the derived one). The calibrated values are pinned in `test_sphere_presets`."""
     import tomllib
     from importlib import resources
 
-    from sphere_weather_helpers import pools
+    from alife.analysis.w0_sphere import make_pools
 
     assert "stormsph16" in config.WORLD_OVERLAYS and "stormsph16" in config.ALL_OVERLAYS
     cfg = load_config(preset="tiny3s", overlays=["stormsph16"])
     p = weather_sph.params_from_config(cfg)
     assert cfg.weather.enabled and (cfg.weather.cells, len(cfg.weather.pools) // 7) == (16, 6)
     assert cfg.weather.cells == 2 * cfg.world.nside == NW["tiny3s"]
-    # the pools are the tests' narrow ones (10 x 6 at +-40 degrees) with `stormsph`'s angular drift:
+    # the pools are 18 x 12 at +-40 degrees with `stormsph`'s angular drift:
     # -0.009 on a planet of radius 90 is -0.0036 on radius 36 (a lap in the same number of steps)
-    assert list(cfg.weather.pools) == pytest.approx(pools("tiny3s", drift=-0.009 * 36.0 / 90.0), abs=1e-6)
-    # the coupling is `stormsph`'s
+    assert list(cfg.weather.pools) == pytest.approx(make_pools(36.0, 3, 18.0, 12.0), abs=1e-6)
     sph = load_config(preset="tiny3s", overlays=["stormsph"], overrides=W64K[1:]).weather
-    for key in ("enabled", "f0", "seed_rate", "rain_gain", "storm_p", "storm_u0", "storm_span"):
-        assert getattr(cfg.weather, key) == getattr(sph, key), key
+    assert (cfg.weather.enabled, cfg.weather.f0) == (sph.enabled, sph.f0)
     # nothing per step is configured by the overlay: the keys it sets are those of `stormsph`, and none is a
     # time step (S4b derives it from the Courant number, so the overlay validates before and after that)
     text = resources.files("alife.presets").joinpath("stormsph16.toml").read_text(encoding="utf-8")

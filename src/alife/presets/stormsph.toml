@@ -1,24 +1,37 @@
 # stormsph overlay: the storm world's weather layer on a sphere (docs/SPHERE.md 4 and 7.3, DESIGN §46.6). A WORLD
 # overlay, like `storm`: it needs the planet it is tuned for and fails validation on the others. It is made for the
 # `64k3s` world of the sphere series (Rp 90, H 40, field Nside 21, so the weather Nside Nw = 2 Nf = 42, 21 168
-# cells of side 2.19; the weather time step per engine step is derived, Courant 0.40, dt 0.789); the preset itself is S7's, so until then compose it over a world with those
-# numbers. `tiny3s` (Nw 16) and `mini3s` (Nw 22) need narrower pools and a smaller `cells`: S4c's calibration.
+# cells of side 2.19; the weather time step per engine step is derived, Courant 0.40, dt 0.789).
+#
+# CALIBRATED in S4c (DESIGN §46.6; `python -m alife.analysis.w0_sphere`, weather alone, 80 000 to 100 000 steps, a
+# detection every 25, seeds 0, 1 and 2, the window after 20 000 steps): 38 x 19 pools, three per hemisphere, hold 2 or
+# 3 named storms per hemisphere at every tick of the window (the criteria of STORMS_W0: 2 to 6 of them, lifetime above
+# 3 000; a storm on every pool that lasts the run), where the box's 32 x 16 held 0.7 to 1.4 on average and 2 to 6 at 3 to
+# 15 % of the ticks. What matters is the meridional width `sy`: 16 holds weak storms that rarely reach the naming
+# strength (0.5 f0), 17 is half way (1.9 / 2.5 at 62 % of the ticks), 18 and above holds a stable storm on every pool
+# (the plateau runs from 34 x 19 and 36 x 18 to at least 44 x 22); a pool of 40 x 20 with its amplitude lowered to 0.9
+# holds none. `tests/test_sphere_presets.py` pins the values and `tests/test_sphere_presets_slow.py` repeats the criteria.
 #
 # `weather.cells` is the weather Nside Nw (not a grid side) and must be Nf times a power of two. A pool is
 # (x, y, sx, sy, amp, vx, vy) with x the arc length east of longitude 0 and y the arc length north of the
 # equator (lon = x/Rp, lat = y/Rp), sx and sy Gaussian widths in length, vx the drift along the pool's own
-# latitude circle per unit of weather time (vx·dt per engine step, dt 0.789), vy = 0. Six pools of the box's 32 x 16, at latitude +-40 degrees (f at the pool
-# 0.0162, as 64k3d), three per hemisphere, 120 degrees apart; the southern ones are offset by 60 degrees.
+# latitude circle per unit of weather time (vx·dt per engine step, dt 0.789), vy = 0. Six pools at latitude +-40 degrees (f at
+# the pool 0.0162, as 64k3d), three per hemisphere, 120 degrees apart; the southern ones are offset by 60 degrees.
 #
-# The coupling values are PROVISIONAL (those of `storm`; S4c calibrates them). The vertical map of the shell onto
-# the atmosphere is s = (H1 + H2)/H = 2 here.
+# The couplings: `seed_rate` is the box's (0.02 per planet and unit of weather time; the planet's area is 0.994 of
+# 64k3d's, so the density of seeds is the same). `rain_gain` is raised from the box's 50 000 to 60 000 so that the
+# rain is the same 0.08 % of the regeneration (the nominal `rain_global_share` of the metrics) as in the box (8.0e-4
+# in 3 000 steps from the founders). `storm_u0` is raised from the box's 0.06 to 0.075: the winds of these storms
+# are 1.3 times the box's (the largest air speed an agent meets, 0.079 against 0.062), and the onset of the hazard
+# stays where it was in the box, just above that largest speed; `storm_span` and `storm_p` are the box's.
+# The vertical map of the shell onto the atmosphere is s = (H1 + H2)/H = 2 here.
 [weather]
 enabled = true
 cells = 42
 f0 = 0.025
 seed_rate = 0.02
-pools = [94.24778, 62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 282.743339, 62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 471.238898, 62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 0.0, -62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 188.495559, -62.831853, 32.0, 16.0, 1.0, -0.009, 0.0, 376.991118, -62.831853, 32.0, 16.0, 1.0, -0.009, 0.0]
-rain_gain = 50000.0
+pools = [94.24778, 62.831853, 38.0, 19.0, 1.0, -0.009, 0.0, 282.743339, 62.831853, 38.0, 19.0, 1.0, -0.009, 0.0, 471.238898, 62.831853, 38.0, 19.0, 1.0, -0.009, 0.0, 0.0, -62.831853, 38.0, 19.0, 1.0, -0.009, 0.0, 188.495559, -62.831853, 38.0, 19.0, 1.0, -0.009, 0.0, 376.991118, -62.831853, 38.0, 19.0, 1.0, -0.009, 0.0]
+rain_gain = 60000.0
 storm_p = 0.002
-storm_u0 = 0.06
+storm_u0 = 0.075
 storm_span = 0.03

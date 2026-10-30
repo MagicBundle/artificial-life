@@ -18,7 +18,7 @@ import pytest
 import sphere_run
 from alife.config import dims, load_config
 from alife.state import LedgerIdx
-from sphere_storms import count_storms
+from sphere_storms import criteria, study
 
 FEATURES = ["build", "bonds", "comm", "niche3d"]
 CASES = {
@@ -68,12 +68,30 @@ def test_three_thousand_steps_of_a_preset_close_the_ledger_overflow_nothing_and_
     assert 0.6 * n_init <= r["alive"] <= 1.3 * n_init and r["alive_max"] < 0.75 * cfg.population.n_max
 
 
+# The STORMS_W0 criteria on each calibrated planet (DESIGN §46.6, S4c): the weather alone from the rest
+# state for ``steps`` steps (the engine's chain, a detection every 50 steps), the statistics over the window
+# after the first ``SPINUP`` steps. ``steps`` is modest: the calibration is 100 000 steps, every 25.
+STORM_CASES = {
+    "64k3s": dict(overlay="stormsph", steps=45_000),
+    "mini3s": dict(overlay="stormsph22", steps=45_000),
+    "tiny3s": dict(overlay="stormsph16", steps=45_000),
+}
+SPINUP = 15_000  # the storms of every planet have formed by then (the measured spin-up is 10 000 to 14 000)
+
+
 @pytest.mark.slow
-def test_stormsph22_holds_two_to_three_storms_per_hemisphere_on_mini3s() -> None:
-    """The measurement that chose the 24 x 16 pools (DESIGN §46.6): 30 000 steps of the weather alone, seed 1,
-    at the derived dt: a mean of at least 2 named storms per hemisphere (3.0 and 2.8 measured; 20 x 12 pools
-    give 1.0 and 0.6, 16 x 10 give 0.15 and 0.04)."""
-    cfg = load_config(preset="mini3s", overlays=["stormsph22"])
-    r = count_storms(cfg, 30_000, 1)
-    assert r["north_mean"] >= 2.0 and r["south_mean"] >= 2.0, r
-    assert r["north_max"] <= 6 and r["south_max"] <= 6 and r["tracks"] >= 4, r
+@pytest.mark.parametrize("name", list(STORM_CASES))
+def test_a_calibrated_planet_holds_two_to_six_named_storms_per_hemisphere_that_live_past_3000_steps(
+    name: str,
+) -> None:
+    """The criteria of STORMS_W0 on the sphere (S4c): 2 to 6 named storms in each hemisphere at 90 % of the
+    detection times of the window or more, and a named-storm lifetime (the Kaplan-Meier median, or the
+    longest age while the curve stays above one half) of at least 3 000 steps. The exact numbers of the
+    calibration runs are in DESIGN §46.6; a weaker pool, a larger one, or a retuned coupling falls out of the
+    band (a 28 x 18 pool on ``mini3s`` and a 20 x 14 one on ``tiny3s`` hold no storm at all)."""
+    case = STORM_CASES[name]
+    cfg = load_config(preset=name, overlays=[case["overlay"]])
+    c = criteria(study(cfg, case["steps"], SPINUP, seed=0, tick=50))
+    assert c["in_range_both"] >= 0.9, c
+    assert 2.0 <= c["north_mean"] <= 6.0 and 2.0 <= c["south_mean"] <= 6.0, c
+    assert c["lifetime_pass"] and c["lifetime"] >= 3000, c

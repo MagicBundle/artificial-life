@@ -1,6 +1,7 @@
 """The three sphere presets (DESIGN §46.9; sphere series S7a): ``tiny3s``, ``mini3s`` and ``64k3s``, the
 planets of the ``tiny3d``, ``mini3d`` and ``64k3d`` scale, with their calibrated population keys, and the
-weather overlays made for them (``stormsph`` for ``64k3s``, ``stormsph22`` for ``mini3s``).
+weather overlays made for them (``stormsph`` for ``64k3s``, ``stormsph22`` for ``mini3s``, ``stormsph16`` for
+``tiny3s``), calibrated in S4c.
 
 Configuration only (the 3 000-step runs are in ``test_sphere_presets_slow.py``): the values are the ones the
 calibration of S7a measured (DESIGN §46.9), pinned so that a change of one is deliberate.
@@ -120,7 +121,7 @@ def test_all_five_features_validate_on_every_planet(name: str) -> None:
     cfg = load_config(preset=name, overlays=feats, overrides=base)
     assert cfg.structures.enabled and cfg.comm.enabled and cfg.arms.enabled and cfg.niche.farm
     assert cfg.bonds.share_mode != "off" or cfg.roles.enabled
-    overlay = {"mini3s": "stormsph22", "64k3s": "stormsph"}.get(name)
+    overlay = {"tiny3s": "stormsph16", "mini3s": "stormsph22", "64k3s": "stormsph"}.get(name)
     if overlay:
         both = load_config(preset=name, overlays=[*feats, overlay], overrides=base)
         assert both.weather.enabled and both.structures.enabled and both.arms.enabled
@@ -128,8 +129,36 @@ def test_all_five_features_validate_on_every_planet(name: str) -> None:
 
 # --- the weather overlays ---------------------------------------------------------------------------------
 
-OVERLAY_OF = {"64k3s": "stormsph", "mini3s": "stormsph22"}
-POOL_SIZE = {"stormsph": (32.0, 16.0), "stormsph22": (24.0, 16.0)}  # sx, sy
+OVERLAY_OF = {"64k3s": "stormsph", "mini3s": "stormsph22", "tiny3s": "stormsph16"}
+# The calibrated weather of each planet (DESIGN §46.6, S4c), pinned so that a change is deliberate: the pools
+# (per hemisphere, sx, sy, amplitude, at 40 degrees, the angular drift of `stormsph`) and the couplings. The
+# storm statistics they give are the slow gates of `test_sphere_presets_slow.py`.
+CALIBRATED = {
+    "stormsph": dict(
+        pools=(3, 38.0, 19.0, 1.0),
+        seed_rate=0.02,
+        rain_gain=60000.0,
+        storm_p=0.002,
+        storm_u0=0.075,
+        storm_span=0.03,
+    ),
+    "stormsph22": dict(
+        pools=(3, 24.0, 16.0, 1.0),
+        seed_rate=0.02,
+        rain_gain=26000.0,
+        storm_p=0.002,
+        storm_u0=0.075,
+        storm_span=0.03,
+    ),
+    "stormsph16": dict(
+        pools=(3, 18.0, 12.0, 1.0),
+        seed_rate=0.0032,
+        rain_gain=4400.0,
+        storm_p=0.002,
+        storm_u0=0.06,
+        storm_span=0.03,
+    ),
+}
 
 
 @pytest.mark.parametrize(("name", "overlay"), list(OVERLAY_OF.items()))
@@ -153,14 +182,38 @@ def test_the_overlay_validates_on_its_planet_with_the_courant_rule(name: str, ov
     text = tomllib.loads((PRESET_DIR / f"{overlay}.toml").read_text(encoding="utf-8"))
     assert set(text) == {"weather"} and "dt" not in text["weather"]
     assert text["weather"]["pools"] == list(cfg.weather.pools)
-    # the calibrated pool size (DESIGN 46.6: 16 x 10 and 20 x 12 hold too few storms) and the couplings
-    pools = [cfg.weather.pools[i : i + 7] for i in range(0, len(cfg.weather.pools), 7)]
-    assert {(p[2], p[3]) for p in pools} == {POOL_SIZE[overlay]}
-    ref = load_config(preset="64k3s", overlays=["stormsph"]).weather
-    for key in ("f0", "seed_rate", "rain_gain", "storm_p", "storm_u0", "storm_span"):
-        assert getattr(cfg.weather, key) == getattr(ref, key), (
-            key
-        )  # the box's provisional values on every planet
+
+
+@pytest.mark.parametrize(("name", "overlay"), list(OVERLAY_OF.items()))
+def test_the_calibrated_pools_and_couplings_of_each_overlay_are_pinned(name: str, overlay: str) -> None:
+    """S4c (review M2 of S7a, for all three planets): the pools are the builder's (`w0_sphere.make_pools`: per
+    hemisphere, sx, sy, amplitude 1, the angular drift of `stormsph`) at the sizes the study chose, and the
+    couplings are the values it set. A change of one is deliberate: the storm statistics of DESIGN §46.6 and
+    the slow gates of `test_sphere_presets_slow.py` are of these."""
+    from alife.analysis.w0_sphere import make_pools
+
+    cal = CALIBRATED[overlay]
+    cfg = load_config(preset=name, overlays=[overlay])
+    per, sx, sy, amp = cal["pools"]
+    assert cfg.weather.pools == pytest.approx(make_pools(cfg.world.radius, per, sx, sy, amp=amp), abs=1e-5)
+    for key in ("seed_rate", "rain_gain", "storm_p", "storm_u0", "storm_span"):
+        assert getattr(cfg.weather, key) == cal[key], key
+    # what the study left alone is the box's: the seeds' size, the moisture, the damping (S4b M1)
+    ref = load_config(preset="64k3d", overlays=["storm"]).weather
+    for key in (
+        "seed_sigma",
+        "seed_v",
+        "q_pool",
+        "q_bg",
+        "tau_rad",
+        "r1",
+        "r2",
+        "c_d",
+        "gamma",
+        "tau_c",
+        "k_E",
+    ):
+        assert getattr(cfg.weather, key) == getattr(ref, key), key
 
 
 @pytest.mark.parametrize(("name", "overlay"), list(OVERLAY_OF.items()))
@@ -181,7 +234,7 @@ def test_the_pools_sit_at_forty_degrees_three_per_hemisphere_and_fit_the_planet(
     assert len({round(math.degrees(p[0] / r) % 120, 3) for p in pools if p[1] > 0}) == 1  # 120 degrees apart
 
 
-@pytest.mark.parametrize("overlay", ["stormsph", "stormsph22"])
+@pytest.mark.parametrize("overlay", ["stormsph", "stormsph22", "stormsph16"])
 @pytest.mark.parametrize("name", list(TABLE))
 def test_an_overlay_is_refused_on_a_planet_it_is_not_made_for(name: str, overlay: str) -> None:
     if OVERLAY_OF.get(name) == overlay:

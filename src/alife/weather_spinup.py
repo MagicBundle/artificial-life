@@ -35,6 +35,12 @@ from alife.config import Config, config_to_dict
 from alife.rng import Stream, step_keys
 
 CHUNK = 16  # weather steps per evaluation: enough to hide dispatch latency, small enough to bound the graph
+# The spin-up, in engine steps, that the launcher of a planet asks for (``alife play --init-from ...
+# --weather-spinup N``), per sphere preset: the length at which the kinetic energy, the humidity and the storm
+# count of that planet's weather have settled, times 1.3 (DESIGN §46.6, ``alife.analysis.w0_sphere``).
+# ``PlanetSpec.sphereSpinups`` in ``gui/Sources/AlifeCore/PlayLaunch.swift`` is the launcher's copy;
+# ``tests/test_gui_sync.py`` keeps the two equal.
+SPHERE_SPINUP: dict[str, int] = {"64k3s": 15_000, "tiny3s": 10_000, "mini3s": 8_000}
 CACHE_VERSION = 1  # the format of a cache entry and of its key (bump it when either changes)
 CACHE_OFF_ENV = "ALIFE_SPINUP_CACHE"  # set to "0" to switch the cache of the command line off
 
@@ -46,6 +52,25 @@ def spinup_key(key: mx.array) -> mx.array:
     return mx.random.split(key, 3)[2]
 
 
+StepFn = Callable[[mx.array, mx.array, mx.array], tuple[mx.array, mx.array, mx.array]]
+
+
+def chain_step(cfg: Config, *, compile: bool = True) -> StepFn:
+    """One step of the chain, ``(wx, t, key) -> (wx, t + 1, key_next)``: at each step
+    ``key, ks = step_keys(key)`` and the disturbance key is ``split(ks[WEATHER], 2)[0]``, the engine's.
+    Compiled once (``advance_chain`` builds it per call; a caller that advances in many short pieces builds
+    it once and passes it)."""
+    if not cfg.weather.enabled:
+        raise ValueError("weather_spinup needs weather.enabled = true")
+
+    def one(wx: mx.array, t: mx.array, key: mx.array) -> tuple[mx.array, mx.array, mx.array]:
+        key_next, ks = step_keys(key)
+        ws, _ = weather.advance(weather.unpack(wx), t, mx.random.split(ks[Stream.WEATHER], 2)[0], cfg)
+        return weather.pack(ws), t + 1, key_next
+
+    return mx.compile(one) if compile else one
+
+
 def advance_chain(
     cfg: Config,
     wx: mx.array,
@@ -55,22 +80,15 @@ def advance_chain(
     *,
     compile: bool = True,
     progress: Callable[[int, int], None] | None = None,
+    step_fn: StepFn | None = None,
 ) -> tuple[mx.array, mx.array]:
     """Advance the packed weather ``wx`` through the steps ``t0 .. t0 + n_steps - 1`` with the engine's key
-    chain: at each step ``key, ks = step_keys(key)`` and the disturbance key is ``split(ks[WEATHER], 2)[0]``.
-    Returns ``(wx, key)`` after the last step, evaluated. With the state's key and step this reproduces the
-    engine's ``wx`` bitwise. ``progress(done, total)`` is called after each evaluated chunk."""
+    chain (``chain_step``). Returns ``(wx, key)`` after the last step, evaluated. With the state's key and
+    step this reproduces the engine's ``wx`` bitwise. ``progress(done, total)`` is called after each
+    evaluated chunk. ``step_fn`` is a ``chain_step`` built by the caller (``compile`` is then unused)."""
     if n_steps < 0:
         raise ValueError(f"n_steps must be >= 0, got {n_steps}")
-    if not cfg.weather.enabled:
-        raise ValueError("weather_spinup needs weather.enabled = true")
-
-    def one(wx: mx.array, t: mx.array, key: mx.array) -> tuple[mx.array, mx.array, mx.array]:
-        key_next, ks = step_keys(key)
-        ws, _ = weather.advance(weather.unpack(wx), t, mx.random.split(ks[Stream.WEATHER], 2)[0], cfg)
-        return weather.pack(ws), t + 1, key_next
-
-    fn = mx.compile(one) if compile else one
+    fn = chain_step(cfg, compile=compile) if step_fn is None else step_fn
     t = mx.array(t0, dtype=mx.int32)
     done = 0
     while done < n_steps:
