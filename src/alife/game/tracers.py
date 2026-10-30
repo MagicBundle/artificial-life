@@ -124,7 +124,8 @@ def _wind(
 
 def tracer_step(tr: TracerState, wx: mx.array, cfg: Config) -> TracerState:
     """One step of the tracers on the end-of-step weather ``wx``: ``pos ← wrap_xy_clamp_z(pos + v)`` with
-    ``v = α_t·u_air(pos)`` limited to ``physics.v_max`` by its norm, as ``physics.integrate3`` (2D: the
+    ``v = α_t·u_air(pos)`` (on a sphere times the weather time of a step ``dt``, as the agents' wind force)
+    limited to ``physics.v_max`` by its norm, as ``physics.integrate3`` (2D: the
     layer-1 wind and ``ops.wrap``). ``age`` counts up. No random draw. Every output derives from an input
     through an operation (the MLX 0.32 ``mx.compile`` quirk noted at ``step.consume_env``)."""
     p = weather.params_from_config(cfg)
@@ -133,6 +134,8 @@ def tracer_step(tr: TracerState, wx: mx.array, cfg: Config) -> TracerState:
     d = dims(cfg)
     u = _wind(ws, tr.pos, p, cfg).u if d.d3 else weather.sample_wind_h(ws, tr.pos, p).u  # static
     v = tr.alpha[:, None] * u
+    if d.sph:  # static: the wind is in length per unit of weather time, a step is dt of it (DESIGN §46.6)
+        v = v * p.dt
     speed = mx.sqrt((v * v).sum(axis=-1))
     v = mx.where((speed > ph.v_max)[:, None], v * (ph.v_max / mx.maximum(speed, ph.v_max))[:, None], v)
     moved = tr.pos + v

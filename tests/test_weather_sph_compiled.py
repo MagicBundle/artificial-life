@@ -18,9 +18,10 @@ PIN_STEPS = 50
 # The digest of ``tiny3s`` with the weather on (float32 weights, seed_rate 0.2, seed_gain 0.03) after 50
 # compiled
 # steps, per platform (as ``test_sphere_trajectory``: only checked where recorded). Re-pinned for C29 (the
-# weather time step 0.829 per engine step: the pools, seeds and rain are rates times dt).
+# weather time step 0.829 per engine step: the pools, seeds and rain are rates times dt) and for S4c (the wind
+# force on an agent is alpha·drag·dt·u).
 GOLDEN_WEATHER = {
-    "Darwin-arm64-cpu": "fc50adcaf1aa74fe67b77ac7468a22d8b1b8b3a5834ca9b4f96631d845412470",
+    "Darwin-arm64-cpu": "1a19dd587b33dac770ce207a9d37df8b5c649f8fd10bc5845482052062181032",
     "Darwin-arm64-gpu": "630cfb0e7c1f3f882bd392e33920418e38909c6269fc14441b6b9f20788a4605",
     "Linux-x86_64-cpu": "",
 }

@@ -859,9 +859,11 @@ def agent_wind(
 ) -> AgentForce:
     """The wind force on every row at ``pos`` (start-of-step positions) from the stored sphere weather: the
     coupling ``alpha0 + alpha1·buoy_cap`` times ``drag`` times the wind of ``sample_wind`` (Cartesian, planet
-    frame; ``physics.integrate_s`` divides by the same ``drag``, so a free agent drifts at ``alpha·u_air``).
-    ``wind_scale`` multiplies the force; the hazard speed is ``|u_air|`` (the eddy controls are refused on a
-    sphere by ``validate_config``)."""
+    frame, in length per unit of weather time) times ``dt``, the weather time of one engine step
+    (``weather_dt``; ``physics.integrate_s`` divides by the same ``drag``, so a free agent drifts at
+    ``alpha·dt·u_air`` per step, ``alpha`` times the displacement of the air parcel: DESIGN §46.6, S4c).
+    ``wind_scale`` multiplies the force; the hazard speed is ``|u_air|``, the air's own, not scaled (the eddy
+    controls are refused on a sphere by ``validate_config``)."""
     from alife.weather import alpha
 
     p = params_from_config(cfg)
@@ -869,7 +871,7 @@ def agent_wind(
     geo = WeatherGeometry.from_config(cfg)
     aw = sample_wind(ws, pos, p, geo, valid=alive)
     a = alpha(buoy_cap, p)[:, None]
-    force = a * cfg.physics.drag * aw.u
+    force = (a * cfg.physics.drag * p.dt) * aw.u  # S4c: the wind is per unit of weather time, a step is dt
     if wc.wind_scale != 1.0:  # static
         force = wc.wind_scale * force
     speed = mx.sqrt(_dot(aw.u, aw.u))
