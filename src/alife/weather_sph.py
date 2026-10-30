@@ -58,8 +58,9 @@ _I32 = mx.int32
 
 N_WX: Final = 11  # h1, h2, u1 (3), u2 (3), Q, P, Dc
 A4: Final = 3e-3  # the biharmonic filter strength on h and u (ENGINE_FIXED: the Courant limit needs it, S4a)
-C_LIMIT: Final = 0.650  # the float32 limit of the S4a noise test at a4 = 3e-3: the least over Nw 16, 22,
-42(0.6547, 0.650, 0.650)
+C_LIMIT: Final = (
+    0.650  # float32 limit of the S4a noise test at a4 = 3e-3: least over Nw 16, 22, 42 (0.6547, 0.650)
+)
 E_SQRT: Final = math.sqrt(math.e)
 PLANET_AXIS: Final = np.array(
     [0.0, 0.0, 1.0]
