@@ -18,6 +18,11 @@
 > with two metrics lines converted early, `stream`/`activity`/`migrate` refuse it and `play` is refused through the observers gate; the `fast` overlay is invalid on a sphere. **S2 review: hash layers keep `T_h > R/2` strictly (`mini3s` `G_z` 7 not 8, minimum `C` 30 not 27; 7.3 table).** **The stop rule of 2.4 is exceeded by the literal per-alive-agent
 > metric at the volume-matched `mini3s` (search 2.09x, step 2.0 to 2.2x of `mini3d`) and not at equal count, higher density or 64k (1.1 to 1.5x); see DESIGN §46.10. Reported, not optimised.**
 
+> **S3 (2026-10-30).** Built section 2.6 (structures `nopen`, R2 aperture, the colouring), 3.2 and the S3 row of section 10; see DESIGN §46.5 ("The five features on the shell"). Deviations: the colouring is searched
+> (DSATUR, iterated greedy, tabu) and has **11 colours** at Nside 8, 11, 21 (the spec's greedy 15, 16, 18), so the closing cycle is `min(FZ, 3)·11 = 33` phases (the spec: 45 to 54); the aperture requirement is
+> per cell, `ceil(aperture·n_nbr)` (26, 23, 17, 15 neighbours), under the box's domain `ceil(aperture·26) <= 17`; the material gradient is a world-frame vector at the cell centre; niche, comm, bonds with roles and arms
+> needed no change of code; "the existing per-feature suites run on a sphere fixture" is the parameter `"s"` of their helpers in the eager step (spec 10.1 fallback), the compiled step being in cold children.
+
 Status: proposal for owner review, 2026-10-29; **Revision 1** (same day) applies the independent review `review.md` (changelog at the end). Planned identifiers: DESIGN §46, Review-log row I77 (I76 is taken by a GUI fix).
 Owner request (2026-10-29): "a true sphere and not a wrapped sheet". This document is a specification only: no engine code
 was written or changed. Read-only inputs: main at 7ab28cf (DESIGN §27, §30, §32, §37 to §43, §45, F20; `src/alife/*`; the

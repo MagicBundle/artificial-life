@@ -105,11 +105,6 @@ def test_run_inspect_resume_and_bench_run_a_sphere(tmp_path: Path, capsys: pytes
         (["run", "--preset", "tiny3s", "--set", "game.observe=true"], "S5"),
         (["run", "--preset", "tiny3s", "--set", "director.enabled=true"], "S5"),
         (["run", "--preset", "tiny3s", "--set", "weather.enabled=true"], "S4"),
-        (["run", "--preset", "tiny3s", "--set", "structures.enabled=true"], "S3"),
-        (["run", "--preset", "tiny3s", "--set", "arms.enabled=true"], "S3"),
-        (["run", "--preset", "tiny3s", "--set", "comm.enabled=true"], "S3"),
-        (["run", "--preset", "tiny3s", "--set", "niche.farm=true"], "S3"),
-        (["run", "--preset", "tiny3s", "--set", "roles.enabled=true"], "S3"),
     ],
 )
 def test_layers_that_are_not_converted_are_refused_with_their_pr(
@@ -120,17 +115,32 @@ def test_layers_that_are_not_converted_are_refused_with_their_pr(
     assert "is not available on a sphere yet" in err and f"(PR {pr})" in err
 
 
-def test_the_readiness_set_is_read_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``SPHERE_READY`` is what a later PR widens: a name in it passes the gate (the layer's rules apply)."""
-    sets = ["structures.enabled=true"]
-    with pytest.raises(ConfigError, match=r"structures is not available on a sphere yet \(PR S3\)"):
+S3_LAYERS = {  # the layers PR S3 converts: the settings that switch each on (roles brings bonds)
+    "structures": ["structures.enabled=true"],
+    "arms": ["arms.enabled=true"],
+    "comm": ["comm.enabled=true"],
+    "niche": ["niche.farm=true"],
+    "bonds": ["bonds.share_mode=2"],
+    "roles": ["roles.enabled=true"],
+}
+
+
+@pytest.mark.parametrize("name", sorted(S3_LAYERS))
+def test_a_layer_is_refused_with_its_pr_until_it_is_in_the_readiness_set(
+    name: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """Outside ``SPHERE_READY`` a layer is refused with the PR that converts it (S3 for these), on the CLI
+    too; inside it the gate lets the layer through (its own rules apply). The set is read at call time."""
+    sets = S3_LAYERS[name]
+    monkeypatch.setattr(config, "SPHERE_READY", config.SPHERE_READY - {name})
+    with pytest.raises(ConfigError, match=rf"{name} is not available on a sphere yet \(PR S3\)"):
         load_config(preset="tiny3s", overrides=sets)
-    monkeypatch.setattr(config, "SPHERE_READY", frozenset({"structures"}))
-    assert "structures" not in config.sphere_wanted(load_config(preset="tiny3s"))
-    try:
-        load_config(preset="tiny3s", overrides=sets)
-    except ConfigError as e:  # the layer's own rules may still refuse; the gate does not
-        assert "not available on a sphere yet" not in str(e)
+    argv = ["run", "--preset", "tiny3s", *(x for s in sets for x in ("--set", s)), "--quiet"]
+    assert cli.main(argv) == 2
+    assert f"{name} is not available on a sphere yet (PR S3)" in capsys.readouterr().err
+    monkeypatch.setattr(config, "SPHERE_READY", config.SPHERE_READY | {"bonds", "roles", name})
+    cfg = load_config(preset="tiny3s", overrides=[*sets, "brain.weight_dtype=float32"])
+    assert name in config.sphere_wanted(cfg)
 
 
 @pytest.mark.parametrize("cmd", ["stream", "activity"])
