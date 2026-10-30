@@ -12,6 +12,12 @@
 > `(11, 12·(2·Nf)²)` until S4; the founders and `ops.body_axes_s`/`to_body_s` come in S1; the horizontal diffusivity at the floor is 1.2 to 1.4 times the box's `d_q8/256·field_cell²`; the S1 spherical-harmonic gate allows 4 %
 > at Nside 8, l = 6 (the measured −3.4 %; the spec's own text says 3.3 %); `fieldtab.py` and `fields_sph.py` are geometry-definition files of the lint.
 
+> **S2 (2026-10-30).** Built section 2 (agents), 2.9 (the readiness gates and the rotation harness), 7.2 (`GEOMETRY_SUPPORTED`, `SPHERE_READY`) and the S2 row of section 10; see DESIGN §46.3, §46.4, §46.10. Deviations: the child sits at a chord exactly `D`
+> from the parent (the arc is solved, the spec's arc `D·cosχ` is not a chord); the compile-collision guard was not merged, so the 10.1 fallback is in force (child processes with their own `TMPDIR`, both orders, `sphere_check` in `make_step`); CPU and
+> Metal digests are never equal (as for the box) but every integer field, counter and ledger entry is; the box's "velocity into the bound" invariant has no sound sphere form and is dropped; `run`/`resume` work on a sphere
+> with two metrics lines converted early, `stream`/`activity`/`migrate` refuse it and `play` is refused through the observers gate; the `fast` overlay is invalid on a sphere. **The stop rule of 2.4 is exceeded by the literal per-alive-agent
+> metric at the volume-matched `mini3s` (search 2.09x, step 2.2x of `mini3d`) and not at equal count, higher density or 64k (1.1 to 1.5x); see DESIGN §46.10. Reported, not optimised.**
+
 Status: proposal for owner review, 2026-10-29; **Revision 1** (same day) applies the independent review `review.md` (changelog at the end). Planned identifiers: DESIGN §46, Review-log row I77 (I76 is taken by a GUI fix).
 Owner request (2026-10-29): "a true sphere and not a wrapped sheet". This document is a specification only: no engine code
 was written or changed. Read-only inputs: main at 7ab28cf (DESIGN §27, §30, §32, §37 to §43, §45, F20; `src/alife/*`; the
