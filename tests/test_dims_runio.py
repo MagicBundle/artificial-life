@@ -10,7 +10,16 @@ import pytest
 
 from alife import cli, config, runio, state, viewer
 from alife.analysis import signals
-from alife.config import PRESETS, Config, ConfigError, config_from_dict, config_to_dict, is_3d, load_config
+from alife.config import (
+    PRESETS,
+    SPHERE_PRESETS,
+    Config,
+    ConfigError,
+    config_from_dict,
+    config_to_dict,
+    is_3d,
+    load_config,
+)
 from alife.render import render_frame
 from alife.runio import CheckpointError, RunDir, checkpoint_metadata, load_checkpoint, write_state_file
 from alife.state import init_state
@@ -199,7 +208,7 @@ def test_require_2d_message(micro_cfg: Config) -> None:
 @pytest.mark.parametrize("overlays", [(), ("fast",)])
 def test_one_schema(preset: str, overlays: tuple[str, ...]) -> None:
     if (
-        preset == "tiny3s" and overlays
+        preset in SPHERE_PRESETS and overlays
     ):  # the fast overlay's cell_capacity 12 cannot cover a sphere's lid cell
         pytest.skip("a sphere refuses the fast overlay (tests/test_config.py)")
     cfg = load_config(preset=preset, overlays=overlays)

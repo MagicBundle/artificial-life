@@ -59,6 +59,7 @@ def test_with_every_feature_off_every_function_is_the_identity() -> None:
         "niche3d",
         "stormsph",
         "stormsph16",
+        "stormsph22",
     )
     assert ext.check_registry() == []
 

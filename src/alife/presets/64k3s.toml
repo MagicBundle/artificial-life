@@ -1,0 +1,59 @@
+# 64k3s: the 64k sphere world, the sphere analogue of 64k3d (DESIGN section 46.9, sphere series PR S7a). A planet of
+# radius 90 with a shell of thickness 40 (floor area 101 788 against 64k3d's 102 400, shell volume 6.15 M against
+# 8.19 M): HEALPix Nside 21 (5 292 angular cells) and 18 equal-volume layers (95 256 field cells of about 65 units^3),
+# a hash of Nside 21 with 13 radial layers, gravity towards the centre, a floor at radius 90 + r and a hard lid at
+# 130 - r. The per-agent physics and economy are 64k3d's; the sizes, the patches and the population keys are the
+# sphere's. The weather is the `stormsph` overlay (`alife run --preset 64k3s --overlay stormsph`). `world.size` is
+# only the image length of min_image and must exceed 4 (radius + height) = 520. One key per line: the GUI reads the
+# scalars of this file.
+#
+# CALIBRATION (S7a, Metal, seed 0; DESIGN 46.9). regen_max 1 340 against 64k3d's 1 700: the 18-layer shell yields more
+# population per unit of food than the 80-high column. At 1 700 the founders' boom reaches 56 900 (step 18 000, 0.87 of
+# n_max; the spec's alive range is 31 000 to 41 600); at 1 340 (100 000 steps) it peaks at 50 300 (step 14 200), is
+# 31 600 at the trough (step 34 000) and from step 30 000 averages 41 500 (31 600 to 46 100; 44 000 from step 50 000);
+# at 1 000 (60 000 steps) the level from step 30 000 is 29 200 (26 000 to 32 200). 1 340 gives 64k3d's measured 41 900
+# (0.409 per unit of floor area), and the boom, trough and recovery are the shape of 64k3d's (42 700, 25 100, then a
+# plateau). n_max 65 536 (the spec's 49 152 is below the peak) keeps the peak at 0.77; n_init 16 384 is 0.4 of the
+# level, as in 64k3d. The hash capacity C = 32 (the lid hash cell needs at least 25): the maximum occupancy of the
+# dry runs was 16 (15 at 1 340; 19 with the five features and the weather), no hash cell overflowed in any of 8 runs of
+# 12 000 to 100 000 steps, the energy ledger was exact on every row, and the 3 000-step slow test passes.
+[population]
+n_max = 65536
+n_init = 16384
+max_births_per_step = 1024
+
+[world]
+geometry = "sphere"
+size = 1024.0
+dims = 3
+height = 40.0
+radius = 90.0
+nside = 21
+layers = 18
+
+[physics]
+gravity = 0.015
+floor_eps = 0.1
+buoyancy_max = 0.04
+
+[sensing]
+k_neighbors = 8
+cell_capacity = 32
+
+[energy]
+brain_cost_per_l1 = 0.0905
+buoyancy_cost = 16
+buoyancy_cap_cost = 8
+
+[mutation]
+buoy_init = 0.5
+buoy_sigma = 0.02
+
+[fields]
+n_patches = 8
+patch_sigma = 24.0
+regen_max = 1340
+chem_diffusion = [0.16, 0.10, 0.16]
+benthic_lambda = 8.0
+photic_amp = 0.5
+photic_lambda = 8.0

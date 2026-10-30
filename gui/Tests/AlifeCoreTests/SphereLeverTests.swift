@@ -31,6 +31,29 @@ import Testing
         #expect(Preset(rawValue: "tiny3s") == .tiny3s && Preset.allCases.contains(.tiny3s))
     }
 
+    /// The three planets of the engine's `config.PRESETS` (DESIGN §46.9): each is a sphere preset of its own shape, in the picker and on the command line.
+    @Test(arguments: [
+        ("tiny3s", Preset.tiny3s, "36", "16", "8", "8"),
+        ("mini3s", Preset.mini3s, "48", "24", "11", "12"),
+        ("64k3s", Preset.k64_3s, "90", "40", "21", "18"),
+    ])
+    func everySpherePresetIsAPlanetOfItsShape(name: String, preset: Preset, radius: String, height: String, nside: String, layers: String) throws {
+        let w = World3DLevers(preset: PresetFile(text: try Repo.preset(name)))
+        #expect(w.sphere.isSphere && w.dims == 3 && w.height == height)
+        #expect(w.sphere.radius == radius && w.sphere.nside == nside && w.sphere.layers == layers && w.sphere.ceilingBand == "0")
+        #expect(w.validate().isEmpty)
+        #expect(World3DLevers.preset(name, repo: Repo.root) == w)
+        #expect(preset.rawValue == name && Preset(rawValue: name) == preset)
+        var s = RunSettings()
+        s.mode = .new
+        s.name = "t"
+        s.seed = "1"
+        s.selectPreset(preset, world3D: w)
+        #expect(s.validate(existingRuns: []).isEmpty)
+        #expect(s.arguments(existingRuns: []) == ["run", "--preset", name, "--seed", "1", "--out", "runs/t"])
+        #expect(s.worldDims == 3)
+    }
+
     @Test(arguments: ["tiny3d", "64k3d", "mini3d", "tiny", "dev"])
     func aBoxPresetIsNotASphere(name: String) throws {
         let w = World3DLevers(preset: PresetFile(text: try Repo.preset(name)))
@@ -164,12 +187,15 @@ import Testing
     private static let tiny3s = PlanetShape(radius: 36, height: 16, nside: 8, layers: 8)
     private static let mini3s = PlanetShape(radius: 48, height: 24, nside: 11, layers: 12)
     private static let p64k3s = PlanetShape(radius: 90, height: 40, nside: 21, layers: 18)
+    /// A planet of no preset's shape: nothing is calibrated for it.
+    private static let odd = PlanetShape(radius: 60, height: 30, nside: 14, layers: 14)
 
     @Test func theLauncherPicksTheWeatherOverlayByTheSourcesGeometryAndShape() {
         #expect(PlanetSpec.weatherOverlay(forGeometry: "sphere", shape: Self.p64k3s, worldSize: 1024) == "stormsph")
         #expect(PlanetSpec.weatherOverlay(forGeometry: "sphere", shape: Self.p64k3s, worldSize: 160) == "stormsph", "the size does not matter on a planet")
         #expect(PlanetSpec.weatherOverlay(forGeometry: "sphere", shape: Self.tiny3s, worldSize: 1024) == "stormsph16")
-        #expect(PlanetSpec.weatherOverlay(forGeometry: "sphere", shape: Self.mini3s, worldSize: 1024) == nil, "mini3s has no calibrated weather yet")
+        #expect(PlanetSpec.weatherOverlay(forGeometry: "sphere", shape: Self.mini3s, worldSize: 1024) == "stormsph22")
+        #expect(PlanetSpec.weatherOverlay(forGeometry: "sphere", shape: Self.odd, worldSize: 1024) == nil, "a shape of no preset has no calibrated weather")
         #expect(PlanetSpec.weatherOverlay(forGeometry: "sphere", shape: nil, worldSize: 1024) == nil, "an unreadable shape is not guessed")
         #expect(PlanetSpec.weatherOverlay(forGeometry: "box", shape: Self.tiny3s, worldSize: 160) == "storm160")
         #expect(PlanetSpec.weatherOverlay(forGeometry: "box", shape: nil, worldSize: 320) == "storm")
@@ -186,6 +212,9 @@ import Testing
         #expect(planet.validate(existing: []).isEmpty)
         #expect(PlayLaunch.arguments(planet: planet) == ["play", "--init-from", "runs/s:100", "--overlay", "stormsph16", "--set", "director.enabled=true",
                                                          "--weather-spinup", "20000", "--houses", "auto", "--out", "runs/p", "--rate", "1"])
+        planet.sourceShape = Self.mini3s
+        #expect(planet.validate(existing: []).isEmpty)
+        #expect(PlayLaunch.arguments(planet: planet).starts(with: ["play", "--init-from", "runs/s:100", "--overlay", "stormsph22"]))
         planet.sourceGeometry = nil
         planet.sourceShape = nil
         planet.sourceWorldSize = 320
@@ -196,16 +225,17 @@ import Testing
     }
 
     @Test func aPlanetOfAShapeWithoutACalibratedWeatherHasAnObstacleNotAFailingOverlay() {
-        let caption = PlanetSpec.weatherObstacle(dims: 3, geometry: "sphere", shape: Self.mini3s)
+        let caption = PlanetSpec.weatherObstacle(dims: 3, geometry: "sphere", shape: Self.odd)
         #expect(caption?.hasPrefix("No weather is calibrated yet for this planet size") == true)
         #expect(PlanetSpec.weatherObstacle(dims: 3, geometry: "sphere", shape: nil) == caption, "an unreadable shape is refused too")
         #expect(PlanetSpec.weatherObstacle(dims: 3, geometry: "sphere", shape: Self.tiny3s) == nil)
+        #expect(PlanetSpec.weatherObstacle(dims: 3, geometry: "sphere", shape: Self.mini3s) == nil)
         #expect(PlanetSpec.weatherObstacle(dims: 3, geometry: "sphere", shape: Self.p64k3s) == nil)
-        #expect(PlanetSpec.weatherObstacle(dims: 3, geometry: "sphere", shape: Self.mini3s, weatherOn: true) == nil, "a source whose weather is on needs no overlay")
+        #expect(PlanetSpec.weatherObstacle(dims: 3, geometry: "sphere", shape: Self.odd, weatherOn: true) == nil, "a source whose weather is on needs no overlay")
         #expect(PlanetSpec.weatherObstacle(dims: 3, geometry: "box", shape: nil) == nil)
         #expect(PlanetSpec.weatherObstacle(dims: 2, geometry: "box") == PlanetSpec.weatherObstacle(dims: 2), "the 2D obstacle is unchanged")
         // forcing the weather on is refused before launch, as the 2D case is, and no weather flag is built without an overlay
-        var planet = PlanetSpec(source: "s", name: "p", sourceDims: 3, sourceGeometry: "sphere", sourceShape: Self.mini3s)
+        var planet = PlanetSpec(source: "s", name: "p", sourceDims: 3, sourceGeometry: "sphere", sourceShape: Self.odd)
         planet.weatherSpinup = 20_000
         #expect(planet.validate(existing: []) == [caption!])
         let args = PlayLaunch.arguments(planet: planet)

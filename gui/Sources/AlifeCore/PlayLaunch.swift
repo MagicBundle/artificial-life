@@ -103,11 +103,12 @@ package struct PlanetSpec: Equatable, Sendable {
     package static func overlay(forWorldSize size: Double?) -> String { size == miniWorldSize ? "storm160" : "storm" }
 
     /// The weather overlay of each planet shape that has one, `(shape, overlay)`. PROVISIONAL, as the overlays are (S4c calibrates them):
-    /// `stormsph` is made for the `64k3s` planet (radius 90, height 40, field Nside 21, 18 layers), `stormsph16` for `tiny3s` (36, 16, 8, 8).
-    /// `mini3s` (48, 24, 11, 12) has none yet. `tests/test_gui_sync.py` checks the shapes against the engine's presets.
+    /// `stormsph` is made for the `64k3s` planet (radius 90, height 40, field Nside 21, 18 layers), `stormsph16` for `tiny3s` (36, 16, 8, 8)
+    /// and `stormsph22` for `mini3s` (48, 24, 11, 12). `tests/test_gui_sync.py` checks the shapes against the engine's presets.
     package static let weatherOverlays: [(shape: PlanetShape, overlay: String)] = [
         (PlanetShape(radius: 90, height: 40, nside: 21, layers: 18), "stormsph"),
         (PlanetShape(radius: 36, height: 16, nside: 8, layers: 8), "stormsph16"),
+        (PlanetShape(radius: 48, height: 24, nside: 11, layers: 12), "stormsph22"),
     ]
 
     /// The weather overlay of a planet of this shape; nil when none is calibrated for it (or the shape is unknown).
@@ -130,14 +131,14 @@ package struct PlanetSpec: Equatable, Sendable {
     package static func weatherObstacle(dims: Int?, geometry: String? = nil, shape: PlanetShape? = nil, weatherOn: Bool = false) -> String? {
         if dims == 2 { return "The weather runs only in a 3D world: this source is 2D. Turn the weather off, or choose a 3D source." }
         if geometry == "sphere", !weatherOn, overlay(forShape: shape) == nil {
-            return "No weather is calibrated yet for this planet size. It is calibrated for the 64k3s (radius 90) and tiny3s (radius 36) planets."
+            return "No weather is calibrated yet for this planet size. It is calibrated for the 64k3s (radius 90), mini3s (radius 48) and tiny3s (radius 36) planets."
         }
         return nil
     }
 
     /// The spin-up of a planet. The engine has no sphere-specific value (the storm calibration, S4c, is open: the S4b tests spin up 40 000 steps for
     /// stability, the rest state needs only N >= 1), so this is the box's 320 world's, keyed on the geometry so that S4c changes one constant and
-    /// the size of a sphere (`world.size` is only its image length there) never picks the mini world's. It is valid for both calibrated planets
+    /// the size of a sphere (`world.size` is only its image length there) never picks the mini world's. It is valid for the three calibrated planets
     /// (the weather time of a step is at most 1, so 20 000 steps are at most 20 000 units of it; the spin-up of a tiny3s planet takes seconds).
     package static let sphereSpinup = 20_000
 
