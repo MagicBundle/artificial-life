@@ -314,3 +314,150 @@ def sample_fields(
     cg = mx.transpose(cg, (1, 0, 2))  # (N, NCH, 3)
     chem_grad = mx.tanh(ops.to_body_s(cg, hdg[:, None], up[:, None], cos_p[:, None], sin_p[:, None]) / half)
     return FieldObs(res=res, res_grad=res_grad, chem=cv / (cv + half), chem_grad=chem_grad)
+
+
+# --- the built material (DESIGN §38 on the shell, §46.5; sphere series S3) -------------------------------
+
+_BIG: int = 1 << 30  # the "missing neighbour" value of a min pass (never the minimum)
+_TOUCH_K = 1.0e-9  # the guard of a product that is exact in decimal (0.25 · 8), as ``fields.mat_k``
+
+
+class MatTables(NamedTuple):
+    """Device and host tables of the material layers of one shell and one aperture.
+
+    The neighbourhood of a cell ``(k, p)`` is the 3 layers ``k-1..k+1`` (those that exist) times the pixel
+    ``p`` and its touching pixels (8, or 7 at the 24 seven-neighbour pixels): 26 cells, 23 at a
+    seven-neighbour pixel, 17 (15) on the floor and lid layers. ``kmap`` is the aperture rule's required open
+    neighbours per cell, ``ceil(aperture · n_nbr)``; ``phase`` the closing phase
+    ``colour[p] + n_colours·(k mod 3)`` (cells of one phase are pairwise at least three steps apart, so no two
+    of them share a neighbour)."""
+
+    touch: mx.array  # (Npix, 8) int32: the touching pixels, a padded entry points at the pixel itself
+    ok: mx.array  # (Npix, 8) bool: the entry is a real neighbour
+    edge: mx.array  # (Npix, 4) int32: the edge neighbours (the 'face' neighbours of the layer)
+    kmap: mx.array | None  # (FZ, Npix) int32 required open neighbours; None with aperture 0
+    phase: mx.array | None  # (FZ, Npix) int32; None with aperture 0
+    n_phase: int  # min(FZ, 3) · n_colours; 0 with aperture 0
+    k_max: int  # the largest entry of kmap (0 with aperture 0)
+    n_nbr: np.ndarray  # (FZ, Npix) int32 host: the neighbour count of every cell
+
+
+def n_neighbours(nside: int, layers: int) -> np.ndarray:
+    """(FZ, Npix) int32: the number of neighbours of each cell (centre excluded), host."""
+    tb = geom.tables(nside)
+    nl = 1 + (np.arange(layers) > 0).astype(np.int64) + (np.arange(layers) < layers - 1).astype(np.int64)
+    return (nl[:, None] * (1 + tb.n_touch[None, :].astype(np.int64)) - 1).astype(np.int32)
+
+
+def aperture_k(aperture: float, n_nbr: np.ndarray) -> np.ndarray:
+    """The required open neighbours ``ceil(aperture · n_nbr)`` of every cell (0 for aperture 0), int32."""
+    if aperture <= 0:
+        return np.zeros(n_nbr.shape, np.int32)
+    return np.ceil(aperture * n_nbr - _TOUCH_K).astype(np.int32)
+
+
+@functools.cache
+def mat_tables(nside: int, layers: int, aperture: float) -> MatTables:
+    """The material tables of a shell (host-built once per ``(nside, layers, aperture)``)."""
+    tb = geom.tables(nside)
+    ok = tb.touch >= 0
+    touch = np.where(ok, tb.touch, np.arange(tb.npix)[:, None]).astype(np.int32)
+    n_nbr = n_neighbours(nside, layers)
+    kmap = phase = None
+    n_phase = k_max = 0
+    if aperture > 0:
+        kk = aperture_k(aperture, n_nbr)
+        colour, n_col = geom.min_colouring(nside)
+        phase_np = colour[None, :].astype(np.int64) + n_col * (np.arange(layers)[:, None] % 3)
+        kmap, phase = mx.array(kk, dtype=_I32), mx.array(phase_np, dtype=_I32)
+        n_phase, k_max = min(layers, 3) * n_col, math.ceil(aperture * (26 if layers > 2 else 17) - _TOUCH_K)
+    return MatTables(
+        touch=mx.array(touch, dtype=_I32),
+        ok=mx.array(ok),
+        edge=mx.array(tb.edge, dtype=_I32),
+        kmap=kmap,
+        phase=phase,
+        n_phase=n_phase,
+        k_max=k_max,
+        n_nbr=n_nbr,
+    )
+
+
+def mat_tabs(cfg: Config) -> MatTables:
+    return mat_tables(cfg.world.nside, cfg.world.layers, cfg.structures.aperture)
+
+
+def _ang_sum(a: mx.array, t: MatTables) -> mx.array:
+    """``a`` plus its touching pixels in the same layer, (FZ, Npix) int32 (missing neighbours count 0)."""
+    return a + mx.where(t.ok, mx.take(a, t.touch, axis=1), 0).sum(axis=2)
+
+
+def box_sum(a: mx.array, t: MatTables) -> mx.array:
+    """Sum over the neighbourhood of every cell including the centre (a missing layer counts 0), int32."""
+    s = _ang_sum(a, t)
+    zero = mx.zeros_like(s[:1])
+    return s + mx.concatenate([zero, s[:-1]], axis=0) + mx.concatenate([s[1:], zero], axis=0)
+
+
+def box_min(a: mx.array, t: MatTables) -> mx.array:
+    """Minimum over the neighbourhood of every cell including the centre (a missing layer counts ``_BIG``)."""
+    m = mx.minimum(a, mx.where(t.ok, mx.take(a, t.touch, axis=1), _BIG).min(axis=2))
+    big = mx.full(m[:1].shape, _BIG, dtype=m.dtype)
+    below, above = mx.concatenate([big, m[:-1]], axis=0), mx.concatenate([m[1:], big], axis=0)
+    return mx.minimum(m, mx.minimum(below, above))
+
+
+def mat_nopen(m: mx.array, thr: int, t: MatTables) -> mx.array:
+    """The OPEN cells (``m < thr``) among the neighbours of every cell, (FZ, Npix) int32."""
+    op = (m < thr).astype(_I32)
+    return box_sum(op, t) - op
+
+
+def mat_table(m: mx.array, cols: tuple[str, ...], cfg: Config) -> mx.array:
+    """The sphere's ``fields.mat_table``: ``(n_cells, C)`` f32 with the columns ``cols``. ``cover`` takes the
+    maximum over the 6 face neighbours (4 edge neighbours and the layers above and below, the layer itself at
+    the floor and the lid); ``grad`` is the world-frame vector ``∇(m/cap)·field_cell`` (3 columns) of the
+    tangent least-squares sum and the radial central difference (``_gradient``) at the cell's centre
+    direction, in the box's 'per cell' units, so ``physics.barrier_drag``'s confidence constant keeps its
+    meaning."""
+    sc = cfg.structures
+    nside, layers = cfg.world.nside, cfg.world.layers
+    inv = 1.0 / sc.cap
+    out = [m.astype(_F32).reshape(-1) * inv]
+    if "cover" in cols:
+        t = mat_tabs(cfg)
+        nmax = mx.take(m, t.edge, axis=1).max(axis=2)
+        nmax = mx.maximum(nmax, mx.concatenate([m[1:], m[-1:]], axis=0))
+        nmax = mx.maximum(nmax, mx.concatenate([m[:1], m[:-1]], axis=0))
+        out.append(mx.maximum(m.astype(_F32).reshape(-1), sc.reach * nmax.astype(_F32).reshape(-1)) * inv)
+    table = mx.stack(out, axis=1)
+    if "grad" in cols:
+        npix = geom.npix(nside)
+        cells = mx.arange(layers * npix, dtype=_I32)
+        up = cell_centres(nside)[cells % npix]
+        g = _gradient(m.astype(_F32).reshape(-1), cells, grad_tables(cfg), layers, npix, up)
+        table = mx.concatenate([table, g * (cfg.world.field_cell * inv)], axis=1)
+    return table
+
+
+def update_mat(
+    m: mx.array, dep: mx.array, step: mx.array, cfg: Config
+) -> tuple[mx.array, mx.array, mx.array, mx.array]:
+    """The sphere's ``fields.update_mat``: ``(mat', wasted, decayed, nopen)``, the same integer rule on the
+    neighbourhood tables: with ``aperture > 0`` a cell that would turn from OPEN to CLOSED may do so only in
+    its closing phase and when every cell of its neighbourhood has more than its required open neighbours
+    (``box_min(nopen − kmap) >= 1``); otherwise it stays at ``thr − 1``."""
+    sc = cfg.structures
+    thr = math.ceil(sc.open_frac * sc.cap)
+    t = mat_tabs(cfg)
+    nopen = mat_nopen(m, thr, t)
+    pre = m + dep
+    m1 = mx.minimum(pre, sc.cap)
+    if t.kmap is not None:  # static: R2 (§38.4b)
+        assert t.phase is not None
+        slack = box_min(nopen - t.kmap, t) >= 1
+        active = t.phase == (step % t.n_phase)
+        want_close = (m < thr) & (m1 >= thr)
+        m1 = mx.where(want_close & ~(active & slack), thr - 1, m1)
+    loss = (m1 * sc.decay_q12 + 4095) >> 12
+    return m1 - loss, (pre - m1).sum(), loss.sum(), nopen

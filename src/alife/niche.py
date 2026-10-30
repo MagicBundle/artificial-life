@@ -28,7 +28,7 @@ from typing import Any, Final, NamedTuple
 import mlx.core as mx
 import numpy as np
 
-from alife import fields, ops, rng
+from alife import fields, ops, rng, sphere
 from alife.config import Config, dims
 
 SALT: Final = rng.HASH_SALTS["niche"]  # the put dither: hash32(uid, step, SALT)
@@ -144,15 +144,15 @@ def update(
 ) -> tuple[mx.array, mx.array, mx.array, Flows]:
     """S17: regrow the resource with the bonus of the START-of-step soil, then deposit, cap and decay the
     soil. Returns ``(resource', inc, soil', Flows)``; ``inc`` is what ``INJECT_REGEN`` books."""
-    d = dims(cfg)
     n = cfg.niche
     resource2, inc, inc0 = fields.update_resource_farm(
         resource, patch_pos, bonus_of(soil, cfg), cfg, step, env, rain
     )
-    dep = ops.scatter_add_i32(d.n_cells, fcell, dec.units).reshape(d.field_shape)
+    geo = sphere.geometry(cfg)
+    dep = geo.deposit(fcell, dec.units)
     f1 = mx.minimum(soil + dep, n.farm_cap)
     put = (f1 - soil).sum()
-    cells = mx.arange(d.n_cells, dtype=_I32).reshape(d.field_shape)
+    cells = geo.cell_ids()
     lost = ops.dithered_decay(f1, n.farm_decay_q16, cells, step, DECAY_SALT)
     soil2 = f1 - lost
     return (

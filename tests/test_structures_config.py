@@ -9,7 +9,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from alife import config, ext, fields, layout, structures
+from alife import config, ext, fields, geom, layout, structures
 from alife.config import (
     Config,
     ConfigError,
@@ -202,11 +202,11 @@ def test_silent_build_zeroes_the_build_column_of_founders_only() -> None:
 def test_the_build_overlay_validates_against_the_presets_that_can_be_coloured() -> None:
     assert "build" in config.WORLD_OVERLAYS and "build" not in config.OVERLAYS
     for preset in config.PRESETS:
-        if preset == "tiny3s":  # structures are PR S3 on a sphere (config.SPHERE_READY)
-            with pytest.raises(ConfigError, match="structures is not available on a sphere yet"):
-                load_config(preset=preset, overlays=["build"])
-            continue
         cfg = load_config(preset=preset, overlays=["build"])
+        if preset == "tiny3s":  # a shell has no lattice side: its closing cycle is 3·n_colours phases
+            n_phase = 3 * geom.min_colouring(cfg.world.nside)[1]
+            assert cfg.structures.enabled and int(fields.mat_colour(cfg).max().item()) + 1 == n_phase
+            continue
         assert cfg.structures.enabled and fields.mat_phases(dims(cfg).fg, dims(cfg).nd)[0] >= 3
     # an overlay on a world whose lattice is prime is refused with the reason
     with pytest.raises(ConfigError, match="colouring"):
