@@ -395,11 +395,12 @@ def _ci(x: Mapping[str, Any], nd: int = 4) -> str:
 def to_markdown(res: dict[str, Any]) -> str:
     """The report: verdict, clauses with their numbers, contrasts per seed, fitness readouts."""
     d, seeds, cl = res["decision"], res["seeds"], res["decision"]["clauses"]
-    status = (
-        "Confirmatory"
-        if res["confirmatory"]
-        else "EXPLORATORY (the pre-registration is missing or not frozen)"
-    )
+    if res["confirmatory"]:
+        status = "Confirmatory"
+    elif not res["as_designed"]:
+        status = "EXPLORATORY (a fork or a log does not match the pre-registered length or window)"
+    else:
+        status = "EXPLORATORY (the pre-registration is missing or not frozen)"
     lines = [
         "# Voice meaning test",
         "",
