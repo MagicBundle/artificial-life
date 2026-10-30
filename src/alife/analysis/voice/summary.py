@@ -443,9 +443,10 @@ def to_markdown(s: dict[str, Any]) -> str:
 
 
 def compare_windows(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
-    """Dialect drift between two windows of one world (summaries from ``build``): the population call-type
-    distributions, the mean call of the lineages in both, and the stability of the code (the correlation of
-    the call-type to context enrichment table)."""
+    """Dialect drift between two windows of one world (summaries from ``build``): the Jensen-Shannon distance
+    of the population's call-type distributions, the shift of its mean call, and the stability of the code (the
+    correlation of the call-type to context enrichment tables). The kin groups are re-clustered at the start
+    of each window, so their labels do not name the same lines of descent in two windows: not compared."""
     sa, sb = a["population"]["symbols"], b["population"]["symbols"]
     names = list(sa)
     pa, pb = np.array([sa[n] for n in names]), np.array([sb[n] for n in names])
@@ -457,15 +458,10 @@ def compare_windows(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
                 xs.append(x)
                 ys.append(y)
     r = float(np.corrcoef(xs, ys)[0, 1]) if len(xs) > 2 and np.std(xs) > 0 and np.std(ys) > 0 else None
-    la = {ln["lineage"]: ln for ln in a["lineages"]}
-    shared = []
-    for ln in b["lineages"]:
-        if ln["lineage"] in la:
-            va, vb = np.array(la[ln["lineage"]]["mean_voice"], float), np.array(ln["mean_voice"], float)
-            shared.append({"lineage": ln["lineage"], "mean_voice_shift": _f(np.linalg.norm(va - vb))})
+    va, vb = np.array(a["population"]["mean_voice"], float), np.array(b["population"]["mean_voice"], float)
     return {
         "windows": [a["window"], b["window"]],
         "population_js": _f(ms.jensen_shannon(pa, pb)),
+        "population_mean_voice_shift": _f(np.linalg.norm(va - vb)),
         "code_table_correlation": r,
-        "shared_lineages": shared,
     }
