@@ -105,6 +105,16 @@ class ArmRun:
         self.window = tuple(self.tab.meta["window"])
         self.fit = load_fitness(run, rules)
         self.prep: analyse.Prepared | None = None
+        meta = json.loads((self.run / "meta.json").read_text(encoding="utf-8"))
+        self.fork_start = int(meta["start_step"])
+
+    def as_designed(self, rules: Rules) -> bool:
+        """The fork ran the pre-registered length and its log covers the pre-registered window."""
+        lo, hi = rules.table_window
+        return bool(
+            int(self.fit["last_step"][0]) == rules.fork_steps
+            and tuple(self.window) == (self.fork_start + lo, self.fork_start + hi)
+        )
 
 
 def _pass(best: Mapping[str, Any] | None, thr: Mapping[str, float]) -> dict[str, Any]:
@@ -222,7 +232,12 @@ def decide(res: dict[str, Any], rules: Rules) -> dict[str, Any]:
         detail = "no information clause passes"
         if clauses["fitness"]["passed"]:
             detail += " (hearing is worth something in fitness, but no measured call information explains it)"
-    return {"verdict": verdict, "detail": detail, "clauses": clauses, "confirmatory": rules.confirmatory}
+    return {
+        "verdict": verdict,
+        "detail": detail,
+        "clauses": clauses,
+        "confirmatory": bool(rules.confirmatory and res["as_designed"]),
+    }
 
 
 # --- the whole test ---------------------------------------------------------------------------------------
@@ -253,6 +268,7 @@ def run_meaning(
         "windows": sorted(windows),
         "prereg_hash": rules.hash,
         "confirmatory": rules.confirmatory,
+        "as_designed": all(a.as_designed(rules) for d in arms.values() for a in d.values()),
         "fork_steps_seen": sorted(int(x) for x in steps_rel),
         "arms": {},
     }
@@ -328,6 +344,7 @@ def run_meaning(
     # counterfactual effects, descriptive
     res["counterfactual"] = _cf_summary(arms)
     res["decision"] = decide(res, rules)
+    res["confirmatory"] = res["decision"]["confirmatory"]
     return res
 
 
@@ -363,6 +380,10 @@ def _f(v: Any, nd: int = 3) -> str:
     return "n/a" if v is None else f"{v:.{nd}f}"
 
 
+def _p(v: Any) -> str:
+    return "n/a" if v is None else "<1e-4" if v < 1e-4 else f"{v:.4f}"
+
+
 def _row(*cells: Any) -> str:
     return "| " + " | ".join(str(c) for c in cells) + " |"
 
@@ -395,7 +416,7 @@ def to_markdown(res: dict[str, Any]) -> str:
     for k in ("code", "transfer", "reception"):
         nums = "; ".join(
             f"s{s}: {c.get('pair', '-')} excess {_f(c.get('excess'), 4)} bits, z {_f(c.get('z'), 1)}, "
-            f"p {_f(c.get('p_family'), 4)}"
+            f"p {_p(c.get('p_family'))}"
             for s, c in zip(seeds, cl[k]["per_seed"], strict=True)
         )
         lines.append(_row(f"{k} (none arm)", cl[k]["passed"], nums))
@@ -406,7 +427,7 @@ def to_markdown(res: dict[str, Any]) -> str:
         call = tc[c]["call"]
         return (
             f"none-{c}: mean {_f(np.mean(means) if means else None, 4)} bits, label {call['label']}, "
-            f"p {_f(call['p'], 4)}, Holm {_f(call.get('p_holm'), 4)}"
+            f"p {_p(call['p'])}, Holm {_p(call.get('p_holm'))}"
         )
 
     lines.append(
@@ -456,7 +477,7 @@ def to_markdown(res: dict[str, Any]) -> str:
             relv = ", ".join(_f(v * 100, 2) + "%" if v is not None else "n/a" for v in x["relative_per_seed"])
             call = x["call"]
             lines.append(
-                _row(r, f"none-{c}", call["label"], _f(call["p"], 4), _f(call.get("p_holm"), 4), per, relv)
+                _row(r, f"none-{c}", call["label"], _p(call["p"]), _p(call.get("p_holm")), per, relv)
             )
     lines += ["", "Arm means per seed:", ""]
     for r, byc in res["fitness"].items():

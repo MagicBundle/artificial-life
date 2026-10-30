@@ -238,6 +238,10 @@ class FakeArm(meaning.ArmRun):
     def __init__(self, arm: str, seed: int, tab: tables.Tables, fit: dict[str, np.ndarray]):
         self.arm, self.seed, self.tab, self.fit = arm, seed, tab, fit
         self.window, self.prep, self.run = WINDOW, None, Path("x")
+        self.fork_start, self.designed = 0, True
+
+    def as_designed(self, rules: meaning.Rules) -> bool:
+        return self.designed
 
 
 def _fit(rng: np.random.Generator, level: float, due: float = 100.0) -> dict[str, np.ndarray]:
@@ -326,6 +330,15 @@ def test_the_environment_alone_is_not_a_language() -> None:
         not res["decision"]["clauses"]["transfer_contrast"]["passed"]
         and res["decision"]["verdict"] != "language"
     )
+
+
+def test_a_fork_off_the_design_makes_the_report_exploratory() -> None:
+    rules, arms = _arms("random", "random", benefit=0.0)
+    rules.confirmatory = True  # as if a frozen pre-registration were loaded
+    assert meaning.run_meaning(arms, rules, log=lambda m: None)["confirmatory"] is True
+    arms["deaf"][2].designed = False  # a fork of the wrong length or a log of the wrong window
+    res = meaning.run_meaning(arms, rules, log=lambda m: None)
+    assert res["confirmatory"] is False and "pre-registered length or window" in meaning.to_markdown(res)
 
 
 def test_the_arms_must_be_complete() -> None:
