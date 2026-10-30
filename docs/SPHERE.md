@@ -27,6 +27,8 @@
 
 > **S5 (2026-10-30).** Built section 5 (observers, stream v2, dumps, metrics, groups/tracking/society, `game.observe`, labels, the game layer, alerts, tracers, the storm tracker and layer, the director) and the S5 row of section 10; see DESIGN §46.7. Deviations: the planet radius of the header is `planet_radius` (the existing `radius` is the agents' body radius); `MAPH` pools every plane to the field Nside `Nc`, with the winds as east/north components; `STRC`/`FSOL` need Nside <= 73; `grid_clusters` over the coarse graph is `geom.label_components` (the tag-space clustering never touched the planet); the territory is 972 cells and the footprint 12 288; levers use (lon, lat) degrees; the World Report's facts carry the planet-frame `z` (S5 review L8); the `wx` dump has 12 planes.
 
+> **S7a (2026-10-30).** Built section 7.3 (the presets `mini3s` and `64k3s`, calibrated; `stormsph22`), the preset part of the S7 row of section 10 and the measurements of section 8; see DESIGN §46.9, §46.10. Deviations: `n_max`/`n_init` are 20 480 / 4 096 (`mini3s`; the table's 8 192 / 2 048 is below the 11 800 of its own alive range) and 65 536 / 16 384 (`64k3s`; 49 152 is below the boom of 50 300); `regen_max` is 2 400 and 1 340 (the box's 1 700 gives 6 500 and a boom of 56 900); `G_z` 7 and minimum `C` 30 for `mini3s` (S2 review); the measured dry levels are 9 800 and 41 500 alive from step 30 000 (`tiny3s`: 270); `mini3s` keeps 3 patches (four made the population stick at the row cap); the pools of `stormsph22` are 24 × 16, three per hemisphere (S4a: "Nw 22 needs 3 narrower pools"); `stormsph` is validated on the `64k3s` preset; the step cost is proportional to `n_max`, not to the alive count; the 64k performance estimate of section 8 (19.5 ms, 51 steps/s) was 21.1 ms (47 steps/s) with the weather and the five features on, 15.6 ms dry (the estimate had no feature cost). Two false positives of the host invariants at 65 536 agents were fixed (no trajectory change). Not done: `RESULTS_SPHERE.md` and the 500 000-step `mini3s` run (S7b).
+
 Status: proposal for owner review, 2026-10-29; **Revision 1** (same day) applies the independent review `review.md` (changelog at the end). Planned identifiers: DESIGN §46, Review-log row I77 (I76 is taken by a GUI fix).
 Owner request (2026-10-29): "a true sphere and not a wrapped sheet". This document is a specification only: no engine code
 was written or changed. Read-only inputs: main at 7ab28cf (DESIGN §27, §30, §32, §37 to §43, §45, F20; `src/alife/*`; the
@@ -710,6 +712,8 @@ In a box world `world.radius`, `nside`, `layers`, `ceiling_band` are rejected ("
 | `n_max`, `n_init` | 1 024, 256 | 8 192, 2 048 | 49 152, 12 288 |
 | alive expected | ~2 000 to 6 700 | ~5 600 to 11 800 | ~31 000 to 41 600 |
 | `n_patches`, `patch_sigma` | 4, 12 | 3, 18 | 8, 24 |
+
+**S7a calibrated values** (measured; the table above is the pre-calibration design): `n_max`, `n_init` 20 480, 4 096 (`mini3s`) and 65 536, 16 384 (`64k3s`); `regen_max` 2 400 and 1 340; `C` 32; patches as the table; alive 9 800 and 41 500 (DESIGN §46.9).
 
 "Alive expected" is the range between the volume density of mini3d/64k3d and the floor-area density (0.409/unit²); `regen_max`
 is recalibrated in S7 from a short run, as `64k3d` was. The gravity, buoyancy, energy costs and mutation keys are the 3D presets'.
