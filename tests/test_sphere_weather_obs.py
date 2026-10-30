@@ -233,3 +233,36 @@ def test_a_played_weather_world_sends_maph_and_strm_the_decoder_accepts(tmp_path
     assert maph.f["nside"] == dims(cfg).nside and maph.f["k"] == 1
     envs = next(r for r in dec.records if r.tag == "ENVS").f["json"]
     assert len(envs["pools"]) == 6 and all({"x", "y", "z", "lon", "lat"} <= set(p) for p in envs["pools"])
+
+
+def test_the_pools_of_envs_are_where_the_warm_pool_map_has_them_at_a_later_step(cfg) -> None:
+    """Review L5: ``play.sphere_pools`` at ``t > 0`` is the centre of ``weather_sph.warm_pools`` (the drift in
+    longitude is ``vx·t/(R cos lat)``): the argmax cell of the map is within one cell of the stated place."""
+
+    one = weather_cfg(
+        "tiny3s",
+        f"weather.pools={RADIUS * math.radians(60):.6f},{RADIUS * math.radians(40):.6f},10,6,1,-0.009,0",
+    )
+    wp = weather_sph.params_from_config(one)
+    x = np.array(weather_sph.dev_for(wp, RADIUS).x, dtype=np.float64)
+    cell = math.sqrt(4 * math.pi * RADIUS**2 / (12 * NW * NW))
+    for t in (0, 5000):
+        [pool] = play.sphere_pools(wp.pools, RADIUS, t)
+        ts = np.array(
+            weather_sph.warm_pools(wp, RADIUS, mx.array(x, dtype=mx.float32), mx.array(t, dtype=mx.int32))
+        )
+        peak = x[int(np.argmax(ts))]
+        centre = np.array([pool["x"], pool["y"], pool["z"]]) / RADIUS
+        arc = RADIUS * math.acos(min(1.0, float(peak @ centre)))
+        assert arc < 1.2 * cell, (t, arc, cell)
+        assert math.isclose(math.hypot(pool["x"], pool["y"], pool["z"]), RADIUS, rel_tol=1e-3)
+    lon0 = play.sphere_pools(wp.pools, RADIUS, 0)[0]["lon"]
+    lon1 = play.sphere_pools(wp.pools, RADIUS, 5000)[0]["lon"]
+    assert (
+        abs(
+            ((lon1 - lon0 + 180) % 360)
+            - 180
+            - math.degrees(-0.009 * 5000 / (RADIUS * math.cos(math.radians(40))))
+        )
+        < 0.1
+    )

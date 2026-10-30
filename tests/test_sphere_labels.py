@@ -77,7 +77,7 @@ def test_a_small_circle_develops_into_an_arc_of_curvature_cot_colatitude() -> No
 
 def test_the_height_component_is_the_summed_height_change_and_zk_is_the_height() -> None:
     radius = 50.0
-    th = np.linspace(0.0, math.pi, 301)
+    th = np.linspace(0.0, math.pi / 2, 301)  # the height ends at another value than it starts (review L6)
     h = 1.0 + 8.0 * np.sin(th)
     path = np.stack([np.cos(th), np.sin(th), 0 * th], axis=1) * (radius + h)[:, None]
     tr = _walk(path, radius)

@@ -1023,7 +1023,11 @@ class PlayPacer:
             config_hash=config_hash(cfg),
             source=self.opt.source,
             color_modes=self._modes,
-            sphere=stream_mod.sphere_block(cfg) if d.sph else None,
+            sphere=(
+                stream_mod.sphere_block(cfg, obs.social.terr_cells if obs is not None else None)
+                if d.sph
+                else None
+            ),
         )
         powers = self.desk.header()
         play = streamrec.header_play(
@@ -1636,7 +1640,7 @@ class PlayPacer:
             self._window.popleft()
         if len(self._window) < 2:
             return 0.0
-        (t0, n0), (t1, n1) = self._window[0], self._window[len(self._window) - 1]
+        (t0, n0), (t1, n1) = self._window[0], self._window[-1]
         span = max(t1 - t0, 1e-9)
         # the window ends now, not at the last step: a pause lets the rate decay
         return (n1 - n0) / max(span, min(now - t0, ACHIEVED_S))

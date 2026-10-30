@@ -204,6 +204,16 @@ def span(cfg: Config) -> float:
     return 2.0 * math.pi * g.radius if g.name == "sphere" else g.size
 
 
+def area_width(cfg: Config) -> float:
+    """The width of the square whose area is the planet's, ``sqrt(4π)·Rp``: the unit of the catastrophe's
+    radius on a sphere (``radius_bounds``, the rule tier). A box column of radius ``f·L`` covers ``π f²`` of
+    the floor whatever ``L``; a cap of arc radius ``f·sqrt(4π)·Rp`` covers ``(1 − cos(f·sqrt(4π)))/2``, which
+    is ``π f²`` to the second order, so the menu's largest strike (``f = 200/1024``) is 11.5 % of the planet
+    against the box's 12.0 % at any size (the equator ``2π·Rp`` would give 33 %)."""
+    g = geom.geometry(cfg)
+    return math.sqrt(4.0 * math.pi) * g.radius if g.name == "sphere" else g.size
+
+
 def is_sphere(cfg: Config) -> bool:
     return cfg.world.geometry == "sphere"
 
@@ -265,8 +275,8 @@ def radius_bounds(cfg: Config, specs: Mapping[str, Spec] | None = None) -> tuple
     2D disc of a 1024-wide world, rather than most of a small 3D world. A table that lists a ``radius`` bound
     for ``catastrophe`` (the player's) gives the range, in the same 1024-world units, scaled the same way."""
     ref = (specs if specs is not None else MENU)["catastrophe"].bounds.get("radius", CATASTROPHE_RADIUS)
-    if is_sphere(cfg):  # the equator stands for the width: the same share of the planet as the 3D box column
-        width = span(cfg)
+    if is_sphere(cfg):  # the area-equivalent width: the largest cap is the box column's 12 % of the surface
+        width = area_width(cfg)
         k = width / CATASTROPHE_REF_SIZE
         return ref[0] * k, min(ref[1] * k, width / 2)
     if is_3d(cfg):

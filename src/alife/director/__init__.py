@@ -625,6 +625,7 @@ class Director:
             pacing.fold([*self.entries, *new], t, "rule"),
             actions.env_view(work),
             actions.is_sphere(self.cfg),
+            actions.area_width(self.cfg),
         )
 
     def _decide(self, state: State, t: int) -> State:

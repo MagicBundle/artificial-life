@@ -1452,7 +1452,7 @@ class RunDir:
         ckpts = self.checkpoints()
         if not ckpts:
             return None
-        newest_step, newest = ckpts[len(ckpts) - 1]
+        newest_step, newest = ckpts[-1]
         latest_step = -1
         latest = self.checkpoint_dir / LATEST_FILE
         if latest.is_file():
@@ -1486,7 +1486,7 @@ class RunDir:
             if _CKPT_RE.match(name) and (self.checkpoint_dir / name).is_file():
                 return self.checkpoint_dir / name
         ckpts = self.checkpoints()
-        return ckpts[len(ckpts) - 1][1] if ckpts else None
+        return ckpts[-1][1] if ckpts else None
 
     def checkpoint_at(self, step: int) -> Path:
         """The checkpoint of ``step``; ``FileNotFoundError`` if there is none."""

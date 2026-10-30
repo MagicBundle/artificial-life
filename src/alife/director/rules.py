@@ -215,6 +215,7 @@ class Context(NamedTuple):
     pacing: Pacing
     env: EnvView
     sphere: bool = False  # a place is (longitude, latitude) in degrees, drawn uniform by area (DESIGN §46.7)
+    area_width: float = 0.0  # a sphere's unit of the catastrophe radius, ``actions.area_width`` (else unused)
 
 
 class Proposal(NamedTuple):
@@ -355,7 +356,9 @@ def _request(
         if ctx.sphere:  # uniform by area: the longitude, and the latitude from the sine
             lon_u, sin_lat = (float(c) for c in rng.uniform(-1.0, 1.0, 2))
             x, y = 180.0 * lon_u, math.degrees(math.asin(sin_lat))
-            radius = _lerp(u(), p.cat_radius_frac) * size / 2  # half the equator stands for the width
+            radius = (
+                _lerp(u(), p.cat_radius_frac) * ctx.area_width
+            )  # a disc of the box's share of the surface
         else:
             x, y = (float(c) for c in rng.uniform(0.0, size, 2))
             radius = _lerp(u(), p.cat_radius_frac) * size

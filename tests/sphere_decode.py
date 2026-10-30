@@ -1,5 +1,5 @@
 """A reference decoder of the protocol 2 (sphere world) play stream, written from the format text
-"stream protocol v2, the sphere world" (DESIGN §46.7, stream part), not from the writer.
+"stream protocol v2, the sphere world" (docs/STREAM_V2.md, DESIGN §46.7), not from the writer.
 
 It does not import ``alife``: every constant and offset of the v2 differences is spelled out here. The records
 that protocol 2 leaves unchanged (INTN, CLCK, FSIG, RPRT, PLAN, and the common part of IDNT, FOCS, STRM,

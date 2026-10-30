@@ -58,12 +58,45 @@ def _arc(a_lonlat, b_lonlat, radius):
 # --- the menu's lengths -----------------------------------------------------------------------------------
 
 
-def test_the_width_of_a_sphere_is_its_equator(cfg) -> None:
-    assert actions.span(cfg) == pytest.approx(2 * math.pi * 36.0)
+def _cap_share(radius: float, planet: float) -> float:
+    """The share of the planet's surface inside a cap of arc radius ``radius``."""
+    return (1.0 - math.cos(radius / planet)) / 2.0
+
+
+def test_a_moves_length_is_a_quarter_of_the_equator_and_a_strikes_is_area_equivalent(cfg) -> None:
+    assert actions.span(cfg) == pytest.approx(2 * math.pi * 36.0)  # the equator: lengths along circles
+    assert actions.area_width(cfg) == pytest.approx(
+        math.sqrt(4 * math.pi) * 36.0
+    )  # the square of the same area
     lo, hi = actions.radius_bounds(cfg)
-    k = actions.span(cfg) / actions.CATASTROPHE_REF_SIZE
-    assert lo == pytest.approx(20.0 * k) and hi == pytest.approx(min(200.0 * k, actions.span(cfg) / 2))
+    k = actions.area_width(cfg) / actions.CATASTROPHE_REF_SIZE
+    assert lo == pytest.approx(20.0 * k) and hi == pytest.approx(200.0 * k)
     assert hi <= math.pi * cfg.world.radius  # the cap never exceeds the planet (invariants.env range)
+
+
+@pytest.mark.parametrize("radius", [36.0, 48.0, 90.0], ids=["tiny3s", "mini3s", "64k3s"])
+def test_the_largest_strike_on_a_sphere_is_the_boxs_share_of_the_surface(cfg, radius: float) -> None:
+    """Review M2 (decision C30): the largest catastrophe covers the 3D box column's 12 % of the surface at any
+    size (a cap of 33 % of the planet when the equator stood for the width). The research menu, the player's
+    table, the rule tier's draws and the random persona's all go through the bounds."""
+    import dataclasses
+
+    sph = dataclasses.replace(cfg, world=dataclasses.replace(cfg.world, radius=radius))
+    box = load_config(preset="tiny3d")
+    b_lo, b_hi = actions.radius_bounds(box)
+    box_share = math.pi * (b_hi / box.world.size) ** 2
+    assert box_share == pytest.approx(0.1198, abs=2e-4)
+    lo, hi = actions.radius_bounds(sph)
+    assert _cap_share(hi, radius) == pytest.approx(0.1151, abs=2e-4)
+    assert abs(_cap_share(hi, radius) - box_share) < 0.006
+    assert _cap_share(lo, radius) == pytest.approx(math.pi * (b_lo / box.world.size) ** 2, rel=0.03)
+    # the player's table (radius 20..80 in the same 1024-wide units) scales the same way
+    _glo, ghi = actions.radius_bounds(sph, actions.GAME_SPECS)
+    assert _cap_share(ghi, radius) == pytest.approx(math.pi * (80.0 / 1024.0) ** 2, rel=0.03)
+    # a request is clamped into the bounds: a huge rule-tier radius is the largest cap
+    s = init_state(sph)
+    big = clamp("catastrophe", {"x": 0.0, "y": 0.0, "radius": 1e6, "kill_p": 0.5}, None, env_view(s), sph)
+    assert _cap_share(big.params["radius"], radius) == pytest.approx(_cap_share(hi, radius), rel=1e-5)
 
 
 # --- a patch move -----------------------------------------------------------------------------------------
@@ -126,12 +159,12 @@ def test_the_engine_kills_the_cap_the_host_counts(cfg, s0) -> None:
     """`apply` writes the centre in radians; `lifecycle.catastrophe_mask` (the engine) and
     `powers.column_count` (the host) agree on who is inside, at the poles and the date line."""
     lon, lat = 123.0, 61.0
-    e = _entry(cfg, s0, "catastrophe", {"x": lon, "y": lat, "radius": 30.0, "kill_p": 0.9})
+    e = _entry(cfg, s0, "catastrophe", {"x": lon, "y": lat, "radius": 20.0, "kill_p": 0.9})
     validate_entry(e, cfg, 100)
     s1 = apply(s0, e, cfg)
     np.testing.assert_allclose(to_numpy(s1.env_cat_center), np.radians([lon, lat]), atol=1e-6)
     pos, alive = to_numpy(s1.pos), to_numpy(s1.alive)
-    inside = powers.column_count(pos, alive, [lon, lat], 30.0, cfg.world.size, planet=cfg.world.radius)
+    inside = powers.column_count(pos, alive, [lon, lat], 20.0, cfg.world.size, planet=cfg.world.radius)
     # the engine's mask with kill_p forced to 1 is the cap itself
     env = s1.env_cat_center, s1.env_cat_radius
     del env
@@ -144,7 +177,7 @@ def test_the_engine_kills_the_cap_the_host_counts(cfg, s0) -> None:
     up = pos / np.linalg.norm(pos, axis=1, keepdims=True)
     c = geom.from_latlon(lat, lon)
     arc = np.arctan2(np.linalg.norm(np.cross(up, c), axis=1), up @ c) * cfg.world.radius
-    assert inside == int((alive & (arc <= 30.0 + 1e-3)).sum())
+    assert inside == int((alive & (arc <= 20.0 + 1e-3)).sum())
 
 
 def test_replay_validation_of_a_catastrophe_on_a_sphere(cfg, s0) -> None:
@@ -160,7 +193,7 @@ def test_replay_validation_of_a_catastrophe_on_a_sphere(cfg, s0) -> None:
 
 def test_the_rule_tier_draws_a_catastrophe_uniform_by_area(cfg, s0) -> None:
     ctx = rules.Context(
-        100, 0, "gardener", 5, actions.span(cfg), None, None, env_view(s0), actions.is_sphere(cfg)
+        100, 0, "gardener", 5, actions.span(cfg), None, None, env_view(s0), True, actions.area_width(cfg)
     )  # vitals and pacing are not read by this request
     p, persona = rules.RULE_PARAMS, rules.RULE_PARAMS.persona("gardener")
     rng = np.random.default_rng(0)
@@ -177,11 +210,15 @@ def test_the_rule_tier_draws_a_catastrophe_uniform_by_area(cfg, s0) -> None:
     )
 
 
-def test_the_random_persona_draws_places_in_degrees(cfg, s0) -> None:
+def test_the_random_persona_draws_places_in_degrees_uniform_by_area(cfg, s0) -> None:
     rng = np.random.default_rng(5)
-    got = [yoked.sample_params("catastrophe", rng, cfg)[0] for _ in range(500)]
+    got = [yoked.sample_params("catastrophe", rng, cfg)[0] for _ in range(2000)]
     z = np.sin(np.radians([g["y"] for g in got]))
-    assert abs(z.mean()) < 0.1 and max(abs(g["x"]) for g in got) <= 180.0
+    # uniform on the sphere: sin(lat) is uniform in [-1, 1] (mean 0, variance 1/3); a latitude drawn uniformly
+    # in degrees has variance of sin about 0.22 (review L4a)
+    assert abs(z.mean()) < 0.06 and abs(z.var() - 1 / 3) < 0.025 and max(abs(g["x"]) for g in got) <= 180.0
+    lo, hi = actions.radius_bounds(cfg)
+    assert all(lo <= g["radius"] <= hi for g in got)  # arm R draws inside the area-equivalent bounds
     mv = [yoked.sample_params("fertility_shift", rng, cfg)[0] for _ in range(200)]
     moves = [m for m in mv if "dx" in m]
     assert moves and max(math.hypot(m["dx"], m["dy"]) for m in moves) <= actions.MOVE_MAX_FRAC * actions.span(
@@ -200,6 +237,45 @@ def test_the_models_schema_and_prompts_state_a_sphere(cfg, s0) -> None:
 
 
 # --- the player's powers ----------------------------------------------------------------------------------
+
+
+def test_the_rule_tier_radius_is_a_disc_of_the_boxs_share(cfg, s0) -> None:
+    ctx = rules.Context(
+        100, 0, "gardener", 5, actions.span(cfg), None, None, env_view(s0), True, actions.area_width(cfg)
+    )
+    p, persona = rules.RULE_PARAMS, rules.RULE_PARAMS.persona("gardener")
+    rng = np.random.default_rng(1)
+    radii = np.array([rules._request("catastrophe", ctx, p, persona, rng)[0]["radius"] for _ in range(300)])
+    lo, hi = p.cat_radius_frac
+    assert (
+        radii.min() >= lo * actions.area_width(cfg) * 0.999
+        and radii.max() <= hi * actions.area_width(cfg) * 1.001
+    )
+    shares = (1.0 - np.cos(radii / cfg.world.radius)) / 2.0
+    assert (
+        shares.min() > 0.9 * math.pi * lo**2 and shares.max() < 1.1 * math.pi * hi**2
+    )  # the box's 3 % to 20 %
+
+
+def test_wrap_lon_stays_below_180_and_events_state_cartesian_places(cfg) -> None:
+    """Review L4(b) and (c): +180 is -180 (also when float32 rounds a longitude up to it), and a director
+    entry's chronicle event states the planet-frame point of its (lon, lat), not the degrees."""
+    for lon in (180.0, -180.0, 540.0, 179.99999999, -179.99999999):
+        assert actions.wrap_lon(lon) == -180.0 or abs(actions.wrap_lon(lon)) < 180.0
+        assert -180.0 <= actions.wrap_lon(lon) < 180.0
+    assert actions.wrap_lon(180.0) == -180.0 and actions.wrap_lon(179.99999999) == -180.0
+    from alife.game.chronicle import Chronicler
+
+    chron = Chronicler(0, planet=36.0)
+    entry = {"step_applied": 200, "source": "rule", "action": "fertility_shift",
+             "params": {"patch": 1, "x": 90.0, "y": 0.0}, "prev": {"patch": 1, "x": 80.0, "y": 0.0},
+             "duration": None, "reason": "test"}  # fmt: skip
+    [ev] = chron.from_director([entry])
+    assert (ev["x"], ev["y"], ev["z"]) == (0.0, 36.0, 0.0)  # lon 90 on the equator: +y
+    entry = {**entry, "params": {"patch": 1, "x": 0.0, "y": 60.0}}
+    [ev] = Chronicler(0, planet=36.0).from_director([entry])
+    assert (ev["x"], ev["y"], ev["z"]) == (18.0, 0.0, 31.18)
+    assert Chronicler(0)._where(90.0, 0.0) == (90.0, 0.0)  # a box: the entry's own numbers
 
 
 def test_the_nearest_patch_is_by_arc(cfg, s0) -> None:

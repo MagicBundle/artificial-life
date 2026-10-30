@@ -593,7 +593,7 @@ class Observer:
         self._settle()
         records = self.society.take_records()
         if records:
-            self._last_record = records[len(records) - 1]
+            self._last_record = records[-1]
         return records
 
     def color_inputs(self, houses: np.ndarray) -> ColorInputs:
@@ -665,7 +665,7 @@ class Observer:
     def _latest_record(self) -> dict[str, Any] | None:
         """The newest settled snapshot record (untaken, else the last one taken), None before any."""
         if self.society.records:
-            return self.society.records[len(self.society.records) - 1]
+            return self.society.records[-1]
         return self._last_record
 
     # --- reporting ----------------------------------------------------------------------------------------
