@@ -951,13 +951,18 @@ def thread_fold(rd: RunView, a: int, b: int, origin: int | None) -> ThreadFold:
     return ThreadFold(tuple(told), kt, largest_a, kinthreads.kin_untold(in_chapter, told, a, b))
 
 
-def thread_facts(tf: ThreadFold, rules: ReportRules, quota: dict[str, int]) -> list[dict[str, Any]]:
+def thread_facts(
+    tf: ThreadFold, rules: ReportRules, quota: dict[str, int], sphere: bool = False
+) -> list[dict[str, Any]]:
     """The thread facts of a chapter: the events its fold told, the largest first (the size of a group that
-    formed, the peak of one that ended), at most ``quota_events`` of them (the cut goes to ``quota``)."""
+    formed, the peak of one that ended), at most ``quota_events`` of them (the cut goes to ``quota``). On a
+    sphere (``sphere``) the thread's place is the planet-frame point ``x, y, z`` (a box's third element is a
+    height, which a fact does not state)."""
     out = []
     for e in tf.told:
         formed = e["kind"] == "formed"
-        x, y = e["pos"][0], e["pos"][1]
+        x, y, *rest = e["pos"]
+        place = {"z": rest[0]} if sphere else {}
         out.append(
             {
                 "kind": "thread",
@@ -978,6 +983,7 @@ def thread_facts(tf: ThreadFold, rules: ReportRules, quota: dict[str, int]) -> l
                 "kin": int(e["a"]),
                 "x": x,
                 "y": y,
+                **place,
             }
         )
     out.sort(key=lambda f: (-(f["size"] if f["event"] == "formed" else f["peak"]), f["told"], f["thread"]))
@@ -1036,6 +1042,7 @@ def storm_fold(lines: Sequence[Mapping[str, Any]], b: int) -> StormFold:
                     "peak": 0.0,
                     "x": e["x"],
                     "y": e["y"],
+                    **({"z": e["z"]} if "z" in e else {}),  # a sphere's tracker states the planet-frame z
                     "first_told": None,
                 }
             if kind == "named":
@@ -1048,7 +1055,15 @@ def storm_fold(lines: Sequence[Mapping[str, Any]], b: int) -> StormFold:
             cur = tracks.get(ident)
             if cur is not None:
                 tracks.update(
-                    {ident: {**cur, "peak": max(cur["peak"], float(s["zeta"])), "x": s["x"], "y": s["y"]}}
+                    {
+                        ident: {
+                            **cur,
+                            "peak": max(cur["peak"], float(s["zeta"])),
+                            "x": s["x"],
+                            "y": s["y"],
+                            **({"z": s["z"]} if "z" in s else {}),
+                        }
+                    }
                 )
         chron.from_storms(step, events, [s["id"] for s in storms])
         for e in chron.told_storm:
@@ -1101,6 +1116,7 @@ def storm_facts(
                 "age": tr["age"] if ident in ended_in else None,
                 "x": tr["x"],
                 "y": tr["y"],
+                **({"z": tr["z"]} if "z" in tr else {}),
             }
         )
     facts.sort(key=lambda f: (-f["ratio"], f["storm"]))
@@ -1161,6 +1177,7 @@ def _group_facts(
             "share": g["size"] / alive_b if alive_b else 0.0,
             "x": g.get("x"),
             "y": g.get("y"),
+            **({"z": g["z"]} if g.get("z") is not None else {}),  # a sphere's table has the planet-frame z
         }
         carried = carried and (nxt is None or g["size"] > nxt)
         if carried:
@@ -1726,7 +1743,7 @@ def build_sheet(rd: RunView, a: int, b: int, rules: ReportRules = REPORT_V1) -> 
         rec_b = next(r for r in recs if r["step"] == b)
         alive_at = {r["step"]: alive_of(r) for r in recs}
         tf = thread_fold(rd, a, b, origin)
-        kinds.update({"thread": thread_facts(tf, rules, quota)})
+        kinds.update({"thread": thread_facts(tf, rules, quota, rd.cfg.world.geometry == "sphere")})
         if tf.untold > 0:
             kinds.update({"untold": [{"kind": "untold", "n": tf.untold}]})
         kinds.update({"event": cap("event", _colony_events(recs, rules, excl), rules.quota_events)})

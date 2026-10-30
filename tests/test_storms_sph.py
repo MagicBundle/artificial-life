@@ -242,3 +242,60 @@ def test_the_vortex_field_has_the_cyclonic_sign_of_its_hemisphere() -> None:
     z = vortex_field(NSIDE, [0, 0, 1], SIGMA, RADIUS, 0.05)
     s = np.where(geom.pixel_centres(NSIDE)[:, 2] >= 0, 1, -1)
     assert ((s * z) >= 0).all() and z.max() <= 0.05 and z[s < 0].min() >= -0.05
+
+
+# --- the distance hooks decide (review M3) ----------------------------------------------------------------
+
+
+def path_by_distance(start, towards, steps) -> np.ndarray:
+    """Centres on the great circle from ``start`` through ``towards``, ``steps`` (arc lengths) apart."""
+    u = geom.unit(np.asarray(start, float))
+    w = np.asarray(towards, float)
+    t = geom.unit(w - (w @ u) * u)
+    ang = np.concatenate([[0.0], np.cumsum(np.asarray(steps, float))]) / RADIUS
+    return np.cos(ang)[:, None] * u + np.sin(ang)[:, None] * t
+
+
+def test_a_storm_that_outruns_its_footprint_keeps_its_id_by_prediction() -> None:
+    """The overlap rule cannot match a storm that moved farther than its footprint's diameter in one
+    detection; the position fallback (the gate on the distance to the predicted centre) must."""
+    sigma = 5.0  # a footprint of radius about 10: diameter 20
+    steps = [14, 16, 18, 20, 22, 24, 26]  # arc lengths between detections, accelerating
+    path = path_by_distance([1.0, 0.0, 0.7], [0.0, 0.0, 1.0], steps)  # over the pole, staying north
+    tracker, out = SphereTracker(P), []
+    for i, c in enumerate(path):
+        det = detect(frame_of_vortices(NSIDE, 25 * i, [cyclone(c, sigma=sigma)], RADIUS), P)
+        out.append((det, tracker.update(det)))
+    assert all(len(det.storms) == 1 for det, _ in out)
+    r_eq = out[0][0].storms[0].r_eq
+    gaps = [arc(path[i] * RADIUS, path[i + 1] * RADIUS) for i in range(len(path) - 1)]
+    assert max(gaps) > 2.2 * r_eq and sum(g > 2.2 * r_eq for g in gaps) >= 2, "jumps beyond the footprint"
+    assert {ids[0] for _, ids in out} == {1}, "one id: matched by the predicted position"
+    assert len(tracker.tracks) == 1 and len(tracker.tracks[0].dets) == len(path)
+
+
+def test_a_storm_beyond_the_gate_is_a_new_track_and_the_orphan_coasts() -> None:
+    far = geom.unit(np.array([-1.0, 0.3, 0.7]))
+    here = geom.unit(np.array([1.0, 0.0, 0.7]))
+    tracker = SphereTracker(P)
+    for i in range(3):
+        tracker.update(detect(frame_of_vortices(NSIDE, 25 * i, [cyclone(here)], RADIUS), P))
+    ids = tracker.update(detect(frame_of_vortices(NSIDE, 75, [cyclone(far)], RADIUS), P))
+    assert ids == [2], "a storm 120 degrees away is not the old one"
+    old = next(t for t in tracker.tracks if t.id == 1)
+    assert not old.ended and old.missed == 1 and len(old.dets) == 3  # it coasts
+
+
+def test_the_distance_hooks_are_great_circle_arcs() -> None:
+    tracker = SphereTracker(P)
+    tracker.update(detect(frame_of_vortices(NSIDE, 0, [cyclone([1.0, 0.0, 0.7])], RADIUS), P))
+    det = detect(frame_of_vortices(NSIDE, 25, [cyclone([1.0, 0.5, 0.7])], RADIUS), P)
+    [c] = det.storms
+    last = tracker.tracks[0].dets[-1]
+    want = arc(np.array([c.x, c.y, c.z]), np.array([last.x, last.y, last.z]))
+    assert want > 10.0 and tracker._gap(c, last) == pytest.approx(want, rel=1e-9)
+    point = (0.0, RADIUS, 0.0)
+    assert tracker._gap_to(c, point) == pytest.approx(
+        arc(np.array([c.x, c.y, c.z]), np.array(point)), rel=1e-9
+    )
+    assert tracker._gap_to(c, (c.x, c.y, c.z)) == pytest.approx(0.0, abs=1e-9)

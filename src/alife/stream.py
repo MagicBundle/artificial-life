@@ -153,10 +153,11 @@ def reader_closed(out: object) -> bool:
 # --- the view and the frame builder ---------------------------------------------------------------------
 
 
-def sphere_block(cfg: Config) -> dict[str, Any]:
+def sphere_block(cfg: Config, territory: int | None = None) -> dict[str, Any]:
     """The planet keys of the protocol 2 header of a sphere config (``streamrec.sphere_block``): the layer
     radii, the three Nsides (the weather's is ``weather.cells`` while the weather is on, else 0; the
-    territory's is the social rules' for the sphere) and the depth ``H1 + H2`` the shell is mapped onto."""
+    territory's is ``territory``, the observer's ``terr_cells`` (the Nside of its ``TERR`` record), or
+    ``geom.TERRITORY_NSIDE`` without an observer) and the depth ``H1 + H2`` the shell is mapped onto."""
     w, d = cfg.world, dims(cfg)
     wx = cfg.weather
     return streamrec.sphere_block(
@@ -164,7 +165,7 @@ def sphere_block(cfg: Config) -> dict[str, Any]:
         shell_edges=layer_radii(w.radius, geom.geometry(cfg).height_max, d.fz),
         nside_field=w.nside,
         nside_weather=wx.cells if wx.enabled else 0,
-        nside_territory=geom.TERRITORY_NSIDE,
+        nside_territory=geom.TERRITORY_NSIDE if territory is None else territory,
         weather_depth=(wx.H1 + wx.H2) if wx.enabled else 0.0,
     )
 

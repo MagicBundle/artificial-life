@@ -1,5 +1,5 @@
 """Stream protocol v2 (the sphere world): the encoders against the independent decoder ``sphere_decode``
-(written from ``stream_v2_spec.md``, not from ``streamrec``), a real ``alife play`` of a tiny3s world, the
+(written from ``docs/STREAM_V2.md``, not from ``streamrec``), a real ``alife play`` of a tiny3s world, the
 legacy ``alife stream`` header, and the box streams' unchanged bytes (DESIGN §46.7; sphere series S5).
 """
 
@@ -17,7 +17,9 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
+import play_decode
 import sphere_decode as sd
+import stream_decode
 from alife import geom, play, stream, streamrec
 from alife.config import load_config
 from alife.game import observer
@@ -98,6 +100,11 @@ def test_the_sphere_decoder_refuses_a_protocol_1_header(played) -> None:
     )  # fmt: skip
     with pytest.raises(sd.ProtocolError):
         sd.decode_header(head)
+    # review L2: the box reference decoders refuse protocol 2 too (the magic is unchanged)
+    with pytest.raises(AssertionError, match="protocol 1"):
+        stream_decode.decode_header(played[3])
+    with pytest.raises(AssertionError, match="protocol 1"):
+        play_decode.decode(played[3])
 
 
 # --- the records ------------------------------------------------------------------------------------------
@@ -273,6 +280,14 @@ def test_the_sphere_block_validates() -> None:
             streamrec.sphere_block(**{**ok, **bad})
 
 
+def test_the_header_territory_nside_is_the_observers() -> None:
+    """Review L1: a caller whose social rules choose another territory Nside writes that Nside in the header
+    (the ``TERR`` record carries the observer's), not the constant."""
+    cfg = load_config(preset="tiny3s")
+    assert stream.sphere_block(cfg)["nside_territory"] == geom.TERRITORY_NSIDE
+    assert stream.sphere_block(cfg, 12)["nside_territory"] == 12
+
+
 # --- the legacy stream ------------------------------------------------------------------------------------
 
 
@@ -299,6 +314,19 @@ def test_alife_stream_writes_the_same_header_and_a_frame(played) -> None:
     assert n_alive == int(to_numpy(s.alive).sum())
     n_rows = s.alive.shape[0]  # head, alive bytes, pos 12, orient 4, rgb 4, no bonds, the field layer
     assert len(frame) == 8 + 32 + ((n_rows + 3) // 4) * 4 + 12 * n_rows + 4 * n_rows + 4 * n_rows + 4 * npix
+    # the orientation section: (yaw, pitch) half floats of the state's bearing and pitch (review L6: a flipped
+    # sign of the yaw must not pass)
+    off = 8 + 32 + ((n_rows + 3) // 4) * 4 + 12 * n_rows
+    orient = np.frombuffer(frame[off : off + 4 * n_rows], "<f2").reshape(n_rows, 2).astype(np.float64)
+    alive = to_numpy(s.alive)
+    np.testing.assert_allclose(orient[alive, 0], to_numpy(s.heading)[alive], atol=2e-3)
+    np.testing.assert_allclose(orient[alive, 1], to_numpy(s.pitch)[alive], atol=2e-3)
+    assert np.abs(orient[alive, 0]).max() > 0.5, "the yaws are not all near zero: the sign is tested"
+
+
+def test_the_sparse_cell_index_is_sixteen_bits_wide() -> None:
+    """Nside 73 fits a u16 ``nx`` (63 948 cells), Nside 74 does not (65 712): the bound is exactly that."""
+    assert 12 * 73**2 <= play.CELL_INDEX_MAX == 0xFFFF < 12 * 74**2
 
 
 def test_a_box_header_is_unchanged_by_the_sphere_keys() -> None:
@@ -361,3 +389,54 @@ def test_a_box_play_stream_is_byte_identical_to_the_base(
     data = out.getvalue()
     assert (len(data), hashlib.sha256(data).hexdigest()[:16]) == BOX_STREAM_PINS[name]
     assert json.loads(data[12 : 12 + struct.unpack("<I", data[8:12])[0]])["protocol"] == 1
+
+
+# --- found by the GUI builder (PR S6): signed places and the sphere's ENVS patches -------------------------
+
+
+def test_a_place_of_a_power_may_be_signed_and_only_the_place() -> None:
+    line = play._parse_power(["bloom", "id=3", "x=-30.5", "y=-60", "gain=1.5"])
+    assert line.power == "bloom" and line.id == 3
+    assert dict(line.params)["x"] == -30.5 and dict(line.params)["y"] == -60.0
+    for bad in ("x=--3", "y=+4", "x=-", "x=1e3", "x=- 3", "gain=-1", "radius=-5", "kill=-0.1", "mult=-2"):
+        with pytest.raises(play.ControlError):
+            play._parse_power(["strike", "id=1", bad])
+
+
+def test_the_patches_of_a_sphere_pass_the_writers_check() -> None:
+    sphere = {"i": 0, "x": 0.5, "y": 0.5, "z": 0.7071, "lon": 45.0, "lat": 45.0, "gain": 1.0, "sigma": 12.0}
+    streamrec.check_envs({"patches": [sphere]})
+    streamrec.check_envs({"patches": [{"i": 0, "x": 1.0, "y": 2.0, "gain": 1.0, "sigma": 3.0}]})  # a box's
+    for bad in (
+        {k: v for k, v in sphere.items() if k != "lat"},  # z without lon, lat
+        {**sphere, "extra": 1.0},
+        {"i": 0, "x": 1.0, "y": 2.0, "gain": 1.0, "sigma": 3.0, "lon": 1.0},  # lon without z
+    ):
+        with pytest.raises(streamrec.RecordError):
+            streamrec.check_envs({"patches": [bad]})
+
+
+def test_a_played_sphere_with_the_players_director_writes_envs_and_obeys_a_signed_strike(
+    tmp_path: Path,
+) -> None:
+    """The planet launcher always sets ``director.enabled``: ENVS then carries the patches (and the powers),
+    and a power aimed at a negative longitude and latitude is applied."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(observer, "DEFAULT_SOCIAL", SOC)
+        cfg = load_config(
+            preset="tiny3s",
+            overrides=[*CADENCE, "game.observe=true", "run.compile=false", "director.enabled=true",
+                       "director.rule_every=20", "run.director=player"],
+        )  # fmt: skip
+        opts = play.PlayOptions(rate=float("inf"), paused=False, fresh=True, unattended=True, tick=10)
+        script = [[] for _ in range(60)]
+        script[5] = ["power strike id=1 x=-120 y=-35 radius=15 kill=0.5"]
+        _rd, res, pacer, out = run_paced(cfg, tmp_path / "w", 40, script, options=opts, game_specs=True)
+    assert res.status == "done" and pacer.failure is None
+    dec = sd.decode(out.getvalue())
+    envs = [r for r in dec.records if r.tag == "ENVS"]
+    assert envs and envs[0].f["json"]["patches"], "the patches are in ENVS"
+    patch = envs[0].f["json"]["patches"][0]
+    assert {"i", "x", "y", "z", "lon", "lat", "gain", "sigma"} == set(patch)
+    plans = [r.f["json"] for r in dec.records if r.tag == "PLAN"]
+    assert plans and plans[0]["raw"]["x"] == -120.0 and plans[0]["raw"]["y"] == -35.0, plans[:1]

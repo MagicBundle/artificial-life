@@ -18,6 +18,7 @@ import report_synth as RS
 from alife.director import actions
 from alife.game import kinthreads
 from alife.game import report as R
+from alife.game import reportjob as RJ
 from report_synth import entry, variant
 
 DATA = Path(__file__).parent / "data"
@@ -724,6 +725,34 @@ def test_the_storm_facts_of_a_chapter_count_what_the_chronicle_told() -> None:
     assert "2 storms formed and 1 dissolved during the chapter." in texts
     assert "Storm Alder dissolved at step 2,500 after 450 steps." in texts
     assert heads[0]["text"] == "2 storms reached named strength"
+
+
+def test_the_storm_facts_and_entities_of_a_sphere_carry_the_planet_frame_z() -> None:
+    """Review L8: a sphere's tracker states the planet-frame ``z``; the storm facts and the entities that cite
+    them keep it (a box's carry none), so that a place in a report can fly a camera."""
+    lines = script()
+    for line in lines:
+        for item in (*line["storms"], *line["events"]):
+            item["z"] = -3.5
+    view = storm_view(lines)
+    sheet = R.build_sheet(view, 2000, 3000)
+    storms = facts_of(sheet, "storm")
+    assert storms and all(f["z"] == -3.5 for f in storms)
+    box = facts_of(R.build_sheet(storm_view(script()), 2000, 3000), "storm")
+    assert box and all("z" not in f for f in box)
+    ((key, ent),) = RJ._entity_of(sheet, storms[0])
+    assert key.startswith("S") and ent["z"] == -3.5 and "z" not in RJ._entity_of(sheet, box[0])[0][1]
+
+
+def test_a_thread_fact_states_z_on_a_sphere_only() -> None:
+    told = {"kind": "formed", "first_id": 7, "name": "Oak", "parent": 0, "into": 0, "first_step": 10,
+            "end_step": None, "steps": 5, "size": 9, "peak": 9, "step": 15, "imp": 1, "initial": False,
+            "a": 7, "pos": (1.0, 2.0, 3.0)}  # fmt: skip
+    tf = R.ThreadFold((told,), None, None, 0)  # type: ignore[arg-type]
+    (sph,) = R.thread_facts(tf, R.REPORT_V1, {}, True)
+    (box,) = R.thread_facts(tf, R.REPORT_V1, {})
+    assert (sph["x"], sph["y"], sph["z"]) == (1.0, 2.0, 3.0)
+    assert (box["x"], box["y"]) == (1.0, 2.0) and "z" not in box
 
 
 def test_a_chapter_with_no_tracker_log_has_no_storm_facts() -> None:

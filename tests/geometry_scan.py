@@ -87,15 +87,21 @@ def _const(node: ast.AST | None) -> object:
     return None
 
 
-def _last_index_kind(sl: ast.AST, poslike: bool) -> str | None:
-    """'z_index' / 'xy_slice' for a subscript whose last index selects the third component or xy."""
+def _last_index_kind(sl: ast.AST, poslike: bool, direct: bool = True) -> str | None:
+    """'z_index' / 'xy_slice' for a subscript whose last index selects the third component or xy.
+
+    ``direct``: the base is position-like by its own name (not only by taint). A bare ``x[-1]`` on a name that
+    is merely assigned from a position-like expression is the last item of a list (``records[-1]``,
+    ``ckpts[-1]``, ``shape[-1]``), not a z; it counts only on a directly position-like base, or as a tuple
+    index (``p[:, -1]``, ``p[..., -1]``), which is a component of an array.
+    """
     elts = sl.elts if isinstance(sl, ast.Tuple) else [sl]
     last = elts[-1]
     tuple_form = isinstance(sl, ast.Tuple) and len(elts) >= 2
     c = _const(last)
     if c == 2 and (tuple_form or poslike):
         return "z_index"
-    if c == -1 and poslike:
+    if c == -1 and poslike and (tuple_form or direct):
         return "z_index"
     if isinstance(last, ast.Slice) and (tuple_form or poslike):
         lo, up = _const(last.lower), _const(last.upper)
@@ -185,12 +191,30 @@ class _Scanner:
             return any(self.poslike(e) for e in node.elts)
         return False
 
+    def _direct(self, node: ast.AST) -> bool:
+        """Is the base position-like by a token of its own name (a name, an attribute, a dict key), through
+        subscripts and calls, without counting taint? ``.shape`` is a tuple of sizes, never a position."""
+        if isinstance(node, ast.Name):
+            return bool(_tokens(node.id) & POSITION_TOKENS)
+        if isinstance(node, ast.Attribute):
+            return node.attr != "shape" and (
+                bool(_tokens(node.attr) & POSITION_TOKENS) or self._direct(node.value)
+            )
+        if isinstance(node, ast.Subscript):
+            key = _const(node.slice)
+            if isinstance(key, str) and _tokens(key) & POSITION_TOKENS:
+                return True
+            return self._direct(node.value)
+        if isinstance(node, ast.Call):
+            return any(self._direct(a) for a in node.args) or self._direct(node.func)
+        return self.poslike(node) and not isinstance(node, ast.Name)
+
     # -- the scan --------------------------------------------------------------------------------------
     def hits(self) -> dict[str, int]:
         h = dict.fromkeys(GEOMETRY_PATTERNS, 0)
         for n in ast.walk(self.tree):
             if isinstance(n, ast.Subscript):
-                kind = _last_index_kind(n.slice, self.poslike(n.value))
+                kind = _last_index_kind(n.slice, self.poslike(n.value), self._direct(n.value))
                 if kind:
                     h[kind] += 1
             elif isinstance(n, ast.Call):

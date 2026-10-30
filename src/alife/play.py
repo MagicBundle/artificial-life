@@ -162,6 +162,8 @@ POWER_INT_KEYS: Final = frozenset({"steps", "patch"})  # the others are decimals
 _CLASS = re.compile(r"[a-z][a-z0-9_]*")
 _UINT = re.compile(r"[0-9]+")
 _DECIMAL = re.compile(r"[0-9]+(\.[0-9]+)?")
+# A place of a power (`x`, `y`) on a sphere is a longitude and a latitude in degrees: signed (§46.7)
+_SIGNED_DECIMAL = re.compile(r"-?[0-9]+(\.[0-9]+)?")
 INT64_MAX: Final = 2**63 - 1
 
 
@@ -456,7 +458,7 @@ def _parse_power(args: list[str]) -> PowerLine:
             if number > INT64_MAX:
                 raise ControlError(f"{key} does not fit an int64")
         else:
-            if not _DECIMAL.fullmatch(value):
+            if not (_SIGNED_DECIMAL if key in ("x", "y") else _DECIMAL).fullmatch(value):
                 raise ControlError(f"{key} must be a decimal, got {value!r}")
             number = float(value)
             if not math.isfinite(number):
@@ -1021,7 +1023,11 @@ class PlayPacer:
             config_hash=config_hash(cfg),
             source=self.opt.source,
             color_modes=self._modes,
-            sphere=stream_mod.sphere_block(cfg) if d.sph else None,
+            sphere=(
+                stream_mod.sphere_block(cfg, obs.social.terr_cells if obs is not None else None)
+                if d.sph
+                else None
+            ),
         )
         powers = self.desk.header()
         play = streamrec.header_play(
@@ -1634,7 +1640,7 @@ class PlayPacer:
             self._window.popleft()
         if len(self._window) < 2:
             return 0.0
-        (t0, n0), (t1, n1) = self._window[0], self._window[len(self._window) - 1]
+        (t0, n0), (t1, n1) = self._window[0], self._window[-1]
         span = max(t1 - t0, 1e-9)
         # the window ends now, not at the last step: a pause lets the rate decay
         return (n1 - n0) / max(span, min(now - t0, ACHIEVED_S))

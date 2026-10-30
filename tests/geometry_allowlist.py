@@ -28,6 +28,13 @@ the files that define the geometry are not counted at all, see
 ``geometry_scan.DEFINITION_FILES``), ``box branch`` (the box half of a function the sphere replaces by a
 separate one),
 ``converted`` (the consumer is converted in PR S<until>).
+
+Review note (S5 review, L7): the S5 ``box branch`` entries (``play.py``, ``cli.py``, ``stream.py``,
+``game/powers.py``, ``game/tracers.py``, ``director/actions.py``, ...) are permanent, not dated: each is
+the box half of a function whose sphere half is a separate function, and each is guarded by a
+``geometry == "sphere"`` / ``dims(cfg).sph`` branch (spot-checked in review; the sphere paths are the ones
+the tests of ``test_sphere_*`` run). A new ``box branch`` entry needs the same guard; the count of an
+entry may only go down.
 """
 
 from __future__ import annotations
@@ -152,7 +159,6 @@ NOT_IN_SPEC_AUDIT = frozenset(
     {
         "step.py",
         "analysis/emergence/braid.py",
-        "analysis/emergence/frames.py",
         "analysis/emergence/modes.py",
         "analysis/emergence/winding.py",
     }
@@ -168,8 +174,6 @@ ALLOWLIST: tuple[Allow, ...] = (
     # analysis/emergence/epr.py: ditto
     Allow("analysis/emergence/epr.py", "wrap", 1, "box-only tool"),
     Allow("analysis/emergence/epr.py", "lattice", 8, "box-only tool"),
-    # analysis/emergence/frames.py: ditto
-    Allow("analysis/emergence/frames.py", "z_index", 1, "box-only tool"),
     # analysis/emergence/lattice.py: ditto (holds its own torus min_image)
     Allow("analysis/emergence/lattice.py", "z_index", 1, "box-only tool"),
     Allow("analysis/emergence/lattice.py", "xy_slice", 9, "box-only tool"),
@@ -183,7 +187,7 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("analysis/emergence/record.py", "world.size", 1, "box-only tool"),
     Allow("analysis/emergence/record.py", "world.height", 1, "box-only tool"),
     # analysis/emergence/winding.py: ditto (unwrapped torus tracks)
-    Allow("analysis/emergence/winding.py", "z_index", 3, "box-only tool"),
+    Allow("analysis/emergence/winding.py", "z_index", 1, "box-only tool"),
     Allow("analysis/emergence/winding.py", "xy_slice", 1, "box-only tool"),
     Allow("analysis/emergence/winding.py", "wrap", 6, "box-only tool"),
     # analysis/labels.py: G1 labels; the Nomad track needs the sum of great-circle arcs; INTENT_VERSION 4
@@ -195,7 +199,7 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("analysis/signals.py", "wrap", 1, "box-only tool"),
     Allow("analysis/signals.py", "world.size", 1, "box-only tool"),
     # analysis/w0.py: the W0 storm study driver (box-only; S4c writes the sphere's)
-    Allow("analysis/w0.py", "z_index", 29, "box-only tool"),
+    Allow("analysis/w0.py", "z_index", 24, "box-only tool"),
     Allow("analysis/w0.py", "xy_slice", 1, "box-only tool"),
     Allow("analysis/w0.py", "wrap", 35, "box-only tool"),
     Allow("analysis/w0.py", "world.size", 3, "box-only tool"),
@@ -208,7 +212,7 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("analysis/w2.py", "world.height", 3, "box-only tool"),
     # bench.py: the environment block, the play-bench centre and list indexing; the staged step has its
     # sphere branches (S2: `--stages` works on a sphere)
-    Allow("bench.py", "z_index", 4, "box branch"),
+    Allow("bench.py", "z_index", 3, "box branch"),
     Allow("bench.py", "world.size", 2, "box branch"),
     Allow("bench.py", "world.height", 1, "box branch"),
     Allow("bench.py", "lattice", 2, "box branch"),
@@ -230,7 +234,7 @@ ALLOWLIST: tuple[Allow, ...] = (
     # fields.py: S1 and S3 converted it: every function the sphere replaces dispatches on `dims(cfg).sph`
     # to `fields_sph` (the resource, the chemicals, the built material) and keeps its box half (the counts
     # are those box halves)
-    Allow("fields.py", "z_index", 3, "box branch"),
+    Allow("fields.py", "z_index", 2, "box branch"),
     Allow("fields.py", "xy_slice", 1, "box branch"),
     Allow("fields.py", "wrap", 4, "box branch"),
     Allow("fields.py", "world.size", 3, "box branch"),
@@ -270,7 +274,7 @@ ALLOWLIST: tuple[Allow, ...] = (
     # metrics.py: observers (S5)
     Allow("metrics.py", "lattice", 6, "box branch"),
     # physics.py: the box forces and integrators; the sphere has `forces_s` / `integrate_s` (S2)
-    Allow("physics.py", "z_index", 7, "box branch"),
+    Allow("physics.py", "z_index", 6, "box branch"),
     Allow("physics.py", "xy_slice", 3, "box branch"),
     Allow("physics.py", "wrap", 2, "box branch"),
     Allow("physics.py", "world.size", 2, "box branch"),
@@ -294,7 +298,7 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("sensing.py", "xy_slice", 6, "box branch"),
     Allow("sensing.py", "world.height", 1, "box branch"),
     # spatial.py: the box search; the sphere search is a separate function (S2)
-    Allow("spatial.py", "z_index", 5, "box branch"),
+    Allow("spatial.py", "z_index", 4, "box branch"),
     Allow("spatial.py", "xy_slice", 2, "box branch"),
     Allow("spatial.py", "wrap", 3, "box branch"),
     Allow("spatial.py", "world.size", 3, "box branch"),
@@ -320,7 +324,7 @@ ALLOWLIST: tuple[Allow, ...] = (
     Allow("viewer.py", "wrap", 8, "box-only tool"),
     Allow("viewer.py", "world.size", 7, "box-only tool"),
     # weather.py: wind sampling, vertical profile, remap (S4b converted it: the sphere half is weather_sph.py)
-    Allow("weather.py", "z_index", 11, "box branch"),
+    Allow("weather.py", "z_index", 8, "box branch"),
     Allow("weather.py", "xy_slice", 2, "box branch"),
     Allow("weather.py", "wrap", 6, "box branch"),
     Allow("weather.py", "world.size", 12, "box branch"),

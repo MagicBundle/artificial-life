@@ -101,7 +101,7 @@ def tracer_reseed(
 
 def tracer_init(pos: mx.array, buoy_cap: mx.array | None, alive: mx.array, cfg: Config) -> TracerState:
     """The rig at a state: ``game.tracers`` tracers seeded at its live rows, from the key of the run seed."""
-    t, nd = cfg.game.tracers, pos.shape[len(pos.shape) - 1]
+    t, nd = cfg.game.tracers, pos.shape[-1]
     blank = TracerState(
         mx.zeros((t, nd), _F32), mx.zeros((t,), _F32), mx.zeros((t,), _I32), tracer_key(cfg.run.seed)
     )
